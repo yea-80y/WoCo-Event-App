@@ -49,7 +49,7 @@ export interface IssueObjectOpts {
    * nothing for a chain registration to hold. This is the branch that makes the
    * plan's "chain footprint: ZERO" true rather than aspirational.
    */
-  holdingSource?: "chain" | "pod-cert";
+  holdingSource?: "chain" | "cert";
   /** For `cert` badges: the issuer's content-feed owner address, without
    *  which nobody can find the certificate log. See `ObjectDirectoryEntry`. */
   certLogOwner?: Hex0x;
@@ -77,7 +77,7 @@ export interface IssueObjectOpts {
  */
 export async function issueObjectType(opts: IssueObjectOpts): Promise<ObjectDirectoryEntry> {
   const { creatorAddress, kind, name, description, categoryId, supply, signedManifest, editionBodies, image } = opts;
-  const certSourced = opts.holdingSource === "pod-cert";
+  const certSourced = opts.holdingSource === "cert";
 
   // ── Holdings/gating on the CHAIN rail is a WoCoEventV2 feature — refuse to
   //    mint an object on a chain where it could never be read on-chain. A

@@ -13,10 +13,10 @@
 /**
  * A creator's object directory — every object *type* (manifest) they have issued,
  * across all kinds (ticket / badge / collectible / authenticity). This is what
- * the `#/creator/pods` manager reads. Paged like `ShopDirectory`: page 0 holds
+ * the `#/creator/objects` manager reads. Paged like `ShopDirectory`: page 0 holds
  * the head + category list, overflow spills to `/pN`.
  */
 export function objectCreatorDirectoryTopic(ethAddress: string, page = 0): string {
-  const base = `woco/pod/creator/${ethAddress.toLowerCase()}`;
+  const base = `woco/object/creator/${ethAddress.toLowerCase()}`;
   return page === 0 ? base : `${base}/p${page}`;
 }

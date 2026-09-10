@@ -3,7 +3,7 @@
  * log, on the v2 issuer curve. Design record: docs/SWARM_SOCIAL_PLAN.md,
  * BUILD RECORD slice 3; see the issuer-curve migration handover.
  *
- * WHAT CHANGED from `woco.pod-cert-log.v1`: the certificates inside are
+ * WHAT CHANGED from `woco.legacy-cert-log.v1`: the certificates inside are
  * `woco.cert.v1`, and verification takes an `IssuerAddress` rather than an
  * ed25519 issuer pubkey. The envelope shape, the size rule and the
  * drop-individually rule are unchanged.

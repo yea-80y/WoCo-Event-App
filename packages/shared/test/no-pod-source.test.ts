@@ -2,7 +2,7 @@
  * "POD" is retired as a NAME (owner decision 2026-09-01, #515/#458). What a user
  * READS is now "object(s)" in the organiser studio and "collection" on the
  * attendee side. What the machine reads — identifiers (`PodCard`, `podSeed`,
- * `ensurePodIdentity`), routes (`/creator/pods`), feed topics (`woco/pod/*`),
+ * `ensurePodIdentity`), routes (`/creator/objects`), feed topics (`woco/pod/*`),
  * storage keys (`StorageKeys.POD_SEED`) and the frozen signed literals — keeps
  * its exact bytes, and the comments are deliberately left speaking the old
  * vocabulary because they explain the wire format, not the product.
@@ -118,7 +118,7 @@ test("the word boundary spares identifiers, storage keys and comments", () => {
     "const k = StorageKeys.POD_SEED;",
     "import PodCard from './PodCard.svelte';",
     "await auth.ensurePodIdentity();",
-    'navigate("/creator/pods");',
+    'navigate("/creator/objects");',
     'topic("woco/pod/collection/" + addr)',
   ]) {
     assert.ok(!POD_WORD.test(safe), `pattern should not match code: ${safe}`);

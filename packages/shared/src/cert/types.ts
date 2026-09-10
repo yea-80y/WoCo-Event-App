@@ -5,7 +5,7 @@
  * CERTIFICATE rail" is the design record for the rail itself; this file is
  * normative for its v2 form.
  *
- * WHAT CHANGED from `woco.pod-cert.v1`, and only this:
+ * WHAT CHANGED from `woco.legacy-cert.v1`, and only this:
  *  - the ISSUER signature is secp256k1 EIP-191 personal_sign by the derived
  *    issuing key (`crypto/issuing.ts`), and the issuer identity of record is a
  *    20-byte `IssuerAddress` — never a 64-hex ed25519 pubkey again;
@@ -41,7 +41,7 @@
  * structurally, not by convention — the only route from bytes to an `ObjectHolding`
  * is `holdings.ts`, which accepts issuer-verified certificates and nothing else.
  * A `woco.credit.v1` object fails format dispatch here and always will, and so
- * does a `woco.pod-cert.v1` object: the v1 rail is REFUSED, not branched.
+ * does a `woco.legacy-cert.v1` object: the v1 rail is REFUSED, not branched.
  *
  * Rides the statement discipline (`../statement/discipline.ts`) unchanged:
  * registry-prefixed digests, closed JSON-safe schemas, dispatch-before-validation,
@@ -310,7 +310,7 @@ export function certPublicSalt(): Uint8Array {
  * The band is REQUIRED and never defaulted: on the write path a wrong band
  * targets a version that already exists, which Bee dedupes silently.
  *
- * The v1 rail's topics live under `woco/pod-cert/v1/…`, so v1 and v2 logs can
+ * The v1 rail's topics live under `woco/legacy-cert/v1/…`, so v1 and v2 logs can
  * never collide even for the same issuer and the same badge.
  */
 export function certLogTopic(salt: Uint8Array, badge: Bytes32Hex, band: number): string {
@@ -364,7 +364,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * Closed-schema validation of the UNSIGNED certificate. Dispatch happens
  * BEFORE this: a reader reads `format` first and applies this only for
  * `woco.cert.v1`, so a v2 object — or a credit statement, or a legacy
- * `woco.pod-cert.v1` certificate — fails whole instead of half-parsing.
+ * `woco.legacy-cert.v1` certificate — fails whole instead of half-parsing.
  * Unknown fields are REJECTED, not ignored; absent optionals are OMITTED,
  * never null (both are what make the DAG-CBOR digest unambiguous).
  */

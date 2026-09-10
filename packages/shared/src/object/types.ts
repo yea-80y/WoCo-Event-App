@@ -130,7 +130,7 @@ export interface ObjectDirectoryEntry {
   updatedAt: string;
 }
 
-/** Paged on-feed directory of a creator's object types at `woco/pod/creator/{ethAddress}`. */
+/** Paged on-feed directory of a creator's object types at `woco/object/creator/{ethAddress}`. */
 export interface ObjectDirectory {
   v: 1;
   owner: Hex0x;
@@ -250,7 +250,7 @@ export interface ChainObjectGate extends ObjectGateBase {
 
 /**
  * Certificate-sourced gate: holdings derived from an issuer-signed
- * `woco.pod-cert.v1` plus a possession challenge the holder answers. No chain
+ * `woco.legacy-cert.v1` plus a possession challenge the holder answers. No chain
  * coordinates, because there is no chain read.
  *
  * NOTE WHAT IS ABSENT: there is no `issuerPubkey`. Storing one would create
@@ -266,7 +266,7 @@ export interface ChainObjectGate extends ObjectGateBase {
  * admits only 1 because a certificate holding is presence, not quantity.
  */
 export interface CertObjectGate extends ObjectGateBase {
-  holdingSource: "pod-cert";
+  holdingSource: "cert";
   /**
    * Swarm ref (no 0x) of the `SeriesManifestBlob` carrying this badge's signed
    * manifest. A LOCATION HINT, not a trust root: enforcement recomputes

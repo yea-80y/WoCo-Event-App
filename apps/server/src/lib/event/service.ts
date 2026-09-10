@@ -189,7 +189,7 @@ export async function createEventV2(opts: {
   // create-step latency, ~N serialised /bytes writes). objectRefs is left empty;
   // a future Merkle-inclusion claim path (B2) can rebuild refs from the bodies
   // the client already holds. See EDITIONS_PUBLISH_SPEED handover.
-  emit("pods", totalObjects, totalObjects, "Tickets prepared");
+  emit("objects", totalObjects, totalObjects, "Tickets prepared");
   const imageHash = await imagePromise;
   emit("image", 1, 1, "Image uploaded");
   void whitelistHashes([imageHash]).catch((err) =>
@@ -354,7 +354,7 @@ export async function confirmSeriesOnChain(
   }]);
 
   // Surface this series as a `ticket` object type in the creator's object directory
-  // (powers the #/creator/pods manager + <ObjectPicker>). Fire-and-forget: the
+  // (powers the #/creator/objects manager + <ObjectPicker>). Fire-and-forget: the
   // on-chain confirmation must not fail if the directory write hiccups. Keyed
   // by manifestRef, so the upsert also patches onChainEventId on re-confirm.
   const series = updated.series.find((s) => s.seriesId === seriesId);

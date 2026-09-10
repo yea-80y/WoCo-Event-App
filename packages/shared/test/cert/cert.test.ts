@@ -47,11 +47,11 @@ import { utf8ToBytes } from "@noble/hashes/utils.js";
  * Test-local replica of the retired v1 certificate signer — the production v1 sign path is DELETED
  * (PR 5a); this replica keeps the dispatch refusal below facing a
  * VALIDLY-SIGNED legacy certificate. Recipe frozen as it shipped:
- * ed25519 over keccak256("woco-pod-cert-v1\n" || dagCbor(unsigned)).
+ * ed25519 over keccak256("woco-legacy-cert-v1\n" || dagCbor(unsigned)).
  */
 function signLegacyCertV1(unsigned: Record<string, unknown>, priv: Uint8Array) {
   const digest = keccak_256(
-    new Uint8Array([...utf8ToBytes("woco-pod-cert-v1\n"), ...dagCbor.encode(unsigned)]),
+    new Uint8Array([...utf8ToBytes("woco-legacy-cert-v1\n"), ...dagCbor.encode(unsigned)]),
   );
   return { ...unsigned, issuerSig: bytesToHex(ed25519.sign(digest, priv)) };
 }
@@ -301,14 +301,14 @@ test("challenge verification is bound to the holder key", () => {
 // Dispatch refusals — what this rail will not read
 // ---------------------------------------------------------------------------
 
-test("a well-formed woco.pod-cert.v1 certificate is refused — dispatch, not signature", () => {
+test("a well-formed woco.legacy-cert.v1 certificate is refused — dispatch, not signature", () => {
   // The v1 rail's certificates are ed25519-issuer-signed and conform to their
   // own closed schema perfectly. They must not half-parse here: `format`
   // dispatch fails them whole, before any curve is chosen. That refusal IS the
   // curve migration's cutoff.
   const v1IssuerPriv = new Uint8Array(32).fill(7);
   const legacy = signLegacyCertV1(
-    { format: "woco.pod-cert.v1", badge: BADGE, holder: HOLDER, issuedAt: "2026-08-20" },
+    { format: "woco.legacy-cert.v1", badge: BADGE, holder: HOLDER, issuedAt: "2026-08-20" },
     v1IssuerPriv,
   );
 
@@ -368,7 +368,7 @@ test("the index is band-carrying despite its .v1 name", () => {
     "the V1 SHAPE must not pass under this type's v1 NAME",
   );
   assert.ok(
-    !validateCertSubjectIndex({ format: "woco.pod-cert-index.v1", entries: [{ subject: BADGE, band: 2 }] }),
+    !validateCertSubjectIndex({ format: "woco.legacy-cert-index.v1", entries: [{ subject: BADGE, band: 2 }] }),
     "the v1 rail's index is a different format id",
   );
 });

@@ -86,12 +86,12 @@ test("band must be a non-negative safe integer", () => {
 });
 
 test("the topic functions stay TYPE-GENERIC (Gate B depends on this)", () => {
-  // The certificate rail rides these same functions with type "pod-cert". If either
+  // The certificate rail rides these same functions with type "cert". If either
   // ever hard-codes a type or version, that rail has to be rebuilt rather than
   // reused — see SWARM_SOCIAL_PLAN.md "Gate B is the CERTIFICATE rail".
-  const salt = publicTopicSalt("pod-cert", 1);
-  assert.match(statementTopic("pod-cert", 1, salt, subjectToBytes(SUBJECT), 0), /^woco\/pod-cert\/v1\/[0-9a-f]{64}$/);
-  assert.match(subjectIndexTopic("pod-cert", 2, salt, 3), /^woco\/pod-cert\/v2\/index\/[0-9a-f]{64}$/);
+  const salt = publicTopicSalt("cert", 1);
+  assert.match(statementTopic("cert", 1, salt, subjectToBytes(SUBJECT), 0), /^woco\/cert\/v1\/[0-9a-f]{64}$/);
+  assert.match(subjectIndexTopic("cert", 2, salt, 3), /^woco\/cert\/v2\/index\/[0-9a-f]{64}$/);
 });
 
 test("subjectToBytes rejects non-canonical subjects", () => {

@@ -19,7 +19,7 @@ const OTHER_BADGE = `0x${"cd".repeat(32)}`;
 const SWARM_REF = "ef".repeat(32);
 
 function certGate(over: Partial<CertObjectGate> = {}): CertObjectGate {
-  return { holdingSource: "pod-cert", manifestRef: BADGE, swarmManifestRef: SWARM_REF, ...over };
+  return { holdingSource: "cert", manifestRef: BADGE, swarmManifestRef: SWARM_REF, ...over };
 }
 
 function chainGate(over: Partial<ChainObjectGate> = {}): ChainObjectGate {

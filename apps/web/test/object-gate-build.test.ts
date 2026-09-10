@@ -125,7 +125,7 @@ test("a certificate badge cannot be emitted even if its ref is selected", () => 
 
 test("a cert ref smuggled into the gateable list still cannot produce a cert gate", () => {
   // Belt and braces: even given a corrupted list, the builder has no branch
-  // that emits `holdingSource: "pod-cert"`.
+  // that emits `holdingSource: "cert"`.
   const gates = buildChainGates([certObject.manifestRef], [certObject]);
   assert.deepEqual(gates, [], "no chain coordinates, so nothing is emitted");
 });

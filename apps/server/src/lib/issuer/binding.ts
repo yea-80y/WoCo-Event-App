@@ -53,7 +53,7 @@ export interface IssuerBindingRecord {
   /** The proof-of-possession signature that pinned it, kept as evidence. */
   sig: string;
   boundAt: string;
-  /** What pinned it: "event-create" | "pod-mint" | "issuer-statement" | "rotation". */
+  /** What pinned it: "event-create" | "object-mint" | "issuer-statement" | "rotation". */
   source: string;
   /** Issuing addresses this parent ROTATED AWAY FROM — refused everywhere a
    *  current issuer is expected, and the gate write boundary refuses badges
@@ -110,7 +110,7 @@ export function verifyAndPinIssuerBinding(
   parentAddress: string,
   binding: unknown,
   manifestIssuers: readonly string[],
-  source: "event-create" | "pod-mint" | "issuer-statement",
+  source: "event-create" | "object-mint" | "issuer-statement",
 ): BindingVerdict {
   const parent = parentAddress.toLowerCase();
 

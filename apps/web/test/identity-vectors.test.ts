@@ -268,5 +268,5 @@ test("no FEED_SIGNER_DERIVE / DeriveFeedSigner symbol survives anywhere", () => 
 });
 
 // The twin guard against the RETIRED pre-2026-09-10 account-keys constants was
-// removed here: naming them is exactly what packages/shared/test/no-pod-source.test.ts
-// now forbids across every source root, comments included, so it subsumes this.
+// removed here: naming them is exactly what the shared source-noun ratchet now
+// forbids across every source root, comments included, so it subsumes this.

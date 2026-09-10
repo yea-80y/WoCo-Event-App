@@ -155,7 +155,7 @@
       {:else if gateable.length === 0 && blocked.length === 0}
         <p class="gate-msg">
           No objects yet. Create one in the
-          <a href="/creator/pods">Objects</a> manager first.
+          <a href="/creator/objects">Objects</a> manager first.
         </p>
       {:else if gateable.length === 0}
         <p class="gate-msg">

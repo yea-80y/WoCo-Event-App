@@ -11,11 +11,11 @@ export const StorageKeys = {
   PARENT_ADDRESS: "woco:auth:parent",
   SESSION_KEY: "woco:auth:session-key",
   SESSION_DELEGATION: "woco:auth:session-delegation",
-  IDENTITY_SEED: "woco:auth:pod-seed",
+  IDENTITY_SEED: "woco:auth:identity-seed",
   // PRF-EOA address used as the seed derivation/AAD key for passkey logins.
   // The Kernel smart-account address is the parent; the seed must stay on the raw
   // PRF-EOA address (invariant #1) so it survives the future Option 2 swap.
-  SEED_ADDRESS: "woco:auth:pod-address",
+  SEED_ADDRESS: "woco:auth:seed-address",
   // Durable RECOVERED-account bindings: a MAP `{ [prfEoaLower]: kernelAddress }`.
   // After recovery the Kernel's sudo owner is rotated but its address is PRESERVED,
   // so the rotated passkey's counterfactual CREATE2 address no longer equals the

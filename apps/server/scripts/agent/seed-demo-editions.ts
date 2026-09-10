@@ -4,7 +4,7 @@
  *
  * WHY THIS EXISTS: `setup-demo-event.ts` writes only the event feed + directory
  * entry. The legacy Swarm-editions claim path that `settleAgentTicketPurchase →
- * claimTicket` uses additionally needs `woco/pod/editions/{seriesId}` page 0 =
+ * claimTicket` uses additionally needs `woco/object/editions/{seriesId}` page 0 =
  * [metaRef, ticketRef1…N], where each ticketRef is a `woco.ticket.v1` object with a
  * valid ed25519 self-signature. Real organiser publishes build these client-side;
  * for the headless demo we generate them here with a throwaway signing key (claim

@@ -108,7 +108,7 @@
   function handleProgress(p: PublishProgress) {
     step = p.message;
     phase = "uploading";
-    if (p.phase === "pods" && p.total > 0) {
+    if (p.phase === "objects" && p.total > 0) {
       progress = 20 + Math.round((p.current / p.total) * 55);
     } else if (p.phase === "manifests") {
       progress = 75 + Math.round((p.current / Math.max(p.total, 1)) * 10);

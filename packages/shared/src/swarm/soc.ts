@@ -333,7 +333,7 @@ export function profileAvatarContentTopic(address: string): string {
   return `woco/profile/avatar/${address.toLowerCase()}`;
 }
 
-// `editionsContentTopic` (woco/pod/editions/{seriesId}) was deleted with the
+// `editionsContentTopic` (woco/object/editions/{seriesId}) was deleted with the
 // v1 claim rail — nothing writes or reads the editions feed; the WoCoEventV2
 // contract is the supply ledger.
 

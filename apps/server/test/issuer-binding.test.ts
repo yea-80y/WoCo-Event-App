@@ -108,7 +108,7 @@ test("re-binding the SAME issuer is idempotent; a DIFFERENT issuer is refused lo
   binding._resetIssuerBindings();
   assert.equal(binding.verifyAndPinIssuerBinding(PARENT, bindingFor(PARENT), [ISSUER], "event-create").ok, true);
   // Same again — the ordinary republish/second-event case.
-  assert.equal(binding.verifyAndPinIssuerBinding(PARENT, bindingFor(PARENT), [ISSUER], "pod-mint").ok, true);
+  assert.equal(binding.verifyAndPinIssuerBinding(PARENT, bindingFor(PARENT), [ISSUER], "object-mint").ok, true);
   // A second identity for one account: either a client bug or the
   // seed-divergence class surfacing. Must refuse, never silently re-pin.
   const divergent = bindingFor(PARENT, OTHER_KEY, OTHER_ISSUER);

@@ -39,7 +39,7 @@
    * `authenticity` is unbuilt, so neither appears.
    *
    * `cert-badge` is a UI kind, not a server kind: it mints `kind: "badge"` with
-   * `holdingSource: "pod-cert"`. It is a full third card rather than a toggle
+   * `holdingSource: "cert"`. It is a full third card rather than a toggle
    * under BADGE because the choice is IRREVERSIBLE at mint — the two rails
    * produce structurally different artifacts (one template body versus one per
    * edition, chain registration versus none) — and this grid is already where
@@ -200,7 +200,7 @@
           ),
         },
         ...(image ? { image } : {}),
-        ...(isCert ? { holdingSource: "pod-cert" as const, certLogOwner: certLogOwner! } : {}),
+        ...(isCert ? { holdingSource: "cert" as const, certLogOwner: certLogOwner! } : {}),
       });
 
       oncreated(entry);

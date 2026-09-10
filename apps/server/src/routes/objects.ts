@@ -27,7 +27,7 @@ const MAX_OBJECT_SUPPLY = 10_000;
  */
 export const objectsRouter = new Hono<AppEnv>();
 
-/** GET /api/pod/mine — the caller's object directory (types + categories). */
+/** GET /api/objects/mine — the caller's object directory (types + categories). */
 objectsRouter.get("/mine", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   try {
@@ -40,7 +40,7 @@ objectsRouter.get("/mine", requireAuth, async (c) => {
 });
 
 /**
- * POST /api/pod — mint a standalone `badge`/`collectible` type.
+ * POST /api/objects — mint a standalone `badge`/`collectible` type.
  *
  * The client builds + signs the manifest with its derived issuing key and
  * uploads the artwork, then posts the signed manifest + edition bodies + the
@@ -106,7 +106,7 @@ objectsRouter.post("/", requireAuth, async (c) => {
       parentAddress,
       b.issuerBinding,
       [b.signedManifest.body.issuer],
-      "pod-mint",
+      "object-mint",
     );
     if (!verdict.ok) {
       return c.json({ ok: false, error: verdict.error }, 400);
@@ -115,10 +115,10 @@ objectsRouter.post("/", requireAuth, async (c) => {
   if (b.image !== undefined && typeof b.image !== "string") {
     return c.json({ ok: false, error: "image must be a Swarm ref string" }, 400);
   }
-  if (b.holdingSource !== undefined && b.holdingSource !== "chain" && b.holdingSource !== "pod-cert") {
-    return c.json({ ok: false, error: "holdingSource must be 'chain' or 'pod-cert'" }, 400);
+  if (b.holdingSource !== undefined && b.holdingSource !== "chain" && b.holdingSource !== "cert") {
+    return c.json({ ok: false, error: "holdingSource must be 'chain' or 'cert'" }, 400);
   }
-  const certSourced = b.holdingSource === "pod-cert";
+  const certSourced = b.holdingSource === "cert";
   // Without this the badge is mintable and its certificate log unfindable —
   // the identifier is derivable from the manifest by anyone, but the owner
   // half of a chunk address appears in no public artifact.
@@ -143,7 +143,7 @@ objectsRouter.post("/", requireAuth, async (c) => {
       ...(typeof b.categoryId === "string" && b.categoryId ? { categoryId: b.categoryId } : {}),
       supply: b.supply,
       ...(certSourced
-        ? { holdingSource: "pod-cert" as const, certLogOwner: (b.certLogOwner as string).toLowerCase() as Hex0x }
+        ? { holdingSource: "cert" as const, certLogOwner: (b.certLogOwner as string).toLowerCase() as Hex0x }
         : {}),
       signedManifest: b.signedManifest as SignedManifestV2,
       editionBodies: b.editionBodies as EditionV1Body[],
@@ -156,7 +156,7 @@ objectsRouter.post("/", requireAuth, async (c) => {
   }
 });
 
-/** PUT /api/pod/categories — replace the caller's object category list. */
+/** PUT /api/objects/categories — replace the caller's object category list. */
 objectsRouter.put("/categories", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   let body: unknown;
@@ -193,7 +193,7 @@ objectsRouter.put("/categories", requireAuth, async (c) => {
 });
 
 /**
- * PUT /api/pod/:manifestRef — patch the mutable display layer of one object type.
+ * PUT /api/objects/:manifestRef — patch the mutable display layer of one object type.
  * Only updates fields that live in the directory entry (name, image, description,
  * categoryId) — the signed manifest is never touched, so no re-signing needed.
  */
@@ -264,7 +264,7 @@ objectsRouter.put("/:manifestRef", requireAuth, async (c) => {
 });
 
 /**
- * GET /api/pod/holdings — public read of a wallet's trustless on-chain holding
+ * GET /api/objects/holdings — public read of a wallet's trustless on-chain holding
  * of one object type. Used by the client to preview "you hold N" / whether a gate
  * passes. Holdings are public on-chain, so no auth; all params required.
  *   ?holder=0x..&onChainEventId=0x..&chainId=421614&manifestRef=0x..

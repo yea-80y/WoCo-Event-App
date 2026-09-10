@@ -57,7 +57,7 @@ test("a log page is exactly format + certs, and never empty", () => {
   assert.ok(!validateCertLogPageV1({ ...page, certs: [] }), "an empty page is a wasted version");
   assert.ok(!validateCertLogPageV1({ ...page, extra: 1 }), "unknown field");
   assert.ok(!validateCertLogPageV1({ ...page, format: "woco.cert-log.v2" }), "wrong format");
-  assert.ok(!validateCertLogPageV1({ ...page, format: "woco.pod-cert-log.v1" }), "the v1 rail's page format");
+  assert.ok(!validateCertLogPageV1({ ...page, format: "woco.legacy-cert-log.v1" }), "the v1 rail's page format");
   assert.ok(!validateCertLogPageV1({ certs: page.certs }), "missing format");
   assert.ok(
     !validateCertLogPageV1({ ...page, certs: [{ ...certFor(1), extra: 1 }] }),
@@ -152,7 +152,7 @@ test("a page that is not a log page verifies to nothing", () => {
   assert.deepEqual(verifyCertLogPage(null, ISSUING.address), []);
   assert.deepEqual(verifyCertLogPage({ format: CERT_LOG_FORMAT, certs: [] }, ISSUING.address), []);
   assert.deepEqual(
-    verifyCertLogPage({ format: "woco.pod-cert-log.v1", certs: [certFor(1)] }, ISSUING.address),
+    verifyCertLogPage({ format: "woco.legacy-cert-log.v1", certs: [certFor(1)] }, ISSUING.address),
     [],
     "the v1 rail's envelope is refused at dispatch, not read leniently",
   );

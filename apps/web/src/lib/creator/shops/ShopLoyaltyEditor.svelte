@@ -141,7 +141,7 @@
       <p class="err-box mono">{error}</p>
     {:else if badges.length === 0}
       <p class="hint">
-        No on-chain objects yet — create a badge in the <a href="/creator/pods">Objects</a> manager first.
+        No on-chain objects yet — create a badge in the <a href="/creator/objects">Objects</a> manager first.
         Only on-chain objects can be minted as rewards.
       </p>
     {:else}

@@ -79,7 +79,7 @@ test("the certificate rail is carried by holdingSource, not by a new ObjectKind"
   // `kind` stays "badge" downstream — the directory, the gate picker and the
   // manager all key on the rail via `certLogOwner` / `holdingSource`. A fourth
   // ObjectKind would need a migration and a new case in every switch.
-  assert.match(CODE, /holdingSource:\s*"pod-cert"/);
+  assert.match(CODE, /holdingSource:\s*"cert"/);
   // Matched on the PROPERTY, not the spelling: whatever the condition, the
   // request's `kind` must resolve to "badge" for a certificate badge. The
   // earlier version pinned `isCert ? "badge"` literally and broke the moment

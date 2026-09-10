@@ -158,7 +158,7 @@ export function evaluateObjectGateGroup(
  * existed passed a chain binding check, and chain is the stricter reading.
  */
 export function isCertObjectGate(gate: ObjectGate): gate is CertObjectGate {
-  return (gate as CertObjectGate)?.holdingSource === "pod-cert";
+  return (gate as CertObjectGate)?.holdingSource === "cert";
 }
 
 /**
@@ -169,7 +169,7 @@ export function isCertObjectGate(gate: ObjectGate): gate is CertObjectGate {
  */
 export function isKnownHoldingSource(gate: ObjectGate): boolean {
   const src = (gate as { holdingSource?: unknown })?.holdingSource;
-  return src === undefined || src === "chain" || src === "pod-cert";
+  return src === undefined || src === "chain" || src === "cert";
 }
 
 /**

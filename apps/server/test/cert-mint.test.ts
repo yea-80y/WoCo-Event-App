@@ -51,7 +51,7 @@ function certOpts(over: Record<string, unknown> = {}) {
     kind: "badge" as const,
     name: "Century Rider",
     supply: CAP,
-    holdingSource: "pod-cert" as const,
+    holdingSource: "cert" as const,
     certLogOwner: LOG_OWNER,
     signedManifest: manifestFor(bodies),
     editionBodies: bodies,

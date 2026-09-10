@@ -44,7 +44,7 @@ export const AAD = {
   SESSION_DELEGATION: (parent: string) =>
     `woco/device/session-delegation/v1:${parent.toLowerCase()}`,
   IDENTITY_SEED: (parent: string) =>
-    `woco/device/pod-seed/v1:${parent.toLowerCase()}`,
+    `woco/device/identity-seed/v1:${parent.toLowerCase()}`,
   // ZeroDev scoped EAS session key, bound to the Kernel (smart-account) address
   // that owns it. A serialized permission account written under one Kernel
   // cannot be decrypted by a different Kernel on the same device. (The sub-ENS

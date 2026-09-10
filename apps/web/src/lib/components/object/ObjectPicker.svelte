@@ -103,7 +103,7 @@
     <div class="pick-empty">
       <span class="pick-kicker">No {label} yet</span>
       <p>
-        Create an object first — <a class="pick-link" href="/creator/pods">go to Objects</a>.
+        Create an object first — <a class="pick-link" href="/creator/objects">go to Objects</a>.
       </p>
     </div>
 

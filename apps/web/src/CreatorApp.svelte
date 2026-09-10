@@ -100,7 +100,7 @@
     {/key}
   {:else if router.route === "shop-pos"}
     <ShopPosShell shopId={router.params.shopId} />
-  {:else if router.route === "creator-pods"}
+  {:else if router.route === "creator-objects"}
     <ObjectManager />
   {:else if router.route === "audience"}
     <AudienceScreen />

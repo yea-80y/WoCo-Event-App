@@ -64,16 +64,17 @@ export function statementSigningPrefix(type: string, version: number): string {
  */
 export const STATEMENT_SIGNING_PREFIXES = Object.freeze({
   "woco.credit.v1": statementSigningPrefix("credit", 1),
-  // Gate B, the certificate rail. TWO prefixes because two different keys
-  // sign two different objects: the badge issuer signs the certificate, and the
-  // holder signs the possession challenge that answers for it. One prefix would
-  // let a certificate's bytes be replayed as a challenge answer, or the reverse.
-  "woco.pod-cert.v1": statementSigningPrefix("pod-cert", 1),
-  "woco.pod-cert-challenge.v1": statementSigningPrefix("pod-cert-challenge", 1),
-  // The v2 cert rail (issuer-curve migration PR 3). Same two-prefix rule. The
-  // cert's ISSUER signature is secp256k1 personal_sign, but its digest is this
-  // same registry recipe — the prefix claim below is what keeps the domain
-  // unique; the challenge stays holder-ed25519 over its own prefix.
+  // The RETIRED v1 certificate rail reserved two prefixes of its own here. Both
+  // entries went with its name: nothing read them, and every v1 verifier
+  // dispatch-refuses that rail already.
+  //
+  // Gate B, the v2 certificate rail (issuer-curve migration PR 3). TWO prefixes
+  // because two different keys sign two different objects: the badge issuer
+  // signs the certificate, and the holder signs the possession challenge that
+  // answers for it. One prefix would let a certificate's bytes be replayed as a
+  // challenge answer, or the reverse. The cert's ISSUER signature is secp256k1
+  // personal_sign, but its digest is this same registry recipe — the prefix
+  // claim is what keeps the domain unique; the challenge stays holder-ed25519.
   "woco.cert.v1": statementSigningPrefix("cert", 1),
   "woco.cert-challenge.v1": statementSigningPrefix("cert-challenge", 1),
 } as const);

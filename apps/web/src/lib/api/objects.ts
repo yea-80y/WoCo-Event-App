@@ -12,14 +12,14 @@ import { authGet, authPut, authPost, get } from "./client.js";
 
 /** The signed-in creator's object directory (types + categories). Throws on error. */
 export async function getMyObjects(): Promise<ObjectDirectory> {
-  const r = await authGet<ObjectDirectory>("/api/pod/mine");
+  const r = await authGet<ObjectDirectory>("/api/objects/mine");
   if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to load objects");
   return r.data;
 }
 
 /** Replace the creator's object category list. Throws on error. */
 export async function setObjectCategories(categories: ObjectCategory[]): Promise<ObjectCategory[]> {
-  const r = await authPut<{ categories: ObjectCategory[] }>("/api/pod/categories", { categories });
+  const r = await authPut<{ categories: ObjectCategory[] }>("/api/objects/categories", { categories });
   if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to save categories");
   return r.data.categories;
 }
@@ -63,9 +63,9 @@ export interface CreateObjectRequest {
    * `cert` records holding as an issuer-signed certificate naming the
    * holder's key, so there is no chain registration at all.
    */
-  holdingSource?: "pod-cert";
+  holdingSource?: "cert";
   /**
-   * REQUIRED with `holdingSource: "pod-cert"`, and the server refuses without
+   * REQUIRED with `holdingSource: "cert"`, and the server refuses without
    * it: the issuer's secp256k1 content-feed address. Chunk addresses are
    * `keccak256(identifier ‖ owner)` and the owner half appears in no public
    * artifact, so a certificate badge minted without this has a log nobody —
@@ -85,7 +85,7 @@ export interface CreateObjectRequest {
  */
 export async function createObject(req: CreateObjectRequest): Promise<ObjectDirectoryEntry> {
   const r = await authPost<ObjectDirectoryEntry>(
-    "/api/pod",
+    "/api/objects",
     req as unknown as Record<string, unknown>,
   );
   if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to create object");
@@ -109,7 +109,7 @@ export async function updateObject(
   },
 ): Promise<ObjectDirectoryEntry> {
   const r = await authPut<ObjectDirectoryEntry>(
-    `/api/pod/${encodeURIComponent(manifestRef)}`,
+    `/api/objects/${encodeURIComponent(manifestRef)}`,
     patch,
   );
   if (!r.ok || !r.data) throw new Error(r.error ?? "Failed to update object");
@@ -134,7 +134,7 @@ export async function getObjectHolding(params: {
     manifestRef: params.manifestRef,
     chainId: String(params.chainId),
   });
-  return get<ObjectHolding>(`/api/pod/holdings?${q.toString()}`, params.apiUrl);
+  return get<ObjectHolding>(`/api/objects/holdings?${q.toString()}`, params.apiUrl);
 }
 
 /** One attendee edition bound to an account. */

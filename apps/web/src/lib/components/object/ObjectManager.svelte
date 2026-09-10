@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * ObjectManager — the creator "objects" surface (#/creator/pods).
+   * ObjectManager — the creator "objects" surface (#/creator/objects).
    *
    * Header (title + Create object), category filter chips, responsive ObjectCard grid,
    * empty/loading/error states. The LOOK is locked here (Opus + frontend-design):

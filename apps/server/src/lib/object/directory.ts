@@ -1,9 +1,9 @@
 // ---------------------------------------------------------------------------
 // Creator object directory — every object *type* (manifest) a creator has issued.
 //
-// Backs the `#/creator/pods` manager and the `<ObjectPicker>`. Mirrors the shop /
+// Backs the `#/creator/objects` manager and the `<ObjectPicker>`. Mirrors the shop /
 // site creator directories: a paged on-feed envelope at
-// `woco/pod/creator/{ethAddress}`, most-recently-updated first, deduped by the
+// `woco/object/creator/{ethAddress}`, most-recently-updated first, deduped by the
 // immutable `manifestRef`. Categories + display metadata live HERE (mutable),
 // never in the signed manifest — re-categorising/renaming never re-signs.
 //

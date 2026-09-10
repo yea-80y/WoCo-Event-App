@@ -152,7 +152,7 @@ export async function addToUserCollection(ethAddress: string, entry: CollectionE
   }
 }
 
-/** Add a ticket entry to an email-keyed collection feed (woco/pod/collection/email:{hash}) */
+/** Add a ticket entry to an email-keyed collection feed (woco/object/collection/email:{hash}) */
 export async function addToEmailCollection(emailHash: string, entry: CollectionEntry): Promise<void> {
   return addToUserCollection(`email:${emailHash}`, entry);
 }
