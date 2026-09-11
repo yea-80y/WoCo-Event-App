@@ -222,7 +222,7 @@
     phase = "working";
     errorMsg = "";
     try {
-      await auth.setupAccountRecovery(
+      const added = await auth.setupAccountRecovery(
         {
           ...pendingBackup,
           // Record HOW this backup was added in the user's encrypted-to-self manifest
@@ -243,6 +243,13 @@
       backupAddress = pendingBackup.address;
       isProtected = true; // the install succeeded, so the route is on-chain
       protectionSource = "chain";
+      // The set the write PROVED, read back in full at its landing block — not a
+      // re-read of a chain that may still be catching up (#510). Leaving this stale
+      // is how the next add on this screen would be checked against the set from
+      // BEFORE this one: both writes leave the route on the WoCo hook, so that is
+      // the hook kind too.
+      hookKind = "woco";
+      onChainGuardians = added.guardians;
       phase = "done";
     } catch (e) {
       console.warn("[recovery] backup install failed:", e);
@@ -507,8 +514,8 @@
       </ul>
       {#if isProtected === null && checkDone}
         <p class="soft-warn" role="note">
-          We couldn't check whether this account already has a backup. Adding one is safe
-          either way — it adds to any you already have.
+          We couldn't check whether this account already has a backup — try again in a
+          moment if you'd rather be sure before adding one.
         </p>
       {/if}
       <button class="btn btn--primary btn--lg cta" onclick={startChoosing}>Add a backup</button>

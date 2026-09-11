@@ -9,11 +9,13 @@
  *
  * TWO RULES RUN THROUGH ALL OF IT:
  *
- *  1. THE CHAIN IS THE TRUTH. `RecoveryStatus` from the server is a hint the
+ *  1. THE CHAIN IS THE TRUTH — read at a block no older than the last recovery
+ *     write this device saw (#510). `RecoveryStatus` from the server is a hint the
  *     platform signs — forgeable, withholdable, and stale the moment a user
  *     removes a backup. Protection state is read from the Kernel's own selector
- *     table and only falls back to the hint when the chain is unreadable, which
- *     is reported as "couldn't tell", never as "not protected".
+ *     table; the hint may only ever add doubt (an unreadable chain, or a chain
+ *     answer it contradicts), which is reported as "couldn't tell", never as
+ *     "not protected".
  *
  *  2. REMOVAL IS ALL-OR-NOTHING, AND IT IS NOT A REPLACE. The deployed ZeroDev
  *     caller hook has no per-guardian revoke: `onInstall` ORs guardians in and
@@ -77,34 +79,60 @@ export type HintOutcome = { configured: boolean } | null | "unreadable";
  */
 export function decideProtection(route: RecoveryRouteState, hint: HintOutcome): BackupProtection {
   if (route === "installed") return { isProtected: true, source: "chain", routeState: route };
-  if (route === "absent") return { isProtected: false, source: "chain", routeState: route };
 
-  if (hint && hint !== "unreadable" && hint.configured) {
-    return { isProtected: true, source: "hint", routeState: "unknown" };
+  const hintAttestsPresence = !!hint && hint !== "unreadable" && hint.configured;
+
+  if (route === "absent") {
+    // A CONTRADICTION, not a reading (#510). The chain says no route; a hint that
+    // only ever gets written by a completed setup says there was one. Exactly one
+    // of them is wrong, and we cannot tell which from here: the chain answer may
+    // come from a replica behind an install this device never saw, and the hint
+    // may be a clear that failed after a real removal (`hintCleared` reports that
+    // it can) or a platform that simply says what it likes.
+    //
+    // So neither confident answer may be minted. "Not protected" would be the
+    // #138/#169 lie to a user who is protected; "protected" would be the #148 lie
+    // — a false safety certificate sourced from a forgeable hint AGAINST a chain
+    // read — to a user whose backups are genuinely gone. `null` is the honest
+    // third state this whole module exists to keep available.
+    if (hintAttestsPresence) return { isProtected: null, source: "none", routeState: "unknown" };
+    return { isProtected: false, source: "chain", routeState: route };
   }
+
+  // Chain unreadable: the hint may attest PRESENCE (nothing contradicts it), never absence.
+  if (hintAttestsPresence) return { isProtected: true, source: "hint", routeState: "unknown" };
   return { isProtected: null, source: "none", routeState: "unknown" };
 }
 
 /**
  * Does this account currently have a working recovery route?
  *
- * Chain first (`selectorConfig(doRecovery)`), the server hint only as a fallback
- * for an unreadable chain — and even then only as evidence OF protection, never
- * against it (see `decideProtection`). Callers MUST render `isProtected: null` as
- * uncertainty; presenting it as "you have no backup" is the bug this guards.
+ * Chain first (`selectorConfig(doRecovery)`), pinned so a lagging replica cannot
+ * answer it (#510); the server hint is evidence OF protection when the chain is
+ * unreadable and evidence of DOUBT when it disagrees with an `absent` — never
+ * evidence against protection (see `decideProtection`). Callers MUST render
+ * `isProtected: null` as uncertainty; presenting it as "you have no backup" is
+ * the bug this guards.
  */
 export async function readBackupProtection(kernelAddress: string): Promise<BackupProtection> {
-  const { readRecoveryRoute, readGuardianSet } = await import("./kernel-account.js");
-  const route = await readRecoveryRoute(kernelAddress);
-  if (route.state !== "unknown") {
-    const protection = decideProtection(route.state, null);
-    if (route.state !== "installed") return protection;
+  const { readRecoveryRouteNoOlderThan } = await import("./kernel-account.js");
+  // PINNED (#510). Not `readRecoveryRoute` at "latest": this is the read the panel
+  // shows AND the read the next "add a backup" is checked against, so a replica
+  // behind a change this device has seen must produce "couldn't load", not `absent`.
+  // The set comes back from the SAME block, so the list cannot describe one chain
+  // state and the route another.
+  const { route, set } = await readRecoveryRouteNoOlderThan(kernelAddress);
+  if (route.state === "installed") {
+    const protection = decideProtection("installed", null);
     // The set is only meaningful behind the WoCo hook; for a legacy route there is
     // nothing to enumerate and the manifest is the only (untrusted) list.
-    const onChainGuardians = route.hookKind === "woco" ? await readGuardianSet(kernelAddress) : undefined;
-    return { ...protection, hookKind: route.hookKind, ...(onChainGuardians ? { onChainGuardians } : {}) };
+    return { ...protection, hookKind: route.hookKind, ...(set ? { onChainGuardians: set } : {}) };
   }
 
+  // The hint is consulted for `absent` TOO, not just `unknown` (#510): against an
+  // unreadable chain it can attest presence, and against an `absent` it is the one
+  // independent signal that the answer may be a lagging replica — see
+  // `decideProtection`, which resolves that contradiction to "couldn't tell".
   let hint: HintOutcome = "unreadable";
   try {
     const { fetchRecoveryStatus } = await import("../api/recovery.js");
@@ -113,7 +141,7 @@ export async function readBackupProtection(kernelAddress: string): Promise<Backu
   } catch {
     hint = "unreadable";
   }
-  return decideProtection("unknown", hint);
+  return decideProtection(route.state, hint);
 }
 
 export interface RemoveBackupsOutcome {
