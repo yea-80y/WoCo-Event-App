@@ -65,8 +65,32 @@ import {
 } from "../lib/stripe/payout-ledger.js";
 import { buildPayoutsResponse } from "../lib/stripe/payout-view.js";
 import { RateWindow } from "../lib/marketing/rate-window.js";
+import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
+import { clientIp } from "../lib/http/client-ip.js";
 
 const stripe = new Hono<AppEnv>();
+
+/**
+ * The bound on `/create-checkout` (#463).
+ *
+ * The route is unauthenticated and CORS-open, and every call that gets past
+ * validation spends: a Swarm event read, chain reads (registration, sales
+ * window, availability) and a Checkout Session created on the ORGANISER'S
+ * connected account. `/reserve` is limited, but a reservation is optional — a
+ * caller that never asks for one reaches all of that with no limit in front of
+ * it at all.
+ *
+ * Keyed on the client IP ALONE, deliberately not on (IP, eventId). What is being
+ * protected is our Stripe quota and the Swarm/chain reads, and those cost the
+ * same whichever event is named — so a per-event key would let one caller
+ * multiply its own budget by naming more events, while still punishing the
+ * shared-connection case (a venue's wi-fi, a coach party at the door) that this
+ * single key is sized for.
+ */
+const createCheckoutLimiter = new SlidingWindowLimiter([
+  { limit: 30, windowMs: 60_000 },
+  { limit: 300, windowMs: 3_600_000 },
+]);
 
 // ---------------------------------------------------------------------------
 // 1. Organiser onboarding — create Connected Account + Account Link
@@ -503,6 +527,21 @@ stripe.post("/create-checkout", async (c) => {
   if (!claimerEmail && !verifiedAddress) {
     return c.json({ ok: false, error: "claimerEmail or authenticated wallet session required" }, 400);
   }
+
+  // Validation first: everything above this line is a field check, a local
+  // reservation lookup or a signature check on bytes already in hand, and is
+  // answered without spending anything — so it must not spend the caller's
+  // budget either. Everything below it does spend (#463). Peek-then-record so a
+  // refusal is not itself charged.
+  const ip = clientIp(c);
+  if (!createCheckoutLimiter.peek(ip)) {
+    c.header("Retry-After", "60");
+    return c.json(
+      { ok: false, error: "Too many checkout attempts from your connection. Wait a minute and try again." },
+      429,
+    );
+  }
+  createCheckoutLimiter.record(ip);
 
   // Load event + (optionally) upload encrypted order in parallel. Swarm upload
   // is the slowest link (~3–10s cold); running it alongside the event read
