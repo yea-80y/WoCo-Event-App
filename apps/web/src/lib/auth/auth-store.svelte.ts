@@ -2203,7 +2203,7 @@ async function setupAccountRecovery(
    * this guards — see `checkAddAgainstPriorProtection`.
    */
   prior: import("./guardian-hook.js").PriorProtection,
-): Promise<{ guardianAddress: string; txHash: string }> {
+): Promise<{ guardianAddress: string; txHash: string; guardians: string[] }> {
   if (_kind !== "passkey" && _kind !== "web3auth") {
     throw new Error("Account recovery is only available for passkey or email/social accounts");
   }
@@ -2269,7 +2269,7 @@ async function setupAccountRecovery(
   // Decide the on-chain write BEFORE persisting anything, so a refusal leaves no
   // trace at all (the escrow SOC below is guardian-owned and idempotent, but there
   // is no reason to write it for an add that will not happen).
-  const { deriveGuardianAddress, setupRecovery, addGuardianOnChain, readRecoveryRoute, readGuardianSet } =
+  const { deriveGuardianAddress, setupRecovery, addGuardianOnChain, readRecoveryRouteNoOlderThan } =
     await import("./kernel-account.js");
   const { decideAddPath, checkAddAgainstPriorProtection, expectedGuardiansAfterAdd } = await import(
     "./guardian-hook.js"
@@ -2289,8 +2289,12 @@ async function setupAccountRecovery(
   // than guesses — guessing "install" against a WoCo-routed account would silently
   // drop every other backup. A legacy (ZeroDev-hook) route is replaced on purpose:
   // that is the upgrade, and the UI has warned that its old guardians stop working.
-  const route = await readRecoveryRoute(kernelAddress);
-  const set = route.state === "installed" && route.hookKind === "woco" ? await readGuardianSet(kernelAddress) : null;
+  // PINNED to a block no older than the last recovery write this device saw (#510),
+  // and the set is read at that SAME block. Asked at "latest", this pair is exactly
+  // what one lagging replica turns into a silent drop: `absent` → `install` → the
+  // hook's set is REPLACED by this guardian alone. A replica behind the bound now
+  // answers `unknown`, which `decideAddPath` refuses.
+  const { route, set } = await readRecoveryRouteNoOlderThan(kernelAddress);
   // ... and the fresh read must also AGREE with what the panel already showed the
   // user (#505). `absent` is the dangerous answer here: it maps to `install`, which
   // pins the hook's set to exactly this guardian, and one lagging replica is enough
@@ -2422,7 +2426,11 @@ async function setupAccountRecovery(
     }
   }
 
-  return { guardianAddress, txHash };
+  // The guardian set is returned because it was PROVEN, not guessed: both writes
+  // read the whole set back at their landing block and throw unless it matches
+  // (`assertGuardianSetAfterWrite`). The panel shows this instead of re-reading a
+  // chain that may still be catching up — and the next add is checked against it.
+  return { guardianAddress, txHash, guardians: expectedGuardiansAfter };
 }
 
 /**
@@ -2823,6 +2831,16 @@ async function recoverAndRekey(args: {
             "We couldn't confirm the change on-chain — it may well have gone through. " +
               "Don't assume either way: run recovery again and it will pick up wherever it landed.",
       );
+    }
+
+    // The rotation is confirmed at `blockNumber`, and it went THROUGH the recovery
+    // route — so the route provably existed at that block. This device is about to
+    // become the account's own device (step 5 logs in as it), and its recovery panel
+    // must not then be told "no backup" by a replica standing before this point
+    // (#510). A lower bound, recorded the moment it is proven.
+    if (blockNumber !== undefined) {
+      const { rememberLandingBlock } = await import("./recovery-landing-block.js");
+      rememberLandingBlock(target, blockNumber);
     }
 
     // (2c) TAIL RE-SCAN (#234). Both devices can scan clean and both rotate —

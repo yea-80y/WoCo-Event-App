@@ -43,6 +43,11 @@ import {
   recoveryRouteSelector,
 } from "./recovery-route.js";
 import type { GuardianConfig } from "./guardian-config.js";
+import {
+  readRouteNoOlderThan,
+  rememberLandingBlock,
+  type PinnedRouteRead,
+} from "./recovery-landing-block.js";
 import { assertGuardianAddressAgrees } from "./guardian-address.js";
 import {
   LEGACY_HOOK_ALLOWED_ABI,
@@ -848,7 +853,7 @@ export async function setupRecovery(
   builtKernel: BuiltKernel,
   guardianAddress: string,
   opts: { expectedGuardiansAfter: string[] },
-): Promise<{ userOpHash: string; txHash: string }> {
+): Promise<{ userOpHash: string; txHash: string; blockNumber?: bigint }> {
   const d = await loadRecoveryDeps();
   const callData = buildRegisterGuardianCallData(d, guardianAddress as Address);
   const { userOpHash, txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, { callData });
@@ -872,7 +877,11 @@ export async function setupRecovery(
     );
   }
   await assertGuardianSetAfterWrite(builtKernel.address, opts.expectedGuardiansAfter, blockNumber, txHash);
-  return { userOpHash, txHash };
+  // This device has now SEEN this account's route change, so no later read of it may
+  // be answered by a replica that predates this block (#510). Recorded here, at the
+  // one place the change is proven, so no caller can forget it.
+  if (blockNumber !== undefined) rememberLandingBlock(builtKernel.address, blockNumber);
+  return { userOpHash, txHash, blockNumber };
 }
 
 /**
@@ -925,7 +934,7 @@ export async function addGuardianOnChain(
   builtKernel: BuiltKernel,
   guardianAddress: string,
   opts: { expectedGuardiansAfter: string[] },
-): Promise<{ userOpHash: string; txHash: string }> {
+): Promise<{ userOpHash: string; txHash: string; blockNumber?: bigint }> {
   const d = await loadRecoveryDeps();
   const { userOpHash, txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
     calls: [buildAddGuardianCall(d.encodeFunctionData, guardianAddress as Address)],
@@ -944,7 +953,8 @@ export async function addGuardianOnChain(
     );
   }
   await assertGuardianSetAfterWrite(builtKernel.address, opts.expectedGuardiansAfter, blockNumber, txHash);
-  return { userOpHash, txHash };
+  if (blockNumber !== undefined) rememberLandingBlock(builtKernel.address, blockNumber);
+  return { userOpHash, txHash, blockNumber };
 }
 
 /**
@@ -955,7 +965,7 @@ export async function addGuardianOnChain(
 export async function revokeGuardianOnChain(
   builtKernel: BuiltKernel,
   guardianAddress: string,
-): Promise<{ userOpHash: string; txHash: string }> {
+): Promise<{ userOpHash: string; txHash: string; blockNumber?: bigint }> {
   const d = await loadRecoveryDeps();
   const { userOpHash, txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
     calls: [buildRevokeGuardianCall(d.encodeFunctionData, guardianAddress as Address)],
@@ -973,7 +983,8 @@ export async function revokeGuardianOnChain(
         "reopen this screen in a moment to check before assuming either way.",
     );
   }
-  return { userOpHash, txHash };
+  if (blockNumber !== undefined) rememberLandingBlock(builtKernel.address, blockNumber);
+  return { userOpHash, txHash, blockNumber };
 }
 
 // --- Removing recovery (#165) ----------------------------------------------
@@ -1110,6 +1121,35 @@ export async function readRecoveryRoute(
   }
 }
 
+/**
+ * THE route read for the backup-management surface (#510) — route + WoCo guardian
+ * set, both answered at ONE block that is no older than the last recovery write
+ * this device saw. A replica behind that bound yields `unknown`, never `absent`.
+ *
+ * Use this and not `readRecoveryRoute` wherever a read decides what to SHOW or
+ * what to WRITE: bare `readRecoveryRoute` at "latest" is the read that lets one
+ * lagging replica turn "add another backup" into an install that drops the first
+ * (`recovery-landing-block.ts` has the full sequence). The bare form stays for
+ * reads that already carry their own pin — every post-write read-back does.
+ */
+export async function readRecoveryRouteNoOlderThan(kernelAddress: string): Promise<PinnedRouteRead> {
+  return readRouteNoOlderThan(kernelAddress, {
+    headBlock: async () => {
+      const { createPublicClient, http } = await import("viem");
+      const publicClient = createPublicClient({ chain: KERNEL_CHAIN, transport: http(getRpcUrl()) });
+      // Same guard readRecoveryRoute applies: a wrong-chain RPC's block height is
+      // not this chain's, and pinning to it would be nonsense. Throwing here is
+      // read as unreadable, which is the honest answer.
+      if (!(await isConfiguredChain(publicClient))) {
+        throw new Error(`RPC does not serve chain ${KERNEL_CHAIN_ID}`);
+      }
+      return publicClient.getBlockNumber();
+    },
+    readRoute: readRecoveryRoute,
+    readSet: readGuardianSet,
+  });
+}
+
 export interface RemoveAllBackupsResult {
   /** The account is not deployed, so no route can exist and no userOp was sent. */
   alreadyAbsent: boolean;
@@ -1146,7 +1186,10 @@ export async function removeAllBackups(
   builtKernel: BuiltKernel,
   opts: { expectInstalled?: boolean } = {},
 ): Promise<RemoveAllBackupsResult> {
-  const before = await readRecoveryRoute(builtKernel.address);
+  // PINNED (#510): at "latest" a replica behind this device's last recovery write
+  // could answer "no code" for a deployed account, which `expectInstalled` would
+  // then report as a contradiction to a user whose removal was perfectly possible.
+  const { route: before } = await readRecoveryRouteNoOlderThan(builtKernel.address);
   if (before.deployed === false) {
     if (opts.expectInstalled) {
       throw new Error(
@@ -1181,6 +1224,10 @@ export async function removeAllBackups(
         "reopen this screen in a moment to check before assuming either way.",
     );
   }
+  // The route is provably gone as of this block — the strongest form of "this
+  // device has seen the route change", and the one that must never be read back
+  // over by a replica that still shows the route installed.
+  if (blockNumber !== undefined) rememberLandingBlock(builtKernel.address, blockNumber);
   return { alreadyAbsent: false, userOpHash, txHash };
 }
 
