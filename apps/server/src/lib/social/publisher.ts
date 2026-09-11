@@ -38,12 +38,12 @@ import {
   type Hex0x,
 } from "@woco/shared";
 import {
-  BEE_URL,
   getSocialIndexerOwnerHex,
   getSocialIndexerSigner,
   requirePostageBatch,
   socialIndexerConfigured,
 } from "../../config/swarm.js";
+import { beeBatchState } from "../health/probes.js";
 import {
   confirmContentFeedWrite,
   writeVersionedContentFeed,
@@ -95,9 +95,6 @@ const MIN_BATCH_TTL_SECONDS = envInt("SOCIAL_PUBLISH_MIN_BATCH_TTL", 3600);
  * retrying at all, and `stuck` in /api/health names what was set down.
  */
 const MAX_CONSECUTIVE_FAILURES = envInt("SOCIAL_PUBLISH_MAX_FAILURES", 5);
-/** Batch health is asked for at most this often — it changes on a chain clock. */
-const BATCH_PROBE_TTL_MS = 5 * 60_000;
-
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -165,28 +162,21 @@ export function markSubjectDirty(format: string, subject: string): void {
   dirty.set(key(format, s), { format: format as IndexableFormat, subject: s });
 }
 
-/** Batch state, cached — `usable` and a TTL, or nulls when the node cannot say. */
-let batchProbe: { at: number; usable: boolean | null; ttl: number | null } = { at: 0, usable: null, ttl: null };
-
+/**
+ * Batch state — from the `/api/health` postage probe's cache, not a fetch of
+ * our own (#421).
+ *
+ * This module used to run its own five-minute stamp read. Two probes on two
+ * clocks can disagree about whether the batch is alive, and the one that says
+ * "fine" is the one that holds off nothing — so there is one read, one cache,
+ * and the health endpoint and the publisher can never contradict each other.
+ * A probe failure still reads as unknown, never as unusable.
+ */
 async function batchState(): Promise<{ usable: boolean | null; ttl: number | null }> {
-  if (Date.now() - batchProbe.at < BATCH_PROBE_TTL_MS) return batchProbe;
-  let usable: boolean | null = null;
-  let ttl: number | null = null;
-  try {
-    const res = await fetch(`${BEE_URL}/stamps/${requirePostageBatch()}`, { signal: AbortSignal.timeout(5000) });
-    if (res.ok && (res.headers.get("content-type") ?? "").includes("application/json")) {
-      const b = (await res.json()) as Record<string, unknown>;
-      usable = typeof b.usable === "boolean" ? b.usable : null;
-      ttl = typeof b.batchTTL === "number" ? b.batchTTL : null;
-    }
-  } catch {
-    // The stamps API is not exposed on every endpoint BEE_URL can point at, and
-    // a probe failure is not evidence of a dead batch. Unknown, not unusable.
-  }
-  batchProbe = { at: Date.now(), usable, ttl };
-  health.batchUsable = usable;
-  health.batchTTL = ttl;
-  return batchProbe;
+  const state = await beeBatchState();
+  health.batchUsable = state.usable;
+  health.batchTTL = state.ttl;
+  return state;
 }
 
 /**
@@ -493,5 +483,4 @@ export function __resetPublisher(): void {
     lastError: null,
     lastSkipReason: null,
   });
-  batchProbe = { at: 0, usable: null, ttl: null };
 }
