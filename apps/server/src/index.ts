@@ -59,7 +59,7 @@ import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-re
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
-import { startHealthProbes, paymasterHealth, postageHealth } from "./lib/health/probes.js";
+import { startHealthProbes, paymasterHealth, postageHealth, subEnsParentHealth } from "./lib/health/probes.js";
 import { persistHealth } from "./lib/marketing/persist.js";
 import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.js";
 import { checkMarketingSenderConfig, marketingSenderHealth } from "./lib/email/client.js";
@@ -292,7 +292,15 @@ app.get("/api/health", (c) =>
     // anyone who types it — a silent loss of a feature, which is why it is
     // reported rather than left to a log line. An `apexError` alongside it is
     // worse than unset: someone configured a value and it is being ignored.
-    subEns: subEnsApexHealth(),
+    subEns: {
+      ...subEnsApexHealth(),
+      // `woco.eth`'s own L1 registration (#420). Silent until it isn't: renewal
+      // is one manual transaction a year from the Safe, nothing else on this
+      // server reads mainnet, and the day the registration lapses past its
+      // 90-day grace every *.woco.eth name — the app's own frontend included —
+      // stops resolving at once. WATCH ONLY; nothing here renews anything.
+      parent: subEnsParentHealth(),
+    },
     // Wedged on-chain registrations (#434). Since #433 a registration whose
     // on-chain event is already bound to another series can NEVER complete: the
     // confirm throws on every retry, the pending marker never clears, and the fix
