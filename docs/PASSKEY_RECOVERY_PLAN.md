@@ -786,6 +786,15 @@ in the SAME weighted-ECDSA guardian (§4); this section is about *which* signers
   #161's single config source + pure/SDK cross-checked derivation live in `guardian-config.ts` /
   `guardian-address.ts`.
 
+  **#510 (2026-09-11): the reads that decide are pinned.** Every route read on this surface
+  goes through `readRecoveryRouteNoOlderThan` — route + guardian set answered at ONE block,
+  no older than the last recovery write this device saw (`recovery-landing-block.ts`, recorded
+  inside each write helper once its read-back proves the change). A replica behind that bound
+  is never asked: it reads `unknown`, which `decideAddPath` refuses, instead of `absent` —
+  the answer that maps to the REPLACING install and silently drops the earlier backups. A
+  device that has never seen this account change has no bound, so there #505's
+  `checkAddAgainstPriorProtection` remains the only guard.
+
 ### 12.3 Primary-method-aware prompting (the "don't suggest the same account" rule)
 - **Reliable signal = the app's own known login method** (passkey / email-wallet / web3 / local),
   not WebAuthn probing. Drive the offered-guardian list off it.

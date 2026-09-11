@@ -4,6 +4,33 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## No route read older than the change this device has seen (#510, 2026-09-11)
+
+The residual #505 left open. "Add a backup" picks between two writes with opposite
+semantics — a route install SETS the guardian hook's set to exactly the new guardian,
+`addGuardian` APPENDS — off a chain read at "latest" through a load-balanced RPC. A replica
+that has not yet seen backup A's install answers `absent`, honestly from where it is
+standing, and `absent` maps to `install`: A is dropped while the user is told it worked.
+#505 refuses a pre-write read that RETRACTS what the panel listed, so it covers the case
+where the panel saw the truth; it cannot cover the case where the panel's own mount-time
+read came from the lagging replica, and since "Backup added" is a terminal screen, a second
+add always remounts the panel. Every recovery write already knows the block its userOp
+landed in and pins its read-back to it; `recovery-landing-block.ts` now makes that block
+durable (monotonic, per-account, storage-throws-safe, with an in-memory mirror for browsers
+that refuse storage, and deliberately NOT swept on sign-out), and `readRecoveryRouteNoOlderThan`
+pins every later read — route and guardian set at ONE block, so they cannot describe two
+chain states — to a head at or after it. A replica behind the bound is never asked at all:
+the answer is `unknown`, which `decideAddPath` refuses, and never `absent`. The block is
+recorded inside the four write helpers after their read-back proves the change, so no caller
+can forget it, and the recovery rotation records one too (it goes through the route, and its
+device becomes the account's own). Separately, an `absent` CONTRADICTED by the platform's
+presence hint now reads as "couldn't tell": it cannot be "protected" either — that would
+mint a false safety certificate from a forgeable hint against a chain read — but a device
+with no bound still has a lagging `absent` to worry about, and the hint is the one
+independent signal that it might be one. **The honest limit:** a device that has never seen
+this account's route change has no bound to demand, so there the #505 guard remains the only
+protection, exactly as before.
+
 ## Account setup explains itself, and the call sites stop counting (2026-09-10)
 
 `auth.ensureAccountSetup({ identity })` is now the single gate for "make this account ready to

@@ -251,6 +251,14 @@ test("every deciding read on the backup surface goes through the pinned helper",
       /[^a-zA-Z]readGuardianSet\([^,)]*\)/,
       `${where} must take the set from the SAME pinned read, not a second unpinned one`,
     );
+    // ...and the pinned name must BE the pinned helper. Importing the unpinned read
+    // under the pinned one's name would satisfy every check above while restoring
+    // exactly the bug (the type error it also causes is not a guard this suite runs).
+    assert.doesNotMatch(
+      body,
+      /readRecoveryRoute\s*:|readGuardianSet\s*:/,
+      `${where} must not rename the unpinned reads into the pinned one's name`,
+    );
   }
 });
 
