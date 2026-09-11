@@ -78,10 +78,25 @@ export const defaultIntentDeps: IntentDeps = {
 };
 
 export async function resolveRegistrationIntent(
-  marker: Pick<PendingRegistration, "nonce">,
+  marker: Pick<PendingRegistration, "nonce" | "txHash">,
   manifestRef: string,
   deps: IntentDeps = defaultIntentDeps,
 ): Promise<IntentResolution> {
+  // HASH-LESS MARKERS ONLY, enforced rather than assumed (#434). A marker with a
+  // receipt to consult must be resolved BY that receipt (register-once.ts), because
+  // `byManifestRef` is first-writer-wins over a public, creator-supplied digest: an
+  // attacker who registered a copy of this manifest earlier is the entry step 1
+  // returns, and adopting it binds their event to this series and wedges the real
+  // registration behind a RegistrationRebindError. Today register-once only reaches
+  // here on the else-branch, so this refusal is unreachable — it exists so that a
+  // future caller wiring the two paths the other way round fails loudly and
+  // retryably instead of adopting a stranger's registration.
+  if (marker.txHash) {
+    throw new Error(
+      "resolveRegistrationIntent: marker carries a txHash — resolve it by receipt, not by manifestRef",
+    );
+  }
+
   // Step 1 — the positive proof outranks every nonce inference. Throws propagate.
   const onChainEventId = await deps.findByManifestRef(manifestRef);
   if (onChainEventId) return { status: "registered", onChainEventId };

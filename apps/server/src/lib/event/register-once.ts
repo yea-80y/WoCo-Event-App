@@ -130,6 +130,15 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
 
   const pending = deps.lookupPending(eventId, seriesId);
   if (pending && pending.txHash) {
+    // OUR OWN RECEIPT OUTRANKS A MANIFEST MATCH, and this ordering is the rule,
+    // not an accident of layout (#434). `byManifestRef` is first-writer-wins and
+    // the digest is creator-supplied and public, so an attacker who registers a
+    // COPY of this series' manifest earlier than we did becomes the entry
+    // `findByManifestRef` returns. Adopting that answer would bind their on-chain
+    // event to this series and wedge the real registration behind a
+    // RegistrationRebindError forever. A receipt cannot be raced: it names the
+    // event OUR tx created. So the manifest ladder below is for markers that have
+    // no receipt to consult, and never a shortcut past one.
     const outcome = await deps.resolveRegisterTx(pending.txHash, pending.nonce);
     if (outcome.status === "pending") {
       console.log(`[register-once] ${eventId}/${seriesId} tx ${pending.txHash} still in flight — not re-sending`);
@@ -164,12 +173,15 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
     deps.clearPending(eventId, seriesId);
   }
 
+  // The marker carries the manifest digest as well as the nonce (#434): it is what
+  // lets the tier-3 fill refuse to hand THIS registration's on-chain event to
+  // another series while the confirm below has not run yet.
   const { onChainEventId, txHash } = await deps.registerEventOnChain(
     supply,
     manifestRef,
     v2Params,
-    (tx) => deps.recordPending(eventId, seriesId, tx),
-    (r) => deps.recordIntent(eventId, seriesId, r),
+    (tx) => deps.recordPending(eventId, seriesId, tx, manifestRef),
+    (r) => deps.recordIntent(eventId, seriesId, r, manifestRef),
   );
 
   // A throw here leaves the marker in place ON PURPOSE: the tx is already on chain,
