@@ -29,7 +29,7 @@
 
   const SOCIALS = [
     { brand: "x", label: "X", href: "https://x.com/woco_org" },
-    { brand: "discord", label: "Discord", href: "https://discord.gg/BMtzDAuSX" },
+    { brand: "discord", label: "Discord", href: "https://discord.gg/tPxAK5WHcb" },
   ] as const;
 </script>
 
