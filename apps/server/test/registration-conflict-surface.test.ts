@@ -118,3 +118,23 @@ test("the section is public-safe: booleans and counts only", () => {
   // Nothing in the serialised section may name an event, a series or a chain id.
   assert.ok(!JSON.stringify(section).includes("evt-wedged"));
 });
+
+// Fable gate, 2026-09-11: the health tests above call `noteRebindConflict`
+// directly, so removing the call from `confirmSeriesOnChain` survived a
+// mutation. This one goes through the real confirm; the rebind refusal is its
+// first statement, so no Swarm or chain is touched before the throw.
+test("a wedged CONFIRM is what raises the alarm — not a direct call to the counter", async () => {
+  const service = await import("../src/lib/event/service.js");
+  const id = `0x${"c7".repeat(32)}`;
+  const before = registry.onchainRegistryHealth().rebindConflicts;
+  registry.recordOnChainEventId("evt-held-434", "ser-held-434", id);
+
+  await assert.rejects(
+    service.confirmSeriesOnChain("evt-wedged-434", "ser-wedged-434", id),
+    registry.RegistrationRebindError,
+  );
+  assert.deepEqual(registry.onchainRegistryHealth(), { ok: false, rebindConflicts: before + 1 });
+
+  await assert.rejects(service.confirmSeriesOnChain("evt-wedged-434", "ser-wedged-434", id));
+  assert.equal(registry.onchainRegistryHealth().rebindConflicts, before + 1, "a retry of the same key does not double-count");
+});

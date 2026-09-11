@@ -534,6 +534,15 @@ export function indexWalkedRegistrations(
 }
 
 /**
+ * TEST SEED for `byManifestRef` — the only way to reach tier 3 without a chain
+ * walk, which `mock.module` cannot stub under the tsx loader. Same `_…ForTests`
+ * shape as `_resetChainEndMemoForTests`. Never called by runtime code.
+ */
+export function _seedManifestIndexForTests(walked: Array<{ id: string; manifestRef?: string | null }>): void {
+  indexWalkedRegistrations(byManifestRef, walked);
+}
+
+/**
  * Walk EVERY sponsor registration on chain into `byManifestRef`. Bounded by
  * `organiserNonce` (exact count), batched. THROWS on any failure — a caller
  * that needs a definitive answer (the #318 intent resolver) must be able to

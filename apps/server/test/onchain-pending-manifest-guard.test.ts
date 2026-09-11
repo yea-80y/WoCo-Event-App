@@ -172,3 +172,49 @@ test("SOURCE GUARD: the tier-3 fill still asks, and asks BEFORE it writes", () =
   assert.ok(writes > -1, "the tier-3 fill no longer writes a record — update this guard");
   assert.ok(asks < writes, "the pending-marker guard must run BEFORE the record write");
 });
+
+// ---------------------------------------------------------------------------
+// BEHAVIOURAL (Fable gate, 2026-09-11): the source guard above survived a
+// mutation that disabled the refusal while leaving the call in place. These
+// drive `applyOnChainEventIds` itself, with `byManifestRef` seeded through the
+// test-only hook so tier 3 is reached without a chain walk.
+// ---------------------------------------------------------------------------
+
+const T3_ID = `0x${"a1".repeat(32)}`;
+const T3_MANIFEST = `0x${"d4".repeat(32)}`;
+const T3_VICTIM_EVENT = "evt-t3-victim";
+const T3_VICTIM_SERIES = "ser-t3-victim";
+const T3_ATTACKER_EVENT = "evt-t3-attacker";
+const T3_ATTACKER_SERIES = "ser-t3-attacker";
+
+function feedFor(eventId: string, seriesId: string, manifestRef: string) {
+  return { eventId, series: [{ seriesId, manifestRef, name: "t3" }] } as any;
+}
+
+test("TIER 3 REFUSES while another key's registration for the same manifestRef is in flight", async () => {
+  registry._seedManifestIndexForTests([{ id: T3_ID, manifestRef: T3_MANIFEST }]);
+  registry.recordRegistrationIntent(T3_VICTIM_EVENT, T3_VICTIM_SERIES, { nonce: 11, chainId: 42161 }, T3_MANIFEST);
+
+  const out = await registry.applyOnChainEventIds(feedFor(T3_ATTACKER_EVENT, T3_ATTACKER_SERIES, T3_MANIFEST));
+  assert.equal(out.series[0].onChainEventId, undefined, "the attacker's series must stay unfilled");
+  assert.equal(registry.lookupOnChainEventId(T3_ATTACKER_EVENT, T3_ATTACKER_SERIES), null, "and nothing was persisted");
+});
+
+test("TIER 3 still refuses once the victim's confirm has landed (sibling guard, now behavioural)", async () => {
+  registry.clearPendingRegistration(T3_VICTIM_EVENT, T3_VICTIM_SERIES);
+  registry.recordOnChainEventId(T3_VICTIM_EVENT, T3_VICTIM_SERIES, T3_ID);
+
+  const out = await registry.applyOnChainEventIds(feedFor(T3_ATTACKER_EVENT, T3_ATTACKER_SERIES, T3_MANIFEST));
+  assert.equal(out.series[0].onChainEventId, undefined);
+  assert.equal(registry.lookupOnChainEventId(T3_ATTACKER_EVENT, T3_ATTACKER_SERIES), null);
+});
+
+test("TIER 3 binds the honest case — no marker, no record, the manifestRef is its own", async () => {
+  const id = `0x${"b2".repeat(32)}`;
+  const manifest = `0x${"e5".repeat(32)}`;
+  registry._seedManifestIndexForTests([{ id, manifestRef: manifest }]);
+
+  const out = await registry.applyOnChainEventIds(feedFor("evt-t3-honest", "ser-t3-honest", manifest));
+  assert.equal(out.series[0].onChainEventId, id);
+  assert.equal(registry.lookupOnChainEventId("evt-t3-honest", "ser-t3-honest"), id, "promoted to the record");
+});
