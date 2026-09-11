@@ -47,6 +47,11 @@ const ROOTS = [
   "packages/shared/test",
   "packages/embed/src",
   "packages/embed/test",
+  // Not source roots in the usual sense, but they hold TypeScript that imports
+  // the renamed modules and nothing type-checks them — so they are scanned.
+  "apps/web/scripts",
+  "apps/web/vite-plugins",
+  "apps/registry/src",
 ] as const;
 
 /**
