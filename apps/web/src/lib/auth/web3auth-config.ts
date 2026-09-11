@@ -13,6 +13,8 @@
  * either way; only the exposure path changes.
  */
 
+import { resolveWeb3AuthNetwork } from "./web3auth-network.js";
+
 type Web3AuthModule = typeof import("@web3auth/modal");
 
 /**
@@ -24,9 +26,17 @@ type Web3AuthModule = typeof import("@web3auth/modal");
  */
 export function buildWeb3AuthOptions(mod: Web3AuthModule, clientId: string) {
   const { WEB3AUTH_NETWORK, CHAIN_NAMESPACES } = mod;
-  const networkEnv = (import.meta.env.VITE_WEB3AUTH_NETWORK as string | undefined) ?? "sapphire_devnet";
+  // THROWS on anything that is not one of the two exact names — there is no
+  // default, because the wrong network is a wrong key, not a wrong feature flag
+  // (#244). Read through an optional chain so this module also loads under plain
+  // Node for the unit test: Vite substitutes the whole `import.meta.env` object at
+  // build time, while in Node it is simply absent and the validator sees
+  // `undefined`, which it refuses — the same verdict, reached the same way.
+  const networkEnv = import.meta.env?.VITE_WEB3AUTH_NETWORK as string | undefined;
   const web3AuthNetwork =
-    networkEnv === "sapphire_mainnet" ? WEB3AUTH_NETWORK.SAPPHIRE_MAINNET : WEB3AUTH_NETWORK.SAPPHIRE_DEVNET;
+    resolveWeb3AuthNetwork(networkEnv) === "sapphire_mainnet"
+      ? WEB3AUTH_NETWORK.SAPPHIRE_MAINNET
+      : WEB3AUTH_NETWORK.SAPPHIRE_DEVNET;
 
   // OTHER namespace = key-only, no chain calls. But modal init still validates the
   // provider config and rejects an empty rpcTarget ("Please provide rpcTarget inside
