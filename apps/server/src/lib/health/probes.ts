@@ -49,10 +49,21 @@ interface Reading<T> {
   error: string | null;
   /** The library's own message. Server log only, on transitions only. */
   detail: string | null;
+  /** The node positively said the batch does not exist — an alarm, not an unknown. */
+  gone?: boolean;
 }
 
 const empty = <T>(): Reading<T> => ({ at: null, value: null, error: null, detail: null });
-const failed = <T>(err: unknown): Reading<T> => ({ at: Date.now(), value: null, error: publicReason(err), detail: msg(err) });
+const failed = <T>(err: unknown): Reading<T> => ({ at: Date.now(), value: null, error: publicReason(err), detail: msg(err), gone: false });
+/**
+ * WHY 404 IS NOT "UNKNOWN". A node answers 404 for a stamp it does not hold, and
+ * for a batch id WE configured that is a positive statement: expired and
+ * evicted (the 2026-07-27 and 2026-07-19 deaths both read exactly this way), or
+ * never synced — either way every write stamped with it is unpaid. Reporting
+ * that as "could not read" would be the unknown nobody watches.
+ */
+const gone = <T>(err: unknown): Reading<T> => ({ at: Date.now(), value: null, error: "HTTP 404 — batch not found on the node: expired and evicted, or never synced", detail: msg(err), gone: true });
+const isNotFound = (err: unknown): boolean => typeof (err as { status?: unknown } | null)?.status === "number" && (err as { status: number }).status === 404;
 const unparsed = <T>(): Reading<T> => ({ at: Date.now(), value: null, error: "stamp response was missing fields", detail: null });
 
 let paymasterReading = empty<bigint>();
@@ -232,7 +243,7 @@ export async function refreshPostage(
       const parsed = parseStamp(await readers.beeStamp(POSTAGE_BATCH_ID));
       beeReading = parsed ? { at: Date.now(), value: parsed, error: null, detail: null } : unparsed();
     } catch (err) {
-      beeReading = failed(err);
+      beeReading = isNotFound(err) ? gone(err) : failed(err);
     }
     try {
       const raw = await readers.chainstate();
@@ -253,7 +264,7 @@ export async function refreshPostage(
       const parsed = parseStamp(await readers.ethernaStamp(ethernaBatch));
       ethernaReading = parsed ? { at: Date.now(), value: parsed, error: null, detail: null } : unparsed();
     } catch (err) {
-      ethernaReading = failed(err);
+      ethernaReading = isNotFound(err) ? gone(err) : failed(err);
     }
   }
 
@@ -352,10 +363,12 @@ function stampSection(reading: Reading<StampReading & { immutable: boolean | nul
   }
   if (reading.value === null) {
     const reason = reading.error ?? "not read yet";
+    const verdict: Verdict = reading.gone ? false : null;
+    const check: Check = { ok: verdict, reason };
     return {
       batch: batchLabel(batchId), depth: null, bucketDepth: null, utilization: null, bucketCap: null,
       batchTTL: null, batchTTLDays: null, usable: null, immutable: null,
-      checks: unread(reason), ok: null, reason,
+      checks: { ttl: check, utilization: check, usable: check }, ok: verdict, reason,
       ...(reading.error ? { error: reading.error } : {}),
     };
   }
