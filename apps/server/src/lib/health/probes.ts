@@ -43,11 +43,17 @@ const PAYMASTER_NOTE =
 
 interface Reading<T> {
   at: number | null;
+  /** The reading, or null when the probe could not read. */
   value: T | null;
+  /** Operator-safe CLASS of failure — this is what the public section shows. */
   error: string | null;
+  /** The library's own message. Server log only, on transitions only. */
+  detail: string | null;
 }
 
-const empty = <T>(): Reading<T> => ({ at: null, value: null, error: null });
+const empty = <T>(): Reading<T> => ({ at: null, value: null, error: null, detail: null });
+const failed = <T>(err: unknown): Reading<T> => ({ at: Date.now(), value: null, error: publicReason(err), detail: msg(err) });
+const unparsed = <T>(): Reading<T> => ({ at: Date.now(), value: null, error: "stamp response was missing fields", detail: null });
 
 let paymasterReading = empty<bigint>();
 let beeReading = empty<StampReading & { immutable: boolean | null }>();
@@ -83,16 +89,25 @@ function withTimeout<T>(p: Promise<T>, what: string): Promise<T> {
   ]);
 }
 
-async function beeGet(path: string): Promise<Record<string, unknown>> {
+/** A non-2xx from bee. Carries the status; the path stays out of the text. */
+class HttpStatusError extends Error {
+  constructor(readonly status: number, what: string) {
+    super(`${what} → HTTP ${status}`);
+    this.name = "HttpStatusError";
+  }
+}
+
+async function beeGet(path: string, what: string): Promise<Record<string, unknown>> {
   const res = await fetch(`${BEE_URL}${path}`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
-  if (!res.ok) throw new Error(`GET ${path} → ${res.status}`);
+  if (!res.ok) throw new HttpStatusError(res.status, what);
   // The stamps API is not exposed on every endpoint BEE_URL can point at, and a
   // gateway answering HTML with a 200 must read as "could not tell", not as data.
   if (!(res.headers.get("content-type") ?? "").includes("application/json")) {
-    throw new Error(`GET ${path} → not JSON (stamps API not exposed here?)`);
+    throw new Error(NOT_JSON);
   }
   return (await res.json()) as Record<string, unknown>;
 }
+const NOT_JSON = "not JSON (stamps API not exposed here?)";
 
 export const liveReaders: HealthReaders = {
   deposit: async () => {
@@ -102,8 +117,8 @@ export const liveReaders: HealthReaders = {
     );
     return wei;
   },
-  beeStamp: (batchId) => beeGet(`/stamps/${batchId}`),
-  chainstate: () => beeGet("/chainstate"),
+  beeStamp: (batchId) => beeGet(`/stamps/${batchId}`, "bee stamp"),
+  chainstate: () => beeGet("/chainstate", "bee chainstate"),
   ethernaStamp: (batchId) => readEthernaStamp(batchId, TIMEOUT_MS) as Promise<Record<string, unknown>>,
 };
 
@@ -141,6 +156,29 @@ function parseStamp(raw: Record<string, unknown>): (StampReading & { immutable: 
 
 const msg = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
+/**
+ * WHY NOT `err.message` ON THE SECTION. This endpoint is public and error text
+ * is written by libraries that do not know that: ethers embeds the full request
+ * URL — API key included — in a SERVER_ERROR message (verified against ethers
+ * 6.x: `info={ "requestUrl": "…/v2/<key>" }`), Etherna echoes its response
+ * body, and a fetch of `/stamps/<id>` names the whole batch. So the section
+ * gets the CLASS of failure, which is all an operator needs to know where to
+ * look, and the raw text goes to the server log on transitions only.
+ */
+export function publicReason(err: unknown): string {
+  const e = err as { name?: unknown; code?: unknown; status?: unknown; cause?: unknown; message?: unknown } | null;
+  if (e && typeof e === "object") {
+    if (e.name === "TimeoutError" || e.name === "AbortError") return "timed out";
+    if (typeof e.message === "string" && e.message.includes("timed out")) return "timed out";
+    if (typeof e.message === "string" && e.message === NOT_JSON) return NOT_JSON;
+    if (typeof e.status === "number") return `HTTP ${e.status}`;
+    const cause = e.cause as { code?: unknown } | undefined;
+    if (cause && typeof cause === "object" && typeof cause.code === "string") return `network ${cause.code}`;
+    if (typeof e.code === "string") return /^[A-Z_]+$/.test(e.code) ? `rpc ${e.code}` : "unreadable";
+  }
+  return "unreadable";
+}
+
 /** Enough to identify a batch in a log, never enough to be the batch. */
 function batchLabel(batchId: string): string {
   return `${batchId.slice(0, 12)}…`;
@@ -161,11 +199,14 @@ const lastVerdict = new Map<string, Verdict>();
  * the same as no alarm — and the point of this whole change is that the three
  * postage near-misses were all found by hand.
  */
-function noteVerdict(name: string, check: Check, log: Logger): void {
+function noteVerdict(name: string, check: Check, log: Logger, detail: string | null = null): void {
   if (lastVerdict.has(name) && lastVerdict.get(name) === check.ok) return;
   lastVerdict.set(name, check.ok);
   const word = check.ok === true ? "ok" : check.ok === false ? "ALARM" : "unknown";
-  log(`[health] ${name}: ${word}${check.reason ? ` — ${check.reason}` : ""}`);
+  // The raw library text is useful exactly once — when the verdict changes — and
+  // only here, where the reader is the operator's log and not the public.
+  const raw = detail ? ` (detail: ${detail.slice(0, 300)})` : "";
+  log(`[health] ${name}: ${word}${check.reason ? ` — ${check.reason}` : ""}${raw}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -174,11 +215,11 @@ function noteVerdict(name: string, check: Check, log: Logger): void {
 
 export async function refreshPaymaster(readers: HealthReaders = liveReaders, log: Logger = console.warn): Promise<void> {
   try {
-    paymasterReading = { at: Date.now(), value: await readers.deposit(), error: null };
+    paymasterReading = { at: Date.now(), value: await readers.deposit(), error: null, detail: null };
   } catch (err) {
-    paymasterReading = { at: Date.now(), value: null, error: msg(err) };
+    paymasterReading = failed(err);
   }
-  noteVerdict("paymaster", paymasterHealth(), log);
+  noteVerdict("paymaster", paymasterHealth(), log, paymasterReading.detail);
 }
 
 export async function refreshPostage(
@@ -189,11 +230,9 @@ export async function refreshPostage(
   if (POSTAGE_BATCH_ID) {
     try {
       const parsed = parseStamp(await readers.beeStamp(POSTAGE_BATCH_ID));
-      beeReading = parsed
-        ? { at: Date.now(), value: parsed, error: null }
-        : { at: Date.now(), value: null, error: "stamp response was missing fields" };
+      beeReading = parsed ? { at: Date.now(), value: parsed, error: null, detail: null } : unparsed();
     } catch (err) {
-      beeReading = { at: Date.now(), value: null, error: msg(err) };
+      beeReading = failed(err);
     }
     try {
       const raw = await readers.chainstate();
@@ -201,10 +240,10 @@ export async function refreshPostage(
       const chainTip = num(raw.chainTip);
       chainstateReading =
         block !== null && chainTip !== null
-          ? { at: Date.now(), value: { block, chainTip }, error: null }
-          : { at: Date.now(), value: null, error: "chainstate response was missing fields" };
+          ? { at: Date.now(), value: { block, chainTip }, error: null, detail: null }
+          : { at: Date.now(), value: null, error: "chainstate response was missing fields", detail: null };
     } catch (err) {
-      chainstateReading = { at: Date.now(), value: null, error: msg(err) };
+      chainstateReading = failed(err);
     }
   }
 
@@ -212,20 +251,18 @@ export async function refreshPostage(
   if (includeEtherna && ethernaBatch && process.env.ETHERNA_API_KEY) {
     try {
       const parsed = parseStamp(await readers.ethernaStamp(ethernaBatch));
-      ethernaReading = parsed
-        ? { at: Date.now(), value: parsed, error: null }
-        : { at: Date.now(), value: null, error: "stamp response was missing fields" };
+      ethernaReading = parsed ? { at: Date.now(), value: parsed, error: null, detail: null } : unparsed();
     } catch (err) {
-      ethernaReading = { at: Date.now(), value: null, error: msg(err) };
+      ethernaReading = failed(err);
     }
   }
 
   const section = postageHealth();
-  noteVerdict("postage.bee.ttl", section.bee.checks.ttl, log);
-  noteVerdict("postage.bee.utilization", section.bee.checks.utilization, log);
-  noteVerdict("postage.bee.usable", section.bee.checks.usable, log);
-  noteVerdict("postage.chain", section.chain, log);
-  if (section.etherna.configured) noteVerdict("postage.etherna", section.etherna, log);
+  noteVerdict("postage.bee.ttl", section.bee.checks.ttl, log, beeReading.detail);
+  noteVerdict("postage.bee.utilization", section.bee.checks.utilization, log, beeReading.detail);
+  noteVerdict("postage.bee.usable", section.bee.checks.usable, log, beeReading.detail);
+  noteVerdict("postage.chain", section.chain, log, chainstateReading.detail);
+  if (section.etherna.configured) noteVerdict("postage.etherna", section.etherna, log, ethernaReading.detail);
 }
 
 // ---------------------------------------------------------------------------

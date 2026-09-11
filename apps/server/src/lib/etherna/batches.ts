@@ -73,6 +73,14 @@ export function saveUserBatch(addr: string, entry: UserBatchEntry): void {
 // Etherna API helpers
 // ---------------------------------------------------------------------------
 
+/** Carries the status so a caller can tell "expired token" from "no such batch". */
+class EthernaHttpError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "EthernaHttpError";
+  }
+}
+
 /** Bearer cache for the read paths below — one token, not one per probe. */
 let tokenCache: { token: string; expiresAt: number } | null = null;
 const TOKEN_REFRESH_MARGIN_MS = 30_000;
@@ -94,7 +102,7 @@ async function fetchToken(): Promise<string> {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
   });
-  if (!r.ok) throw new Error(`Etherna token request failed: ${r.status} ${await r.text().catch(() => "")}`);
+  if (!r.ok) throw new EthernaHttpError(r.status, `Etherna token request failed: ${r.status} ${await r.text().catch(() => "")}`);
   const json = (await r.json()) as { access_token: string; expires_in?: number };
   tokenCache = { token: json.access_token, expiresAt: Date.now() + (json.expires_in ?? 300) * 1000 };
   return json.access_token;
@@ -105,14 +113,6 @@ async function bearerToken(force = false): Promise<string> {
   if (force) tokenCache = null;
   if (tokenCache && tokenCache.expiresAt - TOKEN_REFRESH_MARGIN_MS > Date.now()) return tokenCache.token;
   return fetchToken();
-}
-
-/** Carries the status so a caller can tell "expired token" from "no such batch". */
-class EthernaHttpError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message);
-    this.name = "EthernaHttpError";
-  }
 }
 
 async function authGet(token: string, path: string, signal?: AbortSignal): Promise<unknown> {

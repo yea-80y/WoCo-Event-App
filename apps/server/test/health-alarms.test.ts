@@ -252,7 +252,7 @@ test("the paymaster section reports stale on the same rule", async () => {
 
 test("a bee that cannot be reached leaves the batch UNKNOWN, not healthy and not dead", async () => {
   await probes.refreshPostage(
-    readers({ beeStamp: async () => { throw new Error("connect ECONNREFUSED"); } }),
+    readers({ beeStamp: async () => { throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }); } }),
     silent,
   );
   const s = probes.postageHealth();
@@ -260,7 +260,7 @@ test("a bee that cannot be reached leaves the batch UNKNOWN, not healthy and not
   assert.equal(s.bee.checks.ttl.ok, null);
   assert.equal(s.bee.checks.utilization.ok, null);
   assert.equal(s.bee.checks.usable.ok, null);
-  assert.match(s.bee.error ?? "", /ECONNREFUSED/);
+  assert.equal(s.bee.error, "network ECONNREFUSED");
   assert.equal(s.ok, null, "unknown must not roll up as healthy");
 });
 
@@ -286,11 +286,14 @@ test("an unreadable chainstate leaves the chain check UNKNOWN", async () => {
 });
 
 test("an RPC that cannot answer leaves the paymaster UNKNOWN", async () => {
-  await probes.refreshPaymaster(readers({ deposit: async () => { throw new Error("rpc 503"); } }), silent);
+  await probes.refreshPaymaster(
+    readers({ deposit: async () => { throw Object.assign(new Error("server response 503"), { code: "SERVER_ERROR" }); } }),
+    silent,
+  );
   const s = probes.paymasterHealth();
   assert.equal(s.ok, null);
   assert.equal(s.depositEth, null);
-  assert.match(s.error ?? "", /rpc 503/);
+  assert.equal(s.error, "rpc SERVER_ERROR");
 });
 
 test("a real alarm still wins over an unknown in the same section", async () => {
@@ -360,6 +363,53 @@ test("batch ids are truncated — this endpoint is public", async () => {
   const body = JSON.stringify(probes.postageHealth());
   assert.ok(!body.includes(BATCH), "the full batch id must never reach the response");
   assert.equal(probes.postageHealth().bee.batch, "7dad2b8c0f1a…");
+});
+
+/**
+ * Measured, not imagined: ethers 6.x puts `info={ "requestUrl": "…/v2/<key>" }`
+ * into a SERVER_ERROR message, so a keyed RPC URL would have been published by
+ * one 503 from the provider. The section gets the class; the log gets the text.
+ */
+test("library error text never reaches the public sections — only the server log", async () => {
+  const KEY = "SECRETKEY123";
+  const BODY = "SECRETBODY456";
+  const lines: string[] = [];
+  const log = (l: string) => lines.push(l);
+  process.env.ETHERNA_PLATFORM_BATCH = BATCH;
+  process.env.ETHERNA_API_KEY = "id.secret";
+  await probes.refreshPaymaster(
+    readers({
+      deposit: async () => {
+        throw Object.assign(
+          new Error(`server response 503 Service Unavailable (info={ "requestUrl": "https://arb.example/v2/${KEY}" })`),
+          { code: "SERVER_ERROR" },
+        );
+      },
+    }),
+    log,
+  );
+  await probes.refreshPostage(
+    readers({
+      beeStamp: async () => { throw Object.assign(new Error(`GET /stamps/${BATCH} → 404`), { status: 404 }); },
+      chainstate: async () => { throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" }); },
+      ethernaStamp: async () => { throw Object.assign(new Error(`GET /stamps/${BATCH} → 401: ${BODY}`), { status: 401 }); },
+    }),
+    log,
+  );
+  const pm = probes.paymasterHealth();
+  const pg = probes.postageHealth();
+  const published = JSON.stringify({ pm, pg });
+  assert.ok(!published.includes(KEY), "the RPC key must never reach the response");
+  assert.ok(!published.includes(BATCH), "the full batch id must never reach the response");
+  assert.ok(!published.includes(BODY), "an upstream response body must never reach the response");
+  assert.equal(pm.error, "rpc SERVER_ERROR");
+  assert.equal(pm.ok, null);
+  assert.equal(pg.bee.error, "HTTP 404");
+  assert.equal(pg.chain.reason, "timed out");
+  assert.equal(pg.etherna.error, "HTTP 401");
+  // The operator still gets the raw text — once, on the crossing, in the log.
+  assert.ok(lines.some((l) => l.includes(KEY)), "the transition log carries the library detail");
+  assert.ok(lines.some((l) => l.includes(BODY)));
 });
 
 test("the paymaster section names both ceilings, because the server can only see one", async () => {

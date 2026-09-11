@@ -4,7 +4,7 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
-## /api/health learns to watch postage and the paymaster (#421 + #522, 2026-09-11)
+## /api/health learns to watch postage and the paymaster (#421 + #522, 2026-09-11) Gate (Fable): sections publish a failure CLASS (`rpc SERVER_ERROR`, `HTTP 404`, `timed out`), never library text — ethers 6 embeds the keyed RPC URL in a SERVER_ERROR message; the raw text goes to the server log on transitions only.
 
 Three postage batches died or nearly died in five weeks and every one was found by hand: a
 dead batch does not fail an upload, bee accepts it and never pays for the chunks. The
