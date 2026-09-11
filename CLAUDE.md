@@ -94,6 +94,9 @@ DEV COMMANDS:
   PUBLIC_API_BASE. Optional: SOCIAL_INDEXER_PRIVATE_KEY — signs the indexer's published
   evidence reports (#312), never user data; its address must match `SOCIAL_INDEXER_ADDRESS`
   in `packages/shared`. Unset = reports served on request, never published.
+  Also optional, all with defaults baked in (#421/#522 health alarms; a bad value is
+  ignored and reported as `configError`, never fatal): `PAYMASTER_DEPOSIT_MIN_ETH`,
+  `POSTAGE_TTL_MIN_SECONDS`, `POSTAGE_UTILIZATION_MAX_PCT`, `BEE_CHAIN_LAG_MAX_BLOCKS`.
 
 ============================================================================
 AUTH ARCHITECTURE

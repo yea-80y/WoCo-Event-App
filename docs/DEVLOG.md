@@ -4,6 +4,21 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## /api/health learns to watch postage and the paymaster (#421 + #522, 2026-09-11)
+
+Three postage batches died or nearly died in five weeks and every one was found by hand: a
+dead batch does not fail an upload, bee accepts it and never pays for the chunks. The
+paymaster is the same shape — its EntryPoint deposit runs dry and every Kernel userOp fails
+on the client, where the server never sees one. Both are readable from the server, so both
+are now background-probed (60s; Etherna every 5min) and served from cache with `checkedAt`
+and `stale`. Verdicts are `true | false | null`, and `null` — the probe could not read — is
+its own answer: collapsing it into "fine" is the 2026-08-10 incident exactly. Utilization
+alarms one slot from the per-bucket cap `2^(depth-bucketDepth)` as well as on a percentage,
+because 7 of 8 slots is 87.5% and one chunk from silent overwrite. Top-level `ok` stays
+liveness-only. The evidence publisher's own stamp probe was absorbed — one read, one cache.
+
+---
+
 ## No route read older than the change this device has seen (#510, 2026-09-11)
 
 The residual #505 left open. "Add a backup" picks between two writes with opposite
