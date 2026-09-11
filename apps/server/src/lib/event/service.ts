@@ -12,7 +12,12 @@ import { getActiveChainId } from "../chain/event-contract.js";
 import { assertNoOrders } from "./delete-safety.js";
 import { validateObjectGate } from "../object/gate-check.js";
 import { upsertCreatorObject } from "../object/directory.js";
-import { recordOnChainEventId, applyOnChainEventIds } from "./onchain-registry.js";
+import {
+  recordOnChainEventId,
+  applyOnChainEventIds,
+  noteRebindConflict,
+  RegistrationRebindError,
+} from "./onchain-registry.js";
 import { setListed, setTombstoned } from "./listing-state.js";
 import { cardFromFeed, getEventsSnapshot, scheduleSnapshotRebuild } from "./directory-snapshot.js";
 import {
@@ -310,7 +315,17 @@ export async function confirmSeriesOnChain(
   // SOC with onChainEventId. This is what makes the money path's v2 detection robust:
   // getEvent() merges this in, so reserve/claim-status/Stripe see the on-chain id even
   // if the organiser's SOC re-sign never lands. The chain stays authoritative.
-  recordOnChainEventId(eventId, seriesId, onChainEventId);
+  //
+  // A rebind refusal here is the WEDGE shape from #434: this registration's tx has
+  // landed and its on-chain event is already bound to another series, so no retry
+  // can ever get past this line. Counted before rethrowing so `/api/health` can say
+  // an operator has work to do — the error itself stays exactly as it was.
+  try {
+    recordOnChainEventId(eventId, seriesId, onChainEventId);
+  } catch (err) {
+    if (err instanceof RegistrationRebindError) noteRebindConflict(eventId, seriesId);
+    throw err;
+  }
 
   // The client's event SOC is uploaded AFTER registration completes, so a signerHint
   // read here stalls on a not-yet-existent chunk (Bee network retrieval) — a hidden

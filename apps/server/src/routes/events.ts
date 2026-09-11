@@ -10,6 +10,7 @@ import { setListed } from "../lib/event/listing-state.js";
 import { cardFromFeed, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
 import { getOrganiserNonce, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
 import { registerSeriesExactlyOnce } from "../lib/event/register-once.js";
+import { RegistrationRebindError } from "../lib/event/onchain-registry.js";
 import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { batchForDeploy } from "../lib/etherna/batch-router.js";
@@ -743,6 +744,46 @@ events.post("/:id/unlist", requireAuth, async (c) => {
   return c.json({ ok: true, eventId });
 });
 
+/**
+ * How `register-on-chain` answers a failed registration.
+ *
+ * A `RegistrationRebindError` is not a transport failure and never succeeds on
+ * retry (#434): this series' on-chain event is already bound to another series,
+ * so the confirm throws on every attempt, the pending marker never clears, and
+ * the fix is an operator's, not the organiser's. It used to come back as the
+ * generic 500 below, which reads as "try again" — exactly the loop nobody
+ * escalates. It is now a definitive 409 carrying a code the client can branch on,
+ * the same shape as the in-flight 409 the handler already returns.
+ *
+ * The message is deliberately plain and carries no internal detail. The operator
+ * signal is `/api/health` `onchainRegistry` plus the error logged at the call
+ * site.
+ *
+ * Exported because the refusal is worth a test and the handler around it is not
+ * reachable in one: getting there needs a session delegation, a Swarm feed read
+ * and a chain broadcast.
+ */
+export function registerOnChainErrorResponse(err: unknown): {
+  status: 409 | 500;
+  body: { ok: false; error: string; message?: string };
+} {
+  if (err instanceof RegistrationRebindError) {
+    return {
+      status: 409,
+      body: {
+        ok: false,
+        error: "registration_conflict",
+        message:
+          "This series' on-chain registration conflicts with an existing binding - please contact support.",
+      },
+    };
+  }
+  return {
+    status: 500,
+    body: { ok: false, error: err instanceof Error ? err.message : "registerEvent tx failed" },
+  };
+}
+
 // POST /api/events/:id/register-on-chain — authenticated, organiser-only
 // Calls registerEvent via the sponsor wallet (no EOA needed for the organiser).
 // Verifies ownership, sends the tx, then writes onChainEventId back to the Swarm feed.
@@ -848,8 +889,8 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
     });
   } catch (err) {
     console.error("[api] register-on-chain error:", err);
-    const message = err instanceof Error ? err.message : "registerEvent tx failed";
-    return c.json({ ok: false, error: message }, 500);
+    const refusal = registerOnChainErrorResponse(err);
+    return c.json(refusal.body, refusal.status);
   }
 
   if (result.status === "pending") {

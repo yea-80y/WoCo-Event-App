@@ -261,6 +261,19 @@ export interface PendingRegistration {
   txHash?: string;
   nonce: number;
   chainId: number;
+  /**
+   * The manifest digest this registration is FOR, lowercased (#434). Load-bearing
+   * despite being optional: it is what lets the tier-3 fill see that an on-chain
+   * event resolved by manifestRef may belong to a registration in flight for
+   * somebody else's series.
+   *
+   * ADDITIVE — a marker written before this field existed simply carries none and
+   * matches nothing, which is the pre-#434 behaviour. That is acceptable here and
+   * would not be for a durable record: markers live for the seconds or minutes of
+   * a broadcast window, so the only markers that can lack it are the ones already
+   * in flight across the deploy that adds it.
+   */
+  manifestRef?: string;
   /** ISO timestamp of the journal write — diagnostics only. */
   at: string;
 }
@@ -289,6 +302,33 @@ function persistPending(): boolean {
   return writeJsonAtomic(PENDING_FILE, Object.fromEntries(pending), "onchain-pending");
 }
 
+/** Lowercased, and ABSENT rather than undefined — the marker is JSON on disk and
+ *  `{"manifestRef": undefined}` is not a thing the file can carry. */
+function refField(manifestRef?: string): { manifestRef?: string } {
+  return manifestRef ? { manifestRef: manifestRef.toLowerCase() } : {};
+}
+
+/**
+ * The `eventId|seriesId` key of a pending registration for this manifest digest,
+ * if any — the guard the tier-3 fill needs (#434).
+ *
+ * SCANS, and that is right here where `findKeyBoundTo` needed an index: `pending`
+ * holds only registrations inside their broadcast window, which is a handful at
+ * the very worst and normally zero. An index over a map that is almost always
+ * empty would be state to keep correct for no gain.
+ *
+ * A marker carrying no `manifestRef` (written before the field existed) matches
+ * nothing — see `PendingRegistration`.
+ */
+export function findPendingKeyByManifestRef(manifestRef: string): string | null {
+  ensurePendingLoaded();
+  const needle = manifestRef.toLowerCase();
+  for (const [k, v] of pending) {
+    if (v.manifestRef && v.manifestRef.toLowerCase() === needle) return k;
+  }
+  return null;
+}
+
 /**
  * Journal the INTENT to broadcast at `nonce` — phase 1 of the #318 contract.
  * THROWS when the journal cannot be written, and the caller MUST treat that as
@@ -301,10 +341,11 @@ export function recordRegistrationIntent(
   eventId: string,
   seriesId: string,
   intent: { nonce: number; chainId: number },
+  manifestRef?: string,
 ): void {
   ensurePendingLoaded();
   const k = key(eventId, seriesId);
-  pending.set(k, { ...intent, at: new Date().toISOString() });
+  pending.set(k, { ...intent, ...refField(manifestRef), at: new Date().toISOString() });
   if (!persistPending()) {
     pending.delete(k);
     throw new Error("registration journal unwritable — refusing to broadcast registerEvent");
@@ -322,9 +363,10 @@ export function recordPendingRegistration(
   eventId: string,
   seriesId: string,
   tx: { txHash: string; nonce: number; chainId: number },
+  manifestRef?: string,
 ): void {
   ensurePendingLoaded();
-  pending.set(key(eventId, seriesId), { ...tx, at: new Date().toISOString() });
+  pending.set(key(eventId, seriesId), { ...tx, ...refField(manifestRef), at: new Date().toISOString() });
   if (!persistPending()) {
     console.error(
       `[onchain-cache] pending-registration upgrade for ${eventId}/${seriesId} not journalled — ` +
@@ -347,6 +389,57 @@ export function clearPendingRegistration(eventId: string, seriesId: string): voi
     // (step 2 of register-once finds the recorded id first).
     console.warn(`[onchain-cache] could not persist marker clear for ${eventId}/${seriesId}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Rebind-conflict alarm (#434)
+// ---------------------------------------------------------------------------
+
+/**
+ * Distinct `${eventId}|${seriesId}` keys whose confirm hit a
+ * `RegistrationRebindError` since boot. In-memory and deliberately NOT persisted:
+ * it is an alarm about the state of THIS process, and a restart is one of the
+ * things an operator does about it.
+ *
+ * WHAT IT MEANS. Since #433 a registration whose on-chain event was already bound
+ * to another series cannot complete: the confirm throws on every retry, the
+ * pending marker is never cleared, and the only recovery is an operator restoring
+ * `onchain-events.json` by hand. That is strictly better than the silent theft it
+ * replaced, but it is invisible — the organiser sees a failing button and the
+ * server logs an exception among thousands. A count on `/api/health` is the
+ * difference between "somebody noticed" and "somebody noticed six weeks later".
+ */
+const rebindConflicts = new Set<string>();
+
+/**
+ * Record a wedged registration. Idempotent per key, so an organiser retrying the
+ * same series ten times is one alarm, not ten — the number has to mean "how many
+ * series are stuck", or nobody can act on it.
+ */
+export function noteRebindConflict(eventId: string, seriesId: string): void {
+  const k = key(eventId, seriesId);
+  if (rebindConflicts.has(k)) return;
+  const first = rebindConflicts.size === 0;
+  rebindConflicts.add(k);
+  // Transition-only, the same rule as lib/health/probes.ts `noteVerdict`: one line
+  // when the verdict crosses, nothing on the ticks in between. A line per retry is
+  // a line nobody reads by the second day. Per-conflict detail is already in the
+  // route's own error log; this one says an operator has work to do.
+  if (first) {
+    console.error(
+      "[onchain-registry] ALARM: a series' registration is wedged behind a rebind conflict — " +
+      "its confirm can never complete and its pending marker will not clear. " +
+      "See /api/health onchainRegistry, and the register-on-chain errors for which one (#434)",
+    );
+  }
+}
+
+/**
+ * `/api/health` section. Counts and a boolean ONLY — the endpoint is public, so
+ * no event ids, no series ids, no error text.
+ */
+export function onchainRegistryHealth(): { ok: boolean; rebindConflicts: number } {
+  return { ok: rebindConflicts.size === 0, rebindConflicts: rebindConflicts.size };
 }
 
 /**
@@ -438,6 +531,15 @@ export function indexWalkedRegistrations(
       );
     }
   }
+}
+
+/**
+ * TEST SEED for `byManifestRef` — the only way to reach tier 3 without a chain
+ * walk, which `mock.module` cannot stub under the tsx loader. Same `_…ForTests`
+ * shape as `_resetChainEndMemoForTests`. Never called by runtime code.
+ */
+export function _seedManifestIndexForTests(walked: Array<{ id: string; manifestRef?: string | null }>): void {
+  indexWalkedRegistrations(byManifestRef, walked);
 }
 
 /**
@@ -634,6 +736,25 @@ export async function applyOnChainEventIds(feed: EventFeed): Promise<EventFeed> 
     // server resolve the victim's id and PERSIST it as its own record — after
     // which the tier-1 comparison above agrees with the forgery forever,
     // because the record it trusts is the forged one (#424).
+    // The same question asked of registrations that have NOT landed in the record
+    // yet (#434). `findKeyBoundTo` can only see a binding that exists, and the
+    // record is written by `confirmSeriesOnChain` AFTER the tx mines — so between
+    // the mining and the confirm the victim's on-chain event is bound to nobody,
+    // and this tier would happily hand it to whoever names the manifestRef first.
+    // A pending marker is the server's own evidence that a registration for this
+    // digest is in flight for somebody else's series, and it is evidence a
+    // creator cannot write. Refusing costs the honest case nothing: the marker is
+    // cleared the moment the confirm completes, after which tier 1/2 answers.
+    const pendingElsewhere = findPendingKeyByManifestRef(s.manifestRef!);
+    if (pendingElsewhere && pendingElsewhere !== key(feed.eventId, s.seriesId)) {
+      console.error(
+        `[onchain-registry] REFUSED to bind on-chain event ${id.slice(0, 10)}… to ` +
+        `${feed.eventId.slice(0, 8)}/${s.seriesId.slice(0, 8)} — a registration for the same ` +
+        `manifestRef is in flight for ${pendingElsewhere} (see #434)`,
+      );
+      continue;
+    }
+
     const boundElsewhere = findKeyBoundTo(id);
     if (boundElsewhere && boundElsewhere !== key(feed.eventId, s.seriesId)) {
       console.error(

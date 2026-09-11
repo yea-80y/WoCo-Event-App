@@ -159,3 +159,62 @@ test("a proven-dead intent clears and a fresh broadcast completes the registrati
   assert.equal(h.calls.broadcasts, 1);
   assert.equal(h.pending.size, 0);
 });
+
+// ── #434: the marker carries the digest, and a receipt outranks it ────────────
+
+test("both journal phases record the manifestRef the registration is FOR (#434)", async () => {
+  // The marker is what lets the tier-3 fill see that an on-chain event resolved
+  // by manifestRef belongs to a registration in flight for another series. If
+  // register-once stops passing it, the guard is disarmed with nothing failing.
+  const seen: Array<{ phase: string; manifestRef?: string }> = [];
+  const h = harness({
+    recordIntent: (_e, _s, _r, manifestRef) => seen.push({ phase: "intent", manifestRef }),
+    recordPending: (_e, _s, _tx, manifestRef) => seen.push({ phase: "upgrade", manifestRef }),
+  });
+
+  await registerSeriesExactlyOnce({ ...PARAMS, eventId: "evt-marker", seriesId: "ser-marker" }, h.deps);
+
+  assert.deepEqual(seen, [
+    { phase: "intent", manifestRef: PARAMS.manifestRef },
+    { phase: "upgrade", manifestRef: PARAMS.manifestRef },
+  ]);
+});
+
+test("a marker WITH a receipt is resolved by the receipt, never by the manifest (#434)", async () => {
+  // The second door in #434. `byManifestRef` is first-writer-wins over a public,
+  // creator-supplied digest, so an attacker who registered a COPY of this
+  // series' manifest EARLIER is the entry the manifest lookup returns. Adopting
+  // it would bind their on-chain event to this series and wedge the real
+  // registration behind a RegistrationRebindError forever. A receipt cannot be
+  // raced: it names the event OUR tx created.
+  let manifestConsulted = false;
+  const h = harness({
+    resolveRegisterTx: async () =>
+      ({ status: "registered" as const, onChainEventId: "0xfromreceipt", txHash: "0xtx9" }) as never,
+    resolveIntent: async () => {
+      manifestConsulted = true;
+      return { status: "registered" as const, onChainEventId: "0xfrommanifest" };
+    },
+  });
+  h.pending.set("evt-i|ser-i", { txHash: "0xtx9", nonce: 12, chainId: 421614, at: "then" });
+
+  const r = await registerSeriesExactlyOnce(PARAMS, h.deps);
+
+  assert.equal(r.status === "registered" && r.onChainEventId, "0xfromreceipt");
+  assert.equal(manifestConsulted, false, "a receipt-carrying marker consulted the manifest ladder");
+  assert.equal(h.calls.broadcasts, 0);
+});
+
+test("the resolver REFUSES a marker that carries a txHash rather than guessing (#434)", async () => {
+  // Unreachable from register-once today — it resolves those by receipt — so this
+  // pins the rule for the caller that does not exist yet. A loud, retryable
+  // refusal beats silently adopting a stranger's registration.
+  await assert.rejects(
+    resolveRegistrationIntent(
+      { nonce: 40, txHash: "0xtx" },
+      REF,
+      ladderDeps({ findByManifestRef: async () => "0xsomeone-elses" }),
+    ),
+    /resolve it by receipt/,
+  );
+});

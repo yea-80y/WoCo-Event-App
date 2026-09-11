@@ -53,6 +53,7 @@ import { apiBodyLimit } from "./lib/http/body-limit.js";
 import { agentCard, agentOpenApi, agentBaseUrl } from "./agent/discovery.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
 import { listEvents } from "./lib/event/service.js";
+import { onchainRegistryHealth } from "./lib/event/onchain-registry.js";
 import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
@@ -300,6 +301,15 @@ app.get("/api/health", (c) =>
       // stops resolving at once. WATCH ONLY; nothing here renews anything.
       parent: subEnsParentHealth(),
     },
+    // Wedged on-chain registrations (#434). Since #433 a registration whose
+    // on-chain event is already bound to another series can NEVER complete: the
+    // confirm throws on every retry, the pending marker never clears, and the fix
+    // is an operator restoring `onchain-events.json` and restarting. Refusing is
+    // right — the alternative was silent theft of another organiser's supply — but
+    // the failure was invisible: an organiser saw a button that did not work and
+    // the server logged an exception among thousands. `rebindConflicts` counts
+    // DISTINCT series stuck this way since boot, so a retry loop is one alarm.
+    onchainRegistry: onchainRegistryHealth(),
     // The profile-name ledger (#464). `loadFailed` means the file on
     // disk would not parse: the ledger is EMPTY, so every rename cooldown has
     // reset and the profile-name refusal at the binding points is off until each
