@@ -45,6 +45,22 @@ const CACHE_FILE = join(DATA_DIR, "onchain-events.json");
 
 /** `${eventId}|${seriesId}` → onChainEventId — the persisted hot-path cache. */
 const byEventSeries = new Map<string, string>();
+/**
+ * lowercased onChainEventId → `${eventId}|${seriesId}` — the INVERSE of
+ * `byEventSeries`, and nothing more.
+ *
+ * DERIVED STATE, NOT A SECOND STORE. It is rebuilt from `byEventSeries` in
+ * `ensureLoaded` and maintained by `recordOnChainEventId`, which is the only
+ * writer of either map. `onchain-events.json` keeps its exact persisted shape —
+ * adding a second file to keep in sync with a must-survive store would be a new
+ * way to lose the money path, and this index needs no durability: it is
+ * reconstructible from the map beside it in O(n) at boot.
+ *
+ * WHY IT EXISTS: #435 puts `findKeyBoundTo` on every event cache hit, and the
+ * linear scan it used to be was affordable only because it ran on the tier-3
+ * cold path.
+ */
+const keyByOnChainEventId = new Map<string, string>();
 /** lowercased on-chain manifestRef → onChainEventId — transient chain projection. */
 const byManifestRef = new Map<string, string>();
 
@@ -63,7 +79,15 @@ function ensureLoaded(): void {
   loaded = true;
   try {
     const obj = JSON.parse(readFileSync(CACHE_FILE, "utf-8")) as Record<string, string>;
-    for (const [k, v] of Object.entries(obj)) byEventSeries.set(k, v);
+    for (const [k, v] of Object.entries(obj)) {
+      byEventSeries.set(k, v);
+      // FIRST-WINS, matching the scan this index replaces: that scan returned the
+      // first key in insertion order, and a file written before #433 can hold two
+      // keys for one id. A silent change of WHICH key an old duplicate reports
+      // would change which series the strip below spares.
+      const lc = v.toLowerCase();
+      if (!keyByOnChainEventId.has(lc)) keyByOnChainEventId.set(lc, k);
+    }
     console.log(`[onchain-cache] Loaded ${byEventSeries.size} on-chain event ids from cache`);
   } catch {
     // No cache yet — it rebuilds from chain on demand.
@@ -147,6 +171,10 @@ export function recordOnChainEventId(eventId: string, seriesId: string, onChainE
   }
 
   byEventSeries.set(k, onChainEventId);
+  // The two maps move together or the reverse index lies — and a lying index
+  // answers `findKeyBoundTo` with null, which is the exact answer that lets a
+  // binding be stolen. Same statement, no await between them.
+  keyByOnChainEventId.set(onChainEventId.toLowerCase(), k);
   dirty = true;
   persist();
 }
@@ -168,16 +196,19 @@ export function recordOnChainEventId(eventId: string, seriesId: string, onChainE
 /**
  * The `eventId|seriesId` key already bound to this on-chain event, if any.
  *
- * Scans rather than keeping a reverse map: it runs only on the tier-3 cold-miss
- * path, never on the hot path, and the map is small enough that a second
- * persisted index would be more to keep correct than it is worth.
+ * HOT-PATH SAFE, and it has to be: #435 calls this once per series on EVERY
+ * event cache hit, not just on the tier-3 cold miss it was written for. It used
+ * to be a linear scan of `byEventSeries`, which was affordable exactly because
+ * of that cold-path-only claim — putting a scan on the read path would have made
+ * the strip cost grow with the number of registrations the platform has ever
+ * made. It is now an O(1) read of `keyByOnChainEventId`, which is derived from
+ * the same map and maintained by the same single writer, so the answer is
+ * identical to the scan's in every case (first-wins on a pre-#433 duplicate
+ * included).
  */
 export function findKeyBoundTo(onChainEventId: string): string | null {
-  const needle = onChainEventId.toLowerCase();
-  for (const [k, v] of byEventSeries) {
-    if (v.toLowerCase() === needle) return k;
-  }
-  return null;
+  ensureLoaded();
+  return keyByOnChainEventId.get(onChainEventId.toLowerCase()) ?? null;
 }
 
 export function lookupOnChainEventId(eventId: string, seriesId: string): string | null {
@@ -516,9 +547,21 @@ export async function findOnChainEventIdByManifestRef(manifestRef: string): Prom
  * routes/stripe.ts already refuses to charge for. So the usual outcome is heal,
  * and refuse is the floor — both safe, but do not rely on "it lands unset".
  *
- * TWO LIMITS, both real:
- *   · A series the server has no record for cannot be checked here. The money
- *     path carries a second, chain-backed check for that case.
+ * TWO STRIPS, NOT ONE (#435). The record lookup above is keyed on
+ * `${feed.eventId}|${s.seriesId}`, and BOTH halves of that key come out of the
+ * creator-signed SOC. `feed.eventId` is pinned to the id the feed was read under
+ * (#426), but `s.seriesId` is not pinned to anything — the creator picks it. So a
+ * creator who renames a series inside their own feed makes the lookup MISS, and a
+ * miss is indistinguishable from "the server has no record", which passes an id
+ * the server knows to be wrong straight through. The second strip therefore asks
+ * the question the other way round — WHO is this id bound to? — and that question
+ * does not care what the creator called the series.
+ *
+ * LIMITS, both real:
+ *   · A series the server has no record for, whose id is bound to nothing at all,
+ *     cannot be checked here. The money path carries a second, chain-backed check
+ *     for that case (routes/stripe.ts), and delete-safety takes its count at the
+ *     id the SERVER recorded rather than at the feed's (#435).
  *   · `byEventSeries` is NOT beyond a creator's reach. Tier 3 below resolves an
  *     id from the CREATOR-SUPPLIED `manifestRef` and persists it as a record —
  *     so a creator naming another series' manifestRef could otherwise have the
@@ -526,9 +569,6 @@ export async function findOnChainEventIdByManifestRef(manifestRef: string): Prom
  *     agree with it forever. That is why tier 3 refuses to bind an on-chain
  *     event already bound to a different series; without that guard, this tier
  *     is anchored on something the attacker can move.
- *   · The key uses `feed.eventId`, which is a field INSIDE the creator-signed
- *     SOC and is not validated against the id the feed was fetched under. A
- *     mislabelled SOC therefore misses the lookup. Tracked separately.
  */
 export async function applyOnChainEventIds(feed: EventFeed): Promise<EventFeed> {
   ensureLoaded();
@@ -537,13 +577,33 @@ export async function applyOnChainEventIds(feed: EventFeed): Promise<EventFeed> 
   // fill below so a stripped series can be re-filled with the correct id.
   for (const s of feed.series) {
     if (!s.onChainEventId) continue;
-    const recorded = byEventSeries.get(key(feed.eventId, s.seriesId));
+    const k = key(feed.eventId, s.seriesId);
+    const recorded = byEventSeries.get(k);
     if (recorded && recorded.toLowerCase() !== s.onChainEventId.toLowerCase()) {
       console.error(
         `[onchain-registry] REJECTED feed-supplied onChainEventId for ` +
         `${feed.eventId.slice(0, 8)}/${s.seriesId.slice(0, 8)}: feed says ` +
         `${s.onChainEventId.slice(0, 10)}… but this server registered ` +
         `${recorded.slice(0, 10)}… — dropping (see #424)`,
+      );
+      s.onChainEventId = undefined as unknown as typeof s.onChainEventId;
+      continue;
+    }
+
+    // The same rejection asked from the other end (#435). The check above can
+    // only fire when the lookup HITS, and `s.seriesId` is creator-chosen inside
+    // the signed SOC — so renaming the series makes the lookup miss and carries
+    // the wrong id through untouched. Asking who the ID is bound to does not care
+    // what the creator called the series. An id bound to nobody is left alone:
+    // see the LIMITS note above, and the consumers that read the server's own
+    // record instead of the feed's field.
+    const boundElsewhere = findKeyBoundTo(s.onChainEventId);
+    if (boundElsewhere && boundElsewhere !== k) {
+      console.error(
+        `[onchain-registry] REJECTED feed-supplied onChainEventId for ` +
+        `${feed.eventId.slice(0, 8)}/${s.seriesId.slice(0, 8)}: ` +
+        `${s.onChainEventId.slice(0, 10)}… is bound to ${boundElsewhere} — ` +
+        `dropping (a renamed seriesId dodging the record lookup, see #435)`,
       );
       s.onChainEventId = undefined as unknown as typeof s.onChainEventId;
     }

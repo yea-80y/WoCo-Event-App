@@ -10,6 +10,11 @@
  * ever have minted) ALLOWS, while a chain read that THROWS (RPC outage)
  * REFUSES with a retryable error. One inverted conditional would let an
  * outage delete a sold-out event, silently.
+ *
+ * #435 adds the other half: WHICH on-chain event is counted. The id now comes
+ * from the server's own registration record, never from the feed's
+ * `onChainEventId` — that field is creator-signed input, and pointing a sold
+ * series at an empty on-chain event made the count read zero.
  */
 
 import { test } from "node:test";
@@ -49,7 +54,9 @@ function onChain(nextSlot: bigint): OnChainEvent {
   };
 }
 
-/** Deps harness: verified-zero everywhere unless overridden; records chain reads. */
+/** Deps harness: verified-zero everywhere unless overridden; records chain reads.
+ *  `lookupOnChainEventId` stands in for the server's registration record — the
+ *  only source of the id that is counted (#435). */
 function harness(over: Partial<DeleteSafetyDeps> = {}) {
   const reads: Array<{ onChainEventId: string; chainId: number }> = [];
   const deps: DeleteSafetyDeps = {
@@ -59,6 +66,7 @@ function harness(over: Partial<DeleteSafetyDeps> = {}) {
     },
     getActiveChainId: () => CHAIN_ID,
     heldFor: () => 0,
+    lookupOnChainEventId: () => ONCHAIN_ID,
     ...over,
   };
   return { deps, reads };
@@ -104,7 +112,7 @@ test("a THROWING chain read refuses — an RPC outage is never read as zero clai
 });
 
 test("series with no on-chain record → blocked; there is no ledger to consult", async () => {
-  const { deps, reads } = harness();
+  const { deps, reads } = harness({ lookupOnChainEventId: () => null });
   await assert.rejects(
     assertNoOrders(EVENT_ID, [series({ onChainEventId: undefined })], deps),
     (err: unknown) => {
@@ -143,6 +151,8 @@ test("blockers accumulate across series — the 409 reports every reason", async
   const claimedId = `0x${"cd".repeat(32)}`;
   const { deps } = harness({
     getOnChainEvent: async (id) => onChain(id === claimedId ? 5n : 0n),
+    lookupOnChainEventId: (_eventId, seriesId) =>
+      seriesId === "ser-1" ? null : seriesId === "ser-2" ? claimedId : ONCHAIN_ID,
     // Asserting the event id here is the point: without it a wrong constant
     // threaded through assertNoOrders would pass unnoticed (#377).
     heldFor: (eventId, seriesId) => {
@@ -177,6 +187,7 @@ test("a transport failure aborts outright — never demoted to one blocker among
     getOnChainEvent: async () => {
       throw new Error("timeout");
     },
+    lookupOnChainEventId: (_eventId, seriesId) => (seriesId === "ser-1" ? null : ONCHAIN_ID),
   });
   const all = [
     series({ seriesId: "ser-1", name: "Unregistered", onChainEventId: undefined }),
@@ -188,4 +199,74 @@ test("a transport failure aborts outright — never demoted to one blocker among
     assert.equal(err.message, "Could not verify order status — try again");
     return true;
   });
+});
+
+// ---------------------------------------------------------------------------
+// #435 — the count is taken at the RECORDED id, never the feed's
+// ---------------------------------------------------------------------------
+
+test("#435: a feed pointing a SOLD series at an empty on-chain event still blocks", async () => {
+  // The attack this closes. The feed is the creator's client-signed SOC, so
+  // `onChainEventId` is input: point a sold-out series at an on-chain event with
+  // nothing minted and the old code counted zero and allowed the delete —
+  // orphaning every paid ticket. The count must come from the server's record.
+  const EMPTY_ID = `0x${"ee".repeat(32)}`;
+  const seen: string[] = [];
+  const { deps } = harness({
+    getOnChainEvent: async (id) => {
+      seen.push(id);
+      return onChain(id === ONCHAIN_ID ? 7n : 0n);
+    },
+    lookupOnChainEventId: () => ONCHAIN_ID,
+  });
+
+  await assert.rejects(
+    assertNoOrders(EVENT_ID, [series({ onChainEventId: EMPTY_ID })], deps),
+    (err: unknown) => {
+      assert.ok(err instanceof DeleteBlockedError);
+      assert.deepEqual(err.blockers, [`"General": 7 ticket(s) issued`]);
+      return true;
+    },
+  );
+  // And the ledger was consulted at the recorded id, not the feed's — an assert
+  // on the blocker alone would also pass if the feed id happened to read 7.
+  assert.deepEqual(seen, [ONCHAIN_ID]);
+});
+
+test("#435: a feed id the server has NO record for blocks, and never reaches the chain", async () => {
+  // The renamed-series case from the strip: the id may be perfectly real and
+  // belong to somebody else. Unverifiable is not zero.
+  const { deps, reads } = harness({ lookupOnChainEventId: () => null });
+
+  await assert.rejects(
+    assertNoOrders(EVENT_ID, [series({ onChainEventId: `0x${"fa".repeat(32)}` })], deps),
+    (err: unknown) => {
+      assert.ok(err instanceof DeleteBlockedError);
+      assert.match(err.blockers[0], /no on-chain record/);
+      return true;
+    },
+  );
+  assert.equal(reads.length, 0, "a foreign feed id must not be read as this series' ledger");
+});
+
+test("#435: a recorded series with a MISSING feed id is still counted", async () => {
+  // The mirror: the record is what matters, so a feed that carries no id at all
+  // is neither blocked for that reason nor waved through. It is counted.
+  const seen: string[] = [];
+  const { deps } = harness({
+    getOnChainEvent: async (id) => {
+      seen.push(id);
+      return onChain(2n);
+    },
+  });
+
+  await assert.rejects(
+    assertNoOrders(EVENT_ID, [series({ onChainEventId: undefined })], deps),
+    (err: unknown) => {
+      assert.ok(err instanceof DeleteBlockedError);
+      assert.deepEqual(err.blockers, [`"General": 2 ticket(s) issued`]);
+      return true;
+    },
+  );
+  assert.deepEqual(seen, [ONCHAIN_ID]);
 });
