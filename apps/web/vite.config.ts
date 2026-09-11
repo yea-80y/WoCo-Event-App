@@ -2,9 +2,28 @@ import { defineConfig, loadEnv } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { nodePolyfills } from 'vite-plugin-node-polyfills'
 import { cspInject } from './vite-plugins/csp'
+import { resolveWeb3AuthNetwork, WEB3AUTH_NETWORK_ENV_VAR } from './src/lib/auth/web3auth-network'
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
+
+  // 🔴 Fail the BUILD, not the user's sign-in (#244). The network is an input to
+  // every Web3Auth account's key derivation, and `apps/web/.env` is gitignored —
+  // so a fresh clone, a git worktree or a CI runner has no value for it at all,
+  // and a typo'd one ("sapphire-mainnet") reads as configured. Before this gate
+  // either case shipped a bundle pointed at devnet that looked exactly like the
+  // mainnet one. Refusing here is the only place the mistake is cheap.
+  //
+  // Gated on the clientId because that is what says "this build ships Web3Auth
+  // login": with no clientId the SDK is never constructed (web3auth-account.ts
+  // `_getInstance` returns null) and there is nothing to point at a network.
+  // `command === 'build'` only — `vite dev` must stay startable without env.
+  // Same validator the browser runs, imported from a plain .ts module so the two
+  // cannot drift. The site/multisite/scanner bundles have their own configs and
+  // ship no Web3Auth login surface, so they are deliberately not gated here.
+  if (command === 'build' && env.VITE_WEB3AUTH_CLIENT_ID) {
+    resolveWeb3AuthNetwork(env[WEB3AUTH_NETWORK_ENV_VAR])
+  }
 
   // Dev: proxy to local server. Production API is set via VITE_API_URL at build time.
   const apiTarget = env.VITE_DEV_API_URL || 'http://localhost:3001'
