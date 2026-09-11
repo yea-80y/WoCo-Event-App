@@ -58,6 +58,7 @@ import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-re
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
+import { startHealthProbes, paymasterHealth, postageHealth } from "./lib/health/probes.js";
 import { persistHealth } from "./lib/marketing/persist.js";
 import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.js";
 import { checkMarketingSenderConfig, marketingSenderHealth } from "./lib/email/client.js";
@@ -265,6 +266,22 @@ app.get("/api/health", (c) =>
     // refused writes with 503 — either an attack on the postage batch or a
     // client stuck in a write loop. Per-bucket refusal counts are statistics.
     swarmRelay: socRelayHealth(),
+    // Postage (#421). Three batches died or nearly died in five weeks and every
+    // one was found by hand: a dead batch does not fail an upload, it accepts it
+    // and never pays for the chunks. `bee.checks.ttl` false is "top up now";
+    // `bee.checks.utilization` false is "dilute now" — the batch is mutable, so a
+    // full bucket overwrites older chunks silently. `chain` is the confidence
+    // interval on the other two: a bee behind the postage contract answers every
+    // question from stale state. `null` anywhere means the probe could not read,
+    // which is deliberately NOT the same as healthy. Batch ids are truncated.
+    postage: postageHealth(),
+    // The self-funded ZeroDev paymaster's EntryPoint deposit (#522). Empty means
+    // every Kernel userOp — recovery setup, backup changes, name discard, a
+    // guardian's recovery — fails with "temporarily unavailable", and the server
+    // never sees those ops, so this public on-chain read is the only warning
+    // available. Addresses and a balance only; the monthly policy caps are a
+    // SECOND ceiling this cannot see (see `note`).
+    paymaster: paymasterHealth(),
     // The self-hosted CCIP-Read gateway (#419). `signer` must equal
     // L1Resolver.signer() on L1 — if this address changes and the resolver is
     // not updated, every *.woco.eth name stops resolving.
@@ -683,6 +700,11 @@ startSnapshotMaintenance();
 // not a degraded feature. See docs/PAYOUTS.md.
 startPayoutReleaseJob();
 startPendingRefundRetryJob(liveRefundGateway);
+// Postage batches and the paymaster deposit both fail SILENTLY and both are
+// readable from here, so they are polled in the background and served from cache
+// — /api/health must stay instant even when the bee or the RPC is the thing that
+// is broken (#421, #522).
+startHealthProbes();
 // Broadcast recipients are encrypted at rest under a key held only in the
 // process that wrote them, so a restart leaves ciphertext nobody can open. Wipe
 // it, mark the jobs that were in flight `died`, and hand back their daily-cap
