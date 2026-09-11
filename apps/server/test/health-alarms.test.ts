@@ -264,6 +264,31 @@ test("a bee that cannot be reached leaves the batch UNKNOWN, not healthy and not
   assert.equal(s.ok, null, "unknown must not roll up as healthy");
 });
 
+/**
+ * LIVE, 2026-09-11: the configured Etherna platform batch answered 404 — its
+ * 7-day stamp from 2026-08-29 had expired, and every site deploy since was
+ * accepted and unpaid. A node saying "no such batch" is evidence, not a failed
+ * read, and the batch deaths of 2026-07-19 and 2026-07-27 read exactly this way.
+ */
+test("a 404 for a batch WE configured is an alarm, not an unknown", async () => {
+  process.env.ETHERNA_PLATFORM_BATCH = BATCH;
+  process.env.ETHERNA_API_KEY = "id.secret";
+  const notFound = () => { throw Object.assign(new Error("GET /stamps/x → 404: not found"), { status: 404 }); };
+  await probes.refreshPostage(readers({ beeStamp: async () => notFound(), ethernaStamp: async () => notFound() }), silent);
+  const s = probes.postageHealth();
+  assert.equal(s.bee.ok, false);
+  assert.equal(s.bee.checks.ttl.ok, false);
+  assert.match(s.bee.reason ?? "", /not found/);
+  assert.equal(s.etherna.ok, false);
+  assert.equal(s.ok, false);
+  // A 5xx or a network failure is still an unknown — only 404 is a statement.
+  await probes.refreshPostage(
+    readers({ beeStamp: async () => { throw Object.assign(new Error("x"), { status: 503 }); } }),
+    silent,
+  );
+  assert.equal(probes.postageHealth().bee.ok, null);
+});
+
 test("a 200 that is not a stamp is UNKNOWN too — a partial answer must not produce a verdict", async () => {
   await probes.refreshPostage(readers({ beeStamp: async () => ({ usable: true }) }), silent);
   const s = probes.postageHealth();
@@ -404,7 +429,7 @@ test("library error text never reaches the public sections — only the server l
   assert.ok(!published.includes(BODY), "an upstream response body must never reach the response");
   assert.equal(pm.error, "rpc SERVER_ERROR");
   assert.equal(pm.ok, null);
-  assert.equal(pg.bee.error, "HTTP 404");
+  assert.match(pg.bee.error ?? "", /^HTTP 404/);
   assert.equal(pg.chain.reason, "timed out");
   assert.equal(pg.etherna.error, "HTTP 401");
   // The operator still gets the raw text — once, on the crossing, in the log.
