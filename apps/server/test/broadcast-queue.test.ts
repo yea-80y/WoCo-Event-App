@@ -176,7 +176,7 @@ describe("draining", () => {
     });
 
     assert.equal(existsSync(join(CHUNKS_DIR(), `${job.id}.0.bin`)), false, "chunk destroyed");
-    // Read the file back, not the in-memory object: the point is that it landed.
+    // Read the file back, not the in-memory object — the point is that it landed.
     const onDisk = JSON.parse(
       readFileSync(join(process.cwd(), ".data", "broadcast-jobs", `${job.id}.json`), "utf-8"),
     ) as { sentHashes: string[]; nextChunk: number; state: string };

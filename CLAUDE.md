@@ -46,7 +46,7 @@ STACK & STRUCTURE
 
 apps/web/              # Vite + Svelte main platform UI
 apps/server/           # Hono API server (Swarm relay + auth)
-packages/shared/       # Shared types, POD schema, constants (single source of truth)
+packages/shared/       # Shared types, object schema, constants (single source of truth)
 packages/embed/        # <woco-tickets> (IIFE 51KB, guest Stripe checkout) + <woco-lap-count> (42KB, separate bundle)
 contracts/             # WoCoEscrow.sol + deploy scripts
 
@@ -108,9 +108,9 @@ Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
 3. Identity SEED (32 bytes, keccak256 of ONE deterministic EIP-712 signature under
    "WoCo Account Keys" / `DeriveAccountKeys`) — NOT a key: the HKDF root for 4, 5 and the
    X25519 encryption key. A fresh device therefore needs TWO signatures total: the session
-   delegation and this. `ensurePodIdentity()` returns a
+   delegation and this. `ensureIdentitySeed()` returns a
    BOOLEAN (is the seed available), never a public key. The ed25519 HOLDER key it used to
-   derive is GONE from every launch path (#518): `creatorPodKey` and `podPubKey` are deleted
+   derive is GONE from every launch path (#518): `creatorObjectKey` and `holderPubKey` are deleted
    end to end, and no auth surface holds an ed25519 key. Two OUT-OF-LAUNCH-SCOPE rails still
    specify the curve in frozen formats (`woco.credit.v1` holderSig, `woco.cert-challenge.v1`)
    and derive it lazily from the seed themselves — `apps/web/src/lib/credits/holder-key.ts`,
@@ -131,10 +131,15 @@ Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
    fork the feeds because it cannot change the seed. Never falls back to platform signing.
    Coinbase Smart Wallet stays parked (non-deterministic 1271 ⇒ no reproducible seed).
 
-NAMING (owner decision, 2026-09-01): "POD" is retired from docs and code names — the
-standard is "object data"; code speaks editions / certs / holder identity. FROZEN signed
-literals (domains, salts, `woco/pod/*` topics, the "POD seed" storage key) keep their
-exact bytes — only names and copy changed.
+NAMING (owner decision, extended 2026-09-10): the retired noun is gone from every code
+name, file name and wire literal, so a real 0xPARC POD integration would arrive into an
+empty namespace. The product noun is **object** (never a bare `object`/`Object`
+identifier — always compounded: `ObjectKind`, `objectEntry`, `objectsRouter`), and the
+key material is the **identity seed**. Topics are `woco/object/*`, routes `/api/objects`
+and `/creator/objects`, storage keys `woco:auth:identity-seed` / `woco:auth:seed-address`.
+`packages/shared/test/no-pod-source.test.ts` fails CI on any reintroduction, and on any
+bare `object`/`Object` declaration. The ONE thing frozen through it all is the account-keys
+EIP-712 message (`ACCOUNT_KEYS_*`), which was renamed separately on 2026-09-10.
 
 Login methods. AUTHORITATIVE LIST = `AuthKind` in `packages/shared/src/auth/types.ts`
 (`"web3" | "passkey" | "web3auth" | "coinbase" | "zupass" | "none"`) — read it there.
@@ -148,7 +153,7 @@ Deferred signing: login just connects; the signatures are asked for on the first
 that needs them, through ONE entry point — `auth.ensureAccountSetup({ identity })`, which
 plans the outstanding steps (`lib/auth/account-setup-plan.ts`) and, for external wallets
 only, explains them first via `AccountSetupSheet`. Never call `ensureSession()` +
-`ensurePodIdentity()` in sequence at a call site and never count the prompts: how many a
+`ensureIdentitySeed()` in sequence at a call site and never count the prompts: how many a
 person sees depends on the login kind (passkey/web3auth sign the session silently) and on
 what is already on the device. `ensureIssuingKey()` (`lib/auth/issuing-key.ts`) wraps the
 seed + derivation — FAIL LOUD when no seed, never another signer.
@@ -191,7 +196,7 @@ FEED TOPICS:
   woco/event/directory                    # Global event listing
   woco/event/{eventId}                    # Event details + ticket series
   woco/event/creator/{ethAddress}         # Per-organiser event index (never deleted from)
-  woco/pod/collection/{ethAddress}        # User's collection
+  woco/object/collection/{ethAddress}     # User's collection
   woco/recovery/{kernelAddress}[...]      # Recovery escrow + status + by-guardian hint (see topics.ts)
   woco/issuer/{parentAddress}             # Issuer-registry statement log (parent-signed)
   woco/profile/data/{ethAddress}          # User profile
@@ -340,7 +345,7 @@ AUTH (frontend):
   apps/web/src/lib/auth/login-request.svelte.ts      # global login popup trigger
   apps/web/src/lib/auth/signing-request.svelte.ts    # EIP-712 confirm dialog trigger
   apps/web/src/lib/auth/session-delegation.ts        # session key + delegation
-  apps/web/src/lib/auth/pod-identity.ts              # identity-seed derivation + AAD-bound storage
+  apps/web/src/lib/auth/identity-seed.ts             # identity-seed derivation + AAD-bound storage
   apps/web/src/lib/credits/holder-key.ts             # ed25519 holder key — credits/cert rails ONLY, dynamic import
   apps/web/src/lib/auth/issuing-key.ts               # ensureIssuingKey() — fail-loud wrapper
   apps/web/src/lib/auth/ensure-action.ts             # requireAccountForAction() gate
@@ -436,7 +441,7 @@ SECURITY / AUTH:
   like UI copy and is not) and every account derives a different seed: sealed orders stop
   decrypting, issuer identities move, and every content SOC is orphaned under an address
   nothing looks at. `apps/web/test/identity-vectors.test.ts` fails on a one-byte change.
-  They were renamed FROM `POD_IDENTITY_*` / "WoCo POD Identity" on 2026-09-10 — a deliberate
+  They were renamed off their retired predecessors on 2026-09-10 — a deliberate
   pre-launch break, salt deliberately unchanged
 - Canonical challenge relies on raw body bytes: server MUST use `c.req.text()` BEFORE any
   parse/re-stringify, and the client must hash the exact bytes it sends

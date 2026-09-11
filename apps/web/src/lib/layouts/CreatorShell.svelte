@@ -30,7 +30,7 @@
     router.route === "embed-setup"
   );
   const isSites = $derived(router.route === "build" || router.route === "site-builder");
-  const isPods = $derived(router.route === "creator-pods");
+  const isObjects = $derived(router.route === "creator-objects");
   const isProfile = $derived(router.route === "profile");
 
   let createOpen = $state(false);
@@ -112,8 +112,8 @@
     </button>
     <button
       class="bottom-nav-item"
-      class:active={isPods}
-      onclick={() => navigate("/creator/pods")}
+      class:active={isObjects}
+      onclick={() => navigate("/creator/objects")}
     >
       <span class="nav-icon"><Layers size={20} strokeWidth={2.25} /></span>
       <span class="nav-label">Objects</span>
@@ -148,7 +148,7 @@
         <span class="opt-ic"><Monitor size={16} strokeWidth={2.25} /></span>
         <span class="opt-text"><strong>New website</strong><small>Multi-page site builder</small></span>
       </button>
-      <button class="create-opt" role="menuitem" onclick={() => create("/creator/pods")}>
+      <button class="create-opt" role="menuitem" onclick={() => create("/creator/objects")}>
         <span class="opt-ic"><Layers size={16} strokeWidth={2.25} /></span>
         <span class="opt-text"><strong>New object</strong><small>Badge, drop, or access pass</small></span>
       </button>

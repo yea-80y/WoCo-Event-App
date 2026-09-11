@@ -88,7 +88,7 @@ export interface CreditStatementV1 {
   format: typeof CREDIT_STATEMENT_FORMAT;
   /** keccak256(CREDIT_SUBJECT_DOMAIN + ulid), 0x-prefixed lowercase. */
   subject: Hex0x;
-  /** Rider's ed25519 POD public key (hex, no 0x) — the owner-of-record, the
+  /** Rider's ed25519 object public key (hex, no 0x) — the owner-of-record, the
    *  same identity as `ClaimedTicket.owner`. Chosen over the feed key for
    *  key-exposure containment: the feed signer is deliberately low-stakes,
    *  escrowed, and effectively unrotatable. */
@@ -246,7 +246,7 @@ export function creditStatementDigest(unsigned: UnsignedCreditStatementV1): Uint
   return statementSigningDigest(CREDIT_SIGNING_PREFIX, canonicalUnsigned(unsigned));
 }
 
-/** Sign as `holder`. `holderPrivKey` is the rider's 32-byte ed25519 POD
+/** Sign as `holder`. `holderPrivKey` is the rider's 32-byte ed25519 object
  *  private key; the statement's `holder` MUST be its public key. */
 export function signCreditStatement(
   unsigned: UnsignedCreditStatementV1,

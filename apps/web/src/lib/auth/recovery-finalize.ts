@@ -23,11 +23,11 @@ import type { SessionProbeResult } from "./session-probe.js";
  *  with auth-store's mint-time backfill so both callers feed the SAME preamble. */
 export interface BackfillGatherDeps {
   getPasskeyPrivKey: () => string | null;
-  /** PRF-EOA address — the key the POD seed and recovery binding are stored under. */
-  getPodAddress: () => string | null;
+  /** PRF-EOA address — the key the identity seed and recovery binding are stored under. */
+  getSeedAddress: () => string | null;
   /** The preserved Kernel address bound to this passkey at recovery time. */
-  recoveryKernelFor: (podAddress: string) => Promise<`0x${string}` | undefined>;
-  restorePodSeed: (podAddress: string) => Promise<string | null>;
+  recoveryKernelFor: (seedAddress: string) => Promise<`0x${string}` | undefined>;
+  restoreIdentitySeed: (seedAddress: string) => Promise<string | null>;
 }
 
 export interface RecoveryFinalizeDeps extends BackfillGatherDeps {
@@ -123,8 +123,8 @@ export type BackfillGather =
  */
 export async function gatherBackfillArgs(deps: BackfillGatherDeps): Promise<BackfillGather> {
   const passkeyPrivKey = deps.getPasskeyPrivKey();
-  const podAddress = deps.getPodAddress();
-  if (!passkeyPrivKey || !podAddress) {
+  const seedAddress = deps.getSeedAddress();
+  if (!passkeyPrivKey || !seedAddress) {
     return {
       status: "unavailable",
       reason: "passkey key material not in memory",
@@ -135,7 +135,7 @@ export async function gatherBackfillArgs(deps: BackfillGatherDeps): Promise<Back
 
   let preserved: `0x${string}` | undefined;
   try {
-    preserved = await deps.recoveryKernelFor(podAddress);
+    preserved = await deps.recoveryKernelFor(seedAddress);
   } catch (e) {
     return {
       status: "unavailable",
@@ -153,9 +153,9 @@ export async function gatherBackfillArgs(deps: BackfillGatherDeps): Promise<Back
     };
   }
 
-  let podSeed: string | null;
+  let identitySeed: string | null;
   try {
-    podSeed = await deps.restorePodSeed(podAddress);
+    identitySeed = await deps.restoreIdentitySeed(seedAddress);
   } catch (e) {
     return {
       status: "unavailable",
@@ -164,13 +164,13 @@ export async function gatherBackfillArgs(deps: BackfillGatherDeps): Promise<Back
       stage: "envelope",
     };
   }
-  if (!podSeed) {
+  if (!identitySeed) {
     return { status: "unavailable", reason: "identity seed absent", retryable: false, stage: "envelope" };
   }
 
   return {
     status: "ready",
-    args: { passkeyPrivKey, preservedKernelAddress: preserved, podSeed },
+    args: { passkeyPrivKey, preservedKernelAddress: preserved, identitySeed },
   };
 }
 

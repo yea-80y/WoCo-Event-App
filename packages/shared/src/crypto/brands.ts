@@ -26,7 +26,7 @@ export type HolderPubkey = Brand<string, "HolderPubkey">;
 export type EncryptionPubkey = Brand<string, "EncryptionPubkey">;
 // `IssuerPubkeyV1` (the branded ed25519 v1 issuer key) was DELETED in PR 4
 // with the web v1 producers — its removal forced the issuer-site audit exactly
-// where the curve changed. The surviving v1 VERIFY paths (`pod/` + `pod-cert/`,
+// where the curve changed. The surviving v1 VERIFY paths (the retired v1 modules,
 // condemned, deleted in PR 5a) carry plain `string` issuer keys until then.
 /** 0x-prefixed lowercase 20-byte eth address — the v2 issuer identity unit. */
 export type IssuerAddress = Brand<string, "IssuerAddress">;

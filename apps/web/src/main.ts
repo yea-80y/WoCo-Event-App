@@ -13,7 +13,7 @@ if (import.meta.env.DEV) {
     (window as unknown as { wocoDebug: unknown }).wocoDebug = {
       getContentFeedSignerAddress: () => auth.getContentFeedSignerAddress(),
       parent: () => auth.parent,
-      podAddress: () => auth.podAddress,
+      seedAddress: () => auth.seedAddress,
     };
   });
 }

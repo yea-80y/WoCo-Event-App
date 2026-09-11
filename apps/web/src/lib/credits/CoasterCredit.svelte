@@ -209,7 +209,7 @@
         // race — the keys are fine and the count on screen may be stale — but
         // the write can also have failed BECAUSE the rider declined the key
         // ceremony, and a bare re-read then walks straight back into
-        // `ensurePodIdentity` and re-opens the prompt they just dismissed.
+        // `ensureIdentitySeed` and re-opens the prompt they just dismissed.
         // Asking first costs one device read and never prompts.
         unlocked = await creditsUnlocked();
         if (unlocked) await refresh();

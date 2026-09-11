@@ -60,23 +60,23 @@ export function deriveEncryptionKeypair(seedHex: string): {
 }
 
 /**
- * Derive an X25519 encryption keypair from an existing POD identity seed.
+ * Derive an X25519 encryption keypair from an existing identity seed seed.
  *
  * Uses HKDF to derive a cryptographically independent encryption key
- * from the POD signing seed — zero additional wallet popups required.
- * Same wallet → same POD seed → same encryption keypair on any device.
+ * from the identity seed — zero additional wallet popups required.
+ * Same wallet → same identity seed → same encryption keypair on any device.
  *
- * @param podSeedHex - The POD identity seed (keccak256 of EIP-712 signature)
+ * @param identitySeedHex - The identity seed seed (keccak256 of EIP-712 signature)
  */
-export function deriveEncryptionKeypairFromPodSeed(podSeedHex: string): {
+export function deriveEncryptionKeypairFromSeed(identitySeedHex: string): {
   privateKey: Uint8Array;
   publicKey: Uint8Array;
   publicKeyHex: string;
 } {
-  const podSeed = hexToBytes(
-    podSeedHex.startsWith("0x") ? podSeedHex.slice(2) : podSeedHex,
+  const identitySeed = hexToBytes(
+    identitySeedHex.startsWith("0x") ? identitySeedHex.slice(2) : identitySeedHex,
   );
-  const encSeed = hkdf(sha256, podSeed, new Uint8Array(0), ENCRYPTION_INFO_BYTES, 32);
+  const encSeed = hkdf(sha256, identitySeed, new Uint8Array(0), ENCRYPTION_INFO_BYTES, 32);
   const publicKey = x25519.getPublicKey(encSeed);
 
   return {

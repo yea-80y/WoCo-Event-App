@@ -15,9 +15,9 @@ const read = (p: string) => readFileSync(fileURLToPath(new URL(p, import.meta.ur
 const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
 const ISSUE = strip(read("../src/lib/cert/issue.ts"));
-const MODAL_RAW = read("../src/lib/components/pod/CertIssueModal.svelte");
+const MODAL_RAW = read("../src/lib/components/object/CertIssueModal.svelte");
 const MODAL = strip(MODAL_RAW);
-const DRAWER = read("../src/lib/components/pod/PodEditDrawer.svelte");
+const DRAWER = read("../src/lib/components/object/ObjectEditDrawer.svelte");
 
 // ---------------------------------------------------------------------------
 // #1 — an upload that THROWS must become a stop, not an escaping rejection
@@ -66,14 +66,14 @@ function zIndexes(src: string): number[] {
 }
 
 test("the award modal stacks ABOVE the drawer that opens it", () => {
-  // At the modal default of 90/91 it rendered BEHIND PodEditDrawer (200/201) —
+  // At the modal default of 90/91 it rendered BEHIND ObjectEditDrawer (200/201) —
   // invisible, while still capturing the run. Nothing in a unit test or a
   // typecheck can see this; only stacking arithmetic can.
   const modalMax = Math.max(...zIndexes(MODAL_RAW));
   const drawerMax = Math.max(...zIndexes(DRAWER));
   assert.ok(
     modalMax > drawerMax,
-    `award modal (${modalMax}) must stack above PodEditDrawer (${drawerMax})`,
+    `award modal (${modalMax}) must stack above ObjectEditDrawer (${drawerMax})`,
   );
 });
 

@@ -1,7 +1,7 @@
 /**
  * Event create no longer asks for — or keeps — a creator holder key (#518).
  *
- * `creatorPodKey` was a REQUIRED field: a missing one was a 400, and the value
+ * `creatorObjectKey` was a REQUIRED field: a missing one was a 400, and the value
  * was stamped onto the stored `EventFeed` where nothing ever read it back. It
  * was the ed25519 holder public key, which signs nothing on any issuance path
  * (manifests are signed by the secp256k1 issuing key), so it bought exactly one
@@ -12,7 +12,7 @@
  *  1. BEHAVIOURAL, over real HTTP with a real session delegation: a create
  *     carrying no holder key must get PAST the missing-field gate. Proved by
  *     landing on the NEXT validation's own, distinct 400 — no Swarm, no chain,
- *     no upload. MUTATION: put `!creatorPodKey ||` back in the route's image
+ *     no upload. MUTATION: put `!creatorObjectKey ||` back in the route's image
  *     guard and this goes red on the error string.
  *
  *  2. STRUCTURAL, over the two files that assemble and persist the feed: neither
@@ -124,11 +124,11 @@ test("a create with NO holder key gets past the required-field gate", async () =
   const { status, error } = await post(bodyStoppingAtTags());
   assert.equal(status, 400, "the tags gate is the intended stop");
   assert.match(error ?? "", /tags must be an array/);
-  assert.doesNotMatch(error ?? "", /creatorPodKey/i, "the field must not be required any more");
+  assert.doesNotMatch(error ?? "", /creatorObjectKey/i, "the field must not be required any more");
 });
 
 test("the missing-image refusal no longer names a holder key", async () => {
-  // The old message was "Missing creatorPodKey or image", so a client debugging a
+  // The old message was "Missing creatorObjectKey or image", so a client debugging a
   // genuinely missing image was pointed at a field that no longer exists.
   const b = bodyStoppingAtTags();
   delete (b as { image?: string }).image;
@@ -140,7 +140,7 @@ test("the missing-image refusal no longer names a holder key", async () => {
 test("a legacy client still sending one is not refused for it", async () => {
   // Behaviour must be IDENTICAL with the field present — an old cached bundle
   // keeps sending it and must not start failing.
-  const { status, error } = await post(bodyStoppingAtTags({ creatorPodKey: "0x" + "aa".repeat(32) }));
+  const { status, error } = await post(bodyStoppingAtTags({ creatorObjectKey: "0x" + "aa".repeat(32) }));
   assert.equal(status, 400);
   assert.match(error ?? "", /tags must be an array/);
 });
@@ -153,8 +153,8 @@ const ROUTE_SRC = readFileSync(new URL("../src/routes/events.ts", import.meta.ur
 const SERVICE_SRC = readFileSync(new URL("../src/lib/event/service.ts", import.meta.url), "utf-8");
 
 test("neither the create route nor the feed writer names a holder key", () => {
-  assert.doesNotMatch(ROUTE_SRC, /creatorPodKey/, "the route must not read one off the body");
-  assert.doesNotMatch(SERVICE_SRC, /creatorPodKey/, "the writer must not stamp one into the feed");
+  assert.doesNotMatch(ROUTE_SRC, /creatorObjectKey/, "the route must not read one off the body");
+  assert.doesNotMatch(SERVICE_SRC, /creatorObjectKey/, "the writer must not stamp one into the feed");
 });
 
 test("the route builds the create call from NAMED fields, never a body spread", () => {

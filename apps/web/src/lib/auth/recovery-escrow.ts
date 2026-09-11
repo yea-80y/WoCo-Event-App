@@ -21,7 +21,7 @@
  *    data (recovery-aad.ts) so a stolen envelope cannot be replayed against
  *    another account or opened under the other role.
  *  - GUARDIAN KEY is DERIVED, never stored: the guardian EOA signs a fixed
- *    EIP-712 message (the deterministic-signature trick `requestPodIdentity`
+ *    EIP-712 message (the deterministic-signature trick `requestIdentitySeed`
  *    relies on) → keccak → 32-byte seed → HPKE `deriveKeyPair`. Same EOA always
  *    reproduces the same X25519 key, on any device, with nothing at rest.
  *
@@ -29,10 +29,10 @@
  * over the DEK is a later envelope version (§11.6 step 2) — the DEK indirection
  * here is exactly what makes that a content change, not a redesign. The bundle is
  * generic (`secrets: Record<name,secret>`) so slots cost nothing to add (§11.6
- * step 3) — the bundle ships `{ podSeed, feedSignerPrivKey }` (gathered in
- * recovery-finalize.ts; an earlier version of this header said podSeed-only and
+ * step 3) — the bundle ships `{ identitySeed, feedSignerPrivKey }` (gathered in
+ * recovery-finalize.ts; an earlier version of this header said identitySeed-only and
  * that stale claim derailed a design pass — issuer-curve handover, 2026-09-01).
- * The ISSUING key needs no slot ever: it re-derives from podSeed (crypto/issuing.ts).
+ * The ISSUING key needs no slot ever: it re-derives from identitySeed (crypto/issuing.ts).
  *
  * Confidentiality of the escrow equals the recovery-threshold strength, NOT
  * device-bound secrecy — inherent to all recovery (§11.4). A timelock guards
@@ -59,7 +59,7 @@ import { recoveryAadBytes, type RecoveryAadRole } from "./recovery-aad.js";
 
 /**
  * Plaintext escrow bundle — CLIENT-ONLY. Never serialised to the server (the
- * server stores `RecoveryEnvelope` ciphertext only). v1 carries `{ podSeed }`;
+ * server stores `RecoveryEnvelope` ciphertext only). v1 carries `{ identitySeed }`;
  * `feedSignerPrivKey` etc. are added later as a content change in this same
  * format (no crypto/ceremony change — §11.6 step 3).
  */
@@ -119,7 +119,7 @@ const HKDF_INFO_SOC = new TextEncoder().encode("woco/recovery/soc/v1");
  * signing for a different role yields distinct keys.
  *
  * Construction: keccak the canonical 65-byte signature (getBytes, not the hex
- * string — the same compression POD identity uses) into a uniform 32-byte master
+ * string — the same compression identity seed uses) into a uniform 32-byte master
  * secret, then HKDF-SHA256-Expand into two independent 32-byte seeds under
  * distinct `info` labels:
  *  - `hpke/v1`  → X25519 escrow keypair (wraps the DEK).

@@ -11,7 +11,7 @@
  * about that reads as a failure at recovery time; it reads as an account whose
  * content vanished.
  *
- * So: a bundle carrying `podSeed` ALONE must restore an account whose
+ * So: a bundle carrying `identitySeed` ALONE must restore an account whose
  * content-feed signer is byte-identical to the one it had. That is now true by
  * construction (the signer is `HKDF(seed, "woco/feed-signer/v1")`), and this
  * pins the construction end to end — through the REAL seal/open, with the real
@@ -25,7 +25,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Wallet } from "ethers";
-import { deriveFeedSignerKey, deriveIssuingKey, deriveEncryptionKeypairFromPodSeed } from "@woco/shared";
+import { deriveFeedSignerKey, deriveIssuingKey, deriveEncryptionKeypairFromSeed } from "@woco/shared";
 import {
   deriveGuardianKeys,
   sealRecoveryBundle,
@@ -54,7 +54,7 @@ test("a seed-only bundle round-trips and re-derives the SAME feed signer", async
   const gk = await deriveGuardianKeys(GUARDIAN.address, guardianSigner);
   const envelope = await sealRecoveryBundle({
     // The bundle as `setupAccountRecovery` now writes it: one secret.
-    bundle: { version: 1, secrets: { podSeed: ORIGINAL_SEED } },
+    bundle: { version: 1, secrets: { identitySeed: ORIGINAL_SEED } },
     kernelAddress: KERNEL,
     role: "guardian",
     guardianPublicKeysHex: [gk.encryption.publicKeyHex],
@@ -70,14 +70,14 @@ test("a seed-only bundle round-trips and re-derives the SAME feed signer", async
     guardianKeypair: gk2.encryption,
   });
 
-  assert.equal(opened.secrets.podSeed, ORIGINAL_SEED, "the seed must survive verbatim");
+  assert.equal(opened.secrets.identitySeed, ORIGINAL_SEED, "the seed must survive verbatim");
   assert.equal(
     Object.prototype.hasOwnProperty.call(opened.secrets, "feedSignerPrivKey"),
     false,
     "no second secret is carried any more",
   );
 
-  const after = deriveFeedSignerKey(opened.secrets.podSeed!);
+  const after = deriveFeedSignerKey(opened.secrets.identitySeed!);
   assert.equal(after.address, before.address, "the recovered account must own the same feeds");
   assert.equal(after.privKey, before.privKey);
 });
@@ -88,8 +88,8 @@ test("the whole account comes back, not just the feeds", async () => {
   const seed = ORIGINAL_SEED;
   assert.equal(deriveIssuingKey(seed, 0).address, deriveIssuingKey(ORIGINAL_SEED, 0).address);
   assert.equal(
-    deriveEncryptionKeypairFromPodSeed(seed).publicKeyHex,
-    deriveEncryptionKeypairFromPodSeed(ORIGINAL_SEED).publicKeyHex,
+    deriveEncryptionKeypairFromSeed(seed).publicKeyHex,
+    deriveEncryptionKeypairFromSeed(ORIGINAL_SEED).publicKeyHex,
   );
 });
 
@@ -108,7 +108,7 @@ test("the WRONG guardian wallet cannot open the bundle", async () => {
   // a smaller bundle must not have loosened it.
   const gk = await deriveGuardianKeys(GUARDIAN.address, guardianSigner);
   const envelope = await sealRecoveryBundle({
-    bundle: { version: 1, secrets: { podSeed: ORIGINAL_SEED } },
+    bundle: { version: 1, secrets: { identitySeed: ORIGINAL_SEED } },
     kernelAddress: KERNEL,
     role: "guardian",
     guardianPublicKeysHex: [gk.encryption.publicKeyHex],

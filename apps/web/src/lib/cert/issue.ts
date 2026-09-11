@@ -1,7 +1,7 @@
 /**
  * Issuing certificates — the issuer's write path (Gate B, slice 3; on the v2
  * issuer curve since PR 4). Design record: docs/SWARM_SOCIAL_PLAN.md, BUILD
- * RECORD slice 3; curve migration: HANDOVER-pod-curve-migration.md.
+ * RECORD slice 3; see the issuer-curve migration handover.
  *
  * TREAT EVERY WRITE HERE AS DELIVERY, NOT AS AUDIT DÉCOR. Until the holder's
  * passport import exists, a certificate lives NOWHERE except this log — and
@@ -27,7 +27,7 @@ import {
   certLogTopic,
   certPublicSalt,
   certSubjectIndexTopic,
-  // Log-cursor arithmetic + holder dedupe still live in `pod-cert/log.ts`
+  // Log-cursor arithmetic + holder dedupe still live in the retired v1 certificate module
   // (format-agnostic; they move to `cert/log.ts` when 5a deletes the v1 module).
   firstCertLogCursor,
   holdersFromLogPages,
@@ -65,7 +65,7 @@ import { contentFeedSignerFromPrivKey } from "../swarm/content-feed";
  * resolved from its MANIFEST, which binds it to the badge by digest — so this
  * call cannot be handed the wrong one, because it does not take one. Same move
  * as `certHoldingFromManifest`, and for the same reason: an issuer identity
- * that merely type-checks is exactly what `PodDirectoryEntry.issuer` is, and
+ * that merely type-checks is exactly what `ObjectDirectoryEntry.issuer` is, and
  * that field is an unverified display mirror sitting one import away.
  */
 export interface CertIssuerKeys {
@@ -339,13 +339,13 @@ export async function issueCertificates(args: {
    * 2. the CAP — `body.totalSupply`, which is why there is no `cap` parameter
    *    any more. Slice 3 made a cap required so it could not be forgotten;
    *    taking it from the manifest means it also cannot be WRONG. The obvious
-   *    thing a caller would otherwise pass is `PodDirectoryEntry.supply`, which
+   *    thing a caller would otherwise pass is `ObjectDirectoryEntry.supply`, which
    *    is mutable display state;
    * 3. proof that 1 and 2 belong to the same badge as everything else here.
    */
   manifest: SignedManifestV2;
   /**
-   * Where the directory says this badge's log lives — `PodDirectoryEntry.certLogOwner`.
+   * Where the directory says this badge's log lives — `ObjectDirectoryEntry.certLogOwner`.
    *
    * REQUIRED because the failure it catches is otherwise perfectly silent: a
    * run whose `keys.feedAddress` is not the recorded owner reads a DIFFERENT

@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { ed25519 } from "@noble/curves/ed25519";
 import { Wallet } from "ethers";
 import { precheckIssuance } from "../src/lib/cert/issue.js";
-import { buildCertBadgeManifest } from "../src/lib/pod/cert-builder.js";
+import { buildCertBadgeManifest } from "../src/lib/object/cert-builder.js";
 import { issuingAddress, verifyManifestV2, type Hex0x } from "@woco/shared";
 
 /** The badge's issuing key (secp256k1) — its ADDRESS is the issuer identity. */
@@ -129,7 +129,7 @@ test("extras matched case-insensitively — an upper-case key is neither orphan 
 
 test("the cap comes from the SIGNED MANIFEST, not from a caller-supplied number", () => {
   // `cap` is no longer a parameter of `issueCertificates` at all, so passing a
-  // stale `PodDirectoryEntry.supply` is impossible rather than discouraged.
+  // stale `ObjectDirectoryEntry.supply` is impossible rather than discouraged.
   // What the run enforces is `manifest.body.totalSupply`, and the manifest is
   // signed — so the number cannot be moved without breaking the signature.
   const b = badge({ cap: 2 });

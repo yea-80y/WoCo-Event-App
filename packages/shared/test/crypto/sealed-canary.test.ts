@@ -13,13 +13,13 @@
  * existence just became undecryptable to the current build. Do NOT regenerate
  * the fixture to make it pass — that is the outage, not a stale test.
  *
- * The recipient key is `deriveEncryptionKeypairFromPodSeed` of a pinned seed,
+ * The recipient key is `deriveEncryptionKeypairFromSeed` of a pinned seed,
  * so the HKDF("woco/encryption/v1") sibling derivation is inside the blast
  * radius too, not just the ECIES open path.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deriveEncryptionKeypairFromPodSeed } from "../../src/crypto/keys.js";
+import { deriveEncryptionKeypairFromSeed } from "../../src/crypto/keys.js";
 import { openJsonAuto } from "../../src/crypto/ecies.js";
 import type { SealedBox } from "../../src/crypto/types.js";
 
@@ -40,18 +40,18 @@ const FIXTURE: SealedBox = {
 const PAYLOAD = { canary: "woco-sealed-canary-v1", n: 42 };
 
 test("the pinned recipient key still derives from the pinned seed", () => {
-  const enc = deriveEncryptionKeypairFromPodSeed(SEED);
+  const enc = deriveEncryptionKeypairFromSeed(SEED);
   assert.equal(enc.publicKeyHex, X25519_PUB, "HKDF encryption-sibling derivation moved");
 });
 
 test("a sealed box from fixture time still opens (HKDF/ECIES/AES-GCM/gzip frozen)", async () => {
-  const enc = deriveEncryptionKeypairFromPodSeed(SEED);
+  const enc = deriveEncryptionKeypairFromSeed(SEED);
   const back = await openJsonAuto<typeof PAYLOAD>(enc.privateKey, FIXTURE);
   assert.deepEqual(back, PAYLOAD, "the sealed-data construction drifted — existing blobs are orphaned");
 });
 
 test("a tampered fixture is refused, not decrypted to garbage", async () => {
-  const enc = deriveEncryptionKeypairFromPodSeed(SEED);
+  const enc = deriveEncryptionKeypairFromSeed(SEED);
   const tampered: SealedBox = {
     ...FIXTURE,
     // flip one nibble mid-ciphertext — AES-GCM's tag must catch it

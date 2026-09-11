@@ -131,7 +131,7 @@ export async function uploadAvatar(
   // The proxy 403s unwhitelisted content, and UserAvatar reads the image
   // gateway-direct (/bytes/{avatarRef}) — so the gateway can't serve it unless
   // we whitelist the ref. Awaited (not fire-and-forget) because the client
-  // re-reads the avatar immediately after this returns. Mirrors event/POD images.
+  // re-reads the avatar immediately after this returns. Mirrors event/object images.
   try {
     await whitelistHashes([avatarRef]);
   } catch (err) {

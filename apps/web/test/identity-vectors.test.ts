@@ -11,7 +11,7 @@
  * move together.
  *
  * These tests sign the REAL EIP-712 payload with a fixed wallet key through the
- * REAL `requestPodIdentity`, and pin the resulting seed and every key derived
+ * REAL `requestIdentitySeed`, and pin the resulting seed and every key derived
  * from it to fixed bytes. Any drift anywhere in
  * wallet → sig → seed → {ed25519 holder, X25519 encryption, secp256k1 issuing,
  * content-feed signer} fails loudly.
@@ -51,13 +51,13 @@ import {
   ACCOUNT_KEYS_TYPES,
   ACCOUNT_KEYS_NONCE,
   ACCOUNT_KEYS_PURPOSE,
-  deriveEncryptionKeypairFromPodSeed,
+  deriveEncryptionKeypairFromSeed,
   deriveIssuingKey,
   deriveFeedSignerKey,
   type EIP712Signer,
 } from "@woco/shared";
 
-// --- minimal in-memory IndexedDB, same shim as pod-identity.test.ts ----------
+// --- minimal in-memory IndexedDB, same shim as identity-seed.test.ts ----------
 function installFakeIndexedDB() {
   const data = new Map<string, unknown>();
   const stores = new Set<string>();
@@ -92,7 +92,7 @@ function installFakeIndexedDB() {
 }
 installFakeIndexedDB();
 
-const { requestPodIdentity, clearPodIdentity } = await import("../src/lib/auth/pod-identity.ts");
+const { requestIdentitySeed, clearIdentitySeed } = await import("../src/lib/auth/identity-seed.ts");
 const { deriveHolderKeypair } = await import("../src/lib/credits/holder-key.ts");
 
 const WALLET_PRIV = "0x" + "ab".repeat(32);
@@ -100,7 +100,7 @@ const PINNED = {
   address: "0xe239cdc5fbe977a8a141B72194D3CF8c41bC5BC6",
   seed: "0xd5c14311ef004fa8015eb99bb6383e3b394ef7599b320fba05486a08cd04a48e",
   /** The HOLDER key — derived by the credits/cert rails only (#518), the seed
-   *  used verbatim; `requestPodIdentity` returns the seed and nothing else. */
+   *  used verbatim; `requestIdentitySeed` returns the seed and nothing else. */
   ed25519Pub: "0xc9f4939db19ea5291f24a924f5d4317970bf1810a27a3d4ae9816b958715c802",
   x25519Pub: "7dfc3c60ac69453d720eed9c12d9255d5fddf7482ed9834898f8b6cf2fd0a263",
   issuingAddress: "0x1fe9969b8ee844fcdb77beb2f19e731adab94882",
@@ -118,15 +118,15 @@ function fixedWalletSigner(wallet: Wallet): EIP712Signer {
 }
 
 test("wallet → EIP-712 sig → seed pin (the chain ABOVE the seed)", async () => {
-  await clearPodIdentity();
+  await clearIdentitySeed();
   const wallet = new Wallet(WALLET_PRIV);
   assert.equal(wallet.address, PINNED.address, "the fixed wallet key itself moved?");
-  const { seed } = await requestPodIdentity(wallet.address, fixedWalletSigner(wallet));
+  const { seed } = await requestIdentitySeed(wallet.address, fixedWalletSigner(wallet));
   assert.equal(seed, PINNED.seed, "identity seed moved — domain/types/purpose/nonce/hashing drift");
 });
 
 test("seed → X25519 encryption pubkey pin (the sibling that decrypts sealed orders)", () => {
-  const enc = deriveEncryptionKeypairFromPodSeed(PINNED.seed);
+  const enc = deriveEncryptionKeypairFromSeed(PINNED.seed);
   assert.equal(
     enc.publicKeyHex,
     PINNED.x25519Pub,
@@ -210,11 +210,11 @@ test("FROZEN: the account-keys EIP-712 message, byte for byte", () => {
 });
 
 test("the production message is built from the frozen constants, not a literal", () => {
-  // The pin above is worth nothing if `pod-identity.ts` writes its own copy of
+  // The pin above is worth nothing if `identity-seed.ts` writes its own copy of
   // the purpose string: the two would drift and only the production one would
   // matter. So the source is checked for the IMPORT, not for the text.
   const src = readFileSync(
-    fileURLToPath(new URL("../src/lib/auth/pod-identity.ts", import.meta.url)),
+    fileURLToPath(new URL("../src/lib/auth/identity-seed.ts", import.meta.url)),
     "utf8",
   );
   assert.match(src, /purpose:\s*ACCOUNT_KEYS_PURPOSE/, "the purpose must come from the constant");
@@ -234,12 +234,12 @@ function sourceFiles(root: string, out: Array<{ rel: string; text: string }> = [
 }
 
 /**
- * Comments stripped for the symbol scans below. The rename is DOCUMENTED in
- * comments that name the retired constant on purpose — a scan that read prose
- * would fire on the explanation and be silenced by deleting it, which is
- * precisely backwards. Crude (it would also blank a `//` inside a string
- * literal); acceptable, because over-stripping can only cost a false PASS on a
- * line no such literal appears on, and a real symbol is never inside one.
+ * Comments stripped for the symbol scan below, so it fires on a live symbol and
+ * never on prose that merely explains why one was retired — a scan silenced by
+ * deleting its own explanation would be precisely backwards. Crude (it would
+ * also blank a `//` inside a string literal); acceptable, because over-stripping
+ * can only cost a false PASS on a line no such literal appears on, and a real
+ * symbol is never inside one.
  */
 const stripComments = (t: string) =>
   t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
@@ -253,7 +253,7 @@ test("the source scan below actually reaches the source", () => {
   // Without this, a moved directory empties the scan and the assertion after it
   // passes while guarding nothing.
   assert.ok(SCANNED.length > 300, `scanned only ${SCANNED.length} files`);
-  assert.ok(SCANNED.some((f) => f.rel.endsWith("auth/pod-identity.ts")));
+  assert.ok(SCANNED.some((f) => f.rel.endsWith("auth/identity-seed.ts")));
   assert.ok(SCANNED.some((f) => f.rel.endsWith("crypto/feed-signer.ts")));
 });
 
@@ -267,11 +267,6 @@ test("no FEED_SIGNER_DERIVE / DeriveFeedSigner symbol survives anywhere", () => 
   assert.deepEqual(hits, []);
 });
 
-test("no POD_IDENTITY_DOMAIN / DerivePodIdentity symbol survives either", () => {
-  // The rename IS the byte change made visible (2026-09-10). A surviving old
-  // constant name would let a reader believe the old message is still signed.
-  const hits = SCANNED.filter((f) =>
-    /POD_IDENTITY_(DOMAIN|TYPES|NONCE)|DerivePodIdentity/.test(f.code),
-  ).map((f) => f.rel);
-  assert.deepEqual(hits, []);
-});
+// The twin guard against the RETIRED pre-2026-09-10 account-keys constants was
+// removed here: naming them is exactly what the shared source-noun ratchet now
+// forbids across every source root, comments included, so it subsumes this.

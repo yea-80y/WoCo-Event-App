@@ -25,7 +25,7 @@ import {
 // sibling off the same construction (#518 follow-up). Same algorithm, same
 // bytes — which is what the golden vectors above prove.
 import { scalarFromOkm48 } from "../../src/crypto/secp-hkdf.js";
-import { deriveEncryptionKeypairFromPodSeed } from "../../src/crypto/keys.js";
+import { deriveEncryptionKeypairFromSeed } from "../../src/crypto/keys.js";
 
 const SEED = "0x" + "ab".repeat(32);
 const N = secp256k1.Point.Fn.ORDER;
@@ -67,7 +67,7 @@ test("derivation is deterministic and 0x-prefix-insensitive", () => {
 
 test("issuing key is independent of the X25519 encryption sibling", () => {
   const issuing = deriveIssuingKey(SEED, 0);
-  const enc = deriveEncryptionKeypairFromPodSeed(SEED);
+  const enc = deriveEncryptionKeypairFromSeed(SEED);
   assert.notEqual(bytesToHex(issuing.privateKey), bytesToHex(enc.privateKey));
 });
 

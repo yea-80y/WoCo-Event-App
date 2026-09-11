@@ -140,7 +140,7 @@ test("both app shells mount the signing dialog and the setup sheet", () => {
 test("the setup call sites go through ensureAccountSetup", () => {
   for (const rel of [
     "lib/creator/events/PublishButton.svelte",
-    "lib/components/pod/PodCreateModal.svelte",
+    "lib/components/object/ObjectCreateModal.svelte",
     "lib/components/profile/ProfilePage.svelte",
   ]) {
     assert.match(

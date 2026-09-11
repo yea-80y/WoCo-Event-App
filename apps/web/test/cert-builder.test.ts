@@ -21,8 +21,8 @@ import {
   manifestV2Digest,
   verifyManifestV2,
 } from "@woco/shared";
-import { buildCertBadgeManifest } from "../src/lib/pod/cert-builder.js";
-import { buildEventManifests } from "../src/lib/pod/event-builder.js";
+import { buildCertBadgeManifest } from "../src/lib/object/cert-builder.js";
+import { buildEventManifests } from "../src/lib/object/event-builder.js";
 
 const PRIV = new Uint8Array(32).fill(7);
 const ISSUER = issuingAddress(PRIV);
@@ -48,7 +48,7 @@ test("commits to exactly ONE template body, whatever the cap", () => {
     assert.equal(
       built.editionBodies.length,
       1,
-      `cap ${cap} must still commit one body — issuePodType refuses anything else`,
+      `cap ${cap} must still commit one body — issueObjectType refuses anything else`,
     );
   }
 });

@@ -7,7 +7,7 @@ import { Topic } from "@ethersphere/bee-js";
  */
 
 const EVENT_NS = "woco/event";
-const POD_NS = "woco/pod";
+const OBJECT_NS = "woco/object";
 
 /**
  * Topic strings are path-shaped and a paged one ends in `/p{N}`. So a component
@@ -70,7 +70,7 @@ export const topicEvent = (eventId: string) =>
 export const topicEventsSnapshot = () =>
   Topic.fromString(`${EVENT_NS}/directory/snapshot`);
 
-// The v1 per-series claim feeds (woco/pod/editions|claims|claimers|
+// The v1 per-series claim feeds (woco/object/editions|claims|claimers|
 // pending-claims/{seriesId}) were retired with the v1 claim rail — the
 // WoCoEventV2 contract is the ticket ledger. Their topic builders are gone so
 // nothing can quietly write that namespace again; see git history for the
@@ -83,7 +83,7 @@ export const topicEventsSnapshot = () =>
  */
 export const topicUserCollection = (ethAddress: string, page = 0) =>
   pagedTopic(
-    `${POD_NS}/collection/${component(ethAddress.toLowerCase(), "ethAddress")}`,
+    `${OBJECT_NS}/collection/${component(ethAddress.toLowerCase(), "ethAddress")}`,
     page,
   );
 

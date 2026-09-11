@@ -42,7 +42,7 @@ function memStore(seed: Record<string, string> = {}): ReprobeStorage & { map: Ma
 
 const FOUND: PortabilityRead = {
   status: "found",
-  value: { preservedKernelAddress: PRESERVED, podSeed: "seed" },
+  value: { preservedKernelAddress: PRESERVED, identitySeed: "seed" },
 };
 
 /** Deps for a poisoned device: the cached parent is undeployed, an envelope exists. */
@@ -56,7 +56,7 @@ function deps(over: Partial<EnvelopeReprobeDeps> = {}, store = memStore()) {
     readKernelOwner: async (addr) => (addr === PRESERVED ? EOA : null),
     envelopeExists: async () => ({ status: "present" }),
     readEnvelope: async () => FOUND,
-    putRecoveryBinding: async (pod, kernel) => void bindings.push([pod, kernel]),
+    putRecoveryBinding: async (seedAddr, kernel) => void bindings.push([seedAddr, kernel]),
     writeOrphanTombstone: (_kind, eoa, fact) => void tombstones.push({ eoa, ...fact }),
     clearCachedKernelAddress: (_kind, eoa) => void cleared.push(eoa),
     isStillSignedInAs: () => true,

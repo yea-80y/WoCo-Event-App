@@ -3,7 +3,7 @@
  *
  * A web3auth login yields ONE deterministic key per identity. Three stores assume
  * one key means one account — the recovery binding map (key → the Kernel it owns),
- * the POD seed slot (`pod-identity.ts`, keyed by the owner address), and the
+ * the identity seed slot (`identity-seed.ts`, keyed by the owner address), and the
  * login-time address caches. `recoverAndRekey`'s web3auth branch is the only place
  * in the codebase that can break that assumption: it points an EXISTING key at a
  * DIFFERENT account.
@@ -46,7 +46,7 @@
  *    same-moment race, made loud by the tail re-scan after the rotation.
  *
  * STOPGAP, deliberately. The real fix is to key the binding by (ownerKey, account)
- * and the seed by (podAddress, parentAddress), so one key CAN own several accounts
+ * and the seed by (seedAddress, parentAddress), so one key CAN own several accounts
  * and (2) becomes impossible rather than merely unreachable. This guard is a
  * prerequisite for that work — the migration must decide whose seed occupies a
  * legacy slot, and on an already-collided device that is unanswerable, since the
@@ -70,8 +70,8 @@ export interface OwnerCollisionEvidence {
   targetKernel: string;
   /** Recovery binding already held for this EOA on this device, if any. */
   existingBinding?: string;
-  /** Is a POD seed already stored under this EOA? `null` when the read failed. */
-  podSeedPresent: boolean | null;
+  /** Is a identity seed already stored under this EOA? `null` when the read failed. */
+  identitySeedPresent: boolean | null;
   /** Cached Kernel address for this EOA from a previous login, if any. */
   cachedKernel?: string | null;
   /**
@@ -215,14 +215,14 @@ export function decideOwnerCollision(e: OwnerCollisionEvidence): OwnerCollisionV
   // (3) Local traces of a previous life for this credential. A stored seed is the
   //     one that matters — it is the value the ceremony would destroy. `null` means
   //     the read itself failed, which is not evidence of absence.
-  if (e.podSeedPresent === true) {
+  if (e.identitySeedPresent === true) {
     return {
       status: "block",
       reason: "an identity seed is already stored under this credential",
       userMessage: MSG_TAKEN,
     };
   }
-  if (e.podSeedPresent === null) {
+  if (e.identitySeedPresent === null) {
     return {
       status: "block",
       reason: "could not read local identity storage",

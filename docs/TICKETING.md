@@ -22,7 +22,7 @@ in [PAYOUTS.md](./PAYOUTS.md). This document is the lifecycle and the cryptograp
 | **Slot** | The on-chain record of one sold ticket: `slotOwner[eventId][edition-1]`. |
 | **Burner** | A single-use keypair generated at fulfilment. Its address becomes the slot owner. |
 
-The naming is deliberately narrower than it used to be: "edition" replaced "POD"/"ticket" as the
+The naming is deliberately narrower than it used to be: "edition" replaced the older nouns as the
 body noun, because **one shape now serves both** the ticket rail and standalone badge or
 collectible issuance.
 
@@ -259,7 +259,7 @@ exercised with the gate off.
 | **The v1 claim rail** | `POST /claim` allocated an edition by scanning a Swarm editions feed. The editions feed was retired first, so the route could not mint for anything created afterwards. Deleted; `WoCoEventV2` is the only ticket ledger. `claims.ts` now holds only `claim-status`. |
 | **The organiser approval flow** | Routes, flags and UI all deleted with the v1 rail. Tracked for return on the v2 contract rail (#202). |
 | **Any free-ticket path** | An accepted consequence of the above: there is no v2 mint path for a free ticket yet. `freeEventsAllowed = false`, so nothing live changes. |
-| **`woco.manifest.v1` / `woco.ticket.v2` / `woco.pod-cert.v1`** | Deleted and dispatch-refused by every verifier. |
+| **`woco.manifest.v1` / `woco.ticket.v2` / the v1 cert format** | Deleted and dispatch-refused by every verifier. |
 
 > **Which contract you are on is env-selected.** Production sets `WOCO_EVENT_CHAIN_ID=421614`
 > and `WOCO_EVENT_VERSION_421614=v2`. Unset, the server defaults to chain `84532` (Base Sepolia)

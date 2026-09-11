@@ -23,14 +23,14 @@ export const FEATURES = {
   // Coinbase Smart Wallet login. OFF for launch (#173, owner decision
   // 2026-08-04): CSW is a smart account, so its ERC-1271/6492 signatures are
   // not byte-reproducible (6492-wrapped before deployment, bare 1271 after —
-  // definitional, not a quirk), and POD identity + content feeds are
-  // sign-to-derive. Feeds already park CSW; POD does not, so a CSW user's
+  // definitional, not a quirk), and identity seed + content feeds are
+  // sign-to-derive. Feeds already park CSW; the seed does not, so a CSW user's
   // ticket-signing and dashboard-decryption identity forks on ordinary
   // logout→login. Gates in lockstep: the login button + loginCoinbase +
   // session restore (client) AND the server's 1271/6492 delegation-verify
   // path (its only intended client — pre-08209a1 Kernel delegations also
   // used it, but pre-launch those are test sessions that just re-login).
-  // Turn on with the CSW escrow path (random POD seed + feed key, escrowed
+  // Turn on with the CSW escrow path (random identity seed + feed key, escrowed
   // and restored per device), after #164. Never sign-to-derive for smart
   // accounts.
   coinbaseLoginAllowed: false,

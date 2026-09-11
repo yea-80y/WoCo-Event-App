@@ -124,7 +124,7 @@ woco/site/config/{siteId}            site JSON, or a platform-signed POINTER to 
                                      client-owned Site chunk (see SITE_BUILDER.md)
 woco/site/{siteId}/events            site events index
 woco-multisite-{siteId}              per-site pointer → latest content hash (for ENS)
-woco/pod/collection/{address}        a user's collection
+woco/object/collection/{address}     a user's collection
 ```
 
 Topic components are restricted to `[0-9a-z-]{1,64}`, and this is a **collision guard, not input

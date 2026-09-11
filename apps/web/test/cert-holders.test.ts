@@ -153,7 +153,7 @@ test("a stale holder key on a binding cannot resurrect certification", () => {
   // error at runtime, and it must not become an award.
   const s = splitAttendees({
     claims: [claim(1)],
-    bindings: [bind({ podPubKey: A } as unknown as Partial<AttendeeCandidate>)],
+    bindings: [bind({ holderPubKey: A } as unknown as Partial<AttendeeCandidate>)],
   });
   assert.deepEqual(s.certifiable, []);
   assert.equal(s.withoutKey[0]!.reason, "no-key");

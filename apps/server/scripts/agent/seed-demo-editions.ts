@@ -4,10 +4,10 @@
  *
  * WHY THIS EXISTS: `setup-demo-event.ts` writes only the event feed + directory
  * entry. The legacy Swarm-editions claim path that `settleAgentTicketPurchase →
- * claimTicket` uses additionally needs `woco/pod/editions/{seriesId}` page 0 =
- * [metaRef, ticketRef1…N], where each ticketRef is a `woco.ticket.v1` POD with a
+ * claimTicket` uses additionally needs `woco/object/editions/{seriesId}` page 0 =
+ * [metaRef, ticketRef1…N], where each ticketRef is a `woco.ticket.v1` object with a
  * valid ed25519 self-signature. Real organiser publishes build these client-side;
- * for the headless demo we generate them here with a throwaway POD key (claim
+ * for the headless demo we generate them here with a throwaway signing key (claim
  * only checks each ticket's signature against its OWN embedded pubkey, so any
  * key produces claimable editions). Idempotent: no-op if the feed already exists.
  *
@@ -45,10 +45,10 @@ async function main() {
     return;
   }
 
-  // Throwaway POD key — each ticket self-verifies against its embedded pubkey.
-  const podPriv = ed25519.utils.randomSecretKey();
-  const podPub = ed25519.getPublicKey(podPriv);
-  const publicKey = bytesToHex(podPub);
+  // Throwaway signing key — each ticket self-verifies against its embedded pubkey.
+  const signingPriv = ed25519.utils.randomSecretKey();
+  const signingPub = ed25519.getPublicKey(signingPriv);
+  const publicKey = bytesToHex(signingPub);
   const mintedAt = new Date().toISOString();
 
   // metadata page-0 slot 0 — what loadSeriesMeta parses.
@@ -59,7 +59,7 @@ async function main() {
   const ticketRefs: string[] = [];
   for (let edition = 1; edition <= SUPPLY; edition++) {
     const data = {
-      podType: "woco.ticket.v1" as const,
+      format: "woco.ticket.v1" as const,
       eventId: EVENT_ID,
       seriesId: SERIES_ID,
       seriesName: SERIES_NAME,
@@ -69,7 +69,7 @@ async function main() {
       creator: CREATOR,
       mintedAt,
     };
-    const signature = bytesToHex(ed25519.sign(new TextEncoder().encode(JSON.stringify(data)), podPriv));
+    const signature = bytesToHex(ed25519.sign(new TextEncoder().encode(JSON.stringify(data)), signingPriv));
     const ref = await uploadToBytes(JSON.stringify({ data, signature, publicKey }));
     ticketRefs.push(ref);
     process.stdout.write(`\r  uploaded edition ${edition}/${SUPPLY}`);
@@ -77,7 +77,7 @@ async function main() {
   process.stdout.write("\n");
 
   // Page 0: [metaRef, ticketRef1 … ticketRefN]. Slot index = edition number.
-  // MIGRATION SEAM (client-side feed signing): ticket PODs above are already
+  // MIGRATION SEAM (client-side feed signing): ticket objects above are already
   // signed with an off-server key (the organiser-client model). Only this feed
   // WRITE still uses the server signer (FEED_PRIVATE_KEY via writeFeedPage). When
   // feed signing moves client-side, swap just this call for a client feed write

@@ -90,7 +90,7 @@
         return;
       }
 
-      // Fetch individual ticket details — use permanent cache for each POD
+      // Fetch individual ticket details — use permanent cache for each object
       const details = await Promise.all(
         collection.entries
           .filter((entry: CollectionEntry) => !!entry.claimedRef)
@@ -98,7 +98,7 @@
             const ticketKey = cacheKey.ticket(entry.claimedRef);
             const cachedTicket = cacheGet<ClaimedTicket>(ticketKey);
             if (cachedTicket) return Promise.resolve(cachedTicket);
-            // Not cached — fetch and store permanently (PODs are immutable)
+            // Not cached — fetch and store permanently (objects are immutable)
             return getTicketDetail(entry.claimedRef)
               .then((t) => {
                 if (t) cacheSet(ticketKey, t, TTL.PERMANENT);
@@ -172,7 +172,7 @@
 
     {#if tickets.length > 0}
       <div class="ticket-grid">
-        {#each tickets as ticket (ticket.originalPodHash)}
+        {#each tickets as ticket (ticket.originalObjectHash)}
           <TicketCard {ticket} />
         {/each}
       </div>

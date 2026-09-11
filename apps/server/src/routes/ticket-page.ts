@@ -137,10 +137,10 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig{.+\\.png}", async (c) => {
   });
 });
 
-/** Downloadable ticket POD — the durable, server-independent artifact
+/** Downloadable ticket object — the durable, server-independent artifact
  *  (plan §4): QR payload + the full signature chain (per-ticket sig verifiable
  *  against on-chain slotOwner, plus the organiser-signed original and the
- *  claimed POD). Declared BEFORE the HTML route so the regex constraint takes
+ *  claimed object). Declared BEFORE the HTML route so the regex constraint takes
  *  priority over the catch-all `:sig` segment (same trick as .png). */
 ticketPage.get("/:eventId/:seriesId/:edition/:sig{.+\\.json}", async (c) => {
   const rawSig = c.req.param("sig");
@@ -157,7 +157,7 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig{.+\\.json}", async (c) => {
     return c.json({ ok: false, error: "Invalid ticket signature" }, 403);
   }
 
-  const pod = {
+  const download = {
     format: "woco.ticket.download.v1",
     eventId,
     seriesId,
@@ -169,14 +169,14 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig{.+\\.json}", async (c) => {
       method:
         "EIP-191 recover of ticketSig over buildTicketCanonicalMessage(onChainEventId, seriesId, edition) must equal the on-chain WoCoEventV2 slotOwner for edition-1",
     },
-    // On-chain tickets have no ClaimedTicket/SignedTicket PODs — the contract
+    // On-chain tickets have no ClaimedTicket/SignedTicket objects — the contract
     // is the ledger. Fields kept (as null) so the download format is stable.
     claimed: null,
     original: null,
     downloadedAt: new Date().toISOString(),
   };
 
-  return c.body(JSON.stringify(pod, null, 2), 200, {
+  return c.body(JSON.stringify(download, null, 2), 200, {
     "content-type": "application/json",
     "content-disposition": `attachment; filename="woco-ticket-${String(edition).padStart(3, "0")}.json"`,
     "cache-control": "no-cache, no-store, must-revalidate",

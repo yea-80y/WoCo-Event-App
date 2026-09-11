@@ -166,8 +166,8 @@ export async function createCheckoutSession(params: {
 }
 
 /**
- * Checkout failure that preserves the server's `gated` flag (POD-holdings gate).
- * Lets the caller distinguish "must sign in / hold a POD" from a generic error so
+ * Checkout failure that preserves the server's `gated` flag (object-holdings gate).
+ * Lets the caller distinguish "must sign in / hold an object" from a generic error so
  * the shared sign-in-to-act prompt (built with the like button) can hook it —
  * the gate binds to the ACCOUNT, the payment rail is independent.
  */

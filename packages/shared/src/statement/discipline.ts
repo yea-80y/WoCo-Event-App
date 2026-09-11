@@ -64,16 +64,17 @@ export function statementSigningPrefix(type: string, version: number): string {
  */
 export const STATEMENT_SIGNING_PREFIXES = Object.freeze({
   "woco.credit.v1": statementSigningPrefix("credit", 1),
-  // Gate B, the POD certificate rail. TWO prefixes because two different keys
-  // sign two different objects: the badge issuer signs the certificate, and the
-  // holder signs the possession challenge that answers for it. One prefix would
-  // let a certificate's bytes be replayed as a challenge answer, or the reverse.
-  "woco.pod-cert.v1": statementSigningPrefix("pod-cert", 1),
-  "woco.pod-cert-challenge.v1": statementSigningPrefix("pod-cert-challenge", 1),
-  // The v2 cert rail (issuer-curve migration PR 3). Same two-prefix rule. The
-  // cert's ISSUER signature is secp256k1 personal_sign, but its digest is this
-  // same registry recipe — the prefix claim below is what keeps the domain
-  // unique; the challenge stays holder-ed25519 over its own prefix.
+  // The RETIRED v1 certificate rail reserved two prefixes of its own here. Both
+  // entries went with its name: nothing read them, and every v1 verifier
+  // dispatch-refuses that rail already.
+  //
+  // Gate B, the v2 certificate rail (issuer-curve migration PR 3). TWO prefixes
+  // because two different keys sign two different objects: the badge issuer
+  // signs the certificate, and the holder signs the possession challenge that
+  // answers for it. One prefix would let a certificate's bytes be replayed as a
+  // challenge answer, or the reverse. The cert's ISSUER signature is secp256k1
+  // personal_sign, but its digest is this same registry recipe — the prefix
+  // claim is what keeps the domain unique; the challenge stays holder-ed25519.
   "woco.cert.v1": statementSigningPrefix("cert", 1),
   "woco.cert-challenge.v1": statementSigningPrefix("cert-challenge", 1),
 } as const);
@@ -84,15 +85,15 @@ export const STATEMENT_SIGNING_PREFIXES = Object.freeze({
 
 /**
  * The identity-signature digest: `keccak256(utf8(prefix) || dagCbor(unsigned))`,
- * encoder locked to the same deterministic DAG-CBOR as `pod/canonical.ts`.
+ * encoder locked to the same deterministic DAG-CBOR as the retired v1 canonicalisation module.
  *
  * RULE (frozen): the holder key NEVER signs an externally supplied digest.
  * Every protocol hands structured bytes to a signer that hashes them itself
  * under its own registry prefix — which is why this function takes an object,
  * not bytes, and why no API in this package accepts a caller-computed digest.
  *
- * Cross-protocol safety with the same account's POD-manifest signatures
- * (`pod/merkle.ts` signs `keccak256(dagCbor(body))`, no prefix): the digest
+ * Cross-protocol safety with the same account's manifest signatures
+ * (the retired v1 manifest module signs `keccak256(dagCbor(body))`, no prefix): the digest
  * PREIMAGES can never be equal, because a canonical manifest encodes as a CBOR
  * map (first byte 0xa0-0xbb) while these bytes start 0x77 ("w").
  */
@@ -111,7 +112,7 @@ export function statementSigningDigest(prefix: string, unsigned: object): Uint8A
  * Statements travel as JSON: `assembleContentFeed` (swarm/soc.ts) JSON-parses
  * the base payload to detect the multi-chunk manifest, and a non-JSON payload
  * has NO paging path. So every frozen schema must survive a JSON round-trip
- * into the same canonical object: strings, booleans, safe integers, arrays,
+ * into the same canonical object — strings, booleans, safe integers, arrays,
  * plain objects. No byte strings, no floats, no null — absent means OMITTED.
  * (Floats are banned outright rather than risked: a whole-number float loses
  * its floatness across JSON and would change the CBOR encoding under the
@@ -206,7 +207,7 @@ export function publicTopicSalt(type: string, version: number): Uint8Array {
 /**
  * The per-user PRIVATE salt:
  * `HMAC-SHA256(encryptionPrivKey, utf8("woco-{type}-topic-salt-v{n}"))`.
- * `encryptionPrivKey` is the X25519 key from `deriveEncryptionKeypairFromPodSeed`
+ * `encryptionPrivKey` is the X25519 key from `deriveEncryptionKeypairFromSeed`
  * — deterministic on any device, never transmitted. Knowing a rider's
  * feed-owner address is NOT enough to compute their private topics: presence
  * at a deterministic address is the leak encryption alone cannot close.

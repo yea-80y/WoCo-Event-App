@@ -129,7 +129,7 @@ export const cacheKey = {
     `claimed:${eventId}:${seriesId}:${address.toLowerCase()}`,
   /** User's collection, keyed by address. */
   collection: (address: string) => `collection:${address.toLowerCase()}`,
-  /** Individual ticket POD — immutable. */
+  /** Individual ticket object — immutable. */
   ticket: (ref: string) => `ticket:${ref}`,
   /** Full event list for a deployed site (bundled fetch). */
   siteEvents: (siteId: string) => `site-events:${siteId}`,

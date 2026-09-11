@@ -108,7 +108,7 @@ test("re-binding the SAME issuer is idempotent; a DIFFERENT issuer is refused lo
   binding._resetIssuerBindings();
   assert.equal(binding.verifyAndPinIssuerBinding(PARENT, bindingFor(PARENT), [ISSUER], "event-create").ok, true);
   // Same again — the ordinary republish/second-event case.
-  assert.equal(binding.verifyAndPinIssuerBinding(PARENT, bindingFor(PARENT), [ISSUER], "pod-mint").ok, true);
+  assert.equal(binding.verifyAndPinIssuerBinding(PARENT, bindingFor(PARENT), [ISSUER], "object-mint").ok, true);
   // A second identity for one account: either a client bug or the
   // seed-divergence class surfacing. Must refuse, never silently re-pin.
   const divergent = bindingFor(PARENT, OTHER_KEY, OTHER_ISSUER);
@@ -144,7 +144,7 @@ const readSrc = (p: string) =>
 test("both create routes verify the binding and stop on refusal", () => {
   for (const [name, path] of [
     ["events", "../src/routes/events.ts"],
-    ["pod", "../src/routes/pod.ts"],
+    ["objects", "../src/routes/objects.ts"],
   ] as const) {
     const src = readSrc(path);
     const at = src.indexOf("verifyAndPinIssuerBinding(");
@@ -156,7 +156,7 @@ test("both create routes verify the binding and stop on refusal", () => {
 });
 
 test("the binding is checked against the VERIFIED parent, never a body value", () => {
-  for (const path of ["../src/routes/events.ts", "../src/routes/pod.ts"]) {
+  for (const path of ["../src/routes/events.ts", "../src/routes/objects.ts"]) {
     const src = readSrc(path);
     const at = src.indexOf("verifyAndPinIssuerBinding(");
     const call = src.slice(at, at + 200);
@@ -181,7 +181,7 @@ test("a legacy v1 blob yields no digest on the checkout path", async () => {
       },
       signature: "cd".repeat(64),
     },
-    podRefs: [],
+    objectRefs: [],
     manifestDigestHex: `0x${"33".repeat(32)}`,
   };
   assert.equal(digestOfManifestBlob(v1Blob), null, "a v1 blob must not digest — the sale refuses");
@@ -207,7 +207,7 @@ test("a legacy v1 blob yields no digest on the checkout path", async () => {
     encoding: "cbor-v1" as const,
     treeScheme: "oz-simple-v1" as const,
   };
-  const v2Blob = { v: 2, signedManifest: signManifestV2(manifest, KEY), podRefs: [], manifestDigestHex: "" };
+  const v2Blob = { v: 2, signedManifest: signManifestV2(manifest, KEY), objectRefs: [], manifestDigestHex: "" };
   assert.equal(
     digestOfManifestBlob(v2Blob),
     bytesToHex0x(manifestV2Digest(manifest)).toLowerCase(),

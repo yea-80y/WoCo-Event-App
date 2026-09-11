@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { PaymentConfig, PaymentChainId, Hex0x, PodGate, PodGateGroup } from "@woco/shared";
-  import PodGateEditor from "../../components/pod/PodGateEditor.svelte";
+  import type { PaymentConfig, PaymentChainId, Hex0x, ObjectGate, ObjectGateGroup } from "@woco/shared";
+  import ObjectGateEditor from "../../components/object/ObjectGateEditor.svelte";
   import { CHAIN_NAMES, PLATFORM_FEE_BP, FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT, CURRENCY_SYMBOLS } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
@@ -41,8 +41,8 @@
     feePassedToCustomer: boolean;
     /** Organiser-set buyer-pays fee % (≥ BUYER_FEE_FLOOR_PCT). Default BUYER_FEE_DEFAULT_PCT. */
     buyerFeePercent: number;
-    /** Optional POD-holdings gate — applies to every wave in this tier. */
-    gate?: PodGate | PodGateGroup;
+    /** Optional object-holdings gate — applies to every wave in this tier. */
+    gate?: ObjectGate | ObjectGateGroup;
   }
 
   interface SeriesDraft {
@@ -54,7 +54,7 @@
     saleStart?: string;
     saleEnd?: string;
     payment?: PaymentConfig;
-    gate?: PodGate | PodGateGroup;
+    gate?: ObjectGate | ObjectGateGroup;
   }
 
   interface Props {
@@ -794,8 +794,8 @@
           </div>
         {/if}
 
-        <!-- POD-holdings gate (optional) -->
-        <PodGateEditor gate={tier.gate} onChange={(g) => { tier.gate = g; }} />
+        <!-- object-holdings gate (optional) -->
+        <ObjectGateEditor gate={tier.gate} onChange={(g) => { tier.gate = g; }} />
 
         <!-- Sale waves -->
         <div class="waves-section">

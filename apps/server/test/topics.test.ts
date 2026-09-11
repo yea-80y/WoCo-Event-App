@@ -25,7 +25,7 @@ describe("paged topic format — byte-exact pins", () => {
   it("page 0 is the bare base topic, with no suffix", () => {
     assert.equal(
       hex(topicUserCollection(ADDR, 0)),
-      hex(Topic.fromString(`woco/pod/collection/${ADDR}`)),
+      hex(Topic.fromString(`woco/object/collection/${ADDR}`)),
     );
     assert.equal(
       hex(topicCreatorDirectory(ADDR, 0)),
@@ -37,7 +37,7 @@ describe("paged topic format — byte-exact pins", () => {
   it("pages 1+ append /p{N}", () => {
     assert.equal(
       hex(topicUserCollection(ADDR, 3)),
-      hex(Topic.fromString(`woco/pod/collection/${ADDR}/p3`)),
+      hex(Topic.fromString(`woco/object/collection/${ADDR}/p3`)),
     );
     assert.equal(
       hex(topicCreatorDirectory(ADDR, 12)),
@@ -80,7 +80,7 @@ describe("the collision #197 reported is now unrepresentable", () => {
   it("accepts a lowercased eth address", () => {
     assert.equal(
       hex(topicUserCollection(ADDR, 0)),
-      hex(Topic.fromString(`woco/pod/collection/${ADDR}`)),
+      hex(Topic.fromString(`woco/object/collection/${ADDR}`)),
     );
   });
 });

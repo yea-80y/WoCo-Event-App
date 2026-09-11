@@ -21,7 +21,7 @@ import {
   verifyEditionInclusion,
 } from "@woco/shared";
 import type { EditionV1Body } from "@woco/shared";
-import { buildCertBadgeManifest } from "../src/lib/pod/cert-builder.js";
+import { buildCertBadgeManifest } from "../src/lib/object/cert-builder.js";
 
 const PRIV = new Uint8Array(32).fill(7);
 

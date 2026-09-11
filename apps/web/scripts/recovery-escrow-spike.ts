@@ -1,7 +1,7 @@
 /**
  * RECOVERY-ESCROW SPIKE (PASSKEY_RECOVERY_PLAN §11.6 step 1).
  *
- * Pure-crypto verification of the POD escrow primitives — NO chain, no bundler,
+ * Pure-crypto verification of the recovery-escrow primitives — NO chain, no bundler,
  * no env. Proves the round-trip and the security properties an audit will look
  * for:
  *   1. seal → open round-trips the exact bundle (1-of-1 backup EOA).
@@ -25,7 +25,7 @@ import {
 } from "../src/lib/auth/recovery-escrow.js";
 
 /** Adapt a viem local account to the WoCo EIP712Signer interface (primaryType =
- *  the single type key, exactly as requestPodIdentity's callers do). */
+ *  the single type key, exactly as requestIdentitySeed's callers do). */
 function viemSigner(account: ReturnType<typeof privateKeyToAccount>): EIP712Signer {
   return async (domain, types, value) => {
     const primaryType = Object.keys(types)[0];
@@ -66,7 +66,7 @@ async function main() {
 
   const bundle: RecoveryBundle = {
     version: 1,
-    secrets: { podSeed: "0x" + "ab".repeat(32) },
+    secrets: { identitySeed: "0x" + "ab".repeat(32) },
   };
 
   console.log("[1] derive guardian X25519 key + seal");
@@ -82,14 +82,14 @@ async function main() {
 
   console.log("[2] open round-trip");
   const opened = await openRecoveryBundle({ envelope, kernelAddress: kernelA, role: "guardian", guardianKeypair: gk });
-  assert(opened.secrets.podSeed === bundle.secrets.podSeed, "recovered podSeed matches original");
+  assert(opened.secrets.identitySeed === bundle.secrets.identitySeed, "recovered identitySeed matches original");
   assert(opened.version === bundle.version, "recovered version matches");
 
   console.log("[3] deterministic re-derivation (recoverable on any device)");
   const gk2 = await deriveGuardianEncryptionKeypair(guardianAccount.address, guardianSign);
   assert(gk2.publicKeyHex === gk.publicKeyHex, "same EOA → identical X25519 key");
   const openedAgain = await openRecoveryBundle({ envelope, kernelAddress: kernelA, role: "guardian", guardianKeypair: gk2 });
-  assert(openedAgain.secrets.podSeed === bundle.secrets.podSeed, "freshly re-derived key opens the same envelope");
+  assert(openedAgain.secrets.identitySeed === bundle.secrets.identitySeed, "freshly re-derived key opens the same envelope");
 
   console.log("[4] AAD bind — transplant to kernel B rejected");
   await expectThrow(

@@ -1,16 +1,16 @@
 /**
  * The DOOR — the pure half of Gate B on the v2 issuer curve: presented
- * certificate + possession challenge in, a `PodHolding` out, no chain and no
+ * certificate + possession challenge in, an `ObjectHolding` out, no chain and no
  * I/O.
  *
- * This is the second holding source the plan calls for. `evaluatePodGate` is
- * unchanged and unaware: it takes a `PodHolding`, and a `PodHolding` may derive
+ * This is the second holding source the plan calls for. `evaluateObjectGate` is
+ * unchanged and unaware: it takes an `ObjectHolding`, and an `ObjectHolding` may derive
  * from exactly two places — on-chain slot ownership (`getOnChainHolding`,
  * server) or verified certificates (here). Nothing else. The spoofable
  * collection feed and self-signed credits are not sources and there is no
  * function in this package that would make them one.
  *
- * WHAT CHANGED from `pod-cert/holdings.ts`: the badge's manifest is a
+ * WHAT CHANGED from the retired v1 certificate module: the badge's manifest is a
  * `woco.manifest.v2` and the issuer it resolves to is an `IssuerAddress`. The
  * check order, the reason strings and the presence-not-quantity holding are
  * unchanged.
@@ -32,7 +32,7 @@
  * one.
  */
 
-import type { PodHolding, Bytes32Hex } from "../pod/types.js";
+import type { ObjectHolding, Bytes32Hex } from "../object/types.js";
 import type { IssuerAddress } from "../crypto/brands.js";
 import { bytesToHex0x } from "../crypto/hex.js";
 import { manifestV2Digest } from "../edition/canonical.js";
@@ -86,7 +86,7 @@ export type CertCheck = { ok: true } | { ok: false; reason: string };
  * function had to refuse a manifest whose `issuerPubkey` was 0x-prefixed or
  * uppercase, because `verifySignedManifest` stripped and case-folded before
  * checking, so such a manifest SELF-VERIFIED and then resolved to a key
- * `verifyPodCert`'s regex refused forever — a dead end that failed closed but
+ * `verifyLegacyCert`'s regex refused forever — a dead end that failed closed but
  * said nothing about why. The v2 schema is closed and refusing: `isIssuerAddress`
  * admits only the canonical `0x` + 40 lowercase hex form, so a non-canonical
  * issuer never reaches this function at all.
@@ -168,7 +168,7 @@ export function checkCertPresentation(
 }
 
 /**
- * Derive a `PodHolding` for `badge` from presented certificates.
+ * Derive an `ObjectHolding` for `badge` from presented certificates.
  *
  * PRESENCE, NOT QUANTITY — `count` is 0 or 1 and `slots` is always empty, and
  * both are deliberate:
@@ -177,7 +177,7 @@ export function checkCertPresentation(
  *   ("the order buyers claimed"), and inventing an index here would let a
  *   `maxSlotExclusive` "first N" gate be satisfied by a number nothing
  *   allocated. Empty slots make such a gate UNSATISFIABLE from certificates,
- *   which is the fail-closed answer: `evaluatePodGate` filters `slots` and
+ *   which is the fail-closed answer: `evaluateObjectGate` filters `slots` and
  *   gets zero.
  * - Counting distinct certificates would inflate on re-issuance. An issuer
  *   re-signs when a holder rotates keys or a date was wrong, there is no
@@ -199,7 +199,7 @@ export function certHolding(
   presentations: readonly CertPresentation[],
   issuer: IssuerAddress,
   expect: CertChallengeExpectation,
-): PodHolding {
+): ObjectHolding {
   const held = (presentations ?? []).some((p) => checkCertPresentation(p, badge, issuer, expect).ok);
   return { manifestRef: badge, count: held ? 1 : 0, slots: [] };
 }
@@ -226,7 +226,7 @@ export function certHoldingFromManifest(
   manifest: unknown,
   presentations: readonly CertPresentation[],
   expect: CertChallengeExpectation,
-): PodHolding {
+): ObjectHolding {
   const issuer = resolveCertIssuer(manifest, badge);
   if (!issuer) return { manifestRef: badge, count: 0, slots: [] };
   return certHolding(badge, presentations, issuer, expect);

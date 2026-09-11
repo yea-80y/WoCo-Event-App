@@ -13,13 +13,13 @@
     FiatCurrency,
     SalesChannel,
     UpsertProductRequest,
-    PodGate,
-    PodGateGroup,
+    ObjectGate,
+    ObjectGateGroup,
   } from "@woco/shared";
   import { onMount } from "svelte";
   import { updateShop, upsertProduct, deleteProduct, getProducts } from "../../api/shops.js";
   import { uploadSiteImage } from "../../api/sites.js";
-  import PodGateEditor from "../../components/pod/PodGateEditor.svelte";
+  import ObjectGateEditor from "../../components/object/ObjectGateEditor.svelte";
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
 
@@ -45,7 +45,7 @@
   let pCategory = $state("");
   let pChannels = $state<"both" | "web" | "pos">("both");
   let pActive = $state(true);
-  let pGate = $state<PodGate | PodGateGroup | undefined>(undefined);
+  let pGate = $state<ObjectGate | ObjectGateGroup | undefined>(undefined);
   let pImageRef = $state<string | undefined>(undefined);
   let pImageUploading = $state(false);
   let productSaving = $state(false);
@@ -276,9 +276,9 @@
         </div>
       </div>
 
-      <!-- POD-holdings gate (optional). Wallet-purchase-only when set; card buyers
+      <!-- object-holdings gate (optional). Wallet-purchase-only when set; card buyers
            are steered to crypto. Server chain-validates on save. -->
-      <PodGateEditor gate={pGate} onChange={(g) => { pGate = g; }} />
+      <ObjectGateEditor gate={pGate} onChange={(g) => { pGate = g; }} />
 
       {#if productError}<div class="err-box mono">{productError}</div>{/if}
       <div class="pf-actions">

@@ -42,7 +42,7 @@ export const SESSION_TYPES = {
  * an address nobody will look at. There is no migration short of re-publishing
  * everything. Pinned byte for byte by apps/web/test/identity-vectors.test.ts.
  *
- * The name changed once, on 2026-09-10, from "WoCo POD Identity" — a deliberate
+ * The name changed once, on 2026-09-10, off its retired predecessor — a deliberate
  * pre-launch break with no users to carry, made so the sheet a person actually
  * signs says what it does. The SALT was deliberately NOT churned: it is opaque
  * to the user and rotating it buys nothing. The constants were renamed
@@ -67,7 +67,7 @@ export const ACCOUNT_KEYS_TYPES = {
  * The `purpose` field's value, FROZEN with the rest of the message.
  *
  * It lives here rather than at the call site because it is signed bytes, not
- * copy: a well-meaning edit in `pod-identity.ts` reads like a wording change and
+ * copy: a well-meaning edit in `identity-seed.ts` reads like a wording change and
  * is a key migration. Wallets render it, so it has to be a sentence a person can
  * act on — but it is the sentence, exactly, forever.
  */
@@ -76,8 +76,9 @@ export const ACCOUNT_KEYS_PURPOSE = "Derive the keys that unlock your WoCo accou
 /**
  * Domain for the deterministic signature a guardian signs to derive its X25519
  * recovery-escrow encryption keypair (PASSKEY_RECOVERY_PLAN §11.6). Distinct
- * salt from POD so the two derivations can never collide — a guardian's escrow
- * key and a POD signing key are different roles even off the same EOA.
+ * salt from the account-keys domain so the two derivations can never collide —
+ * a guardian's escrow key and an account's own keys are different roles even off
+ * the same EOA.
  */
 export const RECOVERY_ENC_DOMAIN = {
   name: "WoCo Recovery Encryption",

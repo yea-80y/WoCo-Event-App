@@ -81,7 +81,7 @@
   // user signs in — so the guidance can be exact, never a guess. The load-bearing
   // rule is INDEPENDENCE from the primary login:
   //   - same KEY is impossible: chooseAndConnect() hard-blocks any guardian whose
-  //     address is auth.parent (Kernel) or auth.podAddress (the primary's raw
+  //     address is auth.parent (Kernel) or auth.seedAddress (the primary's raw
   //     deterministic EOA — PRF-EOA for passkey, Web3Auth EOA for web3auth).
   //   - same PROVIDER-fate is a soft warn added at connect time (1b).
   // A web3auth user signs in BY email/social, so their backup email/social must be
@@ -199,7 +199,7 @@
 
       // Hard block: the backup must not be one of this account's own keys (fate-sharing).
       const backupLc = backup.address.toLowerCase();
-      const ownKeys = [auth.parent, auth.podAddress].filter(Boolean).map(a => a!.toLowerCase());
+      const ownKeys = [auth.parent, auth.seedAddress].filter(Boolean).map(a => a!.toLowerCase());
       if (ownKeys.includes(backupLc)) {
         throw new Error("Pick a different wallet — your backup can't be a key that already controls this account.");
       }

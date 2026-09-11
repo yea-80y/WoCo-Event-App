@@ -1,6 +1,6 @@
 /**
  * `woco.edition.v1` / `woco.manifest.v2` — the v2 issuance formats
- * (issuer-curve migration PR 3; design record: HANDOVER-pod-curve-migration.md).
+ * (issuer-curve migration PR 3).
  *
  * What changed from `woco.ticket.v2` / `woco.manifest.v1`, and only this:
  *  - the issuer identity is a 20-byte secp256k1 ADDRESS (`IssuerAddress`),
@@ -9,10 +9,10 @@
  *  - `eventId` is GONE from both bodies (#443): it never matched the on-chain
  *    eventId, could not join a manifest to its registration, and had zero
  *    production readers. The chain binding is `manifestRef` alone;
- *  - validation is CLOSED-SCHEMA and refusing (the pod-cert discipline):
+ *  - validation is CLOSED-SCHEMA and refusing (the certificate rail's discipline):
  *    unknown fields, non-canonical hex and non-JSON-safe metadata are
  *    rejected at the boundary, never normalised;
- *  - "edition" replaces "POD"/"ticket" as the body noun — one shape serves
+ *  - "edition" replaces the retired body nouns — one shape serves
  *    both the ticket rail and standalone badge/collectible issuance.
  *
  * What did NOT change — the cryptographic surface underneath: DAG-CBOR
@@ -29,7 +29,7 @@
 
 import { isIssuerAddress, type IssuerAddress } from "../crypto/brands.js";
 import { isJsonSafeStatementValue } from "../statement/discipline.js";
-import type { Bytes32Hex } from "../pod/types.js";
+import type { Bytes32Hex } from "../object/types.js";
 import type { Hex0x } from "../types.js";
 
 export const EDITION_FORMAT = "woco.edition.v1" as const;

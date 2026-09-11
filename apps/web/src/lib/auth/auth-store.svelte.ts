@@ -24,11 +24,11 @@ import {
   clearSession,
 } from "./session-delegation.js";
 import {
-  requestPodIdentity,
-  restorePodSeed,
-  storePodSeed,
-  clearPodIdentity,
-} from "./pod-identity.js";
+  requestIdentitySeed,
+  restoreIdentitySeed,
+  storeIdentitySeed,
+  clearIdentitySeed,
+} from "./identity-seed.js";
 import {
   connectWallet,
   getConnectedAddress,
@@ -65,7 +65,7 @@ let _sessionAddress = $state<string | null>(null);
 // device. A BOOLEAN, not a key: the seed derives the encryption and issuing
 // keys on demand and no launch path holds a public key of its own any more
 // (#518). The seed itself is never mirrored into reactive state.
-let _podSeedPresent = $state(false);
+let _identitySeedPresent = $state(false);
 let _ready = $state(false);
 let _busy = $state(false);
 
@@ -81,23 +81,23 @@ let _web3authPrivateKey: string | null = null;
 // ZeroDev Kernel logins (passkey + web3auth). The Kernel smart-account address
 // is the parent identity; the identity seed stays on the raw signer key + its
 // EOA address (invariant #1 — deterministic, wallet-independent).
-//  - _podAddress: passkey PRF-EOA address — POD EIP-712 address field + AAD.
-//  - _web3authPodAddress: Web3Auth EOA address — the web3auth POD address + AAD
-//    (the Kernel parent is NOT the POD key; same invariant #1 as passkey).
+//  - _seedAddress: passkey PRF-EOA address — seed EIP-712 address field + AAD.
+//  - _web3authSeedAddress: Web3Auth EOA address — the Web3Auth seed address + AAD
+//    (the Kernel parent is NOT the seed key; same invariant #1 as passkey).
 //  - _kernel: the built Kernel (account + client + sudo validator), cached in
 //    memory after the first key ceremony of a session. Never persisted.
-let _podAddress: string | null = null;
-let _web3authPodAddress: string | null = null;
+let _seedAddress: string | null = null;
+let _web3authSeedAddress: string | null = null;
 let _kernel: BuiltKernel | null = null;
 
 // Cleanup function for wallet event listeners
 let _cleanupAccountListener: (() => void) | null = null;
 
-// In-flight singletons — coalesce concurrent ensureSession/ensurePodIdentity
+// In-flight singletons — coalesce concurrent ensureSession/ensureIdentitySeed
 // calls so parallel authGets after login don't each trigger their own EIP-712
 // prompt. First caller signs; the rest await the same promise.
 let _sessionInFlight: Promise<boolean> | null = null;
-let _podInFlight: Promise<boolean> | null = null;
+let _seedInFlight: Promise<boolean> | null = null;
 let _feedSignerInFlight: Promise<ContentFeedSigner | null> | null = null;
 
 // In-memory memo of the feed-signer ADDRESS for passive self-reads, always
@@ -112,7 +112,7 @@ let _feedSignerAddressMemo: { parent: string; address: string } | null = null;
 // ---------------------------------------------------------------------------
 
 const hasSession = $derived(_sessionAddress !== null);
-const hasPodIdentity = $derived(_podSeedPresent);
+const hasIdentitySeed = $derived(_identitySeedPresent);
 const isConnected = $derived(_kind !== "none" && _parent !== null);
 const isAuthenticated = $derived(isConnected && hasSession);
 
@@ -134,7 +134,7 @@ async function _getSigner(): Promise<EIP712Signer> {
     // (kernel-owner.ts). Replaces Kernel ERC-1271, which needed deployed +
     // owner==live-key + working RPC and 403-wedged recovered/rotated accounts
     // (2026-07 split-brain fix). Silent (no confirm dialog) like the Kernel
-    // signer it replaces. POD uses _getPodSigner() instead (invariant #1).
+    // signer it replaces. The seed uses _getSeedSigner() instead (invariant #1).
     await _ensurePasskeyKey();
     if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable for signer");
     return createLocalSigner(_passkeyPrivateKey, async () => true);
@@ -153,15 +153,15 @@ async function _getSigner(): Promise<EIP712Signer> {
 }
 
 /**
- * Signer used ONLY for POD identity derivation.
+ * Signer used ONLY for identity seed derivation.
  *
- * INVARIANT #1: POD must be derived from a DETERMINISTIC signature. For passkey
+ * INVARIANT #1: object must be derived from a DETERMINISTIC signature. For passkey
  * logins that is the raw PRF-EOA secp256k1 key (ethers Wallet → RFC-6979), NOT
  * the Kernel (smart-account 1271 signatures are non-deterministic and would
  * corrupt the user's encryption + ticket-signing identity). For every other
- * kind the POD signer is the same as the request signer.
+ * kind the object signer is the same as the request signer.
  */
-async function _getPodSigner(): Promise<EIP712Signer> {
+async function _getSeedSigner(): Promise<EIP712Signer> {
   if (_kind === "passkey") {
     await _ensurePasskeyKey();
     if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable for identity derivation");
@@ -170,7 +170,7 @@ async function _getPodSigner(): Promise<EIP712Signer> {
     );
   }
   if (_kind === "web3auth") {
-    // INVARIANT #1: POD derives from the raw Web3Auth secp256k1 key (ethers
+    // INVARIANT #1: object derives from the raw Web3Auth secp256k1 key (ethers
     // Wallet → RFC-6979 deterministic), NOT the Kernel (`_getSigner` returns the
     // non-deterministic 1271 signer, which would corrupt the identity seed).
     if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable for identity derivation");
@@ -180,20 +180,20 @@ async function _getPodSigner(): Promise<EIP712Signer> {
 }
 
 /**
- * Address used as the POD EIP-712 `address` field + encryption AAD.
+ * Address used as the seed EIP-712 `address` field + encryption AAD.
  *
- * INVARIANT #1: passkey POD is keyed by the PRF-EOA address (not the Kernel
+ * INVARIANT #1: the passkey seed is keyed by the PRF-EOA address (not the Kernel
  * parent), so the derived identity seed is stable across the Option 2 swap.
- * Kind-aware so a stale passkey `_podAddress` can never leak into another
+ * Kind-aware so a stale passkey `_seedAddress` can never leak into another
  * login method after an in-tab account switch.
  */
-function _getPodAddress(): string | null {
-  if (_kind === "passkey") return _podAddress ?? _parent;
-  // web3auth POD is keyed by the Web3Auth EOA, NOT the Kernel parent (invariant
+function _getSeedAddress(): string | null {
+  if (_kind === "passkey") return _seedAddress ?? _parent;
+  // The Web3Auth seed is keyed by the Web3Auth EOA, NOT the Kernel parent (invariant
   // #1). `_parent` here is the Kernel address, so it must NEVER be the fallback
-  // for a logged-in web3auth user — `_web3authPodAddress` is loaded at login and
+  // for a logged-in web3auth user — `_web3authSeedAddress` is loaded at login and
   // on restore before this is read.
-  if (_kind === "web3auth") return _web3authPodAddress ?? _parent;
+  if (_kind === "web3auth") return _web3authSeedAddress ?? _parent;
   return _parent;
 }
 
@@ -202,7 +202,7 @@ function _getPodAddress(): string | null {
  * own client-signed feeds. The address is the SOC owner + the registry value.
  *
  * Concurrent callers coalesce onto one establish ceremony (same pattern as
- * ensureSession/ensurePodIdentity): two parallel first-writes would otherwise
+ * ensureSession/ensureIdentitySeed): two parallel first-writes would otherwise
  * each fire a derive, and `signingRequest` auto-rejects an overlapping confirm
  * dialog — which surfaces as a signer failure with no visible prompt.
  */
@@ -232,9 +232,9 @@ async function _getContentFeedSignerInner(
   // and after every recovery. The "stored copy wins" rule that used to live in a
   // second at-rest blob now lives in exactly one place — the seed's AAD-bound
   // slot — which is what makes a rotated credential unable to fork the feeds.
-  const podAddr = _getPodAddress();
-  if (!podAddr) return null;
-  let seed = await restorePodSeed(podAddr);
+  const seedAddr = _getSeedAddress();
+  if (!seedAddr) return null;
+  let seed = await restoreIdentitySeed(seedAddr);
 
   if (!seed) {
     // Anti-divergence guard: a RECOVERED account's credential has ROTATED, so
@@ -242,7 +242,7 @@ async function _getContentFeedSignerInner(
     // existing feeds (and encrypted history) were written under — silently
     // forking them. Its real seed only comes from escrow/portability restore,
     // done at login. Reaching here means that restore didn't happen, so FAIL
-    // LOUD rather than fork. `ensurePodIdentity` carries the twin guard; this one
+    // LOUD rather than fork. `ensureIdentitySeed` carries the twin guard; this one
     // exists to throw a message that names the feeds, since a null return here
     // would read as "no feed signer" and fall back to platform signing.
     //
@@ -250,11 +250,11 @@ async function _getContentFeedSignerInner(
     // which gets the same durable binding and the same un-re-derivable seed but
     // has no PRF portability envelope. The binding is the correct signal (#149).
     //
-    // `_getPodAddress()`, NOT `_podAddress` (#174): the bare field is only ever
+    // `_getSeedAddress()`, NOT `_seedAddress` (#174): the bare field is only ever
     // assigned on passkey paths, so for a web3auth session it is null and
     // `_recoveryKernelFor` would return undefined at its first line — inert for
     // exactly the population the paragraph above describes.
-    if (await _recoveryKernelFor(_getPodAddress())) {
+    if (await _recoveryKernelFor(_getSeedAddress())) {
       throw new Error(
         "Recovered account feed signer unavailable — restore from recovery escrow required; refusing to derive a divergent key.",
       );
@@ -265,7 +265,7 @@ async function _getContentFeedSignerInner(
     if (!(await _ensureIdentitySeed(opts))) {
       throw new Error("Could not unlock your account keys — your content can't be signed without them.");
     }
-    seed = await restorePodSeed(podAddr);
+    seed = await restoreIdentitySeed(seedAddr);
     if (!seed) throw new Error("Could not unlock your account keys — your content can't be signed without them.");
   }
 
@@ -321,8 +321,8 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
   if (!parent) return null;
   if (_feedSignerAddressMemo?.parent === parent) return _feedSignerAddressMemo.address;
 
-  const podAddr = _getPodAddress();
-  const seed = podAddr ? await restorePodSeed(podAddr) : null;
+  const seedAddr = _getSeedAddress();
+  const seed = seedAddr ? await restoreIdentitySeed(seedAddr) : null;
   if (seed) {
     const address = deriveFeedSignerKey(seed).address;
     _feedSignerAddressMemo = { parent, address };
@@ -422,8 +422,8 @@ async function _readBackupInventoryUncached(parent: string): Promise<BackupInven
   // read, and "couldn't read" is not "no backups".
   const address = await _getContentFeedSignerAddress();
   if (!address) return { status: "unavailable", reason: "no feed signer on this device" };
-  const podAddr = _getPodAddress();
-  const seed = podAddr ? await restorePodSeed(podAddr) : null;
+  const seedAddr = _getSeedAddress();
+  const seed = seedAddr ? await restoreIdentitySeed(seedAddr) : null;
   if (!seed) return { status: "unavailable", reason: "no feed signer on this device" };
   const { privKey } = deriveFeedSignerKey(seed);
   try {
@@ -441,7 +441,7 @@ async function _readBackupInventoryUncached(parent: string): Promise<BackupInven
 }
 
 /**
- * Restore cached session + POD from IndexedDB (shared by all login methods).
+ * Restore cached session + seed from IndexedDB (shared by all login methods).
  * Passes the current `_parent` as the expected parent so a stale delegation
  * from a different identity can never be silently re-attached.
  */
@@ -451,13 +451,13 @@ async function _restoreCachedAuth(): Promise<void> {
   if (session) {
     _sessionAddress = session.sessionWallet.address;
   }
-  // POD is keyed by the PRF-EOA address for passkey (invariant #1), the parent
-  // for everyone else. restorePodSeed deletes the blob on an AAD mismatch, so
+  // The seed is keyed by the PRF-EOA address for passkey (invariant #1), the parent
+  // for everyone else. restoreIdentitySeed deletes the blob on an AAD mismatch, so
   // it must never be called with the Kernel address for a passkey user — the
   // PRF-EOA address is loaded from storage in init() before this runs.
-  const podAddr = _getPodAddress();
-  if (podAddr) {
-    _podSeedPresent = !!(await restorePodSeed(podAddr));
+  const seedAddr = _getSeedAddress();
+  if (seedAddr) {
+    _identitySeedPresent = !!(await restoreIdentitySeed(seedAddr));
   }
 }
 
@@ -486,14 +486,14 @@ async function _restoreAuthAfterRotation(): Promise<void> {
  * cached SESSION before adopting the new account — the session key + delegation
  * are still single-slot, so without this a delegation signed by the previous
  * wallet would be misattributed to the newly-logged-in identity (cross-identity
- * leak). The POD seed + feed signer are per-account keyed (podSeedKey /
+ * leak). The identity seed + feed signer are per-account keyed (identitySeedKey /
  * feedSignerKey) and left in place, so a switch back to the prior account restores
  * instantly; each account's blobs are wiped on ITS OWN logout (clearAllAuth). Only
  * the in-memory feed-signer memo must be reset, since it's keyed by the outgoing
  * parent.
  *
  * This used to say the blobs "are AAD-bound, so they cannot be misattributed".
- * That is FALSE and was load-bearing (#227, #233): the POD seed's AAD is derived
+ * That is FALSE and was load-bearing (#227, #233): the identity seed's AAD is derived
  * from the OWNER address, not the account, so two accounts reachable from one
  * credential share an AAD byte-for-byte and each other's seeds decrypt cleanly.
  * The AEAD cannot object, because there is nothing for it to object to. What
@@ -511,11 +511,11 @@ async function _clearStaleAuthForSwitch(address: string): Promise<void> {
 
 /**
  * Re-derive the raw PRF key + PRF-EOA address via a biometric prompt (if not
- * already in memory). This is the deterministic POD key source (invariant #1)
+ * already in memory). This is the deterministic seed-key source (invariant #1)
  * and the Kernel's sudo signer source — it never builds the Kernel itself.
  *
- * SINGLE-FLIGHT. `_getSigner` and `_getPodSigner` both call this, and a first
- * authenticated action can drive `ensureSession` + `ensurePodIdentity`
+ * SINGLE-FLIGHT. `_getSigner` and `_getSeedSigner` both call this, and a first
+ * authenticated action can drive `ensureSession` + `ensureIdentitySeed`
  * concurrently. Two ceremonies would mean two biometric prompts, and WebAuthn
  * rejects the second with an opaque NotAllowedError — which used to cascade
  * into wiping the credential metadata. Concurrent callers want the same key, so
@@ -525,14 +525,14 @@ async function _clearStaleAuthForSwitch(address: string): Promise<void> {
 let _passkeyKeyInFlight: Promise<void> | null = null;
 
 async function _ensurePasskeyKey(): Promise<void> {
-  if (_passkeyPrivateKey && _podAddress) return;
+  if (_passkeyPrivateKey && _seedAddress) return;
   if (_passkeyKeyInFlight) return _passkeyKeyInFlight;
   _passkeyKeyInFlight = (async () => {
     const result = await restorePasskeyAccount();
 
     // A biometric sheet can stay open across a sign-out: `clearAllAuth` nulls
-    // `_podAddress` AND deletes the KV slot, so an orphaned ceremony settling
-    // afterwards would find `sessionPodAddr` null and pass the guard below
+    // `_seedAddress` AND deletes the KV slot, so an orphaned ceremony settling
+    // afterwards would find `sessionSeedAddr` null and pass the guard below
     // VACUOUSLY — adopting whichever credential the picker returned into module
     // state. Today nothing can sign with it (every reader is `_kind`-gated and
     // every login path overwrites both fields first), but that is an invariant
@@ -545,21 +545,21 @@ async function _ensurePasskeyKey(): Promise<void> {
     // Identity guard. A discoverable fallback inside restorePasskeyAccount shows
     // the picker, and every WoCo passkey is labelled identically — so the user
     // can pick a DIFFERENT account than the one this session belongs to. Adopting
-    // it would sign PODs and requests with one identity under another's parent
+    // it would sign content and requests with one identity under another's parent
     // address (invariant #1 violated silently). A mismatch is a wrong pick, not a
     // new login — switching accounts goes through loginPasskey, which never calls
     // this mid-flight.
     //
-    // Compare against the IN-MEMORY `_podAddress` first. StorageKeys.POD_ADDRESS
+    // Compare against the IN-MEMORY `_seedAddress` first. StorageKeys.SEED_ADDRESS
     // is ONE global IDB slot shared by every tab and every login kind (web3auth
     // writes it too), so trusting it alone fails both ways: another tab logging
     // in as a different account would reject THIS session's correct passkey, and
     // another tab logging OUT would delete the slot and let the guard pass
-    // vacuously — permitting exactly the adoption it exists to stop. `_podAddress`
+    // vacuously — permitting exactly the adoption it exists to stop. `_seedAddress`
     // is set on every passkey session entry (init, all three loginPasskey paths,
     // recoverAndRekey), so it is the authority; KV is only a cold-start fallback.
-    const sessionPodAddr = _podAddress ?? (await getKV<string>(StorageKeys.POD_ADDRESS));
-    if (sessionPodAddr && sessionPodAddr.toLowerCase() !== result.address.toLowerCase()) {
+    const sessionSeedAddr = _seedAddress ?? (await getKV<string>(StorageKeys.SEED_ADDRESS));
+    if (sessionSeedAddr && sessionSeedAddr.toLowerCase() !== result.address.toLowerCase()) {
       // Unpin the credential we just proved wrong. `authenticatePasskey` writes
       // PASSKEY_CREDENTIAL for whatever the picker returned BEFORE this guard can
       // run, so a wrong pick leaves the wrong credential pinned: the next ceremony
@@ -588,7 +588,7 @@ async function _ensurePasskeyKey(): Promise<void> {
     }
 
     _passkeyPrivateKey = result.privateKey;
-    _podAddress = result.address; // PRF-EOA address — POD derivation/AAD key
+    _seedAddress = result.address; // PRF-EOA address — seed derivation/AAD key
   })();
   const inFlight = _passkeyKeyInFlight;
   try {
@@ -606,38 +606,38 @@ async function _ensurePasskeyKey(): Promise<void> {
  * (see StorageKeys.RECOVERED_KERNEL_BINDING). Each entry means: this device
  * recovered an account whose Kernel address is PRESERVED while its sudo owner was
  * rotated to the passkey whose PRF-EOA is the key. Migrates a legacy single-object
- * `{pod,kernel}` blob to the map shape transparently.
+ * `{seedAddress,kernel}` blob to the map shape transparently.
  */
 type RecoveryBindings = Record<string, string>;
 async function _getRecoveryBindings(): Promise<RecoveryBindings> {
-  const raw = await getKV<RecoveryBindings | { pod: string; kernel: string }>(
+  const raw = await getKV<RecoveryBindings | { seedAddress: string; kernel: string }>(
     StorageKeys.RECOVERED_KERNEL_BINDING,
   );
   if (!raw) return {};
   // Legacy single-object shape → map (one-time transparent migration).
-  if (typeof (raw as { pod?: unknown }).pod === "string") {
-    const legacy = raw as { pod: string; kernel: string };
-    return { [legacy.pod.toLowerCase()]: legacy.kernel };
+  if (typeof (raw as { seedAddress?: unknown }).seedAddress === "string") {
+    const legacy = raw as { seedAddress: string; kernel: string };
+    return { [legacy.seedAddress.toLowerCase()]: legacy.kernel };
   }
   return raw as RecoveryBindings;
 }
 
 /**
- * The preserved Kernel address bound to the passkey whose PRF-EOA is `podAddress`,
+ * The preserved Kernel address bound to the passkey whose PRF-EOA is `seedAddress`,
  * or undefined if this device holds no recovery binding for it. Callers use it as
  * the CREATE2 override so a recovered account rebuilds at its real (preserved)
  * address instead of the rotated credential's divergent counterfactual.
  */
-async function _recoveryKernelFor(podAddress: string | null): Promise<`0x${string}` | undefined> {
-  if (!podAddress) return undefined;
-  const kernel = (await _getRecoveryBindings())[podAddress.toLowerCase()];
+async function _recoveryKernelFor(seedAddress: string | null): Promise<`0x${string}` | undefined> {
+  if (!seedAddress) return undefined;
+  const kernel = (await _getRecoveryBindings())[seedAddress.toLowerCase()];
   return kernel ? (kernel as `0x${string}`) : undefined;
 }
 
 /** Upsert the binding for one passkey (never clobbers other accounts' bindings). */
-async function _putRecoveryBinding(podAddress: string, kernel: string): Promise<void> {
+async function _putRecoveryBinding(seedAddress: string, kernel: string): Promise<void> {
   const bindings = await _getRecoveryBindings();
-  bindings[podAddress.toLowerCase()] = kernel;
+  bindings[seedAddress.toLowerCase()] = kernel;
   await putKV(StorageKeys.RECOVERED_KERNEL_BINDING, bindings);
 }
 
@@ -648,7 +648,7 @@ async function _putRecoveryBinding(podAddress: string, kernel: string): Promise<
  * VERIFY ON-CHAIN that the preserved Kernel's current ECDSA owner equals this
  * device's PRF-EOA before trusting it — the chain, not the blob, is the authority.
  *
- * Pure check: returns `{ preserved, podSeed }` to apply; `null` ONLY when the read
+ * Pure check: returns `{ preserved, identitySeed }` to apply; `null` ONLY when the read
  * stack definitively established that no envelope chunk exists (the cacheable
  * answer for a never-recovered account); `{ orphaned }` when the envelope was
  * found and the chain ANSWERED that its preserved Kernel is owned by someone
@@ -657,16 +657,16 @@ async function _putRecoveryBinding(podAddress: string, kernel: string): Promise<
  * never a forgery; or `"unavailable"` for every other non-result — the read
  * failed, the envelope was unusable, or nobody could answer the owner check.
  * `"unavailable"` is treated as absent for THIS login but is never cached.
- * The caller does the storage writes (storePodSeed + binding) AFTER
+ * The caller does the storage writes (storeIdentitySeed + binding) AFTER
  * `_clearStaleAuthForSwitch`, which would otherwise wipe a freshly-stored
  * seed. The read is unauthenticated, so this works during login before any
  * session exists.
  */
 async function _verifyPortabilityEnvelope(
   passkeyPrivKey: string,
-  podAddress: string,
+  seedAddress: string,
 ): Promise<
-  | { preserved: `0x${string}`; podSeed: string }
+  | { preserved: `0x${string}`; identitySeed: string }
   | { orphaned: { preserved: string; onChainOwner: string } }
   | null
   | "unavailable"
@@ -693,7 +693,7 @@ async function _verifyPortabilityEnvelope(
     // poison the returning-device cache nor condemn the credential.
     const { readKernelEcdsaOwner } = await import("./kernel-account.js");
     const owner = await readKernelEcdsaOwner(opened.preservedKernelAddress);
-    const foreignOwner = provenOrphanOwner(owner, podAddress);
+    const foreignOwner = provenOrphanOwner(owner, seedAddress);
     if (foreignOwner) {
       return { orphaned: { preserved: opened.preservedKernelAddress, onChainOwner: foreignOwner } };
     }
@@ -703,7 +703,7 @@ async function _verifyPortabilityEnvelope(
     }
     return {
       preserved: opened.preservedKernelAddress as `0x${string}`,
-      podSeed: opened.podSeed,
+      identitySeed: opened.identitySeed,
     };
   } catch (e) {
     console.warn("[auth] portability envelope check failed (non-fatal):", e);
@@ -752,9 +752,9 @@ async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
 function _backfillGatherDeps(): import("./recovery-finalize.js").BackfillGatherDeps {
   return {
     getPasskeyPrivKey: () => _passkeyPrivateKey,
-    getPodAddress: () => _podAddress,
+    getSeedAddress: () => _seedAddress,
     recoveryKernelFor: _recoveryKernelFor,
-    restorePodSeed,
+    restoreIdentitySeed,
   };
 }
 
@@ -776,7 +776,7 @@ async function _ensureKernel(): Promise<void> {
   if (_kernel) return;
   if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable — cannot build Kernel");
   const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
-  const override = await _recoveryKernelFor(_podAddress);
+  const override = await _recoveryKernelFor(_seedAddress);
   const kernel = await buildKernelFromPrivateKey(
     _passkeyPrivateKey,
     override ? { address: override } : undefined,
@@ -806,7 +806,7 @@ async function _ensureKernelForWeb3Auth(): Promise<void> {
   if (_kernel) return;
   if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable — cannot build Kernel");
   const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
-  const override = await _recoveryKernelFor(_getPodAddress());
+  const override = await _recoveryKernelFor(_getSeedAddress());
   const kernel = await buildKernelFromPrivateKey(
     _web3authPrivateKey,
     override ? { address: override } : undefined,
@@ -845,7 +845,7 @@ function _retryWeb3AuthKeyInBackground(attempt = 0): void {
       // The same pairing check as boot (#183): the key that finally arrives must
       // belong to the identity already adopted, or the mismatch the boot check
       // refuses would be reintroduced here, asynchronously.
-      const d = decideWeb3AuthKeyRetry({ restore: r, adoptedPodAddr: _web3authPodAddress });
+      const d = decideWeb3AuthKeyRetry({ restore: r, adoptedSeedAddr: _web3authSeedAddress });
       if (d.action === "adopt") {
         _web3authPrivateKey = d.privateKey as `0x${string}`;
         return;
@@ -903,7 +903,7 @@ async function init(): Promise<void> {
         // Wallet not accessible: extension locked, uninstalled, or WC
         // pairing lapsed. The 30-day session key alone MUST NOT grant
         // authenticated access — a locked wallet = logged-out UX.
-        // Leave encrypted session + POD seed in IndexedDB untouched so the
+        // Leave encrypted session + identity seed in IndexedDB untouched so the
         // user gets back in with a single wallet unlock (no EIP-712 re-sign)
         // via loginWeb3(), which restores the cached auth if addresses match.
         _kind = "none";
@@ -926,21 +926,21 @@ async function init(): Promise<void> {
       }
     } else if (kind === "passkey") {
       const storedParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
-      const storedPodAddr = await getKV<string>(StorageKeys.POD_ADDRESS);
+      const storedSeedAddr = await getKV<string>(StorageKeys.SEED_ADDRESS);
       const hasCredential = await hasStoredPasskeyCredential();
 
-      if (hasCredential && storedParent && storedPodAddr) {
+      if (hasCredential && storedParent && storedSeedAddr) {
         // Connected state only — the Kernel (and raw PRF key) stay null until
         // first use; the biometric prompt is deferred to ensureSession /
-        // ensurePodIdentity. storedParent = Kernel address; storedPodAddr =
-        // PRF-EOA address (loaded BEFORE _restoreCachedAuth so POD restore uses
+        // ensureIdentitySeed. storedParent = Kernel address; storedSeedAddr =
+        // PRF-EOA address (loaded BEFORE _restoreCachedAuth so seed restore uses
         // the right AAD and never deletes the seed on a Kernel-address mismatch).
         _kind = "passkey";
         _parent = storedParent;
-        _podAddress = storedPodAddr;
+        _seedAddress = storedSeedAddr;
         await _restoreCachedAuth();
       } else {
-        // Missing POD_ADDRESS = a pre-Kernel-upgrade session (parent was the
+        // Missing SEED_ADDRESS = a pre-Kernel-upgrade session (parent was the
         // PRF-EOA, not the Kernel). Force a clean re-login so the parent becomes
         // the Kernel address rather than silently mixing identity layers.
         await clearAllAuth();
@@ -950,23 +950,23 @@ async function init(): Promise<void> {
       const { decideWeb3AuthRestore } = await import("./web3auth-restore-guard.js");
       const restore = await restoreWeb3AuthSession();
       const storedParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
-      const storedPodAddr = await getKV<string>(StorageKeys.POD_ADDRESS);
+      const storedSeedAddr = await getKV<string>(StorageKeys.SEED_ADDRESS);
       // The live session's key is paired with the STORED identity only when the
       // SDK's address is the EOA that identity names (#183). A half-completed
-      // sign-out on a shared device leaves A's PARENT/POD_ADDRESS behind; B's
+      // sign-out on a shared device leaves A's PARENT/SEED_ADDRESS behind; B's
       // session must not be adopted as A — the eager feed-signer step below
       // would otherwise derive A's signer from B's key and persist it under A.
-      const decision = decideWeb3AuthRestore({ restore, storedParent, storedPodAddr });
+      const decision = decideWeb3AuthRestore({ restore, storedParent, storedSeedAddr });
 
       if (decision.action === "adopt") {
         // Connected state only — the Kernel is rebuilt lazily on first use
         // (deferred-signing), so no eth_call here. storedParent = Kernel address;
-        // storedPodAddr = Web3Auth EOA (loaded BEFORE _restoreCachedAuth so POD
+        // storedSeedAddr = Web3Auth EOA (loaded BEFORE _restoreCachedAuth so object
         // restore uses the EOA AAD, never the Kernel address — invariant #1).
         _kind = "web3auth";
         _parent = storedParent!;
         _web3authPrivateKey = decision.privateKey as `0x${string}`;
-        _web3authPodAddress = storedPodAddr!;
+        _web3authSeedAddress = storedSeedAddr!;
         await _restoreCachedAuth();
         // Re-establish the feed signer on cold-restore too (silent). A refresh
         // keeps the blob, but a device that only ever restored (never logged in on
@@ -975,7 +975,7 @@ async function init(): Promise<void> {
       } else if (decision.action === "adopt-without-key") {
         // Web3Auth SDK couldn't init (dev dep-optimizer 504, or a network blip) —
         // a transient failure, NOT a logout. The WoCo session (session key,
-        // delegation, POD seed, feed signer) is fully persisted and independent of
+        // delegation, identity seed, feed signer) is fully persisted and independent of
         // the live provider, so stay logged in and reconnect the raw key in the
         // background instead of nuking a valid session on every refresh. Actions
         // that genuinely need the key (Kernel build, session renewal) lazily
@@ -984,7 +984,7 @@ async function init(): Promise<void> {
         // re-applies the pairing check before adopting the key.
         _kind = "web3auth";
         _parent = storedParent!;
-        _web3authPodAddress = storedPodAddr!;
+        _web3authSeedAddress = storedSeedAddr!;
         await _restoreCachedAuth();
         await _establishFeedSignerEagerly().catch(() => {}); // best-effort w/o key
         _retryWeb3AuthKeyInBackground();
@@ -1182,7 +1182,7 @@ function _verifyRecoveredBindingInBackground(
         // CREDENTIAL, not the session. Mirrors reprobeEnvelope's gate.
         const stillThisSession =
           _kind === kind &&
-          _getPodAddress()?.toLowerCase() === eoa.toLowerCase() &&
+          _getSeedAddress()?.toLowerCase() === eoa.toLowerCase() &&
           _parent?.toLowerCase() === kernel.toLowerCase();
         if (stillThisSession) {
           postOrphanedCredentialNotice(kind);
@@ -1210,7 +1210,7 @@ function _verifyRecoveredBindingInBackground(
 function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, passkeyPrivKey: string): void {
   const stillSignedInAs = (e: string, parent: string): boolean =>
     _kind === "passkey" &&
-    _podAddress?.toLowerCase() === e.toLowerCase() &&
+    _seedAddress?.toLowerCase() === e.toLowerCase() &&
     _parent?.toLowerCase() === parent.toLowerCase();
   setTimeout(() => {
     void (async () => {
@@ -1315,7 +1315,7 @@ async function loginWeb3(): Promise<boolean> {
     _kind = "web3";
     _parent = address;
 
-    // Restore any cached session/POD from a previous login with the same
+    // Restore any cached session/seed from a previous login with the same
     // parent. When unlocking MetaMask after init() skipped the session-only
     // path, this is the rehydration point — no EIP-712 re-prompt needed.
     await _restoreCachedAuth();
@@ -1362,11 +1362,11 @@ async function loginWeb3Auth(): Promise<boolean> {
         await _clearStaleAuthForSwitch(cachedKernel);
         await putKV(StorageKeys.AUTH_KIND, "web3auth" as AuthKind);
         await putKV(StorageKeys.PARENT_ADDRESS, cachedKernel);
-        await putKV(StorageKeys.POD_ADDRESS, address);
+        await putKV(StorageKeys.SEED_ADDRESS, address);
         _kind = "web3auth";
         _parent = cachedKernel;
         _web3authPrivateKey = privateKey;
-        _web3authPodAddress = address;
+        _web3authSeedAddress = address;
         _kernel = null;
         _passkeyPrivateKey = null;
         await _restoreCachedAuth();
@@ -1381,7 +1381,7 @@ async function loginWeb3Auth(): Promise<boolean> {
     // Kernelize: build the ZeroDev Kernel from the raw Web3Auth key. The Kernel
     // address (not the EOA) becomes the parent identity, so email users get the
     // gasless on-chain rails (likes/follows) — `attester == parent` holds because
-    // the Kernel is msg.sender. POD stays on the raw EOA key (invariant #1).
+    // the Kernel is msg.sender. The seed stays on the raw EOA key (invariant #1).
     //
     // If this web3auth key is the rotated owner of a RECOVERED account, its Kernel
     // address was preserved (≠ this key's counterfactual) — honour the durable
@@ -1427,13 +1427,13 @@ async function loginWeb3Auth(): Promise<boolean> {
 
     await putKV(StorageKeys.AUTH_KIND, "web3auth" as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, kernel.address);
-    // Web3Auth EOA persisted as the POD address so POD restores on reload with
-    // the correct AAD (invariant #1) — mirrors passkey's POD_ADDRESS handling.
-    await putKV(StorageKeys.POD_ADDRESS, address);
+    // Web3Auth EOA persisted as the seed address so the seed restores on reload with
+    // the correct AAD (invariant #1) — mirrors passkey's SEED_ADDRESS handling.
+    await putKV(StorageKeys.SEED_ADDRESS, address);
     _kind = "web3auth";
     _parent = kernel.address;
     _web3authPrivateKey = privateKey;
-    _web3authPodAddress = address;
+    _web3authSeedAddress = address;
     _kernel = kernel;
     _passkeyPrivateKey = null;
 
@@ -1548,7 +1548,7 @@ function prefetchCoinbaseSdk(): Promise<void> {
 async function loginCoinbase(): Promise<boolean> {
   // #173: the flag must hold even if some path other than the (already
   // gated) LoginModal button reaches this — CSW's 1271/6492 signatures are
-  // not byte-reproducible, so the POD identity it would mint forks on an
+  // not byte-reproducible, so the identity seed it would mint forks on an
   // ordinary logout→login.
   if (!FEATURES.coinbaseLoginAllowed) {
     console.warn("[auth] coinbase login refused: coinbaseLoginAllowed is off (#173)");
@@ -1644,11 +1644,11 @@ async function loginPasskeyResult(
         await _clearStaleAuthForSwitch(cachedKernel);
         await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
         await putKV(StorageKeys.PARENT_ADDRESS, cachedKernel);
-        await putKV(StorageKeys.POD_ADDRESS, account.address);
+        await putKV(StorageKeys.SEED_ADDRESS, account.address);
         _kind = "passkey";
         _parent = cachedKernel;
         _passkeyPrivateKey = account.privateKey;
-        _podAddress = account.address;
+        _seedAddress = account.address;
         _kernel = null;
         await _restoreCachedAuth();
         _scheduleKernelPrebuild();
@@ -1670,17 +1670,17 @@ async function loginPasskeyResult(
       // fast path. Owner staleness is re-checked in the background; the Kernel
       // rebuilds lazily at the preserved address via the binding (`_ensureKernel`
       // honours it and still asserts the parent).
-      const seed = await restorePodSeed(account.address);
+      const seed = await restoreIdentitySeed(account.address);
       if (seed) {
         const parent = override.toLowerCase();
         await _clearStaleAuthForSwitch(parent);
         await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
         await putKV(StorageKeys.PARENT_ADDRESS, parent);
-        await putKV(StorageKeys.POD_ADDRESS, account.address);
+        await putKV(StorageKeys.SEED_ADDRESS, account.address);
         _kind = "passkey";
         _parent = parent;
         _passkeyPrivateKey = account.privateKey;
-        _podAddress = account.address;
+        _seedAddress = account.address;
         _kernel = null;
         await _restoreCachedAuth();
         _verifyRecoveredBindingInBackground("passkey", override, account.address);
@@ -1693,7 +1693,7 @@ async function loginPasskeyResult(
     }
 
     // Build the ZeroDev Kernel; its deterministic address is the parent identity.
-    // The raw PRF key remains the POD source + the Kernel's ECDSA sudo signer.
+    // The raw PRF key remains the seed source + the Kernel's ECDSA sudo signer.
     // If this passkey is the rotated owner of a RECOVERED account, its Kernel
     // address was preserved (≠ this key's counterfactual) — honour the durable
     // binding so we log into the real account, not a fresh counterfactual one.
@@ -1707,7 +1707,7 @@ async function loginPasskeyResult(
     // proof this credential was orphaned by a recovery elsewhere (bindings are
     // written only after a confirmed rotation), so the login FAILS HONESTLY
     // (#255) instead of clearing state and falling through to a fresh
-    // counterfactual account. The binding and POD seed deliberately stay: the
+    // counterfactual account. The binding and identity seed deliberately stay: the
     // binding is what keeps the counterfactual path unreachable, and nothing
     // signs in, so the #233 foreign-seed landmine has no trigger. Only the
     // fast-path marker — a claim this read just disproved — is dropped.
@@ -1736,19 +1736,19 @@ async function loginPasskeyResult(
     //   (a) there is NO local binding — this may be the account opened on a 2ND device; OR
     //   (b) a binding exists but the seed was WIPED on logout (clearAllAuth drops
     //       it). Without (b) a plain logout→login of a recovered account comes back
-    //       with no seed → it cannot decrypt its own history, `ensurePodIdentity`
+    //       with no seed → it cannot decrypt its own history, `ensureIdentitySeed`
     //       would establish a DIVERGENT seed from the rotated credential, and every
     //       content feed it owns would fork under a new signer address. The envelope
     //       is the ONLY silent restore channel — the guardian escrow needs the
     //       guardian's signature.
-    // The presence probe below doubles as self-heal: restorePodSeed drops a
+    // The presence probe below doubles as self-heal: restoreIdentitySeed drops a
     // foreign-AAD blob.
     let portabilityRestore:
-      | { preserved: `0x${string}`; podSeed: string }
+      | { preserved: `0x${string}`; identitySeed: string }
       | null = null;
     let envelopeAbsent = false;
-    const podSeedPresent = !!(await restorePodSeed(account.address));
-    if (!override || !podSeedPresent) {
+    const identitySeedPresent = !!(await restoreIdentitySeed(account.address));
+    if (!override || !identitySeedPresent) {
       const check = await _verifyPortabilityEnvelope(account.privateKey, account.address);
       if (check === null) {
         envelopeAbsent = true; // definitive — makes this login cacheable below
@@ -1784,20 +1784,20 @@ async function loginPasskeyResult(
     // KDF of this seed, so storing the seed restores ownership of the recovered
     // account's existing content feeds by construction.
     if (portabilityRestore) {
-      await storePodSeed(account.address, portabilityRestore.podSeed);
+      await storeIdentitySeed(account.address, portabilityRestore.identitySeed);
       await _putRecoveryBinding(account.address, portabilityRestore.preserved);
       _feedSignerAddressMemo = null;
     }
 
     await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, kernel.address);
-    // PRF-EOA address persisted so POD restores on reload without a biometric
+    // PRF-EOA address persisted so the seed restores on reload without a biometric
     // and with the correct AAD (invariant #1).
-    await putKV(StorageKeys.POD_ADDRESS, account.address);
+    await putKV(StorageKeys.SEED_ADDRESS, account.address);
     _kind = "passkey";
     _parent = kernel.address;
     _passkeyPrivateKey = account.privateKey;
-    _podAddress = account.address;
+    _seedAddress = account.address;
     _kernel = kernel;
 
     // An applied envelope means a rotation put THIS credential in charge — any
@@ -1870,7 +1870,7 @@ async function login(method?: "web3" | "passkey"): Promise<boolean> {
 
 /**
  * Discard the stored session delegation so the next `ensureSession()` mints a
- * fresh one. Login state, POD identity and feed signer are all untouched.
+ * fresh one. Login state, identity seed and feed signer are all untouched.
  *
  * This exists for ONE case: the server rejected a delegation that every
  * client-side check still considers valid (`AuthErrorCode.SESSION_INVALID`).
@@ -1910,9 +1910,9 @@ async function ensureSession(): Promise<boolean> {
       // any more; on-chain actions still build it lazily.
       const expectedSigner =
         _kind === "passkey"
-          ? (_podAddress ?? undefined)
+          ? (_seedAddress ?? undefined)
           : _kind === "web3auth"
-            ? (_web3authPodAddress ?? undefined)
+            ? (_web3authSeedAddress ?? undefined)
             : undefined;
       const { sessionAddress } = await requestSessionDelegation(parent, signer, expectedSigner);
       _sessionAddress = sessionAddress;
@@ -1934,20 +1934,20 @@ async function ensureSession(): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// POD identity (lazy — called on first POD action)
+// identity seed (lazy — called on first object action)
 // ---------------------------------------------------------------------------
 
 /**
  * Establish this account's identity SEED, prompting for the one deterministic
  * EIP-712 signature if it is not already on this device. True = the seed is
- * readable now (so `getPodSeed`, the issuing key and the encryption key all
+ * readable now (so `getIdentitySeed`, the issuing key and the encryption key all
  * resolve); false = it is not, and the caller must not proceed as if it were.
  *
  * Returns a BOOLEAN, not a key (#518). It used to hand back the ed25519 public
  * key, which no launch path signs with — the seed is the thing, and every key
  * hangs off it by KDF.
  */
-async function ensurePodIdentity(): Promise<boolean> {
+async function ensureIdentitySeed(): Promise<boolean> {
   return _ensureIdentitySeed();
 }
 
@@ -1961,9 +1961,9 @@ async function ensurePodIdentity(): Promise<boolean> {
  * the signature genuinely is the user's decision.
  */
 async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boolean> {
-  if (_podSeedPresent) return true;
+  if (_identitySeedPresent) return true;
   if (!isConnected || !_parent) return false;
-  if (_podInFlight) return _podInFlight;
+  if (_seedInFlight) return _seedInFlight;
 
   // The SILENT establish (web3auth eager path only — see _ensureIdentitySeed's
   // doc) runs INSIDE login/restore flows that own `_busy` themselves; toggling
@@ -1971,24 +1971,24 @@ async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boo
   // a busy state of its own.
   const prompting = !opts.silent; // silent ⇔ the web3auth eager establish
   if (prompting) _busy = true;
-  _podInFlight = (async () => {
+  _seedInFlight = (async () => {
     try {
-      // POD is keyed by the PRF-EOA address for passkey (invariant #1), the
-      // parent for every other kind. _getPodAddress() reads the cached value;
-      // restorePodSeed below needs no signer, so resolve the address first.
-      const podAddr = _getPodAddress();
-      if (!podAddr) return false;
+      // The seed is keyed by the PRF-EOA address for passkey (invariant #1), the
+      // parent for every other kind. _getSeedAddress() reads the cached value;
+      // restoreIdentitySeed below needs no signer, so resolve the address first.
+      const seedAddr = _getSeedAddress();
+      if (!seedAddr) return false;
 
       // Prefer an already-stored seed over re-deriving from a fresh signature.
       // CRITICAL after recovery: the passkey credential (PRF-EOA) has rotated, so
-      // a fresh requestPodIdentity() would derive a DIVERGENT seed and clobber the
+      // a fresh requestIdentitySeed() would derive a DIVERGENT seed and clobber the
       // escrow-restored original — permanently breaking decryption of historical
       // encrypted data. Reusing the stored seed (escrow-restored, or a prior
       // derivation) also spares the user a redundant signature each session. For a
       // non-rotated credential the re-derived seed would be identical anyway, so
       // this never changes the identity — it only avoids the clobber + the prompt.
-      if (await restorePodSeed(podAddr)) {
-        _podSeedPresent = true;
+      if (await restoreIdentitySeed(seedAddr)) {
+        _identitySeedPresent = true;
         return true;
       }
 
@@ -1996,7 +1996,7 @@ async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boo
       // has a ROTATED credential, so re-deriving below would produce a DIVERGENT seed
       // and permanently break decryption of its historical data. Its real seed only
       // comes from escrow/portability restore (done at login). If it's absent here,
-      // return null (POD unavailable this session) rather than clobber it — login
+      // return null (seed unavailable this session) rather than clobber it — login
       // should have restored it; failing soft keeps historical data recoverable once
       // the restore path runs, whereas a divergent derive would corrupt it forever.
       //
@@ -2005,7 +2005,7 @@ async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boo
       // silently derived a divergent seed and made its encrypted claim history
       // permanently undecryptable (#149). The binding is the correct signal; kinds
       // that can never carry one (web3/coinbase/local) are unaffected.
-      if (await _recoveryKernelFor(podAddr)) {
+      if (await _recoveryKernelFor(seedAddr)) {
         console.error(
           "[auth] recovered account identity seed missing — refusing to re-derive a divergent seed",
         );
@@ -2014,31 +2014,31 @@ async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boo
 
       // No stored seed (first login on this device) → establish it with the
       // deterministic PRF-EOA signer (passkey) / parent signer (others).
-      // _getPodSigner() runs _ensurePasskeyKey() internally, so _podAddress is set.
+      // _getSeedSigner() runs _ensurePasskeyKey() internally, so _seedAddress is set.
       const silentRawKey = opts.silent && _kind === "web3auth" ? _web3authPrivateKey : null;
       const signer = silentRawKey
         ? createLocalSigner(silentRawKey, async () => true)
-        : await _getPodSigner();
+        : await _getSeedSigner();
       // External wallets are not under our control, so their determinism is
-      // CHECKED rather than assumed — see requestPodIdentity. Coinbase Smart
+      // CHECKED rather than assumed — see requestIdentitySeed. Coinbase Smart
       // Wallet is included on purpose: its 1271/6492 signatures are NOT
       // reproducible, so without the check it would establish a DIFFERENT seed
       // every time and fork the account silently; with it, the wallet is refused
       // loudly at setup, which is the honest answer until CSW feeds un-park.
-      await requestPodIdentity(podAddr, signer, {
+      await requestIdentitySeed(seedAddr, signer, {
         verifyDeterminism: _kind === "web3" || _kind === "coinbase",
       });
-      _podSeedPresent = true;
+      _identitySeedPresent = true;
       return true;
     } catch (e) {
       console.error("[auth] holder identity derivation failed:", e);
       return false;
     } finally {
       if (prompting) _busy = false;
-      _podInFlight = null;
+      _seedInFlight = null;
     }
   })();
-  return _podInFlight;
+  return _seedInFlight;
 }
 
 // ---------------------------------------------------------------------------
@@ -2048,7 +2048,7 @@ async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boo
 /** Run the outstanding steps in order, ticking the sheet's rail as each lands. */
 async function _runAccountSetupSteps(steps: AccountSetupStep[]): Promise<boolean> {
   for (const step of steps) {
-    const ok = step === "session" ? await ensureSession() : await ensurePodIdentity();
+    const ok = step === "session" ? await ensureSession() : await ensureIdentitySeed();
     if (!ok) return false;
     accountSetupRequest.markDone(step);
   }
@@ -2059,7 +2059,7 @@ async function _runAccountSetupSteps(steps: AccountSetupStep[]): Promise<boolean
  * Get this account ready to act on this device: session delegation, and — when
  * the action needs the seed — the account keys. Returns false if the person
  * declined; callers must then do nothing, exactly as they did when they called
- * `ensureSession`/`ensurePodIdentity` themselves.
+ * `ensureSession`/`ensureIdentitySeed` themselves.
  *
  * This exists because the call sites were COUNTING. They hard-coded "(1 of 2)"
  * and "(2 of 2)" step labels, which were wrong for the majority of logins: for
@@ -2076,7 +2076,7 @@ async function ensureAccountSetup(opts: { identity: boolean }): Promise<boolean>
   const plan = planAccountSetup({
     kind: _kind,
     hasSession,
-    hasSeed: hasPodIdentity,
+    hasSeed: hasIdentitySeed,
     identity: opts.identity,
     explainedBefore: hasExplainedAccountSetup(parent),
   });
@@ -2217,11 +2217,11 @@ async function setupAccountRecovery(
   if (!_kernel) throw new Error("Account unavailable — please sign in again");
   const kernelAddress = _kernel.address;
 
-  // The POD seed must exist to escrow it; derive it now if this is the first action.
-  await ensurePodIdentity();
-  const podAddr = _getPodAddress();
-  if (!podAddr) throw new Error("Could not access your identity key");
-  const seed = await restorePodSeed(podAddr);
+  // The identity seed must exist to escrow it; derive it now if this is the first action.
+  await ensureIdentitySeed();
+  const seedAddr = _getSeedAddress();
+  if (!seedAddr) throw new Error("Could not access your identity key");
+  const seed = await restoreIdentitySeed(seedAddr);
   if (!seed) throw new Error("Could not access your identity key — open your dashboard once, then retry");
 
   const { deriveGuardianKeys, sealRecoveryBundle, openRecoveryBundle } = await import(
@@ -2236,7 +2236,7 @@ async function setupAccountRecovery(
   // alongside it as a second independent secret; it is now a KDF of this seed, so
   // restoring the seed restores it byte-identically and a bundle can no longer be
   // written missing half of what an account needs.
-  const secrets: Record<string, string> = { podSeed: seed };
+  const secrets: Record<string, string> = { identitySeed: seed };
   // Still needed BELOW (the backup-inventory manifest is signed and sealed with
   // it), and cheap now: the seed above is already established, so this derives
   // rather than prompts.
@@ -2259,7 +2259,7 @@ async function setupAccountRecovery(
   // failing loudly at setup instead of silently at recovery time.
   const gk2 = await deriveGuardianKeys(backup.address, backup.signTypedData);
   const check = await openRecoveryBundle({ envelope, kernelAddress, role: "guardian", guardianKeypair: gk2.encryption });
-  if (check.secrets.podSeed !== seed || gk2.socSigner.address !== gk.socSigner.address) {
+  if (check.secrets.identitySeed !== seed || gk2.socSigner.address !== gk.socSigner.address) {
     throw new Error(
       "Your backup wallet's signature isn't reproducible, so recovery couldn't be guaranteed. " +
         "Try a different backup wallet.",
@@ -2324,7 +2324,7 @@ async function setupAccountRecovery(
   // only stamps postage, so it can no longer forge or withhold it. FATAL: this IS
   // the escrow. Do it BEFORE the irreversible on-chain write so a failed write
   // aborts with nothing committed (an installed recovery route with no escrow blob
-  // would leave POD unrecoverable).
+  // would leave the seed unrecoverable).
   const { uploadRecoveryEnvelopeSoc } = await import("../swarm/recovery-feed.js");
   await uploadRecoveryEnvelopeSoc({
     socSignerPrivKey: gk.socSigner.privKey,
@@ -2493,7 +2493,7 @@ async function revokeAccountBackup(
  * §11.6). The locked-out user is on a NEW device with no session; they have only
  * their backup wallet and the lost account's address. This:
  *
- *  0. PRE-FLIGHT: decrypts the POD escrow with the backup's derived X25519 key
+ *  0. PRE-FLIGHT: decrypts the recovery escrow with the backup's derived X25519 key
  *     BEFORE any irreversible step. Only the genuine account's envelope is sealed
  *     to this guardian (the seal key comes from an unforgeable backup signature),
  *     so a failed decrypt — wrong address typed, or a poisoned auto-find hint —
@@ -2570,7 +2570,7 @@ async function recoverAndRekey(args: {
     // Read the guardian-owned escrow SOC (owner derived LOCALLY from the backup
     // wallet — no platform signer in the loop, §13), falling back to the legacy
     // platform-signed feed for accounts protected before this migration. If there
-    // is nothing to restore, recovery would strand the POD identity — refuse before
+    // is nothing to restore, recovery would strand the identity seed — refuse before
     // touching the chain.
     // Tri-state, because this decides whether to tell a locked-out user their
     // account cannot be recovered (#228). The lenient read collapses "no escrow"
@@ -2597,14 +2597,14 @@ async function recoverAndRekey(args: {
     }
     if (!envelope) throw new Error("No backup found for that account — recovery isn't possible.");
 
-    let podSeed: string;
+    let identitySeed: string;
     try {
       const bundle = await openRecoveryBundle({ envelope, kernelAddress: target, role: "guardian", guardianKeypair: gk.encryption });
-      if (!bundle.secrets.podSeed) throw new Error("missing podSeed");
+      if (!bundle.secrets.identitySeed) throw new Error("missing identitySeed");
       // The whole account: restored verbatim, and the feed signer, issuing key and
       // encryption key all fall back out of it — so the recovered account keeps
       // owning the feeds it wrote and the issuer identity it published under.
-      podSeed = bundle.secrets.podSeed;
+      identitySeed = bundle.secrets.identitySeed;
     } catch (e) {
       // An envelope from a NEWER app version is the one failure that is not
       // "wrong wallet" — the version is public metadata on a public feed, so
@@ -2648,7 +2648,7 @@ async function recoverAndRekey(args: {
     // (1) New owner credential on THIS device. passkey → a fresh PRF-EOA;
     // web3auth → an email/social login whose EOA becomes the new sudo owner (the
     // account STAYS web3auth — owner decision 2026-07-02, not forced to passkey).
-    // Either branch yields {newOwnerAddress, newOwnerPrivKey}; the POD seed is
+    // Either branch yields {newOwnerAddress, newOwnerPrivKey}; the identity seed is
     // re-homed under the new owner EOA (PRF-EOA for passkey, Web3Auth EOA otherwise).
     let newOwnerAddress: string;
     let newOwnerPrivKey: `0x${string}`;
@@ -2665,7 +2665,7 @@ async function recoverAndRekey(args: {
 
       // (1b) COLLISION GUARD — a web3auth login yields ONE deterministic key per
       // identity, so this is the only path that can point an EXISTING key at a
-      // DIFFERENT account. Doing so overwrites the other account's POD seed under a
+      // DIFFERENT account. Doing so overwrites the other account's identity seed under a
       // shared AAD, which makes it both unreachable AND, later, silently openable
       // by the wrong account. See recovery-owner-collision.ts for the full chain.
       //
@@ -2685,18 +2685,18 @@ async function recoverAndRekey(args: {
           return null;
         }
       };
-      let podSeedPresent: boolean | null;
+      let identitySeedPresent: boolean | null;
       try {
-        podSeedPresent = !!(await restorePodSeed(newOwnerAddress));
+        identitySeedPresent = !!(await restoreIdentitySeed(newOwnerAddress));
       } catch {
-        podSeedPresent = null; // read FAILED — not evidence that the slot is free
+        identitySeedPresent = null; // read FAILED — not evidence that the slot is free
       }
       const counterfactualAddress = await counterfactualKernelOf(newOwnerAddress);
       const evidence = {
         newOwnerEoa: newOwnerAddress,
         targetKernel: target,
         existingBinding: (await localOrNull(() => _recoveryKernelFor(newOwnerAddress))) ?? undefined,
-        podSeedPresent,
+        identitySeedPresent,
         cachedKernel: await localOrNull(() => readCachedKernelAddress("web3auth", newOwnerAddress)),
         verifiedBinding: await localOrNull(() => readVerifiedBinding("web3auth", newOwnerAddress)),
         counterfactualAddress,
@@ -2749,7 +2749,7 @@ async function recoverAndRekey(args: {
       newOwnerAddress = fresh.address; // PRF-EOA == ECDSA sudo owner of the rebuilt Kernel
       newOwnerPrivKey = fresh.privateKey;
     }
-    const newPodAddress = newOwnerAddress;
+    const newSeedAddress = newOwnerAddress;
 
     // (2) Guardian (backup wallet) calls doRecovery → rotate sudo to the new owner.
     onProgress?.("Approve in your backup wallet to move this account to your new sign-in…");
@@ -2866,7 +2866,7 @@ async function recoverAndRekey(args: {
     const kernel = await buildKernelFromPrivateKey(newOwnerPrivKey, { address: target });
 
     // (4) Establish the session as the recovered account (mirrors loginPasskey,
-    // but pinned to the preserved address with the escrow-restored POD seed).
+    // but pinned to the preserved address with the escrow-restored identity seed).
     // Clear any stale auth on this device FIRST — it drops the cached SESSION,
     // which belongs to whatever account was here before. (Same-account recovery
     // is the case it deliberately skips; `resetSession` below is what covers it.)
@@ -2884,16 +2884,16 @@ async function recoverAndRekey(args: {
     // Kernel-address mismatch, and the next full login landed in the counterfactual
     // and cached it — because the envelope back-fill requires the binding that was
     // never written. Writing it first makes a half-finished commit heal instead.
-    await _putRecoveryBinding(newPodAddress, target);
+    await _putRecoveryBinding(newSeedAddress, target);
     // The escrow-restored seed re-derives the ORIGINAL feed signer, so the
     // recovered account keeps ownership of its existing content feeds rather than
     // deriving a new address from the rotated credential — by construction, with
     // no second secret to store and no way for the two to fall out of step.
     // AFTER _clearStaleAuthForSwitch, which clears it.
-    await storePodSeed(newPodAddress, podSeed);
+    await storeIdentitySeed(newSeedAddress, identitySeed);
     await putKV(StorageKeys.AUTH_KIND, newOwnerKind as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, target);
-    await putKV(StorageKeys.POD_ADDRESS, newPodAddress);
+    await putKV(StorageKeys.SEED_ADDRESS, newSeedAddress);
     // Cross-device portability (passkey only): `_maybeBackfillPortabilityEnvelope`
     // writes a PRF-sealed envelope on the first `ensureSession` after this ceremony,
     // so a passkey-recovered account can be re-opened on a THIRD device. A web3auth
@@ -2904,19 +2904,19 @@ async function recoverAndRekey(args: {
     _parent = target;
     if (newOwnerKind === "web3auth") {
       _web3authPrivateKey = newOwnerPrivKey;
-      _web3authPodAddress = newPodAddress;
+      _web3authSeedAddress = newSeedAddress;
       _passkeyPrivateKey = null;
     } else {
       _passkeyPrivateKey = newOwnerPrivKey;
       _web3authPrivateKey = null;
-      _web3authPodAddress = null;
+      _web3authSeedAddress = null;
     }
-    _podAddress = newPodAddress;
+    _seedAddress = newSeedAddress;
     _kernel = kernel;
     // Mark the escrow-restored seed present so the dashboard decrypts immediately
-    // and ensurePodIdentity short-circuits (never re-derives a divergent seed from
+    // and ensureIdentitySeed short-circuits (never re-derives a divergent seed from
     // the rotated credential).
-    _podSeedPresent = !!(await restorePodSeed(newPodAddress));
+    _identitySeedPresent = !!(await restoreIdentitySeed(newSeedAddress));
 
     // Kill the session the rotation just invalidated — LAST, immediately before
     // the restore that would otherwise resurrect it (client-side twin of #200's
@@ -3059,15 +3059,15 @@ async function logout(opts: { force?: boolean } = {}): Promise<void> {
 
 async function clearAllAuth(): Promise<void> {
   // Capture the active account's addresses BEFORE the slot wipes below reset them —
-  // needed to target this account's per-account POD-seed / feed-signer slots.
-  const podAddr = _getPodAddress() ?? undefined;
+  // needed to target this account's per-account identity-seed / feed-signer slots.
+  const seedAddr = _getSeedAddress() ?? undefined;
   const parentAddr = _parent ?? undefined;
 
   // ORDER + ISOLATION ARE LOAD-BEARING (#183). The identity keys go FIRST and
   // every step is individually guarded: this used to be a straight sequence of
   // awaits with the identity keys last, so an IndexedDB error or a failed
   // dynamic import anywhere above them left AUTH_KIND / PARENT_ADDRESS /
-  // POD_ADDRESS behind while the rest of the sign-out completed — and the next
+  // SEED_ADDRESS behind while the rest of the sign-out completed — and the next
   // sign-in on a shared device then restored as the previous person (the
   // precondition for the web3auth pairing bug, and plausibly for others). A
   // step failing is logged and the sweep continues; the in-memory state is
@@ -3083,13 +3083,13 @@ async function clearAllAuth(): Promise<void> {
     }
   };
   await step("identity-keys", () =>
-    Promise.all([delKV(StorageKeys.AUTH_KIND), delKV(StorageKeys.PARENT_ADDRESS), delKV(StorageKeys.POD_ADDRESS)]),
+    Promise.all([delKV(StorageKeys.AUTH_KIND), delKV(StorageKeys.PARENT_ADDRESS), delKV(StorageKeys.SEED_ADDRESS)]),
   );
   await step("session", () => clearSession());
   // Dropping the seed drops the feed signer, the issuing key and the encryption
   // key with it — there is one secret at rest now, so there is one thing to wipe
   // and no way to wipe half an account on a shared device.
-  await step("pod-identity", () => clearPodIdentity(podAddr));
+  await step("identity-seed", () => clearIdentitySeed(seedAddr));
   // Legacy slots from builds that stored the feed signer as its OWN secret and
   // cached its address in cleartext. Nothing writes either any more; both are
   // swept so a device carrying one does not keep an orphaned key blob (and a
@@ -3114,14 +3114,14 @@ async function clearAllAuth(): Promise<void> {
   _kind = "none";
   _parent = null;
   _sessionAddress = null;
-  _podSeedPresent = false;
+  _identitySeedPresent = false;
   _passkeyPrivateKey = null;
   _web3authPrivateKey = null;
-  _podAddress = null;
-  _web3authPodAddress = null;
+  _seedAddress = null;
+  _web3authSeedAddress = null;
   _kernel = null;
   _sessionInFlight = null;
-  _podInFlight = null;
+  _seedInFlight = null;
   _feedSignerInFlight = null;
   _passkeyKeyInFlight = null;
   _feedSignerAddressMemo = null;
@@ -3166,13 +3166,13 @@ export const auth = {
   // #1); the parent address for every other kind. Seed lookups MUST use this,
   // NOT auth.parent — for passkey, parent is the Kernel address and the seed is
   // not stored there.
-  get podAddress() { return _getPodAddress(); },
+  get seedAddress() { return _getSeedAddress(); },
   get ready() { return _ready; },
   get busy() { return _busy; },
   // Display-only login progress for the modal's authenticating scene.
   get loginStage() { return _loginStage; },
   get hasSession() { return hasSession; },
-  get hasPodIdentity() { return hasPodIdentity; },
+  get hasIdentitySeed() { return hasIdentitySeed; },
   get isConnected() { return isConnected; },
   get isAuthenticated() { return isAuthenticated; },
 
@@ -3189,9 +3189,9 @@ export const auth = {
   ensureSession,
   resetSession,
   logout,
-  ensurePodIdentity,
+  ensureIdentitySeed,
   // The entry point for "make this account ready to act" — call this, not
-  // ensureSession/ensurePodIdentity in sequence, and never count prompts.
+  // ensureSession/ensureIdentitySeed in sequence, and never count prompts.
   ensureAccountSetup,
   ensureEasSessionKey,
   grantSpendPermission,
@@ -3212,11 +3212,11 @@ export const auth = {
   // The RAW identity seed, BOUND to the address it is actually keyed by, so no
   // caller has to know which that is (and none can pick wrong). For passkey it
   // is the PRF-EOA address, NOT the Kernel parent (invariant #1); reaching for
-  // `restorePodSeed(auth.parent)` reads a slot that is never written. Every
+  // `restoreIdentitySeed(auth.parent)` reads a slot that is never written. Every
   // key the account owns is a KDF of this: the X25519 encryption key, the
   // secp256k1 issuing key, and — on the out-of-launch-scope credit/cert rails
   // only — the ed25519 holder key. Returns null when not logged in.
-  getPodSeed: () => { const a = _getPodAddress(); return a ? restorePodSeed(a) : Promise.resolve(null); },
+  getIdentitySeed: () => { const a = _getSeedAddress(); return a ? restoreIdentitySeed(a) : Promise.resolve(null); },
   // Content-feed signer (Phase B) — the key the user signs their own content
   // feeds with. null = this kind/state can't own feeds (fall back to platform).
   getContentFeedSigner: () => _getContentFeedSigner(),

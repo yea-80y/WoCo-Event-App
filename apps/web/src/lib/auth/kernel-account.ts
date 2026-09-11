@@ -11,9 +11,9 @@
  * via viem's universal validator — no server change.
  *
  * INVARIANTS (crypto-lead, see docs/ZERODEV_PASSKEY_INTEGRATION_PLAN.md):
- *  - #1 POD identity is NEVER derived from the Kernel. Smart-account signatures
- *    are non-deterministic; POD stays on the raw PRF key + PRF-EOA address
- *    (auth-store `_getPodSigner` / `_podAddress`).
+ *  - #1 identity seed is NEVER derived from the Kernel. Smart-account signatures
+ *    are non-deterministic; the seed stays on the raw PRF key + PRF-EOA address
+ *    (auth-store `_getSeedSigner` / `_seedAddress`).
  *  - #4 The sudo signer is exposed behind `KernelSudoValidator` so the
  *    post-buildathon swap to @zerodev/passkey-validator (Option 2) is a change
  *    to this file only.
@@ -997,7 +997,7 @@ export async function revokeGuardianOnChain(
 //    `onUninstall`, so `allowed[…]` survives. RE-INSTALLING against the same hook
 //    address resurrects every past guardian.
 //  - it cannot un-disclose the escrow: each guardian's SOC still holds a bundle
-//    sealed to it (podSeed + feed-signer key). Removal ends TAKEOVER, not the
+//    sealed to it (identitySeed + feed-signer key). Removal ends TAKEOVER, not the
 //    secrets a backup was already given.
 
 /**

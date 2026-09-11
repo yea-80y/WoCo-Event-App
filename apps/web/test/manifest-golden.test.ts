@@ -21,8 +21,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { issuingAddress } from "@woco/shared";
-import { buildEventManifests } from "../src/lib/pod/event-builder.js";
-import { buildCertBadgeManifest } from "../src/lib/pod/cert-builder.js";
+import { buildEventManifests } from "../src/lib/object/event-builder.js";
+import { buildCertBadgeManifest } from "../src/lib/object/cert-builder.js";
 
 const PRIV = new Uint8Array(32).fill(7);
 const AT = "2026-08-21T00:00:00.000Z";

@@ -196,7 +196,7 @@ export async function getSlotDataLedger(
 
 /**
  * All on-chain slot indices currently owned by `owner` — the TRUSTLESS holdings
- * source for POD gating. Reads `SlotClaimed` logs filtered by the indexed
+ * source for object gating. Reads `SlotClaimed` logs filtered by the indexed
  * `(eventId, owner)` topics. Same event topology as V2.
  */
 export async function querySlotsOwnedLedger(

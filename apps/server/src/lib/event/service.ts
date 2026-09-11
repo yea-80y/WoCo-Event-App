@@ -10,8 +10,8 @@ import { readContentFeedJson, invalidateContentFeedVersion } from "../swarm/soc-
 import { whitelistHashes } from "../swarm/whitelist.js";
 import { getActiveChainId } from "../chain/event-contract.js";
 import { assertNoOrders } from "./delete-safety.js";
-import { validatePodGate } from "../pod/gate-check.js";
-import { upsertCreatorPod } from "../pod/directory.js";
+import { validateObjectGate } from "../object/gate-check.js";
+import { upsertCreatorObject } from "../object/directory.js";
 import { recordOnChainEventId, applyOnChainEventIds } from "./onchain-registry.js";
 import { setListed, setTombstoned } from "./listing-state.js";
 import { cardFromFeed, getEventsSnapshot, scheduleSnapshotRebuild } from "./directory-snapshot.js";
@@ -120,7 +120,7 @@ export async function createEventV2(opts: {
     saleStart?: string;
     saleEnd?: string;
     payment?: import("@woco/shared").PaymentConfig;
-    gate?: import("@woco/shared").PodGate | import("@woco/shared").PodGateGroup;
+    gate?: import("@woco/shared").ObjectGate | import("@woco/shared").ObjectGateGroup;
   }>;
   encryptionKey?: string;
   orderFields?: OrderField[];
@@ -132,7 +132,7 @@ export async function createEventV2(opts: {
    *  entries as the discovery carrier. Absent ⇒ legacy platform-signed write. */
   creatorFeedSigner?: Hex0x;
   /** Builder's selected gateway (the builder IS the event creator). Etherna ⇒
-   *  event content (image, pods, manifests) is stamped on the organiser's Etherna
+   *  event content (image, objects, manifests) is stamped on the organiser's Etherna
    *  batch; otherwise the WoCo bee. The global directory always stays on WoCo. */
   gatewayUrl?: string;
   onProgress?: (p: CreateProgress) => void;
@@ -157,17 +157,17 @@ export async function createEventV2(opts: {
 
   const tStart = Date.now();
   const createdAt = new Date().toISOString();
-  const totalPods = series.reduce((n, s) => n + s.totalSupply, 0);
+  const totalObjects = series.reduce((n, s) => n + s.totalSupply, 0);
 
   // ── Validate all manifests before touching Swarm ─────────────────────
   for (const s of series) {
     validateSeriesManifest(s);
     // Chain-validate any gate at the write boundary so enforcement can trust
     // the stored gate (manifestRef↔eventId binding verified on-chain). See
-    // validatePodGate — closes the silent wrong-badge gap.
+    // validateObjectGate — closes the silent wrong-badge gap.
     if (s.gate) {
-      const v = await validatePodGate(s.gate);
-      if (!v.ok) throw new Error(`Series ${s.seriesId}: invalid POD gate — ${v.error}`);
+      const v = await validateObjectGate(s.gate);
+      if (!v.ok) throw new Error(`Series ${s.seriesId}: invalid object gate — ${v.error}`);
     }
   }
 
@@ -179,17 +179,17 @@ export async function createEventV2(opts: {
   // earlier phase throws before we reach the await.
   imagePromise.catch(() => {});
 
-  // ── Phase 2: image upload (pod bodies are NOT uploaded) ───────────────
+  // ── Phase 2: image upload (object bodies are NOT uploaded) ───────────────
   // The per-edition bodies are never fetched by the claim/payment/order
   // paths — those read `blob.signedManifest` and recompute the on-chain digest
   // from `signedManifest.body` (events.ts, stripe.ts, orders.ts); none read
-  // `podRefs`. The on-chain anchor is the manifest digest (over the Merkle
+  // `objectRefs`. The on-chain anchor is the manifest digest (over the Merkle
   // `metadataRoot`, already validated in-memory above via buildEditionTree), so
   // uploading N copies of near-identical bodies was pure cost (the dominant
-  // create-step latency, ~N serialised /bytes writes). podRefs is left empty;
+  // create-step latency, ~N serialised /bytes writes). objectRefs is left empty;
   // a future Merkle-inclusion claim path (B2) can rebuild refs from the bodies
   // the client already holds. See EDITIONS_PUBLISH_SPEED handover.
-  emit("pods", totalPods, totalPods, "Tickets prepared");
+  emit("objects", totalObjects, totalObjects, "Tickets prepared");
   const imageHash = await imagePromise;
   emit("image", 1, 1, "Image uploaded");
   void whitelistHashes([imageHash]).catch((err) =>
@@ -207,7 +207,7 @@ export async function createEventV2(opts: {
       const blob: SeriesManifestBlob = {
         v: 2,
         signedManifest: s.signedManifest,
-        podRefs: [],
+        objectRefs: [],
         manifestDigestHex,
       };
       const swarmManifestRef = await uploadToBytes(JSON.stringify(blob), batchSelection);
@@ -292,7 +292,7 @@ export async function createEventV2(opts: {
   ).catch((err) => console.error("[event] Creator index update failed (non-critical):", err));
 
   emit("finalize", 1, 1, "Event published!");
-  console.log(`[event] v2 event created — ${eventId} (${series.length} series, ${totalPods} pods, ${Date.now() - tStart}ms)`);
+  console.log(`[event] v2 event created — ${eventId} (${series.length} series, ${totalObjects} objects, ${Date.now() - tStart}ms)`);
   return eventFeed;
 }
 
@@ -353,13 +353,13 @@ export async function confirmSeriesOnChain(
     ...(updated.creatorFeedSigner ? { creatorFeedSigner: updated.creatorFeedSigner } : {}),
   }]);
 
-  // Surface this series as a `ticket` POD type in the creator's POD directory
-  // (powers the #/creator/pods manager + <PodPicker>). Fire-and-forget: the
+  // Surface this series as a `ticket` object type in the creator's object directory
+  // (powers the #/creator/objects manager + <ObjectPicker>). Fire-and-forget: the
   // on-chain confirmation must not fail if the directory write hiccups. Keyed
   // by manifestRef, so the upsert also patches onChainEventId on re-confirm.
   const series = updated.series.find((s) => s.seriesId === seriesId);
   if (series?.manifestRef) {
-    void upsertCreatorPod(updated.creatorAddress, {
+    void upsertCreatorObject(updated.creatorAddress, {
       manifestRef: series.manifestRef,
       kind: "ticket",
       name: series.name,
@@ -371,7 +371,7 @@ export async function confirmSeriesOnChain(
       createdAt: updated.createdAt,
       updatedAt: new Date().toISOString(),
     }).catch((err) =>
-      console.error("[event] POD directory upsert failed (non-critical):", err),
+      console.error("[event] object directory upsert failed (non-critical):", err),
     );
   }
 

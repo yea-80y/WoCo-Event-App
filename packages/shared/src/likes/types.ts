@@ -2,7 +2,7 @@
  * EAS likes / following (buildathon #4) — single source of truth for the
  * on-chain like primitive shared by client write path and server projection.
  *
- * A "like" is an EAS attestation on Arbitrum Sepolia — NOT an NFT, NOT a POD.
+ * A "like" is an EAS attestation on Arbitrum Sepolia — NOT an NFT, NOT an object.
  * It points at a per-entity `subject` (`bytes32`): a brand's sub-ENS namehash
  * (profile) or an event's on-chain eventId (event). The attester is the user's
  * own account address; the like keys to it forever. like = attest, unlike =

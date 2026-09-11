@@ -2,7 +2,7 @@ import type { AuthErrorCode } from "../types.js";
 
 export type AuthKind = "web3" | "passkey" | "web3auth" | "coinbase" | "zupass" | "none";
 
-/** Callback that signs EIP-712 typed data — used by session delegation + POD identity */
+/** Callback that signs EIP-712 typed data — used by session delegation + identity seed */
 export type EIP712Signer = (
   domain: Record<string, unknown>,
   types: Record<string, Array<{ name: string; type: string }>>,
@@ -36,8 +36,8 @@ export interface SessionDelegation {
   parentSig: string;
 }
 
-/** EIP-712 POD identity derivation message (deterministic, fixed nonce) */
-export interface PodIdentityMessage {
+/** EIP-712 identity seed derivation message (deterministic, fixed nonce) */
+export interface IdentitySeedMessage {
   purpose: string;
   address: string;
   nonce: string;

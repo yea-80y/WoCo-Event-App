@@ -116,7 +116,7 @@ export function getBindingsForEvent(eventId: string): GateBinding[] {
  * THE RECORD IS BUILT FIELD BY FIELD, never spread from the caller's object,
  * and that is a guard rather than a style: this store is the only definition of
  * what a binding IS, and a spread let any caller persist any extra property it
- * happened to be holding. That is exactly how the self-declared `podPubKey`
+ * happened to be holding. That is exactly how the self-declared `holderPubKey`
  * reached disk unverified (#345) — a route read it off an untrusted body and
  * handed the whole object through. Whitelisting here means a future caller
  * cannot make that mistake again without editing this list, which is a decision

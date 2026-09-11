@@ -3,10 +3,10 @@
  * CLIENT_FEED_SIGNER_HANDOVER.md step 4).
  *
  * A WoCo-guardian *recovery* rotates a passkey Kernel's on-chain owner while
- * PRESERVING the Kernel address, and restores the original POD seed from escrow.
+ * PRESERVING the Kernel address, and restores the original identity seed from escrow.
  * Both facts get written to the recovery DEVICE's IndexedDB only, so the recovered
  * account is single-device (a second device shows a divergent counterfactual
- * address + a divergent POD identity). This module carries those preserved
+ * address + a divergent identity seed). This module carries those preserved
  * secrets in a tiny record any device with the SAME passkey can fetch and open:
  *
  *  - The record is a Single-Owner-Chunk owned by a key DERIVED from the passkey's
@@ -95,16 +95,16 @@ export async function derivePortabilityKeys(passkeyPrivKey: string): Promise<Por
 export async function writePortabilityEnvelope(args: {
   passkeyPrivKey: string;
   preservedKernelAddress: string;
-  podSeed: string;
+  identitySeed: string;
 }): Promise<void> {
-  const { passkeyPrivKey, preservedKernelAddress, podSeed } = args;
+  const { passkeyPrivKey, preservedKernelAddress, identitySeed } = args;
   const keys = await derivePortabilityKeys(passkeyPrivKey);
 
   // The preserved Kernel goes INSIDE the sealed bundle (v2 privacy fix) — never
   // cleartext on the chunk, so a reader can't link socOwnerAddress → real Kernel.
   const secrets: Record<string, string> = {
     preservedKernelAddress: preservedKernelAddress.toLowerCase(),
-    podSeed,
+    identitySeed,
   };
 
   // Bind the AAD + envelope.kernelAddress to the PRF-derived socOwnerAddress
@@ -137,7 +137,7 @@ export async function writePortabilityEnvelope(args: {
 
 export interface OpenedPortability {
   preservedKernelAddress: string;
-  podSeed: string;
+  identitySeed: string;
 }
 
 /**
@@ -224,15 +224,15 @@ export async function readPortabilityEnvelope(args: {
       guardianKeypair: keys.hpke,
     });
     const preservedKernelAddress = bundle.secrets.preservedKernelAddress;
-    const podSeed = bundle.secrets.podSeed;
-    if (!preservedKernelAddress || !podSeed) {
+    const identitySeed = bundle.secrets.identitySeed;
+    if (!preservedKernelAddress || !identitySeed) {
       return { status: "unusable", reason: "opened bundle is missing required secrets" };
     }
     return {
       status: "found",
       value: {
         preservedKernelAddress: preservedKernelAddress.toLowerCase(),
-        podSeed,
+        identitySeed,
       },
     };
   } catch (e) {
@@ -365,7 +365,7 @@ const _backfillInFlight = new Map<string, Promise<PortabilityBackfill>>();
 export interface PortabilityBackfillArgs {
   passkeyPrivKey: string;
   preservedKernelAddress: string;
-  podSeed: string;
+  identitySeed: string;
 }
 
 export function backfillPortabilityEnvelope(
@@ -416,7 +416,7 @@ async function _backfillOnce(args: PortabilityBackfillArgs): Promise<Portability
     // signer is gone because the shape it guarded against cannot occur.
     if (
       cur.preservedKernelAddress === args.preservedKernelAddress.toLowerCase() &&
-      cur.podSeed === args.podSeed
+      cur.identitySeed === args.identitySeed
     ) {
       return { action: "skipped", reason: "envelope already current" };
     }

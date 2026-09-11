@@ -93,11 +93,11 @@ interface SessionOpts {
   /** Drop eventId/seriesId entirely — "not our session". */
   noEventKeys?: boolean;
   /**
-   * A `podPubKey` in the session metadata, as checkout used to stamp it. Sessions
+   * A `holderPubKey` in the session metadata, as checkout used to stamp it. Sessions
    * created before #518 still carry one and Stripe replays them for days, so the
    * webhook must ignore it rather than resurrect the field.
    */
-  legacyPodPubKey?: string;
+  legacyHolderPubKey?: string;
 }
 
 function session(o: SessionOpts = {}): FulfilmentSession {
@@ -115,7 +115,7 @@ function session(o: SessionOpts = {}): FulfilmentSession {
   if (o.consent !== null) md.marketingConsent = o.consent ?? "1";
   if (o.connectedAccountId !== null) md.connectedAccountId = o.connectedAccountId ?? ACCT;
   if (o.onChainEventId !== null) md.onChainEventId = o.onChainEventId ?? ON_CHAIN_EVENT_ID;
-  if (o.legacyPodPubKey) md.podPubKey = o.legacyPodPubKey;
+  if (o.legacyHolderPubKey) md.holderPubKey = o.legacyHolderPubKey;
   return {
     id: "cs_test_1",
     metadata: md,
@@ -468,14 +468,14 @@ describe("happy path", () => {
     assert.equal(f.emails[0].profileCta, false);
   });
 
-  test("an in-flight session carrying a legacy podPubKey binds WITHOUT one", async () => {
+  test("an in-flight session carrying a legacy holderPubKey binds WITHOUT one", async () => {
     // Stripe replays sessions created before the field was dropped. Reading it
     // back would put an unverified, client-declared key on a fresh binding —
     // #345 all over again, and this time with nothing left that wants it.
-    const { f } = await run({ quantity: 1, wallet: BUYER_WALLET, legacyPodPubKey: "a".repeat(64) });
+    const { f } = await run({ quantity: 1, wallet: BUYER_WALLET, legacyHolderPubKey: "a".repeat(64) });
     assert.equal(f.bindings.length, 1);
     assert.equal(
-      Object.prototype.hasOwnProperty.call(f.bindings[0], "podPubKey"),
+      Object.prototype.hasOwnProperty.call(f.bindings[0], "holderPubKey"),
       false,
       "metadata from an old checkout must not reach the binding",
     );

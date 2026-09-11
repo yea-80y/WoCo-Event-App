@@ -1,5 +1,5 @@
 /**
- * 0x-prefixed hex helpers — relocated verbatim from `pod/canonical.ts` ahead
+ * 0x-prefixed hex helpers — relocated verbatim from the retired v1 canonicalisation module ahead
  * of the v1 module's deletion (issuer-curve migration PR 5a). Curve- and
  * format-agnostic: OZ's merkle-tree wants 0x-prefixed strings, Swarm and the
  * chain seams want bytes, and both rails' digests travel through these.

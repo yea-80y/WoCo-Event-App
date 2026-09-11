@@ -66,7 +66,7 @@ export async function backupWalletFromPrivateKey(privateKey: string): Promise<Ba
   }
   const account = privateKeyToAccount(pk);
 
-  // primaryType = the single type key, matching the escrow caller + requestPodIdentity.
+  // primaryType = the single type key, matching the escrow caller + requestIdentitySeed.
   const signTypedData: EIP712Signer = (domain, types, value) =>
     account.signTypedData({
       domain: domain as Parameters<typeof account.signTypedData>[0]["domain"],

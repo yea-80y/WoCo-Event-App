@@ -48,14 +48,14 @@ test("a caller that passes a holder key cannot persist one", () => {
     emailHash: "deadbeef",
     paid: true,
     route: "email-link",
-    podPubKey: HOLDER_KEY,
+    holderPubKey: HOLDER_KEY,
     somethingElse: "also not a binding field",
   } as unknown as Parameters<typeof bindTicket>[0]);
 
   const [row] = getBindingsForEvent("e-leak");
   assert.ok(row, "the binding is persisted");
   assert.equal(
-    Object.prototype.hasOwnProperty.call(row, "podPubKey"),
+    Object.prototype.hasOwnProperty.call(row, "holderPubKey"),
     false,
     "no holder key may reach the persisted binding",
   );
@@ -83,7 +83,7 @@ test("a leaked key cannot be served to the certificate picker either", () => {
       parentAddress: PARENT,
       route: "claim",
       boundAt: "2026-09-10T00:00:00.000Z",
-      podPubKey: HOLDER_KEY,
+      holderPubKey: HOLDER_KEY,
     } as unknown as Parameters<typeof toAttendeeKeyRows>[0][number],
   ]);
   assert.deepEqual(Object.keys(rows[0]!).sort(), ["edition", "route", "seriesId"]);
