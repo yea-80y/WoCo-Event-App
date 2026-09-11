@@ -93,6 +93,8 @@ ETH + USDC on Base/Optimism/Mainnet/Sepolia:
 - Production rejects unsigned webhooks (prevents forged free-ticket claims)
 - Pre-flight check on `/api/stripe/create-checkout`: returns 409 if sold out or user already
   has a ticket (prevents charge-without-ticket race)
+- `/api/stripe/create-checkout` is rate limited per client IP — 30/min + 300/hour, checked
+  after validation and before the first spend, 429 + `Retry-After: 60` (#463)
 - Fulfilment (paid session → mint → email) lives in `lib/stripe/fulfilment.ts` behind an
   injected-deps seam (#314). Any stop (mint revert, sales closed, unregistered series,
   unreadable event feed) auto-refunds the unfilled part; an issued ticket whose email
