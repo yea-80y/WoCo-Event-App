@@ -1,6 +1,6 @@
 /**
- * The two probes behind the `/api/health` postage and paymaster sections
- * (#421, #522).
+ * The probes behind the `/api/health` postage, paymaster and ENS-parent
+ * sections (#421, #522, #420).
  *
  * WHY A TIMER AND NOT A READ-THROUGH. `/api/health` is polled by uptime checks
  * and read by hand during an incident; it must answer instantly and must never
@@ -14,8 +14,15 @@
  * This module is the plumbing: read, park the reading, log transitions.
  */
 
-import { JsonRpcProvider, Contract, formatEther, parseEther } from "ethers";
-import { ENTRY_POINT_V07_ADDRESS, KERNEL_CHAIN_ID, SELF_FUNDED_PAYMASTER_ADDRESS } from "@woco/shared";
+import { JsonRpcProvider, Contract, formatEther, id, parseEther } from "ethers";
+import {
+  ENS_BASE_REGISTRAR_MAINNET,
+  ENTRY_POINT_V07_ADDRESS,
+  KERNEL_CHAIN_ID,
+  SELF_FUNDED_PAYMASTER_ADDRESS,
+  SUB_ENS_PARENT,
+  SUB_ENS_PARENT_LABEL,
+} from "@woco/shared";
 import { getChainRpcUrl } from "../chain/event-contract.js";
 import { BEE_URL, POSTAGE_BATCH_ID } from "../../config/swarm.js";
 import { readEthernaStamp } from "../etherna/batches.js";
@@ -26,6 +33,7 @@ import {
   type Verdict,
   combine,
   evaluateChainLag,
+  evaluateEnsExpiry,
   evaluatePaymaster,
   evaluateStamp,
   isStale,
@@ -35,6 +43,13 @@ import {
 export const PROBE_INTERVAL_MS = 60_000;
 /** Etherna is an external OAuth service — probed a fifth as often, on purpose. */
 export const ETHERNA_PROBE_INTERVAL_MS = 5 * 60_000;
+/**
+ * Six hours. NOT an env var, deliberately: the thing being watched moves once a
+ * year, the answer only ever gets one day older per day, and a knob here would
+ * only ever be turned down — which is how a mainnet read that costs nothing
+ * becomes a mainnet read on every health poll.
+ */
+export const ENS_EXPIRY_PROBE_INTERVAL_MS = 6 * 60 * 60_000;
 const TIMEOUT_MS = 5_000;
 
 /** The ZeroDev ceiling the server CANNOT see, named so nobody infers it can. */
@@ -70,6 +85,15 @@ let paymasterReading = empty<bigint>();
 let beeReading = empty<StampReading & { immutable: boolean | null }>();
 let chainstateReading = empty<{ block: number; chainTip: number }>();
 let ethernaReading = empty<StampReading & { immutable: boolean | null }>();
+let ensExpiryReading = empty<bigint>();
+/**
+ * WHY A SECOND TIMESTAMP. `Reading.at` is when the probe last RAN; this is when
+ * it last KNEW. A six-hourly read stamps `at` on a failure too, so a probe that
+ * has been unable to reach mainnet for a day would still look fresh — and a
+ * watch that cannot watch must never read as silence. `stale` and `lastReadAt`
+ * are both taken from this one.
+ */
+let ensExpiryOkAt: number | null = null;
 
 // ---------------------------------------------------------------------------
 // Live readers — injectable so every rule above can be tested without a network
@@ -80,14 +104,40 @@ export interface HealthReaders {
   beeStamp(batchId: string): Promise<Record<string, unknown>>;
   chainstate(): Promise<Record<string, unknown>>;
   ethernaStamp(batchId: string): Promise<Record<string, unknown>>;
+  ensNameExpires(): Promise<bigint>;
 }
 
 const ENTRY_POINT_ABI = ["function balanceOf(address account) view returns (uint256)"];
+const BASE_REGISTRAR_ABI = ["function nameExpires(uint256 id) view returns (uint256)"];
+
+/**
+ * The public endpoint the watch reads unless told otherwise. A keyed URL may be
+ * set here later, which is exactly why no error text from this provider is ever
+ * allowed onto the section (see `publicReason`).
+ */
+export const DEFAULT_ENS_MAINNET_RPC_URL = "https://ethereum-rpc.publicnode.com";
+const ENS_MAINNET_CHAIN_ID = 1;
 
 let provider: JsonRpcProvider | null = null;
 function entryPoint(): Contract {
   if (!provider) provider = new JsonRpcProvider(getChainRpcUrl(KERNEL_CHAIN_ID), KERNEL_CHAIN_ID);
   return new Contract(ENTRY_POINT_V07_ADDRESS, ENTRY_POINT_ABI, provider);
+}
+
+/**
+ * Pinned to chain 1 on purpose: an `ENS_MAINNET_RPC_URL` pointing anywhere else
+ * then throws a network mismatch, rather than reading a BaseRegistrar that does
+ * not exist there and answering 0 — which this module would report as "not
+ * registered", a loud alarm about a configuration mistake rather than a quiet
+ * wrong answer about the name.
+ */
+let ensProvider: JsonRpcProvider | null = null;
+function baseRegistrar(): Contract {
+  if (!ensProvider) {
+    const url = (process.env.ENS_MAINNET_RPC_URL ?? "").trim() || DEFAULT_ENS_MAINNET_RPC_URL;
+    ensProvider = new JsonRpcProvider(url, ENS_MAINNET_CHAIN_ID);
+  }
+  return new Contract(ENS_BASE_REGISTRAR_MAINNET, BASE_REGISTRAR_ABI, ensProvider);
 }
 
 function withTimeout<T>(p: Promise<T>, what: string): Promise<T> {
@@ -131,6 +181,14 @@ export const liveReaders: HealthReaders = {
   beeStamp: (batchId) => beeGet(`/stamps/${batchId}`, "bee stamp"),
   chainstate: () => beeGet("/chainstate", "bee chainstate"),
   ethernaStamp: (batchId) => readEthernaStamp(batchId, TIMEOUT_MS) as Promise<Record<string, unknown>>,
+  // labelhash = keccak256 of the LABEL alone ("woco"), never the namehash of
+  // "woco.eth" — BaseRegistrar is keyed by the former and would answer 0, the
+  // "not registered" alarm, for the latter.
+  ensNameExpires: () =>
+    withTimeout(
+      baseRegistrar().nameExpires(BigInt(id(SUB_ENS_PARENT_LABEL))) as Promise<bigint>,
+      "ENS nameExpires",
+    ),
 };
 
 // ---------------------------------------------------------------------------
@@ -274,6 +332,33 @@ export async function refreshPostage(
   noteVerdict("postage.bee.usable", section.bee.checks.usable, log, beeReading.detail);
   noteVerdict("postage.chain", section.chain, log, chainstateReading.detail);
   if (section.etherna.configured) noteVerdict("postage.etherna", section.etherna, log, ethernaReading.detail);
+}
+
+/**
+ * `woco.eth`'s own registration, read from L1 (#420).
+ *
+ * WATCH ONLY — there is no auto-renew here and there is not meant to be. The
+ * owner's decision (2026-09-11) is that renewal stays one manual transaction a
+ * year from the Safe, so the server's entire job is to make sure nobody has to
+ * remember the date.
+ */
+export async function refreshEnsExpiry(
+  readers: HealthReaders = liveReaders,
+  log: Logger = console.warn,
+): Promise<void> {
+  try {
+    ensExpiryReading = { at: Date.now(), value: await readers.ensNameExpires(), error: null, detail: null };
+    ensExpiryOkAt = ensExpiryReading.at;
+  } catch (err) {
+    ensExpiryReading = failed(err);
+  }
+  const section = subEnsParentHealth();
+  noteVerdict(
+    "subEns.parent.expiry",
+    { ok: section.ok, ...(section.reason ? { reason: section.reason } : {}) },
+    log,
+    ensExpiryReading.detail,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +530,46 @@ export function postageHealth(now: number = Date.now()): PostageSection {
 }
 
 /**
+ * `/api/health` -> `subEns.parent`. Silent until it isn't: nothing else on this
+ * server reads mainnet, and nothing else would notice the year go by.
+ */
+export interface SubEnsParentSection {
+  name: string;
+  ok: Verdict;
+  expiresAt: string | null;
+  daysRemaining: number | null;
+  graceEndsAt: string | null;
+  minDays: number;
+  reason?: string;
+  stale: boolean;
+  /** When the expiry was last actually READ, not when the probe last ran. */
+  lastReadAt: string | null;
+  configError?: string;
+}
+
+export function subEnsParentHealth(now: number = Date.now()): SubEnsParentSection {
+  const { ensParent: cfg } = readThresholdsFromEnv(process.env);
+  const verdict = evaluateEnsExpiry({
+    expiresAtSec: ensExpiryReading.value,
+    minDays: cfg.minDays,
+    now,
+    reason: ensExpiryReading.error,
+  });
+  return {
+    name: SUB_ENS_PARENT,
+    ok: verdict.ok,
+    expiresAt: verdict.expiresAt,
+    daysRemaining: verdict.daysRemaining,
+    graceEndsAt: verdict.graceEndsAt,
+    minDays: cfg.minDays,
+    ...(verdict.reason ? { reason: verdict.reason } : {}),
+    stale: isStale(ensExpiryOkAt, now, ENS_EXPIRY_PROBE_INTERVAL_MS),
+    lastReadAt: ensExpiryOkAt === null ? null : new Date(ensExpiryOkAt).toISOString(),
+    ...(cfg.configError ? { configError: cfg.configError } : {}),
+  };
+}
+
+/**
  * Bee batch state for the evidence publisher (#312), served from THIS module's
  * cache.
  *
@@ -466,21 +591,27 @@ export async function beeBatchState(): Promise<{ usable: boolean | null; ttl: nu
 
 let timer: NodeJS.Timeout | null = null;
 let ethernaDueAt = 0;
+let ensExpiryDueAt = 0;
 
 export function startHealthProbes(): void {
   if (timer) return;
   const tick = () => {
     const etherna = Date.now() >= ethernaDueAt;
     if (etherna) ethernaDueAt = Date.now() + ETHERNA_PROBE_INTERVAL_MS;
+    const ens = Date.now() >= ensExpiryDueAt;
+    if (ens) ensExpiryDueAt = Date.now() + ENS_EXPIRY_PROBE_INTERVAL_MS;
     void refreshPaymaster().catch((err) => console.warn("[health] paymaster probe threw:", err));
     void refreshPostage(liveReaders, console.warn, etherna).catch((err) =>
       console.warn("[health] postage probe threw:", err),
     );
+    if (ens) {
+      void refreshEnsExpiry().catch((err) => console.warn("[health] ENS expiry probe threw:", err));
+    }
   };
   tick();
   timer = setInterval(tick, PROBE_INTERVAL_MS);
   timer.unref?.();
-  console.log("[health] postage + paymaster probes started");
+  console.log("[health] postage + paymaster + ENS parent probes started");
 }
 
 /** Tests only. */
@@ -488,10 +619,14 @@ export function __resetHealthProbes(): void {
   if (timer) clearInterval(timer);
   timer = null;
   ethernaDueAt = 0;
+  ensExpiryDueAt = 0;
   paymasterReading = empty<bigint>();
   beeReading = empty<StampReading & { immutable: boolean | null }>();
   chainstateReading = empty<{ block: number; chainTip: number }>();
   ethernaReading = empty<StampReading & { immutable: boolean | null }>();
+  ensExpiryReading = empty<bigint>();
+  ensExpiryOkAt = null;
   lastVerdict.clear();
   provider = null;
+  ensProvider = null;
 }

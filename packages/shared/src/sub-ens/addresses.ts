@@ -94,3 +94,25 @@ export function getSubEnsDeployment(chainId: number): SubEnsDeployment {
   if (!deployment) throw new Error(`No sub-ENS deployment for chain ${chainId}`);
   return deployment;
 }
+
+/**
+ * ENS BaseRegistrarImplementation on ETHEREUM MAINNET — the L1 contract that
+ * holds the registration of `woco.eth` itself, and the only place its expiry
+ * exists.
+ *
+ * This is the ONE mainnet address in a sub-ENS world that is otherwise entirely
+ * on Arbitrum, and it is here rather than in the server because the name it
+ * answers for is the parent of every L2 name in {@link SUB_ENS_DEPLOYMENTS}.
+ * `nameExpires(labelhash(SUB_ENS_PARENT_LABEL))` is what the #420 renewal watch
+ * reads: renewal is one manual transaction a year from the Safe, so the only
+ * thing between a missed year and every `*.woco.eth` name going dark is
+ * somebody being told.
+ *
+ * Verified on mainnet 2026-09-11: `nameExpires` = 1799929835
+ * (2027-01-14T12:30:35Z), followed by a 90-day owner-only grace during which
+ * records keep resolving, then release.
+ */
+export const ENS_BASE_REGISTRAR_MAINNET: Hex0x = "0x57f1887a8BF19b14fC0dF6Fd9B2acc9Af147eA85";
+
+/** Days after expiry during which only the owner may renew and records still resolve. */
+export const ENS_GRACE_PERIOD_DAYS = 90;
