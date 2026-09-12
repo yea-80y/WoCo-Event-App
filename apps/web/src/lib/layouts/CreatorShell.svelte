@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import { FEATURES } from "@woco/shared";
   import { auth } from "../auth/auth-store.svelte.js";
   import { loginRequest } from "../auth/login-request.svelte.js";
   import { router, navigate } from "../router/router.svelte.js";
@@ -140,10 +141,14 @@
         <span class="opt-ic"><CalendarDays size={16} strokeWidth={2.25} /></span>
         <span class="opt-text"><strong>New event</strong><small>Tickets, dates, payments</small></span>
       </button>
-      <button class="create-opt" role="menuitem" onclick={() => create("/creator/shops/new")}>
-        <span class="opt-ic"><ShoppingBag size={16} strokeWidth={2.25} /></span>
-        <span class="opt-text"><strong>New shop</strong><small>Catalog, POS, tap-to-pay</small></span>
-      </button>
+      <!-- The router refuses /creator/shops/* while the rail is off (#124), so
+           offering this would open the create sheet onto the splitter. -->
+      {#if FEATURES.shopAllowed}
+        <button class="create-opt" role="menuitem" onclick={() => create("/creator/shops/new")}>
+          <span class="opt-ic"><ShoppingBag size={16} strokeWidth={2.25} /></span>
+          <span class="opt-text"><strong>New shop</strong><small>Catalog, POS, tap-to-pay</small></span>
+        </button>
+      {/if}
       <button class="create-opt" role="menuitem" onclick={() => create("/creator/sites")}>
         <span class="opt-ic"><Monitor size={16} strokeWidth={2.25} /></span>
         <span class="opt-text"><strong>New website</strong><small>Multi-page site builder</small></span>

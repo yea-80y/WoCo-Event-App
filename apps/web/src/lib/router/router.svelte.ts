@@ -37,6 +37,8 @@
  *     /stripe/return, /stripe/refresh   stripe-return / stripe-refresh
  */
 
+import { FEATURES } from "@woco/shared";
+
 export type Surface = "neutral" | "attendee" | "creator";
 
 let _route = $state("splitter");
@@ -74,7 +76,6 @@ function matchRoute(pathWithQuery: string): Match {
   if (path === "/creator/events") return { route: "dashboard-index", params: {}, surface: "creator" };
   if (path === "/creator/events/new") return { route: "create", params: {}, surface: "creator" };
   if (path === "/creator/sites") return { route: "build", params: {}, surface: "creator" };
-  if (path === "/creator/shops") return { route: "my-shops", params: {}, surface: "creator" };
   if (path === "/creator/objects") return { route: "creator-objects", params: {}, surface: "creator" };
   if (path === "/creator/payouts") return { route: "payouts", params: {}, surface: "creator" };
   if (path === "/creator/audience") {
@@ -85,11 +86,20 @@ function matchRoute(pathWithQuery: string): Match {
   }
   if (path === "/creator/profile") return { route: "profile", params: {}, surface: "creator" };
 
-  const shopPosMatch = path.match(/^\/creator\/shops\/([^/]+)\/pos$/);
-  if (shopPosMatch) return { route: "shop-pos", params: { shopId: shopPosMatch[1] }, surface: "creator" };
+  // Shop rail is flagged off for launch (#124). Unresolved rather than
+  // redirected: falling through to the splitter fallback below is what an
+  // unknown path already does, so a bookmarked shop URL behaves like any other
+  // dead link. `/creator/shops` moved down here to sit with the other two — no
+  // route between its old position and this one matches that exact string.
+  if (FEATURES.shopAllowed) {
+    if (path === "/creator/shops") return { route: "my-shops", params: {}, surface: "creator" };
 
-  const shopEditorMatch = path.match(/^\/creator\/shops\/([^/]+)$/);
-  if (shopEditorMatch) return { route: "shop-editor", params: { shopId: shopEditorMatch[1] }, surface: "creator" };
+    const shopPosMatch = path.match(/^\/creator\/shops\/([^/]+)\/pos$/);
+    if (shopPosMatch) return { route: "shop-pos", params: { shopId: shopPosMatch[1] }, surface: "creator" };
+
+    const shopEditorMatch = path.match(/^\/creator\/shops\/([^/]+)$/);
+    if (shopEditorMatch) return { route: "shop-editor", params: { shopId: shopEditorMatch[1] }, surface: "creator" };
+  }
 
   const creatorSiteEventsMatch = path.match(/^\/creator\/sites\/([^/]+)\/events$/);
   if (creatorSiteEventsMatch) return { route: "site-events", params: { siteId: creatorSiteEventsMatch[1] }, surface: "creator" };
@@ -127,11 +137,14 @@ function matchRoute(pathWithQuery: string): Match {
     return { route: "coaster", params: { subject: coasterMatch[1].toLowerCase() }, surface: "attendee" };
   }
 
-  const shopTapMatch = path.match(/^\/shops\/([^/]+)\/tap$/);
-  if (shopTapMatch) return { route: "shop-tap", params: { shopId: shopTapMatch[1] }, surface: "attendee" };
+  // Attendee half of the shop rail — same flag, same fall-through (#124).
+  if (FEATURES.shopAllowed) {
+    const shopTapMatch = path.match(/^\/shops\/([^/]+)\/tap$/);
+    if (shopTapMatch) return { route: "shop-tap", params: { shopId: shopTapMatch[1] }, surface: "attendee" };
 
-  const shopOrderMatch = path.match(/^\/shop\/([^/]+)\/order\/([^/]+)$/);
-  if (shopOrderMatch) return { route: "shop-order", params: { shopId: shopOrderMatch[1], code: shopOrderMatch[2] }, surface: "attendee" };
+    const shopOrderMatch = path.match(/^\/shop\/([^/]+)\/order\/([^/]+)$/);
+    if (shopOrderMatch) return { route: "shop-order", params: { shopId: shopOrderMatch[1], code: shopOrderMatch[2] }, surface: "attendee" };
+  }
 
   const profileMatch = path.match(/^\/profile\/(0x[a-fA-F0-9]{40})$/);
   if (profileMatch) return { route: "profile", params: { address: profileMatch[1] }, surface: "attendee" };

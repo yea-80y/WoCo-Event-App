@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { UserProfile, EventDirectoryEntry } from "@woco/shared";
-  import { socialProfileSubject } from "@woco/shared";
+  import { socialProfileSubject, FEATURES } from "@woco/shared";
   import { getProfile, updateProfile, uploadAvatar, getProfileNameStatus } from "../../api/profiles.js";
   import { gate } from "../../attendee/gate/gate.svelte.js";
   import { isTicketRequired } from "../../api/attendee-gate.js";
@@ -887,7 +887,10 @@
 
     {#if activeTab === "wallet"}
       <div class="tab-body">
-        {#if auth.kind === "passkey"}
+        <!-- A spending wallet only ever funds a shop draw, so it goes with the
+             rail (#124). Import left static: this file lazy-loads nothing, and
+             the screen is already behind a tab. -->
+        {#if FEATURES.shopAllowed && auth.kind === "passkey"}
           <SpendingWallet />
         {/if}
         <WalletTab />

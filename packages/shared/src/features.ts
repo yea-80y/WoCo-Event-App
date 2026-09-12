@@ -20,6 +20,20 @@ export const FEATURES = {
   // That rail is now DELETED — settleAgentTicketPurchase refuses outright (see
   // lib/agent/spend-authority.ts). Turn on with a v2 on-chain mint path, not before.
   agentCommerceAllowed: false,
+  // The shop rail: catalog, POS, tap-to-pay, shop Stripe checkout, and the USDC
+  // draw the server performs as the spender against a permission the customer
+  // signed on-chain (lib/shop/spend-permission.ts, SHOP_SPENDER_SECRET). Launch
+  // ships events, not shops, and a live money path needs a kill switch that is
+  // not a code change — so this gates the client routes AND the whole
+  // /api/shops router in lockstep, and an old client cannot reach the rail.
+  //
+  // ONE ASYMMETRY, decided rather than overlooked: a deployed organiser site
+  // bakes this constant into its multisite bundle at publish time, so flipping
+  // it does NOT reach an already-published site until that site is re-published.
+  // For those sites the SERVER gate is the authoritative one — their order
+  // screen calls /api/shops/*, which refuses. Flip to true with the shop launch
+  // plus a server deploy, not before.
+  shopAllowed: false,
   // Coinbase Smart Wallet login. OFF for launch (#173, owner decision
   // 2026-08-04): CSW is a smart account, so its ERC-1271/6492 signatures are
   // not byte-reproducible (6492-wrapped before deployment, bare 1271 after —

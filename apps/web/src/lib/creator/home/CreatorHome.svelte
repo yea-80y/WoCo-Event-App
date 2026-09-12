@@ -8,6 +8,7 @@
 -->
 <script lang="ts">
   import type { EventDirectoryEntry, SiteDirectoryEntry, ShopDirectoryEntry, BackupInventoryEntry } from "@woco/shared";
+  import { FEATURES } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { getMyEventsSWR, getMySitesSWR, getMyShopsSWR } from "../../api/creator-cache.js";
@@ -139,7 +140,7 @@
     const shopSWR = getMyShopsSWR(addr);
     if (evSWR.cached && token === loadToken) { events = evSWR.cached; loadingEvents = false; }
     if (siteSWR.cached && token === loadToken) { sites = siteSWR.cached; loadingSites = false; }
-    if (shopSWR.cached && token === loadToken) { shops = shopSWR.cached; loadingShops = false; }
+    if (FEATURES.shopAllowed && shopSWR.cached && token === loadToken) { shops = shopSWR.cached; loadingShops = false; }
 
     // Fire both refreshes in parallel but resolve them independently so the
     // events panel doesn't block on the sites Swarm read (or vice versa).
@@ -159,12 +160,20 @@
       loadingSites = false;
     });
 
-    shopSWR.refresh().then((fresh) => {
-      if (token !== loadToken) return;
-      if (fresh.data && (fresh.data.length > 0 || !shopSWR.cached)) shops = fresh.data;
-      shopsFailed = !fresh.ok && shops.length === 0;
+    // With the shop rail off (#124) /api/shops/mine answers 403, so the only
+    // thing this read could produce is a "couldn't load your shops" panel about
+    // a feature that does not exist. Skip the request outright rather than
+    // render its failure; `loadingShops` is settled so nothing waits on it.
+    if (FEATURES.shopAllowed) {
+      shopSWR.refresh().then((fresh) => {
+        if (token !== loadToken) return;
+        if (fresh.data && (fresh.data.length > 0 || !shopSWR.cached)) shops = fresh.data;
+        shopsFailed = !fresh.ok && shops.length === 0;
+        loadingShops = false;
+      });
+    } else {
       loadingShops = false;
-    });
+    }
 
     getStripeAccountStatus().then(s => {
       if (token !== loadToken) return;
@@ -325,10 +334,12 @@
           <span class="stat-label mono">YOUR SITES</span>
           <span class="stat-num mono" class:hot={sites.length > 0}>{loadingSites ? "—" : String(sites.length).padStart(2, "0")}</span>
         </div>
-        <div class="stat">
-          <span class="stat-label mono">YOUR SHOPS</span>
-          <span class="stat-num mono" class:hot={shops.length > 0}>{loadingShops ? "—" : String(shops.length).padStart(2, "0")}</span>
-        </div>
+        {#if FEATURES.shopAllowed}
+          <div class="stat">
+            <span class="stat-label mono">YOUR SHOPS</span>
+            <span class="stat-num mono" class:hot={shops.length > 0}>{loadingShops ? "—" : String(shops.length).padStart(2, "0")}</span>
+          </div>
+        {/if}
       </div>
     </div>
   </section>
@@ -500,7 +511,10 @@
           {/if}
         </div>
 
-        <!-- Shops panel -->
+        <!-- Shops panel. Every control in it navigates into the shop rail, which
+             the router refuses while the flag is off (#124) — so the whole panel
+             goes, rather than leaving three buttons that land on the splitter. -->
+        {#if FEATURES.shopAllowed}
         <div class="panel">
           <div class="panel-head">
             <span class="panel-title">
@@ -543,6 +557,7 @@
             </ul>
           {/if}
         </div>
+        {/if}
 
         <!-- Audience panel — marketing list lives per-organiser, not per-event.
              Static link (no load: opening the list downloads + decrypts the
