@@ -296,3 +296,23 @@ test("a transient FEED read stays transient all the way through", async () => {
   });
   assert.equal(read.status === "unavailable" && read.unusableAt, undefined);
 });
+
+test("rebuild REFUSES a newer-format envelope even though it is frozen — reload, never overwrite", async () => {
+  let wrote = 0;
+  await assert.rejects(
+    rebuildManifest({
+      signer: SIGNER,
+      parentAddress: PARENT,
+      seed: null,
+      readManifest: readingAs({
+        status: "unavailable",
+        reason: "feed payload is not a self-sealed envelope",
+        unusableAt: 7,
+        newerFormat: true,
+      }),
+      write: async () => { wrote++; return 8; },
+    }),
+    /newer version of WoCo/,
+  );
+  assert.equal(wrote, 0, "a newer envelope must never be written over");
+});

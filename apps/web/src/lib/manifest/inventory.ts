@@ -336,6 +336,15 @@ export async function rebuildManifest(args: {
       `Couldn't confirm the saved copy is damaged, so nothing was rebuilt (${read.reason ?? "read failed"}). Try again.`,
     );
   }
+  // Not damage: a newer app wrote a manifest this build cannot open. Writing a
+  // v1 body past it would destroy data the newer client reads fine, so the
+  // primitive refuses on its own — the panel's reload-only branch is a courtesy,
+  // not the guard.
+  if (read.newerFormat) {
+    throw new Error(
+      "Your backup list was saved by a newer version of WoCo. Reload to update this app. Nothing was rebuilt.",
+    );
+  }
 
   const manifest: UserManifest = {
     ...(args.seed ?? { backups: [] }),
