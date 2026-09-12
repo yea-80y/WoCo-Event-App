@@ -131,6 +131,117 @@ test("CreatorApp loads the shop screens lazily, so a closed rail costs no boot b
   }
 });
 
+/**
+ * The four surfaces that REACH the rail. Refusing the routes is only half the
+ * job: a button that navigates into a refused route lands the organiser on the
+ * splitter with no explanation, and a section that fetches /api/shops/* renders
+ * the server's 403 as "could not load products" — about a shop nobody can buy
+ * from. Each of these is pinned individually, because each is a separate way for
+ * the rail to leak back into the UI.
+ */
+test("the creator home Shops panel is not offered while the rail is off", () => {
+  const home = read("lib/creator/home/CreatorHome.svelte");
+  assert.match(
+    home,
+    /\{#if FEATURES\.shopAllowed\}\s*<div class="panel">\s*<div class="panel-head">\s*<span class="panel-title">\s*<ShoppingBag/,
+    "the whole panel goes: every control in it navigates into the shop rail",
+  );
+  assert.match(
+    home,
+    /\{#if FEATURES\.shopAllowed\}\s*<div class="stat">\s*<span class="stat-label mono">YOUR SHOPS<\/span>/,
+    "the hero stat would otherwise read a permanent 00",
+  );
+  assert.match(
+    home,
+    /if \(FEATURES\.shopAllowed\) \{\s*shopSWR\.refresh\(\)/,
+    "no /api/shops/mine request may fire while the rail is off",
+  );
+});
+
+test("the create sheet does not offer New shop while the rail is off", () => {
+  const shell = read("lib/layouts/CreatorShell.svelte");
+  assert.match(
+    shell,
+    /\{#if FEATURES\.shopAllowed\}\s*<button class="create-opt"[^\n]*create\("\/creator\/shops\/new"\)/,
+    "the router refuses /creator/shops/new, so offering it opens onto the splitter",
+  );
+});
+
+test("the builder does not offer the Shop tab while the rail is off", () => {
+  const builder = read("lib/creator/builder/MultiSiteBuilder.svelte");
+  assert.match(
+    builder,
+    /\.\.\.\(FEATURES\.shopAllowed \? \[\{ id: 'shop' as TabId, label: 'Shop' \}\] : \[\]\)/,
+    "the tab is filtered out of the tab list, not disabled in place",
+  );
+  assert.match(
+    builder,
+    /\{:else if FEATURES\.shopAllowed && tab === 'shop'\}\s*<ShopTab/,
+    "and the branch that renders it carries the same guard",
+  );
+  // A saved site's shop data must be left alone — hidden, never cleared.
+  assert.doesNotMatch(
+    builder,
+    /siteShopId = null|localStorage\.removeItem\(`woco:site-shopid/,
+    "hiding the tab must not delete the site's existing shop binding",
+  );
+
+  const pages = read("lib/creator/builder/tabs/PagesTab.svelte");
+  assert.match(
+    pages,
+    /FEATURES\.shopAllowed \? SECTION_TYPES : SECTION_TYPES\.filter\(t => t\.type !== 'productGrid'\)/,
+    "a product grid can only be configured against a shop, so it is not offered",
+  );
+  assert.match(
+    pages,
+    /\{#each ADDABLE_SECTION_TYPES as meta\}/,
+    "…and the add-section picker must iterate the filtered list, not the full one",
+  );
+  assert.match(
+    pages,
+    /SECTION_TYPES\.find\(t => t\.type === type\)/,
+    "sectionMeta still reads the FULL list, so an existing section keeps its label",
+  );
+
+  const editor = read("lib/creator/builder/SectionEditor.svelte");
+  assert.match(
+    editor,
+    /if \(FEATURES\.shopAllowed && section\.type === 'productGrid' && !shopsLoaded\)/,
+    "editing a legacy product grid must not call getMyShops",
+  );
+  assert.match(
+    editor,
+    /if \(!FEATURES\.shopAllowed \|\| section\.type !== 'productGrid'\) return;/,
+    "…nor getShop for its categories",
+  );
+});
+
+test("the deployed-site runtime shows a line instead of fetching", () => {
+  const grid = read("lib/components/site/sections/ProductGridSection.svelte");
+  assert.match(
+    grid,
+    /onMount\(async \(\) => \{[\s\S]{0,600}?if \(!FEATURES\.shopAllowed\) return;/,
+    "the guard must be the FIRST thing onMount does, before any fetch",
+  );
+  assert.match(
+    grid,
+    /\{#if !FEATURES\.shopAllowed\}\s*<p class="notice">Shop coming soon\.<\/p>/,
+    "and the markup says so rather than showing a load failure",
+  );
+  assert.match(
+    grid,
+    /\{#if FEATURES\.shopAllowed && checkoutOpen && shop\}/,
+    "the checkout drawer cannot open from a section that cannot load",
+  );
+
+  const checkout = read("lib/components/shop/Checkout.svelte");
+  assert.match(
+    checkout,
+    /\{#if !FEATURES\.shopAllowed\}[\s\S]{0,900}?<p class="shop-off">Shop coming soon\.<\/p>/,
+    "second lock on the same door: every button inside leads to createOrder",
+  );
+});
+
 test("the shipped flag is off", async () => {
   const { FEATURES } = await import("@woco/shared");
   assert.equal(FEATURES.shopAllowed, false);

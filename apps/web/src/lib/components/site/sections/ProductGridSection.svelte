@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ProductGridSection as ProductGridSectionType, Site } from "@woco/shared";
   import type { Shop, Product } from "@woco/shared";
+  import { FEATURES } from "@woco/shared";
   import { onMount } from "svelte";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../../cache/cache.js";
   import Storefront from "../../shop/Storefront.svelte";
@@ -36,6 +37,13 @@
   }
 
   onMount(async () => {
+    // No request may leave this section while the shop rail is off (#124).
+    // /api/shops/* answers 403, so every branch below could only reach the
+    // "could not load products" notice — about a shop nobody can buy from. The
+    // markup renders a plain "coming soon" line instead, and the cached copy is
+    // left in place rather than overwritten with a failure.
+    if (!FEATURES.shopAllowed) return;
+
     const ck = cacheKey.shopProducts(section.shopId);
     const isPreview = !!window.SITE_CONFIG?.previewEvents;
 
@@ -89,7 +97,9 @@
       <h2 class="section-heading">{section.title}</h2>
     {/if}
 
-    {#if loadState === "loading"}
+    {#if !FEATURES.shopAllowed}
+      <p class="notice">Shop coming soon.</p>
+    {:else if loadState === "loading"}
       <div class="skeleton-grid">
         {#each Array(section.max ?? 4) as _, i}
           <div class="skeleton" style="animation-delay:{i * 0.08}s"></div>
@@ -111,7 +121,7 @@
   </div>
 </section>
 
-{#if checkoutOpen && shop}
+{#if FEATURES.shopAllowed && checkoutOpen && shop}
   <Checkout
     {shop}
     {cart}
