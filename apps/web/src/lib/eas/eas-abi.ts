@@ -1,7 +1,8 @@
 /**
- * Minimal EAS ABI fragments for the likes write path. Kept import-free so both
+ * Minimal EAS ABI fragments for the referral campaign's write path (#476) - the
+ * last EAS user after the likes rail was deleted (#475). Kept import-free so both
  * the Kernel call-policy widening (auth/kernel-account.ts) and the attest code
- * (eas/attest.ts) can pull from it without a circular module dependency.
+ * (eas/attest-referral.ts) can pull from it without a circular module dependency.
  *
  * Function shapes mirror IEAS on Arbitrum Sepolia — `attest(AttestationRequest)`
  * and `revoke(RevocationRequest)`. Both are scoped by selector in the session

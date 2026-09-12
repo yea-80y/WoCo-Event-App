@@ -1,8 +1,7 @@
 /**
  * On-chain EAS access for the onboarding campaign (referrals + badges).
  *
- * Mirrors likes/eas-onchain.ts: the chain is authoritative, the server stores
- * only projections. Two write paths live here because both spend PLATFORM gas
+ * The chain is authoritative; the server stores only projections. Two write paths live here because both spend PLATFORM gas
  * (WOCO_SPONSOR_PRIVATE_KEY) and are gated upstream by the route:
  *  - relayDelegatedReferral — submits the merchant's EIP-712-signed delegated
  *    attest. Attester on-chain = the merchant; we only pay the gas. The
@@ -34,7 +33,8 @@ const EAS_ABI = [
 
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
 
-// Same read-after-write retry rationale as likes/eas-onchain.ts.
+// Read-after-write retry: a just-landed attestation is not always visible to the
+// next RPC read (replica lag), so one miss is not proof the attest failed.
 const READ_ATTEMPTS = 6;
 const READ_DELAY_MS = 1000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

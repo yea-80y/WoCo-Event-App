@@ -2,7 +2,7 @@
   import type { UserProfile } from "@woco/shared";
   import { socialProfileSubject } from "@woco/shared";
   import { getProfile } from "../../api/profiles.js";
-  import { rememberLabel } from "../../likes/label-cache.js";
+  import { rememberLabel } from "../../profile/label-cache.js";
   import { navigate } from "../../router/router.svelte.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import UserAvatar from "./UserAvatar.svelte";
@@ -43,7 +43,7 @@
   onMount(() => {
     getProfile(address, signer).then((p) => {
       profile = p;
-      rememberLabel(p?.subEnsLabel); // feed the client name-resolution cache
+      rememberLabel(address, p?.subEnsLabel); // feed the client name-resolution cache
     });
   });
 </script>

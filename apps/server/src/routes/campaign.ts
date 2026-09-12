@@ -1,7 +1,7 @@
 /**
  * Onboarding campaign API — referral attribution + relay, cohort badges.
  *
- * Decentralisation posture matches likes: the chain is authoritative for
+ * Decentralisation posture: the chain is authoritative for
  * every confirmed referral and badge; this layer holds only the pre-chain
  * pending attribution plus fast-read projections.
  *
@@ -29,7 +29,7 @@ export const campaignRoutes = new Hono<AppEnv>();
 const ADDR = /^0x[0-9a-fA-F]{40}$/;
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
 
-// Same sliding-window shape as likes /record. The relay endpoint spends
+// Sliding window. The relay endpoint spends
 // platform gas, so its funnel is tighter than the read-side default.
 const LIMIT = 10;
 const WINDOW_MS = 60_000;

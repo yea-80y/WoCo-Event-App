@@ -238,7 +238,7 @@ export function createKernelTypedDataSigner(account: KernelAccount): EIP712Signe
 // identity, can do nothing but the one call it was scoped to until it expires.
 // This is invariant #3: scoped, never sudo.
 //
-// ONE such key survives: the EAS likes/following key below. The sub-ENS
+// ONE such key survives: the referral campaign's EAS key below. The sub-ENS
 // registerWithPermit key was deleted with the gasless mint rail (#501) — every
 // name is minted by the WoCo sponsor wallet, for every login kind.
 // ---------------------------------------------------------------------------
@@ -453,7 +453,8 @@ async function storedSessionKeyAddress(
 }
 
 // ---------------------------------------------------------------------------
-// EAS likes/following session key (#4) — the only scoped session key left.
+// EAS session key for the referral campaign (#476) — the only scoped session key
+// left, and the last EAS user after the likes/follows rail was deleted (#475).
 // Pinned to EAS attest + revoke by 4-byte SELECTOR, not the deeply-nested
 // AttestationRequest ABI: that nested tuple in enable-data is what broke
 // paymaster gas estimation, and while these permissions shared a key with the
@@ -701,8 +702,8 @@ export async function sendSessionUserOp(
 // rotation, so a passkey Kernel can safely HOLD funds. The sudo signer (ECDSA
 // over PRF) is unchanged for daily use; recovery is a SEPARATE escape path.
 //
-// DEPLOYED-account model (the realistic WoCo case — sub-ENS / likes already
-// deploy these Kernels), verified end-to-end on Arb Sepolia (the chain the
+// DEPLOYED-account model (the realistic WoCo case — sub-ENS and referrals
+// already deploy these Kernels), verified end-to-end on Arb Sepolia (the chain the
 // Kernel ran on before #489) by
 // scripts/recovery-spike-caller-hook.ts (recovery tx 0x17f0622…, address
 // preserved, old key dead): install the recovery ACTION as a fallback module
