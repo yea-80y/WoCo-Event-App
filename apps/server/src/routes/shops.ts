@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Context, Next } from "hono";
 import { randomUUID } from "node:crypto";
 import { parseUnits, formatUnits, verifyTypedData, type TypedDataField } from "ethers";
 import type { AppEnv } from "../types.js";
@@ -38,6 +39,7 @@ import { getStripeAccount } from "../lib/stripe/accounts.js";
 import { validateReturnUrl, getFrontendUrl, canonicalSuccessUrl } from "../lib/stripe/return-url.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import {
+  FEATURES,
   priceOrder,
   moneyToMinor,
   PLATFORM_FEE_BP,
@@ -64,6 +66,23 @@ import type {
 } from "@woco/shared";
 
 const shopsRouter = new Hono<AppEnv>();
+
+// Kill switch for the whole shop rail (#124). Every route on this router either
+// moves money (Stripe checkout, the USDC spend-permission draw) or feeds the
+// screen that does, so the gate is the router's FIRST middleware rather than a
+// per-route list: a new endpoint added below is closed by default instead of
+// being remembered. It sits ahead of requireAuth on purpose — an unauthenticated
+// probe should learn "off", not "unauthorised". Hiding the client routes is not
+// the same as closing the feature: a cached client, or a deployed organiser site
+// that baked the old flag into its bundle at publish time, still calls here.
+shopsRouter.use("*", shopGate);
+
+async function shopGate(c: Context<AppEnv>, next: Next) {
+  if (!FEATURES.shopAllowed) {
+    return c.json({ ok: false, error: "Shops are not available" }, 403);
+  }
+  await next();
+}
 
 // ---------------------------------------------------------------------------
 // Rate limiter — public order creation writes to Swarm (postage cost); bound

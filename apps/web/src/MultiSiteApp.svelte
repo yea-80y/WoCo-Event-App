@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { Site, SiteRuntimeConfig, NavStyleId } from '@woco/shared';
+  import { FEATURES } from '@woco/shared';
   import SectionRenderer from './lib/components/site/sections/SectionRenderer.svelte';
   import EventPage from './lib/components/site/EventPage.svelte';
   import ShopOrderScreen from './lib/attendee/shop/ShopOrderScreen.svelte';
@@ -371,7 +372,15 @@
   <!-- ── Page / event / shop-order content ───────────────────────── -->
   {#if route.type === 'shop-order'}
     <main>
-      <ShopOrderScreen shopId={route.shopId} code={route.code} />
+      <!-- A deployed site carries the flag value baked in at publish time, so an
+           older site keeps rendering this screen after a flip. That is fine: the
+           screen's own calls to /api/shops/* are refused by the server gate,
+           which is the authoritative one for published sites (#124). -->
+      {#if FEATURES.shopAllowed}
+        <ShopOrderScreen shopId={route.shopId} code={route.code} />
+      {:else}
+        <p class="shop-off">Shop orders are not available on this site yet.</p>
+      {/if}
     </main>
   {:else if route.type === 'event'}
     <!-- Keyed for the same reason the page branch below is: EventPage reads its
@@ -802,6 +811,14 @@
 
   /* ── Main ─────────────────────────────────────────────────────────── */
   main { flex: 1; }
+
+  .shop-off {
+    max-width: 40rem;
+    margin: 0 auto;
+    padding: 4rem 1.5rem;
+    text-align: center;
+    color: var(--muted);
+  }
 
   .not-found {
     display: flex;
