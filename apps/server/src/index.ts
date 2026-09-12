@@ -54,6 +54,7 @@ import { agentCard, agentOpenApi, agentBaseUrl } from "./agent/discovery.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
 import { listEvents } from "./lib/event/service.js";
 import { onchainRegistryHealth } from "./lib/event/onchain-registry.js";
+import { issuerBindingHealth } from "./lib/issuer/binding.js";
 import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
@@ -310,6 +311,13 @@ app.get("/api/health", (c) =>
     // the server logged an exception among thousands. `rebindConflicts` counts
     // DISTINCT series stuck this way since boot, so a retry loop is one alarm.
     onchainRegistry: onchainRegistryHealth(),
+    // Cross-account issuer claims (#457). One issuing address belongs to one
+    // account, but the server sees only addresses and cannot tell a squatter
+    // from a client deriving the wrong key — so it refuses the second claimant
+    // and reports it here. `crossClaimRefusals` climbing means a real account
+    // may be locked out of its own issuer identity, which from the organiser's
+    // side is indistinguishable from a create that mysteriously stopped working.
+    issuerBindings: issuerBindingHealth(),
     // The profile-name ledger (#464). `loadFailed` means the file on
     // disk would not parse: the ledger is EMPTY, so every rename cooldown has
     // reset and the profile-name refusal at the binding points is off until each
