@@ -1380,7 +1380,7 @@ async function loginWeb3Auth(): Promise<boolean> {
 
     // Kernelize: build the ZeroDev Kernel from the raw Web3Auth key. The Kernel
     // address (not the EOA) becomes the parent identity, so email users get the
-    // gasless on-chain rails (likes/follows) — `attester == parent` holds because
+    // gasless on-chain rail (the referral attestation) — `attester == parent` holds because
     // the Kernel is msg.sender. The seed stays on the raw EOA key (invariant #1).
     //
     // If this web3auth key is the rotated owner of a RECOVERED account, its Kernel

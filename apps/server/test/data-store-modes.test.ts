@@ -27,7 +27,6 @@ import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SubjectType } from "@woco/shared";
 
 const OWNER = "0x1111111111111111111111111111111111111111";
 const ADDR2 = "0x2222222222222222222222222222222222222222";
@@ -194,13 +193,6 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     drive: async () => {
       const m = await import("../src/lib/gate/store.js");
       m.bindTicket({ seriesId: "series-1", edition: 1, eventId: "event-1", parentAddress: OWNER, route: "claim" });
-    },
-  },
-  {
-    store: "likes/index-store",
-    drive: async () => {
-      const m = await import("../src/lib/likes/index-store.js");
-      await m.recordLike({ subject: BYTES32, subjectType: SubjectType.Profile, attester: OWNER, uid: BYTES32 });
     },
   },
   {

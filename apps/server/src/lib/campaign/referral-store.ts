@@ -3,8 +3,8 @@
  *
  * PENDING is genuinely server-held state (the pre-chain attribution window):
  * captured at signup-via-link, consumed when the merchant's attestation lands
- * on-chain. CONFIRMED is a projection of on-chain EAS truth (same posture as
- * likes-index: cache, not trust anchor — rebuildable from Attested logs).
+ * on-chain. CONFIRMED is a projection of on-chain EAS truth: cache, not trust
+ * anchor — rebuildable from Attested logs.
  *
  * One referral per referee, ever: first pending wins, a confirmed referral is
  * permanent (the attestation is non-revocable). Keyed by lowercase referee.

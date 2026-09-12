@@ -2,8 +2,8 @@
  * Onboarding-campaign EAS schemas — referrals + cohort badges. Single source
  * of truth shared by the client write path and the server relay/issuer.
  *
- * Both are EAS attestations on Arbitrum Sepolia, alongside the likes schema
- * (see ../likes/types.ts, which owns the chain constants). NOT NFTs, NOT objects:
+ * Both are EAS attestations on Arbitrum Sepolia; `./eas.ts` owns the chain
+ * constants they share. NOT NFTs, NOT objects:
  * these are participation facts, and the future token distribution reads them
  * as an on-chain ledger.
  *
