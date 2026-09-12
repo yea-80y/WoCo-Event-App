@@ -38,6 +38,9 @@ import {
   authenticatePasskey,
   restorePasskeyAccount,
   createPasskeyAccount,
+  createPasskeyAccountUnpinned,
+  pinPasskeyCredential,
+  type PasskeyCredentialHandle,
   hasStoredPasskeyCredential,
   clearPasskeyCredential,
 } from "./passkey-account.js";
@@ -2660,6 +2663,11 @@ async function recoverAndRekey(args: {
     // re-homed under the new owner EOA (PRF-EOA for passkey, Web3Auth EOA otherwise).
     let newOwnerAddress: string;
     let newOwnerPrivKey: `0x${string}`;
+    // #158: the minted passkey's metadata, held UNWRITTEN until the commit block.
+    // Which credential this device logs in with is local state, so it is committed
+    // with the other local state once the rotation is proven — not at mint time,
+    // when every step between here and the commit could still abort.
+    let pendingCredential: PasskeyCredentialHandle | null = null;
     // #234: set by the web3auth branch when its owner scan completed, so the
     // post-rotation tail re-scan below can pick up where the pre-scan left off.
     let ownerScanHead: bigint | undefined;
@@ -2753,135 +2761,167 @@ async function recoverAndRekey(args: {
       }
     } else {
       onProgress?.("Create a new passkey on this device…");
-      const fresh = await createPasskeyAccount();
+      // UNPINNED (#158). The new owner address is the PRF-EOA, so the passkey must
+      // exist before the rotation; making it this device's login credential must
+      // not, or a later abort strands the pin on an account nobody owns.
+      const fresh = await createPasskeyAccountUnpinned();
       newOwnerAddress = fresh.address; // PRF-EOA == ECDSA sudo owner of the rebuilt Kernel
       newOwnerPrivKey = fresh.privateKey;
+      pendingCredential = fresh.credential;
     }
     const newSeedAddress = newOwnerAddress;
 
-    // (2) Guardian (backup wallet) calls doRecovery → rotate sudo to the new owner.
-    onProgress?.("Approve in your backup wallet to move this account to your new sign-in…");
-    const guardianSigner = await backup.getGuardianSigner();
-    const { recoverAccount } = await import("./kernel-account.js");
-    const { txHash, blockNumber } = await recoverAccount({
-      targetAddress: target,
-      // The SAME config object the pre-flight derived `expectedGuardian` from —
-      // reconstructing it separately here is how setup-time and recovery-time
-      // guardian addresses could silently diverge (#161).
-      guardianConfig: guardianConfigForCheck,
-      guardianSigners: [guardianSigner],
-      newOwnerAddress,
-    });
-
-    // (2b) POST-CONDITION: prove on-chain that the owner actually rotated, before
-    // ANY irreversible local commit below. The old `kernel.address !== target`
-    // assertion could not do this — buildKernelFromPrivateKey passes the address
-    // override straight through to createKernelAccount, so it compared `target`
-    // to itself and was true whatever happened on-chain (#152). A userOp that is
-    // included but reverts now throws in sendSudoUserOp (#151); this catches the
-    // rest (wrong validator, a rotation that landed elsewhere, chain reorg).
-    //
-    // Fails CLOSED, including on an unreadable chain: nothing has been committed
-    // at this point, so refusing costs the user a retry, whereas proceeding
-    // wrongly tells them "you're back in" and invites them to discard the old
-    // device that still holds the only working credential.
-    // The message it fails with is NOT interchangeable (#226). `readKernelEcdsaOwner`
-    // returns null for BOTH "the owner is someone else" and "the read threw", so the
-    // original text — "your account has NOT been changed" — asserted a fact it had
-    // never observed. Said to the one user whose old credential may have just been
-    // retired on-chain, it is the worst possible advice: it tells them to keep using
-    // a dead sign-in and stop retrying, when a retry is exactly what heals it (the
-    // escrow, the guardian registration and doRecovery all survive).
-    //
-    // So the two answers are kept apart. `removeAllBackups` already does this —
-    // "did not take effect" vs "couldn't confirm; it may well have worked".
-    onProgress?.("Confirming the change on-chain…");
-    // PINNED to the block the rotation landed in (#236) — the removeAllBackups
-    // precedent, now plumbed through recoverAccount. Reaching this loop at all
-    // means the userOp receipt SUCCEEDED (#151 throws on included-but-reverted),
-    // so at "latest" the common way to see a non-matching owner was a replica
-    // lagging the receipt — and the user was then told "this account still has
-    // its previous sign-in" about a rotation that landed. A pinned replica that
-    // lacks the block errors instead (→ "unconfirmed", retried below), and a
-    // pinned ANSWER is immutable block state — final either way, judged by
-    // rotation-confirm.ts. Only errored reads are worth the remaining attempts.
-    const { readKernelEcdsaOwnerStrict } = await import("./kernel-account.js");
-    const { judgeRotationRead, rotationReadIsFinal } = await import("./rotation-confirm.js");
-    let verdict: import("./rotation-confirm.js").RotationReadVerdict = "unconfirmed";
-    for (let attempt = 0; attempt < ROTATION_CONFIRM_ATTEMPTS; attempt++) {
-      verdict = judgeRotationRead(
-        await readKernelEcdsaOwnerStrict(target, blockNumber),
+    // Declared out here because the commit block below needs both, and the block
+    // that produces them is now scoped by the log-and-rethrow guard.
+    let txHash: string;
+    let kernel: BuiltKernel;
+    // Everything from here to the commit block is abortable, and on the passkey
+    // branch an abort leaves ONE thing behind that no code can clean up: the
+    // resident passkey now sitting in the user's authenticator. Name it in the log
+    // so a support conversation can identify the stray credential, and rethrow
+    // untouched — the messages below are written for the user and several of them
+    // (not-effective vs unconfirmed) are deliberately not interchangeable.
+    try {
+      // (2) Guardian (backup wallet) calls doRecovery → rotate sudo to the new owner.
+      onProgress?.("Approve in your backup wallet to move this account to your new sign-in…");
+      const guardianSigner = await backup.getGuardianSigner();
+      const { recoverAccount } = await import("./kernel-account.js");
+      const rotated = await recoverAccount({
+        targetAddress: target,
+        // The SAME config object the pre-flight derived `expectedGuardian` from —
+        // reconstructing it separately here is how setup-time and recovery-time
+        // guardian addresses could silently diverge (#161).
+        guardianConfig: guardianConfigForCheck,
+        guardianSigners: [guardianSigner],
         newOwnerAddress,
-      );
-      if (rotationReadIsFinal(verdict, blockNumber !== undefined)) break;
-      if (attempt < ROTATION_CONFIRM_ATTEMPTS - 1) {
-        await new Promise((r) => setTimeout(r, ROTATION_CONFIRM_DELAY_MS));
-      }
-    }
-    if (verdict !== "confirmed") {
-      throw new Error(
-        verdict === "not-effective"
-          ? // The chain answered — at the rotation's own block, when pinned —
-            // and named somebody else. The only case that justifies telling
-            // the user nothing changed.
-            "The recovery didn't take effect — this account still has its previous sign-in. " +
-              "Keep using your existing sign-in, and try recovering again."
-          : // Nobody could answer. It may have worked. Say so, and send them
-            // back to the portal rather than back to a sign-in that might be dead.
-            "We couldn't confirm the change on-chain — it may well have gone through. " +
-              "Don't assume either way: run recovery again and it will pick up wherever it landed.",
-      );
-    }
-
-    // The rotation is confirmed at `blockNumber`, and it went THROUGH the recovery
-    // route — so the route provably existed at that block. This device is about to
-    // become the account's own device (step 5 logs in as it), and its recovery panel
-    // must not then be told "no backup" by a replica standing before this point
-    // (#510). A lower bound, recorded the moment it is proven.
-    if (blockNumber !== undefined) {
-      const { rememberLandingBlock } = await import("./recovery-landing-block.js");
-      rememberLandingBlock(target, blockNumber);
-    }
-
-    // (2c) TAIL RE-SCAN (#234). Both devices can scan clean and both rotate —
-    // window = scan duration + inclusion + log-index lag, and no client-side
-    // design closes it without an on-chain mutex. It is made LOUD instead: one
-    // cheap page from the pre-scan head (minus a reorg margin) to now. A collision
-    // found here cannot be un-rotated, but NOTHING local has been written yet, so
-    // the client refuses to commit, says so plainly, and routes the user to
-    // re-recover this account onto a fresh passkey — the rotation that just landed
-    // is itself the event that proves the collision. Fails closed like the pre-scan.
-    if (newOwnerKind === "web3auth" && ownerScanHead !== undefined && ownerScanIO) {
-      onProgress?.("Re-checking this sign-in on-chain…");
-      const { scanOwnedAccounts, OWNER_SCAN_REORG_MARGIN } = await import("./owned-accounts-scan.js");
-      const { counterfactualKernelOf } = await import("./kernel-account.js");
-      const tail = await scanOwnedAccounts({
-        eoa: newOwnerAddress,
-        exclude: [target, await counterfactualKernelOf(newOwnerAddress)],
-        io: ownerScanIO,
-        fromBlock: ownerScanHead - OWNER_SCAN_REORG_MARGIN,
       });
-      if (tail.status === "collision") {
-        console.warn("[auth] post-rotation owner scan found a collision:", tail.kernels);
-        throw new Error(
-          "Another recovery used this same sign-in while this one was running, so it now opens " +
-            "two accounts. Nothing was saved on this device. To keep the accounts apart, run " +
-            "recovery for this account again and choose \"Passkey on this device\".",
-        );
-      }
-      if (tail.status === "unknown") {
-        console.warn("[auth] post-rotation owner scan did not complete:", tail.reason);
-        throw new Error(
-          "We couldn't re-check this sign-in on-chain after the change — it may well have gone " +
-            "through. Nothing was saved on this device. Run recovery again and it will pick up " +
-            "wherever it landed.",
-        );
-      }
-    }
+      txHash = rotated.txHash;
+      const blockNumber = rotated.blockNumber;
 
-    // (3) Rebuild the Kernel at the OLD address with the NEW owner key.
-    const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
-    const kernel = await buildKernelFromPrivateKey(newOwnerPrivKey, { address: target });
+      // (2b) POST-CONDITION: prove on-chain that the owner actually rotated, before
+      // ANY irreversible local commit below. The old `kernel.address !== target`
+      // assertion could not do this — buildKernelFromPrivateKey passes the address
+      // override straight through to createKernelAccount, so it compared `target`
+      // to itself and was true whatever happened on-chain (#152). A userOp that is
+      // included but reverts now throws in sendSudoUserOp (#151); this catches the
+      // rest (wrong validator, a rotation that landed elsewhere, chain reorg).
+      //
+      // Fails CLOSED, including on an unreadable chain: nothing has been committed
+      // at this point, so refusing costs the user a retry, whereas proceeding
+      // wrongly tells them "you're back in" and invites them to discard the old
+      // device that still holds the only working credential. That claim is true of
+      // local state on BOTH branches since #158 moved the credential pin into the
+      // commit block; the single thing a refusal here cannot take back is the
+      // resident passkey the authenticator now holds, which owns no account and
+      // which the user can delete.
+      // The message it fails with is NOT interchangeable (#226). `readKernelEcdsaOwner`
+      // returns null for BOTH "the owner is someone else" and "the read threw", so the
+      // original text — "your account has NOT been changed" — asserted a fact it had
+      // never observed. Said to the one user whose old credential may have just been
+      // retired on-chain, it is the worst possible advice: it tells them to keep using
+      // a dead sign-in and stop retrying, when a retry is exactly what heals it (the
+      // escrow, the guardian registration and doRecovery all survive).
+      //
+      // So the two answers are kept apart. `removeAllBackups` already does this —
+      // "did not take effect" vs "couldn't confirm; it may well have worked".
+      onProgress?.("Confirming the change on-chain…");
+      // PINNED to the block the rotation landed in (#236) — the removeAllBackups
+      // precedent, now plumbed through recoverAccount. Reaching this loop at all
+      // means the userOp receipt SUCCEEDED (#151 throws on included-but-reverted),
+      // so at "latest" the common way to see a non-matching owner was a replica
+      // lagging the receipt — and the user was then told "this account still has
+      // its previous sign-in" about a rotation that landed. A pinned replica that
+      // lacks the block errors instead (→ "unconfirmed", retried below), and a
+      // pinned ANSWER is immutable block state — final either way, judged by
+      // rotation-confirm.ts. Only errored reads are worth the remaining attempts.
+      const { readKernelEcdsaOwnerStrict } = await import("./kernel-account.js");
+      const { judgeRotationRead, rotationReadIsFinal } = await import("./rotation-confirm.js");
+      let verdict: import("./rotation-confirm.js").RotationReadVerdict = "unconfirmed";
+      for (let attempt = 0; attempt < ROTATION_CONFIRM_ATTEMPTS; attempt++) {
+        verdict = judgeRotationRead(
+          await readKernelEcdsaOwnerStrict(target, blockNumber),
+          newOwnerAddress,
+        );
+        if (rotationReadIsFinal(verdict, blockNumber !== undefined)) break;
+        if (attempt < ROTATION_CONFIRM_ATTEMPTS - 1) {
+          await new Promise((r) => setTimeout(r, ROTATION_CONFIRM_DELAY_MS));
+        }
+      }
+      if (verdict !== "confirmed") {
+        throw new Error(
+          verdict === "not-effective"
+            ? // The chain answered — at the rotation's own block, when pinned —
+              // and named somebody else. The only case that justifies telling
+              // the user nothing changed.
+              "The recovery didn't take effect — this account still has its previous sign-in. " +
+                "Keep using your existing sign-in, and try recovering again."
+            : // Nobody could answer. It may have worked. Say so, and send them
+              // back to the portal rather than back to a sign-in that might be dead.
+              "We couldn't confirm the change on-chain — it may well have gone through. " +
+                "Don't assume either way: run recovery again and it will pick up wherever it landed.",
+        );
+      }
+
+      // The rotation is confirmed at `blockNumber`, and it went THROUGH the recovery
+      // route — so the route provably existed at that block. This device is about to
+      // become the account's own device (step 5 logs in as it), and its recovery panel
+      // must not then be told "no backup" by a replica standing before this point
+      // (#510). A lower bound, recorded the moment it is proven.
+      if (blockNumber !== undefined) {
+        const { rememberLandingBlock } = await import("./recovery-landing-block.js");
+        rememberLandingBlock(target, blockNumber);
+      }
+
+      // (2c) TAIL RE-SCAN (#234). Both devices can scan clean and both rotate —
+      // window = scan duration + inclusion + log-index lag, and no client-side
+      // design closes it without an on-chain mutex. It is made LOUD instead: one
+      // cheap page from the pre-scan head (minus a reorg margin) to now. A collision
+      // found here cannot be un-rotated, but NOTHING local has been written yet
+      // (structurally so on either branch since #158, not just on this one), so
+      // the client refuses to commit, says so plainly, and routes the user to
+      // re-recover this account onto a fresh passkey — the rotation that just landed
+      // is itself the event that proves the collision. Fails closed like the pre-scan.
+      if (newOwnerKind === "web3auth" && ownerScanHead !== undefined && ownerScanIO) {
+        onProgress?.("Re-checking this sign-in on-chain…");
+        const { scanOwnedAccounts, OWNER_SCAN_REORG_MARGIN } = await import("./owned-accounts-scan.js");
+        const { counterfactualKernelOf } = await import("./kernel-account.js");
+        const tail = await scanOwnedAccounts({
+          eoa: newOwnerAddress,
+          exclude: [target, await counterfactualKernelOf(newOwnerAddress)],
+          io: ownerScanIO,
+          fromBlock: ownerScanHead - OWNER_SCAN_REORG_MARGIN,
+        });
+        if (tail.status === "collision") {
+          console.warn("[auth] post-rotation owner scan found a collision:", tail.kernels);
+          throw new Error(
+            "Another recovery used this same sign-in while this one was running, so it now opens " +
+              "two accounts. Nothing was saved on this device. To keep the accounts apart, run " +
+              "recovery for this account again and choose \"Passkey on this device\".",
+          );
+        }
+        if (tail.status === "unknown") {
+          console.warn("[auth] post-rotation owner scan did not complete:", tail.reason);
+          throw new Error(
+            "We couldn't re-check this sign-in on-chain after the change — it may well have gone " +
+              "through. Nothing was saved on this device. Run recovery again and it will pick up " +
+              "wherever it landed.",
+          );
+        }
+      }
+
+      // (3) Rebuild the Kernel at the OLD address with the NEW owner key.
+      const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
+      kernel = await buildKernelFromPrivateKey(newOwnerPrivKey, { address: target });
+    } catch (e) {
+      if (pendingCredential) {
+        console.warn(
+          "[auth] recovery aborted after the passkey was created — credential",
+          pendingCredential.credentialId,
+          "is resident in this authenticator and owns no account; it was never pinned as this device's login.",
+        );
+      }
+      throw e;
+    }
 
     // (4) Establish the session as the recovered account (mirrors loginPasskey,
     // but pinned to the preserved address with the escrow-restored identity seed).
@@ -2909,6 +2949,13 @@ async function recoverAndRekey(args: {
     // no second secret to store and no way for the two to fall out of step.
     // AFTER _clearStaleAuthForSwitch, which clears it.
     await storeIdentitySeed(newSeedAddress, identitySeed);
+    // The primary-login pin (#158), passkey branch only. It sits HERE, between the
+    // seed and AUTH_KIND, because `init()` requires the pin AND the parent address
+    // AND the seed address together: writing it in this order means that three-way
+    // requirement can only ever become satisfiable once the binding and the seed
+    // are already down. A death before this line is healed by the next sign-in,
+    // which is discoverable and rewrites the pin itself.
+    if (pendingCredential) await pinPasskeyCredential(pendingCredential);
     await putKV(StorageKeys.AUTH_KIND, newOwnerKind as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, target);
     await putKV(StorageKeys.SEED_ADDRESS, newSeedAddress);
