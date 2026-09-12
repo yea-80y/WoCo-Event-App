@@ -22,6 +22,27 @@
  * surfacing, and both must be LOUD, not silently recorded. Rotation (a gen
  * bump) arrives with the registry statement in 5b, not here.
  *
+ * ONE ISSUING ADDRESS, ONE PARENT — GLOBALLY, and a retired address to nobody
+ * (#457). The per-parent rule above is only half the fence: without a global
+ * index a SECOND account could pin an issuing address the first one already
+ * holds, and a rotation could walk an account onto an address another account
+ * is currently issuing under. Either way two parents answer to one issuer
+ * address, and a manifest signed by that key verifies under both — so the
+ * issuer a badge names stops naming an account at all, which is the one thing
+ * the pin exists to guarantee. Retirement is global for the same reason plus
+ * the leaked-key one: a retired address is precisely the address a bumped-away
+ * key can still sign for.
+ *
+ * THE HONEST LIMIT: first claim wins, and this module cannot tell which claim
+ * is the genuine one. Derivation is client-side from a secret seed and only
+ * ADDRESSES ever reach the server, so nothing here links one generation of one
+ * account to another — two accounts claiming one address are indistinguishable
+ * apart from arrival order. So the server refuses the second and COUNTS it;
+ * which claim was real is for registry readers to judge from the published
+ * statement chains (#455). That count is on `/api/health` rather than only in a
+ * log line because a genuine account locked out by someone else's claim looks,
+ * from the inside, exactly like a client bug.
+ *
  * The binding is deliberately REPLAYABLE — it asserts a durable fact. The
  * guard is that it is only accepted inside a session-authenticated create
  * whose VERIFIED parent must equal the parent in the signed message; freshness
@@ -64,13 +85,36 @@ export interface IssuerBindingRecord {
 let bindings = new Map<string, IssuerBindingRecord>();
 /** Flat view of every parent's retiredIssuers, for O(1) refusals. */
 let retired = new Set<string>();
+/** issuer → the parent CURRENTLY holding it, for the O(1) cross-account refusal. */
+let issuerToParent = new Map<string, string>();
 let loaded = false;
 
-function rebuildRetired(): void {
+/** Both reverse views, from `bindings` alone — so a reload and a mutation
+ *  cannot disagree about who holds what. */
+function rebuildIndexes(): void {
   retired = new Set();
-  for (const rec of bindings.values()) {
-    for (const r of rec.retiredIssuers ?? []) retired.add(r);
+  issuerToParent = new Map();
+  for (const [parent, rec] of bindings) {
+    // Lowercased on the way in: every lookup below is a lowercased address, and
+    // an index that missed on case would read as "nobody holds this".
+    for (const r of rec.retiredIssuers ?? []) retired.add(r.toLowerCase());
+    issuerToParent.set(rec.issuer.toLowerCase(), parent);
   }
+}
+
+/** Cross-account claims refused since boot. Not persisted: this is an alarm
+ *  about what is happening NOW, and a restart is a fresh window. */
+let crossClaimRefusals = 0;
+let lastCrossClaimAt: string | null = null;
+let lastCrossClaim: { claimant: string; holder: string } | null = null;
+
+function recordCrossClaim(claimant: string, holder: string): void {
+  crossClaimRefusals += 1;
+  lastCrossClaimAt = new Date().toISOString();
+  lastCrossClaim = { claimant, holder };
+  console.warn(
+    `[issuer-binding] cross-account issuer claim REFUSED: ${claimant} claimed an issuing address held by ${holder}`,
+  );
 }
 
 function ensureLoaded(): void {
@@ -79,7 +123,7 @@ function ensureLoaded(): void {
   try {
     const obj = JSON.parse(readFileSync(STORE_FILE, "utf-8")) as Record<string, IssuerBindingRecord>;
     if (obj && typeof obj === "object") bindings = new Map(Object.entries(obj));
-    rebuildRetired();
+    rebuildIndexes();
   } catch {
     // File doesn't exist yet — that's fine.
   }
@@ -177,6 +221,22 @@ export function verifyAndPinIssuerBinding(
   if (b.gen !== 0) {
     return { ok: false, error: "issuerBinding.gen must be 0 — an account with no rotation history starts at generation 0" };
   }
+  // Possession is proven by here, which is exactly why these two still refuse:
+  // whoever holds the key, the ADDRESS is already spoken for.
+  if (retired.has(b.issuer)) {
+    return {
+      ok: false,
+      error: "this issuing address was retired by an account rotation and cannot be pinned again",
+    };
+  }
+  const holder = issuerToParent.get(b.issuer);
+  if (holder !== undefined && holder !== parent) {
+    recordCrossClaim(parent, holder);
+    return {
+      ok: false,
+      error: "this issuing address is already bound to a different account — a cross-account issuer claim is refused",
+    };
+  }
   bindings.set(parent, {
     issuer: b.issuer,
     gen: 0,
@@ -184,6 +244,7 @@ export function verifyAndPinIssuerBinding(
     boundAt: new Date().toISOString(),
     source,
   });
+  rebuildIndexes();
   persist();
   return { ok: true };
 }
@@ -207,6 +268,24 @@ export function applyIssuerRotation(
   if (!existing || newGen !== existing.gen + 1) {
     return { ok: false, error: "rotation out of order — the pinned record does not precede this generation" };
   }
+  // A rotation is a WRITE to the global index like any other, so the same two
+  // refusals apply: rotating onto a live or retired address would let a
+  // statement chain take an address the fresh-pin path guards.
+  const incoming = newIssuer.toLowerCase();
+  if (retired.has(incoming)) {
+    return {
+      ok: false,
+      error: "this issuing address was retired by an account rotation and cannot be pinned again",
+    };
+  }
+  const holder = issuerToParent.get(incoming);
+  if (holder !== undefined && holder !== parent) {
+    recordCrossClaim(parent, holder);
+    return {
+      ok: false,
+      error: "this issuing address is already bound to a different account — a cross-account issuer claim is refused",
+    };
+  }
   bindings.set(parent, {
     issuer: newIssuer,
     gen: newGen,
@@ -215,9 +294,33 @@ export function applyIssuerRotation(
     source: "rotation",
     retiredIssuers: [...(existing.retiredIssuers ?? []), existing.issuer],
   });
-  rebuildRetired();
+  rebuildIndexes();
   persist();
   return { ok: true };
+}
+
+/**
+ * Operator view (#457). `crossClaimRefusals` climbing is the alarm: either a
+ * client is deriving someone else's issuing address (a seed bug) or an account
+ * is being locked out of its own by a squatter, and the two look identical from
+ * here — the last pair names both parents so the registry logs can be read
+ * side by side. ADDRESSES ONLY: no key material, no signatures.
+ */
+export function issuerBindingHealth(): {
+  pinnedParents: number;
+  retiredIssuers: number;
+  crossClaimRefusals: number;
+  lastCrossClaimAt: string | null;
+  lastCrossClaim: { claimant: string; holder: string } | null;
+} {
+  ensureLoaded();
+  return {
+    pinnedParents: bindings.size,
+    retiredIssuers: retired.size,
+    crossClaimRefusals,
+    lastCrossClaimAt,
+    lastCrossClaim,
+  };
 }
 
 /** Has ANY parent rotated away from this issuing address? Refused at the gate
@@ -234,9 +337,16 @@ export function getIssuerBinding(parentAddress: string): IssuerBindingRecord | n
   return bindings.get(parentAddress.toLowerCase()) ?? null;
 }
 
-/** Test seam — the store is process-lifetime state. */
-export function _resetIssuerBindings(): void {
+/** Test seam — the store is process-lifetime state. `fromDisk` drops the
+ *  in-memory state WITHOUT marking it loaded, which is the only way to exercise
+ *  a fresh boot (the reverse indexes being rebuilt from the file) inside one
+ *  process. */
+export function _resetIssuerBindings(opts?: { fromDisk?: boolean }): void {
   bindings = new Map();
   retired = new Set();
-  loaded = true;
+  issuerToParent = new Map();
+  crossClaimRefusals = 0;
+  lastCrossClaimAt = null;
+  lastCrossClaim = null;
+  loaded = opts?.fromDisk !== true;
 }

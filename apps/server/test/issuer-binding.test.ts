@@ -127,6 +127,119 @@ test("malformed bindings are refused, never thrown on", () => {
 });
 
 // ---------------------------------------------------------------------------
+// ONE ISSUING ADDRESS, ONE PARENT — the global index (#457).
+//
+// Possession is not ownership: a second account CAN hold a valid proof for an
+// issuing address (it derived the same one from a colliding seed, or it simply
+// stole the key) and the per-parent rules above see nothing wrong, because they
+// only ever look at the claimant's own record. These tests are the fence that
+// makes the pin mean "this address names THIS account".
+// ---------------------------------------------------------------------------
+
+const THIRD_PARENT = "0x4444444444444444444444444444444444444444";
+const GEN1 = deriveIssuingKey("0x" + "ab".repeat(32), 1);
+
+test("a SECOND account cannot pin an issuing address the first one holds", () => {
+  binding._resetIssuerBindings();
+  assert.equal(binding.verifyAndPinIssuerBinding(PARENT, bindingFor(PARENT), [ISSUER], "event-create").ok, true);
+
+  // A perfectly valid proof of possession — signed for OTHER_PARENT by the very
+  // key that ISSUER is. Everything the pre-#457 checks look at passes.
+  const claim = bindingFor(OTHER_PARENT, KEY, ISSUER);
+  const v = binding.verifyAndPinIssuerBinding(OTHER_PARENT, claim, [ISSUER], "event-create");
+  assert.equal(v.ok, false, "a cross-account claim must be refused even with a valid PoP");
+  assert.match((v as { error: string }).error, /already bound to a different account/);
+
+  assert.equal(binding.getIssuerBinding(OTHER_PARENT), null, "the claimant must get no record");
+  assert.equal(binding.getIssuerBinding(PARENT)?.issuer, ISSUER, "the holder's pin must stand untouched");
+  assert.equal(binding.getIssuerBinding(PARENT)?.gen, 0);
+
+  const h = binding.issuerBindingHealth();
+  assert.equal(h.crossClaimRefusals, 1, "the refusal has to be visible to an operator");
+  assert.deepEqual(h.lastCrossClaim, { claimant: OTHER_PARENT, holder: PARENT });
+  assert.equal(typeof h.lastCrossClaimAt, "string");
+  assert.equal(h.pinnedParents, 1);
+});
+
+test("a RETIRED issuing address can never be pinned again, by anyone", () => {
+  binding._resetIssuerBindings();
+  assert.equal(binding.verifyAndPinIssuerBinding(PARENT, bindingFor(PARENT), [ISSUER], "event-create").ok, true);
+  const gen1 = bindingFor(PARENT, GEN1.privateKey, GEN1.address, 1);
+  assert.equal(binding.applyIssuerRotation(PARENT, GEN1.address, 1, gen1.sig).ok, true);
+  assert.equal(binding.isRetiredIssuer(ISSUER), true);
+
+  // A stranger claiming the retired address — the leaked-key case the
+  // retirement seam exists for. Its PoP is genuine; it is still refused.
+  const v = binding.verifyAndPinIssuerBinding(THIRD_PARENT, bindingFor(THIRD_PARENT, KEY, ISSUER), [ISSUER], "event-create");
+  assert.equal(v.ok, false);
+  assert.match((v as { error: string }).error, /retired by an account rotation/);
+  assert.equal(binding.getIssuerBinding(THIRD_PARENT), null);
+
+  // The ORIGINAL account is refused too, though by its own record's generation
+  // rule — it never reaches the fresh-pin path while that record stands.
+  const back = binding.verifyAndPinIssuerBinding(PARENT, bindingFor(PARENT), [ISSUER], "event-create");
+  assert.equal(back.ok, false);
+  assert.match((back as { error: string }).error, /generation 1/);
+  assert.equal(binding.getIssuerBinding(PARENT)?.issuer, GEN1.address, "the rotation must stand");
+  assert.equal(binding.issuerBindingHealth().retiredIssuers, 1);
+});
+
+test("a rotation cannot walk an account onto an issuer another account holds", () => {
+  binding._resetIssuerBindings();
+  assert.equal(binding.verifyAndPinIssuerBinding(PARENT, bindingFor(PARENT), [ISSUER], "event-create").ok, true);
+  assert.equal(
+    binding.verifyAndPinIssuerBinding(OTHER_PARENT, bindingFor(OTHER_PARENT, OTHER_KEY, OTHER_ISSUER), [OTHER_ISSUER], "event-create").ok,
+    true,
+  );
+
+  // The registry has already verified the statement and the PoP by this point —
+  // the only thing left to notice is that the address belongs to someone else.
+  const stolen = signPersonalMessage(buildIssuerBindingMessage(PARENT, 1), OTHER_KEY);
+  const v = binding.applyIssuerRotation(PARENT, OTHER_ISSUER, 1, stolen);
+  assert.equal(v.ok, false);
+  assert.match((v as { error: string }).error, /already bound to a different account/);
+
+  const rec = binding.getIssuerBinding(PARENT);
+  assert.equal(rec?.issuer, ISSUER, "a refused rotation must not move the record");
+  assert.equal(rec?.gen, 0);
+  assert.equal(binding.getIssuerBinding(OTHER_PARENT)?.issuer, OTHER_ISSUER, "nor disturb the holder");
+  assert.deepEqual(binding.issuerBindingHealth().lastCrossClaim, { claimant: PARENT, holder: OTHER_PARENT });
+});
+
+test("the global index survives a restart — it is rebuilt from the store file", () => {
+  binding._resetIssuerBindings();
+  assert.equal(binding.verifyAndPinIssuerBinding(PARENT, bindingFor(PARENT), [ISSUER], "event-create").ok, true);
+
+  // A fresh boot: nothing in memory, the pin only on disk. Without the reverse
+  // index being rebuilt on load, the first claim after every restart would win.
+  binding._resetIssuerBindings({ fromDisk: true });
+  assert.equal(binding.getIssuerBinding(PARENT)?.issuer, ISSUER, "the record must reload at all");
+
+  const v = binding.verifyAndPinIssuerBinding(OTHER_PARENT, bindingFor(OTHER_PARENT, KEY, ISSUER), [ISSUER], "event-create");
+  assert.equal(v.ok, false, "a restart must not reopen the cross-account window");
+  assert.match((v as { error: string }).error, /already bound to a different account/);
+  assert.equal(binding.getIssuerBinding(OTHER_PARENT), null);
+});
+
+test("the health view carries addresses only — never a key or a signature", () => {
+  binding._resetIssuerBindings();
+  assert.equal(binding.verifyAndPinIssuerBinding(PARENT, bindingFor(PARENT), [ISSUER], "event-create").ok, true);
+  const claim = bindingFor(OTHER_PARENT, KEY, ISSUER);
+  binding.verifyAndPinIssuerBinding(OTHER_PARENT, claim, [ISSUER], "event-create");
+
+  const serialised = JSON.stringify(binding.issuerBindingHealth());
+  assert.doesNotMatch(serialised, new RegExp(claim.sig), "the PoP signature must not leak onto /api/health");
+  assert.doesNotMatch(serialised, new RegExp(KEY.slice(2)), "nor anything key-shaped");
+  assert.deepEqual(Object.keys(JSON.parse(serialised)).sort(), [
+    "crossClaimRefusals",
+    "lastCrossClaim",
+    "lastCrossClaimAt",
+    "pinnedParents",
+    "retiredIssuers",
+  ]);
+});
+
+// ---------------------------------------------------------------------------
 // Route enforcement ratchets — the module above is only worth anything if the
 // two create routes actually call it and stop on refusal. Neither route has a
 // harness-level test (auth middleware + streaming), so the wiring is pinned at
