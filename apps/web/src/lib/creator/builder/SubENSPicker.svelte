@@ -8,7 +8,9 @@
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import OwnedNamesList from "./OwnedNamesList.svelte";
   import { bindableNames, hidesProfileName } from "../../sub-ens/roles.js";
+  import { untrack } from "svelte";
   import { subEnsName as buildSubEnsName, subEnsWebUrl } from "@woco/shared";
+  import { subEnsLinkState, SUB_ENS_POLL_INTERVAL_MS, type SubEnsLinkNote } from "./sub-ens-link-state.js";
 
   interface Props {
     claimedLabel?: string;
@@ -153,6 +155,86 @@
   let claimed = $derived(!!claimedLabel);
   let ensName = $derived(claimedLabel ? buildSubEnsName(claimedLabel) : '');
   let ensUrl  = $derived(claimedLabel ? subEnsWebUrl(claimedLabel) : '');
+
+  // ── Does the name actually resolve yet? (#500) ───────────────────────────────
+  // eth.limo mints the subname TLS certificate on the FIRST request and only if
+  // the name resolves to a contenthash, and a failed ask is spent from a budget
+  // of ~10 per 15 minutes PER HOSTNAME (negatives cached 5 min). So "Open ↗"
+  // waits for on-chain evidence — never for the local fact that a name was
+  // claimed or a deploy was started. Rules + WHY: ./sub-ens-link-state.ts
+  let nameContentHash = $state<string | null>(null);
+  let hashAttempts    = $state(0);
+
+  let linkState = $derived(subEnsLinkState({
+    claimed,
+    singleName,
+    contentHash: nameContentHash,
+    deployedHash,
+    attempts: hashAttempts,
+  }));
+
+  const LINK_NOTES: Record<NonNullable<SubEnsLinkNote>, string> = {
+    identity: 'This is your identity and payment name. It does not open as a website.',
+    registering: 'Registering. Your address goes live after the first deploy.',
+    updating: 'Pointing your name at the new version. This can take a minute.',
+    'stale-version': 'Updating to the latest version.',
+    'gave-up': 'Still updating. Check back in a few minutes.',
+  };
+  let linkNote = $derived(linkState.note ? LINK_NOTES[linkState.note] : '');
+
+  // Non-reactive on purpose: which label the answer below belongs to. Reading it
+  // as state would make the effect depend on its own writes.
+  let seenLabel: string | undefined;
+
+  // Re-reads on every label change and after every deploy, because both change
+  // what the name should point at. The read is authenticated, so it waits for a
+  // session instead of minting one: a passive status check must never raise a
+  // signing prompt the user did not ask for.
+  $effect(() => {
+    const label  = claimedLabel;
+    const target = deployedHash;
+    const ready  = auth.hasSession;
+
+    // A different NAME is a different fact, so forget the old answer. A new
+    // DEPLOY is not: the certificate that name already earned still exists, so
+    // the link stays up (marked stale) instead of blinking out on every publish.
+    if (label !== seenLabel) {
+      seenLabel = label;
+      nameContentHash = null;
+    }
+    if (!label || !ready) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    hashAttempts = 0;
+
+    let attempts = 0;
+    let found: string | null = untrack(() => nameContentHash);
+
+    const read = async () => {
+      // A THROWN read (network down, a non-JSON reply) must count like a failed
+      // one: uncaught, it would end the loop with the "updating" note still on
+      // screen and nothing left to clear it.
+      const res = await getOwnedSubEns().catch(() => null);
+      if (cancelled) return;
+      attempts += 1;
+      // A read that FAILED is not evidence the name points nowhere — leave the
+      // last known answer standing, so a network blip can't retract a link that
+      // works. It still costs an attempt, or a broken endpoint polls forever.
+      if (res && res.ok && res.data) {
+        found = res.data.names.find((n) => n.label === label)?.contentHash ?? null;
+        nameContentHash = found;
+      }
+      hashAttempts = attempts;
+      const { pollAgain } = subEnsLinkState({
+        claimed: true, singleName, contentHash: found, deployedHash: target, attempts,
+      });
+      if (pollAgain) timer = setTimeout(() => { void read(); }, SUB_ENS_POLL_INTERVAL_MS);
+    };
+    void read();
+
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  });
 
   // Live preview as user types (before claim)
   let previewLabel = $derived(rawInput.toLowerCase().trim());
@@ -356,6 +438,9 @@
           {checkingRename ? 'Checking…' : 'Change'}
         </button>
       </div>
+      {#if linkState.note === 'identity'}
+        <p class="claimed-note claimed-note--muted profile-name-note">{linkNote}</p>
+      {/if}
     </div>
   {:else}
     <!-- ── Brand: terminal claimed state ─────────────────────────────────── -->
@@ -387,10 +472,18 @@
             Unlink
           </button>
         {/if}
-        <a class="action-btn action-btn--open" href={ensUrl} target="_blank" rel="noopener" title="Live on ENS — open this address">
-          Open ↗
-        </a>
+        {#if linkState.showOpen}
+          <a class="action-btn action-btn--open" href={ensUrl} target="_blank" rel="noopener" title="Live on ENS — open this address">
+            Open ↗
+          </a>
+        {:else if linkNote}
+          <span class="claimed-link-note">{linkNote}</span>
+        {/if}
       </div>
+
+      {#if linkState.showOpen && linkState.note === 'stale-version'}
+        <p class="claimed-note claimed-note--muted">{linkNote}</p>
+      {/if}
 
       {#if deployedHash}
         <p class="claimed-note">
@@ -1106,6 +1199,15 @@
   }
   .action-btn--open:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
+  /* Sits where Open ↗ would be, so the row keeps its shape while the name is
+     still becoming openable. */
+  .claimed-link-note {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+    max-width: 22rem;
+  }
+
   .claimed-note {
     margin: 0;
     display: flex;
@@ -1115,6 +1217,8 @@
     color: var(--text-muted);
     line-height: 1.4;
   }
+
+  .profile-name-note { margin-top: 0.4375rem; }
 
   /* ── Profile single-name row ────────────────────────────────────────────── */
   .picker--profile-name {
