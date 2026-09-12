@@ -272,6 +272,16 @@ export function applyIssuerRotation(
   // refusals apply: rotating onto a live or retired address would let a
   // statement chain take an address the fresh-pin path guards.
   const incoming = newIssuer.toLowerCase();
+  // Same address at the next generation is not a rotation: the write below
+  // would retire it AND make it current, and `isRetiredIssuer` would then refuse
+  // every badge this account mints. Only the account itself can send this (the
+  // statement is parent-signed), so it is a client bug, made loud here.
+  if (incoming === existing.issuer.toLowerCase()) {
+    return {
+      ok: false,
+      error: "rotation must name a NEW issuing address — the current one cannot be both retired and current",
+    };
+  }
   if (retired.has(incoming)) {
     return {
       ok: false,

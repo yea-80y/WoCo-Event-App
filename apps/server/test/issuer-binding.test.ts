@@ -327,3 +327,35 @@ test("a legacy v1 blob yields no digest on the checkout path", async () => {
     "a valid v2 blob must digest to its manifestRef",
   );
 });
+
+test("a rotation onto a RETIRED address is refused — rotating back is not a rotation", () => {
+  binding._resetIssuerBindings();
+  assert.equal(binding.verifyAndPinIssuerBinding(PARENT, bindingFor(PARENT), [ISSUER], "event-create").ok, true);
+  const gen1 = bindingFor(PARENT, GEN1.privateKey, GEN1.address, 1);
+  assert.equal(binding.applyIssuerRotation(PARENT, GEN1.address, 1, gen1.sig).ok, true);
+
+  // The account's OWN gen-0 address, retired one step ago. A bumped-away key
+  // is exactly the key a leak can still sign with, so it never comes back.
+  const back = signPersonalMessage(buildIssuerBindingMessage(PARENT, 2), KEY);
+  const v = binding.applyIssuerRotation(PARENT, ISSUER, 2, back);
+  assert.equal(v.ok, false, "a rotation must not resurrect a retired address");
+  assert.match((v as { error: string }).error, /retired by an account rotation/);
+  const rec = binding.getIssuerBinding(PARENT);
+  assert.equal(rec?.issuer, GEN1.address, "the record must not move");
+  assert.equal(rec?.gen, 1);
+  assert.equal(binding.isRetiredIssuer(ISSUER), true);
+});
+
+test("a rotation onto the account's OWN current address is refused — it would retire the live key", () => {
+  binding._resetIssuerBindings();
+  assert.equal(binding.verifyAndPinIssuerBinding(PARENT, bindingFor(PARENT), [ISSUER], "event-create").ok, true);
+
+  const same = signPersonalMessage(buildIssuerBindingMessage(PARENT, 1), KEY);
+  const v = binding.applyIssuerRotation(PARENT, ISSUER, 1, same);
+  assert.equal(v.ok, false);
+  assert.match((v as { error: string }).error, /NEW issuing address/);
+  const rec = binding.getIssuerBinding(PARENT);
+  assert.equal(rec?.gen, 0, "the record must not move");
+  assert.equal(binding.isRetiredIssuer(ISSUER), false, "the live address must not become retired");
+  assert.equal(binding.issuerBindingHealth().crossClaimRefusals, 0, "this is not a cross-account claim");
+});
