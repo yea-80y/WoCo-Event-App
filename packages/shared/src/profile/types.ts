@@ -10,9 +10,9 @@ export interface UserProfile {
   twitterHandle?: string;
   farcasterHandle?: string;
   avatarRef?: string;
-  /** Claimed sub-ENS label (e.g. "punkpub" for punkpub.woco.eth). Makes the
-   *  profile a likeable/followable subject — its namehash is the like subject
-   *  (see `profileSubject`). Written client-side after a successful claim. */
+  /** Claimed sub-ENS label (e.g. "punkpub" for punkpub.woco.eth). A display name
+   *  and web address only: follows are keyed by the ACCOUNT ADDRESS, never by this
+   *  name (owner decision 2026-09-03). Written client-side after a successful claim. */
   subEnsLabel?: string;
   updatedAt: string;
 }
