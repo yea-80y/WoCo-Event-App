@@ -247,7 +247,16 @@ export type ContentFeedResult<T> =
       scanClean: boolean;
     }
   | { status: "absent" }
-  | { status: "unavailable"; reason?: string };
+  | {
+      status: "unavailable";
+      reason?: string;
+      /**
+       * The version that exists and will never read — see `VersionedFeedRead`.
+       * Absent means "could not read right now"; present means a retry can only
+       * fail the same way, so the only way forward is to write past it.
+       */
+      unusableAt?: number;
+    };
 
 /**
  * Read + JSON-decode a client-owned content feed by owner + topic, preserving the
@@ -295,8 +304,10 @@ export async function readContentFeedResult<T>(
     };
   } catch {
     // Bytes exist at this identifier but aren't our JSON — corrupt or foreign,
-    // never "no feed here". Absent would be a lie a caller could cache.
-    return { status: "unavailable", reason: "feed payload is not valid JSON" };
+    // never "no feed here". Absent would be a lie a caller could cache, and
+    // "try again" would be a lie too: these bytes are immutable, so this version
+    // is spent and only a write past it can move the feed on.
+    return { status: "unavailable", reason: "feed payload is not valid JSON", unusableAt: res.version };
   }
 }
 
@@ -334,7 +345,10 @@ export async function readContentFeedAtVersion<T>(
   );
   if (asm.status === "absent") return { status: "absent" };
   if (asm.status !== "found") {
-    return { status: "unavailable", reason: `version ${version} did not resolve` };
+    const reason = `version ${version} did not resolve`;
+    return asm.unusable
+      ? { status: "unavailable", reason, unusableAt: version }
+      : { status: "unavailable", reason };
   }
   try {
     return {
@@ -344,7 +358,7 @@ export async function readContentFeedAtVersion<T>(
       scanClean: true,
     };
   } catch {
-    return { status: "unavailable", reason: "feed payload is not valid JSON" };
+    return { status: "unavailable", reason: "feed payload is not valid JSON", unusableAt: version };
   }
 }
 

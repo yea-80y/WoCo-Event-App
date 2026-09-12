@@ -3,7 +3,12 @@ import { profileDataContentTopic, profileAvatarContentTopic } from "@woco/shared
 import { authPost, authGet, get } from "./client.js";
 import { apiError } from "./errors.js";
 import { auth } from "../auth/auth-store.svelte.js";
-import { writeContentFeed, readContentFeed, readContentFeedResult } from "../swarm/content-feed.js";
+import {
+  writeContentFeed,
+  readContentFeed,
+  readContentFeedResult,
+  type ContentFeedResult,
+} from "../swarm/content-feed.js";
 import { ETHERNA_GATEWAY_URL } from "../swarm/gateways.js";
 import { logFeedToManifest } from "../manifest/feed-log.js";
 import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../cache/cache.js";
@@ -256,10 +261,15 @@ export async function updateProfile(
     // read, and the `unavailable` guard below cannot catch it because a gate
     // refusal reads as ABSENT, not as unavailable.
     { thorough: true },
-  ).catch((e: unknown) => ({ status: "unavailable" as const, reason: String(e) }));
+  ).catch((e: unknown): ContentFeedResult<UserProfile> => ({ status: "unavailable", reason: String(e) }));
   if (existingRead.status === "unavailable") {
+    // A permanent verdict must not be dressed as a connection problem: the user
+    // would retry forever on advice that cannot work (#190). Reloading CAN work —
+    // the usual cause is an app older than the payload it is being asked to read.
     throw new Error(
-      "Couldn't load your current profile to update it — check your connection and try again. Nothing was changed.",
+      existingRead.unusableAt !== undefined
+        ? "Your saved profile can't be read by this version of WoCo, so it wasn't changed. Reload to update the app, then try again."
+        : "Couldn't load your current profile to update it — check your connection and try again. Nothing was changed.",
     );
   }
   const existing = existingRead.status === "found" ? existingRead.value : null;

@@ -377,7 +377,18 @@ const BACKUP_INV_TTL_MS = 10 * 60 * 1000;
  */
 export type BackupInventoryRead =
   | { status: "known"; backups: import("@woco/shared").BackupInventoryEntry[] }
-  | { status: "unavailable"; reason?: string };
+  | {
+      status: "unavailable";
+      reason?: string;
+      /**
+       * The manifest is FROZEN at this version — permanent, so the panel must
+       * offer repair instead of "try again" (#190). Unset = a fault that may
+       * clear by itself, which must keep the transient copy.
+       */
+      unusableAt?: number;
+      /** Saved by a newer app: reload to update, never repair. */
+      newerFormat?: boolean;
+    };
 
 /** The account's LIVE backups — retired ones are filtered out (see getRetiredBackups). */
 async function getBackupInventory(): Promise<BackupInventoryRead> {
@@ -416,16 +427,28 @@ async function _getBackupHistory(): Promise<BackupInventoryRead> {
   return promise;
 }
 
+/**
+ * The prompt-free manifest signer, or null when this device has none (a fresh
+ * device before the seed lands, or a recovered one whose escrow restore never
+ * ran). Shared by the panel read and the #190 repair path so neither can reach
+ * the manifest with different key material than the other.
+ */
+async function _manifestSigner(): Promise<{ privKey: string; address: string } | null> {
+  const address = await _getContentFeedSignerAddress();
+  if (!address) return null;
+  const seedAddr = _getSeedAddress();
+  const seed = seedAddr ? await restoreIdentitySeed(seedAddr) : null;
+  if (!seed) return null;
+  return { privKey: deriveFeedSignerKey(seed).privKey, address };
+}
+
 async function _readBackupInventoryUncached(parent: string): Promise<BackupInventoryRead> {
   // No prompt-free signer on this device (or none yet — it may appear right
   // after login, so this is never memoized). Without it the manifest cannot be
   // read, and "couldn't read" is not "no backups".
-  const address = await _getContentFeedSignerAddress();
-  if (!address) return { status: "unavailable", reason: "no feed signer on this device" };
-  const seedAddr = _getSeedAddress();
-  const seed = seedAddr ? await restoreIdentitySeed(seedAddr) : null;
-  if (!seed) return { status: "unavailable", reason: "no feed signer on this device" };
-  const { privKey } = deriveFeedSignerKey(seed);
+  const signer = await _manifestSigner();
+  if (!signer) return { status: "unavailable", reason: "no feed signer on this device" };
+  const { privKey, address } = signer;
   try {
     // Read the FULL history — the memo backs both the live-backups view and the
     // retired-guardian warning, and one read serves both.
@@ -438,6 +461,41 @@ async function _readBackupInventoryUncached(parent: string): Promise<BackupInven
   } catch (e) {
     return { status: "unavailable", reason: String(e) };
   }
+}
+
+/**
+ * Diagnose a manifest the panel could not read (#190) — is it frozen for good, and
+ * is there an older copy to seed a rebuild from? Reads only; writes nothing.
+ *
+ * Lives here rather than in the panel because it needs the feed-signer SECRET (the
+ * manifest is sealed to it), and no component may hold that.
+ */
+async function diagnoseUserManifest(): Promise<import("../manifest/inventory.js").ManifestDiagnosis> {
+  const parent = _parent;
+  if (!parent) return { kind: "transient", reason: "not signed in" };
+  const signer = await _manifestSigner();
+  // No signer is genuinely "can't tell from this device" — never a frozen verdict,
+  // which would offer to overwrite a manifest nobody here can even read.
+  if (!signer) return { kind: "transient", reason: "no feed signer on this device" };
+  const { diagnoseManifest } = await import("../manifest/inventory.js");
+  return diagnoseManifest({ signer, parentAddress: parent });
+}
+
+/**
+ * Write a fresh manifest past a frozen version, seeded with `seed` (or empty).
+ * Throws when the manifest turns out to be readable or merely offline — the guard
+ * lives in `rebuildManifest`, which re-reads before it writes. Returns the version
+ * written; drops the panel memo so the next read shows the rebuilt list.
+ */
+async function repairUserManifest(seed: import("@woco/shared").UserManifest | null): Promise<number> {
+  const parent = _parent;
+  if (!parent) throw new Error("Sign in first.");
+  const signer = await _manifestSigner();
+  if (!signer) throw new Error("This device can't read your saved list yet — sign in again, then retry.");
+  const { rebuildManifest } = await import("../manifest/inventory.js");
+  const version = await rebuildManifest({ signer, parentAddress: parent, seed });
+  _backupInvMemo = null; // the panel must read the rebuilt manifest, not the pre-repair memo
+  return version;
 }
 
 /**
@@ -3247,6 +3305,11 @@ export const auth = {
   // panel can show. (Until #164 they were ALSO a live hazard: re-adding resurrected
   // them on the legacy hook. The WoCo hook's set-semantics ended that.)
   getRetiredBackups: () => getRetiredBackups(),
+  // #190 repair path, for a manifest whose latest version will never open. Two
+  // calls, never one: diagnose only READS, so the panel can show the user what a
+  // rebuild would cost before anything is written.
+  diagnoseUserManifest: () => diagnoseUserManifest(),
+  repairUserManifest: (seed: import("@woco/shared").UserManifest | null) => repairUserManifest(seed),
   // Revoke ONE backup on-chain (#164) — proven by read-back, then bookkeeping.
   revokeAccountBackup: (guardianAddress: string) => revokeAccountBackup(guardianAddress),
 };

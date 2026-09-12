@@ -28,7 +28,18 @@ export type BackupHistoryRead =
   /** Definitive: the manifest was read (or provably does not exist). */
   | { status: "known"; backups: BackupInventoryEntry[] }
   /** No answer — render uncertainty, never "no backups". */
-  | { status: "unavailable"; reason?: string };
+  | {
+      status: "unavailable";
+      reason?: string;
+      /**
+       * Set = the manifest is FROZEN at this version and no retry will change
+       * that, so the surface owes the user a repair path rather than "try again"
+       * (#190). Unset = a fault that may clear on its own.
+       */
+      unusableAt?: number;
+      /** Saved by a newer app, not damaged — reload, never repair. */
+      newerFormat?: boolean;
+    };
 
 /**
  * Every backup entry the account has ever recorded, retired ones included —
@@ -45,6 +56,13 @@ export async function readBackupHistoryResult(args: {
     signer: args.signer,
     parentAddress: args.parentAddress,
   });
-  if (read.status === "unavailable") return { status: "unavailable", reason: read.reason };
+  if (read.status === "unavailable") {
+    return {
+      status: "unavailable",
+      reason: read.reason,
+      unusableAt: read.unusableAt,
+      newerFormat: read.newerFormat,
+    };
+  }
   return { status: "known", backups: read.status === "found" ? read.manifest.backups : [] };
 }
