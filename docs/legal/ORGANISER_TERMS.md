@@ -67,23 +67,30 @@ attendees submit.
 
 1. **Have a privacy policy** and make it available to your attendees. If you do not have one, you are
    in breach of UK GDPR from the moment you collect your first attendee's details.
-2. **Check whether you owe the ICO data protection fee.** Every UK controller owes it unless all of
-   their processing falls inside a set of narrow exemptions. Selling your own tickets and promoting
-   your own events may well fall inside them, but two things in this industry commonly do not:
+2. **Decide whether you owe the ICO data protection fee.** Every UK controller owes it unless all of
+   their processing falls inside a narrow set of exemptions. Using WoCo does not settle this for you:
+   you are the controller, we are only your processor.
 
-   - **You operate CCTV for crime prevention.** There is no exemption for this. If you run CCTV at
-     your own venue you owe the fee regardless of anything else you do.
-   - **You market someone else's events.** The marketing exemption only covers promoting *your own*
-     business, goods and services. A promoter advertising another promoter's night, or a venue
-     advertising events run by third parties, is marketing for others and owes the fee.
+   **The exemptions cover you if all of these are true:**
 
-   Collecting more than you need can also take you outside the "accounts and records" exemption,
-   which is limited to the information genuinely required to process the transaction.
+   - You sell tickets only to your own events
+   - You market only your own events, to people whose details you hold for that purpose
+   - You hold only what the sale needs — name, contact details, payment record
+   - You do not operate CCTV
 
-   **Check your own position with the ICO's fee self-assessment at
-   [ico.org.uk/fee-checker](https://ico.org.uk/fee-checker).** It takes a
-   few minutes. We cannot make this determination for you, and using WoCo does not remove it: you are
-   the controller, we are only your processor.
+   **You must pay if any of these are true:**
+
+   - **You operate CCTV for crime prevention.** There is no exemption. A venue running its own
+     cameras owes the fee whatever else it does.
+   - **You market someone else's events.** The exemption covers promoting your own goods and
+     services only. A promoter advertising another promoter's night, or a venue advertising events
+     run by third parties, is marketing for others and owes the fee.
+   - **You collect more than the sale needs.** Extensive order-form data takes you outside the
+     "accounts and records" exemption, which is limited to what the transaction actually requires.
+
+   Confirm your position with the ICO's own fee checker at
+   [ico.org.uk/fee-checker](https://ico.org.uk/fee-checker). It takes a few minutes, and the answer
+   comes from them rather than from us.
 3. **Only ask for what you need.** Every field you add to an order form is data you are responsible
    for. Do not collect special category data (health, religion, ethnicity, sexuality) unless you have
    a lawful basis and have thought carefully about it.
