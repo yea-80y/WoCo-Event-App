@@ -58,4 +58,35 @@ test("an unreadable manifest is UNAVAILABLE — never an empty inventory", async
   });
   assert.equal(read.status, "unavailable");
   assert.equal(read.status === "unavailable" && read.reason, "gateway 502");
+  // Nothing names a version, so the panel keeps its "try again" copy (#190).
+  assert.equal(read.status === "unavailable" && read.unusableAt, undefined);
+  assert.equal(read.status === "unavailable" && read.newerFormat, undefined);
+});
+
+test("a PERMANENTLY unreadable manifest carries its verdict to the panel (#190)", async () => {
+  // The panel cannot reach the manifest layer itself, so if this hop drops the
+  // fields the user is told to check their connection about a fault no retry can
+  // fix, and the repair action never appears.
+  const read = await readBackupHistoryResult({
+    signer: SIGNER,
+    parentAddress: PARENT,
+    readManifest: readingAs({ status: "unavailable", reason: "manifest did not open", unusableAt: 7 }),
+  });
+  assert.equal(read.status, "unavailable");
+  assert.equal(read.status === "unavailable" && read.unusableAt, 7);
+});
+
+test("a newer-format manifest says so, so the panel offers RELOAD and not repair", async () => {
+  const read = await readBackupHistoryResult({
+    signer: SIGNER,
+    parentAddress: PARENT,
+    readManifest: readingAs({
+      status: "unavailable",
+      reason: "feed payload is not a self-sealed envelope",
+      unusableAt: 3,
+      newerFormat: true,
+    }),
+  });
+  assert.equal(read.status === "unavailable" && read.unusableAt, 3);
+  assert.equal(read.status === "unavailable" && read.newerFormat, true);
 });

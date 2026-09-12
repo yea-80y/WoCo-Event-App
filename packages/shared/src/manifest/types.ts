@@ -157,6 +157,27 @@ export interface SelfSealedEnvelope {
   ct: string;
 }
 
+/**
+ * Does this payload look like a self-sealed envelope from a LATER format than the
+ * one this build understands?
+ *
+ * Separated from "damaged" because the two need opposite advice: a newer envelope
+ * means the user has an old app and a perfectly good manifest — the fix is to
+ * reload, and offering to rebuild it would destroy the newer version's data with
+ * an older schema. Deliberately structural (nonce + ct present, `v` numeric and
+ * above ours) rather than a version allow-list, so it keeps working for any future
+ * bump without this build knowing about it. The `1` is the ENVELOPE format
+ * version `isSelfSealedEnvelope` pins, NOT `USER_MANIFEST_VERSION` — the sealed
+ * body inside carries its own, and conflating them would misread a body bump as
+ * an unreadable envelope.
+ */
+export function looksLikeNewerSelfSealedEnvelope(x: unknown): boolean {
+  if (typeof x !== "object" || x === null) return false;
+  const o = x as Record<string, unknown>;
+  return typeof o.nonce === "string" && typeof o.ct === "string" &&
+    typeof o.v === "number" && o.v > 1;
+}
+
 /** Narrow an unknown feed payload to a `SelfSealedEnvelope`. */
 export function isSelfSealedEnvelope(x: unknown): x is SelfSealedEnvelope {
   return (

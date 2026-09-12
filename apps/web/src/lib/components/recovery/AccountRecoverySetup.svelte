@@ -27,6 +27,7 @@
   import { isPasskeySupported } from "../../auth/passkey-account.js";
   import { readBackupProtection } from "../../auth/backup-management.js";
   import { describeRecoveryError } from "../../auth/recovery-errors.js";
+  import type { UserManifest } from "@woco/shared";
 
   type Phase =
     | "intro" | "choosing" | "connecting" | "confirming" | "working" | "done"
@@ -66,6 +67,19 @@
   let revokingGuardian = $state<string | null>(null);
   let revokeError = $state("");
   let revokeBookkeepingNote = $state("");
+
+  // ── Frozen backup list (#190) ───────────────────────────────────────────
+  // The manifest read behind the labels fails two ways that used to look
+  // identical. A fault that may clear stays SILENT here (labels are a memory-jog
+  // and the list itself is chain truth). A FROZEN manifest is the opposite: its
+  // latest version exists and will never open, so every mutator refuses forever
+  // and no amount of waiting helps. This panel is where that dead end gets a way
+  // out - and the way out writes, so the user sees the cost first.
+  let manifestFrozen = $state<{ newerFormat: boolean } | null>(null);
+  let manifestSeed = $state<{ version: number; manifest: UserManifest } | null>(null);
+  let diagnosing = $state(false);
+  let repairing = $state(false);
+  let repairError = $state("");
 
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
   const addrDisplay = (a: string) => `${a.slice(0, 10)}…${a.slice(-8)}`;
@@ -158,15 +172,70 @@
   function loadBackupLabels() {
     auth.getBackupInventory()
       .then((r) => {
-        if (r.status !== "known") return;
+        if (r.status !== "known") {
+          // A fault that may clear on its own gets no surface at all — offering a
+          // repair there would overwrite a manifest that is probably intact.
+          if (r.unusableAt === undefined) return;
+          manifestFrozen = { newerFormat: r.newerFormat === true };
+          // Lazily, and exactly once per failed read: the seed walk costs real
+          // network reads, so it must never hang off a render. A newer envelope
+          // needs no seed — it is not damaged and must not be rebuilt.
+          if (!r.newerFormat) void diagnoseFrozenManifest();
+          return;
+        }
         const next: typeof backupLabels = {};
         for (const b of r.backups) {
           next[b.guardianAddress.toLowerCase()] = { method: b.method, providerLabel: b.providerLabel, addedAt: b.addedAt };
         }
         backupLabels = next;
+        manifestFrozen = null;
+        manifestSeed = null;
       })
       .catch(() => { /* labels only */ });
   }
+
+  /** Read-only: classify the failure and find the newest copy that still opens. */
+  async function diagnoseFrozenManifest() {
+    diagnosing = true;
+    try {
+      const d = await auth.diagnoseUserManifest();
+      // Anything other than "frozen" RETRACTS the notice — the manifest either
+      // reads now or is merely offline, and neither may be offered a rebuild.
+      if (d.kind !== "frozen") {
+        manifestFrozen = null;
+        manifestSeed = null;
+        return;
+      }
+      manifestFrozen = { newerFormat: d.newerFormat };
+      manifestSeed = d.seed;
+    } catch (e) {
+      console.warn("[recovery] manifest diagnosis failed:", e);
+      manifestFrozen = null;
+      manifestSeed = null;
+    } finally {
+      diagnosing = false;
+    }
+  }
+
+  async function repairBackupList() {
+    repairing = true;
+    repairError = "";
+    try {
+      await auth.repairUserManifest(manifestSeed?.manifest ?? null);
+      manifestFrozen = null;
+      manifestSeed = null;
+      loadBackupLabels(); // back to the normal render, off the rebuilt manifest
+    } catch (e) {
+      console.warn("[recovery] manifest repair failed:", e);
+      repairError = e instanceof Error ? e.message : String(e);
+    } finally {
+      repairing = false;
+    }
+  }
+
+  const seedDate = (ms: number) =>
+    new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
   function backupLabel(guardian: string): string {
     const l = backupLabels[guardian.toLowerCase()];
@@ -645,6 +714,45 @@
         <button class="btn btn--primary btn--lg cta" onclick={startChoosing}>Try again</button>
       {/if}
     {/if}
+
+    <!-- The list above is chain truth and is unaffected; what is stuck is the
+         account's own saved copy (labels + the feed keep-list). Only on the
+         resting screen: mid-flow, this would be noise the user cannot act on. -->
+    {#if manifestFrozen && phase === "intro"}
+      <div class="repair">
+        <h2 class="repair-title">Your backup list can't be read</h2>
+        {#if manifestFrozen.newerFormat}
+          <p class="security-note" role="note">
+            It was saved by a newer version of WoCo. Reload to update this app, then try again.
+          </p>
+          <button class="btn btn--ghost cta" onclick={() => location.reload()}>Reload</button>
+        {:else}
+          <p class="security-note" role="note">The saved copy is damaged.</p>
+          {#if diagnosing}
+            <p class="hint-sm" aria-live="polite"><span class="spinner"></span> Looking for an earlier copy…</p>
+          {:else}
+            {#if manifestSeed}
+              <p class="repair-body">
+                The last readable copy is from {seedDate(manifestSeed.manifest.updatedAt)} with
+                {count(manifestSeed.manifest.backups.length, "backup", "backups")} and
+                {count(manifestSeed.manifest.feeds?.length ?? 0, "feed", "feeds")}. Anything added
+                after that will be missing from the list. Your content itself is not deleted.
+              </p>
+            {:else}
+              <p class="repair-body">
+                No earlier readable copy was found. Repairing starts a fresh, empty list.
+              </p>
+            {/if}
+            {#if repairError}
+              <p class="error" role="alert">{repairError}</p>
+            {/if}
+            <button class="btn btn--danger cta" disabled={repairing} onclick={repairBackupList}>
+              {repairing ? "Repairing…" : manifestSeed ? "Repair from that copy" : "Start a fresh list"}
+            </button>
+          {/if}
+        {/if}
+      </div>
+    {/if}
   </div>
 </section>
 
@@ -913,6 +1021,30 @@
     border-radius: var(--radius-md);
     padding: 0.6rem 0.8rem; font-size: 0.88rem; margin: 0 0 1rem;
   }
+
+  /* Frozen-manifest repair (#190) — separated by a rule because it is about a
+     DIFFERENT thing than the panel above it (the saved copy, not the on-chain
+     route), and its one button is destructive. */
+  .repair {
+    margin-top: 1.75rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    text-align: left;
+  }
+  .repair-title {
+    font-family: var(--font-display);
+    font-size: 1.05rem;
+    letter-spacing: -0.01em;
+    margin: 0 0 0.75rem;
+    color: var(--text);
+  }
+  .repair-body {
+    font-size: 0.88rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin: 0 0 1rem;
+  }
+  .repair .cta:disabled { opacity: 0.6; cursor: default; }
 
   .spinner {
     display: inline-block; width: 0.9rem; height: 0.9rem; flex: none;
