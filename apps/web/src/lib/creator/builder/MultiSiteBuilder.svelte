@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Site, SiteEventEntry, TemplateId } from "@woco/shared";
-  import { newSiteFromTemplate, siteConfigTopic, subEnsName } from "@woco/shared";
+  import { newSiteFromTemplate, siteConfigTopic, subEnsName, FEATURES } from "@woco/shared";
   import { logFeedToManifest } from "../../manifest/feed-log.js";
   import { onMount } from 'svelte';
   import { publishSite, deploySite, loadSite, getSiteEvents, uploadSiteImage, type DeploySiteResult } from "../../api/sites.js";
@@ -614,7 +614,11 @@
     { id: 'pages',    label: 'Pages' },
     { id: 'nav',      label: 'Navigation' },
     { id: 'events',   label: 'Events' },
-    { id: 'shop',     label: 'Shop' },
+    // Shop rail flagged off for launch (#124): the tab is not OFFERED, and that
+    // is the whole intervention. A site that already carries shop data keeps it
+    // — nothing is read, written or cleared here, so flipping the flag back
+    // brings the tab and its existing data straight back.
+    ...(FEATURES.shopAllowed ? [{ id: 'shop' as TabId, label: 'Shop' }] : []),
     { id: 'domain',   label: 'Domain' },
   ];
 
@@ -776,7 +780,7 @@
           published={!!feedHash || publishState === 'done'}
           onsiteeventschange={(ev) => siteEvents = ev}
         />
-      {:else if tab === 'shop'}
+      {:else if FEATURES.shopAllowed && tab === 'shop'}
         <ShopTab
           siteId={site.siteId}
           shopId={siteShopId}

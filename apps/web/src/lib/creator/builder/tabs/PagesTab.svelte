@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Site, Section, SectionType, Page } from "@woco/shared";
+  import { FEATURES } from "@woco/shared";
   import SectionEditor from "../SectionEditor.svelte";
 
   interface Props {
@@ -172,6 +173,16 @@
     { type: 'embed',         icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M6 4L2 8l4 4M10 4l4 4-4 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>', label: 'Embed',          desc: 'Raw HTML embed (iframes etc.)',        color: '#9a8f7c' },
   ];
 
+  // A product grid can only be configured against a WoCo shop, so it is not
+  // offered while the shop rail is off (#124). Filtered at the ADD point only:
+  // SECTION_TYPES stays complete because sectionMeta() reads it for the label and
+  // icon of sections a site ALREADY has, and dropping the entry there would
+  // relabel existing shop sections as "Hero banner" — a display bug about data
+  // this change is meant to leave alone.
+  const ADDABLE_SECTION_TYPES = $derived(
+    FEATURES.shopAllowed ? SECTION_TYPES : SECTION_TYPES.filter(t => t.type !== 'productGrid'),
+  );
+
   function sectionMeta(type: SectionType): SectionTypeMeta {
     return SECTION_TYPES.find(t => t.type === type) ?? SECTION_TYPES[0];
   }
@@ -326,7 +337,7 @@
             <button class="btn-icon-xs" onclick={() => showSectionPicker = false}>&#10005;</button>
           </div>
           <div class="picker-grid">
-            {#each SECTION_TYPES as meta}
+            {#each ADDABLE_SECTION_TYPES as meta}
               <button class="picker-item" onclick={() => addSection(meta.type)}>
                 <span class="picker-icon">{@html meta.icon}</span>
                 <span class="picker-label">{meta.label}</span>
