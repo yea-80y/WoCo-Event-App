@@ -405,7 +405,19 @@ export type VersionedFeedRead =
       scanClean: boolean;
     }
   | { status: "absent" }
-  | { status: "unavailable"; reason?: string };
+  | {
+      status: "unavailable";
+      reason?: string;
+      /**
+       * Set ONLY when this version exists and can never be used by this reader —
+       * a definitive verdict about ONE version, not about the feed. It is the
+       * difference between "come back later" and "this will never read", which
+       * a caller holding a read-modify-write on it cannot otherwise tell: both
+       * arrive as `unavailable`, and one of them means the feed is frozen until
+       * something repairs it.
+       */
+      unusableAt?: number;
+    };
 
 export interface SocVersionResolution {
   /** Highest version confirmed PRESENT, or null if none was found. */
@@ -742,11 +754,26 @@ export async function resolveBandedHead(
  * Assembling that yields the OLD bytes under the NEW manifest. `len` is the one
  * field that disagrees, so it is the only thing that can catch it.
  */
+export type AssembledContentFeed =
+  | { status: "found"; bytes: Uint8Array }
+  | { status: "absent" }
+  | {
+      status: "unavailable";
+      reason?: string;
+      /**
+       * The bytes at this identifier are real and will never assemble, however
+       * many times they are re-read — so a caller may stop retrying and repair
+       * instead. NEVER set for a page the network merely could not answer for:
+       * that page may be perfectly fine on the next attempt.
+       */
+      unusable?: true;
+    };
+
 export async function assembleContentFeed(
   read: SocChunkProbe,
   baseId: Uint8Array,
   pageIdFor: (page: number) => Uint8Array,
-): Promise<SocReadOutcome> {
+): Promise<AssembledContentFeed> {
   const base = await read(baseId);
   if (base.status !== "found") return base;
   const raw = base.bytes;
@@ -759,14 +786,21 @@ export async function assembleContentFeed(
   }
   if (!isContentFeedManifest(head)) return base; // single-chunk feed
   if (head.pages < 1 || head.pages > 256) {
-    return { status: "unavailable", reason: `manifest page count out of range: ${head.pages}` };
+    return { status: "unavailable", reason: `manifest page count out of range: ${head.pages}`, unusable: true };
   }
 
   const parts: Uint8Array[] = [];
   for (let i = 1; i <= head.pages; i++) {
     const page = await read(pageIdFor(i));
     if (page.status !== "found") {
-      return { status: "unavailable", reason: `multi-chunk page ${i}/${head.pages} ${page.status}` };
+      const reason = `multi-chunk page ${i}/${head.pages} ${page.status}`;
+      // An ABSENT page under an existing manifest is the torn write described
+      // above: immutable chunks, so that page can never appear. A page nobody
+      // could ANSWER for is the ordinary network fault — retrying is the right
+      // answer there, and calling it unusable would offer repair over a hiccup.
+      return page.status === "absent"
+        ? { status: "unavailable", reason, unusable: true }
+        : { status: "unavailable", reason };
     }
     parts.push(page.bytes);
   }
@@ -777,6 +811,7 @@ export async function assembleContentFeed(
     return {
       status: "unavailable",
       reason: `multi-chunk length mismatch: assembled ${full.length} B, manifest declares ${head.len} B`,
+      unusable: true,
     };
   }
   return { status: "found", bytes: full };
@@ -837,9 +872,15 @@ export async function readVersionedContentFeed(
     // The probe just confirmed this version PRESENT, so an absent re-read is a
     // contradiction (a vanished chunk / a reader disagreeing with itself), never
     // evidence that the feed does not exist.
-    return asm.status === "absent"
-      ? { status: "unavailable", reason: `version ${latest} vanished between probe and read` }
-      : asm;
+    if (asm.status === "absent") {
+      return { status: "unavailable", reason: `version ${latest} vanished between probe and read` };
+    }
+    // Only the assembler's DEFINITIVE verdicts name a version. A scan or page
+    // probe that could not answer is still just "ask again later", and naming a
+    // version there would invite a repair that overwrites live data.
+    return asm.unusable
+      ? { status: "unavailable", reason: asm.reason, unusableAt: latest }
+      : { status: "unavailable", reason: asm.reason };
   }
 
   // A dirty scan found nothing — but it never asked every question, so "nothing
@@ -855,7 +896,11 @@ export async function readVersionedContentFeed(
     base,
     (page) => contentFeedSocIdentifier(contentFeedPageTopic(topic, page)),
   );
-  return legacy.status === "found"
-    ? { status: "found", bytes: legacy.bytes, version: LEGACY_CONTENT_FEED_VERSION, scanClean: clean }
-    : legacy;
+  if (legacy.status === "found") {
+    return { status: "found", bytes: legacy.bytes, version: LEGACY_CONTENT_FEED_VERSION, scanClean: clean };
+  }
+  if (legacy.status === "absent") return { status: "absent" };
+  return legacy.unusable
+    ? { status: "unavailable", reason: legacy.reason, unusableAt: LEGACY_CONTENT_FEED_VERSION }
+    : { status: "unavailable", reason: legacy.reason };
 }

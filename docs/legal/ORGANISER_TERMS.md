@@ -67,15 +67,39 @@ attendees submit.
 
 1. **Have a privacy policy** and make it available to your attendees. If you do not have one, you are
    in breach of UK GDPR from the moment you collect your first attendee's details.
-2. **Only ask for what you need.** Every field you add to an order form is data you are responsible
+2. **Decide whether you owe the ICO data protection fee.** Every UK controller owes it unless all of
+   their processing falls inside a narrow set of exemptions. Using WoCo does not settle this for you:
+   you are the controller, we are only your processor.
+
+   **The exemptions cover you if all of these are true:**
+
+   - You sell tickets only to your own events
+   - You market only your own events, to people whose details you hold for that purpose
+   - You hold only what the sale needs — name, contact details, payment record
+   - You do not operate CCTV
+
+   **You must pay if any of these are true:**
+
+   - **You operate CCTV for crime prevention.** There is no exemption. A venue running its own
+     cameras owes the fee whatever else it does.
+   - **You market someone else's events.** The exemption covers promoting your own goods and
+     services only. A promoter advertising another promoter's night, or a venue advertising events
+     run by third parties, is marketing for others and owes the fee.
+   - **You collect more than the sale needs.** Extensive order-form data takes you outside the
+     "accounts and records" exemption, which is limited to what the transaction actually requires.
+
+   Confirm your position with the ICO's own fee checker at
+   [ico.org.uk/fee-checker](https://ico.org.uk/fee-checker). It takes a few minutes, and the answer
+   comes from them rather than from us.
+3. **Only ask for what you need.** Every field you add to an order form is data you are responsible
    for. Do not collect special category data (health, religion, ethnicity, sexuality) unless you have
    a lawful basis and have thought carefully about it.
-3. **Honour data subject rights.** Your attendees' access, correction and erasure requests come to
+4. **Honour data subject rights.** Your attendees' access, correction and erasure requests come to
    you. You must respond within one month.
-4. **Only send marketing where you are permitted to.** See section 5.
-5. **Keep your decryption credentials safe.** If you lose them, the attendee data sealed to you is
+5. **Only send marketing where you are permitted to.** See section 5.
+6. **Keep your decryption credentials safe.** If you lose them, the attendee data sealed to you is
    permanently unrecoverable. We cannot recover it — that is the point of the design.
-6. **Tell us within 24 hours** if you become aware of a personal data breach affecting attendee data,
+7. **Tell us within 24 hours** if you become aware of a personal data breach affecting attendee data,
    so we can meet our own notification duties.
 
 ### What we do
