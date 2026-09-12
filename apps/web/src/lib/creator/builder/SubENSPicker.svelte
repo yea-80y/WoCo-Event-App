@@ -212,13 +212,16 @@
     let found: string | null = untrack(() => nameContentHash);
 
     const read = async () => {
-      const res = await getOwnedSubEns();
+      // A THROWN read (network down, a non-JSON reply) must count like a failed
+      // one: uncaught, it would end the loop with the "updating" note still on
+      // screen and nothing left to clear it.
+      const res = await getOwnedSubEns().catch(() => null);
       if (cancelled) return;
       attempts += 1;
       // A read that FAILED is not evidence the name points nowhere — leave the
       // last known answer standing, so a network blip can't retract a link that
       // works. It still costs an attempt, or a broken endpoint polls forever.
-      if (res.ok && res.data) {
+      if (res && res.ok && res.data) {
         found = res.data.names.find((n) => n.label === label)?.contentHash ?? null;
         nameContentHash = found;
       }
