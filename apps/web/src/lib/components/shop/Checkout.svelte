@@ -16,6 +16,7 @@
     ShopPaymentQuote,
     ShopPaymentBinding,
   } from "@woco/shared";
+  import { FEATURES } from "@woco/shared";
   import type { CartLine } from "./Storefront.svelte";
   import { createOrder } from "../../api/shops.js";
   import { fetchShopPaymentQuote } from "../../api/shop-payment.js";
@@ -172,6 +173,23 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="backdrop" onclick={(e) => e.target === e.currentTarget && onClose()}></div>
 
+{#if !FEATURES.shopAllowed}
+  <!-- Its one caller is already gated, so this is the second lock on the same
+       door (#124): every button below leads to createOrder or a Stripe session,
+       and neither exists while the rail is off. Refusing at the top means no
+       code path inside can fire a request. -->
+  <div class="drawer" role="dialog" aria-modal="true" aria-label="Cart">
+    <div class="drawer-head">
+      <span class="kicker">Your order</span>
+      <button class="close" onclick={onClose} aria-label="Close cart">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="square">
+          <path d="M2 2l10 10M12 2L2 12" />
+        </svg>
+      </button>
+    </div>
+    <p class="shop-off">Shop coming soon.</p>
+  </div>
+{:else}
 <div class="drawer" role="dialog" aria-modal="true" aria-label="Cart">
   <div class="drawer-head">
     <span class="kicker">Your order · {itemCount} item{itemCount !== 1 ? "s" : ""}</span>
@@ -280,6 +298,7 @@
     </button>
   {/if}
 </div>
+{/if}
 
 <style>
   .backdrop {
@@ -317,6 +336,10 @@
     text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-muted);
   }
   .kicker--plain { letter-spacing: 0.08em; }
+  .shop-off {
+    margin: 0; padding: 2.5rem 1.125rem; text-align: center;
+    color: var(--text-muted); font-size: 0.875rem;
+  }
   .close {
     width: 1.75rem; height: 1.75rem; display: grid; place-items: center;
     background: none; border: none; color: var(--text-muted); cursor: pointer;

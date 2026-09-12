@@ -11,9 +11,7 @@
   import MultiSiteBuilder from "./lib/creator/builder/MultiSiteBuilder.svelte";
   import ProfilePage from "./lib/components/profile/ProfilePage.svelte";
   import SiteEventsManager from "./lib/creator/sites/SiteEventsManager.svelte";
-  import MyShopsScreen from "./lib/creator/shops/MyShopsScreen.svelte";
-  import ShopEditor from "./lib/creator/shops/ShopEditor.svelte";
-  import ShopPosShell from "./lib/creator/shops/ShopPosShell.svelte";
+  import LazyRoute from "./lib/router/LazyRoute.svelte";
   import ObjectManager from "./lib/components/object/ObjectManager.svelte";
   import AudienceScreen from "./lib/creator/audience/AudienceScreen.svelte";
   import PayoutsScreen from "./lib/creator/payouts/PayoutsScreen.svelte";
@@ -22,6 +20,14 @@
     postStripeReturn,
     stripeReturnVariant,
   } from "./lib/creator/dashboard/stripe-return-handoff.js";
+
+  // The shop rail is flagged off for launch (#124), and the router refuses its
+  // routes while it is. Static imports would still drag the three screens — and
+  // the spend-permission/USDC subtree behind them — into the creator boot chunk
+  // for a feature nobody can reach, so they load on navigation instead.
+  const loadMyShopsScreen = () => import("./lib/creator/shops/MyShopsScreen.svelte");
+  const loadShopEditor = () => import("./lib/creator/shops/ShopEditor.svelte");
+  const loadShopPosShell = () => import("./lib/creator/shops/ShopPosShell.svelte");
 
   $effect(() => {
     if (router.route === "create" && !import.meta.env.VITE_ENABLE_INAPP_CREATOR) {
@@ -93,13 +99,13 @@
   {:else if router.route === "build"}
     <MultiSiteBuilder />
   {:else if router.route === "my-shops"}
-    <MyShopsScreen />
+    <LazyRoute loader={loadMyShopsScreen} />
   {:else if router.route === "shop-editor"}
     {#key router.params.shopId}
-      <ShopEditor shopId={router.params.shopId} />
+      <LazyRoute loader={loadShopEditor} props={{ shopId: router.params.shopId }} />
     {/key}
   {:else if router.route === "shop-pos"}
-    <ShopPosShell shopId={router.params.shopId} />
+    <LazyRoute loader={loadShopPosShell} props={{ shopId: router.params.shopId }} />
   {:else if router.route === "creator-objects"}
     <ObjectManager />
   {:else if router.route === "audience"}
