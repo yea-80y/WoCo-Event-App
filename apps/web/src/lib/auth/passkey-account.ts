@@ -9,6 +9,15 @@ interface PasskeyCredentialMeta {
   rpId: string;
 }
 
+/**
+ * The same metadata, named for the one caller that holds it UNWRITTEN. Recovery
+ * must mint a passkey before the irreversible on-chain rotation and pin it only
+ * after (#158), so the handle crosses code that has no business treating it as a
+ * storage record yet — the name is the reminder that nothing is committed until
+ * `pinPasskeyCredential` runs.
+ */
+export type PasskeyCredentialHandle = PasskeyCredentialMeta;
+
 // RP-ID policy lives in @woco/shared (resolvePasskeyRpId) — identity-critical,
 // and the embed resolves it too, so a local copy is how #175 shipped.
 function getPasskeyRpId(): string {
@@ -261,9 +270,46 @@ export async function createPasskeyAccount(): Promise<{
   return ceremony("creation", _createPasskeyAccountImpl);
 }
 
+/**
+ * Mint a primary-login passkey and hand back its credential WITHOUT pinning it as
+ * this device's login. The recovery ceremony needs the two halves apart: the new
+ * Kernel owner IS the PRF-EOA, so the passkey has to exist before the irreversible
+ * on-chain rotation, while the pin is a local commit that belongs beside the
+ * binding and the identity seed — after the rotation is proven (#158). Pinning at
+ * mint time left a device whose stored credential owned no account whenever a
+ * later step of the ceremony threw, and `init()` then demanded a parent and seed
+ * address that were never written.
+ *
+ * The caller MUST pass the returned handle to `pinPasskeyCredential` once it
+ * commits, or this device keeps offering "Create" to an account it already owns.
+ */
+export async function createPasskeyAccountUnpinned(): Promise<{
+  address: string;
+  privateKey: `0x${string}`;
+  credential: PasskeyCredentialHandle;
+}> {
+  return ceremony("creation", _mintPasskeyAccountImpl);
+}
+
+/** Commit a minted credential as this device's primary login — the second half of
+ *  `createPasskeyAccountUnpinned`. */
+export async function pinPasskeyCredential(handle: PasskeyCredentialHandle): Promise<void> {
+  await putKV(StorageKeys.PASSKEY_CREDENTIAL, handle);
+}
+
 async function _createPasskeyAccountImpl(): Promise<{
   address: string;
   privateKey: `0x${string}`;
+}> {
+  const { address, privateKey, credential } = await _mintPasskeyAccountImpl();
+  await putKV(StorageKeys.PASSKEY_CREDENTIAL, credential);
+  return { address, privateKey };
+}
+
+async function _mintPasskeyAccountImpl(): Promise<{
+  address: string;
+  privateKey: `0x${string}`;
+  credential: PasskeyCredentialMeta;
 }> {
   const salt = await getPrfSalt();
   const rpId = getPasskeyRpId();
@@ -328,14 +374,12 @@ async function _createPasskeyAccountImpl(): Promise<{
     );
   }
 
-  // Store credential metadata for later restore
   const meta: PasskeyCredentialMeta = {
     credentialId: toBase64url(credential.rawId),
     rpId,
   };
-  await putKV(StorageKeys.PASSKEY_CREDENTIAL, meta);
 
-  return deriveKey(prfOutput);
+  return { ...(await deriveKey(prfOutput)), credential: meta };
 }
 
 // ---------------------------------------------------------------------------

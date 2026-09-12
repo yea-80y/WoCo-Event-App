@@ -27,16 +27,22 @@
  *
  * So this refuses at the FORWARD factory: an existing credential acquiring a second
  * account, on this device. Be precise about what that does and does not close —
- * two routes to the same collided state remain open, and a re-key migration author
- * who reads this as a guarantee will build on a false premise:
+ * two further routes reach the same collided state, and NEITHER is closed by this
+ * guard, so a re-key migration author who reads this as a guarantee will build on a
+ * false premise:
  *
  *  - REVERSED ORDER, same device. Recover onto a fresh credential (allowed, correctly
  *    — there is nothing to see), then later move that account to another credential.
- *    The first credential's binding is deleted by the stale-binding check on its next
- *    login, but its seed slot is NOT, and the session then falls through to that
- *    credential's own counterfactual account and adopts the leftover seed. Same
- *    silent wrong-identity end state, reached without this guard ever being consulted.
- *    Tracked separately; the fix is to clear the seed wherever the binding is cleared.
+ *    CLOSED, and the description that used to stand here was wrong about why it was
+ *    not. It rested on the first credential's binding being deleted by the
+ *    stale-binding check at its next login while the seed slot survived, dropping the
+ *    session into that credential's own counterfactual account with the leftover seed.
+ *    Nothing deletes `StorageKeys.RECOVERED_KERNEL_BINDING` — it is only ever read and
+ *    upserted — and both login paths, once they have PROVEN a foreign on-chain owner,
+ *    refuse the login and keep binding and seed deliberately (#255): the kept binding
+ *    is what makes the counterfactual path unreachable, and nothing signs in, so the
+ *    #233 foreign-seed landmine has no trigger. Only the fast-path verification
+ *    marker, which that read just disproved, is dropped.
  *  - CROSS-DEVICE. Two recoveries onto the same credential on two devices. Neither
  *    device can see the other's, and no per-credential POINT read can either, because
  *    a recovered account lives at a PRESERVED address that is not derivable from the
