@@ -30,7 +30,6 @@ export * from "./shop/types.js";
 export * from "./shop/topics.js";
 export * from "./shop/pricing.js";
 export * from "./shop/loyalty.js";
-export * from "./likes/index.js";
 export * from "./statement/index.js";
 export * from "./credit/index.js";
 export * from "./cert/index.js";

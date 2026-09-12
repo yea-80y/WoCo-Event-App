@@ -279,20 +279,9 @@ Frozen rules every statement type shares: `packages/shared/src/statement/discipl
 - Counting is an INDEXER's job, not the platform's; it can publish evidence reports
   (`statement/evidence-report.ts`, #312)
 
-SUPERSEDED EAS RAIL (below) — `packages/shared/src/likes/` + `apps/web/src/lib/eas/` are its
-remains, kept for the abuse model. ProfilePage's Following/Trending still read it (#475) and
-referral badges still sit on it (#476). Do NOT build new social on it.
-
-- Attester = the user's own account (user-attested). Parent IS the attester here, unlike
-  feeds: web3 = parent EOA signs own-gas; passkey = Kernel attests gasless via scoped
-  session key. Both: `attester == parent` — that check is the linchpin.
-- Schema `bytes32 subject,uint8 subjectType` (revocable), UID `0x62c5b546…dda64`
-  (registered + verified on Arb Sepolia, also `EAS_SCHEMA_UID` env).
-- Stylus aggregator (#5, shipped 2026-06-11) on Arb Sepolia
-  `0x7dbf8d3a58bebb642fa1a478bbffba4675f1ba20`. ABI + address in `packages/shared` likes/types.ts.
-  GOTCHA: Stylus multi-value returns = ONE ABI tuple — fragments need `returns (tuple(...))`.
-- Server is a CACHE not truth: `.data/likes-index.json` is a projection, rebuildable from
-  chain logs (`reconcileFromChain`).
+EAS LIKES RAIL DELETED 2026-09-12 (#475) - `shared/src/likes/`, `routes/likes.ts`, `lib/likes/*`,
+`api/likes.ts` and ProfilePage's Following/Trending are all gone. The referral campaign is the ONLY
+remaining EAS user (#476); `packages/shared/src/campaign/eas.ts` holds its chain constants.
 
 ============================================================================
 MULTI-PAGE SITE BUILDER
@@ -374,13 +363,6 @@ CLAIMS / EVENTS:
   packages/shared/src/crypto/issuing.ts              # issuing-key derivation + personal-sign wrapper
   packages/shared/src/issuer/types.ts                # issuer-registry statements + log verify
   apps/server/src/lib/issuer/{binding,registry}.ts   # PoP pin + rotation relay
-
-EAS LIKES:
-  apps/web/src/lib/eas/{eas-abi,attest}.ts           # attestLike/revokeLike
-  apps/server/src/routes/likes.ts                    # verify-on-chain record + reads
-  apps/server/src/lib/likes/eas-onchain.ts           # getVerifiedLike (linchpin) + reconcileFromChain
-  apps/server/src/lib/likes/index-store.ts           # .data/likes-index.json projection
-  packages/shared/src/likes/types.ts                 # schema, SubjectType, EAS addresses
 
 FRONTEND COMPONENTS:
   apps/web/src/App.svelte                            # shell: top bar + routing + bottom nav

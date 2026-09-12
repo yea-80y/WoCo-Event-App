@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { EventFeed, Hex0x } from "@woco/shared";
   import { socialEventSubject, socialProfileSubject, subEnsWebUrl } from "@woco/shared";
-  import { rememberLabel } from "../../likes/label-cache.js";
+  import { rememberLabel } from "../../profile/label-cache.js";
   import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
   import { getEvent } from "../../api/events.js";
   import ClaimButton from "./ClaimButton.svelte";
@@ -135,7 +135,7 @@
         // Fetch creator profile
         getProfile(fresh.creatorAddress, fresh.creatorFeedSigner).then((p) => {
           creatorProfile = p;
-          rememberLabel(p?.subEnsLabel); // so Following/Trending can show the name
+          rememberLabel(fresh.creatorAddress, p?.subEnsLabel); // feed the name cache
         });
       })
       .catch((e) => {

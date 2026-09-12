@@ -43,7 +43,6 @@ import { ensGatewayRoutes, ensGatewayStatus } from "./routes/ens-gateway.js";
 import { subEnsApexHealth } from "./lib/chain/sub-ens-apex.js";
 import { profileNamesHealth } from "./lib/profile/name-ledger.js";
 import { attendeeGate } from "./routes/attendee-gate.js";
-import { likesRoutes } from "./routes/likes.js";
 import { socialRoutes } from "./routes/social.js";
 import { campaignRoutes } from "./routes/campaign.js";
 import { agentRouter } from "./routes/agent.js";
@@ -586,12 +585,10 @@ app.route("/api/ens-gateway", ensGatewayRoutes);
 // Attendee gate — ticket-purchase-gated account unlock (docs/ATTENDEE_GATE_RESALE_PLAN.md)
 app.route("/api/attendee-gate", attendeeGate);
 
-// EAS likes (#4) — verify-on-chain record + projection reads
-app.route("/api/likes", likesRoutes);
-// Swarm-native social + credits (#172). Separate from /api/likes, which serves
-// the superseded on-chain EAS projection — the two count different things from
-// different sources, so sharing a prefix would make which one answered a
-// question of routing order.
+// Swarm-native social + credits (#172) — likes and follows are statements on the
+// user's own feed, counted by an indexer. The superseded /api/likes EAS projection
+// was deleted with its rail (#475); do not add a second counting surface here, or
+// which one answers a question becomes a matter of routing order.
 app.route("/api/social", socialRoutes);
 
 // Onboarding campaign — referral attribution/relay + cohort badges

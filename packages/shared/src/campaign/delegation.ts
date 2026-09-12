@@ -13,7 +13,7 @@
  */
 
 import type { Hex0x } from "../types.js";
-import { EAS_ADDRESS, EAS_CHAIN_ID } from "../likes/types.js";
+import { EAS_ADDRESS, EAS_CHAIN_ID } from "./eas.js";
 import { EAS_REFERRAL_SCHEMA_UID } from "./types.js";
 
 /** Semver of the deployed EAS contract — part of the EIP-712 domain. */

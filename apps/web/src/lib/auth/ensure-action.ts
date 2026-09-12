@@ -20,7 +20,8 @@ export interface RequireAccountOptions {
   context?: "attendee" | "creator";
   /**
    * Also ensure the scoped EAS session key (the gasless Kernel rail) is minted
-   * up front — for deliberate on-chain actions like an EAS like, so the passkey
+   * up front — for a deliberate on-chain action like a referral confirmation, so
+   * the passkey
    * ceremony happens at the click, not mid-attest. No-op for non-passkey kinds
    * (web3 signs on-chain with the parent EOA directly).
    *
@@ -42,8 +43,8 @@ export async function requireAccountForAction(
     if (!ok) return false;
   }
 
-  // 2. HTTP session (canonical-request signing) — needed for authenticated
-  //    server calls such as POST /api/likes/record.
+  // 2. HTTP session (canonical-request signing) — every authenticated server
+  //    endpoint verifies the session delegation.
   if (!auth.hasSession) {
     const ok = await auth.ensureSession();
     if (!ok) return false;

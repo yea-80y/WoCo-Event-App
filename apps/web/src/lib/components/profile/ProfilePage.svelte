@@ -9,7 +9,7 @@
   import { setExternalEventApi, setEventFeedSigner } from "../../api/event-api-registry.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { authPost, authGet } from "../../api/client.js";
-  import { rememberLabel } from "../../likes/label-cache.js";
+  import { rememberLabel } from "../../profile/label-cache.js";
   import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
   import { subEnsErrorFrom, subEnsErrorDetail, formatRetryAt } from "../../sub-ens/errors.js";
   import { canOpenRename, type ProfileNameStatus } from "../../sub-ens/rename.js";
@@ -371,7 +371,7 @@
 
   async function loadProfile() {
     if (!viewAddress) { loading = false; return; }
-    try { profile = await getProfile(viewAddress); rememberLabel(profile?.subEnsLabel); }
+    try { profile = await getProfile(viewAddress); rememberLabel(viewAddress, profile?.subEnsLabel); }
     catch { /* no profile yet */ }
     finally { loading = false; }
   }
