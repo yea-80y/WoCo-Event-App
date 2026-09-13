@@ -281,7 +281,11 @@ export async function confirmReferral(
   args: { referee: string; refereeFeed: string; referrer: string },
   deps: IssuerDeps = liveDeps(),
 ): Promise<ConfirmResult> {
-  if (!campaignIssuerConfigured()) return unavailable("issuer not configured");
+  // `health.configured`, not `campaignIssuerConfigured()`: a key that is SET
+  // but derives the wrong address is exactly the deployment boot refused, and
+  // every entry point here has to honour that refusal or the boot check only
+  // protects the route that happens to consult it.
+  if (!health.configured) return unavailable("issuer not configured");
 
   const referee = args.referee.toLowerCase() as Hex0x;
   const refereeFeed = args.refereeFeed.toLowerCase() as Hex0x;
@@ -318,7 +322,14 @@ export async function confirmReferral(
     }
 
     const subject = campaignAccountSubject(referrer);
-    const statementRead = await deps.readHead(refereeFeed, referralStatementTopic(subject));
+    let statementRead: VersionedFeedRead;
+    try {
+      statementRead = await deps.readHead(refereeFeed, referralStatementTopic(subject));
+    } catch (err) {
+      // Same as the badge read: a throw is a fault, and a fault is never
+      // absence — but it is also not a 500 the referee can act on.
+      return unavailable("statement read threw", err instanceof Error ? err.message : String(err));
+    }
     if (statementRead.status === "unavailable") {
       return unavailable("statement read unavailable", statementRead.reason);
     }
@@ -419,7 +430,17 @@ export async function appendReferrerIndex(
   };
 
   const issuerOwner = getCampaignIssuerOwnerHex();
-  const current = await deps.readBanded(issuerOwner, topicForBand);
+  let current: VersionedFeedRead & { band: number };
+  try {
+    current = await deps.readBanded(issuerOwner, topicForBand);
+  } catch (err) {
+    // The banded read walks openers through a probe that THROWS on any fault
+    // but not-found. This runs after the confirmation is already on Swarm, so
+    // a throw here must be a recorded index failure, never an error response
+    // for a referral that did in fact confirm.
+    noteFailure("read threw", err instanceof Error ? err.message : String(err));
+    return;
+  }
   if (current.status === "unavailable") {
     noteFailure("read unavailable", current.reason);
     return;
@@ -489,7 +510,10 @@ export function currentEpoch(): number {
 export async function issueBadge(address: string, deps: IssuerDeps = liveDeps()): Promise<void> {
   const addr = address.toLowerCase();
   if (!/^0x[0-9a-f]{40}$/.test(addr)) return;
-  if (!campaignIssuerConfigured()) return;
+  // Boot-accepted, not merely set — `events.ts` fires this on every publish,
+  // so this is the entry point a mismatched key would most quietly leak
+  // through, writing badges into an address space no client reads.
+  if (!health.configured) return;
   if (badgesInFlight.has(addr)) return;
   badgesInFlight.add(addr);
   try {
@@ -560,7 +584,7 @@ export async function readConfirmation(
   referee: string,
   deps: IssuerDeps = liveDeps(),
 ): Promise<RecordRead<ReferralConfirmationV1>> {
-  if (!campaignIssuerConfigured()) return { status: "unavailable" };
+  if (!health.configured) return { status: "unavailable" };
   const topic = referralConfirmationTopic(campaignAccountSubject(referee.toLowerCase()));
   const slot = await deps.readVersion0(getCampaignIssuerOwnerHex(), topic);
   if (slot.status === "unavailable") return { status: "unavailable" };
@@ -578,9 +602,18 @@ export async function readBadge(
   address: string,
   deps: IssuerDeps = liveDeps(),
 ): Promise<RecordRead<BadgeV1>> {
-  if (!campaignIssuerConfigured()) return { status: "unavailable" };
+  if (!health.configured) return { status: "unavailable" };
   const topic = badgeTopic(campaignAccountSubject(address.toLowerCase()), "joined");
-  const head = await deps.readHead(getCampaignIssuerOwnerHex(), topic);
+  let head: VersionedFeedRead;
+  try {
+    head = await deps.readHead(getCampaignIssuerOwnerHex(), topic);
+  } catch (err) {
+    // A head read can throw past the probe (`readSocPayload` throws every
+    // fault but not-found). There is no global error handler, so an uncaught
+    // throw here is a bare 500 for a public read that should say "try again".
+    console.warn(`[campaign] badge read threw for ${address}:`, err);
+    return { status: "unavailable" };
+  }
   if (head.status === "unavailable") return { status: "unavailable" };
   if (head.status === "absent") return { status: "absent" };
   const record = parseJson(head.bytes);
@@ -615,12 +648,17 @@ export function campaignIssuerHealth(): Record<string, unknown> {
   return { ...health, issuer: CAMPAIGN_ISSUER_ADDRESS, inFlight: inFlight.size };
 }
 
-/** Test seam — drops counters and both in-flight sets without touching Swarm. */
-export function __resetIssuer(): void {
+/**
+ * Test seam — drops counters and both in-flight sets without touching Swarm.
+ * `configured` is the boot decision, and a test that exercises a write path
+ * has to say so: the default is the refused state, so a test cannot pass by
+ * forgetting that boot exists.
+ */
+export function __resetIssuer(opts: { configured?: boolean } = {}): void {
   inFlight.clear();
   badgesInFlight.clear();
   Object.assign(health, {
-    configured: false,
+    configured: opts.configured ?? false,
     confirmations: 0,
     alreadyConfirmed: 0,
     refused: 0,

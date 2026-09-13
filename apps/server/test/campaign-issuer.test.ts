@@ -128,7 +128,8 @@ before(async () => {
 });
 
 beforeEach(() => {
-  issuer.__resetIssuer();
+  // Boot-accepted by default; the boot-refusal tests below flip it back.
+  issuer.__resetIssuer({ configured: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -187,7 +188,7 @@ test("the referee's statement decides, and nothing is written without one", asyn
   ];
 
   for (const c of cases) {
-    issuer.__resetIssuer();
+    issuer.__resetIssuer({ configured: true });
     const { deps, writes } = recorder({ readHead: async () => c.head });
     const res = await issuer.confirmReferral(ARGS, deps);
     assert.equal(res.status, c.expect, c.why);
@@ -264,7 +265,7 @@ test("an unusable postage batch stops the rail before it spends anything", async
 test("the referrer index appends, rolls over a full band, and never unmakes a confirmation", async () => {
   // Absent → band 0 holding just this referee.
   {
-    issuer.__resetIssuer();
+    issuer.__resetIssuer({ configured: true });
     const { deps, writes } = recorder();
     await issuer.appendReferrerIndex(REFERRER, REFEREE, deps);
     assert.deepEqual(writes.map((w) => w.topic), [referrerIndexTopic(S_R, 0)]);
@@ -274,7 +275,7 @@ test("the referrer index appends, rolls over a full band, and never unmakes a co
 
   // A full band rolls over rather than writing a version that cannot exist.
   {
-    issuer.__resetIssuer();
+    issuer.__resetIssuer({ configured: true });
     const { deps, writes } = recorder({
       readBanded: async () => ({
         ...found(enc({ format: REFERRER_INDEX_FORMAT, subjects: [campaignAccountSubject(OTHER)] }), LAST_VERSION_IN_BAND),
@@ -287,7 +288,7 @@ test("the referrer index appends, rolls over a full band, and never unmakes a co
 
   // Already listed — an append that says nothing new costs nothing.
   {
-    issuer.__resetIssuer();
+    issuer.__resetIssuer({ configured: true });
     const { deps, writes } = recorder({
       readBanded: async () => ({ ...found(enc({ format: REFERRER_INDEX_FORMAT, subjects: [S_E] })), band: 0 }),
     });
@@ -297,7 +298,7 @@ test("the referrer index appends, rolls over a full band, and never unmakes a co
 
   // The index is a convenience; the confirmation is the record.
   {
-    issuer.__resetIssuer();
+    issuer.__resetIssuer({ configured: true });
     const indexTopic = referrerIndexTopic(S_R, 0);
     const { deps } = recorder({
       writeFeed: async (topic) =>
@@ -321,7 +322,7 @@ test("a badge is minted once and never over an existing one — revoked included
   const granted = enc({ format: BADGE_FORMAT, subject: S_E, badge: "joined", epoch: 0, value: true });
 
   {
-    issuer.__resetIssuer();
+    issuer.__resetIssuer({ configured: true });
     const { deps, writes, confirmed } = recorder({ readHead: async () => ({ status: "absent" }) });
     await issuer.issueBadge(REFEREE, deps);
     assert.deepEqual(writes.map((w) => w.topic), [BADGE_TOPIC]);
@@ -337,7 +338,7 @@ test("a badge is minted once and never over an existing one — revoked included
     ["granted", found(granted)],
     ["unreadable", { status: "unavailable", reason: "probe" } as VersionedFeedRead],
   ] as const) {
-    issuer.__resetIssuer();
+    issuer.__resetIssuer({ configured: true });
     const { deps, writes } = recorder({ readHead: async () => head });
     await issuer.issueBadge(REFEREE, deps);
     assert.equal(writes.length, 0, `${why}: nothing may be written`);
@@ -357,6 +358,39 @@ test("a key that derives the wrong address turns the feature off and names both"
   assert.ok(reason.includes(CAMPAIGN_ISSUER_ADDRESS), "the address clients read must be named");
   assert.ok(/0x[0-9a-f]{40}/.test(reason.replace(CAMPAIGN_ISSUER_ADDRESS, "")), "the derived address must be named");
   assert.equal(issuer.campaignIssuerReady(), false);
+});
+
+test("a boot-refused key turns EVERY entry point off, not just the route", async () => {
+  // `events.ts` fires the badge on every publish and never consults the route's
+  // gate, so this is where a mismatched key would leak: badges written into an
+  // address space no client reads, postage spent, health counting success.
+  issuer.startCampaignIssuer();
+  assert.equal(issuer.campaignIssuerReady(), false);
+
+  const c = recorder();
+  assert.equal((await issuer.confirmReferral(ARGS, c.deps)).status, "unavailable");
+  await issuer.issueBadge(REFEREE, c.deps);
+  assert.equal(c.writes.length, 0, "nothing may be written under a key boot refused");
+  assert.equal((await issuer.readConfirmation(REFEREE, c.deps)).status, "unavailable");
+  assert.equal((await issuer.readBadge(REFEREE, c.deps)).status, "unavailable");
+});
+
+test("a read that throws is a fault, never an absence and never a 500", async () => {
+  const boom = async (): Promise<never> => { throw new Error("bee unreachable: http://user:secret@rpc"); };
+  const c = recorder({ readHead: boom });
+  const res = await issuer.confirmReferral(ARGS, c.deps);
+  assert.equal(res.status, "unavailable");
+  assert.equal(c.writes.length, 0);
+  // The detail goes to the log; the public health label must not carry it.
+  assert.ok(!String(issuer.campaignIssuerHealth().lastError).includes("secret"));
+  assert.equal((await issuer.readBadge(REFEREE, c.deps)).status, "unavailable");
+
+  // After a confirmation has landed, a throwing index read is a recorded index
+  // failure — the confirmation itself still stands.
+  const d = recorder({ readBanded: boom as never });
+  const confirmed = await issuer.confirmReferral(ARGS, d.deps);
+  assert.equal(confirmed.status, "confirmed");
+  assert.equal(issuer.campaignIssuerHealth().indexFailed, 1);
 });
 
 test("a second confirm for the same referee while one is in flight refuses instead of racing", async () => {
