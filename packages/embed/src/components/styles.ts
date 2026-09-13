@@ -16,6 +16,7 @@ export function getStyles(theme: "dark" | "light"): string {
         accentText: "#a298f5",
         success: "#10b981",
         error: "#f43f5e",
+        warning: "#f59e0b",
         inputBg: "#0e0e1a",
       }
     : {
@@ -279,6 +280,60 @@ export function getStyles(theme: "dark" | "light"): string {
       font-size: 0.6875rem;
       color: ${vars.textMuted};
       margin: 0.25rem 0 0;
+    }
+
+    /* Seat hold (#568) - the same pill and banners as the main app's checkout. */
+    .hold-slot:empty { display: none; }
+
+    .hold-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.25rem 0.5rem;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
+      color: ${vars.textSecondary};
+      background: ${vars.inputBg};
+      border: 1px solid ${vars.border};
+      border-radius: 4px;
+    }
+
+    .hold-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: ${vars.success};
+      animation: hold-pulse 1.6s ease-in-out infinite;
+    }
+
+    @keyframes hold-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .hold-dot { animation: none; }
+    }
+
+    .hold-banner {
+      font-size: 0.75rem;
+      line-height: 1.45;
+      padding: 0.5rem 0.625rem;
+      border-radius: 6px;
+      color: ${vars.text};
+      background: ${vars.inputBg};
+      border: 1px solid ${vars.warning};
+    }
+
+    .hold-retry {
+      background: none;
+      border: none;
+      padding: 0;
+      color: inherit;
+      text-decoration: underline;
+      cursor: pointer;
+      font: inherit;
     }
 
     .claim-options {
