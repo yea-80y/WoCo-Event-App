@@ -18,8 +18,8 @@
   import UserAvatar from "./UserAvatar.svelte";
   import ReferralShareCard from "../campaign/ReferralShareCard.svelte";
   import CohortStamp from "../campaign/CohortStamp.svelte";
-  import { getBadge } from "../../api/campaign.js";
-  import type { BadgeRecord } from "@woco/shared";
+  import { readBadge } from "../../campaign/records.js";
+  import type { BadgeV1, Hex0x } from "@woco/shared";
   import WalletTab from "./WalletTab.svelte";
   import SubENSPicker from "../../creator/builder/SubENSPicker.svelte";
   import DiscardNameDialog from "../../creator/builder/DiscardNameDialog.svelte";
@@ -59,14 +59,14 @@
   let loading = $state(true);
   let saving = $state(false);
 
-  // Cohort badge (public read, one tiny GET keyed on the viewed address).
-  let badge = $state<BadgeRecord | null>(null);
+  // Cohort badge — read STRAIGHT FROM the issuer's feed (#476), not from the
+  // platform. The badge's whole value is that WoCo vouched, and a signed chunk
+  // carries that on its own; an API answer only carried WoCo's word for it.
+  let badge = $state<BadgeV1 | null>(null);
   $effect(() => {
     badge = null;
     if (!viewAddress) return;
-    getBadge(viewAddress as `0x${string}`).then((resp) => {
-      if (resp.ok) badge = resp.data ?? null;
-    }).catch(() => {});
+    readBadge(viewAddress as Hex0x).then((b) => { badge = b; }).catch(() => {});
   });
   let saveError = $state('');
   let ensBindError = $state('');
@@ -519,10 +519,13 @@
       {:else}
         <div class="name-row">
           <h1 class="display-name">{displayName}</h1>
-          {#if badge}
+          <!-- `value === true` only: a revoked badge is a LATER version of the
+               same record, so `readBadge` returns it and the display rule is
+               here. Truthiness alone would render a revocation as a badge. -->
+          {#if badge?.value === true}
             <span
               class="cohort-mark"
-              title={badge.epoch === 0 ? "Early adopter — cohort attested on-chain" : `Cohort ${badge.epoch} — attested on-chain`}
+              title={badge.epoch === 0 ? "Early adopter - signed by WoCo" : `Cohort ${badge.epoch} - signed by WoCo`}
             >
               <CohortStamp epoch={badge.epoch} size={36} />
             </span>

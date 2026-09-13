@@ -1,6 +1,6 @@
 <!--
   CohortStamp — the campaign's signature mark. A notary-style stamp strike:
-  the on-chain cohort attestation rendered as the physical object it replaces.
+  the issuer-signed cohort record rendered as the physical mark it replaces.
   Ring text carries the cohort, the centre numeral is the epoch. Drawn inline
   (currentColor + tokens) so it inherits any surface it lands on.
 -->
@@ -11,7 +11,7 @@
   }: { epoch?: number; size?: number } = $props();
 
   const label = $derived(
-    epoch === 0 ? "EARLY ADOPTER • WOCO • ON-CHAIN • " : `COHORT ${epoch} • WOCO • ON-CHAIN • `,
+    epoch === 0 ? "EARLY ADOPTER • WOCO • SIGNED • " : `COHORT ${epoch} • WOCO • SIGNED • `,
   );
   const uid = $derived(`stamp-ring-${epoch}-${size}`);
 </script>

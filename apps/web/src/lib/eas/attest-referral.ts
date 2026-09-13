@@ -16,7 +16,7 @@
  * signed in (requireAccountForAction) before invoking.
  */
 
-import type { Hex0x, DelegatedSignature, ReferralStatus } from "@woco/shared";
+import type { ApiResponse, Hex0x, DelegatedSignature, ReferralStatus } from "@woco/shared";
 import {
   EAS_ADDRESS, EAS_CHAIN_ID, EAS_REFERRAL_SCHEMA_UID,
   EAS_DELEGATED_ATTEST_DOMAIN, EAS_DELEGATED_ATTEST_TYPES,
@@ -27,7 +27,24 @@ import { getEasSessionClient, sendSessionUserOp } from "../auth/kernel-account.j
 import { switchChain } from "../payment/chains.js";
 import { requireProvider } from "../wallet/provider.js";
 import { EAS_SESSION_ABI, EAS_EVENTS_ABI } from "./eas-abi.js";
-import { recordReferral, relayReferral } from "../api/campaign.js";
+
+// DEAD MODULE (#476). Referrals are Swarm-native statements now, so the two
+// endpoints this rail ended in — `/referrals/record` and `/referrals/relay` —
+// are gone from the server and from `api/campaign.ts`, and nothing imports this
+// file any more. The whole thing is deleted in the PR that removes the EAS
+// campaign types; these two locals exist only so the tree typechecks until
+// then. They THROW rather than return, because a caller reaching one has found
+// a path that was supposed to be unreachable.
+const RETIRED = "The EAS referral rail is retired — referrals are Swarm-native statements (#476).";
+async function recordReferral(_uid: Hex0x): Promise<ApiResponse<ReferralStatus>> {
+  throw new Error(RETIRED);
+}
+async function relayReferral(
+  _deadline: bigint,
+  _signature: DelegatedSignature,
+): Promise<ApiResponse<ReferralStatus>> {
+  throw new Error(RETIRED);
+}
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 

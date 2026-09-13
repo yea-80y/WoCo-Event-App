@@ -43,49 +43,66 @@
   }
 
   // Referral attribution: a captured #/ref/{address} waits in localStorage
-  // until the account's first authenticated moment (a session already exists,
-  // so this never triggers an unsolicited signing prompt), then registers the
-  // pending referral server-side. First attribution wins; self-referral is
-  // dropped client-side and rejected server-side.
-  let refPostInFlight = false;
+  // until the referee can sign a statement on their OWN feed, at which point
+  // this writes it. No server call, no attestation and — the constraint the
+  // whole path is built around — no signing prompt: the statement is written on
+  // the user's behalf at a moment they did not ask to sign anything, so it uses
+  // only a seed already on the device (settleCapturedReferral's contract).
+  //
+  // BOTH dependencies are read, deliberately. `isAuthenticated` alone was
+  // enough while the referral was a server POST; a feed write needs the account
+  // SEED as well, and a fresh device has none at sign-in. Depending on
+  // `hasIdentitySeed` too means the first user action that establishes one — a
+  // like, a publish, a ticket — re-runs this and the statement lands then,
+  // still with no ceremony of the campaign's own.
+  let refSettleInFlight = false;
   $effect(() => {
-    if (!auth.isAuthenticated || refPostInFlight) return;
-    void import("./lib/api/campaign.js").then(async (m) => {
-      // A link that carried a sub-ENS name whose lookup did not answer on the
-      // landing page leaves the name stored with no address. Retry it here
-      // rather than dropping the referral: "error" is not "unregistered"
-      // (#177), and this is the next moment we are online.
-      async function resolvePendingName(): Promise<`0x${string}` | null> {
-        const capture = await import("./lib/campaign/referral-capture.js");
-        const pendingName = capture.unresolvedRefName();
-        if (!pendingName) return null;
-        const { resolveSubEnsAddress } = await import("./lib/api/sub-ens.js");
-        const res = await resolveSubEnsAddress(pendingName).catch(() => null);
-        // Only an unregistered name is a dead link worth forgetting; an
-        // unanswered lookup keeps the name for the next authenticated visit.
-        if (res?.status === "none") { m.clearCapturedRef(); return null; }
-        if (res?.status !== "found") return null;
-        capture.storeCapturedRef(res.address);
-        return capture.readCapturedRef();
-      }
-
-      const ref = m.readCapturedRef() ?? (await resolvePendingName());
-      if (!ref) return;
-      if (auth.parent && ref === auth.parent.toLowerCase()) {
-        m.clearCapturedRef();
-        return;
-      }
-      refPostInFlight = true;
+    if (!auth.isAuthenticated || !auth.hasIdentitySeed || refSettleInFlight) return;
+    refSettleInFlight = true;
+    void (async () => {
       try {
-        const resp = await m.postPendingReferral(ref);
-        // 4xx (self-referral, already attributed) is final too — stop retrying.
-        if (resp.ok || resp.error) m.clearCapturedRef();
+        const capture = await import("./lib/campaign/referral-capture.js");
+        // Nothing captured and no name left to resolve — almost every sign-in.
+        // Bail BEFORE the Swarm write path is pulled in: referral-capture.js
+        // imports nothing, records.js drags the feed writer, and a page load
+        // with no invite behind it should pay for neither.
+        if (!capture.readCapturedRef() && !capture.unresolvedRefName()) return;
+
+        // A link that carried a sub-ENS name whose lookup did not answer on the
+        // landing page leaves the name stored with no address. Retry it here
+        // rather than dropping the referral: "error" is not "unregistered"
+        // (#177), and this is the next moment we are online.
+        async function resolvePendingName(): Promise<void> {
+          const pendingName = capture.unresolvedRefName();
+          if (!pendingName) return;
+          const { resolveSubEnsAddress } = await import("./lib/api/sub-ens.js");
+          const res = await resolveSubEnsAddress(pendingName).catch(() => null);
+          // Only an unregistered name is a dead link worth forgetting; an
+          // unanswered lookup keeps the name for the next authenticated visit.
+          if (res?.status === "none") { capture.clearCapturedRef(); return; }
+          if (res?.status !== "found") return;
+          capture.storeCapturedRef(res.address);
+        }
+
+        await resolvePendingName();
+        const [{ settleCapturedReferral }, { writeReferralStatement }] = await Promise.all([
+          import("./lib/campaign/referral-flow.js"),
+          import("./lib/campaign/records.js"),
+        ]);
+        await settleCapturedReferral({
+          parent: auth.parent,
+          capturedRef: capture.readCapturedRef,
+          getSigner: () => auth.getContentFeedSignerIfPresent(),
+          write: writeReferralStatement,
+          clear: capture.clearCapturedRef,
+        });
       } catch {
-        // Network failure — keep the capture for the next authenticated visit.
+        // Every outcome that matters is already a return value; a thrown import
+        // or resolver failure just leaves the capture for the next visit.
       } finally {
-        refPostInFlight = false;
+        refSettleInFlight = false;
       }
-    });
+    })();
   });
 
   // Lazy-load the creator bundle — attendees never download builder/dashboard code.
