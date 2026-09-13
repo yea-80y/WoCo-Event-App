@@ -81,11 +81,9 @@ import {
 const MIN_BATCH_TTL_SECONDS = 3600;
 
 /**
- * The early-adopter cohort. Defined here rather than imported because the
- * `@woco/shared` constant of that name belongs to the EAS rail this replaces.
- *
- * It is a platform-defined WINDOW, not clock math: epoch 0 is "the people who
- * were here first", and it moves when the platform says so, never on a date.
+ * The early-adopter cohort. A platform-defined WINDOW, not clock math: epoch 0
+ * is "the people who were here first", and it moves when the platform says so,
+ * never on a date.
  */
 const EARLY_ADOPTER_EPOCH = 0;
 

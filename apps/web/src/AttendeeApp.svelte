@@ -9,7 +9,7 @@
 
   // Route-level code splitting: only Home ships in the boot chunk (Swarm
   // round-trips are slow, so the eager graph must stay minimal). Every other
-  // route — and its dependency subtree (payments, EAS, recovery, shop rail) —
+  // route — and its dependency subtree (payments, recovery, shop rail) —
   // downloads on first navigation.
   const loadEventDetail = () => import("./lib/attendee/events/EventDetail.svelte");
   const loadEventPage = () => import("./lib/components/site/EventPage.svelte");

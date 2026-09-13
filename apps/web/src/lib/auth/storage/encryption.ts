@@ -45,13 +45,11 @@ export const AAD = {
     `woco/device/session-delegation/v1:${parent.toLowerCase()}`,
   IDENTITY_SEED: (parent: string) =>
     `woco/device/identity-seed/v1:${parent.toLowerCase()}`,
-  // ZeroDev scoped EAS session key, bound to the Kernel (smart-account) address
-  // that owns it. A serialized permission account written under one Kernel
-  // cannot be decrypted by a different Kernel on the same device. (The sub-ENS
-  // mint key had its own AAD beside this one until #501 deleted that rail; its
-  // stored blobs are now only ever DELETED, which needs no AAD.)
-  WOCO_AA_EAS_SESSION: (kernel: string) =>
-    `woco/device/aa-eas-session/v1:${kernel.toLowerCase()}`,
+  // Two scoped ZeroDev session keys had AAD constructors here — the sub-ENS mint
+  // key until #501, the referral campaign's EAS key until #476. Neither is
+  // written any more, and an unused AAD constructor is worse than none (see the
+  // note below): whatever blobs remain are only ever DELETED, which needs no AAD.
+
   // A CONTENT_FEED_SIGNER entry sat here while the feed signer was stored as its
   // own secret. The signer is derived from the seed now, so nothing is encrypted
   // under that label — and an unused AAD constructor is worse than none, because

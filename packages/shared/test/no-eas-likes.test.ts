@@ -23,6 +23,10 @@
  * MUTATION: create `packages/shared/src/likes/index.ts`, or import any path whose
  * last-but-one segment or basename is `likes` from outside the excluded
  * directory, and this goes red.
+ *
+ * SCOPE: this file guards the LIKES rail only. EAS itself outlived it here by a
+ * day — the referral campaign still used it — and left the tree on 2026-09-13
+ * (#476). `no-eas.test.ts` is the ratchet for that.
  */
 
 import { test } from "node:test";
@@ -131,15 +135,4 @@ test("no source file imports the retired rail", () => {
     }
   }
   assert.deepEqual(offences, [], "likes and follows are Swarm-native (lib/social/) — #475");
-});
-
-test("the likes chain constants moved to the campaign, not into limbo", () => {
-  // The referral campaign (#476) is the last EAS user; it must own the constants
-  // it needs, or the deletion has simply broken it.
-  const eas = join(ROOT, "packages/shared/src/campaign/eas.ts");
-  assert.ok(existsSync(eas), "packages/shared/src/campaign/eas.ts must hold the EAS constants");
-  const text = readFileSync(eas, "utf-8");
-  for (const sym of ["EAS_ADDRESS", "EAS_CHAIN_ID", "SCHEMA_REGISTRY_ADDRESS"]) {
-    assert.match(text, new RegExp(`export const ${sym}\\b`), `${sym} must live here now`);
-  }
 });

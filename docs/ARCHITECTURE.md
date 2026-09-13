@@ -440,9 +440,9 @@ written `value: false`, never a deletion.
 [COASTER_CREDITS_PLAN.md](./COASTER_CREDITS_PLAN.md) (the credits rail, and the design record for
 the frozen statement discipline)
 
-The predecessor — EAS attestations on Arbitrum plus a Stylus aggregator for trending — is
-superseded. `packages/shared/src/likes/` and `apps/web/src/lib/eas/` are its remains, and two
-profile read surfaces still call them (#475, #476).
+The predecessor — EAS attestations on Arbitrum plus a Stylus aggregator for trending — is gone,
+not merely superseded: the likes half was deleted in #475 and the referral half, the last EAS user
+in the tree, in #476. `packages/shared/test/no-eas.test.ts` keeps it out.
 
 ### Email
 Amazon SES, in two independent lanes with different reputations and different rules:

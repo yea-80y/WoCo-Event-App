@@ -131,7 +131,7 @@ async function _getSigner(): Promise<EIP712Signer> {
     return createWeb3Signer(_parent);
   }
   if (_kind === "passkey") {
-    // Passkey parent stays the ZeroDev Kernel (identity/EAS attester), but
+    // Passkey parent stays the ZeroDev Kernel (the user's identity), but
     // AuthorizeSession is signed by the RAW PRF-EOA key — ecrecover-able, so
     // the server verifies it RPC-free and authorizes by owner-of-Kernel
     // (kernel-owner.ts). Replaces Kernel ERC-1271, which needed deployed +
@@ -2207,31 +2207,6 @@ async function ensureAccountSetup(opts: { identity: boolean }): Promise<boolean>
   return false;
 }
 
-/**
- * Ensure a scoped EAS session key exists for the Kernel, minting one on first
- * use. Selector-scoped to attest/revoke and nothing else — the deeply-nested
- * AttestationRequest ABI in a shared key's enable-data is what broke paymaster
- * gas estimation, so these permissions get a key of their own. Returns the
- * Kernel address that owns the key. Available to both Kernel-backed kinds
- * (passkey + web3auth) — email users like/follow gaslessly.
- */
-async function ensureEasSessionKey(): Promise<string> {
-  if (_kind !== "passkey" && _kind !== "web3auth") {
-    throw new Error("ensureEasSessionKey: only available for passkey/web3auth logins");
-  }
-  await _ensureKernelForKind();
-  if (!_kernel) throw new Error("Kernel unavailable — cannot mint EAS session key");
-  const { hasEasSessionKey, createEasSessionKey } = await import("./kernel-account.js");
-  // Kernel-address-aware check: a stored key minted for a DIFFERENT Kernel
-  // (a pre-pinning recovered-account blob, or an account switch) reports false
-  // and is replaced instead of silently attesting from a divergent account —
-  // the heal path for the 2026-07-10 split-brain.
-  if (!(await hasEasSessionKey(_kernel.address))) {
-    await createEasSessionKey(_kernel);
-  }
-  return _kernel.address;
-}
-
 // ---------------------------------------------------------------------------
 // Shop spend-permission grant (passkey/Kernel only)
 // ---------------------------------------------------------------------------
@@ -3267,13 +3242,12 @@ async function clearAllAuth(): Promise<void> {
       delKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS),
     ]),
   );
-  // Drop the scoped ZeroDev session key. Re-login mints fresh. WOCO_AA_SESSION
-  // is the RETIRED sub-ENS mint key's slot (#501): nothing writes it any more,
-  // but devices from before the deletion still hold one and a serialized
-  // permission account is not something to leave lying in IndexedDB.
-  await step("aa-sessions", () =>
-    Promise.all([delKV(StorageKeys.WOCO_AA_SESSION), delKV(StorageKeys.WOCO_AA_EAS_SESSION)]),
-  );
+  // WOCO_AA_SESSION is the RETIRED sub-ENS mint key's slot (#501): nothing
+  // writes it any more, but devices from before the deletion still hold one and
+  // a serialized permission account is not something to leave lying in
+  // IndexedDB. (The referral campaign's key had a slot beside it until #476;
+  // that name is gone, so its stale blobs are simply orphaned.)
+  await step("aa-sessions", () => delKV(StorageKeys.WOCO_AA_SESSION));
   // Shared-device safety: drop all user-scoped caches (creator lists, orders, collection, claim status).
   await step("user-caches", () => cacheClearByPrefix(USER_SCOPED_PREFIXES));
   _kind = "none";
@@ -3358,7 +3332,6 @@ export const auth = {
   // The entry point for "make this account ready to act" — call this, not
   // ensureSession/ensureIdentitySeed in sequence, and never count prompts.
   ensureAccountSetup,
-  ensureEasSessionKey,
   grantSpendPermission,
   setupAccountRecovery,
   removeAccountBackups,

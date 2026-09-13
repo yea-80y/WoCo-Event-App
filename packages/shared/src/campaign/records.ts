@@ -1,7 +1,7 @@
 /**
  * The Swarm-native referral campaign (#476): formats, topics and closed
- * schemas. It replaces the EAS attestation rail still described in
- * `campaign/types.ts`, which leaves in a later PR.
+ * schemas. It replaced an EAS attestation rail, deleted with the rest of the
+ * platform's EAS code on 2026-09-13.
  *
  * THREE RECORDS, THREE SIGNERS — who can honestly assert a fact decides whose
  * feed it lives in:
