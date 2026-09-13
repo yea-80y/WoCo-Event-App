@@ -26,6 +26,21 @@ export const FEED_PRIVATE_KEY = process.env.FEED_PRIVATE_KEY || "";
  */
 export const SOCIAL_INDEXER_PRIVATE_KEY = process.env.SOCIAL_INDEXER_PRIVATE_KEY || "";
 
+/**
+ * Signs referral confirmations and cohort badges (#476).
+ *
+ * A third key rather than the indexer's, and the argument is the one that kept
+ * the indexer off `FEED_PRIVATE_KEY`, one step further in: the indexer signs
+ * COUNTS, which anyone can recompute and nobody gains by forging, while these
+ * records decide who receives a revenue share. Different blast radius if the
+ * key leaks, so a different key.
+ *
+ * Absent = the confirm route answers 503 and no badge is issued. Records
+ * already written are unaffected — each is a signed chunk on Swarm, readable
+ * without this server.
+ */
+export const CAMPAIGN_ISSUER_PRIVATE_KEY = process.env.CAMPAIGN_ISSUER_PRIVATE_KEY || "";
+
 export function normalizePk(pk: string, name = "FEED_PRIVATE_KEY"): `0x${string}` {
   const v = pk.startsWith("0x") ? pk : `0x${pk}`;
   if (!/^0x[0-9a-fA-F]{64}$/.test(v)) {
@@ -37,6 +52,7 @@ export function normalizePk(pk: string, name = "FEED_PRIVATE_KEY"): `0x${string}
 let _bee: Bee | null = null;
 let _signer: PrivateKey | null = null;
 let _indexerSigner: PrivateKey | null = null;
+let _campaignSigner: PrivateKey | null = null;
 
 export function getBee(): Bee {
   if (!_bee) _bee = new Bee(BEE_URL);
@@ -80,6 +96,26 @@ export function getSocialIndexerSigner(): PrivateKey {
 /** Lowercase 20-byte hex, no `0x` — the form every SOC read path here takes. */
 export function getSocialIndexerOwnerHex(): string {
   return getSocialIndexerSigner().publicKey().address().toHex().replace(/^0x/, "").toLowerCase();
+}
+
+/** True when this deployment can write campaign records at all (#476). */
+export function campaignIssuerConfigured(): boolean {
+  return CAMPAIGN_ISSUER_PRIVATE_KEY !== "";
+}
+
+export function getCampaignIssuerSigner(): PrivateKey {
+  if (!_campaignSigner) {
+    if (!CAMPAIGN_ISSUER_PRIVATE_KEY) {
+      throw new Error("CAMPAIGN_ISSUER_PRIVATE_KEY not configured");
+    }
+    _campaignSigner = new PrivateKey(normalizePk(CAMPAIGN_ISSUER_PRIVATE_KEY, "CAMPAIGN_ISSUER_PRIVATE_KEY"));
+  }
+  return _campaignSigner;
+}
+
+/** Lowercase 20-byte hex, no `0x` — the form every SOC read path here takes. */
+export function getCampaignIssuerOwnerHex(): string {
+  return getCampaignIssuerSigner().publicKey().address().toHex().replace(/^0x/, "").toLowerCase();
 }
 
 export function requirePostageBatch(): string {
