@@ -49,6 +49,20 @@
  * name. `confirmedAt` is when the issuer saw both preconditions, which is the
  * claim it can actually make.
  *
+ * `refereeFeed` IS present, and it is a discovery binding, not a claim about
+ * possession. The referee's statement lives on their content-feed signer's
+ * feed, and nothing maps an account to that signer — client-owned profiles are
+ * read only through a signer carried on some platform record (`api/profiles.ts`
+ * resolves them "WITHOUT a registry"). The confirmation is that carrier for
+ * referrals, in the role `creatorFeedSigner` plays on the site events index:
+ * with it, a verifier holding only this chunk can open the referee's own
+ * statement under that owner. It is accepted from the authenticated referee on
+ * the rule `routes/sites.ts` already states for `siteFeedSigner` — a user's own
+ * claim about their own feed can only resolve that signer's namespace at THIS
+ * record's key, so it cannot be aimed at anyone else's confirmation — and the
+ * server reads the statement it names before writing, so the carrier never
+ * points at nothing.
+ *
  * Payloads stay JSON-canonical with ISO-millisecond timestamps so a later
  * Merkle anchor over confirmation chunks is a tree over bytes that already
  * round-trip, with no canonicalisation step left to get wrong.
@@ -123,17 +137,18 @@ export function campaignAccountSubject(address: string): Hex0x {
 // ---------------------------------------------------------------------------
 
 /**
- * The referee's statement feed is PINNED to band 0, the follow scheme exactly:
- * a referral is latest-wins, so the feed gains a version per change of mind,
- * not per action. A pinned family must never be handed to a band walk — every
- * opener probe would address the same chunk.
+ * Three of the five families are PINNED to band 0. The referee's statement is
+ * latest-wins, the follow scheme exactly; the confirmation is write-once; a
+ * badge gains a version only on revocation. None has a growth axis, so none
+ * bands — and a pinned family must never be handed to a band walk, because
+ * every opener probe would address the same chunk.
  */
-const REFERRAL_STATEMENT_BAND = 0;
+const PINNED_BAND = 0;
 
 export function referralStatementTopic(subject: Hex0x): string {
   return statementTopic(
     REFERRAL_TYPE, CAMPAIGN_VERSION, publicTopicSalt(REFERRAL_TYPE, CAMPAIGN_VERSION),
-    subjectToBytes(subject), REFERRAL_STATEMENT_BAND,
+    subjectToBytes(subject), PINNED_BAND,
   );
 }
 
@@ -150,7 +165,7 @@ export function referralSubjectIndexTopic(band: number): string {
 export function referralConfirmationTopic(refereeSubject: Hex0x): string {
   return statementTopic(
     CONFIRMATION_TYPE, CAMPAIGN_VERSION, publicTopicSalt(CONFIRMATION_TYPE, CAMPAIGN_VERSION),
-    subjectToBytes(refereeSubject), REFERRAL_STATEMENT_BAND,
+    subjectToBytes(refereeSubject), PINNED_BAND,
   );
 }
 
@@ -165,7 +180,7 @@ export function badgeTopic(subject: Hex0x, kind: BadgeKind): string {
     throw new Error(`unknown badge kind ${JSON.stringify(kind)}`);
   }
   const salt = utf8ToBytes(`woco-${BADGE_TYPE}-public-v${CAMPAIGN_VERSION}-${kind}`);
-  return statementTopic(BADGE_TYPE, CAMPAIGN_VERSION, salt, subjectToBytes(subject), REFERRAL_STATEMENT_BAND);
+  return statementTopic(BADGE_TYPE, CAMPAIGN_VERSION, salt, subjectToBytes(subject), PINNED_BAND);
 }
 
 /**
@@ -206,6 +221,8 @@ export type ReferralSubjectIndexV1 = SubjectIndexV1<typeof REFERRAL_SUBJECT_INDE
 export interface ReferralConfirmationV1 {
   format: typeof REFERRAL_CONFIRMATION_FORMAT;
   referee: Hex0x;
+  /** The content-feed signer whose feed holds the referee's statement — see the header. */
+  refereeFeed: Hex0x;
   referrer: Hex0x;
   /** `Date#toISOString` exactly — see the Merkle-anchor note in the header. */
   confirmedAt: string;
@@ -262,11 +279,12 @@ export function validateReferralConfirmationV1(value: unknown): value is Referra
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const o = value as Record<string, unknown>;
   const keys = Object.keys(o).sort();
-  if (keys.length !== 4) return false;
-  if (keys[0] !== "confirmedAt" || keys[1] !== "format") return false;
-  if (keys[2] !== "referee" || keys[3] !== "referrer") return false;
+  if (keys.length !== 5) return false;
+  if (keys[0] !== "confirmedAt" || keys[1] !== "format" || keys[2] !== "referee") return false;
+  if (keys[3] !== "refereeFeed" || keys[4] !== "referrer") return false;
   if (o.format !== REFERRAL_CONFIRMATION_FORMAT) return false;
   if (typeof o.referee !== "string" || !ADDRESS_RE.test(o.referee)) return false;
+  if (typeof o.refereeFeed !== "string" || !ADDRESS_RE.test(o.refereeFeed)) return false;
   if (typeof o.referrer !== "string" || !ADDRESS_RE.test(o.referrer)) return false;
   // A self-referral is not a record this issuer would ever write, so bytes
   // claiming one are foreign — refused at the schema, not left to policy.

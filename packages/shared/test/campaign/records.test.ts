@@ -23,6 +23,15 @@
  * `updatedAt`, and `updatedAt` also moves on a currency change. A field the
  * writer cannot source honestly is worse than an absent one; `confirmedAt` is
  * the moment the issuer saw both preconditions, which is the claim it can make.
+ *
+ * `refereeFeed` is ADDED to it. The referee's statement lives on their
+ * content-feed signer's feed, and nothing maps an account to that signer:
+ * client-owned profiles are only ever read through a signer carried on a
+ * platform record (`api/profiles.ts` "WITHOUT a registry"). The confirmation is
+ * that carrier for referrals — the same role `creatorFeedSigner` plays on the
+ * site events index — so a verifier holding only the chunk can read the
+ * referee's own statement at `referralStatementTopic(subject(referrer))` under
+ * that owner.
  */
 
 import { test } from "node:test";
@@ -53,6 +62,8 @@ const REFERRER = "0x1234567890abcdef1234567890abcdef12345678";
 const REFEREE = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
 const S_REFERRER = "0x0000000000000000000000001234567890abcdef1234567890abcdef12345678" as const;
 const S_REFEREE = "0x000000000000000000000000abcdefabcdefabcdefabcdefabcdefabcdefabcd" as const;
+/** The referee's content-feed signer — a sibling key of the account, never the account itself. */
+const REFEREE_FEED = "0x9999999999999999999999999999999999999999";
 
 // ---------------------------------------------------------------------------
 // Identity
@@ -183,14 +194,23 @@ test("referral subject index: the shared SubjectIndexV1 shape under its own form
   assert.equal(validateReferralSubjectIndexV1({ format: "woco.referral-index.v1", subjects: [S_REFERRER], band: 0 }), false);
 });
 
-test("confirmation: exactly {confirmedAt, format, referee, referrer}, addresses lowercase, never self", () => {
+test("confirmation: exactly {confirmedAt, format, referee, refereeFeed, referrer}, addresses lowercase, never self", () => {
   const ok = {
     format: "woco.referral-confirmation.v1",
     referee: REFEREE,
+    refereeFeed: REFEREE_FEED,
     referrer: REFERRER,
     confirmedAt: "2026-09-13T12:34:56.789Z",
   };
   assert.equal(validateReferralConfirmationV1(ok), true);
+
+  // The feed binding is an address in its own right — lowercase, well-formed,
+  // and REQUIRED: without it the record cannot point a verifier at the
+  // referee's statement, which is the half of the proof the issuer did not sign.
+  const { refereeFeed: _noFeed, ...unbound } = ok;
+  assert.equal(validateReferralConfirmationV1(unbound), false);
+  assert.equal(validateReferralConfirmationV1({ ...ok, refereeFeed: REFEREE_FEED.toUpperCase() }), false);
+  assert.equal(validateReferralConfirmationV1({ ...ok, refereeFeed: S_REFEREE }), false);
 
   // Key set is closed: the design's stripeCompletedAt is deliberately absent and
   // must not be accepted if someone adds it back.
