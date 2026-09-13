@@ -352,6 +352,48 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
 }
 
 /**
+ * The user's content-feed SIGNER resolved WITHOUT a prompt — the twin of
+ * {@link _getContentFeedSignerAddress}, returning the key rather than only the
+ * address it computes.
+ *
+ * WHY A SECOND ENTRY POINT EXISTS, when `_getContentFeedSigner` already returns
+ * a signer: that one ESTABLISHES the seed when the device has none, which is a
+ * wallet popup or a biometric. It is the right behaviour at a write the user
+ * asked for. It is the wrong behaviour for the referral statement, which is
+ * written on the user's behalf at a moment they did not ask to sign anything —
+ * their first authenticated page load after following an invite. A ceremony
+ * there is unexplained, and an unexplained ceremony is one the user declines.
+ *
+ * So this may only ever use a seed ALREADY on the device: `restoreIdentitySeed`
+ * is a device-key decrypt and `deriveFeedSignerKey` an HKDF, neither of which
+ * asks the user for anything. Null — never a prompt — for Coinbase Smart Wallet
+ * (client feeds parked), when not signed in, and on a device with no seed yet.
+ * The caller's answer to null is to WAIT: the seed arrives with whatever action
+ * the user takes next, and `auth.hasIdentitySeed` tells them when.
+ *
+ * Deliberately does NOT reuse `_getContentFeedSigner({ silent: true })`:
+ * `silent` only suppresses the confirm dialog for web3auth (see its doc), so on
+ * web3 and passkey that call still prompts. A flag whose meaning depends on the
+ * login kind cannot carry a guarantee this function has to make unconditionally.
+ */
+async function _getContentFeedSignerIfPresent(): Promise<ContentFeedSigner | null> {
+  if (_kind === "coinbase") return null;
+  const parent = _parent?.toLowerCase();
+  if (!parent) return null;
+
+  const seedAddr = _getSeedAddress();
+  const seed = seedAddr ? await restoreIdentitySeed(seedAddr) : null;
+  if (!seed) return null;
+
+  const signer = deriveFeedSignerKey(seed);
+  // Same memo its sibling fills, and for the same reason: the address is a pure
+  // function of the seed, so a later passive self-read must not repeat the
+  // decrypt. Parent-keyed, so it cannot survive an account switch.
+  _feedSignerAddressMemo = { parent, address: signer.address };
+  return signer;
+}
+
+/**
  * The user's configured recovery backups from their encrypted-to-self manifest
  * (Increment 3a) — the LOGGED-IN comfort layer that lets the "Protect your
  * account" panel show what's already set up. Prompt-free: both the SOC owner
@@ -3345,6 +3387,9 @@ export const auth = {
   getContentFeedSigner: () => _getContentFeedSigner(),
   // Self-read SOC owner address — no prompt (see _getContentFeedSignerAddress).
   getContentFeedSignerAddress: () => _getContentFeedSignerAddress(),
+  // The SIGNER, for a write made on the user's behalf at a moment they did not
+  // ask to sign anything. Never prompts; null until this device holds the seed.
+  getContentFeedSignerIfPresent: () => _getContentFeedSignerIfPresent(),
   // Configured recovery backups from the encrypted-to-self manifest — prompt-free
   // read for the "Protect your account" panel (Increment 3a).
   getBackupInventory: () => getBackupInventory(),
