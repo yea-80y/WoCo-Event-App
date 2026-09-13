@@ -3,7 +3,7 @@
  *
  * Kernel-backed logins (passkey, web3auth) sign `AuthorizeSession` with their
  * RAW owner EOA key (ecrecover-able, RPC-free) while `message.parent` stays the
- * Kernel smart-account address — the user's identity and EAS attester. The
+ * Kernel smart-account address — the user's identity. The
  * server authorizes the delegation iff the recovered EOA *owns* that Kernel:
  *
  *  1. Deterministic (no RPC): the Kernel v3.1 counterfactual CREATE2 address of

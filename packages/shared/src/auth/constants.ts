@@ -35,14 +35,12 @@ export const StorageKeys = {
   // account here, so logout keeps DELETING this key. Do not reuse the name for
   // anything else: an old blob would then be read as the new thing.
   WOCO_AA_SESSION: "woco:auth:aa-session:v3",
-  // ZeroDev on-chain session key for EAS likes/following: the scoped, serialized
-  // permission account (contains the session private key) encrypted at rest, and
-  // scoped to EAS attest/revoke by selector only — no nested-tuple ABI in
-  // enable-data, which is what broke paymaster gas estimation when these
-  // permissions shared a key with the sub-ENS mint. DISTINCT from SESSION_KEY,
-  // which is the EIP-712 HTTP session-delegation key — two unrelated "session"
-  // concepts (see ZERODEV_PASSKEY_INTEGRATION_PLAN.md).
-  WOCO_AA_EAS_SESSION: "woco:auth:aa-eas-session:v1",
+  // The referral campaign's scoped on-chain session key had a slot here until
+  // the EAS rail was deleted (#476). Unlike WOCO_AA_SESSION above, the name is
+  // dropped outright rather than kept for the logout sweep: pre-launch, the only
+  // devices holding a blob under it are ours, so the orphaned IndexedDB entry
+  // costs a few hundred bytes and nothing else. Do not revive the name.
+
   // LEGACY, swept on logout, never written. Both date from when the content-feed
   // signer was an INDEPENDENT secret: an encrypted key blob established once per
   // account and escrowed (…_KEY), plus a cleartext cache of its address so passive

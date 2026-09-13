@@ -282,8 +282,10 @@ Frozen rules every statement type shares: `packages/shared/src/statement/discipl
   (`statement/evidence-report.ts`, #312)
 
 EAS LIKES RAIL DELETED 2026-09-12 (#475) - `shared/src/likes/`, `routes/likes.ts`, `lib/likes/*`,
-`api/likes.ts` and ProfilePage's Following/Trending are all gone. The referral campaign is the ONLY
-remaining EAS user (#476); `packages/shared/src/campaign/eas.ts` holds its chain constants.
+`api/likes.ts` and ProfilePage's Following/Trending are all gone. EAS is gone from the tree (#476,
+2026-09-13): referrals and cohort badges are Swarm-native signed records
+(`packages/shared/src/campaign/records.ts`, server `lib/campaign/issuer.ts`, client
+`lib/campaign/records.ts`); `packages/shared/test/no-eas.test.ts` fails CI on any EAS symbol.
 
 ============================================================================
 MULTI-PAGE SITE BUILDER

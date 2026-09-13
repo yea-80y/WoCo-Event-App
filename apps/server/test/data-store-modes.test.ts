@@ -29,7 +29,6 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const OWNER = "0x1111111111111111111111111111111111111111";
-const ADDR2 = "0x2222222222222222222222222222222222222222";
 const BYTES32 = `0x${"ab".repeat(32)}`;
 
 let dir: string;
@@ -71,10 +70,11 @@ function looseModes(root: string): string[] {
 }
 
 /**
- * `campaign/badges.ts` and `shop/spend-permission.ts` are absent: their only
- * write paths go through an on-chain attestation and a verified USDC transfer
- * respectively, so driving them here would mean mocking a chain. The ratchet
- * below is what covers them.
+ * `campaign/badges.ts` and `shop/spend-permission.ts` are absent, for different
+ * reasons. Badges write no `.data` file at all — they are signed Swarm records
+ * (`campaign/issuer.ts`), so there is no mode to check. `shop/spend-permission`
+ * writes one, but only behind a verified USDC transfer, so driving it here would
+ * mean mocking a chain. The ratchet below is what covers that one.
  */
 const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> = [
   {
@@ -82,13 +82,6 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     drive: async () => {
       const m = await import("../src/lib/auth/revocation.js");
       m.revokeSession("nonce-1", new Date(Date.now() + 3_600_000).toISOString());
-    },
-  },
-  {
-    store: "campaign/referral-store",
-    drive: async () => {
-      const m = await import("../src/lib/campaign/referral-store.js");
-      m.setPendingReferral(OWNER, ADDR2);
     },
   },
   {
