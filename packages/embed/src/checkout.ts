@@ -52,28 +52,26 @@ export interface CheckoutBodyInputs {
   /** The consent box was rendered, so the opt-out WAS offered — an untouched
    *  box is an explicit refusal (recorded as a suppression), not "never asked". */
   marketingConsent: boolean;
-  /** The organiser's page URL — Stripe's cancel button returns the buyer
-   *  exactly there. The server falls back to the platform event page if it
-   *  is not a well-formed https URL. */
-  cancelUrl: string;
+  /** The organiser page the buyer is on (see resolvePageUrl), when it is known. */
+  pageUrl?: string;
   encryptedOrder?: SealedBox;
   reservationId?: string;
 }
 
 /**
- * The exact create-checkout wire body. Deliberately NO returnUrl: the
- * organiser's domain cannot be in ALLOWED_HOSTS, so the server would refuse
- * it — omitting it selects the platform's purchased page, and the ticket
- * email is the durable artifact either way.
+ * The exact create-checkout wire body. No returnUrl and no cancelUrl: the server
+ * derives both Stripe redirects from `pageUrl` (#567), and without a page it
+ * sends the buyer to the WoCo pages — the ticket email is the durable artifact
+ * either way.
  */
 export function buildCheckoutBody(i: CheckoutBodyInputs): Record<string, unknown> {
   const body: Record<string, unknown> = {
     eventId: i.eventId,
     seriesId: i.seriesId,
     claimerEmail: i.claimerEmail,
-    cancelUrl: i.cancelUrl,
     marketingConsent: i.marketingConsent,
   };
+  if (i.pageUrl) body.pageUrl = i.pageUrl;
   if (i.quantity > 1) body.quantity = i.quantity;
   if (i.encryptedOrder) body.encryptedOrder = i.encryptedOrder;
   if (i.reservationId) body.reservationId = i.reservationId;
@@ -104,4 +102,89 @@ export function reserveOutcome(
     return { kind: "blocked", message: "Not enough tickets left at this quantity" };
   }
   return { kind: "proceed" };
+}
+
+// ---------------------------------------------------------------------------
+// Returning from Stripe (#567)
+// ---------------------------------------------------------------------------
+
+function httpUrl(raw: string): string | undefined {
+  try {
+    const u = new URL(raw);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The organiser page the buyer is on. Inside the /embed/frame iframe the frame's
+ * own URL is WoCo's, never the organiser's, so only the snippet's `page-url` can
+ * name the page there; without it the server's WoCo pages apply.
+ */
+export function resolvePageUrl(pageUrlAttr: string | null, href: string, framed: boolean): string | undefined {
+  const named = pageUrlAttr ? httpUrl(pageUrlAttr) : undefined;
+  if (named) return named;
+  return framed ? undefined : httpUrl(href);
+}
+
+export type ReturnMarker = { kind: "success"; sessionId: string } | { kind: "cancelled" };
+
+/** The return marker the server put in the page's query, when this page load is a return from Stripe. */
+export function parseReturn(pageUrl: string | undefined): ReturnMarker | null {
+  if (!pageUrl) return null;
+  let params: URLSearchParams;
+  try {
+    params = new URL(pageUrl).searchParams;
+  } catch {
+    return null;
+  }
+  const marker = params.get("woco");
+  if (marker === "cancelled") return { kind: "cancelled" };
+  if (marker !== "success") return null;
+  const sessionId = params.get("session_id") ?? "";
+  return /^cs_(?:test|live)_[A-Za-z0-9]{10,200}$/.test(sessionId) ? { kind: "success", sessionId } : null;
+}
+
+/** `href` without the return marker, every other query pair and the hash left as they were. */
+export function withoutReturnMarker(href: string): string {
+  const hashAt = href.indexOf("#");
+  const beforeHash = hashAt === -1 ? href : href.slice(0, hashAt);
+  const hash = hashAt === -1 ? "" : href.slice(hashAt);
+  const q = beforeHash.indexOf("?");
+  if (q === -1) return href;
+  const kept = beforeHash
+    .slice(q + 1)
+    .split("&")
+    .filter((pair) => {
+      const key = pair.split("=")[0];
+      return pair !== "" && key !== "woco" && key !== "session_id";
+    })
+    .join("&");
+  return `${beforeHash.slice(0, q)}${kept ? `?${kept}` : ""}${hash}`;
+}
+
+export type ReturnView =
+  | { kind: "checking" }
+  | { kind: "paid"; quantity: number; emailMasked: string | null }
+  | { kind: "unpaid" }
+  | { kind: "unconfirmed" };
+
+/**
+ * What the widget may say about a return, from the server's answer alone. A
+ * marker in the URL proves nothing was paid, so anything short of a well-formed
+ * confirmation reads as "unconfirmed", never "paid".
+ */
+export function returnView(resp: { ok: boolean; data?: unknown } | null): ReturnView {
+  const d = resp?.ok && resp.data && typeof resp.data === "object" ? resp.data as Record<string, unknown> : null;
+  if (!d) return { kind: "unconfirmed" };
+  if (d.status === "open" || d.status === "expired") return { kind: "unpaid" };
+  if (d.status !== "paid" || !Number.isInteger(d.quantity) || (d.quantity as number) < 1) {
+    return { kind: "unconfirmed" };
+  }
+  return {
+    kind: "paid",
+    quantity: d.quantity as number,
+    emailMasked: typeof d.emailMasked === "string" ? d.emailMasked : null,
+  };
 }

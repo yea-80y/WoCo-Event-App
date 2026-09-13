@@ -86,6 +86,26 @@ export async function prepareStripeOrder(encryptedOrder: SealedBox): Promise<str
   return data.orderRef;
 }
 
+/** What the server confirms about a returning buyer's checkout (#567) — never the full email. */
+export interface CheckoutStatus {
+  status: "paid" | "open" | "expired";
+  quantity: number;
+  seriesId: string;
+  emailMasked: string | null;
+}
+
+/** Null when the order cannot be checked; callers keep whatever they already show. */
+export async function getCheckoutStatus(eventId: string, sessionId: string): Promise<CheckoutStatus | null> {
+  try {
+    const params = new URLSearchParams({ eventId, session_id: sessionId });
+    const resp = await fetch(`${apiBase}/api/stripe/checkout-status?${params}`);
+    const data = await resp.json() as { ok: boolean; data?: CheckoutStatus };
+    return data.ok && data.data ? data.data : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Create a Stripe Checkout Session for an attendee to pay for a ticket.
  *

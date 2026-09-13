@@ -42,7 +42,9 @@ import { fulfilPaidSession } from "../lib/stripe/fulfilment.js";
 import { liveFulfilmentDeps } from "../lib/stripe/fulfilment-live.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
 import { getReservation } from "../lib/event/reservation-store.js";
-import { validateReturnUrl, getFrontendUrl, canonicalSuccessUrl } from "../lib/stripe/return-url.js";
+import { validateReturnUrl, getFrontendUrl } from "../lib/stripe/return-url.js";
+import { checkoutRedirectUrls } from "../lib/stripe/checkout-urls.js";
+import { checkoutStatusView, isCheckoutSessionId } from "../lib/stripe/checkout-status.js";
 import { updateOrder as updateShopOrder, getOrder as getShopOrder, getShop } from "../lib/shop/service.js";
 import { sendShopOrderEmail } from "../lib/email/shop-receipt.js";
 import { ensureManualPayoutSchedule } from "../lib/stripe/payout-schedule.js";
@@ -436,7 +438,7 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, quantity: rawQty, orderRef, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId, marketingConsent: rawMarketingConsent } = body as {
+  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, pageUrl, quantity: rawQty, orderRef, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId, marketingConsent: rawMarketingConsent } = body as {
     eventId: string;
     seriesId: string;
     claimerEmail?: string;
@@ -445,6 +447,9 @@ stripe.post("/create-checkout", async (c) => {
      *  Accepted as-is (any HTTPS URL) — it's just a back-navigation, not a
      *  security gate. Separate from returnUrl so success and cancel can differ. */
     cancelUrl?: string;
+    /** The organiser page hosting the embed widget (#567). Success and cancel
+     *  both return there; lib/stripe/checkout-urls.ts says what is accepted. */
+    pageUrl?: string;
     quantity?: number;
     orderRef?: string;
     encryptedOrder?: SealedBox;
@@ -819,32 +824,16 @@ stripe.post("/create-checkout", async (c) => {
     }
   }
 
-  const resolvedFrontendUrl = validateReturnUrl(returnUrl) ?? getFrontendUrl(c);
-  // Platform purchases use the dedicated WoCo success page. Site-originated
-  // purchases must return to the organiser site so the site runtime can show
-  // its own Stripe success banner and keep the buyer in the branded UI.
-  const frontendUrl = siteId ? resolvedFrontendUrl : canonicalSuccessUrl(resolvedFrontendUrl);
-
-  // Cancel URL: use the client-supplied full page URL (including hash fragment)
-  // so the buyer is returned to exactly where they came from, even on standalone
-  // ENS event sites whose host isn't in ALLOWED_HOSTS. Validated only as a
-  // well-formed HTTPS URL — no host restriction needed for a back-navigation.
-  function buildCancelUrl(marker: string): string {
-    if (cancelUrl) {
-      try {
-        const u = new URL(cancelUrl);
-        if (u.protocol === "https:" || u.hostname === "localhost") {
-          const sep = cancelUrl.includes("?") ? "&" : "?";
-          return `${cancelUrl}${sep}${marker}`;
-        }
-      } catch { /* fall through */ }
-    }
-    return `${frontendUrl}/#/event/${eventId}?${marker}`;
-  }
-  const stripeCancelUrl = buildCancelUrl("stripe=cancelled");
-  const stripeSuccessUrl = siteId
-    ? `${frontendUrl}/#/events/${eventId}?stripe=success&session_id={CHECKOUT_SESSION_ID}`
-    : `${frontendUrl}/#/event/${eventId}/purchased?stripe=success&session_id={CHECKOUT_SESSION_ID}`;
+  // Embed buyers return to the organiser page, site buyers to their site's event
+  // route, platform buyers to the purchased page (#567, lib/stripe/checkout-urls.ts).
+  const { successUrl: stripeSuccessUrl, cancelUrl: stripeCancelUrl } = checkoutRedirectUrls({
+    eventId,
+    siteId,
+    returnUrl,
+    cancelUrl,
+    pageUrl,
+    frontendUrl: () => validateReturnUrl(returnUrl) ?? getFrontendUrl(c),
+  });
 
   // #300: the session must not outlive the event it sells for. Undefined keeps
   // Stripe's 24 h default (event end is 24 h+ away, so the default is tighter).
@@ -957,6 +946,64 @@ stripe.post("/create-checkout", async (c) => {
     const msg = err instanceof Error ? err.message : "Failed to create checkout";
     return c.json({ ok: false, error: msg }, 500);
   }
+});
+
+/**
+ * The bound on `/checkout-status` (#567). Unauthenticated like create-checkout,
+ * and every call past validation spends a Swarm event read and a Stripe API read
+ * on the organiser's connected account, so it is sized the same way.
+ */
+const checkoutStatusLimiter = new SlidingWindowLimiter([
+  { limit: 30, windowMs: 60_000 },
+  { limit: 300, windowMs: 3_600_000 },
+]);
+
+/**
+ * GET /api/stripe/checkout-status?eventId=&session_id=[&siteId=]
+ *
+ * What a buyer returning from Stripe is shown (#567). The embed widget on an
+ * organiser page and the platform purchased page both render from this, because
+ * the pre-redirect sessionStorage stash does not cross origins. The answer is
+ * deliberately narrow — see lib/stripe/checkout-status.ts.
+ */
+stripe.get("/checkout-status", async (c) => {
+  const eventId = c.req.query("eventId") ?? "";
+  const sessionId = c.req.query("session_id");
+  if (!eventId || !isCheckoutSessionId(sessionId)) {
+    return c.json({ ok: false, error: "eventId and a checkout session_id are required" }, 400);
+  }
+
+  // Peek-then-record after validation, as create-checkout does, so a malformed
+  // request is refused without spending the caller's budget.
+  const ip = clientIp(c);
+  if (!checkoutStatusLimiter.peek(ip)) {
+    c.header("Retry-After", "60");
+    return c.json({ ok: false, error: "Too many requests from your connection. Wait a minute and try again." }, 429);
+  }
+  checkoutStatusLimiter.record(ip);
+
+  const rawSiteId = c.req.query("siteId");
+  const siteId = rawSiteId && /^[0-9a-z_-]{10,}$/i.test(rawSiteId) ? rawSiteId : undefined;
+  const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
+  const event = await getEvent(eventId, siteSigner ?? undefined).catch(() => null);
+  const account = event ? getStripeAccount(event.creatorAddress.toLowerCase()) : null;
+  if (!account) return c.json({ ok: false, error: "Not found" }, 404);
+
+  let session;
+  try {
+    session = await getStripe().checkout.sessions.retrieve(sessionId, {}, { stripeAccount: account.stripeAccountId });
+  } catch (err) {
+    if ((err as { statusCode?: number }).statusCode === 404) {
+      return c.json({ ok: false, error: "Not found" }, 404);
+    }
+    // The error class only: Stripe's message text is not for a public route.
+    console.error("[stripe/checkout-status] session read failed:", (err as { type?: string }).type ?? "unknown");
+    return c.json({ ok: false, error: "Could not check this payment right now" }, 502);
+  }
+
+  const view = checkoutStatusView(session, eventId);
+  if (!view) return c.json({ ok: false, error: "Not found" }, 404);
+  return c.json({ ok: true, data: view });
 });
 
 // ---------------------------------------------------------------------------

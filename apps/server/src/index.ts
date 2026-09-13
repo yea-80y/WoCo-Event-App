@@ -9,7 +9,8 @@ import { FEATURES } from "@woco/shared";
 import type { AppEnv } from "./types.js";
 import { buildInfo } from "./config/build-info.js";
 import { requireAuth } from "./middleware/auth.js";
-import { securityHeaders, FRAME_INLINE_SCRIPT, FRAME_CSP } from "./lib/http/security-headers.js";
+import { securityHeaders, FRAME_CSP } from "./lib/http/security-headers.js";
+import { buildFramePage } from "./lib/embed/frame-page.js";
 import { revokeSession, revokeAllSessions } from "./lib/auth/revocation.js";
 import { kernelDeployedLoadFailed } from "./lib/auth/kernel-deployed.js";
 import { events } from "./routes/events.js";
@@ -463,31 +464,13 @@ app.post("/api/payment/quote", async (c) => {
 
 // Serve embed iframe frame page
 app.get("/embed/frame/:eventId", (c) => {
-  const eventId = c.req.param("eventId").replace(/[^a-zA-Z0-9\-]/g, "");
-  const theme = (c.req.query("theme") || "dark").replace(/[^a-z]/g, "");
-  const showImage = c.req.query("show-image") !== "false" ? "true" : "false";
-  const showDesc = c.req.query("show-description") !== "false" ? "true" : "false";
-  const apiUrl = "https://events-api.woco-net.com";
-
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <style>* { margin: 0; padding: 0; box-sizing: border-box; } html, body { background: transparent; }</style>
-</head>
-<body>
-  <script src="${apiUrl}/embed/woco-embed.js?v=9"><\/script>
-  <woco-tickets
-    event-id="${eventId}"
-    api-url="${apiUrl}"
-    theme="${theme}"
-    show-image="${showImage}"
-    show-description="${showDesc}"
-  ></woco-tickets>
-  <script>${FRAME_INLINE_SCRIPT}<\/script>
-</body>
-</html>`;
+  const html = buildFramePage({
+    eventId: c.req.param("eventId"),
+    theme: c.req.query("theme"),
+    showImage: c.req.query("show-image"),
+    showDescription: c.req.query("show-description"),
+    page: c.req.query("page"),
+  });
 
   c.header("Content-Type", "text/html");
   // frame-ancestors * in the CSP is the valid spelling of what the old

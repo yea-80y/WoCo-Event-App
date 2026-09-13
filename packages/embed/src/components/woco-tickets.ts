@@ -19,6 +19,11 @@ import {
   buildOrderPayload,
   buildCheckoutBody,
   reserveOutcome,
+  parseReturn,
+  resolvePageUrl,
+  returnView,
+  withoutReturnMarker,
+  type ReturnView,
 } from "../checkout.js";
 import { formatCountdown, holdResult, secondsUntil, usableHold, type Hold } from "../reservation.js";
 
@@ -82,6 +87,8 @@ export class WocoTickets extends HTMLElement {
   /** Per-series request counter: a hold response that is no longer the latest request is dropped. */
   private holdSeq: Map<string, number> = new Map();
   private holdTimer: ReturnType<typeof setInterval> | null = null;
+  /** What this page load says about a return from Stripe (#567); null when it is not one. */
+  private returnState: ReturnView | null = null;
 
   static get observedAttributes() {
     return ["event-id", "api-url", "theme", "show-image", "show-description"];
@@ -99,6 +106,7 @@ export class WocoTickets extends HTMLElement {
       this.delegationSetup = true;
     }
     this.ensureHoldTimer();
+    this.checkReturn();
     this.loadEvent();
   }
 
@@ -144,6 +152,17 @@ export class WocoTickets extends HTMLElement {
   private get theme() { return (this.getAttribute("theme") || "dark") as "dark" | "light"; }
   private get showImage() { return this.getAttribute("show-image") !== "false"; }
   private get showDescription() { return this.getAttribute("show-description") !== "false"; }
+
+  /** The organiser page the buyer is on; see resolvePageUrl. Comparing `window.top` is allowed cross-origin. */
+  private get pageUrl(): string | undefined {
+    let framed: boolean;
+    try {
+      framed = window.top !== window;
+    } catch {
+      framed = true;
+    }
+    return resolvePageUrl(this.getAttribute("page-url"), window.location.href, framed);
+  }
 
   private freshSeriesState(status: ClaimStatus | null = null): SeriesState {
     return {
@@ -246,6 +265,7 @@ export class WocoTickets extends HTMLElement {
     this.shadow.innerHTML = `
       <style>${getStyles(this.theme)}</style>
       <div class="woco-container">
+        <div data-return-slot>${this.renderReturn()}</div>
         <div class="loading">Loading event...</div>
       </div>
     `;
@@ -291,6 +311,7 @@ export class WocoTickets extends HTMLElement {
           </div>
         </div>
         ${descHtml}
+        <div data-return-slot>${this.renderReturn()}</div>
         ${seriesHtml}
         <div class="powered-by">Powered by WoCo</div>
       </div>
@@ -317,6 +338,13 @@ export class WocoTickets extends HTMLElement {
   private setupDelegation() {
     this.shadow.addEventListener("click", (e) => {
       const target = e.target as Element;
+
+      // data-return-dismiss — close the return-from-Stripe card
+      if (target.closest("[data-return-dismiss]")) {
+        this.returnState = null;
+        this.refreshReturn();
+        return;
+      }
 
       // data-buy — expand the buy panel
       const buyBtn = target.closest<HTMLElement>("[data-buy]");
@@ -420,6 +448,70 @@ export class WocoTickets extends HTMLElement {
         st.orderFormData[fieldId] = el.checked ? "yes" : "";
       }
     });
+  }
+
+  /**
+   * A page load that is a return from Stripe (#567). Nothing is shown as paid
+   * until the server confirms the session; a cancel needs no message at all.
+   */
+  private async checkReturn() {
+    const marker = parseReturn(this.pageUrl);
+    if (!marker || !this.eventId || !this.apiUrl) return;
+    this.forgetReturnMarker();
+    if (marker.kind === "cancelled") return;
+
+    this.returnState = { kind: "checking" };
+    this.refreshReturn();
+    const params = new URLSearchParams({ eventId: this.eventId, session_id: marker.sessionId });
+    const resp = await createApiClient(this.apiUrl)
+      .get(`/api/stripe/checkout-status?${params}`)
+      .catch(() => null);
+    this.returnState = returnView(resp);
+    this.refreshReturn();
+  }
+
+  /**
+   * Drop the marker from the address bar so a refresh is not a second return.
+   * Only a top-level page can rewrite its own URL; inside the frame the marker
+   * lives in the organiser's address bar, out of reach.
+   */
+  private forgetReturnMarker() {
+    try {
+      if (window.top !== window) return;
+      const next = withoutReturnMarker(window.location.href);
+      if (next !== window.location.href) history.replaceState(history.state, "", next);
+    } catch {
+      // A sandboxed host page may refuse history writes; the card still shows.
+    }
+  }
+
+  /** Swap just the return slot, so a buyer already typing in a panel keeps focus. */
+  private refreshReturn() {
+    const slot = this.shadow.querySelector("[data-return-slot]");
+    if (slot) slot.innerHTML = this.renderReturn();
+    else this.render();
+  }
+
+  /** `quantity` is an integer by returnView; the masked address is escaped like any API text. */
+  private renderReturn(): string {
+    const r = this.returnState;
+    if (!r) return "";
+    if (r.kind === "checking") {
+      return `<div class="return-card" role="status">Confirming your payment...</div>`;
+    }
+    if (r.kind === "paid") {
+      const n = r.quantity;
+      const to = r.emailMasked ? `<strong>${this.esc(r.emailMasked)}</strong>` : "the address you entered";
+      return `<div class="return-card return-card--paid" role="status">
+          <div class="return-title">Payment confirmed</div>
+          <p>${n > 1 ? `Your ${n} tickets are` : "Your ticket is"} on the way to ${to}. Show the QR code in the email at the door.</p>
+          <button class="return-dismiss" data-return-dismiss>Done</button>
+        </div>`;
+    }
+    const message = r.kind === "unpaid"
+      ? "This payment was not completed, so no ticket was issued. You can try again below."
+      : "We could not confirm this payment here. If it went through, your ticket is on its way by email.";
+    return `<div class="return-card" role="status"><p>${message}</p><button class="return-dismiss" data-return-dismiss>Dismiss</button></div>`;
   }
 
   /**
@@ -825,7 +917,7 @@ export class WocoTickets extends HTMLElement {
         claimerEmail: email,
         quantity: st.quantity,
         marketingConsent: st.consent,
-        cancelUrl: window.location.href,
+        pageUrl: this.pageUrl,
         encryptedOrder,
         reservationId,
       });

@@ -12,6 +12,7 @@
   import { onMount } from "svelte";
   import { navigate } from "../../router/router.svelte.js";
   import { getEvent } from "../../api/events.js";
+  import { getCheckoutStatus } from "../../api/stripe.js";
   import type { EventFeed } from "@woco/shared";
   import { cacheGet, cacheKey } from "../../cache/cache.js";
 
@@ -46,6 +47,9 @@
   let email = $state(_stash.email);
   let qty = $state(_stash.qty);
   const seriesId = _stash.seriesId;
+  // A checkout that started on another origin (an embed with no page to return
+  // to, or a new tab) left no stash here, so the server confirms the order (#567).
+  let emailMasked = $state<string | null>(null);
 
   // Best-effort event title from cache. Don't block first paint on a fetch —
   // the success card stands alone without it; the line just renders without a
@@ -59,6 +63,17 @@
       getEvent(eventId).then((fresh) => {
         if (fresh) eventTitle = fresh.title;
       }).catch(() => { /* non-fatal */ });
+    }
+
+    if (!email) {
+      const sessionId = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("session_id");
+      if (sessionId) {
+        getCheckoutStatus(eventId, sessionId).then((status) => {
+          if (!status) return;
+          emailMasked = status.emailMasked;
+          if (!seriesId) qty = status.quantity;
+        });
+      }
     }
 
     // Clean up the form stash now that we've used it. Keep `stripe-returning`
@@ -101,8 +116,10 @@
       <span class="email-label">Sent to</span>
       {#if email}
         <span class="email-addr">{email}</span>
+      {:else if emailMasked}
+        <span class="email-addr">{emailMasked}</span>
       {:else}
-        <span class="email-addr email-addr--unknown">your email</span>
+        <span class="email-addr email-addr--unknown">the address you entered</span>
       {/if}
     </div>
 
