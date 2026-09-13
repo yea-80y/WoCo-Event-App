@@ -59,6 +59,7 @@ import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-re
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
+import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
 import { startHealthProbes, paymasterHealth, postageHealth, subEnsParentHealth } from "./lib/health/probes.js";
 import { persistHealth } from "./lib/marketing/persist.js";
 import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.js";
@@ -262,6 +263,12 @@ app.get("/api/health", (c) =>
     // bee behind on the postage contract stamps against a dead batch and the
     // uploads still look successful.
     evidencePublisher: evidencePublisherHealth(),
+    // The campaign issuer (#476). `failed` or `indexFailed` climbing is the
+    // alarm: writes are reporting success and not landing, which on this rail
+    // means a merchant is owed a revenue share nothing records. `configured:
+    // false` while the key IS set means the key derives an address clients do
+    // not read — the boot log names both.
+    campaignIssuer: campaignIssuerHealth(),
     // The client-SOC relay's limiter (#301). `globalTrippedAt` non-null is the
     // alarm: the per-process ceiling that legitimate traffic never reaches has
     // refused writes with 503 — either an attack on the postage batch or a
@@ -740,3 +747,8 @@ startDrainWorker();
 // and the participant registry becomes rebuildable by someone who is not us.
 // Inert without SOCIAL_INDEXER_PRIVATE_KEY; the served tally is unaffected.
 startEvidencePublisher();
+// Referral confirmations and cohort badges are signed Swarm records, not server
+// state (#476) — this only checks that the campaign key derives the address
+// clients read, and refuses to write anywhere else if it does not.
+// Inert without CAMPAIGN_ISSUER_PRIVATE_KEY: confirmations answer 503.
+startCampaignIssuer();
