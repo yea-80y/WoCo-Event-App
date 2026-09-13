@@ -140,6 +140,32 @@ test("the statement lands on the REFERRER's topic, closed payload, index after",
   assert.equal(rec.indexed[0].indexTopic(0), referralSubjectIndexTopic(0));
 });
 
+test("a live statement already on the feed is not rewritten — only its index is ensured", async () => {
+  // The capture is kept on `unconfirmed`, so this runs again on the next
+  // sign-in; without the head read every such run would append another version
+  // of the same statement.
+  const subject = campaignAccountSubject(REFERRER);
+  const { deps, rec } = harness({
+    feeds: { [referralStatementTopic(subject)]: { format: REFERRAL_STATEMENT_FORMAT, subject, value: true } },
+  });
+  const res = await writeReferralStatement(SIGNER, REFERRER, deps);
+  assert.equal(res.status, "verified");
+  assert.equal(rec.writes.length, 0, "no second version of a live statement");
+  assert.deepEqual(rec.order, ["index"]);
+  assert.equal(rec.feedReads[0]?.owner, MY_FEED, "the head read is of the referee's OWN feed");
+});
+
+test("a RETRACTED head is written over — a retraction is not a live statement", async () => {
+  const subject = campaignAccountSubject(REFERRER);
+  const { deps, rec } = harness({
+    feeds: { [referralStatementTopic(subject)]: { format: REFERRAL_STATEMENT_FORMAT, subject, value: false } },
+  });
+  const res = await writeReferralStatement(SIGNER, REFERRER, deps);
+  assert.equal(res.status, "verified");
+  assert.equal(rec.writes.length, 1);
+  assert.deepEqual(rec.order, ["statement", "index"]);
+});
+
 test("a superseded statement writes NO index entry", async () => {
   const { deps, rec } = harness({ writeStatus: "superseded" });
   const res = await writeReferralStatement(SIGNER, REFERRER, deps);

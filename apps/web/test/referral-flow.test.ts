@@ -81,20 +81,27 @@ test("no seed on this device — the capture waits, and nothing was prompted", a
   assert.equal(state.cleared, 0, "the invite must survive to the next authenticated visit");
 });
 
-test("a written statement clears the capture — verified and unconfirmed alike", async () => {
-  for (const status of ["verified", "unconfirmed"] as const) {
-    const { deps, state } = harness({
-      ref: REFERRER,
-      write: async () =>
-        status === "verified"
-          ? { status: "verified", version: 3 }
-          : { status: "unconfirmed", version: 3, reason: "read-back timed out" },
-    });
-    assert.equal(await settleCapturedReferral(deps), "written");
-    assert.equal(state.cleared, 1, `${status} must clear`);
-    assert.deepEqual(state.writes[0]?.referrer, REFERRER);
-    assert.equal(state.writes[0]?.signer.address, SIGNER.address);
-  }
+test("a VERIFIED statement clears the capture", async () => {
+  const { deps, state } = harness({
+    ref: REFERRER,
+    write: async () => ({ status: "verified", version: 3 }),
+  });
+  assert.equal(await settleCapturedReferral(deps), "written");
+  assert.equal(state.cleared, 1);
+  assert.deepEqual(state.writes[0]?.referrer, REFERRER);
+  assert.equal(state.writes[0]?.signer.address, SIGNER.address);
+});
+
+test("an UNCONFIRMED write keeps the capture — accepted is not on the feed", async () => {
+  // The read-back could not answer. Usually propagation; also exactly the shape
+  // a dead postage batch takes, and in that case clearing would lose the
+  // referral silently. The retry is idempotent, so keeping it is cheap.
+  const { deps, state } = harness({
+    ref: REFERRER,
+    write: async () => ({ status: "unconfirmed", version: 3, reason: "read-back timed out" }),
+  });
+  assert.equal(await settleCapturedReferral(deps), "deferred");
+  assert.equal(state.cleared, 0);
 });
 
 test("a superseded write keeps the capture — the write is LOST, not late", async () => {

@@ -144,6 +144,15 @@ const REFERRAL_INDEX = {
  * bytes are at our version, so our statement is lost, not late — indexing a
  * subject whose statement never landed would advertise a claim the feed does
  * not make. The caller keeps the capture and tries again later.
+ *
+ * IDEMPOTENT, by a head read first. The caller keeps the capture on every
+ * outcome short of a confirmed write — including `unconfirmed`, a write the
+ * gateway accepted but could not read back in time, which on Swarm is usually
+ * propagation, not loss — and re-runs this on the next sign-in. Without this
+ * read each such run would append one more version of the same statement.
+ * With it, a live statement already on the feed is reported as `verified` at
+ * its own version and only the index is (idempotently) ensured. A retracted
+ * head is NOT a live statement and is written over.
  */
 export async function writeReferralStatement(
   signer: CampaignSigner,
@@ -156,6 +165,16 @@ export async function writeReferralStatement(
     subject,
     value: true,
   };
+
+  const head = await deps.readFeed(signer.address, referralStatementTopic(subject), { skipLegacy: true });
+  if (
+    head.status === "found" &&
+    validateReferralStatementV1(head.value) &&
+    (head.value as ReferralStatementV1).value === true
+  ) {
+    await deps.addToIndex(signer, subject, REFERRAL_INDEX);
+    return { status: "verified", version: head.version };
+  }
 
   const written = await deps.writeVerified({
     signerPrivKey: signer.privKey,

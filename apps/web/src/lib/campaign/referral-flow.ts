@@ -14,9 +14,14 @@
  * ticket — and `auth.hasIdentitySeed` flipping re-runs this.
  *
  * WHAT SURVIVES A FAILURE is the other half of the design. The capture is
- * cleared ONLY when the statement is on the feed or the referral was never
- * valid; every other outcome keeps it, because a dropped capture is a credit
- * nobody can recover — the link is not followed twice.
+ * cleared ONLY when the statement is CONFIRMED on the feed or the referral was
+ * never valid; every other outcome keeps it, because a dropped capture is a
+ * credit nobody can recover — the link is not followed twice. That includes
+ * `unconfirmed`: the write was accepted but not read back, and while that is
+ * usually propagation it is also exactly the shape a dead postage batch takes.
+ * Keeping the capture costs one idempotent head read per later sign-in
+ * (`writeReferralStatement` checks before it writes); clearing it would cost
+ * the referral in the one case that matters.
  *
  * Pure, and its only imports are TYPES — erased at build, so the rules below
  * are testable without a browser, a wallet or a network, for the same reason
@@ -40,7 +45,8 @@ export type SettleOutcome =
   | "no-signer"
   /** The statement is on the referee's feed. */
   | "written"
-  /** Another writer took our version — the write is LOST, not late. Retried later. */
+  /** Not confirmed on the feed: another writer took our version (LOST, not
+   *  late) or the read-back could not answer. Retried later, idempotently. */
   | "deferred"
   /** The write threw. Kept, because a network failure is not a decision. */
   | "failed";
@@ -77,13 +83,11 @@ export async function settleCapturedReferral(deps: SettleReferralDeps): Promise<
     if (!signer) return "no-signer";
 
     const written = await deps.write(signer, referrer);
-    // `unconfirmed` clears alongside `verified` deliberately. It means the write
-    // was ACCEPTED and the read-back could not confirm it — so the bytes are
-    // most likely on the feed, and re-writing would race our own chunk and
-    // report `superseded` forever. The server reads the feed before it
-    // countersigns, so a genuinely lost write costs the referral, never a
-    // wrong one.
-    if (written.status === "superseded") return "deferred";
+    // Only a VERIFIED write clears. `unconfirmed` means accepted but not read
+    // back, and a write that is not on the feed is a referral the server will
+    // never countersign — so the capture stays and the next run re-checks,
+    // which is cheap because the write is idempotent (see records.ts).
+    if (written.status !== "verified") return "deferred";
     deps.clear();
     return "written";
   } catch {
