@@ -16,6 +16,7 @@
 import { auth } from "../auth/auth-store.svelte.js";
 import { readContentFeedResult, readBandedContentFeed } from "../swarm/content-feed.js";
 import { writeContentFeedVerified, type VerifiedWriteResult } from "../swarm/verified-write.js";
+import { addToSubjectIndex } from "./subject-index.js";
 import {
   LIKE_STATEMENT_FORMAT,
   FOLLOW_STATEMENT_FORMAT,
@@ -34,7 +35,6 @@ import {
   type LikeSubjectIndexV1,
   type FollowSubjectIndexV1,
   type Hex0x,
-  LAST_VERSION_IN_BAND,
 } from "@woco/shared";
 
 export type SocialKind = "like" | "follow";
@@ -124,93 +124,10 @@ export async function writeMyStatement(
       return { ok: false, error: "Another device updated this at the same moment. Try again." };
     }
 
-    await addToSubjectIndex(kind, subject, signer);
+    await addToSubjectIndex(signer, subject, k);
     return { ok: true, value, confirmation: written.status };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Could not save that." };
-  }
-}
-
-/** Re-reads of the index after losing a write race, before giving up. */
-const INDEX_WRITE_ATTEMPTS = 3;
-
-/**
- * Add `subject` to the caller's index for this kind, if absent.
- *
- * Subjects are never REMOVED. The index records which subjects have a live head
- * under this salt partition, not which are currently liked — a retraction is a
- * statement at that head, so the head stays live and the entry stays correct.
- * Removing it would hide a `false` the indexer needs in order to stop counting.
- *
- * This is a read-modify-write with no compare-and-swap underneath, so losing
- * the race has to be handled rather than assumed away. `writeContentFeedVerified`
- * serialises same-device writes per topic and reports `superseded` when another
- * writer took our version; the only sound response is to re-read and union,
- * because retrying with the list we already computed would rewrite stale data
- * over the winner.
- *
- * Failures are swallowed after that: the statement is already written and
- * valid, and "your like worked but its index entry did not" is noise the user
- * cannot act on. It costs enumeration of THIS subject until the user next
- * toggles it — a write for a different subject does not repair it.
- */
-async function addToSubjectIndex(
-  kind: SocialKind,
-  subject: Hex0x,
-  signer: { privKey: string; address: string },
-): Promise<void> {
-  const k = KINDS[kind];
-  try {
-    for (let attempt = 0; attempt < INDEX_WRITE_ATTEMPTS; attempt++) {
-      // BANDED. This index grows one version per new subject and subjects are
-      // never removed, so unbanded it was the one structure here whose read cost
-      // tracked how much a user had ever liked. Social has no partition rule and
-      // so nothing read beforehand to carry a band hint — it is discovered by
-      // walking band openers, which the full-band invariant makes sound.
-      // `thorough` — this read feeds the read-modify-write below, so it must not
-      // trust the gateway's whitelist gate. A tagged 403 is treated as `absent`
-      // on ordinary reads (client-soc.ts), and a lost whitelist entry would
-      // therefore arrive here as a CLEAN absent — the one shape the guard below
-      // cannot catch, because it checks for INCONCLUSIVE, not for wrong.
-      const res = await readBandedContentFeed<unknown>(signer.address, k.indexTopic, { thorough: true });
-
-      // Only `absent` may be treated as "no index yet". Writing a fresh one over
-      // an index we merely FAILED to read would drop every subject it holds —
-      // the lenient-read-on-a-write-path trap.
-      let subjects: Hex0x[];
-      if (res.status === "found") {
-        // A read-modify-write of a whole snapshot must refuse on an inconclusive
-        // resolution: the writer probes for a fresh address independently, and
-        // would land this stale list at the real latest — verified — erasing
-        // every subject added since. The statement is already written, so
-        // stopping here costs enumeration only.
-        if (!res.bandClean) return;
-        if (!k.validateIndex(res.value)) return;
-        subjects = (res.value as LikeSubjectIndexV1 | FollowSubjectIndexV1).subjects;
-        if (subjects.includes(subject)) return;
-        subjects = [...subjects, subject];
-      } else if (res.status === "absent") {
-        subjects = [subject];
-      } else {
-        return;
-      }
-
-      // The index's own rollover, on the same rule the statement feeds use: a
-      // band opens only once its predecessor is full.
-      // `>=`: an overshoot must not disable rollover permanently.
-      const rollover = res.status === "found" && res.version >= LAST_VERSION_IN_BAND;
-      const targetBand = rollover ? res.band + 1 : res.band;
-
-      const written = await writeContentFeedVerified({
-        signerPrivKey: signer.privKey,
-        ownerAddress: signer.address,
-        topic: k.indexTopic(targetBand),
-        data: { format: k.indexFormat, subjects },
-      });
-      if (written.status !== "superseded") return;
-    }
-  } catch {
-    // See doc comment — the statement stands regardless.
   }
 }
 

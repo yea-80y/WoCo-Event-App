@@ -66,7 +66,7 @@
     <h3>Bring a venue on board</h3>
     <p>
       Know someone who runs events? When they join through your link and start selling,
-      you earn a share of the platform fee on every sale — recorded on-chain, paid on
+      you earn a share of the platform fee on every sale — signed and public, paid on
       real revenue.
     </p>
     <div class="link-row">
