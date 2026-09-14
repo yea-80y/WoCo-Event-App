@@ -185,9 +185,9 @@ export async function getSlotDataLedger(
   chainId: number,
 ): Promise<SlotData> {
   const r = await readContract(contractAddress, chainId).getSlotData(onChainEventId, slot);
-  // `owner == 0` means the slot is unclaimed. The other two fields are then the
-  // batch-0 claimer/orderRef rather than zeroes (batchFirstSlot defaults to 0),
-  // so they must not be read in that case — see the contract's natspec.
+  // `owner == 0` means the slot is unclaimed, and the contract then returns
+  // zeroes for all three fields (WoCo-Contracts #25). `owner` stays the test:
+  // a claimed slot's orderRef may itself be zero.
   return {
     owner:    (r.owner as string).toLowerCase(),
     orderRef: r.orderRef as string,
