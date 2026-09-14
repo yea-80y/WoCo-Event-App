@@ -94,9 +94,18 @@ if ("disabled" in loaded) {
 } else {
   console.log(
     `[ens-gateway] serving *.${loaded.parentName} — signer=${ensGatewaySignerAddress(loaded)} ` +
-    `chain=${loaded.chainId} registry=${loaded.registryAddress} ttl=${loaded.ttlSeconds}s ` +
+    `chain=${loaded.chainId} registries=${loaded.registryAddresses.join(",")} ttl=${loaded.ttlSeconds}s ` +
     `resolvers=${loaded.allowedSenders.join(",")}`,
   );
+  if (loaded.registryAddresses.length > 1) {
+    // A cutover window is meant to last minutes: answers about the outgoing
+    // registry must stop as soon as L1 points at the incoming one
+    // (WoCo-Contracts #21), so an open window is announced, not implied.
+    console.warn(
+      `[ens-gateway] REGISTRY CUTOVER WINDOW OPEN — serving ${loaded.registryAddresses.length} registries. ` +
+      "Unset ENS_GATEWAY_REGISTRY_ADDRESSES as soon as L1Resolver.l2Registry(woco.eth) names the incoming one.",
+    );
+  }
   // Redacted: provider URLs routinely carry the API key in the path or query.
   const hosts = loaded.rpcUrls.map(redactRpcUrl).join(",");
   if (loaded.rpcUrls.length > 1) {
@@ -129,12 +138,18 @@ export const ensGatewayRoutes = createEnsGatewayRoutes(
  * at our resolver. Endpoint URLs are NOT reported: they carry provider
  * credentials, and naming our providers on a public endpoint would hand an
  * attacker the "knock one over, lie on the survivor" target list.
+ *
+ * `registry` is the minting registry. `registries` is everything served, and has
+ * two entries only while a registry cutover window is open
+ * (ENS_GATEWAY_REGISTRY_ADDRESSES) — two for longer than a cutover takes is the
+ * alarm.
  */
 export function ensGatewayStatus(): {
   configured: boolean;
   signer: string | null;
   chainId: number | null;
   registry: string | null;
+  registries: string[];
   parent: string | null;
   crossCheck: boolean;
   memoEntries: number;
@@ -146,6 +161,7 @@ export function ensGatewayStatus(): {
       signer: null,
       chainId: null,
       registry: null,
+      registries: [],
       parent: null,
       crossCheck: false,
       memoEntries: 0,
@@ -156,7 +172,8 @@ export function ensGatewayStatus(): {
     configured: true,
     signer: ensGatewaySignerAddress(loaded),
     chainId: loaded.chainId,
-    registry: loaded.registryAddress,
+    registry: loaded.registryAddresses[0]!,
+    registries: loaded.registryAddresses,
     parent: loaded.parentName,
     crossCheck: loaded.rpcUrls.length > 1,
     memoEntries: memo?.size() ?? 0,

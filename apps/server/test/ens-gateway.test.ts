@@ -62,7 +62,7 @@ const CONFIG: CcipHandlerConfig = {
   signerPrivateKey: SIGNER_PK,
   allowedSenders: [RESOLVER.toLowerCase()],
   chainId: CHAIN_ID,
-  registryAddress: REGISTRY,
+  registryAddresses: [REGISTRY.toLowerCase()],
   parentName: "woco.eth",
   ttlSeconds: TTL,
 };
@@ -971,4 +971,170 @@ test("the 502 body never carries the read failure's detail", async () => {
   })(RESOLVER, stuff());
   assert.equal(out.status, 502);
   assert.equal(JSON.stringify(out.body).includes("rpc-a.example"), false);
+});
+
+// ---------------------------------------------------------------------------
+// (q) WoCo-Contracts #21 — the registry cutover window
+//
+// Outside a cutover the gateway pins ONE registry, and every test above runs in
+// that posture. During one it serves the outgoing and incoming pair, so the L1
+// flip and the server redeploy need not land at the same instant.
+// ---------------------------------------------------------------------------
+
+const INCOMING_REGISTRY = "0x5555555555555555555555555555555555555555";
+const UNSERVED_REGISTRY = "0x6666666666666666666666666666666666666666";
+const CUTOVER_CONFIG: CcipHandlerConfig = {
+  ...CONFIG,
+  registryAddresses: [REGISTRY.toLowerCase(), INCOMING_REGISTRY],
+};
+
+test("cutover: each registry in the pair is served, read from the registry the request names", async () => {
+  const reads: string[] = [];
+  const h = createCcipHandler(CUTOVER_CONFIG, {
+    readL2: async (registry) => {
+      reads.push(registry.toLowerCase());
+      return L2_RESULT;
+    },
+    now: () => NOW,
+  });
+
+  for (const registry of [REGISTRY, INCOMING_REGISTRY]) {
+    const calldata = stuff({ registry });
+    const out = await h(RESOLVER, calldata);
+    assert.equal(out.status, 200, registry);
+    const { result, expires, sig } = decodeResponse((out.body as { data: string }).data);
+    assert.equal(
+      recoverAddress(makeSignatureHash(RESOLVER, expires, getBytes(calldata), result), sig),
+      SIGNER_ADDRESS,
+    );
+  }
+  assert.deepEqual(reads, [REGISTRY.toLowerCase(), INCOMING_REGISTRY]);
+});
+
+test("cutover: an answer about one registry does not verify as an answer about the other", async () => {
+  const h = createCcipHandler(CUTOVER_CONFIG, { readL2: async () => L2_RESULT, now: () => NOW });
+  const outgoing = stuff({ registry: REGISTRY });
+  const incoming = stuff({ registry: INCOMING_REGISTRY });
+  const out = await h(RESOLVER, outgoing);
+  assert.equal(out.status, 200);
+  const { result, expires, sig } = decodeResponse((out.body as { data: string }).data);
+  // Same result, same deadline — checked against the request naming the OTHER registry.
+  assert.notEqual(
+    recoverAddress(makeSignatureHash(RESOLVER, expires, getBytes(incoming), result), sig),
+    SIGNER_ADDRESS,
+  );
+});
+
+test("cutover: a registry outside the pair is refused before any read", async () => {
+  let read = false;
+  const h = createCcipHandler(CUTOVER_CONFIG, {
+    readL2: async () => {
+      read = true;
+      return L2_RESULT;
+    },
+    now: () => NOW,
+  });
+  const out = await h(RESOLVER, stuff({ registry: UNSERVED_REGISTRY }));
+  assert.equal(out.status, 403);
+  assert.ok(!("data" in out.body));
+  assert.match((out.body as { message: string }).message, /registry not served/);
+  assert.equal(read, false, "an unserved registry was read");
+});
+
+test("cutover: the memo keeps the two registries' answers apart", async () => {
+  let reads = 0;
+  const h = createCcipHandler(CUTOVER_CONFIG, {
+    readL2: async () => {
+      reads += 1;
+      return L2_RESULT;
+    },
+    now: () => NOW,
+    memo: new ResponseMemo<{ data: string }>(30_000),
+  });
+  const a = await h(RESOLVER, stuff({ registry: REGISTRY }));
+  const b = await h(RESOLVER, stuff({ registry: INCOMING_REGISTRY }));
+  assert.equal(a.status, 200);
+  assert.equal(b.status, 200);
+  assert.equal(reads, 2, "an answer about one registry was served for the other");
+  assert.notDeepEqual(a.body, b.body);
+});
+
+/** The minting registry the loader resolves with no cutover variable set. */
+function mintingRegistry(): string {
+  const loaded = loadEnsGatewayConfig({ ...BASE_ENV });
+  assert.ok(!("disabled" in loaded), JSON.stringify(loaded));
+  return loaded.registryAddresses[0]!;
+}
+
+test("config: with no cutover variable exactly one registry is served", () => {
+  const loaded = loadEnsGatewayConfig({ ...BASE_ENV });
+  assert.ok(!("disabled" in loaded), JSON.stringify(loaded));
+  assert.equal(loaded.registryAddresses.length, 1);
+  assert.match(loaded.registryAddresses[0]!, /^0x[0-9a-f]{40}$/);
+});
+
+test("config: the cutover pair is served, the minting registry first", () => {
+  const minting = mintingRegistry();
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    ENS_GATEWAY_REGISTRY_ADDRESSES: ` ${getAddress(INCOMING_REGISTRY)} , ${getAddress(minting)} `,
+  });
+  assert.ok(!("disabled" in loaded), JSON.stringify(loaded));
+  assert.deepEqual(loaded.registryAddresses, [minting, INCOMING_REGISTRY]);
+});
+
+test("config: naming the minting registry twice is still one registry", () => {
+  const minting = mintingRegistry();
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    ENS_GATEWAY_REGISTRY_ADDRESSES: `${minting},${getAddress(minting)}`,
+  });
+  assert.ok(!("disabled" in loaded), JSON.stringify(loaded));
+  assert.deepEqual(loaded.registryAddresses, [minting]);
+});
+
+test("config: a cutover pair without the minting registry disables — it may add a registry, never swap one out", () => {
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    ENS_GATEWAY_REGISTRY_ADDRESSES: `${INCOMING_REGISTRY},${UNSERVED_REGISTRY}`,
+  });
+  assert.ok("disabled" in loaded);
+  assert.match(loaded.disabled, /must include SUB_ENS_REGISTRY_ADDRESS/);
+});
+
+test("config: more than two registries disables", () => {
+  const minting = mintingRegistry();
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    ENS_GATEWAY_REGISTRY_ADDRESSES: `${minting},${INCOMING_REGISTRY},${UNSERVED_REGISTRY}`,
+  });
+  assert.ok("disabled" in loaded);
+  assert.match(loaded.disabled, /more than two/);
+});
+
+test("config: a non-address in the cutover pair disables", () => {
+  const minting = mintingRegistry();
+  const loaded = loadEnsGatewayConfig({ ...BASE_ENV, ENS_GATEWAY_REGISTRY_ADDRESSES: `${minting},lolno` });
+  assert.ok("disabled" in loaded);
+  assert.match(loaded.disabled, /non-address: lolno/);
+});
+
+for (const empty of ["", " ", " , "]) {
+  test(`config: a set-but-empty cutover variable disables (${JSON.stringify(empty)})`, () => {
+    const loaded = loadEnsGatewayConfig({ ...BASE_ENV, ENS_GATEWAY_REGISTRY_ADDRESSES: empty });
+    assert.ok("disabled" in loaded);
+    assert.match(loaded.disabled, /set but empty/);
+  });
+}
+
+test("config: the incoming registry named twice, in two spellings, is still a pair", () => {
+  const minting = mintingRegistry();
+  const incoming = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+  assert.notEqual(getAddress(incoming), incoming, "fixture must have a second spelling");
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    ENS_GATEWAY_REGISTRY_ADDRESSES: `${minting},${incoming},${getAddress(incoming)}`,
+  });
+  assert.ok(!("disabled" in loaded), JSON.stringify(loaded));
+  assert.deepEqual(loaded.registryAddresses, [minting, incoming]);
 });
