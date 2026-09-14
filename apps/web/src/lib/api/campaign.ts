@@ -18,6 +18,7 @@
 
 import type { Hex0x, ReferralConfirmationV1 } from "@woco/shared";
 import { authGet, authPost } from "./client.js";
+import { canonicalUrl } from "../sub-ens/host-label.js";
 
 /** `POST /api/campaign/referrals/confirm`. */
 export interface ConfirmReferralResponse {
@@ -61,30 +62,24 @@ export function getReferralStatus() {
 }
 
 /**
- * The shareable referral link for an account — deliberately whatever origin and
- * path the sharer is browsing.
+ * The shareable referral link for an account, always on the canonical app host.
  *
- * #34 proposed rewriting this to drop a versioned `/bzz/{hash}/` prefix, on the
- * grounds that sharing from one pins the recipient to a frozen build. Checked
- * against the live gateways before building it, and it does not hold:
+ * Owner rule (2026-09-15): a gateway URL is never user-facing — WoCo names exist
+ * so nothing has to be shown at one. This reverses #34's choice to keep
+ * whatever origin the sharer was browsing, which from gateway.woco-net.com put
+ * a `/bzz/{manifest}/` path in every invite and made the invite code denser.
+ * #34's objection to a fixed host (old builds keep emitting it) is already
+ * accepted for sign-in, which sends people to the same `CANONICAL_APP_ORIGIN`.
  *
- *   - gateway.woco-net.com serves the app ONLY under /bzz/{hash}/. Its origin
- *     root 404s, so stripping the prefix produces a dead link — worse than the
- *     defect it was meant to fix.
- *   - the path normally browsed there is the FEED MANIFEST hash, which is
- *     stable across deploys and resolves to the current build. A link shared
- *     from it was never frozen.
- *
- * A fixed canonical host was the other option and is worse again: it bakes one
- * gateway into every build, and an old build would emit whatever host was
- * canonical when it was built — the same frozen-pointer problem one level up.
+ * In local dev the link therefore points at production; open `#/ref/…` on the
+ * dev host to exercise the invite page there.
  *
  * `referrer` is an address or a WoCo sub-ENS label — the router accepts both,
  * so a sharer with a name gets `#/ref/theirvenue` instead of forty hex
  * characters, and the visitor who follows it is told a name rather than hex.
  */
 export function referralLink(referrer: Hex0x | string): string {
-  return `${window.location.origin}${window.location.pathname}#/ref/${referrer}`;
+  return canonicalUrl(`#/ref/${referrer}`);
 }
 
 // Ref-link capture moved to lib/campaign/referral-capture.ts, which imports
