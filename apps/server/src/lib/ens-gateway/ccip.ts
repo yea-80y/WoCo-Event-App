@@ -196,7 +196,12 @@ export interface CcipHandlerConfig {
   /** Lowercased L1Resolver addresses whose `OffchainLookup` this gateway answers. */
   allowedSenders: string[];
   chainId: number;
-  registryAddress: string;
+  /**
+   * The L2 registries this gateway reads and signs for, the minting registry
+   * first. One outside a registry cutover; the outgoing and incoming pair
+   * during one — see `loadEnsGatewayConfig`.
+   */
+  registryAddresses: string[];
   /** Lowercased 2LD, e.g. "woco.eth". Only names strictly BELOW it are served. */
   parentName: string;
   ttlSeconds: number;
@@ -242,7 +247,7 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
   const signingKey = new SigningKey(config.signerPrivateKey);
   const parent = config.parentName.toLowerCase();
   const allowedSenders = new Set(config.allowedSenders.map((s) => s.toLowerCase()));
-  const registry = config.registryAddress.toLowerCase();
+  const registries = new Set(config.registryAddresses.map((r) => r.toLowerCase()));
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
   const memo = deps.memo;
   // ONE clock for both. The memo's freshness and the signature's deadline are
@@ -309,7 +314,10 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
     //    attacker-chosen until pinned: without this an attacker names their own
     //    contract on their own chain and this gateway signs whatever it returns.
     if (call.targetChainId !== BigInt(config.chainId)) return refuse(403, "registry not served");
-    if (call.targetRegistryAddress.toLowerCase() !== registry) {
+    // Two registries only during a cutover. Which one a lookup names is fixed by
+    // the L1 resolver at the time, and the signature binds the request that
+    // names it, so an answer about one never verifies as an answer about the other.
+    if (!registries.has(call.targetRegistryAddress.toLowerCase())) {
       return refuse(403, "registry not served");
     }
 

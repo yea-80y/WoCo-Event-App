@@ -98,6 +98,46 @@ export function loadEnsGatewayConfig(env: Env = process.env): EnsGatewayLoad {
     return { disabled: `SUB_ENS_REGISTRY_ADDRESS is not an address: ${registryAddress}` };
   }
 
+  // REGISTRY CUTOVER (WoCo-Contracts #21). Every lookup names ONE registry —
+  // whatever the L1 resolver's `l2Registry[node]` holds at that moment — and
+  // moving it is a single Safe transaction this process cannot observe. With a
+  // single registry pinned, whichever of the L1 flip and the server redeploy
+  // lands first blacks out every subname until the other does. So for that
+  // window only, a second registry may be served: set this to the outgoing and
+  // incoming pair, flip L1, then unset it.
+  //
+  // The minting registry must be in the set, so the variable can only ADD a
+  // registry, never swap the platform's own out; and it names at most two,
+  // because a cutover has exactly two sides. Set-but-empty is refused like the
+  // SUB_ENS_* overrides: an empty value reaches the process from a bare
+  // `KEY=` line and is a misconfiguration, not "unset".
+  const registryAddresses = [registryAddress.toLowerCase()];
+  const cutoverRaw = env.ENS_GATEWAY_REGISTRY_ADDRESSES;
+  if (cutoverRaw !== undefined) {
+    const listed = [
+      ...new Set(
+        cutoverRaw
+          .split(",")
+          .map((s) => s.trim().toLowerCase())
+          .filter((s) => s.length > 0),
+      ),
+    ];
+    if (listed.length === 0) {
+      return { disabled: "ENS_GATEWAY_REGISTRY_ADDRESSES is set but empty — unset it outside a registry cutover" };
+    }
+    const badRegistry = listed.find((s) => !ADDRESS_RE.test(s));
+    if (badRegistry) {
+      return { disabled: `ENS_GATEWAY_REGISTRY_ADDRESSES contains a non-address: ${badRegistry}` };
+    }
+    if (!listed.includes(registryAddresses[0]!)) {
+      return { disabled: "ENS_GATEWAY_REGISTRY_ADDRESSES must include SUB_ENS_REGISTRY_ADDRESS" };
+    }
+    if (listed.length > 2) {
+      return { disabled: "ENS_GATEWAY_REGISTRY_ADDRESSES names more than two registries — a cutover has two sides" };
+    }
+    registryAddresses.push(...listed.filter((s) => s !== registryAddresses[0]));
+  }
+
   // The second endpoint is OPTIONAL: without it the gateway keeps its pre-#465
   // single-provider posture rather than refusing to boot, because a hard
   // requirement here would block the Sepolia rehearsal for a hardening step
@@ -138,7 +178,7 @@ export function loadEnsGatewayConfig(env: Env = process.env): EnsGatewayLoad {
     signerPrivateKey,
     allowedSenders,
     chainId,
-    registryAddress,
+    registryAddresses,
     parentName,
     ttlSeconds,
     rpcUrls,
