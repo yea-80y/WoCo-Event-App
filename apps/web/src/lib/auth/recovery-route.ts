@@ -14,7 +14,12 @@
  */
 
 import type { Address, Hex } from "viem";
-import { LEGACY_ZERODEV_CALLER_HOOK, WOCO_GUARDIAN_HOOK } from "./guardian-hook.js";
+import {
+  LEGACY_ZERODEV_CALLER_HOOK,
+  WOCO_GUARDIAN_HOOK,
+  buildClearGuardiansCall,
+  type HookCall,
+} from "./guardian-hook.js";
 
 /** ZeroDev recovery ACTION singleton (Arb Sepolia) — delegatecalled by the route. */
 export const RECOVERY_ACTION_ADDRESS = "0xe884C2868CC82c16177eC73a93f7D9E6F3A5DC6E" as const;
@@ -129,4 +134,28 @@ export function buildUninstallRecoveryCallData(d: RouteEncoders): Hex {
     functionName: "uninstallModule",
     args: [RECOVERY_FALLBACK_MODULE_TYPE, RECOVERY_ACTION_ADDRESS, recoveryRouteSelector(d)],
   });
+}
+
+/**
+ * "Remove all backups" as ONE batch: uninstall the route, then empty the WoCo hook's
+ * set for this account (#571).
+ *
+ * WHY THE SECOND CALL. The uninstall above discards the hook without calling it, so
+ * the set outlives the route. A later install replaces that set only because
+ * `_installHook` (`core/HookManager.sol:30-42`) honours the `0xff` flag: a leftover
+ * set makes `isInitialized` true, and without the flag `onInstall` is skipped and
+ * every removed guardian is live again. Emptying the set here makes the removal
+ * final on its own, whatever a later install sends.
+ *
+ * The first call targets the ACCOUNT ITSELF — inside `execute`, `uninstallModule`'s
+ * `onlyEntryPointOrSelfOrRoot` passes on `msg.sender == address(this)`. Kernel's
+ * default batch reverts as a whole (`utils/ExecLib.sol:69-77`), so the two land
+ * together or not at all. On a legacy-hook or never-protected account the clear
+ * empties an already-empty set and does not revert.
+ */
+export function buildRemoveRecoveryCalls(d: RouteEncoders, kernelAddress: Address): HookCall[] {
+  return [
+    { to: kernelAddress, value: 0n, data: buildUninstallRecoveryCallData(d) },
+    buildClearGuardiansCall(d.encodeFunctionData),
+  ];
 }
