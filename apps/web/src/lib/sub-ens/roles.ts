@@ -52,3 +52,15 @@ export function roleLabel(role: SubEnsNameRole | undefined): string | undefined 
     default:        return undefined;
   }
 }
+
+/**
+ * The name an invite link should carry. The PROFILE name comes first because it
+ * is who the sharer is; otherwise the alphabetically first name, so a sharer
+ * with several names gets the same link on every visit. Links shared with any
+ * other name keep working — the router resolves whichever one arrives.
+ */
+export function inviteLabel(names: readonly (RoledName & { label: string })[]): string | null {
+  const profile = names.find((n) => n.role === "profile");
+  if (profile) return profile.label;
+  return names.map((n) => n.label).sort()[0] ?? null;
+}

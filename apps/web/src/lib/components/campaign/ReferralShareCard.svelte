@@ -1,10 +1,10 @@
 <!--
   ReferralShareCard — the user's referral link, on their own profile.
 
-  The link prefers a WoCo sub-ENS name the sharer owns (`#/ref/theirvenue`) and
-  falls back to their address. That is not cosmetic: the name is what the
-  RECIPIENT is shown when they land, so a named organiser's invite says who they
-  are instead of forty hex characters.
+  The link prefers the sharer's PROFILE name, then any other WoCo name they own
+  (`#/ref/theirvenue`), and falls back to their address. That is not cosmetic:
+  the name is what the RECIPIENT is shown when they land, and an address link
+  shows them no name at all.
 
   No longer zero-fetch, deliberately. It costs one authenticated read of names
   the organiser already owns, on a profile screen that is already fetching. The
@@ -17,6 +17,7 @@
   import { onMount } from "svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { referralLink } from "../../api/campaign.js";
+  import { inviteLabel } from "../../sub-ens/roles.js";
 
   let copied = $state(false);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
@@ -27,12 +28,7 @@
     try {
       const { getOwnedSubEns } = await import("../../api/sub-ens.js");
       const resp = await getOwnedSubEns();
-      // Sorted so a sharer with several names gets a STABLE link — a referral
-      // link that changes between visits is one people cannot recognise as
-      // theirs, and old copies of it must keep working anyway (they do: the
-      // router resolves whichever name was shared).
-      const names = [...(resp.data?.names ?? [])].map((n) => n.label).sort();
-      ensLabel = names[0] ?? null;
+      ensLabel = inviteLabel(resp.data?.names ?? []);
     } catch {
       // Falls back to the address link — the card is never empty.
     }

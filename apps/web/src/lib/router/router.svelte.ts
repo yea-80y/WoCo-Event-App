@@ -6,6 +6,7 @@
  *   NEUTRAL surface
  *     /                            splitter (landing — funnels to organiser vs attendee)
  *     /legal, /legal/:doc          legal (privacy, terms, organiser-terms, dpa, cookies)
+ *     /ref/:token                  invite (an invite link: stores the invite, shows who sent it)
  *
  *   ATTENDEE surface
  *     /discover                    discover (events feed — was at /)
@@ -63,6 +64,19 @@ function matchRoute(pathWithQuery: string): Match {
 
   // ── Neutral splitter (root landing) ──────────────────────────────────────
   if (path === "/" || path === "") return { route: "splitter", params: {}, surface: "neutral" };
+
+  // ── Invite link — a screen of its own. `update()` has already stored the
+  //    invite; the page reads the token back from the link for display ───────
+  const refRoute = path.match(/^\/ref\/([^/?#]+)$/);
+  if (refRoute) {
+    let token = "";
+    try {
+      token = decodeURIComponent(refRoute[1]);
+    } catch {
+      // A malformed escape is a broken link: the page renders without an inviter.
+    }
+    return { route: "invite", params: { token }, surface: "neutral" };
+  }
 
   // ── Legal documents (neutral: reachable pre-login, from emails, and from a
   //    checkout the buyer has not signed into) ──────────────────────────────
@@ -178,9 +192,10 @@ function matchRoute(pathWithQuery: string): Match {
 }
 
 function update() {
-  // Referral capture: #/ref/{referrer} isn't a screen — persist the referrer
-  // and land on discover. The referrer is an address OR a WoCo sub-ENS name, so
-  // an organiser can share `#/ref/theirvenue` instead of forty hex characters.
+  // Referral capture: #/ref/{referrer} persists the referrer, then renders the
+  // invite page (see matchRoute). The referrer is an address OR a WoCo sub-ENS
+  // name, so an organiser can share `#/ref/theirvenue` instead of forty hex
+  // characters.
   //
   // The lazy import points at the dependency-free capture module rather than
   // the API client, so an address link costs a few lines instead of the client
@@ -211,8 +226,6 @@ function update() {
         m.clearCapturedRef();
       }
     });
-    window.location.replace(`${window.location.pathname}#/discover`);
-    return;
   }
   const matched = matchRoute(parseHash());
   _route = matched.route;
