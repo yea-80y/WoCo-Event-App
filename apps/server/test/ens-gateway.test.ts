@@ -36,7 +36,7 @@ import {
 import { loadEnsGatewayConfig } from "../src/lib/ens-gateway/config.js";
 import { createL2Reader, redactRpcUrl } from "../src/lib/ens-gateway/l2-reader.js";
 import { ResponseMemo, memoTtlMsFor } from "../src/lib/ens-gateway/memo.js";
-import { createEnsGatewayRoutes, ENS_GATEWAY_RATE_WINDOWS } from "../src/routes/ens-gateway.js";
+import { createEnsGatewayRoutes, ensGatewayStatusOf, ENS_GATEWAY_RATE_WINDOWS } from "../src/routes/ens-gateway.js";
 import { SlidingWindowLimiter } from "../src/lib/http/rate-limit.js";
 import { getSubEnsChainId } from "../src/lib/chain/sub-ens-contract.js";
 
@@ -1137,4 +1137,22 @@ test("config: the incoming registry named twice, in two spellings, is still a pa
   });
   assert.ok(!("disabled" in loaded), JSON.stringify(loaded));
   assert.deepEqual(loaded.registryAddresses, [minting, incoming]);
+});
+
+test("health: the status names every served registry and says when a cutover window is open", () => {
+  const minting = mintingRegistry();
+  const pair = loadEnsGatewayConfig({ ...BASE_ENV, ENS_GATEWAY_REGISTRY_ADDRESSES: `${minting},${INCOMING_REGISTRY}` });
+  assert.ok(!("disabled" in pair), JSON.stringify(pair));
+  const open = ensGatewayStatusOf(pair, 0);
+  assert.equal(open.registry, minting);
+  assert.deepEqual(open.registries, [minting, INCOMING_REGISTRY]);
+  assert.equal(open.cutoverWindowOpen, true);
+
+  const closed = ensGatewayStatusOf(loadEnsGatewayConfig({ ...BASE_ENV }), 0);
+  assert.deepEqual(closed.registries, [minting]);
+  assert.equal(closed.cutoverWindowOpen, false);
+
+  const disabled = ensGatewayStatusOf(loadEnsGatewayConfig({}), 0);
+  assert.equal(disabled.configured, false);
+  assert.equal(disabled.cutoverWindowOpen, false);
 });
