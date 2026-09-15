@@ -37,7 +37,7 @@
       if (!bootRedirectFor(window.location.hostname, window.location.hash)) return;
       // replace, not navigate: this redirect is automatic, so a history entry
       // for it would make Back land on the name host's bare home page — a
-      // dead end nobody chose. Same precedent as the router's #/ref/ handler.
+      // dead end nobody chose.
       window.location.replace(`${window.location.pathname}#/profile/${res.address}`);
     });
   }
@@ -119,6 +119,13 @@
       ? import("./lib/legal/LegalPage.svelte").then((m) => m.default)
       : null
   );
+
+  // Lazy for the same reason: only someone who followed an invite link pays for it.
+  const invitePagePromise = $derived(
+    router.route === "invite"
+      ? import("./lib/landing/InviteLanding.svelte").then((m) => m.default)
+      : null
+  );
 </script>
 
 {#if router.route === "legal"}
@@ -127,6 +134,16 @@
   {:then Comp}
     {#if Comp}
       <Comp doc={router.params.doc ?? "index"} />
+    {/if}
+  {:catch}
+    <div class="surface-loading surface-error">Failed to load. Please refresh.</div>
+  {/await}
+{:else if router.route === "invite"}
+  {#await invitePagePromise}
+    <div class="surface-loading">Loading…</div>
+  {:then Comp}
+    {#if Comp}
+      <Comp token={router.params.token ?? ""} />
     {/if}
   {:catch}
     <div class="surface-loading surface-error">Failed to load. Please refresh.</div>
