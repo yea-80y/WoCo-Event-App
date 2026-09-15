@@ -15,6 +15,7 @@
    * Globally mounted (App.svelte); opened via gate.request().
    */
   import { gate } from "./gate.svelte.js";
+  import { unlocksWhen } from "./unlock-copy.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
 
@@ -74,7 +75,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="backdrop" onclick={(e) => e.target === e.currentTarget && close()}></div>
 
-  <div class="modal" role="dialog" aria-modal="true" aria-label="Add a ticket">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="Unlock your account">
     <div class="modal-head">
       <div class="head-text">
         <span class="kicker">Unlock</span>
@@ -82,7 +83,7 @@
           {#if phase === "done"}
             {alreadyUnlocked ? "You're all set" : "Unlocked"}
           {:else}
-            Add a ticket first
+            Not unlocked yet
           {/if}
         </span>
       </div>
@@ -94,8 +95,8 @@
     {#if phase === "info"}
       <div class="body">
         <p class="desc">
-          Your name, photo and bio unlock once a ticket is in your account. Open
-          the email with your ticket and tap <strong>Add to WoCo</strong>.
+          {unlocksWhen("Your name, photo and bio", true)} Got a ticket? Open its
+          email and tap <strong>Add to WoCo</strong>.
         </p>
         <p class="desc">
           Bought it while signed in? It went into that account, so sign in with

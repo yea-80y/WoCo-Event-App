@@ -43,9 +43,11 @@ test("nothing to say before the read has answered", () => {
   assert.equal(inviteStatusText(null), null);
 });
 
-test("only an organiser unlock turns the Studio link on", () => {
+test("an organiser or Stripe unlock turns the Studio link on; a ticket or an invite does not", () => {
   assert.equal(organisesFromUnlock("organiser"), true);
+  assert.equal(organisesFromUnlock("stripe"), true);
   assert.equal(organisesFromUnlock("ticket"), false);
+  assert.equal(organisesFromUnlock("referral"), false);
   assert.equal(organisesFromUnlock("disabled"), false);
   assert.equal(organisesFromUnlock(undefined), false);
 });
