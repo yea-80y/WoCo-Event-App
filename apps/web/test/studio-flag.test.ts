@@ -20,7 +20,9 @@ g.localStorage = storage;
 
 const { markStudio, hasStudio } = await import("../src/lib/auth/studio-flag.js");
 
-const ALICE = "0x1111111111111111111111111111111111111111";
+// Hex letters on purpose: an all-digit address reads the same in any case, so
+// the case test could never fail against it.
+const ALICE = "0xabcdef1111111111111111111111111111111111";
 const BOB = "0x2222222222222222222222222222222222222222";
 
 beforeEach(() => {
