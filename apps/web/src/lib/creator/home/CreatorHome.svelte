@@ -18,7 +18,7 @@
   import DiscardNameDialog from "../builder/DiscardNameDialog.svelte";
   import { discardPlanFor } from "../../sub-ens/discard-availability.js";
   import { onboarding } from "./onboarding.svelte.js";
-  import { markStudio } from "../../auth/studio-flag.js";
+  import { studioRole } from "../../auth/studio-role.svelte.js";
   import { canProtectAccount } from "../../auth/backup-prompt.js";
   import WelcomeModal from "./WelcomeModal.svelte";
   import GettingStartedCard from "./GettingStartedCard.svelte";
@@ -210,10 +210,10 @@
 
   onDestroy(() => clearInterval(clockTimer));
 
-  // Remember on this device that the account organises, so the member shell
-  // offers a Studio link. Display only — nothing is gated on it.
+  // Remember on this device that the account organises, so WoCo shows the way
+  // back into Studio. Display only — nothing is gated on it.
   $effect(() => {
-    if (events.length > 0 || sites.length > 0 || stripeReady === true) markStudio(auth.parent);
+    if (events.length > 0 || sites.length > 0 || stripeReady === true) studioRole.mark(auth.parent);
   });
 
   // Drive data loading off auth.parent so sign-in, sign-out and account

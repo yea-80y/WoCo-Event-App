@@ -2,9 +2,10 @@
  * Whether this device has seen the account act as an organiser: a Stripe
  * account, an event, a site, or a tap on "Start hosting".
  *
- * It only decides what the member shell OFFERS (a Studio link in the top bar).
- * Nothing is gated on it — every organiser route and API still checks for
- * itself — so a stale or missing flag costs a link, never access.
+ * It decides whether WoCo offers the way into Studio (the top-bar link and the
+ * Home row), through `studio-role.svelte.ts`. Nothing is gated on it — every
+ * organiser route and API still checks for itself — so a stale or missing flag
+ * costs a link, never access.
  *
  * Dependency-free, so it runs under the plain-tsx suite and costs the boot
  * chunk a few lines.

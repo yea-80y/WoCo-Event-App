@@ -17,7 +17,7 @@
   import { loginRequest } from "../auth/login-request.svelte.js";
   import { navigate } from "../router/router.svelte.js";
   import { classifyRefToken } from "../campaign/referral-capture.js";
-  import { markStudio } from "../auth/studio-flag.js";
+  import { studioRole } from "../auth/studio-role.svelte.js";
   import WocoWordmark from "../components/brand/WocoWordmark.svelte";
   import CohortStamp from "../components/campaign/CohortStamp.svelte";
 
@@ -53,7 +53,7 @@
       const ok = await loginRequest.request({ context: "invite" });
       if (!ok) return;
     }
-    markStudio(auth.parent);
+    studioRole.mark(auth.parent);
     navigate("/creator");
   }
 
