@@ -7,9 +7,10 @@
   has already stored the invite by the time this renders, so browsing away
   keeps it.
 
-  The inviter is read from the link itself rather than from storage, so the
-  name cannot race the router's write. Only a WoCo name is shown — never an
-  account address (owner decision, 2026-09-14).
+  The inviter is named only once a lookup confirms the name exists, so a link
+  carrying a mistyped or unregistered name never credits someone who isn't
+  there. Only a WoCo name is shown — never an account address (owner decision,
+  2026-09-14).
 -->
 <script lang="ts">
   import { auth } from "../auth/auth-store.svelte.js";
@@ -27,7 +28,23 @@
 
   const link = $derived(classifyRefToken(token));
   const invited = $derived(link.kind !== "invalid");
-  const inviterName = $derived(link.kind === "name" ? `${link.label}.woco.eth` : null);
+  // A second lookup of the name the router is also resolving: one cheap request,
+  // and this page never depends on which of the two finishes first. A lookup
+  // nobody answered shows no name rather than an unconfirmed one.
+  let inviterName = $state<string | null>(null);
+  $effect(() => {
+    const current = link;
+    inviterName = null;
+    if (current.kind !== "name") return;
+    let live = true;
+    import("../api/sub-ens.js")
+      .then((m) => m.resolveSubEnsAddress(current.label))
+      .then((res) => {
+        if (live && res.status === "found") inviterName = `${current.label}.woco.eth`;
+      })
+      .catch(() => { /* no name shown */ });
+    return () => { live = false; };
+  });
 
   const signedIn = $derived(auth.ready && auth.isConnected && !!auth.parent);
 
@@ -70,14 +87,14 @@
   <main class="body">
     {#if invited}
       <section class="card-invite" aria-label="Your invitation">
-        <p class="card-label">Invitation</p>
-        {#if inviterName}
-          <p class="card-name">{inviterName}</p>
-          <p class="card-line">invited you to host your events on WoCo.</p>
-        {:else}
-          <p class="card-name">You've been invited</p>
-          <p class="card-line">to host your events on WoCo.</p>
-        {/if}
+        <div class="card-top">
+          <p class="card-label">Invitation</p>
+          {#if inviterName}
+            <p class="card-from">from {inviterName}</p>
+          {/if}
+        </div>
+        <p class="card-name">You've been invited</p>
+        <p class="card-line">to host your events on WoCo.</p>
         <div class="card-foot">
           <span class="card-stamp"><CohortStamp epoch={0} size={44} /></span>
           <p>Verify with Stripe and you both get the early adopter stamp.</p>
@@ -172,7 +189,25 @@
     color: var(--accent-ink);
     border-radius: var(--radius-md);
   }
-  .card-label { margin: 0 0 0.625rem; font-size: 0.75rem; font-weight: 600; opacity: 0.7; }
+  /* The top row holds its height before the name arrives, so confirming the
+     inviter never shifts the card. */
+  .card-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    min-height: 1.25rem;
+    margin-bottom: 0.625rem;
+  }
+  .card-label { margin: 0; font-size: 0.75rem; font-weight: 600; opacity: 0.7; }
+  .card-from {
+    margin: 0;
+    min-width: 0;
+    font-size: 0.8125rem;
+    font-weight: 700;
+    text-align: right;
+    overflow-wrap: anywhere;
+  }
   .card-name {
     margin: 0;
     font-family: var(--font-display);
