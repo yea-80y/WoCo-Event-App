@@ -3,7 +3,7 @@
   import { auth } from "../auth/auth-store.svelte.js";
   import { loginRequest } from "../auth/login-request.svelte.js";
   import { router, navigate } from "../router/router.svelte.js";
-  import { hasStudio } from "../auth/studio-flag.js";
+  import { studioRole } from "../auth/studio-role.svelte.js";
   import { inviteSheet } from "../campaign/invite-sheet.svelte.js";
   import { gate } from "../attendee/gate/gate.svelte.js";
   import { organisesFromUnlock } from "../attendee/home/member-state.js";
@@ -20,9 +20,10 @@
   let { children }: Props = $props();
 
   const signedIn = $derived(auth.ready && auth.isConnected && !!auth.parent);
-  // Display only: every organiser route checks for itself.
+  // WoCo is the same for every account; an organiser also gets the way into
+  // Studio. Display only: every organiser route checks for itself.
   const showStudio = $derived(
-    signedIn && (hasStudio(auth.parent) || organisesFromUnlock(gate.status?.via)),
+    signedIn && (studioRole.isOrganiser || organisesFromUnlock(gate.status?.via)),
   );
 
   const isHome = $derived(router.route === "member-home");

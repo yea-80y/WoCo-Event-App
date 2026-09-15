@@ -20,7 +20,7 @@
   import { gate } from "../gate/gate.svelte.js";
   import { inviteSheet } from "../../campaign/invite-sheet.svelte.js";
   import type { ReferrerIndexRead } from "../../campaign/records.js";
-  import { markStudio } from "../../auth/studio-flag.js";
+  import { studioRole } from "../../auth/studio-role.svelte.js";
   import { profileLabel } from "../../sub-ens/roles.js";
   import PassportTicket from "../passport/PassportTicket.svelte";
   import { passportState } from "../passport/passport-state.svelte.js";
@@ -70,9 +70,9 @@
   });
 
   // An organiser unlock proves the account organises even on a device that has
-  // never opened the studio; remember it so the Studio link stays next visit.
+  // never opened Studio; from then on WoCo shows the way into Studio.
   $effect(() => {
-    if (organisesFromUnlock(gate.status?.via)) markStudio(auth.parent);
+    if (organisesFromUnlock(gate.status?.via)) studioRole.mark(auth.parent);
   });
 
   const inviteStatus = $derived(inviteStatusText(inviteRead));
@@ -80,7 +80,7 @@
   const showBackup = $derived(needsBackupPrompt(auth.kind, backupRead));
 
   function startHosting() {
-    markStudio(auth.parent);
+    studioRole.mark(auth.parent);
     navigate("/creator");
   }
 </script>
@@ -157,11 +157,19 @@
     {/if}
 
     <div class="row">
-      <div class="row-text">
-        <strong>Run events?</strong>
-        <span>Sell tickets from your own page.</span>
-      </div>
-      <button class="btn btn--ghost row-btn" onclick={startHosting}>Start hosting</button>
+      {#if studioRole.isOrganiser}
+        <div class="row-text">
+          <strong>Your Studio</strong>
+          <span>Your events, sites and payouts.</span>
+        </div>
+        <button class="btn btn--ghost row-btn" onclick={() => navigate("/creator")}>Open Studio</button>
+      {:else}
+        <div class="row-text">
+          <strong>Run events?</strong>
+          <span>Sell tickets from your own page.</span>
+        </div>
+        <button class="btn btn--ghost row-btn" onclick={startHosting}>Start hosting</button>
+      {/if}
     </div>
   {/if}
 </div>

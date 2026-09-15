@@ -7,6 +7,7 @@
   import TicketGateModal from "./lib/attendee/gate/TicketGateModal.svelte";
   import Splitter from "./lib/landing/Splitter.svelte";
   import AttendeeApp from "./AttendeeApp.svelte";
+  import { studioRole } from "./lib/auth/studio-role.svelte.js";
   import { bootRedirectFor } from "./lib/sub-ens/host-label.js";
   import { onMount } from "svelte";
 
@@ -103,6 +104,20 @@
         refSettleInFlight = false;
       }
     })();
+  });
+
+  // A device that has never opened Studio learns the account organises from its
+  // public event list, so WoCo shows the way into Studio there too.
+  // Unauthenticated, so it never prompts; one look per account per page load.
+  const organiserChecked = new Set<string>();
+  $effect(() => {
+    const parent = auth.ready ? auth.parent?.toLowerCase() : undefined;
+    if (!parent || studioRole.isOrganiser || organiserChecked.has(parent)) return;
+    organiserChecked.add(parent);
+    import("./lib/api/events.js")
+      .then((m) => m.getEventsByCreatorResult(parent))
+      .then((resp) => { if (resp.ok && (resp.data?.length ?? 0) > 0) studioRole.mark(parent); })
+      .catch(() => { /* no Studio link until Studio is opened on this device */ });
   });
 
   // Lazy-load the creator bundle — attendees never download builder/dashboard code.
