@@ -4,6 +4,19 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## Add to WoCo is offered whenever the automatic add did not land (#582, 2026-09-15)
+
+A signed-in buyer's first ticket is added to their account at fulfilment, and the ticket
+email left the Add to WoCo button out for a signed-in single-ticket order on the assumption
+that it had. The add is an accessory that may throw or be refused, and the email button is
+its only fallback, so `mintV2` now reports whether the binding landed and the email offers
+the button exactly when something is left to add: every ticket of an anonymous order, the
+other tickets of a group order, and the first ticket when the add failed. A ticket that was
+added still goes without it. Chosen over "always show the button" so the email never sends
+a buyer to a page that says the ticket is already there.
+
+---
+
 ## The member route: one WoCo app for every account, Studio as a workspace (#577–#580, #584–#586, 2026-09-15)
 
 Members join mostly to share an invite, so the signed-in app was rebuilt around that: a bottom bar

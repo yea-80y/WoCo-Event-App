@@ -174,6 +174,8 @@ interface FakeOpts {
   revertAtChunk?: number;
   /** Ticket index at which signMessage throws (with fail = "signMessage"). Default 0. */
   signFailAt?: number;
+  /** What bindTicket answers. Default true; false = the store already holds this edition. */
+  bindReturns?: boolean;
 }
 
 function fakeDeps(o: FakeOpts = {}) {
@@ -265,6 +267,7 @@ function fakeDeps(o: FakeOpts = {}) {
     onChainBatchMax: o.batchMax ?? 100,
     bindTicket: (b) => {
       boom("bindTicket");
+      if (o.bindReturns === false) return false;
       bindings.push(b as unknown as Record<string, unknown>);
       return true;
     },
@@ -466,6 +469,30 @@ describe("happy path", () => {
     const { f } = await run({ quantity: 1, wallet: BUYER_WALLET });
     assert.equal(f.bindings.length, 1);
     assert.equal(f.emails[0].profileCta, false);
+  });
+
+  // #582: the automatic add is an accessory that may fail; the email button is
+  // its only fallback, and for this order shape it used to be left out.
+  test("single ticket for a signed-in buyer whose automatic add throws: the email offers Add to WoCo", async () => {
+    const { f, outcome } = await run({ quantity: 1, wallet: BUYER_WALLET }, { fail: "bindTicket" });
+    assert.equal(outcome.issued, 1);
+    assert.equal(outcome.refund.kind, "not-needed");
+    assert.equal(outcome.email, "sent");
+    assert.equal(f.bindings.length, 0);
+    assert.equal(f.emails[0].profileCta, true, "nothing was added, so the email must offer to");
+  });
+
+  test("single ticket for a signed-in buyer whose automatic add is refused: the email offers Add to WoCo", async () => {
+    const { f } = await run({ quantity: 1, wallet: BUYER_WALLET }, { bindReturns: false });
+    assert.equal(f.bindings.length, 0);
+    assert.equal(f.emails[0].profileCta, true);
+  });
+
+  test("a group order for a signed-in buyer keeps the per-ticket links whether or not the first was added", async () => {
+    const { f: added } = await run({ quantity: 2, wallet: BUYER_WALLET });
+    assert.equal(added.emails[0].profileCta, true);
+    const { f: notAdded } = await run({ quantity: 2, wallet: BUYER_WALLET }, { fail: "bindTicket" });
+    assert.equal(notAdded.emails[0].profileCta, true);
   });
 
   test("an in-flight session carrying a legacy holderPubKey binds WITHOUT one", async () => {
