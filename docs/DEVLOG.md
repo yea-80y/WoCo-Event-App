@@ -4,6 +4,30 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## The member route: one WoCo app for every account, Studio as a workspace (#577–#580, #584–#586, 2026-09-15)
+
+Members join mostly to share an invite, so the signed-in app was rebuilt around that: a bottom bar
+(Home · Events · Invite · Contacts · Profile); an Invite sheet with a scannable code; invite links
+(`#/ref/:token`) that open their own page on the canonical host, never a gateway URL; Contacts with
+verified invites and follows; Home with the next ticket, the invite and the name; and a Passport tab
+in Profile that lists linked tickets and never opens on a signing prompt. The old My Tickets screen
+read a feed nothing has written since #268, and is deleted.
+
+Adding a ticket has one name end to end: the email button and its page say "Add to WoCo", the ticket
+lands in the passport, and it unlocks the name, photo and bio. A buyer signed in at checkout already
+gets their first ticket added at fulfilment. Expired or broken links no longer point at the deleted
+ticket-proof form, or promise an organiser resend that does not exist.
+
+Navigation (owner decision): WoCo is the same app for every account, organisers included, and Studio
+is a workspace an organiser steps into. WoCo shows an organiser a Studio link on any device (device
+flag, organiser unlock, or the public by-creator event list, which never prompts), and Studio's back
+button returns to WoCo Home. Rejected: drawing shared pages in the Studio layout for organisers.
+
+Open: #575 (unlock on Stripe verification or a confirmed invite), #582, #583, #581, #576; organiser
+sites still show the old purchase confirmation and return buyers to the app (#567).
+
+---
+
 ## /api/health learns to watch postage and the paymaster (#421 + #522, 2026-09-11) Gate (Fable): sections publish a failure CLASS (`rpc SERVER_ERROR`, `HTTP 404`, `timed out`), never library text — ethers 6 embeds the keyed RPC URL in a SERVER_ERROR message; the raw text goes to the server log on transitions only.
 
 Three postage batches died or nearly died in five weeks and every one was found by hand: a
