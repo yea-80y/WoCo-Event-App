@@ -13,7 +13,7 @@
  *     /contacts                    contacts (who a member invited and follows)
  *     /discover                    discover (events feed — was at /)
  *     /event/:id                   event
- *     /tickets   (and /my-tickets) my-tickets
+ *     /tickets   (and /my-tickets) profile, passport tab
  *     /verify                      verify
  *     /signup                      signup (email-CTA landing; ?gt= gate token)
  *     /profile, /profile/:addr     profile
@@ -133,7 +133,8 @@ function matchRoute(pathWithQuery: string): Match {
   if (path === "/home") return { route: "member-home", params: {}, surface: "attendee" };
   if (path === "/contacts") return { route: "contacts", params: {}, surface: "attendee" };
   if (path === "/discover") return { route: "discover", params: {}, surface: "attendee" };
-  if (path === "/tickets" || path === "/my-tickets") return { route: "my-tickets", params: {}, surface: "attendee" };
+  // Tickets live in the Profile passport; these paths open it on that tab.
+  if (path === "/tickets" || path === "/my-tickets") return { route: "profile", params: { tab: "passport" }, surface: "attendee" };
   if (path === "/verify") return { route: "verify", params: {}, surface: "attendee" };
   if (path === "/signup") {
     const gt = new URLSearchParams(query).get("gt");

@@ -6,7 +6,7 @@
   import { isTicketRequired } from "../../api/attendee-gate.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
-  import { setExternalEventApi, setEventFeedSigner } from "../../api/event-api-registry.js";
+  import { openEvent } from "../../attendee/events/open-event.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { authPost, authGet } from "../../api/client.js";
   import { rememberLabel } from "../../profile/label-cache.js";
@@ -21,6 +21,7 @@
   import { readBadge } from "../../campaign/records.js";
   import type { BadgeV1, Hex0x } from "@woco/shared";
   import WalletTab from "./WalletTab.svelte";
+  import PassportTab from "../../attendee/passport/PassportTab.svelte";
   import SubENSPicker from "../../creator/builder/SubENSPicker.svelte";
   import DiscardNameDialog from "../../creator/builder/DiscardNameDialog.svelte";
   import LikeButton from "../likes/LikeButton.svelte";
@@ -30,13 +31,15 @@
   import { isPastEvent } from "../../utils/events.js";
   import { onMount, onDestroy } from "svelte";
 
-  type ProfileTab = "profile" | "wallet" | "events";
+  type ProfileTab = "profile" | "passport" | "wallet" | "events";
 
   interface Props {
     address?: string;
+    /** "passport" opens on the passport (`#/tickets`). */
+    tab?: string;
   }
 
-  let { address: propAddress }: Props = $props();
+  let { address: propAddress, tab: propTab }: Props = $props();
 
   const viewAddress = $derived(propAddress?.toLowerCase() || auth.parent?.toLowerCase() || "");
 
@@ -96,6 +99,10 @@
   let eventsNow = $state(Date.now());
   let eventsClockTimer: ReturnType<typeof setInterval>;
   let activeTab = $state<ProfileTab>("profile");
+  // Follows the route, so leaving `#/tickets` for your profile lands on Profile.
+  $effect(() => {
+    activeTab = propTab === "passport" ? "passport" : "profile";
+  });
   let addressCopied = $state(false);
   let revokingAll = $state(false);
   let revokeSuccess = $state(false);
@@ -415,12 +422,6 @@
       .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime()),
   );
 
-  function openEvent(event: EventDirectoryEntry) {
-    if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
-    setEventFeedSigner(event.eventId, event.creatorFeedSigner);
-    navigate(`/event/${event.eventId}`);
-  }
-
   function switchTab(tab: ProfileTab) {
     activeTab = tab;
     if (tab === "events" && !eventsLoaded) loadEvents();
@@ -644,6 +645,13 @@
         role="tab"
         aria-selected={activeTab === "profile"}
       >Profile</button>
+      <button
+        class="tab-btn"
+        class:tab-active={activeTab === "passport"}
+        onclick={() => switchTab("passport")}
+        role="tab"
+        aria-selected={activeTab === "passport"}
+      >Passport</button>
       <button
         class="tab-btn"
         class:tab-active={activeTab === "wallet"}
@@ -885,6 +893,12 @@
           </div>
         </section>
 
+      </div>
+    {/if}
+
+    {#if activeTab === "passport"}
+      <div class="tab-body">
+        <PassportTab {badge} />
       </div>
     {/if}
 

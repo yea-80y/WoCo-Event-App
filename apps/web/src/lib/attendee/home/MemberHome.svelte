@@ -1,28 +1,37 @@
 <!--
-  MemberHome — a signed-in member's home: their invite first, because sharing
-  it is what most people join for at launch; then their name; then the way into
-  hosting.
+  MemberHome — a signed-in member's home. A ticket for something coming up goes
+  first, because on the day it is what they opened the app for; then their
+  invite, since sharing it is what most people join for at launch; then their
+  name; then anything left to do.
 
   Every read here is prompt-free. The referral index is public on Swarm, and the
-  two authenticated reads (unlock status, owned names) run only when a session
-  is already on this device — a home screen must never open on a signing prompt.
-  What each block says is decided in `member-state.ts`, where the suite pins it.
+  authenticated reads (unlock status, owned names) run only when a session is
+  already on this device — a home screen must never open on a signing prompt.
+  What each block says is decided in `member-state.ts`, `passport.ts` and
+  `backup-prompt.ts`, where the suite pins it.
 -->
 <script lang="ts">
   import type { Hex0x } from "@woco/shared";
   import { untrack } from "svelte";
-  import { auth } from "../../auth/auth-store.svelte.js";
+  import { auth, type BackupInventoryRead } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
+  import { canProtectAccount, needsBackupPrompt } from "../../auth/backup-prompt.js";
   import { navigate } from "../../router/router.svelte.js";
   import { gate } from "../gate/gate.svelte.js";
   import { inviteSheet } from "../../campaign/invite-sheet.svelte.js";
   import type { ReferrerIndexRead } from "../../campaign/records.js";
   import { markStudio } from "../../auth/studio-flag.js";
   import { profileLabel } from "../../sub-ens/roles.js";
+  import PassportTicket from "../passport/PassportTicket.svelte";
+  import { passportState } from "../passport/passport-state.svelte.js";
   import { inviteStatusText, nameStateFrom, organisesFromUnlock } from "./member-state.js";
 
   let inviteRead = $state<ReferrerIndexRead | null>(null);
   let profileName = $state<string | null>(null);
+  let backupRead = $state<BackupInventoryRead | null>(null);
+
+  const passport = passportState();
+  const nextTicket = $derived(passport.tickets.upcoming[0] ?? null);
 
   $effect(() => {
     const parent = auth.parent?.toLowerCase() as Hex0x | undefined;
@@ -49,6 +58,17 @@
     return () => { current = false; };
   });
 
+  $effect(() => {
+    const parent = auth.parent;
+    backupRead = null;
+    if (!parent || !canProtectAccount(auth.kind)) return;
+    let current = true;
+    auth.getBackupInventory()
+      .then((read) => { if (current) backupRead = read; })
+      .catch(() => { if (current) backupRead = { status: "unavailable" }; });
+    return () => { current = false; };
+  });
+
   // An organiser unlock proves the account organises even on a device that has
   // never opened the studio; remember it so the Studio link stays next visit.
   $effect(() => {
@@ -57,6 +77,7 @@
 
   const inviteStatus = $derived(inviteStatusText(inviteRead));
   const nameState = $derived(nameStateFrom(profileName, gate.status));
+  const showBackup = $derived(needsBackupPrompt(auth.kind, backupRead));
 
   function startHosting() {
     markStudio(auth.parent);
@@ -75,6 +96,16 @@
     </section>
   {:else}
     <h1 class="sr-only">Home</h1>
+
+    {#if nextTicket}
+      <section class="next">
+        <div class="next-head">
+          <h2 class="section-label">Next up</h2>
+          <button class="btn btn--text next-all" onclick={() => navigate("/tickets")}>All tickets</button>
+        </div>
+        <PassportTicket ticket={nextTicket} now={passport.now} size="large" />
+      </section>
+    {/if}
 
     <section class="invite">
       <h2 class="invite-title">Know someone who runs events?</h2>
@@ -112,12 +143,22 @@
       </section>
     {/if}
 
-    <div class="hosting">
-      <div class="hosting-text">
+    {#if showBackup}
+      <div class="row">
+        <div class="row-text">
+          <strong>Back up your account</strong>
+          <span>So you can get back in if you lose access.</span>
+        </div>
+        <button class="btn btn--ghost row-btn" onclick={() => navigate("/protect")}>Set up</button>
+      </div>
+    {/if}
+
+    <div class="row">
+      <div class="row-text">
         <strong>Run events?</strong>
         <span>Sell tickets from your own page.</span>
       </div>
-      <button class="btn btn--ghost hosting-btn" onclick={startHosting}>Start hosting</button>
+      <button class="btn btn--ghost row-btn" onclick={startHosting}>Start hosting</button>
     </div>
   {/if}
 </div>
@@ -133,6 +174,15 @@
     letter-spacing: -0.035em;
     text-wrap: balance;
   }
+
+  .next { margin-bottom: 2.25rem; }
+  .next-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+  .next-all { font-size: 0.8125rem; }
 
   .invite { margin-bottom: 2.25rem; }
   .invite-title {
@@ -167,16 +217,17 @@
   }
   .note { margin: 0 0 0.875rem; font-size: 0.875rem; color: var(--text-secondary); max-width: 40ch; }
 
-  .hosting {
+  .row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
     padding-block: 0.875rem;
-    border-block: 1px solid var(--border);
+    border-top: 1px solid var(--border);
   }
-  .hosting-text { min-width: 0; }
-  .hosting-text strong { display: block; font-size: 0.9375rem; font-weight: 600; }
-  .hosting-text span { display: block; font-size: 0.8125rem; color: var(--text-muted); }
-  .hosting-btn { flex: none; padding: 0.5rem 0.875rem; font-size: 0.8125rem; }
+  .row:last-child { border-bottom: 1px solid var(--border); }
+  .row-text { min-width: 0; }
+  .row-text strong { display: block; font-size: 0.9375rem; font-weight: 600; }
+  .row-text span { display: block; font-size: 0.8125rem; color: var(--text-muted); }
+  .row-btn { flex: none; padding: 0.5rem 0.875rem; font-size: 0.8125rem; }
 </style>
