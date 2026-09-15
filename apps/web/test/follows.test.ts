@@ -44,3 +44,10 @@ test("a subject that is not an account never becomes a row", () => {
   const eventSubject = socialEventSubject(`0x${"ab".repeat(32)}`);
   assert.deepEqual(followsFromReads([eventSubject], [statement(eventSubject, true)]).accounts, []);
 });
+
+test("bytes that are not a follow statement are not a follow", () => {
+  // Right subject, value true, but no format: foreign bytes at the topic. Only
+  // schema validation stands between this and a row.
+  const foreign = { status: "found" as const, value: { subject: subjectA, value: true } };
+  assert.deepEqual(followsFromReads([subjectA], [foreign]), { accounts: [], unreadable: 0 });
+});
