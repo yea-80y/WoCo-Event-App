@@ -9,6 +9,7 @@
  *     /ref/:token                  invite (an invite link: stores the invite, shows who sent it)
  *
  *   ATTENDEE surface
+ *     /home                        member-home (a signed-in member's home)
  *     /discover                    discover (events feed — was at /)
  *     /event/:id                   event
  *     /tickets   (and /my-tickets) my-tickets
@@ -128,6 +129,7 @@ function matchRoute(pathWithQuery: string): Match {
   if (creatorProfileMatch) return { route: "profile", params: { address: creatorProfileMatch[1] }, surface: "creator" };
 
   // ── Attendee surface ────────────────────────────────────────────────────
+  if (path === "/home") return { route: "member-home", params: {}, surface: "attendee" };
   if (path === "/discover") return { route: "discover", params: {}, surface: "attendee" };
   if (path === "/tickets" || path === "/my-tickets") return { route: "my-tickets", params: {}, surface: "attendee" };
   if (path === "/verify") return { route: "verify", params: {}, surface: "attendee" };

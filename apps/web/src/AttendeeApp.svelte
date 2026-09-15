@@ -23,6 +23,7 @@
   const loadRecoverPortal = () => import("./lib/components/recovery/AccountRecoverPortal.svelte");
   const loadSignupLanding = () => import("./lib/attendee/gate/SignupLanding.svelte");
   const loadCoasterPage = () => import("./lib/credits/CoasterPage.svelte");
+  const loadMemberHome = () => import("./lib/attendee/home/MemberHome.svelte");
 
   // Warm the chunks behind the bottom-nav destinations once the landing
   // screen is idle, so first navigation doesn't pay a cold Swarm fetch.
@@ -43,6 +44,8 @@
 <AttendeeShell>
   {#if router.route === "home" || router.route === "discover"}
     <Home />
+  {:else if router.route === "member-home"}
+    <LazyRoute loader={loadMemberHome} />
   {:else if router.route === "event"}
     <!--
       Keyed on the event id so a hash change from one event to another builds a

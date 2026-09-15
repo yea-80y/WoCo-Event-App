@@ -1,6 +1,12 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
 
+  interface Props {
+    /** A plain "Sign out" button: the member shell puts no account address on screen. */
+    compact?: boolean;
+  }
+  let { compact = false }: Props = $props();
+
   let signingOut = $state(false);
   let signOutError = $state<string | null>(null);
 
@@ -30,15 +36,21 @@
 </script>
 
 {#if auth.isConnected && auth.parent}
-  <div class="session-status">
-    <span class="kind-badge">{kindLabel}</span>
-    <span class="address" title={auth.parent}>
-      {truncateAddress(auth.parent)}
-    </span>
-    <button class="action-btn logout-btn" onclick={handleSignOut} disabled={signingOut} title="Sign out">
-        &#10005;
+  {#if compact}
+    <button class="signout-text" onclick={handleSignOut} disabled={signingOut}>
+      {signingOut ? "Signing out…" : "Sign out"}
     </button>
-  </div>
+  {:else}
+    <div class="session-status">
+      <span class="kind-badge">{kindLabel}</span>
+      <span class="address" title={auth.parent}>
+        {truncateAddress(auth.parent)}
+      </span>
+      <button class="action-btn logout-btn" onclick={handleSignOut} disabled={signingOut} title="Sign out">
+          &#10005;
+      </button>
+    </div>
+  {/if}
   {#if signOutError}
     <p class="signout-error" role="alert">{signOutError}</p>
   {/if}
@@ -101,6 +113,16 @@
     border-color: var(--error);
     color: var(--error);
   }
+
+  .signout-text {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    white-space: nowrap;
+    transition: color var(--transition);
+  }
+  .signout-text:hover { color: var(--text); }
+  .signout-text:disabled { opacity: 0.6; cursor: default; }
 
   .signout-error {
     font-size: 0.6875rem;
