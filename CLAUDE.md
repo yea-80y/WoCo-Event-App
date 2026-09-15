@@ -165,7 +165,7 @@ what is already on the device. `ensureIssuingKey()` (`lib/auth/issuing-key.ts`) 
 seed + derivation — FAIL LOUD when no seed, never another signer.
 
 Global login popup pattern: `loginRequest.request() → Promise<boolean>` — opens
-`LoginModal` from any component. Used by ClaimButton, PublishButton, MyTickets, nav.
+`LoginModal` from any component. Used by ClaimButton, PublishButton, nav.
 
 CANONICAL REQUEST SIGNING (auth v2, 2026-04-09):
 
@@ -373,7 +373,7 @@ FRONTEND COMPONENTS:
   apps/web/src/lib/components/auth/{LoginModal,SigningConfirmDialog}.svelte
   apps/web/src/lib/attendee/events/{ClaimButton,EventCard,EventDetail}.svelte
   apps/web/src/lib/creator/events/PublishButton.svelte
-  apps/web/src/lib/attendee/passport/MyTickets.svelte
+  apps/web/src/lib/attendee/passport/{PassportTab,PassportTicket}.svelte
   apps/web/src/lib/creator/dashboard/Dashboard.svelte
   apps/web/src/lib/creator/embed/EmbedSetup.svelte
   apps/web/src/lib/components/profile/{ProfilePage,UserAvatar,CreatorChip,WalletTab,ConnectWalletModal}.svelte
@@ -501,7 +501,8 @@ SVELTE 5 / BEE-JS:
 
 RUNTIME:
 - Local account sign-out clears session but keeps keypair for re-login
-- `MyTickets` triggers `ensureSession` on mount (lazy EIP-712), not just on login
+- The passport (Profile tab, `#/tickets`) never prompts on open: its tickets are the unlock
+  status's linked tickets, read only when a session is already on the device
 - Embed widget is card-only (#141 decision): guest Stripe checkout, no wallet/passkey/account.
   Bump the `?v=` cache-buster (EmbedSetup + the frame page) whenever its behaviour changes
 - Web3 auth init: if the wallet isn't immediately available after redirect, session restores
