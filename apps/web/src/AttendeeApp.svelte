@@ -14,7 +14,6 @@
   const loadEventDetail = () => import("./lib/attendee/events/EventDetail.svelte");
   const loadEventPage = () => import("./lib/components/site/EventPage.svelte");
   const loadEventPurchased = () => import("./lib/attendee/events/EventPurchased.svelte");
-  const loadMyTickets = () => import("./lib/attendee/passport/MyTickets.svelte");
   const loadVerifyTicket = () => import("./lib/attendee/passport/VerifyTicket.svelte");
   const loadProfilePage = () => import("./lib/components/profile/ProfilePage.svelte");
   const loadShopTapScreen = () => import("./lib/attendee/shop/ShopTapScreen.svelte");
@@ -31,7 +30,6 @@
   onMount(() => {
     const warm = () => {
       void loadEventDetail();
-      void loadMyTickets();
       void loadProfilePage();
     };
     if ("requestIdleCallback" in window) {
@@ -80,14 +78,12 @@
     {/key}
   {:else if router.route === "event-purchased"}
     <LazyRoute loader={loadEventPurchased} props={{ eventId: router.params.id }} />
-  {:else if router.route === "my-tickets"}
-    <LazyRoute loader={loadMyTickets} />
   {:else if router.route === "verify"}
     <LazyRoute loader={loadVerifyTicket} />
   {:else if router.route === "signup"}
     <LazyRoute loader={loadSignupLanding} props={{ token: router.params.gt }} />
   {:else if router.route === "profile"}
-    <LazyRoute loader={loadProfilePage} props={{ address: router.params.address }} />
+    <LazyRoute loader={loadProfilePage} props={{ address: router.params.address, tab: router.params.tab }} />
   {:else if router.route === "coaster"}
     <LazyRoute loader={loadCoasterPage} props={{ subject: router.params.subject }} />
   {:else if router.route === "soon"}
