@@ -17,6 +17,8 @@ import { auth } from "../auth/auth-store.svelte.js";
 import { readContentFeedResult, readBandedContentFeed } from "../swarm/content-feed.js";
 import { writeContentFeedVerified, type VerifiedWriteResult } from "../swarm/verified-write.js";
 import { addToSubjectIndex } from "./subject-index.js";
+import { followsFromReads } from "./follows.js";
+import { settleInBatches } from "../utils/settle-in-batches.js";
 import {
   LIKE_STATEMENT_FORMAT,
   FOLLOW_STATEMENT_FORMAT,
@@ -139,4 +141,36 @@ export async function readMySubjects(kind: SocialKind): Promise<Hex0x[]> {
   const res = await readBandedContentFeed<unknown>(signer.address, k.indexTopic);
   if (res.status !== "found" || !k.validateIndex(res.value)) return [];
   return (res.value as LikeSubjectIndexV1 | FollowSubjectIndexV1).subjects;
+}
+
+/** The accounts a user follows now — see `readMyFollowsIfReady`. */
+export type MyFollowsRead =
+  | { status: "found"; accounts: Hex0x[]; unreadable: number }
+  | { status: "unavailable" }
+  | { status: "not-ready" };
+
+/**
+ * The accounts this user currently follows, for a screen that must never raise
+ * a prompt: only a seed already on this device is used, and `not-ready` means
+ * there is none yet. `readMySubjects` cannot serve here — its signer getter
+ * prompts on web3 and passkey. The index never drops an account once followed,
+ * so each statement is read (four at a time) to leave out the ones unfollowed.
+ */
+export async function readMyFollowsIfReady(): Promise<MyFollowsRead> {
+  const k = KINDS.follow;
+  const signer = await auth.getContentFeedSignerIfPresent();
+  if (!signer) return { status: "not-ready" };
+  const index = await readBandedContentFeed<unknown>(signer.address, k.indexTopic);
+  if (index.status === "unavailable") return { status: "unavailable" };
+  if (index.status !== "found" || !k.validateIndex(index.value)) {
+    return { status: "found", accounts: [], unreadable: 0 };
+  }
+  const subjects = (index.value as FollowSubjectIndexV1).subjects;
+  const reads = await settleInBatches(subjects, 4, (subject) =>
+    readContentFeedResult<unknown>(signer.address, k.statementTopic(subject), { skipLegacy: true }),
+  );
+  const statements = reads.map((read) =>
+    read.status === "fulfilled" ? read.value : ({ status: "unavailable" } as const),
+  );
+  return { status: "found", ...followsFromReads(subjects, statements) };
 }

@@ -6,6 +6,7 @@
   Every read here is prompt-free. The referral index is public on Swarm, and the
   two authenticated reads (unlock status, owned names) run only when a session
   is already on this device — a home screen must never open on a signing prompt.
+  What each block says is decided in `member-state.ts`, where the suite pins it.
 -->
 <script lang="ts">
   import type { Hex0x } from "@woco/shared";
@@ -15,20 +16,23 @@
   import { navigate } from "../../router/router.svelte.js";
   import { gate } from "../gate/gate.svelte.js";
   import { inviteSheet } from "../../campaign/invite-sheet.svelte.js";
+  import type { ReferrerIndexRead } from "../../campaign/records.js";
   import { markStudio } from "../../auth/studio-flag.js";
+  import { profileLabel } from "../../sub-ens/roles.js";
+  import { inviteStatusText, nameStateFrom, organisesFromUnlock } from "./member-state.js";
 
-  let verifiedInvites = $state<number | null>(null);
+  let inviteRead = $state<ReferrerIndexRead | null>(null);
   let profileName = $state<string | null>(null);
 
   $effect(() => {
     const parent = auth.parent?.toLowerCase() as Hex0x | undefined;
-    verifiedInvites = null;
+    inviteRead = null;
     if (!parent) return;
     let current = true;
     import("../../campaign/records.js")
       .then((m) => m.readReferrerIndex(parent))
-      .then((referees) => { if (current) verifiedInvites = referees.length; })
-      .catch(() => { if (current) verifiedInvites = null; });
+      .then((read) => { if (current) inviteRead = read; })
+      .catch(() => { if (current) inviteRead = { status: "unavailable" }; });
     return () => { current = false; };
   });
 
@@ -40,34 +44,19 @@
     if (!untrack(() => gate.status)) void gate.refresh();
     import("../../api/sub-ens.js")
       .then((m) => m.getOwnedSubEns())
-      .then((resp) => {
-        if (current) profileName = resp.data?.names.find((n) => n.role === "profile")?.label ?? null;
-      })
+      .then((resp) => { if (current) profileName = profileLabel(resp.data?.names ?? []); })
       .catch(() => { /* the name block falls back to the unlock status */ });
     return () => { current = false; };
   });
 
-  // The count comes from confirmations only: the referrer index gains an entry
-  // when an invite verifies with Stripe, and nothing earlier is visible here.
-  const inviteStatus = $derived(
-    verifiedInvites === null
-      ? null
-      : verifiedInvites === 0
-        ? "No verified invites yet. People you invite show up once they verify with Stripe."
-        : verifiedInvites === 1
-          ? "1 verified invite."
-          : `${verifiedInvites} verified invites.`,
-  );
+  // An organiser unlock proves the account organises even on a device that has
+  // never opened the studio; remember it so the Studio link stays next visit.
+  $effect(() => {
+    if (organisesFromUnlock(gate.status?.via)) markStudio(auth.parent);
+  });
 
-  const nameState = $derived<"claimed" | "unlocked" | "locked" | "unknown">(
-    profileName
-      ? "claimed"
-      : gate.status === null
-        ? "unknown"
-        : gate.status.gated
-          ? "unlocked"
-          : "locked",
-  );
+  const inviteStatus = $derived(inviteStatusText(inviteRead));
+  const nameState = $derived(nameStateFrom(profileName, gate.status));
 
   function startHosting() {
     markStudio(auth.parent);
@@ -100,7 +89,7 @@
 
     {#if nameState !== "unknown"}
       <section class="block">
-        <h2 class="block-title">Your name</h2>
+        <h2 class="section-label">Your name</h2>
         {#if nameState === "claimed"}
           <p class="name">{profileName}<span class="tld">.woco.eth</span></p>
           <p class="note">Your name on WoCo, and the one your invite link uses.</p>
@@ -118,7 +107,7 @@
             <span class="blank" aria-hidden="true"></span><span class="tld">.woco.eth</span>
           </p>
           <p class="note">Your name, photo and bio unlock when you buy a ticket or put an event on sale.</p>
-          <button class="text-btn" onclick={() => navigate("/discover")}>Find an event</button>
+          <button class="btn btn--text" onclick={() => navigate("/discover")}>Find an event</button>
         {/if}
       </section>
     {/if}
@@ -135,18 +124,6 @@
 
 <style>
   .member-home { max-width: 34rem; padding-block: 0.5rem 1rem; }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-    border: 0;
-  }
 
   .signed-out { padding-block: 2rem; }
   .signed-out h1 {
@@ -170,14 +147,6 @@
   .status { margin: 0.875rem 0 0; font-size: 0.8125rem; color: var(--text-muted); max-width: 40ch; }
 
   .block { margin-bottom: 2rem; }
-  .block-title {
-    margin: 0 0 0.625rem;
-    font-size: 0.8125rem;
-    line-height: 1.2;
-    font-weight: 600;
-    letter-spacing: 0;
-    color: var(--text-secondary);
-  }
   .name {
     margin: 0 0 0.5rem;
     font-family: var(--font-display);
@@ -197,15 +166,6 @@
     vertical-align: -0.12em;
   }
   .note { margin: 0 0 0.875rem; font-size: 0.875rem; color: var(--text-secondary); max-width: 40ch; }
-  .text-btn {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--text);
-    text-decoration: underline;
-    text-decoration-color: var(--text-dim);
-    text-underline-offset: 4px;
-  }
-  .text-btn:hover { text-decoration-color: var(--accent); }
 
   .hosting {
     display: flex;

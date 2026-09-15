@@ -10,7 +10,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bindableNames, hidesProfileName, inviteLabel, roleLabel } from "../src/lib/sub-ens/roles.js";
+import { bindableNames, hidesProfileName, inviteLabel, profileLabel, roleLabel } from "../src/lib/sub-ens/roles.js";
 
 const NAMES = [
   { label: "nabil", role: "profile" as const },
@@ -69,4 +69,11 @@ test("without a profile name the invite link uses the first name alphabetically"
 
 test("no names means no name in the invite link", () => {
   assert.equal(inviteLabel([]), null);
+});
+
+test("profileLabel picks the profile name and nothing else", () => {
+  assert.equal(profileLabel(NAMES), "nabil");
+  // Other roles and role-less names are never mistaken for the profile name.
+  assert.equal(profileLabel([{ label: "punkpub", role: "url" as const }, { label: "old" }]), null);
+  assert.equal(profileLabel([]), null);
 });

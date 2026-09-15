@@ -286,6 +286,12 @@ export async function readBadge(
   return res.value as BadgeV1;
 }
 
+/** What a referrer-index read found. `unavailable` is a read nobody answered. */
+export type ReferrerIndexRead =
+  | { status: "found"; referees: Hex0x[] }
+  | { status: "absent" }
+  | { status: "unavailable" };
+
 /**
  * Every referee the issuer has confirmed to `referrer`, as addresses.
  *
@@ -297,17 +303,26 @@ export async function readBadge(
  * so no lookup table is needed. A subject that is not address-shaped is
  * dropped — this is a public feed and one foreign entry must not take the list
  * with it.
+ *
+ * Three answers, kept apart: `absent` is the issuer having published nothing
+ * for this referrer, `unavailable` is a read nobody answered. Folding the second
+ * into an empty list told a member with verified invites that they had none
+ * whenever the gateway was slow.
  */
 export async function readReferrerIndex(
   referrer: Hex0x,
   deps: CampaignRecordDeps = liveDeps,
-): Promise<Hex0x[]> {
+): Promise<ReferrerIndexRead> {
   const subject = campaignAccountSubject(referrer);
   const res = await deps.readBandedFeed(CAMPAIGN_ISSUER_ADDRESS, (band) =>
     referrerIndexTopic(subject, band),
   );
-  if (res.status !== "found" || !validateReferrerIndexV1(res.value)) return [];
-  return (res.value as ReferrerIndexV1).subjects
+  if (res.status === "unavailable") return { status: "unavailable" };
+  // Only the issuer writes this topic, so an index that fails validation is not
+  // an outage worth retrying: it reads as nothing published.
+  if (res.status !== "found" || !validateReferrerIndexV1(res.value)) return { status: "absent" };
+  const referees = (res.value as ReferrerIndexV1).subjects
     .map((s) => addressFromProfileSubject(s))
     .filter((a): a is Hex0x => a !== null);
+  return { status: "found", referees };
 }

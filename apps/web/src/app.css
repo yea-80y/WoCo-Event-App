@@ -195,6 +195,49 @@ button {
   font-size: 1rem;
 }
 
+/* An action that reads as a link: "Browse events", "Close". Use with .btn. */
+.btn--text {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  font-size: 0.875rem;
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--text-dim);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+  transition: text-decoration-color var(--transition);
+}
+.btn--text:hover { text-decoration-color: var(--accent); }
+.btn--text:active { transform: none; }
+
+/* ── Utility primitives ──────────────────────────────────────────────── */
+
+/* Sentence-case label above a section on member screens, in place of the
+   all-caps mono kicker. */
+.section-label {
+  margin: 0 0 0.625rem;
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--text-secondary);
+}
+
+/* Hidden on screen, still read by screen readers. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ── Form primitives ─────────────────────────────────────────────────── */
 
 input, textarea, select {

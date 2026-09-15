@@ -10,6 +10,7 @@
  *
  *   ATTENDEE surface
  *     /home                        member-home (a signed-in member's home)
+ *     /contacts                    contacts (who a member invited and follows)
  *     /discover                    discover (events feed — was at /)
  *     /event/:id                   event
  *     /tickets   (and /my-tickets) my-tickets
@@ -130,6 +131,7 @@ function matchRoute(pathWithQuery: string): Match {
 
   // ── Attendee surface ────────────────────────────────────────────────────
   if (path === "/home") return { route: "member-home", params: {}, surface: "attendee" };
+  if (path === "/contacts") return { route: "contacts", params: {}, surface: "attendee" };
   if (path === "/discover") return { route: "discover", params: {}, surface: "attendee" };
   if (path === "/tickets" || path === "/my-tickets") return { route: "my-tickets", params: {}, surface: "attendee" };
   if (path === "/verify") return { route: "verify", params: {}, surface: "attendee" };

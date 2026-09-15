@@ -80,7 +80,7 @@
       <WocoWordmark height={20} variant="default" showTagline={false} />
     </button>
     {#if auth.ready && !signedIn}
-      <button class="text-btn" onclick={() => loginRequest.request()}>Sign in</button>
+      <button class="btn btn--text" onclick={() => loginRequest.request()}>Sign in</button>
     {/if}
   </header>
 
@@ -110,12 +110,12 @@
       </button>
       <p class="alt">
         Just looking for events?
-        <button class="text-btn" onclick={() => navigate("/discover")}>Browse events</button>
+        <button class="btn btn--text" onclick={() => navigate("/discover")}>Browse events</button>
       </p>
     </section>
 
     <section class="block">
-      <h2 class="block-title">How it works</h2>
+      <h2 class="section-label">How it works</h2>
       <ol class="steps">
         <li>Create your account with email, a passkey or a wallet.</li>
         <li>Verify with Stripe so you can get paid.</li>
@@ -124,7 +124,7 @@
     </section>
 
     <section class="block">
-      <h2 class="block-title">Why hosts use it</h2>
+      <h2 class="section-label">Why hosts use it</h2>
       {#each reasons as reason (reason.title)}
         <div class="reason">
           <strong>{reason.title}</strong>
@@ -142,8 +142,8 @@
   </main>
 
   <footer class="foot">
-    <button class="text-btn" onclick={() => navigate("/legal/terms")}>Terms</button>
-    <button class="text-btn" onclick={() => navigate("/legal/privacy")}>Privacy</button>
+    <button class="btn btn--text" onclick={() => navigate("/legal/terms")}>Terms</button>
+    <button class="btn btn--text" onclick={() => navigate("/legal/privacy")}>Privacy</button>
   </footer>
 </div>
 
@@ -167,18 +167,6 @@
     border-bottom: 1px solid var(--border);
   }
   .brand { display: flex; align-items: center; }
-
-  .text-btn {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--text);
-    text-decoration: underline;
-    text-decoration-color: var(--text-dim);
-    text-decoration-thickness: 1px;
-    text-underline-offset: 4px;
-    transition: text-decoration-color var(--transition);
-  }
-  .text-btn:hover { text-decoration-color: var(--accent); }
 
   /* The invitation is printed like a stub: bone paper, a torn line, the stamp
      both people receive once the invite is confirmed. */
@@ -257,14 +245,6 @@
   .alt { margin: 0.875rem 0 0; font-size: 0.875rem; color: var(--text-muted); }
 
   .block { margin-bottom: 2rem; }
-  .block-title {
-    margin: 0 0 0.75rem;
-    font-size: 0.8125rem;
-    line-height: 1.2;
-    font-weight: 600;
-    letter-spacing: 0;
-    color: var(--text-secondary);
-  }
 
   .steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; counter-reset: step; }
   .steps li {
@@ -292,5 +272,5 @@
   .fine { margin: 0; font-size: 0.78125rem; color: var(--text-muted); max-width: 40ch; }
 
   .foot { display: flex; gap: 1.25rem; margin-top: auto; padding-top: 2rem; }
-  .foot .text-btn { font-size: 0.8125rem; color: var(--text-muted); }
+  .foot .btn--text { font-size: 0.8125rem; color: var(--text-muted); }
 </style>
