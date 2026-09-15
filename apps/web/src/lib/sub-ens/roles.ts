@@ -60,7 +60,10 @@ export function roleLabel(role: SubEnsNameRole | undefined): string | undefined 
  * other name keep working — the router resolves whichever one arrives.
  */
 export function inviteLabel(names: readonly (RoledName & { label: string })[]): string | null {
-  const profile = names.find((n) => n.role === "profile");
-  if (profile) return profile.label;
-  return names.map((n) => n.label).sort()[0] ?? null;
+  return profileLabel(names) ?? names.map((n) => n.label).sort()[0] ?? null;
+}
+
+/** The account's PROFILE name among `names`, or null when it has none. */
+export function profileLabel(names: readonly (RoledName & { label: string })[]): string | null {
+  return names.find((n) => n.role === "profile")?.label ?? null;
 }

@@ -5,6 +5,8 @@
   import { router, navigate } from "../router/router.svelte.js";
   import { hasStudio } from "../auth/studio-flag.js";
   import { inviteSheet } from "../campaign/invite-sheet.svelte.js";
+  import { gate } from "../attendee/gate/gate.svelte.js";
+  import { organisesFromUnlock } from "../attendee/home/member-state.js";
   import SessionStatus from "../components/auth/SessionStatus.svelte";
   import UserAvatar from "../components/profile/UserAvatar.svelte";
   import WocoWordmark from "../components/brand/WocoWordmark.svelte";
@@ -19,10 +21,13 @@
 
   const signedIn = $derived(auth.ready && auth.isConnected && !!auth.parent);
   // Display only: every organiser route checks for itself.
-  const showStudio = $derived(signedIn && hasStudio(auth.parent));
+  const showStudio = $derived(
+    signedIn && (hasStudio(auth.parent) || organisesFromUnlock(gate.status?.via)),
+  );
 
   const isHome = $derived(router.route === "member-home");
   const isEvents = $derived(router.route === "home" || router.route === "discover");
+  const isContacts = $derived(router.route === "contacts");
   const isProfile = $derived(router.route === "profile");
 
   // The sheet and its QR library load on first open, never with the shell.
@@ -35,6 +40,7 @@
     home: [[5,1,2,1],[4,2,1,1],[7,2,1,1],[3,3,1,1],[8,3,1,1],[2,4,1,1],[9,4,1,1],[1,5,1,1],[10,5,1,1],[2,5,1,6],[9,5,1,6],[2,10,8,1],[5,7,2,3]],
     events: [[3,1,1,1],[8,1,1,1],[1,2,10,2],[1,4,1,6],[10,4,1,6],[1,10,10,1],[6,6,2,2]],
     invite: [[0,0,5,1],[0,4,5,1],[0,1,1,3],[4,1,1,3],[2,2,1,1],[7,0,5,1],[7,4,5,1],[7,1,1,3],[11,1,1,3],[9,2,1,1],[0,7,5,1],[0,11,5,1],[0,8,1,3],[4,8,1,3],[2,9,1,1],[7,7,2,2],[10,7,2,1],[9,9,2,1],[7,10,1,2],[10,11,2,1],[6,5,1,1]],
+    contacts: [[2,4,2,1],[1,5,1,2],[4,5,1,2],[2,7,2,1],[1,9,4,1],[0,10,1,2],[5,10,1,2],[8,1,2,1],[7,2,1,2],[10,2,1,2],[8,4,2,1],[7,6,4,1],[11,7,1,3],[6,7,1,2]],
   } satisfies Record<string, number[][]>;
 </script>
 
@@ -98,6 +104,15 @@
       <button class="nav-item nav-item--key" aria-haspopup="dialog" onclick={() => inviteSheet.show()}>
         <span class="nav-key">{@render pixel(ICONS.invite)}</span>
         <span class="nav-label">Invite</span>
+      </button>
+      <button
+        class="nav-item"
+        class:active={isContacts}
+        aria-current={isContacts ? "page" : undefined}
+        onclick={() => navigate("/contacts")}
+      >
+        <span class="nav-icon">{@render pixel(ICONS.contacts)}</span>
+        <span class="nav-label">Contacts</span>
       </button>
       <button
         class="nav-item"

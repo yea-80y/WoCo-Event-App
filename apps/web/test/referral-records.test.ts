@@ -71,6 +71,8 @@ function harness(
     banded?: Record<string, unknown>;
     atVersion?: unknown;
     writeStatus?: "verified" | "superseded" | "unconfirmed";
+    /** Every banded read answers `unavailable`, as a gateway that never replied would. */
+    bandedUnavailable?: boolean;
   } = {},
 ): { deps: CampaignRecordDeps; rec: Recorder } {
   const rec: Recorder = {
@@ -93,6 +95,9 @@ function harness(
     readBandedFeed: async (owner, topicForBand) => {
       const topic0 = topicForBand(0);
       rec.bandedReads.push({ owner, topic0 });
+      if (answers.bandedUnavailable) {
+        return { status: "unavailable", reason: "no answer", band: 0, bandClean: false };
+      }
       const value = answers.banded?.[topic0];
       return value === undefined
         ? { status: "absent", band: 0, bandClean: true }
@@ -283,10 +288,15 @@ test("readReferrerIndex maps subjects to addresses and drops a foreign entry", a
 
   // FOREIGN_SUBJECT is a valid bytes32 and passes the index schema — it just is
   // not address-shaped. One such entry must cost its own row and nothing else.
-  assert.deepEqual(await readReferrerIndex(REFERRER, deps), [REFEREE, OTHER]);
+  assert.deepEqual(await readReferrerIndex(REFERRER, deps), { status: "found", referees: [REFEREE, OTHER] });
 });
 
-test("readReferrerIndex is empty when the issuer has published nothing", async () => {
+test("readReferrerIndex reports absent when the issuer has published nothing", async () => {
   const { deps } = harness();
-  assert.deepEqual(await readReferrerIndex(REFERRER, deps), []);
+  assert.deepEqual(await readReferrerIndex(REFERRER, deps), { status: "absent" });
+});
+
+test("readReferrerIndex reports a read nobody answered as unavailable, never as empty", async () => {
+  const { deps } = harness({ bandedUnavailable: true });
+  assert.deepEqual(await readReferrerIndex(REFERRER, deps), { status: "unavailable" });
 });

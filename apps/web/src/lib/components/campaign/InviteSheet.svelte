@@ -99,7 +99,7 @@
 <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="invite-sheet-title">
   <header class="head">
     <h2 id="invite-sheet-title">Your invite</h2>
-    <button class="text-btn" bind:this={closeButton} onclick={() => inviteSheet.hide()}>Close</button>
+    <button class="btn btn--text" bind:this={closeButton} onclick={() => inviteSheet.hide()}>Close</button>
   </header>
 
   <div class="pass">
@@ -169,15 +169,6 @@
 
   .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.875rem; }
   .head h2 { margin: 0; font-size: 1.25rem; line-height: 1.2; letter-spacing: -0.02em; }
-  .text-btn {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--text);
-    text-decoration: underline;
-    text-decoration-color: var(--text-dim);
-    text-underline-offset: 4px;
-  }
-  .text-btn:hover { text-decoration-color: var(--accent); }
 
   /* The pass is the one light surface in the member app: bone paper, ink code. */
   .pass {
