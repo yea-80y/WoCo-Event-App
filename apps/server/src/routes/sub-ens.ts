@@ -223,8 +223,8 @@ subEnsRoutes.get("/owned", requireAuth, async (c) => {
 subEnsRoutes.post("/claim", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress");
 
-  // Attendee gate: sub-ENS names are unlocked by a purchased ticket (or by
-  // being an organiser). UI catches "ticket_required" → gate flow.
+  // Attendee gate — the rule is lib/gate/check.ts (#575). The error code predates
+  // the wider rule; the UI matches on it to open the unlock flow.
   const gate = await checkAttendeeGate(parentAddress as string);
   if (!gate.gated) {
     return c.json({ ok: false, error: "ticket_required" }, 403);

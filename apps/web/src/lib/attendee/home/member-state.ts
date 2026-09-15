@@ -31,7 +31,11 @@ export function inviteStatusText(read: ReferrerIndexRead | null): string | null 
   return count === 1 ? "1 verified invite." : `${count} verified invites.`;
 }
 
-/** Whether an unlock reason means the account organises, so Studio can show on a new device. */
+/**
+ * Whether an unlock reason means the account organises, so Studio can show on a
+ * new device. Stripe verification only happens in Studio (Payments), so it
+ * counts; a ticket or a confirmed invite says nothing about hosting.
+ */
 export function organisesFromUnlock(via: GateStatusData["via"] | undefined): boolean {
-  return via === "organiser";
+  return via === "organiser" || via === "stripe";
 }
