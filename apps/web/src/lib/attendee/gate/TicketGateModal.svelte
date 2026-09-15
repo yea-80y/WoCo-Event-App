@@ -74,15 +74,15 @@
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="backdrop" onclick={(e) => e.target === e.currentTarget && close()}></div>
 
-  <div class="modal" role="dialog" aria-modal="true" aria-label="Unlock your account with a ticket">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="Add a ticket">
     <div class="modal-head">
       <div class="head-text">
-        <span class="kicker">Account unlock</span>
+        <span class="kicker">Unlock</span>
         <span class="title">
           {#if phase === "done"}
-            {alreadyUnlocked ? "Already unlocked" : "Account unlocked"}
+            {alreadyUnlocked ? "You're all set" : "Unlocked"}
           {:else}
-            Use your ticket
+            Add a ticket first
           {/if}
         </span>
       </div>
@@ -94,16 +94,14 @@
     {#if phase === "info"}
       <div class="body">
         <p class="desc">
-          Profiles are unlocked by a ticket. Open the confirmation email for
-          your ticket and follow its <strong>set up your profile</strong> link —
-          that link is your proof of purchase, and clicking it while signed in
-          here unlocks this account.
+          Your name, photo and bio unlock once a ticket is in your account. Open
+          the email with your ticket and tap <strong>Add to WoCo</strong>.
         </p>
         <p class="desc">
-          Can't find the email or the link has expired? Ask the organiser to
-          resend your ticket.
+          Bought it while signed in? It went into that account, so sign in with
+          the same one.
         </p>
-        <button class="primary-btn" onclick={close}>OK</button>
+        <button class="primary-btn" onclick={close}>Got it</button>
       </div>
 
     {:else if phase === "done"}
@@ -113,10 +111,10 @@
         </div>
         <p class="done-desc">
           {#if alreadyUnlocked}
-            This account is already unlocked — you're good to go.
+            Your account is already unlocked, so you can go ahead.
           {:else}
-            Your ticket is linked to this account. You can now set up your
-            profile, claim a name, and follow events.
+            Your ticket is in your account, and your name, photo and bio are
+            unlocked.
           {/if}
         </p>
         <button class="primary-btn" onclick={close}>Done</button>

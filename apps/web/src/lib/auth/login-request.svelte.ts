@@ -1,6 +1,6 @@
 let _pending = $state(false);
 /** Which sign-in the modal is for — it tailors the heading and subtitle. */
-export type LoginContext = "attendee" | "creator" | "invite";
+export type LoginContext = "attendee" | "creator" | "invite" | "ticket";
 
 let _context = $state<LoginContext | undefined>(undefined);
 let _resolve: ((success: boolean) => void) | null = null;

@@ -1,13 +1,13 @@
 <script lang="ts">
   /**
-   * Route A signup landing — target of the "Create your WoCo profile" button
-   * in ticket emails (#/signup?gt={token}, docs/ATTENDEE_GATE_RESALE_PLAN.md §3).
+   * Route A landing — target of the "Add to WoCo" button in ticket emails
+   * (#/signup?gt={token}, docs/ATTENDEE_GATE_RESALE_PLAN.md §3).
    *
    * The token rides in the hash fragment so it never hits a server on page
    * load; we POST it to /token-info (unauthenticated) to show WHICH ticket is
-   * being linked, then to /redeem once an account exists. First click wins —
-   * a consumed token gets a graceful "already used" path, and expired/invalid
-   * links fall back to Route B (the ticket-proof modal).
+   * being added, then to /redeem once an account exists. First click wins, so
+   * a consumed token gets its own screen. An expired or broken link has no
+   * in-app fallback: the ticket-proof form went with the v1 claim rail.
    */
   import { navigate } from "../../router/router.svelte.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -56,12 +56,14 @@
       if (resp.ok && resp.data) {
         info = resp.data;
         phase = resp.data.consumed ? "consumed" : "ready";
+        // A used link may be this account's own ticket; the status says whose.
+        if (resp.data.consumed) void gate.refresh();
       } else {
         phase = (resp.error ?? "").toLowerCase().includes("expired") ? "expired" : "invalid";
       }
     } catch {
       if (my !== loadToken) return;
-      errorMsg = "Could not reach the server — check your connection and refresh.";
+      errorMsg = "Couldn't reach WoCo. Check your connection and refresh.";
       phase = "invalid";
     }
   }
@@ -71,7 +73,7 @@
     errorMsg = "";
 
     if (!auth.isConnected) {
-      const ok = await loginRequest.request({ context: "attendee" });
+      const ok = await loginRequest.request({ context: "ticket" });
       if (!ok) return;
     }
 
@@ -80,7 +82,7 @@
       const sessionOk = await auth.ensureSession();
       if (!sessionOk) {
         phase = "ready";
-        errorMsg = "Could not authorise this device — try again.";
+        errorMsg = "Couldn't set up this device. Try again.";
         return;
       }
 
@@ -95,26 +97,27 @@
         phase = "consumed";
       } else {
         phase = "ready";
-        errorMsg = resp.error ?? "Could not link the ticket — try again.";
+        errorMsg = resp.error ?? "Couldn't add your ticket. Try again.";
       }
     } catch (err) {
       phase = "ready";
-      errorMsg = err instanceof Error ? err.message : "Network error — try again.";
+      errorMsg = err instanceof Error ? err.message : "Couldn't reach WoCo. Try again.";
     }
-  }
-
-  /** Route B fallback — the in-app ticket-proof modal (paste /t link + email). */
-  async function useTicketProof() {
-    const ok = await gate.request();
-    if (ok) phase = "done";
   }
 
   async function plainSignIn() {
-    if (!auth.isConnected) {
-      await loginRequest.request({ context: "attendee" });
-    }
-    navigate("/profile");
+    if (!auth.isConnected && !(await loginRequest.request({ context: "attendee" }))) return;
+    navigate("/tickets");
   }
+
+  // Whether the ticket this link names is in the signed-in account, not merely
+  // whether that account is unlocked by some other ticket.
+  const inThisAccount = $derived.by(() => {
+    const ticket = info;
+    return !!ticket && !!gate.status?.bindings.some(
+      (b) => b.seriesId === ticket.seriesId && b.edition === ticket.edition,
+    );
+  });
 
   const editionStr = $derived(
     info ? String(info.edition).padStart(3, "0") : "",
@@ -138,14 +141,13 @@
     <div class="pending"><span class="spinner"></span> Checking your ticket…</div>
 
   {:else if phase === "no-token"}
-    <h1 class="headline">Your tickets, on <span class="hl-accent">your keys</span>.</h1>
+    <h1 class="headline">Add a ticket to <span class="hl-accent">WoCo</span>.</h1>
     <p class="sub">
-      WoCo accounts are unlocked by a ticket — buy one, or use the link in a
-      ticket email you've received.
+      Open the email with your ticket and tap Add to WoCo. It brings you back
+      here with your ticket ready to add.
     </p>
     <div class="actions">
       <button class="primary-btn" onclick={() => navigate("/discover")}>Explore events</button>
-      <button class="ghost-btn" onclick={useTicketProof}>I already have a ticket</button>
     </div>
 
   {:else if phase === "ready" || phase === "linking"}
@@ -154,8 +156,7 @@
       {#if info?.eventTitle}<span class="hl-accent">{info.eventTitle}</span>{/if}.
     </h1>
     <p class="sub">
-      Link your ticket to a free WoCo account to keep it safe, get in faster at
-      the door, and follow the events and venues you love.
+      Add this ticket to WoCo to keep it in your passport and claim your own name.
     </p>
 
     {#if info}
@@ -177,17 +178,15 @@
     <div class="actions">
       <button class="primary-btn" onclick={linkTicket} disabled={phase === "linking"}>
         {#if phase === "linking"}
-          <span class="spinner spinner--dark"></span> Linking your ticket…
+          <span class="spinner spinner--dark"></span> Adding your ticket…
         {:else if auth.isConnected}
-          Link ticket to my account
+          Add to my passport
         {:else}
-          Create my account
+          Add to WoCo
         {/if}
       </button>
       {#if !auth.isConnected}
-        <p class="fineprint">
-          Already have a WoCo account? The same button lets you sign in instead.
-        </p>
+        <p class="fineprint">You'll sign in, or create a free account, first.</p>
       {/if}
     </div>
 
@@ -195,56 +194,54 @@
     <div class="ok-mark" aria-hidden="true">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
     </div>
-    <h1 class="headline">You're <span class="hl-accent">in</span>.</h1>
+    <h1 class="headline">It's in your <span class="hl-accent">passport</span>.</h1>
     <p class="sub">
-      {#if info}Ticket #{editionStr} is linked to your account.{:else}Your ticket is linked to your account.{/if}
-      Set up your profile, claim your name, and follow the events you're into.
+      {#if info}Ticket #{editionStr} is in your account{:else}Your ticket is in your account{/if},
+      and your name, photo and bio are unlocked.
     </p>
     <div class="actions">
-      <button class="primary-btn" onclick={() => navigate("/profile")}>Set up my profile</button>
-      <button class="ghost-btn" onclick={() => navigate("/discover")}>Explore events</button>
+      <button class="primary-btn" onclick={() => navigate("/tickets")}>See my passport</button>
+      <button class="ghost-btn" onclick={() => navigate("/profile")}>Claim your name</button>
     </div>
 
   {:else if phase === "consumed"}
-    <h1 class="headline">This ticket already unlocked an account.</h1>
-    <p class="sub">
-      {#if gate.status?.gated}
-        Good news — it looks like it was this one. Your account is unlocked.
-      {:else}
-        Each ticket unlocks one account. If that was you on another device,
-        just sign in with the same account. If someone forwarded you this
-        email, ask them for a ticket that hasn't been used yet.
-      {/if}
-    </p>
-    <div class="actions">
-      {#if gate.status?.gated}
-        <button class="primary-btn" onclick={() => navigate("/profile")}>Go to my profile</button>
-      {:else}
-        <button class="primary-btn" onclick={plainSignIn}>Sign in</button>
-        <button class="ghost-btn" onclick={useTicketProof}>I have another ticket</button>
-      {/if}
-    </div>
+    {#if inThisAccount}
+      <h1 class="headline">It's already in your <span class="hl-accent">passport</span>.</h1>
+      <p class="sub">This ticket was added to this account, so you're all set.</p>
+      <div class="actions">
+        <button class="primary-btn" onclick={() => navigate("/tickets")}>See my passport</button>
+      </div>
+    {:else}
+      <h1 class="headline">This ticket is already in a WoCo account.</h1>
+      <p class="sub">
+        A ticket goes into one account. If you added it with another account, sign
+        in with that one. If someone forwarded you this email, ask them for a ticket
+        that hasn't been added yet.
+      </p>
+      <div class="actions">
+        {#if auth.isConnected}
+          <button class="ghost-btn" onclick={() => navigate("/discover")}>Explore events</button>
+        {:else}
+          <button class="primary-btn" onclick={plainSignIn}>Sign in</button>
+        {/if}
+      </div>
+    {/if}
 
   {:else if phase === "expired"}
     <h1 class="headline">This link has expired.</h1>
-    <p class="sub">
-      No harm done — you can still link your ticket. Open the ticket page from
-      your email and use "I have a ticket" instead; we'll confirm it with a
-      code to your purchase email.
-    </p>
+    <p class="sub">It can't add your ticket any more, but your ticket still works at the door.</p>
     <div class="actions">
-      <button class="primary-btn" onclick={useTicketProof}>I have a ticket</button>
+      <button class="primary-btn" onclick={() => navigate("/discover")}>Explore events</button>
     </div>
 
   {:else}
-    <h1 class="headline">This link isn't valid.</h1>
+    <h1 class="headline">{errorMsg ? "Couldn't check this link." : "This link isn't working."}</h1>
     <p class="sub">
       {errorMsg ||
-        "The link may have been cut short by your email app. You can still link your ticket with the ticket page link and your purchase email."}
+        "Your email app may have cut it short. Open it again from the email, or copy the whole link into your browser."}
     </p>
     <div class="actions">
-      <button class="primary-btn" onclick={useTicketProof}>I have a ticket</button>
-      <button class="ghost-btn" onclick={() => navigate("/discover")}>Explore events</button>
+      <button class="primary-btn" onclick={() => navigate("/discover")}>Explore events</button>
     </div>
   {/if}
 </div>

@@ -38,10 +38,6 @@
   async function setUp() {
     if (await auth.ensureAccountSetup({ identity: false })) void refresh();
   }
-
-  async function linkTicket() {
-    if (await gate.request()) void refresh();
-  }
 </script>
 
 {#snippet list(rows: typeof tickets.upcoming)}
@@ -69,13 +65,10 @@
     {:else if count === 0}
       <p class="empty-title">No tickets yet</p>
       <p class="note">
-        Bought one? Link it with the link in your confirmation email. A linked ticket also unlocks
-        your name.
+        Bought one? Open the email with your ticket and tap <strong>Add to WoCo</strong>. A ticket
+        you buy while signed in is added for you.
       </p>
-      <div class="actions">
-        <button class="btn btn--primary" onclick={linkTicket}>Link a ticket</button>
-        <button class="btn btn--text" onclick={() => navigate("/discover")}>Find an event</button>
-      </div>
+      <button class="btn btn--primary" onclick={() => navigate("/discover")}>Find an event</button>
     {:else}
       {#if tickets.upcoming.length > 0}
         <h3 class="group">Upcoming</h3>
@@ -88,7 +81,7 @@
         <h3 class="group">Past</h3>
         {@render list(tickets.past)}
       {/if}
-      <button class="btn btn--text more" onclick={linkTicket}>Link another ticket</button>
+      <p class="more">To add another ticket, tap <strong>Add to WoCo</strong> in its email.</p>
     {/if}
   </section>
 
@@ -126,7 +119,8 @@
     font-weight: 700;
     letter-spacing: -0.02em;
   }
-  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1.25rem; }
+  .note strong,
+  .more strong { font-weight: 600; color: var(--text); }
 
   .group { margin: 0 0 0.5rem; font-size: 0.75rem; font-weight: 600; color: var(--text-muted); }
   .list {
@@ -139,7 +133,7 @@
   }
   .list + .group { margin-top: 1.5rem; }
   .list + .list { margin-top: 0.5rem; }
-  .more { margin-top: 1rem; font-size: 0.8125rem; }
+  .more { margin: 1rem 0 0; font-size: 0.8125rem; color: var(--text-muted); }
 
   .stamp { display: flex; align-items: center; gap: 1rem; }
   .stamp-text { display: flex; flex-direction: column; gap: 0.125rem; margin: 0; }
