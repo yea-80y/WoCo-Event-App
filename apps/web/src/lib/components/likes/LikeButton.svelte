@@ -6,21 +6,23 @@
   interface Props {
     subject: Hex0x;
     /**
-     * "heart" (default) = like a happening (event onChainEventId): heart + count.
-     * "follow" = follow an ACCOUNT (its address as bytes32): "Follow"/"Following".
-     * Both write a signed statement to the user's own Swarm feed; the variant
-     * selects the statement KIND (woco.like.v1 / woco.follow.v1), which are
-     * separate topics, so a like and a follow of one subject never collide.
+     * "interested" (default) = interest in a happening (event onChainEventId):
+     * "Interested" + count. "follow" = follow an ACCOUNT (its address as
+     * bytes32): "Follow"/"Following". Both write a signed statement to the
+     * user's own Swarm feed; the variant selects the statement KIND
+     * (woco.like.v1 / woco.follow.v1), which are separate topics, so interest in
+     * and a follow of one subject never collide.
+     *
+     * Interested IS the like statement, under the word people use for an event
+     * (owner decision 2026-09-15: Follow for people, Interested for events). Only
+     * the words changed; the statement format did not.
      */
-    variant?: "heart" | "follow";
-    /** Names WHAT is being liked (e.g. "event") — shown as a muted mono caption
-     *  so the target is unambiguous when hearts and follows share a page. */
-    caption?: string;
+    variant?: "interested" | "follow";
     /** Count-only view (e.g. your own follower count) — no action, no toggle. */
     readonly?: boolean;
   }
 
-  let { subject, variant = "heart", caption, readonly = false }: Props = $props();
+  let { subject, variant = "interested", readonly = false }: Props = $props();
 
   // null = nobody has counted yet (no indexer), which renders as ABSENT. Zero
   // would be a claim that nobody liked it — a different, and wrong, statement.
@@ -164,7 +166,10 @@
     {#if count === null}·{:else}{count}{/if}
     <span class="stat-label">{count === 1 ? "follower" : "followers"}</span>
   </span>
-{:else if variant === "follow"}
+{:else}
+  <!-- One pill for both. Follow names the viewer's state in its label;
+       Interested keeps its label and carries the state in the filled star and
+       aria-pressed, since "Not interested" would read as a separate answer. -->
   <button
     class="follow-btn"
     class:following={liked}
@@ -172,10 +177,21 @@
     class:failed={!!errMsg}
     onclick={handleClick}
     disabled={inFlight}
-    aria-label={liked ? "Unfollow" : "Follow"}
-    title={liked ? "Unfollow" : "Follow"}
+    aria-label={variant === "follow" ? (liked ? "Unfollow" : "Follow") : undefined}
+    aria-pressed={variant === "follow" || !loaded ? undefined : liked}
+    title={variant === "follow" ? (liked ? "Unfollow" : "Follow") : undefined}
   >
-    {#if liked}
+    {#if variant !== "follow"}
+      <svg class="follow-ico" width="13" height="13" viewBox="0 0 24 24" aria-hidden="true">
+        <path
+          d="M12 2.5l2.94 5.96 6.56.95-4.75 4.63 1.12 6.54L12 17.5l-5.87 3.08 1.12-6.54L2.5 9.41l6.56-.95L12 2.5z"
+          fill={liked ? "currentColor" : "none"}
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linejoin="round"
+        />
+      </svg>
+    {:else if liked}
       <svg class="follow-ico" width="13" height="13" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M20 6L9 17l-5-5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
@@ -185,91 +201,18 @@
       </svg>
     {/if}
     <span class="follow-label">
-      {#if !loaded}·{:else}{liked ? "Following" : "Follow"}{/if}
+      {#if !loaded}·{:else if variant === "follow"}{liked ? "Following" : "Follow"}{:else}Interested{/if}
     </span>
     <!-- The count is public and may be remembered; the LABEL beside it is the
          viewer's own state and waits for a real read. -->
     {#if count !== null && count > 0}<span class="follow-count">{count}</span>{/if}
   </button>
   {#if errMsg}<span class="like-err" role="status">{errMsg}</span>{/if}
-{:else}
-  <button
-    class="like-btn"
-    class:liked
-    class:loading={!loaded}
-    class:failed={!!errMsg}
-    onclick={handleClick}
-    disabled={inFlight}
-    aria-label={liked ? "Unlike" : "Like"}
-    title={liked ? "Unlike" : "Like"}
-  >
-    <svg class="heart" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M12 21L3.5 12.5C1.5 10.5 1.5 7.2 3.5 5.2C5.5 3.2 8.8 3.2 10.8 5.2L12 6.4L13.2 5.2C15.2 3.2 18.5 3.2 20.5 5.2C22.5 7.2 22.5 10.5 20.5 12.5L12 21Z"
-        fill={liked ? "currentColor" : "none"}
-        stroke="currentColor"
-        stroke-width={liked ? "0" : "1.8"}
-        stroke-linejoin="round"
-      />
-    </svg>
-    <span class="count" class:zero={count === null || (count === 0 && !liked)}>
-      {#if count !== null && count > 0}{count}{:else if !loaded}·{/if}
-    </span>
-    {#if caption}<span class="caption">{caption}</span>{/if}
-  </button>
-  {#if errMsg}<span class="like-err" role="status">{errMsg}</span>{/if}
 {/if}
 
 <style>
-  .like-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3125rem;
-    padding: 0.3125rem 0.5625rem 0.3125rem 0.4375rem;
-    border: 1px solid transparent;
-    border-radius: var(--radius-sm);
-    background: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    font-family: var(--font-mono, "SF Mono", "Fira Code", monospace);
-    font-size: 0.6875rem;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-    line-height: 1;
-    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
-    white-space: nowrap;
-  }
-
-  .like-btn.loading { opacity: 0.5; cursor: default; }
-
-  .like-btn:hover:not(:disabled):not(.loading) {
-    color: var(--accent);
-    border-color: var(--accent-subtle);
-    background: var(--accent-subtle);
-  }
-
-  .like-btn.liked { color: var(--accent); }
-
-  .like-btn.liked:hover:not(:disabled) {
-    color: var(--accent-hover);
-    border-color: var(--accent-subtle);
-    background: var(--accent-subtle);
-  }
-
-  .like-btn:disabled { cursor: default; }
-
-  .heart {
-    flex-shrink: 0;
-    transition: transform 0.12s ease;
-  }
-
-  .like-btn:not(:disabled):active .heart { transform: scale(0.82); }
-
-  .count { min-width: 0.625rem; }
-  .count.zero { opacity: 0; }
-
   /* ── Failure micro-state: shake + transient mono chip ─────────── */
-  .like-btn.failed, .follow-btn.failed {
+  .follow-btn.failed {
     animation: like-shake 0.34s cubic-bezier(0.36, 0.07, 0.19, 0.97);
   }
 
@@ -301,7 +244,7 @@
     to { opacity: 1; transform: translateX(0); }
   }
 
-  /* ── Follow variant: name-follow pill ─────────────────────── */
+  /* ── The pill: Follow on accounts, Interested on events ─────── */
   .follow-btn {
     display: inline-flex;
     align-items: center;
@@ -345,16 +288,6 @@
     border-left: 1px solid var(--accent-subtle);
     color: var(--text-muted);
     font-weight: 500;
-  }
-
-  /* Heart caption — names the like target ("event") in muted mono */
-  .caption {
-    color: var(--text-muted);
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    font-size: 0.5625rem;
-    opacity: 0.8;
   }
 
   /* Read-only follower stat (self-view) — same plate language, no affordance */

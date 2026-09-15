@@ -32,7 +32,7 @@ export interface SocialState {
 }
 
 /** A "follow" pill writes a follow; every other variant writes a like. */
-export function kindForVariant(variant: "heart" | "follow"): SocialKind {
+export function kindForVariant(variant: "interested" | "follow"): SocialKind {
   return variant === "follow" ? "follow" : "like";
 }
 

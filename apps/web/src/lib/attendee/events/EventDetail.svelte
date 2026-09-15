@@ -251,8 +251,8 @@
 
     {#if eventSubject || (event.subEnsLabel && eventNameVerified)}
       <!-- Social row: the event's .woco.eth identity (display — ownership lives
-           on-chain) + like on the HAPPENING (keyed to the immutable on-chain
-           event id, so likes survive a name repoint). -->
+           on-chain) + Interested on the HAPPENING (a like statement keyed to the
+           immutable on-chain event id, so interest survives a name repoint). -->
       <div class="social-actions">
         {#if event.subEnsLabel && eventNameVerified}
           <!-- The name's contenthash IS this event page (set by `runSubEnsTask`),
@@ -272,7 +272,7 @@
           </a>
         {/if}
         {#if eventSubject}
-          <LikeButton subject={eventSubject} caption="event" />
+          <LikeButton subject={eventSubject} />
         {/if}
       </div>
     {/if}
