@@ -18,6 +18,7 @@
   import DiscardNameDialog from "../builder/DiscardNameDialog.svelte";
   import { discardPlanFor } from "../../sub-ens/discard-availability.js";
   import { onboarding } from "./onboarding.svelte.js";
+  import { markStudio } from "../../auth/studio-flag.js";
   import WelcomeModal from "./WelcomeModal.svelte";
   import GettingStartedCard from "./GettingStartedCard.svelte";
   import { navigate } from "../../router/router.svelte.js";
@@ -207,6 +208,12 @@
   });
 
   onDestroy(() => clearInterval(clockTimer));
+
+  // Remember on this device that the account organises, so the member shell
+  // offers a Studio link. Display only — nothing is gated on it.
+  $effect(() => {
+    if (events.length > 0 || sites.length > 0 || stripeReady === true) markStudio(auth.parent);
+  });
 
   // Drive data loading off auth.parent so sign-in, sign-out and account
   // switching all flow through the same path. Sign-out clears the stat

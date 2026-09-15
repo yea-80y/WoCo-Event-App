@@ -145,9 +145,7 @@
         <div class="modal-heading">
           <span class="kicker kicker--plain">WoCo</span>
           <h2>{authing ? "Signing in" : loginRequest.context === "invite" ? "Create your account" : "Sign in"}</h2>
-          {#if !authing && loginRequest.context === "attendee"}
-            <p class="context-sub">WoCo accounts are for organisers right now — attendee accounts coming soon.</p>
-          {:else if !authing && loginRequest.context === "invite"}
+          {#if !authing && loginRequest.context === "invite"}
             <p class="context-sub">Takes a minute. Then you verify with Stripe so you can get paid.</p>
           {/if}
         </div>
