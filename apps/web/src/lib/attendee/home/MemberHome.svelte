@@ -137,7 +137,10 @@
           <p class="name name--locked">
             <span class="blank" aria-hidden="true"></span><span class="tld">.woco.eth</span>
           </p>
-          <p class="note">Your name, photo and bio unlock when you buy a ticket or put an event on sale.</p>
+          <p class="note">
+            Your name, photo and bio unlock once a ticket is in your account: buy one while signed
+            in, or tap Add to WoCo in your ticket email.
+          </p>
           <button class="btn btn--text" onclick={() => navigate("/discover")}>Find an event</button>
         {/if}
       </section>

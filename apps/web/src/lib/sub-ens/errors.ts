@@ -101,7 +101,7 @@ export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescri
     // showing text. Described here only so a caller that reaches the fallback
     // path still shows a sentence.
     case "ticket_required":
-      return { title: "Link a ticket to unlock your account first" };
+      return { title: "Your name unlocks once a ticket is in your account." };
     default:
       // Several routes answer with prose already ("You do not own that name").
       // Pass it through rather than replacing a specific message with a vague one.

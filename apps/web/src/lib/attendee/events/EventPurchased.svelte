@@ -11,6 +11,7 @@
    */
   import { onMount } from "svelte";
   import { navigate } from "../../router/router.svelte.js";
+  import { auth } from "../../auth/auth-store.svelte.js";
   import { getEvent } from "../../api/events.js";
   import type { EventFeed } from "@woco/shared";
   import { cacheGet, cacheKey } from "../../cache/cache.js";
@@ -109,12 +110,23 @@
     <ul class="steps">
       <li><span class="bullet"></span>Check your inbox in the next few minutes.</li>
       <li><span class="bullet"></span>If you don't see it, check your spam folder.</li>
+      <!-- A signed-in checkout adds the first ticket to the account at fulfilment
+           (the checkout request carries the session); a guest adds it from the email. -->
+      {#if auth.isConnected}
+        <li><span class="bullet"></span>{qty > 1
+          ? "Your first ticket goes into your passport for you. Forward the others from the email."
+          : "It goes into your passport for you."}</li>
+      {:else}
+        <li><span class="bullet"></span>{qty > 1
+          ? "Tap Add to WoCo in the email to keep one in your passport, and forward the others."
+          : "Tap Add to WoCo in the email to keep it in your passport."}</li>
+      {/if}
       <li><span class="bullet"></span>Show the QR code in the email at the door.</li>
     </ul>
 
-    <!-- Email-only release: tickets are delivered to the inbox; there is no
-         on-platform MyTickets collection yet, so don't offer "View my tickets"
-         — it would land the buyer on an empty page. Back-to-event only. -->
+    <!-- No "See my passport" button: the ticket reaches the passport only once
+         fulfilment adds it or the buyer taps Add to WoCo in the email, so at this
+         moment the passport could still be missing it. Back-to-event only. -->
     <div class="actions">
       <button class="btn-primary" onclick={handleBackToEvent}>Back to event</button>
     </div>

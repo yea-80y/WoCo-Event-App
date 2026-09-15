@@ -195,7 +195,7 @@
       const ok = await auth.ensureAccountSetup({ identity: true });
       if (!ok) { saveError = "Sign-in was cancelled — your changes were not saved."; return; }
       if (!(await ensureUnlocked())) {
-        saveError = "Link a ticket to unlock your profile first.";
+        saveError = "Your profile unlocks once a ticket is in your account.";
         return;
       }
       const prevAvatarRef = profile?.avatarRef;
@@ -234,7 +234,7 @@
       // silently didn't stick (the feed-signer setup path can throw or be
       // declined, and the write itself can fail after signing).
       saveError = isTicketRequired(err)
-        ? "Link a ticket to unlock your profile first."
+        ? "Your profile unlocks once a ticket is in your account."
         : err instanceof Error ? err.message : "Failed to save profile — please try again.";
       console.error("Failed to save profile:", err);
     } finally {
@@ -297,7 +297,7 @@
       if (isTicketRequired(err)) {
         const unlocked = await gate.request();
         if (unlocked) return handleSubEnsClaim(label);
-        ensBindError = 'Link a ticket to unlock your account first';
+        ensBindError = 'Your name unlocks once a ticket is in your account.';
         return;
       }
       const described = subEnsErrorFrom(err, 'Failed to save name to profile');
@@ -691,15 +691,15 @@
                 </svg>
               </div>
               <div class="unlock-text">
-                <p class="unlock-title">Unlock your account with a ticket</p>
+                <p class="unlock-title">Unlock your name, photo and bio</p>
                 <p class="unlock-sub">
-                  Your profile, name and follows unlock once you link a ticket —
-                  use the link in your purchase email, or a ticket claimed with
-                  this account.
+                  Open the email with your ticket and tap Add to WoCo. A ticket you
+                  buy while signed in is added for you, and putting an event on sale
+                  unlocks them too.
                 </p>
               </div>
             </div>
-            <button class="save-btn" onclick={() => gate.request()}>Link a ticket</button>
+            <button class="save-btn" onclick={() => navigate("/discover")}>Find an event</button>
           </section>
         {/if}
 

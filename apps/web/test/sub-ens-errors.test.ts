@@ -89,7 +89,7 @@ test("not_owner explains the loss; the two unverified spellings both mean 'we co
 
 test("ticket_required is left to the gate flow — a title, nothing else", () => {
   const d = describeSubEnsError({ error: "ticket_required" });
-  assert.equal(d.title, "Link a ticket to unlock your account first");
+  assert.equal(d.title, "Your name unlocks once a ticket is in your account.");
   assert.equal(d.detail, undefined);
 });
 

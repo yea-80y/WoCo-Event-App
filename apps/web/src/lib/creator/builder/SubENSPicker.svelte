@@ -311,7 +311,7 @@
       if (!res.ok && isTicketRequired(res.error)) {
         const unlocked = await gate.request();
         if (!unlocked) {
-          claimError = 'Claiming a name needs a ticket-unlocked account.';
+          claimError = 'Your name unlocks once a ticket is in your account.';
           return;
         }
         res = await attempt();
