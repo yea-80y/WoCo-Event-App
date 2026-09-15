@@ -1,37 +1,29 @@
 <!--
   ReferralShareCard — the user's referral link, on their own profile.
 
-  The link prefers the sharer's PROFILE name, then any other WoCo name they own
-  (`#/ref/theirvenue`), and falls back to their address. That is not cosmetic:
-  the name is what the RECIPIENT is shown when they land, and an address link
-  shows them no name at all.
+  The link carries the sharer's PROFILE name once the chain confirms it
+  (`#/ref/theirvenue`), and their address otherwise. That is not cosmetic: the
+  name is what the RECIPIENT is shown when they land, and an address link shows
+  them no name at all. Never another name they own: a site or event name would
+  read as that page inviting.
 
-  No longer zero-fetch, deliberately. It costs one authenticated read of names
-  the organiser already owns, on a profile screen that is already fetching. The
-  address link paints first and is swapped only if a name comes back, so a
-  failed or slow lookup degrades to exactly the previous behaviour rather than
-  to an empty card.
+  The address link works from first paint and is swapped only if a name comes
+  back, so a failed or slow lookup still leaves a working card. The link is
+  printed only once it is a name; an address link is copied, never shown.
 -->
 <script lang="ts">
   import type { Hex0x } from "@woco/shared";
   import { onMount } from "svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { referralLink } from "../../api/campaign.js";
-  import { inviteLabel } from "../../sub-ens/roles.js";
+  import { verifiedProfileName } from "../../sub-ens/profile-name.js";
 
   let copied = $state(false);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
   let ensLabel = $state<string | null>(null);
 
-  onMount(async () => {
-    if (!auth.parent) return;
-    try {
-      const { getOwnedSubEns } = await import("../../api/sub-ens.js");
-      const resp = await getOwnedSubEns();
-      ensLabel = inviteLabel(resp.data?.names ?? []);
-    } catch {
-      // Falls back to the address link — the card is never empty.
-    }
+  onMount(() => {
+    if (auth.parent) void verifiedProfileName(auth.parent).then((name) => { ensLabel = name; });
   });
 
   const link = $derived(
@@ -51,7 +43,7 @@
       clearTimeout(copyTimer);
       copyTimer = setTimeout(() => (copied = false), 2000);
     } catch {
-      // Clipboard unavailable — the link is selectable text either way.
+      // Clipboard unavailable — a name link is selectable text either way.
     }
   }
 </script>
@@ -66,7 +58,7 @@
       real revenue.
     </p>
     <div class="link-row">
-      <span class="link mono" title={link}>{displayLink}</span>
+      {#if ensLabel}<span class="link mono" title={link}>{displayLink}</span>{/if}
       <button class="copy-btn" onclick={copy} aria-live="polite">
         {copied ? "Copied" : "Copy link"}
       </button>
@@ -120,6 +112,7 @@
     user-select: all;
   }
   .copy-btn {
+    min-height: 2.125rem;
     font-family: var(--font-display);
     font-weight: 600;
     font-size: 0.8125rem;
