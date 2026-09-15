@@ -4,6 +4,22 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## Name unlock: a ticket, your own Stripe verification, or a confirmed invite (#575, 2026-09-15)
+
+Owner decision 2026-09-14: every name is backed by a real payment or a real identity check, and
+a member's name IS their sub-name, so profile save and photo upload sit behind the same gate.
+`checkAttendeeGate` (`lib/gate/check.ts`) now passes on any of: a ticket binding, published
+events, the STORED Stripe flag (written only from Stripe's own answer - the flag the referral
+confirm already pays a revenue share on), or a confirmed referral, read from the issuer's
+referrer index at `CAMPAIGN_ISSUER_ADDRESS` (`lib/gate/referral-unlock.ts`). That index is
+append-only, so "confirmed" is memoised for the process and only "none" / "unavailable" expire
+(30s); the issuer primes the memo at confirm time. A read that cannot answer refuses, never
+allows. New `via` values `stripe` and `referral`; the client turns `stripe` into the Studio
+link as it does `organiser`. Every screen says the rule with one sentence
+(`attendee/gate/unlock-copy.ts`).
+
+---
+
 ## The member route: one WoCo app for every account, Studio as a workspace (#577–#580, #584–#586, 2026-09-15)
 
 Members join mostly to share an invite, so the signed-in app was rebuilt around that: a bottom bar

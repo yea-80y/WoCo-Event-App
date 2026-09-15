@@ -18,6 +18,7 @@
   import { canProtectAccount, needsBackupPrompt } from "../../auth/backup-prompt.js";
   import { navigate } from "../../router/router.svelte.js";
   import { gate } from "../gate/gate.svelte.js";
+  import { unlocksWhen } from "../gate/unlock-copy.js";
   import { inviteSheet } from "../../campaign/invite-sheet.svelte.js";
   import type { ReferrerIndexRead } from "../../campaign/records.js";
   import { studioRole } from "../../auth/studio-role.svelte.js";
@@ -138,8 +139,8 @@
             <span class="blank" aria-hidden="true"></span><span class="tld">.woco.eth</span>
           </p>
           <p class="note">
-            Your name, photo and bio unlock once a ticket is in your account: buy one while signed
-            in, or tap Add to WoCo in your ticket email.
+            {unlocksWhen("Your name, photo and bio", true)} Buy a ticket while signed in, or tap
+            Add to WoCo in your ticket email.
           </p>
           <button class="btn btn--text" onclick={() => navigate("/discover")}>Find an event</button>
         {/if}

@@ -16,7 +16,8 @@ export interface GateBindingSummary {
 
 export interface GateStatusData {
   gated: boolean;
-  via?: "ticket" | "organiser" | "disabled";
+  /** Why the account is unlocked — server rule: lib/gate/check.ts (#575). */
+  via?: "ticket" | "organiser" | "stripe" | "referral" | "disabled";
   bindings: GateBindingSummary[];
 }
 
