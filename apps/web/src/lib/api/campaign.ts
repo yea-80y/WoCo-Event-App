@@ -18,7 +18,6 @@
 
 import type { Hex0x, ReferralConfirmationV1 } from "@woco/shared";
 import { authGet, authPost } from "./client.js";
-import { canonicalUrl } from "../sub-ens/host-label.js";
 
 /** `POST /api/campaign/referrals/confirm`. */
 export interface ConfirmReferralResponse {
@@ -61,26 +60,10 @@ export function getReferralStatus() {
   return authGet<ReferralStatusResponse>("/api/campaign/referrals/status");
 }
 
-/**
- * The shareable referral link for an account, always on the canonical app host.
- *
- * Owner rule (2026-09-15): a gateway URL is never user-facing — WoCo names exist
- * so nothing has to be shown at one. This reverses #34's choice to keep
- * whatever origin the sharer was browsing, which from gateway.woco-net.com put
- * a `/bzz/{manifest}/` path in every invite and made the invite code denser.
- * #34's objection to a fixed host (old builds keep emitting it) is already
- * accepted for sign-in, which sends people to the same `CANONICAL_APP_ORIGIN`.
- *
- * In local dev the link therefore points at production; open `#/ref/…` on the
- * dev host to exercise the invite page there.
- *
- * `referrer` is an address or a WoCo sub-ENS label — the router accepts both,
- * so a sharer with a name gets `#/ref/theirvenue` instead of forty hex
- * characters, and the visitor who follows it is told a name rather than hex.
- */
-export function referralLink(referrer: Hex0x | string): string {
-  return canonicalUrl(`#/ref/${referrer}`);
-}
+// The referral link moved to lib/campaign/share-codes.ts, beside the other codes
+// the share sheet builds, where it runs under the plain-tsx suite. Re-exported so
+// existing callers are unaffected.
+export { referralLink } from "../campaign/share-codes.js";
 
 // Ref-link capture moved to lib/campaign/referral-capture.ts, which imports
 // nothing — the router reaches capture on every hash change and should not pull
