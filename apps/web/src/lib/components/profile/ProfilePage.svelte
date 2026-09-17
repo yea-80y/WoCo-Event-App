@@ -4,6 +4,7 @@
   import { getProfile, updateProfile, uploadAvatar, getProfileNameStatus } from "../../api/profiles.js";
   import { gate } from "../../attendee/gate/gate.svelte.js";
   import { isTicketRequired } from "../../api/attendee-gate.js";
+  import { unlocksWhen } from "../../attendee/gate/unlock-copy.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
   import { openEvent } from "../../attendee/events/open-event.js";
@@ -195,7 +196,7 @@
       const ok = await auth.ensureAccountSetup({ identity: true });
       if (!ok) { saveError = "Sign-in was cancelled — your changes were not saved."; return; }
       if (!(await ensureUnlocked())) {
-        saveError = "Your profile unlocks once a ticket is in your account.";
+        saveError = unlocksWhen("Your profile");
         return;
       }
       const prevAvatarRef = profile?.avatarRef;
@@ -234,7 +235,7 @@
       // silently didn't stick (the feed-signer setup path can throw or be
       // declined, and the write itself can fail after signing).
       saveError = isTicketRequired(err)
-        ? "Your profile unlocks once a ticket is in your account."
+        ? unlocksWhen("Your profile")
         : err instanceof Error ? err.message : "Failed to save profile — please try again.";
       console.error("Failed to save profile:", err);
     } finally {
@@ -297,7 +298,7 @@
       if (isTicketRequired(err)) {
         const unlocked = await gate.request();
         if (unlocked) return handleSubEnsClaim(label);
-        ensBindError = 'Your name unlocks once a ticket is in your account.';
+        ensBindError = unlocksWhen('Your name');
         return;
       }
       const described = subEnsErrorFrom(err, 'Failed to save name to profile');
@@ -682,7 +683,7 @@
       <div class="tab-body">
 
         {#if needsUnlock}
-          <!-- Attendee gate: profile features unlock with a purchased ticket -->
+          <!-- Attendee gate: rule in unlock-copy.ts / server lib/gate/check.ts -->
           <section class="settings-card unlock-card">
             <div class="unlock-row">
               <div class="unlock-icon">
@@ -693,9 +694,8 @@
               <div class="unlock-text">
                 <p class="unlock-title">Unlock your name, photo and bio</p>
                 <p class="unlock-sub">
-                  Open the email with your ticket and tap Add to WoCo. A ticket you
-                  buy while signed in is added for you, and putting an event on sale
-                  unlocks them too.
+                  {unlocksWhen("They", true)} Got a ticket? Open its email and tap Add to
+                  WoCo; one you buy while signed in is added for you.
                 </p>
               </div>
             </div>
