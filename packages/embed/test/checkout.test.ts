@@ -58,7 +58,7 @@ const baseInputs = {
   claimerEmail: "a@b.co",
   quantity: 1,
   marketingConsent: false,
-  cancelUrl: "https://venue.example/tickets",
+  pageUrl: "https://venue.example/tickets",
 };
 
 test("quantity 1 is omitted from the body (server default), >1 is sent", () => {
@@ -71,14 +71,21 @@ test("marketingConsent is always an explicit boolean — an untouched box is a r
   assert.equal(buildCheckoutBody({ ...baseInputs, marketingConsent: true }).marketingConsent, true);
 });
 
-test("no returnUrl is ever sent — the organiser's domain cannot pass ALLOWED_HOSTS", () => {
+test("the page goes as pageUrl, and no returnUrl or cancelUrl is sent - the server derives both redirects from it (#567)", () => {
   const body = buildCheckoutBody({
     ...baseInputs,
     encryptedOrder: { ephemeralPublicKey: "e", iv: "i", ciphertext: "c" },
     reservationId: "r1",
   });
+  assert.equal(body.pageUrl, "https://venue.example/tickets");
   assert.equal("returnUrl" in body, false);
-  assert.equal(body.cancelUrl, "https://venue.example/tickets");
+  assert.equal("cancelUrl" in body, false);
+});
+
+test("with no known page, neither pageUrl nor cancelUrl is sent, so the server's WoCo pages apply", () => {
+  const body = buildCheckoutBody({ ...baseInputs, pageUrl: undefined });
+  assert.equal("pageUrl" in body, false);
+  assert.equal("cancelUrl" in body, false);
 });
 
 test("absent encryptedOrder / reservationId are omitted, not sent as undefined", () => {

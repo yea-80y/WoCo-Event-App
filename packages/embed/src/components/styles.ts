@@ -376,6 +376,47 @@ export function getStyles(theme: "dark" | "light"): string {
       text-align: right;
     }
 
+    /* Return from Stripe (#567) - rendered from the server's confirmation only. */
+    .return-card {
+      margin-bottom: 0.75rem;
+      padding: 0.75rem;
+      border: 1px solid ${vars.border};
+      border-radius: 8px;
+      background: ${vars.bgSurface};
+      font-size: 0.8125rem;
+      color: ${vars.textSecondary};
+    }
+
+    .return-card--paid {
+      border-color: ${vars.success};
+    }
+
+    .return-card p {
+      margin: 0.25rem 0 0.5rem;
+    }
+
+    .return-card strong {
+      color: ${vars.text};
+    }
+
+    .return-title {
+      font-size: 0.9375rem;
+      font-weight: 600;
+      color: ${vars.text};
+    }
+
+    .return-dismiss {
+      padding: 0.375rem 0.75rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      border: 1px solid ${vars.border};
+      border-radius: 6px;
+      background: none;
+      color: ${vars.text};
+      cursor: pointer;
+      font-family: inherit;
+    }
+
     .loading {
       text-align: center;
       padding: 2rem;

@@ -37,7 +37,7 @@
     if (!showImage) attrs.push(`\n  show-image="false"`);
     if (!showDescription) attrs.push(`\n  show-description="false"`);
 
-    return `<script src="${defaultApiUrl}/embed/woco-embed.js?v=9"><\/script>\n<woco-tickets${attrs.join("")}\n><\/woco-tickets>`;
+    return `<script src="${defaultApiUrl}/embed/woco-embed.js?v=10"><\/script>\n<woco-tickets${attrs.join("")}\n><\/woco-tickets>`;
   }
 
   function buildIframeSnippet(): string {
@@ -49,6 +49,9 @@
     const frameUrl = `${defaultApiUrl}/embed/frame/${eventId}${qs ? `?${qs}` : ""}`;
     const frameId = `woco-frame-${eventId.slice(0, 8)}`;
 
+    // The static src keeps the widget working on builders that strip scripts;
+    // where the script runs it re-points the frame with this page's address, so
+    // buyers come back here after paying (#567).
     return `<iframe
   src="${frameUrl}"
   id="${frameId}"
@@ -56,13 +59,16 @@
   title="Ticket widget"
 ></iframe>
 <script>
-window.addEventListener('message', function(e) {
-  if (e.origin !== '${defaultApiUrl}') return;
+(function() {
   var frame = document.getElementById('${frameId}');
-  if (!frame || e.source !== frame.contentWindow) return;
-  if (e.data.type === 'woco-resize') frame.style.height = e.data.height + 'px';
-  if (e.data.type === 'woco-checkout') console.log('Checkout started:', e.data.detail);
-});
+  if (!frame) return;
+  frame.src = '${frameUrl}${qs ? "&" : "?"}page=' + encodeURIComponent(location.href);
+  window.addEventListener('message', function(e) {
+    if (e.origin !== '${defaultApiUrl}' || e.source !== frame.contentWindow) return;
+    if (e.data.type === 'woco-resize') frame.style.height = e.data.height + 'px';
+    if (e.data.type === 'woco-checkout') console.log('Checkout started:', e.data.detail);
+  });
+})();
 <\/script>`;
   }
 
