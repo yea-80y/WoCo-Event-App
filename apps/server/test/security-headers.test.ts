@@ -4,11 +4,9 @@
  * the ones an attacker actually probes — and the embed frame's CSP pins the
  * inline script by hash while staying frameable by anyone (that page's job).
  *
- * NOT covered here: that /embed/frame's template really interpolates
- * FRAME_INLINE_SCRIPT (index.ts boots the full server on import, and this suite
- * has no route-level harness — same gap recorded on #378 for the release route).
- * The pairing is kept honest structurally instead: the constant and the hash
- * live in one module, and the route imports both from it.
+ * That /embed/frame really serves FRAME_INLINE_SCRIPT is pinned in
+ * frame-page.test.ts, now that the page is built by lib/embed/frame-page.ts
+ * rather than inline in index.ts.
  */
 import test from "node:test";
 import assert from "node:assert/strict";

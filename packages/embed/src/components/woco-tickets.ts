@@ -19,7 +19,15 @@ import {
   buildOrderPayload,
   buildCheckoutBody,
   reserveOutcome,
+  parseReturn,
+  resolvePageUrl,
+  returnView,
+  withoutReturnMarker,
+  type ReturnView,
 } from "../checkout.js";
+import { formatCountdown, holdResult, secondsUntil, usableHold, type Hold } from "../reservation.js";
+
+const CLIENT_KEY_STORAGE = "woco:client-id";
 
 interface SeriesSummary {
   seriesId: string;
@@ -62,6 +70,12 @@ interface SeriesState {
   email: string;
   consent: boolean;
   orderFormData: Record<string, string>;
+  /** Seat hold placed when the buy panel opened (#568). */
+  hold: Hold | null;
+  /** Why a hold was refused, shown in the panel (sold out, held by others, sales closed). */
+  holdError: string | null;
+  /** The hold ran out with the panel still open; waits for "try again" or a quantity change. */
+  holdExpired: boolean;
 }
 
 export class WocoTickets extends HTMLElement {
@@ -70,6 +84,11 @@ export class WocoTickets extends HTMLElement {
   private seriesStates: Map<string, SeriesState> = new Map();
   private shadow: ShadowRoot;
   private delegationSetup = false;
+  /** Per-series request counter: a hold response that is no longer the latest request is dropped. */
+  private holdSeq: Map<string, number> = new Map();
+  private holdTimer: ReturnType<typeof setInterval> | null = null;
+  /** What this page load says about a return from Stripe (#567); null when it is not one. */
+  private returnState: ReturnView | null = null;
 
   static get observedAttributes() {
     return ["event-id", "api-url", "theme", "show-image", "show-description"];
@@ -86,7 +105,15 @@ export class WocoTickets extends HTMLElement {
       this.setupDelegation();
       this.delegationSetup = true;
     }
+    this.ensureHoldTimer();
+    this.checkReturn();
     this.loadEvent();
+  }
+
+  disconnectedCallback() {
+    // Holds are not released here, as in the main app: the ten minutes belong
+    // to the buyer, and the server drops an abandoned hold at its expiry.
+    this.stopHoldTimer();
   }
 
   attributeChangedCallback() {
@@ -126,6 +153,17 @@ export class WocoTickets extends HTMLElement {
   private get showImage() { return this.getAttribute("show-image") !== "false"; }
   private get showDescription() { return this.getAttribute("show-description") !== "false"; }
 
+  /** The organiser page the buyer is on; see resolvePageUrl. Comparing `window.top` is allowed cross-origin. */
+  private get pageUrl(): string | undefined {
+    let framed: boolean;
+    try {
+      framed = window.top !== window;
+    } catch {
+      framed = true;
+    }
+    return resolvePageUrl(this.getAttribute("page-url"), window.location.href, framed);
+  }
+
   private freshSeriesState(status: ClaimStatus | null = null): SeriesState {
     return {
       status,
@@ -136,6 +174,9 @@ export class WocoTickets extends HTMLElement {
       email: "",
       consent: false,
       orderFormData: {},
+      hold: null,
+      holdError: null,
+      holdExpired: false,
     };
   }
 
@@ -224,6 +265,7 @@ export class WocoTickets extends HTMLElement {
     this.shadow.innerHTML = `
       <style>${getStyles(this.theme)}</style>
       <div class="woco-container">
+        <div data-return-slot>${this.renderReturn()}</div>
         <div class="loading">Loading event...</div>
       </div>
     `;
@@ -269,6 +311,7 @@ export class WocoTickets extends HTMLElement {
           </div>
         </div>
         ${descHtml}
+        <div data-return-slot>${this.renderReturn()}</div>
         ${seriesHtml}
         <div class="powered-by">Powered by WoCo</div>
       </div>
@@ -296,6 +339,13 @@ export class WocoTickets extends HTMLElement {
     this.shadow.addEventListener("click", (e) => {
       const target = e.target as Element;
 
+      // data-return-dismiss — close the return-from-Stripe card
+      if (target.closest("[data-return-dismiss]")) {
+        this.returnState = null;
+        this.refreshReturn();
+        return;
+      }
+
       // data-buy — expand the buy panel
       const buyBtn = target.closest<HTMLElement>("[data-buy]");
       if (buyBtn) {
@@ -305,6 +355,9 @@ export class WocoTickets extends HTMLElement {
           st.buyOpen = true;
           st.error = null;
           this.updateSeries(sid);
+          // Hold when the buyer commits, not at payment: the hold matters most
+          // while they are filling in the form.
+          this.requestHold(sid);
         }
         return;
       }
@@ -316,12 +369,20 @@ export class WocoTickets extends HTMLElement {
         return;
       }
 
+      // data-hold-retry — the expired-hold banner's "try again"
+      const retryBtn = target.closest<HTMLElement>("[data-hold-retry]");
+      if (retryBtn) {
+        this.requestHold(retryBtn.getAttribute("data-hold-retry")!);
+        return;
+      }
+
       // data-cancel-order — collapse and reset the buy panel
       const cancelOrderBtn = target.closest<HTMLElement>("[data-cancel-order]");
       if (cancelOrderBtn) {
         const sid = cancelOrderBtn.getAttribute("data-cancel-order")!;
         const st = this.seriesStates.get(sid);
         if (st) {
+          this.dropHold(sid, st);
           st.buyOpen = false;
           st.orderFormData = {};
           st.email = "";
@@ -362,9 +423,11 @@ export class WocoTickets extends HTMLElement {
       if (qtyAttr && el instanceof HTMLSelectElement) {
         const st = this.seriesStates.get(qtyAttr);
         if (st) {
+          const prev = st.quantity;
           const q = parseInt(el.value, 10);
           st.quantity = Number.isInteger(q) && q >= 1 && q <= MAX_QTY ? q : 1;
           this.updateSeries(qtyAttr);
+          if (st.buyOpen && st.quantity !== prev) this.requestHold(qtyAttr);
         }
         return;
       }
@@ -385,6 +448,70 @@ export class WocoTickets extends HTMLElement {
         st.orderFormData[fieldId] = el.checked ? "yes" : "";
       }
     });
+  }
+
+  /**
+   * A page load that is a return from Stripe (#567). Nothing is shown as paid
+   * until the server confirms the session; a cancel needs no message at all.
+   */
+  private async checkReturn() {
+    const marker = parseReturn(this.pageUrl);
+    if (!marker || !this.eventId || !this.apiUrl) return;
+    this.forgetReturnMarker();
+    if (marker.kind === "cancelled") return;
+
+    this.returnState = { kind: "checking" };
+    this.refreshReturn();
+    const params = new URLSearchParams({ eventId: this.eventId, session_id: marker.sessionId });
+    const resp = await createApiClient(this.apiUrl)
+      .get(`/api/stripe/checkout-status?${params}`)
+      .catch(() => null);
+    this.returnState = returnView(resp);
+    this.refreshReturn();
+  }
+
+  /**
+   * Drop the marker from the address bar so a refresh is not a second return.
+   * Only a top-level page can rewrite its own URL; inside the frame the marker
+   * lives in the organiser's address bar, out of reach.
+   */
+  private forgetReturnMarker() {
+    try {
+      if (window.top !== window) return;
+      const next = withoutReturnMarker(window.location.href);
+      if (next !== window.location.href) history.replaceState(history.state, "", next);
+    } catch {
+      // A sandboxed host page may refuse history writes; the card still shows.
+    }
+  }
+
+  /** Swap just the return slot, so a buyer already typing in a panel keeps focus. */
+  private refreshReturn() {
+    const slot = this.shadow.querySelector("[data-return-slot]");
+    if (slot) slot.innerHTML = this.renderReturn();
+    else this.render();
+  }
+
+  /** `quantity` is an integer by returnView; the masked address is escaped like any API text. */
+  private renderReturn(): string {
+    const r = this.returnState;
+    if (!r) return "";
+    if (r.kind === "checking") {
+      return `<div class="return-card" role="status">Confirming your payment...</div>`;
+    }
+    if (r.kind === "paid") {
+      const n = r.quantity;
+      const to = r.emailMasked ? `<strong>${this.esc(r.emailMasked)}</strong>` : "the address you entered";
+      return `<div class="return-card return-card--paid" role="status">
+          <div class="return-title">Payment confirmed</div>
+          <p>${n > 1 ? `Your ${n} tickets are` : "Your ticket is"} on the way to ${to}. Show the QR code in the email at the door.</p>
+          <button class="return-dismiss" data-return-dismiss>Done</button>
+        </div>`;
+    }
+    const message = r.kind === "unpaid"
+      ? "This payment was not completed, so no ticket was issued. You can try again below."
+      : "We could not confirm this payment here. If it went through, your ticket is on its way by email.";
+    return `<div class="return-card" role="status"><p>${message}</p><button class="return-dismiss" data-return-dismiss>Dismiss</button></div>`;
   }
 
   /**
@@ -493,6 +620,7 @@ export class WocoTickets extends HTMLElement {
 
     return `
       <div class="order-form" data-order-form="${this.esc(s.seriesId)}">
+        <div class="hold-slot" data-hold-slot="${this.esc(s.seriesId)}">${this.renderHold(s.seriesId, st)}</div>
         ${this.hasOrderForm ? this.renderOrderFields(s.seriesId, st) : ""}
         <label class="form-field">
           <span class="form-label">Email for your ticket <span class="required">*</span></span>
@@ -563,6 +691,142 @@ export class WocoTickets extends HTMLElement {
     `;
   }
 
+  /** The hold pill, or the banner explaining why there is no hold. `quantity` is an integer by holdResult. */
+  private renderHold(seriesId: string, st: SeriesState): string {
+    if (st.hold) {
+      const q = st.hold.quantity;
+      const secs = secondsUntil(st.hold.expiresAt, Date.now());
+      // The countdown is aria-hidden so a screen reader announces the hold once, not every second.
+      return `<div class="hold-pill" role="status"><span class="hold-dot"></span>${q} ticket${q === 1 ? "" : "s"} reserved · <span data-hold-countdown="${this.esc(seriesId)}" aria-hidden="true">${formatCountdown(secs)}</span> to checkout</div>`;
+    }
+    if (st.holdExpired) {
+      return `<div class="hold-banner" role="alert">Your hold has expired - change quantity or <button class="hold-retry" data-hold-retry="${this.esc(seriesId)}">try again</button>.</div>`;
+    }
+    if (st.holdError) {
+      return `<div class="hold-banner" role="alert">${this.esc(st.holdError)}</div>`;
+    }
+    return "";
+  }
+
+  /** Swap just the hold slot, never the card: a card re-render would drop the buyer's focus mid-typing. */
+  private refreshHold(seriesId: string) {
+    const st = this.seriesStates.get(seriesId);
+    const slot = this.shadow.querySelector(`[data-hold-slot="${CSS.escape(seriesId)}"]`);
+    if (st && slot) slot.innerHTML = this.renderHold(seriesId, st);
+  }
+
+  /**
+   * Place or re-issue this panel's seat hold (#568). A quantity change passes
+   * the old id so the server releases it inside the same per-series lock,
+   * instead of the buyer's own hold blocking the new count.
+   */
+  private async requestHold(seriesId: string) {
+    const st = this.seriesStates.get(seriesId);
+    if (!st || !this.api) return;
+    const seq = (this.holdSeq.get(seriesId) ?? 0) + 1;
+    this.holdSeq.set(seriesId, seq);
+    const replaceReservationId = st.hold?.reservationId;
+
+    const resp = await this.api.post<Hold>(
+      `/api/events/${this.eventId}/series/${seriesId}/reserve`,
+      { quantity: st.quantity, ...(replaceReservationId ? { replaceReservationId } : {}) },
+      { headers: this.clientKeyHeader() },
+    ).catch(() => null);
+    const result = holdResult(resp);
+
+    const cur = this.seriesStates.get(seriesId);
+    if (this.holdSeq.get(seriesId) !== seq || !cur?.buyOpen) {
+      // A newer request swaps this hold out by client key; a closed panel has
+      // nothing that will, so give the seats back now.
+      if (result.kind === "held" && !cur?.buyOpen) this.releaseHold(seriesId, result.hold.reservationId);
+      return;
+    }
+
+    cur.holdExpired = false;
+    cur.holdError = null;
+    if (result.kind === "held") {
+      cur.hold = result.hold;
+      this.ensureHoldTimer();
+    } else if (result.kind === "refused") {
+      // A refused replace has already released the old hold server-side.
+      cur.hold = null;
+      cur.holdError = result.message;
+    }
+    this.refreshHold(seriesId);
+  }
+
+  /** Cancel: ignore any hold still on its way and hand back the live one. */
+  private dropHold(seriesId: string, st: SeriesState) {
+    this.holdSeq.set(seriesId, (this.holdSeq.get(seriesId) ?? 0) + 1);
+    if (st.hold) this.releaseHold(seriesId, st.hold.reservationId);
+    st.hold = null;
+    st.holdError = null;
+    st.holdExpired = false;
+  }
+
+  /** Best-effort, like the main app's: a hold that is never released still expires server-side. */
+  private releaseHold(seriesId: string, reservationId: string) {
+    this.api?.post(
+      `/api/events/${this.eventId}/series/${seriesId}/reserve/release`,
+      { reservationId },
+      { keepalive: true },
+    ).catch(() => {});
+  }
+
+  /**
+   * The per-browser key the main app also sends (apps/web/src/lib/api/reservations.ts):
+   * the server releases this browser's older hold on the series before
+   * allocating a new one, so a refresh or a second tab cannot stack holds.
+   */
+  private clientKeyHeader(): Record<string, string> {
+    try {
+      let key = localStorage.getItem(CLIENT_KEY_STORAGE);
+      if (!key || key.length < 8) {
+        key = crypto.randomUUID();
+        localStorage.setItem(CLIENT_KEY_STORAGE, key);
+      }
+      return { "X-Client-Key": key };
+    } catch {
+      return {};
+    }
+  }
+
+  private ensureHoldTimer() {
+    if (this.holdTimer !== null) return;
+    for (const [, st] of this.seriesStates) {
+      if (st.hold) {
+        this.holdTimer = setInterval(() => this.tickHolds(), 1000);
+        return;
+      }
+    }
+  }
+
+  private stopHoldTimer() {
+    if (this.holdTimer === null) return;
+    clearInterval(this.holdTimer);
+    this.holdTimer = null;
+  }
+
+  /** Writes only the countdown text each second; the slot re-renders once, at expiry. */
+  private tickHolds() {
+    const now = Date.now();
+    let live = false;
+    for (const [sid, st] of this.seriesStates) {
+      if (!st.hold) continue;
+      const secs = secondsUntil(st.hold.expiresAt, now);
+      if (secs > 0) {
+        live = true;
+        const el = this.shadow.querySelector(`[data-hold-countdown="${CSS.escape(sid)}"]`);
+        if (el) el.textContent = formatCountdown(secs);
+      } else {
+        st.hold = null;
+        st.holdExpired = true;
+        this.refreshHold(sid);
+      }
+    }
+    if (!live) this.stopHoldTimer();
+  }
+
   /**
    * Validate required order fields and encrypt the buyer's answers (plus the
    * email, mirroring the main checkout's inline seal) to the organiser's
@@ -620,18 +884,31 @@ export class WocoTickets extends HTMLElement {
     this.updateSeries(seriesId);
 
     try {
-      // Hold the seats while the buyer is at Stripe — see reserveOutcome for
-      // why every failure short of "Insufficient seats" proceeds without one.
-      const rsv = await this.api.post<{ reservationId: string }>(
-        `/api/events/${this.eventId}/series/${seriesId}/reserve`,
-        { quantity: st.quantity },
-      ).catch(() => null);
-      const outcome = reserveOutcome(rsv);
-      if (outcome.kind === "blocked") {
-        st.error = outcome.message;
-        st.busy = false;
-        this.updateSeries(seriesId);
-        return;
+      // The panel's hold carries into checkout while it still covers this
+      // quantity. Otherwise hold at the click, as before — see reserveOutcome
+      // for why every failure short of "Insufficient seats" proceeds without one.
+      this.holdSeq.set(seriesId, (this.holdSeq.get(seriesId) ?? 0) + 1);
+      let reservationId = usableHold(st.hold, st.quantity, Date.now())?.reservationId;
+      if (!reservationId) {
+        const rsv = await this.api.post<{ reservationId: string }>(
+          `/api/events/${this.eventId}/series/${seriesId}/reserve`,
+          { quantity: st.quantity, ...(st.hold ? { replaceReservationId: st.hold.reservationId } : {}) },
+          { headers: this.clientKeyHeader() },
+        ).catch(() => null);
+        const outcome = reserveOutcome(rsv);
+        if (outcome.kind === "blocked") {
+          st.hold = null;
+          st.error = outcome.message;
+          st.busy = false;
+          this.updateSeries(seriesId);
+          return;
+        }
+        const fresh = holdResult(rsv);
+        if (fresh.kind === "held") {
+          st.hold = fresh.hold;
+          this.ensureHoldTimer();
+        }
+        reservationId = outcome.kind === "reserved" ? outcome.reservationId : undefined;
       }
 
       const body = buildCheckoutBody({
@@ -640,9 +917,9 @@ export class WocoTickets extends HTMLElement {
         claimerEmail: email,
         quantity: st.quantity,
         marketingConsent: st.consent,
-        cancelUrl: window.location.href,
+        pageUrl: this.pageUrl,
         encryptedOrder,
-        reservationId: outcome.kind === "reserved" ? outcome.reservationId : undefined,
+        reservationId,
       });
 
       const resp = await this.api.post<never>("/api/stripe/create-checkout", body);
@@ -653,6 +930,11 @@ export class WocoTickets extends HTMLElement {
         this.updateSeries(seriesId);
         return;
       }
+
+      // The webhook consumes the hold now; stop counting it down so a Back
+      // from Stripe does not show a timer for a hold that is spoken for.
+      st.hold = null;
+      this.refreshHold(seriesId);
 
       this.dispatchEvent(new CustomEvent("woco-checkout", {
         detail: { seriesId, quantity: st.quantity },
