@@ -4,9 +4,10 @@
   import { getProfile, updateProfile, uploadAvatar, getProfileNameStatus } from "../../api/profiles.js";
   import { gate } from "../../attendee/gate/gate.svelte.js";
   import { isTicketRequired } from "../../api/attendee-gate.js";
+  import { unlocksWhen } from "../../attendee/gate/unlock-copy.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
-  import { setExternalEventApi, setEventFeedSigner } from "../../api/event-api-registry.js";
+  import { openEvent } from "../../attendee/events/open-event.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { authPost, authGet } from "../../api/client.js";
   import { rememberLabel } from "../../profile/label-cache.js";
@@ -21,6 +22,7 @@
   import { readBadge } from "../../campaign/records.js";
   import type { BadgeV1, Hex0x } from "@woco/shared";
   import WalletTab from "./WalletTab.svelte";
+  import PassportTab from "../../attendee/passport/PassportTab.svelte";
   import SubENSPicker from "../../creator/builder/SubENSPicker.svelte";
   import DiscardNameDialog from "../../creator/builder/DiscardNameDialog.svelte";
   import LikeButton from "../likes/LikeButton.svelte";
@@ -30,13 +32,15 @@
   import { isPastEvent } from "../../utils/events.js";
   import { onMount, onDestroy } from "svelte";
 
-  type ProfileTab = "profile" | "wallet" | "events";
+  type ProfileTab = "profile" | "passport" | "wallet" | "events";
 
   interface Props {
     address?: string;
+    /** "passport" opens on the passport (`#/tickets`). */
+    tab?: string;
   }
 
-  let { address: propAddress }: Props = $props();
+  let { address: propAddress, tab: propTab }: Props = $props();
 
   const viewAddress = $derived(propAddress?.toLowerCase() || auth.parent?.toLowerCase() || "");
 
@@ -96,6 +100,10 @@
   let eventsNow = $state(Date.now());
   let eventsClockTimer: ReturnType<typeof setInterval>;
   let activeTab = $state<ProfileTab>("profile");
+  // Follows the route, so leaving `#/tickets` for your profile lands on Profile.
+  $effect(() => {
+    activeTab = propTab === "passport" ? "passport" : "profile";
+  });
   let addressCopied = $state(false);
   let revokingAll = $state(false);
   let revokeSuccess = $state(false);
@@ -188,7 +196,7 @@
       const ok = await auth.ensureAccountSetup({ identity: true });
       if (!ok) { saveError = "Sign-in was cancelled — your changes were not saved."; return; }
       if (!(await ensureUnlocked())) {
-        saveError = "Link a ticket to unlock your profile first.";
+        saveError = unlocksWhen("Your profile");
         return;
       }
       const prevAvatarRef = profile?.avatarRef;
@@ -227,7 +235,7 @@
       // silently didn't stick (the feed-signer setup path can throw or be
       // declined, and the write itself can fail after signing).
       saveError = isTicketRequired(err)
-        ? "Link a ticket to unlock your profile first."
+        ? unlocksWhen("Your profile")
         : err instanceof Error ? err.message : "Failed to save profile — please try again.";
       console.error("Failed to save profile:", err);
     } finally {
@@ -290,7 +298,7 @@
       if (isTicketRequired(err)) {
         const unlocked = await gate.request();
         if (unlocked) return handleSubEnsClaim(label);
-        ensBindError = 'Link a ticket to unlock your account first';
+        ensBindError = unlocksWhen('Your name');
         return;
       }
       const described = subEnsErrorFrom(err, 'Failed to save name to profile');
@@ -414,12 +422,6 @@
     events.filter(e => isPastEvent(e, eventsNow))
       .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime()),
   );
-
-  function openEvent(event: EventDirectoryEntry) {
-    if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
-    setEventFeedSigner(event.eventId, event.creatorFeedSigner);
-    navigate(`/event/${event.eventId}`);
-  }
 
   function switchTab(tab: ProfileTab) {
     activeTab = tab;
@@ -646,6 +648,13 @@
       >Profile</button>
       <button
         class="tab-btn"
+        class:tab-active={activeTab === "passport"}
+        onclick={() => switchTab("passport")}
+        role="tab"
+        aria-selected={activeTab === "passport"}
+      >Passport</button>
+      <button
+        class="tab-btn"
         class:tab-active={activeTab === "wallet"}
         onclick={() => switchTab("wallet")}
         role="tab"
@@ -674,7 +683,7 @@
       <div class="tab-body">
 
         {#if needsUnlock}
-          <!-- Attendee gate: profile features unlock with a purchased ticket -->
+          <!-- Attendee gate: rule in unlock-copy.ts / server lib/gate/check.ts -->
           <section class="settings-card unlock-card">
             <div class="unlock-row">
               <div class="unlock-icon">
@@ -683,15 +692,14 @@
                 </svg>
               </div>
               <div class="unlock-text">
-                <p class="unlock-title">Unlock your account with a ticket</p>
+                <p class="unlock-title">Unlock your name, photo and bio</p>
                 <p class="unlock-sub">
-                  Your profile, name and follows unlock once you link a ticket —
-                  use the link in your purchase email, or a ticket claimed with
-                  this account.
+                  {unlocksWhen("They", true)} Got a ticket? Open its email and tap Add to
+                  WoCo; one you buy while signed in is added for you.
                 </p>
               </div>
             </div>
-            <button class="save-btn" onclick={() => gate.request()}>Link a ticket</button>
+            <button class="save-btn" onclick={() => navigate("/discover")}>Find an event</button>
           </section>
         {/if}
 
@@ -885,6 +893,12 @@
           </div>
         </section>
 
+      </div>
+    {/if}
+
+    {#if activeTab === "passport"}
+      <div class="tab-body">
+        <PassportTab {badge} />
       </div>
     {/if}
 

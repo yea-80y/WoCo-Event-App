@@ -18,6 +18,8 @@
   import DiscardNameDialog from "../builder/DiscardNameDialog.svelte";
   import { discardPlanFor } from "../../sub-ens/discard-availability.js";
   import { onboarding } from "./onboarding.svelte.js";
+  import { studioRole } from "../../auth/studio-role.svelte.js";
+  import { canProtectAccount } from "../../auth/backup-prompt.js";
   import WelcomeModal from "./WelcomeModal.svelte";
   import GettingStartedCard from "./GettingStartedCard.svelte";
   import { navigate } from "../../router/router.svelte.js";
@@ -77,7 +79,7 @@
   // Kernel-backed kinds can install guardian recovery (see AccountRecoverySetup.svelte
   // for the full rationale). Self-custody kinds (web3/local/coinbase) recover from
   // their own wallet, so the safety panel has nothing useful to show them.
-  const canProtect = $derived(auth.kind === "passkey" || auth.kind === "web3auth");
+  const canProtect = $derived(canProtectAccount(auth.kind));
   // Monotonic token to discard results from a prior sign-in / account switch.
   // Without it, an in-flight refresh from the previous identity could land
   // after sign-out (or after a new sign-in) and repopulate stale numbers.
@@ -207,6 +209,12 @@
   });
 
   onDestroy(() => clearInterval(clockTimer));
+
+  // Remember on this device that the account organises, so WoCo shows the way
+  // back into Studio. Display only — nothing is gated on it.
+  $effect(() => {
+    if (events.length > 0 || sites.length > 0 || stripeReady === true) studioRole.mark(auth.parent);
+  });
 
   // Drive data loading off auth.parent so sign-in, sign-out and account
   // switching all flow through the same path. Sign-out clears the stat

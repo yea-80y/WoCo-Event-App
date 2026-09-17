@@ -63,6 +63,17 @@ export function getStripeAccount(organiserAddress: string): StripeAccountRecord 
   return store[organiserAddress.toLowerCase()];
 }
 
+/**
+ * Stripe's verdict on this account as last heard from Stripe: charges AND
+ * payouts enabled. Written only from Stripe's own answer (routes/stripe.ts, the
+ * account.updated webhook, the live checks that sync it), so the referral
+ * confirm (routes/campaign.ts) and the attendee gate (lib/gate/check.ts) read
+ * one flag and mean the same thing by "verified".
+ */
+export function stripeVerificationComplete(address: string): boolean {
+  return getStripeAccount(address)?.onboardingComplete === true;
+}
+
 export function setStripeAccount(
   organiserAddress: string,
   stripeAccountId: string,

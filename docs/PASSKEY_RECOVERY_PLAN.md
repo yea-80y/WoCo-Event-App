@@ -779,6 +779,11 @@ in the SAME weighted-ECDSA guardian (§4); this section is about *which* signers
   on-chain truth the UI lists. So: **per-backup "Remove" exists**, "add another" APPENDS, and
   re-installing REPLACES — the resurrection hazard above is over (proven live on a real Kernel route
   by `apps/web/scripts/recovery-hook-harness.ts`: revoke refuses, re-install does not resurrect).
+  **#571 (2026-09-13):** that replace rests on the install's `0xff` hook flag. Kernel's route
+  uninstall never calls the hook, so the set outlives the route, and an install without the flag
+  would keep it. "Remove all backups" therefore sends ONE batch - `uninstallModule(3, …)` then
+  `clearGuardians()` - and reads back an empty set as well as a gone route. WoCo-Contracts
+  `test/WoCoGuardianHookKernel.t.sol` runs these paths against the deployed Kernel v3.1 bytecode.
   Routes installed before the switch still point at the ZeroDev hook: recognised on read
   (`hookKind: "legacy"`), still recover through it, no per-guardian revoke, and the next "add"
   REPLACES the route (the confirm step says so). Client: `guardian-hook.ts` (ABI, calldata,

@@ -3,6 +3,7 @@
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { checkSubEnsLabel, claimSubEnsLabel, getOwnedSubEns, type OwnedSubEnsName } from "../../api/sub-ens.js";
   import { gate } from "../../attendee/gate/gate.svelte.js";
+  import { unlocksWhen } from "../../attendee/gate/unlock-copy.js";
   import { isTicketRequired } from "../../api/attendee-gate.js";
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
@@ -306,12 +307,12 @@
           description: profileBio.trim() || undefined,
         });
       let res = await attempt();
-      // Attendee gate: names need a ticket-unlocked account (organisers pass
-      // automatically). Open the unlock flow and retry once.
+      // Attendee gate: names need an unlocked account (rule: server
+      // lib/gate/check.ts). Open the unlock flow and retry once.
       if (!res.ok && isTicketRequired(res.error)) {
         const unlocked = await gate.request();
         if (!unlocked) {
-          claimError = 'Claiming a name needs a ticket-unlocked account.';
+          claimError = unlocksWhen('Your name');
           return;
         }
         res = await attempt();
