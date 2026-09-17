@@ -117,6 +117,10 @@
   {:else}
     <h1 class="title">Contacts</h1>
     <p class="lead">The people you've invited and the accounts you follow.</p>
+    <div class="share-row">
+      <button class="btn btn--primary small" onclick={() => inviteSheet.show("invite")}>Invite to host</button>
+      <button class="btn btn--ghost small" onclick={() => inviteSheet.show("follow")}>Follow me</button>
+    </div>
 
     <section class="block" aria-labelledby="invited-title">
       <h2 class="section-label with-count"id="invited-title">
@@ -213,7 +217,8 @@
     line-height: 1.05;
     letter-spacing: -0.035em;
   }
-  .lead { margin: 0 0 1.75rem; font-size: 0.9375rem; color: var(--text-secondary); max-width: 36ch; }
+  .lead { margin: 0 0 1rem; font-size: 0.9375rem; color: var(--text-secondary); max-width: 36ch; }
+  .share-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 2rem; }
 
   .block { margin-bottom: 2rem; }
   .with-count { display: flex; align-items: baseline; gap: 0.5rem; }
