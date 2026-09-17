@@ -3,7 +3,9 @@
 
   `release` BURNS the ERC-721 token. `owner(node)` becomes zero, the registrar's
   `available()` says true again, and anyone may re-mint the label; the registry
-  keeps only `lastRelease` (who held it, when) and nothing reads it. There is no
+  keeps only `lastRelease` (who held it, when), which the registrar reads for
+  one thing — taking back your own released label costs no mint allowance.
+  A name with names beneath it cannot be discarded until they are gone. There is no
   undo and no grace period — the 30-day previous-holder hold was examined and
   DROPPED (plan doc, 2026-09-02). So the confirmation is the label, typed: the
   one gesture a mis-click cannot produce.
@@ -15,6 +17,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { SUB_ENS_DEFAULT_CHAIN_ID, SUB_ENS_DEPLOYMENTS, subEnsName } from "@woco/shared";
   import type { Hex0x } from "@woco/shared";
+  import type { ReleaseTypedData } from "../../sub-ens/release-digest.js";
   import { discardPlanFor } from "../../sub-ens/discard-availability.js";
   import { subEnsErrorFrom, subEnsErrorDetail } from "../../sub-ens/errors.js";
   import { getEthersProvider } from "../../wallet/provider.js";
@@ -43,9 +46,10 @@
   /**
    * Build the rails for THIS login.
    *
-   * The signer signs 32 RAW BYTES — never the hex string that spells them (see
-   * `release.ts`, which explains what a text signature costs). `kernelRelease`
-   * is deliberately absent: the Kernel lives on another chain than the names,
+   * The signer signs EIP-712 typed data whose domain names the registry's
+   * chain, and wallets refuse `eth_signTypedData_v4` for a chain that is not
+   * the active one, so the wallet is switched first. `kernelRelease` is
+   * deliberately absent: the Kernel lives on another chain than the names,
    * so a sudo op there could not touch this registry. #489 wires it when the
    * account moves; until then the AA gate above means we never get here.
    */
@@ -61,15 +65,18 @@
       throw new Error("Discarding from this account isn't wired up yet — nothing was signed.");
     }
     const { JsonRpcSigner } = await import("ethers");
-    const signer = new JsonRpcSigner(await getEthersProvider(), parent);
 
     return {
-      signInnerHash: (inner: Uint8Array) => signer.signMessage(inner),
+      signTypedData: async ({ domain, types, message }: ReleaseTypedData) => {
+        await switchChain(SUB_ENS_DEFAULT_CHAIN_ID);
+        const signer = new JsonRpcSigner(await getEthersProvider(), parent);
+        return signer.signTypedData(domain, types, message);
+      },
       ...(plan.rails.includes("wallet")
         ? {
             walletRelease: async (node: Hex0x) => {
-              // The wallet must be ON the names' chain to submit; the relay
-              // signature above did not need it (personal_sign is chain-free).
+              // The wallet must be ON the names' chain to submit. Signing put
+              // it there, but it can be switched away in between.
               await switchChain(SUB_ENS_DEFAULT_CHAIN_ID);
               const { Contract } = await import("ethers");
               const fresh = new JsonRpcSigner(await getEthersProvider(), parent);

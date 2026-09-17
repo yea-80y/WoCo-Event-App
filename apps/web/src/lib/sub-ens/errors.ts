@@ -54,8 +54,8 @@ const MS_PER_DAY = 86_400_000;
 export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescription {
   switch (env.error) {
     case "mint_rate_cap": {
-      // `WoCoRegistrar._consumeMintAllowance` reverts with
-      // `w.start + mintWindowSeconds` — a block timestamp, so UNIX SECONDS.
+      // `WoCoRegistrar._consumeMintAllowance` reverts with the window's
+      // recorded end — a block timestamp, so UNIX SECONDS.
       const secs = env.data?.windowResetsAt;
       return {
         title: "You've registered as many names as you can for now.",
@@ -82,6 +82,16 @@ export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescri
       return { title: "Too many requests right now.", detail: "Wait a few minutes and try again." };
     case "release_in_flight":
       return { title: "That name is already being released.", detail: "Give it a minute, then refresh." };
+    case "has_children":
+      return {
+        title: "This name has names beneath it.",
+        detail: "Release or move those first, then this one.",
+      };
+    case "expiration_too_far":
+      return {
+        title: "The network's clock is behind, so that signature can't be used yet.",
+        detail: "Try again in a few minutes.",
+      };
     case "expiration_out_of_range":
       return { title: "That signature expired before it reached us.", detail: "Try again." };
     case "not_owner":
@@ -107,6 +117,26 @@ export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescri
       // Several routes answer with prose already ("You do not own that name").
       // Pass it through rather than replacing a specific message with a vague one.
       return { title: env.error || "Something went wrong" };
+  }
+}
+
+/**
+ * A release-relay refusal the holder must SEE rather than have routed round to
+ * their own rail, as the sentence to show; `null` for one the next rail may get
+ * past.
+ *
+ * `profile_name`: the name the holder is known by, which the server declines to
+ * sponsor on purpose. `has_children`: the registry refuses to release a name
+ * with names beneath it, so every rail would fail the same way.
+ */
+export function unroutableReleaseRefusal(error: string | undefined): string | null {
+  switch (error) {
+    case "profile_name":
+      return "That's the name your profile is known by. Change your profile name first, then release this one.";
+    case "has_children":
+      return "This name has names beneath it. Release or move those first, then this one.";
+    default:
+      return null;
   }
 }
 

@@ -3,9 +3,8 @@
  * sponsor key on an IRREVERSIBLE action.
  *
  * The security boundary is on-chain: `releaseWithSignature` checks that
- * `signer` is the holder or an ERC-721 approvee BEFORE it looks at the
- * signature, so the sponsor can only relay what a holder authorised and can
- * never forge one. What the ROUTE owes is therefore not authorisation — it is
+ * `signer` is the holder BEFORE it looks at the signature (registry v2.1), so
+ * the sponsor can only relay what a holder authorised and can never forge one. What the ROUTE owes is therefore not authorisation — it is
  * everything around it:
  *
  *   · `signer` and `node` derived server-side, never taken from the body
@@ -192,9 +191,34 @@ test("both rate budgets are peeked before either is charged", () => {
 });
 
 test("contract refusals are named, not 500s", () => {
-  for (const name of ["Unauthorized", "SignatureExpired", "ReleaseUnregistered", "ReleaseBaseNode"]) {
+  for (const name of [
+    "Unauthorized",
+    "SignatureExpired",
+    "ReleaseUnregistered",
+    "ReleaseBaseNode",
+    "HasChildren",
+    "ExpirationTooFar",
+  ]) {
     assert.match(RELAY, new RegExp(`"${name}"`), `${name} must map to a specific status`);
   }
+});
+
+test("a name with names beneath it is its own code, which the client shows rather than routes round", () => {
+  // The client's `unroutableReleaseRefusal` keys on exactly this string.
+  assert.match(RELAY, /name === "HasChildren"\)\s*return c\.json\(\{ ok: false, error: "has_children" \}, 409\);/);
+  assert.match(
+    RELAY,
+    /name === "ExpirationTooFar"\)\s*return c\.json\(\{ ok: false, error: "expiration_too_far" \}, 400\);/,
+  );
+});
+
+test("ethers can name the v2.1 refusals: their fragments are in the registry ABI", () => {
+  // ethers v6 decodes a custom error by NAME only when its fragment is in the
+  // ABI; without these the route's comparisons never match and every refusal
+  // is a 500. The selectors are pinned on the contract side
+  // (`L2RegistryV2.t.sol`, test_Abi_TheSelectorsTheAppEncodesByHandAreUnchanged).
+  assert.match(CHAIN, /"error HasChildren\(bytes32 node, uint256 count\)"/);
+  assert.match(CHAIN, /"error ExpirationTooFar\(\)"/);
 });
 
 test("the signature never reaches a log line", () => {
