@@ -36,7 +36,7 @@ import {
   KERNEL_SELECTOR_CONFIG_ABI,
   RECOVERY_EXECUTOR_FN,
   buildRegisterGuardianCallData,
-  buildUninstallRecoveryCallData,
+  buildRemoveRecoveryCalls,
   recoveryRouteSelector,
 } from "./recovery-route.js";
 import type { GuardianConfig } from "./guardian-config.js";
@@ -767,12 +767,10 @@ export async function revokeGuardianOnChain(
   return { userOpHash, txHash, blockNumber };
 }
 
-// --- Removing recovery (#165) ----------------------------------------------
+// --- Removing recovery (#165, #571) ------------------------------------------
 //
-// There is NO per-guardian revoke. The ZeroDev caller hook's `onInstall` ORs each
-// guardian into `allowed[guardian][kernel]` and nothing ever clears it, so a
-// replaced backup keeps permanent takeover power (#148). What CAN be removed is
-// the SELECTOR ROUTE itself, which sits in front of every guardian:
+// What disables EVERY guardian at once is removing the SELECTOR ROUTE, which sits
+// in front of all of them:
 //
 //   Kernel.sol:454-456   uninstallModule(3, …) → _uninstallSelector(bytes4(deInitData[0:4]), deInitData[4:])
 //   SelectorManager:63-73 zeroes hook, target and callType for that selector
@@ -783,10 +781,13 @@ export async function revokeGuardianOnChain(
 // `zerodevapp/kernel@release/v3.1`, and the live account reports
 // `accountId() == "kernel.advanced.v0.3.1"`.
 //
-// TWO THINGS THIS DOES NOT DO, and the product must not claim otherwise:
+// TWO THINGS THE UNINSTALL ALONE DOES NOT DO, and the product must not claim otherwise:
 //  - `_uninstallSelector` discards the hook it returns and never calls its
-//    `onUninstall`, so `allowed[…]` survives. RE-INSTALLING against the same hook
-//    address resurrects every past guardian.
+//    `onUninstall`, so the hook's own storage survives. For the legacy ZeroDev hook
+//    that is `allowed[…]`, which nothing can clear, so no install ever names that
+//    hook again (#148). For the WoCo hook it is the guardian set, which a later
+//    install keeps unless it carries the 0xff flag, so `removeAllBackups` empties
+//    the set in the same batch (#571).
 //  - it cannot un-disclose the escrow: each guardian's SOC still holds a bundle
 //    sealed to it (identitySeed + feed-signer key). Removal ends TAKEOVER, not the
 //    secrets a backup was already given.
@@ -939,13 +940,14 @@ export interface RemoveAllBackupsResult {
 
 /**
  * "Remove all backups" — one sudo userOp that uninstalls the `doRecovery` route,
- * disabling EVERY registered guardian at once (per-guardian revoke does not exist).
+ * disabling EVERY registered guardian at once, and empties the WoCo hook's set in
+ * the same batch so no later install can revive it (#571; `buildRemoveRecoveryCalls`).
  *
  * Success is proven by an on-chain READ-BACK, never by the transaction: Kernel
  * does not revert when the selector was never installed, so a green receipt says
- * nothing about whether anything was removed. Throws if the route survives, and
- * throws if the chain cannot be re-read afterwards — an unverified removal must
- * never be reported as done.
+ * nothing about whether anything was removed. Throws if the route or any listed
+ * guardian survives, and throws if the chain cannot be re-read afterwards — an
+ * unverified removal must never be reported as done.
  *
  * WHY IT SENDS THE USEROP EVEN WHEN THE ROUTE LOOKS ABSENT. `getCode` and
  * `selectorConfig` are answers from ONE load-balanced RPC, not chain truth. A
@@ -982,7 +984,7 @@ export async function removeAllBackups(
 
   const d = await loadRecoveryDeps();
   const { userOpHash, txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
-    callData: buildUninstallRecoveryCallData(d),
+    calls: buildRemoveRecoveryCalls(d, builtKernel.address as Address),
   });
 
   // PINNED to the block the uninstall landed in. Asked at "latest", this read can
@@ -1002,6 +1004,23 @@ export async function removeAllBackups(
     throw new Error(
       `Couldn't confirm the removal on-chain yet (tx ${txHash}). It may well have worked — ` +
         "reopen this screen in a moment to check before assuming either way.",
+    );
+  }
+  // A gone route is not the whole removal (#571): the hook's set must be empty too,
+  // or a later install that lacks the 0xff flag would bring it back. Read at the SAME
+  // block, from the hook's own storage, for the reason every write here does.
+  const set = await readGuardianSet(builtKernel.address, blockNumber);
+  if (set.state === "unknown") {
+    throw new Error(
+      `Couldn't confirm the removal onchain yet (tx ${txHash}). It may well have worked - ` +
+        "reopen this screen in a moment to check before assuming either way.",
+    );
+  }
+  if (set.guardians.length > 0) {
+    throw new Error(
+      `Removal did not fully take effect: the recovery route is gone, but the account still ` +
+        `lists ${set.guardians.length} backup(s) as of block ${blockNumber ?? "?"} (tx ${txHash}). ` +
+        "Please try again.",
     );
   }
   // The route is provably gone as of this block — the strongest form of "this

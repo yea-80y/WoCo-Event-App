@@ -144,9 +144,16 @@
       <header>
         <div class="modal-heading">
           <span class="kicker kicker--plain">WoCo</span>
-          <h2>{authing ? "Signing in" : "Sign in"}</h2>
-          {#if !authing && loginRequest.context === "attendee"}
-            <p class="attendee-sub">WoCo accounts are for organisers right now — attendee accounts coming soon.</p>
+          <h2>
+            {authing ? "Signing in"
+              : loginRequest.context === "invite" ? "Create your account"
+              : loginRequest.context === "ticket" ? "Add your ticket"
+              : "Sign in"}
+          </h2>
+          {#if !authing && loginRequest.context === "invite"}
+            <p class="context-sub">Takes a minute. Then you verify with Stripe so you can get paid.</p>
+          {:else if !authing && loginRequest.context === "ticket"}
+            <p class="context-sub">Sign in, or create a free account. Your ticket goes straight into it.</p>
           {/if}
         </div>
         <button class="close-btn" onclick={close} aria-label="Close">
@@ -286,7 +293,7 @@
     letter-spacing: -0.025em;
   }
 
-  .attendee-sub {
+  .context-sub {
     margin: 0.25rem 0 0;
     font-size: 0.75rem;
     color: var(--text-muted);

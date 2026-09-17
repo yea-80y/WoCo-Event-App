@@ -6,8 +6,6 @@ import type {
   UpdateEventMetaRequest,
   CreateEventResponse,
   SeriesClaimStatus,
-  UserCollection,
-  ClaimedTicket,
   SealedBox,
   OrderEntry,
 } from "@woco/shared";
@@ -324,21 +322,6 @@ export async function getClaimStatus(
     `/api/events/${eventId}/series/${seriesId}/claim-status${query}`,
     apiUrl,
   );
-  return resp.data ?? null;
-}
-
-// ---------------------------------------------------------------------------
-// Collection (Passport)
-// ---------------------------------------------------------------------------
-
-export async function getMyCollection(): Promise<UserCollection> {
-  const resp = await authGet<UserCollection>("/api/collection/me");
-  if (!resp.ok) throw new Error(resp.error || "Failed to load collection");
-  return resp.data ?? { v: 1, entries: [], updatedAt: "" };
-}
-
-export async function getTicketDetail(ref: string): Promise<ClaimedTicket | null> {
-  const resp = await authGet<ClaimedTicket>(`/api/collection/me/ticket/${ref}`);
   return resp.data ?? null;
 }
 

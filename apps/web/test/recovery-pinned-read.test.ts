@@ -276,12 +276,29 @@ test("every proven recovery write records its landing block", () => {
   assert.match(AUTH_STORE, /rememberLandingBlock\(target, blockNumber\)/);
 });
 
+test("removeAllBackups sends the whole removal batch and proves both halves (#571)", () => {
+  const body = fnBody(KERNEL_ACCOUNT, "removeAllBackups");
+  // Sending the bare uninstall again (or any subset of the batch) would pass every
+  // other check in this file while leaving the hook's set for a flagless install to
+  // revive — so the call site is pinned verbatim.
+  assert.ok(
+    body.includes("calls: buildRemoveRecoveryCalls(d, builtKernel.address as Address),"),
+    "removeAllBackups must send buildRemoveRecoveryCalls unmodified",
+  );
+  assert.doesNotMatch(body, /buildUninstallRecoveryCallData\(/, "the bare uninstall is not a removal (#571)");
+  // An unreadable set is "couldn't confirm" and a non-empty one is a failed removal —
+  // neither may fall through to the success return.
+  assert.match(body, /if \(set\.state === "unknown"\) \{\s*throw new Error\(/);
+  assert.match(body, /if \(set\.guardians\.length > 0\) \{\s*throw new Error\(/);
+});
+
 test("each write records its block only AFTER the read-back has proven it", () => {
   for (const [fn, proof] of [
     ["setupRecovery", "await assertGuardianSetAfterWrite("],
     ["addGuardianOnChain", "await assertGuardianSetAfterWrite("],
     ["revokeGuardianOnChain", "if (still === null)"],
-    ["removeAllBackups", 'if (after.state === "unknown")'],
+    // The LAST proof: a gone route is not the whole removal until the set is empty too (#571).
+    ["removeAllBackups", "if (set.guardians.length > 0)"],
   ] as const) {
     const body = fnBody(KERNEL_ACCOUNT, fn);
     const provenAt = body.indexOf(proof);

@@ -411,3 +411,23 @@ test("a second confirm for the same referee while one is in flight refuses inste
   assert.equal((await first).status, "confirmed");
   assert.equal(confirmWrites(writes).length, 1, "exactly one write raced for the slot");
 });
+
+// ---------------------------------------------------------------------------
+// The attendee gate hears about it (#575)
+// ---------------------------------------------------------------------------
+
+test("a confirmation primes the gate's referral memo, from the confirmation itself — index or no index", async () => {
+  const gate = await import("../src/lib/gate/referral-unlock.js");
+  gate.resetReferralUnlockMemo();
+  try {
+    const { deps } = recorder({
+      readBanded: async () => { throw new Error("index unreachable"); },
+    });
+    const res = await issuer.confirmReferral(ARGS, deps);
+    assert.equal(res.status, "confirmed");
+    const neverRead = async (): Promise<never> => { throw new Error("the gate must not need to read"); };
+    assert.equal(await gate.referralUnlock(REFERRER, neverRead), "confirmed");
+  } finally {
+    gate.resetReferralUnlockMemo();
+  }
+});

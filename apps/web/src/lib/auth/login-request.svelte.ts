@@ -1,5 +1,8 @@
 let _pending = $state(false);
-let _context = $state<"attendee" | "creator" | undefined>(undefined);
+/** Which sign-in the modal is for — it tailors the heading and subtitle. */
+export type LoginContext = "attendee" | "creator" | "invite" | "ticket";
+
+let _context = $state<LoginContext | undefined>(undefined);
 let _resolve: ((success: boolean) => void) | null = null;
 
 // How many login modals are mounted. `request()` hands back a promise that only
@@ -42,9 +45,9 @@ export const loginRequest = {
   /**
    * Request the user to log in.
    * Returns a promise that resolves to true (logged in) or false (cancelled).
-   * Pass context: "attendee" to show the attendee-specific subtitle in the modal.
+   * Pass a context to tailor the modal's heading and subtitle.
    */
-  request(opts?: { context?: "attendee" | "creator" }): Promise<boolean> {
+  request(opts?: { context?: LoginContext }): Promise<boolean> {
     if (_resolve) {
       _resolve(false);
     }

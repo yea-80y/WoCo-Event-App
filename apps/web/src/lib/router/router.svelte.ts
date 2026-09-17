@@ -6,11 +6,14 @@
  *   NEUTRAL surface
  *     /                            splitter (landing — funnels to organiser vs attendee)
  *     /legal, /legal/:doc          legal (privacy, terms, organiser-terms, dpa, cookies)
+ *     /ref/:token                  invite (an invite link: stores the invite, shows who sent it)
  *
  *   ATTENDEE surface
+ *     /home                        member-home (a signed-in member's home)
+ *     /contacts                    contacts (who a member invited and follows)
  *     /discover                    discover (events feed — was at /)
  *     /event/:id                   event
- *     /tickets   (and /my-tickets) my-tickets
+ *     /tickets   (and /my-tickets) profile, passport tab
  *     /verify                      verify
  *     /signup                      signup (email-CTA landing; ?gt= gate token)
  *     /profile, /profile/:addr     profile
@@ -64,6 +67,19 @@ function matchRoute(pathWithQuery: string): Match {
   // ── Neutral splitter (root landing) ──────────────────────────────────────
   if (path === "/" || path === "") return { route: "splitter", params: {}, surface: "neutral" };
 
+  // ── Invite link — a screen of its own. `update()` has already stored the
+  //    invite; the page reads the token back from the link for display ───────
+  const refRoute = path.match(/^\/ref\/([^/?#]+)$/);
+  if (refRoute) {
+    let token = "";
+    try {
+      token = decodeURIComponent(refRoute[1]);
+    } catch {
+      // A malformed escape is a broken link: the page renders without an inviter.
+    }
+    return { route: "invite", params: { token }, surface: "neutral" };
+  }
+
   // ── Legal documents (neutral: reachable pre-login, from emails, and from a
   //    checkout the buyer has not signed into) ──────────────────────────────
   const legalMatch = path.match(/^\/legal(?:\/([a-z-]+))?$/);
@@ -114,8 +130,11 @@ function matchRoute(pathWithQuery: string): Match {
   if (creatorProfileMatch) return { route: "profile", params: { address: creatorProfileMatch[1] }, surface: "creator" };
 
   // ── Attendee surface ────────────────────────────────────────────────────
+  if (path === "/home") return { route: "member-home", params: {}, surface: "attendee" };
+  if (path === "/contacts") return { route: "contacts", params: {}, surface: "attendee" };
   if (path === "/discover") return { route: "discover", params: {}, surface: "attendee" };
-  if (path === "/tickets" || path === "/my-tickets") return { route: "my-tickets", params: {}, surface: "attendee" };
+  // Tickets live in the Profile passport; these paths open it on that tab.
+  if (path === "/tickets" || path === "/my-tickets") return { route: "profile", params: { tab: "passport" }, surface: "attendee" };
   if (path === "/verify") return { route: "verify", params: {}, surface: "attendee" };
   if (path === "/signup") {
     const gt = new URLSearchParams(query).get("gt");
@@ -178,9 +197,10 @@ function matchRoute(pathWithQuery: string): Match {
 }
 
 function update() {
-  // Referral capture: #/ref/{referrer} isn't a screen — persist the referrer
-  // and land on discover. The referrer is an address OR a WoCo sub-ENS name, so
-  // an organiser can share `#/ref/theirvenue` instead of forty hex characters.
+  // Referral capture: #/ref/{referrer} persists the referrer, then renders the
+  // invite page (see matchRoute). The referrer is an address OR a WoCo sub-ENS
+  // name, so an organiser can share `#/ref/theirvenue` instead of forty hex
+  // characters.
   //
   // The lazy import points at the dependency-free capture module rather than
   // the API client, so an address link costs a few lines instead of the client
@@ -211,8 +231,6 @@ function update() {
         m.clearCapturedRef();
       }
     });
-    window.location.replace(`${window.location.pathname}#/discover`);
-    return;
   }
   const matched = matchRoute(parseHash());
   _route = matched.route;

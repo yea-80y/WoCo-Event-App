@@ -3,7 +3,7 @@
   import { COUNTRY_VOCAB, GENRE_VOCAB } from "@woco/shared";
   import { listEvents } from "../../api/events.js";
   import { navigate } from "../../router/router.svelte.js";
-  import { setExternalEventApi, setEventFeedSigner } from "../../api/event-api-registry.js";
+  import { openEvent } from "../events/open-event.js";
   import EventCard from "../events/EventCard.svelte";
   import DiscoveryFilters from "./DiscoveryFilters.svelte";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
@@ -158,11 +158,7 @@
     {:else}
       <div class="event-grid">
         {#each upcoming as event (event.eventId)}
-          <EventCard {event} distanceKm={distanceFor(event)} onclick={() => {
-            if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
-            setEventFeedSigner(event.eventId, event.creatorFeedSigner);
-            navigate(`/event/${event.eventId}`);
-          }} />
+          <EventCard {event} distanceKm={distanceFor(event)} onclick={() => openEvent(event)} />
         {/each}
       </div>
     {/if}
@@ -179,11 +175,7 @@
     {:else}
       <div class="event-grid">
         {#each past as event (event.eventId)}
-          <EventCard {event} distanceKm={distanceFor(event)} onclick={() => {
-            if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
-            setEventFeedSigner(event.eventId, event.creatorFeedSigner);
-            navigate(`/event/${event.eventId}`);
-          }} />
+          <EventCard {event} distanceKm={distanceFor(event)} onclick={() => openEvent(event)} />
         {/each}
       </div>
     {/if}

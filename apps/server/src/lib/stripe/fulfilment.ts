@@ -501,6 +501,8 @@ export async function fulfilPaidSession(
 
   const claimedResults: Array<{ edition: number; qrContent: string }> = [];
   let stoppedReason: string | null = bindingStopReason;
+  /** Whether the signed-in buyer's first ticket landed in their account (#582). */
+  let accountClaimBound = false;
 
   // ── 3. Sales-window re-checks (fail OPEN on anything but a definitive "ended") ──
   // #300 rider: a payment can complete after the event's end — inside the
@@ -548,7 +550,7 @@ export async function fulfilPaidSession(
     // void below with zero claims, exactly as a SalesClosed revert would have.
   } else if (isV2) {
     try {
-      await mintV2({
+      const minted = await mintV2({
         deps,
         eventId,
         seriesId,
@@ -562,6 +564,7 @@ export async function fulfilPaidSession(
           stoppedReason = reason;
         },
       });
+      accountClaimBound = minted.accountClaimBound;
     } catch (err) {
       // Nothing inside mintV2 is meant to reach here — every known failure sets
       // stoppedReason and returns. This is the fence for the unknown one: a
@@ -790,10 +793,12 @@ export async function fulfilPaidSession(
         // events with no site, or no contact email set on it.
         replyTo: siteTheme?.contactEmail,
         // `to` here IS the verified purchase email (Stripe checkout) — the
-        // only path allowed to mint Route A gate tokens. Skipped when a
-        // signed-in buyer's single ticket was already bound at claim time;
-        // multi-ticket orders keep the per-ticket links for forwarding.
-        profileCta: !accountClaim || claimedResults.length > 1,
+        // only path allowed to mint Route A gate tokens. The button is for what
+        // is NOT in an account yet: every ticket of an anonymous order, the
+        // other tickets of a group order (per-ticket links for forwarding), and
+        // a signed-in buyer's single ticket when the add above did not land
+        // (#582). Only a ticket that was actually added goes without it.
+        profileCta: !accountClaimBound || claimedResults.length > 1,
         // The buyer has paid. If every retry and the failover both fail, this
         // is what makes the undelivered ticket findable — see
         // lib/email/failure-ledger.ts.
@@ -857,8 +862,11 @@ interface MintV2Args {
  * The on-chain rail. Every KNOWN failure sets a stop reason and returns — the
  * caller turns that into a refund. Only an unknown throw escapes, and the
  * caller fences that too.
+ *
+ * Returns whether the buyer's account claim was actually bound, so the email
+ * can offer Add to WoCo exactly when there is something left to add (#582).
  */
-async function mintV2(a: MintV2Args): Promise<void> {
+async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
   const { deps, eventId, seriesId, quantity, claimedResults } = a;
 
   // Resolve the orderRef once for the whole batch (all tickets share one
@@ -881,7 +889,7 @@ async function mintV2(a: MintV2Args): Promise<void> {
 
   if (!batchOrderRef) {
     a.setStopped("No orderRef available for on-chain claim");
-    return;
+    return { accountClaimBound: false };
   }
 
   const orderRefBytes32 = "0x" + batchOrderRef;
@@ -945,6 +953,7 @@ async function mintV2(a: MintV2Args): Promise<void> {
   // stamp (the contract is the ledger), but the buyer's account still
   // gets its gate binding at purchase — first edition only, same
   // group-buy reasoning as before.
+  let accountClaimBound = false;
   if (a.accountClaim && slotsForBurners.length > 0) {
     const firstEdition = slotsForBurners[0] + 1;
     // `bindTicket` throws when the binding cannot be persisted — correct at
@@ -952,10 +961,12 @@ async function mintV2(a: MintV2Args): Promise<void> {
     // the refund decision and the ticket email, so an escaping throw would
     // leave the buyer charged, the QR contents discarded, no email, no refund,
     // and nothing in the undelivered-ticket ledger. The binding is an
-    // accessory at purchase — the email carries a bind-later path — so it
-    // degrades on its own rather than taking fulfilment with it.
+    // accessory at purchase, so it degrades on its own rather than taking
+    // fulfilment with it — and the outcome is REPORTED, because the email's
+    // Add to WoCo button is the bind-later path and it used to be omitted for
+    // exactly this order shape (#582).
     try {
-      const bound = deps.bindTicket({
+      accountClaimBound = deps.bindTicket({
         seriesId,
         edition: firstEdition,
         eventId,
@@ -963,15 +974,21 @@ async function mintV2(a: MintV2Args): Promise<void> {
         paid: true,
         route: "claim",
       });
-      if (bound) {
+      if (accountClaimBound) {
         console.log(`[gate] bound ${seriesId}#${firstEdition} → ${a.accountClaim.parentAddress} (claim, on-chain)`);
+      } else {
+        console.error(
+          `[gate] ${seriesId}#${firstEdition} already bound — not added to ${a.accountClaim.parentAddress}; ` +
+            `the ticket email will offer Add to WoCo`,
+        );
       }
     } catch (err) {
       console.error(
         `[gate] could not bind ${seriesId}#${firstEdition} for ${a.accountClaim.parentAddress} — ` +
-          `fulfilment continues, attendee can bind from the ticket email:`,
+          `fulfilment continues, the ticket email will offer Add to WoCo:`,
         err,
       );
     }
   }
+  return { accountClaimBound };
 }

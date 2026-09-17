@@ -37,7 +37,7 @@ export interface TicketEmailOpts {
   /** Organiser site ID — appended to ticket page URLs so the standalone page
    *  can look up the site palette and render in the organiser's brand colours. */
   siteId?: string;
-  /** Add the "Create your WoCo profile" CTA (Route A gate token). Set ONLY on
+  /** Add the "Add to WoCo" button (Route A gate token). Set ONLY on
    *  paths where `to` is the VERIFIED purchase email (Stripe webhook). The
    *  public /send-email route must never set it: its recipient is arbitrary,
    *  and a gate token minted for an arbitrary inbox would let anyone holding
@@ -135,17 +135,17 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
         ${editionStr ? `<div class="qr-label">Ticket #${editionStr}</div>` : `<div class="qr-label">Show at the door</div>`}
         <img src="cid:${cid}" alt="Ticket — show at the door" class="qr-image" width="320" height="440" />
         ${pageUrl ? `<a href="${escHtml(pageUrl)}" class="qr-link">Open ticket page${editionStr ? ` #${editionStr}` : ""} →</a>` : ""}
-        ${perTicketCta ? `<div class="cta-mini"><a href="${escHtml(perTicketCta)}">Create a WoCo profile with this ticket →</a></div>` : ""}
+        ${perTicketCta ? `<div class="cta-mini"><a href="${escHtml(perTicketCta)}">Add this ticket to WoCo →</a></div>` : ""}
       </div>`;
   }).join("\n");
 
   const mainCtaUrl = opts.profileCta ? gateCtaUrl(tix[0].qrContent, to) : null;
   const ctaBlock = mainCtaUrl ? `
         <div class="cta-section">
-          <div class="cta-title">Save your ticket to a WoCo account</div>
-          <p class="cta-copy">Create your free profile to keep your ticket${multiTicket ? "s" : ""} linked to you, follow the events you love, and check in faster at the door.</p>
-          <a href="${escHtml(mainCtaUrl)}" class="cta-btn">Create your WoCo profile →</a>
-          ${multiTicket ? `<p class="cta-note">Each ticket unlocks one profile — forward a ticket to your friends and they can create their own.</p>` : ""}
+          <div class="cta-title">${multiTicket ? "Add a ticket to WoCo" : "Add your ticket to WoCo"}</div>
+          <p class="cta-copy">Keep it in your WoCo passport and claim your own name on WoCo. It's free.</p>
+          <a href="${escHtml(mainCtaUrl)}" class="cta-btn">Add to WoCo →</a>
+          ${multiTicket ? `<p class="cta-note">The button adds your first ticket. Each ticket goes into one account, so forward the others and friends can add their own with the link under each ticket.</p>` : ""}
         </div>` : "";
 
   const countLabel = tix.length > 1 ? `${tix.length} Tickets` : "Your Ticket";

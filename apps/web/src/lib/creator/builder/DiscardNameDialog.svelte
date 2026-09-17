@@ -142,7 +142,8 @@
       <p class="body">
         This burns <strong>{ensName}</strong> for good. Anyone can register it
         afterwards. Anything pointing at it — a site, an event page, your
-        profile — stops resolving.
+        profile — stops resolving, and invite links that use it stop crediting
+        you.
       </p>
       <label class="field">
         <span class="field-label">Type <code>{label}</code> to confirm</span>

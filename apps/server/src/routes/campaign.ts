@@ -33,7 +33,7 @@ import {
   readBadge,
   readConfirmation,
 } from "../lib/campaign/issuer.js";
-import { getStripeAccount } from "../lib/stripe/accounts.js";
+import { stripeVerificationComplete } from "../lib/stripe/accounts.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 
@@ -46,10 +46,6 @@ const ADDR = /^0x[0-9a-fA-F]{40}$/;
  * it once. The ceiling is sized for a human retrying, not for a funnel.
  */
 const CONFIRM_LIMIT = new SlidingWindowLimiter([{ limit: 10, windowMs: 60_000 }]);
-
-function stripeComplete(address: string): boolean {
-  return getStripeAccount(address.toLowerCase())?.onboardingComplete === true;
-}
 
 /**
  * POST /api/campaign/referrals/confirm — the merchant asks the issuer to
@@ -85,7 +81,7 @@ campaignRoutes.post("/referrals/confirm", requireAuth, async (c) => {
   // The unspammable signal: KYC completed at Stripe. It is also the only
   // precondition that cannot be read off Swarm, which is why this route exists
   // at all rather than the referee writing their own confirmation.
-  if (!stripeComplete(parent)) {
+  if (!stripeVerificationComplete(parent)) {
     noteRefusal();
     return c.json({ ok: false, error: "Complete Stripe onboarding first" }, 403);
   }
@@ -130,7 +126,7 @@ campaignRoutes.get("/referrals/status", requireAuth, async (c) => {
   return c.json({
     ok: true,
     data: {
-      stripeComplete: stripeComplete(parent),
+      stripeComplete: stripeVerificationComplete(parent),
       issuer: CAMPAIGN_ISSUER_ADDRESS,
       confirmed: read.status === "found" ? read.record : null,
       readOk: read.status !== "unavailable",

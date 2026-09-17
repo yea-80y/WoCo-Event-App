@@ -81,7 +81,7 @@ attendeeGate.post("/token-info", async (c) => {
   if (!verdict.ok) {
     const msg =
       verdict.reason === "expired"
-        ? "This link has expired — ask the organiser to resend your ticket email"
+        ? "This link has expired. Your ticket still works at the door"
         : "This link is not valid";
     return c.json({ ok: false, error: msg }, verdict.reason === "expired" ? 410 : 400);
   }
@@ -115,7 +115,7 @@ attendeeGate.post("/redeem", requireAuth, async (c) => {
   if (!verdict.ok) {
     const msg =
       verdict.reason === "expired"
-        ? "This link has expired — ask the organiser to resend your ticket email"
+        ? "This link has expired. Your ticket still works at the door"
         : "This link is not valid";
     return c.json({ ok: false, error: msg }, verdict.reason === "expired" ? 410 : 400);
   }

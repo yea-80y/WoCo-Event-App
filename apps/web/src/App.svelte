@@ -7,6 +7,7 @@
   import TicketGateModal from "./lib/attendee/gate/TicketGateModal.svelte";
   import Splitter from "./lib/landing/Splitter.svelte";
   import AttendeeApp from "./AttendeeApp.svelte";
+  import { studioRole } from "./lib/auth/studio-role.svelte.js";
   import { bootRedirectFor } from "./lib/sub-ens/host-label.js";
   import { onMount } from "svelte";
 
@@ -37,7 +38,7 @@
       if (!bootRedirectFor(window.location.hostname, window.location.hash)) return;
       // replace, not navigate: this redirect is automatic, so a history entry
       // for it would make Back land on the name host's bare home page — a
-      // dead end nobody chose. Same precedent as the router's #/ref/ handler.
+      // dead end nobody chose.
       window.location.replace(`${window.location.pathname}#/profile/${res.address}`);
     });
   }
@@ -105,6 +106,20 @@
     })();
   });
 
+  // A device that has never opened Studio learns the account organises from its
+  // public event list, so WoCo shows the way into Studio there too.
+  // Unauthenticated, so it never prompts; one look per account per page load.
+  const organiserChecked = new Set<string>();
+  $effect(() => {
+    const parent = auth.ready ? auth.parent?.toLowerCase() : undefined;
+    if (!parent || studioRole.isOrganiser || organiserChecked.has(parent)) return;
+    organiserChecked.add(parent);
+    import("./lib/api/events.js")
+      .then((m) => m.getEventsByCreatorResult(parent))
+      .then((resp) => { if (resp.ok && (resp.data?.length ?? 0) > 0) studioRole.mark(parent); })
+      .catch(() => { /* no Studio link until Studio is opened on this device */ });
+  });
+
   // Lazy-load the creator bundle — attendees never download builder/dashboard code.
   const creatorAppPromise = $derived(
     router.surface === "creator"
@@ -119,6 +134,13 @@
       ? import("./lib/legal/LegalPage.svelte").then((m) => m.default)
       : null
   );
+
+  // Lazy for the same reason: only someone who followed an invite link pays for it.
+  const invitePagePromise = $derived(
+    router.route === "invite"
+      ? import("./lib/landing/InviteLanding.svelte").then((m) => m.default)
+      : null
+  );
 </script>
 
 {#if router.route === "legal"}
@@ -127,6 +149,16 @@
   {:then Comp}
     {#if Comp}
       <Comp doc={router.params.doc ?? "index"} />
+    {/if}
+  {:catch}
+    <div class="surface-loading surface-error">Failed to load. Please refresh.</div>
+  {/await}
+{:else if router.route === "invite"}
+  {#await invitePagePromise}
+    <div class="surface-loading">Loading…</div>
+  {:then Comp}
+    {#if Comp}
+      <Comp token={router.params.token ?? ""} />
     {/if}
   {:catch}
     <div class="surface-loading surface-error">Failed to load. Please refresh.</div>

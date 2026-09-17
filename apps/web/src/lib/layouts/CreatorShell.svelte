@@ -45,7 +45,7 @@
   <PreLaunchBanner variant="strip" />
   <SessionEndedBanner />
   <header class="top-bar">
-    <button class="logo" onclick={() => navigate("/")} aria-label="WoCo home">
+    <button class="logo" onclick={() => navigate(auth.isConnected && auth.parent ? "/home" : "/")} aria-label="WoCo home">
       <WocoWordmark height={20} variant="default" />
       <span class="surface-badge">Studio</span>
     </button>
@@ -54,9 +54,11 @@
       {#if !auth.ready}
         <span class="loading">Loading...</span>
       {:else if auth.isConnected && auth.parent}
-        <button class="surface-toggle" onclick={() => navigate("/")} title="Back to home">
+        <!-- Studio is a workspace you step into; this is the way back to WoCo,
+             the same app every account uses to browse, buy and keep tickets. -->
+        <button class="surface-toggle" onclick={() => navigate("/home")} title="Back to WoCo" aria-label="Back to WoCo">
           <span class="surface-toggle-arrow"><ArrowLeft size={14} strokeWidth={2.5} /></span>
-          <span class="surface-toggle-label">Home</span>
+          <span class="surface-toggle-label">WoCo</span>
         </button>
         <SessionStatus />
         <button class="top-avatar-btn" onclick={() => navigate(`/creator/profile/${auth.parent!.toLowerCase()}`)}>

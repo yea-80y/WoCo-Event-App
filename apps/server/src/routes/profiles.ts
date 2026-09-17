@@ -151,8 +151,8 @@ profiles.post("/", requireAuth, async (c) => {
   const body = c.get("body") as Record<string, unknown>;
   console.log(`[api] POST /api/profile parent=${parentAddress} keys=${Object.keys(body).join(",")}`);
 
-  // Attendee gate: profiles are unlocked by a purchased ticket (or by being
-  // an organiser). UI catches "ticket_required" and routes to the gate flow.
+  // Attendee gate — the rule is lib/gate/check.ts (#575). The error code predates
+  // the wider rule; the UI matches on it to open the unlock flow.
   const gate = await checkAttendeeGate(parentAddress);
   if (!gate.gated) {
     return c.json({ ok: false, error: "ticket_required" }, 403);
