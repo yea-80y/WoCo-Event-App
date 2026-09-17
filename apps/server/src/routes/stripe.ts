@@ -959,7 +959,7 @@ const checkoutStatusLimiter = new SlidingWindowLimiter([
 ]);
 
 /**
- * GET /api/stripe/checkout-status?eventId=&session_id=[&siteId=]
+ * GET /api/stripe/checkout-status?eventId=&session_id=
  *
  * What a buyer returning from Stripe is shown (#567). The embed widget on an
  * organiser page and the platform purchased page both render from this, because
@@ -982,10 +982,12 @@ stripe.get("/checkout-status", async (c) => {
   }
   checkoutStatusLimiter.record(ip);
 
-  const rawSiteId = c.req.query("siteId");
-  const siteId = rawSiteId && /^[0-9a-z_-]{10,}$/i.test(rawSiteId) ? rawSiteId : undefined;
-  const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
-  const event = await getEvent(eventId, siteSigner ?? undefined).catch(() => null);
+  // No site hint: getEvent already does directory-carrier discovery, so this
+  // resolves the same event the checkout did. An optional `siteId` was removed
+  // here as unreachable — no caller sends one, and nothing pinned it — rather
+  // than leave a parameter that decides which account a session is read on.
+  // Reintroduce it only alongside a caller and a test.
+  const event = await getEvent(eventId).catch(() => null);
   const account = event ? getStripeAccount(event.creatorAddress.toLowerCase()) : null;
   if (!account) return c.json({ ok: false, error: "Not found" }, 404);
 
