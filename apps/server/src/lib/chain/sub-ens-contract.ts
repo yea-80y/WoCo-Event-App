@@ -191,8 +191,8 @@ export function labelNode(label: string): string {
 
 /**
  * Submit a holder-signed release. The SIGNATURE is the authority — the contract
- * checks `signer` is the holder or an ERC-721 approvee before it looks at the
- * signature at all — so the sponsor here is only paying the gas. It cannot
+ * checks `signer` is the holder before it looks at the signature at all — so
+ * the sponsor here is only paying the gas. It cannot
  * forge a release, and refusing to relay one never traps a holder, who can
  * always submit `release` themselves.
  *
