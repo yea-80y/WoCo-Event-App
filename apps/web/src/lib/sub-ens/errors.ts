@@ -14,6 +14,7 @@
  * testable without a clock or a browser.
  */
 
+import { unlocksWhen } from "../attendee/gate/unlock-copy.js";
 import { ApiError } from "../api/errors.js";
 
 /**
@@ -101,7 +102,7 @@ export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescri
     // showing text. Described here only so a caller that reaches the fallback
     // path still shows a sentence.
     case "ticket_required":
-      return { title: "Your name unlocks once a ticket is in your account." };
+      return { title: unlocksWhen("Your name") };
     default:
       // Several routes answer with prose already ("You do not own that name").
       // Pass it through rather than replacing a specific message with a vague one.

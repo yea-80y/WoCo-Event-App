@@ -71,6 +71,7 @@ import {
   readContentFeedJsonResult,
   readSocPayload,
 } from "../swarm/soc-upload.js";
+import { noteConfirmedReferral } from "../gate/referral-unlock.js";
 
 /**
  * Below this, nothing is written. A batch with no time left still ACCEPTS
@@ -380,6 +381,11 @@ export async function confirmReferral(
 
     health.confirmations++;
     health.lastWriteAt = new Date(deps.now()).toISOString();
+
+    // The referrer's name unlocks on this (#575) — told to the gate from the
+    // confirmation itself, because the index append below can fail without
+    // unmaking it.
+    noteConfirmedReferral(referrer);
 
     // The index is a CONVENIENCE for the referrer's dashboard — every entry is
     // re-derivable from the confirmations themselves — so its failure is
