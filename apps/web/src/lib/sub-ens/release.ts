@@ -23,49 +23,23 @@
  * The digest subtlety that makes or breaks all of this is in `release-digest.ts`.
  */
 
-import { SUB_ENS_DEFAULT_CHAIN_ID, SUB_ENS_DEPLOYMENTS } from "@woco/shared";
-import type { Hex0x, SubEnsChainId } from "@woco/shared";
+import { SUB_ENS_DEPLOYMENTS } from "@woco/shared";
+import type { Hex0x } from "@woco/shared";
 import { authPost } from "../api/client.js";
 import {
   RELEASE_DIGEST_ABI,
   buildReleaseInnerHash,
   releaseExpiration,
 } from "./release-digest.js";
+import { SUB_ENS_CHAIN_ID as CHAIN_ID, subEnsRpcUrl as rpcUrl } from "./rpc.js";
 import { rememberOwner } from "./verify-name.js";
 
-/**
- * The chain the REGISTRY lives on. The Kernel now runs on the same one (#489),
- * which is what makes a smart-account release verifiable at all — but this is
- * still read from the sub-ENS constant, not the Kernel's. They were apart for a
- * release cycle, and reading the digest from the Kernel's chain then queried a
- * registry where the holder owns nothing and handed them a signature bound to
- * the wrong EIP-712 domain. The equality is asserted in
- * packages/shared/test/kernel/chain.test.ts, not assumed here.
- */
-const CHAIN_ID: SubEnsChainId = SUB_ENS_DEFAULT_CHAIN_ID;
-const REGISTRY = SUB_ENS_DEPLOYMENTS[SUB_ENS_DEFAULT_CHAIN_ID].registry;
+// The registry's chain and RPC live in `rpc.ts`, shared with the share sheet's
+// name reads. The digest below is bound to that chain's EIP-712 domain, which is
+// why it must never follow the Kernel's chain constant instead.
+const REGISTRY = SUB_ENS_DEPLOYMENTS[CHAIN_ID].registry;
 
 const RELEASE_ABI = [...RELEASE_DIGEST_ABI, "function release(bytes32 node)"];
-
-/**
- * NEVER `VITE_ZERODEV_RPC`: that is the Kernel's bundler RPC on the Kernel's
- * chain, and pointing a registry read at it answers "nobody owns this" for names
- * that plainly exist. Keyed by {@link SubEnsChainId} so adding a deployment
- * without an RPC fails the build rather than at a holder's release.
- */
-const PUBLIC_RPC: Record<SubEnsChainId, string> = {
-  42161: "https://arb1.arbitrum.io/rpc",
-  421614: "https://sepolia-rollup.arbitrum.io/rpc",
-};
-
-function rpcUrl(): string {
-  const env = import.meta.env as Record<string, string | undefined>;
-  const override = env.VITE_SUB_ENS_RPC?.trim();
-  if (override) return override;
-  const url: string | undefined = PUBLIC_RPC[CHAIN_ID];
-  if (!url) throw new Error(`No sub-ENS RPC for chain ${CHAIN_ID}`);
-  return url;
-}
 
 /**
  * Build the exact bytes the holder must sign, cross-checked against the chain.

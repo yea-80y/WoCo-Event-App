@@ -1,13 +1,22 @@
 /**
- * Opens the invite sheet from anywhere — the tab bar's Invite key and Home's
- * "Show my code" — without either owning it. The member shell mounts the sheet,
- * and loads the QR library, only while this is open.
+ * Opens the share sheet from anywhere — the tab bar's Invite key, Home's
+ * "Show my code", Contacts' Invite to host and Follow me — without any of them
+ * owning it. The member shell mounts the sheet, and loads the QR library, only
+ * while this is open.
  */
 
+export type ShareStart = "invite" | "follow";
+
 let _open = $state(false);
+let _start = $state<ShareStart>("invite");
 
 export const inviteSheet = {
   get open() { return _open; },
-  show(): void { _open = true; },
+  /** The code the sheet opens on. */
+  get start() { return _start; },
+  show(start: ShareStart = "invite"): void {
+    _start = start;
+    _open = true;
+  },
   hide(): void { _open = false; },
 };
