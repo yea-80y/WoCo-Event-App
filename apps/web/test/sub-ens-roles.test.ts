@@ -6,11 +6,14 @@
  * narrow and total: the filter removes exactly the profile role and nothing
  * else — including names with no role at all, which is what a response cached
  * from an older server looks like.
+ *
+ * Which name an invite carries is no longer decided here: see
+ * `profile-name.test.ts`.
  */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bindableNames, hidesProfileName, inviteLabel, profileLabel, roleLabel } from "../src/lib/sub-ens/roles.js";
+import { bindableNames, hidesProfileName, profileLabel, roleLabel } from "../src/lib/sub-ens/roles.js";
 
 const NAMES = [
   { label: "nabil", role: "profile" as const },
@@ -55,20 +58,6 @@ test("each role reads as a person would say it", () => {
 
 test("an absent role has no label, so the caller keeps its old text", () => {
   assert.equal(roleLabel(undefined), undefined);
-});
-
-test("an invite link carries the profile name even when another name sorts first", () => {
-  // "aardvark" sorts before "nabil", so a plain sort would put the site name in the link.
-  const names = [{ label: "aardvark", role: "url" as const }, { label: "nabil", role: "profile" as const }];
-  assert.equal(inviteLabel(names), "nabil");
-});
-
-test("without a profile name the invite link uses the first name alphabetically", () => {
-  assert.equal(inviteLabel([{ label: "punkpub", role: "url" as const }, { label: "aardvark" }]), "aardvark");
-});
-
-test("no names means no name in the invite link", () => {
-  assert.equal(inviteLabel([]), null);
 });
 
 test("profileLabel picks the profile name and nothing else", () => {

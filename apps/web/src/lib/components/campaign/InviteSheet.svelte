@@ -2,9 +2,10 @@
   InviteSheet — the member's invite as a code someone can scan off their phone,
   plus Share and Copy. Opened from the tab bar's Invite key or Home.
 
-  The link carries the member's WoCo name when they have one and their address
-  otherwise; the address is never printed on screen, only the name. Loaded on
-  first open together with the QR library, so neither touches the boot chunk.
+  The link carries the member's PROFILE name once the chain confirms it, and
+  their address otherwise; the address is never printed on screen, only the
+  name. Loaded on first open together with the QR library, so neither touches
+  the boot chunk.
 -->
 <script lang="ts">
   import type { Hex0x } from "@woco/shared";
@@ -12,7 +13,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { inviteSheet } from "../../campaign/invite-sheet.svelte.js";
   import { referralLink } from "../../api/campaign.js";
-  import { inviteLabel } from "../../sub-ens/roles.js";
+  import { verifiedProfileName } from "../../sub-ens/profile-name.js";
 
   let label = $state<string | null>(null);
   let codeSvg = $state<string | null>(null);
@@ -31,15 +32,9 @@
   onMount(() => {
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     closeButton?.focus();
-    // The names read is authenticated, and opening an invite must never raise a
-    // signing prompt — so without a session already on this device the address
-    // link stands.
-    if (auth.hasSession) {
-      import("../../api/sub-ens.js")
-        .then((m) => m.getOwnedSubEns())
-        .then((resp) => { label = inviteLabel(resp.data?.names ?? []); })
-        .catch(() => { /* the address link stands */ });
-    }
+    // Public reads only, so the name shows on any device and opening the sheet
+    // never prompts. Until it lands, and if it never does, the address link stands.
+    if (auth.parent) void verifiedProfileName(auth.parent).then((name) => { label = name; });
     return () => {
       clearTimeout(copyTimer);
       returnFocus?.focus();
