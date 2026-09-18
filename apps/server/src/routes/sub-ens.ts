@@ -388,6 +388,9 @@ subEnsRoutes.post("/set-contenthash", requireAuth, async (c) => {
     if (isError(err, "CALL_EXCEPTION")) {
       const name = (err as { revert?: { name?: string } }).revert?.name;
       if (name === "EmptyContenthash") return c.json({ ok: false, error: "swarmHash is empty" }, 400);
+      // Registrar v2.1 refuses a label its own `register` would refuse.
+      if (name === "LabelIsReserved")  return c.json({ ok: false, error: "label is reserved" }, 409);
+      if (name === "InvalidLabel")     return c.json({ ok: false, error: "invalid label" }, 400);
     }
     console.error("[sub-ens] set-contenthash failed:", err);
     return c.json({ ok: false, error: "update failed" }, 500);
@@ -401,19 +404,19 @@ subEnsRoutes.post("/set-contenthash", requireAuth, async (c) => {
  * Body: { label, expiration, signature }
  *
  * The signature is the authority: `L2Registry.releaseWithSignature` checks that
- * `signer` is the holder or an ERC-721 approvee BEFORE it consults the
- * signature, so the sponsor can only ever relay what the holder authorised —
- * never forge one. Refusing to relay traps nobody either: a holder can always
- * submit `release` from their own wallet.
+ * `signer` is the holder BEFORE it consults the signature, so the sponsor can
+ * only ever relay what the holder authorised — never forge one. Refusing to
+ * relay traps nobody either: a holder can always submit `release` from their
+ * own wallet.
  *
  * `signer` and `node` are derived server-side from the VERIFIED parent address
  * and the VALIDATED label. Neither is a body field — a body-supplied node would
  * aim the signature at a name the ownership check never saw.
  *
- * The on-chain check accepts an approvee or an operator-for-all; this route
- * narrows that to the caller's OWN name, so the sponsor never pays to burn a
- * name on someone else's behalf. That narrowing is a GAS POLICY, not the
- * security boundary.
+ * The on-chain check accepts the holder's signature only (registry v2.1); this
+ * route also refuses anyone but the holder before simulating, so the sponsor
+ * spends nothing on a signature the chain would refuse. That check is a GAS
+ * POLICY, not the security boundary.
  */
 subEnsRoutes.post("/relay-release", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
@@ -477,6 +480,12 @@ subEnsRoutes.post("/relay-release", requireAuth, async (c) => {
       if (name === "SignatureExpired")    return c.json({ ok: false, error: "signature_expired" }, 400);
       if (name === "ReleaseUnregistered") return c.json({ ok: false, error: "label not found" }, 404);
       if (name === "ReleaseBaseNode")     return c.json({ ok: false, error: "cannot release the base name" }, 400);
+      // Registry v2.1. A name with names beneath it waits for them: the client
+      // shows this rather than falling back, because every rail would meet it.
+      if (name === "HasChildren")         return c.json({ ok: false, error: "has_children" }, 409);
+      // The block clock trails ours by nearly two days. The client's own-gas
+      // fallback needs no signature, so it still works.
+      if (name === "ExpirationTooFar")    return c.json({ ok: false, error: "expiration_too_far" }, 400);
     }
     // NEVER `err.message` here. ethers builds that string by appending every
     // `info` key it was given, and for a CALL_EXCEPTION / INSUFFICIENT_FUNDS /

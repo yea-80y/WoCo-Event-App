@@ -21,24 +21,26 @@ const REGISTRY_ABI = [
   "function decodeName(bytes name) view returns (string)",
   // Resolver record — current Swarm pointer for a name (EIP-1577 contenthash)
   "function contenthash(bytes32 node) view returns (bytes)",
-  // #464 rename rail. `release` is holder-or-approvee only and never passes
-  // through the registrar, so the server can only ever encode this calldata for
-  // the holder's own wallet to send — it can never release a name itself.
+  // #464 rename rail. `release` is the holder's (or, for a name beneath
+  // another, that name's holder's) and never passes through the registrar, so
+  // the server can only ever encode this calldata for the holder's own wallet
+  // to send — it can never release a name itself.
   "function release(bytes32 node)",
-  // Written by every release and read by nothing on-chain: the frozen layer
-  // keeps who let a name go and when, so a future registrar can enforce a
-  // re-mint hold that `release` would otherwise have made impossible.
+  // Written by every release: the frozen layer keeps who let a name go and
+  // when. Registrar v2.1 reads it so a holder retaking their own released
+  // label is not charged a mint.
   "function lastRelease(bytes32 node) view returns (address previousOwner, uint64 releasedAt)",
   "event Released(bytes32 indexed node, address indexed previousOwner, address indexed operator)",
-  // #464 signature rail (2026-09-03): the holder signs `releaseDigest(node, expiration)`
-  // — read from the chain, never re-derived here — and ANYONE may submit it. This is
-  // the one release path the sponsor wallet can relay, and it can only relay what
-  // the holder signed: `signer` must be the holder or an ERC-721 approvee, checked
-  // on-chain before the signature is examined. The digest carries the registry,
-  // chain, node, record version and deadline, so a signature is single-use.
+  // #464 signature rail: the holder signs the EIP-712 `Release` whose digest is
+  // `releaseDigest(node, expiration)` (registry v2.1; built and checked on the
+  // client) and ANYONE may submit it. This is the one release path the sponsor
+  // wallet can relay, and it can only relay what the holder signed: `signer`
+  // must be the holder, checked on-chain before the signature is examined. The
+  // digest carries the registry, chain, name, record version and deadline, so a
+  // signature is single-use, and the registry refuses a deadline more than 48
+  // hours ahead of the block.
   "function releaseWithSignature(bytes32 node, uint256 expiration, address signer, bytes signature)",
   "function releaseDigest(bytes32 node, uint256 expiration) view returns (bytes32)",
-  "function RELEASE_TYPEHASH() view returns (bytes32)",
   // Registry custom errors, so a relay route can name the refusal instead of 500ing.
   // ERC721NonexistentToken is the one OpenZeppelin raises for a token that was
   // never minted or has been burned, and it is load-bearing here: ethers v6
@@ -51,6 +53,10 @@ const REGISTRY_ABI = [
   "error SignatureExpired()",
   "error ReleaseBaseNode()",
   "error ReleaseUnregistered(bytes32 node)",
+  // Registry v2.1: a name with names beneath it is not released until they are
+  // gone, and a release signature may not expire more than 48 hours ahead.
+  "error HasChildren(bytes32 node, uint256 count)",
+  "error ExpirationTooFar()",
 ];
 
 // Addresses live in `@woco/shared` (#472) so the client cannot drift from them.
@@ -101,7 +107,6 @@ function computeLabelNode(label: string): bigint {
 const REGISTRAR_ABI = [
   // Views
   "function available(string label) view returns (bool)",
-  "function DOMAIN_SEPARATOR() view returns (bytes32)",
   // Sponsor writes
   "function register(string label, address owner, bytes contenthash, string[] textKeys, string[] textValues) returns (bytes32 node)",
   // setContenthash is the ONLY post-mint record write the platform retains.
@@ -115,10 +120,9 @@ const REGISTRAR_ABI = [
   // callable by the sponsor key.
   "function mintAllowance(address recipient) view returns (uint32 remaining, uint64 windowResetsAt)",
   "function setMintRateCap(uint32 max, uint64 windowSeconds)",
-  // `registerWithPermit` is NOT here. The registrar still exposes it, but the
-  // gasless mint rail that used it is gone (#501) — every name is minted by
-  // the sponsor through `register`. A fragment for a call nothing makes is a
-  // call site waiting to be written by accident.
+  // `registerWithPermit` is NOT here: the gasless mint rail that used it is
+  // gone (#501), and registrar v2 removed the function. A fragment for a call
+  // nothing makes is a call site waiting to be written by accident.
   // Custom errors — required for ethers v6 to decode reverts by name
   "error NotAuthorisedSponsor(address caller)",
   "error LabelIsReserved(string label)",
@@ -187,8 +191,8 @@ export function labelNode(label: string): string {
 
 /**
  * Submit a holder-signed release. The SIGNATURE is the authority — the contract
- * checks `signer` is the holder or an ERC-721 approvee before it looks at the
- * signature at all — so the sponsor here is only paying the gas. It cannot
+ * checks `signer` is the holder before it looks at the signature at all — so
+ * the sponsor here is only paying the gas. It cannot
  * forge a release, and refusing to relay one never traps a holder, who can
  * always submit `release` themselves.
  *
@@ -359,6 +363,9 @@ export async function getOwnedLabels(address: string): Promise<OwnedLabel[]> {
   const registry = new Contract(getRegistryAddress(chainId), REGISTRY_ABI, getProvider(chainId));
   const addr = address.toLowerCase();
 
+  // Deduped and confirmed against `ownerOf`, so a self-transfer - which v2.1
+  // permits and which changes nothing - is inert here. Never infer a records
+  // reset from `Transfer`; only `VersionChanged` means that.
   const logs = await registry.queryFilter(registry.filters.Transfer!(null, address));
   const tokenIds = [...new Set(logs.map((l) => (l as unknown as { args: { tokenId: bigint } }).args.tokenId.toString()))];
 
