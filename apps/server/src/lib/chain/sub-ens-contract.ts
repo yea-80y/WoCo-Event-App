@@ -363,6 +363,9 @@ export async function getOwnedLabels(address: string): Promise<OwnedLabel[]> {
   const registry = new Contract(getRegistryAddress(chainId), REGISTRY_ABI, getProvider(chainId));
   const addr = address.toLowerCase();
 
+  // Deduped and confirmed against `ownerOf`, so a self-transfer - which v2.1
+  // permits and which changes nothing - is inert here. Never infer a records
+  // reset from `Transfer`; only `VersionChanged` means that.
   const logs = await registry.queryFilter(registry.filters.Transfer!(null, address));
   const tokenIds = [...new Set(logs.map((l) => (l as unknown as { args: { tokenId: bigint } }).args.tokenId.toString()))];
 
