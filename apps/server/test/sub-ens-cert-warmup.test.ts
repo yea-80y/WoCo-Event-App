@@ -109,8 +109,8 @@ test("the warm-up runs only after the contenthash receipt", () => {
   // Before the receipt it would ask eth.limo about a name with no contenthash,
   // and that negative answer is cached for 300 s — the opposite of warming.
   const chain = sourceOf("../src/lib/chain/sub-ens-contract.ts");
-  const start = chain.indexOf("export async function updateSubEnsContenthash");
-  assert.ok(start > 0, "updateSubEnsContenthash not found");
+  const start = chain.indexOf("export async function relaySignedContenthash");
+  assert.ok(start > 0, "relaySignedContenthash not found");
   const next = chain.indexOf("\nexport ", start + 10);
   const body = chain.slice(start, next > 0 ? next : undefined);
 

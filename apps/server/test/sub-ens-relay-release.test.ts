@@ -26,8 +26,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { labelNode, paddedReleaseGasLimit, RELEASE_GAS_FIXED_PAD } from "../src/lib/chain/sub-ens-contract.js";
-import { isWholeBytesHex, releaseExpiryInWindow } from "../src/routes/sub-ens.js";
+import { labelNode, paddedRelayGasLimit, RELAY_GAS_FIXED_PAD } from "../src/lib/chain/sub-ens-contract.js";
+import { isWholeBytesHex, relayExpiryInWindow } from "../src/routes/sub-ens.js";
 
 function sourceOf(rel: string): string {
   return readFileSync(new URL(rel, import.meta.url), "utf-8")
@@ -40,6 +40,18 @@ function sourceOf(rel: string): string {
 const ROUTE = sourceOf("../src/routes/sub-ens.ts");
 const RELAY = ROUTE.slice(ROUTE.indexOf('subEnsRoutes.post("/relay-release"'));
 const CHAIN = sourceOf("../src/lib/chain/sub-ens-contract.ts");
+
+/** One top-level function of the route file, bounded at the next top-level
+ *  statement — never run to end-of-file, which would widen what it checks. */
+function routeFunction(name: string): string {
+  const start = ROUTE.indexOf(`function ${name}(`);
+  assert.ok(start > 0, `${name} not found`);
+  const end = ROUTE.indexOf("\n}\n", start);
+  assert.ok(end > start, `the end of ${name} was not found`);
+  return ROUTE.slice(start, end + 2);
+}
+const EXPIRY = routeFunction("refuseUnlessExpiryInWindow");
+const LOG = routeFunction("logRelayFailure");
 
 /** Just the relay helper — bounded at the next top-level declaration, or a
  *  slice running to end-of-file picks up other functions' contract calls. */
@@ -144,31 +156,32 @@ test("the route refuses a malformed signature with a 400, before any chain work"
 
 test("expiration is bounded at BOTH ends", () => {
   const now = 1_800_000_000;
-  assert.equal(releaseExpiryInWindow(now + 59, now), false, "under a minute");
-  assert.equal(releaseExpiryInWindow(now + 60, now), true, "exactly a minute");
-  assert.equal(releaseExpiryInWindow(now + 600, now), true, "the client's ten minutes");
-  assert.equal(releaseExpiryInWindow(now + 15 * 60, now), true, "exactly fifteen minutes");
-  assert.equal(releaseExpiryInWindow(now + 15 * 60 + 1, now), false, "past fifteen minutes");
-  assert.equal(releaseExpiryInWindow(now - 1, now), false, "already past");
+  assert.equal(relayExpiryInWindow(now + 59, now), false, "under a minute");
+  assert.equal(relayExpiryInWindow(now + 60, now), true, "exactly a minute");
+  assert.equal(relayExpiryInWindow(now + 600, now), true, "the client's ten minutes");
+  assert.equal(relayExpiryInWindow(now + 15 * 60, now), true, "exactly fifteen minutes");
+  assert.equal(relayExpiryInWindow(now + 15 * 60 + 1, now), false, "past fifteen minutes");
+  assert.equal(relayExpiryInWindow(now - 1, now), false, "already past");
   // A non-integer must not slip through as NaN and compare false on both sides.
-  assert.equal(releaseExpiryInWindow(Number.NaN, now), false);
-  assert.equal(releaseExpiryInWindow(now + 600.5, now), false);
-  assert.match(RELAY, /expiration_out_of_range/);
-  assert.match(RELAY, /Number\.isInteger\(expiration\)/);
+  assert.equal(relayExpiryInWindow(Number.NaN, now), false);
+  assert.equal(relayExpiryInWindow(now + 600.5, now), false);
+  assert.match(EXPIRY, /expiration_out_of_range/);
+  assert.match(EXPIRY, /Number\.isInteger\(expiration\)/);
 });
 
 test("the window is measured on the CHAIN's clock, not ours (audit 950 Low 13)", () => {
   // Arbitrum's block.timestamp may run a day behind or an hour ahead; the
   // registry compares against it, so the relay must too.
-  assert.match(RELAY, /chainNowSecs = await getSubEnsChainTime\(\)/);
-  assert.match(RELAY, /releaseExpiryInWindow\(expiration, chainNowSecs\)/);
-  assert.doesNotMatch(RELAY.slice(0, RELAY.indexOf("relayReleaseWithSignature(")), /Date\.now\(\)/);
+  assert.match(EXPIRY, /chainNowSecs = await getSubEnsChainTime\(\)/);
+  assert.match(EXPIRY, /relayExpiryInWindow\(expiration, chainNowSecs\)/);
+  assert.doesNotMatch(EXPIRY, /Date\.now\(\)/);
   // An unanswered clock is refused as unverified, never guessed from ours.
-  assert.match(RELAY, /"chain_clock_unverified" \}, 502\)/);
-  // …and it is read before anything is charged or sent.
-  const clock = RELAY.indexOf("getSubEnsChainTime()");
-  assert.ok(clock > 0 && clock < RELAY.indexOf("releaseLimiter.record"));
+  assert.match(EXPIRY, /"chain_clock_unverified" \}, 502\)/);
+  // …and the route runs it before anything is charged or sent.
+  const clock = RELAY.indexOf("await refuseUnlessExpiryInWindow(c, body.expiration)");
+  assert.ok(clock > 0 && clock < RELAY.indexOf("releaseLimits.account.record"));
   assert.ok(clock < RELAY.indexOf("relayReleaseWithSignature("));
+  assert.match(RELAY, /if \(expiryRefused\) return expiryRefused;/);
 });
 
 test("the chain clock is the latest block's timestamp", () => {
@@ -180,8 +193,8 @@ test("the chain clock is the latest block's timestamp", () => {
 });
 
 test("the bounds are the ones the client's TTL sits inside", () => {
-  const min = Number(/RELEASE_EXPIRY_MIN_SECS = (\d+)/.exec(ROUTE)?.[1]);
-  const max = /RELEASE_EXPIRY_MAX_SECS = ([^;]+);/.exec(ROUTE)?.[1] ?? "";
+  const min = Number(/RELAY_EXPIRY_MIN_SECS = (\d+)/.exec(ROUTE)?.[1]);
+  const max = /RELAY_EXPIRY_MAX_SECS = ([^;]+);/.exec(ROUTE)?.[1] ?? "";
   assert.equal(min, 60);
   assert.match(max, /15 \* 60/);
   // The client asks for 10 minutes; it must be comfortably inside both bounds,
@@ -195,7 +208,7 @@ test("ownership is checked before anything is spent", () => {
   // answers 502 rather than the 404/403 that would accuse a real holder; what
   // this pins is unchanged — it still runs before any budget is charged.
   const ownerIdx = RELAY.indexOf("refuseUnlessOwner(c, label");
-  const recordIdx = RELAY.indexOf("releaseLimiter.record");
+  const recordIdx = RELAY.indexOf("releaseLimits.account.record");
   const relayIdx = RELAY.indexOf("relayReleaseWithSignature(");
   assert.ok(ownerIdx > 0 && ownerIdx < recordIdx && ownerIdx < relayIdx);
 });
@@ -215,8 +228,8 @@ test("a release already in flight for the node is refused, not double-submitted"
 });
 
 test("both rate budgets are peeked before either is charged", () => {
-  const peek = RELAY.indexOf("releaseGlobalLimiter.peek");
-  const record = RELAY.indexOf("releaseLimiter.record");
+  const peek = RELAY.indexOf("releaseLimits.global.peek");
+  const record = RELAY.indexOf("releaseLimits.account.record");
   assert.ok(peek > 0 && peek < record, "a request refused globally must not be charged to the caller");
 });
 
@@ -248,14 +261,14 @@ test("ethers can name the v2.2 errors too, though no call here can raise them", 
   assert.match(CHAIN, /"error NotDeployer\(address caller\)"/);
 });
 
-test("a registrar the registry no longer enrols is named at the mint and the site write (registry v2.2)", () => {
+test("a registrar the registry no longer enrols is named at the mint and the pointer relay (registry v2.2)", () => {
   // The registry's `Unauthorized` bubbles through the registrar unchanged, so
   // its fragment must be in the REGISTRAR ABI for ethers to name it.
   const registrarAbi = CHAIN.slice(CHAIN.indexOf("const REGISTRAR_ABI"), CHAIN.indexOf("];", CHAIN.indexOf("const REGISTRAR_ABI")));
   assert.match(registrarAbi, /"error Unauthorized\(bytes32 node\)"/);
   const claim = ROUTE.slice(ROUTE.indexOf("mintSubEnsName("), ROUTE.indexOf('"claim failed"'));
   assert.match(claim, /name === "Unauthorized"\) \{[\s\S]*?503\)/);
-  const write = ROUTE.slice(ROUTE.indexOf("updateSubEnsContenthash(label"), ROUTE.indexOf('"update failed"'));
+  const write = ROUTE.slice(ROUTE.indexOf("relaySignedContenthash(label"), ROUTE.indexOf('"update failed"'));
   assert.match(write, /name === "Unauthorized"\) \{[\s\S]*?503\)/);
 });
 
@@ -277,7 +290,8 @@ test("the signature never reaches a log line", () => {
   // by appending every `info` key, so a CALL_EXCEPTION / INSUFFICIENT_FUNDS /
   // nonce error carries `transaction={"data":"0x…"}` — the full calldata, with
   // the holder's signature in it. So the ban is on the CARRIER, not the word.
-  const body = RELAY.slice(0, RELAY.indexOf("\n});"));
+  const body = RELAY.slice(0, RELAY.indexOf("\n});")) + LOG + EXPIRY;
+  assert.match(RELAY, /logRelayFailure\("relay-release", label, err\)/, "failures go through the payload-free logger");
   const logs = [...body.matchAll(/console\.(log|warn|error)\(([\s\S]*?)\);/g)].map((m) => m[2]);
   assert.ok(logs.length > 0, "expected at least one log line to check");
   for (const line of logs) {
@@ -331,16 +345,16 @@ test("the confirmation is awaited outside the sponsor queue", () => {
 
 test("the relayed release is sent with a padded limit, estimated inside the queue (audit 950 Low 15)", () => {
   const e = 1_000_000n;
-  assert.equal(paddedReleaseGasLimit(e), e + e / 5n + RELEASE_GAS_FIXED_PAD);
-  assert.ok(paddedReleaseGasLimit(e) > e + 300_000n, "a fifth plus the fixed allowance");
-  assert.ok(paddedReleaseGasLimit(0n) >= RELEASE_GAS_FIXED_PAD, "the fixed allowance applies to a small estimate too");
+  assert.equal(paddedRelayGasLimit(e), e + e / 5n + RELAY_GAS_FIXED_PAD);
+  assert.ok(paddedRelayGasLimit(e) > e + 300_000n, "a fifth plus the fixed allowance");
+  assert.ok(paddedRelayGasLimit(0n) >= RELAY_GAS_FIXED_PAD, "the fixed allowance applies to a small estimate too");
 
   const helper = relayHelper();
   const queue = helper.slice(helper.indexOf("sendSponsorTx"), helper.indexOf("tx.wait"));
   // The estimate is made INSIDE the queued send — immediately before signing —
   // and its padded value is what is sent.
   assert.match(queue, /releaseWithSignature\.estimateGas\(node, expiration, signer, signature\)/);
-  assert.match(queue, /gasLimit: paddedReleaseGasLimit\(estimate\)/);
+  assert.match(queue, /gasLimit: paddedRelayGasLimit\(estimate\)/);
   assert.match(queue, /\.\.\.o,/, "the nonce override must still reach the send");
 });
 

@@ -6,7 +6,7 @@ import {
   getLabelOwner,
   getOwnedLabels,
   mintSubEnsName,
-  updateSubEnsContenthash,
+  relaySignedContenthash,
   getMintAllowance,
   mintRateCapVerdict,
   labelNode,
@@ -15,6 +15,7 @@ import {
 } from "../lib/chain/sub-ens-contract.js";
 import { validateLabel } from "@woco/shared";
 import { isProfileName, profileNameOf } from "../lib/profile/name-ledger.js";
+import { getApexContenthash } from "../lib/chain/sub-ens-apex.js";
 import { stampEventSubEns } from "../lib/event/service.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
@@ -60,44 +61,95 @@ async function readMintAllowance(recipient: string) {
 }
 
 /**
- * Release relay budgets. The sponsor pays gas for a burn the HOLDER authorised,
- * so the drain is already bounded by the mint side (to release you must hold;
- * to hold you must pass the attendee gate and the 30/30d per-recipient cap).
- * These bound the two things that are not: how much of the shared sponsor nonce
- * queue one account can occupy, and how much of it everyone can occupy at once.
- * That queue is shared with ticket fulfilment, so a burst must not sit in front
- * of it.
+ * Relay budgets. The sponsor pays gas for a burn or a pointer write the HOLDER
+ * authorised, so the drain is already bounded by the mint side (to sign you
+ * must hold; to hold you must pass the attendee gate and the mint caps). These
+ * bound the two things that are not: how much of the names key's nonce queue
+ * one account can occupy, and how much of it everyone can occupy at once.
+ * Releases and pointer writes are budgeted apart, so binding a few sites never
+ * spends the budget a holder needs to discard a name.
  */
-const releaseLimiter = new SlidingWindowLimiter([
-  { limit: 5, windowMs: 60 * 60_000 },
-  { limit: 20, windowMs: 24 * 60 * 60_000 },
-]);
-const releaseGlobalLimiter = new SlidingWindowLimiter([{ limit: 20, windowMs: 60_000 }]);
-const RELEASE_GLOBAL_KEY = "all";
+function relayLimiters() {
+  return {
+    account: new SlidingWindowLimiter([
+      { limit: 5, windowMs: 60 * 60_000 },
+      { limit: 20, windowMs: 24 * 60 * 60_000 },
+    ]),
+    global: new SlidingWindowLimiter([{ limit: 20, windowMs: 60_000 }]),
+  };
+}
+const releaseLimits = relayLimiters();
+const pointerLimits = relayLimiters();
+const RELAY_GLOBAL_KEY = "all";
 
-/** Nodes with a release in flight. Two concurrent posts of ONE signature both
+/** Nodes with a relay in flight. Two concurrent posts of ONE signature both
  *  pass simulation; the second would revert on-chain at the sponsor's expense. */
 const releasesInFlight = new Set<string>();
+const pointersInFlight = new Set<string>();
 
-/** A release signature is valid for a window the CLIENT proposes. Bounded both
+/** A relayed signature is valid for a window the CLIENT proposes. Bounded both
  *  ways: too short and the tx reverts after the queue delay, at our expense;
- *  too long and the signature is a bearer burn token sitting in logs and
+ *  too long and the signature is a bearer authorisation sitting in logs and
  *  proxies, which the holder cannot cleanly cancel.
  *
  *  Measured against the CHAIN's clock (`getSubEnsChainTime`), which is the one
- *  the registry checks, not ours: Arbitrum's may run up to a day behind or an
+ *  the contracts check, not ours: Arbitrum's may run up to a day behind or an
  *  hour ahead of real time (audit 950 Low 13). The client derives its
  *  expiration from the same clock. */
-const RELEASE_EXPIRY_MIN_SECS = 60;
-const RELEASE_EXPIRY_MAX_SECS = 15 * 60;
+const RELAY_EXPIRY_MIN_SECS = 60;
+const RELAY_EXPIRY_MAX_SECS = 15 * 60;
 
 /** Whether `expiration` falls inside the relay's window, measured from
  *  `chainNowSecs`. An integer check first, so a NaN cannot compare false on
  *  both sides and slip through. */
-export function releaseExpiryInWindow(expiration: number, chainNowSecs: number): boolean {
+export function relayExpiryInWindow(expiration: number, chainNowSecs: number): boolean {
   if (!Number.isInteger(expiration) || !Number.isInteger(chainNowSecs)) return false;
   const ttl = expiration - chainNowSecs;
-  return ttl >= RELEASE_EXPIRY_MIN_SECS && ttl <= RELEASE_EXPIRY_MAX_SECS;
+  return ttl >= RELAY_EXPIRY_MIN_SECS && ttl <= RELAY_EXPIRY_MAX_SECS;
+}
+
+/**
+ * The expiration check both relays share: integer, then the chain's clock,
+ * then the window. Returns null to proceed, else the refusal. A clock that did
+ * not answer is not evidence of anything, so it is its own refusal (the client
+ * falls back to the holder's own transaction, which needs no clock) — never a
+ * guess from ours.
+ */
+async function refuseUnlessExpiryInWindow(
+  c: { json: (body: unknown, status: number) => Response },
+  rawExpiration: unknown,
+): Promise<Response | null> {
+  const expiration = Number(rawExpiration);
+  if (!Number.isInteger(expiration)) {
+    return c.json({ ok: false, error: "expiration must be an integer" }, 400);
+  }
+  let chainNowSecs: number;
+  try {
+    chainNowSecs = await getSubEnsChainTime();
+  } catch (err) {
+    console.error("[sub-ens] chain clock read failed:", (err as { shortMessage?: string })?.shortMessage ?? "unspecified");
+    return c.json({ ok: false, error: "chain_clock_unverified" }, 502);
+  }
+  if (!relayExpiryInWindow(expiration, chainNowSecs)) {
+    return c.json({ ok: false, error: "expiration_out_of_range" }, 400);
+  }
+  return null;
+}
+
+/**
+ * Log a failed relay WITHOUT `err.message`. ethers builds that string by
+ * appending every `info` key it was given, and for a CALL_EXCEPTION /
+ * INSUFFICIENT_FUNDS / nonce error that includes `transaction={"data":"0x…"}` —
+ * the whole calldata, holder signature inside. A names key short of ETH would
+ * then park a bearer authorisation in `docker logs` for the life of its expiry.
+ * `shortMessage` is the same diagnosis with none of the payload.
+ */
+function logRelayFailure(what: string, label: string, err: unknown): void {
+  const diag = (err as { shortMessage?: string; code?: string }) ?? {};
+  console.error(
+    `[sub-ens] ${what} failed label=${label} code=${diag.code ?? "none"}:`,
+    diag.shortMessage ?? "unspecified error",
+  );
 }
 
 /**
@@ -227,13 +279,14 @@ subEnsRoutes.get("/owned", requireAuth, async (c) => {
 
 /**
  * POST /api/sub-ens/claim
- * Auth required. Mints label.woco.eth to the authenticated organiser on Arbitrum.
+ * Auth required. Mints an EMPTY label.woco.eth to the authenticated account on
+ * Arbitrum: the name, its holder and the holder's own address records.
  *
- * Body: { label: string, swarmHash?: string, description?: string, avatar?: string }
+ * Body: { label: string }
  *
- * - label: the sub-ENS label (e.g. "punkpub")
- * - swarmHash: 64-char hex Swarm BZZ hash of the deployed site (no 0x prefix); optional at claim time
- * - description, avatar: optional ENS text records set in the same tx
+ * No contenthash and no text records at mint (registrar v2.2): the sponsor
+ * never decides what a name says. Pointing the name at a site or the app is the
+ * holder's to sign afterwards (`/set-contenthash`).
  */
 subEnsRoutes.post("/claim", requireAuth, async (c) => {
   const parentAddress = c.get("parentAddress");
@@ -245,31 +298,13 @@ subEnsRoutes.post("/claim", requireAuth, async (c) => {
     return c.json({ ok: false, error: "ticket_required" }, 403);
   }
 
-  const body = await c.req.json<{
-    label: string;
-    swarmHash?: string;
-    description?: string;
-    avatar?: string;
-  }>();
+  const body = await c.req.json<{ label?: string }>();
 
   const label = body.label?.toLowerCase()?.trim();
   if (!label) return c.json({ ok: false, error: "label is required" }, 400);
 
   const validationError = validateLabel(label);
   if (validationError) return c.json({ ok: false, error: validationError }, 400);
-
-  if (body.swarmHash) {
-    const clean = body.swarmHash.replace(/^0x/, "");
-    if (!/^[a-f0-9]{64}$/.test(clean)) {
-      return c.json({ ok: false, error: "swarmHash must be a 64-char hex string" }, 400);
-    }
-  }
-
-  // Build ENS text records from optional profile fields
-  const textKeys: string[] = [];
-  const textValues: string[] = [];
-  if (body.description?.trim()) { textKeys.push("description"); textValues.push(body.description.trim()); }
-  if (body.avatar?.trim())      { textKeys.push("avatar");      textValues.push(body.avatar.trim()); }
 
   // Pre-flight availability check for a clean user-facing error (contract also guards this)
   try {
@@ -284,13 +319,7 @@ subEnsRoutes.post("/claim", requireAuth, async (c) => {
   if (capped) return c.json({ ok: false, ...capped }, 429);
 
   try {
-    const txHash = await mintSubEnsName(
-      label,
-      parentAddress,
-      body.swarmHash?.replace(/^0x/, "") ?? null,
-      textKeys,
-      textValues,
-    );
+    const txHash = await mintSubEnsName(label, parentAddress);
     return c.json({
       ok: true,
       data: { label, ensName: `${label}.woco.eth`, txHash },
@@ -298,11 +327,12 @@ subEnsRoutes.post("/claim", requireAuth, async (c) => {
   } catch (err: unknown) {
     // Decode ethers v6 custom errors (requires error defs in REGISTRAR_ABI)
     if (isError(err, "CALL_EXCEPTION")) {
-      const name = (err as { revert?: { name?: string } }).revert?.name;
+      const revert = (err as { revert?: { name?: string; args?: unknown[] } }).revert;
+      const name = revert?.name;
       if (name === "LabelIsReserved")     return c.json({ ok: false, error: "label is reserved" }, 409);
       if (name === "InvalidLabel")        return c.json({ ok: false, error: "invalid label" }, 400);
       if (name === "NotAuthorisedSponsor") {
-        console.error("[sub-ens] sponsor wallet not authorised on registrar");
+        console.error("[sub-ens] names sponsor key not authorised on registrar");
         return c.json({ ok: false, error: "name registration temporarily unavailable" }, 503);
       }
       // The registry refused the registrar itself: not enrolled — after an
@@ -315,9 +345,16 @@ subEnsRoutes.post("/claim", requireAuth, async (c) => {
       // read can race a concurrent mint, and it is skipped when the RPC is
       // unavailable. Report the window rather than a generic failure (#471).
       if (name === "MintRateCapExceeded") {
-        const args = (err as { revert?: { args?: unknown[] } }).revert?.args;
-        const windowResetsAt = Number(args?.[1] ?? 0);
+        const windowResetsAt = Number(revert?.args?.[1] ?? 0);
         return c.json({ ok: false, error: "mint_rate_cap", data: { windowResetsAt } }, 429);
+      }
+      // The registrar-wide cap: names are busy for EVERYONE, not this caller,
+      // so 503 rather than 429 and the client says "try again at HH:MM". It is
+      // also the leaked-key detector, which /api/health watches.
+      if (name === "GlobalMintCapExceeded") {
+        const windowResetsAt = Number(revert?.args?.[0] ?? 0);
+        console.warn(`[sub-ens] registrar-wide mint cap reached until ${windowResetsAt}`);
+        return c.json({ ok: false, error: "mint_global_cap", data: { windowResetsAt } }, 503);
       }
     }
     // Race condition: another request registered the label between our check and the tx
@@ -373,54 +410,92 @@ subEnsRoutes.post("/stamp-event", requireAuth, async (c) => {
 
 /**
  * POST /api/sub-ens/set-contenthash
- * Auth required. Updates the Swarm pointer for label.woco.eth after a site redeploy.
- * Called internally by sites.ts deploy route; also available externally for admin/CLI.
+ * Auth required. Relays a pointer write the HOLDER signed, paying the gas.
  *
- * Body: { label: string, swarmHash: string }
+ * Body: { label, swarmHash, expiration, signature }
+ *
+ * The signature is the authority: `WoCoRegistrar.setContenthashWithSignature`
+ * checks it against the name's current holder (EIP-712 `SetContenthash`, a
+ * per-name nonce, the chain's clock), so the names key can only relay what the
+ * holder signed — never repoint a name on its own. Refusing to relay traps
+ * nobody: a holder can always write its own record at the registry.
+ *
+ * The ownership and profile-name checks below are GAS POLICY and accident
+ * guards, not the security boundary.
  */
 subEnsRoutes.post("/set-contenthash", requireAuth, async (c) => {
-  const parentAddress = c.get("parentAddress");
-  const body = await c.req.json<{ label: string; swarmHash: string }>();
+  const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const body = await c.req.json<{ label?: string; swarmHash?: string; expiration?: number; signature?: string }>();
 
   const label = body.label?.toLowerCase()?.trim() ?? "";
-  const swarmHash = (body.swarmHash ?? "").replace(/^0x/, "").trim();
-
   if (!label) return c.json({ ok: false, error: "label is required" }, 400);
-  if (!swarmHash) return c.json({ ok: false, error: "swarmHash is required" }, 400);
+  const validationError = validateLabel(label);
+  if (validationError) return c.json({ ok: false, error: validationError }, 400);
+
+  const swarmHash = (body.swarmHash ?? "").replace(/^0x/, "").trim().toLowerCase();
   if (!/^[a-f0-9]{64}$/.test(swarmHash)) {
     return c.json({ ok: false, error: "swarmHash must be a 64-char hex string" }, 400);
   }
 
-  // Ownership check — verify the authenticated organiser owns this label on-chain.
-  // The sponsor wallet is authorised to update ANY label's contenthash, so this
-  // server-side guard is the only thing preventing cross-organiser overwrite (IDOR).
-  const refused = await refuseUnlessOwner(c, label, parentAddress as string);
+  const signature = typeof body.signature === "string" ? body.signature : "";
+  if (!signature) return c.json({ ok: false, error: "signature is required" }, 400);
+  if (!isWholeBytesHex(signature)) {
+    return c.json({ ok: false, error: "signature must be hex of whole bytes" }, 400);
+  }
+
+  const expiryRefused = await refuseUnlessExpiryInWindow(c, body.expiration);
+  if (expiryRefused) return expiryRefused;
+  const expiration = Number(body.expiration);
+
+  // Gas policy: the sponsor pays only for the caller's own name.
+  const refused = await refuseUnlessOwner(c, label, parentAddress);
   if (refused) return refused;
-  // Point C: pointing the identity name at a site would make every later
-  // redeploy of that site silently repoint the organiser's identity.
-  if (isProfileName(parentAddress as string, label)) {
+
+  // Point C: the identity name points at the app and nowhere else. A site
+  // pointer on it would make the organiser's identity a URL for one site.
+  if (isProfileName(parentAddress, label) && swarmHash !== getApexContenthash()) {
     return c.json({ ok: false, error: "profile_name" }, 409);
   }
 
+  if (!pointerLimits.account.peek(parentAddress) || !pointerLimits.global.peek(RELAY_GLOBAL_KEY)) {
+    return c.json({ ok: false, error: "rate_limited" }, 429);
+  }
+
+  const node = labelNode(label);
+  if (pointersInFlight.has(node)) {
+    return c.json({ ok: false, error: "pointer_in_flight" }, 409);
+  }
+
+  // Both budgets are peeked before either is charged, so a request refused on
+  // the global limit is not charged against the caller's own.
+  pointerLimits.account.record(parentAddress);
+  pointerLimits.global.record(RELAY_GLOBAL_KEY);
+  pointersInFlight.add(node);
   try {
-    const txHash = await updateSubEnsContenthash(label, swarmHash);
+    const txHash = await relaySignedContenthash(label, swarmHash, expiration, signature);
     return c.json({ ok: true, data: { label, txHash } });
   } catch (err: unknown) {
     if (isError(err, "CALL_EXCEPTION")) {
       const name = (err as { revert?: { name?: string } }).revert?.name;
-      if (name === "EmptyContenthash") return c.json({ ok: false, error: "swarmHash is empty" }, 400);
-      // Registrar v2.1 refuses a label its own `register` would refuse.
-      if (name === "LabelIsReserved")  return c.json({ ok: false, error: "label is reserved" }, 409);
-      if (name === "InvalidLabel")     return c.json({ ok: false, error: "invalid label" }, 400);
-      // Ownership is checked above, so the registry refusing here means the
+      // Named refusals, so the client can say what happened rather than "failed".
+      if (name === "NotHolderSignature") return c.json({ ok: false, error: "signature_not_authorised" }, 403);
+      if (name === "SignatureExpired")   return c.json({ ok: false, error: "signature_expired" }, 400);
+      if (name === "ExpirationTooFar")   return c.json({ ok: false, error: "expiration_too_far" }, 400);
+      if (name === "EmptyContenthash")   return c.json({ ok: false, error: "swarmHash is empty" }, 400);
+      if (name === "InvalidLabel")       return c.json({ ok: false, error: "invalid label" }, 400);
+      if (name === "LabelNotRegistered") return c.json({ ok: false, error: "label not found" }, 404);
+      if (name === "LabelIsReserved")    return c.json({ ok: false, error: "label is reserved" }, 409);
+      // The holder check passed, so the registry refusing the write means the
       // registrar is not enrolled (registry v2.2, after an admin handover).
       if (name === "Unauthorized") {
         console.error("[sub-ens] registrar not enrolled in the registry");
         return c.json({ ok: false, error: "update temporarily unavailable" }, 503);
       }
     }
-    console.error("[sub-ens] set-contenthash failed:", err);
+    logRelayFailure("set-contenthash relay", label, err);
     return c.json({ ok: false, error: "update failed" }, 500);
+  } finally {
+    pointersInFlight.delete(node);
   }
 });
 
@@ -460,23 +535,9 @@ subEnsRoutes.post("/relay-release", requireAuth, async (c) => {
     return c.json({ ok: false, error: "signature must be hex of whole bytes" }, 400);
   }
 
+  const expiryRefused = await refuseUnlessExpiryInWindow(c, body.expiration);
+  if (expiryRefused) return expiryRefused;
   const expiration = Number(body.expiration);
-  if (!Number.isInteger(expiration)) {
-    return c.json({ ok: false, error: "expiration must be an integer" }, 400);
-  }
-  // A clock that did not answer is not evidence of anything: refuse as
-  // unverified (the client falls back to the holder's own transaction, which
-  // needs no clock), never guess from ours.
-  let chainNowSecs: number;
-  try {
-    chainNowSecs = await getSubEnsChainTime();
-  } catch (err) {
-    console.error("[sub-ens] chain clock read failed:", (err as { shortMessage?: string })?.shortMessage ?? "unspecified");
-    return c.json({ ok: false, error: "chain_clock_unverified" }, 502);
-  }
-  if (!releaseExpiryInWindow(expiration, chainNowSecs)) {
-    return c.json({ ok: false, error: "expiration_out_of_range" }, 400);
-  }
 
   // Gas policy: the sponsor pays only for the caller's own name.
   const refused = await refuseUnlessOwner(c, label, parentAddress);
@@ -490,7 +551,7 @@ subEnsRoutes.post("/relay-release", requireAuth, async (c) => {
     return c.json({ ok: false, error: "profile_name" }, 409);
   }
 
-  if (!releaseLimiter.peek(parentAddress) || !releaseGlobalLimiter.peek(RELEASE_GLOBAL_KEY)) {
+  if (!releaseLimits.account.peek(parentAddress) || !releaseLimits.global.peek(RELAY_GLOBAL_KEY)) {
     return c.json({ ok: false, error: "rate_limited" }, 429);
   }
 
@@ -501,8 +562,8 @@ subEnsRoutes.post("/relay-release", requireAuth, async (c) => {
 
   // Both budgets are peeked before either is charged, so a request refused on
   // the global limit is not charged against the caller's own.
-  releaseLimiter.record(parentAddress);
-  releaseGlobalLimiter.record(RELEASE_GLOBAL_KEY);
+  releaseLimits.account.record(parentAddress);
+  releaseLimits.global.record(RELAY_GLOBAL_KEY);
   releasesInFlight.add(node);
   try {
     const { txHash } = await relayReleaseWithSignature(node, expiration, parentAddress, signature);
@@ -522,18 +583,7 @@ subEnsRoutes.post("/relay-release", requireAuth, async (c) => {
       // fallback needs no signature, so it still works.
       if (name === "ExpirationTooFar")    return c.json({ ok: false, error: "expiration_too_far" }, 400);
     }
-    // NEVER `err.message` here. ethers builds that string by appending every
-    // `info` key it was given, and for a CALL_EXCEPTION / INSUFFICIENT_FUNDS /
-    // nonce error that includes `transaction={"data":"0x…"}` — the whole
-    // `releaseWithSignature` calldata, holder signature inside. A sponsor
-    // wallet short of ETH would then park a bearer burn authorisation in
-    // `docker logs` for the life of its expiry. `shortMessage` is the same
-    // diagnosis with none of the payload.
-    const diag = (err as { shortMessage?: string; code?: string }) ?? {};
-    console.error(
-      `[sub-ens] relay-release failed label=${label} code=${diag.code ?? "none"}:`,
-      diag.shortMessage ?? "unspecified error",
-    );
+    logRelayFailure("relay-release", label, err);
     return c.json({ ok: false, error: "release failed" }, 500);
   } finally {
     releasesInFlight.delete(node);
