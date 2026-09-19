@@ -14,8 +14,9 @@
  * This module is the plumbing: read, park the reading, log transitions.
  */
 
-import { JsonRpcProvider, Contract, formatEther, id, parseEther } from "ethers";
+import { JsonRpcProvider, Contract, formatEther, id, isError, keccak256, parseEther } from "ethers";
 import {
+  FEATURES,
   ENS_BASE_REGISTRAR_MAINNET,
   ENTRY_POINT_V07_ADDRESS,
   KERNEL_CHAIN_ID,
@@ -37,8 +38,12 @@ import {
   evaluateChainLag,
   evaluateEnsExpiry,
   evaluatePaymaster,
+  evaluateCswFactory,
+  evaluateGlobalMint,
   evaluateRegistrarEnrolled,
+  evaluateSponsorAuthorised,
   evaluateSponsorBalance,
+  type GlobalMintReading,
   evaluateStamp,
   isStale,
   readThresholdsFromEnv,
@@ -107,6 +112,23 @@ interface Enrolment {
 let enrolmentReading = empty<Enrolment>();
 let sponsorReading = empty<bigint>();
 
+/** What the registrar says about the key this server mints with, and about
+ *  everyone's minting right now. */
+interface RegistrarPolicy {
+  sponsorAuthorised: boolean;
+  globalMint: GlobalMintReading | "unsupported";
+}
+let policyReading = empty<RegistrarPolicy>();
+let cswFactoryReading = empty<string>();
+
+/**
+ * Coinbase Smart Wallet factory v1: canonical address and its runtime
+ * codehash, the same on Arbitrum One, Arbitrum Sepolia, Base and Base Sepolia
+ * (read 2026-09-19).
+ */
+export const CSW_FACTORY = "0x0BA5ED0c6AA8c49038F819E587E2633c4A9F428a";
+export const CSW_FACTORY_CODEHASH = "0xc4900c000fd23885462a115b872741ad2b1e7ff2d7889aee18bc4d4bef3728f6";
+
 // ---------------------------------------------------------------------------
 // Live readers — injectable so every rule above can be tested without a network
 // ---------------------------------------------------------------------------
@@ -121,11 +143,19 @@ export interface HealthReaders {
   registrarEnrolment(): Promise<Enrolment>;
   /** The sponsor wallet's ETH on the sub-ENS chain. Throws when no key is set. */
   sponsorBalance(): Promise<bigint>;
+  /** `authorisedSponsors(sponsor)` and `globalMintAllowance()` on the registrar. */
+  registrarPolicy(): Promise<RegistrarPolicy>;
+  /** keccak256 of the code at `CSW_FACTORY` on the sub-ENS chain. */
+  cswFactoryCodehash(): Promise<string>;
 }
 
 const ENTRY_POINT_ABI = ["function balanceOf(address account) view returns (uint256)"];
 const BASE_REGISTRAR_ABI = ["function nameExpires(uint256 id) view returns (uint256)"];
-const WOCO_REGISTRAR_ABI = ["function registry() view returns (address)"];
+const WOCO_REGISTRAR_ABI = [
+  "function registry() view returns (address)",
+  "function authorisedSponsors(address sponsor) view returns (bool)",
+  "function globalMintAllowance() view returns (uint32 remaining, uint64 windowResetsAt)",
+];
 const L2_REGISTRY_ABI = ["function registrars(address registrar) view returns (bool)"];
 
 /** The sponsor key is not configured — minting cannot happen at all. */
@@ -200,6 +230,16 @@ async function beeGet(path: string, what: string): Promise<Record<string, unknow
 }
 const NOT_JSON = "not JSON (stamps API not exposed here?)";
 
+/**
+ * A call that reverted with NO data: what a registrar from before the cap
+ * answers for `globalMintAllowance()`, having no such function. A timeout, an
+ * RPC fault or a revert that carries data is not evidence of that, and must
+ * stay a failed read rather than read as "no cap here".
+ */
+export function revertedWithoutData(err: unknown): boolean {
+  return isError(err, "CALL_EXCEPTION") && (err.data === null || err.data === undefined || err.data === "0x");
+}
+
 export const liveReaders: HealthReaders = {
   deposit: async () => {
     const wei = await withTimeout(
@@ -243,6 +283,32 @@ export const liveReaders: HealthReaders = {
     }
     return withTimeout(subEnsChain().getBalance(sponsor), "sponsor getBalance");
   },
+  registrarPolicy: async () => {
+    const registrar = new Contract(getRegistrarAddress(getSubEnsChainId()), WOCO_REGISTRAR_ABI, subEnsChain());
+    let sponsor: string | null = null;
+    try {
+      sponsor = getSponsorAddress();
+    } catch {
+      sponsor = null; // no key: nothing is authorised, and the balance check says why
+    }
+    const sponsorAuthorised =
+      sponsor !== null &&
+      (await withTimeout(registrar.authorisedSponsors(sponsor) as Promise<boolean>, "WoCoRegistrar authorisedSponsors"));
+    let globalMint: GlobalMintReading | "unsupported";
+    try {
+      const [remaining, windowResetsAt] = (await withTimeout(
+        registrar.globalMintAllowance() as Promise<[bigint, bigint]>,
+        "WoCoRegistrar globalMintAllowance",
+      ));
+      globalMint = { remaining: Number(remaining), windowResetsAt: Number(windowResetsAt) };
+    } catch (err) {
+      if (!revertedWithoutData(err)) throw err;
+      globalMint = "unsupported";
+    }
+    return { sponsorAuthorised, globalMint };
+  },
+  cswFactoryCodehash: async () =>
+    keccak256(await withTimeout(subEnsChain().getCode(CSW_FACTORY), "CSW factory getCode")),
 };
 
 // ---------------------------------------------------------------------------
@@ -440,9 +506,25 @@ export async function refreshSubEnsMinting(
         ? { at: Date.now(), value: null, error: SPONSOR_UNCONFIGURED, detail: null }
         : failed(err);
   }
+  try {
+    policyReading = { at: Date.now(), value: await readers.registrarPolicy(), error: null, detail: null };
+  } catch (err) {
+    policyReading = failed(err);
+  }
+  // Read only while it can matter: one fewer call per tick otherwise.
+  if (FEATURES.coinbaseLoginAllowed) {
+    try {
+      cswFactoryReading = { at: Date.now(), value: await readers.cswFactoryCodehash(), error: null, detail: null };
+    } catch (err) {
+      cswFactoryReading = failed(err);
+    }
+  }
   const section = subEnsMintingHealth();
   noteVerdict("subEns.minting.registrar", section.checks.registrarEnrolled, log, enrolmentReading.detail);
   noteVerdict("subEns.minting.sponsor", section.checks.sponsorBalance, log, sponsorReading.detail);
+  noteVerdict("subEns.minting.sponsorAuthorised", section.checks.sponsorAuthorised, log, policyReading.detail);
+  noteVerdict("subEns.minting.globalMint", section.checks.globalMint, log, policyReading.detail);
+  noteVerdict("subEns.minting.cswFactory", section.checks.cswFactory, log, cswFactoryReading.detail);
 }
 const SPONSOR_UNCONFIGURED = "no sponsor wallet configured (WOCO_SPONSOR_PRIVATE_KEY)";
 
@@ -669,7 +751,16 @@ export interface SubEnsMintingSection {
   sponsor: string | null;
   sponsorBalanceEth: string | null;
   sponsorMinEth: string;
-  checks: { registrarEnrolled: Check; sponsorBalance: Check };
+  /** Registrar-wide mint window: headroom shrinking is visible before it hits zero.
+   *  `"unsupported"` on a registrar from before the cap; null until read. */
+  globalMint: GlobalMintReading | "unsupported" | null;
+  checks: {
+    registrarEnrolled: Check;
+    sponsorBalance: Check;
+    sponsorAuthorised: Check;
+    globalMint: Check;
+    cswFactory: Check;
+  };
   stale: boolean;
   checkedAt: string | null;
   configError?: string;
@@ -700,17 +791,30 @@ export function subEnsMintingHealth(now: number = Date.now()): SubEnsMintingSect
           reason: sponsorReading.error,
         });
 
+  const policy = policyReading.value;
+  const sponsorAuthorised = evaluateSponsorAuthorised({
+    authorised: policy?.sponsorAuthorised ?? null,
+    reason: policyReading.error,
+  });
+  const globalMint = evaluateGlobalMint({ reading: policy?.globalMint ?? null, reason: policyReading.error });
+  const cswFactory = evaluateCswFactory({
+    codehash: cswFactoryReading.value,
+    expected: CSW_FACTORY_CODEHASH,
+    required: FEATURES.coinbaseLoginAllowed,
+    reason: cswFactoryReading.error,
+  });
+
   let sponsor: string | null = null;
   try {
     sponsor = getSponsorAddress();
   } catch {
     sponsor = null;
   }
-  const oldest = enrolmentReading.at === null || sponsorReading.at === null
-    ? null
-    : Math.min(enrolmentReading.at, sponsorReading.at);
+  const reads = [enrolmentReading.at, sponsorReading.at, policyReading.at];
+  if (FEATURES.coinbaseLoginAllowed) reads.push(cswFactoryReading.at);
+  const oldest = reads.some((at) => at === null) ? null : Math.min(...(reads as number[]));
   return {
-    ok: combine([registrarEnrolled, sponsorBalance]),
+    ok: combine([registrarEnrolled, sponsorBalance, sponsorAuthorised, globalMint, cswFactory]),
     chainId,
     registrar: getRegistrarAddress(chainId),
     registry: enrolment?.registry ?? null,
@@ -718,7 +822,8 @@ export function subEnsMintingHealth(now: number = Date.now()): SubEnsMintingSect
     sponsor,
     sponsorBalanceEth: sponsorReading.value === null ? null : formatEther(sponsorReading.value),
     sponsorMinEth: cfg.sponsorMinEth,
-    checks: { registrarEnrolled, sponsorBalance },
+    globalMint: policy?.globalMint ?? null,
+    checks: { registrarEnrolled, sponsorBalance, sponsorAuthorised, globalMint, cswFactory },
     stale: isStale(oldest, now, PROBE_INTERVAL_MS),
     checkedAt: oldest === null ? null : new Date(oldest).toISOString(),
     ...(cfg.configError ? { configError: cfg.configError } : {}),
@@ -785,6 +890,8 @@ export function __resetHealthProbes(): void {
   ensExpiryOkAt = null;
   enrolmentReading = empty<Enrolment>();
   sponsorReading = empty<bigint>();
+  policyReading = empty<RegistrarPolicy>();
+  cswFactoryReading = empty<string>();
   lastVerdict.clear();
   provider = null;
   ensProvider = null;

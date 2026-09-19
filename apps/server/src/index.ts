@@ -315,9 +315,11 @@ app.get("/api/health", (c) =>
       // stops resolving at once. WATCH ONLY; nothing here renews anything.
       parent: subEnsParentHealth(),
       // Whether new names can be minted at all (#598): the registrar enrolled
-      // in the registry it mints into, and the sponsor able to pay. Both fail
-      // silently — existing names keep resolving. Registry v2.2 drops every
-      // registrar at an admin handover, so a handover batch that forgot
+      // in the registry it mints into, the sponsor still authorised on it and
+      // able to pay, and — on registrar v2.2 — the registrar-wide cap's
+      // headroom, which is also the leaked-key detector. All fail silently —
+      // existing names keep resolving. Registry v2.2 drops every registrar at
+      // an admin handover, so a handover batch that forgot
       // `addRegistrar(WoCoRegistrar)` lands here. Public on-chain data only.
       minting: subEnsMintingHealth(),
     },

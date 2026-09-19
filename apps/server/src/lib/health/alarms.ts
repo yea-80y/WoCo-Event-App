@@ -323,7 +323,7 @@ export function evaluateEnsExpiry(r: {
 /**
  * Whether the registry still lists WoCoRegistrar. Registry v2.2 ends EVERY
  * registrar grant when the admin seat changes hands, so a handover whose batch
- * forgot `addRegistrar` stops new names and sponsor site writes — while every
+ * forgot `addRegistrar` stops new names and name updates — while every
  * existing name keeps resolving, which is exactly why it would go unnoticed.
  */
 export function evaluateRegistrarEnrolled(r: { enrolled: boolean | null; reason?: string | null }): Check {
@@ -332,7 +332,7 @@ export function evaluateRegistrarEnrolled(r: { enrolled: boolean | null; reason?
     return {
       ok: false,
       reason:
-        "WoCoRegistrar is not enrolled in the registry — new names and sponsor site writes are refused. After an admin handover the new admin must addRegistrar(WoCoRegistrar)",
+        "WoCoRegistrar is not enrolled in the registry — new names and name updates are refused. After an admin handover the new admin must addRegistrar(WoCoRegistrar)",
     };
   }
   return { ok: true };
@@ -345,6 +345,70 @@ export function evaluateSponsorBalance(r: { balanceWei: bigint | null; minWei: b
     return {
       ok: false,
       reason: "sponsor wallet below minimum on the sub-ENS chain — sponsored mints, site writes and relayed releases will start failing",
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Whether the registrar still lists the key this server mints with. The Safe
+ * can `removeSponsor` without telling this process (the leaked-key response),
+ * and the wrong key in env reads healthy everywhere else until the first mint.
+ */
+export function evaluateSponsorAuthorised(r: { authorised: boolean | null; reason?: string | null }): Check {
+  if (r.authorised === null) return { ok: null, reason: r.reason || "sponsor authorisation could not be read" };
+  if (!r.authorised) {
+    return {
+      ok: false,
+      reason: "the sponsor key is not an authorised sponsor on WoCoRegistrar — new names are refused",
+    };
+  }
+  return { ok: true };
+}
+
+/** A registrar-wide mint window as `globalMintAllowance()` answers it. */
+export interface GlobalMintReading {
+  remaining: number;
+  windowResetsAt: number;
+}
+
+/**
+ * The registrar-wide mint cap (registrar v2.2). `remaining == 0` means names
+ * are being refused for EVERYONE right now — and a cap tripped by nobody the
+ * product can account for is the leaked-key detector (Fable sponsor-key
+ * consult §3). `"unsupported"` is a registrar from before the cap: nothing to
+ * watch, and not an unknown.
+ */
+export function evaluateGlobalMint(r: { reading: GlobalMintReading | "unsupported" | null; reason?: string | null }): Check {
+  if (r.reading === null) return { ok: null, reason: r.reason || "registrar-wide mint allowance could not be read" };
+  if (r.reading === "unsupported") return { ok: true };
+  if (r.reading.remaining === 0) {
+    return {
+      ok: false,
+      reason: "the registrar-wide mint cap is spent — every new name is refused until the window resets. If the product did not mint them, treat the names key as leaked",
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * The Coinbase Smart Wallet factory, at its canonical address and with its
+ * pinned code, on the names' chain. A name minted to a CSW parent on a chain
+ * where that account can never be deployed is a name nobody controls, so this
+ * alarms only while Coinbase login is on (Fable sponsor-key consult §11.1).
+ */
+export function evaluateCswFactory(r: {
+  codehash: string | null;
+  expected: string;
+  required: boolean;
+  reason?: string | null;
+}): Check {
+  if (!r.required) return { ok: true };
+  if (r.codehash === null) return { ok: null, reason: r.reason || "Coinbase Smart Wallet factory could not be read" };
+  if (r.codehash.toLowerCase() !== r.expected.toLowerCase()) {
+    return {
+      ok: false,
+      reason: "the Coinbase Smart Wallet factory is missing or different on the sub-ENS chain — a name minted to a Coinbase account there may be uncontrollable",
     };
   }
   return { ok: true };

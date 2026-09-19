@@ -20,7 +20,10 @@ import { Wallet } from "ethers";
 import { getSubEnsDeployment } from "@woco/shared";
 import {
   DEFAULT_SUB_ENS_SPONSOR_MIN_ETH,
+  evaluateCswFactory,
+  evaluateGlobalMint,
   evaluateRegistrarEnrolled,
+  evaluateSponsorAuthorised,
   evaluateSponsorBalance,
   readThresholdsFromEnv,
 } from "../src/lib/health/alarms.js";
@@ -47,6 +50,8 @@ function readers(over: Partial<Record<string, unknown>> = {}) {
     ensNameExpires: async () => 0n,
     registrarEnrolment: async () => ({ registry: SERVER_REGISTRY, enrolled: true }),
     sponsorBalance: async () => (13n * ETH) / 10_000n, // 0.0013, LIVE 2026-09-19
+    registrarPolicy: async () => ({ sponsorAuthorised: true, globalMint: "unsupported" as const }),
+    cswFactoryCodehash: async () => probes.CSW_FACTORY_CODEHASH,
   };
   return { ...base, ...over } as Parameters<typeof probes.refreshSubEnsMinting>[0];
 }
@@ -262,4 +267,129 @@ test("enrolment is asked of the registry the REGISTRAR mints into", () => {
   const reader = src.slice(src.indexOf("registrarEnrolment: async"), src.indexOf("sponsorBalance: async"));
   assert.match(reader, /\.registry\(\)/);
   assert.match(reader, /registrars\(registrar\)/);
+});
+
+// ---------------------------------------------------------------------------
+// Sponsor authorisation, the registrar-wide cap, the CSW factory (Fable
+// sponsor-key consult §6, §11.1)
+// ---------------------------------------------------------------------------
+
+test("an authorised sponsor is healthy; a removed one is an ALARM; unread is UNKNOWN", () => {
+  assert.deepEqual(evaluateSponsorAuthorised({ authorised: true }), { ok: true });
+  const v = evaluateSponsorAuthorised({ authorised: false });
+  assert.equal(v.ok, false);
+  assert.match(v.reason ?? "", /not an authorised sponsor/);
+  assert.equal(evaluateSponsorAuthorised({ authorised: null, reason: "timed out" }).ok, null);
+});
+
+test("the global cap alarms at zero headroom and only there", () => {
+  assert.equal(evaluateGlobalMint({ reading: { remaining: 1, windowResetsAt: 1 } }).ok, true);
+  const spent = evaluateGlobalMint({ reading: { remaining: 0, windowResetsAt: 1 } });
+  assert.equal(spent.ok, false);
+  assert.match(spent.reason ?? "", /leaked/);
+  assert.equal(evaluateGlobalMint({ reading: null, reason: "x" }).ok, null);
+});
+
+test("a registrar from before the cap is healthy, not unknown", () => {
+  assert.deepEqual(evaluateGlobalMint({ reading: "unsupported" }), { ok: true });
+});
+
+test("only a revert with NO data reads as 'no cap on this registrar'", async () => {
+  const { makeError } = await import("ethers");
+  const call = (data: string | null) =>
+    makeError("reverted", "CALL_EXCEPTION", {
+      action: "call",
+      data,
+      reason: null,
+      transaction: { to: "0x" + "1".repeat(40), data: "0x" },
+      invocation: null,
+      revert: null,
+    });
+  assert.equal(probes.revertedWithoutData(call("0x")), true);
+  assert.equal(probes.revertedWithoutData(call(null)), true);
+  assert.equal(probes.revertedWithoutData(call("0x08c379a0")), false, "a revert with a reason is not a missing function");
+  assert.equal(probes.revertedWithoutData(makeError("timeout", "TIMEOUT", { operation: "call" })), false);
+  assert.equal(probes.revertedWithoutData(new Error("socket hang up")), false);
+});
+
+test("the CSW factory only alarms while Coinbase login is on", () => {
+  const expected = probes.CSW_FACTORY_CODEHASH;
+  const wrong = "0x" + "00".repeat(32);
+  assert.deepEqual(evaluateCswFactory({ codehash: wrong, expected, required: false }), { ok: true });
+  assert.deepEqual(evaluateCswFactory({ codehash: null, expected, required: false }), { ok: true });
+  assert.deepEqual(evaluateCswFactory({ codehash: expected.toUpperCase().replace("0X", "0x"), expected, required: true }), { ok: true });
+  assert.equal(evaluateCswFactory({ codehash: wrong, expected, required: true }).ok, false);
+  assert.equal(evaluateCswFactory({ codehash: null, expected, required: true, reason: "x" }).ok, null);
+});
+
+test("the pinned factory is the canonical v1 address and codehash (read on Arbitrum One 2026-09-19)", () => {
+  assert.equal(probes.CSW_FACTORY, "0x0BA5ED0c6AA8c49038F819E587E2633c4A9F428a");
+  assert.equal(probes.CSW_FACTORY_CODEHASH, "0xc4900c000fd23885462a115b872741ad2b1e7ff2d7889aee18bc4d4bef3728f6");
+});
+
+test("a removed sponsor makes the whole section false", async () => {
+  await probes.refreshSubEnsMinting(
+    readers({ registrarPolicy: async () => ({ sponsorAuthorised: false, globalMint: "unsupported" }) }),
+    silent,
+  );
+  const s = probes.subEnsMintingHealth();
+  assert.equal(s.ok, false);
+  assert.equal(s.checks.sponsorAuthorised.ok, false);
+});
+
+test("a spent global cap makes the whole section false, and the numbers are shown", async () => {
+  await probes.refreshSubEnsMinting(
+    readers({
+      registrarPolicy: async () => ({ sponsorAuthorised: true, globalMint: { remaining: 0, windowResetsAt: 1_800_003_600 } }),
+    }),
+    silent,
+  );
+  const s = probes.subEnsMintingHealth();
+  assert.equal(s.ok, false);
+  assert.deepEqual(s.globalMint, { remaining: 0, windowResetsAt: 1_800_003_600 });
+});
+
+test("headroom is reported before it hits zero, and does not alarm", async () => {
+  await probes.refreshSubEnsMinting(
+    readers({
+      registrarPolicy: async () => ({ sponsorAuthorised: true, globalMint: { remaining: 12, windowResetsAt: 1_800_003_600 } }),
+    }),
+    silent,
+  );
+  const s = probes.subEnsMintingHealth();
+  assert.equal(s.ok, true);
+  assert.deepEqual(s.globalMint, { remaining: 12, windowResetsAt: 1_800_003_600 });
+});
+
+test("a registrar-policy read that fails leaves the section UNKNOWN, not healthy", async () => {
+  await probes.refreshSubEnsMinting(
+    readers({ registrarPolicy: async () => { throw Object.assign(new Error("timeout"), { code: "TIMEOUT" }); } }),
+    silent,
+  );
+  const s = probes.subEnsMintingHealth();
+  assert.equal(s.ok, null);
+  assert.equal(s.checks.sponsorAuthorised.ok, null);
+  assert.equal(s.checks.globalMint.ok, null);
+  assert.equal(s.stale, false);
+});
+
+test("the section is only fresh once the registrar policy has been read too", async () => {
+  await probes.refreshSubEnsMinting(readers(), silent);
+  assert.equal(probes.subEnsMintingHealth().stale, false);
+  const src = readFileSync(fileURLToPath(new URL("../src/lib/health/probes.ts", import.meta.url)), "utf-8");
+  assert.match(src, /const reads = \[enrolmentReading\.at, sponsorReading\.at, policyReading\.at\];/);
+});
+
+test("the CSW factory is read, and required, only while Coinbase login is on", () => {
+  const src = readFileSync(fileURLToPath(new URL("../src/lib/health/probes.ts", import.meta.url)), "utf-8");
+  assert.match(src, /if \(FEATURES\.coinbaseLoginAllowed\) \{\s*try \{\s*cswFactoryReading =/);
+  assert.match(src, /required: FEATURES\.coinbaseLoginAllowed,/);
+  assert.match(src, /keccak256\(await withTimeout\(subEnsChain\(\)\.getCode\(CSW_FACTORY\)/);
+});
+
+test("the sponsor asked about is the key this build mints with", () => {
+  const src = readFileSync(fileURLToPath(new URL("../src/lib/health/probes.ts", import.meta.url)), "utf-8");
+  const policy = src.slice(src.indexOf("registrarPolicy: async () =>"), src.indexOf("cswFactoryCodehash: async () =>"));
+  assert.match(policy, /sponsor = getSponsorAddress\(\);/);
+  assert.match(policy, /registrar\.authorisedSponsors\(sponsor\)/);
 });
