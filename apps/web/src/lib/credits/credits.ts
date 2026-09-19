@@ -34,13 +34,15 @@ import { auth } from "../auth/auth-store.svelte.js";
 import { deriveHolderKeypair } from "./holder-key.js";
 import { decideVisibility, type IndexRead, type PartitionRead } from "./partition.js";
 import type { CreditVisibility } from "./visibility.js";
-import { readBandedContentFeed } from "../swarm/content-feed.js";
+import { readBandedContentFeed, readContentFeedAtVersion } from "../swarm/content-feed.js";
 import {
   writeContentFeedVerified,
   writeContentFeedSettling,
   type VerifiedWriteResult,
 } from "../swarm/verified-write.js";
 import { nextCreditStatement } from "./next-statement.js";
+import { rideDate, type CountedLaps, type PreparedRide, type PreparedRideDraft } from "./lap-journal.js";
+import type { PrepareResult, ReconcileResult, SendResult } from "./lap-sender.js";
 import {
   CREDIT_SUBJECT_INDEX_FORMAT,
   creditPublicSalt,
@@ -51,11 +53,16 @@ import {
   verifyCreditStatement,
   validateCreditSubjectIndexV2,
   LAST_VERSION_IN_BAND,
+  buildLapDiaryEntry,
+  lapDiaryEntryTopic,
+  lapDiaryPrivateSalt,
+  validateLapDiaryEntryV1,
   deriveEncryptionKeypairFromSeed,
   sealJson,
   openJson,
   type CreditStatementV1,
   type CreditSubjectIndexV2,
+  type LapDiaryEntryV1,
   type SealedBox,
   type Hex0x,
 } from "@woco/shared";
@@ -491,6 +498,41 @@ async function attemptRide(
   // it runs after the upload is accepted — so this no longer advertises a
   // synchronous failure channel for it. The caller reconciles through
   // `settled`; see the card's `settle()`.
+  const built = await buildRide(keys, subject, laps, warm);
+  if (!built.ok) {
+    return { ok: false, error: built.kind === "retry" ? built.error : "Those laps are from an earlier day." };
+  }
+  const sent = await sendRide(keys, subject, built.ride);
+  return {
+    ok: true, statement: built.ride.statement, visibility: built.ride.visibility,
+    version: sent.version, band: sent.band, settled: sent.settled,
+  };
+}
+
+/** A ride ready to upload: everything decided, nothing sent. */
+type BuiltRide = Omit<PreparedRideDraft, "times">;
+
+type BuildResult =
+  | { ok: true; ride: BuiltRide }
+  | { ok: false; kind: "retry"; error: string }
+  | { ok: false; kind: "held"; heldBefore: string };
+
+/**
+ * The READ-AND-DECIDE half of a ride: which head to build on, the statement,
+ * the exact address, and the exact bytes. Split from the upload so a caller can
+ * write the result down BEFORE sending it, and re-send exactly that on a retry
+ * (`lap-journal.ts` explains why a retry must never rebuild).
+ *
+ * `date` is the UTC date of the TAPS when the caller knows it. Omitted means
+ * today, which is only right for a lap sent the moment it was tapped.
+ */
+async function buildRide(
+  keys: RiderKeys,
+  subject: Hex0x,
+  laps: number,
+  warm: CreditHead | null,
+  date?: string,
+): Promise<BuildResult> {
   let visibility: CreditVisibility;
   let prev: CreditStatementV1 | null;
   /** The version the PREVIOUS head sits at, when we know it. `undefined` means
@@ -534,7 +576,7 @@ async function attemptRide(
     // success. The rider's lifetime count silently restarts, which is precisely
     // what the comment below exists to prevent.
     const where = await liveVisibility(keys, subject, { thorough: true });
-    if (where.status !== "ok") return { ok: false, error: CANNOT_READ };
+    if (where.status !== "ok") return { ok: false, kind: "retry", error: CANNOT_READ };
     visibility = where.visibility ?? "private";
     indexed = where.visibility !== null;
 
@@ -544,7 +586,7 @@ async function attemptRide(
     // the reset while an indexer (highest seq) kept the real total, and the
     // two would disagree indefinitely.
     const head = await readHeadAt(keys, subject, visibility, where.band, { thorough: true });
-    if (head.status === "unavailable") return { ok: false, error: CANNOT_READ };
+    if (head.status === "unavailable") return { ok: false, kind: "retry", error: CANNOT_READ };
     prev = head.status === "found" ? head.statement : null;
     if (head.status === "found") {
       prevVersion = head.version;
@@ -552,8 +594,15 @@ async function attemptRide(
     }
   }
 
+  // The head is already on a LATER date than these taps — another device got
+  // there first. Neither write is honest (see `LapJournal.heldBefore`), so none
+  // is made.
+  if (date !== undefined && prev !== null && prev.session.date > date) {
+    return { ok: false, kind: "held", heldBefore: prev.session.date };
+  }
+
   const statement = signCreditStatement(
-    nextCreditStatement({ prev, subject, holder: keys.holder, laps }),
+    nextCreditStatement({ prev, subject, holder: keys.holder, laps, ...(date !== undefined ? { date } : {}) }),
     keys.holderPrivKey,
   );
   // Where the lap lands. `prevVersion + 1` when we read the previous head — the
@@ -571,7 +620,29 @@ async function attemptRide(
   const rollover = prevVersion !== undefined && prevVersion >= LAST_VERSION_IN_BAND;
   const writeBand = rollover ? band + 1 : band;
   const knownVersion = rollover ? 0 : prevVersion !== undefined ? prevVersion + 1 : undefined;
-  const written = await writeStatement(keys, subject, visibility, statement, writeBand, knownVersion);
+
+  // Sealed HERE, once. The sealed box is part of what a retry must reproduce
+  // byte for byte, and sealing is randomised — so it cannot be left to the send.
+  const body = visibility === "private" ? await sealJson(keys.encPubKeyHex, statement) : statement;
+  return {
+    ok: true,
+    ride: { statement, visibility, band: writeBand, version: knownVersion ?? null, body, indexed, rollover },
+  };
+}
+
+/**
+ * The UPLOAD half. Safe to call again with the same `ride`: a known-version
+ * write re-sends identical bytes to an identical address, which Bee dedupes, and
+ * the index maintenance below is idempotent.
+ */
+async function sendRide(
+  keys: RiderKeys,
+  subject: Hex0x,
+  ride: BuiltRide,
+): Promise<{ version: number; band: number; settled: Promise<VerifiedWriteResult> }> {
+  const { visibility, indexed, rollover } = ride;
+  const writeBand = ride.band;
+  const written = await writeRideBody(keys, subject, visibility, ride.body, writeBand, ride.version ?? undefined);
 
   // ONLY when this subject is not already indexed. A non-null partition IS the
   // statement "that partition's index contains this subject" — it is the only
@@ -608,10 +679,7 @@ async function attemptRide(
     }
   }
 
-  return {
-    ok: true, statement, visibility, version: written.version,
-    band: writeBand, settled: written.settled,
-  };
+  return { version: written.version, band: writeBand, settled: written.settled };
 }
 
 async function writeStatement(
@@ -627,7 +695,18 @@ async function writeStatement(
   const body = visibility === "private"
     ? await sealJson(keys.encPubKeyHex, statement)
     : statement;
+  return writeRideBody(keys, subject, visibility, body, band, knownVersion);
+}
 
+/** Upload an already-built body — the sealed box or the public statement. */
+async function writeRideBody(
+  keys: RiderKeys,
+  subject: Hex0x,
+  visibility: CreditVisibility,
+  body: unknown,
+  band: number,
+  knownVersion?: number,
+): Promise<{ version: number; settled: Promise<VerifiedWriteResult> }> {
   // Returns at UPLOAD-ACCEPT, with the read-back still running. From that
   // moment the rider's signed entry durably exists; the verification only
   // catches the same-version dedupe, whose usual answer is "yes" and whose
@@ -645,6 +724,210 @@ async function writeStatement(
   // failure a caller could once branch on here — `superseded` — is not knowable
   // until the read-back settles, and lives on `settled`.
   return { version, settled };
+}
+
+// ---------------------------------------------------------------------------
+// The journal's write path — prepare once, send as often as it takes
+// ---------------------------------------------------------------------------
+
+/**
+ * Establish the rider's keys, prompting if this device has never had them.
+ *
+ * The card calls this on a rider's FIRST tap, before the tap is written into
+ * the journal. A tap is only journalled once it can actually be sent: a rider
+ * who declines the key ceremony has declined the lap, and must not find it
+ * waiting for them later.
+ */
+export async function unlockCredits(): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await riderKeys();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Could not unlock your collection." };
+  }
+}
+
+/**
+ * Build the ONE write that records these taps. `times` are the clock readings
+ * taken at each tap and must share a UTC date — that date, never today's, is
+ * what the statement signs, so laps sent after midnight are still dated the day
+ * they were ridden.
+ */
+export async function prepareRide(
+  subject: Hex0x,
+  times: readonly number[],
+  warm: CreditHead | null,
+): Promise<PrepareResult> {
+  try {
+    const keys = await riderKeys();
+    const built = await buildRide(keys, subject, times.length, warm, rideDate(times));
+    if (!built.ok) return built;
+    return { ok: true, prepared: { ...built.ride, times: [...times] } };
+  } catch (e) {
+    return { ok: false, kind: "retry", error: e instanceof Error ? e.message : "Could not save that ride." };
+  }
+}
+
+/** Upload a prepared write exactly as prepared. Resolves at upload-accept. */
+export async function sendPreparedRide(subject: Hex0x, prepared: PreparedRide): Promise<SendResult> {
+  try {
+    const keys = await riderKeys();
+    const sent = await sendRide(keys, subject, prepared);
+    return { ok: true, ...sent };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Could not save that ride." };
+  }
+}
+
+/**
+ * Did a PROBING write land? Only a first lap probes, and a probing write has no
+ * address to replay at, so an attempt whose reply was lost is resolved by
+ * reading instead: a head carrying our own signature over our own `seq` is that
+ * write. ed25519 is deterministic, so the signature is the statement's identity
+ * — it matches even though the sealed box around it would not.
+ */
+export async function reconcilePreparedRide(subject: Hex0x, prepared: PreparedRide): Promise<ReconcileResult> {
+  try {
+    const keys = await riderKeys();
+    const where = await liveVisibility(keys, subject, { thorough: true });
+    if (where.status !== "ok") return { status: "unavailable" };
+    const visibility = where.visibility ?? prepared.visibility;
+    const head = await readHeadAt(keys, subject, visibility, where.band, { thorough: true });
+    if (head.status === "unavailable") return { status: "unavailable" };
+    if (head.status === "absent") return { status: "absent" };
+    const ours =
+      head.statement.seq === prepared.statement.seq &&
+      head.statement.holderSig === prepared.statement.holderSig;
+    if (!ours) return { status: "different" };
+    // The lost reply also lost the index write that follows a first lap.
+    if (where.visibility === null) {
+      try {
+        await upsertSubjectBand(keys, subject, visibility, head.band);
+      } catch {
+        // Survivable by design — see `sendRide`.
+      }
+    }
+    return { status: "landed", version: head.version, band: head.band };
+  } catch {
+    return { status: "unavailable" };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The lap diary — the rider's own times, sealed to the rider
+// ---------------------------------------------------------------------------
+
+function diaryTopic(keys: RiderKeys, subject: Hex0x, seq: number): string {
+  return lapDiaryEntryTopic(lapDiaryPrivateSalt(keys.encPrivKey), subject, seq);
+}
+
+async function readDiaryEntry(
+  keys: RiderKeys,
+  subject: Hex0x,
+  seq: number,
+  opts: { thorough?: boolean } = {},
+): Promise<
+  | { status: "found"; entry: LapDiaryEntryV1 }
+  | { status: "absent" }
+  /** Bytes are at the address and are not a readable entry for it. Write-once,
+   *  so this is permanent — distinct from `unavailable`, which a retry can fix. */
+  | { status: "spent" }
+  | { status: "unavailable" }
+> {
+  const res = await readContentFeedAtVersion<unknown>(keys.feedAddress, diaryTopic(keys, subject, seq), 0, opts);
+  if (res.status === "absent") return { status: "absent" };
+  if (res.status !== "found") return res.unusableAt !== undefined ? { status: "spent" } : { status: "unavailable" };
+  try {
+    const entry = await openJson<unknown>(keys.encPrivKey, res.value as SealedBox);
+    // A box at the wrong address is not this lap's entry, whatever it says.
+    if (!validateLapDiaryEntryV1(entry) || entry.subject !== subject || entry.seq !== seq) {
+      return { status: "spent" };
+    }
+    return { status: "found", entry };
+  } catch {
+    return { status: "spent" };
+  }
+}
+
+/**
+ * Seal one landed statement's lap times at its own write-once address. True
+ * once a sealed copy exists; false means "not yet, keep them and try again".
+ *
+ * Called only AFTER the statement has settled as ours. Until then its `seq` may
+ * still be lost to another device, and an entry written under a seq that turns
+ * out to be theirs can never be moved.
+ */
+export async function sealLapTimes(subject: Hex0x, laps: CountedLaps): Promise<boolean> {
+  const keys = await riderKeys();
+  const entry = buildLapDiaryEntry({ subject, seq: laps.seq, total: laps.total, times: laps.times });
+  const written = await writeContentFeedVerified({
+    signerPrivKey: keys.feedPrivKey,
+    ownerAddress: keys.feedAddress,
+    topic: diaryTopic(keys, subject, laps.seq),
+    data: await sealJson(keys.encPubKeyHex, entry),
+    // Version 0 of a topic keyed by a seq this device just proved is its own —
+    // the case `writeContentFeed` documents as safe to address directly.
+    knownVersion: 0,
+  });
+  if (written.status !== "superseded") return true;
+
+  // Something is already there. Sealing is randomised, so an EARLIER attempt of
+  // ours whose reply was lost reads as `superseded` too — open it and see.
+  const existing = await readDiaryEntry(keys, subject, laps.seq, { thorough: true });
+  // Ours, another device's entry for a seq it also believed was its own, or
+  // bytes nobody can read: in every case the address is spent and nothing more
+  // can be written to it, so there is nothing left to retry. Only a read that
+  // could not be MADE keeps the times queued.
+  return existing.status === "found" || existing.status === "spent";
+}
+
+/** A day's sealed entries cannot outnumber its statements; this bounds the walk. */
+const DIARY_WALK_LIMIT = 400;
+/** Entries missing in a row before the walk concludes it has left the diary —
+ *  laps from before times existed, which have no entries at all. */
+const DIARY_ABSENT_RUN = 6;
+const DIARY_READ_CONCURRENCY = 6;
+
+/**
+ * Sealed entries from `head` backwards to `since`, for a device whose journal
+ * does not already hold them — a second phone, or this one after a sign-out.
+ * Display path: every failure collapses to "fewer entries", never to an error.
+ */
+export async function readLapTimes(head: CreditHead, since: number): Promise<LapDiaryEntryV1[]> {
+  try {
+    const keys = await riderKeys();
+    const subject = head.statement.subject;
+    const found: LapDiaryEntryV1[] = [];
+    let seq = head.statement.seq;
+    let absentRun = 0;
+    let read = 0;
+    while (seq >= 0 && read < DIARY_WALK_LIMIT && absentRun < DIARY_ABSENT_RUN) {
+      const batch: number[] = [];
+      for (let i = 0; i < DIARY_READ_CONCURRENCY && seq - i >= 0; i++) batch.push(seq - i);
+      const results = await Promise.all(batch.map((n) => readDiaryEntry(keys, subject, n)));
+      let reachedStart = false;
+      for (const r of results) {
+        read += 1;
+        if (r.status !== "found") {
+          absentRun += 1;
+          continue;
+        }
+        absentRun = 0;
+        // Entries are in seq order and a seq is never older than the one before
+        // it, so the first entry wholly before `since` ends the walk.
+        if (r.entry.times[r.entry.times.length - 1]! < since) {
+          reachedStart = true;
+          break;
+        }
+        found.push(r.entry);
+      }
+      if (reachedStart) break;
+      seq -= batch.length;
+    }
+    return found;
+  } catch {
+    return [];
+  }
 }
 
 /**
