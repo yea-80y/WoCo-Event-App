@@ -11,6 +11,7 @@ import {
   mintRateCapVerdict,
   labelNode,
   relayReleaseWithSignature,
+  getSubEnsChainTime,
 } from "../lib/chain/sub-ens-contract.js";
 import { validateLabel } from "@woco/shared";
 import { isProfileName, profileNameOf } from "../lib/profile/name-ledger.js";
@@ -79,11 +80,25 @@ const RELEASE_GLOBAL_KEY = "all";
 const releasesInFlight = new Set<string>();
 
 /** A release signature is valid for a window the CLIENT proposes. Bounded both
- *  ways: too short and the tx reverts after the queue delay plus block-timestamp
- *  skew, at our expense; too long and the signature is a bearer burn token
- *  sitting in logs and proxies, which the holder cannot cleanly cancel. */
+ *  ways: too short and the tx reverts after the queue delay, at our expense;
+ *  too long and the signature is a bearer burn token sitting in logs and
+ *  proxies, which the holder cannot cleanly cancel.
+ *
+ *  Measured against the CHAIN's clock (`getSubEnsChainTime`), which is the one
+ *  the registry checks, not ours: Arbitrum's may run up to a day behind or an
+ *  hour ahead of real time (audit 950 Low 13). The client derives its
+ *  expiration from the same clock. */
 const RELEASE_EXPIRY_MIN_SECS = 60;
 const RELEASE_EXPIRY_MAX_SECS = 15 * 60;
+
+/** Whether `expiration` falls inside the relay's window, measured from
+ *  `chainNowSecs`. An integer check first, so a NaN cannot compare false on
+ *  both sides and slip through. */
+export function releaseExpiryInWindow(expiration: number, chainNowSecs: number): boolean {
+  if (!Number.isInteger(expiration) || !Number.isInteger(chainNowSecs)) return false;
+  const ttl = expiration - chainNowSecs;
+  return ttl >= RELEASE_EXPIRY_MIN_SECS && ttl <= RELEASE_EXPIRY_MAX_SECS;
+}
 
 /**
  * The ownership gate every mutation route shares. Returns null when the caller
@@ -290,6 +305,12 @@ subEnsRoutes.post("/claim", requireAuth, async (c) => {
         console.error("[sub-ens] sponsor wallet not authorised on registrar");
         return c.json({ ok: false, error: "name registration temporarily unavailable" }, 503);
       }
+      // The registry refused the registrar itself: not enrolled — after an
+      // admin handover that did not re-enrol it (registry v2.2).
+      if (name === "Unauthorized") {
+        console.error("[sub-ens] registrar not enrolled in the registry");
+        return c.json({ ok: false, error: "name registration temporarily unavailable" }, 503);
+      }
       // #464 per-recipient cap. Reachable despite the pre-flight above: the
       // read can race a concurrent mint, and it is skipped when the RPC is
       // unavailable. Report the window rather than a generic failure (#471).
@@ -391,6 +412,12 @@ subEnsRoutes.post("/set-contenthash", requireAuth, async (c) => {
       // Registrar v2.1 refuses a label its own `register` would refuse.
       if (name === "LabelIsReserved")  return c.json({ ok: false, error: "label is reserved" }, 409);
       if (name === "InvalidLabel")     return c.json({ ok: false, error: "invalid label" }, 400);
+      // Ownership is checked above, so the registry refusing here means the
+      // registrar is not enrolled (registry v2.2, after an admin handover).
+      if (name === "Unauthorized") {
+        console.error("[sub-ens] registrar not enrolled in the registry");
+        return c.json({ ok: false, error: "update temporarily unavailable" }, 503);
+      }
     }
     console.error("[sub-ens] set-contenthash failed:", err);
     return c.json({ ok: false, error: "update failed" }, 500);
@@ -434,12 +461,20 @@ subEnsRoutes.post("/relay-release", requireAuth, async (c) => {
   }
 
   const expiration = Number(body.expiration);
-  const nowSecs = Math.floor(Date.now() / 1000);
   if (!Number.isInteger(expiration)) {
     return c.json({ ok: false, error: "expiration must be an integer" }, 400);
   }
-  const ttl = expiration - nowSecs;
-  if (ttl < RELEASE_EXPIRY_MIN_SECS || ttl > RELEASE_EXPIRY_MAX_SECS) {
+  // A clock that did not answer is not evidence of anything: refuse as
+  // unverified (the client falls back to the holder's own transaction, which
+  // needs no clock), never guess from ours.
+  let chainNowSecs: number;
+  try {
+    chainNowSecs = await getSubEnsChainTime();
+  } catch (err) {
+    console.error("[sub-ens] chain clock read failed:", (err as { shortMessage?: string })?.shortMessage ?? "unspecified");
+    return c.json({ ok: false, error: "chain_clock_unverified" }, 502);
+  }
+  if (!releaseExpiryInWindow(expiration, chainNowSecs)) {
     return c.json({ ok: false, error: "expiration_out_of_range" }, 400);
   }
 

@@ -70,7 +70,13 @@ export async function prepareRelease(label: string): Promise<{
   const normalised = label.toLowerCase().trim();
   const node = keccak256(concat([namehash("woco.eth"), keccak256(toUtf8Bytes(normalised))])) as Hex0x;
 
-  const expiration = releaseExpiration();
+  // "Now" is the registry chain's latest block, not this device's clock: the
+  // registry compares the expiration with `block.timestamp`, which on Arbitrum
+  // may run up to a day behind real time or an hour ahead of it, and the relay
+  // bounds the window against the same block (audit 950 Low 13).
+  const latest = await provider.getBlock("latest");
+  if (!latest) throw new Error("Could not read the registry chain's clock. Nothing was signed.");
+  const expiration = releaseExpiration(latest.timestamp * 1000);
   const [recordVersion, onChainDigest] = await Promise.all([
     registry.recordVersions(node) as Promise<bigint>,
     registry.releaseDigest(node, expiration) as Promise<string>,

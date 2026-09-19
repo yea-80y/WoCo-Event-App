@@ -90,9 +90,12 @@ export function buildReleaseTypedData(parts: ReleaseTypedDataParts): ReleaseType
  * has no clean way to cancel one. Ten minutes covers a slow relay and a user
  * confirming in a wallet; the server independently refuses anything outside
  * 60s–15min, so a modified client cannot mint itself a long-lived one.
+ *
+ * `chainNowMs` is the registry chain's latest block time, never this device's
+ * clock — hence no default (audit 950 Low 13; see `prepareRelease`).
  */
 export const RELEASE_TTL_SECS = 10 * 60;
 
-export function releaseExpiration(nowMs: number = Date.now()): number {
-  return Math.floor(nowMs / 1000) + RELEASE_TTL_SECS;
+export function releaseExpiration(chainNowMs: number): number {
+  return Math.floor(chainNowMs / 1000) + RELEASE_TTL_SECS;
 }

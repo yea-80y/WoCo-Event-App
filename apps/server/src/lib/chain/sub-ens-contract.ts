@@ -57,6 +57,13 @@ const REGISTRY_ABI = [
   // gone, and a release signature may not expire more than 48 hours ahead.
   "error HasChildren(bytes32 node, uint256 count)",
   "error ExpirationTooFar()",
+  // Registry v2.2 (audit 950). None is reachable from a call this server makes:
+  // it never approves, never sends `createSubnode` a batch, never initialises.
+  // Listed so that an unexpected one arrives NAMED rather than as bare revert
+  // data. `approve` / `setApprovalForAll` always refuse; `multicall` is gone.
+  "error DelegationNotSupported()",
+  "error BatchNodeMismatch(bytes32 node)",
+  "error NotDeployer(address caller)",
 ];
 
 // Addresses live in `@woco/shared` (#472) so the client cannot drift from them.
@@ -130,6 +137,12 @@ const REGISTRAR_ABI = [
   "error EmptyContenthash()",
   "error ArrayLengthMismatch()",
   "error MintRateCapExceeded(address recipient, uint64 windowResetsAt)",
+  // The REGISTRY's refusal, bubbled through `register` / `setContenthash`
+  // unchanged. With ownership checked first, it means this registrar is not
+  // enrolled: registry v2.2 drops EVERY registrar when the admin seat changes
+  // hands, until the new admin re-enrols it (audit 950 Medium 3; the
+  // `subEns.minting` health alarm watches for exactly this).
+  "error Unauthorized(bytes32 node)",
 ];
 
 // ENS contenthash encoding for a Swarm BZZ hash (EIP-1577 / ENSIP-7).
@@ -199,6 +212,38 @@ export function labelNode(label: string): string {
  * Uses a REGISTRY-bound writer: `writeContract` binds the REGISTRAR ABI, and
  * `releaseWithSignature` lives on the registry.
  */
+/**
+ * The registry chain's clock: the latest block's timestamp, in seconds.
+ *
+ * What `releaseWithSignature` compares an expiration with is `block.timestamp`,
+ * and Arbitrum's may run up to a day behind real time or an hour ahead of it.
+ * Measured against the wall clock, a ten-minute signature could arrive already
+ * expired, or be refused here as too far ahead when the chain would take it
+ * (audit 950 Low 13). The client takes its expiration from the same clock.
+ */
+export async function getSubEnsChainTime(): Promise<number> {
+  const block = await getProvider(getSubEnsChainId()).getBlock("latest");
+  if (!block) throw new Error("no latest block from the sub-ENS RPC");
+  return block.timestamp;
+}
+
+/**
+ * The gas limit a relayed release is sent with: the estimate made just before
+ * submission, plus a fifth, plus a fixed allowance.
+ *
+ * Why pad at all (audit 950 Low 15): on Arbitrum the L1 data fee is taken out
+ * of the transaction's gas before execution, and it moves with the L1 base fee
+ * and how well the calldata compresses. A limit cut exactly to an estimate can
+ * leave the ERC-6492 validator — which a smart-account holder's release runs
+ * through, with a budget of up to 1M gas — short, and the registry then
+ * refuses a VALID signature as `Unauthorized`, indistinguishable on chain from
+ * a forged one. A limit is not a charge: Arbitrum bills the gas used.
+ */
+export const RELEASE_GAS_FIXED_PAD = 150_000n;
+export function paddedReleaseGasLimit(estimate: bigint): bigint {
+  return estimate + estimate / 5n + RELEASE_GAS_FIXED_PAD;
+}
+
 export async function relayReleaseWithSignature(
   node: string,
   expiration: number,
@@ -221,9 +266,18 @@ export async function relayReleaseWithSignature(
   // refused release must never get that far.
   await registry.releaseWithSignature.staticCall(node, expiration, signer, signature);
 
+  // Estimated INSIDE the queue, immediately before the send, and padded — see
+  // `paddedReleaseGasLimit`. The estimate ethers would otherwise make is the
+  // same call at the same moment, with no margin.
   const tx = await sendSponsorTx(
     { chainId, address: getSponsorAddress(), provider, label: "sub-ens.release" },
-    (o) => registry.releaseWithSignature(node, expiration, signer, signature, o),
+    async (o) => {
+      const estimate = await registry.releaseWithSignature.estimateGas(node, expiration, signer, signature);
+      return registry.releaseWithSignature(node, expiration, signer, signature, {
+        ...o,
+        gasLimit: paddedReleaseGasLimit(estimate),
+      });
+    },
   );
   // Awaited OUTSIDE sendSponsorTx, like the mint: holding the nonce lock across
   // a block confirmation would serialise every sponsor tx behind this one.

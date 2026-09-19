@@ -122,3 +122,14 @@ test("the release uses the chain's digest as the reference, and refuses on a mis
   assert.match(release, /if \(local\.toLowerCase\(\) !== onChainDigest\.toLowerCase\(\)\) \{\s*throw new Error/);
   assert.match(release, /const shown = unroutableReleaseRefusal\(relayed\.error\);\s*if \(shown\) throw new Error\(shown\);/);
 });
+
+test("the expiration is taken from the registry chain's latest block, never this device's clock (audit 950 Low 13)", () => {
+  const src = readFileSync(new URL("../src/lib/sub-ens/release.ts", import.meta.url), "utf-8");
+  const prepare = src.slice(src.indexOf("export async function prepareRelease"), src.indexOf("export interface ReleaseResult"));
+  assert.match(prepare, /provider\.getBlock\("latest"\)/);
+  assert.match(prepare, /releaseExpiration\(latest\.timestamp \* 1000\)/);
+  assert.doesNotMatch(prepare, /Date\.now\(\)/);
+  // No default either: a caller that forgets the chain time does not compile.
+  const digest = readFileSync(new URL("../src/lib/sub-ens/release-digest.ts", import.meta.url), "utf-8");
+  assert.match(digest, /export function releaseExpiration\(chainNowMs: number\): number/);
+});
