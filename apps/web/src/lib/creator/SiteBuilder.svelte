@@ -14,7 +14,8 @@
   import EventDomainPicker, { type EventDomainIntent } from "./builder/EventDomainPicker.svelte";
   import BackupNudge from "../components/recovery/BackupNudge.svelte";
   import { addSiteEvent } from "../api/sites.js";
-  import { claimSubEnsLabel, setSubEnsContenthash, stampEventSubEns } from "../api/sub-ens.js";
+  import { claimSubEnsLabel, stampEventSubEns } from "../api/sub-ens.js";
+  import NamePointerPrompt from "../components/sub-ens/NamePointerPrompt.svelte";
   import { describeSubEnsError, subEnsErrorDetail } from "../sub-ens/errors.js";
   import { registerDomain, verifyDomainDns, type DomainEntry } from "../api/domains.js";
 
@@ -79,7 +80,7 @@
 
   // Sub-ENS for this event — intent captured here, acted on after deploy (needs contentHash)
   let domainIntent = $state<EventDomainIntent>({ mode: "none" });
-  let subEnsPhase = $state<"idle" | "pending" | "done" | "error">("idle");
+  let subEnsPhase = $state<"idle" | "pending" | "sign" | "done" | "error">("idle");
   let subEnsLabel = $state("");
   let subEnsError = $state<string | null>(null);
   /** A name that registered fine but did not make it onto the event feed. */
@@ -199,12 +200,13 @@
     }
   }
 
-  // Route the chosen sub-ENS at the freshly deployed event page. Runs after deploy
-  // because it needs the contentHash. "new" mints through the WoCo sponsor wallet —
-  // EVERY login kind, no exceptions (#489) — with the contenthash set in the same tx;
-  // "existing" repoints an owned label via the ownership-checked set-contenthash
-  // endpoint.
-  async function runSubEnsTask(contentHash: string) {
+  // Route the chosen sub-ENS at the freshly deployed event page. "new" mints an
+  // EMPTY name through the WoCo sponsor wallet — every login kind (#489); then,
+  // in both modes, the HOLDER signs the pointer (registrar v2.2), which needs
+  // their click (`NamePointerPrompt`). The target is the page's CONTENT hash,
+  // not its feed manifest: this page's feed is platform-signed, and a name must
+  // not answer to a platform key. So a redeploy asks again.
+  async function runSubEnsTask() {
     const intent = domainIntent;
     if (intent.mode === "none") return;
     if (intent.mode === "new" && !intent.label) {
@@ -213,32 +215,35 @@
       return;
     }
 
-    subEnsPhase = "pending";
     subEnsError = null;
     subEnsStampWarning = null;
     subEnsLabel = intent.label;
+    if (intent.mode === "existing") {
+      subEnsPhase = "sign";
+      return;
+    }
+    subEnsPhase = "pending";
     try {
-      if (intent.mode === "new") {
-        const res = await claimSubEnsLabel({
-          label: intent.label,
-          swarmHash: contentHash,
-          description: intent.description,
-        });
-        if (!res.ok) { subEnsPhase = "error"; subEnsError = res.error ?? "Could not claim the name"; return; }
-      } else {
-        const res = await setSubEnsContenthash(intent.label, contentHash);
-        if (!res.ok) { subEnsPhase = "error"; subEnsError = res.error ?? "Could not update the name"; return; }
+      const res = await claimSubEnsLabel({ label: intent.label });
+      if (!res.ok) {
+        const d = describeSubEnsError({ error: res.error, data: (res as { data?: { windowResetsAt?: number } }).data });
+        const detail = subEnsErrorDetail(d);
+        subEnsPhase = "error";
+        subEnsError = `${d.title}${detail ? ` ${detail}` : ""}`;
+        return;
       }
-      // Display hint on the event feed (event pages show the name + social row).
-      // Non-fatal — chain ownership is authoritative — but not silent: a missed
-      // stamp means the event page shows no name, and only the organiser can
-      // decide whether that is worth retrying (#484).
-      if (createdEventId) void stampEventLabel(intent.label, createdEventId);
-      subEnsPhase = "done";
+      subEnsPhase = "sign";
     } catch (e) {
       subEnsPhase = "error";
       subEnsError = e instanceof Error ? e.message : "Sub-ENS update failed";
     }
+  }
+
+  /** The holder signed and the pointer landed: now the event page may show the
+   *  name. Display hint only — non-fatal, but not silent (#484). */
+  function onSubEnsPointed() {
+    if (createdEventId) void stampEventLabel(subEnsLabel, createdEventId);
+    subEnsPhase = "done";
   }
 
   /**
@@ -314,7 +319,7 @@
       siteAddErrors = {};
       step = 3;
       void runPostDeployTasks([...selectedSiteIds]);
-      void runSubEnsTask(deployed.contentHash);
+      void runSubEnsTask();
     } catch (e) {
       deployError = e instanceof Error ? e.message : "Unexpected error during deploy";
     } finally {
@@ -329,7 +334,7 @@
   }
 
   function retrySubEns() {
-    if (deployResult) void runSubEnsTask(deployResult.contentHash);
+    if (deployResult) void runSubEnsTask();
   }
 
   const subEnsName = $derived(subEnsLabel ? `${subEnsLabel}.woco.eth` : "");
@@ -581,8 +586,15 @@
           {#if subEnsPhase === "pending"}
             <div class="progress-status">
               <div class="spinner"></div>
-              <span>{domainIntent.mode === "new" ? "Registering" : "Repointing"} <code>{subEnsName}</code> on Arbitrum…</span>
+              <span>Registering <code>{subEnsName}</code> on Arbitrum…</span>
             </div>
+          {:else if subEnsPhase === "sign" && deployResult}
+            <NamePointerPrompt
+              label={subEnsLabel}
+              target={deployResult.contentHash}
+              purpose="event-page"
+              ondone={onSubEnsPointed}
+            />
           {:else if subEnsPhase === "done"}
             <div class="subens-claimed">
               <span class="subens-name">{subEnsName}</span>

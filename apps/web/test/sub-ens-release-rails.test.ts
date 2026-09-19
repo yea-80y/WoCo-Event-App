@@ -20,7 +20,8 @@ import { releaseRails } from "../src/lib/sub-ens/release-rails.js";
 
 const NAME_CHAIN = 42161;      // SUB_ENS_DEFAULT_CHAIN_ID
 const KERNEL_TODAY = 421614;   // KERNEL_CHAIN_ID before #489
-const AA_KINDS = ["passkey", "coinbase", "web3auth"] as const;
+/** The Kernel-backed kinds: their holder signs ERC-1271 on the names' chain. */
+const AA_KINDS = ["passkey", "web3auth"] as const;
 
 test("a wallet login can always discard: relay first, own gas behind it", () => {
   for (const kernelChain of [KERNEL_TODAY, NAME_CHAIN]) {
@@ -49,6 +50,18 @@ test("the same logins switch on by themselves once the chains agree (#489)", () 
     assert.deepEqual(plan.rails, ["relay", "kernel"]);
     // No wallet rail: a smart account has no EOA to pay from.
     assert.equal(plan.rails.includes("wallet"), false);
+  }
+});
+
+test("a Coinbase Smart Wallet is never offered the relay, on any chain (consult §11.1)", () => {
+  // It signs for Base whatever the domain says, so its signature can never
+  // verify on the names' chain. Offering the relay would be a button that
+  // fails for every holder, with the sponsor paying to find out.
+  for (const kernelChain of [KERNEL_TODAY, NAME_CHAIN]) {
+    const plan = releaseRails("coinbase", kernelChain, NAME_CHAIN);
+    assert.equal(plan.available, false);
+    assert.deepEqual(plan.rails, []);
+    assert.match(plan.reason ?? "", /stays yours/);
   }
 });
 

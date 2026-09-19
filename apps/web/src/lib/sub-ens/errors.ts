@@ -63,6 +63,15 @@ export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescri
         ...(typeof secs === "number" && secs > 0 ? { retryAt: secs * MS_PER_SECOND } : {}),
       };
     }
+    case "mint_global_cap": {
+      // The registrar-wide cap: names are busy for everyone, not this caller.
+      const secs = env.data?.windowResetsAt;
+      return {
+        title: "Lots of names are being registered right now.",
+        detail: "Nothing was registered — try again after the wait.",
+        ...(typeof secs === "number" && secs > 0 ? { retryAt: secs * MS_PER_SECOND } : {}),
+      };
+    }
     case "name_change_cooldown": {
       // `nameChangeStatus` returns `lastChangedAt + NAME_CHANGE_COOLDOWN_MS`,
       // both already epoch ms — scaling this one would put the retry 50 years out.
@@ -82,6 +91,22 @@ export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescri
       return { title: "Too many requests right now.", detail: "Wait a few minutes and try again." };
     case "release_in_flight":
       return { title: "That name is already being released.", detail: "Give it a minute, then refresh." };
+    case "pointer_in_flight":
+      return { title: "That name is already being updated.", detail: "Give it a minute, then refresh." };
+    case "signature_not_authorised":
+      return {
+        title: "That signature isn't from the account holding this name.",
+        detail: "Nothing was changed. Sign in with the account that holds it and try again.",
+      };
+    case "signature_expired":
+      return { title: "That signature expired before it was used.", detail: "Nothing was changed — try again." };
+    case "chain_clock_unverified":
+      return { title: "Couldn't reach the network to check the time.", detail: "Nothing was changed — try again in a minute." };
+    case "no_feed_manifest":
+      return {
+        title: "This publish has no stable address for your name yet.",
+        detail: "Publish again and your name will be offered it.",
+      };
     case "has_children":
       return {
         title: "This name has names beneath it.",

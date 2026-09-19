@@ -126,8 +126,6 @@
   let checkMsg  = $state('');
 
   // Profile fields shown once the label is confirmed available
-  let showProfile = $derived(checkPhase === 'ok');
-  let profileBio  = $state('');
 
   // Claiming
   let claiming   = $state(false);
@@ -302,10 +300,7 @@
       // is one more thing to keep working on a chain move, and it bought the user
       // nothing the sponsor path does not already give them.
       const attempt = async () =>
-        claimSubEnsLabel({
-          label,
-          description: profileBio.trim() || undefined,
-        });
+        claimSubEnsLabel({ label });
       let res = await attempt();
       // Attendee gate: names need an unlocked account (rule: server
       // lib/gate/check.ts). Open the unlock flow and retry once.
@@ -627,26 +622,6 @@
       </p>
     {/if}
 
-    <!-- Profile fields (shown once available) -->
-    {#if showProfile}
-      <div class="profile-fields">
-        <div class="field-group">
-          <label class="field-label" for="ens-bio">Short bio <span class="field-opt">(optional)</span></label>
-          <textarea
-            id="ens-bio"
-            class="field-input field-textarea"
-            placeholder="Describe your venue, brand, or project in a sentence…"
-            rows="2"
-            maxlength="160"
-            bind:value={profileBio}
-          ></textarea>
-          <span class="field-counter">{profileBio.length}/160</span>
-        </div>
-        <p class="field-hint">
-          Stored as ENS text records — portable across any app that reads ENS.
-        </p>
-      </div>
-    {/if}
 
     <!-- Error -->
     {#if claimError}
@@ -971,66 +946,6 @@
   }
 
   @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* ── Profile fields ─────────────────────────────────────────────────────── */
-  .profile-fields {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    padding: 0.875rem;
-    background: color-mix(in srgb, var(--accent) 3%, var(--bg));
-    border: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
-    border-radius: 4px;
-  }
-
-  .field-group { display: flex; flex-direction: column; gap: 0.3rem; position: relative; }
-
-  .field-label {
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-muted);
-  }
-
-  .field-opt { text-transform: none; font-weight: 400; letter-spacing: 0; opacity: 0.65; }
-
-  .field-input {
-    width: 100%;
-    padding: 0.5rem 0.6875rem;
-    font-size: 0.875rem;
-    color: var(--text);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    outline: none;
-    box-sizing: border-box;
-    transition: border-color 130ms;
-    font-family: inherit;
-  }
-
-  .field-input:focus { border-color: var(--accent); }
-
-  .field-textarea { resize: vertical; min-height: 4rem; line-height: 1.5; }
-
-  .field-counter {
-    position: absolute;
-    right: 0;
-    bottom: 0.3rem;
-    font-size: 0.6875rem;
-    color: var(--text-muted);
-    opacity: 0.55;
-    padding: 0 0.6rem;
-    pointer-events: none;
-  }
-
-  .field-hint {
-    margin: 0;
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    opacity: 0.65;
-    line-height: 1.4;
-  }
 
   /* ── Claim button ───────────────────────────────────────────────────────── */
   .claim-btn {

@@ -38,6 +38,7 @@ export * from "./kernel/chain.js";
 export * from "./sub-ens/addresses.js";
 export * from "./sub-ens/label.js";
 export * from "./sub-ens/web.js";
+export * from "./sub-ens/pointer.js";
 export * from "./campaign/index.js";
 export * from "./marketing/index.js";
 export * from "./legal/consent.js";

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Site, SiteEventEntry, TemplateId } from "@woco/shared";
+  import type { Site, SiteDeploySubEns, SiteEventEntry, TemplateId } from "@woco/shared";
   import { newSiteFromTemplate, siteConfigTopic, subEnsName, FEATURES } from "@woco/shared";
   import { logFeedToManifest } from "../../manifest/feed-log.js";
   import { onMount } from 'svelte';
@@ -23,6 +23,7 @@
   import DomainLinker from "./DomainLinker.svelte";
   import DomainTab from "./DomainTab.svelte";
   import SubENSPicker from "./SubENSPicker.svelte";
+  import NamePointerPrompt from "../../components/sub-ens/NamePointerPrompt.svelte";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import { describeSubEnsError, subEnsErrorDetail } from "../../sub-ens/errors.js";
@@ -113,6 +114,8 @@
    *  fire-and-forget on the server, so a skip used to leave no trace anywhere
    *  the organiser could see it (#484). */
   let subEnsNotice = $state<{ tone: 'info' | 'warn'; text: string } | null>(null);
+  /** The site's name is not on this site's feed yet: the holder signs once. */
+  let subEnsPointer = $state<Extract<SiteDeploySubEns, { status: 'awaiting_signature' }> | null>(null);
   let deployedUrl       = $state('');
   let deployedHash      = $state(
     typeof window !== 'undefined'
@@ -303,16 +306,15 @@
     pendingPurchaseResolve = null;
   }
 
-  /** Say what happened to the site's name, in the site's own words. */
+  /** Say what happened to the site's name, in the site's own words. A name
+   *  already on this site follows the publish, so it needs no line at all. */
   function describeDeploySubEns(
     s: DeploySiteResult['subEns'],
   ): { tone: 'info' | 'warn'; text: string } | null {
-    if (!s) return null;
-    const name = subEnsName(s.label);
-    if (s.status === 'updating') return { tone: 'info', text: `Updating ${name} to this version…` };
+    if (!s || s.status !== 'skipped') return null;
     const d = describeSubEnsError({ error: s.reason });
     const detail = subEnsErrorDetail(d);
-    return { tone: 'warn', text: `${name}: ${d.title}${detail ? ` ${detail}` : ''}` };
+    return { tone: 'warn', text: `${subEnsName(s.label)}: ${d.title}${detail ? ` ${detail}` : ''}` };
   }
 
   async function handlePublish() {
@@ -330,6 +332,7 @@
     publishState = 'publishing';
     publishError = '';
     subEnsNotice = null;
+    subEnsPointer = null;
     deployedUrl = '';
 
     /** Logo upload → publish config/feeds → deploy. Throws the sentinel errors
@@ -386,6 +389,7 @@
       }
 
       subEnsNotice = describeDeploySubEns(deployed.subEns);
+      subEnsPointer = deployed.subEns?.status === 'awaiting_signature' ? deployed.subEns : null;
       deployedUrl  = deployed.siteUrl;
       deployedHash = deployed.contentHash;
       localStorage.setItem(`woco:site-content-hash:${site.siteId}`, deployedHash);
@@ -758,6 +762,14 @@
       <div class="subens-notice" class:subens-notice--warn={subEnsNotice.tone === 'warn'}>
         <span>{subEnsNotice.text}</span>
       </div>
+    {/if}
+    {#if subEnsPointer}
+      <NamePointerPrompt
+        label={subEnsPointer.label}
+        target={subEnsPointer.target}
+        feedOwner={subEnsPointer.feedOwner}
+        purpose="site"
+      />
     {/if}
 
     <!-- Tab content -->

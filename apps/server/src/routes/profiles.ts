@@ -10,7 +10,7 @@ import {
 import { getApexContenthash } from "../lib/chain/sub-ens-apex.js";
 import { bindProfileName, nameChangeStatus, unbindProfileName } from "../lib/profile/name-ledger.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
-import type { UpdateProfileRequest } from "@woco/shared";
+import type { PointerRequest, UpdateProfileRequest } from "@woco/shared";
 
 export const profiles = new Hono<AppEnv>();
 
@@ -55,13 +55,6 @@ profiles.get("/:address", async (c) => {
  * never record a name the caller does not hold), then the cooldown, then the
  * write. A refused bind writes nothing at all.
  */
-/** The name should point at the app and does not yet: the holder signs that
- *  pointer (`/api/sub-ens/set-contenthash`); the server never writes it. */
-export interface PointerRequest {
-  status: "awaiting_signature";
-  target: string;
-}
-
 type BindOutcome =
   | {
       ok: true;

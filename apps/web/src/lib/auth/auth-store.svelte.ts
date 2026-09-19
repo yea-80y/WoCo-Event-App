@@ -2208,6 +2208,53 @@ async function ensureAccountSetup(opts: { identity: boolean }): Promise<boolean>
 }
 
 // ---------------------------------------------------------------------------
+// Signing as the HOLDER (sub-ENS pointer + release)
+// ---------------------------------------------------------------------------
+
+/**
+ * Sign EIP-712 typed data as the account that HOLDS this login's names —
+ * `auth.parent`, which the registrar and registry check. Never the session key
+ * and never the seed key: neither holds anything on chain.
+ *
+ *   web3              → the injected wallet, switched to the domain's chain
+ *                       first (wallets refuse typed data for an inactive chain).
+ *   passkey, web3auth → the Kernel's own ERC-1271 signature (ERC-6492-wrapped
+ *                       while the account is undeployed). The passkey build may
+ *                       ask for the passkey; the click that got here is the
+ *                       deliberate gesture.
+ *   coinbase          → refused. A Coinbase Smart Wallet signs for Base whatever
+ *                       the domain says, so no signature of its can verify on
+ *                       the names' chain; its holder acts by its own
+ *                       transaction (Fable sponsor-key consult §11.1), which is
+ *                       not built yet.
+ */
+async function signTypedDataAsHolder(typed: {
+  domain: { chainId: number } & Record<string, unknown>;
+  types: Record<string, Array<{ name: string; type: string }>>;
+  message: Record<string, unknown>;
+}): Promise<string> {
+  const parent = _parent;
+  if (!parent) throw new Error("Sign in again first. Nothing was signed.");
+  if (_kind === "web3") {
+    const [{ switchChain }, { getEthersProvider }, { JsonRpcSigner }] = await Promise.all([
+      import("../payment/chains.js"),
+      import("../wallet/provider.js"),
+      import("ethers"),
+    ]);
+    await switchChain(typed.domain.chainId as Parameters<typeof switchChain>[0]);
+    const signer = new JsonRpcSigner(await getEthersProvider(), parent);
+    return signer.signTypedData(typed.domain, typed.types, typed.message);
+  }
+  if (_kind === "passkey" || _kind === "web3auth") {
+    await _ensureKernelForKind();
+    if (!_kernel) throw new Error("Account unavailable — please sign in again. Nothing was signed.");
+    const { createKernelTypedDataSigner } = await import("./kernel-account.js");
+    return createKernelTypedDataSigner(_kernel.account)(typed.domain, typed.types, typed.message);
+  }
+  throw new Error("Signing for a name isn't available for this sign-in method yet. Nothing was signed.");
+}
+
+// ---------------------------------------------------------------------------
 // Shop spend-permission grant (passkey/Kernel only)
 // ---------------------------------------------------------------------------
 
@@ -3333,6 +3380,7 @@ export const auth = {
   // ensureSession/ensureIdentitySeed in sequence, and never count prompts.
   ensureAccountSetup,
   grantSpendPermission,
+  signTypedDataAsHolder,
   setupAccountRecovery,
   removeAccountBackups,
   recoverAndRekey,

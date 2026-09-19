@@ -44,34 +44,21 @@
   const matches = $derived(typed.trim().toLowerCase() === label.toLowerCase());
 
   /**
-   * Build the rails for THIS login.
-   *
-   * The signer signs EIP-712 typed data whose domain names the registry's
-   * chain, and wallets refuse `eth_signTypedData_v4` for a chain that is not
-   * the active one, so the wallet is switched first. `kernelRelease` is
-   * deliberately absent: the Kernel lives on another chain than the names,
-   * so a sudo op there could not touch this registry. #489 wires it when the
-   * account moves; until then the AA gate above means we never get here.
+   * Build the rails for THIS login. The signature is the HOLDER's
+   * (`auth.signTypedDataAsHolder`): the injected wallet, switched to the names'
+   * chain, or the Kernel's own ERC-1271 signature for passkey / web3auth.
+   * `kernelRelease` is deliberately absent until the Arbitrum Sepolia rehearsal
+   * settles whether an UNDEPLOYED Kernel's ERC-6492 signature clears the
+   * registry's validator budget; if it does not, that fallback is the holder's
+   * own userOp, and it lands here.
    */
   async function buildRails() {
     const parent = auth.parent;
     if (!parent) throw new Error("Sign in again to discard a name.");
-    // FAIL LOUD rather than sign with the wrong key. Everything below assumes an
-    // EOA holder reachable through the injected wallet; a smart-account login
-    // must sign through its own account, which is #489's work. Today the gate
-    // above makes this unreachable — when the gate opens, this line is what
-    // stops the flip shipping a signature the registry will not accept.
-    if (auth.kind !== "web3") {
-      throw new Error("Discarding from this account isn't wired up yet — nothing was signed.");
-    }
     const { JsonRpcSigner } = await import("ethers");
 
     return {
-      signTypedData: async ({ domain, types, message }: ReleaseTypedData) => {
-        await switchChain(SUB_ENS_DEFAULT_CHAIN_ID);
-        const signer = new JsonRpcSigner(await getEthersProvider(), parent);
-        return signer.signTypedData(domain, types, message);
-      },
+      signTypedData: (typed: ReleaseTypedData) => auth.signTypedDataAsHolder(typed),
       ...(plan.rails.includes("wallet")
         ? {
             walletRelease: async (node: Hex0x) => {

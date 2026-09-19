@@ -1,4 +1,5 @@
 <script lang="ts">
+  import NamePointerPrompt from "../sub-ens/NamePointerPrompt.svelte";
   import type { UserProfile, EventDirectoryEntry } from "@woco/shared";
   import { socialProfileSubject, FEATURES } from "@woco/shared";
   import { getProfile, updateProfile, uploadAvatar, getProfileNameStatus } from "../../api/profiles.js";
@@ -77,6 +78,8 @@
   let ensBindDetail = $state('');
   /** A bind that worked but has a caveat — rendered as a note, never as red. */
   let ensBindWarning = $state('');
+  /** The bound name is empty and should open the app: the holder signs that. */
+  let ensPointer = $state<{ label: string; target: string } | null>(null);
   /** Cooldown refusal, shown INSTEAD of opening the name picker. */
   let renameBlocked = $state('');
   /** The name this account was known by before the rename that just succeeded. */
@@ -277,15 +280,16 @@
     ensBindError = '';
     ensBindDetail = '';
     ensBindWarning = '';
+    ensPointer = null;
     renameBlocked = '';
     // Captured BEFORE the bind: after it, the ledger no longer calls this the
     // profile name, which is exactly why the relay will now accept releasing it.
     const previous = profile?.subEnsLabel;
     try {
-      const updated = await updateProfile(
-        { subEnsLabel: label },
-        () => { ensBindWarning = 'This name already points at a site, and keeps doing so.'; },
-      );
+      const updated = await updateProfile({ subEnsLabel: label }, (outcome) => {
+        if (outcome.warning) ensBindWarning = 'This name already points at a site, and keeps doing so.';
+        if (outcome.pointer) ensPointer = { label, target: outcome.pointer.target };
+      });
       if (updated) {
         profile = updated;
         // updateProfile already wrote the fresh profile to cache — don't
@@ -822,6 +826,9 @@
           {/if}
           {#if ensBindWarning}
             <p class="ens-bind-warning">{ensBindWarning}</p>
+          {/if}
+          {#if ensPointer}
+            <NamePointerPrompt label={ensPointer.label} target={ensPointer.target} purpose="profile" />
           {/if}
         </section>
 

@@ -106,14 +106,30 @@ function sourceOf(rel: string): string {
   return readFileSync(new URL(rel, import.meta.url), "utf-8");
 }
 
-test("the discard dialog signs typed data on the registry's chain, never a personal message", () => {
+test("the discard dialog signs typed data as the holder, never a personal message", () => {
   const dialog = sourceOf("../src/lib/creator/builder/DiscardNameDialog.svelte");
   const script = dialog.slice(dialog.indexOf("<script"), dialog.indexOf("</script>"));
   assert.doesNotMatch(script, /signMessage\(/, "a personal-sign signature is not a v2.1 release");
-  const signer = script.slice(script.indexOf("signTypedData: async"));
-  const sw = signer.indexOf("switchChain(SUB_ENS_DEFAULT_CHAIN_ID)");
-  const sign = signer.indexOf(".signTypedData(");
-  assert.ok(sw > 0 && sign > sw, "the wallet must be on the registry's chain before it signs");
+  assert.match(script, /signTypedData: \(typed: ReleaseTypedData\) => auth\.signTypedDataAsHolder\(typed\)/);
+});
+
+test("the holder signer puts a wallet on the domain's chain first, and refuses Coinbase", () => {
+  const store = sourceOf("../src/lib/auth/auth-store.svelte.ts");
+  const start = store.indexOf("async function signTypedDataAsHolder(");
+  const body = store.slice(start, store.indexOf("\n}\n", start));
+  assert.ok(start > 0, "signTypedDataAsHolder not found");
+  assert.doesNotMatch(body, /signMessage\(/);
+  // web3: the typed data's own chain, switched to BEFORE the wallet signs.
+  const web3 = body.slice(body.indexOf('if (_kind === "web3")'), body.indexOf('if (_kind === "passkey"'));
+  const sw = web3.indexOf("await switchChain(typed.domain.chainId");
+  const sign = web3.indexOf(".signTypedData(");
+  assert.ok(sw > 0 && sign > sw, "the wallet must be on the domain's chain before it signs");
+  // Kernel kinds sign as the Kernel (the holder), never as the raw owner key.
+  assert.match(body, /createKernelTypedDataSigner\(_kernel\.account\)/);
+  assert.doesNotMatch(body, /_passkeyPrivateKey|_web3authPrivateKey|createLocalSigner/);
+  // Coinbase falls through to the refusal: no branch may sign for it.
+  assert.doesNotMatch(body, /_kind === "coinbase"/, "a CSW signature can never verify on the names' chain");
+  assert.match(body, /throw new Error\("Signing for a name isn't available for this sign-in method yet/);
 });
 
 test("the release uses the chain's digest as the reference, and refuses on a mismatch", () => {

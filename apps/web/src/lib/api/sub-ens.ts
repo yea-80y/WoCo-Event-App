@@ -42,14 +42,10 @@ export async function resolveSubEnsAddress(input: string) {
   return resolveSubEnsWith(checkSubEnsLabel, input);
 }
 
-export async function claimSubEnsLabel(opts: {
-  label: string;
-  description?: string;
-  avatar?: string;
-  /** 64-char hex Swarm hash (no 0x) to set as the label's contenthash in the mint tx. */
-  swarmHash?: string;
-}) {
-  return authPost<SubEnsClaimResult>("/api/sub-ens/claim", opts);
+/** Mint an EMPTY name to the signed-in account. What it points at is the
+ *  holder's to sign afterwards (`../sub-ens/pointer.ts`). */
+export async function claimSubEnsLabel(opts: { label: string }) {
+  return authPost<SubEnsClaimResult>("/api/sub-ens/claim", { label: opts.label });
 }
 
 export interface OwnedSubEnsName {
@@ -72,11 +68,6 @@ export interface OwnedSubEnsName {
 /** Labels the authenticated organiser owns (reconciled against on-chain ownerOf). */
 export async function getOwnedSubEns() {
   return authGet<{ names: OwnedSubEnsName[] }>("/api/sub-ens/owned");
-}
-
-/** Point an already-owned label's contenthash at a new Swarm hash (server checks ownership). */
-export async function setSubEnsContenthash(label: string, swarmHash: string) {
-  return authPost<{ label: string; txHash: string }>("/api/sub-ens/set-contenthash", { label, swarmHash });
 }
 
 /** Record an owned label on an event feed as a display hint (server verifies

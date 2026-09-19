@@ -18,17 +18,9 @@
 
 import { getLabelOwner, getLabelContenthash, decodeSwarmContenthash } from "../chain/sub-ens-contract.js";
 import { isProfileName } from "../profile/name-ledger.js";
+import type { SiteDeploySubEns, SiteFeedOwner } from "@woco/shared";
 
-export type SiteFeedOwner = "client" | "platform";
-
-export type SiteDeploySubEns =
-  | { label: string; status: "ok"; target: string; feedOwner: SiteFeedOwner }
-  | { label: string; status: "awaiting_signature"; target: string; feedOwner: SiteFeedOwner }
-  | {
-      label: string;
-      status: "skipped";
-      reason: "not_owner" | "profile_name" | "unverified" | "no_feed_manifest";
-    };
+export type { SiteDeploySubEns, SiteFeedOwner };
 
 export interface SitePointerDeps {
   readOwner: (label: string) => Promise<string | null>;
