@@ -99,10 +99,10 @@ DEV COMMANDS:
   unset = names 503. The platform holds NO key that can repoint a name (registrar v2.2).
   Optional: `CAMPAIGN_ISSUER_PRIVATE_KEY` — signs referral confirmations + badges
   (#476), address must match `CAMPAIGN_ISSUER_ADDRESS`; unset = confirm 503s.
-  Also optional, all with defaults baked in (#421/#522/#420 health alarms; a bad value is
+  Also optional, all with defaults baked in (#421/#522/#420/#598 health alarms; a bad value is
   ignored and reported as `configError`, never fatal): `PAYMASTER_DEPOSIT_MIN_ETH`,
   `POSTAGE_TTL_MIN_SECONDS`, `POSTAGE_UTILIZATION_MAX_PCT`, `BEE_CHAIN_LAG_MAX_BLOCKS`,
-  `ENS_MAINNET_RPC_URL`, `ENS_EXPIRY_MIN_DAYS`.
+  `ENS_MAINNET_RPC_URL`, `ENS_EXPIRY_MIN_DAYS`, `SUB_ENS_SPONSOR_MIN_ETH`.
 
 ============================================================================
 AUTH ARCHITECTURE
