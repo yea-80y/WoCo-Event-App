@@ -61,7 +61,13 @@ import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/p
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
-import { startHealthProbes, paymasterHealth, postageHealth, subEnsParentHealth } from "./lib/health/probes.js";
+import {
+  startHealthProbes,
+  paymasterHealth,
+  postageHealth,
+  subEnsParentHealth,
+  subEnsMintingHealth,
+} from "./lib/health/probes.js";
 import { persistHealth } from "./lib/marketing/persist.js";
 import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.js";
 import { checkMarketingSenderConfig, marketingSenderHealth } from "./lib/email/client.js";
@@ -308,6 +314,14 @@ app.get("/api/health", (c) =>
       // 90-day grace every *.woco.eth name — the app's own frontend included —
       // stops resolving at once. WATCH ONLY; nothing here renews anything.
       parent: subEnsParentHealth(),
+      // Whether new names can be minted at all (#598): the registrar enrolled
+      // in the registry it mints into, the sponsor still authorised on it and
+      // able to pay, and — on registrar v2.2 — the registrar-wide cap's
+      // headroom, which is also the leaked-key detector. All fail silently —
+      // existing names keep resolving. Registry v2.2 drops every registrar at
+      // an admin handover, so a handover batch that forgot
+      // `addRegistrar(WoCoRegistrar)` lands here. Public on-chain data only.
+      minting: subEnsMintingHealth(),
     },
     // Wedged on-chain registrations (#434). Since #433 a registration whose
     // on-chain event is already bound to another series can NEVER complete: the
