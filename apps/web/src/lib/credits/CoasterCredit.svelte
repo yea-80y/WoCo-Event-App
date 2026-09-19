@@ -223,7 +223,10 @@
     sendTrouble = trouble !== null && trouble !== ANOTHER_DEVICE;
     troubleDetail = sendTrouble && trouble && !NO_SIGNAL.test(trouble) ? trouble : null;
     if (sender.notice) notice = sender.notice;
-    if (sender.head && sender.head !== head) {
+    // By signature, not identity: `head` is a reactive proxy, so an identity
+    // check is always "different" and would rewrite the remembered count on
+    // every repaint.
+    if (sender.head && sender.head.statement.holderSig !== head?.statement.holderSig) {
       head = sender.head;
       loaded = true;
       remember(sender.head);
