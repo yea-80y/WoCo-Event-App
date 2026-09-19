@@ -1981,6 +1981,12 @@ Where a rider genuinely wants their own times, the designated future outlet is a
 private sidecar** — ECIES-to-self, never inside the public statement, explicitly NOT v1.
 Recorded so "add timestamps back" has a landing place that is not the signed public object.
 
+**Landed 2026-09-19** as `woco.lap-diary.v1` (`packages/shared/src/credit/lap-diary.ts`): one
+write-once entry per statement `seq`, sealed to the rider. Rider-only; nothing public reads it.
+Publishing times stays unbuilt, and when it is built it is for allowlisted holders with a pinned
+feed owner, not a toggle on every card: this rail asks no age, so a confirm screen would be the
+only thing between a child and a public ride routine. See the DEVLOG entry of that date.
+
 Consequence for record claims — "most laps in a day" and similar: those must require tier 2 or
 3. A record is never creditable from self-reported data, whatever times it carries.
 
