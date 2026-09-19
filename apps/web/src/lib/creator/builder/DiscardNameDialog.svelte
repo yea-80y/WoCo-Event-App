@@ -46,11 +46,10 @@
   /**
    * Build the rails for THIS login. The signature is the HOLDER's
    * (`auth.signTypedDataAsHolder`): the injected wallet, switched to the names'
-   * chain, or the Kernel's own ERC-1271 signature for passkey / web3auth.
-   * `kernelRelease` is deliberately absent until the Arbitrum Sepolia rehearsal
-   * settles whether an UNDEPLOYED Kernel's ERC-6492 signature clears the
-   * registry's validator budget; if it does not, that fallback is the holder's
-   * own userOp, and it lands here.
+   * chain, or the Kernel's own ERC-1271 signature for passkey / web3auth —
+   * ERC-6492-wrapped while the account is undeployed, which the relay accepts
+   * (Arbitrum Sepolia rehearsal, 2026-09-19). So no `kernelRelease` fallback
+   * is needed for a fresh account.
    */
   async function buildRails() {
     const parent = auth.parent;

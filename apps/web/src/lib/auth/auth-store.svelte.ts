@@ -2218,10 +2218,13 @@ async function ensureAccountSetup(opts: { identity: boolean }): Promise<boolean>
  *
  *   web3              → the injected wallet, switched to the domain's chain
  *                       first (wallets refuse typed data for an inactive chain).
- *   passkey, web3auth → the Kernel's own ERC-1271 signature (ERC-6492-wrapped
- *                       while the account is undeployed). The passkey build may
- *                       ask for the passkey; the click that got here is the
- *                       deliberate gesture.
+ *   passkey, web3auth → the Kernel's own ERC-1271 signature. While the account
+ *                       is undeployed viem's smart-account wrapper makes it
+ *                       ERC-6492, and the contracts' validator simulates the
+ *                       deploy and accepts it — proven on Arbitrum Sepolia
+ *                       2026-09-19, with the account left undeployed. The
+ *                       passkey build may ask for the passkey; the click that
+ *                       got here is the deliberate gesture.
  *   coinbase          → refused. A Coinbase Smart Wallet signs for Base whatever
  *                       the domain says, so no signature of its can verify on
  *                       the names' chain; its holder acts by its own

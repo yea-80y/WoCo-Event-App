@@ -7,10 +7,11 @@
  *  1. Relay (preferred, free to the user). The holder signs the release as
  *     EIP-712 typed data and `POST /api/sub-ens/relay-release` submits it with
  *     sponsor gas. Works for a plain wallet, which no paymaster can ever cover.
- *  2. Kernel sudo userOp. Used when the relay refuses the signature — the
- *     likely case being a COUNTERFACTUAL Kernel, whose ERC-1271 answer the
- *     ERC-6492 validator cannot check until the account is deployed. The sudo
- *     op deploys it as a side effect and the paymaster pays.
+ *  2. Kernel sudo userOp — for a relay refusal the next rail may get past. An
+ *     UNDEPLOYED Kernel is NOT such a case: viem's smart-account wrapper signs
+ *     it as ERC-6492, and the registry's validator simulates the deploy and
+ *     accepts it (Arbitrum Sepolia rehearsal, 2026-09-19: 272,746 gas, the
+ *     account left undeployed). Not wired yet.
  *  3. Own-gas `release()` from the wallet. The floor: it needs nothing from us.
  *
  * NEVER a scoped session key. None is left on the device — the last one went
