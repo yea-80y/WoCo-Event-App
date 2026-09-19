@@ -5,6 +5,7 @@ import {
   type SessionDelegation,
   deriveFeedSignerKey,
   FEATURES,
+  KERNEL_CHAIN_ID,
 } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 import { AUTH_NOTICE_KEY } from "./auth-notice.js";
@@ -2249,6 +2250,14 @@ async function signTypedDataAsHolder(typed: {
     return signer.signTypedData(typed.domain, typed.types, typed.message);
   }
   if (_kind === "passkey" || _kind === "web3auth") {
+    // A Kernel's ERC-1271 answer is bound to the chain it lives on. Asked to sign
+    // for another chain, it would produce a signature that chain's contract can
+    // never accept — so refuse here, before any passkey prompt, rather than
+    // after the relay refuses it (Fable sign-off F7; `releaseRails` does the
+    // same for discards).
+    if (typed.domain.chainId !== KERNEL_CHAIN_ID) {
+      throw new Error("This account can't sign for that network yet. Nothing was signed.");
+    }
     await _ensureKernelForKind();
     if (!_kernel) throw new Error("Account unavailable — please sign in again. Nothing was signed.");
     const { createKernelTypedDataSigner } = await import("./kernel-account.js");

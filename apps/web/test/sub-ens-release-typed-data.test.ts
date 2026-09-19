@@ -124,8 +124,15 @@ test("the holder signer puts a wallet on the domain's chain first, and refuses C
   const sw = web3.indexOf("await switchChain(typed.domain.chainId");
   const sign = web3.indexOf(".signTypedData(");
   assert.ok(sw > 0 && sign > sw, "the wallet must be on the domain's chain before it signs");
-  // Kernel kinds sign as the Kernel (the holder), never as the raw owner key.
+  // Kernel kinds sign as the Kernel (the holder), never as the raw owner key -
+  // and only for the chain the Kernel lives on, refused BEFORE the Kernel is
+  // built (which may prompt for the passkey).
   assert.match(body, /createKernelTypedDataSigner\(_kernel\.account\)/);
+  const kernel = body.slice(body.indexOf('if (_kind === "passkey" || _kind === "web3auth")'));
+  const chainCheck = kernel.indexOf("if (typed.domain.chainId !== KERNEL_CHAIN_ID) {");
+  assert.ok(chainCheck > 0, "the Kernel branch must check the domain's chain");
+  assert.ok(chainCheck < kernel.indexOf("await _ensureKernelForKind()"), "before any prompt");
+  assert.match(kernel.slice(chainCheck, kernel.indexOf("}", chainCheck)), /throw new Error\(/);
   assert.doesNotMatch(body, /_passkeyPrivateKey|_web3authPrivateKey|createLocalSigner/);
   // Coinbase falls through to the refusal: no branch may sign for it.
   assert.doesNotMatch(body, /_kind === "coinbase"/, "a CSW signature can never verify on the names' chain");

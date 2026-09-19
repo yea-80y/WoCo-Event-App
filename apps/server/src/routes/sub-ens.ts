@@ -9,6 +9,8 @@ import {
   relaySignedContenthash,
   getMintAllowance,
   mintRateCapVerdict,
+  getGlobalMintHeadroom,
+  globalMintSoftVerdict,
   labelNode,
   relayReleaseWithSignature,
   getSubEnsChainTime,
@@ -48,6 +50,29 @@ const checkLimiter = new SlidingWindowLimiter([
   { limit: 60, windowMs: 60_000 },
   { limit: 600, windowMs: 60 * 60_000 },
 ]);
+
+/**
+ * Claim budget per account (Fable sign-off F11). The contract's own caps are
+ * per recipient (30 / 30 days) and registrar-wide (300 / hour at deploy); with
+ * only those, ten gated accounts could spend the registrar-wide hour between
+ * them and stop names for everyone. Sized for an organiser claiming a profile
+ * name and a few site and event names in a sitting.
+ */
+const claimLimiter = new SlidingWindowLimiter([
+  { limit: 5, windowMs: 60 * 60_000 },
+  { limit: 10, windowMs: 24 * 60 * 60_000 },
+]);
+
+/** The registrar-wide headroom, or null when the chain did not answer — see
+ *  `globalMintSoftVerdict`, which treats null as "proceed". */
+async function readGlobalMintHeadroom() {
+  try {
+    return await getGlobalMintHeadroom();
+  } catch (err) {
+    console.warn("[sub-ens] globalMintAllowance pre-flight unavailable:", (err as { shortMessage?: string })?.shortMessage ?? "unspecified");
+    return null;
+  }
+}
 
 /** Read the mint allowance, or null when the chain is unreachable — see
  *  `mintRateCapVerdict`, which treats null as "proceed", not "refuse". */
@@ -306,6 +331,10 @@ subEnsRoutes.post("/claim", requireAuth, async (c) => {
   const validationError = validateLabel(label);
   if (validationError) return c.json({ ok: false, error: validationError }, 400);
 
+  // Before any chain read: a caller over budget costs nothing.
+  const account = (parentAddress as string).toLowerCase();
+  if (!claimLimiter.peek(account)) return c.json({ ok: false, error: "rate_limited" }, 429);
+
   // Pre-flight availability check for a clean user-facing error (contract also guards this)
   try {
     const available = await isLabelAvailable(label);
@@ -315,9 +344,18 @@ subEnsRoutes.post("/claim", requireAuth, async (c) => {
     return c.json({ ok: false, error: "availability check failed" }, 500);
   }
 
-  const capped = mintRateCapVerdict(await readMintAllowance(parentAddress as string));
+  const [allowance, headroom] = await Promise.all([
+    readMintAllowance(parentAddress as string),
+    readGlobalMintHeadroom(),
+  ]);
+  const capped = mintRateCapVerdict(allowance);
   if (capped) return c.json({ ok: false, ...capped }, 429);
+  // Names are busy for everyone, not this caller: 503, as the chain's own refusal.
+  const busy = globalMintSoftVerdict(headroom);
+  if (busy) return c.json({ ok: false, ...busy }, 503);
 
+  // Charged only for a mint we are about to send: a taken or capped label is free.
+  claimLimiter.record(account);
   try {
     const txHash = await mintSubEnsName(label, parentAddress);
     return c.json({

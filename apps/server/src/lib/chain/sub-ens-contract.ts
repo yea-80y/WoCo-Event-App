@@ -126,6 +126,7 @@ const REGISTRAR_ABI = [
   "function pointerNonce(bytes32 node) view returns (uint256)",
   // Registrar-wide mint cap (#469); /api/health watches its headroom.
   "function globalMintAllowance() view returns (uint32 remaining, uint64 windowResetsAt)",
+  "function maxGlobalMintsPerWindow() view returns (uint32)",
   // #464 mint rate cap — per RECIPIENT, 30 mints / 30 days at deploy. Read it
   // before promising a mint: exceeding it reverts. `setMintRateCap` is
   // owner-only (the multisig on mainnet), here so the fragment exists, never
@@ -369,6 +370,46 @@ export function mintRateCapVerdict(
   // rather than as a third top-level key — this was the one response in the
   // sub-ENS surface outside the `{ ok, data?, error? }` envelope.
   return { error: "mint_rate_cap", data: { windowResetsAt: allowance.windowResetsAt } };
+}
+
+/** The registrar-wide mint window as the chain reports it (registrar v2.2). */
+export interface GlobalMintHeadroom extends MintAllowance {
+  /** The cap the Safe has set for the window. */
+  max: number;
+}
+
+/**
+ * The share of each registrar-wide window this server never spends itself.
+ * Two reasons (Fable sign-off F11): the product refuses gracefully before the
+ * chain does, and - because the platform alone can never take the window
+ * below this - a cap that DOES reach zero was spent by someone else, which
+ * makes /api/health's `globalMint` alarm mean a leaked names key, not a busy
+ * hour. A fraction of the LIVE cap rather than a number, so the Safe's retune
+ * (raised for launch day, lowered after) moves it too.
+ */
+export const GLOBAL_MINT_RESERVE_FRACTION = 0.2;
+
+/**
+ * Turn a registrar-wide headroom read into a refusal, or null to proceed.
+ * Null headroom means the READ FAILED, and proceeds for the same reason as
+ * `mintRateCapVerdict`: the contract's own cap still binds.
+ */
+export function globalMintSoftVerdict(
+  headroom: GlobalMintHeadroom | null,
+): { error: "mint_global_cap"; data: { windowResetsAt: number } } | null {
+  if (!headroom) return null;
+  const reserve = Math.floor(headroom.max * GLOBAL_MINT_RESERVE_FRACTION);
+  if (headroom.remaining > reserve) return null;
+  return { error: "mint_global_cap", data: { windowResetsAt: headroom.windowResetsAt } };
+}
+
+export async function getGlobalMintHeadroom(): Promise<GlobalMintHeadroom> {
+  const registrar = readContract(getSubEnsChainId());
+  const [[remaining, windowResetsAt], max] = await Promise.all([
+    registrar.globalMintAllowance() as Promise<[bigint, bigint]>,
+    registrar.maxGlobalMintsPerWindow() as Promise<bigint>,
+  ]);
+  return { remaining: Number(remaining), windowResetsAt: Number(windowResetsAt), max: Number(max) };
 }
 
 export async function getMintAllowance(recipient: string): Promise<MintAllowance> {
