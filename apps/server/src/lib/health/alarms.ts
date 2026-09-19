@@ -1,6 +1,6 @@
 /**
- * Pure verdicts for the `/api/health` postage, paymaster and ENS-parent alarms
- * (#421, #522, #420).
+ * Pure verdicts for the `/api/health` postage, paymaster, ENS-parent and
+ * sub-ENS minting alarms (#421, #522, #420, #598).
  *
  * No network, no clock of its own, no env reads beyond the one function that
  * exists to read env. Everything here is a function of its arguments, so the
@@ -36,6 +36,7 @@ export interface ThresholdConfig {
   paymaster: { minEth: string; configError?: string };
   postage: Thresholds & { configError?: string };
   ensParent: { minDays: number; configError?: string };
+  subEnsMinting: { sponsorMinEth: string; configError?: string };
 }
 
 export const DEFAULT_PAYMASTER_MIN_ETH = "0.0005";
@@ -52,6 +53,14 @@ export const DEFAULT_CHAIN_LAG_MAX_BLOCKS = 720;
  * resolving. A 30-day threshold would spend that margin on nothing.
  */
 export const DEFAULT_ENS_EXPIRY_MIN_DAYS = 120;
+/**
+ * The sponsor wallet's floor on the sub-ENS chain (#598). About 25M gas at
+ * Arbitrum One's 0.02 gwei (2026-09-19): roughly 80-100 sponsored mints, or
+ * about 20 relayed releases at their padded worst case. The same order as the
+ * paymaster's floor, and for the same reason — enough warning to top up by
+ * hand before anyone notices.
+ */
+export const DEFAULT_SUB_ENS_SPONSOR_MIN_ETH = "0.0005";
 
 /** A decimal ETH amount, no exponent, at most 18 decimals — `parseEther` fodder. */
 const DECIMAL_ETH = /^\d+(\.\d{1,18})?$/;
@@ -80,14 +89,17 @@ function envInt(
  * silently would leave an operator believing a threshold they set is in force.
  * So: fall back, and SAY SO in the section itself.
  */
+function envEth(env: NodeJS.ProcessEnv, name: string, fallback: string, invalid: string[]): string {
+  const raw = env[name];
+  if (raw === undefined || raw === "") return fallback;
+  if (DECIMAL_ETH.test(raw.trim()) && Number(raw) > 0) return raw.trim();
+  invalid.push(name);
+  return fallback;
+}
+
 export function readThresholdsFromEnv(env: NodeJS.ProcessEnv): ThresholdConfig {
   const pmInvalid: string[] = [];
-  const rawMin = env.PAYMASTER_DEPOSIT_MIN_ETH;
-  let minEth = DEFAULT_PAYMASTER_MIN_ETH;
-  if (rawMin !== undefined && rawMin !== "") {
-    if (DECIMAL_ETH.test(rawMin.trim()) && Number(rawMin) > 0) minEth = rawMin.trim();
-    else pmInvalid.push("PAYMASTER_DEPOSIT_MIN_ETH");
-  }
+  const minEth = envEth(env, "PAYMASTER_DEPOSIT_MIN_ETH", DEFAULT_PAYMASTER_MIN_ETH, pmInvalid);
 
   const postInvalid: string[] = [];
   const ttlMinSeconds = envInt(env, "POSTAGE_TTL_MIN_SECONDS", DEFAULT_TTL_MIN_SECONDS, postInvalid);
@@ -97,10 +109,14 @@ export function readThresholdsFromEnv(env: NodeJS.ProcessEnv): ThresholdConfig {
   const ensInvalid: string[] = [];
   const minDays = envInt(env, "ENS_EXPIRY_MIN_DAYS", DEFAULT_ENS_EXPIRY_MIN_DAYS, ensInvalid);
 
+  const mintInvalid: string[] = [];
+  const sponsorMinEth = envEth(env, "SUB_ENS_SPONSOR_MIN_ETH", DEFAULT_SUB_ENS_SPONSOR_MIN_ETH, mintInvalid);
+
   return {
     paymaster: { minEth, configError: configError(pmInvalid) },
     postage: { ttlMinSeconds, utilizationMaxPct, chainLagMaxBlocks, configError: configError(postInvalid) },
     ensParent: { minDays, configError: configError(ensInvalid) },
+    subEnsMinting: { sponsorMinEth, configError: configError(mintInvalid) },
   };
 }
 
@@ -298,6 +314,40 @@ export function evaluateEnsExpiry(r: {
     };
   }
   return { ok: true, ...reading };
+}
+
+// ---------------------------------------------------------------------------
+// Sub-ENS minting (#598)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether the registry still lists WoCoRegistrar. Registry v2.2 ends EVERY
+ * registrar grant when the admin seat changes hands, so a handover whose batch
+ * forgot `addRegistrar` stops new names and sponsor site writes — while every
+ * existing name keeps resolving, which is exactly why it would go unnoticed.
+ */
+export function evaluateRegistrarEnrolled(r: { enrolled: boolean | null; reason?: string | null }): Check {
+  if (r.enrolled === null) return { ok: null, reason: r.reason || "registrar enrolment could not be read" };
+  if (!r.enrolled) {
+    return {
+      ok: false,
+      reason:
+        "WoCoRegistrar is not enrolled in the registry — new names and sponsor site writes are refused. After an admin handover the new admin must addRegistrar(WoCoRegistrar)",
+    };
+  }
+  return { ok: true };
+}
+
+/** The sponsor pays for every sponsored mint, site write and relayed release. */
+export function evaluateSponsorBalance(r: { balanceWei: bigint | null; minWei: bigint; reason?: string | null }): Check {
+  if (r.balanceWei === null) return { ok: null, reason: r.reason || "sponsor balance could not be read" };
+  if (r.balanceWei < r.minWei) {
+    return {
+      ok: false,
+      reason: "sponsor wallet below minimum on the sub-ENS chain — sponsored mints, site writes and relayed releases will start failing",
+    };
+  }
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
