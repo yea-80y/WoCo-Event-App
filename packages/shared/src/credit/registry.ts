@@ -220,7 +220,13 @@ export const WOCO_SUBJECT_DEFINITIONS: readonly SubjectDefinition[] = [
     // PROVISIONAL. The plan requires this be set from the actual planned
     // cadence rather than a default, and that number comes from the rider —
     // a launch coaster's cycle plus re-ride arrangement, not a guess here.
-    cadenceMinutes: 2,
+    //
+    // 1, down from 2 (owner decision 2026-09-19). Rita 100 targets 130 laps in
+    // one park day, about three minutes a lap on AVERAGE, so back-to-back
+    // re-rides will sometimes come in under two — and this guard refusing a
+    // real lap leaves a hole in the rider's log that nothing later can fill.
+    // It only ever existed to stop a fumbled double tap, which one minute does.
+    cadenceMinutes: 1,
   },
   {
     // Minted 2026-08-18 so a demo never needs a false tap on Rita. Signing a
