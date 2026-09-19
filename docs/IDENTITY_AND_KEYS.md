@@ -402,6 +402,11 @@ Passkey and email logins are both Kernels, so both are subject to credential rot
 depend on escrow for identity stability. `apps/web/src/lib/auth/` carries the full state machine;
 `auth-store.svelte.ts` is the entry point.
 
+A Kernel can hold a sub-ENS name, and the registry treats the account as the holder: whatever
+the account can be made to do, the name follows. WoCo's Kernels install only the guardian hook,
+and that must stay so. A session key or an executor module on a name-holding Kernel would be
+holder authority outside the registry's own rules (audit 950 design review).
+
 **Removed, and not to be reintroduced from older docs:** the Para embedded wallet and the local
 encrypted browser account were both deleted to cut eager bundle size. `SiteLoginModal.svelte:3`
 and `backup-signer.ts:173` carry comments explaining why.

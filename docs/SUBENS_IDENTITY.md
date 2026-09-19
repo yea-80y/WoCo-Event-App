@@ -128,6 +128,26 @@ deliberately outlives the name it refers to — nothing deletes a record, becaus
 
 Administrative reclaim is `adminTransfer` — **transfer-only, no timelock**, held by the Safe.
 
+### Registry v2.2 rules (they arrive with the v2.2 cutover)
+
+After audit 950 the registry refuses ERC-721 delegation, because a name's holder has every power
+over it and an approval let the approvee become the holder. What that means in practice:
+
+- **No approvals.** `approve` and `setApprovalForAll` always revert `DelegationNotSupported()`,
+  and only a name's holder moves it. Names cannot be listed on approval-based marketplaces. A
+  sale is the holder's own transfer, or a push into an escrow contract that pays the seller and
+  hands the name on in the same transaction (proven in the contracts suite, not built). Listing is
+  a change of holder, so it resets the name's records while it is listed.
+- **Custody is push-only, and not custodial-safe.** A vault receives a name by its holder's
+  `safeTransferFrom`. The admin can still `adminTransfer` it, and the holder of the name above can
+  still take or release it, whoever holds it.
+- **An admin handover drops every registrar,** WoCoRegistrar included. The incoming admin's
+  acceptance is therefore ONE executor batch, `[acceptAdmin(), addRegistrar(WoCoRegistrar)]`.
+  Accepted alone, new names and sponsor site writes stop (the server answers 503) until the second
+  call lands; existing names keep resolving. The `subEns.minting` health section alarms on it.
+- **No public `multicall`.** A smart-account holder batches record writes in its own user
+  operation.
+
 ---
 
 ## What a name is *not* used for
