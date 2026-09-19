@@ -377,6 +377,52 @@ test("times that cannot be sealed yet never fail or block a lap", async () => {
   assert.deepEqual(w.sealed.map((s) => s.seq), [0, 1]);
 });
 
+test("times that can NEVER be sealed still never block a lap", async () => {
+  const w = new World();
+  const sender = createLapSender(w.deps());
+  w.sealFailures = 99;
+  w.tap(T0);
+  await sender.kick();
+  const mark = w.log.length;
+  w.tap(T0 + 3 * MIN);
+  await sender.kick();
+
+  assert.equal(w.head()?.statement.total, 2, "the second lap went up past the stuck seal");
+  const second = w.log.slice(mark);
+  assert.ok(second.indexOf("send") >= 0 && second.indexOf("send") < second.indexOf("seal(0)"), "laps first, times after");
+  assert.equal(sender.error, null);
+  assert.equal(journalCounts(w.journal).unsealed, 2, "both laps' times are still on the phone");
+});
+
+test("a stale read cannot replace a newer head the sender wrote", async () => {
+  const w = new World();
+  const sender = createLapSender(w.deps());
+  w.tap(T0);
+  await sender.kick();
+  const older = structuredClone(sender.head) as CreditHead;
+  w.tap(T0 + 3 * MIN);
+  await sender.kick();
+  assert.equal(sender.head?.statement.seq, 1);
+
+  sender.offerHead(older); // a read that started before the second lap landed
+  assert.equal(sender.head?.statement.seq, 1);
+
+  w.tap(T0 + 6 * MIN);
+  await sender.kick();
+  assert.equal(w.head()?.statement.total, 3);
+  assert.equal(w.chunks.size, 3, "no collision, no rebuild");
+});
+
+test("a newer read is taken", async () => {
+  const w = new World();
+  const sender = createLapSender(w.deps());
+  w.tap(T0);
+  await sender.kick();
+  w.rivalWrites(4);
+  sender.offerHead(w.head());
+  assert.equal(sender.head?.statement.total, 5);
+});
+
 test("a read the caller made cannot overrule a write that is still in doubt", async () => {
   const w = new World();
   const sender = createLapSender(w.deps());

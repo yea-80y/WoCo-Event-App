@@ -226,6 +226,10 @@ export function createLapSender(deps: LapSenderDeps): LapSender {
     },
     offerHead(h) {
       if (deps.read().prepared) return;
+      // `seq` only ever rises for a (holder, subject), across publication too,
+      // so a lower one is a read that started before a write of ours landed.
+      // Building on it would only collide and retry — but it is avoidable.
+      if (h && head && h.statement.seq < head.statement.seq) return;
       head = h;
     },
     dropHead() {

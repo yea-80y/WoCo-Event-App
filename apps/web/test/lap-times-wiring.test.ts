@@ -85,7 +85,11 @@ test("the build passes that date into the statement instead of defaulting to tod
 
 test("sealing happens in the build, so the send can be repeated byte for byte", () => {
   assert.match(body(CREDITS, /async function buildRide\(/), /sealJson\(/);
-  assert.doesNotMatch(body(CREDITS, /async function sendRide\(/), /sealJson\(|signCreditStatement\(|nextCreditStatement\(/);
+  const send = body(CREDITS, /async function sendRide\(/);
+  // The extraction itself is asserted: a mutation run found this check reading
+  // the function's RETURN TYPE (an inline `{ ... }`) and so guarding nothing.
+  assert.match(send, /writeRideBody\(keys, subject, visibility, ride\.body,/, "this is the function body, and it uploads the prepared bytes");
+  assert.doesNotMatch(send, /sealJson\(|signCreditStatement\(|nextCreditStatement\(/);
   assert.doesNotMatch(body(CREDITS, /export async function sendPreparedRide\(/), /buildRide\(|prepareRide\(/);
 });
 
@@ -101,8 +105,34 @@ test("times are sealed at version 0 of a seq-keyed topic, and only there", () =>
 
 test("a failed refresh leaves the head on screen alone", () => {
   const refresh = body(CARD, /async function refresh\(/);
-  assert.match(refresh, /if \(!read\) return;/);
-  assert.doesNotMatch(refresh, /head = await/);
+  const bail = refresh.indexOf("if (!read) return;");
+  const assign = refresh.indexOf("head = read;");
+  assert.ok(bail >= 0 && assign >= 0);
+  assert.ok(bail < assign, "the null check comes BEFORE the head is touched");
+  assert.equal(refresh.match(/\bhead = /g)?.length, 1, "and that is the only place it is assigned");
+});
+
+test("a stale read cannot take the count on screen backwards", () => {
+  const refresh = body(CARD, /async function refresh\(/);
+  const stale = refresh.indexOf("read.statement.seq < head.statement.seq");
+  assert.ok(stale >= 0 && stale < refresh.indexOf("head = read;"));
+});
+
+test("every network step re-checks whose session it is", () => {
+  const ensure = body(CARD, /function ensureSender\(/);
+  for (const step of ["prepare", "send", "reconcile", "seal"]) {
+    assert.match(ensure, new RegExp(`${step}: async \\([^)]*\\) =>\\s*\\(?\\s*mine\\(\\)`), `${step} is gated on mine()`);
+  }
+  assert.match(ensure, /if \(sender && boundParent === parent\) return sender;/);
+});
+
+test("an account change under a mounted card resets it", () => {
+  const at = CARD.indexOf("parent === boundParent) return;");
+  assert.ok(at >= 0);
+  const reset = CARD.slice(at, at + 600);
+  for (const cleared of ["sender = null;", "store = null;", "head = null;", "cachedLaps = null;", "journal = emptyJournal();"]) {
+    assert.ok(reset.includes(cleared), `resets ${cleared}`);
+  }
 });
 
 test("publishing drops the sender's private head before anything can build on it", () => {

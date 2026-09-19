@@ -15,7 +15,7 @@
    * lap's time is only worth keeping if it is the time of the tap, and a button
    * stuck on "Saving…" is a lap the rider could not log at all.
    */
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import { lookupSubject, currentEra, formerNames, WOCO_SUBJECTS, type Hex0x } from "@woco/shared";
   import {
     creditsUnlocked,
@@ -40,7 +40,7 @@
     type LapJournal,
     type LapRow,
   } from "./lap-journal.js";
-  import { createLapSender, type LapSender } from "./lap-sender.js";
+  import { ANOTHER_DEVICE, createLapSender, type LapSender } from "./lap-sender.js";
   import { openLapJournal, type LapJournalStore } from "./lap-journal-store.js";
   import { auth } from "../auth/auth-store.svelte.js";
   import { requireAccountForAction } from "../auth/ensure-action.js";
@@ -77,12 +77,23 @@
   let sending = $state(false);
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
+  /**
+   * The last send did not get through. NOT an error on the card: the laps are
+   * safe on the phone and go on their own, and a red message in a queue reads
+   * as "your lap was lost". `troubleDetail` carries the cause only when it is
+   * something the rider can act on (a wrong clock, a rate limit) rather than
+   * the absence of signal.
+   */
+  let sendTrouble = $state(false);
+  let troubleDetail = $state<string | null>(null);
   let confirmingPublish = $state(false);
 
   /** This phone's record of the rider's taps. Mirrors the store for rendering. */
   let journal = $state.raw<LapJournal>(emptyJournal());
   let store: LapJournalStore | null = null;
   let sender: LapSender | null = null;
+  /** The account the journal and sender above belong to. */
+  let boundParent: string | null = null;
 
   let showLog = $state(false);
   /** Laps read back from the rider's sealed entries — only ever needed on a
@@ -181,6 +192,9 @@
     // moment a tap could not be sent — a false claim, made in exactly the
     // conditions the card most needs to stay truthful in.
     if (!read) return;
+    // Nor does a STALE one: a read that started before a lap of ours landed
+    // would take the count on screen backwards. `seq` only ever rises.
+    if (head && read.statement.seq < head.statement.seq) return;
     head = read;
     remember(read);
     sender?.offerHead(read);
@@ -195,11 +209,19 @@
   const RETRY_MS = [5_000, 15_000, 30_000, 60_000];
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** What a browser says when there is simply no network. */
+  const NO_SIGNAL = /failed to fetch|networkerror|load failed|network request failed/i;
+
   function sync() {
     if (!store || !sender) return;
     journal = store.read();
     sending = sender.running;
-    error = sender.error;
+    const trouble = sender.error;
+    // Losing a race to another device is the one outcome the rider should
+    // read as an error; everything else is "not sent YET".
+    error = trouble === ANOTHER_DEVICE ? trouble : null;
+    sendTrouble = trouble !== null && trouble !== ANOTHER_DEVICE;
+    troubleDetail = sendTrouble && trouble && !NO_SIGNAL.test(trouble) ? trouble : null;
     if (sender.notice) notice = sender.notice;
     if (sender.head && sender.head !== head) {
       head = sender.head;
@@ -208,27 +230,44 @@
     }
   }
 
+  const SIGNED_OUT = "Signed out.";
+
   function ensureSender(): LapSender | null {
-    if (sender) return sender;
-    const parent = auth.parent;
+    const parent = auth.parent?.toLowerCase() ?? null;
     if (!parent) return null;
+    if (sender && boundParent === parent) return sender;
     const opened = openLapJournal(parent, subject);
-    store = opened;
-    sender = createLapSender({
+    /**
+     * EVERY network step re-checks whose session this is. The write path takes
+     * its keys from whoever is signed in at that moment, so a run still in
+     * flight across an account change would otherwise sign one rider's taps
+     * with another rider's keys, into the other rider's permanent count.
+     */
+    const mine = () => auth.parent?.toLowerCase() === parent;
+    const self: LapSender = createLapSender({
       read: opened.read,
       write: opened.write,
-      prepare: (times, warm) => prepareRide(subject, times, warm),
-      send: (prepared) => measured("record a lap", () => sendPreparedRide(subject, prepared)),
-      reconcile: (prepared) => reconcilePreparedRide(subject, prepared),
-      seal: (counted) => sealLapTimes(subject, counted),
-      onChange: sync,
+      prepare: async (times, warm) =>
+        mine() ? prepareRide(subject, times, warm) : { ok: false, kind: "retry", error: SIGNED_OUT },
+      send: async (prepared) =>
+        mine() ? measured("record a lap", () => sendPreparedRide(subject, prepared)) : { ok: false, error: SIGNED_OUT },
+      reconcile: async (prepared) => (mine() ? reconcilePreparedRide(subject, prepared) : { status: "unavailable" }),
+      seal: async (counted) => (mine() ? sealLapTimes(subject, counted) : false),
+      // A sender this card has since replaced must not repaint it.
+      onChange: () => {
+        if (sender === self) sync();
+      },
       retryLater(attempt) {
+        if (sender !== self) return;
         if (retryTimer) clearTimeout(retryTimer);
         retryTimer = setTimeout(drain, RETRY_MS[Math.min(attempt, RETRY_MS.length) - 1]);
       },
     });
+    store = opened;
+    sender = self;
+    boundParent = parent;
     journal = opened.read();
-    return sender;
+    return self;
   }
 
   function hasWork(): boolean {
@@ -263,9 +302,13 @@
    * a rail that promises nothing is written without a deliberate tap. The tap
    * itself does the unlocking, where the rider has asked for it.
    */
-  onMount(async () => {
+  onMount(() => {
     window.addEventListener("online", drain);
     document.addEventListener("visibilitychange", onVisible);
+    void init();
+  });
+
+  async function init() {
     unlocked = await creditsUnlocked();
     if (unlocked) {
       // Paint the remembered count FIRST. The live read walks the rider's feeds
@@ -279,6 +322,36 @@
     } else {
       loaded = true;
     }
+  }
+
+  /**
+   * The account changed under a mounted card — a sign-out, or a sign-in as
+   * someone else. Everything here belongs to the rider it was read for: a warm
+   * head carried across would have the next rider's first lap built on the
+   * previous rider's total, and written into their feed as a verified fact.
+   */
+  $effect(() => {
+    const parent = auth.parent?.toLowerCase() ?? null;
+    if (boundParent === null || parent === boundParent) return;
+    untrack(() => {
+      if (retryTimer) clearTimeout(retryTimer);
+      sender = null;
+      store = null;
+      boundParent = null;
+      journal = emptyJournal();
+      head = null;
+      cachedLaps = null;
+      remoteRows = [];
+      error = null;
+      notice = null;
+      sendTrouble = false;
+      troubleDetail = null;
+      showLog = false;
+      confirmingPublish = false;
+      unlocked = false;
+      loaded = false;
+      void init();
+    });
   });
 
   onDestroy(() => {
@@ -587,6 +660,12 @@
     </div>
   {/if}
 
+  {#if sendTrouble && counts.waiting > 0}
+    <p class="msg note" role="status">
+      Couldn't send just now. Your laps are saved on this phone and will send on their own.
+      {#if troubleDetail}<span class="detail">{troubleDetail}</span>{/if}
+    </p>
+  {/if}
   {#if error}<p class="msg err" role="status">{error}</p>{/if}
   {#if notice}<p class="msg note" role="status">{notice}</p>{/if}
 </article>
@@ -811,6 +890,8 @@
     line-height: 1.4;
     letter-spacing: 0.02em;
   }
+
+  .detail { display: block; margin-top: 0.1875rem; color: var(--text-dim); }
 
   .err { color: var(--error); }
   .note { color: var(--text-muted); }

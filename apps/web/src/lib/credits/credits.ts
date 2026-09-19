@@ -630,6 +630,8 @@ async function buildRide(
   };
 }
 
+type SentRide = { version: number; band: number; settled: Promise<VerifiedWriteResult> };
+
 /**
  * The UPLOAD half. Safe to call again with the same `ride`: a known-version
  * write re-sends identical bytes to an identical address, which Bee dedupes, and
@@ -639,7 +641,7 @@ async function sendRide(
   keys: RiderKeys,
   subject: Hex0x,
   ride: BuiltRide,
-): Promise<{ version: number; band: number; settled: Promise<VerifiedWriteResult> }> {
+): Promise<SentRide> {
   const { visibility, indexed, rollover } = ride;
   const writeBand = ride.band;
   const written = await writeRideBody(keys, subject, visibility, ride.body, writeBand, ride.version ?? undefined);
