@@ -3,7 +3,9 @@
 
   `release` BURNS the ERC-721 token. `owner(node)` becomes zero, the registrar's
   `available()` says true again, and anyone may re-mint the label; the registry
-  keeps only `lastRelease` (who held it, when) and nothing reads it. There is no
+  keeps only `lastRelease` (who held it, when), which the registrar reads for
+  one thing — taking back your own released label costs no mint allowance.
+  A name with names beneath it cannot be discarded until they are gone. There is no
   undo and no grace period — the 30-day previous-holder hold was examined and
   DROPPED (plan doc, 2026-09-02). So the confirmation is the label, typed: the
   one gesture a mis-click cannot produce.
@@ -15,6 +17,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { SUB_ENS_DEFAULT_CHAIN_ID, SUB_ENS_DEPLOYMENTS, subEnsName } from "@woco/shared";
   import type { Hex0x } from "@woco/shared";
+  import type { ReleaseTypedData } from "../../sub-ens/release-digest.js";
   import { discardPlanFor } from "../../sub-ens/discard-availability.js";
   import { subEnsErrorFrom, subEnsErrorDetail } from "../../sub-ens/errors.js";
   import { getEthersProvider } from "../../wallet/provider.js";
@@ -41,35 +44,25 @@
   const matches = $derived(typed.trim().toLowerCase() === label.toLowerCase());
 
   /**
-   * Build the rails for THIS login.
-   *
-   * The signer signs 32 RAW BYTES — never the hex string that spells them (see
-   * `release.ts`, which explains what a text signature costs). `kernelRelease`
-   * is deliberately absent: the Kernel lives on another chain than the names,
-   * so a sudo op there could not touch this registry. #489 wires it when the
-   * account moves; until then the AA gate above means we never get here.
+   * Build the rails for THIS login. The signature is the HOLDER's
+   * (`auth.signTypedDataAsHolder`): the injected wallet, switched to the names'
+   * chain, or the Kernel's own ERC-1271 signature for passkey / web3auth —
+   * ERC-6492-wrapped while the account is undeployed, which the relay accepts
+   * (Arbitrum Sepolia rehearsal, 2026-09-19). So no `kernelRelease` fallback
+   * is needed for a fresh account.
    */
   async function buildRails() {
     const parent = auth.parent;
     if (!parent) throw new Error("Sign in again to discard a name.");
-    // FAIL LOUD rather than sign with the wrong key. Everything below assumes an
-    // EOA holder reachable through the injected wallet; a smart-account login
-    // must sign through its own account, which is #489's work. Today the gate
-    // above makes this unreachable — when the gate opens, this line is what
-    // stops the flip shipping a signature the registry will not accept.
-    if (auth.kind !== "web3") {
-      throw new Error("Discarding from this account isn't wired up yet — nothing was signed.");
-    }
     const { JsonRpcSigner } = await import("ethers");
-    const signer = new JsonRpcSigner(await getEthersProvider(), parent);
 
     return {
-      signInnerHash: (inner: Uint8Array) => signer.signMessage(inner),
+      signTypedData: (typed: ReleaseTypedData) => auth.signTypedDataAsHolder(typed),
       ...(plan.rails.includes("wallet")
         ? {
             walletRelease: async (node: Hex0x) => {
-              // The wallet must be ON the names' chain to submit; the relay
-              // signature above did not need it (personal_sign is chain-free).
+              // The wallet must be ON the names' chain to submit. Signing put
+              // it there, but it can be switched away in between.
               await switchChain(SUB_ENS_DEFAULT_CHAIN_ID);
               const { Contract } = await import("ethers");
               const fresh = new JsonRpcSigner(await getEthersProvider(), parent);

@@ -1,4 +1,4 @@
-import type { Site, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, EventFeed } from "@woco/shared";
+import type { Site, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, EventFeed, SiteDeploySubEns } from "@woco/shared";
 import { siteConfigTopic, multisiteFeedTopic, beeFeedUpdateIdentifier } from "@woco/shared";
 import { authPost, authDelete, authGet, get } from "./client.js";
 import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
@@ -51,17 +51,11 @@ export interface DeploySiteResult {
   /** Present when the pointer feed is client-owned — the update we must sign. */
   multisiteFeed?: { nextIndex: number; rootChunkPayloadB64: string };
   /**
-   * What the deploy did with the site's sub-ENS name, when it has one. The
-   * two CHECKS run synchronously so the response can say this; only the
-   * transaction is fire-and-forget, so `updating` is a start, not a finish.
-   * Before this reached the UI every refusal was silent — a site bound to a
-   * name the organiser had transferred away just stopped updating.
+   * The site's sub-ENS name, when it has one. The deploy writes no name: the
+   * name points at this site's feed manifest and follows every publish, and
+   * `awaiting_signature` means the HOLDER must sign that pointer once.
    */
-  subEns?: {
-    label: string;
-    status: "updating" | "skipped";
-    reason?: "not_owner" | "profile_name" | "unverified";
-  };
+  subEns?: SiteDeploySubEns;
 }
 
 /**

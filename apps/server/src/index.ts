@@ -42,6 +42,7 @@ import { ethernaRoutes } from "./routes/etherna.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { ensGatewayRoutes, ensGatewayStatus } from "./routes/ens-gateway.js";
 import { subEnsApexHealth } from "./lib/chain/sub-ens-apex.js";
+import { sponsorKeysConflict } from "./lib/chain/sub-ens-contract.js";
 import { profileNamesHealth } from "./lib/profile/name-ledger.js";
 import { attendeeGate } from "./routes/attendee-gate.js";
 import { socialRoutes } from "./routes/social.js";
@@ -61,7 +62,13 @@ import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/p
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
-import { startHealthProbes, paymasterHealth, postageHealth, subEnsParentHealth } from "./lib/health/probes.js";
+import {
+  startHealthProbes,
+  paymasterHealth,
+  postageHealth,
+  subEnsParentHealth,
+  subEnsMintingHealth,
+} from "./lib/health/probes.js";
 import { persistHealth } from "./lib/marketing/persist.js";
 import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.js";
 import { checkMarketingSenderConfig, marketingSenderHealth } from "./lib/email/client.js";
@@ -174,6 +181,18 @@ if (process.env.NODE_ENV === "production" && process.env.STRIPE_SECRET_KEY) {
       "    - STRIPE_WEBHOOK_SECRET_PLATFORM  → 'Your account' endpoint\n" +
       "  and add to apps/server/.env.\n",
     );
+    process.exit(1);
+  }
+}
+
+// Two sponsor keys, one job each (Fable sponsor-key consult §4): the events key
+// pays for tickets and events, the names key for sub-ENS. The split is what
+// lets one be lost, rotated or drained without the other, and gives each its
+// own nonce queue. The same key under both names defeats it silently.
+{
+  const conflict = sponsorKeysConflict();
+  if (conflict) {
+    console.error(`\n[startup] FATAL: ${conflict}.\n  Generate a separate key for each on the server host.\n`);
     process.exit(1);
   }
 }
@@ -308,6 +327,14 @@ app.get("/api/health", (c) =>
       // 90-day grace every *.woco.eth name — the app's own frontend included —
       // stops resolving at once. WATCH ONLY; nothing here renews anything.
       parent: subEnsParentHealth(),
+      // Whether new names can be minted at all (#598): the registrar enrolled
+      // in the registry it mints into, the sponsor still authorised on it and
+      // able to pay, and — on registrar v2.2 — the registrar-wide cap's
+      // headroom, which is also the leaked-key detector. All fail silently —
+      // existing names keep resolving. Registry v2.2 drops every registrar at
+      // an admin handover, so a handover batch that forgot
+      // `addRegistrar(WoCoRegistrar)` lands here. Public on-chain data only.
+      minting: subEnsMintingHealth(),
     },
     // Wedged on-chain registrations (#434). Since #433 a registration whose
     // on-chain event is already bound to another series can NEVER complete: the

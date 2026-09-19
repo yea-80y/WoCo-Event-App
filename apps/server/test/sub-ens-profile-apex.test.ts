@@ -1,17 +1,22 @@
 /**
- * A bound PROFILE name is pointed at the WoCo app (step 9, PR E).
+ * A bound PROFILE name is pointed at the WoCo app (step 9, PR E) — by the
+ * HOLDER's signature since registrar v2.2. The bind never writes a pointer: it
+ * answers `pointer: { status: "awaiting_signature", target: apex }` and the
+ * client asks the holder to sign it.
  *
  * Two properties are pinned here, and they pull in opposite directions:
- *   - an EMPTY name gets the apex written to it, or typing the name into a
- *     browser resolves to nothing;
- *   - a name that already carries SOMEONE ELSE'S contenthash is never
- *     overwritten. A foreign hash means the holder pointed the name somewhere
- *     on purpose, and silently repointing it would be the platform taking a
- *     site off the air at the moment its owner adopted the name as identity.
- * Between them sits the third case: already the apex → write nothing, and do
- * not warn `points_at_site` about the app itself.
+ *   - an EMPTY name is offered the apex, or typing the name into a browser
+ *     resolves to nothing;
+ *   - a name that already carries SOMEONE ELSE'S contenthash is never offered
+ *     one. A foreign hash means the holder pointed the name somewhere on
+ *     purpose, and prompting them to repoint it would invite taking their own
+ *     site off the air at the moment they adopted the name as identity.
+ * Between them sits the third case: already the apex → nothing to sign, and do
+ * not warn `points_at_site` about the app itself. And a fourth: a contenthash
+ * read that FAILED is not "empty" — no offer, because the name may point at a
+ * site.
  *
- * Driven through the real `verifyAndBindProfileName` with the three chain edges
+ * Driven through the real `verifyAndBindProfileName` with the chain edges
  * injected (the default-parameter shape `refuseUnlessOwner` already uses —
  * `mock.module` is unavailable under the tsx loader). The ledger is NOT stubbed:
  * it writes to a temp cwd, so the bind under test is the real bind.
@@ -40,147 +45,160 @@ const record = (hash: string): string => `0xe40101fa011b20${hash}`;
 let n = 0;
 const acct = (): string => `0x${(++n).toString(16).padStart(40, "b")}`;
 
-interface Written {
-  calls: Array<[string, string]>;
-}
+type Outcome = Awaited<ReturnType<typeof verifyAndBindProfileName>>;
 
 async function bind(opts: {
-  contenthash: string | null;
+  contenthash: string | null | Error;
   apex: string | null;
   account?: string;
   label?: string;
-}): Promise<{ outcome: Awaited<ReturnType<typeof verifyAndBindProfileName>>; written: Written }> {
+}): Promise<{ outcome: Outcome; offered: string | undefined }> {
   const account = opts.account ?? acct();
-  const written: Written = { calls: [] };
   const outcome = await verifyAndBindProfileName(account, opts.label ?? "punkpub", {
     readOwner: async () => account.toLowerCase(),
-    readContenthash: async () => opts.contenthash,
-    writeContenthash: async (label, hash) => {
-      written.calls.push([label, hash]);
-      return "0xtx";
+    readContenthash: async () => {
+      if (opts.contenthash instanceof Error) throw opts.contenthash;
+      return opts.contenthash;
     },
     apexContenthash: () => opts.apex,
   });
-  return { outcome, written };
+  if (outcome.ok && outcome.pointer) assert.equal(outcome.pointer.status, "awaiting_signature");
+  return { outcome, offered: outcome.ok ? outcome.pointer?.target : undefined };
 }
 
 // ---------------------------------------------------------------------------
-// (1) Apex unconfigured — exactly today's behaviour, and no writes at all
+// (1) Apex unconfigured — nothing to offer at all
 // ---------------------------------------------------------------------------
 
-test("unconfigured apex + a name that points at a site: warns, writes nothing", async () => {
-  const { outcome, written } = await bind({ contenthash: record(OTHER), apex: null });
+test("unconfigured apex + a name that points at a site: warns, offers nothing", async () => {
+  const { outcome, offered } = await bind({ contenthash: record(OTHER), apex: null });
   assert.equal(outcome.ok, true);
   assert.equal(outcome.ok && outcome.warning, "points_at_site");
-  assert.deepEqual(written.calls, [], "nothing may be written when there is no apex to write");
+  assert.equal(offered, undefined, "nothing may be offered when there is no apex");
 });
 
-test("unconfigured apex + an empty name: no warning, and still no write", async () => {
-  const { outcome, written } = await bind({ contenthash: null, apex: null });
+test("unconfigured apex + an empty name: no warning, and still no offer", async () => {
+  const { outcome, offered } = await bind({ contenthash: null, apex: null });
   assert.equal(outcome.ok && outcome.warning, undefined);
-  assert.deepEqual(written.calls, []);
+  assert.equal(offered, undefined);
 });
 
 // ---------------------------------------------------------------------------
-// (2) Empty contenthash — the write that makes the name open the app
+// (2) Empty contenthash — the pointer that makes the name open the app
 // ---------------------------------------------------------------------------
 
-test("an EMPTY name gets the apex written to it, with no warning", async () => {
-  const { outcome, written } = await bind({ contenthash: null, apex: APEX, label: "punkpub" });
+test("an EMPTY name is offered the apex to sign, with no warning", async () => {
+  const { outcome, offered } = await bind({ contenthash: null, apex: APEX, label: "punkpub" });
   assert.equal(outcome.ok, true);
+  assert.equal(outcome.ok && outcome.label, "punkpub");
   assert.equal(outcome.ok && outcome.warning, undefined, "the app is not a site to warn about");
-  assert.deepEqual(
-    written.calls,
-    [["punkpub", APEX]],
-    "the bound label must be pointed at the apex exactly once",
-  );
+  assert.equal(offered, APEX, "the bound label must be offered exactly the apex");
 });
 
-test("the label written is the NORMALISED one, not what the caller typed", async () => {
-  const { written } = await bind({ contenthash: null, apex: APEX, label: "  PunkPub  " });
-  assert.deepEqual(written.calls, [["punkpub", APEX]]);
+test("the bind reports the NORMALISED label the offer is for", async () => {
+  const { outcome, offered } = await bind({ contenthash: null, apex: APEX, label: "  PunkPub  " });
+  assert.equal(outcome.ok && outcome.label, "punkpub");
+  assert.equal(offered, APEX);
 });
 
 // ---------------------------------------------------------------------------
-// (3) Already the apex — nothing written, and NOT a `points_at_site` warning
+// (3) Already the apex — nothing to sign, and NOT a `points_at_site` warning
 // ---------------------------------------------------------------------------
 
 test("a name already pointing at the app is left alone and does not warn", async () => {
-  const { outcome, written } = await bind({ contenthash: record(APEX), apex: APEX });
+  const { outcome, offered } = await bind({ contenthash: record(APEX), apex: APEX });
   assert.equal(outcome.ok && outcome.warning, undefined, "the app is not `points_at_site`");
-  assert.deepEqual(written.calls, [], "re-writing the same hash spends sponsor gas for nothing");
+  assert.equal(offered, undefined, "re-signing the same hash spends a prompt and sponsor gas for nothing");
 });
 
 test("the comparison is case-insensitive — the registry's casing is not ours to assume", async () => {
-  const { outcome, written } = await bind({
+  const { outcome, offered } = await bind({
     // Only the payload is upper-cased: `0x` itself is not, because that is what
     // an RPC would ever hand back and stripping it is prefix-sensitive.
     contenthash: `0xE40101FA011B20${APEX.toUpperCase()}`,
     apex: APEX,
   });
   assert.equal(outcome.ok && outcome.warning, undefined);
-  assert.deepEqual(written.calls, []);
+  assert.equal(offered, undefined);
 });
 
 // ---------------------------------------------------------------------------
-// (4) A foreign contenthash — warn, and never overwrite
+// (4) A foreign contenthash — warn, and never offer to overwrite
 // ---------------------------------------------------------------------------
 
-test("a name pointing at ANOTHER site warns and is NOT overwritten with the apex", async () => {
-  const { outcome, written } = await bind({ contenthash: record(OTHER), apex: APEX });
+test("a name pointing at ANOTHER site warns and is NOT offered the apex", async () => {
+  const { outcome, offered } = await bind({ contenthash: record(OTHER), apex: APEX });
   assert.equal(outcome.ok && outcome.warning, "points_at_site");
-  assert.deepEqual(
-    written.calls,
-    [],
-    "a foreign hash is where the holder pointed the name — repointing it takes their site off the air",
+  assert.equal(
+    offered,
+    undefined,
+    "a foreign hash is where the holder pointed the name — prompting a repoint invites taking their site off the air",
   );
 });
 
-test("a NON-Swarm contenthash is still someone's pointer: warn, do not overwrite", async () => {
+test("a NON-Swarm contenthash is still someone's pointer: warn, do not offer", async () => {
   // Decodes to null, which must read as "set to something we don't recognise",
   // never as "empty, safe to fill".
-  const { outcome, written } = await bind({ contenthash: "0xe30101701220ff", apex: APEX });
+  const { outcome, offered } = await bind({ contenthash: "0xe30101701220ff", apex: APEX });
   assert.equal(outcome.ok && outcome.warning, "points_at_site");
-  assert.deepEqual(written.calls, []);
+  assert.equal(offered, undefined);
 });
 
 // ---------------------------------------------------------------------------
-// A refused bind writes nothing — the courtesy must not outlive the bind
+// (5) A contenthash read that FAILED — the bind stands, nothing is offered
 // ---------------------------------------------------------------------------
 
-test("a name the caller does not own is refused, and no contenthash is written", async () => {
-  const written: Written = { calls: [] };
+test("an UNREADABLE contenthash is not empty: the bind succeeds, nothing is offered", async () => {
+  const account = acct();
+  const { outcome, offered } = await bind({
+    contenthash: Object.assign(new Error("timeout"), { code: "TIMEOUT" }),
+    apex: APEX,
+    account,
+  });
+  assert.equal(outcome.ok, true, "a courtesy read must never fail the bind");
+  assert.equal(offered, undefined, "the name may point at a site; asking to sign the apex could take it off the air");
+  assert.equal(outcome.ok && outcome.warning, undefined);
+  assert.equal(profileNameOf(account), "punkpub", "the bind itself is recorded");
+});
+
+// ---------------------------------------------------------------------------
+// A refused bind offers nothing — the courtesy must not outlive the bind
+// ---------------------------------------------------------------------------
+
+test("a name the caller does not own is refused, with no offer and no ledger record", async () => {
   const account = acct();
   const outcome = await verifyAndBindProfileName(account, "punkpub", {
     readOwner: async () => "0x" + "9".repeat(40),
     readContenthash: async () => null,
-    writeContenthash: async (label, hash) => {
-      written.calls.push([label, hash]);
-      return "0xtx";
-    },
     apexContenthash: () => APEX,
   });
   assert.equal(outcome.ok, false);
-  assert.deepEqual(written.calls, []);
   // The LEDGER is the part that outlives the request: a record written here
   // would spend the rename cooldown on a name the caller does not hold, and no
   // path deletes a record, so the account would carry it for 30 days.
   assert.equal(profileNameOf(account), null, "a refused bind must write no ledger record");
 });
 
-test("a chain read that FAILS refuses too, and still writes nothing", async () => {
+test("a chain read that FAILS refuses too, and records nothing", async () => {
   // 502, not 403: an unanswered read is not proof the caller is not the owner
   // (#488). What matters here is that neither answer reaches the ledger.
   const account = acct();
   const outcome = await verifyAndBindProfileName(account, "punkpub", {
     readOwner: async () => { throw Object.assign(new Error("timeout"), { code: "TIMEOUT" }); },
     readContenthash: async () => null,
-    writeContenthash: async () => "0xtx",
     apexContenthash: () => APEX,
   });
   assert.equal(outcome.ok, false);
   assert.equal(outcome.ok === false && outcome.status, 502);
   assert.equal(profileNameOf(account), null);
+});
+
+test("the bind never writes a pointer: no sponsor write is reachable from it", () => {
+  // Registrar v2.2 has no sponsor-only pointer setter, so a write here could
+  // only be a relay of a signature the bind does not have. Pinned in the
+  // source so one is not reintroduced as "a courtesy".
+  const src = readFileSync(new URL("../src/routes/profiles.ts", import.meta.url), "utf-8");
+  assert.doesNotMatch(src, /relaySignedContenthash|setContenthash|writeContenthash/);
 });
 
 // ---------------------------------------------------------------------------
@@ -239,7 +257,7 @@ test("a MALFORMED value is not configured, and says so on health", () => {
 });
 
 test("a 0x-prefixed value is refused rather than silently stripped", () => {
-  // The var is documented as the bare reference setContenthash takes. Accepting
+  // The var is documented as the bare reference a pointer write takes. Accepting
   // a second shape hides the mistake worth catching: a hash pasted from a place
   // where it is not the same hash.
   const h = subEnsApexHealth(parseApexContenthash(`0x${APEX}`));
@@ -251,7 +269,7 @@ test("a truncated reference is refused", () => {
   assert.equal(subEnsApexHealth(parseApexContenthash(APEX.slice(0, 63))).apexConfigured, false);
 });
 
-test("UNSET is not an error — the write is a courtesy, not the bind's truth", () => {
+test("UNSET is not an error — the pointer is a courtesy, not the bind's truth", () => {
   for (const raw of [undefined, "", "   "]) {
     assert.deepEqual(subEnsApexHealth(parseApexContenthash(raw)), { apexConfigured: false });
   }

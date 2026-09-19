@@ -143,10 +143,12 @@ test("every route that points a name at content consults isProfileName", () => {
     assert.match(body, /"profile_name"/, `${marker} must refuse with profile_name`);
   }
 
-  // Point B — the site deploy hook.
+  // Point B — the site deploy hook, a read-only check since registry v2.2.
   const sites = sourceOf("../src/routes/sites.ts");
-  assert.match(sites, /isProfileName\(/);
-  assert.match(sites, /profile_name/);
+  assert.match(sites, /checkSiteSubEns\(/, "the deploy must run the site-pointer check");
+  const check = sourceOf("../src/lib/sub-ens/site-pointer.ts");
+  assert.match(check, /isProfile\(parentAddress, label\)/);
+  assert.match(check, /reason: "profile_name"/);
 });
 
 test("the mint rail pre-flights the rate cap", () => {
@@ -164,6 +166,7 @@ test("the mint rail pre-flights the rate cap", () => {
 
 test("the deploy response reports what happened to the name instead of skipping silently", () => {
   const sites = sourceOf("../src/routes/sites.ts");
-  assert.match(sites, /not_owner/);
   assert.match(sites, /subEns \? \{ subEns \} : \{\}/);
+  // The outcomes themselves are driven in sub-ens-site-pointer.test.ts.
+  assert.match(sourceOf("../src/lib/sub-ens/site-pointer.ts"), /reason: "not_owner"/);
 });

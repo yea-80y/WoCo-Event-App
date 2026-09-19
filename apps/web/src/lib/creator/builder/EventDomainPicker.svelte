@@ -2,7 +2,7 @@
   /** Intent captured in the deploy step; the parent acts on it AFTER deploy (needs the contentHash). */
   export type EventDomainIntent =
     | { mode: "none" }
-    | { mode: "new"; label: string; description?: string }
+    | { mode: "new"; label: string }
     | { mode: "existing"; label: string; willOverwrite: boolean };
 </script>
 
@@ -55,7 +55,6 @@
   let rawInput = $state("");
   let checkPhase = $state<"idle" | "checking" | "ok" | "taken" | "invalid">("idle");
   let checkMsg = $state("");
-  let profileBio = $state("");
   let _timer: ReturnType<typeof setTimeout> | null = null;
 
   let previewLabel = $derived(rawInput.toLowerCase().trim());
@@ -120,7 +119,7 @@
   $effect(() => {
     if (mode === "new") {
       intent = checkPhase === "ok"
-        ? { mode: "new", label: previewLabel, description: profileBio.trim() || undefined }
+        ? { mode: "new", label: previewLabel }
         : { mode: "new", label: "" };
     } else if (mode === "existing") {
       intent = { mode: "existing", label: selectedExisting, willOverwrite: !!selectedExisting };
@@ -233,9 +232,6 @@
             <p class="msg msg--warn">{checkMsg}</p>
           {/if}
 
-          {#if checkPhase === "ok"}
-            <input class="bio-input" type="text" maxlength="160" placeholder="Short bio (optional) — stored as an ENS text record" bind:value={profileBio} />
-          {/if}
         </div>
       {/if}
 
@@ -377,13 +373,6 @@
   .label-input::placeholder { color: var(--text-muted); opacity: 0.5; font-weight: 400; }
   .tld-suffix { font-size: 0.8125rem; font-family: monospace; color: var(--text-muted); padding-right: 0.5rem; white-space: nowrap; opacity: 0.65; }
   .check-indicator { display: flex; align-items: center; padding: 0 0.625rem 0 0.25rem; width: 1.875rem; flex-shrink: 0; }
-
-  .bio-input {
-    width: 100%; box-sizing: border-box; padding: 0.5rem 0.6875rem; font-size: 0.8125rem;
-    color: var(--text); background: var(--bg-elevated); border: 1px solid var(--border);
-    border-radius: 4px; outline: none; transition: border-color 130ms; font-family: inherit;
-  }
-  .bio-input:focus { border-color: #C7F23A; }
 
   .msg { margin: 0; display: flex; align-items: center; gap: 0.375rem; font-size: 0.8125rem; line-height: 1.4; }
   .msg--ok { color: #22c55e; }

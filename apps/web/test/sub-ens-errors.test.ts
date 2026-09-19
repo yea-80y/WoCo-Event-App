@@ -166,3 +166,13 @@ test("a plain Error and a mint-cap ApiError both survive the narrowing", () => {
   });
   assert.equal(subEnsErrorFrom(capped, "fallback").retryAt, windowResetsAt * 1000);
 });
+
+test("a name with names beneath it, and a lagging chain clock, each say what to do", () => {
+  assert.deepEqual(describeSubEnsError({ error: "has_children" }), {
+    title: "This name has names beneath it.",
+    detail: "Release or move those first, then this one.",
+  });
+  const late = describeSubEnsError({ error: "expiration_too_far" });
+  assert.match(late.title, /clock is behind/);
+  assert.equal(late.detail, "Try again in a few minutes.");
+});

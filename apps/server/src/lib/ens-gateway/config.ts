@@ -47,13 +47,16 @@ export function loadEnsGatewayConfig(env: Env = process.env): EnsGatewayLoad {
   const signer = addressOf(signerPrivateKey);
   if (!signer) return { disabled: "ENS_GATEWAY_SIGNER_PRIVATE_KEY is not a valid private key" };
 
-  // OWNER RULE: the gateway signer is a NEW hot key, never the sponsor wallet.
-  // The sponsor holds funds and mints names; this key sits behind a public
-  // unauthenticated GET. Sharing them would mean one gateway compromise also
-  // drains the sponsor and takes over minting.
-  const sponsorPk = env.WOCO_SPONSOR_PRIVATE_KEY?.trim();
-  if (sponsorPk && addressOf(sponsorPk) === signer) {
-    return { disabled: "gateway signer must not be the sponsor wallet" };
+  // OWNER RULE: the gateway signer is a NEW hot key, never a sponsor wallet —
+  // neither the events key nor the names key. Sponsors hold funds and send
+  // transactions; this key sits behind a public unauthenticated GET. Sharing
+  // one would mean a gateway compromise also drains it and takes over what it
+  // sends.
+  for (const sponsorPk of [env.WOCO_SPONSOR_PRIVATE_KEY, env.SUB_ENS_SPONSOR_PRIVATE_KEY]) {
+    const pk = sponsorPk?.trim();
+    if (pk && addressOf(pk) === signer) {
+      return { disabled: "gateway signer must not be a sponsor wallet" };
+    }
   }
 
   // Pinning the L1Resolver addresses is what stops this gateway from signing a
