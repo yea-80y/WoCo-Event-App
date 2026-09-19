@@ -338,13 +338,13 @@ export function evaluateRegistrarEnrolled(r: { enrolled: boolean | null; reason?
   return { ok: true };
 }
 
-/** The sponsor pays for every sponsored mint, site write and relayed release. */
+/** The names sponsor pays for every mint and every relayed pointer write and release. */
 export function evaluateSponsorBalance(r: { balanceWei: bigint | null; minWei: bigint; reason?: string | null }): Check {
   if (r.balanceWei === null) return { ok: null, reason: r.reason || "sponsor balance could not be read" };
   if (r.balanceWei < r.minWei) {
     return {
       ok: false,
-      reason: "sponsor wallet below minimum on the sub-ENS chain — sponsored mints, site writes and relayed releases will start failing",
+      reason: "names sponsor wallet below minimum on the sub-ENS chain — mints and relayed pointer writes and releases will start failing",
     };
   }
   return { ok: true };
