@@ -733,12 +733,19 @@ async function writeRideBody(
 // ---------------------------------------------------------------------------
 
 /**
- * Establish the rider's keys, prompting if this device has never had them.
+ * Check that the rider's keys actually resolve on this device.
  *
- * The card calls this on a rider's FIRST tap, before the tap is written into
- * the journal. A tap is only journalled once it can actually be sent: a rider
- * who declines the key ceremony has declined the lap, and must not find it
- * waiting for them later.
+ * NOT the thing that establishes them. The card runs
+ * `auth.ensureAccountSetup({ identity: true })` first — the ONE entry point
+ * that plans the session and the seed together and explains them once — so by
+ * the time this runs every ceremony is done and `riderKeys` only derives.
+ *
+ * It was the establishing step, and that was the bug: the card asked for the
+ * session through one call and the seed through this one, which is precisely
+ * the sequencing CLAUDE.md forbids at a call site. How many prompts a rider
+ * sees depends on their login kind and on what the device already holds, so a
+ * caller that orders them itself gets the order wrong for somebody — and a
+ * brand-new account is the case where nothing is on the device yet.
  */
 export async function unlockCredits(): Promise<{ ok: true } | { ok: false; error: string }> {
   try {

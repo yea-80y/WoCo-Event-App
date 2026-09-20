@@ -87,6 +87,21 @@ test("a held tap is cleared on every exit from the unlock", () => {
   assert.ok(fin >= 0 && cleared > fin, "cleared in the finally, not on the success path only");
 });
 
+test("the first tap uses the ONE planned account gate, not its own sequence", () => {
+  const tapped = body(CARD, /async function tapped\(/);
+  // How many prompts a rider meets depends on the login kind and on what the
+  // device already holds, so a call site that orders them gets it wrong for
+  // somebody — and a brand-new account, with nothing on the device, is the case
+  // that broke: the first ride after creating an account got stuck.
+  assert.match(tapped, /auth\.ensureAccountSetup\(\{ identity: true \}\)/);
+  assert.doesNotMatch(CARD, /requireAccountForAction/, "never the session gate plus a separate key call");
+  const login = tapped.indexOf("loginRequest.request()");
+  const setup = tapped.indexOf("ensureAccountSetup");
+  assert.ok(login >= 0 && login < setup, "sign in first, then the planned setup");
+  // And the key check must come after the gate, never instead of it.
+  assert.ok(setup < tapped.indexOf("unlockCredits()"));
+});
+
 test("a tap made during the unlock is answered, not silently dropped", () => {
   const tapped = body(CARD, /async function tapped\(/);
   const guard = tapped.slice(0, tapped.indexOf("notice = null;"));

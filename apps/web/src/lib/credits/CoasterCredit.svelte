@@ -43,7 +43,7 @@
   import { ANOTHER_DEVICE, createLapSender, type LapSender } from "./lap-sender.js";
   import { openLapJournal, type LapJournalStore } from "./lap-journal-store.js";
   import { auth } from "../auth/auth-store.svelte.js";
-  import { requireAccountForAction } from "../auth/ensure-action.js";
+  import { loginRequest } from "../auth/login-request.svelte.js";
   import { cacheGet, cacheSet, TTL } from "../cache/cache.js";
   import { measured } from "../swarm/probe-stats.js";
 
@@ -461,12 +461,35 @@
         // No `context` deliberately: the attendee subtitle in the login modal
         // tells riders that accounts are for organisers, which is exactly the
         // wrong thing to say to the rider we just asked to sign in.
-        if (!(await requireAccountForAction())) {
-          notice = "That lap wasn't saved — sign in first, then tap it again.";
+        if (!auth.isConnected) {
+          if (!(await loginRequest.request())) {
+            notice = "That lap wasn't saved — sign in first, then tap it again.";
+            return;
+          }
+        }
+
+        /**
+         * ONE GATE, and the house pattern — `PublishButton`, `ProfilePage` and
+         * `ObjectCreateModal` all call exactly this.
+         *
+         * It used to be two: `requireAccountForAction()` for the session and
+         * then the key ceremony underneath `unlockCredits()`. That is the
+         * sequencing CLAUDE.md forbids at a call site, and a BRAND-NEW account
+         * is the case it breaks — the device holds nothing, so both ceremonies
+         * are outstanding at once, and ordering them here is how the first ride
+         * after creating an account ended up stuck. `ensureAccountSetup` plans
+         * the outstanding steps together, explains them once for an external
+         * wallet, and handles a dismissed popup by offering the retry rather
+         * than dropping the rider mid-setup.
+         */
+        if (!(await auth.ensureAccountSetup({ identity: true }))) {
+          notice = "That lap wasn't saved — finish setting up your logbook, then tap it again.";
           return;
         }
-        // Keys BEFORE the journal. A rider who declines the key ceremony has
-        // declined the lap, and must not find it waiting to send later.
+
+        // Nothing here PROMPTS any more — the ceremonies are done above — so
+        // this is the check that the keys really do resolve on this device,
+        // and the rider hears about it if they do not.
         const keys = await unlockCredits();
         if (!keys.ok) {
           error = keys.error;
