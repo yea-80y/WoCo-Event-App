@@ -32,7 +32,7 @@
 
 import { auth } from "../auth/auth-store.svelte.js";
 import { deriveHolderKeypair } from "./holder-key.js";
-import { decideVisibility, type IndexRead, type PartitionRead } from "./partition.js";
+import { decideVisibility, mergeSubjectPartitions, type IndexRead, type PartitionRead } from "./partition.js";
 import type { CreditVisibility } from "./visibility.js";
 import { readBandedContentFeed, readContentFeedAtVersion } from "../swarm/content-feed.js";
 import {
@@ -726,6 +726,109 @@ async function writeRideBody(
   // failure a caller could once branch on here — `superseded` — is not knowable
   // until the read-back settles, and lives on `settled`.
   return { version, settled };
+}
+
+// ---------------------------------------------------------------------------
+// Enumeration — every coaster this rider holds a credit for
+// ---------------------------------------------------------------------------
+
+/** One coaster in the rider's collection. Display shape: everything a list
+ *  needs and nothing a write could be built from. */
+export interface MyCredit {
+  subject: Hex0x;
+  /** Lifetime laps, carried on the head statement. */
+  total: number;
+  visibility: CreditVisibility;
+  /** The head's session block, so a caller can show "today" without re-reading.
+   *  It is TODAY'S only if `sessionDate` is today — the block rolls over at
+   *  WRITE time, not at midnight. */
+  sessionDate: string;
+  sessionCount: number;
+}
+
+export type MyCreditsRead =
+  | { status: "ok"; credits: MyCredit[] }
+  /** The rider's keys are not on this device. NOTHING was read and nothing was
+   *  prompted — distinct from "no credits", which is an `ok` with an empty
+   *  list, and a screen must not tell a returning rider on a new device that
+   *  their collection is empty. */
+  | { status: "locked" }
+  | { status: "unavailable" };
+
+/** Head reads in flight at once. The rider's own feeds, so this is politeness
+ *  to the gateway rather than a limit — a big collection should not arrive as
+ *  one burst of chunk reads. */
+const CREDIT_LIST_CONCURRENCY = 4;
+
+/**
+ * Every coaster this rider holds a credit for, from BOTH partitions.
+ *
+ * DISPLAY PATH, and deliberately so: no `thorough`, and every per-subject
+ * failure is dropped rather than propagated. A list that shows nine of ten
+ * coasters and re-reads on the next visit is right; refusing to draw the list
+ * because one head was slow is not. Nothing here may feed a write — the write
+ * path does its own tri-state reads for exactly that reason.
+ *
+ * NEVER PROMPTS. The passport is a screen a rider opens, not an action they
+ * took, so this asks only what the device already holds ({@link creditsUnlocked},
+ * which is documented prompt-free) and reports `locked` rather than reaching
+ * for `riderKeys`, whose job is to ESTABLISH what it cannot find.
+ */
+export async function readMyCredits(): Promise<MyCreditsRead> {
+  try {
+    if (!(await creditsUnlocked())) return { status: "locked" };
+    const keys = await riderKeys();
+
+    const [pub, priv] = await Promise.all([
+      readSubjectIndex(keys, "public"),
+      readSubjectIndex(keys, "private"),
+    ]);
+    // Both unreadable is the one case with nothing honest to draw. One of the
+    // two is survivable: an absent index is a partition the rider has nothing
+    // in, which is the ordinary case for anyone who has never published.
+    if (pub.read.status === "unavailable" && priv.read.status === "unavailable") {
+      return { status: "unavailable" };
+    }
+
+    // PUBLIC WINS a subject in both — see `mergeSubjectPartitions`, which owns
+    // that rule and is tested against it.
+    const queue = mergeSubjectPartitions(
+      pub.read.status === "ok" ? pub.read.entries : [],
+      priv.read.status === "ok" ? priv.read.entries : [],
+    );
+    const found: MyCredit[] = [];
+    async function worker(): Promise<void> {
+      for (;;) {
+        const where = queue.shift();
+        if (!where) return;
+        const subject = where.subject as Hex0x;
+        const head = await readHeadAt(keys, subject, where.visibility, where.band).catch(
+          () => ({ status: "unavailable" }) as const,
+        );
+        // An indexed subject whose head will not read is dropped from the list
+        // rather than shown as zero laps: the index says they own it, so a
+        // count of nothing would be a wrong number, and absent is a slow one.
+        if (head.status !== "found") continue;
+        found.push({
+          subject,
+          total: head.statement.total,
+          visibility: where.visibility,
+          sessionDate: head.statement.session.date,
+          sessionCount: head.statement.session.count,
+        });
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(CREDIT_LIST_CONCURRENCY, queue.length) }, worker),
+    );
+
+    // Most-ridden first, then a stable tie-break so the order does not shuffle
+    // between reads of the same collection.
+    found.sort((a, b) => b.total - a.total || a.subject.localeCompare(b.subject));
+    return { status: "ok", credits: found };
+  } catch {
+    return { status: "unavailable" };
+  }
 }
 
 // ---------------------------------------------------------------------------

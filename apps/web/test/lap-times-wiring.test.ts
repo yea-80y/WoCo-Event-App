@@ -204,6 +204,68 @@ test("publishing drops the sender's private head before anything can build on it
 });
 
 // ---------------------------------------------------------------------------
+// Listing the collection — the passport's way back to a coaster
+// ---------------------------------------------------------------------------
+
+const PASSPORT = code(read("../src/lib/attendee/passport/PassportTab.svelte"));
+
+test("listing a collection never prompts", () => {
+  // The passport is a tab someone OPENS, not an action they took. Reaching for
+  // riderKeys() first would raise a key ceremony at a rider who has done
+  // nothing, which is the rule the coaster card's mount read already follows.
+  const list = body(CREDITS, /export async function readMyCredits\(/);
+  const gate = list.indexOf("creditsUnlocked()");
+  assert.ok(gate >= 0, "asks only what the device already holds");
+  assert.ok(gate < list.indexOf("riderKeys()"), "and does so BEFORE establishing anything");
+  assert.match(list, /return \{ status: "locked" \}/);
+});
+
+test("both partitions are read, and merged by the tested rule", () => {
+  const list = body(CREDITS, /export async function readMyCredits\(/);
+  assert.match(list, /readSubjectIndex\(keys, "public"\)/);
+  assert.match(list, /readSubjectIndex\(keys, "private"\)/);
+  assert.match(list, /mergeSubjectPartitions\(/);
+});
+
+test("a head that will not read is dropped, never shown as zero laps", () => {
+  const list = body(CREDITS, /export async function readMyCredits\(/);
+  assert.match(list, /if \(head\.status !== "found"\) continue;/);
+  // The index says the rider owns it, so a count of nothing would be a WRONG
+  // number on the screen that lists what they own; absent is merely a slow one.
+  assert.doesNotMatch(list, /total: 0/);
+});
+
+test("one unreadable partition is survivable, both is not", () => {
+  const list = body(CREDITS, /export async function readMyCredits\(/);
+  assert.match(
+    list,
+    /pub\.read\.status === "unavailable" && priv\.read\.status === "unavailable"/,
+    "AND, not OR: an absent index is an ordinary empty partition",
+  );
+});
+
+test("the passport tells 'not set up' apart from 'no credits'", () => {
+  // A returning rider on a new phone must not be told their collection is empty.
+  assert.match(PASSPORT, /creditsState === "locked"/);
+  assert.match(PASSPORT, /creditsState === "unavailable"/);
+  const locked = PASSPORT.slice(PASSPORT.indexOf('creditsState === "locked"'));
+  assert.doesNotMatch(locked.slice(0, 260), /No credits|no credits yet/i);
+});
+
+test("each credit taps back to its coaster page", () => {
+  // The whole point of the section beyond completeness: the coaster page is
+  // reached by QR or a link and never from nav, so a rider who closed the tab
+  // has no other route back.
+  assert.match(PASSPORT, /navigate\(`\/coaster\/\$\{credit\.subject\}`\)/);
+});
+
+test("the credits rail is not dragged into the passport's eager bundle", () => {
+  const mount = body(PASSPORT, /onMount\(async \(\) =>/);
+  assert.match(mount, /await import\("\.\.\/\.\.\/credits\/credits\.js"\)/);
+  assert.doesNotMatch(PASSPORT, /^import .*credits\/credits\.js/m);
+});
+
+// ---------------------------------------------------------------------------
 // What sign-out may destroy
 // ---------------------------------------------------------------------------
 
