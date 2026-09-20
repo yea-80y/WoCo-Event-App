@@ -1,5 +1,6 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
+  import { unsentLapsOnDevice, type UnsentLaps } from "../../credits/unsent-laps.js";
 
   interface Props {
     /** A plain "Sign out" button: the member shell puts no account address on screen. */
@@ -21,8 +22,26 @@
   // Sign-out can now FAIL honestly (#182: ending the provider session is part
   // of signing out) — a fire-and-forget click would swallow that and leave the
   // user believing they signed out on a shared device.
-  async function handleSignOut() {
+  /**
+   * Set when signing out would destroy coaster laps that exist only on this
+   * device. Sign-out wipes the lap journal along with every other user-scoped
+   * cache — correctly, for a shared family phone — so this is the one place a
+   * rider can lose laps they believe are recorded, and the one place to ask.
+   * Only THIS control asks: the forced sign-outs on security paths must never
+   * be blockable.
+   */
+  let unsent = $state<UnsentLaps | null>(null);
+
+  async function handleSignOut(opts: { discard?: boolean } = {}) {
     if (signingOut) return;
+    if (!opts.discard) {
+      const found = unsentLapsOnDevice(auth.parent);
+      if (found.waiting > 0 || found.unsealed > 0) {
+        unsent = found;
+        return;
+      }
+    }
+    unsent = null;
     signingOut = true;
     signOutError = null;
     try {
@@ -37,7 +56,7 @@
 
 {#if auth.isConnected && auth.parent}
   {#if compact}
-    <button class="signout-text" onclick={handleSignOut} disabled={signingOut}>
+    <button class="signout-text" onclick={() => handleSignOut()} disabled={signingOut}>
       {signingOut ? "Signing out…" : "Sign out"}
     </button>
   {:else}
@@ -46,9 +65,26 @@
       <span class="address" title={auth.parent}>
         {truncateAddress(auth.parent)}
       </span>
-      <button class="action-btn logout-btn" onclick={handleSignOut} disabled={signingOut} title="Sign out">
+      <button class="action-btn logout-btn" onclick={() => handleSignOut()} disabled={signingOut} title="Sign out">
           &#10005;
       </button>
+    </div>
+  {/if}
+  {#if unsent}
+    <div class="unsent" role="alertdialog" aria-label="Laps not saved yet">
+      <p>
+        {#if unsent.waiting > 0}
+          {unsent.waiting} {unsent.waiting === 1 ? "lap has" : "laps have"} not been sent yet.
+        {/if}
+        {#if unsent.unsealed > 0}
+          Times for {unsent.unsealed} {unsent.unsealed === 1 ? "lap are" : "laps are"} still saving.
+        {/if}
+        Signing out now discards them. Open the coaster page with signal and they send on their own.
+      </p>
+      <div class="unsent-actions">
+        <button class="signout-text" onclick={() => (unsent = null)}>Stay signed in</button>
+        <button class="signout-text discard" onclick={() => handleSignOut({ discard: true })}>Discard and sign out</button>
+      </div>
     </div>
   {/if}
   {#if signOutError}
@@ -123,6 +159,18 @@
   }
   .signout-text:hover { color: var(--text); }
   .signout-text:disabled { opacity: 0.6; cursor: default; }
+
+  .unsent {
+    max-width: 16rem;
+    margin: 0.375rem 0 0;
+    padding: 0.625rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .unsent p { margin: 0; font-size: 0.75rem; line-height: 1.45; color: var(--text-secondary); }
+  .unsent-actions { display: flex; gap: 0.75rem; margin-top: 0.5rem; }
+  .discard { color: var(--error); }
 
   .signout-error {
     font-size: 0.6875rem;
