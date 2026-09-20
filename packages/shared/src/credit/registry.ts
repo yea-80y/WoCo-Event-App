@@ -221,12 +221,17 @@ export const WOCO_SUBJECT_DEFINITIONS: readonly SubjectDefinition[] = [
     // cadence rather than a default, and that number comes from the rider —
     // a launch coaster's cycle plus re-ride arrangement, not a guess here.
     //
-    // 1, down from 2 (owner decision 2026-09-19). Rita 100 targets 130 laps in
-    // one park day, about three minutes a lap on AVERAGE, so back-to-back
-    // re-rides will sometimes come in under two — and this guard refusing a
-    // real lap leaves a hole in the rider's log that nothing later can fill.
-    // It only ever existed to stop a fumbled double tap, which one minute does.
-    cadenceMinutes: 1,
+    // 0.5, down from 1 and originally 2 (owner, 2026-09-19/20, the second cut
+    // made while testing on a phone and being refused a second lap).
+    //
+    // Sized from what the guard is FOR, which is the only honest way to set it:
+    // it catches a fumbled double tap, and a fumble lands within a second or
+    // two. Everything above that is refusing real laps for no gain — and on a
+    // 130-lap day with back-to-back re-rides a whole minute does exactly that,
+    // leaving a hole in the log nothing later can fill. It has never been an
+    // anti-fraud control (a determined inflater simply waits it out), so
+    // trading a rider's real lap for it was always the wrong way round.
+    cadenceMinutes: 0.5,
   },
   {
     // Minted 2026-08-18 so a demo never needs a false tap on Rita. Signing a

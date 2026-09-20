@@ -28,6 +28,7 @@
   import { lookupSubject, currentEra, WOCO_SUBJECTS, type Hex0x } from "@woco/shared";
   import CoasterCredit from "./CoasterCredit.svelte";
   import { creditsUnlocked } from "./credits.js";
+  import { navigate } from "../router/router.svelte.js";
 
   interface Props {
     /** Subject hash from the route. Unknown or malformed is a real state. */
@@ -101,15 +102,31 @@
 
     {#if started}
       <!-- Only once there is something to look at. A rider mid-ride does not
-           need a second destination, and a brand-new one has an empty passport. -->
+           need a second destination, and a brand-new one has an empty passport.
+
+           A BUTTON CALLING `navigate`, NEVER `<a href="#/tickets">`. The deploy
+           injects `<base href="https://gateway.woco-net.com/bzz/{hash}/">` so
+           the bundle's assets resolve, and a fragment-only href resolves
+           against the BASE — so the anchor navigated the rider off
+           woco.eth.limo and onto the gateway origin. That is not cosmetic: the
+           WebAuthn RP ID is taken from `window.location.hostname`
+           (`resolvePasskeyRpId`), so a passkey on the gateway host is a
+           DIFFERENT ACCOUNT, and the rider's credits are not there. `navigate`
+           sets `window.location.hash` and cannot leave the origin. -->
       <p class="footnote">
-        <a href="#/tickets">Your passport - every credit you hold</a>
+        <button class="linkish" onclick={() => navigate("/tickets")}>
+          Your passport - every credit you hold
+        </button>
       </p>
     {/if}
 
     <!-- The public counter is the marketing asset, and this is the loop into
          it. Relative, because the app is served from a content hash whose path
          prefix is not known at build time. -->
+    <!-- Deliberately a real link: the counter is a SEPARATE page in the same
+         Swarm collection, so it has to resolve against the base like every
+         other asset. It is a different document, not a route, so there is no
+         origin change to worry about mid-session. -->
     <p class="footnote">
       <a href="verify.html?subject={normalised}">
         See the public count for {era?.name ?? "this coaster"}
@@ -180,10 +197,23 @@
     color: var(--text-muted);
   }
 
-  .footnote a {
+  .footnote a,
+  .footnote .linkish {
     color: var(--accent-text);
     border-bottom: 1px solid var(--accent);
     text-decoration: none;
   }
-  .footnote a:hover { color: var(--accent); }
+  .footnote a:hover,
+  .footnote .linkish:hover { color: var(--accent); }
+
+  /* A route change, so a button — but it reads as the link it replaces. */
+  .linkish {
+    padding: 0;
+    background: none;
+    border-left: none;
+    border-right: none;
+    border-top: none;
+    font: inherit;
+    cursor: pointer;
+  }
 </style>
