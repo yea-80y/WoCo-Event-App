@@ -310,8 +310,8 @@ export interface LapRow {
   state: "counted" | "waiting" | "held";
 }
 
-/** Every tap this phone knows of on the day `dayOf` names, oldest first. */
-export function lapRows(j: LapJournal, dayOf: (at: number) => string, day: string): LapRow[] {
+/** Every tap this phone knows of, oldest first, whatever day it fell on. */
+export function allLapRows(j: LapJournal): LapRow[] {
   const rows: LapRow[] = [];
   for (const c of j.counted) {
     const sorted = [...c.times].sort((a, b) => a - b);
@@ -323,5 +323,34 @@ export function lapRows(j: LapJournal, dayOf: (at: number) => string, day: strin
     rows.push({ at, lap: null, state: j.prepared?.accepted ? "counted" : "waiting" });
   }
   for (const at of j.waiting) rows.push({ at, lap: null, state: isHeld(j, at) ? "held" : "waiting" });
-  return rows.filter((r) => dayOf(r.at) === day).sort((a, b) => a.at - b.at);
+  return rows.sort((a, b) => a.at - b.at);
+}
+
+/** Every tap this phone knows of on the day `dayOf` names, oldest first. */
+export function lapRows(j: LapJournal, dayOf: (at: number) => string, day: string): LapRow[] {
+  return allLapRows(j).filter((r) => dayOf(r.at) === day);
+}
+
+/**
+ * Laps grouped into days, NEWEST DAY FIRST and oldest lap first inside each.
+ *
+ * A challenge runs over days, so "today" is the wrong window for the screen a
+ * rider opens to see what they have done — on the second morning it would show
+ * an empty log beside a count of 130. Newest day first because that is the one
+ * being added to; ascending inside a day because that is the order they rode.
+ */
+export function lapRowsByDay(
+  rows: readonly LapRow[],
+  dayOf: (at: number) => string,
+): { day: string; rows: LapRow[] }[] {
+  const days = new Map<string, LapRow[]>();
+  for (const r of rows) {
+    const day = dayOf(r.at);
+    const bucket = days.get(day);
+    if (bucket) bucket.push(r);
+    else days.set(day, [r]);
+  }
+  return [...days.entries()]
+    .map(([day, group]) => ({ day, rows: group.sort((a, b) => a.at - b.at) }))
+    .sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : 0));
 }
