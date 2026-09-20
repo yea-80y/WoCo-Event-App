@@ -10,6 +10,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   addTap,
+  allLapRows,
+  lapRowsByDay,
   beginPrepared,
   cardNumbers,
   emptyJournal,
@@ -28,6 +30,7 @@ import {
   rideDate,
   utcDateOf,
   type LapJournal,
+  type LapRow,
   type PreparedRide,
 } from "../src/lib/credits/lap-journal.js";
 import { CREDIT_STATEMENT_FORMAT, type CreditStatementV1, type Hex0x } from "@woco/shared";
@@ -219,6 +222,47 @@ test("laps are numbered from the statement's carried total", () => {
 test("the list shows waiting laps with their times, unnumbered", () => {
   const rows = lapRows(taps(T0), utcDateOf, "2026-09-21");
   assert.deepEqual(rows, [{ at: T0, lap: null, state: "waiting" }]);
+});
+
+test("the log spans every day, newest day first, laps in order within it", () => {
+  // A challenge runs over days. A log windowed to "today" shows an empty list
+  // beside a count of 130 on the second morning, which is the one moment the
+  // rider most wants to look at it.
+  const mon = Date.UTC(2026, 8, 21, 10, 0, 0);
+  const tue = Date.UTC(2026, 8, 22, 9, 0, 0);
+  const j = taps(tue + MIN, mon, tue, mon + 5 * MIN);
+  const groups = lapRowsByDay(allLapRows(j), utcDateOf);
+
+  assert.deepEqual(groups.map((g) => g.day), ["2026-09-22", "2026-09-21"], "newest day first");
+  assert.deepEqual(groups[0]!.rows.map((r) => r.at), [tue, tue + MIN], "ascending within a day");
+  assert.deepEqual(groups[1]!.rows.map((r) => r.at), [mon, mon + 5 * MIN]);
+});
+
+test("every tap appears in the whole-log view, whatever its state", () => {
+  let j = taps(T0, T0 + MIN, T0 + 2 * MIN);
+  j = preparedLanded(beginPrepared(j, prepared([T0])));
+  const states = allLapRows(j).map((r) => r.state);
+  assert.equal(allLapRows(j).length, 3);
+  assert.deepEqual(states, ["counted", "waiting", "waiting"]);
+});
+
+test("grouping SORTS within a day, whatever order it is handed", () => {
+  // A mutation run caught this: the earlier version fed already-sorted rows, so
+  // deleting the per-group sort changed nothing and the test passed regardless.
+  const mon = Date.UTC(2026, 8, 21, 10, 0, 0);
+  const scrambled: LapRow[] = [
+    { at: mon + 9 * MIN, lap: 3, state: "counted" },
+    { at: mon, lap: 1, state: "counted" },
+    { at: mon + 4 * MIN, lap: 2, state: "counted" },
+  ];
+  assert.deepEqual(
+    lapRowsByDay(scrambled, utcDateOf)[0]!.rows.map((r) => r.at),
+    [mon, mon + 4 * MIN, mon + 9 * MIN],
+  );
+});
+
+test("grouping an empty log is an empty list, not a day with nothing in it", () => {
+  assert.deepEqual(lapRowsByDay(allLapRows(emptyJournal()), utcDateOf), []);
 });
 
 test("the list is one day's laps only", () => {

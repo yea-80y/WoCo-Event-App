@@ -35,7 +35,8 @@
     cardNumbers,
     emptyJournal,
     journalCounts,
-    lapRows,
+    allLapRows,
+    lapRowsByDay,
     lastTapAt,
     type LapJournal,
     type LapRow,
@@ -149,7 +150,7 @@
    * and opened the app on Sunday was being shown "3 today" without having
    * ridden — the stored block was still Saturday's and nothing had rewritten it.
    */
-  const today = $derived(
+  const todayCount = $derived(
     head && head.statement.session.date === utcSessionDate() ? head.statement.session.count : 0,
   );
   const isPublic = $derived(head?.visibility === "public");
@@ -172,20 +173,28 @@
   );
   const dayOf = (at: number): string => dayFormat.format(at);
 
-  /** Today's laps: this phone's own record, plus any sealed entries it lacks. */
+  /**
+   * Every lap this phone knows of, plus any sealed entries it lacks.
+   *
+   * ALL DAYS, not today's. A challenge runs over days, so a log that resets at
+   * midnight shows an empty list beside a count of 130 on the second morning —
+   * which is the one moment the rider most wants to look at it.
+   */
   const rows = $derived.by(() => {
-    const day = dayOf(Date.now());
-    const mine = lapRows(journal, dayOf, day);
+    const mine = allLapRows(journal);
     const pending: LapRow[] =
-      pendingTap !== null && dayOf(pendingTap) === day
-        ? [{ at: pendingTap, lap: null, state: "waiting" }]
-        : [];
+      pendingTap !== null ? [{ at: pendingTap, lap: null, state: "waiting" }] : [];
     const known = new Set([...mine, ...pending].map((r) => r.at));
-    const extra = remoteRows.filter((r) => dayOf(r.at) === day && !known.has(r.at));
+    const extra = remoteRows.filter((r) => !known.has(r.at));
     return [...mine, ...pending, ...extra].sort((a, b) => a.at - b.at);
   });
-  const timedToday = $derived(rows.filter((r) => r.state === "counted").length);
-  const untimedToday = $derived(Math.max(0, today - timedToday));
+  const byDay = $derived(lapRowsByDay(rows, dayOf));
+  const timedTotal = $derived(rows.filter((r) => r.state === "counted").length);
+  const today = $derived(dayOf(Date.now()));
+  const timedToday = $derived(
+    rows.filter((r) => r.state === "counted" && dayOf(r.at) === today).length,
+  );
+  const untimedToday = $derived(Math.max(0, todayCount - timedToday));
 
   /**
    * The last count this device SAW, for instant paint on load.
@@ -552,31 +561,38 @@
   // The rider's log
   // ---------------------------------------------------------------------------
 
+  /** How far back the log looks. Matches the journal's own keep window, so the
+   *  two halves of the same list do not disagree about where it ends. */
+  const LOG_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+
   async function toggleLog() {
     showLog = !showLog;
     if (!showLog || !head || !unlocked) return;
     // Only when this phone's record is short of the day's count: a second
     // phone, or this one after a sign-out. Otherwise it costs nothing.
-    if (timedToday >= today) return;
-    const entries = await readLapTimes(head, Date.now() - 36 * 60 * 60 * 1000);
+    // Only when this phone's record is short of the lifetime count: a second
+    // phone, or this one after a sign-out. Otherwise it costs nothing.
+    if (timedTotal >= laps) return;
+    // A challenge's worth, not a day's — the window the log now shows.
+    const entries = await readLapTimes(head, Date.now() - LOG_WINDOW_MS);
     remoteRows = entries.flatMap((e) =>
       e.times.map((at, i) => ({ at, lap: e.total - e.times.length + 1 + i, state: "counted" as const })),
     );
   }
 
   function logText(): string {
-    const lines = [
-      `${era?.name ?? "Coaster"} - ${era?.park ?? ""}`.replace(/ - $/, ""),
-      longDayFormat.format(Date.now()),
-      "",
-      ...rows.map((r) =>
-        r.state === "counted"
-          ? `${r.lap === null ? "Lap" : `Lap ${r.lap}`}\t${timeFormat.format(r.at)}`
-          : `${r.state === "held" ? "Not counted" : "Waiting to send"}\t${timeFormat.format(r.at)}`,
-      ),
-      "",
-      "Times are from this phone's clock.",
-    ];
+    const lines: string[] = [`${era?.name ?? "Coaster"} - ${era?.park ?? ""}`.replace(/ - $/, "")];
+    for (const group of byDay) {
+      lines.push("", longDayFormat.format(group.rows[0]!.at));
+      for (const r of group.rows) {
+        lines.push(
+          r.state === "counted"
+            ? `${r.lap === null ? "Lap" : `Lap ${r.lap}`}\t${timeFormat.format(r.at)}`
+            : `${r.state === "held" ? "Not counted" : "Waiting to send"}\t${timeFormat.format(r.at)}`,
+        );
+      }
+    }
+    lines.push("", "Times are from this phone's clock.");
     return lines.join("\n");
   }
 
@@ -654,8 +670,8 @@
         <span class="num">{laps}</span>
         <span class="unit">{laps === 1 ? "lap" : "laps"}</span>
       </div>
-      {#if today > 0}
-        <p class="today">{today} today</p>
+      {#if todayCount > 0}
+        <p class="today">{todayCount} today</p>
       {/if}
     </div>
     {#if waiting > 0}
@@ -727,34 +743,41 @@
     </p>
   {/if}
 
-  {#if unlocked && (rows.length > 0 || today > 0)}
+  {#if unlocked && (rows.length > 0 || todayCount > 0)}
     <!-- The rider's own record of WHEN, which the public statement deliberately
          does not carry. Private: it is read from this phone and from entries
          sealed to the rider, and nothing on a public surface shows it. -->
     <div class="log">
       <button class="link" onclick={toggleLog} aria-expanded={showLog}>
-        {showLog ? "Hide today's laps" : "Today's laps and times"}
+        {showLog ? "Hide lap log" : `Your lap log${rows.length > 0 ? ` (${rows.length})` : ""}`}
       </button>
       {#if showLog}
         {#if rows.length === 0}
-          <p class="msg note">No times saved for today's laps on this phone.</p>
+          <p class="msg note">No lap times saved on this phone yet.</p>
         {:else}
-          <ol class="laps">
-            {#each rows as row (row.at + ":" + row.state + ":" + (row.lap ?? ""))}
-              <li class:pending={row.state !== "counted"}>
-                <span class="lapno">
-                  {#if row.state === "counted"}{row.lap === null ? "Lap" : `Lap ${row.lap}`}
-                  {:else if row.state === "held"}Not counted
-                  {:else}Waiting to send{/if}
-                </span>
-                <span class="lapat">{timeFormat.format(row.at)}</span>
-              </li>
+          <div class="laps-scroll">
+            {#each byDay as group (group.day)}
+              <!-- A challenge runs over days, so each one gets its own heading
+                   rather than the whole log running together. -->
+              <p class="lapday">{longDayFormat.format(group.rows[0].at)}</p>
+              <ol class="laps">
+                {#each group.rows as row (row.at + ":" + row.state + ":" + (row.lap ?? ""))}
+                  <li class:pending={row.state !== "counted"}>
+                    <span class="lapno">
+                      {#if row.state === "counted"}{row.lap === null ? "Lap" : `Lap ${row.lap}`}
+                      {:else if row.state === "held"}Not counted
+                      {:else}Waiting to send{/if}
+                    </span>
+                    <span class="lapat">{timeFormat.format(row.at)}</span>
+                  </li>
+                {/each}
+              </ol>
             {/each}
-          </ol>
+          </div>
         {/if}
         {#if untimedToday > 0}
           <p class="msg note">
-            {today} laps today - {timedToday} with times. {untimedToday === 1 ? "1 lap has" : `${untimedToday} laps have`}
+            {todayCount} laps today - {timedToday} with times. {untimedToday === 1 ? "1 lap has" : `${untimedToday} laps have`}
             no time saved. Your count is still right.
           </p>
         {/if}
@@ -889,12 +912,23 @@
 
   .log { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; }
 
+  .laps-scroll { width: 100%; max-height: 22rem; overflow-y: auto; }
+
+  .lapday {
+    margin: 0.75rem 0 0.375rem;
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+  .lapday:first-child { margin-top: 0; }
+
   .laps {
     width: 100%;
-    max-height: 16rem;
     margin: 0;
     padding: 0;
-    overflow-y: auto;
     list-style: none;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);

@@ -267,6 +267,17 @@ test("no coaster surface uses a fragment anchor, which the base href sends to th
   assert.match(PAGE, /navigate\("\/tickets"\)/);
 });
 
+test("the lap log spans the whole challenge, not just today", () => {
+  // A mutation run caught this one: nothing failed when the card's log was
+  // filtered back to a single day, because the rule lives in a $derived that no
+  // unit test reaches. A challenge runs over days, and a log that resets at
+  // midnight shows an empty list beside a count of 130 the next morning.
+  const rows = body(CARD, /const rows = \$derived\.by/);
+  assert.match(rows, /allLapRows\(journal\)/);
+  assert.doesNotMatch(rows, /dayOf\(/, "no day filter anywhere in building the rows");
+  assert.match(CARD, /const byDay = \$derived\(lapRowsByDay\(rows, dayOf\)\)/);
+});
+
 test("each credit taps back to its coaster page", () => {
   // The whole point of the section beyond completeness: the coaster page is
   // reached by QR or a link and never from nav, so a rider who closed the tab
