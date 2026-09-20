@@ -64,6 +64,54 @@ test("the tap button is never disabled by a send in progress", () => {
   assert.doesNotMatch(button, /sending|inFlight|running/);
 });
 
+test("the tap that starts the unlock is on screen before anything can block", () => {
+  const tapped = body(CARD, /async function tapped\(/);
+  const shown = tapped.indexOf("pendingTap = at;");
+  assert.ok(shown >= 0, "the tap is held where the card can render it");
+  assert.ok(shown < tapped.indexOf("await"), "and assigned before the first await");
+  // Every "waiting" the card shows has to include it, or the tap that raised
+  // the dialog stays invisible underneath it — which is what made a tester
+  // re-tap and start at three laps.
+  const markup = CARD.slice(CARD.indexOf("</script>"));
+  assert.doesNotMatch(markup, /counts\.waiting/, "the markup counts through the derived, never the journal alone");
+  assert.match(CARD, /const waiting = \$derived\(counts\.waiting \+ \(pendingTap === null \? 0 : 1\)\)/);
+});
+
+test("a held tap is cleared on every exit from the unlock", () => {
+  const tapped = body(CARD, /async function tapped\(/);
+  const cleared = tapped.indexOf("pendingTap = null;");
+  assert.ok(cleared >= 0);
+  // In the `finally`, so a declined sign-in and a failed key ceremony both drop
+  // it — a tap left behind would show as waiting forever and be sent by nobody.
+  const fin = tapped.indexOf("} finally {");
+  assert.ok(fin >= 0 && cleared > fin, "cleared in the finally, not on the success path only");
+});
+
+test("a tap made during the unlock is answered, not silently dropped", () => {
+  const tapped = body(CARD, /async function tapped\(/);
+  const guard = tapped.slice(0, tapped.indexOf("notice = null;"));
+  assert.match(guard, /if \(unlocking\)/);
+  assert.match(guard, /notice = /, "it says something rather than returning in silence");
+});
+
+test("coming back online resets the ladder before it retries", () => {
+  const onOnline = body(CARD, /function onOnline\(/);
+  const reset = onOnline.indexOf("resetBackoff()");
+  assert.ok(reset >= 0 && reset < onOnline.indexOf("drain()"), "reset first, then try");
+  assert.match(CARD, /addEventListener\("online", onOnline\)/);
+  assert.match(CARD, /removeEventListener\("online", onOnline\)/);
+});
+
+test("unsent laps are retried on a steady poll, whatever events arrive", () => {
+  // The event listeners SHOULD be enough and were not: a tester had to tap a
+  // lap to move three waiting ones after reconnecting.
+  const poll = body(CARD, /function pollWhileUnsent\(/);
+  assert.match(poll, /if \(pollTimer \|\| !hasWork\(\)\) return;/, "one timer, and only while there is work");
+  assert.match(poll, /setInterval/);
+  assert.match(body(CARD, /function drain\(/), /pollWhileUnsent\(\)/);
+  assert.match(body(CARD, /function stopPolling\(/), /clearInterval/);
+});
+
 // ---------------------------------------------------------------------------
 // The date is the taps'
 // ---------------------------------------------------------------------------

@@ -73,6 +73,18 @@
   /** A first tap is establishing the account or its keys. The ONLY thing that
    *  disables the button: once unlocked, a tap never waits on anything. */
   let unlocking = $state(false);
+  /**
+   * The tap that STARTED the unlock, held here until there is a journal to put
+   * it in — with its own time, which is the whole point.
+   *
+   * It is `$state` because it must be ON SCREEN from the instant of the tap.
+   * Sign-in and the key ceremony are several seconds and two dialogs, and while
+   * they ran the card said nothing at all about the tap underneath them: the
+   * rider could not tell it had registered, so they tapped again afterwards and
+   * the count started at three. On the honesty product an invisible tap is not
+   * a cosmetic problem.
+   */
+  let pendingTap = $state<number | null>(null);
   let publishing = $state(false);
   let sending = $state(false);
   let error = $state<string | null>(null);
@@ -127,6 +139,10 @@
   );
   const shownLaps = $derived(numbers.counted);
   const counts = $derived(journalCounts(journal));
+  /** Laps this phone holds that are not in a settled statement — INCLUDING the
+   *  one still behind the unlock dialogs. Every "waiting" the card shows is
+   *  this, never `counts.waiting`, or the first tap stays invisible. */
+  const waiting = $derived(counts.waiting + (pendingTap === null ? 0 : 1));
   /**
    * The session block is TODAY'S only when its date is today. It rolls over at
    * WRITE time, not at midnight, so a rider who logged three laps on Saturday
@@ -160,9 +176,13 @@
   const rows = $derived.by(() => {
     const day = dayOf(Date.now());
     const mine = lapRows(journal, dayOf, day);
-    const known = new Set(mine.map((r) => r.at));
+    const pending: LapRow[] =
+      pendingTap !== null && dayOf(pendingTap) === day
+        ? [{ at: pendingTap, lap: null, state: "waiting" }]
+        : [];
+    const known = new Set([...mine, ...pending].map((r) => r.at));
     const extra = remoteRows.filter((r) => dayOf(r.at) === day && !known.has(r.at));
-    return [...mine, ...extra].sort((a, b) => a.at - b.at);
+    return [...mine, ...pending, ...extra].sort((a, b) => a.at - b.at);
   });
   const timedToday = $derived(rows.filter((r) => r.state === "counted").length);
   const untimedToday = $derived(Math.max(0, today - timedToday));
@@ -286,11 +306,48 @@
    */
   function drain() {
     if (!unlocked || !sender || !hasWork()) return;
+    pollWhileUnsent();
     void sender.kick().then(async () => {
       // A run that ended without a usable head lost a race or could not read.
       // Repaint from a real read rather than leave a number nobody wrote.
       if (sender && !sender.head && sender.error) await refresh();
     });
+  }
+
+  /**
+   * A floor under the retry ladder, running only while laps are unsent.
+   *
+   * The `online` event and the ladder SHOULD be enough and were not: a spell
+   * with no signal leaves the ladder at its longest rung (a minute), and
+   * `online` fires when the interface comes up, which is often a moment before
+   * a request can actually succeed — so the one immediate attempt failed and
+   * the rider had to tap a lap to force the next one. A steady poll makes the
+   * delay bounded no matter which event does or does not arrive.
+   */
+  const POLL_MS = 10_000;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  function stopPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  function pollWhileUnsent() {
+    if (pollTimer || !hasWork()) return;
+    pollTimer = setInterval(() => {
+      if (!hasWork()) {
+        stopPolling();
+        return;
+      }
+      drain();
+    }, POLL_MS);
+  }
+
+  function onOnline() {
+    // The failures behind the current delay were all "there is no network".
+    // That is no longer true, so they no longer get to say when to try next.
+    sender?.resetBackoff();
+    drain();
   }
 
   function onVisible() {
@@ -306,7 +363,7 @@
    * itself does the unlocking, where the rider has asked for it.
    */
   onMount(() => {
-    window.addEventListener("online", drain);
+    window.addEventListener("online", onOnline);
     document.addEventListener("visibilitychange", onVisible);
     void init();
   });
@@ -349,6 +406,7 @@
       notice = null;
       sendTrouble = false;
       troubleDetail = null;
+      pendingTap = null;
       showLog = false;
       confirmingPublish = false;
       unlocked = false;
@@ -359,8 +417,9 @@
 
   onDestroy(() => {
     if (retryTimer) clearTimeout(retryTimer);
+    stopPolling();
     if (typeof window !== "undefined") {
-      window.removeEventListener("online", drain);
+      window.removeEventListener("online", onOnline);
       document.removeEventListener("visibilitychange", onVisible);
     }
   });
@@ -376,19 +435,36 @@
   }
 
   async function tapped(at: number) {
-    if (unlocking) return;
+    if (unlocking) {
+      // The rider is looking at a sign-in or signing dialog and has tapped the
+      // card behind it. Their first tap is already held and shown as waiting,
+      // so this is impatience rather than a lap — and on a log whose whole
+      // claim is accuracy, a tap we cannot tell apart from impatience is not
+      // counted. Said out loud, because silence is what caused the re-tapping.
+      notice = "Got that one — finish unlocking your logbook and it's saved.";
+      return;
+    }
     notice = null;
 
     if (!unlocked || !auth.parent) {
+      // ON SCREEN FIRST, before anything that can block. Assigned before the
+      // first `await` so the card paints "1 waiting to send" underneath the
+      // dialog the next line raises.
+      pendingTap = at;
       unlocking = true;
       error = null;
       try {
         // The tap IS the sign-in prompt. Cancelling is not a failure and gets no
-        // error: the rider changed their mind, and the card is unchanged.
+        // error: the rider changed their mind. But the tap does not survive it —
+        // it was never written anywhere — so say so rather than leave a lap on
+        // screen that no longer exists.
         // No `context` deliberately: the attendee subtitle in the login modal
         // tells riders that accounts are for organisers, which is exactly the
         // wrong thing to say to the rider we just asked to sign in.
-        if (!(await requireAccountForAction())) return;
+        if (!(await requireAccountForAction())) {
+          notice = "That lap wasn't saved — sign in first, then tap it again.";
+          return;
+        }
         // Keys BEFORE the journal. A rider who declines the key ceremony has
         // declined the lap, and must not find it waiting to send later.
         const keys = await unlockCredits();
@@ -398,6 +474,9 @@
         }
         unlocked = true;
       } finally {
+        // Cleared on EVERY exit, including the two returns above: a pending tap
+        // left behind would show as waiting forever and be sent by no one.
+        pendingTap = null;
         unlocking = false;
       }
     }
@@ -524,8 +603,8 @@
         <span class="unit">{shownLaps === 1 ? "lap" : "laps"}</span>
       </div>
     </div>
-    {#if counts.waiting > 0}
-      <p class="waiting" role="status">{counts.waiting} waiting to send</p>
+    {#if waiting > 0}
+      <p class="waiting" role="status">{waiting} waiting to send</p>
     {/if}
     <p class="credit">Credit collected — only you can see it</p>
     <p class="syncing">Checking your logbook…</p>
@@ -533,10 +612,17 @@
     <p class="state">Loading your collection…</p>
   {:else if !unlocked}
     <p class="state">Ride it once to add the credit.</p>
-  {:else if laps === 0 && counts.waiting > 0}
-    <!-- A first lap that is on the phone and not yet on the network. "Not
-         collected yet" would be untrue, and so would a count of one. -->
-    <p class="state" role="status">Your first lap is saved on this phone and waiting to send.</p>
+  {:else if laps === 0 && waiting > 0}
+    <!-- A first lap that is not on the network yet. "Not collected yet" would
+         be untrue, and so would a count of one. The two cases differ and the
+         copy must not overclaim: a tap still behind the unlock dialogs is held
+         in memory and is lost if the rider cancels, so only a JOURNALLED tap
+         gets told it is saved. -->
+    <p class="state" role="status">
+      {pendingTap === null
+        ? "Your first lap is saved on this phone and waiting to send."
+        : "Got your first lap — unlock your logbook to save it."}
+    </p>
   {:else if laps === 0}
     <p class="state">Not collected yet. Ride it once to add the credit.</p>
   {:else}
@@ -549,11 +635,11 @@
         <p class="today">{today} today</p>
       {/if}
     </div>
-    {#if counts.waiting > 0}
+    {#if waiting > 0}
       <!-- Beside the count, never inside it: the number above is one somebody
            wrote, and these are not written yet. -->
       <p class="waiting" role="status">
-        {counts.waiting} waiting to send{sending ? "…" : ""}
+        {waiting} waiting to send{sending ? "…" : ""}
       </p>
     {/if}
     <!-- The credit itself: held once, forever, from the first ride. The count
@@ -577,13 +663,13 @@
     <button class="collect" onclick={collect} disabled={unlocking || publishing}>
       <!-- `shownLaps`, not `laps`: the label must agree with the card above it,
            including while a remembered card waits for the live read. -->
-      {#if unlocking}One moment…{:else if shownLaps === 0 && counts.waiting === 0}I rode it{:else}Add a lap{/if}
+      {#if unlocking}One moment…{:else if shownLaps === 0 && waiting === 0}I rode it{:else}Add a lap{/if}
     </button>
 
     <!-- Not while laps are still on their way: publishing re-signs the head it
          reads and retires the private one, so a lap in the air would be left
          behind on a feed nothing counts. -->
-    {#if loaded && unlocked && laps > 0 && !isPublic && !confirmingPublish && counts.waiting === 0 && !sending}
+    {#if loaded && unlocked && laps > 0 && !isPublic && !confirmingPublish && waiting === 0 && !sending}
       <button class="link" onclick={() => (confirmingPublish = true)} disabled={publishing}>
         Make public
       </button>
@@ -663,7 +749,7 @@
     </div>
   {/if}
 
-  {#if sendTrouble && counts.waiting > 0}
+  {#if sendTrouble && waiting > 0}
     <p class="msg note" role="status">
       Couldn't send just now. Your laps are saved on this phone and will send on their own.
       {#if troubleDetail}<span class="detail">{troubleDetail}</span>{/if}

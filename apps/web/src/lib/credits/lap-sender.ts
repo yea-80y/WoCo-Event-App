@@ -90,6 +90,18 @@ export interface LapSender {
   offerHead(head: CreditHead | null): void;
   /** Forget the warm head — the next prepare reads everything fresh. */
   dropHead(): void;
+  /**
+   * Forget how many attempts have failed, so the next retry is scheduled at the
+   * SHORTEST delay again.
+   *
+   * For a caller that has learned something the failures no longer speak for —
+   * the browser coming back online. Without it a spell with no signal leaves the
+   * ladder at its longest rung, and since `online` commonly fires a moment
+   * before the network is actually usable, that one immediate attempt fails and
+   * the next is a minute away. The laps are safe either way; this is about how
+   * long they sit there.
+   */
+  resetBackoff(): void;
   readonly head: CreditHead | null;
   readonly running: boolean;
   readonly error: string | null;
@@ -234,6 +246,9 @@ export function createLapSender(deps: LapSenderDeps): LapSender {
     },
     dropHead() {
       head = null;
+    },
+    resetBackoff() {
+      failures = 0;
     },
     get head() {
       return head;

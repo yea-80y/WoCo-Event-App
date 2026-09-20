@@ -423,6 +423,38 @@ test("a newer read is taken", async () => {
   assert.equal(sender.head?.statement.total, 5);
 });
 
+test("the retry ladder climbs while sending fails, and resets when the network returns", async () => {
+  const w = new World();
+  const sender = createLapSender(w.deps());
+  w.failUploads = 99;
+  w.tap(T0);
+  await sender.kick();
+  await sender.kick();
+  await sender.kick();
+  // Each failed run is scheduled further out than the last — which is right
+  // while nothing has changed, and wrong the moment signal comes back.
+  assert.deepEqual(w.retries, [1, 2, 3]);
+
+  sender.resetBackoff();
+  await sender.kick();
+  assert.deepEqual(w.retries, [1, 2, 3, 1], "the next try is at the SHORTEST delay, not the longest");
+});
+
+test("a reset does not disturb the laps themselves", async () => {
+  const w = new World();
+  const sender = createLapSender(w.deps());
+  w.failUploads = 1;
+  w.tap(T0);
+  await sender.kick();
+  const before = structuredClone(w.journal);
+  sender.resetBackoff();
+  assert.deepEqual(w.journal, before);
+
+  await sender.kick();
+  assert.equal(w.head()?.statement.total, 1);
+  assert.deepEqual(w.prepareCalls, [[T0]], "still the same prepared write, replayed");
+});
+
 test("a read the caller made cannot overrule a write that is still in doubt", async () => {
   const w = new World();
   const sender = createLapSender(w.deps());
