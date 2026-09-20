@@ -208,6 +208,7 @@ test("publishing drops the sender's private head before anything can build on it
 // ---------------------------------------------------------------------------
 
 const PASSPORT = code(read("../src/lib/attendee/passport/PassportTab.svelte"));
+const PAGE = code(read("../src/lib/credits/CoasterPage.svelte"));
 
 test("listing a collection never prompts", () => {
   // The passport is a tab someone OPENS, not an action they took. Reaching for
@@ -250,6 +251,20 @@ test("the passport tells 'not set up' apart from 'no credits'", () => {
   assert.match(PASSPORT, /creditsState === "unavailable"/);
   const locked = PASSPORT.slice(PASSPORT.indexOf('creditsState === "locked"'));
   assert.doesNotMatch(locked.slice(0, 260), /No credits|no credits yet/i);
+});
+
+test("no coaster surface uses a fragment anchor, which the base href sends to the gateway", () => {
+  // The deploy injects `<base href="https://gateway.woco-net.com/bzz/{hash}/">`
+  // so the bundle's own assets resolve. A fragment-only href resolves against
+  // that BASE, so `<a href="#/tickets">` walks the rider off woco.eth.limo and
+  // onto the gateway origin — where `resolvePasskeyRpId` reads a different
+  // hostname and their passkey is a DIFFERENT ACCOUNT holding none of their
+  // credits. Route changes go through `navigate`, which sets location.hash and
+  // cannot leave the origin.
+  for (const [name, src] of [["CoasterPage", PAGE], ["CoasterCredit", CARD], ["PassportTab", PASSPORT]] as const) {
+    assert.doesNotMatch(src, /<a[^>]+href="#/, `${name} uses navigate(), not a fragment anchor`);
+  }
+  assert.match(PAGE, /navigate\("\/tickets"\)/);
 });
 
 test("each credit taps back to its coaster page", () => {
