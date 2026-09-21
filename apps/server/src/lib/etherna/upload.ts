@@ -56,6 +56,13 @@ export async function uploadCollectionToEtherna(opts: BzzUploadOpts): Promise<st
     "Swarm-Index-Document": opts.indexDocument,
     "Swarm-Error-Document": opts.errorDocument ?? opts.indexDocument,
     "Swarm-Collection": "true",
+    // Bee defaults an upload to DEFERRED: it returns once the node holds the
+    // chunks and pushes them to the network in the background, so every reader
+    // but Etherna waits. Measured 2026-09-21 on 5 MB collections, time until the
+    // page opened from our bee: 326 s deferred vs 171 s with this (#613). Free -
+    // nothing is stored twice. Etherna still returns before the push completes,
+    // so it halves the wait rather than removing it.
+    "Swarm-Deferred-Upload": "false",
     Authorization: `Bearer ${token}`,
   };
 

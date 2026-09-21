@@ -10,6 +10,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { getCreatorEvents } from "../lib/event/service.js";
 import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
 import { recordUpload } from "../lib/swarm/storage-ledger.js";
+import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate } from "../lib/etherna/upload.js";
 import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
 import {
@@ -250,6 +251,15 @@ site.post("/deploy", requireAuth, async (c) => {
         "site feed write",
       );
     }
+
+    // Whitelist the page and its feed on our gateway, as the site deploy does
+    // (sites.ts). Without it our gateway refuses an event page outright - 403
+    // for `eventtest` on 2026-09-21 - so only other people's nodes can serve
+    // the organiser's own page (#613). Fire-and-forget: a whitelist failure
+    // must not fail a deploy that has already landed.
+    void whitelistHashes([contentHash, feedManifestHash].filter(Boolean)).catch((e) =>
+      console.warn("[site/deploy] whitelist call failed:", e),
+    );
 
     return c.json({ ok: true, data: { contentHash, feedManifestHash } });
 

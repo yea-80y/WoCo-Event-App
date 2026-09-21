@@ -1,10 +1,11 @@
 import {
-  JsonRpcProvider, Contract, Wallet, keccak256, toUtf8Bytes, concat, namehash,
+  JsonRpcProvider, Contract, Wallet, keccak256, toUtf8Bytes, concat, namehash, hexlify,
 } from "ethers";
-import { SUB_ENS_DEFAULT_CHAIN_ID, getSubEnsDeployment } from "@woco/shared";
+import { SUB_ENS_DEFAULT_CHAIN_ID, getSubEnsDeployment, subEnsName } from "@woco/shared";
 import { getChainRpcUrl } from "./event-contract.js";
 import { sendSponsorTx } from "./sponsor-nonce.js";
-import { warmSubEnsWebCert } from "../sub-ens/cert-warmup.js";
+import { warmSubEnsWebCertWhenResolvable } from "../sub-ens/cert-warmup.js";
+import { publicContenthashQueryUrl } from "../ens-gateway/public-url.js";
 
 // namehash("woco.eth") — the base node of our L2Registry.
 // Computed once at module load; namehash() is a pure function (no provider).
@@ -588,7 +589,12 @@ export async function relaySignedContenthash(
   if (!receipt) throw new Error("No receipt from setContenthashWithSignature tx");
   // No signature in the log: it is a bearer authorisation until mined.
   console.log(`[sub-ens] pointer relayed label=${label} hash=${swarmHash.slice(0, 10)}… txHash=${receipt.hash}`);
-  // Fire-and-forget: the receipt is the fact callers wait for; the warm-up is a courtesy.
-  void warmSubEnsWebCert(label);
+  // Fire-and-forget: the receipt is the fact callers wait for; the warm-up is a
+  // courtesy, and it waits until eth.limo can resolve the new pointer (#557).
+  void warmSubEnsWebCertWhenResolvable(
+    label,
+    { contenthash: hexlify(contenthash), swarmHash },
+    publicContenthashQueryUrl(subEnsName(label), chainId, getRegistryAddress(chainId)),
+  );
   return receipt.hash as string;
 }
