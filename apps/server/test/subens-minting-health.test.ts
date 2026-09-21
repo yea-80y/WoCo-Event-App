@@ -32,8 +32,11 @@ delete process.env.SUB_ENS_SPONSOR_MIN_ETH;
 delete process.env.SUB_ENS_CHAIN_ID;
 delete process.env.SUB_ENS_REGISTRY_ADDRESS;
 delete process.env.SUB_ENS_REGISTRAR_ADDRESS;
+// The NAMES key (registrar v2.2 split). The events key is a different one.
 const SPONSOR_KEY = Wallet.createRandom().privateKey;
-process.env.WOCO_SPONSOR_PRIVATE_KEY = SPONSOR_KEY;
+const EVENTS_KEY = Wallet.createRandom().privateKey;
+process.env.SUB_ENS_SPONSOR_PRIVATE_KEY = SPONSOR_KEY;
+process.env.WOCO_SPONSOR_PRIVATE_KEY = EVENTS_KEY;
 
 const probes = await import("../src/lib/health/probes.js");
 
@@ -61,7 +64,8 @@ const silent = () => {};
 beforeEach(() => {
   probes.__resetHealthProbes();
   delete process.env.SUB_ENS_SPONSOR_MIN_ETH;
-  process.env.WOCO_SPONSOR_PRIVATE_KEY = SPONSOR_KEY;
+  process.env.SUB_ENS_SPONSOR_PRIVATE_KEY = SPONSOR_KEY;
+  process.env.WOCO_SPONSOR_PRIVATE_KEY = EVENTS_KEY;
 });
 
 after(() => probes.__resetHealthProbes());
@@ -171,11 +175,11 @@ test("a sponsor below the floor makes the whole section false", async () => {
 });
 
 test("no sponsor key at all is an ALARM, not an unknown — nothing can be minted", async () => {
-  delete process.env.WOCO_SPONSOR_PRIVATE_KEY;
+  delete process.env.SUB_ENS_SPONSOR_PRIVATE_KEY;
   await probes.refreshSubEnsMinting(readers({ sponsorBalance: probes.liveReaders.sponsorBalance }), silent);
   const s = probes.subEnsMintingHealth();
   assert.equal(s.checks.sponsorBalance.ok, false);
-  assert.match(s.checks.sponsorBalance.reason ?? "", /WOCO_SPONSOR_PRIVATE_KEY/);
+  assert.match(s.checks.sponsorBalance.reason ?? "", /SUB_ENS_SPONSOR_PRIVATE_KEY/);
   assert.equal(s.sponsor, null);
   assert.equal(s.ok, false);
 });
@@ -390,6 +394,23 @@ test("the CSW factory is read, and required, only while Coinbase login is on", (
 test("the sponsor asked about is the key this build mints with", () => {
   const src = readFileSync(fileURLToPath(new URL("../src/lib/health/probes.ts", import.meta.url)), "utf-8");
   const policy = src.slice(src.indexOf("registrarPolicy: async () =>"), src.indexOf("cswFactoryCodehash: async () =>"));
-  assert.match(policy, /sponsor = getSponsorAddress\(\);/);
+  assert.match(policy, /sponsor = getSubEnsSponsorAddress\(\);/);
   assert.match(policy, /registrar\.authorisedSponsors\(sponsor\)/);
+});
+
+test("the minting watch looks at the NAMES key, never the events key", async () => {
+  await probes.refreshSubEnsMinting(readers(), silent);
+  const s = probes.subEnsMintingHealth();
+  assert.equal(s.sponsor, new Wallet(SPONSOR_KEY).address);
+  assert.notEqual(s.sponsor, new Wallet(EVENTS_KEY).address);
+  const src = readFileSync(fileURLToPath(new URL("../src/lib/health/probes.ts", import.meta.url)), "utf-8");
+  assert.doesNotMatch(src, /getSponsorAddress\(/, "the events key's accessor must not appear in the probes");
+});
+
+test("one key under both names is a configError on the section too", async () => {
+  process.env.WOCO_SPONSOR_PRIVATE_KEY = SPONSOR_KEY;
+  await probes.refreshSubEnsMinting(readers(), silent);
+  assert.match(probes.subEnsMintingHealth().configError ?? "", /must not be the same key/);
+  process.env.WOCO_SPONSOR_PRIVATE_KEY = EVENTS_KEY;
+  assert.equal(probes.subEnsMintingHealth().configError, undefined);
 });

@@ -94,6 +94,9 @@ DEV COMMANDS:
   PUBLIC_API_BASE. Optional: SOCIAL_INDEXER_PRIVATE_KEY — signs the indexer's published
   evidence reports (#312), never user data; its address must match `SOCIAL_INDEXER_ADDRESS`
   in `packages/shared`. Unset = reports served on request, never published.
+  Sub-ENS: `SUB_ENS_SPONSOR_PRIVATE_KEY` — the NAMES sponsor (mints + relays holder-signed
+  pointer/release writes), never the same key as `WOCO_SPONSOR_PRIVATE_KEY` (boot refuses);
+  unset = names 503. The platform holds NO key that can repoint a name (registrar v2.2).
   Optional: `CAMPAIGN_ISSUER_PRIVATE_KEY` — signs referral confirmations + badges
   (#476), address must match `CAMPAIGN_ISSUER_ADDRESS`; unset = confirm 503s.
   Also optional, all with defaults baked in (#421/#522/#420/#598 health alarms; a bad value is

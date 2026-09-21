@@ -42,6 +42,7 @@ import { ethernaRoutes } from "./routes/etherna.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { ensGatewayRoutes, ensGatewayStatus } from "./routes/ens-gateway.js";
 import { subEnsApexHealth } from "./lib/chain/sub-ens-apex.js";
+import { sponsorKeysConflict } from "./lib/chain/sub-ens-contract.js";
 import { profileNamesHealth } from "./lib/profile/name-ledger.js";
 import { attendeeGate } from "./routes/attendee-gate.js";
 import { socialRoutes } from "./routes/social.js";
@@ -180,6 +181,18 @@ if (process.env.NODE_ENV === "production" && process.env.STRIPE_SECRET_KEY) {
       "    - STRIPE_WEBHOOK_SECRET_PLATFORM  → 'Your account' endpoint\n" +
       "  and add to apps/server/.env.\n",
     );
+    process.exit(1);
+  }
+}
+
+// Two sponsor keys, one job each (Fable sponsor-key consult §4): the events key
+// pays for tickets and events, the names key for sub-ENS. The split is what
+// lets one be lost, rotated or drained without the other, and gives each its
+// own nonce queue. The same key under both names defeats it silently.
+{
+  const conflict = sponsorKeysConflict();
+  if (conflict) {
+    console.error(`\n[startup] FATAL: ${conflict}.\n  Generate a separate key for each on the server host.\n`);
     process.exit(1);
   }
 }

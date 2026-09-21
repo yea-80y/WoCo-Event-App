@@ -4,7 +4,6 @@ import {
 import { SUB_ENS_DEFAULT_CHAIN_ID, getSubEnsDeployment } from "@woco/shared";
 import { getChainRpcUrl } from "./event-contract.js";
 import { sendSponsorTx } from "./sponsor-nonce.js";
-import { getSponsorAddress } from "./sponsor-wallet.js";
 import { warmSubEnsWebCert } from "../sub-ens/cert-warmup.js";
 
 // namehash("woco.eth") — the base node of our L2Registry.
@@ -21,24 +20,26 @@ const REGISTRY_ABI = [
   "function decodeName(bytes name) view returns (string)",
   // Resolver record — current Swarm pointer for a name (EIP-1577 contenthash)
   "function contenthash(bytes32 node) view returns (bytes)",
-  // #464 rename rail. `release` is holder-or-approvee only and never passes
-  // through the registrar, so the server can only ever encode this calldata for
-  // the holder's own wallet to send — it can never release a name itself.
+  // #464 rename rail. `release` is the holder's (or, for a name beneath
+  // another, that name's holder's) and never passes through the registrar, so
+  // the server can only ever encode this calldata for the holder's own wallet
+  // to send — it can never release a name itself.
   "function release(bytes32 node)",
-  // Written by every release and read by nothing on-chain: the frozen layer
-  // keeps who let a name go and when, so a future registrar can enforce a
-  // re-mint hold that `release` would otherwise have made impossible.
+  // Written by every release: the frozen layer keeps who let a name go and
+  // when. Registrar v2.1 reads it so a holder retaking their own released
+  // label is not charged a mint.
   "function lastRelease(bytes32 node) view returns (address previousOwner, uint64 releasedAt)",
   "event Released(bytes32 indexed node, address indexed previousOwner, address indexed operator)",
-  // #464 signature rail (2026-09-03): the holder signs `releaseDigest(node, expiration)`
-  // — read from the chain, never re-derived here — and ANYONE may submit it. This is
-  // the one release path the sponsor wallet can relay, and it can only relay what
-  // the holder signed: `signer` must be the holder or an ERC-721 approvee, checked
-  // on-chain before the signature is examined. The digest carries the registry,
-  // chain, node, record version and deadline, so a signature is single-use.
+  // #464 signature rail: the holder signs the EIP-712 `Release` whose digest is
+  // `releaseDigest(node, expiration)` (registry v2.1; built and checked on the
+  // client) and ANYONE may submit it. This is the one release path the sponsor
+  // wallet can relay, and it can only relay what the holder signed: `signer`
+  // must be the holder, checked on-chain before the signature is examined. The
+  // digest carries the registry, chain, name, record version and deadline, so a
+  // signature is single-use, and the registry refuses a deadline more than 48
+  // hours ahead of the block.
   "function releaseWithSignature(bytes32 node, uint256 expiration, address signer, bytes signature)",
   "function releaseDigest(bytes32 node, uint256 expiration) view returns (bytes32)",
-  "function RELEASE_TYPEHASH() view returns (bytes32)",
   // Registry custom errors, so a relay route can name the refusal instead of 500ing.
   // ERC721NonexistentToken is the one OpenZeppelin raises for a token that was
   // never minted or has been burned, and it is load-bearing here: ethers v6
@@ -51,6 +52,17 @@ const REGISTRY_ABI = [
   "error SignatureExpired()",
   "error ReleaseBaseNode()",
   "error ReleaseUnregistered(bytes32 node)",
+  // Registry v2.1: a name with names beneath it is not released until they are
+  // gone, and a release signature may not expire more than 48 hours ahead.
+  "error HasChildren(bytes32 node, uint256 count)",
+  "error ExpirationTooFar()",
+  // Registry v2.2 (audit 950). None is reachable from a call this server makes:
+  // it never approves, never sends `createSubnode` a batch, never initialises.
+  // Listed so that an unexpected one arrives NAMED rather than as bare revert
+  // data. `approve` / `setApprovalForAll` always refuse; `multicall` is gone.
+  "error DelegationNotSupported()",
+  "error BatchNodeMismatch(bytes32 node)",
+  "error NotDeployer(address caller)",
 ];
 
 // Addresses live in `@woco/shared` (#472) so the client cannot drift from them.
@@ -101,31 +113,47 @@ function computeLabelNode(label: string): bigint {
 const REGISTRAR_ABI = [
   // Views
   "function available(string label) view returns (bool)",
-  "function DOMAIN_SEPARATOR() view returns (bytes32)",
-  // Sponsor writes
-  "function register(string label, address owner, bytes contenthash, string[] textKeys, string[] textValues) returns (bytes32 node)",
-  // setContenthash is the ONLY post-mint record write the platform retains.
-  // `setText(string,string,string)` was REMOVED from WoCoRegistrar (#422) — it
-  // was never called from here, so it was standing authority over holders'
-  // profile records with no operational benefit. Do not re-add the fragment.
-  "function setContenthash(string label, bytes contenthash)",
+  // Sponsor mint: an EMPTY name — the name, its holder and the holder's own
+  // address records. The registrar writes nothing a sponsor chooses (registrar
+  // v2.2, Fable sponsor-key consult).
+  "function register(string label, address owner) returns (bytes32 node)",
+  // The ONE post-mint write, and the platform only relays it: the HOLDER signs
+  // EIP-712 `SetContenthash` (domain "WoCo Registrar"/"1"), anyone submits.
+  // The sponsor-only `setContenthash(string,bytes)` is GONE — a sponsor key can
+  // repoint no name. Do not re-add the fragment.
+  "function setContenthashWithSignature(string label, bytes contenthash, uint256 expiration, bytes signature)",
+  "function setContenthashDigest(bytes32 node, bytes contenthash, uint256 expiration) view returns (bytes32)",
+  "function pointerNonce(bytes32 node) view returns (uint256)",
+  // Registrar-wide mint cap (#469); /api/health watches its headroom.
+  "function globalMintAllowance() view returns (uint32 remaining, uint64 windowResetsAt)",
+  "function maxGlobalMintsPerWindow() view returns (uint32)",
   // #464 mint rate cap — per RECIPIENT, 30 mints / 30 days at deploy. Read it
   // before promising a mint: exceeding it reverts. `setMintRateCap` is
   // owner-only (the multisig on mainnet), here so the fragment exists, never
   // callable by the sponsor key.
   "function mintAllowance(address recipient) view returns (uint32 remaining, uint64 windowResetsAt)",
   "function setMintRateCap(uint32 max, uint64 windowSeconds)",
-  // `registerWithPermit` is NOT here. The registrar still exposes it, but the
-  // gasless mint rail that used it is gone (#501) — every name is minted by
-  // the sponsor through `register`. A fragment for a call nothing makes is a
-  // call site waiting to be written by accident.
+  // `registerWithPermit` is NOT here: the gasless mint rail that used it is
+  // gone (#501), and registrar v2 removed the function. A fragment for a call
+  // nothing makes is a call site waiting to be written by accident.
   // Custom errors — required for ethers v6 to decode reverts by name
   "error NotAuthorisedSponsor(address caller)",
   "error LabelIsReserved(string label)",
   "error InvalidLabel(string label)",
   "error EmptyContenthash()",
-  "error ArrayLengthMismatch()",
   "error MintRateCapExceeded(address recipient, uint64 windowResetsAt)",
+  "error GlobalMintCapExceeded(uint64 windowResetsAt)",
+  "error LabelNotRegistered(string label)",
+  "error NotHolderSignature(bytes32 node)",
+  "error SignatureExpired()",
+  "error ExpirationTooFar()",
+  "error NameMovedDuringRegistration(bytes32 node)",
+  // The REGISTRY's refusal, bubbled through `register` / `setContenthash`
+  // unchanged. With ownership checked first, it means this registrar is not
+  // enrolled: registry v2.2 drops EVERY registrar when the admin seat changes
+  // hands, until the new admin re-enrols it (audit 950 Medium 3; the
+  // `subEns.minting` health alarm watches for exactly this).
+  "error Unauthorized(bytes32 node)",
 ];
 
 // ENS contenthash encoding for a Swarm BZZ hash (EIP-1577 / ENSIP-7).
@@ -164,10 +192,47 @@ function readContract(chainId: number): Contract {
   return new Contract(getRegistrarAddress(chainId), REGISTRAR_ABI, getProvider(chainId));
 }
 
+/**
+ * The NAMES sponsor key: every sub-ENS transaction this server sends — mints,
+ * relayed pointer writes, relayed releases — and nothing else. Deliberately
+ * NOT `WOCO_SPONSOR_PRIVATE_KEY`, which pays for tickets and events (Fable
+ * sponsor-key consult §4): two keys, two balances, two nonce queues
+ * (`sendSponsorTx` keys its queue on the address), and a names burst can no
+ * longer sit in front of ticket fulfilment. No fallback to the events key — a
+ * soft split is no split; unset means names are unavailable, loudly.
+ */
+function subEnsSponsorKey(): string {
+  const pk = process.env.SUB_ENS_SPONSOR_PRIVATE_KEY?.trim();
+  if (!pk) throw new Error("SUB_ENS_SPONSOR_PRIVATE_KEY is not set");
+  return pk;
+}
+
+export function getSubEnsSponsorAddress(): string {
+  return new Wallet(subEnsSponsorKey()).address;
+}
+
+/**
+ * Boot check: the names key and the events key must be different keys. The
+ * whole point of the split is that one can be lost, rotated or drained
+ * without the other; the same key under two names defeats it silently.
+ * Returns the reason to refuse, or null.
+ */
+export function sponsorKeysConflict(env: NodeJS.ProcessEnv = process.env): string | null {
+  const names = env.SUB_ENS_SPONSOR_PRIVATE_KEY?.trim();
+  const events = env.WOCO_SPONSOR_PRIVATE_KEY?.trim();
+  if (!names || !events) return null;
+  try {
+    if (new Wallet(names).address === new Wallet(events).address) {
+      return "SUB_ENS_SPONSOR_PRIVATE_KEY must not be the same key as WOCO_SPONSOR_PRIVATE_KEY";
+    }
+  } catch {
+    return "SUB_ENS_SPONSOR_PRIVATE_KEY or WOCO_SPONSOR_PRIVATE_KEY is not a valid private key";
+  }
+  return null;
+}
+
 function writeContract(chainId: number): Contract {
-  const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
-  if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
-  return new Contract(getRegistrarAddress(chainId), REGISTRAR_ABI, new Wallet(pk, getProvider(chainId)));
+  return new Contract(getRegistrarAddress(chainId), REGISTRAR_ABI, new Wallet(subEnsSponsorKey(), getProvider(chainId)));
 }
 
 export async function isLabelAvailable(label: string): Promise<boolean> {
@@ -187,14 +252,47 @@ export function labelNode(label: string): string {
 
 /**
  * Submit a holder-signed release. The SIGNATURE is the authority — the contract
- * checks `signer` is the holder or an ERC-721 approvee before it looks at the
- * signature at all — so the sponsor here is only paying the gas. It cannot
+ * checks `signer` is the holder before it looks at the signature at all — so
+ * the sponsor here is only paying the gas. It cannot
  * forge a release, and refusing to relay one never traps a holder, who can
  * always submit `release` themselves.
  *
  * Uses a REGISTRY-bound writer: `writeContract` binds the REGISTRAR ABI, and
  * `releaseWithSignature` lives on the registry.
  */
+/**
+ * The registry chain's clock: the latest block's timestamp, in seconds.
+ *
+ * What `releaseWithSignature` compares an expiration with is `block.timestamp`,
+ * and Arbitrum's may run up to a day behind real time or an hour ahead of it.
+ * Measured against the wall clock, a ten-minute signature could arrive already
+ * expired, or be refused here as too far ahead when the chain would take it
+ * (audit 950 Low 13). The client takes its expiration from the same clock.
+ */
+export async function getSubEnsChainTime(): Promise<number> {
+  const block = await getProvider(getSubEnsChainId()).getBlock("latest");
+  if (!block) throw new Error("no latest block from the sub-ENS RPC");
+  return block.timestamp;
+}
+
+/**
+ * The gas limit a relayed release or pointer write is sent with: the estimate
+ * made just before submission, plus a fifth, plus a fixed allowance.
+ *
+ * Why pad at all (audit 950 Low 15): on Arbitrum the L1 data fee is taken out
+ * of the transaction's gas before execution, and it moves with the L1 base fee
+ * and how well the calldata compresses. A limit cut exactly to an estimate can
+ * leave the ERC-6492 validator — which a smart-account holder's signature runs
+ * through, with a budget of up to 1M gas — short, and the contract then
+ * refuses a VALID signature (`Unauthorized` / `NotHolderSignature`),
+ * indistinguishable on chain from a forged one. A limit is not a charge:
+ * Arbitrum bills the gas used.
+ */
+export const RELAY_GAS_FIXED_PAD = 150_000n;
+export function paddedRelayGasLimit(estimate: bigint): bigint {
+  return estimate + estimate / 5n + RELAY_GAS_FIXED_PAD;
+}
+
 export async function relayReleaseWithSignature(
   node: string,
   expiration: number,
@@ -202,13 +300,11 @@ export async function relayReleaseWithSignature(
   signature: string,
 ): Promise<{ txHash: string }> {
   const chainId = getSubEnsChainId();
-  const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
-  if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
   const provider = getProvider(chainId);
   const registry = new Contract(
     getRegistryAddress(chainId),
     REGISTRY_ABI,
-    new Wallet(pk, provider),
+    new Wallet(subEnsSponsorKey(), provider),
   );
 
   // SIMULATE FIRST, and outside the sponsor nonce queue. A reverting tx still
@@ -217,9 +313,18 @@ export async function relayReleaseWithSignature(
   // refused release must never get that far.
   await registry.releaseWithSignature.staticCall(node, expiration, signer, signature);
 
+  // Estimated INSIDE the queue, immediately before the send, and padded — see
+  // `paddedRelayGasLimit`. The estimate ethers would otherwise make is the
+  // same call at the same moment, with no margin.
   const tx = await sendSponsorTx(
-    { chainId, address: getSponsorAddress(), provider, label: "sub-ens.release" },
-    (o) => registry.releaseWithSignature(node, expiration, signer, signature, o),
+    { chainId, address: getSubEnsSponsorAddress(), provider, label: "sub-ens.release" },
+    async (o) => {
+      const estimate = await registry.releaseWithSignature.estimateGas(node, expiration, signer, signature);
+      return registry.releaseWithSignature(node, expiration, signer, signature, {
+        ...o,
+        gasLimit: paddedRelayGasLimit(estimate),
+      });
+    },
   );
   // Awaited OUTSIDE sendSponsorTx, like the mint: holding the nonce lock across
   // a block confirmation would serialise every sponsor tx behind this one.
@@ -265,6 +370,46 @@ export function mintRateCapVerdict(
   // rather than as a third top-level key — this was the one response in the
   // sub-ENS surface outside the `{ ok, data?, error? }` envelope.
   return { error: "mint_rate_cap", data: { windowResetsAt: allowance.windowResetsAt } };
+}
+
+/** The registrar-wide mint window as the chain reports it (registrar v2.2). */
+export interface GlobalMintHeadroom extends MintAllowance {
+  /** The cap the Safe has set for the window. */
+  max: number;
+}
+
+/**
+ * The share of each registrar-wide window this server never spends itself.
+ * Two reasons (Fable sign-off F11): the product refuses gracefully before the
+ * chain does, and - because the platform alone can never take the window
+ * below this - a cap that DOES reach zero was spent by someone else, which
+ * makes /api/health's `globalMint` alarm mean a leaked names key, not a busy
+ * hour. A fraction of the LIVE cap rather than a number, so the Safe's retune
+ * (raised for launch day, lowered after) moves it too.
+ */
+export const GLOBAL_MINT_RESERVE_FRACTION = 0.2;
+
+/**
+ * Turn a registrar-wide headroom read into a refusal, or null to proceed.
+ * Null headroom means the READ FAILED, and proceeds for the same reason as
+ * `mintRateCapVerdict`: the contract's own cap still binds.
+ */
+export function globalMintSoftVerdict(
+  headroom: GlobalMintHeadroom | null,
+): { error: "mint_global_cap"; data: { windowResetsAt: number } } | null {
+  if (!headroom) return null;
+  const reserve = Math.floor(headroom.max * GLOBAL_MINT_RESERVE_FRACTION);
+  if (headroom.remaining > reserve) return null;
+  return { error: "mint_global_cap", data: { windowResetsAt: headroom.windowResetsAt } };
+}
+
+export async function getGlobalMintHeadroom(): Promise<GlobalMintHeadroom> {
+  const registrar = readContract(getSubEnsChainId());
+  const [[remaining, windowResetsAt], max] = await Promise.all([
+    registrar.globalMintAllowance() as Promise<[bigint, bigint]>,
+    registrar.maxGlobalMintsPerWindow() as Promise<bigint>,
+  ]);
+  return { remaining: Number(remaining), windowResetsAt: Number(windowResetsAt), max: Number(max) };
 }
 
 export async function getMintAllowance(recipient: string): Promise<MintAllowance> {
@@ -319,23 +464,17 @@ export async function getLabelOwner(label: string): Promise<string | null> {
 }
 
 /**
- * The raw contenthash record for a label, or null when unset / unreadable.
- *
- * Used at the profile bind to WARN — never to refuse — when the name being
- * adopted as an identity currently points at a site: the pointer keeps working
- * and the binding points protect it from then on, but the user should know the
- * name they are making their identity is already a live URL.
+ * The raw contenthash record for a label, or null when UNSET. Throws when the
+ * chain did not answer: "unreadable" is not "empty", and both callers decide
+ * whether to ask the holder to sign a pointer on this answer — a read fault
+ * read as "unset" would prompt them to overwrite a pointer they chose.
  */
 export async function getLabelContenthash(label: string): Promise<string | null> {
   const chainId = getSubEnsChainId();
   const registry = new Contract(getRegistryAddress(chainId), REGISTRY_ABI, getProvider(chainId));
   const node = "0x" + computeLabelNode(label).toString(16).padStart(64, "0");
-  try {
-    const raw = await registry.contenthash(node) as string;
-    return raw && raw !== "0x" ? raw : null;
-  } catch {
-    return null;
-  }
+  const raw = await registry.contenthash(node) as string;
+  return raw && raw !== "0x" ? raw : null;
 }
 
 export interface OwnedLabel {
@@ -359,6 +498,9 @@ export async function getOwnedLabels(address: string): Promise<OwnedLabel[]> {
   const registry = new Contract(getRegistryAddress(chainId), REGISTRY_ABI, getProvider(chainId));
   const addr = address.toLowerCase();
 
+  // Deduped and confirmed against `ownerOf`, so a self-transfer - which v2.1
+  // permits and which changes nothing - is inert here. Never infer a records
+  // reset from `Transfer`; only `VersionChanged` means that.
   const logs = await registry.queryFilter(registry.filters.Transfer!(null, address));
   const tokenIds = [...new Set(logs.map((l) => (l as unknown as { args: { tokenId: bigint } }).args.tokenId.toString()))];
 
@@ -389,21 +531,19 @@ export async function getOwnedLabels(address: string): Promise<OwnedLabel[]> {
   return out;
 }
 
-export async function mintSubEnsName(
-  label: string,
-  ownerAddress: string,
-  swarmHash: string | null,
-  textKeys: string[],
-  textValues: string[],
-): Promise<string> {
+/**
+ * Mint an EMPTY name to `ownerAddress`: the registrar writes the name, its
+ * holder and the holder's own address records, nothing else. What the name
+ * points at is the holder's to sign (`relaySignedContenthash`).
+ */
+export async function mintSubEnsName(label: string, ownerAddress: string): Promise<string> {
   const chainId = getSubEnsChainId();
-  const contenthash = swarmHash ? encodeSwarmContenthash(swarmHash) : new Uint8Array(0);
 
   console.log(`[sub-ens] register label=${label} owner=${ownerAddress} chain=${chainId}`);
   const contract = writeContract(chainId);
   const tx = await sendSponsorTx(
-    { chainId, address: getSponsorAddress(), provider: getProvider(chainId), label: "sub-ens.register" },
-    (o) => contract.register(label, ownerAddress, contenthash, textKeys, textValues, o),
+    { chainId, address: getSubEnsSponsorAddress(), provider: getProvider(chainId), label: "sub-ens.register" },
+    (o) => contract.register(label, ownerAddress, o),
   );
   const receipt = await tx.wait(1);
   if (!receipt) throw new Error("No receipt from register tx");
@@ -411,19 +551,43 @@ export async function mintSubEnsName(
   return receipt.hash as string;
 }
 
-export async function updateSubEnsContenthash(label: string, swarmHash: string): Promise<string> {
+/**
+ * Relay a pointer write the HOLDER signed. The signature is the authority: the
+ * registrar checks it against the name's current holder, and the sponsor only
+ * pays — it can refuse to relay, never forge. A holder can always write its
+ * own record at the registry instead.
+ *
+ * The same shape as `relayReleaseWithSignature`: simulate OUTSIDE the shared
+ * sponsor queue, estimate inside it immediately before the send, and pad the
+ * limit, because a smart-account holder's signature runs through the ERC-6492
+ * validator and a limit cut to the estimate can starve it (audit 950 Low 15).
+ */
+export async function relaySignedContenthash(
+  label: string,
+  swarmHash: string,
+  expiration: number,
+  signature: string,
+): Promise<string> {
   const chainId = getSubEnsChainId();
   const contenthash = encodeSwarmContenthash(swarmHash);
-
-  console.log(`[sub-ens] setContenthash label=${label} hash=${swarmHash.slice(0, 10)}… chain=${chainId}`);
   const contract = writeContract(chainId);
+
+  await contract.setContenthashWithSignature.staticCall(label, contenthash, expiration, signature);
+
   const tx = await sendSponsorTx(
-    { chainId, address: getSponsorAddress(), provider: getProvider(chainId), label: "sub-ens.setContenthash" },
-    (o) => contract.setContenthash(label, contenthash, o),
+    { chainId, address: getSubEnsSponsorAddress(), provider: getProvider(chainId), label: "sub-ens.setContenthash" },
+    async (o) => {
+      const estimate = await contract.setContenthashWithSignature.estimateGas(label, contenthash, expiration, signature);
+      return contract.setContenthashWithSignature(label, contenthash, expiration, signature, {
+        ...o,
+        gasLimit: paddedRelayGasLimit(estimate),
+      });
+    },
   );
   const receipt = await tx.wait(1);
-  if (!receipt) throw new Error("No receipt from setContenthash tx");
-  console.log(`[sub-ens] contenthash updated label=${label} txHash=${receipt.hash}`);
+  if (!receipt) throw new Error("No receipt from setContenthashWithSignature tx");
+  // No signature in the log: it is a bearer authorisation until mined.
+  console.log(`[sub-ens] pointer relayed label=${label} hash=${swarmHash.slice(0, 10)}… txHash=${receipt.hash}`);
   // Fire-and-forget: the receipt is the fact callers wait for; the warm-up is a courtesy.
   void warmSubEnsWebCert(label);
   return receipt.hash as string;

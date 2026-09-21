@@ -50,8 +50,7 @@ import { getFromAddress } from "../lib/email/client.js";
 import { sendEmail } from "../lib/email/send.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
-import { getLabelOwner, updateSubEnsContenthash } from "../lib/chain/sub-ens-contract.js";
-import { isProfileName } from "../lib/profile/name-ledger.js";
+import { checkSiteSubEns, type SiteDeploySubEns } from "../lib/sub-ens/site-pointer.js";
 import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
 import { clientIp } from "../lib/http/client-ip.js";
 
@@ -1053,43 +1052,17 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
 
     const siteUrl = `${gatewayUrl}/bzz/${contentHash}/`;
 
-    // Point B. The two CHECKS run synchronously — they are single eth_calls and
-    // a local map read — so the deploy response can say what happened to the
-    // name. Only the TRANSACTION stays fire-and-forget, as before: a name
-    // update must never hold up or fail a site deploy.
+    // Point B, registry v2.2. The deploy never writes the name: it points at
+    // this site's FEED MANIFEST, which the publish just advanced, so the name
+    // follows with no chain write and no prompt. This is a read-only check
+    // that it still does; when it does not (first bind, or re-bound
+    // elsewhere), the response says what the HOLDER should sign.
     //
-    // Before this, every refusal was SILENT: a site bound to a name the
-    // organiser had transferred away simply stopped updating, with nothing in
-    // the response and a line in a log nobody reads.
-    let subEns: { label: string; status: "updating" | "skipped"; reason?: "not_owner" | "profile_name" | "unverified" } | undefined;
+    // Every refusal is reported, never silent: before, a site bound to a name
+    // the organiser had transferred away simply stopped updating.
+    let subEns: SiteDeploySubEns | undefined;
     if (site.subEnsLabel) {
-      const label = site.subEnsLabel;
-      let owner: string | null = null;
-      let unverified = false;
-      try {
-        owner = await getLabelOwner(label);
-      } catch (e) {
-        console.warn("[sites/deploy] sub-ens ownership check failed:", e);
-        unverified = true;
-      }
-      if (owner === null && unverified) {
-        // A chain read that did not answer is not evidence the organiser lost
-        // the name. Saying "not_owner" here accuses them of something the
-        // platform never established, and hides an outage as a permissions
-        // problem.
-        subEns = { label, status: "skipped", reason: "unverified" };
-      } else if (owner !== parentAddress.toLowerCase()) {
-        subEns = { label, status: "skipped", reason: "not_owner" };
-      } else if (isProfileName(parentAddress, label)) {
-        // The identity name must not become a site pointer: every later
-        // redeploy would silently repoint the organiser's identity.
-        subEns = { label, status: "skipped", reason: "profile_name" };
-      } else {
-        subEns = { label, status: "updating" };
-        void updateSubEnsContenthash(label, contentHash)
-          .then(() => console.log(`[sites/deploy] sub-ens ${label}.woco.eth → ${contentHash.slice(0, 10)}…`))
-          .catch((e) => console.warn("[sites/deploy] sub-ens contenthash update failed:", e));
-      }
+      subEns = await checkSiteSubEns(site.subEnsLabel, parentAddress, feedManifestHash, feedOwnerSigner ? "client" : "platform");
     }
 
     // Auto-update any custom domains registered for this site (fire-and-forget).

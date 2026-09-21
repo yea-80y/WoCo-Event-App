@@ -408,15 +408,28 @@ test("config: a valid env loads", () => {
   assert.equal(loaded.ttlSeconds, 600);
 });
 
-test("config: the gateway key must not be the sponsor wallet", () => {
+test("config: the gateway key must not be the events sponsor wallet", () => {
   const loaded = loadEnsGatewayConfig({ ...BASE_ENV, WOCO_SPONSOR_PRIVATE_KEY: SIGNER_PK });
   assert.ok("disabled" in loaded);
-  assert.match(loaded.disabled, /must not be the sponsor wallet/);
+  assert.match(loaded.disabled, /must not be a sponsor wallet/);
 });
 
-test("config: a DIFFERENT sponsor key is fine", () => {
-  const other = Wallet.createRandom().privateKey;
-  const loaded = loadEnsGatewayConfig({ ...BASE_ENV, WOCO_SPONSOR_PRIVATE_KEY: other });
+test("config: the gateway key must not be the NAMES sponsor wallet either", () => {
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    WOCO_SPONSOR_PRIVATE_KEY: Wallet.createRandom().privateKey,
+    SUB_ENS_SPONSOR_PRIVATE_KEY: SIGNER_PK,
+  });
+  assert.ok("disabled" in loaded);
+  assert.match(loaded.disabled, /must not be a sponsor wallet/);
+});
+
+test("config: DIFFERENT sponsor keys are fine", () => {
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    WOCO_SPONSOR_PRIVATE_KEY: Wallet.createRandom().privateKey,
+    SUB_ENS_SPONSOR_PRIVATE_KEY: Wallet.createRandom().privateKey,
+  });
   assert.ok(!("disabled" in loaded));
 });
 

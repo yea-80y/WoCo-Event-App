@@ -5,6 +5,7 @@ import {
   type SessionDelegation,
   deriveFeedSignerKey,
   FEATURES,
+  KERNEL_CHAIN_ID,
 } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 import { AUTH_NOTICE_KEY } from "./auth-notice.js";
@@ -2208,6 +2209,64 @@ async function ensureAccountSetup(opts: { identity: boolean }): Promise<boolean>
 }
 
 // ---------------------------------------------------------------------------
+// Signing as the HOLDER (sub-ENS pointer + release)
+// ---------------------------------------------------------------------------
+
+/**
+ * Sign EIP-712 typed data as the account that HOLDS this login's names —
+ * `auth.parent`, which the registrar and registry check. Never the session key
+ * and never the seed key: neither holds anything on chain.
+ *
+ *   web3              → the injected wallet, switched to the domain's chain
+ *                       first (wallets refuse typed data for an inactive chain).
+ *   passkey, web3auth → the Kernel's own ERC-1271 signature. While the account
+ *                       is undeployed viem's smart-account wrapper makes it
+ *                       ERC-6492, and the contracts' validator simulates the
+ *                       deploy and accepts it — proven on Arbitrum Sepolia
+ *                       2026-09-19, with the account left undeployed. The
+ *                       passkey build may ask for the passkey; the click that
+ *                       got here is the deliberate gesture.
+ *   coinbase          → refused. A Coinbase Smart Wallet signs for Base whatever
+ *                       the domain says, so no signature of its can verify on
+ *                       the names' chain; its holder acts by its own
+ *                       transaction (Fable sponsor-key consult §11.1), which is
+ *                       not built yet.
+ */
+async function signTypedDataAsHolder(typed: {
+  domain: { chainId: number } & Record<string, unknown>;
+  types: Record<string, Array<{ name: string; type: string }>>;
+  message: Record<string, unknown>;
+}): Promise<string> {
+  const parent = _parent;
+  if (!parent) throw new Error("Sign in again first. Nothing was signed.");
+  if (_kind === "web3") {
+    const [{ switchChain }, { getEthersProvider }, { JsonRpcSigner }] = await Promise.all([
+      import("../payment/chains.js"),
+      import("../wallet/provider.js"),
+      import("ethers"),
+    ]);
+    await switchChain(typed.domain.chainId as Parameters<typeof switchChain>[0]);
+    const signer = new JsonRpcSigner(await getEthersProvider(), parent);
+    return signer.signTypedData(typed.domain, typed.types, typed.message);
+  }
+  if (_kind === "passkey" || _kind === "web3auth") {
+    // A Kernel's ERC-1271 answer is bound to the chain it lives on. Asked to sign
+    // for another chain, it would produce a signature that chain's contract can
+    // never accept — so refuse here, before any passkey prompt, rather than
+    // after the relay refuses it (Fable sign-off F7; `releaseRails` does the
+    // same for discards).
+    if (typed.domain.chainId !== KERNEL_CHAIN_ID) {
+      throw new Error("This account can't sign for that network yet. Nothing was signed.");
+    }
+    await _ensureKernelForKind();
+    if (!_kernel) throw new Error("Account unavailable — please sign in again. Nothing was signed.");
+    const { createKernelTypedDataSigner } = await import("./kernel-account.js");
+    return createKernelTypedDataSigner(_kernel.account)(typed.domain, typed.types, typed.message);
+  }
+  throw new Error("Signing for a name isn't available for this sign-in method yet. Nothing was signed.");
+}
+
+// ---------------------------------------------------------------------------
 // Shop spend-permission grant (passkey/Kernel only)
 // ---------------------------------------------------------------------------
 
@@ -3333,6 +3392,7 @@ export const auth = {
   // ensureSession/ensureIdentitySeed in sequence, and never count prompts.
   ensureAccountSetup,
   grantSpendPermission,
+  signTypedDataAsHolder,
   setupAccountRecovery,
   removeAccountBackups,
   recoverAndRekey,

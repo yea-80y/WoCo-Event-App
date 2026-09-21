@@ -25,8 +25,13 @@ import {
   SUB_ENS_PARENT_LABEL,
 } from "@woco/shared";
 import { getChainRpcUrl } from "../chain/event-contract.js";
-import { getRegistrarAddress, getRegistryAddress, getSubEnsChainId } from "../chain/sub-ens-contract.js";
-import { getSponsorAddress } from "../chain/sponsor-wallet.js";
+import {
+  getRegistrarAddress,
+  getRegistryAddress,
+  getSubEnsChainId,
+  getSubEnsSponsorAddress,
+  sponsorKeysConflict,
+} from "../chain/sub-ens-contract.js";
 import { BEE_URL, POSTAGE_BATCH_ID } from "../../config/swarm.js";
 import { readEthernaStamp } from "../etherna/batches.js";
 import {
@@ -277,9 +282,9 @@ export const liveReaders: HealthReaders = {
   sponsorBalance: async () => {
     let sponsor: string;
     try {
-      sponsor = getSponsorAddress();
+      sponsor = getSubEnsSponsorAddress();
     } catch {
-      throw new SponsorUnconfigured("WOCO_SPONSOR_PRIVATE_KEY is not set");
+      throw new SponsorUnconfigured("SUB_ENS_SPONSOR_PRIVATE_KEY is not set");
     }
     return withTimeout(subEnsChain().getBalance(sponsor), "sponsor getBalance");
   },
@@ -287,7 +292,7 @@ export const liveReaders: HealthReaders = {
     const registrar = new Contract(getRegistrarAddress(getSubEnsChainId()), WOCO_REGISTRAR_ABI, subEnsChain());
     let sponsor: string | null = null;
     try {
-      sponsor = getSponsorAddress();
+      sponsor = getSubEnsSponsorAddress();
     } catch {
       sponsor = null; // no key: nothing is authorised, and the balance check says why
     }
@@ -526,7 +531,7 @@ export async function refreshSubEnsMinting(
   noteVerdict("subEns.minting.globalMint", section.checks.globalMint, log, policyReading.detail);
   noteVerdict("subEns.minting.cswFactory", section.checks.cswFactory, log, cswFactoryReading.detail);
 }
-const SPONSOR_UNCONFIGURED = "no sponsor wallet configured (WOCO_SPONSOR_PRIVATE_KEY)";
+const SPONSOR_UNCONFIGURED = "no names sponsor wallet configured (SUB_ENS_SPONSOR_PRIVATE_KEY)";
 
 // ---------------------------------------------------------------------------
 // Sections
@@ -768,6 +773,9 @@ export interface SubEnsMintingSection {
 
 export function subEnsMintingHealth(now: number = Date.now()): SubEnsMintingSection {
   const { subEnsMinting: cfg } = readThresholdsFromEnv(process.env);
+  // Boot already refuses equal sponsor keys; this is for a process started
+  // with that check bypassed (Fable sponsor-key consult §6).
+  const configError = [cfg.configError, sponsorKeysConflict() ?? undefined].filter(Boolean).join("; ") || undefined;
   const chainId = getSubEnsChainId();
   const serverRegistry = getRegistryAddress(chainId).toLowerCase();
   const enrolment = enrolmentReading.value;
@@ -806,7 +814,7 @@ export function subEnsMintingHealth(now: number = Date.now()): SubEnsMintingSect
 
   let sponsor: string | null = null;
   try {
-    sponsor = getSponsorAddress();
+    sponsor = getSubEnsSponsorAddress();
   } catch {
     sponsor = null;
   }
@@ -826,7 +834,7 @@ export function subEnsMintingHealth(now: number = Date.now()): SubEnsMintingSect
     checks: { registrarEnrolled, sponsorBalance, sponsorAuthorised, globalMint, cswFactory },
     stale: isStale(oldest, now, PROBE_INTERVAL_MS),
     checkedAt: oldest === null ? null : new Date(oldest).toISOString(),
-    ...(cfg.configError ? { configError: cfg.configError } : {}),
+    ...(configError ? { configError } : {}),
   };
 }
 

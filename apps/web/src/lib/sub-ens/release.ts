@@ -4,13 +4,14 @@
  * Three rails, one signed payload. The AUTHORITY is always the holder's
  * signature or their own transaction; only the GAS differs:
  *
- *  1. Relay (preferred, free to the user). The holder signs the release digest
- *     and `POST /api/sub-ens/relay-release` submits it with sponsor gas. Works
- *     for a plain wallet, which no paymaster can ever cover.
- *  2. Kernel sudo userOp. Used when the relay refuses the signature — the
- *     likely case being a COUNTERFACTUAL Kernel, whose ERC-1271 answer the
- *     ERC-6492 validator cannot check until the account is deployed. The sudo
- *     op deploys it as a side effect and the paymaster pays.
+ *  1. Relay (preferred, free to the user). The holder signs the release as
+ *     EIP-712 typed data and `POST /api/sub-ens/relay-release` submits it with
+ *     sponsor gas. Works for a plain wallet, which no paymaster can ever cover.
+ *  2. Kernel sudo userOp — for a relay refusal the next rail may get past. An
+ *     UNDEPLOYED Kernel is NOT such a case: viem's smart-account wrapper signs
+ *     it as ERC-6492, and the registry's validator simulates the deploy and
+ *     accepts it (Arbitrum Sepolia rehearsal, 2026-09-19: 272,746 gas, the
+ *     account left undeployed). Not wired yet.
  *  3. Own-gas `release()` from the wallet. The floor: it needs nothing from us.
  *
  * NEVER a scoped session key. None is left on the device — the last one went
@@ -20,43 +21,46 @@
  * deliberate action gets the deliberate gesture (a passkey prompt, or a wallet
  * confirmation).
  *
- * The digest subtlety that makes or breaks all of this is in `release-digest.ts`.
+ * What is signed, and why each field, is in `release-digest.ts`.
+ *
+ * A name with names beneath it cannot be released (registry v2.1). That
+ * refusal is shown, never routed round: every rail would meet it.
  */
 
-import { SUB_ENS_DEPLOYMENTS } from "@woco/shared";
+import { SUB_ENS_DEPLOYMENTS, subEnsName } from "@woco/shared";
 import type { Hex0x } from "@woco/shared";
 import { authPost } from "../api/client.js";
 import {
   RELEASE_DIGEST_ABI,
-  buildReleaseInnerHash,
+  buildReleaseTypedData,
   releaseExpiration,
+  type ReleaseTypedData,
 } from "./release-digest.js";
+import { unroutableReleaseRefusal } from "./errors.js";
 import { SUB_ENS_CHAIN_ID as CHAIN_ID, subEnsRpcUrl as rpcUrl } from "./rpc.js";
 import { rememberOwner } from "./verify-name.js";
 
 // The registry's chain and RPC live in `rpc.ts`, shared with the share sheet's
-// name reads. The digest below is bound to that chain's EIP-712 domain, which is
-// why it must never follow the Kernel's chain constant instead.
+// name reads. The typed data below names that chain in its EIP-712 domain,
+// which is why it must never follow the Kernel's chain constant instead.
 const REGISTRY = SUB_ENS_DEPLOYMENTS[CHAIN_ID].registry;
 
 const RELEASE_ABI = [...RELEASE_DIGEST_ABI, "function release(bytes32 node)"];
 
 /**
- * Build the exact bytes the holder must sign, cross-checked against the chain.
+ * Build the typed data the holder must sign, cross-checked against the chain.
  *
- * We derive the inner hash locally because that is what a wallet has to be
- * handed — `releaseDigest` is already EIP-191-wrapped, so signing IT would
- * prefix twice and produce a signature the contract rejects. Having derived it,
- * we assert that hashing it reproduces the contract's own `releaseDigest` and
- * REFUSE on any mismatch, so this file drifting from the deployed contract can
- * never yield a signature aimed at something we did not intend.
+ * Built locally because that is what a wallet has to be handed; then hashed
+ * and compared with the contract's own `releaseDigest`, and REFUSED on any
+ * mismatch, so this file drifting from the deployed contract can never yield a
+ * signature aimed at something we did not intend.
  */
 export async function prepareRelease(label: string): Promise<{
   node: Hex0x;
-  innerHash: Hex0x;
+  typedData: ReleaseTypedData;
   expiration: number;
 }> {
-  const { JsonRpcProvider, Contract, AbiCoder, keccak256, namehash, concat, toUtf8Bytes, hashMessage } =
+  const { JsonRpcProvider, Contract, TypedDataEncoder, keccak256, namehash, concat, toUtf8Bytes } =
     await import("ethers");
 
   const provider = new JsonRpcProvider(rpcUrl());
@@ -64,47 +68,40 @@ export async function prepareRelease(label: string): Promise<{
 
   // node = keccak(baseNode ‖ keccak(label)) — the same derivation the registry
   // and the server use. Recomputed rather than trusted from anywhere.
-  const node = keccak256(
-    concat([namehash("woco.eth"), keccak256(toUtf8Bytes(label.toLowerCase().trim()))]),
-  ) as Hex0x;
+  const normalised = label.toLowerCase().trim();
+  const node = keccak256(concat([namehash("woco.eth"), keccak256(toUtf8Bytes(normalised))])) as Hex0x;
 
-  const expiration = releaseExpiration();
-  const [typehash, recordVersion, onChainDigest] = await Promise.all([
-    registry.RELEASE_TYPEHASH() as Promise<string>,
+  // "Now" is the registry chain's latest block, not this device's clock: the
+  // registry compares the expiration with `block.timestamp`, which on Arbitrum
+  // may run up to a day behind real time or an hour ahead of it, and the relay
+  // bounds the window against the same block (audit 950 Low 13).
+  const latest = await provider.getBlock("latest");
+  if (!latest) throw new Error("Could not read the registry chain's clock. Nothing was signed.");
+  const expiration = releaseExpiration(latest.timestamp * 1000);
+  const [recordVersion, onChainDigest] = await Promise.all([
     registry.recordVersions(node) as Promise<bigint>,
     registry.releaseDigest(node, expiration) as Promise<string>,
   ]);
 
-  const coder = AbiCoder.defaultAbiCoder();
-  const innerHash = buildReleaseInnerHash(
-    {
-      typehash: typehash as Hex0x,
-      registry: REGISTRY,
-      chainId: CHAIN_ID,
-      node,
-      recordVersion,
-      expiration,
-    },
-    { encode: (t, v) => coder.encode(t, v), keccak256 },
-  );
+  const typedData = buildReleaseTypedData({
+    registry: REGISTRY,
+    chainId: CHAIN_ID,
+    name: subEnsName(normalised),
+    node,
+    recordVersion,
+    expiration,
+  });
 
   // The check that keeps the chain authoritative.
-  if (hashMessage(getBytes32(innerHash)).toLowerCase() !== onChainDigest.toLowerCase()) {
+  const local = TypedDataEncoder.hash(typedData.domain, typedData.types, typedData.message);
+  if (local.toLowerCase() !== onChainDigest.toLowerCase()) {
     throw new Error(
       "Refusing to sign: this app's release digest does not match the registry's. " +
         "Nothing was signed. Please report this — it means the app and the contract disagree.",
     );
   }
 
-  return { node, innerHash, expiration };
-}
-
-/** ethers' `getBytes` without importing it at module scope. */
-function getBytes32(hex: string): Uint8Array {
-  const clean = hex.replace(/^0x/, "");
-  const out = new Uint8Array(32);
-  for (let i = 0; i < 32; i++) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
-  return out;
+  return { node, typedData, expiration };
 }
 
 export interface ReleaseResult {
@@ -117,8 +114,9 @@ export interface ReleaseResult {
  * Release `label`, preferring the free rail and falling back rather than
  * stranding the holder.
  *
- * A relay refusal is NOT an error the user should see: it means the sponsor
- * would not or could not submit, and the holder can always act alone. So each
+ * A relay refusal is NOT an error the user should see unless no other rail
+ * could succeed (`unroutableReleaseRefusal`): it means the sponsor would not
+ * or could not submit, and the holder can always act alone. So each other
  * failure steps down a rail instead of surfacing.
  */
 export async function releaseName(
@@ -129,21 +127,16 @@ export async function releaseName(
     /** Present for wallet logins — own-gas fallback. */
     walletRelease?: (node: Hex0x) => Promise<{ txHash: string }>;
     /**
-     * Signs the 32 RAW BYTES as an EIP-191 personal-sign message.
-     *
-     * `Uint8Array`, not a hex string, and that is the whole point: handed the
-     * 0x-string, ethers' `signMessage` and viem's `{ message }` both sign the
-     * 66-character TEXT rather than the 32 bytes it spells, `verifyMessage`
-     * recovers a stranger, and the release reverts `Unauthorized` on-chain
-     * with nothing local to catch it. The type makes that mistake unspellable:
-     * ethers takes the bytes directly, viem wants `{ raw: bytes }`.
+     * Signs the release as EIP-712 typed data (`eth_signTypedData_v4`). The
+     * domain names the registry's chain, which wallets require to be the
+     * active one, so the implementation switches chain before signing.
      */
-    signInnerHash: (inner: Uint8Array) => Promise<string>;
+    signTypedData: (typed: ReleaseTypedData) => Promise<string>;
   },
 ): Promise<ReleaseResult> {
-  const { node, innerHash, expiration } = await prepareRelease(label);
+  const { node, typedData, expiration } = await prepareRelease(label);
 
-  const signature = await opts.signInnerHash(getBytes32(innerHash));
+  const signature = await opts.signTypedData(typedData);
   const relayed = await authPost<{ label: string; txHash: string }>(
     "/api/sub-ens/relay-release",
     { label, expiration, signature },
@@ -153,13 +146,8 @@ export async function releaseName(
     return { txHash: relayed.data.txHash, via: "relay" };
   }
 
-  // A refusal the user MUST see rather than route around: their own identity
-  // name, which the server declines to sponsor on purpose.
-  if (relayed.error === "profile_name") {
-    throw new Error(
-      "That's the name your profile is known by. Change your profile name first, then release this one.",
-    );
-  }
+  const shown = unroutableReleaseRefusal(relayed.error);
+  if (shown) throw new Error(shown);
 
   console.warn("[sub-ens] release relay refused, falling back to own signer:", relayed.error);
   const fallback = opts.kernelRelease ?? opts.walletRelease;

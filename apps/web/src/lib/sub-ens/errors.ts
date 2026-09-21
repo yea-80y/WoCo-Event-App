@@ -54,12 +54,21 @@ const MS_PER_DAY = 86_400_000;
 export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescription {
   switch (env.error) {
     case "mint_rate_cap": {
-      // `WoCoRegistrar._consumeMintAllowance` reverts with
-      // `w.start + mintWindowSeconds` — a block timestamp, so UNIX SECONDS.
+      // `WoCoRegistrar._consumeMintAllowance` reverts with the window's
+      // recorded end — a block timestamp, so UNIX SECONDS.
       const secs = env.data?.windowResetsAt;
       return {
         title: "You've registered as many names as you can for now.",
         detail: "You can register another one after the wait ends.",
+        ...(typeof secs === "number" && secs > 0 ? { retryAt: secs * MS_PER_SECOND } : {}),
+      };
+    }
+    case "mint_global_cap": {
+      // The registrar-wide cap: names are busy for everyone, not this caller.
+      const secs = env.data?.windowResetsAt;
+      return {
+        title: "Lots of names are being registered right now.",
+        detail: "Nothing was registered — try again after the wait.",
         ...(typeof secs === "number" && secs > 0 ? { retryAt: secs * MS_PER_SECOND } : {}),
       };
     }
@@ -82,6 +91,32 @@ export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescri
       return { title: "Too many requests right now.", detail: "Wait a few minutes and try again." };
     case "release_in_flight":
       return { title: "That name is already being released.", detail: "Give it a minute, then refresh." };
+    case "pointer_in_flight":
+      return { title: "That name is already being updated.", detail: "Give it a minute, then refresh." };
+    case "signature_not_authorised":
+      return {
+        title: "That signature isn't from the account holding this name.",
+        detail: "Nothing was changed. Sign in with the account that holds it and try again.",
+      };
+    case "signature_expired":
+      return { title: "That signature expired before it was used.", detail: "Nothing was changed — try again." };
+    case "chain_clock_unverified":
+      return { title: "Couldn't reach the network to check the time.", detail: "Nothing was changed — try again in a minute." };
+    case "no_feed_manifest":
+      return {
+        title: "This publish has no stable address for your name yet.",
+        detail: "Publish again and your name will be offered it.",
+      };
+    case "has_children":
+      return {
+        title: "This name has names beneath it.",
+        detail: "Release or move those first, then this one.",
+      };
+    case "expiration_too_far":
+      return {
+        title: "The network's clock is behind, so that signature can't be used yet.",
+        detail: "Try again in a few minutes.",
+      };
     case "expiration_out_of_range":
       return { title: "That signature expired before it reached us.", detail: "Try again." };
     case "not_owner":
@@ -107,6 +142,26 @@ export function describeSubEnsError(env: SubEnsErrorEnvelope): SubEnsErrorDescri
       // Several routes answer with prose already ("You do not own that name").
       // Pass it through rather than replacing a specific message with a vague one.
       return { title: env.error || "Something went wrong" };
+  }
+}
+
+/**
+ * A release-relay refusal the holder must SEE rather than have routed round to
+ * their own rail, as the sentence to show; `null` for one the next rail may get
+ * past.
+ *
+ * `profile_name`: the name the holder is known by, which the server declines to
+ * sponsor on purpose. `has_children`: the registry refuses to release a name
+ * with names beneath it, so every rail would fail the same way.
+ */
+export function unroutableReleaseRefusal(error: string | undefined): string | null {
+  switch (error) {
+    case "profile_name":
+      return "That's the name your profile is known by. Change your profile name first, then release this one.";
+    case "has_children":
+      return "This name has names beneath it. Release or move those first, then this one.";
+    default:
+      return null;
   }
 }
 

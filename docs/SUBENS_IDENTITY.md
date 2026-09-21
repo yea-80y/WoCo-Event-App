@@ -86,14 +86,22 @@ and a `crossCheck` flag.
 
 ---
 
-## Claiming a name
+## Claiming a name, and pointing it
 
-- **Passkey and email users claim gaslessly.** The account is a ZeroDev Kernel on the *same*
-  chain as the registry, and a scoped session key calls `registerWithPermit(...)` against a
-  server-signed permit, sponsored by the paymaster. The user pays no gas and signs no raw
-  transaction.
-- The registrar enforces availability, one canonical record per name, a per-recipient mint cap,
-  and sets the EIP-1577 **contenthash** so a name can resolve to a Swarm site.
+- **The platform mints, for every login kind.** `POST /api/sub-ens/claim` sends
+  `register(label, holder)` from the NAMES sponsor key (`SUB_ENS_SPONSOR_PRIVATE_KEY`, never the
+  events key). The name is minted EMPTY: its holder and the holder's own address records, no
+  contenthash and no text records.
+- The registrar enforces availability, the label rules, a per-recipient mint cap and a
+  registrar-wide cap (300 an hour at deploy, the leaked-key detector; `mint_global_cap` → 503).
+- **What a name points at is the holder's signature, never the platform's** (registrar v2.2).
+  The holder signs EIP-712 `SetContenthash` (`"WoCo Registrar"`/`"1"`; name, node, contenthash,
+  per-name nonce, expiration) and `POST /api/sub-ens/set-contenthash` relays it; no WoCo key can
+  repoint a name. It is asked for once, at BIND: a site name points at the site's feed manifest,
+  which every publish advances, so publishing never needs a chain write or a prompt. A profile
+  name points at the app (`SUB_ENS_APEX_CONTENTHASH`) and nowhere else. Web3 wallets sign
+  directly; passkey and web3auth sign as their Kernel (ERC-1271); a Coinbase Smart Wallet's
+  signature only verifies on Base, so its holder will act by its own transaction.
 - Claiming is behind the **attendee gate**: hold a ticket, or be an organiser
   ([TICKETING.md § The attendee gate](./TICKETING.md#7-the-attendee-gate)).
 
@@ -127,6 +135,26 @@ deliberately outlives the name it refers to — nothing deletes a record, becaus
 `release old → mint new → bind` would read as a first bind and skip the cooldown.
 
 Administrative reclaim is `adminTransfer` — **transfer-only, no timelock**, held by the Safe.
+
+### Registry v2.2 rules (they arrive with the v2.2 cutover)
+
+After audit 950 the registry refuses ERC-721 delegation, because a name's holder has every power
+over it and an approval let the approvee become the holder. What that means in practice:
+
+- **No approvals.** `approve` and `setApprovalForAll` always revert `DelegationNotSupported()`,
+  and only a name's holder moves it. Names cannot be listed on approval-based marketplaces. A
+  sale is the holder's own transfer, or a push into an escrow contract that pays the seller and
+  hands the name on in the same transaction (proven in the contracts suite, not built). Listing is
+  a change of holder, so it resets the name's records while it is listed.
+- **Custody is push-only, and not custodial-safe.** A vault receives a name by its holder's
+  `safeTransferFrom`. The admin can still `adminTransfer` it, and the holder of the name above can
+  still take or release it, whoever holds it.
+- **An admin handover drops every registrar,** WoCoRegistrar included. The incoming admin's
+  acceptance is therefore ONE executor batch, `[acceptAdmin(), addRegistrar(WoCoRegistrar)]`.
+  Accepted alone, new names and relayed pointer writes stop (the server answers 503) until the second
+  call lands; existing names keep resolving. The `subEns.minting` health section alarms on it.
+- **No public `multicall`.** A smart-account holder batches record writes in its own user
+  operation.
 
 ---
 

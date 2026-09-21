@@ -1,4 +1,5 @@
-import type { UserProfile, UpdateProfileRequest } from "@woco/shared";
+import type { PointerRequest, UserProfile, UpdateProfileRequest } from "@woco/shared";
+import { profileBindOutcome, type ProfileBindOutcome, type ProfileBindWarning } from "../sub-ens/pointer-policy.js";
 import { profileDataContentTopic, profileAvatarContentTopic } from "@woco/shared";
 import { authPost, authGet, get } from "./client.js";
 import { apiError } from "./errors.js";
@@ -184,9 +185,11 @@ export async function getProfileNameStatus(): Promise<ProfileNameStatus | null> 
 /**
  * A bind that SUCCEEDED but is worth saying out loud. `points_at_site` means
  * the name already resolves to a site of the holder's and keeps doing so — not
- * a failure, so it must not render as one.
+ * a failure, so it must not render as one. `pointer` is an ask for the HOLDER
+ * to sign: the name is empty and should open the app (registrar v2.2 — the
+ * server never writes a pointer itself).
  */
-export type ProfileBindWarning = "points_at_site";
+export type { ProfileBindWarning, ProfileBindOutcome } from "../sub-ens/pointer-policy.js";
 
 /**
  * Update the authenticated user's profile.
@@ -200,7 +203,7 @@ export type ProfileBindWarning = "points_at_site";
  */
 export async function updateProfile(
   updates: UpdateProfileRequest,
-  onBindWarning?: (warning: ProfileBindWarning) => void,
+  onBind?: (outcome: ProfileBindOutcome) => void,
 ): Promise<UserProfile | null> {
   const signer = await auth.getContentFeedSigner();
   const parent = auth.parent?.toLowerCase();
@@ -208,11 +211,11 @@ export async function updateProfile(
   if (!signer || !parent) {
     const resp = await authPost<UserProfile>("/api/profile", updates as Record<string, unknown>);
     if (resp.ok && resp.data) {
-      // This route puts `warning` at the TOP LEVEL of the envelope; the Phase B
-      // route below nests it under `data`. Both reach us — `safeJson` spreads
-      // the whole body — so read it where each one actually sends it.
-      const warning = (resp as { warning?: string }).warning;
-      if (warning === "points_at_site") onBindWarning?.("points_at_site");
+      // This route puts `warning` / `pointer` at the TOP LEVEL of the envelope;
+      // the Phase B route below nests them under `data`. Both reach us —
+      // `safeJson` spreads the whole body — so read them where each is sent.
+      const outcome = profileBindOutcome(resp as { warning?: unknown; pointer?: unknown });
+      if (outcome) onBind?.(outcome);
       cacheStore(resp.data.address, resp.data);
       return resp.data;
     }
@@ -233,12 +236,14 @@ export async function updateProfile(
   }
   let verifiedLabel: string | undefined;
   if (updates.subEnsLabel !== undefined && updates.subEnsLabel !== null && updates.subEnsLabel !== "") {
-    const res = await authPost<{ label: string; warning?: ProfileBindWarning }>("/api/profile/verify-label", {
-      subEnsLabel: updates.subEnsLabel,
-    });
+    const res = await authPost<{ label: string; warning?: ProfileBindWarning; pointer?: PointerRequest }>(
+      "/api/profile/verify-label",
+      { subEnsLabel: updates.subEnsLabel },
+    );
     if (!res.ok || !res.data) throw apiError(res, "You do not own that name");
     verifiedLabel = res.data.label;
-    if (res.data.warning === "points_at_site") onBindWarning?.("points_at_site");
+    const outcome = profileBindOutcome(res.data);
+    if (outcome) onBind?.(outcome);
   }
 
   // Self-read the existing data feed to carry forward unedited fields.
