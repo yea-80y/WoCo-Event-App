@@ -65,7 +65,7 @@ class ScannerStore {
     if (fragment) {
       await this.provision(fragment.token, fragment.keyB64url);
       // Scrub the secret-bearing fragment from the address bar + history.
-      history.replaceState(null, "", location.pathname + location.search);
+      history.replaceState(null, "", new URL(location.pathname + location.search, location.href).href);
       return;
     }
 

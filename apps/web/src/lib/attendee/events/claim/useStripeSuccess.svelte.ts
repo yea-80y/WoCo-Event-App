@@ -38,7 +38,9 @@ export function useStripeSuccess(opts: UseStripeSuccessOpts) {
         const newHash = window.location.hash
           .replace(/[?&]stripe=success/, "")
           .replace(/[?&]session_id=[^&]*/, "");
-        window.history.replaceState(null, "", url.pathname + url.search + newHash);
+        // Absolute: a relative URL resolves against the <base href> gateway and
+        // throws cross-origin in the app, so the strip silently never ran (#605).
+        window.history.replaceState(null, "", new URL(url.pathname + url.search + newHash, window.location.href).href);
       } catch { /* ignore */ }
     },
     /** User dismissed the success modal. Keeps `claimed=true` upstream so the
