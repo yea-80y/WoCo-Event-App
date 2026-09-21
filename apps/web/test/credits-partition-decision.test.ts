@@ -18,7 +18,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decideVisibility, shouldRetryCold, type IndexRead } from "../src/lib/credits/partition.js";
+import { decideVisibility, shouldRetryCold, type IndexRead, mergeSubjectPartitions } from "../src/lib/credits/partition.js";
 import type { Hex0x } from "@woco/shared";
 
 const SUBJECT = `0x${"11".repeat(32)}` as Hex0x;
@@ -158,4 +158,37 @@ test("public wins on band as well as partition, mid-publish", () => {
   // the one being retired, so its band must not be the one we write into.
   const r = decideVisibility(ok([SUBJECT], 2), ok([SUBJECT], 9), SUBJECT);
   assert.deepEqual(r, { status: "ok", visibility: "public", band: 2 });
+});
+
+// ---------------------------------------------------------------------------
+// Listing a whole collection — `mergeSubjectPartitions`
+// ---------------------------------------------------------------------------
+
+test("a collection is both partitions, and public wins a subject in both", () => {
+  // Mid-publish is the ONLY way a subject is in both, and there the public head
+  // is the newer one. Taking the private entry would read the RETIRED head and
+  // show a lower count than the rider has, on the screen that lists what they
+  // own.
+  const merged = mergeSubjectPartitions(
+    [{ subject: "0xaa", band: 0 }],
+    [{ subject: "0xaa", band: 3 }, { subject: "0xbb", band: 1 }],
+  );
+  const byId = new Map(merged.map((e) => [e.subject, e]));
+  assert.equal(merged.length, 2, "one entry per subject, never one per partition");
+  assert.equal(byId.get("0xaa")?.visibility, "public");
+  assert.equal(byId.get("0xaa")?.band, 0, "and the public entry's own band, not the retired one's");
+  assert.equal(byId.get("0xbb")?.visibility, "private");
+  assert.equal(byId.get("0xbb")?.band, 1);
+});
+
+test("either partition alone is a whole collection", () => {
+  assert.deepEqual(
+    mergeSubjectPartitions([{ subject: "0xaa", band: 2 }], []),
+    [{ subject: "0xaa", band: 2, visibility: "public" }],
+  );
+  assert.deepEqual(
+    mergeSubjectPartitions([], [{ subject: "0xbb", band: 0 }]),
+    [{ subject: "0xbb", band: 0, visibility: "private" }],
+  );
+  assert.deepEqual(mergeSubjectPartitions([], []), []);
 });

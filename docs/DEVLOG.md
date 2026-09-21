@@ -4,6 +4,34 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## Lap times: a private, timed log of every lap, that survives no signal (2026-09-19)
+
+Built for Rita 100 (21 Sep). `woco.credit.v1` is closed and carries no times on purpose, so a
+lap's time goes in the sidecar the plan reserved: `woco.lap-diary.v1`
+(`packages/shared/src/credit/lap-diary.ts`), one write-once entry per statement `seq`, sealed
+to the rider's own X25519 key under its own topic salt. Rejected: one list per day rewritten on
+each tap - a read-modify-write snapshot, a 130-version unbanded feed on a record day, and the
+whole day re-uploaded on every late tap.
+
+The tap no longer waits for the network. `collect()` reads the clock in its first line and
+writes the lap to a journal on the phone (`lib/credits/lap-journal.ts`, pure);
+`lap-sender.ts` drains it. The rule that matters: taps are bound to ONE exact write that is
+saved before upload and re-sent unchanged on any retry, because an upload can land while its
+reply is lost and a rebuilt statement would count those laps twice, permanently. `attemptRide`
+split into `buildRide` (read, sign, seal) and `sendRide` for this. Waiting taps go up as one
+statement per UTC date, dated by the TAPS; the diary entry carries one time per lap. Laps whose
+date is behind a newer head (a second device) are HELD rather than signed: folding signs a false
+date, and writing the true date signs a false count, since the carry rule resets
+`session.count` whenever the date differs. The count on screen is always one somebody wrote,
+with waiting laps beside it. Sign-out asks first when it would destroy unsent laps or unsealed
+times. Also fixed: a failed read used to blank the card to "Not collected yet". Rita's
+double-tap guard is 1 minute (was 2).
+
+Not built: publishing times (design only - allowlisted holders with a pinned feed owner, not a
+general toggle), an offline app shell, the backwards-date writer.
+
+---
+
 ## Add to WoCo is offered whenever the automatic add did not land (#582, 2026-09-15)
 
 A signed-in buyer's first ticket is added to their account at fulfilment, and the ticket

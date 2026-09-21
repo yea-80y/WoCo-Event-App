@@ -220,7 +220,18 @@ export const WOCO_SUBJECT_DEFINITIONS: readonly SubjectDefinition[] = [
     // PROVISIONAL. The plan requires this be set from the actual planned
     // cadence rather than a default, and that number comes from the rider —
     // a launch coaster's cycle plus re-ride arrangement, not a guess here.
-    cadenceMinutes: 2,
+    //
+    // 0.5, down from 1 and originally 2 (owner, 2026-09-19/20, the second cut
+    // made while testing on a phone and being refused a second lap).
+    //
+    // Sized from what the guard is FOR, which is the only honest way to set it:
+    // it catches a fumbled double tap, and a fumble lands within a second or
+    // two. Everything above that is refusing real laps for no gain — and on a
+    // 130-lap day with back-to-back re-rides a whole minute does exactly that,
+    // leaving a hole in the log nothing later can fill. It has never been an
+    // anti-fraud control (a determined inflater simply waits it out), so
+    // trading a rider's real lap for it was always the wrong way round.
+    cadenceMinutes: 0.5,
   },
   {
     // Minted 2026-08-18 so a demo never needs a false tap on Rita. Signing a
