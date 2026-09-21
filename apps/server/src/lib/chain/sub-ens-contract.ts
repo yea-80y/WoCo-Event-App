@@ -590,10 +590,10 @@ export async function relaySignedContenthash(
   // No signature in the log: it is a bearer authorisation until mined.
   console.log(`[sub-ens] pointer relayed label=${label} hash=${swarmHash.slice(0, 10)}… txHash=${receipt.hash}`);
   // Fire-and-forget: the receipt is the fact callers wait for; the warm-up is a
-  // courtesy, and it waits until the PUBLIC gateway serves the new pointer (#557).
+  // courtesy, and it waits until eth.limo can resolve the new pointer (#557).
   void warmSubEnsWebCertWhenResolvable(
     label,
-    hexlify(contenthash),
+    { contenthash: hexlify(contenthash), swarmHash },
     publicContenthashQueryUrl(subEnsName(label), chainId, getRegistryAddress(chainId)),
   );
   return receipt.hash as string;

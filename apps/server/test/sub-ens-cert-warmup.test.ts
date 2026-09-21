@@ -16,7 +16,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { AbiCoder, Interface, dnsEncode, namehash } from "ethers";
 import { subEnsName, subEnsWebUrl } from "@woco/shared";
-import { warmSubEnsWebCert, warmSubEnsWebCertWhenResolvable } from "../src/lib/sub-ens/cert-warmup.js";
+import {
+  ETH_LIMO_DOH_URL,
+  warmSubEnsWebCert,
+  warmSubEnsWebCertWhenResolvable,
+} from "../src/lib/sub-ens/cert-warmup.js";
 import { publicContenthashQueryUrl } from "../src/lib/ens-gateway/public-url.js";
 import { createCcipHandler } from "../src/lib/ens-gateway/ccip.js";
 
@@ -123,19 +127,25 @@ test("the warm-up runs only after the contenthash receipt", () => {
   assert.ok(warmIdx > 0, "the contenthash update must warm the name's certificate");
   assert.ok(warmIdx > waitIdx, "the warm-up must come after the receipt, never before");
   // Gated on what the public gateway serves, and on the contenthash just written.
-  assert.match(body.slice(warmIdx), /^warmSubEnsWebCertWhenResolvable\(\s*label,\s*hexlify\(contenthash\),\s*publicContenthashQueryUrl\(/);
+  assert.match(
+    body.slice(warmIdx),
+    /^warmSubEnsWebCertWhenResolvable\(\s*label,\s*\{\s*contenthash:\s*hexlify\(contenthash\),\s*swarmHash\s*\},\s*publicContenthashQueryUrl\(/,
+  );
   // The ungated knock is what bought eth.limo's negative on 2026-09-21 (#557).
   assert.ok(!/warmSubEnsWebCert\(label\)/.test(body), "the relay must not knock ungated");
 });
 
 // ---------------------------------------------------------------------------
-// Knock only once the public gateway serves the new pointer (#557)
+// Knock only once eth.limo can resolve the new pointer (#557)
 // ---------------------------------------------------------------------------
 
 const ABI = AbiCoder.defaultAbiCoder();
 const QUERY_URL = "https://api.example/api/ens-gateway/v1/0x1111111111111111111111111111111111111111/0xdead";
-const NEW_HASH = "0xe40101fa011b20" + "ab".repeat(32);
-const OLD_HASH = "0xe40101fa011b20" + "cd".repeat(32);
+const NEW_REF = "ab".repeat(32);
+const OLD_REF = "cd".repeat(32);
+const NEW = { contenthash: "0xe40101fa011b20" + NEW_REF, swarmHash: NEW_REF };
+const OLD_HASH = "0xe40101fa011b20" + OLD_REF;
+const HOST = subEnsWebUrl("punkpub");
 
 /** The body the gateway answers with: `(bytes result, uint64 expires, bytes sig)`, result = `abi.encode(bytes)`. */
 function gatewayBody(contenthash: string): string {
@@ -143,19 +153,37 @@ function gatewayBody(contenthash: string): string {
   return JSON.stringify({ data: ABI.encode(["bytes", "uint64", "bytes"], [result, 1n, "0x" + "00".repeat(65)]) });
 }
 
+/** eth.limo's DoH answer, in the shape `dns.eth.limo` returned on 2026-09-21. */
+function dohBody(ref: string | null, quoted = false): string {
+  const data = ref ? (quoted ? `"dnslink=/bzz/${ref}"` : `dnslink=/bzz/${ref}`) : null;
+  return JSON.stringify({
+    Status: "0",
+    Question: [{ name: "punkpub.woco.eth", type: 16 }],
+    Answer: data ? [{ name: "punkpub.woco.eth", data, type: 16, ttl: 300 }] : [],
+  });
+}
+
+type Answer = () => Response;
+const gatewayServing = (hash: string): Answer => () => new Response(gatewayBody(hash), { status: 200 });
+const ethLimoHolding = (ref: string | null, quoted = false): Answer => () =>
+  new Response(dohBody(ref, quoted), { status: 200 });
+
 /**
- * A fake network: the gateway query answers from `served` in turn (the last one
- * repeats), the name's web address answers the HEAD. Time only moves when the
- * code sleeps, so a five-minute window runs instantly.
+ * A fake network: the gateway query and eth.limo's DoH each answer from their
+ * own list in turn (the last repeats); anything else is the name's web address,
+ * answering the HEAD. Time only moves when the code sleeps, so the windows run
+ * instantly.
  */
-function fakeNetwork(served: Array<() => Response>) {
+function fakeNetwork(gateway: Answer[], ethLimo: Answer[] = [ethLimoHolding(NEW_REF)]) {
   const calls: Call[] = [];
-  let polls = 0;
+  let gw = 0;
+  let doh = 0;
   let clock = 0;
   const fn = (async (url: unknown, init: unknown) => {
     const u = String(url);
     calls.push({ url: u, init: (init ?? {}) as RequestInit });
-    if (u === QUERY_URL) return served[Math.min(polls++, served.length - 1)]();
+    if (u === QUERY_URL) return gateway[Math.min(gw++, gateway.length - 1)]();
+    if (u.startsWith(ETH_LIMO_DOH_URL)) return ethLimo[Math.min(doh++, ethLimo.length - 1)]();
     return response(200);
   }) as unknown as typeof fetch;
   const deps = {
@@ -166,84 +194,117 @@ function fakeNetwork(served: Array<() => Response>) {
     },
     intervalMs: 15_000,
     windowMs: 5 * 60_000,
+    ethLimoWindowMs: 6 * 60_000,
   };
-  return { deps, calls };
+  /** Each call as G (gateway), D (eth.limo DoH) or H (the knock), in order. */
+  const trace = () =>
+    calls.map((c) => (c.url === QUERY_URL ? "G" : c.url.startsWith(ETH_LIMO_DOH_URL) ? "D" : "H")).join("");
+  return { deps, calls, trace };
 }
 
-const serving = (hash: string) => () => new Response(gatewayBody(hash), { status: 200 });
-
-test("no knock until the gateway serves the new contenthash, then exactly one", async () => {
-  const { deps, calls } = fakeNetwork([serving(OLD_HASH), serving(OLD_HASH), serving(NEW_HASH)]);
-  const status = await warmSubEnsWebCertWhenResolvable("punkpub", NEW_HASH, QUERY_URL, { ...deps, log: () => {} });
+test("gateway first, then eth.limo, then exactly one knock", async () => {
+  const { deps, calls, trace } = fakeNetwork(
+    [gatewayServing(OLD_HASH), gatewayServing(OLD_HASH), gatewayServing(NEW.contenthash)],
+    [ethLimoHolding(null), ethLimoHolding(NEW_REF)],
+  );
+  const status = await warmSubEnsWebCertWhenResolvable("punkpub", NEW, QUERY_URL, { ...deps, log: () => {} });
 
   assert.equal(status, 200);
-  assert.deepEqual(
-    calls.map((c) => c.url),
-    [QUERY_URL, QUERY_URL, QUERY_URL, subEnsWebUrl("punkpub")],
-    "three polls, the knock only after the third saw the new pointer",
-  );
-  const head = calls[3].init;
-  assert.equal(head.method, "HEAD");
-  assert.equal(head.redirect, "manual");
+  // eth.limo is not asked while our gateway still says "unset": asking then is
+  // how its 300 s negative gets made.
+  assert.equal(trace(), "GGGDDH");
+  const head = calls.at(-1)!;
+  assert.equal(head.url, HOST);
+  assert.equal(head.init.method, "HEAD");
+  assert.equal(head.init.redirect, "manual");
 });
 
-test("the match ignores hex case", async () => {
-  const { deps, calls } = fakeNetwork([serving(NEW_HASH)]);
-  await warmSubEnsWebCertWhenResolvable("punkpub", NEW_HASH.toUpperCase().replace("0X", "0x"), QUERY_URL, {
-    ...deps,
-    log: () => {},
-  });
-  assert.equal(calls.filter((c) => c.url === subEnsWebUrl("punkpub")).length, 1);
+test("eth.limo is asked by name, for TXT, as DNS JSON", async () => {
+  const { deps, calls } = fakeNetwork([gatewayServing(NEW.contenthash)]);
+  await warmSubEnsWebCertWhenResolvable("punkpub", NEW, QUERY_URL, { ...deps, log: () => {} });
+  const doh = calls.find((c) => c.url.startsWith(ETH_LIMO_DOH_URL))!;
+  const u = new URL(doh.url);
+  assert.equal(u.origin + u.pathname, ETH_LIMO_DOH_URL);
+  assert.equal(u.searchParams.get("name"), subEnsName("punkpub"));
+  assert.equal(u.searchParams.get("type"), "TXT");
+  assert.equal(new Headers(doh.init.headers).get("accept"), "application/dns-json");
 });
 
-test("never served within the window: no knock at all", async () => {
-  const { deps, calls } = fakeNetwork([serving(OLD_HASH)]);
+test("the gateway never serving it: eth.limo is never asked and nothing knocks", async () => {
+  const { deps, calls } = fakeNetwork([gatewayServing(OLD_HASH)]);
   const lines: string[] = [];
-  const status = await warmSubEnsWebCertWhenResolvable("punkpub", NEW_HASH, QUERY_URL, {
+  const status = await warmSubEnsWebCertWhenResolvable("punkpub", NEW, QUERY_URL, {
     ...deps,
     log: (l) => lines.push(l),
   });
 
   assert.equal(status, null);
-  // A handshake while eth.limo would still be told "no contenthash" caches the
-  // negative for 300 s: the exact failure this exists to avoid.
-  assert.equal(calls.filter((c) => c.url !== QUERY_URL).length, 0);
+  assert.ok(calls.every((c) => c.url === QUERY_URL), "only the gateway may be asked");
   // Bounded: one poll at t=0 and one per interval up to the window, no more.
   assert.equal(calls.length, 5 * 60 / 15 + 1);
-  assert.match(lines.at(-1) ?? "", /cert warm-up skipped .*did not serve the new contenthash/);
+  assert.match(lines.at(-1) ?? "", /cert warm-up skipped .*public gateway did not serve/);
 });
 
-test("gateway errors and junk answers count as not yet", async () => {
-  const { deps, calls } = fakeNetwork([
-    () => response(502),
-    () => new Response("not json", { status: 200 }),
-    () => new Response(JSON.stringify({ message: "refused" }), { status: 200 }),
-    () => new Response(JSON.stringify({ data: "0x1234" }), { status: 200 }),
-    serving(NEW_HASH),
-  ]);
-  const status = await warmSubEnsWebCertWhenResolvable("punkpub", NEW_HASH, QUERY_URL, { ...deps, log: () => {} });
+test("eth.limo never resolving it: no knock, and the wait is bounded", async () => {
+  const { deps, calls, trace } = fakeNetwork([gatewayServing(NEW.contenthash)], [ethLimoHolding(OLD_REF)]);
+  const lines: string[] = [];
+  const status = await warmSubEnsWebCertWhenResolvable("punkpub", NEW, QUERY_URL, {
+    ...deps,
+    log: (l) => lines.push(l),
+  });
 
-  assert.equal(status, 200);
-  assert.equal(calls.filter((c) => c.url === QUERY_URL).length, 5);
-  assert.equal(calls.filter((c) => c.url === subEnsWebUrl("punkpub")).length, 1);
+  assert.equal(status, null);
+  assert.ok(!trace().includes("H"), "a knock now spends an ask to cache the negative");
+  assert.equal(calls.filter((c) => c.url.startsWith(ETH_LIMO_DOH_URL)).length, 6 * 60 / 15 + 1);
+  assert.match(lines.at(-1) ?? "", /cert warm-up skipped .*eth\.limo did not resolve/);
 });
 
-test("a thrown poll counts as not yet, and never becomes a knock", async () => {
-  const { deps, calls } = fakeNetwork([
-    () => {
-      throw new Error("ECONNRESET");
-    },
-    serving(NEW_HASH),
-  ]);
-  const status = await warmSubEnsWebCertWhenResolvable("punkpub", NEW_HASH, QUERY_URL, { ...deps, log: () => {} });
+test("the matches ignore hex case and a 0x on the reference, and accept a quoted TXT", async () => {
+  const { deps, trace } = fakeNetwork(
+    [gatewayServing(NEW.contenthash)],
+    [ethLimoHolding(NEW_REF.toUpperCase(), true)],
+  );
+  await warmSubEnsWebCertWhenResolvable(
+    "punkpub",
+    { contenthash: NEW.contenthash.toUpperCase().replace("0X", "0x"), swarmHash: "0x" + NEW_REF.toUpperCase() },
+    QUERY_URL,
+    { ...deps, log: () => {} },
+  );
+  assert.equal(trace(), "GDH");
+});
+
+test("errors and junk count as not yet, at both gates", async () => {
+  const { deps, trace } = fakeNetwork(
+    [
+      () => response(502),
+      () => new Response("not json", { status: 200 }),
+      () => new Response(JSON.stringify({ message: "refused" }), { status: 200 }),
+      () => new Response(JSON.stringify({ data: "0x1234" }), { status: 200 }),
+      () => {
+        throw new Error("ECONNRESET");
+      },
+      gatewayServing(NEW.contenthash),
+    ],
+    [
+      () => response(503),
+      () => new Response("not json", { status: 200 }),
+      () => new Response(JSON.stringify({ Answer: [{ data: 42 }, { data: "dnslink=/ipfs/bafy" }] }), { status: 200 }),
+      () => new Response(JSON.stringify({ Answer: [{ data: `dnslink=/bzz/${NEW_REF}/extra` }] }), { status: 200 }),
+      () => {
+        throw new Error("ETIMEDOUT");
+      },
+      ethLimoHolding(NEW_REF),
+    ],
+  );
+  const status = await warmSubEnsWebCertWhenResolvable("punkpub", NEW, QUERY_URL, { ...deps, log: () => {} });
   assert.equal(status, 200);
-  assert.equal(calls.filter((c) => c.url === subEnsWebUrl("punkpub")).length, 1);
+  assert.equal(trace(), "GGGGGGDDDDDDH");
 });
 
 test("no public gateway URL: nothing is fetched", async () => {
-  const { deps, calls } = fakeNetwork([serving(NEW_HASH)]);
+  const { deps, calls } = fakeNetwork([gatewayServing(NEW.contenthash)]);
   const lines: string[] = [];
-  const status = await warmSubEnsWebCertWhenResolvable("punkpub", NEW_HASH, null, {
+  const status = await warmSubEnsWebCertWhenResolvable("punkpub", NEW, null, {
     ...deps,
     log: (l) => lines.push(l),
   });
@@ -253,10 +314,19 @@ test("no public gateway URL: nothing is fetched", async () => {
 });
 
 test("the gated warm-up refuses a bad label before any request", async () => {
-  const { deps, calls } = fakeNetwork([serving(NEW_HASH)]);
-  const status = await warmSubEnsWebCertWhenResolvable("evil.com/x", NEW_HASH, QUERY_URL, { ...deps, log: () => {} });
+  const { deps, calls } = fakeNetwork([gatewayServing(NEW.contenthash)]);
+  const status = await warmSubEnsWebCertWhenResolvable("evil.com/x", NEW, QUERY_URL, { ...deps, log: () => {} });
   assert.equal(status, null);
   assert.equal(calls.length, 0);
+});
+
+test("a refused handshake logs its TLS cause, so an alert reads apart from a dead network", async () => {
+  const { fn } = fakeFetch(async () => {
+    throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR" } });
+  });
+  const lines: string[] = [];
+  await warmSubEnsWebCert("punkpub", { fetch: fn, log: (l) => lines.push(l) });
+  assert.match(lines[0], /failed: fetch failed \(ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR\)$/);
 });
 
 // ---------------------------------------------------------------------------
@@ -319,12 +389,13 @@ test("round trip: the real gateway handler's answer to that query is what releas
       parentName: "woco.eth",
       ttlSeconds: 600,
     },
-    { readL2: async () => ABI.encode(["bytes"], [NEW_HASH]), now: () => 1_800_000_000 },
+    { readL2: async () => ABI.encode(["bytes"], [NEW.contenthash]), now: () => 1_800_000_000 },
   );
 
   const calls: string[] = [];
   const fn = (async (u: unknown) => {
     calls.push(String(u));
+    if (String(u).startsWith(ETH_LIMO_DOH_URL)) return ethLimoHolding(NEW_REF)();
     if (String(u) !== url) return response(200);
     const out = await gateway(sender, data);
     return new Response(JSON.stringify(out.body), { status: out.status });
@@ -333,7 +404,7 @@ test("round trip: the real gateway handler's answer to that query is what releas
   // A fake clock, so a regression here fails at once instead of spinning
   // through a real five-minute window.
   let clock = 0;
-  const status = await warmSubEnsWebCertWhenResolvable("punkpub", NEW_HASH, url, {
+  const status = await warmSubEnsWebCertWhenResolvable("punkpub", NEW, url, {
     fetch: fn,
     log: () => {},
     now: () => clock,
@@ -342,7 +413,10 @@ test("round trip: the real gateway handler's answer to that query is what releas
     },
   });
   assert.equal(status, 200);
-  assert.deepEqual(calls, [url, subEnsWebUrl("punkpub")]);
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0], url);
+  assert.ok(calls[1].startsWith(ETH_LIMO_DOH_URL));
+  assert.equal(calls[2], HOST);
 });
 
 // ---------------------------------------------------------------------------
