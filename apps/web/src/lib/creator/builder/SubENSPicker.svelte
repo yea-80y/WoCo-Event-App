@@ -11,11 +11,12 @@
   import { bindableNames, hidesProfileName } from "../../sub-ens/roles.js";
   import { untrack } from "svelte";
   import { subEnsName as buildSubEnsName, subEnsWebUrl } from "@woco/shared";
-  import { subEnsLinkState, SUB_ENS_POLL_INTERVAL_MS, type SubEnsLinkNote } from "./sub-ens-link-state.js";
+  import { subEnsLinkState, SUB_ENS_POLL_INTERVAL_MS, NAME_SHOWS_PUBLISH_AFTER, type SubEnsLinkNote } from "./sub-ens-link-state.js";
 
   interface Props {
     claimedLabel?: string;
-    deployedHash?: string;
+    /** What the name should resolve to once linked: a site's FEED manifest. */
+    targetHash?: string;
     onclaim?: (label: string) => void;
     /** Unlink the name from THIS site. The name is not released — it stays in
      *  the organiser's account and can be pointed at something else. */
@@ -38,7 +39,7 @@
     onbeforerename?: () => Promise<boolean> | boolean;
   }
 
-  let { claimedLabel = $bindable<string | undefined>(undefined), deployedHash = '', onclaim, onunlink, stripeConnected, onstripesetup, singleName = false, onbeforerename }: Props = $props();
+  let { claimedLabel = $bindable<string | undefined>(undefined), targetHash = '', onclaim, onunlink, stripeConnected, onstripesetup, singleName = false, onbeforerename }: Props = $props();
 
   // ── Stripe gate ──────────────────────────────────────────────────────────────
   // null = loading/unknown, false = not connected, true = connected+complete
@@ -168,7 +169,7 @@
     claimed,
     singleName,
     contentHash: nameContentHash,
-    deployedHash,
+    targetHash,
     attempts: hashAttempts,
   }));
 
@@ -185,13 +186,13 @@
   // as state would make the effect depend on its own writes.
   let seenLabel: string | undefined;
 
-  // Re-reads on every label change and after every deploy, because both change
-  // what the name should point at. The read is authenticated, so it waits for a
+  // Re-reads on every label change and whenever the target changes, because
+  // both change what the name should point at. The read is authenticated, so it waits for a
   // session instead of minting one: a passive status check must never raise a
   // signing prompt the user did not ask for.
   $effect(() => {
     const label  = claimedLabel;
-    const target = deployedHash;
+    const target = targetHash;
     const ready  = auth.hasSession;
 
     // A different NAME is a different fact, so forget the old answer. A new
@@ -226,7 +227,7 @@
       }
       hashAttempts = attempts;
       const { pollAgain } = subEnsLinkState({
-        claimed: true, singleName, contentHash: found, deployedHash: target, attempts,
+        claimed: true, singleName, contentHash: found, targetHash: target, attempts,
       });
       if (pollAgain) timer = setTimeout(() => { void read(); }, SUB_ENS_POLL_INTERVAL_MS);
     };
@@ -481,13 +482,13 @@
         <p class="claimed-note claimed-note--muted">{linkNote}</p>
       {/if}
 
-      {#if deployedHash}
+      {#if targetHash}
         <p class="claimed-note">
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true" style="flex-shrink:0">
             <path d="M6 1v7M2 5l4 3 4-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
             <path d="M1 10h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
           </svg>
-          Linked to your site — updates automatically when you publish.
+          Linked to your site. Each publish shows here after {NAME_SHOWS_PUBLISH_AFTER}.
         </p>
         {#if onunlink}
           <p class="claimed-note claimed-note--muted">

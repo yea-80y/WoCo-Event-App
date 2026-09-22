@@ -9,6 +9,7 @@
   import AttendeeApp from "./AttendeeApp.svelte";
   import { studioRole } from "./lib/auth/studio-role.svelte.js";
   import { bootRedirectFor } from "./lib/sub-ens/host-label.js";
+  import { subEnsName } from "@woco/shared";
   import { onMount } from "svelte";
 
   onMount(() => {
@@ -16,13 +17,25 @@
     openProfileForNameHost();
   });
 
+  // On a name host the profile IS the destination, so painting the home page
+  // and swapping it out a moment later flashes the wrong page. The home page is
+  // held back while the lookup runs, and only for so long: it must still paint
+  // if the lookup never answers.
+  const NAME_HOST_HOLD_MS = 4000;
+  const nameHostLabel = bootRedirectFor(window.location.hostname, window.location.hash);
+  let holdingForNameProfile = $state(nameHostLabel !== null);
+
   // A WoCo name (`nabil.woco.eth.<tld>`) resolves to this app's own content, so
   // the app itself has to notice which name it was reached by and open that
   // profile. Deliberately AFTER mount and never awaited: the label→address hop
-  // is a network read, and the home page must paint whether or not it answers.
+  // is a network read, and the app must work whether or not it answers.
   function openProfileForNameHost() {
-    const label = bootRedirectFor(window.location.hostname, window.location.hash);
+    const label = nameHostLabel;
     if (!label) return;
+    // Released on failure and on this timer, never on success: the redirect
+    // below changes the route, and releasing first would show the home page
+    // for the frame before the hashchange lands.
+    setTimeout(() => { holdingForNameProfile = false; }, NAME_HOST_HOLD_MS);
     // Lazy so the resolver's graph is only fetched on a name host — the vast
     // majority of loads are the canonical host and pay nothing for this.
     void import("./lib/api/sub-ens.js").then(async (m) => {
@@ -31,6 +44,7 @@
         // Warn once and stay on the home page. An unregistered or unreadable
         // name is not worth an error screen — the app is still the app.
         console.warn(`[woco] ${label}.woco.eth did not resolve to a profile — showing the home page`);
+        holdingForNameProfile = false;
         return;
       }
       // Re-check the route: the user may have navigated during the lookup, and
@@ -167,7 +181,11 @@
     <div class="surface-loading surface-error">Failed to load. Please refresh.</div>
   {/await}
 {:else if router.surface === "neutral"}
-  <Splitter />
+  {#if holdingForNameProfile && router.route === "splitter"}
+    <div class="surface-loading">Opening {subEnsName(nameHostLabel ?? "")}…</div>
+  {:else}
+    <Splitter />
+  {/if}
 {:else if router.surface === "creator"}
   {#await creatorAppPromise}
     <div class="surface-loading">Loading creator portal…</div>
