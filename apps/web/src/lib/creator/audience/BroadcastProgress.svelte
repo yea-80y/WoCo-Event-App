@@ -54,6 +54,8 @@
         return "Stopped before it finished";
       case "expired":
         return "Ran out of time";
+      case "stopped":
+        return "Stopped";
       default:
         return "Preparing";
     }
@@ -69,6 +71,7 @@
    * already phrased for them.
    */
   const guidance = $derived.by(() => {
+    if ((job.state === "running" || job.state === "queued") && job.unproven > 0) return pacedLine();
     if (job.state === "running" || job.state === "queued") {
       return "You can close this page — the send carries on without it.";
     }
@@ -83,6 +86,40 @@
   });
 
   const missed = $derived(Math.max(0, job.accepted - job.sent - job.suppressed));
+
+  /** "14:05", or "01:00 tomorrow" when the time falls on a later day. */
+  function when(iso: string | undefined): string {
+    if (!iso) return "shortly";
+    const d = new Date(iso);
+    const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    const today = new Date();
+    if (d.toDateString() === today.toDateString()) return time;
+    const tomorrow = new Date(today.getTime() + 24 * 60 * 60_000);
+    if (d.toDateString() === tomorrow.toDateString()) return `${time} tomorrow`;
+    return `${time} on ${d.toLocaleDateString("en-GB", { weekday: "long" })}`;
+  }
+
+  /**
+   * A paced send (#619) in words: who has had it, where the new contacts are
+   * up to, and what happens next. A pause is explained by the server, which
+   * has the numbers, and shown as it comes.
+   */
+  function pacedLine(): string {
+    const w = job.waiting;
+    if (w?.message) return w.message;
+    const returning =
+      job.proven > 0
+        ? `${job.sentProven.toLocaleString()} sent to people you've emailed before. `
+        : "";
+    const progress = `New contacts: ${job.sentUnproven.toLocaleString()} of ${job.unproven.toLocaleString()} sent`;
+    if (w?.for === "next-batch") {
+      return `${returning}${progress}, next batch at ${when(w.until)}. You can close this page.`;
+    }
+    if (w?.for === "day-ceiling") {
+      return `${returning}${progress}. The rest continue at ${when(w.until)}, in larger batches. You can close this page.`;
+    }
+    return `${returning}${progress}. You can close this page - the send carries on without it.`;
+  }
 
   async function stop(): Promise<void> {
     cancelError = null;
@@ -146,7 +183,10 @@
   </div>
 
   {#if guidance}
-    <p class="guidance" class:warn={job.state === "died" || job.state === "expired"}>
+    <p
+      class="guidance"
+      class:warn={job.state === "died" || job.state === "expired" || job.state === "stopped" || Boolean(job.waiting?.message)}
+    >
       {guidance}
     </p>
   {/if}
