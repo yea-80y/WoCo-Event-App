@@ -228,7 +228,7 @@ describe("stopping", () => {
     const final = jobs.getJob(job.id)!;
     assert.equal(final.state, "died");
     assert.match(final.reason ?? "", /paused|quota/i);
-    assert.ok(final.nextChunk < final.chunkCount, "it stopped early rather than running to the end");
+    assert.ok(final.nextP < final.pChunks, "it stopped early rather than running to the end");
     assert.equal(readdirSync(CHUNKS_DIR()).length, 0, "and destroyed the recipients it never used");
   });
 
@@ -268,7 +268,7 @@ describe("stopping", () => {
         /paused|quota/i,
         "an operator must not be told to wait for a quota that was never the problem",
       );
-      assert.ok(final.nextChunk < final.chunkCount, "it stopped early rather than running to the end");
+      assert.ok(final.nextP < final.pChunks, "it stopped early rather than running to the end");
       assert.equal(readdirSync(CHUNKS_DIR()).length, 0, "and destroyed the recipients it never used");
     });
   }

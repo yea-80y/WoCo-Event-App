@@ -116,6 +116,14 @@ export interface MarketingSendOptions {
    * everything the recipient reads before the note is written by the platform.
    */
   serviceNotice?: boolean;
+  /**
+   * The broadcast job and batch this send belongs to, tagged on every message
+   * so a bounce or complaint that arrives minutes later can be counted against
+   * the right batch (#619). `batch` is `p` for contacts already proven
+   * deliverable or `u<n>` for the n-th batch of new ones — the new-contacts
+   * check needs that split. Absent for a test send, which no check counts.
+   */
+  attribution?: { job: string; batch: string };
 }
 
 /**
@@ -219,7 +227,13 @@ export async function sendMarketingBatch(
           },
           // Yields the send-rate budget to transactional mail, and keeps this
           // batch off the transactional-only failover path.
-          { priority: "marketing", context: { organiser: organiserAddress } },
+          {
+            priority: "marketing",
+            context: {
+              organiser: organiserAddress,
+              ...(opts.attribution ? { job: opts.attribution.job, batch: opts.attribution.batch } : {}),
+            },
+          },
         );
       }),
     );

@@ -14,19 +14,33 @@
  * WHAT IT WILL NOT DO. It cannot recall a message already handed to SES. Cancel
  * and TTL stop what has not been sent; every ESP that publishes its semantics
  * says the same, and promising otherwise would be a lie an organiser acts on.
+ *
+ * PACING (#619). A marketing job's contacts were split at seal into those the
+ * sender has already reached (`p`, drained straight away) and those new to the
+ * platform (`u`, released in batches). Before each new batch the worker asks
+ * `sender-pacing` for permission; between batches the job simply is not
+ * runnable until `nextBatchAt`. Holding, waiting and stopping are decided
+ * there, not here — this loop only does what it is told.
  */
 
+import { PACING_CHUNK } from "@woco/shared";
 import {
   broadcastQueueHealth,
   finishJob,
+  hasChunksLeft,
   isTerminal,
   jobSignal,
+  liveJobsFor,
   readChunk,
   recordChunkDrained,
   runnableJobs,
+  saveJob,
   sweep,
   type BroadcastJob,
+  type JobWaiting,
 } from "./broadcast-jobs.js";
+
+type JobWaitingKind = JobWaiting["for"];
 import {
   sendMarketingBatch,
   type MarketingSendDeps,
@@ -35,8 +49,23 @@ import {
 import { resendAbandoned } from "./send.js";
 import { hashEmail } from "../event/claim-service.js";
 import { bumpRetry, listFailures, resolveFailure } from "./failure-ledger.js";
-import { reconcileReservation } from "../marketing/send-cap.js";
+import { reconcileReservation, recordSend } from "../marketing/send-cap.js";
+import { isGloballySuppressed } from "../marketing/suppression-store.js";
 import { forgetRetries, requeue, takeDue, retryQueueStats } from "./retry-queue.js";
+import {
+  admit,
+  mayDrain,
+  onPacingStateChange,
+  pacingState,
+  pacingWindow,
+  recordAccepted,
+  sweepPacing,
+  type PacingState,
+} from "../sender-pacing/index.js";
+import { pacingNotice, stoppedMessage } from "./pacing-copy.js";
+
+/** The daily-cap reservation made at start stops counting after this. */
+const CAP_WINDOW_MS = 24 * 60 * 60_000;
 
 /** How often the worker looks for something to do when it is otherwise idle. */
 const TICK_MS = 2_000;
@@ -142,11 +171,96 @@ export function settleReservation(job: BroadcastJob): void {
 
 function settle(
   job: BroadcastJob,
-  state: "completed" | "died" | "expired" | "cancelled",
+  state: "completed" | "died" | "expired" | "cancelled" | "stopped",
   reason?: string,
 ): void {
   finishJob(job, state, reason);
   settleReservation(job);
+}
+
+/** Park a job until `until`, saying why. The worker will not pick it before then. */
+function wait(job: BroadcastJob, kind: JobWaitingKind, until: number, message?: string): void {
+  const at = new Date(until).toISOString();
+  job.nextBatchAt = at;
+  job.waiting = { for: kind, until: at, ...(message ? { message } : {}) };
+  saveJob(job);
+}
+
+function holdKind(state: PacingState): JobWaitingKind {
+  return state.kind === "held" && state.scope === "all" ? "complaint-hold" : "bounce-hold";
+}
+
+/**
+ * A stop ends every live marketing job of that sender at once — between
+ * groups of ten via the abort signal, with the payload destroyed and the
+ * reservation settled. The job stays resumable; the resume's start is refused
+ * until an operator lifts the stop.
+ */
+onPacingStateChange((sender, state) => {
+  if (state.kind !== "stopped") return;
+  const reason = stoppedMessage(state, pacingWindow(sender)) ?? "Stopped";
+  for (const job of liveJobsFor(sender)) {
+    if (job.kind !== "marketing") continue;
+    settle(job, "stopped", reason);
+    console.error(`[drain-worker] job ${job.id} stopped: sender ${sender} was stopped`);
+  }
+});
+
+/**
+ * Which run to drain next, opening a batch of new contacts when one is due —
+ * or null, having parked the job, when nothing may go yet.
+ */
+function nextRun(job: BroadcastJob): "p" | "u" | null {
+  const paced = job.kind === "marketing";
+  if (job.nextP < job.pChunks) {
+    if (paced && !mayDrain(job.org, "p")) {
+      const state = pacingState(job.org);
+      wait(job, holdKind(state), Date.now() + 60_000, pacingNotice(state, pacingWindow(job.org)) ?? undefined);
+      return null;
+    }
+    return "p";
+  }
+  if (job.nextU >= job.uChunks) return null;
+
+  if (job.batch && job.batch.chunksLeft > 0) {
+    if (!mayDrain(job.org, "u")) {
+      const state = pacingState(job.org);
+      wait(job, holdKind(state), Date.now() + 60_000, pacingNotice(state, pacingWindow(job.org)) ?? undefined);
+      return null;
+    }
+    return "u";
+  }
+
+  const n = job.batchesStarted + 1;
+  const remaining = job.unproven - job.nextU * PACING_CHUNK;
+  const now = Date.now();
+  const r = admit(job.org, `${job.id}:u${n}`, remaining, now);
+  if (!r.ok) {
+    const state = pacingState(job.org, now);
+    switch (r.code) {
+      case "STOPPED":
+        settle(job, "stopped", stoppedMessage(state, pacingWindow(job.org, now)) ?? "Stopped");
+        return null;
+      case "HELD":
+        wait(job, holdKind(state), r.retryAt ?? now + 60_000, pacingNotice(state, pacingWindow(job.org, now)) ?? undefined);
+        return null;
+      case "TOO_SOON":
+        wait(job, "next-batch", r.retryAt ?? now + 60_000);
+        return null;
+      case "DAY_EXHAUSTED":
+        wait(job, "day-ceiling", r.retryAt ?? now + 60 * 60_000);
+        return null;
+    }
+  }
+  job.batchesStarted = n;
+  job.batch = { n, chunksLeft: Math.ceil(r.size / PACING_CHUNK), startedAt: new Date(now).toISOString() };
+  delete job.waiting;
+  delete job.nextBatchAt;
+  // The start-time reservation ages out of the rolling 24h cap after a day, so
+  // a batch sent after that would count for nothing. Record it instead.
+  if (job.reservedAt && now - Date.parse(job.reservedAt) > CAP_WINDOW_MS) recordSend(job.org, r.size);
+  saveJob(job);
+  return "u";
 }
 
 async function drainOneChunk(job: BroadcastJob): Promise<void> {
@@ -157,8 +271,12 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
     return;
   }
 
-  const index = job.nextChunk;
-  const recipients = readChunk(job.id, index);
+  const seq = nextRun(job);
+  if (!seq) return;
+
+  const index = seq === "p" ? job.nextP : job.nextU;
+  const batchTag = seq === "p" ? "p" : `u${job.batch!.n}`;
+  const recipients = readChunk(job.id, seq, index);
   if (!recipients) {
     // The payload is gone but the job is not finished: a restart wiped it, or
     // the TTL sweep beat us here. Either way there is nothing left to send, and
@@ -170,8 +288,9 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
 
   // Belt and braces against a double-send: the chunk was written before any of
   // it was sent, so if this job is a resume — or if a crash replayed a chunk —
-  // anyone already delivered to must be dropped here rather than mailed twice.
-  const alreadySent = new Set(job.sentHashes);
+  // anyone already delivered to, by this job or any it resumes, must be dropped
+  // here rather than mailed twice.
+  const alreadySent = new Set([...job.sentHashes, ...job.priorDelivered]);
   const fresh = recipients.filter((r) => !alreadySent.has(hashEmail(r.email)));
 
   let result: MarketingSendResult;
@@ -190,6 +309,7 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
         // Stops between in-flight groups, so a cancel or a TTL expiry takes
         // effect within ten messages instead of after the whole chunk.
         ...(jobSignal(job.id) ? { signal: jobSignal(job.id)! } : {}),
+        attribution: { job: job.id, batch: batchTag },
       },
       sendDeps,
     );
@@ -206,7 +326,7 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
   // Recorded even if the job was cancelled mid-chunk: those messages really did
   // go out, and a counter that omitted them would tell the organiser fewer
   // people were mailed than actually were.
-  const persisted = recordChunkDrained(job, {
+  const persisted = recordChunkDrained(job, seq, {
     sent: result.sent,
     suppressed: result.suppressed,
     crossed: result.crossed,
@@ -225,6 +345,20 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
     return;
   }
 
+  if (job.kind === "marketing") recordAccepted(job.org, `${job.id}:${batchTag}`, seq, result.sentHashes);
+  if (seq === "u" && job.batch) {
+    job.batch.chunksLeft--;
+    if (job.batch.chunksLeft <= 0) {
+      const next = Date.parse(job.batch.startedAt) + 60 * 60_000;
+      delete job.batch;
+      if (job.nextU < job.uChunks && !isTerminal(job)) {
+        wait(job, "next-batch", next);
+      } else {
+        saveJob(job);
+      }
+    }
+  }
+
   // A cancel (or a TTL expiry) may have landed while this chunk was in flight.
   // `finishJob` sets state unconditionally, so falling through to the completed
   // branch below would overwrite "cancelled" and tell the organiser the send
@@ -238,7 +372,7 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
     return;
   }
 
-  if (job.nextChunk >= job.chunkCount) {
+  if (!hasChunksLeft(job)) {
     settle(job, "completed");
     console.log(
       `[drain-worker] job ${job.id} finished — sent=${job.sent} suppressed=${job.suppressed} ` +
@@ -302,6 +436,8 @@ function maybeSweep(): void {
   // half-uploaded broadcast, so without a sweep its plaintext recipients would
   // sit on disk until the next restart, well past the TTL the inventory states.
   for (const expired of sweep(now)) settleReservation(expired);
+  // Proof promotion, the 7-day window, and holds lifting with time.
+  sweepPacing(isGloballySuppressed, now);
 }
 
 async function pump(): Promise<void> {

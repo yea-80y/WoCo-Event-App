@@ -198,6 +198,17 @@ export function isSuppressed(emailHash: string, organiserAddress: string): boole
   return suppresses(entry.global) || suppresses(entry.orgs[organiserAddress.toLowerCase()]);
 }
 
+/**
+ * Is there an active PLATFORM-wide mark on this address — a hard bounce, a
+ * complaint, an opt-out of everything, or an erasure? Sender pacing reads it
+ * to refuse "delivered without a bounce" to an address that has since been
+ * suppressed (#619).
+ */
+export function isGloballySuppressed(emailHash: string): boolean {
+  ensureLoaded();
+  return suppresses(entries.get(emailHash)?.global);
+}
+
 /** Subset of the given hashes that are suppressed for this organiser. */
 export function suppressedSubset(organiserAddress: string, emailHashes: string[]): string[] {
   ensureLoaded();

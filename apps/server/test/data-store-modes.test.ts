@@ -78,6 +78,15 @@ function looseModes(root: string): string[] {
  */
 const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> = [
   {
+    store: "sender-pacing",
+    drive: async () => {
+      const m = await import("../src/lib/sender-pacing/index.js");
+      m.admit(OWNER, "job:u1", 100);
+      m.recordPlatformAccepted(1);
+      m.flushPacing();
+    },
+  },
+  {
     store: "auth/revocation",
     drive: async () => {
       const m = await import("../src/lib/auth/revocation.js");

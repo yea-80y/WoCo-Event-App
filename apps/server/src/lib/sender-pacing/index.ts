@@ -27,12 +27,15 @@ import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   PACING_BATCH_GAP_MS,
+  PACING_HOLD_SLACK_MS,
+  PACING_MAX_HOLD_MS,
   PACING_PROOF_DELAY_MS,
   PACING_THRESHOLDS,
   PACING_WINDOW_MS,
   batchAllowance,
   crosses,
   nextUtcMidnight,
+  planSchedule,
   utcDay,
   type PacingPosition,
 } from "@woco/shared";
@@ -87,7 +90,8 @@ interface LogEntry {
 
 interface StoredSender {
   sender: string;
-  stop?: { since: number; reason: string; by: string };
+  /** `cause` is absent for a stop an operator placed by hand. */
+  stop?: { since: number; reason: string; by: string; cause?: HoldCause };
   /**
    * Batches started before this are ignored by the checks. Set by an operator
    * lift, so the evidence that caused a stop cannot re-cause it the moment it
@@ -112,7 +116,7 @@ interface Live {
 export type PacingState =
   | { kind: "open" }
   | { kind: "held"; scope: "new" | "all"; causes: HoldCause[] }
-  | { kind: "stopped"; since: string; reason: string; by: string };
+  | { kind: "stopped"; since: string; reason: string; by: string; cause?: HoldCause };
 
 export type AdmitResult =
   | { ok: true; size: number; rung: number }
@@ -219,7 +223,13 @@ function evaluateSender(rec: StoredSender, at: number): Evaluation {
 
 function stateOf(rec: StoredSender, at: number): PacingState {
   if (rec.stop) {
-    return { kind: "stopped", since: new Date(rec.stop.since).toISOString(), reason: rec.stop.reason, by: rec.stop.by };
+    return {
+      kind: "stopped",
+      since: new Date(rec.stop.since).toISOString(),
+      reason: rec.stop.reason,
+      by: rec.stop.by,
+      ...(rec.stop.cause ? { cause: rec.stop.cause } : {}),
+    };
   }
   const { holds } = evaluateSender(rec, at);
   const scope = holdScope(holds);
@@ -264,7 +274,7 @@ function applyStopLine(live: Live, at: number): void {
   if (live.rec.stop) return;
   const { stop } = evaluateSender(live.rec, at);
   if (!stop) return;
-  live.rec.stop = { since: at, reason: STOP_REASON[stop], by: "automatic" };
+  live.rec.stop = { since: at, reason: STOP_REASON[stop], by: "automatic", cause: stop };
   live.rec.log.push({ at, by: "automatic", action: "stop", reason: STOP_REASON[stop] });
   console.error(`[sender-pacing] Sender ${live.rec.sender} STOPPED: ${STOP_REASON[stop]}`);
 }
@@ -292,6 +302,17 @@ export function position(sender: string, at = Date.now()): PacingPosition {
     nextAllowedAt: rec.nextAllowedAt && rec.nextAllowedAt > at ? rec.nextAllowedAt : null,
     at,
   };
+}
+
+/**
+ * When a paced send's held recipients must be destroyed, finished or not: its
+ * planned schedule plus a day's slack, and never more than 7 days (owner's
+ * call, 2026-09-22 — no external source sets it). A pause that outlasts it
+ * expires the job; the organiser resumes with one press.
+ */
+export function holdUntil(sender: string, unproven: number, at = Date.now()): number {
+  const { endsAt } = planSchedule(position(sender, at), unproven);
+  return Math.min(at + PACING_MAX_HOLD_MS, endsAt + PACING_HOLD_SLACK_MS);
 }
 
 export function isProven(sender: string, hash: string): boolean {
@@ -701,7 +722,9 @@ export function _resetPacingForTest(): void {
   announced.clear();
   platform = {};
   platformDirty = false;
-  listeners.length = 0;
+  // Listeners are NOT cleared: the drain worker registers its stop handler once,
+  // at module load, and a suite that reset it away would test a worker that
+  // never hears a stop.
   loaded = false;
 }
 

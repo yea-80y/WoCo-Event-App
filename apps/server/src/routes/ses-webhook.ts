@@ -51,6 +51,15 @@
  *     path. If a complaint does lead to loss, it lands on AWS's account-level
  *     suppression list and comes back as `Permanent/OnAccountSuppressionList` —
  *     which IS ledgered, at the moment the loss becomes real.
+ *
+ * PACING (#619) is a third reader, counting rather than recording. A tagged
+ * hard bounce or complaint on a marketing message is counted against the
+ * sender and batch it came from (`woco_ctx_organiser`, `woco_ctx_job`,
+ * `woco_ctx_batch`), which is what pauses or stops a sender whose new list is
+ * bouncing; every tagged event, of both kinds, also feeds the platform-wide
+ * alarm. Untagged events are not counted: in the dual-wiring topology below
+ * they are the identity-level COPY of an event that also arrives tagged, and
+ * counting both would double every rate.
  */
 
 import { Hono } from "hono";
@@ -60,6 +69,13 @@ import { suppressGlobal } from "../lib/marketing/suppression-store.js";
 import { checkAndConsumeSnsEvent } from "../lib/email/consumed-sns-events.js";
 import { recordFailure } from "../lib/email/failure-ledger.js";
 import { readMessageTags } from "../lib/email/message-tags.js";
+import {
+  recordBounce,
+  recordComplaint,
+  recordPlatformBounce,
+  recordPlatformComplaint,
+  type ComplaintInfo,
+} from "../lib/sender-pacing/index.js";
 import {
   verifySnsSignature,
   isSnsAwsHttpsUrl,
@@ -88,6 +104,8 @@ interface SesEventPayload {
   complaint?: {
     complainedRecipients?: Array<{ emailAddress?: string }>;
     complaintFeedbackType?: string;
+    /** `OnAccountSuppressionList` / `OnTenantSuppressionList`: SES never sent the message. */
+    complaintSubType?: string | null;
   };
   reject?: { reason?: string };
   mail?: {
@@ -190,6 +208,35 @@ function ledgerAsyncFailure(opts: {
     },
   });
   return true;
+}
+
+/**
+ * Count one bounce or complaint for pacing. Deduped on its own key for the
+ * same reason the ledger is: one failure can reach us over two subscriptions,
+ * and a count that doubles is a pause that fires at half the line.
+ */
+function countForPacing(
+  payload: SesEventPayload,
+  event: { type: "Bounce"; subtype: string } | { type: "Complaint"; info: ComplaintInfo },
+  n: number,
+): void {
+  if (n <= 0) return;
+  const { kind, context } = readMessageTags(payload.mail?.tags);
+  if (!kind) return;
+  const messageId = payload.mail?.messageId;
+  if (messageId && !checkAndConsumeSnsEvent(`pacing:${messageId}:${event.type}`)) return;
+
+  const attributed =
+    kind === "marketing" && context.organiser && context.job && context.batch
+      ? { sender: context.organiser.toLowerCase(), batchId: `${context.job}:${context.batch}` }
+      : null;
+  if (event.type === "Bounce") {
+    recordPlatformBounce(event.subtype, n);
+    if (attributed) recordBounce(attributed.sender, attributed.batchId, event.subtype, n);
+  } else {
+    recordPlatformComplaint(event.info, n);
+    if (attributed) recordComplaint(attributed.sender, attributed.batchId, event.info, n);
+  }
 }
 
 function allowedTopicArns(): string[] {
@@ -341,6 +388,7 @@ sesWebhook.post("/webhook", async (c) => {
           console.error("[ses-webhook] Suppression write failed:", err);
         }
       }
+      countForPacing(payload, { type: "Bounce", subtype: subType }, bounced.length);
       console.log(
         `[ses-webhook] Permanent bounce (${subType}): suppressed ${suppressed} address(es)` +
           `${ledgered ? ", ledgered as undelivered" : ""}`,
@@ -355,6 +403,17 @@ sesWebhook.post("/webhook", async (c) => {
         suppressed++;
       }
     }
+    countForPacing(
+      payload,
+      {
+        type: "Complaint",
+        info: {
+          ...(payload.complaint?.complaintFeedbackType ? { feedbackType: payload.complaint.complaintFeedbackType } : {}),
+          complaintSubType: payload.complaint?.complaintSubType ?? null,
+        },
+      },
+      suppressed,
+    );
     console.log(
       `[ses-webhook] Complaint (${payload.complaint?.complaintFeedbackType ?? "unspecified"}): ` +
         `suppressed ${suppressed} address(es)`,

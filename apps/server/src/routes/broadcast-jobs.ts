@@ -26,6 +26,12 @@
  * queued behind a 28-minute occupant waits 28 minutes. Holding it across a
  * drain would hang the organiser's own list, suppress and check calls until
  * Cloudflare killed them. It is held for gate-check + reserve + state-flip only.
+ *
+ * PACING (#619), marketing only. Each recipient is classified at upload as a
+ * contact the organiser has already reached through us, or one new to the
+ * platform; the new ones are released in hourly batches by the worker. The
+ * route's part is the classification, the start gate (a stopped or fully
+ * paused sender cannot start), and the hold bound on the payload.
  */
 
 import { Hono } from "hono";
@@ -39,6 +45,15 @@ import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
 import { isServiceNoticeType, serviceNoticeSubject, SERVICE_NOTICE_TYPES } from "@woco/shared";
 import { buildServiceNoticeHtml } from "../lib/email/service-notice-email.js";
 import { getList, withOrgLock } from "../lib/marketing/list-store.js";
+import {
+  holdUntil,
+  pacingState,
+  pacingWindow,
+  position as pacingPosition,
+} from "../lib/sender-pacing/index.js";
+import { pacingNotice } from "../lib/email/pacing-copy.js";
+import { pacingStartRefusal, reachedBefore } from "../lib/email/broadcast-pacing.js";
+import { batchAllowance } from "@woco/shared";
 import { capRemaining, reserveSend } from "../lib/marketing/send-cap.js";
 import {
   MARKETING_SENDER_UNCONFIGURED,
@@ -114,8 +129,14 @@ function jobView(job: BroadcastJob) {
      */
     ...(job.crossed ? { crossed: job.crossed } : {}),
     remaining: Math.max(0, job.accepted - job.sent - job.suppressed - job.failed),
-    chunkCount: job.chunkCount,
-    drainedChunks: job.nextChunk,
+    chunkCount: job.state === "draft" ? job.chunkCount : job.pChunks + job.uChunks,
+    drainedChunks: job.nextP + job.nextU,
+    // The paced split (#619): who went straight away and who goes in batches.
+    proven: job.proven,
+    unproven: job.unproven,
+    sentProven: job.sentProven,
+    sentUnproven: job.sentUnproven,
+    ...(job.waiting ? { waiting: job.waiting } : {}),
     ...(job.reason ? { reason: job.reason } : {}),
     ...(job.resumeOf ? { resumeOf: job.resumeOf } : {}),
     ...(job.errors.length ? { errors: job.errors.slice(0, 10) } : {}),
@@ -395,6 +416,8 @@ broadcastJobs.post("/jobs/:id/chunk", requireAuth, async (c) => {
   // nobody reads. The count is echoed, never the addresses — that would turn a
   // rejection into an oracle for "does this person hold a ticket".
   //
+  // Only the marketing lane is paced; attendee mail goes to proven ticket-holders.
+  //
   // The predicate is built ONCE per chunk. Resolving the member set per
   // recipient rebuilds a 20,000-entry Set five hundred times per request.
   const isMember = memberTest(job);
@@ -438,7 +461,8 @@ broadcastJobs.post("/jobs/:id/chunk", requireAuth, async (c) => {
     // Under the job lock: chunk indices are server-assigned and the AES-GCM AAD
     // binds a chunk to its index, so two concurrent uploads racing the numbering
     // would have one silently overwrite the other's recipients.
-    const result = await withJobLock(job.id, () => appendChunk(job.id, recipients, hashEmail));
+    const classify = job.kind === "marketing" ? (h: string) => reachedBefore(job.org, h) : undefined;
+    const result = await withJobLock(job.id, () => appendChunk(job.id, recipients, hashEmail, classify));
     return c.json({ ok: true, data: result });
   } catch (err) {
     if (err instanceof BroadcastJobError) {
@@ -499,6 +523,13 @@ broadcastJobs.post("/jobs/:id/start", requireAuth, async (c) => {
     // starts cannot both pass a check the other invalidates. Nothing slow runs
     // in here — the drain happens on the worker, outside the lock.
     const outcome = await withOrgLock(org, () => {
+      // Pacing first, so a sender with nothing that could go does not spend the
+      // hourly window or the daily cap on it (see `pacingStartRefusal`).
+      if (job.kind === "marketing" && job.state === "draft") {
+        const refusal = pacingStartRefusal(org);
+        if (refusal) return { rejected: refusal.message, status: refusal.status, code: refusal.code } as const;
+      }
+
       if (rate.isLimited(org)) {
         return { rejected: `Rate limit exceeded (${perHour} broadcasts per hour)`, status: 429 } as const;
       }
@@ -523,7 +554,11 @@ broadcastJobs.post("/jobs/:id/start", requireAuth, async (c) => {
       // jobId, only the first of which `reconcileReservation` can find. Do the
       // side effects only on the transition.
       const wasDraft = job.state === "draft";
-      const queued = sealAndQueue(job.id, { chunkCount, totalRecipients });
+      const queued = sealAndQueue(
+        job.id,
+        { chunkCount, totalRecipients },
+        job.kind === "marketing" && job.unproven > 0 ? { holdUntil: holdUntil(org, job.unproven) } : {},
+      );
       if (wasDraft) {
         rate.record(org);
         if (queued.kind === "marketing") {
@@ -535,7 +570,10 @@ broadcastJobs.post("/jobs/:id/start", requireAuth, async (c) => {
     });
 
     if ("rejected" in outcome) {
-      return c.json({ ok: false, error: outcome.rejected }, outcome.status);
+      return c.json(
+        { ok: false, error: outcome.rejected, ...("code" in outcome ? { code: outcome.code } : {}) },
+        outcome.status,
+      );
     }
 
     // Start draining now rather than on the next tick — an organiser watching
@@ -557,6 +595,32 @@ broadcastJobs.post("/jobs/:id/start", requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // Status / cancel
 // ---------------------------------------------------------------------------
+
+/**
+ * Where the caller stands on the pacing ladder, for the composer's estimate
+ * ("your 1,000 new contacts go out over about 10 hours") and its notice when
+ * sending is paused. Counts and times only.
+ */
+broadcastJobs.get("/pacing", requireAuth, (c) => {
+  const org = c.get("parentAddress").toLowerCase();
+  const now = Date.now();
+  const state = pacingState(org, now);
+  const pos = pacingPosition(org, now);
+  const allowance = batchAllowance(pos);
+  const notice = pacingNotice(state, pacingWindow(org, now));
+  return c.json({
+    ok: true,
+    data: {
+      state: state.kind,
+      ...(state.kind === "held" ? { scope: state.scope } : {}),
+      ...(notice ? { notice } : {}),
+      position: pos,
+      rung: allowance.rung,
+      batchSize: allowance.size,
+      dayRemaining: allowance.dayRemaining,
+    },
+  });
+});
 
 broadcastJobs.get("/jobs", requireAuth, (c) => {
   const org = c.get("parentAddress").toLowerCase();
