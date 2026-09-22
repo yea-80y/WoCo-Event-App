@@ -51,7 +51,7 @@
   {#if error}
     <p class="error">{error}</p>
   {/if}
-  <p class="hint">Sign in with email or Google — no extension needed</p>
+  <p class="hint">Use your email address or Google account</p>
 </div>
 
 <style>
