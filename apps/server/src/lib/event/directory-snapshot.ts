@@ -14,6 +14,7 @@
  * log lacks). A missed rebuild degrades freshness, never integrity.
  */
 
+import { ETHERNA_URL, isEthernaGateway } from "../etherna/batch-router.js";
 import type {
   EventFeed, EventsSnapshot, EventsSnapshotPointer, SnapshotCard, SnapshotResolutionEntry,
 } from "@woco/shared";
@@ -43,6 +44,9 @@ export function cardFromFeed(feed: EventFeed, extra?: { apiUrl?: string }): Snap
     location: feed.location ?? "",
     creatorAddress: feed.creatorAddress,
     ...(feed.creatorFeedSigner ? { creatorFeedSigner: feed.creatorFeedSigner } : {}),
+    // The canonical URL, never the feed's own string: a Phase B feed is
+    // organiser-signed, and a card's gatewayUrl steers every viewer's image fetch.
+    ...(feed.gatewayUrl && isEthernaGateway(feed.gatewayUrl) ? { gatewayUrl: ETHERNA_URL } : {}),
     seriesCount: feed.series.length,
     totalTickets: feed.series.reduce((n, s) => n + s.totalSupply, 0),
     createdAt: feed.createdAt,

@@ -36,7 +36,7 @@
       jsonLdId,
       buildEventJsonLd(event, {
         url: `${base}#/events/${event.eventId}`,
-        imageUrl: firstImageUrl(event.imageHash, gatewayUrl),
+        imageUrl: firstImageUrl(event.imageHash, gatewayUrl, event.gatewayUrl),
         organiserName: (typeof window !== 'undefined' && window.SITE_CONFIG?.site?.theme?.brandName) || undefined,
       }),
     );
@@ -101,7 +101,7 @@
   }
 
   function imageUrl(ev: EventFeed): string | undefined {
-    return firstImageUrl(ev.imageHash, gatewayUrl);
+    return firstImageUrl(ev.imageHash, gatewayUrl, ev.gatewayUrl);
   }
 </script>
 
@@ -136,7 +136,7 @@
             src={img}
             alt={event.title}
             data-image-gateway-index="0"
-            onerror={(e) => useNextImageUrl(e, event?.imageHash, gatewayUrl)}
+            onerror={(e) => useNextImageUrl(e, event?.imageHash, gatewayUrl, event?.gatewayUrl)}
           />
           <div class="image-overlay" aria-hidden="true"></div>
         </div>

@@ -5,7 +5,7 @@ import type {
 } from "@woco/shared";
 import { verifyManifestV2, buildEditionTree, manifestV2Digest, bytesToHex0x, eventContentTopic } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
-import { batchForDeploy, type BatchSelection } from "../etherna/batch-router.js";
+import { batchForDeploy, ETHERNA_URL, isEthernaGateway, isWocoGateway, type BatchSelection } from "../etherna/batch-router.js";
 import { readContentFeedJson, invalidateContentFeedVersion } from "../swarm/soc-upload.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
 import { getActiveChainId } from "../chain/event-contract.js";
@@ -148,12 +148,18 @@ export async function createEventV2(opts: {
     encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl, onProgress,
   } = opts;
 
-  // Route all event-content uploads to the selected gateway's batch (events never
-  // trigger a batch purchase — batchForDeploy falls back to the platform Etherna
-  // batch when the organiser has none).
+  // New events are stored on Etherna (owner decision 2026-09-22): no gateway means
+  // Etherna, the WoCo gateway is still accepted (API testing), anything else is
+  // refused - the stored gatewayUrl steers readers' image fetches, so it is only
+  // ever one of ours. batchForDeploy falls back to the platform Etherna batch when
+  // the organiser has none; events never trigger a purchase.
+  if (gatewayUrl && !isEthernaGateway(gatewayUrl) && !isWocoGateway(gatewayUrl)) {
+    throw new Error("gatewayUrl must be the Etherna or WoCo gateway");
+  }
+  const onEtherna = !gatewayUrl || isEthernaGateway(gatewayUrl);
   const batchSelection = batchForDeploy({
     ownerAddress: creatorAddress,
-    gatewayUrl: gatewayUrl ?? "",
+    gatewayUrl: onEtherna ? ETHERNA_URL : gatewayUrl,
     deployType: "event",
   });
 
@@ -257,8 +263,8 @@ export async function createEventV2(opts: {
     ...(claimMode && claimMode !== "wallet" ? { claimMode } : {}),
     ...(creatorFeedSigner ? { creatorFeedSigner } : {}),
     // Self-describe the storage gateway so the edit/delete rail restamps on the same
-    // batch. Only record a non-WoCo (Etherna) gateway; WoCo is the default when absent.
-    ...(gatewayUrl && !gatewayUrl.includes("woco-net.com") ? { gatewayUrl } : {}),
+    // batch. Only Etherna is recorded, and only as the canonical URL; absent = WoCo.
+    ...(onEtherna ? { gatewayUrl: ETHERNA_URL } : {}),
   };
 
   // Phase B: when the organiser owns a content-feed signer, the detail feed is a

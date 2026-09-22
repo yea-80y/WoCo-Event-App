@@ -17,8 +17,7 @@
   import NavTab from "./tabs/NavTab.svelte";
   import EventsTab from "./tabs/EventsTab.svelte";
   import ShopTab from "./tabs/ShopTab.svelte";
-  import GatewayPicker from "./GatewayPicker.svelte";
-  import { GATEWAYS } from "./gateways.js";
+  import { ETHERNA_GATEWAY_URL } from "../../swarm/gateways.js";
   import PurchaseBatchModal from "./PurchaseBatchModal.svelte";
   import DomainLinker from "./DomainLinker.svelte";
   import DomainTab from "./DomainTab.svelte";
@@ -40,10 +39,7 @@
   const FEED_HASH_KEY = 'woco:site-feed-hash';
 
   const API_URL     = (import.meta as { env?: Record<string, string> }).env?.VITE_API_URL ?? 'http://localhost:3001';
-  const DEFAULT_GATEWAY = GATEWAYS.find((g) => g.default)?.url ?? GATEWAYS[0].url;
   const WOCO_APP_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_APP_URL ?? 'https://woco.eth.limo';
-
-  const ETHERNA_URL = 'https://gateway.etherna.io';
 
   function loadDraft(): Site {
     if (typeof window === 'undefined') {
@@ -124,7 +120,8 @@
   );
   let feedHash          = $state(typeof window !== 'undefined' ? (localStorage.getItem(FEED_HASH_KEY) ?? '') : '');
 
-  let gatewayUrl        = $state(DEFAULT_GATEWAY);
+  // Sites are always stored on and served by Etherna (owner decision 2026-09-22).
+  const gatewayUrl      = ETHERNA_GATEWAY_URL;
   let purchaseOpen      = $state(false);
   let pendingLogoBase64 = $state<string | null>(null);
 
@@ -722,15 +719,6 @@
 
     <div class="editor-split">
     <div class="editor-rail">
-    <div class="gateway-row">
-      <label class="gateway-label" for="ms-gw-picker">Deploy gateway</label>
-      <div class="gateway-input"><GatewayPicker bind:value={gatewayUrl} /></div>
-      <span class="gateway-hint">
-        {gatewayUrl === ETHERNA_URL
-          ? 'Etherna serves your site — uses your batch'
-          : 'Testing only — uses platform WoCo batch'}
-      </span>
-    </div>
 
     {#if feedHash || deployedUrl}
       <div class="deploy-banner">
@@ -1104,25 +1092,6 @@
   }
 
   /* ── Gateway row ── */
-  .gateway-row {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem 1.5rem;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg);
-    flex-wrap: wrap;
-  }
-  .gateway-label {
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--text-muted);
-    white-space: nowrap;
-  }
-  .gateway-input { min-width: 16rem; flex: 0 1 18rem; }
-  .gateway-hint { font-size: 0.75rem; color: var(--text-muted); }
 
   /* ── Deploy banner ── */
   .deploy-banner {
