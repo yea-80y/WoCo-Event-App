@@ -272,7 +272,7 @@ We would rather you came to us first, but it is your right either way.
 | Account data | While your account is open, plus 90 days |
 | Suppression records | Indefinitely — required to honour your opt-out. This is the one record we keep *because* you asked us to stop: deleting it would let the next contact upload put you back |
 | Marketing consent records | While the organiser can still mail you on that basis, plus 6 months. A hashed record of the wording you agreed to and when — it is how we can show your consent was real |
-| Your place on an organiser's contact list | Until the organiser removes you, or you unsubscribe. We hold only a hashed form of your address; the list itself is encrypted to the organiser |
+| Your place on an organiser's contact list | Until the organiser removes you, or you unsubscribe. We hold only a hashed form of your address; the list itself is encrypted to the organiser. While an organiser's email to you is being sent, we also hold your address, encrypted under a key that exists only in the running system, until your message goes out and for at most 7 days |
 | Failed ticket-delivery records | Until put right, or 90 days at most. If every attempt to email your ticket fails, we keep your address on a restricted ledger — the one case where we hold an email in plaintext — so a human can still get you the ticket you paid for |
 | Transaction records | 6 years (Companies Act 2006, HMRC) |
 | Organiser sale and payout records | 6 years (Companies Act 2006, HMRC) — what sold, what we released and when. Accounting evidence; it contains no attendee identifier |
@@ -290,11 +290,14 @@ Order-form answers and contact lists are encrypted in the browser using X25519 k
 AES-256-GCM, to a key derived from the organiser's own credentials. Our servers can create these
 encrypted records but have no code path to open them.
 
-Email addresses are stored as keyed HMAC-SHA256 hashes rather than plaintext, with one narrow
-exception: when every attempt to deliver a ticket email fails, we keep the address on a
-restricted failure ledger — the only plaintext copy we hold — until the delivery is put right, or
-for at most 90 days, so that we can still get you the ticket you paid for. Requests are
-authenticated with per-request signatures. All traffic uses TLS.
+Email addresses are stored as keyed HMAC-SHA256 hashes rather than plaintext, with two narrow
+exceptions. When every attempt to deliver a ticket email fails, we keep the address on a
+restricted failure ledger - the only readable plaintext copy we hold - until the delivery is put
+right, or for at most 90 days, so that we can still get you the ticket you paid for. And while a
+broadcast an organiser has instructed is being sent, we hold its recipient addresses encrypted
+under a key that exists only in the running system, delete each batch as it is sent, and destroy
+whatever remains within 7 days. Requests are authenticated with per-request signatures. All
+traffic uses TLS.
 
 No system is perfectly secure. We will notify you and the ICO of a qualifying breach within the
 required timeframes.

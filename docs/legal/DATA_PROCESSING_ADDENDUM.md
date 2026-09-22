@@ -111,6 +111,10 @@ You acknowledge and instruct us that:
 5. **Order-form data and contact lists are encrypted client-side to your key.** We cannot read them.
    This means we **cannot** retrieve, correct, export or inspect that content on your behalf — you
    must do so through your dashboard. **If you lose your credentials, the data is unrecoverable.**
+   The one exception is a broadcast you instruct: your browser hands us its recipients so we can
+   send it, and while it is being sent we hold those addresses encrypted under a key that exists
+   only in the running process, delete each batch as it is sent, and destroy whatever remains
+   within 7 days.
 6. **Correction is by supersession, not overwrite.** A corrected record is published as a new version
    and is what the platform uses from then on. The earlier version remains publicly retrievable
    from the network — supersession does not hide prior versions — until its storage lapses.
@@ -142,7 +146,9 @@ We implement appropriate technical and organisational measures, including:
 - **Email addresses stored as keyed HMAC-SHA256 hashes** rather than plaintext — except that the
   recipient of a transactional email that could not be delivered after every retry is retained in
   plaintext on an access-restricted failure ledger, solely to remediate that delivery, until
-  resolved or for at most 90 days.
+  resolved or for at most 90 days; and that, while a broadcast you have instructed is being sent,
+  we hold its recipient addresses encrypted under a per-send key that exists only in the running
+  process, delete each batch as it is sent, and destroy whatever remains within 7 days.
 - **Per-request cryptographic authentication** of API calls; session delegation with expiry and
   revocation.
 - **TLS** for all data in transit.

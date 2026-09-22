@@ -33,6 +33,16 @@ Quote these, not round approximations — AWS re-reads the case on later increas
 The 24h floor tracks list size deliberately: a cap below an organiser's own audience is not
 a reputation guard, it is a product defect.
 
+**Superseded in code (internal note, not sent to AWS).** The per-request figure in the first row
+went when broadcasts moved to the background queue (#100). Since #619 the control that replaces
+it is per-sender pacing: contacts new to the platform go out in batches of at most Resend's
+existing-domain per-hour figure (100 on a sender's first sending day, rising to 2,000), at least
+an hour apart, under a per-day ceiling (1,000 rising to 10,000), with hard-bounce and complaint
+checks between batches that pause at 4% / 0.08% and stop at 10% / 0.5%. Contacts already proven
+deliverable are unpaced. The 2-per-hour start limit and the 24h ceiling are unchanged. A first
+send is therefore well inside the 1,000-per-broadcast figure given to AWS; no correction was sent
+(owner decision 2026-09-22). If AWS asks, describe this, not the table row.
+
 **Do not claim we serve 100k-contact organisers.** Lists cap at 20,000 and the storage shape
 (one sealed blob re-uploaded per change, gzipped) does not stretch to 100k without paging.
 Raise the cap in code first, then update this file, then tell AWS.
