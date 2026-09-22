@@ -27,6 +27,13 @@
 
   const entry = $derived(DOCS[doc]);
 
+  // Opened from footers and from mid-page links, and the router keeps the
+  // scroll position across routes: start each document at its top.
+  $effect(() => {
+    void doc;
+    window.scrollTo(0, 0);
+  });
+
   const html = $derived.by(async () => {
     if (!entry) return null;
     const key = Object.keys(sources).find((k) => k.endsWith(`/${entry.file}`));

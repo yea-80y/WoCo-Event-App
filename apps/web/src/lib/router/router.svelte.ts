@@ -6,6 +6,7 @@
  *   NEUTRAL surface
  *     /                            splitter (landing — funnels to organiser vs attendee)
  *     /legal, /legal/:doc          legal (privacy, terms, organiser-terms, dpa, cookies)
+ *     /about                       about (how WoCo works — the technical companion)
  *     /ref/:token                  invite (an invite link: stores the invite, shows who sent it)
  *
  *   ATTENDEE surface
@@ -86,6 +87,8 @@ function matchRoute(pathWithQuery: string): Match {
   if (legalMatch) {
     return { route: "legal", params: { doc: legalMatch[1] ?? "index" }, surface: "neutral" };
   }
+
+  if (path === "/about") return { route: "about", params: {}, surface: "neutral" };
 
   // ── Creator surface (explicit /creator/* prefix) ─────────────────────────
   if (path === "/creator") return { route: "creator-home", params: {}, surface: "creator" };

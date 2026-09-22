@@ -152,6 +152,12 @@
       : null
   );
 
+  const aboutPagePromise = $derived(
+    router.route === "about"
+      ? import("./lib/landing/AboutPage.svelte").then((m) => m.default)
+      : null
+  );
+
   // Lazy for the same reason: only someone who followed an invite link pays for it.
   const invitePagePromise = $derived(
     router.route === "invite"
@@ -166,6 +172,16 @@
   {:then Comp}
     {#if Comp}
       <Comp doc={router.params.doc ?? "index"} />
+    {/if}
+  {:catch}
+    <div class="surface-loading surface-error">Failed to load. Please refresh.</div>
+  {/await}
+{:else if router.route === "about"}
+  {#await aboutPagePromise}
+    <div class="surface-loading">Loading…</div>
+  {:then Comp}
+    {#if Comp}
+      <Comp />
     {/if}
   {:catch}
     <div class="surface-loading surface-error">Failed to load. Please refresh.</div>
