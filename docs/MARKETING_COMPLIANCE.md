@@ -106,6 +106,26 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   subdomain split requires the $20/mo Pro plan when an imported list makes it mandatory.
 - Marketing caps: 2 broadcasts/hr + `MARKETING_DAILY_CAP` (rolling 24h, default 2000) per
   organiser; explicit 429, never a silent trim.
+- **PACED FIRST SEND (#619)** — `lib/sender-pacing/` (sender-agnostic: a sender, a batch, a hash)
+  + numbers in `packages/shared/src/marketing/pacing.ts`. Contacts the organiser has never reached
+  through WoCo (no delivery without a hard bounce, no checkout opt-in to them) go in hourly
+  batches on Resend's existing-domain warm-up table, per sender: 100/h and 1,000/day on the first
+  sending day up to 2,000/h and 10,000/day, last row forever. Proven contacts go at once. The
+  server HOLDS the unsent recipients (per-job in-memory key, ≤7 days) so the organiser presses
+  Send once. Checks over the last 7 days, on all sends AND on new contacts alone (so proven
+  volume cannot dilute a dead import): HOLD at Resend's 4% bounce / 0.08% complaint (floors 4 /
+  2), lifts itself; STOP at SES's 10% / 0.5% (floors 10 / 5), sticky until
+  `POST /api/ops/sender-pacing/:sender/lift` (`{by, reason}`), which resets the evidence
+  baseline. A bounce hold pauses new contacts only; an all-sends complaint hold pauses
+  everything. Counted from tagged SES events only (`woco_ctx_job` + `woco_ctx_batch`); complaints
+  with a `complaintSubType` (never sent) and `not-spam` never count. Attendee (event) broadcasts
+  are never paced. Alarm: `/api/health` `email.senderPacing.ok` (also false when `tagging` is
+  false — SES active with no `SES_CONFIGURATION_SET`, so nothing can be counted). A
+  new-contacts hold cannot be diluted (no new contacts go while it stands), so it lasts until the
+  bad batch leaves the 7-day window; the same operator `lift` clears a HOLD too, and is the remedy
+  when a week is too long. Known consequences, deliberately not built yet: proof never expires
+  except by re-import, and sending days never decay, so a sender who ramped a year ago starts at
+  the top rung.
 - ABUSE GATE (#59): `/broadcast` + `/domain(create)` require `isVerifiedOrganiser`
   (Stripe `charges_enabled`, same as paid events / free hosting) → 403
   `STRIPE_VERIFICATION_REQUIRED`. Import/read/suppress stay open; **event broadcasts are
@@ -217,6 +237,7 @@ These `.data` stores MUST survive server restarts:
 - `.data/marketing-lists.json`
 - `.data/marketing-domains.json`
 - `.data/marketing-send-log.json`
+- `.data/sender-pacing/` — **losing it forgets a stop and resets every sender's ramp**
 - `.data/consumed-resend-events.json`
 
 ---

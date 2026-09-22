@@ -34,11 +34,13 @@ process.env.EMAIL_HASH_SECRET = "test-secret-email-delivery";
 // The failure ledger writes .data/ relative to cwd — chdir before importing it.
 let send: typeof import("../src/lib/email/send.js");
 let ledger: typeof import("../src/lib/email/failure-ledger.js");
+let pacing: typeof import("../src/lib/sender-pacing/index.js");
 
 before(async () => {
   process.chdir(mkdtempSync(join(tmpdir(), "woco-email-delivery-test-")));
   send = await import("../src/lib/email/send.js");
   ledger = await import("../src/lib/email/failure-ledger.js");
+  pacing = await import("../src/lib/sender-pacing/index.js");
 });
 
 beforeEach(() => {
@@ -71,6 +73,17 @@ const permanent = () => new EmailSendError("rejected", { retryable: false, code:
 
 /** No real waiting — backoff timing is not what these assert. */
 const noSleep = async () => {};
+
+describe("the platform alarm's denominator (#619)", () => {
+  test("an accepted message is counted once; a refused one is not", async () => {
+    pacing._resetPacingForTest();
+    const ok = flakyProvider("ses", 0, retryable);
+    await send.sendVia({ primary: ok.provider, secondary: null, sleep: noSleep }, MSG, { maxAttempts: 3 });
+    const bad = flakyProvider("ses", 99, permanent);
+    await assert.rejects(send.sendVia({ primary: bad.provider, secondary: null, sleep: noSleep }, MSG, { maxAttempts: 1 }));
+    assert.equal(pacing.pacingHealth().platform7d.accepted, 1);
+  });
+});
 
 describe("retry", () => {
   test("a transient failure is retried and the message goes out", async () => {

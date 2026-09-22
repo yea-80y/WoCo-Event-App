@@ -23,6 +23,8 @@ import { getList, putList, withOrgLock } from "../lib/marketing/list-store.js";
 import { normalizeEmails } from "../lib/marketing/emails.js";
 import { suppressedSubset, suppressOrg } from "../lib/marketing/suppression-store.js";
 import { consentedSubset } from "../lib/marketing/consent-store.js";
+import { pruneProven } from "../lib/sender-pacing/index.js";
+import { reachedBefore } from "../lib/email/broadcast-pacing.js";
 import { sendMarketingBatch } from "../lib/email/marketing-send.js";
 import { getResend, getMarketingFromAddress } from "../lib/email/client.js";
 import {
@@ -138,6 +140,9 @@ marketing.post("/list", requireAuth, async (c) => {
         encodeJsonFeed({ version: 1, swarmRef, count, updatedAt }),
       );
       putList(org, { swarmRef, count, updatedAt, emailHashes });
+      // Pacing proof exists to exempt a contact on this list; one who left it
+      // has nothing to be exempted from (#619).
+      pruneProven(org, new Set(emailHashes));
       return { swarmRef, count, updatedAt };
     });
 
@@ -177,7 +182,11 @@ marketing.get("/list", requireAuth, async (c) => {
   }
 });
 
-/** Which of these emails are suppressed / already stored / hold a consent record? */
+/**
+ * Which of these emails are suppressed / already stored / hold a consent
+ * record / have already been reached through us (`proven`, #619 — they skip
+ * pacing, so the composer can say how many go straight away)?
+ */
 marketing.post("/check", requireAuth, async (c) => {
   const org = c.get("parentAddress").toLowerCase();
   const body = c.get("body") as Record<string, unknown>;
@@ -209,13 +218,16 @@ marketing.post("/check", requireAuth, async (c) => {
   const suppressed: string[] = [];
   const alreadyInList: string[] = [];
   const consented: string[] = [];
+  const proven: string[] = [];
   for (const [h, e] of hashToEmail) {
     if (suppressedHashes.has(h)) suppressed.push(e);
     if (storedHashes.has(h)) alreadyInList.push(e);
     if (consentedHashes.has(h)) consented.push(e);
+    // The same rule the send path classifies by.
+    if (reachedBefore(org, h)) proven.push(e);
   }
 
-  return c.json({ ok: true, data: { suppressed, alreadyInList, consented } });
+  return c.json({ ok: true, data: { suppressed, alreadyInList, consented, proven } });
 });
 
 /** Manual per-organiser suppression (contact delete + "also unsubscribe"). */

@@ -35,6 +35,7 @@ let snsVerify: typeof import("../src/lib/email/sns-verify.js");
 let consumed: typeof import("../src/lib/email/consumed-sns-events.js");
 let ledger: typeof import("../src/lib/email/failure-ledger.js");
 let tags: typeof import("../src/lib/email/message-tags.js");
+let pacing: typeof import("../src/lib/sender-pacing/index.js");
 
 before(async () => {
   const dir = mkdtempSync(join(tmpdir(), "woco-ses-webhook-cert-"));
@@ -61,6 +62,7 @@ before(async () => {
   consumed = await import("../src/lib/email/consumed-sns-events.js");
   ledger = await import("../src/lib/email/failure-ledger.js");
   tags = await import("../src/lib/email/message-tags.js");
+  pacing = await import("../src/lib/sender-pacing/index.js");
   ({ hashEmail } = await import("../src/lib/event/claim-service.js"));
 });
 
@@ -69,6 +71,7 @@ beforeEach(() => {
   consumed._resetForTest();
   ledger._resetForTest();
   route._resetUntaggedWarningForTest();
+  pacing._resetPacingForTest();
 });
 
 let messageSeq = 0;
@@ -152,6 +155,33 @@ describe("complaint policy", () => {
     // The person said stop; the ISP's classification does not change that.
     const email = "quiet@example.com";
     await post({ eventType: "Complaint", complaint: { complainedRecipients: [{ emailAddress: email }] } });
+    assert.equal(suppression.isSuppressed(hashEmail(email), ORG), true);
+  });
+
+  test("a not-spam report does NOT suppress (#621)", async () => {
+    // SES: "the entity providing the report does not consider the message to
+    // be spam". A retraction must not become a permanent global block.
+    const email = "wanted-it@example.com";
+    const resp = await post({
+      eventType: "Complaint",
+      complaint: { complainedRecipients: [{ emailAddress: email }], complaintFeedbackType: "not-spam" },
+    });
+    assert.equal(resp.status, 200);
+    assert.equal(suppression.isSuppressed(hashEmail(email), ORG), false);
+  });
+
+  test("a provider-suppressed complaint still suppresses", async () => {
+    // Harmless (the address is already on the SES list) and kept, so only
+    // not-spam is exempt.
+    const email = "already-listed@example.com";
+    await post({
+      eventType: "Complaint",
+      complaint: {
+        complainedRecipients: [{ emailAddress: email }],
+        complaintFeedbackType: "abuse",
+        complaintSubType: "OnAccountSuppressionList",
+      },
+    });
     assert.equal(suppression.isSuppressed(hashEmail(email), ORG), true);
   });
 });
@@ -511,5 +541,65 @@ describe("the failure ledger (#99)", () => {
       });
       assert.equal(ledger.listFailures()[0]?.context?.untagged, "true");
     });
+  });
+});
+
+describe("pacing attribution (#619)", () => {
+  const SENDER = ORG.toLowerCase();
+  const JOB = "5f0c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f";
+  const mail = (id: string, t: Record<string, string> | null) => ({
+    messageId: id,
+    destination: ["x@example.com"],
+    ...(t ? { tags: Object.fromEntries(Object.entries(t).map(([k, v]) => [k, [v]])) } : {}),
+  });
+  const marketingTags = (batch: string) => ({
+    woco_kind: "marketing", woco_ctx_organiser: SENDER, woco_ctx_job: JOB, woco_ctx_batch: batch,
+  });
+
+  beforeEach(() => {
+    pacing.admit(SENDER, `${JOB}:u1`, 100);
+    pacing.recordAccepted(SENDER, `${JOB}:u1`, "u", Array.from({ length: 100 }, (_, i) => `${i}`.padEnd(64, "a")));
+  });
+
+  test("a tagged hard bounce is counted against its sender and batch", async () => {
+    await post({ ...bounce("Permanent", "General", "gone@example.com"), mail: mail("m-1", marketingTags("u1")) });
+    const w = pacing.pacingWindow(SENDER);
+    assert.equal(w.new.bounces, 1);
+    assert.equal(pacing.pacingHealth().platform7d.bounces, 1);
+  });
+
+  test("an untagged copy counts nowhere — it is the identity-level duplicate of a tagged event", async () => {
+    await post({ ...bounce("Permanent", "General", "gone@example.com"), mail: mail("m-2", null) });
+    assert.equal(pacing.pacingWindow(SENDER).all.bounces, 0);
+    assert.equal(pacing.pacingHealth().platform7d.bounces, 0);
+  });
+
+  test("the same failure over two subscriptions counts once", async () => {
+    const ev = { ...bounce("Permanent", "General", "gone@example.com"), mail: mail("m-3", marketingTags("u1")) };
+    await post(ev, "envelope-a");
+    await post(ev, "envelope-b");
+    assert.equal(pacing.pacingWindow(SENDER).new.bounces, 1);
+  });
+
+  test("complaints are read by tag; one about mail SES never sent counts as nothing", async () => {
+    const complaint = (id: string, extra: Record<string, unknown>) => ({
+      eventType: "Complaint",
+      complaint: { complainedRecipients: [{ emailAddress: `${id}@example.com` }], ...extra },
+      mail: mail(id, marketingTags("u1")),
+    });
+    await post(complaint("c-1", { complaintFeedbackType: "abuse" }));
+    await post(complaint("c-2", { complaintFeedbackType: "abuse", complaintSubType: "OnAccountSuppressionList" }));
+    await post(complaint("c-3", { complaintFeedbackType: "not-spam" }));
+    assert.equal(pacing.pacingWindow(SENDER).new.complaints, 1);
+    assert.equal(pacing.pacingHealth().platform7d.complaints, 1);
+  });
+
+  test("a transactional bounce feeds the platform alarm but no sender", async () => {
+    await post({
+      ...bounce("Permanent", "General", "buyer@example.com"),
+      mail: mail("t-1", { woco_kind: "transactional", woco_ctx_eventId: "ev1" }),
+    });
+    assert.equal(pacing.pacingWindow(SENDER).all.bounces, 0);
+    assert.equal(pacing.pacingHealth().platform7d.bounces, 1);
   });
 });
