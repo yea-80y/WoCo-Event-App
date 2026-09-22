@@ -157,6 +157,33 @@ describe("complaint policy", () => {
     await post({ eventType: "Complaint", complaint: { complainedRecipients: [{ emailAddress: email }] } });
     assert.equal(suppression.isSuppressed(hashEmail(email), ORG), true);
   });
+
+  test("a not-spam report does NOT suppress (#621)", async () => {
+    // SES: "the entity providing the report does not consider the message to
+    // be spam". A retraction must not become a permanent global block.
+    const email = "wanted-it@example.com";
+    const resp = await post({
+      eventType: "Complaint",
+      complaint: { complainedRecipients: [{ emailAddress: email }], complaintFeedbackType: "not-spam" },
+    });
+    assert.equal(resp.status, 200);
+    assert.equal(suppression.isSuppressed(hashEmail(email), ORG), false);
+  });
+
+  test("a provider-suppressed complaint still suppresses", async () => {
+    // Harmless (the address is already on the SES list) and kept, so only
+    // not-spam is exempt.
+    const email = "already-listed@example.com";
+    await post({
+      eventType: "Complaint",
+      complaint: {
+        complainedRecipients: [{ emailAddress: email }],
+        complaintFeedbackType: "abuse",
+        complaintSubType: "OnAccountSuppressionList",
+      },
+    });
+    assert.equal(suppression.isSuppressed(hashEmail(email), ORG), true);
+  });
 });
 
 describe("event handling", () => {
