@@ -1,8 +1,42 @@
 # Email work — where it stands and what is next
 
-Written 2026-08-02, at the end of #100. Companion to `SES_MIGRATION_HANDOVER.md`
+Written 2026-08-02, at the end of #100; launch state added 2026-09-22 (next section).
+Companion to `SES_MIGRATION_HANDOVER.md`
 (which holds the SES design record and the §4a review board) and
 `PRICING_AND_EMAIL.md` (rates — never restate them elsewhere).
+
+---
+
+## Launch state — 2026-09-22
+
+**Code: done for launch.** Live on `e9574b1a`, `/api/health` `.email` all green on
+2026-09-22 (0 undelivered tickets, `bounceLedger` untagged 0, pacing `tagging: true`,
+marketing sender set). Shipped: #99, #96, #100, #104, #387/#388, #392/#394, #410, #619
+(+ #620). #621 (not-spam must not suppress) and the unsubscribe-page wrap fix are on their
+own PRs.
+
+**Resend is being removed (#627) — owner decision 2026-09-22.** It is not a rollback: flipping
+`EMAIL_PROVIDER=resend` would cap all mail at the free tier's 100/day, and Resend is not
+sent our message tags, so async bounces would stop reaching the ledger and sender pacing
+would stop counting bounces and complaints. No longer tied to #103.
+
+**Open, not needed to go live:** #622 (route tests, proof/ramp decay, write coalescing),
+#60 items 2 and 5 (double-opt-in resubscribe, composer polish), #101 (20k list cap),
+#103 (per-organiser sending domains, now to be built on SES).
+
+**Owner's call:** #133 item 4, refusing imported contacts in AU/CA/DE (CASL has no soft
+opt-in). #133 items 1–3 (per-sender rates, automatic stop, paced first send) shipped in #619.
+
+**Owner, outside the code** (none of these can be seen from the repo):
+- support@ and privacy@woco-net.com receive mail (MX is Zoho) — privacy@ is the Privacy
+  Policy's rights address.
+- Rotate the AWS access key that passed through a chat on 2026-07-31.
+- In the SES console: `mail.woco-net.com` shows DKIM verified; note the reputation page
+  before and after the first organiser send.
+- Google Postmaster Tools for `woco-net.com` (no verification record in DNS on 2026-09-22).
+- mail-tester.com via the composer's Send test (it goes out through SES, same path as a
+  broadcast), then a GlockApps seed test for Microsoft placement.
+- Read the #619 clauses: PRIVACY_POLICY retention row + §11, DPA §5.
 
 ---
 
@@ -63,10 +97,8 @@ on a `Permanent` bounce or a `Reject` and writes a ledger entry carrying the
 
 **Still open, deliberately:**
 
-- **`routes/resend-webhook.ts` is NOT covered.** Resend is the rollback lever and
-  is scheduled for deletion; pulling it reopens the async hole, which
-  `/api/health` reports as `email.bounceLedger.unsupported` rather than leaving
-  it to be discovered.
+- **`routes/resend-webhook.ts` is NOT covered.** Moot: Resend is being removed
+  (#627, owner decision 2026-09-22).
 - **AWS-side wiring is unverifiable from code.** Tags are published only through
   a **configuration-set event destination** — identity-level feedback
   notifications carry none — and `Reject` must be enabled on that destination to
@@ -77,12 +109,10 @@ on a `Permanent` bounce or a `Reject` and writes a ledger entry carrying the
   apart so the tagged one is never lost, but the cost is a duplicate ledger row
   per bounce.
 - **AWS documents the `mail.tags` block on Bounce and Complaint records but the
-  worked examples for those two show only `ses:*` entries** — the Delivery, Send,
-  Reject and Subscription examples show custom tags. The page's prose says a
-  config set publishes tags for all event types, so this should be a gap in the
-  examples rather than in the behaviour. One send to
-  `bounce@simulator.amazonses.com` after deploy settles it; the untagged counter
-  is the detector either way.
+  worked examples for those two show only `ses:*` entries.** Settled in
+  production: `/api/health` on 2026-09-22 shows `bounceLedger.correlated: 1,
+  untagged: 0` — a real bounce came back carrying its tags and was tied to its
+  send.
 
 **Research kept — do not re-derive:**
 
@@ -181,7 +211,7 @@ so loudly on the first chunk instead of grinding through the whole list.
   half. Pre-existing, but fail-closed adds a way to be pinned there by ops
   alone. The sequencing above makes it unreachable in practice.
 
-### 3. #104 — SNS webhook: pin the signing-cert URL path
+### 3. #104 — SNS webhook: pin the signing-cert URL path — **DONE** (`962da5ab`, PR #386)
 
 Board row 12. Any POST with a novel valid-host `SigningCertURL` triggers an
 outbound fetch from an unauthenticated endpoint. Pin the path to
@@ -200,18 +230,18 @@ phone**, which is the genuine unknown, not on architecture.
 
 The big one, gated on the paid tier. §4 of the SES handover has the API mapping
 and the three things that will bite (1 req/s on non-send actions, 10,000
-identities per region, reputation split per organiser). Deleting Resend is
-scheduled for **2026-10-01** if phase 2 slips.
+identities per region, reputation split per organiser). Deleting Resend is no
+longer tied to this: it goes now (#627, owner decision 2026-09-22).
 
 ### 6. #60, #81 — compliance and launch-ops leftovers
 
 `#60` item 4 (audiences over 1,000) is **closed by #100**. Item 3 (CAN-SPAM
 postal address) is satisfied by `MARKETING_POSTAL_ADDRESS`, which the send path
-now fails closed without. Still open there: operational-vs-marketing messages to
-ticket-holders, a double-opt-in resubscribe path, and the marketing-list blobs
-stamped on the dying test batch. `#81` is the launch ops checklist.
+now fails closed without. Item 1 (service messages to ticket-holders) shipped in
+#392/#394. Still open there: a double-opt-in resubscribe path (item 2) and
+composer polish (item 5). `#81` is the launch ops checklist.
 
-### 7. #82 — event-broadcast hardening: verify and close
+### 7. #82 — event-broadcast hardening — **DONE** (closed 2026-08-24)
 
 All three items look closed by #100 — the rate window now runs inside the
 organiser mutex, keys are lowercased throughout, and the on-chain-series
@@ -227,8 +257,9 @@ the issue against `routes/broadcast-jobs.ts` and close it rather than assuming.
   accurate unsent count and the organiser gets a one-click resume that mails
   exactly the remainder — but check first:
   `curl -s https://events-api.woco-net.com/api/health | jq .email.broadcasts`
-- **Domain warm-up.** No broadcasts until roughly 2026-08-14. Day-over-day ramp
-  is well evidenced. The earlier note here said spreading a broadcast across hours
+- **Domain warm-up.** The ticket domain has carried transactional mail since
+  2026-07-31; the marketing subdomain had sent nothing by 2026-09-22 (health
+  `senderPacing.platform7d.accepted: 0`). Day-over-day ramp is well evidenced. The earlier note here said spreading a broadcast across hours
   had no primary source; Resend's warm-up table (read 2026-09-22) does publish a
   per-hour column, and #619 now paces a first send to NEW contacts in hourly
   batches on it — see `docs/MARKETING_COMPLIANCE.md` "PACED FIRST SEND". A single
