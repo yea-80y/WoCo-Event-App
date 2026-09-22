@@ -302,6 +302,38 @@ describe("the checks", () => {
     assert.equal(pacing.pacingState(A, T0 + 2 * MIN).kind, "stopped", "a stop survives a restart");
   });
 
+  test("a lift does not blind the checks to the rest of a batch that straddles it", () => {
+    // Rung 2: one earlier sending day.
+    sendBatch(A, 100, T0 - DAY, "e:u1");
+    const id = "j:u1";
+    assert.equal(pacing.admit(A, id, 300, T0).ok, true);
+    pacing.recordAccepted(A, id, "u", hashes(100, "a"), T0);
+    pacing.recordBounce(A, id, "General", 10, T0 + MIN);
+    assert.equal(pacing.pacingState(A, T0 + MIN).kind, "held");
+    pacing.liftSender(A, "ops:test", "looked at it", T0 + HOUR);
+
+    // The same batch carries on after the lift, and its new contacts bounce.
+    pacing.recordAccepted(A, id, "u", hashes(200, "b"), T0 + HOUR + MIN);
+    pacing.recordBounce(A, id, "General", 60, T0 + HOUR + 2 * MIN);
+    assert.equal(pacing.pacingState(A, T0 + HOUR + 2 * MIN).kind, "stopped");
+  });
+
+  test("a proven run that straddles a lift still has its complaints counted", () => {
+    pacing.recordAccepted(A, "j:p", "p", hashes(500, "p"), T0);
+    pacing.stopSender(A, "ops:test", "checking", T0 + MIN);
+    pacing.liftSender(A, "ops:test", "fine", T0 + 2 * MIN);
+    pacing.recordAccepted(A, "j:p", "p", hashes(500, "q"), T0 + 3 * MIN);
+    pacing.recordComplaint(A, "j:p", { feedbackType: "abuse" }, 5, T0 + 4 * MIN);
+    assert.equal(pacing.pacingState(A, T0 + 4 * MIN).kind, "stopped");
+  });
+
+  test("a batch opened before its first send catches a bounce that beats the send's record", () => {
+    pacing.openBatch(A, "j:p", "p", T0);
+    assert.equal(pacing.recordBounce(A, "j:p", "General", 3, T0 + 5_000), true);
+    pacing.recordAccepted(A, "j:p", "p", hashes(400, "o"), T0 + 30_000);
+    assert.equal(pacing.pacingWindow(A, T0 + MIN).all.bounces, 3);
+  });
+
   test("a manual stop blocks everything until lifted", () => {
     pacing.stopSender(A, "ops:bob", "investigating", T0);
     assert.equal(!pacing.admit(A, "j:u1", 100, T0).ok && "refused", "refused");

@@ -74,7 +74,8 @@ import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.
 import { checkMarketingSenderConfig, marketingSenderHealth } from "./lib/email/client.js";
 import { failureHealth, bounceLedgerHealth } from "./lib/email/failure-ledger.js";
 import { reconcileOnBoot, recordShutdown } from "./lib/email/broadcast-jobs.js";
-import { flushPacing, pacingHealth } from "./lib/sender-pacing/index.js";
+import { flushPacing } from "./lib/sender-pacing/index.js";
+import { senderPacingHealth } from "./lib/email/broadcast-pacing.js";
 import {
   drainWorkerHealth,
   settleReservation,
@@ -367,9 +368,10 @@ app.get("/api/health", (c) =>
       // Sender pacing (#619). `ok: false` means a sender has been STOPPED for
       // bounces or complaints (an operator must look: /api/ops/sender-pacing),
       // or the platform's own 7-day rate is over a hold line — the early
-      // warning before SES's review line. Holds alone are reported, not alarmed:
-      // they lift on their own. Counts only; this endpoint is public.
-      senderPacing: pacingHealth(),
+      // warning before SES's review line — or `tagging` is false (no SES
+      // configuration set, so nothing can be counted). Holds alone are
+      // reported, not alarmed: they lift on their own. Counts only; public.
+      senderPacing: senderPacingHealth(),
       // `ok: false` means the PLATFORM marketing lane is refusing sends because
       // no marketing from-address is configured (#96). Organisers with their own
       // verified sending domain are unaffected, and so is transactional email.

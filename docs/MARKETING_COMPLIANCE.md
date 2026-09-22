@@ -119,7 +119,13 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   baseline. A bounce hold pauses new contacts only; an all-sends complaint hold pauses
   everything. Counted from tagged SES events only (`woco_ctx_job` + `woco_ctx_batch`); complaints
   with a `complaintSubType` (never sent) and `not-spam` never count. Attendee (event) broadcasts
-  are never paced. Alarm: `/api/health` `email.senderPacing.ok`.
+  are never paced. Alarm: `/api/health` `email.senderPacing.ok` (also false when `tagging` is
+  false — SES active with no `SES_CONFIGURATION_SET`, so nothing can be counted). A
+  new-contacts hold cannot be diluted (no new contacts go while it stands), so it lasts until the
+  bad batch leaves the 7-day window; the same operator `lift` clears a HOLD too, and is the remedy
+  when a week is too long. Known consequences, deliberately not built yet: proof never expires
+  except by re-import, and sending days never decay, so a sender who ramped a year ago starts at
+  the top rung.
 - ABUSE GATE (#59): `/broadcast` + `/domain(create)` require `isVerifiedOrganiser`
   (Stripe `charges_enabled`, same as paid events / free hosting) → 403
   `STRIPE_VERIFICATION_REQUIRED`. Import/read/suppress stay open; **event broadcasts are

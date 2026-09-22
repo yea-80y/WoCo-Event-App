@@ -357,17 +357,7 @@ export function admit(sender: string, batchId: string, remaining: number, at = D
   const size = Math.min(allowance.size, Math.max(0, Math.floor(remaining)));
   if (size <= 0) return { ok: false, code: "DAY_EXHAUSTED", retryAt: nextUtcMidnight(at) };
 
-  live.rec.batches.push({
-    id: batchId,
-    kind: "u",
-    startedAt: at,
-    admitted: size,
-    accepted: 0,
-    pendingProof: [],
-    bounces: {},
-    complaints: {},
-    providerSuppressed: 0,
-  });
+  live.rec.batches.push({ ...freshBatch(batchId, "u", at), admitted: size });
   const today = utcDay(at);
   if (!live.rec.sendingDays.includes(today)) {
     live.rec.sendingDays = [...live.rec.sendingDays, today].sort().slice(-SENDING_DAYS_KEPT);
@@ -381,8 +371,60 @@ export function admit(sender: string, batchId: string, remaining: number, at = D
 // Feeds
 // ---------------------------------------------------------------------------
 
+/** The newest record for this id — a lift can leave an older one behind it. */
 function findBatch(rec: StoredSender, batchId: string): StoredBatch | undefined {
-  return rec.batches.find((b) => b.id === batchId);
+  for (let i = rec.batches.length - 1; i >= 0; i--) if (rec.batches[i]!.id === batchId) return rec.batches[i];
+  return undefined;
+}
+
+function freshBatch(id: string, kind: BatchKind, at: number): StoredBatch {
+  return {
+    id,
+    kind,
+    startedAt: at,
+    admitted: 0,
+    accepted: 0,
+    pendingProof: [],
+    bounces: {},
+    complaints: {},
+    providerSuppressed: 0,
+  };
+}
+
+/**
+ * The record that new sends and events for this batch count against.
+ *
+ * An operator lift ignores every record that STARTED before it. A batch can
+ * straddle a lift — a hold parks a multi-chunk batch halfway, and a job's
+ * proven run is one record for its whole life — so the part sent after the
+ * lift goes onto a new record with the same id, started at the lift or later.
+ * Without this the rest of that batch, and everything that came back from it,
+ * would be invisible to both checks (Fable sign-off R1, 2026-09-22). A late
+ * event about a pre-lift message then counts against post-lift sends, which is
+ * SES's own reading: only bounces received after the changes count.
+ */
+function liveBatch(live: Live, batchId: string, kind: BatchKind, at: number, create: boolean): StoredBatch | undefined {
+  const found = findBatch(live.rec, batchId);
+  const baseline = live.rec.baselineAt;
+  if (found && (baseline === undefined || found.startedAt >= baseline)) return found;
+  if (!found && !create) return undefined;
+  const b = freshBatch(batchId, found?.kind ?? kind, at);
+  live.rec.batches.push(b);
+  return b;
+}
+
+/**
+ * Open the record a batch's sends and events will count against, BEFORE its
+ * first message goes. Hard bounces arrive within seconds, and one that finds no
+ * record is dropped — so a proven run opened only after its first chunk
+ * returned lost most of that chunk's bounces (Fable sign-off R2). New-contact
+ * batches are opened by `admit`; this is for the proven run.
+ */
+export function openBatch(sender: string, batchId: string, kind: BatchKind, at = Date.now()): void {
+  const live = get(sender);
+  const before = live.rec.batches.length;
+  liveBatch(live, batchId, kind, at, true);
+  if (live.rec.batches.length !== before) persist(live);
 }
 
 /**
@@ -399,21 +441,7 @@ export function recordAccepted(
 ): void {
   if (hashes.length === 0) return;
   const live = get(sender);
-  let batch = findBatch(live.rec, batchId);
-  if (!batch) {
-    batch = {
-      id: batchId,
-      kind,
-      startedAt: at,
-      admitted: 0,
-      accepted: 0,
-      pendingProof: [],
-      bounces: {},
-      complaints: {},
-      providerSuppressed: 0,
-    };
-    live.rec.batches.push(batch);
-  }
+  const batch = liveBatch(live, batchId, kind, at, true)!;
   batch.accepted += hashes.length;
   batch.lastAcceptedAt = at;
   if (batch.kind === "u") batch.pendingProof.push(...hashes);
@@ -432,8 +460,8 @@ export function recordAccepted(
 export function recordBounce(sender: string, batchId: string, subtype: string, n = 1, at = Date.now()): boolean {
   if (!isValidSenderId(sender)) return false;
   const live = get(sender);
-  const batch = findBatch(live.rec, batchId);
-  if (!batch || n <= 0) return false;
+  const batch = n > 0 ? liveBatch(live, batchId, "u", at, false) : undefined;
+  if (!batch) return false;
   const key = subtype || "Unknown";
   batch.bounces[key] = (batch.bounces[key] ?? 0) + n;
   applyStopLine(live, at);
@@ -457,8 +485,8 @@ export function recordComplaint(
 ): boolean {
   if (!isValidSenderId(sender)) return false;
   const live = get(sender);
-  const batch = findBatch(live.rec, batchId);
-  if (!batch || n <= 0) return false;
+  const batch = n > 0 ? liveBatch(live, batchId, "u", at, false) : undefined;
+  if (!batch) return false;
   if (info.complaintSubType) {
     batch.providerSuppressed += n;
   } else {

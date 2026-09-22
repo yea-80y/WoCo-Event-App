@@ -55,6 +55,7 @@ import { forgetRetries, requeue, takeDue, retryQueueStats } from "./retry-queue.
 import {
   admit,
   mayDrain,
+  openBatch,
   onPacingStateChange,
   pacingState,
   pacingWindow,
@@ -207,6 +208,19 @@ onPacingStateChange((sender, state) => {
 });
 
 /**
+ * A run is going again: whatever the job was waiting for is over, so the view
+ * must stop saying "Paused" (Fable sign-off R3).
+ */
+function resumed(job: BroadcastJob, run: "p" | "u"): "p" | "u" {
+  if (job.waiting || job.nextBatchAt) {
+    delete job.waiting;
+    delete job.nextBatchAt;
+    saveJob(job);
+  }
+  return run;
+}
+
+/**
  * Which run to drain next, opening a batch of new contacts when one is due —
  * or null, having parked the job, when nothing may go yet.
  */
@@ -218,7 +232,7 @@ function nextRun(job: BroadcastJob): "p" | "u" | null {
       wait(job, holdKind(state), Date.now() + 60_000, pacingNotice(state, pacingWindow(job.org)) ?? undefined);
       return null;
     }
-    return "p";
+    return resumed(job, "p");
   }
   if (job.nextU >= job.uChunks) return null;
 
@@ -228,7 +242,7 @@ function nextRun(job: BroadcastJob): "p" | "u" | null {
       wait(job, holdKind(state), Date.now() + 60_000, pacingNotice(state, pacingWindow(job.org)) ?? undefined);
       return null;
     }
-    return "u";
+    return resumed(job, "u");
   }
 
   const n = job.batchesStarted + 1;
@@ -292,6 +306,10 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
   // here rather than mailed twice.
   const alreadySent = new Set([...job.sentHashes, ...job.priorDelivered]);
   const fresh = recipients.filter((r) => !alreadySent.has(hashEmail(r.email)));
+
+  // The record must exist before the first message goes: a hard bounce that
+  // arrives mid-chunk and finds none is dropped (Fable sign-off R2).
+  if (job.kind === "marketing") openBatch(job.org, `${job.id}:${batchTag}`, seq);
 
   let result: MarketingSendResult;
   try {

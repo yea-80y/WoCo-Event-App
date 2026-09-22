@@ -71,7 +71,7 @@
    * already phrased for them.
    */
   const guidance = $derived.by(() => {
-    if ((job.state === "running" || job.state === "queued") && job.unproven > 0) return pacedLine();
+    if ((job.state === "running" || job.state === "queued") && (job.unproven > 0 || job.waiting)) return pacedLine();
     if (job.state === "running" || job.state === "queued") {
       return "You can close this page — the send carries on without it.";
     }

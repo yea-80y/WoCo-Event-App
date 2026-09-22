@@ -13,7 +13,8 @@
  * ladder is climbed PER SENDER. The per-hour figure is the batch size (batches
  * are at least an hour apart) and the per-day figure is the day's ceiling. The
  * table ends at day 7; its last row continues indefinitely rather than turning
- * pacing off, so a stale list imported a year later is paced like the first.
+ * pacing off, so a stale list imported a year later is still paced — at the
+ * sender's rung, which does not decay — rather than sent at once.
  *
  * THE THRESHOLDS: hold at Resend's published lines (bounce under 4%, spam
  * under 0.08% — https://resend.com/docs/knowledge-base/account-quotas-and-limits),

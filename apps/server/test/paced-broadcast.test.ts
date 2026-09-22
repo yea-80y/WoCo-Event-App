@@ -216,6 +216,77 @@ describe("pauses and stops", { timeout: 60_000 }, () => {
     assert.equal(job.waiting?.for, "bounce-hold");
   });
 
+  test("a send that resumes after a pause stops saying it is paused", async () => {
+    pacing.admit(ORG, "earlier:u1", 100, T0 - 24 * HOUR);
+    pacing.recordAccepted(ORG, "earlier:u1", "u", Array.from({ length: 100 }, (_, i) => `${i}`.padEnd(64, "e")), T0 - 24 * HOUR);
+    const seen: Array<string | undefined> = [];
+    let job!: ReturnType<typeof paced>;
+    let fired = false;
+    worker._resetDrainWorkerForTest({
+      async send(msg: OutboundEmail, opts?: SendEmailOptions) {
+        sent.push({ to: msg.to[0]!, ctx: opts?.context });
+        if (!fired) {
+          fired = true;
+          pacing.recordBounce(ORG, "earlier:u1", "General", 8);
+        } else if (sent.length > 100) {
+          seen.push(job.waiting?.for);
+        }
+      },
+    });
+    job = paced(0, 300);
+    await drain();
+    assert.equal(job.waiting?.for, "bounce-hold");
+
+    pacing.liftSender(ORG, "ops:test", "benign", T0 + 30 * MIN);
+    at(T0 + 31 * MIN);
+    await drain();
+    assert.equal(sent.length, 300);
+    assert.ok(seen.length > 0 && seen.every((w) => w === undefined), `the card said ${seen.find(Boolean)} while sending`);
+  });
+
+  test("returning contacts' first bounces are counted even before their chunk finishes", async () => {
+    let job!: ReturnType<typeof paced>;
+    let fired = false;
+    worker._resetDrainWorkerForTest({
+      async send(msg: OutboundEmail, opts?: SendEmailOptions) {
+        sent.push({ to: msg.to[0]!, ctx: opts?.context });
+        if (!fired) {
+          fired = true;
+          // Hard bounces come back in seconds, while the chunk is still going out.
+          pacing.recordBounce(ORG, `${job.id}:p`, "General", 40);
+        }
+      },
+    });
+    job = paced(400, 0);
+    await drain();
+    assert.equal(pacing.pacingWindow(ORG).all.bounces, 40);
+    assert.equal(job.state, "stopped", "40 of 400 returning contacts is the SES pause line");
+  });
+
+  test("attendee broadcasts never wait on, or die with, a marketing pause or stop", async () => {
+    pacing.admit(ORG, "earlier:u1", 100, T0 - 2 * HOUR);
+    pacing.recordAccepted(ORG, "earlier:u1", "u", ["f".repeat(64), "g".repeat(64)], T0 - 2 * HOUR);
+    pacing.recordComplaint(ORG, "earlier:u1", { feedbackType: "abuse" }, 2, T0 - HOUR);
+    const event = () => {
+      const j = jobs.createJob({
+        org: ORG, kind: "event", eventId: "ev1", subject: "Venue moved", html: "<p>x</p>",
+        fromDisplayName: "Gig", fromAddress: "n@woco-net.com",
+      });
+      jobs.appendChunk(j.id, people(3, "att"), hashEmail);
+      jobs.sealAndQueue(j.id, { chunkCount: 1, totalRecipients: 3 });
+      return j;
+    };
+    const held = event();
+    await drain();
+    assert.equal(held.state, "completed", "a complaint pause on marketing does not hold attendee mail");
+
+    const queued = event();
+    pacing.stopSender(ORG, "ops:test", "investigating");
+    assert.equal(queued.state, "queued", "a marketing stop does not end an attendee broadcast");
+    await drain();
+    assert.equal(queued.state, "completed");
+  });
+
   test("a pause for new contacts only still lets a send start", () => {
     pacing.admit(ORG, "earlier:u1", 100, T0 - 2 * HOUR);
     pacing.recordAccepted(ORG, "earlier:u1", "u", Array.from({ length: 100 }, (_, i) => `${i}`.padEnd(64, "c")), T0 - 2 * HOUR);
@@ -376,6 +447,7 @@ describe("accounting", { timeout: 60_000 }, () => {
   test("a batch inside the reservation's window is not counted twice", async () => {
     const job = paced(0, 200);
     jobs.markReserved(job, 200);
+    assert.equal(job.reservedAt, new Date(T0).toISOString(), "the reservation's age is what ages it out");
     const before = cap.capRemaining(ORG);
     await drain();
     assert.equal(cap.capRemaining(ORG), before);
@@ -415,5 +487,23 @@ describe("data-subject requests", { timeout: 60_000 }, () => {
     subject.eraseSubject(h);
     assert.equal(pacing.isProven(ORG, h), false);
     assert.deepEqual(subject.reportSubject(h).pacingProof, []);
+  });
+});
+
+describe("health", { timeout: 60_000 }, () => {
+  test("pacing reports itself blind when SES has no configuration set to publish tags", () => {
+    const saved = { p: process.env.EMAIL_PROVIDER, c: process.env.SES_CONFIGURATION_SET };
+    try {
+      process.env.EMAIL_PROVIDER = "ses";
+      delete process.env.SES_CONFIGURATION_SET;
+      const blind = glue.senderPacingHealth();
+      assert.equal(blind.tagging, false);
+      assert.equal(blind.ok, false);
+      process.env.SES_CONFIGURATION_SET = "woco-events";
+      assert.equal(glue.senderPacingHealth().ok, true);
+    } finally {
+      if (saved.p === undefined) delete process.env.EMAIL_PROVIDER; else process.env.EMAIL_PROVIDER = saved.p;
+      if (saved.c === undefined) delete process.env.SES_CONFIGURATION_SET; else process.env.SES_CONFIGURATION_SET = saved.c;
+    }
   });
 });

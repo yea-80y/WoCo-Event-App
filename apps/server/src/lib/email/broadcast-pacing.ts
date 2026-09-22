@@ -6,8 +6,9 @@
  */
 
 import { getConsent } from "../marketing/consent-store.js";
-import { isProven, pacingState, pacingWindow } from "../sender-pacing/index.js";
+import { isProven, pacingHealth, pacingState, pacingWindow } from "../sender-pacing/index.js";
 import { pacingNotice } from "./pacing-copy.js";
+import { activeEmailProvider } from "./send.js";
 
 /**
  * Has this organiser already reached this contact through us? Either the
@@ -46,4 +47,18 @@ export function pacingStartRefusal(org: string, at = Date.now()): StartRefusal |
     status: state.kind === "stopped" ? 403 : 429,
     code: state.kind === "stopped" ? "SENDER_STOPPED" : "SENDER_PAUSED",
   };
+}
+
+/**
+ * `email.senderPacing` for /api/health: the ledger's counts, plus whether the
+ * counts can be fed at all. SES publishes message tags only through a
+ * configuration set; without `SES_CONFIGURATION_SET` every bounce arrives
+ * untagged, pacing counts nothing, and nothing else says so until the first
+ * hard bounce (Fable sign-off P4). An alarm, not a refusal: attendee notices
+ * must still go.
+ */
+export function senderPacingHealth(at = Date.now()) {
+  const h = pacingHealth(at);
+  const tagging = activeEmailProvider() !== "ses" || Boolean(process.env.SES_CONFIGURATION_SET);
+  return { ...h, tagging, ok: h.ok && tagging };
 }
