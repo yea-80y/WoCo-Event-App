@@ -22,6 +22,7 @@
   import DomainLinker from "./DomainLinker.svelte";
   import DomainTab from "./DomainTab.svelte";
   import SubENSPicker from "./SubENSPicker.svelte";
+  import { NAME_SHOWS_PUBLISH_AFTER } from "./sub-ens-link-state.js";
   import NamePointerPrompt from "../../components/sub-ens/NamePointerPrompt.svelte";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import { getStripeAccountStatus } from "../../api/stripe.js";
@@ -304,10 +305,14 @@
   }
 
   /** Say what happened to the site's name, in the site's own words. A name
-   *  already on this site follows the publish, so it needs no line at all. */
+   *  already on this site follows the publish with nothing to sign, but not at
+   *  once, and "Published" next to an unchanged page reads as a lost publish. */
   function describeDeploySubEns(
     s: DeploySiteResult['subEns'],
   ): { tone: 'info' | 'warn'; text: string } | null {
+    if (s?.status === 'ok') {
+      return { tone: 'info', text: `${subEnsName(s.label)} shows this version in ${NAME_SHOWS_PUBLISH_AFTER}.` };
+    }
     if (!s || s.status !== 'skipped') return null;
     const d = describeSubEnsError({ error: s.reason });
     const detail = subEnsErrorDetail(d);
@@ -720,21 +725,19 @@
     <div class="editor-split">
     <div class="editor-rail">
 
-    {#if feedHash || deployedUrl}
+    <!-- No gateway link here: a site is shown at its WoCo name (#576). -->
+    {#if feedHash}
       <div class="deploy-banner">
-        {#if feedHash}
-          <div class="deploy-row deploy-row--primary">
-            <span class="deploy-label feed-label">Feed hash</span>
-            <span class="deploy-siteid">{feedHash}</span>
-            <button class="deploy-copy" onclick={() => navigator.clipboard.writeText(feedHash)} title="Copy feed hash">Copy</button>
-            <span class="feed-hint">← stable · use this for ENS</span>
-          </div>
-        {/if}
-        {#if deployedUrl}
+        <div class="deploy-row deploy-row--primary">
+          <span class="deploy-label feed-label">Feed hash</span>
+          <span class="deploy-siteid">{feedHash}</span>
+          <button class="deploy-copy" onclick={() => navigator.clipboard.writeText(feedHash)} title="Copy feed hash">Copy</button>
+          <span class="feed-hint">← stable · use this for ENS</span>
+        </div>
+        {#if publishState === 'done' && !site.subEnsLabel}
           <div class="deploy-row">
-            <span class="deploy-label">Preview</span>
-            <a href={deployedUrl} target="_blank" rel="noopener" class="deploy-url">{deployedUrl}</a>
-            <button class="deploy-copy" onclick={() => navigator.clipboard.writeText(deployedUrl)} title="Copy URL">Copy</button>
+            <span class="deploy-label">Share</span>
+            <button class="deploy-copy" onclick={() => { tab = 'domain'; }}>Get a free .woco.eth address</button>
           </div>
         {/if}
       </div>
@@ -789,7 +792,7 @@
       {:else if tab === 'domain'}
         <SubENSPicker
           bind:claimedLabel={site.subEnsLabel}
-          deployedHash={deployedHash}
+          targetHash={feedHash}
           onclaim={(label) => { site.subEnsLabel = label; }}
           onunlink={() => { site.subEnsLabel = undefined; }}
           stripeConnected={stripeConnected}
@@ -1130,14 +1133,6 @@
     font-size: 0.75rem;
     color: color-mix(in srgb, #22c55e 70%, var(--text-muted));
     white-space: nowrap;
-  }
-
-  .deploy-url {
-    font-size: 0.8125rem;
-    color: var(--text);
-    font-family: monospace;
-    word-break: break-all;
-    flex: 1;
   }
 
   .deploy-siteid {
