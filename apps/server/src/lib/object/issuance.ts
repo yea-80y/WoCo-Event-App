@@ -70,6 +70,49 @@ export interface IssueObjectOpts {
 }
 
 /**
+ * The client-input checks, separated from minting so the ROUTE can run them
+ * before it charges anything (#263): a client bug that sends a mismatched
+ * manifest is the caller's mistake to fix, not five of their five daily mints.
+ * issueObjectType runs the same function, so there is one copy of the rules.
+ *
+ * The two rails count bodies differently, and deliberately. On the chain rail a
+ * body is an EDITION - one per claimable slot. A certificate names its holder
+ * instead, so no edition is ever claimed and pre-signing one per unit of supply
+ * would cost N signatures to commit to bytes no reader reads. The certificate
+ * rail commits to exactly ONE real template body carrying the badge's display
+ * metadata: a genuine leaf of a genuine (degenerate) tree under the locked
+ * scheme, so `metadataRoot` is an honest commitment to bytes that exist, and
+ * `verifyManifestV2` needs no special case. (It also dispatch-refuses
+ * `woco.manifest.v1` whole - the v1 cutoff on this rail.)
+ */
+export function validateObjectIssuance(input: {
+  supply: number;
+  signedManifest: SignedManifestV2;
+  editionBodies: EditionV1Body[];
+  certSourced: boolean;
+}): { ok: true } | { ok: false; error: string } {
+  const { supply, signedManifest, editionBodies, certSourced } = input;
+  const expectedBodies = certSourced ? 1 : supply;
+  if (editionBodies.length !== expectedBodies) {
+    return {
+      ok: false,
+      error: certSourced
+        ? `A certificate badge commits to exactly 1 template edition body, got ${editionBodies.length}`
+        : `Expected ${supply} edition bodies, got ${editionBodies.length}`,
+    };
+  }
+  if (!verifyManifestV2(signedManifest)) return { ok: false, error: "Manifest signature invalid" };
+  const { root } = buildEditionTree(editionBodies);
+  if (root.toLowerCase() !== signedManifest.body.metadataRoot.toLowerCase()) {
+    return { ok: false, error: "Merkle root mismatch — object bodies don't match manifest" };
+  }
+  if (signedManifest.body.totalSupply !== supply) {
+    return { ok: false, error: "Manifest totalSupply does not match supply" };
+  }
+  return { ok: true };
+}
+
+/**
  * Which edition bodies get their own Swarm upload (#263).
  *
  * The CHAIN rail uploads none, exactly as createEventV2 stopped doing in
@@ -109,37 +152,8 @@ export async function issueObjectType(opts: IssueObjectOpts): Promise<ObjectDire
     throw new Error("a certificate badge needs certLogOwner, or its log can never be found");
   }
 
-  // ── Validate the client-signed manifest against the object bodies (same checks
-  //    createEventV2 runs before touching Swarm).
-  //
-  //    The two rails count bodies differently, and deliberately. On the chain
-  //    rail a body is an EDITION — one per claimable slot. A certificate names
-  //    its holder instead, so no edition is ever claimed and pre-signing one per
-  //    unit of supply would cost N signatures and N uploads to commit to bytes
-  //    no reader reads. The certificate rail commits to exactly ONE real
-  //    template body carrying the badge's display metadata: a genuine leaf of a
-  //    genuine (degenerate) tree under the locked scheme, so `metadataRoot` is
-  //    an honest commitment to bytes that exist and are fetchable, and
-  //    `verifyManifestV2` needs no special case. (It also dispatch-refuses
-  //    `woco.manifest.v1` whole — the v1 cutoff on this rail.) ──────────────
-  const expectedBodies = certSourced ? 1 : supply;
-  if (editionBodies.length !== expectedBodies) {
-    throw new Error(
-      certSourced
-        ? `A certificate badge commits to exactly 1 template edition body, got ${editionBodies.length}`
-        : `Expected ${supply} edition bodies, got ${editionBodies.length}`,
-    );
-  }
-  if (!verifyManifestV2(signedManifest)) {
-    throw new Error("Manifest signature invalid");
-  }
-  const { root } = buildEditionTree(editionBodies);
-  if (root.toLowerCase() !== signedManifest.body.metadataRoot.toLowerCase()) {
-    throw new Error("Merkle root mismatch — object bodies don't match manifest");
-  }
-  if (signedManifest.body.totalSupply !== supply) {
-    throw new Error("Manifest totalSupply does not match supply");
-  }
+  const valid = validateObjectIssuance({ supply, signedManifest, editionBodies, certSourced });
+  if (!valid.ok) throw new Error(valid.error);
 
   // ── Whitelist artwork so ObjectCard can render it via the gateway proxy (the
   //    upload-image route doesn't whitelist, so issuance is the authority).
