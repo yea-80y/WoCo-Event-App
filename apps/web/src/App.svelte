@@ -39,7 +39,10 @@
       // replace, not navigate: this redirect is automatic, so a history entry
       // for it would make Back land on the name host's bare home page — a
       // dead end nobody chose.
-      window.location.replace(`${window.location.pathname}#/profile/${res.address}`);
+      // Built from the page's own URL: a relative one resolves against the
+      // deploy's <base href>, which sent a profile name's own address to the
+      // bare gateway root ("Cannot GET /") instead of the profile (#605).
+      window.location.replace(new URL(`#/profile/${res.address}`, window.location.href).href);
     });
   }
 

@@ -122,7 +122,8 @@
         .replace(/[?&]stripe=success/, "")
         .replace(/[?&]session_id=[^&]*/, "")
         .replace(/^\?$/, "");
-      window.history.replaceState(null, "", window.location.pathname + newSearch + newHash);
+      // Absolute: relative resolves against the <base href> gateway and throws (#605).
+      window.history.replaceState(null, "", new URL(window.location.pathname + newSearch + newHash, window.location.href).href);
     } catch { /* ignore */ }
   }
 
@@ -278,7 +279,7 @@
         try {
           const newHash = window.location.hash.replace(/[?&]stripe=cancelled/, "");
           const newSearch = window.location.search.replace(/[?&]stripe=cancelled/, "").replace(/^\?$/, "");
-          window.history.replaceState(null, "", window.location.pathname + newSearch + newHash);
+          window.history.replaceState(null, "", new URL(window.location.pathname + newSearch + newHash, window.location.href).href);
         } catch { /* ignore */ }
 
         // Stripe Checkout's cancel-back redirects via location.href, which
@@ -289,15 +290,16 @@
         // the site home (#/) — replacing the current entry so forward nav
         // doesn't loop them back here.
         try {
-          const cleanUrl = window.location.pathname + window.location.search + window.location.hash;
-          history.pushState({ wocoCancelGuard: true }, "", cleanUrl);
+          // Absolute, as above: relative threw here in the app, so the guard never installed.
+          history.pushState({ wocoCancelGuard: true }, "", new URL(window.location.pathname + window.location.search + window.location.hash, window.location.href).href);
           const onPop = (ev: PopStateEvent) => {
             // Ignore pops that land back ON the guard (user went forward
             // somewhere then came back). Only intercept pops that land
             // BEHIND the guard — i.e. the buyer's first back from this page.
             if ((ev.state as { wocoCancelGuard?: boolean } | null)?.wocoCancelGuard) return;
             window.removeEventListener("popstate", onPop);
-            window.location.replace("#/");
+            // Against the page's own URL, never the <base href> gateway (#605).
+            window.location.replace(new URL("#/", window.location.href).href);
           };
           window.addEventListener("popstate", onPop);
         } catch { /* ignore */ }

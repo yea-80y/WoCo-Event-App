@@ -36,7 +36,8 @@
     if (typeof window === "undefined") return false;
     const hash = window.location.hash;
     if (!hash.includes("stripe=success")) return false;
-    window.location.replace(`#/event/${eventId}/purchased`);
+    // Against the page's own URL, never the <base href> gateway (#605).
+    window.location.replace(new URL(`#/event/${eventId}/purchased`, window.location.href).href);
     return true;
   })();
 
