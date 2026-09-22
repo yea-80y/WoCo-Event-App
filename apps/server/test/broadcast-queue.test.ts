@@ -70,20 +70,24 @@ describe("chunk upload", () => {
       !raw.includes("buyer@example.com"),
       "a backup or VM snapshot that catches this file must catch ciphertext",
     );
-    // And it round-trips through the in-process key.
-    assert.deepEqual(jobs.readChunk(job.id, 0), [{ email: "buyer@example.com" }]);
+    // And it round-trips through the job's in-memory key.
+    assert.deepEqual(jobs.readChunk(job.id, "in", 0), [{ email: "buyer@example.com", proven: true }]);
   });
 
   test("a chunk cannot be replayed into a different slot", () => {
     const job = newJob();
     jobs.appendChunk(job.id, [{ email: "a@example.com" }], hash);
 
-    // Copy chunk 0's ciphertext into slot 1. The AAD binds it to {jobId, index},
-    // so opening it as chunk 1 must fail rather than quietly re-mailing chunk
-    // 0's recipients — the failure a plain "encrypt the file" would not catch.
-    copyFileSync(join(CHUNKS_DIR(), `${job.id}.0.bin`), join(CHUNKS_DIR(), `${job.id}.1.bin`));
-    assert.throws(() => jobs.readChunk(job.id, 1), /auth/i);
-    assert.deepEqual(jobs.readChunk(job.id, 0), [{ email: "a@example.com" }], "slot 0 still opens");
+    // Copy chunk 0's ciphertext into slot 1. The AAD binds it to {jobId, seq,
+    // index}, so opening it as chunk 1 must fail rather than quietly re-mailing
+    // chunk 0's recipients — the failure a plain "encrypt the file" would not catch.
+    copyFileSync(join(CHUNKS_DIR(), `${job.id}.in.0.bin`), join(CHUNKS_DIR(), `${job.id}.in.1.bin`));
+    assert.equal(jobs.readChunk(job.id, "in", 1), null);
+    assert.deepEqual(
+      jobs.readChunk(job.id, "in", 0),
+      [{ email: "a@example.com", proven: true }],
+      "slot 0 still opens",
+    );
   });
 
   test("the same address in two chunks is accepted once", () => {
@@ -167,7 +171,7 @@ describe("draining", () => {
     jobs.appendChunk(job.id, people(2), hash);
     jobs.sealAndQueue(job.id, { chunkCount: 1, totalRecipients: 2 });
 
-    jobs.recordChunkDrained(job, {
+    jobs.recordChunkDrained(job, "p", {
       sent: 2,
       suppressed: 0,
       failed: 0,
@@ -175,13 +179,13 @@ describe("draining", () => {
       errors: [],
     });
 
-    assert.equal(existsSync(join(CHUNKS_DIR(), `${job.id}.0.bin`)), false, "chunk destroyed");
+    assert.equal(existsSync(join(CHUNKS_DIR(), `${job.id}.p.0.bin`)), false, "chunk destroyed");
     // Read the file back, not the in-memory object — the point is that it landed.
     const onDisk = JSON.parse(
       readFileSync(join(process.cwd(), ".data", "broadcast-jobs", `${job.id}.json`), "utf-8"),
-    ) as { sentHashes: string[]; nextChunk: number; state: string };
+    ) as { sentHashes: string[]; nextP: number; state: string };
     assert.equal(onDisk.sentHashes.length, 2);
-    assert.equal(onDisk.nextChunk, 1);
+    assert.equal(onDisk.nextP, 1);
     assert.equal(onDisk.state, "running");
   });
 
@@ -190,7 +194,7 @@ describe("draining", () => {
     jobs.appendChunk(job.id, people(3, "a"), hash);
     jobs.appendChunk(job.id, people(3, "b"), hash);
     jobs.sealAndQueue(job.id, { chunkCount: 2, totalRecipients: 6 });
-    assert.equal(readdirSync(CHUNKS_DIR()).length, 2);
+    assert.equal(readdirSync(CHUNKS_DIR()).length, 1, "two uploads re-cut into one proven chunk");
 
     jobs.cancelJob(job);
     assert.equal(
@@ -221,7 +225,7 @@ describe("resume", () => {
     const first = newJob();
     jobs.appendChunk(first.id, people(4), hash);
     jobs.sealAndQueue(first.id, { chunkCount: 1, totalRecipients: 4 });
-    jobs.recordChunkDrained(first, {
+    jobs.recordChunkDrained(first, "p", {
       sent: 2,
       suppressed: 0,
       failed: 0,
@@ -237,7 +241,7 @@ describe("resume", () => {
     assert.equal(result.skipped, 2, "p0 and p1 already have the email");
     assert.equal(result.accepted, 2);
     assert.deepEqual(
-      jobs.readChunk(second.id, 0)?.map((r) => r.email),
+      jobs.readChunk(second.id, "in", 0)?.map((r) => r.email),
       ["p2@example.com", "p3@example.com"],
     );
   });
@@ -258,7 +262,7 @@ describe("restart", () => {
     const job = newJob();
     jobs.appendChunk(job.id, people(10), hash);
     jobs.sealAndQueue(job.id, { chunkCount: 1, totalRecipients: 10 });
-    jobs.recordChunkDrained(job, {
+    jobs.recordChunkDrained(job, "p", {
       sent: 4, suppressed: 0, failed: 0,
       sentHashes: people(4).map((p) => hash(p.email)),
       errors: [],
@@ -475,7 +479,7 @@ describe("data-subject reachability", () => {
     const job = newJob();
     jobs.appendChunk(job.id, people(2), hash);
     jobs.sealAndQueue(job.id, { chunkCount: 1, totalRecipients: 2 });
-    jobs.recordChunkDrained(job, {
+    jobs.recordChunkDrained(job, "p", {
       sent: 1, suppressed: 0, failed: 0,
       sentHashes: [hash("p0@example.com")],
       errors: [],
@@ -585,7 +589,7 @@ describe("stopping cleanly", () => {
     jobs.cancelJob(job);
     // The chunk that was in flight lands afterwards; its counts must be kept —
     // those messages really did go out — without resurrecting the job.
-    jobs.recordChunkDrained(job, {
+    jobs.recordChunkDrained(job, "p", {
       sent: 2, suppressed: 0, failed: 0,
       sentHashes: [hash("p0@example.com"), hash("p1@example.com")],
       errors: [],

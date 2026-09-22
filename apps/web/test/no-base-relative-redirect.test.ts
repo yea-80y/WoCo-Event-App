@@ -82,3 +82,50 @@ test("every history push/replace builds its URL absolute, from the page's own UR
   }
   assert.deepEqual(offenders, [], "wrap the URL in new URL(…, window.location.href).href");
 });
+
+/**
+ * A link is the same trap as a redirect: `<a href="#/…">` resolves against the
+ * base too, so a click walks the user onto the gateway, where
+ * `resolvePasskeyRpId` reads another hostname and their passkey is a DIFFERENT
+ * ACCOUNT. Use `routeHref("/…")` (router) for an in-app link, or `canonicalUrl`
+ * for a new tab. Only index.html gets the base: the deployed-site runtime
+ * (MultiSiteApp and the sections only it renders) and verify.html are exempt.
+ */
+const FRAGMENT_ANCHOR = /<a\b[^>]*?\bhref=(?:"#|\{\s*["'\x60]#)/g;
+const SERVED_WITHOUT_BASE = (rel: string) =>
+  rel === "MultiSiteApp.svelte" || rel === "VerifyApp.svelte" || rel.startsWith("lib/components/site/sections/");
+
+function fragmentAnchors(src: string): number[] {
+  const blanked = src.replace(/<!--[\s\S]*?-->/g, (c) => c.replace(/[^\n]/g, " "));
+  return [...blanked.matchAll(FRAGMENT_ANCHOR)].map((m) => blanked.slice(0, m.index).split("\n").length);
+}
+
+test("no in-app link is a bare fragment", () => {
+  const offenders: string[] = [];
+  for (const file of sourceFiles(SRC)) {
+    const rel = relative(SRC, file);
+    if (!rel.endsWith(".svelte") || SERVED_WITHOUT_BASE(rel)) continue;
+    for (const line of fragmentAnchors(readFileSync(file, "utf-8"))) offenders.push(`${rel}:${line}`);
+  }
+  assert.deepEqual(offenders, [], "use routeHref() or canonicalUrl(), never href=\"#/…\"");
+});
+
+test("the link guard recognises every fragment shape it exists for", () => {
+  for (const bad of [
+    '<a href="#/">',
+    '<a class="x" href="#/legal/{slug}">',
+    "<a\n  class=\"card\"\n  href={'#/events/' + id}>",
+    "<a href={`#/x/${y}`}>",
+  ]) {
+    assert.equal(fragmentAnchors(bad).length, 1, bad);
+  }
+  for (const ok of [
+    '<a href={routeHref("/")}>',
+    '<a href={canonicalUrl("#/legal/privacy")}>',
+    '<a href="https://woco.eth.limo/#/">',
+    '<textPath href="#{uid}">',
+    '<!-- <a href="#/"> -->',
+  ]) {
+    assert.equal(fragmentAnchors(ok).length, 0, ok);
+  }
+});

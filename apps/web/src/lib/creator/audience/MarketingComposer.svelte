@@ -1,12 +1,16 @@
 <script lang="ts">
   import type { MarketingContact, EventDirectoryEntry } from "@woco/shared";
-  import { MAILABLE_EMAIL_RE } from "@woco/shared";
+  import { MAILABLE_EMAIL_RE, planSchedule, rungLimits } from "@woco/shared";
   import { sendMarketingTest } from "../../api/marketing.js";
   import { MarketingSenderUnavailable } from "../../api/errors.js";
   import {
     startBroadcast,
     pollBroadcast,
+    getPacing,
+    listBroadcastJobs,
+    isBroadcastFinished,
     type BroadcastJobStatus,
+    type PacingInfo,
   } from "../../api/broadcasts.js";
   import BroadcastProgress from "./BroadcastProgress.svelte";
   import { getEventsByCreator } from "../../api/events.js";
@@ -22,12 +26,14 @@
   interface Props {
     contacts: MarketingContact[];
     suppressedEmails: Set<string>;
+    /** Contacts already reached through WoCo — they skip paced sending (#619). */
+    provenEmails?: Set<string>;
     /** Preselects the event picker once events load — the post-publish
      *  "Announce to your audience" deep-link (?announce=eventId). */
     initialEventId?: string;
   }
 
-  let { contacts, suppressedEmails, initialEventId }: Props = $props();
+  let { contacts, suppressedEmails, provenEmails = new Set(), initialEventId }: Props = $props();
 
   let fromName = $state("");
   let subject = $state("");
@@ -119,6 +125,69 @@
         name: [c.firstName, c.lastName].filter(Boolean).join(" ") || undefined,
       })),
   );
+
+  /**
+   * Paced sending (#619). Contacts the organiser has never reached through
+   * WoCo go out in hourly batches with a bounce check between each, held and
+   * released by the server — so the organiser is told how long it will take
+   * and that the page can be closed, before they press Send.
+   */
+  let pacing = $state<PacingInfo | null>(null);
+  const provenCount = $derived(
+    recipients.filter((r) => provenEmails.has(r.email.trim().toLowerCase())).length,
+  );
+  const newCount = $derived(recipients.length - provenCount);
+
+  const HOUR = 60 * 60_000;
+  const paceLine = $derived.by(() => {
+    if (newCount === 0) return null;
+    const now = Date.now();
+    const pos = pacing?.position
+      ? { ...pacing.position, at: now }
+      : { earlierSendingDays: 0, admittedToday: 0, nextAllowedAt: null, at: now };
+    const plan = planSchedule(pos, newCount);
+    const batch = (pacing?.batchSize || rungLimits(pacing?.rung ?? 1).batchMax).toLocaleString();
+    const n = newCount.toLocaleString();
+    const noun = newCount === 1 ? "new contact" : "new contacts";
+    if (plan.batches <= 1 && plan.endsAt <= now) return `Your ${n} ${noun} go${newCount === 1 ? "es" : ""} out now.`;
+    const span = plan.endsAt - now + HOUR;
+    const over =
+      span < 24 * HOUR
+        ? `about ${Math.max(1, Math.round(span / HOUR))} hour${Math.round(span / HOUR) === 1 ? "" : "s"}`
+        : `about ${Math.ceil(span / (24 * HOUR))} days`;
+    return `Your ${n} ${noun} go out over ${over}, ${batch} at a time, with a bounce check between each. You can close this page.`;
+  });
+
+  /** Remembered so "Done" on a finished send does not bring it back on the next visit. */
+  const DISMISSED_KEY = "woco:dismissed-broadcast";
+  function dismissed(): string | null {
+    try { return localStorage.getItem(DISMISSED_KEY); } catch { return null; }
+  }
+  function dismiss(id: string): void {
+    try { localStorage.setItem(DISMISSED_KEY, id); } catch { /* per-viewer convenience only */ }
+  }
+
+  let restored = false;
+  $effect(() => {
+    if (restored) return;
+    restored = true;
+    void getPacing().then((p) => { pacing = p; }).catch(() => { /* the estimate falls back to rung 1 */ });
+    // The send outlives the page, so the page must be able to find it again:
+    // a paced send runs for hours, and a died one needs its resume button.
+    void listBroadcastJobs()
+      .then((list) => {
+        if (job) return;
+        const latest = list.find((j) => j.kind === "marketing");
+        if (!latest || latest.jobId === dismissed()) return;
+        const missed = latest.accepted - latest.sent - latest.suppressed;
+        if (isBroadcastFinished(latest) && !(latest.resumable && missed > 0)) return;
+        job = latest;
+        if (!isBroadcastFinished(latest)) {
+          void pollBroadcast(latest.jobId, (update) => { job = update; }).catch(() => {});
+        }
+      })
+      .catch(() => { /* no history is the same as none to show */ });
+  });
 
   /**
    * Why the broadcast button is off, said BEFORE it is clicked. An audience of
@@ -258,6 +327,10 @@
 </script>
 
 <section class="composer" aria-label="Compose broadcast">
+  {#if pacing?.notice}
+    <p class="pace-notice" class:stopped={pacing.state === "stopped"} role="status">{pacing.notice}</p>
+  {/if}
+
   <div class="reach">
     Reaches <strong>{recipients.length.toLocaleString()}</strong> contact{recipients.length === 1 ? "" : "s"}
     {#if suppressedEmails.size > 0}
@@ -271,6 +344,15 @@
       </span>
     {/if}
   </div>
+
+  {#if recipients.length > 0 && newCount > 0}
+    <p class="pace">
+      {#if provenCount > 0}
+        {provenCount.toLocaleString()} {provenCount === 1 ? "person" : "people"} you've emailed before get it now.
+      {/if}
+      {paceLine}
+    </p>
+  {/if}
 
   {#if blockedReason}
     <p class="blocked">{blockedReason}</p>
@@ -347,7 +429,7 @@
     <BroadcastProgress
       {job}
       onResume={(dead) => handleSend(dead.jobId)}
-      onDismiss={() => { job = null; }}
+      onDismiss={() => { if (job) dismiss(job.jobId); job = null; }}
     />
   {/if}
   <!--
@@ -418,6 +500,30 @@
   }
   .reach strong { color: var(--accent-text); font-family: var(--font-mono); }
   .reach-sup { color: var(--text-muted); }
+
+  /* The pacing line reads as information, not a warning: this is how a first
+     send to a new list is meant to go. */
+  .pace {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin: -0.375rem 0 0;
+  }
+
+  /* A pause or stop is waiting on someone else, the amber this screen already
+     uses for "can't send yet"; a stop keeps the same colour because nothing
+     here is broken by the organiser. */
+  .pace-notice {
+    margin: 0;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    border-left: 2px solid var(--warning);
+    background: var(--bg-elevated);
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+    padding: 0.75rem 0.875rem;
+  }
+  .pace-notice.stopped { color: var(--text); }
 
   /* Not an error — nothing is wrong and nothing was lost, so this reads as the
      muted note it is rather than borrowing the red the composer keeps for a
