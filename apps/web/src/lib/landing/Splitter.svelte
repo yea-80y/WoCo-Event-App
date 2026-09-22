@@ -316,6 +316,10 @@
             works like public infrastructure, for the people who put events on
             and the people who go to them.
           </p>
+          <button class="declaration-link" onclick={() => navigate("/legal/organiser-terms")}>
+            It's in our organiser terms, not just on this page
+            <ArrowRight size={14} strokeWidth={2.5} />
+          </button>
         </div>
       </div>
 
@@ -362,6 +366,20 @@
           </div>
         </li>
       </ol>
+
+      <div class="horizon">
+        <span class="mono-kicker">// WHERE THIS GOES</span>
+        <h3>Events first. Not events only.</h3>
+        <p>
+          Wherever a platform sits between the people who make something and the
+          people who turn up for it, the same thing happens: the fee creeps up,
+          the audience ends up belonging to the platform, and leaving means
+          starting again. Events are where we begin, because it's the work we
+          know. What's underneath - your keys, your audience, open storage, a fee
+          that only goes down - isn't specific to events, and neither are our
+          plans.
+        </p>
+      </div>
     </div>
   </section>
 
@@ -1073,6 +1091,44 @@
     color: var(--accent);
     padding-top: 0.25rem;
     letter-spacing: 0.06em;
+  }
+
+  .declaration-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    margin-top: 1.25rem;
+    padding: 0.125rem 0;
+    font-family: var(--font-body);
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text);
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--accent);
+    cursor: pointer;
+    transition: color var(--transition);
+  }
+  .declaration-link:hover { color: var(--accent); }
+
+  /* The declaration ends on where this is going, not on the last pledge. */
+  .horizon {
+    margin-top: 3rem;
+    padding-top: 2.5rem;
+    border-top: 1px solid var(--border);
+  }
+  .horizon h3 {
+    font-size: clamp(1.5rem, 3vw, 2.125rem);
+    line-height: 1.05;
+    letter-spacing: -0.035em;
+    margin: 1rem 0 1rem;
+  }
+  .horizon p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 1rem;
+    line-height: 1.7;
+    max-width: 68ch;
   }
 
   /* ── Launch offer band ──────────────────────────────────────────────

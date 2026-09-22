@@ -64,7 +64,8 @@
     <p class="intro-lede">
       WoCo is ticketing and websites for event organisers. Underneath, it runs
       on open networks rather than a private database, so the parts that matter
-      can be checked by anyone instead of taken on trust.
+      can be checked by anyone instead of taken on trust. Events are where we
+      begin: none of what follows is specific to them.
     </p>
     <p class="intro-note">
       This is the technical version, for anyone who wants to check our working.
@@ -269,8 +270,9 @@
         <p>
           Card payments run through Stripe Connect, straight into the
           organiser's own Stripe account. We don't hold the money, and we
-          normally release each event's takings after the event. Our fee is 1.5% of the ticket
-          price, and it only goes down.
+          normally release each event's takings after the event. Our fee is 1.5%
+          of the ticket price, and it only goes down: the organiser terms cap it
+          at 1.5% and stop any update to those terms raising the cap.
         </p>
         <!-- DELETE AT LAUNCH, alongside PreLaunchBanner: both name the test
              rails (Stripe test mode, Arbitrum Sepolia). -->
