@@ -330,7 +330,9 @@ export interface SeriesSummary {
 export interface SeriesManifestBlob {
   v: 2;
   signedManifest: SignedManifestV2;
-  /** Swarm refs to individual edition body JSON blobs, indexed by edition-1 (0-based). */
+  /** Swarm refs to individual edition body JSON blobs, indexed by edition-1 (0-based).
+   *  EMPTY on both writers since #263 (events already did this in 896b29b3): the
+   *  manifest's Merkle root commits to every body, and no reader fetches them. */
   objectRefs: Hex64[];
   /** keccak256(dagCbor(manifestBody)), 0x-prefixed bytes32 — matches on-chain manifestRef. */
   manifestDigestHex: string;

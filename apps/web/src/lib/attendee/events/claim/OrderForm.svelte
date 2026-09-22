@@ -6,6 +6,7 @@
     CHECKOUT_PRIVACY_SUMMARY,
   } from "@woco/shared";
   import type { BuyerFees } from "@woco/shared";
+  import { canonicalUrl } from "../../../sub-ens/host-label.js";
 
   // Stripe-only: the form collects the organiser's order fields (+ a buyer
   // email when needed) ahead of the checkout redirect. The direct wallet/email
@@ -145,7 +146,9 @@
       {:else}
         {CHECKOUT_PRIVACY_SUMMARY}
       {/if}
-      <a href="#/legal/privacy" target="_blank" rel="noopener">Privacy Policy</a>
+      <!-- Canonical host: a new tab must not open the gateway (#605), and on an
+           organiser's site there is no legal route to open. -->
+      <a href={canonicalUrl("#/legal/privacy")} target="_blank" rel="noopener">Privacy Policy</a>
     </p>
   </div>
 

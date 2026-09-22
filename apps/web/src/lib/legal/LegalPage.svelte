@@ -1,5 +1,6 @@
 <script lang="ts">
   import { renderLegalMarkdown } from "./markdown.js";
+  import { routeHref } from "../router/router.svelte.js";
 
   interface Props {
     /** Slug from the route: privacy | terms | organiser-terms | dpa | cookies | index */
@@ -40,10 +41,10 @@
 
 <div class="legal">
   <nav class="legal-nav" aria-label="Legal documents">
-    <a href="#/" class="back">← WoCo</a>
+    <a href={routeHref("/")} class="back">← WoCo</a>
     <div class="legal-links">
       {#each Object.entries(DOCS) as [slug, d]}
-        <a href="#/legal/{slug}" class:active={slug === doc}>{d.title}</a>
+        <a href={routeHref(`/legal/${slug}`)} class:active={slug === doc}>{d.title}</a>
       {/each}
     </div>
   </nav>

@@ -3,8 +3,9 @@
 // *type* that is NOT wrapped in an event.
 //
 // It is the ticket-creation pipeline (createEventV2 + register-on-chain) minus
-// the event/series feed: validate the client-signed manifest, upload the object
-// bodies + SeriesManifestBlob to Swarm, sponsor-register the manifest on-chain
+// the event/series feed: validate the client-signed manifest, upload the
+// SeriesManifestBlob to Swarm (edition bodies are not uploaded - see
+// bodiesToUpload), sponsor-register the manifest on-chain
 // (so the object gets an on-chain eventId + slot space → holdable + gateable), and
 // upsert the creator's object directory entry.
 //
@@ -27,7 +28,6 @@ import { registerEventOnChain } from "../chain/sponsor-wallet.js";
 import { getActiveChainId, getEventContractVersion } from "../chain/event-contract.js";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-const BATCH = 40;
 /** Manifest never expires for a standalone object — far-future so the V2 contract's
  *  `eventEndTs > block.timestamp` guard passes and the (price-0, dormant) escrow
  *  release window never matters. */
@@ -113,6 +113,22 @@ export function validateObjectIssuance(input: {
 }
 
 /**
+ * Which edition bodies get their own Swarm upload (#263).
+ *
+ * The CHAIN rail uploads none, exactly as createEventV2 stopped doing in
+ * 896b29b3: no reader fetches `objectRefs` (holdings, gates and the directory
+ * read the signed manifest and the on-chain digest), and the Merkle root
+ * validated in issueObjectType already commits to every body. Uploading them
+ * cost one Swarm write per edition - 10,000 for a maximum-supply badge.
+ *
+ * The CERTIFICATE rail keeps its ONE template upload: that body is meant to
+ * exist and be fetchable (see the body-count comment in issueObjectType).
+ */
+export function bodiesToUpload(certSourced: boolean, editionBodies: EditionV1Body[]): EditionV1Body[] {
+  return certSourced ? editionBodies.slice(0, 1) : [];
+}
+
+/**
  * Mint a standalone object type. Throws on any failure BEFORE the directory write
  * so a half-created object never appears in the manager; once on-chain
  * registration succeeds the directory upsert is awaited (it is the primary
@@ -148,13 +164,11 @@ export async function issueObjectType(opts: IssueObjectOpts): Promise<ObjectDire
     );
   }
 
-  // ── Upload object bodies + the SeriesManifestBlob to Swarm. ──────────────────
-  const objectRefs: Hex64[] = [];
-  for (let i = 0; i < editionBodies.length; i += BATCH) {
-    const batch = editionBodies.slice(i, i + BATCH);
-    const batchRefs = await Promise.all(batch.map((p) => uploadToBytes(JSON.stringify(p))));
-    objectRefs.push(...batchRefs);
-  }
+  // ── Upload the SeriesManifestBlob (+ the certificate rail's one template
+  //    body - see bodiesToUpload). ──────────────────────────────────────────
+  const objectRefs: Hex64[] = await Promise.all(
+    bodiesToUpload(certSourced, editionBodies).map((p) => uploadToBytes(JSON.stringify(p))),
+  );
 
   const manifestRef = bytesToHex0x(manifestV2Digest(signedManifest.body)); // 0x-prefixed bytes32
   const blob: SeriesManifestBlob = { v: 2, signedManifest, objectRefs, manifestDigestHex: manifestRef };
