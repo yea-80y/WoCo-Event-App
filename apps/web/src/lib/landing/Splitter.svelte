@@ -27,7 +27,6 @@
   import HomeIcon from "lucide-svelte/icons/house";
   import Users from "lucide-svelte/icons/users-round";
   import Mail from "lucide-svelte/icons/mail";
-  import { SOURCE_URL } from "./links.js";
 </script>
 
 
@@ -431,7 +430,6 @@
         <div class="footer-col">
           <span class="mono-kicker">WoCo</span>
           <button class="link" onclick={() => navigate("/about")}>How it works</button>
-          <a class="link" href={SOURCE_URL} target="_blank" rel="noopener">Source code</a>
         </div>
         <div class="footer-col">
           <span class="mono-kicker">Legal</span>

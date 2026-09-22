@@ -12,7 +12,6 @@
   import { navigate } from "../router/router.svelte.js";
   import WocoWordmark from "../components/brand/WocoWordmark.svelte";
   import ArrowRight from "lucide-svelte/icons/arrow-right";
-  import { SOURCE_URL } from "./links.js";
 
   const SECTIONS = [
     { id: "short", label: "The short version" },
@@ -25,8 +24,6 @@
     { id: "payments", label: "Payments" },
     { id: "code", label: "The code" },
   ] as const;
-
-  const DOCS = `${SOURCE_URL}/blob/main/docs`;
 
   // Set and restored by hand: a <svelte:head> title outlives the page, so the
   // landing page would keep this title after navigating back to it.
@@ -69,7 +66,6 @@
     </p>
     <p class="intro-note">
       This is the technical version, for anyone who wants to check our working.
-      Each section links to the design document behind it.
     </p>
   </section>
 
@@ -122,9 +118,6 @@
             </p>
           </div>
         </div>
-        <a class="doc-link" href="{DOCS}/ARCHITECTURE.md" target="_blank" rel="noopener">
-          Architecture overview <ArrowRight size={14} strokeWidth={2.5} />
-        </a>
       </section>
 
       <!-- ── Account ── -->
@@ -150,9 +143,6 @@
           our servers never hold them. Passkey and email accounts are smart
           accounts on Arbitrum One.
         </p>
-        <a class="doc-link" href="{DOCS}/IDENTITY_AND_KEYS.md" target="_blank" rel="noopener">
-          Identity and keys <ArrowRight size={14} strokeWidth={2.5} />
-        </a>
       </section>
 
       <!-- ── Tickets ── -->
@@ -175,9 +165,6 @@
           with the holder onchain. It downloads the holders before doors open,
           so the check happens on the phone, with or without signal.
         </p>
-        <a class="doc-link" href="{DOCS}/TICKETING.md" target="_blank" rel="noopener">
-          The ticket lifecycle <ArrowRight size={14} strokeWidth={2.5} />
-        </a>
       </section>
 
       <!-- ── Privacy ── (DATA_INVENTORY.md §4: the server imports seal only) -->
@@ -222,9 +209,6 @@
           are published to Swarm as standalone sites, and can carry a name under
           woco.eth.
         </p>
-        <a class="doc-link" href="{DOCS}/SWARM_DATA_MODEL.md" target="_blank" rel="noopener">
-          Swarm data model <ArrowRight size={14} strokeWidth={2.5} />
-        </a>
       </section>
 
       <!-- ── Followers ── -->
@@ -240,9 +224,6 @@
           Follower counts are worked out by reading those feeds, so anyone can
           count them again and get the same answer.
         </p>
-        <a class="doc-link" href="{DOCS}/SWARM_SOCIAL_PLAN.md" target="_blank" rel="noopener">
-          Swarm-native social <ArrowRight size={14} strokeWidth={2.5} />
-        </a>
       </section>
 
       <!-- ── Server ── (ARCHITECTURE.md §1.1: "cannot author, but can misdirect") -->
@@ -290,18 +271,11 @@
         <span class="block-label mono">09 · Open source</span>
         <h2>The code</h2>
         <p>
-          WoCo is MIT-licensed and the code is public. The design documents in
-          the repository go deeper than this page, and they're written to say
-          where the limits are, not just what works.
+          WoCo is MIT-licensed and the code is public. What that buys is the
+          ability to audit how any of this works. It is not what lets anyone
+          check a ticket: that works because the ticket carries a signature and
+          the chain carries its holder, and both are public.
         </p>
-        <div class="code-actions">
-          <a class="btn btn--primary" href={SOURCE_URL} target="_blank" rel="noopener">
-            Read the code <ArrowRight size={16} strokeWidth={2.5} />
-          </a>
-          <a class="btn btn--ghost" href="{SOURCE_URL}/tree/main/docs" target="_blank" rel="noopener">
-            Design documents
-          </a>
-        </div>
       </section>
     </div>
   </div>
@@ -548,14 +522,6 @@
     transition: color var(--transition);
   }
   .doc-link:hover { color: var(--accent); }
-
-  .code-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem;
-    margin-top: 1.5rem;
-  }
-  .code-actions a { text-decoration: none; }
 
   .foot {
     max-width: 1100px;
