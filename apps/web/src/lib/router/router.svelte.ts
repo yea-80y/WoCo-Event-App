@@ -247,6 +247,13 @@ export function navigate(path: string) {
   window.location.hash = path;
 }
 
+/** An in-app link on THIS page's host. A bare `href="#/…"` resolves against the
+ *  deploy's `<base href>` and walks the user onto the gateway, where a passkey is
+ *  a different account (#605). */
+export function routeHref(path: string): string {
+  return new URL(`#${path}`, window.location.href).href;
+}
+
 export const router = {
   get route() { return _route; },
   get params() { return _params; },

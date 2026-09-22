@@ -2,8 +2,8 @@
  * Smoke test: full standalone object issuance (Item A) via the same server path
  * the create-object UI uses. Builds + ed25519-signs a manifest exactly as the
  * client does (throwaway key), then calls issueObjectType — exercising manifest
- * validation → Swarm upload (object bodies + SeriesManifestBlob) → sponsor
- * on-chain register → creator-directory upsert.
+ * validation → Swarm upload (the SeriesManifestBlob; edition bodies are not
+ * uploaded since #263) → sponsor on-chain register → creator-directory upsert.
  *
  * SIDE EFFECTS (real): writes a few chunks to the live bee, sends one
  * registerEvent tx on Arb Sepolia (sponsor gas), and writes a junk object

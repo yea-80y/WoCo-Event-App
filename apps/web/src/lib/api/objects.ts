@@ -79,9 +79,10 @@ export interface CreateObjectRequest {
 }
 
 /**
- * Mint a standalone object type. The server validates the signed manifest, uploads
- * the object bodies, sponsor-registers on-chain, and writes the directory entry —
- * returning the new entry. Throws on error.
+ * Mint a standalone object type. The server validates the signed manifest (the
+ * edition bodies are checked against its Merkle root, not uploaded), sponsor-
+ * registers on-chain, and writes the directory entry — returning the new entry.
+ * Throws on error.
  */
 export async function createObject(req: CreateObjectRequest): Promise<ObjectDirectoryEntry> {
   const r = await authPost<ObjectDirectoryEntry>(
