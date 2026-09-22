@@ -43,6 +43,7 @@ export async function checkMarketingEmails(emails: string[]): Promise<MarketingC
   const suppressed: string[] = [];
   const alreadyInList: string[] = [];
   const consented: string[] = [];
+  const proven: string[] = [];
 
   for (let i = 0; i < emails.length; i += CHECK_BATCH_SIZE) {
     const batch = emails.slice(i, i + CHECK_BATCH_SIZE);
@@ -51,9 +52,10 @@ export async function checkMarketingEmails(emails: string[]): Promise<MarketingC
     suppressed.push(...resp.data.suppressed);
     alreadyInList.push(...resp.data.alreadyInList);
     consented.push(...(resp.data.consented ?? []));
+    proven.push(...(resp.data.proven ?? []));
   }
 
-  return { suppressed, alreadyInList, consented };
+  return { suppressed, alreadyInList, consented, proven };
 }
 
 export async function suppressContacts(emails: string[]): Promise<void> {

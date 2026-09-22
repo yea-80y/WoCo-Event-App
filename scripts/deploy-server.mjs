@@ -152,6 +152,30 @@ if (DRY_RUN) {
 // worse than no stamp at all.
 writeFileSync(".deploy-commit", `${stamp}\n${new Date().toISOString().replace(/\.\d{3}Z$/, "Z")}\n`);
 
+// A deploy restarts the server, and a restart ends every in-flight broadcast
+// by design (its recipients are encrypted under keys that die with the
+// process). Paced first sends (#619) run for hours or days, so there will often
+// be one. Show the number before the prompt, so the choice is made with it in
+// view. Never blocks: the organiser's resume is one press and exact.
+const apiBase = (process.env.PUBLIC_API_BASE || "").replace(/\/$/, "");
+if (apiBase) {
+  try {
+    const res = await fetch(`${apiBase}/api/health`, { signal: AbortSignal.timeout(5_000) });
+    const b = (await res.json())?.email?.broadcasts ?? {};
+    console.log(
+      `\nBroadcasts in flight: ${b.pendingRecipients ?? "?"} recipient(s) unsent, ` +
+        `${b.pacedJobs ?? "?"} paced send(s), oldest ${b.oldestPendingHours ?? "?"}h.`,
+    );
+    if (b.pendingRecipients > 0) {
+      console.log("Deploying now stops them; each organiser sees a one-press resume that skips everyone already reached.");
+    }
+  } catch {
+    console.log("\nCould not read broadcast health — check `email.broadcasts` yourself before proceeding.");
+  }
+} else {
+  console.log("\nPUBLIC_API_BASE is unset — check `email.broadcasts` on /api/health yourself before proceeding.");
+}
+
 if (!ASSUME_YES) {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const reply = await rl.question("Proceed? [y/N] ");

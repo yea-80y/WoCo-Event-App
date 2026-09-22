@@ -228,8 +228,11 @@ the issue against `routes/broadcast-jobs.ts` and close it rather than assuming.
   exactly the remainder — but check first:
   `curl -s https://events-api.woco-net.com/api/health | jq .email.broadcasts`
 - **Domain warm-up.** No broadcasts until roughly 2026-08-14. Day-over-day ramp
-  is well evidenced; spreading a single broadcast across hours is **not** —
-  no primary source (AWS, Google, Yahoo, M3AAWG) supports it. Do not build for it.
+  is well evidenced. The earlier note here said spreading a broadcast across hours
+  had no primary source; Resend's warm-up table (read 2026-09-22) does publish a
+  per-hour column, and #619 now paces a first send to NEW contacts in hourly
+  batches on it — see `docs/MARKETING_COMPLIANCE.md` "PACED FIRST SEND". A single
+  batch is still not spread within its hour.
 - **`SendBulkEmail` is not worth adopting** and the previously recorded reason
   was wrong — see §5 of the SES handover for the corrected version.
 - **New `.data` stores get their modes for free now (#130).** `broadcast-jobs/`

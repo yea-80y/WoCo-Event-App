@@ -45,6 +45,7 @@ import {
 import { liveRefundGateway } from "../lib/stripe/pending-refunds-live.js";
 import { mergeParticipants, knownSubjects, participantsFor } from "../lib/social/participants.js";
 import { clearTallyCache } from "./social.js";
+import { isValidSenderId, liftSender, listForOps, stopSender } from "../lib/sender-pacing/index.js";
 
 const ops = new Hono<AppEnv>();
 
@@ -367,6 +368,40 @@ ops.post("/pending-refunds/:sessionId/resolve", async (c) => {
 /** Tests only — clears the failed-attempt window between cases. */
 export function _resetOpsLockoutForTest(): void {
   failedAttempts = [];
+}
+
+// ---------------------------------------------------------------------------
+// Sender pacing (#619)
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/ops/sender-pacing — every sender's state, rung, 7-day counts and
+ * bounce subtypes. Hash-free. The subtypes are what an operator reads before a
+ * lift: a stop made of `OnAccountSuppressionList` bounces cost the account
+ * nothing (SES does not count them) and is usually safe to lift.
+ */
+ops.get("/sender-pacing", (c) => c.json({ ok: true, data: { senders: listForOps() } }));
+
+/**
+ * POST /api/ops/sender-pacing/:sender/lift and /stop — body `{ by, reason }`.
+ * Both required and both logged: a stop lifted by nobody in particular is a
+ * decision nobody owns. A lift also resets the evidence window, so the batch
+ * that caused the stop cannot re-cause it.
+ */
+for (const action of ["lift", "stop"] as const) {
+  ops.post(`/sender-pacing/:sender/${action}`, async (c) => {
+    const sender = c.req.param("sender").toLowerCase();
+    if (!isValidSenderId(sender)) return c.json({ ok: false, error: "Not a sender id" }, 400);
+    const body = (await c.req.json().catch(() => null)) as { by?: string; reason?: string } | null;
+    const by = (body?.by || "").trim().slice(0, 100);
+    const reason = (body?.reason || "").trim().slice(0, 500);
+    if (!by || !reason) {
+      return c.json({ ok: false, error: "`by` and `reason` are required — who decided this, and why?" }, 400);
+    }
+    const state = action === "lift" ? liftSender(sender, by, reason) : stopSender(sender, by, reason);
+    console.log(`[ops] Sender ${sender} ${action === "lift" ? "lifted" : "stopped"} by ${by}: ${reason}`);
+    return c.json({ ok: true, data: { sender, state } });
+  });
 }
 
 export { ops };
