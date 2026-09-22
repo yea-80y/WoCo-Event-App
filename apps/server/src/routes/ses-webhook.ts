@@ -397,25 +397,37 @@ sesWebhook.post("/webhook", async (c) => {
       console.log(`[ses-webhook] ${bounceType ?? "Unknown"} bounce — not suppressing`);
     }
   } else if (type === "Complaint") {
-    for (const r of payload.complaint?.complainedRecipients ?? []) {
-      if (r.emailAddress?.includes("@")) {
-        suppressGlobal(hashEmail(r.emailAddress), "complaint");
+    const feedbackType = payload.complaint?.complaintFeedbackType;
+    const complained = (payload.complaint?.complainedRecipients ?? []).filter((r) =>
+      r.emailAddress?.includes("@"),
+    );
+    // SES defines `not-spam` as the opposite of a complaint: the reporter says
+    // the message was wrongly tagged as spam (#621,
+    // https://docs.aws.amazon.com/ses/latest/dg/notification-contents.html).
+    // Suppression marks are never erased, so treating it as a complaint would
+    // block that address from every organiser for good for saying the mail was
+    // wanted. Every other type, and an absent one, still suppresses.
+    if (feedbackType !== "not-spam") {
+      for (const r of complained) {
+        suppressGlobal(hashEmail(r.emailAddress!), "complaint");
         suppressed++;
       }
     }
+    // Pacing gets the report either way; `countsAsComplaint` is what keeps a
+    // not-spam report out of the complaint thresholds.
     countForPacing(
       payload,
       {
         type: "Complaint",
         info: {
-          ...(payload.complaint?.complaintFeedbackType ? { feedbackType: payload.complaint.complaintFeedbackType } : {}),
+          ...(feedbackType ? { feedbackType } : {}),
           complaintSubType: payload.complaint?.complaintSubType ?? null,
         },
       },
-      suppressed,
+      complained.length,
     );
     console.log(
-      `[ses-webhook] Complaint (${payload.complaint?.complaintFeedbackType ?? "unspecified"}): ` +
+      `[ses-webhook] Complaint (${feedbackType ?? "unspecified"}): ` +
         `suppressed ${suppressed} address(es)`,
     );
   } else if (type === "Reject") {
