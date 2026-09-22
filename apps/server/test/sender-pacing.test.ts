@@ -55,6 +55,16 @@ describe("the gate", () => {
     assert.equal(pacing.admit(A, "j:u2", 100, T0 + HOUR).ok, true);
   });
 
+  test("an admitted batch is durable before a single message goes", () => {
+    // The admission alone must reach disk: a crash between admitting a batch
+    // and its first send would otherwise let the restarted server admit it again.
+    pacing.admit(A, "j:u1", 100, T0);
+    pacing._reloadPacingForTest();
+    const r = pacing.admit(A, "j:u2", 100, T0 + 10 * MIN);
+    assert.equal(!r.ok && r.code, "TOO_SOON");
+    assert.equal(pacing.position(A, T0 + 10 * MIN).admittedToday, 100);
+  });
+
   test("the wait survives a restart", () => {
     sendBatch(A, 100, T0, "j:u1");
     pacing._reloadPacingForTest();

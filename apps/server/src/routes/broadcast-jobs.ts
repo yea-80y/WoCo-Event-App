@@ -263,6 +263,13 @@ broadcastJobs.post("/jobs", requireAuth, async (c) => {
         403,
       );
     }
+    // A stopped or fully paused sender has nothing that could go, so refuse
+    // before the client uploads a single recipient. `start` checks again: the
+    // state can change while the upload runs.
+    const refusal = pacingStartRefusal(org);
+    if (refusal) {
+      return c.json({ ok: false, error: refusal.message, code: refusal.code }, refusal.status);
+    }
     fromDisplayName = prior
       ? prior.fromDisplayName
       : typeof body.fromName === "string" ? body.fromName.trim() : "";

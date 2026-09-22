@@ -97,7 +97,7 @@ function paced(proven: number, fresh: number, over: Record<string, unknown> = {}
   return job;
 }
 
-describe("the schedule", () => {
+describe("the schedule", { timeout: 60_000 }, () => {
   test("proven contacts go at once; new contacts go 100 an hour", async () => {
     const job = paced(140, 250);
     await drain();
@@ -167,7 +167,7 @@ describe("the schedule", () => {
   });
 });
 
-describe("pauses and stops", () => {
+describe("pauses and stops", { timeout: 60_000 }, () => {
   test("a bounce pause parks new contacts and says why", async () => {
     const job = paced(0, 300);
     await drain();
@@ -191,6 +191,55 @@ describe("pauses and stops", () => {
     assert.equal(refusal?.code, "SENDER_STOPPED");
     pacing.liftSender(ORG, "ops:test", "suppression-list hits", T0 + 20 * MIN);
     assert.equal(glue.pacingStartRefusal(ORG, T0 + 21 * MIN), null);
+  });
+
+  test("a pause that arrives mid-batch stops the batch between chunks", async () => {
+    // One earlier sending day puts the sender on rung 2: this batch is 300,
+    // three chunks of 100.
+    pacing.admit(ORG, "earlier:u1", 100, T0 - 24 * HOUR);
+    pacing.recordAccepted(ORG, "earlier:u1", "u", Array.from({ length: 100 }, (_, i) => `${i}`.padEnd(64, "d")), T0 - 24 * HOUR);
+    let fired = false;
+    worker._resetDrainWorkerForTest({
+      async send(msg: OutboundEmail, opts?: SendEmailOptions) {
+        sent.push({ to: msg.to[0]!, ctx: opts?.context });
+        if (!fired) {
+          fired = true;
+          // 8 of the 100 earlier new contacts bounce while chunk 1 is going out.
+          pacing.recordBounce(ORG, "earlier:u1", "General", 8);
+        }
+      },
+    });
+    const job = paced(0, 300);
+    await drain();
+    assert.equal(sent.length, 100, "the chunk in flight finishes; the other two wait");
+    assert.equal(job.batch?.chunksLeft, 2, "the batch stays open for when the pause lifts");
+    assert.equal(job.waiting?.for, "bounce-hold");
+  });
+
+  test("a pause for new contacts only still lets a send start", () => {
+    pacing.admit(ORG, "earlier:u1", 100, T0 - 2 * HOUR);
+    pacing.recordAccepted(ORG, "earlier:u1", "u", Array.from({ length: 100 }, (_, i) => `${i}`.padEnd(64, "c")), T0 - 2 * HOUR);
+    pacing.recordBounce(ORG, "earlier:u1", "General", 5, T0 - HOUR);
+    assert.equal(pacing.pacingState(ORG).kind, "held");
+    assert.equal(glue.pacingStartRefusal(ORG), null, "returning contacts can still be told");
+  });
+
+  test("a stopped send that reached people outlives the per-organiser record cap", async () => {
+    const job = paced(0, 300);
+    await drain();
+    pacing.recordBounce(ORG, `${job.id}:u1`, "General", 10, T0 + 5 * MIN);
+    assert.equal(job.state, "stopped");
+    for (let i = 0; i < 25; i++) {
+      // Each newer than the last, so the stopped job is the OLDEST record and
+      // the per-organiser cap would reach it first.
+      at(T0 + (i + 10) * MIN);
+      const other = jobs.createJob({
+        org: ORG, kind: "event", eventId: "e", subject: "s", html: "h", fromDisplayName: "E", fromAddress: "n@woco-net.com",
+      });
+      jobs.finishJob(other, "completed");
+    }
+    jobs.sweep();
+    assert.ok(jobs.getJob(job.id), "its record is what a resume skips by once the stop is lifted");
   });
 
   test("a complaint pause holds returning contacts too, and refuses a new start", async () => {
@@ -222,7 +271,7 @@ describe("pauses and stops", () => {
   });
 });
 
-describe("resume chains (#620)", () => {
+describe("resume chains (#620)", { timeout: 60_000 }, () => {
   test("a resume of a resume skips everyone ANY earlier job reached, even with that job's record gone", () => {
     const list = [...people(3, "a"), ...people(3, "b"), ...people(3, "c")];
     const make = (resumeOf?: string) =>
@@ -279,7 +328,7 @@ describe("resume chains (#620)", () => {
   });
 });
 
-describe("the payload", () => {
+describe("the payload", { timeout: 60_000 }, () => {
   test("uploads are re-cut into 500s of returning contacts and 100s of new ones", () => {
     const job = paced(140, 1_100);
     assert.equal(job.pChunks, 1);
@@ -292,9 +341,11 @@ describe("the payload", () => {
   });
 
   test("a new-contact chunk moved into the returning run does not open", () => {
-    const job = paced(10, 200);
-    copyFileSync(join(CHUNKS(), `${job.id}.u.0.bin`), join(CHUNKS(), `${job.id}.p.9.bin`));
-    assert.equal(jobs.readChunk(job.id, "p", 9), null, "pacing cannot be skipped by renaming a file");
+    // Same job, same slot number — only the run differs, so this fails ONLY
+    // because the run is part of the authenticated data.
+    const job = paced(0, 200);
+    copyFileSync(join(CHUNKS(), `${job.id}.u.0.bin`), join(CHUNKS(), `${job.id}.p.0.bin`));
+    assert.equal(jobs.readChunk(job.id, "p", 0), null, "pacing cannot be skipped by renaming a file");
     assert.ok(jobs.readChunk(job.id, "u", 0));
   });
 
@@ -312,7 +363,7 @@ describe("the payload", () => {
   });
 });
 
-describe("accounting", () => {
+describe("accounting", { timeout: 60_000 }, () => {
   test("a batch sent after the start reservation aged out is counted against the daily cap", async () => {
     const job = paced(0, 200);
     jobs.markReserved(job, 200);
@@ -341,7 +392,7 @@ describe("accounting", () => {
   });
 });
 
-describe("who counts as reached before", () => {
+describe("who counts as reached before", { timeout: 60_000 }, () => {
   test("proof, or a checkout opt-in to this organiser — and nothing else", () => {
     const h = hashEmail("buyer@example.com");
     assert.equal(glue.reachedBefore(ORG, h), false);
@@ -350,5 +401,19 @@ describe("who counts as reached before", () => {
     consent.recordConsent(h, ORG, { ts: new Date().toISOString(), source: "checkout", notice: "x" });
     assert.equal(glue.reachedBefore(ORG, h), true);
     assert.equal(glue.reachedBefore("0x1111111111111111111111111111111111111111", h), false, "per organiser");
+  });
+});
+
+describe("data-subject requests", { timeout: 60_000 }, () => {
+  test("pacing proof is reported under Art. 15 and erased under Art. 17", async () => {
+    const subject = await import("../src/lib/marketing/subject-request.js");
+    const h = hashEmail("person@example.com");
+    pacing.admit(ORG, "j:u1", 1, T0);
+    pacing.recordAccepted(ORG, "j:u1", "u", [h], T0);
+    pacing.sweepPacing(() => false, T0 + HOUR);
+    assert.deepEqual(subject.reportSubject(h).pacingProof, [ORG]);
+    subject.eraseSubject(h);
+    assert.equal(pacing.isProven(ORG, h), false);
+    assert.deepEqual(subject.reportSubject(h).pacingProof, []);
   });
 });

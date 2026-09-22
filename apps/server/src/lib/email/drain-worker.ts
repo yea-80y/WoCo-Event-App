@@ -348,15 +348,11 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
   if (job.kind === "marketing") recordAccepted(job.org, `${job.id}:${batchTag}`, seq, result.sentHashes);
   if (seq === "u" && job.batch) {
     job.batch.chunksLeft--;
-    if (job.batch.chunksLeft <= 0) {
-      const next = Date.parse(job.batch.startedAt) + 60 * 60_000;
-      delete job.batch;
-      if (job.nextU < job.uChunks && !isTerminal(job)) {
-        wait(job, "next-batch", next);
-      } else {
-        saveJob(job);
-      }
-    }
+    // A finished batch just closes. The wait before the next one is the
+    // ledger's to say — the next pick asks `admit`, which answers TOO_SOON with
+    // the time — so the gap has exactly one source.
+    if (job.batch.chunksLeft <= 0) delete job.batch;
+    saveJob(job);
   }
 
   // A cancel (or a TTL expiry) may have landed while this chunk was in flight.
