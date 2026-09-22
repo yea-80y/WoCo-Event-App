@@ -53,6 +53,7 @@ import {
   isStale,
   readThresholdsFromEnv,
 } from "./alarms.js";
+import { errorClass } from "../http/error-class.js";
 
 export const PROBE_INTERVAL_MS = 60_000;
 /** Etherna is an external OAuth service — probed a fifth as often, on purpose. */
@@ -351,26 +352,14 @@ function parseStamp(raw: Record<string, unknown>): (StampReading & { immutable: 
 const msg = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /**
- * WHY NOT `err.message` ON THE SECTION. This endpoint is public and error text
- * is written by libraries that do not know that: ethers embeds the full request
- * URL — API key included — in a SERVER_ERROR message (verified against ethers
- * 6.x: `info={ "requestUrl": "…/v2/<key>" }`), Etherna echoes its response
- * body, and a fetch of `/stamps/<id>` names the whole batch. So the section
- * gets the CLASS of failure, which is all an operator needs to know where to
- * look, and the raw text goes to the server log on transitions only.
+ * WHY NOT `err.message` ON THE SECTION: see `lib/http/error-class.ts`. This
+ * endpoint is public, so it gets the class of failure; the one addition here is
+ * the stamps API's not-JSON answer, which is ours and safe to name.
  */
 export function publicReason(err: unknown): string {
-  const e = err as { name?: unknown; code?: unknown; status?: unknown; cause?: unknown; message?: unknown } | null;
-  if (e && typeof e === "object") {
-    if (e.name === "TimeoutError" || e.name === "AbortError") return "timed out";
-    if (typeof e.message === "string" && e.message.includes("timed out")) return "timed out";
-    if (typeof e.message === "string" && e.message === NOT_JSON) return NOT_JSON;
-    if (typeof e.status === "number") return `HTTP ${e.status}`;
-    const cause = e.cause as { code?: unknown } | undefined;
-    if (cause && typeof cause === "object" && typeof cause.code === "string") return `network ${cause.code}`;
-    if (typeof e.code === "string") return /^[A-Z_]+$/.test(e.code) ? `rpc ${e.code}` : "unreadable";
-  }
-  return "unreadable";
+  const e = err as { message?: unknown } | null;
+  if (e && typeof e === "object" && e.message === NOT_JSON) return NOT_JSON;
+  return errorClass(err);
 }
 
 /** Enough to identify a batch in a log, never enough to be the batch. */

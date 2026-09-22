@@ -77,11 +77,23 @@ test("the 409 body leaks no internals — not the ids, not the thrown message", 
 test("every other failure keeps its 500 — the 409 is for the one thing retry cannot fix", () => {
   const res = registerOnChainErrorResponse(new Error("timeout"));
   assert.equal(res.status, 500);
-  assert.equal(res.body.error, "timeout");
+  assert.equal(res.body.error, "Registration failed. Please try again.");
 
   const nonError = registerOnChainErrorResponse("nope");
   assert.equal(nonError.status, 500);
-  assert.equal(nonError.body.error, "registerEvent tx failed");
+  assert.equal(nonError.body.error, "Registration failed. Please try again.");
+});
+
+test("a 500 carries the failure class, never the RPC error text (#540)", () => {
+  // The shape ethers 6 throws on an upstream 5xx: the keyed URL is in the message.
+  const rpcError = Object.assign(
+    new Error('server response 503 (request={ }, response={ }, error=null, info={ "requestUrl": "https://arb.example/v2/SECRETKEY123" })'),
+    { code: "SERVER_ERROR" },
+  );
+  const res = registerOnChainErrorResponse(rpcError);
+  assert.equal(res.status, 500);
+  assert.equal(res.body.error, "Registration failed (rpc SERVER_ERROR). Please try again.");
+  assert.ok(!JSON.stringify(res.body).includes("SECRETKEY123"), "the keyed RPC URL reached the caller");
 });
 
 // ---------------------------------------------------------------------------

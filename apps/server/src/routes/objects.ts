@@ -13,6 +13,7 @@ import {
 } from "../lib/object/directory.js";
 import { getOnChainHolding } from "../lib/object/holdings.js";
 import { issueObjectType, validateIssuedCount, type IssuableObjectKind } from "../lib/object/issuance.js";
+import { failureSentence } from "../lib/http/error-class.js";
 
 /** Upper bound on directly-minted object supply — one on-chain registration covers
  *  the whole batch, but each object body is a Swarm upload, so cap the burst. */
@@ -152,7 +153,9 @@ objectsRouter.post("/", requireAuth, async (c) => {
     return c.json({ ok: true, data: entry });
   } catch (err) {
     console.error("[objectEntry] POST / (mint) failed:", err);
-    return c.json({ ok: false, error: (err as Error).message }, 500);
+    // The class, never the text: the chain rail registers through a keyed RPC
+    // URL, and ethers puts that URL in its error messages (#540).
+    return c.json({ ok: false, error: failureSentence(`Could not create this ${b.kind}`, err) }, 500);
   }
 });
 
@@ -293,6 +296,8 @@ objectsRouter.get("/holdings", async (c) => {
     return c.json({ ok: true, data: holding });
   } catch (err) {
     console.error("[objectEntry] GET /holdings failed:", err);
-    return c.json({ ok: false, error: (err as Error).message }, 502);
+    // PUBLIC route, and the read goes through the keyed RPC URL - the class,
+    // never the text (#540).
+    return c.json({ ok: false, error: failureSentence("Could not read holdings", err) }, 502);
   }
 });
