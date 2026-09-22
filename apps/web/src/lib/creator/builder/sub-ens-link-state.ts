@@ -23,11 +23,19 @@
 export const SUB_ENS_POLL_INTERVAL_MS = 5000;
 
 /**
+ * How long a publish takes to show at a name that already points at the site.
+ * The publish is one feed-update chunk written to Etherna, and the name serves it
+ * only once that chunk has spread to the node behind it: measured 4.5 min
+ * (2026-09-21) and 5.5 min (2026-09-22), #613. The files are not the wait.
+ */
+export const NAME_SHOWS_PUBLISH_AFTER = "about 5 minutes";
+
+/**
  * Re-reads before the picker stops asking. 24 × 5s = two minutes, which covers
  * an Arbitrum write plus a comfortable margin. The bound exists because the
- * transaction is fire-and-forget on the server (`routes/sites.ts`): if it was
- * refused or lost there is nothing to wait for, and an unbounded poll would
- * hammer an authenticated chain-scanning endpoint forever on an open tab.
+ * pointer write needs the HOLDER's signature (v2.2, #599): if they never sign,
+ * or the relay refuses it, there is nothing to wait for, and an unbounded poll
+ * would hammer an authenticated chain-scanning endpoint forever on an open tab.
  */
 export const SUB_ENS_POLL_MAX_ATTEMPTS = 24;
 
@@ -50,8 +58,12 @@ export interface SubEnsLinkInput {
   singleName: boolean;
   /** 64-hex Swarm hash the name resolves to on chain, from `/api/sub-ens/owned`. */
   contentHash: string | null | undefined;
-  /** 64-hex Swarm hash of the last deploy from this screen; '' when never deployed. */
-  deployedHash: string;
+  /**
+   * 64-hex Swarm hash the name SHOULD resolve to; '' when never deployed. For a
+   * site that is its FEED manifest, not the content: the name follows every
+   * publish through the feed, so a republish never changes what it points at.
+   */
+  targetHash: string;
   /** Chain reads already spent on this label since the deploy. */
   attempts: number;
 }
@@ -63,12 +75,10 @@ export interface SubEnsLinkState {
 }
 
 /**
- * Both sides are the SAME quantity — the BZZ collection reference. The deploy
- * route passes its `contentHash` to `updateSubEnsContenthash`
- * (`apps/server/src/routes/sites.ts`) and hands the same value back to the
- * builder as `contentHash`; the owned-names read decodes it out of the chain
- * record (`decodeSwarmContenthash`). So they are comparable, and a mismatch
- * genuinely means "the name still points at the previous publish".
+ * Both sides must be the SAME quantity: what the chain record holds
+ * (`decodeSwarmContenthash` in the owned-names read) and what the caller says
+ * it should hold. A site passing its CONTENT hash here never matched after
+ * v2.2 pointed names at the feed, so every publish read as "still updating".
  *
  * Compared case-insensitively and without an `0x`: the encoder accepts either
  * case and the decoder lower-cases, so a difference in spelling would otherwise
@@ -80,7 +90,7 @@ function sameHash(a: string | null | undefined, b: string | null | undefined): b
 }
 
 export function subEnsLinkState(input: SubEnsLinkInput): SubEnsLinkState {
-  const { claimed, singleName, contentHash, deployedHash, attempts } = input;
+  const { claimed, singleName, contentHash, targetHash, attempts } = input;
 
   // Nothing claimed: there is no address to open and nothing to explain.
   if (!claimed) return { showOpen: false, note: null, pollAgain: false };
@@ -95,22 +105,22 @@ export function subEnsLinkState(input: SubEnsLinkInput): SubEnsLinkState {
     // refuses it with 409 `profile_name`), so "not yet" would be a lie — it is
     // never going to open, and saying so stops the user hunting for the link.
     note = "identity";
-  } else if (!contentHash && !deployedHash) {
+  } else if (!contentHash && !targetHash) {
     // Claimed but never published. The name exists on chain and can receive
     // payments; it has no content to serve, and no deploy is pending.
     note = "registering";
-  } else if (!contentHash && deployedHash && attempts < SUB_ENS_POLL_MAX_ATTEMPTS) {
-    // A deploy went out and the contenthash write is in flight (fire-and-forget
-    // on the server, so the deploy response cannot wait for the receipt).
+  } else if (!contentHash && targetHash && attempts < SUB_ENS_POLL_MAX_ATTEMPTS) {
+    // A deploy went out and the pointer write has not landed yet (the holder
+    // signs it after the deploy answers).
     note = "updating";
-  } else if (!contentHash && deployedHash) {
+  } else if (!contentHash && targetHash) {
     // Past the bound. Do not promise a link that has not arrived in two minutes
     // and do not keep asking: send the user away and let them come back.
     note = "gave-up";
-  } else if (contentHash && deployedHash && !sameHash(contentHash, deployedHash)) {
+  } else if (contentHash && targetHash && !sameHash(contentHash, targetHash)) {
     // The name resolves, so the certificate exists and the link is safe — it
-    // just serves the PREVIOUS publish until the new write lands. Saying so
-    // stops "I published and the site is unchanged" reading as a lost deploy.
+    // just serves something else until the new pointer lands. Saying so stops
+    // "I published and the site is unchanged" reading as a lost deploy.
     note = "stale-version";
   }
 
@@ -118,7 +128,7 @@ export function subEnsLinkState(input: SubEnsLinkInput): SubEnsLinkState {
   // with it. Each read is an authenticated chain scan, so it is bounded both by
   // the target being reached and by the attempt ceiling.
   const pollAgain =
-    !!deployedHash && attempts < SUB_ENS_POLL_MAX_ATTEMPTS && !sameHash(contentHash, deployedHash);
+    !!targetHash && attempts < SUB_ENS_POLL_MAX_ATTEMPTS && !sameHash(contentHash, targetHash);
 
   return { showOpen, note, pollAgain };
 }
