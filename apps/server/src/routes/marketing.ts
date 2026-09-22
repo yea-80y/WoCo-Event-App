@@ -17,7 +17,7 @@ import { RedundancyLevel } from "@ethersphere/bee-js";
 import { FEATURES, MAILABLE_EMAIL_RE, MARKETING_MAX_LIST_EMAILS } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
+import { refuseUnlessVerifiedOrganiser } from "../lib/stripe/verification.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { getList, putList, withOrgLock } from "../lib/marketing/list-store.js";
 import { normalizeEmails } from "../lib/marketing/emails.js";
@@ -257,15 +257,11 @@ marketing.post("/suppress", requireAuth, async (c) => {
  *  domain slots) is gated. Event broadcasts are deliberately NOT gated here:
  *  attendee-relationship mail (e.g. cancellations) must not depend on Stripe. */
 async function requireVerifiedSender(org: string): Promise<Response | null> {
-  if (await isVerifiedOrganiser(org)) return null;
-  return Response.json(
-    {
-      ok: false,
-      error: "Connect and verify a Stripe account to send marketing (free — it verifies your identity and protects everyone's deliverability)",
-      code: "STRIPE_VERIFICATION_REQUIRED",
-    },
-    { status: 403 },
+  const refusal = await refuseUnlessVerifiedOrganiser(
+    org,
+    "Connect and verify a Stripe account to send marketing (free — it verifies your identity and protects everyone's deliverability)",
   );
+  return refusal ? Response.json(refusal, { status: 403 }) : null;
 }
 
 /**
