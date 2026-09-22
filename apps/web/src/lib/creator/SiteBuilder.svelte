@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ETHERNA_GATEWAY_URL } from "../swarm/gateways.js";
   import { subEnsWebUrl, type ClaimMode, type OrderField, type PaymentConfig } from "@woco/shared";
   import { auth } from "../auth/auth-store.svelte.js";
   import { loginRequest } from "../auth/login-request.svelte.js";
@@ -8,7 +9,6 @@
   import PublishButton from "./events/PublishButton.svelte";
   import StripeVerifyGate from "./events/StripeVerifyGate.svelte";
   import ImportUrlPanel, { type ImportPreview, type ImportTier } from "./events/ImportUrlPanel.svelte";
-  import GatewayPicker from "./builder/GatewayPicker.svelte";
   import AdvancedSetup from "./builder/AdvancedSetup.svelte";
   import SiteSelector from "./builder/SiteSelector.svelte";
   import EventDomainPicker, { type EventDomainIntent } from "./builder/EventDomainPicker.svelte";
@@ -73,7 +73,9 @@
   }
 
   // Step 2 — deploy targets
-  let gatewayUrl = $state("https://gateway.etherna.io");
+  // Event pages are always stored on and served by Etherna (owner decision
+  // 2026-09-22): the organiser no longer picks a gateway.
+  const gatewayUrl = ETHERNA_GATEWAY_URL;
   let listOnWoco = $state(false);
   let selectedSiteIds = $state<string[]>([]);
   let siteAddErrors = $state<Record<string, string>>({});
@@ -376,14 +378,6 @@
         </div>
       {:else}
         <div class="event-form">
-          <div class="field-group">
-            <label class="field-label" for="gw-picker">Gateway</label>
-            <GatewayPicker bind:value={gatewayUrl} />
-            <p class="field-hint">
-              The Swarm gateway that will host and serve your deployed event site.
-            </p>
-          </div>
-
           {#if anyCardEnabled}
             <StripeVerifyGate bind:verified={stripeVerified} />
           {/if}
@@ -827,11 +821,6 @@
 
   /* ── Form fields ─────────────────────────────────────────────────────────── */
   .field-group { display: flex; flex-direction: column; gap: 0.375rem; }
-  .field-label {
-    font-size: 0.875rem; font-weight: 600; color: var(--text);
-    display: flex; align-items: center; gap: 0.375rem;
-  }
-  .field-hint { font-size: 0.8125rem; color: var(--text-muted); margin: 0; line-height: 1.5; }
 
   .site-add-error { margin: 0; font-size: 0.8125rem; color: var(--error); }
   .site-add-error code { font-family: var(--font-mono); font-size: 0.75rem; }

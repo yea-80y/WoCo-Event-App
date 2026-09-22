@@ -31,7 +31,7 @@ export interface BatchSelection {
   freeHosted?: boolean;
 }
 
-const ETHERNA_URL = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
+export const ETHERNA_URL = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
 const WOCO_URL = "https://gateway.woco-net.com";
 
 export class BatchPurchaseRequired extends Error {
@@ -83,7 +83,7 @@ function isLive(batch: { expiresAt: string }): boolean {
   return expiresAt - Date.now() > MIN_BATCH_REMAINING_MS;
 }
 
-function isWocoGateway(url: string): boolean {
+export function isWocoGateway(url: string): boolean {
   try {
     return new URL(url).host.endsWith(new URL(WOCO_URL).host);
   } catch {

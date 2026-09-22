@@ -35,6 +35,11 @@ export interface SnapshotCard {
   creatorAddress: Hex0x;
   /** Phase B discovery carrier — lets a reader resolve the event SOC with no registry. */
   creatorFeedSigner?: Hex0x;
+  /** Where the event's content (its image included) is stamped: the canonical
+   *  Etherna gateway URL, absent = WoCo. A HINT for picking the image gateway to
+   *  try first - readers match it against their own known-gateway list and never
+   *  fetch from it as given, since an event feed is organiser-written. */
+  gatewayUrl?: string;
   seriesCount: number;
   totalTickets: number;
   createdAt: string;

@@ -97,7 +97,7 @@
       "event",
       buildEventJsonLd(ev, {
         url: window.location.href,
-        imageUrl: ev.imageHash ? firstImageUrl(ev.imageHash, BEE_GATEWAY) : undefined,
+        imageUrl: ev.imageHash ? firstImageUrl(ev.imageHash, BEE_GATEWAY, ev.gatewayUrl) : undefined,
         organiserName: siteName ?? undefined,
       }),
     );
@@ -370,11 +370,11 @@
     {#if event.imageHash}
       <div class="hero-wrap">
         <img
-          src={firstImageUrl(event.imageHash, BEE_GATEWAY)}
+          src={firstImageUrl(event.imageHash, BEE_GATEWAY, event.gatewayUrl)}
           alt={event.title}
           class="hero-img"
           data-image-gateway-index="0"
-          onerror={(e) => useNextImageUrl(e, event?.imageHash, BEE_GATEWAY)}
+          onerror={(e) => useNextImageUrl(e, event?.imageHash, BEE_GATEWAY, event?.gatewayUrl)}
         />
         <div class="hero-fade"></div>
       </div>

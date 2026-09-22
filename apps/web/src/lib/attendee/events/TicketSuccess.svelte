@@ -100,8 +100,10 @@
     });
   }
 
-  // Try each gateway candidate in turn (WoCo + Etherna) so an event image stamped
-  // on the organiser's Etherna batch still loads for the composite card.
+  // Try each gateway candidate in turn. WoCo first and no storage hint, on purpose:
+  // a canvas read needs CORS, and Etherna sends no Access-Control-Allow-Origin
+  // (verified 2026-09-22), so an Etherna candidate can never succeed here - an
+  // Etherna-stamped image loads through the WoCo gateway once it has spread.
   async function loadImageFromCandidates(imageHash: string): Promise<HTMLImageElement> {
     const candidates = imageUrlCandidates(imageHash, BEE_GATEWAY);
     let lastErr: unknown;
@@ -405,12 +407,12 @@
         {#if event.imageHash}
           <div class="ticket-art">
             <img
-              src={firstImageUrl(event.imageHash, BEE_GATEWAY)}
+              src={firstImageUrl(event.imageHash, BEE_GATEWAY, event.gatewayUrl)}
               alt=""
               class="ticket-art-img"
               aria-hidden="true"
               data-image-gateway-index="0"
-              onerror={(e) => useNextImageUrl(e, event.imageHash, BEE_GATEWAY)}
+              onerror={(e) => useNextImageUrl(e, event.imageHash, BEE_GATEWAY, event.gatewayUrl)}
             />
             <div class="ticket-art-mask"></div>
           </div>
