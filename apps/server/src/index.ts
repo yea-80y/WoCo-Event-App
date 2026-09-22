@@ -16,7 +16,6 @@ import { kernelDeployedLoadFailed } from "./lib/auth/kernel-deployed.js";
 import { events } from "./routes/events.js";
 import { claims } from "./routes/claims.js";
 import { orders } from "./routes/orders.js";
-import { collection } from "./routes/collection.js";
 import { admin } from "./routes/admin.js";
 import { ops } from "./routes/ops.js";
 import { siteRoute } from "./routes/site.js";
@@ -579,9 +578,6 @@ app.route("/api/events", checkinOrganiser);
 
 // Door scanner endpoints — authed by X-Door-Pass token, not session delegation
 app.route("/api/checkin", checkin);
-
-// Collection routes (authenticated)
-app.route("/api/collection", collection);
 
 // Admin / setup routes (unauthenticated — no private data exposed)
 app.route("/api/admin", admin);
