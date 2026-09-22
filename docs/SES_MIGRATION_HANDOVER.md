@@ -3,8 +3,8 @@
 Built 2026-07-30. Cost/pricing authority stays in `PRICING_AND_EMAIL.md` §6 — do not
 restate rates here. Production-access case record: `SES_PRODUCTION_ACCESS.md`.
 
-**Status: code complete and tested, NOT yet cut over.** The switch is `EMAIL_PROVIDER=ses`
-in `apps/server/.env`, and it must not be flipped until §2 is done.
+**Status (2026-09-22): LIVE since the 2026-07-31 cutover.** This file is the design record
+of the migration. Current state and what is next: `EMAIL_NEXT_HANDOVER.md`.
 
 ---
 
@@ -154,10 +154,14 @@ restart loses the pending retries and leaves the entry unresolved for
 `/api/ops/email-failures` — worse than an automatic retry, far better than the
 `console.error` all of this replaced.
 
-Resend remains ONLY as the `EMAIL_PROVIDER=resend` rollback lever. The
-`SendDeps.secondary` seam stays under test so the failover *rules* (transactional
-only, never on a permanent error) survive if a second funded provider is ever
-added — but production passes null.
+Resend then remained only as an `EMAIL_PROVIDER=resend` rollback lever. **Owner
+decision 2026-09-22: Resend is not a rollback, and it is being removed (#627).** Flipping
+to it would cap all mail at the free tier's 100/day and silently switch off the
+controls built since: Resend is not sent our message tags, so async bounces stop
+reaching the ledger (#99) and sender pacing (#619) stops counting bounces and
+complaints. The `SendDeps.secondary` seam stays under test so the failover *rules*
+(transactional only, never on a permanent error) survive if a second funded
+provider is ever added — but production passes null.
 
 ---
 
@@ -231,7 +235,7 @@ record; do not close a row without a commit reference.
 
 | # | Finding | Status |
 |---|---|---|
-| **1** | **ASYNC BOUNCES NEVER REACH THE LEDGER** — see below | 🔴 **OPEN — #99, blocks LAUNCH (not cutover)** |
+| **1** | **ASYNC BOUNCES NEVER REACH THE LEDGER** — see below | ✅ `556038b9` (#99, PR #126) — message tags on every send, ledgered from the bounce handler |
 | 2 | `QueueOverflowError` bypassed the ledger: `acquire()` sat outside the `try`, so a full queue threw past `recordFailure` into the Stripe webhook's `console.error` — the original bug, re-created | ✅ `757d57e` |
 | 3 | A marketing flood evicted unresolved transactional evidence *and* cleared the health alarm: `prune()` sliced newest-1000 regardless of kind | ✅ `757d57e` |
 | 4 | `eraseSubject` did not cover `email-failures.json` — Art. 17 gap on the only plaintext store | ✅ `757d57e` |
@@ -242,7 +246,7 @@ record; do not close a row without a commit reference.
 | 9 | Ledger records only `msg.to[0]`; a future multi-recipient transactional send would lose recipients 2..n | ✅ `fa6a0b2` — `recipients: [{hash, address?}]`, legacy shape migrated on read |
 | 10 | `attempts` in the ledger is approximate (`retryable ? maxAttempts : 1`), ignores failover attempts | ✅ `fa6a0b2` — real provider-call count, 0 on a queue overflow |
 | 11 | No ops surface: `listFailures`/`resolveFailure` have no route, so remediation means editing `.data/` over SSH | ✅ `5b9f5b0`+`04a097e` — `/api/ops/email-failures`, `OPS_TOKEN`, list always redacted |
-| 12 | Forged-message fetch amplification: any POST with a novel valid-host `SigningCertURL` triggers an outbound fetch from an unauthenticated endpoint | 🟡 Open — pin path to `/SimpleNotificationService-*.pem` and/or rate-limit |
+| 12 | Forged-message fetch amplification: any POST with a novel valid-host `SigningCertURL` triggers an outbound fetch from an unauthenticated endpoint | ✅ `962da5ab` (#104, PR #386) — path pinned, empty query and fragment |
 | 13 | Webhook consumes the `MessageId` **before** processing, so a crash between the two loses the bounce permanently | ✅ `fa6a0b2` — commented. The ordering is what #99 needs once the handler also ledgers |
 | 14 | **#100's record sweep evicted a died-unresumed job** — the per-org 20-record cap ranked purely by recency, so 20 later terminal records (or expired drafts, which nothing rate-limits) deleted the death record: `/api/health` went green with the broadcast half-sent, and the resume 404'd because its `sentHashes` went too. Row 3's lesson (unresolved evidence is exempt from size caps), not carried into the new store. Retention was also keyed on `createdAt`, so a boot after a week-long outage would delete the record it had just written 60s later | ✅ fix/broadcast-died-record-eviction — died-unresumed records exempt from the cap, retention keyed on `finishedAt`; confirmed by repro before the fix |
 | 15 | `POST /api/broadcasts/jobs` is not rate-limited — the hourly window burns at `start` only, so an organiser (or their retrying client) can mint unbounded drafts, each holding an encrypted chunk file for up to 15 min and a dedupe Set in memory. Gated to verified organisers / event owners, and the TTL bounds each draft, so resource growth is slow — but it is unbounded in job count | 🟡 Open — low; consider a per-org draft ceiling |
@@ -253,12 +257,12 @@ closed in the same sweep — the Art. 15 report and the operator script did not 
 at all (so an access report omitted the one store holding the subject's plaintext address), and
 the `DATA_INVENTORY` cap wording predated the eviction exemption.
 
-Tracked on GitHub: **#99** (finding 1, cutover blocker) · **#100** (queue + drain worker — SHIPPED,
-and rows 9, 10, 11, 13 closed with it) · **#101** (list cap). Rows 9–13 stayed **here**, not on GitHub — they are a comment, an assertion and a cosmetic field, and six issues for that is noise while one bucket issue is unclosable. Rows 11 and the batched-persist note are natural pickups for #100's drain worker. The one exception is the SNS cert-fetch hardening, which is standalone security work: **#104**. Phase 2 sending domains: **#103**.
+Tracked on GitHub: **#99** (finding 1 — SHIPPED) · **#100** (queue + drain worker — SHIPPED,
+and rows 9, 10, 11, 13 closed with it) · **#101** (list cap). Rows 9–13 stayed **here**, not on GitHub — they are a comment, an assertion and a cosmetic field, and six issues for that is noise while one bucket issue is unclosable. Rows 11 and the batched-persist note are natural pickups for #100's drain worker. The one exception is the SNS cert-fetch hardening, which is standalone security work: **#104** (SHIPPED). Phase 2 sending domains: **#103**.
 
-### Finding 1 — the half of the bug that is still open
+### Finding 1 — CLOSED by #99 (`556038b9`); kept as the record of why
 
-**Blocks LAUNCH, not the cutover — corrected 2026-07-30.** `routes/resend-webhook.ts` has the
+**Blocked LAUNCH, not the cutover — corrected 2026-07-30.** `routes/resend-webhook.ts` has the
 identical gap: it suppresses the hash and never ledgers. So this is **pre-existing on both
 providers**, not introduced by the migration, and cutting over to SES is neutral with respect to
 it. Holding the cutover would burn the low-volume warm-up window that was the whole reason for
@@ -482,5 +486,5 @@ mechanism instead) and `broadcast-chunks/*.bin`. §3.2's "hashed-and-discarded"
 claim was amended: broadcast recipients are no longer transient, and saying so is
 not optional.
 
-**Still open:** #99 (async bounces → ledger) and #101 (the list cap). Board row
-12 (SNS cert-fetch hardening) is #104.
+**Still open:** #101 (the list cap). #99 shipped as `556038b9`; board row 12 (SNS
+cert-fetch hardening) shipped as #104 (`962da5ab`).
