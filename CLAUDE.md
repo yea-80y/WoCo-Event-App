@@ -452,7 +452,9 @@ feed a read-modify-write pass `thorough` and never trust the gate for this reaso
 are encrypted under a key held only in the running process, so a restart makes them
 permanently unreadable and the boot sweep deletes them. A deploy therefore kills in-flight
 broadcasts; the organiser resumes from the builder. Check for running jobs before deploying:
-`curl https://events-api.woco-net.com/api/health | jq .email.broadcasts`
+`curl https://events-api.woco-net.com/api/health | jq .email.broadcasts` — `pendingRecipients`
+0 is safe. Paced first sends (#619) run for hours or days, so `pacedJobs` will often be non-zero;
+deploying then is acceptable (the organiser's resume is one press and exact), just deliberate.
 
 `.data/` FILES THAT MUST SURVIVE RESTARTS (loaded on startup — don't delete):
   consumed-tx-hashes.json · revoked-sessions.json · consumed-stripe-sessions.json
@@ -485,6 +487,8 @@ broadcasts; the organiser resumes from the builder. Check for running jobs befor
     organiser can tell attendees their event is cancelled, and it CANNOT be rebuilt: the
     plaintext address is never stored anywhere we could re-derive it from)
   marketing-suppression.json (losing it = emailing unsubscribers, a legal breach)
+  sender-pacing/ (#619 — each sender's ramp, 7-day bounce/complaint counts, stops and the
+    proven set. Losing it FORGETS A STOP and lets a stopped organiser mail again)
   marketing-lists.json · marketing-domains.json · marketing-send-log.json
   consumed-resend-events.json
   consumed-sns-events.json (also dedupes the failure-ledger write for an async bounce —

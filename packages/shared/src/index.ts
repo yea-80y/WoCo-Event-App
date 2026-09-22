@@ -42,4 +42,5 @@ export * from "./sub-ens/pointer.js";
 export * from "./campaign/index.js";
 export * from "./marketing/index.js";
 export * from "./legal/consent.js";
+export * from "./legal/contact.js";
 export * from "./payouts/types.js";

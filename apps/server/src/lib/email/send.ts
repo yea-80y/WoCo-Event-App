@@ -26,6 +26,7 @@ import { sendRateLimiter, type SendPriority } from "./rate-limiter.js";
 import { recordFailure } from "./failure-ledger.js";
 import { enqueueRetry } from "./retry-queue.js";
 import { buildMessageTags } from "./message-tags.js";
+import { recordPlatformAccepted } from "../sender-pacing/index.js";
 import { hashEmail } from "../event/claim-service.js";
 import {
   EmailSendError,
@@ -266,7 +267,12 @@ export async function sendVia(
   const primaryOutcome = await attemptWithRetries(
     active, outbound, priority, maxAttempts, deps.sleep, acquire,
   );
-  if (!primaryOutcome.error) return;
+  if (!primaryOutcome.error) {
+    // The denominator of the platform-wide bounce and complaint alarm (#619):
+    // every message the provider accepted, of both kinds, counted once, here.
+    recordPlatformAccepted(outbound.to.length);
+    return;
+  }
 
   let failure = primaryOutcome.error;
   let attempts = primaryOutcome.attempts;

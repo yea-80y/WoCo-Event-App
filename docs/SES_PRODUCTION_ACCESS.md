@@ -6,6 +6,10 @@ Everything here must stay TRUE against the code; if a limit changes, change it h
 Identity: `woco-net.com`, Easy DKIM (2048-bit), region **eu-west-2**, custom MAIL FROM
 `bounce.woco-net.com`, DMARC `p=none` with aggregate reporting.
 
+Since 2026-08-03 organiser marketing sends from `news@mail.woco-net.com` (#96), a separate
+subdomain from ticket mail, with custom MAIL FROM `bounce.mail.woco-net.com` (MX and SPF to
+SES — checked in public DNS 2026-09-22). Its DKIM status can only be read in the SES console.
+
 > Note: `send.woco-net.com` (MX → `feedback-smtp.eu-west-1.amazonses.com`) is **Resend's**
 > return-path domain, not ours — Resend runs on SES. Do not confuse the two subdomains.
 
@@ -32,6 +36,16 @@ Quote these, not round approximations — AWS re-reads the case on later increas
 
 The 24h floor tracks list size deliberately: a cap below an organiser's own audience is not
 a reputation guard, it is a product defect.
+
+**Superseded in code (internal note, not sent to AWS).** The per-request figure in the first row
+went when broadcasts moved to the background queue (#100). Since #619 the control that replaces
+it is per-sender pacing: contacts new to the platform go out in batches of at most Resend's
+existing-domain per-hour figure (100 on a sender's first sending day, rising to 2,000), at least
+an hour apart, under a per-day ceiling (1,000 rising to 10,000), with hard-bounce and complaint
+checks between batches that pause at 4% / 0.08% and stop at 10% / 0.5%. Contacts already proven
+deliverable are unpaced. The 2-per-hour start limit and the 24h ceiling are unchanged. A first
+send is therefore well inside the 1,000-per-broadcast figure given to AWS; no correction was sent
+(owner decision 2026-09-22). If AWS asks, describe this, not the table row.
 
 **Do not claim we serve 100k-contact organisers.** Lists cap at 20,000 and the storage shape
 (one sealed blob re-uploaded per change, gzipped) does not stretch to 100k without paging.
@@ -141,15 +155,10 @@ Three things worth knowing if this is ever revisited:
   the site is left open in `SEO_PLAN.md` D3, and a 301 would be cached in users' browsers
   permanently, foreclosing that.
 
-## Known gaps — fix before these become claims
+## Gaps recorded at the time of the reply — all closed
 
-- **No background job queue for broadcasts.** Sends run inline in the HTTP request, 5
-  concurrent. A 1,000-recipient broadcast is a long request behind Cloudflare's 125s origin
-  timeout, and reaching a full 20,000-contact list takes ~10 hours at 2 broadcasts/hour.
-  A launch announcement cannot dribble out over 10 hours.
-- **No ESP batch API use.** `sendEmail` posts one message per call. Resend's limit is
-  10 req/s per team (`docs/PRICING_AND_EMAIL.md` §4); `SEND_CHUNK = 5` in flight at ~200ms
-  each is ~25 req/s, so a large broadcast will hit 429s — which are counted as `failed`,
-  not retried. Move to a batch endpoint and add backoff.
-- **No retry on transient send failures.** A 429 or 5xx from the ESP is counted as `failed`
-  and the recipient is simply not mailed.
+| Gap (as written 2026-07-27) | Closed by |
+|---|---|
+| Broadcasts ran inline in the HTTP request, behind Cloudflare's origin timeout | #100 (`b483f448`): background queue + drain worker |
+| One message per call at ~25 req/s into a lower rate limit; 429s counted as `failed` | SES cutover (2026-07-31) + #100: one account-wide token bucket under the SES grant. `SendBulkEmail` deliberately not adopted — `SES_MIGRATION_HANDOVER.md` §5 |
+| No retry on transient send failures | #100: retry ×3 with backoff, then the failure ledger's retry queue |

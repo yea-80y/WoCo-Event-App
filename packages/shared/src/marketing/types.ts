@@ -132,6 +132,13 @@ export interface MarketingCheckResult {
    * missing entry as `imported` rather than as a refusal.
    */
   consented?: string[];
+  /**
+   * Normalized emails this organiser has already reached through the platform
+   * without a bounce (or who opted in at their checkout). They go straight
+   * away; everyone else on a first send goes in paced batches (#619). Absent
+   * from an older server, which the composer reads as "all new".
+   */
+  proven?: string[];
 }
 
 /**

@@ -30,6 +30,9 @@
   /** Contacts who ticked the opt-in themselves — the server holds the evidence,
    *  keyed by hash, so this is the only way the client can know. */
   let consentedEmails = $state<Set<string>>(new Set());
+  /** Contacts this organiser has already reached through WoCo without a bounce
+   *  (or who opted in at their checkout) — they skip paced sending (#619). */
+  let provenEmails = $state<Set<string>>(new Set());
   /** The consent/suppression read failed, so the labels and counts below are
    *  not evidence of anything — distinct from everyone being 'imported'. */
   let consentUnknown = $state(false);
@@ -68,12 +71,14 @@
     if (list.length === 0) {
       suppressedEmails = new Set();
       consentedEmails = new Set();
+      provenEmails = new Set();
       return;
     }
     try {
       const res = await checkMarketingEmails(list.map((c) => c.email));
       suppressedEmails = new Set(res.suppressed);
       consentedEmails = new Set(res.consented ?? []);
+      provenEmails = new Set(res.proven ?? []);
       consentUnknown = false;
     } catch {
       // Non-fatal for sending — the server is the enforcement boundary and
@@ -300,7 +305,7 @@
         sub="Marketing email sends on WoCo's shared reputation, so broadcasting needs a connected, verified Stripe account — it's free and verifies who you are. Your contact list is yours either way: importing and managing it needs nothing."
       />
       {#if stripeVerified}
-        <MarketingComposer {contacts} {suppressedEmails} initialEventId={announceEventId} />
+        <MarketingComposer {contacts} {suppressedEmails} {provenEmails} initialEventId={announceEventId} />
       {/if}
     {/if}
 
