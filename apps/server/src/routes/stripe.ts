@@ -30,7 +30,7 @@ import { checkoutExpiresAt } from "../lib/event/checkout-expiry.js";
 import { chainEventEndMs } from "../lib/event/end-date-guard.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { checkObjectGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
-import { computeCardFees } from "../lib/stripe/checkout-fees.js";
+import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../lib/stripe/checkout-fees.js";
 import type { SealedBox, PayoutsResponse } from "@woco/shared";
 import { isSponsorReady } from "../lib/chain/sponsor-wallet.js";
 import { getActiveChainId, getOnChainEvent, EventContractConfigError } from "../lib/chain/event-contract.js";
@@ -785,6 +785,9 @@ stripe.post("/create-checkout", async (c) => {
   const stripeCurrency = series.payment.currency.toLowerCase(); // "usd", "gbp", "eur"
 
   const { chargeAmount, totalApplicationFee } = computeCardFees(series.payment, priceFloat, quantity);
+  if (totalApplicationFee < MIN_APPLICATION_FEE_MINOR) {
+    return c.json({ ok: false, error: "This ticket's price is too low to sell by card" }, 400);
+  }
 
   // Find the organiser's connected account
   const organiserRecord = getStripeAccount(event.creatorAddress.toLowerCase());
@@ -871,9 +874,9 @@ stripe.post("/create-checkout", async (c) => {
       // That holds whatever the organiser can do in their own Stripe account.
       //
       // Empty string when this server has no record. `create-checkout`
-      // refuses those sales outright, so it should be unreachable; it is
-      // written rather than omitted so fulfilment can tell "old session,
-      // created before this shipped" from "recorded as nothing".
+      // refuses those sales outright, so it should be unreachable. Stripe may
+      // drop an empty value, and fulfilment treats absent and "" alike (both
+      // fall back to the record), as does the integrity tag.
       onChainEventId: validatedOnChainEventId ?? "",
       // Stored so the webhook can issue refunds through the connected account.
       connectedAccountId: organiserRecord.stripeAccountId,
@@ -959,8 +962,9 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: true, url: session.url });
   } catch (err) {
     console.error("[stripe] Failed to create checkout session:", err);
-    const msg = err instanceof Error ? err.message : "Failed to create checkout";
-    return c.json({ ok: false, error: msg }, 500);
+    // A fixed string: this catch also sees configuration and Stripe errors,
+    // whose text is not the buyer's to read (#540).
+    return c.json({ ok: false, error: "Failed to create checkout" }, 500);
   }
 });
 

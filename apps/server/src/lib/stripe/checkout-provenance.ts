@@ -58,7 +58,11 @@ function tagKey(): Buffer {
 }
 
 function canonical(f: CheckoutTagFields): string {
+  // An empty value is left out on both sides: Stripe documents "" as the way to
+  // REMOVE a metadata key, so a key we send empty may come back absent, and the
+  // two must tag alike or every such sale would read as tampered.
   const meta = Object.keys(f.metadata)
+    .filter((k) => f.metadata[k] !== "")
     .sort()
     .map((k) => [k, f.metadata[k]]);
   return JSON.stringify([
@@ -112,6 +116,13 @@ export interface ProvenanceReads {
   retrievePlatformFee(feeId: string): Promise<{ amount: number; account: string } | null>;
 }
 
+/**
+ * INVARIANT: every session this platform creates carries a non-zero application
+ * fee (`MIN_APPLICATION_FEE_MINOR`, checkout-fees.ts; both create routes refuse
+ * below it). A sale of ours with no fee would classify as foreign - charged,
+ * never fulfilled, never refunded. Any future no-fee path (free events, a 100%
+ * promotion) must change this check first.
+ */
 export async function classifyPaidSession(
   session: PaidSessionView,
   eventAccount: string | null | undefined,
@@ -135,6 +146,8 @@ export async function classifyPaidSession(
   if (!fee) return { kind: "foreign", reason: "application fee is not this platform's" };
 
   // From here the sale is provably ours: our platform collected the fee on it.
+  // The charge was read on eventAccount, so its fee is on eventAccount too; this
+  // check is defence in depth, not a path we expect to see.
   if (fee.account !== eventAccount) {
     return { kind: "tampered", reason: "our fee was collected on a different account" };
   }

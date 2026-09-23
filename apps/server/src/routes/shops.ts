@@ -65,6 +65,7 @@ import type {
   PaySpendPermissionRequest,
 } from "@woco/shared";
 import { signCheckoutTag } from "../lib/stripe/checkout-provenance.js";
+import { MIN_APPLICATION_FEE_MINOR } from "../lib/stripe/checkout-fees.js";
 
 const shopsRouter = new Hono<AppEnv>();
 
@@ -490,6 +491,9 @@ shopsRouter.post("/:id/orders/:orderId/checkout", async (c) => {
     // Platform fee taken from the merchant's cut (standard retail). Buyer pays
     // exactly the priced total; merchant absorbs Stripe + platform fee.
     const applicationFee = Math.round((amountMinor * PLATFORM_FEE_BP) / 10_000);
+    if (applicationFee < MIN_APPLICATION_FEE_MINOR) {
+      return c.json({ ok: false, error: "Order total is too low to pay by card" }, 400);
+    }
 
     const body = (await c.req.json().catch(() => ({}))) as { returnUrl?: string; cancelUrl?: string };
     const frontendUrl = canonicalSuccessUrl(validateReturnUrl(body.returnUrl) ?? getFrontendUrl(c));

@@ -9,9 +9,15 @@ import { getStripe } from "./client.js";
 import type { ProvenanceReads } from "./checkout-provenance.js";
 import { idempotencyKeyFor, recordPendingRefund } from "./pending-refunds.js";
 
-function isMissing(err: unknown): boolean {
-  const e = err as { code?: string; statusCode?: number } | null;
-  return e?.code === "resource_missing" || e?.statusCode === 404;
+/** Stripe's answer for a fee that is not this platform's: missing, or not ours to read. */
+function isNotOurs(err: unknown): boolean {
+  const e = err as { code?: string; type?: string; statusCode?: number } | null;
+  return (
+    e?.code === "resource_missing" ||
+    e?.statusCode === 404 ||
+    e?.statusCode === 403 ||
+    e?.type === "StripePermissionError"
+  );
 }
 
 export const liveProvenanceReads: ProvenanceReads = {
@@ -39,7 +45,7 @@ export const liveProvenanceReads: ProvenanceReads = {
       const fee = await getStripe().applicationFees.retrieve(feeId);
       return { amount: fee.amount, account: typeof fee.account === "string" ? fee.account : fee.account.id };
     } catch (err) {
-      if (isMissing(err)) return null;
+      if (isNotOurs(err)) return null;
       throw err;
     }
   },

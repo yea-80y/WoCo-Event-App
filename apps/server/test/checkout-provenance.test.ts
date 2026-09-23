@@ -60,6 +60,17 @@ test("changing any bound field breaks the tag", () => {
   for (const [what, f] of changes) assert.equal(verifyCheckoutTag(tag, f), false, `${what} change must fail`);
 });
 
+test("an empty metadata value tags the same as an absent key", () => {
+  // Stripe documents "" as the way to remove a key, so a wallet buyer's empty
+  // claimerEmail may not come back; the sale must still verify.
+  const withEmpty = { ...FIELDS, metadata: { ...FIELDS.metadata, claimerAddress: "", onChainEventId: "" } };
+  const tag = signCheckoutTag(withEmpty);
+  assert.equal(verifyCheckoutTag(tag, FIELDS), true);
+  assert.equal(verifyCheckoutTag(tag, withEmpty), true);
+  // A non-empty value is still bound.
+  assert.equal(verifyCheckoutTag(tag, { ...FIELDS, metadata: { ...FIELDS.metadata, claimerAddress: "0xabc" } }), false);
+});
+
 test("missing or foreign-shaped tags do not verify", () => {
   for (const t of [null, undefined, "", "abc", "woco1.", "woco2." + "0".repeat(64)]) {
     assert.equal(verifyCheckoutTag(t as string, FIELDS), false);
@@ -167,4 +178,11 @@ test("both checkout routes tag the sessions they create", () => {
     assert.match(src, /client_reference_id: clientReferenceId/, `${rel} must set the integrity tag`);
     assert.match(src, /signCheckoutTag\(\{/, `${rel} must sign it`);
   }
+});
+
+test("create-checkout never returns an error's own text to the buyer", () => {
+  const src = readFileSync(new URL("../src/routes/stripe.ts", import.meta.url), "utf-8");
+  const c = src.slice(src.indexOf("Failed to create checkout session:"));
+  const tail = c.slice(0, c.indexOf("});"));
+  assert.doesNotMatch(tail, /err\.message/, "the catch must return a fixed string");
 });
