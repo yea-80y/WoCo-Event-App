@@ -376,9 +376,10 @@ export async function fulfilPaidSession(
   //
   // Two server-controlled values, and the feed is not consulted for either:
   //   · `validated` — stamped into the Stripe session at checkout, after the
-  //     binding check passed. The organiser cannot write session metadata
-  //     (controller.stripe_dashboard.type = "none"), so it is as trustworthy as
-  //     the decision it records.
+  //     binding check passed. The webhook only reaches here for a session whose
+  //     integrity tag verifies and whose application fee is ours (#645,
+  //     lib/stripe/checkout-provenance.ts), so it is as trustworthy as the
+  //     decision it records, whatever the organiser can do in their own account.
   //   · `recorded`  — this server's registration record, read now.
   //
   // Absent metadata means a session created before this shipped; those fall
