@@ -2,9 +2,9 @@
   The organiser's own Stripe account, embedded.
 
   Replaces the "Manage bank details" button that opened the Express Dashboard.
-  Under Managed Risk with `stripe_dashboard.type = "none"` that dashboard does
-  not exist, so these two components are the only way an organiser can see what
-  Stripe still needs from them and change the bank account they get paid into.
+  Accounts now have their own full Stripe Dashboard (#645), but these two
+  components keep what Stripe still needs from the organiser, and the bank
+  account they get paid into, on the payouts screen where they already look.
 
   Two components, two jobs:
     notification-banner — what Stripe needs from you, if anything

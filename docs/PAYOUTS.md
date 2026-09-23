@@ -45,7 +45,7 @@ money".
 | `scripts/payout-schedule-audit.ts` | Audits (and with `--fix`, corrects) the schedule on every existing account. |
 | `GET /api/stripe/payouts` | Organiser's own held/released takings. Backs the terms' promise to tell them when funds release. |
 | `lib/stripe/payout-view.ts` | Ledger → the organiser-facing response. `netIsFinal` + settlement-currency keying live here. |
-| `POST /api/stripe/dashboard-link` | Single-use Express Dashboard login link ("Manage bank details"). Minted per click, never stored or emailed — Stripe's own rule. |
+| `POST /api/stripe/account-session` | Client secret for the Connect embedded components on the payouts screen (replaced the deleted Express `dashboard-link`). Minted per request, never stored. |
 | `creator/payouts/PayoutsScreen.svelte` | The organiser's Payouts screen at `#/creator/payouts` (issue #93). |
 | `creator/payouts/payouts-model.ts` | Pure grouping/totalling/labelling for that screen. |
 | `test/payout-release.test.ts` · `test/payout-view.test.ts` | 36 tests over the failure modes below; 13 over the organiser-facing response. |
@@ -159,6 +159,10 @@ festival-scale on-sales. Those belong to the §7 tier decisions.
 
 ### 3.2 The manual schedule IS the lock for Express — confirmed 2026-07-29
 
+> **Superseded for new accounts by #645 (2026-09-23).** This section is about Express
+> and `none`. On `full`, the organiser's dashboard has payout controls, and the lock is
+> the platform's Connect dashboard setting — see §4.1.
+
 Earlier revisions of this section treated the platform-controls page's warning
 ("connected accounts can still make manual payouts…") as applying to us and called the
 hold advisory. **Stripe support corrected this in writing (live chat, 2026-07-29):**
@@ -189,7 +193,7 @@ properties**, never `type` (`lib/stripe/account-params.ts`, pinned by
 
 | | Value | Meaning |
 |---|---|---|
-| `controller.stripe_dashboard.type` | `express` | Stripe-hosted Express Dashboard |
+| `controller.stripe_dashboard.type` | `full` | the organiser's own Stripe Dashboard (#645; was `none`, §4.1) |
 | `controller.fees.payer` | `account` | organiser pays Stripe processing fees |
 | `controller.losses.payments` | `stripe` | **Stripe** absorbs unrecoverable negative balances |
 | `controller.requirement_collection` | `stripe` | Stripe-hosted onboarding collects KYC |
@@ -214,7 +218,33 @@ Everything in §2 is still required: an organiser paid before their event who
 then cancels leaves attendees unrefundable regardless of who absorbs the
 accounting loss.
 
-### 4.1 The dashboard is moving to `none` — DECIDED, not yet flipped
+### 4.1 The dashboard is now `full` (#645, 2026-09-23)
+
+Owner decision 2026-08-25: organisers get the full Stripe Dashboard, so they can
+refund, answer disputes and set up Radar themselves (#644). Shipped in #645:
+
+- **Accepted by Stripe.** Sandbox 2026-09-23: `accounts.create` takes `full` with
+  `losses.payments=stripe` (reported as `type: "standard"`); the manual schedule
+  sticks and the platform can still set it; our Account Session components mint;
+  Express login links still fail.
+- **Who created a session is proven, not assumed.** An organiser can now create
+  Checkout Sessions on their own account, and the webhook sees them. It fulfils
+  only sessions carrying our application fee and an intact integrity tag
+  (`checkout-provenance.ts`, #645 part A).
+- 🔴 **Self-payout is off only if the platform turns it off.** A full dashboard
+  has one-off payouts; platform schedule controls do not stop them. Before any
+  real organiser: Stripe Dashboard → Settings → Connect → Stripe Dashboard →
+  customise features → payouts OFF, API access OFF (Stripe said API keys would
+  otherwise let an organiser move money), no extensions. Then check it on a
+  sandbox account signed in as the organiser. Without it, the §2 hold is advice.
+- **Retire older accounts.** The dashboard type is fixed at creation.
+  `payout-schedule-audit.ts` flags `none` accounts as LEGACY-SHAPE and
+  `retire-legacy-accounts.ts --delete` removes zero-balance ones. Name the
+  owner's own accounts before running it.
+
+The rest of this section is the `none` history, kept for its evidence.
+
+#### The earlier move to `none` (2026-07-31)
 
 The `express` row above is what the code still ships. It is wrong, and Stripe
 said so: `stripe_dashboard.type = "express"` with `losses.payments = "stripe"`

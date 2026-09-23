@@ -304,10 +304,10 @@ stripe.get("/payouts", requireAuth, async (c) => {
  * POST /api/stripe/account-session — a client secret for Connect embedded components.
  *
  * The organiser's only route to their own bank details and account status.
- * This REPLACED `POST /dashboard-link`: under Managed Risk with
- * `stripe_dashboard.type = "none"` there is no Express Dashboard, and
- * `accounts.createLoginLink` returns "does not have access to the Express
- * Dashboard" — so the login-link door is not deprecated, it is closed.
+ * This REPLACED `POST /dashboard-link`: `accounts.createLoginLink` returns
+ * "does not have access to the Express Dashboard" for our controller-created
+ * accounts, `none` and `full` alike - so the login-link door is not
+ * deprecated, it is closed.
  *
  * The client secret is single-use and expires in minutes, and connect.js calls
  * this again whenever it needs a fresh one. So it is minted per request and
