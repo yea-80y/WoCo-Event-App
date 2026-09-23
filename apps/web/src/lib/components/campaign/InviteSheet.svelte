@@ -159,6 +159,7 @@
     <ol class="steps">
       <li>They scan this or open your link.</li>
       <li>They verify with Stripe to start hosting.</li>
+      <li>They confirm you invited them.</li>
       <li>You earn a share of the platform fee on their ticket sales.</li>
     </ol>
   {:else if code?.kind === "follow"}

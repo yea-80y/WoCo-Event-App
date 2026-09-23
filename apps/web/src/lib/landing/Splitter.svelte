@@ -129,9 +129,10 @@
         <ArrowRight size={18} strokeWidth={2.5} />
       </button>
       <p class="offer-fine">
-        * Launch rate, and it can change — we'll tell you before it does. What
-        you earn builds up per sale and is paid after the event, when the
-        organiser is paid.
+        * Launch rate, and it can change - we'll tell you before it does. Your
+        share builds up from each sale and is paid monthly in stablecoin once
+        the event has taken place. We're aiming for the first payout on or
+        before 31 December 2026.
         <button class="link-inline" onclick={() => navigate("/legal/terms")}>Full terms</button>
       </p>
     </div>
@@ -271,8 +272,8 @@
           free, and always will be.
         </p>
         <p>
-          And when someone follows you, they can opt in to hear from you
-          directly — so your list is people who actually asked.
+          Fans can follow you too, and you'll see your following grow on your
+          events.
         </p>
       </div>
     </article>
