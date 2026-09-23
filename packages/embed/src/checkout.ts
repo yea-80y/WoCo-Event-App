@@ -6,7 +6,15 @@
  * pinned in one place.
  */
 
-import { calculateBuyerFees, type PaymentConfig, type SealedBox } from "@woco/shared";
+import {
+  calculateBuyerFees,
+  orderFormShown,
+  resolveBuyerEmail,
+  ORDER_EMAIL_FIELD_ID,
+  type OrderField,
+  type PaymentConfig,
+  type SealedBox,
+} from "@woco/shared";
 
 /** Server-side clamp is RESERVATION_MAX_QTY / create-checkout's own max(10). */
 export const MAX_QTY = 10;
@@ -21,10 +29,37 @@ export function seriesPayable(payment: PaymentConfig | undefined): boolean {
   return !!calculateBuyerFees(payment, 1)?.cardTotal;
 }
 
-/** Trimmed email, or null when it cannot receive a ticket. */
-export function validateEmail(raw: string): string | null {
-  const email = raw.trim();
-  return email && email.includes("@") ? email : null;
+export type BuyPanelVerdict = { ok: true; email: string } | { ok: false; error: string };
+
+/**
+ * The buy panel's checks, top to bottom in the order the buyer sees them, so
+ * the first message names the first thing to fix (#597).
+ *
+ * The ticket address comes from the shared rule (`resolveBuyerEmail`): the
+ * order form's own email field when the form shows one, else the widget's box.
+ * This widget has no wallet or account path, so that field is required here
+ * whatever the organiser ticked - it is the only way the ticket can arrive.
+ */
+export function validateBuyPanel(i: {
+  fields: readonly OrderField[] | undefined;
+  encryptionKey: string | undefined;
+  formData: Record<string, string>;
+  inlineEmail: string;
+}): BuyPanelVerdict {
+  if (orderFormShown(i.fields, i.encryptionKey)) {
+    for (const f of i.fields!) {
+      const isEmail = f.id === ORDER_EMAIL_FIELD_ID;
+      // Never an internal id: OrderFieldsEditor starts every field with label "".
+      const label = f.label || f.placeholder || (isEmail ? "Email" : "This field");
+      const value = (i.formData[f.id] ?? "").trim();
+      if ((f.required || isEmail) && !value) return { ok: false, error: `${label} is required` };
+      if (isEmail && !resolveBuyerEmail(i.formData, i.fields, i.encryptionKey, "")) {
+        return { ok: false, error: `Enter a valid email address in ${label}` };
+      }
+    }
+  }
+  const email = resolveBuyerEmail(i.formData, i.fields, i.encryptionKey, i.inlineEmail);
+  return email ? { ok: true, email } : { ok: false, error: "Enter a valid email address" };
 }
 
 /** Quantity the picker may offer: 1..min(10, available), never below 1. */

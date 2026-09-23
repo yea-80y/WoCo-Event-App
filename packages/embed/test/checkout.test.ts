@@ -6,10 +6,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { PaymentConfig } from "@woco/shared";
+import type { OrderField, PaymentConfig } from "@woco/shared";
 import {
   seriesPayable,
-  validateEmail,
+  validateBuyPanel,
   maxSelectableQty,
   buildOrderPayload,
   buildCheckoutBody,
@@ -139,8 +139,51 @@ test("quantity picker is capped by availability and by the server clamp", () => 
   assert.equal(maxSelectableQty(NaN), MAX_QTY); // unreadable count falls back to the server clamp
 });
 
-test("email is trimmed; an address that cannot receive a ticket is refused", () => {
-  assert.equal(validateEmail("  a@b.co  "), "a@b.co");
-  assert.equal(validateEmail("nope"), null);
-  assert.equal(validateEmail("   "), null);
+// ── #597: the buy panel reads the order form's email field ──────────────────
+
+const KEY = "ab".repeat(32);
+const EMAIL: OrderField = { id: "__email", type: "email", label: "Email", required: true };
+const NAME: OrderField = { id: "name", type: "text", label: "Name", required: true };
+const GUEST: OrderField = { id: "guest", type: "email", label: "Guest's email", required: false };
+const panel = (fields: OrderField[] | undefined, formData: Record<string, string>, inlineEmail = "", key: string | undefined = KEY) =>
+  validateBuyPanel({ fields, encryptionKey: key, formData, inlineEmail });
+
+test("the default order form's email field is the ticket address (the #597 dead-end)", () => {
+  assert.deepEqual(panel([EMAIL, NAME], { __email: " buyer@example.com ", name: "Ann" }), { ok: true, email: "buyer@example.com" });
+});
+
+test("a blank email field is refused by its own label, even when the organiser left it optional", () => {
+  // No wallet or account path here: that field is the only way a ticket arrives.
+  const optional = { ...EMAIL, required: false, label: "Your email" };
+  assert.deepEqual(panel([optional], {}), { ok: false, error: "Your email is required" });
+});
+
+test("an implausible email in the form names the field to fix", () => {
+  assert.deepEqual(panel([EMAIL], { __email: "not-an-address" }), { ok: false, error: "Enter a valid email address in Email" });
+});
+
+test("an unlabelled field is named by its placeholder, never by its internal id", () => {
+  const bare: OrderField = { id: "field_1727000000000", type: "text", label: "", required: true };
+  assert.deepEqual(panel([bare], {}), { ok: false, error: "This field is required" });
+  assert.deepEqual(panel([{ ...bare, placeholder: "Your name" }], {}), { ok: false, error: "Your name is required" });
+});
+
+test("errors come top to bottom, in the order the buyer sees the fields", () => {
+  assert.deepEqual(panel([NAME, EMAIL], {}), { ok: false, error: "Name is required" });
+  assert.deepEqual(panel([EMAIL, NAME], {}), { ok: false, error: "Email is required" });
+});
+
+test("with no email field in the form, the widget's own box is the address", () => {
+  assert.deepEqual(panel([NAME], { name: "Ann" }, "me@example.com"), { ok: true, email: "me@example.com" });
+  assert.deepEqual(panel([NAME], { name: "Ann" }, ""), { ok: false, error: "Enter a valid email address" });
+  assert.deepEqual(panel(undefined, {}, " me@example.com "), { ok: true, email: "me@example.com" });
+});
+
+test("a guest's email field never becomes the ticket address", () => {
+  assert.deepEqual(panel([GUEST], { guest: "friend@example.com" }, "me@example.com"), { ok: true, email: "me@example.com" });
+});
+
+test("a form that cannot be shown (no organiser key) falls back to the widget's box, never a dead-end", () => {
+  const noKey = validateBuyPanel({ fields: [EMAIL], encryptionKey: undefined, formData: {}, inlineEmail: "me@example.com" });
+  assert.deepEqual(noKey, { ok: true, email: "me@example.com" });
 });
