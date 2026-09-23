@@ -1,11 +1,9 @@
 import { createHmac } from "node:crypto";
 import type {
   Hex0x,
-  ClaimedTicket,
   CollectionEntry,
   UserCollection,
 } from "@woco/shared";
-import { downloadFromBytes } from "../swarm/bytes.js";
 import {
   readFeedPage,
   writeFeedPage,
@@ -61,41 +59,6 @@ export function hashEmail(email: string): string {
 
 /** Safety cap to bound probe cost — ~20 entries/page × 50 = 1000 tickets/user. */
 const COLLECTION_MAX_PAGES = 50;
-
-/**
- * Read a user's full collection across all pages. Probes sequentially
- * starting at page 0 and stops at the first missing page. Writers write
- * contiguously so a gap means end-of-data.
- */
-export async function getUserCollection(address: string): Promise<UserCollection | null> {
-  const page0Raw = await readFeedPage(topicUserCollection(address, 0));
-  if (!page0Raw) return null;
-  const page0 = decodeJsonFeed<UserCollection>(page0Raw);
-  if (!page0) return null;
-
-  const allEntries: CollectionEntry[] = [...page0.entries];
-  let latestUpdatedAt = page0.updatedAt;
-
-  for (let i = 1; i < COLLECTION_MAX_PAGES; i++) {
-    const raw = await readFeedPage(topicUserCollection(address, i));
-    if (!raw) break;
-    const parsed = decodeJsonFeed<UserCollection>(raw);
-    if (!parsed) break;
-    allEntries.push(...parsed.entries);
-    if (parsed.updatedAt > latestUpdatedAt) latestUpdatedAt = parsed.updatedAt;
-  }
-
-  return { v: 1, entries: allEntries, updatedAt: latestUpdatedAt };
-}
-
-export async function getClaimedTicketDetail(ref: string): Promise<ClaimedTicket | null> {
-  try {
-    const json = await downloadFromBytes(ref);
-    return JSON.parse(json) as ClaimedTicket;
-  } catch {
-    return null;
-  }
-}
 
 export async function addToUserCollection(ethAddress: string, entry: CollectionEntry): Promise<void> {
   // Probe pages 0..N until a gap; accumulate entries for dedup and locate the
