@@ -271,7 +271,14 @@ export type ContentFeedResult<T> =
 export async function readContentFeedResult<T>(
   ownerAddress: string,
   topic: string,
-  opts: { skipLegacy?: boolean; thorough?: boolean } = {},
+  /**
+   * `gatewayUrl` names the gateway that STAMPS this feed. For an Etherna-stamped
+   * feed it must be passed: our bee sees Etherna's writes only minutes later, so
+   * without it even a `thorough` read asks our bee alone and resolves to the
+   * PREVIOUS version, marked clean - a read-modify-write then reverts the last
+   * save (#651).
+   */
+  opts: { skipLegacy?: boolean; thorough?: boolean; gatewayUrl?: string } = {},
 ): Promise<ContentFeedResult<T>> {
   const { probeSoc } = await import("./client-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
@@ -281,7 +288,7 @@ export async function readContentFeedResult<T>(
   // gateway 403 as absent (client-soc.ts), those three cases can no longer take
   // the gate's word for it, and a caller that acts on absence must say so.
   // Ordinary display reads leave it off and keep the cheap path.
-  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough });
+  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough, gatewayUrl: opts.gatewayUrl });
   // Counted from what the RESOLVER did, not from what we handed it. A stored
   // hint whose version does not resolve restarts the scan from 0, so counting
   // the hint's existence would report the expensive case as the cheap one —
@@ -328,14 +335,15 @@ export async function readContentFeedAtVersion<T>(
   ownerAddress: string,
   topic: string,
   version: number,
-  opts: { thorough?: boolean } = {},
+  /** `gatewayUrl`: see {@link readContentFeedResult}. */
+  opts: { thorough?: boolean; gatewayUrl?: string } = {},
 ): Promise<ContentFeedResult<T>> {
   if (!Number.isInteger(version) || version < 0) {
     return { status: "unavailable", reason: `invalid version ${version}` };
   }
   const { probeSoc } = await import("./client-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
-  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough });
+  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough, gatewayUrl: opts.gatewayUrl });
   const base = contentFeedSocIdentifier(topic);
 
   const asm = await assembleContentFeed(
@@ -370,7 +378,8 @@ export async function readContentFeedAtVersion<T>(
 export async function readContentFeed<T>(
   ownerAddress: string,
   topic: string,
-  opts: { skipLegacy?: boolean } = {},
+  /** `gatewayUrl`: see {@link readContentFeedResult}. */
+  opts: { skipLegacy?: boolean; gatewayUrl?: string } = {},
 ): Promise<T | null> {
   const res = await readContentFeedResult<T>(ownerAddress, topic, opts);
   return res.status === "found" ? res.value : null;
@@ -447,7 +456,8 @@ export type BandedContentFeedResult<T> = ContentFeedResult<T> & {
 export async function readBandedContentFeed<T>(
   ownerAddress: string,
   topicForBand: (band: number) => string,
-  opts: { hintBand?: number; thorough?: boolean } = {},
+  /** `gatewayUrl`: see {@link readContentFeedResult}. */
+  opts: { hintBand?: number; thorough?: boolean; gatewayUrl?: string } = {},
 ): Promise<BandedContentFeedResult<T>> {
   const { probeSoc } = await import("./client-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
@@ -465,7 +475,7 @@ export async function readBandedContentFeed<T>(
   //
   // Display and head reads do NOT need it: a lap is an exact-address write, so
   // staleness collides, Bee dedupes, and the read-back reports `superseded`.
-  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough });
+  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough, gatewayUrl: opts.gatewayUrl });
 
   // SCAN-FIRST. Resolving the band by walking openers first spent its whole
   // probe window on every read, and a probe past the last opened band is a

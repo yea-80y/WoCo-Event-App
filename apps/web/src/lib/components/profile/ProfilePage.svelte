@@ -3,6 +3,7 @@
   import type { UserProfile, EventDirectoryEntry } from "@woco/shared";
   import { socialProfileSubject, FEATURES } from "@woco/shared";
   import { getProfile, updateProfile, uploadAvatar, getProfileNameStatus } from "../../api/profiles.js";
+  import { changedProfileFields, type ProfileFormFields } from "../../api/profile-save.js";
   import { gate } from "../../attendee/gate/gate.svelte.js";
   import { isTicketRequired } from "../../api/attendee-gate.js";
   import { unlocksWhen } from "../../attendee/gate/unlock-copy.js";
@@ -118,6 +119,12 @@
   let editTwitter = $state("");
   let editFarcaster = $state("");
   let formDirty = $state(false);
+  // What the form was filled with, so a save sends only what the user changed.
+  let formLoaded = $state<ProfileFormFields>({ displayName: "", bio: "", website: "", twitterHandle: "", farcasterHandle: "" });
+
+  function formValues(): ProfileFormFields {
+    return { displayName: editName, bio: editBio, website: editWebsite, twitterHandle: editTwitter, farcasterHandle: editFarcaster };
+  }
 
   let fileInput: HTMLInputElement | undefined = $state(undefined);
 
@@ -152,11 +159,21 @@
   }
 
   function initForm() {
-    editName = profile?.displayName ?? "";
-    editBio = profile?.bio ?? "";
-    editWebsite = profile?.website ?? "";
-    editTwitter = profile?.twitterHandle ?? "";
-    editFarcaster = profile?.farcasterHandle ?? "";
+    // Built from `profile` alone: this runs inside an effect, and reading the edit
+    // fields back would make it re-run on every keystroke.
+    const loaded: ProfileFormFields = {
+      displayName: profile?.displayName ?? "",
+      bio: profile?.bio ?? "",
+      website: profile?.website ?? "",
+      twitterHandle: profile?.twitterHandle ?? "",
+      farcasterHandle: profile?.farcasterHandle ?? "",
+    };
+    editName = loaded.displayName;
+    editBio = loaded.bio;
+    editWebsite = loaded.website;
+    editTwitter = loaded.twitterHandle;
+    editFarcaster = loaded.farcasterHandle;
+    formLoaded = loaded;
     formDirty = false;
   }
 
@@ -205,15 +222,12 @@
       const prevAvatarRef = profile?.avatarRef;
       let merged: UserProfile | null = profile;
 
-      // Text fields — only write the data feed when the user actually edited them.
-      if (formDirty) {
-        const updated = await updateProfile({
-          displayName: editName || undefined,
-          bio: editBio || undefined,
-          website: editWebsite || undefined,
-          twitterHandle: editTwitter || undefined,
-          farcasterHandle: editFarcaster || undefined,
-        });
+      // Text fields — only write the data feed when the user actually edited them,
+      // and send only those: the form was filled from a display read that can lag
+      // a save by minutes, and an untouched stale value would overwrite it (#651).
+      const changes = formDirty ? changedProfileFields(formValues(), formLoaded) : {};
+      if (Object.keys(changes).length > 0) {
+        const updated = await updateProfile(changes);
         // updateProfile already cached the fresh profile — don't invalidate, or the
         // next read races feed propagation and blanks it. Carry the avatar forward
         // (the data feed doesn't store avatarRef — it lives in a separate feed).

@@ -11,6 +11,7 @@ import {
   type ContentFeedResult,
 } from "../swarm/content-feed.js";
 import { ETHERNA_GATEWAY_URL } from "../swarm/gateways.js";
+import { profileSaveBase } from "./profile-save.js";
 import { logFeedToManifest } from "../manifest/feed-log.js";
 import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../cache/cache.js";
 import type { ProfileNameStatus } from "../sub-ens/rename.js";
@@ -265,19 +266,15 @@ export async function updateProfile(
     // again, reached through the gateway gate rather than through a lenient
     // read, and the `unavailable` guard below cannot catch it because a gate
     // refusal reads as ABSENT, not as unavailable.
-    { thorough: true },
+    //
+    // ROUTED to Etherna, where the write below lands: our bee sees an Etherna
+    // write minutes later, so a second save inside that window would otherwise
+    // merge onto the version BEFORE the first save and revert it (#651).
+    { thorough: true, gatewayUrl: ETHERNA_GATEWAY_URL },
   ).catch((e: unknown): ContentFeedResult<UserProfile> => ({ status: "unavailable", reason: String(e) }));
-  if (existingRead.status === "unavailable") {
-    // A permanent verdict must not be dressed as a connection problem: the user
-    // would retry forever on advice that cannot work (#190). Reloading CAN work —
-    // the usual cause is an app older than the payload it is being asked to read.
-    throw new Error(
-      existingRead.unusableAt !== undefined
-        ? "Your saved profile can't be read by this version of WoCo, so it wasn't changed. Reload to update the app, then try again."
-        : "Couldn't load your current profile to update it — check your connection and try again. Nothing was changed.",
-    );
-  }
-  const existing = existingRead.status === "found" ? existingRead.value : null;
+  const base = profileSaveBase(existingRead);
+  if (!base.ok) throw new Error(base.error);
+  const existing = base.base;
 
   const profile: UserProfile = {
     v: 1,
