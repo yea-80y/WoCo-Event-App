@@ -206,7 +206,8 @@ test("every feed probe in the read and read-back paths forwards the feed's gatew
   for (const file of ["../src/lib/swarm/content-feed.ts", "../src/lib/swarm/verified-write.ts"]) {
     const calls = probeCalls(src(file));
     assert.ok(calls.length > 0, `${file}: no probeSoc call found - the check would pass vacuously`);
-    for (const args of calls) assert.match(args, /gatewayUrl/, `${file}: probeSoc(${args})`);
+    // The caller's own gateway, not merely the word: `gatewayUrl: undefined` compiles.
+    for (const args of calls) assert.match(args, /gatewayUrl:\s*(?:opts|args)\.gatewayUrl\b/, `${file}: probeSoc(${args})`);
   }
 });
 
@@ -219,10 +220,40 @@ test("the profile save reads its base from Etherna and merges only onto what the
   assert.match(save, /const base = profileSaveBase\(existingRead\);\s*if \(!base\.ok\) throw new Error\(base\.error\);\s*const existing = base\.base;/);
 });
 
+const page = () => code(src("../src/lib/components/profile/ProfilePage.svelte"));
+const between = (s: string, from: string, to: string) => {
+  const a = s.indexOf(from);
+  const b = s.indexOf(to, a);
+  assert.ok(a >= 0 && b > a, `not found: ${from} .. ${to}`);
+  return s.slice(a, b);
+};
+
 test("the profile page sends the changed fields, not the whole form", () => {
-  const page = code(src("../src/lib/components/profile/ProfilePage.svelte"));
-  const save = page.slice(page.indexOf("async function saveProfile()"), page.indexOf("async function guardRename()"));
-  assert.match(save, /changedProfileFields\(formValues\(\), formLoaded\)/);
+  const save = between(page(), "async function saveProfile()", "async function guardRename()");
   assert.match(save, /updateProfile\(changes\)/);
   assert.doesNotMatch(save, /updateProfile\(\{\s*displayName:/);
+});
+
+test("the changes are decided before any signing prompt, so a no-op save asks for nothing", () => {
+  const save = between(page(), "async function saveProfile()", "async function guardRename()");
+  const decided = save.indexOf("changedProfileFields(formValues(), formLoaded)");
+  const prompt = save.indexOf("ensureAccountSetup(");
+  assert.ok(decided >= 0 && prompt > decided, "changes must be computed before ensureAccountSetup");
+  assert.match(save.slice(decided, prompt), /if \(Object\.keys\(changes\)\.length === 0 && !pendingAvatarDataUrl\) \{ formDirty = false; return; \}/);
+});
+
+test("the form's baseline is the profile it was filled from, and the text just saved", () => {
+  const init = between(page(), "function initForm()", "formDirty = false;");
+  assert.match(init, /const loaded: ProfileFormFields = \{[\s\S]*profile\?\.displayName[\s\S]*\};[\s\S]*formLoaded = loaded;/);
+  // A failed avatar upload must not leave the next save diffing against the old profile.
+  const save = between(page(), "async function saveProfile()", "async function guardRename()");
+  const rebased = save.indexOf("if (merged) profile = merged;");
+  assert.ok(rebased >= 0 && rebased < save.indexOf("uploadAvatar("), "saved text becomes the baseline before the avatar upload");
+});
+
+test("switching account or profile clears the form, so typed text cannot reach another account", () => {
+  const reset = between(page(), "let _prevView", "loadProfile();");
+  assert.match(reset, /editName = "";[\s\S]*editFarcaster = "";/);
+  assert.match(reset, /formLoaded = \{ displayName: "", bio: "", website: "", twitterHandle: "", farcasterHandle: "" \};/);
+  assert.match(reset, /formDirty = false;/);
 });
