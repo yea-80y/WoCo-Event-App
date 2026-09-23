@@ -6,12 +6,10 @@
   import { getClaimStatus } from "../../api/events.js";
   import { createCheckoutSession } from "../../api/stripe.js";
   import type { SeriesClaimStatus } from "@woco/shared";
+  import { orderFormCollectsEmail, orderFormShown, resolveBuyerEmail } from "@woco/shared";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
-  import {
-    getEmailFromForm as getEmailFromFormPure,
-    buildOrderSnapshot as buildOrderSnapshotPure,
-  } from "./claim/helpers.js";
+  import { buildOrderSnapshot as buildOrderSnapshotPure } from "./claim/helpers.js";
   import StripeSuccessCard from "./claim/StripeSuccessCard.svelte";
   import ReservationPill from "./claim/ReservationPill.svelte";
   import StripePayPanel from "./claim/StripePayPanel.svelte";
@@ -98,11 +96,11 @@
   const claimMarketingConsent = $derived(
     showOrderForm ? marketingConsent === true : undefined
   );
-  /** Whether the order form already includes an email-type field */
-  const hasEmailField = $derived(
-    !!orderFields?.some((f) => f.type === "email" || f.id === "__email")
-  );
-  const hasOrderForm = $derived(!!orderFields?.length && !!encryptionKey);
+  /** Whether the SHOWN order form collects the ticket address - the shared
+   *  rule (#597), so the inline box is hidden only when there is a field on
+   *  screen to type into. */
+  const hasEmailField = $derived(orderFormCollectsEmail(orderFields, encryptionKey));
+  const hasOrderForm = $derived(orderFormShown(orderFields, encryptionKey));
 
   /** True while we refresh availability when the form opens. */
   let prefetching = $state(false);
@@ -122,7 +120,7 @@
   });
 
   const getEmailFromForm = (): string | null =>
-    getEmailFromFormPure(formData, orderFields, "");
+    resolveBuyerEmail(formData, orderFields, encryptionKey, "");
 
   function applyStatus(s: SeriesClaimStatus) {
     status = s;

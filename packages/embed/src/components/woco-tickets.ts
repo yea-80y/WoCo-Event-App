@@ -3,6 +3,9 @@ import { getStyles } from "./styles.js";
 import {
   sealJson,
   calculateBuyerFees,
+  orderFormShown,
+  orderFormCollectsEmail,
+  ORDER_EMAIL_FIELD_ID,
   MARKETING_CONSENT_NOTICE,
   TRANSACTIONAL_EMAIL_NOTICE,
   CHECKOUT_PRIVACY_SUMMARY,
@@ -14,7 +17,7 @@ import { cacheGet, cacheSet, TTL_7D, embedCacheKey } from "../cache.js";
 import {
   MAX_QTY,
   seriesPayable,
-  validateEmail,
+  validateBuyPanel,
   maxSelectableQty,
   buildOrderPayload,
   buildCheckoutBody,
@@ -540,7 +543,7 @@ export class WocoTickets extends HTMLElement {
   }
 
   private get hasOrderForm(): boolean {
-    return !!(this.event?.orderFields?.length && this.event?.encryptionKey);
+    return orderFormShown(this.event?.orderFields, this.event?.encryptionKey);
   }
 
   /** True when this series can actually be sold here: Stripe rail on, price > 0. */
@@ -581,12 +584,13 @@ export class WocoTickets extends HTMLElement {
       } else if (f.type === "checkbox") {
         inputHtml = `<label class="checkbox-row"><input type="checkbox" data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}" ${val === "yes" ? "checked" : ""} /><span>${this.esc(f.placeholder || f.label)}</span></label>`;
       } else {
-        inputHtml = `<input type="${this.esc(f.type)}" data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}" value="${this.esc(val)}" placeholder="${this.esc(f.placeholder || "")}" ${maxLenAttr(f)} />`;
+        const autocomplete = f.id === ORDER_EMAIL_FIELD_ID ? 'autocomplete="email"' : "";
+        inputHtml = `<input type="${this.esc(f.type)}" data-order-field="${this.esc(seriesId)}:${this.esc(f.id)}" value="${this.esc(val)}" placeholder="${this.esc(f.placeholder || "")}" ${maxLenAttr(f)} ${autocomplete} />`;
       }
 
       fieldsHtml += `
         <label class="form-field">
-          <span class="form-label">${this.esc(f.label)}${f.required ? ' <span class="required">*</span>' : ""}</span>
+          <span class="form-label">${this.esc(f.label)}${f.required || f.id === ORDER_EMAIL_FIELD_ID ? ' <span class="required">*</span>' : ""}</span>
           ${inputHtml}
         </label>
       `;
@@ -622,10 +626,12 @@ export class WocoTickets extends HTMLElement {
       <div class="order-form" data-order-form="${this.esc(s.seriesId)}">
         <div class="hold-slot" data-hold-slot="${this.esc(s.seriesId)}">${this.renderHold(s.seriesId, st)}</div>
         ${this.hasOrderForm ? this.renderOrderFields(s.seriesId, st) : ""}
-        <label class="form-field">
+        ${orderFormCollectsEmail(this.event?.orderFields, this.event?.encryptionKey)
+          ? ""
+          : `<label class="form-field">
           <span class="form-label">Email for your ticket <span class="required">*</span></span>
           <input type="email" data-email-input="${this.esc(s.seriesId)}" value="${this.esc(st.email)}" placeholder="your@email.com" autocomplete="email" />
-        </label>
+        </label>`}
         <label class="form-field qty-row">
           <span class="form-label">Quantity</span>
           <select data-qty-select="${this.esc(s.seriesId)}">${qtyOptions}</select>
@@ -835,22 +841,12 @@ export class WocoTickets extends HTMLElement {
    *
    * Returns undefined when there is nothing to seal or sealing failed (the
    * server builds a minimal fallback record at fulfilment — same trade the
-   * main checkout makes: a lost form answer must not lose the sale), and
-   * null when validation failed (stops the checkout).
+   * main checkout makes: a lost form answer must not lose the sale). The
+   * fields were validated before this runs (validateBuyPanel).
    */
-  private async encryptOrderData(seriesId: string, st: SeriesState, email: string): Promise<SealedBox | undefined | null> {
+  private async encryptOrderData(seriesId: string, st: SeriesState, email: string): Promise<SealedBox | undefined> {
     const encryptionKey = this.event?.encryptionKey;
     if (!encryptionKey) return undefined;
-
-    if (this.hasOrderForm) {
-      for (const f of this.event?.orderFields ?? []) {
-        if (f.required && !(st.orderFormData[f.id] ?? "").trim()) {
-          st.error = `${f.label} is required`;
-          this.updateSeries(seriesId);
-          return null;
-        }
-      }
-    }
 
     try {
       return await sealJson(encryptionKey, buildOrderPayload(st.orderFormData, seriesId, email));
@@ -869,15 +865,22 @@ export class WocoTickets extends HTMLElement {
     const st = this.seriesStates.get(seriesId);
     if (!st || st.busy || !this.api) return;
 
-    const email = validateEmail(st.email);
-    if (!email) {
-      st.error = "Enter a valid email address";
+    // One top-to-bottom pass over what the buyer can see; the address comes
+    // from the order form's email field when it shows one (#597).
+    const verdict = validateBuyPanel({
+      fields: this.event?.orderFields,
+      encryptionKey: this.event?.encryptionKey,
+      formData: st.orderFormData,
+      inlineEmail: st.email,
+    });
+    if (!verdict.ok) {
+      st.error = verdict.error;
       this.updateSeries(seriesId);
       return;
     }
+    const email = verdict.email;
 
     const encryptedOrder = await this.encryptOrderData(seriesId, st, email);
-    if (encryptedOrder === null) return;
 
     st.busy = true;
     st.error = null;

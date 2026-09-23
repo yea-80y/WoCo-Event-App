@@ -27,3 +27,19 @@ export async function isVerifiedOrganiser(address: string): Promise<boolean> {
     return record.onboardingComplete;
   }
 }
+
+/** The code every surface gated on a verified organiser answers with. */
+export const STRIPE_VERIFICATION_REQUIRED = "STRIPE_VERIFICATION_REQUIRED";
+
+/**
+ * One gate, one refusal shape, per-surface wording: marketing sending and badge
+ * minting both refuse an unverified organiser, and neither should carry its own
+ * copy of the check or the body. Returns null when the caller may proceed.
+ */
+export async function refuseUnlessVerifiedOrganiser(
+  address: string,
+  sentence: string,
+): Promise<{ ok: false; error: string; code: string } | null> {
+  if (await isVerifiedOrganiser(address)) return null;
+  return { ok: false, error: sentence, code: STRIPE_VERIFICATION_REQUIRED };
+}

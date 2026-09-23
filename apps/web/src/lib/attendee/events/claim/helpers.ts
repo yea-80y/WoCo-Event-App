@@ -1,5 +1,3 @@
-import type { OrderField } from "@woco/shared";
-
 /**
  * Synchronously compute the initial Stripe-success state at script-init time
  * (BEFORE the first render). The URL hash is the canonical signal of a fresh
@@ -28,26 +26,6 @@ export function initialStripeSuccess(
   return { email, qty, visible: true };
 }
 
-/** Resolve the buyer's email from form fields or the inline input. */
-export function getEmailFromForm(
-  formData: Record<string, string>,
-  orderFields: OrderField[] | undefined,
-  inlineEmail: string,
-): string | null {
-  const email = formData["__email"]?.trim();
-  if (email && email.includes("@")) return email;
-  if (orderFields) {
-    for (const f of orderFields) {
-      if (f.type === "email") {
-        const val = formData[f.id]?.trim();
-        if (val && val.includes("@")) return val;
-      }
-    }
-  }
-  const inline = inlineEmail.trim();
-  if (inline && inline.includes("@")) return inline;
-  return null;
-}
 
 /**
  * Build the snapshot string identifying the encrypted-order payload. The

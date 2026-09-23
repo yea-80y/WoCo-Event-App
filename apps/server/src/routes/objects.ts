@@ -12,11 +12,32 @@ import {
   upsertCreatorObject,
 } from "../lib/object/directory.js";
 import { getOnChainHolding } from "../lib/object/holdings.js";
-import { issueObjectType, validateIssuedCount, type IssuableObjectKind } from "../lib/object/issuance.js";
+import { issueObjectType, validateIssuedCount, validateObjectIssuance, type IssuableObjectKind } from "../lib/object/issuance.js";
+import { refuseUnlessVerifiedOrganiser } from "../lib/stripe/verification.js";
+import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
+import { clientIp } from "../lib/http/client-ip.js";
+import { failureSentence } from "../lib/http/error-class.js";
 
-/** Upper bound on directly-minted object supply — one on-chain registration covers
- *  the whole batch, but each object body is a Swarm upload, so cap the burst. */
+/** Upper bound on directly-minted object supply. One on-chain registration covers
+ *  the whole batch and no edition body is uploaded any more (#263), so this is a
+ *  sanity bound on a client-supplied number, not a cost control - the cost
+ *  control is MINT_BUDGET below. Each body still travels in the request and is
+ *  hashed into the Merkle tree, which is what keeps it finite. */
 const MAX_OBJECT_SUPPLY = 10_000;
+
+/**
+ * Minting budget (#263). A chain-rail mint is one on-chain registration paid by
+ * the sponsor wallet, so it is bounded per account AND per client IP: accounts
+ * cost nothing to create, IPs do. Sized for an organiser setting up a handful
+ * of badges in a sitting (owner decision 2026-09-22: 5 per account per day).
+ * Exported for the test; the route is not reachable without a signed session.
+ */
+export const MINT_BUDGET = {
+  perAccount: { limit: 5, windowMs: 24 * 60 * 60_000 },
+  perIp: { limit: 10, windowMs: 24 * 60 * 60_000 },
+} as const;
+const mintByAccount = new SlidingWindowLimiter([MINT_BUDGET.perAccount]);
+const mintByIp = new SlidingWindowLimiter([MINT_BUDGET.perIp]);
 
 /**
  * object layer routes (Step 4) — the creator object manager + the public holdings
@@ -45,11 +66,34 @@ objectsRouter.get("/mine", requireAuth, async (c) => {
  * The client builds + signs the manifest with its derived issuing key and
  * uploads the artwork, then posts the signed manifest + edition bodies + the
  * issuer binding (PoP). The server verifies + pins the binding, validates the
- * manifest, uploads the bodies, sponsor-registers on-chain, and writes the
- * directory entry. Owner is the verified parentAddress (never from the body).
+ * manifest against the bodies (which it does not upload - #263),
+ * sponsor-registers on-chain, and writes the directory entry. Owner is the
+ * verified parentAddress (never from the body).
+ *
+ * Gated on a Stripe-verified organiser and a daily budget - see MINT_BUDGET.
  */
 objectsRouter.post("/", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase() as Hex0x;
+
+  const ip = clientIp(c);
+  if (!mintByAccount.peek(parentAddress) || !mintByIp.peek(ip)) {
+    return c.json(
+      {
+        ok: false,
+        error: "You've reached today's limit for creating badges and collectibles. Try again tomorrow.",
+        code: "RATE_LIMITED",
+      },
+      429,
+    );
+  }
+  // Same gate as marketing sending: a Stripe-verified organiser
+  // (charges_enabled). Checked before anything is parsed or pinned, so an
+  // unverified account writes nothing.
+  const unverified = await refuseUnlessVerifiedOrganiser(
+    parentAddress,
+    "Connect and verify a Stripe account to create badges and collectibles. It's free and verifies your identity.",
+  );
+  if (unverified) return c.json(unverified, 403);
 
   let body: unknown;
   try {
@@ -132,6 +176,23 @@ objectsRouter.post("/", requireAuth, async (c) => {
     return c.json({ ok: false, error: "only a badge can record holdings as certificates" }, 400);
   }
 
+  // The client-input checks run BEFORE the budget is charged: a mismatched
+  // manifest is the caller's bug to fix, not five of their five daily mints
+  // (issueObjectType runs the same function, so the rules have one home).
+  const valid = validateObjectIssuance({
+    supply: b.supply,
+    signedManifest: b.signedManifest as SignedManifestV2,
+    editionBodies: b.editionBodies as EditionV1Body[],
+    certSourced,
+  });
+  if (!valid.ok) return c.json({ ok: false, error: valid.error }, 400);
+
+  // Charged here, once every free check has passed and the next step spends:
+  // a refused request costs the caller nothing, a mint that then fails still
+  // counts (its upload and transaction may already have happened).
+  mintByAccount.record(parentAddress);
+  mintByIp.record(ip);
+
   try {
     const entry = await issueObjectType({
       creatorAddress: parentAddress,
@@ -152,7 +213,9 @@ objectsRouter.post("/", requireAuth, async (c) => {
     return c.json({ ok: true, data: entry });
   } catch (err) {
     console.error("[objectEntry] POST / (mint) failed:", err);
-    return c.json({ ok: false, error: (err as Error).message }, 500);
+    // The class, never the text: the chain rail registers through a keyed RPC
+    // URL, and ethers puts that URL in its error messages (#540).
+    return c.json({ ok: false, error: failureSentence(`Could not create this ${b.kind}`, err) }, 500);
   }
 });
 
@@ -293,6 +356,8 @@ objectsRouter.get("/holdings", async (c) => {
     return c.json({ ok: true, data: holding });
   } catch (err) {
     console.error("[objectEntry] GET /holdings failed:", err);
-    return c.json({ ok: false, error: (err as Error).message }, 502);
+    // PUBLIC route, and the read goes through the keyed RPC URL - the class,
+    // never the text (#540).
+    return c.json({ ok: false, error: failureSentence("Could not read holdings", err) }, 502);
   }
 });

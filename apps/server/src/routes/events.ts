@@ -24,6 +24,7 @@ import { sanitisePublicApiUrl } from "../lib/url/public-api-url.js";
 import { isValidSeriesId } from "../lib/swarm/topics.js";
 import { issueJoinedBadge } from "../lib/campaign/badges.js";
 import { clientIp } from "../lib/http/client-ip.js";
+import { failureSentence } from "../lib/http/error-class.js";
 const events = new Hono<AppEnv>();
 
 // ---------------------------------------------------------------------------
@@ -778,9 +779,11 @@ export function registerOnChainErrorResponse(err: unknown): {
       },
     };
   }
+  // The class, never the text: this path talks to the chain through a keyed
+  // RPC URL, and ethers puts that URL in its error messages (#540).
   return {
     status: 500,
-    body: { ok: false, error: err instanceof Error ? err.message : "registerEvent tx failed" },
+    body: { ok: false, error: failureSentence("Registration failed", err) },
   };
 }
 
