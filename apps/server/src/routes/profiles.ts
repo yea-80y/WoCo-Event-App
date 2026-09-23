@@ -165,11 +165,13 @@ profiles.post("/", requireAuth, async (c) => {
   }
 
   const updates: UpdateProfileRequest = {
-    displayName: body.displayName as string | undefined,
-    bio: body.bio as string | undefined,
-    website: body.website as string | undefined,
-    twitterHandle: body.twitterHandle as string | undefined,
-    farcasterHandle: body.farcasterHandle as string | undefined,
+    // Types are not checked here: `mergeProfileText` stores only strings and
+    // treats anything else as "keep", so a malformed field can only be a no-op.
+    displayName: body.displayName as string | null | undefined,
+    bio: body.bio as string | null | undefined,
+    website: body.website as string | null | undefined,
+    twitterHandle: body.twitterHandle as string | null | undefined,
+    farcasterHandle: body.farcasterHandle as string | null | undefined,
   };
 
   // Validate lengths

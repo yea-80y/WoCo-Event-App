@@ -9,7 +9,7 @@
  * (#171, #651).
  */
 
-import type { UpdateProfileRequest, UserProfile } from "@woco/shared";
+import { PROFILE_TEXT_FIELDS, type ProfileTextField, type UpdateProfileRequest, type UserProfile } from "@woco/shared";
 import type { ContentFeedResult } from "../swarm/content-feed.js";
 
 export const PROFILE_BASE_RETRY =
@@ -38,8 +38,7 @@ export function profileSaveBase(
   return { ok: false, error: read.unusableAt !== undefined ? PROFILE_BASE_RELOAD : PROFILE_BASE_RETRY };
 }
 
-export const PROFILE_FORM_FIELDS = ["displayName", "bio", "website", "twitterHandle", "farcasterHandle"] as const;
-export type ProfileFormFields = Record<(typeof PROFILE_FORM_FIELDS)[number], string>;
+export type ProfileFormFields = Record<ProfileTextField, string>;
 
 /**
  * Only the fields the user changed since the form was filled.
@@ -48,13 +47,14 @@ export type ProfileFormFields = Record<(typeof PROFILE_FORM_FIELDS)[number], str
  * Etherna write reaches our bee late). Re-sending an untouched field would write
  * that stale value over the newer profile the save's own base read found.
  *
- * A field changed to empty is not sent, which keeps its current value: the merge
- * treats a missing field as "keep", and clearing has no representation yet (#652).
+ * A field the user emptied is sent as `null`, which removes it (#652). An empty
+ * field they never touched is not sent at all - the form can load empty when a
+ * read fails, and that must never read as "clear everything" (#171).
  */
 export function changedProfileFields(current: ProfileFormFields, loaded: ProfileFormFields): UpdateProfileRequest {
   const changes: UpdateProfileRequest = {};
-  for (const field of PROFILE_FORM_FIELDS) {
-    if (current[field] !== loaded[field] && current[field] !== "") changes[field] = current[field];
+  for (const field of PROFILE_TEXT_FIELDS) {
+    if (current[field] !== loaded[field]) changes[field] = current[field] === "" ? null : current[field];
   }
   return changes;
 }

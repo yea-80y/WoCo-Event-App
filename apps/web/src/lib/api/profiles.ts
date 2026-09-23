@@ -1,6 +1,6 @@
 import type { PointerRequest, UserProfile, UpdateProfileRequest } from "@woco/shared";
 import { profileBindOutcome, type ProfileBindOutcome, type ProfileBindWarning } from "../sub-ens/pointer-policy.js";
-import { profileDataContentTopic, profileAvatarContentTopic } from "@woco/shared";
+import { profileDataContentTopic, profileAvatarContentTopic, mergeProfileText } from "@woco/shared";
 import { authPost, authGet, get } from "./client.js";
 import { apiError } from "./errors.js";
 import { auth } from "../auth/auth-store.svelte.js";
@@ -279,11 +279,7 @@ export async function updateProfile(
   const profile: UserProfile = {
     v: 1,
     address: addr,
-    displayName: updates.displayName ?? existing?.displayName,
-    bio: updates.bio ?? existing?.bio,
-    website: updates.website ?? existing?.website,
-    twitterHandle: updates.twitterHandle ?? existing?.twitterHandle,
-    farcasterHandle: updates.farcasterHandle ?? existing?.farcasterHandle,
+    ...mergeProfileText(updates, existing),
     // Carry forward the bound name unless this call set a freshly-verified one
     // — or explicitly removed it, which `??` alone cannot express.
     subEnsLabel: unbinding ? undefined : (verifiedLabel ?? existing?.subEnsLabel),

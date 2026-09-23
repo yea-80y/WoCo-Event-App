@@ -19,11 +19,13 @@ export interface UserProfile {
 
 /** Request body for POST /api/profile */
 export interface UpdateProfileRequest {
-  displayName?: string;
-  bio?: string;
-  website?: string;
-  twitterHandle?: string;
-  farcasterHandle?: string;
+  /** Text fields: a string sets it, `null` (or "") removes it, omitted keeps it.
+   *  Applied by `mergeProfileText` on both save paths (#652). */
+  displayName?: string | null;
+  bio?: string | null;
+  website?: string | null;
+  twitterHandle?: string | null;
+  farcasterHandle?: string | null;
   /** Sub-ENS label to bind to this profile. The server verifies the caller
    *  owns `{label}.woco.eth` on-chain before persisting (see profiles route),
    *  then records the bind in the name ledger so the rename cooldown and the
