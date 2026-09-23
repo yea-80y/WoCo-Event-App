@@ -58,6 +58,7 @@ import { issuerBindingHealth } from "./lib/issuer/binding.js";
 import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
+import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
@@ -270,6 +271,9 @@ app.get("/api/health", (c) =>
     // yet — and until it lands the organiser is still scheduled to be paid for
     // it. Counts only; the ops route has the entries.
     pendingRefunds: pendingRefundsHealth(),
+    // #645: a tampered session (ours, altered after creation) is the alarm;
+    // foreign sessions are an organiser's own sales and are only counted.
+    checkoutProvenance: checkoutProvenanceHealth(),
     compliancePersistence: persistHealth(),
     // `false` is an alarm, not a statistic: the Kernel known-deployed record
     // exists on disk but would not load, so the counterfactual fallback is live

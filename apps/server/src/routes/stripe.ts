@@ -30,7 +30,7 @@ import { checkoutExpiresAt } from "../lib/event/checkout-expiry.js";
 import { chainEventEndMs } from "../lib/event/end-date-guard.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { checkObjectGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
-import { computeCardFees } from "../lib/stripe/checkout-fees.js";
+import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../lib/stripe/checkout-fees.js";
 import type { SealedBox, PayoutsResponse } from "@woco/shared";
 import { isSponsorReady } from "../lib/chain/sponsor-wallet.js";
 import { getActiveChainId, getOnChainEvent, EventContractConfigError } from "../lib/chain/event-contract.js";
@@ -38,6 +38,8 @@ import { checkSeriesOnChainBinding, resolveManifestDigest } from "../lib/event/o
 import { lookupOnChainEventId } from "../lib/event/onchain-registry.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
+import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../lib/stripe/checkout-provenance.js";
+import { liveProvenanceReads, refundTamperedSession } from "../lib/stripe/checkout-provenance-live.js";
 import { fulfilPaidSession } from "../lib/stripe/fulfilment.js";
 import { liveFulfilmentDeps } from "../lib/stripe/fulfilment-live.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
@@ -783,6 +785,9 @@ stripe.post("/create-checkout", async (c) => {
   const stripeCurrency = series.payment.currency.toLowerCase(); // "usd", "gbp", "eur"
 
   const { chargeAmount, totalApplicationFee } = computeCardFees(series.payment, priceFloat, quantity);
+  if (totalApplicationFee < MIN_APPLICATION_FEE_MINOR) {
+    return c.json({ ok: false, error: "This ticket's price is too low to sell by card" }, 400);
+  }
 
   // Find the organiser's connected account
   const organiserRecord = getStripeAccount(event.creatorAddress.toLowerCase());
@@ -845,6 +850,71 @@ stripe.post("/create-checkout", async (c) => {
     // Direct charge on the connected account: Stripe Checkout shows the
     // organiser's business name (set during Express onboarding) rather than
     // the platform name. The platform still collects application_fee_amount.
+    const sessionMetadata: Record<string, string> = {
+      eventId,
+      seriesId,
+      claimerEmail: claimerEmail || "",
+      // Server-vouched: only set from a verified session, never from the body.
+      // The webhook trusts this field because we wrote it.
+      claimerAddress: verifiedAddress || "",
+      quantity: String(quantity),
+      // The on-chain event this sale was VALIDATED against, carried to
+      // fulfilment (#426).
+      //
+      // Fulfilment used to re-read `onChainEventId` from the event feed at
+      // mint time, so everything the checks above establish held at CHARGE
+      // time and not at mint: for a Phase B event the feed is the creator's
+      // own client-signed SOC, and re-signing it between the two re-pointed
+      // the mint. Carrying the decision forward is what makes the guarantee
+      // end to end.
+      //
+      // Session metadata is a sound carrier because fulfilment only acts on
+      // a session whose integrity tag (client_reference_id, below) verifies and
+      // whose application fee is ours (#645, lib/stripe/checkout-provenance.ts).
+      // That holds whatever the organiser can do in their own Stripe account.
+      //
+      // Empty string when this server has no record. `create-checkout`
+      // refuses those sales outright, so it should be unreachable. Stripe may
+      // drop an empty value, and fulfilment treats absent and "" alike (both
+      // fall back to the record), as does the integrity tag.
+      onChainEventId: validatedOnChainEventId ?? "",
+      // Stored so the webhook can issue refunds through the connected account.
+      connectedAccountId: organiserRecord.stripeAccountId,
+      // Pre-uploaded encrypted-order ref (Swarm /bytes). Either:
+      //  - client pre-uploaded during form typing and passed `orderRef`, or
+      //  - we just uploaded it inline (above) in parallel with the other reads.
+      // Either way, the webhook attaches this ref to every ticket in the batch,
+      // so multi-ticket orders never end up with empty attendee data.
+      ...(finalOrderRef ? { orderRef: finalOrderRef } : {}),
+      // Slot reservation id, consumed by the webhook on successful claim.
+      // Optional: legacy / expired-reservation flows fall back to the
+      // existing availability check at claim time.
+      ...(reservationId ? { reservationId } : {}),
+      // Site id — present when checkout comes from a deployed organiser site.
+      // Webhook uses it to fetch the site theme for branded email + ticket PNG.
+      ...(siteId ? { siteId } : {}),
+      // The buyer's answer to the marketing opt-in, carried to the webhook —
+      // it is the webhook, not this request, that knows the claim succeeded,
+      // and a consent record for a sale that never completed is worthless.
+      // Tri-state: "1" granted, "0" declined, absent means never asked.
+      ...(marketingConsent !== undefined
+        ? { marketingConsent: marketingConsent ? "1" : "0" }
+        : {}),
+    };
+    // #645: fulfilment acts on this metadata, and under a full Stripe Dashboard
+    // the organiser can create sessions and edit metadata on their own account.
+    // The tag commits to everything fulfilment acts on; it lives in
+    // client_reference_id, which a session update cannot change, and the webhook
+    // checks it together with our application fee (lib/stripe/checkout-provenance.ts).
+    const sessionAmount = chargeAmount * quantity;
+    const clientReferenceId = signCheckoutTag({
+      account: organiserRecord.stripeAccountId,
+      currency: stripeCurrency,
+      amountSubtotal: sessionAmount,
+      amountTotal: sessionAmount,
+      applicationFee: totalApplicationFee,
+      metadata: sessionMetadata,
+    });
     const session = await s.checkout.sessions.create(
       {
         mode: "payment",
@@ -866,59 +936,8 @@ stripe.post("/create-checkout", async (c) => {
           application_fee_amount: totalApplicationFee,
           // No transfer_data — direct charge settles on the connected account.
         },
-        metadata: {
-          eventId,
-          seriesId,
-          claimerEmail: claimerEmail || "",
-          // Server-vouched: only set from a verified session, never from the body.
-          // The webhook trusts this field because we wrote it.
-          claimerAddress: verifiedAddress || "",
-          quantity: String(quantity),
-          // The on-chain event this sale was VALIDATED against, carried to
-          // fulfilment (#426).
-          //
-          // Fulfilment used to re-read `onChainEventId` from the event feed at
-          // mint time, so everything the checks above establish held at CHARGE
-          // time and not at mint: for a Phase B event the feed is the creator's
-          // own client-signed SOC, and re-signing it between the two re-pointed
-          // the mint. Carrying the decision forward is what makes the guarantee
-          // end to end.
-          //
-          // Session metadata is a sound carrier because the ORGANISER cannot
-          // write it. Connected accounts are created with
-          // `controller.stripe_dashboard.type = "none"`
-          // (lib/stripe/account-params.ts), so an organiser holds no dashboard
-          // and no API credentials for the account this session lives on —
-          // only the platform can update it.
-          //
-          // Empty string when this server has no record. `create-checkout`
-          // refuses those sales outright, so it should be unreachable; it is
-          // written rather than omitted so fulfilment can tell "old session,
-          // created before this shipped" from "recorded as nothing".
-          onChainEventId: validatedOnChainEventId ?? "",
-          // Stored so the webhook can issue refunds through the connected account.
-          connectedAccountId: organiserRecord.stripeAccountId,
-          // Pre-uploaded encrypted-order ref (Swarm /bytes). Either:
-          //  - client pre-uploaded during form typing and passed `orderRef`, or
-          //  - we just uploaded it inline (above) in parallel with the other reads.
-          // Either way, the webhook attaches this ref to every ticket in the batch,
-          // so multi-ticket orders never end up with empty attendee data.
-          ...(finalOrderRef ? { orderRef: finalOrderRef } : {}),
-          // Slot reservation id, consumed by the webhook on successful claim.
-          // Optional: legacy / expired-reservation flows fall back to the
-          // existing availability check at claim time.
-          ...(reservationId ? { reservationId } : {}),
-          // Site id — present when checkout comes from a deployed organiser site.
-          // Webhook uses it to fetch the site theme for branded email + ticket PNG.
-          ...(siteId ? { siteId } : {}),
-          // The buyer's answer to the marketing opt-in, carried to the webhook —
-          // it is the webhook, not this request, that knows the claim succeeded,
-          // and a consent record for a sale that never completed is worthless.
-          // Tri-state: "1" granted, "0" declined, absent means never asked.
-          ...(marketingConsent !== undefined
-            ? { marketingConsent: marketingConsent ? "1" : "0" }
-            : {}),
-        },
+        metadata: sessionMetadata,
+        client_reference_id: clientReferenceId,
         success_url: stripeSuccessUrl,
         cancel_url: stripeCancelUrl,
         // Prefills the email field at checkout. Side effect: on a direct charge
@@ -943,8 +962,9 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: true, url: session.url });
   } catch (err) {
     console.error("[stripe] Failed to create checkout session:", err);
-    const msg = err instanceof Error ? err.message : "Failed to create checkout";
-    return c.json({ ok: false, error: msg }, 500);
+    // A fixed string: this catch also sees configuration and Stripe errors,
+    // whose text is not the buyer's to read (#540).
+    return c.json({ ok: false, error: "Failed to create checkout" }, 500);
   }
 });
 
@@ -1073,12 +1093,53 @@ stripe.post("/webhook", async (c) => {
     case "checkout.session.completed": {
       const session = event.data.object as import("stripe").Stripe.Checkout.Session;
       if (session.payment_status === "paid") {
+        // #645: is this a session we created, unaltered? Decided BEFORE the
+        // session is consumed, so a failure to ask Stripe leaves it retryable.
+        // This endpoint delivers every session on every connected account, and
+        // an organiser with their own Stripe Dashboard can create sessions and
+        // edit metadata there (lib/stripe/checkout-provenance.ts).
+        const verdict = await classifyPaidSession(session, event.account, liveProvenanceReads);
+        noteProvenanceVerdict(verdict);
+        if (verdict.kind === "unverifiable") {
+          console.error(
+            `[stripe-webhook] Session ${session.id}: provenance could not be checked (${verdict.reason}) — asking Stripe to retry`,
+          );
+          return c.text("Provenance check unavailable", 500);
+        }
+        if (verdict.kind === "foreign") {
+          // The organiser's own sale, not ours: never fulfilled, never refunded.
+          console.warn(
+            `[stripe-webhook] Session ${session.id} on ${event.account ?? "no account"} was not created by WoCo (${verdict.reason}) — ignored`,
+          );
+          break;
+        }
+
         // Deduplicate before doing any work. Both the platform and connected-accounts
         // webhooks can deliver the same event; Stripe also retries on any non-2xx.
         // Consuming the session ID here (synchronously, before returning 200) ensures
         // we process each confirmed payment exactly once.
         if (!checkAndConsumeSession(session.id)) {
           console.log(`[stripe-webhook] Session ${session.id} already processed — skipping duplicate delivery`);
+          break;
+        }
+
+        if (verdict.kind === "tampered") {
+          // Ours, but altered after creation: the buyer paid for something we
+          // will not issue. Refund through the account the event came from.
+          const paymentIntentId =
+            typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id;
+          console.error(
+            `[stripe-webhook] Session ${session.id} on ${event.account} was ALTERED after creation (${verdict.reason}) — refunding, not fulfilling`,
+          );
+          if (paymentIntentId && event.account) {
+            void refundTamperedSession({
+              sessionId: session.id,
+              paymentIntentId,
+              account: event.account,
+              reason: verdict.reason,
+              metadata: session.metadata ?? {},
+            });
+          }
           break;
         }
 

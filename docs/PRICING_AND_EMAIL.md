@@ -226,6 +226,8 @@ Marginal cost per active organiser/year, assuming model 1 confirmed:
 
 If the £2 does apply, add ~$24/yr and the total becomes ~$38/yr — enough to make a $50/yr price break-even rather than a business. **This single dashboard check is the difference between those two worlds.**
 
+**Fee floor (#645):** the platform fee on a card sale is `round(subtotal × 1.5%)` (`checkout-fees.ts`), and it must be at least 1 minor unit (`MIN_APPLICATION_FEE_MINOR`). The webhook proves a session is ours by that fee, so a sale with no fee could never be fulfilled. Below the floor (a subtotal under 34p/34c, e.g. one 30p ticket), checkout refuses: "price too low".
+
 Either way, **price on value not cost** — §7's anchors (Mailchimp $900/yr at 10k contacts, Squarespace £144/yr) set the price, not our margin floor.
 
 ### Payout timing is a RISK CONTROL, not a feature — LAUNCH BLOCKER
