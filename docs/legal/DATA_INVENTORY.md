@@ -261,10 +261,11 @@ What matters for the legal documents:
 - **The hold cannot be promised unconditionally.** Stripe requires payout within 90 days of the
   charge for UK businesses (10 days Thailand, 2 years US), measured **per sale, not per event**, so
   tickets sold more than ~90 days ahead are released to the organiser before their event.
-- **On a manual schedule, only the platform can move funds.** Stripe confirmed in writing
-  (2026-07-29, `PAYOUTS.md` §3.2) that the Express Dashboard cannot self-initiate payouts and
-  schedule editing is a platform capability we have not enabled. The earlier "not a lock" caveat
-  here is retired.
+- **On a manual schedule, only the platform can move funds - provided payouts are switched off
+  in organisers' Stripe Dashboards.** Since #645 organisers have the full Stripe Dashboard, where
+  one-off payouts exist unless the platform's Connect settings turn them (and API access) off
+  (`PAYOUTS.md` §4.1). That setting is a launch prerequisite; until it is verified on a real
+  account, this line is a requirement, not a fact.
 
 `TERMS_OF_SERVICE.md` §4 and `ORGANISER_TERMS.md` §6 are written to these limits.
 

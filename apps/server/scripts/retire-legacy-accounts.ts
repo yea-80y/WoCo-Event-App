@@ -1,17 +1,18 @@
 /**
- * Retire pre-#90 platform-liable connected accounts.
+ * Retire connected accounts of a shape we no longer create (`isLegacyShape`):
+ * pre-#90 platform-liable ones, and pre-#645 ones without the full Stripe
+ * Dashboard.
  *
  * Accounts created with `type: "express"` carry `controller.losses.payments =
- * "application"` forever — they cannot be converted to Managed Risk, only
- * replaced. Stripe allows a platform to delete a live account it is liable for
+ * "application"` forever, and the dashboard type is fixed at creation — neither
+ * can be converted, only replaced. Stripe allows a platform to delete a live account it is liable for
  * once every balance is zero; the organiser simply re-runs /connect and
  * onboards a fresh Managed Risk account.
  *
  * Read-only by default: reports each account's liability, balance, and held
- * ledger entries. Run with --delete to remove zero-balance platform-liable
- * accounts from Stripe AND the local store. Never touches an account that is
- * Managed Risk (losses=stripe), has a non-zero balance, or has held ledger
- * entries.
+ * ledger entries. Run with --delete to remove zero-balance legacy-shape
+ * accounts from Stripe AND the local store. Never touches an account of the
+ * current shape, one with a non-zero balance, or one with held ledger entries.
  *
  *   dev:  cd apps/server && npx tsx scripts/retire-legacy-accounts.ts [--delete]
  *   prod: docker compose exec -w /app server npx tsx apps/server/scripts/retire-legacy-accounts.ts [--delete]
@@ -23,7 +24,7 @@ import "dotenv/config";
 import { getStripe } from "../src/lib/stripe/client.js";
 import { listStripeAccounts, deleteStripeAccount } from "../src/lib/stripe/accounts.js";
 import { listByOrganiser } from "../src/lib/stripe/payout-ledger.js";
-import { isPlatformLiable } from "../src/lib/stripe/account-params.js";
+import { isLegacyShape } from "../src/lib/stripe/account-params.js";
 
 const DELETE = process.argv.includes("--delete");
 
@@ -49,9 +50,10 @@ async function main(): Promise<void> {
     const id = record.stripeAccountId;
     try {
       const account = await s.accounts.retrieve(id);
-      if (!isPlatformLiable(account)) {
+      const dashboard = account.controller?.stripe_dashboard?.type ?? "?";
+      if (!isLegacyShape(account)) {
         managedRisk++;
-        console.log(`  ok      ${id}  ${organiserAddress.slice(0, 10)}…  losses=stripe`);
+        console.log(`  ok      ${id}  ${organiserAddress.slice(0, 10)}…  losses=stripe dashboard=${dashboard}`);
         continue;
       }
 
@@ -65,7 +67,7 @@ async function main(): Promise<void> {
           : `balance=${nonZero.map((b) => `${b.amount} ${b.currency}`).join(", ")}`;
       console.log(
         `  LEGACY  ${id}  ${organiserAddress.slice(0, 10)}…  losses=` +
-          `${account.controller?.losses?.payments ?? "application (type: express)"}  ${balanceLabel}  held=${held.length}`,
+          `${account.controller?.losses?.payments ?? "application (type: express)"}  dashboard=${dashboard}  ${balanceLabel}  held=${held.length}`,
       );
 
       if (nonZero.length > 0 || held.length > 0) {
@@ -86,7 +88,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `\nmanagedRisk=${managedRisk} legacy=${legacy}${DELETE ? ` deleted=${deleted}` : ""} blocked=${blocked} errors=${errored}`,
+    `\ncurrent=${managedRisk} legacy=${legacy}${DELETE ? ` deleted=${deleted}` : ""} blocked=${blocked} errors=${errored}`,
   );
   if (legacy > deleted && !DELETE) console.log("Re-run with --delete to retire the deletable ones.");
   if (legacy > deleted) process.exitCode = 1;
