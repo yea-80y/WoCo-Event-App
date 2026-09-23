@@ -172,9 +172,16 @@ If you share a referral link and an organiser signs up through it, WoCo pays you
 set a different rate for different referrers or different periods. Any change applies from the
 date of notice and **does not affect earnings you have already accrued**.
 
-Earnings build up per sale and are released after the event, at the same time the organiser is
-paid. WoCo intends to move referral payouts to automated stablecoin settlement once the relevant
-contracts have been independently audited; until then they are paid manually.
+Earnings accrue from the referred organiser's first sale after their referral is confirmed, and are
+calculated from the platform fee WoCo keeps on each sale, net of any fee WoCo returns. A sale's
+earnings become payable once its event has taken place and the organiser has been paid.
+
+Payable earnings are paid monthly in a stablecoin in pounds sterling, euros or US dollars,
+depending on what is available to you, to the wallet linked to your WoCo account (we will tell you
+which network before the first payout). Where that currency differs from the currency of the sale,
+we convert at the rate we obtain on the payout date.
+We aim to make the first payout on or before 31 December 2026. If that date changes, we will tell
+you before it does, and your earnings keep accruing in the meantime.
 
 Referral earnings are payment for introducing a customer. **They are not an investment and give
 you no interest in WoCo.**
