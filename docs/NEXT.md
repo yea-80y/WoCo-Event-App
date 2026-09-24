@@ -270,7 +270,7 @@ profiles and event pages; the custom-domain worker must proxy, never redirect).
 | 7 | **SEO guidance panel** in builder — live checks + wires up the orphaned `Page.metaDescription` | Sonnet | #72 |
 | 8 | **sitemap.xml + robots.txt** at deploy | Sonnet | #73 |
 
-**Sub-ENS is LIVE on mainnet (2026-09-05):** Arb One registry `0x8630…A2B6`, registrar `0xACfe…03a2`, L1Resolver `0x1720…Ed8A`; `woco.eth` held by the #420 Safe. Arb Sepolia pair (`0xC38e…7cf8` / `0x42c6…d6F9`) remains the Kernel/passkey gasless target until #489.
+**Sub-ENS is LIVE on mainnet (2026-09-05):** Arb One registry `0x8630…A2B6`, registrar `0xACfe…03a2`, L1Resolver `0x1720…Ed8A` (replaced 2026-09-25 by v2 `0xD935…FfD7`, audited as LeftClaw 964/969; v1 kept as the rollback); `woco.eth` held by the #420 Safe. Arb Sepolia pair (`0xC38e…7cf8` / `0x42c6…d6F9`) remains the Kernel/passkey gasless target until #489.
 
 **…and again 2026-09-03 (#464 signature rail):** registry `0xC38e08CB…7cf8`, registrar `0x42c6464d…d6F9`. The registry gained `releaseWithSignature` + `releaseDigest` so a holder-signed release can be relayed (sponsor-paid) for every login kind. Fresh registry; nothing carried.
 
