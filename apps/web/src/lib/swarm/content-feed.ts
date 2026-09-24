@@ -21,6 +21,7 @@
 // paint, and top-level imports here would drag both libraries into the boot
 // bundle.
 import { countHint } from "./probe-stats.js";
+import type { FeedRoute } from "./gateways.js";
 import {
   CONTENT_FEED_MC_MARKER,
   contentFeedSocIdentifier,
@@ -128,14 +129,14 @@ export async function contentFeedSignerFromPrivKey(privKey: string): Promise<Con
  * there is no size ceiling. Inline payloads only (Etherna-safe). Data pages upload
  * BEFORE the manifest so a reader never sees a manifest whose pages aren't there yet.
  *
- * `gatewayUrl` routes the stamp to the matching batch (Etherna user batch when the
- * event/site lives on Etherna); omitted ⇒ WoCo platform batch.
+ * `route` selects the batch that pays for the stamp and the node the version probe
+ * asks - see {@link FeedRoute}.
  */
 export async function writeContentFeed(args: {
   signerPrivKey: string;
   topic: string;
   data: unknown;
-  gatewayUrl?: string;
+  route: FeedRoute;
   /** Optional caller-supplied lower bound on the latest version (else localStorage). */
   versionHint?: number;
   /**
@@ -156,7 +157,7 @@ export async function writeContentFeed(args: {
   const key = args.signerPrivKey.startsWith("0x") ? args.signerPrivKey : `0x${args.signerPrivKey}`;
   const owner = new Wallet(key).address.toLowerCase();
   const base = contentFeedSocIdentifier(args.topic);
-  const gw = args.gatewayUrl ? { gatewayUrl: args.gatewayUrl } : {};
+  const gw = { gatewayUrl: args.route.gatewayUrl };
 
   let version: number;
   if (args.knownVersion !== undefined) {
@@ -168,11 +169,11 @@ export async function writeContentFeed(args: {
     // thorough: the write-path probe MUST see chunks still settling on the
     // public net (Etherna-stamped writes) — a missed version here re-writes an
     // existing immutable SOC and silently loses the edit (see probeSoc).
-    // `gatewayUrl` rides along so the server's fallback asks Etherna for an
+    // The route rides along so the server's fallback asks Etherna for an
     // Etherna-stamped feed — the head this writer just wrote may sit only there
     // for a few seconds — and answers unavailable (→ refuse below) rather than
     // absent when Etherna cannot be asked (#156).
-    const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: true, gatewayUrl: args.gatewayUrl });
+    const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: true, gatewayUrl: args.route.gatewayUrl });
     const hint = args.versionHint ?? readVersionHint(owner, args.topic);
     const { latest, clean, hintGiven, hintValidated } =
       await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), hint);
@@ -271,14 +272,8 @@ export type ContentFeedResult<T> =
 export async function readContentFeedResult<T>(
   ownerAddress: string,
   topic: string,
-  /**
-   * `gatewayUrl` names the gateway that STAMPS this feed. For an Etherna-stamped
-   * feed it must be passed: our bee sees Etherna's writes only minutes later, so
-   * without it even a `thorough` read asks our bee alone and resolves to the
-   * PREVIOUS version, marked clean - a read-modify-write then reverts the last
-   * save (#651).
-   */
-  opts: { skipLegacy?: boolean; thorough?: boolean; gatewayUrl?: string } = {},
+  /** `route`: where this feed is stamped - see {@link FeedRoute}. */
+  opts: { route: FeedRoute; skipLegacy?: boolean; thorough?: boolean },
 ): Promise<ContentFeedResult<T>> {
   const { probeSoc } = await import("./client-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
@@ -288,7 +283,7 @@ export async function readContentFeedResult<T>(
   // gateway 403 as absent (client-soc.ts), those three cases can no longer take
   // the gate's word for it, and a caller that acts on absence must say so.
   // Ordinary display reads leave it off and keep the cheap path.
-  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough, gatewayUrl: opts.gatewayUrl });
+  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough, gatewayUrl: opts.route.gatewayUrl });
   // Counted from what the RESOLVER did, not from what we handed it. A stored
   // hint whose version does not resolve restarts the scan from 0, so counting
   // the hint's existence would report the expensive case as the cheap one —
@@ -335,15 +330,15 @@ export async function readContentFeedAtVersion<T>(
   ownerAddress: string,
   topic: string,
   version: number,
-  /** `gatewayUrl`: see {@link readContentFeedResult}. */
-  opts: { thorough?: boolean; gatewayUrl?: string } = {},
+  /** `route`: see {@link FeedRoute}. */
+  opts: { route: FeedRoute; thorough?: boolean },
 ): Promise<ContentFeedResult<T>> {
   if (!Number.isInteger(version) || version < 0) {
     return { status: "unavailable", reason: `invalid version ${version}` };
   }
   const { probeSoc } = await import("./client-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
-  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough, gatewayUrl: opts.gatewayUrl });
+  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough, gatewayUrl: opts.route.gatewayUrl });
   const base = contentFeedSocIdentifier(topic);
 
   const asm = await assembleContentFeed(
@@ -378,8 +373,8 @@ export async function readContentFeedAtVersion<T>(
 export async function readContentFeed<T>(
   ownerAddress: string,
   topic: string,
-  /** `gatewayUrl`: see {@link readContentFeedResult}. */
-  opts: { skipLegacy?: boolean; gatewayUrl?: string } = {},
+  /** `route`: see {@link FeedRoute}. */
+  opts: { route: FeedRoute; skipLegacy?: boolean },
 ): Promise<T | null> {
   const res = await readContentFeedResult<T>(ownerAddress, topic, opts);
   return res.status === "found" ? res.value : null;
@@ -456,8 +451,8 @@ export type BandedContentFeedResult<T> = ContentFeedResult<T> & {
 export async function readBandedContentFeed<T>(
   ownerAddress: string,
   topicForBand: (band: number) => string,
-  /** `gatewayUrl`: see {@link readContentFeedResult}. */
-  opts: { hintBand?: number; thorough?: boolean; gatewayUrl?: string } = {},
+  /** `route`: see {@link FeedRoute}. */
+  opts: { route: FeedRoute; hintBand?: number; thorough?: boolean },
 ): Promise<BandedContentFeedResult<T>> {
   const { probeSoc } = await import("./client-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
@@ -475,7 +470,7 @@ export async function readBandedContentFeed<T>(
   //
   // Display and head reads do NOT need it: a lap is an exact-address write, so
   // staleness collides, Bee dedupes, and the read-back reports `superseded`.
-  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough, gatewayUrl: opts.gatewayUrl });
+  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough, gatewayUrl: opts.route.gatewayUrl });
 
   // SCAN-FIRST. Resolving the band by walking openers first spent its whole
   // probe window on every read, and a probe past the last opened band is a

@@ -30,6 +30,7 @@ import {
   writeContentFeed,
   type ContentFeedResult,
 } from "../swarm/content-feed.js";
+import { FEED_ROUTES, type FeedRoute } from "../swarm/gateways.js";
 import { openFromSelf, sealToSelf } from "./self-seal.js";
 import { mergeFeedEntry, removeFeedEntry, restoreFeedEntry, retireBackupEntries, retireOneBackupEntry } from "./ops.js";
 
@@ -90,11 +91,11 @@ export async function readUserManifestResult(args: {
    */
   thorough?: boolean;
   /** Test seam — production always takes the real feed read. */
-  readFeed?: (owner: string, topic: string, opts: { thorough?: boolean }) => Promise<ContentFeedResult<unknown>>;
+  readFeed?: (owner: string, topic: string, opts: { route: FeedRoute; thorough?: boolean }) => Promise<ContentFeedResult<unknown>>;
 }): Promise<ManifestReadResult> {
   const readFeed = args.readFeed ??
     ((owner, topic, opts) => readContentFeedResult<unknown>(owner, topic, opts));
-  const read = await readFeed(args.signer.address, USER_MANIFEST_TOPIC, { thorough: args.thorough })
+  const read = await readFeed(args.signer.address, USER_MANIFEST_TOPIC, { route: FEED_ROUTES.manifest, thorough: args.thorough })
     .catch((e: unknown): ContentFeedResult<unknown> => ({ status: "unavailable", reason: String(e) }));
   if (read.status === "unavailable") {
     return { status: "unavailable", reason: read.reason, unusableAt: read.unusableAt };
@@ -164,6 +165,7 @@ async function writeUserManifest(args: {
     signerPrivKey: args.signer.privKey,
     topic: USER_MANIFEST_TOPIC,
     data: envelope,
+    route: FEED_ROUTES.manifest,
   });
 }
 
@@ -245,7 +247,7 @@ type VersionReader = (
   owner: string,
   topic: string,
   version: number,
-  opts: { thorough?: boolean },
+  opts: { route: FeedRoute; thorough?: boolean },
 ) => Promise<ContentFeedResult<unknown>>;
 
 /**
@@ -289,7 +291,7 @@ export async function diagnoseManifest(args: {
   let walked = 0;
   for (let v = unusableAt - 1; v >= floor; v--) {
     walked++;
-    const at = await readAt(args.signer.address, USER_MANIFEST_TOPIC, v, { thorough: true })
+    const at = await readAt(args.signer.address, USER_MANIFEST_TOPIC, v, { route: FEED_ROUTES.manifest, thorough: true })
       .catch((e: unknown) => ({ status: "unavailable" as const, reason: String(e) }));
     if (at.status !== "found") continue;
     const manifest = openManifestCandidate({

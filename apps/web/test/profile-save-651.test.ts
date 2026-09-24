@@ -214,8 +214,8 @@ test("every feed probe in the read and read-back paths forwards the feed's gatew
   for (const file of ["../src/lib/swarm/content-feed.ts", "../src/lib/swarm/verified-write.ts"]) {
     const calls = probeCalls(src(file));
     assert.ok(calls.length > 0, `${file}: no probeSoc call found - the check would pass vacuously`);
-    // The caller's own gateway, not merely the word: `gatewayUrl: undefined` compiles.
-    for (const args of calls) assert.match(args, /gatewayUrl:\s*(?:opts|args)\.gatewayUrl\b/, `${file}: probeSoc(${args})`);
+    // The caller's own route, not merely the word: `gatewayUrl: undefined` compiles.
+    for (const args of calls) assert.match(args, /gatewayUrl:\s*(?:opts|args)\.route\.gatewayUrl\b/, `${file}: probeSoc(${args})`);
   }
 });
 
@@ -224,7 +224,7 @@ test("the profile save reads its base from Etherna and merges only onto what the
   const save = profiles.slice(profiles.indexOf("export async function updateProfile("), profiles.indexOf("export async function uploadAvatar("));
   const baseRead = save.slice(save.indexOf("readContentFeedResult<UserProfile>("), save.indexOf("profileSaveBase("));
   assert.match(baseRead, /thorough:\s*true/);
-  assert.match(baseRead, /gatewayUrl:\s*ETHERNA_GATEWAY_URL/);
+  assert.match(baseRead, /route:\s*FEED_ROUTES\.profile\b/);
   assert.match(save, /const base = profileSaveBase\(existingRead\);\s*if \(!base\.ok\) throw new Error\(base\.error\);\s*const existing = base\.base;/);
   // The text fields go through the shared rule, the same one the server uses (#652).
   assert.match(save, /\.\.\.mergeProfileText\(updates, existing\)/);

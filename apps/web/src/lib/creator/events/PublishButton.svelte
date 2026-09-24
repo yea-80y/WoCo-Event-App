@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { feedRouteFor } from "../../swarm/gateways.js";
   import type { OrderField, ClaimMode, EventFeed, EventGeo, EventTag } from "@woco/shared";
   import { buildIssuerBindingMessage, deriveEncryptionKeypairFromSeed, FEATURES, signPersonalMessage } from "@woco/shared";
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
@@ -382,7 +383,7 @@
       kind: "event",
       topic: eventContentTopic(eventId),
       label: title,
-      target: gatewayUrl && !gatewayUrl.includes("woco-net.com") ? "etherna" : "woco",
+      target: feedRouteFor(gatewayUrl).target,
     });
     onpublished?.(eventId);
   }

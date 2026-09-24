@@ -52,6 +52,7 @@ import {
   type BandedContentFeedResult,
   type ContentFeedResult,
 } from "../swarm/content-feed.js";
+import { FEED_ROUTES, type FeedRoute } from "../swarm/gateways.js";
 import { writeContentFeedVerified, type VerifiedWriteResult } from "../swarm/verified-write.js";
 import { addToSubjectIndex } from "../social/subject-index.js";
 
@@ -81,24 +82,25 @@ export interface CampaignRecordDeps {
   readFeed: (
     owner: string,
     topic: string,
-    opts?: { skipLegacy?: boolean; thorough?: boolean },
+    opts: { route: FeedRoute; skipLegacy?: boolean; thorough?: boolean },
   ) => Promise<ContentFeedResult<unknown>>;
   readFeedAtVersion: (
     owner: string,
     topic: string,
     version: number,
-    opts?: { thorough?: boolean },
+    opts: { route: FeedRoute; thorough?: boolean },
   ) => Promise<ContentFeedResult<unknown>>;
   readBandedFeed: (
     owner: string,
     topicForBand: (band: number) => string,
-    opts?: { hintBand?: number; thorough?: boolean },
+    opts: { route: FeedRoute; hintBand?: number; thorough?: boolean },
   ) => Promise<BandedContentFeedResult<unknown>>;
   writeVerified: (args: {
     signerPrivKey: string;
     ownerAddress: string;
     topic: string;
     data: unknown;
+    route: FeedRoute;
   }) => Promise<VerifiedWriteResult>;
   addToIndex: (
     signer: CampaignSigner,
@@ -107,6 +109,7 @@ export interface CampaignRecordDeps {
       indexTopic: (band: number) => string;
       indexFormat: string;
       validateIndex: (value: unknown) => boolean;
+      route: FeedRoute;
     },
   ) => Promise<void>;
 }
@@ -126,6 +129,7 @@ const REFERRAL_INDEX = {
   indexTopic: referralSubjectIndexTopic,
   indexFormat: REFERRAL_SUBJECT_INDEX_FORMAT,
   validateIndex: validateReferralSubjectIndexV1,
+  route: FEED_ROUTES.referral,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -166,7 +170,10 @@ export async function writeReferralStatement(
     value: true,
   };
 
-  const head = await deps.readFeed(signer.address, referralStatementTopic(subject), { skipLegacy: true });
+  const head = await deps.readFeed(signer.address, referralStatementTopic(subject), {
+    route: REFERRAL_INDEX.route,
+    skipLegacy: true,
+  });
   if (
     head.status === "found" &&
     validateReferralStatementV1(head.value) &&
@@ -181,6 +188,7 @@ export async function writeReferralStatement(
     ownerAddress: signer.address,
     topic: referralStatementTopic(subject),
     data: statement,
+    route: REFERRAL_INDEX.route,
   });
   if (written.status === "superseded") return written;
 
@@ -209,7 +217,7 @@ export async function readMyReferralStatement(
   ownerAddress: string,
   deps: CampaignRecordDeps = liveDeps,
 ): Promise<MyReferralStatement | null> {
-  const index = await deps.readBandedFeed(ownerAddress, REFERRAL_INDEX.indexTopic);
+  const index = await deps.readBandedFeed(ownerAddress, REFERRAL_INDEX.indexTopic, { route: REFERRAL_INDEX.route });
   if (index.status !== "found" || !validateReferralSubjectIndexV1(index.value)) return null;
 
   for (const subject of (index.value as ReferralSubjectIndexV1).subjects) {
@@ -223,6 +231,7 @@ export async function readMyReferralStatement(
     // chunk cannot exist and probing for one spends a guaranteed missing-chunk
     // network search on every read.
     const res = await deps.readFeed(ownerAddress, referralStatementTopic(subject), {
+      route: REFERRAL_INDEX.route,
       skipLegacy: true,
     });
     if (res.status !== "found" || !validateReferralStatementV1(res.value)) continue;
@@ -259,7 +268,7 @@ export async function readConfirmation(
   deps: CampaignRecordDeps = liveDeps,
 ): Promise<ReferralConfirmationV1 | null> {
   const topic = referralConfirmationTopic(campaignAccountSubject(referee));
-  const res = await deps.readFeedAtVersion(CAMPAIGN_ISSUER_ADDRESS, topic, 0);
+  const res = await deps.readFeedAtVersion(CAMPAIGN_ISSUER_ADDRESS, topic, 0, { route: FEED_ROUTES.campaignIssuer });
   if (res.status !== "found" || !validateReferralConfirmationV1(res.value)) return null;
   return res.value as ReferralConfirmationV1;
 }
@@ -281,7 +290,7 @@ export async function readBadge(
   deps: CampaignRecordDeps = liveDeps,
 ): Promise<BadgeV1 | null> {
   const topic = badgeTopic(campaignAccountSubject(address), "joined");
-  const res = await deps.readFeed(CAMPAIGN_ISSUER_ADDRESS, topic, { skipLegacy: true });
+  const res = await deps.readFeed(CAMPAIGN_ISSUER_ADDRESS, topic, { route: FEED_ROUTES.campaignIssuer, skipLegacy: true });
   if (res.status !== "found" || !validateBadgeV1(res.value)) return null;
   return res.value as BadgeV1;
 }
@@ -314,8 +323,10 @@ export async function readReferrerIndex(
   deps: CampaignRecordDeps = liveDeps,
 ): Promise<ReferrerIndexRead> {
   const subject = campaignAccountSubject(referrer);
-  const res = await deps.readBandedFeed(CAMPAIGN_ISSUER_ADDRESS, (band) =>
-    referrerIndexTopic(subject, band),
+  const res = await deps.readBandedFeed(
+    CAMPAIGN_ISSUER_ADDRESS,
+    (band) => referrerIndexTopic(subject, band),
+    { route: FEED_ROUTES.campaignIssuer },
   );
   if (res.status === "unavailable") return { status: "unavailable" };
   // Only the issuer writes this topic, so an index that fails validation is not

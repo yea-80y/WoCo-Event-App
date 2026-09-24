@@ -35,6 +35,7 @@ import { deriveHolderKeypair } from "./holder-key.js";
 import { decideVisibility, mergeSubjectPartitions, type IndexRead, type PartitionRead } from "./partition.js";
 import type { CreditVisibility } from "./visibility.js";
 import { readBandedContentFeed, readContentFeedAtVersion } from "../swarm/content-feed.js";
+import { FEED_ROUTES } from "../swarm/gateways.js";
 import {
   writeContentFeedVerified,
   writeContentFeedSettling,
@@ -214,7 +215,7 @@ async function readSubjectIndex(
   const res = await readBandedContentFeed<unknown>(
     keys.feedAddress,
     indexTopicForBand(keys, visibility),
-    { thorough: opts.thorough },
+    { thorough: opts.thorough, route: FEED_ROUTES.credits },
   );
   const at = {
     indexBand: res.band,
@@ -291,7 +292,7 @@ async function readHeadAt(
   const res = await readBandedContentFeed<unknown>(
     keys.feedAddress,
     headTopicForBand(keys, subject, visibility),
-    { hintBand, thorough: opts.thorough },
+    { hintBand, thorough: opts.thorough, route: FEED_ROUTES.credits },
   );
   if (res.status === "absent") return { status: "absent" };
   if (res.status === "unavailable") return { status: "unavailable", reason: res.reason ?? "head unavailable" };
@@ -719,6 +720,7 @@ async function writeRideBody(
     ownerAddress: keys.feedAddress,
     topic: creditStatementTopic(saltFor(keys, visibility), subject, band),
     data: body,
+    route: FEED_ROUTES.credits,
     ...(knownVersion !== undefined ? { knownVersion } : {}),
   });
 
@@ -946,7 +948,7 @@ async function readDiaryEntry(
   | { status: "spent" }
   | { status: "unavailable" }
 > {
-  const res = await readContentFeedAtVersion<unknown>(keys.feedAddress, diaryTopic(keys, subject, seq), 0, opts);
+  const res = await readContentFeedAtVersion<unknown>(keys.feedAddress, diaryTopic(keys, subject, seq), 0, { ...opts, route: FEED_ROUTES.credits });
   if (res.status === "absent") return { status: "absent" };
   if (res.status !== "found") return res.unusableAt !== undefined ? { status: "spent" } : { status: "unavailable" };
   try {
@@ -977,6 +979,7 @@ export async function sealLapTimes(subject: Hex0x, laps: CountedLaps): Promise<b
     ownerAddress: keys.feedAddress,
     topic: diaryTopic(keys, subject, laps.seq),
     data: await sealJson(keys.encPubKeyHex, entry),
+    route: FEED_ROUTES.credits,
     // Version 0 of a topic keyed by a seq this device just proved is its own —
     // the case `writeContentFeed` documents as safe to address directly.
     knownVersion: 0,
@@ -1103,6 +1106,7 @@ async function upsertSubjectBand(
       ownerAddress: keys.feedAddress,
       topic: creditSubjectIndexTopic(saltFor(keys, visibility), targetBand),
       data: { format: CREDIT_SUBJECT_INDEX_FORMAT, entries: merged },
+      route: FEED_ROUTES.credits,
     });
     if (written.status === "verified") return true;
     if (written.status === "unconfirmed") return false;
@@ -1257,6 +1261,7 @@ async function removeFromSubjectIndex(
       signerPrivKey: keys.feedPrivKey,
       ownerAddress: keys.feedAddress,
       topic: creditSubjectIndexTopic(saltFor(keys, visibility), targetBand),
+      route: FEED_ROUTES.credits,
       data: {
         format: CREDIT_SUBJECT_INDEX_FORMAT,
         entries: existing.read.entries.filter((e) => e.subject !== subject),

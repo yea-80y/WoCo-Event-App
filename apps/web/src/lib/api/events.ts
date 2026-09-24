@@ -14,6 +14,7 @@ import { authPost, authGet, get, apiBase, authStream, currentSiteId } from "./cl
 import { auth } from "../auth/auth-store.svelte.js";
 import { eventContentTopic } from "@woco/shared";
 import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
+import { feedRouteFor } from "../swarm/gateways.js";
 import { trashFeedOnManifest } from "../manifest/feed-log.js";
 
 export interface PublishProgress {
@@ -47,7 +48,7 @@ export async function signEventFeedSoc(
     // Route the stamp to the batch the event content lives on. The feed carries its
     // own storage gateway (Etherna user batch vs WoCo); without this, an Etherna
     // event's detail SOC would be stamped on the WoCo batch on every edit/restamp.
-    ...(feed.gatewayUrl ? { gatewayUrl: feed.gatewayUrl } : {}),
+    route: feedRouteFor(feed.gatewayUrl),
   });
 }
 
