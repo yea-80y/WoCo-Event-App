@@ -17,7 +17,8 @@
 import { verifyMessage } from "ethers";
 import { buildTicketCanonicalMessage } from "@woco/shared";
 import { getEvent } from "../event/service.js";
-import { getSlotData, getActiveChainId } from "../chain/event-contract.js";
+import { getSlotDataAt } from "../chain/event-contract.js";
+import { registrationContractFor } from "../event/onchain-registry.js";
 
 export type TicketSigVerdict = "valid" | "invalid" | "unverified";
 
@@ -37,9 +38,14 @@ export async function verifyTicketSig(params: {
   if (!series) return "unverified";
   if (!series.onChainEventId) return "unverified"; // v1 — no on-chain trust root
 
+  // The contract the registration lives on (#563): after a cutover, today's env
+  // contract has no such slot, and "unclaimed" there would read as a forgery.
+  const contract = registrationContractFor(params.eventId, params.seriesId);
+  if (!contract) return "unverified";
+
   let slot;
   try {
-    slot = await getSlotData(series.onChainEventId, params.edition - 1, getActiveChainId());
+    slot = await getSlotDataAt(contract, series.onChainEventId, params.edition - 1);
   } catch (err) {
     console.warn(`[ticket-sig] Slot read failed (edition=${params.edition}):`, err);
     return "unverified";

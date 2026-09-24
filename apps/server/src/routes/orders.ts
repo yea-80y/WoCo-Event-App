@@ -5,7 +5,8 @@ import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
 import { getBindingsForEvent, toAttendeeKeyRows } from "../lib/gate/store.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
-import { getOnChainEvent, getSlotData, getActiveChainId } from "../lib/chain/event-contract.js";
+import { getOnChainEventAt, getSlotDataAt } from "../lib/chain/event-contract.js";
+import { registrationContractFor } from "../lib/event/onchain-registry.js";
 import { mapWithConcurrency, SLOT_READ_CONCURRENCY } from "../lib/util/concurrency.js";
 
 /** Maximum concurrent Swarm downloads when fetching v2 order blobs */
@@ -47,7 +48,6 @@ orders.get("/:id/orders", requireAuth, async (c) => {
 
     // 2. Collect encrypted orders — v2 series read from chain, v1 from Swarm claimers feed
     const orderEntries: OrderEntry[] = [];
-    const chainId = getActiveChainId();
 
     for (const series of event.series) {
       // The contract is the only order ledger. A series that never finished
@@ -56,7 +56,10 @@ orders.get("/:id/orders", requireAuth, async (c) => {
       if (!series.swarmManifestRef || !series.onChainEventId) continue;
 
       {
-        const onChainData = await getOnChainEvent(series.onChainEventId, chainId);
+        // On the contract the registration lives on (#563).
+        const contract = registrationContractFor(eventId, series.seriesId);
+        if (!contract) continue;
+        const onChainData = await getOnChainEventAt(contract, series.onChainEventId);
         if (!onChainData || onChainData.nextSlot === 0n) continue;
 
         const slotCount = Number(onChainData.nextSlot);
@@ -70,7 +73,7 @@ orders.get("/:id/orders", requireAuth, async (c) => {
           Array.from({ length: slotCount }, (_, slot) => slot),
           SLOT_READ_CONCURRENCY,
           (slot) =>
-            getSlotData(series.onChainEventId!, slot, chainId).catch((err) => {
+            getSlotDataAt(contract, series.onChainEventId!, slot).catch((err) => {
               console.warn(`[orders/v2] getSlotData failed for slot ${slot}:`, err);
               return null;
             }),
