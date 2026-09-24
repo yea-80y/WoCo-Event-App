@@ -74,6 +74,18 @@ test("the 409 body leaks no internals — not the ids, not the thrown message", 
   assert.ok(!serialised.includes("refusing to bind"), "the internal message reached the caller");
 });
 
+test("an unreadable registry file answers 503 registry_unavailable — never 'please try again'", () => {
+  const { RegistryUnreadableError } = registry;
+  const res = registerOnChainErrorResponse(
+    new RegistryUnreadableError("refusing to record evt-secret/ser-secret: onchain-events.json is not valid JSON"),
+  );
+  assert.equal(res.status, 503);
+  assert.equal(res.body.error, "registry_unavailable");
+  assert.ok(res.body.message && !/try again/i.test(res.body.message), "a retry never succeeds here");
+  const serialised = JSON.stringify(res.body);
+  assert.ok(!serialised.includes("evt-secret") && !serialised.includes("onchain-events.json"), "internals reached the caller");
+});
+
 test("every other failure keeps its 500 — the 409 is for the one thing retry cannot fix", () => {
   const res = registerOnChainErrorResponse(new Error("timeout"));
   assert.equal(res.status, 500);
