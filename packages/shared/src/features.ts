@@ -55,6 +55,16 @@ export const FEATURES = {
   // cap of 10, and migrating to SES later would make every organiser redo their
   // DNS. Turn on with the SES provider work (§14 E10), not before.
   organiserSendingDomains: false,
+  // Standalone badges and drops, and ticket sales gated on holding one. OFF for
+  // launch (owner decision 2026-09-13, re-confirmed 2026-09-24): a chain badge is
+  // a sponsor-paid registration on the events contract, which is for events only,
+  // and the certificate rail meant to carry badges cannot be presented yet
+  // (gate-build.ts "cert-not-live"). The Objects tab STAYS: it lists the tickets
+  // of every published event. Gates the create entry points and the ticket
+  // editor's gate panel AND, in lockstep, POST /api/objects and gated series at
+  // event create. Checkout still ENFORCES a gate an existing series carries -
+  // turning the flag off must never open a gated sale to everyone.
+  badgesAllowed: false,
 } as const;
 
 /** Minimum buyer-pays fee % (3% Stripe + 1.5% WoCo). UI snaps below this back up. */

@@ -795,7 +795,9 @@
         {/if}
 
         <!-- object-holdings gate (optional) -->
-        <ObjectGateEditor gate={tier.gate} onChange={(g) => { tier.gate = g; }} />
+        {#if FEATURES.badgesAllowed}
+          <ObjectGateEditor gate={tier.gate} onChange={(g) => { tier.gate = g; }} />
+        {/if}
 
         <!-- Sale waves -->
         <div class="waves-section">

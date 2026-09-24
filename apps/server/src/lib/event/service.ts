@@ -3,7 +3,7 @@ import type {
   OrderField, ClaimMode, SeriesManifestBlob,
   SignedManifestV2, EditionV1Body,
 } from "@woco/shared";
-import { verifyManifestV2, buildEditionTree, manifestV2Digest, bytesToHex0x, eventContentTopic } from "@woco/shared";
+import { verifyManifestV2, buildEditionTree, manifestV2Digest, bytesToHex0x, eventContentTopic, FEATURES } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
 import { batchForDeploy, ETHERNA_URL, isEthernaGateway, isWocoGateway, type BatchSelection } from "../etherna/batch-router.js";
 import { readContentFeedJson, invalidateContentFeedVersion } from "../swarm/soc-upload.js";
@@ -148,6 +148,13 @@ export async function createEventV2(opts: {
     creatorAddress, issuer, imageData, series,
     encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl, onProgress,
   } = opts;
+
+  // Here rather than in the route: every create passes this boundary, and it
+  // throws before any batch is chosen, any gate is chain-read or anything is written.
+  if (!FEATURES.badgesAllowed) {
+    const gated = series.find((s) => s.gate);
+    if (gated) throw new Error(`Series ${gated.seriesId}: gated ticket sales are not available yet`);
+  }
 
   // New events are stored on Etherna (owner decision 2026-09-22): no gateway means
   // Etherna, the WoCo gateway is still accepted (API testing), anything else is

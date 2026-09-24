@@ -58,6 +58,9 @@ FEATURE FLAGS — READ BEFORE ASSUMING A RAIL IS LIVE
 
   cryptoPaymentsAllowed = false   # crypto rail built but unreachable (deferred to #41)
   freeEventsAllowed     = false
+  badgesAllowed         = false   # badge/drop creation + gated ticket sales (#664); Objects tab stays
+  shopAllowed           = false   # shops, POS, spend-permission draws (#124)
+  (also off: agentCommerceAllowed, coinbaseLoginAllowed, organiserSendingDomains)
 
 Flags gate UI AND server validation in lockstep — an old client cannot reach a disabled
 rail past the API. Stripe card payment is the ONLY live payment method.
