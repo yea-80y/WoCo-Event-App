@@ -38,6 +38,9 @@ const ON_CHAIN_EVENT_ID = "0x" + "ab".repeat(32);
 const MANIFEST_REF = "cd".repeat(32);
 const ORDER_REF = "ef".repeat(32);
 const ORGANISER = "0x" + "11".repeat(20);
+/** Where the default series' registration lives, as the server's record names it (#563). */
+const RECORDED_CONTRACT = { chainId: 421614, address: "0x" + "c2".repeat(20), version: "v2" as const };
+const RECORDED_CONTRACT_KEY = `421614:${"0x" + "c2".repeat(20)}`;
 const BUYER_WALLET = "0x" + "22".repeat(20);
 const ACCT = "acct_test_1";
 const FUTURE = "2099-01-01T00:00:00.000Z";
@@ -90,6 +93,11 @@ interface SessionOpts {
    * must still fulfil from the server's registration record.
    */
   onChainEventId?: string | null;
+  /**
+   * The contract the sale was validated against, as create-checkout stamps it
+   * (#563). Absent by default: a session from before that shipped.
+   */
+  onChainContract?: string;
   /** Drop eventId/seriesId entirely — "not our session". */
   noEventKeys?: boolean;
   /**
@@ -115,6 +123,7 @@ function session(o: SessionOpts = {}): FulfilmentSession {
   if (o.consent !== null) md.marketingConsent = o.consent ?? "1";
   if (o.connectedAccountId !== null) md.connectedAccountId = o.connectedAccountId ?? ACCT;
   if (o.onChainEventId !== null) md.onChainEventId = o.onChainEventId ?? ON_CHAIN_EVENT_ID;
+  if (o.onChainContract) md.onChainContract = o.onChainContract;
   if (o.legacyHolderPubKey) md.holderPubKey = o.legacyHolderPubKey;
   return {
     id: "cs_test_1",
@@ -136,6 +145,7 @@ type Step =
   | "getEvent"
   | "chainEventEndMs"
   | "lookupOnChainEventId"
+  | "registrationContractFor"
   | "recordHeldPayout"
   | "getOrganiserByStripeAccount"
   | "uploadToBytes"
@@ -168,6 +178,11 @@ interface FakeOpts {
    * no longer decides.
    */
   recorded?: string | null;
+  /**
+   * The contract the registration record names (#563). Default
+   * RECORDED_CONTRACT; `null` = nothing can name one.
+   */
+  contract?: typeof RECORDED_CONTRACT | { chainId: number; address: string; version: "v1" | "v2" | "ledger" } | null;
   /** Contract batch cap. Default 100 (one chunk for any test quantity). */
   batchMax?: number;
   /** Chunk index (0-based) at which batchClaimFor reverts. Default: never. */
@@ -195,6 +210,10 @@ function fakeDeps(o: FakeOpts = {}) {
   const minted: string[][] = [];
   /** The on-chain event each batch was minted against — the #426 assertion. */
   const mintedAgainst: string[] = [];
+  /** The contract each batch was minted on — the #563 assertion. */
+  const mintedOn: unknown[] = [];
+  /** The contract each chain-end read went to. */
+  const endReadOn: unknown[] = [];
   let nextSlot = 0;
   let chunkIdx = 0;
   let burnerSeq = 0;
@@ -217,13 +236,18 @@ function fakeDeps(o: FakeOpts = {}) {
       boom("getEvent");
       return o.event === undefined ? eventFeed() : o.event;
     },
-    chainEventEndMs: async () => {
+    chainEventEndMs: async (_id, contract) => {
       boom("chainEventEndMs");
+      endReadOn.push(contract);
       return o.chainEndMs === undefined ? Date.parse(FUTURE) : o.chainEndMs;
     },
     lookupOnChainEventId: () => {
       boom("lookupOnChainEventId");
       return o.recorded === undefined ? ON_CHAIN_EVENT_ID : o.recorded;
+    },
+    registrationContractFor: () => {
+      boom("registrationContractFor");
+      return o.contract === undefined ? RECORDED_CONTRACT : (o.contract ?? undefined);
     },
     recordHeldPayout: (entry) => {
       boom("recordHeldPayout");
@@ -255,12 +279,13 @@ function fakeDeps(o: FakeOpts = {}) {
         },
       };
     },
-    batchClaimForOnChain: async (ev, burners) => {
+    batchClaimForOnChain: async (ev, burners, _ref, contract) => {
       boom("batchClaimForOnChain");
       const idx = chunkIdx++;
       if (o.revertAtChunk === idx) throw new Error("execution reverted: Insufficient supply");
       minted.push(burners);
       mintedAgainst.push(ev);
+      mintedOn.push(contract);
       const slots = burners.map(() => nextSlot++);
       return slots;
     },
@@ -318,7 +343,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, voided, bindings, consents, attendees, consumed, minted, mintedAgainst };
+  return { deps, calls, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, voided, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -692,6 +717,43 @@ describe("stop reasons", () => {
     assert.equal(f.mintedAgainst[0], ON_CHAIN_EVENT_ID);
   });
 
+  // ── #563: the mint goes to the contract the registration LIVES on ────────
+
+  test("mints on the contract the registration record names, and reads its end there", async () => {
+    const { f, outcome } = await run({}, {});
+    assert.equal(outcome.issued, 2);
+    assert.deepEqual(f.mintedOn, [RECORDED_CONTRACT]);
+    assert.deepEqual(f.endReadOn, [RECORDED_CONTRACT]);
+  });
+
+  test("a session validated against the recorded contract mints", async () => {
+    const { f, outcome } = await run({ onChainContract: RECORDED_CONTRACT_KEY }, {});
+    assert.equal(outcome.issued, 2);
+    assert.deepEqual(f.mintedOn, [RECORDED_CONTRACT]);
+  });
+
+  test("the record names a DIFFERENT contract than checkout validated: refund, mint nothing", async () => {
+    const { f, outcome } = await run({ onChainContract: `421614:0x${"99".repeat(20)}` }, {});
+    assert.equal(outcome.issued, 0);
+    assert.equal(outcome.stoppedReason, "Ticket contract changed after payment — refunding");
+    assert.equal(f.calls.includes("batchClaimForOnChain"), false);
+    assert.equal(outcome.refund.kind, "created");
+  });
+
+  test("no contract can be named: refund, never a guessed mint", async () => {
+    const { f, outcome } = await run({}, { contract: null });
+    assert.equal(outcome.stoppedReason, "No events contract to mint on — refunding");
+    assert.equal(f.calls.includes("batchClaimForOnChain"), false);
+    assert.equal(outcome.refund.kind, "created");
+  });
+
+  test("the contract lookup throwing refunds, and never rejects", async () => {
+    const { f, outcome } = await run({}, { fail: "registrationContractFor" });
+    assert.equal(outcome.issued, 0);
+    assert.equal(f.calls.includes("batchClaimForOnChain"), false);
+    assert.equal(outcome.refund.kind, "created");
+  });
+
   test("event feed says the event has ended: refund without broadcasting", async () => {
     const { f, outcome } = await run({}, { event: eventFeed({ startDate: PAST, endDate: PAST }) });
     assert.equal(outcome.stoppedReason, "Event ended before payment completed — sales closed");
@@ -862,7 +924,8 @@ describe("every collaborator throws", () => {
 
 test("never rejects, whichever step throws", async () => {
   const steps: Step[] = [
-    "hashEmail", "resolveSiteEventSigner", "getEvent", "chainEventEndMs", "lookupOnChainEventId", "recordHeldPayout",
+    "hashEmail", "resolveSiteEventSigner", "getEvent", "chainEventEndMs", "lookupOnChainEventId",
+    "registrationContractFor", "recordHeldPayout",
     "getOrganiserByStripeAccount", "uploadToBytes", "generateBurner",
     "signMessage", "batchClaimForOnChain", "bindTicket", "consumeReservation", "createRefund",
     "markPayoutVoid", "captureCheckoutConsent", "recordAttendeeEmail", "getSiteTheme", "sendTicketEmail",

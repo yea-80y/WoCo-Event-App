@@ -4,7 +4,8 @@ import { getEvent } from "../lib/event/service.js";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
-import { getOnChainEvent, getActiveChainId } from "../lib/chain/event-contract.js";
+import { getOnChainEventAt } from "../lib/chain/event-contract.js";
+import { registrationContractFor } from "../lib/event/onchain-registry.js";
 import {
   reserve,
   release,
@@ -129,11 +130,15 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
   // Closure that the reservation store uses to ask "what is available right
   // now?" — the contract is the only supply ledger.
   const availableSupplier = async (): Promise<number> => {
-    const chainId = getActiveChainId();
+    // Counted on the contract the registration lives on (#563), from the
+    // server's record — not today's env contract, where an older series' id
+    // does not exist and would read as zero seats.
+    const contract = registrationContractFor(eventId, seriesId);
+    if (!contract) return 0;
     // Fail closed on ANY chain problem: EventNotFound returns null, a
     // transport failure throws — both mean "cannot verify seats exist",
     // and a hold must never be granted against seats we can't count.
-    const onChainData = await getOnChainEvent(onChainEventId, chainId).catch(() => null);
+    const onChainData = await getOnChainEventAt(contract, onChainEventId).catch(() => null);
     if (!onChainData) return 0;
     return Math.max(0, Number(onChainData.totalSupply) - Number(onChainData.nextSlot));
   };

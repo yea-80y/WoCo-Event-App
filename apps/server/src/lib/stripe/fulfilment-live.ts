@@ -12,13 +12,12 @@
 import { getStripe } from "./client.js";
 import { hashEmail } from "../event/claim-service.js";
 import { getEvent } from "../event/service.js";
-import { chainEventEndMs } from "../event/end-date-guard.js";
-import { lookupOnChainEventId } from "../event/onchain-registry.js";
+import { chainEventEndMsAt } from "../event/end-date-guard.js";
+import { lookupOnChainEventId, registrationContractFor } from "../event/onchain-registry.js";
 import { recordHeld, markVoid } from "./payout-ledger.js";
 import { getOrganiserByStripeAccount } from "./accounts.js";
 import { uploadToBytes } from "../swarm/bytes.js";
 import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX } from "../chain/sponsor-wallet.js";
-import { getDefaultEventContract } from "../chain/event-contract.js";
 import { bindTicket } from "../gate/store.js";
 import { consume as consumeReservation } from "../event/reservation-store.js";
 import { captureCheckoutConsent } from "../marketing/consent-capture.js";
@@ -33,8 +32,9 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   hashEmail,
   resolveSiteEventSigner,
   getEvent,
-  chainEventEndMs: (onChainEventId) => chainEventEndMs(onChainEventId),
+  chainEventEndMs: (onChainEventId, contract) => chainEventEndMsAt(contract, onChainEventId),
   lookupOnChainEventId,
+  registrationContractFor,
   recordHeldPayout: (entry) => {
     recordHeld(entry);
   },
@@ -42,11 +42,7 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   getOrganiserByStripeAccount,
   uploadToBytes: (data) => uploadToBytes(data),
   generateBurner,
-  batchClaimForOnChain: (onChainEventId, burners, orderRefBytes32) => {
-    const target = getDefaultEventContract();
-    if (!target) return Promise.reject(new Error("No WoCoEvent contract on the active chain"));
-    return batchClaimForOnChain(onChainEventId, burners, orderRefBytes32, target);
-  },
+  batchClaimForOnChain,
   onChainBatchMax: ON_CHAIN_BATCH_MAX,
   bindTicket,
   consumeReservation,

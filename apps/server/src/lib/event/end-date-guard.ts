@@ -22,17 +22,52 @@
  * chain, and pinning it would make the guard permanently blind there.
  */
 
-import { getOnChainEventEnd as realGetOnChainEventEnd, getActiveChainId } from "../chain/event-contract.js";
+import {
+  getOnChainEventEnd as realGetOnChainEventEnd,
+  getOnChainEventEndAt as realGetOnChainEventEndAt,
+  getActiveChainId,
+  contractKey,
+  type EventContractTarget,
+} from "../chain/event-contract.js";
 
 /** `${chainId}:${onChainEventId}` → registered end in epoch MS. */
 const _endMemo = new Map<string, number>();
+/**
+ * `${chainId}:${contract}:${onChainEventId}` → registered end in epoch MS. Keyed
+ * by contract as well (#563): V2 ids are not domain-separated by contract, so
+ * two contracts on one chain can hold the same id with different ends.
+ */
+const _endMemoAt = new Map<string, number>();
 
 /** Test seam — production always reads the real contract. */
 export type ChainEndReader = typeof realGetOnChainEventEnd;
+export type ChainEndReaderAt = typeof realGetOnChainEventEndAt;
 
 /** Reset the memo (tests only). */
 export function _resetChainEndMemoForTests(): void {
   _endMemo.clear();
+  _endMemoAt.clear();
+}
+
+/**
+ * `chainEventEndMs` on the contract a registration LIVES on — the money path's
+ * form (#563): create-checkout and fulfilment pass the recorded contract, so an
+ * old registration's end is read where it was registered, not on today's env
+ * contract (where its id does not exist and the guard would go blind).
+ */
+export async function chainEventEndMsAt(
+  contract: EventContractTarget,
+  onChainEventId: string,
+  read: ChainEndReaderAt = realGetOnChainEventEndAt,
+): Promise<number | null> {
+  const k = `${contractKey(contract)}:${onChainEventId.toLowerCase()}`;
+  const hit = _endMemoAt.get(k);
+  if (hit !== undefined) return hit;
+  const endSec = await read(contract, onChainEventId);
+  if (endSec === null) return null;
+  const endMs = endSec * 1000;
+  _endMemoAt.set(k, endMs);
+  return endMs;
 }
 
 /**

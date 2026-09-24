@@ -40,6 +40,7 @@ import type { PayoutLedgerEntry } from "./payout-ledger.js";
 import type { GateBinding } from "../gate/store.js";
 import type { CaptureConsentInput } from "../marketing/consent-capture.js";
 import type { TicketEmailOpts } from "../../routes/tickets.js";
+import { contractKey, type EventContractTarget } from "../chain/event-contract.js";
 
 // ---------------------------------------------------------------------------
 // Inputs
@@ -80,8 +81,18 @@ export interface FulfilmentDeps {
   resolveSiteEventSigner(siteId: string, eventId: string): Promise<string | null>;
   getEvent(eventId: string, signerHint?: string): Promise<EventFeed | null>;
 
-  /** `null` = "could not determine" (transport); the caller fails OPEN. */
-  chainEventEndMs(onChainEventId: string): Promise<number | null>;
+  /**
+   * The registered sales end on `contract`. `null` = "could not determine"
+   * (transport); the caller fails OPEN.
+   */
+  chainEventEndMs(onChainEventId: string, contract: EventContractTarget): Promise<number | null>;
+
+  /**
+   * The contract this server's registration record says the series lives on
+   * (#563) — the mint target. Zero I/O. `undefined` when nothing can name one;
+   * the caller refunds rather than guess.
+   */
+  registrationContractFor(eventId: string, seriesId: string): EventContractTarget | undefined;
 
   /**
    * The on-chain event THIS server registered for a series — its own
@@ -102,7 +113,12 @@ export interface FulfilmentDeps {
 
   /** Chain. `batchClaimForOnChain` rejects on a revert; partial state is never left. */
   generateBurner(): Burner;
-  batchClaimForOnChain(onChainEventId: string, burners: string[], orderRefBytes32: string): Promise<number[]>;
+  batchClaimForOnChain(
+    onChainEventId: string,
+    burners: string[],
+    orderRefBytes32: string,
+    contract: EventContractTarget,
+  ): Promise<number[]>;
   /** Contract batch cap — `ON_CHAIN_BATCH_MAX` in production. */
   onChainBatchMax: number;
 
@@ -249,6 +265,7 @@ export async function fulfilPaidSession(
     marketingConsent: metaConsent,
     connectedAccountId: metaConnectedAccountId,
     onChainEventId: metaOnChainEventId,
+    onChainContract: metaOnChainContract,
   } = session.metadata ?? {};
 
   const quantity = Math.max(1, Math.min(10, parseInt(qtyStr ?? "1", 10) || 1));
@@ -438,6 +455,40 @@ export async function fulfilPaidSession(
     }
   }
 
+  // ── 1c. WHICH CONTRACT to mint on (#563) ──
+  //
+  // The registration record's, never the feed's and never today's env default:
+  // a successor contract runs beside the old one, and a series stays on the
+  // contract it was registered on until it sells out. create-checkout stamped
+  // the contract its checks read (`onChainContract`, integrity-tagged like the
+  // id); if the record now names another, neither is safe to mint into, so the
+  // sale refunds — the same tripwire as the id above. A session created before
+  // this shipped carries none and follows the record.
+  let mintContract: EventContractTarget | undefined;
+  if (isV2 && !bindingStopReason) {
+    try {
+      mintContract = deps.registrationContractFor(eventId, seriesId);
+    } catch (err) {
+      console.error("[fulfilment] registration-contract lookup threw — refunding:", err);
+    }
+    const validatedContract =
+      typeof metaOnChainContract === "string" && metaOnChainContract.length > 0 ? metaOnChainContract : null;
+    if (!mintContract) {
+      console.error(
+        `[fulfilment] BLOCKED — no events contract to mint on ` +
+        `(eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)}) — refunding (see #563)`,
+      );
+      bindingStopReason = "No events contract to mint on — refunding";
+    } else if (validatedContract && validatedContract.toLowerCase() !== contractKey(mintContract)) {
+      console.error(
+        `[fulfilment] BLOCKED — events contract changed between checkout and mint ` +
+        `(eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)} ` +
+        `validated=${validatedContract} recorded=${contractKey(mintContract)}) — refunding (see #563)`,
+      );
+      bindingStopReason = "Ticket contract changed after payment — refunding";
+    }
+  }
+
   // A feed that disagrees with what we are about to mint is not fatal — the
   // feed is not an input here any more — but it is the signature of the #426
   // attack and of a stale SOC, and neither should pass unremarked.
@@ -529,9 +580,9 @@ export async function fulfilPaidSession(
   // keeps the feed check above green while every mint reverts. Memo hit in the
   // common case (create-checkout warmed it); fail-OPEN on a transport error —
   // the contract remains the authority and refuses the mint itself.
-  if (isV2 && !stoppedReason) {
+  if (isV2 && !stoppedReason && mintContract) {
     try {
-      const chainEndMs = await deps.chainEventEndMs(v2OnChainEventId);
+      const chainEndMs = await deps.chainEventEndMs(v2OnChainEventId, mintContract);
       if (chainEndMs !== null && Date.now() >= chainEndMs) {
         console.warn(
           `[fulfilment] on-chain sales end passed before payment completed — refunding without ` +
@@ -549,7 +600,7 @@ export async function fulfilPaidSession(
   if (stoppedReason) {
     // Sales re-check refused the mint — fall through to the refund + payout
     // void below with zero claims, exactly as a SalesClosed revert would have.
-  } else if (isV2) {
+  } else if (isV2 && mintContract) {
     try {
       const minted = await mintV2({
         deps,
@@ -557,6 +608,7 @@ export async function fulfilPaidSession(
         seriesId,
         quantity,
         v2OnChainEventId,
+        mintContract,
         prefetchedOrderRef,
         encryptedOrder,
         accountClaim,
@@ -851,6 +903,8 @@ interface MintV2Args {
   seriesId: string;
   quantity: number;
   v2OnChainEventId: string;
+  /** From the registration record (#563) — never the feed, never today's env default. */
+  mintContract: EventContractTarget;
   prefetchedOrderRef: string | undefined;
   encryptedOrder: SealedBox | undefined;
   accountClaim: { parentAddress: string } | undefined;
@@ -912,7 +966,7 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
     const chunk = burners.slice(chunkStart, chunkStart + deps.onChainBatchMax);
     const chunkAddresses = chunk.map((w) => w.address);
     try {
-      const chunkSlots = await deps.batchClaimForOnChain(a.v2OnChainEventId, chunkAddresses, orderRefBytes32);
+      const chunkSlots = await deps.batchClaimForOnChain(a.v2OnChainEventId, chunkAddresses, orderRefBytes32, a.mintContract);
       slotsForBurners.push(...chunkSlots);
       console.log(
         `[fulfilment/v2] batchClaimFor chunk ${chunkStart}..${chunkStart + chunk.length} ` +

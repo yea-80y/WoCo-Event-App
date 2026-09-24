@@ -131,3 +131,21 @@ test("no chain end (null) preserves the feed-only behaviour", async () => {
   const got = checkoutExpiresAt({ startDate: iso(-HOUR_S), endDate: iso(2 * HOUR_S) }, NOW_MS, null);
   assert.equal(got, NOW_S + 2 * HOUR_S);
 });
+
+// ── #563: the money path reads the end on the contract the registration lives on ──
+
+test("chainEventEndMsAt reads the RECORDED contract and memoizes per contract", async () => {
+  const { chainEventEndMsAt } = await import("../src/lib/event/end-date-guard.js");
+  const A = { chainId: CHAIN, address: "0x" + "0a".repeat(20), version: "v2" as const };
+  const B = { chainId: CHAIN, address: "0x" + "0b".repeat(20), version: "ledger" as const };
+  const asked: string[] = [];
+  const read = async (t: { address: string }, id: string) => {
+    asked.push(`${t.address}:${id}`);
+    return t.address === A.address ? END_SEC : END_SEC + 100;
+  };
+  // Same id on two contracts: V2 ids are not domain-separated by contract.
+  assert.equal(await chainEventEndMsAt(A, "0xsame", read), END_SEC * 1000);
+  assert.equal(await chainEventEndMsAt(B, "0xsame", read), (END_SEC + 100) * 1000);
+  assert.equal(await chainEventEndMsAt(A, "0xsame", read), END_SEC * 1000);
+  assert.deepEqual(asked, [`${A.address}:0xsame`, `${B.address}:0xsame`], "one read per contract, then memo");
+});

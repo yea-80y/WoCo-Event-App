@@ -27,7 +27,7 @@ import { getEvent } from "../lib/event/service.js";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
 import { checkoutExpiresAt } from "../lib/event/checkout-expiry.js";
-import { chainEventEndMs } from "../lib/event/end-date-guard.js";
+import { chainEventEndMsAt } from "../lib/event/end-date-guard.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { checkObjectGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
 import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../lib/stripe/checkout-fees.js";
@@ -35,13 +35,12 @@ import type { SealedBox, PayoutsResponse } from "@woco/shared";
 import { checkSponsorCanMint, type SponsorMintVerdict } from "../lib/chain/sponsor-wallet.js";
 import { sponsorGateRefusal } from "../lib/stripe/sponsor-gate.js";
 import {
-  getActiveChainId,
-  getDefaultEventContract,
-  getOnChainEvent,
+  contractKey,
+  getOnChainEventAt,
   EventContractConfigError,
 } from "../lib/chain/event-contract.js";
 import { checkSeriesOnChainBinding, resolveManifestDigest } from "../lib/event/onchain-binding.js";
-import { lookupOnChainEventId } from "../lib/event/onchain-registry.js";
+import { lookupOnChainEventId, registrationContractFor } from "../lib/event/onchain-registry.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../lib/stripe/checkout-provenance.js";
@@ -622,6 +621,24 @@ stripe.post("/create-checkout", async (c) => {
     );
   }
 
+  // WHICH CONTRACT (#563). Every chain read below and the mint the webhook makes
+  // go to the contract this series was registered on, from the server's own
+  // record — never the feed, which the organiser signs (#424/#426). A successor
+  // contract runs beside the old one, and today's env contract is where NEW
+  // registrations go, not where this one necessarily lives. Fails CLOSED when
+  // no contract can be named: a mint target is not something to guess.
+  const mintTarget = registrationContractFor(eventId, seriesId);
+  if (!mintTarget) {
+    console.error(
+      `[stripe/create-checkout] BLOCKED — no events contract resolvable for this registration; ` +
+      `refusing to charge (eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)})`,
+    );
+    return c.json(
+      { ok: false, error: "Tickets for this event are not currently on sale. Please contact the organiser." },
+      409,
+    );
+  }
+
   // Past-event gate (#241). The "This event has ended" banner is client-side
   // only — a stale tab, deep link, or direct API call otherwise reaches a
   // live Checkout Session for an event that is over, and the mint behind it
@@ -660,7 +677,7 @@ stripe.post("/create-checkout", async (c) => {
   // contract itself is the final refusal, exactly like the availability read.
   let chainEndMs: number | null = null;
   try {
-    chainEndMs = await chainEventEndMs(series.onChainEventId);
+    chainEndMs = await chainEventEndMsAt(mintTarget, series.onChainEventId);
   } catch (err) {
     console.warn("[stripe/create-checkout] chain-end read failed (continuing):", err);
   }
@@ -678,9 +695,9 @@ stripe.post("/create-checkout", async (c) => {
   // supply at mint and the webhook auto-refund is the backstop); the tier
   // count stays undefined on failure, which computeGatePhase fail-safes to
   // holders-only — never a definite 0 that could hold a window open.
-  let onChain: Awaited<ReturnType<typeof getOnChainEvent>> = null;
+  let onChain: Awaited<ReturnType<typeof getOnChainEventAt>> = null;
   try {
-    onChain = await getOnChainEvent(series.onChainEventId, getActiveChainId());
+    onChain = await getOnChainEventAt(mintTarget, series.onChainEventId);
   } catch (err) {
     console.warn("[stripe/create-checkout] availability chain read failed (continuing):", err);
   }
@@ -813,10 +830,8 @@ stripe.post("/create-checkout", async (c) => {
   // mint on every event, and the owner's stop lever, cap 0, has to bite on the
   // very next checkout.
   {
-    const mintTarget = getDefaultEventContract();
     let verdict: SponsorMintVerdict | "config-error" = { ok: true };
     try {
-      if (!mintTarget) throw new EventContractConfigError(`no events contract on chain ${getActiveChainId()}`);
       verdict = await checkSponsorCanMint(mintTarget, quantity);
     } catch (err) {
       // Transient RPC failures fail OPEN — a flaky node must not stop sales,
@@ -833,7 +848,7 @@ stripe.post("/create-checkout", async (c) => {
     const refusal = sponsorGateRefusal(verdict, quantity, Date.now());
     if (refusal) {
       console.error(
-        `[stripe/create-checkout] BLOCKED — ${refusal.log} on chain ${mintTarget?.chainId ?? getActiveChainId()}; ` +
+        `[stripe/create-checkout] BLOCKED — ${refusal.log} on ${contractKey(mintTarget)}; ` +
         `refusing to charge (eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)})`,
       );
       if (refusal.retryAfterSeconds !== undefined) c.header("Retry-After", String(refusal.retryAfterSeconds));
@@ -890,6 +905,10 @@ stripe.post("/create-checkout", async (c) => {
       // drop an empty value, and fulfilment treats absent and "" alike (both
       // fall back to the record), as does the integrity tag.
       onChainEventId: validatedOnChainEventId ?? "",
+      // The contract the checks above read, carried the same way (#563): if the
+      // record's contract ever differs at mint time, fulfilment refunds rather
+      // than mint into a contract nobody validated this sale against.
+      onChainContract: contractKey(mintTarget),
       // Stored so the webhook can issue refunds through the connected account.
       connectedAccountId: organiserRecord.stripeAccountId,
       // Pre-uploaded encrypted-order ref (Swarm /bytes). Either:
