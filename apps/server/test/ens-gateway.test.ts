@@ -233,8 +233,9 @@ test("a chain-bound sender is signed in the v2 format, a legacy sender in the v1
 /**
  * Shared with the contracts repo (`test/L1ResolverSignedPath.t.sol`,
  * `test_Signed_TheGatewaysOwnVectorVerifies`), which checks that L1Resolver v2
- * accepts exactly these bytes on chain 1 and refuses them elsewhere. If this
- * handler's output changes, that vector must be regenerated and re-verified.
+ * accepts exactly these bytes on chain 1 and refuses them elsewhere. Both repos
+ * carry the bytes by hand and only this test sees a gateway change, so when it
+ * fails: regenerate, re-pin BOTH, and re-run the contract test.
  */
 test("golden vector: the v2 response L1Resolver v2 is pinned to accept", async () => {
   const V2 = "0x1111111111111111111111111111111111111111";
@@ -541,8 +542,8 @@ test("config: a resolver entry may carry the chain its signed hash binds", () =>
   assert.deepEqual(loaded.senderChainIds, { [OTHER_RESOLVER.toLowerCase()]: 1 });
   const status = ensGatewayStatusOf(loaded, 0);
   assert.deepEqual(status.resolvers, [
-    { address: RESOLVER.toLowerCase(), chainId: null },
-    { address: OTHER_RESOLVER.toLowerCase(), chainId: 1 },
+    { address: RESOLVER.toLowerCase(), boundChainId: null },
+    { address: OTHER_RESOLVER.toLowerCase(), boundChainId: 1 },
   ]);
 });
 

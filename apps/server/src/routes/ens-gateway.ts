@@ -95,7 +95,7 @@ if ("disabled" in loaded) {
   console.log(
     `[ens-gateway] serving *.${loaded.parentName} — signer=${ensGatewaySignerAddress(loaded)} ` +
     `chain=${loaded.chainId} registries=${loaded.registryAddresses.join(",")} ttl=${loaded.ttlSeconds}s ` +
-    `resolvers=${describeResolvers(loaded).map((r) => `${r.address}(${r.chainId === null ? "legacy" : `chain ${r.chainId}`})`).join(",")}`,
+    `resolvers=${describeResolvers(loaded).map((r) => `${r.address}(${r.boundChainId === null ? "legacy" : `bound to chain ${r.boundChainId}`})`).join(",")}`,
   );
   if (loaded.registryAddresses.length > 1) {
     // A cutover window is meant to last minutes: answers about the outgoing
@@ -149,22 +149,26 @@ export function ensGatewayStatus(): EnsGatewayStatus {
   return ensGatewayStatusOf(loaded, memo?.size() ?? 0);
 }
 
-/** Each served resolver and the signed format it gets: a chain id (v2) or legacy (null, v1). */
+/**
+ * Each served resolver and the signed format it gets: the L1 chain bound into
+ * its hash (L1Resolver v2), or null for the legacy format (v1). Named
+ * `boundChainId` so it is not read as `chainId` above, which is the L2.
+ */
 function describeResolvers(config: {
   allowedSenders: string[];
   senderChainIds?: Record<string, number>;
-}): Array<{ address: string; chainId: number | null }> {
+}): Array<{ address: string; boundChainId: number | null }> {
   return config.allowedSenders.map((address) => ({
     address,
-    chainId: config.senderChainIds?.[address] ?? null,
+    boundChainId: config.senderChainIds?.[address] ?? null,
   }));
 }
 
 export interface EnsGatewayStatus {
   configured: boolean;
   signer: string | null;
-  /** Must match what each resolver verifies: `chainId` for v2, null (legacy) for v1. */
-  resolvers: Array<{ address: string; chainId: number | null }>;
+  /** Must match what each resolver verifies: its L1 chain for v2, null (legacy) for v1. */
+  resolvers: Array<{ address: string; boundChainId: number | null }>;
   chainId: number | null;
   registry: string | null;
   registries: string[];
