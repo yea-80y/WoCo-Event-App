@@ -101,12 +101,12 @@ test("a 500 carries the failure class, never the RPC error text (#540)", () => {
 // ---------------------------------------------------------------------------
 
 test("health starts ok with nothing wedged", () => {
-  assert.deepEqual(registry.onchainRegistryHealth(), { ok: true, rebindConflicts: 0 });
+  assert.deepEqual(registry.onchainRegistryHealth(), { ok: true, rebindConflicts: 0, unreadableRecords: 0 });
 });
 
 test("one conflict flips ok:false with a count of 1", () => {
   registry.noteRebindConflict("evt-wedged", "ser-wedged");
-  assert.deepEqual(registry.onchainRegistryHealth(), { ok: false, rebindConflicts: 1 });
+  assert.deepEqual(registry.onchainRegistryHealth(), { ok: false, rebindConflicts: 1, unreadableRecords: 0 });
 });
 
 test("retrying the SAME series stays at 1 — the number means 'series stuck', not 'attempts'", () => {
@@ -114,17 +114,17 @@ test("retrying the SAME series stays at 1 — the number means 'series stuck', n
   // incident; the count has to be something an operator can act on.
   registry.noteRebindConflict("evt-wedged", "ser-wedged");
   registry.noteRebindConflict("evt-wedged", "ser-wedged");
-  assert.deepEqual(registry.onchainRegistryHealth(), { ok: false, rebindConflicts: 1 });
+  assert.deepEqual(registry.onchainRegistryHealth(), { ok: false, rebindConflicts: 1, unreadableRecords: 0 });
 });
 
 test("a SECOND wedged series counts separately", () => {
   registry.noteRebindConflict("evt-wedged-2", "ser-wedged-2");
-  assert.deepEqual(registry.onchainRegistryHealth(), { ok: false, rebindConflicts: 2 });
+  assert.deepEqual(registry.onchainRegistryHealth(), { ok: false, rebindConflicts: 2, unreadableRecords: 0 });
 });
 
 test("the section is public-safe: booleans and counts only", () => {
   const section = registry.onchainRegistryHealth() as Record<string, unknown>;
-  assert.deepEqual(Object.keys(section).sort(), ["ok", "rebindConflicts"]);
+  assert.deepEqual(Object.keys(section).sort(), ["ok", "rebindConflicts", "unreadableRecords"]);
   assert.equal(typeof section.ok, "boolean");
   assert.equal(typeof section.rebindConflicts, "number");
   // Nothing in the serialised section may name an event, a series or a chain id.
@@ -145,7 +145,7 @@ test("a wedged CONFIRM is what raises the alarm — not a direct call to the cou
     service.confirmSeriesOnChain("evt-wedged-434", "ser-wedged-434", id),
     registry.RegistrationRebindError,
   );
-  assert.deepEqual(registry.onchainRegistryHealth(), { ok: false, rebindConflicts: before + 1 });
+  assert.deepEqual(registry.onchainRegistryHealth(), { ok: false, rebindConflicts: before + 1, unreadableRecords: 0 });
 
   await assert.rejects(service.confirmSeriesOnChain("evt-wedged-434", "ser-wedged-434", id));
   assert.equal(registry.onchainRegistryHealth().rebindConflicts, before + 1, "a retry of the same key does not double-count");

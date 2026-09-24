@@ -350,6 +350,9 @@ app.get("/api/health", (c) =>
     // the failure was invisible: an organiser saw a button that did not work and
     // the server logged an exception among thousands. `rebindConflicts` counts
     // DISTINCT series stuck this way since boot, so a retry loop is one alarm.
+    // `unreadableRecords` counts entries in `onchain-events.json` this build
+    // cannot parse (#563): kept on disk untouched, never served, so each is a
+    // series that cannot sell until an operator repairs it.
     onchainRegistry: onchainRegistryHealth(),
     // Whether paid checkouts can mint on the events contract (#662): the ticket
     // sponsor still authorised, and on the ledger its hourly mint cap's headroom
