@@ -8,13 +8,14 @@ import { uploadToBytes } from "../swarm/bytes.js";
 import { batchForDeploy, ETHERNA_URL, isEthernaGateway, isWocoGateway, type BatchSelection } from "../etherna/batch-router.js";
 import { readContentFeedJson, invalidateContentFeedVersion } from "../swarm/soc-upload.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
-import { getActiveChainId } from "../chain/event-contract.js";
+import { getActiveChainId, type EventContractTarget } from "../chain/event-contract.js";
 import { assertNoOrders } from "./delete-safety.js";
 import { validateObjectGate } from "../object/gate-check.js";
 import { upsertCreatorObject } from "../object/directory.js";
 import {
   recordOnChainEventId,
   applyOnChainEventIds,
+  lookupRegistration,
   noteRebindConflict,
   RegistrationRebindError,
 } from "./onchain-registry.js";
@@ -318,11 +319,16 @@ export async function createEventV2(opts: {
 // Update on-chain registration for a series (called after registerEvent tx)
 // ---------------------------------------------------------------------------
 
+/**
+ * @param contract Where the registration was made (#563). Omit ONLY to replay a
+ *   registration already on record — the record keeps the contract it has.
+ */
 export async function confirmSeriesOnChain(
   eventId: string,
   seriesId: string,
   onChainEventId: string,
   signerHint?: string,
+  contract?: EventContractTarget,
 ): Promise<EventFeed> {
   // Persist the chain receipt FIRST — independent of whether the client re-signs its
   // SOC with onChainEventId. This is what makes the money path's v2 detection robust:
@@ -334,7 +340,7 @@ export async function confirmSeriesOnChain(
   // can ever get past this line. Counted before rethrowing so `/api/health` can say
   // an operator has work to do — the error itself stays exactly as it was.
   try {
-    recordOnChainEventId(eventId, seriesId, onChainEventId);
+    recordOnChainEventId(eventId, seriesId, onChainEventId, contract);
   } catch (err) {
     if (err instanceof RegistrationRebindError) noteRebindConflict(eventId, seriesId);
     throw err;
@@ -374,10 +380,14 @@ export async function confirmSeriesOnChain(
   // entry it can't derive from chain. Debounced, so a multi-series publish coalesces
   // into one rebuild; durability is covered by onchain-registry's persisted map
   // (the periodic full reconcile rebuilds from it if this in-memory trigger is lost).
+  // The entry names its contract only when the RECORD does — a legacy record's
+  // contract is a rule's answer, not a fact to publish.
+  const recorded = lookupRegistration(eventId, seriesId)?.contract;
   scheduleSnapshotRebuild(eventId, [{
     onChainEventId,
     wocoEventId: eventId,
     seriesId,
+    ...(recorded ? { chainId: recorded.chainId, contract: recorded.address as Hex0x } : {}),
     ...(updated.creatorFeedSigner ? { creatorFeedSigner: updated.creatorFeedSigner } : {}),
   }]);
 
@@ -395,7 +405,7 @@ export async function confirmSeriesOnChain(
       ...(series.description ? { description: series.description } : {}),
       supply: series.totalSupply,
       eventId: onChainEventId,
-      chainId: getActiveChainId(),
+      chainId: recorded?.chainId ?? getActiveChainId(),
       createdAt: updated.createdAt,
       updatedAt: new Date().toISOString(),
     }).catch((err) =>

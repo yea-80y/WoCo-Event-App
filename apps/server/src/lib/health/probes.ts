@@ -1,6 +1,6 @@
 /**
- * The probes behind the `/api/health` postage, paymaster, ENS-parent and sub-ENS
- * minting sections (#421, #522, #420, #598).
+ * The probes behind the `/api/health` postage, paymaster, ENS-parent, sub-ENS
+ * minting and ticket minting sections (#421, #522, #420, #598, #662).
  *
  * WHY A TIMER AND NOT A READ-THROUGH. `/api/health` is polled by uptime checks
  * and read by hand during an incident; it must answer instantly and must never
@@ -24,7 +24,17 @@ import {
   SUB_ENS_PARENT,
   SUB_ENS_PARENT_LABEL,
 } from "@woco/shared";
-import { getChainRpcUrl } from "../chain/event-contract.js";
+import {
+  getActiveChainId,
+  getChainRpcUrl,
+  EventContractConfigError,
+  type EventContractVersion,
+} from "../chain/event-contract.js";
+import {
+  readTicketMintPolicy,
+  SponsorKeyUnconfigured,
+  type TicketMintPolicy,
+} from "../chain/sponsor-wallet.js";
 import {
   getRegistrarAddress,
   getRegistryAddress,
@@ -48,7 +58,10 @@ import {
   evaluateRegistrarEnrolled,
   evaluateSponsorAuthorised,
   evaluateSponsorBalance,
+  evaluateTicketMintAllowance,
+  evaluateTicketSponsorAuthorised,
   type GlobalMintReading,
+  type TicketMintReading,
   evaluateStamp,
   isStale,
   readThresholdsFromEnv,
@@ -127,6 +140,8 @@ interface RegistrarPolicy {
 let policyReading = empty<RegistrarPolicy>();
 let cswFactoryReading = empty<string>();
 
+let ticketMintReading = empty<TicketMintPolicy>();
+
 /**
  * Coinbase Smart Wallet factory v1: canonical address and its runtime
  * codehash, the same on Arbitrum One, Arbitrum Sepolia, Base and Base Sepolia
@@ -153,6 +168,8 @@ export interface HealthReaders {
   registrarPolicy(): Promise<RegistrarPolicy>;
   /** keccak256 of the code at `CSW_FACTORY` on the sub-ENS chain. */
   cswFactoryCodehash(): Promise<string>;
+  /** `authorisedSponsors` and, on the ledger, `sponsorMintAllowance` for the ticket sponsor. */
+  ticketMintPolicy(): Promise<TicketMintPolicy>;
 }
 
 const ENTRY_POINT_ABI = ["function balanceOf(address account) view returns (uint256)"];
@@ -315,6 +332,10 @@ export const liveReaders: HealthReaders = {
   },
   cswFactoryCodehash: async () =>
     keccak256(await withTimeout(subEnsChain().getCode(CSW_FACTORY), "CSW factory getCode")),
+  // The events key's reads live in sponsor-wallet.ts, not here: this module
+  // must never name that key's accessor (the sub-ENS watch reads the NAMES
+  // key, and subens-minting-health.test.ts holds the line).
+  ticketMintPolicy: () => withTimeout(readTicketMintPolicy(), "events contract ticket mint policy"),
 };
 
 // ---------------------------------------------------------------------------
@@ -521,6 +542,36 @@ export async function refreshSubEnsMinting(
   noteVerdict("subEns.minting.cswFactory", section.checks.cswFactory, log, cswFactoryReading.detail);
 }
 const SPONSOR_UNCONFIGURED = "no names sponsor wallet configured (SUB_ENS_SPONSOR_PRIVATE_KEY)";
+
+/**
+ * Whether paid checkouts can mint (#662): the ticket sponsor is authorised on
+ * the events contract, and — on the ledger — its hourly mint cap has headroom.
+ * The checkout gate refuses a sale the cap cannot mint, so a spent or stopped
+ * cap shows up as "tickets not on sale"; this is where an operator sees why,
+ * and sees it coming.
+ */
+export async function refreshTicketMinting(
+  readers: HealthReaders = liveReaders,
+  log: Logger = console.warn,
+): Promise<void> {
+  try {
+    ticketMintReading = { at: Date.now(), value: await readers.ticketMintPolicy(), error: null, detail: null };
+  } catch (err) {
+    ticketMintReading =
+      err instanceof SponsorKeyUnconfigured
+        ? { at: Date.now(), value: null, error: TICKET_SPONSOR_UNCONFIGURED, detail: null }
+        : err instanceof EventContractConfigError
+          ? { at: Date.now(), value: null, error: TICKET_CONTRACT_MISCONFIGURED, detail: err.message }
+          : failed(err);
+  }
+  const section = ticketMintingHealth();
+  noteVerdict("ticketMinting.sponsorAuthorised", section.checks.sponsorAuthorised, log, ticketMintReading.detail);
+  noteVerdict("ticketMinting.mintAllowance", section.checks.mintAllowance, log, ticketMintReading.detail);
+}
+const TICKET_SPONSOR_UNCONFIGURED = "no ticket sponsor wallet configured (WOCO_SPONSOR_PRIVATE_KEY)";
+const TICKET_CONTRACT_MISCONFIGURED =
+  "the events contract is misconfigured: no address, or it does not answer the events-contract ABI " +
+  "(authorisedSponsors / sponsorMintAllowance)";
 
 // ---------------------------------------------------------------------------
 // Sections
@@ -828,6 +879,55 @@ export function subEnsMintingHealth(now: number = Date.now()): SubEnsMintingSect
 }
 
 /**
+ * `/api/health` -> `ticketMinting` (#662). Addresses and the cap's numbers only,
+ * all public on chain.
+ */
+export interface TicketMintingSection {
+  ok: Verdict;
+  chainId: number;
+  contract: string | null;
+  version: EventContractVersion | null;
+  sponsor: string | null;
+  /** `"no-cap"` on V1/V2; null until read. `unlimited` = the ledger's UNLIMITED_MINTS. */
+  allowance: (TicketMintReading & { unlimited: boolean }) | "no-cap" | null;
+  minMintable: number;
+  checks: { sponsorAuthorised: Check; mintAllowance: Check };
+  stale: boolean;
+  checkedAt: string | null;
+  configError?: string;
+}
+
+export function ticketMintingHealth(now: number = Date.now()): TicketMintingSection {
+  const { ticketMinting: cfg } = readThresholdsFromEnv(process.env);
+  const policy = ticketMintReading.value;
+  const unconfigured = ticketMintReading.error === TICKET_SPONSOR_UNCONFIGURED
+    || ticketMintReading.error === TICKET_CONTRACT_MISCONFIGURED;
+  const sponsorAuthorised = unconfigured
+    ? { ok: false as const, reason: ticketMintReading.error! }
+    : evaluateTicketSponsorAuthorised({ authorised: policy?.sponsorAuthorised ?? null, reason: ticketMintReading.error });
+  const mintAllowance = unconfigured
+    ? { ok: false as const, reason: ticketMintReading.error! }
+    : evaluateTicketMintAllowance({ reading: policy?.allowance ?? null, min: cfg.minMintable, reason: ticketMintReading.error });
+  const allowance = policy?.allowance ?? null;
+  return {
+    ok: combine([sponsorAuthorised, mintAllowance]),
+    chainId: policy?.contract.chainId ?? getActiveChainId(),
+    contract: policy?.contract.address ?? null,
+    version: policy?.contract.version ?? null,
+    sponsor: policy?.sponsor ?? null,
+    allowance:
+      allowance === null || allowance === "no-cap"
+        ? allowance
+        : { ...allowance, unlimited: allowance.perHour === 0xffff_ffff },
+    minMintable: cfg.minMintable,
+    checks: { sponsorAuthorised, mintAllowance },
+    stale: isStale(ticketMintReading.at, now, PROBE_INTERVAL_MS),
+    checkedAt: ticketMintReading.at === null ? null : new Date(ticketMintReading.at).toISOString(),
+    ...(cfg.configError ? { configError: cfg.configError } : {}),
+  };
+}
+
+/**
  * Bee batch state for the evidence publisher (#312), served from THIS module's
  * cache.
  *
@@ -860,6 +960,7 @@ export function startHealthProbes(): void {
     if (ens) ensExpiryDueAt = Date.now() + ENS_EXPIRY_PROBE_INTERVAL_MS;
     void refreshPaymaster().catch((err) => console.warn("[health] paymaster probe threw:", err));
     void refreshSubEnsMinting().catch((err) => console.warn("[health] sub-ENS minting probe threw:", err));
+    void refreshTicketMinting().catch((err) => console.warn("[health] ticket minting probe threw:", err));
     void refreshPostage(liveReaders, console.warn, etherna).catch((err) =>
       console.warn("[health] postage probe threw:", err),
     );
@@ -870,7 +971,7 @@ export function startHealthProbes(): void {
   tick();
   timer = setInterval(tick, PROBE_INTERVAL_MS);
   timer.unref?.();
-  console.log("[health] postage + paymaster + ENS parent + sub-ENS minting probes started");
+  console.log("[health] postage + paymaster + ENS parent + sub-ENS minting + ticket minting probes started");
 }
 
 /** Tests only. */
@@ -889,6 +990,7 @@ export function __resetHealthProbes(): void {
   sponsorReading = empty<bigint>();
   policyReading = empty<RegistrarPolicy>();
   cswFactoryReading = empty<string>();
+  ticketMintReading = empty<TicketMintPolicy>();
   lastVerdict.clear();
   provider = null;
   ensProvider = null;

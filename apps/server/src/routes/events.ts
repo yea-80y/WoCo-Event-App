@@ -10,7 +10,7 @@ import { setListed } from "../lib/event/listing-state.js";
 import { cardFromFeed, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
 import { getOrganiserNonce, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
 import { registerSeriesExactlyOnce } from "../lib/event/register-once.js";
-import { RegistrationRebindError } from "../lib/event/onchain-registry.js";
+import { RegistrationRebindError, RegistryUnreadableError } from "../lib/event/onchain-registry.js";
 import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { batchForDeploy } from "../lib/etherna/batch-router.js";
@@ -756,6 +756,11 @@ events.post("/:id/unlist", requireAuth, async (c) => {
  * escalates. It is now a definitive 409 carrying a code the client can branch on,
  * the same shape as the in-flight 409 the handler already returns.
  *
+ * A `RegistryUnreadableError` is the same kind of failure from the other side:
+ * `onchain-events.json` exists and could not be loaded, so no registration can
+ * be recorded until an operator repairs or restores it and restarts. A 503 with
+ * a code, never the retry-shaped 500.
+ *
  * The message is deliberately plain and carries no internal detail. The operator
  * signal is `/api/health` `onchainRegistry` plus the error logged at the call
  * site.
@@ -765,9 +770,19 @@ events.post("/:id/unlist", requireAuth, async (c) => {
  * and a chain broadcast.
  */
 export function registerOnChainErrorResponse(err: unknown): {
-  status: 409 | 500;
+  status: 409 | 500 | 503;
   body: { ok: false; error: string; message?: string };
 } {
+  if (err instanceof RegistryUnreadableError) {
+    return {
+      status: 503,
+      body: {
+        ok: false,
+        error: "registry_unavailable",
+        message: "Event registration is temporarily unavailable - please contact support.",
+      },
+    };
+  }
   if (err instanceof RegistrationRebindError) {
     return {
       status: 409,

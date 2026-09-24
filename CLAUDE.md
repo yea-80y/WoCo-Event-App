@@ -102,10 +102,11 @@ DEV COMMANDS:
   unset = names 503. The platform holds NO key that can repoint a name (registrar v2.2).
   Optional: `CAMPAIGN_ISSUER_PRIVATE_KEY` — signs referral confirmations + badges
   (#476), address must match `CAMPAIGN_ISSUER_ADDRESS`; unset = confirm 503s.
-  Also optional, all with defaults baked in (#421/#522/#420/#598 health alarms; a bad value is
+  Also optional, all with defaults baked in (#421/#522/#420/#598/#662 health alarms; a bad value is
   ignored and reported as `configError`, never fatal): `PAYMASTER_DEPOSIT_MIN_ETH`,
   `POSTAGE_TTL_MIN_SECONDS`, `POSTAGE_UTILIZATION_MAX_PCT`, `BEE_CHAIN_LAG_MAX_BLOCKS`,
-  `ENS_MAINNET_RPC_URL`, `ENS_EXPIRY_MIN_DAYS`, `SUB_ENS_SPONSOR_MIN_ETH`.
+  `ENS_MAINNET_RPC_URL`, `ENS_EXPIRY_MIN_DAYS`, `SUB_ENS_SPONSOR_MIN_ETH`,
+  `TICKET_MINT_ALLOWANCE_MIN` (ledger sponsor mint-cap headroom, default 10).
 
 ============================================================================
 AUTH ARCHITECTURE
@@ -466,7 +467,17 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     `byEventSeries` CANNOT be rebuilt from chain: the walk fills `byManifestRef`
     only, and a registered series never re-enters the tier-3 fill. Losing it
     stops ALL sales until restored. It was a pure cache before #424 — it is not
-    one now)
+    one now. Since #563 a record also names its CONTRACT (chain, address,
+    version) and mints/reads follow it, so do NOT wipe it at a contract cutover
+    (at a CHAIN flip a record on the old chain still verifies, never sells);
+    pre-#563 records are bare id strings, never rewritten. ROLLBACK HAZARD: a
+    build older than #563 loads the file only up to the first new-shape record
+    (a swallowed TypeError), boots normally, and on its next registration
+    OVERWRITES the file with that partial map — silently dropping every
+    registration #563 made after it. Back the file up before any rollback. If
+    the old build then records anything, its file is the partial map: on
+    rolling forward, restore the backup and re-add the bare-string records the
+    old build wrote (this build reads them))
   kernel-deployed.json (which Kernels have been seen with an on-chain owner, WHICH
     owner, at which L2 block, and — since #489 — on which CHAIN: records are keyed
     `{chainId}:{address}` and a record from another chain is ignored, never deleted.

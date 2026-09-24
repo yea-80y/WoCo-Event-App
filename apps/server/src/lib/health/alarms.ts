@@ -1,6 +1,6 @@
 /**
- * Pure verdicts for the `/api/health` postage, paymaster, ENS-parent and
- * sub-ENS minting alarms (#421, #522, #420, #598).
+ * Pure verdicts for the `/api/health` postage, paymaster, ENS-parent, sub-ENS
+ * minting and ticket minting alarms (#421, #522, #420, #598, #662).
  *
  * No network, no clock of its own, no env reads beyond the one function that
  * exists to read env. Everything here is a function of its arguments, so the
@@ -37,6 +37,7 @@ export interface ThresholdConfig {
   postage: Thresholds & { configError?: string };
   ensParent: { minDays: number; configError?: string };
   subEnsMinting: { sponsorMinEth: string; configError?: string };
+  ticketMinting: { minMintable: number; configError?: string };
 }
 
 export const DEFAULT_PAYMASTER_MIN_ETH = "0.0005";
@@ -61,6 +62,14 @@ export const DEFAULT_ENS_EXPIRY_MIN_DAYS = 120;
  * hand before anyone notices.
  */
 export const DEFAULT_SUB_ENS_SPONSOR_MIN_ETH = "0.0005";
+/**
+ * The ticket sponsor's mint headroom floor (#662): the largest order
+ * create-checkout accepts. Below it, the next maximum order is already refused,
+ * so the alarm fires before a buyer finds out rather than after. A Safe cap set
+ * below this keeps the alarm on — deliberately: such a cap refuses every order
+ * that size, every hour.
+ */
+export const DEFAULT_TICKET_MINT_ALLOWANCE_MIN = 10;
 
 /** A decimal ETH amount, no exponent, at most 18 decimals — `parseEther` fodder. */
 const DECIMAL_ETH = /^\d+(\.\d{1,18})?$/;
@@ -112,11 +121,15 @@ export function readThresholdsFromEnv(env: NodeJS.ProcessEnv): ThresholdConfig {
   const mintInvalid: string[] = [];
   const sponsorMinEth = envEth(env, "SUB_ENS_SPONSOR_MIN_ETH", DEFAULT_SUB_ENS_SPONSOR_MIN_ETH, mintInvalid);
 
+  const ticketInvalid: string[] = [];
+  const minMintable = envInt(env, "TICKET_MINT_ALLOWANCE_MIN", DEFAULT_TICKET_MINT_ALLOWANCE_MIN, ticketInvalid);
+
   return {
     paymaster: { minEth, configError: configError(pmInvalid) },
     postage: { ttlMinSeconds, utilizationMaxPct, chainLagMaxBlocks, configError: configError(postInvalid) },
     ensParent: { minDays, configError: configError(ensInvalid) },
     subEnsMinting: { sponsorMinEth, configError: configError(mintInvalid) },
+    ticketMinting: { minMintable, configError: configError(ticketInvalid) },
   };
 }
 
@@ -409,6 +422,67 @@ export function evaluateCswFactory(r: {
     return {
       ok: false,
       reason: "the Coinbase Smart Wallet factory is missing or different on the sub-ENS chain — a name minted to a Coinbase account there may be uncontrollable",
+    };
+  }
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Ticket minting on the events contract (#662)
+// ---------------------------------------------------------------------------
+
+/** Whether the ticket sponsor is still on the events contract's allow-list. */
+export function evaluateTicketSponsorAuthorised(r: { authorised: boolean | null; reason?: string | null }): Check {
+  if (r.authorised === null) return { ok: null, reason: r.reason || "ticket sponsor authorisation could not be read" };
+  if (!r.authorised) {
+    return {
+      ok: false,
+      reason: "the ticket sponsor key is not an authorised sponsor on the events contract — every paid checkout is refused",
+    };
+  }
+  return { ok: true };
+}
+
+/** `sponsorMintAllowance(sponsor)` as the ledger answers it. */
+export interface TicketMintReading {
+  perHour: number;
+  mintable: number;
+  windowResetsAt: number;
+}
+
+/**
+ * The ticket sponsor's hourly mint headroom (WoCoTicketLedger, audit 959 M-1).
+ * The cap is shared by every event the sponsor mints into, so one busy on-sale
+ * can spend an hour another event's buyers then wait out (audit 960 L-7) — the
+ * natspec's intended remedy is exactly this watch, and raising the cap.
+ *
+ * `"no-cap"` is a contract version without the cap (V1, V2): nothing to watch,
+ * and not an unknown. `perHour` 0 is the owner's stop lever and always an
+ * alarm; so is a window the product did not account for spending, which is
+ * what a leaked sponsor key looks like from here.
+ */
+export function evaluateTicketMintAllowance(r: {
+  reading: TicketMintReading | "no-cap" | null;
+  min: number;
+  reason?: string | null;
+}): Check {
+  if (r.reading === null) return { ok: null, reason: r.reason || "ticket sponsor mint allowance could not be read" };
+  // An uncapped sponsor's `mintable` reads UNLIMITED_MINTS, so it clears the floor below.
+  if (r.reading === "no-cap") return { ok: true };
+  if (r.reading.perHour === 0) {
+    return {
+      ok: false,
+      reason:
+        "the events contract's mint cap for the ticket sponsor is 0 — the owner has stopped it, and every paid checkout is refused until setSponsorMintCap raises it",
+    };
+  }
+  if (r.reading.mintable < r.min) {
+    return {
+      ok: false,
+      reason:
+        `${r.reading.mintable} of ${r.reading.perHour}/h left in the ticket sponsor's mint window (alarm below ${r.min}), ` +
+        `resets ${new Date(r.reading.windowResetsAt * 1000).toISOString()} — larger orders are refused until then. ` +
+        "If the product did not mint them, treat the ticket sponsor key as leaked",
     };
   }
   return { ok: true };
