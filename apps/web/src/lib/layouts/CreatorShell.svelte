@@ -155,10 +155,12 @@
         <span class="opt-ic"><Monitor size={16} strokeWidth={2.25} /></span>
         <span class="opt-text"><strong>New website</strong><small>Multi-page site builder</small></span>
       </button>
-      <button class="create-opt" role="menuitem" onclick={() => create("/creator/objects")}>
-        <span class="opt-ic"><Layers size={16} strokeWidth={2.25} /></span>
-        <span class="opt-text"><strong>New object</strong><small>Badge, drop, or access pass</small></span>
-      </button>
+      {#if FEATURES.badgesAllowed}
+        <button class="create-opt" role="menuitem" onclick={() => create("/creator/objects")}>
+          <span class="opt-ic"><Layers size={16} strokeWidth={2.25} /></span>
+          <span class="opt-text"><strong>New object</strong><small>Badge, drop, or access pass</small></span>
+        </button>
+      {/if}
     </div>
   {/if}
 </main>
