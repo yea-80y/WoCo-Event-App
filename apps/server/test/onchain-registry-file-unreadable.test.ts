@@ -16,10 +16,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const originalCwd = process.cwd();
+const savedEnv = {
+  chain: process.env.WOCO_EVENT_CHAIN_ID,
+  version: process.env.WOCO_EVENT_VERSION_421614,
+};
 const dirs: string[] = [];
 after(() => {
   process.chdir(originalCwd);
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  for (const [k, v] of [["WOCO_EVENT_CHAIN_ID", savedEnv.chain], ["WOCO_EVENT_VERSION_421614", savedEnv.version]] as const) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
 });
 
 /** A fresh registry module whose `.data` is a new temp dir holding `contents` (or no file). */
@@ -65,6 +73,16 @@ for (const [name, contents] of [
     assert.equal(existsSync(join(dir, ".data", "pending-registrations.json")), false, "no intent was journalled");
   });
 
+  test(`${name}: no contract is guessed — the legacy rule has nothing to answer for`, async () => {
+    // Env names a perfectly good default contract, which the legacy rule would
+    // return for a series with no record. Here "no record" means "not read".
+    process.env.WOCO_EVENT_CHAIN_ID = "421614";
+    process.env.WOCO_EVENT_VERSION_421614 = "v2";
+    const { registry } = await registryWith(contents);
+    assert.equal(registry.registrationContractFor(E, S), undefined);
+    assert.deepEqual(registry.saleContractFor(E, S), { ok: false, reason: "no-contract" });
+  });
+
   test(`${name}: /api/health alarms`, async () => {
     const { registry } = await registryWith(contents);
     const h = registry.onchainRegistryHealth();
@@ -74,7 +92,11 @@ for (const [name, contents] of [
 }
 
 test("no file at all is the ordinary first boot — registrations record and the file is created", async () => {
+  process.env.WOCO_EVENT_CHAIN_ID = "421614";
+  process.env.WOCO_EVENT_VERSION_421614 = "v2";
   const { registry, file } = await registryWith(null);
+  // Nothing read and nothing wrong: the legacy rule answers as always.
+  assert.equal(registry.registrationContractFor(E, S)?.version, "v2");
   registry.recordOnChainEventId(E, S, ID, TARGET);
   assert.equal(registry.lookupOnChainEventId(E, S), ID);
   assert.ok(existsSync(file));

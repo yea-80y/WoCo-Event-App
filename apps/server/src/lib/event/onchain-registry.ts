@@ -411,6 +411,12 @@ export function lookupOnChainEventId(eventId: string, seriesId: string): string 
  */
 export function registrationContractFor(eventId: string, seriesId: string): EventContractTarget | undefined {
   ensureLoaded();
+  // With the file unreadable, "no record" means "not read", not "recorded
+  // without a contract" — the legacy rule has no subject, and its answer would
+  // be a guess. Undefined instead (owner decision, Fable re-check O2): a session
+  // paid before the incident refunds rather than mints by the rule, and /t says
+  // "unverified" rather than reading a ticket on the wrong contract as "invalid".
+  if (fileUnreadable) return undefined;
   return byEventSeries.get(key(eventId, seriesId))?.contract ?? legacyEventContract();
 }
 
