@@ -159,22 +159,30 @@ export function decodeInnerNode(data: string): string {
 
 /**
  * Byte-exact mirror of `SignatureVerifier.makeSignatureHash`
- * (contracts/src/durin/lib/SignatureVerifier.sol:13-29):
+ * (contracts/src/durin/lib/SignatureVerifier.sol):
  *
- *   keccak256(abi.encodePacked(hex"1900", target, expires, keccak256(request), keccak256(result)))
+ *   v2:     keccak256(abi.encodePacked(hex"1900", target, uint256 chainId, expires, keccak256(request), keccak256(result)))
+ *   legacy: keccak256(abi.encodePacked(hex"1900", target, expires, keccak256(request), keccak256(result)))
  *
  * `target` is the L1 resolver (`address(this)` at verify time), NOT this gateway.
+ * `chainId` is the chain that resolver lives on: pass it for an L1Resolver v2
+ * (audit 964 M-2), omit it only for the v1 resolver still live at 0x1720…,
+ * which verifies the legacy preimage. The two preimages differ in length
+ * (126 vs 94 bytes), so one key signing both cannot have either verify as the
+ * other.
  */
 export function makeSignatureHash(
   target: string,
   expires: bigint,
   request: Uint8Array | string,
   result: string,
+  chainId: bigint | null = null,
 ): string {
   return keccak256(
     concat([
       "0x1900",
       getAddress(target), // 20 bytes
+      ...(chainId === null ? [] : [toBeHex(chainId, 32)]), // uint256, big-endian
       toBeHex(expires, 8), // uint64, big-endian
       keccak256(request),
       keccak256(result),
@@ -195,6 +203,13 @@ export interface CcipHandlerConfig {
   signerPrivateKey: string;
   /** Lowercased L1Resolver addresses whose `OffchainLookup` this gateway answers. */
   allowedSenders: string[];
+  /**
+   * Lowercased sender -> the chain it lives on, for every resolver that binds
+   * the chain id into its signed hash (L1Resolver v2). A sender absent here is
+   * signed in the legacy format (v1). Which format a sender verifies is fixed
+   * by its bytecode, so it is configuration, never inferred from a request.
+   */
+  senderChainIds?: Record<string, number>;
   chainId: number;
   /**
    * The L2 registries this gateway reads and signs for, the minting registry
@@ -369,7 +384,14 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
     //    resolver passes `callData` as `extraData` (L1Resolver.sol:242-248) and
     //    the verifier hashes `extraData` as `request` (L1Resolver.sol:186-189).
     const expires = BigInt(now() + config.ttlSeconds);
-    const hash = makeSignatureHash(sender, expires, getBytes(dataParam), result);
+    const boundChain = config.senderChainIds?.[sender];
+    const hash = makeSignatureHash(
+      sender,
+      expires,
+      getBytes(dataParam),
+      result,
+      boundChain === undefined ? null : BigInt(boundChain),
+    );
     const sig = signingKey.sign(hash).serialized;
 
     const body = { data: encodeGatewayResponse(result, expires, sig) };

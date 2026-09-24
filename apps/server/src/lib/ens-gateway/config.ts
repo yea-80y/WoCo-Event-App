@@ -62,16 +62,38 @@ export function loadEnsGatewayConfig(env: Env = process.env): EnsGatewayLoad {
   // Pinning the L1Resolver addresses is what stops this gateway from signing a
   // resolution that some OTHER resolver — one whose `signer()` also points here,
   // or one an attacker deployed and pointed at this URL — would accept.
+  //
+  // Each entry is `0xADDRESS` (the v1 resolver: legacy signed format) or
+  // `0xADDRESS:CHAINID` (L1Resolver v2, whose signed hash binds the chain it
+  // lives on - `:1` on mainnet). During the v1 -> v2 swap both are listed.
   const raw = env.ENS_GATEWAY_RESOLVER_ADDRESSES?.trim();
   if (!raw) return { disabled: "ENS_GATEWAY_RESOLVER_ADDRESSES is not set" };
-  const allowedSenders = raw
+  const entries = raw
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
     .map((s) => s.toLowerCase());
-  if (allowedSenders.length === 0) return { disabled: "ENS_GATEWAY_RESOLVER_ADDRESSES is empty" };
-  const bad = allowedSenders.find((s) => !ADDRESS_RE.test(s));
-  if (bad) return { disabled: `ENS_GATEWAY_RESOLVER_ADDRESSES contains a non-address: ${bad}` };
+  if (entries.length === 0) return { disabled: "ENS_GATEWAY_RESOLVER_ADDRESSES is empty" };
+  const allowedSenders: string[] = [];
+  const senderChainIds: Record<string, number> = {};
+  for (const entry of entries) {
+    const [address, chain, ...rest] = entry.split(":");
+    if (!ADDRESS_RE.test(address!) || rest.length > 0) {
+      return { disabled: `ENS_GATEWAY_RESOLVER_ADDRESSES contains a non-address: ${entry}` };
+    }
+    // A sender listed twice could be listed in both formats; which one it
+    // verifies is a property of its bytecode, so that is a misconfiguration.
+    if (allowedSenders.includes(address!)) {
+      return { disabled: `ENS_GATEWAY_RESOLVER_ADDRESSES lists ${address} more than once` };
+    }
+    if (chain !== undefined) {
+      if (!/^[1-9][0-9]{0,15}$/.test(chain)) {
+        return { disabled: `ENS_GATEWAY_RESOLVER_ADDRESSES has a bad chain id for ${address}: ${chain}` };
+      }
+      senderChainIds[address!] = Number(chain);
+    }
+    allowedSenders.push(address!);
+  }
 
   const parentName = (env.ENS_GATEWAY_PARENT_NAME?.trim() || DEFAULT_PARENT_NAME).toLowerCase();
   if (!parentName.includes(".")) {
@@ -180,6 +202,7 @@ export function loadEnsGatewayConfig(env: Env = process.env): EnsGatewayLoad {
   return {
     signerPrivateKey,
     allowedSenders,
+    senderChainIds,
     chainId,
     registryAddresses,
     parentName,
