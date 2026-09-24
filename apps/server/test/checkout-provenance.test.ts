@@ -203,6 +203,13 @@ test("#666: a fee that arrives and is not ours is still foreign", async () => {
   assert.deepEqual(v, { kind: "foreign", reason: "application fee is not this platform's" });
 });
 
+test("#666: a fee our key can read is ours even if the charge does not report requesting one", async () => {
+  // Not a state Stripe documents; the point is that the proof outranks the hint.
+  const r = reads({ charges: [{ requested: false, feeId: "fee_1" }] });
+  assert.deepEqual(await classifyPaidSession(session(), ACCT, r, sleeper().sleep), { kind: "ours" });
+  assert.equal(r.chargeReads, 1);
+});
+
 test("#666: a read failing during the wait decides nothing", async () => {
   const { sleep } = sleeper();
   const v = await classifyPaidSession(session(), ACCT, reads({ charges: [FEE_PENDING, NETWORK()] }), sleep);

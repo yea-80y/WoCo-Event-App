@@ -124,7 +124,8 @@ export interface ProvenanceReads {
   retrievePlatformFee(feeId: string): Promise<{ amount: number; account: string } | null>;
 }
 
-export const FEE_SETTLE_DELAYS_MS: readonly number[] = [1000, 1500, 2000]; // ack stays under Stripe's 10 s redirect cap
+// 4.5 s of waits: with typical reads the ack lands inside Stripe's 10 s redirect window.
+export const FEE_SETTLE_DELAYS_MS: readonly number[] = [1000, 1500, 2000];
 
 /**
  * INVARIANT: every session this platform creates carries a non-zero application
@@ -153,8 +154,12 @@ export async function classifyPaidSession(
       await sleep(ms);
       charge = await reads.chargeFeeForPaymentIntent(piId, eventAccount);
     }
-    if (!charge.requested) return { kind: "foreign", reason: "no application fee on the charge" };
-    if (!charge.feeId) return { kind: "unverifiable", reason: "application fee not created yet" };
+    // The fee object is the proof; `requested` only says whether to expect one.
+    if (!charge.feeId) {
+      return charge.requested
+        ? { kind: "unverifiable", reason: "application fee not created yet" }
+        : { kind: "foreign", reason: "no application fee on the charge" };
+    }
     fee = await reads.retrievePlatformFee(charge.feeId);
   } catch (err) {
     return { kind: "unverifiable", reason: err instanceof Error ? err.name : "read failed" };
