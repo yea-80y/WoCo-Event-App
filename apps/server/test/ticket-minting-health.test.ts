@@ -191,6 +191,9 @@ test("a ledger that does not answer the cap ABI is an ALARM, not an unknown", as
   const s = probes.ticketMintingHealth();
   assert.equal(s.ok, false);
   assert.match(s.checks.mintAllowance.reason ?? "", /misconfigured/);
+  // Since the no-code fix the AUTHORISATION read raises this class too, so the
+  // public reason must not name only the cap read.
+  assert.match(s.checks.sponsorAuthorised.reason ?? "", /authorisedSponsors \/ sponsorMintAllowance/);
 });
 
 test("before the first read the section is stale and unknown", () => {

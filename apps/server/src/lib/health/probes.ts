@@ -570,7 +570,8 @@ export async function refreshTicketMinting(
 }
 const TICKET_SPONSOR_UNCONFIGURED = "no ticket sponsor wallet configured (WOCO_SPONSOR_PRIVATE_KEY)";
 const TICKET_CONTRACT_MISCONFIGURED =
-  "the events contract is misconfigured: no address, or it does not answer the mint-cap ABI";
+  "the events contract is misconfigured: no address, or it does not answer the events-contract ABI " +
+  "(authorisedSponsors / sponsorMintAllowance)";
 
 // ---------------------------------------------------------------------------
 // Sections
