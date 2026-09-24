@@ -1,7 +1,8 @@
 /**
  * Whether a 403 came from OUR chunk gate.
  *
- * ITS OWN MODULE ON PURPOSE. `client-soc.ts` reaches the Svelte auth store
+ * ITS OWN MODULE ON PURPOSE. `client-soc.ts` (the signed upload; the probe that
+ * calls this now lives in `probe-soc.ts`) reaches the Svelte auth store
  * through `../api/client.js`, so importing it from a `node:test` file throws
  * `$state is not defined` — and the alternative, testing the trust rule through
  * a mock, would be testing the mock. This is the single decision that turns a

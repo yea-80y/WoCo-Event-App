@@ -151,7 +151,7 @@ async function verifyLanded(
   // chunk for minutes, so without it a same-version collision - the one thing
   // this read-back exists to catch - reads as a routine `unconfirmed` and the
   // caller never replays.
-  const { probeSoc } = await import("./client-soc.js");
+  const { probeSoc } = await import("./probe-soc.js");
   const read: SocChunkProbe = (id) => probeSoc(args.ownerAddress, id, { thorough: true, gatewayUrl: args.route.gatewayUrl });
 
   let lastReason = "read-back did not resolve";
