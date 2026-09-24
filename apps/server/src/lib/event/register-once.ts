@@ -47,6 +47,7 @@ import {
   clearPendingRegistration as realClearPending,
 } from "./onchain-registry.js";
 import { resolveRegistrationIntent as realResolveIntent } from "./registration-intent.js";
+import { getDefaultEventContract } from "../chain/event-contract.js";
 
 export type RegisterResult =
   | { status: "registered"; onChainEventId: string; txHash?: string; feed?: EventFeed }
@@ -145,7 +146,11 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
       return { status: "pending", txHash: pending.txHash };
     }
     if (outcome.status === "registered") {
-      const feed = await deps.confirmSeriesOnChain(eventId, seriesId, outcome.onChainEventId, signerHint);
+      // The receipt was read and parsed against the env-selected contract, so
+      // that is the contract it was found on (#563).
+      const feed = await deps.confirmSeriesOnChain(
+        eventId, seriesId, outcome.onChainEventId, signerHint, getDefaultEventContract(),
+      );
       deps.clearPending(eventId, seriesId);
       console.log(`[register-once] ${eventId}/${seriesId} recovered from broadcast tx ${outcome.txHash}`);
       return { status: "registered", onChainEventId: outcome.onChainEventId, txHash: outcome.txHash, feed };
@@ -160,7 +165,10 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
     // wrong guess mints a duplicate on-chain event.
     const outcome = await deps.resolveIntent(pending, manifestRef);
     if (outcome.status === "registered") {
-      const feed = await deps.confirmSeriesOnChain(eventId, seriesId, outcome.onChainEventId, signerHint);
+      // Resolved by walking the env-selected contract (#563).
+      const feed = await deps.confirmSeriesOnChain(
+        eventId, seriesId, outcome.onChainEventId, signerHint, getDefaultEventContract(),
+      );
       deps.clearPending(eventId, seriesId);
       console.log(`[register-once] ${eventId}/${seriesId} intent marker resolved to ${outcome.onChainEventId}`);
       return { status: "registered", onChainEventId: outcome.onChainEventId, feed };
@@ -176,7 +184,7 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
   // The marker carries the manifest digest as well as the nonce (#434): it is what
   // lets the tier-3 fill refuse to hand THIS registration's on-chain event to
   // another series while the confirm below has not run yet.
-  const { onChainEventId, txHash } = await deps.registerEventOnChain(
+  const { onChainEventId, txHash, contract } = await deps.registerEventOnChain(
     supply,
     manifestRef,
     v2Params,
@@ -186,7 +194,7 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
 
   // A throw here leaves the marker in place ON PURPOSE: the tx is already on chain,
   // and step 3 of the next attempt is what turns it back into a completed registration.
-  const feed = await deps.confirmSeriesOnChain(eventId, seriesId, onChainEventId, signerHint);
+  const feed = await deps.confirmSeriesOnChain(eventId, seriesId, onChainEventId, signerHint, contract);
   deps.clearPending(eventId, seriesId);
   return { status: "registered", onChainEventId, txHash, feed };
 }

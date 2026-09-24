@@ -298,7 +298,7 @@ is operationally load-bearing:
 
 | Store | Why it cannot be rebuilt |
 |---|---|
-| `onchain-events.json` | eventId+seriesId → the on-chain event **this server** registered. Checkout refuses to charge a series with no record, and the chain-log walk cannot reconstruct the mapping. **Losing it stops all sales.** |
+| `onchain-events.json` | eventId+seriesId → the on-chain event **this server** registered, and (#563) the contract it lives on. Checkout refuses to charge a series with no record, and the chain-log walk cannot reconstruct the mapping. **Losing it stops all sales.** Never wipe it at a contract cutover. |
 | `event-attendees.json` | eventId → attendee email hashes. The only server-visible proof a broadcast recipient holds a ticket. The plaintext address is never stored anywhere it could be re-derived from. |
 | `marketing-suppression.json` | Unsubscribes. Losing it means emailing people who opted out — a legal breach, not a bug. |
 | `kernel-deployed.json` | Which Kernels have been seen with an on-chain owner, which owner, at which block and on which chain. Losing it reopens a window where a lagging RPC replica can roll an owner back to a retired key. |
