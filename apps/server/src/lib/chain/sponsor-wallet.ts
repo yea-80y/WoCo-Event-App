@@ -235,7 +235,7 @@ const _sponsorReady = new Map<string, number>();
  * `false` means the sponsor is genuinely not on the allow-list.
  */
 export async function isSponsorReady(target: EventContractTarget): Promise<boolean> {
-  const { version, address, chainId } = target;
+  const { version } = target;
   // Only V1 skips the probe (deploy-time authorisation, nothing to read).
   // Written as an explicit V1 test rather than `!== "v2"`: the old form
   // returned TRUE — check skipped — for any version that was not literally
@@ -247,21 +247,45 @@ export async function isSponsorReady(target: EventContractTarget): Promise<boole
   const k = contractKey(target);
   if ((_sponsorReady.get(k) ?? 0) > now) return true;
 
-  let ready: boolean;
-  switch (version) {
-    case "ledger": {
-      const { isSponsorAuthorisedLedger } = await import("./event-contract-ledger.js");
-      ready = await isSponsorAuthorisedLedger(getSponsorAddress(), address, chainId);
-      break;
-    }
-    case "v2":
-      ready = await isSponsorAuthorisedV2(getSponsorAddress(), address, chainId);
-      break;
-    default:
-      return unhandledVersion(version, "isSponsorReady");
-  }
+  const ready = await readSponsorAuthorised(target, getSponsorAddress());
   if (ready) _sponsorReady.set(k, now + SPONSOR_READY_TTL_MS);
   return ready;
+}
+
+/**
+ * `authorisedSponsors(sponsor)` on `target`, uncached. V1 has no such read.
+ *
+ * `EventContractConfigError` when the address does not speak the ABI — most
+ * likely NO CODE at it (a typo'd or not-yet-deployed address answers 0x). That
+ * has to be told apart from a blip here, not only at the cap read: this read
+ * runs first, and a no-code address read as transient passed the checkout gate
+ * "continuing", charged every buyer, and refunded each after a mint tx that
+ * landed on an EOA.
+ */
+async function readSponsorAuthorised(target: EventContractTarget, sponsor: string): Promise<boolean> {
+  const { version, address, chainId } = target;
+  try {
+    switch (version) {
+      case "v1":
+        return true; // deploy-time authorisation; nothing to read
+      case "ledger": {
+        const { isSponsorAuthorisedLedger } = await import("./event-contract-ledger.js");
+        return await isSponsorAuthorisedLedger(sponsor, address, chainId);
+      }
+      case "v2":
+        return await isSponsorAuthorisedV2(sponsor, address, chainId);
+      default:
+        return unhandledVersion(version, "readSponsorAuthorised");
+    }
+  } catch (err) {
+    if (isNotThisAbi(err)) {
+      throw new EventContractConfigError(
+        `the ${version} contract at ${address} on chain ${chainId} does not answer authorisedSponsors — ` +
+        `wrong address, or no code at it`,
+      );
+    }
+    throw err;
+  }
 }
 
 /**
@@ -381,22 +405,7 @@ export async function readTicketMintPolicy(): Promise<TicketMintPolicy> {
   if (!contract) throw new EventContractConfigError(`no events contract on chain ${chainId}`);
   if (!process.env.WOCO_SPONSOR_PRIVATE_KEY) throw new SponsorKeyUnconfigured();
   const sponsor = getSponsorAddress();
-  let sponsorAuthorised: boolean;
-  switch (contract.version) {
-    case "v1":
-      sponsorAuthorised = true; // deploy-time authorisation; nothing to read
-      break;
-    case "v2":
-      sponsorAuthorised = await isSponsorAuthorisedV2(sponsor, contract.address, chainId);
-      break;
-    case "ledger": {
-      const { isSponsorAuthorisedLedger } = await import("./event-contract-ledger.js");
-      sponsorAuthorised = await isSponsorAuthorisedLedger(sponsor, contract.address, chainId);
-      break;
-    }
-    default:
-      return unhandledVersion(contract.version, "readTicketMintPolicy");
-  }
+  const sponsorAuthorised = await readSponsorAuthorised(contract, sponsor);
   const allowance = contract.version === "ledger" ? await readSponsorMintAllowance(contract) : ("no-cap" as const);
   return { contract, sponsor: sponsor.toLowerCase(), sponsorAuthorised, allowance };
 }

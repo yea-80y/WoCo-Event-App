@@ -33,6 +33,7 @@ const {
   checkSponsorCanMint,
   evaluateSponsorMint,
   readSponsorMintAllowance,
+  readTicketMintPolicy,
 } = await import("../src/lib/chain/sponsor-wallet.js");
 const { EventContractConfigError } = await import("../src/lib/chain/event-contract.js");
 const { LEDGER_ABI, LEDGER_UNLIMITED_MINTS, MintCapExceededError, batchClaimForLedger } =
@@ -205,6 +206,58 @@ test("an address that answers the cap view with nothing is a CONFIG error, not a
 test("a contract that reverts the cap view with no data is a CONFIG error", async () => {
   answer = (m) => (m === "eth_call" ? { error: { code: 3, message: "execution reverted", data: "0x" } } : { result: null });
   await assert.rejects(() => readSponsorMintAllowance(LEDGER), (err) => err instanceof EventContractConfigError);
+});
+
+test("an address with NO CODE fails the AUTHORISATION read as a config error, not a blip", async () => {
+  // The likeliest flip-day mistake: a typo'd or not-yet-deployed ledger address.
+  // `authorisedSponsors` answers 0x, and read as transient that charged every
+  // buyer for a mint that lands on an EOA and refunds. Distinct contract
+  // address per case: the positive-authorisation cache is keyed per contract.
+  answer = (m) => (m === "eth_call" ? { result: "0x" } : { result: null });
+  const ledgerNoCode = { ...LEDGER, address: "0x" + "3e".repeat(20) };
+  const v2NoCode = { ...V2, address: "0x" + "4e".repeat(20) };
+  await assert.rejects(() => checkSponsorCanMint(ledgerNoCode, 1), (err) => err instanceof EventContractConfigError);
+  await assert.rejects(() => checkSponsorCanMint(v2NoCode, 1), (err) => err instanceof EventContractConfigError);
+});
+
+test("the health probe classifies a no-code AUTHORISATION answer the same way", async () => {
+  // Only `authorisedSponsors` answers empty, so the cap read cannot be what trips it.
+  const authorisedSponsors = iface.getFunction("authorisedSponsors")!.selector;
+  answer = (m, params) => {
+    if (m !== "eth_call") return { result: null };
+    const data = String((params[0] as { data?: string })?.data ?? "");
+    return data.startsWith(authorisedSponsors)
+      ? { result: "0x" }
+      : { result: iface.encodeFunctionResult("sponsorMintAllowance", [50, 50, NOW_S]) };
+  };
+  const saved = {
+    chain: process.env.WOCO_EVENT_CHAIN_ID,
+    version: process.env[`WOCO_EVENT_VERSION_${CHAIN}`],
+    address: process.env[`WOCO_EVENT_ADDRESS_LEDGER_${CHAIN}`],
+  };
+  process.env.WOCO_EVENT_CHAIN_ID = String(CHAIN);
+  process.env[`WOCO_EVENT_VERSION_${CHAIN}`] = "ledger";
+  process.env[`WOCO_EVENT_ADDRESS_LEDGER_${CHAIN}`] = "0x" + "5e".repeat(20);
+  try {
+    await assert.rejects(() => readTicketMintPolicy(), (err) => err instanceof EventContractConfigError);
+  } finally {
+    for (const [k, v] of [
+      ["WOCO_EVENT_CHAIN_ID", saved.chain],
+      [`WOCO_EVENT_VERSION_${CHAIN}`, saved.version],
+      [`WOCO_EVENT_ADDRESS_LEDGER_${CHAIN}`, saved.address],
+    ] as const) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
+test("an RPC fault on the AUTHORISATION read is not a config error either", async () => {
+  answer = () => ({ error: { code: -32603, message: "internal error" } });
+  await assert.rejects(
+    () => checkSponsorCanMint({ ...LEDGER, address: "0x" + "6e".repeat(20) }, 1),
+    (err) => !(err instanceof EventContractConfigError),
+  );
 });
 
 test("an RPC fault is NOT a config error — the route must be free to fail open on it", async () => {
