@@ -3,6 +3,7 @@
   import type { UserProfile, EventDirectoryEntry } from "@woco/shared";
   import { socialProfileSubject, FEATURES } from "@woco/shared";
   import { getProfile, updateProfile, uploadAvatar, getProfileNameStatus } from "../../api/profiles.js";
+  import { changedProfileFields, type ProfileFormFields } from "../../api/profile-save.js";
   import { gate } from "../../attendee/gate/gate.svelte.js";
   import { isTicketRequired } from "../../api/attendee-gate.js";
   import { unlocksWhen } from "../../attendee/gate/unlock-copy.js";
@@ -118,6 +119,12 @@
   let editTwitter = $state("");
   let editFarcaster = $state("");
   let formDirty = $state(false);
+  // What the form was filled with, so a save sends only what the user changed.
+  let formLoaded = $state<ProfileFormFields>({ displayName: "", bio: "", website: "", twitterHandle: "", farcasterHandle: "" });
+
+  function formValues(): ProfileFormFields {
+    return { displayName: editName, bio: editBio, website: editWebsite, twitterHandle: editTwitter, farcasterHandle: editFarcaster };
+  }
 
   let fileInput: HTMLInputElement | undefined = $state(undefined);
 
@@ -152,11 +159,21 @@
   }
 
   function initForm() {
-    editName = profile?.displayName ?? "";
-    editBio = profile?.bio ?? "";
-    editWebsite = profile?.website ?? "";
-    editTwitter = profile?.twitterHandle ?? "";
-    editFarcaster = profile?.farcasterHandle ?? "";
+    // Built from `profile` alone: this runs inside an effect, and reading the edit
+    // fields back would make it re-run on every keystroke.
+    const loaded: ProfileFormFields = {
+      displayName: profile?.displayName ?? "",
+      bio: profile?.bio ?? "",
+      website: profile?.website ?? "",
+      twitterHandle: profile?.twitterHandle ?? "",
+      farcasterHandle: profile?.farcasterHandle ?? "",
+    };
+    editName = loaded.displayName;
+    editBio = loaded.bio;
+    editWebsite = loaded.website;
+    editTwitter = loaded.twitterHandle;
+    editFarcaster = loaded.farcasterHandle;
+    formLoaded = loaded;
     formDirty = false;
   }
 
@@ -189,6 +206,11 @@
 
   async function saveProfile() {
     if ((!formDirty && !pendingAvatarDataUrl) || saving) return;
+    // Only what the user changed - the form was filled from a display read that can
+    // lag a save by minutes, and an untouched stale value would overwrite it (#651).
+    // Decided before any prompt: typed-then-undone has nothing to sign for.
+    const changes = formDirty ? changedProfileFields(formValues(), formLoaded) : {};
+    if (Object.keys(changes).length === 0 && !pendingAvatarDataUrl) { formDirty = false; return; }
     saving = true;
     saveError = '';
     try {
@@ -205,19 +227,17 @@
       const prevAvatarRef = profile?.avatarRef;
       let merged: UserProfile | null = profile;
 
-      // Text fields — only write the data feed when the user actually edited them.
-      if (formDirty) {
-        const updated = await updateProfile({
-          displayName: editName || undefined,
-          bio: editBio || undefined,
-          website: editWebsite || undefined,
-          twitterHandle: editTwitter || undefined,
-          farcasterHandle: editFarcaster || undefined,
-        });
+      if (Object.keys(changes).length > 0) {
+        const updated = await updateProfile(changes);
         // updateProfile already cached the fresh profile — don't invalidate, or the
         // next read races feed propagation and blanks it. Carry the avatar forward
         // (the data feed doesn't store avatarRef — it lives in a separate feed).
         if (updated) merged = { ...updated, avatarRef: updated.avatarRef ?? prevAvatarRef };
+        // The text is saved whatever the avatar upload below does: make it the
+        // form's baseline now, or a failed upload leaves the next save diffing
+        // against the old profile.
+        formDirty = false;
+        if (merged) profile = merged;
       }
 
       // Avatar — upload the STAGED image now (on Save), not on file-select.
@@ -446,6 +466,11 @@
     profile = null; events = []; eventsLoaded = false; eventsLoading = false; eventsFailed = false;
     eventsSubTab = "upcoming";
     avatarPreviewUrl = null; pendingAvatarDataUrl = null;
+    // Writes only - reading the form here would make this effect track it. Text
+    // typed under one account must not ride into another account's first save.
+    editName = ""; editBio = ""; editWebsite = ""; editTwitter = ""; editFarcaster = "";
+    formLoaded = { displayName: "", bio: "", website: "", twitterHandle: "", farcasterHandle: "" };
+    formDirty = false;
     if (!v) {
       loading = false;
       if (!auth.isConnected) loginRequest.request().then(ok => { if (!ok) navigate("/"); });
