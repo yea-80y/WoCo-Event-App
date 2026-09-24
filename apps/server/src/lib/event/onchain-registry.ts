@@ -147,49 +147,96 @@ function key(eventId: string, seriesId: string): string {
   return `${eventId}|${seriesId}`;
 }
 
+/**
+ * Why `onchain-events.json` EXISTS but could not be loaded at all (unreadable,
+ * not JSON, not an object), or null. Distinct from ENOENT, which is a first
+ * boot: this is a must-survive file that is present and not understood.
+ *
+ * The old loader read both as "no cache yet" and started empty, so the next
+ * registration persisted that empty map over the file — every record gone,
+ * silently. Now the store refuses: it serves nothing (every sale is refused, as
+ * it already was with an empty map), NEVER writes the file, refuses to journal
+ * a new registration before its broadcast, and `/api/health` alarms. The file
+ * stays exactly as found for an operator to repair or restore.
+ */
+let fileUnreadable: string | null = null;
+
+/** Thrown by a write while `fileUnreadable` — never succeeds until an operator acts. */
+export class RegistryUnreadableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RegistryUnreadableError";
+  }
+}
+
+function refuseFile(why: string): void {
+  fileUnreadable = why;
+  console.error(
+    `[onchain-cache] ALARM: onchain-events.json ${why} — nothing is served from it, and it will NOT be ` +
+    `written until it is repaired or restored and the server restarted. No series can sell and no ` +
+    `registration can complete until then (/api/health onchainRegistry)`,
+  );
+}
+
 function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
+  let raw: string;
   try {
-    const obj = JSON.parse(readFileSync(CACHE_FILE, "utf-8")) as Record<string, unknown>;
-    for (const [k, v] of Object.entries(obj)) {
-      const r = parseRegistration(v);
-      if (!r) {
-        unreadable.set(k, v);
-        // Still a binding for the strips: an id this server bound to a series
-        // must not become free for another series to claim.
-        const id = (v as { onChainEventId?: unknown } | null)?.onChainEventId;
-        if (typeof id === "string" && !keyByOnChainEventId.has(id.toLowerCase())) {
-          keyByOnChainEventId.set(id.toLowerCase(), k);
-        }
-        continue;
-      }
-      byEventSeries.set(k, r);
-      // FIRST-WINS, matching the scan this index replaces: that scan returned the
-      // first key in insertion order, and a file written before #433 can hold two
-      // keys for one id. A silent change of WHICH key an old duplicate reports
-      // would change which series the strip below spares.
-      const lc = r.onChainEventId.toLowerCase();
-      if (!keyByOnChainEventId.has(lc)) keyByOnChainEventId.set(lc, k);
-    }
-    const legacy = [...byEventSeries.values()].filter((r) => !r.contract).length;
-    console.log(
-      `[onchain-cache] Loaded ${byEventSeries.size} on-chain event ids from cache` +
-      (legacy ? ` (${legacy} recorded before the contract was — resolved by the legacy rule)` : ""),
-    );
-    if (unreadable.size > 0) {
-      console.error(
-        `[onchain-cache] ${unreadable.size} record(s) in onchain-events.json are unreadable — kept on disk ` +
-        `untouched, NOT served: those series cannot sell until an operator repairs them`,
-      );
-    }
+    raw = readFileSync(CACHE_FILE, "utf-8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    // No file yet: a first boot. It fills as registrations land.
+    if (code === "ENOENT") return;
+    return refuseFile(`exists but could not be read (${code ?? "unknown error"})`);
+  }
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw);
   } catch {
-    // No cache yet — it rebuilds from chain on demand.
+    return refuseFile("is not valid JSON");
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    return refuseFile("is not a JSON object");
+  }
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    const r = parseRegistration(v);
+    if (!r) {
+      unreadable.set(k, v);
+      // Still a binding for the strips: an id this server bound to a series
+      // must not become free for another series to claim.
+      const id = (v as { onChainEventId?: unknown } | null)?.onChainEventId;
+      if (typeof id === "string" && !keyByOnChainEventId.has(id.toLowerCase())) {
+        keyByOnChainEventId.set(id.toLowerCase(), k);
+      }
+      continue;
+    }
+    byEventSeries.set(k, r);
+    // FIRST-WINS, matching the scan this index replaces: that scan returned the
+    // first key in insertion order, and a file written before #433 can hold two
+    // keys for one id. A silent change of WHICH key an old duplicate reports
+    // would change which series the strip below spares.
+    const lc = r.onChainEventId.toLowerCase();
+    if (!keyByOnChainEventId.has(lc)) keyByOnChainEventId.set(lc, k);
+  }
+  const legacy = [...byEventSeries.values()].filter((r) => !r.contract).length;
+  console.log(
+    `[onchain-cache] Loaded ${byEventSeries.size} on-chain event ids from cache` +
+    (legacy ? ` (${legacy} recorded before the contract was — resolved by the legacy rule)` : ""),
+  );
+  if (unreadable.size > 0) {
+    console.error(
+      `[onchain-cache] ${unreadable.size} record(s) in onchain-events.json are unreadable — kept on disk ` +
+      `untouched, NOT served: those series cannot sell until an operator repairs them`,
+    );
   }
 }
 
 function persist(): void {
   if (!dirty) return;
+  // Unreachable through `recordOnChainEventId`, which refuses first; kept so no
+  // future writer can put a map over a file this process never understood.
+  if (fileUnreadable) return;
   const out: Record<string, unknown> = {};
   for (const [k, r] of byEventSeries) out[k] = serialiseRegistration(r);
   for (const [k, v] of unreadable) out[k] = v;
@@ -263,6 +310,12 @@ export function recordOnChainEventId(
 ): void {
   ensureLoaded();
   const k = key(eventId, seriesId);
+
+  if (fileUnreadable) {
+    throw new RegistryUnreadableError(
+      `refusing to record ${eventId.slice(0, 8)}/${seriesId.slice(0, 8)}: onchain-events.json ${fileUnreadable}`,
+    );
+  }
 
   if (unreadable.has(k)) {
     throw new RegistrationRebindError(
@@ -538,6 +591,12 @@ export function recordRegistrationIntent(
   intent: { nonce: number; chainId: number },
   manifestRef?: string,
 ): void {
+  // A broadcast whose confirm can never be recorded is a registration nobody
+  // will find — refuse it here, before the node sees it (#318's abort seam).
+  ensureLoaded();
+  if (fileUnreadable) {
+    throw new RegistryUnreadableError(`registration record ${fileUnreadable} — refusing to broadcast registerEvent`);
+  }
   ensurePendingLoaded();
   const k = key(eventId, seriesId);
   pending.set(k, { ...intent, ...refField(manifestRef), at: new Date().toISOString() });
@@ -633,14 +692,22 @@ export function noteRebindConflict(eventId: string, seriesId: string): void {
  * `/api/health` section. Counts and a boolean ONLY — the endpoint is public, so
  * no event ids, no series ids, no error text.
  */
-export function onchainRegistryHealth(): { ok: boolean; rebindConflicts: number; unreadableRecords: number } {
+export function onchainRegistryHealth(): {
+  ok: boolean;
+  rebindConflicts: number;
+  unreadableRecords: number;
+  fileUnreadable: boolean;
+} {
   ensureLoaded();
   return {
-    ok: rebindConflicts.size === 0 && unreadable.size === 0,
+    ok: rebindConflicts.size === 0 && unreadable.size === 0 && !fileUnreadable,
     rebindConflicts: rebindConflicts.size,
     // Records this build could not parse. Kept on disk, never served: each is a
     // series that cannot sell until an operator repairs its record.
     unreadableRecords: unreadable.size,
+    // The whole file exists and could not be loaded: nothing sells, nothing
+    // registers, and the file is left untouched for repair (`fileUnreadable`).
+    fileUnreadable: fileUnreadable !== null,
   };
 }
 
