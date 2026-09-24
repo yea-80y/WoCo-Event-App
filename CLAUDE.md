@@ -471,8 +471,10 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     build older than #563 loads the file only up to the first new-shape record
     (a swallowed TypeError), boots normally, and on its next registration
     OVERWRITES the file with that partial map — silently dropping every
-    registration #563 made after it. Back the file up before any rollback and
-    restore it before the old build records anything)
+    registration #563 made after it. Back the file up before any rollback. If
+    the old build then records anything, its file is the partial map: on
+    rolling forward, restore the backup and re-add the bare-string records the
+    old build wrote (this build reads them))
   kernel-deployed.json (which Kernels have been seen with an on-chain owner, WHICH
     owner, at which L2 block, and — since #489 — on which CHAIN: records are keyed
     `{chainId}:{address}` and a record from another chain is ignored, never deleted.
