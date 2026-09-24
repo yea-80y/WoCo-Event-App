@@ -148,7 +148,9 @@ today's env contract, or to the chain's V2 once env selects the ledger (`legacyE
 **The ledger's hourly mint cap** (#662): create-checkout refuses a sale the sponsor's
 `sponsorMintAllowance` cannot mint (read uncached), and names a retry time only when waiting
 helps — never for cap 0 (the Safe's stop), never for an order bigger than the whole cap.
-`/api/health` `ticketMinting` alarms below `TICKET_MINT_ALLOWANCE_MIN`.
+`/api/health` `ticketMinting` alarms below `TICKET_MINT_ALLOWANCE_MIN`. The gate is a read, not a
+reservation: it does not net out open holds or concurrent checkouts, so several passing against
+the same headroom can all be charged and the ones the cap then refuses are refunded.
 
 ### Why a burner, and not the buyer's address
 
