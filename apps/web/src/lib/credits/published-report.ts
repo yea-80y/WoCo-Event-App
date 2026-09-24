@@ -31,6 +31,7 @@ import {
 } from "@woco/shared";
 import { hexToBytes, bytesToHex } from "@noble/hashes/utils.js";
 import { WOCO_GATEWAY_URL } from "../swarm/gateways.js";
+import { buildEnv } from "../build-env.js";
 
 /** Long enough for a cold network search; short enough that a stuck gateway
  *  does not hold the page on "checking…" for the length of a stream segment. */
@@ -92,7 +93,7 @@ export async function readPublishedReport<L>(
   } = {},
 ): Promise<EvidenceReportV1<L> | null> {
   const indexer = opts.indexer ?? SOCIAL_INDEXER_ADDRESS;
-  const gateway = opts.gateway ?? (import.meta.env?.VITE_GATEWAY_URL || WOCO_GATEWAY_URL);
+  const gateway = opts.gateway ?? (buildEnv(() => import.meta.env.VITE_GATEWAY_URL as string | undefined) || WOCO_GATEWAY_URL);
   const doFetch = opts.fetchImpl ?? fetch;
 
   let owner: Uint8Array;

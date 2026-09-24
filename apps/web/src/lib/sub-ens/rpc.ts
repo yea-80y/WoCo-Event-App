@@ -15,6 +15,7 @@
  */
 
 import { SUB_ENS_DEFAULT_CHAIN_ID, type SubEnsChainId } from "@woco/shared";
+import { buildEnv } from "../build-env.js";
 
 export const SUB_ENS_CHAIN_ID: SubEnsChainId = SUB_ENS_DEFAULT_CHAIN_ID;
 
@@ -24,8 +25,7 @@ const PUBLIC_RPC: Record<SubEnsChainId, string> = {
 };
 
 export function subEnsRpcUrl(): string {
-  const env = import.meta.env as Record<string, string | undefined>;
-  const override = env.VITE_SUB_ENS_RPC?.trim();
+  const override = buildEnv(() => import.meta.env.VITE_SUB_ENS_RPC as string | undefined)?.trim();
   if (override) return override;
   const url: string | undefined = PUBLIC_RPC[SUB_ENS_CHAIN_ID];
   if (!url) throw new Error(`No sub-ENS RPC for chain ${SUB_ENS_CHAIN_ID}`);
