@@ -369,6 +369,16 @@ test("publicContenthashQueryUrl: the L1Resolver's own request for the name's con
   assert.equal(String(registry).toLowerCase(), REGISTRY.toLowerCase());
 });
 
+/** An L1Resolver v2 entry carries its chain (`0x…:1`); the URL's sender is the bare address. */
+test("publicContenthashQueryUrl: a chain-bound resolver entry sends its bare address", () => {
+  const url = publicContenthashQueryUrl(subEnsName("punkpub"), 42161, REGISTRY, {
+    PUBLIC_API_BASE: "https://api.example",
+    ENS_GATEWAY_RESOLVER_ADDRESSES: `${RESOLVER}:1,0x2222222222222222222222222222222222222222`,
+  });
+  assert.ok(url);
+  assert.match(url, new RegExp(`/api/ens-gateway/v1/${RESOLVER}/0x`));
+});
+
 test("round trip: the real gateway handler's answer to that query is what releases the knock", async () => {
   // If the query and the gateway ever drift apart, the warm-up would poll into
   // refusals and silently never knock. So the answer here comes from the real

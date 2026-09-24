@@ -33,8 +33,9 @@ export function publicContenthashQueryUrl(
   env: Env = process.env,
 ): string | null {
   const base = env.PUBLIC_API_BASE?.trim().replace(/\/+$/, "");
+  // The first listed resolver; an entry may carry `:CHAINID` (L1Resolver v2).
   const sender = env.ENS_GATEWAY_RESOLVER_ADDRESSES?.split(",")
-    .map((s) => s.trim())
+    .map((s) => s.trim().split(":")[0]!)
     .find((s) => s.length > 0);
   if (!base || !sender) return null;
   const inner = CONTENTHASH.encodeFunctionData("contenthash", [namehash(name)]);
