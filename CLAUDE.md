@@ -466,8 +466,12 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     stops ALL sales until restored. It was a pure cache before #424 — it is not
     one now. Since #563 a record also names its CONTRACT (chain, address,
     version) and mints/reads follow it, so do NOT wipe it at a contract cutover;
-    pre-#563 records are bare id strings, never rewritten. A build older than
-    #563 cannot load the new shape — back the file up before any rollback)
+    pre-#563 records are bare id strings, never rewritten. ROLLBACK HAZARD: a
+    build older than #563 loads the file only up to the first new-shape record
+    (a swallowed TypeError), boots normally, and on its next registration
+    OVERWRITES the file with that partial map — silently dropping every
+    registration #563 made after it. Back the file up before any rollback and
+    restore it before the old build records anything)
   kernel-deployed.json (which Kernels have been seen with an on-chain owner, WHICH
     owner, at which L2 block, and — since #489 — on which CHAIN: records are keyed
     `{chainId}:{address}` and a record from another chain is ignored, never deleted.
