@@ -40,7 +40,7 @@ import {
   EventContractConfigError,
 } from "../lib/chain/event-contract.js";
 import { checkSeriesOnChainBinding, resolveManifestDigest } from "../lib/event/onchain-binding.js";
-import { lookupOnChainEventId, registrationContractFor } from "../lib/event/onchain-registry.js";
+import { lookupOnChainEventId, saleContractFor } from "../lib/event/onchain-registry.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../lib/stripe/checkout-provenance.js";
@@ -626,18 +626,24 @@ stripe.post("/create-checkout", async (c) => {
   // record — never the feed, which the organiser signs (#424/#426). A successor
   // contract runs beside the old one, and today's env contract is where NEW
   // registrations go, not where this one necessarily lives. Fails CLOSED when
-  // no contract can be named: a mint target is not something to guess.
-  const mintTarget = registrationContractFor(eventId, seriesId);
-  if (!mintTarget) {
+  // no contract can be named (a mint target is not something to guess) and
+  // when the record is on another chain than the active one (a live charge
+  // mints only on the active chain) — before any read of that other chain.
+  const sale = saleContractFor(eventId, seriesId);
+  if (!sale.ok) {
     console.error(
-      `[stripe/create-checkout] BLOCKED — no events contract resolvable for this registration; ` +
-      `refusing to charge (eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)})`,
+      `[stripe/create-checkout] BLOCKED — ` +
+      (sale.reason === "other-chain"
+        ? `registration is on ${contractKey(sale.contract)}, the active chain is ${sale.activeChainId}`
+        : `no events contract resolvable for this registration`) +
+      `; refusing to charge (eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)})`,
     );
     return c.json(
       { ok: false, error: "Tickets for this event are not currently on sale. Please contact the organiser." },
       409,
     );
   }
+  const mintTarget = sale.contract;
 
   // Past-event gate (#241). The "This event has ended" banner is client-side
   // only — a stale tab, deep link, or direct API call otherwise reaches a

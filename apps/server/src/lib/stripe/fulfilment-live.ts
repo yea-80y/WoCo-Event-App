@@ -13,7 +13,7 @@ import { getStripe } from "./client.js";
 import { hashEmail } from "../event/claim-service.js";
 import { getEvent } from "../event/service.js";
 import { chainEventEndMsAt } from "../event/end-date-guard.js";
-import { lookupOnChainEventId, registrationContractFor } from "../event/onchain-registry.js";
+import { lookupOnChainEventId, saleContractFor } from "../event/onchain-registry.js";
 import { recordHeld, markVoid } from "./payout-ledger.js";
 import { getOrganiserByStripeAccount } from "./accounts.js";
 import { uploadToBytes } from "../swarm/bytes.js";
@@ -34,7 +34,7 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   getEvent,
   chainEventEndMs: (onChainEventId, contract) => chainEventEndMsAt(contract, onChainEventId),
   lookupOnChainEventId,
-  registrationContractFor,
+  saleContractFor,
   recordHeldPayout: (entry) => {
     recordHeld(entry);
   },

@@ -233,10 +233,12 @@ export class RegistrationRebindError extends Error {
  * call site.
  *
  * CONTRACT CUTOVER: since #563 a record names its contract, so a flip of
- * `WOCO_EVENT_VERSION_*` or `WOCO_EVENT_CHAIN_ID` no longer strands it — its
- * mints and reads keep going to the contract it was made on, and only NEW
- * registrations go to the new one. Do NOT wipe `onchain-events.json` at a
- * cutover: that is what would strand them. Records from before #563 carry no
+ * `WOCO_EVENT_VERSION_*` no longer strands it — its mints and reads keep going
+ * to the contract it was made on, and only NEW registrations go to the new one.
+ * A flip of `WOCO_EVENT_CHAIN_ID` is different on purpose: a record on another
+ * chain still VERIFIES there, but is never charged or minted (`saleContractFor`).
+ * Do NOT wipe `onchain-events.json` at either: that is what would strand the
+ * old tickets' verification. Records from before #563 carry no
  * contract and resolve through `legacyEventContract`, which covers a flip to
  * the ledger on the same chain. One written on a different chain than today's
  * is read on today's chain, where its id does not exist — stale, as every
@@ -357,6 +359,30 @@ export function lookupOnChainEventId(eventId: string, seriesId: string): string 
 export function registrationContractFor(eventId: string, seriesId: string): EventContractTarget | undefined {
   ensureLoaded();
   return byEventSeries.get(key(eventId, seriesId))?.contract ?? legacyEventContract();
+}
+
+export type SaleContract =
+  | { ok: true; contract: EventContractTarget }
+  | { ok: false; reason: "no-contract" }
+  | { ok: false; reason: "other-chain"; contract: EventContractTarget; activeChainId: number };
+
+/**
+ * The contract a CHARGE may mint on: the registration's own
+ * (`registrationContractFor`), and only while it is on the ACTIVE chain.
+ *
+ * A record names its chain, so after `WOCO_EVENT_CHAIN_ID` moves a record from
+ * the old chain still resolves — and the old chain's RPC is still configured.
+ * Without this, a live Stripe charge would validate against, and mint on, the
+ * previous (test) chain. Reads that only VERIFY (the door, /t, delete-safety)
+ * keep following the record: an old ticket stays verifiable, it just can no
+ * longer be sold.
+ */
+export function saleContractFor(eventId: string, seriesId: string): SaleContract {
+  const contract = registrationContractFor(eventId, seriesId);
+  if (!contract) return { ok: false, reason: "no-contract" };
+  const activeChainId = getActiveChainId();
+  if (contract.chainId !== activeChainId) return { ok: false, reason: "other-chain", contract, activeChainId };
+  return { ok: true, contract };
 }
 
 /**

@@ -145,7 +145,7 @@ type Step =
   | "getEvent"
   | "chainEventEndMs"
   | "lookupOnChainEventId"
-  | "registrationContractFor"
+  | "saleContractFor"
   | "recordHeldPayout"
   | "getOrganiserByStripeAccount"
   | "uploadToBytes"
@@ -179,10 +179,9 @@ interface FakeOpts {
    */
   recorded?: string | null;
   /**
-   * The contract the registration record names (#563). Default
-   * RECORDED_CONTRACT; `null` = nothing can name one.
+   * What `saleContractFor` answers (#563). Default: ok, RECORDED_CONTRACT.
    */
-  contract?: typeof RECORDED_CONTRACT | { chainId: number; address: string; version: "v1" | "v2" | "ledger" } | null;
+  sale?: ReturnType<FulfilmentDeps["saleContractFor"]>;
   /** Contract batch cap. Default 100 (one chunk for any test quantity). */
   batchMax?: number;
   /** Chunk index (0-based) at which batchClaimFor reverts. Default: never. */
@@ -245,9 +244,9 @@ function fakeDeps(o: FakeOpts = {}) {
       boom("lookupOnChainEventId");
       return o.recorded === undefined ? ON_CHAIN_EVENT_ID : o.recorded;
     },
-    registrationContractFor: () => {
-      boom("registrationContractFor");
-      return o.contract === undefined ? RECORDED_CONTRACT : (o.contract ?? undefined);
+    saleContractFor: () => {
+      boom("saleContractFor");
+      return o.sale ?? { ok: true, contract: RECORDED_CONTRACT };
     },
     recordHeldPayout: (entry) => {
       boom("recordHeldPayout");
@@ -741,14 +740,27 @@ describe("stop reasons", () => {
   });
 
   test("no contract can be named: refund, never a guessed mint", async () => {
-    const { f, outcome } = await run({}, { contract: null });
+    const { f, outcome } = await run({}, { sale: { ok: false, reason: "no-contract" } });
     assert.equal(outcome.stoppedReason, "No events contract to mint on — refunding");
     assert.equal(f.calls.includes("batchClaimForOnChain"), false);
     assert.equal(outcome.refund.kind, "created");
   });
 
+  test("a registration on another chain than the active one refunds — a live charge never mints there", async () => {
+    // A session created before a chain flip and paid after it.
+    const { f, outcome } = await run(
+      { onChainContract: RECORDED_CONTRACT_KEY },
+      { sale: { ok: false, reason: "other-chain", contract: RECORDED_CONTRACT, activeChainId: 42161 } },
+    );
+    assert.equal(outcome.issued, 0);
+    assert.equal(outcome.stoppedReason, "Ticket registration is on another chain — refunding");
+    assert.equal(f.calls.includes("batchClaimForOnChain"), false);
+    assert.equal(f.calls.includes("chainEventEndMs"), false, "the other chain is not even read");
+    assert.equal(outcome.refund.kind, "created");
+  });
+
   test("the contract lookup throwing refunds, and never rejects", async () => {
-    const { f, outcome } = await run({}, { fail: "registrationContractFor" });
+    const { f, outcome } = await run({}, { fail: "saleContractFor" });
     assert.equal(outcome.issued, 0);
     assert.equal(f.calls.includes("batchClaimForOnChain"), false);
     assert.equal(outcome.refund.kind, "created");
@@ -925,7 +937,7 @@ describe("every collaborator throws", () => {
 test("never rejects, whichever step throws", async () => {
   const steps: Step[] = [
     "hashEmail", "resolveSiteEventSigner", "getEvent", "chainEventEndMs", "lookupOnChainEventId",
-    "registrationContractFor", "recordHeldPayout",
+    "saleContractFor", "recordHeldPayout",
     "getOrganiserByStripeAccount", "uploadToBytes", "generateBurner",
     "signMessage", "batchClaimForOnChain", "bindTicket", "consumeReservation", "createRefund",
     "markPayoutVoid", "captureCheckoutConsent", "recordAttendeeEmail", "getSiteTheme", "sendTicketEmail",

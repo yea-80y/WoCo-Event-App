@@ -41,6 +41,7 @@ import type { GateBinding } from "../gate/store.js";
 import type { CaptureConsentInput } from "../marketing/consent-capture.js";
 import type { TicketEmailOpts } from "../../routes/tickets.js";
 import { contractKey, type EventContractTarget } from "../chain/event-contract.js";
+import type { SaleContract } from "../event/onchain-registry.js";
 
 // ---------------------------------------------------------------------------
 // Inputs
@@ -89,10 +90,11 @@ export interface FulfilmentDeps {
 
   /**
    * The contract this server's registration record says the series lives on
-   * (#563) — the mint target. Zero I/O. `undefined` when nothing can name one;
-   * the caller refunds rather than guess.
+   * (#563) — the mint target — provided it is on the active chain. Zero I/O.
+   * Anything but `ok` refunds: nothing can name a contract, or the record is on
+   * another chain than the one a live charge may mint on.
    */
-  registrationContractFor(eventId: string, seriesId: string): EventContractTarget | undefined;
+  saleContractFor(eventId: string, seriesId: string): SaleContract;
 
   /**
    * The on-chain event THIS server registered for a series — its own
@@ -466,14 +468,24 @@ export async function fulfilPaidSession(
   // this shipped carries none and follows the record.
   let mintContract: EventContractTarget | undefined;
   if (isV2 && !bindingStopReason) {
+    let sale: SaleContract | null = null;
     try {
-      mintContract = deps.registrationContractFor(eventId, seriesId);
+      sale = deps.saleContractFor(eventId, seriesId);
     } catch (err) {
       console.error("[fulfilment] registration-contract lookup threw — refunding:", err);
     }
+    if (sale?.ok) mintContract = sale.contract;
     const validatedContract =
       typeof metaOnChainContract === "string" && metaOnChainContract.length > 0 ? metaOnChainContract : null;
-    if (!mintContract) {
+    if (sale && !sale.ok && sale.reason === "other-chain") {
+      // A session created before a chain flip and paid after it: the charge is
+      // live on the new chain, the registration is not.
+      console.error(
+        `[fulfilment] BLOCKED — registration is on ${contractKey(sale.contract)}, the active chain is ` +
+        `${sale.activeChainId} (eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)}) — refunding (see #563)`,
+      );
+      bindingStopReason = "Ticket registration is on another chain — refunding";
+    } else if (!mintContract) {
       console.error(
         `[fulfilment] BLOCKED — no events contract to mint on ` +
         `(eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)}) — refunding (see #563)`,

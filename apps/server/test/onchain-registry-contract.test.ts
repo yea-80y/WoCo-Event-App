@@ -149,6 +149,27 @@ test("THE CUTOVER: after env flips to the ledger, every existing registration st
   }
 });
 
+test("a charge may mint only on the ACTIVE chain — a record on another chain is refused for sale", () => {
+  assert.deepEqual(registry.saleContractFor(NEW_EVENT, NEW_SERIES), { ok: true, contract: v2Target });
+  setEnv("WOCO_EVENT_CHAIN_ID", "42161");
+  try {
+    // The chain flip: the record still names 421614, and still resolves...
+    assert.deepEqual(registry.registrationContractFor(NEW_EVENT, NEW_SERIES), v2Target);
+    // ...for the reads that verify, but not for a charge.
+    assert.deepEqual(registry.saleContractFor(NEW_EVENT, NEW_SERIES), {
+      ok: false,
+      reason: "other-chain",
+      contract: v2Target,
+      activeChainId: 42161,
+    });
+    // A legacy record has no V2 on 42161 to resolve to: nothing to sell against.
+    const [e, s] = LEGACY_KEY.split("|");
+    assert.deepEqual(registry.saleContractFor(e, s), { ok: false, reason: "no-contract" });
+  } finally {
+    setEnv("WOCO_EVENT_CHAIN_ID", String(CHAIN));
+  }
+});
+
 test("the snapshot's resolution entries carry the contract when the record has one", () => {
   const entries = registry.getAllResolutionEntries() as Array<Record<string, unknown>>;
   const pinned = entries.find((e) => e.onChainEventId === NEW_ID)!;

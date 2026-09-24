@@ -139,9 +139,11 @@ from the manifest — so registering the same series twice creates two events. T
 **Which contract** (#563) is part of the same record: each registration names the chain, address
 and version it was made on, and the mint, every pre-charge read, the door pack, `/t` and
 delete-safety follow it (`registrationContractFor`). A successor contract therefore runs beside
-the old one — only new registrations go to the env-selected contract. Records from before #563
-carry no contract and resolve to today's env contract, or to the chain's V2 once env selects the
-ledger (`legacyEventContract`).
+the old one — only new registrations go to the env-selected contract. A charge, though, mints
+only on the ACTIVE chain (`saleContractFor`): after a `WOCO_EVENT_CHAIN_ID` flip a record on the
+old chain still verifies at the door and on `/t`, but create-checkout refuses it and fulfilment
+refunds a session paid across the flip. Records from before #563 carry no contract and resolve to
+today's env contract, or to the chain's V2 once env selects the ledger (`legacyEventContract`).
 
 **The ledger's hourly mint cap** (#662): create-checkout refuses a sale the sponsor's
 `sponsorMintAllowance` cannot mint (read uncached), and names a retry time only when waiting

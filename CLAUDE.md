@@ -465,7 +465,8 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     only, and a registered series never re-enters the tier-3 fill. Losing it
     stops ALL sales until restored. It was a pure cache before #424 — it is not
     one now. Since #563 a record also names its CONTRACT (chain, address,
-    version) and mints/reads follow it, so do NOT wipe it at a contract cutover;
+    version) and mints/reads follow it, so do NOT wipe it at a contract cutover
+    (at a CHAIN flip a record on the old chain still verifies, never sells);
     pre-#563 records are bare id strings, never rewritten. ROLLBACK HAZARD: a
     build older than #563 loads the file only up to the first new-shape record
     (a swallowed TypeError), boots normally, and on its next registration
