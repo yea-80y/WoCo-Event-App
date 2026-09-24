@@ -68,6 +68,7 @@ import {
   postageHealth,
   subEnsParentHealth,
   subEnsMintingHealth,
+  ticketMintingHealth,
 } from "./lib/health/probes.js";
 import { persistHealth } from "./lib/marketing/persist.js";
 import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.js";
@@ -350,6 +351,13 @@ app.get("/api/health", (c) =>
     // the server logged an exception among thousands. `rebindConflicts` counts
     // DISTINCT series stuck this way since boot, so a retry loop is one alarm.
     onchainRegistry: onchainRegistryHealth(),
+    // Whether paid checkouts can mint on the events contract (#662): the ticket
+    // sponsor still authorised, and on the ledger its hourly mint cap's headroom
+    // (`TICKET_MINT_ALLOWANCE_MIN`, default one maximum order). The checkout
+    // refuses a sale the cap cannot mint, so a spent or stopped cap reads from
+    // outside as "not on sale"; this says why. `mintable` falling with no sales
+    // to account for it is the leaked-key signal. Public on-chain data only.
+    ticketMinting: ticketMintingHealth(),
     // Cross-account issuer claims (#457). One issuing address belongs to one
     // account, but the server sees only addresses and cannot tell a squatter
     // from a client deriving the wrong key — so it refuses the second claimant

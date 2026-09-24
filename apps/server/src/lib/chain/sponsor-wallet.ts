@@ -352,6 +352,55 @@ export async function checkSponsorCanMint(
   return evaluateSponsorMint(true, await reads.readSponsorMintAllowance(target), quantity);
 }
 
+/** `WOCO_SPONSOR_PRIVATE_KEY` is not set: no paid checkout can mint. */
+export class SponsorKeyUnconfigured extends Error {
+  constructor() {
+    super("WOCO_SPONSOR_PRIVATE_KEY is not set");
+    this.name = "SponsorKeyUnconfigured";
+  }
+}
+
+/** What the env-selected events contract says about this server's ticket sponsor. */
+export interface TicketMintPolicy {
+  contract: EventContractTarget;
+  /** Lowercased. */
+  sponsor: string;
+  sponsorAuthorised: boolean;
+  /** `"no-cap"` on a version without the cap (V1, V2). */
+  allowance: SponsorMintAllowance | "no-cap";
+}
+
+/**
+ * For `/api/health` `ticketMinting` (#662). Both halves read UNCACHED: the
+ * checkout gate caches a positive authorisation for ten minutes, and a watch
+ * that shared the cache would report a removed sponsor as authorised as long.
+ */
+export async function readTicketMintPolicy(): Promise<TicketMintPolicy> {
+  const chainId = getActiveChainId();
+  const contract = getDefaultEventContract(chainId);
+  if (!contract) throw new EventContractConfigError(`no events contract on chain ${chainId}`);
+  if (!process.env.WOCO_SPONSOR_PRIVATE_KEY) throw new SponsorKeyUnconfigured();
+  const sponsor = getSponsorAddress();
+  let sponsorAuthorised: boolean;
+  switch (contract.version) {
+    case "v1":
+      sponsorAuthorised = true; // deploy-time authorisation; nothing to read
+      break;
+    case "v2":
+      sponsorAuthorised = await isSponsorAuthorisedV2(sponsor, contract.address, chainId);
+      break;
+    case "ledger": {
+      const { isSponsorAuthorisedLedger } = await import("./event-contract-ledger.js");
+      sponsorAuthorised = await isSponsorAuthorisedLedger(sponsor, contract.address, chainId);
+      break;
+    }
+    default:
+      return unhandledVersion(contract.version, "readTicketMintPolicy");
+  }
+  const allowance = contract.version === "ledger" ? await readSponsorMintAllowance(contract) : ("no-cap" as const);
+  return { contract, sponsor: sponsor.toLowerCase(), sponsorAuthorised, allowance };
+}
+
 /**
  * Boot-time readiness probe. Logs loudly if the sponsor can't mint on the
  * active contract so a misconfigured deploy is caught immediately rather than
