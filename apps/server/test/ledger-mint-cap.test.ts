@@ -114,7 +114,7 @@ test("any other refusal is not read as the cap", () => {
 // ---------------------------------------------------------------------------
 
 test("a stopped sponsor (perHour 0) is NEVER given a retry time", () => {
-  const r = mintCapRefusal({ perHour: 0, windowResetsAt: RESETS_AT });
+  const r = mintCapRefusal({ perHour: 0, windowResetsAt: RESETS_AT, quantity: 1 });
   assert.equal(r.stopped, true);
   assert.equal(r.retryAt, null);
   assert.doesNotMatch(r.message, /resets at|retry/i);
@@ -123,22 +123,30 @@ test("a stopped sponsor (perHour 0) is NEVER given a retry time", () => {
 });
 
 test("an unreadable cap withholds the retry time — it might be a stop", () => {
-  const r = mintCapRefusal({ perHour: null, windowResetsAt: RESETS_AT });
+  const r = mintCapRefusal({ perHour: null, windowResetsAt: RESETS_AT, quantity: 1 });
   assert.equal(r.stopped, null);
   assert.equal(r.retryAt, null);
   assert.doesNotMatch(r.message, /resets at/);
 });
 
 test("an exhausted window names when it resets", () => {
-  const r = mintCapRefusal({ perHour: 50, windowResetsAt: RESETS_AT });
+  const r = mintCapRefusal({ perHour: 50, windowResetsAt: RESETS_AT, quantity: 50 });
   assert.equal(r.stopped, false);
   assert.equal(r.retryAt, RESETS_AT);
   assert.match(r.message, /50\/h/);
   assert.match(r.message, new RegExp(new Date(RESETS_AT * 1000).toISOString()));
 });
 
+test("a mint bigger than the whole hourly cap is never given a retry time — it never fits", () => {
+  const r = mintCapRefusal({ perHour: 5, windowResetsAt: RESETS_AT, quantity: 6 });
+  assert.equal(r.retryAt, null);
+  assert.equal(r.stopped, false);
+  assert.doesNotMatch(r.message, /resets at/);
+  assert.match(r.message, /larger than the sponsor's whole hourly cap \(5\/h\)/);
+});
+
 test("the error thrown to fulfilment carries the refusal as its message", () => {
-  const e = new MintCapExceededError(mintCapRefusal({ perHour: 0, windowResetsAt: RESETS_AT }));
+  const e = new MintCapExceededError(mintCapRefusal({ perHour: 0, windowResetsAt: RESETS_AT, quantity: 1 }));
   assert.equal(e.name, "MintCapExceededError");
   assert.equal(e.stopped, true);
   assert.match(e.message, /stopped/);

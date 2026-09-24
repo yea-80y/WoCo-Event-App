@@ -219,9 +219,12 @@ export function decodeMintCapExceeded(err: unknown): { sponsor: string; windowRe
  * `perHour` is read AFTER the revert and is the whole point of this function:
  * when it is 0 the owner has stopped the sponsor and the window reset lifts
  * nothing, so naming a retry time would be a false promise. When it could not
- * be read (`null`) the time is withheld for the same reason.
+ * be read (`null`) the time is withheld for the same reason, and so it is for a
+ * mint of more slots than a whole window allows — `quantity` never fits, and
+ * the contract's `windowResetsAt` may even name a window its own call opened.
+ * The same three cases the pre-charge gate withholds (`evaluateSponsorMint`).
  */
-export function mintCapRefusal(r: { perHour: number | null; windowResetsAt: number }): {
+export function mintCapRefusal(r: { perHour: number | null; windowResetsAt: number; quantity: number }): {
   stopped: boolean | null;
   retryAt: number | null;
   message: string;
@@ -242,6 +245,15 @@ export function mintCapRefusal(r: { perHour: number | null; windowResetsAt: numb
       message:
         "sponsor hourly mint cap reached on the events contract — its cap could not be read, " +
         "so whether it has been stopped is unknown",
+    };
+  }
+  if (r.quantity > r.perHour) {
+    return {
+      stopped: false,
+      retryAt: null,
+      message:
+        `a mint of ${r.quantity} is larger than the sponsor's whole hourly cap (${r.perHour}/h) on the ` +
+        `events contract — it cannot fit any window`,
     };
   }
   return {
@@ -285,6 +297,7 @@ async function explainMintFailure(
   sponsor: string,
   contractAddress: string,
   chainId: number,
+  quantity: number,
 ): Promise<never> {
   const cap = decodeMintCapExceeded(err);
   if (!cap) {
@@ -298,7 +311,7 @@ async function explainMintFailure(
   } catch (readErr) {
     console.warn("[sponsor ledger] mint cap hit; allowance read failed:", readErr);
   }
-  const refusal = mintCapRefusal({ perHour, windowResetsAt: cap.windowResetsAt });
+  const refusal = mintCapRefusal({ perHour, windowResetsAt: cap.windowResetsAt, quantity });
   console.error(`[sponsor ledger] mint REFUSED — ${refusal.message}`);
   throw new MintCapExceededError(refusal);
 }
@@ -455,7 +468,7 @@ export async function claimForLedger(
       (o) => contract.claimFor(onChainEventId, burnerAddress, orderRefBytes32, o),
     );
   } catch (err) {
-    return explainMintFailure(err, wallet.address, contractAddress, chainId);
+    return explainMintFailure(err, wallet.address, contractAddress, chainId, 1);
   }
   const receipt = await tx.wait(1);
   if (!receipt) throw new Error("No receipt from ledger claimFor tx");
@@ -490,7 +503,7 @@ export async function batchClaimForLedger(
       (o) => contract.batchClaimFor(onChainEventId, burners, orderRefBytes32, o),
     );
   } catch (err) {
-    return explainMintFailure(err, wallet.address, contractAddress, chainId);
+    return explainMintFailure(err, wallet.address, contractAddress, chainId, burners.length);
   }
   const receipt = await tx.wait(1);
   if (!receipt) throw new Error("No receipt from ledger batchClaimFor tx");

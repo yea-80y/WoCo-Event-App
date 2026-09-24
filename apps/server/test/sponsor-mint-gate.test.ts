@@ -322,6 +322,20 @@ test("a mint refused by a spent window is explained with its reset time", async 
   );
 });
 
+test("a batch bigger than the whole cap is explained with no retry time", async () => {
+  answer = mintReverting(iface.encodeErrorResult("MintCapExceeded", [SPONSOR, NOW_S]), 1);
+  const two = ["0x" + "22".repeat(20), "0x" + "23".repeat(20)];
+  await assert.rejects(
+    () => batchClaimForLedger("0x" + "a5".repeat(32), two, "0x" + "33".repeat(32), LEDGER.address, SPONSOR_KEY, CHAIN),
+    (err) => {
+      assert.ok(err instanceof MintCapExceededError);
+      assert.equal(err.retryAt, null);
+      assert.match(err.message, /mint of 2 is larger/);
+      return true;
+    },
+  );
+});
+
 test("any other mint revert is named, not read as the cap — ethers alone says 'unknown custom error'", async () => {
   answer = mintReverting(iface.encodeErrorResult("SalesClosed", []), 25);
   await assert.rejects(
