@@ -1,4 +1,5 @@
 import type { Hex0x, UserProfile, UpdateProfileRequest } from "@woco/shared";
+import { mergeProfileText } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
 import { batchForUserContent } from "../etherna/batch-router.js";
 import {
@@ -85,11 +86,7 @@ export async function updateProfile(
   const profile: UserProfile = {
     v: 1,
     address: addr,
-    displayName: updates.displayName ?? existing?.displayName,
-    bio: updates.bio ?? existing?.bio,
-    website: updates.website ?? existing?.website,
-    twitterHandle: updates.twitterHandle ?? existing?.twitterHandle,
-    farcasterHandle: updates.farcasterHandle ?? existing?.farcasterHandle,
+    ...mergeProfileText(updates, existing),
     subEnsLabel: resolveSubEnsLabelUpdate(updates.subEnsLabel, existing?.subEnsLabel),
     updatedAt: new Date().toISOString(),
   };

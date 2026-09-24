@@ -21,6 +21,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   contentFeedSocIdentifier,
+  mergeProfileText,
   profileDataContentTopic,
   readVersionedContentFeed,
   versionedSocIdentifier,
@@ -186,11 +187,18 @@ test("the form sends only what was changed, never the stale values it merely dis
   assert.deepEqual(changedProfileFields({ ...LOADED, bio: "old bio" }, LOADED), {}, "changed back = unchanged");
 });
 
-test("a cleared field is not sent, so it keeps its current value", () => {
-  // Clearing has no representation in the merge yet (#652); sending "" would store "",
-  // and sending undefined is what the form did before - keep. Pinned so a change
-  // to either is deliberate.
-  assert.deepEqual(changedProfileFields({ ...LOADED, twitterHandle: "" }, LOADED), {});
+test("a field the user emptied is sent as null, and the save removes it (#652)", () => {
+  const changes = changedProfileFields({ ...LOADED, twitterHandle: "" }, LOADED);
+  assert.deepEqual(changes, { twitterHandle: null });
+  const saved = mergeProfileText(changes, { displayName: "Nabil", bio: "old bio", twitterHandle: "nabil" });
+  assert.deepEqual(saved, { displayName: "Nabil", bio: "old bio" });
+});
+
+test("an empty field the user never touched is not sent, so an empty form cannot clear anything (#171)", () => {
+  // The form loads empty when its read fails. Only a field the user changed may
+  // be cleared; everything else must keep what the profile holds.
+  const blank: ProfileFormFields = { displayName: "", bio: "", website: "", twitterHandle: "", farcasterHandle: "" };
+  assert.deepEqual(changedProfileFields({ ...blank, displayName: "Nabil" }, blank), { displayName: "Nabil" });
 });
 
 // ---------------------------------------------------------------------------
@@ -218,6 +226,9 @@ test("the profile save reads its base from Etherna and merges only onto what the
   assert.match(baseRead, /thorough:\s*true/);
   assert.match(baseRead, /gatewayUrl:\s*ETHERNA_GATEWAY_URL/);
   assert.match(save, /const base = profileSaveBase\(existingRead\);\s*if \(!base\.ok\) throw new Error\(base\.error\);\s*const existing = base\.base;/);
+  // The text fields go through the shared rule, the same one the server uses (#652).
+  assert.match(save, /\.\.\.mergeProfileText\(updates, existing\)/);
+  assert.doesNotMatch(save, /updates\.(?:displayName|bio|website|twitterHandle|farcasterHandle) \?\?/);
 });
 
 const page = () => code(src("../src/lib/components/profile/ProfilePage.svelte"));

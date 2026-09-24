@@ -26,6 +26,7 @@ export * from "./issuer/types.js";
 export * from "./ticket/canonical.js";
 export * from "./checkin/types.js";
 export * from "./profile/types.js";
+export * from "./profile/merge.js";
 export * from "./site/index.js";
 export * from "./shop/types.js";
 export * from "./shop/topics.js";
