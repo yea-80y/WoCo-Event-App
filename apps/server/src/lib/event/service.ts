@@ -152,7 +152,7 @@ export async function createEventV2(opts: {
   // throws before any batch is chosen, any gate is chain-read or anything is written.
   if (!FEATURES.badgesAllowed) {
     const gated = series.find((s) => s.gate);
-    if (gated) throw new Error(`Series ${gated.seriesId}: badge-gated tickets are not available yet`);
+    if (gated) throw new Error(`Series ${gated.seriesId}: gated ticket sales are not available yet`);
   }
 
   // New events are stored on Etherna (owner decision 2026-09-22): no gateway means

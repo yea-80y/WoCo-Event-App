@@ -12,7 +12,7 @@
 
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -70,8 +70,24 @@ test("event create refuses a badge-gated series before choosing storage or readi
   const gate = { mode: "any", gates: [] };
   await assert.rejects(
     createWith([{ seriesId: "s-open-0001", totalSupply: 1 }, { seriesId: "s-gated-0001", totalSupply: 1, gate }]),
-    /Series s-gated-0001: badge-gated tickets are not available yet/,
+    /Series s-gated-0001: gated ticket sales are not available yet/,
   );
+});
+
+test("the gated-series refusal runs before storage is chosen, a gate is chain-read, or anything is uploaded", () => {
+  // Text order, as in object-mint-budget.test.ts: the property is where the
+  // check sits in createEventV2, which no behavioural test here can reach past.
+  const src = readFileSync(new URL("../src/lib/event/service.ts", import.meta.url), "utf-8");
+  const body = src.slice(src.indexOf("export async function createEventV2("));
+  const at = (needle: string) => {
+    const i = body.indexOf(needle);
+    assert.ok(i > 0, `createEventV2 is missing ${needle}`);
+    return i;
+  };
+  const refusal = at("gated ticket sales are not available yet");
+  assert.ok(refusal < at("batchForDeploy("), "before a batch is chosen");
+  assert.ok(refusal < at("validateObjectGate("), "before a gate is chain-read");
+  assert.ok(refusal < at("uploadToBytes("), "before anything is uploaded");
 });
 
 test("an ungated event gets past the badge check", async () => {
