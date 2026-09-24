@@ -2,6 +2,7 @@ import type { Site, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, EventFe
 import { siteConfigTopic, multisiteFeedTopic, beeFeedUpdateIdentifier } from "@woco/shared";
 import { authPost, authDelete, authGet, get } from "./client.js";
 import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
+import { feedRouteFor } from "../swarm/gateways.js";
 import { signAndUploadSoc } from "../swarm/client-soc.js";
 
 export interface SiteEventsFull {
@@ -30,7 +31,7 @@ export async function publishSite(
       signerPrivKey: feedSigner.privKey,
       topic: siteConfigTopic(site.siteId),
       data: { ...site, updatedAt: Date.now() },
-      ...gw,
+      route: feedRouteFor(gatewayUrl),
     });
     return authPost<{ siteId: string }>("/api/sites", { site, events, siteFeedSigner: feedSigner.address, ...gw });
   }

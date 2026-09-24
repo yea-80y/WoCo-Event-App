@@ -30,6 +30,7 @@ import {
   writeContentFeed,
   type ContentFeedResult,
 } from "../swarm/content-feed.js";
+import { FEED_ROUTES } from "../swarm/gateways.js";
 import { openFromSelf, sealToSelf } from "./self-seal.js";
 import { mergeFeedEntry, removeFeedEntry, restoreFeedEntry, retireBackupEntries, retireOneBackupEntry } from "./ops.js";
 
@@ -93,7 +94,7 @@ export async function readUserManifestResult(args: {
   readFeed?: (owner: string, topic: string, opts: { thorough?: boolean }) => Promise<ContentFeedResult<unknown>>;
 }): Promise<ManifestReadResult> {
   const readFeed = args.readFeed ??
-    ((owner, topic, opts) => readContentFeedResult<unknown>(owner, topic, opts));
+    ((owner, topic, opts) => readContentFeedResult<unknown>(owner, topic, { ...opts, route: FEED_ROUTES.manifest }));
   const read = await readFeed(args.signer.address, USER_MANIFEST_TOPIC, { thorough: args.thorough })
     .catch((e: unknown): ContentFeedResult<unknown> => ({ status: "unavailable", reason: String(e) }));
   if (read.status === "unavailable") {
@@ -164,6 +165,7 @@ async function writeUserManifest(args: {
     signerPrivKey: args.signer.privKey,
     topic: USER_MANIFEST_TOPIC,
     data: envelope,
+    route: FEED_ROUTES.manifest,
   });
 }
 
@@ -284,7 +286,8 @@ export async function diagnoseManifest(args: {
   if (unusableAt < 1) return { kind: "frozen", unusableAt, newerFormat, seed: null, walked: 0 };
 
   const readAt: VersionReader = args.readAt ??
-    ((owner, topic, version, opts) => readContentFeedAtVersion<unknown>(owner, topic, version, opts));
+    ((owner, topic, version, opts) =>
+      readContentFeedAtVersion<unknown>(owner, topic, version, { ...opts, route: FEED_ROUTES.manifest }));
   const floor = Math.max(0, unusableAt - MANIFEST_REPAIR_WALK_LIMIT);
   let walked = 0;
   for (let v = unusableAt - 1; v >= floor; v--) {

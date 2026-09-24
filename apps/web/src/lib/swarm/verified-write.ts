@@ -35,6 +35,7 @@ import {
   type SocChunkProbe,
 } from "@woco/shared";
 import { writeContentFeed } from "./content-feed.js";
+import type { FeedRoute } from "./gateways.js";
 
 export type VerifiedWriteResult =
   /** Our bytes are what this version of the feed holds. */
@@ -91,7 +92,8 @@ export async function writeContentFeedVerified(args: {
   ownerAddress: string;
   topic: string;
   data: unknown;
-  gatewayUrl?: string;
+  /** Where the feed is stamped; the read-back asks the same node. See {@link FeedRoute}. */
+  route: FeedRoute;
   /**
    * FORWARDED to `writeContentFeed` — see its doc for when this is safe. As on
    * {@link writeContentFeedSettling}, it is safer through this entry point than
@@ -112,14 +114,14 @@ async function writeAndVerify(args: {
   ownerAddress: string;
   topic: string;
   data: unknown;
-  gatewayUrl?: string;
+  route: FeedRoute;
   knownVersion?: number;
 }): Promise<VerifiedWriteResult> {
   const version = await writeContentFeed({
     signerPrivKey: args.signerPrivKey,
     topic: args.topic,
     data: args.data,
-    ...(args.gatewayUrl ? { gatewayUrl: args.gatewayUrl } : {}),
+    route: args.route,
     ...(args.knownVersion !== undefined ? { knownVersion: args.knownVersion } : {}),
   });
   return verifyLanded(args, version);
@@ -134,7 +136,7 @@ async function writeAndVerify(args: {
  * routine — a gateway having a bad minute.
  */
 async function verifyLanded(
-  args: { ownerAddress: string; topic: string; data: unknown; gatewayUrl?: string },
+  args: { ownerAddress: string; topic: string; data: unknown; route: FeedRoute },
   version: number,
 ): Promise<VerifiedWriteResult> {
  try {
@@ -150,7 +152,7 @@ async function verifyLanded(
   // this read-back exists to catch - reads as a routine `unconfirmed` and the
   // caller never replays.
   const { probeSoc } = await import("./client-soc.js");
-  const read: SocChunkProbe = (id) => probeSoc(args.ownerAddress, id, { thorough: true, gatewayUrl: args.gatewayUrl });
+  const read: SocChunkProbe = (id) => probeSoc(args.ownerAddress, id, { thorough: true, gatewayUrl: args.route.gatewayUrl });
 
   let lastReason = "read-back did not resolve";
 
@@ -220,7 +222,8 @@ export function writeContentFeedSettling(args: {
   ownerAddress: string;
   topic: string;
   data: unknown;
-  gatewayUrl?: string;
+  /** Where the feed is stamped; the read-back asks the same node. See {@link FeedRoute}. */
+  route: FeedRoute;
   /**
    * FORWARDED to `writeContentFeed` — see its doc for when this is safe. It is
    * safe through THIS entry point in a way it is not through a bare write: the
@@ -244,7 +247,7 @@ export function writeContentFeedSettling(args: {
         signerPrivKey: args.signerPrivKey,
         topic: args.topic,
         data: args.data,
-        ...(args.gatewayUrl ? { gatewayUrl: args.gatewayUrl } : {}),
+        route: args.route,
         ...(args.knownVersion !== undefined ? { knownVersion: args.knownVersion } : {}),
       });
     } catch (e) {

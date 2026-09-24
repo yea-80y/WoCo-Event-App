@@ -17,6 +17,7 @@ import {
   type GuardianAccountIndex,
 } from "@woco/shared";
 import { readContentFeedResult, writeContentFeed, type ContentFeedResult } from "./content-feed.js";
+import { FEED_ROUTES } from "./gateways.js";
 
 /**
  * Read the index a guardian SOC signer owns. Tri-state; bytes that are not an
@@ -30,6 +31,7 @@ export async function readGuardianAccountIndex(
   // The index postdates content-feed versioning, so there is no legacy chunk to
   // probe for — one fewer missing-chunk search per recovery.
   const res = await readContentFeedResult<unknown>(socOwnerAddress, GUARDIAN_ACCOUNT_INDEX_TOPIC, {
+    route: FEED_ROUTES.guardianIndex,
     skipLegacy: true,
     thorough: opts.thorough,
   });
@@ -73,6 +75,7 @@ export async function upsertGuardianAccountIndex(args: {
     signerPrivKey: args.socSignerPrivKey,
     topic: GUARDIAN_ACCOUNT_INDEX_TOPIC,
     data: next.index,
+    route: FEED_ROUTES.guardianIndex,
   });
   return { status: "written", version };
 }

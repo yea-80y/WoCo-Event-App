@@ -10,7 +10,7 @@ import {
   readContentFeedResult,
   type ContentFeedResult,
 } from "../swarm/content-feed.js";
-import { ETHERNA_GATEWAY_URL } from "../swarm/gateways.js";
+import { FEED_ROUTES } from "../swarm/gateways.js";
 import { profileSaveBase } from "./profile-save.js";
 import { logFeedToManifest } from "../manifest/feed-log.js";
 import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../cache/cache.js";
@@ -80,8 +80,9 @@ interface ProfileMiss {
 async function readClientProfile(address: string, signer: string): Promise<UserProfile | null> {
   const addr = address.toLowerCase() as UserProfile["address"];
   const [data, avatar] = await Promise.all([
-    readContentFeed<UserProfile>(signer, profileDataContentTopic(addr)).catch(() => null),
-    readContentFeed<{ v: 1; avatarRef: string }>(signer, profileAvatarContentTopic(addr)).catch(() => null),
+    readContentFeed<UserProfile>(signer, profileDataContentTopic(addr), { route: FEED_ROUTES.profile }).catch(() => null),
+    readContentFeed<{ v: 1; avatarRef: string }>(signer, profileAvatarContentTopic(addr), { route: FEED_ROUTES.profile })
+      .catch(() => null),
   ]);
 
   let profile: UserProfile | null = data ?? null;
@@ -270,7 +271,7 @@ export async function updateProfile(
     // ROUTED to Etherna, where the write below lands: our bee sees an Etherna
     // write minutes later, so a second save inside that window would otherwise
     // merge onto the version BEFORE the first save and revert it (#651).
-    { thorough: true, gatewayUrl: ETHERNA_GATEWAY_URL },
+    { thorough: true, route: FEED_ROUTES.profile },
   ).catch((e: unknown): ContentFeedResult<UserProfile> => ({ status: "unavailable", reason: String(e) }));
   const base = profileSaveBase(existingRead);
   if (!base.ok) throw new Error(base.error);
@@ -293,7 +294,7 @@ export async function updateProfile(
     signerPrivKey: signer.privKey,
     topic: profileDataContentTopic(addr),
     data: profile,
-    gatewayUrl: ETHERNA_GATEWAY_URL,
+    route: FEED_ROUTES.profile,
   });
 
   void logFeedToManifest({ kind: "profile", topic: profileDataContentTopic(addr) });
@@ -327,7 +328,7 @@ export async function uploadAvatar(imageDataUrl: string): Promise<string> {
     signerPrivKey: signer.privKey,
     topic: profileAvatarContentTopic(parent),
     data: { v: 1, avatarRef },
-    gatewayUrl: ETHERNA_GATEWAY_URL,
+    route: FEED_ROUTES.profile,
   });
 
   // Log the NEW image ref as the entry's only ref — the manifest merge moves a

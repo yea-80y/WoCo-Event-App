@@ -25,6 +25,7 @@ import {
   readContentFeedResult,
   type ContentFeedResult,
 } from "./content-feed.js";
+import { FEED_ROUTES } from "./gateways.js";
 
 /**
  * Sign + upload the sealed recovery envelope as a guardian-owned SOC.
@@ -44,6 +45,7 @@ export async function uploadRecoveryEnvelopeSoc(args: {
     signerPrivKey: args.socSignerPrivKey,
     topic: recoveryContentTopic(args.kernelAddress),
     data: args.envelope,
+    route: FEED_ROUTES.recoveryEnvelope,
   });
 }
 
@@ -68,5 +70,7 @@ export async function readRecoveryEnvelopeSocResult(
   socOwnerAddress: string,
   kernelAddress: string,
 ): Promise<ContentFeedResult<RecoveryEnvelope>> {
-  return readContentFeedResult<RecoveryEnvelope>(socOwnerAddress, recoveryContentTopic(kernelAddress));
+  return readContentFeedResult<RecoveryEnvelope>(socOwnerAddress, recoveryContentTopic(kernelAddress), {
+    route: FEED_ROUTES.recoveryEnvelope,
+  });
 }
