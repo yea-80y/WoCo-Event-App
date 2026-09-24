@@ -41,14 +41,27 @@ type GatewayRead =
  * A chunk that fails verification is a MISS with no status, never a verdict:
  * it proves only that this source served something else, so the probe asks the
  * server. That is what the bee-js reader did too - it threw, without a status.
- * `verifyServedSoc` additionally requires span = payload length; every SOC this
- * probe reads carries its payload inline, and the server path already required
- * it.
+ *
+ * `verifyServedSoc` also requires span = payload length, which bee-js never
+ * checked on this path. The set that rule rejects is empty for real data: every
+ * writer puts the payload inline in a single SOC (`signAndUploadSoc` in
+ * client-soc.ts; the server relay's `uploadSignedSoc`, soc-upload.ts), a feed too
+ * big for one chunk writes each page as its own SOC (`writeContentFeed`), and the
+ * server read path already required it (soc-read.ts).
  */
 async function readFromGateway(owner: string, identifier: Uint8Array): Promise<GatewayRead> {
-  const address = bytesToHex(calculateSocAddress(identifier, hexToBytes(owner)));
+  // The bee-js reader threw on a malformed owner, so the probe asked the server,
+  // which refuses it (400) and the probe answered `unavailable`. Same here: never
+  // throw out of the probe, and never probe an address built from bad hex.
+  if (!/^[0-9a-f]{40}$/.test(owner)) {
+    return { kind: "miss", ourGateDenied: false, reason: "owner is not a 20-byte address" };
+  }
   try {
-    const res = await fetch(`${WOCO_GATEWAY_URL}/chunks/${address}`);
+    const address = bytesToHex(calculateSocAddress(identifier, hexToBytes(owner)));
+    // The Accept bee-js sent, so the gateway sees the same request it always has.
+    const res = await fetch(`${WOCO_GATEWAY_URL}/chunks/${address}`, {
+      headers: { accept: "application/json, text/plain, */*" },
+    });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       return {

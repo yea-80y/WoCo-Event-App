@@ -21,11 +21,12 @@
  * upstream saying no, which is "couldn't ask" — and #138/#156 exist because a
  * "couldn't ask" once got cached as an answer.
  *
- * Checked in two places because libraries disagree about what they surface.
- * The header is the clean signal (the proxy CORS-exposes `X-Chunk-Gate`), but
- * bee-js surfaces an error body more reliably than headers, so the body's
- * machine-readable `code` is the fallback. Prose is never matched — only the
- * code — so rewording the message cannot silently change trust behaviour.
+ * Checked in two places. The header is the clean signal (the proxy CORS-exposes
+ * `X-Chunk-Gate`, and the probe now reads over fetch, which sees it); the body's
+ * machine-readable `code` is the fallback for a response whose header the page is
+ * not allowed to read - an intermediary that drops the CORS exposure. Prose is
+ * never matched — only the code — so rewording the message cannot silently change
+ * trust behaviour.
  */
 /** The machine-readable code the proxy puts in a whitelist denial body. Matched
  *  exactly — never the human message, so rewording prose cannot change trust. */

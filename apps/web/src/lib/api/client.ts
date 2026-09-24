@@ -6,7 +6,6 @@ import { BASE, safeJson } from "./http.js";
 // The unauthenticated half lives in http.ts, free of the auth store (#658).
 export { apiBase, get, post } from "./http.js";
 
-
 /**
  * The siteId of the deployed organiser site this app is running inside, or
  * undefined when running in the main WoCo app. Sent with claim/reservation
@@ -19,7 +18,6 @@ export function currentSiteId(): string | undefined {
   if (typeof window === "undefined") return undefined;
   return window.SITE_CONFIG?.site?.siteId;
 }
-
 
 /**
  * Build the auth headers for an authenticated request.
@@ -328,5 +326,4 @@ export async function authStream(
   }
   return retried;
 }
-
 

@@ -91,6 +91,8 @@ function install(net: Net) {
       return hit ? new Response(hit.raw) : new Response("Not Found", { status: 404 });
     }
 
+    const any = url.match(/^\/api\/swarm\/soc\/([^/?]+)\/([^/?]+)/);
+    if (any && !/^[0-9a-f]{40}$/.test(any[1])) return Response.json({ ok: false, error: "Invalid owner" }, { status: 400 });
     const s = url.match(/^\/api\/swarm\/soc\/([0-9a-f]{40})\/([0-9a-f]{64})(?:\?gatewayUrl=([^&]+))?$/);
     if (s) {
       const address = hex(calculateSocAddress(unhex(s[2]), unhex(s[1])));
@@ -215,18 +217,48 @@ test("a gateway 404 is a verdict for a display read, and asked about again for a
   assert.equal(serverRequests().length, 1);
 });
 
-test("only OUR gate's 403 is a verdict; an untagged 403 is somebody upstream saying no", async () => {
-  const tagged = () => new Response(JSON.stringify({ error: "denied", code: "NOT_WHITELISTED" }), {
-    status: 403, headers: { "X-Chunk-Gate": "not-whitelisted" },
-  });
-  install({ ourBee: new Map(), etherna: new Map(), gateway: () => tagged() });
-  assert.equal((await probeSoc(OWNER, at(0))).status, "absent");
-  assert.deepEqual(serverRequests(), []);
+test("our gate's 403 is a verdict for a display read - by its header alone, or its body code alone", async () => {
+  const cases: Array<[string, () => Response]> = [
+    ["header only", () => new Response("Forbidden", { status: 403, headers: { "X-Chunk-Gate": "not-whitelisted" } })],
+    ["body code only", () => new Response(JSON.stringify({ error: "denied", code: "NOT_WHITELISTED" }), { status: 403 })],
+  ];
+  for (const [label, denial] of cases) {
+    requests = [];
+    install({ ourBee: new Map(), etherna: new Map(), gateway: () => denial() });
+    assert.equal((await probeSoc(OWNER, at(0))).status, "absent", label);
+    assert.deepEqual(serverRequests(), [], `${label}: a verdict needs no server`);
+  }
+});
 
-  requests = [];
-  install({ ourBee: new Map(), etherna: new Map(), gateway: () => new Response("Forbidden", { status: 403 }) });
-  await probeSoc(OWNER, at(0));
-  assert.equal(serverRequests().length, 1, "an untagged 403 falls through to the server");
+test("a thorough read asks the server even after our gate refused", async () => {
+  const tagged = () => new Response("Forbidden", { status: 403, headers: { "X-Chunk-Gate": "not-whitelisted" } });
+  install({ ourBee: new Map(), etherna: new Map(), gateway: () => tagged() });
+  await probeSoc(OWNER, at(0), { thorough: true });
+  assert.equal(serverRequests().length, 1);
+});
+
+test("anything else from the gateway is not an answer: an untagged 403, a 5xx, a 200 that is not a SOC", async () => {
+  const cases: Array<[string, () => Response]> = [
+    ["untagged 403", () => new Response("Forbidden", { status: 403 })],
+    ["502", () => new Response("Bad Gateway", { status: 502 })],
+    ["200, not a SOC", () => new Response(new Uint8Array([1, 2, 3]))],
+  ];
+  for (const [label, answer] of cases) {
+    requests = [];
+    install({ ourBee: new Map(), etherna: new Map(), gateway: () => answer() });
+    await probeSoc(OWNER, at(0));
+    assert.equal(serverRequests().length, 1, `${label} falls through to the server`);
+  }
+});
+
+test("a malformed owner never reaches the gateway, and reads as unavailable - as it did through bee-js", async () => {
+  install({ ourBee: new Map(), etherna: new Map() });
+  for (const bad of ["abc", "zz".repeat(20)]) {
+    requests = [];
+    const res = await probeSoc(bad, at(0));
+    assert.equal(res.status, "unavailable", bad);
+    assert.deepEqual(requests.filter((u) => u.includes("/chunks/")), [], `${bad}: no garbage address probed`);
+  }
 });
 
 test("a chunk our gateway serves but the owner did not sign is never found from it", async () => {
