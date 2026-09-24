@@ -95,7 +95,7 @@ if ("disabled" in loaded) {
   console.log(
     `[ens-gateway] serving *.${loaded.parentName} — signer=${ensGatewaySignerAddress(loaded)} ` +
     `chain=${loaded.chainId} registries=${loaded.registryAddresses.join(",")} ttl=${loaded.ttlSeconds}s ` +
-    `resolvers=${loaded.allowedSenders.join(",")}`,
+    `resolvers=${describeResolvers(loaded).map((r) => `${r.address}(${r.chainId === null ? "legacy" : `chain ${r.chainId}`})`).join(",")}`,
   );
   if (loaded.registryAddresses.length > 1) {
     // A cutover window is meant to last minutes: answers about the outgoing
@@ -149,9 +149,22 @@ export function ensGatewayStatus(): EnsGatewayStatus {
   return ensGatewayStatusOf(loaded, memo?.size() ?? 0);
 }
 
+/** Each served resolver and the signed format it gets: a chain id (v2) or legacy (null, v1). */
+function describeResolvers(config: {
+  allowedSenders: string[];
+  senderChainIds?: Record<string, number>;
+}): Array<{ address: string; chainId: number | null }> {
+  return config.allowedSenders.map((address) => ({
+    address,
+    chainId: config.senderChainIds?.[address] ?? null,
+  }));
+}
+
 export interface EnsGatewayStatus {
   configured: boolean;
   signer: string | null;
+  /** Must match what each resolver verifies: `chainId` for v2, null (legacy) for v1. */
+  resolvers: Array<{ address: string; chainId: number | null }>;
   chainId: number | null;
   registry: string | null;
   registries: string[];
@@ -175,6 +188,7 @@ export function ensGatewayStatusOf(
     return {
       configured: false,
       signer: null,
+      resolvers: [],
       chainId: null,
       registry: null,
       registries: [],
@@ -188,6 +202,7 @@ export function ensGatewayStatusOf(
   return {
     configured: true,
     signer: ensGatewaySignerAddress(config),
+    resolvers: describeResolvers(config),
     chainId: config.chainId,
     registry: config.registryAddresses[0]!,
     registries: config.registryAddresses,

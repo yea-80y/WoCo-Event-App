@@ -181,6 +181,83 @@ test("makeSignatureHash matches an independently computed cast vector", () => {
   );
 });
 
+test("makeSignatureHash with a chain id matches an independently computed cast vector (v2)", () => {
+  // Same inputs as above, chain 1 as a uint256 right after the target:
+  //   cast keccak "$(cast abi-encode --packed \
+  //     'f(bytes2,address,uint256,uint64,bytes32,bytes32)' 0x1900 $TARGET 1 $EXPIRES $REQ $RES)"
+  //   → 0xd5b539dce2a7ba6519adefbd367b7766052e9cf3d6630965e0c1c52277ca900c
+  assert.equal(
+    makeSignatureHash(
+      "0x1111111111111111111111111111111111111111",
+      1_893_456_000n,
+      getBytes("0xdeadbeef"),
+      "0xc0ffee",
+      1n,
+    ),
+    "0xd5b539dce2a7ba6519adefbd367b7766052e9cf3d6630965e0c1c52277ca900c",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// (b2) Per-resolver signed format (audit 964 M-2)
+// ---------------------------------------------------------------------------
+
+test("a chain-bound sender is signed in the v2 format, a legacy sender in the v1 format", async () => {
+  const config = {
+    ...CONFIG,
+    allowedSenders: [RESOLVER.toLowerCase(), OTHER_RESOLVER.toLowerCase()],
+    senderChainIds: { [OTHER_RESOLVER.toLowerCase()]: 1 },
+  };
+  const calldata = stuff();
+
+  const v1 = decodeResponse(((await handler(config)(RESOLVER, calldata)).body as { data: string }).data);
+  const legacyHash = keccak256(
+    concat(["0x1900", RESOLVER, toBeHex(v1.expires, 8), keccak256(getBytes(calldata)), keccak256(v1.result)]),
+  );
+  assert.equal(recoverAddress(legacyHash, v1.sig), SIGNER_ADDRESS, "v1 must get the legacy preimage");
+
+  const v2 = decodeResponse(((await handler(config)(OTHER_RESOLVER, calldata)).body as { data: string }).data);
+  const boundHash = keccak256(
+    concat([
+      "0x1900",
+      OTHER_RESOLVER,
+      toBeHex(1, 32),
+      toBeHex(v2.expires, 8),
+      keccak256(getBytes(calldata)),
+      keccak256(v2.result),
+    ]),
+  );
+  assert.equal(recoverAddress(boundHash, v2.sig), SIGNER_ADDRESS, "v2 must get the chain-bound preimage");
+});
+
+/**
+ * Shared with the contracts repo (`test/L1ResolverSignedPath.t.sol`,
+ * `test_Signed_TheGatewaysOwnVectorVerifies`), which checks that L1Resolver v2
+ * accepts exactly these bytes on chain 1 and refuses them elsewhere. If this
+ * handler's output changes, that vector must be regenerated and re-verified.
+ */
+test("golden vector: the v2 response L1Resolver v2 is pinned to accept", async () => {
+  const V2 = "0x1111111111111111111111111111111111111111";
+  const V22_REGISTRY = "0x4c2265470e0134c0a2df6902ebcb5397a40102a8";
+  const request = stuff({ name: "nabil.woco.eth", chainId: 42161, registry: V22_REGISTRY });
+  const result = AbiCoder.defaultAbiCoder().encode(["address"], ["0xea1478b3818f3a06b83ceb7ec6f710a51115d879"]);
+  const out = await createCcipHandler(
+    {
+      ...CONFIG,
+      allowedSenders: [V2],
+      senderChainIds: { [V2]: 1 },
+      chainId: 42161,
+      registryAddresses: [V22_REGISTRY],
+    },
+    { readL2: async () => result, now: () => 1_800_000_000 },
+  )(V2, request);
+  assert.equal(out.status, 200);
+  assert.equal(
+    (out.body as { data: string }).data,
+    "0x0000000000000000000000000000000000000000000000000000000000000060000000000000000000000000000000000000000000000000000000006b49d45800000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000ea1478b3818f3a06b83ceb7ec6f710a51115d87900000000000000000000000000000000000000000000000000000000000000414c8548db5c48a5063537b3a02b86075ec75986bc945c64d236305bdcbdb4fab62bdbec2c48eaedebf07003b0265061a8ab2ce0141b748ac0727c4f8daaaa44981b00000000000000000000000000000000000000000000000000000000000000",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // (c) Sender pin
 // ---------------------------------------------------------------------------
@@ -452,6 +529,45 @@ test("config: a non-address in the resolver list disables", () => {
   });
   assert.ok("disabled" in loaded);
   assert.match(loaded.disabled, /non-address/);
+});
+
+test("config: a resolver entry may carry the chain its signed hash binds", () => {
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    ENS_GATEWAY_RESOLVER_ADDRESSES: `${RESOLVER}, ${OTHER_RESOLVER}:1`,
+  });
+  assert.ok(!("disabled" in loaded), JSON.stringify(loaded));
+  assert.deepEqual(loaded.allowedSenders, [RESOLVER.toLowerCase(), OTHER_RESOLVER.toLowerCase()]);
+  assert.deepEqual(loaded.senderChainIds, { [OTHER_RESOLVER.toLowerCase()]: 1 });
+  const status = ensGatewayStatusOf(loaded, 0);
+  assert.deepEqual(status.resolvers, [
+    { address: RESOLVER.toLowerCase(), chainId: null },
+    { address: OTHER_RESOLVER.toLowerCase(), chainId: 1 },
+  ]);
+});
+
+for (const bad of [`${RESOLVER}:0`, `${RESOLVER}:-1`, `${RESOLVER}:1.5`, `${RESOLVER}:x`, `${RESOLVER}:`]) {
+  test(`config: a bad chain id disables (${bad.slice(42)})`, () => {
+    const loaded = loadEnsGatewayConfig({ ...BASE_ENV, ENS_GATEWAY_RESOLVER_ADDRESSES: bad });
+    assert.ok("disabled" in loaded, `expected ${bad} to be refused`);
+    assert.match(loaded.disabled, /bad chain id/);
+  });
+}
+
+test("config: an entry with two chain ids is not an address", () => {
+  const loaded = loadEnsGatewayConfig({ ...BASE_ENV, ENS_GATEWAY_RESOLVER_ADDRESSES: `${RESOLVER}:1:2` });
+  assert.ok("disabled" in loaded);
+  assert.match(loaded.disabled, /non-address/);
+});
+
+/** Which format a resolver verifies is fixed by its bytecode, so both at once is a mistake. */
+test("config: the same resolver listed twice disables", () => {
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    ENS_GATEWAY_RESOLVER_ADDRESSES: `${RESOLVER},${RESOLVER.toUpperCase().replace("0X", "0x")}:1`,
+  });
+  assert.ok("disabled" in loaded);
+  assert.match(loaded.disabled, /more than once/);
 });
 
 for (const ttl of ["59", "3601", "0", "abc", "600.5"]) {
