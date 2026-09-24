@@ -2,6 +2,7 @@ import type { Site, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, EventFe
 import { siteConfigTopic, multisiteFeedTopic, beeFeedUpdateIdentifier } from "@woco/shared";
 import { authPost, authDelete, authGet, get } from "./client.js";
 import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
+import { feedRouteFor } from "../swarm/gateways.js";
 import { signAndUploadSoc } from "../swarm/client-soc.js";
 
 export interface SiteEventsFull {
@@ -18,19 +19,21 @@ export interface SiteEventsFull {
  */
 export async function publishSite(
   site: Site,
-  events: SiteEventEntry[] = [],
-  feedSigner?: ContentFeedSigner | null,
+  events: SiteEventEntry[],
+  feedSigner: ContentFeedSigner | null | undefined,
   /** The site's home gateway — routes the config SOC's stamp AND the server's
-   *  pointer/events-index feed writes onto the site's own batch (#48). */
-  gatewayUrl?: string,
+   *  pointer/events-index feed writes onto the site's own batch (#48). Required,
+   *  as `deploySite`'s is: a missing one stamped the config on WoCo while the
+   *  deploy went to Etherna. */
+  gatewayUrl: string,
 ) {
-  const gw = gatewayUrl ? { gatewayUrl } : {};
+  const gw = { gatewayUrl };
   if (feedSigner) {
     await writeContentFeed({
       signerPrivKey: feedSigner.privKey,
       topic: siteConfigTopic(site.siteId),
       data: { ...site, updatedAt: Date.now() },
-      ...gw,
+      route: feedRouteFor(gatewayUrl),
     });
     return authPost<{ siteId: string }>("/api/sites", { site, events, siteFeedSigner: feedSigner.address, ...gw });
   }

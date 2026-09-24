@@ -11,14 +11,18 @@
  */
 
 import { readBandedContentFeed } from "../swarm/content-feed.js";
+import type { FeedRoute } from "../swarm/gateways.js";
 import { writeContentFeedVerified } from "../swarm/verified-write.js";
 import { LAST_VERSION_IN_BAND, type Hex0x, type SubjectIndexV1 } from "@woco/shared";
 
-/** Per-family wiring — the three things that differ between one index and another. */
+/** Per-family wiring — the things that differ between one index and another. */
 export interface SubjectIndexKind {
   indexTopic: (band: number) => string;
   indexFormat: string;
   validateIndex: (value: unknown) => boolean;
+  /** Where this family is stamped. Carried by the kind, never chosen here: the
+   *  index is read back through its own family, and the two must never split. */
+  route: FeedRoute;
 }
 
 /** Re-reads of the index after losing a write race, before giving up. */
@@ -62,6 +66,7 @@ export async function addToSubjectIndex(
       // therefore arrive here as a CLEAN absent — the one shape the guard below
       // cannot catch, because it checks for INCONCLUSIVE, not for wrong.
       const res = await readBandedContentFeed<unknown>(signer.address, kind.indexTopic, {
+        route: kind.route,
         thorough: true,
       });
 
@@ -97,6 +102,7 @@ export async function addToSubjectIndex(
         ownerAddress: signer.address,
         topic: kind.indexTopic(targetBand),
         data: { format: kind.indexFormat, subjects },
+        route: kind.route,
       });
       if (written.status !== "superseded") return;
     }

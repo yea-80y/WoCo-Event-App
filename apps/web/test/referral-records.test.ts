@@ -47,6 +47,7 @@ import {
   writeReferralStatement,
   type CampaignRecordDeps,
 } from "../src/lib/campaign/records.js";
+import { FEED_ROUTES, type FeedRoute } from "../src/lib/swarm/gateways.js";
 
 const REFERRER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as Hex0x;
 const OTHER = "0xdddddddddddddddddddddddddddddddddddddddd" as Hex0x;
@@ -63,6 +64,8 @@ type Recorder = {
   feedReads: Array<{ owner: string; topic: string; opts?: unknown }>;
   versionReads: Array<{ owner: string; topic: string; version: number }>;
   bandedReads: Array<{ owner: string; topic0: string }>;
+  /** The route every call carried, in call order - which family each read and write used. */
+  routes: Array<{ call: string; route: FeedRoute }>;
 };
 
 function harness(
@@ -76,7 +79,7 @@ function harness(
   } = {},
 ): { deps: CampaignRecordDeps; rec: Recorder } {
   const rec: Recorder = {
-    order: [], writes: [], indexed: [], feedReads: [], versionReads: [], bandedReads: [],
+    order: [], writes: [], indexed: [], feedReads: [], versionReads: [], bandedReads: [], routes: [],
   };
   const found = (value: unknown) =>
     value === undefined
@@ -86,13 +89,16 @@ function harness(
   const deps: CampaignRecordDeps = {
     readFeed: async (owner, topic, opts) => {
       rec.feedReads.push({ owner, topic, opts });
+      rec.routes.push({ call: "readFeed", route: opts.route });
       return found(answers.feeds?.[topic]);
     },
-    readFeedAtVersion: async (owner, topic, version) => {
+    readFeedAtVersion: async (owner, topic, version, opts) => {
       rec.versionReads.push({ owner, topic, version });
+      rec.routes.push({ call: "readFeedAtVersion", route: opts.route });
       return found(answers.atVersion);
     },
-    readBandedFeed: async (owner, topicForBand) => {
+    readBandedFeed: async (owner, topicForBand, opts) => {
+      rec.routes.push({ call: "readBandedFeed", route: opts.route });
       const topic0 = topicForBand(0);
       rec.bandedReads.push({ owner, topic0 });
       if (answers.bandedUnavailable) {
@@ -106,11 +112,13 @@ function harness(
     writeVerified: async (args) => {
       rec.order.push("statement");
       rec.writes.push(args);
+      rec.routes.push({ call: "writeVerified", route: args.route });
       return { status: answers.writeStatus ?? "verified", version: 0 } as never;
     },
     addToIndex: async (_signer, subject, kind) => {
       rec.order.push("index");
       rec.indexed.push({ subject, indexFormat: kind.indexFormat, indexTopic: kind.indexTopic });
+      rec.routes.push({ call: "addToIndex", route: kind.route });
     },
   };
   return { deps, rec };
@@ -299,4 +307,41 @@ test("readReferrerIndex reports absent when the issuer has published nothing", a
 test("readReferrerIndex reports a read nobody answered as unavailable, never as empty", async () => {
   const { deps } = harness({ bandedUnavailable: true });
   assert.deepEqual(await readReferrerIndex(REFERRER, deps), { status: "unavailable" });
+});
+
+// ---------------------------------------------------------------------------
+// Which family each call reads and writes through (#651)
+// ---------------------------------------------------------------------------
+
+const onlyRoute = (routes: Array<{ call: string; route: FeedRoute }>, expected: FeedRoute, label: string) => {
+  assert.ok(routes.length > 0, `${label}: no calls recorded`);
+  for (const r of routes) assert.equal(r.route, expected, `${label}: ${r.call}`);
+};
+
+test("the referee's statement, its head read and its index all go through the referral family", async () => {
+  const { deps, rec } = harness();
+  await writeReferralStatement(SIGNER, REFERRER, deps);
+  onlyRoute(rec.routes, FEED_ROUTES.referral, "writeReferralStatement");
+  assert.deepEqual(rec.routes.map((r) => r.call), ["readFeed", "writeVerified", "addToIndex"]);
+});
+
+test("reading the caller's own referral goes through the referral family", async () => {
+  const subject = campaignAccountSubject(REFERRER);
+  const { deps, rec } = harness({
+    banded: { [referralSubjectIndexTopic(0)]: { format: REFERRAL_SUBJECT_INDEX_FORMAT, subjects: [subject] } },
+  });
+  await readMyReferralStatement(MY_FEED, deps);
+  onlyRoute(rec.routes, FEED_ROUTES.referral, "readMyReferralStatement");
+});
+
+test("the issuer's confirmations, badges and referrer index are read through the issuer's family", async () => {
+  for (const [label, run] of [
+    ["readConfirmation", (d: CampaignRecordDeps) => readConfirmation(REFEREE, d)],
+    ["readBadge", (d: CampaignRecordDeps) => readBadge(REFEREE, d)],
+    ["readReferrerIndex", (d: CampaignRecordDeps) => readReferrerIndex(REFERRER, d)],
+  ] as const) {
+    const { deps, rec } = harness();
+    await run(deps);
+    onlyRoute(rec.routes, FEED_ROUTES.campaignIssuer, label);
+  }
 });

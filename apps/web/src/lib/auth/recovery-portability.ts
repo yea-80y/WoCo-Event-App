@@ -45,6 +45,7 @@ import {
 } from "./recovery-escrow.js";
 import { UnknownRecoveryEnvelopeVersionError } from "./recovery-aad.js";
 import { writeContentFeed, readContentFeedResult } from "../swarm/content-feed.js";
+import { FEED_ROUTES } from "../swarm/gateways.js";
 
 /** Domain-separated 32-byte seed = keccak256(utf8(domain) || prfPrivKeyBytes). */
 function domainSeed(domain: string, prfPrivKeyBytes: Uint8Array): Uint8Array {
@@ -132,6 +133,7 @@ export async function writePortabilityEnvelope(args: {
     signerPrivKey: keys.socOwnerPrivKey,
     topic: PORTABILITY_SOC_IDENTIFIER_INPUT,
     data: payloadObj,
+    route: FEED_ROUTES.recoveryPortability,
   });
 }
 
@@ -190,7 +192,7 @@ export async function readPortabilityEnvelope(args: {
     // LIFE OF THE DEVICE — the #138 class exactly, which is why `probeSoc`'s
     // own docstring names "a cached negative" as a case that must not take a
     // gateway refusal at face value.
-    { thorough: true },
+    { thorough: true, route: FEED_ROUTES.recoveryPortability },
   );
   if (read.status === "absent") return { status: "absent" };
   if (read.status === "unavailable") {
@@ -293,6 +295,7 @@ export async function portabilityEnvelopeExists(args: {
     // Kernel with the repair path silently confirming the damage.
     const probe = await probeSoc(keys.socOwnerAddress, versionedSocIdentifier(base, 0), {
       thorough: true,
+      gatewayUrl: FEED_ROUTES.recoveryPortability.gatewayUrl,
     });
     if (probe.status === "found") return { status: "present" };
     if (probe.status === "absent") return { status: "absent" };

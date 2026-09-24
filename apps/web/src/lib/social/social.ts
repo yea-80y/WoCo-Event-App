@@ -15,6 +15,7 @@
 
 import { auth } from "../auth/auth-store.svelte.js";
 import { readContentFeedResult, readBandedContentFeed } from "../swarm/content-feed.js";
+import { FEED_ROUTES } from "../swarm/gateways.js";
 import { writeContentFeedVerified, type VerifiedWriteResult } from "../swarm/verified-write.js";
 import { addToSubjectIndex } from "./subject-index.js";
 import { followsFromReads } from "./follows.js";
@@ -52,6 +53,7 @@ const KINDS = {
     indexTopic: likeSubjectIndexTopic,
     validate: validateLikeStatementV1,
     validateIndex: validateLikeSubjectIndexV1,
+    route: FEED_ROUTES.social,
   },
   follow: {
     format: FOLLOW_STATEMENT_FORMAT,
@@ -60,6 +62,7 @@ const KINDS = {
     indexTopic: followSubjectIndexTopic,
     validate: validateFollowStatementV1,
     validateIndex: validateFollowSubjectIndexV1,
+    route: FEED_ROUTES.social,
   },
 } as const;
 
@@ -90,6 +93,7 @@ export async function readMyStatement(kind: SocialKind, subject: Hex0x): Promise
   // ones the user has never liked. Probing for a legacy chunk anyway spent a
   // guaranteed missing-chunk network search on every such read.
   const res = await readContentFeedResult<unknown>(signer.address, k.statementTopic(subject), {
+    route: k.route,
     skipLegacy: true,
   });
   if (res.status !== "found") return null;
@@ -120,6 +124,7 @@ export async function writeMyStatement(
       ownerAddress: signer.address,
       topic: k.statementTopic(subject),
       data: statement,
+      route: k.route,
     });
 
     if (written.status === "superseded") {
@@ -138,7 +143,7 @@ export async function readMySubjects(kind: SocialKind): Promise<Hex0x[]> {
   const k = KINDS[kind];
   const signer = await auth.getContentFeedSigner();
   if (!signer) return [];
-  const res = await readBandedContentFeed<unknown>(signer.address, k.indexTopic);
+  const res = await readBandedContentFeed<unknown>(signer.address, k.indexTopic, { route: k.route });
   if (res.status !== "found" || !k.validateIndex(res.value)) return [];
   return (res.value as LikeSubjectIndexV1 | FollowSubjectIndexV1).subjects;
 }
@@ -160,14 +165,14 @@ export async function readMyFollowsIfReady(): Promise<MyFollowsRead> {
   const k = KINDS.follow;
   const signer = await auth.getContentFeedSignerIfPresent();
   if (!signer) return { status: "not-ready" };
-  const index = await readBandedContentFeed<unknown>(signer.address, k.indexTopic);
+  const index = await readBandedContentFeed<unknown>(signer.address, k.indexTopic, { route: k.route });
   if (index.status === "unavailable") return { status: "unavailable" };
   if (index.status !== "found" || !k.validateIndex(index.value)) {
     return { status: "found", accounts: [], unreadable: 0 };
   }
   const subjects = (index.value as FollowSubjectIndexV1).subjects;
   const reads = await settleInBatches(subjects, 4, (subject) =>
-    readContentFeedResult<unknown>(signer.address, k.statementTopic(subject), { skipLegacy: true }),
+    readContentFeedResult<unknown>(signer.address, k.statementTopic(subject), { route: k.route, skipLegacy: true }),
   );
   const statements = reads.map((read) =>
     read.status === "fulfilled" ? read.value : ({ status: "unavailable" } as const),

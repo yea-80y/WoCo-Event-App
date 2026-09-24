@@ -54,8 +54,10 @@ export interface SocWriteResult {
  * Sign a SOC with `signerPrivKey` over `{ identifier, payload }` and have the
  * server stamp + upload it. `identifier` must be 32 bytes; `payload` ≤ 4096 bytes.
  * `gatewayUrl` routes the stamp to the matching batch (Etherna user batch when
- * the Etherna gateway was picked) — same signal as the /bytes rail; omitted →
- * WoCo platform batch. Throws if not authenticated or the upload fails.
+ * it names Etherna) — same signal as the /bytes rail. Content-feed callers always
+ * pass their family's route (`FeedRoute`, lib/swarm/gateways.ts); left out, the
+ * server stamps on the WoCo platform batch. Throws if not authenticated or the
+ * upload fails.
  */
 export async function signAndUploadSoc(args: {
   signerPrivKey: string;
@@ -119,9 +121,11 @@ export async function signAndUploadSoc(args: {
  * whitelisted (done server-side at write time); the server fallback covers a
  * whitelist lag and a just-written Etherna-stamped chunk. No auth on either path.
  *
- * `gatewayUrl` is the WRITE-PATH probe's routing signal, forwarded to the server
- * so an Etherna-stamped feed's read asks Etherna too (and answers `unavailable`,
- * not absent, when Etherna cannot be asked). Display reads leave it off.
+ * `gatewayUrl` names where the feed is stamped. It is forwarded to the server so an
+ * Etherna-stamped feed's read asks Etherna too (and answers `unavailable`, not
+ * absent, when Etherna cannot be asked). Every content-feed read passes its
+ * family's route (`FeedRoute`, lib/swarm/gateways.ts), display reads included;
+ * it matters only when this probe falls through to the server.
  */
 export async function probeSoc(
   ownerAddress: string,

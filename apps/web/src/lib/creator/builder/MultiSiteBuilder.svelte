@@ -17,7 +17,7 @@
   import NavTab from "./tabs/NavTab.svelte";
   import EventsTab from "./tabs/EventsTab.svelte";
   import ShopTab from "./tabs/ShopTab.svelte";
-  import { ETHERNA_GATEWAY_URL } from "../../swarm/gateways.js";
+  import { ETHERNA_GATEWAY_URL, feedRouteFor } from "../../swarm/gateways.js";
   import PurchaseBatchModal from "./PurchaseBatchModal.svelte";
   import DomainLinker from "./DomainLinker.svelte";
   import DomainTab from "./DomainTab.svelte";
@@ -426,7 +426,7 @@
           contentHash: deployed.contentHash,
           ...(deployed.feedManifestHash ? { feedManifestHash: deployed.feedManifestHash } : {}),
         },
-        target: gatewayUrl.includes("woco-net.com") ? "woco" : "etherna",
+        target: feedRouteFor(gatewayUrl).target,
       });
 
       publishState = 'done';

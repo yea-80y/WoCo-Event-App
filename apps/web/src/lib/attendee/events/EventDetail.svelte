@@ -10,6 +10,7 @@
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { getExternalEventApi, getEventFeedSigner } from "../../api/event-api-registry.js";
   import { readContentFeed } from "../../swarm/content-feed.js";
+  import { FEED_ROUTES } from "../../swarm/gateways.js";
   import { eventContentTopic } from "@woco/shared";
   import { getProfile } from "../../api/profiles.js";
   import type { UserProfile } from "@woco/shared";
@@ -60,7 +61,8 @@
   async function loadEventFeed(): Promise<EventFeed | null> {
     const signer = getEventFeedSigner(eventId) ?? _cached?.creatorFeedSigner;
     if (signer && !externalApiUrl) {
-      const direct = await readContentFeed<EventFeed>(signer, eventContentTopic(eventId)).catch(() => null);
+      const direct = await readContentFeed<EventFeed>(signer, eventContentTopic(eventId), { route: FEED_ROUTES.event })
+        .catch(() => null);
       if (direct) return direct;
     }
     return getEvent(eventId, externalApiUrl, signer);
