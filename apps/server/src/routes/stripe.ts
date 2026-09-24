@@ -32,8 +32,14 @@ import { hashEmail } from "../lib/event/claim-service.js";
 import { checkObjectGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
 import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../lib/stripe/checkout-fees.js";
 import type { SealedBox, PayoutsResponse } from "@woco/shared";
-import { isSponsorReady } from "../lib/chain/sponsor-wallet.js";
-import { getActiveChainId, getOnChainEvent, EventContractConfigError } from "../lib/chain/event-contract.js";
+import { checkSponsorCanMint, type SponsorMintVerdict } from "../lib/chain/sponsor-wallet.js";
+import { sponsorGateRefusal } from "../lib/stripe/sponsor-gate.js";
+import {
+  getActiveChainId,
+  getDefaultEventContract,
+  getOnChainEvent,
+  EventContractConfigError,
+} from "../lib/chain/event-contract.js";
 import { checkSeriesOnChainBinding, resolveManifestDigest } from "../lib/event/onchain-binding.js";
 import { lookupOnChainEventId } from "../lib/event/onchain-registry.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
@@ -797,14 +803,21 @@ stripe.post("/create-checkout", async (c) => {
 
   // Sponsor-readiness gate. The webhook mints via the sponsor wallet's
   // `batchClaimFor`, which reverts `NotAuthorised` if the sponsor isn't on the
-  // contract allow-list — that would charge the buyer then auto-refund. Refuse
-  // the checkout up front instead. Fail-OPEN on an RPC error (transient) since
-  // the webhook's auto-refund remains the backstop; only a definitive "not
-  // authorised" blocks the sale.
+  // contract allow-list, and — on the ledger — `MintCapExceeded` once the
+  // sponsor's hourly cap is spent (#662). Either would charge the buyer then
+  // auto-refund. Refuse the checkout up front instead. Fail-OPEN on an RPC
+  // error (transient) since the webhook's auto-refund remains the backstop;
+  // only a definitive answer blocks the sale.
+  //
+  // The cap read is UNCACHED (authorisation is cached): it moves with every
+  // mint on every event, and the owner's stop lever, cap 0, has to bite on the
+  // very next checkout.
   {
-    let sponsorReady = true;
+    const mintTarget = getDefaultEventContract();
+    let verdict: SponsorMintVerdict | "config-error" = { ok: true };
     try {
-      sponsorReady = await isSponsorReady(getActiveChainId());
+      if (!mintTarget) throw new EventContractConfigError(`no events contract on chain ${getActiveChainId()}`);
+      verdict = await checkSponsorCanMint(mintTarget, quantity);
     } catch (err) {
       // Transient RPC failures fail OPEN — a flaky node must not stop sales,
       // and the webhook auto-refund is the backstop. A CONFIG error is the
@@ -812,20 +825,19 @@ stripe.post("/create-checkout", async (c) => {
       // continuing here charges all of them for tickets that can never mint.
       if (err instanceof EventContractConfigError) {
         console.error("[stripe/create-checkout] BLOCKED — event contract misconfigured:", err.message);
-        sponsorReady = false;
+        verdict = "config-error";
       } else {
         console.warn("[stripe/create-checkout] sponsor readiness check errored (continuing):", err);
       }
     }
-    if (!sponsorReady) {
+    const refusal = sponsorGateRefusal(verdict, quantity, Date.now());
+    if (refusal) {
       console.error(
-        `[stripe/create-checkout] BLOCKED — sponsor not authorised on chain ${getActiveChainId()}; ` +
+        `[stripe/create-checkout] BLOCKED — ${refusal.log} on chain ${mintTarget?.chainId ?? getActiveChainId()}; ` +
         `refusing to charge (eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)})`,
       );
-      return c.json(
-        { ok: false, error: "Ticketing is temporarily unavailable — please try again shortly." },
-        503,
-      );
+      if (refusal.retryAfterSeconds !== undefined) c.header("Retry-After", String(refusal.retryAfterSeconds));
+      return c.json({ ok: false, error: refusal.error }, refusal.status);
     }
   }
 

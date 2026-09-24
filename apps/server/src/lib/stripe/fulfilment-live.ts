@@ -18,6 +18,7 @@ import { recordHeld, markVoid } from "./payout-ledger.js";
 import { getOrganiserByStripeAccount } from "./accounts.js";
 import { uploadToBytes } from "../swarm/bytes.js";
 import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX } from "../chain/sponsor-wallet.js";
+import { getDefaultEventContract } from "../chain/event-contract.js";
 import { bindTicket } from "../gate/store.js";
 import { consume as consumeReservation } from "../event/reservation-store.js";
 import { captureCheckoutConsent } from "../marketing/consent-capture.js";
@@ -41,7 +42,11 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   getOrganiserByStripeAccount,
   uploadToBytes: (data) => uploadToBytes(data),
   generateBurner,
-  batchClaimForOnChain,
+  batchClaimForOnChain: (onChainEventId, burners, orderRefBytes32) => {
+    const target = getDefaultEventContract();
+    if (!target) return Promise.reject(new Error("No WoCoEvent contract on the active chain"));
+    return batchClaimForOnChain(onChainEventId, burners, orderRefBytes32, target);
+  },
   onChainBatchMax: ON_CHAIN_BATCH_MAX,
   bindTicket,
   consumeReservation,

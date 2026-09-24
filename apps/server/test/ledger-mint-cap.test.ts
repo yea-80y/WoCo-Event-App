@@ -82,10 +82,11 @@ test("UNLIMITED_MINTS is type(uint32).max", () => {
 // Decoding the refusal
 // ---------------------------------------------------------------------------
 
-test("MintCapExceeded decodes from the error ethers actually throws", () => {
+test("MintCapExceeded decodes from a contract-level CALL_EXCEPTION", () => {
   const data = iface.encodeErrorResult("MintCapExceeded", [SPONSOR, BigInt(RESETS_AT)]);
-  // `makeError` is how ethers builds the CALL_EXCEPTION an estimateGas revert
-  // surfaces, `revert` attached — the real shape, not a hand-rolled one.
+  // `makeError` is how a contract's staticCall/estimateGas builds its
+  // CALL_EXCEPTION, `revert` attached. A sponsor SEND carries raw data only —
+  // that shape is driven end to end in sponsor-mint-gate.test.ts.
   const err = iface.makeError(data, { to: LEDGER, data: "0x" });
   assert.deepEqual(decodeMintCapExceeded(err), { sponsor: SPONSOR, windowResetsAt: RESETS_AT });
 });
@@ -147,10 +148,11 @@ test("the error thrown to fulfilment carries the refusal as its message", () => 
 // "This address does not speak the cap ABI"
 // ---------------------------------------------------------------------------
 
-test("a data-less revert or an undecodable empty return is not-this-ABI; a timeout is not", () => {
+test("an empty revert or an undecodable empty return is not-this-ABI; a timeout or a revert with data is not", () => {
   const fn = iface.getFunction("sponsorMintAllowance")!;
-  const noData = iface.makeError("0x", { to: LEDGER, data: iface.encodeFunctionData(fn, [SPONSOR]) });
-  assert.equal(isNotThisAbi(noData), true, "revert with no data");
+  // What a contract call raises when the node answers a revert with data "0x".
+  const emptyRevert = iface.makeError("0x", { to: LEDGER, data: iface.encodeFunctionData(fn, [SPONSOR]) });
+  assert.equal(isNotThisAbi(emptyRevert), true, "revert with empty data");
   let badData: unknown;
   try {
     iface.decodeFunctionResult(fn, "0x");

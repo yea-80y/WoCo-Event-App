@@ -45,8 +45,10 @@ const LEDGER_READ_ABI = [
 /**
  * The claim surface: selectors and SlotClaimed topics identical to V2's.
  *
- * Every error the two mint functions can revert with is declared, so a refusal
- * arrives decoded instead of as raw revert data. `MintCapExceeded` is the one
+ * Every error the two mint functions can revert with is declared. Declaring is
+ * not decoding: on the SEND path ethers reports a custom-error revert as
+ * "unknown custom error" with the raw data attached, whatever the ABI says, so
+ * `explainMintFailure` parses that data itself. `MintCapExceeded` is the one
  * the server acts on (`mintCapRefusal`); the rest make a refund's reason
  * readable.
  */
@@ -158,14 +160,24 @@ export async function readSponsorMintAllowanceLedger(
 
 /**
  * The call reached a contract that does not implement the function, or an
- * address with no code: a revert carrying no data, or an empty return ethers
- * cannot decode. Neither heals on retry, so for the configured ledger it is a
- * misconfiguration (wrong address, or a ledger from before the cap), never a
- * blip. A timeout or an RPC fault is neither of these.
+ * address with no code: the node's own "execution reverted" with no data, or an
+ * empty return ethers cannot decode. Neither heals on retry, so for the
+ * configured ledger it is a misconfiguration (wrong address, or a ledger from
+ * before the cap), never a blip.
+ *
+ * A data-less CALL_EXCEPTION is NOT enough on its own: ethers turns every
+ * JSON-RPC error on `eth_call` into one — a rate limit or an internal error
+ * included — so without the node's message a flaky RPC would read as a
+ * misconfiguration and fail every checkout closed.
  */
 export function isNotThisAbi(err: unknown): boolean {
   if (isError(err, "BAD_DATA")) return true;
-  return isError(err, "CALL_EXCEPTION") && (err.data === null || err.data === undefined || err.data === "0x");
+  if (!isError(err, "CALL_EXCEPTION")) return false;
+  // "0x" is what the node sent as revert data: an answer, and an empty one.
+  if (err.data === "0x") return true;
+  if (err.data !== null && err.data !== undefined) return false;
+  const rpcMessage = (err.info as { error?: { message?: unknown } } | undefined)?.error?.message;
+  return typeof rpcMessage === "string" && /revert/i.test(rpcMessage);
 }
 
 const CLAIM_IFACE = new Interface(LEDGER_CLAIM_ABI);
@@ -173,8 +185,9 @@ const CLAIM_IFACE = new Interface(LEDGER_CLAIM_ABI);
 /**
  * `MintCapExceeded(sponsor, windowResetsAt)` from a failed mint, or null.
  *
- * ethers attaches the decoded error as `revert` when the ABI declares it; the
- * raw `data` is the fallback for a provider that strips that.
+ * Read from `revert` when ethers decoded it (a contract-level estimateGas or
+ * staticCall), else from the raw `data` — which is the ONLY form a sponsor
+ * send's revert takes (see LEDGER_CLAIM_ABI).
  */
 export function decodeMintCapExceeded(err: unknown): { sponsor: string; windowResetsAt: number } | null {
   const e = err as { revert?: { name?: string; args?: ArrayLike<unknown> } | null; data?: unknown } | null;
@@ -240,6 +253,17 @@ export function mintCapRefusal(r: { perHour: number | null; windowResetsAt: numb
   };
 }
 
+/** The name of a claim-path custom error in `err`'s revert data, or null. */
+export function decodeClaimRevert(err: unknown): string | null {
+  const data = (err as { data?: unknown } | null)?.data;
+  if (typeof data !== "string" || data.length < 10) return null;
+  try {
+    return CLAIM_IFACE.parseError(data)?.name ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** A mint the ledger refused on the sponsor's hourly cap, already explained. */
 export class MintCapExceededError extends Error {
   readonly stopped: boolean | null;
@@ -263,7 +287,11 @@ async function explainMintFailure(
   chainId: number,
 ): Promise<never> {
   const cap = decodeMintCapExceeded(err);
-  if (!cap) throw err;
+  if (!cap) {
+    const refused = decodeClaimRevert(err);
+    if (refused) throw new Error(`events contract refused the mint: ${refused}`, { cause: err });
+    throw err;
+  }
   let perHour: number | null = null;
   try {
     perHour = (await readSponsorMintAllowanceLedger(sponsor, contractAddress, chainId)).perHour;
