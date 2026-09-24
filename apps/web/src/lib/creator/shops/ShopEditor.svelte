@@ -17,6 +17,7 @@
   import { createShop, updateShop, getShop, getShopOrders } from "../../api/shops.js";
   import { publishSite, deploySite } from "../../api/sites.js";
   import { GATEWAYS } from "../builder/gateways.js";
+  import { feedRouteFor } from "../../swarm/gateways.js";
   import { newSiteFromShop, siteConfigTopic } from "@woco/shared";
   import { logFeedToManifest } from "../../manifest/feed-log.js";
   import ShopCatalogEditor from "./ShopCatalogEditor.svelte";
@@ -191,7 +192,7 @@
       });
 
       const feedSigner = await auth.getContentFeedSigner();
-      const pub = await publishSite(site, [], feedSigner);
+      const pub = await publishSite(site, [], feedSigner, DEFAULT_GATEWAY);
       if (!pub.ok) throw new Error(pub.error ?? "Publish failed");
 
       const dep = await deploySite(siteId, { apiUrl: API_URL, gatewayUrl: DEFAULT_GATEWAY, wocoAppUrl: WOCO_APP_URL, site }, feedSigner);
@@ -210,7 +211,7 @@
           contentHash: dep.data.contentHash,
           ...(dep.data.feedManifestHash ? { feedManifestHash: dep.data.feedManifestHash } : {}),
         },
-        target: DEFAULT_GATEWAY.includes("woco-net.com") ? "woco" : "etherna",
+        target: feedRouteFor(DEFAULT_GATEWAY).target,
       });
     } catch (e) {
       deployErr = e instanceof Error ? e.message : "Deploy failed";

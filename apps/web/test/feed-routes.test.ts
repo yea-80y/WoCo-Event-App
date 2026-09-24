@@ -21,6 +21,7 @@ import {
   WOCO_ROUTE,
   feedRouteFor,
 } from "../src/lib/swarm/gateways.js";
+import { diagnoseManifest, readUserManifestResult } from "../src/lib/manifest/inventory.js";
 
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
@@ -32,13 +33,21 @@ const code = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/<!--[\s\
 // ---------------------------------------------------------------------------
 
 test("each family is stamped where the table says - a move is a deliberate diff here", () => {
-  const onEtherna = Object.entries(FEED_ROUTES).filter(([, r]) => r === ETHERNA_ROUTE).map(([k]) => k).sort();
+  const onEtherna = Object.entries(FEED_ROUTES).filter(([, r]) => r.target === "etherna").map(([k]) => k).sort();
   // Profiles have been Etherna since #617; event reads ask Etherna because new
   // events are stamped there. Everything else has not moved yet.
   assert.deepEqual(onEtherna, ["event", "profile"]);
   for (const [family, route] of Object.entries(FEED_ROUTES)) {
-    assert.ok(route === ETHERNA_ROUTE || route === WOCO_ROUTE, `${family}: not one of the two routes`);
+    const store = route.target === "etherna" ? ETHERNA_ROUTE : WOCO_ROUTE;
+    assert.equal(route.gatewayUrl, store.gatewayUrl, `${family}: gateway disagrees with its target`);
+    assert.equal(route.family, family, `${family}: route names another family`);
+    assert.ok(Object.isFrozen(route), `${family}: not frozen`);
   }
+});
+
+test("every family has its OWN route, so a call using another family's is detectable", () => {
+  const routes = Object.values(FEED_ROUTES);
+  assert.equal(new Set(routes).size, routes.length, "two families share one route object");
 });
 
 test("the two routes are frozen and name the canonical gateways", () => {
@@ -93,12 +102,17 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-test("no rail picks a raw route: every choice goes through the family table", () => {
+test("no rail picks a raw route or reaches the table indirectly", () => {
   const offenders: string[] = [];
   for (const file of sourceFiles(SRC)) {
     const rel = relative(SRC, file);
     if (rel === "lib/swarm/gateways.ts") continue;
-    if (/\b(?:ETHERNA_ROUTE|WOCO_ROUTE)\b/.test(code(readFileSync(file, "utf8")))) offenders.push(rel);
+    const src = code(readFileSync(file, "utf8"));
+    // Raw constants, bracket access and an aliased import would all escape the
+    // per-family check above.
+    if (/\b(?:ETHERNA_ROUTE|WOCO_ROUTE)\b/.test(src)) offenders.push(`${rel}: raw route`);
+    if (/FEED_ROUTES\s*\[/.test(src)) offenders.push(`${rel}: FEED_ROUTES[...]`);
+    if (/FEED_ROUTES\s+as\s+\w/.test(src)) offenders.push(`${rel}: aliased FEED_ROUTES`);
   }
   assert.deepEqual(offenders, []);
 });
@@ -151,9 +165,63 @@ test("every direct probe in the app names a gateway", () => {
     if (rel === "lib/swarm/client-soc.ts") continue; // the primitive itself
     for (const args of callArgs(code(readFileSync(file, "utf8")), "probeSoc")) {
       seen++;
-      if (!/gatewayUrl:/.test(args)) offenders.push(`${rel}: probeSoc(${args.replace(/\s+/g, " ")})`);
+      // Taken from a route, not merely present: `gatewayUrl: undefined` compiles.
+      if (!/gatewayUrl:\s*(?:\w+\.)*route\.gatewayUrl\b|gatewayUrl:\s*FEED_ROUTES\.\w+\.gatewayUrl\b/.test(args)) {
+        offenders.push(`${rel}: probeSoc(${args.replace(/\s+/g, " ")})`);
+      }
     }
   }
   assert.ok(seen >= 6, `only ${seen} probeSoc calls found - the scan is not seeing them`);
   assert.deepEqual(offenders, []);
+});
+
+// ---------------------------------------------------------------------------
+// The manifest's readers hand over the manifest route when they run
+// ---------------------------------------------------------------------------
+
+test("the manifest's head read and its repair walk both carry the manifest route", async () => {
+  const signer = { privKey: `0x${"11".repeat(32)}`, address: `0x${"cc".repeat(20)}` };
+  const parentAddress = `0x${"aa".repeat(20)}`;
+  const seen: unknown[] = [];
+
+  await readUserManifestResult({
+    signer,
+    parentAddress,
+    readFeed: async (_owner, _topic, opts) => { seen.push(opts.route); return { status: "absent" }; },
+  });
+  await diagnoseManifest({
+    signer,
+    parentAddress,
+    // A frozen head at version 3 makes the repair walk read versions below it.
+    readManifest: async () => ({ status: "unavailable", reason: "frozen", unusableAt: 3 }),
+    readAt: async (_owner, _topic, _v, opts) => { seen.push(opts.route); return { status: "absent" }; },
+  });
+
+  assert.ok(seen.length >= 2, `expected the head read and at least one walk read, saw ${seen.length}`);
+  for (const route of seen) assert.equal(route, FEED_ROUTES.manifest);
+});
+
+test("a route can only be minted in gateways.ts", () => {
+  // Branded (a type-only unique symbol), so a made-up `{ gatewayUrl }` does not
+  // compile. The one escape is a cast, and only the minting module may use it.
+  assert.match(read("lib/swarm/gateways.ts"), /readonly \[feedRouteBrand\]: true;/);
+  const casts: string[] = [];
+  for (const file of sourceFiles(SRC)) {
+    const rel = relative(SRC, file);
+    if (rel !== "lib/swarm/gateways.ts" && /\bas\s+FeedRoute\b/.test(code(readFileSync(file, "utf8")))) casts.push(rel);
+  }
+  assert.deepEqual(casts, []);
+});
+
+test("events, sites and shops stamp through the recorded-gateway mapping, and label the manifest by it", () => {
+  assert.match(code(read("lib/api/events.ts")), /route:\s*feedRouteFor\(feed\.gatewayUrl\)/);
+  assert.match(code(read("lib/api/sites.ts")), /route:\s*feedRouteFor\(gatewayUrl\)/);
+  const sites = code(read("lib/api/sites.ts"));
+  const publish = sites.slice(sites.indexOf("export async function publishSite("), sites.indexOf(") {", sites.indexOf("export async function publishSite(")));
+  assert.match(publish, /\bgatewayUrl:\s*string\b/, "publishSite's gateway is required");
+  for (const file of ["lib/creator/events/PublishButton.svelte", "lib/creator/builder/MultiSiteBuilder.svelte", "lib/creator/shops/ShopEditor.svelte"]) {
+    const src = code(read(file));
+    assert.match(src, /target:\s*feedRouteFor\([^)]*\)\.target/, file);
+    assert.doesNotMatch(src, /target:[^\n]*includes\("woco-net\.com"\)/, `${file}: a third classification rule`);
+  }
 });

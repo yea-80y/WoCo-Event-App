@@ -19,13 +19,15 @@ export interface SiteEventsFull {
  */
 export async function publishSite(
   site: Site,
-  events: SiteEventEntry[] = [],
-  feedSigner?: ContentFeedSigner | null,
+  events: SiteEventEntry[],
+  feedSigner: ContentFeedSigner | null | undefined,
   /** The site's home gateway — routes the config SOC's stamp AND the server's
-   *  pointer/events-index feed writes onto the site's own batch (#48). */
-  gatewayUrl?: string,
+   *  pointer/events-index feed writes onto the site's own batch (#48). Required,
+   *  as `deploySite`'s is: a missing one stamped the config on WoCo while the
+   *  deploy went to Etherna. */
+  gatewayUrl: string,
 ) {
-  const gw = gatewayUrl ? { gatewayUrl } : {};
+  const gw = { gatewayUrl };
   if (feedSigner) {
     await writeContentFeed({
       signerPrivKey: feedSigner.privKey,
