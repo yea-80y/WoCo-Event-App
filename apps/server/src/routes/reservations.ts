@@ -5,7 +5,7 @@ import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
 import { getOnChainEventAt } from "../lib/chain/event-contract.js";
-import { registrationContractFor } from "../lib/event/onchain-registry.js";
+import { saleContractFor } from "../lib/event/onchain-registry.js";
 import {
   reserve,
   release,
@@ -127,14 +127,20 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
     return c.json({ ok: false, error: seriesSaleMessage(seriesWindow.reason) }, 409);
   }
 
+  // Sale-contract gate (#563) — the same rule, and the same refusal, as
+  // create-checkout: the registration's own contract, and only on the active
+  // chain. A hold for a series create-checkout would refuse is a seat nobody
+  // can buy, and it would still spend this network's seat cap (#223). Refused
+  // before any read of another chain.
+  const sale = saleContractFor(eventId, seriesId);
+  if (!sale.ok) {
+    return c.json({ ok: false, error: "Tickets for this event are not currently on sale" }, 409);
+  }
+  const contract = sale.contract;
+
   // Closure that the reservation store uses to ask "what is available right
   // now?" — the contract is the only supply ledger.
   const availableSupplier = async (): Promise<number> => {
-    // Counted on the contract the registration lives on (#563), from the
-    // server's record — not today's env contract, where an older series' id
-    // does not exist and would read as zero seats.
-    const contract = registrationContractFor(eventId, seriesId);
-    if (!contract) return 0;
     // Fail closed on ANY chain problem: EventNotFound returns null, a
     // transport failure throws — both mean "cannot verify seats exist",
     // and a hold must never be granted against seats we can't count.

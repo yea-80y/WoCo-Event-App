@@ -1,5 +1,6 @@
 /**
- * #563 — a live charge mints only on the ACTIVE chain.
+ * #563 — a live charge mints only on the ACTIVE chain, and a hold is only
+ * granted for one it can become.
  *
  * Since #563 a registration record names its chain, so after
  * `WOCO_EVENT_CHAIN_ID` moves (421614 -> 42161), a record from the old chain
@@ -7,7 +8,11 @@
  * create-checkout would validate against the previous (test) chain, stamp it
  * into a LIVE Stripe session, and fulfilment would mint there.
  *
- * Driven through the real route. The old chain's RPC is a local stub that
+ * The reserve step (the 10-minute seat hold) applies the same rule: a hold
+ * granted against the old chain's supply is one create-checkout then refuses,
+ * and it still spends the network's seat cap.
+ *
+ * Driven through the real routes. The old chain's RPC is a local stub that
  * COUNTS requests, so "refused before reading the other chain" is observed,
  * not inferred; the positive control proves the stub is the chain the route
  * would otherwise have read.
@@ -72,8 +77,10 @@ before(async () => {
   const registry = await import("../src/lib/event/onchain-registry.js");
   const service = await import("../src/lib/event/service.js");
   const { stripeRoutes } = await import("../src/routes/stripe.js");
+  const { reservations } = await import("../src/routes/reservations.js");
   app = new Hono();
   app.route("/api/stripe", stripeRoutes);
+  app.route("/api/events", reservations);
 
   // Registered — and recorded — while the platform ran on the old chain.
   registry.recordOnChainEventId(EVENT_ID, SERIES_ID, ON_CHAIN_ID, { chainId: OLD_CHAIN, address: V2_ADDR, version: "v2" });
@@ -133,4 +140,30 @@ test("control: on its own chain the same registration IS read on that chain", as
   rpcRequests = 0;
   await checkout("203.0.113.41");
   assert.ok(rpcRequests > 0, "the stub is not the chain the route reads — the test above proves nothing");
+});
+
+function reserve(ip: string): Promise<Response> {
+  return app.request(`/api/events/${EVENT_ID}/series/${SERIES_ID}/reserve`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+    body: JSON.stringify({ quantity: 1 }),
+  });
+}
+
+test("after a chain flip, no seat hold is granted for a registration on the old chain", async () => {
+  process.env.WOCO_EVENT_CHAIN_ID = String(NEW_CHAIN);
+  rpcRequests = 0;
+  const res = await reserve("203.0.113.42");
+  assert.equal(res.status, 409);
+  const body = (await res.json()) as { ok: boolean; error: string };
+  assert.equal(body.ok, false);
+  assert.match(body.error, /not currently on sale/);
+  assert.equal(rpcRequests, 0, "the old chain's supply was read for a hold on the new one");
+});
+
+test("control: on its own chain the hold counts seats on that chain", async () => {
+  process.env.WOCO_EVENT_CHAIN_ID = String(OLD_CHAIN);
+  rpcRequests = 0;
+  await reserve("203.0.113.43");
+  assert.ok(rpcRequests > 0, "the stub is not the chain the reserve step reads — the test above proves nothing");
 });
