@@ -65,7 +65,8 @@ test("the guard recognises the env object Vite emits, minified or not", () => {
   // Shape copied from a real production chunk (values replaced).
   assert.ok(hasEnvObject(`OTHER:"other"},nM={BASE_URL:"./",DEV:!1,MODE:"production",PROD:!0,SSR:!1,VITE_X:"v"};`));
   assert.ok(hasEnvObject(`const __vite_import_meta_env__ = {"VITE_X": "v", "BASE_URL": "./", "MODE": "site", "DEV": false, "PROD": true, "SSR": false};`));
-  assert.ok(hasEnvObject(`x={SSR:!1,BASE_URL:"./"}`), "key order is not guaranteed");
+  // Vite sorts the keys today; this is the order a Vite that stopped sorting could emit.
+  assert.ok(hasEnvObject(`x={SSR:!1,BASE_URL:"./"}`));
 });
 
 test("the guard does not fire on code that merely names those keys", () => {
@@ -101,14 +102,18 @@ test("an unlisted file is never rewritten", () => {
 
 test("the installed Web3Auth dependency is still the shape the rewrite expects", () => {
   // A dependency upgrade that moves or adds a read fails here as well as in the build.
+  // Resolved through the package that makes the call, so this is the copy it uses.
   const require = createRequire(join(WEB, "package.json"));
-  const pkg = require.resolve("@toruslabs/base-controllers/package.json", {
-    paths: [dirname(require.resolve("@web3auth/modal"))],
-  });
-  const file = join(dirname(pkg), "dist/lib.esm/utils/utils.js");
+  const resolveFrom = (name: string, from: string) => dirname(require.resolve(`${name}/package.json`, { paths: [from] }));
+  const caller = resolveFrom("@toruslabs/ethereum-controllers", WEB);
+  const file = join(resolveFrom("@toruslabs/base-controllers", caller), "dist/lib.esm/utils/utils.js");
   assert.match(file, TORUS);
   const out = withoutDependencyEnvRead(file, readFileSync(file, "utf8"));
   assert.ok(out && "code" in out, out && "error" in out ? out.error : "file not recognised");
+
+  // The rewrite changes nothing only while its one caller asks for a setting no build sets.
+  const constants = readFileSync(join(caller, "dist/lib.esm/utils/constants.js"), "utf8");
+  assert.deepEqual([...constants.matchAll(/getEnvVariable\(([^)]*)\)/g)].map((m) => m[1]), ['"VITE_APP_INFURA_PROJECT_KEY"']);
 });
 
 test("every bundle this app builds runs the guard", () => {

@@ -34,7 +34,10 @@ const DEPENDENCY_ENV_READS: { file: RegExp; occurrences: number; why: string }[]
 ];
 
 const KEY = (name: string) => String.raw`["'\`]?\b${name}["'\`]?\s*:`;
-// Both orders, within one brace-free span: the keys of a single object literal.
+// Within one brace-free span: the keys of a single object literal. Vite sorts
+// the keys, so BASE_URL comes first and only DEV, MODE and PROD sit before SSR -
+// no setting's value can fall in between. The reverse order is for a Vite that
+// stops sorting.
 const ENV_OBJECT = new RegExp(
   `${KEY("BASE_URL")}[^{}]*?${KEY("SSR")}|${KEY("SSR")}[^{}]*?${KEY("BASE_URL")}`,
 );
