@@ -207,3 +207,41 @@ test("in-flight entry is released after failure, so a later retry can proceed", 
   const r = await registerSeriesExactlyOnce(PARAMS, h.deps);
   assert.equal(r.status, "registered");
 });
+
+// ── #563: the registration is recorded on the contract it was made on ────────
+
+const LEDGER = { chainId: 421614, address: "0x" + "1e".repeat(20), version: "ledger" as const };
+
+test("a fresh registration hands confirm the contract the tx went to", async () => {
+  const seen: unknown[] = [];
+  const h = harness({
+    registerEventOnChain: (async (_s, _r, _v, onTxSent, onTxReserved) => {
+      onTxReserved?.({ nonce: 7, chainId: 421614 });
+      onTxSent?.({ txHash: "0xtx1", nonce: 7, chainId: 421614 });
+      return { onChainEventId: "0xonchain1", txHash: "0xtx1", contract: LEDGER };
+    }) as RegisterDeps["registerEventOnChain"],
+    confirmSeriesOnChain: (async (_e, _s, _id, _hint, contract) => {
+      seen.push(contract);
+      return FEED;
+    }) as RegisterDeps["confirmSeriesOnChain"],
+  });
+  await registerSeriesExactlyOnce({ ...PARAMS, seriesId: "ser-563a" }, h.deps);
+  assert.deepEqual(seen, [LEDGER]);
+});
+
+test("healing an already-recorded registration names NO contract — the record keeps its own", async () => {
+  // After a flip, today's env contract is not where this series lives; handing
+  // it to confirm would be a contract rebind, and refuse the heal forever.
+  const seen: unknown[] = [];
+  const h = harness({
+    confirmSeriesOnChain: (async (_e, _s, _id, _hint, contract) => {
+      seen.push(contract);
+      return FEED;
+    }) as RegisterDeps["confirmSeriesOnChain"],
+  });
+  h.registry.set("evt-1|ser-563b", "0xalready");
+  const r = await registerSeriesExactlyOnce({ ...PARAMS, seriesId: "ser-563b" }, h.deps);
+  assert.equal(r.status, "already");
+  assert.deepEqual(seen, [undefined]);
+  assert.equal(h.calls.broadcasts, 0);
+});

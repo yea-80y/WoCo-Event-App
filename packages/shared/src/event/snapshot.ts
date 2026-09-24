@@ -60,7 +60,7 @@ export interface SnapshotCard {
  * chain→content bridge the `Registered` log cannot provide on its own.
  */
 export interface SnapshotResolutionEntry {
-  /** 0x bytes32 event id from the WoCoEventV2 `Registered` log. */
+  /** 0x bytes32 event id from the events contract's `Registered` log. */
   onChainEventId: string;
   /** WoCo eventId the on-chain registration belongs to. */
   wocoEventId: string;
@@ -68,6 +68,14 @@ export interface SnapshotResolutionEntry {
   seriesId: string;
   /** Discovery carrier for resolving the event SOC (absent for legacy events). */
   creatorFeedSigner?: Hex0x;
+  /**
+   * The events contract whose `Registered` log this entry came from (#563) —
+   * with a successor contract running beside the old one, "the chain log" is
+   * one log per contract. Absent for a registration recorded before the server
+   * kept it; never a guess.
+   */
+  chainId?: number;
+  contract?: Hex0x;
 }
 
 /** The immutable snapshot blob — the read model. Uploaded to Swarm bytes; the

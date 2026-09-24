@@ -34,7 +34,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AbiCoder, keccak256 } from "ethers";
-import type { EventFeed } from "@woco/shared";
+import type { EventFeed, Hex0x } from "@woco/shared";
 import { writeJsonAtomic } from "../marketing/persist.js";
 import {
   getActiveChainId,
@@ -359,10 +359,15 @@ export function registrationContractFor(eventId: string, seriesId: string): Even
   return byEventSeries.get(key(eventId, seriesId))?.contract ?? legacyEventContract();
 }
 
-/** `/api/health` needs only the count; tests need to see what was written. */
-export function _peekRegistrationForTests(eventId: string, seriesId: string): Registration | undefined {
+/**
+ * The record as written — `contract` absent on a pre-#563 record. For callers
+ * that must tell a recorded contract from the legacy rule's answer (the
+ * snapshot publishes only the former); everything that reads or mints wants
+ * `registrationContractFor`.
+ */
+export function lookupRegistration(eventId: string, seriesId: string): Readonly<Registration> | null {
   ensureLoaded();
-  return byEventSeries.get(key(eventId, seriesId));
+  return byEventSeries.get(key(eventId, seriesId)) ?? null;
 }
 
 /** A resolution entry as `getAllResolutionEntries` hands it to the snapshot builder. */
@@ -372,7 +377,7 @@ export interface RegistryResolutionEntry {
   seriesId: string;
   /** Present when the record names its contract (#563). */
   chainId?: number;
-  contract?: string;
+  contract?: Hex0x;
 }
 
 /**
@@ -392,7 +397,7 @@ export function getAllResolutionEntries(): RegistryResolutionEntry[] {
       onChainEventId: r.onChainEventId,
       wocoEventId: k.slice(0, sep),
       seriesId: k.slice(sep + 1),
-      ...(r.contract ? { chainId: r.contract.chainId, contract: r.contract.address } : {}),
+      ...(r.contract ? { chainId: r.contract.chainId, contract: r.contract.address as Hex0x } : {}),
     });
   }
   return out;

@@ -133,7 +133,7 @@ test("a replay never stamps a contract onto an old record — today's contract w
   const [e, s] = LEGACY_KEY.split("|");
   registry.recordOnChainEventId(e, s, LEGACY_ID, ledgerTarget);
   assert.equal(file()[LEGACY_KEY], LEGACY_ID);
-  assert.equal(registry._peekRegistrationForTests(e, s).contract, undefined);
+  assert.equal(registry.lookupRegistration(e, s).contract, undefined);
 });
 
 test("THE CUTOVER: after env flips to the ledger, every existing registration stays on V2", () => {
