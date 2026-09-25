@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && vite build --config vite.ticket.config.ts",
     "dev:site": "vite --config vite.site.config.ts --mode site",
     "build:site": "vite build --config vite.site.config.ts --mode site",
     "dev:multisite": "vite --config vite.multisite.config.ts",
@@ -14,7 +14,8 @@
     "test": "node --import tsx --test test/*.test.ts",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
     "build:scanner": "vite build --config vite.scanner.config.ts",
-    "dev:scanner": "vite --config vite.scanner.config.ts"
+    "dev:scanner": "vite --config vite.scanner.config.ts",
+    "build:ticket": "vite build --config vite.ticket.config.ts"
   },
   "dependencies": {
     "@coinbase/wallet-sdk": "^4.3.7",

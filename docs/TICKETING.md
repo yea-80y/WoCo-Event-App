@@ -111,7 +111,7 @@ Card is the only live rail (`cryptoPaymentsAllowed = false`, `freeEventsAllowed 
                  as the platform sponsor, chunked
               d. each burner signs its own ticket message — then the key is
                  DISCARDED. It never touches disk or any store.
-              e. email the ticket: a composite PNG plus a /t/… link
+              e. email the ticket: a composite PNG plus a /ticket.html#… link
 ```
 
 **Which on-chain event to mint against comes from server state only, never from the event feed.**
@@ -191,17 +191,20 @@ personal-sign prefix — not raw keccak256. Verification is one comparison:
 
 > `ecrecover(ticketSig, canonicalMessage) == slotOwner[onChainEventId][edition - 1]`
 
-`GET /t/:eventId/:seriesId/:edition/:sig` renders the ticket page, and appending `.json` returns
-a downloadable artifact carrying the QR payload, the signature and an explicit verdict:
+The emailed link opens a **static page on the app origin**, not a server route:
 
-- `valid` — recovered to the on-chain slot owner;
-- `unverified` — the chain was unreachable. **Distinct from invalid**, deliberately: "couldn't
-  ask" is not "no".
-- an invalid signature is a 403 and never renders.
+> `https://woco.eth.limo/ticket.html#{eventId}/{seriesId}/{edition}/{sig}?t=…&d=…&l=…&n=…&i=…`
 
-The download format keeps `claimed` and `original` as `null`. On-chain tickets have no
-intermediate credential objects — the contract *is* the ledger — and the fields stay so the shape
-is stable.
+Everything after `#` is the URL fragment, which a browser never sends in a request, so the
+signature reaches no server, CDN log or mail link scanner. The page draws the QR on the phone
+and can save it as an image (canvas, `blob:` download), so it works with no signal. Its CSP pins
+its one inline script by hash and sets `connect-src 'none'`; the only fetch is the event image,
+from a content gateway. One format, three users: `packages/shared/src/ticket/link.ts` (built by
+the email, read by the page and by the scanner's `parseTicketQr`).
+
+The page does **not** verify the ticket - the door does. The display fields after `?` are not
+authenticated: anyone holding the link can edit them, as they could a screenshot. The retired
+`/t/…/{sig}` route answers 410 and echoes nothing; it put the signature in the request path.
 
 There was once a `woco-claimed-owner-v2` owner-binding attestation. It was **deleted**: an audit
 found it was produced by nothing and verified by nothing, and an unverified signature field

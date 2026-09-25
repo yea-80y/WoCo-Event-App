@@ -459,7 +459,7 @@ describe("happy path", () => {
     );
     assert.match(mail.tickets[0].qrContent, new RegExp(`^woco://t/${EVENT_ID}/${SERIES_ID}/1/sig0$`));
     assert.equal(mail.replyTo, "org@example.com");
-    assert.equal(mail.siteId, "site-1");
+    assert.equal(mail.imageHash, "00".repeat(32), "the event image reference travels to the ticket link builder");
     assert.equal(mail.profileCta, true, "multi-ticket order keeps per-ticket links");
     assert.deepEqual(mail.failureContext, { stripeSessionId: "cs_test_1", eventId: EVENT_ID, siteId: "site-1" });
 

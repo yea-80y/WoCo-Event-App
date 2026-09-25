@@ -348,6 +348,8 @@ export async function fulfilPaidSession(
   let eventCreatorAddress = "";
   let eventLocation = "";
   let seriesName = "";
+  let eventImageHash = "";
+  let eventImageGateway = "";
   let totalSupply = 0;
   /** The feed's own copy — used ONLY to notice a disagreement, never to mint. */
   let feedOnChainEventId = "";
@@ -364,6 +366,8 @@ export async function fulfilPaidSession(
       eventEndDate = ev.endDate ?? "";
       eventCreatorAddress = (ev.creatorAddress ?? "").toLowerCase();
       eventLocation = ev.location ?? "";
+      eventImageHash = ev.imageHash ?? "";
+      eventImageGateway = ev.gatewayUrl ?? "";
       const ser = ev.series.find((s) => s.seriesId === seriesId);
       if (ser) {
         seriesName = ser.name;
@@ -853,7 +857,8 @@ export async function fulfilPaidSession(
         tickets: claimedResults,
         buyerName,
         palette: siteTheme?.palette,
-        siteId: metaSiteId || undefined,
+        imageHash: eventImageHash || undefined,
+        imageGateway: eventImageGateway || undefined,
         // Attendee replies reach the organiser instead of a void. Absent for
         // events with no site, or no contact email set on it.
         replyTo: siteTheme?.contactEmail,

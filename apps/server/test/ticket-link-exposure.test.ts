@@ -1,58 +1,61 @@
 /**
- * A ticket link carries a working ticket, so it must carry nothing else and
- * leak nowhere.
+ * A ticket link carries a working ticket, so it must reach no server and leak
+ * nowhere.
  *
- * Found 2026-09-25: the email's "Open ticket page" link put the buyer's name in
- * the query string (`?n=`), where it lands in CDN logs, browser history and the
- * link scanners mail providers run; the page and the PNG then printed "ISSUED TO"
- * straight from that parameter, so anyone holding a link could put any name on a
- * genuine ticket; and /t responses had no Referrer-Policy, because the security
- * headers were mounted on /api and /embed only.
- *
- * The page route needs a chain read to render (verifyTicketSig), so the page and
- * the mount are pinned by source; the link builder is tested directly.
+ * History: #688 took the buyer's name out of the old `/t/…/{sig}` link and gave
+ * /t a no-referrer policy. That link still put the SIGNATURE in the request path,
+ * so it reached our server and every log in front of it. The link now points at
+ * a static page on the app origin with the ticket in the URL fragment, which a
+ * browser never sends (packages/shared/src/ticket/link.ts), and /t is retired.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { ticketUrl } from "../src/routes/tickets.js";
+import { ticketPage } from "../src/routes/ticket-page.js";
 
 const SRC = new URL("../src/", import.meta.url).pathname;
 const read = (p: string) => readFileSync(SRC + p, "utf-8");
 
-const QR = `woco://t/0x${"ab".repeat(32)}/series-1/7/0x${"cd".repeat(65)}`;
+const EVENT = "449ce21d-8503-4dc1-936b-2268b5a8356f";
+const SIG = `0x${"cd".repeat(65)}`;
+const QR = `woco://t/${EVENT}/series-1/7/${SIG}`;
 
-test("a ticket link carries no name and no email", () => {
-  for (const url of [ticketUrl(QR), ticketUrl(QR, true), ticketUrl(QR, false, "site_abc123")]) {
-    assert.ok(url, "the link builder must still produce a link");
-    const q = new URL(url!, "https://api.example").searchParams;
-    assert.equal(q.get("n"), null, "buyer name must not ride in a ticket URL");
-    assert.equal(q.get("e"), null, "buyer email must not ride in a ticket URL");
+test("the link opens the static ticket page, with the ticket only in the fragment", () => {
+  const url = new URL(ticketUrl(QR, { title: "Rooftop Sessions", location: "Leeds" })!);
+  assert.equal(url.pathname, "/ticket.html");
+  assert.ok(url.hash.startsWith(`#${EVENT}/series-1/7/${SIG}`), "ticket parts lead the fragment");
+  assert.ok(!(url.pathname + url.search).includes(SIG), "the signature must never be in the request line");
+  assert.equal(url.search, "", "nothing may ride in the query string, which IS sent");
+});
+
+test("a ticket link never carries the buyer's name", () => {
+  const src = read("routes/tickets.ts");
+  const start = src.indexOf("const display: TicketDisplay = {");
+  const block = src.slice(start, src.indexOf("};", start));
+  assert.ok(start !== -1, "the display block moved - re-point this test");
+  assert.doesNotMatch(block, /buyerName|\bto\b|email/i, "the email must not put the buyer's name or address in the link");
+});
+
+test("an over-long title is dropped before any ticket part", () => {
+  const url = ticketUrl(QR, { title: "x".repeat(5000), location: "y".repeat(5000), series: "z".repeat(5000) })!;
+  assert.ok(url.length <= 1000, `link is ${url.length} chars`);
+  assert.ok(new URL(url).hash.startsWith(`#${EVENT}/series-1/7/${SIG}`));
+});
+
+test("the retired /t route answers 410 and never echoes the signature", async () => {
+  for (const path of [`/${EVENT}/series-1/7/${SIG}`, `/${EVENT}/series-1/7/${SIG}.png`, "/anything"]) {
+    const res = await ticketPage.request(path);
+    assert.equal(res.status, 410, path);
+    const body = await res.text();
+    assert.ok(!body.includes(SIG), "the moved page must not repeat what the request carried");
   }
 });
 
-test("the site id is the only query parameter a ticket link keeps", () => {
-  const url = ticketUrl(QR, false, "site_abc123")!;
-  const q = new URL(url, "https://api.example").searchParams;
-  assert.deepEqual([...q.keys()], ["s"]);
-});
-
-test("the ticket page reads no name or email from its URL", () => {
-  const page = read("routes/ticket-page.ts");
-  assert.doesNotMatch(page, /searchParams\.get\(\s*["'`][ne]["'`]\s*\)/, "the page must not print text taken from its URL");
-  assert.doesNotMatch(page, /ISSUED TO/, "an unverifiable 'issued to' line is back");
-});
-
-test("the ticket page does not copy its whole query string onto the image link", () => {
-  const page = read("routes/ticket-page.ts");
-  assert.doesNotMatch(page, /c\.req\.url\.slice\(\s*c\.req\.url\.indexOf\(\s*["']\?["']\s*\)\s*\)/);
-});
-
-test("ticket pages get the security headers, including no-referrer", () => {
+test("the /t route still gets the security headers, before the route", () => {
   const index = read("index.ts");
   assert.match(index, /app\.use\(\s*["']\/t\/\*["']\s*,\s*securityHeaders\(\)\s*\)/);
-  // Registered before the route, or it never runs for it.
   const mount = index.search(/app\.use\(\s*["']\/t\/\*["']/);
   const route = index.search(/app\.route\(\s*["']\/t["']/);
-  assert.ok(mount !== -1 && route !== -1 && mount < route, "the /t headers must be mounted before the /t route");
+  assert.ok(mount !== -1 && route !== -1 && mount < route);
 });
