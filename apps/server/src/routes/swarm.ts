@@ -5,7 +5,7 @@ import { uploadSignedSoc, type SignedSocInput } from "../lib/swarm/soc-upload.js
 import { readVerifiedSoc } from "../lib/swarm/soc-read.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
-import { batchForDeploy } from "../lib/etherna/batch-router.js";
+import { batchForDeploy, PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import { jsonBodyLimit } from "../lib/http/body-limit.js";
 import {
@@ -82,6 +82,7 @@ swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, a
     }, selection);
     return c.json({ ok: true, data: ref });
   } catch (err) {
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     const status = (err as { status?: number })?.status;
     if (status === 400) {
       return c.json({ ok: false, error: (err as Error).message }, 400);
@@ -148,6 +149,7 @@ swarmRoutes.post("/bytes", jsonBodyLimit(BYTES_RELAY_MAX_BODY_BYTES), requireAut
     const ref = await uploadToBytes(new Uint8Array(bytes), selection);
     return c.json({ ok: true, data: { ref } });
   } catch (err) {
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     console.error("[swarm] bytes stamp failed:", err);
     return c.json({ ok: false, error: "Bytes upload failed" }, 502);
   }

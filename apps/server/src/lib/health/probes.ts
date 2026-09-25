@@ -113,6 +113,8 @@ let paymasterReading = empty<bigint>();
 let beeReading = empty<StampReading & { immutable: boolean | null }>();
 let chainstateReading = empty<{ block: number; chainTip: number }>();
 let ethernaReading = empty<StampReading & { immutable: boolean | null }>();
+/** The batch `ethernaReading` is FOR, so a reading can never vouch for another one. */
+let ethernaReadingBatch = "";
 let ensExpiryReading = empty<bigint>();
 /**
  * WHY A SECOND TIMESTAMP. `Reading.at` is when the probe last RAN; this is when
@@ -459,6 +461,7 @@ export async function refreshPostage(
     } catch (err) {
       ethernaReading = isNotFound(err) ? gone(err) : failed(err);
     }
+    ethernaReadingBatch = ethernaBatch;
   }
 
   const section = postageHealth();
@@ -943,6 +946,32 @@ export async function beeBatchState(): Promise<{ usable: boolean | null; ttl: nu
   return { usable: beeReading.value?.usable ?? null, ttl: beeReading.value?.batchTTL ?? null };
 }
 
+export interface EthernaPlatformBatchSnapshot {
+  /** The batch this reading is for ("" before the first read). */
+  batchId: string;
+  /** When the probe last ran, or null if it never has. */
+  at: number | null;
+  /** Etherna positively said the batch does not exist. */
+  gone: boolean;
+  /** The parsed stamp, or null when the read failed or was incomplete. */
+  stamp: StampReading | null;
+}
+
+/**
+ * The last Etherna platform-batch reading, for the batch router's liveness guard
+ * (#610). Synchronous and cache-only on purpose: the router is called on every
+ * write path and awaits nothing, and one probe on one clock is the only answer
+ * to "is it alive" (see `beeBatchState` for why there must never be two).
+ */
+export function ethernaPlatformBatchSnapshot(): EthernaPlatformBatchSnapshot {
+  return {
+    batchId: ethernaReadingBatch,
+    at: ethernaReading.at,
+    gone: ethernaReading.gone === true,
+    stamp: ethernaReading.value,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Timer
 // ---------------------------------------------------------------------------
@@ -984,6 +1013,7 @@ export function __resetHealthProbes(): void {
   beeReading = empty<StampReading & { immutable: boolean | null }>();
   chainstateReading = empty<{ block: number; chainTip: number }>();
   ethernaReading = empty<StampReading & { immutable: boolean | null }>();
+  ethernaReadingBatch = "";
   ensExpiryReading = empty<bigint>();
   ensExpiryOkAt = null;
   enrolmentReading = empty<Enrolment>();

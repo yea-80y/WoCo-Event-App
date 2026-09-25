@@ -4,6 +4,22 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## A dead Etherna platform batch refuses writes instead of swallowing them (#610, 2026-09-25)
+
+The router handed out `ETHERNA_PLATFORM_BATCH` with no liveness check (user batches had one).
+A write onto a dead batch answers 200 and Etherna serves it from its own storage for a while,
+so it looked saved and was lost. `batchForDeploy` now reads the health probe's last Etherna
+reading and refuses with 503 `STORAGE_UNAVAILABLE` when the batch is gone (404), unusable, or
+has a full bucket (mutable: the next chunk would overwrite stored content). Owner's rule: a
+batch that is merely running low is the `postage.etherna` alarm's job, never a refusal, since
+a top-up before it dies saves everything on it. TTL is not a refusal input (bee reports < 1
+for an invalid price); an unknown or stale reading writes. Feed-page helpers and
+`batchForUserContent` pass the refusal through rather than detour to WoCo (nothing would move
+it back, and a detoured feed page can fork the feed index). Detour + move-back stays post-launch
+(Fable report `FABLE_610_FALLBACK_CONSULT_REPORT.md`).
+
+---
+
 ## L1Resolver v2: one resolver for woco.eth and other owners' names, meant to last (2026-09-25)
 
 Audit 964 passed the two #23 changes (renounce always reverts, two-step ownership) but
