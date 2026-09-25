@@ -38,7 +38,7 @@
     <div class="inner strip-inner">
       <span class="kicker kicker--hi">PRE-LAUNCH</span>
       <span class="strip-text">
-        Test mode — nothing here charges a real card.
+        Test mode: nothing here charges a real card.
       </span>
     </div>
   </aside>
@@ -63,7 +63,7 @@
         <div class="detail-body">
           <p>
             Payments run through Stripe in test mode, and the on-chain pieces sit
-            on Arbitrum Sepolia, a test network. Nothing moves real money — and no
+            on Arbitrum Sepolia, a test network. Nothing moves real money, and no
             real card will work here yet.
           </p>
           <p>
@@ -71,7 +71,7 @@
             own domain, issue cryptographically signed tickets, scan them at the door.
           </p>
           <p class="test-card">
-            Want to try a checkout? Use Stripe's test card —
+            Want to try a checkout? Use Stripe's test card:
             <code>4242 4242 4242 4242</code>, any future expiry, any CVC.
           </p>
         </div>

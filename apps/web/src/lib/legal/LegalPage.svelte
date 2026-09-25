@@ -22,6 +22,13 @@
 
   const entry = $derived(DOCS[doc]);
 
+  // Opened from footers and from mid-page links, and the router keeps the
+  // scroll position across routes: start each document at its top.
+  $effect(() => {
+    void doc;
+    window.scrollTo(0, 0);
+  });
+
   // One document links to another by file name. The route that serves it is not
   // derivable from that name, and the href must be absolute or the deploy's
   // <base href> sends the reader to the gateway origin (#605).

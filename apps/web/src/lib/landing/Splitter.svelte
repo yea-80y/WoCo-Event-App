@@ -13,7 +13,6 @@
   import WocoWordmark from "../components/brand/WocoWordmark.svelte";
   import PreLaunchBanner from "../components/status/PreLaunchBanner.svelte";
   import ArrowRight from "lucide-svelte/icons/arrow-right";
-  import Shield from "lucide-svelte/icons/shield-check";
   // Two photographs, two jobs. `crowd` is screen-blended so its pure-black
   // pixels resolve to exactly --bg and the frame dissolves — it is a light
   // source, not a picture. `decks` is the opposite: a hard-edged plate, held
@@ -24,12 +23,12 @@
   import decksAvif from "./media/decks.avif";
   import decksWebp from "./media/decks.webp";
   import decksJpg from "./media/decks.jpg";
-  import Layers from "lucide-svelte/icons/layers";
   import Coins from "lucide-svelte/icons/coins";
   import HomeIcon from "lucide-svelte/icons/house";
   import Users from "lucide-svelte/icons/users-round";
   import Mail from "lucide-svelte/icons/mail";
 </script>
+
 
 <div class="root">
   <PreLaunchBanner />
@@ -72,7 +71,7 @@
 
       <p class="hero-sub">
         Sell tickets from your own page and build a following that stays
-        yours — even if you leave. 1.5% when you sell, no monthly bill.
+        yours, even if you leave. 1.5% when you sell, no monthly bill.
       </p>
 
       <div class="hero-ctas">
@@ -100,11 +99,11 @@
       </div>
 
       <div class="hero-meta">
-        <span class="mono-kicker">1.5% PLATFORM FEE</span>
+        <span class="mono-kicker">1.5% FEE, NEVER MORE</span>
         <span class="dot">·</span>
         <span class="mono-kicker">NO MONTHLY BILL</span>
         <span class="dot">·</span>
-        <span class="mono-kicker">YOUR FOLLOWING IS YOURS</span>
+        <span class="mono-kicker">OPEN SOURCE</span>
       </div>
     </div>
 
@@ -114,8 +113,8 @@
   </section>
 
   <!-- ── Launch offer ────────────────────────────────────────────────
-       An offer with a shelf life, not a product feature — so it sits in its
-       own band under the hero rather than becoming a seventh numbered reason. -->
+       An offer with a shelf life, not a product feature, so it sits in its
+       own band under the hero rather than becoming another numbered reason. -->
   <section class="offer">
     <div class="offer-inner">
       <span class="mono-kicker offer-kicker">// LAUNCH OFFER</span>
@@ -138,165 +137,257 @@
     </div>
   </section>
 
-  <!-- ── Section divider ─────────────────────────────────────────────── -->
-  <div class="divider">
-    <span class="divider-tag tag-display">Six reasons</span>
-    <span class="divider-line"></span>
-    <span class="mono-kicker">// WHY ORGANISERS BUILD HERE</span>
+  <!-- ── Why organisers switch — the business case, in their words ───── -->
+  <div class="section-head">
+    <span class="section-tag tag-display">Why switch</span>
+    <span class="section-line"></span>
+    <span class="mono-kicker">// WHAT YOU GET</span>
   </div>
 
-  <!-- ── USP blocks — alternating editorial rhythm ───────────────────── -->
-  <section class="usps">
-
-    <!-- 01 — the one nobody else can offer, so it leads. Deliberately says
-         nothing about where a follow is stored: the benefit is that it outlives
-         us, and an organiser does not need the mechanism to understand that. -->
-    <article class="usp usp--left">
-      <div class="usp-num mono">01</div>
-      <div class="usp-body">
-        <span class="usp-icon"><Users size={22} strokeWidth={2.25} /></span>
-        <h2>Your followers stay yours.</h2>
-        <p>
-          On other platforms, your followers belong to the platform. It sends
-          the alerts, on its schedule, and you can't take the list anywhere. If
-          the platform folds or drops you, it's gone.
-        </p>
-        <p>
-          Here, a follow belongs to the person who made it. We can't hold it
-          hostage, and if WoCo disappeared tomorrow your following would still
-          be there.
-        </p>
+  <section class="reasons">
+    <!-- 01 leads because nobody else can offer it. Deliberately says nothing
+         about where a follow is stored: the benefit is that it outlives us, and
+         an organiser does not need the mechanism to understand that. -->
+    <article class="reason">
+      <div class="reason-top">
+        <span class="reason-num mono">01</span>
+        <span class="reason-icon"><Users size={20} strokeWidth={2.25} /></span>
       </div>
+      <h3>Your followers stay yours.</h3>
+      <p>
+        On other platforms your followers belong to the platform. It sends the
+        alerts, on its schedule, and the list never leaves with you.
+      </p>
+      <p>
+        Here, a follow belongs to the person who made it. We can't hold it
+        hostage, and if WoCo disappeared tomorrow your following would still be
+        there.
+      </p>
     </article>
 
-    <!-- 02 -->
-    <article class="usp usp--right">
-      <div class="usp-num mono">02</div>
-      <div class="usp-body">
-        <span class="usp-icon"><Layers size={22} strokeWidth={2.25} /></span>
-        <h2>Every ticket becomes a memento.</h2>
-        <p>
-          The ticket doesn't die at the door. It stays on their phone as a
-          memento of being there — and you can build on it. Open the presale to
-          everyone who came last time. Put a fiver off the third visit. Give
-          the people who actually turned up first refusal.
-        </p>
-        <p>
-          No email address needed. The ticket is the proof they were
-          there.
-        </p>
-        <p class="usp-aside">
-          And because it's a real thing they hold, it doesn't have to stop
-          here. The same stub could unlock a discount at a local shop, early
-          access to somebody else's event, or something in a game. That's the
-          direction this is going.
-        </p>
-      </div>
-    </article>
-
-    <!-- 03 -->
-    <article class="usp usp--left">
-      <div class="usp-num mono">03</div>
-      <div class="usp-body">
-        <span class="usp-icon"><Shield size={22} strokeWidth={2.25} /></span>
-        <h2>The door works without internet.</h2>
-        <p>
-          The scanner downloads your tickets in advance and checks each one on
-          the phone itself. Nothing to connect to, so a cellar bar or a field
-          scans just as fast as anywhere else.
-        </p>
-        <p>
-          There's no list to look up, so nothing to fail to find. And when the
-          ticket holder has an account, their phone signs a fresh code on
-          arrival — so a screenshot in a group chat gets nobody in.
-        </p>
-      </div>
-    </article>
-
-    <!-- 04 — the page and the web address are separate sentences on purpose:
-         the page carries no WoCo branding at all, but the free address has our
+    <!-- The page and the web address are separate sentences on purpose: the
+         page carries no WoCo branding at all, but the free address has our
          name behind theirs. Claiming otherwise buys a bad first five minutes. -->
-    <article class="usp usp--right">
-      <div class="usp-num mono">04</div>
-      <div class="usp-body">
-        <span class="usp-icon"><HomeIcon size={22} strokeWidth={2.25} /></span>
-        <h2>Your name on it, not ours.</h2>
-        <p>
-          The page is yours — your artwork, your colours, your name at the top.
-          No WoCo logo in the corner, no eleven other events down the side.
-        </p>
-        <p>
-          Point your own domain at it, or use the free web address with your
-          name at the front and swap to your own later.
-        </p>
-        <p>
-          Need a full website? Build it here too — pages, artwork, your events
-          on it, no separate subscription.
-        </p>
+    <article class="reason">
+      <div class="reason-top">
+        <span class="reason-num mono">02</span>
+        <span class="reason-icon"><HomeIcon size={20} strokeWidth={2.25} /></span>
       </div>
+      <h3>Your name on it, not ours.</h3>
+      <p>
+        Your artwork, your colours, your name at the top. No WoCo logo in the
+        corner, no eleven other events down the side.
+      </p>
+      <p>
+        Point your own domain at it, or start on a free web address with your
+        name at the front. Need a full website? Build that here too, with no
+        extra subscription.
+      </p>
     </article>
 
-    <!-- 05 -->
-    <article class="usp usp--left">
-      <div class="usp-num mono">05</div>
-      <div class="usp-body">
-        <span class="usp-icon"><Coins size={22} strokeWidth={2.25} /></span>
-        <h2>Charge a booking fee. Keep it.</h2>
-        <p>
-          Every platform adds a booking fee and pockets it. Set yours here and
-          it's yours. We take 1.5% of the ticket price, nothing else.
-        </p>
-        <p>
-          A £20 ticket with a 10% booking fee: the buyer pays £22, 30p comes to
-          us, the rest is yours once the card fee's paid. Or charge nothing at
-          all. Your call, event by event.
-        </p>
+    <!-- 30p on a £20 ticket is exact: checkout-fees.ts charges the 1.5% on the
+         ticket subtotal, not the total. -->
+    <article class="reason">
+      <div class="reason-top">
+        <span class="reason-num mono">03</span>
+        <span class="reason-icon"><Coins size={20} strokeWidth={2.25} /></span>
       </div>
+      <h3>Charge a booking fee. Keep it.</h3>
+      <p>
+        Most platforms add a booking fee and pocket it. Set yours here and it's
+        yours. We take 1.5% of the ticket price, nothing else.
+      </p>
+      <p>
+        A £20 ticket with a 10% booking fee: the buyer pays £22, 30p comes to
+        us, and the rest is yours once the card fee's paid. Or charge nothing at
+        all. Your call, event by event.
+      </p>
     </article>
 
-    <!-- 06 — last because it answers the objection that lands right before
-         someone commits: moving is a hassle. Kept separate from 01 on purpose;
-         folding the two is what produced the old "someone else's email list". -->
-    <article class="usp usp--right">
-      <div class="usp-num mono">06</div>
-      <div class="usp-body">
-        <span class="usp-icon"><Mail size={22} strokeWidth={2.25} /></span>
-        <h2>Bring your mailing list. The boring bit is done.</h2>
+    <!-- The follow-time opt-in line was cut: #416 (the opt-in itself) is still
+         open, and this page may not promise what the product does not do. -->
+    <article class="reason">
+      <div class="reason-top">
+        <span class="reason-num mono">04</span>
+        <span class="reason-icon"><Mail size={20} strokeWidth={2.25} /></span>
+      </div>
+      <h3>Bring your mailing list.</h3>
+      <p>
+        Import from Eventbrite, Ticket Tailor or a spreadsheet and you've moved.
+        Unsubscribes, consent records and the one-click opt-out the rules
+        require are built in and run on every send.
+      </p>
+      <p>
+        Then email your people from here. Emailing your own ticket buyers is
+        free, and always will be.
+      </p>
+      <p>
+        Fans can follow you too, and you'll see your following grow on your
+        events.
+      </p>
+    </article>
+  </section>
+
+  <!-- ── Built differently — what the architecture buys an organiser ────
+       Three claims, each checked against the code: verify.ts (offline check
+       against pre-downloaded slot owners), DATA_INVENTORY.md §4 (the server
+       seals and has no code path to open). Nothing here may say more. -->
+  <section class="built">
+    <div class="built-inner">
+      <div class="built-head">
+        <span class="mono-kicker">// HOW IT'S BUILT</span>
+        <h2>Built differently, on purpose.</h2>
         <p>
-          Import from Eventbrite, Ticket Tailor or a spreadsheet and you've
-          moved. Unsubscribes, consent records and the one-click opt-out the
-          rules require are built in and run on every send.
-        </p>
-        <p>
-          Then email your people from here. Emailing your own ticket buyers is
-          free, and always will be.
-        </p>
-        <p>
-          Fans can follow you too, and you'll see your following grow on your
-          events.
+          The same things other platforms do, built so they don't depend on
+          trusting us.
         </p>
       </div>
-    </article>
 
+      <div class="built-grid">
+        <article class="built-item">
+          <span class="built-label mono">Signed</span>
+          <h3>Scans with no signal.</h3>
+          <p>
+            Every ticket is signed when it's issued and recorded onchain. The
+            door phone checks that signature itself, against a list it
+            downloaded before doors - so a basement with no bars scans as fast
+            as anywhere.
+          </p>
+          <p>Anyone can check a WoCo ticket is real, without asking us.</p>
+          <span class="built-spec mono">Signed at issue · checked offline</span>
+        </article>
+
+        <article class="built-item">
+          <span class="built-label mono">Sealed</span>
+          <h3>Your buyers' details, locked to you.</h3>
+          <p>
+            The answers people give on your order form are encrypted to a key
+            only you hold. They're sealed before they're stored, and we can't
+            open them.
+          </p>
+          <p>Your mailing list is stored the same way.</p>
+          <span class="built-spec mono">X25519 + AES-256-GCM</span>
+        </article>
+
+        <article class="built-item">
+          <span class="built-label mono">Kept</span>
+          <h3>A ticket they keep.</h3>
+          <p>
+            The ticket doesn't die at the door. It stays on their phone as proof
+            they were there, and you can build on that: open the presale to
+            everyone who came last time, or put a fiver off the third visit.
+          </p>
+          <p>No email address needed. The ticket is the proof.</p>
+          <span class="built-spec mono">One ticket · one holder</span>
+        </article>
+      </div>
+
+      <button class="built-more" onclick={() => navigate("/about")}>
+        How WoCo works, in full
+        <ArrowRight size={16} strokeWidth={2.5} />
+      </button>
+    </div>
   </section>
 
   <!-- ── The declaration ─────────────────────────────────────────────
-       Five commitments about our own conduct. Every line is deliberately a
-       promise we can keep unilaterally — nothing here says what anyone owns,
-       which is the constraint that governs this block. -->
-  <section class="creed">
-    <div class="creed-inner">
-      <span class="mono-kicker">// WHAT WE'RE PROMISING</span>
-      <h2>What we're promising</h2>
-      <ul>
-        <li>The fee only ever goes down. It's 1.5% today. If we ever put it up, we got this wrong.</li>
-        <li>Everything you build here is yours to take with you.</li>
-        <li>We're building it so it would keep working even without us.</li>
-        <li>No ads. No promoted events. We don't sell what we know about the people who come.</li>
-        <li>Nothing here is designed to make leaving difficult.</li>
-        <li>We're building this to still be here in ten years, not to be bought.</li>
-        <li>The people who use this should be the ones it answers to.</li>
-      </ul>
+       The page's centrepiece. Every line is a promise about our own conduct
+       that we can keep unilaterally. Nothing here says what anyone OWNS of
+       WoCo (shares, tokens, a stake) - "public good" is an aim we state, never
+       a legal form we claim. The fee line is a ceiling that only ratchets
+       down; if the fee ever needs to rise, this block is wrong, not the fee. -->
+  <section class="declaration">
+    <div class="declaration-inner">
+      <span class="mono-kicker declaration-kicker">// THE WOCO DECLARATION</span>
+
+      <div class="declaration-top">
+        <h2 class="fee-statement">
+          <span class="fee-number">1.5%</span>
+          <span class="fee-line">It only goes down.</span>
+        </h2>
+        <div class="declaration-lede">
+          <p class="lede-strong">
+            Our fee is 1.5% of the ticket price, and it will never go up. When
+            we can bring it down, we will - and every time we do, the lower rate
+            becomes the new ceiling.
+          </p>
+          <p>
+            Most platforms grow by taking more: bigger fees, paid placement,
+            your crowd's data. We're building the opposite - ticketing that
+            works like public infrastructure, for the people who put events on
+            and the people who go to them.
+          </p>
+          <button class="declaration-link" onclick={() => navigate("/legal/organiser-terms")}>
+            It's in our organiser terms, not just on this page
+            <ArrowRight size={14} strokeWidth={2.5} />
+          </button>
+        </div>
+      </div>
+
+      <ol class="pledges">
+        <li>
+          <span class="pledge-num mono">01</span>
+          <div>
+            <strong>Yours to take with you.</strong>
+            Your following, your pages and your mailing list go wherever you
+            go. Nothing here is designed to make leaving hard.
+          </div>
+        </li>
+        <li>
+          <span class="pledge-num mono">02</span>
+          <div>
+            <strong>Nothing for sale.</strong>
+            No ads and no promoted events. We don't sell what we know about the
+            people who come to your events.
+          </div>
+        </li>
+        <li>
+          <span class="pledge-num mono">03</span>
+          <div>
+            <strong>We never hold your money.</strong>
+            Ticket sales settle in your own Stripe account, not ours.
+          </div>
+        </li>
+        <li>
+          <span class="pledge-num mono">04</span>
+          <div>
+            <strong>Open source.</strong>
+            The code is public, so anyone can check how WoCo actually works.
+          </div>
+        </li>
+        <li>
+          <span class="pledge-num mono">05</span>
+          <div>
+            <strong>Built to outlast us.</strong>
+            Your events, pages, tickets and followers live on open networks,
+            not in a database we own.
+          </div>
+        </li>
+        <li>
+          <span class="pledge-num mono">06</span>
+          <div>
+            <strong>A public good, not an exit.</strong>
+            We're working towards WoCo being infrastructure the scene can rely
+            on in ten years' time, answerable to the people who use it. We're
+            building it to last, not to be sold.
+          </div>
+        </li>
+      </ol>
+
+      <div class="horizon">
+        <span class="mono-kicker">// THE WORLD COMPUTER</span>
+        <h3>Events are where the World Computer starts.</h3>
+        <p>
+          Every ticket here is a signed object, held by the person it was issued
+          to and recorded on open networks instead of in our database. That isn't
+          a ticketing feature - it's a foundation. The same rails can carry any
+          marketplace where a platform sits in the middle today, owning the
+          buyers, the sellers and the data.
+        </p>
+        <p>
+          We're building WoCo into exactly that: a fully decentralised
+          marketplace, run as a public good. Events are the first market on it.
+        </p>
+      </div>
     </div>
   </section>
 
@@ -315,8 +406,8 @@
         <SprayCan size={42} color="var(--text)" paintColor="var(--accent)" />
         <h2>Put your next event on sale.</h2>
         <p>
-          Free to set up. 1.5% when you sell. The following you build is yours
-          to keep.
+          Free to set up. 1.5% when you sell, and never more. The following you
+          build is yours to keep.
         </p>
         <div class="closing-actions">
           <button class="btn btn--primary btn--lg" onclick={() => navigate("/creator")}>
@@ -342,8 +433,19 @@
         <div class="footer-col">
           <span class="mono-kicker">Platform</span>
           <button class="link" onclick={() => navigate("/discover")}>Discover events</button>
-          <button class="link" onclick={() => navigate("/creator")}>Creator portal</button>
+          <button class="link" onclick={() => navigate("/creator")}>Host an event</button>
           <button class="link" onclick={() => navigate("/tickets")}>My tickets</button>
+        </div>
+        <div class="footer-col">
+          <span class="mono-kicker">WoCo</span>
+          <button class="link" onclick={() => navigate("/about")}>How it works</button>
+        </div>
+        <div class="footer-col">
+          <span class="mono-kicker">Legal</span>
+          <button class="link" onclick={() => navigate("/legal/terms")}>Terms</button>
+          <button class="link" onclick={() => navigate("/legal/organiser-terms")}>Organiser terms</button>
+          <button class="link" onclick={() => navigate("/legal/privacy")}>Privacy</button>
+          <button class="link" onclick={() => navigate("/legal/cookies")}>Cookies</button>
         </div>
       </div>
     </div>
@@ -393,6 +495,7 @@
     padding: 0.25rem 0;
     transition: color var(--transition);
     border-bottom: 1px solid transparent;
+    text-decoration: none;
   }
   .link:hover { color: var(--accent); border-bottom-color: var(--accent); }
   .link-quiet { color: var(--text-muted); }
@@ -701,51 +804,75 @@
     .corner { display: none; }
   }
 
-  /* ── Divider ────────────────────────────────────────────────────── */
 
-  .divider {
-    max-width: 1100px;
+  /* ── Section head ───────────────────────────────────────────────── */
+
+  /* The bands below (offer, built, declaration) pad OUTSIDE a 1100px column;
+     these pad inside it. Adding the padding back puts every left edge on the
+     page on one line. */
+  .section-head {
+    max-width: calc(1100px + 3rem);
     margin: 0 auto;
-    padding: 3rem 1.5rem 0;
+    padding: 3.5rem 1.5rem 0;
     display: flex;
     align-items: baseline;
     gap: 1.25rem;
   }
-  .divider-tag {
+  .section-tag {
     color: var(--accent);
     font-size: 1.125rem;
     letter-spacing: 0.04em;
   }
-  .divider-line {
+  .section-line {
     flex: 1;
     height: 1px;
     background: var(--border);
   }
 
-  /* ── USP blocks ─────────────────────────────────────────────────── */
+  /* ── Reasons — a ruled 2×2 on desktop, a plain stack on a phone ──────
+     The old alternating left/right rhythm right-aligned whole paragraphs and
+     left half the width empty; a grid reads left to right like everything
+     else on the page and fits all four above the fold on a laptop. */
 
-  .usps {
-    max-width: 1100px;
+  .reasons {
+    max-width: calc(1100px + 3rem);
     margin: 0 auto;
-    padding: 2rem 1.5rem 4rem;
-  }
-  .usp {
+    padding: 2rem 1.5rem 4.5rem;
     display: grid;
-    grid-template-columns: 5rem 1fr;
-    gap: 1.5rem;
-    padding: 2.5rem 0;
+    grid-template-columns: 1fr;
+  }
+  .reason {
+    padding: 2rem 0;
     border-bottom: 1px solid var(--border);
   }
-  .usp:last-of-type { border-bottom: none; }
-  .usp-num {
-    font-size: 2.5rem;
-    color: var(--text-dim);
-    line-height: 1;
-    font-weight: 500;
-    letter-spacing: -0.04em;
+  .reason:last-child { border-bottom: none; }
+
+  @media (min-width: 880px) {
+    .reasons {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .reason {
+      padding: 2.5rem 2.75rem 2.75rem 0;
+    }
+    /* Ruled like a spec sheet: one vertical hairline between the columns,
+       one horizontal between the rows, none on the outside edges. */
+    .reason:nth-child(odd) { border-right: 1px solid var(--border); }
+    .reason:nth-child(even) { padding-left: 2.75rem; padding-right: 0; }
+    .reason:nth-last-child(-n + 2) { border-bottom: none; }
   }
-  .usp-body { max-width: 620px; }
-  .usp-icon {
+
+  .reason-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.25rem;
+  }
+  .reason-num {
+    font-size: 0.8125rem;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+  }
+  .reason-icon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -754,43 +881,264 @@
     border: 1px solid var(--border-hover);
     border-radius: var(--radius-sm);
     color: var(--accent);
-    margin-bottom: 1rem;
   }
-  .usp h2 {
-    font-size: clamp(1.625rem, 3vw, 2.25rem);
-    line-height: 1.05;
-    margin: 0 0 0.875rem;
+  .reason h3 {
+    font-size: clamp(1.5rem, 2.4vw, 1.875rem);
+    line-height: 1.1;
     letter-spacing: -0.03em;
+    margin: 0 0 0.875rem;
   }
-  .usp p {
+  .reason p {
     margin: 0;
     color: var(--text-secondary);
     font-size: 1rem;
     line-height: 1.65;
+    max-width: 52ch;
   }
-  /* Blocks run to two or three paragraphs now; .usp p zeroes margin, so the
-     gap has to be declared here rather than inherited from anywhere. */
-  .usp p + p { margin-top: 0.875rem; }
-  /* offset right-aligned ones to add editorial rhythm on desktop */
+  .reason p + p { margin-top: 0.75rem; }
+
+  /* ── Built differently ──────────────────────────────────────────── */
+
+  .built {
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-surface);
+    padding: 4rem 1.5rem;
+  }
+  .built-inner {
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  .built-head {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    margin-bottom: 2.5rem;
+  }
+  .built-head h2 {
+    font-size: clamp(1.75rem, 3.4vw, 2.625rem);
+    line-height: 1.05;
+    letter-spacing: -0.035em;
+    margin: 0;
+  }
+  .built-head p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 1.0625rem;
+    line-height: 1.55;
+    max-width: 48ch;
+  }
+
+  .built-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+  @media (min-width: 960px) {
+    .built-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+
+  .built-item {
+    display: flex;
+    flex-direction: column;
+    padding: 1.75rem 1.5rem 1.5rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--accent);
+    border-radius: var(--radius-sm);
+  }
+  .built-label {
+    font-size: 0.6875rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--accent);
+    margin-bottom: 1rem;
+  }
+  .built-item h3 {
+    font-size: clamp(1.375rem, 2vw, 1.625rem);
+    line-height: 1.1;
+    letter-spacing: -0.03em;
+    margin: 0 0 0.875rem;
+  }
+  .built-item p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.9375rem;
+    line-height: 1.6;
+  }
+  .built-item p + p { margin-top: 0.625rem; }
+  .built-item p:last-of-type { margin-bottom: 1.25rem; }
+  /* Pinned to the bottom so the three spec lines sit on one baseline however
+     long each paragraph runs. */
+  .built-spec {
+    margin-top: auto;
+    padding-top: 0.875rem;
+    border-top: 1px dashed var(--border);
+    font-size: 0.625rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--text-muted);
+  }
+
+  .built-more {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 2rem;
+    padding: 0.25rem 0;
+    font-family: var(--font-body);
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--text);
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--accent);
+    cursor: pointer;
+    transition: color var(--transition);
+  }
+  .built-more:hover { color: var(--accent); }
+
+  /* ── The declaration ────────────────────────────────────────────── */
+
+  .declaration {
+    position: relative;
+    padding: 5rem 1.5rem 5.5rem;
+    background:
+      radial-gradient(ellipse 60% 70% at 0% 0%, var(--accent-subtle), transparent 70%),
+      var(--bg);
+    overflow: hidden;
+  }
+  .declaration-inner {
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  .declaration-kicker { color: var(--accent); }
+
+  .declaration-top {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 2rem;
+    margin: 1.75rem 0 3.5rem;
+  }
+  @media (min-width: 960px) {
+    .declaration-top {
+      grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+      gap: 3.5rem;
+      align-items: end;
+    }
+  }
+
+  .fee-statement {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .fee-number {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: clamp(5.5rem, 17vw, 11rem);
+    line-height: 0.82;
+    letter-spacing: -0.06em;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .fee-line {
+    font-size: clamp(1.75rem, 4vw, 2.75rem);
+    line-height: 1.05;
+    letter-spacing: -0.035em;
+    color: var(--text);
+  }
+
+  .declaration-lede p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 1rem;
+    line-height: 1.65;
+    max-width: 54ch;
+  }
+  .declaration-lede p + p { margin-top: 1rem; }
+  .declaration-lede .lede-strong {
+    color: var(--text);
+    font-size: clamp(1.0625rem, 1.5vw, 1.1875rem);
+    line-height: 1.55;
+  }
+
+  .pledges {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: 1fr;
+    border-top: 1px solid var(--border);
+  }
   @media (min-width: 880px) {
-    .usp--right {
-      grid-template-columns: 1fr 5rem;
-    }
-    .usp--right .usp-num {
-      grid-column: 2;
-      grid-row: 1;
-      text-align: right;
-    }
-    .usp--right .usp-body {
-      grid-column: 1;
-      grid-row: 1;
-      text-align: right;
-    }
-    .usp--right .usp-icon { margin-left: auto; }
+    .pledges { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 2.75rem; }
+  }
+  .pledges li {
+    display: grid;
+    grid-template-columns: 2.25rem 1fr;
+    gap: 0.75rem;
+    padding: 1.375rem 0;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: 1rem;
+    line-height: 1.6;
+  }
+  .pledges strong {
+    color: var(--text);
+    font-weight: 700;
+    margin-right: 0.25rem;
+  }
+  .pledge-num {
+    font-size: 0.75rem;
+    color: var(--accent);
+    padding-top: 0.25rem;
+    letter-spacing: 0.06em;
+  }
+
+  .declaration-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    margin-top: 1.25rem;
+    padding: 0.125rem 0;
+    font-family: var(--font-body);
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text);
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--accent);
+    cursor: pointer;
+    transition: color var(--transition);
+  }
+  .declaration-link:hover { color: var(--accent); }
+
+  /* The declaration ends on where this is going, not on the last pledge. */
+  .horizon {
+    margin-top: 3rem;
+    padding-top: 2.5rem;
+    border-top: 1px solid var(--border);
+  }
+  .horizon h3 {
+    font-size: clamp(1.5rem, 3vw, 2.125rem);
+    line-height: 1.05;
+    letter-spacing: -0.035em;
+    margin: 1rem 0 1rem;
+  }
+  .horizon p + p { margin-top: 1rem; }
+  .horizon p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 1rem;
+    line-height: 1.7;
+    max-width: 68ch;
   }
 
   /* ── Launch offer band ──────────────────────────────────────────────
-     Tinted rather than plain so it reads as an offer and not a sixth USP,
+     Tinted rather than plain so it reads as an offer and not another reason,
      and so the page gets a change of ground between the hero and the list. */
 
   .offer {
@@ -841,59 +1189,6 @@
     cursor: pointer;
   }
   .link-inline:hover { color: var(--accent); }
-
-  /* The interoperability paragraph in USP 02. Ruled off so it reads as an
-     aside about where this is heading, not as a feature that ships today —
-     and so it can be removed without touching the rest of the block. */
-  .usp .usp-aside {
-    border-top: 1px dashed var(--border);
-    padding-top: 0.875rem;
-    color: var(--text-muted);
-  }
-
-  /* ── Declaration ────────────────────────────────────────────────── */
-
-  .creed {
-    border-top: 1px solid var(--border);
-    background: var(--bg-surface);
-    padding: 3.5rem 1.5rem;
-  }
-  .creed-inner {
-    max-width: 1100px;
-    margin: 0 auto;
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }
-  .creed h2 {
-    font-size: clamp(1.5rem, 3vw, 2.125rem);
-    letter-spacing: -0.03em;
-    margin: 0 0 0.5rem;
-  }
-  .creed ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    max-width: 68ch;
-  }
-  .creed li {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 0.75rem;
-    align-items: baseline;
-    color: var(--text-secondary);
-    font-size: 1rem;
-    line-height: 1.6;
-  }
-  .creed li::before {
-    content: "—";
-    color: var(--accent);
-    font-family: var(--font-mono);
-    font-size: 0.8125rem;
-  }
 
   /* ── Closing strip ──────────────────────────────────────────────── */
 
@@ -972,7 +1267,7 @@
   /* ── Footer ─────────────────────────────────────────────────────── */
 
   .footer {
-    max-width: 1100px;
+    max-width: calc(1100px + 3rem);
     margin: 0 auto;
     padding: 3rem 1.5rem 2rem;
   }
@@ -992,8 +1287,11 @@
   }
   .footer-cols {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 1.5rem;
+  }
+  @media (max-width: 480px) {
+    .footer-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 2rem; }
   }
   .footer-col {
     display: flex;

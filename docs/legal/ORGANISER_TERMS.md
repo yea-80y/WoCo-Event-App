@@ -167,7 +167,14 @@ you receive **£21.17**. With the booking fee switched off, the buyer pays £20.
 **£19.20**. Processing rates vary by card type — the example uses the provider's standard UK
 consumer-card rate at the time of writing.
 
-We will give reasonable notice before changing this structure.
+**Our platform fee will never go above 1.5%.** This is a cap, not today's price. We will not
+raise the platform fee above 1.5% of your ticket price, and we will not introduce any other
+charge on your ticket sales in its place. If we lower it, the lower rate becomes the cap and we
+cannot put it back up. **Section 10 does not let us change this**: no update to these terms may
+raise the cap or add a ticket-sale charge alongside it. Services we may offer separately, and
+price openly, are not charges on your ticket sales and are not covered by this cap.
+
+We will give reasonable notice before changing the rest of this structure.
 
 ### When you get paid
 
@@ -261,7 +268,8 @@ Subject to that, and because you are contracting with us as a business rather th
 ## 10. Changes, law, and contact
 
 We may update these terms on reasonable notice. Material changes will be notified before they take
-effect.
+effect. **One exception: the 1.5% platform fee cap in section 6 cannot be raised by an update to
+these terms.**
 
 Governed by the law of **England and Wales**; the courts of England and Wales have exclusive
 jurisdiction.
