@@ -262,7 +262,8 @@
           <h3>Your buyers' details, locked to you.</h3>
           <p>
             The answers people give on your order form are encrypted to a key
-            only you hold. We store them. We can't read them.
+            only you hold. They're sealed before they're stored, and we can't
+            open them.
           </p>
           <p>Your mailing list is stored the same way.</p>
           <span class="built-spec mono">X25519 + AES-256-GCM</span>
@@ -342,21 +343,27 @@
         <li>
           <span class="pledge-num mono">03</span>
           <div>
-            <strong>Open source.</strong>
-            The code is public, so anyone can read how WoCo works - and check
-            a ticket is real without asking us.
+            <strong>We never hold your money.</strong>
+            Ticket sales settle in your own Stripe account, not ours.
           </div>
         </li>
         <li>
           <span class="pledge-num mono">04</span>
+          <div>
+            <strong>Open source.</strong>
+            The code is public, so anyone can check how WoCo actually works.
+          </div>
+        </li>
+        <li>
+          <span class="pledge-num mono">05</span>
           <div>
             <strong>Built to outlast us.</strong>
             Your events, pages, tickets and followers live on open networks,
             not in a database we own.
           </div>
         </li>
-        <li class="pledge-wide">
-          <span class="pledge-num mono">05</span>
+        <li>
+          <span class="pledge-num mono">06</span>
           <div>
             <strong>A public good, not an exit.</strong>
             We're working towards WoCo being infrastructure the scene can rely
@@ -367,16 +374,18 @@
       </ol>
 
       <div class="horizon">
-        <span class="mono-kicker">// WHERE THIS GOES</span>
-        <h3>Events first. Not events only.</h3>
+        <span class="mono-kicker">// THE WORLD COMPUTER</span>
+        <h3>Events are where the World Computer starts.</h3>
         <p>
-          Wherever a platform sits between the people who make something and the
-          people who turn up for it, the same thing happens: the fee creeps up,
-          the audience ends up belonging to the platform, and leaving means
-          starting again. Events are where we begin, because it's the work we
-          know. What's underneath - your keys, your audience, open storage, a fee
-          that only goes down - isn't specific to events, and neither are our
-          plans.
+          Every ticket here is a signed object, held by the person it was issued
+          to and recorded on open networks instead of in our database. That isn't
+          a ticketing feature - it's a foundation. The same rails can carry any
+          marketplace where a platform sits in the middle today, owning the
+          buyers, the sellers and the data.
+        </p>
+        <p>
+          We're building WoCo into exactly that: a fully decentralised
+          marketplace, run as a public good. Events are the first market on it.
         </p>
       </div>
     </div>
@@ -1066,8 +1075,6 @@
   }
   @media (min-width: 880px) {
     .pledges { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 2.75rem; }
-    .pledges .pledge-wide { grid-column: 1 / -1; }
-    .pledges .pledge-wide > div { max-width: 72ch; }
   }
   .pledges li {
     display: grid;
@@ -1121,6 +1128,7 @@
     letter-spacing: -0.035em;
     margin: 1rem 0 1rem;
   }
+  .horizon p + p { margin-top: 1rem; }
   .horizon p {
     margin: 0;
     color: var(--text-secondary);
