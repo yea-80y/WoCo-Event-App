@@ -1,3 +1,4 @@
+import { parseTicketFragment, TICKET_PAGE_PATH } from "../ticket/link.js";
 import type { Hex0x } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -109,35 +110,40 @@ export interface TicketQr {
 }
 
 /**
- * Accepts the canonical `woco://t/...` URI and the `https://.../t/...` page
- * URL form (with optional query params / `.png` suffix), so scanning either
- * the emailed PNG QR or a ticket-page link both work at the door.
+ * Accepts the `woco://t/...` URI the QR codes carry and the emailed ticket link
+ * (`…/ticket.html#{eventId}/{seriesId}/{edition}/{sig}`, see ticket/link.ts), so
+ * the camera and a pasted link both work at the door. The old
+ * `https://…/t/{eventId}/{seriesId}/{edition}/{sig}` form is not accepted: it
+ * put the signature in the request path, and nothing produces it any more.
  */
 export function parseTicketQr(raw: string): TicketQr | null {
   const trimmed = raw.trim();
-  let path: string | null = null;
 
   const wocoMatch = trimmed.match(/^woco:\/\/t\/(.+)$/i);
   if (wocoMatch) {
-    path = wocoMatch[1];
-  } else if (/^https?:\/\//i.test(trimmed)) {
+    const parts = wocoMatch[1].split("/");
+    if (parts.length !== 4) return null;
+    const [eventId, seriesId, editionStr, sig] = parts;
+    const edition = Number(editionStr);
+    if (!eventId || !seriesId || !sig) return null;
+    if (!Number.isInteger(edition) || edition < 1) return null;
+    try {
+      return { eventId, seriesId: decodeURIComponent(seriesId), edition, sig };
+    } catch {
+      return null; // a malformed escape is an unreadable ticket, not a crash at the door
+    }
+  }
+
+  if (/^https?:\/\//i.test(trimmed)) {
     try {
       const url = new URL(trimmed);
-      const m = url.pathname.match(/\/t\/(.+)$/);
-      if (m) path = m[1];
+      if (!url.pathname.endsWith(TICKET_PAGE_PATH)) return null;
+      return parseTicketFragment(url.hash)?.ticket ?? null;
     } catch {
       return null;
     }
   }
-  if (!path) return null;
-
-  const parts = path.replace(/\.png$/i, "").split("/");
-  if (parts.length !== 4) return null;
-  const [eventId, seriesId, editionStr, sig] = parts;
-  const edition = Number(editionStr);
-  if (!eventId || !seriesId || !sig) return null;
-  if (!Number.isInteger(edition) || edition < 1) return null;
-  return { eventId, seriesId: decodeURIComponent(seriesId), edition, sig };
+  return null;
 }
 
 /** Door-pass URL: `{scannerOrigin}/#/p/{token}/{keyB64url}`. */

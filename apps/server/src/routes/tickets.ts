@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
-import type { SitePalette } from "@woco/shared";
+import type { SitePalette, TicketDisplay } from "@woco/shared";
+import { buildTicketLink, TICKET_IMAGE_GATEWAYS } from "@woco/shared";
 import { getFromAddress } from "../lib/email/client.js";
 import { sendEmail } from "../lib/email/send.js";
 import { renderTicketCardPng } from "../lib/ticket/render-card.js";
@@ -13,11 +14,6 @@ const tickets = new Hono<AppEnv>();
 const emailRateMap = new Map<string, number[]>();
 const RATE_LIMIT = 3;
 const RATE_WINDOW = 300_000; // 5 min
-
-/** Public base URL the server is reachable on (e.g. https://events-api.woco-net.com).
- *  Required for ticket links + composite PNG OG image URLs. Falls back to a
- *  relative path so dev/test still works without the env. */
-const PUBLIC_API_BASE = (process.env.PUBLIC_API_BASE || "").replace(/\/$/, "");
 
 export interface TicketEmailOpts {
   to: string;
@@ -34,9 +30,11 @@ export interface TicketEmailOpts {
   /** Organiser site palette — when present, email + PNG card match their brand.
    *  Falls back to WoCo Concrete & Acid defaults when absent. */
   palette?: SitePalette;
-  /** Organiser site ID — appended to ticket page URLs so the standalone page
-   *  can look up the site palette and render in the organiser's brand colours. */
-  siteId?: string;
+  /** Swarm reference of the event image, shown on the static ticket page. */
+  imageHash?: string;
+  /** The gateway the event recorded its storage on (`EventFeed.gatewayUrl`); the
+   *  ticket page tries it first for the image. */
+  imageGateway?: string;
   /** Add the "Add to WoCo" button (Route A gate token). Set ONLY on
    *  paths where `to` is the VERIFIED purchase email (Stripe webhook). The
    *  public /send-email route must never set it: its recipient is arbitrary,
@@ -86,18 +84,21 @@ function parseQrContent(qr: string): { eventId: string; seriesId: string; editio
   return { eventId: m[1], seriesId: m[2], edition, sig: m[4] };
 }
 
-/** Build the public URL for a ticket — both the HTML page and the composite
- *  PNG share the same base; the .png suffix toggles between them. Never carries
- *  the buyer's name: a URL ends up in logs, history and mail link scanners, and
- *  the page does not read one (ticket-page.ts). */
-export function ticketUrl(qrContent: string, png = false, siteId?: string): string | null {
+/** The emailed "Open ticket page" link: the static page on the app origin, with
+ *  the ticket and its display details in the URL fragment, so no server - ours
+ *  or anyone's - receives the signature (packages/shared/src/ticket/link.ts).
+ *  Never carries the buyer's name: the page cannot tell a real one from an edit. */
+export function ticketUrl(qrContent: string, display: TicketDisplay = {}): string | null {
   const p = parseQrContent(qrContent);
   if (!p) return null;
-  const params = new URLSearchParams();
-  if (siteId) params.set("s", siteId);
-  const q = params.toString();
-  const path = `/t/${p.eventId}/${p.seriesId}/${p.edition}/${p.sig}${png ? ".png" : ""}`;
-  return `${PUBLIC_API_BASE}${path}${q ? `?${q}` : ""}`;
+  return buildTicketLink(APP_BASE, { eventId: p.eventId, seriesId: p.seriesId, edition: p.edition, sig: p.sig }, display);
+}
+
+/** Which of the page's known image gateways the event's storage gateway is. */
+function imageGatewayIndex(url: string | undefined): number {
+  const clean = (url ?? "").trim().replace(/\/$/, "");
+  const i = (TICKET_IMAGE_GATEWAYS as readonly string[]).indexOf(clean);
+  return i === -1 ? 0 : i;
 }
 
 function escHtml(s: string): string {
@@ -105,7 +106,15 @@ function escHtml(s: string): string {
 }
 
 function buildTicketHtml(opts: TicketEmailOpts): string {
-  const { to, eventTitle, eventDate, eventLocation, seriesName, tickets: tix, totalSupply, palette: p, siteId } = opts;
+  const { to, eventTitle, eventDate, eventLocation, seriesName, tickets: tix, totalSupply, palette: p, imageHash, imageGateway } = opts;
+  const display: TicketDisplay = {
+    title: eventTitle,
+    date: eventDate,
+    location: eventLocation,
+    series: seriesName,
+    image: imageHash,
+    gateway: imageGatewayIndex(imageGateway),
+  };
   // Resolved palette — organiser brand when available, WoCo Concrete & Acid otherwise
   const c = {
     bg:      p?.bg      ?? '#0B0B09',
@@ -126,7 +135,7 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
   const ticketBlocks = tix.map(({ edition, qrContent }, i) => {
     const editionStr = edition != null ? String(edition).padStart(3, "0") : null;
     // Standalone HTML page: fast server-rendered, no SPA load.
-    const pageUrl = ticketUrl(qrContent, false, siteId);
+    const pageUrl = ticketUrl(qrContent, display);
     const cid = `woco-card-${i}`;
     // Group buys: each ticket carries its own one-shot signup link — forward a
     // ticket to a friend and their click binds THAT edition, not the buyer's.

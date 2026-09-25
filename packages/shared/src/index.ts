@@ -24,6 +24,7 @@ export * from "./crypto/hex.js";
 export * from "./edition/index.js";
 export * from "./issuer/types.js";
 export * from "./ticket/canonical.js";
+export * from "./ticket/link.js";
 export * from "./checkin/types.js";
 export * from "./profile/types.js";
 export * from "./profile/merge.js";
