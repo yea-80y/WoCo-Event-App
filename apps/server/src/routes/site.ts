@@ -1,23 +1,21 @@
 import { Hono } from "hono";
-import { Topic, Reference } from "@ethersphere/bee-js";
-import {
-  getBee,
-  getPlatformSigner,
-  getPlatformOwner,
-  BEE_URL,
-} from "../config/swarm.js";
+import { Topic } from "@ethersphere/bee-js";
+import { eventPageFeedTopic, validateLabel } from "@woco/shared";
 import { requireAuth } from "../middleware/auth.js";
-import { getCreatorEvents } from "../lib/event/service.js";
-import { batchForDeploy, BatchPurchaseRequired, PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
+import { eventPageDeployGate } from "../lib/event/page-deploy-gate.js";
+import {
+  batchForDeploy,
+  BatchPurchaseRequired,
+  PlatformBatchUnavailable,
+  ETHERNA_URL,
+  isEthernaGateway,
+} from "../lib/etherna/batch-router.js";
 import { recordUpload } from "../lib/swarm/storage-ledger.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
-import { uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate } from "../lib/etherna/upload.js";
-import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
+import { uploadCollectionToEtherna, registerEthernaOffer, prepareEthernaFeedUpdate } from "../lib/etherna/upload.js";
+import { checkSiteSubEns, type SiteDeploySubEns } from "../lib/sub-ens/site-pointer.js";
 import {
-  allowedGatewayUrls,
-  isAllowedGatewayUrl,
   injectBeforeHeadClose,
-  canonicalOrigin,
   isSafeIdParam,
   siteConfigScript,
   resolveDeployApiUrl,
@@ -64,8 +62,12 @@ site.post("/deploy", requireAuth, async (c) => {
       eventId: string;
       gatewayUrl?: string;
       apiUrl: string;
+      /** The browser will sign the page-feed update (#614); absent = no feed. */
+      clientFeed?: boolean;
+      /** A name to check against the page feed - read-only, never written here. */
+      subEnsLabel?: string;
     };
-    const { eventId, gatewayUrl, apiUrl: clientApiUrl } = body;
+    const { eventId, gatewayUrl, apiUrl: clientApiUrl, subEnsLabel } = body;
 
     // eventId is interpolated into the deployed page's SITE_CONFIG, so its shape
     // is a security property, not just hygiene: the charset admits no `<`, `>`,
@@ -88,13 +90,19 @@ site.post("/deploy", requireAuth, async (c) => {
       }, 400);
     }
 
-    // Gateway is free-form in the body and reaches both the batch router and the
-    // deployed page's content reads. Empty/absent is NOT rejected — both consumers
-    // below already substitute a default for it, and turning that into a 400 would
-    // break a caller that omits the field rather than closing anything.
-    if (gatewayUrl?.trim() && !isAllowedGatewayUrl(gatewayUrl)) {
-      return c.json({ ok: false, error: `gatewayUrl must be one of: ${allowedGatewayUrls().join(", ")}` }, 400);
+    // Event pages are stored on Etherna only (#617): its feed is the organiser's
+    // and Etherna is where the browser signs it into. Absent means Etherna.
+    if (gatewayUrl?.trim() && !isEthernaGateway(gatewayUrl)) {
+      return c.json({ ok: false, error: "Event pages are published on Etherna" }, 400);
     }
+    if (subEnsLabel !== undefined && (typeof subEnsLabel !== "string" || validateLabel(subEnsLabel))) {
+      return c.json({ ok: false, error: "subEnsLabel is not a valid name" }, 400);
+    }
+
+    // Only the event's creator publishes its page (#679), and the page feed is
+    // owned by the signer pinned at create (#676) - never a request value.
+    const gate = eventPageDeployGate(eventId, parentAddress);
+    if (!gate.ok) return c.json({ ok: false, error: gate.error }, gate.status);
 
     if (!existsSync(DIST_SITE_PATH)) {
       return c.json({
@@ -105,12 +113,11 @@ site.post("/deploy", requireAuth, async (c) => {
       }, 503);
     }
 
-    const effectiveGateway = gatewayUrl?.trim() || "https://gateway.etherna.io";
     let selection;
     try {
       selection = batchForDeploy({
         ownerAddress: parentAddress,
-        gatewayUrl: effectiveGateway,
+        gatewayUrl: ETHERNA_URL,
         deployType: "event",
       });
     } catch (err) {
@@ -121,8 +128,8 @@ site.post("/deploy", requireAuth, async (c) => {
       throw err;
     }
     const { batchId, target } = selection;
-    const signer = getPlatformSigner();
-    const owner = getPlatformOwner();
+    // The route above only ever asks for Etherna; anything else is a router bug.
+    if (target !== "etherna") throw new Error(`event page routed to ${target}, expected etherna`);
 
     // 1) Read site.html and inject runtime config before </head>
     const siteHtmlPath = join(DIST_SITE_PATH, "site.html");
@@ -130,26 +137,18 @@ site.post("/deploy", requireAuth, async (c) => {
 
     // Phase B carrier: bake the event's content-feed signer into SITE_CONFIG so the
     // deployed page reads GET /api/events/:id?signer=… and the server reads the
-    // client-signed SOC directly. Without it an unlisted (skipAutoList) event can't
-    // be resolved — it isn't in the global directory — and the page fails to load.
-    // The deployer IS the owner, so their creator directory holds the carrier.
-    let eventSigner: string | undefined;
-    try {
-      const creatorEvents = await getCreatorEvents(parentAddress);
-      eventSigner = creatorEvents.find((e) => e.eventId === eventId)?.creatorFeedSigner;
-    } catch {
-      // Non-fatal: legacy/platform-signed events have no carrier and resolve via the directory.
-    }
+    // client-signed SOC directly - an unlisted event is in no directory. From the
+    // record pinned at create, the same source as the feed owner below (#676).
+    const eventSigner = gate.signer;
 
     const config = {
       apiUrl,
-      // Canonical origin, never the submitted bytes — see canonicalOrigin().
-      gatewayUrl: (gatewayUrl?.trim() ? canonicalOrigin(gatewayUrl) : null) ?? "https://gateway.woco-net.com",
+      gatewayUrl: ETHERNA_URL,
       // Event images (uploaded to WoCo Bee at event-creation time) must always
       // be fetched from the WoCo gateway, regardless of where the site is hosted.
       contentGatewayUrl: "https://gateway.woco-net.com",
       eventId,
-      ...(eventSigner ? { eventSigner } : {}),
+      eventSigner,
     };
     const configScript = siteConfigScript(config);
     const injectedHtml = injectBeforeHeadClose(siteHtml, `  ${configScript}`);
@@ -166,39 +165,14 @@ site.post("/deploy", requireAuth, async (c) => {
     await spawnPromise("tar", ["-cf", tarPath, "-C", tmpDir, "."]);
     const tarData = await fs.readFile(tarPath);
 
-    // 4) Upload directory to Swarm as a collection — branch by target
-    let contentHash: string;
-    if (target === "etherna") {
-      contentHash = await uploadCollectionToEtherna({
-        batchId,
-        tarData,
-        indexDocument: "site.html",
-      });
-      // Make anonymously readable via /bytes and /bzz/{ref}/file
-      await registerEthernaOffer(contentHash);
-    } else {
-      const uploadResp = await fetch(`${BEE_URL}/bzz`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-tar",
-          "Swarm-Postage-Batch-Id": batchId,
-          "Swarm-Index-Document": "site.html",
-          "Swarm-Error-Document": "site.html",
-          "Swarm-Collection": "true",
-        },
-        // @ts-ignore — Node 18 fetch doesn't expose duplex in type defs
-        duplex: "half",
-        body: tarData,
-        signal: AbortSignal.timeout(BEE_COLLECTION_TIMEOUT_MS),
-      });
-
-      if (!uploadResp.ok) {
-        const text = await uploadResp.text().catch(() => "");
-        throw new Error(`Swarm upload failed ${uploadResp.status}: ${text.slice(0, 300)}`);
-      }
-
-      ({ reference: contentHash } = await uploadResp.json() as { reference: string });
-    }
+    // 4) Upload the page to Etherna as a collection
+    const contentHash = await uploadCollectionToEtherna({
+      batchId,
+      tarData,
+      indexDocument: "site.html",
+    });
+    // Make anonymously readable via /bytes and /bzz/{ref}/file
+    await registerEthernaOffer(contentHash);
 
     // Event pages are exempt from the free-hosting gate (publishing an event must
     // never block on it) but their bytes still land in the ledger — it is the
@@ -212,45 +186,39 @@ site.post("/deploy", requireAuth, async (c) => {
       note: eventId,
     });
 
-    // 5) Per-event feed topic so each event gets its own updatable ENS entry.
-    // The feed follows the CONTENT's batch (#48): an Etherna-hosted page must
-    // not leave its pointer feed stamped on the WoCo batch — the two would
-    // expire independently and the pointer would outlive or predecease the
-    // content it points at. Same split as the multisite deploy (sites.ts).
-    const topic = Topic.fromString(`woco-site-${eventId}`);
+    // 5) The page's feed is the ORGANISER's (#614): owned by the signer pinned at
+    // create and signed in the browser, so no key but theirs can change what a
+    // name following it shows. The platform never writes one - it used to, and
+    // with no creator check any account could advance it (#679). A client that
+    // cannot sign gets no feed at all, never a platform one. Same steps as a
+    // client-owned site (sites.ts), on the content's batch (#48).
     let feedManifestHash = "";
-
-    if (target === "etherna") {
-      feedManifestHash = await writeEthernaFeedUpdate({
-        topic,
+    let pageFeed: { owner: string; nextIndex: number; rootChunkPayloadB64: string } | undefined;
+    if (body.clientFeed === true) {
+      const prep = await prepareEthernaFeedUpdate({
+        topic: Topic.fromString(eventPageFeedTopic(eventId)),
         contentHash,
         batchId,
-        signer,
-        ownerHex: owner.toHex(),
+        ownerHex: gate.signer.replace(/^0x/, ""),
       });
-    } else {
-      const platformBee = getBee();
-      // Create feed manifest (one-time; if it already exists the call still succeeds)
-      try {
-        const mRef = await withTimeout(
-          platformBee.createFeedManifest(batchId, topic, owner),
-          BEE_CALL_TIMEOUT_MS,
-          "site feed manifest",
-        );
-        feedManifestHash = mRef.toString();
-      } catch {
-        // Non-fatal — organiser can still use the direct content hash
-      }
+      feedManifestHash = prep.feedManifestHash;
+      // The owner travels with the update so the browser refuses to sign a feed
+      // it does not own; the span is stripped because the signer re-derives it.
+      pageFeed = {
+        owner: gate.signer,
+        nextIndex: Number(prep.nextIndex),
+        rootChunkPayloadB64: Buffer.from(prep.chunkBytes.subarray(8)).toString("base64"),
+      };
+      // Etherna answers 402 to an anonymous /bzz/{manifest}/ without an offer.
+      void registerEthernaOffer(feedManifestHash).catch((e) =>
+        console.warn("[site/deploy] etherna feed-manifest offer failed (non-fatal):", e));
+    }
 
-      // 6) Update feed → new content hash. uploadReference, NOT upload():
-      // bee-js v11's upload() writes an entry createFeedManifest-style
-      // manifests cannot resolve (2026-04-18 deploy-script incident).
-      const writer = platformBee.makeFeedWriter(topic, signer);
-      await withTimeout(
-        writer.uploadReference(batchId, new Reference(contentHash)),
-        BEE_CALL_TIMEOUT_MS,
-        "site feed write",
-      );
+    // Does the name already follow this feed? Read-only chain state, so the
+    // builder asks for a pointer signature only the first time (#614).
+    let subEns: SiteDeploySubEns | undefined;
+    if (subEnsLabel && feedManifestHash) {
+      subEns = await checkSiteSubEns(subEnsLabel, parentAddress, feedManifestHash, "client");
     }
 
     // Whitelist the page and its feed on our gateway, as the site deploy does
@@ -262,7 +230,15 @@ site.post("/deploy", requireAuth, async (c) => {
       console.warn("[site/deploy] whitelist call failed:", e),
     );
 
-    return c.json({ ok: true, data: { contentHash, feedManifestHash } });
+    return c.json({
+      ok: true,
+      data: {
+        contentHash,
+        feedManifestHash,
+        ...(pageFeed ? { feedOwner: "client" as const, pageFeed } : {}),
+        ...(subEns ? { subEns } : {}),
+      },
+    });
 
   } catch (e) {
     console.error("[site/deploy]", e);

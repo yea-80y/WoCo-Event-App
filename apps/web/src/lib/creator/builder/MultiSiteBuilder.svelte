@@ -39,8 +39,8 @@
   const LAST_SITE_KEY = 'woco:last-site-id';
   const FEED_HASH_KEY = 'woco:site-feed-hash';
 
-  const API_URL     = (import.meta as { env?: Record<string, string> }).env?.VITE_API_URL ?? 'http://localhost:3001';
-  const WOCO_APP_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_APP_URL ?? 'https://woco.eth.limo';
+  const API_URL     = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
+  const WOCO_APP_URL = import.meta.env.VITE_APP_URL ?? 'https://woco.eth.limo';
 
   function loadDraft(): Site {
     if (typeof window === 'undefined') {
@@ -758,6 +758,7 @@
       <NamePointerPrompt
         label={subEnsPointer.label}
         target={subEnsPointer.target}
+        targetIsFeed={true}
         feedOwner={subEnsPointer.feedOwner}
         purpose="site"
       />

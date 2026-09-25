@@ -450,7 +450,7 @@ test("an event-page deploy whitelists its page and feed on our gateway", () => {
   const src = sourceOf("../src/routes/site.ts");
   const call = /whitelistHashes\(\s*\[\s*contentHash,\s*feedManifestHash\s*\]/.exec(src);
   assert.ok(call, "the deploy must whitelist contentHash and feedManifestHash");
-  const ret = src.indexOf("data: { contentHash, feedManifestHash }");
+  const ret = src.search(/return c\.json\(\{\s*ok: true,/);
   assert.ok(ret > 0);
   assert.ok(call.index < ret, "whitelisted before the deploy answers");
   // Fire-and-forget: a whitelist failure must not fail a deploy that has landed.

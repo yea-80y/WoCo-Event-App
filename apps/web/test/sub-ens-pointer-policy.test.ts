@@ -11,38 +11,51 @@ const NAME = "punkpub.woco.eth";
 const SIGNERS = ["web3", "passkey", "web3auth"] as const;
 const REF = "ab".repeat(32);
 
-test("the kinds that sign as the holder may bind a site feed they own", () => {
+test("the kinds that sign as the holder may bind a site or event-page feed they own", () => {
   for (const kind of SIGNERS) {
-    assert.equal(pointerBlockedReason(kind, "site", "client", NAME), null, kind);
+    assert.equal(pointerBlockedReason(kind, "site", "client", true, NAME), null, kind);
+    assert.equal(pointerBlockedReason(kind, "event-page", "client", true, NAME), null, kind);
   }
 });
 
-test("a login with a feed signer never binds a name to a platform-authored feed", () => {
+test("a name never follows a feed this account does not sign - sites and event pages alike (#614)", () => {
   for (const kind of SIGNERS) {
-    for (const owner of ["platform", undefined] as const) {
-      assert.match(pointerBlockedReason(kind, "site", owner, NAME) ?? "", /own key/, `${kind}/${owner}`);
+    for (const purpose of ["site", "event-page"] as const) {
+      for (const owner of ["platform", undefined] as const) {
+        assert.match(pointerBlockedReason(kind, purpose, owner, true, NAME) ?? "", /own key/, `${kind}/${purpose}/${owner}`);
+      }
     }
   }
 });
 
-test("an event page (fixed content hash) and the profile (app) need no feed owner", () => {
+test("a fixed content hash needs no feed owner - no key can change what it shows", () => {
   for (const kind of SIGNERS) {
-    assert.equal(pointerBlockedReason(kind, "event-page", undefined, NAME), null);
-    assert.equal(pointerBlockedReason(kind, "profile", undefined, NAME), null);
+    for (const owner of ["platform", undefined] as const) {
+      assert.equal(pointerBlockedReason(kind, "event-page", owner, false, NAME), null);
+    }
+  }
+});
+
+test("the profile name may follow the app's feed, which WoCo publishes by design", () => {
+  for (const kind of SIGNERS) {
+    assert.equal(pointerBlockedReason(kind, "profile", undefined, true, NAME), null);
+    assert.equal(pointerBlockedReason(kind, "profile", "platform", true, NAME), null);
   }
 });
 
 test("Coinbase Smart Wallet is never asked to sign, for any purpose or feed", () => {
   for (const purpose of ["site", "event-page", "profile"] as const) {
     for (const owner of ["client", "platform", undefined] as const) {
-      assert.match(pointerBlockedReason("coinbase", purpose, owner, NAME) ?? "", /stays yours/);
+      for (const isFeed of [true, false]) {
+        assert.match(pointerBlockedReason("coinbase", purpose, owner, isFeed, NAME) ?? "", /stays yours/);
+      }
     }
   }
 });
 
 test("signed-out and unimplemented kinds are refused", () => {
-  assert.match(pointerBlockedReason("none", "profile", undefined, NAME) ?? "", /Sign in/);
-  assert.ok(pointerBlockedReason("zupass", "profile", undefined, NAME));
+  assert.match(pointerBlockedReason("none", "profile", undefined, true, NAME) ?? "", /Sign in/);
+  assert.ok(pointerBlockedReason("zupass", "profile", undefined, true, NAME));
 });
 
 test("a bind's pointer is an ask to sign only with a bare 64-hex target", () => {

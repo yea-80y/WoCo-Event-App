@@ -14,6 +14,7 @@
  */
 
 import { resolveWeb3AuthNetwork } from "./web3auth-network.js";
+import { buildEnv } from "../build-env.js";
 
 type Web3AuthModule = typeof import("@web3auth/modal");
 
@@ -28,11 +29,9 @@ export function buildWeb3AuthOptions(mod: Web3AuthModule, clientId: string) {
   const { WEB3AUTH_NETWORK, CHAIN_NAMESPACES } = mod;
   // THROWS on anything that is not one of the two exact names — there is no
   // default, because the wrong network is a wrong key, not a wrong feature flag
-  // (#244). Read through an optional chain so this module also loads under plain
-  // Node for the unit test: Vite substitutes the whole `import.meta.env` object at
-  // build time, while in Node it is simply absent and the validator sees
-  // `undefined`, which it refuses — the same verdict, reached the same way.
-  const networkEnv = import.meta.env?.VITE_WEB3AUTH_NETWORK as string | undefined;
+  // (#244). Under plain Node (the unit test) the setting reads as absent and the
+  // validator refuses `undefined` — the same verdict, reached the same way.
+  const networkEnv = buildEnv(() => import.meta.env.VITE_WEB3AUTH_NETWORK as string | undefined);
   const web3AuthNetwork =
     resolveWeb3AuthNetwork(networkEnv) === "sapphire_mainnet"
       ? WEB3AUTH_NETWORK.SAPPHIRE_MAINNET

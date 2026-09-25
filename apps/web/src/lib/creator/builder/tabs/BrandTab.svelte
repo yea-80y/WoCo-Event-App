@@ -16,7 +16,7 @@
   let logoError = $state('');
   let fileInput: HTMLInputElement | undefined = $state();
 
-  const WOCO_GATEWAY = (import.meta as { env?: Record<string, string> }).env?.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com';
+  const WOCO_GATEWAY = import.meta.env.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com';
 
   function existingLogoUrl(): string | null {
     const ref = site.theme.logoSwarmRef;
