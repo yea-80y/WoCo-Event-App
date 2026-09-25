@@ -23,8 +23,8 @@
   import ShopCatalogEditor from "./ShopCatalogEditor.svelte";
   import ShopLoyaltyEditor from "./ShopLoyaltyEditor.svelte";
 
-  const API_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_API_URL ?? "http://localhost:3001";
-  const WOCO_APP_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_APP_URL ?? "https://woco.eth.limo";
+  const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
+  const WOCO_APP_URL = import.meta.env.VITE_APP_URL ?? "https://woco.eth.limo";
   const DEFAULT_GATEWAY = GATEWAYS.find((g) => g.default)?.url ?? GATEWAYS[0].url;
   const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 

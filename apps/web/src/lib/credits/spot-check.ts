@@ -48,6 +48,7 @@ import {
 } from "@woco/shared";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { WOCO_GATEWAY_URL } from "../swarm/gateways.js";
+import { buildEnv } from "../build-env.js";
 
 /** Long enough for a cold network search, short enough that a stuck read does
  *  not leave the page saying "checking…" for the length of a stream segment. */
@@ -109,7 +110,7 @@ export async function spotCheckLeaf(
   leaf: CarriedEvidenceLeaf,
   opts: { gateway?: string; fetchImpl?: typeof fetch; signal?: AbortSignal } = {},
 ): Promise<SpotCheck> {
-  const gateway = opts.gateway ?? (import.meta.env?.VITE_GATEWAY_URL || WOCO_GATEWAY_URL);
+  const gateway = opts.gateway ?? (buildEnv(() => import.meta.env.VITE_GATEWAY_URL as string | undefined) || WOCO_GATEWAY_URL);
   const doFetch = opts.fetchImpl ?? fetch;
 
   let address: string;

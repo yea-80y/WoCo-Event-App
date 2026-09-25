@@ -66,6 +66,7 @@
 
 import type { Address } from "viem";
 import { KERNEL_CHAIN_ID, type KernelChainId } from "@woco/shared";
+import { buildEnv } from "../build-env.js";
 
 /**
  * `keccak256("OwnerRegistered(address,address)")`. Pinned by test against viem's
@@ -212,9 +213,8 @@ const DEFAULT_SCAN_FALLBACK_RPC = {
  * that fails on one endpoint is retried on the next before the scan gives up.
  */
 export function ownerScanRpcUrls(): string[] {
-  const env = import.meta.env as Record<string, string | undefined>;
-  const primary = env.VITE_ZERODEV_RPC;
-  const extra = (env.VITE_OWNER_SCAN_FALLBACK_RPCS ?? DEFAULT_SCAN_FALLBACK_RPC[KERNEL_CHAIN_ID satisfies KernelChainId])
+  const primary = buildEnv(() => import.meta.env.VITE_ZERODEV_RPC as string | undefined);
+  const extra = (buildEnv(() => import.meta.env.VITE_OWNER_SCAN_FALLBACK_RPCS as string | undefined) ?? DEFAULT_SCAN_FALLBACK_RPC[KERNEL_CHAIN_ID satisfies KernelChainId])
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
