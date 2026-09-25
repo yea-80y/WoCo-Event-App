@@ -19,6 +19,14 @@
 
 const CONNECT_JS_URL = "https://connect-js.stripe.com/v1.0/connect.js";
 
+/**
+ * The organiser's own Stripe Dashboard. Accounts are `full` (#645), so this is
+ * where refunds and disputes are handled - nothing in WoCo does either. A plain
+ * link, no API call: the organiser signs in to Stripe themselves, and Stripe
+ * lands a signed-in user on their own account.
+ */
+export const STRIPE_DASHBOARD_URL = "https://dashboard.stripe.com/";
+
 /** Ad blockers sometimes stall a request rather than failing it outright. */
 const LOAD_TIMEOUT_MS = 15_000;
 
