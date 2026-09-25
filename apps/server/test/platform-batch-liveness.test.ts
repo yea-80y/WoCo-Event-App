@@ -301,6 +301,7 @@ test("never refuses without the alarm: every refusing reading is an alarm on /ap
     ["gone", async () => notFound()],
     ["unusable", stamp({ usable: false })],
     ["full", stamp({ utilization: 8 })],
+    ["spent", stamp({ batchTTL: 0 })],
   ];
   for (const [name, reader] of cases) {
     probes.__resetHealthProbes();

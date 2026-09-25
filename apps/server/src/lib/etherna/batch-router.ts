@@ -91,7 +91,9 @@ export class PlatformBatchUnavailable extends Error {
  * exactly -1, bee's own sentinel for "price unknown" / "never expires" (bee
  * `pkg/api/postage.go` `estimateBatchTTL` returns -1 when `CurrentPrice` is 0), so
  * it is not evidence of death. The value arrives raw — `readEthernaStamp` is a plain
- * fetch, with no bee-js normalisation.
+ * fetch, with no bee-js normalisation. Both readings are a bee ASSUMPTION for
+ * Etherna: its gateway answers in bee's shape, but whether it proxies a node or
+ * derives the TTL itself is not visible from here.
  *
  * WHY A FULL BUCKET REFUSES. The platform batch is mutable: once a bucket holds
  * `bucketCap` chunks the next chunk into it overwrites an older one with a 200 —
