@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { streamText } from "hono/streaming";
 import type { Hex0x, CreateEventV3Request, UpdateEventMetaRequest, EventDirectoryEntry } from "@woco/shared";
-import { FEATURES, BUYER_FEE_FLOOR_PCT, geoWithinSizeLimit } from "@woco/shared";
+import { FEATURES, BUYER_FEE_FLOOR_PCT, MIN_TICKET_PRICE, ticketPriceMeetsMinimum, geoWithinSizeLimit } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { createEventV2, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, type EventMetaUpdates } from "../lib/event/service.js";
@@ -253,6 +253,9 @@ events.post("/", requireAuth, async (c) => {
     if (!FEATURES.freeEventsAllowed) {
       if (!s.payment || !s.payment.price || parseFloat(s.payment.price) <= 0) {
         return c.json({ ok: false, error: `Series ${s.seriesId}: free events are not allowed — set a price` }, 400);
+      }
+      if (!ticketPriceMeetsMinimum(s.payment.price)) {
+        return c.json({ ok: false, error: `Series ${s.seriesId}: the minimum ticket price is ${MIN_TICKET_PRICE}.00` }, 400);
       }
       if (!s.payment.stripeEnabled && !s.payment.cryptoEnabled) {
         return c.json({ ok: false, error: `Series ${s.seriesId}: enable a payment method (card or crypto)` }, 400);

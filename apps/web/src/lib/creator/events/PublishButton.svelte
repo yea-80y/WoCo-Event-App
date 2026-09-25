@@ -1,7 +1,7 @@
 <script lang="ts">
   import { feedRouteFor } from "../../swarm/gateways.js";
   import type { OrderField, ClaimMode, EventFeed, EventGeo, EventTag } from "@woco/shared";
-  import { buildIssuerBindingMessage, deriveEncryptionKeypairFromSeed, FEATURES, signPersonalMessage } from "@woco/shared";
+  import { buildIssuerBindingMessage, deriveEncryptionKeypairFromSeed, FEATURES, signPersonalMessage, ticketPriceMeetsMinimum } from "@woco/shared";
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
@@ -100,8 +100,8 @@
     imageDataUrl &&
     series.length > 0 &&
     series.every((s) => s.name.trim() && s.totalSupply > 0) &&
-    // When free events are disabled, every series must carry a price > 0.
-    (FEATURES.freeEventsAllowed || series.every((s) => s.payment && parseFloat(s.payment.price) > 0))
+    // When free events are disabled, every series must carry at least the minimum price.
+    (FEATURES.freeEventsAllowed || series.every((s) => s.payment && ticketPriceMeetsMinimum(s.payment.price)))
   );
 
   const hasPaidSeries = $derived(series.some((s) => s.payment));

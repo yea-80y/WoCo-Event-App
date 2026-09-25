@@ -67,6 +67,21 @@ export const FEATURES = {
   badgesAllowed: false,
 } as const;
 
+/**
+ * The lowest ticket price, in major units of the ticket's currency (£1, $1, €1 -
+ * the only currencies offered). Below it Stripe's own per-card fee eats most of
+ * the price, and below 34p our 1.5% fee rounds to nothing, which checkout refuses
+ * (#645, MIN_APPLICATION_FEE_MINOR). Checked at publish, in the editor and on the
+ * server, so an organiser never publishes a ticket nobody can buy.
+ */
+export const MIN_TICKET_PRICE = 1;
+
+/** True when a price string is a number at or above MIN_TICKET_PRICE. */
+export function ticketPriceMeetsMinimum(price: string | undefined): boolean {
+  const n = parseFloat((price ?? "").trim());
+  return Number.isFinite(n) && n >= MIN_TICKET_PRICE;
+}
+
 /** Minimum buyer-pays fee % (3% Stripe + 1.5% WoCo). UI snaps below this back up. */
 export const BUYER_FEE_FLOOR_PCT = 4.5;
 
