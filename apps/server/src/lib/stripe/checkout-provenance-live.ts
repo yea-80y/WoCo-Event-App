@@ -7,6 +7,7 @@
 import type Stripe from "stripe";
 import { getStripe } from "./client.js";
 import type { ProvenanceReads } from "./checkout-provenance.js";
+import type { LatestCharge } from "./sale-refunds.js";
 import { idempotencyKeyFor, recordPendingRefund } from "./pending-refunds.js";
 
 /** Stripe's answer for a fee that is not this platform's: missing, or not ours to read. */
@@ -20,22 +21,37 @@ function isNotOurs(err: unknown): boolean {
   );
 }
 
+/**
+ * The payment intent's latest charge on `account`, with its fee state. Shared
+ * with the refund handlers (sale-refunds-live.ts), which classify a refund's
+ * charge by the same fee. Throws on a transport failure.
+ */
+export async function readLatestCharge(paymentIntentId: string, account: string): Promise<LatestCharge | null> {
+  const s = getStripe();
+  const pi = await s.paymentIntents.retrieve(
+    paymentIntentId,
+    { expand: ["latest_charge"] },
+    { stripeAccount: account },
+  );
+  let charge = pi.latest_charge;
+  if (!charge) return null;
+  if (typeof charge === "string") {
+    charge = await s.charges.retrieve(charge, {}, { stripeAccount: account });
+  }
+  const ch = charge as Stripe.Charge;
+  const fee = ch.application_fee;
+  return {
+    id: ch.id,
+    amount: ch.amount,
+    feeRequested: (ch.application_fee_amount ?? 0) > 0,
+    feeId: !fee ? null : typeof fee === "string" ? fee : fee.id,
+  };
+}
+
 export const liveProvenanceReads: ProvenanceReads = {
   async chargeFeeForPaymentIntent(paymentIntentId, account) {
-    const s = getStripe();
-    const pi = await s.paymentIntents.retrieve(
-      paymentIntentId,
-      { expand: ["latest_charge"] },
-      { stripeAccount: account },
-    );
-    let charge = pi.latest_charge;
-    if (!charge) return { requested: false, feeId: null };
-    if (typeof charge === "string") {
-      charge = await s.charges.retrieve(charge, {}, { stripeAccount: account });
-    }
-    const ch = charge as Stripe.Charge;
-    const fee = ch.application_fee;
-    return { requested: (ch.application_fee_amount ?? 0) > 0, feeId: !fee ? null : typeof fee === "string" ? fee : fee.id };
+    const charge = await readLatestCharge(paymentIntentId, account);
+    return charge ? { requested: charge.feeRequested, feeId: charge.feeId } : { requested: false, feeId: null };
   },
 
   async retrievePlatformFee(feeId) {

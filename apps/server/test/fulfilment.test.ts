@@ -157,6 +157,8 @@ type Step =
   | "createRefund"
   | "recordPendingRefund"
   | "markPayoutVoid"
+  | "recordSaleSlots"
+  | "recordAutoRefund"
   | "captureCheckoutConsent"
   | "recordAttendeeEmail"
   | "getSiteTheme"
@@ -213,6 +215,9 @@ function fakeDeps(o: FakeOpts = {}) {
   const mintedOn: unknown[] = [];
   /** The contract each chain-end read went to. */
   const endReadOn: unknown[] = [];
+  /** Sale-record writes (#645 part C). */
+  const saleSlots: Array<{ sessionId: string; onChainEventId: string; contract: string; slots: number[] }> = [];
+  const autoRefunds: Array<{ sessionId: string; amount: number }> = [];
   let nextSlot = 0;
   let chunkIdx = 0;
   let burnerSeq = 0;
@@ -289,6 +294,17 @@ function fakeDeps(o: FakeOpts = {}) {
       return slots;
     },
     onChainBatchMax: o.batchMax ?? 100,
+    recordSaleSlots: (sessionId, onChainEventId, contract, slots) => {
+      // Attempt recorded before the throw: the invariant is that every minted
+      // chunk REACHES the record, whether or not the store accepted it.
+      saleSlots.push({ sessionId, onChainEventId, contract, slots });
+      boom("recordSaleSlots");
+    },
+    recordAutoRefund: (sessionId, amount) => {
+      // Attempt recorded before the throw, like markPayoutVoid.
+      autoRefunds.push({ sessionId, amount });
+      boom("recordAutoRefund");
+    },
     bindTicket: (b) => {
       boom("bindTicket");
       if (o.bindReturns === false) return false;
@@ -342,7 +358,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, voided, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn };
+  return { deps, calls, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, voided, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -399,7 +415,29 @@ function assertInvariant(
     assert.equal(outcome.email, "nothing-issued");
     assert.equal(f.emails.length, 0);
   }
-  // 3. A full refund voids the payout entry; a partial leaves it held; a
+  // 3. Every refund we attempt is recorded as OURS first, at the amount we
+  //    asked for, so its refund event is never read as the organiser's (#645).
+  if (outcome.refund.kind === "created" || outcome.refund.kind === "failed") {
+    assert.equal(f.autoRefunds.length, 1, "one auto-refund record per refund attempt");
+    assert.equal(f.autoRefunds[0].sessionId, s.id);
+    const asked = f.refunds[0]?.params.amount ?? f.pendingRefunds[0]?.amount ?? (s.amount_total ?? 0);
+    assert.equal(f.autoRefunds[0].amount, asked, "recorded amount = the amount refunded");
+    assert.ok(f.calls.indexOf("recordAutoRefund") < f.calls.indexOf("createRefund"), "recorded BEFORE the refund call");
+  } else {
+    assert.equal(f.autoRefunds.length, 0, "no refund, no auto-refund record");
+  }
+  // 4. Every minted chunk reaches the sale record, under this session, keyed
+  //    to the event and contract it was minted against (#645: voids key on the
+  //    slot, so a slot that never reached the record can never be voided).
+  assert.equal(f.saleSlots.length, f.minted.length, "one sale-record write per minted chunk");
+  f.saleSlots.forEach((r, i) => {
+    assert.equal(r.sessionId, s.id);
+    assert.equal(r.slots.length, f.minted[i].length);
+    assert.equal(r.onChainEventId, f.mintedAgainst[i]);
+    const c = f.mintedOn[i] as { chainId: number; address: string };
+    assert.equal(r.contract, `${c.chainId}:${c.address.toLowerCase()}`);
+  });
+  // 5. A full refund voids the payout entry; a partial leaves it held; a
   //    refund that did not land leaves it held too (the money is still there).
   if (outcome.refund.kind === "created" && outcome.issued === 0) {
     assert.deepEqual(f.voided, [s.id], "full refund voids the payout entry");
@@ -828,6 +866,7 @@ describe("every collaborator throws", () => {
     { step: "generateBurner", issued: 0, refund: "created", email: "nothing-issued", note: "unknown throw before the mint" },
     { step: "batchClaimForOnChain", issued: 0, refund: "created", email: "nothing-issued", note: "revert" },
     { step: "bindTicket", issued: 2, refund: "not-needed", email: "sent", note: "the #313 hole — accessory" },
+    { step: "recordSaleSlots", issued: 2, refund: "not-needed", email: "sent", note: "a missing record costs a void, never a ticket (#645)" },
     { step: "consumeReservation", issued: 2, refund: "not-needed", email: "sent", note: "store hiccup" },
     { step: "captureCheckoutConsent", issued: 2, refund: "not-needed", email: "sent", note: "store hiccup" },
     { step: "getSiteTheme", issued: 2, refund: "not-needed", email: "sent", note: "default palette" },
@@ -890,6 +929,23 @@ describe("every collaborator throws", () => {
     assert.equal(f.pendingRefunds.length, 1);
     assert.equal(f.pendingRefunds[0].amount, 2200);
     assert.equal(f.emails[0].tickets.length, 2, "the issued tickets still go out");
+  });
+
+  test("sale record (#645): each chunk's slots, and the partial auto-refund recorded as ours", async () => {
+    const { f } = await run({ quantity: 3, amountTotal: 6600 }, { batchMax: 2, revertAtChunk: 1 });
+    assert.deepEqual(
+      f.saleSlots.map((r) => r.slots),
+      [[0, 1]],
+      "only the chunk that landed; the reverted one minted nothing",
+    );
+    assert.equal(f.saleSlots[0].onChainEventId, ON_CHAIN_EVENT_ID);
+    assert.deepEqual(f.autoRefunds, [{ sessionId: "cs_test_1", amount: 2200 }]);
+  });
+
+  test("recordAutoRefund throws: the refund still goes out", async () => {
+    const { outcome, f } = await run({}, { fail: "recordAutoRefund", revertAtChunk: 0 });
+    assert.equal(outcome.refund.kind, "created");
+    assert.equal(f.refunds.length, 1);
   });
 
   test("createRefund AND recordPendingRefund throw: still resolves, outcome still honest", async () => {

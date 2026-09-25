@@ -59,6 +59,8 @@ import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
+import { ticketSalesHealth } from "./lib/stripe/ticket-sales.js";
+import { saleRefundEventsHealth } from "./lib/stripe/sale-refunds.js";
 import { alarmGate } from "./lib/health/alarm-gate.js";
 import { feedSignerRecordHealth } from "./lib/event/feed-signer-record.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
@@ -282,6 +284,12 @@ function healthReport() {
     // is a sale left unverifiable for 10 minutes (#666, `stuck`); foreign sessions
     // are an organiser's own sales and are only counted.
     checkoutProvenance: checkoutProvenanceHealth(),
+    // #645 part C: the sale record refunds void tickets through.
+    // Alarms: a partial refund above our own that no operator has acknowledged
+    // (tickets left valid), the record file present but unreadable (voids off),
+    // and `refundEvents.stuck` — a refund on one of our sales that has waited an
+    // hour for its record. Counts only; the ops route has the sales.
+    ticketSales: { ...ticketSalesHealth(), refundEvents: saleRefundEventsHealth() },
     compliancePersistence: persistHealth(),
     // `false` is an alarm, not a statistic: the Kernel known-deployed record
     // exists on disk but would not load, so the counterfactual fallback is live
