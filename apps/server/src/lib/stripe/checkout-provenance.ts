@@ -14,7 +14,9 @@
  *     `applicationFees.retrieve` with the platform key succeeds only for OUR fees,
  *     so a fee we can read, on the charge the session paid, proves the session
  *     came from this platform. No configuration is needed to know which platform
- *     we are.
+ *     we are. Stripe creates that object a few seconds AFTER it sends
+ *     `checkout.session.completed` (#666), so a fee the charge requested but does
+ *     not carry yet is waited for, never read as "not ours".
  *  2. INTEGRITY. A tag in `client_reference_id` - which Stripe does not let a
  *     session update change - is an HMAC over everything fulfilment acts on:
  *     the connected account, the currency and amounts, our fee, and every
@@ -25,10 +27,12 @@
  *  - foreign       -> not created by this platform. Ignore, count, NEVER refund:
  *                     it is the organiser's own sale, not ours to reverse.
  *  - tampered      -> created by us, altered after. Refund the buyer and alarm.
- *  - unverifiable  -> Stripe could not be asked. Retry; decide nothing.
+ *  - unverifiable  -> Stripe could not be asked, or has not created our fee yet.
+ *                     Retry; decide nothing.
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { setTimeout as defaultSleep } from "node:timers/promises";
 
 export const CHECKOUT_TAG_PREFIX = "woco1.";
 
@@ -110,11 +114,18 @@ export interface PaidSessionView {
 
 /** The two Stripe reads the check needs. Throws on a transport failure. */
 export interface ProvenanceReads {
-  /** The ApplicationFee id on the charge the PaymentIntent settled with, or null when there is none. */
-  applicationFeeIdForPaymentIntent(paymentIntentId: string, account: string): Promise<string | null>;
+  /**
+   * The fee state of the charge the PaymentIntent settled with. `requested` is
+   * `application_fee_amount > 0`, set when the charge is created; `feeId` is the
+   * ApplicationFee, created seconds after `checkout.session.completed` (#666).
+   */
+  chargeFeeForPaymentIntent(paymentIntentId: string, account: string): Promise<{ requested: boolean; feeId: string | null }>;
   /** Our fee by id with the PLATFORM key; null when Stripe says it does not exist (not ours). */
   retrievePlatformFee(feeId: string): Promise<{ amount: number; account: string } | null>;
 }
+
+// 4.5 s of waits: with typical reads the ack lands inside Stripe's 10 s redirect window.
+export const FEE_SETTLE_DELAYS_MS: readonly number[] = [1000, 1500, 2000];
 
 /**
  * INVARIANT: every session this platform creates carries a non-zero application
@@ -127,6 +138,7 @@ export async function classifyPaidSession(
   session: PaidSessionView,
   eventAccount: string | null | undefined,
   reads: ProvenanceReads,
+  sleep: (ms: number) => Promise<void> = defaultSleep,
 ): Promise<ProvenanceVerdict> {
   if (!eventAccount) {
     return { kind: "foreign", reason: "event has no connected account" };
@@ -134,12 +146,21 @@ export async function classifyPaidSession(
   const piId = typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id;
   if (!piId) return { kind: "foreign", reason: "session has no payment intent" };
 
-  let feeId: string | null;
   let fee: { amount: number; account: string } | null;
   try {
-    feeId = await reads.applicationFeeIdForPaymentIntent(piId, eventAccount);
-    if (!feeId) return { kind: "foreign", reason: "no application fee on the charge" };
-    fee = await reads.retrievePlatformFee(feeId);
+    let charge = await reads.chargeFeeForPaymentIntent(piId, eventAccount);
+    for (const ms of FEE_SETTLE_DELAYS_MS) {
+      if (charge.feeId || !charge.requested) break;
+      await sleep(ms);
+      charge = await reads.chargeFeeForPaymentIntent(piId, eventAccount);
+    }
+    // The fee object is the proof; `requested` only says whether to expect one.
+    if (!charge.feeId) {
+      return charge.requested
+        ? { kind: "unverifiable", reason: "application fee not created yet" }
+        : { kind: "foreign", reason: "no application fee on the charge" };
+    }
+    fee = await reads.retrievePlatformFee(charge.feeId);
   } catch (err) {
     return { kind: "unverifiable", reason: err instanceof Error ? err.name : "read failed" };
   }
@@ -168,17 +189,44 @@ export async function classifyPaidSession(
 
 const counts = { foreign: 0, tampered: 0, unverifiable: 0 };
 
-export function noteProvenanceVerdict(v: ProvenanceVerdict): void {
+/**
+ * Sessions whose last verdict was `unverifiable`, keyed by session id, with the
+ * time of the first one. Keyed rather than counted: a counter either never
+ * alarms or alarms for ever after one transport blip. In memory like the
+ * counters - a restart forgets, and Stripe's next retry puts it back.
+ */
+const unresolvedSince = new Map<string, number>();
+
+/** Past the seat hold the buyer is a support case, whatever Stripe's retry interval. */
+export const UNRESOLVED_ALARM_MS = 10 * 60_000;
+
+export function noteProvenanceVerdict(sessionId: string, v: ProvenanceVerdict): void {
   if (v.kind !== "ours") counts[v.kind]++;
+  if (v.kind === "unverifiable") {
+    if (!unresolvedSince.has(sessionId)) unresolvedSince.set(sessionId, Date.now());
+  } else {
+    unresolvedSince.delete(sessionId);
+  }
 }
 
 /**
- * `/api/health` section. A tampered session is the alarm: one of our sessions
- * was altered after creation. Foreign sessions are normal on `full` accounts (an
- * organiser's own sales) and are counted, not alarmed.
+ * `/api/health` section. Two alarms: a tampered session (one of ours altered
+ * after creation), and a session left `unverifiable` for UNRESOLVED_ALARM_MS -
+ * a buyer charged whose ticket waits on a Stripe retry (#666). Foreign sessions
+ * are normal on `full` accounts (an organiser's own sales) and are counted, not
+ * alarmed. Counts only: this endpoint is public, and the ids are in the log.
  */
-export function checkoutProvenanceHealth(): { ok: boolean; foreign: number; tampered: number; unverifiable: number } {
-  return { ok: counts.tampered === 0, ...counts };
+export function checkoutProvenanceHealth(now = Date.now()): {
+  ok: boolean;
+  foreign: number;
+  tampered: number;
+  unverifiable: number;
+  unresolved: number;
+  stuck: number;
+} {
+  let stuck = 0;
+  for (const since of unresolvedSince.values()) if (now - since >= UNRESOLVED_ALARM_MS) stuck++;
+  return { ok: counts.tampered === 0 && stuck === 0, ...counts, unresolved: unresolvedSince.size, stuck };
 }
 
 /** Tests only. */
@@ -186,4 +234,5 @@ export function _resetProvenanceCountsForTest(): void {
   counts.foreign = 0;
   counts.tampered = 0;
   counts.unverifiable = 0;
+  unresolvedSince.clear();
 }

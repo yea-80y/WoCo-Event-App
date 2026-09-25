@@ -2,7 +2,8 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { getEvent } from "../lib/event/service.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
-import { getOnChainEvent, getActiveChainId } from "../lib/chain/event-contract.js";
+import { getOnChainEventAt } from "../lib/chain/event-contract.js";
+import { registrationContractFor } from "../lib/event/onchain-registry.js";
 import { heldFor } from "../lib/event/reservation-store.js";
 
 // The v1 claim rail lived here: POST /claim allocated an edition by scanning
@@ -36,8 +37,9 @@ claims.get("/:eventId/series/:seriesId/claim-status", async (c) => {
       return c.json({ ok: false, error: "Tickets for this event are not currently on sale" }, 409);
     }
 
-    const chainId = getActiveChainId();
-    const onChainData = await getOnChainEvent(series.onChainEventId, chainId);
+    // On the contract the registration lives on (#563), not today's env contract.
+    const contract = registrationContractFor(eventId, seriesId);
+    const onChainData = contract ? await getOnChainEventAt(contract, series.onChainEventId) : null;
     const totalSupply = onChainData ? Number(onChainData.totalSupply) : series.totalSupply;
     const claimed = onChainData ? Number(onChainData.nextSlot) : 0;
     const physicalAvailable = Math.max(0, totalSupply - claimed);

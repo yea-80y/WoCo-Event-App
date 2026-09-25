@@ -104,6 +104,13 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     },
   },
   {
+    store: "event/feed-signer-record",
+    drive: async () => {
+      const m = await import("../src/lib/event/feed-signer-record.js");
+      m.recordEventFeedSigner("store-modes-event", OWNER, OWNER);
+    },
+  },
+  {
     store: "issuer/registry",
     drive: async () => {
       const m = await import("../src/lib/issuer/registry.js");

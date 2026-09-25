@@ -1,6 +1,6 @@
 /**
- * The probes behind the `/api/health` postage, paymaster, ENS-parent and sub-ENS
- * minting sections (#421, #522, #420, #598).
+ * The probes behind the `/api/health` postage, paymaster, ENS-parent, sub-ENS
+ * minting and ticket minting sections (#421, #522, #420, #598, #662).
  *
  * WHY A TIMER AND NOT A READ-THROUGH. `/api/health` is polled by uptime checks
  * and read by hand during an incident; it must answer instantly and must never
@@ -24,7 +24,17 @@ import {
   SUB_ENS_PARENT,
   SUB_ENS_PARENT_LABEL,
 } from "@woco/shared";
-import { getChainRpcUrl } from "../chain/event-contract.js";
+import {
+  getActiveChainId,
+  getChainRpcUrl,
+  EventContractConfigError,
+  type EventContractVersion,
+} from "../chain/event-contract.js";
+import {
+  readTicketMintPolicy,
+  SponsorKeyUnconfigured,
+  type TicketMintPolicy,
+} from "../chain/sponsor-wallet.js";
 import {
   getRegistrarAddress,
   getRegistryAddress,
@@ -48,7 +58,11 @@ import {
   evaluateRegistrarEnrolled,
   evaluateSponsorAuthorised,
   evaluateSponsorBalance,
+  evaluateTicketMintAllowance,
+  evaluateTicketMintRamp,
+  evaluateTicketSponsorAuthorised,
   type GlobalMintReading,
+  type TicketMintReading,
   evaluateStamp,
   isStale,
   readThresholdsFromEnv,
@@ -100,6 +114,14 @@ let paymasterReading = empty<bigint>();
 let beeReading = empty<StampReading & { immutable: boolean | null }>();
 let chainstateReading = empty<{ block: number; chainTip: number }>();
 let ethernaReading = empty<StampReading & { immutable: boolean | null }>();
+/**
+ * The last POSITIVE Etherna reading (a parsed stamp or a 404), for the router's
+ * liveness guard (#610). Kept apart from `ethernaReading` because a failed read
+ * must never ERASE a verdict: one stamps-read timeout after a confirmed 404 would
+ * otherwise read as "unknown" and reopen writes onto the dead batch. It still
+ * ages out under the same stale rule the health section uses.
+ */
+let ethernaVerdict: EthernaPlatformBatchSnapshot | null = null;
 let ensExpiryReading = empty<bigint>();
 /**
  * WHY A SECOND TIMESTAMP. `Reading.at` is when the probe last RAN; this is when
@@ -127,6 +149,51 @@ interface RegistrarPolicy {
 let policyReading = empty<RegistrarPolicy>();
 let cswFactoryReading = empty<string>();
 
+let ticketMintReading = empty<TicketMintPolicy>();
+
+/**
+ * The busiest mint windows of the last week (#672), keyed by window end, so a
+ * rising trend is visible to someone who was not online in the busy hour. Only
+ * OPEN windows are recorded: with none open the ledger reports the whole cap as
+ * mintable and a window end that moves with the clock, which is not a window.
+ * In memory like every other reading — a restart forgets it. Cleared when the
+ * contract changes, so a flip never mixes two ledgers' hours.
+ */
+const MINT_PEAK_WINDOW_MS = 7 * 24 * 60 * 60_000;
+let mintPeaks: { contract: string | null; windows: Map<number, { used: number; perHour: number }> } = {
+  contract: null,
+  windows: new Map(),
+};
+
+function recordMintWindow(policy: TicketMintPolicy, now: number): void {
+  const a = policy.allowance;
+  if (a === "no-cap" || a.perHour === 0 || a.perHour === 0xffff_ffff) return;
+  const used = Math.max(0, a.perHour - a.mintable);
+  if (used === 0) return;
+  const contract = policy.contract.address.toLowerCase();
+  if (mintPeaks.contract !== contract) mintPeaks = { contract, windows: new Map() };
+  const prev = mintPeaks.windows.get(a.windowResetsAt);
+  if (!prev || used > prev.used) mintPeaks.windows.set(a.windowResetsAt, { used, perHour: a.perHour });
+  for (const end of mintPeaks.windows.keys()) {
+    if (end * 1000 < now - MINT_PEAK_WINDOW_MS) mintPeaks.windows.delete(end);
+  }
+}
+
+function mintPeak7d(now: number): TicketMintingSection["peak7d"] {
+  let best: { end: number; used: number; perHour: number } | null = null;
+  for (const [end, w] of mintPeaks.windows) {
+    if (end * 1000 < now - MINT_PEAK_WINDOW_MS) continue;
+    if (!best || w.used * best.perHour > best.used * w.perHour) best = { end, ...w };
+  }
+  if (!best) return null;
+  return {
+    used: best.used,
+    perHour: best.perHour,
+    pct: Math.floor((best.used * 100) / best.perHour),
+    windowEndedAt: new Date(best.end * 1000).toISOString(),
+  };
+}
+
 /**
  * Coinbase Smart Wallet factory v1: canonical address and its runtime
  * codehash, the same on Arbitrum One, Arbitrum Sepolia, Base and Base Sepolia
@@ -153,6 +220,8 @@ export interface HealthReaders {
   registrarPolicy(): Promise<RegistrarPolicy>;
   /** keccak256 of the code at `CSW_FACTORY` on the sub-ENS chain. */
   cswFactoryCodehash(): Promise<string>;
+  /** `authorisedSponsors` and, on the ledger, `sponsorMintAllowance` for the ticket sponsor. */
+  ticketMintPolicy(): Promise<TicketMintPolicy>;
 }
 
 const ENTRY_POINT_ABI = ["function balanceOf(address account) view returns (uint256)"];
@@ -315,6 +384,10 @@ export const liveReaders: HealthReaders = {
   },
   cswFactoryCodehash: async () =>
     keccak256(await withTimeout(subEnsChain().getCode(CSW_FACTORY), "CSW factory getCode")),
+  // The events key's reads live in sponsor-wallet.ts, not here: this module
+  // must never name that key's accessor (the sub-ENS watch reads the NAMES
+  // key, and subens-minting-health.test.ts holds the line).
+  ticketMintPolicy: () => withTimeout(readTicketMintPolicy(), "events contract ticket mint policy"),
 };
 
 // ---------------------------------------------------------------------------
@@ -438,6 +511,14 @@ export async function refreshPostage(
     } catch (err) {
       ethernaReading = isNotFound(err) ? gone(err) : failed(err);
     }
+    if (ethernaReading.value || ethernaReading.gone) {
+      ethernaVerdict = {
+        batchId: ethernaBatch,
+        at: ethernaReading.at,
+        gone: ethernaReading.gone === true,
+        stamp: ethernaReading.value,
+      };
+    }
   }
 
   const section = postageHealth();
@@ -521,6 +602,38 @@ export async function refreshSubEnsMinting(
   noteVerdict("subEns.minting.cswFactory", section.checks.cswFactory, log, cswFactoryReading.detail);
 }
 const SPONSOR_UNCONFIGURED = "no names sponsor wallet configured (SUB_ENS_SPONSOR_PRIVATE_KEY)";
+
+/**
+ * Whether paid checkouts can mint (#662): the ticket sponsor is authorised on
+ * the events contract, and — on the ledger — its hourly mint cap has headroom.
+ * The checkout gate refuses a sale the cap cannot mint, so a spent or stopped
+ * cap shows up as "tickets not on sale"; this is where an operator sees why,
+ * and sees it coming.
+ */
+export async function refreshTicketMinting(
+  readers: HealthReaders = liveReaders,
+  log: Logger = console.warn,
+): Promise<void> {
+  try {
+    ticketMintReading = { at: Date.now(), value: await readers.ticketMintPolicy(), error: null, detail: null };
+    recordMintWindow(ticketMintReading.value!, ticketMintReading.at!);
+  } catch (err) {
+    ticketMintReading =
+      err instanceof SponsorKeyUnconfigured
+        ? { at: Date.now(), value: null, error: TICKET_SPONSOR_UNCONFIGURED, detail: null }
+        : err instanceof EventContractConfigError
+          ? { at: Date.now(), value: null, error: TICKET_CONTRACT_MISCONFIGURED, detail: err.message }
+          : failed(err);
+  }
+  const section = ticketMintingHealth();
+  noteVerdict("ticketMinting.sponsorAuthorised", section.checks.sponsorAuthorised, log, ticketMintReading.detail);
+  noteVerdict("ticketMinting.mintAllowance", section.checks.mintAllowance, log, ticketMintReading.detail);
+  noteVerdict("ticketMinting.mintRamp", section.checks.mintRamp, log, ticketMintReading.detail);
+}
+const TICKET_SPONSOR_UNCONFIGURED = "no ticket sponsor wallet configured (WOCO_SPONSOR_PRIVATE_KEY)";
+const TICKET_CONTRACT_MISCONFIGURED =
+  "the events contract is misconfigured: no address, or it does not answer the events-contract ABI " +
+  "(authorisedSponsors / sponsorMintAllowance)";
 
 // ---------------------------------------------------------------------------
 // Sections
@@ -828,6 +941,64 @@ export function subEnsMintingHealth(now: number = Date.now()): SubEnsMintingSect
 }
 
 /**
+ * `/api/health` -> `ticketMinting` (#662). Addresses and the cap's numbers only,
+ * all public on chain.
+ */
+export interface TicketMintingSection {
+  ok: Verdict;
+  chainId: number;
+  contract: string | null;
+  version: EventContractVersion | null;
+  sponsor: string | null;
+  /** `"no-cap"` on V1/V2; null until read. `unlimited` = the ledger's UNLIMITED_MINTS. */
+  allowance: (TicketMintReading & { unlimited: boolean }) | "no-cap" | null;
+  minMintable: number;
+  /** Minted-this-hour share of the cap that turns the section red (#672). */
+  alarmPct: number;
+  /** The busiest open window of the last 7 days on this contract; null if none. */
+  peak7d: { used: number; perHour: number; pct: number; windowEndedAt: string } | null;
+  checks: { sponsorAuthorised: Check; mintAllowance: Check; mintRamp: Check };
+  stale: boolean;
+  checkedAt: string | null;
+  configError?: string;
+}
+
+export function ticketMintingHealth(now: number = Date.now()): TicketMintingSection {
+  const { ticketMinting: cfg } = readThresholdsFromEnv(process.env);
+  const policy = ticketMintReading.value;
+  const unconfigured = ticketMintReading.error === TICKET_SPONSOR_UNCONFIGURED
+    || ticketMintReading.error === TICKET_CONTRACT_MISCONFIGURED;
+  const sponsorAuthorised = unconfigured
+    ? { ok: false as const, reason: ticketMintReading.error! }
+    : evaluateTicketSponsorAuthorised({ authorised: policy?.sponsorAuthorised ?? null, reason: ticketMintReading.error });
+  const mintAllowance = unconfigured
+    ? { ok: false as const, reason: ticketMintReading.error! }
+    : evaluateTicketMintAllowance({ reading: policy?.allowance ?? null, min: cfg.minMintable, reason: ticketMintReading.error });
+  const mintRamp = unconfigured
+    ? { ok: false as const, reason: ticketMintReading.error! }
+    : evaluateTicketMintRamp({ reading: policy?.allowance ?? null, alarmPct: cfg.alarmPct, reason: ticketMintReading.error });
+  const allowance = policy?.allowance ?? null;
+  return {
+    ok: combine([sponsorAuthorised, mintAllowance, mintRamp]),
+    chainId: policy?.contract.chainId ?? getActiveChainId(),
+    contract: policy?.contract.address ?? null,
+    version: policy?.contract.version ?? null,
+    sponsor: policy?.sponsor ?? null,
+    allowance:
+      allowance === null || allowance === "no-cap"
+        ? allowance
+        : { ...allowance, unlimited: allowance.perHour === 0xffff_ffff },
+    minMintable: cfg.minMintable,
+    alarmPct: cfg.alarmPct,
+    peak7d: mintPeak7d(now),
+    checks: { sponsorAuthorised, mintAllowance, mintRamp },
+    stale: isStale(ticketMintReading.at, now, PROBE_INTERVAL_MS),
+    checkedAt: ticketMintReading.at === null ? null : new Date(ticketMintReading.at).toISOString(),
+    ...(cfg.configError ? { configError: cfg.configError } : {}),
+  };
+}
+
+/**
  * Bee batch state for the evidence publisher (#312), served from THIS module's
  * cache.
  *
@@ -843,6 +1014,28 @@ export async function beeBatchState(): Promise<{ usable: boolean | null; ttl: nu
   return { usable: beeReading.value?.usable ?? null, ttl: beeReading.value?.batchTTL ?? null };
 }
 
+export interface EthernaPlatformBatchSnapshot {
+  /** The batch this reading is for ("" before the first positive read). */
+  batchId: string;
+  /** When that reading was taken, or null if there has been none. */
+  at: number | null;
+  /** Etherna positively said the batch does not exist. */
+  gone: boolean;
+  /** The parsed stamp; null exactly when `gone`. */
+  stamp: StampReading | null;
+}
+
+/**
+ * The last POSITIVE Etherna platform-batch reading, for the batch router's
+ * liveness guard (#610). Failed and incomplete reads never replace it. Synchronous
+ * and cache-only on purpose: the router is called on every write path and awaits
+ * nothing, and one probe on one clock is the only answer to "is it alive" (see
+ * `beeBatchState` for why there must never be two).
+ */
+export function ethernaPlatformBatchSnapshot(): EthernaPlatformBatchSnapshot {
+  return ethernaVerdict ?? { batchId: "", at: null, gone: false, stamp: null };
+}
+
 // ---------------------------------------------------------------------------
 // Timer
 // ---------------------------------------------------------------------------
@@ -853,6 +1046,11 @@ let ensExpiryDueAt = 0;
 
 export function startHealthProbes(): void {
   if (timer) return;
+  if (process.env.ETHERNA_PLATFORM_BATCH && !process.env.ETHERNA_API_KEY) {
+    console.warn(
+      "[health] ETHERNA_PLATFORM_BATCH is set but ETHERNA_API_KEY is not: the platform batch is never read, so the router cannot refuse writes onto a dead one (#610)",
+    );
+  }
   const tick = () => {
     const etherna = Date.now() >= ethernaDueAt;
     if (etherna) ethernaDueAt = Date.now() + ETHERNA_PROBE_INTERVAL_MS;
@@ -860,6 +1058,7 @@ export function startHealthProbes(): void {
     if (ens) ensExpiryDueAt = Date.now() + ENS_EXPIRY_PROBE_INTERVAL_MS;
     void refreshPaymaster().catch((err) => console.warn("[health] paymaster probe threw:", err));
     void refreshSubEnsMinting().catch((err) => console.warn("[health] sub-ENS minting probe threw:", err));
+    void refreshTicketMinting().catch((err) => console.warn("[health] ticket minting probe threw:", err));
     void refreshPostage(liveReaders, console.warn, etherna).catch((err) =>
       console.warn("[health] postage probe threw:", err),
     );
@@ -870,7 +1069,7 @@ export function startHealthProbes(): void {
   tick();
   timer = setInterval(tick, PROBE_INTERVAL_MS);
   timer.unref?.();
-  console.log("[health] postage + paymaster + ENS parent + sub-ENS minting probes started");
+  console.log("[health] postage + paymaster + ENS parent + sub-ENS minting + ticket minting probes started");
 }
 
 /** Tests only. */
@@ -883,12 +1082,15 @@ export function __resetHealthProbes(): void {
   beeReading = empty<StampReading & { immutable: boolean | null }>();
   chainstateReading = empty<{ block: number; chainTip: number }>();
   ethernaReading = empty<StampReading & { immutable: boolean | null }>();
+  ethernaVerdict = null;
   ensExpiryReading = empty<bigint>();
   ensExpiryOkAt = null;
   enrolmentReading = empty<Enrolment>();
   sponsorReading = empty<bigint>();
   policyReading = empty<RegistrarPolicy>();
   cswFactoryReading = empty<string>();
+  ticketMintReading = empty<TicketMintPolicy>();
+  mintPeaks = { contract: null, windows: new Map() };
   lastVerdict.clear();
   provider = null;
   ensProvider = null;

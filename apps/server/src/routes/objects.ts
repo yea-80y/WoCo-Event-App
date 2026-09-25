@@ -1,10 +1,10 @@
-import { Hono } from "hono";
+import { Hono, type Context, type Next } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import type {
   ObjectCategory, ObjectDirectoryEntry, Hex0x, Hex64, SignedManifestV2, EditionV1Body,
 } from "@woco/shared";
-import { validateSignedManifestV2 } from "@woco/shared";
+import { validateSignedManifestV2, FEATURES } from "@woco/shared";
 import { verifyAndPinIssuerBinding } from "../lib/issuer/binding.js";
 import {
   getCreatorObjectDirectory,
@@ -72,7 +72,16 @@ objectsRouter.get("/mine", requireAuth, async (c) => {
  *
  * Gated on a Stripe-verified organiser and a daily budget - see MINT_BUDGET.
  */
-objectsRouter.post("/", requireAuth, async (c) => {
+/** FEATURES.badgesAllowed. Ahead of requireAuth, so a probe learns "off" rather
+ *  than "unauthorised" - a 401 would read as "sign in and try again". */
+async function badgeGate(c: Context<AppEnv>, next: Next) {
+  if (!FEATURES.badgesAllowed) {
+    return c.json({ ok: false, error: "Badges and collectibles are not available yet" }, 403);
+  }
+  await next();
+}
+
+objectsRouter.post("/", badgeGate, requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase() as Hex0x;
 
   const ip = clientIp(c);

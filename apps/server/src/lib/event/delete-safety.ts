@@ -1,6 +1,6 @@
 import type { SeriesSummary } from "@woco/shared";
-import { getActiveChainId, getOnChainEvent } from "../chain/event-contract.js";
-import { lookupOnChainEventId } from "./onchain-registry.js";
+import { getOnChainEventAt } from "../chain/event-contract.js";
+import { lookupOnChainEventId, registrationContractFor } from "./onchain-registry.js";
 import { heldFor } from "./reservation-store.js";
 
 /** Thrown when a delete is blocked by existing tickets/holds; `blockers` lists
@@ -18,14 +18,15 @@ export class DeleteBlockedError extends Error {
  *  is otherwise unreachable: the client pre-disables delete whenever orders
  *  exist, so nothing exercises these branches in practice. */
 export interface DeleteSafetyDeps {
-  getOnChainEvent: typeof getOnChainEvent;
-  getActiveChainId: typeof getActiveChainId;
+  getOnChainEventAt: typeof getOnChainEventAt;
   heldFor: typeof heldFor;
   /** The server's OWN registration record — see the `assertNoOrders` note (#435). */
   lookupOnChainEventId: typeof lookupOnChainEventId;
+  /** Which contract that record lives on (#563). */
+  registrationContractFor: typeof registrationContractFor;
 }
 
-const defaultDeps: DeleteSafetyDeps = { getOnChainEvent, getActiveChainId, heldFor, lookupOnChainEventId };
+const defaultDeps: DeleteSafetyDeps = { getOnChainEventAt, heldFor, lookupOnChainEventId, registrationContractFor };
 
 /**
  * Refuse deletion unless every series' ticket count is VERIFIED zero: on-chain
@@ -43,6 +44,11 @@ const defaultDeps: DeleteSafetyDeps = { getOnChainEvent, getActiveChainId, heldF
  * the sharpest consumer of the #435 defect, and it is the one place a strip
  * upstream is not enough on its own, because the strip can only fire on ids it
  * can attribute.
+ *
+ * AND ON WHICH CONTRACT (#563): the one the record names. After a cutover,
+ * today's env contract has never heard of an older series' id, and an
+ * `EventNotFound` there is exactly the "verified zero" that allows a delete —
+ * so reading the wrong contract would hand out deletes on sold events.
  *
  * A series carrying a feed id the server has NO record for therefore counts as
  * having no verifiable on-chain event, and BLOCKS. That is the safe direction and
@@ -71,9 +77,14 @@ export async function assertNoOrders(
       blockers.push(`"${s.name}": series has no on-chain record — ticket count cannot be verified`);
       continue;
     }
+    const contract = deps.registrationContractFor(eventId, s.seriesId);
+    if (!contract) {
+      blockers.push(`"${s.name}": no events contract resolvable for its registration — ticket count cannot be verified`);
+      continue;
+    }
     let claimed: number;
     try {
-      const onChain = await deps.getOnChainEvent(recorded, deps.getActiveChainId());
+      const onChain = await deps.getOnChainEventAt(contract, recorded);
       // nextSlot = slots ever allocated (refunds flag, never free, slots) —
       // overcounting after refunds is the safe direction for delete-safety.
       claimed = onChain ? Number(onChain.nextSlot) : 0;

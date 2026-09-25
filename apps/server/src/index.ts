@@ -59,6 +59,8 @@ import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
+import { alarmGate } from "./lib/health/alarm-gate.js";
+import { feedSignerRecordHealth } from "./lib/event/feed-signer-record.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
@@ -68,6 +70,7 @@ import {
   postageHealth,
   subEnsParentHealth,
   subEnsMintingHealth,
+  ticketMintingHealth,
 } from "./lib/health/probes.js";
 import { persistHealth } from "./lib/marketing/persist.js";
 import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.js";
@@ -252,8 +255,8 @@ app.use("/embed/*", securityHeaders());
 // `email` reports the live ESP and any send we abandoned. An unresolved
 // TRANSACTIONAL failure means somebody paid and has no ticket, so it is an
 // alarm, not a statistic. Counts and store names only — this endpoint is public.
-app.get("/api/health", (c) =>
-  c.json({
+function healthReport() {
+  return {
     ok: true,
     // Which commit is answering (#125). Before this, "is production running what
     // I think?" could only be inferred — from a log line, a container creation
@@ -271,8 +274,9 @@ app.get("/api/health", (c) =>
     // yet — and until it lands the organiser is still scheduled to be paid for
     // it. Counts only; the ops route has the entries.
     pendingRefunds: pendingRefundsHealth(),
-    // #645: a tampered session (ours, altered after creation) is the alarm;
-    // foreign sessions are an organiser's own sales and are only counted.
+    // #645: a tampered session (ours, altered after creation) is an alarm, and so
+    // is a sale left unverifiable for 10 minutes (#666, `stuck`); foreign sessions
+    // are an organiser's own sales and are only counted.
     checkoutProvenance: checkoutProvenanceHealth(),
     compliancePersistence: persistHealth(),
     // `false` is an alarm, not a statistic: the Kernel known-deployed record
@@ -349,7 +353,23 @@ app.get("/api/health", (c) =>
     // the failure was invisible: an organiser saw a button that did not work and
     // the server logged an exception among thousands. `rebindConflicts` counts
     // DISTINCT series stuck this way since boot, so a retry loop is one alarm.
+    // `unreadableRecords` counts entries in `onchain-events.json` this build
+    // cannot parse (#563): kept on disk untouched, never served, so each is a
+    // series that cannot sell until an operator repairs it. `fileUnreadable`
+    // is the whole file: nothing sells or registers, and it is never written.
     onchainRegistry: onchainRegistryHealth(),
+    // Each event's feed signer + verified creator, pinned at create (#670): the
+    // money path's only carrier for an UNLISTED event. `unreadable` true, or
+    // `unreadableRecords` above 0, is an alarm: those events cannot sell, and no
+    // event can be created with a signer, until an operator restores the file.
+    eventFeedSigners: feedSignerRecordHealth(),
+    // Whether paid checkouts can mint on the events contract (#662): the ticket
+    // sponsor still authorised, and on the ledger its hourly mint cap's headroom
+    // (`TICKET_MINT_ALLOWANCE_MIN`, default one maximum order). The checkout
+    // refuses a sale the cap cannot mint, so a spent or stopped cap reads from
+    // outside as "not on sale"; this says why. `mintable` falling with no sales
+    // to account for it is the leaked-key signal. Public on-chain data only.
+    ticketMinting: ticketMintingHealth(),
     // Cross-account issuer claims (#457). One issuing address belongs to one
     // account, but the server sees only addresses and cannot tell a squatter
     // from a client deriving the wrong key — so it refuses the second claimant
@@ -387,8 +407,19 @@ app.get("/api/health", (c) =>
           ? bounceLedgerHealth()
           : { ok: false, unsupported: activeEmailProvider() },
     },
-  }),
-);
+  };
+}
+
+app.get("/api/health", (c) => c.json(healthReport()));
+
+// The same report as ONE status code, for an uptime monitor (#672): 503 when a
+// watched section is red. `/api/health` itself always answers 200, so without
+// this no alarm above reached anyone. `?sections=` picks what to watch.
+app.get("/api/health/alarms", (c) => {
+  const { status, body } = alarmGate(healthReport(), c.req.query("sections"));
+  c.header("Cache-Control", "no-store");
+  return c.json(body, status);
+});
 
 // ETH price proxy — frontend can't call CoinGecko directly (CORS + rate limits)
 app.get("/api/eth-price", async (c) => {

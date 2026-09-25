@@ -12,6 +12,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 process.env.PAYMENT_QUOTE_SECRET = "test-secret-checkout-provenance-0123456789abcdef";
+// Constructs the SDK client only; every call on it below is mocked.
+process.env.STRIPE_SECRET_KEY = "sk_test_checkout_provenance_never_sent";
 
 const {
   signCheckoutTag,
@@ -20,7 +22,11 @@ const {
   noteProvenanceVerdict,
   checkoutProvenanceHealth,
   _resetProvenanceCountsForTest,
+  FEE_SETTLE_DELAYS_MS,
+  UNRESOLVED_ALARM_MS,
 } = await import("../src/lib/stripe/checkout-provenance.js");
+const { liveProvenanceReads } = await import("../src/lib/stripe/checkout-provenance-live.js");
+const { getStripe } = await import("../src/lib/stripe/client.js");
 type Fields = Parameters<typeof signCheckoutTag>[0];
 type Reads = Parameters<typeof classifyPaidSession>[2];
 
@@ -92,17 +98,39 @@ function session(over: Partial<Parameters<typeof classifyPaidSession>[0]> = {}) 
   };
 }
 
-function reads(over: Partial<{ feeId: string | null; fee: { amount: number; account: string } | null; throws: boolean }> = {}): Reads {
-  const o = { feeId: "fee_1", fee: { amount: 33, account: ACCT }, throws: false, ...over };
-  return {
-    async applicationFeeIdForPaymentIntent() {
-      if (o.throws) throw Object.assign(new Error("network"), { name: "StripeConnectionError" });
-      return o.feeId;
+type ChargeFee = { requested: boolean; feeId: string | null };
+const FEE_READY: ChargeFee = { requested: true, feeId: "fee_1" };
+const FEE_PENDING: ChargeFee = { requested: true, feeId: null };
+const NO_FEE: ChargeFee = { requested: false, feeId: null };
+const NETWORK = () => Object.assign(new Error("network"), { name: "StripeConnectionError" });
+
+/**
+ * `charges` is what each successive charge read returns (the last one repeats);
+ * an Error entry is thrown. `chargeReads` counts the reads made.
+ */
+function reads(
+  over: Partial<{ charges: Array<ChargeFee | Error>; fee: { amount: number; account: string } | null; throws: boolean }> = {},
+): Reads & { chargeReads: number } {
+  const o = { charges: [FEE_READY], fee: { amount: 33, account: ACCT }, throws: false, ...over };
+  const r = {
+    chargeReads: 0,
+    async chargeFeeForPaymentIntent() {
+      if (o.throws) throw NETWORK();
+      const next = o.charges[Math.min(r.chargeReads++, o.charges.length - 1)];
+      if (next instanceof Error) throw next;
+      return next;
     },
     async retrievePlatformFee() {
       return o.fee;
     },
   };
+  return r;
+}
+
+/** Records the waits instead of taking them. */
+function sleeper() {
+  const slept: number[] = [];
+  return { slept, sleep: async (ms: number) => void slept.push(ms) };
 }
 
 test("our unaltered session is ours", async () => {
@@ -113,11 +141,11 @@ test("sessions this platform did not create are foreign - never ours, never refu
   const cases: Array<[string, Promise<{ kind: string }>]> = [
     ["no account on the event", classifyPaidSession(session(), undefined, reads())],
     ["no payment intent", classifyPaidSession(session({ payment_intent: null }), ACCT, reads())],
-    ["no application fee on the charge", classifyPaidSession(session(), ACCT, reads({ feeId: null }))],
+    ["no application fee on the charge", classifyPaidSession(session(), ACCT, reads({ charges: [NO_FEE] }))],
     ["a fee that is not ours", classifyPaidSession(session(), ACCT, reads({ fee: null }))],
     // An organiser can copy one of our tags into their own session; with no fee
     // of ours on its charge it is still foreign.
-    ["a copied tag on an organiser's own session", classifyPaidSession(session(), ACCT, reads({ feeId: null }))],
+    ["a copied tag on an organiser's own session", classifyPaidSession(session(), ACCT, reads({ charges: [NO_FEE] }))],
   ];
   for (const [what, p] of cases) assert.equal((await p).kind, "foreign", what);
 });
@@ -138,16 +166,149 @@ test("a Stripe read that fails decides nothing", async () => {
   assert.equal((await classifyPaidSession(session(), ACCT, reads({ throws: true }))).kind, "unverifiable");
 });
 
+// ── #666: the fee object arrives after checkout.session.completed ────────────
+// Stripe creates the ApplicationFee ~2 s after it sends the event, so the first
+// read of every one of our sales sees a fee requested but not yet there.
+
+test("#666: a fee Stripe has not created yet is waited for, and the sale is ours", async () => {
+  const r = reads({ charges: [FEE_PENDING, FEE_READY] });
+  const { slept, sleep } = sleeper();
+  assert.deepEqual(await classifyPaidSession(session(), ACCT, r, sleep), { kind: "ours" });
+  assert.equal(r.chargeReads, 2);
+  assert.deepEqual(slept, [FEE_SETTLE_DELAYS_MS[0]]);
+});
+
+test("#666: a requested fee that never appears is unverifiable (Stripe retries), never foreign", async () => {
+  const r = reads({ charges: [FEE_PENDING] });
+  const { slept, sleep } = sleeper();
+  assert.deepEqual(await classifyPaidSession(session(), ACCT, r, sleep), {
+    kind: "unverifiable",
+    reason: "application fee not created yet",
+  });
+  assert.equal(r.chargeReads, 1 + FEE_SETTLE_DELAYS_MS.length);
+  assert.deepEqual(slept, FEE_SETTLE_DELAYS_MS);
+});
+
+test("#666: a charge that requested no fee is foreign at once, with no wait", async () => {
+  const r = reads({ charges: [NO_FEE] });
+  const { slept, sleep } = sleeper();
+  assert.equal((await classifyPaidSession(session(), ACCT, r, sleep)).kind, "foreign");
+  assert.equal(r.chargeReads, 1);
+  assert.deepEqual(slept, []);
+});
+
+test("#666: a fee that arrives and is not ours is still foreign", async () => {
+  const { sleep } = sleeper();
+  const v = await classifyPaidSession(session(), ACCT, reads({ charges: [FEE_PENDING, FEE_READY], fee: null }), sleep);
+  assert.deepEqual(v, { kind: "foreign", reason: "application fee is not this platform's" });
+});
+
+test("#666: a fee our key can read is ours even if the charge does not report requesting one", async () => {
+  // Not a state Stripe documents; the point is that the proof outranks the hint.
+  const r = reads({ charges: [{ requested: false, feeId: "fee_1" }] });
+  assert.deepEqual(await classifyPaidSession(session(), ACCT, r, sleeper().sleep), { kind: "ours" });
+  assert.equal(r.chargeReads, 1);
+});
+
+test("#666: a read failing during the wait decides nothing", async () => {
+  const { sleep } = sleeper();
+  const v = await classifyPaidSession(session(), ACCT, reads({ charges: [FEE_PENDING, NETWORK()] }), sleep);
+  assert.equal(v.kind, "unverifiable");
+});
+
+test("#666: the wait fits inside the buyer's redirect window", () => {
+  // The buyer's redirect to success_url waits on our 2xx, and Stripe sends it
+  // anyway 10 s after payment. The webhook lands ~2.4 s after payment and each
+  // charge read takes ~0.2 s, so waits past ~5 s would leave the buyer on
+  // Stripe's page with the ticket still undecided.
+  assert.ok(FEE_SETTLE_DELAYS_MS.reduce((a, b) => a + b, 0) <= 5000);
+});
+
+// ── The live charge read (the one layer the stubs above cannot see) ──────────
+
+test("#666: the live read reports a requested fee before Stripe has created it", async (t) => {
+  const calls: unknown[][] = [];
+  let latest: unknown = null;
+  t.mock.method(getStripe().paymentIntents, "retrieve", async (...args: unknown[]) => {
+    calls.push(args);
+    return { latest_charge: latest };
+  });
+  const read = () => liveProvenanceReads.chargeFeeForPaymentIntent("pi_1", ACCT);
+  const cases: Array<[string, unknown, ChargeFee]> = [
+    ["the charge at checkout.session.completed", { application_fee_amount: 2, application_fee: null }, FEE_PENDING],
+    ["the fee attached, as an id", { application_fee_amount: 2, application_fee: "fee_1" }, FEE_READY],
+    ["the fee attached, expanded", { application_fee_amount: 2, application_fee: { id: "fee_1" } }, FEE_READY],
+    ["no fee requested", { application_fee_amount: null, application_fee: null }, NO_FEE],
+    ["a zero fee requested", { application_fee_amount: 0, application_fee: null }, NO_FEE],
+    ["no charge", null, NO_FEE],
+  ];
+  for (const [what, charge, want] of cases) {
+    latest = charge;
+    assert.deepEqual(await read(), want, what);
+  }
+  // The charge is read on the event's account, where a direct charge lives.
+  assert.deepEqual(calls[0], ["pi_1", { expand: ["latest_charge"] }, { stripeAccount: ACCT }]);
+});
+
+test("#666: an unexpanded charge is fetched on the same account", async (t) => {
+  t.mock.method(getStripe().paymentIntents, "retrieve", async () => ({ latest_charge: "ch_1" }));
+  const chargeCalls: unknown[][] = [];
+  t.mock.method(getStripe().charges, "retrieve", async (...args: unknown[]) => {
+    chargeCalls.push(args);
+    return { application_fee_amount: 2, application_fee: null };
+  });
+  assert.deepEqual(await liveProvenanceReads.chargeFeeForPaymentIntent("pi_1", ACCT), FEE_PENDING);
+  assert.deepEqual(chargeCalls, [["ch_1", {}, { stripeAccount: ACCT }]]);
+});
+
 // ── Health ────────────────────────────────────────────────────────────────────
 
 beforeEach(() => _resetProvenanceCountsForTest());
 
 test("health alarms on a tampered session and only counts foreign ones", () => {
-  noteProvenanceVerdict({ kind: "ours" });
-  noteProvenanceVerdict({ kind: "foreign", reason: "x" });
-  assert.deepEqual(checkoutProvenanceHealth(), { ok: true, foreign: 1, tampered: 0, unverifiable: 0 });
-  noteProvenanceVerdict({ kind: "tampered", reason: "x" });
+  noteProvenanceVerdict("cs_a", { kind: "ours" });
+  noteProvenanceVerdict("cs_b", { kind: "foreign", reason: "x" });
+  assert.deepEqual(checkoutProvenanceHealth(), {
+    ok: true,
+    foreign: 1,
+    tampered: 0,
+    unverifiable: 0,
+    unresolved: 0,
+    stuck: 0,
+  });
+  noteProvenanceVerdict("cs_c", { kind: "tampered", reason: "x" });
   assert.equal(checkoutProvenanceHealth().ok, false);
+});
+
+test("#666: a session left unverifiable alarms after the seat hold, and a later verdict clears it", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const unverifiable = { kind: "unverifiable", reason: "application fee not created yet" } as const;
+  noteProvenanceVerdict("cs_x", unverifiable);
+  noteProvenanceVerdict("cs_y", unverifiable);
+  noteProvenanceVerdict("cs_z", unverifiable);
+  t.mock.timers.tick(UNRESOLVED_ALARM_MS - 1);
+  // Stripe's retry lands and fails again: the clock runs from the FIRST failure.
+  noteProvenanceVerdict("cs_x", unverifiable);
+  // Other sessions settling leave cs_x alone.
+  noteProvenanceVerdict("cs_y", { kind: "ours" });
+  noteProvenanceVerdict("cs_z", { kind: "foreign", reason: "x" });
+  noteProvenanceVerdict("cs_other", { kind: "ours" });
+  assert.deepEqual(checkoutProvenanceHealth(), {
+    ok: true,
+    foreign: 1,
+    tampered: 0,
+    unverifiable: 4,
+    unresolved: 1,
+    stuck: 0,
+  });
+  t.mock.timers.tick(1);
+  assert.equal(checkoutProvenanceHealth().ok, false);
+  assert.equal(checkoutProvenanceHealth().stuck, 1);
+  noteProvenanceVerdict("cs_x", { kind: "ours" });
+  const h = checkoutProvenanceHealth();
+  assert.equal(h.ok, true);
+  assert.equal(h.unresolved, 0);
+  assert.equal(h.stuck, 0);
 });
 
 // ── Wiring (text checks: the route needs Stripe signatures and a live account) ─
@@ -161,12 +322,14 @@ test("the webhook classifies before it consumes, and acts on nothing it did not 
     return i;
   };
   const classify = at("await classifyPaidSession(session, event.account");
+  const note = at("noteProvenanceVerdict(session.id, verdict)");
   const retry = at('if (verdict.kind === "unverifiable")');
   const foreign = at('if (verdict.kind === "foreign")');
   const consume = at("checkAndConsumeSession(session.id)");
   const tampered = at('if (verdict.kind === "tampered")');
   const shop = at("handleShopOrderPaid(session)");
   const fulfil = at("fulfilPaidSession(session");
+  assert.ok(classify < note && note < retry, "every verdict is noted against its session before any exit");
   assert.ok(classify < retry && retry < consume, "an unverifiable session is never consumed");
   assert.ok(foreign < consume, "a foreign session is never consumed");
   assert.ok(consume < tampered && tampered < shop && shop < fulfil, "shop and ticket flows run only for verified sessions");

@@ -12,8 +12,8 @@
 import { getStripe } from "./client.js";
 import { hashEmail } from "../event/claim-service.js";
 import { getEvent } from "../event/service.js";
-import { chainEventEndMs } from "../event/end-date-guard.js";
-import { lookupOnChainEventId } from "../event/onchain-registry.js";
+import { chainEventEndMsAt } from "../event/end-date-guard.js";
+import { lookupOnChainEventId, saleContractFor } from "../event/onchain-registry.js";
 import { recordHeld, markVoid } from "./payout-ledger.js";
 import { getOrganiserByStripeAccount } from "./accounts.js";
 import { uploadToBytes } from "../swarm/bytes.js";
@@ -32,8 +32,9 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   hashEmail,
   resolveSiteEventSigner,
   getEvent,
-  chainEventEndMs: (onChainEventId) => chainEventEndMs(onChainEventId),
+  chainEventEndMs: (onChainEventId, contract) => chainEventEndMsAt(contract, onChainEventId),
   lookupOnChainEventId,
+  saleContractFor,
   recordHeldPayout: (entry) => {
     recordHeld(entry);
   },

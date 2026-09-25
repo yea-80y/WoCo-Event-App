@@ -42,7 +42,7 @@ test("the handler checks budget and verification before it pins or spends anythi
   // Text check: the route sits behind requireAuth and this suite has no
   // signed-request harness (#622). What matters is the order in the handler.
   const src = readFileSync(new URL("../src/routes/objects.ts", import.meta.url), "utf-8");
-  const handler = src.slice(src.indexOf('objectsRouter.post("/", requireAuth'));
+  const handler = src.slice(src.indexOf('objectsRouter.post("/", badgeGate, requireAuth'));
   const at = (needle: string) => {
     const i = handler.indexOf(needle);
     assert.ok(i > 0, `handler is missing ${needle}`);

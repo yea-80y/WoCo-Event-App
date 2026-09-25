@@ -33,7 +33,8 @@ export interface SubEnsDeployment {
 
 /**
  * Arbitrum One (42161) — registry v2.2, LIVE since 2026-09-21: woco.eth's L1
- * resolver (`0x1720…Ed8A`) names this registry, so every real name lives here.
+ * resolver (v2 `0xD935…FfD7` since 2026-09-25; v1 `0x1720…Ed8A` before) names
+ * this registry, so every real name lives here.
  * An EIP-1167 clone of OUR implementation
  * (`0x44F3CE28DFb86d6827637D6b3E55D4111cA55367`) under baseNode
  * `0x616c19dee44e200629c0e4918ca0fe2f6e85100ea0b354c4f888e11c07a9006f`, with

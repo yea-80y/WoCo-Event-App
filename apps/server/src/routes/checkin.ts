@@ -25,7 +25,8 @@ import type {
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEvent, getEventForOwner, getEventBySigner } from "../lib/event/service.js";
-import { getOnChainEvent, getSlotData, getActiveChainId } from "../lib/chain/event-contract.js";
+import { getOnChainEventAt, getSlotDataAt } from "../lib/chain/event-contract.js";
+import { registrationContractFor } from "../lib/event/onchain-registry.js";
 import {
   issueDoorPass,
   verifyDoorPass,
@@ -174,7 +175,6 @@ checkin.get("/:eventId/pack", async (c) => {
       ?? await getEvent(eventId);
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
 
-    const chainId = getActiveChainId();
     const series: CheckinSeries[] = [];
 
     for (const s of event.series) {
@@ -189,13 +189,21 @@ checkin.get("/:eventId/pack", async (c) => {
       // empty entry rather than falling back to a Swarm feed no longer written.
       if (s.swarmManifestRef && s.onChainEventId) {
         entry.onChainEventId = s.onChainEventId as CheckinSeries["onChainEventId"];
-        const onChain = await getOnChainEvent(s.onChainEventId, chainId).catch(() => null);
-        const slotCount = onChain ? Number(onChain.nextSlot) : 0;
+        // Owners are read on the contract the registration lives on (#563), so
+        // a ticket on an older contract still verifies at the door after a
+        // cutover. None resolvable reads as no slots: the door refuses.
+        const contract = registrationContractFor(eventId, s.seriesId);
+        const onChainEventId = s.onChainEventId;
+        const onChain = contract
+          ? await getOnChainEventAt(contract, onChainEventId).catch(() => null)
+          : null;
+        const slotCount = contract && onChain ? Number(onChain.nextSlot) : 0;
         const owners = await mapWithConcurrency(
           Array.from({ length: slotCount }, (_, slot) => slot),
           SLOT_READ_CONCURRENCY,
           async (slot) => {
-            const data = await getSlotData(s.onChainEventId!, slot, chainId).catch(() => null);
+            if (!contract) return "";
+            const data = await getSlotDataAt(contract, onChainEventId, slot).catch(() => null);
             return data?.owner?.toLowerCase() ?? "";
           },
         );

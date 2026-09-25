@@ -1,9 +1,11 @@
 import { Wallet, HDNodeWallet, Contract, Interface, JsonRpcProvider } from "ethers";
 import {
   getActiveChainId,
-  getWoCoEventAddress,
   getChainRpcUrl,
   getEventContractVersion,
+  getDefaultEventContract,
+  contractKey,
+  EventContractConfigError,
 } from "./event-contract.js";
 import { sendSponsorTx } from "./sponsor-nonce.js";
 import {
@@ -13,9 +15,14 @@ import {
   isSponsorAuthorisedV2,
   V2_ABI,
 } from "./event-contract-v2.js";
-import { LEDGER_ABI } from "./event-contract-ledger.js";
+import {
+  LEDGER_ABI,
+  LEDGER_UNLIMITED_MINTS,
+  isNotThisAbi,
+  type SponsorMintAllowance,
+} from "./event-contract-ledger.js";
 import { unhandledVersion } from "./event-contract.js";
-import type { EventContractVersion } from "./event-contract.js";
+import type { EventContractVersion, EventContractTarget } from "./event-contract.js";
 
 /**
  * Fragment set carrying the `Registered` event for a given contract version.
@@ -83,20 +90,30 @@ const REGISTER_ABI = [
   "event Registered(bytes32 indexed eventId, address indexed organiser, uint256 supply, bytes32 manifestRef)",
 ];
 
-let _wallet: Wallet | null = null;
+const _wallets = new Map<number, Wallet>();
 
-function getSponsorWallet(): Wallet {
-  if (_wallet) return _wallet;
+/** Per chain: a registration recorded on another chain still mints there (#563). */
+function getSponsorWallet(chainId: number = getActiveChainId()): Wallet {
+  const cached = _wallets.get(chainId);
+  if (cached) return cached;
   const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
   if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
-  const chainId = getActiveChainId();
   const url = getChainRpcUrl(chainId);
   const provider = new JsonRpcProvider(url);
   // Tighten tx.wait(1) polling — ethers v6 defaults to 4000ms, which was most of
   // the registerEvent/batchClaim latency on a sub-second L2. See event-contract.ts.
   provider.pollingInterval = 500;
-  _wallet = new Wallet(pk, provider);
-  return _wallet;
+  const wallet = new Wallet(pk, provider);
+  _wallets.set(chainId, wallet);
+  return wallet;
+}
+
+/** The env-selected contract, or the loud failure every mint/register path gives. */
+function defaultTargetOrThrow(): EventContractTarget {
+  const chainId = getActiveChainId();
+  const t = getDefaultEventContract(chainId);
+  if (!t) throw new Error(`No WoCoEvent contract on chain ${chainId}`);
+  return t;
 }
 
 /**
@@ -200,21 +217,25 @@ export function getSponsorAddress(): string {
 // Sponsor authorisation is a config invariant that only changes via an owner
 // addSponsor/removeSponsor tx, so a confirmed-ready result is cached. Only the
 // positive is cached — a negative is a fixable misconfig we want to re-detect
-// promptly (e.g. right after the owner runs addSponsor).
+// promptly (e.g. right after the owner runs addSponsor). Keyed per contract:
+// since #563 one checkout may be for a registration on an older contract, and
+// a positive for one contract says nothing about another.
 const SPONSOR_READY_TTL_MS = 10 * 60 * 1000;
-let _sponsorReady: { chainId: number; expires: number } | null = null;
+const _sponsorReady = new Map<string, number>();
 
 /**
- * Whether the sponsor wallet can actually mint on the active contract. V1 uses
- * a different (deploy-time) authorisation model and is treated as always ready;
- * V2 gates `claimFor`/`batchClaimFor` behind `authorisedSponsors`, so an
- * unauthorised sponsor would make every paid claim revert `NotAuthorised`.
+ * Whether the sponsor wallet is authorised to mint on `target`. V1 uses a
+ * different (deploy-time) authorisation model and is treated as always ready;
+ * V2 and the ledger gate `claimFor`/`batchClaimFor` behind `authorisedSponsors`,
+ * so an unauthorised sponsor would make every paid claim revert `NotAuthorised`.
+ *
+ * Says nothing about the ledger's hourly cap — see `checkSponsorCanMint`.
  *
  * Throws on RPC failure (caller decides fail-open vs fail-closed). A definitive
  * `false` means the sponsor is genuinely not on the allow-list.
  */
-export async function isSponsorReady(chainId: number): Promise<boolean> {
-  const version = getEventContractVersion(chainId);
+export async function isSponsorReady(target: EventContractTarget): Promise<boolean> {
+  const { version } = target;
   // Only V1 skips the probe (deploy-time authorisation, nothing to read).
   // Written as an explicit V1 test rather than `!== "v2"`: the old form
   // returned TRUE — check skipped — for any version that was not literally
@@ -223,28 +244,170 @@ export async function isSponsorReady(chainId: number): Promise<boolean> {
   if (version === "v1") return true;
 
   const now = Date.now();
-  if (_sponsorReady && _sponsorReady.chainId === chainId && _sponsorReady.expires > now) {
-    return true;
-  }
+  const k = contractKey(target);
+  if ((_sponsorReady.get(k) ?? 0) > now) return true;
 
-  const address = getWoCoEventAddress(chainId);
-  if (!address) return false;
-
-  let ready: boolean;
-  switch (version) {
-    case "ledger": {
-      const { isSponsorAuthorisedLedger } = await import("./event-contract-ledger.js");
-      ready = await isSponsorAuthorisedLedger(getSponsorAddress(), address, chainId);
-      break;
-    }
-    case "v2":
-      ready = await isSponsorAuthorisedV2(getSponsorAddress(), address, chainId);
-      break;
-    default:
-      return unhandledVersion(version, "isSponsorReady");
-  }
-  if (ready) _sponsorReady = { chainId, expires: now + SPONSOR_READY_TTL_MS };
+  const ready = await readSponsorAuthorised(target, getSponsorAddress());
+  if (ready) _sponsorReady.set(k, now + SPONSOR_READY_TTL_MS);
   return ready;
+}
+
+/**
+ * `authorisedSponsors(sponsor)` on `target`, uncached. V1 has no such read.
+ *
+ * `EventContractConfigError` when the address does not speak the ABI — most
+ * likely NO CODE at it (a typo'd or not-yet-deployed address answers 0x). That
+ * has to be told apart from a blip here, not only at the cap read: this read
+ * runs first, and a no-code address read as transient passed the checkout gate
+ * "continuing", charged every buyer, and refunded each after a mint tx that
+ * landed on an EOA.
+ */
+async function readSponsorAuthorised(target: EventContractTarget, sponsor: string): Promise<boolean> {
+  const { version, address, chainId } = target;
+  try {
+    switch (version) {
+      case "v1":
+        return true; // deploy-time authorisation; nothing to read
+      case "ledger": {
+        const { isSponsorAuthorisedLedger } = await import("./event-contract-ledger.js");
+        return await isSponsorAuthorisedLedger(sponsor, address, chainId);
+      }
+      case "v2":
+        return await isSponsorAuthorisedV2(sponsor, address, chainId);
+      default:
+        return unhandledVersion(version, "readSponsorAuthorised");
+    }
+  } catch (err) {
+    if (isNotThisAbi(err)) {
+      throw new EventContractConfigError(
+        `the ${version} contract at ${address} on chain ${chainId} does not answer authorisedSponsors — ` +
+        `wrong address, or no code at it`,
+      );
+    }
+    throw err;
+  }
+}
+
+/**
+ * The ledger's answer for this server's sponsor. `EventContractConfigError`
+ * when the configured address does not speak the cap ABI at all (a wrong
+ * address, or a ledger from before the cap): that never heals, so a caller
+ * that fails open on RPC errors must not fail open on it.
+ */
+export async function readSponsorMintAllowance(target: EventContractTarget): Promise<SponsorMintAllowance> {
+  const { readSponsorMintAllowanceLedger } = await import("./event-contract-ledger.js");
+  try {
+    return await readSponsorMintAllowanceLedger(getSponsorAddress(), target.address, target.chainId);
+  } catch (err) {
+    if (isNotThisAbi(err)) {
+      throw new EventContractConfigError(
+        `the ledger at ${target.address} on chain ${target.chainId} does not answer sponsorMintAllowance — ` +
+        `wrong address, or a ledger deployed before the per-sponsor mint cap`,
+      );
+    }
+    throw err;
+  }
+}
+
+export type SponsorMintVerdict =
+  | { ok: true }
+  | { ok: false; reason: "not-authorised" }
+  | {
+      ok: false;
+      reason: "mint-cap";
+      perHour: number;
+      mintable: number;
+      /**
+       * Epoch seconds the refusal lifts, or null when waiting cannot help: the
+       * owner set the cap to 0 (a reset lifts nothing), or this one order is
+       * larger than a whole window's cap.
+       */
+      retryAt: number | null;
+    };
+
+/** Pure half of `checkSponsorCanMint` — exported so every rule is testable without a chain. */
+export function evaluateSponsorMint(
+  authorised: boolean,
+  allowance: SponsorMintAllowance | null,
+  quantity: number,
+): SponsorMintVerdict {
+  if (!authorised) return { ok: false, reason: "not-authorised" };
+  // An uncapped sponsor's `mintable` reads UNLIMITED_MINTS, so it passes here.
+  if (allowance === null || allowance.mintable >= quantity) return { ok: true };
+  // Cap 0 included: `quantity` is at least 1.
+  const hopeless = quantity > allowance.perHour;
+  return {
+    ok: false,
+    reason: "mint-cap",
+    perHour: allowance.perHour,
+    mintable: allowance.mintable,
+    retryAt: hopeless ? null : allowance.windowResetsAt,
+  };
+}
+
+/** Seams for `checkSponsorCanMint` — both touch the chain. */
+export interface SponsorMintReads {
+  isSponsorReady(target: EventContractTarget): Promise<boolean>;
+  readSponsorMintAllowance(target: EventContractTarget): Promise<SponsorMintAllowance>;
+}
+
+const liveSponsorMintReads: SponsorMintReads = { isSponsorReady, readSponsorMintAllowance };
+
+/**
+ * Can the sponsor mint `quantity` slots on `target` right now? The pre-charge
+ * gate (#662): a "no" here refuses the checkout BEFORE the buyer is charged,
+ * where the contract would otherwise refuse the mint after it and the webhook
+ * refund.
+ *
+ * Authorisation is cached (`isSponsorReady`); the ledger's cap is NOT. It moves
+ * with every mint any event makes, and the owner's stop lever — cap 0 — has to
+ * bite on the next checkout, not ten minutes later. V1 and V2 have no cap.
+ *
+ * Throws on RPC failure, and `EventContractConfigError` when the ledger does
+ * not answer the cap ABI; the caller treats the two differently.
+ */
+export async function checkSponsorCanMint(
+  target: EventContractTarget,
+  quantity: number,
+  reads: SponsorMintReads = liveSponsorMintReads,
+): Promise<SponsorMintVerdict> {
+  const authorised = await reads.isSponsorReady(target);
+  if (!authorised || target.version !== "ledger") return evaluateSponsorMint(authorised, null, quantity);
+  return evaluateSponsorMint(true, await reads.readSponsorMintAllowance(target), quantity);
+}
+
+/** `WOCO_SPONSOR_PRIVATE_KEY` is not set: no paid checkout can mint. */
+export class SponsorKeyUnconfigured extends Error {
+  constructor() {
+    super("WOCO_SPONSOR_PRIVATE_KEY is not set");
+    this.name = "SponsorKeyUnconfigured";
+  }
+}
+
+/** What the env-selected events contract says about this server's ticket sponsor. */
+export interface TicketMintPolicy {
+  contract: EventContractTarget;
+  /** Lowercased. */
+  sponsor: string;
+  sponsorAuthorised: boolean;
+  /** `"no-cap"` on a version without the cap (V1, V2). */
+  allowance: SponsorMintAllowance | "no-cap";
+}
+
+/**
+ * For `/api/health` `ticketMinting` (#662). Both halves read UNCACHED: the
+ * checkout gate caches a positive authorisation for ten minutes, and a watch
+ * that shared the cache would report a removed sponsor as authorised as long.
+ */
+export async function readTicketMintPolicy(): Promise<TicketMintPolicy> {
+  const chainId = getActiveChainId();
+  const contract = getDefaultEventContract(chainId);
+  if (!contract) throw new EventContractConfigError(`no events contract on chain ${chainId}`);
+  if (!process.env.WOCO_SPONSOR_PRIVATE_KEY) throw new SponsorKeyUnconfigured();
+  const sponsor = getSponsorAddress();
+  const sponsorAuthorised = await readSponsorAuthorised(contract, sponsor);
+  const allowance = contract.version === "ledger" ? await readSponsorMintAllowance(contract) : ("no-cap" as const);
+  return { contract, sponsor: sponsor.toLowerCase(), sponsorAuthorised, allowance };
 }
 
 /**
@@ -256,16 +419,44 @@ export async function isSponsorReady(chainId: number): Promise<boolean> {
 export async function logSponsorReadiness(): Promise<void> {
   const chainId = getActiveChainId();
   try {
-    const ready = await isSponsorReady(chainId);
-    if (ready) {
-      console.log(`[sponsor] readiness OK — authorised to mint on chain ${chainId}`);
-    } else {
+    const target = getDefaultEventContract(chainId);
+    if (!target) return; // assertEventContractConfig has already refused to boot
+    const ready = await isSponsorReady(target);
+    if (!ready) {
+      // The cap is a required argument, never defaulted: choosing it is the
+      // decision that bounds a leaked key (WoCoTicketLedger.addSponsor).
+      const how = target.version === "ledger"
+        ? `addSponsor(${getSponsorAddress()}, <perHour>) — the cap is required; UNLIMITED_MINTS only for a sponsor the chain can check`
+        : `addSponsor(${getSponsorAddress()})`;
       console.error(
-        `[sponsor] NOT AUTHORISED on chain ${chainId} contract ${getWoCoEventAddress(chainId)} — ` +
-        `paid checkouts will be refused. Owner must call addSponsor(${getSponsorAddress()}).`,
+        `[sponsor] NOT AUTHORISED on chain ${chainId} contract ${target.address} — ` +
+        `paid checkouts will be refused. Owner must call ${how}.`,
+      );
+      return;
+    }
+    if (target.version !== "ledger") {
+      console.log(`[sponsor] readiness OK — authorised to mint on chain ${chainId}`);
+      return;
+    }
+    const a = await readSponsorMintAllowance(target);
+    if (a.perHour === LEDGER_UNLIMITED_MINTS) {
+      console.log(`[sponsor] readiness OK — authorised to mint on chain ${chainId}, no hourly cap`);
+    } else if (a.perHour === 0) {
+      console.error(
+        `[sponsor] mint cap is 0 on chain ${chainId} contract ${target.address} — the owner has stopped this ` +
+        `sponsor; paid checkouts will be refused until setSponsorMintCap(${getSponsorAddress()}, <perHour>) raises it.`,
+      );
+    } else {
+      console.log(
+        `[sponsor] readiness OK — authorised to mint on chain ${chainId}, cap ${a.perHour}/h, ` +
+        `${a.mintable} mintable in the current window`,
       );
     }
   } catch (err) {
+    if (err instanceof EventContractConfigError) {
+      console.error(`[sponsor] readiness probe: ${err.message} — paid checkouts will be refused`);
+      return;
+    }
     console.warn(`[sponsor] readiness probe failed on chain ${chainId} (RPC?):`, err);
   }
 }
@@ -293,12 +484,9 @@ export async function claimForOnChain(
   onChainEventId: string,
   burnerAddress: string,
   orderRefBytes32: string,
+  target: EventContractTarget = defaultTargetOrThrow(),
 ): Promise<number> {
-  const chainId = getActiveChainId();
-  const address = getWoCoEventAddress(chainId);
-  if (!address) throw new Error(`No WoCoEvent contract on chain ${chainId}`);
-
-  const version = getEventContractVersion(chainId);
+  const { chainId, address, version } = target;
   if (version === "ledger") {
     const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
     if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
@@ -316,7 +504,7 @@ export async function claimForOnChain(
   // fallthrough this module was rewritten to remove.
   if (version !== "v1") return unhandledVersion(version, "claimForOnChain");
 
-  const wallet = getSponsorWallet();
+  const wallet = getSponsorWallet(chainId);
   const contract = new Contract(address, CLAIM_ABI, wallet);
 
   console.log(
@@ -361,23 +549,24 @@ export async function claimForOnChain(
  * @param onChainEventId  0x-prefixed bytes32 event ID from registerEvent
  * @param burners         Per-ticket burner addresses (length 1..100)
  * @param orderRefBytes32 Shared "0x"+64-char Swarm hex ref of the encrypted order blob
+ * @param target          The contract the registration lives on — from the
+ *                        server's registration record, never from the event
+ *                        feed (#563, #426). Required, so no caller mints into
+ *                        today's env contract by omission.
  * @returns Array of 0-based slot indices in the same order as `burners`.
  */
 export async function batchClaimForOnChain(
   onChainEventId: string,
   burners: string[],
   orderRefBytes32: string,
+  target: EventContractTarget,
 ): Promise<number[]> {
   if (burners.length === 0) throw new Error("batchClaimForOnChain: empty burners");
   if (burners.length > ON_CHAIN_BATCH_MAX) {
     throw new Error(`batchClaimForOnChain: ${burners.length} exceeds cap ${ON_CHAIN_BATCH_MAX}`);
   }
 
-  const chainId = getActiveChainId();
-  const address = getWoCoEventAddress(chainId);
-  if (!address) throw new Error(`No WoCoEvent contract on chain ${chainId}`);
-
-  const version = getEventContractVersion(chainId);
+  const { chainId, address, version } = target;
   if (version === "ledger") {
     const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
     if (!pk) throw new Error("WOCO_SPONSOR_PRIVATE_KEY is not set");
@@ -392,7 +581,7 @@ export async function batchClaimForOnChain(
   // See claimForOnChain — V1 is narrowed, never a fallthrough tail.
   if (version !== "v1") return unhandledVersion(version, "batchClaimForOnChain");
 
-  const wallet = getSponsorWallet();
+  const wallet = getSponsorWallet(chainId);
   const contract = new Contract(address, CLAIM_ABI, wallet);
 
   console.log(
@@ -443,7 +632,8 @@ export async function batchClaimForOnChain(
  * @param manifestRef    "0x" + 64-char manifest digest hex
  * @param v2Params       Required when the active chain runs the V2 contract
  *                       (6-arg registerEvent); ignored on V1 chains.
- * @returns on-chain eventId emitted in the Registered event
+ * @returns on-chain eventId emitted in the Registered event, and the contract
+ *          it was registered on — which the caller records (#563)
  */
 export async function registerEventOnChain(
   supply: number,
@@ -451,12 +641,21 @@ export async function registerEventOnChain(
   v2Params?: RegisterV2Params,
   onTxSent?: SponsorTxSent,
   onTxReserved?: SponsorTxReserved,
-): Promise<{ onChainEventId: string; txHash: string }> {
-  const chainId = getActiveChainId();
-  const address = getWoCoEventAddress(chainId);
-  if (!address) throw new Error(`No WoCoEvent contract on chain ${chainId}`);
+): Promise<{ onChainEventId: string; txHash: string; contract: EventContractTarget }> {
+  const contract = defaultTargetOrThrow();
+  const registered = await registerOn(contract, supply, manifestRef, v2Params, onTxSent, onTxReserved);
+  return { ...registered, contract };
+}
 
-  const version = getEventContractVersion(chainId);
+async function registerOn(
+  target: EventContractTarget,
+  supply: number,
+  manifestRef: string,
+  v2Params?: RegisterV2Params,
+  onTxSent?: SponsorTxSent,
+  onTxReserved?: SponsorTxReserved,
+): Promise<{ onChainEventId: string; txHash: string }> {
+  const { chainId, address, version } = target;
 
   if (version === "ledger") {
     const pk = process.env.WOCO_SPONSOR_PRIVATE_KEY;
@@ -505,7 +704,7 @@ export async function registerEventOnChain(
   // See claimForOnChain — V1 is narrowed, never a fallthrough tail.
   if (version !== "v1") return unhandledVersion(version, "registerEventOnChain");
 
-  const wallet = getSponsorWallet();
+  const wallet = getSponsorWallet(chainId);
   const contract = new Contract(address, REGISTER_ABI, wallet);
 
   console.log(

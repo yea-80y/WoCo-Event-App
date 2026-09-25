@@ -34,17 +34,90 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AbiCoder, keccak256 } from "ethers";
-import type { EventFeed } from "@woco/shared";
+import type { EventFeed, Hex0x } from "@woco/shared";
 import { writeJsonAtomic } from "../marketing/persist.js";
-import { getActiveChainId, getDeployedContract, getOnChainEvent, unhandledVersion } from "../chain/event-contract.js";
-import type { EventContractVersion } from "../chain/event-contract.js";
+import {
+  getActiveChainId,
+  getDeployedContract,
+  getDefaultEventContract,
+  getOnChainEvent,
+  legacyEventContract,
+  contractKey,
+  unhandledVersion,
+} from "../chain/event-contract.js";
+import type { EventContractTarget, EventContractVersion } from "../chain/event-contract.js";
 import { getSponsorAddress } from "../chain/sponsor-wallet.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const CACHE_FILE = join(DATA_DIR, "onchain-events.json");
 
-/** `${eventId}|${seriesId}` → onChainEventId — the persisted hot-path cache. */
-const byEventSeries = new Map<string, string>();
+/**
+ * One registration as this server recorded it.
+ *
+ * `contract` is WHERE it lives (#563) — the anchor for every mint and every
+ * pre-charge read, so that a successor contract can run beside the old one and
+ * the old one's tickets stay mintable until sold out and verifiable forever.
+ * Server state, never the organiser-signed feed (#424/#426): the mint target
+ * must be a value the organiser cannot write.
+ *
+ * Absent on records written before #563. Those resolve through
+ * `legacyEventContract` and are never rewritten to carry a guess.
+ */
+interface Registration {
+  onChainEventId: string;
+  contract?: EventContractTarget;
+}
+
+/**
+ * The value on disk. A pre-#563 record is the bare id string and STAYS one — a
+ * rewrite of the file reproduces it byte for byte, so the only change the file
+ * ever sees is records added in the new shape.
+ */
+type PersistedRegistration =
+  | string
+  | { onChainEventId: string; chainId: number; contract: string; version: EventContractVersion };
+
+const VERSIONS: ReadonlySet<string> = new Set<EventContractVersion>(["v1", "v2", "ledger"]);
+
+function parseRegistration(v: unknown): Registration | null {
+  if (typeof v === "string") return v ? { onChainEventId: v } : null;
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  if (
+    typeof o.onChainEventId !== "string" || !o.onChainEventId ||
+    typeof o.chainId !== "number" || !Number.isInteger(o.chainId) ||
+    typeof o.contract !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(o.contract) ||
+    typeof o.version !== "string" || !VERSIONS.has(o.version)
+  ) {
+    return null;
+  }
+  return {
+    onChainEventId: o.onChainEventId,
+    contract: { chainId: o.chainId, address: o.contract.toLowerCase(), version: o.version as EventContractVersion },
+  };
+}
+
+function serialiseRegistration(r: Registration): PersistedRegistration {
+  if (!r.contract) return r.onChainEventId;
+  return {
+    onChainEventId: r.onChainEventId,
+    chainId: r.contract.chainId,
+    contract: r.contract.address,
+    version: r.contract.version,
+  };
+}
+
+/** `${eventId}|${seriesId}` → the registration — the persisted hot-path record. */
+const byEventSeries = new Map<string, Registration>();
+/**
+ * Values on disk that are neither shape above, verbatim. NEVER dropped: the
+ * file is must-survive, and `persist` writes the whole map, so an entry this
+ * build cannot read would otherwise vanish on the next registration. Not
+ * served either — a series whose record is unreadable has no record, which
+ * create-checkout refuses and delete-safety blocks on. Counted on
+ * `/api/health` `onchainRegistry`.
+ */
+const unreadable = new Map<string, unknown>();
 /**
  * lowercased onChainEventId → `${eventId}|${seriesId}` — the INVERSE of
  * `byEventSeries`, and nothing more.
@@ -74,30 +147,101 @@ function key(eventId: string, seriesId: string): string {
   return `${eventId}|${seriesId}`;
 }
 
+/**
+ * Why `onchain-events.json` EXISTS but could not be loaded at all (unreadable,
+ * not JSON, not an object), or null. Distinct from ENOENT, which is a first
+ * boot: this is a must-survive file that is present and not understood.
+ *
+ * The old loader read both as "no cache yet" and started empty, so the next
+ * registration persisted that empty map over the file — every record gone,
+ * silently. Now the store refuses: it serves nothing (every sale is refused, as
+ * it already was with an empty map), NEVER writes the file, refuses to journal
+ * a new registration before its broadcast, and `/api/health` alarms. The file
+ * stays exactly as found for an operator to repair or restore.
+ */
+let fileUnreadable: string | null = null;
+
+/** Thrown by a write while `fileUnreadable` — never succeeds until an operator acts. */
+export class RegistryUnreadableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RegistryUnreadableError";
+  }
+}
+
+function refuseFile(why: string): void {
+  fileUnreadable = why;
+  console.error(
+    `[onchain-cache] ALARM: onchain-events.json ${why} — nothing is served from it, and it will NOT be ` +
+    `written until it is repaired or restored and the server restarted. No series can sell and no ` +
+    `registration can complete until then (/api/health onchainRegistry)`,
+  );
+}
+
 function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
+  let raw: string;
   try {
-    const obj = JSON.parse(readFileSync(CACHE_FILE, "utf-8")) as Record<string, string>;
-    for (const [k, v] of Object.entries(obj)) {
-      byEventSeries.set(k, v);
-      // FIRST-WINS, matching the scan this index replaces: that scan returned the
-      // first key in insertion order, and a file written before #433 can hold two
-      // keys for one id. A silent change of WHICH key an old duplicate reports
-      // would change which series the strip below spares.
-      const lc = v.toLowerCase();
-      if (!keyByOnChainEventId.has(lc)) keyByOnChainEventId.set(lc, k);
-    }
-    console.log(`[onchain-cache] Loaded ${byEventSeries.size} on-chain event ids from cache`);
+    raw = readFileSync(CACHE_FILE, "utf-8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    // No file yet: a first boot. It fills as registrations land.
+    if (code === "ENOENT") return;
+    return refuseFile(`exists but could not be read (${code ?? "unknown error"})`);
+  }
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw);
   } catch {
-    // No cache yet — it rebuilds from chain on demand.
+    return refuseFile("is not valid JSON");
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    return refuseFile("is not a JSON object");
+  }
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    const r = parseRegistration(v);
+    if (!r) {
+      unreadable.set(k, v);
+      // Still a binding for the strips: an id this server bound to a series
+      // must not become free for another series to claim.
+      const id = (v as { onChainEventId?: unknown } | null)?.onChainEventId;
+      if (typeof id === "string" && !keyByOnChainEventId.has(id.toLowerCase())) {
+        keyByOnChainEventId.set(id.toLowerCase(), k);
+      }
+      continue;
+    }
+    byEventSeries.set(k, r);
+    // FIRST-WINS, matching the scan this index replaces: that scan returned the
+    // first key in insertion order, and a file written before #433 can hold two
+    // keys for one id. A silent change of WHICH key an old duplicate reports
+    // would change which series the strip below spares.
+    const lc = r.onChainEventId.toLowerCase();
+    if (!keyByOnChainEventId.has(lc)) keyByOnChainEventId.set(lc, k);
+  }
+  const legacy = [...byEventSeries.values()].filter((r) => !r.contract).length;
+  console.log(
+    `[onchain-cache] Loaded ${byEventSeries.size} on-chain event ids from cache` +
+    (legacy ? ` (${legacy} recorded before the contract was — resolved by the legacy rule)` : ""),
+  );
+  if (unreadable.size > 0) {
+    console.error(
+      `[onchain-cache] ${unreadable.size} record(s) in onchain-events.json are unreadable — kept on disk ` +
+      `untouched, NOT served: those series cannot sell until an operator repairs them`,
+    );
   }
 }
 
 function persist(): void {
   if (!dirty) return;
+  // Unreachable through `recordOnChainEventId`, which refuses first; kept so no
+  // future writer can put a map over a file this process never understood.
+  if (fileUnreadable) return;
+  const out: Record<string, unknown> = {};
+  for (const [k, r] of byEventSeries) out[k] = serialiseRegistration(r);
+  for (const [k, v] of unreadable) out[k] = v;
   // Stays dirty on failure so the next record retries the whole map.
-  if (writeJsonAtomic(CACHE_FILE, Object.fromEntries(byEventSeries), "onchain-cache")) {
+  if (writeJsonAtomic(CACHE_FILE, out, "onchain-cache")) {
     dirty = false;
   }
 }
@@ -135,30 +279,67 @@ export class RegistrationRebindError extends Error {
  * `findKeyBoundTo` (see `applyOnChainEventIds`); this lifts it out of that one
  * call site.
  *
- * CHAIN CUTOVER: the key carries no chainId, so records from a previous chain
- * are stale rather than wrong. In practice this refusal does NOT fire on a flip —
- * `register-once` short-circuits on the stale record (and the route short-circuits
- * earlier still on the feed's own id) and hands back the dead id as "already
- * registered", so nothing reaches here to be refused. Wipe `onchain-events.json`
- * as part of any chain flip; that is required for the same underlying reason and
- * is on the cutover checklist (#423).
+ * CONTRACT CUTOVER: since #563 a record names its contract, so a flip of
+ * `WOCO_EVENT_VERSION_*` no longer strands it — its mints and reads keep going
+ * to the contract it was made on, and only NEW registrations go to the new one.
+ * A flip of `WOCO_EVENT_CHAIN_ID` is different on purpose: a record on another
+ * chain still VERIFIES there, but is never charged or minted (`saleContractFor`).
+ * Do NOT wipe `onchain-events.json` at either: that is what would strand the
+ * old tickets' verification. Records from before #563 carry no
+ * contract and resolve through `legacyEventContract`, which covers a flip to
+ * the ledger on the same chain. One written on a different chain than today's
+ * is read on today's chain, where its id does not exist — stale, as every
+ * record was on a chain flip before #563.
+ *
+ * THE CONTRACT IS PART OF THE BINDING (#563). `contract` is where the
+ * registration was made; production callers always pass it. A replay of the
+ * same id is idempotent whatever it carries, EXCEPT that a replay naming a
+ * different contract than the record holds is a rebind and refuses. A replay
+ * never adds a contract to a record written without one: the caller's contract
+ * is today's, which for an old registration is a guess.
  *
  * @throws {RegistrationRebindError} when the key or the id is already bound
  *   elsewhere. Callers must NOT swallow it: it means two events disagree about
  *   who owns one on-chain registration, and continuing picks a winner silently.
  */
-export function recordOnChainEventId(eventId: string, seriesId: string, onChainEventId: string): void {
+export function recordOnChainEventId(
+  eventId: string,
+  seriesId: string,
+  onChainEventId: string,
+  contract?: EventContractTarget,
+): void {
   ensureLoaded();
   const k = key(eventId, seriesId);
 
+  if (fileUnreadable) {
+    throw new RegistryUnreadableError(
+      `refusing to record ${eventId.slice(0, 8)}/${seriesId.slice(0, 8)}: onchain-events.json ${fileUnreadable}`,
+    );
+  }
+
+  if (unreadable.has(k)) {
+    throw new RegistrationRebindError(
+      `refusing to record ${eventId.slice(0, 8)}/${seriesId.slice(0, 8)}: its existing record is unreadable ` +
+      `and is kept as it is on disk`,
+    );
+  }
+
   const existing = byEventSeries.get(k);
   if (existing) {
-    // Idempotent replay — the landed-tx heal path in `register-once` relies on
-    // this returning quietly.
-    if (existing.toLowerCase() === onChainEventId.toLowerCase()) return;
+    if (existing.onChainEventId.toLowerCase() === onChainEventId.toLowerCase()) {
+      if (existing.contract && contract && contractKey(existing.contract) !== contractKey(contract)) {
+        throw new RegistrationRebindError(
+          `refusing to rebind ${eventId.slice(0, 8)}/${seriesId.slice(0, 8)}: registered on ` +
+          `${contractKey(existing.contract)}, asked to record it on ${contractKey(contract)}`,
+        );
+      }
+      // Idempotent replay — the landed-tx heal path in `register-once` relies on
+      // this returning quietly.
+      return;
+    }
     throw new RegistrationRebindError(
       `refusing to rebind ${eventId.slice(0, 8)}/${seriesId.slice(0, 8)}: already registered as ` +
-      `${existing.slice(0, 10)}…, asked to record ${onChainEventId.slice(0, 10)}…`,
+      `${existing.onChainEventId.slice(0, 10)}…, asked to record ${onChainEventId.slice(0, 10)}…`,
     );
   }
 
@@ -170,7 +351,10 @@ export function recordOnChainEventId(eventId: string, seriesId: string, onChainE
     );
   }
 
-  byEventSeries.set(k, onChainEventId);
+  byEventSeries.set(k, {
+    onChainEventId,
+    ...(contract ? { contract: { ...contract, address: contract.address.toLowerCase() } } : {}),
+  });
   // The two maps move together or the reverse index lies — and a lying index
   // answers `findKeyBoundTo` with null, which is the exact answer that lets a
   // binding be stolen. Same statement, no await between them.
@@ -213,23 +397,93 @@ export function findKeyBoundTo(onChainEventId: string): string | null {
 
 export function lookupOnChainEventId(eventId: string, seriesId: string): string | null {
   ensureLoaded();
+  return byEventSeries.get(key(eventId, seriesId))?.onChainEventId ?? null;
+}
+
+/**
+ * The contract a series' registration lives on — THE mint target and the
+ * contract every pre-charge read goes to (#563). Server state only: the record
+ * when it names one, else `legacyEventContract` (a record from before the
+ * contract was recorded, or no record at all — which the checkout refuses on
+ * its own). Undefined when neither can answer; callers refuse, never guess.
+ *
+ * Zero I/O.
+ */
+export function registrationContractFor(eventId: string, seriesId: string): EventContractTarget | undefined {
+  ensureLoaded();
+  // With the file unreadable, "no record" means "not read", not "recorded
+  // without a contract" — the legacy rule has no subject, and its answer would
+  // be a guess. Undefined instead (owner decision, Fable re-check O2): a session
+  // paid before the incident refunds rather than mints by the rule, and /t says
+  // "unverified" rather than reading a ticket on the wrong contract as "invalid".
+  if (fileUnreadable) return undefined;
+  return byEventSeries.get(key(eventId, seriesId))?.contract ?? legacyEventContract();
+}
+
+export type SaleContract =
+  | { ok: true; contract: EventContractTarget }
+  | { ok: false; reason: "no-contract" }
+  | { ok: false; reason: "other-chain"; contract: EventContractTarget; activeChainId: number };
+
+/**
+ * The contract a CHARGE may mint on: the registration's own
+ * (`registrationContractFor`), and only while it is on the ACTIVE chain.
+ *
+ * A record names its chain, so after `WOCO_EVENT_CHAIN_ID` moves a record from
+ * the old chain still resolves — and the old chain's RPC is still configured.
+ * Without this, a live Stripe charge would validate against, and mint on, the
+ * previous (test) chain. Reads that only VERIFY (the door, /t, delete-safety)
+ * keep following the record: an old ticket stays verifiable, it just can no
+ * longer be sold.
+ */
+export function saleContractFor(eventId: string, seriesId: string): SaleContract {
+  const contract = registrationContractFor(eventId, seriesId);
+  if (!contract) return { ok: false, reason: "no-contract" };
+  const activeChainId = getActiveChainId();
+  if (contract.chainId !== activeChainId) return { ok: false, reason: "other-chain", contract, activeChainId };
+  return { ok: true, contract };
+}
+
+/**
+ * The record as written — `contract` absent on a pre-#563 record. For callers
+ * that must tell a recorded contract from the legacy rule's answer (the
+ * snapshot publishes only the former); everything that reads or mints wants
+ * `registrationContractFor`.
+ */
+export function lookupRegistration(eventId: string, seriesId: string): Readonly<Registration> | null {
+  ensureLoaded();
   return byEventSeries.get(key(eventId, seriesId)) ?? null;
+}
+
+/** A resolution entry as `getAllResolutionEntries` hands it to the snapshot builder. */
+export interface RegistryResolutionEntry {
+  onChainEventId: string;
+  wocoEventId: string;
+  seriesId: string;
+  /** Present when the record names its contract (#563). */
+  chainId?: number;
+  contract?: Hex0x;
 }
 
 /**
  * Every known registration as a chain→content resolution entry (inverts the
- * persisted `${eventId}|${seriesId}` → onChainEventId map). The directory-snapshot
+ * persisted `${eventId}|${seriesId}` → registration map). The directory-snapshot
  * full-rebuild uses this: the platform sponsor registers ALL events, so this map is
  * a complete enumerator of onChainEventId → {wocoEventId, seriesId}. `creatorFeedSigner`
  * is filled by the builder from the resolved feed (this cache doesn't carry it).
  */
-export function getAllResolutionEntries(): Array<{ onChainEventId: string; wocoEventId: string; seriesId: string }> {
+export function getAllResolutionEntries(): RegistryResolutionEntry[] {
   ensureLoaded();
-  const out: Array<{ onChainEventId: string; wocoEventId: string; seriesId: string }> = [];
-  for (const [k, onChainEventId] of byEventSeries) {
+  const out: RegistryResolutionEntry[] = [];
+  for (const [k, r] of byEventSeries) {
     const sep = k.indexOf("|");
     if (sep === -1) continue;
-    out.push({ onChainEventId, wocoEventId: k.slice(0, sep), seriesId: k.slice(sep + 1) });
+    out.push({
+      onChainEventId: r.onChainEventId,
+      wocoEventId: k.slice(0, sep),
+      seriesId: k.slice(sep + 1),
+      ...(r.contract ? { chainId: r.contract.chainId, contract: r.contract.address as Hex0x } : {}),
+    });
   }
   return out;
 }
@@ -343,6 +597,12 @@ export function recordRegistrationIntent(
   intent: { nonce: number; chainId: number },
   manifestRef?: string,
 ): void {
+  // A broadcast whose confirm can never be recorded is a registration nobody
+  // will find — refuse it here, before the node sees it (#318's abort seam).
+  ensureLoaded();
+  if (fileUnreadable) {
+    throw new RegistryUnreadableError(`registration record ${fileUnreadable} — refusing to broadcast registerEvent`);
+  }
   ensurePendingLoaded();
   const k = key(eventId, seriesId);
   pending.set(k, { ...intent, ...refField(manifestRef), at: new Date().toISOString() });
@@ -438,8 +698,23 @@ export function noteRebindConflict(eventId: string, seriesId: string): void {
  * `/api/health` section. Counts and a boolean ONLY — the endpoint is public, so
  * no event ids, no series ids, no error text.
  */
-export function onchainRegistryHealth(): { ok: boolean; rebindConflicts: number } {
-  return { ok: rebindConflicts.size === 0, rebindConflicts: rebindConflicts.size };
+export function onchainRegistryHealth(): {
+  ok: boolean;
+  rebindConflicts: number;
+  unreadableRecords: number;
+  fileUnreadable: boolean;
+} {
+  ensureLoaded();
+  return {
+    ok: rebindConflicts.size === 0 && unreadable.size === 0 && !fileUnreadable,
+    rebindConflicts: rebindConflicts.size,
+    // Records this build could not parse. Kept on disk, never served: each is a
+    // series that cannot sell until an operator repairs its record.
+    unreadableRecords: unreadable.size,
+    // The whole file exists and could not be loaded: nothing sells, nothing
+    // registers, and the file is left untouched for repair (`fileUnreadable`).
+    fileUnreadable: fileUnreadable !== null,
+  };
 }
 
 /**
@@ -680,7 +955,7 @@ export async function applyOnChainEventIds(feed: EventFeed): Promise<EventFeed> 
   for (const s of feed.series) {
     if (!s.onChainEventId) continue;
     const k = key(feed.eventId, s.seriesId);
-    const recorded = byEventSeries.get(k);
+    const recorded = byEventSeries.get(k)?.onChainEventId;
     if (recorded && recorded.toLowerCase() !== s.onChainEventId.toLowerCase()) {
       console.error(
         `[onchain-registry] REJECTED feed-supplied onChainEventId for ` +
@@ -716,7 +991,7 @@ export async function applyOnChainEventIds(feed: EventFeed): Promise<EventFeed> 
 
   // Tier 1/2: per-(event,series) cache (in-memory, backed by .data).
   for (const s of missing) {
-    const cached = byEventSeries.get(key(feed.eventId, s.seriesId));
+    const cached = byEventSeries.get(key(feed.eventId, s.seriesId))?.onChainEventId;
     if (cached) s.onChainEventId = cached as typeof s.onChainEventId;
   }
   const stillMissing = missing.filter((s) => !s.onChainEventId);
@@ -784,7 +1059,9 @@ export async function applyOnChainEventIds(feed: EventFeed): Promise<EventFeed> 
     // must therefore never be fatal to a feed READ, which has to return the rest
     // of the feed regardless.
     try {
-      recordOnChainEventId(feed.eventId, s.seriesId, id);
+      // The walk that found `id` ran on the env-selected contract, so that is
+      // where it lives.
+      recordOnChainEventId(feed.eventId, s.seriesId, id, getDefaultEventContract());
       s.onChainEventId = id as typeof s.onChainEventId;
     } catch (err) {
       console.error(

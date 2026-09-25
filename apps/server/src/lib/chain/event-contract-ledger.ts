@@ -1,4 +1,4 @@
-import { JsonRpcProvider, Contract, Interface, Wallet, id } from "ethers";
+import { JsonRpcProvider, Contract, Interface, Wallet, id, isError } from "ethers";
 import { getChainRpcUrl } from "./event-contract.js";
 import { sendSponsorTx } from "./sponsor-nonce.js";
 import type { OnChainEvent, SlotData } from "./event-contract.js";
@@ -33,18 +33,50 @@ const LEDGER_READ_ABI = [
   "function registrantNonce(address) view returns (uint256)",
   "function getEvent(bytes32) view returns (uint64 totalSupply, uint64 nextSlot, address organiser, bytes32 manifestRef)",
   "function getEventStatus(bytes32) view returns (uint64 eventEndTs, bool cancelled)",
-  "function getSlotData(bytes32 eventId, uint256 slot) view returns (address owner, address claimer, bytes32 orderRef)",
+  "function getSlotData(bytes32 eventId, uint256 slot) view returns (address holder, address claimer, bytes32 orderRef)",
   "function authorisedSponsors(address) view returns (bool)",
   "function remaining(bytes32) view returns (uint256)",
+  // The per-sponsor hourly cap (WoCo-Contracts #30, audit 959 M-1).
+  "function sponsorMintAllowance(address) view returns (uint32 perHour, uint32 mintable, uint64 windowResetsAt)",
   // Declared so ethers decodes the revert — getOnChainEventLedger keys on its name.
   "error EventNotFound()",
 ];
 
-/** Identical to V2's claim surface. Same selectors, same SlotClaimed topics. */
+/**
+ * The claim surface: selectors and SlotClaimed topics identical to V2's.
+ *
+ * Every error the two mint functions can revert with is declared. Declaring is
+ * not decoding: on the SEND path ethers reports a custom-error revert as
+ * "unknown custom error" with the raw data attached, whatever the ABI says, so
+ * `explainMintFailure` parses that data itself. `MintCapExceeded` is the one
+ * the server acts on (`mintCapRefusal`); the rest make a refund's reason
+ * readable.
+ */
 const LEDGER_CLAIM_ABI = [
   "function claimFor(bytes32 eventId, address owner, bytes32 orderRef) returns (uint256 slot)",
   "function batchClaimFor(bytes32 eventId, address[] owners, bytes32 orderRef) returns (uint256 firstSlot)",
   "event SlotClaimed(bytes32 indexed eventId, uint256 indexed slot, address indexed owner, address claimer, bytes32 orderRef)",
+  "error NotAuthorised()",
+  "error EventNotFound()",
+  "error AlreadyCancelled()",
+  "error SalesClosed()",
+  "error InsufficientSupply()",
+  "error BatchEmpty()",
+  "error BatchTooLarge()",
+  "error ZeroAddress()",
+  "error TransferToLedger()",
+  "error MintCapExceeded(address sponsor, uint64 windowResetsAt)",
+];
+
+/**
+ * Not read by the server, declared so that whichever consumer reads them first
+ * decodes the CURRENT layouts. `SlotTransferred` in particular kept its topic0
+ * when `slot` moved from an indexed topic to data (audit 959 I-4), so a decoder
+ * built against the old layout would read `from` as a slot number, silently.
+ */
+const LEDGER_LIFECYCLE_ABI = [
+  "event SlotTransferred(bytes32 indexed eventId, uint256 slot, address indexed from, address indexed to)",
+  "event EventCancelled(bytes32 indexed eventId, address indexed by, bool forced)",
 ];
 
 const LEDGER_REGISTER_ABI = [
@@ -56,10 +88,14 @@ export const LEDGER_ABI = [
   ...LEDGER_READ_ABI,
   ...LEDGER_CLAIM_ABI,
   ...LEDGER_REGISTER_ABI,
+  ...LEDGER_LIFECYCLE_ABI,
 ] as const;
 
 /** Computed, never hardcoded — same error name as V2, so the same selector. */
 const EVENT_NOT_FOUND_SELECTOR = id("EventNotFound()").slice(0, 10);
+
+/** `WoCoTicketLedger.UNLIMITED_MINTS` (type(uint32).max): `perHour` meaning "no cap". */
+export const LEDGER_UNLIMITED_MINTS = 0xffff_ffff;
 
 const _providers = new Map<number, JsonRpcProvider>();
 
@@ -90,6 +126,194 @@ export async function isSponsorAuthorisedLedger(
   chainId: number,
 ): Promise<boolean> {
   return readContract(contractAddress, chainId).authorisedSponsors(sponsorAddress) as Promise<boolean>;
+}
+
+/**
+ * A sponsor's hourly mint cap as the ledger answers `sponsorMintAllowance`.
+ * Says nothing about authorisation: that is `authorisedSponsors`.
+ */
+export interface SponsorMintAllowance {
+  /** `LEDGER_UNLIMITED_MINTS` = no cap; 0 = the owner has stopped this sponsor. */
+  perHour: number;
+  /** What it may still mint in the current window. `LEDGER_UNLIMITED_MINTS` when uncapped. */
+  mintable: number;
+  /** Epoch seconds the window ends; 0 when uncapped. */
+  windowResetsAt: number;
+}
+
+/**
+ * Throws on transport failure, and on an answer that proves the address does
+ * not speak this ABI (see `isNotThisAbi`) — the caller tells the two apart.
+ */
+export async function readSponsorMintAllowanceLedger(
+  sponsorAddress: string,
+  contractAddress: string,
+  chainId: number,
+): Promise<SponsorMintAllowance> {
+  const r = await readContract(contractAddress, chainId).sponsorMintAllowance(sponsorAddress);
+  return {
+    perHour: Number(r.perHour),
+    mintable: Number(r.mintable),
+    windowResetsAt: Number(r.windowResetsAt),
+  };
+}
+
+/**
+ * The call reached a contract that does not implement the function, or an
+ * address with no code: the node's own "execution reverted" with no data, or an
+ * empty return ethers cannot decode. Neither heals on retry, so for the
+ * configured ledger it is a misconfiguration (wrong address, or a ledger from
+ * before the cap), never a blip.
+ *
+ * A data-less CALL_EXCEPTION is NOT enough on its own: ethers turns every
+ * JSON-RPC error on `eth_call` into one — a rate limit or an internal error
+ * included — so without the node's message a flaky RPC would read as a
+ * misconfiguration and fail every checkout closed.
+ */
+export function isNotThisAbi(err: unknown): boolean {
+  if (isError(err, "BAD_DATA")) return true;
+  if (!isError(err, "CALL_EXCEPTION")) return false;
+  // "0x" is what the node sent as revert data: an answer, and an empty one.
+  if (err.data === "0x") return true;
+  if (err.data !== null && err.data !== undefined) return false;
+  const rpcMessage = (err.info as { error?: { message?: unknown } } | undefined)?.error?.message;
+  return typeof rpcMessage === "string" && /revert/i.test(rpcMessage);
+}
+
+const CLAIM_IFACE = new Interface(LEDGER_CLAIM_ABI);
+
+/**
+ * `MintCapExceeded(sponsor, windowResetsAt)` from a failed mint, or null.
+ *
+ * Read from `revert` when ethers decoded it (a contract-level estimateGas or
+ * staticCall), else from the raw `data` — which is the ONLY form a sponsor
+ * send's revert takes (see LEDGER_CLAIM_ABI).
+ */
+export function decodeMintCapExceeded(err: unknown): { sponsor: string; windowResetsAt: number } | null {
+  const e = err as { revert?: { name?: string; args?: ArrayLike<unknown> } | null; data?: unknown } | null;
+  if (e?.revert?.name === "MintCapExceeded" && e.revert.args) {
+    return {
+      sponsor: String(e.revert.args[0]).toLowerCase(),
+      windowResetsAt: Number(e.revert.args[1] as bigint),
+    };
+  }
+  if (typeof e?.data === "string" && e.data.length >= 10) {
+    try {
+      const parsed = CLAIM_IFACE.parseError(e.data);
+      if (parsed?.name === "MintCapExceeded") {
+        return {
+          sponsor: String(parsed.args[0]).toLowerCase(),
+          windowResetsAt: Number(parsed.args[1] as bigint),
+        };
+      }
+    } catch {
+      // not one of ours
+    }
+  }
+  return null;
+}
+
+/**
+ * Why the cap refused, in words an operator and a refund reason can carry.
+ *
+ * `perHour` is read AFTER the revert and is the whole point of this function:
+ * when it is 0 the owner has stopped the sponsor and the window reset lifts
+ * nothing, so naming a retry time would be a false promise. When it could not
+ * be read (`null`) the time is withheld for the same reason, and so it is for a
+ * mint of more slots than a whole window allows — `quantity` never fits, and
+ * the contract's `windowResetsAt` may even name a window its own call opened.
+ * The same three cases the pre-charge gate withholds (`evaluateSponsorMint`).
+ */
+export function mintCapRefusal(r: { perHour: number | null; windowResetsAt: number; quantity: number }): {
+  stopped: boolean | null;
+  retryAt: number | null;
+  message: string;
+} {
+  if (r.perHour === 0) {
+    return {
+      stopped: true,
+      retryAt: null,
+      message:
+        "sponsor mint cap is 0 on the events contract — the owner has stopped this sponsor, " +
+        "and no mint succeeds until the cap is raised (setSponsorMintCap)",
+    };
+  }
+  if (r.perHour === null) {
+    return {
+      stopped: null,
+      retryAt: null,
+      message:
+        "sponsor hourly mint cap reached on the events contract — its cap could not be read, " +
+        "so whether it has been stopped is unknown",
+    };
+  }
+  if (r.quantity > r.perHour) {
+    return {
+      stopped: false,
+      retryAt: null,
+      message:
+        `a mint of ${r.quantity} is larger than the sponsor's whole hourly cap (${r.perHour}/h) on the ` +
+        `events contract — it cannot fit any window`,
+    };
+  }
+  return {
+    stopped: false,
+    retryAt: r.windowResetsAt,
+    message:
+      `sponsor hourly mint cap (${r.perHour}/h) reached on the events contract — ` +
+      `the window resets at ${new Date(r.windowResetsAt * 1000).toISOString()}`,
+  };
+}
+
+/** The name of a claim-path custom error in `err`'s revert data, or null. */
+export function decodeClaimRevert(err: unknown): string | null {
+  const data = (err as { data?: unknown } | null)?.data;
+  if (typeof data !== "string" || data.length < 10) return null;
+  try {
+    return CLAIM_IFACE.parseError(data)?.name ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** A mint the ledger refused on the sponsor's hourly cap, already explained. */
+export class MintCapExceededError extends Error {
+  readonly stopped: boolean | null;
+  readonly retryAt: number | null;
+  constructor(refusal: ReturnType<typeof mintCapRefusal>) {
+    super(refusal.message);
+    this.name = "MintCapExceededError";
+    this.stopped = refusal.stopped;
+    this.retryAt = refusal.retryAt;
+  }
+}
+
+/**
+ * Re-throw a mint failure, explained when it is the cap. The cap read is
+ * best-effort: a failure there must not replace the mint's own error.
+ */
+async function explainMintFailure(
+  err: unknown,
+  sponsor: string,
+  contractAddress: string,
+  chainId: number,
+  quantity: number,
+): Promise<never> {
+  const cap = decodeMintCapExceeded(err);
+  if (!cap) {
+    const refused = decodeClaimRevert(err);
+    if (refused) throw new Error(`events contract refused the mint: ${refused}`, { cause: err });
+    throw err;
+  }
+  let perHour: number | null = null;
+  try {
+    perHour = (await readSponsorMintAllowanceLedger(sponsor, contractAddress, chainId)).perHour;
+  } catch (readErr) {
+    console.warn("[sponsor ledger] mint cap hit; allowance read failed:", readErr);
+  }
+  const refusal = mintCapRefusal({ perHour, windowResetsAt: cap.windowResetsAt, quantity });
+  console.error(`[sponsor ledger] mint REFUSED — ${refusal.message}`);
+  throw new MintCapExceededError(refusal);
 }
 
 /**
@@ -185,11 +409,11 @@ export async function getSlotDataLedger(
   chainId: number,
 ): Promise<SlotData> {
   const r = await readContract(contractAddress, chainId).getSlotData(onChainEventId, slot);
-  // `owner == 0` means the slot is unclaimed, and the contract then returns
-  // zeroes for all three fields (WoCo-Contracts #25). `owner` stays the test:
+  // `holder == 0` means the slot is unclaimed, and the contract then returns
+  // zeroes for all three fields (WoCo-Contracts #25). `holder` stays the test:
   // a claimed slot's orderRef may itself be zero.
   return {
-    owner:    (r.owner as string).toLowerCase(),
+    owner:    (r.holder as string).toLowerCase(),
     orderRef: r.orderRef as string,
   };
 }
@@ -237,10 +461,15 @@ export async function claimForLedger(
     `burner=${burnerAddress} orderRef=${orderRefBytes32.slice(0, 10)}… chain=${chainId}`,
   );
 
-  const tx = await sendSponsorTx(
-    { chainId, address: wallet.address, provider: wallet.provider!, label: "claimFor" },
-    (o) => contract.claimFor(onChainEventId, burnerAddress, orderRefBytes32, o),
-  );
+  let tx;
+  try {
+    tx = await sendSponsorTx(
+      { chainId, address: wallet.address, provider: wallet.provider!, label: "claimFor" },
+      (o) => contract.claimFor(onChainEventId, burnerAddress, orderRefBytes32, o),
+    );
+  } catch (err) {
+    return explainMintFailure(err, wallet.address, contractAddress, chainId, 1);
+  }
   const receipt = await tx.wait(1);
   if (!receipt) throw new Error("No receipt from ledger claimFor tx");
 
@@ -267,10 +496,15 @@ export async function batchClaimForLedger(
     `n=${burners.length} orderRef=${orderRefBytes32.slice(0, 10)}… chain=${chainId}`,
   );
 
-  const tx = await sendSponsorTx(
-    { chainId, address: wallet.address, provider: wallet.provider!, label: "batchClaimFor" },
-    (o) => contract.batchClaimFor(onChainEventId, burners, orderRefBytes32, o),
-  );
+  let tx;
+  try {
+    tx = await sendSponsorTx(
+      { chainId, address: wallet.address, provider: wallet.provider!, label: "batchClaimFor" },
+      (o) => contract.batchClaimFor(onChainEventId, burners, orderRefBytes32, o),
+    );
+  } catch (err) {
+    return explainMintFailure(err, wallet.address, contractAddress, chainId, burners.length);
+  }
   const receipt = await tx.wait(1);
   if (!receipt) throw new Error("No receipt from ledger batchClaimFor tx");
 

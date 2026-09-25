@@ -36,10 +36,12 @@ L1 resolver answers from that registry.
 
 | | Address |
 |---|---|
-| `SubENSRegistry` (L2Registry clone) | `0x8630000177d44ec12e4752Ae0C8b26390d30A2B6` |
-| `WoCoRegistrar` | `0xACfe7c02909a5c1eB64aE5aA10D18618323403a2` |
-| L2Registry implementation | `0x172031e6a8428617b05f2002e0e278bb8fb3ed8a` |
-| `L1Resolver` (Ethereum mainnet) | `0x231b0Ee14048e9dCcD1d247744d114a4EB5E8E63` |
+| `SubENSRegistry` (L2Registry v2.2 clone, since 2026-09-21) | `0x4c2265470e0134C0a2df6902ebcb5397a40102a8` |
+| `WoCoRegistrar` | `0x5974bd7bb11C5a33B3d35996d4D95660F315fFaB` |
+| L2Registry implementation | `0x44F3CE28DFb86d6827637D6b3E55D4111cA55367` |
+| `L1Resolver` v2 (Ethereum mainnet, since 2026-09-25) | `0xD9357945E2fc3bA586Cbc1Cdc2f79f0E512cFfD7` |
+| `L1Resolver` v1 (kept only as the rollback target) | `0x172031E6a8428617B05F2002e0e278bb8fb3Ed8A` |
+| woco.eth's own records (the apex fallback: ENS Public Resolver) | `0x231b0Ee14048e9dCcD1d247744d114a4EB5E8E63` |
 | baseNode (`woco.eth`) | `0x616c19dee44e200629c0e4918ca0fe2f6e85100ea0b354c4f888e11c07a9006f` |
 
 Source of truth: `packages/shared/src/sub-ens/addresses.ts` and
@@ -73,6 +75,8 @@ Arbitrum One registry:
       https://events-api.woco-net.com/api/ens-gateway/v1/{sender}/{data}
 3.  our gateway reads the PINNED Arbitrum One registry and signs the answer
 4.  L1Resolver accepts anything SignatureVerifier.verify() accepts for signer()
+    (v2: the signed hash also binds chain id 1, so the gateway signs per resolver -
+    ENS_GATEWAY_RESOLVER_ADDRESSES entry `0xADDR:1` for v2, bare `0xADDR` for v1)
 ```
 
 Step 4 is the security-critical one: **a signature from that key over any `result` is

@@ -480,7 +480,7 @@ test("a crossing back to healthy is logged", async () => {
 
 test("/api/health still serves both sections, and its top-level ok stays liveness-only", () => {
   const src = readFileSync(fileURLToPath(new URL("../src/index.ts", import.meta.url)), "utf-8");
-  const start = src.indexOf('app.get("/api/health"');
+  const start = src.indexOf("function healthReport()"); // the report /api/health serves (#672)
   assert.ok(start > 0, "the health handler moved");
   const handler = src.slice(start, src.indexOf('app.get("/api/eth-price"'));
 
