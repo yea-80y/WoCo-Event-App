@@ -202,6 +202,10 @@ We will tell you the applicable schedule before you sell.
 **You are responsible for refunds.** If you cancel, reschedule or fail to deliver an event, you must
 refund your attendees.
 
+**Our platform fee is not returned if you cancel an event or refund a buyer.** If an event is
+cancelled, we may at our discretion return some or all of it. The one case where we always return
+it is set out next.
+
 **If we cannot issue a ticket after a buyer has paid** — because of a failure on our side, not
 yours — we refund the buyer automatically for the tickets we could not issue, and we return our
 platform fee on the refunded amount to you at the same time. The payment provider may retain its
