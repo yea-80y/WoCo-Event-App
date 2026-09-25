@@ -59,6 +59,8 @@ import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
+import { alarmGate } from "./lib/health/alarm-gate.js";
+import { feedSignerRecordHealth } from "./lib/event/feed-signer-record.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
@@ -253,8 +255,8 @@ app.use("/embed/*", securityHeaders());
 // `email` reports the live ESP and any send we abandoned. An unresolved
 // TRANSACTIONAL failure means somebody paid and has no ticket, so it is an
 // alarm, not a statistic. Counts and store names only — this endpoint is public.
-app.get("/api/health", (c) =>
-  c.json({
+function healthReport() {
+  return {
     ok: true,
     // Which commit is answering (#125). Before this, "is production running what
     // I think?" could only be inferred — from a log line, a container creation
@@ -356,6 +358,11 @@ app.get("/api/health", (c) =>
     // series that cannot sell until an operator repairs it. `fileUnreadable`
     // is the whole file: nothing sells or registers, and it is never written.
     onchainRegistry: onchainRegistryHealth(),
+    // Each event's feed signer + verified creator, pinned at create (#670): the
+    // money path's only carrier for an UNLISTED event. `unreadable` true, or
+    // `unreadableRecords` above 0, is an alarm: those events cannot sell, and no
+    // event can be created with a signer, until an operator restores the file.
+    eventFeedSigners: feedSignerRecordHealth(),
     // Whether paid checkouts can mint on the events contract (#662): the ticket
     // sponsor still authorised, and on the ledger its hourly mint cap's headroom
     // (`TICKET_MINT_ALLOWANCE_MIN`, default one maximum order). The checkout
@@ -400,8 +407,19 @@ app.get("/api/health", (c) =>
           ? bounceLedgerHealth()
           : { ok: false, unsupported: activeEmailProvider() },
     },
-  }),
-);
+  };
+}
+
+app.get("/api/health", (c) => c.json(healthReport()));
+
+// The same report as ONE status code, for an uptime monitor (#672): 503 when a
+// watched section is red. `/api/health` itself always answers 200, so without
+// this no alarm above reached anyone. `?sections=` picks what to watch.
+app.get("/api/health/alarms", (c) => {
+  const { status, body } = alarmGate(healthReport(), c.req.query("sections"));
+  c.header("Cache-Control", "no-store");
+  return c.json(body, status);
+});
 
 // ETH price proxy — frontend can't call CoinGecko directly (CORS + rate limits)
 app.get("/api/eth-price", async (c) => {

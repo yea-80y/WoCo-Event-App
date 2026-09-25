@@ -20,6 +20,7 @@ import {
   RegistrationRebindError,
 } from "./onchain-registry.js";
 import { setListed, setTombstoned } from "./listing-state.js";
+import { acceptEventFeed, getRecordedFeedSigner, recordEventFeedSigner } from "./feed-signer-record.js";
 import { cardFromFeed, getEventsSnapshot, scheduleSnapshotRebuild } from "./directory-snapshot.js";
 import {
   readFeedPage,
@@ -291,6 +292,10 @@ export async function createEventV2(opts: {
   } else {
     emit("finalize", 0, 1, "Preparing event feed for signing...");
   }
+  // The money path's signer for this event from now on, listed or not (#670).
+  // Before the cache and the `done` stream: a record that cannot be written fails
+  // the create while the organiser has signed nothing.
+  if (creatorFeedSigner) recordEventFeedSigner(eventId, creatorFeedSigner, creatorAddress);
   // Seed the money-path cache with the just-built feed so an immediate reserve/claim
   // resolves it before the fire-and-forget directory carrier below has propagated
   // (Phase B events have no platform feed to fall back to). See primeEventCache.
@@ -355,7 +360,8 @@ export async function confirmSeriesOnChain(
   // The signerHint SOC read stays as the cold-cache fallback (e.g. a retried confirm
   // after a restart, once the client SOC does exist).
   let feed = await getEvent(eventId);
-  if (!feed && signerHint) feed = await readEventFeedSoc(eventId, signerHint);
+  // Same creator check as getEvent: this feed primes the money-path cache below.
+  if (!feed && signerHint) feed = acceptEventFeed(eventId, await readEventFeedSoc(eventId, signerHint));
   if (!feed) throw new Error("Event not found");
 
   const updated: EventFeed = {
@@ -385,12 +391,13 @@ export async function confirmSeriesOnChain(
   // The entry names its contract only when the RECORD does — a legacy record's
   // contract is a rule's answer, not a fact to publish.
   const recorded = lookupRegistration(eventId, seriesId)?.contract;
+  const feedSigner = resolutionSigner(eventId, updated);
   scheduleSnapshotRebuild(eventId, [{
     onChainEventId,
     wocoEventId: eventId,
     seriesId,
     ...(recorded ? { chainId: recorded.chainId, contract: recorded.address as Hex0x } : {}),
-    ...(updated.creatorFeedSigner ? { creatorFeedSigner: updated.creatorFeedSigner } : {}),
+    ...(feedSigner ? { creatorFeedSigner: feedSigner } : {}),
   }]);
 
   // Surface this series as a `ticket` object type in the creator's object directory
@@ -821,13 +828,32 @@ export async function readEventFeedSoc(eventId: string, signer: string): Promise
 }
 
 /**
- * Resolve the organiser's content-feed-signer for an event from the discovery
- * carrier — the global directory entry. Carrier-based, NOT a registry: the signer
- * is only known because the event is publicly listed. Returns null for legacy
- * (platform-signed) events and for events not in the global directory (those are
- * read by an explicit signer hint or via the legacy path).
+ * The directory's signer for a registered event is born here: the record pinned
+ * at create (#670), not the organiser's own feed's description of itself. A
+ * disagreement is the organiser's client naming a signer other than the one it
+ * signs under - self-harm, so a log line, not an alarm.
+ */
+function resolutionSigner(eventId: string, feed: EventFeed): Hex0x | undefined {
+  const recorded = getRecordedFeedSigner(eventId)?.signer;
+  const claimed = feed.creatorFeedSigner?.toLowerCase() as Hex0x | undefined;
+  if (recorded && claimed && recorded !== claimed) {
+    console.error(
+      `[event] ${eventId}: feed names signer ${claimed} but ${recorded} was recorded at create - the directory carries the record`,
+    );
+  }
+  return recorded ?? feed.creatorFeedSigner;
+}
+
+/**
+ * The organiser's content-feed signer, from a server-held source only - never a
+ * request. First the record pinned at create (#670): zero I/O, and the only
+ * source for an UNLISTED event. Then the public directory, for events created
+ * before the record existed. Null for legacy (platform-signed) events and events
+ * created without a signer: those read the platform feed.
  */
 async function resolveCreatorFeedSigner(eventId: string): Promise<string | null> {
+  const recorded = getRecordedFeedSigner(eventId);
+  if (recorded) return recorded.signer;
   try {
     const entries = await listEvents();
     return entries.find((e) => e.eventId === eventId)?.creatorFeedSigner ?? null;
@@ -865,6 +891,9 @@ export async function getEvent(eventId: string, signerHint?: string): Promise<Ev
     const page = await readFeedPageWithRetry(topicEvent(eventId));
     feed = page ? decodeEventFeed(page, eventId) : null;
   }
+  // A recorded event whose feed names another creator is not found (#670): the
+  // feed's creator is who gets paid, and the organiser signs the feed.
+  feed = acceptEventFeed(eventId, feed);
   // Tombstoned (deleted) events read as not-found on every path — money included.
   if (feed?.deleted) return null;
   if (feed) {
@@ -909,8 +938,9 @@ export async function getEventForDisplay(
     } catch {
       trustedCarrier = null;
     }
-    // Trusted carrier wins; the hint is the fallback only when there is none.
-    const soc = await readEventFeedSoc(eventId, trustedCarrier ?? untrustedSigner);
+    // Trusted carrier wins; the hint is the fallback only when there is none. The
+    // creator check too, so the page and the checkout give one answer (#670).
+    const soc = acceptEventFeed(eventId, await readEventFeedSoc(eventId, trustedCarrier ?? untrustedSigner));
     if (soc) return soc.deleted ? null : soc;
   }
   return getEvent(eventId);

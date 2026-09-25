@@ -7,6 +7,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { createEventV2, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, type EventMetaUpdates } from "../lib/event/service.js";
 import { DeleteBlockedError } from "../lib/event/delete-safety.js";
 import { setListed } from "../lib/event/listing-state.js";
+import { isFeedSignerStoreError } from "../lib/event/feed-signer-record.js";
 import { cardFromFeed, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
 import { getOrganiserNonce, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
 import { registerSeriesExactlyOnce } from "../lib/event/register-once.js";
@@ -410,7 +411,11 @@ events.post("/", requireAuth, async (c) => {
       void issueJoinedBadge(parentAddress);
     } catch (err) {
       console.error("[api] createEventV2 error:", err);
-      const message = err instanceof Error ? err.message : "Failed to create event";
+      // The feed-signer store names a `.data` file in its errors: that is for the
+      // log (and /api/health), not the organiser.
+      const message = isFeedSignerStoreError(err)
+        ? "Publishing is paused while the server is repaired. Nothing was created - please try again later."
+        : err instanceof Error ? err.message : "Failed to create event";
       const code = err instanceof PlatformBatchUnavailable ? { code: err.code } : {};
       stream.writeln(JSON.stringify({ type: "error", ok: false, error: message, ...code }));
     }
