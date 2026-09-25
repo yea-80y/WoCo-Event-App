@@ -21,7 +21,7 @@ function isNotOurs(err: unknown): boolean {
 }
 
 export const liveProvenanceReads: ProvenanceReads = {
-  async applicationFeeIdForPaymentIntent(paymentIntentId, account) {
+  async chargeFeeForPaymentIntent(paymentIntentId, account) {
     const s = getStripe();
     const pi = await s.paymentIntents.retrieve(
       paymentIntentId,
@@ -29,13 +29,13 @@ export const liveProvenanceReads: ProvenanceReads = {
       { stripeAccount: account },
     );
     let charge = pi.latest_charge;
-    if (!charge) return null;
+    if (!charge) return { requested: false, feeId: null };
     if (typeof charge === "string") {
       charge = await s.charges.retrieve(charge, {}, { stripeAccount: account });
     }
-    const fee = (charge as Stripe.Charge).application_fee;
-    if (!fee) return null;
-    return typeof fee === "string" ? fee : fee.id;
+    const ch = charge as Stripe.Charge;
+    const fee = ch.application_fee;
+    return { requested: (ch.application_fee_amount ?? 0) > 0, feeId: !fee ? null : typeof fee === "string" ? fee : fee.id };
   },
 
   async retrievePlatformFee(feeId) {

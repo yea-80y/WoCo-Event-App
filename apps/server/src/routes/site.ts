@@ -8,7 +8,7 @@ import {
 } from "../config/swarm.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getCreatorEvents } from "../lib/event/service.js";
-import { batchForDeploy, BatchPurchaseRequired } from "../lib/etherna/batch-router.js";
+import { batchForDeploy, BatchPurchaseRequired, PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
 import { recordUpload } from "../lib/swarm/storage-ledger.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { uploadCollectionToEtherna, registerEthernaOffer, writeEthernaFeedUpdate } from "../lib/etherna/upload.js";
@@ -117,6 +117,7 @@ site.post("/deploy", requireAuth, async (c) => {
       if (err instanceof BatchPurchaseRequired) {
         return c.json({ ok: false, error: err.message, code: "BATCH_PURCHASE_REQUIRED" }, 402);
       }
+      if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
       throw err;
     }
     const { batchId, target } = selection;

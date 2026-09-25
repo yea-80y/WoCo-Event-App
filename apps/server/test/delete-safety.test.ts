@@ -45,6 +45,9 @@ function series(over: Partial<SeriesSummary> = {}): SeriesSummary {
   };
 }
 
+/** The contract the series' registration record names (#563). */
+const RECORDED = { chainId: CHAIN_ID, address: "0x" + "c2".repeat(20), version: "v2" as const };
+
 function onChain(nextSlot: bigint): OnChainEvent {
   return {
     totalSupply: 100n,
@@ -60,13 +63,13 @@ function onChain(nextSlot: bigint): OnChainEvent {
 function harness(over: Partial<DeleteSafetyDeps> = {}) {
   const reads: Array<{ onChainEventId: string; chainId: number }> = [];
   const deps: DeleteSafetyDeps = {
-    getOnChainEvent: async (onChainEventId, chainId) => {
-      reads.push({ onChainEventId, chainId });
+    getOnChainEventAt: async (contract, onChainEventId) => {
+      reads.push({ onChainEventId, chainId: contract.chainId });
       return onChain(0n);
     },
-    getActiveChainId: () => CHAIN_ID,
     heldFor: () => 0,
     lookupOnChainEventId: () => ONCHAIN_ID,
+    registrationContractFor: () => RECORDED,
     ...over,
   };
   return { deps, reads };
@@ -86,7 +89,7 @@ test("verified zero on-chain and no holds → delete allowed, ledger actually co
 test("null chain read (EventNotFound) is a verified zero → delete allowed", async () => {
   // getOnChainEventV2 returns null for exactly one thing: the contract
   // reverted EventNotFound(), so nothing can ever have minted.
-  const { deps } = harness({ getOnChainEvent: async () => null });
+  const { deps } = harness({ getOnChainEventAt: async () => null });
   await assertNoOrders(EVENT_ID, [series()], deps);
 });
 
@@ -96,7 +99,7 @@ test("null chain read (EventNotFound) is a verified zero → delete allowed", as
 
 test("a THROWING chain read refuses — an RPC outage is never read as zero claims", async () => {
   const { deps } = harness({
-    getOnChainEvent: async () => {
+    getOnChainEventAt: async () => {
       throw new Error("ECONNREFUSED");
     },
   });
@@ -126,7 +129,7 @@ test("series with no on-chain record → blocked; there is no ledger to consult"
 });
 
 test("claimed tickets block, with the count surfaced", async () => {
-  const { deps } = harness({ getOnChainEvent: async () => onChain(3n) });
+  const { deps } = harness({ getOnChainEventAt: async () => onChain(3n) });
   await assert.rejects(assertNoOrders(EVENT_ID, [series()], deps), (err: unknown) => {
     assert.ok(err instanceof DeleteBlockedError);
     assert.deepEqual(err.blockers, [`"General": 3 ticket(s) issued`]);
@@ -150,7 +153,7 @@ test("live buyer holds block even when on-chain claims are zero", async () => {
 test("blockers accumulate across series — the 409 reports every reason", async () => {
   const claimedId = `0x${"cd".repeat(32)}`;
   const { deps } = harness({
-    getOnChainEvent: async (id) => onChain(id === claimedId ? 5n : 0n),
+    getOnChainEventAt: async (_contract, id) => onChain(id === claimedId ? 5n : 0n),
     lookupOnChainEventId: (_eventId, seriesId) =>
       seriesId === "ser-1" ? null : seriesId === "ser-2" ? claimedId : ONCHAIN_ID,
     // Asserting the event id here is the point: without it a wrong constant
@@ -184,7 +187,7 @@ test("a transport failure aborts outright — never demoted to one blocker among
   // plain Error must win: a partial blocker list would render as a complete,
   // definitive 409 while a count is actually UNKNOWN.
   const { deps } = harness({
-    getOnChainEvent: async () => {
+    getOnChainEventAt: async () => {
       throw new Error("timeout");
     },
     lookupOnChainEventId: (_eventId, seriesId) => (seriesId === "ser-1" ? null : ONCHAIN_ID),
@@ -213,7 +216,7 @@ test("#435: a feed pointing a SOLD series at an empty on-chain event still block
   const EMPTY_ID = `0x${"ee".repeat(32)}`;
   const seen: string[] = [];
   const { deps } = harness({
-    getOnChainEvent: async (id) => {
+    getOnChainEventAt: async (_contract, id) => {
       seen.push(id);
       return onChain(id === ONCHAIN_ID ? 7n : 0n);
     },
@@ -254,7 +257,7 @@ test("#435: a recorded series with a MISSING feed id is still counted", async ()
   // is neither blocked for that reason nor waved through. It is counted.
   const seen: string[] = [];
   const { deps } = harness({
-    getOnChainEvent: async (id) => {
+    getOnChainEventAt: async (_contract, id) => {
       seen.push(id);
       return onChain(2n);
     },
@@ -269,4 +272,35 @@ test("#435: a recorded series with a MISSING feed id is still counted", async ()
     },
   );
   assert.deepEqual(seen, [ONCHAIN_ID]);
+});
+
+// ---------------------------------------------------------------------------
+// #563: counted on the contract the registration lives on
+// ---------------------------------------------------------------------------
+
+test("the count is taken on the RECORDED contract, not today's env contract", async () => {
+  // After a cutover the env contract has never heard of this id, and its
+  // EventNotFound would read as a verified zero — a delete on a sold event.
+  const seen: string[] = [];
+  const { deps } = harness({
+    getOnChainEventAt: async (contract) => {
+      seen.push(contract.address);
+      return contract.address === RECORDED.address ? onChain(4n) : null;
+    },
+  });
+  await assert.rejects(assertNoOrders(EVENT_ID, [series()], deps), (err: unknown) => {
+    assert.ok(err instanceof DeleteBlockedError);
+    return true;
+  });
+  assert.deepEqual(seen, [RECORDED.address]);
+});
+
+test("no contract resolvable for the registration BLOCKS — unverifiable is never zero", async () => {
+  const { deps, reads } = harness({ registrationContractFor: () => undefined });
+  await assert.rejects(assertNoOrders(EVENT_ID, [series()], deps), (err: unknown) => {
+    assert.ok(err instanceof DeleteBlockedError);
+    assert.match(err.blockers[0], /cannot be verified/);
+    return true;
+  });
+  assert.equal(reads.length, 0);
 });

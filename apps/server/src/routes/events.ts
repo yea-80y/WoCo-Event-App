@@ -7,13 +7,14 @@ import { requireAuth } from "../middleware/auth.js";
 import { createEventV2, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, type EventMetaUpdates } from "../lib/event/service.js";
 import { DeleteBlockedError } from "../lib/event/delete-safety.js";
 import { setListed } from "../lib/event/listing-state.js";
+import { isFeedSignerStoreError } from "../lib/event/feed-signer-record.js";
 import { cardFromFeed, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
 import { getOrganiserNonce, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
 import { registerSeriesExactlyOnce } from "../lib/event/register-once.js";
-import { RegistrationRebindError } from "../lib/event/onchain-registry.js";
+import { RegistrationRebindError, RegistryUnreadableError } from "../lib/event/onchain-registry.js";
 import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
-import { batchForDeploy } from "../lib/etherna/batch-router.js";
+import { batchForDeploy, PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
 import type { SeriesManifestBlob } from "@woco/shared";
 import { manifestV2Digest, validateSignedManifestV2, bytesToHex0x } from "@woco/shared";
 import { verifyAndPinIssuerBinding } from "../lib/issuer/binding.js";
@@ -410,8 +411,13 @@ events.post("/", requireAuth, async (c) => {
       void issueJoinedBadge(parentAddress);
     } catch (err) {
       console.error("[api] createEventV2 error:", err);
-      const message = err instanceof Error ? err.message : "Failed to create event";
-      stream.writeln(JSON.stringify({ type: "error", ok: false, error: message }));
+      // The feed-signer store names a `.data` file in its errors: that is for the
+      // log (and /api/health), not the organiser.
+      const message = isFeedSignerStoreError(err)
+        ? "Publishing is paused while the server is repaired. Nothing was created - please try again later."
+        : err instanceof Error ? err.message : "Failed to create event";
+      const code = err instanceof PlatformBatchUnavailable ? { code: err.code } : {};
+      stream.writeln(JSON.stringify({ type: "error", ok: false, error: message, ...code }));
     }
   });
 });
@@ -476,6 +482,7 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
         console.warn("[event] edit-image whitelist failed (non-critical):", err));
       updates.imageHash = imageHash;
     } catch (err) {
+      if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
       console.error("[api] update-meta image upload failed:", err);
       return c.json({ ok: false, error: "Image upload failed" }, 502);
     }
@@ -527,6 +534,8 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
     // it; legacy callers need it for the fresh imageHash (already platform-written).
     return c.json({ ok: true, data: { eventId, eventFeed: updated } });
   } catch (err) {
+    // A legacy (platform-written) event's feed restamp goes through the router.
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     const msg = err instanceof Error ? err.message : "Failed to update event";
     const status =
       msg === "Event not found" ? 404 :
@@ -560,6 +569,7 @@ events.post("/:id/delete", requireAuth, async (c) => {
     if (err instanceof DeleteBlockedError) {
       return c.json({ ok: false, error: err.message, blockers: err.blockers }, 409);
     }
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     const msg = err instanceof Error ? err.message : "Failed to delete event";
     const status =
       msg === "Event not found" ? 404 :
@@ -756,6 +766,11 @@ events.post("/:id/unlist", requireAuth, async (c) => {
  * escalates. It is now a definitive 409 carrying a code the client can branch on,
  * the same shape as the in-flight 409 the handler already returns.
  *
+ * A `RegistryUnreadableError` is the same kind of failure from the other side:
+ * `onchain-events.json` exists and could not be loaded, so no registration can
+ * be recorded until an operator repairs or restores it and restarts. A 503 with
+ * a code, never the retry-shaped 500.
+ *
  * The message is deliberately plain and carries no internal detail. The operator
  * signal is `/api/health` `onchainRegistry` plus the error logged at the call
  * site.
@@ -765,9 +780,19 @@ events.post("/:id/unlist", requireAuth, async (c) => {
  * and a chain broadcast.
  */
 export function registerOnChainErrorResponse(err: unknown): {
-  status: 409 | 500;
+  status: 409 | 500 | 503;
   body: { ok: false; error: string; message?: string };
 } {
+  if (err instanceof RegistryUnreadableError) {
+    return {
+      status: 503,
+      body: {
+        ok: false,
+        error: "registry_unavailable",
+        message: "Event registration is temporarily unavailable - please contact support.",
+      },
+    };
+  }
   if (err instanceof RegistrationRebindError) {
     return {
       status: 409,

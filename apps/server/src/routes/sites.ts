@@ -29,7 +29,7 @@ import {
   getPlatformOwner,
   BEE_URL,
 } from "../config/swarm.js";
-import { batchForDeploy, BatchPurchaseRequired, StripeVerificationRequired, type BatchSelection } from "../lib/etherna/batch-router.js";
+import { batchForDeploy, BatchPurchaseRequired, PlatformBatchUnavailable, StripeVerificationRequired, type BatchSelection } from "../lib/etherna/batch-router.js";
 import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
 import { recordUpload, getFreeHostedBytes } from "../lib/swarm/storage-ledger.js";
 
@@ -138,7 +138,11 @@ async function stampEventSigners(
  * deployType "event" = the UNGATED cold-write rules (user batch if live, else
  * the shared Etherna platform batch): a 4KB feed page must never trip the
  * purchase or verification gate. Any failure falls back to the WoCo batch —
- * feed routing is an optimisation of postage lifetime, never publish-blocking.
+ * feed routing is an optimisation of postage lifetime, never publish-blocking —
+ * EXCEPT a dead platform batch (#610), which refuses: the page would stay on WoCo
+ * with nothing listing it to move back, and a bee read that cannot yet see the
+ * last Etherna page can lower the cached index and fork the feed across the two
+ * nodes. The deploy that follows refuses on the same guard anyway.
  */
 function siteFeedDest(ownerAddress: string, gatewayUrl: string | undefined): BatchSelection | undefined {
   if (!gatewayUrl) return undefined;
@@ -146,6 +150,7 @@ function siteFeedDest(ownerAddress: string, gatewayUrl: string | undefined): Bat
     const sel = batchForDeploy({ ownerAddress, gatewayUrl, deployType: "event" });
     return sel.target === "etherna" ? sel : undefined;
   } catch (e) {
+    if (e instanceof PlatformBatchUnavailable) throw e;
     console.warn("[sites] feed batch routing failed — WoCo batch fallback:", (e as Error).message);
     return undefined;
   }
@@ -158,7 +163,8 @@ async function siteFeedDestFromDirectory(ownerAddress: string, siteId: string): 
   try {
     const sites = await getCreatorSites(ownerAddress);
     return siteFeedDest(ownerAddress, sites.find((s) => s.siteId === siteId)?.deployedUrl);
-  } catch {
+  } catch (e) {
+    if (e instanceof PlatformBatchUnavailable) throw e;
     return undefined;
   }
 }
@@ -232,6 +238,7 @@ sitesRouter.post("/upload-image", requireAuth, async (c) => {
       if (err instanceof StripeVerificationRequired) {
         return c.json({ ok: false, error: err.message, code: "STRIPE_VERIFICATION_REQUIRED" }, 403);
       }
+      if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
       throw err;
     }
 
@@ -389,6 +396,7 @@ sitesRouter.post("/", requireAuth, async (c) => {
 
     return c.json({ ok: true, data: { siteId: site.siteId } });
   } catch (err) {
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     console.error("[sites/publish]", err);
     return c.json({
       ok: false,
@@ -575,6 +583,7 @@ sitesRouter.post("/:id/events", requireAuth, async (c) => {
     _siteEventsFull.delete(siteId);
     return c.json({ ok: true, data: index });
   } catch (err) {
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     return c.json({ ok: false, error: err instanceof Error ? err.message : "Failed to add event" }, 500);
   }
 });
@@ -613,6 +622,7 @@ sitesRouter.delete("/:id/events/:eventId", requireAuth, async (c) => {
     _siteEventsFull.delete(siteId); // see add-event handler — keep visitors fresh
     return c.json({ ok: true, data: index });
   } catch (err) {
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     return c.json({ ok: false, error: err instanceof Error ? err.message : "Failed to remove event" }, 500);
   }
 });
@@ -754,6 +764,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       if (err instanceof StripeVerificationRequired) {
         return c.json({ ok: false, error: err.message, code: "STRIPE_VERIFICATION_REQUIRED" }, 403);
       }
+      if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
       throw err;
     }
     const { batchId, target } = selection;

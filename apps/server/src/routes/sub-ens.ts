@@ -19,6 +19,7 @@ import { validateLabel } from "@woco/shared";
 import { isProfileName, profileNameOf } from "../lib/profile/name-ledger.js";
 import { getApexContenthash } from "../lib/chain/sub-ens-apex.js";
 import { stampEventSubEns } from "../lib/event/service.js";
+import { PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { clientIp } from "../lib/http/client-ip.js";
@@ -439,6 +440,7 @@ subEnsRoutes.post("/stamp-event", requireAuth, async (c) => {
     // events were already platform-written; eventFeed is harmless there.
     return c.json({ ok: true, data: { label, eventId, ...(updated.creatorFeedSigner ? { eventFeed: updated } : {}) } });
   } catch (err) {
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     const msg = err instanceof Error ? err.message : "stamp failed";
     const status = msg === "Event not found" ? 404 : msg === "Not the event creator" ? 403 : 500;
     if (status === 500) console.error("[sub-ens] stamp-event failed:", err);

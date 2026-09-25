@@ -62,7 +62,7 @@ export async function addToSubjectIndex(
       // walking band openers, which the full-band invariant makes sound.
       // `thorough` — this read feeds the read-modify-write below, so it must not
       // trust the gateway's whitelist gate. A tagged 403 is treated as `absent`
-      // on ordinary reads (client-soc.ts), and a lost whitelist entry would
+      // on ordinary reads (probe-soc.ts), and a lost whitelist entry would
       // therefore arrive here as a CLEAN absent — the one shape the guard below
       // cannot catch, because it checks for INCONCLUSIVE, not for wrong.
       const res = await readBandedContentFeed<unknown>(signer.address, kind.indexTopic, {

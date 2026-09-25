@@ -4,6 +4,43 @@ Running history of completed work and roadmap. Stable architecture and conventio
 
 ---
 
+## A dead Etherna platform batch refuses writes instead of swallowing them (#610, 2026-09-25)
+
+The router handed out `ETHERNA_PLATFORM_BATCH` with no liveness check (user batches had one).
+A write onto a dead batch answers 200 and Etherna serves it from its own storage for a while,
+so it looked saved and was lost. `batchForDeploy` now reads the health probe's last Etherna
+reading and refuses with 503 `STORAGE_UNAVAILABLE` when the batch is gone (404), spent
+(`batchTTL <= 0`, except bee's `-1` "price unknown" sentinel), unusable, or has a full bucket
+(mutable: the next chunk would overwrite stored content). Owner's rule: a batch that is merely
+running low is the `postage.etherna` alarm's job, never a refusal, since a top-up before it dies
+saves everything on it. The probe keeps its last POSITIVE reading apart, so a failed read after a
+404 cannot reopen writes; an unknown or stale (15 min) reading writes. Feed-page helpers and
+`batchForUserContent` pass the refusal through rather than detour to WoCo (nothing would move
+it back, and a detoured feed page can fork the feed index). Detour + move-back stays post-launch
+(Fable report `FABLE_610_FALLBACK_CONSULT_REPORT.md`).
+
+---
+
+## L1Resolver v2: one resolver for woco.eth and other owners' names, meant to last (2026-09-25)
+
+Audit 964 passed the two #23 changes (renounce always reverts, two-step ownership) but
+re-raised findings in code v2 had not touched. Other owners' names will point here (a venue's
+`venue.eth` -> WoCo-served `sub.venue.eth`), and every redeploy would cost each of them a
+`setResolver`, so the findings were fixed in the contract rather than worked around (Fable
+design consult + diff sign-off). Names are read label by label and the DEEPEST configured
+ancestor routes; settings are stored per (node, owner), so a buyer starts clean; the signed
+hash binds the chain id (our deployer had already produced `0x1720...` on two chains); a
+per-name answer module plus an owner-set default lets resolution move off the gateway key
+(to proofs) with one Safe transaction, no redeploy. The NameWrapper is a constructor argument
+(the mainnet wrapper has no admin and no upgrade path). Audit 969: 0 C/H/M, 3 Low taken.
+
+Live: `0xD9357945E2fc3bA586Cbc1Cdc2f79f0E512cFfD7` (WoCo-Contracts #32, #33). The gateway
+(#667) signs per resolver: `ENS_GATEWAY_RESOLVER_ADDRESSES=0xD935…:1,0x1720…`. v1 stays
+listed and untouched, so rollback is one `NameWrapper.setResolver`. Remaining gap: the gateway
+key still vouches for every subname answer until a proof module exists.
+
+---
+
 ## Lap times: a private, timed log of every lap, that survives no signal (2026-09-19)
 
 Built for Rita 100 (21 Sep). `woco.credit.v1` is closed and carries no times on purpose, so a

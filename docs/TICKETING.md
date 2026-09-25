@@ -124,6 +124,14 @@ minted against either.** The validated id is a registration the server no longer
 the record may have moved under an in-flight session and could drain the wrong event's supply.
 Refund is the only outcome that does neither (`fulfilment.ts`, the #426 tripwire).
 
+**Which signer an event's feed is read under comes from server state only, never from a request.**
+The money path (`getEvent`) asks, in order: the record pinned at create
+(`.data/event-feed-signers.json`, #670), then the public directory, then the platform feed for
+legacy events. The record is what lets an UNLISTED event sell at all; before it, such an event
+sold only for the 10 minutes its create primed the cache. A recorded event whose feed names a
+different `creatorAddress` than the one recorded reads as not found, because that field decides
+which Stripe account is paid.
+
 Two more properties of that path:
 
 - **The event feed is fenced.** A Swarm hiccup while fulfilling degrades the ticket *email* — a
@@ -135,6 +143,22 @@ Two more properties of that path:
 `registerEvent` is **not idempotent** — it derives the event id from a sponsor-nonce counter, not
 from the manifest — so registering the same series twice creates two events. That is why
 `register-once.ts` and `.data/onchain-events.json` exist, and why losing that file stops sales.
+
+**Which contract** (#563) is part of the same record: each registration names the chain, address
+and version it was made on, and the mint, every pre-charge read, the door pack, `/t` and
+delete-safety follow it (`registrationContractFor`). A successor contract therefore runs beside
+the old one — only new registrations go to the env-selected contract. A charge, though, mints
+only on the ACTIVE chain (`saleContractFor`): after a `WOCO_EVENT_CHAIN_ID` flip a record on the
+old chain still verifies at the door and on `/t`, but create-checkout refuses it and fulfilment
+refunds a session paid across the flip. Records from before #563 carry no contract and resolve to
+today's env contract, or to the chain's V2 once env selects the ledger (`legacyEventContract`).
+
+**The ledger's hourly mint cap** (#662): create-checkout refuses a sale the sponsor's
+`sponsorMintAllowance` cannot mint (read uncached), and names a retry time only when waiting
+helps — never for cap 0 (the Safe's stop), never for an order bigger than the whole cap.
+`/api/health` `ticketMinting` alarms below `TICKET_MINT_ALLOWANCE_MIN`. The gate is a read, not a
+reservation: it does not net out open holds or concurrent checkouts, so several passing against
+the same headroom can all be charged and the ones the cap then refuses are refunded.
 
 ### Why a burner, and not the buyer's address
 
