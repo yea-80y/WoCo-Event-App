@@ -47,6 +47,17 @@
   // (CoinbaseLogin's two-step progress, per-method error text) across the scene.
   let authing = $state<Method | null>(null);
 
+  // Wallets get their own screen. Shown beside passkey and email they read as
+  // a requirement to someone who has never held one, so the first screen only
+  // offers what works for everybody. Mounted on demand: nothing a wallet needs
+  // is fetched unless someone asks for it.
+  let view = $state<"main" | "wallet">("main");
+
+  // Keyboard users land on the way back, not on the page behind the modal.
+  function focusOnMount(node: HTMLElement) {
+    node.focus();
+  }
+
   const sceneCopy: Record<Method, { name: string; waiting: string; finalizing: string }> = {
     passkey: {
       name: "Passkey",
@@ -111,6 +122,7 @@
   function close() {
     open = false;
     authing = null;
+    view = "main";
     // The modal instance outlives its openings, so drop the notice here or it
     // re-renders on every later open — sessionStorage was already cleared.
     notice = null;
@@ -121,6 +133,7 @@
   function handleComplete() {
     open = false;
     authing = null;
+    view = "main";
     notice = null;
     loginRequest.resolve(true);
     onclose?.();
@@ -146,13 +159,16 @@
           <span class="kicker kicker--plain">WoCo</span>
           <h2>
             {authing ? "Signing in"
+              : view === "wallet" ? "Connect a wallet"
               : loginRequest.context === "invite" ? "Create your account"
               : loginRequest.context === "ticket" ? "Add your ticket"
               : "Sign in"}
           </h2>
-          {#if !authing && loginRequest.context === "invite"}
+          {#if authing || view === "wallet"}
+            <!-- The context line describes the first screen's choices, not this one. -->
+          {:else if loginRequest.context === "invite"}
             <p class="context-sub">Takes a minute. Then you verify with Stripe so you can get paid.</p>
-          {:else if !authing && loginRequest.context === "ticket"}
+          {:else if loginRequest.context === "ticket"}
             <p class="context-sub">Sign in, or create a free account. Your ticket goes straight into it.</p>
           {/if}
         </div>
@@ -212,21 +228,38 @@
            only sign-in this page can honestly offer. -->
       {#if !nameHostLabel}
       <div class="options" class:offstage={authing !== null}>
-        <PasskeyLogin oncomplete={handleComplete} onstart={() => start("passkey")} onsettle={settle} />
+        <!-- Hidden rather than unmounted on the wallet screen, so a passkey
+             error or the create-account offer is still there on the way back. -->
+        <div class="methods" class:offstage={view !== "main"}>
+          <PasskeyLogin oncomplete={handleComplete} onstart={() => start("passkey")} onsettle={settle} />
 
-        <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} />
+          <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} />
 
-        <div class="group-label"><span>Wallets</span></div>
+          <div class="wallet-door">
+            <span>Already use a crypto wallet?</span>
+            <button type="button" class="text-btn" onclick={() => (view = "wallet")}>
+              Connect it <span aria-hidden="true">→</span>
+            </button>
+          </div>
+        </div>
 
-        <WalletLogin oncomplete={handleComplete} onstart={() => start("wallet")} onsettle={settle} />
+        {#if view === "wallet"}
+          <div class="methods">
+            <button type="button" class="text-btn back-btn" onclick={() => (view = "main")} use:focusOnMount>
+              <span aria-hidden="true">←</span> All sign-in options
+            </button>
 
-        {#if FEATURES.coinbaseLoginAllowed}
-          <CoinbaseLogin oncomplete={handleComplete} onstart={() => start("coinbase")} onsettle={settle} />
+            <WalletLogin oncomplete={handleComplete} onstart={() => start("wallet")} onsettle={settle} />
+
+            {#if FEATURES.coinbaseLoginAllowed}
+              <CoinbaseLogin oncomplete={handleComplete} onstart={() => start("coinbase")} onsettle={settle} />
+            {/if}
+
+            <div class="group-label"><span>Coming soon</span></div>
+
+            <ZupassLogin />
+          </div>
         {/if}
-
-        <div class="group-label"><span>Coming soon</span></div>
-
-        <ZupassLogin />
       </div>
       {/if}
     </div>
@@ -458,8 +491,51 @@
 
   /* Children stay mounted while the scene plays so their state (Coinbase's
      two-step progress, error text) survives the round-trip. */
-  .options.offstage {
+  .options.offstage,
+  .methods.offstage {
     display: none;
+  }
+
+  .methods {
+    display: flex;
+    flex-direction: column;
+    gap: 0.875rem;
+  }
+
+  .text-btn {
+    font-family: var(--font-body);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: none;
+    border: none;
+    padding: 0.25rem 0;
+    cursor: pointer;
+    transition: color var(--transition);
+  }
+
+  .text-btn:hover {
+    color: var(--accent-text);
+  }
+
+  /* The way in to wallets: present for anyone who looks for it, quiet enough
+     that nobody else reads it as a step they are missing. */
+  .wallet-door {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: center;
+    gap: 0.25rem 0.5rem;
+    margin-top: 0.25rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+  }
+
+  .back-btn {
+    align-self: flex-start;
+    margin-top: -0.5rem;
   }
 
   .group-label {
