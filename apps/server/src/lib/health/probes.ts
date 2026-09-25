@@ -113,8 +113,14 @@ let paymasterReading = empty<bigint>();
 let beeReading = empty<StampReading & { immutable: boolean | null }>();
 let chainstateReading = empty<{ block: number; chainTip: number }>();
 let ethernaReading = empty<StampReading & { immutable: boolean | null }>();
-/** The batch `ethernaReading` is FOR, so a reading can never vouch for another one. */
-let ethernaReadingBatch = "";
+/**
+ * The last POSITIVE Etherna reading (a parsed stamp or a 404), for the router's
+ * liveness guard (#610). Kept apart from `ethernaReading` because a failed read
+ * must never ERASE a verdict: one stamps-read timeout after a confirmed 404 would
+ * otherwise read as "unknown" and reopen writes onto the dead batch. It still
+ * ages out under the same stale rule the health section uses.
+ */
+let ethernaVerdict: EthernaPlatformBatchSnapshot | null = null;
 let ensExpiryReading = empty<bigint>();
 /**
  * WHY A SECOND TIMESTAMP. `Reading.at` is when the probe last RAN; this is when
@@ -461,7 +467,14 @@ export async function refreshPostage(
     } catch (err) {
       ethernaReading = isNotFound(err) ? gone(err) : failed(err);
     }
-    ethernaReadingBatch = ethernaBatch;
+    if (ethernaReading.value || ethernaReading.gone) {
+      ethernaVerdict = {
+        batchId: ethernaBatch,
+        at: ethernaReading.at,
+        gone: ethernaReading.gone === true,
+        stamp: ethernaReading.value,
+      };
+    }
   }
 
   const section = postageHealth();
@@ -947,29 +960,25 @@ export async function beeBatchState(): Promise<{ usable: boolean | null; ttl: nu
 }
 
 export interface EthernaPlatformBatchSnapshot {
-  /** The batch this reading is for ("" before the first read). */
+  /** The batch this reading is for ("" before the first positive read). */
   batchId: string;
-  /** When the probe last ran, or null if it never has. */
+  /** When that reading was taken, or null if there has been none. */
   at: number | null;
   /** Etherna positively said the batch does not exist. */
   gone: boolean;
-  /** The parsed stamp, or null when the read failed or was incomplete. */
+  /** The parsed stamp; null exactly when `gone`. */
   stamp: StampReading | null;
 }
 
 /**
- * The last Etherna platform-batch reading, for the batch router's liveness guard
- * (#610). Synchronous and cache-only on purpose: the router is called on every
- * write path and awaits nothing, and one probe on one clock is the only answer
- * to "is it alive" (see `beeBatchState` for why there must never be two).
+ * The last POSITIVE Etherna platform-batch reading, for the batch router's
+ * liveness guard (#610). Failed and incomplete reads never replace it. Synchronous
+ * and cache-only on purpose: the router is called on every write path and awaits
+ * nothing, and one probe on one clock is the only answer to "is it alive" (see
+ * `beeBatchState` for why there must never be two).
  */
 export function ethernaPlatformBatchSnapshot(): EthernaPlatformBatchSnapshot {
-  return {
-    batchId: ethernaReadingBatch,
-    at: ethernaReading.at,
-    gone: ethernaReading.gone === true,
-    stamp: ethernaReading.value,
-  };
+  return ethernaVerdict ?? { batchId: "", at: null, gone: false, stamp: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -982,6 +991,11 @@ let ensExpiryDueAt = 0;
 
 export function startHealthProbes(): void {
   if (timer) return;
+  if (process.env.ETHERNA_PLATFORM_BATCH && !process.env.ETHERNA_API_KEY) {
+    console.warn(
+      "[health] ETHERNA_PLATFORM_BATCH is set but ETHERNA_API_KEY is not: the platform batch is never read, so the router cannot refuse writes onto a dead one (#610)",
+    );
+  }
   const tick = () => {
     const etherna = Date.now() >= ethernaDueAt;
     if (etherna) ethernaDueAt = Date.now() + ETHERNA_PROBE_INTERVAL_MS;
@@ -1013,7 +1027,7 @@ export function __resetHealthProbes(): void {
   beeReading = empty<StampReading & { immutable: boolean | null }>();
   chainstateReading = empty<{ block: number; chainTip: number }>();
   ethernaReading = empty<StampReading & { immutable: boolean | null }>();
-  ethernaReadingBatch = "";
+  ethernaVerdict = null;
   ensExpiryReading = empty<bigint>();
   ensExpiryOkAt = null;
   enrolmentReading = empty<Enrolment>();

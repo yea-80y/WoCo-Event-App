@@ -9,11 +9,12 @@ Running history of completed work and roadmap. Stable architecture and conventio
 The router handed out `ETHERNA_PLATFORM_BATCH` with no liveness check (user batches had one).
 A write onto a dead batch answers 200 and Etherna serves it from its own storage for a while,
 so it looked saved and was lost. `batchForDeploy` now reads the health probe's last Etherna
-reading and refuses with 503 `STORAGE_UNAVAILABLE` when the batch is gone (404), unusable, or
-has a full bucket (mutable: the next chunk would overwrite stored content). Owner's rule: a
-batch that is merely running low is the `postage.etherna` alarm's job, never a refusal, since
-a top-up before it dies saves everything on it. TTL is not a refusal input (bee reports < 1
-for an invalid price); an unknown or stale reading writes. Feed-page helpers and
+reading and refuses with 503 `STORAGE_UNAVAILABLE` when the batch is gone (404), spent
+(`batchTTL <= 0`, except bee's `-1` "price unknown" sentinel), unusable, or has a full bucket
+(mutable: the next chunk would overwrite stored content). Owner's rule: a batch that is merely
+running low is the `postage.etherna` alarm's job, never a refusal, since a top-up before it dies
+saves everything on it. The probe keeps its last POSITIVE reading apart, so a failed read after a
+404 cannot reopen writes; an unknown or stale (15 min) reading writes. Feed-page helpers and
 `batchForUserContent` pass the refusal through rather than detour to WoCo (nothing would move
 it back, and a detoured feed page can fork the feed index). Detour + move-back stays post-launch
 (Fable report `FABLE_610_FALLBACK_CONSULT_REPORT.md`).

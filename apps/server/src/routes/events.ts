@@ -529,6 +529,8 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
     // it; legacy callers need it for the fresh imageHash (already platform-written).
     return c.json({ ok: true, data: { eventId, eventFeed: updated } });
   } catch (err) {
+    // A legacy (platform-written) event's feed restamp goes through the router.
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     const msg = err instanceof Error ? err.message : "Failed to update event";
     const status =
       msg === "Event not found" ? 404 :
@@ -562,6 +564,7 @@ events.post("/:id/delete", requireAuth, async (c) => {
     if (err instanceof DeleteBlockedError) {
       return c.json({ ok: false, error: err.message, blockers: err.blockers }, 409);
     }
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     const msg = err instanceof Error ? err.message : "Failed to delete event";
     const status =
       msg === "Event not found" ? 404 :

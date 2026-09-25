@@ -178,12 +178,23 @@ test("running low on time still writes - and the alarm fires", async () => {
   assert.equal(probes.postageHealth().etherna.checks.ttl.ok, false);
 });
 
-test("a TTL at or below zero is not death: bee reports that for an invalid price", async () => {
-  for (const batchTTL of [0, -1]) {
+test("a spent balance refuses: a TTL at or below zero, before eviction makes it a 404", async () => {
+  for (const batchTTL of [0, -2, -86_400]) {
     await readEtherna(stamp({ batchTTL }));
-    assert.equal(route().batchId, PLATFORM, `batchTTL ${batchTTL}`);
-    assert.equal(probes.postageHealth().etherna.checks.ttl.ok, false, `alarm for batchTTL ${batchTTL}`);
+    assertRefused(() => route(), /expired/);
   }
+});
+
+test("a TTL of exactly -1 is bee's 'price unknown' sentinel, not death - writes, and alarms", async () => {
+  // bee pkg/api/postage.go estimateBatchTTL: CurrentPrice == 0 -> -1, "never expires".
+  await readEtherna(stamp({ batchTTL: -1 }));
+  assert.equal(route().batchId, PLATFORM);
+  assert.equal(probes.postageHealth().etherna.checks.ttl.ok, false);
+});
+
+test("one second of life left still writes: nearly empty is the alarm's job", async () => {
+  await readEtherna(stamp({ batchTTL: 1 }));
+  assert.equal(route().batchId, PLATFORM);
 });
 
 // ---------------------------------------------------------------------------
@@ -200,6 +211,35 @@ test("a failed or incomplete reading is unknown, not dead", async () => {
   await readEtherna(async () => { throw Object.assign(new Error("x"), { status: 503 }); });
   assert.equal(route().batchId, PLATFORM);
   await readEtherna(stamp({ usable: undefined }));
+  assert.equal(route().batchId, PLATFORM);
+});
+
+test("the rule on its own: a fresh snapshot with no stamp and no 404 is unknown", () => {
+  const now = Date.now();
+  assert.equal(router.platformBatchRefusal(PLATFORM, { batchId: PLATFORM, at: now, gone: false, stamp: null }, now), null);
+});
+
+test("a failed read after a confirmed 404 does not reopen writes", async () => {
+  await readEtherna(async () => notFound());
+  const goneAt = probes.ethernaPlatformBatchSnapshot().at;
+  assert.ok(goneAt !== null);
+  // The next stamps reads time out, 5xx, or come back incomplete: still refused.
+  await readEtherna(async () => refused());
+  assertRefused(() => route(), /not found/);
+  await readEtherna(async () => { throw Object.assign(new Error("x"), { status: 503 }); });
+  assertRefused(() => route(), /not found/);
+  await readEtherna(stamp({ usable: undefined }));
+  assertRefused(() => route(), /not found/);
+  // ...until the 404 itself goes stale (the reading age, not the last failed attempt).
+  const snap = probes.ethernaPlatformBatchSnapshot();
+  assert.equal(snap.at, goneAt);
+  assert.equal(router.platformBatchRefusal(PLATFORM, snap, goneAt + 3 * probes.ETHERNA_PROBE_INTERVAL_MS), null);
+});
+
+test("a healthy reading after a 404 reopens writes", async () => {
+  await readEtherna(async () => notFound());
+  assertRefused(() => route(), /not found/);
+  await readEtherna(stamp());
   assert.equal(route().batchId, PLATFORM);
 });
 
@@ -401,16 +441,17 @@ test("every module that routes a write also handles PlatformBatchUnavailable", (
  * The catch sites no test above can reach offline (they read a site or an event
  * from Swarm first): site add/remove-event, site-image upload, both deploys, the
  * event image edit, the event-create stream, the avatar route, and the legacy
- * event feed. Each one is a refusal that would otherwise become a 500 - or, in
+ * event feed with the three routes that surface it. Each one is a refusal that would otherwise become a 500 - or, in
  * the two feed helpers, a silent detour to WoCo. Pinned by count so deleting any
  * single one turns this red; adding one means updating the number on purpose.
  */
 const REFUSAL_HANDLERS: Record<string, number> = {
   "routes/swarm.ts": 2, // /soc, /bytes
-  "routes/events.ts": 2, // update-meta image, create stream error code
+  "routes/events.ts": 4, // update-meta image, create stream error code, legacy update-meta + delete
   "routes/site.ts": 1, // legacy single-site deploy
   "routes/sites.ts": 7, // siteFeedDest, siteFeedDestFromDirectory, upload-image, publish, add-event, remove-event, deploy
   "routes/profiles.ts": 1, // avatar
+  "routes/sub-ens.ts": 1, // legacy event sub-ENS stamp
   "lib/event/service.ts": 1, // legacyEventFeedDest
   "lib/etherna/batch-router.ts": 1, // batchForUserContent
 };

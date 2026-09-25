@@ -19,10 +19,10 @@
  * PLATFORM BATCH LIVENESS (#610): the shared Etherna platform batch has no registry
  * expiry, so it is checked against the health probe's last reading instead, and a
  * write it cannot take is REFUSED (503) rather than stamped into a void. "Cannot
- * take" is deliberately narrow — gone, unusable, or a full bucket. A batch that is
- * merely running low is the alarm's job (`/api/health` postage.etherna), never a
- * refusal: everything on it lives exactly as long as it does, so a top-up before it
- * dies saves what was written today.
+ * take" is deliberately narrow — gone, expired, unusable, or a full bucket. A batch
+ * that is merely running low is the alarm's job (`/api/health` postage.etherna),
+ * never a refusal: everything on it lives exactly as long as it does, so a top-up
+ * before it dies saves what was written today.
  */
 
 import { POSTAGE_BATCH_ID } from "../../config/swarm.js";
@@ -85,15 +85,22 @@ export class PlatformBatchUnavailable extends Error {
  * refuses. Stale uses the same rule `/api/health` uses to mark the section stale,
  * so the router never trusts a reading the health endpoint has stopped trusting.
  *
- * WHY NOT TTL. A TTL near zero is "top up", and bee reports a TTL below 1 when its
- * price reading is invalid (bee-js `normalizeBatchTTL` works around exactly that),
- * so it is not evidence of death. A dead batch is evicted and reads 404 — `gone`.
+ * WHY ONLY A SPENT TTL. A TTL near zero is "top up" — the alarm's job (owner,
+ * 2026-09-25). A TTL at or below zero is the node saying the balance is spent: dead,
+ * in the short window before eviction turns it into a 404. The one exception is
+ * exactly -1, bee's own sentinel for "price unknown" / "never expires" (bee
+ * `pkg/api/postage.go` `estimateBatchTTL` returns -1 when `CurrentPrice` is 0), so
+ * it is not evidence of death. The value arrives raw — `readEthernaStamp` is a plain
+ * fetch, with no bee-js normalisation.
  *
  * WHY A FULL BUCKET REFUSES. The platform batch is mutable: once a bucket holds
  * `bucketCap` chunks the next chunk into it overwrites an older one with a 200 —
  * someone else's saved content, lost with no error. The alarm fires one slot
  * earlier (`evaluateStamp`, `>= cap - 1`), which is the "nearly full" warning.
  */
+/** bee's `batchTTL` when the node has no current price: "never expires", not dead. */
+const BEE_TTL_PRICE_UNKNOWN = -1;
+
 export function platformBatchRefusal(
   batchId: string,
   snapshot: EthernaPlatformBatchSnapshot,
@@ -105,6 +112,7 @@ export function platformBatchRefusal(
   const stamp = snapshot.stamp;
   if (!stamp) return null;
   if (!stamp.usable) return "Etherna reports the batch unusable";
+  if (stamp.batchTTL <= 0 && stamp.batchTTL !== BEE_TTL_PRICE_UNKNOWN) return "batch has expired (balance spent)";
   const cap = bucketCapacity(stamp.depth, stamp.bucketDepth);
   if (stamp.utilization >= cap) {
     return `a bucket is full (${stamp.utilization}/${cap}); the next write could overwrite stored content`;
