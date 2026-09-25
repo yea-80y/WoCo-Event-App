@@ -279,6 +279,10 @@ stored and escrowed. The reasoning is in
 [CLIENT_FEED_SIGNER_HANDOVER.md](./CLIENT_FEED_SIGNER_HANDOVER.md) and
 [FEED_SIGNER_REVIEW_2026-07-02.md](./FEED_SIGNER_REVIEW_2026-07-02.md).
 
+**Server** reads of an event's content feed find its signer in server state only: the record pinned
+at create (`.data/event-feed-signers.json`, #670), then the public directory, then the legacy
+platform feed. Never from a request.
+
 **Client** reads of content feeds resolve by **computed chunk address** and never through Bee's
 `/feeds` endpoint. That is not a preference — it is what keeps every feed readable through
 gateways that do not implement `/feeds`, Etherna included. The **server** does use `/feeds` for

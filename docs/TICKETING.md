@@ -124,6 +124,14 @@ minted against either.** The validated id is a registration the server no longer
 the record may have moved under an in-flight session and could drain the wrong event's supply.
 Refund is the only outcome that does neither (`fulfilment.ts`, the #426 tripwire).
 
+**Which signer an event's feed is read under comes from server state only, never from a request.**
+The money path (`getEvent`) asks, in order: the record pinned at create
+(`.data/event-feed-signers.json`, #670), then the public directory, then the platform feed for
+legacy events. The record is what lets an UNLISTED event sell at all; before it, such an event
+sold only for the 10 minutes its create primed the cache. A recorded event whose feed names a
+different `creatorAddress` than the one recorded reads as not found, because that field decides
+which Stripe account is paid.
+
 Two more properties of that path:
 
 - **The event feed is fenced.** A Swarm hiccup while fulfilling degrades the ticket *email* — a

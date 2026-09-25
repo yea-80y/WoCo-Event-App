@@ -515,6 +515,12 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
   event-listing-state.json (#37 global-directory overlay) — if lost, the builder self-heals by
   reseeding from the last snapshot (directory-snapshot.ts) rather than publishing an empty
   directory, but that only recovers events already in a snapshot
+  event-feed-signers.json (#670 — eventId → the organiser's content-feed signer + verified
+    creator, pinned at create, write-once. The money path's ONLY carrier for an UNLISTED event.
+    Losing it fails CLOSED: unlisted events stop selling until re-created; listed ones fall back
+    to the directory. The server cannot rebuild it (creators are not enumerable); an operator can
+    restore one organiser's records, best effort, from their creator index
+    `woco/event/creator/{address}`. Unreadable = `/api/health` `eventFeedSigners` alarm)
 
 SVELTE 5 / BEE-JS:
 - Svelte 5 `$state` proxy: properties absent from the initial object literal aren't reactive;

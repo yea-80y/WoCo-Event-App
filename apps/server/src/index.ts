@@ -60,6 +60,7 @@ import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-re
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
 import { alarmGate } from "./lib/health/alarm-gate.js";
+import { feedSignerRecordHealth } from "./lib/event/feed-signer-record.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
@@ -357,6 +358,11 @@ function healthReport() {
     // series that cannot sell until an operator repairs it. `fileUnreadable`
     // is the whole file: nothing sells or registers, and it is never written.
     onchainRegistry: onchainRegistryHealth(),
+    // Each event's feed signer + verified creator, pinned at create (#670): the
+    // money path's only carrier for an UNLISTED event. `unreadable` true, or
+    // `unreadableRecords` above 0, is an alarm: those events cannot sell, and no
+    // event can be created with a signer, until an operator restores the file.
+    eventFeedSigners: feedSignerRecordHealth(),
     // Whether paid checkouts can mint on the events contract (#662): the ticket
     // sponsor still authorised, and on the ledger its hourly mint cap's headroom
     // (`TICKET_MINT_ALLOWANCE_MIN`, default one maximum order). The checkout
