@@ -59,6 +59,7 @@ import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
+import { alarmGate } from "./lib/health/alarm-gate.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
@@ -253,8 +254,8 @@ app.use("/embed/*", securityHeaders());
 // `email` reports the live ESP and any send we abandoned. An unresolved
 // TRANSACTIONAL failure means somebody paid and has no ticket, so it is an
 // alarm, not a statistic. Counts and store names only — this endpoint is public.
-app.get("/api/health", (c) =>
-  c.json({
+function healthReport() {
+  return {
     ok: true,
     // Which commit is answering (#125). Before this, "is production running what
     // I think?" could only be inferred — from a log line, a container creation
@@ -400,8 +401,19 @@ app.get("/api/health", (c) =>
           ? bounceLedgerHealth()
           : { ok: false, unsupported: activeEmailProvider() },
     },
-  }),
-);
+  };
+}
+
+app.get("/api/health", (c) => c.json(healthReport()));
+
+// The same report as ONE status code, for an uptime monitor (#672): 503 when a
+// watched section is red. `/api/health` itself always answers 200, so without
+// this no alarm above reached anyone. `?sections=` picks what to watch.
+app.get("/api/health/alarms", (c) => {
+  const { status, body } = alarmGate(healthReport(), c.req.query("sections"));
+  c.header("Cache-Control", "no-store");
+  return c.json(body, status);
+});
 
 // ETH price proxy — frontend can't call CoinGecko directly (CORS + rate limits)
 app.get("/api/eth-price", async (c) => {

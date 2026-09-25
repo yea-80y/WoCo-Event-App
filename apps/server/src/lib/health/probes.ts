@@ -59,6 +59,7 @@ import {
   evaluateSponsorAuthorised,
   evaluateSponsorBalance,
   evaluateTicketMintAllowance,
+  evaluateTicketMintRamp,
   evaluateTicketSponsorAuthorised,
   type GlobalMintReading,
   type TicketMintReading,
@@ -141,6 +142,49 @@ let policyReading = empty<RegistrarPolicy>();
 let cswFactoryReading = empty<string>();
 
 let ticketMintReading = empty<TicketMintPolicy>();
+
+/**
+ * The busiest mint windows of the last week (#672), keyed by window end, so a
+ * rising trend is visible to someone who was not online in the busy hour. Only
+ * OPEN windows are recorded: with none open the ledger reports the whole cap as
+ * mintable and a window end that moves with the clock, which is not a window.
+ * In memory like every other reading — a restart forgets it. Cleared when the
+ * contract changes, so a flip never mixes two ledgers' hours.
+ */
+const MINT_PEAK_WINDOW_MS = 7 * 24 * 60 * 60_000;
+let mintPeaks: { contract: string | null; windows: Map<number, { used: number; perHour: number }> } = {
+  contract: null,
+  windows: new Map(),
+};
+
+function recordMintWindow(policy: TicketMintPolicy, now: number): void {
+  const a = policy.allowance;
+  if (a === "no-cap" || a.perHour === 0 || a.perHour === 0xffff_ffff) return;
+  const used = Math.max(0, a.perHour - a.mintable);
+  if (used === 0) return;
+  const contract = policy.contract.address.toLowerCase();
+  if (mintPeaks.contract !== contract) mintPeaks = { contract, windows: new Map() };
+  const prev = mintPeaks.windows.get(a.windowResetsAt);
+  if (!prev || used > prev.used) mintPeaks.windows.set(a.windowResetsAt, { used, perHour: a.perHour });
+  for (const end of mintPeaks.windows.keys()) {
+    if (end * 1000 < now - MINT_PEAK_WINDOW_MS) mintPeaks.windows.delete(end);
+  }
+}
+
+function mintPeak7d(now: number): TicketMintingSection["peak7d"] {
+  let best: { end: number; used: number; perHour: number } | null = null;
+  for (const [end, w] of mintPeaks.windows) {
+    if (end * 1000 < now - MINT_PEAK_WINDOW_MS) continue;
+    if (!best || w.used * best.perHour > best.used * w.perHour) best = { end, ...w };
+  }
+  if (!best) return null;
+  return {
+    used: best.used,
+    perHour: best.perHour,
+    pct: Math.floor((best.used * 100) / best.perHour),
+    windowEndedAt: new Date(best.end * 1000).toISOString(),
+  };
+}
 
 /**
  * Coinbase Smart Wallet factory v1: canonical address and its runtime
@@ -556,6 +600,7 @@ export async function refreshTicketMinting(
 ): Promise<void> {
   try {
     ticketMintReading = { at: Date.now(), value: await readers.ticketMintPolicy(), error: null, detail: null };
+    recordMintWindow(ticketMintReading.value!, ticketMintReading.at!);
   } catch (err) {
     ticketMintReading =
       err instanceof SponsorKeyUnconfigured
@@ -567,6 +612,7 @@ export async function refreshTicketMinting(
   const section = ticketMintingHealth();
   noteVerdict("ticketMinting.sponsorAuthorised", section.checks.sponsorAuthorised, log, ticketMintReading.detail);
   noteVerdict("ticketMinting.mintAllowance", section.checks.mintAllowance, log, ticketMintReading.detail);
+  noteVerdict("ticketMinting.mintRamp", section.checks.mintRamp, log, ticketMintReading.detail);
 }
 const TICKET_SPONSOR_UNCONFIGURED = "no ticket sponsor wallet configured (WOCO_SPONSOR_PRIVATE_KEY)";
 const TICKET_CONTRACT_MISCONFIGURED =
@@ -891,7 +937,11 @@ export interface TicketMintingSection {
   /** `"no-cap"` on V1/V2; null until read. `unlimited` = the ledger's UNLIMITED_MINTS. */
   allowance: (TicketMintReading & { unlimited: boolean }) | "no-cap" | null;
   minMintable: number;
-  checks: { sponsorAuthorised: Check; mintAllowance: Check };
+  /** Minted-this-hour share of the cap that turns the section red (#672). */
+  alarmPct: number;
+  /** The busiest open window of the last 7 days on this contract; null if none. */
+  peak7d: { used: number; perHour: number; pct: number; windowEndedAt: string } | null;
+  checks: { sponsorAuthorised: Check; mintAllowance: Check; mintRamp: Check };
   stale: boolean;
   checkedAt: string | null;
   configError?: string;
@@ -908,9 +958,12 @@ export function ticketMintingHealth(now: number = Date.now()): TicketMintingSect
   const mintAllowance = unconfigured
     ? { ok: false as const, reason: ticketMintReading.error! }
     : evaluateTicketMintAllowance({ reading: policy?.allowance ?? null, min: cfg.minMintable, reason: ticketMintReading.error });
+  const mintRamp = unconfigured
+    ? { ok: false as const, reason: ticketMintReading.error! }
+    : evaluateTicketMintRamp({ reading: policy?.allowance ?? null, alarmPct: cfg.alarmPct, reason: ticketMintReading.error });
   const allowance = policy?.allowance ?? null;
   return {
-    ok: combine([sponsorAuthorised, mintAllowance]),
+    ok: combine([sponsorAuthorised, mintAllowance, mintRamp]),
     chainId: policy?.contract.chainId ?? getActiveChainId(),
     contract: policy?.contract.address ?? null,
     version: policy?.contract.version ?? null,
@@ -920,7 +973,9 @@ export function ticketMintingHealth(now: number = Date.now()): TicketMintingSect
         ? allowance
         : { ...allowance, unlimited: allowance.perHour === 0xffff_ffff },
     minMintable: cfg.minMintable,
-    checks: { sponsorAuthorised, mintAllowance },
+    alarmPct: cfg.alarmPct,
+    peak7d: mintPeak7d(now),
+    checks: { sponsorAuthorised, mintAllowance, mintRamp },
     stale: isStale(ticketMintReading.at, now, PROBE_INTERVAL_MS),
     checkedAt: ticketMintReading.at === null ? null : new Date(ticketMintReading.at).toISOString(),
     ...(cfg.configError ? { configError: cfg.configError } : {}),
@@ -991,6 +1046,7 @@ export function __resetHealthProbes(): void {
   policyReading = empty<RegistrarPolicy>();
   cswFactoryReading = empty<string>();
   ticketMintReading = empty<TicketMintPolicy>();
+  mintPeaks = { contract: null, windows: new Map() };
   lastVerdict.clear();
   provider = null;
   ensProvider = null;
