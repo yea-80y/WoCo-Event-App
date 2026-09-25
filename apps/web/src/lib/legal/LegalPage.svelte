@@ -1,5 +1,6 @@
 <script lang="ts">
   import { renderLegalMarkdown } from "./markdown.js";
+  import { LEGAL_DOCS, slugForFile } from "./docs.js";
   import { routeHref } from "../router/router.svelte.js";
 
   interface Props {
@@ -17,13 +18,7 @@
     import: "default",
   }) as Record<string, () => Promise<string>>;
 
-  const DOCS: Record<string, { title: string; file: string }> = {
-    privacy: { title: "Privacy Policy", file: "PRIVACY_POLICY.md" },
-    terms: { title: "Terms of Service", file: "TERMS_OF_SERVICE.md" },
-    "organiser-terms": { title: "Organiser Terms", file: "ORGANISER_TERMS.md" },
-    dpa: { title: "Data Processing Addendum", file: "DATA_PROCESSING_ADDENDUM.md" },
-    cookies: { title: "Cookie Notice", file: "COOKIE_NOTICE.md" },
-  };
+  const DOCS = LEGAL_DOCS;
 
   const entry = $derived(DOCS[doc]);
 
@@ -34,11 +29,19 @@
     window.scrollTo(0, 0);
   });
 
+  // One document links to another by file name. The route that serves it is not
+  // derivable from that name, and the href must be absolute or the deploy's
+  // <base href> sends the reader to the gateway origin (#605).
+  function resolveDoc(href: string): string | null {
+    const slug = slugForFile(href);
+    return slug ? routeHref(`/legal/${slug}`) : null;
+  }
+
   const html = $derived.by(async () => {
     if (!entry) return null;
     const key = Object.keys(sources).find((k) => k.endsWith(`/${entry.file}`));
     if (!key) throw new Error(`Legal document not bundled: ${entry.file}`);
-    return renderLegalMarkdown(await sources[key]());
+    return renderLegalMarkdown(await sources[key](), resolveDoc);
   });
 </script>
 
