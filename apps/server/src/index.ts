@@ -272,8 +272,9 @@ app.get("/api/health", (c) =>
     // yet — and until it lands the organiser is still scheduled to be paid for
     // it. Counts only; the ops route has the entries.
     pendingRefunds: pendingRefundsHealth(),
-    // #645: a tampered session (ours, altered after creation) is the alarm;
-    // foreign sessions are an organiser's own sales and are only counted.
+    // #645: a tampered session (ours, altered after creation) is an alarm, and so
+    // is a sale left unverifiable for 10 minutes (#666, `stuck`); foreign sessions
+    // are an organiser's own sales and are only counted.
     checkoutProvenance: checkoutProvenanceHealth(),
     compliancePersistence: persistHealth(),
     // `false` is an alarm, not a statistic: the Kernel known-deployed record

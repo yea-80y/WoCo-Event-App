@@ -1136,7 +1136,7 @@ stripe.post("/webhook", async (c) => {
         // an organiser with their own Stripe Dashboard can create sessions and
         // edit metadata there (lib/stripe/checkout-provenance.ts).
         const verdict = await classifyPaidSession(session, event.account, liveProvenanceReads);
-        noteProvenanceVerdict(verdict);
+        noteProvenanceVerdict(session.id, verdict);
         if (verdict.kind === "unverifiable") {
           console.error(
             `[stripe-webhook] Session ${session.id}: provenance could not be checked (${verdict.reason}) — asking Stripe to retry`,
@@ -1192,7 +1192,8 @@ stripe.post("/webhook", async (c) => {
         }
 
         // Return 200 to Stripe immediately — Stripe best practice.
-        // Stripe's delivery timeout is 30 s; the mint + email take longer.
+        // Stripe publishes no delivery timeout, and the buyer's redirect to
+        // success_url waits on this 2xx (up to 10 s); the mint + email take longer.
         // The payment is already confirmed (payment_status === "paid") — the
         // mint is the result of that confirmation, not a prerequisite.
         // Fulfilment never rejects: every failure is a refund reason, a
