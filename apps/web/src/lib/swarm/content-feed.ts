@@ -16,7 +16,7 @@
  * `/feeds`).
  */
 
-// ethers and client-soc (bee-js) are imported lazily inside each function —
+// ethers, client-soc (bee-js) and probe-soc are imported lazily inside each function —
 // this module is statically reachable from api/events + api/profiles at first
 // paint, and top-level imports here would drag both libraries into the boot
 // bundle.
@@ -150,9 +150,10 @@ export async function writeContentFeed(args: {
    */
   knownVersion?: number;
 }): Promise<number> {
-  const [{ Wallet }, { signAndUploadSoc, probeSoc }] = await Promise.all([
+  const [{ Wallet }, { signAndUploadSoc }, { probeSoc }] = await Promise.all([
     import("ethers"),
     import("./client-soc.js"),
+    import("./probe-soc.js"),
   ]);
   const key = args.signerPrivKey.startsWith("0x") ? args.signerPrivKey : `0x${args.signerPrivKey}`;
   const owner = new Wallet(key).address.toLowerCase();
@@ -275,12 +276,12 @@ export async function readContentFeedResult<T>(
   /** `route`: where this feed is stamped - see {@link FeedRoute}. */
   opts: { route: FeedRoute; skipLegacy?: boolean; thorough?: boolean },
 ): Promise<ContentFeedResult<T>> {
-  const { probeSoc } = await import("./client-soc.js");
+  const { probeSoc } = await import("./probe-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
   // `thorough` — REQUIRED by the contract in this function's own docstring:
   // "use this wherever `absent` gets acted on: a durable write, a cached
   // negative, or a security decision." Since the reader may now treat a tagged
-  // gateway 403 as absent (client-soc.ts), those three cases can no longer take
+  // gateway 403 as absent (probe-soc.ts), those three cases can no longer take
   // the gate's word for it, and a caller that acts on absence must say so.
   // Ordinary display reads leave it off and keep the cheap path.
   const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough, gatewayUrl: opts.route.gatewayUrl });
@@ -336,7 +337,7 @@ export async function readContentFeedAtVersion<T>(
   if (!Number.isInteger(version) || version < 0) {
     return { status: "unavailable", reason: `invalid version ${version}` };
   }
-  const { probeSoc } = await import("./client-soc.js");
+  const { probeSoc } = await import("./probe-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
   const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough, gatewayUrl: opts.route.gatewayUrl });
   const base = contentFeedSocIdentifier(topic);
@@ -454,7 +455,7 @@ export async function readBandedContentFeed<T>(
   /** `route`: see {@link FeedRoute}. */
   opts: { route: FeedRoute; hintBand?: number; thorough?: boolean },
 ): Promise<BandedContentFeedResult<T>> {
-  const { probeSoc } = await import("./client-soc.js");
+  const { probeSoc } = await import("./probe-soc.js");
   const owner = (ownerAddress.startsWith("0x") ? ownerAddress.slice(2) : ownerAddress).toLowerCase();
   // `thorough` is REQUIRED of any caller whose result feeds a read-modify-write
   // of a whole snapshot. Such a writer probes for a fresh address independently
@@ -463,7 +464,7 @@ export async function readBandedContentFeed<T>(
   // and erases every entry added since. Nothing detects it.
   //
   // This became load-bearing when the reader started trusting a tagged 403 as
-  // absent (client-soc.ts): the gate is authoritative only while its whitelist
+  // absent (probe-soc.ts): the gate is authoritative only while its whitelist
   // is complete, and a lost entry would otherwise read as a CLEAN absent —
   // clean being exactly what the `bandClean`/`scanClean` guards check. Thorough
   // reads keep consulting the server, so they cannot be fooled by the gate.
