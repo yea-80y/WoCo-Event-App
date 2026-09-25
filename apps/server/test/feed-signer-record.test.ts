@@ -123,11 +123,12 @@ test("one bad record is kept on disk untouched, never served, and alarms; the re
   assert.throws(() => m.recordEventFeedSigner("bad-id", SIGNER, CREATOR), m.FeedSignerRebindError);
 });
 
-test("a write that cannot reach disk is not a record: it throws and forgets", () => {
+// Root ignores a 0500 directory, so under root this would be a false red, not a finding.
+test("a write that cannot reach disk is not a record: it throws and forgets", { skip: process.getuid?.() === 0 }, () => {
   m.recordEventFeedSigner("first", SIGNER, CREATOR); // creates .data
   chmodSync(DATA, 0o500);
   try {
-    assert.throws(() => m.recordEventFeedSigner(EVENT, SIGNER, CREATOR), /could not be written/);
+    assert.throws(() => m.recordEventFeedSigner(EVENT, SIGNER, CREATOR), m.FeedSignerWriteError);
     assert.equal(m.getRecordedFeedSigner(EVENT), null);
   } finally {
     chmodSync(DATA, 0o700);
@@ -153,6 +154,13 @@ test("a recorded event's feed must name the recorded creator, or it is not found
 test("an event with no record (legacy, or created without a signer) passes unchanged", () => {
   const f = feed(OTHER);
   assert.equal(m.acceptEventFeed(EVENT, f), f);
+});
+
+test("the store's own failures are recognised, so the organiser gets a plain sentence", () => {
+  assert.equal(m.isFeedSignerStoreError(new m.FeedSignerRebindError("x")), true);
+  assert.equal(m.isFeedSignerStoreError(new m.FeedSignerStoreUnreadableError("x")), true);
+  assert.equal(m.isFeedSignerStoreError(new m.FeedSignerWriteError("x")), true);
+  assert.equal(m.isFeedSignerStoreError(new Error("Stripe account not onboarded")), false);
 });
 
 // ── Wiring (text checks: getEvent reads Swarm, which a unit test cannot) ──────
@@ -193,6 +201,25 @@ test("the directory's signer is born from the record", () => {
   assert.match(service, /const feedSigner = resolutionSigner\(eventId, updated\);/);
   const helper = between("function resolutionSigner(", "\n}\n");
   assert.match(helper, /return recorded \?\? feed\.creatorFeedSigner;/);
+});
+
+test("registration's cold-cache fallback checks the creator before it primes the cache", () => {
+  const confirm = between("export async function confirmSeriesOnChain(", "\nexport ");
+  const read = confirm.indexOf("feed = acceptEventFeed(eventId, await readEventFeedSoc(eventId, signerHint))");
+  const prime = confirm.indexOf("primeEventCache(eventId, updated)");
+  assert.ok(read > 0 && prime > read, "accept the fallback read, then prime");
+});
+
+test("the public page applies the same creator check, so it never shows what checkout refuses", () => {
+  const display = between("export async function getEventForDisplay(", "\n}\n");
+  assert.match(display, /const soc = acceptEventFeed\(eventId, await readEventFeedSoc\(/);
+});
+
+test("create never hands the organiser the store's operator text", () => {
+  const route = readFileSync(new URL("../src/routes/events.ts", import.meta.url), "utf-8");
+  const c = route.slice(route.indexOf('console.error("[api] createEventV2 error:", err);'));
+  const handler = c.slice(0, c.indexOf("});"));
+  assert.match(handler, /isFeedSignerStoreError\(err\)\s*\n?\s*\? "Publishing is paused while the server is repaired/);
 });
 
 test("/api/health carries the store's alarm", () => {

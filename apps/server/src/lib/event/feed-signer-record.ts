@@ -26,11 +26,13 @@
  * on the listing overlay, whose `seed` is rewritten by `/list` (#674) and
  * rebuilt from snapshots that never held an unlisted event.
  *
- * MUST SURVIVE RESTARTS, and cannot be rebuilt: the signer is only in the
- * organiser's own SOC, which needs the signer to find. Losing it fails CLOSED:
- * unlisted events stop selling, listed ones fall back to the directory. A file
- * that exists and cannot be read is never overwritten; every write is refused
- * and `/api/health` `eventFeedSigners` alarms until an operator restores it.
+ * MUST SURVIVE RESTARTS. The server cannot rebuild it (creators are not
+ * enumerable); an operator can restore one organiser's records, best effort,
+ * from their creator index `woco/event/creator/{address}`, which carries both
+ * values for every event, unlisted included. Losing it fails CLOSED: unlisted
+ * events stop selling, listed ones fall back to the directory. A file that
+ * exists and cannot be read is never overwritten; every write is refused and
+ * `/api/health` `eventFeedSigners` alarms until an operator restores it.
  */
 
 import { readFileSync } from "node:fs";
@@ -63,6 +65,26 @@ export class FeedSignerStoreUnreadableError extends Error {
     super(message);
     this.name = "FeedSignerStoreUnreadableError";
   }
+}
+
+/** Thrown when a record could not be made durable. */
+export class FeedSignerWriteError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FeedSignerWriteError";
+  }
+}
+
+/**
+ * A create that failed at this store. The messages name a `.data` file and are
+ * for the operator's log; the organiser gets a plain sentence instead.
+ */
+export function isFeedSignerStoreError(err: unknown): boolean {
+  return (
+    err instanceof FeedSignerRebindError ||
+    err instanceof FeedSignerStoreUnreadableError ||
+    err instanceof FeedSignerWriteError
+  );
 }
 
 let records = new Map<string, FeedSignerRecord>();
@@ -147,7 +169,7 @@ export function recordEventFeedSigner(eventId: string, signer: string, creatorAd
     // Not durable means not a record: the next restart would forget it and the
     // event would stop selling. Fail the create while nothing is signed yet.
     records.delete(eventId);
-    throw new Error(`event ${eventId}: the feed signer record could not be written`);
+    throw new FeedSignerWriteError(`event ${eventId}: the feed signer record could not be written`);
   }
 }
 

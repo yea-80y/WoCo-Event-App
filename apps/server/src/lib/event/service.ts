@@ -358,7 +358,8 @@ export async function confirmSeriesOnChain(
   // The signerHint SOC read stays as the cold-cache fallback (e.g. a retried confirm
   // after a restart, once the client SOC does exist).
   let feed = await getEvent(eventId);
-  if (!feed && signerHint) feed = await readEventFeedSoc(eventId, signerHint);
+  // Same creator check as getEvent: this feed primes the money-path cache below.
+  if (!feed && signerHint) feed = acceptEventFeed(eventId, await readEventFeedSoc(eventId, signerHint));
   if (!feed) throw new Error("Event not found");
 
   const updated: EventFeed = {
@@ -935,8 +936,9 @@ export async function getEventForDisplay(
     } catch {
       trustedCarrier = null;
     }
-    // Trusted carrier wins; the hint is the fallback only when there is none.
-    const soc = await readEventFeedSoc(eventId, trustedCarrier ?? untrustedSigner);
+    // Trusted carrier wins; the hint is the fallback only when there is none. The
+    // creator check too, so the page and the checkout give one answer (#670).
+    const soc = acceptEventFeed(eventId, await readEventFeedSoc(eventId, trustedCarrier ?? untrustedSigner));
     if (soc) return soc.deleted ? null : soc;
   }
   return getEvent(eventId);
