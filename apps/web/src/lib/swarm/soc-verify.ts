@@ -1,13 +1,12 @@
 /**
  * Client-side verification of a SOC handed to us by the API origin (#156).
  *
- * The gateway path is self-verifying (bee-js's SOC reader rejects a chunk whose
- * recovered signer is not the owner), so it adds no trust. The server fallback
- * used to return a bare payload the client decoded and believed — which made
- * the API origin a trust root for every client-owned feed, on exactly the path
- * a hostile or broken origin can force. Now the server returns the whole SOC
- * and this runs the same three checks bee does: identifier is the one we asked
- * for, span matches the payload, signature recovers to the owner.
+ * Both read sources run it: our gateway's chunk and the API origin's relayed SOC
+ * alike (`probe-soc.ts`, #658), so neither adds trust. The server fallback used
+ * to return a bare payload the client decoded and believed — which made the API
+ * origin a trust root for every client-owned feed, on exactly the path a hostile
+ * or broken origin can force. Three checks: the identifier is the one we asked
+ * for, the span matches the payload, the signature recovers to the owner.
  *
  * Pure; takes the wire fields. A rollback (an OLDER genuine chunk served for a
  * NEWER identifier) fails here on the identifier check — the signature covers

@@ -282,7 +282,7 @@ export async function portabilityEnvelopeExists(args: {
   const [keys, { probeSoc }, { contentFeedSocIdentifier, versionedSocIdentifier }] =
     await Promise.all([
       derivePortabilityKeys(args.passkeyPrivKey),
-      import("../swarm/client-soc.js"),
+      import("../swarm/probe-soc.js"),
       import("@woco/shared"),
     ]);
 

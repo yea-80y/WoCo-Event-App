@@ -1,15 +1,10 @@
 import { AuthErrorCode, type ApiResponse, type SessionDelegation } from "@woco/shared";
 import { auth } from "../auth/auth-store.svelte.js";
 import { sessionHealth } from "./session-health.svelte.js";
+import { BASE, safeJson } from "./http.js";
 
-/** API base URL — runtime config wins, then build-time env var, then empty (dev proxy) */
-const BASE =
-  (typeof window !== "undefined" && window.SITE_CONFIG?.apiUrl) ||
-  import.meta.env.VITE_API_URL ||
-  "";
-
-/** Exported for direct fetch calls in events.ts */
-export const apiBase = BASE;
+// The unauthenticated half lives in http.ts, free of the auth store (#658).
+export { apiBase, get, post } from "./http.js";
 
 /**
  * The siteId of the deployed organiser site this app is running inside, or
@@ -22,29 +17,6 @@ export const apiBase = BASE;
 export function currentSiteId(): string | undefined {
   if (typeof window === "undefined") return undefined;
   return window.SITE_CONFIG?.site?.siteId;
-}
-
-/**
- * Read a response body as JSON, falling back to a typed `{ ok: false, error }`
- * envelope when the server returns a non-JSON body (e.g. Hono's plain-text
- * "404 Not Found" or an upstream HTML error page). Without this, callers
- * `await resp.json()` throws SyntaxError unhandled — UI state machines that
- * sit outside try/catch end up frozen instead of surfacing the error.
- */
-async function safeJson<T>(resp: Response): Promise<ApiResponse<T>> {
-  const text = await resp.text();
-  try {
-    // `status` is stamped on every response, not just the non-JSON fallback.
-    // Without it a 403 auth rejection and a 400 business-rule failure both
-    // arrive as `{ ok: false, error }` and no caller can tell them apart.
-    return { ...(JSON.parse(text) as ApiResponse<T>), status: resp.status };
-  } catch {
-    return {
-      ok: false,
-      error: `HTTP ${resp.status}${text ? `: ${text.slice(0, 200)}` : ""}`,
-      status: resp.status,
-    } as ApiResponse<T>;
-  }
 }
 
 /**
@@ -355,18 +327,3 @@ export async function authStream(
   return retried;
 }
 
-/** Unauthenticated GET request. */
-export async function get<T>(path: string, baseUrl?: string): Promise<ApiResponse<T>> {
-  const resp = await fetch(`${baseUrl ?? BASE}${path}`);
-  return safeJson<T>(resp);
-}
-
-/** Unauthenticated POST request. */
-export async function post<T>(path: string, body: unknown, baseUrl?: string): Promise<ApiResponse<T>> {
-  const resp = await fetch(`${baseUrl ?? BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return safeJson<T>(resp);
-}

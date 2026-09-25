@@ -162,7 +162,7 @@ test("every direct probe in the app names a gateway", () => {
   let seen = 0;
   for (const file of sourceFiles(SRC)) {
     const rel = relative(SRC, file);
-    if (rel === "lib/swarm/client-soc.ts") continue; // the primitive itself
+    if (rel === "lib/swarm/probe-soc.ts") continue; // the primitive itself
     for (const args of callArgs(code(readFileSync(file, "utf8")), "probeSoc")) {
       seen++;
       // Taken from a route, not merely present: `gatewayUrl: undefined` compiles.
