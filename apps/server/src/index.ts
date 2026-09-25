@@ -241,6 +241,10 @@ app.use("/api/*", apiBodyLimit());
 // mistyped content-type into a dead asset. See lib/http/security-headers.ts.
 app.use("/api/*", securityHeaders());
 app.use("/embed/*", securityHeaders());
+// Ticket pages carry a working ticket in their URL, so they must never hand it
+// to another site in a Referer header. Every /t response is our own HTML, PNG or
+// JSON with an explicit content-type, so nosniff is safe here too.
+app.use("/t/*", securityHeaders());
 
 // Health check. Includes payout-sweep liveness (no amounts — this endpoint is
 // public): if `payoutSweep.stale` is ever true, organiser money has stopped moving

@@ -87,12 +87,13 @@ function parseQrContent(qr: string): { eventId: string; seriesId: string; editio
 }
 
 /** Build the public URL for a ticket — both the HTML page and the composite
- *  PNG share the same base; the .png suffix toggles between them. */
-function ticketUrl(qrContent: string, buyerName?: string, png = false, siteId?: string): string | null {
+ *  PNG share the same base; the .png suffix toggles between them. Never carries
+ *  the buyer's name: a URL ends up in logs, history and mail link scanners, and
+ *  the page does not read one (ticket-page.ts). */
+export function ticketUrl(qrContent: string, png = false, siteId?: string): string | null {
   const p = parseQrContent(qrContent);
   if (!p) return null;
   const params = new URLSearchParams();
-  if (buyerName) params.set("n", buyerName);
   if (siteId) params.set("s", siteId);
   const q = params.toString();
   const path = `/t/${p.eventId}/${p.seriesId}/${p.edition}/${p.sig}${png ? ".png" : ""}`;
@@ -104,7 +105,7 @@ function escHtml(s: string): string {
 }
 
 function buildTicketHtml(opts: TicketEmailOpts): string {
-  const { to, eventTitle, eventDate, eventLocation, seriesName, tickets: tix, totalSupply, buyerName, palette: p, siteId } = opts;
+  const { to, eventTitle, eventDate, eventLocation, seriesName, tickets: tix, totalSupply, palette: p, siteId } = opts;
   // Resolved palette — organiser brand when available, WoCo Concrete & Acid otherwise
   const c = {
     bg:      p?.bg      ?? '#0B0B09',
@@ -125,7 +126,7 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
   const ticketBlocks = tix.map(({ edition, qrContent }, i) => {
     const editionStr = edition != null ? String(edition).padStart(3, "0") : null;
     // Standalone HTML page: fast server-rendered, no SPA load.
-    const pageUrl = ticketUrl(qrContent, buyerName, false, siteId);
+    const pageUrl = ticketUrl(qrContent, false, siteId);
     const cid = `woco-card-${i}`;
     // Group buys: each ticket carries its own one-shot signup link — forward a
     // ticket to a friend and their click binds THAT edition, not the buyer's.

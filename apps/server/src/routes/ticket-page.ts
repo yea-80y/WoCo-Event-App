@@ -9,11 +9,14 @@
  * Loads in a few hundred ms even on cold mobile networks, which is the whole
  * point of replacing the old `woco.eth.limo/#/verify?t=…` link.
  *
- * Both endpoints accept optional query params `?n=` (buyer name) and `?e=`
- * (buyer email). These are display-only — the cryptographic guarantee comes
- * from the secp256k1 ticket signature in the URL path (EIP-191 by the burner
- * key, recovered against the on-chain slotOwner — see lib/ticket/verify-sig.ts),
- * not from the displayed text.
+ * Both endpoints accept one optional query param, `?s=` (the organiser site, for
+ * its palette). They take no name or email from the URL: a query string is
+ * written into CDN logs, browser history and the link scanners mail providers
+ * run, and anything read from it can be set by whoever holds the link - a page
+ * that printed "issued to" from `?n=` let anyone put any name on a genuine
+ * ticket. The cryptographic guarantee is the secp256k1 ticket signature in the
+ * URL path (EIP-191 by the burner key, recovered against the on-chain slotOwner
+ * - see lib/ticket/verify-sig.ts).
  *
  * No auth: possession of the URL is possession of the ticket. Buyers can
  * forward one URL per ticket to a friend in a multi-ticket purchase. This
@@ -45,7 +48,6 @@ interface TicketContext {
   edition: number;
   sig: string;
   qrContent: string;
-  buyerName?: string;
 }
 
 function escHtml(s: string): string {
@@ -64,16 +66,12 @@ function parseContext(c: Context<AppEnv>): TicketContext | null {
   const edition = Number(editionStr);
   if (!eventId || !seriesId || !sig || !Number.isInteger(edition) || edition < 1) return null;
 
-  const url = new URL(c.req.url);
-  const buyerName = url.searchParams.get("n") ?? undefined;
-
   return {
     eventId,
     seriesId,
     edition,
     sig,
     qrContent: `woco://t/${eventId}/${seriesId}/${edition}/${sig}`,
-    buyerName: buyerName?.trim() || undefined,
   };
 }
 
@@ -94,10 +92,7 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig{.+\\.png}", async (c) => {
     return c.text("Invalid ticket signature", 403);
   }
 
-  const url = new URL(c.req.url);
-  const buyerName = url.searchParams.get("n")?.trim() || undefined;
-
-  const siteId = url.searchParams.get("s")?.trim() || undefined;
+  const siteId = new URL(c.req.url).searchParams.get("s")?.trim() || undefined;
 
   let eventTitle = "Event ticket";
   let eventDate: string | undefined;
@@ -123,7 +118,6 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig{.+\\.png}", async (c) => {
     eventDate,
     eventLocation,
     edition,
-    buyerName,
     qrContent: `woco://t/${eventId}/${seriesId}/${edition}/${sig}`,
     palette,
   });
@@ -131,8 +125,8 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig{.+\\.png}", async (c) => {
   // Convert Node Buffer to Uint8Array for the Response BodyInit type.
   return c.body(new Uint8Array(png), 200, {
     "content-type": "image/png",
-    // `private`: the URL embeds the ticket signature and may carry a display
-    // name, so no shared cache may key on it.
+    // `private`: the URL embeds the ticket signature, so no shared cache may
+    // key on it.
     "cache-control": "private, max-age=300",
   });
 });
@@ -253,7 +247,9 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig", async (c) => {
     color: { dark: "#0c0d12", light: "#ffffff" },
   });
 
-  const pngUrl = `${c.req.path}.png${c.req.url.includes("?") ? c.req.url.slice(c.req.url.indexOf("?")) : ""}`;
+  // Only the site id is carried forward: copying the whole query string would
+  // pass along whatever else the link was given.
+  const pngUrl = `${c.req.path}.png${siteId ? `?s=${encodeURIComponent(siteId)}` : ""}`;
   const jsonUrl = `${c.req.path}.json`;
 
   const html = `<!DOCTYPE html>
@@ -280,9 +276,6 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig", async (c) => {
     .qr { width: 100%; max-width: 320px; aspect-ratio: 1; margin: 0 auto; padding: 12px; background: #fff; border-radius: 12px; }
     .qr svg { display: block; width: 100%; height: 100%; }
     .qr-cap { margin-top: 0.875rem; text-align: center; font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.18em; color: ${pc.muted}; }
-    .footer { padding: 1.25rem 1.5rem 1.5rem; text-align: center; }
-    .footer-label { font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.18em; color: ${pc.muted}; margin-bottom: 0.375rem; }
-    .footer-name { font-size: 1rem; font-weight: 600; color: ${pc.text}; word-break: break-word; }
     .actions { width: 100%; max-width: 420px; margin-top: 1rem; display: flex; gap: 0.5rem; }
     .btn { flex: 1; padding: 0.75rem; text-align: center; text-decoration: none; font-size: 0.8125rem; font-weight: 600; border-radius: 10px; transition: background 0.15s; }
     .btn-primary { background: ${pc.accent}; color: ${pc.bg}; }
@@ -310,11 +303,6 @@ ticketPage.get("/:eventId/:seriesId/:edition/:sig", async (c) => {
         <div class="qr">${qrSvg}</div>
         <div class="qr-cap">SHOW AT THE DOOR</div>
       </div>
-      ${ctx.buyerName ? `
-      <footer class="footer">
-        <div class="footer-label">ISSUED TO</div>
-        <div class="footer-name">${escHtml(ctx.buyerName)}</div>
-      </footer>` : ""}
     </article>
     <div class="actions">
       <a href="${escHtml(pngUrl)}" download="ticket-${editionStr}.png" class="btn btn-primary">Save image</a>
