@@ -5,7 +5,7 @@ import type {
 } from "@woco/shared";
 import { verifyManifestV2, buildEditionTree, manifestV2Digest, bytesToHex0x, eventContentTopic, FEATURES } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
-import { batchForDeploy, ETHERNA_URL, isEthernaGateway, isWocoGateway, type BatchSelection } from "../etherna/batch-router.js";
+import { batchForDeploy, ETHERNA_URL, isEthernaGateway, isWocoGateway, PlatformBatchUnavailable, type BatchSelection } from "../etherna/batch-router.js";
 import { readContentFeedJson, invalidateContentFeedVersion } from "../swarm/soc-upload.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
 import { getActiveChainId, type EventContractTarget } from "../chain/event-contract.js";
@@ -51,6 +51,8 @@ function legacyEventFeedDest(feed: Pick<EventFeed, "creatorAddress" | "gatewayUr
     });
     return sel.target === "etherna" ? sel : undefined;
   } catch (e) {
+    // A dead platform batch refuses, never detours - see siteFeedDest (#610).
+    if (e instanceof PlatformBatchUnavailable) throw e;
     console.warn("[event] legacy feed batch routing failed — WoCo fallback:", (e as Error).message);
     return undefined;
   }

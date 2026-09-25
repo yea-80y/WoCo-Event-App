@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getProfile, updateProfile, uploadAvatar } from "../lib/profile/service.js";
+import { PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
 import {
   getLabelOwner,
   getLabelContenthash,
@@ -294,6 +295,7 @@ profiles.post("/avatar", requireAuth, async (c) => {
     const avatarRef = await uploadAvatar(parentAddress, bytes, { writeFeed: body.clientOwned !== true });
     return c.json({ ok: true, data: { avatarRef } });
   } catch (err) {
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     console.error("[api] uploadAvatar error:", err);
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ ok: false, error: `Failed to upload avatar: ${msg}` }, 500);

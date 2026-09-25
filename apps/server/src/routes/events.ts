@@ -14,7 +14,7 @@ import { registerSeriesExactlyOnce } from "../lib/event/register-once.js";
 import { RegistrationRebindError, RegistryUnreadableError } from "../lib/event/onchain-registry.js";
 import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
-import { batchForDeploy } from "../lib/etherna/batch-router.js";
+import { batchForDeploy, PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
 import type { SeriesManifestBlob } from "@woco/shared";
 import { manifestV2Digest, validateSignedManifestV2, bytesToHex0x } from "@woco/shared";
 import { verifyAndPinIssuerBinding } from "../lib/issuer/binding.js";
@@ -416,7 +416,8 @@ events.post("/", requireAuth, async (c) => {
       const message = isFeedSignerStoreError(err)
         ? "Publishing is paused while the server is repaired. Nothing was created - please try again later."
         : err instanceof Error ? err.message : "Failed to create event";
-      stream.writeln(JSON.stringify({ type: "error", ok: false, error: message }));
+      const code = err instanceof PlatformBatchUnavailable ? { code: err.code } : {};
+      stream.writeln(JSON.stringify({ type: "error", ok: false, error: message, ...code }));
     }
   });
 });
@@ -481,6 +482,7 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
         console.warn("[event] edit-image whitelist failed (non-critical):", err));
       updates.imageHash = imageHash;
     } catch (err) {
+      if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
       console.error("[api] update-meta image upload failed:", err);
       return c.json({ ok: false, error: "Image upload failed" }, 502);
     }
@@ -532,6 +534,8 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
     // it; legacy callers need it for the fresh imageHash (already platform-written).
     return c.json({ ok: true, data: { eventId, eventFeed: updated } });
   } catch (err) {
+    // A legacy (platform-written) event's feed restamp goes through the router.
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     const msg = err instanceof Error ? err.message : "Failed to update event";
     const status =
       msg === "Event not found" ? 404 :
@@ -565,6 +569,7 @@ events.post("/:id/delete", requireAuth, async (c) => {
     if (err instanceof DeleteBlockedError) {
       return c.json({ ok: false, error: err.message, blockers: err.blockers }, 409);
     }
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     const msg = err instanceof Error ? err.message : "Failed to delete event";
     const status =
       msg === "Event not found" ? 404 :

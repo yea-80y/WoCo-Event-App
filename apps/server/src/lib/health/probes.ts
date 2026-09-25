@@ -114,6 +114,14 @@ let paymasterReading = empty<bigint>();
 let beeReading = empty<StampReading & { immutable: boolean | null }>();
 let chainstateReading = empty<{ block: number; chainTip: number }>();
 let ethernaReading = empty<StampReading & { immutable: boolean | null }>();
+/**
+ * The last POSITIVE Etherna reading (a parsed stamp or a 404), for the router's
+ * liveness guard (#610). Kept apart from `ethernaReading` because a failed read
+ * must never ERASE a verdict: one stamps-read timeout after a confirmed 404 would
+ * otherwise read as "unknown" and reopen writes onto the dead batch. It still
+ * ages out under the same stale rule the health section uses.
+ */
+let ethernaVerdict: EthernaPlatformBatchSnapshot | null = null;
 let ensExpiryReading = empty<bigint>();
 /**
  * WHY A SECOND TIMESTAMP. `Reading.at` is when the probe last RAN; this is when
@@ -502,6 +510,14 @@ export async function refreshPostage(
       ethernaReading = parsed ? { at: Date.now(), value: parsed, error: null, detail: null } : unparsed();
     } catch (err) {
       ethernaReading = isNotFound(err) ? gone(err) : failed(err);
+    }
+    if (ethernaReading.value || ethernaReading.gone) {
+      ethernaVerdict = {
+        batchId: ethernaBatch,
+        at: ethernaReading.at,
+        gone: ethernaReading.gone === true,
+        stamp: ethernaReading.value,
+      };
     }
   }
 
@@ -998,6 +1014,28 @@ export async function beeBatchState(): Promise<{ usable: boolean | null; ttl: nu
   return { usable: beeReading.value?.usable ?? null, ttl: beeReading.value?.batchTTL ?? null };
 }
 
+export interface EthernaPlatformBatchSnapshot {
+  /** The batch this reading is for ("" before the first positive read). */
+  batchId: string;
+  /** When that reading was taken, or null if there has been none. */
+  at: number | null;
+  /** Etherna positively said the batch does not exist. */
+  gone: boolean;
+  /** The parsed stamp; null exactly when `gone`. */
+  stamp: StampReading | null;
+}
+
+/**
+ * The last POSITIVE Etherna platform-batch reading, for the batch router's
+ * liveness guard (#610). Failed and incomplete reads never replace it. Synchronous
+ * and cache-only on purpose: the router is called on every write path and awaits
+ * nothing, and one probe on one clock is the only answer to "is it alive" (see
+ * `beeBatchState` for why there must never be two).
+ */
+export function ethernaPlatformBatchSnapshot(): EthernaPlatformBatchSnapshot {
+  return ethernaVerdict ?? { batchId: "", at: null, gone: false, stamp: null };
+}
+
 // ---------------------------------------------------------------------------
 // Timer
 // ---------------------------------------------------------------------------
@@ -1008,6 +1046,11 @@ let ensExpiryDueAt = 0;
 
 export function startHealthProbes(): void {
   if (timer) return;
+  if (process.env.ETHERNA_PLATFORM_BATCH && !process.env.ETHERNA_API_KEY) {
+    console.warn(
+      "[health] ETHERNA_PLATFORM_BATCH is set but ETHERNA_API_KEY is not: the platform batch is never read, so the router cannot refuse writes onto a dead one (#610)",
+    );
+  }
   const tick = () => {
     const etherna = Date.now() >= ethernaDueAt;
     if (etherna) ethernaDueAt = Date.now() + ETHERNA_PROBE_INTERVAL_MS;
@@ -1039,6 +1082,7 @@ export function __resetHealthProbes(): void {
   beeReading = empty<StampReading & { immutable: boolean | null }>();
   chainstateReading = empty<{ block: number; chainTip: number }>();
   ethernaReading = empty<StampReading & { immutable: boolean | null }>();
+  ethernaVerdict = null;
   ensExpiryReading = empty<bigint>();
   ensExpiryOkAt = null;
   enrolmentReading = empty<Enrolment>();
