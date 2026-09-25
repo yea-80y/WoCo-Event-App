@@ -853,7 +853,7 @@
             <p class="ens-bind-warning">{ensBindWarning}</p>
           {/if}
           {#if ensPointer}
-            <NamePointerPrompt label={ensPointer.label} target={ensPointer.target} purpose="profile" />
+            <NamePointerPrompt label={ensPointer.label} target={ensPointer.target} targetIsFeed={true} purpose="profile" />
           {/if}
         </section>
 

@@ -13,7 +13,7 @@
   import SiteSelector from "./builder/SiteSelector.svelte";
   import EventDomainPicker, { type EventDomainIntent } from "./builder/EventDomainPicker.svelte";
   import BackupNudge from "../components/recovery/BackupNudge.svelte";
-  import { addSiteEvent } from "../api/sites.js";
+  import { addSiteEvent, deployEventPage, type DeployEventPageResult } from "../api/sites.js";
   import { claimSubEnsLabel, stampEventSubEns } from "../api/sub-ens.js";
   import NamePointerPrompt from "../components/sub-ens/NamePointerPrompt.svelte";
   import { describeSubEnsError, subEnsErrorDetail } from "../sub-ens/errors.js";
@@ -91,7 +91,7 @@
   // Step 3 — live + domain (deploy state)
   let deploying = $state(false);
   let deployError = $state<string | null>(null);
-  let deployResult = $state<{ contentHash: string; feedManifestHash: string } | null>(null);
+  let deployResult = $state<(DeployEventPageResult & { feedSigned: boolean }) | null>(null);
 
   let listingOnWoco = $state(false);
   let wocoListError = $state<string | null>(null);
@@ -150,20 +150,35 @@
   const dashboardUrl = $derived(eventSiteUrl ? `${eventSiteUrl}#/dashboard` : "");
   const ensHash = $derived(deployResult?.feedManifestHash ? `bzz://${deployResult.feedManifestHash}` : "");
 
-  async function deployToSwarm(): Promise<{ contentHash: string; feedManifestHash: string } | null> {
+  // The name follows the page's FEED only when this deploy's update was signed
+  // with the organiser's own key (#614) - never on the server's word alone.
+  // Otherwise the fixed page version, which no key can change.
+  const pointerFollowsFeed = $derived(
+    !!deployResult && deployResult.feedOwner === "client" && deployResult.feedSigned && !!deployResult.feedManifestHash,
+  );
+  const pointerTarget = $derived(
+    deployResult ? (pointerFollowsFeed ? deployResult.feedManifestHash : deployResult.contentHash) : "",
+  );
+
+  async function deployToSwarm(): Promise<(DeployEventPageResult & { feedSigned: boolean }) | null> {
     if (!createdEventId) return null;
     try {
-      const json = await authPost<{ contentHash: string; feedManifestHash: string }>(
-        "/api/site/deploy",
+      // The page's feed is the organiser's own (#614): this key signs each
+      // update, so a name bound to it follows every republish unsigned. The
+      // name is sent only to ask whether it already follows the feed.
+      const feedSigner = await auth.getContentFeedSigner();
+      const json = await deployEventPage(
+        createdEventId,
         {
-          eventId: createdEventId,
-          gatewayUrl: gatewayUrl.trim(),
           apiUrl,
+          gatewayUrl: gatewayUrl.trim(),
+          ...(domainIntent.mode === "existing" && domainIntent.label ? { subEnsLabel: domainIntent.label } : {}),
         },
+        feedSigner,
       );
       if (json.ok && json.data) {
-        deployResult = json.data;
-        return json.data;
+        deployResult = { ...json.data, feedSigned: json.feedSigned };
+        return deployResult;
       }
       deployError = json.error || "Deploy failed";
       return null;
@@ -205,9 +220,9 @@
   // Route the chosen sub-ENS at the freshly deployed event page. "new" mints an
   // EMPTY name through the WoCo sponsor wallet — every login kind (#489); then,
   // in both modes, the HOLDER signs the pointer (registrar v2.2), which needs
-  // their click (`NamePointerPrompt`). The target is the page's CONTENT hash,
-  // not its feed manifest: this page's feed is platform-signed, and a name must
-  // not answer to a platform key. So a redeploy asks again.
+  // their click (`NamePointerPrompt`). The target is the page's FEED when this
+  // deploy's update was signed with the organiser's own key (#614), so later
+  // republishes ask nothing; otherwise the fixed page version.
   async function runSubEnsTask() {
     const intent = domainIntent;
     if (intent.mode === "none") return;
@@ -221,7 +236,8 @@
     subEnsStampWarning = null;
     subEnsLabel = intent.label;
     if (intent.mode === "existing") {
-      subEnsPhase = "sign";
+      // Already following this page's feed: nothing to sign (#614).
+      subEnsPhase = pointerFollowsFeed && deployResult?.subEns?.status === "ok" ? "done" : "sign";
       return;
     }
     subEnsPhase = "pending";
@@ -553,7 +569,7 @@
         <div class="output-section-header">
           <span class="output-section-title">ENS content hash</span>
         </div>
-        {#if deployResult?.feedManifestHash}
+        {#if pointerFollowsFeed}
           <div class="output-url-row">
             <code class="output-url">{ensHash}</code>
             <button class="btn-ghost copy-btn" onclick={() => copyText(ensHash)}>Copy</button>
@@ -585,7 +601,9 @@
           {:else if subEnsPhase === "sign" && deployResult}
             <NamePointerPrompt
               label={subEnsLabel}
-              target={deployResult.contentHash}
+              target={pointerTarget}
+              targetIsFeed={pointerFollowsFeed}
+              feedOwner={pointerFollowsFeed ? "client" : undefined}
               purpose="event-page"
               ondone={onSubEnsPointed}
             />

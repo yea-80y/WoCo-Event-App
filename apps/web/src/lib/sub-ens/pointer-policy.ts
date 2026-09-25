@@ -14,20 +14,25 @@ export type PointerPurpose = "site" | "event-page" | "profile";
  *  - Coinbase Smart Wallet signs for Base whatever the domain says, so no
  *    signature of its verifies on the names' chain; its holder acts by its own
  *    transaction, which is not built yet.
- *  - A login that HAS a feed signer (every kind that can sign here) binds a
- *    site name only to a feed it owns: a platform-authored feed would hand the
- *    platform's feed key the say over what the name shows.
+ *  - A name that follows a FEED answers to whoever signs that feed, so it may
+ *    follow only a feed this account signs: a platform-authored one would hand
+ *    the platform's feed key the say over what the name shows. One rule for
+ *    sites and event pages alike (#614). A fixed content hash is safe for any
+ *    purpose - no key can change what it shows. The profile name is the one
+ *    exception by design: it opens the WoCo app, whose feed WoCo publishes.
  */
 export function pointerBlockedReason(
   kind: AuthKind,
   purpose: PointerPurpose,
   feedOwner: SiteFeedOwner | undefined,
+  targetIsFeed: boolean,
   name: string,
 ): string | null {
   if (kind === "coinbase") return `Pointing ${name} from this account arrives soon — the name stays yours.`;
   if (kind !== "web3" && kind !== "passkey" && kind !== "web3auth") return "Sign in to point your name.";
-  if (purpose === "site" && feedOwner !== "client") {
-    return `This site isn't published under your own key yet. Publish it again, then point ${name} at it.`;
+  if (targetIsFeed && purpose !== "profile" && feedOwner !== "client") {
+    const what = purpose === "site" ? "site" : "page";
+    return `This ${what} isn't published under your own key yet. Publish it again, then point ${name} at it.`;
   }
   return null;
 }

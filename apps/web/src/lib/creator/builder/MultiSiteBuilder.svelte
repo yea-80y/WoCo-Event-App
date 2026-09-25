@@ -758,6 +758,7 @@
       <NamePointerPrompt
         label={subEnsPointer.label}
         target={subEnsPointer.target}
+        targetIsFeed={true}
         feedOwner={subEnsPointer.feedOwner}
         purpose="site"
       />
