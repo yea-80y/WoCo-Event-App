@@ -1,5 +1,11 @@
-import type { Site, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, EventFeed, SiteDeploySubEns } from "@woco/shared";
-import { siteConfigTopic, multisiteFeedTopic, beeFeedUpdateIdentifier } from "@woco/shared";
+import type { Site, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, EventFeed, SiteDeploySubEns, ApiResponse } from "@woco/shared";
+import {
+  siteConfigTopic,
+  multisiteFeedTopic,
+  eventPageFeedTopic,
+  beeFeedUpdateIdentifier,
+  assertFeedUpdateMatches,
+} from "@woco/shared";
 import { authPost, authDelete, authGet, get } from "./client.js";
 import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
 import { feedRouteFor } from "../swarm/gateways.js";
@@ -79,9 +85,8 @@ export async function deploySite(
   );
   if (res.ok && res.data?.multisiteFeed && feedSigner) {
     const { nextIndex, rootChunkPayloadB64 } = res.data.multisiteFeed;
-    const bin = atob(rootChunkPayloadB64);
-    const payload = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) payload[i] = bin.charCodeAt(i);
+    const payload = base64ToBytes(rootChunkPayloadB64);
+    assertFeedUpdateMatches(payload, res.data.contentHash);
     await signAndUploadSoc({
       signerPrivKey: feedSigner.privKey,
       identifier: beeFeedUpdateIdentifier(multisiteFeedTopic(siteId), nextIndex),
@@ -92,6 +97,61 @@ export async function deploySite(
     });
   }
   return res;
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+export interface DeployEventPageResult {
+  contentHash: string;
+  /** The page feed's manifest; empty when this deploy prepared no feed. */
+  feedManifestHash: string;
+  /** Present only when the page feed is the organiser's own (#614). */
+  feedOwner?: "client";
+  pageFeed?: { owner: string; nextIndex: number; rootChunkPayloadB64: string };
+  /** The name's state against the page feed, when a name was sent (#614). */
+  subEns?: SiteDeploySubEns;
+}
+
+/**
+ * Publish an event page (#614). With a feed signer the page's feed is the
+ * organiser's own: the server prepares the update and it is signed HERE, only
+ * when the server prepared it for this very signer and its bytes are the page
+ * that was deployed. `feedSigned` says whether that happened - a name may
+ * follow the feed only then, never on the server's word alone.
+ */
+export async function deployEventPage(
+  eventId: string,
+  opts: { apiUrl: string; gatewayUrl: string; subEnsLabel?: string },
+  feedSigner?: ContentFeedSigner | null,
+): Promise<ApiResponse<DeployEventPageResult> & { feedSigned: boolean }> {
+  const res = await authPost<DeployEventPageResult>("/api/site/deploy", {
+    eventId,
+    apiUrl: opts.apiUrl,
+    gatewayUrl: opts.gatewayUrl,
+    ...(opts.subEnsLabel ? { subEnsLabel: opts.subEnsLabel } : {}),
+    ...(feedSigner ? { clientFeed: true } : {}),
+  });
+  const pageFeed = res.ok ? res.data?.pageFeed : undefined;
+  if (!res.ok || !res.data || !pageFeed || !feedSigner) return { ...res, feedSigned: false };
+
+  if (pageFeed.owner.toLowerCase() !== feedSigner.address.toLowerCase()) {
+    throw new Error("The page feed was prepared for a different key - refusing to sign it");
+  }
+  const payload = base64ToBytes(pageFeed.rootChunkPayloadB64);
+  assertFeedUpdateMatches(payload, res.data.contentHash);
+  await signAndUploadSoc({
+    signerPrivKey: feedSigner.privKey,
+    // Derived here from the event id, never taken from the response.
+    identifier: beeFeedUpdateIdentifier(eventPageFeedTopic(eventId), pageFeed.nextIndex),
+    payload,
+    gatewayUrl: opts.gatewayUrl,
+  });
+  return { ...res, feedSigned: true };
 }
 
 export async function loadSite(siteId: string, apiUrl?: string) {

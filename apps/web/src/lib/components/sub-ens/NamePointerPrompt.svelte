@@ -3,10 +3,10 @@
   name's pointer (registrar v2.2). WoCo holds no key that can repoint a name,
   so every bind is the holder's signature, relayed for free.
 
-  Asked at BIND only. A site name points at the site's feed manifest, which
-  each publish advances, so publishing again never asks. An event page's feed
-  is platform-signed, so its name points at the page's fixed content hash
-  instead, and a redeploy asks again.
+  Asked at BIND only. A site or event-page name points at its feed manifest,
+  which each publish advances, so publishing again never asks - the feed is
+  signed with the organiser's own key (#614). When this deploy's feed update
+  was not signed, the name points at the page's fixed content hash instead.
 
   Who may sign which pointer is decided in `sub-ens/pointer-policy.ts`.
 -->
@@ -21,19 +21,21 @@
     /** 64-hex Swarm reference the name should point at. */
     target: string;
     purpose: PointerPurpose;
-    /** Sites only: who authors the feed behind `target`. */
+    /** Whether `target` is a feed manifest (it follows publishes) or a fixed version. */
+    targetIsFeed: boolean;
+    /** With a feed target: who authors the feed behind it. */
     feedOwner?: SiteFeedOwner;
     ondone?: () => void;
   }
 
-  let { label, target, purpose, feedOwner, ondone }: Props = $props();
+  let { label, target, purpose, targetIsFeed, feedOwner, ondone }: Props = $props();
 
   let phase = $state<"ask" | "working" | "done">("ask");
   let errText = $state("");
 
   const name = $derived(subEnsName(label));
 
-  const blocked = $derived(pointerBlockedReason(auth.kind, purpose, feedOwner, name));
+  const blocked = $derived(pointerBlockedReason(auth.kind, purpose, feedOwner, targetIsFeed, name));
 
   async function point() {
     if (phase === "working" || blocked) return;

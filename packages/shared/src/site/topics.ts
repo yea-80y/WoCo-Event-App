@@ -38,3 +38,14 @@ export function siteCreatorDirectoryTopic(ethAddress: string, page = 0): string 
 export function multisiteFeedTopic(siteId: string): string {
   return `woco-multisite-${siteId}`;
 }
+
+/**
+ * Topic STRING of an event page's bee SEQUENCE feed, owned by the organiser's
+ * content-feed signer (#614) - the feed an event-page name follows, so a
+ * republish needs no new pointer signature. Same update scheme as
+ * {@link multisiteFeedTopic}. One definition, so the server that prepares an
+ * update and the browser that signs it cannot disagree on the feed.
+ */
+export function eventPageFeedTopic(eventId: string): string {
+  return `woco-site-${eventId}`;
+}

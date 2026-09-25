@@ -104,6 +104,27 @@ export function calculateCacAddress(span: Uint8Array, payload: Uint8Array): Uint
 }
 
 /**
+ * Refuse to sign a feed update whose wrapped chunk is not the reported content.
+ *
+ * A feed resolves to the ADDRESS of the chunk its update wraps, and the update's
+ * signature commits to `span || payload` with the span taken from the payload
+ * length. So the signer must know that address equals the collection the server
+ * said it deployed - otherwise it endorses content it was never shown (#614). It
+ * also refuses a root chunk whose real span exceeds its data length, which
+ * would otherwise be signed and resolve to nothing.
+ */
+export function assertFeedUpdateMatches(payload: Uint8Array, contentHash: string): void {
+  const expected = contentHash.replace(/^0x/i, "").toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(expected)) throw new Error("contentHash is not a 64-hex Swarm reference");
+  const actual = Array.from(calculateCacAddress(encodeSpan(payload.length), payload), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
+  if (actual !== expected) {
+    throw new Error("Feed update does not match the deployed content - refusing to sign it");
+  }
+}
+
+/**
  * The SOC's own Swarm address (where it is stored/read): `keccak256(identifier || owner)`.
  * `owner` is the 20-byte Ethereum address; `identifier` is 32 bytes.
  */
