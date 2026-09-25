@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { PaymentConfig, PaymentChainId, Hex0x, ObjectGate, ObjectGateGroup } from "@woco/shared";
   import ObjectGateEditor from "../../components/object/ObjectGateEditor.svelte";
-  import { CHAIN_NAMES, PLATFORM_FEE_BP, FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT, CURRENCY_SYMBOLS } from "@woco/shared";
+  import { CHAIN_NAMES, PLATFORM_FEE_BP, FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT, CURRENCY_SYMBOLS, MIN_TICKET_PRICE, ticketPriceMeetsMinimum } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import ConnectWalletModal from "../../components/profile/ConnectWalletModal.svelte";
@@ -542,6 +542,9 @@
               <label class="field payment-price-field">
                 <span class="field-label">Price <span class="required">*</span></span>
                 <input type="text" bind:value={tier.price} placeholder="e.g. 10.00" inputmode="decimal" />
+                {#if tier.price.trim() && !ticketPriceMeetsMinimum(tier.price)}
+                  <span class="price-min-hint">The minimum ticket price is {CURRENCY_SYMBOLS[tier.currency] ?? ""}{MIN_TICKET_PRICE}.00</span>
+                {/if}
               </label>
               <label class="field payment-currency-field">
                 <span class="field-label">Currency</span>
@@ -1223,6 +1226,13 @@
     font-size: 0.75rem;
     line-height: 1.45;
     color: var(--text-muted);
+  }
+
+  .price-min-hint {
+    display: block;
+    margin-top: 0.25rem;
+    font-size: 0.75rem;
+    color: var(--warning);
   }
 
   .currency-note-warn {
