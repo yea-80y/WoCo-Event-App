@@ -6,26 +6,12 @@
  */
 
 import type { ApiResponse } from "@woco/shared";
-
-/**
- * The build-time API URL. Written as the EXACT expression Vite replaces with the
- * one value: `import.meta.env?.VITE_API_URL` would make it inline the whole env
- * object instead - every VITE_ setting - into bundles that organiser sites
- * publish to Swarm for good. The try covers the node test runner, which has no
- * `import.meta.env`.
- */
-function buildTimeApiUrl(): string | undefined {
-  try {
-    return import.meta.env.VITE_API_URL;
-  } catch {
-    return undefined;
-  }
-}
+import { buildEnv } from "../build-env.js";
 
 /** API base URL — runtime config wins, then build-time env var, then empty (dev proxy) */
 export const BASE: string =
   (typeof window !== "undefined" && window.SITE_CONFIG?.apiUrl) ||
-  buildTimeApiUrl() ||
+  buildEnv(() => import.meta.env.VITE_API_URL as string | undefined) ||
   "";
 
 /** Exported for direct fetch calls in events.ts */

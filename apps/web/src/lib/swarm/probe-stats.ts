@@ -20,6 +20,8 @@
  * code path that changes behaviour — it counts and it prints.
  */
 
+import { buildEnv } from "../build-env.js";
+
 /**
  * What actually happened to a feed read's version hint — THREE states, not two.
  *
@@ -149,7 +151,7 @@ export function probeTotals(c: ProbeCounts): { probes: number; misses: number } 
  * none.
  */
 export async function measured<T>(label: string, action: () => Promise<T>): Promise<T> {
-  if (!import.meta.env?.DEV) return action();
+  if (!buildEnv(() => import.meta.env.DEV)) return action();
 
   const before = probeCounts();
   const hintsBefore = hintCounts();

@@ -32,7 +32,7 @@
 
   let { section, onpatch, gatewayUrl }: Props = $props();
 
-  const WOCO_GATEWAY = (import.meta as { env?: Record<string, string> }).env?.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com';
+  const WOCO_GATEWAY = import.meta.env.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com';
   // Use selected deploy gateway so images uploaded to Etherna preview correctly.
   const GATEWAY_URL = $derived(gatewayUrl || WOCO_GATEWAY);
 

@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { VitePWA } from 'vite-plugin-pwa'
+import { noEnvObject } from './vite-plugins/no-env-object'
 import { rename } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -67,6 +68,7 @@ export default defineConfig({
       },
     }),
     renameEntryToIndex(),
+    noEnvObject(),
   ],
   server: {
     port: 5175,
