@@ -27,6 +27,8 @@ import {
 
 export type VerifyVerdict =
   | { status: "valid"; strength: "onchain"; ticket: TicketQr; seriesName: string }
+  /** Genuine, but its sale was refunded in full (#645): not admitted, and no check-in is recorded. */
+  | { status: "refunded"; ticket: TicketQr; seriesName: string }
   | { status: "invalid"; reason: string; ticket?: TicketQr }
   | { status: "wrong-event"; ticket: TicketQr }
   | { status: "unreadable" };
@@ -54,6 +56,11 @@ async function verifyV2(series: CheckinSeries, ticket: TicketQr): Promise<Verify
   }
   if (recovered.toLowerCase() !== owner.toLowerCase()) {
     return { status: "invalid", reason: "Signature does not match the on-chain ticket owner", ticket };
+  }
+  // Only now, with the ticket proven genuine: a refund is a fact about a real
+  // ticket, so a forged QR for a refunded slot must still read invalid above.
+  if (series.voidSlots?.includes(ticket.edition - 1)) {
+    return { status: "refunded", ticket, seriesName: series.name };
   }
   return { status: "valid", strength: "onchain", ticket, seriesName: series.name };
 }

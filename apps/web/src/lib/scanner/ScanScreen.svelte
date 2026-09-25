@@ -77,7 +77,7 @@
       class="verdict"
       class:ok={kind === "checked-in"}
       class:dup={kind === "duplicate"}
-      class:bad={kind === "rejected" || kind === "wrong-event"}
+      class:bad={kind === "rejected" || kind === "wrong-event" || kind === "refunded"}
       onclick={dismiss}
     >
       {#if outcome.kind === "checked-in"}
@@ -96,6 +96,13 @@
           #{String(outcome.edition).padStart(3, "0")} · {formatTime(outcome.record.at)}
           {outcome.record.method === "manual" ? " (manual)" : ""}
         </span>
+      {:else if outcome.kind === "refunded"}
+        <span class="verdict-title">REFUNDED</span>
+        {#if outcome.attendee?.name || outcome.attendee?.email}
+          <span class="verdict-who">{outcome.attendee.name ?? outcome.attendee.email}</span>
+        {/if}
+        <span class="verdict-detail">{outcome.seriesName} · #{String(outcome.edition).padStart(3, "0")}</span>
+        <span class="verdict-detail">This ticket was refunded. Not valid for entry.</span>
       {:else if outcome.kind === "rejected"}
         <span class="verdict-title">INVALID</span>
         <span class="verdict-detail">{outcome.reason}</span>

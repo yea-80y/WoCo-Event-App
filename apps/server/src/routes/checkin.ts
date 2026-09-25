@@ -27,6 +27,8 @@ import { requireAuth } from "../middleware/auth.js";
 import { getEvent, getEventForOwner, getEventBySigner } from "../lib/event/service.js";
 import { getOnChainEventAt, getSlotDataAt } from "../lib/chain/event-contract.js";
 import { registrationContractFor } from "../lib/event/onchain-registry.js";
+import { contractKey } from "../lib/chain/event-contract.js";
+import { voidedSlots } from "../lib/stripe/ticket-sales.js";
 import {
   issueDoorPass,
   verifyDoorPass,
@@ -208,6 +210,13 @@ checkin.get("/:eventId/pack", async (c) => {
           },
         );
         entry.slotOwners = owners;
+        // Refunded sales (#645): keyed by the same (event, slot) the owners are,
+        // on the same contract. The scanner checks these only after the
+        // signature verifies, so listing a slot here never makes a forgery pass.
+        if (contract) {
+          const refunded = voidedSlots(onChainEventId, contractKey(contract));
+          if (refunded.length > 0) entry.voidSlots = refunded;
+        }
       }
       series.push(entry);
     }

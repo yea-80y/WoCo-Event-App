@@ -182,6 +182,28 @@ describe("voidedSlots", () => {
   });
 });
 
+describe("slotRefundStates (organiser orders view)", () => {
+  test("refunded in full marks each slot refunded; a partial marks the order's slots partial", () => {
+    stub();
+    ts.recordSaleSlots("cs_1", EV, CONTRACT, [0, 1]);
+    stub({ sessionId: "cs_2", paymentIntentId: "pi_2" });
+    ts.recordSaleSlots("cs_2", EV, CONTRACT, [2, 3]);
+    stub({ sessionId: "cs_3", paymentIntentId: "pi_3" });
+    ts.recordSaleSlots("cs_3", EV, CONTRACT, [4]);
+    ts.applyRefundState("cs_1", 3000, 3000);
+    ts.applyRefundState("cs_2", 1000, 3000);
+
+    const states = ts.slotRefundStates(EV, CONTRACT);
+    assert.deepEqual(
+      [...states.entries()].sort(([a], [b]) => a - b),
+      [[0, "refunded"], [1, "refunded"], [2, "partial"], [3, "partial"]],
+      "slot 4 was never refunded and carries no state",
+    );
+    assert.equal(ts.slotRefundStates(EV, "421614:0x" + "c2".repeat(20)).size, 0, "another contract's slots are not these");
+    assert.equal(ts.slotRefundStates(OTHER_EV).size, 0);
+  });
+});
+
 describe("a record file that cannot be read", () => {
   for (const [name, contents] of [
     ["truncated JSON", `{"cs_1": {"sessionId": "cs_1", "slo`],

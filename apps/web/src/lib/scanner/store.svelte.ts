@@ -23,6 +23,8 @@ const SYNC_INTERVAL_MS = 30_000;
 export type ScanOutcome =
   | { kind: "checked-in"; strength: "onchain"; seriesName: string; edition: number; attendee?: RosterEntry }
   | { kind: "duplicate"; record: CheckinRecord; seriesName?: string; edition: number; attendee?: RosterEntry }
+  /** Genuine ticket whose sale was refunded (#645). Not admitted; no check-in recorded. */
+  | { kind: "refunded"; seriesName: string; edition: number; attendee?: RosterEntry }
   | { kind: "rejected"; reason: string }
   | { kind: "wrong-event" }
   | { kind: "unreadable" };
@@ -128,6 +130,17 @@ class ScannerStore {
     if (verdict.status === "unreadable") return { kind: "unreadable" };
     if (verdict.status === "wrong-event") return { kind: "wrong-event" };
     if (verdict.status === "invalid") return { kind: "rejected", reason: verdict.reason };
+    if (verdict.status === "refunded") {
+      // Before `mark`: a refunded ticket consumes no nullifier, so if the refund
+      // was a mistake and is reversed, the ticket still works at the door.
+      const { ticket } = verdict;
+      return {
+        kind: "refunded",
+        seriesName: verdict.seriesName,
+        edition: ticket.edition,
+        attendee: this.findAttendee(ticket.seriesId, ticket.edition),
+      };
+    }
 
     const { ticket } = verdict;
     const duplicate = await this.mark(ticket.seriesId, ticket.edition, "scan");
@@ -138,9 +151,20 @@ class ScannerStore {
     return { kind: "checked-in", strength: verdict.strength, seriesName: verdict.seriesName, edition: ticket.edition, attendee };
   }
 
-  /** Roster-list check-in — no QR involved, so no signature to verify. */
+  /**
+   * Roster-list check-in — no QR involved, so no signature to verify. A
+   * refunded ticket is refused here as at the camera (the roster can predate
+   * the refund); the roster offers no button for one, this is the backstop.
+   */
   async manualCheckin(seriesId: string, edition: number): Promise<CheckinRecord | null> {
+    if (this.isRefunded(seriesId, edition)) return null;
     return this.mark(seriesId, edition, "manual");
+  }
+
+  /** Whether the pack lists this ticket's sale as refunded (#645). */
+  isRefunded(seriesId: string, edition: number): boolean {
+    const series = this.pack?.series.find((s) => s.seriesId === seriesId);
+    return series?.voidSlots?.includes(edition - 1) ?? false;
   }
 
   isCheckedIn(seriesId: string, edition: number): CheckinRecord | undefined {

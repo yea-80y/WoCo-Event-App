@@ -90,6 +90,8 @@
           </div>
           {#if record}
             <span class="pill in">✓ {formatTime(record.at)}{record.method === "manual" ? " ·M" : ""}</span>
+          {:else if scanner.isRefunded(entry.seriesId, entry.edition)}
+            <span class="pill refunded">Refunded</span>
           {:else if confirming === key(entry)}
             <button class="pill confirm" onclick={() => tapCheckin(entry)}>Tap to confirm</button>
           {:else}
@@ -177,6 +179,10 @@
   .pill.confirm {
     background: var(--warning);
     color: #1a1200;
+  }
+  .pill.refunded {
+    background: var(--error-subtle);
+    color: var(--error);
   }
   .empty {
     padding: 2rem 1.25rem;
