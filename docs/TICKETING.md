@@ -238,6 +238,14 @@ server: a leaked pass token exposes no attendee plaintext.
 Check-ins are **merged**, not overwritten, so several scanner devices can work the same door
 offline and reconcile on sync.
 
+**Refunded tickets (#645).** A sale refunded in full still verifies on chain (the contract has no
+per-slot void), so the pack carries `voidSlots` per series from `.data/ticket-sales.json`, keyed by
+(on-chain event, contract, slot) — never the orderRef. The scanner checks it only AFTER the owner
+and signature pass: a forged QR for a refunded slot still reads `invalid`, and a genuine one reads
+`refunded`, consumes no check-in, and is refused on the roster too. A device learns of a refund on
+its next pack refresh. The ticket page cannot say "refunded" — it makes no requests by design; the
+organiser's orders view shows `Refunded` / `Part refunded`.
+
 ---
 
 ## 6. Certificates and badges

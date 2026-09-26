@@ -353,6 +353,27 @@ export function voidedSlots(onChainEventId: string, contract: string): number[] 
   return [...out].sort((a, b) => a - b);
 }
 
+export type SlotRefundState = "refunded" | "partial";
+
+/**
+ * Refund state per slot of one on-chain event on one contract, for the
+ * organiser's orders view. `partial` marks every ticket of a partly refunded
+ * order: the refund is on the order, not on a ticket, so which ticket it was
+ * for is not known here. Contract required, as for `voidedSlots`.
+ */
+export function slotRefundStates(onChainEventId: string, contract: string): Map<number, SlotRefundState> {
+  ensureLoaded();
+  const id = onChainEventId.toLowerCase();
+  const key = contract.toLowerCase();
+  const out = new Map<number, SlotRefundState>();
+  for (const sale of Object.values(store)) {
+    if (sale.onChainEventId !== id || sale.contract !== key) continue;
+    const state: SlotRefundState | null = isSaleVoid(sale) ? "refunded" : sale.partialRefund ? "partial" : null;
+    if (state) for (const slot of sale.slots) out.set(slot, state);
+  }
+  return out;
+}
+
 /** Ops view: sales carrying a void or a partial refund, newest first. */
 export function listFlaggedSales(): TicketSale[] {
   ensureLoaded();

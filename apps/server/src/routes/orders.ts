@@ -7,6 +7,8 @@ import { getBindingsForEvent, toAttendeeKeyRows } from "../lib/gate/store.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
 import { getOnChainEventAt, getSlotDataAt } from "../lib/chain/event-contract.js";
 import { registrationContractFor } from "../lib/event/onchain-registry.js";
+import { contractKey } from "../lib/chain/event-contract.js";
+import { slotRefundStates } from "../lib/stripe/ticket-sales.js";
 import { mapWithConcurrency, SLOT_READ_CONCURRENCY } from "../lib/util/concurrency.js";
 
 /** Maximum concurrent Swarm downloads when fetching v2 order blobs */
@@ -63,6 +65,7 @@ orders.get("/:id/orders", requireAuth, async (c) => {
         if (!onChainData || onChainData.nextSlot === 0n) continue;
 
         const slotCount = Number(onChainData.nextSlot);
+        const refunds = slotRefundStates(series.onChainEventId, contractKey(contract));
 
         // Slot reads are public view calls, but they are still one RPC round trip
         // EACH, and `slotCount` is however many tickets this series has sold. An
@@ -99,10 +102,12 @@ orders.get("/:id/orders", requireAuth, async (c) => {
             }
           }
 
+          const refund = refunds.get(slot);
           return {
             seriesId: series.seriesId,
             seriesName: series.name,
             edition: slot + 1,
+            ...(refund ? { refund } : {}),
             // Burner address — unique per ticket, proves on-chain slot ownership.
             // The actual claimer identity is inside the encrypted order blob.
             claimerAddress: slotData.owner,

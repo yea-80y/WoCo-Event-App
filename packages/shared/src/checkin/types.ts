@@ -10,6 +10,9 @@ import type { Hex0x } from "../types.js";
 //   `onChainEventId` is rejected — there is no owner to recover against.
 // - The roster is AES-GCM ciphertext end-to-end: the key travels only in the
 //   door-pass URL fragment and is never sent to the server.
+// - A ticket whose sale was refunded in full (#645) still verifies — the chain
+//   has no per-slot void — so `voidSlots` is checked AFTER the signature: a
+//   forgery still reads invalid, and only a genuine ticket can read refunded.
 // ---------------------------------------------------------------------------
 
 export const DOOR_PASS_VERSION = "v1" as const;
@@ -53,6 +56,10 @@ export interface CheckinSeries {
   /** Lowercase owner address per slot (index = edition - 1); zero-address
    *  slots are unclaimed. */
   slotOwners?: string[];
+  /** Slots (edition - 1) whose sale was refunded in full (#645): the ticket is
+   *  genuine but paid for no longer, so the door must not admit it. Absent from
+   *  packs built before this shipped, which read as "none". */
+  voidSlots?: number[];
 }
 
 /** Everything a scanner device needs to operate offline. */

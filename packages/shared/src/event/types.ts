@@ -563,4 +563,10 @@ export interface OrderEntry {
   encryptedOrder?: SealedBox;
   /** How this claim was paid for. Absent on legacy entries. */
   via?: ClaimVia;
+  /**
+   * #645: the sale was refunded in full (the ticket no longer admits), or part
+   * of the order was refunded (tickets still admit; the organiser should check
+   * Stripe). Absent = not refunded, or refunded before this was recorded.
+   */
+  refund?: "refunded" | "partial";
 }

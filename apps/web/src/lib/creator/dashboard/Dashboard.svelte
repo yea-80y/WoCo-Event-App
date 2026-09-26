@@ -154,7 +154,7 @@
   }
 
   function downloadCSV(seriesName: string, seriesOrders: OrderEntry[], fields: OrderField[]) {
-    const headers = ["Edition", "Claimer", "Email", "Paid via", "Claimed At", ...fields.map((f) => f.label)];
+    const headers = ["Edition", "Claimer", "Email", "Paid via", "Refund", "Claimed At", ...fields.map((f) => f.label)];
     const rows = seriesOrders.map((order) => {
       const dec = decryptedOrders.get(ordersResponse!.orders.indexOf(order));
       return [
@@ -164,6 +164,7 @@
           : order.claimerAddress,
         dec?.claimerEmail ?? "",
         order.via ?? "",
+        order.refund === "refunded" ? "Refunded" : order.refund === "partial" ? "Part refunded" : "",
         order.claimedAt ? new Date(order.claimedAt).toLocaleString() : "",
         ...fields.map((f) => dec?.fields?.[f.id] ?? ""),
       ];
@@ -1006,6 +1007,11 @@
                         {:else}
                           <span class="via-badge via-badge--unknown">—</span>
                         {/if}
+                        {#if order.refund === "refunded"}
+                          <span class="refund-badge" title="Refunded in full. This ticket no longer gets in at the door.">Refunded</span>
+                        {:else if order.refund === "partial"}
+                          <span class="refund-badge refund-badge--partial" title="Part of this order was refunded. The tickets still get in - check the payment in Stripe.">Part refunded</span>
+                        {/if}
                       </td>
                       <td>{order.claimedAt ? new Date(order.claimedAt).toLocaleString() : "—"}</td>
                       {#if event.orderFields}
@@ -1411,6 +1417,22 @@
   .via-badge--crypto { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
   .via-badge--free   { color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 8%, transparent); }
   .via-badge--unknown { color: var(--text-muted); border-color: transparent; }
+
+  .refund-badge {
+    display: inline-block;
+    margin-left: 0.375rem;
+    padding: 0.125rem 0.4375rem;
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    font-weight: 600;
+    border-radius: var(--radius-sm);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border: 1px solid currentColor;
+    color: var(--error);
+    background: var(--error-subtle);
+  }
+  .refund-badge--partial { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
 
   .badge-sent {
     background: color-mix(in srgb, var(--success) 15%, transparent);
