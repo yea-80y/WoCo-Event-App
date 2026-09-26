@@ -11,7 +11,6 @@
    */
   import { onMount } from "svelte";
   import { navigate } from "../../router/router.svelte.js";
-  import { auth } from "../../auth/auth-store.svelte.js";
   import { getEvent } from "../../api/events.js";
   import { getCheckoutStatus } from "../../api/stripe.js";
   import type { EventFeed } from "@woco/shared";
@@ -25,22 +24,24 @@
   // Hydrate sync from sessionStorage so the page renders correct content on
   // first paint. The keys are set in ClaimButton.handleStripeCheckout()
   // immediately before window.location.replace(url).
-  function readStash(): { email: string | null; qty: number; seriesId: string | null } {
-    if (typeof window === "undefined") return { email: null, qty: 1, seriesId: null };
+  function readStash(): { email: string | null; qty: number; seriesId: string | null; linked: boolean } {
+    if (typeof window === "undefined") return { email: null, qty: 1, seriesId: null, linked: false };
     try {
       const seriesId = sessionStorage.getItem(`woco:stripe-returning:${eventId}`);
-      if (!seriesId) return { email: null, qty: 1, seriesId: null };
+      if (!seriesId) return { email: null, qty: 1, seriesId: null, linked: false };
       const formRaw = sessionStorage.getItem(`woco:stripe-form:${eventId}:${seriesId}`);
       let email: string | null = null;
       let qty = 1;
+      let linked = false;
       if (formRaw) {
-        const parsed = JSON.parse(formRaw) as { claimerEmail?: string; quantity?: number };
+        const parsed = JSON.parse(formRaw) as { claimerEmail?: string; quantity?: number; linked?: boolean };
         email = parsed.claimerEmail ?? null;
         if (parsed.quantity && Number.isInteger(parsed.quantity)) qty = parsed.quantity;
+        linked = parsed.linked === true;
       }
-      return { email, qty, seriesId };
+      return { email, qty, seriesId, linked };
     } catch {
-      return { email: null, qty: 1, seriesId: null };
+      return { email: null, qty: 1, seriesId: null, linked: false };
     }
   }
 
@@ -145,9 +146,10 @@
     <ul class="steps">
       <li><span class="bullet"></span>Check your inbox in the next few minutes.</li>
       <li><span class="bullet"></span>If you don't see it, check your spam folder.</li>
-      <!-- A signed-in checkout adds the first ticket to the account at fulfilment
-           (the checkout request carries the session); a guest adds it from the email. -->
-      {#if auth.isConnected}
+      <!-- A linked checkout adds the first ticket to the account at fulfilment
+           (the request carried the session); a guest adds it from the email.
+           What was SENT decides, not whether someone is signed in now. -->
+      {#if _stash.linked}
         <li><span class="bullet"></span>{qty > 1
           ? "Your first ticket goes into your passport for you. Forward the others from the email."
           : "It goes into your passport for you."}</li>
