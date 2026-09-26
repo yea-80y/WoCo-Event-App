@@ -35,10 +35,22 @@ test("a found manifest answers with its backups, retired rows included", async (
     readManifest: readingAs({
       status: "found",
       manifest: { v: 1, updatedAt: 1, backups: [ENTRY, { ...ENTRY, revoked: true }] },
+      scanClean: true,
     }),
   });
   assert.equal(read.status, "known");
   assert.equal(read.status === "known" && read.backups.length, 2);
+  assert.equal(read.status === "known" && read.settled, true);
+});
+
+test("a manifest found while a newer one could not be ruled out is shown, but not as settled (#689)", async () => {
+  const read = await readBackupHistoryResult({
+    signer: SIGNER,
+    parentAddress: PARENT,
+    readManifest: readingAs({ status: "found", manifest: { v: 1, updatedAt: 1, backups: [ENTRY] }, scanClean: false }),
+  });
+  assert.equal(read.status === "known" && read.backups.length, 1);
+  assert.equal(read.status === "known" && read.settled, false);
 });
 
 test("a definitively absent manifest is a KNOWN empty inventory — the one empty that may nudge", async () => {
@@ -47,7 +59,7 @@ test("a definitively absent manifest is a KNOWN empty inventory — the one empt
     parentAddress: PARENT,
     readManifest: readingAs({ status: "absent" }),
   });
-  assert.deepEqual(read, { status: "known", backups: [] });
+  assert.deepEqual(read, { status: "known", backups: [], settled: true });
 });
 
 test("an unreadable manifest is UNAVAILABLE — never an empty inventory", async () => {

@@ -47,6 +47,12 @@ function familyRoute(family: string, store: FeedRoute): FeedRoute {
  * writes alike, so the two cannot split. An Etherna route's reads still ask our
  * bee as well, so moving a family never strands what it wrote before.
  *
+ * A move has a rollout window (#689): a tab still running the previous app
+ * writes the family's next version to the OLD store, at the same address the new
+ * app may use on the new one. Every read tries our gateway first, so if the old
+ * store is ours, that copy wins and the other is never read. Close other tabs
+ * after the frontend deploy.
+ *
  * Two rows are not that shape, and say so: `event` is a read-only discovery
  * route (writes follow each event's own recorded gateway, `feedRouteFor`), and
  * `campaignIssuer` is written by the SERVER, whose choice must move with this row
@@ -61,8 +67,8 @@ export const FEED_ROUTES = {
    * from here: each event names its own gateway (`feedRouteFor(feed.gatewayUrl)`).
    */
   event: familyRoute("event", ETHERNA_ROUTE),
-  /** The encrypted-to-self backup/feed manifest. */
-  manifest: familyRoute("manifest", WOCO_ROUTE),
+  /** The encrypted-to-self backup/feed manifest (#689). */
+  manifest: familyRoute("manifest", ETHERNA_ROUTE),
   /** Likes, follows, Interested, and their subject index. */
   social: familyRoute("social", WOCO_ROUTE),
   /** The referee's own referral statement and its subject index. */

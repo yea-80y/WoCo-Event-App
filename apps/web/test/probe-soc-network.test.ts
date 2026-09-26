@@ -8,132 +8,35 @@
  * server (`GET /api/swarm/soc/{owner}/{id}?gatewayUrl=`) would. Chunks are genuine
  * signed SOCs, so the signature check is exercised on both sources.
  *
- * The server model is `readVerifiedSoc`'s (apps/server/src/lib/swarm/soc-read.ts):
- * our bee always, Etherna only when the request names it; any found wins, then
- * any unanswered, else absent.
+ * The network model lives in fake-swarm-net.ts.
  */
 
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { Bee, Bytes, Identifier, PrivateKey, Reference, Span } from "@ethersphere/bee-js";
-import {
-  calculateCacAddress,
-  calculateSocAddress,
-  contentFeedSocIdentifier,
-  encodeSpan,
-  versionedSocIdentifier,
-} from "@woco/shared";
+import { contentFeedSocIdentifier, versionedSocIdentifier } from "@woco/shared";
 import { probeSoc } from "../src/lib/swarm/probe-soc.js";
 import { readBandedContentFeed, readContentFeedAtVersion, readContentFeedResult } from "../src/lib/swarm/content-feed.js";
-import { ETHERNA_GATEWAY_URL, FEED_ROUTES } from "../src/lib/swarm/gateways.js";
-
-// ---------------------------------------------------------------------------
-// Signed chunks
-// ---------------------------------------------------------------------------
-
-const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
-const unhex = (h: string) => new Uint8Array(Buffer.from(h, "hex"));
-const bee = new Bee("http://127.0.0.1:9"); // makeSingleOwnerChunk only - no I/O
-
-const OWNER_KEY = new PrivateKey(`0x${"11".repeat(32)}`);
-const OTHER_KEY = new PrivateKey(`0x${"22".repeat(32)}`);
-const OWNER = OWNER_KEY.publicKey().address().toHex().replace(/^0x/, "").toLowerCase();
-
-interface StoredSoc { address: string; raw: Uint8Array; identifier: Uint8Array; signature: Uint8Array; span: Uint8Array; payload: Uint8Array }
-
-/** A SOC as a bee stores it: identifier ‖ signature ‖ span ‖ payload. `signer`
- *  defaults to the owner; another key forges a chunk at the owner's address. */
-function soc(identifier: Uint8Array, value: unknown, signer = OWNER_KEY): StoredSoc {
-  const payload = new TextEncoder().encode(JSON.stringify(value));
-  const span = encodeSpan(payload.length);
-  const chunk = bee.makeSingleOwnerChunk(
-    new Reference(calculateCacAddress(span, payload)),
-    Span.fromBigInt(BigInt(payload.length)),
-    new Bytes(payload),
-    new Identifier(identifier),
-    signer,
-  );
-  const signature = chunk.signature.toUint8Array();
-  const raw = new Uint8Array([...identifier, ...signature, ...span, ...payload]);
-  return { address: hex(calculateSocAddress(identifier, unhex(OWNER))), raw, identifier, signature, span, payload };
-}
+import { ETHERNA_GATEWAY_URL, FEED_ROUTES, WOCO_ROUTE } from "../src/lib/swarm/gateways.js";
+import {
+  OTHER_KEY,
+  OWNER,
+  clearRequests,
+  gatewayParam,
+  install,
+  requests,
+  resetNet,
+  restoreNet,
+  serverRequests,
+  soc,
+  socBytes,
+  type Net,
+} from "./fake-swarm-net.js";
 
 const TOPIC = "woco/test/probe";
 const at = (v: number, topic = TOPIC) => versionedSocIdentifier(contentFeedSocIdentifier(topic), v);
 
-// ---------------------------------------------------------------------------
-// The network
-// ---------------------------------------------------------------------------
-
-interface Net {
-  ourBee: Map<string, StoredSoc>;
-  etherna: Map<string, StoredSoc>;
-  ethernaDown?: boolean;
-  /** Override what our gateway answers for an address. */
-  gateway?: (address: string) => Response | "throw" | undefined;
-}
-
-let requests: string[] = [];
-const realFetch = globalThis.fetch;
-const realStorage = (globalThis as { localStorage?: unknown }).localStorage;
-
-function install(net: Net) {
-  globalThis.fetch = (async (input: string | URL | Request) => {
-    const url = String(input instanceof Request ? input.url : input);
-    requests.push(url);
-
-    const g = url.match(/^https:\/\/gateway\.woco-net\.com\/chunks\/([0-9a-f]{64})$/);
-    if (g) {
-      const override = net.gateway?.(g[1]);
-      if (override === "throw") throw new TypeError("network error");
-      if (override) return override;
-      const hit = net.ourBee.get(g[1]);
-      return hit ? new Response(hit.raw) : new Response("Not Found", { status: 404 });
-    }
-
-    const any = url.match(/^\/api\/swarm\/soc\/([^/?]+)\/([^/?]+)/);
-    if (any && !/^[0-9a-f]{40}$/.test(any[1])) return Response.json({ ok: false, error: "Invalid owner" }, { status: 400 });
-    const s = url.match(/^\/api\/swarm\/soc\/([0-9a-f]{40})\/([0-9a-f]{64})(?:\?gatewayUrl=([^&]+))?$/);
-    if (s) {
-      const address = hex(calculateSocAddress(unhex(s[2]), unhex(s[1])));
-      const gateway = s[3] ? decodeURIComponent(s[3]) : "";
-      const askEtherna = gateway !== "" && new URL(gateway).host.endsWith(new URL(ETHERNA_GATEWAY_URL).host);
-      const found = net.ourBee.get(address) ?? (askEtherna && !net.ethernaDown ? net.etherna.get(address) : undefined);
-      if (found) {
-        return Response.json({
-          ok: true,
-          data: {
-            owner: s[1],
-            identifier: hex(found.identifier),
-            signature: hex(found.signature),
-            span: hex(found.span),
-            payloadB64: Buffer.from(found.payload).toString("base64"),
-          },
-        });
-      }
-      if (askEtherna && net.ethernaDown) return Response.json({ ok: false, code: "unavailable" }, { status: 503 });
-      return Response.json({ ok: false, code: "absent" }, { status: 404 });
-    }
-    throw new Error(`unexpected request: ${url}`);
-  }) as typeof fetch;
-}
-
-const serverRequests = () => requests.filter((u) => u.startsWith("/api/swarm/soc/"));
-const gatewayParam = (u: string) => new URL(u, "http://x").searchParams.get("gatewayUrl");
-
-beforeEach(() => {
-  requests = [];
-  const store = new Map<string, string>();
-  (globalThis as { localStorage?: unknown }).localStorage = {
-    getItem: (k: string) => store.get(k) ?? null,
-    setItem: (k: string, v: string) => void store.set(k, v),
-    removeItem: (k: string) => void store.delete(k),
-  };
-});
-afterEach(() => {
-  globalThis.fetch = realFetch;
-  (globalThis as { localStorage?: unknown }).localStorage = realStorage;
-});
+beforeEach(resetNet);
+afterEach(restoreNet);
 
 /** Version 0 everywhere; version 1 was just written through Etherna. */
 function savedMomentsAgo(): Net {
@@ -157,7 +60,7 @@ test("an Etherna-routed read asks the server WITH Etherna, and finds the version
 
 test("a WoCo-routed read of the same feed returns the PREVIOUS version, marked clean - the #651 hazard, in the real code", async () => {
   install(savedMomentsAgo());
-  const res = await readContentFeedResult<{ v: number }>(OWNER, TOPIC, { route: FEED_ROUTES.manifest, thorough: true });
+  const res = await readContentFeedResult<{ v: number }>(OWNER, TOPIC, { route: WOCO_ROUTE, thorough: true });
   assert.equal(res.status, "found");
   assert.equal((res as { version: number }).version, 0);
   assert.equal((res as { scanClean: boolean }).scanClean, true);
@@ -168,10 +71,10 @@ test("the device that just wrote (hint = 1) still needs the route: without it th
   // readContentFeedResult stores the hint it resolves; seed the writer's hint first.
   install(savedMomentsAgo());
   await readContentFeedResult(OWNER, TOPIC, { route: FEED_ROUTES.profile, thorough: true });
-  requests = [];
+  clearRequests();
   const again = await readContentFeedResult<{ v: number }>(OWNER, TOPIC, { route: FEED_ROUTES.profile, thorough: true });
   assert.equal((again as { version: number }).version, 1);
-  const stale = await readContentFeedResult<{ v: number }>(OWNER, TOPIC, { route: FEED_ROUTES.manifest, thorough: true });
+  const stale = await readContentFeedResult<{ v: number }>(OWNER, TOPIC, { route: WOCO_ROUTE, thorough: true });
   assert.equal((stale as { version: number }).version, 0);
 });
 
@@ -195,6 +98,19 @@ test("Etherna unreachable: a routed read cannot vouch for the newest version, an
   const res = await readContentFeedResult(OWNER, TOPIC, { route: FEED_ROUTES.profile, thorough: true });
   // Version 0 is readable from our bee, but the scan could not rule version 1 out.
   assert.ok(res.status === "unavailable" || (res.status === "found" && !res.scanClean), JSON.stringify(res));
+});
+
+test("bytes that are not JSON are called unusable only when the scan could confirm they are the head (#689)", async () => {
+  const junk = socBytes(at(0), new TextEncoder().encode("not json"));
+  const v1 = soc(at(1), { v: 1 });
+  install({ ourBee: new Map([[junk.address, junk]]), etherna: new Map([[v1.address, v1]]), ethernaDown: true });
+  const blind = await readContentFeedResult(OWNER, TOPIC, { route: FEED_ROUTES.profile, thorough: true });
+  assert.equal(blind.status, "unavailable");
+  assert.equal((blind as { unusableAt?: number }).unusableAt, undefined, "version 1 may be the head");
+
+  install({ ourBee: new Map([[junk.address, junk]]), etherna: new Map() });
+  const alone = await readContentFeedResult(OWNER, TOPIC, { route: FEED_ROUTES.profile, thorough: true });
+  assert.equal((alone as { unusableAt?: number }).unusableAt, 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -223,7 +139,7 @@ test("our gate's 403 is a verdict for a display read - by its header alone, or i
     ["body code only", () => new Response(JSON.stringify({ error: "denied", code: "NOT_WHITELISTED" }), { status: 403 })],
   ];
   for (const [label, denial] of cases) {
-    requests = [];
+    clearRequests();
     install({ ourBee: new Map(), etherna: new Map(), gateway: () => denial() });
     assert.equal((await probeSoc(OWNER, at(0))).status, "absent", label);
     assert.deepEqual(serverRequests(), [], `${label}: a verdict needs no server`);
@@ -244,7 +160,7 @@ test("anything else from the gateway is not an answer: an untagged 403, a 5xx, a
     ["200, not a SOC", () => new Response(new Uint8Array([1, 2, 3]))],
   ];
   for (const [label, answer] of cases) {
-    requests = [];
+    clearRequests();
     install({ ourBee: new Map(), etherna: new Map(), gateway: () => answer() });
     await probeSoc(OWNER, at(0));
     assert.equal(serverRequests().length, 1, `${label} falls through to the server`);
@@ -254,7 +170,7 @@ test("anything else from the gateway is not an answer: an untagged 403, a 5xx, a
 test("a malformed owner never reaches the gateway, and reads as unavailable - as it did through bee-js", async () => {
   install({ ourBee: new Map(), etherna: new Map() });
   for (const bad of ["abc", "zz".repeat(20)]) {
-    requests = [];
+    clearRequests();
     const res = await probeSoc(bad, at(0));
     assert.equal(res.status, "unavailable", bad);
     assert.deepEqual(requests.filter((u) => u.includes("/chunks/")), [], `${bad}: no garbage address probed`);

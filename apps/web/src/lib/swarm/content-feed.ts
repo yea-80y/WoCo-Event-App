@@ -3,7 +3,7 @@
  *
  * A content feed (profile, event, site) becomes a fixed-identifier Single-Owner
  * Chunk SIGNED by the user's own content-feed key — so the USER owns the feed.
- * The server only stamps+uploads it (`signAndUploadSoc` → `/api/swarm/soc`), so
+ * The server only stamps+uploads it (`postSignedSoc` → `/api/swarm/soc`), so
  * there is no added latency vs the old server-write (signing is local) and the
  * stamp step is a swappable transport (per-user batch / browser-Bee later).
  *
@@ -16,12 +16,13 @@
  * `/feeds`).
  */
 
-// ethers, client-soc (bee-js) and probe-soc are imported lazily inside each function —
+// ethers, soc-sign (bee-js), client-soc and probe-soc are imported lazily inside each function —
 // this module is statically reachable from api/events + api/profiles at first
 // paint, and top-level imports here would drag both libraries into the boot
 // bundle.
 import { countHint } from "./probe-stats.js";
 import type { FeedRoute } from "./gateways.js";
+import type { SignedSocBody } from "./soc-sign.js";
 import {
   CONTENT_FEED_MC_MARKER,
   contentFeedSocIdentifier,
@@ -92,6 +93,10 @@ function bumpVersionHint(owner: string, topic: string, version: number): void {
   }
 }
 
+/** How a signed chunk leaves the client (`postSignedSoc` in production). The
+ *  gateway is required: every write here names its route's. */
+export type SocTransport = (body: SignedSocBody & { gatewayUrl: string }) => Promise<unknown>;
+
 export interface ContentFeedSigner {
   /** secp256k1 private key (0x-prefixed). */
   privKey: string;
@@ -137,6 +142,12 @@ export async function writeContentFeed(args: {
   topic: string;
   data: unknown;
   route: FeedRoute;
+  /**
+   * Test seam: where the signed chunk goes. Production leaves it unset and posts
+   * to our server (`postSignedSoc`), whose authenticated client cannot load
+   * under node. The chunk is signed here either way.
+   */
+  transport?: SocTransport;
   /** Optional caller-supplied lower bound on the latest version (else localStorage). */
   versionHint?: number;
   /**
@@ -150,15 +161,17 @@ export async function writeContentFeed(args: {
    */
   knownVersion?: number;
 }): Promise<number> {
-  const [{ Wallet }, { signAndUploadSoc }, { probeSoc }] = await Promise.all([
+  const [{ Wallet }, { probeSoc }, { signSoc }, post] = await Promise.all([
     import("ethers"),
-    import("./client-soc.js"),
     import("./probe-soc.js"),
+    import("./soc-sign.js"),
+    args.transport ?? import("./client-soc.js").then((m): SocTransport => m.postSignedSoc),
   ]);
   const key = args.signerPrivKey.startsWith("0x") ? args.signerPrivKey : `0x${args.signerPrivKey}`;
   const owner = new Wallet(key).address.toLowerCase();
   const base = contentFeedSocIdentifier(args.topic);
-  const gw = { gatewayUrl: args.route.gatewayUrl };
+  const put = (identifier: Uint8Array, payload: Uint8Array) =>
+    post({ ...signSoc({ signerPrivKey: key, identifier, payload }), gatewayUrl: args.route.gatewayUrl });
 
   let version: number;
   if (args.knownVersion !== undefined) {
@@ -202,12 +215,7 @@ export async function writeContentFeed(args: {
   if (json.length < 1) throw new Error("content feed payload must be ≥1 byte");
 
   if (json.length <= SOC_MAX_PAYLOAD_SIZE) {
-    await signAndUploadSoc({
-      signerPrivKey: key,
-      identifier: versionedSocIdentifier(base, version),
-      payload: json,
-      ...gw,
-    });
+    await put(versionedSocIdentifier(base, version), json);
     bumpVersionHint(owner, args.topic, version);
     return version;
   }
@@ -219,21 +227,11 @@ export async function writeContentFeed(args: {
   await Promise.all(
     Array.from({ length: pages }, (_, i) => {
       const slice = json.subarray(i * SOC_MAX_PAYLOAD_SIZE, (i + 1) * SOC_MAX_PAYLOAD_SIZE);
-      return signAndUploadSoc({
-        signerPrivKey: key,
-        identifier: versionedPageIdentifier(base, version, i + 1),
-        payload: slice,
-        ...gw,
-      });
+      return put(versionedPageIdentifier(base, version, i + 1), slice);
     }),
   );
   const manifest: ContentFeedManifest = { [CONTENT_FEED_MC_MARKER]: 1, pages, len: json.length };
-  await signAndUploadSoc({
-    signerPrivKey: key,
-    identifier: versionedSocIdentifier(base, version),
-    payload: new TextEncoder().encode(JSON.stringify(manifest)),
-    ...gw,
-  });
+  await put(versionedSocIdentifier(base, version), new TextEncoder().encode(JSON.stringify(manifest)));
   bumpVersionHint(owner, args.topic, version);
   return version;
 }
@@ -309,8 +307,10 @@ export async function readContentFeedResult<T>(
     // Bytes exist at this identifier but aren't our JSON — corrupt or foreign,
     // never "no feed here". Absent would be a lie a caller could cache, and
     // "try again" would be a lie too: these bytes are immutable, so this version
-    // is spent and only a write past it can move the feed on.
-    return { status: "unavailable", reason: "feed payload is not valid JSON", unusableAt: res.version };
+    // is spent and only a write past it can move the feed on. Unless the scan
+    // was dirty: then this may not be the head, and a retry is the honest answer.
+    const reason = "feed payload is not valid JSON";
+    return res.scanClean ? { status: "unavailable", reason, unusableAt: res.version } : { status: "unavailable", reason };
   }
 }
 

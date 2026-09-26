@@ -899,7 +899,12 @@ export async function readVersionedContentFeed(
     // Only the assembler's DEFINITIVE verdicts name a version. A scan or page
     // probe that could not answer is still just "ask again later", and naming a
     // version there would invite a repair that overwrites live data.
-    return asm.unusable
+    //
+    // And only under a CLEAN scan (#689): a dirty one stopped at the newest
+    // version it could reach, so `latest` may not be the head. Naming it would
+    // offer a repair seeded from below it, and the rewrite - landing past the
+    // real head - would erase every good version in between.
+    return asm.unusable && clean
       ? { status: "unavailable", reason: asm.reason, unusableAt: latest }
       : { status: "unavailable", reason: asm.reason };
   }
