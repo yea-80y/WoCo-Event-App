@@ -138,6 +138,12 @@ export function listHeld(): PayoutLedgerEntry[] {
   return Object.values(store).filter((e) => e.status === "held");
 }
 
+/** Every event sale recorded for an event, any status (#644). */
+export function listEntriesForEvent(eventId: string): PayoutLedgerEntry[] {
+  ensureLoaded();
+  return Object.values(store).filter((e) => e.kind === "event" && e.eventId === eventId);
+}
+
 export function listByOrganiser(organiserAddress: string): PayoutLedgerEntry[] {
   ensureLoaded();
   const key = organiserAddress.toLowerCase();
