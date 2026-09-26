@@ -3,6 +3,7 @@
  */
 
 import { authPost, authGet, authDelete, apiBase } from "./client.js";
+import { sendCheckout } from "./checkout-request.js";
 import { auth } from "../auth/auth-store.svelte.js";
 import type { SealedBox } from "@woco/shared";
 
@@ -110,12 +111,13 @@ export async function getCheckoutStatus(eventId: string, sessionId: string): Pro
 /**
  * Create a Stripe Checkout Session for an attendee to pay for a ticket.
  *
- * When the user is logged in (any auth kind), the request is signed so the
- * server can bind the claim to the VERIFIED parent wallet — this is what lets
- * us record both wallet + email on Stripe claims. The body never carries the
- * claimer address; the server reads it from the session.
+ * `linkAccount` (the caller decides, once per click): the request is signed so
+ * the server binds the claim to the VERIFIED parent wallet and records both
+ * wallet and email. The body never carries the claimer address; the server
+ * reads it from the session. Only ever true when a session key is already on
+ * the device — paying by card must not open a wallet (checkout-request.ts).
  *
- * Anonymous (no session) flow: email-only. Requires `claimerEmail`.
+ * Otherwise the guest flow: email only, `claimerEmail` required.
  */
 export async function createCheckoutSession(params: {
   eventId: string;
@@ -133,6 +135,8 @@ export async function createCheckoutSession(params: {
    *  shown — "not asked" is not the same as "declined", and only the two
    *  explicit answers are recorded. */
   marketingConsent?: boolean;
+  /** Sign the request and bind the purchase to the account. */
+  linkAccount: boolean;
 }): Promise<{ url: string }> {
   // Browsers strip the Referer path cross-origin (strict-origin-when-cross-origin),
   // so the server can't derive our full base. Pass it explicitly; server validates
@@ -169,19 +173,11 @@ export async function createCheckoutSession(params: {
     ...(cancelUrl ? { cancelUrl } : {}),
   };
 
-  if (auth.isConnected) {
-    const resp = await authPost<{ url: string }>("/api/stripe/create-checkout", body);
-    const data = resp as { ok: boolean; url?: string; error?: string; gated?: boolean };
-    if (!data.ok || !data.url) throw new CheckoutError(data.error || "Failed to create checkout session", !!data.gated);
-    return { url: data.url };
-  }
-
-  const resp = await fetch(`${apiBase}/api/stripe/create-checkout`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+  const data = await sendCheckout("/api/stripe/create-checkout", body, params.linkAccount, {
+    authPost: (path, b) => authPost<{ url: string }>(path, b),
+    fetch: (input, init) => fetch(input, init),
+    apiBase,
   });
-  const data = await resp.json() as { ok: boolean; url?: string; error?: string; gated?: boolean };
   if (!data.ok || !data.url) throw new CheckoutError(data.error || "Failed to create checkout session", !!data.gated);
   return { url: data.url };
 }
