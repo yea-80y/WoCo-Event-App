@@ -75,7 +75,9 @@ refund, pro-rata on a partial. ORGANISER_TERMS §6 states it.
 The ledger's `netAmount` is a **reporting cache only** — the sweep re-resolves from
 Stripe on every run while an entry is held, because a refund can land between sweeps and a
 trusted cache would pay out the pre-refund value. (The `charge.refunded` webhook, #645
-part C, voids TICKETS; the money side never depends on it.)
+part C, voids TICKETS; the money side never depends on it.) A refund that has not moved
+money yet (`pending` with `insufficient_funds`, or `requires_action`: no balance transaction)
+HOLDS the sale until it lands or fails, so its balance is never paid out from under it (#701).
 
 **Disputes (#645 part C).** A disputed charge's disputes are read too. While one is open
 (`needs_response`, `under_review`, or a `warning_*` inquiry) the sale is **contested**: held,
