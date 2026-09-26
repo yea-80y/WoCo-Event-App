@@ -218,9 +218,16 @@ checkin.get("/:eventId/pack", async (c) => {
   if (!auth.ok) return auth.resp;
 
   const eventId = c.req.param("eventId");
+  // Required in EVERY mode, not only "single": a scanner bundle from before #641
+  // sends no device id and ignores the door mode, admitting offline on its own
+  // set. Refusing it a pack is what keeps it from provisioning onto a shared door.
+  const device = deviceFrom(c);
+  if (!device) {
+    return c.json({ ok: false, error: "This scanner needs updating - reload the page and try again" }, 400);
+  }
   let refused: Response | null;
   try {
-    refused = checkDevice(c, auth, deviceFrom(c), true);
+    refused = checkDevice(c, auth, device, true);
   } catch (err) {
     console.error("[checkin] single-scanner binding could not be saved:", err);
     return c.json({ ok: false, error: "Could not register this scanner - try again" }, 503);

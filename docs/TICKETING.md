@@ -244,13 +244,18 @@ picks a door mode when issuing the pass, and a pass without one is `several`:
   (`bindSinglePassDevice`) and refuses every other with `409 wrong-device`. That device is the only
   door, so it admits from its own set and works with no signal; it syncs when it can.
   Regenerating the pass is how it moves phones, and a device that learns its pass is dead stops
-  admitting.
+  admitting. It learns that only from a server answer: a bound phone that is OFFLINE when the
+  organiser regenerates keeps admitting until it next has signal, and the new pass's phone does
+  not know those tickets. The dashboard tells the organiser to bring the old phone online and
+  let it sync first; nothing can enforce it for a phone that cannot be reached.
 - `several` - every admission is `POST /claim`: `claimCheckin` is synchronous, persists before it
   answers, and returns `admitted` to the first claim and `already-in` (with the holder's record)
-  to every other. The scanner shows green ONLY on a confirmed `admitted` for that exact ticket.
+  to every other. `/pack` refuses a scanner that sends no `X-Scanner-Device` in every mode: a
+  bundle from before #641 ignores the door mode and would admit offline on a shared door. The scanner shows green ONLY on a confirmed `admitted` for that exact ticket.
   No signal, a timeout (4s), a 5xx or a malformed answer is a grey **couldn't confirm** - not
   admitted. A scan attempt carries a `claimId` kept until an answer arrives, so a retry after a
-  lost response is the same attempt and reads `admitted`, not its own duplicate.
+  lost response is the same attempt and reads `admitted`, not its own duplicate. The retry must
+  come from the same device: claimIds reach every scanner on the pass, so one alone is replayable.
 
 A check-in set that exists but cannot be read fails closed (every claim refused), because reading
 it as empty would admit everyone again. `/sync` still merges records, and a conflict (one ticket

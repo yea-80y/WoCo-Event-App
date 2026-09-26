@@ -239,16 +239,18 @@ export type ClaimResult =
  * returns (`commitCheckins` throws on failure, and the caller answers 503):
  * an admission a restart could forget is one the door must not act on.
  *
- * A claim carrying the claimId of the record that holds the ticket is that same
- * attempt retrying, and is told "admitted" again - never refused as a duplicate
- * of itself.
+ * A claim carrying the claimId AND device of the record that holds the ticket is
+ * that same attempt retrying, and is told "admitted" again - never refused as a
+ * duplicate of itself.
  */
 export function claimCheckin(eventId: string, record: CheckinRecord): ClaimResult {
   if (!isValidRecord(record) || !record.claimId) throw new Error("invalid check-in claim");
   const existing = loadCheckins(eventId);
   const holder = existing.find((r) => ticketKey(r) === ticketKey(record));
   if (holder) {
-    return holder.claimId === record.claimId
+    // The device must match too: claimIds reach every scanner on the pass (in
+    // the pack and in "already in" answers), so on its own one is replayable.
+    return holder.claimId === record.claimId && holder.deviceId === record.deviceId
       ? { status: "admitted", record: holder }
       : { status: "already-in", record: holder };
   }

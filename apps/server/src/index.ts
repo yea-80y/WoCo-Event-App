@@ -10,6 +10,7 @@ import type { AppEnv } from "./types.js";
 import { buildInfo } from "./config/build-info.js";
 import { requireAuth } from "./middleware/auth.js";
 import { securityHeaders, FRAME_CSP } from "./lib/http/security-headers.js";
+import { CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS } from "./lib/http/cors.js";
 import { buildFramePage } from "./lib/embed/frame-page.js";
 import { revokeSession, revokeAllSessions } from "./lib/auth/revocation.js";
 import { kernelDeployedLoadFailed } from "./lib/auth/kernel-deployed.js";
@@ -218,23 +219,9 @@ app.use(
   "*",
   cors({
     origin: (origin) => origin || "*",
-    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowHeaders: [
-      "Content-Type",
-      "X-Session-Address",
-      "X-Session-Delegation",
-      "X-Session-Sig",
-      "X-Session-Nonce",
-      "X-Session-Timestamp",
-      "X-PAYMENT",
-      "X-Client-Key",
-      "X-Door-Pass",
-    ],
-    exposeHeaders: [
-      "PAYMENT-REQUIRED",
-      "X-FACILITATOR-URL",
-      "PAYMENT-RESPONSE",
-    ],
+    allowMethods: CORS_ALLOW_METHODS,
+    allowHeaders: CORS_ALLOW_HEADERS,
+    exposeHeaders: CORS_EXPOSE_HEADERS,
   }),
 );
 // Backstop on request-body size for every API route (#176). Per-route caps

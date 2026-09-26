@@ -287,15 +287,18 @@ class ScannerStore {
    * Ask the server to admit a ticket ("several" passes). The claimId is kept
    * until an answer arrives, so a re-scan after a lost response retries the SAME
    * attempt and is admitted, not turned away as "already in" by its own claim.
+   *
+   * `claiming` stays up until the answer is recorded here: while it is down, the
+   * next scan of this ticket must find it in `checkins` or find no pending
+   * claimId - never neither, or it would replay this claim and show green twice.
    */
   private async claimAtServer(seriesId: string, edition: number, method: "scan" | "manual"): Promise<ClaimAnswer> {
     this.claiming = true;
-    let answer: ClaimAnswer;
     try {
       if (!this.pass) return { kind: "cant-confirm", message: "Scanner not provisioned" };
       const claimId = (await db.getPendingClaimId(seriesId, edition)) ?? newClaimId();
       await db.setPendingClaimId(seriesId, edition, claimId);
-      answer = await claimAdmission({
+      const answer = await claimAdmission({
         fetchFn: (input, init) => fetch(input, init),
         apiBase: API_BASE,
         eventId: this.pass.eventId,
@@ -303,24 +306,31 @@ class ScannerStore {
         deviceId: this.deviceId,
         claim: { seriesId, edition, method, claimId, at: new Date().toISOString() },
       });
+
+      if (answer.kind === "pass-dead") {
+        this.passDead = answer.message;
+        return answer;
+      }
+      if (answer.kind === "cant-confirm") return answer;
+
+      // Final either way. Into memory first, before anything can yield; then the
+      // pending claimId goes BEFORE the record is written, because a stale claimId
+      // is the only thing that could replay this admission.
+      const next = new Map(this.checkins);
+      next.set(db.ticketKey(seriesId, edition), answer.record);
+      this.checkins = next;
+      try {
+        await db.clearPendingClaimId(seriesId, edition);
+        await db.absorbServerCheckins([answer.record], []);
+      } catch (err) {
+        // The server holds the record and the next sync brings it back; the
+        // answer stands.
+        console.warn("[scanner] could not store a confirmed check-in locally", err);
+      }
+      return answer;
     } finally {
       this.claiming = false;
     }
-
-    if (answer.kind === "pass-dead") {
-      this.passDead = answer.message;
-      return answer;
-    }
-    if (answer.kind === "cant-confirm") return answer;
-
-    // The server's answer is final either way: remember who holds the ticket so a
-    // re-scan here is an instant "already in", and drop the in-flight claim.
-    await db.absorbServerCheckins([answer.record], []);
-    await db.clearPendingClaimId(seriesId, edition);
-    const next = new Map(this.checkins);
-    next.set(db.ticketKey(seriesId, edition), answer.record);
-    this.checkins = next;
-    return answer;
   }
 
   private async mark(seriesId: string, edition: number, method: "scan" | "manual"): Promise<CheckinRecord | null> {

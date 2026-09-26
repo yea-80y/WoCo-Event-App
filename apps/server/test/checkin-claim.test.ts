@@ -112,6 +112,13 @@ test("a single-scanner pass binds to its first device and refuses every other", 
   assert.equal(store.bindSinglePassDevice("evt-bind", DEV_B), true, "regenerating the pass is how it moves to another phone");
 });
 
+test("a claimId replayed from another device is not a retry: it is told already in", () => {
+  assert.equal(store.claimCheckin("evt-replay", rec()).status, "admitted");
+  const replay = store.claimCheckin("evt-replay", rec({ deviceId: DEV_B }));
+  assert.equal(replay.status, "already-in", "same claimId, different device");
+  assert.equal(replay.record.deviceId, DEV_A);
+});
+
 // ---------------------------------------------------------------------------
 // The route
 // ---------------------------------------------------------------------------
@@ -169,4 +176,12 @@ test("route: a claim that cannot be saved answers 503, never 'admitted'", async 
   } finally {
     chmodSync(checkinsDir(), 0o700);
   }
+});
+
+test("route: a scanner that sends no device id gets no pack, whatever the mode", async () => {
+  // A pre-#641 bundle ignores the door mode and admits offline; it must not
+  // provision onto a shared ("several") door.
+  const token = store.issueDoorPass("evt-route-pack", Math.floor(Date.now() / 1000) + 3600);
+  const res = await app.request("/api/checkin/evt-route-pack/pack", { headers: { "X-Door-Pass": token } });
+  assert.equal(res.status, 400);
 });

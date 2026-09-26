@@ -40,7 +40,14 @@
     lastPayload = raw;
     lastPayloadAt = now;
 
-    const result = await scanner.scan(raw);
+    let result: ScanOutcome;
+    try {
+      result = await scanner.scan(raw);
+    } catch (err) {
+      // Without this a storage error left `busy` set and froze the scanner.
+      console.error("[scanner] scan failed", err);
+      result = { kind: "cant-confirm", message: "Something went wrong on this phone - scan again" };
+    }
     // Ignore stray non-ticket QRs entirely — flashing red at a poster QR in
     // the background would train staff to distrust real rejections.
     if (result.kind === "unreadable") {

@@ -263,10 +263,17 @@
         </button>
         <button class="danger" onclick={regenTap} disabled={working}>
           {confirmRegen
-            ? "Tap again - this locks out every scanner"
+            ? stored.mode === "single" ? "Tap again - the old phone stops once it has signal" : "Tap again - this locks out every scanner"
             : stored.mode === "single" ? "Regenerate (move to another phone)" : "Regenerate (revoke all devices)"}
         </button>
       </div>
+      {#if stored.mode === "single"}
+        <p class="hint caution">
+          Before you regenerate or switch, open the scanner on the old phone with signal and wait until it
+          shows nothing unsynced. A phone that is offline when you do it keeps checking people in until it
+          next gets signal - and the new pass does not know who it let in.
+        </p>
+      {/if}
       {#if stored.rosterPushedAt}
         <p class="meta">Attendee list pushed {new Date(stored.rosterPushedAt).toLocaleString()}</p>
       {/if}
@@ -378,6 +385,10 @@
     font-size: 0.85rem;
     color: var(--text-secondary);
     line-height: 1.45;
+  }
+  .caution {
+    margin: 0.75rem 0 0;
+    color: var(--warning);
   }
   .mode-line {
     font-size: 0.875rem;
