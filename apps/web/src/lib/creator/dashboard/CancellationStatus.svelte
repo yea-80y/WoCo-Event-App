@@ -11,10 +11,12 @@
   interface Props {
     eventId: string;
     cancelledAt: string;
+    /** The organiser's own page feed could not be re-signed when they cancelled. */
+    pageNotUpdated?: boolean;
     onnotify: () => void;
   }
 
-  let { eventId, cancelledAt, onnotify }: Props = $props();
+  let { eventId, cancelledAt, pageNotUpdated = false, onnotify }: Props = $props();
 
   const POLL_MS = 30_000;
   let progress = $state<CancellationProgress | null>(null);
@@ -48,6 +50,13 @@
     <span class="when">{new Date(cancelledAt).toLocaleString()}</span>
   </div>
 
+  {#if pageNotUpdated}
+    <p class="alert">
+      Sales have stopped, but your event page could not be updated from this device yet. Buy buttons already show
+      the event as cancelled.
+    </p>
+  {/if}
+
   {#if progress?.cancelled && progress.sales !== undefined}
     {#if progress.sales === 0}
       <p>No tickets were sold, so there is nothing to refund.</p>
@@ -55,14 +64,14 @@
       <p class="line">
         Refunds: <strong>{progress.done} of {progress.sales}</strong> complete
         {#each Object.entries(progress.totals ?? {}) as [currency, t] (currency)}
-          <span class="money"> - {money(t.refunded, currency)} of {money(t.charged, currency)}</span>
+          <span class="money"> - {money(t.refunded, currency)} of {money(t.charged, currency)} returned or on its way</span>
         {/each}
       </p>
       {#if progress.waitingForFunds}
         <p class="alert">
-          {progress.waitingForFunds} refund(s) are waiting for funds in your Stripe balance. Add funds in your
-          <a href="https://dashboard.stripe.com" target="_blank" rel="noopener noreferrer">Stripe Dashboard</a>
-          and they go through automatically.
+          {progress.waitingForFunds} refund(s) are more than your Stripe balance can cover right now. Stripe is
+          holding them and sends them once your balance can - see your balance in your
+          <a href="https://dashboard.stripe.com" target="_blank" rel="noopener noreferrer">Stripe Dashboard</a>.
         </p>
       {/if}
       {#if progress.waitingForBuyer}
@@ -75,7 +84,7 @@
         <p class="alert">{progress.needsAttention} refund(s) could not be completed. We have been alerted and will sort them.</p>
       {/if}
       {#if progress.settled}
-        <p class="ok">Every buyer has been refunded.</p>
+        <p class="ok">Every refund has been sent.</p>
       {:else if progress.inProgress}
         <p>{progress.inProgress} refund(s) in progress.</p>
       {/if}

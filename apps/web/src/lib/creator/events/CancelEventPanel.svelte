@@ -5,7 +5,13 @@
    * the way in, not the guard. Sales stop and refunds start server-side; the
    * dashboard's CancellationStatus shows the progress.
    */
-  import { CANCELLATION_RETURNS_PLATFORM_FEE, PLATFORM_FEE_BP, type EventFeed } from "@woco/shared";
+  import {
+    CANCELLATION_RETURNS_PLATFORM_FEE,
+    ORGANISER_CANCEL_WINDOW_DAYS,
+    PLATFORM_FEE_BP,
+    organiserCancelClosesAt,
+    type EventFeed,
+  } from "@woco/shared";
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { cancelEvent } from "../../api/events.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -13,7 +19,8 @@
   interface Props {
     event: EventFeed;
     ordersCount: number;
-    oncancelled: (feed: EventFeed) => void;
+    /** `feedUpdated` false: sales have stopped, but the organiser's own page feed still lacks the banner. */
+    oncancelled: (feed: EventFeed, feedUpdated: boolean) => void;
   }
 
   let { event, ordersCount, oncancelled }: Props = $props();
@@ -22,7 +29,6 @@
   let typed = $state("");
   let working = $state(false);
   let error = $state<string | null>(null);
-  let warning = $state<string | null>(null);
 
   // Same comparison the server makes: Unicode form and runs of spaces don't matter.
   const norm = (s: string) => s.normalize("NFC").replace(/\s+/gu, " ").trim();
@@ -30,31 +36,31 @@
   // Owner policy: refunds are for events that do not take place. Cancelling one
   // that already happened refunds people who came, so it is said plainly.
   const alreadyEnded = $derived(Date.parse(event.endDate || event.startDate) < Date.now());
+  // The server refuses past this too; here it only swaps the button for the reason.
+  const windowClosed = $derived.by(() => {
+    const closesAt = organiserCancelClosesAt(event);
+    return closesAt !== null && Date.now() > closesAt;
+  });
   const platformFeePct = `${PLATFORM_FEE_BP / 100}%`;
 
   async function confirmCancel() {
     if (!matches || working) return;
     working = true;
     error = null;
-    warning = null;
     try {
-      // The cancellation itself needs no signing key. The page feed does: a
-      // mismatch only means the banner reaches the organiser's own page later.
+      // The cancellation itself needs no signing key. The page feed does, and
+      // only a key already on this device is used: no prompt mid-cancellation.
       let feedSigner: ContentFeedSigner | null = null;
       if (event.creatorFeedSigner) {
         try {
-          const signer = await auth.getContentFeedSigner();
+          const signer = await auth.getContentFeedSignerIfPresent();
           if (signer && signer.address.toLowerCase() === event.creatorFeedSigner.toLowerCase()) feedSigner = signer;
         } catch {
           feedSigner = null;
         }
       }
       const result = await cancelEvent(event.eventId, typed, { feedSigner });
-      if (!result.feedUpdated || (event.creatorFeedSigner && !feedSigner)) {
-        warning =
-          "The event is cancelled and sales have stopped. Its page could not be updated from this account yet - buy buttons already show it as cancelled.";
-      }
-      if (result.eventFeed) oncancelled(result.eventFeed);
+      oncancelled(result.eventFeed ?? { ...event, cancelledAt: new Date().toISOString() }, result.feedUpdated);
     } catch (e) {
       error = e instanceof Error ? e.message : "Could not cancel the event";
     } finally {
@@ -71,7 +77,11 @@
       This event was cancelled on {new Date(event.cancelledAt).toLocaleDateString()}. Refund progress is at
       the top of this dashboard.
     </p>
-    {#if warning}<p class="warn">{warning}</p>{/if}
+  {:else if windowClosed}
+    <p class="hint">
+      This event ended more than {ORGANISER_CANCEL_WINDOW_DAYS} days ago, so it can no longer be cancelled. You can
+      still refund individual buyers from your Stripe Dashboard.
+    </p>
   {:else if !open}
     <p class="hint">
       If the event isn't going ahead, cancel it here. Every buyer gets back everything they paid.
@@ -92,14 +102,15 @@
           {ordersCount > 0 ? `all ${ordersCount} ticket(s) sold are` : "any tickets sold are"} refunded in full -
           everything the buyer paid, including any booking fee, back to the card they used
         </li>
-        <li>those tickets stop working at the door</li>
+        <li>each ticket stops working at the door as soon as its refund goes through</li>
       </ul>
       <p>
         <strong>What it costs you:</strong> the refunds come out of your Stripe balance. Stripe doesn't return its
         processing fee on a refund{CANCELLATION_RETURNS_PLATFORM_FEE
           ? "."
           : `, and WoCo's ${platformFeePct} platform fee isn't returned either (see the organiser terms).`}
-        Your balance needs to cover every refund in full - any it can't cover wait until you add funds in Stripe.
+        Your balance needs to cover every refund in full. Stripe holds any refund it can't cover yet and sends it
+        once your balance can.
       </p>
       <p><strong>This can't be undone.</strong> Afterwards you'll be able to send your attendees a cancellation
         notice - we'll start it for you, and you choose the words.</p>

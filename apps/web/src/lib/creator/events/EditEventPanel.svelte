@@ -18,7 +18,7 @@
     onsaved: (feed: EventFeed) => void;
     ondeleted: () => void;
     /** #644: the event was cancelled; the feed carries `cancelledAt`. */
-    oncancelled: (feed: EventFeed) => void;
+    oncancelled: (feed: EventFeed, feedUpdated: boolean) => void;
   }
 
   let { event, ordersCount, onsaved, ondeleted, oncancelled }: Props = $props();

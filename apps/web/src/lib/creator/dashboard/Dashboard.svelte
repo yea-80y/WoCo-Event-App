@@ -83,6 +83,9 @@
    */
   let broadcastServiceType = $state<ServiceNoticeType | "">("");
 
+  /** #644: cancelled, but the organiser's own page feed could not be re-signed from here. */
+  let cancelPageNotUpdated = $state(false);
+
   function openCancellationNotice(): void {
     if (!event) return;
     activeTab = "broadcast";
@@ -553,7 +556,12 @@
     <p class="subtitle">{event.title}</p>
 
     {#if event.cancelledAt}
-      <CancellationStatus {eventId} cancelledAt={event.cancelledAt} onnotify={openCancellationNotice} />
+      <CancellationStatus
+        {eventId}
+        cancelledAt={event.cancelledAt}
+        pageNotUpdated={cancelPageNotUpdated}
+        onnotify={openCancellationNotice}
+      />
     {/if}
 
     <!-- Tab bar -->
@@ -610,8 +618,9 @@
           cacheDel(cacheKey.event(eventId));
           navigate("/creator/events");
         }}
-        oncancelled={(feed) => {
+        oncancelled={(feed, feedUpdated) => {
           event = feed;
+          cancelPageNotUpdated = !feedUpdated;
           cacheSet(cacheKey.event(eventId), feed, TTL.EVENT);
           openCancellationNotice();
         }}

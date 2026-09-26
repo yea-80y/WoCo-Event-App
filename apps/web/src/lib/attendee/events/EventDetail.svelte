@@ -109,8 +109,12 @@
   })());
 
   const isPastEvent = $derived(!!event && checkPast(event, now));
-  /** #644: display only — sales are refused server-side whatever this says. */
-  const isCancelled = $derived(!!event?.cancelledAt);
+  /**
+   * #644: display only — sales are refused server-side whatever this says. The
+   * organiser's own feed may not carry `cancelledAt` yet; claim-status does.
+   */
+  let serverSaysCancelled = $state(false);
+  const isCancelled = $derived(!!event?.cancelledAt || serverSaysCancelled);
 
   function formatDate(iso: string): string {
     return new Date(iso).toLocaleDateString(undefined, {
@@ -372,6 +376,7 @@
                 apiUrl={externalApiUrl}
                 payment={s.payment}
                 quantity={ticketQty[s.seriesId] ?? 1}
+                oncancelled={() => (serverSaysCancelled = true)}
               />
             {/if}
           </div>

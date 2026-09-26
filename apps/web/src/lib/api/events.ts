@@ -262,14 +262,20 @@ export async function cancelEvent(
 
   const feed = resp.data?.eventFeed ?? null;
   const progress = resp.data?.progress ? { ...resp.data.progress, cancelled: true } : null;
-  if (feed?.creatorFeedSigner && opts.feedSigner
-      && feed.creatorFeedSigner.toLowerCase() === opts.feedSigner.address.toLowerCase()) {
-    try {
-      await signEventFeedSoc(feed, opts.feedSigner);
-    } catch (err) {
-      console.warn("[cancel] the event is cancelled but its page feed could not be re-signed:", err);
-      return { progress, eventFeed: feed, feedUpdated: false };
-    }
+  if (!feed) return { progress, eventFeed: null, feedUpdated: false };
+  // A platform-owned feed has nothing for the organiser to sign: the server's
+  // overlay is what readers see.
+  if (!feed.creatorFeedSigner) return { progress, eventFeed: feed, feedUpdated: true };
+  // Sign only a feed that names THIS event and this signer.
+  if (!opts.feedSigner || feed.eventId !== eventId
+      || feed.creatorFeedSigner.toLowerCase() !== opts.feedSigner.address.toLowerCase()) {
+    return { progress, eventFeed: feed, feedUpdated: false };
+  }
+  try {
+    await signEventFeedSoc(feed, opts.feedSigner);
+  } catch (err) {
+    console.warn("[cancel] the event is cancelled but its page feed could not be re-signed:", err);
+    return { progress, eventFeed: feed, feedUpdated: false };
   }
   return { progress, eventFeed: feed, feedUpdated: true };
 }
