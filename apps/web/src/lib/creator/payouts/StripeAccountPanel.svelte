@@ -170,8 +170,12 @@
        the embed on purpose: it must work when Stripe's iframes fail to load. -->
   <div class="dashboard">
     <p class="blurb">
-      Refunds and disputes are handled in your own Stripe Dashboard - find the payment and
-      choose Refund. A refund is paid from your takings.
+      Cancelling an event? Use Cancel event and refund everyone on the event's Edit tab - WoCo
+      refunds every buyer for you, up to 2 days after the event ends.
+    </p>
+    <p class="blurb">
+      Single refunds and disputes are handled in your own Stripe Dashboard - find the payment
+      and choose Refund. A refund is paid from your takings.
     </p>
     <a class="dash-link" href={STRIPE_DASHBOARD_URL} target="_blank" rel="noopener noreferrer">
       Open your Stripe Dashboard
