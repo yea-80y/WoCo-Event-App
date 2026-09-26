@@ -163,19 +163,32 @@ export async function resolveNetFromStripe(
   // `requires_action` — has no balance transaction yet, and whether it counts
   // in `charge.amount_refunded` is not documented. Skipping it resolved the
   // sale POSITIVE and paid out the very balance the refund was waiting on, so
-  // such a sale is held until the refund lands or fails. A failed or cancelled
-  // refund moved nothing and is skipped.
+  // anything without a balance transaction that is not failed or cancelled
+  // (including a status we do not know) holds the sale.
+  //
+  // A refund that FAILED after its debit posted keeps that debit as
+  // `balance_transaction` and gets the reversal as `failure_balance_transaction`
+  // (stripe-node Refund). Netting the debit alone would void the sale — a
+  // terminal state — with the money back in the organiser's balance and nothing
+  // left watching it. So both are netted, and a failure whose reversal has not
+  // posted yet holds, like a won dispute awaiting its reinstatement.
+  const btIdOf = (b: string | Stripe.BalanceTransaction | null | undefined): string | undefined =>
+    typeof b === "string" ? b : b?.id;
   for await (const r of s.refunds.list({ charge: charge.id, limit: 100 }, opts)) {
-    const rBtId =
-      typeof r.balance_transaction === "string"
-        ? r.balance_transaction
-        : r.balance_transaction?.id;
+    const gone = r.status === "failed" || r.status === "canceled";
+    const rBtId = btIdOf(r.balance_transaction);
     if (!rBtId) {
-      if (r.status === "pending" || r.status === "requires_action") return { held: "refund" };
-      continue;
+      if (gone) continue;
+      return { held: "refund" };
     }
     const rBt = await s.balanceTransactions.retrieve(rBtId, {}, opts);
     net += rBt.net; // negative
+    if (gone) {
+      const fBtId = btIdOf(r.failure_balance_transaction);
+      if (!fBtId) return { held: "refund" };
+      const fBt = await s.balanceTransactions.retrieve(fBtId, {}, opts);
+      net += fBt.net; // positive
+    }
   }
 
   // Disputes (#645 part C). Each carries zero, one or two balance transactions:
