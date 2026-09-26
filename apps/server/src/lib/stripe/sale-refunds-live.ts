@@ -20,4 +20,12 @@ export const liveSaleRefundReads: SaleRefundReads = {
   },
 
   retrievePlatformFee: liveProvenanceReads.retrievePlatformFee,
+
+  async disputesForCharge(chargeId, account) {
+    const out: Array<{ status: string }> = [];
+    for await (const d of getStripe().disputes.list({ charge: chargeId, limit: 100 }, { stripeAccount: account })) {
+      out.push({ status: d.status });
+    }
+    return out;
+  },
 };

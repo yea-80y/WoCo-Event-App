@@ -73,9 +73,15 @@ The auto-refund in `lib/stripe/fulfilment.ts` (a sale WoCo itself could not fulf
 refund, pro-rata on a partial. ORGANISER_TERMS §6 states it.
 
 The ledger's `netAmount` is a **reporting cache only** — the sweep re-resolves from
-Stripe on every run while an entry is held, because a refund can land between sweeps
-(there is no `charge.refunded` webhook wired) and a trusted cache would pay out the
-pre-refund value.
+Stripe on every run while an entry is held, because a refund can land between sweeps and a
+trusted cache would pay out the pre-refund value. (The `charge.refunded` webhook, #645
+part C, voids TICKETS; the money side never depends on it.)
+
+**Disputes (#645 part C).** A disputed charge's disputes are read too. While one is open
+(`needs_response`, `under_review`, or a `warning_*` inquiry) the sale is **contested**: held,
+never paid, never voided — `markVoid` is terminal and a won dispute gives the money back. Once
+closed, each dispute's balance transactions (the withdrawal, and the reinstatement if won) are
+netted like refunds, so a lost dispute takes the sale to ≤ 0 and the void branch retires it.
 
 The balance transaction is also where the **settlement currency** comes from: a charge
 presented in a currency the account has no bank account for is converted to the

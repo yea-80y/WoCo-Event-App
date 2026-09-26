@@ -45,6 +45,7 @@ export async function readLatestCharge(paymentIntentId: string, account: string)
     amount: ch.amount,
     feeRequested: (ch.application_fee_amount ?? 0) > 0,
     feeId: !fee ? null : typeof fee === "string" ? fee : fee.id,
+    disputed: ch.disputed === true,
   };
 }
 

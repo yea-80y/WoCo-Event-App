@@ -164,7 +164,13 @@
           : order.claimerAddress,
         dec?.claimerEmail ?? "",
         order.via ?? "",
-        order.refund === "refunded" ? "Refunded" : order.refund === "partial" ? "Part refunded" : "",
+        order.refund === "refunded"
+          ? "Refunded"
+          : order.refund === "disputed"
+            ? "Disputed"
+            : order.refund === "partial"
+              ? "Part refunded"
+              : "",
         order.claimedAt ? new Date(order.claimedAt).toLocaleString() : "",
         ...fields.map((f) => dec?.fields?.[f.id] ?? ""),
       ];
@@ -1009,6 +1015,8 @@
                         {/if}
                         {#if order.refund === "refunded"}
                           <span class="refund-badge" title="Refunded in full. This ticket no longer gets in at the door.">Refunded</span>
+                        {:else if order.refund === "disputed"}
+                          <span class="refund-badge" title="The buyer's bank took this payment back. This ticket no longer gets in at the door. Respond to the dispute in Stripe.">Disputed</span>
                         {:else if order.refund === "partial"}
                           <span class="refund-badge refund-badge--partial" title="Part of this order was refunded. The tickets still get in - check the payment in Stripe.">Part refunded</span>
                         {/if}

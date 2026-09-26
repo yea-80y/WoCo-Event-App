@@ -47,7 +47,7 @@ import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../
 import { liveProvenanceReads, refundTamperedSession } from "../lib/stripe/checkout-provenance-live.js";
 import { fulfilPaidSession } from "../lib/stripe/fulfilment.js";
 import { recordSaleStub } from "../lib/stripe/ticket-sales.js";
-import { alreadyApplied, noteApplied, reconcileRefundEvent } from "../lib/stripe/sale-refunds.js";
+import { alreadyApplied, noteApplied, reconcileChargeEvent } from "../lib/stripe/sale-refunds.js";
 import { liveSaleRefundReads } from "../lib/stripe/sale-refunds-live.js";
 import { liveFulfilmentDeps } from "../lib/stripe/fulfilment-live.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
@@ -1251,32 +1251,44 @@ stripe.post("/webhook", async (c) => {
 
     case "charge.refunded":
     case "refund.updated":
-    case "refund.failed": {
+    case "refund.failed":
+    case "charge.dispute.created":
+    case "charge.dispute.updated":
+    case "charge.dispute.closed":
+    case "charge.dispute.funds_withdrawn":
+    case "charge.dispute.funds_reinstated": {
       // #645 part C: a refund we did not make (the organiser's own Dashboard, a
       // cancellation) voids the sale's tickets; a refund that FAILED or was
       // CANCELLED lifts that void again, and one that moves from requires_action
       // to succeeded lands it (`refund.updated` is the only event carrying those
-      // two). All are applied from Stripe's current totals, never from this
-      // event's body (lib/stripe/sale-refunds.ts). Only a direct charge on a
-      // connected account can be one of our sales.
+      // two). A chargeback voids the same way and a won dispute lifts it; an
+      // inquiry voids nothing. All are applied from Stripe's current state,
+      // never from this event's body (lib/stripe/sale-refunds.ts). Only a direct
+      // charge on a connected account can be one of our sales.
       if (!event.account || alreadyApplied(event.id)) break;
       const obj = event.data.object as { payment_intent?: string | { id: string } | null };
       const piId = typeof obj.payment_intent === "string" ? obj.payment_intent : obj.payment_intent?.id;
       if (!piId) break;
-      const outcome = await reconcileRefundEvent({ paymentIntentId: piId, account: event.account }, liveSaleRefundReads);
+      const outcome = await reconcileChargeEvent(
+        { paymentIntentId: piId, account: event.account, dispute: event.type.startsWith("charge.dispute.") },
+        liveSaleRefundReads,
+      );
       if (outcome.kind === "retry") {
         console.warn(`[stripe-webhook] ${event.type} ${event.id} for ${piId}: ${outcome.reason} — asking Stripe to retry`);
         return c.text("Refund could not be applied yet", 500);
       }
       noteApplied(event.id);
       if (outcome.kind === "applied") {
-        const { change } = outcome;
-        if (change.voided || change.unvoided || change.partialAlarm) {
+        const { change, dispute } = outcome;
+        if (change.voided || change.unvoided || change.partialAlarm || dispute?.change.voided || dispute?.change.unvoided || dispute?.reading.needsResponse) {
           console.warn(
             `[stripe-webhook] ${event.type} on sale ${outcome.sessionId}: refunded ${outcome.refunded}/${outcome.charged}` +
               (change.voided ? " — tickets VOIDED" : "") +
               (change.unvoided ? " — refund failed, tickets valid again" : "") +
-              (change.partialAlarm ? " — PARTIAL refund above our own, tickets left valid (alarm)" : ""),
+              (change.partialAlarm ? " — PARTIAL refund above our own, tickets left valid (alarm)" : "") +
+              (dispute?.change.voided ? " — CHARGEBACK, tickets VOIDED" : "") +
+              (dispute?.change.unvoided ? " — dispute won, tickets valid again" : "") +
+              (dispute?.reading.needsResponse ? " — dispute needs a response in Stripe (alarm)" : ""),
           );
         }
       }

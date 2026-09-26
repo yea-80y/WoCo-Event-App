@@ -284,9 +284,11 @@ function healthReport() {
     // is a sale left unverifiable for 10 minutes (#666, `stuck`); foreign sessions
     // are an organiser's own sales and are only counted.
     checkoutProvenance: checkoutProvenanceHealth(),
-    // #645 part C: the sale record refunds void tickets through.
+    // #645 part C: the sale record refunds and chargebacks void tickets through.
     // Alarms: a partial refund above our own that no operator has acknowledged
-    // (tickets left valid), the record file present but unreadable (voids off),
+    // (tickets left valid), a dispute or inquiry waiting for evidence
+    // (`disputesNeedingResponse` — a deadline is running in Stripe), the record
+    // file present but unreadable (voids off),
     // and `refundEvents.stuck` — a refund on one of our sales that has waited an
     // hour for its record. After launch `stuck` is also what catches a LOST
     // record file: a refund on a sale the file no longer knows. Counts only; the

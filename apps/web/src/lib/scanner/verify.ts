@@ -27,7 +27,7 @@ import {
 
 export type VerifyVerdict =
   | { status: "valid"; strength: "onchain"; ticket: TicketQr; seriesName: string }
-  /** Genuine, but its sale was refunded in full (#645): not admitted, and no check-in is recorded. */
+  /** Genuine, but its sale was refunded in full or charged back (#645): not admitted, and no check-in is recorded. */
   | { status: "refunded"; ticket: TicketQr; seriesName: string }
   | { status: "invalid"; reason: string; ticket?: TicketQr }
   | { status: "wrong-event"; ticket: TicketQr }
