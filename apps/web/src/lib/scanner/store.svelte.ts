@@ -130,6 +130,9 @@ class ScannerStore {
         exp: decoded.payload.exp,
       };
       await db.setStoredPass(pass);
+      // A pass for another event starts from an empty in-memory set;
+      // `reloadCheckins` only ever adds to it.
+      if (this.pass?.eventId !== pass.eventId) this.checkins = new Map();
       this.pass = pass;
       this.passDead = null;
       await this.absorbPack(pack);
@@ -384,6 +387,10 @@ class ScannerStore {
     const all = await db.getAllCheckins();
     const map = new Map<string, CheckinRecord>();
     for (const r of all) map.set(db.ticketKey(r.seriesId, r.edition), r);
+    // A union, never a replacement: the set only grows. A snapshot read before a
+    // confirmed check-in reached storage must not drop it from memory, or a
+    // re-scan could replay that claim (#641). `reset()` clears explicitly.
+    for (const [k, v] of this.checkins) if (!map.has(k)) map.set(k, v);
     this.checkins = map;
     this.pendingCount = (await db.getPending()).length;
   }
