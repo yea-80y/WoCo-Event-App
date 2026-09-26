@@ -207,7 +207,7 @@ describe("slotRefundStates (organiser orders view)", () => {
       "slot 4 was never refunded and carries no state",
     );
     assert.equal(ts.slotRefundStates(EV, "421614:0x" + "c2".repeat(20)).size, 0, "another contract's slots are not these");
-    assert.equal(ts.slotRefundStates(OTHER_EV).size, 0);
+    assert.equal(ts.slotRefundStates(OTHER_EV, CONTRACT).size, 0);
   });
 });
 
