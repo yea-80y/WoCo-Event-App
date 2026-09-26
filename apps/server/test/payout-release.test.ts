@@ -748,6 +748,32 @@ test("a cancelled event's sale is held until its refunds settle — even past th
   assert.equal(ledger.getEntry("cs_cx")?.status, "void", "once settled, the refunded sale nets below zero and voids");
 });
 
+test("a journalled payout is not replayed once a sale in it belongs to a cancelled event (#644)", async () => {
+  // Crash after journalling, then the event is cancelled. Replaying would pay
+  // the cancelled sale; clearing early would drop the key that keeps the rest
+  // of the set from being paid twice. The group waits out the window instead.
+  held("cs_x", { eventId: "ev_cx", grossAmount: 5_000 });
+  held("cs_y", { eventId: "ev1", grossAmount: 7_000 });
+  const key = "woco-payout-cancelled-since";
+  const { gateway, payouts } = fakeGateway();
+  gateway.cancellationHold = (eventId) => eventId === "ev_cx";
+  journal(key, ["cs_x", "cs_y"], 12_000, "2026-02-05T00:00:00.000Z");
+
+  const [first] = await release.runReleaseSweep(gateway, at("2026-02-05T02:00:00.000Z"));
+  assert.equal(payouts.length, 0, "never replayed");
+  assert.ok(intents.getIntent(ACCT, "gbp"), "the intent and its key survive");
+  assert.deepEqual(first!.deferred.slice().sort(), ["cs_x", "cs_y"]);
+  assert.equal(ledger.getEntry("cs_y")?.status, "held");
+
+  const [later] = await release.runReleaseSweep(gateway, at("2026-02-06T00:00:00.000Z"));
+  assert.equal(intents.getIntent(ACCT, "gbp"), undefined, "abandoned once the key has expired");
+  assert.equal(payouts.length, 1);
+  assert.equal(payouts[0]!.amount, 7_000, "only the sale that is not held");
+  assert.notEqual(payouts[0]!.idempotencyKey, key);
+  assert.equal(ledger.getEntry("cs_x")?.status, "held");
+  assert.ok(later!.deferred.includes("cs_x"));
+});
+
 test("the live hold is PER SALE: a cancelled event's sale with no refund row yet is held (#644)", async () => {
   const cancellations = await import("../src/lib/event/cancellations.js");
   cancellations.recordCancellation({ eventId: "ev_cancel_live", by: "ops:test", feeReturned: false });

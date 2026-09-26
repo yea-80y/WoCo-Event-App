@@ -96,6 +96,11 @@ const FINAL: ReadonlySet<CancelRefundStatus> = new Set(["resolved", "abandoned"]
 export const DONE_RECHECK_WINDOW_MS = 35 * 24 * 60 * 60_000;
 export const DONE_RECHECK_EVERY_MS = 24 * 60 * 60_000;
 /**
+ * A row parked on a visible open chargeback is re-read this often: a chargeback
+ * runs for weeks, and each dispute webhook reopens the row at once anyway.
+ */
+export const DISPUTED_RECHECK_EVERY_MS = 6 * 60 * 60_000;
+/**
  * Row states whose sale may be paid out: refunded, or resolved by an operator.
  * NOT `disputed`: a chargeback the organiser later WINS gives the money back to
  * their balance and the buyer is then refunded from it (the pass refunds a won
@@ -142,11 +147,13 @@ function persist(): boolean {
   return writeJsonAtomic(STORE_FILE, store, "event-cancellations", { pretty: true });
 }
 
+export type CancellationGate = "open" | "cancelled" | "unknown";
+
 /**
  * The money path's question. "unknown" while the file is unreadable: every
  * caller that sells refuses on it, one that has already been paid proceeds.
  */
-export function cancellationGate(eventId: string): "open" | "cancelled" | "unknown" {
+export function cancellationGate(eventId: string): CancellationGate {
   ensureLoaded();
   if (fileUnreadable) return "unknown";
   return store[eventId] ? "cancelled" : "open";
@@ -243,7 +250,7 @@ export function reopenRefundRow(eventId: string, sessionId: string, now: Date = 
   ensureLoaded();
   const row = store[eventId]?.refunds[sessionId];
   if (!row || row.status === "resolved") return false;
-  if (row.status !== "done" && row.status !== "abandoned") return true;
+  if (row.status !== "done" && row.status !== "abandoned" && row.status !== "disputed") return true;
   Object.assign(row, { status: "pending" as const, updatedAt: now.toISOString() });
   persist();
   return true;
@@ -276,8 +283,12 @@ export function resolveRefundRow(
 /** Whether a pass should look at this row now. */
 export function isRowDue(row: CancelRefundRow, now: Date = new Date()): boolean {
   if (FINAL.has(row.status)) return false;
-  if (row.status !== "done") return true;
   const t = now.getTime();
+  // Parked on a chargeback we could see (no lastError). One parked because
+  // Stripe refused a create (lastError set) stays due every pass, so it reaches
+  // `abandoned` and the alarm rather than waiting quietly.
+  if (row.status === "disputed" && !row.lastError) return t - Date.parse(row.updatedAt) >= DISPUTED_RECHECK_EVERY_MS;
+  if (row.status !== "done") return true;
   const doneAt = row.doneAt ? Date.parse(row.doneAt) : Date.parse(row.updatedAt);
   return t - doneAt < DONE_RECHECK_WINDOW_MS && t - Date.parse(row.updatedAt) >= DONE_RECHECK_EVERY_MS;
 }
