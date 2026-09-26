@@ -64,14 +64,14 @@ function fakeReads(o: {
   return { reads, calls };
 }
 
-function fakeStore(sale: TicketSale | undefined, persisting = true) {
+function fakeStore(sale: TicketSale | undefined, persisting = true, writes = true) {
   const applied: Array<{ sessionId: string; refunded: number; charged: number }> = [];
   const store: SaleRefundStore = {
     persisting: () => persisting,
     getSaleByPaymentIntent: (pi) => (sale && sale.paymentIntentId === pi ? sale : undefined),
     applyRefundState: (sessionId, refunded, charged) => {
       applied.push({ sessionId, refunded, charged });
-      return { voided: refunded >= charged, unvoided: false, partialAlarm: false };
+      return { voided: refunded >= charged, unvoided: false, partialAlarm: false, persisted: writes };
     },
   };
   return { store, applied };
@@ -162,8 +162,15 @@ describe("a recorded sale", () => {
     assert.deepEqual(applied.map((x) => x.refunded), [500, 2000], "the newer total is the one left standing");
   });
 
-  test("a tampered session's refund is applied but not counted as a ticket void", async () => {
-    const { store } = fakeStore({ ...SALE, tampered: true });
+  test("a write that does not reach disk is a retry, so Stripe redelivers", async () => {
+    const { store, applied } = fakeStore(SALE, true, false);
+    const out = await reconcileRefundEvent(INPUT, fakeReads({ refunds: [{ amount: 2000, status: "succeeded" }] }).reads, store);
+    assert.equal(out.kind, "retry");
+    assert.equal(applied.length, 1, "it was attempted — and will be again on redelivery");
+  });
+
+  test("a slotless sale's refund (tampered, shop, minted nothing) is applied but not counted as a ticket void", async () => {
+    const { store } = fakeStore({ ...SALE, tampered: true, slots: [] });
     await reconcileRefundEvent(INPUT, fakeReads({ refunds: [{ amount: 2000, status: "succeeded" }] }).reads, store);
     assert.equal(saleRefundEventsHealth().voided, 0);
   });
