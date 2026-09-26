@@ -26,6 +26,7 @@ import {
 import {
   diagnoseManifest,
   readUserManifestResult,
+  rebuildManifest,
   retireBackupInventory,
   retireOneBackup,
   upsertBackupEntry,
@@ -236,6 +237,28 @@ for (const [path, locks] of LOCK_PATHS) {
   });
 }
 
+test("a repair waits for an edit already running on the same manifest", { timeout: 5_000 }, async () => {
+  let release!: () => void;
+  const editing = withManifestLock(signer.address, () => new Promise<void>((r) => (release = r)));
+  const events: string[] = [];
+  const repair = rebuildManifest({
+    signer,
+    parentAddress,
+    seed: null,
+    readManifest: async () => (events.push("re-read"), { status: "unavailable", reason: "frozen", unusableAt: 3 }),
+    write: async () => (events.push("write"), 4),
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(events, [], "the repair read and wrote while another edit held the manifest");
+  } finally {
+    release(); // a failure here must not leave the lock held for the tests after it
+  }
+  await editing;
+  assert.equal(await repair, 4);
+  assert.deepEqual(events, ["re-read", "write"]);
+});
+
 // ---------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------
@@ -264,13 +287,13 @@ test("a copy that will not open is called frozen only when the scan could confir
 
   net.ethernaDown = true;
   install(net);
-  const blind = await readUserManifestResult({ signer, parentAddress, thorough: true });
+  const blind = await readUserManifestResult({ signer, parentAddress });
   assert.equal(blind.status, "unavailable");
   assert.equal((blind as { unusableAt?: number }).unusableAt, undefined, "no permanent verdict on a version that may not be the head");
   assert.equal((await diagnoseManifest({ signer, parentAddress })).kind, "transient", "so no repair is offered");
 
   net.ethernaDown = false;
-  const seen = await readUserManifestResult({ signer, parentAddress, thorough: true });
+  const seen = await readUserManifestResult({ signer, parentAddress });
   assert.equal(seen.status, "found");
 
   // The same unopenable copy IS the head when nothing newer exists anywhere.
@@ -278,7 +301,7 @@ test("a copy that will not open is called frozen only when the scan could confir
   const alone: Net = { ourBee: new Map(), etherna: new Map() };
   put(alone.ourBee, soc(at(0), { not: "an envelope" }));
   install(alone);
-  const frozen = await readUserManifestResult({ signer, parentAddress, thorough: true });
+  const frozen = await readUserManifestResult({ signer, parentAddress });
   assert.equal((frozen as { unusableAt?: number }).unusableAt, 0);
 });
 

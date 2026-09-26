@@ -180,8 +180,11 @@ async function manifestBaseForWrite(args: {
 /**
  * How long one manifest read-modify-write may hold the lock. Generous: the
  * server already retries a stuck upload with backoff. Past it the caller gets an
- * error and the next edit runs; the abandoned upload may still land, which the
- * next edit's own version probe then sees.
+ * error and the next edit runs. The abandoned upload may still land: before the
+ * next edit's version probe, and that edit sees it; AFTER the probe, and that
+ * edit writes the same version, which Bee keeps the first of - it is lost while
+ * reporting success. The timeout trades that rare hang-then-land case for never
+ * blocking every later edit for the life of the tab; it does not close the race.
  */
 export const MANIFEST_EDIT_TIMEOUT_MS = 120_000;
 

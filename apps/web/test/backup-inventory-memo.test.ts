@@ -53,6 +53,15 @@ test("callers during one read share it", async () => {
   assert.equal(loads, 1);
 });
 
+test("a write forgets the remembered list", async () => {
+  const memo = new BackupInventoryMemo(60_000);
+  await memo.read(P, async () => known(["a"]));
+  memo.drop(); // a backup was added
+  let loads = 0;
+  assert.deepEqual(names(await memo.read(P, async () => (loads++, known(["a", "b"])))), ["a", "b"]);
+  assert.equal(loads, 1, "the pre-write list was served from memory");
+});
+
 test("a read that began before a write is neither kept nor joined", async () => {
   const memo = new BackupInventoryMemo(60_000);
   const before = pending();
