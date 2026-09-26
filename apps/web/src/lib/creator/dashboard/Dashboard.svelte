@@ -21,6 +21,8 @@
   import StripeConnect from "./StripeConnect.svelte";
   import CheckinPanel from "./CheckinPanel.svelte";
   import EditEventPanel from "../events/EditEventPanel.svelte";
+  import CancellationStatus from "./CancellationStatus.svelte";
+  import { cancellationNoticeTemplate } from "./cancellation-notice.js";
   import { cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
 
   interface Props {
@@ -80,6 +82,13 @@
    * the guard.
    */
   let broadcastServiceType = $state<ServiceNoticeType | "">("");
+
+  function openCancellationNotice(): void {
+    if (!event) return;
+    activeTab = "broadcast";
+    broadcastServiceType = "cancelled";
+    if (!broadcastBody.trim()) broadcastBody = cancellationNoticeTemplate(event);
+  }
   let showPreview = $state(false);
   let showRecipientList = $state(false);
 
@@ -543,6 +552,10 @@
     <h1>Orders Dashboard</h1>
     <p class="subtitle">{event.title}</p>
 
+    {#if event.cancelledAt}
+      <CancellationStatus {eventId} cancelledAt={event.cancelledAt} onnotify={openCancellationNotice} />
+    {/if}
+
     <!-- Tab bar -->
     <div class="tab-bar">
       <button
@@ -596,6 +609,11 @@
         ondeleted={() => {
           cacheDel(cacheKey.event(eventId));
           navigate("/creator/events");
+        }}
+        oncancelled={(feed) => {
+          event = feed;
+          cacheSet(cacheKey.event(eventId), feed, TTL.EVENT);
+          openCancellationNotice();
         }}
       />
     {:else if activeTab === "payments"}

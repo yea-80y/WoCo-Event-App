@@ -88,7 +88,8 @@ export async function prepareStripeOrder(encryptedOrder: SealedBox): Promise<str
 
 /** What the server confirms about a returning buyer's checkout (#567) — never the full email. */
 export interface CheckoutStatus {
-  status: "paid" | "open" | "expired";
+  /** `cancelled` (#644): the event was cancelled — any payment is refunded, no ticket follows. */
+  status: "paid" | "open" | "expired" | "cancelled";
   quantity: number;
   seriesId: string;
   emailMasked: string | null;

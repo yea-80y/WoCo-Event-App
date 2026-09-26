@@ -561,6 +561,8 @@ export interface SeriesClaimStatus {
   available: number;
   /** Seats currently held by active reservations (informational). */
   held?: number;
+  /** The event was cancelled (#644): `available` reads 0 and nothing is on sale. */
+  cancelled?: boolean;
 }
 
 /** Payment method used to obtain a ticket. */

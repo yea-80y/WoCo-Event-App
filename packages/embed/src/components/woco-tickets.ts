@@ -50,6 +50,8 @@ interface EventData {
   series: SeriesSummary[];
   encryptionKey?: string;
   orderFields?: OrderField[];
+  /** #644: the event was cancelled (the API overlays the server's record). */
+  cancelledAt?: string;
 }
 
 interface ClaimStatus {
@@ -57,6 +59,8 @@ interface ClaimStatus {
   totalSupply: number;
   claimed: number;
   available: number;
+  /** #644: the event was cancelled; `available` then reads 0. */
+  cancelled?: boolean;
 }
 
 interface SeriesState {
@@ -511,9 +515,11 @@ export class WocoTickets extends HTMLElement {
           <button class="return-dismiss" data-return-dismiss>Done</button>
         </div>`;
     }
-    const message = r.kind === "unpaid"
-      ? "This payment was not completed, so no ticket was issued. You can try again below."
-      : "We could not confirm this payment here. If it went through, your ticket is on its way by email.";
+    const message = r.kind === "cancelled"
+      ? "This event was cancelled, so no ticket was issued. If your payment went through, it is being refunded in full to the card you paid with."
+      : r.kind === "unpaid"
+        ? "This payment was not completed, so no ticket was issued. You can try again below."
+        : "We could not confirm this payment here. If it went through, your ticket is on its way by email.";
     return `<div class="return-card" role="status"><p>${message}</p><button class="return-dismiss" data-return-dismiss>Dismiss</button></div>`;
   }
 
@@ -667,7 +673,11 @@ export class WocoTickets extends HTMLElement {
       </div>
     `;
 
-    if (st?.buyOpen && this.isPayable(s) && avail !== 0) {
+    // #644: a cancelled event shows as cancelled, not "sold out". The server
+    // refuses the sale either way; this is what the buyer reads.
+    const cancelled = !!this.event?.cancelledAt || st?.status?.cancelled === true;
+
+    if (st?.buyOpen && this.isPayable(s) && avail !== 0 && !cancelled) {
       return `
         <div class="series-card series-card--expanded" data-series="${this.esc(s.seriesId)}">
           ${header}
@@ -677,7 +687,9 @@ export class WocoTickets extends HTMLElement {
     }
 
     let actionHtml: string;
-    if (!this.isPayable(s)) {
+    if (cancelled) {
+      actionHtml = `<button class="claim-btn" disabled>Event cancelled</button>`;
+    } else if (!this.isPayable(s)) {
       // No live payment rail for this series (crypto-only, free, or a stale
       // cache entry from before prices were in the payload). Nothing can be
       // sold here — say so rather than dead-ending at checkout.

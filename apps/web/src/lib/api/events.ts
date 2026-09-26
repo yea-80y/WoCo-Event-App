@@ -222,6 +222,64 @@ export async function deleteEvent(
   void trashFeedOnManifest("event", eventContentTopic(eventId));
 }
 
+/** Refund progress of a cancelled event (#644): counts and totals only, no buyer data. */
+export interface CancellationProgress {
+  cancelled: boolean;
+  cancelledAt?: string;
+  /** Whether our platform fee goes back to the organiser with each refund. */
+  feeReturned?: boolean;
+  sales?: number;
+  done?: number;
+  inProgress?: number;
+  /** Refunds Stripe is holding until the organiser's Stripe balance can cover them. */
+  waitingForFunds?: number;
+  waitingForBuyer?: number;
+  disputed?: number;
+  needsAttention?: number;
+  settled?: boolean;
+  /** Minor units per currency. */
+  totals?: Record<string, { charged: number; refunded: number }>;
+}
+
+/**
+ * Cancel an event and refund every buyer (#644). One-way. The server refuses
+ * unless `confirmTitle` is the event's exact name, stops sales at once and
+ * refunds in the background. For a Phase B event the returned feed carries
+ * `cancelledAt` and is re-signed here so the organiser's own page shows the
+ * banner; a re-sign that fails does NOT undo anything (`feedUpdated: false`) —
+ * sales are already stopped server-side and every API read shows it.
+ */
+export async function cancelEvent(
+  eventId: string,
+  confirmTitle: string,
+  opts: { feedSigner?: ContentFeedSigner | null } = {},
+): Promise<{ progress: CancellationProgress | null; eventFeed: EventFeed | null; feedUpdated: boolean }> {
+  const resp = await authPost<{ progress?: CancellationProgress; eventFeed?: EventFeed }>(
+    `/api/events/${eventId}/cancel`,
+    { confirmTitle },
+  );
+  if (!resp.ok) throw new Error(resp.error || "Could not cancel the event");
+
+  const feed = resp.data?.eventFeed ?? null;
+  const progress = resp.data?.progress ? { ...resp.data.progress, cancelled: true } : null;
+  if (feed?.creatorFeedSigner && opts.feedSigner
+      && feed.creatorFeedSigner.toLowerCase() === opts.feedSigner.address.toLowerCase()) {
+    try {
+      await signEventFeedSoc(feed, opts.feedSigner);
+    } catch (err) {
+      console.warn("[cancel] the event is cancelled but its page feed could not be re-signed:", err);
+      return { progress, eventFeed: feed, feedUpdated: false };
+    }
+  }
+  return { progress, eventFeed: feed, feedUpdated: true };
+}
+
+/** Refund progress for the organiser's cancelled event, or `{ cancelled: false }`. */
+export async function getCancellation(eventId: string): Promise<CancellationProgress | null> {
+  const resp = await authGet<CancellationProgress>(`/api/events/${eventId}/cancellation`);
+  return resp.ok ? (resp.data ?? null) : null;
+}
+
 /** Fetch the organiser's current nonce on the active chain (used to predict on-chain eventId). */
 export async function getOrganiserNonce(address: string): Promise<{
   nonce: bigint;

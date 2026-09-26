@@ -109,6 +109,8 @@
   })());
 
   const isPastEvent = $derived(!!event && checkPast(event, now));
+  /** #644: display only — sales are refused server-side whatever this says. */
+  const isCancelled = $derived(!!event?.cancelledAt);
 
   function formatDate(iso: string): string {
     return new Date(iso).toLocaleDateString(undefined, {
@@ -202,14 +204,19 @@
 
     <h1>
       {event.title}
-      {#if isPastEvent}<span class="past-pill">Past event</span>{/if}
+      {#if isCancelled}<span class="cancelled-pill">Cancelled</span>{:else if isPastEvent}<span class="past-pill">Past event</span>{/if}
     </h1>
 
     {#if event.tagline}
       <p class="tagline">{event.tagline}</p>
     {/if}
 
-    {#if isPastEvent}
+    {#if isCancelled}
+      <div class="cancelled-banner">
+        This event has been cancelled. Everyone who bought a ticket is being refunded in full, to the card they
+        paid with.
+      </div>
+    {:else if isPastEvent}
       <div class="past-banner">
         This event has ended. Tickets are no longer available — this page is here for reference.
       </div>
@@ -297,7 +304,7 @@
     {/if}
 
     <h2>Tickets</h2>
-    {#if isPastEvent}
+    {#if isPastEvent || isCancelled}
       <div class="past-tickets-block">
         <div class="past-tickets-list">
           {#each event.series as s}
@@ -311,7 +318,9 @@
             </div>
           {/each}
         </div>
-        <p class="past-tickets-note">Ticket sales have closed.</p>
+        <p class="past-tickets-note">
+          {isCancelled ? "Ticket sales have stopped - this event has been cancelled." : "Ticket sales have closed."}
+        </p>
       </div>
     {:else}
       <div class="series-list">
@@ -434,6 +443,32 @@
     background: color-mix(in srgb, var(--warning) 18%, transparent);
     color: var(--warning);
     border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .cancelled-banner {
+    margin: 0 0 1.25rem;
+    padding: 0.75rem 1rem;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    background: var(--error-subtle);
+    border: 1px solid color-mix(in srgb, var(--error) 30%, var(--border));
+    border-left: 3px solid var(--error);
+    border-radius: var(--radius-sm);
+    line-height: 1.5;
+  }
+
+  .cancelled-pill {
+    display: inline-block;
+    margin-left: 0.5rem;
+    padding: 0.15rem 0.5rem;
+    font-size: 0.625rem;
+    font-weight: 600;
+    vertical-align: middle;
+    color: var(--error);
+    border: 1px solid var(--error);
+    border-radius: var(--radius-sm);
     letter-spacing: 0.1em;
     text-transform: uppercase;
   }

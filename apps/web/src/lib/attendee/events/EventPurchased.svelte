@@ -51,6 +51,8 @@
   // A checkout that started on another origin (an embed with no page to return
   // to, or a new tab) left no stash here, so the server confirms the order (#567).
   let emailMasked = $state<string | null>(null);
+  /** #644: the event was cancelled — this buyer's payment is refunded, no ticket follows. */
+  let cancelled = $state(false);
 
   // Best-effort event title from cache. Don't block first paint on a fetch —
   // the success card stands alone without it; the line just renders without a
@@ -66,15 +68,16 @@
       }).catch(() => { /* non-fatal */ });
     }
 
-    if (!email) {
-      const sessionId = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("session_id");
-      if (sessionId) {
-        getCheckoutStatus(eventId, sessionId).then((status) => {
-          if (!status) return;
-          emailMasked = status.emailMasked;
-          if (!seriesId) qty = status.quantity;
-        });
-      }
+    // Asked even when the stash has the email: only the server knows whether
+    // the event was cancelled while the buyer was at Stripe (#644).
+    const sessionId = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("session_id");
+    if (sessionId) {
+      getCheckoutStatus(eventId, sessionId).then((status) => {
+        if (!status) return;
+        if (status.status === "cancelled") cancelled = true;
+        if (!email) emailMasked = status.emailMasked;
+        if (!seriesId) qty = status.quantity;
+      });
     }
 
     // Clean up the form stash now that we've used it. Keep `stripe-returning`
@@ -97,6 +100,21 @@
 </script>
 
 <div class="page">
+  {#if cancelled}
+  <div class="card">
+    <h1 class="title">Event cancelled</h1>
+    {#if eventTitle}
+      <p class="event-line">{eventTitle}</p>
+    {/if}
+    <p class="lede">
+      This event was cancelled, so no ticket will be issued. If your payment went through, it is being refunded in
+      full to the card you paid with - refunds usually arrive within 5-10 working days.
+    </p>
+    <div class="actions">
+      <button class="btn-primary" onclick={handleBackToEvent}>Back to event</button>
+    </div>
+  </div>
+  {:else}
   <div class="card">
     <div class="check" aria-hidden="true">
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
@@ -152,6 +170,7 @@
       A receipt has been sent by Stripe. Need help? Contact the organiser.
     </p>
   </div>
+  {/if}
 </div>
 
 <style>

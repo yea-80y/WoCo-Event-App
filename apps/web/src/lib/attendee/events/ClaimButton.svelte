@@ -369,7 +369,11 @@
       <span class="own-chip-hint">Buy another below</span>
     </div>
   {/if}
-  {#if showOrderForm}
+  {#if status?.cancelled}
+    <!-- #644: the server's word, from claim-status — covers a page whose feed
+         was not re-signed after the cancellation. -->
+    <button class="claim-btn" disabled>Event cancelled</button>
+  {:else if showOrderForm}
     <OrderForm
       {status}
       {quantity}
