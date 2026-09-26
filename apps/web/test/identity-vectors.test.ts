@@ -54,8 +54,17 @@ import {
   deriveEncryptionKeypairFromSeed,
   deriveIssuingKey,
   deriveFeedSignerKey,
+  PASSKEY_PRF_SALT_INPUT,
+  PASSKEY_SEED_INFO,
+  PORTABILITY_SOC_OWNER_INFO,
+  PORTABILITY_HPKE_INFO,
+  passkeyIdentitySeed,
+  portabilitySocOwnerKey,
+  portabilityHpkeSeed,
   type EIP712Signer,
 } from "@woco/shared";
+import { createHash } from "node:crypto";
+import { keccak256 } from "ethers";
 
 // --- minimal in-memory IndexedDB, same shim as identity-seed.test.ts ----------
 function installFakeIndexedDB() {
@@ -92,7 +101,12 @@ function installFakeIndexedDB() {
 }
 installFakeIndexedDB();
 
-const { requestIdentitySeed, clearIdentitySeed } = await import("../src/lib/auth/identity-seed.ts");
+const { requestIdentitySeed, establishPasskeyIdentitySeed, restoreIdentitySeed, clearIdentitySeed } =
+  await import("../src/lib/auth/identity-seed.ts");
+const { AAD } = await import("../src/lib/auth/storage/encryption.ts");
+const { deriveEncryptionKeypairFromSeed: derivePortabilityHpkeKeypair } = await import(
+  "../src/lib/auth/recovery-escrow.ts"
+);
 const { deriveHolderKeypair } = await import("../src/lib/credits/holder-key.ts");
 
 const WALLET_PRIV = "0x" + "ab".repeat(32);
@@ -265,6 +279,123 @@ test("no FEED_SIGNER_DERIVE / DeriveFeedSigner symbol survives anywhere", () => 
     /FEED_SIGNER_DERIVE|DeriveFeedSigner|deriveContentFeedSignerFromSig/.test(f.code),
   ).map((f) => f.rel);
   assert.deepEqual(hits, []);
+});
+
+// ---------------------------------------------------------------------------
+// PASSKEY: PRF output → seed (#642)
+// ---------------------------------------------------------------------------
+//
+// A passkey account's seed is not a signature: it is HKDF of the WebAuthn PRF
+// output (`packages/shared/src/crypto/passkey-prf.ts`). The wallet chain above is
+// untouched and still pins web3/web3auth; this block pins the passkey chain.
+//
+// HOW THESE VECTORS WERE PRODUCED (2026-09-27):
+//   1. A fixed, throwaway PRF output, 32 bytes of 0xcd — never used anywhere else.
+//   2. Each value derived by the shipped functions and pasted below.
+//   3. The seed cross-checked against an independent HKDF-SHA256 (Python stdlib
+//      hmac/hashlib, RFC 5869 by hand), so it does not rest on the code under test.
+//
+// Same rule as above: a mismatch is a migration of every passkey account, not a
+// test to update.
+
+const PRF_OUTPUT = "0x" + "cd".repeat(32);
+const PASSKEY_PINNED = {
+  /** SHA-256(PASSKEY_PRF_SALT_INPUT) — the salt every PRF evaluation sends. A
+   *  vector that starts from a fixed PRF output never exercises this step. */
+  prfSalt: "e1a5e87b05822eaeb0b43af383a77609480cd238104af967172412233f499a1a",
+  /** keccak256(prf) → the Kernel owner (PRF-EOA). FROZEN and NOT moved by #642. */
+  ownerAddress: "0x12e5a1673ab1890a409e63c4886c687d67261bc3",
+  seed: "0x1af9fab6130a59ec73f8ec8aa1103e6636d3750881d50683a36c5c93aeae6c60",
+  x25519Pub: "8ed1d0a43933c49dedf87a54dbb5e0e91fb4bae5e400a046032e6ec83813b250",
+  issuingAddress: "0x439b17b3f6954b1936a1585b99a363961dfcc8a0",
+  feedSignerAddress: "0x82fb649fe2107d66e0d0f1bce6a97d34c62af90d",
+  portabilitySocOwner: "0x20fc9d127383b9b5f742b231d51727bba875dbeb",
+  portabilityHpkePub: "18e04dd736a44a260303df188129b057ddd045bd017851a03badf9331f53b91a",
+} as const;
+
+test("FROZEN: the PRF salt input and its digest", () => {
+  assert.equal(PASSKEY_PRF_SALT_INPUT, "woco-passkey-secp256k1-v1");
+  assert.equal(
+    createHash("sha256").update(PASSKEY_PRF_SALT_INPUT).digest("hex"),
+    PASSKEY_PINNED.prfSalt,
+  );
+});
+
+test("FROZEN: the PRF-rooted HKDF labels and the at-rest seed AAD, byte for byte", () => {
+  assert.equal(PASSKEY_SEED_INFO, "woco/identity-seed/passkey-prf/v1");
+  assert.equal(PORTABILITY_SOC_OWNER_INFO, "woco/recovery/portability/soc-owner/v2");
+  assert.equal(PORTABILITY_HPKE_INFO, "woco/recovery/portability/hpke/v2");
+  assert.equal(AAD.IDENTITY_SEED("0xAbC"), "woco/device/identity-seed/v2:0xabc");
+});
+
+test("PRF → Kernel owner address pin (the frozen keccak route #642 did not move)", () => {
+  // `deriveKey` in passkey-account.ts is private and needs WebAuthn; the source
+  // check below pins that it is still exactly this.
+  const { address } = new Wallet(keccak256(PRF_OUTPUT));
+  assert.equal(address.toLowerCase(), PASSKEY_PINNED.ownerAddress);
+});
+
+test("PRF → seed pin, through the REAL establish + restore", async () => {
+  await clearIdentitySeed(PASSKEY_PINNED.ownerAddress);
+  assert.equal(passkeyIdentitySeed(PRF_OUTPUT), PASSKEY_PINNED.seed);
+  const { seed } = await establishPasskeyIdentitySeed(PASSKEY_PINNED.ownerAddress, PRF_OUTPUT);
+  assert.equal(seed, PASSKEY_PINNED.seed, "passkey seed moved — every passkey account's identity changed");
+  assert.equal(await restoreIdentitySeed(PASSKEY_PINNED.ownerAddress), PASSKEY_PINNED.seed);
+});
+
+test("passkey seed → the same sibling derivations as every other seed", () => {
+  assert.equal(deriveEncryptionKeypairFromSeed(PASSKEY_PINNED.seed).publicKeyHex, PASSKEY_PINNED.x25519Pub);
+  assert.equal(deriveIssuingKey(PASSKEY_PINNED.seed, 0).address, PASSKEY_PINNED.issuingAddress);
+  assert.equal(deriveFeedSignerKey(PASSKEY_PINNED.seed).address, PASSKEY_PINNED.feedSignerAddress);
+});
+
+test("PRF → portability envelope SOC owner + HPKE recipient pins", async () => {
+  assert.equal(portabilitySocOwnerKey(PRF_OUTPUT).address, PASSKEY_PINNED.portabilitySocOwner);
+  const kp = await derivePortabilityHpkeKeypair(portabilityHpkeSeed(PRF_OUTPUT));
+  assert.equal(kp.publicKeyHex, PASSKEY_PINNED.portabilityHpkePub);
+});
+
+test("everything hanging off one PRF output is a different key", () => {
+  const values = new Set([
+    PASSKEY_PINNED.seed.slice(2),
+    keccak256(PRF_OUTPUT).slice(2),
+    PASSKEY_PINNED.ownerAddress,
+    PASSKEY_PINNED.portabilitySocOwner,
+    PASSKEY_PINNED.feedSignerAddress,
+    PASSKEY_PINNED.issuingAddress,
+    PASSKEY_PINNED.x25519Pub,
+    PASSKEY_PINNED.portabilityHpkePub,
+  ]);
+  assert.equal(values.size, 8, "two derivations produced the same value");
+});
+
+test("a PRF output that is not exactly 32 bytes derives nothing", () => {
+  for (const bad of ["0x" + "cd".repeat(31), "0x" + "cd".repeat(33), "0x"]) {
+    assert.throws(() => passkeyIdentitySeed(bad), /32 bytes/);
+    assert.throws(() => portabilitySocOwnerKey(bad), /32 bytes/);
+    assert.throws(() => portabilityHpkeSeed(bad), /32 bytes/);
+  }
+});
+
+test("the passkey code paths route through the frozen module, and no passkey path signs for the seed", () => {
+  const read = (rel: string) =>
+    readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+  const account = read("../src/lib/auth/passkey-account.ts");
+  // The length check sits BEFORE the owner key, and the owner key is still keccak256(prf).
+  const check = account.indexOf("prfBytes.length !== PASSKEY_PRF_OUTPUT_BYTES");
+  const owner = account.indexOf("keccak256(prfBytes)");
+  assert.ok(check > 0 && owner > check, "the 32-byte check must guard the owner key too");
+
+  const seedSrc = read("../src/lib/auth/identity-seed.ts");
+  assert.match(seedSrc, /const seed = passkeyIdentitySeed\(prfSecret\)/);
+
+  const store = stripComments(read("../src/lib/auth/auth-store.svelte.ts"));
+  assert.match(store, /establishPasskeyIdentitySeed\(seedAddr, _passkeyPrfSecret\)/);
+  // The confirm-dialog seed signer is gone from every source root.
+  assert.deepEqual(
+    SCANNED.filter((f) => /createPasskeySigner|passkey-signer/.test(f.code)).map((f) => f.rel),
+    [],
+  );
 });
 
 // The twin guard against the RETIRED pre-2026-09-10 account-keys constants was

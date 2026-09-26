@@ -66,9 +66,9 @@ export interface EnvelopeReprobeDeps {
    * the common case, and the common answer is no — so it must cost one miss, not
    * the full read's three. See `portabilityEnvelopeExists`.
    */
-  envelopeExists: (passkeyPrivKey: string) => Promise<EnvelopePresence>;
+  envelopeExists: (prfSecret: string) => Promise<EnvelopePresence>;
   /** Read + open the PRF-sealed envelope. Reached ONLY after a hit, so its lookups succeed. */
-  readEnvelope: (passkeyPrivKey: string) => Promise<PortabilityRead>;
+  readEnvelope: (prfSecret: string) => Promise<PortabilityRead>;
   /** Durable device-local fact: this PRF-EOA opens the preserved Kernel. THE heal. */
   putRecoveryBinding: (seedAddress: string, kernel: string) => Promise<void>;
   /** Durable device-local fact, the opposite direction (#283): this PRF-EOA's
@@ -218,11 +218,11 @@ export async function reprobeEnvelope(
     /** The cached parent the fast path just trusted: the address under suspicion. */
     cachedParent: string;
     /** Captured at login, not read from the store, so a concurrent logout cannot swap it. */
-    passkeyPrivKey: string;
+    prfSecret: string;
   },
   deps: EnvelopeReprobeDeps,
 ): Promise<ReprobeOutcome> {
-  const { kind, eoa, cachedParent, passkeyPrivKey } = args;
+  const { kind, eoa, cachedParent, prfSecret } = args;
   const store = deps.storage ?? (globalThis.localStorage as unknown as ReprobeStorage | undefined);
   const now = deps.now ?? (() => Date.now());
   const online = deps.online ?? (() => globalThis.navigator?.onLine !== false);
@@ -299,7 +299,7 @@ export async function reprobeEnvelope(
     writeState(store, kind, eoa, spent);
     let presence: EnvelopePresence;
     try {
-      presence = await deps.envelopeExists(passkeyPrivKey);
+      presence = await deps.envelopeExists(prfSecret);
     } catch (e) {
       return { status: "inconclusive", reason: `envelope probe threw: ${(e as Error).message}` };
     }
@@ -311,7 +311,7 @@ export async function reprobeEnvelope(
 
     let read: PortabilityRead;
     try {
-      read = await deps.readEnvelope(passkeyPrivKey);
+      read = await deps.readEnvelope(prfSecret);
     } catch (e) {
       return { status: "inconclusive", reason: `envelope read threw: ${(e as Error).message}` };
     }

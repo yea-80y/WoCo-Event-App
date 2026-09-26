@@ -120,10 +120,11 @@ issuer-curve migration #443, PRs #447–#453, 2026-09-01).
 Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
 1. Primary wallet (secp256k1) — permanent identity
 2. Session key (secp256k1, random, 30-day expiry) — signs API requests
-3. Identity SEED (32 bytes, keccak256 of ONE deterministic EIP-712 signature under
-   "WoCo Account Keys" / `DeriveAccountKeys`) — NOT a key: the HKDF root for 4, 5 and the
-   X25519 encryption key. A fresh device therefore needs TWO signatures total: the session
-   delegation and this. `ensureIdentitySeed()` returns a
+3. Identity SEED (32 bytes) — NOT a key: the HKDF root for 4, 5 and the X25519 encryption
+   key. Wallet/email: keccak256 of ONE deterministic EIP-712 signature under "WoCo Account
+   Keys" / `DeriveAccountKeys`, so a fresh device needs TWO signatures total (session
+   delegation + this). PASSKEY (#642): HKDF of the PRF output, no signature, never through a
+   secp256k1 key — labels FROZEN in `packages/shared/src/crypto/passkey-prf.ts`. `ensureIdentitySeed()` returns a
    BOOLEAN (is the seed available), never a public key. The ed25519 HOLDER key it used to
    derive is GONE from every launch path (#518): `creatorObjectKey` and `holderPubKey` are deleted
    end to end, and no auth surface holds an ed25519 key. Two OUT-OF-LAUNCH-SCOPE rails still

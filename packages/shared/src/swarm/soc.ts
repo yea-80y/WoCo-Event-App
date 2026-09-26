@@ -151,12 +151,8 @@ export function socSignDigest(identifier: Uint8Array, cacAddress: Uint8Array): U
  */
 export const PORTABILITY_SOC_IDENTIFIER_INPUT = "woco/recovery/portability/v1";
 
-/**
- * Domain-separation tags for the two keys derived from the passkey PRF secret.
- * Distinct domains so neither derived key reveals the other (handover step 3).
- */
-export const PORTABILITY_SOC_OWNER_DOMAIN = "woco/recovery/portability/soc-owner/v1";
-export const PORTABILITY_HPKE_DOMAIN = "woco/recovery/portability/hpke/v1";
+// The two keys that own and open this envelope derive from the passkey's PRF
+// output under their own HKDF labels — see crypto/passkey-prf.ts (#642).
 
 /**
  * Current portability-envelope payload version.

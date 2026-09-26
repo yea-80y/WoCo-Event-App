@@ -250,7 +250,7 @@ delegation.
 | `packages/shared/src/auth/constants.ts` | Storage keys, PRF salt, `PASSKEY_CLAIM_MAX_AGE_MS`, `PASSKEY_CLAIM_PREFIX` |
 | `apps/web/src/lib/auth/webauthn-prf.d.ts` | TypeScript type augmentation for PRF extension |
 | `apps/web/src/lib/auth/passkey-account.ts` | Core: `authenticatePasskey()` (discoverable picker), `createPasskeyAccount()`, `restorePasskeyAccount()`, `getPasskeyRpId()` |
-| `apps/web/src/lib/auth/signers/passkey-signer.ts` | EIP-712 signer — shows confirmation dialog before signing |
+| `packages/shared/src/crypto/passkey-prf.ts` | Identity seed + portability keys from the PRF output (#642; replaced the confirm-dialog seed signer) |
 | `apps/web/src/lib/auth/auth-store.svelte.ts` | State machine: passkey branches, calls `authenticatePasskey()` |
 | `apps/web/src/lib/components/auth/PasskeyLogin.svelte` | UI with provider logos |
 | `apps/web/src/lib/components/auth/LoginModal.svelte` | Integrates PasskeyLogin |
