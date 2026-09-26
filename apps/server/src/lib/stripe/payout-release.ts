@@ -67,8 +67,9 @@ export interface PayoutGateway {
    * presentment currency). Read fresh from the balance transaction on EVERY
    * call — a refund can land at any moment before release, so a cached value is
    * never trusted. `null` means "couldn't determine" — the caller leaves the
-   * entry held rather than guessing. `contested` means a dispute on the charge
-   * is still open: nothing is final until it closes, so the entry stays held.
+   * entry held rather than guessing. `held` means the sale's worth is not final
+   * yet — a dispute is still open, or a refund has not moved money yet (#701) —
+   * so the entry stays held until it is.
    */
   resolveNet(entry: PayoutLedgerEntry): Promise<ResolvedNet | null>;
   /** Aggregate available balance for a currency, minor units. */
@@ -96,7 +97,7 @@ export interface PayoutGateway {
   accountCountry(stripeAccountId: string): Promise<string | undefined>;
 }
 
-export type ResolvedNet = { net: number; currency: string } | { contested: true };
+export type ResolvedNet = { net: number; currency: string } | { held: "dispute" | "refund" };
 
 export interface ReleaseOutcome {
   stripeAccountId: string;
@@ -156,16 +157,37 @@ export async function resolveNetFromStripe(
   // real transactions rather than subtracting refund.amount matters because
   // whether a refund returns the processing fee varies by region, and whether
   // it returns our application fee depends on refund_application_fee.
-  if (charge.amount_refunded > 0) {
-    const refunds = await s.refunds.list({ charge: charge.id, limit: 100 }, opts);
-    for (const r of refunds.data) {
-      const rBtId =
-        typeof r.balance_transaction === "string"
-          ? r.balance_transaction
-          : r.balance_transaction?.id;
-      if (!rBtId) continue;
-      const rBt = await s.balanceTransactions.retrieve(rBtId, {}, opts);
-      net += rBt.net; // negative
+  //
+  // Listed on every call, every page (#701). A refund still waiting to move
+  // money — `pending` with `pending_reason: insufficient_funds`, or
+  // `requires_action` — has no balance transaction yet, and whether it counts
+  // in `charge.amount_refunded` is not documented. Skipping it resolved the
+  // sale POSITIVE and paid out the very balance the refund was waiting on, so
+  // anything without a balance transaction that is not failed or cancelled
+  // (including a status we do not know) holds the sale.
+  //
+  // A refund that FAILED after its debit posted keeps that debit as
+  // `balance_transaction` and gets the reversal as `failure_balance_transaction`
+  // (stripe-node Refund). Netting the debit alone would void the sale — a
+  // terminal state — with the money back in the organiser's balance and nothing
+  // left watching it. So both are netted, and a failure whose reversal has not
+  // posted yet holds, like a won dispute awaiting its reinstatement.
+  const btIdOf = (b: string | Stripe.BalanceTransaction | null | undefined): string | undefined =>
+    typeof b === "string" ? b : b?.id;
+  for await (const r of s.refunds.list({ charge: charge.id, limit: 100 }, opts)) {
+    const gone = r.status === "failed" || r.status === "canceled";
+    const rBtId = btIdOf(r.balance_transaction);
+    if (!rBtId) {
+      if (gone) continue;
+      return { held: "refund" };
+    }
+    const rBt = await s.balanceTransactions.retrieve(rBtId, {}, opts);
+    net += rBt.net; // negative
+    if (gone) {
+      const fBtId = btIdOf(r.failure_balance_transaction);
+      if (!fBtId) return { held: "refund" };
+      const fBt = await s.balanceTransactions.retrieve(fBtId, {}, opts);
+      net += fBt.net; // positive
     }
   }
 
@@ -179,13 +201,13 @@ export async function resolveNetFromStripe(
   if (charge.disputed) {
     for await (const d of s.disputes.list({ charge: charge.id, limit: 100 }, opts)) {
       // Open: `warning_*` too — an inquiry moves no money but can escalate.
-      if (OPEN_DISPUTE_STATUSES.has(d.status)) return { contested: true };
+      if (OPEN_DISPUTE_STATUSES.has(d.status)) return { held: "dispute" };
       // A WON dispute whose reinstatement has not posted yet shows only the
       // withdrawal. Netting that would void a sale the organiser won, and the
       // void is terminal — so it waits, like an open one.
       if (d.status === "won" && d.balance_transactions.some((b) => b.net < 0)
           && !d.balance_transactions.some((b) => b.net > 0)) {
-        return { contested: true };
+        return { held: "dispute" };
       }
       for (const dBt of d.balance_transactions) {
         // Every transaction on this account's balance settles in its own
@@ -435,11 +457,16 @@ export async function releaseForAccount(
       outcome.deferred.push(entry.sessionId);
       continue;
     }
-    if ("contested" in resolved) {
-      // Never voided here: `markVoid` is terminal, and a won dispute gives the
-      // money back. Held until the dispute closes (the ceiling alarm still runs).
+    if ("held" in resolved) {
+      // Never voided here: `markVoid` is terminal, a won dispute gives the money
+      // back, and a pending refund may yet fail. Held until it is final (the
+      // ceiling alarm still runs).
       outcome.deferred.push(entry.sessionId);
-      console.warn(`[payout-release] ${entry.sessionId}: dispute open — held until it closes`);
+      console.warn(
+        `[payout-release] ${entry.sessionId}: ` +
+          (resolved.held === "dispute" ? "dispute open" : "refund not settled") +
+          " — held until it is final",
+      );
       continue;
     }
     const { net, currency: settledIn } = resolved;

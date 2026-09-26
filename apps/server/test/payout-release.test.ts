@@ -527,9 +527,19 @@ test("a fully refunded sale voids even after its net was cached", async () => {
 // Disputes (#645 part C) — held while open, netted when closed, never voided early
 // ---------------------------------------------------------------------------
 
+/** An async-iterable list, the shape stripe-node's auto-paginating `list()` returns. */
+function listOf<T>(items: T[]) {
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield* items;
+    },
+  };
+}
+
 /** A fake Stripe whose charge is disputed, with these disputes. */
 function disputedStripe(disputes: Array<{ status: string; balance_transactions: Array<{ net: number; currency: string }> }>) {
   return {
+    refunds: { list: () => listOf([]) },
     paymentIntents: {
       retrieve: async () => ({ latest_charge: { id: "ch_1", balance_transaction: "txn_1", amount_refunded: 0, disputed: true } }),
     },
@@ -546,11 +556,11 @@ function disputedStripe(disputes: Array<{ status: string; balance_transactions: 
   };
 }
 
-test("an OPEN dispute makes the sale contested — not a number", async () => {
+test("an OPEN dispute holds the sale — not a number", async () => {
   const entry = held("cs_d");
   for (const status of ["needs_response", "under_review", "warning_needs_response", "warning_under_review"]) {
     const r = await release.resolveNetFromStripe(disputedStripe([{ status, balance_transactions: [] }]) as never, entry);
-    assert.deepEqual(r, { contested: true }, status);
+    assert.deepEqual(r, { held: "dispute" }, status);
   }
 });
 
@@ -580,13 +590,13 @@ test("a WON dispute nets the withdrawal and the reinstatement: only the dispute 
   assert.deepEqual(r, { net: 8_000, currency: "gbp" });
 });
 
-test("a WON dispute whose reinstatement has not posted yet is still contested, never voided", async () => {
+test("a WON dispute whose reinstatement has not posted yet is still held, never voided", async () => {
   const entry = held("cs_d");
   const r = await release.resolveNetFromStripe(
     disputedStripe([{ status: "won", balance_transactions: [{ net: -11_500, currency: "gbp" }] }]) as never,
     entry,
   );
-  assert.deepEqual(r, { contested: true });
+  assert.deepEqual(r, { held: "dispute" });
 });
 
 test("a won INQUIRY (no funds ever moved) is final at the charge's net", async () => {
@@ -604,12 +614,12 @@ test("a dispute balance transaction in another currency decides nothing", async 
   assert.equal(r, null);
 });
 
-test("the sweep HOLDS a contested sale — never pays it, never voids it", async () => {
+test("the sweep HOLDS a sale with an open dispute — never pays it, never voids it", async () => {
   held("cs_d");
   held("cs_ok");
   const { gateway, payouts } = fakeGateway();
   const base = gateway.resolveNet;
-  gateway.resolveNet = async (entry) => (entry.sessionId === "cs_d" ? { contested: true } : base(entry));
+  gateway.resolveNet = async (entry) => (entry.sessionId === "cs_d" ? { held: "dispute" } : base(entry));
   const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
   assert.deepEqual(outcome!.deferred, ["cs_d"]);
   assert.equal(ledger.getEntry("cs_d")?.status, "held", "a won dispute gives the money back, so no terminal void");
@@ -634,11 +644,101 @@ test("the live resolver ignores the cached net and reports the settlement curren
         return { net: 4_840, currency: "GBP" };
       },
     },
+    refunds: {
+      list: () => {
+        calls.push("refunds");
+        return listOf([]);
+      },
+    },
   };
   const entry = held("cs_live", { currency: "eur", netAmount: 9_680 });
   const resolved = await release.resolveNetFromStripe(fakeStripe as never, entry);
   assert.deepEqual(resolved, { net: 4_840, currency: "gbp" });
-  assert.deepEqual(calls, ["pi:pi_cs_live", "bt:txn_1"], "went to Stripe despite the cache");
+  assert.deepEqual(calls, ["pi:pi_cs_live", "bt:txn_1", "refunds"], "went to Stripe despite the cache");
+});
+
+// ---------------------------------------------------------------------------
+// Unsettled refunds (#701) — a refund that has not moved money yet holds the sale
+// ---------------------------------------------------------------------------
+
+/** A fake Stripe whose charge has these refunds; `amount_refunded` is deliberately 0. */
+function refundedStripe(
+  refunds: Array<{ status: string | null; balance_transaction: string | null; failure_balance_transaction?: string | null }>,
+) {
+  const bts: Record<string, { net: number; currency: string }> = {
+    txn_charge: { net: 9_500, currency: "gbp" },
+    txn_refund: { net: -10_000, currency: "gbp" },
+    txn_reversal: { net: 10_000, currency: "gbp" },
+  };
+  return {
+    paymentIntents: {
+      retrieve: async () => ({ latest_charge: { id: "ch_1", balance_transaction: "txn_charge", amount_refunded: 0 } }),
+    },
+    balanceTransactions: { retrieve: async (id: string) => bts[id] },
+    refunds: { list: () => listOf(refunds) },
+  };
+}
+
+test("a refund still waiting to move money (pending, requires_action) holds the sale — never paid out", async () => {
+  const entry = held("cs_r");
+  for (const status of ["pending", "requires_action"]) {
+    const r = await release.resolveNetFromStripe(refundedStripe([{ status, balance_transaction: null }]) as never, entry);
+    assert.deepEqual(r, { held: "refund" }, status);
+  }
+});
+
+test("a failed or cancelled refund moved nothing and does not hold the sale", async () => {
+  const entry = held("cs_r");
+  for (const status of ["failed", "canceled"]) {
+    const r = await release.resolveNetFromStripe(refundedStripe([{ status, balance_transaction: null }]) as never, entry);
+    assert.deepEqual(r, { net: 9_500, currency: "gbp" }, status);
+  }
+});
+
+test("a refund that FAILED after its debit posted nets the reversal too — the sale keeps its worth", async () => {
+  const entry = held("cs_r");
+  const r = await release.resolveNetFromStripe(
+    refundedStripe([{ status: "failed", balance_transaction: "txn_refund", failure_balance_transaction: "txn_reversal" }]) as never,
+    entry,
+  );
+  assert.deepEqual(r, { net: 9_500, currency: "gbp" }, "not -500, which would void a sale whose money is back");
+});
+
+test("a failed refund whose reversal has not posted yet holds — never a terminal void", async () => {
+  const entry = held("cs_r");
+  const r = await release.resolveNetFromStripe(
+    refundedStripe([{ status: "failed", balance_transaction: "txn_refund", failure_balance_transaction: null }]) as never,
+    entry,
+  );
+  assert.deepEqual(r, { held: "refund" });
+});
+
+test("a refund with no balance transaction and a status we do not know holds (fail closed)", async () => {
+  const entry = held("cs_r");
+  for (const status of [null, "succeeded", "something_new"]) {
+    const r = await release.resolveNetFromStripe(refundedStripe([{ status, balance_transaction: null }]) as never, entry);
+    assert.deepEqual(r, { held: "refund" }, String(status));
+  }
+});
+
+test("refunds are read even when amount_refunded says 0, and a landed one is netted", async () => {
+  const entry = held("cs_r");
+  const r = await release.resolveNetFromStripe(
+    refundedStripe([{ status: "succeeded", balance_transaction: "txn_refund" }]) as never,
+    entry,
+  );
+  assert.deepEqual(r, { net: -500, currency: "gbp" });
+});
+
+test("the sweep holds a sale whose refund is not settled — neither paid nor voided", async () => {
+  held("cs_r", { netAmount: 9_680 });
+  const { gateway, payouts } = fakeGateway();
+  gateway.resolveNet = async () => ({ held: "refund" });
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.deepEqual(outcome!.deferred, ["cs_r"]);
+  assert.equal(payouts.length, 0);
+  assert.equal(ledger.getEntry("cs_r")?.status, "held");
+  assert.equal(ledger.getEntry("cs_r")?.netAmount, 9_680, "a held sale's last known net is not overwritten");
 });
 
 // ---------------------------------------------------------------------------
