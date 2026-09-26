@@ -198,10 +198,10 @@
   // ──────────────────────────────────────────────────────────────
   // Pre-upload + reservation hooks
   // ──────────────────────────────────────────────────────────────
-  const buildOrderSnapshot = (): string => buildOrderSnapshotPure(
+  const buildOrderSnapshot = (link: boolean = linked): string => buildOrderSnapshotPure(
     formData,
     getEmailFromForm() ?? stripeEmail.trim(),
-    linked ? auth.parent?.toLowerCase() ?? "" : "",
+    link ? auth.parent?.toLowerCase() ?? "" : "",
   );
 
   // svelte-ignore state_referenced_locally
@@ -287,7 +287,7 @@
         // snapshot. Otherwise the user kept typing after the upload finished
         // and the ref now points at a stale SealedBox — fall back to inline
         // upload, which seals the current formData.
-        const liveSnapshot = buildOrderSnapshot();
+        const liveSnapshot = buildOrderSnapshot(linkAccount);
         if (orderPrefetch.ref && orderPrefetch.refSnapshot === liveSnapshot) {
           preparedOrderRef = orderPrefetch.ref;
         } else if (orderPrefetch.inflight) {
