@@ -7,6 +7,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { requireAuth } from "../middleware/auth.js";
+import { cancellationGate } from "../lib/event/cancellations.js";
 import { getEvent, getCreatorEvents } from "../lib/event/service.js";
 import { getCreatorSites, upsertCreatorSite, resolveSiteConfig, resolveSiteConfigOrNull } from "../lib/site/service.js";
 import {
@@ -486,6 +487,20 @@ sitesRouter.get("/:id/events", async (c) => {
 const _siteEventsFull = new Map<string, { data: { index: SiteEventsIndex; events: EventFeed[] }; expiresAt: number }>();
 const SITE_EVENTS_FULL_TTL_MS = 5 * 60_000;
 
+/**
+ * A cancelled event leaves every site's listing (#644). Applied on each
+ * response, cached or fresh, so a cancellation needs no cache bust here; the
+ * Cloudflare edge copy can still be up to its stale-while-revalidate window
+ * old, and the buy button behind it refuses regardless (claim-status).
+ */
+export function withoutCancelled(data: { index: SiteEventsIndex; events: EventFeed[] }) {
+  const open = (eventId: string) => cancellationGate(eventId) !== "cancelled";
+  return {
+    index: { ...data.index, events: data.index.events.filter((e) => open(e.eventId)) },
+    events: data.events.filter((e) => open(e.eventId)),
+  };
+}
+
 // GET /api/sites/:id/events-full — events index + full event details in one call (public)
 // Reduces N+1 client round trips to a single request. Server fans out to Swarm in parallel.
 // ---------------------------------------------------------------------------
@@ -498,7 +513,7 @@ sitesRouter.get("/:id/events-full", async (c) => {
     const cached = _siteEventsFull.get(siteId);
     if (cached && cached.expiresAt > now) {
       c.header("Cache-Control", "public, max-age=300, stale-while-revalidate=86400");
-      return c.json({ ok: true, data: cached.data });
+      return c.json({ ok: true, data: withoutCancelled(cached.data) });
     }
 
     const topic = Topic.fromString(siteEventsIndexTopic(siteId));
@@ -527,7 +542,7 @@ sitesRouter.get("/:id/events-full", async (c) => {
     const data = { index, events };
     _siteEventsFull.set(siteId, { data, expiresAt: now + SITE_EVENTS_FULL_TTL_MS });
     c.header("Cache-Control", "public, max-age=300, stale-while-revalidate=86400");
-    return c.json({ ok: true, data });
+    return c.json({ ok: true, data: withoutCancelled(data) });
   } catch {
     return c.json({ ok: false, error: "Failed to read site events" }, 500);
   }
@@ -551,6 +566,9 @@ sitesRouter.post("/:id/events", requireAuth, async (c) => {
 
     const body = await c.req.json() as { eventId?: string; featured?: boolean };
     if (!body.eventId) return c.json({ ok: false, error: "eventId required" }, 400);
+    if (cancellationGate(body.eventId) !== "open") {
+      return c.json({ ok: false, error: "This event has been cancelled" }, 409);
+    }
 
     const topic = Topic.fromString(siteEventsIndexTopic(siteId));
     const page = await readFeedPage(topic);

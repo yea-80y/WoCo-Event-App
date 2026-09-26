@@ -730,6 +730,24 @@ test("refunds are read even when amount_refunded says 0, and a landed one is net
   assert.deepEqual(r, { net: -500, currency: "gbp" });
 });
 
+test("a cancelled event's sale is held until its refunds settle — even past the hold ceiling (#644)", async () => {
+  held("cs_cx", { eventId: "ev_cancelled", recordedAt: "2026-01-01T00:00:00.000Z", releaseAfter: "2026-07-20T00:00:00.000Z" });
+  held("cs_ok", { eventId: "ev_fine" });
+  const { gateway, payouts } = fakeGateway({ country: "GB" });
+  let settled = false;
+  gateway.cancellationHold = (eventId) => eventId === "ev_cancelled" && !settled;
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-04-10T00:00:00.000Z"));
+  assert.deepEqual(outcome!.deferred, ["cs_cx"], "past the ceiling, and still held");
+  assert.equal(payouts.length, 1, "the other event's sale is paid as normal");
+  assert.equal(ledger.getEntry("cs_cx")?.status, "held");
+
+  settled = true;
+  const { gateway: g2 } = fakeGateway({ nets: { cs_cx: -300 }, country: "GB" });
+  g2.cancellationHold = () => false;
+  await release.runReleaseSweep(g2, at("2026-04-10T01:00:00.000Z"));
+  assert.equal(ledger.getEntry("cs_cx")?.status, "void", "once settled, the refunded sale nets below zero and voids");
+});
+
 test("the sweep holds a sale whose refund is not settled — neither paid nor voided", async () => {
   held("cs_r", { netAmount: 9_680 });
   const { gateway, payouts } = fakeGateway();

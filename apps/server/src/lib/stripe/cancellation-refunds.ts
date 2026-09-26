@@ -31,7 +31,7 @@
 
 import {
   addRefundRow,
-  isRowFinal,
+  isRowDue,
   listCancellations,
   updateRefundRow,
   type CancelRefundRow,
@@ -113,8 +113,9 @@ async function processRow(
   feeReturned: boolean,
   row: CancelRefundRow,
   deps: CancellationRefundDeps,
+  now: Date,
 ): Promise<CancelRefundStatus> {
-  const set = (patch: Parameters<typeof updateRefundRow>[2]) => updateRefundRow(eventId, row.sessionId, patch);
+  const set = (patch: Parameters<typeof updateRefundRow>[2]) => updateRefundRow(eventId, row.sessionId, patch, now);
   const voidNow = () => deps.reconcile(row.paymentIntentId, row.account).catch((err) => {
     console.warn(`[cancel-refunds] void of ${row.sessionId} deferred to the webhook:`, errMessage(err));
   });
@@ -206,14 +207,17 @@ export interface CancellationPassOutcome {
 }
 
 /** One pass over every cancelled event. Exported for tests and the ops route. */
-export async function runCancellationPass(deps: CancellationRefundDeps): Promise<CancellationPassOutcome> {
+export async function runCancellationPass(
+  deps: CancellationRefundDeps,
+  now: Date = new Date(),
+): Promise<CancellationPassOutcome> {
   const outcome: CancellationPassOutcome = { events: 0, processed: 0, byStatus: {} };
   for (const cancellation of listCancellations()) {
     outcome.events++;
-    for (const sale of deps.saleSessionsFor(cancellation.eventId)) addRefundRow(cancellation.eventId, sale);
+    for (const sale of deps.saleSessionsFor(cancellation.eventId)) addRefundRow(cancellation.eventId, sale, now);
     for (const row of Object.values(cancellation.refunds)) {
-      if (isRowFinal(row)) continue;
-      const status = await processRow(cancellation.eventId, cancellation.feeReturned, row, deps);
+      if (!isRowDue(row, now)) continue;
+      const status = await processRow(cancellation.eventId, cancellation.feeReturned, row, deps, now);
       outcome.processed++;
       outcome.byStatus[status] = (outcome.byStatus[status] ?? 0) + 1;
     }

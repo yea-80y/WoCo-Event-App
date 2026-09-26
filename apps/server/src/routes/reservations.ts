@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
+import { cancellationGate } from "../lib/event/cancellations.js";
 import { getEvent } from "../lib/event/service.js";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
@@ -60,6 +61,11 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
 
   const eventId = c.req.param("eventId");
   const seriesId = c.req.param("seriesId");
+
+  // #644: no seat is held for a cancelled event; "unknown" refuses too.
+  const gate = cancellationGate(eventId);
+  if (gate === "cancelled") return c.json({ ok: false, error: "This event has been cancelled" }, 409);
+  if (gate === "unknown") return c.json({ ok: false, error: "Ticket sales are temporarily unavailable" }, 503);
 
   let body: Record<string, unknown>;
   try {

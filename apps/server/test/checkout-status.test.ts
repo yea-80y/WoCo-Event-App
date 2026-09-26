@@ -68,3 +68,15 @@ test("only a Stripe checkout session id is accepted", () => {
   assert.equal(isCheckoutSessionId("cs_test_a1B2c3D4e5&x=1"), false);
   assert.equal(isCheckoutSessionId(undefined), false);
 });
+
+test("a cancelled event (#644) reads as cancelled, never as paid with tickets implied", () => {
+  for (const [s, p] of [["complete", "paid"], ["open", "unpaid"], ["expired", "unpaid"]] as const) {
+    const view = checkoutStatusView({ status: s, payment_status: p, metadata: metadata() }, EV, { cancelled: true });
+    assert.equal(view?.status, "cancelled", `${s}/${p}`);
+  }
+  assert.equal(
+    checkoutStatusView({ status: "complete", payment_status: "paid", metadata: metadata({ eventId: "other" }) }, EV, { cancelled: true }),
+    null,
+    "another event's session is still not answered",
+  );
+});

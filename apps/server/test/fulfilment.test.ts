@@ -159,6 +159,8 @@ type Step =
   | "markPayoutVoid"
   | "recordSaleSlots"
   | "recordAutoRefund"
+  | "cancellationGate"
+  | "enqueueCancellationRefund"
   | "captureCheckoutConsent"
   | "recordAttendeeEmail"
   | "getSiteTheme"
@@ -192,6 +194,8 @@ interface FakeOpts {
   signFailAt?: number;
   /** What bindTicket answers. Default true; false = the store already holds this edition. */
   bindReturns?: boolean;
+  /** What cancellationGate answers (#644). Default "open". */
+  cancellation?: "open" | "cancelled" | "unknown";
 }
 
 function fakeDeps(o: FakeOpts = {}) {
@@ -218,6 +222,8 @@ function fakeDeps(o: FakeOpts = {}) {
   /** Sale-record writes (#645 part C). */
   const saleSlots: Array<{ sessionId: string; onChainEventId: string; contract: string; slots: number[] }> = [];
   const autoRefunds: Array<{ sessionId: string; amount: number }> = [];
+  /** Sales handed to a cancellation's refund job (#644). */
+  const cancellationQueue: Array<{ eventId: string; sessionId: string; paymentIntentId: string; account: string }> = [];
   let nextSlot = 0;
   let chunkIdx = 0;
   let burnerSeq = 0;
@@ -311,6 +317,14 @@ function fakeDeps(o: FakeOpts = {}) {
       bindings.push(b as unknown as Record<string, unknown>);
       return true;
     },
+    cancellationGate: () => {
+      boom("cancellationGate");
+      return o.cancellation ?? "open";
+    },
+    enqueueCancellationRefund: (input) => {
+      boom("enqueueCancellationRefund");
+      cancellationQueue.push(input);
+    },
     consumeReservation: (id) => {
       boom("consumeReservation");
       consumed.push(id);
@@ -358,7 +372,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, voided, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds };
+  return { deps, calls, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, voided, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -392,6 +406,11 @@ function assertInvariant(
     assert.ok(outcome.stoppedReason, "unfilled tickets need a stop reason");
     if (outcome.refund.kind === "created") {
       assert.equal(refundedUnits(outcome, s), unfilled, "refund covers exactly the unfilled units");
+    } else if (outcome.refund.kind === "queued-cancellation") {
+      // #644: the cancellation's own job refunds it — exactly one hand-over, and
+      // no second refund created here under a different fee policy.
+      assert.equal(f.cancellationQueue.length, 1, "handed to the cancellation exactly once");
+      assert.equal(f.refunds.length, 0, "no auto-refund beside the cancellation's");
     } else if (outcome.refund.kind === "failed") {
       // #367: a refund that could not be created is RECORDED for retry (the
       // attempt is made even if the store itself then throws).
@@ -940,6 +959,33 @@ describe("every collaborator throws", () => {
     );
     assert.equal(f.saleSlots[0].onChainEventId, ON_CHAIN_EVENT_ID);
     assert.deepEqual(f.autoRefunds, [{ sessionId: "cs_test_1", amount: 2200 }]);
+  });
+
+  test("cancelled event (#644): nothing minted, the sale is handed to the cancellation, no second refund", async () => {
+    const { outcome, f } = await run({}, { cancellation: "cancelled" });
+    assert.equal(outcome.issued, 0);
+    assert.equal(f.minted.length, 0);
+    assert.deepEqual(outcome.refund, { kind: "queued-cancellation" });
+    assert.deepEqual(f.cancellationQueue, [{ eventId: EVENT_ID, sessionId: "cs_test_1", paymentIntentId: "pi_1", account: ACCT }]);
+    assert.equal(f.autoRefunds.length, 0);
+    assert.match(outcome.stoppedReason!, /cancelled/);
+  });
+
+  test("cancelled event, hand-over throws: the generic auto-refund runs instead — the buyer is refunded either way", async () => {
+    const { outcome, f } = await run({}, { cancellation: "cancelled", fail: "enqueueCancellationRefund" });
+    assert.equal(outcome.refund.kind, "created");
+    assert.equal(f.refunds.length, 1);
+    assert.equal(f.minted.length, 0);
+  });
+
+  test("cancellation record unreadable: the paid buyer is minted (a restored cancellation refunds them)", async () => {
+    const { outcome } = await run({}, { cancellation: "unknown" });
+    assert.equal(outcome.issued, 2);
+  });
+
+  test("the cancellation check throwing never costs a paid buyer their tickets", async () => {
+    const { outcome } = await run({}, { fail: "cancellationGate" });
+    assert.equal(outcome.issued, 2);
   });
 
   test("recordAutoRefund throws: the refund still goes out", async () => {

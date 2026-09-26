@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
+import { cancellationGate } from "../lib/event/cancellations.js";
 import { getEvent } from "../lib/event/service.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
 import { getOnChainEventAt } from "../lib/chain/event-contract.js";
@@ -44,6 +45,10 @@ claims.get("/:eventId/series/:seriesId/claim-status", async (c) => {
     const claimed = onChainData ? Number(onChainData.nextSlot) : 0;
     const physicalAvailable = Math.max(0, totalSupply - claimed);
     const held = heldFor(eventId, seriesId);
+    // #644: a cancelled event reads as nothing available, so every buy button
+    // already published — including bundles baked into organiser sites before
+    // this field existed — shows "sold out"; new ones read `cancelled`.
+    const cancelled = cancellationGate(eventId) === "cancelled";
     return c.json({
       ok: true,
       data: {
@@ -52,8 +57,9 @@ claims.get("/:eventId/series/:seriesId/claim-status", async (c) => {
         claimed,
         // available is physical remaining. /reserve subtracts held seats
         // atomically when allocating a checkout hold.
-        available: physicalAvailable,
+        available: cancelled ? 0 : physicalAvailable,
         held,
+        ...(cancelled ? { cancelled: true } : {}),
       },
     });
   } catch (err) {

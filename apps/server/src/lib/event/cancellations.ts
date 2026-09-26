@@ -64,6 +64,8 @@ export interface CancelRefundRow {
   currency?: string;
   lastError?: string;
   updatedAt: string;
+  /** When the row last became `done`. A card refund can still fail for weeks after. */
+  doneAt?: string;
   resolvedBy?: string;
 }
 
@@ -81,8 +83,16 @@ export interface EventCancellation {
   refunds: Record<string, CancelRefundRow>;
 }
 
-/** Row states that need no further work. */
-const FINAL: ReadonlySet<CancelRefundStatus> = new Set(["done", "resolved", "abandoned"]);
+/** Row states no pass touches again (an operator or the alarm owns them). */
+const FINAL: ReadonlySet<CancelRefundStatus> = new Set(["resolved", "abandoned"]);
+/**
+ * A `done` refund is re-read once a day for this long: Stripe says a refund can
+ * fail up to 30 days after it was requested, and a failure puts the money back
+ * with the organiser while the buyer has none. A `refund.failed` webhook reopens
+ * the row straight away; this re-read is the backstop that needs no webhook.
+ */
+export const DONE_RECHECK_WINDOW_MS = 35 * 24 * 60 * 60_000;
+export const DONE_RECHECK_EVERY_MS = 24 * 60 * 60_000;
 /** Row states the payouts may treat as settled (the dispute path holds its own sale). */
 const SETTLED: ReadonlySet<CancelRefundStatus> = new Set(["done", "resolved", "disputed"]);
 
@@ -209,8 +219,24 @@ export function updateRefundRow(
   ensureLoaded();
   const row = store[eventId]?.refunds[sessionId];
   if (!row) return false;
-  Object.assign(row, patch, { updatedAt: now.toISOString() });
+  const becameDone = patch.status === "done" && row.status !== "done";
+  Object.assign(row, patch, { updatedAt: now.toISOString() }, becameDone ? { doneAt: now.toISOString() } : {});
   return persist();
+}
+
+/**
+ * Something happened on this sale's charge (a refund failed, a dispute moved):
+ * make the next pass look at it again, whatever it last concluded. The pass
+ * recomputes from Stripe, so reopening a sale that is still fine costs one read.
+ */
+export function reopenRefundRow(eventId: string, sessionId: string, now: Date = new Date()): boolean {
+  ensureLoaded();
+  const row = store[eventId]?.refunds[sessionId];
+  if (!row || row.status === "resolved") return false;
+  if (row.status !== "done" && row.status !== "abandoned") return true;
+  Object.assign(row, { status: "pending" as const, updatedAt: now.toISOString() });
+  persist();
+  return true;
 }
 
 /**
@@ -237,8 +263,13 @@ export function resolveRefundRow(
   return persist() ? "resolved" : "not-persisted";
 }
 
-export function isRowFinal(row: CancelRefundRow): boolean {
-  return FINAL.has(row.status);
+/** Whether a pass should look at this row now. */
+export function isRowDue(row: CancelRefundRow, now: Date = new Date()): boolean {
+  if (FINAL.has(row.status)) return false;
+  if (row.status !== "done") return true;
+  const t = now.getTime();
+  const doneAt = row.doneAt ? Date.parse(row.doneAt) : Date.parse(row.updatedAt);
+  return t - doneAt < DONE_RECHECK_WINDOW_MS && t - Date.parse(row.updatedAt) >= DONE_RECHECK_EVERY_MS;
 }
 
 /**

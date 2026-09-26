@@ -27,6 +27,9 @@ import { sendTicketEmail } from "../../routes/tickets.js";
 import { recordFailure } from "../email/failure-ledger.js";
 import { recordPendingRefund } from "./pending-refunds.js";
 import { recordAutoRefund, recordSaleSlots } from "./ticket-sales.js";
+import { addRefundRow, cancellationGate } from "../event/cancellations.js";
+import { kickCancellationRefunds } from "./cancellation-refunds.js";
+import { liveCancellationRefundDeps } from "./cancellation-refunds-live.js";
 import type { FulfilmentDeps } from "./fulfilment.js";
 
 export const liveFulfilmentDeps: FulfilmentDeps = {
@@ -51,6 +54,13 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   recordAutoRefund,
   bindTicket,
   consumeReservation,
+  cancellationGate,
+  enqueueCancellationRefund: ({ eventId, sessionId, paymentIntentId, account }) => {
+    if (!addRefundRow(eventId, { sessionId, paymentIntentId, account })) {
+      throw new Error(`event ${eventId} has no cancellation record`);
+    }
+    void kickCancellationRefunds(liveCancellationRefundDeps).catch(() => undefined);
+  },
   createRefund: async (params, connectedAccountId, idempotencyKey) => {
     // Direct-charge sessions: the refund must go through the connected account.
     const refund = await getStripe().refunds.create(params, {

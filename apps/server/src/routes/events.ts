@@ -4,6 +4,7 @@ import type { Hex0x, CreateEventV3Request, UpdateEventMetaRequest, EventDirector
 import { FEATURES, BUYER_FEE_FLOOR_PCT, MIN_TICKET_PRICE, ticketPriceMeetsMinimum, geoWithinSizeLimit } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
+import { cancellationGate, withCancellation } from "../lib/event/cancellations.js";
 import { createEventV2, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, type EventMetaUpdates } from "../lib/event/service.js";
 import { DeleteBlockedError } from "../lib/event/delete-safety.js";
 import { setListed } from "../lib/event/listing-state.js";
@@ -150,7 +151,8 @@ events.get("/:id", async (c) => {
     // money-path cache). Trusted resolution (directory) still takes precedence.
     const event = await getEventForDisplay(eventId, validHint);
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
-    return c.json({ ok: true, data: event });
+    // #644: the server's record of a cancellation wins over the feed's field.
+    return c.json({ ok: true, data: withCancellation(event) });
   } catch (err) {
     console.error("[api] getEvent error:", err);
     return c.json({ ok: false, error: "Failed to get event" }, 500);
@@ -169,7 +171,7 @@ events.get("/:id/owned", requireAuth, async (c) => {
   try {
     const event = await getEventForOwner(eventId, parentAddress);
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
-    return c.json({ ok: true, data: event });
+    return c.json({ ok: true, data: withCancellation(event) });
   } catch (err) {
     console.error("[api] getOwnedEvent error:", err);
     return c.json({ ok: false, error: "Failed to get event" }, 500);
@@ -535,7 +537,9 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
     const updated = await updateEventMetadata({ eventId, parentAddress, updates, signerHint });
     // Merged feed goes back on every path: Phase B owners re-sign their SOC with
     // it; legacy callers need it for the fresh imageHash (already platform-written).
-    return c.json({ ok: true, data: { eventId, eventFeed: updated } });
+    // #644: carried into the feed the owner re-signs, so an ordinary edit after
+    // a cancellation cannot drop the Cancelled banner.
+    return c.json({ ok: true, data: { eventId, eventFeed: withCancellation(updated) } });
   } catch (err) {
     // A legacy (platform-written) event's feed restamp goes through the router.
     if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
@@ -639,6 +643,10 @@ events.post("/discover", requireAuth, async (c) => {
 // and adds to WoCo directory. No-op if already listed.
 events.post("/:id/list", requireAuth, async (c) => {
   const eventId = c.req.param("id");
+  // #644: a cancelled event stays out of every listing.
+  if (cancellationGate(eventId) !== "open") {
+    return c.json({ ok: false, error: "This event has been cancelled" }, 409);
+  }
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const body = c.get("body") as { sourceApiUrl?: string; signer?: string };
 
@@ -821,6 +829,10 @@ export function registerOnChainErrorResponse(err: unknown): {
 events.post("/:id/register-on-chain", requireAuth, async (c) => {
   const tStart = Date.now();
   const eventId = c.req.param("id");
+  // #644: nothing new goes on sale for a cancelled event.
+  if (cancellationGate(eventId) !== "open") {
+    return c.json({ ok: false, error: "This event has been cancelled" }, 409);
+  }
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const body = c.get("body") as { seriesId: string; signer?: string };
   const { seriesId } = body;

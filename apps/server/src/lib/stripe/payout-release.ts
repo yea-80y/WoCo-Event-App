@@ -35,6 +35,7 @@ import {
   type PayoutLedgerEntry,
 } from "./payout-ledger.js";
 import { OPEN_DISPUTE_STATUSES } from "./dispute-status.js";
+import { cancellationGate, isCancellationSettled } from "../event/cancellations.js";
 import {
   clearIntent,
   getIntent,
@@ -95,6 +96,13 @@ export interface PayoutGateway {
   ): Promise<{ payoutId: string | null } | null>;
   /** ISO-3166 alpha-2 of the business, which picks the hold ceiling. */
   accountCountry(stripeAccountId: string): Promise<string | undefined>;
+  /**
+   * True while a sale of this event must not be paid out because the event was
+   * cancelled and its refunds are not all settled (#644) — or because the
+   * cancellation record cannot be read. Zero I/O. Optional so a gateway that
+   * knows nothing of cancellations holds nothing.
+   */
+  cancellationHold?(eventId: string): boolean;
 }
 
 export type ResolvedNet = { net: number; currency: string } | { held: "dispute" | "refund" };
@@ -270,6 +278,11 @@ export const liveGateway: PayoutGateway = {
     }
   },
 
+  cancellationHold(eventId) {
+    const gate = cancellationGate(eventId);
+    return gate === "unknown" || (gate === "cancelled" && !isCancellationSettled(eventId));
+  },
+
   async accountCountry(stripeAccountId) {
     if (countryCache.has(stripeAccountId)) return countryCache.get(stripeAccountId);
     try {
@@ -439,6 +452,14 @@ export async function releaseForAccount(
   // we must pay out even though the event hasn't happened.
   const due: Array<{ entry: PayoutLedgerEntry; forced: boolean }> = [];
   for (const entry of entries.slice().sort(byAge)) {
+    // A cancelled event's takings fund its refunds (#644): held until every
+    // refund is settled, and never forced out by the hold ceiling — paying the
+    // organiser the balance a buyer's refund is waiting on is the one outcome
+    // worse than a late payout. `heldPastCeiling` still counts them.
+    if (entry.eventId && gateway.cancellationHold?.(entry.eventId)) {
+      outcome.deferred.push(entry.sessionId);
+      continue;
+    }
     const eventDue = nowMs >= new Date(entry.releaseAfter).getTime();
     const ceiling = holdCeilingAt(entry.recordedAt, country);
     const ceilingHit = nowMs >= new Date(ceiling).getTime();

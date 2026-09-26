@@ -291,6 +291,13 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     },
   },
   {
+    store: "event/cancellations",
+    drive: async () => {
+      const m = await import("../src/lib/event/cancellations.js");
+      m.recordCancellation({ eventId: "ev_1", by: "ops:test", feeReturned: false });
+    },
+  },
+  {
     store: "stripe/ticket-sales",
     drive: async () => {
       const m = await import("../src/lib/stripe/ticket-sales.js");
