@@ -130,6 +130,12 @@ function ensureLoaded(): void {
   }
 }
 
+/** False while the file exists but could not be read: nothing written now survives a restart. */
+export function isPersisting(): boolean {
+  ensureLoaded();
+  return fileUnreadable === null;
+}
+
 function persist(): void {
   if (fileUnreadable) return;
   writeJsonAtomic(STORE_FILE, store, "ticket-sales", { pretty: true });
@@ -253,6 +259,7 @@ export interface RefundStateChange {
  *
  *   refunded >= charged            -> every slot void (covers cancellation)
  *   autoRefunded < refunded < charged -> partial: void nothing, flag + alarm
+ *                                     (ticket sales only — a sale with an eventId)
  *   refunded <= autoRefunded       -> our own refund only: nothing to do
  */
 export function applyRefundState(
@@ -278,8 +285,10 @@ export function applyRefundState(
     if (Object.keys(sale.voids!).length === 0) delete sale.voids;
   }
 
+  // Only a ticket sale can be partly refunded in a way the door cares about; a
+  // shop order or a tampered session (no eventId) never raises the flag.
   const ours = sale.autoRefunded ?? 0;
-  if (!full && refunded > ours) {
+  if (!full && refunded > ours && sale.eventId) {
     if (sale.partialRefund?.amount !== refunded) sale.partialRefund = { amount: refunded, seenAt: at };
   } else {
     delete sale.partialRefund;
@@ -314,18 +323,19 @@ export function acknowledgePartialRefund(sessionId: string, by: string, now: Dat
 }
 
 /**
- * Void slots of one on-chain event, sorted. `contract` narrows to sales minted
- * on that contract when both sides know it (#563: a successor contract can
- * reuse an id). While the file is unreadable this answers from what this
- * process has recorded since boot — fail OPEN, with the health alarm up.
+ * Void slots of one on-chain event on one contract (`contractKey`), sorted.
+ * The contract is required: a v2 event id is keccak(sponsor, nonce), so a
+ * successor contract with the same sponsor can reuse it (#563). While the file
+ * is unreadable this answers from what this process recorded since boot — fail
+ * OPEN, with the health alarm up.
  */
-export function voidedSlots(onChainEventId: string, contract?: string): number[] {
+export function voidedSlots(onChainEventId: string, contract: string): number[] {
   ensureLoaded();
   const id = onChainEventId.toLowerCase();
+  const key = contract.toLowerCase();
   const out = new Set<number>();
   for (const sale of Object.values(store)) {
-    if (sale.onChainEventId !== id || !isSaleVoid(sale)) continue;
-    if (contract && sale.contract && sale.contract !== contract.toLowerCase()) continue;
+    if (sale.onChainEventId !== id || sale.contract !== key || !isSaleVoid(sale)) continue;
     for (const slot of sale.slots) out.add(slot);
   }
   return [...out].sort((a, b) => a - b);

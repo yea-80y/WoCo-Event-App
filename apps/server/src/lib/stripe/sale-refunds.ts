@@ -1,7 +1,7 @@
 /**
  * Refund events -> ticket voids (#645 part C).
  *
- * `charge.refunded` and `refund.failed` arrive on the Connected-accounts webhook
+ * `charge.refunded`, `refund.updated` and `refund.failed` arrive on the Connected-accounts webhook
  * for EVERY charge on every connected account: our ticket sales, and under
  * `stripe_dashboard.type = full` the organiser's own sales too. This decides
  * which are ours and moves the sale record (ticket-sales.ts) to match Stripe.
@@ -25,12 +25,15 @@
  * fails or is cancelled drops out, which lifts a void it caused. Stripe's
  * statuses are `pending`, `requires_action`, `succeeded`, `failed`, `canceled`
  * (stripe-node Refund.status); `requires_action` is money that has not started
- * back, so it does not void a ticket yet.
+ * back, so it does not void a ticket yet. A cancellation and a
+ * requires_action -> succeeded move arrive only as `refund.updated`, which is
+ * why that event is handled too.
  */
 
 import {
   applyRefundState,
   getSaleByPaymentIntent,
+  isPersisting,
   type RefundStateChange,
   type TicketSale,
 } from "./ticket-sales.js";
@@ -57,12 +60,14 @@ export interface SaleRefundReads {
 export interface SaleRefundStore {
   getSaleByPaymentIntent(paymentIntentId: string): TicketSale | undefined;
   applyRefundState(sessionId: string, refunded: number, charged: number): RefundStateChange | null;
+  /** False while the record file is unreadable: a state applied now would not survive a restart. */
+  persisting(): boolean;
 }
 
-const liveStore: SaleRefundStore = { getSaleByPaymentIntent, applyRefundState };
+const liveStore: SaleRefundStore = { getSaleByPaymentIntent, applyRefundState, persisting: isPersisting };
 
 export type RefundEventOutcome =
-  | { kind: "applied"; sessionId: string; refunded: number; charged: number; change: RefundStateChange }
+  | { kind: "applied"; sessionId: string; refunded: number; charged: number; change: RefundStateChange; tampered?: true }
   | { kind: "foreign"; reason: string }
   /**
    * Answer 500: Stripe redelivers, and nothing was decided. `awaitingRecord` =
@@ -104,10 +109,37 @@ async function classifyUnrecorded(
   }
 }
 
-export async function reconcileRefundEvent(
+/**
+ * One reconcile at a time per payment intent. Two refunds made seconds apart
+ * deliver two events; run concurrently, the one that READ first could APPLY
+ * last and write an older total over a newer one. Chained, each reads after
+ * the previous one applied.
+ */
+const inFlight = new Map<string, Promise<RefundEventOutcome>>();
+
+export function reconcileRefundEvent(
   input: { paymentIntentId: string; account: string },
   reads: SaleRefundReads,
   store: SaleRefundStore = liveStore,
+): Promise<RefundEventOutcome> {
+  const key = input.paymentIntentId;
+  const previous = inFlight.get(key);
+  const run = (previous ? previous.catch(() => undefined) : Promise.resolve()).then(() =>
+    reconcileOnce(input, reads, store),
+  );
+  inFlight.set(key, run);
+  void run
+    .finally(() => {
+      if (inFlight.get(key) === run) inFlight.delete(key);
+    })
+    .catch(() => undefined);
+  return run;
+}
+
+async function reconcileOnce(
+  input: { paymentIntentId: string; account: string },
+  reads: SaleRefundReads,
+  store: SaleRefundStore,
 ): Promise<RefundEventOutcome> {
   const sale = store.getSaleByPaymentIntent(input.paymentIntentId);
   if (!sale) {
@@ -122,6 +154,13 @@ export async function reconcileRefundEvent(
     noteOutcome(input.paymentIntentId, outcome);
     return outcome;
   }
+  if (!store.persisting()) {
+    // The record file is unreadable (ticket-sales.ts). A void applied now would
+    // live in memory only and vanish when the operator restores the file and
+    // restarts. Stripe redelivers for about three days while /api/health is
+    // red; an outage longer than that loses the void (the ticket stays valid).
+    return { kind: "retry", reason: "sale record not persisting" };
+  }
 
   let charge: LatestCharge | null;
   let refunded: number;
@@ -135,7 +174,14 @@ export async function reconcileRefundEvent(
 
   const change = store.applyRefundState(sale.sessionId, refunded, charge.amount);
   if (!change) return { kind: "retry", reason: "sale record vanished" };
-  const outcome: RefundEventOutcome = { kind: "applied", sessionId: sale.sessionId, refunded, charged: charge.amount, change };
+  const outcome: RefundEventOutcome = {
+    kind: "applied",
+    sessionId: sale.sessionId,
+    refunded,
+    charged: charge.amount,
+    change,
+    ...(sale.tampered ? { tampered: true as const } : {}),
+  };
   noteOutcome(input.paymentIntentId, outcome);
   return outcome;
 }
@@ -195,7 +241,9 @@ function noteOutcome(paymentIntentId: string, outcome: RefundEventOutcome): void
   }
   awaitingSince.delete(paymentIntentId);
   if (outcome.kind === "foreign") counts.foreign++;
-  if (outcome.kind === "applied") {
+  // A tampered session's refund is ours and voids no ticket; counting it here
+  // would read as an organiser refund.
+  if (outcome.kind === "applied" && !outcome.tampered) {
     if (outcome.change.voided) counts.voided++;
     if (outcome.change.unvoided) counts.unvoided++;
   }
@@ -227,4 +275,5 @@ export function _resetSaleRefundStateForTest(): void {
   counts.unvoided = 0;
   awaitingSince.clear();
   applied.clear();
+  inFlight.clear();
 }

@@ -288,7 +288,9 @@ function healthReport() {
     // Alarms: a partial refund above our own that no operator has acknowledged
     // (tickets left valid), the record file present but unreadable (voids off),
     // and `refundEvents.stuck` — a refund on one of our sales that has waited an
-    // hour for its record. Counts only; the ops route has the sales.
+    // hour for its record. After launch `stuck` is also what catches a LOST
+    // record file: a refund on a sale the file no longer knows. Counts only; the
+    // ops route has the sales.
     ticketSales: { ...ticketSalesHealth(), refundEvents: saleRefundEventsHealth() },
     compliancePersistence: persistHealth(),
     // `false` is an alarm, not a statistic: the Kernel known-deployed record

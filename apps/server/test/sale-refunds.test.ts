@@ -64,9 +64,10 @@ function fakeReads(o: {
   return { reads, calls };
 }
 
-function fakeStore(sale: TicketSale | undefined) {
+function fakeStore(sale: TicketSale | undefined, persisting = true) {
   const applied: Array<{ sessionId: string; refunded: number; charged: number }> = [];
   const store: SaleRefundStore = {
+    persisting: () => persisting,
     getSaleByPaymentIntent: (pi) => (sale && sale.paymentIntentId === pi ? sale : undefined),
     applyRefundState: (sessionId, refunded, charged) => {
       applied.push({ sessionId, refunded, charged });
@@ -121,6 +122,50 @@ describe("a recorded sale", () => {
       assert.equal(out.kind, "retry", step);
       assert.equal(applied.length, 0, step);
     }
+  });
+
+  test("while the record cannot persist, a recorded sale is retried, never applied in memory", async () => {
+    const { store, applied } = fakeStore(SALE, false);
+    const out = await reconcileRefundEvent(INPUT, fakeReads({ refunds: [{ amount: 2000, status: "succeeded" }] }).reads, store);
+    assert.equal(out.kind, "retry");
+    assert.equal(applied.length, 0);
+  });
+
+  test("two events on one payment intent apply in the order they READ, never older-over-newer", async () => {
+    // The first delivery reads slowly and sees the older total (a partial
+    // refund); the second reads fast and sees the newer one (refunded in full).
+    // Run concurrently, the older total used to land last.
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((r) => (releaseFirst = r));
+    let call = 0;
+    const reads: SaleRefundReads = {
+      async latestCharge() {
+        return { id: "ch_1", amount: 2000, feeRequested: true, feeId: "fee_1" };
+      },
+      async refundsForCharge() {
+        const n = ++call;
+        if (n === 1) {
+          await firstGate;
+          return [{ amount: 500, status: "succeeded" }];
+        }
+        return [{ amount: 500, status: "succeeded" }, { amount: 1500, status: "succeeded" }];
+      },
+      async retrievePlatformFee() {
+        return { amount: 30, account: "acct_1" };
+      },
+    };
+    const { store, applied } = fakeStore(SALE);
+    const a = reconcileRefundEvent(INPUT, reads, store);
+    const b = reconcileRefundEvent(INPUT, reads, store);
+    releaseFirst();
+    await Promise.all([a, b]);
+    assert.deepEqual(applied.map((x) => x.refunded), [500, 2000], "the newer total is the one left standing");
+  });
+
+  test("a tampered session's refund is applied but not counted as a ticket void", async () => {
+    const { store } = fakeStore({ ...SALE, tampered: true });
+    await reconcileRefundEvent(INPUT, fakeReads({ refunds: [{ amount: 2000, status: "succeeded" }] }).reads, store);
+    assert.equal(saleRefundEventsHealth().voided, 0);
   });
 
   test("an event from another account than the sale's is not applied", async () => {

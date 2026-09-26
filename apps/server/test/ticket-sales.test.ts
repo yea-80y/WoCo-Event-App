@@ -99,14 +99,14 @@ describe("applyRefundState", () => {
     ts.recordSaleSlots("cs_1", EV, CONTRACT, [0, 1, 2]);
     const v = ts.applyRefundState("cs_1", 3000, 3000)!;
     assert.deepEqual(v, { voided: true, unvoided: false, partialAlarm: false });
-    assert.deepEqual(ts.voidedSlots(EV), [0, 1, 2]);
+    assert.deepEqual(ts.voidedSlots(EV, CONTRACT), [0, 1, 2]);
 
     const again = ts.applyRefundState("cs_1", 3000, 3000)!;
     assert.equal(again.voided, false, "re-applying the same totals changes nothing");
 
     const lifted = ts.applyRefundState("cs_1", 0, 3000)!;
     assert.deepEqual(lifted, { voided: false, unvoided: true, partialAlarm: false });
-    assert.deepEqual(ts.voidedSlots(EV), []);
+    assert.deepEqual(ts.voidedSlots(EV, CONTRACT), []);
     assert.equal(ts.getSale("cs_1")!.voids, undefined);
   });
 
@@ -124,7 +124,7 @@ describe("applyRefundState", () => {
     ts.recordSaleSlots("cs_1", EV, CONTRACT, [0, 1, 2]);
     const r = ts.applyRefundState("cs_1", 1000, 3000)!;
     assert.deepEqual(r, { voided: false, unvoided: false, partialAlarm: true });
-    assert.deepEqual(ts.voidedSlots(EV), []);
+    assert.deepEqual(ts.voidedSlots(EV, CONTRACT), []);
     const h = ts.ticketSalesHealth();
     assert.equal(h.ok, false);
     assert.equal(h.partialRefunds, 1);
@@ -153,6 +153,14 @@ describe("applyRefundState", () => {
     assert.equal(ts.ticketSalesHealth().ok, true);
   });
 
+  test("a sale with no event (shop order, tampered session) never raises the partial flag", () => {
+    stub({ eventId: undefined, seriesId: undefined });
+    const r = ts.applyRefundState("cs_1", 1000, 3000)!;
+    assert.equal(r.partialAlarm, false);
+    assert.equal(ts.getSale("cs_1")!.partialRefund, undefined);
+    assert.equal(ts.ticketSalesHealth().ok, true);
+  });
+
   test("acknowledging a sale with no partial refund is refused", () => {
     stub();
     assert.equal(ts.acknowledgePartialRefund("cs_1", "ops"), false);
@@ -165,7 +173,7 @@ describe("applyRefundState", () => {
 });
 
 describe("voidedSlots", () => {
-  test("only void sales, only this event, narrowed by contract when both sides know it", () => {
+  test("only void sales, only this event, only this contract", () => {
     stub();
     ts.recordSaleSlots("cs_1", EV, CONTRACT, [0, 1]);
     stub({ sessionId: "cs_2", paymentIntentId: "pi_2" });
@@ -175,9 +183,8 @@ describe("voidedSlots", () => {
     ts.applyRefundState("cs_1", 3000, 3000);
     ts.applyRefundState("cs_3", 3000, 3000);
 
-    assert.deepEqual(ts.voidedSlots(EV), [0, 1], "cs_2 is paid for; cs_3 is another event");
-    assert.deepEqual(ts.voidedSlots(EV.toUpperCase().replace("0X", "0x")), [0, 1]);
-    assert.deepEqual(ts.voidedSlots(EV, CONTRACT), [0, 1]);
+    assert.deepEqual(ts.voidedSlots(EV, CONTRACT), [0, 1], "cs_2 is paid for; cs_3 is another event");
+    assert.deepEqual(ts.voidedSlots(EV.toUpperCase().replace("0X", "0x"), CONTRACT.toUpperCase()), [0, 1]);
     assert.deepEqual(ts.voidedSlots(EV, "421614:0x" + "c2".repeat(20)), [], "a successor contract's slots are not these");
   });
 });
@@ -194,7 +201,8 @@ describe("a record file that cannot be read", () => {
       ts.recordSaleSlots("cs_1", EV, CONTRACT, [0]);
       ts.applyRefundState("cs_1", 3000, 3000);
       assert.equal(readFileSync(storeFile, "utf-8"), contents, "the unreadable file is left exactly as it was");
-      assert.deepEqual(ts.voidedSlots(EV), [0], "this process still voids what it recorded since boot");
+      assert.deepEqual(ts.voidedSlots(EV, CONTRACT), [0], "this process still voids what it recorded since boot");
+      assert.equal(ts.isPersisting(), false, "the refund handler reads this and asks Stripe to retry");
       const h = ts.ticketSalesHealth();
       assert.equal(h.fileUnreadable, true);
       assert.equal(h.ok, false);
@@ -203,6 +211,7 @@ describe("a record file that cannot be read", () => {
 
   test("an ABSENT file is an ordinary first boot", () => {
     stub();
+    assert.equal(ts.isPersisting(), true);
     assert.equal(ts.ticketSalesHealth().fileUnreadable, false);
     assert.equal(ts.ticketSalesHealth().ok, true);
     assert.ok(JSON.parse(readFileSync(storeFile, "utf-8")).cs_1);
