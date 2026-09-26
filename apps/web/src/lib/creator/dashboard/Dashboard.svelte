@@ -96,14 +96,17 @@
   async function updateCancelledPage(): Promise<void> {
     if (!event?.cancelledAt) return;
     let feedSigner: ContentFeedSigner | null = null;
-    try {
-      const signer = await auth.getContentFeedSigner();
-      if (signer && signer.address.toLowerCase() === event.creatorFeedSigner?.toLowerCase()) feedSigner = signer;
-    } catch {
-      feedSigner = null;
-    }
-    if (event.creatorFeedSigner && !feedSigner) {
-      throw new Error("This account can't sign this event's page. Sign in with the account that created the event.");
+    if (event.creatorFeedSigner) {
+      let signer: ContentFeedSigner | null;
+      try {
+        signer = await auth.getContentFeedSigner();
+      } catch {
+        throw new Error("The page was not signed, so it has not been updated.");
+      }
+      if (!signer || signer.address.toLowerCase() !== event.creatorFeedSigner.toLowerCase()) {
+        throw new Error("This account can't sign this event's page. Sign in with the account that created the event.");
+      }
+      feedSigner = signer;
     }
     const result = await cancelEvent(eventId, event.title, { feedSigner });
     cancelPageNotUpdated = !result.feedUpdated;
