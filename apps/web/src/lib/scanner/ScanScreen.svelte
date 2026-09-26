@@ -3,13 +3,19 @@
    * Full-screen scan surface. Each decoded QR gets a verdict card + full-bleed
    * colour flash + sound/vibration; identical payloads are debounced so a
    * ticket held in frame doesn't re-trigger.
+   *
+   * With several scanners (#641) every admission waits for the server, so there
+   * is a CHECKING state, and a grey COULDN'T CONFIRM card that is deliberately
+   * neither green nor red: the ticket may be fine, but it is not admitted yet.
    */
   import { scanner, type ScanOutcome } from "./store.svelte.js";
-  import { armAudio, feedbackSuccess, feedbackDuplicate, feedbackInvalid } from "./feedback.js";
+  import { armAudio, feedbackSuccess, feedbackDuplicate, feedbackInvalid, feedbackCantConfirm } from "./feedback.js";
   import QrCamera from "./QrCamera.svelte";
 
   const REARM_MS = 3000;
   const CARD_MS = 2600;
+  /** Longer: staff need time to read why, and to decide to scan again. */
+  const CANT_CONFIRM_CARD_MS = 5000;
 
   let outcome = $state<ScanOutcome | null>(null);
   let manualValue = $state("");
@@ -44,11 +50,12 @@
 
     if (result.kind === "checked-in") feedbackSuccess();
     else if (result.kind === "duplicate") feedbackDuplicate();
+    else if (result.kind === "cant-confirm") feedbackCantConfirm();
     else feedbackInvalid();
 
     outcome = result;
     if (cardTimer) clearTimeout(cardTimer);
-    cardTimer = setTimeout(() => (outcome = null), CARD_MS);
+    cardTimer = setTimeout(() => (outcome = null), result.kind === "cant-confirm" ? CANT_CONFIRM_CARD_MS : CARD_MS);
     busy = false;
   }
 
@@ -71,13 +78,19 @@
 <div class="scan-screen">
   <QrCamera onScan={(data) => void handlePayload(data)} />
 
-  {#if outcome}
+  {#if scanner.claiming}
+    <div class="verdict checking" aria-live="polite">
+      <span class="verdict-title">CHECKING…</span>
+      <span class="verdict-detail">Hold on - asking WoCo whether this ticket is already in</span>
+    </div>
+  {:else if outcome}
     {@const kind = outcome.kind}
     <button
       class="verdict"
       class:ok={kind === "checked-in"}
       class:dup={kind === "duplicate"}
       class:bad={kind === "rejected" || kind === "wrong-event" || kind === "refunded"}
+      class:unsure={kind === "cant-confirm"}
       onclick={dismiss}
     >
       {#if outcome.kind === "checked-in"}
@@ -103,6 +116,16 @@
         {/if}
         <span class="verdict-detail">{outcome.seriesName} · #{String(outcome.edition).padStart(3, "0")}</span>
         <span class="verdict-detail">The payment for this ticket was refunded or reversed. Not valid for entry.</span>
+      {:else if outcome.kind === "cant-confirm"}
+        <span class="verdict-title">COULDN'T CONFIRM</span>
+        {#if outcome.attendee?.name || outcome.attendee?.email}
+          <span class="verdict-who">{outcome.attendee.name ?? outcome.attendee.email}</span>
+        {/if}
+        {#if outcome.edition}
+          <span class="verdict-detail">{outcome.seriesName} · #{String(outcome.edition).padStart(3, "0")}</span>
+        {/if}
+        <span class="verdict-detail">{outcome.message}</span>
+        <span class="verdict-badge">Not admitted yet - scan again</span>
       {:else if outcome.kind === "rejected"}
         <span class="verdict-title">INVALID</span>
         <span class="verdict-detail">{outcome.reason}</span>
@@ -179,6 +202,15 @@
   .verdict.bad {
     background: rgba(255, 91, 44, 0.95);
     color: #fff;
+  }
+  .verdict.unsure {
+    background: var(--text-secondary);
+    color: var(--accent-ink);
+  }
+  .verdict.checking {
+    background: var(--bg-elevated);
+    color: var(--text);
+    animation: none;
   }
   .verdict-title {
     font-size: 2.25rem;

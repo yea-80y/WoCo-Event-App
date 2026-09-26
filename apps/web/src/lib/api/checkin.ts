@@ -1,11 +1,12 @@
 /** Organiser-side check-in API — door pass issue, roster push, live status. */
 
 import { authPost, authGet } from "./client.js";
-import type { EncryptedRoster } from "@woco/shared";
+import type { DoorMode, EncryptedRoster } from "@woco/shared";
 
 export interface DoorPassIssueResult {
   token: string;
   exp: number;
+  mode: DoorMode;
 }
 
 export interface CheckinStatus {
@@ -14,8 +15,8 @@ export interface CheckinStatus {
   lastCheckinAt: string | null;
 }
 
-export async function issueDoorPass(eventId: string): Promise<DoorPassIssueResult> {
-  const resp = await authPost<DoorPassIssueResult>(`/api/events/${eventId}/door-pass`, {});
+export async function issueDoorPass(eventId: string, mode: DoorMode): Promise<DoorPassIssueResult> {
+  const resp = await authPost<DoorPassIssueResult>(`/api/events/${eventId}/door-pass`, { mode });
   if (!resp.ok || !resp.data) throw new Error(resp.error ?? "Failed to issue door pass");
   return resp.data;
 }

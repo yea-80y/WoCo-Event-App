@@ -5,10 +5,14 @@
    * order data under it, and uploads only ciphertext; the key travels solely
    * in the door-pass URL fragment. Regenerating the pass rotates the server
    * jti and revokes every previously provisioned device.
+   *
+   * The organiser picks a door mode per pass (#641): one scanner, which works
+   * with no signal because no other phone can use the pass, or several, where
+   * every scan is confirmed with WoCo first so no ticket gets in twice.
    */
   import { onMount } from "svelte";
   import QRCode from "qrcode";
-  import { buildDoorPassUrl, parseDoorPassFragment, type RosterEntry } from "@woco/shared";
+  import { buildDoorPassUrl, parseDoorPassFragment, type DoorMode, type RosterEntry } from "@woco/shared";
   import type { EventFeed, OrderEntry } from "@woco/shared";
   import { issueDoorPass, pushCheckinRoster, getCheckinStatus, type CheckinStatus } from "../../api/checkin.js";
   import { generateRosterKeyB64url, encryptRoster } from "../../scanner/roster-crypto.js";
@@ -38,6 +42,8 @@
   interface StoredDoorPass {
     url: string;
     exp: number;
+    /** Absent on passes stored before #641: the server treats those as "several". */
+    mode?: DoorMode;
     rosterPushedAt?: string;
   }
 
@@ -47,6 +53,8 @@
   let workError = $state<string | null>(null);
   let copied = $state(false);
   let confirmRegen = $state(false);
+  let confirmSwitch = $state(false);
+  let mode = $state<DoorMode>("single");
   let status = $state<CheckinStatus | null>(null);
 
   const storageKey = $derived(`woco:doorpass:${eventId}`);
@@ -103,10 +111,11 @@
   }
 
   /** First-time setup AND regenerate: new key + new pass (old devices die). */
-  async function generatePass(): Promise<void> {
+  async function generatePass(passMode: DoorMode): Promise<void> {
     working = true;
     workError = null;
     confirmRegen = false;
+    confirmSwitch = false;
     try {
       if (needsDecrypt) await onEnsureDecrypted();
 
@@ -114,9 +123,9 @@
       const roster = await encryptRoster(buildRosterEntries(), keyB64url);
       await pushCheckinRoster(eventId, roster);
 
-      const { token, exp } = await issueDoorPass(eventId);
-      const url = buildDoorPassUrl(SCANNER_ORIGIN, token, keyB64url);
-      stored = { url, exp, rosterPushedAt: new Date().toISOString() };
+      const issued = await issueDoorPass(eventId, passMode);
+      const url = buildDoorPassUrl(SCANNER_ORIGIN, issued.token, keyB64url);
+      stored = { url, exp: issued.exp, mode: issued.mode, rosterPushedAt: new Date().toISOString() };
       localStorage.setItem(storageKey, JSON.stringify(stored));
     } catch (err) {
       workError = err instanceof Error ? err.message : "Setup failed";
@@ -162,7 +171,16 @@
       setTimeout(() => (confirmRegen = false), 4000);
       return;
     }
-    void generatePass();
+    void generatePass(stored?.mode ?? "several");
+  }
+
+  function switchTap(): void {
+    if (!confirmSwitch) {
+      confirmSwitch = true;
+      setTimeout(() => (confirmSwitch = false), 4000);
+      return;
+    }
+    void generatePass(stored?.mode === "single" ? "several" : "single");
   }
 
   function formatTime(iso: string): string {
@@ -193,24 +211,41 @@
     <div class="setup-card">
       <h3>Door scanner</h3>
       <p>
-        Generate a <strong>door pass</strong> to turn any phone into a ticket scanner for this event —
-        no login needed on the door device. The pass QR provisions the scanner with everything it
-        needs to verify tickets <strong>offline</strong>, including your attendee list (encrypted —
-        the WoCo server never sees names or emails).
+        Generate a <strong>door pass</strong> to turn any phone into a ticket scanner for this event -
+        no login needed on the door device. The pass loads everything the scanner needs to check
+        tickets, including your attendee list (encrypted - the WoCo server never sees names or emails).
       </p>
+      <fieldset class="modes">
+        <legend>How many phones on the door?</legend>
+        <label class="mode" class:chosen={mode === "single"}>
+          <input type="radio" name="door-mode" value="single" bind:group={mode} />
+          <span class="mode-name">One scanner</span>
+          <span class="mode-desc">Works with no signal. Only the first phone that opens the pass can use it.</span>
+        </label>
+        <label class="mode" class:chosen={mode === "several"}>
+          <input type="radio" name="door-mode" value="several" bind:group={mode} />
+          <span class="mode-name">Several scanners</span>
+          <span class="mode-desc">For busy doors. Every phone needs signal: each scan is confirmed with WoCo first, so no ticket gets in twice.</span>
+        </label>
+      </fieldset>
       {#if needsDecrypt}
         <p class="hint">Your order data will be decrypted first — this may ask for your signature.</p>
       {/if}
-      <button class="primary" onclick={() => void generatePass()} disabled={working || decrypting}>
+      <button class="primary" onclick={() => void generatePass(mode)} disabled={working || decrypting}>
         {working ? "Setting up…" : "Generate door pass"}
       </button>
     </div>
   {:else}
     <div class="pass-card">
       <h3>Door pass</h3>
+      {#if stored.mode === "single"}
+        <p class="mode-line"><strong>One scanner</strong> - works with no signal. The first phone to open this pass is the only one that can use it.</p>
+      {:else}
+        <p class="mode-line"><strong>Several scanners</strong> - every phone needs signal, and each ticket is let in once across all of them.</p>
+      {/if}
       <p class="hint">
-        On each door device, open <strong>{SCANNER_ORIGIN.replace(/^https?:\/\//, "")}</strong> and scan
-        this QR (or open the link). Anyone with this pass can check people in — share it only with
+        On the door {stored.mode === "single" ? "phone" : "phones"}, open <strong>{SCANNER_ORIGIN.replace(/^https?:\/\//, "")}</strong> and scan
+        this QR (or open the link). Anyone with this pass can check people in - share it only with
         your door team.
       </p>
       {#if qrDataUrl}
@@ -221,8 +256,15 @@
         <button onclick={() => void refreshRoster()} disabled={working || decrypting}>
           {working ? "Working…" : "Re-push attendee list"}
         </button>
+        <button onclick={switchTap} disabled={working}>
+          {confirmSwitch
+            ? "Tap again - this makes a new pass and locks out every scanner"
+            : stored.mode === "single" ? "Switch to several scanners" : "Switch to one scanner"}
+        </button>
         <button class="danger" onclick={regenTap} disabled={working}>
-          {confirmRegen ? "Tap again — this locks out every scanner" : "Regenerate (revoke all devices)"}
+          {confirmRegen
+            ? "Tap again - this locks out every scanner"
+            : stored.mode === "single" ? "Regenerate (move to another phone)" : "Regenerate (revoke all devices)"}
         </button>
       </div>
       {#if stored.rosterPushedAt}
@@ -293,6 +335,52 @@
   .hint {
     font-size: 0.85rem;
     color: var(--text-muted);
+  }
+  .modes {
+    border: none;
+    margin: 0 0 1rem;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .modes legend {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 0.5rem;
+  }
+  .mode {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: 0.6rem;
+    row-gap: 0.15rem;
+    align-items: center;
+    padding: 0.75rem 0.85rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+  }
+  .mode.chosen {
+    border-color: var(--accent);
+    background: var(--accent-subtle);
+  }
+  .mode input {
+    accent-color: var(--accent);
+    margin: 0;
+  }
+  .mode-name {
+    font-weight: 600;
+    color: var(--text);
+  }
+  .mode-desc {
+    grid-column: 2;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    line-height: 1.45;
+  }
+  .mode-line {
+    font-size: 0.875rem;
   }
   .pass-qr {
     display: block;
