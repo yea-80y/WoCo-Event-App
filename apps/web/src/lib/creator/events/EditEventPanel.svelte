@@ -6,6 +6,7 @@
   import ImageUpload from "./ImageUpload.svelte";
   import LocationPicker from "./LocationPicker.svelte";
   import GenreTagPicker from "./GenreTagPicker.svelte";
+  import CancelEventPanel from "./CancelEventPanel.svelte";
   import { toLocalInput } from "./date.js";
 
   interface Props {
@@ -16,9 +17,11 @@
     /** Approval requests still pending — also blocks delete. */
     onsaved: (feed: EventFeed) => void;
     ondeleted: () => void;
+    /** #644: the event was cancelled; the feed carries `cancelledAt`. */
+    oncancelled: (feed: EventFeed, feedUpdated: boolean) => void;
   }
 
-  let { event, ordersCount, onsaved, ondeleted }: Props = $props();
+  let { event, ordersCount, onsaved, ondeleted, oncancelled }: Props = $props();
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
 
@@ -244,6 +247,8 @@
   <button class="btn btn--primary save-btn" onclick={save} disabled={!canSave}>
     {saving ? "Saving…" : "Save changes"}
   </button>
+
+  <CancelEventPanel {event} {ordersCount} {oncancelled} />
 
   <div class="danger-zone">
     <h3>Delete event</h3>

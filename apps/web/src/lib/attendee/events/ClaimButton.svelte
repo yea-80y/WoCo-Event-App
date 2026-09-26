@@ -48,9 +48,11 @@
     /** Organiser display name, shown in the checkout privacy notice so the buyer
      *  is told who actually receives their details. Falls back to generic wording. */
     organiserName?: string;
+    /** #644: the server says the event is cancelled, whatever the page's feed says. */
+    oncancelled?: () => void;
   }
 
-  let { eventId, seriesId, encryptionKey, orderFields, apiUrl, payment, quantity = 1, eager = false, organiserName }: Props = $props();
+  let { eventId, seriesId, encryptionKey, orderFields, apiUrl, payment, quantity = 1, eager = false, organiserName, oncancelled }: Props = $props();
 
   const isPaid = $derived(!!payment && parseFloat(payment.price) > 0);
   const hasStripe = $derived(!!payment?.stripeEnabled);
@@ -124,6 +126,7 @@
 
   function applyStatus(s: SeriesClaimStatus) {
     status = s;
+    if (s.cancelled) oncancelled?.();
   }
 
   function refreshStatus(): void {
@@ -369,7 +372,11 @@
       <span class="own-chip-hint">Buy another below</span>
     </div>
   {/if}
-  {#if showOrderForm}
+  {#if status?.cancelled}
+    <!-- #644: the server's word, from claim-status — covers a page whose feed
+         was not re-signed after the cancellation. -->
+    <button class="claim-btn" disabled>Event cancelled</button>
+  {:else if showOrderForm}
     <OrderForm
       {status}
       {quantity}

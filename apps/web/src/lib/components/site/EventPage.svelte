@@ -193,6 +193,11 @@
 
   // True once the event itself has ended — locks down qty selection + Get Tickets.
   const eventIsPast = $derived(event ? isPastEvent(event) : false);
+  // #644: cancelled, from the (re-signed) feed or from the server via
+  // claim-status. Display only: the server refuses the sale regardless.
+  const eventIsCancelled = $derived(
+    !!event?.cancelledAt || (event?.series ?? []).some((s) => getSeriesStatus(s)?.cancelled === true),
+  );
 
   // ── Ticket quantity + Get Tickets ─────────────────────────────────────────
   function handleQtyChange(s: SeriesSummary, qty: number) {
@@ -456,7 +461,7 @@
           {@const ss = getSeriesStatus(s)}
           {@const physRemaining = ss?.available ?? s.totalSupply}
           {@const soldOut = ss != null && ss.available === 0}
-          {@const isUnavailable = eventIsPast || sale !== "active" || soldOut}
+          {@const isUnavailable = eventIsCancelled || eventIsPast || sale !== "active" || soldOut}
           {@const isPaid = s.payment && parseFloat(s.payment.price) > 0}
           {@const qty = ticketQty[s.seriesId] ?? 0}
           {@const maxQty = isUnavailable ? 0 : Math.min(physRemaining, 10)}
@@ -479,7 +484,9 @@
 
             <!-- Middle: status + price -->
             <div class="ticket-row-mid">
-              {#if eventIsPast}
+              {#if eventIsCancelled}
+                <span class="ticket-status">Cancelled</span>
+              {:else if eventIsPast}
                 <span class="ticket-status">Event ended</span>
               {:else if sale === "future"}
                 <span class="ticket-status">Opens {formatShortDate(s.saleStart!)}</span>
@@ -526,13 +533,17 @@
       <div class="tickets-footer">
         <button
           class="get-tickets-btn"
-          class:get-tickets-btn--active={anySelected && !eventIsPast}
-          disabled={!anySelected || eventIsPast}
+          class:get-tickets-btn--active={anySelected && !eventIsPast && !eventIsCancelled}
+          disabled={!anySelected || eventIsPast || eventIsCancelled}
           onclick={handleGetTickets}
         >
-          {eventIsPast ? "Event ended" : "Get Tickets"}
+          {eventIsCancelled ? "Event cancelled" : eventIsPast ? "Event ended" : "Get Tickets"}
         </button>
-        {#if eventIsPast}
+        {#if eventIsCancelled}
+          <p class="nothing-selected">
+            This event has been cancelled. Everyone who bought a ticket is being refunded in full, to the card they paid with.
+          </p>
+        {:else if eventIsPast}
           <p class="nothing-selected">Ticket sales are closed for past events</p>
         {:else if !anySelected}
           <p class="nothing-selected">Nothing selected yet</p>

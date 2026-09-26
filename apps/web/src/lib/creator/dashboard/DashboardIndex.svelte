@@ -164,7 +164,7 @@
           {#each upcoming as ev}
             <button class="event-row" onclick={() => navigate(`/event/${ev.eventId}/dashboard`)}>
               <div class="event-info">
-                <span class="event-title">{ev.title}</span>
+                <span class="event-title">{ev.title}{#if ev.cancelledAt}<span class="cancelled-tag">Cancelled</span>{/if}</span>
                 <span class="event-meta">
                   {new Date(ev.startDate).toLocaleDateString()} &middot;
                   {ev.totalTickets} ticket{ev.totalTickets !== 1 ? "s" : ""}
@@ -185,7 +185,7 @@
           {#each past as ev}
             <button class="event-row event-row--past" onclick={() => navigate(`/event/${ev.eventId}/dashboard`)}>
               <div class="event-info">
-                <span class="event-title">{ev.title}</span>
+                <span class="event-title">{ev.title}{#if ev.cancelledAt}<span class="cancelled-tag">Cancelled</span>{/if}</span>
                 <span class="event-meta">
                   {new Date(ev.startDate).toLocaleDateString()} &middot;
                   {ev.totalTickets} ticket{ev.totalTickets !== 1 ? "s" : ""}
@@ -384,6 +384,19 @@
     font-size: 0.9375rem;
     font-weight: 500;
     color: var(--text);
+  }
+
+  .cancelled-tag {
+    margin-left: 0.5rem;
+    padding: 0.05rem 0.4rem;
+    font-size: 0.625rem;
+    font-weight: 600;
+    color: var(--error);
+    border: 1px solid var(--error);
+    border-radius: var(--radius-sm);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    vertical-align: middle;
   }
 
   .event-meta {

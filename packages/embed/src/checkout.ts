@@ -203,6 +203,8 @@ export type ReturnView =
   | { kind: "checking" }
   | { kind: "paid"; quantity: number; emailMasked: string | null }
   | { kind: "unpaid" }
+  /** #644: the event was cancelled — no ticket, any payment refunded. */
+  | { kind: "cancelled" }
   | { kind: "unconfirmed" };
 
 /**
@@ -213,6 +215,7 @@ export type ReturnView =
 export function returnView(resp: { ok: boolean; data?: unknown } | null): ReturnView {
   const d = resp?.ok && resp.data && typeof resp.data === "object" ? resp.data as Record<string, unknown> : null;
   if (!d) return { kind: "unconfirmed" };
+  if (d.status === "cancelled") return { kind: "cancelled" };
   if (d.status === "open" || d.status === "expired") return { kind: "unpaid" };
   if (d.status !== "paid" || !Number.isInteger(d.quantity) || (d.quantity as number) < 1) {
     return { kind: "unconfirmed" };

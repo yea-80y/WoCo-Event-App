@@ -74,6 +74,8 @@ test("a server-confirmed paid order is shown as paid", () => {
 
 test("an open or expired session is an unfinished payment", () => {
   assert.equal(returnView({ ok: true, data: { status: "open", quantity: 1 } }).kind, "unpaid");
+  // #644: a cancelled event is never read as paid.
+  assert.equal(returnView({ ok: true, data: { status: "cancelled", quantity: 1 } }).kind, "cancelled");
   assert.equal(returnView({ ok: true, data: { status: "expired", quantity: 1 } }).kind, "unpaid");
 });
 

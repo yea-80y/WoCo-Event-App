@@ -37,7 +37,7 @@
     if (!showImage) attrs.push(`\n  show-image="false"`);
     if (!showDescription) attrs.push(`\n  show-description="false"`);
 
-    return `<script src="${defaultApiUrl}/embed/woco-embed.js?v=11"><\/script>\n<woco-tickets${attrs.join("")}\n><\/woco-tickets>`;
+    return `<script src="${defaultApiUrl}/embed/woco-embed.js?v=12"><\/script>\n<woco-tickets${attrs.join("")}\n><\/woco-tickets>`;
   }
 
   function buildIframeSnippet(): string {

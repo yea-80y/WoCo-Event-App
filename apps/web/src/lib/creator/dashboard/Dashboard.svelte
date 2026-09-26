@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { EventFeed, OrderEntry, SealedBox, OrderField } from "@woco/shared";
   import { deriveEncryptionKeypairFromSeed, openJson } from "@woco/shared";
-  import { getEvent } from "../../api/events.js";
+  import { cancelEvent, getEvent } from "../../api/events.js";
+  import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { getEventOrders, webhookRelay, type EventOrdersResponse } from "../../api/events.js";
   import { startBroadcast, pollBroadcast, type BroadcastJobStatus } from "../../api/broadcasts.js";
   import BroadcastProgress from "../audience/BroadcastProgress.svelte";
@@ -21,6 +22,8 @@
   import StripeConnect from "./StripeConnect.svelte";
   import CheckinPanel from "./CheckinPanel.svelte";
   import EditEventPanel from "../events/EditEventPanel.svelte";
+  import CancellationStatus from "./CancellationStatus.svelte";
+  import { cancellationNoticeTemplate } from "./cancellation-notice.js";
   import { cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
 
   interface Props {
@@ -80,6 +83,46 @@
    * the guard.
    */
   let broadcastServiceType = $state<ServiceNoticeType | "">("");
+
+  /** #644: cancelled, but the organiser's own page feed could not be re-signed from here. */
+  let cancelPageNotUpdated = $state(false);
+
+  /**
+   * Re-sign the organiser's page feed with the cancellation. Pressing cancel on
+   * an already-cancelled event is the server's repair path: it changes nothing
+   * and hands back the feed with `cancelledAt` to sign. The organiser asked for
+   * this, so a signing prompt here is expected.
+   */
+  async function updateCancelledPage(): Promise<void> {
+    if (!event?.cancelledAt) return;
+    let feedSigner: ContentFeedSigner | null = null;
+    if (event.creatorFeedSigner) {
+      let signer: ContentFeedSigner | null;
+      try {
+        signer = await auth.getContentFeedSigner();
+      } catch {
+        throw new Error("The page was not signed, so it has not been updated.");
+      }
+      if (!signer || signer.address.toLowerCase() !== event.creatorFeedSigner.toLowerCase()) {
+        throw new Error("This account can't sign this event's page. Sign in with the account that created the event.");
+      }
+      feedSigner = signer;
+    }
+    const result = await cancelEvent(eventId, event.title, { feedSigner });
+    cancelPageNotUpdated = !result.feedUpdated;
+    if (result.eventFeed) {
+      event = result.eventFeed;
+      cacheSet(cacheKey.event(eventId), result.eventFeed, TTL.EVENT);
+    }
+    if (!result.feedUpdated) throw new Error("The event page could not be updated. Try again shortly.");
+  }
+
+  function openCancellationNotice(): void {
+    if (!event) return;
+    activeTab = "broadcast";
+    broadcastServiceType = "cancelled";
+    if (!broadcastBody.trim()) broadcastBody = cancellationNoticeTemplate(event);
+  }
   let showPreview = $state(false);
   let showRecipientList = $state(false);
 
@@ -543,6 +586,16 @@
     <h1>Orders Dashboard</h1>
     <p class="subtitle">{event.title}</p>
 
+    {#if event.cancelledAt}
+      <CancellationStatus
+        {eventId}
+        cancelledAt={event.cancelledAt}
+        pageNotUpdated={cancelPageNotUpdated}
+        onupdatepage={updateCancelledPage}
+        onnotify={openCancellationNotice}
+      />
+    {/if}
+
     <!-- Tab bar -->
     <div class="tab-bar">
       <button
@@ -596,6 +649,12 @@
         ondeleted={() => {
           cacheDel(cacheKey.event(eventId));
           navigate("/creator/events");
+        }}
+        oncancelled={(feed, feedUpdated) => {
+          event = feed;
+          cancelPageNotUpdated = !feedUpdated;
+          cacheSet(cacheKey.event(eventId), feed, TTL.EVENT);
+          openCancellationNotice();
         }}
       />
     {:else if activeTab === "payments"}

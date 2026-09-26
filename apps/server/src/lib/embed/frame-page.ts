@@ -50,7 +50,7 @@ export function buildFramePage(i: FramePageInputs): string {
   <style>* { margin: 0; padding: 0; box-sizing: border-box; } html, body { background: transparent; }</style>
 </head>
 <body>
-  <script src="${API_URL}/embed/woco-embed.js?v=11"></script>
+  <script src="${API_URL}/embed/woco-embed.js?v=12"></script>
   <woco-tickets
     event-id="${eventId}"
     api-url="${API_URL}"
