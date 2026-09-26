@@ -54,6 +54,13 @@
 
   let { eventId, seriesId, encryptionKey, orderFields, apiUrl, payment, quantity = 1, eager = false, organiserName, oncancelled }: Props = $props();
 
+  /**
+   * Link the purchase to the signed-in account only when that costs no prompt:
+   * a session key already on this device. Otherwise the buyer checks out as a
+   * guest by email — paying by card must never open a wallet. Read once per
+   * Pay click, so the email field shown and the request sent always agree.
+   */
+  const linked = $derived(auth.isAuthenticated);
   const isPaid = $derived(!!payment && parseFloat(payment.price) > 0);
   const hasStripe = $derived(!!payment?.stripeEnabled);
   let stripeLoading = $state(false);
@@ -191,10 +198,10 @@
   // ──────────────────────────────────────────────────────────────
   // Pre-upload + reservation hooks
   // ──────────────────────────────────────────────────────────────
-  const buildOrderSnapshot = (): string => buildOrderSnapshotPure(
+  const buildOrderSnapshot = (link: boolean = linked): string => buildOrderSnapshotPure(
     formData,
     getEmailFromForm() ?? stripeEmail.trim(),
-    auth.parent?.toLowerCase() ?? "",
+    link ? auth.parent?.toLowerCase() ?? "" : "",
   );
 
   // svelte-ignore state_referenced_locally
@@ -205,7 +212,7 @@
     getSnapshot: () => buildOrderSnapshot(),
     getFormData: () => formData,
     getEmail: () => getEmailFromForm() ?? stripeEmail.trim(),
-    getAddress: () => auth.parent?.toLowerCase() ?? "",
+    getAddress: () => (linked ? auth.parent?.toLowerCase() ?? "" : ""),
     getQuantity: () => quantity,
     getPayHoverTick: () => payHoverTick,
   });
@@ -252,14 +259,15 @@
 
     stripeLoading = true;
     error = null;
+    const linkAccount = linked;
     try {
       const email = getEmailFromForm() || stripeEmail.trim() || undefined;
-      const address = auth.parent?.toLowerCase() || undefined;
+      const address = linkAccount ? auth.parent?.toLowerCase() || undefined : undefined;
       if (!email && !address) {
         // Deployed builder sites mount no login modal, so "sign in" names an
-        // action that surface does not offer (#194). Ask only for what is
-        // actually reachable from here.
-        error = loginRequest.available
+        // action that surface does not offer (#194), and a buyer already signed
+        // in is not asked to sign here. Ask only for what is reachable.
+        error = loginRequest.available && !auth.isConnected
           ? "Please enter an email address or sign in with a wallet."
           : "Please enter an email address to continue.";
         return;
@@ -279,7 +287,7 @@
         // snapshot. Otherwise the user kept typing after the upload finished
         // and the ref now points at a stale SealedBox — fall back to inline
         // upload, which seals the current formData.
-        const liveSnapshot = buildOrderSnapshot();
+        const liveSnapshot = buildOrderSnapshot(linkAccount);
         if (orderPrefetch.ref && orderPrefetch.refSnapshot === liveSnapshot) {
           preparedOrderRef = orderPrefetch.ref;
         } else if (orderPrefetch.inflight) {
@@ -316,9 +324,12 @@
 
       // Persist email + quantity so the success card can render after the
       // Stripe redirect even before the webhook has confirmed the claim.
+      // `linked` tells the return screen whether the ticket goes into the
+      // passport by itself, or from the email.
       sessionStorage.setItem(STRIPE_FORM_KEY, JSON.stringify({
         claimerEmail: email,
         quantity,
+        linked: linkAccount,
       }));
 
       const { url } = await createCheckoutSession({
@@ -333,6 +344,7 @@
         // early to show it and is re-entered), so the opt-out WAS offered and an
         // untouched box records as a refusal.
         marketingConsent: claimMarketingConsent,
+        linkAccount,
       });
       // Server has stamped reservationId into Stripe metadata; webhook
       // consumes it. Clear local state (incl. sessionStorage) so back-nav
@@ -382,7 +394,7 @@
       {quantity}
       {orderFields}
       {hasEmailField}
-      authConnected={auth.isConnected}
+      authConnected={linked}
       {stripeLoading}
       {buyerFees}
       {priceLabel}
@@ -403,7 +415,7 @@
       {stripeLoading}
       soldOut={status?.available === 0}
       {stripeEmail}
-      showEmailInput={!auth.isConnected && !hasEmailField}
+      showEmailInput={!linked && !hasEmailField}
       onCheckout={handleStripeCheckout}
       onStripeEmailChange={(v) => { stripeEmail = v; }}
     />

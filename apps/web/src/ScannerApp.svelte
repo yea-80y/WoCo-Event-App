@@ -44,6 +44,7 @@
         <span class="stats">
           <strong>{scanner.checkedInCount}</strong> / {scanner.totalCapacity} in
           {#if scanner.pendingCount > 0}· {scanner.pendingCount} unsynced{/if}
+          · {scanner.doorMode === "single" ? "only scanner" : "shared door"}
         </span>
       </div>
       <div class="header-actions">
@@ -58,14 +59,15 @@
     </header>
 
     {#if scanner.passDead}
-      <div class="banner dead">{scanner.passDead}. Scans still record locally — re-provision with a new pass to sync.</div>
+      <div class="banner dead">{scanner.passDead}. This phone has stopped checking people in - ask the organiser for a new door pass.</div>
+    {:else if !scanner.online && scanner.doorMode === "single"}
+      <div class="banner offline">Offline - this is the only scanner on this pass, so it keeps checking people in and syncs when back online.</div>
     {:else if !scanner.online}
-      <div class="banner offline">Offline — scans are verified locally and will sync when back online.</div>
+      <div class="banner dead">Offline - check-in is paused. This door is shared, so nobody is let in until WoCo confirms their ticket is not already in.</div>
     {/if}
     {#if scanner.conflicts.length > 0}
       <div class="banner conflict">
-        ⚠ {scanner.conflicts.length} ticket{scanner.conflicts.length === 1 ? "" : "s"} accepted on two devices while
-        offline — check with the door team.
+        ⚠ {scanner.conflicts.length} ticket{scanner.conflicts.length === 1 ? " was" : "s were"} recorded by two scanners - check with the door team.
       </div>
     {/if}
 

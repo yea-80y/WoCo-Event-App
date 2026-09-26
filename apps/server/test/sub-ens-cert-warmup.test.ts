@@ -14,12 +14,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { AbiCoder, Interface, dnsEncode, namehash } from "ethers";
 import { subEnsName, subEnsWebUrl } from "@woco/shared";
 import {
+  CERT_WARMUP_TIMEOUT_MS,
   ETH_LIMO_DOH_URL,
+  httpsHead,
   warmSubEnsWebCert,
   warmSubEnsWebCertWhenResolvable,
+  type Knock,
 } from "../src/lib/sub-ens/cert-warmup.js";
 import { publicContenthashQueryUrl } from "../src/lib/ens-gateway/public-url.js";
 import { createCcipHandler } from "../src/lib/ens-gateway/ccip.js";
@@ -29,13 +33,13 @@ interface Call {
   init: RequestInit;
 }
 
-/** A fake fetch that records what it was asked for and answers however told. */
-function fakeFetch(answer: () => Promise<Response>) {
-  const calls: Call[] = [];
-  const fn = (async (url: unknown, init: unknown) => {
-    calls.push({ url: String(url), init: (init ?? {}) as RequestInit });
+/** A fake knock that records what it was asked for and answers however told. */
+function fakeKnock(answer: () => Promise<number>) {
+  const calls: { url: string; timeoutMs: number }[] = [];
+  const fn: Knock = async (url, timeoutMs) => {
+    calls.push({ url, timeoutMs });
     return answer();
-  }) as unknown as typeof fetch;
+  };
   return { fn, calls };
 }
 
@@ -43,27 +47,24 @@ function response(status: number): Response {
   return new Response(null, { status });
 }
 
-test("the request is a HEAD to the name's own web address, bounded and unredirected", async () => {
-  const { fn, calls } = fakeFetch(async () => response(200));
+test("the knock goes to the name's own web address, held open for the issuance", async () => {
+  const { fn, calls } = fakeKnock(async () => 200);
   const lines: string[] = [];
-  await warmSubEnsWebCert("punkpub", { fetch: fn, log: (l) => lines.push(l) });
+  await warmSubEnsWebCert("punkpub", { knock: fn, log: (l) => lines.push(l) });
 
   assert.equal(calls.length, 1);
   // Built from the shared helper, never a suffix spelled out here — the point of
   // the warm-up is to warm the address the organiser is actually handed.
   assert.equal(calls[0].url, subEnsWebUrl("punkpub"));
-  assert.equal(calls[0].init.method, "HEAD");
-  // A redirect would be a second hostname's handshake, spending someone else's ask.
-  assert.equal(calls[0].init.redirect, "manual");
-  assert.ok(calls[0].init.signal instanceof AbortSignal, "the attempt must be time-bounded");
+  assert.equal(calls[0].timeoutMs, CERT_WARMUP_TIMEOUT_MS);
 });
 
 test("a refused handshake is swallowed and never retried", async () => {
-  const { fn, calls } = fakeFetch(async () => {
+  const { fn, calls } = fakeKnock(async () => {
     throw new Error("write EPROTO tlsv1 alert internal error");
   });
   const lines: string[] = [];
-  const status = await warmSubEnsWebCert("punkpub", { fetch: fn, log: (l) => lines.push(l) });
+  const status = await warmSubEnsWebCert("punkpub", { knock: fn, log: (l) => lines.push(l) });
 
   assert.equal(status, null);
   assert.equal(calls.length, 1, "a retry would spend a second ask on a hostname that just failed");
@@ -72,9 +73,9 @@ test("a refused handshake is swallowed and never retried", async () => {
 });
 
 test("a non-2xx answer is reported, not retried", async () => {
-  const { fn, calls } = fakeFetch(async () => response(404));
+  const { fn, calls } = fakeKnock(async () => 404);
   const lines: string[] = [];
-  const status = await warmSubEnsWebCert("punkpub", { fetch: fn, log: (l) => lines.push(l) });
+  const status = await warmSubEnsWebCert("punkpub", { knock: fn, log: (l) => lines.push(l) });
 
   assert.equal(status, 404);
   assert.equal(calls.length, 1);
@@ -82,22 +83,90 @@ test("a non-2xx answer is reported, not retried", async () => {
 });
 
 test("a served name reports its status", async () => {
-  const { fn, calls } = fakeFetch(async () => response(200));
-  const status = await warmSubEnsWebCert("punkpub", { fetch: fn, log: () => {} });
+  const { fn, calls } = fakeKnock(async () => 200);
+  const status = await warmSubEnsWebCert("punkpub", { knock: fn, log: () => {} });
   assert.equal(status, 200);
   assert.equal(calls.length, 1);
 });
 
 test("a label that could not be a name is refused before any request", async () => {
-  const { fn, calls } = fakeFetch(async () => response(200));
+  const { fn, calls } = fakeKnock(async () => 200);
   const lines: string[] = [];
-  const status = await warmSubEnsWebCert("evil.com/x", { fetch: fn, log: (l) => lines.push(l) });
+  const status = await warmSubEnsWebCert("evil.com/x", { knock: fn, log: (l) => lines.push(l) });
 
   assert.equal(status, null);
   // Zero, not one: the label decides the host, so a bad label is not a failed
   // warm-up, it is a request that must never leave.
   assert.equal(calls.length, 0);
   assert.match(lines[0], /cert warm-up refused label/);
+});
+
+// ---------------------------------------------------------------------------
+// The knock outlasts the issuance (#707)
+// ---------------------------------------------------------------------------
+
+/** A listener that accepts TCP and never answers the ClientHello: a handshake held open while eth.limo issues. */
+async function stalledTls(): Promise<{ url: string; close: () => void }> {
+  const sockets: Socket[] = [];
+  const server = createServer((socket) => {
+    sockets.push(socket);
+    socket.on("error", () => {});
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  return {
+    url: `https://127.0.0.1:${port}/`,
+    close: () => {
+      for (const s of sockets) s.destroy();
+      server.close();
+    },
+  };
+}
+
+test("httpsHead holds a stalled handshake past 10 s, to its own timeout", async () => {
+  // Node's fetch hangs up on this listener at 10 s whatever signal it is given
+  // (UND_ERR_CONNECT_TIMEOUT). That cap is what cut every warm-up off
+  // mid-issuance on 2026-09-26, so this must wait for the timeout it was handed.
+  const stalled = await stalledTls();
+  const started = Date.now();
+  try {
+    await assert.rejects(httpsHead(stalled.url, 12_000), (err: { name?: string; code?: string }) => {
+      assert.equal(err.name, "AbortError", `gave up for another reason: ${err.code}`);
+      return true;
+    });
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed >= 11_500, `gave up after ${elapsed} ms, before the 12 s it was given`);
+  } finally {
+    stalled.close();
+  }
+});
+
+test("the knock is given the whole issuance, not the 10 s that cut it off", () => {
+  // eth.limo took 1-2 minutes to issue on 2026-09-21. Anything near 10 s
+  // reproduces #707 by a different road.
+  assert.ok(CERT_WARMUP_TIMEOUT_MS >= 120_000, `only ${CERT_WARMUP_TIMEOUT_MS} ms`);
+});
+
+test("httpsHead is one HEAD on its own socket, and follows nothing", () => {
+  const src = sourceOf("../src/lib/sub-ens/cert-warmup.ts");
+  const start = src.indexOf("export function httpsHead");
+  assert.ok(start > 0, "httpsHead not found");
+  const body = src.slice(start, src.indexOf("\nexport ", start + 10));
+  assert.match(body, /method: "HEAD"/);
+  // A pooled socket could already be past its handshake, and then nothing is warmed.
+  assert.match(body, /agent: false/);
+  assert.match(body, /signal: AbortSignal\.timeout\(timeoutMs\)/);
+  // node:https never follows a redirect; fetch would, into another hostname's ask.
+  assert.ok(!/\bfetch\(/.test(body), "the knock must not go through fetch");
+});
+
+test("the warm-up knocks with httpsHead unless told otherwise, never with fetch", () => {
+  const src = sourceOf("../src/lib/sub-ens/cert-warmup.ts");
+  const start = src.indexOf("export async function warmSubEnsWebCert(");
+  assert.ok(start > 0, "warmSubEnsWebCert not found");
+  const body = src.slice(start);
+  assert.match(body, /const knock = deps\.knock \?\? httpsHead;/);
+  assert.ok(!/fetch/.test(body), "the knock path must not touch fetch");
 });
 
 // ---------------------------------------------------------------------------
@@ -170,12 +239,13 @@ const ethLimoHolding = (ref: string | null, quoted = false): Answer => () =>
 
 /**
  * A fake network: the gateway query and eth.limo's DoH each answer from their
- * own list in turn (the last repeats); anything else is the name's web address,
- * answering the HEAD. Time only moves when the code sleeps, so the windows run
- * instantly.
+ * own list in turn (the last repeats); the knock answers 200. `fetch` refuses
+ * any other address, so a knock sent through it fails the trace. Time only
+ * moves when the code sleeps, so the windows run instantly.
  */
 function fakeNetwork(gateway: Answer[], ethLimo: Answer[] = [ethLimoHolding(NEW_REF)]) {
   const calls: Call[] = [];
+  const knocks: number[] = [];
   let gw = 0;
   let doh = 0;
   let clock = 0;
@@ -184,10 +254,16 @@ function fakeNetwork(gateway: Answer[], ethLimo: Answer[] = [ethLimoHolding(NEW_
     calls.push({ url: u, init: (init ?? {}) as RequestInit });
     if (u === QUERY_URL) return gateway[Math.min(gw++, gateway.length - 1)]();
     if (u.startsWith(ETH_LIMO_DOH_URL)) return ethLimo[Math.min(doh++, ethLimo.length - 1)]();
-    return response(200);
+    throw new Error(`fetch was asked for ${u}: only the gates may use it`);
   }) as unknown as typeof fetch;
+  const knock: Knock = async (url, timeoutMs) => {
+    calls.push({ url, init: {} });
+    knocks.push(timeoutMs);
+    return 200;
+  };
   const deps = {
     fetch: fn,
+    knock,
     now: () => clock,
     sleep: async (ms: number) => {
       clock += ms;
@@ -199,11 +275,11 @@ function fakeNetwork(gateway: Answer[], ethLimo: Answer[] = [ethLimoHolding(NEW_
   /** Each call as G (gateway), D (eth.limo DoH) or H (the knock), in order. */
   const trace = () =>
     calls.map((c) => (c.url === QUERY_URL ? "G" : c.url.startsWith(ETH_LIMO_DOH_URL) ? "D" : "H")).join("");
-  return { deps, calls, trace };
+  return { deps, calls, knocks, trace };
 }
 
 test("gateway first, then eth.limo, then exactly one knock", async () => {
-  const { deps, calls, trace } = fakeNetwork(
+  const { deps, calls, knocks, trace } = fakeNetwork(
     [gatewayServing(OLD_HASH), gatewayServing(OLD_HASH), gatewayServing(NEW.contenthash)],
     [ethLimoHolding(null), ethLimoHolding(NEW_REF)],
   );
@@ -213,10 +289,8 @@ test("gateway first, then eth.limo, then exactly one knock", async () => {
   // eth.limo is not asked while our gateway still says "unset": asking then is
   // how its 300 s negative gets made.
   assert.equal(trace(), "GGGDDH");
-  const head = calls.at(-1)!;
-  assert.equal(head.url, HOST);
-  assert.equal(head.init.method, "HEAD");
-  assert.equal(head.init.redirect, "manual");
+  assert.equal(calls.at(-1)!.url, HOST);
+  assert.deepEqual(knocks, [CERT_WARMUP_TIMEOUT_MS]);
 });
 
 test("eth.limo is asked by name, for TXT, as DNS JSON", async () => {
@@ -320,13 +394,20 @@ test("the gated warm-up refuses a bad label before any request", async () => {
   assert.equal(calls.length, 0);
 });
 
-test("a refused handshake logs its TLS cause, so an alert reads apart from a dead network", async () => {
-  const { fn } = fakeFetch(async () => {
+test("a refused handshake logs its TLS code, so an alert reads apart from a dead network", async () => {
+  // As node:https reports it: the code on the error itself.
+  const direct = fakeKnock(async () => {
+    throw Object.assign(new Error("tlsv1 alert internal error"), { code: "ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR" });
+  });
+  // As fetch reports it: "fetch failed", with the code on the cause.
+  const wrapped = fakeKnock(async () => {
     throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR" } });
   });
   const lines: string[] = [];
-  await warmSubEnsWebCert("punkpub", { fetch: fn, log: (l) => lines.push(l) });
-  assert.match(lines[0], /failed: fetch failed \(ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR\)$/);
+  await warmSubEnsWebCert("punkpub", { knock: direct.fn, log: (l) => lines.push(l) });
+  await warmSubEnsWebCert("punkpub", { knock: wrapped.fn, log: (l) => lines.push(l) });
+  assert.match(lines[0], /failed: tlsv1 alert internal error \(ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR\)$/);
+  assert.match(lines[1], /failed: fetch failed \(ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR\)$/);
 });
 
 // ---------------------------------------------------------------------------
@@ -406,16 +487,21 @@ test("round trip: the real gateway handler's answer to that query is what releas
   const fn = (async (u: unknown) => {
     calls.push(String(u));
     if (String(u).startsWith(ETH_LIMO_DOH_URL)) return ethLimoHolding(NEW_REF)();
-    if (String(u) !== url) return response(200);
+    if (String(u) !== url) throw new Error(`unexpected fetch of ${String(u)}`);
     const out = await gateway(sender, data);
     return new Response(JSON.stringify(out.body), { status: out.status });
   }) as unknown as typeof fetch;
+  const knock: Knock = async (u) => {
+    calls.push(u);
+    return 200;
+  };
 
   // A fake clock, so a regression here fails at once instead of spinning
   // through a real five-minute window.
   let clock = 0;
   const status = await warmSubEnsWebCertWhenResolvable("punkpub", NEW, url, {
     fetch: fn,
+    knock,
     log: () => {},
     now: () => clock,
     sleep: async (ms) => {

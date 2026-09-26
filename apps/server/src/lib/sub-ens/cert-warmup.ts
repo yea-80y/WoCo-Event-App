@@ -12,6 +12,7 @@
  * warming early buys a negative instead of a certificate.
  */
 
+import { request } from "node:https";
 import { AbiCoder } from "ethers";
 import { subEnsName, subEnsWebUrl, validateLabel } from "@woco/shared";
 
@@ -19,6 +20,11 @@ import { subEnsName, subEnsWebUrl, validateLabel } from "@woco/shared";
  * The handshake BLOCKS while eth.limo issues the certificate (1-2 minutes on
  * 2026-09-21), so the attempt must stay open that long. 30 s used to give up
  * mid-issuance.
+ *
+ * Only `httpsHead` can honour it. Node's `fetch` gives up on any connection
+ * whose TLS handshake has not finished within 10 s (undici's connect timeout),
+ * whatever abort signal it is handed, so a fetch knock hung up 10 s into every
+ * issuance and no name was ever warmed (#707).
  */
 export const CERT_WARMUP_TIMEOUT_MS = 120_000;
 
@@ -35,9 +41,31 @@ export const RESOLVABLE_POLL_WINDOW_MS = 5 * 60_000;
 export const ETH_LIMO_DOH_URL = "https://dns.eth.limo/dns-query";
 export const ETH_LIMO_POLL_WINDOW_MS = 6 * 60_000;
 
+/** Send the one HEAD that knocks, resolving to the HTTP status. */
+export type Knock = (url: string, timeoutMs: number) => Promise<number>;
+
 export interface CertWarmupDeps {
+  /** The gates' reads: quick requests that the 10 s connect cap does not reach. */
   fetch?: typeof fetch;
+  knock?: Knock;
   log?: (line: string) => void;
+}
+
+/**
+ * A HEAD over `node:https`, whose handshake runs until `timeoutMs` and no
+ * sooner. A fresh socket (`agent: false`) so the handshake is this hostname's
+ * own, and no redirect is followed: one would be a second hostname's handshake,
+ * spending someone else's ask.
+ */
+export function httpsHead(url: string, timeoutMs: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = request(url, { method: "HEAD", agent: false, signal: AbortSignal.timeout(timeoutMs) }, (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    });
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 export interface ResolvableWarmupDeps extends CertWarmupDeps {
@@ -177,14 +205,14 @@ export async function warmSubEnsWebCertWhenResolvable(
     return null;
   }
 
-  return warmSubEnsWebCert(label, { fetch: doFetch, log });
+  return warmSubEnsWebCert(label, { knock: deps.knock, log });
 }
 
 export async function warmSubEnsWebCert(
   label: string,
   deps: CertWarmupDeps = {},
 ): Promise<number | null> {
-  const doFetch = deps.fetch ?? globalThis.fetch;
+  const knock = deps.knock ?? httpsHead;
   const log = deps.log ?? ((line: string) => console.log(line));
   // The hostname is built from the label. Every caller has already proven
   // on-chain ownership, which the registrar only grants to a valid label, but a
@@ -198,20 +226,18 @@ export async function warmSubEnsWebCert(
   const url = subEnsWebUrl(label);
 
   try {
-    const res = await doFetch(url, {
-      method: "HEAD",
-      redirect: "manual",
-      signal: AbortSignal.timeout(CERT_WARMUP_TIMEOUT_MS),
-    });
-    log(`[sub-ens] cert warm-up ${url} → ${res.status}`);
-    return res.status;
+    const status = await knock(url, CERT_WARMUP_TIMEOUT_MS);
+    log(`[sub-ens] cert warm-up ${url} → ${status}`);
+    return status;
   } catch (err) {
-    // undici reports a refused certificate (TLS alert) and a dead network alike
-    // as "fetch failed"; the cause's code is what tells them apart.
-    const cause = (err as { cause?: { code?: unknown } } | null)?.cause?.code;
+    // The code tells a refused certificate (a TLS alert) apart from a dead
+    // network or our own timeout. `node:https` puts it on the error itself;
+    // `fetch` wraps it as "fetch failed" and puts it on the cause.
+    const e = err as { code?: unknown; cause?: { code?: unknown } } | null;
+    const code = typeof e?.code === "string" ? e.code : e?.cause?.code;
     log(
       `[sub-ens] cert warm-up ${url} failed: ${err instanceof Error ? err.message : String(err)}` +
-        (typeof cause === "string" ? ` (${cause})` : ""),
+        (typeof code === "string" ? ` (${code})` : ""),
     );
     return null;
   }
