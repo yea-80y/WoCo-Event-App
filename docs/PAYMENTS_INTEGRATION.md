@@ -128,7 +128,8 @@ ETH + USDC on Base/Optimism/Mainnet/Sepolia:
   Payouts hold a cancelled event's takings until every refund settles, past the ceiling too.
   A refund Stripe holds for `insufficient_funds` alarms (`waitingForFunds`): whole-gross
   refunds with our fee kept leave the event's balance short by the fees, so the organiser
-  may need to top up.
+  may need to top up (whether Stripe instead recovers a negative balance from the organiser's
+  bank under `losses.payments = stripe` is unverified — do not read the alarm as permanent).
   A state that cannot be written (file unreadable, disk full) answers 500 so Stripe redelivers
   (~3 days). A sale made while the file was unreadable is in memory only: after a restore it
   surfaces as `refundEvents.stuck`, never as an automatic void.

@@ -41,7 +41,13 @@ export const liveCancellationRefundDeps: CancellationRefundDeps = {
     return out;
   },
 
-  disputesForCharge: liveSaleRefundReads.disputesForCharge,
+  async disputesForCharge(chargeId, account) {
+    const out: Array<{ status: string; amount: number }> = [];
+    for await (const d of getStripe().disputes.list({ charge: chargeId, limit: 100 }, { stripeAccount: account })) {
+      out.push({ status: d.status, amount: d.amount });
+    }
+    return out;
+  },
 
   async createRefund(params, account, idempotencyKey) {
     const refund = await getStripe().refunds.create(

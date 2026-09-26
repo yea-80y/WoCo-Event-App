@@ -748,6 +748,24 @@ test("a cancelled event's sale is held until its refunds settle — even past th
   assert.equal(ledger.getEntry("cs_cx")?.status, "void", "once settled, the refunded sale nets below zero and voids");
 });
 
+test("the live hold is PER SALE: a cancelled event's sale with no refund row yet is held (#644)", async () => {
+  const cancellations = await import("../src/lib/event/cancellations.js");
+  cancellations.recordCancellation({ eventId: "ev_cancel_live", by: "ops:test", feeReturned: false });
+  held("cs_norow", { eventId: "ev_cancel_live" });
+  const { gateway, payouts } = fakeGateway();
+  gateway.cancellationHold = release.liveGateway.cancellationHold;
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.deepEqual(outcome!.deferred, ["cs_norow"], "the refund job has not reached it: never read as refunded");
+  assert.equal(payouts.length, 0);
+
+  cancellations.addRefundRow("ev_cancel_live", { sessionId: "cs_norow", paymentIntentId: "pi_cs_norow", account: ACCT });
+  cancellations.updateRefundRow("ev_cancel_live", "cs_norow", { status: "disputed" });
+  assert.equal(release.liveGateway.cancellationHold!("ev_cancel_live", "cs_norow"), true, "a dispute still holds");
+  cancellations.updateRefundRow("ev_cancel_live", "cs_norow", { status: "done" });
+  assert.equal(release.liveGateway.cancellationHold!("ev_cancel_live", "cs_norow"), false);
+  assert.equal(release.liveGateway.cancellationHold!("ev_not_cancelled", "cs_x"), false);
+});
+
 test("the sweep holds a sale whose refund is not settled — neither paid nor voided", async () => {
   held("cs_r", { netAmount: 9_680 });
   const { gateway, payouts } = fakeGateway();

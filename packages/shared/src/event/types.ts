@@ -438,6 +438,8 @@ export interface EventDirectoryEntry {
    *  entry can resolve the event SOC with no global registry. Absent for legacy
    *  platform-signed events. */
   creatorFeedSigner?: Hex0x;
+  /** #644: the event was cancelled — overlaid by the server on the organiser's lists. */
+  cancelledAt?: string;
 }
 
 /** Body of POST /api/events/:id/update-meta — edits event-LEVEL metadata only.

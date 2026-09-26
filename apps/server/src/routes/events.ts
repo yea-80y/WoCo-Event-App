@@ -108,7 +108,7 @@ events.get("/mine", requireAuth, async (c) => {
     const now = Date.now();
     const data = filter === "all" ? merged : merged.filter((e) => isPastEntry(e, now) === (filter === "past"));
 
-    return c.json({ ok: true, data });
+    return c.json({ ok: true, data: data.map(withCancellation) });
   } catch (err) {
     console.error("[api] getCreatorEvents error:", err);
     return c.json({ ok: false, error: "Failed to list events" }, 500);
@@ -130,7 +130,7 @@ events.get("/by-creator/:address", async (c) => {
     const filter = c.req.query("filter") ?? "all";
     const now = Date.now();
     const data = filter === "all" ? merged : merged.filter((e) => isPastEntry(e, now) === (filter === "past"));
-    return c.json({ ok: true, data });
+    return c.json({ ok: true, data: data.map(withCancellation) });
   } catch (err) {
     console.error("[api] getCreatorEvents (public) error:", err);
     return c.json({ ok: false, error: "Failed to list events" }, 500);
