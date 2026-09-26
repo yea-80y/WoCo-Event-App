@@ -95,6 +95,10 @@ ETH + USDC on Base/Optimism/Mainnet/Sepolia:
   has a ticket (prevents charge-without-ticket race)
 - `/api/stripe/create-checkout` is rate limited per client IP — 30/min + 300/hour, checked
   after validation and before the first spend, 429 + `Retry-After: 60` (#463)
+- Paying by card never opens a wallet. The checkout is signed, and the purchase bound to the
+  account, only when a session key is already on the device (`auth.isAuthenticated`, decided
+  once per Pay click in `ClaimButton`); otherwise it is the guest path with the form's email.
+  The two rare re-mint paths that can still prompt are tracked in #711.
 - Fulfilment (paid session → mint → email) lives in `lib/stripe/fulfilment.ts` behind an
   injected-deps seam (#314). Any stop (mint revert, sales closed, unregistered series,
   unreadable event feed) auto-refunds the unfilled part; an issued ticket whose email

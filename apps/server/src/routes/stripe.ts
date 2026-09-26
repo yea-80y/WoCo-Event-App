@@ -426,9 +426,11 @@ stripe.post("/prepare-order", async (c) => {
  * Creates a Checkout Session as a direct charge on the organiser's
  * connected account. Two auth flows:
  *
- *   1. Wallet / passkey / local / para user — sends session delegation
- *      headers. Server verifies, sets metadata.claimerAddress from the
- *      VERIFIED parentAddress (body claimerAddress is ignored).
+ *   1. A buyer whose device already holds a session key — sends session
+ *      delegation headers. Server verifies, sets metadata.claimerAddress from
+ *      the VERIFIED parentAddress (body claimerAddress is ignored). The client
+ *      never mints a session to pay by card, so a signed-in buyer without one
+ *      arrives here as case 2.
  *   2. Anonymous email-only user — no auth headers. Requires claimerEmail
  *      in the body. metadata.claimerAddress is empty.
  *
