@@ -78,9 +78,12 @@ trusted cache would pay out the pre-refund value. (The `charge.refunded` webhook
 part C, voids TICKETS; the money side never depends on it.) A refund that has not moved
 money yet (`pending` with `insufficient_funds`, or `requires_action`: no balance transaction)
 HOLDS the sale until it lands or fails, so its balance is never paid out from under it (#701).
+A refund that FAILED after its debit posted is netted with its `failure_balance_transaction`
+(the reversal); until the reversal posts it holds too, never a terminal void. While a dispute
+is open the sale is likewise held (`held: "dispute"`).
 
 **Disputes (#645 part C).** A disputed charge's disputes are read too. While one is open
-(`needs_response`, `under_review`, or a `warning_*` inquiry) the sale is **contested**: held,
+(`needs_response`, `under_review`, or a `warning_*` inquiry) the sale is **held**:
 never paid, never voided — `markVoid` is terminal and a won dispute gives the money back. Once
 closed, each dispute's balance transactions (the withdrawal, and the reinstatement if won) are
 netted like refunds, so a lost dispute takes the sale to ≤ 0 and the void branch retires it.
