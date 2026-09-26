@@ -57,6 +57,7 @@ import {
   type AccountSetupStep,
 } from "./account-setup-plan.js";
 import { cacheClearByPrefix, USER_SCOPED_PREFIXES } from "../cache/cache.js";
+import { BackupInventoryMemo } from "../manifest/backup-inventory-memo.js";
 
 // ---------------------------------------------------------------------------
 // State (Svelte 5 runes)
@@ -402,17 +403,9 @@ async function _getContentFeedSignerIfPresent(): Promise<ContentFeedSigner | nul
  * decrypt, never a PRF/wallet signature), so passive UI can call it freely.
  * Returns [] when not signed in, no feed signer established, or no manifest yet.
  */
-// Session memo for the backup inventory. A user without a manifest pays a full
-// failed-SOC-probe fan-out (gateway 403s + server 404s) on EVERY passive panel
-// mount otherwise. In-memory only — this is decrypted private metadata (guardian
-// addresses) and must not land in localStorage. Concurrent callers (CreatorHome
-// + BackupNudge) share one in-flight read. Only DEFINITIVE answers are memoized
-// (#166 item 4): pinning "couldn't read" for 10 minutes would hide the panel's
-// recovery on the next mount, while pinning a definitive answer is exactly what
-// the memo is for.
-let _backupInvMemo: { parent: string; at: number; backups: import("@woco/shared").BackupInventoryEntry[] } | null = null;
-let _backupInvFlight: { parent: string; promise: Promise<BackupInventoryRead> } | null = null;
-const BACKUP_INV_TTL_MS = 10 * 60 * 1000;
+// Session memo for the backup inventory - what it may keep, and why a write must
+// drop it, is in backup-inventory-memo.ts.
+const _backupInv = new BackupInventoryMemo(10 * 60 * 1000);
 
 /**
  * What the backup panels may claim (#166 item 4). `unavailable` means NOTHING
@@ -461,16 +454,7 @@ async function getRetiredBackups(): Promise<BackupInventoryRead> {
 async function _getBackupHistory(): Promise<BackupInventoryRead> {
   const parent = _parent;
   if (!parent) return { status: "unavailable", reason: "not signed in" };
-  const memo = _backupInvMemo;
-  if (memo && memo.parent === parent && Date.now() - memo.at < BACKUP_INV_TTL_MS) {
-    return { status: "known", backups: memo.backups };
-  }
-  if (_backupInvFlight?.parent === parent) return _backupInvFlight.promise;
-  const promise = _readBackupInventoryUncached(parent).finally(() => {
-    _backupInvFlight = null;
-  });
-  _backupInvFlight = { parent, promise };
-  return promise;
+  return _backupInv.read(parent, () => _readBackupInventoryUncached(parent));
 }
 
 /**
@@ -488,7 +472,7 @@ async function _manifestSigner(): Promise<{ privKey: string; address: string } |
   return { privKey: deriveFeedSignerKey(seed).privKey, address };
 }
 
-async function _readBackupInventoryUncached(parent: string): Promise<BackupInventoryRead> {
+async function _readBackupInventoryUncached(parent: string): Promise<import("../manifest/backup-inventory.js").BackupHistoryRead> {
   // No prompt-free signer on this device (or none yet — it may appear right
   // after login, so this is never memoized). Without it the manifest cannot be
   // read, and "couldn't read" is not "no backups".
@@ -499,11 +483,7 @@ async function _readBackupInventoryUncached(parent: string): Promise<BackupInven
     // Read the FULL history — the memo backs both the live-backups view and the
     // retired-guardian warning, and one read serves both.
     const { readBackupHistoryResult } = await import("../manifest/backup-inventory.js");
-    const read = await readBackupHistoryResult({ signer: { privKey, address }, parentAddress: parent });
-    if (read.status === "known") {
-      _backupInvMemo = { parent, at: Date.now(), backups: read.backups };
-    }
-    return read;
+    return await readBackupHistoryResult({ signer: { privKey, address }, parentAddress: parent });
   } catch (e) {
     return { status: "unavailable", reason: String(e) };
   }
@@ -540,7 +520,7 @@ async function repairUserManifest(seed: import("@woco/shared").UserManifest | nu
   if (!signer) throw new Error("This device can't read your saved list yet — sign in again, then retry.");
   const { rebuildManifest } = await import("../manifest/inventory.js");
   const version = await rebuildManifest({ signer, parentAddress: parent, seed });
-  _backupInvMemo = null; // the panel must read the rebuilt manifest, not the pre-repair memo
+  _backupInv.drop(); // the panel must read the rebuilt manifest, not the pre-repair memo
   return version;
 }
 
@@ -2493,6 +2473,7 @@ async function setupAccountRecovery(
       } catch (err) {
         console.warn("[recovery] retiring legacy-hook backup rows failed (non-fatal):", err);
       }
+      _backupInv.drop(); // whatever the upsert below does, the list has changed
     }
   }
 
@@ -2557,7 +2538,7 @@ async function setupAccountRecovery(
           maskedEmail: backup.meta?.maskedEmail,
         },
       });
-      _backupInvMemo = null; // next panel read sees the new entry
+      _backupInv.drop(); // next panel read sees the new entry
     } catch (err) {
       console.warn("[recovery] backup-inventory manifest write failed (non-fatal):", err);
     }
@@ -2601,7 +2582,7 @@ async function removeAccountBackups(
     feedSigner,
     expectInstalled: opts.expectInstalled,
   });
-  _backupInvMemo = null; // the panel must not keep listing revoked backups
+  _backupInv.drop(); // the panel must not keep listing revoked backups
   return outcome;
 }
 
@@ -2629,7 +2610,7 @@ async function revokeAccountBackup(
     guardianAddress,
     feedSigner,
   });
-  _backupInvMemo = null; // the panel must not keep listing the revoked backup as live
+  _backupInv.drop(); // the panel must not keep listing the revoked backup as live
   return outcome;
 }
 
@@ -3323,8 +3304,7 @@ async function clearAllAuth(): Promise<void> {
   _feedSignerInFlight = null;
   _passkeyKeyInFlight = null;
   _feedSignerAddressMemo = null;
-  _backupInvMemo = null;
-  _backupInvFlight = null;
+  _backupInv.drop();
 }
 
 // ---------------------------------------------------------------------------

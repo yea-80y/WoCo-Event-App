@@ -29,6 +29,7 @@ import {
   readContentFeedResult,
   writeContentFeed,
   type ContentFeedResult,
+  type SocTransport,
 } from "../swarm/content-feed.js";
 import { FEED_ROUTES, type FeedRoute } from "../swarm/gateways.js";
 import { openFromSelf, sealToSelf } from "./self-seal.js";
@@ -59,7 +60,17 @@ export interface ManifestSigner {
  * write costs the user a stale backup list; guessing costs them their keep-list.
  */
 export type ManifestReadResult =
-  | { status: "found"; manifest: UserManifest }
+  | {
+      status: "found";
+      manifest: UserManifest;
+      /**
+       * Whether the version scan that chose this copy was conclusive. False = the
+       * newest copy this read could REACH, not necessarily the newest: a
+       * read-modify-write must refuse it, or the rewrite erases what the
+       * unreachable version held (#651).
+       */
+      scanClean: boolean;
+    }
   | { status: "absent" }
   | {
       status: "unavailable";
@@ -80,22 +91,26 @@ export type ManifestReadResult =
       newerFormat?: boolean;
     };
 
+/**
+ * Read the manifest. ALWAYS thorough - there is no other kind of manifest read.
+ *
+ * Every reader either rewrites the whole manifest from what it read, or shows
+ * the backup list, a surface that must not guess (#166). A non-thorough read
+ * trusts our gateway's "not found", and neither can afford that: a gate refusal
+ * reads as ABSENT, and since the manifest moved to Etherna (#689) our bee sees a
+ * new version minutes after it is written, so a read that does not ask Etherna
+ * returns the PREVIOUS version, marked clean. A rewrite built on that erases the
+ * newer one while reporting success.
+ */
 export async function readUserManifestResult(args: {
   signer: ManifestSigner;
   parentAddress: string;
-  /**
-   * Set by `manifestBaseForWrite`. Every manifest mutator rewrites the WHOLE
-   * object, so a false absent does not fail — it succeeds, having erased the
-   * backup list and the `feeds` keep-list. The `unavailable` guard there cannot
-   * catch it, because a gateway gate refusal reads as ABSENT.
-   */
-  thorough?: boolean;
   /** Test seam — production always takes the real feed read. */
-  readFeed?: (owner: string, topic: string, opts: { route: FeedRoute; thorough?: boolean }) => Promise<ContentFeedResult<unknown>>;
+  readFeed?: (owner: string, topic: string, opts: { route: FeedRoute; thorough: true }) => Promise<ContentFeedResult<unknown>>;
 }): Promise<ManifestReadResult> {
   const readFeed = args.readFeed ??
     ((owner, topic, opts) => readContentFeedResult<unknown>(owner, topic, opts));
-  const read = await readFeed(args.signer.address, USER_MANIFEST_TOPIC, { route: FEED_ROUTES.manifest, thorough: args.thorough })
+  const read = await readFeed(args.signer.address, USER_MANIFEST_TOPIC, { route: FEED_ROUTES.manifest, thorough: true })
     .catch((e: unknown): ContentFeedResult<unknown> => ({ status: "unavailable", reason: String(e) }));
   if (read.status === "unavailable") {
     return { status: "unavailable", reason: read.reason, unusableAt: read.unusableAt };
@@ -104,13 +119,16 @@ export async function readUserManifestResult(args: {
   // Everything below this line read REAL BYTES at a KNOWN version, so each refusal
   // is definitive at that version — `unusableAt` says so, and without it these
   // three would keep presenting as "try again later" forever (#190).
+  //
+  // Only when the scan was clean, though. A dirty scan stopped at the newest copy
+  // it could reach, and a newer one may be sitting unread on Etherna; calling the
+  // reachable one frozen would offer a repair that writes over the newer copy.
+  const unusable = (reason: string, newerFormat?: boolean): ManifestReadResult =>
+    read.scanClean
+      ? { status: "unavailable", reason, unusableAt: read.version, ...(newerFormat === undefined ? {} : { newerFormat }) }
+      : { status: "unavailable", reason: `${reason}, and the scan could not confirm it is the newest version` };
   if (!isSelfSealedEnvelope(read.value)) {
-    return {
-      status: "unavailable",
-      reason: "feed payload is not a self-sealed envelope",
-      unusableAt: read.version,
-      newerFormat: looksLikeNewerSelfSealedEnvelope(read.value),
-    };
+    return unusable("feed payload is not a self-sealed envelope", looksLikeNewerSelfSealedEnvelope(read.value));
   }
   try {
     const manifest = openFromSelf<UserManifest>({
@@ -119,30 +137,104 @@ export async function readUserManifestResult(args: {
       envelope: read.value as SelfSealedEnvelope,
     });
     if (typeof manifest?.updatedAt !== "number" || !Array.isArray(manifest?.backups)) {
-      return { status: "unavailable", reason: "decoded payload is not a usable manifest", unusableAt: read.version };
+      return unusable("decoded payload is not a usable manifest");
     }
-    return { status: "found", manifest };
+    return { status: "found", manifest, scanClean: read.scanClean };
   } catch (e) {
-    return { status: "unavailable", reason: `manifest did not open: ${String(e)}`, unusableAt: read.version };
+    return unusable(`manifest did not open: ${String(e)}`);
   }
 }
 
 /**
- * Load the manifest for a read-modify-write, or throw when we could not read it.
- * Every mutator below rewrites the WHOLE manifest, so merging against a null base
- * that only meant "couldn't read" silently drops every entry the user already had
- * (#171). Callers are all fire-and-forget comfort-layer paths that already log and
- * swallow, so throwing here just means "skip this update".
+ * The manifest a read-modify-write may build on, or why it must not proceed.
+ *
+ * Every mutator rewrites the WHOLE manifest, so the base must be the newest
+ * copy. Two ways it can fail to be, both of which succeed silently if allowed:
+ * merging onto a null base that only meant "couldn't read" drops every entry the
+ * user already had (#171), and merging onto a copy found by an inconclusive scan
+ * reverts whatever the unreachable newer version held (#651).
  */
+async function readManifestBase(args: {
+  signer: ManifestSigner;
+  parentAddress: string;
+}): Promise<{ ok: true; base: UserManifest | null } | { ok: false; reason: string }> {
+  const read = await readUserManifestResult(args);
+  if (read.status === "unavailable") return { ok: false, reason: `manifest unreadable (${read.reason ?? "unknown"})` };
+  if (read.status === "absent") return { ok: true, base: null };
+  if (!read.scanClean) return { ok: false, reason: "could not confirm this is the newest manifest" };
+  return { ok: true, base: read.manifest };
+}
+
+/** `readManifestBase` for the mutators that throw. Callers are fire-and-forget
+ *  comfort-layer paths that already log and swallow, so throwing here just means
+ *  "skip this update". */
 async function manifestBaseForWrite(args: {
   signer: ManifestSigner;
   parentAddress: string;
 }): Promise<UserManifest | null> {
-  const read = await readUserManifestResult({ ...args, thorough: true });
-  if (read.status === "unavailable") {
-    throw new Error(`manifest unreadable — refusing to rewrite it (${read.reason ?? "unknown"})`);
-  }
-  return read.status === "found" ? read.manifest : null;
+  const read = await readManifestBase(args);
+  if (!read.ok) throw new Error(`${read.reason} — refusing to rewrite it`);
+  return read.base;
+}
+
+/**
+ * How long one manifest read-modify-write may hold the lock. Generous: the
+ * server already retries a stuck upload with backoff. Past it the caller gets an
+ * error and the next edit runs. The abandoned upload may still land: before the
+ * next edit's version probe, and that edit sees it; AFTER the probe, and that
+ * edit writes the same version, which Bee keeps the first of - it is lost while
+ * reporting success. The timeout trades that rare hang-then-land case for never
+ * blocking every later edit for the life of the tab; it does not close the race.
+ */
+export const MANIFEST_EDIT_TIMEOUT_MS = 120_000;
+
+/** The part of the Web Locks API used here. */
+export interface ManifestLocks {
+  request<T>(name: string, callback: () => Promise<T>): Promise<T>;
+}
+
+const chains = new Map<string, Promise<unknown>>();
+
+/**
+ * One read-modify-write of `owner`'s manifest at a time.
+ *
+ * Each edit reads the whole manifest and writes the whole manifest, so two
+ * running at once build on the same base and the second erases the first's
+ * change. That is routine, not rare: one profile Save with a new avatar logs two
+ * feeds back to back, fire-and-forget. Web Locks extend this across the
+ * account's open tabs where the browser has them; otherwise a per-owner chain
+ * covers this tab. Another DEVICE can still race; the thorough base read
+ * narrows that, it cannot close it.
+ *
+ * Exported for tests; `opts` are test seams.
+ */
+export function withManifestLock<T>(
+  owner: string,
+  edit: () => Promise<T>,
+  opts: { timeoutMs?: number; locks?: ManifestLocks | null } = {},
+): Promise<T> {
+  const name = `woco:manifest:${owner.toLowerCase()}`;
+  const timeoutMs = opts.timeoutMs ?? MANIFEST_EDIT_TIMEOUT_MS;
+  const bounded = (): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`manifest update did not finish within ${Math.round(timeoutMs / 1000)}s`)),
+        timeoutMs,
+      );
+      edit().then(resolve, reject).finally(() => clearTimeout(timer));
+    });
+  const locks = opts.locks === undefined
+    ? (globalThis as { navigator?: { locks?: ManifestLocks } }).navigator?.locks
+    : opts.locks;
+  if (locks) return locks.request(name, bounded);
+
+  const run = (chains.get(name) ?? Promise.resolve()).then(bounded, bounded);
+  const tail = run.then(() => undefined, () => undefined);
+  chains.set(name, tail);
+  void tail.then(() => {
+    if (chains.get(name) === tail) chains.delete(name);
+  });
+  return run;
 }
 
 // Backup reads live in backup-inventory.ts (#166 item 4): every consumer of the
@@ -155,6 +247,7 @@ async function writeUserManifest(args: {
   signer: ManifestSigner;
   parentAddress: string;
   manifest: UserManifest;
+  transport?: SocTransport;
 }): Promise<number> {
   const envelope = sealToSelf({
     feedSignerPrivKey: args.signer.privKey,
@@ -166,6 +259,7 @@ async function writeUserManifest(args: {
     topic: USER_MANIFEST_TOPIC,
     data: envelope,
     route: FEED_ROUTES.manifest,
+    transport: args.transport,
   });
 }
 
@@ -241,7 +335,6 @@ function openManifestCandidate(args: {
 type ManifestReader = (args: {
   signer: ManifestSigner;
   parentAddress: string;
-  thorough?: boolean;
 }) => Promise<ManifestReadResult>;
 type VersionReader = (
   owner: string,
@@ -268,12 +361,11 @@ export async function diagnoseManifest(args: {
   /** Test seam — production always takes the real exact-version read. */
   readAt?: VersionReader;
 }): Promise<ManifestDiagnosis> {
+  // Thorough, as every manifest read is: a gateway gate refusal reads as ABSENT,
+  // and "absent" here would be diagnosed as "nothing to repair".
   const read = await (args.readManifest ?? readUserManifestResult)({
     signer: args.signer,
     parentAddress: args.parentAddress,
-    // Same reason every write-path read is thorough: a gateway gate refusal reads
-    // as ABSENT, and "absent" here would be diagnosed as "nothing to repair".
-    thorough: true,
   });
   if (read.status === "found") return { kind: "ok" };
   if (read.status === "absent") return { kind: "absent" };
@@ -325,10 +417,13 @@ export async function rebuildManifest(args: {
   /** Test seam — production always takes the real seal-and-write. */
   write?: (a: { signer: ManifestSigner; parentAddress: string; manifest: UserManifest }) => Promise<number>;
 }): Promise<number> {
+  return withManifestLock(args.signer.address, () => rebuildManifestNow(args));
+}
+
+async function rebuildManifestNow(args: Parameters<typeof rebuildManifest>[0]): Promise<number> {
   const read = await (args.readManifest ?? readUserManifestResult)({
     signer: args.signer,
     parentAddress: args.parentAddress,
-    thorough: true,
   });
   if (read.status !== "unavailable") {
     throw new Error("Your backup list reads fine now, so nothing was rebuilt. Reload the page to see it.");
@@ -370,18 +465,22 @@ export async function upsertBackupEntry(args: {
   signer: ManifestSigner;
   parentAddress: string;
   entry: BackupInventoryEntry;
+  /** Test seam — production always posts to our server. */
+  transport?: SocTransport;
 }): Promise<void> {
-  const existing = await manifestBaseForWrite({ signer: args.signer, parentAddress: args.parentAddress });
-  const g = args.entry.guardianAddress.toLowerCase();
-  const kept = (existing?.backups ?? []).filter((b) => b.guardianAddress.toLowerCase() !== g);
+  await withManifestLock(args.signer.address, async () => {
+    const existing = await manifestBaseForWrite({ signer: args.signer, parentAddress: args.parentAddress });
+    const g = args.entry.guardianAddress.toLowerCase();
+    const kept = (existing?.backups ?? []).filter((b) => b.guardianAddress.toLowerCase() !== g);
 
-  const manifest: UserManifest = {
-    ...(existing ?? {}),
-    v: USER_MANIFEST_VERSION,
-    updatedAt: Date.now(),
-    backups: [...kept, { ...args.entry, guardianAddress: g }],
-  };
-  await writeUserManifest({ signer: args.signer, parentAddress: args.parentAddress, manifest });
+    const manifest: UserManifest = {
+      ...(existing ?? {}),
+      v: USER_MANIFEST_VERSION,
+      updatedAt: Date.now(),
+      backups: [...kept, { ...args.entry, guardianAddress: g }],
+    };
+    await writeUserManifest({ signer: args.signer, parentAddress: args.parentAddress, manifest, transport: args.transport });
+  });
 }
 
 /**
@@ -399,17 +498,22 @@ export type RetireBackupsResult = "retired" | "nothing-to-retire" | "unavailable
 export async function retireBackupInventory(args: {
   signer: ManifestSigner;
   parentAddress: string;
+  /** Test seam — production always posts to our server. */
+  transport?: SocTransport;
 }): Promise<RetireBackupsResult> {
-  const res = await readUserManifestResult({ signer: args.signer, parentAddress: args.parentAddress });
-  if (res.status === "unavailable") return "unavailable";
-  if (res.status === "absent") return "nothing-to-retire";
-  if (!res.manifest.backups.some((b) => !b.revoked)) return "nothing-to-retire"; // don't churn the feed
-  await writeUserManifest({
-    signer: args.signer,
-    parentAddress: args.parentAddress,
-    manifest: retireBackupEntries(res.manifest),
+  return withManifestLock(args.signer.address, async () => {
+    const res = await readManifestBase({ signer: args.signer, parentAddress: args.parentAddress });
+    if (!res.ok) return "unavailable";
+    if (!res.base) return "nothing-to-retire";
+    if (!res.base.backups.some((b) => !b.revoked)) return "nothing-to-retire"; // don't churn the feed
+    await writeUserManifest({
+      signer: args.signer,
+      parentAddress: args.parentAddress,
+      manifest: retireBackupEntries(res.base),
+      transport: args.transport,
+    });
+    return "retired";
   });
-  return "retired";
 }
 
 /**
@@ -423,20 +527,25 @@ export async function retireOneBackup(args: {
   signer: ManifestSigner;
   parentAddress: string;
   guardianAddress: string;
+  /** Test seam — production always posts to our server. */
+  transport?: SocTransport;
 }): Promise<RetireBackupsResult> {
-  const res = await readUserManifestResult({ signer: args.signer, parentAddress: args.parentAddress });
-  if (res.status === "unavailable") return "unavailable";
-  if (res.status === "absent") return "nothing-to-retire";
-  const g = args.guardianAddress.toLowerCase();
-  if (!res.manifest.backups.some((b) => b.guardianAddress.toLowerCase() === g && !b.revoked)) {
-    return "nothing-to-retire";
-  }
-  await writeUserManifest({
-    signer: args.signer,
-    parentAddress: args.parentAddress,
-    manifest: retireOneBackupEntry(res.manifest, g),
+  return withManifestLock(args.signer.address, async () => {
+    const res = await readManifestBase({ signer: args.signer, parentAddress: args.parentAddress });
+    if (!res.ok) return "unavailable";
+    if (!res.base) return "nothing-to-retire";
+    const g = args.guardianAddress.toLowerCase();
+    if (!res.base.backups.some((b) => b.guardianAddress.toLowerCase() === g && !b.revoked)) {
+      return "nothing-to-retire";
+    }
+    await writeUserManifest({
+      signer: args.signer,
+      parentAddress: args.parentAddress,
+      manifest: retireOneBackupEntry(res.base, g),
+      transport: args.transport,
+    });
+    return "retired";
   });
-  return "retired";
 }
 
 // ── Feed log + trash (Phase 4 — active client-owned content) ────────────────
@@ -448,10 +557,14 @@ export async function upsertFeedEntry(args: {
   signer: ManifestSigner;
   parentAddress: string;
   entry: ManifestFeedEntry;
+  /** Test seam — production always posts to our server. */
+  transport?: SocTransport;
 }): Promise<void> {
-  const existing = await manifestBaseForWrite({ signer: args.signer, parentAddress: args.parentAddress });
-  const manifest = mergeFeedEntry(existing, args.entry);
-  await writeUserManifest({ signer: args.signer, parentAddress: args.parentAddress, manifest });
+  await withManifestLock(args.signer.address, async () => {
+    const existing = await manifestBaseForWrite({ signer: args.signer, parentAddress: args.parentAddress });
+    const manifest = mergeFeedEntry(existing, args.entry);
+    await writeUserManifest({ signer: args.signer, parentAddress: args.parentAddress, manifest, transport: args.transport });
+  });
 }
 
 /** Move a whole feed entry to trash (restorable until the old batch dies). */
@@ -460,10 +573,14 @@ export async function trashFeedEntryOnManifest(args: {
   parentAddress: string;
   kind: ManifestFeedKind;
   topic: string;
+  /** Test seam — production always posts to our server. */
+  transport?: SocTransport;
 }): Promise<void> {
-  const existing = await manifestBaseForWrite({ signer: args.signer, parentAddress: args.parentAddress });
-  const manifest = removeFeedEntry(existing, args.kind, args.topic);
-  await writeUserManifest({ signer: args.signer, parentAddress: args.parentAddress, manifest });
+  await withManifestLock(args.signer.address, async () => {
+    const existing = await manifestBaseForWrite({ signer: args.signer, parentAddress: args.parentAddress });
+    const manifest = removeFeedEntry(existing, args.kind, args.topic);
+    await writeUserManifest({ signer: args.signer, parentAddress: args.parentAddress, manifest, transport: args.transport });
+  });
 }
 
 /** Restore a whole-feed trash entry back into the active log. */
@@ -472,8 +589,12 @@ export async function restoreFeedEntryOnManifest(args: {
   parentAddress: string;
   kind: ManifestFeedKind;
   topic: string;
+  /** Test seam — production always posts to our server. */
+  transport?: SocTransport;
 }): Promise<void> {
-  const existing = await manifestBaseForWrite({ signer: args.signer, parentAddress: args.parentAddress });
-  const manifest = restoreFeedEntry(existing, args.kind, args.topic);
-  await writeUserManifest({ signer: args.signer, parentAddress: args.parentAddress, manifest });
+  await withManifestLock(args.signer.address, async () => {
+    const existing = await manifestBaseForWrite({ signer: args.signer, parentAddress: args.parentAddress });
+    const manifest = restoreFeedEntry(existing, args.kind, args.topic);
+    await writeUserManifest({ signer: args.signer, parentAddress: args.parentAddress, manifest, transport: args.transport });
+  });
 }

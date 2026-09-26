@@ -25,8 +25,17 @@ import type { BackupInventoryEntry } from "@woco/shared";
 import { readUserManifestResult, type ManifestSigner, type ManifestReadResult } from "./inventory.js";
 
 export type BackupHistoryRead =
-  /** Definitive: the manifest was read (or provably does not exist). */
-  | { status: "known"; backups: BackupInventoryEntry[] }
+  /** The manifest was read (or provably does not exist). */
+  | {
+      status: "known";
+      backups: BackupInventoryEntry[];
+      /**
+       * Whether the read could confirm this is the NEWEST manifest. False = the
+       * newest copy it could reach while Etherna could not be asked: worth
+       * showing, never worth remembering.
+       */
+      settled: boolean;
+    }
   /** No answer — render uncertainty, never "no backups". */
   | {
       status: "unavailable";
@@ -52,6 +61,9 @@ export async function readBackupHistoryResult(args: {
   /** Test seam — production always takes the real manifest read. */
   readManifest?: (args: { signer: ManifestSigner; parentAddress: string }) => Promise<ManifestReadResult>;
 }): Promise<BackupHistoryRead> {
+  // Thorough, though this is a display read (every manifest read is): our bee
+  // sees an Etherna write minutes later, and a read that trusted our gateway
+  // would show the list from BEFORE the backup just added or removed.
   const read = await (args.readManifest ?? readUserManifestResult)({
     signer: args.signer,
     parentAddress: args.parentAddress,
@@ -64,5 +76,6 @@ export async function readBackupHistoryResult(args: {
       newerFormat: read.newerFormat,
     };
   }
-  return { status: "known", backups: read.status === "found" ? read.manifest.backups : [] };
+  if (read.status === "absent") return { status: "known", backups: [], settled: true };
+  return { status: "known", backups: read.manifest.backups, settled: read.scanClean };
 }

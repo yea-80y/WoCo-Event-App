@@ -159,6 +159,18 @@ test("an inconclusive version PROBE names no version", async () => {
   assert.equal(read.status === "unavailable" && read.unusableAt, undefined);
 });
 
+test("an unusable version found by a DIRTY scan names no version - it may not be the head (#689)", async () => {
+  const store = makeStore();
+  const base = contentFeedSocIdentifier(TOPIC);
+  writeMultiChunk(store, 0, ["aaa"], 999); // version 0 will never assemble
+  store.put(versionedSocIdentifier(base, 1), enc('{"ok":true}'));
+  store.hide(versionedSocIdentifier(base, 1)); // ...but version 1 exists, unanswered
+
+  const read = await readVersionedContentFeed(store.read, TOPIC);
+  assert.equal(read.status, "unavailable");
+  assert.equal(read.status === "unavailable" && read.unusableAt, undefined);
+});
+
 test("a version that VANISHES between probe and read names no version", async () => {
   const store = makeStore();
   const base = contentFeedSocIdentifier(TOPIC);
