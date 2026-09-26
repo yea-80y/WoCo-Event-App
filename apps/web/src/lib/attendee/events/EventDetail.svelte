@@ -269,14 +269,17 @@
            immutable on-chain event id, so interest survives a name repoint). -->
       <div class="social-actions">
         {#if event.subEnsLabel && eventNameVerified}
-          <!-- The name's contenthash IS this event page (set by `runSubEnsTask`),
-               so the plate is the address itself — a link, not a label. -->
+          <!-- The name belongs to the event's brand, not to this one event: an
+               organiser repoints it at each new event, and older events keep the
+               stamp (owner, 2026-09-26, #708). The chain decides which page opens,
+               so the copy names the address and claims nothing about what it
+               shows. -->
           <a
             class="ens-plate"
             href={subEnsWebUrl(event.subEnsLabel)}
             target="_blank"
             rel="noopener"
-            title="This event's permanent web3 address — open it"
+            title="Open {event.subEnsLabel}.woco.eth"
           >
             <svg class="ens-mark" width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
               <path d="M6 0.5L7.6 4.4L11.5 6L7.6 7.6L6 11.5L4.4 7.6L0.5 6L4.4 4.4Z"
