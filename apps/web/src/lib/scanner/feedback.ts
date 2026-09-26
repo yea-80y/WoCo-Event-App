@@ -50,3 +50,11 @@ export function feedbackInvalid(): void {
   tone(196, 0, 420, "sawtooth");
   navigator.vibrate?.([200, 80, 200]);
 }
+
+/** Couldn't confirm (#641): not a no, not a yes - a flat, neutral pair that
+ *  sounds like neither, so staff look at the screen instead of waving through. */
+export function feedbackCantConfirm(): void {
+  tone(440, 0, 160, "sine");
+  tone(440, 220, 160, "sine");
+  navigator.vibrate?.([120, 120, 120]);
+}

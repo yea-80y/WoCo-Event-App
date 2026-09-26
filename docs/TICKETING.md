@@ -217,7 +217,7 @@ checked it. Ownership that is actually enforced lives on chain and in the gate b
 
 The scanner is a standalone PWA (`dist-scanner/`, built from the same `apps/web` source) with no
 auth stack, no external fonts and no Swarm reads. It is provisioned entirely by a **door-pass
-URL** and works fully offline once provisioned.
+URL**. Whether it can admit offline depends on the pass's door mode (below).
 
 ```
 Organiser (session-authed):
@@ -226,8 +226,9 @@ Organiser (session-authed):
                                        is never sent to the server
   GET  /api/events/:id/checkin-status  live counts for the dashboard
 
-Scanner (X-Door-Pass header):
-  GET  /api/checkin/:eventId/pack      offline verification pack
+Scanner (X-Door-Pass + X-Scanner-Device headers):
+  GET  /api/checkin/:eventId/pack      verification pack (binds a "single" pass)
+  POST /api/checkin/:eventId/claim     admit ONE ticket - first claim anywhere wins
   POST /api/checkin/:eventId/sync      merge this device's check-ins, get all
 ```
 
@@ -235,8 +236,30 @@ The pack holds only public or derivable data — on-chain slot owners, claim-led
 the roster ciphertext. The roster **key lives in the pass URL fragment**, so it never reaches the
 server: a leaked pass token exposes no attendee plaintext.
 
-Check-ins are **merged**, not overwritten, so several scanner devices can work the same door
-offline and reconcile on sync.
+**A ticket is admitted once, across every scanner (#641).** Check-in is a capacity control, so a
+second admission is a crowd-safety defect, never a statistic to reconcile afterwards. The organiser
+picks a door mode when issuing the pass, and a pass without one is `several`:
+
+- `single` - the server binds the pass to the first device that loads the pack
+  (`bindSinglePassDevice`) and refuses every other with `409 wrong-device`. That device is the only
+  door, so it admits from its own set and works with no signal; it syncs when it can.
+  Regenerating the pass is how it moves phones, and a device that learns its pass is dead stops
+  admitting. It learns that only from a server answer: a bound phone that is OFFLINE when the
+  organiser regenerates keeps admitting until it next has signal, and the new pass's phone does
+  not know those tickets. The dashboard tells the organiser to bring the old phone online and
+  let it sync first; nothing can enforce it for a phone that cannot be reached.
+- `several` - every admission is `POST /claim`: `claimCheckin` is synchronous, persists before it
+  answers, and returns `admitted` to the first claim and `already-in` (with the holder's record)
+  to every other. `/pack` refuses a scanner that sends no `X-Scanner-Device` in every mode: a
+  bundle from before #641 ignores the door mode and would admit offline on a shared door. The scanner shows green ONLY on a confirmed `admitted` for that exact ticket.
+  No signal, a timeout (4s), a 5xx or a malformed answer is a grey **couldn't confirm** - not
+  admitted. A scan attempt carries a `claimId` kept until an answer arrives, so a retry after a
+  lost response is the same attempt and reads `admitted`, not its own duplicate. The retry must
+  come from the same device: claimIds reach every scanner on the pass, so one alone is replayable.
+
+A check-in set that exists but cannot be read fails closed (every claim refused), because reading
+it as empty would admit everyone again. `/sync` still merges records, and a conflict (one ticket
+recorded by two devices) is now a defect to investigate, not an expected outcome.
 
 **Refunded tickets (#645).** A sale refunded in full still verifies on chain (the contract has no
 per-slot void), so the pack carries `voidSlots` per series from `.data/ticket-sales.json`, keyed by
