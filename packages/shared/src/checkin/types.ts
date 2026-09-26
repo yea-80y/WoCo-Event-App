@@ -13,6 +13,11 @@ import type { Hex0x } from "../types.js";
 // - A ticket whose sale was refunded in full (#645) still verifies — the chain
 //   has no per-slot void — so `voidSlots` is checked AFTER the signature: a
 //   forgery still reads invalid, and only a genuine ticket can read refunded.
+// - A ticket is admitted ONCE, across every scanner (#641). Check-in is a
+//   capacity control, so a second admission is a defect, never a statistic. With
+//   several scanners, admission is an atomic server claim (first scan anywhere
+//   wins); a scanner that cannot reach the server refuses. Only a pass bound to
+//   exactly one device may admit offline.
 // ---------------------------------------------------------------------------
 
 export const DOOR_PASS_VERSION = "v1" as const;
@@ -27,6 +32,20 @@ export interface DoorPassPayload {
   exp: number;
 }
 
+/**
+ * How many scanners a door pass serves, chosen by the organiser when issuing it.
+ * - "single": the pass binds to the first device that loads it and no other can
+ *   use it, so that one device may admit offline from its own set.
+ * - "several": every admission is claimed at the server first; no connection
+ *   means no admission.
+ * A pack or pass that names no mode is treated as "several" - the mode that
+ * cannot admit twice.
+ */
+export type DoorMode = "single" | "several";
+
+/** Header every scanner request carries: the device's stable random id. */
+export const SCANNER_DEVICE_HEADER = "X-Scanner-Device";
+
 /** One check-in — the nullifier unit. Identity is (seriesId, edition). */
 export interface CheckinRecord {
   seriesId: string;
@@ -36,9 +55,13 @@ export interface CheckinRecord {
   /** Random per-device id — lets sync attribute duplicate offline scans. */
   deviceId: string;
   method: "scan" | "manual";
+  /** Random id of the scan attempt that claimed it (#641): a device retrying the
+   *  same attempt is told "admitted", never mistaken for a second admission. */
+  claimId?: string;
 }
 
-/** Same ticket accepted independently on two offline devices. */
+/** Same ticket recorded by two devices. Since #641 this is a defect to
+ *  investigate, not an expected outcome of offline scanning. */
 export interface CheckinConflict {
   seriesId: string;
   edition: number;
@@ -74,6 +97,8 @@ export interface CheckinPack {
   roster?: EncryptedRoster;
   /** Server's merged check-in set at pack time. */
   checkins: CheckinRecord[];
+  /** The pass's door mode (#641). Absent reads as "several". */
+  doorMode?: DoorMode;
   generatedAt: string;
 }
 
@@ -102,6 +127,25 @@ export interface CheckinSyncRequest {
 export interface CheckinSyncResponse {
   checkins: CheckinRecord[];
   conflicts: CheckinConflict[];
+}
+
+/** POST /api/checkin/:eventId/claim - one scan attempt asking to admit a ticket. */
+export interface CheckinClaimRequest {
+  seriesId: string;
+  edition: number;
+  method: "scan" | "manual";
+  /** Random per scan attempt; a retry of the same attempt reuses it. */
+  claimId: string;
+  /** Device clock at the scan, ISO. Recorded, never trusted for ordering. */
+  at: string;
+}
+
+export interface CheckinClaimResponse {
+  /** "admitted": this attempt holds the ticket. "already-in": another attempt does. */
+  status: "admitted" | "already-in";
+  /** The record that holds the ticket - this attempt's, or the earlier one. */
+  record: CheckinRecord;
+  serverTime: string;
 }
 
 // ---------------------------------------------------------------------------

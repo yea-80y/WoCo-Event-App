@@ -11,6 +11,10 @@
   let search = $state("");
   let confirming = $state<string | null>(null);
   let confirmTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Why the last manual check-in did not go through - with several scanners it
+   *  can fail for want of signal, and a tap that does nothing reads as "done". */
+  let notice = $state<string | null>(null);
+  let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 
   const filtered = $derived.by(() => {
     const q = search.trim().toLowerCase();
@@ -44,7 +48,22 @@
       return;
     }
     confirming = null;
-    void scanner.manualCheckin(r.seriesId, r.edition);
+    void manualCheckin(r);
+  }
+
+  async function manualCheckin(r: RosterEntry): Promise<void> {
+    let message: string | null = null;
+    try {
+      const result = await scanner.manualCheckin(r.seriesId, r.edition);
+      if (result.kind === "cant-confirm") message = `Not checked in - ${result.message}`;
+      else if (result.kind === "refunded") message = "Not checked in - this ticket was refunded";
+      else if (result.kind === "duplicate") message = `Already in since ${formatTime(result.record.at)}`;
+    } catch {
+      message = "Not checked in - something went wrong on this phone, try again";
+    }
+    notice = message;
+    if (noticeTimer) clearTimeout(noticeTimer);
+    if (message) noticeTimer = setTimeout(() => (notice = null), 5000);
   }
 
   function formatTime(iso: string): string {
@@ -65,6 +84,12 @@
     autocomplete="off"
     spellcheck="false"
   />
+
+  {#if scanner.claiming}
+    <p class="notice" aria-live="polite">Checking with WoCo…</p>
+  {:else if notice}
+    <p class="notice warn" aria-live="polite">{notice}</p>
+  {/if}
 
   {#if scanner.roster.length === 0}
     <div class="empty">
@@ -92,6 +117,8 @@
             <span class="pill in">✓ {formatTime(record.at)}{record.method === "manual" ? " ·M" : ""}</span>
           {:else if scanner.isRefunded(entry.seriesId, entry.edition)}
             <span class="pill refunded">Refunded</span>
+          {:else if scanner.claiming}
+            <span class="pill action">…</span>
           {:else if confirming === key(entry)}
             <button class="pill confirm" onclick={() => tapCheckin(entry)}>Tap to confirm</button>
           {:else}
@@ -183,6 +210,18 @@
   .pill.refunded {
     background: var(--error-subtle);
     color: var(--error);
+  }
+  .notice {
+    margin: 0 0.75rem 0.5rem;
+    padding: 0.55rem 0.75rem;
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+  }
+  .notice.warn {
+    background: var(--warning-subtle);
+    color: var(--warning);
   }
   .empty {
     padding: 2rem 1.25rem;
