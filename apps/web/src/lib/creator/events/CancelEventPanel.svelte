@@ -24,7 +24,12 @@
   let error = $state<string | null>(null);
   let warning = $state<string | null>(null);
 
-  const matches = $derived(typed.trim() === event.title.trim());
+  // Same comparison the server makes: Unicode form and runs of spaces don't matter.
+  const norm = (s: string) => s.normalize("NFC").replace(/\s+/gu, " ").trim();
+  const matches = $derived(norm(typed) === norm(event.title));
+  // Owner policy: refunds are for events that do not take place. Cancelling one
+  // that already happened refunds people who came, so it is said plainly.
+  const alreadyEnded = $derived(Date.parse(event.endDate || event.startDate) < Date.now());
   const platformFeePct = `${PLATFORM_FEE_BP / 100}%`;
 
   async function confirmCancel() {
@@ -73,6 +78,12 @@
     </p>
     <button class="cancel-btn" onclick={() => (open = true)}>Cancel this event</button>
   {:else}
+    {#if alreadyEnded}
+      <p class="warn">
+        This event has already ended. Cancelling it now refunds everyone who bought a ticket, including people who
+        came.
+      </p>
+    {/if}
     <div class="explain">
       <p>Straight away:</p>
       <ul>
