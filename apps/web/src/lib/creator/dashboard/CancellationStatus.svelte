@@ -13,10 +13,28 @@
     cancelledAt: string;
     /** The organiser's own page feed could not be re-signed when they cancelled. */
     pageNotUpdated?: boolean;
+    /** Try re-signing the page feed; rejects with the reason. */
+    onupdatepage?: () => Promise<void>;
     onnotify: () => void;
   }
 
-  let { eventId, cancelledAt, pageNotUpdated = false, onnotify }: Props = $props();
+  let { eventId, cancelledAt, pageNotUpdated = false, onupdatepage, onnotify }: Props = $props();
+
+  let updatingPage = $state(false);
+  let updatePageError = $state<string | null>(null);
+
+  async function updatePage(): Promise<void> {
+    if (!onupdatepage || updatingPage) return;
+    updatingPage = true;
+    updatePageError = null;
+    try {
+      await onupdatepage();
+    } catch (e) {
+      updatePageError = e instanceof Error ? e.message : "Could not update the event page";
+    } finally {
+      updatingPage = false;
+    }
+  }
 
   const POLL_MS = 30_000;
   let progress = $state<CancellationProgress | null>(null);
@@ -55,6 +73,12 @@
       Sales have stopped, but your event page could not be updated from this device yet. Buy buttons already show
       the event as cancelled.
     </p>
+    {#if onupdatepage}
+      <button class="notify-btn" onclick={updatePage} disabled={updatingPage}>
+        {updatingPage ? "Updating…" : "Update the event page"}
+      </button>
+      {#if updatePageError}<p class="alert">{updatePageError}</p>{/if}
+    {/if}
   {/if}
 
   {#if progress?.cancelled && progress.sales !== undefined}
