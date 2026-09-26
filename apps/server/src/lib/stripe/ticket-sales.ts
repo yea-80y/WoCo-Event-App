@@ -450,7 +450,7 @@ export function slotRefundStates(onChainEventId: string, contract: string): Map<
 export function listFlaggedSales(): TicketSale[] {
   ensureLoaded();
   return Object.values(store)
-    .filter((s) => (isSaleVoid(s) && s.slots.length > 0) || s.partialRefund || s.dispute)
+    .filter((s) => (isSaleVoid(s) && s.slots.length > 0) || s.partialRefund || (s.dispute && s.dispute.state !== "closed"))
     .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
 }
 

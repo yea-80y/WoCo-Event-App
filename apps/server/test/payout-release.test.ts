@@ -580,6 +580,21 @@ test("a WON dispute nets the withdrawal and the reinstatement: only the dispute 
   assert.deepEqual(r, { net: 8_000, currency: "gbp" });
 });
 
+test("a WON dispute whose reinstatement has not posted yet is still contested, never voided", async () => {
+  const entry = held("cs_d");
+  const r = await release.resolveNetFromStripe(
+    disputedStripe([{ status: "won", balance_transactions: [{ net: -11_500, currency: "gbp" }] }]) as never,
+    entry,
+  );
+  assert.deepEqual(r, { contested: true });
+});
+
+test("a won INQUIRY (no funds ever moved) is final at the charge's net", async () => {
+  const entry = held("cs_d");
+  const r = await release.resolveNetFromStripe(disputedStripe([{ status: "won", balance_transactions: [] }]) as never, entry);
+  assert.deepEqual(r, { net: 9_500, currency: "gbp" });
+});
+
 test("a dispute balance transaction in another currency decides nothing", async () => {
   const entry = held("cs_d");
   const r = await release.resolveNetFromStripe(

@@ -37,6 +37,11 @@
  * won one lifts it. An inquiry (`warning_*`) moves no money and voids nothing;
  * it escalates to a chargeback through a status change (`charge.dispute.updated`),
  * which lands here like any other. Unknown statuses read as not a chargeback.
+ *
+ * A chargeback on PART of an order still voids every slot, unlike a partial
+ * refund (which voids nothing and alarms). Deliberate: a refund is the
+ * organiser's own act, a chargeback is the buyer taking money back through
+ * their bank, and which ticket it was for is not knowable. Do not "align" the two.
  */
 
 import {
@@ -49,6 +54,7 @@ import {
   type RefundStateChange,
   type TicketSale,
 } from "./ticket-sales.js";
+import { CHARGEBACK_STATUSES, INQUIRY_STATUSES, NEEDS_RESPONSE_STATUSES } from "./dispute-status.js";
 
 export interface LatestCharge {
   id: string;
@@ -115,9 +121,6 @@ export function refundedTotal(refunds: Array<{ amount: number; status: string | 
   return total;
 }
 
-const CHARGEBACK_STATUSES = new Set(["needs_response", "under_review", "lost"]);
-const INQUIRY_STATUSES = new Set(["warning_needs_response", "warning_under_review"]);
-const NEEDS_RESPONSE_STATUSES = new Set(["needs_response", "warning_needs_response"]);
 
 export function readDisputes(disputes: Array<{ status: string }>): DisputeReading {
   return {

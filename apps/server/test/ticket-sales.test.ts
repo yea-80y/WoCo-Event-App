@@ -220,6 +220,7 @@ describe("applyDisputeState", () => {
     assert.deepEqual(ts.applyDisputeState("cs_1", WON), { voided: false, unvoided: true, persisted: true });
     assert.deepEqual(ts.voidedSlots(EV, CONTRACT), []);
     assert.equal(ts.getSale("cs_1")!.dispute?.state, "closed");
+    assert.equal(ts.listFlaggedSales().length, 0, "a won dispute leaves the ops flagged list");
   });
 
   test("an inquiry voids nothing but alarms while it needs a response", () => {

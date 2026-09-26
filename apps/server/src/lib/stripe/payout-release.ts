@@ -34,6 +34,7 @@ import {
   setNetAmount,
   type PayoutLedgerEntry,
 } from "./payout-ledger.js";
+import { OPEN_DISPUTE_STATUSES } from "./dispute-status.js";
 import {
   clearIntent,
   getIntent,
@@ -96,19 +97,6 @@ export interface PayoutGateway {
 }
 
 export type ResolvedNet = { net: number; currency: string } | { contested: true };
-
-/**
- * Dispute statuses whose outcome is not known yet (stripe-node Dispute.Status).
- * `warning_*` is an inquiry: no money has moved, but it can escalate, so it
- * holds the sale too. Everything else — won, lost, warning_closed, prevented —
- * is closed and its balance transactions are final.
- */
-const OPEN_DISPUTE_STATUSES = new Set([
-  "warning_needs_response",
-  "warning_under_review",
-  "needs_response",
-  "under_review",
-]);
 
 export interface ReleaseOutcome {
   stripeAccountId: string;
@@ -190,7 +178,15 @@ export async function resolveNetFromStripe(
   // branch retires the entry.
   if (charge.disputed) {
     for await (const d of s.disputes.list({ charge: charge.id, limit: 100 }, opts)) {
+      // Open: `warning_*` too — an inquiry moves no money but can escalate.
       if (OPEN_DISPUTE_STATUSES.has(d.status)) return { contested: true };
+      // A WON dispute whose reinstatement has not posted yet shows only the
+      // withdrawal. Netting that would void a sale the organiser won, and the
+      // void is terminal — so it waits, like an open one.
+      if (d.status === "won" && d.balance_transactions.some((b) => b.net < 0)
+          && !d.balance_transactions.some((b) => b.net > 0)) {
+        return { contested: true };
+      }
       for (const dBt of d.balance_transactions) {
         // Every transaction on this account's balance settles in its own
         // currency; one that does not cannot be summed, so decide nothing.

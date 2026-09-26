@@ -1016,7 +1016,7 @@
                         {#if order.refund === "refunded"}
                           <span class="refund-badge" title="Refunded in full. This ticket no longer gets in at the door.">Refunded</span>
                         {:else if order.refund === "disputed"}
-                          <span class="refund-badge" title="The buyer's bank took this payment back. This ticket no longer gets in at the door. Respond to the dispute in Stripe.">Disputed</span>
+                          <span class="refund-badge" title="The buyer's bank took this payment back. This ticket no longer gets in at the door. Check the dispute in Stripe.">Disputed</span>
                         {:else if order.refund === "partial"}
                           <span class="refund-badge refund-badge--partial" title="Part of this order was refunded. The tickets still get in - check the payment in Stripe.">Part refunded</span>
                         {/if}
