@@ -34,6 +34,7 @@ import {
   setNetAmount,
   type PayoutLedgerEntry,
 } from "./payout-ledger.js";
+import { OPEN_DISPUTE_STATUSES } from "./dispute-status.js";
 import {
   clearIntent,
   getIntent,
@@ -66,9 +67,10 @@ export interface PayoutGateway {
    * presentment currency). Read fresh from the balance transaction on EVERY
    * call — a refund can land at any moment before release, so a cached value is
    * never trusted. `null` means "couldn't determine" — the caller leaves the
-   * entry held rather than guessing.
+   * entry held rather than guessing. `contested` means a dispute on the charge
+   * is still open: nothing is final until it closes, so the entry stays held.
    */
-  resolveNet(entry: PayoutLedgerEntry): Promise<{ net: number; currency: string } | null>;
+  resolveNet(entry: PayoutLedgerEntry): Promise<ResolvedNet | null>;
   /** Aggregate available balance for a currency, minor units. */
   availableBalance(stripeAccountId: string, currency: string): Promise<number | null>;
   createPayout(args: {
@@ -93,6 +95,8 @@ export interface PayoutGateway {
   /** ISO-3166 alpha-2 of the business, which picks the hold ceiling. */
   accountCountry(stripeAccountId: string): Promise<string | undefined>;
 }
+
+export type ResolvedNet = { net: number; currency: string } | { contested: true };
 
 export interface ReleaseOutcome {
   stripeAccountId: string;
@@ -125,7 +129,7 @@ const countryCache = new Map<string, string | undefined>();
 export async function resolveNetFromStripe(
   s: Stripe,
   entry: PayoutLedgerEntry,
-): Promise<{ net: number; currency: string } | null> {
+): Promise<ResolvedNet | null> {
   if (!entry.paymentIntentId) return null;
   const opts = { stripeAccount: entry.stripeAccountId };
   const pi = await s.paymentIntents.retrieve(
@@ -162,6 +166,33 @@ export async function resolveNetFromStripe(
       if (!rBtId) continue;
       const rBt = await s.balanceTransactions.retrieve(rBtId, {}, opts);
       net += rBt.net; // negative
+    }
+  }
+
+  // Disputes (#645 part C). Each carries zero, one or two balance transactions:
+  // the withdrawal (amount + dispute fee, negative) when it became a
+  // chargeback, and the reinstatement (positive) if it was won. While one is
+  // still open the sale's worth is unknown — the sweep holds it rather than
+  // paying out money the buyer's bank may be about to take back. A lost
+  // dispute's withdrawal takes the net to zero or below, and the existing void
+  // branch retires the entry.
+  if (charge.disputed) {
+    for await (const d of s.disputes.list({ charge: charge.id, limit: 100 }, opts)) {
+      // Open: `warning_*` too — an inquiry moves no money but can escalate.
+      if (OPEN_DISPUTE_STATUSES.has(d.status)) return { contested: true };
+      // A WON dispute whose reinstatement has not posted yet shows only the
+      // withdrawal. Netting that would void a sale the organiser won, and the
+      // void is terminal — so it waits, like an open one.
+      if (d.status === "won" && d.balance_transactions.some((b) => b.net < 0)
+          && !d.balance_transactions.some((b) => b.net > 0)) {
+        return { contested: true };
+      }
+      for (const dBt of d.balance_transactions) {
+        // Every transaction on this account's balance settles in its own
+        // currency; one that does not cannot be summed, so decide nothing.
+        if (dBt.currency.toLowerCase() !== bt.currency.toLowerCase()) return null;
+        net += dBt.net;
+      }
     }
   }
   return { net, currency: bt.currency.toLowerCase() };
@@ -402,6 +433,13 @@ export async function releaseForAccount(
     const resolved = await gateway.resolveNet(entry);
     if (resolved === null) {
       outcome.deferred.push(entry.sessionId);
+      continue;
+    }
+    if ("contested" in resolved) {
+      // Never voided here: `markVoid` is terminal, and a won dispute gives the
+      // money back. Held until the dispute closes (the ceiling alarm still runs).
+      outcome.deferred.push(entry.sessionId);
+      console.warn(`[payout-release] ${entry.sessionId}: dispute open — held until it closes`);
       continue;
     }
     const { net, currency: settledIn } = resolved;

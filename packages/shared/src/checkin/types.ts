@@ -56,9 +56,9 @@ export interface CheckinSeries {
   /** Lowercase owner address per slot (index = edition - 1); zero-address
    *  slots are unclaimed. */
   slotOwners?: string[];
-  /** Slots (edition - 1) whose sale was refunded in full (#645): the ticket is
-   *  genuine but paid for no longer, so the door must not admit it. Absent from
-   *  packs built before this shipped, which read as "none". */
+  /** Slots (edition - 1) whose sale was refunded in full or charged back
+   *  (#645): the ticket is genuine but paid for no longer, so the door must not
+   *  admit it. Absent from packs built before this shipped, which read as "none". */
   voidSlots?: number[];
 }
 

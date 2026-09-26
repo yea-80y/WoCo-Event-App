@@ -523,6 +523,100 @@ test("a fully refunded sale voids even after its net was cached", async () => {
   assert.equal(ledger.getEntry("cs_a")?.status, "void");
 });
 
+// ---------------------------------------------------------------------------
+// Disputes (#645 part C) — held while open, netted when closed, never voided early
+// ---------------------------------------------------------------------------
+
+/** A fake Stripe whose charge is disputed, with these disputes. */
+function disputedStripe(disputes: Array<{ status: string; balance_transactions: Array<{ net: number; currency: string }> }>) {
+  return {
+    paymentIntents: {
+      retrieve: async () => ({ latest_charge: { id: "ch_1", balance_transaction: "txn_1", amount_refunded: 0, disputed: true } }),
+    },
+    balanceTransactions: {
+      retrieve: async () => ({ net: 9_500, currency: "gbp" }),
+    },
+    disputes: {
+      list: () => ({
+        async *[Symbol.asyncIterator]() {
+          yield* disputes;
+        },
+      }),
+    },
+  };
+}
+
+test("an OPEN dispute makes the sale contested — not a number", async () => {
+  const entry = held("cs_d");
+  for (const status of ["needs_response", "under_review", "warning_needs_response", "warning_under_review"]) {
+    const r = await release.resolveNetFromStripe(disputedStripe([{ status, balance_transactions: [] }]) as never, entry);
+    assert.deepEqual(r, { contested: true }, status);
+  }
+});
+
+test("a LOST dispute's withdrawal is netted, which takes the sale to zero or below", async () => {
+  const entry = held("cs_d");
+  const r = await release.resolveNetFromStripe(
+    disputedStripe([{ status: "lost", balance_transactions: [{ net: -11_500, currency: "gbp" }] }]) as never,
+    entry,
+  );
+  assert.deepEqual(r, { net: -2_000, currency: "gbp" });
+});
+
+test("a WON dispute nets the withdrawal and the reinstatement: only the dispute fee is lost", async () => {
+  const entry = held("cs_d");
+  const r = await release.resolveNetFromStripe(
+    disputedStripe([
+      {
+        status: "won",
+        balance_transactions: [
+          { net: -11_500, currency: "gbp" },
+          { net: 10_000, currency: "gbp" },
+        ],
+      },
+    ]) as never,
+    entry,
+  );
+  assert.deepEqual(r, { net: 8_000, currency: "gbp" });
+});
+
+test("a WON dispute whose reinstatement has not posted yet is still contested, never voided", async () => {
+  const entry = held("cs_d");
+  const r = await release.resolveNetFromStripe(
+    disputedStripe([{ status: "won", balance_transactions: [{ net: -11_500, currency: "gbp" }] }]) as never,
+    entry,
+  );
+  assert.deepEqual(r, { contested: true });
+});
+
+test("a won INQUIRY (no funds ever moved) is final at the charge's net", async () => {
+  const entry = held("cs_d");
+  const r = await release.resolveNetFromStripe(disputedStripe([{ status: "won", balance_transactions: [] }]) as never, entry);
+  assert.deepEqual(r, { net: 9_500, currency: "gbp" });
+});
+
+test("a dispute balance transaction in another currency decides nothing", async () => {
+  const entry = held("cs_d");
+  const r = await release.resolveNetFromStripe(
+    disputedStripe([{ status: "lost", balance_transactions: [{ net: -100, currency: "eur" }] }]) as never,
+    entry,
+  );
+  assert.equal(r, null);
+});
+
+test("the sweep HOLDS a contested sale — never pays it, never voids it", async () => {
+  held("cs_d");
+  held("cs_ok");
+  const { gateway, payouts } = fakeGateway();
+  const base = gateway.resolveNet;
+  gateway.resolveNet = async (entry) => (entry.sessionId === "cs_d" ? { contested: true } : base(entry));
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.deepEqual(outcome!.deferred, ["cs_d"]);
+  assert.equal(ledger.getEntry("cs_d")?.status, "held", "a won dispute gives the money back, so no terminal void");
+  assert.equal(payouts.length, 1);
+  assert.equal(payouts[0]!.amount, 10_000, "only the undisputed sale is paid");
+});
+
 test("the live resolver ignores the cached net and reports the settlement currency", async () => {
   // Pins the actual regression: liveGateway used to short-circuit on
   // entry.netAmount, which is what made late refunds invisible.

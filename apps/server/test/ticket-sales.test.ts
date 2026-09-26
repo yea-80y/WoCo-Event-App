@@ -203,6 +203,64 @@ describe("applyRefundState", () => {
   });
 });
 
+describe("applyDisputeState", () => {
+  const CHARGEBACK = { chargeback: true, inquiry: false, needsResponse: true, any: true };
+  const UNDER_REVIEW = { chargeback: true, inquiry: false, needsResponse: false, any: true };
+  const WON = { chargeback: false, inquiry: false, needsResponse: false, any: true };
+  const INQUIRY = { chargeback: false, inquiry: true, needsResponse: true, any: true };
+
+  test("a chargeback voids every slot; winning it lifts the void", () => {
+    stub();
+    ts.recordSaleSlots("cs_1", EV, CONTRACT, [0, 1]);
+    assert.deepEqual(ts.applyDisputeState("cs_1", CHARGEBACK), { voided: true, unvoided: false, persisted: true });
+    assert.deepEqual(ts.voidedSlots(EV, CONTRACT), [0, 1]);
+    assert.equal(ts.slotRefundStates(EV, CONTRACT).get(0), "disputed");
+
+    assert.deepEqual(ts.applyDisputeState("cs_1", UNDER_REVIEW), { voided: false, unvoided: false, persisted: true }, "evidence submitted: still void");
+    assert.deepEqual(ts.applyDisputeState("cs_1", WON), { voided: false, unvoided: true, persisted: true });
+    assert.deepEqual(ts.voidedSlots(EV, CONTRACT), []);
+    assert.equal(ts.getSale("cs_1")!.dispute?.state, "closed");
+    assert.equal(ts.listFlaggedSales().length, 0, "a won dispute leaves the ops flagged list");
+  });
+
+  test("an inquiry voids nothing but alarms while it needs a response", () => {
+    stub();
+    ts.recordSaleSlots("cs_1", EV, CONTRACT, [0]);
+    assert.deepEqual(ts.applyDisputeState("cs_1", INQUIRY), { voided: false, unvoided: false, persisted: true });
+    assert.deepEqual(ts.voidedSlots(EV, CONTRACT), []);
+    const h = ts.ticketSalesHealth();
+    assert.equal(h.ok, false);
+    assert.equal(h.disputesNeedingResponse, 1);
+    assert.equal(h.inquiries, 1);
+  });
+
+  test("the alarm is 'needs a response', not 'open': under review is counted, not alarmed", () => {
+    stub();
+    ts.applyDisputeState("cs_1", UNDER_REVIEW);
+    const h = ts.ticketSalesHealth();
+    assert.equal(h.ok, true);
+    assert.equal(h.chargebacks, 1);
+    assert.equal(h.disputesNeedingResponse, 0);
+  });
+
+  test("refund and dispute voids are independent: a won dispute does not lift a refund", () => {
+    stub();
+    ts.recordSaleSlots("cs_1", EV, CONTRACT, [0]);
+    ts.applyRefundState("cs_1", 3000, 3000);
+    ts.applyDisputeState("cs_1", CHARGEBACK);
+    ts.applyDisputeState("cs_1", WON);
+    assert.deepEqual(ts.voidedSlots(EV, CONTRACT), [0], "still refunded");
+    assert.equal(ts.slotRefundStates(EV, CONTRACT).get(0), "refunded");
+  });
+
+  test("a sale with no disputes left carries no dispute state", () => {
+    stub();
+    ts.applyDisputeState("cs_1", INQUIRY);
+    ts.applyDisputeState("cs_1", { chargeback: false, inquiry: false, needsResponse: false, any: false });
+    assert.equal(ts.getSale("cs_1")!.dispute, undefined);
+  });
+});
+
 describe("voidedSlots", () => {
   test("only void sales, only this event, only this contract", () => {
     stub();

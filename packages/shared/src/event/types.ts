@@ -564,9 +564,11 @@ export interface OrderEntry {
   /** How this claim was paid for. Absent on legacy entries. */
   via?: ClaimVia;
   /**
-   * #645: the sale was refunded in full (the ticket no longer admits), or part
-   * of the order was refunded (tickets still admit; the organiser should check
-   * Stripe). Absent = not refunded, or refunded before this was recorded.
+   * #645: the sale was refunded in full, or the buyer's bank took the payment
+   * back (a chargeback, open or lost) — either way the ticket no longer admits.
+   * `partial` = part of the order was refunded (tickets still admit; the
+   * organiser should check Stripe). Absent = none of these, or before this was
+   * recorded.
    */
-  refund?: "refunded" | "partial";
+  refund?: "refunded" | "disputed" | "partial";
 }

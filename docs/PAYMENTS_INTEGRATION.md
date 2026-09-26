@@ -111,6 +111,10 @@ ETH + USDC on Base/Optimism/Mainnet/Sepolia:
   and apply the total, one event per payment intent at a time: refunded in full → every slot
   void; a partial refund above our own → nothing void,
   flagged + `/api/health` `ticketSales` alarm until `/api/ops/ticket-sales/:id/acknowledge-partial-refund`.
+  The `charge.dispute.*` events land in the same handler: a chargeback (`needs_response`,
+  `under_review`, `lost`) voids every slot, a won dispute lifts it, an inquiry voids nothing;
+  anything needing a response alarms (`disputesNeedingResponse`). Payouts hold a sale while
+  its dispute is open (docs/PAYOUTS.md).
   Voids key on (onChainEventId, slot), never the orderRef (#661). The handlers never refund.
   A state that cannot be written (file unreadable, disk full) answers 500 so Stripe redelivers
   (~3 days). A sale made while the file was unreadable is in memory only: after a restore it

@@ -102,7 +102,7 @@
           <span class="verdict-who">{outcome.attendee.name ?? outcome.attendee.email}</span>
         {/if}
         <span class="verdict-detail">{outcome.seriesName} · #{String(outcome.edition).padStart(3, "0")}</span>
-        <span class="verdict-detail">This ticket was refunded. Not valid for entry.</span>
+        <span class="verdict-detail">The payment for this ticket was refunded or reversed. Not valid for entry.</span>
       {:else if outcome.kind === "rejected"}
         <span class="verdict-title">INVALID</span>
         <span class="verdict-detail">{outcome.reason}</span>

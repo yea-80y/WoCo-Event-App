@@ -516,7 +516,7 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
   reseeding from the last snapshot (directory-snapshot.ts) rather than publishing an empty
   directory, but that only recovers events already in a snapshot
   ticket-sales.json (#645 part C — sessionId → payment intent + minted slots + what we
-    refunded ourselves. Refunds void tickets THROUGH it. Losing it fails OPEN:
+    refunded ourselves. Refunds and chargebacks void tickets THROUGH it. Losing it fails OPEN:
     every refunded ticket reads valid at the door again. The money side does not depend on
     it (the payout sweep re-reads Stripe). Present-but-unreadable is never overwritten)
   event-feed-signers.json (#670 — eventId → the organiser's content-feed signer + verified

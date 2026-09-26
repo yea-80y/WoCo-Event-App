@@ -14,7 +14,7 @@
  * for this session, recorded from `batchClaimFor`'s own return value. A void
  * follows the slot, so it survives the ticket being transferred.
  *
- * Written in three steps, each by the only code that knows the fact:
+ * Written in four steps, each by the only code that knows the fact:
  *   1. the webhook writes a STUB the moment a paid session is consumed — ours or
  *      tampered — carrying the payment intent, which is what refund and dispute
  *      events arrive keyed on;
@@ -22,7 +22,9 @@
  *      what it refunds itself (`autoRefunded`), so its own refund of an unfilled
  *      part is never read as the organiser's;
  *   3. the refund handlers (sale-refunds.ts) set or clear the void from Stripe's
- *      current totals — never from the event alone, so delivery order is moot.
+ *      current totals — never from the event alone, so delivery order is moot;
+ *   4. the dispute handlers do the same from the charge's current disputes: a
+ *      chargeback (funds taken back by the bank) voids, a won one lifts it.
  *
  * MUST SURVIVE RESTARTS. Losing it fails OPEN on ticket validity: every refunded
  * ticket reads valid again at the door. The money side does not depend on it —
@@ -80,7 +82,13 @@ export interface TicketSale {
   refunded?: number;
   refundCheckedAt?: string;
   /** Why this sale's slots are void. A void of any kind voids every slot. */
-  voids?: { refund?: SaleVoid };
+  voids?: { refund?: SaleVoid; dispute?: SaleVoid };
+  /**
+   * The charge's dispute state as last read from Stripe. `chargeback` = funds
+   * withdrawn (open or lost) — voids; `inquiry` = a warning_* inquiry, no funds
+   * moved — never voids. `needsResponse` = someone must answer it in Stripe.
+   */
+  dispute?: { state: "chargeback" | "inquiry" | "closed"; needsResponse: boolean; checkedAt: string };
   /**
    * A refund above our own that is not a full refund — the organiser refunded
    * part of an order. Voids nothing (no per-ticket refunds, owner policy
@@ -244,7 +252,7 @@ export function getSaleByPaymentIntent(paymentIntentId: string): TicketSale | un
 }
 
 export function isSaleVoid(sale: TicketSale): boolean {
-  return !!sale.voids?.refund;
+  return !!(sale.voids?.refund || sale.voids?.dispute);
 }
 
 /** The state the refund handler moved a sale to. */
@@ -314,6 +322,64 @@ function partialAlarmed(sale: TicketSale): boolean {
   return sale.partialRefund.amount > (sale.partialRefundAcknowledged?.amount ?? 0);
 }
 
+/** The dispute view of one charge, reduced from Stripe's list (sale-refunds.ts). */
+export interface DisputeReading {
+  /** Any dispute whose funds are withdrawn and not given back: open chargeback, or lost. */
+  chargeback: boolean;
+  /** Any warning_* inquiry still open. */
+  inquiry: boolean;
+  /** Any dispute or inquiry waiting for evidence (needs_response / warning_needs_response). */
+  needsResponse: boolean;
+  /** Any dispute at all, open or closed. */
+  any: boolean;
+}
+
+export interface DisputeStateChange {
+  voided: boolean;
+  /** A dispute void was lifted: the dispute was won (or withdrawn). */
+  unvoided: boolean;
+  /** Whether the new state reached disk. False = applied in memory only; the caller must retry. */
+  persisted: boolean;
+}
+
+/**
+ * Apply the charge's CURRENT disputes. Idempotent and order-free, like
+ * `applyRefundState`. A chargeback voids every slot: the buyer's bank took the
+ * money back, whatever the organiser does in Stripe. An inquiry voids nothing
+ * (no funds move unless it escalates, which arrives as a status change).
+ */
+export function applyDisputeState(
+  sessionId: string,
+  reading: DisputeReading,
+  now: Date = new Date(),
+): DisputeStateChange | null {
+  ensureLoaded();
+  const sale = store[sessionId];
+  if (!sale) return null;
+  const at = now.toISOString();
+  const wasVoid = !!sale.voids?.dispute;
+
+  if (reading.chargeback && !wasVoid) {
+    sale.voids = { ...sale.voids, dispute: { at } };
+  } else if (!reading.chargeback && wasVoid) {
+    delete sale.voids!.dispute;
+    if (Object.keys(sale.voids!).length === 0) delete sale.voids;
+  }
+
+  if (reading.any) {
+    sale.dispute = {
+      state: reading.chargeback ? "chargeback" : reading.inquiry ? "inquiry" : "closed",
+      needsResponse: reading.needsResponse,
+      checkedAt: at,
+    };
+  } else {
+    delete sale.dispute;
+  }
+
+  const persisted = persist();
+  return { voided: reading.chargeback && !wasVoid, unvoided: !reading.chargeback && wasVoid, persisted };
+}
+
 /**
  * An operator has looked at a partial refund. Clears the alarm for THIS amount
  * only; a later, larger partial refund alarms again. `by` is required for the
@@ -353,7 +419,7 @@ export function voidedSlots(onChainEventId: string, contract: string): number[] 
   return [...out].sort((a, b) => a - b);
 }
 
-export type SlotRefundState = "refunded" | "partial";
+export type SlotRefundState = "refunded" | "disputed" | "partial";
 
 /**
  * Refund state per slot of one on-chain event on one contract, for the
@@ -368,17 +434,23 @@ export function slotRefundStates(onChainEventId: string, contract: string): Map<
   const out = new Map<number, SlotRefundState>();
   for (const sale of Object.values(store)) {
     if (sale.onChainEventId !== id || sale.contract !== key) continue;
-    const state: SlotRefundState | null = isSaleVoid(sale) ? "refunded" : sale.partialRefund ? "partial" : null;
+    const state: SlotRefundState | null = sale.voids?.refund
+      ? "refunded"
+      : sale.voids?.dispute
+        ? "disputed"
+        : sale.partialRefund
+          ? "partial"
+          : null;
     if (state) for (const slot of sale.slots) out.set(slot, state);
   }
   return out;
 }
 
-/** Ops view: sales carrying a void or a partial refund, newest first. */
+/** Ops view: sales carrying a void, a partial refund or a dispute, newest first. */
 export function listFlaggedSales(): TicketSale[] {
   ensureLoaded();
   return Object.values(store)
-    .filter((s) => (isSaleVoid(s) && s.slots.length > 0) || s.partialRefund)
+    .filter((s) => (isSaleVoid(s) && s.slots.length > 0) || s.partialRefund || (s.dispute && s.dispute.state !== "closed"))
     .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
 }
 
@@ -393,6 +465,12 @@ export interface TicketSalesHealth {
   voidedSales: number;
   /** Partial refunds above our own that no operator has acknowledged — the alarm. */
   partialRefunds: number;
+  /** Disputes or inquiries waiting for evidence in Stripe — the alarm (a deadline runs). */
+  disputesNeedingResponse: number;
+  /** Chargebacks open or lost (tickets void). */
+  chargebacks: number;
+  /** Inquiries open (tickets still valid). */
+  inquiries: number;
   /** The file exists but could not be read: voids are off and nothing is persisted. */
   fileUnreadable: boolean;
 }
@@ -402,16 +480,25 @@ export function ticketSalesHealth(): TicketSalesHealth {
   ensureLoaded();
   let voidedSales = 0;
   let partialRefunds = 0;
+  let disputesNeedingResponse = 0;
+  let chargebacks = 0;
+  let inquiries = 0;
   for (const sale of Object.values(store)) {
     // A slotless sale (a shop order, a sale that minted nothing) voids no ticket.
     if (isSaleVoid(sale) && sale.slots.length > 0) voidedSales++;
     if (partialAlarmed(sale)) partialRefunds++;
+    if (sale.dispute?.needsResponse) disputesNeedingResponse++;
+    if (sale.dispute?.state === "chargeback") chargebacks++;
+    if (sale.dispute?.state === "inquiry") inquiries++;
   }
   return {
-    ok: partialRefunds === 0 && !fileUnreadable,
+    ok: partialRefunds === 0 && disputesNeedingResponse === 0 && !fileUnreadable,
     records: Object.keys(store).length,
     voidedSales,
     partialRefunds,
+    disputesNeedingResponse,
+    chargebacks,
+    inquiries,
     fileUnreadable: fileUnreadable !== null,
   };
 }

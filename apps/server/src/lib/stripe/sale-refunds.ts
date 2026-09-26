@@ -1,12 +1,14 @@
 /**
- * Refund events -> ticket voids (#645 part C).
+ * Refund and dispute events -> ticket voids (#645 part C).
  *
- * `charge.refunded`, `refund.updated` and `refund.failed` arrive on the Connected-accounts webhook
- * for EVERY charge on every connected account: our ticket sales, and under
- * `stripe_dashboard.type = full` the organiser's own sales too. This decides
- * which are ours and moves the sale record (ticket-sales.ts) to match Stripe.
+ * `charge.refunded`, `refund.updated`, `refund.failed` and the `charge.dispute.*`
+ * events arrive on the Connected-accounts webhook for EVERY charge on every
+ * connected account: our ticket sales, and under `stripe_dashboard.type = full`
+ * the organiser's own sales too. This decides which are ours and moves the sale
+ * record (ticket-sales.ts) to match Stripe.
  *
- * Nothing here issues a refund. It only reads Stripe and records what it finds.
+ * Nothing here issues a refund or answers a dispute. It only reads Stripe and
+ * records what it finds.
  *
  * WHICH ARE OURS. A payment intent in the sale record is ours: the record is
  * written only for a session that passed the provenance check. Otherwise the
@@ -28,15 +30,31 @@
  * back, so it does not void a ticket yet. A cancellation and a
  * requires_action -> succeeded move arrive only as `refund.updated`, which is
  * why that event is handled too.
+ *
+ * DISPUTES. Any event re-reads the charge's disputes as well when the charge is
+ * disputed (a dispute event always does). A chargeback — funds withdrawn by the
+ * buyer's bank: `needs_response`, `under_review`, `lost` — voids every slot; a
+ * won one lifts it. An inquiry (`warning_*`) moves no money and voids nothing;
+ * it escalates to a chargeback through a status change (`charge.dispute.updated`),
+ * which lands here like any other. Unknown statuses read as not a chargeback.
+ *
+ * A chargeback on PART of an order still voids every slot, unlike a partial
+ * refund (which voids nothing and alarms). Deliberate: a refund is the
+ * organiser's own act, a chargeback is the buyer taking money back through
+ * their bank, and which ticket it was for is not knowable. Do not "align" the two.
  */
 
 import {
+  applyDisputeState,
   applyRefundState,
   getSaleByPaymentIntent,
   isPersisting,
+  type DisputeReading,
+  type DisputeStateChange,
   type RefundStateChange,
   type TicketSale,
 } from "./ticket-sales.js";
+import { CHARGEBACK_STATUSES, INQUIRY_STATUSES, NEEDS_RESPONSE_STATUSES } from "./dispute-status.js";
 
 export interface LatestCharge {
   id: string;
@@ -45,6 +63,8 @@ export interface LatestCharge {
   /** `application_fee_amount > 0`: the charge asked for a fee (it may not exist yet, #666). */
   feeRequested: boolean;
   feeId: string | null;
+  /** Stripe's `charge.disputed`: whether the charge has been disputed. */
+  disputed: boolean;
 }
 
 /** The Stripe reads. Each throws on a transport failure. */
@@ -55,16 +75,24 @@ export interface SaleRefundReads {
   refundsForCharge(chargeId: string, account: string): Promise<Array<{ amount: number; status: string | null }>>;
   /** Our fee by id, platform key; null when it is not this platform's. */
   retrievePlatformFee(feeId: string): Promise<{ amount: number; account: string } | null>;
+  /** Every dispute on the charge, all pages. */
+  disputesForCharge(chargeId: string, account: string): Promise<Array<{ status: string }>>;
 }
 
 export interface SaleRefundStore {
   getSaleByPaymentIntent(paymentIntentId: string): TicketSale | undefined;
   applyRefundState(sessionId: string, refunded: number, charged: number): RefundStateChange | null;
+  applyDisputeState(sessionId: string, reading: DisputeReading): DisputeStateChange | null;
   /** False while the record file is unreadable: a state applied now would not survive a restart. */
   persisting(): boolean;
 }
 
-const liveStore: SaleRefundStore = { getSaleByPaymentIntent, applyRefundState, persisting: isPersisting };
+const liveStore: SaleRefundStore = {
+  getSaleByPaymentIntent,
+  applyRefundState,
+  applyDisputeState,
+  persisting: isPersisting,
+};
 
 export type RefundEventOutcome =
   | {
@@ -73,6 +101,8 @@ export type RefundEventOutcome =
       refunded: number;
       charged: number;
       change: RefundStateChange;
+      /** Null when the disputes were not read (a refund event on an undisputed charge). */
+      dispute: { reading: DisputeReading; change: DisputeStateChange } | null;
       /** Minted slots on the sale. A void on a sale with none voids no ticket. */
       slots: number;
     }
@@ -89,6 +119,16 @@ export function refundedTotal(refunds: Array<{ amount: number; status: string | 
   let total = 0;
   for (const r of refunds) if (r.status && COUNTED_STATUSES.has(r.status)) total += r.amount;
   return total;
+}
+
+
+export function readDisputes(disputes: Array<{ status: string }>): DisputeReading {
+  return {
+    chargeback: disputes.some((d) => CHARGEBACK_STATUSES.has(d.status)),
+    inquiry: disputes.some((d) => INQUIRY_STATUSES.has(d.status)),
+    needsResponse: disputes.some((d) => NEEDS_RESPONSE_STATUSES.has(d.status)),
+    any: disputes.length > 0,
+  };
 }
 
 function errName(err: unknown): string {
@@ -127,8 +167,15 @@ async function classifyUnrecorded(
  */
 const inFlight = new Map<string, Promise<RefundEventOutcome>>();
 
-export function reconcileRefundEvent(
-  input: { paymentIntentId: string; account: string },
+export interface ChargeEventInput {
+  paymentIntentId: string;
+  account: string;
+  /** A dispute event: read the disputes even if the charge does not say disputed yet. */
+  dispute?: boolean;
+}
+
+export function reconcileChargeEvent(
+  input: ChargeEventInput,
   reads: SaleRefundReads,
   store: SaleRefundStore = liveStore,
 ): Promise<RefundEventOutcome> {
@@ -147,7 +194,7 @@ export function reconcileRefundEvent(
 }
 
 async function reconcileOnce(
-  input: { paymentIntentId: string; account: string },
+  input: ChargeEventInput,
   reads: SaleRefundReads,
   store: SaleRefundStore,
 ): Promise<RefundEventOutcome> {
@@ -172,12 +219,19 @@ async function reconcileOnce(
     return { kind: "retry", reason: "sale record not persisting" };
   }
 
+  // Both states are recomputed on every event, whichever kind it was: each is a
+  // pure function of Stripe's current answer, so the kind of event that
+  // triggered the read does not matter.
   let charge: LatestCharge | null;
   let refunded: number;
+  let reading: DisputeReading | null = null;
   try {
     charge = await reads.latestCharge(input.paymentIntentId, input.account);
     if (!charge) return { kind: "retry", reason: "recorded sale has no charge" };
     refunded = refundedTotal(await reads.refundsForCharge(charge.id, input.account));
+    if (input.dispute || charge.disputed) {
+      reading = readDisputes(await reads.disputesForCharge(charge.id, input.account));
+    }
   } catch (err) {
     return { kind: "retry", reason: errName(err) };
   }
@@ -187,12 +241,17 @@ async function reconcileOnce(
   // Applied in memory but not on disk (a full disk, a failed write): answer as
   // not applied, so Stripe redelivers and the next attempt writes it again.
   if (!change.persisted) return { kind: "retry", reason: "sale record not written" };
+  // Not read = not known, which is not the same as "no disputes": leave the
+  // recorded dispute state alone rather than clearing it.
+  const disputeChange = reading ? store.applyDisputeState(sale.sessionId, reading) : null;
+  if (disputeChange && !disputeChange.persisted) return { kind: "retry", reason: "sale record not written" };
   const outcome: RefundEventOutcome = {
     kind: "applied",
     sessionId: sale.sessionId,
     refunded,
     charged: charge.amount,
     change,
+    dispute: reading && disputeChange ? { reading, change: disputeChange } : null,
     slots: sale.slots.length,
   };
   noteOutcome(input.paymentIntentId, outcome);
@@ -233,7 +292,7 @@ export function noteApplied(eventId: string, now = Date.now()): void {
 // Health
 // ---------------------------------------------------------------------------
 
-const counts = { foreign: 0, voided: 0, unvoided: 0 };
+const counts = { foreign: 0, voided: 0, unvoided: 0, disputeVoided: 0, disputeUnvoided: 0 };
 
 /**
  * Payment intents carrying OUR fee whose sale record has not appeared, with
@@ -259,6 +318,8 @@ function noteOutcome(paymentIntentId: string, outcome: RefundEventOutcome): void
   if (outcome.kind === "applied" && outcome.slots > 0) {
     if (outcome.change.voided) counts.voided++;
     if (outcome.change.unvoided) counts.unvoided++;
+    if (outcome.dispute?.change.voided) counts.disputeVoided++;
+    if (outcome.dispute?.change.unvoided) counts.disputeUnvoided++;
   }
 }
 
@@ -273,6 +334,8 @@ export function saleRefundEventsHealth(now = Date.now()): {
   foreign: number;
   voided: number;
   unvoided: number;
+  disputeVoided: number;
+  disputeUnvoided: number;
   awaitingRecord: number;
   stuck: number;
 } {
@@ -286,6 +349,8 @@ export function _resetSaleRefundStateForTest(): void {
   counts.foreign = 0;
   counts.voided = 0;
   counts.unvoided = 0;
+  counts.disputeVoided = 0;
+  counts.disputeUnvoided = 0;
   awaitingSince.clear();
   applied.clear();
   inFlight.clear();
