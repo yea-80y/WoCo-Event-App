@@ -112,6 +112,9 @@ ETH + USDC on Base/Optimism/Mainnet/Sepolia:
   void; a partial refund above our own → nothing void,
   flagged + `/api/health` `ticketSales` alarm until `/api/ops/ticket-sales/:id/acknowledge-partial-refund`.
   Voids key on (onChainEventId, slot), never the orderRef (#661). The handlers never refund.
+  A state that cannot be written (file unreadable, disk full) answers 500 so Stripe redelivers
+  (~3 days). A sale made while the file was unreadable is in memory only: after a restore it
+  surfaces as `refundEvents.stuck`, never as an automatic void.
 
 ---
 
