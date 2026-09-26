@@ -98,14 +98,14 @@ describe("applyRefundState", () => {
     stub();
     ts.recordSaleSlots("cs_1", EV, CONTRACT, [0, 1, 2]);
     const v = ts.applyRefundState("cs_1", 3000, 3000)!;
-    assert.deepEqual(v, { voided: true, unvoided: false, partialAlarm: false });
+    assert.deepEqual(v, { voided: true, unvoided: false, partialAlarm: false, persisted: true });
     assert.deepEqual(ts.voidedSlots(EV, CONTRACT), [0, 1, 2]);
 
     const again = ts.applyRefundState("cs_1", 3000, 3000)!;
     assert.equal(again.voided, false, "re-applying the same totals changes nothing");
 
     const lifted = ts.applyRefundState("cs_1", 0, 3000)!;
-    assert.deepEqual(lifted, { voided: false, unvoided: true, partialAlarm: false });
+    assert.deepEqual(lifted, { voided: false, unvoided: true, partialAlarm: false, persisted: true });
     assert.deepEqual(ts.voidedSlots(EV, CONTRACT), []);
     assert.equal(ts.getSale("cs_1")!.voids, undefined);
   });
@@ -115,7 +115,7 @@ describe("applyRefundState", () => {
     ts.recordSaleSlots("cs_1", EV, CONTRACT, [0, 1]);
     ts.recordAutoRefund("cs_1", 1000);
     const r = ts.applyRefundState("cs_1", 1000, 3000)!;
-    assert.deepEqual(r, { voided: false, unvoided: false, partialAlarm: false });
+    assert.deepEqual(r, { voided: false, unvoided: false, partialAlarm: false, persisted: true });
     assert.equal(ts.ticketSalesHealth().ok, true);
   });
 
@@ -123,7 +123,7 @@ describe("applyRefundState", () => {
     stub();
     ts.recordSaleSlots("cs_1", EV, CONTRACT, [0, 1, 2]);
     const r = ts.applyRefundState("cs_1", 1000, 3000)!;
-    assert.deepEqual(r, { voided: false, unvoided: false, partialAlarm: true });
+    assert.deepEqual(r, { voided: false, unvoided: false, partialAlarm: true, persisted: true });
     assert.deepEqual(ts.voidedSlots(EV, CONTRACT), []);
     const h = ts.ticketSalesHealth();
     assert.equal(h.ok, false);
@@ -134,7 +134,7 @@ describe("applyRefundState", () => {
   test("acknowledging clears the alarm for that amount only; a larger one alarms again", () => {
     stub();
     ts.applyRefundState("cs_1", 1000, 3000);
-    assert.equal(ts.acknowledgePartialRefund("cs_1", "ops"), true);
+    assert.equal(ts.acknowledgePartialRefund("cs_1", "ops"), "acknowledged");
     assert.equal(ts.ticketSalesHealth().ok, true);
     ts.applyRefundState("cs_1", 1000, 3000);
     assert.equal(ts.ticketSalesHealth().ok, true, "the same amount stays acknowledged");
@@ -163,8 +163,39 @@ describe("applyRefundState", () => {
 
   test("acknowledging a sale with no partial refund is refused", () => {
     stub();
-    assert.equal(ts.acknowledgePartialRefund("cs_1", "ops"), false);
-    assert.equal(ts.acknowledgePartialRefund("cs_none", "ops"), false);
+    assert.equal(ts.acknowledgePartialRefund("cs_1", "ops"), "none");
+    assert.equal(ts.acknowledgePartialRefund("cs_none", "ops"), "none");
+  });
+
+  test("a slotless sale refunded in full is not counted or listed as a ticket void", () => {
+    stub();
+    const r = ts.applyRefundState("cs_1", 3000, 3000)!;
+    assert.equal(r.voided, true);
+    assert.equal(r.persisted, true);
+    assert.equal(ts.ticketSalesHealth().voidedSales, 0);
+    assert.equal(ts.listFlaggedSales().length, 0);
+  });
+
+  test("a write that fails (disk refuses) reports persisted: false, so the handler retries", () => {
+    stub();
+    // A directory where the temp file goes makes writeJsonAtomic fail, as a
+    // full or read-only disk would.
+    mkdirSync(`${storeFile}.tmp`);
+    try {
+      const r = ts.applyRefundState("cs_1", 3000, 3000)!;
+      assert.equal(r.persisted, false);
+    } finally {
+      rmSync(`${storeFile}.tmp`, { recursive: true, force: true });
+    }
+    assert.equal(ts.applyRefundState("cs_1", 3000, 3000)!.persisted, true, "the redelivery writes it");
+  });
+
+  test("an acknowledgement that cannot be written says so", () => {
+    writeFileSync(storeFile, "null");
+    ts.__resetForTests();
+    stub();
+    ts.applyRefundState("cs_1", 1000, 3000);
+    assert.equal(ts.acknowledgePartialRefund("cs_1", "ops"), "not-persisted");
   });
 
   test("an unknown session is not invented", () => {
@@ -181,12 +212,12 @@ describe("applyDisputeState", () => {
   test("a chargeback voids every slot; winning it lifts the void", () => {
     stub();
     ts.recordSaleSlots("cs_1", EV, CONTRACT, [0, 1]);
-    assert.deepEqual(ts.applyDisputeState("cs_1", CHARGEBACK), { voided: true, unvoided: false });
+    assert.deepEqual(ts.applyDisputeState("cs_1", CHARGEBACK), { voided: true, unvoided: false, persisted: true });
     assert.deepEqual(ts.voidedSlots(EV, CONTRACT), [0, 1]);
     assert.equal(ts.slotRefundStates(EV, CONTRACT).get(0), "disputed");
 
-    assert.deepEqual(ts.applyDisputeState("cs_1", UNDER_REVIEW), { voided: false, unvoided: false }, "evidence submitted: still void");
-    assert.deepEqual(ts.applyDisputeState("cs_1", WON), { voided: false, unvoided: true });
+    assert.deepEqual(ts.applyDisputeState("cs_1", UNDER_REVIEW), { voided: false, unvoided: false, persisted: true }, "evidence submitted: still void");
+    assert.deepEqual(ts.applyDisputeState("cs_1", WON), { voided: false, unvoided: true, persisted: true });
     assert.deepEqual(ts.voidedSlots(EV, CONTRACT), []);
     assert.equal(ts.getSale("cs_1")!.dispute?.state, "closed");
   });
@@ -194,7 +225,7 @@ describe("applyDisputeState", () => {
   test("an inquiry voids nothing but alarms while it needs a response", () => {
     stub();
     ts.recordSaleSlots("cs_1", EV, CONTRACT, [0]);
-    assert.deepEqual(ts.applyDisputeState("cs_1", INQUIRY), { voided: false, unvoided: false });
+    assert.deepEqual(ts.applyDisputeState("cs_1", INQUIRY), { voided: false, unvoided: false, persisted: true });
     assert.deepEqual(ts.voidedSlots(EV, CONTRACT), []);
     const h = ts.ticketSalesHealth();
     assert.equal(h.ok, false);
@@ -243,6 +274,10 @@ describe("voidedSlots", () => {
     assert.deepEqual(ts.voidedSlots(EV, CONTRACT), [0, 1], "cs_2 is paid for; cs_3 is another event");
     assert.deepEqual(ts.voidedSlots(EV.toUpperCase().replace("0X", "0x"), CONTRACT.toUpperCase()), [0, 1]);
     assert.deepEqual(ts.voidedSlots(EV, "421614:0x" + "c2".repeat(20)), [], "a successor contract's slots are not these");
+    stub({ sessionId: "cs_4", paymentIntentId: "pi_4" });
+    ts.recordSaleSlots("cs_4", EV, CONTRACT.toUpperCase(), [9]);
+    ts.applyRefundState("cs_4", 3000, 3000);
+    assert.deepEqual(ts.voidedSlots(EV, CONTRACT), [0, 1, 9], "the contract is stored lowercase, whatever the caller passed");
   });
 });
 

@@ -1283,7 +1283,7 @@ stripe.post("/webhook", async (c) => {
         if (change.voided || change.unvoided || change.partialAlarm || dispute?.change.voided || dispute?.change.unvoided || dispute?.reading.needsResponse) {
           console.warn(
             `[stripe-webhook] ${event.type} on sale ${outcome.sessionId}: refunded ${outcome.refunded}/${outcome.charged}` +
-              (change.voided ? " — tickets VOIDED" : "") +
+              (change.voided ? (outcome.slots > 0 ? " — tickets VOIDED" : " — refunded in full (no tickets)") : "") +
               (change.unvoided ? " — refund failed, tickets valid again" : "") +
               (change.partialAlarm ? " — PARTIAL refund above our own, tickets left valid (alarm)" : "") +
               (dispute?.change.voided ? " — CHARGEBACK, tickets VOIDED" : "") +

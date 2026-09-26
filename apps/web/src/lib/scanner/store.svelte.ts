@@ -29,6 +29,11 @@ export type ScanOutcome =
   | { kind: "wrong-event" }
   | { kind: "unreadable" };
 
+export type ManualCheckinResult =
+  | { kind: "checked-in" }
+  | { kind: "duplicate"; record: CheckinRecord }
+  | { kind: "refunded" };
+
 class ScannerStore {
   phase = $state<"loading" | "unprovisioned" | "provisioning" | "ready">("loading");
   provisionError = $state<string | null>(null);
@@ -156,9 +161,10 @@ class ScannerStore {
    * refunded ticket is refused here as at the camera (the roster can predate
    * the refund); the roster offers no button for one, this is the backstop.
    */
-  async manualCheckin(seriesId: string, edition: number): Promise<CheckinRecord | null> {
-    if (this.isRefunded(seriesId, edition)) return null;
-    return this.mark(seriesId, edition, "manual");
+  async manualCheckin(seriesId: string, edition: number): Promise<ManualCheckinResult> {
+    if (this.isRefunded(seriesId, edition)) return { kind: "refunded" };
+    const existing = await this.mark(seriesId, edition, "manual");
+    return existing ? { kind: "duplicate", record: existing } : { kind: "checked-in" };
   }
 
   /** Whether the pack lists this ticket's sale as refunded (#645). */

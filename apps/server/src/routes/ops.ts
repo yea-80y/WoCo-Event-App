@@ -391,8 +391,10 @@ ops.post("/ticket-sales/:sessionId/acknowledge-partial-refund", async (c) => {
   const body = (await c.req.json().catch(() => null)) as { by?: string } | null;
   const by = (body?.by || "").trim().slice(0, 100);
   if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
-  if (!acknowledgePartialRefund(sessionId, by)) {
-    return c.json({ ok: false, error: "No partial refund on that sale" }, 404);
+  const result = acknowledgePartialRefund(sessionId, by);
+  if (result === "none") return c.json({ ok: false, error: "No partial refund on that sale" }, 404);
+  if (result === "not-persisted") {
+    return c.json({ ok: false, error: "The sale record could not be written - see compliancePersistence on /api/health" }, 503);
   }
   console.log(`[ops] partial refund on ${sessionId} acknowledged by ${by}`);
   return c.json({ ok: true, data: { acknowledged: true, health: ticketSalesHealth() } });

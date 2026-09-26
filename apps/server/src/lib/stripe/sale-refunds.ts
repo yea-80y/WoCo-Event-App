@@ -97,7 +97,8 @@ export type RefundEventOutcome =
       change: RefundStateChange;
       /** Null when the disputes were not read (a refund event on an undisputed charge). */
       dispute: { reading: DisputeReading; change: DisputeStateChange } | null;
-      tampered?: true;
+      /** Minted slots on the sale. A void on a sale with none voids no ticket. */
+      slots: number;
     }
   | { kind: "foreign"; reason: string }
   /**
@@ -157,7 +158,9 @@ async function classifyUnrecorded(
  * One reconcile at a time per payment intent. Two refunds made seconds apart
  * deliver two events; run concurrently, the one that READ first could APPLY
  * last and write an older total over a newer one. Chained, each reads after
- * the previous one applied.
+ * the previous one applied. A link waits at most for its predecessor's Stripe
+ * reads, each bounded by stripe-node's default 80 s request timeout
+ * (`client.ts` sets none; DEFAULT_TIMEOUT in stripe.core.js).
  */
 const inFlight = new Map<string, Promise<RefundEventOutcome>>();
 
@@ -232,9 +235,13 @@ async function reconcileOnce(
 
   const change = store.applyRefundState(sale.sessionId, refunded, charge.amount);
   if (!change) return { kind: "retry", reason: "sale record vanished" };
+  // Applied in memory but not on disk (a full disk, a failed write): answer as
+  // not applied, so Stripe redelivers and the next attempt writes it again.
+  if (!change.persisted) return { kind: "retry", reason: "sale record not written" };
   // Not read = not known, which is not the same as "no disputes": leave the
   // recorded dispute state alone rather than clearing it.
   const disputeChange = reading ? store.applyDisputeState(sale.sessionId, reading) : null;
+  if (disputeChange && !disputeChange.persisted) return { kind: "retry", reason: "sale record not written" };
   const outcome: RefundEventOutcome = {
     kind: "applied",
     sessionId: sale.sessionId,
@@ -242,7 +249,7 @@ async function reconcileOnce(
     charged: charge.amount,
     change,
     dispute: reading && disputeChange ? { reading, change: disputeChange } : null,
-    ...(sale.tampered ? { tampered: true as const } : {}),
+    slots: sale.slots.length,
   };
   noteOutcome(input.paymentIntentId, outcome);
   return outcome;
@@ -303,9 +310,9 @@ function noteOutcome(paymentIntentId: string, outcome: RefundEventOutcome): void
   }
   awaitingSince.delete(paymentIntentId);
   if (outcome.kind === "foreign") counts.foreign++;
-  // A tampered session's refund is ours and voids no ticket; counting it here
-  // would read as an organiser refund.
-  if (outcome.kind === "applied" && !outcome.tampered) {
+  // A sale with no slots (a tampered session, a shop order, a sale that minted
+  // nothing) voids no ticket; counting it would read as a ticket refund.
+  if (outcome.kind === "applied" && outcome.slots > 0) {
     if (outcome.change.voided) counts.voided++;
     if (outcome.change.unvoided) counts.unvoided++;
     if (outcome.dispute?.change.voided) counts.disputeVoided++;

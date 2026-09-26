@@ -33,7 +33,10 @@
  * A file that EXISTS but cannot be read is never overwritten (the #424 lesson
  * from onchain-events.json): records keep working in memory for this process,
  * nothing is persisted over the file, and /api/health alarms until an operator
- * restores it.
+ * restores it. Refunds on sales the file knows are retried by Stripe until then
+ * (sale-refunds.ts). A sale made DURING that window exists in memory only: after
+ * the restore and restart, a refund on it reads "our fee, no record" and stays
+ * on the `stuck` alarm — it is never voided automatically.
  */
 
 import { readFileSync } from "node:fs";
@@ -144,9 +147,10 @@ export function isPersisting(): boolean {
   return fileUnreadable === null;
 }
 
-function persist(): void {
-  if (fileUnreadable) return;
-  writeJsonAtomic(STORE_FILE, store, "ticket-sales", { pretty: true });
+/** False when nothing reached disk: the file is unreadable, or the write failed. */
+function persist(): boolean {
+  if (fileUnreadable) return false;
+  return writeJsonAtomic(STORE_FILE, store, "ticket-sales", { pretty: true });
 }
 
 export interface SaleStubInput {
@@ -217,7 +221,7 @@ export function recordSaleSlots(
     return false;
   }
   sale.onChainEventId = id;
-  sale.contract = contract;
+  sale.contract = contract.toLowerCase();
   for (const slot of slots) if (!sale.slots.includes(slot)) sale.slots.push(slot);
   persist();
   return true;
@@ -258,6 +262,8 @@ export interface RefundStateChange {
   unvoided: boolean;
   /** A partial refund above our own that no operator has acknowledged. */
   partialAlarm: boolean;
+  /** Whether the new state reached disk. False = applied in memory only; the caller must retry. */
+  persisted: boolean;
 }
 
 /**
@@ -302,11 +308,12 @@ export function applyRefundState(
     delete sale.partialRefund;
   }
 
-  persist();
+  const persisted = persist();
   return {
     voided: full && !wasVoid,
     unvoided: !full && wasVoid,
     partialAlarm: partialAlarmed(sale),
+    persisted,
   };
 }
 
@@ -331,6 +338,8 @@ export interface DisputeStateChange {
   voided: boolean;
   /** A dispute void was lifted: the dispute was won (or withdrawn). */
   unvoided: boolean;
+  /** Whether the new state reached disk. False = applied in memory only; the caller must retry. */
+  persisted: boolean;
 }
 
 /**
@@ -367,8 +376,8 @@ export function applyDisputeState(
     delete sale.dispute;
   }
 
-  persist();
-  return { voided: reading.chargeback && !wasVoid, unvoided: !reading.chargeback && wasVoid };
+  const persisted = persist();
+  return { voided: reading.chargeback && !wasVoid, unvoided: !reading.chargeback && wasVoid, persisted };
 }
 
 /**
@@ -377,13 +386,18 @@ export function applyDisputeState(
  * same reason as the other ops acknowledgements: an alarm cleared by nobody is
  * an alarm nobody owns.
  */
-export function acknowledgePartialRefund(sessionId: string, by: string, now: Date = new Date()): boolean {
+export function acknowledgePartialRefund(
+  sessionId: string,
+  by: string,
+  now: Date = new Date(),
+): "acknowledged" | "none" | "not-persisted" {
   ensureLoaded();
   const sale = store[sessionId];
-  if (!sale?.partialRefund) return false;
+  if (!sale?.partialRefund) return "none";
   sale.partialRefundAcknowledged = { amount: sale.partialRefund.amount, at: now.toISOString(), by };
-  persist();
-  return true;
+  // An operator request: reporting "acknowledged" for a write that did not land
+  // is worse than failing loudly (persist.ts).
+  return persist() ? "acknowledged" : "not-persisted";
 }
 
 /**
@@ -436,7 +450,7 @@ export function slotRefundStates(onChainEventId: string, contract: string): Map<
 export function listFlaggedSales(): TicketSale[] {
   ensureLoaded();
   return Object.values(store)
-    .filter((s) => isSaleVoid(s) || s.partialRefund || s.dispute)
+    .filter((s) => (isSaleVoid(s) && s.slots.length > 0) || s.partialRefund || s.dispute)
     .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
 }
 
@@ -447,6 +461,7 @@ export function listFlaggedSales(): TicketSale[] {
 export interface TicketSalesHealth {
   ok: boolean;
   records: number;
+  /** Sales with tickets whose slots are void. */
   voidedSales: number;
   /** Partial refunds above our own that no operator has acknowledged — the alarm. */
   partialRefunds: number;
@@ -469,7 +484,8 @@ export function ticketSalesHealth(): TicketSalesHealth {
   let chargebacks = 0;
   let inquiries = 0;
   for (const sale of Object.values(store)) {
-    if (isSaleVoid(sale)) voidedSales++;
+    // A slotless sale (a shop order, a sale that minted nothing) voids no ticket.
+    if (isSaleVoid(sale) && sale.slots.length > 0) voidedSales++;
     if (partialAlarmed(sale)) partialRefunds++;
     if (sale.dispute?.needsResponse) disputesNeedingResponse++;
     if (sale.dispute?.state === "chargeback") chargebacks++;
