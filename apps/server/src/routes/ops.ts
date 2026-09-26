@@ -423,7 +423,9 @@ ops.post("/events/:id/cancel", async (c) => {
   // "The organiser vanished" is exactly when their feed may be unreadable, so the
   // feed is only used to find the organiser; the pinned creator (#670) is the
   // fallback, and `force` cancels an id neither knows (refunds still come from
-  // the sale records, never from the feed).
+  // the sale records, never from the feed). With no creator there is no account
+  // to expire open checkouts on: a buyer who pays after this is refunded at
+  // fulfilment instead.
   const event = await getEvent(eventId).catch(() => null);
   const creator = event?.creatorAddress ?? getRecordedFeedSigner(eventId)?.creatorAddress;
   if (!creator && body?.force !== true) {

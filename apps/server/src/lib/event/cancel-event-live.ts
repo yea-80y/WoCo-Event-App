@@ -23,7 +23,8 @@ export const liveCancelEventDeps: CancelEventDeps = {
     const s = getStripe();
     let expired = 0;
     // Checkout Sessions live at most 24 hours, so older open ones cannot exist.
-    const since = Math.floor(Date.now() / 1000) - 24 * 60 * 60;
+    // The extra 10 minutes covers clock skew between us and Stripe.
+    const since = Math.floor(Date.now() / 1000) - 24 * 60 * 60 - 10 * 60;
     for await (const session of s.checkout.sessions.list(
       { status: "open", created: { gte: since }, limit: 100 },
       { stripeAccount: account },

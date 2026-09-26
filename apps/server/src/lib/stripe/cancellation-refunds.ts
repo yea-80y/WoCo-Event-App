@@ -75,6 +75,8 @@ export const MAX_CREATES = 3;
 
 const IN_FLIGHT = new Set(["pending", "succeeded", "requires_action"]);
 const GONE = new Set(["failed", "canceled"]);
+// Inquiries (warning_*) are NOT parked: Stripe accepts a refund during one, and
+// the refund is usually what closes it.
 const OPEN_CHARGEBACK = new Set([...CHARGEBACK_STATUSES].filter((s) => s !== "lost"));
 
 export function cancellationIdempotencyKey(sessionId: string, amount: number, failedBefore: number): string {
@@ -198,7 +200,7 @@ async function processRow(
       // `abandoned` and the alarm rather than a silent loop.
       const attempts = row.attempts + 1;
       const status: CancelRefundStatus = attempts >= MAX_ATTEMPTS ? "abandoned" : "disputed";
-      set({ status, attempts, lastError: code });
+      set({ status, attempts, charged: charge.amount, currency: charge.currency, lastError: code });
       return status;
     }
     const attempts = row.attempts + 1;

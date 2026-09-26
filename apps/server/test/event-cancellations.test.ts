@@ -305,12 +305,15 @@ describe("refund pass", () => {
     cancel();
     const charge: FakeCharge = { amount: 2200, refunds: [], disputes: [{ status: "needs_response" }] };
     const f = fakeDeps({ sales: [SALE], charges: { pi_1: charge } });
-    await job.runCancellationPass(f.deps);
+    const t0 = Date.parse("2026-10-01T00:00:00.000Z");
+    await job.runCancellationPass(f.deps, new Date(t0));
     assert.equal(row().status, "disputed");
     assert.equal(f.created.length, 0);
 
     charge.disputes = [{ status: "lost" }];
-    await job.runCancellationPass(f.deps);
+    await job.runCancellationPass(f.deps, new Date(t0 + 60 * 60_000));
+    assert.equal(row().status, "disputed", "a parked chargeback is not re-read every pass");
+    await job.runCancellationPass(f.deps, new Date(t0 + store.DISPUTED_RECHECK_EVERY_MS));
     assert.equal(row().status, "done", "the bank already returned the money");
     assert.equal(f.created.length, 0);
 
@@ -318,6 +321,19 @@ describe("refund pass", () => {
     charge.disputes = [{ status: "won" }];
     await job.runCancellationPass(f.deps);
     assert.equal(f.created.length, 1, "won: the money is back with the organiser, so the buyer is refunded");
+  });
+
+  test("a dispute webhook sends a parked chargeback straight back to the job", async () => {
+    cancel();
+    const charge: FakeCharge = { amount: 2200, refunds: [], disputes: [{ status: "needs_response" }] };
+    const f = fakeDeps({ sales: [SALE], charges: { pi_1: charge } });
+    const t0 = Date.parse("2026-10-01T00:00:00.000Z");
+    await job.runCancellationPass(f.deps, new Date(t0));
+    assert.equal(row().status, "disputed");
+    charge.disputes = [{ status: "won" }];
+    assert.equal(store.reopenRefundRow(EV, "cs_1", new Date(t0 + 60_000)), true);
+    await job.runCancellationPass(f.deps, new Date(t0 + 120_000));
+    assert.equal(f.created.length, 1, "won and refunded within the minute, not six hours later");
   });
 
   test("an inquiry (warning_*) is refunded — the refund closes it", async () => {
@@ -332,6 +348,8 @@ describe("refund pass", () => {
     const f = fakeDeps({ sales: [SALE], charges: { pi_1: { amount: 2200, refunds: [] } }, createError: "charge_disputed" });
     await job.runCancellationPass(f.deps);
     assert.equal(row().status, "disputed");
+    assert.equal(row().charged, 2200, "counted in the totals while parked");
+    assert.equal(row().currency, "gbp");
     for (let i = 1; i < job.MAX_ATTEMPTS; i++) await job.runCancellationPass(f.deps);
     assert.equal(row().status, "abandoned", "a refusal no read can explain is not a silent loop");
   });
@@ -466,6 +484,28 @@ describe("cancelEvent", () => {
     const r = core.cancelEvent({ eventId: EV, by: "x" }, deps);
     assert.equal(r.ok, true);
     assert.equal(store.cancellationGate(EV), "cancelled");
+  });
+
+  test("the organiser's window closes 2 days after the end (else the start); a repair press is never refused", async () => {
+    const { ORGANISER_CANCEL_WINDOW_DAYS } = await import("@woco/shared");
+    assert.equal(ORGANISER_CANCEL_WINDOW_DAYS, 2, "owner decision 2026-09-26");
+    const end = Date.parse("2026-10-10T23:00:00.000Z");
+    const ev = { startDate: "2026-10-10T19:00:00.000Z", endDate: "2026-10-10T23:00:00.000Z" };
+    const closes = end + 2 * 86_400_000;
+    assert.equal(core.organiserCancelClosed(ev, "open", end + 3_600_000), false, "the morning after");
+    assert.equal(core.organiserCancelClosed(ev, "open", closes), false, "the last moment");
+    assert.equal(core.organiserCancelClosed(ev, "open", closes + 1), true);
+    assert.equal(core.organiserCancelClosed(ev, "cancelled", closes + 86_400_000), false, "already cancelled: the repair path");
+    assert.equal(core.organiserCancelClosed(ev, "unknown", closes + 1), true, "an unreadable record opens no window");
+    const startOnly = { startDate: "2026-10-10T19:00:00.000Z" };
+    assert.equal(core.organiserCancelClosed(startOnly, "open", Date.parse(startOnly.startDate) + 2 * 86_400_000 + 1), true);
+    assert.equal(core.organiserCancelClosed({ endDate: "not a date", startDate: "" }, "open", closes * 2), false, "no date, nothing to measure from");
+  });
+
+  test("the organiser's cancel window closes no later than the takings are released", async () => {
+    const { ORGANISER_CANCEL_WINDOW_DAYS } = await import("@woco/shared");
+    const { POST_EVENT_RELEASE_DAYS } = await import("../src/lib/stripe/payout-policy.js");
+    assert.ok(ORGANISER_CANCEL_WINDOW_DAYS <= POST_EVENT_RELEASE_DAYS);
   });
 });
 

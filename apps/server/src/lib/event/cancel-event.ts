@@ -13,8 +13,8 @@
  *      pay after the cancellation; fulfilment refunds whoever pays in it anyway.
  */
 
-import { CANCELLATION_RETURNS_PLATFORM_FEE } from "@woco/shared";
-import { recordCancellation, type EventCancellation } from "./cancellations.js";
+import { CANCELLATION_RETURNS_PLATFORM_FEE, organiserCancelClosesAt } from "@woco/shared";
+import { recordCancellation, type CancellationGate, type EventCancellation } from "./cancellations.js";
 
 export interface CancelEventDeps {
   unlist(eventId: string): void;
@@ -57,4 +57,19 @@ export function cancelEvent(
   }
   if (recorded.created) console.warn(`[cancel-event] ${input.eventId} CANCELLED by ${input.by} — refunding every sale`);
   return { ok: true, created: recorded.created, cancellation: recorded.cancellation };
+}
+
+/**
+ * Whether the organiser's window to cancel has closed (owner policy): an event
+ * that ended days ago happened, and its takings may be paid out. A press on one
+ * already cancelled is the repair path, so it is never refused; ops never asks.
+ */
+export function organiserCancelClosed(
+  event: { endDate?: string; startDate?: string },
+  gate: CancellationGate,
+  now: number,
+): boolean {
+  if (gate === "cancelled") return false;
+  const closesAt = organiserCancelClosesAt(event);
+  return closesAt !== null && now > closesAt;
 }

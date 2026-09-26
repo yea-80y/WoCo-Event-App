@@ -28,6 +28,7 @@ import { getStripe } from "./client.js";
 import { holdCeilingAt } from "./payout-policy.js";
 import { pendingScheduleHeals, retryPendingScheduleHeals } from "./payout-schedule.js";
 import {
+  getEntry,
   listHeld,
   markManyReleased,
   markVoid,
@@ -380,6 +381,22 @@ async function settlePendingIntent(
   }
 
   if (nowMs - new Date(intent.createdAt).getTime() < REPLAY_WINDOW_MS) {
+    // A sale in the set whose event has since been cancelled (#644) must not be
+    // paid. Clearing the intent now would drop the key that makes a replay safe
+    // for the rest of the set, so the group waits: once the window passes the
+    // intent is abandoned below and the hold applies sale by sale.
+    const cancelled = intent.sessionIds.filter((id) => {
+      const eventId = getEntry(id)?.eventId;
+      return !!eventId && gateway.cancellationHold?.(eventId, id) === true;
+    });
+    if (cancelled.length > 0) {
+      outcome.deferred.push(...intent.sessionIds);
+      console.warn(
+        `[payout-release] Intent ${intent.idempotencyKey} not replayed: ${cancelled.length} sale(s) ` +
+          `belong to a cancelled event. The group waits until the intent can be abandoned.`,
+      );
+      return false;
+    }
     // Definitively absent and the idempotency key is still live: replay the
     // journalled request verbatim. If a concurrent duplicate somehow exists,
     // the key — not our bookkeeping — is what prevents a second payout.

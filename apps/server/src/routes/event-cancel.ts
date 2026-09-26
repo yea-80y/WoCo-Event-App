@@ -9,17 +9,20 @@
  * against, never a field of the feed body (#389). The organiser types the
  * event's name to confirm; the server checks it too, so a stray call cannot
  * cancel an event. The response carries the feed with `cancelledAt` for the
- * organiser to re-sign (Phase B); every API read overlays it anyway.
+ * organiser to re-sign (Phase B); every API read overlays it anyway. The
+ * organiser's window closes ORGANISER_CANCEL_WINDOW_DAYS after the event ends;
+ * the ops route has none.
  */
 
 import { Hono, type Context } from "hono";
+import { ORGANISER_CANCEL_WINDOW_DAYS } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
 import { getStripeAccount } from "../lib/stripe/accounts.js";
-import { cancelEvent } from "../lib/event/cancel-event.js";
+import { cancelEvent, organiserCancelClosed } from "../lib/event/cancel-event.js";
 import { liveCancelEventDeps } from "../lib/event/cancel-event-live.js";
-import { cancellationProgress, withCancellation } from "../lib/event/cancellations.js";
+import { cancellationGate, cancellationProgress, withCancellation } from "../lib/event/cancellations.js";
 
 export const eventCancel = new Hono<AppEnv>();
 
@@ -38,6 +41,15 @@ eventCancel.post("/:id/cancel", requireAuth, async (c) => {
   const { event, parentAddress, error } = await loadOwned(c, eventId);
   if (error) return error;
   if (event.deleted) return c.json({ ok: false, error: "This event was deleted" }, 409);
+  if (organiserCancelClosed(event, cancellationGate(eventId), Date.now())) {
+    return c.json(
+      {
+        ok: false,
+        error: `This event ended more than ${ORGANISER_CANCEL_WINDOW_DAYS} days ago, so it can no longer be cancelled. You can still refund individual buyers from your Stripe Dashboard.`,
+      },
+      409,
+    );
+  }
 
   const body = (c.get("body") ?? {}) as { confirmTitle?: unknown };
   // Compared the way a person reads it: a title pasted with a non-breaking space
