@@ -515,6 +515,10 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
   event-listing-state.json (#37 global-directory overlay) — if lost, the builder self-heals by
   reseeding from the last snapshot (directory-snapshot.ts) rather than publishing an empty
   directory, but that only recovers events already in a snapshot
+  ticket-sales.json (#645 part C — sessionId → payment intent + minted slots + what we
+    refunded ourselves. Refunds void tickets THROUGH it. Losing it fails OPEN:
+    every refunded ticket reads valid at the door again. The money side does not depend on
+    it (the payout sweep re-reads Stripe). Present-but-unreadable is never overwritten)
   event-feed-signers.json (#670 — eventId → the organiser's content-feed signer + verified
     creator, pinned at create, write-once. The money path's ONLY carrier for an UNLISTED event.
     Losing it fails CLOSED: unlisted events stop selling until re-created; listed ones fall back

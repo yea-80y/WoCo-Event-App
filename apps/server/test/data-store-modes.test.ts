@@ -291,6 +291,20 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     },
   },
   {
+    store: "stripe/ticket-sales",
+    drive: async () => {
+      const m = await import("../src/lib/stripe/ticket-sales.js");
+      m.recordSaleStub({
+        sessionId: "cs_1",
+        paymentIntentId: "pi_1",
+        connectedAccountId: "acct_1",
+        quantity: 1,
+        amountTotal: 1000,
+        currency: "gbp",
+      });
+    },
+  },
+  {
     store: "stripe/payout-ledger",
     drive: async () => {
       const m = await import("../src/lib/stripe/payout-ledger.js");

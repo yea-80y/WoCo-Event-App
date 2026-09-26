@@ -43,6 +43,7 @@ import {
   pendingRefundsHealth,
 } from "../lib/stripe/pending-refunds.js";
 import { liveRefundGateway } from "../lib/stripe/pending-refunds-live.js";
+import { acknowledgePartialRefund, listFlaggedSales, ticketSalesHealth } from "../lib/stripe/ticket-sales.js";
 import { mergeParticipants, knownSubjects, participantsFor } from "../lib/social/participants.js";
 import { clearTallyCache } from "./social.js";
 import { isValidSenderId, liftSender, listForOps, stopSender } from "../lib/sender-pacing/index.js";
@@ -363,6 +364,40 @@ ops.post("/pending-refunds/:sessionId/resolve", async (c) => {
   }
   console.log(`[ops] pending refund ${sessionId} marked resolved by ${by}`);
   return c.json({ ok: true, data: { resolved: true, health: pendingRefundsHealth() } });
+});
+
+/**
+ * GET /api/ops/ticket-sales
+ *
+ * Sales whose tickets a refund has voided, or that carry a partial refund
+ * above our own — the rows behind `ticketSales` on /api/health (#645 part C).
+ * Stripe ids, amounts and slots only; no buyer data lives in this store.
+ */
+ops.get("/ticket-sales", (c) => {
+  const entries = listFlaggedSales();
+  return c.json({ ok: true, data: { health: ticketSalesHealth(), count: entries.length, entries } });
+});
+
+/**
+ * POST /api/ops/ticket-sales/:sessionId/acknowledge-partial-refund
+ *
+ * An operator has looked at a partial refund (the organiser refunded part of an
+ * order, which policy does not provide for) and dealt with it. Clears the alarm
+ * for this amount only; a larger partial refund later alarms again. The tickets
+ * stay valid either way — a partial refund never voids.
+ */
+ops.post("/ticket-sales/:sessionId/acknowledge-partial-refund", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const body = (await c.req.json().catch(() => null)) as { by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  const result = acknowledgePartialRefund(sessionId, by);
+  if (result === "none") return c.json({ ok: false, error: "No partial refund on that sale" }, 404);
+  if (result === "not-persisted") {
+    return c.json({ ok: false, error: "The sale record could not be written - see compliancePersistence on /api/health" }, 503);
+  }
+  console.log(`[ops] partial refund on ${sessionId} acknowledged by ${by}`);
+  return c.json({ ok: true, data: { acknowledged: true, health: ticketSalesHealth() } });
 });
 
 /** Tests only — clears the failed-attempt window between cases. */

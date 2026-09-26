@@ -46,6 +46,9 @@ import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../lib/stripe/checkout-provenance.js";
 import { liveProvenanceReads, refundTamperedSession } from "../lib/stripe/checkout-provenance-live.js";
 import { fulfilPaidSession } from "../lib/stripe/fulfilment.js";
+import { recordSaleStub } from "../lib/stripe/ticket-sales.js";
+import { alreadyApplied, noteApplied, reconcileRefundEvent } from "../lib/stripe/sale-refunds.js";
+import { liveSaleRefundReads } from "../lib/stripe/sale-refunds-live.js";
 import { liveFulfilmentDeps } from "../lib/stripe/fulfilment-live.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
 import { getReservation } from "../lib/event/reservation-store.js";
@@ -1160,11 +1163,41 @@ stripe.post("/webhook", async (c) => {
           break;
         }
 
+        const paymentIntentId =
+          typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id;
+
+        // #645 part C: the sale record, written the moment the session is ours
+        // to act on, so a refund or dispute on it can find its tickets. Before
+        // the tampered refund and before fulfilment, both of which record into
+        // it. Fenced: the session is consumed now, so a throw here would turn
+        // into a 500 whose redelivery the registry then skips.
+        // Every sale of ours gets one, shop orders included, so a refund on it is
+        // recognised as ours rather than retried as "our fee, no record". A
+        // tampered session's metadata is exactly what failed its check, so it
+        // records none.
+        const md = verdict.kind === "ours" ? (session.metadata ?? {}) : {};
+        if (paymentIntentId && event.account) {
+          try {
+            recordSaleStub({
+              sessionId: session.id,
+              paymentIntentId,
+              connectedAccountId: event.account,
+              eventId: md.eventId,
+              seriesId: md.seriesId,
+              // Parsed as fulfilment parses it; a tampered session's is unknown.
+              quantity: verdict.kind === "ours" ? Math.max(1, Math.min(10, parseInt(md.quantity ?? "1", 10) || 1)) : 0,
+              amountTotal: session.amount_total ?? 0,
+              currency: session.currency ?? "",
+              ...(verdict.kind === "tampered" ? { tampered: true, autoRefunded: session.amount_total ?? 0 } : {}),
+            });
+          } catch (err) {
+            console.error(`[stripe-webhook] Session ${session.id}: sale record not written — refunds will not void its tickets:`, err);
+          }
+        }
+
         if (verdict.kind === "tampered") {
           // Ours, but altered after creation: the buyer paid for something we
           // will not issue. Refund through the account the event came from.
-          const paymentIntentId =
-            typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id;
           console.error(
             `[stripe-webhook] Session ${session.id} on ${event.account} was ALTERED after creation (${verdict.reason}) — refunding, not fulfilling`,
           );
@@ -1212,6 +1245,40 @@ stripe.post("/webhook", async (c) => {
             // Cannot happen by contract; if it ever does, the log is the only trace.
             console.error("[stripe-webhook] fulfilPaidSession rejected — INVARIANT BROKEN:", err);
           });
+      }
+      break;
+    }
+
+    case "charge.refunded":
+    case "refund.updated":
+    case "refund.failed": {
+      // #645 part C: a refund we did not make (the organiser's own Dashboard, a
+      // cancellation) voids the sale's tickets; a refund that FAILED or was
+      // CANCELLED lifts that void again, and one that moves from requires_action
+      // to succeeded lands it (`refund.updated` is the only event carrying those
+      // two). All are applied from Stripe's current totals, never from this
+      // event's body (lib/stripe/sale-refunds.ts). Only a direct charge on a
+      // connected account can be one of our sales.
+      if (!event.account || alreadyApplied(event.id)) break;
+      const obj = event.data.object as { payment_intent?: string | { id: string } | null };
+      const piId = typeof obj.payment_intent === "string" ? obj.payment_intent : obj.payment_intent?.id;
+      if (!piId) break;
+      const outcome = await reconcileRefundEvent({ paymentIntentId: piId, account: event.account }, liveSaleRefundReads);
+      if (outcome.kind === "retry") {
+        console.warn(`[stripe-webhook] ${event.type} ${event.id} for ${piId}: ${outcome.reason} — asking Stripe to retry`);
+        return c.text("Refund could not be applied yet", 500);
+      }
+      noteApplied(event.id);
+      if (outcome.kind === "applied") {
+        const { change } = outcome;
+        if (change.voided || change.unvoided || change.partialAlarm) {
+          console.warn(
+            `[stripe-webhook] ${event.type} on sale ${outcome.sessionId}: refunded ${outcome.refunded}/${outcome.charged}` +
+              (change.voided ? (outcome.slots > 0 ? " — tickets VOIDED" : " — refunded in full (no tickets)") : "") +
+              (change.unvoided ? " — refund failed, tickets valid again" : "") +
+              (change.partialAlarm ? " — PARTIAL refund above our own, tickets left valid (alarm)" : ""),
+          );
+        }
       }
       break;
     }

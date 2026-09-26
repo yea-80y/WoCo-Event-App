@@ -104,6 +104,17 @@ ETH + USDC on Base/Optimism/Mainnet/Sepolia:
   `.data/pending-refunds.json` and retried every 10 min under the same idempotency key
   (`lib/stripe/pending-refunds.ts`, #367); `/api/health` `pendingRefunds` alarms until it
   lands, and `/api/ops/pending-refunds` lists / retries / resolves.
+- Refunds made OUTSIDE fulfilment void the tickets (#645 part C). `.data/ticket-sales.json`
+  (`lib/stripe/ticket-sales.ts`) records each paid session's payment intent, the slots each
+  mint chunk produced, and what fulfilment refunded itself. `charge.refunded` /
+  `refund.updated` / `refund.failed` (`lib/stripe/sale-refunds.ts`) re-read the charge's refunds
+  and apply the total, one event per payment intent at a time: refunded in full → every slot
+  void; a partial refund above our own → nothing void,
+  flagged + `/api/health` `ticketSales` alarm until `/api/ops/ticket-sales/:id/acknowledge-partial-refund`.
+  Voids key on (onChainEventId, slot), never the orderRef (#661). The handlers never refund.
+  A state that cannot be written (file unreadable, disk full) answers 500 so Stripe redelivers
+  (~3 days). A sale made while the file was unreadable is in memory only: after a restore it
+  surfaces as `refundEvents.stuck`, never as an automatic void.
 
 ---
 

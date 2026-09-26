@@ -124,6 +124,20 @@ export interface FulfilmentDeps {
   /** Contract batch cap — `ON_CHAIN_BATCH_MAX` in production. */
   onChainBatchMax: number;
 
+  /**
+   * Sale record (#645 part C): the slots one mint chunk produced, keyed to the
+   * on-chain event minted against — what a refund or dispute later voids. Must
+   * not throw; fenced anyway, because a missing record costs a void, never a
+   * ticket.
+   */
+  recordSaleSlots(sessionId: string, onChainEventId: string, contract: string, slots: number[]): void;
+  /**
+   * What fulfilment itself refunds, recorded BEFORE the refund call so the
+   * refund event that follows reads as ours, not the organiser's. Must not
+   * throw; fenced anyway.
+   */
+  recordAutoRefund(sessionId: string, amount: number): void;
+
   /** Gate binding. THROWS when it cannot persist — fenced here, correct at /redeem. */
   bindTicket(binding: Omit<GateBinding, "boundAt" | "parentAddress"> & { parentAddress: string }): boolean;
 
@@ -620,6 +634,7 @@ export async function fulfilPaidSession(
     try {
       const minted = await mintV2({
         deps,
+        sessionId: session.id,
         eventId,
         seriesId,
         quantity,
@@ -738,6 +753,14 @@ export async function fulfilPaidSession(
       // we omit it so Stripe refunds the full intent — same as the old behaviour.
       if (claimedResults.length > 0 && refundAmount > 0) {
         refundParams.amount = refundAmount;
+      }
+      // Recorded as an ATTEMPT, before Stripe is called: if the call throws, the
+      // retry job (#367) lands this same refund later, and its event must still
+      // read as ours.
+      try {
+        deps.recordAutoRefund(session.id, refundParams.amount ?? amountTotal);
+      } catch (err) {
+        console.error("[fulfilment] recordAutoRefund threw (continuing to refund):", err);
       }
       try {
         // Idempotent at Stripe for 24h: a retry after a lost response returns
@@ -916,6 +939,8 @@ export async function fulfilPaidSession(
 
 interface MintV2Args {
   deps: FulfilmentDeps;
+  /** The sale the minted slots are recorded under (#645 part C). */
+  sessionId: string;
   eventId: string;
   seriesId: string;
   quantity: number;
@@ -985,6 +1010,13 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
     try {
       const chunkSlots = await deps.batchClaimForOnChain(a.v2OnChainEventId, chunkAddresses, orderRefBytes32, a.mintContract);
       slotsForBurners.push(...chunkSlots);
+      // Per chunk, from the contract's own answer: these slots exist on chain
+      // whatever happens to the rest of the batch, so a refund must reach them.
+      try {
+        deps.recordSaleSlots(a.sessionId, a.v2OnChainEventId, contractKey(a.mintContract), chunkSlots);
+      } catch (err) {
+        console.error(`[fulfilment/v2] recordSaleSlots threw — a refund will not void these slots:`, err);
+      }
       console.log(
         `[fulfilment/v2] batchClaimFor chunk ${chunkStart}..${chunkStart + chunk.length} ` +
         `→ slots=${chunkSlots[0]}..${chunkSlots[chunkSlots.length - 1]}`,

@@ -26,6 +26,7 @@ import { getSiteTheme, resolveSiteEventSigner } from "../site/service.js";
 import { sendTicketEmail } from "../../routes/tickets.js";
 import { recordFailure } from "../email/failure-ledger.js";
 import { recordPendingRefund } from "./pending-refunds.js";
+import { recordAutoRefund, recordSaleSlots } from "./ticket-sales.js";
 import type { FulfilmentDeps } from "./fulfilment.js";
 
 export const liveFulfilmentDeps: FulfilmentDeps = {
@@ -44,6 +45,10 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   generateBurner,
   batchClaimForOnChain,
   onChainBatchMax: ON_CHAIN_BATCH_MAX,
+  recordSaleSlots: (sessionId, onChainEventId, contract, slots) => {
+    recordSaleSlots(sessionId, onChainEventId, contract, slots);
+  },
+  recordAutoRefund,
   bindTicket,
   consumeReservation,
   createRefund: async (params, connectedAccountId, idempotencyKey) => {
