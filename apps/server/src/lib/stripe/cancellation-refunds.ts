@@ -57,7 +57,7 @@ export interface CancellationRefundDeps {
     account: string,
   ): Promise<Array<{ amount: number; status: string | null; pendingReason?: string | null }>>;
   /** Every dispute on the charge, all pages. Throws on transport. */
-  disputesForCharge(chargeId: string, account: string): Promise<Array<{ status: string }>>;
+  disputesForCharge(chargeId: string, account: string): Promise<Array<{ status: string; amount?: number }>>;
   /** Rejects with the Stripe error (its `code` is read). */
   createRefund(
     params: { paymentIntentId: string; amount: number; feeReturned: boolean; eventId: string; sessionId: string },
@@ -122,6 +122,8 @@ async function processRow(
 
   let charge: CancellationCharge | null;
   let refunds: RefundView[];
+  /** What LOST chargebacks already returned through the bank (all of it when no amount is known). */
+  let lostAmount = 0;
   try {
     charge = await deps.latestCharge(row.paymentIntentId, row.account);
     if (!charge) {
@@ -134,10 +136,7 @@ async function processRow(
         set({ status: "disputed", charged: charge.amount, currency: charge.currency, lastError: undefined });
         return "disputed";
       }
-      if (disputes.some((d) => d.status === "lost")) {
-        set({ status: "done", charged: charge.amount, refunded: charge.amount, currency: charge.currency, lastError: undefined });
-        return "done";
-      }
+      for (const d of disputes) if (d.status === "lost") lostAmount += d.amount ?? charge.amount;
     }
     refunds = await deps.refundsForCharge(charge.id, row.account);
   } catch (err) {
@@ -148,12 +147,16 @@ async function processRow(
 
   const inFlight = refunds.filter((r) => r.status && IN_FLIGHT.has(r.status)).reduce((a, r) => a + r.amount, 0);
   const failedBefore = refunds.filter((r) => r.status && GONE.has(r.status)).length;
-  const remaining = charge.amount - inFlight;
+  // A chargeback on PART of an order returned only its amount: the rest is
+  // still the buyer's to get back.
+  const remaining = charge.amount - inFlight - lostAmount;
+  const wasDone = row.status === "done";
 
   if (remaining <= 0) {
     const status = settledStatus(refunds);
-    set({ status, charged: charge.amount, refunded: inFlight, currency: charge.currency, lastError: undefined });
-    if (status === "done") await voidNow();
+    set({ status, charged: charge.amount, refunded: Math.min(charge.amount, inFlight + lostAmount), currency: charge.currency, lastError: undefined });
+    // Voided on arrival at done, not again on each daily re-read of a done row.
+    if (status === "done" && !wasDone) await voidNow();
     return status;
   }
 
@@ -189,8 +192,14 @@ async function processRow(
       return "pending";
     }
     if (code === "charge_disputed" || code === "refund_disputed_payment") {
-      set({ status: "disputed", lastError: code });
-      return "disputed";
+      // A dispute opened between the read and the create: the next read sees it
+      // and parks the row without an attempt. If the read shows NO open dispute
+      // and Stripe still refuses, this is stuck — the attempts it costs lead to
+      // `abandoned` and the alarm rather than a silent loop.
+      const attempts = row.attempts + 1;
+      const status: CancelRefundStatus = attempts >= MAX_ATTEMPTS ? "abandoned" : "disputed";
+      set({ status, attempts, lastError: code });
+      return status;
     }
     const attempts = row.attempts + 1;
     const status: CancelRefundStatus = attempts >= MAX_ATTEMPTS ? "abandoned" : "failed";

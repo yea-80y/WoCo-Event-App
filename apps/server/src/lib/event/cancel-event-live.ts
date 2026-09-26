@@ -22,7 +22,12 @@ export const liveCancelEventDeps: CancelEventDeps = {
   async expireOpenSessions(eventId, account) {
     const s = getStripe();
     let expired = 0;
-    for await (const session of s.checkout.sessions.list({ status: "open", limit: 100 }, { stripeAccount: account })) {
+    // Checkout Sessions live at most 24 hours, so older open ones cannot exist.
+    const since = Math.floor(Date.now() / 1000) - 24 * 60 * 60;
+    for await (const session of s.checkout.sessions.list(
+      { status: "open", created: { gte: since }, limit: 100 },
+      { stripeAccount: account },
+    )) {
       if (session.metadata?.eventId !== eventId) continue;
       try {
         await s.checkout.sessions.expire(session.id, {}, { stripeAccount: account });

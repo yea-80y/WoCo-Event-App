@@ -70,7 +70,7 @@ function fakeDeps(o: {
       return o.charges[chargeId.slice(3)]!.refunds;
     },
     async disputesForCharge(chargeId) {
-      return o.charges[chargeId.slice(3)]!.disputes ?? [];
+      return (o.charges[chargeId.slice(3)]!.disputes ?? []) as Array<{ status: string; amount?: number }>;
     },
     async createRefund(params, account, key) {
       if (o.createError) throw Object.assign(new Error(o.createError), { code: o.createError });
@@ -156,7 +156,7 @@ describe("store", () => {
     assert.ok(store.recordCancellation({ eventId: EV, by: "x", feeReturned: false }), "a retry once the disk is back succeeds");
   });
 
-  test("settled is derived: one open row un-settles the event, disputed counts as settled", () => {
+  test("settled is derived: one open row un-settles the event; a dispute is NOT settled", () => {
     cancel();
     assert.equal(store.isCancellationSettled(EV), true, "no sales");
     store.addRefundRow(EV, SALE);
@@ -166,11 +166,33 @@ describe("store", () => {
     store.addRefundRow(EV, { ...SALE, sessionId: "cs_late", paymentIntentId: "pi_late" });
     assert.equal(store.isCancellationSettled(EV), false, "a late sale un-settles it");
     store.updateRefundRow(EV, "cs_late", { status: "disputed" });
-    assert.equal(store.isCancellationSettled(EV), true);
+    assert.equal(store.isCancellationSettled(EV), false, "a WON dispute puts the money back and the buyer is refunded from it");
     store.updateRefundRow(EV, "cs_late", { status: "abandoned" });
     assert.equal(store.isCancellationSettled(EV), false, "abandoned holds until an operator resolves it");
     assert.equal(store.resolveRefundRow(EV, "cs_late", "ops"), "resolved");
     assert.equal(store.isCancellationSettled(EV), true);
+  });
+
+  test("per sale: a sale with NO row is not settled — never read as refunded", () => {
+    cancel();
+    assert.equal(store.isSaleRefundSettled(EV, "cs_unseen"), false);
+    store.addRefundRow(EV, SALE);
+    assert.equal(store.isSaleRefundSettled(EV, "cs_1"), false);
+    store.updateRefundRow(EV, "cs_1", { status: "disputed" });
+    assert.equal(store.isSaleRefundSettled(EV, "cs_1"), false);
+    store.updateRefundRow(EV, "cs_1", { status: "done" });
+    assert.equal(store.isSaleRefundSettled(EV, "cs_1"), true);
+  });
+
+  test("a refund still open a week after joining the cancellation alarms (disputes excepted)", () => {
+    cancel();
+    const old = new Date(Date.now() - store.ROW_OVERDUE_MS - 60_000);
+    store.addRefundRow(EV, SALE, old);
+    store.addRefundRow(EV, { ...SALE, sessionId: "cs_d", paymentIntentId: "pi_d" }, old);
+    store.updateRefundRow(EV, "cs_d", { status: "disputed" });
+    const h = store.cancellationsStoreHealth();
+    assert.equal(h.overdue, 1);
+    assert.equal(h.ok, false);
   });
 });
 
@@ -305,11 +327,34 @@ describe("refund pass", () => {
     assert.equal(f.created.length, 1);
   });
 
-  test("a dispute error from Stripe on create is `disputed`, never abandoned", async () => {
+  test("a dispute error on create parks the row; if no open dispute ever shows, it abandons and alarms", async () => {
     cancel();
     const f = fakeDeps({ sales: [SALE], charges: { pi_1: { amount: 2200, refunds: [] } }, createError: "charge_disputed" });
-    for (let i = 0; i < job.MAX_ATTEMPTS + 2; i++) await job.runCancellationPass(f.deps);
+    await job.runCancellationPass(f.deps);
     assert.equal(row().status, "disputed");
+    for (let i = 1; i < job.MAX_ATTEMPTS; i++) await job.runCancellationPass(f.deps);
+    assert.equal(row().status, "abandoned", "a refusal no read can explain is not a silent loop");
+  });
+
+  test("a chargeback LOST on PART of the order: the rest is still refunded", async () => {
+    cancel();
+    const f = fakeDeps({
+      sales: [SALE],
+      charges: { pi_1: { amount: 2200, refunds: [], disputes: [{ status: "lost", amount: 1000 } as never] } },
+    });
+    await job.runCancellationPass(f.deps);
+    assert.equal(f.created.length, 1);
+    assert.equal(f.created[0]!.params.amount, 1200);
+  });
+
+  test("a done row re-read with nothing changed is not voided again", async () => {
+    cancel();
+    const f = fakeDeps({ sales: [SALE], charges: { pi_1: { amount: 2200, refunds: [] } } });
+    const t0 = new Date("2026-10-01T00:00:00Z");
+    await job.runCancellationPass(f.deps, t0);
+    assert.equal(f.reconciled.length, 1);
+    await job.runCancellationPass(f.deps, new Date(t0.getTime() + store.DONE_RECHECK_EVERY_MS + 1));
+    assert.equal(f.reconciled.length, 1, "one void per arrival at done");
   });
 
   test("charge_already_refunded is not an attempt: the next pass re-reads", async () => {

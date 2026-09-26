@@ -475,7 +475,7 @@ sitesRouter.get("/:id/events", async (c) => {
 
     const index = decodeJsonFeed<SiteEventsIndex>(page);
     if (!index) return c.json({ ok: false, error: "Corrupt events index" }, 500);
-    return c.json({ ok: true, data: index });
+    return c.json({ ok: true, data: withoutCancelled({ index, events: [] }).index });
   } catch {
     return c.json({ ok: false, error: "Failed to read events index" }, 500);
   }

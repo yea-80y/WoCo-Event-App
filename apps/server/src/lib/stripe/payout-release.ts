@@ -35,7 +35,7 @@ import {
   type PayoutLedgerEntry,
 } from "./payout-ledger.js";
 import { OPEN_DISPUTE_STATUSES } from "./dispute-status.js";
-import { cancellationGate, isCancellationSettled } from "../event/cancellations.js";
+import { cancellationGate, isSaleRefundSettled } from "../event/cancellations.js";
 import {
   clearIntent,
   getIntent,
@@ -97,12 +97,13 @@ export interface PayoutGateway {
   /** ISO-3166 alpha-2 of the business, which picks the hold ceiling. */
   accountCountry(stripeAccountId: string): Promise<string | undefined>;
   /**
-   * True while a sale of this event must not be paid out because the event was
-   * cancelled and its refunds are not all settled (#644) — or because the
-   * cancellation record cannot be read. Zero I/O. Optional so a gateway that
+   * True while THIS sale must not be paid out: its event was cancelled and the
+   * sale's refund is not settled (#644), or the cancellation record cannot be
+   * read. Per sale, not per event: a sale the refund job has not reached yet has
+   * no row, and a missing row must hold. Zero I/O. Optional so a gateway that
    * knows nothing of cancellations holds nothing.
    */
-  cancellationHold?(eventId: string): boolean;
+  cancellationHold?(eventId: string, sessionId: string): boolean;
 }
 
 export type ResolvedNet = { net: number; currency: string } | { held: "dispute" | "refund" };
@@ -278,9 +279,9 @@ export const liveGateway: PayoutGateway = {
     }
   },
 
-  cancellationHold(eventId) {
+  cancellationHold(eventId, sessionId) {
     const gate = cancellationGate(eventId);
-    return gate === "unknown" || (gate === "cancelled" && !isCancellationSettled(eventId));
+    return gate === "unknown" || (gate === "cancelled" && !isSaleRefundSettled(eventId, sessionId));
   },
 
   async accountCountry(stripeAccountId) {
@@ -456,7 +457,7 @@ export async function releaseForAccount(
     // refund is settled, and never forced out by the hold ceiling — paying the
     // organiser the balance a buyer's refund is waiting on is the one outcome
     // worse than a late payout. `heldPastCeiling` still counts them.
-    if (entry.eventId && gateway.cancellationHold?.(entry.eventId)) {
+    if (entry.eventId && gateway.cancellationHold?.(entry.eventId, entry.sessionId)) {
       outcome.deferred.push(entry.sessionId);
       continue;
     }

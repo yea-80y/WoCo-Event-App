@@ -45,6 +45,7 @@ import {
 import { liveRefundGateway } from "../lib/stripe/pending-refunds-live.js";
 import { acknowledgePartialRefund, listFlaggedSales, ticketSalesHealth } from "../lib/stripe/ticket-sales.js";
 import { getEvent } from "../lib/event/service.js";
+import { getRecordedFeedSigner } from "../lib/event/feed-signer-record.js";
 import { getStripeAccount } from "../lib/stripe/accounts.js";
 import { cancelEvent } from "../lib/event/cancel-event.js";
 import { liveCancelEventDeps } from "../lib/event/cancel-event-live.js";
@@ -416,16 +417,23 @@ ops.post("/ticket-sales/:sessionId/acknowledge-partial-refund", async (c) => {
  */
 ops.post("/events/:id/cancel", async (c) => {
   const eventId = c.req.param("id");
-  const body = (await c.req.json().catch(() => null)) as { by?: string } | null;
+  const body = (await c.req.json().catch(() => null)) as { by?: string; force?: boolean } | null;
   const by = (body?.by || "").trim().slice(0, 100);
   if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  // "The organiser vanished" is exactly when their feed may be unreadable, so the
+  // feed is only used to find the organiser; the pinned creator (#670) is the
+  // fallback, and `force` cancels an id neither knows (refunds still come from
+  // the sale records, never from the feed).
   const event = await getEvent(eventId).catch(() => null);
-  if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
+  const creator = event?.creatorAddress ?? getRecordedFeedSigner(eventId)?.creatorAddress;
+  if (!creator && body?.force !== true) {
+    return c.json({ ok: false, error: "Event not found - pass force: true to cancel it anyway" }, 404);
+  }
   const result = cancelEvent(
     {
       eventId,
       by: `ops:${by}`,
-      organiserAccount: getStripeAccount(event.creatorAddress.toLowerCase())?.stripeAccountId,
+      organiserAccount: creator ? getStripeAccount(creator.toLowerCase())?.stripeAccountId : undefined,
     },
     liveCancelEventDeps,
   );

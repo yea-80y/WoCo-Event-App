@@ -63,6 +63,8 @@ export interface CancelRefundRow {
   refunded?: number;
   currency?: string;
   lastError?: string;
+  /** When the sale joined the cancellation — the overdue alarm counts from here. */
+  createdAt?: string;
   updatedAt: string;
   /** When the row last became `done`. A card refund can still fail for weeks after. */
   doneAt?: string;
@@ -93,8 +95,15 @@ const FINAL: ReadonlySet<CancelRefundStatus> = new Set(["resolved", "abandoned"]
  */
 export const DONE_RECHECK_WINDOW_MS = 35 * 24 * 60 * 60_000;
 export const DONE_RECHECK_EVERY_MS = 24 * 60 * 60_000;
-/** Row states the payouts may treat as settled (the dispute path holds its own sale). */
-const SETTLED: ReadonlySet<CancelRefundStatus> = new Set(["done", "resolved", "disputed"]);
+/**
+ * Row states whose sale may be paid out: refunded, or resolved by an operator.
+ * NOT `disputed`: a chargeback the organiser later WINS gives the money back to
+ * their balance and the buyer is then refunded from it (the pass refunds a won
+ * dispute) — so the sale's takings stay held until the row is done.
+ */
+const SETTLED: ReadonlySet<CancelRefundStatus> = new Set(["done", "resolved"]);
+/** A refund row not settled after this long is alarmed (disputes excepted: they run for months). */
+export const ROW_OVERDUE_MS = 7 * 24 * 60 * 60_000;
 
 let store: Record<string, EventCancellation> = {};
 let loaded = false;
@@ -202,6 +211,7 @@ export function addRefundRow(
       status: "pending",
       attempts: 0,
       created: 0,
+      createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
     };
     persist();
@@ -273,9 +283,17 @@ export function isRowDue(row: CancelRefundRow, now: Date = new Date()): boolean 
 }
 
 /**
- * Whether every sale of the event is refunded or otherwise accounted for. The
- * payouts hold a cancelled event's takings until this is true (payout-release.ts).
+ * Whether ONE sale of a cancelled event may be paid out (payout-release.ts). A
+ * sale with no row yet is NOT settled: a pass may not have reached it (a large
+ * event, a sale paid seconds ago), and "no row" must never read as "refunded".
  */
+export function isSaleRefundSettled(eventId: string, sessionId: string): boolean {
+  ensureLoaded();
+  const row = store[eventId]?.refunds[sessionId];
+  return !!row && SETTLED.has(row.status);
+}
+
+/** Whether every sale of the event is refunded or otherwise accounted for (progress view). */
 export function isCancellationSettled(eventId: string): boolean {
   ensureLoaded();
   const c = store[eventId];
@@ -339,6 +357,8 @@ export interface CancellationsStoreHealth {
   waitingForFunds: number;
   /** Retries exhausted — someone paid and has not been refunded. */
   abandoned: number;
+  /** Not refunded a week after joining the cancellation (disputes excepted). */
+  overdue: number;
   /** The file exists but could not be read: every sale is refused. */
   fileUnreadable: boolean;
 }
@@ -349,19 +369,24 @@ export function cancellationsStoreHealth(): CancellationsStoreHealth {
   let refundsOpen = 0;
   let waitingForFunds = 0;
   let abandoned = 0;
+  let overdue = 0;
+  const now = Date.now();
   for (const c of Object.values(store)) {
     for (const r of Object.values(c.refunds)) {
       if (!SETTLED.has(r.status)) refundsOpen++;
       if (r.status === "pending-funds") waitingForFunds++;
       if (r.status === "abandoned") abandoned++;
+      const since = Date.parse(r.createdAt ?? r.updatedAt);
+      if (!SETTLED.has(r.status) && r.status !== "disputed" && now - since > ROW_OVERDUE_MS) overdue++;
     }
   }
   return {
-    ok: abandoned === 0 && waitingForFunds === 0 && !fileUnreadable,
+    ok: abandoned === 0 && waitingForFunds === 0 && overdue === 0 && !fileUnreadable,
     cancelledEvents: Object.keys(store).length,
     refundsOpen,
     waitingForFunds,
     abandoned,
+    overdue,
     fileUnreadable: fileUnreadable !== null,
   };
 }

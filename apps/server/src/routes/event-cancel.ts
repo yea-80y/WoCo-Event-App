@@ -40,7 +40,10 @@ eventCancel.post("/:id/cancel", requireAuth, async (c) => {
   if (event.deleted) return c.json({ ok: false, error: "This event was deleted" }, 409);
 
   const body = (c.get("body") ?? {}) as { confirmTitle?: unknown };
-  if (typeof body.confirmTitle !== "string" || body.confirmTitle.trim() !== event.title.trim()) {
+  // Compared the way a person reads it: a title pasted with a non-breaking space
+  // or a different Unicode form is the same title.
+  const norm = (s: string) => s.normalize("NFC").replace(/\s+/gu, " ").trim();
+  if (typeof body.confirmTitle !== "string" || norm(body.confirmTitle) !== norm(event.title)) {
     return c.json({ ok: false, error: "Type the event name exactly as it appears to confirm" }, 400);
   }
 
