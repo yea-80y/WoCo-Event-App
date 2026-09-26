@@ -3,8 +3,10 @@
  * everyone (#644; owner decision 2026-09-26). Past it the event happened and
  * its takings may already be paid out, so the organiser refunds individual
  * buyers from Stripe instead. Ops can still cancel past it. Must not exceed
- * the server's POST_EVENT_RELEASE_DAYS: the window closes no later than the
- * money is released (a server test pins it).
+ * the server's POST_EVENT_RELEASE_DAYS (a server test pins it), so for dates
+ * unchanged since the sale the window closes no later than the money is
+ * released. A postponed event is measured from its new date, while its
+ * takings keep the release date pinned when they were sold.
  */
 export const ORGANISER_CANCEL_WINDOW_DAYS = 2;
 
