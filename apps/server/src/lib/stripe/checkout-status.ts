@@ -9,7 +9,8 @@
  */
 
 export interface CheckoutStatusView {
-  status: "paid" | "open" | "expired";
+  /** `cancelled`: the event was cancelled (#644) — any payment is refunded, no ticket follows. */
+  status: "paid" | "open" | "expired" | "cancelled";
   quantity: number;
   seriesId: string;
   emailMasked: string | null;
@@ -36,12 +37,19 @@ interface SessionLike {
 }
 
 /** The view of `session` for `eventId`, or null when the session belongs to another event. */
-export function checkoutStatusView(session: SessionLike, eventId: string): CheckoutStatusView | null {
+export function checkoutStatusView(
+  session: SessionLike,
+  eventId: string,
+  opts: { cancelled?: boolean } = {},
+): CheckoutStatusView | null {
   const md = session.metadata ?? {};
   if (!eventId || md.eventId !== eventId) return null;
   const qty = Number.parseInt(md.quantity ?? "", 10);
-  const status =
-    session.status === "expired"
+  // A buyer who paid into an event cancelled in the meantime must not be told
+  // "paid" with tickets implied: fulfilment refunds them instead.
+  const status: CheckoutStatusView["status"] = opts.cancelled
+    ? "cancelled"
+    : session.status === "expired"
       ? "expired"
       : session.status === "complete" && session.payment_status === "paid"
         ? "paid"

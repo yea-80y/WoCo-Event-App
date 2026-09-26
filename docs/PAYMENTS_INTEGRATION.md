@@ -116,6 +116,26 @@ ETH + USDC on Base/Optimism/Mainnet/Sepolia:
   anything needing a response alarms (`disputesNeedingResponse`). Payouts hold a sale while
   its dispute is open (docs/PAYOUTS.md).
   Voids key on (onChainEventId, slot), never the orderRef (#661). The handlers never refund.
+- **Cancel an event and refund everyone (#644).** `POST /api/events/:id/cancel` (organiser,
+  typed-title confirm, refused `ORGANISER_CANCEL_WINDOW_DAYS` = 2 days after the event ends -
+  owner decision 2026-09-26; no later than the payout release for dates unchanged since the
+  sale. A sale's release date is pinned at fulfilment and the window reads the CURRENT feed, so
+  a postponed event stays cancellable after its original-date takings were paid out - those
+  refunds then wait for funds) and
+  `POST /api/ops/events/:id/cancel` (no window) share one core
+  (`lib/event/cancel-event.ts`): persist `.data/event-cancellations.json` FIRST (from then
+  on checkout, `/reserve`, `/list`, register-on-chain and site adds refuse; claim-status reads
+  `available: 0, cancelled: true`; checkout-status says `cancelled`), unlist, expire open
+  checkouts. `lib/stripe/cancellation-refunds.ts` refunds every sale (sale record ∪ payout
+  ledger, re-read every pass) for exactly the unrefunded remainder, `reason:
+  requested_by_customer`, our fee per `CANCELLATION_RETURNS_PLATFORM_FEE` (off — terms §6),
+  then voids the tickets. A sale paid after the cancel is handed to that job by fulfilment.
+  Payouts hold a cancelled event's takings until every refund settles, past the ceiling too,
+  and a journalled payout intent holding one of its sales is not replayed.
+  A refund Stripe holds for `insufficient_funds` alarms (`waitingForFunds`): whole-gross
+  refunds with our fee kept leave the event's balance short by the fees, so the organiser
+  may need to top up (whether Stripe instead recovers a negative balance from the organiser's
+  bank under `losses.payments = stripe` is unverified — do not read the alarm as permanent).
   A state that cannot be written (file unreadable, disk full) answers 500 so Stripe redelivers
   (~3 days). A sale made while the file was unreadable is in memory only: after a restore it
   surfaces as `refundEvents.stuck`, never as an automatic void.

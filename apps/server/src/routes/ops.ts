@@ -44,6 +44,14 @@ import {
 } from "../lib/stripe/pending-refunds.js";
 import { liveRefundGateway } from "../lib/stripe/pending-refunds-live.js";
 import { acknowledgePartialRefund, listFlaggedSales, ticketSalesHealth } from "../lib/stripe/ticket-sales.js";
+import { getEvent } from "../lib/event/service.js";
+import { getRecordedFeedSigner } from "../lib/event/feed-signer-record.js";
+import { getStripeAccount } from "../lib/stripe/accounts.js";
+import { cancelEvent } from "../lib/event/cancel-event.js";
+import { liveCancelEventDeps } from "../lib/event/cancel-event-live.js";
+import { cancellationsStoreHealth, listCancellations, resolveRefundRow } from "../lib/event/cancellations.js";
+import { kickCancellationRefunds } from "../lib/stripe/cancellation-refunds.js";
+import { liveCancellationRefundDeps } from "../lib/stripe/cancellation-refunds-live.js";
 import { mergeParticipants, knownSubjects, participantsFor } from "../lib/social/participants.js";
 import { clearTallyCache } from "./social.js";
 import { isValidSenderId, liftSender, listForOps, stopSender } from "../lib/sender-pacing/index.js";
@@ -398,6 +406,71 @@ ops.post("/ticket-sales/:sessionId/acknowledge-partial-refund", async (c) => {
   }
   console.log(`[ops] partial refund on ${sessionId} acknowledged by ${by}`);
   return c.json({ ok: true, data: { acknowledged: true, health: ticketSalesHealth() } });
+});
+
+/**
+ * POST /api/ops/events/:id/cancel   { by }
+ *
+ * The platform cancels an event and refunds every buyer (#644) — for an
+ * organiser who has vanished. Same core as the organiser's button; the charges
+ * are direct charges on the organiser's account, which the platform can refund.
+ */
+ops.post("/events/:id/cancel", async (c) => {
+  const eventId = c.req.param("id");
+  const body = (await c.req.json().catch(() => null)) as { by?: string; force?: boolean } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  // "The organiser vanished" is exactly when their feed may be unreadable, so the
+  // feed is only used to find the organiser; the pinned creator (#670) is the
+  // fallback, and `force` cancels an id neither knows (refunds still come from
+  // the sale records, never from the feed). With no creator there is no account
+  // to expire open checkouts on: a buyer who pays after this is refunded at
+  // fulfilment instead.
+  const event = await getEvent(eventId).catch(() => null);
+  const creator = event?.creatorAddress ?? getRecordedFeedSigner(eventId)?.creatorAddress;
+  if (!creator && body?.force !== true) {
+    return c.json({ ok: false, error: "Event not found - pass force: true to cancel it anyway" }, 404);
+  }
+  const result = cancelEvent(
+    {
+      eventId,
+      by: `ops:${by}`,
+      organiserAccount: creator ? getStripeAccount(creator.toLowerCase())?.stripeAccountId : undefined,
+    },
+    liveCancelEventDeps,
+  );
+  if (!result.ok) return c.json({ ok: false, error: "The cancellation could not be saved" }, 503);
+  console.warn(`[ops] event ${eventId} cancelled by ${by}`);
+  return c.json({ ok: true, data: { created: result.created, cancellation: result.cancellation } });
+});
+
+/** GET /api/ops/cancellations — every cancelled event and its refund rows (Stripe ids and amounts only). */
+ops.get("/cancellations", (c) => {
+  return c.json({ ok: true, data: { health: cancellationsStoreHealth(), cancellations: listCancellations() } });
+});
+
+/** POST /api/ops/cancellations/run — one refund pass now, instead of waiting for the timer. */
+ops.post("/cancellations/run", async (c) => {
+  const outcome = await kickCancellationRefunds(liveCancellationRefundDeps);
+  return c.json({ ok: true, data: { outcome, health: cancellationsStoreHealth() } });
+});
+
+/**
+ * POST /api/ops/cancellations/:eventId/:sessionId/resolve   { by }
+ *
+ * The buyer was made whole another way (a bank transfer, a dispute that went
+ * their way). Clears that row's alarm and lets the event's payouts settle.
+ */
+ops.post("/cancellations/:eventId/:sessionId/resolve", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  const result = resolveRefundRow(c.req.param("eventId"), c.req.param("sessionId"), by);
+  if (result === "none") return c.json({ ok: false, error: "No such refund row" }, 404);
+  if (result === "not-persisted") {
+    return c.json({ ok: false, error: "The cancellation record could not be written - see eventCancellations on /api/health" }, 503);
+  }
+  return c.json({ ok: true, data: { resolved: true, health: cancellationsStoreHealth() } });
 });
 
 /** Tests only — clears the failed-attempt window between cases. */

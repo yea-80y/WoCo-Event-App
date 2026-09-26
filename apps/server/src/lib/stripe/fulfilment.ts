@@ -144,6 +144,20 @@ export interface FulfilmentDeps {
   /** Seat hold — `null` when unknown or already consumed. */
   consumeReservation(reservationId: string): { quantity: number } | null;
 
+  /**
+   * Whether the event was cancelled (#644), from the server's own record. Zero
+   * I/O. "unknown" (the record is unreadable) mints: the buyer has paid, and a
+   * cancellation, once readable again, refunds every sale it finds.
+   */
+  cancellationGate(eventId: string): "open" | "cancelled" | "unknown";
+  /**
+   * Hand a sale paid into a cancelled event to the cancellation's refund job,
+   * so it is refunded under the cancellation's fee policy like every other
+   * sale of the event. THROWS when it could not be handed over — the generic
+   * auto-refund then runs instead, so the buyer is refunded either way.
+   */
+  enqueueCancellationRefund(input: { eventId: string; sessionId: string; paymentIntentId: string; account: string }): void;
+
   /** The refund call. Rejects on any Stripe error; the caller records the outcome. */
   createRefund(
     params: Stripe.RefundCreateParams,
@@ -219,7 +233,9 @@ export type RefundOutcome =
   /** The refund call threw. The buyer is still charged — see #367. */
   | { kind: "failed"; error: string }
   /** Stopped, but the session carries no payment intent to refund against. */
-  | { kind: "no-payment-intent" };
+  | { kind: "no-payment-intent" }
+  /** The event was cancelled: the cancellation's refund job refunds this sale (#644). */
+  | { kind: "queued-cancellation" };
 
 export interface FulfilmentOutcome {
   sessionId: string;
@@ -625,6 +641,39 @@ export async function fulfilPaidSession(
     }
   }
 
+  // ── 3b. Cancelled event (#644) ──
+  // The cancellation is checked last before the mint, from the server's record,
+  // never the feed. A sale that reaches here after the event was cancelled is
+  // refunded by the cancellation's own job (same fee policy as every other sale
+  // of the event); if it cannot be handed over, the auto-refund below runs.
+  let refundByCancellation = false;
+  if (!stoppedReason) {
+    let gate: "open" | "cancelled" | "unknown" = "open";
+    try {
+      gate = deps.cancellationGate(eventId);
+    } catch (err) {
+      console.error("[fulfilment] cancellation check threw — continuing to mint:", err);
+    }
+    if (gate === "cancelled") {
+      stoppedReason = "Event cancelled — refunded with every other sale";
+      const piForCancel = paymentIntentId(session);
+      if (piForCancel && metaConnectedAccountId) {
+        try {
+          deps.enqueueCancellationRefund({
+            eventId,
+            sessionId: session.id,
+            paymentIntentId: piForCancel,
+            account: metaConnectedAccountId,
+          });
+          refundByCancellation = true;
+        } catch (err) {
+          console.error("[fulfilment] could not hand the sale to the cancellation — auto-refunding instead:", err);
+        }
+      }
+      console.warn(`[fulfilment] ${session.id}: event ${eventId.slice(0, 8)} is cancelled — not minting`);
+    }
+  }
+
   // ── 4. Mint (the whole block is fenced: an unexpected throw becomes a
   //       stoppedReason, never an escape past the refund) ──
   if (stoppedReason) {
@@ -707,7 +756,9 @@ export async function fulfilPaidSession(
   const unfilled = quantity - claimedResults.length;
   let refund: RefundOutcome = { kind: "not-needed" };
   const piId = paymentIntentId(session);
-  if (stoppedReason && unfilled > 0) {
+  if (refundByCancellation) {
+    refund = { kind: "queued-cancellation" };
+  } else if (stoppedReason && unfilled > 0) {
     if (!piId) {
       refund = { kind: "no-payment-intent" };
       console.error(`[fulfilment] stopped (${stoppedReason}) but session ${session.id} has no payment intent to refund`);

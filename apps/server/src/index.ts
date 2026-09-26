@@ -60,6 +60,10 @@ import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-re
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
 import { ticketSalesHealth } from "./lib/stripe/ticket-sales.js";
+import { cancellationsStoreHealth } from "./lib/event/cancellations.js";
+import { cancellationJobHealth, startCancellationRefundJob } from "./lib/stripe/cancellation-refunds.js";
+import { liveCancellationRefundDeps } from "./lib/stripe/cancellation-refunds-live.js";
+import { eventCancel } from "./routes/event-cancel.js";
 import { saleRefundEventsHealth } from "./lib/stripe/sale-refunds.js";
 import { alarmGate } from "./lib/health/alarm-gate.js";
 import { feedSignerRecordHealth } from "./lib/event/feed-signer-record.js";
@@ -294,6 +298,16 @@ function healthReport() {
     // record file: a refund on a sale the file no longer knows. Counts only; the
     // ops route has the sales.
     ticketSales: { ...ticketSalesHealth(), refundEvents: saleRefundEventsHealth() },
+    // #644: cancelled events and the refund of their sales. Alarms: a refund
+    // abandoned after its retries (a buyer paid and is not refunded), a refund
+    // Stripe holds because the organiser's balance is short (`waitingForFunds`),
+    // the file present but unreadable (every sale refused), and a refund job
+    // that has stopped passing (`job.stale`). Counts only; /api/ops/cancellations
+    // has the rows.
+    eventCancellations: {
+      ...cancellationsStoreHealth(),
+      job: { ok: !cancellationJobHealth().stale, ...cancellationJobHealth() },
+    },
     compliancePersistence: persistHealth(),
     // `false` is an alarm, not a statistic: the Kernel known-deployed record
     // exists on disk but would not load, so the counterfactual fallback is live
@@ -626,6 +640,7 @@ app.route("/api/events", orders);
 app.route("/api/events", broadcast);
 app.route("/api/events", reservations);
 app.route("/api/events", checkinOrganiser);
+app.route("/api/events", eventCancel);
 
 // Door scanner endpoints — authed by X-Door-Pass token, not session delegation
 app.route("/api/checkin", checkin);
@@ -797,6 +812,7 @@ startSnapshotMaintenance();
 // not a degraded feature. See docs/PAYOUTS.md.
 startPayoutReleaseJob();
 startPendingRefundRetryJob(liveRefundGateway);
+startCancellationRefundJob(liveCancellationRefundDeps);
 // Postage batches and the paymaster deposit both fail SILENTLY and both are
 // readable from here, so they are polled in the background and served from cache
 // — /api/health must stay instant even when the bee or the RPC is the thing that

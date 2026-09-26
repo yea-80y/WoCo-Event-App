@@ -245,6 +245,12 @@ export function getSale(sessionId: string): TicketSale | undefined {
   return store[sessionId];
 }
 
+/** Every sale recorded for an event (#644: the cancellation refunds them all). */
+export function listSalesForEvent(eventId: string): TicketSale[] {
+  ensureLoaded();
+  return Object.values(store).filter((s) => s.eventId === eventId);
+}
+
 export function getSaleByPaymentIntent(paymentIntentId: string): TicketSale | undefined {
   ensureLoaded();
   const sessionId = byPaymentIntent.get(paymentIntentId);

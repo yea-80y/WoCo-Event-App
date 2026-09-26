@@ -171,6 +171,15 @@ export interface PaymentQuote {
 /** Platform fee in basis points — must match WoCoEscrow.sol FEE_BASIS_POINTS */
 export const PLATFORM_FEE_BP = 150; // 1.5%
 
+/**
+ * Whether our application fee goes back to the organiser when they cancel an
+ * event and every buyer is refunded (#644). OFF: we keep it, as ORGANISER_TERMS
+ * §6 says (owner decision 2026-09-25, option A). A future USP may turn it on —
+ * change the terms in the same PR. Each cancellation captures the value at the
+ * moment it is made, so flipping this never changes one already under way.
+ */
+export const CANCELLATION_RETURNS_PLATFORM_FEE = false;
+
 /** USDC contract addresses by chain (native Circle-issued USDC) */
 export const USDC_ADDRESSES: Partial<Record<PaymentChainId, Hex0x>> = {
   1: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Hex0x,
@@ -285,6 +294,14 @@ export interface EventFeed {
    *  treats it as not-found. Only settable when zero tickets exist. */
   deleted?: boolean;
   deletedAt?: string;
+  /**
+   * The organiser cancelled the event and every buyer is being refunded (#644).
+   * DISPLAY ONLY: for a Phase B event the organiser signs this feed and could
+   * re-sign it without the field. Sales are refused, and refunds run, from the
+   * server's own record (`.data/event-cancellations.json`), which the API also
+   * overlays onto every feed it returns.
+   */
+  cancelledAt?: string;
 }
 
 /** Ticket series summary (stored within event feed) */
@@ -421,6 +438,8 @@ export interface EventDirectoryEntry {
    *  entry can resolve the event SOC with no global registry. Absent for legacy
    *  platform-signed events. */
   creatorFeedSigner?: Hex0x;
+  /** #644: the event was cancelled — overlaid by the server on the organiser's lists. */
+  cancelledAt?: string;
 }
 
 /** Body of POST /api/events/:id/update-meta — edits event-LEVEL metadata only.

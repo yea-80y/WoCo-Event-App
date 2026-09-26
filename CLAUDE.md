@@ -519,6 +519,12 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     refunded ourselves. Refunds and chargebacks void tickets THROUGH it. Losing it fails OPEN:
     every refunded ticket reads valid at the door again. The money side does not depend on
     it (the payout sweep re-reads Stripe). Present-but-unreadable is never overwritten)
+  event-cancellations.json (#644 — cancelled events + one refund row per sale. The ONLY
+    authority the money path reads for "cancelled": checkout, holds and fulfilment refuse from
+    it, payouts hold the event's takings until its refunds settle. Losing it lets a cancelled
+    event SELL AGAIN and forgets which buyers are still owed. Present-but-unreadable is never
+    overwritten and refuses EVERY sale (fail closed) until restored; `/api/health`
+    `eventCancellations` alarms)
   event-feed-signers.json (#670 — eventId → the organiser's content-feed signer + verified
     creator, pinned at create, write-once. The money path's ONLY carrier for an UNLISTED event.
     Losing it fails CLOSED: unlisted events stop selling until re-created; listed ones fall back

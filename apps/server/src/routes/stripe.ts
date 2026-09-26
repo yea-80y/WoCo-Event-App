@@ -14,6 +14,9 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth, tryVerifyAuth } from "../middleware/auth.js";
+import { cancellationGate, reopenRefundRow } from "../lib/event/cancellations.js";
+import { kickCancellationRefunds } from "../lib/stripe/cancellation-refunds.js";
+import { liveCancellationRefundDeps } from "../lib/stripe/cancellation-refunds-live.js";
 import { getStripe } from "../lib/stripe/client.js";
 import {
   getStripeAccount,
@@ -46,7 +49,7 @@ import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../lib/stripe/checkout-provenance.js";
 import { liveProvenanceReads, refundTamperedSession } from "../lib/stripe/checkout-provenance-live.js";
 import { fulfilPaidSession } from "../lib/stripe/fulfilment.js";
-import { recordSaleStub } from "../lib/stripe/ticket-sales.js";
+import { getSale, recordSaleStub } from "../lib/stripe/ticket-sales.js";
 import { alreadyApplied, noteApplied, reconcileChargeEvent } from "../lib/stripe/sale-refunds.js";
 import { liveSaleRefundReads } from "../lib/stripe/sale-refunds-live.js";
 import { liveFulfilmentDeps } from "../lib/stripe/fulfilment-live.js";
@@ -476,6 +479,14 @@ stripe.post("/create-checkout", async (c) => {
   const marketingConsent =
     typeof rawMarketingConsent === "boolean" ? rawMarketingConsent : undefined;
   const quantity = Math.max(1, Math.min(10, Number.isInteger(rawQty) ? rawQty as number : 1));
+
+  // #644: a cancelled event sells nothing, before any other work is done for it.
+  // "unknown" = the cancellations file is unreadable: refuse, never guess.
+  if (typeof eventId === "string" && eventId) {
+    const gate = cancellationGate(eventId);
+    if (gate === "cancelled") return c.json({ ok: false, error: "This event has been cancelled" }, 409);
+    if (gate === "unknown") return c.json({ ok: false, error: "Ticket sales are temporarily unavailable" }, 503);
+  }
 
   // Validate reservation if one was supplied. The reservation is expected to
   // match this event + series + quantity; mismatches mean a stale/wrong client
@@ -975,6 +986,10 @@ stripe.post("/create-checkout", async (c) => {
         payment_intent_data: {
           application_fee_amount: totalApplicationFee,
           // No transfer_data — direct charge settles on the connected account.
+          // #644: lets a charge be matched to its event from Stripe's side alone
+          // (an audit of a cancellation's refunds). Not trusted for anything:
+          // the session metadata under the integrity tag is.
+          metadata: { woco_event: eventId, woco_series: seriesId },
         },
         metadata: sessionMetadata,
         client_reference_id: clientReferenceId,
@@ -1063,7 +1078,7 @@ stripe.get("/checkout-status", async (c) => {
     return c.json({ ok: false, error: "Could not check this payment right now" }, 502);
   }
 
-  const view = checkoutStatusView(session, eventId);
+  const view = checkoutStatusView(session, eventId, { cancelled: cancellationGate(eventId) === "cancelled" });
   if (!view) return c.json({ ok: false, error: "Not found" }, 404);
   return c.json({ ok: true, data: view });
 });
@@ -1278,6 +1293,15 @@ stripe.post("/webhook", async (c) => {
         return c.text("Refund could not be applied yet", 500);
       }
       noteApplied(event.id);
+      // #644: anything moving on a cancelled event's sale (a refund that failed,
+      // a dispute) sends it back to the cancellation's refund job at once,
+      // rather than waiting for its daily re-check.
+      if (outcome.kind === "applied") {
+        const saleEventId = getSale(outcome.sessionId)?.eventId;
+        if (saleEventId && reopenRefundRow(saleEventId, outcome.sessionId)) {
+          void kickCancellationRefunds(liveCancellationRefundDeps).catch(() => undefined);
+        }
+      }
       if (outcome.kind === "applied") {
         const { change, dispute } = outcome;
         if (change.voided || change.unvoided || change.partialAlarm || dispute?.change.voided || dispute?.change.unvoided || dispute?.reading.needsResponse) {

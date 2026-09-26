@@ -730,6 +730,95 @@ test("refunds are read even when amount_refunded says 0, and a landed one is net
   assert.deepEqual(r, { net: -500, currency: "gbp" });
 });
 
+test("a cancelled event's sale is held until its refunds settle — even past the hold ceiling (#644)", async () => {
+  held("cs_cx", { eventId: "ev_cancelled", recordedAt: "2026-01-01T00:00:00.000Z", releaseAfter: "2026-07-20T00:00:00.000Z" });
+  held("cs_ok", { eventId: "ev_fine" });
+  const { gateway, payouts } = fakeGateway({ country: "GB" });
+  let settled = false;
+  gateway.cancellationHold = (eventId) => eventId === "ev_cancelled" && !settled;
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-04-10T00:00:00.000Z"));
+  assert.deepEqual(outcome!.deferred, ["cs_cx"], "past the ceiling, and still held");
+  assert.equal(payouts.length, 1, "the other event's sale is paid as normal");
+  assert.equal(ledger.getEntry("cs_cx")?.status, "held");
+
+  settled = true;
+  const { gateway: g2 } = fakeGateway({ nets: { cs_cx: -300 }, country: "GB" });
+  g2.cancellationHold = () => false;
+  await release.runReleaseSweep(g2, at("2026-04-10T01:00:00.000Z"));
+  assert.equal(ledger.getEntry("cs_cx")?.status, "void", "once settled, the refunded sale nets below zero and voids");
+});
+
+test("a journalled payout is not replayed once a sale in it belongs to a cancelled event (#644)", async () => {
+  // Crash after journalling, then the event is cancelled. Replaying would pay
+  // the cancelled sale; clearing early would drop the key that keeps the rest
+  // of the set from being paid twice. The group waits out the window instead.
+  held("cs_x", { eventId: "ev_cx", grossAmount: 5_000 });
+  held("cs_y", { eventId: "ev1", grossAmount: 7_000 });
+  const key = "woco-payout-cancelled-since";
+  const { gateway, payouts } = fakeGateway({ nets: { cs_x: -300 } });
+  // As live: the per-sale hold lifts once the refund settles; the event stays cancelled.
+  let refundSettled = false;
+  gateway.cancellationHold = (eventId) => eventId === "ev_cx" && !refundSettled;
+  gateway.eventCancelled = (eventId) => eventId === "ev_cx";
+  journal(key, ["cs_x", "cs_y"], 12_000, "2026-02-05T00:00:00.000Z");
+
+  const [first] = await release.runReleaseSweep(gateway, at("2026-02-05T02:00:00.000Z"));
+  assert.equal(payouts.length, 0, "never replayed");
+  assert.ok(intents.getIntent(ACCT, "gbp"), "the intent and its key survive");
+  assert.deepEqual(first!.deferred.slice().sort(), ["cs_x", "cs_y"]);
+  assert.equal(ledger.getEntry("cs_y")?.status, "held");
+
+  refundSettled = true;
+  await release.runReleaseSweep(gateway, at("2026-02-05T02:30:00.000Z"));
+  assert.equal(payouts.length, 0, "still not replayed once the refund has settled: the journalled sum predates it");
+  assert.equal(ledger.getEntry("cs_x")?.status, "held");
+
+  await release.runReleaseSweep(gateway, at("2026-02-06T00:00:00.000Z"));
+  assert.equal(intents.getIntent(ACCT, "gbp"), undefined, "abandoned once the key has expired");
+  assert.equal(payouts.length, 1);
+  assert.equal(payouts[0]!.amount, 7_000, "only the sale that was not refunded");
+  assert.notEqual(payouts[0]!.idempotencyKey, key);
+  assert.equal(ledger.getEntry("cs_x")?.status, "void", "re-resolved fresh: the refunded sale voids");
+});
+
+test("the live eventCancelled asks about the EVENT, and an unreadable record counts as cancelled (#644)", async () => {
+  const cancellations = await import("../src/lib/event/cancellations.js");
+  cancellations.recordCancellation({ eventId: "ev_ec_live", by: "ops:test", feeReturned: false });
+  cancellations.addRefundRow("ev_ec_live", { sessionId: "cs_ec", paymentIntentId: "pi_cs_ec", account: ACCT });
+  cancellations.updateRefundRow("ev_ec_live", "cs_ec", { status: "done" });
+  assert.equal(release.liveGateway.cancellationHold!("ev_ec_live", "cs_ec"), false, "the sale's hold has lifted");
+  assert.equal(release.liveGateway.eventCancelled!("ev_ec_live"), true, "the event is still cancelled");
+  assert.equal(release.liveGateway.eventCancelled!("ev_ec_open"), false);
+
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(join(process.cwd(), ".data", "event-cancellations.json"), "null");
+  cancellations.__resetForTests();
+  try {
+    assert.equal(release.liveGateway.eventCancelled!("ev_ec_open"), true, "unreadable: every event counts as cancelled");
+  } finally {
+    rmSync(join(process.cwd(), ".data", "event-cancellations.json"), { force: true });
+    cancellations.__resetForTests();
+  }
+});
+
+test("the live hold is PER SALE: a cancelled event's sale with no refund row yet is held (#644)", async () => {
+  const cancellations = await import("../src/lib/event/cancellations.js");
+  cancellations.recordCancellation({ eventId: "ev_cancel_live", by: "ops:test", feeReturned: false });
+  held("cs_norow", { eventId: "ev_cancel_live" });
+  const { gateway, payouts } = fakeGateway();
+  gateway.cancellationHold = release.liveGateway.cancellationHold;
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.deepEqual(outcome!.deferred, ["cs_norow"], "the refund job has not reached it: never read as refunded");
+  assert.equal(payouts.length, 0);
+
+  cancellations.addRefundRow("ev_cancel_live", { sessionId: "cs_norow", paymentIntentId: "pi_cs_norow", account: ACCT });
+  cancellations.updateRefundRow("ev_cancel_live", "cs_norow", { status: "disputed" });
+  assert.equal(release.liveGateway.cancellationHold!("ev_cancel_live", "cs_norow"), true, "a dispute still holds");
+  cancellations.updateRefundRow("ev_cancel_live", "cs_norow", { status: "done" });
+  assert.equal(release.liveGateway.cancellationHold!("ev_cancel_live", "cs_norow"), false);
+  assert.equal(release.liveGateway.cancellationHold!("ev_not_cancelled", "cs_x"), false);
+});
+
 test("the sweep holds a sale whose refund is not settled — neither paid nor voided", async () => {
   held("cs_r", { netAmount: 9_680 });
   const { gateway, payouts } = fakeGateway();

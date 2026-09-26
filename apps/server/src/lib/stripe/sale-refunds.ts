@@ -65,6 +65,8 @@ export interface LatestCharge {
   feeId: string | null;
   /** Stripe's `charge.disputed`: whether the charge has been disputed. */
   disputed: boolean;
+  /** Lowercase ISO code of the charge. */
+  currency?: string;
 }
 
 /** The Stripe reads. Each throws on a transport failure. */
