@@ -502,7 +502,7 @@ describe("cancelEvent", () => {
     assert.equal(core.organiserCancelClosed({ endDate: "not a date", startDate: "" }, "open", closes * 2), false, "no date, nothing to measure from");
   });
 
-  test("the organiser's cancel window closes no later than the takings are released", async () => {
+  test("for unchanged dates, the organiser's cancel window closes no later than the takings are released", async () => {
     const { ORGANISER_CANCEL_WINDOW_DAYS } = await import("@woco/shared");
     const { POST_EVENT_RELEASE_DAYS } = await import("../src/lib/stripe/payout-policy.js");
     assert.ok(ORGANISER_CANCEL_WINDOW_DAYS <= POST_EVENT_RELEASE_DAYS);

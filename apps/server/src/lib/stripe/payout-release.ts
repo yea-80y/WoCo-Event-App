@@ -105,6 +105,13 @@ export interface PayoutGateway {
    * knows nothing of cancellations holds nothing.
    */
   cancellationHold?(eventId: string, sessionId: string): boolean;
+  /**
+   * True when the event is cancelled, or the cancellation record cannot be read
+   * (#644). Per EVENT, unlike `cancellationHold`, which lifts once a sale's
+   * refund settles: a payout journalled before the cancellation is stale for the
+   * event whatever its refunds have done since. Zero I/O.
+   */
+  eventCancelled?(eventId: string): boolean;
 }
 
 export type ResolvedNet = { net: number; currency: string } | { held: "dispute" | "refund" };
@@ -285,6 +292,10 @@ export const liveGateway: PayoutGateway = {
     return gate === "unknown" || (gate === "cancelled" && !isSaleRefundSettled(eventId, sessionId));
   },
 
+  eventCancelled(eventId) {
+    return cancellationGate(eventId) !== "open";
+  },
+
   async accountCountry(stripeAccountId) {
     if (countryCache.has(stripeAccountId)) return countryCache.get(stripeAccountId);
     try {
@@ -381,19 +392,21 @@ async function settlePendingIntent(
   }
 
   if (nowMs - new Date(intent.createdAt).getTime() < REPLAY_WINDOW_MS) {
-    // A sale in the set whose event has since been cancelled (#644) must not be
-    // paid. Clearing the intent now would drop the key that makes a replay safe
-    // for the rest of the set, so the group waits: once the window passes the
-    // intent is abandoned below and the hold applies sale by sale.
+    // A set holding a sale of a cancelled event (#644) is stale: its sum was
+    // fixed before the refunds. Asked per EVENT — the per-sale hold lifts once a
+    // refund settles, minutes after a cancellation, and replaying then would pay
+    // the refunded sale. Clearing the intent now would drop the key that makes a
+    // replay safe for the rest of the set, so the group waits: once the window
+    // passes the intent is abandoned below and every sale is re-resolved fresh.
     const cancelled = intent.sessionIds.filter((id) => {
       const eventId = getEntry(id)?.eventId;
-      return !!eventId && gateway.cancellationHold?.(eventId, id) === true;
+      return !!eventId && gateway.eventCancelled?.(eventId) === true;
     });
     if (cancelled.length > 0) {
       outcome.deferred.push(...intent.sessionIds);
       console.warn(
-        `[payout-release] Intent ${intent.idempotencyKey} not replayed: ${cancelled.length} sale(s) ` +
-          `belong to a cancelled event. The group waits until the intent can be abandoned.`,
+        `[payout-release] Intent ${intent.idempotencyKey} not replayed: ${cancelled.length} sale(s) belong to a ` +
+          `cancelled event (or the cancellation record is unreadable). The group waits until the intent can be abandoned.`,
       );
       return false;
     }

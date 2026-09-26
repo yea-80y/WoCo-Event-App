@@ -118,7 +118,10 @@ ETH + USDC on Base/Optimism/Mainnet/Sepolia:
   Voids key on (onChainEventId, slot), never the orderRef (#661). The handlers never refund.
 - **Cancel an event and refund everyone (#644).** `POST /api/events/:id/cancel` (organiser,
   typed-title confirm, refused `ORGANISER_CANCEL_WINDOW_DAYS` = 2 days after the event ends -
-  owner decision 2026-09-26, never later than the payout release) and
+  owner decision 2026-09-26; no later than the payout release for dates unchanged since the
+  sale. A sale's release date is pinned at fulfilment and the window reads the CURRENT feed, so
+  a postponed event stays cancellable after its original-date takings were paid out - those
+  refunds then wait for funds) and
   `POST /api/ops/events/:id/cancel` (no window) share one core
   (`lib/event/cancel-event.ts`): persist `.data/event-cancellations.json` FIRST (from then
   on checkout, `/reserve`, `/list`, register-on-chain and site adds refuse; claim-status reads
