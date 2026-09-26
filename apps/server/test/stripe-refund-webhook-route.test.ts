@@ -82,14 +82,16 @@ test("a refund that cannot be applied answers 500, and its redelivery is applied
   assert.ok(outbound > afterFirst, "the redelivery read Stripe again rather than being skipped as applied");
 });
 
-test("refund.failed takes the same path", async () => {
-  outbound = 0;
-  const res = await deliver(
-    stripeEvent(
-      { id: "evt_refund_failed_1", type: "refund.failed", created: 1, account: "acct_1" },
-      { id: "re_1", charge: "ch_1", payment_intent: "pi_1" },
-    ),
-  );
-  assert.equal(res.status, 500);
-  assert.ok(outbound > 0);
-});
+for (const type of ["refund.failed", "refund.updated"]) {
+  test(`${type} takes the same path`, async () => {
+    outbound = 0;
+    const res = await deliver(
+      stripeEvent(
+        { id: `evt_${type}_1`, type, created: 1, account: "acct_1" },
+        { id: "re_1", charge: "ch_1", payment_intent: "pi_1" },
+      ),
+    );
+    assert.equal(res.status, 500);
+    assert.ok(outbound > 0);
+  });
+}

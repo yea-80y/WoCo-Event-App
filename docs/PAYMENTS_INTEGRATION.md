@@ -107,8 +107,9 @@ ETH + USDC on Base/Optimism/Mainnet/Sepolia:
 - Refunds made OUTSIDE fulfilment void the tickets (#645 part C). `.data/ticket-sales.json`
   (`lib/stripe/ticket-sales.ts`) records each paid session's payment intent, the slots each
   mint chunk produced, and what fulfilment refunded itself. `charge.refunded` /
-  `refund.failed` (`lib/stripe/sale-refunds.ts`) re-read the charge's refunds and apply the
-  total: refunded in full → every slot void; a partial refund above our own → nothing void,
+  `refund.updated` / `refund.failed` (`lib/stripe/sale-refunds.ts`) re-read the charge's refunds
+  and apply the total, one event per payment intent at a time: refunded in full → every slot
+  void; a partial refund above our own → nothing void,
   flagged + `/api/health` `ticketSales` alarm until `/api/ops/ticket-sales/:id/acknowledge-partial-refund`.
   Voids key on (onChainEventId, slot), never the orderRef (#661). The handlers never refund.
 

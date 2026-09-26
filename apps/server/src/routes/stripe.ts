@@ -1171,10 +1171,13 @@ stripe.post("/webhook", async (c) => {
         // the tampered refund and before fulfilment, both of which record into
         // it. Fenced: the session is consumed now, so a throw here would turn
         // into a 500 whose redelivery the registry then skips.
+        // Every sale of ours gets one, shop orders included, so a refund on it is
+        // recognised as ours rather than retried as "our fee, no record". A
+        // tampered session's metadata is exactly what failed its check, so it
+        // records none.
+        const md = verdict.kind === "ours" ? (session.metadata ?? {}) : {};
         if (paymentIntentId && event.account) {
           try {
-            // A tampered session's metadata is exactly what failed its check.
-            const md = verdict.kind === "ours" ? (session.metadata ?? {}) : {};
             recordSaleStub({
               sessionId: session.id,
               paymentIntentId,
@@ -1247,12 +1250,15 @@ stripe.post("/webhook", async (c) => {
     }
 
     case "charge.refunded":
+    case "refund.updated":
     case "refund.failed": {
       // #645 part C: a refund we did not make (the organiser's own Dashboard, a
-      // cancellation) voids the sale's tickets; a refund that FAILED can lift
-      // that void again. Both are applied from Stripe's current totals, never
-      // from this event's body (lib/stripe/sale-refunds.ts). Only a direct
-      // charge on a connected account can be one of our sales.
+      // cancellation) voids the sale's tickets; a refund that FAILED or was
+      // CANCELLED lifts that void again, and one that moves from requires_action
+      // to succeeded lands it (`refund.updated` is the only event carrying those
+      // two). All are applied from Stripe's current totals, never from this
+      // event's body (lib/stripe/sale-refunds.ts). Only a direct charge on a
+      // connected account can be one of our sales.
       if (!event.account || alreadyApplied(event.id)) break;
       const obj = event.data.object as { payment_intent?: string | { id: string } | null };
       const piId = typeof obj.payment_intent === "string" ? obj.payment_intent : obj.payment_intent?.id;
