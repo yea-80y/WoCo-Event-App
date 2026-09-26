@@ -15,7 +15,7 @@ import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { contentFeedSocIdentifier, versionedSocIdentifier } from "@woco/shared";
 import { probeSoc } from "../src/lib/swarm/probe-soc.js";
-import { readBandedContentFeed, readContentFeedAtVersion, readContentFeedResult } from "../src/lib/swarm/content-feed.js";
+import { hintKey, readBandedContentFeed, readContentFeedAtVersion, readContentFeedResult } from "../src/lib/swarm/content-feed.js";
 import { ETHERNA_GATEWAY_URL, FEED_ROUTES, WOCO_ROUTE } from "../src/lib/swarm/gateways.js";
 import {
   OTHER_KEY,
@@ -111,6 +111,21 @@ test("bytes that are not JSON are called unusable only when the scan could confi
   install({ ourBee: new Map([[junk.address, junk]]), etherna: new Map() });
   const alone = await readContentFeedResult(OWNER, TOPIC, { route: FEED_ROUTES.profile, thorough: true });
   assert.equal((alone as { unusableAt?: number }).unusableAt, 0);
+});
+
+test("a stored hint naming a version that exists nowhere costs one server ask, then is forgotten (#689)", async () => {
+  const v0 = soc(at(0), { v: 0 });
+  install({ ourBee: new Map([[v0.address, v0]]), etherna: new Map() });
+  localStorage.setItem(hintKey(OWNER, TOPIC), "5"); // e.g. a version whose batch is gone
+
+  const first = await readContentFeedResult<{ v: number }>(OWNER, TOPIC, { route: FEED_ROUTES.profile });
+  assert.equal((first as { version: number }).version, 0);
+  assert.equal(serverRequests().length, 1, "the hinted version was asked about once");
+
+  clearRequests();
+  const again = await readContentFeedResult<{ v: number }>(OWNER, TOPIC, { route: FEED_ROUTES.profile });
+  assert.equal((again as { version: number }).version, 0);
+  assert.deepEqual(serverRequests(), [], "the dead hint was asked about again");
 });
 
 // ---------------------------------------------------------------------------

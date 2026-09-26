@@ -215,8 +215,15 @@ test("every feed probe in the read and read-back paths forwards the feed's gatew
     const calls = probeCalls(src(file));
     assert.ok(calls.length > 0, `${file}: no probeSoc call found - the check would pass vacuously`);
     // The caller's own route, not merely the word: `gatewayUrl: undefined` compiles.
-    for (const args of calls) assert.match(args, /gatewayUrl:\s*(?:opts|args)\.route\.gatewayUrl\b/, `${file}: probeSoc(${args})`);
+    // `route.gatewayUrl` bare is `knownChunkProbe`'s parameter, pinned below.
+    for (const args of calls) assert.match(args, /gatewayUrl:\s*(?:(?:opts|args)\.)?route\.gatewayUrl\b/, `${file}: probeSoc(${args})`);
   }
+  // ...and every `knownChunkProbe` (#689) is handed the caller's own route.
+  const known = [...code(src("../src/lib/swarm/content-feed.ts")).matchAll(/knownChunkProbe\(([^)]*)\)/g)]
+    .map((m) => m[1])
+    .filter((args) => !/\btypeof\b/.test(args)); // the declaration itself
+  assert.ok(known.length >= 4, `only ${known.length} knownChunkProbe calls found`);
+  for (const args of known) assert.match(args, /^probeSoc,\s*owner,\s*opts\.route,/, `knownChunkProbe(${args})`);
 });
 
 test("the profile save reads its base from Etherna and merges only onto what the base rule accepts", () => {

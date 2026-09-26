@@ -268,3 +268,20 @@ test("a BAND hint naming an unopened band is the same alarm", async () => {
   assert.equal(r.band, 1, "it still lands");
   assert.equal(r.hintInvalidated, true, "but the restart from zero is reported");
 });
+
+test("a validated hint is asked about once - the scan continues past it (#689)", async () => {
+  // Since #689 a client re-asks the SERVER about a hinted version our gateway
+  // has not got yet, so a second probe of it was a second server round trip.
+  const base = contentFeedSocIdentifier(topicForBand(0));
+  const hinted = bytesToHex(versionedSocIdentifier(base, 5));
+  const feed = fakeFeed([10]);
+  let askedHinted = 0;
+  const read: SocChunkProbe = (id) => {
+    if (bytesToHex(id) === hinted) askedHinted++;
+    return feed.read(id);
+  };
+  const r = await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), 5);
+  assert.equal(r.latest, 9);
+  assert.equal(r.hintValidated, true);
+  assert.equal(askedHinted, 1);
+});

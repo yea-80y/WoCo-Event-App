@@ -510,8 +510,10 @@ export async function resolveLatestSocVersion(
     if (!hintValidated) start = 0; // hint unreliable → full scan
   }
 
-  let latest = -1;
-  for (let cursor = start; cursor <= maxVersion; cursor += VERSION_PROBE_WINDOW) {
+  // A validated hint is already known to exist: the scan continues past it
+  // rather than asking about it a second time.
+  let latest = hintValidated ? start : -1;
+  for (let cursor = hintValidated ? start + 1 : start; cursor <= maxVersion; cursor += VERSION_PROBE_WINDOW) {
     const width = Math.min(VERSION_PROBE_WINDOW, maxVersion - cursor + 1);
     const flags = await Promise.all(
       Array.from({ length: width }, (_, i) => exists(cursor + i)),
@@ -794,6 +796,13 @@ export async function assembleContentFeed(
   read: SocChunkProbe,
   baseId: Uint8Array,
   pageIdFor: (page: number) => Uint8Array,
+  /**
+   * The probe for PAGES, when it should differ from `read`. A found manifest
+   * proves its pages exist - the writer uploads them first - so a caller whose
+   * `read` trusts a cheap "absent" can pass a probe that asks harder here, and
+   * a page still settling is not mistaken for a torn write (#689).
+   */
+  readPage: SocChunkProbe = read,
 ): Promise<AssembledContentFeed> {
   const base = await read(baseId);
   if (base.status !== "found") return base;
@@ -812,7 +821,7 @@ export async function assembleContentFeed(
 
   const parts: Uint8Array[] = [];
   for (let i = 1; i <= head.pages; i++) {
-    const page = await read(pageIdFor(i));
+    const page = await readPage(pageIdFor(i));
     if (page.status !== "found") {
       const reason = `multi-chunk page ${i}/${head.pages} ${page.status}`;
       // An ABSENT page under an existing manifest is the torn write described
@@ -867,6 +876,8 @@ export interface VersionedReadOptions {
   /** Ceiling for the version scan — `LAST_VERSION_IN_BAND` for a banded topic.
    *  See {@link resolveLatestSocVersion}. Omit for unbanded feeds. */
   maxVersion?: number;
+  /** The probe for a paged version's pages - see {@link assembleContentFeed}. */
+  readPage?: SocChunkProbe;
   /** Receives the scan diagnostics, so a caller can count what actually happened. */
   onScan?: (d: Pick<SocVersionResolution, "hintGiven" | "hintValidated" | "scannedFrom">) => void;
 }
@@ -888,6 +899,7 @@ export async function readVersionedContentFeed(
       read,
       baseIdFor(latest),
       (page) => versionedPageIdentifier(base, latest, page),
+      opts.readPage,
     );
     if (asm.status === "found") return { status: "found", bytes: asm.bytes, version: latest, scanClean: clean };
     // The probe just confirmed this version PRESENT, so an absent re-read is a
@@ -921,6 +933,7 @@ export async function readVersionedContentFeed(
     read,
     base,
     (page) => contentFeedSocIdentifier(contentFeedPageTopic(topic, page)),
+    opts.readPage,
   );
   if (legacy.status === "found") {
     return { status: "found", bytes: legacy.bytes, version: LEGACY_CONTENT_FEED_VERSION, scanClean: clean };

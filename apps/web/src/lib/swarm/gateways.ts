@@ -69,8 +69,8 @@ export const FEED_ROUTES = {
   event: familyRoute("event", ETHERNA_ROUTE),
   /** The encrypted-to-self backup/feed manifest (#689). */
   manifest: familyRoute("manifest", ETHERNA_ROUTE),
-  /** Likes, follows, Interested, and their subject index. */
-  social: familyRoute("social", WOCO_ROUTE),
+  /** Likes, follows, Interested, and their subject index (#689). */
+  social: familyRoute("social", ETHERNA_ROUTE),
   /** The referee's own referral statement and its subject index. */
   referral: familyRoute("referral", WOCO_ROUTE),
   /**
