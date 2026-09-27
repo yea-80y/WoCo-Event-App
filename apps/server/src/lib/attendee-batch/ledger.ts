@@ -48,6 +48,9 @@ export interface ChunkSlot {
   slot: number;
   /** The exact 8 timestamp bytes of the stamp, hex. A burn must beat these. */
   ts: string;
+  /** Timestamp of a burn persisted BEFORE its upload, so a retry re-sends the
+   *  identical stamp instead of a new one that could be older than the first. */
+  burnTs?: string;
   burnedAt?: string;
 }
 
@@ -159,7 +162,7 @@ export function registerBatch(batchId: string, depth: number, owner: string, fre
     delete store.batches[id];
     throw err;
   }
-  return record;
+  return structuredClone(record);
 }
 
 /** New orders go to `batchId`. Old orders stay where they were stamped. */
@@ -221,7 +224,7 @@ export function allocateOrder(
     const batch = store.batches[existing.batchId];
     if (!batch) throw new AttendeeStoreUnavailableError(`order ${rootHex} names an unregistered batch`);
     if (existing.state === "burned") throw new Error(`order ${rootHex} was erased; refusing to store it again`);
-    return { root: rootHex, record: existing, depth: batch.depth };
+    return { root: rootHex, record: structuredClone(existing), depth: batch.depth };
   }
   if (!store.active) throw new AttendeeStoreUnavailableError("no active attendee batch");
   const batchId = store.active;
@@ -278,7 +281,7 @@ export function allocateOrder(
     }
     throw err;
   }
-  return { root: rootHex, record, depth: batch.depth };
+  return { root: rootHex, record: structuredClone(record), depth: batch.depth };
 }
 
 export function markOrderStored(root: string): void {
@@ -294,6 +297,30 @@ export function markOrderStored(root: string): void {
   }
 }
 
+/**
+ * Persist the timestamp a chunk's burn will carry, before the burn is uploaded.
+ * Returns the planned timestamp; an existing plan is returned unchanged.
+ */
+export function planChunkBurn(root: string, address: string, nowMs: number = Date.now()): string {
+  ensureLoaded();
+  if (unreadable) throw new AttendeeStoreUnavailableError(`ledger unreadable: ${unreadable}`);
+  const record = store.orders[normalizeHex(root)];
+  if (!record) throw new Error(`no order ${root}`);
+  const chunk = record.chunks.find((c) => c.address === normalizeHex(address));
+  if (!chunk) throw new Error(`order ${root} has no chunk ${address}`);
+  if (chunk.burnedAt) throw new Error(`chunk ${address} is already burned`);
+  if (chunk.burnTs) return chunk.burnTs;
+  const burnTs = toHex(encodeTimestampNs(nextTimestampNs(decodeTimestampNs(Buffer.from(chunk.ts, "hex")), nowMs)));
+  chunk.burnTs = burnTs;
+  try {
+    persistOrThrow();
+  } catch (err) {
+    delete chunk.burnTs;
+    throw err;
+  }
+  return burnTs;
+}
+
 /** Record one burned chunk; the order is burned once every chunk is. */
 export function markChunkBurned(root: string, address: string, burnTs: string, nowMs: number = Date.now()): OrderRecord {
   ensureLoaded();
@@ -305,9 +332,10 @@ export function markChunkBurned(root: string, address: string, burnTs: string, n
   if (decodeTimestampNs(Buffer.from(burnTs, "hex")) <= decodeTimestampNs(Buffer.from(chunk.ts, "hex"))) {
     throw new Error("a burn must carry a newer timestamp than the stamp it replaces");
   }
-  const previous = { chunkTs: chunk.ts, chunkBurnedAt: chunk.burnedAt, state: record.state, burnedAt: record.burnedAt };
+  const previous = { chunkTs: chunk.ts, chunkBurnTs: chunk.burnTs, chunkBurnedAt: chunk.burnedAt, state: record.state, burnedAt: record.burnedAt };
   const at = new Date(nowMs).toISOString();
   chunk.ts = burnTs;
+  delete chunk.burnTs;
   chunk.burnedAt = at;
   if (record.chunks.every((c) => c.burnedAt)) {
     record.state = "burned";
@@ -317,17 +345,20 @@ export function markChunkBurned(root: string, address: string, burnTs: string, n
     persistOrThrow();
   } catch (err) {
     chunk.ts = previous.chunkTs;
+    if (previous.chunkBurnTs) chunk.burnTs = previous.chunkBurnTs;
     chunk.burnedAt = previous.chunkBurnedAt;
     record.state = previous.state;
     record.burnedAt = previous.burnedAt;
     throw err;
   }
-  return record;
+  return structuredClone(record);
 }
 
+/** A copy: the store is authoritative in memory, so callers must not be able to edit it. */
 export function getOrderRecord(root: string): OrderRecord | null {
   ensureLoaded();
-  return store.orders[normalizeHex(root)] ?? null;
+  const record = store.orders[normalizeHex(root)];
+  return record ? structuredClone(record) : null;
 }
 
 /** An erased order must never be fetched and shown again, even from our bee's cache. */
@@ -337,7 +368,8 @@ export function isOrderErased(root: string): boolean {
 
 export function getBatchRecord(batchId: string): BatchRecord | null {
   ensureLoaded();
-  return store.batches[normalizeHex(batchId)] ?? null;
+  const record = store.batches[normalizeHex(batchId)];
+  return record ? structuredClone(record) : null;
 }
 
 export interface AttendeeLedgerStatus {

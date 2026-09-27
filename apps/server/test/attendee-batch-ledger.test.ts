@@ -130,6 +130,21 @@ test("the same order twice gets the slots it already holds", () => {
   assert.equal(onDisk().batches[batch].next["12"], 1);
 });
 
+test("records handed out are copies: editing one cannot change the ledger", () => {
+  const batch = freshBatch(18);
+  const { root, record } = ledger.allocateOrder(addr(16, 1), [addr(16, 1)], { kind: "checkout" });
+  record.chunks[0].slot = 99;
+  record.state = "burned";
+  const read = ledger.getOrderRecord(root)!;
+  read.chunks[0].ts = "00".repeat(8);
+  ledger.getBatchRecord(batch)!.next["16"] = 0;
+  const fresh = ledger.getOrderRecord(root)!;
+  assert.equal(fresh.chunks[0].slot, 0);
+  assert.equal(fresh.state, "allocated");
+  assert.notEqual(fresh.chunks[0].ts, "00".repeat(8));
+  assert.equal(ledger.getBatchRecord(batch)!.next["16"], 1);
+});
+
 test("the root must be the last chunk", () => {
   freshBatch();
   assert.throws(() => ledger.allocateOrder(addr(13, 9), [addr(13, 9), addr(13, 1)], { kind: "checkout" }));
