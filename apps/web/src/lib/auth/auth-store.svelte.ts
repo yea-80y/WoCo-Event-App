@@ -300,6 +300,25 @@ async function _getContentFeedSignerInner(
  * passkey a biometric, and CSW cannot derive at all — so those three keep their
  * lazy establish at the point where a prompt is something the user asked for.
  */
+/**
+ * Establish a passkey account's seed at LOGIN, while the PRF output that login just
+ * produced is still in memory (#642). Nothing later then needs a biometric for it,
+ * and passive self-reads resolve at once instead of waiting for a first write.
+ *
+ * No gate of its own on purpose: `_ensureIdentitySeed`'s recovery-binding refusal
+ * is the one rule for "never derive a seed for a rotated credential", and a second
+ * copy here could only drift from it. Best-effort — a failure leaves the lazy path
+ * exactly as it was.
+ */
+async function _establishPasskeySeedEagerly(): Promise<void> {
+  if (_kind !== "passkey" || !_passkeyPrfSecret) return;
+  try {
+    await _ensureIdentitySeed({ silent: true });
+  } catch (e) {
+    console.warn("[auth] eager passkey seed establishment failed (non-fatal):", e);
+  }
+}
+
 async function _establishFeedSignerEagerly(): Promise<void> {
   if (_kind !== "web3auth") return;
   try {
@@ -829,7 +848,12 @@ async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
 
     const { backfillPortabilityEnvelope } = await import("./recovery-portability.js");
     const outcome = await backfillPortabilityEnvelope(gathered.args);
-    console.log(`[auth] portability envelope back-fill: ${outcome.action} (${outcome.reason})`);
+    if (outcome.action === "refused") {
+      // Never silent: this device's seed disagrees with the account's envelope.
+      console.error(`[auth] portability envelope back-fill REFUSED: ${outcome.reason}`);
+    } else {
+      console.log(`[auth] portability envelope back-fill: ${outcome.action} (${outcome.reason})`);
+    }
   } catch (e) {
     console.warn("[auth] portability envelope back-fill failed (non-fatal):", e);
   }
@@ -1321,6 +1345,7 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, prfSecret: 
               return readPortabilityEnvelope({ prfSecret: key });
             },
             putRecoveryBinding: _putRecoveryBinding,
+            clearIdentitySeed,
             writeOrphanTombstone,
             clearCachedKernelAddress,
             isStillSignedInAs: stillSignedInAs,
@@ -1742,6 +1767,7 @@ async function loginPasskeyResult(
         _seedAddress = account.address;
         _kernel = null;
         await _restoreCachedAuth();
+        await _establishPasskeySeedEagerly();
         _scheduleKernelPrebuild();
         // The cache entry was seeded from an ABSENCE, and #245 proved an absence
         // can be true at the time and false forever after. Throttled, chain-gated
@@ -1839,6 +1865,8 @@ async function loginPasskeyResult(
       | { preserved: `0x${string}`; identitySeed: string }
       | null = null;
     let envelopeAbsent = false;
+    // The read could not say either way, so this login may be on the wrong Kernel.
+    let envelopeUnknown = false;
     const identitySeedPresent = !!(await restoreIdentitySeed(account.address));
     if (!override || !identitySeedPresent) {
       const check = await _verifyPortabilityEnvelope(account.prfSecret, account.address);
@@ -1859,6 +1887,8 @@ async function loginPasskeyResult(
         }
         portabilityRestore = check;
         if (!override) override = check.preserved;
+      } else {
+        envelopeUnknown = true;
       }
     }
 
@@ -1902,6 +1932,11 @@ async function loginPasskeyResult(
     } else {
       await _restoreCachedAuth();
     }
+
+    // Not after an UNKNOWN envelope read: this login may be sitting on a fresh
+    // counterfactual Kernel for an account that was really recovered, and a seed
+    // derived now would belong to the wrong account. That case stays lazy.
+    if (!envelopeUnknown) await _establishPasskeySeedEagerly();
 
     // Seed the returning-device fast path: only a never-recovered login may
     // cache (no binding, probe DEFINITIVELY empty — "unavailable" never lands
@@ -2056,6 +2091,10 @@ async function ensureIdentitySeed(): Promise<boolean> {
 async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boolean> {
   if (_identitySeedPresent) return true;
   if (!isConnected || !_parent) return false;
+  // A silent establish must never START a ceremony. For passkey it is silent only
+  // because the PRF output is already in memory; without it this would be a
+  // biometric the user did not ask for.
+  if (opts.silent && _kind === "passkey" && !_passkeyPrfSecret) return false;
   if (_seedInFlight) return _seedInFlight;
 
   // The SILENT establish (web3auth eager path only — see _ensureIdentitySeed's

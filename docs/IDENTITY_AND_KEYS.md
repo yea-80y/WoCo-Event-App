@@ -116,7 +116,10 @@ here, nothing between the authenticator and the seed passes through a secp256k1 
 key and the seed are both one-way images of the PRF output and neither reaches the other. The
 portability envelope's two keys moved with it (`woco/recovery/portability/{soc-owner,hpke}/v2`),
 because that envelope carries a recovered account's seed. Establishing the seed takes no
-signature and no dialog — the biometric that produced the PRF output is the consent. All three
+signature and no dialog — the biometric that produced the PRF output is the consent — and it
+happens at login while that output is in memory, unless the recovery binding says the credential
+was rotated in or the login could not read its portability envelope. A found envelope that names a
+different seed is never overwritten by the back-fill: an account's seed does not change. All three
 labels live in `packages/shared/src/crypto/passkey-prf.ts` and are pinned by
 `identity-vectors.test.ts`; `PASSKEY_PRF_SALT_INPUT` is frozen twice over as a result.
 What this does NOT cover: the Kernel owner, sessions and SOC signatures stay secp256k1, and a

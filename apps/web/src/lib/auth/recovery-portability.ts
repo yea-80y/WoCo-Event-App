@@ -297,8 +297,44 @@ export async function portabilityEnvelopeExists(args: {
 }
 
 export interface PortabilityBackfill {
-  action: "wrote" | "skipped" | "deferred";
+  /** `refused`: the envelope out there names a DIFFERENT seed or Kernel than this
+   *  device holds — proof one side diverged, never something to overwrite. */
+  action: "wrote" | "skipped" | "deferred" | "refused";
   reason: string;
+}
+
+/**
+ * What the back-fill may do with the envelope it just read. Pure, so the rule
+ * that matters most here — never overwrite a different seed — is pinned by test
+ * rather than by reading the I/O around it.
+ *
+ * A found envelope that disagrees with this device is REFUSED, not rewritten. An
+ * account's seed never legitimately changes (recovery carries it verbatim and
+ * re-homing moves the envelope to the NEW credential's address, never rewrites
+ * this one), and neither does the Kernel a credential opens. So a disagreement
+ * means this device holds a divergent seed — most plausibly one derived during a
+ * session that landed on the wrong Kernel (#245) — and "contents differed, write"
+ * would replace the account's real seed with it for every future device.
+ */
+export function decideBackfill(
+  read: PortabilityRead,
+  args: Pick<PortabilityBackfillArgs, "preservedKernelAddress" | "identitySeed">,
+): PortabilityBackfill | { action: "write"; reason: string } {
+  // Could not tell what is out there. Writing blind is what runs the version
+  // counter away; the next session mint retries.
+  if (read.status === "unreadable") return { action: "deferred", reason: read.reason };
+  if (read.status === "found") {
+    const cur = read.value;
+    const sameKernel = cur.preservedKernelAddress === args.preservedKernelAddress.toLowerCase();
+    const sameSeed = cur.identitySeed === args.identitySeed;
+    if (sameKernel && sameSeed) return { action: "skipped", reason: "envelope already current" };
+    return {
+      action: "refused",
+      reason: `envelope names a different ${sameKernel ? "identity seed" : "Kernel"} than this device holds`,
+    };
+  }
+  // absent, or present but stale/corrupt (`unusable`) — the documented self-heal.
+  return { action: "write", reason: read.status };
 }
 
 /**
@@ -394,28 +430,8 @@ function _withDeadline(
 
 async function _backfillOnce(args: PortabilityBackfillArgs): Promise<PortabilityBackfill> {
   const read = await readPortabilityEnvelope({ prfSecret: args.prfSecret });
-
-  // Could not tell what is out there. Writing blind is what runs the version
-  // counter away; the next session mint retries.
-  if (read.status === "unreadable") return { action: "deferred", reason: read.reason };
-
-  if (read.status === "found") {
-    const cur = read.value;
-    // The seed is the whole bundle now, so "already current" is a two-field
-    // comparison and there is no longer a way to rewrite an envelope with LESS in
-    // it than it had. The guard that used to refuse stripping an escrowed feed
-    // signer is gone because the shape it guarded against cannot occur.
-    if (
-      cur.preservedKernelAddress === args.preservedKernelAddress.toLowerCase() &&
-      cur.identitySeed === args.identitySeed
-    ) {
-      return { action: "skipped", reason: "envelope already current" };
-    }
-  }
-
+  const decision = decideBackfill(read, args);
+  if (decision.action !== "write") return decision;
   await writePortabilityEnvelope(args);
-  return {
-    action: "wrote",
-    reason: read.status === "found" ? "contents differed" : read.status,
-  };
+  return { action: "wrote", reason: decision.reason };
 }
