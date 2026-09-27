@@ -258,7 +258,9 @@ export function platformEthernaBatch(): BatchSelection {
  */
 export function batchForFeedWrite(input: { ownerAddress: string; gatewayUrl: string; family?: unknown }): BatchSelection {
   if (isEthernaGateway(input.gatewayUrl) && feedStampForName(input.family) === "platform") {
-    return platformEthernaBatch();
+    const selection = platformEthernaBatch();
+    console.log(`[batch-router] ${String(input.family)} write → etherna PLATFORM batch ${selection.batchId.slice(0, 12)}… (family pinned to the platform batch)`);
+    return selection;
   }
   return batchForDeploy({ ownerAddress: input.ownerAddress, gatewayUrl: input.gatewayUrl, deployType: "event" });
 }
