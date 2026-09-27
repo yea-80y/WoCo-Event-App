@@ -5,7 +5,7 @@ import { uploadSignedSoc, type SignedSocInput } from "../lib/swarm/soc-upload.js
 import { readVerifiedSoc } from "../lib/swarm/soc-read.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
-import { batchForDeploy, PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
+import { batchForDeploy, batchForFeedWrite, PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import { jsonBodyLimit } from "../lib/http/body-limit.js";
 import {
@@ -42,7 +42,7 @@ swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, a
   } catch {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
-  const b = body as Partial<SignedSocInput> & { gatewayUrl?: unknown };
+  const b = body as Partial<SignedSocInput> & { gatewayUrl?: unknown; family?: unknown };
   if (
     typeof b.owner !== "string" ||
     typeof b.identifier !== "string" ||
@@ -54,6 +54,9 @@ swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, a
   }
   if (b.gatewayUrl !== undefined && typeof b.gatewayUrl !== "string") {
     return c.json({ ok: false, error: "Invalid gatewayUrl" }, 400);
+  }
+  if (b.family !== undefined && (typeof b.family !== "string" || b.family.length > 64)) {
+    return c.json({ ok: false, error: "Invalid family" }, 400);
   }
 
   // After the shape check (so a malformed flood is a 400, not a charge) and
@@ -67,11 +70,12 @@ swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, a
 
   try {
     // Same routing as /bytes: Etherna user batch when the builder picked the
-    // Etherna gateway (platform Etherna batch fallback), WoCo platform otherwise.
-    const selection = batchForDeploy({
+    // Etherna gateway (platform Etherna batch fallback), WoCo platform otherwise -
+    // except a family the shared table pins to the platform batch (#689).
+    const selection = batchForFeedWrite({
       ownerAddress: (c.get("parentAddress") as string).toLowerCase(),
       gatewayUrl: typeof b.gatewayUrl === "string" ? b.gatewayUrl : "",
-      deployType: "event",
+      family: b.family,
     });
     const ref = await uploadSignedSoc({
       owner: b.owner,

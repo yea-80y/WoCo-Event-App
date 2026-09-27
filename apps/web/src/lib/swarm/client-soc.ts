@@ -45,7 +45,9 @@ export async function signAndUploadSoc(args: {
 }
 
 /** Have the server stamp + upload a SOC already signed (`signSoc`, soc-sign.ts). */
-export async function postSignedSoc(body: SignedSocBody & { gatewayUrl?: string }): Promise<SocWriteResult> {
+export async function postSignedSoc(
+  body: SignedSocBody & { gatewayUrl?: string; family?: string },
+): Promise<SocWriteResult> {
   const res = await authPost<SocWriteResult>("/api/swarm/soc", body);
   if (!res.ok || !res.data) throw new Error(res.error || "SOC upload failed");
   return res.data;

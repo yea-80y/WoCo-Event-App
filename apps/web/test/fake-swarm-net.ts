@@ -125,7 +125,8 @@ export function propagate(net: Net) {
   for (const [address, chunk] of net.etherna) net.ourBee.set(address, chunk);
 }
 
-export interface Sent { gatewayUrl: string; address: string }
+/** `family`: which batch the relay would charge (`FEED_FAMILY_POLICY`, #689). */
+export interface Sent { gatewayUrl: string; family: string; address: string }
 
 /**
  * A transport with `postSignedSoc`'s shape: takes the chunk the REAL signer
@@ -135,7 +136,7 @@ export interface Sent { gatewayUrl: string; address: string }
  * old chunk, as Bee does. Records every send.
  */
 export function transport(net: Net, log: Sent[] = []) {
-  const send = async (body: SignedSocBody & { gatewayUrl: string }) => {
+  const send = async (body: SignedSocBody & { gatewayUrl: string; family: string }) => {
     const owner = body.owner.replace(/^0x/, "").toLowerCase();
     const identifier = unhex(body.identifier.replace(/^0x/, ""));
     const signature = unhex(body.signature.replace(/^0x/, ""));
@@ -150,7 +151,7 @@ export function transport(net: Net, log: Sent[] = []) {
     };
     const store = isEtherna(body.gatewayUrl) ? net.etherna : net.ourBee;
     if (!store.has(chunk.address)) store.set(chunk.address, chunk);
-    log.push({ gatewayUrl: body.gatewayUrl, address: chunk.address });
+    log.push({ gatewayUrl: body.gatewayUrl, family: body.family, address: chunk.address });
     return { owner, identifier: hex(identifier), address: chunk.address };
   };
   return { transport: send, log };

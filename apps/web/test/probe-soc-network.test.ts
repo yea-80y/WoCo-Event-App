@@ -17,6 +17,7 @@ import { contentFeedSocIdentifier, versionedSocIdentifier } from "@woco/shared";
 import { probeSoc } from "../src/lib/swarm/probe-soc.js";
 import { hintKey, readBandedContentFeed, readContentFeedAtVersion, readContentFeedResult, writeContentFeed } from "../src/lib/swarm/content-feed.js";
 import { ETHERNA_GATEWAY_URL, FEED_ROUTES, WOCO_ROUTE } from "../src/lib/swarm/gateways.js";
+import { FEED_FAMILIES } from "@woco/shared";
 import {
   OTHER_KEY,
   OWNER,
@@ -162,6 +163,20 @@ test("a paged feed saved moments ago reads whole on the device that saved it - i
   const res = await readContentFeedResult<{ bio: string }>(OWNER, TOPIC, { route: FEED_ROUTES.profile });
   assert.equal(res.status, "found", JSON.stringify(res));
   assert.equal((res as { value: { bio: string } }).value.bio.length, 9000);
+});
+
+test("every chunk a content-feed write sends names its family, pages included - the relay charges by it (#689)", async () => {
+  for (const family of FEED_FAMILIES) {
+    const net: Net = { ourBee: new Map(), etherna: new Map() };
+    install(net);
+    const { transport: send, log } = transport(net);
+    const topic = `woco/test/family/${family}`;
+    await writeContentFeed({ signerPrivKey: OWNER_PRIV, topic, data: { v: 0 }, route: FEED_ROUTES[family], transport: send });
+    await writeContentFeed({ signerPrivKey: OWNER_PRIV, topic, data: { bio: "x".repeat(9000) }, route: FEED_ROUTES[family], transport: send });
+    assert.ok(log.length >= 4, `${family}: one inline write + a paged one`);
+    assert.deepEqual([...new Set(log.map((s) => s.family))], [family], family);
+    assert.deepEqual([...new Set(log.map((s) => s.gatewayUrl))], [FEED_ROUTES[family].gatewayUrl], family);
+  }
 });
 
 // ---------------------------------------------------------------------------

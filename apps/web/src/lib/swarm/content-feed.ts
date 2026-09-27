@@ -161,8 +161,9 @@ function knownChunkProbe(
 }
 
 /** How a signed chunk leaves the client (`postSignedSoc` in production). The
- *  gateway is required: every write here names its route's. */
-export type SocTransport = (body: SignedSocBody & { gatewayUrl: string }) => Promise<unknown>;
+ *  gateway and family are required: every write here names its route's. The
+ *  family tells the relay which batch pays (`FEED_FAMILY_POLICY` in shared). */
+export type SocTransport = (body: SignedSocBody & { gatewayUrl: string; family: string }) => Promise<unknown>;
 
 export interface ContentFeedSigner {
   /** secp256k1 private key (0x-prefixed). */
@@ -238,7 +239,11 @@ export async function writeContentFeed(args: {
   const owner = new Wallet(key).address.toLowerCase();
   const base = contentFeedSocIdentifier(args.topic);
   const put = (identifier: Uint8Array, payload: Uint8Array) =>
-    post({ ...signSoc({ signerPrivKey: key, identifier, payload }), gatewayUrl: args.route.gatewayUrl });
+    post({
+      ...signSoc({ signerPrivKey: key, identifier, payload }),
+      gatewayUrl: args.route.gatewayUrl,
+      family: args.route.family,
+    });
 
   let version: number;
   if (args.knownVersion !== undefined) {

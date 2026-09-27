@@ -134,7 +134,11 @@ test("the report names where each feed family is stamped - the gate for moving o
   assert.match(report, /\bfeedRoutes: FEED_FAMILY_STORES,/);
   assert.match(report, /\bethernaReads: ethernaReadsHealth\(\),/);
   assert.match(src, /import \{[^}]*\bFEED_FAMILY_STORES\b[^}]*\} from "@woco\/shared";/);
+  // ...and which batch pays for each family's relayed writes (#689), checked the
+  // same way before a `platform` row moves.
+  assert.match(report, /\bfeedStamps: FEED_FAMILY_STAMPS,/);
+  assert.match(src, /import \{[^}]*\bFEED_FAMILY_STAMPS\b[^}]*\} from "@woco\/shared";/);
   // Strings only: it can never turn the alarm gate red by itself.
-  const ok = alarmGate({ feedRoutes: { referral: "woco", social: "etherna" } }, undefined);
+  const ok = alarmGate({ feedRoutes: { referral: "woco", social: "etherna" }, feedStamps: { guardianIndex: "platform" } }, undefined);
   assert.equal(ok.status, 200);
 });

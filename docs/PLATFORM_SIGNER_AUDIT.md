@@ -92,6 +92,13 @@ higher-effort #3. #3 is the one that actually removes the platform signer from t
 
 # Batch routing — which batch PAYS (added 2026-07-14; IMPLEMENTED 2026-07-15, #48)
 
+> **2026-09-27 (#689):** client-relayed content-feed writes now name their family, and the
+> shared table's `stamp` column decides the Etherna batch (`FEED_FAMILY_POLICY`,
+> `packages/shared/src/swarm/feed-routes.ts`; server `batchForFeedWrite`). `owner` = the
+> account's live batch, else platform (the rule below). `platform` = always the platform
+> batch: the three recovery rows, so an escrow never dies with a lapsed hosting plan and
+> the multi-writer guardian index never spreads across batches. `/api/health` `feedStamps`.
+
 > **Status:** shipped on `feat/free-hosting-stripe-gate`. `writeFeedPage` takes an
 > optional `dest` (BatchSelection); routed per the split below. Site feeds follow the
 > site's home gateway (publish carries `gatewayUrl`, add/remove-event derives it from

@@ -5,7 +5,7 @@ import { serve } from "@hono/node-server";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FEATURES, FEED_FAMILY_STORES } from "@woco/shared";
+import { FEATURES, FEED_FAMILY_STAMPS, FEED_FAMILY_STORES } from "@woco/shared";
 import type { AppEnv } from "./types.js";
 import { buildInfo } from "./config/build-info.js";
 import { requireAuth } from "./middleware/auth.js";
@@ -338,6 +338,10 @@ function healthReport() {
     // frontend. A frontend that moves a family first writes where this server
     // does not yet look.
     feedRoutes: FEED_FAMILY_STORES,
+    // Which Etherna batch pays for each family's relayed writes (#689): `platform`
+    // rows never land on an account's own batch. Check it before moving a
+    // `platform` row, the same way as `feedRoutes`.
+    feedStamps: FEED_FAMILY_STAMPS,
     // RED when a family above is on Etherna and this server cannot ask Etherna
     // (flag or key missing): those reads can never conclude anything. The
     // breaker (reads paused after Etherna hung) is reported, not alarmed on.

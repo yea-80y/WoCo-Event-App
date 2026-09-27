@@ -7,7 +7,10 @@ import assert from "node:assert/strict";
 import {
   ETHERNA_GATEWAY_URL,
   FEED_FAMILIES,
+  FEED_FAMILY_POLICY,
+  FEED_FAMILY_STAMPS,
   FEED_FAMILY_STORES,
+  feedStampForName,
   WOCO_GATEWAY_URL,
   gatewayHostMatches,
   isEthernaGatewayUrl,
@@ -28,6 +31,32 @@ test("each family is stamped where the table says - a move is a deliberate diff 
     "recoveryEnvelope", "recoveryPortability",
   ]);
   assert.ok(Object.isFrozen(FEED_FAMILIES));
+});
+
+test("which batch pays - recovery material and server output never ride an account's own batch (#689)", () => {
+  const platform = FEED_FAMILIES.filter((f) => FEED_FAMILY_STAMPS[f] === "platform").sort();
+  assert.deepEqual(platform, ["campaignIssuer", "evidence", "guardianIndex", "recoveryEnvelope", "recoveryPortability"]);
+  const owner = FEED_FAMILIES.filter((f) => FEED_FAMILY_STAMPS[f] === "owner").sort();
+  assert.deepEqual(owner, ["cert", "credits", "event", "manifest", "profile", "referral", "site", "social"]);
+});
+
+test("the two columns are read off the one policy row", () => {
+  for (const f of FEED_FAMILIES) {
+    assert.equal(FEED_FAMILY_STORES[f], FEED_FAMILY_POLICY[f].store, f);
+    assert.equal(FEED_FAMILY_STAMPS[f], FEED_FAMILY_POLICY[f].stamp, f);
+  }
+  assert.deepEqual(Object.keys(FEED_FAMILY_STORES), [...FEED_FAMILIES]);
+  assert.ok(Object.isFrozen(FEED_FAMILY_STORES));
+  assert.ok(Object.isFrozen(FEED_FAMILY_STAMPS));
+});
+
+test("a client's family name picks a stamp only when it IS a family", () => {
+  assert.equal(feedStampForName("recoveryEnvelope"), "platform");
+  assert.equal(feedStampForName("guardianIndex"), "platform");
+  assert.equal(feedStampForName("profile"), "owner");
+  for (const junk of [undefined, null, 7, "", "nonsense", "__proto__", "constructor", "toString", "etherna", "woco"]) {
+    assert.equal(feedStampForName(junk), "owner", String(junk));
+  }
 });
 
 test("the host rule: the host or a subdomain of it, never a look-alike", () => {

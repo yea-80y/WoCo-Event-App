@@ -25,7 +25,7 @@
  * before it dies saves what was written today.
  */
 
-import { ETHERNA_GATEWAY_URL, isEthernaGatewayUrl, isWocoGatewayUrl } from "@woco/shared";
+import { ETHERNA_GATEWAY_URL, feedStampForName, isEthernaGatewayUrl, isWocoGatewayUrl } from "@woco/shared";
 import { POSTAGE_BATCH_ID } from "../../config/swarm.js";
 import { getUserBatch } from "./batches.js";
 import { bucketCapacity, isStale } from "../health/alarms.js";
@@ -243,6 +243,24 @@ export function platformEthernaBatch(): BatchSelection {
   noteRefusal(platform, refusal);
   if (refusal) throw new PlatformBatchUnavailable(refusal);
   return { batchId: platform, target: "etherna" };
+}
+
+/**
+ * Where the SOC relay stamps a client-signed content-feed chunk (#689).
+ *
+ * The STORE follows the client's `gatewayUrl`, exactly as before: a client reads
+ * a family where it writes it, so a write from a build that routes the family
+ * elsewhere must still land where that build will look. The BATCH follows the
+ * family's `stamp` in the shared table - a `platform` family on Etherna goes to the
+ * shared platform batch even when the account has a live batch of its own. The
+ * family is the client's word (`feedStampForName`); an unknown or missing one is
+ * routed as it always was.
+ */
+export function batchForFeedWrite(input: { ownerAddress: string; gatewayUrl: string; family?: unknown }): BatchSelection {
+  if (isEthernaGateway(input.gatewayUrl) && feedStampForName(input.family) === "platform") {
+    return platformEthernaBatch();
+  }
+  return batchForDeploy({ ownerAddress: input.ownerAddress, gatewayUrl: input.gatewayUrl, deployType: "event" });
 }
 
 /**

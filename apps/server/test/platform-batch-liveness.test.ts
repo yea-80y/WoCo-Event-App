@@ -451,7 +451,7 @@ test("every module that routes a write also handles PlatformBatchUnavailable", (
   const read = (rel: string) => readFileSync(join(SRC, rel), "utf-8");
   const callers = sourceFiles(SRC)
     .map((p) => p.slice(SRC.length + 1))
-    .filter((rel) => !rel.endsWith("batch-router.ts") && /\bbatchFor(Deploy|UserContent)\(/.test(read(rel)));
+    .filter((rel) => !rel.endsWith("batch-router.ts") && /\bbatchFor(Deploy|UserContent|FeedWrite)\(/.test(read(rel)));
   assert.ok(callers.length >= 6, `found only ${callers.length} callers - did the scan break?`);
   const missing = callers.filter((rel) => !read(PROPAGATES_TO[rel] ?? rel).includes("PlatformBatchUnavailable"));
   assert.deepEqual(missing, []);
