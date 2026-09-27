@@ -2795,60 +2795,29 @@ async function recoverAndRekey(args: {
     }
 
     // Read the guardian-owned escrow SOC (owner derived LOCALLY from the backup
-    // wallet — no platform signer in the loop, §13), falling back to the legacy
-    // platform-signed feed for accounts protected before this migration. If there
-    // is nothing to restore, recovery would strand the identity seed — refuse before
-    // touching the chain.
-    // Tri-state, because this decides whether to tell a locked-out user their
-    // account cannot be recovered (#228). The lenient read collapses "no escrow"
-    // and "the gateway didn't answer" into one `null`, and the message below is
-    // terminal-sounding — a blip must not read as a missing backup. The portal's
-    // own pre-check already states this rule; the ceremony was not keeping it.
-    const { readRecoveryEnvelopeSocResult } = await import("../swarm/recovery-feed.js");
-    const socRead = await readRecoveryEnvelopeSocResult(gk.socSigner.address, target);
-    let envelope = socRead.status === "found" ? socRead.value : null;
-    if (!envelope) {
-      // The legacy platform feed is only consulted when the guardian-owned SOC is
-      // definitively ABSENT — a pre-§13 account. An unreadable SOC is not evidence
-      // that this is such an account, and its absence on the legacy feed would then
-      // compound one unknown into a false verdict.
-      if (socRead.status === "absent") {
-        const { fetchRecoveryEnvelope } = await import("../api/recovery.js");
-        envelope = await fetchRecoveryEnvelope(target);
-      } else {
-        throw new Error(
-          "We couldn't reach your backup right now — this doesn't mean it's missing. " +
-            "Check your connection and try again in a moment.",
-        );
-      }
-    }
-    if (!envelope) throw new Error("No backup found for that account — recovery isn't possible.");
-
-    let identitySeed: string;
-    try {
-      const bundle = await openRecoveryBundle({ envelope, kernelAddress: target, role: "guardian", guardianKeypair: gk.encryption });
+    // wallet — no platform signer in the loop, §13). If there is nothing to
+    // restore, recovery would strand the identity seed — refuse before touching
+    // the chain. What the user is told for each outcome (#228, #642, #689) lives
+    // in `openEscrow`, where every branch runs under test.
+    const guardianKeys = gk;
+    const [{ readRecoveryEnvelopeSocResult }, { openEscrow }] = await Promise.all([
+      import("../swarm/recovery-feed.js"),
+      import("./escrow-read.js"),
+    ]);
+    const socRead = await readRecoveryEnvelopeSocResult(guardianKeys.socSigner.address, target);
+    // The whole account: restored verbatim, and the feed signer, issuing key and
+    // encryption key all fall back out of it — so the recovered account keeps
+    // owning the feeds it wrote and the issuer identity it published under.
+    const identitySeed = await openEscrow(socRead, async (envelope) => {
+      const bundle = await openRecoveryBundle({
+        envelope,
+        kernelAddress: target,
+        role: "guardian",
+        guardianKeypair: guardianKeys.encryption,
+      });
       if (!bundle.secrets.identitySeed) throw new Error("missing identitySeed");
-      // The whole account: restored verbatim, and the feed signer, issuing key and
-      // encryption key all fall back out of it — so the recovered account keeps
-      // owning the feeds it wrote and the issuer identity it published under.
-      identitySeed = bundle.secrets.identitySeed;
-    } catch (e) {
-      // An envelope from a NEWER app version is the one failure that is not
-      // "wrong wallet" — the version is public metadata on a public feed, so
-      // being specific leaks nothing, and the generic message would send the
-      // user hunting through wallets when the fix is to update the app.
-      // Same for a RETIRED format (#642): the fix is to set recovery up again, not
-      // to try another wallet.
-      const { UnknownRecoveryEnvelopeVersionError, RetiredRecoveryEnvelopeVersionError } =
-        await import("./recovery-aad.js");
-      if (e instanceof UnknownRecoveryEnvelopeVersionError || e instanceof RetiredRecoveryEnvelopeVersionError) {
-        throw e;
-      }
-      // Don't leak whether it was a wrong account vs a corrupt blob.
-      throw new Error(
-        "That backup wallet can't unlock this account. Check you connected the right backup wallet and chose the right account.",
-      );
-    }
+      return bundle.secrets.identitySeed;
+    });
 
     // (0b) ON-CHAIN PRE-FLIGHT: is this backup's guardian actually registered on
     // the target account? The escrow decrypt above proves the user IS the escrow

@@ -1,4 +1,4 @@
-import type { ApiResponse, RecoveryEnvelope, RecoveryStatus } from "@woco/shared";
+import type { ApiResponse, RecoveryStatus } from "@woco/shared";
 import { authPost, apiBase } from "./client.js";
 
 /**
@@ -7,8 +7,9 @@ import { authPost, apiBase } from "./client.js";
  * §13: the sealed envelope lives in a GUARDIAN-owned SOC (`swarm/recovery-feed.ts`),
  * and since #157 so does the guardian→account auto-find index
  * (`swarm/guardian-index-feed.ts`) — the server writes and serves neither. This
- * module therefore only handles the untrusted PLATFORM PRESENCE HINT and the
- * LEGACY envelope read used as a recovery fallback for pre-§13 accounts.
+ * module therefore only handles the untrusted PLATFORM PRESENCE HINT. (The
+ * legacy pre-§13 envelope read is gone: every envelope it could return is a v1/v2
+ * one, which #642 retired - #689.)
  */
 
 /**
@@ -51,19 +52,5 @@ export async function fetchRecoveryStatus(kernelAddress: string): Promise<Recove
   const resp = await fetch(`${apiBase}/api/recovery/status/${kernelAddress.toLowerCase()}`);
   const json = (await resp.json()) as ApiResponse<RecoveryStatus | null>;
   if (!json.ok) throw new Error(json.error || "Failed to load recovery status");
-  return json.data ?? null;
-}
-
-/**
- * LEGACY: fetch the platform-signed sealed envelope for a Kernel address. §13
- * moved new escrows to a guardian-owned SOC, so this is the RECOVERY READ FALLBACK
- * for accounts protected before the migration only. Public — no auth headers.
- */
-export async function fetchRecoveryEnvelope(
-  kernelAddress: string,
-): Promise<RecoveryEnvelope | null> {
-  const resp = await fetch(`${apiBase}/api/recovery/escrow/${kernelAddress.toLowerCase()}`);
-  const json = (await resp.json()) as ApiResponse<RecoveryEnvelope | null>;
-  if (!json.ok) throw new Error(json.error || "Failed to load recovery envelope");
   return json.data ?? null;
 }
