@@ -507,7 +507,8 @@ test("the cancel route withholds the feed it could not read as the head, and the
 
 test("after Etherna fails slowly, reads stop waiting on it for the breaker window", async () => {
   let now = 1_000_000;
-  rd.__resetEthernaBreaker(() => now);
+  // slowMs 0: every failure here counts as slow - the fake answers instantly.
+  rd.__resetEthernaBreaker({ now: () => now, slowMs: 0 });
   const t = topic();
   put(t, 0, "v0", ["etherna"]);
   net.ethernaMode = "throw"; // a timeout or a dropped connection
@@ -526,15 +527,25 @@ test("after Etherna fails slowly, reads stop waiting on it for the breaker windo
 test("a fast unhappy answer does not pause Etherna - one blip must not block every write for the window", async () => {
   const t = topic();
   put(t, 0, "v0", ["etherna"]);
+  for (const mode of ["503", "throw"] as const) {
+    net.ethernaMode = mode;
+    assert.equal((await up.readVersion0(OWNER, t, "social")).status, "unavailable", mode);
+    net.ethernaMode = "up";
+    assert.equal((await up.readVersion0(OWNER, t, "social")).status, "found", `${mode} did not pause`);
+  }
+});
+
+test("a SLOW unhappy answer - a proxy's 504 after its own wait - pauses Etherna like a timeout", async () => {
+  rd.__resetEthernaBreaker({ slowMs: 0 });
   net.ethernaMode = "503";
-  assert.equal((await up.readVersion0(OWNER, t, "social")).status, "unavailable");
-  net.ethernaMode = "up";
-  assert.equal((await up.readVersion0(OWNER, t, "social")).status, "found");
+  assert.equal((await up.readVersion0(OWNER, topic(), "social")).status, "unavailable");
+  assert.equal((rd.ethernaReadsHealth().breaker as { open: boolean }).open, true);
 });
 
 test("a failed Etherna sign-in pauses Etherna too", async () => {
   const { clearEthernaToken } = await import("../src/lib/etherna/auth.js");
   clearEthernaToken();
+  rd.__resetEthernaBreaker({ slowMs: 0 });
   net.ssoMode = "throw";
   assert.equal((await up.readVersion0(OWNER, topic(), "social")).status, "unavailable");
   assert.equal((rd.ethernaReadsHealth().breaker as { open: boolean }).open, true);
@@ -555,4 +566,35 @@ test("ethernaReads is red when a family is on Etherna and this server cannot ask
   } finally {
     process.env.ETHERNA_ENABLED = saved;
   }
+});
+
+test("a base read right after the organiser re-signed is not answered from either cache (#657)", async () => {
+  const eventId = `657-${++n}-${Date.now()}`;
+  signerRecord.recordEventFeedSigner(eventId, "0x" + OWNER, CREATOR);
+  put(eventContentTopic(eventId), 0, eventVersion(eventId, "v0"), ["bee"]);
+
+  // The cancel route reads v0 (the version cache now holds v0 as clean)...
+  const cancelRead = await events.getEventForOwnerRead(eventId, CREATOR, { fresh: true });
+  assert.equal(cancelRead.feed?.title, "v0");
+  events.invalidateEventCache(eventId);
+  // ...the organiser's client re-signs v1 through the relay, which invalidates nothing...
+  put(eventContentTopic(eventId), 1, eventVersion(eventId, "v1-cancelled"), ["bee"]);
+  // ...and a buyer's read inside the version cache's window re-caches v0.
+  assert.equal((await events.getEvent(eventId))?.title, "v0", "the money path's accepted lag");
+
+  // A second cancel read's base, and the sub-ENS stamp's, are the head all the same.
+  const owner = await events.getEventForOwnerRead(eventId, CREATOR, { fresh: true });
+  assert.equal(owner.feed?.title, "v1-cancelled");
+  const stamped = await events.stampEventSubEns(eventId, "mylabel", CREATOR);
+  assert.equal(stamped.title, "v1-cancelled", "never v0 + label signed over the cancellation");
+});
+
+test("a feed the server authored itself is still a base - the publish flow's register relies on it", async () => {
+  const eventId = `657-${++n}-${Date.now()}`;
+  signerRecord.recordEventFeedSigner(eventId, "0x" + OWNER, CREATOR);
+  // Nothing on Swarm yet: the client signs v0 after registration.
+  events.primeEventCache(eventId, JSON.parse(eventVersion(eventId, "authored")));
+  const stamped = await events.stampEventSubEns(eventId, "mylabel", CREATOR);
+  assert.equal(stamped.title, "authored");
+  assert.equal((await events.getEventForOwnerRead(eventId, CREATOR, { fresh: true })).resignable, true);
 });
