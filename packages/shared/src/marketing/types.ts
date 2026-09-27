@@ -1,4 +1,4 @@
-import type { SealedBox } from "../crypto/types.js";
+import type { SealedBoxV2 } from "../crypto/sealed-box-shape.js";
 
 /**
  * Marketing audience types.
@@ -116,7 +116,7 @@ export interface MarketingListMeta {
 
 export interface MarketingListResponse {
   meta: MarketingListMeta;
-  sealedList: SealedBox;
+  sealedList: SealedBoxV2;
 }
 
 /** Import-wizard validation result for a batch of candidate emails. */

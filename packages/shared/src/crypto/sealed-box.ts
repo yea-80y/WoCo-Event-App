@@ -25,18 +25,11 @@
 import { Aes256Gcm, CipherSuite, HkdfSha256 } from "@hpke/core";
 import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import { XWingKem } from "./xwing-hpke.js";
-import { assertXWingPublicKey, XWING_CIPHERTEXT_BYTES, XWING_SEED_BYTES } from "./xwing.js";
+import { assertXWingPublicKey, XWING_SEED_BYTES } from "./xwing.js";
 import { compressionSupported, gunzip, gzip, isGzipped } from "./compress.js";
+import { SEALED_BOX_VERSION, isSealedBoxV2, type SealedBoxV2 } from "./sealed-box-shape.js";
 
-export const SEALED_BOX_VERSION = 2 as const;
-
-export interface SealedBoxV2 {
-  v: typeof SEALED_BOX_VERSION;
-  /** HPKE encapsulated key = the X-Wing ciphertext (1120 bytes, hex). */
-  enc: string;
-  /** AES-256-GCM ciphertext with its 16-byte tag appended (hex). */
-  ct: string;
-}
+export { SEALED_BOX_VERSION, isSealedBoxV2, type SealedBoxV2 } from "./sealed-box-shape.js";
 
 /** What a box is FOR. Both strings are FROZEN per use: change one and every box
  *  already sealed under it stops opening. */
@@ -90,35 +83,6 @@ export function listSealContext(ownerAddress: string): SealContext {
   const owner = ownerAddress.toLowerCase();
   if (!ADDRESS_RE.test(owner)) throw new Error("list seal context: owner must be a 20-byte address");
   return { info: LIST_SEAL_INFO, aad: `${LIST_SEAL_INFO}:${owner}` };
-}
-
-const HEX_RE = /^[0-9a-f]*$/;
-/** GCM tag length: the smallest `ct` any box can have (an empty plaintext). */
-const TAG_BYTES = 16;
-
-/**
- * A v2 box by SHAPE — for the code that must tell "sealed" from "plain" before it
- * has a key (a server refusing to store cleartext, a participant list). Shape only:
- * it proves nothing about who sealed it or whether it opens.
- *
- * EXACTLY the three fields. A box with anything beside them is refused, so a
- * "sealed, therefore safe to store" check can never wave through cleartext riding
- * next to a valid box.
- */
-export function isSealedBoxV2(x: unknown): x is SealedBoxV2 {
-  if (typeof x !== "object" || x === null || Array.isArray(x)) return false;
-  const b = x as Record<string, unknown>;
-  return (
-    Object.keys(b).length === 3 &&
-    b.v === SEALED_BOX_VERSION &&
-    typeof b.enc === "string" &&
-    b.enc.length === XWING_CIPHERTEXT_BYTES * 2 &&
-    HEX_RE.test(b.enc) &&
-    typeof b.ct === "string" &&
-    b.ct.length >= TAG_BYTES * 2 &&
-    b.ct.length % 2 === 0 &&
-    HEX_RE.test(b.ct)
-  );
 }
 
 const suite = new CipherSuite({ kem: new XWingKem(), kdf: new HkdfSha256(), aead: new Aes256Gcm() });

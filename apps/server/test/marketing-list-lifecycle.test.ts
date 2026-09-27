@@ -201,3 +201,30 @@ test("/suppress honours an unmailable address rather than refusing the call", as
   assert.equal(status, 200);
   assert.deepEqual(json.data, { suppressed: 1 });
 });
+
+// ── The sealed list's shape (#642) ──────────────────────────────────────────
+
+test("/list refuses the retired X25519 box shape", async () => {
+  const d = await mintDelegation();
+  const { status, json } = await postAs(d, "/api/marketing/list", {
+    sealedList: { ephemeralPublicKey: "ab".repeat(32), iv: "00".repeat(12), ciphertext: "00".repeat(32) },
+    emails: [],
+  });
+  assert.equal(status, 400);
+  assert.match(String(json.error), /v2 sealed box/);
+});
+
+test("/list refuses a v2 box with anything riding beside it", async () => {
+  // A store that takes "anything sealed" must never wave cleartext through next
+  // to a valid box — the strict shape is the whole guarantee.
+  const d = await mintDelegation();
+  const box = { v: 2, enc: "ab".repeat(1120), ct: "cd".repeat(48) };
+  for (const sealedList of [
+    { ...box, contacts: ["ada@example.com"] },
+    { ...box, enc: "ab".repeat(1119) },
+    { ...box, v: 3 },
+  ]) {
+    const { status } = await postAs(d, "/api/marketing/list", { sealedList, emails: [] });
+    assert.equal(status, 400);
+  }
+});

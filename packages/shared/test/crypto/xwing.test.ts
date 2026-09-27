@@ -272,9 +272,17 @@ test("contexts refuse ids and owners that could make a binding ambiguous", () =>
 // Modularity: the lattice code never rides the shared barrel
 // ---------------------------------------------------------------------------
 
+test("the shape module is dependency-free, and its enc length is X-Wing's", async () => {
+  const shape = readFileSync(here("../../src/crypto/sealed-box-shape.ts"), "utf8");
+  assert.doesNotMatch(shape, /^\s*import\s/m, "the server's sniffers must not load crypto to check a shape");
+  const { SEALED_BOX_ENC_BYTES } = await import("../../src/crypto/sealed-box-shape.js");
+  const { XWING_CIPHERTEXT_BYTES } = await import("../../src/crypto/xwing.js");
+  assert.equal(SEALED_BOX_ENC_BYTES, XWING_CIPHERTEXT_BYTES);
+});
+
 test("the X-Wing modules are subpath-only — the @woco/shared barrel never pulls them in", () => {
   const barrel = readFileSync(here("../../src/crypto/index.ts"), "utf8");
-  assert.doesNotMatch(barrel, /xwing|sealed-box/);
+  assert.doesNotMatch(barrel, /xwing|sealed-box/);  // incl. sealed-box-shape: subpath only
   const root = readFileSync(here("../../src/index.ts"), "utf8");
   assert.doesNotMatch(root, /xwing|sealed-box/);
 });

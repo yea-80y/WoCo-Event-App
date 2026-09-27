@@ -15,6 +15,7 @@ import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
 import { RedundancyLevel } from "@ethersphere/bee-js";
 import { FEATURES, MAILABLE_EMAIL_RE, MARKETING_MAX_LIST_EMAILS } from "@woco/shared";
+import { isSealedBoxV2, type SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { refuseUnlessVerifiedOrganiser } from "../lib/stripe/verification.js";
@@ -83,21 +84,6 @@ const MAX_SEALED_JSON = 6_000_000;
  */
 const TEST_SEND_RATE_WINDOW = 3_600_000;
 
-interface SealedBoxShape {
-  ephemeralPublicKey: string;
-  iv: string;
-  ciphertext: string;
-}
-
-function isSealedBox(v: unknown): v is SealedBoxShape {
-  if (!v || typeof v !== "object") return false;
-  const b = v as Record<string, unknown>;
-  return (
-    typeof b.ephemeralPublicKey === "string" &&
-    typeof b.iv === "string" &&
-    typeof b.ciphertext === "string"
-  );
-}
 
 /** Shape/size refusal — the one thing content-tolerant normalisation still rejects. */
 function badShape(max: number): string {
@@ -111,8 +97,11 @@ marketing.post("/list", requireAuth, async (c) => {
 
   try {
     const sealedList = body.sealedList;
-    if (!isSealedBox(sealedList)) {
-      return c.json({ ok: false, error: "sealedList must be a SealedBox" }, 400);
+    // Exactly a v2 box (#642: X-Wing, bound to this organiser) — the strict shape,
+    // so no cleartext can ride in beside the ciphertext. The retired X25519 shape
+    // is refused like anything else.
+    if (!isSealedBoxV2(sealedList)) {
+      return c.json({ ok: false, error: "sealedList must be a v2 sealed box" }, 400);
     }
     if (JSON.stringify(sealedList).length > MAX_SEALED_JSON) {
       return c.json({ ok: false, error: "Sealed list too large (max ~20k contacts)" }, 413);
@@ -167,7 +156,7 @@ marketing.get("/list", requireAuth, async (c) => {
     const entry = getList(org);
     if (!entry) return c.json({ ok: true, data: null });
 
-    const sealedList = JSON.parse(await downloadFromBytes(entry.swarmRef)) as SealedBoxShape;
+    const sealedList = JSON.parse(await downloadFromBytes(entry.swarmRef)) as SealedBoxV2;
     return c.json({
       ok: true,
       data: {

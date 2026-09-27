@@ -80,6 +80,15 @@ test("a sealed envelope carrying a cleartext routing hint is STILL refused", () 
   assert.deepEqual(store.knownSubjects("woco.credit.v1"), []);
 });
 
+test("a v2 (X-Wing) sealed box is refused too, even carrying a cleartext routing hint (#642)", () => {
+  store.observeStatementBytes(
+    OWNER,
+    bytes({ v: 2, enc: "ab".repeat(1120), ct: "cd".repeat(48), format: "woco.credit.v1", subject: SUBJECT }),
+  );
+  assert.deepEqual(store.participantsFor("woco.credit.v1", SUBJECT), []);
+  assert.deepEqual(store.knownSubjects("woco.credit.v1"), []);
+});
+
 test("a public statement that merely resembles the sealed shape is not caught by it", () => {
   // The refusal keys on all three envelope fields being strings, so a statement
   // is only rejected for genuinely looking sealed. Guards the other direction:
