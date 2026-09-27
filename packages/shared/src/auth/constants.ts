@@ -66,7 +66,8 @@ export const PASSKEY_PRF_SALT_INPUT = "woco-passkey-secp256k1-v1";
  *  identity nonce on 2026-09-10; the rename is that byte change made visible.) */
 export const ACCOUNT_KEYS_NONCE = "WOCO-ACCOUNT-KEYS-V1";
 
-/** Fixed nonce for deterministic guardian recovery-escrow X25519 key derivation */
+/** Fixed nonce for the deterministic guardian recovery-escrow key derivation (wallet
+ *  and email guardians; a passkey guardian derives from its PRF output, #642) */
 export const RECOVERY_ENC_NONCE = "WOCO-RECOVERY-ENC-V1";
 
 /** Session delegation expiry duration (30 days in ms) */

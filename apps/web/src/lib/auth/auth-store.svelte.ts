@@ -2383,10 +2383,11 @@ async function grantSpendPermission(args: {
  * web3auth):
  *  1. install the on-chain recovery route pinned to a guardian derived from the
  *     backup wallet (sudo/passkey userOp, sponsored),
- *  2. escrow the account SEED — sealed to an X25519 key the backup wallet derives
- *     by signing a fixed message — so a recovered account also restores ticket
- *     decryption, its issuing identity and ownership of its content feeds (funds
- *     recovery alone cannot; §11.1). ONE secret covers all three: the encryption
+ *  2. escrow the account SEED — sealed to an X-Wing key the backup derives (a
+ *     wallet by signing a fixed message, a passkey from its PRF output, #642) — so
+ *     a recovered account also restores ticket decryption, its issuing identity
+ *     and ownership of its content feeds (funds recovery alone cannot; §11.1).
+ *     ONE secret covers all three: the encryption
  *     key, the issuing key and the feed signer are all KDFs of the seed, so there
  *     is nothing else that could go missing from the bundle.
  *
@@ -2440,7 +2441,7 @@ async function setupAccountRecovery(
   const seed = await restoreIdentitySeed(seedAddr);
   if (!seed) throw new Error("Could not access your identity key — open your dashboard once, then retry");
 
-  const { deriveGuardianKeys, sealRecoveryBundle, openRecoveryBundle } = await import(
+  const { deriveGuardianKeysForBackup, sealRecoveryBundle, openRecoveryBundle } = await import(
     "./recovery-escrow.js"
   );
 
@@ -2458,9 +2459,10 @@ async function setupAccountRecovery(
   // rather than prompts.
   const feedSigner = await _getContentFeedSigner();
 
-  // ONE guardian signature derives BOTH the HPKE escrow key and the SOC signer
-  // that OWNS the guardian recovery SOC (§13) — no second wallet prompt.
-  const gk = await deriveGuardianKeys(backup.address, backup.signTypedData);
+  // ONE guardian master (a wallet's signature, or a passkey's PRF output) derives
+  // BOTH the HPKE escrow key and the SOC signer that OWNS the guardian recovery SOC
+  // (§13) — no second wallet prompt.
+  const gk = await deriveGuardianKeysForBackup(backup);
   const envelope = await sealRecoveryBundle({
     bundle: { version: 1, secrets },
     kernelAddress,
@@ -2473,7 +2475,7 @@ async function setupAccountRecovery(
   // SAME SOC owner address. A non-deterministic backup signature would otherwise
   // either make the bundle un-openable or orphan the guardian SOC — caught here,
   // failing loudly at setup instead of silently at recovery time.
-  const gk2 = await deriveGuardianKeys(backup.address, backup.signTypedData);
+  const gk2 = await deriveGuardianKeysForBackup(backup);
   const check = await openRecoveryBundle({ envelope, kernelAddress, role: "guardian", guardianKeypair: gk2.encryption });
   if (check.secrets.identitySeed !== seed || gk2.socSigner.address !== gk.socSigner.address) {
     throw new Error(
@@ -2718,7 +2720,7 @@ async function revokeAccountBackup(
  * §11.6). The locked-out user is on a NEW device with no session; they have only
  * their backup wallet and the lost account's address. This:
  *
- *  0. PRE-FLIGHT: decrypts the recovery escrow with the backup's derived X25519 key
+ *  0. PRE-FLIGHT: decrypts the recovery escrow with the backup's derived X-Wing key
  *     BEFORE any irreversible step. Only the genuine account's envelope is sealed
  *     to this guardian (the seal key comes from an unforgeable backup signature),
  *     so a failed decrypt — wrong address typed, or a poisoned auto-find hint —
@@ -2785,11 +2787,11 @@ async function recoverAndRekey(args: {
     // account can read AND decrypt it. A wrong address or a poisoned auto-find hint
     // fails here — before a passkey is minted or the on-chain owner is rotated.
     // This is the security linchpin of recovery.
-    const { deriveGuardianKeys, openRecoveryBundle } = await import("./recovery-escrow.js");
+    const { deriveGuardianKeysForBackup, openRecoveryBundle } = await import("./recovery-escrow.js");
     let gk = args.guardianKeys ?? null;
     if (!gk) {
-      onProgress?.("Confirm the signature in your backup wallet to unlock this account's data");
-      gk = await deriveGuardianKeys(backup.address, backup.signTypedData);
+      onProgress?.("Confirm with your backup to unlock this account's data");
+      gk = await deriveGuardianKeysForBackup(backup);
     }
 
     // Read the guardian-owned escrow SOC (owner derived LOCALLY from the backup
@@ -2835,8 +2837,13 @@ async function recoverAndRekey(args: {
       // "wrong wallet" — the version is public metadata on a public feed, so
       // being specific leaks nothing, and the generic message would send the
       // user hunting through wallets when the fix is to update the app.
-      const { UnknownRecoveryEnvelopeVersionError } = await import("./recovery-aad.js");
-      if (e instanceof UnknownRecoveryEnvelopeVersionError) throw e;
+      // Same for a RETIRED format (#642): the fix is to set recovery up again, not
+      // to try another wallet.
+      const { UnknownRecoveryEnvelopeVersionError, RetiredRecoveryEnvelopeVersionError } =
+        await import("./recovery-aad.js");
+      if (e instanceof UnknownRecoveryEnvelopeVersionError || e instanceof RetiredRecoveryEnvelopeVersionError) {
+        throw e;
+      }
       // Don't leak whether it was a wrong account vs a corrupt blob.
       throw new Error(
         "That backup wallet can't unlock this account. Check you connected the right backup wallet and chose the right account.",

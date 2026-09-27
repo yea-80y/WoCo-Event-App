@@ -9,21 +9,21 @@
  */
 
 /**
- * Current envelope format. v2 binds a ROLE into the AEAD additional-data
- * (`woco/recovery/{role}/v2:{addr}`) so the guardian escrow and the portability
- * envelope can never authenticate each other's ciphertexts (#166 item 3). v1
- * (legacy, still openable) bound `woco/recovery/v1:{addr}` with no role. The
- * DEK scheme is unchanged across both: 1-of-1 backup-EOA escrow, single wrapped
- * DEK; M-of-N is a future version. AAD construction + the version allowlist
- * live client-side in `apps/web/src/lib/auth/recovery-aad.ts`.
+ * Current envelope format. v3 (#642) wraps the DEK with the X-Wing hybrid KEM
+ * (ML-KEM-768 + X25519) instead of X25519 alone, so an envelope copied off public
+ * storage today cannot be opened by a future quantum computer. The AAD still binds
+ * the ROLE (`woco/recovery/{role}/v3:{addr}`, #166 item 3). v1 and v2 wrapped with
+ * X25519 only and are RETIRED: nothing opens them (pre-launch, no compat path).
+ * 1-of-1 guardian, single wrapped DEK; M-of-N is a future version. AAD
+ * construction + the version rules live in `apps/web/src/lib/auth/recovery-aad.ts`.
  */
-export const RECOVERY_ENVELOPE_VERSION = 2 as const;
+export const RECOVERY_ENVELOPE_VERSION = 3 as const;
 
 /**
- * Sealed escrow envelope. Confidentiality rests entirely on `wrappedDeks`
- * (libsodium sealed boxes to guardian X25519 keys) — every other field is
- * public. `kernelAddress` is also bound as AEAD additional-data so a stolen
- * envelope cannot be replayed against a different account.
+ * Sealed escrow envelope. Confidentiality rests entirely on `wrappedDeks` (HPKE,
+ * RFC 9180, to each guardian's X-Wing key — `recovery-escrow.ts`) — every other
+ * field is public. `kernelAddress` is also bound as AEAD additional-data so a
+ * stolen envelope cannot be replayed against a different account.
  */
 export interface RecoveryEnvelope {
   /** Envelope format version (see RECOVERY_ENVELOPE_VERSION). */
@@ -35,9 +35,10 @@ export interface RecoveryEnvelope {
   /** AEAD ciphertext of the bundle JSON (hex). */
   ciphertext: string;
   /**
-   * The data-encryption key (DEK) sealed to each guardian's X25519 public key
-   * via `crypto_box_seal`. v1 = 1-of-1, so a single entry; any listed guardian
-   * can recover the full DEK (1-of-N). True M-of-N threshold escrow is a future
+   * The data-encryption key (DEK) wrapped to each guardian's X-Wing public key with
+   * HPKE: each entry is `enc` (the 1120-byte X-Wing ciphertext) ‖ the AEAD
+   * ciphertext of the DEK, hex. One entry today (1-of-1); any listed guardian can
+   * recover the full DEK (1-of-N). True M-of-N threshold escrow is a future
    * envelope version using verifiable secret sharing over the DEK (§11.6 step 2).
    */
   wrappedDeks: string[];

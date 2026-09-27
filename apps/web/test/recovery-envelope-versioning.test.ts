@@ -5,13 +5,14 @@
  *  - the two roles ("guardian" escrow, "portability" envelope) can never open
  *    each other's ciphertexts, even sealed to the SAME recipient key — the
  *    barrier the old address-only AAD did not provide;
- *  - envelopes sealed under the LEGACY v1 AAD (`woco/recovery/v1:{addr}`, no
- *    role) still open — pre-v2 escrows must keep recovering;
- *  - an unknown `envelope.v` is rejected with the TYPED error, so callers can
- *    say "update the app" instead of "wrong wallet" / rewriting a newer
+ *  - v1 and v2 envelopes (X25519-only wrap) are RETIRED by #642 and refused with
+ *    their own typed error, before any unwrap — "set recovery up again", never
+ *    "wrong wallet" and never mistaken for a newer client's work;
+ *  - an unknown (newer) `envelope.v` is rejected with the TYPED error, so callers
+ *    can say "update the app" instead of "wrong wallet" / rewriting a newer
  *    client's envelope with an older format (the back-fill downgrade hazard);
- *  - the declared version is downgrade-proof: lying about `v` selects an AAD
- *    the AEAD tag cannot verify under;
+ *  - the DEK is wrapped with X-Wing (a 1120-byte `enc` per entry), and a current
+ *    envelope still fits one 4096-byte chunk;
  *  - the portability read classifies "newer than me" as `unreadable` (leave it
  *    alone), never `unusable` (the self-heal rewrite path).
  */
@@ -29,7 +30,11 @@ import {
   deriveEncryptionKeypairFromSeed,
   type RecoveryBundle,
 } from "../src/lib/auth/recovery-escrow.js";
-import { UnknownRecoveryEnvelopeVersionError, recoveryAadBytes } from "../src/lib/auth/recovery-aad.js";
+import {
+  UnknownRecoveryEnvelopeVersionError,
+  RetiredRecoveryEnvelopeVersionError,
+  recoveryAadBytes,
+} from "../src/lib/auth/recovery-aad.js";
 import {
   derivePortabilityKeys,
   readPortabilityEnvelope,
@@ -75,17 +80,18 @@ test("role separation is cryptographic: the OTHER role cannot open it even with 
 
 /**
  * Seal an envelope EXACTLY the way the pre-#166 code did: v1, AAD
- * `woco/recovery/v1:{addr}`, no role component. This is the on-feed format of
- * every escrow sealed before this change — the compat contract under test.
+ * `woco/recovery/v1:{addr}`, no role component, DEK wrapped with DHKEM(X25519).
+ * A REAL retired envelope, so the refusal under test is the one a user who
+ * protected an account before #642 would actually meet.
  */
-async function sealLegacyV1(recipientPubHex: string): Promise<RecoveryEnvelope> {
+async function sealLegacyV1(): Promise<RecoveryEnvelope> {
   const hpke = new CipherSuite({ kem: new DhkemX25519HkdfSha256(), kdf: new HkdfSha256(), aead: new Aes256Gcm() });
   const toAb = (b: Uint8Array) => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
   const aad = new TextEncoder().encode(`woco/recovery/v1:${KERNEL.toLowerCase()}`);
   const dek = randomBytes(32);
   const nonce = randomBytes(24);
   const ciphertext = xchacha20poly1305(dek, nonce, aad).encrypt(new TextEncoder().encode(JSON.stringify(BUNDLE)));
-  const recipientPublicKey = await hpke.kem.deserializePublicKey(toAb(hexToBytes(recipientPubHex)));
+  const { publicKey: recipientPublicKey } = await hpke.kem.generateKeyPair();
   const sender = await hpke.createSenderContext({ recipientPublicKey });
   const wrappedCt = new Uint8Array(await sender.seal(toAb(dek), aad));
   const enc = new Uint8Array(sender.enc);
@@ -101,16 +107,18 @@ async function sealLegacyV1(recipientPubHex: string): Promise<RecoveryEnvelope> 
   };
 }
 
-test("legacy v1 envelopes still open — under either role, as before roles existed", async () => {
+test("a REAL retired v1 envelope is refused as RETIRED, under either role, before any unwrap", async () => {
   const kp = await deriveEncryptionKeypairFromSeed(SEED_A);
-  const envelope = await sealLegacyV1(kp.publicKeyHex);
+  const envelope = await sealLegacyV1();
   for (const role of ["guardian", "portability"] as const) {
-    const opened = await openRecoveryBundle({ envelope, kernelAddress: KERNEL, role, guardianKeypair: kp });
-    assert.equal(opened.secrets.identitySeed, BUNDLE.secrets.identitySeed);
+    await assert.rejects(
+      openRecoveryBundle({ envelope, kernelAddress: KERNEL, role, guardianKeypair: kp }),
+      (e: unknown) => e instanceof RetiredRecoveryEnvelopeVersionError && e.envelopeVersion === 1,
+    );
   }
 });
 
-test("an unknown envelope.v throws the TYPED error, before any unwrap work", async () => {
+test("only the CURRENT version reaches the unwrap: retired labels and future labels are both refused, typed", async () => {
   const kp = await deriveEncryptionKeypairFromSeed(SEED_A);
   const envelope = await sealRecoveryBundle({
     bundle: BUNDLE,
@@ -118,30 +126,36 @@ test("an unknown envelope.v throws the TYPED error, before any unwrap work", asy
     role: "guardian",
     guardianPublicKeysHex: [kp.publicKeyHex],
   });
-  await assert.rejects(
-    openRecoveryBundle({ envelope: { ...envelope, v: 3 }, kernelAddress: KERNEL, role: "guardian", guardianKeypair: kp }),
-    (e: unknown) => e instanceof UnknownRecoveryEnvelopeVersionError,
-  );
-  assert.throws(() => recoveryAadBytes("guardian", 3, KERNEL), UnknownRecoveryEnvelopeVersionError);
+  assert.equal(RECOVERY_ENVELOPE_VERSION, 3);
+  for (const v of [1, 2]) {
+    await assert.rejects(
+      openRecoveryBundle({ envelope: { ...envelope, v }, kernelAddress: KERNEL, role: "guardian", guardianKeypair: kp }),
+      RetiredRecoveryEnvelopeVersionError,
+    );
+    assert.throws(() => recoveryAadBytes("guardian", v, KERNEL), RetiredRecoveryEnvelopeVersionError);
+  }
+  for (const v of [RECOVERY_ENVELOPE_VERSION + 1, 0, 2.5, Number.NaN]) {
+    await assert.rejects(
+      openRecoveryBundle({ envelope: { ...envelope, v }, kernelAddress: KERNEL, role: "guardian", guardianKeypair: kp }),
+      UnknownRecoveryEnvelopeVersionError,
+    );
+  }
 });
 
-test("the declared version is downgrade-proof: lying about v fails the AEAD, both directions", async () => {
+test("the DEK wrap is X-Wing, and a current envelope still fits one 4096-byte chunk", async () => {
   const kp = await deriveEncryptionKeypairFromSeed(SEED_A);
-  const v2 = await sealRecoveryBundle({
+  assert.equal(kp.publicKeyHex.length, 1216 * 2, "the guardian key is an X-Wing key");
+  const envelope = await sealRecoveryBundle({
     bundle: BUNDLE,
     kernelAddress: KERNEL,
     role: "guardian",
     guardianPublicKeysHex: [kp.publicKeyHex],
   });
-  await assert.rejects(
-    openRecoveryBundle({ envelope: { ...v2, v: 1 }, kernelAddress: KERNEL, role: "guardian", guardianKeypair: kp }),
-    /no wrapped DEK opens/,
-  );
-  const v1 = await sealLegacyV1(kp.publicKeyHex);
-  await assert.rejects(
-    openRecoveryBundle({ envelope: { ...v1, v: 2 }, kernelAddress: KERNEL, role: "guardian", guardianKeypair: kp }),
-    /no wrapped DEK opens/,
-  );
+  assert.equal(envelope.wrappedDeks.length, 1);
+  // enc (1120) ‖ HPKE ciphertext of the 32-byte DEK with its 16-byte tag.
+  assert.equal(hexToBytes(envelope.wrappedDeks[0]).length, 1120 + 32 + 16);
+  const json = new TextEncoder().encode(JSON.stringify(envelope));
+  assert.ok(json.length < 4096, `envelope is ${json.length} bytes`);
 });
 
 // ── Portability read classification ─────────────────────────────────────────
@@ -192,11 +206,24 @@ test("portability read: a NEWER inner envelope version is unreadable — never t
     prfSecret: PRF_KEY,
     readFeed: feedOf({
       status: "found",
-      value: { ...payload, envelope: { ...payload.envelope, v: 3 } },
+      value: { ...payload, envelope: { ...payload.envelope, v: RECOVERY_ENVELOPE_VERSION + 1 } },
       version: 0,
     }),
   });
   assert.equal(read.status, "unreadable");
+});
+
+test("portability read: a RETIRED inner envelope version is unusable — the self-heal may rewrite it", async () => {
+  const payload = await realPortabilityEnvelope();
+  const read = await readPortabilityEnvelope({
+    prfSecret: PRF_KEY,
+    readFeed: feedOf({
+      status: "found",
+      value: { ...payload, envelope: { ...payload.envelope, v: 2 } },
+      version: 0,
+    }),
+  });
+  assert.equal(read.status, "unusable");
 });
 
 test("portability read: an OLDER wrapper version stays unusable (the documented self-heal rewrite)", async () => {
