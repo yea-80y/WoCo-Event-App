@@ -18,10 +18,17 @@
  * spend postage racing for the same slot.
  *
  * ABSENT IS NEVER INFERRED FROM A FAULT. Every read here answers found /
- * absent / unavailable, and only `absent` licenses a write. `readSocPayload`
- * throws for everything except a bee not-found, so a throw is `unavailable` —
- * treating it as absence would write a confirmation over a slot that is already
- * spent, or re-issue a badge someone revoked.
+ * absent / unavailable, and only `absent` licenses a write. A source that
+ * cannot answer is `unavailable` and a throw is treated the same — treating
+ * either as absence would write a confirmation over a slot that is already
+ * spent, re-issue a badge someone revoked, or countersign a referral whose
+ * retraction sits in a store that did not answer.
+ *
+ * EVERY READ NAMES ITS FAMILY (#657). The referee's statement is the
+ * `referral` family - the referee's own feed, wherever the shared table says it
+ * is stamped; everything this issuer writes is `campaignIssuer`. The table
+ * decides which sources a read asks, so a family that moves to Etherna is read
+ * from Etherna here the moment the server runs the new row.
  *
  * Everything touching Swarm is injected (`IssuerDeps`), for the reason the
  * evidence publisher injects its own: the properties worth pinning are the
@@ -39,7 +46,6 @@ import {
   REFERRER_INDEX_FORMAT,
   badgeTopic,
   campaignAccountSubject,
-  contentFeedSocIdentifier,
   referralConfirmationTopic,
   referralStatementTopic,
   referrerIndexTopic,
@@ -47,18 +53,17 @@ import {
   validateReferralConfirmationV1,
   validateReferralStatementV1,
   validateReferrerIndexV1,
-  versionedSocIdentifier,
   type BadgeV1,
   type Hex0x,
   type ReferralConfirmationV1,
   type ReferrerIndexV1,
+  type FeedFamily,
   type VersionedFeedRead,
 } from "@woco/shared";
 import {
   campaignIssuerConfigured,
   getCampaignIssuerOwnerHex,
   getCampaignIssuerSigner,
-  requirePostageBatch,
 } from "../../config/swarm.js";
 import { beeBatchState } from "../health/probes.js";
 import {
@@ -69,7 +74,7 @@ import {
 import {
   readBandedContentFeedJsonResult,
   readContentFeedJsonResult,
-  readSocPayload,
+  readVersion0,
 } from "../swarm/soc-upload.js";
 import { noteConfirmedReferral } from "../gate/referral-unlock.js";
 
@@ -118,12 +123,13 @@ export type RecordRead<T> =
 
 export interface IssuerDeps {
   /** Latest version of a pinned-band feed — badges and the referee's statement. */
-  readHead: (ownerHex: string, topic: string) => Promise<VersionedFeedRead>;
+  readHead: (ownerHex: string, topic: string, family: FeedFamily) => Promise<VersionedFeedRead>;
   /** Version 0 EXACTLY, by computed address. The first-confirmed-wins read. */
-  readVersion0: (ownerHex: string, topic: string) => Promise<SlotRead>;
+  readVersion0: (ownerHex: string, topic: string, family: FeedFamily) => Promise<SlotRead>;
   readBanded: (
     ownerHex: string,
     topicForBand: (band: number) => string,
+    family: FeedFamily,
   ) => Promise<VersionedFeedRead & { band: number }>;
   writeFeed: (topic: string, bytes: Uint8Array) => Promise<ContentFeedWrite>;
   confirmWrite: (
@@ -135,10 +141,6 @@ export interface IssuerDeps {
   now: () => number;
 }
 
-function hex(bytes: Uint8Array): string {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 /**
  * Read version 0 of a feed at its exact address.
  *
@@ -147,35 +149,38 @@ function hex(bytes: Uint8Array): string {
  * land at version 1, and treating that as the answer would hand the referee to
  * whoever wrote last rather than whoever wrote first.
  */
-async function liveReadVersion0(ownerHex: string, topic: string): Promise<SlotRead> {
+async function liveReadVersion0(ownerHex: string, topic: string, family: FeedFamily): Promise<SlotRead> {
   try {
-    const bytes = await readSocPayload(ownerHex, hex(versionedSocIdentifier(contentFeedSocIdentifier(topic), 0)));
-    return bytes ? { status: "found", bytes } : { status: "absent" };
+    const res = await readVersion0(ownerHex, topic, family);
+    if (res.status !== "unavailable") return res;
+    // None of this is evidence that the slot is free. The detail goes to the
+    // log, never to the public health endpoint (an RPC or gateway URL rides in
+    // some messages).
+    console.warn(`[campaign] version-0 read unavailable for ${topic}: ${res.reason ?? "unknown"}`);
   } catch (err) {
-    // Everything except a bee not-found arrives here, and none of it is
-    // evidence that the slot is free. The detail goes to the log, never to the
-    // public health endpoint (an RPC or gateway URL rides in some messages).
     console.warn(`[campaign] version-0 read failed for ${topic}:`, err);
-    return { status: "unavailable", reason: "slot read failed" };
   }
+  return { status: "unavailable", reason: "slot read failed" };
 }
 
 function liveDeps(): IssuerDeps {
   return {
     // `skipLegacy`: every campaign topic postdates versioning, so a legacy
     // chunk cannot exist and probing for one costs a guaranteed miss.
-    readHead: (ownerHex, topic) => readContentFeedJsonResult(ownerHex, topic, 0, { skipLegacy: true }),
+    readHead: (ownerHex, topic, family) => readContentFeedJsonResult(ownerHex, topic, family, { skipLegacy: true }),
     readVersion0: liveReadVersion0,
     readBanded: readBandedContentFeedJsonResult,
+    // Everything this issuer writes is its own family - the probe, the stamp
+    // and the read-back all follow that row.
     writeFeed: (topic, bytes) =>
       writeVersionedContentFeed({
         signer: getCampaignIssuerSigner(),
         topic,
         bytes,
-        batchId: requirePostageBatch(),
+        family: "campaignIssuer",
       }),
     confirmWrite: (topic, bytes, version) =>
-      confirmContentFeedWrite(getCampaignIssuerOwnerHex(), topic, bytes, version),
+      confirmContentFeedWrite(getCampaignIssuerOwnerHex(), topic, "campaignIssuer", bytes, version),
     batchState: async () => {
       const state = await beeBatchState();
       health.batchUsable = state.usable;
@@ -305,7 +310,7 @@ export async function confirmReferral(
     const issuerOwner = getCampaignIssuerOwnerHex();
     const topic = referralConfirmationTopic(campaignAccountSubject(referee));
 
-    const slot = await deps.readVersion0(issuerOwner, topic);
+    const slot = await deps.readVersion0(issuerOwner, topic, "campaignIssuer");
     if (slot.status === "unavailable") return unavailable("confirmation read unavailable", slot.reason);
     if (slot.status === "found") {
       const existing = parseJson(slot.bytes);
@@ -323,7 +328,7 @@ export async function confirmReferral(
     const subject = campaignAccountSubject(referrer);
     let statementRead: VersionedFeedRead;
     try {
-      statementRead = await deps.readHead(refereeFeed, referralStatementTopic(subject));
+      statementRead = await deps.readHead(refereeFeed, referralStatementTopic(subject), "referral");
     } catch (err) {
       // Same as the badge read: a throw is a fault, and a fault is never
       // absence — but it is also not a 500 the referee can act on.
@@ -436,7 +441,7 @@ export async function appendReferrerIndex(
   const issuerOwner = getCampaignIssuerOwnerHex();
   let current: VersionedFeedRead & { band: number };
   try {
-    current = await deps.readBanded(issuerOwner, topicForBand);
+    current = await deps.readBanded(issuerOwner, topicForBand, "campaignIssuer");
   } catch (err) {
     // The banded read walks openers through a probe that THROWS on any fault
     // but not-found. This runs after the confirmation is already on Swarm, so
@@ -525,7 +530,7 @@ export async function issueBadge(address: string, deps: IssuerDeps = liveDeps())
     const topic = badgeTopic(subject, "joined");
     const issuerOwner = getCampaignIssuerOwnerHex();
 
-    const head = await deps.readHead(issuerOwner, topic);
+    const head = await deps.readHead(issuerOwner, topic, "campaignIssuer");
     if (head.status === "unavailable") {
       // Not an error worth counting: the next qualifying action retries, which
       // is how this rail has always recovered from a read it could not make.
@@ -590,7 +595,7 @@ export async function readConfirmation(
 ): Promise<RecordRead<ReferralConfirmationV1>> {
   if (!health.configured) return { status: "unavailable" };
   const topic = referralConfirmationTopic(campaignAccountSubject(referee.toLowerCase()));
-  const slot = await deps.readVersion0(getCampaignIssuerOwnerHex(), topic);
+  const slot = await deps.readVersion0(getCampaignIssuerOwnerHex(), topic, "campaignIssuer");
   if (slot.status === "unavailable") return { status: "unavailable" };
   if (slot.status === "absent") return { status: "absent" };
   const record = parseJson(slot.bytes);
@@ -610,11 +615,11 @@ export async function readBadge(
   const topic = badgeTopic(campaignAccountSubject(address.toLowerCase()), "joined");
   let head: VersionedFeedRead;
   try {
-    head = await deps.readHead(getCampaignIssuerOwnerHex(), topic);
+    head = await deps.readHead(getCampaignIssuerOwnerHex(), topic, "campaignIssuer");
   } catch (err) {
-    // A head read can throw past the probe (`readSocPayload` throws every
-    // fault but not-found). There is no global error handler, so an uncaught
-    // throw here is a bare 500 for a public read that should say "try again".
+    // A head read can still throw (a malformed address, a bug below the
+    // probe). There is no global error handler, so an uncaught throw here is a
+    // bare 500 for a public read that should say "try again".
     console.warn(`[campaign] badge read threw for ${address}:`, err);
     return { status: "unavailable" };
   }

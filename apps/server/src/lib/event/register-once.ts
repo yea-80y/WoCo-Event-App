@@ -96,6 +96,16 @@ const defaultDeps: RegisterDeps = {
   confirmSeriesOnChain: realConfirmSeriesOnChain,
 };
 
+/**
+ * The feed to hand the organiser's client for re-signing, or none: a feed built
+ * on a read that could not show it is the head would be signed over the newer
+ * version (#657). Without one the client merges the on-chain id into the feed
+ * it already holds (PublishButton).
+ */
+function resignableFeed(confirmed: { feed: EventFeed; resignable: boolean }): EventFeed | undefined {
+  return confirmed.resignable ? confirmed.feed : undefined;
+}
+
 /** `${eventId}|${seriesId}` → the registration currently running in THIS process. */
 const inFlight = new Map<string, Promise<RegisterResult>>();
 
@@ -123,7 +133,7 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
   if (recorded) {
     // The tx landed; only the feed write is outstanding. Re-run it — confirm is
     // itself idempotent (it re-records the same id and rewrites the same feed).
-    const feed = await deps.confirmSeriesOnChain(eventId, seriesId, recorded, signerHint);
+    const feed = resignableFeed(await deps.confirmSeriesOnChain(eventId, seriesId, recorded, signerHint));
     deps.clearPending(eventId, seriesId);
     console.log(`[register-once] ${eventId}/${seriesId} already registered (${recorded}) — feed healed`);
     return { status: "already", onChainEventId: recorded, feed };
@@ -148,9 +158,9 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
     if (outcome.status === "registered") {
       // The receipt was read and parsed against the env-selected contract, so
       // that is the contract it was found on (#563).
-      const feed = await deps.confirmSeriesOnChain(
+      const feed = resignableFeed(await deps.confirmSeriesOnChain(
         eventId, seriesId, outcome.onChainEventId, signerHint, getDefaultEventContract(),
-      );
+      ));
       deps.clearPending(eventId, seriesId);
       console.log(`[register-once] ${eventId}/${seriesId} recovered from broadcast tx ${outcome.txHash}`);
       return { status: "registered", onChainEventId: outcome.onChainEventId, txHash: outcome.txHash, feed };
@@ -166,9 +176,9 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
     const outcome = await deps.resolveIntent(pending, manifestRef);
     if (outcome.status === "registered") {
       // Resolved by walking the env-selected contract (#563).
-      const feed = await deps.confirmSeriesOnChain(
+      const feed = resignableFeed(await deps.confirmSeriesOnChain(
         eventId, seriesId, outcome.onChainEventId, signerHint, getDefaultEventContract(),
-      );
+      ));
       deps.clearPending(eventId, seriesId);
       console.log(`[register-once] ${eventId}/${seriesId} intent marker resolved to ${outcome.onChainEventId}`);
       return { status: "registered", onChainEventId: outcome.onChainEventId, feed };
@@ -194,7 +204,7 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
 
   // A throw here leaves the marker in place ON PURPOSE: the tx is already on chain,
   // and step 3 of the next attempt is what turns it back into a completed registration.
-  const feed = await deps.confirmSeriesOnChain(eventId, seriesId, onChainEventId, signerHint, contract);
+  const feed = resignableFeed(await deps.confirmSeriesOnChain(eventId, seriesId, onChainEventId, signerHint, contract));
   deps.clearPending(eventId, seriesId);
   return { status: "registered", onChainEventId, txHash, feed };
 }

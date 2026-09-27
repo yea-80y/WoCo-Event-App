@@ -30,12 +30,15 @@ import {
   versionedSocIdentifier,
   type ContentFeedManifest,
 } from "@woco/shared";
-import type { VersionedFeedRead } from "@woco/shared";
+import { FEED_FAMILY_STORES, type FeedFamily, type VersionedFeedRead } from "@woco/shared";
+import { requirePostageBatch } from "../../config/swarm.js";
+import { platformEthernaBatch } from "../etherna/batch-router.js";
 import {
   invalidateContentFeedVersion,
   readContentFeedJsonResult,
   uploadSignedSoc,
   type SignedSocInput,
+  type SocUploadDestination,
 } from "./soc-upload.js";
 
 export type ContentFeedWrite =
@@ -52,14 +55,28 @@ export type ContentFeedWrite =
  * updating weeks later.
  */
 export interface FeedWriteIo {
-  readHead: (ownerHex: string, topic: string) => Promise<VersionedFeedRead>;
-  upload: (input: SignedSocInput, batchId: string) => Promise<unknown>;
+  readHead: (ownerHex: string, topic: string, family: FeedFamily) => Promise<VersionedFeedRead>;
+  destination: (family: FeedFamily) => SocUploadDestination;
+  upload: (input: SignedSocInput, dest: SocUploadDestination) => Promise<unknown>;
   invalidate: (ownerHex: string, topic: string) => void;
 }
 
+/**
+ * Where a server-owned feed is stamped: its family's row, for the upload as for
+ * the version probe (#657). This used to be the WoCo bee, whatever the family,
+ * so moving a server-written family in the shared table would have moved its
+ * READS alone - and the next write, probing Etherna and stamping WoCo, would
+ * land where the probe does not look first.
+ */
+export function destinationForFamily(family: FeedFamily): SocUploadDestination {
+  if (FEED_FAMILY_STORES[family] === "etherna") return platformEthernaBatch();
+  return { target: "wocoBee", batchId: requirePostageBatch() };
+}
+
 const liveIo: FeedWriteIo = {
-  readHead: (owner, topic) => readContentFeedJsonResult(owner, topic),
-  upload: (input, batchId) => uploadSignedSoc(input, { target: "wocoBee", batchId }),
+  readHead: (owner, topic, family) => readContentFeedJsonResult(owner, topic, family),
+  destination: destinationForFamily,
+  upload: (input, dest) => uploadSignedSoc(input, dest),
   invalidate: invalidateContentFeedVersion,
 };
 
@@ -78,7 +95,7 @@ async function signAndUpload(
   signer: PrivateKey,
   identifier: Uint8Array,
   payload: Uint8Array,
-  batchId: string,
+  dest: SocUploadDestination,
 ): Promise<void> {
   const span = encodeSpan(payload.length);
   const cacAddress = calculateCacAddress(span, payload);
@@ -91,7 +108,7 @@ async function signAndUpload(
     signature: toHex(sig.toUint8Array()),
     span: toHex(span),
     payload: toHex(payload),
-  }, batchId);
+  }, dest);
 }
 
 /**
@@ -112,13 +129,16 @@ export async function writeVersionedContentFeed(args: {
   signer: PrivateKey;
   topic: string;
   bytes: Uint8Array;
-  batchId: string;
+  /** The feed's family: where the probe reads AND where the upload stamps. */
+  family: FeedFamily;
   unchanged?: (headBytes: Uint8Array) => boolean;
 }, io: FeedWriteIo = liveIo): Promise<ContentFeedWrite> {
   if (args.bytes.length < 1) return { ok: false, reason: "payload must be at least one byte" };
 
+  // Before the probe, so a store that cannot take the write spends no read.
+  const dest = io.destination(args.family);
   const owner = args.signer.publicKey().address().toHex().replace(/^0x/, "").toLowerCase();
-  const head = await io.readHead(owner, args.topic);
+  const head = await io.readHead(owner, args.topic, args.family);
   if (head.status === "unavailable") {
     return { ok: false, reason: `version probe inconclusive: ${head.reason ?? "unavailable"}` };
   }
@@ -130,7 +150,7 @@ export async function writeVersionedContentFeed(args: {
   const base = contentFeedSocIdentifier(args.topic);
 
   if (args.bytes.length <= SOC_MAX_PAYLOAD_SIZE) {
-    await signAndUpload(io, args.signer, versionedSocIdentifier(base, version), args.bytes, args.batchId);
+    await signAndUpload(io, args.signer, versionedSocIdentifier(base, version), args.bytes, dest);
   } else {
     const pages = Math.ceil(args.bytes.length / SOC_MAX_PAYLOAD_SIZE);
     for (let i = 0; i < pages; i++) {
@@ -139,11 +159,11 @@ export async function writeVersionedContentFeed(args: {
       // queue with one subject's pages would stall the user writes the tally
       // exists to count.
       const slice = args.bytes.subarray(i * SOC_MAX_PAYLOAD_SIZE, (i + 1) * SOC_MAX_PAYLOAD_SIZE);
-      await signAndUpload(io, args.signer, versionedPageIdentifier(base, version, i + 1), slice, args.batchId);
+      await signAndUpload(io, args.signer, versionedPageIdentifier(base, version, i + 1), slice, dest);
     }
     const manifest: ContentFeedManifest = { [CONTENT_FEED_MC_MARKER]: 1, pages, len: args.bytes.length };
     const encoded = new TextEncoder().encode(JSON.stringify(manifest));
-    await signAndUpload(io, args.signer, versionedSocIdentifier(base, version), encoded, args.batchId);
+    await signAndUpload(io, args.signer, versionedSocIdentifier(base, version), encoded, dest);
   }
 
   // The in-process version cache still holds the PREVIOUS head; without this the
@@ -163,11 +183,12 @@ export async function writeVersionedContentFeed(args: {
 export async function confirmContentFeedWrite(
   ownerHex: string,
   topic: string,
+  family: FeedFamily,
   expected: Uint8Array,
   expectedVersion: number,
   io: FeedWriteIo = liveIo,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const res = await io.readHead(ownerHex, topic);
+  const res = await io.readHead(ownerHex, topic, family);
   if (res.status !== "found") return { ok: false, reason: `read-back ${res.status}` };
   if (res.version !== expectedVersion) return { ok: false, reason: `read-back version ${res.version} != ${expectedVersion}` };
   if (!sameBytes(res.bytes, expected)) return { ok: false, reason: "read-back bytes differ" };

@@ -63,7 +63,9 @@ export interface SiteConfigReaders {
 
 const DEFAULT_READERS: SiteConfigReaders = {
   readConfigPage: readFeedPageStrict,
-  readPointerTarget: readContentFeedJsonResult,
+  // A discovery read (#657): new sites are stamped on Etherna and older ones on
+  // WoCo, and nothing outside the payload says which, so it asks both.
+  readPointerTarget: (ownerHex, baseTopic) => readContentFeedJsonResult(ownerHex, baseTopic, "site"),
   readPagesPage: readFeedPage,
 };
 

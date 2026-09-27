@@ -64,6 +64,8 @@ whitelisted — those sites load, and that historical 403 was fixed separately.
 Still true and worth keeping: the server's `readSocFromEtherna` fallback. Not as a
 routing workaround, but as a backstop for the retrieval window — Etherna's gateway
 holds the chunk locally and answers while a just-pushed chunk is still settling.
+(#657, 2026-09-27: replaced. Server scans ask Etherna only for Etherna families, through
+`soc-read.ts`, and an Etherna failure there is `unavailable`, never absent.)
 
 ## LANDMINE 2 — versioned-sequence split-brain = silently lost writes
 
