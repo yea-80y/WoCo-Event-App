@@ -7,6 +7,7 @@ import { getEventForOwner } from "../lib/event/service.js";
 import { getBindingsForEvent, toAttendeeKeyRows } from "../lib/gate/store.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
 import { isOrderErased } from "../lib/attendee-batch/ledger.js";
+import { getHeldOrder } from "../lib/attendee-batch/held-orders.js";
 import { getOnChainEventAt, getSlotDataAt } from "../lib/chain/event-contract.js";
 import { registrationContractFor } from "../lib/event/onchain-registry.js";
 import { contractKey } from "../lib/chain/event-contract.js";
@@ -99,7 +100,16 @@ orders.get("/:id/orders", requireAuth, async (c) => {
           // still hold it in its cache.
           const erased = swarmHex ? isOrderErased(swarmHex) : false;
 
-          if (swarmHex && !erased) {
+          // A paid order whose store is still pending is served from its hold
+          // (#546): the same ciphertext, before it reaches Swarm.
+          const held = swarmHex && !erased ? getHeldOrder(swarmHex) : null;
+          if (held) {
+            try {
+              encryptedOrder = JSON.parse(held.json) as SealedBoxV2;
+            } catch (err) {
+              console.warn(`[orders/v2] Held order for slot ${slot} is not JSON:`, err);
+            }
+          } else if (swarmHex && !erased) {
             try {
               const json = await downloadFromBytes(swarmHex);
               encryptedOrder = JSON.parse(json) as SealedBoxV2;

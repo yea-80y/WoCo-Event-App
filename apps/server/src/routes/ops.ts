@@ -59,6 +59,8 @@ import { attendeeLedgerStatus, setActiveBatch } from "../lib/attendee-batch/ledg
 import { attendeeCheckoutRefusal, attendeeStamperAddress } from "../lib/attendee-batch/writer.js";
 import { refreshAttendeeBatch, registerAttendeeBatch } from "../lib/attendee-batch/admin.js";
 import { burnOrder } from "../lib/attendee-batch/burn.js";
+import { getOrderRecord } from "../lib/attendee-batch/ledger.js";
+import { getHeldOrder, releaseHeldOrder } from "../lib/attendee-batch/held-orders.js";
 
 const ops = new Hono<AppEnv>();
 
@@ -602,6 +604,16 @@ ops.post("/attendee-batch/orders/:root/burn", async (c) => {
   const reason = (body?.reason || "").trim().slice(0, 500);
   if (!by || !reason) return c.json({ ok: false, error: "`by` and `reason` are required - who decided this, and why?" }, 400);
   try {
+    // A box still held (not yet on Swarm) is simply deleted: real deletion.
+    const wasHeld = getHeldOrder(root) !== null;
+    if (wasHeld && !releaseHeldOrder(root)) {
+      return c.json({ ok: false, error: "The held order could not be deleted - see compliancePersistence on /api/health" }, 503);
+    }
+    if (!getOrderRecord(root)) {
+      if (!wasHeld) return c.json({ ok: false, error: "No attendee order with that reference" }, 404);
+      console.log(`[ops] attendee order ${root} (held, never stored) deleted by ${by} (${reason})`);
+      return c.json({ ok: true, data: { root, state: "deleted-before-store", burnedAt: null } });
+    }
     const record = await burnOrder(root);
     console.log(`[ops] attendee order ${root} burn by ${by} (${reason}): ${record.state}`);
     return c.json({ ok: true, data: { root, state: record.state, burnedAt: record.burnedAt ?? null } });

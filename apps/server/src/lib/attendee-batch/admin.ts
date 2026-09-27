@@ -71,8 +71,11 @@ export async function refreshAttendeeBatch(
 ): Promise<{ batchId: string; expiresAt: string } | null> {
   const batchId = (rawBatchId ?? attendeeLedgerStatus().active ?? "").toLowerCase().replace(/^0x/, "");
   if (!batchId) return null;
-  const chain = await lookup(batchId);
   const stamper = attendeeStamperAddress();
+  // A missing key is local config, not a fact about the batch: record nothing
+  // (checkout already refuses without a stamper).
+  if (!stamper) return null;
+  const chain = await lookup(batchId);
   const alive = chain && chain.batchTTL > 0 && chain.owner === stamper;
   const expiresAt = alive ? expiryFromTtl(chain.batchTTL) : new Date().toISOString();
   setBatchExpiry(batchId, expiresAt);

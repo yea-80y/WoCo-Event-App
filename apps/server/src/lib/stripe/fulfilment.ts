@@ -113,6 +113,17 @@ export interface FulfilmentDeps {
   storeOrderBlob(data: string, meta: { eventId: string; seriesId: string }): Promise<string>;
 
   /**
+   * Paid-only storage (#546). The buyer's box was HELD at checkout, not stored:
+   * `claimHeldOrder` marks it paid (persisted, before the mint) and says whether
+   * one is held; `storeHeldOrder` puts it on the attendee batch and drops the
+   * hold (may throw - the retry worker then stores it); `isOrderStored` says
+   * whether the ref is already on the attendee batch (a retried webhook).
+   */
+  claimHeldOrder(orderRef: string, sessionId: string): boolean;
+  storeHeldOrder(orderRef: string): Promise<string>;
+  isOrderStored(orderRef: string): boolean;
+
+  /**
    * The organiser's X-Wing order key, read by its ref from OUR OWN bee and verified
    * against the ref (`verifyOrderKeyChunk`, #642). Throws on any failure. This is not
    * a new failure domain for the fallback seal: the very next step, uploading the
@@ -387,6 +398,19 @@ export async function fulfilPaidSession(
   if (metaRef && deps.orderRefInOtherSale(metaRef, session.id)) {
     console.warn(`[fulfilment] ${session.id}: orderRef ${metaRef.slice(0, 10)}… is another sale's — sealing this buyer's own order instead`);
     prefetchedOrderRef = undefined;
+  }
+  // Paid-only storage (#546): the ref names a box HELD since checkout. Claim it
+  // for this paid session now (persisted, so a crash before the store cannot
+  // lose it); if nothing is held and nothing is stored, the ref points at no
+  // data, so this buyer's minimal order is sealed instead.
+  let heldOrderRef: string | undefined;
+  if (prefetchedOrderRef) {
+    if (deps.claimHeldOrder(prefetchedOrderRef, session.id)) {
+      heldOrderRef = prefetchedOrderRef;
+    } else if (!deps.isOrderStored(prefetchedOrderRef)) {
+      console.warn(`[fulfilment] ${session.id}: no held or stored order for ${prefetchedOrderRef.slice(0, 10)}… — sealing the minimal order`);
+      prefetchedOrderRef = undefined;
+    }
   }
 
   // ── 1. Event feed (fenced: a feed hiccup degrades the TICKET EMAIL, not the sale) ──
@@ -727,6 +751,7 @@ export async function fulfilPaidSession(
         v2OnChainEventId,
         mintContract,
         prefetchedOrderRef,
+        heldOrderRef,
         encryptedOrder,
         accountClaim,
         claimedResults,
@@ -1036,6 +1061,8 @@ interface MintV2Args {
   /** From the registration record (#563) — never the feed, never today's env default. */
   mintContract: EventContractTarget;
   prefetchedOrderRef: string | undefined;
+  /** Set when `prefetchedOrderRef` is a held box this sale just claimed: store it before minting. */
+  heldOrderRef?: string;
   encryptedOrder: SealedBoxV2 | undefined;
   accountClaim: { parentAddress: string } | undefined;
   /** Filled in place: one entry per slot actually minted AND signed. */
@@ -1057,6 +1084,17 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
   // Resolve the orderRef once for the whole batch (all tickets share one
   // encrypted order blob — same buyer, same form submission).
   let batchOrderRef: string | undefined = a.prefetchedOrderRef;
+  if (a.heldOrderRef) {
+    // The ref is the root of the held bytes, known already, so the mint never
+    // waits on this: a bee blip or a full bucket must not refund a paid sale.
+    // A failed store stays held as paid; the retry worker stores it, and the
+    // organiser's order view serves it from the hold meanwhile.
+    try {
+      await deps.storeHeldOrder(a.heldOrderRef);
+    } catch (err) {
+      console.warn(`[fulfilment/v2] Held order ${a.heldOrderRef.slice(0, 10)}… not stored yet (retry worker will):`, err);
+    }
+  }
   if (!batchOrderRef && a.encryptedOrder) {
     try {
       batchOrderRef = await deps.storeOrderBlob(JSON.stringify(a.encryptedOrder), { eventId, seriesId });

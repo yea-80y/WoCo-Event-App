@@ -26,7 +26,8 @@ const { __setBeeForTests } = await import("../src/config/swarm.js");
 const ledger = await import("../src/lib/attendee-batch/ledger.js");
 const { readyAttendeeStore, acceptingUploadChunk } = await import("./helpers/attendee-store.js");
 const { canonicalOrderBox } = await import("../src/lib/stripe/order-ref.js");
-const { splitPayload, bucketOf } = await import("../src/lib/attendee-batch/stamp.js");
+const held = await import("../src/lib/attendee-batch/held-orders.js");
+const writer = await import("../src/lib/attendee-batch/writer.js");
 
 let feedReads = 0;
 let chunksUploaded = 0;
@@ -74,58 +75,83 @@ test("with no erasable storage, prepare-order is refused 503 and stores nothing"
   assert.equal(chunksUploaded, 0);
 });
 
-test("once ready, prepare-order stores on the attendee batch and returns the recorded root", async () => {
-  const { batchId } = await readyAttendeeStore();
+test("once ready, prepare-order HOLDS the box and stores nothing on Swarm (#546 paid-only)", async () => {
+  await readyAttendeeStore();
+  const before = chunksUploaded;
   const res = await post("prepare-order", { encryptedOrder: BOX }, "198.51.100.3");
   assert.equal(res.status, 200);
   const { orderRef, orderRefToken } = (await res.json()) as { orderRef: string; orderRefToken: string };
   assert.ok(orderRefToken);
-  const record = ledger.getOrderRecord(orderRef);
-  assert.ok(record, "the returned ref is an order in the attendee ledger");
-  assert.equal(record.batchId, batchId);
-  assert.equal(record.kind, "prepared");
-  assert.equal(record.state, "stored");
-  assert.equal(chunksUploaded, record.chunks.length);
+  assert.equal(chunksUploaded, before, "no slot is spent before payment");
+  assert.equal(ledger.getOrderRecord(orderRef), null);
+  assert.equal(held.getHeldOrder(orderRef)?.json, canonicalOrderBox(BOX));
+  assert.equal(orderRef, await writer.orderRefOf(canonicalOrderBox(BOX)!), "the ref is the root the bytes will have");
 });
 
-test("an order box sent with an event that does not exist stores nothing", async () => {
+test("an order box sent with an event that does not exist holds and stores nothing", async () => {
   const before = chunksUploaded;
+  const box = { ...BOX, ct: "ee".repeat(64) };
   const res = await post(
     "create-checkout",
-    { eventId: "evt-missing", seriesId: "s1", claimerEmail: "a@example.com", encryptedOrder: { ...BOX, ct: "ee".repeat(64) } },
+    { eventId: "evt-missing", seriesId: "s1", claimerEmail: "a@example.com", encryptedOrder: box },
     "198.51.100.4",
   );
   assert.equal(res.status, 404);
-  assert.equal(chunksUploaded, before, "no slot was spent for a request naming no real event");
+  assert.equal(chunksUploaded, before);
+  assert.equal(held.getHeldOrder(await writer.orderRefOf(canonicalOrderBox(box)!)), null);
 });
 
-test("a full bucket answers the buyer 'paused', never ledger detail", async () => {
-  // A depth-17 batch holds 2 chunks per bucket; fill the bucket this box's root lands in.
-  const box = { ...BOX, ct: "0f".repeat(64) };
-  const { chunks } = await splitPayload(new TextEncoder().encode(canonicalOrderBox(box)!));
-  const bucket = bucketOf(chunks[chunks.length - 1].address);
-  const id = "17".repeat(32);
-  const { stamper } = await readyAttendeeStore();
-  ledger.registerBatch(id, 17, stamper, true, new Date(Date.now() + 30 * 86400_000).toISOString());
-  ledger.setActiveBatch(id);
-  for (const n of [1, 2]) {
-    const a = new Uint8Array(32);
-    a[0] = bucket >> 8;
-    a[1] = bucket & 0xff;
-    a[31] = n;
-    ledger.allocateOrder(a, [a], { kind: "checkout" });
-  }
-  const res = await post("prepare-order", { encryptedOrder: box }, "198.51.100.5");
-  assert.equal(res.status, 503);
-  const body = (await res.json()) as { error: string };
-  assert.match(body.error, /paused/i);
-  assert.doesNotMatch(body.error, /bucket|ledger|batch/i);
+test("a paid hold is stored under exactly its ref and released; the retry worker ignores unpaid holds", async () => {
+  await readyAttendeeStore();
+  const deps = { stamper: writer.getAttendeeStamper, upload: async (_e: unknown, body: Uint8Array) => { chunksUploaded++; return (await acceptingUploadChunk(_e, body)).reference.toHex(); } };
+  const json = canonicalOrderBox({ ...BOX, ct: "ab".repeat(80) })!;
+  const ref = await writer.orderRefOf(json);
+  held.commitHold(ref, json, { eventId: "e9", seriesId: "s9" });
+  const before = chunksUploaded;
+  assert.deepEqual(await writer.retryPaidHeldOrders(20, deps as never), { stored: 0, failed: 0 }, "unpaid: not stored");
+  assert.equal(chunksUploaded, before);
+  held.markHeldPaid(ref, "cs_9");
+  assert.deepEqual(await writer.retryPaidHeldOrders(20, deps as never), { stored: 1, failed: 0 });
+  assert.equal(ledger.getOrderRecord(ref)?.state, "stored");
+  assert.equal(ledger.getOrderRecord(ref)?.eventId, "e9");
+  assert.equal(held.getHeldOrder(ref), null, "hold released once stored");
+});
+
+test("a hold whose bytes do not hash to its ref is never released as stored", async () => {
+  await readyAttendeeStore();
+  const deps = { stamper: writer.getAttendeeStamper, upload: async (_e: unknown, body: Uint8Array) => (await acceptingUploadChunk(_e, body)).reference.toHex() };
+  const wrongRef = "cd".repeat(32);
+  held.commitHold(wrongRef, canonicalOrderBox({ ...BOX, ct: "99".repeat(70) })!, {});
+  held.markHeldPaid(wrongRef, "cs_w");
+  await assert.rejects(writer.storeHeldOrder(wrongRef, deps as never), /hashes to/);
+  assert.ok(held.getHeldOrder(wrongRef), "hold kept");
+  held.releaseHeldOrder(wrongRef);
+});
+
+test("burning an order that is only held deletes the hold", async () => {
+  process.env.OPS_TOKEN = "t".repeat(40);
+  const { ops } = await import("../src/routes/ops.js");
+  const opsApp = new Hono();
+  opsApp.route("/api/ops", ops);
+  const json = canonicalOrderBox({ ...BOX, ct: "77".repeat(66) })!;
+  const ref = await writer.orderRefOf(json);
+  held.commitHold(ref, json, {});
+  const res = await opsApp.request(`/api/ops/attendee-batch/orders/${ref}/burn`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${"t".repeat(40)}`, "content-type": "application/json" },
+    body: JSON.stringify({ by: "test", reason: "erasure request" }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal(((await res.json()) as { data: { state: string } }).data.state, "deleted-before-store");
+  assert.equal(held.getHeldOrder(ref), null);
 });
 
 test("the organiser's order view checks erasure before it fetches anything", () => {
   const src = readFileSync(new URL("../src/routes/orders.ts", import.meta.url), "utf8");
   const check = src.indexOf("const erased = swarmHex ? isOrderErased(swarmHex) : false;");
-  const guard = src.indexOf("if (swarmHex && !erased) {");
+  const heldGate = src.indexOf("const held = swarmHex && !erased ? getHeldOrder(swarmHex) : null;");
+  const guard = src.indexOf("} else if (swarmHex && !erased) {");
   const fetch = src.indexOf("await downloadFromBytes(swarmHex)");
-  assert.ok(check > 0 && guard > check && fetch > guard, "erasure is decided before the download, and gates it");
+  assert.ok(check > 0 && heldGate > check, "a held order is served only when not erased");
+  assert.ok(guard > heldGate && fetch > guard, "erasure is decided before the download, and gates it");
 });

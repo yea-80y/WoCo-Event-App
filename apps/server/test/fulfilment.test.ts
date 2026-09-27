@@ -154,6 +154,8 @@ type Step =
   | "recordHeldPayout"
   | "getOrganiserByStripeAccount"
   | "storeOrderBlob"
+  | "claimHeldOrder"
+  | "storeHeldOrder"
   | "generateBurner"
   | "signMessage"
   | "batchClaimForOnChain"
@@ -203,6 +205,10 @@ interface FakeOpts {
   cancellation?: "open" | "cancelled" | "unknown";
   /** Order refs another completed sale already carries (#661). Default none. */
   takenRefs?: string[];
+  /** Whether the session's orderRef is a box HELD since checkout (#546). Default false. */
+  held?: boolean;
+  /** Whether a non-held orderRef is already on the attendee batch. Default true. */
+  orderStored?: boolean;
 }
 
 function fakeDeps(o: FakeOpts = {}) {
@@ -292,6 +298,15 @@ function fakeDeps(o: FakeOpts = {}) {
       return ORDER_KEY.publicKey;
     },
     orderRefInOtherSale: (ref: string) => (o.takenRefs ?? []).includes(ref),
+    claimHeldOrder: () => {
+      boom("claimHeldOrder");
+      return o.held ?? false;
+    },
+    storeHeldOrder: async (ref: string) => {
+      boom("storeHeldOrder");
+      return ref;
+    },
+    isOrderStored: () => o.orderStored ?? true,
     generateBurner: () => {
       boom("generateBurner");
       const n = burnerSeq++;
@@ -657,6 +672,31 @@ describe("happy path", () => {
     const box = JSON.parse(f.uploaded[0]);
     const order = await openBoxJson<{ seriesId: string }>(ORDER_KEY.secretKey, box, orderSealContext(EVENT_ID, SERIES_ID));
     assert.equal(order.seriesId, SERIES_ID);
+  });
+
+  test("#546: a held order is claimed for this paid sale and stored BEFORE the mint, under its own ref", async () => {
+    const { f, outcome } = await run({}, { held: true });
+    assert.equal(outcome.issued, 2);
+    const claim = f.calls.indexOf("claimHeldOrder");
+    const store = f.calls.indexOf("storeHeldOrder");
+    const mint = f.calls.indexOf("batchClaimForOnChain");
+    assert.ok(claim >= 0 && store > claim && mint > store, `claim -> store -> mint, got ${f.calls.join(",")}`);
+    assert.ok(f.saleSlots.every((r: { orderRef?: string }) => r.orderRef === ORDER_REF));
+    assert.equal(f.calls.includes("storeOrderBlob"), false, "no fallback seal");
+  });
+
+  test("#546: a held order whose store fails still mints under its ref - never a refund over it", async () => {
+    const { f, outcome } = await run({}, { held: true, fail: "storeHeldOrder" });
+    assert.equal(outcome.issued, 2);
+    assert.deepEqual(outcome.refund, { kind: "not-needed" });
+    assert.ok(f.saleSlots.every((r: { orderRef?: string }) => r.orderRef === ORDER_REF));
+  });
+
+  test("#546: a ref with nothing held and nothing stored points at no data - the minimal order is sealed", async () => {
+    const { f, outcome } = await run({}, { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), orderStored: false });
+    assert.equal(outcome.issued, 2);
+    assert.ok(f.calls.includes("storeOrderBlob"), "a fresh seal was made");
+    assert.ok(f.saleSlots.every((r: { orderRef?: string }) => r.orderRef !== ORDER_REF));
   });
 
   test("the order key cannot be read: no fallback seal, so the sale stops and refunds", async () => {

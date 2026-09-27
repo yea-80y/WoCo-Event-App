@@ -308,6 +308,11 @@ Swarm chunks are **immutable and cannot be individually deleted**.
 > evicts the chunks from every storer that receives the overwrite. Not reached: copies someone else
 > stored under their own stamp, and retrieval caches. Blobs written before the change, and every
 > other data type here, are unchanged.
+>
+> **Only PAID orders reach Swarm.** Until the Stripe payment confirms, the sealed box is held on the
+> server (`.data/held-orders.json` once the buyer heads to checkout; memory only before that) as
+> ciphertext the server cannot open. Unpaid holds are deleted after 24 hours; paid ones as soon as
+> they are stored. Server backups of `.data` keep copies for their own retention period.
 
 > ⚠️ **CORRECTED 2026-08-01 after Fable review.** This section previously claimed crypto-erasure —
 > "destroy or rotate the decryption key" — as mechanism 1. **That capability does not exist.** The

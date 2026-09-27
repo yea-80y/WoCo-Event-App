@@ -105,6 +105,8 @@ export class AttendeeBucketFullError extends Error {
 
 let store: Store = emptyStore();
 let loaded = false;
+/** Orders refused for a full bucket since boot: a partial outage `sales` cannot see. */
+let bucketFullRefusals = 0;
 /** Set when the file exists but cannot be read: every allocation refuses. */
 let unreadable: string | null = null;
 
@@ -293,7 +295,10 @@ export function allocateOrder(
   for (const address of distinct) {
     const bucket = bucketOf(address);
     const slot = (batch.next[bucket] ?? 0) + (taken.get(bucket) ?? 0);
-    if (slot >= capacity) throw new AttendeeBucketFullError(bucket);
+    if (slot >= capacity) {
+      bucketFullRefusals++;
+      throw new AttendeeBucketFullError(bucket);
+    }
     taken.set(bucket, (taken.get(bucket) ?? 0) + 1);
     chunks.push({ address: toHex(address), bucket, slot, ts });
   }
@@ -434,7 +439,9 @@ export interface AttendeeLedgerStatus {
     fullestBucket: number;
     fullestUsed: number;
     capacity: number;
+    bucketsFull: number;
   }>;
+  bucketFullRefusals: number;
   orders: Record<OrderState, number>;
   /** Orders whose burn was planned but not finished: already hidden from
    *  readers, still on the network until an operator re-runs the burn. */
@@ -452,7 +459,10 @@ export function attendeeLedgerStatus(): AttendeeLedgerStatus {
   const batches = Object.entries(store.batches).map(([batchId, b]) => {
     let fullestBucket = -1;
     let fullestUsed = 0;
+    let bucketsFull = 0;
+    const cap = slotsPerBucket(b.depth);
     for (const [bucket, used] of Object.entries(b.next)) {
+      if (used >= cap) bucketsFull++;
       if (used > fullestUsed) {
         fullestUsed = used;
         fullestBucket = Number(bucket);
@@ -465,10 +475,11 @@ export function attendeeLedgerStatus(): AttendeeLedgerStatus {
       expiresAt: b.expiresAt ?? null,
       fullestBucket,
       fullestUsed,
-      capacity: slotsPerBucket(b.depth),
+      capacity: cap,
+      bucketsFull,
     };
   });
-  return { readable: unreadable === null, active: store.active, batches, orders, burning };
+  return { readable: unreadable === null, active: store.active, batches, orders, burning, bucketFullRefusals };
 }
 
 /** Test seam only: forget memory and reload from disk on next use. */

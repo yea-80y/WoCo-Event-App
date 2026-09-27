@@ -99,6 +99,8 @@ import { assertEventContractConfig } from "./lib/chain/event-contract.js";
 import { customDomainProxy } from "./middleware/custom-domain.js";
 import { attendeeBatchHealth } from "./lib/attendee-batch/health.js";
 import { refreshAttendeeBatch } from "./lib/attendee-batch/admin.js";
+import { heldOrdersHealth, sweepExpired as sweepHeldOrders } from "./lib/attendee-batch/held-orders.js";
+import { retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -413,6 +415,10 @@ function healthReport() {
     // the batch is under the postage TTL floor or its fullest bucket over the
     // utilization ceiling, or a burn was left unfinished.
     attendeeBatch: attendeeBatchHealth(),
+    // Orders held until paid (#546). Red when a PAID order has waited over 15
+    // minutes to reach Swarm (the retry worker keeps failing: bee down, bucket
+    // full - activate a fresh batch) or the hold file is unreadable.
+    heldOrders: heldOrdersHealth(),
     // Whether paid checkouts can mint on the events contract (#662): the ticket
     // sponsor still authorised, and on the ledger its hourly mint cap's headroom
     // (`TICKET_MINT_ALLOWANCE_MIN`, default one maximum order). The checkout
@@ -777,6 +783,12 @@ const refreshAttendeeTtl = () =>
   refreshAttendeeBatch().catch((err) => console.warn("[attendee-batch] TTL refresh failed:", (err as Error).message));
 setTimeout(refreshAttendeeTtl, 60_000).unref();
 setInterval(refreshAttendeeTtl, 60 * 60 * 1000).unref();
+// #546: store paid orders whose store failed at fulfilment, and delete unpaid
+// holds past their day.
+setInterval(() => {
+  sweepHeldOrders();
+  retryPaidHeldOrders().catch((err) => console.warn("[attendee-batch] held-order retry failed:", (err as Error).message));
+}, 60_000).unref();
 
 /**
  * Graceful shutdown.
