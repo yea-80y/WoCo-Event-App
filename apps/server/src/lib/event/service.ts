@@ -336,7 +336,7 @@ export async function confirmSeriesOnChain(
   onChainEventId: string,
   signerHint?: string,
   contract?: EventContractTarget,
-): Promise<EventFeed> {
+): Promise<{ feed: EventFeed; resignable: boolean }> {
   // Persist the chain receipt FIRST — independent of whether the client re-signs its
   // SOC with onChainEventId. This is what makes the money path's v2 detection robust:
   // getEvent() merges this in, so reserve/claim-status/Stripe see the on-chain id even
@@ -431,7 +431,10 @@ export async function confirmSeriesOnChain(
     );
   }
 
-  return updated;
+  // `resignable`: whether the organiser's client may sign `updated` as the next
+  // version. Not when it was built on a read that could not show it is the head -
+  // the client then merges the on-chain id into the feed it already holds.
+  return { feed: updated, resignable: cacheable };
 }
 
 /**
@@ -444,11 +447,14 @@ export async function stampEventSubEns(
   label: string,
   parentAddress: string,
 ): Promise<EventFeed> {
-  const feed = await getEvent(eventId);
+  const { feed, cacheable } = await getEventRead(eventId);
   if (!feed) throw new Error("Event not found");
   if (feed.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
     throw new Error("Not the event creator");
   }
+  // The client re-signs what this returns at the next version, so, as for an
+  // owner edit, not off a read that could not show it is the head (#657).
+  if (feed.creatorFeedSigner && !cacheable) throw new Error(EVENT_BASIS_UNVERIFIED);
   if (feed.subEnsLabel === label) return feed; // idempotent
 
   const updated: EventFeed = { ...feed, subEnsLabel: label };
@@ -1062,7 +1068,22 @@ export async function getEventForOwner(
   eventId: string,
   parentAddress: string,
 ): Promise<EventFeed | null> {
-  return (await resolveOwnEventLocally(eventId, parentAddress)) ?? (await getEvent(eventId));
+  return (await getEventForOwnerRead(eventId, parentAddress)).feed;
+}
+
+/**
+ * {@link getEventForOwner}, and whether the feed may be handed back for the
+ * organiser to re-sign (#657): only off a read that showed it is the head. The
+ * cache holds only such reads; a dirty SOC scan is served, never re-signed.
+ */
+export async function getEventForOwnerRead(
+  eventId: string,
+  parentAddress: string,
+): Promise<{ feed: EventFeed | null; resignable: boolean }> {
+  const local = await resolveOwnEventLocallyRead(eventId, parentAddress);
+  if (local) return local;
+  const { feed, cacheable } = await getEventRead(eventId);
+  return { feed, resignable: cacheable };
 }
 
 /**
@@ -1075,12 +1096,21 @@ export async function resolveOwnEventLocally(
   eventId: string,
   parentAddress: string,
 ): Promise<EventFeed | null> {
+  return (await resolveOwnEventLocallyRead(eventId, parentAddress))?.feed ?? null;
+}
+
+async function resolveOwnEventLocallyRead(
+  eventId: string,
+  parentAddress: string,
+): Promise<{ feed: EventFeed; resignable: boolean } | null> {
   const cached = peekEventCache(eventId);
-  if (cached) return applyOnChainEventIds(cached);
+  if (cached) return { feed: await applyOnChainEventIds(cached), resignable: true };
 
   const own = (await getCreatorEvents(parentAddress)).find((e) => e.eventId === eventId);
-  if (own?.creatorFeedSigner) return getEventBySigner(eventId, own.creatorFeedSigner);
-  return null;
+  if (!own?.creatorFeedSigner) return null;
+  const res = await readEventFeedSocResult(eventId, own.creatorFeedSigner);
+  if (res.status !== "found" || res.feed.deleted) return null;
+  return { feed: await applyOnChainEventIds(res.feed), resignable: res.scanClean };
 }
 
 /**

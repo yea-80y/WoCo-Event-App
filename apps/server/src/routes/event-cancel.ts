@@ -18,7 +18,7 @@ import { Hono, type Context } from "hono";
 import { ORGANISER_CANCEL_WINDOW_DAYS } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { getEventForOwner } from "../lib/event/service.js";
+import { getEventForOwnerRead } from "../lib/event/service.js";
 import { getStripeAccount } from "../lib/stripe/accounts.js";
 import { cancelEvent, organiserCancelClosed } from "../lib/event/cancel-event.js";
 import { liveCancelEventDeps } from "../lib/event/cancel-event-live.js";
@@ -28,17 +28,18 @@ export const eventCancel = new Hono<AppEnv>();
 
 async function loadOwned(c: Context<AppEnv>, eventId: string) {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
-  const event = await getEventForOwner(eventId, parentAddress).catch(() => null);
+  const { feed: event, resignable } = await getEventForOwnerRead(eventId, parentAddress)
+    .catch(() => ({ feed: null, resignable: false }));
   if (!event) return { error: c.json({ ok: false, error: "Event not found" }, 404) };
   if (event.creatorAddress.toLowerCase() !== parentAddress) {
     return { error: c.json({ ok: false, error: "Only the event organiser can cancel it" }, 403) };
   }
-  return { event, parentAddress };
+  return { event, parentAddress, resignable };
 }
 
 eventCancel.post("/:id/cancel", requireAuth, async (c) => {
   const eventId = c.req.param("id");
-  const { event, parentAddress, error } = await loadOwned(c, eventId);
+  const { event, parentAddress, resignable, error } = await loadOwned(c, eventId);
   if (error) return error;
   if (event.deleted) return c.json({ ok: false, error: "This event was deleted" }, 409);
   if (organiserCancelClosed(event, cancellationGate(eventId), Date.now())) {
@@ -76,7 +77,10 @@ eventCancel.post("/:id/cancel", requireAuth, async (c) => {
       eventId,
       created: result.created,
       progress: cancellationProgress(eventId),
-      eventFeed: withCancellation(event),
+      // The cancellation stands either way - it lives in the server's record. The
+      // feed goes back for the organiser to re-sign only when it was read as the
+      // head; otherwise their page shows the banner once a re-sign can (#657).
+      ...(resignable ? { eventFeed: withCancellation(event) } : {}),
     },
   });
 });

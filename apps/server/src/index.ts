@@ -40,6 +40,7 @@ import { sesWebhook } from "./routes/ses-webhook.js";
 import { marketing } from "./routes/marketing.js";
 import { ethernaRoutes } from "./routes/etherna.js";
 import { ethernaFetchBaseNotice } from "./lib/etherna/gateway.js";
+import { ethernaReadsHealth } from "./lib/swarm/soc-read.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { ensGatewayRoutes, ensGatewayStatus } from "./routes/ens-gateway.js";
 import { subEnsApexHealth } from "./lib/chain/sub-ens-apex.js";
@@ -134,6 +135,15 @@ if (!process.env.ALLOWED_HOSTS) {
   // Said at boot because routing will NOT follow it (#657).
   const notice = ethernaFetchBaseNotice();
   if (notice) console.warn(`[startup] ${notice}`);
+  // Not fatal - a server can run without Etherna - but loud: /api/health
+  // `ethernaReads` is red for as long as this holds.
+  const reads = ethernaReadsHealth();
+  if (!reads.ok) {
+    console.error(
+      `[startup] Families ${JSON.stringify(reads.families)} are stamped on Etherna, but ETHERNA_ENABLED/ETHERNA_API_KEY ` +
+      `are not set: every read of them will be "unavailable", never an answer.`,
+    );
+  }
 }
 
 // A configured proxy with no UPLOAD_SECRET cannot whitelist anything, and an
@@ -328,6 +338,10 @@ function healthReport() {
     // frontend. A frontend that moves a family first writes where this server
     // does not yet look.
     feedRoutes: FEED_FAMILY_STORES,
+    // RED when a family above is on Etherna and this server cannot ask Etherna
+    // (flag or key missing): those reads can never conclude anything. The
+    // breaker (reads paused after Etherna hung) is reported, not alarmed on.
+    ethernaReads: ethernaReadsHealth(),
     // The client-SOC relay's limiter (#301). `globalTrippedAt` non-null is the
     // alarm: the per-process ceiling that legitimate traffic never reaches has
     // refused writes with 503 — either an attack on the postage batch or a

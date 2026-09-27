@@ -132,6 +132,7 @@ test("the report names where each feed family is stamped - the gate for moving o
   const src = readFileSync(new URL("../src/index.ts", import.meta.url), "utf-8");
   const report = src.slice(src.indexOf("function healthReport()"), src.indexOf('app.get("/api/health"'));
   assert.match(report, /\bfeedRoutes: FEED_FAMILY_STORES,/);
+  assert.match(report, /\bethernaReads: ethernaReadsHealth\(\),/);
   assert.match(src, /import \{[^}]*\bFEED_FAMILY_STORES\b[^}]*\} from "@woco\/shared";/);
   // Strings only: it can never turn the alarm gate red by itself.
   const ok = alarmGate({ feedRoutes: { referral: "woco", social: "etherna" } }, undefined);
