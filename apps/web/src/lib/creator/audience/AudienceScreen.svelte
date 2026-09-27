@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { MarketingContact, MarketingListMeta, ContactConsentState } from "@woco/shared";
-  import { deriveEncryptionKeypairFromSeed, sealJsonCompressed, openJsonAuto, contactConsentState } from "@woco/shared";
+  import { contactConsentState, deriveEncryptionKeypairFromSeed } from "@woco/shared";
   import type { MarketingListPayload } from "@woco/shared";
   import { restoreIdentitySeed } from "../../auth/identity-seed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -52,17 +52,37 @@
   /** Abuse gate (#59): sending requires a Stripe-verified organiser. */
   let stripeVerified = $state<boolean | null>(null);
 
-  /** X25519 keys derived from the organiser's identity seed (decrypt + re-seal). */
-  async function getKeys(): Promise<{ privateKey: Uint8Array; publicKey: Uint8Array } | null> {
+  /**
+   * The organiser's X-Wing keys (#642), derived from the identity seed, plus the
+   * seal context that binds the list to this account. The post-quantum code is
+   * loaded here, on first use, never with the page.
+   */
+  async function getKeys() {
+    const identitySeed = await getIdentitySeed();
+    if (!identitySeed || !auth.parent) return null;
+    const [{ deriveXWingKeypairFromSeed }, box] = await Promise.all([
+      import("@woco/shared/crypto/xwing"),
+      import("@woco/shared/crypto/sealed-box"),
+    ]);
+    const { secretKey, publicKey } = deriveXWingKeypairFromSeed(identitySeed);
+    return { secretKey, publicKey, ctx: box.listSealContext(auth.parent), box };
+  }
+
+  /** The key ORDER blobs are still sealed to: the classical X25519 one, until the
+   *  orders rail moves to X-Wing too (#642). Only the attendee import opens orders. */
+  async function getOrderKeys(): Promise<{ privateKey: Uint8Array } | null> {
+    const identitySeed = await getIdentitySeed();
+    return identitySeed ? deriveEncryptionKeypairFromSeed(identitySeed) : null;
+  }
+
+  /** The identity seed on this device, establishing it first if this is the first
+   *  action that needs it. */
+  async function getIdentitySeed(): Promise<string | null> {
     if (!auth.seedAddress) return null;
-    let identitySeed = await restoreIdentitySeed(auth.seedAddress);
-    if (!identitySeed) {
-      const pk = await auth.ensureIdentitySeed();
-      if (!pk) return null;
-      identitySeed = await restoreIdentitySeed(auth.seedAddress);
-    }
-    if (!identitySeed) return null;
-    return deriveEncryptionKeypairFromSeed(identitySeed);
+    const stored = await restoreIdentitySeed(auth.seedAddress);
+    if (stored) return stored;
+    if (!(await auth.ensureIdentitySeed())) return null;
+    return restoreIdentitySeed(auth.seedAddress);
   }
 
   /** One round trip gives both server-held states; the third (imported) is what
@@ -107,11 +127,18 @@
         loadError = "Sign in and unlock your identity to open your audience.";
         return;
       }
-      const payload = await openJsonAuto<MarketingListPayload>(keys.privateKey, resp.sealedList);
+      const payload = await keys.box.openBoxJson<MarketingListPayload>(keys.secretKey, resp.sealedList, keys.ctx);
       contacts = payload.contacts;
       await refreshConsentStates(contacts);
     } catch (err) {
-      loadError = err instanceof Error ? err.message : "Could not open your audience.";
+      // A list saved before #642 was sealed with the retired X25519 format. Say so
+      // plainly: the fix is to import it again, not to retry.
+      loadError =
+        err instanceof Error && err.name === "UnsupportedSealedBoxError"
+          ? "Your saved audience uses an older format that can no longer be opened. Import your contacts again to replace it."
+          : err instanceof Error
+            ? err.message
+            : "Could not open your audience.";
     } finally {
       loading = false;
     }
@@ -123,7 +150,11 @@
     if (!keys) throw new Error("Identity locked — sign in to save changes");
     saving = true;
     try {
-      const sealed = await sealJsonCompressed(keys.publicKey, { version: 1, contacts: next } satisfies MarketingListPayload);
+      const sealed = await keys.box.sealBoxJsonCompressed(
+        keys.publicKey,
+        { version: 1, contacts: next } satisfies MarketingListPayload,
+        keys.ctx,
+      );
       meta = await uploadMarketingList(sealed, next.map((c) => c.email));
       contacts = next;
       if (next.length > 0 && auth.parent) markAudienceImported(auth.parent);
@@ -272,7 +303,7 @@
     {/if}
 
     {#if panel === "attendees"}
-      <AttendeeImport {contacts} busy={saving} {getKeys} onCommit={commitList} />
+      <AttendeeImport {contacts} busy={saving} getKeys={getOrderKeys} onCommit={commitList} />
     {/if}
 
     {#if panel === "contacts" && contacts.length > 0 && consentUnknown}

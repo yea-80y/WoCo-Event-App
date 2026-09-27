@@ -6,8 +6,8 @@
 
 import { authPost, authGet, authDelete } from "./client.js";
 import { apiError } from "./errors.js";
+import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import type {
-  SealedBox,
   MarketingListMeta,
   MarketingListResponse,
   MarketingCheckResult,
@@ -15,7 +15,7 @@ import type {
 } from "@woco/shared";
 
 export async function uploadMarketingList(
-  sealedList: SealedBox,
+  sealedList: SealedBoxV2,
   emails: string[],
 ): Promise<MarketingListMeta> {
   const resp = await authPost<MarketingListMeta>("/api/marketing/list", {
