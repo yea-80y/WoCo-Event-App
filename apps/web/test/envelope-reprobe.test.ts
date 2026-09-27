@@ -50,13 +50,21 @@ function deps(over: Partial<EnvelopeReprobeDeps> = {}, store = memStore()) {
   const calls: string[] = [];
   const bindings: Array<[string, string]> = [];
   const cleared: string[] = [];
+  const seedsCleared: string[] = [];
   const notices: string[] = [];
   const tombstones: Array<{ eoa: string; kernel: string; owner: string }> = [];
   const base: EnvelopeReprobeDeps = {
     readKernelOwner: async (addr) => (addr === PRESERVED ? EOA : null),
     envelopeExists: async () => ({ status: "present" }),
     readEnvelope: async () => FOUND,
-    putRecoveryBinding: async (seedAddr, kernel) => void bindings.push([seedAddr, kernel]),
+    putRecoveryBinding: async (seedAddr, kernel) => {
+      calls.push("binding");
+      bindings.push([seedAddr, kernel]);
+    },
+    clearIdentitySeed: async (eoa) => {
+      calls.push("clear-seed");
+      seedsCleared.push(eoa);
+    },
     writeOrphanTombstone: (_kind, eoa, fact) => void tombstones.push({ eoa, ...fact }),
     clearCachedKernelAddress: (_kind, eoa) => void cleared.push(eoa),
     isStillSignedInAs: () => true,
@@ -88,24 +96,27 @@ function deps(over: Partial<EnvelopeReprobeDeps> = {}, store = memStore()) {
       return base.logout();
     },
   };
-  return { d, store, calls, bindings, cleared, notices, tombstones };
+  return { d, store, calls, bindings, cleared, seedsCleared, notices, tombstones };
 }
 
-const args = { kind: "passkey" as const, eoa: EOA, cachedParent: PHANTOM, passkeyPrivKey: PRF_KEY };
+const args = { kind: "passkey" as const, eoa: EOA, cachedParent: PHANTOM, prfSecret: PRF_KEY };
 
 test.beforeEach(() => _resetInFlightForTests());
 
 test("heals: envelope found + chain confirms ownership → binding written, cache dropped, signed out", async () => {
-  const { d, calls, bindings, cleared, notices, store } = deps();
+  const { d, calls, bindings, cleared, seedsCleared, notices, store } = deps();
   const r = await reprobeEnvelope(args, d);
 
   assert.deepEqual(r, { status: "healed", preserved: PRESERVED, signedOut: true });
   assert.deepEqual(bindings, [[EOA, PRESERVED]], "the binding IS the heal");
   assert.deepEqual(cleared, [EOA], "the poisoned kaddr entry is removed");
+  assert.deepEqual(seedsCleared, [EOA], "the seed derived for the wrong Kernel is removed");
   assert.equal(notices.length, 1, "the forced sign-out is explained, not silent");
-  // Binding before the cache drop before the logout: every prefix leaves the
-  // device correct or retrying.
-  assert.deepEqual(calls, [`owner:${PHANTOM}`, "exists", "envelope", `owner:${PRESERVED}`, "logout"]);
+  // Binding before the seed drop before the logout: every prefix leaves the
+  // device correct or retrying (a binding with no seed restores from the envelope).
+  assert.deepEqual(calls, [
+    `owner:${PHANTOM}`, "exists", "envelope", `owner:${PRESERVED}`, "binding", "clear-seed", "logout",
+  ]);
   assert.equal(store.map.get(STATE_KEY), undefined, "throttle state is retired on a heal");
 });
 
@@ -312,11 +323,14 @@ test("concurrent probes for the same credential collapse to one", async () => {
 });
 
 test("a user who left mid-probe still gets the binding, but no forced sign-out", async () => {
-  const { d, bindings, notices, calls } = deps({ isStillSignedInAs: () => false });
+  const { d, bindings, seedsCleared, notices, calls } = deps({ isStillSignedInAs: () => false });
   const r = await reprobeEnvelope(args, d);
 
   assert.deepEqual(r, { status: "healed", preserved: PRESERVED, signedOut: false });
   assert.deepEqual(bindings, [[EOA, PRESERVED]], "the repair is durable either way");
+  // The case the seed drop exists for: no logout runs, so nothing else would
+  // remove the wrong seed before this credential's next login.
+  assert.deepEqual(seedsCleared, [EOA]);
   assert.deepEqual(notices, []);
   assert.ok(!calls.includes("logout"));
 });

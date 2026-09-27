@@ -33,6 +33,7 @@ import { UnknownRecoveryEnvelopeVersionError, recoveryAadBytes } from "../src/li
 import {
   derivePortabilityKeys,
   readPortabilityEnvelope,
+  decideBackfill,
 } from "../src/lib/auth/recovery-portability.js";
 import type { ContentFeedResult } from "../src/lib/swarm/content-feed.js";
 
@@ -169,7 +170,7 @@ async function realPortabilityEnvelope(): Promise<PortabilityEnvelope> {
 test("portability read: a valid current envelope is found and opens", async () => {
   const payload = await realPortabilityEnvelope();
   const read = await readPortabilityEnvelope({
-    passkeyPrivKey: PRF_KEY,
+    prfSecret: PRF_KEY,
     readFeed: feedOf({ status: "found", value: payload, version: 0 }),
   });
   assert.equal(read.status, "found");
@@ -179,7 +180,7 @@ test("portability read: a valid current envelope is found and opens", async () =
 test("portability read: a NEWER wrapper version is unreadable — never the rewritable 'unusable'", async () => {
   const payload = await realPortabilityEnvelope();
   const read = await readPortabilityEnvelope({
-    passkeyPrivKey: PRF_KEY,
+    prfSecret: PRF_KEY,
     readFeed: feedOf({ status: "found", value: { ...payload, v: (PORTABILITY_ENVELOPE_VERSION + 1) as never }, version: 0 }),
   });
   assert.equal(read.status, "unreadable");
@@ -188,7 +189,7 @@ test("portability read: a NEWER wrapper version is unreadable — never the rewr
 test("portability read: a NEWER inner envelope version is unreadable — never the rewritable 'unusable'", async () => {
   const payload = await realPortabilityEnvelope();
   const read = await readPortabilityEnvelope({
-    passkeyPrivKey: PRF_KEY,
+    prfSecret: PRF_KEY,
     readFeed: feedOf({
       status: "found",
       value: { ...payload, envelope: { ...payload.envelope, v: 3 } },
@@ -201,7 +202,7 @@ test("portability read: a NEWER inner envelope version is unreadable — never t
 test("portability read: an OLDER wrapper version stays unusable (the documented self-heal rewrite)", async () => {
   const payload = await realPortabilityEnvelope();
   const read = await readPortabilityEnvelope({
-    passkeyPrivKey: PRF_KEY,
+    prfSecret: PRF_KEY,
     readFeed: feedOf({ status: "found", value: { ...payload, v: 1 as never }, version: 0 }),
   });
   assert.equal(read.status, "unusable");
@@ -211,7 +212,7 @@ test("portability read: a tampered inner envelope is unusable — an integrity f
   const payload = await realPortabilityEnvelope();
   const flipped = payload.envelope.ciphertext.replace(/^../, (h) => (h === "00" ? "01" : "00"));
   const read = await readPortabilityEnvelope({
-    passkeyPrivKey: PRF_KEY,
+    prfSecret: PRF_KEY,
     readFeed: feedOf({
       status: "found",
       value: { ...payload, envelope: { ...payload.envelope, ciphertext: flipped } },
@@ -222,11 +223,44 @@ test("portability read: a tampered inner envelope is unusable — an integrity f
 });
 
 test("portability read: absent and unavailable map to absent and unreadable", async () => {
-  const absent = await readPortabilityEnvelope({ passkeyPrivKey: PRF_KEY, readFeed: feedOf({ status: "absent" }) });
+  const absent = await readPortabilityEnvelope({ prfSecret: PRF_KEY, readFeed: feedOf({ status: "absent" }) });
   assert.equal(absent.status, "absent");
   const down = await readPortabilityEnvelope({
-    passkeyPrivKey: PRF_KEY,
+    prfSecret: PRF_KEY,
     readFeed: feedOf({ status: "unavailable", reason: "gateway 502" }),
   });
   assert.equal(down.status, "unreadable");
+});
+
+// ---------------------------------------------------------------------------
+// Back-fill decision (#642 PR B): a found envelope that disagrees is REFUSED
+// ---------------------------------------------------------------------------
+
+const MINE = { preservedKernelAddress: KERNEL, identitySeed: "0x" + "ab".repeat(32) };
+const found = (preservedKernelAddress: string, identitySeed: string) =>
+  ({ status: "found", value: { preservedKernelAddress: preservedKernelAddress.toLowerCase(), identitySeed } }) as const;
+
+test("back-fill: an envelope carrying exactly this device's secrets is skipped", () => {
+  assert.equal(decideBackfill(found(KERNEL, MINE.identitySeed), MINE).action, "skipped");
+});
+
+test("back-fill: a DIFFERENT seed in a found envelope is refused, never overwritten", () => {
+  // The #245 poisoned-device shape: this device derived a seed on the wrong
+  // Kernel. "Contents differed, write" would replace the account's real seed
+  // for every future device.
+  const d = decideBackfill(found(KERNEL, "0x" + "cd".repeat(32)), MINE);
+  assert.equal(d.action, "refused");
+  assert.match(d.reason, /identity seed/);
+});
+
+test("back-fill: a DIFFERENT Kernel in a found envelope is refused too", () => {
+  const d = decideBackfill(found("0x" + "bb".repeat(20), MINE.identitySeed), MINE);
+  assert.equal(d.action, "refused");
+  assert.match(d.reason, /Kernel/);
+});
+
+test("back-fill: absent and stale envelopes are written; an unreadable one defers", () => {
+  assert.equal(decideBackfill({ status: "absent" }, MINE).action, "write");
+  assert.equal(decideBackfill({ status: "unusable", reason: "old" }, MINE).action, "write");
+  assert.equal(decideBackfill({ status: "unreadable", reason: "fetch" }, MINE).action, "deferred");
 });

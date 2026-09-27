@@ -13,7 +13,7 @@
 
 import type { Hex0x } from "@woco/shared";
 import { cacheGet, cacheSet, cacheKey, TTL } from "../cache/cache.js";
-import type { SocialKind } from "./social.js";
+import type { SocialKind } from "./social-core.js";
 
 /**
  * A tally is a whole, non-negative, EXACTLY representable number of statements.

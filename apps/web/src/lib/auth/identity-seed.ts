@@ -4,6 +4,7 @@ import {
   ACCOUNT_KEYS_NONCE,
   ACCOUNT_KEYS_PURPOSE,
   StorageKeys,
+  passkeyIdentitySeed,
   type EncryptedBlob,
   type EIP712Signer,
 } from "@woco/shared";
@@ -23,7 +24,9 @@ function identitySeedKey(address: string): string {
 }
 
 /**
- * Establish the account's identity SEED from the primary wallet.
+ * Establish the account's identity SEED from the primary wallet — every kind
+ * EXCEPT passkey, which roots its seed on the PRF output instead
+ * (`establishPasskeyIdentitySeed` below, #642).
  *
  * Uses a fixed nonce so the same wallet always produces the same EIP-712
  * signature → same keccak256 hash → same seed, on any device.
@@ -102,6 +105,26 @@ export async function requestIdentitySeed(
   const encSeed = await encrypt(deviceKey, AAD.IDENTITY_SEED(parentAddress), { seed });
   await putKV(identitySeedKey(parentAddress), encSeed);
 
+  return { seed };
+}
+
+/**
+ * Establish a passkey account's identity SEED from its PRF output (#642). No
+ * signature and no dialog: the biometric that produced the PRF output was the
+ * consent. The seed never passes through a secp256k1 key, so recovering the
+ * Kernel owner key from its public key does not reproduce it.
+ *
+ * ONLY for a credential that has never been recovered. A recovered credential's
+ * account seed came across in escrow and is not this derivation; the caller must
+ * refuse when a recovery binding exists for `seedAddress` (the PRF-EOA), exactly as
+ * the signature path does.
+ */
+export async function establishPasskeyIdentitySeed(
+  seedAddress: string,
+  prfSecret: string,
+): Promise<{ seed: string }> {
+  const seed = passkeyIdentitySeed(prfSecret);
+  await storeIdentitySeed(seedAddress, seed);
   return { seed };
 }
 
