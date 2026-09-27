@@ -14,8 +14,8 @@
  *    so only the user can write their own envelope. It is read by COMPUTED chunk
  *    address (Etherna-safe — never /feeds).
  *  - The payload is the SAME audited `RecoveryEnvelope` from `recovery-escrow.ts`,
- *    sealed to ONE extra HPKE recipient: a second PRF-derived (X25519) key. No new
- *    crypto — one extra recipient on the bundle the escrow already produces.
+ *    sealed to ONE extra HPKE recipient: a second PRF-derived (X-Wing, #642) key.
+ *    No new crypto — one extra recipient on the bundle the escrow already produces.
  *
  * Trust on read is NOT this blob: the caller MUST verify on-chain that the
  * preserved Kernel's current ECDSA owner == this device's PRF-EOA before applying
@@ -55,7 +55,7 @@ export interface PortabilityKeys {
   /** secp256k1 SOC-owner key (0x-prefixed) + lowercased address. */
   socOwnerPrivKey: string;
   socOwnerAddress: string;
-  /** X25519 HPKE recipient keypair (wrap on write, unwrap on read). */
+  /** X-Wing HPKE recipient keypair (wrap on write, unwrap on read). */
   hpke: GuardianEncryptionKeypair;
 }
 

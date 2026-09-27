@@ -73,9 +73,10 @@ export interface TicketSale {
   /** Slots minted for this sale (edition = slot + 1). */
   slots: number[];
   /**
-   * The order blob these slots carry on chain (#642). Recorded so a sale that
-   * reuses ANOTHER sale's public orderRef is detectable after the fact; nothing
-   * refuses on it (a buyer's retried checkout legitimately reuses its own ref).
+   * The order blob these slots carry on chain (#642). One completed sale per ref
+   * (#661, lib/stripe/order-ref.ts): prepare-order and checkout refuse a ref this
+   * field already names on ANOTHER sale, and fulfilment swaps one for the buyer's
+   * own seal. Only minted sales carry it, so an abandoned checkout blocks nothing.
    */
   orderRef?: string;
   /**

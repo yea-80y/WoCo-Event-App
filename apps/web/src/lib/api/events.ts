@@ -11,8 +11,8 @@ import type {
 export type { OrderEntry };
 import { authPost, authGet, get, apiBase, authStream, currentSiteId } from "./client.js";
 import { auth } from "../auth/auth-store.svelte.js";
-import { eventContentTopic } from "@woco/shared";
-import { assertAssembledFeedMatches } from "./assembled-feed.js";
+import { eventContentTopic, orderKeyRef } from "@woco/shared";
+import { assertAssembledFeedMatches, assertFeedIsOurs } from "./assembled-feed.js";
 import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
 import { feedRouteFor } from "../swarm/gateways.js";
 import { trashFeedOnManifest } from "../manifest/feed-log.js";
@@ -40,6 +40,12 @@ export async function signEventFeedSoc(
   signer: ContentFeedSigner,
   knownVersion?: number,
 ): Promise<number> {
+  // The one guard every event-feed signature passes (#642) — see assertFeedIsOurs.
+  assertFeedIsOurs(feed, {
+    feedSigner: signer.address,
+    parent: auth.parent ?? "",
+    orderKeyRef: feed.encryptionKeyRef !== undefined ? await ownOrderKeyRef(signer.address) : undefined,
+  });
   return writeContentFeed({
     signerPrivKey: signer.privKey,
     topic: eventContentTopic(feed.eventId),
@@ -50,6 +56,25 @@ export async function signEventFeedSoc(
     // event's detail SOC would be stamped on the WoCo batch on every edit/restamp.
     route: feedRouteFor(feed.gatewayUrl),
   });
+}
+
+/**
+ * This organiser's order-key ref: the content address of the X-Wing key derived
+ * from THEIR seed (#642). Memoised per feed signer — the signer is a KDF of the
+ * same seed, so a different account can never hit another's entry. The lattice
+ * code loads here, on the first sign that needs it.
+ */
+const _ownOrderKeyRef = new Map<string, string>();
+async function ownOrderKeyRef(feedSignerAddress: string): Promise<string> {
+  const key = feedSignerAddress.toLowerCase();
+  const hit = _ownOrderKeyRef.get(key);
+  if (hit) return hit;
+  const seed = await auth.getIdentitySeed();
+  if (!seed) throw new Error("Your account keys aren't on this device, so the event can't be checked before signing.");
+  const { deriveXWingKeypairFromSeed } = await import("@woco/shared/crypto/xwing");
+  const ref = orderKeyRef(deriveXWingKeypairFromSeed(seed).publicKey);
+  _ownOrderKeyRef.set(key, ref);
+  return ref;
 }
 
 /**

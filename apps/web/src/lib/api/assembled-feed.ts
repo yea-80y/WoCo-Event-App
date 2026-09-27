@@ -2,28 +2,42 @@ import { orderKeyRef, type CreateEventV3Request, type EventFeed } from "@woco/sh
 import { hexToBytes } from "@noble/hashes/utils.js";
 
 /**
- * Before this client signs a server-ASSEMBLED event feed as its own SOC, refuse it
- * unless the fields whose silent change would matter are what we sent (#642):
- *  - the order key ref is the content address of OUR key (a different ref would
- *    have every buyer seal their details to someone else), and no retired inline
- *    `encryptionKey` rides along;
- *  - the feed signer is ours and the creator is our own account;
- *  - the order form is the one we asked for.
- * Not yet every client-authored field — the rest are tracked separately; these are
- * the ones a signature by our key would otherwise vouch for blind.
+ * The guard EVERY event-feed signature passes (`signEventFeedSoc`, #642): the
+ * create response, the re-sign after on-chain registration, edits, cancel, delete
+ * and the sub-ENS stamp. Each of those signs a feed the SERVER assembled, and a
+ * signature by the organiser's key vouches for all of it — so refuse one that:
+ *  - carries the retired inline `encryptionKey`;
+ *  - names an order key other than OUR OWN (every buyer would seal their details
+ *    to someone else's key);
+ *  - names another feed signer, or another creator than our own account.
+ * A feed with no `encryptionKeyRef` is allowed (events without an order key).
+ * Other fields are not yet compared on every path — see #719.
+ */
+export function assertFeedIsOurs(
+  feed: EventFeed,
+  own: { feedSigner: string; parent: string; orderKeyRef: string | undefined },
+): void {
+  if ("encryptionKey" in (feed as unknown as Record<string, unknown>)) refuse("order key");
+  if (feed.encryptionKeyRef !== undefined && feed.encryptionKeyRef !== own.orderKeyRef) refuse("order key");
+  if ((feed.creatorFeedSigner ?? "").toLowerCase() !== own.feedSigner.toLowerCase()) refuse("feed signer");
+  if ((feed.creatorAddress ?? "").toLowerCase() !== own.parent.toLowerCase()) refuse("creator");
+}
+
+/**
+ * At CREATE, additionally: the ref is exactly the key we sent (or absent when we
+ * sent none), and the order form is the one we asked for.
  */
 export function assertAssembledFeedMatches(
   req: CreateEventV3Request,
   feed: EventFeed,
   own: { feedSigner: string; parent: string },
 ): void {
-  const refuse = (what: string) => {
-    throw new Error(`The server returned an event whose ${what} is not what you published - refusing to sign it.`);
-  };
-  if ("encryptionKey" in (feed as unknown as Record<string, unknown>)) refuse("order key");
   const expectedRef = req.encryptionPublicKey ? orderKeyRef(hexToBytes(req.encryptionPublicKey)) : undefined;
   if (feed.encryptionKeyRef !== expectedRef) refuse("order key");
-  if ((feed.creatorFeedSigner ?? "").toLowerCase() !== own.feedSigner.toLowerCase()) refuse("feed signer");
-  if ((feed.creatorAddress ?? "").toLowerCase() !== own.parent.toLowerCase()) refuse("creator");
+  assertFeedIsOurs(feed, { ...own, orderKeyRef: expectedRef });
   if (JSON.stringify(feed.orderFields ?? []) !== JSON.stringify(req.orderFields ?? [])) refuse("order form");
+}
+
+function refuse(what: string): never {
+  throw new Error(`The server returned an event whose ${what} is not yours - refusing to sign it.`);
 }

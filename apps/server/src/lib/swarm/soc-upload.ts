@@ -292,7 +292,7 @@ export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDes
       // be inverted from it — but a PUBLIC statement's payload names its own
       // format and subject, which is everything needed to recompute the topic.
       // Sealed payloads are refused there by an explicit shape check, NOT by
-      // being unreadable: a SealedBox is ordinary JSON and parses fine (see
+      // being unreadable: a sealed box is ordinary JSON and parses fine (see
       // `looksSealed`). Bookkeeping for a view-plane cache — never awaited, and
       // it must never fail a user's write.
       observeStatementBytes(ownerHex, payload);

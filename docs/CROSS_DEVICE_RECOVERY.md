@@ -64,7 +64,7 @@ recipient**: a key the user's own passkey can re-derive on any device.
         │     feed address = f(owner, fixed topic) → discoverable on ANY device,
         │     and only the passkey holder can WRITE it (Single-Owner Chunk)
         │
-        └── deterministic key #2 (X25519 HPKE recipient, via the existing
+        └── deterministic key #2 (X-Wing HPKE recipient since #642, via the existing
               deriveGuardianEncryptionKeypair pattern, distinct domain/nonce)
                  └─► added as a RECIPIENT when sealing the RecoveryBundle DEK
                      (alongside the guardian recipients)
@@ -86,7 +86,8 @@ recipient**: a key the user's own passkey can re-derive on any device.
 
 ### Why this is sound (auditor's checklist)
 - **Confidentiality of the POD seed.** The bundle is sealed with the **already-
-  reviewed HPKE + XChaCha20 construction**, wrapped to an X25519 recipient derived
+  reviewed HPKE + XChaCha20 construction**, wrapped to an X-Wing (post-quantum hybrid,
+  #642) recipient derived
   *only* from the PRF output — gated by the authenticator's user-verification and
   never leaving it in usable form. The blob is public on Swarm but useless without
   the passkey (or a guardian). No new/hand-rolled AEAD is introduced.

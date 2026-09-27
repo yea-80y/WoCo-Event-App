@@ -57,7 +57,7 @@ export async function gunzip(bytes: Uint8Array): Promise<Uint8Array> {
 /**
  * Gzip magic number (0x1f 0x8b). Serialised JSON always starts with `{`, `[` or
  * whitespace, so this byte pair can never collide with an uncompressed payload —
- * which is what lets `openJsonAuto` read blobs sealed before compression existed.
+ * which is what lets `openBoxJson` (sealed-box.ts) read either form.
  */
 export function isGzipped(bytes: Uint8Array): boolean {
   return bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;

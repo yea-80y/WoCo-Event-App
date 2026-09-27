@@ -66,3 +66,11 @@ test("both routes enforce it: prepare-order refuses a taken ref, checkout takes 
   assert.ok(session > 0, "the Stripe session call must be found, or this check guards nothing");
   assert.ok(refusal > 0 && refusal < session, "refused before any Stripe session exists");
 });
+
+test("checkout refuses an event it could never record an order for, before charging (#642 F3)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/routes/stripe.ts", import.meta.url), "utf8");
+  const refusal = src.indexOf("if (!finalOrderRef && !event.encryptionKeyRef)");
+  const session = src.indexOf("checkout.sessions.create(");
+  assert.ok(refusal > 0 && session > 0 && refusal < session);
+});

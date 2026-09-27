@@ -80,3 +80,18 @@ export function assertXWingPublicKey(publicKey: Uint8Array): void {
     throw new Error(`X-Wing public key must be ${XWING_PUBLIC_KEY_BYTES} bytes, got ${publicKey.length}`);
   }
 }
+
+/**
+ * Full validity, for a key about to be PUBLISHED (not per seal): the length AND
+ * FIPS 203's ML-KEM modulus check, by running noble's own encapsulate once and
+ * discarding the result — so the check is noble's, never a second hand-written one.
+ */
+export function isValidXWingPublicKey(publicKey: Uint8Array): boolean {
+  if (publicKey.length !== XWING_PUBLIC_KEY_BYTES) return false;
+  try {
+    xwing.encapsulate(publicKey);
+    return true;
+  } catch {
+    return false;
+  }
+}

@@ -56,7 +56,7 @@ export class RetiredRecoveryEnvelopeVersionError extends Error {
   constructor(v: number) {
     super(
       `This backup was made with an older version of WoCo (format ${v}) that can no longer be opened. ` +
-        "Set up account recovery again to replace it.",
+        "If you can still sign in, set up account recovery again to replace it.",
     );
     this.name = "RetiredRecoveryEnvelopeVersionError";
     this.envelopeVersion = v;

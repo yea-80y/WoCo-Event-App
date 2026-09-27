@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { streamText } from "hono/streaming";
 import type { Hex0x, CreateEventV3Request, UpdateEventMetaRequest, EventDirectoryEntry } from "@woco/shared";
+import { isValidXWingPublicKey } from "@woco/shared/crypto/xwing";
 import { FEATURES, BUYER_FEE_FLOOR_PCT, MIN_TICKET_PRICE, ticketPriceMeetsMinimum, geoWithinSizeLimit } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -189,8 +190,10 @@ events.post("/", requireAuth, async (c) => {
   // The organiser's X-Wing order key (#642): exactly 1216 bytes of hex. The
   // server publishes it as its own chunk; it never trusts a ref from the client.
   if (encryptionPublicKey !== undefined
-      && (typeof encryptionPublicKey !== "string" || !/^[0-9a-f]{2432}$/.test(encryptionPublicKey))) {
-    return c.json({ ok: false, error: "encryptionPublicKey must be a 1216-byte X-Wing key in lowercase hex" }, 400);
+      && (typeof encryptionPublicKey !== "string" || !/^[0-9a-f]{2432}$/.test(encryptionPublicKey)
+        || !isValidXWingPublicKey(new Uint8Array(Buffer.from(encryptionPublicKey, "hex"))))) {
+    // A key buyers cannot seal to would make every sale of this event refund.
+    return c.json({ ok: false, error: "encryptionPublicKey must be a valid 1216-byte X-Wing key in lowercase hex" }, 400);
   }
 
   if (!ev?.title || !ev?.startDate || !ev?.endDate) {

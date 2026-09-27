@@ -641,6 +641,16 @@ stripe.post("/create-checkout", async (c) => {
   const series = event.series.find((s) => s.seriesId === seriesId);
   if (!series) return c.json({ ok: false, error: "Series not found" }, 404);
 
+  // No order box from the buyer AND no organiser key to seal one with: fulfilment
+  // would reach "no orderRef" and refund. Refuse before the card is charged
+  // (#642 sign-off F3) — only events published without an order key get here.
+  if (!finalOrderRef && !event.encryptionKeyRef) {
+    return c.json(
+      { ok: false, error: "This event isn't set up to take orders yet. Please contact the organiser." },
+      409,
+    );
+  }
+
   if (!series.payment?.stripeEnabled) {
     return c.json({ ok: false, error: "Series does not have Stripe payments enabled" }, 400);
   }

@@ -95,6 +95,9 @@ before(async () => {
     location: "Somewhere",
     creatorAddress: "0x" + "11".repeat(20),
     createdAt: "2026-01-01T00:00:00.000Z",
+    // Every published event names its order key (#642); one without is refused
+    // before any chain read, which is not what this suite is about.
+    encryptionKeyRef: "0b".repeat(32),
     series: [{
       seriesId: SERIES_ID,
       name: "GA",
