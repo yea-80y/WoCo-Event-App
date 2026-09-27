@@ -26,6 +26,8 @@ import {
   type OrderKind,
 } from "./ledger.js";
 import { decodeTimestampNs, signStamp, splitPayload, stamperKeyFromHex, type StamperKey } from "./stamp.js";
+import { getHeldOrder, paidUnstored, releaseHeldOrder } from "./held-orders.js";
+import { isOrderErased } from "./ledger.js";
 
 /**
  * Owns the attendee batch: every stamp on it is signed with this key, and so is
@@ -50,9 +52,19 @@ export function attendeeStamperAddress(): string | null {
   return getAttendeeStamper()?.addressHex ?? null;
 }
 
-/** Why checkout must not take a card right now, or null. */
+/**
+ * Why checkout must not take a card right now, or null. A malformed or reused
+ * stamper key refuses sales here instead of throwing into the route: card
+ * sales stop, loudly, and nothing else on the platform does.
+ */
 export function attendeeCheckoutRefusal(): string | null {
-  return attendeeStoreRefusal(attendeeStamperAddress());
+  let address: string | null;
+  try {
+    address = attendeeStamperAddress();
+  } catch (err) {
+    return `stamper key misconfigured: ${(err as Error).message}`;
+  }
+  return attendeeStoreRefusal(address);
 }
 
 /** Upload one pre-stamped chunk; returns the address bee computed, hex. */
@@ -135,6 +147,65 @@ export async function storeAttendeePayload(
     console.error(`[attendee-batch] order ${rootHex} uploaded but not marked stored:`, (err as Error).message);
   }
   return rootHex as Hex64;
+}
+
+/**
+ * The reference an order box WILL have once stored: its `/bytes` root,
+ * computed locally with no upload. Paid-only storage (#546) hands this out at
+ * prepare-order and checkout, and fulfilment stores the bytes after payment.
+ */
+export async function orderRefOf(json: string): Promise<Hex64> {
+  const { root } = await splitPayload(new TextEncoder().encode(json));
+  return Buffer.from(root).toString("hex") as Hex64;
+}
+
+/**
+ * Store a paid, held order on the attendee batch, then drop the hold. Throws
+ * when nothing is held or the store fails; the hold then stays for the retry
+ * worker. Idempotent: the ledger returns an already-stored order unchanged.
+ */
+export async function storeHeldOrder(root: string, deps: StoreAttendeeDeps = liveDeps): Promise<Hex64> {
+  const ref = root.toLowerCase().replace(/^0x/, "");
+  if (isOrderErased(ref)) throw new Error(`order ${ref} was erased; not storing it`);
+  const held = getHeldOrder(ref);
+  if (!held) throw new Error(`no held order ${ref}`);
+  storesInFlight.add(ref);
+  try {
+    const stored = await storeAttendeePayload(
+      held.json,
+      { kind: "checkout", ...(held.eventId ? { eventId: held.eventId } : {}), ...(held.seriesId ? { seriesId: held.seriesId } : {}) },
+      deps,
+    );
+    if (stored !== ref) throw new Error(`held order ${ref} hashes to ${stored}; not releasing it`);
+    if (!releaseHeldOrder(ref)) console.error(`[attendee-batch] order ${ref} stored but its hold could not be released`);
+    return stored;
+  } finally {
+    storesInFlight.delete(ref);
+  }
+}
+
+/** Held orders being stored right now. An erasure must wait for the store to
+ *  finish (then burn it) rather than delete the hold underneath it. */
+const storesInFlight = new Set<string>();
+
+export function isStoreInFlight(root: string): boolean {
+  return storesInFlight.has(root.toLowerCase().replace(/^0x/, ""));
+}
+
+/** Store paid orders whose store at fulfilment failed (bee down, bucket full). */
+export async function retryPaidHeldOrders(limit = 20, deps: StoreAttendeeDeps = liveDeps): Promise<{ stored: number; failed: number }> {
+  let stored = 0;
+  let failed = 0;
+  for (const order of paidUnstored().slice(0, limit)) {
+    try {
+      await storeHeldOrder(order.root, deps);
+      stored++;
+    } catch (err) {
+      failed++;
+      console.warn(`[attendee-batch] paid order ${order.root} still not stored:`, (err as Error).message);
+    }
+  }
+  return { stored, failed };
 }
 
 /** Test seam only. */

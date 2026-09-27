@@ -107,6 +107,12 @@ if (await portInUse(LOCAL_PORT)) {
 // above). An explicit PROXY_URL in the environment still wins, so anyone who
 // needs the public gateway can say so.
 const devEnv = { ...process.env };
+// Dev never stamps attendee order data (#546). `.env` here is the PRODUCTION
+// master and this tunnel reaches the production bee, so a dev ledger stamping
+// the production attendee batch would hand out slots production already used
+// and evict live orders network-wide. An empty value wins over `.env` (dotenv
+// never overrides a set variable), and checkout then refuses locally with 503.
+devEnv.ATTENDEE_STAMPER_PRIVATE_KEY = "";
 if (tunnel && tunnelledProxy && !process.env.PROXY_URL_EXPLICIT) {
   devEnv.PROXY_URL = `http://localhost:${PROXY_LOCAL_PORT}`;
   console.log(`[dev-tunnel] PROXY_URL -> ${devEnv.PROXY_URL} (rate-limit exempt; set PROXY_URL_EXPLICIT=1 to keep .env's value)`);

@@ -75,6 +75,10 @@ export interface BatchRecord {
   /** bucket → next free slot. Only ever increases. */
   next: Record<string, number>;
   registeredAt: string;
+  /** When the batch runs out of balance, from its chain TTL at the last read. A
+   *  batch that expires takes every order on it with it, live ones included. */
+  expiresAt?: string;
+  ttlCheckedAt?: string;
 }
 
 interface Store {
@@ -101,6 +105,8 @@ export class AttendeeBucketFullError extends Error {
 
 let store: Store = emptyStore();
 let loaded = false;
+/** Orders refused for a full bucket since boot: a partial outage `sales` cannot see. */
+let bucketFullRefusals = 0;
 /** Set when the file exists but cannot be read: every allocation refuses. */
 let unreadable: string | null = null;
 
@@ -146,7 +152,13 @@ function toHex(bytes: Uint8Array): string {
  * Register a newly bought batch. `fresh` is the operator's assertion that no
  * chunk has ever been stamped into it under a ledger we no longer have.
  */
-export function registerBatch(batchId: string, depth: number, owner: string, fresh: boolean): BatchRecord {
+export function registerBatch(
+  batchId: string,
+  depth: number,
+  owner: string,
+  fresh: boolean,
+  expiresAt?: string,
+): BatchRecord {
   ensureLoaded();
   if (unreadable) throw new AttendeeStoreUnavailableError(`ledger unreadable: ${unreadable}`);
   if (!fresh) throw new Error("refusing to register a batch without the fresh assertion");
@@ -154,7 +166,14 @@ export function registerBatch(batchId: string, depth: number, owner: string, fre
   if (!/^[0-9a-f]{64}$/.test(id)) throw new Error("batchId must be 32 bytes of hex");
   if (store.batches[id]) throw new Error(`batch ${id} is already registered`);
   slotsPerBucket(depth);
-  const record: BatchRecord = { depth, owner: owner.toLowerCase(), next: {}, registeredAt: new Date().toISOString() };
+  const now = new Date().toISOString();
+  const record: BatchRecord = {
+    depth,
+    owner: owner.toLowerCase(),
+    next: {},
+    registeredAt: now,
+    ...(expiresAt ? { expiresAt, ttlCheckedAt: now } : {}),
+  };
   store.batches[id] = record;
   try {
     persistOrThrow();
@@ -181,13 +200,34 @@ export function setActiveBatch(batchId: string): void {
   }
 }
 
+/** Record a fresh read of the batch's chain TTL (after a top-up, and hourly). */
+export function setBatchExpiry(batchId: string, expiresAt: string, nowMs: number = Date.now()): void {
+  ensureLoaded();
+  if (unreadable) throw new AttendeeStoreUnavailableError(`ledger unreadable: ${unreadable}`);
+  const batch = store.batches[normalizeHex(batchId)];
+  if (!batch) throw new Error(`batch ${batchId} is not registered`);
+  const previous = { expiresAt: batch.expiresAt, ttlCheckedAt: batch.ttlCheckedAt };
+  batch.expiresAt = expiresAt;
+  batch.ttlCheckedAt = new Date(nowMs).toISOString();
+  try {
+    persistOrThrow();
+  } catch (err) {
+    batch.expiresAt = previous.expiresAt;
+    batch.ttlCheckedAt = previous.ttlCheckedAt;
+    throw err;
+  }
+}
+
+/** Sales stop this long before the active batch is due to expire. */
+const EXPIRY_MARGIN_MS = 60 * 60 * 1000;
+
 /**
  * Why a new order cannot be stored right now, or null if it can. Checkout asks
  * this before charging a card: every order write goes through this ledger, the
  * fulfilment fallback included, so an unavailable ledger would otherwise turn
  * every paid sale into a refund.
  */
-export function attendeeStoreRefusal(expectedOwner: string | null): string | null {
+export function attendeeStoreRefusal(expectedOwner: string | null, nowMs: number = Date.now()): string | null {
   ensureLoaded();
   if (unreadable) return `ledger unreadable: ${unreadable}`;
   if (!expectedOwner) return "no stamper key configured";
@@ -195,6 +235,10 @@ export function attendeeStoreRefusal(expectedOwner: string | null): string | nul
   const batch = store.batches[store.active];
   if (!batch) return "active batch is not registered";
   if (batch.owner !== expectedOwner.toLowerCase()) return "active batch is owned by a different key than the stamper";
+  if (!batch.expiresAt) return "active batch expiry unknown";
+  if (nowMs >= Date.parse(batch.expiresAt) - EXPIRY_MARGIN_MS) {
+    return `active batch expires ${batch.expiresAt}: top it up and refresh, or activate another`;
+  }
   return null;
 }
 
@@ -221,9 +265,9 @@ export function allocateOrder(
   const rootHex = toHex(root);
   const existing = store.orders[rootHex];
   if (existing) {
+    if (existing.state === "burned") throw new Error(`order ${rootHex} was erased; refusing to store it again`);
     const batch = store.batches[existing.batchId];
     if (!batch) throw new AttendeeStoreUnavailableError(`order ${rootHex} names an unregistered batch`);
-    if (existing.state === "burned") throw new Error(`order ${rootHex} was erased; refusing to store it again`);
     return { root: rootHex, record: structuredClone(existing), depth: batch.depth };
   }
   if (!store.active) throw new AttendeeStoreUnavailableError("no active attendee batch");
@@ -251,7 +295,10 @@ export function allocateOrder(
   for (const address of distinct) {
     const bucket = bucketOf(address);
     const slot = (batch.next[bucket] ?? 0) + (taken.get(bucket) ?? 0);
-    if (slot >= capacity) throw new AttendeeBucketFullError(bucket);
+    if (slot >= capacity) {
+      bucketFullRefusals++;
+      throw new AttendeeBucketFullError(bucket);
+    }
     taken.set(bucket, (taken.get(bucket) ?? 0) + 1);
     chunks.push({ address: toHex(address), bucket, slot, ts });
   }
@@ -329,6 +376,8 @@ export function markChunkBurned(root: string, address: string, burnTs: string, n
   if (!record) throw new Error(`no order ${root}`);
   const chunk = record.chunks.find((c) => c.address === normalizeHex(address));
   if (!chunk) throw new Error(`order ${root} has no chunk ${address}`);
+  // A second confirmation of the same burn (two operators, one retry) is not an error.
+  if (chunk.burnedAt && chunk.ts === burnTs) return structuredClone(record);
   if (decodeTimestampNs(Buffer.from(burnTs, "hex")) <= decodeTimestampNs(Buffer.from(chunk.ts, "hex"))) {
     throw new Error("a burn must carry a newer timestamp than the stamp it replaces");
   }
@@ -355,15 +404,42 @@ export function markChunkBurned(root: string, address: string, burnTs: string, n
 }
 
 /** A copy: the store is authoritative in memory, so callers must not be able to edit it. */
+/**
+ * Record the erasure of an order that was never stored (only held, #546): a
+ * tombstone with no chunks. Readers then treat the ref as erased instead of
+ * fetching it, and `allocateOrder` refuses to store it ever again.
+ */
+export function recordErasedBeforeStore(root: string, nowMs: number = Date.now()): void {
+  ensureLoaded();
+  if (unreadable) throw new AttendeeStoreUnavailableError(`ledger unreadable: ${unreadable}`);
+  const k = normalizeHex(root);
+  if (store.orders[k]) throw new Error(`order ${k} is already recorded; burn it instead`);
+  const at = new Date(nowMs).toISOString();
+  store.orders[k] = { batchId: "", kind: "checkout", createdAt: at, state: "burned", chunks: [], burnedAt: at };
+  try {
+    persistOrThrow();
+  } catch (err) {
+    delete store.orders[k];
+    throw err;
+  }
+}
+
 export function getOrderRecord(root: string): OrderRecord | null {
   ensureLoaded();
   const record = store.orders[normalizeHex(root)];
   return record ? structuredClone(record) : null;
 }
 
-/** An erased order must never be fetched and shown again, even from our bee's cache. */
+/**
+ * True from the moment a burn is planned, not only once it completes: an order
+ * being erased must never be fetched and shown again, and our light bee keeps
+ * serving a burned chunk from its cache.
+ */
 export function isOrderErased(root: string): boolean {
-  return getOrderRecord(root)?.state === "burned";
+  ensureLoaded();
+  const record = store.orders[normalizeHex(root)];
+  if (!record) return false;
+  return record.state === "burned" || record.chunks.some((c) => c.burnTs || c.burnedAt);
 }
 
 export function getBatchRecord(batchId: string): BatchRecord | null {
@@ -375,26 +451,55 @@ export function getBatchRecord(batchId: string): BatchRecord | null {
 export interface AttendeeLedgerStatus {
   readable: boolean;
   active: string | null;
-  batches: Array<{ batchId: string; depth: number; owner: string; fullestBucket: number; fullestUsed: number; capacity: number }>;
+  batches: Array<{
+    batchId: string;
+    depth: number;
+    owner: string;
+    expiresAt: string | null;
+    fullestBucket: number;
+    fullestUsed: number;
+    capacity: number;
+    bucketsFull: number;
+  }>;
+  bucketFullRefusals: number;
   orders: Record<OrderState, number>;
+  /** Orders whose burn was planned but not finished: already hidden from
+   *  readers, still on the network until an operator re-runs the burn. */
+  burning: number;
 }
 
 export function attendeeLedgerStatus(): AttendeeLedgerStatus {
   ensureLoaded();
   const orders: Record<OrderState, number> = { allocated: 0, stored: 0, burned: 0 };
-  for (const record of Object.values(store.orders)) orders[record.state]++;
+  let burning = 0;
+  for (const record of Object.values(store.orders)) {
+    orders[record.state]++;
+    if (record.state !== "burned" && record.chunks.some((c) => c.burnTs || c.burnedAt)) burning++;
+  }
   const batches = Object.entries(store.batches).map(([batchId, b]) => {
     let fullestBucket = -1;
     let fullestUsed = 0;
+    let bucketsFull = 0;
+    const cap = slotsPerBucket(b.depth);
     for (const [bucket, used] of Object.entries(b.next)) {
+      if (used >= cap) bucketsFull++;
       if (used > fullestUsed) {
         fullestUsed = used;
         fullestBucket = Number(bucket);
       }
     }
-    return { batchId, depth: b.depth, owner: b.owner, fullestBucket, fullestUsed, capacity: slotsPerBucket(b.depth) };
+    return {
+      batchId,
+      depth: b.depth,
+      owner: b.owner,
+      expiresAt: b.expiresAt ?? null,
+      fullestBucket,
+      fullestUsed,
+      capacity: cap,
+      bucketsFull,
+    };
   });
-  return { readable: unreadable === null, active: store.active, batches, orders };
+  return { readable: unreadable === null, active: store.active, batches, orders, burning, bucketFullRefusals };
 }
 
 /** Test seam only: forget memory and reload from disk on next use. */

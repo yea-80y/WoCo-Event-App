@@ -47,6 +47,36 @@ test("a batch that is dead, not yet visible, or not bucket depth 16 is refused",
   assert.equal(ledger.getBatchRecord("03".repeat(32)), null);
 });
 
+test("registration records the expiry from chain; refresh follows a top-up, and a vanished batch stops sales", async () => {
+  const id = "05".repeat(32);
+  const t0 = Date.now();
+  await admin.registerAttendeeBatch(id, true, lookup({ ...good, batchTTL: 3 * 86400 }));
+  const at = Date.parse(ledger.getBatchRecord(id)!.expiresAt!);
+  assert.ok(Math.abs(at - (t0 + 3 * 86400_000)) < 60_000);
+  ledger.setActiveBatch(id);
+  await admin.refreshAttendeeBatch(undefined, lookup({ ...good, batchTTL: 40 * 86400 }));
+  assert.ok(Date.parse(ledger.getBatchRecord(id)!.expiresAt!) > t0 + 39 * 86400_000);
+  assert.equal(ledger.attendeeStoreRefusal(STAMPER), null);
+  await admin.refreshAttendeeBatch(undefined, lookup(null));
+  assert.match(ledger.attendeeStoreRefusal(STAMPER) ?? "", /expires/);
+  await admin.refreshAttendeeBatch(undefined, lookup({ ...good, owner: "0x" + "98".repeat(20) }));
+  assert.match(ledger.attendeeStoreRefusal(STAMPER) ?? "", /expires/);
+});
+
+test("health is red while sales are refused and green on a live, roomy batch", async () => {
+  const { attendeeBatchHealth } = await import("../src/lib/attendee-batch/health.js");
+  const id = "06".repeat(32);
+  await admin.registerAttendeeBatch(id, true, lookup({ ...good, batchTTL: 30 * 86400 }));
+  ledger.setActiveBatch(id);
+  const green = attendeeBatchHealth();
+  assert.equal(green.ok, true, JSON.stringify(green.checks));
+  await admin.refreshAttendeeBatch(undefined, lookup(null));
+  const red = attendeeBatchHealth();
+  assert.equal(red.ok, false);
+  assert.equal(red.checks.sales.ok, false);
+  assert.equal(red.checks.ttl.ok, false);
+});
+
 test("the fresh assertion is still required", async () => {
   await assert.rejects(admin.registerAttendeeBatch("04".repeat(32), false, lookup(good)), /fresh/);
 });

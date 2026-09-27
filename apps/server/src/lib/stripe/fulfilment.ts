@@ -109,8 +109,21 @@ export interface FulfilmentDeps {
   markPayoutVoid(sessionId: string, reason: string): void;
   getOrganiserByStripeAccount(stripeAccountId: string): string | undefined;
 
-  /** Swarm /bytes — the fallback order seal. May throw; the caller decides what that means. */
-  uploadToBytes(data: string): Promise<string>;
+  /** Store the fallback order seal on the attendee batch (#546). May throw; the caller decides what that means. */
+  storeOrderBlob(data: string, meta: { eventId: string; seriesId: string }): Promise<string>;
+
+  /**
+   * Paid-only storage (#546). The buyer's box was HELD at checkout, not stored:
+   * `claimHeldOrder` marks it paid (persisted, before the mint) and says whether
+   * one is held; `storeHeldOrder` puts it on the attendee batch and drops the
+   * hold (may throw - the retry worker then stores it); `isOrderStored` says
+   * whether the ref is already on the attendee batch (a retried webhook).
+   */
+  claimHeldOrder(orderRef: string, sessionId: string): boolean;
+  storeHeldOrder(orderRef: string): Promise<string>;
+  /** Drop a claimed hold when the sale issued no ticket: nothing references it. */
+  releaseHeldOrder(orderRef: string): boolean;
+  isOrderStored(orderRef: string): boolean;
 
   /**
    * The organiser's X-Wing order key, read by its ref from OUR OWN bee and verified
@@ -387,6 +400,19 @@ export async function fulfilPaidSession(
   if (metaRef && deps.orderRefInOtherSale(metaRef, session.id)) {
     console.warn(`[fulfilment] ${session.id}: orderRef ${metaRef.slice(0, 10)}… is another sale's — sealing this buyer's own order instead`);
     prefetchedOrderRef = undefined;
+  }
+  // Paid-only storage (#546): the ref names a box HELD since checkout. Claim it
+  // for this paid session now (persisted, so a crash before the store cannot
+  // lose it); if nothing is held and nothing is stored, the ref points at no
+  // data, so this buyer's minimal order is sealed instead.
+  let heldOrderRef: string | undefined;
+  if (prefetchedOrderRef) {
+    if (deps.claimHeldOrder(prefetchedOrderRef, session.id)) {
+      heldOrderRef = prefetchedOrderRef;
+    } else if (!deps.isOrderStored(prefetchedOrderRef)) {
+      console.warn(`[fulfilment] ${session.id}: no held or stored order for ${prefetchedOrderRef.slice(0, 10)}… — sealing the minimal order`);
+      prefetchedOrderRef = undefined;
+    }
   }
 
   // ── 1. Event feed (fenced: a feed hiccup degrades the TICKET EMAIL, not the sale) ──
@@ -767,6 +793,24 @@ export async function fulfilPaidSession(
     stoppedReason = "Series is not registered on chain — no mint path";
   }
 
+  // ── 4b. The held order box (#546): stored only once tickets exist ──
+  // Its ref is the root of the held bytes, known already, so the mint above
+  // never waited on this, and a failed store never refunds a paid sale: the
+  // hold stays paid, the retry worker stores it, and the organiser's view
+  // serves it from the hold meanwhile. A sale that issued NO ticket is being
+  // refunded: its box is dropped, never stored - that buyer did not buy.
+  if (heldOrderRef) {
+    if (claimedResults.length > 0) {
+      try {
+        await deps.storeHeldOrder(heldOrderRef);
+      } catch (err) {
+        console.warn(`[fulfilment] Held order ${heldOrderRef.slice(0, 10)}… not stored yet (retry worker will):`, err);
+      }
+    } else if (!deps.releaseHeldOrder(heldOrderRef)) {
+      console.error(`[fulfilment] ${session.id}: refunded sale's held order ${heldOrderRef.slice(0, 10)}… could not be dropped`);
+    }
+  }
+
   // ── 5. Release the seat hold (fenced: a store hiccup must not block the refund) ──
   // Now release the seat hold — all claims that were going to land have
   // landed. Doing this here (vs. at webhook entry) means concurrent /reserve
@@ -1036,6 +1080,7 @@ interface MintV2Args {
   /** From the registration record (#563) — never the feed, never today's env default. */
   mintContract: EventContractTarget;
   prefetchedOrderRef: string | undefined;
+
   encryptedOrder: SealedBoxV2 | undefined;
   accountClaim: { parentAddress: string } | undefined;
   /** Filled in place: one entry per slot actually minted AND signed. */
@@ -1059,7 +1104,7 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
   let batchOrderRef: string | undefined = a.prefetchedOrderRef;
   if (!batchOrderRef && a.encryptedOrder) {
     try {
-      batchOrderRef = await deps.uploadToBytes(JSON.stringify(a.encryptedOrder));
+      batchOrderRef = await deps.storeOrderBlob(JSON.stringify(a.encryptedOrder), { eventId, seriesId });
       console.log(`[fulfilment/v2] Fallback order uploaded: ${batchOrderRef}`);
     } catch (err) {
       console.warn("[fulfilment/v2] Fallback order upload failed:", err);

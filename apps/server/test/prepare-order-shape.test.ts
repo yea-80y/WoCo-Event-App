@@ -28,8 +28,17 @@ delete process.env.POSTAGE_BATCH_ID;
 delete process.env.STRIPE_SECRET_KEY;
 
 const { stripeRoutes } = await import("../src/routes/stripe.js");
+const { __setBeeForTests } = await import("../src/config/swarm.js");
+const { readyAttendeeStore } = await import("./helpers/attendee-store.js");
 const app = new Hono();
 app.route("/api/stripe", stripeRoutes);
+// A bee that refuses every chunk, fast and non-retryable: the spend happens,
+// the store fails, and the route answers 500.
+__setBeeForTests({
+  uploadChunk: async () => {
+    throw Object.assign(new Error("fake bee refuses"), { status: 400 });
+  },
+} as never);
 
 const BOX = { v: 2, enc: "ab".repeat(1120), ct: "cd".repeat(64) };
 
@@ -53,6 +62,14 @@ test("anything but exactly a v2 box within 16 KB is refused", async () => {
   ]) {
     assert.equal(await post({ encryptedOrder }, "203.0.113.7"), 400);
   }
+});
+
+test("with nowhere erasable to store it, a well-formed box is refused 503 and spends nothing (#546)", async () => {
+  const ip = "203.0.113.9";
+  for (let i = 0; i < 40; i++) assert.equal(await post({ encryptedOrder: BOX }, ip), 503);
+  await readyAttendeeStore();
+  for (let i = 0; i < 30; i++) assert.equal(await post({ encryptedOrder: BOX }, ip), 500);
+  assert.equal(await post({ encryptedOrder: BOX }, ip), 429);
 });
 
 test("a well-formed box passes validation, and refusals never spent the budget", async () => {

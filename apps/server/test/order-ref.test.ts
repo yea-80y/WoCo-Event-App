@@ -58,9 +58,11 @@ test("both routes enforce it: prepare-order refuses a taken ref, checkout takes 
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../src/routes/stripe.ts", import.meta.url), "utf8");
   const prepare = src.slice(src.indexOf('stripe.post("/prepare-order"'));
-  assert.match(prepare.slice(0, 2000), /orderRefInOtherSale\(orderRef, null\)\) return c\.json\(\{ ok: false, error: ORDER_ALREADY_USED \}, 409\)/);
-  assert.match(prepare.slice(0, 2000), /orderRefToken: issueOrderRefToken\(orderRef\)/);
-  assert.match(src, /const preUploadedRef = acceptedClientOrderRef\(orderRef, orderRefToken\);/);
+  assert.match(prepare.slice(0, 3000), /orderRefInOtherSale\(orderRef, null\)\) return c\.json\(\{ ok: false, error: ORDER_ALREADY_USED \}, 409\)/);
+  assert.match(prepare.slice(0, 3000), /orderRefToken: issueOrderRefToken\(orderRef\)/);
+  assert.match(src, /const tokenRef = acceptedClientOrderRef\(orderRef, orderRefToken\);/);
+  // #546: a token alone is not enough - the ref must be on the attendee batch.
+  assert.match(src, /tokenRef && \(getHeldOrder\(tokenRef\) \|\| \(getOrderRecord\(tokenRef\) && !isOrderErased\(tokenRef\)\)\) \? tokenRef : null;/);
   const refusal = src.indexOf("if (finalOrderRef && orderRefInOtherSale(finalOrderRef, null))");
   const session = src.indexOf("checkout.sessions.create(");
   assert.ok(session > 0, "the Stripe session call must be found, or this check guards nothing");

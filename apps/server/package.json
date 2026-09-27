@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev-with-tunnel.mjs",
-    "dev:notunnel": "tsx watch src/index.ts",
+    "dev:notunnel": "ATTENDEE_STAMPER_PRIVATE_KEY= tsx watch src/index.ts",
     "build": "tsc",
     "start": "node --import tsx src/index.ts",
     "agent:demo": "node --import tsx scripts/agent/demo.ts",

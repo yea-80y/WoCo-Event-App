@@ -56,9 +56,11 @@ import { mergeParticipants, knownSubjects, participantsFor } from "../lib/social
 import { clearTallyCache } from "./social.js";
 import { isValidSenderId, liftSender, listForOps, stopSender } from "../lib/sender-pacing/index.js";
 import { attendeeLedgerStatus, setActiveBatch } from "../lib/attendee-batch/ledger.js";
-import { attendeeCheckoutRefusal, attendeeStamperAddress } from "../lib/attendee-batch/writer.js";
-import { registerAttendeeBatch } from "../lib/attendee-batch/admin.js";
+import { attendeeCheckoutRefusal, attendeeStamperAddress, isStoreInFlight } from "../lib/attendee-batch/writer.js";
+import { refreshAttendeeBatch, registerAttendeeBatch } from "../lib/attendee-batch/admin.js";
 import { burnOrder } from "../lib/attendee-batch/burn.js";
+import { getOrderRecord, recordErasedBeforeStore } from "../lib/attendee-batch/ledger.js";
+import { getHeldOrder, releaseHeldOrder } from "../lib/attendee-batch/held-orders.js";
 
 const ops = new Hono<AppEnv>();
 
@@ -521,12 +523,18 @@ for (const action of ["lift", "stop"] as const) {
  * takes new orders, how full its fullest bucket is, orders by state, and why
  * checkout would refuse right now (null = it would not).
  */
-ops.get("/attendee-batch", (c) =>
-  c.json({
+ops.get("/attendee-batch", (c) => {
+  let stamper: string | null = null;
+  try {
+    stamper = attendeeStamperAddress();
+  } catch {
+    // Reported through checkoutRefusal below.
+  }
+  return c.json({
     ok: true,
-    data: { stamper: attendeeStamperAddress(), checkoutRefusal: attendeeCheckoutRefusal(), ledger: attendeeLedgerStatus() },
-  }),
-);
+    data: { stamper, checkoutRefusal: attendeeCheckoutRefusal(), ledger: attendeeLedgerStatus() },
+  });
+});
 
 /**
  * POST /api/ops/attendee-batch/register — body `{ batchId, fresh: true, by }`.
@@ -564,6 +572,26 @@ ops.post("/attendee-batch/activate", async (c) => {
 });
 
 /**
+ * POST /api/ops/attendee-batch/refresh — body `{ by, batchId? }` (default: the
+ * active batch). Re-reads the batch's TTL from chain. Run it after a top-up:
+ * checkout refuses an hour before the recorded expiry, and the hourly refresh
+ * would otherwise take up to an hour to notice.
+ */
+ops.post("/attendee-batch/refresh", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { batchId?: string; by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required" }, 400);
+  try {
+    const result = await refreshAttendeeBatch(typeof body?.batchId === "string" ? body.batchId : undefined);
+    if (!result) return c.json({ ok: false, error: "No active attendee batch" }, 404);
+    console.log(`[ops] attendee batch ${result.batchId} TTL refreshed by ${by}: expires ${result.expiresAt}`);
+    return c.json({ ok: true, data: { ...result, checkoutRefusal: attendeeCheckoutRefusal() } });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 502);
+  }
+});
+
+/**
  * POST /api/ops/attendee-batch/orders/:root/burn — body `{ by, reason }`.
  * Erases one order from Swarm (every chunk's slot overwritten). Irreversible.
  * Resumable: calling it again finishes an interrupted burn.
@@ -575,7 +603,22 @@ ops.post("/attendee-batch/orders/:root/burn", async (c) => {
   const by = (body?.by || "").trim().slice(0, 100);
   const reason = (body?.reason || "").trim().slice(0, 500);
   if (!by || !reason) return c.json({ ok: false, error: "`by` and `reason` are required - who decided this, and why?" }, 400);
+  if (isStoreInFlight(root)) {
+    return c.json({ ok: false, error: "This order is being stored right now - retry in a minute and it will be burned" }, 409);
+  }
   try {
+    // A box still held (not yet on Swarm) is simply deleted: real deletion.
+    // Synchronous from here to the tombstone, so no store can start between.
+    const wasHeld = getHeldOrder(root) !== null;
+    if (wasHeld && !releaseHeldOrder(root)) {
+      return c.json({ ok: false, error: "The held order could not be deleted - see compliancePersistence on /api/health" }, 503);
+    }
+    if (!getOrderRecord(root)) {
+      if (!wasHeld) return c.json({ ok: false, error: "No attendee order with that reference" }, 404);
+      recordErasedBeforeStore(root);
+      console.log(`[ops] attendee order ${root} (held, never stored) deleted by ${by} (${reason})`);
+      return c.json({ ok: true, data: { root, state: "deleted-before-store", burnedAt: null } });
+    }
     const record = await burnOrder(root);
     console.log(`[ops] attendee order ${root} burn by ${by} (${reason}): ${record.state}`);
     return c.json({ ok: true, data: { root, state: record.state, burnedAt: record.burnedAt ?? null } });

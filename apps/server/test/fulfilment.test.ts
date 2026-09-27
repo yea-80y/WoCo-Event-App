@@ -153,7 +153,10 @@ type Step =
   | "saleContractFor"
   | "recordHeldPayout"
   | "getOrganiserByStripeAccount"
-  | "uploadToBytes"
+  | "storeOrderBlob"
+  | "claimHeldOrder"
+  | "storeHeldOrder"
+  | "releaseHeldOrder"
   | "generateBurner"
   | "signMessage"
   | "batchClaimForOnChain"
@@ -203,6 +206,10 @@ interface FakeOpts {
   cancellation?: "open" | "cancelled" | "unknown";
   /** Order refs another completed sale already carries (#661). Default none. */
   takenRefs?: string[];
+  /** Whether the session's orderRef is a box HELD since checkout (#546). Default false. */
+  held?: boolean;
+  /** Whether a non-held orderRef is already on the attendee batch. Default true. */
+  orderStored?: boolean;
 }
 
 function fakeDeps(o: FakeOpts = {}) {
@@ -281,8 +288,8 @@ function fakeDeps(o: FakeOpts = {}) {
       boom("getOrganiserByStripeAccount");
       return ORGANISER;
     },
-    uploadToBytes: async (data: string) => {
-      boom("uploadToBytes");
+    storeOrderBlob: async (data: string) => {
+      boom("storeOrderBlob");
       uploaded.push(data);
       return "aa".repeat(32);
     },
@@ -292,6 +299,19 @@ function fakeDeps(o: FakeOpts = {}) {
       return ORDER_KEY.publicKey;
     },
     orderRefInOtherSale: (ref: string) => (o.takenRefs ?? []).includes(ref),
+    claimHeldOrder: () => {
+      boom("claimHeldOrder");
+      return o.held ?? false;
+    },
+    storeHeldOrder: async (ref: string) => {
+      boom("storeHeldOrder");
+      return ref;
+    },
+    releaseHeldOrder: () => {
+      boom("releaseHeldOrder");
+      return true;
+    },
+    isOrderStored: () => o.orderStored ?? true,
     generateBurner: () => {
       boom("generateBurner");
       const n = burnerSeq++;
@@ -635,7 +655,7 @@ describe("happy path", () => {
   test("no prefetched orderRef: the fallback seal is uploaded and used", async () => {
     const { f } = await run({ orderRef: null }, { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }) });
     assert.ok(f.calls.includes("fetchOrderKey"));
-    assert.ok(f.calls.includes("uploadToBytes"));
+    assert.ok(f.calls.includes("storeOrderBlob"));
     assert.equal(f.minted.length, 1);
     // The fallback is a real v2 box, bound to this event and series, that the
     // organiser's key opens (#642).
@@ -650,13 +670,46 @@ describe("happy path", () => {
       { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), takenRefs: [ORDER_REF] },
     );
     assert.equal(outcome.issued, 2, "the sale still completes");
-    assert.ok(f.calls.includes("uploadToBytes"), "a fresh seal was made");
+    assert.ok(f.calls.includes("storeOrderBlob"), "a fresh seal was made");
     // The mint carries the fresh seal's ref, never the copied one.
     assert.ok(f.saleSlots.length > 0);
     assert.ok(f.saleSlots.every((r: { orderRef?: string }) => r.orderRef !== ORDER_REF));
     const box = JSON.parse(f.uploaded[0]);
     const order = await openBoxJson<{ seriesId: string }>(ORDER_KEY.secretKey, box, orderSealContext(EVENT_ID, SERIES_ID));
     assert.equal(order.seriesId, SERIES_ID);
+  });
+
+  test("#546: a held order is claimed before the mint and stored only AFTER tickets exist, under its own ref", async () => {
+    const { f, outcome } = await run({}, { held: true });
+    assert.equal(outcome.issued, 2);
+    const claim = f.calls.indexOf("claimHeldOrder");
+    const mint = f.calls.indexOf("batchClaimForOnChain");
+    const store = f.calls.indexOf("storeHeldOrder");
+    assert.ok(claim >= 0 && mint > claim && store > mint, `claim -> mint -> store, got ${f.calls.join(",")}`);
+    assert.equal(f.calls.includes("releaseHeldOrder"), false);
+    assert.ok(f.saleSlots.every((r: { orderRef?: string }) => r.orderRef === ORDER_REF));
+    assert.equal(f.calls.includes("storeOrderBlob"), false, "no fallback seal");
+  });
+
+  test("#546: a held order whose store fails still mints under its ref - never a refund over it", async () => {
+    const { f, outcome } = await run({}, { held: true, fail: "storeHeldOrder" });
+    assert.equal(outcome.issued, 2);
+    assert.deepEqual(outcome.refund, { kind: "not-needed" });
+    assert.ok(f.saleSlots.every((r: { orderRef?: string }) => r.orderRef === ORDER_REF));
+  });
+
+  test("#546: a sale that issues NO ticket drops its held order - a refunded buyer's box is never stored", async () => {
+    const { f, outcome } = await run({}, { held: true, revertAtChunk: 0 });
+    assert.equal(outcome.issued, 0);
+    assert.equal(f.calls.includes("storeHeldOrder"), false);
+    assert.ok(f.calls.includes("releaseHeldOrder"));
+  });
+
+  test("#546: a ref with nothing held and nothing stored points at no data - the minimal order is sealed", async () => {
+    const { f, outcome } = await run({}, { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), orderStored: false });
+    assert.equal(outcome.issued, 2);
+    assert.ok(f.calls.includes("storeOrderBlob"), "a fresh seal was made");
+    assert.ok(f.saleSlots.every((r: { orderRef?: string }) => r.orderRef !== ORDER_REF));
   });
 
   test("the order key cannot be read: no fallback seal, so the sale stops and refunds", async () => {
@@ -666,13 +719,13 @@ describe("happy path", () => {
     );
     assert.equal(outcome.issued, 0);
     assert.equal(outcome.stoppedReason, "No orderRef available for on-chain claim");
-    assert.equal(f.calls.includes("uploadToBytes"), false);
+    assert.equal(f.calls.includes("storeOrderBlob"), false);
   });
 
   test("the mint path makes NO Swarm read (#368): a prefetched orderRef means no bytes call at all", async () => {
     const { f, outcome } = await run();
     assert.equal(outcome.issued, 2);
-    assert.equal(f.calls.includes("uploadToBytes"), false);
+    assert.equal(f.calls.includes("storeOrderBlob"), false);
     assert.equal(f.calls.some((c) => /download/i.test(c)), false);
   });
 
@@ -1066,10 +1119,10 @@ describe("every collaborator throws", () => {
     assert.equal(outcome.issued, 2);
   });
 
-  test("uploadToBytes throws on the fallback seal: stops before the mint, refunds", async () => {
+  test("storeOrderBlob throws on the fallback seal: stops before the mint, refunds", async () => {
     const { outcome, f } = await run(
       { orderRef: null },
-      { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), fail: "uploadToBytes" },
+      { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), fail: "storeOrderBlob" },
     );
     assert.equal(outcome.issued, 0);
     assert.equal(outcome.stoppedReason, "No orderRef available for on-chain claim");
@@ -1086,7 +1139,7 @@ test("never rejects, whichever step throws", async () => {
   const steps: Step[] = [
     "hashEmail", "resolveSiteEventSigner", "getEvent", "chainEventEndMs", "lookupOnChainEventId",
     "saleContractFor", "recordHeldPayout",
-    "getOrganiserByStripeAccount", "uploadToBytes", "generateBurner",
+    "getOrganiserByStripeAccount", "storeOrderBlob", "generateBurner",
     "signMessage", "batchClaimForOnChain", "bindTicket", "consumeReservation", "createRefund",
     "markPayoutVoid", "captureCheckoutConsent", "recordAttendeeEmail", "getSiteTheme", "sendTicketEmail",
     "sendTicketEmailLedgered", "recordUndeliveredTicket",

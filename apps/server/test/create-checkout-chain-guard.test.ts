@@ -81,6 +81,8 @@ before(async () => {
   app = new Hono();
   app.route("/api/stripe", stripeRoutes);
   app.route("/api/events", reservations);
+  const { readyAttendeeStore } = await import("./helpers/attendee-store.js");
+  await readyAttendeeStore();
 
   // Registered — and recorded — while the platform ran on the old chain.
   registry.recordOnChainEventId(EVENT_ID, SERIES_ID, ON_CHAIN_ID, { chainId: OLD_CHAIN, address: V2_ADDR, version: "v2" });

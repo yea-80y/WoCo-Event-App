@@ -74,6 +74,8 @@ globalThis.fetch = tripwire("fetch") as unknown as typeof fetch;
 
 const app = new Hono();
 app.route("/api/stripe", stripeRoutes);
+const { readyAttendeeStore } = await import("./helpers/attendee-store.js");
+await readyAttendeeStore();
 
 let eventSeq = 0;
 /** A body that passes every field check and goes on to the spend. */

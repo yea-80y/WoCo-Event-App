@@ -6,6 +6,8 @@ import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
 import { getBindingsForEvent, toAttendeeKeyRows } from "../lib/gate/store.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
+import { isOrderErased } from "../lib/attendee-batch/ledger.js";
+import { getHeldOrder } from "../lib/attendee-batch/held-orders.js";
 import { getOnChainEventAt, getSlotDataAt } from "../lib/chain/event-contract.js";
 import { registrationContractFor } from "../lib/event/onchain-registry.js";
 import { contractKey } from "../lib/chain/event-contract.js";
@@ -94,8 +96,20 @@ orders.get("/:id/orders", requireAuth, async (c) => {
 
           const swarmHex = orderRefToSwarmHex(slotData.orderRef);
           let encryptedOrder: SealedBoxV2 | undefined;
+          // Erased on request (#546): never fetched, even though our own bee may
+          // still hold it in its cache.
+          const erased = swarmHex ? isOrderErased(swarmHex) : false;
 
-          if (swarmHex) {
+          // A paid order whose store is still pending is served from its hold
+          // (#546): the same ciphertext, before it reaches Swarm.
+          const held = swarmHex && !erased ? getHeldOrder(swarmHex) : null;
+          if (held) {
+            try {
+              encryptedOrder = JSON.parse(held.json) as SealedBoxV2;
+            } catch (err) {
+              console.warn(`[orders/v2] Held order for slot ${slot} is not JSON:`, err);
+            }
+          } else if (swarmHex && !erased) {
             try {
               const json = await downloadFromBytes(swarmHex);
               encryptedOrder = JSON.parse(json) as SealedBoxV2;
@@ -110,6 +124,7 @@ orders.get("/:id/orders", requireAuth, async (c) => {
             seriesName: series.name,
             edition: slot + 1,
             ...(refund ? { refund } : {}),
+            ...(erased ? { erased: true as const } : {}),
             // Burner address — unique per ticket, proves on-chain slot ownership.
             // The actual claimer identity is inside the encrypted order blob.
             claimerAddress: slotData.owner,

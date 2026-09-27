@@ -45,7 +45,9 @@ import {
 } from "../lib/chain/event-contract.js";
 import { checkSeriesOnChainBinding, resolveManifestDigest } from "../lib/event/onchain-binding.js";
 import { lookupOnChainEventId, saleContractFor } from "../lib/event/onchain-registry.js";
-import { uploadToBytes } from "../lib/swarm/bytes.js";
+import { attendeeCheckoutRefusal, orderRefOf } from "../lib/attendee-batch/writer.js";
+import { getOrderRecord, isOrderErased } from "../lib/attendee-batch/ledger.js";
+import { commitHold, getHeldOrder, holdPrepared } from "../lib/attendee-batch/held-orders.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../lib/stripe/checkout-provenance.js";
 import { liveProvenanceReads, refundTamperedSession } from "../lib/stripe/checkout-provenance-live.js";
@@ -118,6 +120,9 @@ const prepareOrderLimiter = new SlidingWindowLimiter([
   { limit: 30, windowMs: 60_000 },
   { limit: 300, windowMs: 3_600_000 },
 ]);
+
+/** Refusal while order data has nowhere erasable to go (#546). Details go to the log, not the buyer. */
+const SALES_PAUSED = "Ticket sales are paused for a moment. Please try again shortly.";
 
 /** Refusal for an order box that another completed sale already carries (#661). */
 const ORDER_ALREADY_USED =
@@ -420,6 +425,13 @@ stripe.post("/prepare-order", async (c) => {
   if (!orderJson) {
     return c.json({ ok: false, error: "encryptedOrder must be a v2 sealed box of at most 16 KB" }, 400);
   }
+  // Order data is only ever stored where it can be erased (#546). The client
+  // falls back to the inline upload at Pay, which create-checkout refuses too.
+  const storeRefusal = attendeeCheckoutRefusal();
+  if (storeRefusal) {
+    console.error(`[stripe/prepare-order] refused: ${storeRefusal}`);
+    return c.json({ ok: false, error: SALES_PAUSED }, 503);
+  }
   // Validated first, so a refusal does not spend the caller's budget.
   const ip = clientIp(c);
   if (!prepareOrderLimiter.peek(ip)) {
@@ -429,15 +441,17 @@ stripe.post("/prepare-order", async (c) => {
   prepareOrderLimiter.record(ip);
 
   try {
-    const orderRef = await uploadToBytes(orderJson);
+    // Paid-only storage (#546): nothing goes to Swarm here. The box is held in
+    // memory under the root it WILL have, and stored once its sale is paid.
+    const orderRef = await orderRefOf(orderJson);
     // A copy of a box another sale already carries lands on that sale's ref
     // (canonical bytes) — refuse to issue it.
     if (orderRefInOtherSale(orderRef, null)) return c.json({ ok: false, error: ORDER_ALREADY_USED }, 409);
+    holdPrepared(orderRef, orderJson);
     return c.json({ ok: true, orderRef, orderRefToken: issueOrderRefToken(orderRef) });
   } catch (err) {
-    console.error("[stripe/prepare-order] Upload failed:", err);
-    const msg = err instanceof Error ? err.message : "Failed to upload order";
-    return c.json({ ok: false, error: msg }, 500);
+    console.error("[stripe/prepare-order] Hold failed:", err);
+    return c.json({ ok: false, error: "Could not save your order details. Please try again." }, 500);
   }
 });
 
@@ -560,15 +574,16 @@ stripe.post("/create-checkout", async (c) => {
   // A pre-uploaded order ref is taken only with the token prepare-order issued for
   // it, so every ref that reaches a mint is one this server stored (#661). Anything
   // else is silently ignored; never echoed to Stripe metadata as-is.
-  const preUploadedRef = acceptedClientOrderRef(orderRef, orderRefToken);
+  // ...and only if its box is held here or already on the attendee batch (#546):
+  // a token issued before paid-only storage names a blob that can never be erased.
+  const tokenRef = acceptedClientOrderRef(orderRef, orderRefToken);
+  const preparedRef =
+    tokenRef && (getHeldOrder(tokenRef) || (getOrderRecord(tokenRef) && !isOrderErased(tokenRef))) ? tokenRef : null;
 
-  // Inline encrypted order (fallback path when client didn't pre-upload).
-  // We'll upload in parallel with the event/status reads so Swarm latency
-  // hides behind the reads.
-  // Same acceptance rule as prepare-order; anything else is ignored exactly as a
-  // malformed orderRef is, and the webhook seals the minimal order instead.
-  const inlineOrderJson = preUploadedRef ? null : canonicalOrderBox(encryptedOrder);
-  const shouldUploadInline = inlineOrderJson !== null;
+  // Inline encrypted order (when the client did not prepare one, or its hold is
+  // gone). Same acceptance rule as prepare-order; anything else is ignored
+  // exactly as a malformed orderRef is, and the webhook seals the minimal order.
+  const inlineOrderJson = canonicalOrderBox(encryptedOrder);
 
   // Soft auth: if session headers are present, verify them. Malformed auth
   // headers are rejected — never silently fall through to anonymous path.
@@ -583,6 +598,16 @@ stripe.post("/create-checkout", async (c) => {
 
   if (!claimerEmail && !verifiedAddress) {
     return c.json({ ok: false, error: "claimerEmail or authenticated wallet session required" }, 400);
+  }
+
+  // Every order write goes to the attendee batch, the fulfilment fallback seal
+  // included, and never to the platform batch (#546). If that storage is not
+  // available, a paid sale would end in "no orderRef" and a refund, so refuse
+  // before the card is charged - the same rule as the keyless check below.
+  const storeRefusal = attendeeCheckoutRefusal();
+  if (storeRefusal) {
+    console.error(`[stripe/create-checkout] refused: ${storeRefusal}`);
+    return c.json({ ok: false, error: SALES_PAUSED }, 503);
   }
 
   // Validation first: everything above this line is a field check, a local
@@ -614,32 +639,45 @@ stripe.post("/create-checkout", async (c) => {
   // the Stripe destination (creatorAddress→Connect) + amount. siteId is only a
   // pointer; trust is the server-written index, never the request.
   const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
-  const [event, inlineUploadedRef] = await Promise.all([
-    getEvent(eventId, siteSigner ?? undefined),
-    shouldUploadInline
-      ? uploadToBytes(inlineOrderJson!).catch((err) => {
-          // Inline upload failure is non-fatal — webhook falls back to the
-          // minimal server-built seal so attendee still gets a ticket.
-          console.warn("[stripe/create-checkout] Inline order upload failed (continuing):", err);
-          return null as string | null;
-        })
-      : Promise.resolve(null as string | null),
-  ]);
-  const swarmMs = performance.now() - tSwarm;
+  const event = await getEvent(eventId, siteSigner ?? undefined);
+  if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
 
-  // Final ref we'll stamp into Stripe session metadata. Prefer client pre-upload
-  // (fast path — client already did the work before clicking Pay).
-  const finalOrderRef = preUploadedRef ?? (inlineUploadedRef ?? undefined);
+  const series = event.series.find((s) => s.seriesId === seriesId);
+  if (!series) return c.json({ ok: false, error: "Series not found" }, 404);
+
+  // Paid-only storage (#546): the buyer is on the way to pay, so the box is
+  // HELD on disk (surviving a restart before the webhook) and stored on the
+  // attendee batch by fulfilment once paid. Done only once the event and series
+  // are real. A hold that cannot be made is non-fatal: the webhook seals the
+  // minimal server-built order so the attendee still gets a ticket.
+  let finalOrderRef: string | undefined;
+  if (preparedRef) {
+    if (getOrderRecord(preparedRef)) {
+      finalOrderRef = preparedRef; // already on the attendee batch
+    } else {
+      try {
+        commitHold(preparedRef, null, { eventId, seriesId });
+        finalOrderRef = preparedRef;
+      } catch (err) {
+        console.warn("[stripe/create-checkout] Could not hold the prepared order (continuing):", err);
+      }
+    }
+  }
+  if (!finalOrderRef && inlineOrderJson) {
+    try {
+      const inlineRef = await orderRefOf(inlineOrderJson);
+      commitHold(inlineRef, inlineOrderJson, { eventId, seriesId });
+      finalOrderRef = inlineRef;
+    } catch (err) {
+      console.warn("[stripe/create-checkout] Could not hold the inline order (continuing):", err);
+    }
+  }
+  const swarmMs = performance.now() - tSwarm;
   // One sale per order ref (#661): before anything is charged, refuse a box that
   // another completed sale already carries. Fulfilment re-checks as a backstop.
   if (finalOrderRef && orderRefInOtherSale(finalOrderRef, null)) {
     return c.json({ ok: false, error: ORDER_ALREADY_USED }, 409);
   }
-
-  if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
-
-  const series = event.series.find((s) => s.seriesId === seriesId);
-  if (!series) return c.json({ ok: false, error: "Series not found" }, 404);
 
   // No order box from the buyer AND no organiser key to seal one with: fulfilment
   // would reach "no orderRef" and refund. Refuse before the card is charged
