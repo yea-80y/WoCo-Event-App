@@ -49,7 +49,7 @@ export const FEED_FAMILY_STORES = {
   campaignIssuer: "woco",
   /** Recovery: the portability envelope, the escrow envelope, the guardian's account index. */
   recoveryPortability: "etherna",
-  recoveryEnvelope: "woco",
+  recoveryEnvelope: "etherna",
   guardianIndex: "woco",
   /** Coaster laps and their indexes. Moves last: a wrong read restarts a lifetime count. */
   credits: "woco",
