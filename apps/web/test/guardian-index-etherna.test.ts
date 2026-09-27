@@ -112,6 +112,23 @@ test("Etherna unreachable: the upsert writes nothing and the portal says it coul
   assert.equal(found.status, "unavailable", JSON.stringify(found));
 });
 
+test("an index whose newest version could not be asked is never rewritten from the one before it", async () => {
+  const net: Net = { ourBee: new Map(), etherna: new Map() };
+  install(net);
+  await protect(net, A);
+  propagate(net); // version 0 reached our bee
+  await protect(net, B); // version 1, on Etherna only
+  net.ethernaDown = true;
+
+  newDevice(net);
+  const read = await readGuardianAccountIndex(gk.socSigner.address);
+  assert.equal(read.status === "found" && read.scanClean, false, "found version 0 from a scan that could not finish");
+  const log: Sent[] = [];
+  const out = await protect(net, C, log);
+  assert.deepEqual(out, { status: "skipped", reason: "index version scan was not conclusive" });
+  assert.deepEqual(log, [], "a rewrite from version 0 would have dropped B");
+});
+
 /**
  * FOR THE MIGRATION DESIGN (#735). This is the one recovery feed written by
  * SEVERAL accounts, so once accounts have batches of their own its versions can
