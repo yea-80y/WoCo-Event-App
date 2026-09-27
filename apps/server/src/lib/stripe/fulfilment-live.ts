@@ -17,6 +17,8 @@ import { lookupOnChainEventId, saleContractFor } from "../event/onchain-registry
 import { recordHeld, markVoid } from "./payout-ledger.js";
 import { getOrganiserByStripeAccount } from "./accounts.js";
 import { uploadToBytes } from "../swarm/bytes.js";
+import { fetchOrderKey } from "@woco/shared";
+import { BEE_URL } from "../../config/swarm.js";
 import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX } from "../chain/sponsor-wallet.js";
 import { bindTicket } from "../gate/store.js";
 import { consume as consumeReservation } from "../event/reservation-store.js";
@@ -45,11 +47,12 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   markPayoutVoid: markVoid,
   getOrganiserByStripeAccount,
   uploadToBytes: (data) => uploadToBytes(data),
+  fetchOrderKey: (ref) => fetchOrderKey(ref, BEE_URL),
   generateBurner,
   batchClaimForOnChain,
   onChainBatchMax: ON_CHAIN_BATCH_MAX,
-  recordSaleSlots: (sessionId, onChainEventId, contract, slots) => {
-    recordSaleSlots(sessionId, onChainEventId, contract, slots);
+  recordSaleSlots: (sessionId, onChainEventId, contract, slots, orderRef) => {
+    recordSaleSlots(sessionId, onChainEventId, contract, slots, orderRef);
   },
   recordAutoRefund,
   bindTicket,

@@ -141,12 +141,13 @@ test("quantity picker is capped by availability and by the server clamp", () => 
 
 // ── #597: the buy panel reads the order form's email field ──────────────────
 
-const KEY = "ab".repeat(32);
+/** Stands in for a VERIFIED X-Wing order key (#642); the panel only checks presence. */
+const KEY = new Uint8Array(1216).fill(7);
 const EMAIL: OrderField = { id: "__email", type: "email", label: "Email", required: true };
 const NAME: OrderField = { id: "name", type: "text", label: "Name", required: true };
 const GUEST: OrderField = { id: "guest", type: "email", label: "Guest's email", required: false };
-const panel = (fields: OrderField[] | undefined, formData: Record<string, string>, inlineEmail = "", key: string | undefined = KEY) =>
-  validateBuyPanel({ fields, encryptionKey: key, formData, inlineEmail });
+const panel = (fields: OrderField[] | undefined, formData: Record<string, string>, inlineEmail = "", key: Uint8Array | undefined = KEY) =>
+  validateBuyPanel({ fields, verifiedKey: key, formData, inlineEmail });
 
 test("the default order form's email field is the ticket address (the #597 dead-end)", () => {
   assert.deepEqual(panel([EMAIL, NAME], { __email: " buyer@example.com ", name: "Ann" }), { ok: true, email: "buyer@example.com" });
@@ -184,6 +185,6 @@ test("a guest's email field never becomes the ticket address", () => {
 });
 
 test("a form that cannot be shown (no organiser key) falls back to the widget's box, never a dead-end", () => {
-  const noKey = validateBuyPanel({ fields: [EMAIL], encryptionKey: undefined, formData: {}, inlineEmail: "me@example.com" });
+  const noKey = validateBuyPanel({ fields: [EMAIL], verifiedKey: undefined, formData: {}, inlineEmail: "me@example.com" });
   assert.deepEqual(noKey, { ok: true, email: "me@example.com" });
 });

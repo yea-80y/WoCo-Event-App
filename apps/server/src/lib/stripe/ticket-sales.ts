@@ -73,6 +73,12 @@ export interface TicketSale {
   /** Slots minted for this sale (edition = slot + 1). */
   slots: number[];
   /**
+   * The order blob these slots carry on chain (#642). Recorded so a sale that
+   * reuses ANOTHER sale's public orderRef is detectable after the fact; nothing
+   * refuses on it (a buyer's retried checkout legitimately reuses its own ref).
+   */
+  orderRef?: string;
+  /**
    * Minor units WE refunded or tried to (fulfilment's unfilled part, or a
    * tampered session in full). Recorded before the refund call, so the refund
    * event that follows is recognised as ours whatever order things land in.
@@ -205,6 +211,7 @@ export function recordSaleSlots(
   onChainEventId: string,
   contract: string,
   slots: number[],
+  orderRef?: string,
 ): boolean {
   ensureLoaded();
   const sale = store[sessionId];
@@ -222,6 +229,7 @@ export function recordSaleSlots(
   }
   sale.onChainEventId = id;
   sale.contract = contract.toLowerCase();
+  if (orderRef && !sale.orderRef) sale.orderRef = orderRef.toLowerCase();
   for (const slot of slots) if (!sale.slots.includes(slot)) sale.slots.push(slot);
   persist();
   return true;

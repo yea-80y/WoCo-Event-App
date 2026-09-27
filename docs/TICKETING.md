@@ -104,8 +104,9 @@ Card is the only live rail (`cryptoPaymentsAllowed = false`, `freeEventsAllowed 
               is as trustworthy as the decision it records.
 
  3. WEBHOOK   Stripe → fulfilment (apps/server/src/lib/stripe/fulfilment.ts):
-              a. seal the order data to the organiser's X25519 key, upload to
-                 Swarm, keep the 32-byte ref
+              a. seal the order data to the organiser's X-Wing key (#642; usually
+                 done by the buyer's browser before checkout), upload to Swarm,
+                 keep the 32-byte ref
               b. one ephemeral BURNER keypair per ticket
               c. batchClaimFor(onChainEventId, burnerAddresses, orderRef)
                  as the platform sponsor, chunked

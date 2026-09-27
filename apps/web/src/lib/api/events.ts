@@ -6,13 +6,13 @@ import type {
   UpdateEventMetaRequest,
   CreateEventResponse,
   SeriesClaimStatus,
-  SealedBox,
   OrderEntry,
 } from "@woco/shared";
 export type { OrderEntry };
 import { authPost, authGet, get, apiBase, authStream, currentSiteId } from "./client.js";
 import { auth } from "../auth/auth-store.svelte.js";
 import { eventContentTopic } from "@woco/shared";
+import { assertAssembledFeedMatches } from "./assembled-feed.js";
 import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
 import { feedRouteFor } from "../swarm/gateways.js";
 import { trashFeedOnManifest } from "../manifest/feed-log.js";
@@ -137,6 +137,11 @@ export async function createEventStreaming(
   // version 0 is exact and the latest-version probe (missing-chunk searches) is
   // skipped. A retried publish gets a NEW eventId, so 0 can never collide.
   if (result.ok && feedSigner && pendingFeed) {
+    try {
+      assertAssembledFeedMatches(req, pendingFeed, { feedSigner: feedSigner.address, parent: auth.parent ?? "" });
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
     if (opts.deferFeedSign) {
       // Caller signs after registration (see @param deferFeedSign).
       result = { ...result, eventFeed: pendingFeed };

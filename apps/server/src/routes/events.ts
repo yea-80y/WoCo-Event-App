@@ -184,7 +184,14 @@ events.post("/", requireAuth, async (c) => {
   const body = c.get("body") as unknown as CreateEventV3Request;
   const parentAddress = c.get("parentAddress") as string;
 
-  const { event: ev, series, image, encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl } = body;
+  const { event: ev, series, image, encryptionPublicKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl } = body;
+
+  // The organiser's X-Wing order key (#642): exactly 1216 bytes of hex. The
+  // server publishes it as its own chunk; it never trusts a ref from the client.
+  if (encryptionPublicKey !== undefined
+      && (typeof encryptionPublicKey !== "string" || !/^[0-9a-f]{2432}$/.test(encryptionPublicKey))) {
+    return c.json({ ok: false, error: "encryptionPublicKey must be a 1216-byte X-Wing key in lowercase hex" }, 400);
+  }
 
   if (!ev?.title || !ev?.startDate || !ev?.endDate) {
     return c.json({ ok: false, error: "Missing event title or dates" }, 400);
@@ -395,7 +402,7 @@ events.post("/", requireAuth, async (c) => {
         issuer: body.issuerBinding.issuer,
         imageData,
         series,
-        encryptionKey,
+        encryptionPublicKey,
         orderFields,
         claimMode,
         skipAutoList: !!skipAutoList,

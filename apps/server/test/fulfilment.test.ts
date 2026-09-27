@@ -21,6 +21,8 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import type { EventFeed } from "@woco/shared";
+import { deriveXWingKeypairFromSeed } from "@woco/shared/crypto/xwing";
+import { openBoxJson, orderSealContext } from "@woco/shared/crypto/sealed-box";
 import {
   fulfilPaidSession,
   type FulfilmentDeps,
@@ -37,6 +39,9 @@ const SERIES_ID = "sr-000000000001";
 const ON_CHAIN_EVENT_ID = "0x" + "ab".repeat(32);
 const MANIFEST_REF = "cd".repeat(32);
 const ORDER_REF = "ef".repeat(32);
+/** The organiser's real X-Wing order key, so the fallback seal genuinely seals (#642). */
+const ORDER_KEY = deriveXWingKeypairFromSeed("0x" + "5e".repeat(32));
+const ORDER_KEY_REF = "0b".repeat(32);
 const ORGANISER = "0x" + "11".repeat(20);
 /** Where the default series' registration lives, as the server's record names it (#563). */
 const RECORDED_CONTRACT = { chainId: 421614, address: "0x" + "c2".repeat(20), version: "v2" as const };
@@ -213,6 +218,7 @@ function fakeDeps(o: FakeOpts = {}) {
   const attendees: Array<{ eventId: string; emailHash: string; at: string }> = [];
   const consumed: string[] = [];
   const minted: string[][] = [];
+  const uploaded: string[] = [];
   /** The on-chain event each batch was minted against — the #426 assertion. */
   const mintedAgainst: string[] = [];
   /** The contract each batch was minted on — the #563 assertion. */
@@ -273,9 +279,15 @@ function fakeDeps(o: FakeOpts = {}) {
       boom("getOrganiserByStripeAccount");
       return ORGANISER;
     },
-    uploadToBytes: async () => {
+    uploadToBytes: async (data: string) => {
       boom("uploadToBytes");
+      uploaded.push(data);
       return "aa".repeat(32);
+    },
+    fetchOrderKey: async (ref: string) => {
+      boom("fetchOrderKey");
+      if (ref !== ORDER_KEY_REF) throw new Error(`unknown order key ref ${ref}`);
+      return ORDER_KEY.publicKey;
     },
     generateBurner: () => {
       boom("generateBurner");
@@ -372,7 +384,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, voided, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue };
+  return { deps, calls, uploaded, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, voided, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -618,9 +630,25 @@ describe("happy path", () => {
   });
 
   test("no prefetched orderRef: the fallback seal is uploaded and used", async () => {
-    const { f } = await run({ orderRef: null }, { event: eventFeed({ encryptionKey: "ab".repeat(32) }) });
+    const { f } = await run({ orderRef: null }, { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }) });
+    assert.ok(f.calls.includes("fetchOrderKey"));
     assert.ok(f.calls.includes("uploadToBytes"));
     assert.equal(f.minted.length, 1);
+    // The fallback is a real v2 box, bound to this event and series, that the
+    // organiser's key opens (#642).
+    const box = JSON.parse(f.uploaded[0]);
+    const order = await openBoxJson<{ seriesId: string }>(ORDER_KEY.secretKey, box, orderSealContext(EVENT_ID, SERIES_ID));
+    assert.equal(order.seriesId, SERIES_ID);
+  });
+
+  test("the order key cannot be read: no fallback seal, so the sale stops and refunds", async () => {
+    const { outcome, f } = await run(
+      { orderRef: null },
+      { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), fail: "fetchOrderKey" },
+    );
+    assert.equal(outcome.issued, 0);
+    assert.equal(outcome.stoppedReason, "No orderRef available for on-chain claim");
+    assert.equal(f.calls.includes("uploadToBytes"), false);
   });
 
   test("the mint path makes NO Swarm read (#368): a prefetched orderRef means no bytes call at all", async () => {
@@ -1023,7 +1051,7 @@ describe("every collaborator throws", () => {
   test("uploadToBytes throws on the fallback seal: stops before the mint, refunds", async () => {
     const { outcome, f } = await run(
       { orderRef: null },
-      { event: eventFeed({ encryptionKey: "ab".repeat(32) }), fail: "uploadToBytes" },
+      { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), fail: "uploadToBytes" },
     );
     assert.equal(outcome.issued, 0);
     assert.equal(outcome.stoppedReason, "No orderRef available for on-chain claim");

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { feedRouteFor } from "../../swarm/gateways.js";
   import type { OrderField, ClaimMode, EventFeed, EventGeo, EventTag } from "@woco/shared";
-  import { buildIssuerBindingMessage, deriveEncryptionKeypairFromSeed, FEATURES, signPersonalMessage, ticketPriceMeetsMinimum } from "@woco/shared";
+  import { buildIssuerBindingMessage, FEATURES, signPersonalMessage, ticketPriceMeetsMinimum } from "@woco/shared";
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
@@ -145,11 +145,17 @@
       }
       progress = 4;
 
-      // Derive encryption keypair (no extra popup)
-      let encryptionKey: string | undefined;
+      // The organiser's X-Wing order key (#642), derived from the seed with no
+      // extra popup. The server publishes it as its own chunk and names it in the
+      // feed; `createEventStreaming` refuses to sign a feed naming any other.
+      let encryptionPublicKey: string | undefined;
       const identitySeed = auth.seedAddress ? await restoreIdentitySeed(auth.seedAddress) : null;
       if (identitySeed) {
-        encryptionKey = deriveEncryptionKeypairFromSeed(identitySeed).publicKeyHex;
+        const [{ deriveXWingKeypairFromSeed }, { bytesToHex }] = await Promise.all([
+          import("@woco/shared/crypto/xwing"),
+          import("@noble/hashes/utils.js"),
+        ]);
+        encryptionPublicKey = bytesToHex(deriveXWingKeypairFromSeed(identitySeed).publicKey);
       }
 
       // The derived secp256k1 issuing key — signs every manifest below AND the
@@ -234,7 +240,7 @@
               issuing.privateKey,
             ),
           },
-          encryptionKey,
+          encryptionPublicKey,
           orderFields: orderFields?.length ? orderFields : undefined,
           claimMode: claimMode && claimMode !== "wallet" ? claimMode : undefined,
           ...(skipAutoList ? { skipAutoList: true } : {}),

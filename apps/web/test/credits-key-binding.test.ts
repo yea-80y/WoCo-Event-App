@@ -229,16 +229,16 @@ test("the holder secret IS the seed, verbatim — no KDF stands between them", a
   // The frozen credit/cert vectors depend on this exactly as much as on the
   // curve. Checked against an INDEPENDENT ed25519 implementation (@noble/curves,
   // a different package from the @noble/ed25519 holder-key.ts uses) so this
-  // cannot pass by agreeing with itself. NO `.js` on the specifier: apps/web
-  // hoists a @noble/curves whose exports map has no `./ed25519.js` (the same
-  // trap spot-check.test.ts documents).
-  const { ed25519 } = await import("@noble/curves/ed25519");
+  // cannot pass by agreeing with itself. apps/web declares @noble/curves 2.x
+  // itself since #642 (the quarantined legacy seal needs x25519), so the `.js`
+  // specifier resolves to that copy, not to whatever ethers hoists.
+  const { ed25519 } = await import("@noble/curves/ed25519.js");
   const seedHex = "77".repeat(32);
   const kp = await deriveHolderKeypair(seedHex);
   assert.deepEqual(Array.from(kp.privateKey), Array.from(Buffer.from(seedHex, "hex")));
   assert.equal(
     kp.publicKeyHex,
-    "0x" + Buffer.from(ed25519.getPublicKey(Buffer.from(seedHex, "hex"))).toString("hex"),
+    "0x" + Buffer.from(ed25519.getPublicKey(new Uint8Array(Buffer.from(seedHex, "hex")))).toString("hex"),
   );
   // 0x-prefixed seeds are the form the auth store stores, and must derive the same key.
   assert.equal((await deriveHolderKeypair("0x" + seedHex)).publicKeyHex, kp.publicKeyHex);

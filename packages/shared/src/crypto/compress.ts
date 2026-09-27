@@ -4,7 +4,7 @@
  * Used on the seal path for payloads that grow with a user's data (marketing
  * lists). JSON arrays-of-objects repeat every key on every row, so gzip cuts
  * them by 5-20x — enough that a 20k-contact list fits the sealed-blob cap with
- * room for far more fields per contact. See `sealJsonCompressed`.
+ * room for far more fields per contact. See `sealBoxJsonCompressed` (sealed-box.ts).
  */
 
 /** CompressionStream is baseline-2023; older engines fall back to no compression. */
@@ -19,7 +19,7 @@ async function pump(
   stream: CompressionStream | DecompressionStream,
 ): Promise<Uint8Array> {
   // Copy into a fresh ArrayBuffer: @noble returns Uint8Array<ArrayBufferLike>,
-  // which the stream's BufferSource parameter rejects (same reason as ecies.buf).
+  // which the stream's BufferSource parameter rejects (same reason as sealed-box's buf).
   const owned = new Uint8Array(new ArrayBuffer(bytes.byteLength));
   owned.set(bytes);
 

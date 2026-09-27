@@ -5,7 +5,7 @@
 import { authPost, authGet, authDelete, apiBase } from "./client.js";
 import { sendCheckout } from "./checkout-request.js";
 import { auth } from "../auth/auth-store.svelte.js";
-import type { SealedBox } from "@woco/shared";
+import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 
 export interface RequirementCategory {
   label: string;
@@ -76,7 +76,7 @@ export async function removeStripeAccount(): Promise<void> {
  * save-order race that was leaving multi-ticket purchases without attendee
  * data on the dashboard.
  */
-export async function prepareStripeOrder(encryptedOrder: SealedBox): Promise<string> {
+export async function prepareStripeOrder(encryptedOrder: SealedBoxV2): Promise<string> {
   const resp = await fetch(`${apiBase}/api/stripe/prepare-order`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -127,7 +127,7 @@ export async function createCheckoutSession(params: {
   orderRef?: string;
   /** Raw encrypted order — server uploads in parallel with Stripe session
    *  creation when no pre-uploaded ref is available. */
-  encryptedOrder?: SealedBox;
+  encryptedOrder?: SealedBoxV2;
   /** Slot reservation id from POST /reserve. Server validates + stamps into
    *  Stripe session metadata; webhook consumes on successful claim. */
   reservationId?: string;

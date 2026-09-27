@@ -13,8 +13,8 @@ import {
   ORDER_EMAIL_FIELD_ID,
   type OrderField,
   type PaymentConfig,
-  type SealedBox,
 } from "@woco/shared";
+import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 
 /** Server-side clamp is RESERVATION_MAX_QTY / create-checkout's own max(10). */
 export const MAX_QTY = 10;
@@ -42,23 +42,24 @@ export type BuyPanelVerdict = { ok: true; email: string } | { ok: false; error: 
  */
 export function validateBuyPanel(i: {
   fields: readonly OrderField[] | undefined;
-  encryptionKey: string | undefined;
+  /** The organiser's order key as VERIFIED bytes (#642), or undefined. */
+  verifiedKey: Uint8Array | undefined;
   formData: Record<string, string>;
   inlineEmail: string;
 }): BuyPanelVerdict {
-  if (orderFormShown(i.fields, i.encryptionKey)) {
+  if (orderFormShown(i.fields, i.verifiedKey)) {
     for (const f of i.fields!) {
       const isEmail = f.id === ORDER_EMAIL_FIELD_ID;
       // Never an internal id: OrderFieldsEditor starts every field with label "".
       const label = f.label || f.placeholder || (isEmail ? "Email" : "This field");
       const value = (i.formData[f.id] ?? "").trim();
       if ((f.required || isEmail) && !value) return { ok: false, error: `${label} is required` };
-      if (isEmail && !resolveBuyerEmail(i.formData, i.fields, i.encryptionKey, "")) {
+      if (isEmail && !resolveBuyerEmail(i.formData, i.fields, i.verifiedKey, "")) {
         return { ok: false, error: `Enter a valid email address in ${label}` };
       }
     }
   }
-  const email = resolveBuyerEmail(i.formData, i.fields, i.encryptionKey, i.inlineEmail);
+  const email = resolveBuyerEmail(i.formData, i.fields, i.verifiedKey, i.inlineEmail);
   return email ? { ok: true, email } : { ok: false, error: "Enter a valid email address" };
 }
 
@@ -89,7 +90,7 @@ export interface CheckoutBodyInputs {
   marketingConsent: boolean;
   /** The organiser page the buyer is on (see resolvePageUrl), when it is known. */
   pageUrl?: string;
-  encryptedOrder?: SealedBox;
+  encryptedOrder?: SealedBoxV2;
   reservationId?: string;
 }
 

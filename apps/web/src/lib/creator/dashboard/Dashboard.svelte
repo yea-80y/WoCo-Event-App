@@ -1,6 +1,5 @@
 <script lang="ts">
-  import type { EventFeed, OrderEntry, SealedBox, OrderField } from "@woco/shared";
-  import { deriveEncryptionKeypairFromSeed, openJson } from "@woco/shared";
+  import type { EventFeed, OrderEntry, OrderField } from "@woco/shared";
   import { cancelEvent, getEvent } from "../../api/events.js";
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { getEventOrders, webhookRelay, type EventOrdersResponse } from "../../api/events.js";
@@ -455,13 +454,25 @@
       return;
     }
 
-    const { privateKey } = deriveEncryptionKeypairFromSeed(identitySeed);
+    // The X-Wing order key (#642) and the box opener, loaded on first use.
+    const [{ deriveXWingKeypairFromSeed }, { openBoxJson, orderSealContext }] = await Promise.all([
+      import("@woco/shared/crypto/xwing"),
+      import("@woco/shared/crypto/sealed-box"),
+    ]);
+    const { secretKey } = deriveXWingKeypairFromSeed(identitySeed);
 
     if (hasEncryptedOrders) {
       const results = await Promise.allSettled(
         ordersResponse.orders.map(async (order, idx) => {
           if (!order.encryptedOrder) return { idx, data: {} as DecryptedOrder };
-          const decrypted = await openJson<DecryptedOrder>(privateKey, order.encryptedOrder);
+          // Bound to THIS event and the SLOT's series (the server sets
+          // `order.seriesId` from the slot) — never the payload's own seriesId, so
+          // an order lifted from another series fails to open instead of showing.
+          const decrypted = await openBoxJson<DecryptedOrder>(
+            secretKey,
+            order.encryptedOrder,
+            orderSealContext(eventId, order.seriesId),
+          );
           return { idx, data: decrypted };
         }),
       );

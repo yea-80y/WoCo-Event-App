@@ -572,7 +572,7 @@
           <ClaimButton
             eventId={eventId}
             seriesId={selectedSeries.seriesId}
-            encryptionKey={event.encryptionKey}
+            encryptionKeyRef={event.encryptionKeyRef}
             orderFields={event.orderFields}
             apiUrl={apiUrl}
             payment={selectedSeries.payment}

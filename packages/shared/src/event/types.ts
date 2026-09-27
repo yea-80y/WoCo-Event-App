@@ -1,5 +1,6 @@
 import type { Hex64, Hex0x } from "../types.js";
-import type { OrderField, SealedBox } from "../crypto/types.js";
+import type { OrderField } from "../crypto/types.js";
+import type { SealedBoxV2 } from "../crypto/sealed-box-shape.js";
 import type { ObjectGate, ObjectGateGroup } from "../object/types.js";
 import type { SignedManifestV2, EditionV1Body } from "../edition/types.js";
 import type { IssuerBindingV1 } from "../crypto/issuing.js";
@@ -269,8 +270,10 @@ export interface EventFeed {
    *  discovery-filter home for location (the free-text `location` above stays as
    *  the display line). Copied + normalised into each snapshot card. */
   geo?: EventGeo;
-  /** Organizer's X25519 public key for order encryption (hex, no 0x prefix) */
-  encryptionKey?: string;
+  /** Content address of the organiser's X-Wing ORDER key chunk (64 hex, no 0x;
+   *  `event/order-key.ts`, #642). Buyers fetch the 1216-byte key by this ref and
+   *  verify it before sealing their order data to it. */
+  encryptionKeyRef?: string;
   /** Order form fields — present when organizer collects customer info */
   orderFields?: OrderField[];
   /** How attendees can claim tickets (default: "wallet") */
@@ -408,7 +411,9 @@ export interface CreateEventV3Request {
   /** Proof of possession binding the issuing key to the (server-verified)
    *  parent — see {@link IssuerBindingV1} for what the server must check. */
   issuerBinding: IssuerBindingV1;
-  encryptionKey?: string;
+  /** The organiser's X-Wing public key (1216 bytes, hex), which the server
+   *  publishes as its own chunk and names in the feed as `encryptionKeyRef`. */
+  encryptionPublicKey?: string;
   orderFields?: OrderField[];
   claimMode?: ClaimMode;
   skipAutoList?: boolean;
@@ -581,7 +586,7 @@ export interface OrderEntry {
   edition: number;
   claimerAddress: string;
   claimedAt: string;
-  encryptedOrder?: SealedBox;
+  encryptedOrder?: SealedBoxV2;
   /** How this claim was paid for. Absent on legacy entries. */
   via?: ClaimVia;
   /**

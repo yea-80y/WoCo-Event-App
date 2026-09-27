@@ -3,7 +3,7 @@ import type {
   OrderField, ClaimMode, SeriesManifestBlob,
   SignedManifestV2, EditionV1Body,
 } from "@woco/shared";
-import { verifyManifestV2, buildEditionTree, manifestV2Digest, bytesToHex0x, eventContentTopic, FEATURES } from "@woco/shared";
+import { verifyManifestV2, buildEditionTree, manifestV2Digest, bytesToHex0x, eventContentTopic, FEATURES, orderKeyRef } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
 import { batchForDeploy, ETHERNA_URL, isEthernaGateway, isWocoGateway, PlatformBatchUnavailable, type BatchSelection } from "../etherna/batch-router.js";
 import { readContentFeedJson, invalidateContentFeedVersion } from "../swarm/soc-upload.js";
@@ -131,7 +131,8 @@ export async function createEventV2(opts: {
     payment?: import("@woco/shared").PaymentConfig;
     gate?: import("@woco/shared").ObjectGate | import("@woco/shared").ObjectGateGroup;
   }>;
-  encryptionKey?: string;
+  /** The organiser's X-Wing order key, 1216 bytes as lowercase hex (#642). */
+  encryptionPublicKey?: string;
   orderFields?: OrderField[];
   claimMode?: ClaimMode;
   skipAutoList?: boolean;
@@ -149,7 +150,7 @@ export async function createEventV2(opts: {
   const {
     eventId, title, tagline, description, startDate, endDate, location, tags, geo,
     creatorAddress, issuer, imageData, series,
-    encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl, onProgress,
+    encryptionPublicKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl, onProgress,
   } = opts;
 
   // Here rather than in the route: every create passes this boundary, and it
@@ -196,6 +197,12 @@ export async function createEventV2(opts: {
   // ── Phase 1: Upload image (start immediately) ─────────────────────────
   emit("image", 0, 1, "Uploading event image...");
   const imagePromise = uploadToBytes(imageData, batchSelection);
+  // The order key in parallel (#642). Awaited below, and FATAL: an event whose key
+  // chunk is missing or unwhitelisted shows no order form and cannot seal an order.
+  const orderKeyPromise = encryptionPublicKey
+    ? publishOrderKey(encryptionPublicKey, batchSelection)
+    : Promise.resolve(undefined);
+  orderKeyPromise.catch(() => {});
   // Real rejection is re-thrown at the awaited consumer below; the noop
   // catch only prevents Node from crashing as unhandledRejection if an
   // earlier phase throws before we reach the await.
@@ -214,6 +221,7 @@ export async function createEventV2(opts: {
   emit("objects", totalObjects, totalObjects, "Tickets prepared");
   const imageHash = await imagePromise;
   emit("image", 1, 1, "Image uploaded");
+  const encryptionKeyRef = await orderKeyPromise;
   void whitelistHashes([imageHash]).catch((err) =>
     console.warn("[event] image whitelist failed (non-critical):", err),
   );
@@ -269,7 +277,7 @@ export async function createEventV2(opts: {
     ...(issuer ? { issuer } : {}),
     series: seriesSummaries,
     createdAt,
-    ...(encryptionKey ? { encryptionKey } : {}),
+    ...(encryptionKeyRef ? { encryptionKeyRef } : {}),
     ...(orderFields?.length ? { orderFields } : {}),
     ...(claimMode && claimMode !== "wallet" ? { claimMode } : {}),
     ...(creatorFeedSigner ? { creatorFeedSigner } : {}),
@@ -320,6 +328,35 @@ export async function createEventV2(opts: {
   emit("finalize", 1, 1, "Event published!");
   console.log(`[event] v2 event created — ${eventId} (${series.length} series, ${totalObjects} objects, ${Date.now() - tStart}ms)`);
   return eventFeed;
+}
+
+/**
+ * Publish the organiser's X-Wing order key as its own chunk and return its ref
+ * (#642). One 1216-byte chunk, so the ref IS its content address, and it is
+ * checked to be exactly that — the server never names a ref that is not the key
+ * it was given, and the client checks the same before signing the feed.
+ *
+ * Stamped on the event's batch AND on the WoCo batch when the event lives on
+ * Etherna: browsers read it from our gateway (Etherna sends no CORS), and a chunk
+ * stamped only on Etherna reaches our bee minutes later — long enough for a buyer
+ * to find no order form. Whitelisted synchronously: an unwhitelisted chunk reads
+ * as ABSENT to clients, and for this chunk absent means "no form".
+ */
+async function publishOrderKey(keyHex: string, selection: BatchSelection): Promise<string> {
+  const bytes = new Uint8Array(keyHex.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(keyHex.slice(i * 2, i * 2 + 2), 16);
+  const expected = orderKeyRef(bytes);
+  const refs = await Promise.all([
+    uploadToBytes(bytes, selection),
+    ...(selection.target === "etherna" ? [uploadToBytes(bytes)] : []),
+  ]);
+  for (const ref of refs) {
+    if (ref.toLowerCase().replace(/^0x/, "") !== expected) {
+      throw new Error("Order key upload returned a reference that is not the key's content address");
+    }
+  }
+  await whitelistHashes([expected]);
+  return expected;
 }
 
 // ---------------------------------------------------------------------------

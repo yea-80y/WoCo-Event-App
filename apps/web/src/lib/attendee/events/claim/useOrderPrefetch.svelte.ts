@@ -1,13 +1,13 @@
-import { sealJson } from "@woco/shared";
-
 interface UseOrderPrefetchOpts {
-  /** Series ID — baked into the SealedBox payload. */
+  /** Event + series — the seal's binding (`orderSealContext`, #642). */
+  eventId: string;
   seriesId: string;
-  /** Organizer's X25519 public key. When undefined the hook does nothing. */
-  encryptionKey: string | undefined;
+  /** Reactive: the organiser's VERIFIED X-Wing order key. Undefined ⇒ the hook
+   *  does nothing (the Pay click seals inline, or the server's fallback does). */
+  getKey: () => Uint8Array | undefined;
   /** Reactive: should we currently be pre-uploading? Typically `showOrderForm
-   *  && stripeAfterForm && !!encryptionKey && formValid()`. Read inside the
-   *  $effect so any dep change re-evaluates. */
+   *  && !!key && formValid()`. Read inside the $effect so any dep change
+   *  re-evaluates. */
   getShouldPrefetch: () => boolean;
   /** Reactive: cheap stable identifier for the current form payload. When this
    *  string changes the existing `ref` is treated as stale and re-uploaded. */
@@ -26,7 +26,7 @@ interface UseOrderPrefetchOpts {
 }
 
 /**
- * Order-prefetch state hook — uploads the SealedBox encrypted-order payload
+ * Order-prefetch state hook — uploads the sealed order box
  * to Swarm in the background while the buyer is still filling the form, so
  * that Pay-click can ship the ref to Stripe with no upload latency.
  *
@@ -87,22 +87,28 @@ export function useOrderPrefetch(opts: UseOrderPrefetchOpts) {
     const mySeq = ++_seq;
     const capturedSnapshot = snapshot;
     const formData = opts.getFormData();
-    const encryptionKey = opts.encryptionKey;
-    if (!encryptionKey) return;
+    const key = opts.getKey();
+    if (!key) return;
     // 0ms on first fire (form just became valid) and on Pay accelerator;
-    // otherwise 1500ms idle so typing doesn't spam orphan SealedBoxes.
+    // otherwise 1500ms idle so typing doesn't spam orphan boxes.
     const delay = accelerated || !_firstFired ? 0 : 1500;
     _firstFired = true;
     _timer = setTimeout(() => {
       uploading = true;
       const work = (async (): Promise<{ ref: string | null; snapshot: string | null }> => {
         try {
-          const sealed = await sealJson(encryptionKey, {
-            fields: formData,
-            seriesId: opts.seriesId,
-            ...(address ? { claimerAddress: address } : {}),
-            ...(email ? { claimerEmail: email } : {}),
-          });
+          // The post-quantum code loads here, on the first seal, never with the page.
+          const { sealBoxJson, orderSealContext } = await import("@woco/shared/crypto/sealed-box");
+          const sealed = await sealBoxJson(
+            key,
+            {
+              fields: formData,
+              seriesId: opts.seriesId,
+              ...(address ? { claimerAddress: address } : {}),
+              ...(email ? { claimerEmail: email } : {}),
+            },
+            orderSealContext(opts.eventId, opts.seriesId),
+          );
           const { prepareStripeOrder } = await import("../../../api/stripe.js");
           const uploadedRef = await prepareStripeOrder(sealed);
           // A later trigger may have superseded us — drop stale result silently.

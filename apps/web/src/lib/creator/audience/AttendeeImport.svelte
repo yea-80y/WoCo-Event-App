@@ -12,8 +12,7 @@
    * ticket and left the box alone is an attendee, not a marketing contact, and
    * this screen must never be the thing that quietly promotes them.
    */
-  import type { MarketingContact, EventDirectoryEntry, SealedBox } from "@woco/shared";
-  import { openJson } from "@woco/shared";
+  import type { MarketingContact, EventDirectoryEntry } from "@woco/shared";
   import { getEventsByCreator, getEventOrders } from "../../api/events.js";
   import { checkMarketingEmails } from "../../api/marketing.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -27,7 +26,8 @@
   interface Props {
     contacts: MarketingContact[];
     busy: boolean;
-    getKeys: () => Promise<{ privateKey: Uint8Array } | null>;
+    /** The organiser's X-Wing secret key — orders are sealed to it (#642). */
+    getKeys: () => Promise<{ secretKey: Uint8Array } | null>;
     onCommit: (next: MarketingContact[]) => Promise<void>;
   }
 
@@ -61,11 +61,18 @@
       if (!keys) throw new Error("Unlock your identity to read attendee data.");
 
       const { orders } = await getEventOrders(ev.eventId);
+      const { openBoxJson, orderSealContext } = await import("@woco/shared/crypto/sealed-box");
       const claims: DecryptedClaim[] = [];
       for (const order of orders) {
         if (!order.encryptedOrder) continue;
         try {
-          claims.push(await openJson<DecryptedClaim>(keys.privateKey, order.encryptedOrder as SealedBox));
+          claims.push(
+            await openBoxJson<DecryptedClaim>(
+              keys.secretKey,
+              order.encryptedOrder,
+              orderSealContext(ev.eventId, order.seriesId),
+            ),
+          );
         } catch {
           // A blob sealed to a rotated key, or a truncated upload. Skipping is
           // right — one unreadable order must not fail the whole scan.

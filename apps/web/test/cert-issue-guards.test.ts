@@ -14,7 +14,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ed25519 } from "@noble/curves/ed25519";
+import { ed25519 } from "@noble/curves/ed25519.js";
 import { Wallet } from "ethers";
 import { precheckIssuance } from "../src/lib/cert/issue.js";
 import { buildCertBadgeManifest } from "../src/lib/object/cert-builder.js";

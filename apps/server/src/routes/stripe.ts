@@ -34,7 +34,8 @@ import { chainEventEndMsAt } from "../lib/event/end-date-guard.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { checkObjectGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
 import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../lib/stripe/checkout-fees.js";
-import type { SealedBox, PayoutsResponse } from "@woco/shared";
+import type { PayoutsResponse } from "@woco/shared";
+import { isSealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import { checkSponsorCanMint, type SponsorMintVerdict } from "../lib/chain/sponsor-wallet.js";
 import { sponsorGateRefusal } from "../lib/stripe/sponsor-gate.js";
 import {
@@ -106,6 +107,27 @@ const createCheckoutLimiter = new SlidingWindowLimiter([
   { limit: 30, windowMs: 60_000 },
   { limit: 300, windowMs: 3_600_000 },
 ]);
+
+/**
+ * `prepare-order` is unauthenticated and stamps onto the platform batch, so it gets
+ * the checkout limiter's budget (it precedes every checkout) and a size cap. A real
+ * order box is ~4.5 KB (X-Wing's 1120-byte `enc` plus a form under 1 KB); 16 KB of
+ * JSON is generous and bounds what one call can stamp (#642).
+ */
+const prepareOrderLimiter = new SlidingWindowLimiter([
+  { limit: 30, windowMs: 60_000 },
+  { limit: 300, windowMs: 3_600_000 },
+]);
+const MAX_ORDER_BOX_JSON = 16 * 1024;
+
+/** The order blob as the server will store it, or null: exactly a v2 box (#642,
+ *  bound to its event and ticket type by the buyer's seal), within the cap. The
+ *  strict shape means cleartext can never be stored in place of, or beside, it. */
+function acceptableOrderBox(x: unknown): string | null {
+  if (!isSealedBoxV2(x)) return null;
+  const json = JSON.stringify(x);
+  return json.length <= MAX_ORDER_BOX_JSON ? json : null;
+}
 
 // ---------------------------------------------------------------------------
 // 1. Organiser onboarding — create Connected Account + Account Link
@@ -380,7 +402,7 @@ stripe.post("/account-session", requireAuth, async (c) => {
 /**
  * POST /api/stripe/prepare-order
  *
- * Body: { encryptedOrder: SealedBox }
+ * Body: { encryptedOrder: SealedBoxV2 } — exactly a v2 box, ≤ 16 KB of JSON
  * Returns: { ok: true, orderRef: Hex64 }
  *
  * Called by the client immediately before /create-checkout. The returned
@@ -399,13 +421,20 @@ stripe.post("/prepare-order", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const encryptedOrder = body.encryptedOrder as SealedBox | undefined;
-  if (!encryptedOrder || typeof encryptedOrder !== "object") {
-    return c.json({ ok: false, error: "encryptedOrder is required" }, 400);
+  const orderJson = acceptableOrderBox(body.encryptedOrder);
+  if (!orderJson) {
+    return c.json({ ok: false, error: "encryptedOrder must be a v2 sealed box of at most 16 KB" }, 400);
   }
+  // Validated first, so a refusal does not spend the caller's budget.
+  const ip = clientIp(c);
+  if (!prepareOrderLimiter.peek(ip)) {
+    c.header("Retry-After", "60");
+    return c.json({ ok: false, error: "Too many requests from your connection. Wait a minute and try again." }, 429);
+  }
+  prepareOrderLimiter.record(ip);
 
   try {
-    const orderRef = await uploadToBytes(JSON.stringify(encryptedOrder));
+    const orderRef = await uploadToBytes(orderJson);
     return c.json({ ok: true, orderRef });
   } catch (err) {
     console.error("[stripe/prepare-order] Upload failed:", err);
@@ -467,7 +496,7 @@ stripe.post("/create-checkout", async (c) => {
     pageUrl?: string;
     quantity?: number;
     orderRef?: string;
-    encryptedOrder?: SealedBox;
+    encryptedOrder?: unknown;
     reservationId?: string;
     /** Deployed site id — passed when checkout originates from an organiser's
      *  site-builder page so the webhook can theme the ticket email + PNG. */
@@ -538,8 +567,10 @@ stripe.post("/create-checkout", async (c) => {
   // Inline encrypted order (fallback path when client didn't pre-upload).
   // We'll upload in parallel with the event/status reads so Swarm latency
   // hides behind the reads.
-  const shouldUploadInline =
-    !preUploadedRef && encryptedOrder && typeof encryptedOrder === "object";
+  // Same acceptance rule as prepare-order; anything else is ignored exactly as a
+  // malformed orderRef is, and the webhook seals the minimal order instead.
+  const inlineOrderJson = preUploadedRef ? null : acceptableOrderBox(encryptedOrder);
+  const shouldUploadInline = inlineOrderJson !== null;
 
   // Soft auth: if session headers are present, verify them. Malformed auth
   // headers are rejected — never silently fall through to anonymous path.
@@ -588,7 +619,7 @@ stripe.post("/create-checkout", async (c) => {
   const [event, inlineUploadedRef] = await Promise.all([
     getEvent(eventId, siteSigner ?? undefined),
     shouldUploadInline
-      ? uploadToBytes(JSON.stringify(encryptedOrder)).catch((err) => {
+      ? uploadToBytes(inlineOrderJson!).catch((err) => {
           // Inline upload failure is non-fatal — webhook falls back to the
           // minimal server-built seal so attendee still gets a ticket.
           console.warn("[stripe/create-checkout] Inline order upload failed (continuing):", err);
