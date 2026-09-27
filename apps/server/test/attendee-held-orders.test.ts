@@ -7,14 +7,15 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "woco-held-orders-"));
 process.chdir(dir);
 const held = await import("../src/lib/attendee-batch/held-orders.js");
-const FILE = join(dir, ".data", "held-orders.json");
+const DIR = join(dir, ".data", "held-orders");
+const fileOf = (r: string) => join(DIR, `${r}.json`);
 
 const T0 = Date.parse("2026-09-28T10:00:00Z");
 const root = (n: number) => n.toString(16).padStart(64, "0");
@@ -34,12 +35,11 @@ test("a committed hold survives a restart; a paid one never expires, an unpaid o
 });
 
 test("a prepared hold is memory only: it never touches disk, and a restart forgets it", () => {
-  const before = (() => { try { return readFileSync(FILE, "utf-8"); } catch { return ""; } })();
   held.holdPrepared(root(5), '{"prep":1}', T0);
   assert.equal(held.getHeldOrder(root(5))?.json, '{"prep":1}');
-  const after = (() => { try { return readFileSync(FILE, "utf-8"); } catch { return ""; } })();
-  assert.equal(after, before, "no write for a prepared hold");
+  assert.equal(existsSync(fileOf(root(5))), false, "no file for a prepared hold");
   held.commitHold(root(5), null, { eventId: "e5" }, T0);
+  assert.equal(existsSync(fileOf(root(5))), true, "one file per committed hold");
   held._resetHeldOrdersForTests();
   assert.equal(held.getHeldOrder(root(5))?.eventId, "e5", "committed hold reloads");
   held.holdPrepared(root(6), '{"prep":2}', T0);
@@ -47,6 +47,15 @@ test("a prepared hold is memory only: it never touches disk, and a restart forge
   assert.equal(held.getHeldOrder(root(6)), null, "prepared hold forgotten");
   assert.throws(() => held.commitHold(root(6), null, {}, T0), /nothing held/);
   held.releaseHeldOrder(root(5));
+  assert.equal(existsSync(fileOf(root(5))), false, "release deletes the file");
+});
+
+test("a hold claimed by one paid session is not claimed again by another", () => {
+  held.commitHold(root(7), '{"x":7}', {}, T0);
+  assert.equal(held.markHeldPaid(root(7), "cs_a", T0), true);
+  assert.equal(held.markHeldPaid(root(7), "cs_a", T0), true, "the same session again: fine");
+  assert.equal(held.markHeldPaid(root(7), "cs_b", T0), false, "another session gets the minimal seal");
+  held.releaseHeldOrder(root(7));
 });
 
 test("nothing held means nothing to claim: fulfilment falls back to its own seal", () => {
@@ -62,7 +71,7 @@ test("the same reference cannot hold different bytes", () => {
 });
 
 test("full stores evict the oldest UNPAID hold instead of refusing, and never a paid one", () => {
-  held._setMaxUnpaidHoldsForTests(20);
+  held._setHoldCapsForTests(20, 20);
   held.commitHold(root(10), "{}", {}, T0 - 1000);
   held.markHeldPaid(root(10), "cs_10", T0);
   for (let i = 0; i < 20; i++) held.commitHold(root(1000 + i), `{"i":${i}}`, {}, T0 + i);
@@ -77,7 +86,7 @@ test("full stores evict the oldest UNPAID hold instead of refusing, and never a 
   for (let i = 0; i < 25; i++) held.releaseHeldOrder(root(5000 + i));
   held.releaseHeldOrder(root(999_999));
   held.releaseHeldOrder(root(10));
-  held._setMaxUnpaidHoldsForTests(5_000);
+  held._setHoldCapsForTests(5_000, 1_000);
 });
 
 test("health goes red when a paid order waits more than 15 minutes to be stored", () => {
@@ -88,12 +97,15 @@ test("health goes red when a paid order waits more than 15 minutes to be stored"
   held.releaseHeldOrder(root(20));
 });
 
-// Last: leaves the file unreadable.
-test("a present but unreadable store refuses new commits and is not overwritten", () => {
-  writeFileSync(FILE, "{ not json");
+test("a hold file that does not parse is left untouched, its reference refused, and health is red", () => {
+  mkdirSync(DIR, { recursive: true });
+  writeFileSync(fileOf(root(30)), "{ not json");
   held._resetHeldOrdersForTests();
-  assert.throws(() => held.commitHold(root(30), "{}", {}, T0));
+  assert.throws(() => held.commitHold(root(30), "{}", {}, T0), /unreadable/);
   assert.equal(held.markHeldPaid(root(30), "cs", T0), false);
   assert.equal(held.heldOrdersHealth(T0).ok, false);
-  assert.equal(readFileSync(FILE, "utf-8"), "{ not json");
+  assert.equal(readFileSync(fileOf(root(30)), "utf-8"), "{ not json");
+  held.commitHold(root(31), '{"other":1}', {}, T0);
+  assert.ok(held.getHeldOrder(root(31)), "other references still work");
+  assert.ok(readdirSync(DIR).length >= 2);
 });

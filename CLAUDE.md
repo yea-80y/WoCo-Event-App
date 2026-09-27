@@ -530,7 +530,7 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     event SELL AGAIN and forgets which buyers are still owed. Present-but-unreadable is never
     overwritten and refuses EVERY sale (fail closed) until restored; `/api/health`
     `eventCancellations` alarms)
-  held-orders.json (#546 — sealed order boxes held from checkout until PAID, then stored on the
+  held-orders/*.json (#546, one file per hold — sealed order boxes held from checkout until PAID, then stored on the
     attendee batch. A paid entry not yet stored exists NOWHERE else. Unreadable = never overwritten;
     sales continue with the minimal seal; `/api/health` `heldOrders` alarms)
   attendee-slots.json (#546 — which slot of the attendee batch holds each order chunk: the ONLY way

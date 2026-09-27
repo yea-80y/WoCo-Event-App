@@ -156,6 +156,7 @@ type Step =
   | "storeOrderBlob"
   | "claimHeldOrder"
   | "storeHeldOrder"
+  | "releaseHeldOrder"
   | "generateBurner"
   | "signMessage"
   | "batchClaimForOnChain"
@@ -305,6 +306,10 @@ function fakeDeps(o: FakeOpts = {}) {
     storeHeldOrder: async (ref: string) => {
       boom("storeHeldOrder");
       return ref;
+    },
+    releaseHeldOrder: () => {
+      boom("releaseHeldOrder");
+      return true;
     },
     isOrderStored: () => o.orderStored ?? true,
     generateBurner: () => {
@@ -674,13 +679,14 @@ describe("happy path", () => {
     assert.equal(order.seriesId, SERIES_ID);
   });
 
-  test("#546: a held order is claimed for this paid sale and stored BEFORE the mint, under its own ref", async () => {
+  test("#546: a held order is claimed before the mint and stored only AFTER tickets exist, under its own ref", async () => {
     const { f, outcome } = await run({}, { held: true });
     assert.equal(outcome.issued, 2);
     const claim = f.calls.indexOf("claimHeldOrder");
-    const store = f.calls.indexOf("storeHeldOrder");
     const mint = f.calls.indexOf("batchClaimForOnChain");
-    assert.ok(claim >= 0 && store > claim && mint > store, `claim -> store -> mint, got ${f.calls.join(",")}`);
+    const store = f.calls.indexOf("storeHeldOrder");
+    assert.ok(claim >= 0 && mint > claim && store > mint, `claim -> mint -> store, got ${f.calls.join(",")}`);
+    assert.equal(f.calls.includes("releaseHeldOrder"), false);
     assert.ok(f.saleSlots.every((r: { orderRef?: string }) => r.orderRef === ORDER_REF));
     assert.equal(f.calls.includes("storeOrderBlob"), false, "no fallback seal");
   });
@@ -690,6 +696,13 @@ describe("happy path", () => {
     assert.equal(outcome.issued, 2);
     assert.deepEqual(outcome.refund, { kind: "not-needed" });
     assert.ok(f.saleSlots.every((r: { orderRef?: string }) => r.orderRef === ORDER_REF));
+  });
+
+  test("#546: a sale that issues NO ticket drops its held order - a refunded buyer's box is never stored", async () => {
+    const { f, outcome } = await run({}, { held: true, revertAtChunk: 0 });
+    assert.equal(outcome.issued, 0);
+    assert.equal(f.calls.includes("storeHeldOrder"), false);
+    assert.ok(f.calls.includes("releaseHeldOrder"));
   });
 
   test("#546: a ref with nothing held and nothing stored points at no data - the minimal order is sealed", async () => {

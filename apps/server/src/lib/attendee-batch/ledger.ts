@@ -265,9 +265,9 @@ export function allocateOrder(
   const rootHex = toHex(root);
   const existing = store.orders[rootHex];
   if (existing) {
+    if (existing.state === "burned") throw new Error(`order ${rootHex} was erased; refusing to store it again`);
     const batch = store.batches[existing.batchId];
     if (!batch) throw new AttendeeStoreUnavailableError(`order ${rootHex} names an unregistered batch`);
-    if (existing.state === "burned") throw new Error(`order ${rootHex} was erased; refusing to store it again`);
     return { root: rootHex, record: structuredClone(existing), depth: batch.depth };
   }
   if (!store.active) throw new AttendeeStoreUnavailableError("no active attendee batch");
@@ -404,6 +404,26 @@ export function markChunkBurned(root: string, address: string, burnTs: string, n
 }
 
 /** A copy: the store is authoritative in memory, so callers must not be able to edit it. */
+/**
+ * Record the erasure of an order that was never stored (only held, #546): a
+ * tombstone with no chunks. Readers then treat the ref as erased instead of
+ * fetching it, and `allocateOrder` refuses to store it ever again.
+ */
+export function recordErasedBeforeStore(root: string, nowMs: number = Date.now()): void {
+  ensureLoaded();
+  if (unreadable) throw new AttendeeStoreUnavailableError(`ledger unreadable: ${unreadable}`);
+  const k = normalizeHex(root);
+  if (store.orders[k]) throw new Error(`order ${k} is already recorded; burn it instead`);
+  const at = new Date(nowMs).toISOString();
+  store.orders[k] = { batchId: "", kind: "checkout", createdAt: at, state: "burned", chunks: [], burnedAt: at };
+  try {
+    persistOrThrow();
+  } catch (err) {
+    delete store.orders[k];
+    throw err;
+  }
+}
+
 export function getOrderRecord(root: string): OrderRecord | null {
   ensureLoaded();
   const record = store.orders[normalizeHex(root)];

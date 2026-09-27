@@ -14,31 +14,36 @@
  *
  * Lifecycle: `holdPrepared` (prepare-order: MEMORY only - the web client sends
  * one after every pause in typing, so these are many and disposable) ->
- * `commitHold` (create-checkout, the buyer is on the way to Stripe: persisted,
- * one write per checkout attempt) -> `markHeldPaid` (fulfilment, before the
- * mint) -> stored on the attendee batch (fulfilment, then the retry worker) ->
+ * `commitHold` (create-checkout, the buyer is on the way to Stripe: one file) ->
+ * `markHeldPaid` (fulfilment, before the mint) -> stored on the attendee batch
+ * once tickets are minted (fulfilment, then the retry worker) ->
  * `releaseHeldOrder`. Unpaid holds go after HOLD_TTL_MS; paid ones are kept
  * until stored, however long that takes. A prepared hold lost to a restart
  * costs nothing: checkout re-holds the box the client sends inline.
  *
- * The persisted file MUST survive restarts: a paid order that is not yet
- * stored exists nowhere else. A present-but-unreadable file is never
- * overwritten; new commits are refused (the sale then gets the minimal server
- * seal) until it is restored.
+ * ONE FILE PER COMMITTED HOLD (`.data/held-orders/{root}.json`, the
+ * broadcast-jobs pattern): each commit, payment mark and release touches one
+ * small file, never a rewrite of every hold. The directory MUST survive
+ * restarts: a paid order that is not yet stored exists nowhere else. A file
+ * that does not parse is left untouched, counted, and its reference refused;
+ * an unreadable directory refuses every commit (the sale then gets the
+ * minimal server seal) until it is restored.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { writeJsonAtomic } from "../marketing/persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
-const STORE_FILE = join(DATA_DIR, "held-orders.json");
+const HOLDS_DIR = join(DATA_DIR, "held-orders");
 
 /** Matches the order-ref token's lifetime: after that the ref cannot be used anyway. */
 export const HOLD_TTL_MS = 24 * 60 * 60 * 1000;
-/** Unpaid holds kept at most, in memory and on disk each; the oldest unpaid one
- *  makes room, so a full store never refuses a sale. Paid ones never count. */
+/** Committed unpaid holds kept at most; the oldest makes room, so a full store
+ *  never refuses a sale. Paid ones never count. */
 export let MAX_UNPAID_HOLDS = 5_000;
+/** Prepared (memory) holds kept at most. They live minutes; the oldest makes room. */
+export let MAX_PREPARED_HOLDS = 1_000;
 
 export interface HeldOrder {
   /** Canonical box JSON, exactly the bytes whose root is the key. */
@@ -51,37 +56,58 @@ export interface HeldOrder {
   sessionId?: string;
 }
 
-interface Store {
-  v: 1;
-  orders: Record<string, HeldOrder>;
-}
-
-let store: Store = { v: 1, orders: {} };
-let loaded = false;
-let unreadable: string | null = null;
+const committed = new Map<string, HeldOrder>();
 /** prepare-order holds: memory only, insertion-ordered (oldest first). */
 const prepared = new Map<string, HeldOrder>();
+/** References whose file would not parse: left alone, never overwritten. */
+const unreadableRefs = new Set<string>();
+let dirUnreadable: string | null = null;
+let loaded = false;
+
+function key(root: string): string {
+  return root.toLowerCase().replace(/^0x/, "");
+}
+
+function fileFor(k: string): string {
+  return join(HOLDS_DIR, `${k}.json`);
+}
 
 function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
-  if (!existsSync(STORE_FILE)) return;
+  if (!existsSync(HOLDS_DIR)) return;
+  let names: string[];
   try {
-    const raw = JSON.parse(readFileSync(STORE_FILE, "utf-8")) as Store;
-    if (raw?.v !== 1 || typeof raw.orders !== "object") throw new Error("unrecognised shape");
-    store = raw;
+    names = readdirSync(HOLDS_DIR).filter((n) => /^[0-9a-f]{64}\.json$/.test(n));
   } catch (err) {
-    unreadable = (err as Error).message;
-    console.error(`[held-orders] ${STORE_FILE} is present but unreadable (${unreadable}); refusing new holds until it is restored`);
+    dirUnreadable = (err as Error).message;
+    console.error(`[held-orders] ${HOLDS_DIR} is unreadable (${dirUnreadable}); refusing new holds until it is restored`);
+    return;
+  }
+  for (const name of names) {
+    const k = name.slice(0, 64);
+    try {
+      const o = JSON.parse(readFileSync(join(HOLDS_DIR, name), "utf-8")) as HeldOrder;
+      if (typeof o?.json !== "string" || typeof o.heldAt !== "string") throw new Error("unrecognised shape");
+      committed.set(k, o);
+    } catch (err) {
+      unreadableRefs.add(k);
+      console.error(`[held-orders] ${name} is unreadable (${(err as Error).message}); left untouched`);
+    }
   }
 }
 
-function persist(): boolean {
-  return writeJsonAtomic(STORE_FILE, store, "held-orders");
+function writeHold(k: string, o: HeldOrder): boolean {
+  return writeJsonAtomic(fileFor(k), o, "held-orders");
 }
 
-function key(root: string): string {
-  return root.toLowerCase().replace(/^0x/, "");
+function deleteHold(k: string): boolean {
+  try {
+    unlinkSync(fileFor(k));
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT";
+  }
 }
 
 /** Remember a prepare-order box, in memory only. Never throws. */
@@ -90,7 +116,7 @@ export function holdPrepared(root: string, json: string, nowMs: number = Date.no
   prepared.delete(k);
   prepared.set(k, { json, heldAt: new Date(nowMs).toISOString() });
   for (const [k2, o] of prepared) {
-    if (prepared.size <= MAX_UNPAID_HOLDS && nowMs - Date.parse(o.heldAt) <= HOLD_TTL_MS) break;
+    if (prepared.size <= MAX_PREPARED_HOLDS && nowMs - Date.parse(o.heldAt) <= HOLD_TTL_MS) break;
     prepared.delete(k2);
   }
 }
@@ -108,34 +134,38 @@ export function commitHold(
   nowMs: number = Date.now(),
 ): void {
   ensureLoaded();
-  if (unreadable) throw new Error(`held-orders store unreadable: ${unreadable}`);
+  if (dirUnreadable) throw new Error(`held-orders store unreadable: ${dirUnreadable}`);
   const k = key(root);
-  const bytes = json ?? prepared.get(k)?.json ?? store.orders[k]?.json;
+  if (unreadableRefs.has(k)) throw new Error("the held-order file for this reference is unreadable");
+  const existing = committed.get(k);
+  const bytes = json ?? prepared.get(k)?.json ?? existing?.json;
   if (!bytes) throw new Error("nothing held under this reference");
-  const existing = store.orders[k];
   if (existing) {
     if (existing.json !== bytes) throw new Error("a different order is already held under this reference");
-    if (!existing.eventId && meta.eventId) existing.eventId = meta.eventId;
-    if (!existing.seriesId && meta.seriesId) existing.seriesId = meta.seriesId;
-    if (!persist()) throw new Error("held-orders write failed");
+    const next = { ...existing };
+    if (!next.eventId && meta.eventId) next.eventId = meta.eventId;
+    if (!next.seriesId && meta.seriesId) next.seriesId = meta.seriesId;
+    if (next.eventId === existing.eventId && next.seriesId === existing.seriesId) return;
+    if (!writeHold(k, next)) throw new Error("held-orders write failed");
+    committed.set(k, next);
     return;
   }
-  sweepExpired(nowMs, false);
-  const unpaid = Object.entries(store.orders).filter(([, o]) => !o.paidAt);
+  sweepExpired(nowMs);
+  const unpaid = [...committed].filter(([, o]) => !o.paidAt);
   if (unpaid.length >= MAX_UNPAID_HOLDS) {
     unpaid.sort(([, a], [, b]) => a.heldAt.localeCompare(b.heldAt));
-    for (const [k2] of unpaid.slice(0, unpaid.length - MAX_UNPAID_HOLDS + 1)) delete store.orders[k2];
+    for (const [k2] of unpaid.slice(0, unpaid.length - MAX_UNPAID_HOLDS + 1)) {
+      if (deleteHold(k2)) committed.delete(k2);
+    }
   }
-  store.orders[k] = {
+  const o: HeldOrder = {
     json: bytes,
     heldAt: new Date(nowMs).toISOString(),
     ...(meta.eventId ? { eventId: meta.eventId } : {}),
     ...(meta.seriesId ? { seriesId: meta.seriesId } : {}),
   };
-  if (!persist()) {
-    delete store.orders[k];
-    throw new Error("held-orders write failed");
-  }
+  if (!writeHold(k, o)) throw new Error("held-orders write failed");
+  committed.set(k, o);
   prepared.delete(k);
 }
 
@@ -143,96 +173,89 @@ export function commitHold(
 export function getHeldOrder(root: string): HeldOrder | null {
   ensureLoaded();
   const k = key(root);
-  const o = store.orders[k] ?? prepared.get(k);
+  const o = committed.get(k) ?? prepared.get(k);
   return o ? { ...o } : null;
 }
 
 /**
- * Fulfilment claims a held order for a paid session, BEFORE the mint. Returns
- * false when nothing is held (expired, evicted, never held, or the store is
- * unreadable): the caller then seals the minimal order instead.
+ * Fulfilment claims a committed hold for a paid session, BEFORE the mint.
+ * Returns false when nothing is held (expired, evicted, never committed,
+ * unreadable) or another session already claimed it: the caller then seals
+ * the minimal order instead.
  */
 export function markHeldPaid(root: string, sessionId: string, nowMs: number = Date.now()): boolean {
   ensureLoaded();
-  if (unreadable) return false;
-  const o = store.orders[key(root)];
+  const k = key(root);
+  const o = committed.get(k);
   if (!o) return false;
-  if (o.paidAt) return true;
-  o.paidAt = new Date(nowMs).toISOString();
-  o.sessionId = sessionId;
-  if (!persist()) {
-    delete o.paidAt;
-    delete o.sessionId;
-    return false;
-  }
+  if (o.paidAt) return o.sessionId === sessionId;
+  const next = { ...o, paidAt: new Date(nowMs).toISOString(), sessionId };
+  if (!writeHold(k, next)) return false;
+  committed.set(k, next);
   return true;
 }
 
-/** Drop a hold: once its order is stored on Swarm, or when it is erased. */
+/** Drop a hold: once its order is stored on Swarm, or when it is erased or refunded. */
 export function releaseHeldOrder(root: string): boolean {
   ensureLoaded();
-  prepared.delete(key(root));
-  if (unreadable) return false;
   const k = key(root);
-  const o = store.orders[k];
-  if (!o) return true;
-  delete store.orders[k];
-  if (!persist()) {
-    store.orders[k] = o;
-    return false;
-  }
+  prepared.delete(k);
+  if (!committed.has(k)) return true;
+  if (!deleteHold(k)) return false;
+  committed.delete(k);
   return true;
 }
 
 /** Paid orders still waiting to be stored, oldest first. */
 export function paidUnstored(): Array<{ root: string } & HeldOrder> {
   ensureLoaded();
-  return Object.entries(store.orders)
+  return [...committed]
     .filter(([, o]) => o.paidAt)
     .map(([root, o]) => ({ root, ...o }))
     .sort((a, b) => a.paidAt!.localeCompare(b.paidAt!));
 }
 
-/** Delete unpaid holds past HOLD_TTL_MS. Returns how many went. */
-export function sweepExpired(nowMs: number = Date.now(), write = true): number {
+/** Delete holds past HOLD_TTL_MS that were never paid. Returns how many went. */
+export function sweepExpired(nowMs: number = Date.now()): number {
   ensureLoaded();
   for (const [k, o] of prepared) if (nowMs - Date.parse(o.heldAt) > HOLD_TTL_MS) prepared.delete(k);
-  if (unreadable) return 0;
   let n = 0;
-  for (const [k, o] of Object.entries(store.orders)) {
-    if (!o.paidAt && nowMs - Date.parse(o.heldAt) > HOLD_TTL_MS) {
-      delete store.orders[k];
+  for (const [k, o] of committed) {
+    if (!o.paidAt && nowMs - Date.parse(o.heldAt) > HOLD_TTL_MS && deleteHold(k)) {
+      committed.delete(k);
       n++;
     }
   }
-  if (n > 0 && write) persist();
   return n;
 }
 
 export function heldOrdersHealth(nowMs: number = Date.now()) {
   ensureLoaded();
-  const paid = unreadable ? [] : paidUnstored();
+  const paid = paidUnstored();
   const oldestPaidMs = paid.length ? nowMs - Date.parse(paid[0].paidAt!) : 0;
-  const unpaid = Object.values(store.orders).filter((o) => !o.paidAt).length;
+  const unreadable = dirUnreadable !== null || unreadableRefs.size > 0;
   return {
     ok: !unreadable && oldestPaidMs < 15 * 60 * 1000,
-    unreadable: unreadable !== null,
+    unreadable,
+    unreadableFiles: unreadableRefs.size,
     prepared: prepared.size,
-    unpaid,
+    unpaid: [...committed.values()].filter((o) => !o.paidAt).length,
     paidUnstored: paid.length,
     oldestPaidUnstoredMinutes: Math.round(oldestPaidMs / 60000),
   };
 }
 
 /** Test seam only. */
-export function _setMaxUnpaidHoldsForTests(n: number): void {
-  MAX_UNPAID_HOLDS = n;
+export function _setHoldCapsForTests(unpaid: number, preparedCap: number): void {
+  MAX_UNPAID_HOLDS = unpaid;
+  MAX_PREPARED_HOLDS = preparedCap;
 }
 
-/** Test seam only. */
+/** Test seam only: forget memory and reload from disk on next use. */
 export function _resetHeldOrdersForTests(): void {
   prepared.clear();
-  store = { v: 1, orders: {} };
+  committed.clear();
+  unreadableRefs.clear();
+  dirUnreadable = null;
   loaded = false;
-  unreadable = null;
 }

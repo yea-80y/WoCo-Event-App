@@ -144,6 +144,47 @@ test("burning an order that is only held deletes the hold", async () => {
   assert.equal(res.status, 200);
   assert.equal(((await res.json()) as { data: { state: string } }).data.state, "deleted-before-store");
   assert.equal(held.getHeldOrder(ref), null);
+  // A tombstone: readers skip it, and nothing can store it later.
+  assert.equal(ledger.isOrderErased(ref), true);
+  held.commitHold(ref, json, {});
+  held.markHeldPaid(ref, "cs_late");
+  await assert.rejects(writer.storeHeldOrder(ref), /erased/);
+  held.releaseHeldOrder(ref);
+});
+
+test("a burn while that order's store is in flight is refused 409, then works once the store lands", async () => {
+  await readyAttendeeStore();
+  process.env.OPS_TOKEN = "t".repeat(40);
+  const { ops } = await import("../src/routes/ops.js");
+  const opsApp = new Hono();
+  opsApp.route("/api/ops", ops);
+  const burn = () =>
+    opsApp.request(`/api/ops/attendee-batch/orders/${ref}/burn`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${"t".repeat(40)}`, "content-type": "application/json" },
+      body: JSON.stringify({ by: "test", reason: "erasure request" }),
+    });
+  const json = canonicalOrderBox({ ...BOX, ct: "55".repeat(90) })!;
+  const ref = await writer.orderRefOf(json);
+  held.commitHold(ref, json, {});
+  held.markHeldPaid(ref, "cs_race");
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const slow = {
+    stamper: writer.getAttendeeStamper,
+    upload: async (_e: unknown, body: Uint8Array) => {
+      await gate;
+      return (await acceptingUploadChunk(_e, body)).reference.toHex();
+    },
+  };
+  const storing = writer.storeHeldOrder(ref, slow as never);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(writer.isStoreInFlight(ref), true);
+  assert.equal((await burn()).status, 409);
+  assert.ok(held.getHeldOrder(ref), "the hold was not deleted underneath the store");
+  release();
+  await storing;
+  assert.equal(ledger.getOrderRecord(ref)?.state, "stored");
 });
 
 test("the organiser's order view checks erasure before it fetches anything", () => {

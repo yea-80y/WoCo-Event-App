@@ -310,7 +310,7 @@ Swarm chunks are **immutable and cannot be individually deleted**.
 > other data type here, are unchanged.
 >
 > **Only PAID orders reach Swarm.** Until the Stripe payment confirms, the sealed box is held on the
-> server (`.data/held-orders.json` once the buyer heads to checkout; memory only before that) as
+> server (`.data/held-orders/`, one file per order, once the buyer heads to checkout; memory only before that) as
 > ciphertext the server cannot open. Unpaid holds are deleted after 24 hours; paid ones as soon as
 > they are stored. Server backups of `.data` keep copies for their own retention period.
 

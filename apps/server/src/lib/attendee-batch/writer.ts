@@ -27,6 +27,7 @@ import {
 } from "./ledger.js";
 import { decodeTimestampNs, signStamp, splitPayload, stamperKeyFromHex, type StamperKey } from "./stamp.js";
 import { getHeldOrder, paidUnstored, releaseHeldOrder } from "./held-orders.js";
+import { isOrderErased } from "./ledger.js";
 
 /**
  * Owns the attendee batch: every stamp on it is signed with this key, and so is
@@ -165,16 +166,30 @@ export async function orderRefOf(json: string): Promise<Hex64> {
  */
 export async function storeHeldOrder(root: string, deps: StoreAttendeeDeps = liveDeps): Promise<Hex64> {
   const ref = root.toLowerCase().replace(/^0x/, "");
+  if (isOrderErased(ref)) throw new Error(`order ${ref} was erased; not storing it`);
   const held = getHeldOrder(ref);
   if (!held) throw new Error(`no held order ${ref}`);
-  const stored = await storeAttendeePayload(
-    held.json,
-    { kind: "checkout", ...(held.eventId ? { eventId: held.eventId } : {}), ...(held.seriesId ? { seriesId: held.seriesId } : {}) },
-    deps,
-  );
-  if (stored !== ref) throw new Error(`held order ${ref} hashes to ${stored}; not releasing it`);
-  if (!releaseHeldOrder(ref)) console.error(`[attendee-batch] order ${ref} stored but its hold could not be released`);
-  return stored;
+  storesInFlight.add(ref);
+  try {
+    const stored = await storeAttendeePayload(
+      held.json,
+      { kind: "checkout", ...(held.eventId ? { eventId: held.eventId } : {}), ...(held.seriesId ? { seriesId: held.seriesId } : {}) },
+      deps,
+    );
+    if (stored !== ref) throw new Error(`held order ${ref} hashes to ${stored}; not releasing it`);
+    if (!releaseHeldOrder(ref)) console.error(`[attendee-batch] order ${ref} stored but its hold could not be released`);
+    return stored;
+  } finally {
+    storesInFlight.delete(ref);
+  }
+}
+
+/** Held orders being stored right now. An erasure must wait for the store to
+ *  finish (then burn it) rather than delete the hold underneath it. */
+const storesInFlight = new Set<string>();
+
+export function isStoreInFlight(root: string): boolean {
+  return storesInFlight.has(root.toLowerCase().replace(/^0x/, ""));
 }
 
 /** Store paid orders whose store at fulfilment failed (bee down, bucket full). */

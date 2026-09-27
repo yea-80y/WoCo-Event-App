@@ -17,7 +17,7 @@ import { lookupOnChainEventId, saleContractFor } from "../event/onchain-registry
 import { recordHeld, markVoid } from "./payout-ledger.js";
 import { getOrganiserByStripeAccount } from "./accounts.js";
 import { storeAttendeePayload, storeHeldOrder } from "../attendee-batch/writer.js";
-import { markHeldPaid } from "../attendee-batch/held-orders.js";
+import { markHeldPaid, releaseHeldOrder } from "../attendee-batch/held-orders.js";
 import { getOrderRecord, isOrderErased } from "../attendee-batch/ledger.js";
 import { fetchOrderKey } from "@woco/shared";
 import { BEE_URL } from "../../config/swarm.js";
@@ -51,6 +51,7 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   storeOrderBlob: (data, meta) => storeAttendeePayload(data, { kind: "fallback", ...meta }),
   claimHeldOrder: (ref, sessionId) => markHeldPaid(ref, sessionId),
   storeHeldOrder: (ref) => storeHeldOrder(ref),
+  releaseHeldOrder: (ref) => releaseHeldOrder(ref),
   isOrderStored: (ref) => !!getOrderRecord(ref) && !isOrderErased(ref),
   fetchOrderKey: (ref) => fetchOrderKey(ref, BEE_URL),
   orderRefInOtherSale,

@@ -56,10 +56,10 @@ import { mergeParticipants, knownSubjects, participantsFor } from "../lib/social
 import { clearTallyCache } from "./social.js";
 import { isValidSenderId, liftSender, listForOps, stopSender } from "../lib/sender-pacing/index.js";
 import { attendeeLedgerStatus, setActiveBatch } from "../lib/attendee-batch/ledger.js";
-import { attendeeCheckoutRefusal, attendeeStamperAddress } from "../lib/attendee-batch/writer.js";
+import { attendeeCheckoutRefusal, attendeeStamperAddress, isStoreInFlight } from "../lib/attendee-batch/writer.js";
 import { refreshAttendeeBatch, registerAttendeeBatch } from "../lib/attendee-batch/admin.js";
 import { burnOrder } from "../lib/attendee-batch/burn.js";
-import { getOrderRecord } from "../lib/attendee-batch/ledger.js";
+import { getOrderRecord, recordErasedBeforeStore } from "../lib/attendee-batch/ledger.js";
 import { getHeldOrder, releaseHeldOrder } from "../lib/attendee-batch/held-orders.js";
 
 const ops = new Hono<AppEnv>();
@@ -603,14 +603,19 @@ ops.post("/attendee-batch/orders/:root/burn", async (c) => {
   const by = (body?.by || "").trim().slice(0, 100);
   const reason = (body?.reason || "").trim().slice(0, 500);
   if (!by || !reason) return c.json({ ok: false, error: "`by` and `reason` are required - who decided this, and why?" }, 400);
+  if (isStoreInFlight(root)) {
+    return c.json({ ok: false, error: "This order is being stored right now - retry in a minute and it will be burned" }, 409);
+  }
   try {
     // A box still held (not yet on Swarm) is simply deleted: real deletion.
+    // Synchronous from here to the tombstone, so no store can start between.
     const wasHeld = getHeldOrder(root) !== null;
     if (wasHeld && !releaseHeldOrder(root)) {
       return c.json({ ok: false, error: "The held order could not be deleted - see compliancePersistence on /api/health" }, 503);
     }
     if (!getOrderRecord(root)) {
       if (!wasHeld) return c.json({ ok: false, error: "No attendee order with that reference" }, 404);
+      recordErasedBeforeStore(root);
       console.log(`[ops] attendee order ${root} (held, never stored) deleted by ${by} (${reason})`);
       return c.json({ ok: true, data: { root, state: "deleted-before-store", burnedAt: null } });
     }

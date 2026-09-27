@@ -121,6 +121,8 @@ export interface FulfilmentDeps {
    */
   claimHeldOrder(orderRef: string, sessionId: string): boolean;
   storeHeldOrder(orderRef: string): Promise<string>;
+  /** Drop a claimed hold when the sale issued no ticket: nothing references it. */
+  releaseHeldOrder(orderRef: string): boolean;
   isOrderStored(orderRef: string): boolean;
 
   /**
@@ -751,7 +753,6 @@ export async function fulfilPaidSession(
         v2OnChainEventId,
         mintContract,
         prefetchedOrderRef,
-        heldOrderRef,
         encryptedOrder,
         accountClaim,
         claimedResults,
@@ -790,6 +791,24 @@ export async function fulfilPaidSession(
     // its `onChainEventId`, which used to land a paid buyer here.
     console.error(`[fulfilment] Paid session for unregistered series ${seriesId} — refunding`);
     stoppedReason = "Series is not registered on chain — no mint path";
+  }
+
+  // ── 4b. The held order box (#546): stored only once tickets exist ──
+  // Its ref is the root of the held bytes, known already, so the mint above
+  // never waited on this, and a failed store never refunds a paid sale: the
+  // hold stays paid, the retry worker stores it, and the organiser's view
+  // serves it from the hold meanwhile. A sale that issued NO ticket is being
+  // refunded: its box is dropped, never stored - that buyer did not buy.
+  if (heldOrderRef) {
+    if (claimedResults.length > 0) {
+      try {
+        await deps.storeHeldOrder(heldOrderRef);
+      } catch (err) {
+        console.warn(`[fulfilment] Held order ${heldOrderRef.slice(0, 10)}… not stored yet (retry worker will):`, err);
+      }
+    } else if (!deps.releaseHeldOrder(heldOrderRef)) {
+      console.error(`[fulfilment] ${session.id}: refunded sale's held order ${heldOrderRef.slice(0, 10)}… could not be dropped`);
+    }
   }
 
   // ── 5. Release the seat hold (fenced: a store hiccup must not block the refund) ──
@@ -1061,8 +1080,7 @@ interface MintV2Args {
   /** From the registration record (#563) — never the feed, never today's env default. */
   mintContract: EventContractTarget;
   prefetchedOrderRef: string | undefined;
-  /** Set when `prefetchedOrderRef` is a held box this sale just claimed: store it before minting. */
-  heldOrderRef?: string;
+
   encryptedOrder: SealedBoxV2 | undefined;
   accountClaim: { parentAddress: string } | undefined;
   /** Filled in place: one entry per slot actually minted AND signed. */
@@ -1084,17 +1102,6 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
   // Resolve the orderRef once for the whole batch (all tickets share one
   // encrypted order blob — same buyer, same form submission).
   let batchOrderRef: string | undefined = a.prefetchedOrderRef;
-  if (a.heldOrderRef) {
-    // The ref is the root of the held bytes, known already, so the mint never
-    // waits on this: a bee blip or a full bucket must not refund a paid sale.
-    // A failed store stays held as paid; the retry worker stores it, and the
-    // organiser's order view serves it from the hold meanwhile.
-    try {
-      await deps.storeHeldOrder(a.heldOrderRef);
-    } catch (err) {
-      console.warn(`[fulfilment/v2] Held order ${a.heldOrderRef.slice(0, 10)}… not stored yet (retry worker will):`, err);
-    }
-  }
   if (!batchOrderRef && a.encryptedOrder) {
     try {
       batchOrderRef = await deps.storeOrderBlob(JSON.stringify(a.encryptedOrder), { eventId, seriesId });
