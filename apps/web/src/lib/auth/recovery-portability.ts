@@ -22,19 +22,20 @@
  * any override (see auth-store / kernel-account.readKernelEcdsaOwner). The seal
  * only provides confidentiality; the chain provides authenticity.
  *
- * Determinism / recovery-stability: the two keys derive from the passkey's
- * secp256k1 PRF key (`keccak256(prfOutput)`), which is reproduced on any device
- * holding the passkey. After a recovery the envelope is (re)written under the
- * NEW passkey's derived keys, so the recovered identity becomes portable to that
- * passkey's future devices.
+ * Determinism / recovery-stability: the two keys derive from the passkey's PRF
+ * OUTPUT under their own HKDF labels (`@woco/shared` crypto/passkey-prf.ts), which
+ * any device holding the passkey reproduces. They used to derive from the Kernel
+ * owner key — which put the recovered account's seed, sealed inside, one
+ * elliptic-curve break away (#642). After a recovery the envelope is (re)written
+ * under the NEW passkey's derived keys, so the recovered identity becomes portable
+ * to that passkey's future devices.
  */
 
-import { keccak256, getBytes, toUtf8Bytes, concat, Wallet } from "ethers";
 import {
-  PORTABILITY_SOC_OWNER_DOMAIN,
-  PORTABILITY_HPKE_DOMAIN,
   PORTABILITY_ENVELOPE_VERSION,
   PORTABILITY_SOC_IDENTIFIER_INPUT,
+  portabilitySocOwnerKey,
+  portabilityHpkeSeed,
   type PortabilityEnvelope,
 } from "@woco/shared";
 import {
@@ -47,11 +48,6 @@ import { UnknownRecoveryEnvelopeVersionError } from "./recovery-aad.js";
 import { writeContentFeed, readContentFeedResult } from "../swarm/content-feed.js";
 import { FEED_ROUTES } from "../swarm/gateways.js";
 
-/** Domain-separated 32-byte seed = keccak256(utf8(domain) || prfPrivKeyBytes). */
-function domainSeed(domain: string, prfPrivKeyBytes: Uint8Array): Uint8Array {
-  return getBytes(keccak256(concat([toUtf8Bytes(domain), prfPrivKeyBytes])));
-}
-
 export interface PortabilityKeys {
   /** secp256k1 SOC-owner key (0x-prefixed) + lowercased address. */
   socOwnerPrivKey: string;
@@ -61,27 +57,20 @@ export interface PortabilityKeys {
 }
 
 /**
- * Derive the two domain-separated keys from a passkey's PRF secp256k1 private key
- * (`_passkeyPrivateKey` in auth-store; == keccak256(PRF output)). Distinct domains
- * ⇒ the SOC-owner key and the HPKE recipient key don't reveal each other.
+ * Derive the two keys from a passkey's PRF output (`_passkeyPrfSecret` in
+ * auth-store). Distinct HKDF labels ⇒ the SOC-owner key and the HPKE recipient key
+ * don't reveal each other, and neither reveals the PRF output.
  */
-export async function derivePortabilityKeys(passkeyPrivKey: string): Promise<PortabilityKeys> {
-  const prfBytes = getBytes(passkeyPrivKey.startsWith("0x") ? passkeyPrivKey : `0x${passkeyPrivKey}`);
-
-  const socSeed = domainSeed(PORTABILITY_SOC_OWNER_DOMAIN, prfBytes);
-  const socOwnerPrivKey = keccak256(socSeed); // 0x + 32 bytes → valid secp256k1 key
-  const wallet = new Wallet(socOwnerPrivKey);
-
-  const hpkeSeed = domainSeed(PORTABILITY_HPKE_DOMAIN, prfBytes);
+export async function derivePortabilityKeys(prfSecret: string): Promise<PortabilityKeys> {
+  const soc = portabilitySocOwnerKey(prfSecret);
+  const hpkeSeed = portabilityHpkeSeed(prfSecret);
   let hpke: GuardianEncryptionKeypair;
   try {
     hpke = await deriveEncryptionKeypairFromSeed(hpkeSeed);
   } finally {
     hpkeSeed.fill(0);
-    socSeed.fill(0);
   }
-
-  return { socOwnerPrivKey, socOwnerAddress: wallet.address.toLowerCase(), hpke };
+  return { socOwnerPrivKey: soc.privKey, socOwnerAddress: soc.address, hpke };
 }
 
 /**
@@ -94,12 +83,12 @@ export async function derivePortabilityKeys(passkeyPrivKey: string): Promise<Por
  * to handle — this throws on any error.
  */
 export async function writePortabilityEnvelope(args: {
-  passkeyPrivKey: string;
+  prfSecret: string;
   preservedKernelAddress: string;
   identitySeed: string;
 }): Promise<void> {
-  const { passkeyPrivKey, preservedKernelAddress, identitySeed } = args;
-  const keys = await derivePortabilityKeys(passkeyPrivKey);
+  const { prfSecret, preservedKernelAddress, identitySeed } = args;
+  const keys = await derivePortabilityKeys(prfSecret);
 
   // The preserved Kernel goes INSIDE the sealed bundle (v2 privacy fix) — never
   // cleartext on the chunk, so a reader can't link socOwnerAddress → real Kernel.
@@ -169,7 +158,7 @@ export type PortabilityRead =
   | { status: "unusable"; reason: string };
 
 /**
- * Read + open the portability envelope for the passkey holding `passkeyPrivKey`.
+ * Read + open the portability envelope for the passkey whose PRF output is `prfSecret`.
  * Does NOT perform the on-chain owner check — the caller MUST verify
  * `Kernel(preservedKernelAddress).owner == PRF-EOA` before trusting the result.
  *
@@ -177,11 +166,11 @@ export type PortabilityRead =
  * envelope chunk exists, i.e. this really is a never-recovered account.
  */
 export async function readPortabilityEnvelope(args: {
-  passkeyPrivKey: string;
+  prfSecret: string;
   /** Test seam — production always takes the real content-feed read. */
   readFeed?: typeof readContentFeedResult;
 }): Promise<PortabilityRead> {
-  const keys = await derivePortabilityKeys(args.passkeyPrivKey);
+  const keys = await derivePortabilityKeys(args.prfSecret);
 
   const read = await (args.readFeed ?? readContentFeedResult)<PortabilityEnvelope>(
     keys.socOwnerAddress,
@@ -277,11 +266,11 @@ export async function readPortabilityEnvelope(args: {
  * Three states, for the usual reason: a failed lookup is not an absence.
  */
 export async function portabilityEnvelopeExists(args: {
-  passkeyPrivKey: string;
+  prfSecret: string;
 }): Promise<{ status: "present" } | { status: "absent" } | { status: "unreadable"; reason: string }> {
   const [keys, { probeSoc }, { contentFeedSocIdentifier, versionedSocIdentifier }] =
     await Promise.all([
-      derivePortabilityKeys(args.passkeyPrivKey),
+      derivePortabilityKeys(args.prfSecret),
       import("../swarm/probe-soc.js"),
       import("@woco/shared"),
     ]);
@@ -305,12 +294,6 @@ export async function portabilityEnvelopeExists(args: {
     // Here that is "nobody could answer", never "nothing is there".
     return { status: "unreadable", reason: `envelope probe threw: ${(e as Error).message}` };
   }
-}
-
-/** Normalise a secp256k1 private key for comparison (0x-prefixed, lowercase). */
-function normKey(k: string | undefined): string | undefined {
-  if (!k) return undefined;
-  return (k.startsWith("0x") ? k : `0x${k}`).toLowerCase();
 }
 
 export interface PortabilityBackfill {
@@ -349,8 +332,8 @@ export interface PortabilityBackfill {
  * invisible while the only caller was fire-and-forget; now it gates the screen
  * shown straight after an IRREVERSIBLE on-chain rotation, where a user who
  * concludes it failed may re-run the whole ceremony. It also wedges the map: a
- * run that never settles never clears its entry, pinning the raw passkey key and
- * making every later call join the dead run. Bounding it converts both into the
+ * run that never settles never clears its entry, pinning its arguments (the PRF
+ * output among them) and making every later call join the dead run. Bounding it converts both into the
  * ordinary retryable failure the portal already handles. The underlying fetch is
  * not cancelled (nothing downstream takes a signal) — it is abandoned, and a
  * late write is harmless: the next read simply skips as already-current.
@@ -366,7 +349,7 @@ const _backfillInFlight = new Map<string, Promise<PortabilityBackfill>>();
  * without the new secret.
  */
 export interface PortabilityBackfillArgs {
-  passkeyPrivKey: string;
+  prfSecret: string;
   preservedKernelAddress: string;
   identitySeed: string;
 }
@@ -377,10 +360,15 @@ export function backfillPortabilityEnvelope(
     deadlineMs?: number;
   },
 ): Promise<PortabilityBackfill> {
-  // An unusable key would collapse every such caller onto one shared "" slot.
-  // Both production callers guard it; fail loudly rather than coalesce blind.
-  const key = normKey(args.passkeyPrivKey);
-  if (!key) return Promise.reject(new Error("backfillPortabilityEnvelope: passkeyPrivKey is required"));
+  // Keyed by the envelope's SOC owner ADDRESS — public and 1:1 with the passkey —
+  // so the map never holds the PRF output itself. A missing or malformed secret
+  // throws here rather than coalescing every such caller onto one slot.
+  let key: string;
+  try {
+    key = portabilitySocOwnerKey(args.prfSecret).address;
+  } catch (e) {
+    return Promise.reject(new Error(`backfillPortabilityEnvelope: ${(e as Error).message}`));
+  }
   const existing = _backfillInFlight.get(key);
   if (existing) return existing;
 
@@ -405,7 +393,7 @@ function _withDeadline(
 }
 
 async function _backfillOnce(args: PortabilityBackfillArgs): Promise<PortabilityBackfill> {
-  const read = await readPortabilityEnvelope({ passkeyPrivKey: args.passkeyPrivKey });
+  const read = await readPortabilityEnvelope({ prfSecret: args.prfSecret });
 
   // Could not tell what is out there. Writing blind is what runs the version
   // counter away; the next session mint retries.

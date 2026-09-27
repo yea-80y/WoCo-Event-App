@@ -26,6 +26,7 @@ import {
 } from "./session-delegation.js";
 import {
   requestIdentitySeed,
+  establishPasskeyIdentitySeed,
   restoreIdentitySeed,
   storeIdentitySeed,
   clearIdentitySeed,
@@ -45,7 +46,7 @@ import {
   hasStoredPasskeyCredential,
   clearPasskeyCredential,
 } from "./passkey-account.js";
-import { createWeb3Signer, createLocalSigner, createPasskeySigner } from "./signers/index.js";
+import { createWeb3Signer, createLocalSigner } from "./signers/index.js";
 import type { BuiltKernel } from "./kernel-account.js";
 import type { ContentFeedSigner } from "../swarm/content-feed.js";
 import { signingRequest } from "./signing-request.svelte.js";
@@ -81,12 +82,16 @@ let _loginStage = $state<"waiting" | "finalizing" | null>(null);
 
 // In-memory only — never exposed reactively
 let _passkeyPrivateKey: string | null = null;
+// The passkey's PRF output (#642): the root of its identity seed and portability
+// keys. Set and cleared at exactly the sites `_passkeyPrivateKey` is — the two come
+// out of one ceremony and neither is derivable from the other.
+let _passkeyPrfSecret: string | null = null;
 let _web3authPrivateKey: string | null = null;
 
 // ZeroDev Kernel logins (passkey + web3auth). The Kernel smart-account address
 // is the parent identity; the identity seed stays on the raw signer key + its
 // EOA address (invariant #1 — deterministic, wallet-independent).
-//  - _seedAddress: passkey PRF-EOA address — seed EIP-712 address field + AAD.
+//  - _seedAddress: passkey PRF-EOA address — the seed's storage slot + AAD key.
 //  - _web3authSeedAddress: Web3Auth EOA address — the Web3Auth seed address + AAD
 //    (the Kernel parent is NOT the seed key; same invariant #1 as passkey).
 //  - _kernel: the built Kernel (account + client + sudo validator), cached in
@@ -139,7 +144,7 @@ async function _getSigner(): Promise<EIP712Signer> {
     // (kernel-owner.ts). Replaces Kernel ERC-1271, which needed deployed +
     // owner==live-key + working RPC and 403-wedged recovered/rotated accounts
     // (2026-07 split-brain fix). Silent (no confirm dialog) like the Kernel
-    // signer it replaces. The seed uses _getSeedSigner() instead (invariant #1).
+    // signer it replaces. The seed never signs at all for passkey (#642).
     await _ensurePasskeyKey();
     if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable for signer");
     return createLocalSigner(_passkeyPrivateKey, async () => true);
@@ -158,21 +163,18 @@ async function _getSigner(): Promise<EIP712Signer> {
 }
 
 /**
- * Signer used ONLY for identity seed derivation.
+ * Signer used ONLY for identity seed derivation, for the kinds whose seed IS a
+ * signature. Passkey is not one of them: its seed roots on the PRF output
+ * (`establishPasskeyIdentitySeed`, #642), so no passkey path signs for it.
  *
- * INVARIANT #1: object must be derived from a DETERMINISTIC signature. For passkey
- * logins that is the raw PRF-EOA secp256k1 key (ethers Wallet → RFC-6979), NOT
- * the Kernel (smart-account 1271 signatures are non-deterministic and would
- * corrupt the user's encryption + ticket-signing identity). For every other
- * kind the object signer is the same as the request signer.
+ * INVARIANT #1: the seed must come from a DETERMINISTIC signature — the raw key
+ * (ethers Wallet → RFC-6979), never a Kernel (smart-account 1271 signatures are
+ * non-deterministic and would corrupt the user's encryption + ticket-signing
+ * identity). For web3 the seed signer is the same as the request signer.
  */
 async function _getSeedSigner(): Promise<EIP712Signer> {
   if (_kind === "passkey") {
-    await _ensurePasskeyKey();
-    if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable for identity derivation");
-    return createPasskeySigner(_passkeyPrivateKey, (info) =>
-      signingRequest.request(info),
-    );
+    throw new Error("A passkey account's seed comes from its PRF output, never a signature");
   }
   if (_kind === "web3auth") {
     // INVARIANT #1: object derives from the raw Web3Auth secp256k1 key (ethers
@@ -609,7 +611,7 @@ async function _clearStaleAuthForSwitch(address: string): Promise<void> {
 let _passkeyKeyInFlight: Promise<void> | null = null;
 
 async function _ensurePasskeyKey(): Promise<void> {
-  if (_passkeyPrivateKey && _seedAddress) return;
+  if (_passkeyPrivateKey && _passkeyPrfSecret && _seedAddress) return;
   if (_passkeyKeyInFlight) return _passkeyKeyInFlight;
   _passkeyKeyInFlight = (async () => {
     const result = await restorePasskeyAccount();
@@ -672,7 +674,8 @@ async function _ensurePasskeyKey(): Promise<void> {
     }
 
     _passkeyPrivateKey = result.privateKey;
-    _seedAddress = result.address; // PRF-EOA address — seed derivation/AAD key
+    _passkeyPrfSecret = result.prfSecret;
+    _seedAddress = result.address; // PRF-EOA address — seed slot/AAD key
   })();
   const inFlight = _passkeyKeyInFlight;
   try {
@@ -747,7 +750,7 @@ async function _putRecoveryBinding(seedAddress: string, kernel: string): Promise
  * session exists.
  */
 async function _verifyPortabilityEnvelope(
-  passkeyPrivKey: string,
+  prfSecret: string,
   seedAddress: string,
 ): Promise<
   | { preserved: `0x${string}`; identitySeed: string }
@@ -757,7 +760,7 @@ async function _verifyPortabilityEnvelope(
 > {
   try {
     const { readPortabilityEnvelope } = await import("./recovery-portability.js");
-    const read = await readPortabilityEnvelope({ passkeyPrivKey });
+    const read = await readPortabilityEnvelope({ prfSecret });
     if (read.status === "absent") return null;
     if (read.status !== "found") {
       // Either bytes were there and we could not use them (`unusable`), or nobody
@@ -835,7 +838,7 @@ async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
 /** The one accessor bundle both backfill preambles read through (#260). */
 function _backfillGatherDeps(): import("./recovery-finalize.js").BackfillGatherDeps {
   return {
-    getPasskeyPrivKey: () => _passkeyPrivateKey,
+    getPasskeyPrfSecret: () => _passkeyPrfSecret,
     getSeedAddress: () => _seedAddress,
     recoveryKernelFor: _recoveryKernelFor,
     restoreIdentitySeed,
@@ -1291,7 +1294,7 @@ function _verifyRecoveredBindingInBackground(
  *  Deferred past the Kernel prebuild so the two don't contend for the first
  *  seconds after login, and past any plausible first user action, so the sign-out
  *  a heal performs lands on an idle screen rather than mid-flow. */
-function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, passkeyPrivKey: string): void {
+function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, prfSecret: string): void {
   const stillSignedInAs = (e: string, parent: string): boolean =>
     _kind === "passkey" &&
     _seedAddress?.toLowerCase() === e.toLowerCase() &&
@@ -1306,16 +1309,16 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, passkeyPriv
         const { reprobeEnvelope } = await import("./envelope-reprobe.js");
         const { readKernelEcdsaOwnerStrict } = await import("./kernel-account.js");
         const outcome = await reprobeEnvelope(
-          { kind: "passkey", eoa, cachedParent, passkeyPrivKey },
+          { kind: "passkey", eoa, cachedParent, prfSecret },
           {
             readKernelOwner: readKernelEcdsaOwnerStrict,
             envelopeExists: async (key) => {
               const { portabilityEnvelopeExists } = await import("./recovery-portability.js");
-              return portabilityEnvelopeExists({ passkeyPrivKey: key });
+              return portabilityEnvelopeExists({ prfSecret: key });
             },
             readEnvelope: async (key) => {
               const { readPortabilityEnvelope } = await import("./recovery-portability.js");
-              return readPortabilityEnvelope({ passkeyPrivKey: key });
+              return readPortabilityEnvelope({ prfSecret: key });
             },
             putRecoveryBinding: _putRecoveryBinding,
             writeOrphanTombstone,
@@ -1453,6 +1456,7 @@ async function loginWeb3Auth(): Promise<boolean> {
         _web3authSeedAddress = address;
         _kernel = null;
         _passkeyPrivateKey = null;
+        _passkeyPrfSecret = null;
         await _restoreCachedAuth();
         await _establishFeedSignerEagerly();
         _scheduleKernelPrebuild();
@@ -1520,6 +1524,7 @@ async function loginWeb3Auth(): Promise<boolean> {
     _web3authSeedAddress = address;
     _kernel = kernel;
     _passkeyPrivateKey = null;
+    _passkeyPrfSecret = null;
 
     await _restoreCachedAuth();
 
@@ -1654,6 +1659,7 @@ async function loginCoinbase(): Promise<boolean> {
     _kind = "coinbase";
     _parent = address;
     _passkeyPrivateKey = null;
+    _passkeyPrfSecret = null;
 
     await _restoreCachedAuth();
 
@@ -1732,6 +1738,7 @@ async function loginPasskeyResult(
         _kind = "passkey";
         _parent = cachedKernel;
         _passkeyPrivateKey = account.privateKey;
+        _passkeyPrfSecret = account.prfSecret;
         _seedAddress = account.address;
         _kernel = null;
         await _restoreCachedAuth();
@@ -1739,7 +1746,7 @@ async function loginPasskeyResult(
         // The cache entry was seeded from an ABSENCE, and #245 proved an absence
         // can be true at the time and false forever after. Throttled, chain-gated
         // re-check — see _scheduleEnvelopeReprobe.
-        _scheduleEnvelopeReprobe(cachedKernel, account.address, account.privateKey);
+        _scheduleEnvelopeReprobe(cachedKernel, account.address, account.prfSecret);
         _cleanupAccountListener?.();
         _cleanupAccountListener = null;
         console.debug(`[auth] passkey login (fast path): ceremony ${Math.round(tCeremony - t0)}ms, total ${Math.round(performance.now() - t0)}ms`);
@@ -1764,6 +1771,7 @@ async function loginPasskeyResult(
         _kind = "passkey";
         _parent = parent;
         _passkeyPrivateKey = account.privateKey;
+        _passkeyPrfSecret = account.prfSecret;
         _seedAddress = account.address;
         _kernel = null;
         await _restoreCachedAuth();
@@ -1833,7 +1841,7 @@ async function loginPasskeyResult(
     let envelopeAbsent = false;
     const identitySeedPresent = !!(await restoreIdentitySeed(account.address));
     if (!override || !identitySeedPresent) {
-      const check = await _verifyPortabilityEnvelope(account.privateKey, account.address);
+      const check = await _verifyPortabilityEnvelope(account.prfSecret, account.address);
       if (check === null) {
         envelopeAbsent = true; // definitive — makes this login cacheable below
       } else if (check !== "unavailable") {
@@ -1881,6 +1889,7 @@ async function loginPasskeyResult(
     _kind = "passkey";
     _parent = kernel.address;
     _passkeyPrivateKey = account.privateKey;
+    _passkeyPrfSecret = account.prfSecret;
     _seedAddress = account.address;
     _kernel = kernel;
 
@@ -2096,9 +2105,23 @@ async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boo
         return false;
       }
 
-      // No stored seed (first login on this device) → establish it with the
-      // deterministic PRF-EOA signer (passkey) / parent signer (others).
-      // _getSeedSigner() runs _ensurePasskeyKey() internally, so _seedAddress is set.
+      // No stored seed (first login on this device). A passkey establishes it from
+      // its PRF output (#642): no signature and no dialog — the biometric behind
+      // `_ensurePasskeyKey` is the consent. The recovery-binding refusal above has
+      // already run, so this is never a rotated credential.
+      if (_kind === "passkey") {
+        await _ensurePasskeyKey();
+        // `seedAddr` was read before the ceremony; if it was the parent fallback it
+        // is not the PRF-EOA, and a seed stored under it would sit behind the wrong AAD.
+        if (!_passkeyPrfSecret || _seedAddress?.toLowerCase() !== seedAddr.toLowerCase()) {
+          throw new Error("Passkey PRF output unavailable for identity derivation");
+        }
+        await establishPasskeyIdentitySeed(seedAddr, _passkeyPrfSecret);
+        _identitySeedPresent = true;
+        return true;
+      }
+
+      // Every other kind signs `DeriveAccountKeys` with its deterministic signer.
       const silentRawKey = opts.silent && _kind === "web3auth" ? _web3authPrivateKey : null;
       const signer = silentRawKey
         ? createLocalSigner(silentRawKey, async () => true)
@@ -2570,7 +2593,7 @@ async function removeAccountBackups(
 
   // BEST-EFFORT, and it must stay that way. `_getContentFeedSigner` throws outright
   // for a recovered account whose escrow restore didn't happen, and for a passkey
-  // with no stored signer it falls through to sign-to-derive (a biometric prompt).
+  // with no stored seed it falls through to establishing one (a biometric prompt).
   // Letting either reach the caller would block the on-chain revoke entirely — for
   // exactly the user most likely to need it — over a cosmetic manifest update.
   const feedSigner = await _getContentFeedSigner().catch(() => null);
@@ -2778,6 +2801,9 @@ async function recoverAndRekey(args: {
     // re-homed under the new owner EOA (PRF-EOA for passkey, Web3Auth EOA otherwise).
     let newOwnerAddress: string;
     let newOwnerPrivKey: `0x${string}`;
+    // Passkey branch only: the fresh credential's PRF output, which roots the
+    // portability envelope this device writes after the rotation (#642).
+    let newOwnerPrfSecret: string | null = null;
     // #158: the minted passkey's metadata, held UNWRITTEN until the commit block.
     // Which credential this device logs in with is local state, so it is committed
     // with the other local state once the rotation is proven — not at mint time,
@@ -2882,6 +2908,7 @@ async function recoverAndRekey(args: {
       const fresh = await createPasskeyAccountUnpinned();
       newOwnerAddress = fresh.address; // PRF-EOA == ECDSA sudo owner of the rebuilt Kernel
       newOwnerPrivKey = fresh.privateKey;
+      newOwnerPrfSecret = fresh.prfSecret;
       pendingCredential = fresh.credential;
     }
     const newSeedAddress = newOwnerAddress;
@@ -3086,8 +3113,10 @@ async function recoverAndRekey(args: {
       _web3authPrivateKey = newOwnerPrivKey;
       _web3authSeedAddress = newSeedAddress;
       _passkeyPrivateKey = null;
+      _passkeyPrfSecret = null;
     } else {
       _passkeyPrivateKey = newOwnerPrivKey;
+      _passkeyPrfSecret = newOwnerPrfSecret;
       _web3authPrivateKey = null;
       _web3authSeedAddress = null;
     }
@@ -3295,6 +3324,7 @@ async function clearAllAuth(): Promise<void> {
   _sessionAddress = null;
   _identitySeedPresent = false;
   _passkeyPrivateKey = null;
+  _passkeyPrfSecret = null;
   _web3authPrivateKey = null;
   _seedAddress = null;
   _web3authSeedAddress = null;

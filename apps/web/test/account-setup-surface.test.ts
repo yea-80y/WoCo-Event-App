@@ -49,7 +49,7 @@ const read = (rel: string): string => {
 const DIALOG = "lib/components/auth/SigningConfirmDialog.svelte";
 
 test("the human copy is keyed on the exact EIP-712 type names", () => {
-  // `action` IS the type name (local-signer.ts / passkey-signer.ts pass it
+  // `action` IS the type name (local-signer.ts passes it
   // through). These two strings are the join between frozen signed bytes and
   // readable copy: mistype either and the dialog silently falls back to showing
   // a type name and a blob, which is the state this work existed to end.

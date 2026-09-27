@@ -1,6 +1,11 @@
 /// <reference path="./webauthn-prf.d.ts" />
 
-import { StorageKeys, PASSKEY_PRF_SALT_INPUT, resolvePasskeyRpId } from "@woco/shared";
+import {
+  StorageKeys,
+  PASSKEY_PRF_SALT_INPUT,
+  PASSKEY_PRF_OUTPUT_BYTES,
+  resolvePasskeyRpId,
+} from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 
 /** Credential metadata stored in IndexedDB (not secret) */
@@ -62,14 +67,45 @@ function fromBase64url(str: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-/** Derive a secp256k1 private key + Ethereum address from the PRF output.
+/**
+ * What one PRF ceremony yields. `privateKey` is the Kernel's ECDSA owner key
+ * (`keccak256(prf)`, frozen); `prfSecret` is the PRF output itself, the root of the
+ * identity seed and the portability keys (`@woco/shared` crypto/passkey-prf.ts, #642).
+ * They are carried apart because neither is derivable from the other.
+ */
+export interface PasskeyKeyMaterial {
+  address: string;
+  privateKey: `0x${string}`;
+  prfSecret: `0x${string}`;
+}
+
+/** Derive the owner key + address from the PRF output, and hand the output on.
  *  ethers is imported lazily — this module is in the login modal's boot graph. */
-async function deriveKey(prfOutput: ArrayBuffer): Promise<{ address: string; privateKey: `0x${string}` }> {
-  const { keccak256, Wallet } = await import("ethers");
+async function deriveKey(prfOutput: ArrayBuffer): Promise<PasskeyKeyMaterial> {
   const prfBytes = new Uint8Array(prfOutput);
+  // Checked BEFORE the owner key too: a short output used to keccak into a valid,
+  // wrong account, and it would now also become somebody's identity seed.
+  if (prfBytes.length !== PASSKEY_PRF_OUTPUT_BYTES) {
+    throw new Error(
+      `Your passkey returned an unexpected PRF result (${prfBytes.length} bytes, expected ${PASSKEY_PRF_OUTPUT_BYTES}). ` +
+        "Try a different authenticator (e.g. iCloud Keychain, Google Password Manager, or 1Password).",
+    );
+  }
+  const { keccak256, hexlify, Wallet } = await import("ethers");
   const privateKey = keccak256(prfBytes) as `0x${string}`;
   const wallet = new Wallet(privateKey);
-  return { address: wallet.address.toLowerCase(), privateKey };
+  return {
+    address: wallet.address.toLowerCase(),
+    privateKey,
+    prfSecret: hexlify(prfBytes) as `0x${string}`,
+  };
+}
+
+/** A backup-passkey GUARDIAN needs its owner key only. The PRF output would be the
+ *  root of a second account's seed, so it never leaves this module. */
+async function deriveGuardianKey(prfOutput: ArrayBuffer): Promise<{ address: string; privateKey: string }> {
+  const { address, privateKey } = await deriveKey(prfOutput);
+  return { address, privateKey };
 }
 
 /** Extract PRF result from a WebAuthn credential response. */
@@ -200,17 +236,11 @@ export function isPasskeySupported(): boolean {
  * cancelled, timed-out or concurrently-rejected ceremony into a brand-new
  * account at a brand-new address, silently forking the user's identity.
  */
-export async function authenticatePasskey(): Promise<{
-  address: string;
-  privateKey: string;
-}> {
+export async function authenticatePasskey(): Promise<PasskeyKeyMaterial> {
   return withCeremonyLock(_authenticatePasskeyImpl);
 }
 
-async function _authenticatePasskeyImpl(): Promise<{
-  address: string;
-  privateKey: string;
-}> {
+async function _authenticatePasskeyImpl(): Promise<PasskeyKeyMaterial> {
   const salt = await getPrfSalt();
   const rpId = getPasskeyRpId();
 
@@ -263,10 +293,7 @@ async function _authenticatePasskeyImpl(): Promise<{
  * → new Kernel → new address), stranding the user's tickets, feeds and funds on
  * the account they meant to sign in to.
  */
-export async function createPasskeyAccount(): Promise<{
-  address: string;
-  privateKey: `0x${string}`;
-}> {
+export async function createPasskeyAccount(): Promise<PasskeyKeyMaterial> {
   return ceremony("creation", _createPasskeyAccountImpl);
 }
 
@@ -283,11 +310,9 @@ export async function createPasskeyAccount(): Promise<{
  * The caller MUST pass the returned handle to `pinPasskeyCredential` once it
  * commits, or this device keeps offering "Create" to an account it already owns.
  */
-export async function createPasskeyAccountUnpinned(): Promise<{
-  address: string;
-  privateKey: `0x${string}`;
-  credential: PasskeyCredentialHandle;
-}> {
+export async function createPasskeyAccountUnpinned(): Promise<
+  PasskeyKeyMaterial & { credential: PasskeyCredentialHandle }
+> {
   return ceremony("creation", _mintPasskeyAccountImpl);
 }
 
@@ -297,20 +322,15 @@ export async function pinPasskeyCredential(handle: PasskeyCredentialHandle): Pro
   await putKV(StorageKeys.PASSKEY_CREDENTIAL, handle);
 }
 
-async function _createPasskeyAccountImpl(): Promise<{
-  address: string;
-  privateKey: `0x${string}`;
-}> {
-  const { address, privateKey, credential } = await _mintPasskeyAccountImpl();
+async function _createPasskeyAccountImpl(): Promise<PasskeyKeyMaterial> {
+  const { credential, ...material } = await _mintPasskeyAccountImpl();
   await putKV(StorageKeys.PASSKEY_CREDENTIAL, credential);
-  return { address, privateKey };
+  return material;
 }
 
-async function _mintPasskeyAccountImpl(): Promise<{
-  address: string;
-  privateKey: `0x${string}`;
-  credential: PasskeyCredentialMeta;
-}> {
+async function _mintPasskeyAccountImpl(): Promise<
+  PasskeyKeyMaterial & { credential: PasskeyCredentialMeta }
+> {
   const salt = await getPrfSalt();
   const rpId = getPasskeyRpId();
 
@@ -470,7 +490,7 @@ async function _createPasskeyBackupKeyImpl(): Promise<{ address: string; private
     );
   }
 
-  return deriveKey(prfOutput);
+  return deriveGuardianKey(prfOutput);
 }
 
 /**
@@ -502,7 +522,7 @@ async function _getPasskeyBackupKeyImpl(): Promise<{ address: string; privateKey
     throw new Error("Passkey authentication was cancelled.");
   }
   const prfOutput = extractPrfResult(credential.getClientExtensionResults());
-  return deriveKey(prfOutput);
+  return deriveGuardianKey(prfOutput);
 }
 
 // ---------------------------------------------------------------------------
@@ -514,17 +534,11 @@ async function _getPasskeyBackupKeyImpl(): Promise<{ address: string; privateKey
  * Used for silent re-derivation on page reload when we know which credential to use.
  * Falls back to discoverable mode if stored credential is gone.
  */
-export async function restorePasskeyAccount(): Promise<{
-  address: string;
-  privateKey: string;
-}> {
+export async function restorePasskeyAccount(): Promise<PasskeyKeyMaterial> {
   return withCeremonyLock(_restorePasskeyAccountImpl);
 }
 
-async function _restorePasskeyAccountImpl(): Promise<{
-  address: string;
-  privateKey: string;
-}> {
+async function _restorePasskeyAccountImpl(): Promise<PasskeyKeyMaterial> {
   const meta = await getKV<PasskeyCredentialMeta>(StorageKeys.PASSKEY_CREDENTIAL);
   if (!meta) {
     // IDB cleared — fall back to the discoverable picker (sign-in only, never creates)

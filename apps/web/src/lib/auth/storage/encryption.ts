@@ -43,8 +43,13 @@ export const AAD = {
     `woco/device/session-key/v1:${parent.toLowerCase()}`,
   SESSION_DELEGATION: (parent: string) =>
     `woco/device/session-delegation/v1:${parent.toLowerCase()}`,
+  // v2 since #642, when passkey seeds moved from a signature to the PRF output. The
+  // bump is what makes every device converge: a v1 blob fails its tag, the restore
+  // deletes it, and the seed is re-established under the current rule. Without it a
+  // device holding the old signature-derived seed would keep it (stored seed wins)
+  // while every new device derived the PRF seed: one account, two identities.
   IDENTITY_SEED: (parent: string) =>
-    `woco/device/identity-seed/v1:${parent.toLowerCase()}`,
+    `woco/device/identity-seed/v2:${parent.toLowerCase()}`,
   // Two scoped ZeroDev session keys had AAD constructors here — the sub-ENS mint
   // key until #501, the referral campaign's EAS key until #476. Neither is
   // written any more, and an unused AAD constructor is worse than none (see the

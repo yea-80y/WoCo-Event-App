@@ -91,7 +91,7 @@ function deps(over: Partial<EnvelopeReprobeDeps> = {}, store = memStore()) {
   return { d, store, calls, bindings, cleared, notices, tombstones };
 }
 
-const args = { kind: "passkey" as const, eoa: EOA, cachedParent: PHANTOM, passkeyPrivKey: PRF_KEY };
+const args = { kind: "passkey" as const, eoa: EOA, cachedParent: PHANTOM, prfSecret: PRF_KEY };
 
 test.beforeEach(() => _resetInFlightForTests());
 

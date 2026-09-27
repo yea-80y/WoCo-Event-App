@@ -25,15 +25,14 @@ defines it; that file is the authority, not this document.
   │  Permanent identity. Signs AuthorizeSession, then gets out of the      │
   │  way. Never signs a feed and never signs an API request.               │
   │                                                                        │
-  │  A KERNEL NEVER SIGNS THE TWO DERIVATIONS (invariant #1). Those are    │
-  │  signed by the RAW secp256k1 key beneath it — the passkey's PRF key    │
-  │  or the Web3Auth key — because a smart account's 1271 signatures are   │
-  │  non-deterministic. The derivation's `address` field is that raw       │
-  │  key's address, NOT the Kernel's.                                      │
+  │  A KERNEL NEVER SIGNS THE SEED DERIVATION (invariant #1). For email    │
+  │  it is signed by the RAW Web3Auth key beneath it, because a smart      │
+  │  account's 1271 signatures are non-deterministic. A PASSKEY account    │
+  │  signs nothing for it: its seed is HKDF of the PRF output (§2, #642).  │
   └──┬──────────────────────────────────┬───────────────────────────────────┘
-     │ AuthorizeSession                 │ two deterministic derivations, signed
-     │ (per session, by the Kernel       │ by the RAW key (never the Kernel)
-     │  or the EOA)                     │ (fixed nonce — same signature forever)
+     │ AuthorizeSession                 │ the seed: a deterministic signature by
+     │ (per session, by the Kernel       │ the RAW key (wallet/email, fixed nonce),
+     │  or the EOA)                     │ or HKDF of the PRF output (passkey)
      ▼                                  │
   ┌──────────────────────┐              ├──────────────────────────────┐
   │ SESSION KEY          │              ▼                              ▼
@@ -71,9 +70,9 @@ There is exactly one sign-to-derive step left. The object-data seed is produced 
 content-feed signer used to have a second signature of its own and no longer does — it is an
 HKDF sibling of this seed (§5).
 
-**Who signs matters more than it looks.** For a passkey or email login the signer here is the
-**raw secp256k1 key beneath the Kernel** — the PRF-derived key, or the Web3Auth key — obtained
-via `_getSeedSigner()`, never `_getSigner()`. This is "invariant #1" in
+**Who signs matters more than it looks.** For an email login the signer here is the
+**raw secp256k1 key beneath the Kernel** — the Web3Auth key — obtained via `_getSeedSigner()`,
+never `_getSigner()`. (A passkey login does not sign here at all — see below.) This is "invariant #1" in
 `apps/web/src/lib/auth/auth-store.svelte.ts`: a Kernel's ERC-1271 signature is
 non-deterministic, so deriving from it would corrupt the user's encryption and ticket-signing
 identity on every login. It is also why the message's `address` field carries the raw key's
@@ -103,6 +102,27 @@ RECOVERY_ENC_DOMAIN  salt 0x7647dc11…8a20   (a guardian's escrow key)
 
 **A fresh device therefore needs two signatures**, once: the session delegation, and this. Both
 are deferred to the first action that needs them, not taken at login.
+
+**Passkey accounts are the exception: their seed is not a signature (#642).** A passkey has a
+symmetric secret to start from — the 32-byte PRF output — so the seed roots on it:
+
+```
+seed = HKDF-SHA256(prfOutput, salt = "", info = "woco/identity-seed/passkey-prf/v1", 32)
+```
+
+Rooted on the signature, the seed was reproducible by anyone who could recover the Kernel owner
+key (`keccak256(prfOutput)`) from its public key, which every owner signature reveals. Rooted
+here, nothing between the authenticator and the seed passes through a secp256k1 key; the owner
+key and the seed are both one-way images of the PRF output and neither reaches the other. The
+portability envelope's two keys moved with it (`woco/recovery/portability/{soc-owner,hpke}/v2`),
+because that envelope carries a recovered account's seed. Establishing the seed takes no
+signature and no dialog — the biometric that produced the PRF output is the consent. All three
+labels live in `packages/shared/src/crypto/passkey-prf.ts` and are pinned by
+`identity-vectors.test.ts`; `PASSKEY_PRF_SALT_INPUT` is frozen twice over as a result.
+What this does NOT cover: the Kernel owner, sessions and SOC signatures stay secp256k1, and a
+recovered account's seed is still whatever its escrow carried (stored seed wins). The at-rest
+slot's AAD moved to `woco/device/identity-seed/v2:{addr}` with it, so every device re-derives
+under the new rule rather than keeping a seed from the old one.
 
 **These bytes are FROZEN from launch.** The domain name, version and salt, the primary type name
 `DeriveAccountKeys`, all three field names and types, the `purpose` string and the `nonce` are
