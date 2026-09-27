@@ -55,6 +55,10 @@ import { liveCancellationRefundDeps } from "../lib/stripe/cancellation-refunds-l
 import { mergeParticipants, knownSubjects, participantsFor } from "../lib/social/participants.js";
 import { clearTallyCache } from "./social.js";
 import { isValidSenderId, liftSender, listForOps, stopSender } from "../lib/sender-pacing/index.js";
+import { attendeeLedgerStatus, setActiveBatch } from "../lib/attendee-batch/ledger.js";
+import { attendeeCheckoutRefusal, attendeeStamperAddress } from "../lib/attendee-batch/writer.js";
+import { registerAttendeeBatch } from "../lib/attendee-batch/admin.js";
+import { burnOrder } from "../lib/attendee-batch/burn.js";
 
 const ops = new Hono<AppEnv>();
 
@@ -511,5 +515,74 @@ for (const action of ["lift", "stop"] as const) {
     return c.json({ ok: true, data: { sender, state } });
   });
 }
+
+/**
+ * GET /api/ops/attendee-batch — the attendee batch ledger (#546): which batch
+ * takes new orders, how full its fullest bucket is, orders by state, and why
+ * checkout would refuse right now (null = it would not).
+ */
+ops.get("/attendee-batch", (c) =>
+  c.json({
+    ok: true,
+    data: { stamper: attendeeStamperAddress(), checkoutRefusal: attendeeCheckoutRefusal(), ledger: attendeeLedgerStatus() },
+  }),
+);
+
+/**
+ * POST /api/ops/attendee-batch/register — body `{ batchId, fresh: true, by }`.
+ * `fresh` asserts nothing was ever stamped into this batch under a ledger we no
+ * longer hold. A batch whose ledger was lost must never be registered again:
+ * its used slots cannot be told apart from free ones, and reusing one evicts a
+ * live order. Buy a new batch instead.
+ */
+ops.post("/attendee-batch/register", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { batchId?: string; fresh?: boolean; by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by || typeof body?.batchId !== "string") return c.json({ ok: false, error: "`batchId` and `by` are required" }, 400);
+  if (body.fresh !== true) return c.json({ ok: false, error: "`fresh: true` is required - see the route comment" }, 400);
+  try {
+    const result = await registerAttendeeBatch(body.batchId, true);
+    console.log(`[ops] attendee batch ${body.batchId} registered by ${by} (depth ${result.chain.depth}, immutable ${result.chain.immutable})`);
+    return c.json({ ok: true, data: result });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 400);
+  }
+});
+
+/** POST /api/ops/attendee-batch/activate — body `{ batchId, by }`. New orders go there. */
+ops.post("/attendee-batch/activate", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { batchId?: string; by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by || typeof body?.batchId !== "string") return c.json({ ok: false, error: "`batchId` and `by` are required" }, 400);
+  try {
+    setActiveBatch(body.batchId);
+    console.log(`[ops] attendee batch ${body.batchId} activated by ${by}`);
+    return c.json({ ok: true, data: { checkoutRefusal: attendeeCheckoutRefusal(), ledger: attendeeLedgerStatus() } });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 400);
+  }
+});
+
+/**
+ * POST /api/ops/attendee-batch/orders/:root/burn — body `{ by, reason }`.
+ * Erases one order from Swarm (every chunk's slot overwritten). Irreversible.
+ * Resumable: calling it again finishes an interrupted burn.
+ */
+ops.post("/attendee-batch/orders/:root/burn", async (c) => {
+  const root = c.req.param("root").toLowerCase().replace(/^0x/, "");
+  if (!/^[0-9a-f]{64}$/.test(root)) return c.json({ ok: false, error: "Not an order reference" }, 400);
+  const body = (await c.req.json().catch(() => null)) as { by?: string; reason?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  const reason = (body?.reason || "").trim().slice(0, 500);
+  if (!by || !reason) return c.json({ ok: false, error: "`by` and `reason` are required - who decided this, and why?" }, 400);
+  try {
+    const record = await burnOrder(root);
+    console.log(`[ops] attendee order ${root} burn by ${by} (${reason}): ${record.state}`);
+    return c.json({ ok: true, data: { root, state: record.state, burnedAt: record.burnedAt ?? null } });
+  } catch (err) {
+    console.error(`[ops] attendee order ${root} burn by ${by} failed:`, (err as Error).message);
+    return c.json({ ok: false, error: (err as Error).message }, 502);
+  }
+});
 
 export { ops };
