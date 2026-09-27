@@ -74,7 +74,7 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * the same batch (event create stamps image + N edition pages + manifest at once).
  * It clears once the contending write releases — retry after backoff, same as 429.
  */
-function isTransientSwarmError(err: unknown): boolean {
+export function isTransientSwarmError(err: unknown): boolean {
   const e = err as any;
   const status: number | undefined = e?.status ?? e?.response?.status;
   if (status === 429 || status === 423) return true;
