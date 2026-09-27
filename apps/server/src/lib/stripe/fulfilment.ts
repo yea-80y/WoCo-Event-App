@@ -109,8 +109,8 @@ export interface FulfilmentDeps {
   markPayoutVoid(sessionId: string, reason: string): void;
   getOrganiserByStripeAccount(stripeAccountId: string): string | undefined;
 
-  /** Swarm /bytes — the fallback order seal. May throw; the caller decides what that means. */
-  uploadToBytes(data: string): Promise<string>;
+  /** Store the fallback order seal on the attendee batch (#546). May throw; the caller decides what that means. */
+  storeOrderBlob(data: string, meta: { eventId: string; seriesId: string }): Promise<string>;
 
   /**
    * The organiser's X-Wing order key, read by its ref from OUR OWN bee and verified
@@ -1059,7 +1059,7 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
   let batchOrderRef: string | undefined = a.prefetchedOrderRef;
   if (!batchOrderRef && a.encryptedOrder) {
     try {
-      batchOrderRef = await deps.uploadToBytes(JSON.stringify(a.encryptedOrder));
+      batchOrderRef = await deps.storeOrderBlob(JSON.stringify(a.encryptedOrder), { eventId, seriesId });
       console.log(`[fulfilment/v2] Fallback order uploaded: ${batchOrderRef}`);
     } catch (err) {
       console.warn("[fulfilment/v2] Fallback order upload failed:", err);

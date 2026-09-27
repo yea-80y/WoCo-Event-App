@@ -302,6 +302,13 @@ GDPR because WoCo holds the key / can re-link them. The policy must treat them a
 
 Swarm chunks are **immutable and cannot be individually deleted**.
 
+> **UPDATED 2026-09-27 (#546) - attendee order blobs are the exception.** From that change on, every
+> order blob is stamped on its own attendee batch by a key WoCo holds, and the slot of each chunk is
+> recorded (`.data/attendee-slots.json`). Erasure overwrites those slots with newer stamps, which
+> evicts the chunks from every storer that receives the overwrite. Not reached: copies someone else
+> stored under their own stamp, and retrieval caches. Blobs written before the change, and every
+> other data type here, are unchanged.
+
 > ⚠️ **CORRECTED 2026-08-01 after Fable review.** This section previously claimed crypto-erasure —
 > "destroy or rotate the decryption key" — as mechanism 1. **That capability does not exist.** The
 > order-sealing key is HKDF-derived from a POD seed derived client-side from the organiser's wallet

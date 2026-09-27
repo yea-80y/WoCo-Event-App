@@ -149,6 +149,10 @@ test("if bee reports a different address for the burner, the chunk is not marked
   freshBatch();
   const root = await storeOrder(100, "order-4");
   await assert.rejects(burn.burnOrder(root, { stamper: () => STAMPER, upload: async () => "ff".repeat(32) }));
-  assert.equal(ledger.getOrderRecord(root)!.chunks[0].burnedAt, undefined);
-  assert.equal(ledger.isOrderErased(root), false);
+  const record = ledger.getOrderRecord(root)!;
+  assert.equal(record.chunks[0].burnedAt, undefined);
+  assert.equal(record.state, "stored");
+  // The burn was planned, so readers already treat the order as erased; an
+  // operator re-runs the burn to finish it.
+  assert.equal(ledger.isOrderErased(root), true);
 });

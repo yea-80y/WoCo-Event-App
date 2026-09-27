@@ -100,6 +100,8 @@ DEV COMMANDS:
   Sub-ENS: `SUB_ENS_SPONSOR_PRIVATE_KEY` — the NAMES sponsor (mints + relays holder-signed
   pointer/release writes), never the same key as `WOCO_SPONSOR_PRIVATE_KEY` (boot refuses);
   unset = names 503. The platform holds NO key that can repoint a name (registrar v2.2).
+  `ATTENDEE_STAMPER_PRIVATE_KEY` owns the attendee order batch (#546): unset, or no active batch it
+  owns (`/api/ops/attendee-batch/register` + `/activate`), and checkout refuses (503). Never FEED_PRIVATE_KEY.
   Optional: `CAMPAIGN_ISSUER_PRIVATE_KEY` — signs referral confirmations + badges
   (#476), address must match `CAMPAIGN_ISSUER_ADDRESS`; unset = confirm 503s.
   Also optional, all with defaults baked in (#421/#522/#420/#598/#662 health alarms; a bad value is
@@ -526,6 +528,9 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     event SELL AGAIN and forgets which buyers are still owed. Present-but-unreadable is never
     overwritten and refuses EVERY sale (fail closed) until restored; `/api/health`
     `eventCancellations` alarms)
+  attendee-slots.json (#546 — which slot of the attendee batch holds each order chunk: the ONLY way
+    to erase one order. Losing it loses per-record erasure for everything written so far, and that
+    batch must NEVER be registered again (buy a new one). Unreadable = checkout refuses until restored)
   event-feed-signers.json (#670 — eventId → the organiser's content-feed signer + verified
     creator, pinned at create, write-once. The money path's ONLY carrier for an UNLISTED event.
     Losing it fails CLOSED: unlisted events stop selling until re-created; listed ones fall back

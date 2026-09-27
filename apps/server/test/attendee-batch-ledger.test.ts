@@ -145,6 +145,16 @@ test("records handed out are copies: editing one cannot change the ledger", () =
   assert.equal(ledger.getBatchRecord(batch)!.next["16"], 1);
 });
 
+test("an order reads as erased from the moment a burn is planned, before any upload", () => {
+  freshBatch();
+  const { root, record } = ledger.allocateOrder(addr(17, 1), [addr(17, 1)], { kind: "checkout" });
+  assert.equal(ledger.isOrderErased(root), false);
+  const planned = ledger.planChunkBurn(root, record.chunks[0].address);
+  assert.equal(ledger.isOrderErased(root), true);
+  assert.equal(ledger.planChunkBurn(root, record.chunks[0].address), planned, "a second plan returns the first");
+  assert.ok(BigInt(`0x${planned}`) > BigInt(`0x${record.chunks[0].ts}`));
+});
+
 test("the root must be the last chunk", () => {
   freshBatch();
   assert.throws(() => ledger.allocateOrder(addr(13, 9), [addr(13, 9), addr(13, 1)], { kind: "checkout" }));
@@ -156,10 +166,13 @@ test("a burn must be newer than the stamp it replaces; the order is erased once 
   const [c1, c2] = record.chunks;
   assert.throws(() => ledger.markChunkBurned(root, c1.address, c1.ts));
   const newer = (BigInt(`0x${c1.ts}`) + 1n).toString(16).padStart(16, "0");
-  ledger.markChunkBurned(root, c1.address, newer);
   assert.equal(ledger.isOrderErased(root), false);
-  ledger.markChunkBurned(root, c2.address, newer);
+  ledger.markChunkBurned(root, c1.address, newer);
+  // Erased to every reader from the first burned chunk; the state follows the last.
   assert.equal(ledger.isOrderErased(root), true);
+  assert.equal(ledger.getOrderRecord(root)?.state, "allocated");
+  ledger.markChunkBurned(root, c2.address, newer);
+  assert.equal(ledger.getOrderRecord(root)?.state, "burned");
   assert.throws(() => ledger.allocateOrder(addr(14, 2), [addr(14, 1), addr(14, 2)], { kind: "checkout" }));
 });
 
@@ -292,6 +305,11 @@ test("the stamper key must not be the feed key", () => {
   process.env.ATTENDEE_STAMPER_PRIVATE_KEY = FEED_KEY;
   writer._resetAttendeeStamperForTests();
   assert.throws(() => writer.getAttendeeStamper(), /must not be the same key/);
+  // Checkout gets a refusal, not an exception.
+  assert.match(writer.attendeeCheckoutRefusal() ?? "", /misconfigured.*must not be the same key/);
+  process.env.ATTENDEE_STAMPER_PRIVATE_KEY = "not a key";
+  writer._resetAttendeeStamperForTests();
+  assert.match(writer.attendeeCheckoutRefusal() ?? "", /misconfigured/);
   process.env.ATTENDEE_STAMPER_PRIVATE_KEY = "44".repeat(32);
   writer._resetAttendeeStamperForTests();
   assert.equal(writer.attendeeStamperAddress(), STAMPER_ADDRESS.toLowerCase());

@@ -521,12 +521,18 @@ for (const action of ["lift", "stop"] as const) {
  * takes new orders, how full its fullest bucket is, orders by state, and why
  * checkout would refuse right now (null = it would not).
  */
-ops.get("/attendee-batch", (c) =>
-  c.json({
+ops.get("/attendee-batch", (c) => {
+  let stamper: string | null = null;
+  try {
+    stamper = attendeeStamperAddress();
+  } catch {
+    // Reported through checkoutRefusal below.
+  }
+  return c.json({
     ok: true,
-    data: { stamper: attendeeStamperAddress(), checkoutRefusal: attendeeCheckoutRefusal(), ledger: attendeeLedgerStatus() },
-  }),
-);
+    data: { stamper, checkoutRefusal: attendeeCheckoutRefusal(), ledger: attendeeLedgerStatus() },
+  });
+});
 
 /**
  * POST /api/ops/attendee-batch/register — body `{ batchId, fresh: true, by }`.

@@ -6,6 +6,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
 import { getBindingsForEvent, toAttendeeKeyRows } from "../lib/gate/store.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
+import { isOrderErased } from "../lib/attendee-batch/ledger.js";
 import { getOnChainEventAt, getSlotDataAt } from "../lib/chain/event-contract.js";
 import { registrationContractFor } from "../lib/event/onchain-registry.js";
 import { contractKey } from "../lib/chain/event-contract.js";
@@ -94,8 +95,11 @@ orders.get("/:id/orders", requireAuth, async (c) => {
 
           const swarmHex = orderRefToSwarmHex(slotData.orderRef);
           let encryptedOrder: SealedBoxV2 | undefined;
+          // Erased on request (#546): never fetched, even though our own bee may
+          // still hold it in its cache.
+          const erased = swarmHex ? isOrderErased(swarmHex) : false;
 
-          if (swarmHex) {
+          if (swarmHex && !erased) {
             try {
               const json = await downloadFromBytes(swarmHex);
               encryptedOrder = JSON.parse(json) as SealedBoxV2;
@@ -110,6 +114,7 @@ orders.get("/:id/orders", requireAuth, async (c) => {
             seriesName: series.name,
             edition: slot + 1,
             ...(refund ? { refund } : {}),
+            ...(erased ? { erased: true as const } : {}),
             // Burner address — unique per ticket, proves on-chain slot ownership.
             // The actual claimer identity is inside the encrypted order blob.
             claimerAddress: slotData.owner,

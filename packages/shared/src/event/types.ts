@@ -597,4 +597,6 @@ export interface OrderEntry {
    * recorded.
    */
   refund?: "refunded" | "disputed" | "partial";
+  /** #546: the attendee's record was erased on request. No order data is sent. */
+  erased?: true;
 }

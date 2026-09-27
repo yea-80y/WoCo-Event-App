@@ -50,9 +50,19 @@ export function attendeeStamperAddress(): string | null {
   return getAttendeeStamper()?.addressHex ?? null;
 }
 
-/** Why checkout must not take a card right now, or null. */
+/**
+ * Why checkout must not take a card right now, or null. A malformed or reused
+ * stamper key refuses sales here instead of throwing into the route: card
+ * sales stop, loudly, and nothing else on the platform does.
+ */
 export function attendeeCheckoutRefusal(): string | null {
-  return attendeeStoreRefusal(attendeeStamperAddress());
+  let address: string | null;
+  try {
+    address = attendeeStamperAddress();
+  } catch (err) {
+    return `stamper key misconfigured: ${(err as Error).message}`;
+  }
+  return attendeeStoreRefusal(address);
 }
 
 /** Upload one pre-stamped chunk; returns the address bee computed, hex. */

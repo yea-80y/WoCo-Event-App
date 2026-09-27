@@ -153,7 +153,7 @@ type Step =
   | "saleContractFor"
   | "recordHeldPayout"
   | "getOrganiserByStripeAccount"
-  | "uploadToBytes"
+  | "storeOrderBlob"
   | "generateBurner"
   | "signMessage"
   | "batchClaimForOnChain"
@@ -281,8 +281,8 @@ function fakeDeps(o: FakeOpts = {}) {
       boom("getOrganiserByStripeAccount");
       return ORGANISER;
     },
-    uploadToBytes: async (data: string) => {
-      boom("uploadToBytes");
+    storeOrderBlob: async (data: string) => {
+      boom("storeOrderBlob");
       uploaded.push(data);
       return "aa".repeat(32);
     },
@@ -635,7 +635,7 @@ describe("happy path", () => {
   test("no prefetched orderRef: the fallback seal is uploaded and used", async () => {
     const { f } = await run({ orderRef: null }, { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }) });
     assert.ok(f.calls.includes("fetchOrderKey"));
-    assert.ok(f.calls.includes("uploadToBytes"));
+    assert.ok(f.calls.includes("storeOrderBlob"));
     assert.equal(f.minted.length, 1);
     // The fallback is a real v2 box, bound to this event and series, that the
     // organiser's key opens (#642).
@@ -650,7 +650,7 @@ describe("happy path", () => {
       { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), takenRefs: [ORDER_REF] },
     );
     assert.equal(outcome.issued, 2, "the sale still completes");
-    assert.ok(f.calls.includes("uploadToBytes"), "a fresh seal was made");
+    assert.ok(f.calls.includes("storeOrderBlob"), "a fresh seal was made");
     // The mint carries the fresh seal's ref, never the copied one.
     assert.ok(f.saleSlots.length > 0);
     assert.ok(f.saleSlots.every((r: { orderRef?: string }) => r.orderRef !== ORDER_REF));
@@ -666,13 +666,13 @@ describe("happy path", () => {
     );
     assert.equal(outcome.issued, 0);
     assert.equal(outcome.stoppedReason, "No orderRef available for on-chain claim");
-    assert.equal(f.calls.includes("uploadToBytes"), false);
+    assert.equal(f.calls.includes("storeOrderBlob"), false);
   });
 
   test("the mint path makes NO Swarm read (#368): a prefetched orderRef means no bytes call at all", async () => {
     const { f, outcome } = await run();
     assert.equal(outcome.issued, 2);
-    assert.equal(f.calls.includes("uploadToBytes"), false);
+    assert.equal(f.calls.includes("storeOrderBlob"), false);
     assert.equal(f.calls.some((c) => /download/i.test(c)), false);
   });
 
@@ -1066,10 +1066,10 @@ describe("every collaborator throws", () => {
     assert.equal(outcome.issued, 2);
   });
 
-  test("uploadToBytes throws on the fallback seal: stops before the mint, refunds", async () => {
+  test("storeOrderBlob throws on the fallback seal: stops before the mint, refunds", async () => {
     const { outcome, f } = await run(
       { orderRef: null },
-      { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), fail: "uploadToBytes" },
+      { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), fail: "storeOrderBlob" },
     );
     assert.equal(outcome.issued, 0);
     assert.equal(outcome.stoppedReason, "No orderRef available for on-chain claim");
@@ -1086,7 +1086,7 @@ test("never rejects, whichever step throws", async () => {
   const steps: Step[] = [
     "hashEmail", "resolveSiteEventSigner", "getEvent", "chainEventEndMs", "lookupOnChainEventId",
     "saleContractFor", "recordHeldPayout",
-    "getOrganiserByStripeAccount", "uploadToBytes", "generateBurner",
+    "getOrganiserByStripeAccount", "storeOrderBlob", "generateBurner",
     "signMessage", "batchClaimForOnChain", "bindTicket", "consumeReservation", "createRefund",
     "markPayoutVoid", "captureCheckoutConsent", "recordAttendeeEmail", "getSiteTheme", "sendTicketEmail",
     "sendTicketEmailLedgered", "recordUndeliveredTicket",

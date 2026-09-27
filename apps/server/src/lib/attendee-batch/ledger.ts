@@ -361,9 +361,16 @@ export function getOrderRecord(root: string): OrderRecord | null {
   return record ? structuredClone(record) : null;
 }
 
-/** An erased order must never be fetched and shown again, even from our bee's cache. */
+/**
+ * True from the moment a burn is planned, not only once it completes: an order
+ * being erased must never be fetched and shown again, and our light bee keeps
+ * serving a burned chunk from its cache.
+ */
 export function isOrderErased(root: string): boolean {
-  return getOrderRecord(root)?.state === "burned";
+  ensureLoaded();
+  const record = store.orders[normalizeHex(root)];
+  if (!record) return false;
+  return record.state === "burned" || record.chunks.some((c) => c.burnTs || c.burnedAt);
 }
 
 export function getBatchRecord(batchId: string): BatchRecord | null {

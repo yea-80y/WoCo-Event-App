@@ -45,7 +45,8 @@ import {
 } from "../lib/chain/event-contract.js";
 import { checkSeriesOnChainBinding, resolveManifestDigest } from "../lib/event/onchain-binding.js";
 import { lookupOnChainEventId, saleContractFor } from "../lib/event/onchain-registry.js";
-import { uploadToBytes } from "../lib/swarm/bytes.js";
+import { attendeeCheckoutRefusal, storeAttendeePayload } from "../lib/attendee-batch/writer.js";
+import { getOrderRecord } from "../lib/attendee-batch/ledger.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../lib/stripe/checkout-provenance.js";
 import { liveProvenanceReads, refundTamperedSession } from "../lib/stripe/checkout-provenance-live.js";
@@ -118,6 +119,9 @@ const prepareOrderLimiter = new SlidingWindowLimiter([
   { limit: 30, windowMs: 60_000 },
   { limit: 300, windowMs: 3_600_000 },
 ]);
+
+/** Refusal while order data has nowhere erasable to go (#546). Details go to the log, not the buyer. */
+const SALES_PAUSED = "Ticket sales are paused for a moment. Please try again shortly.";
 
 /** Refusal for an order box that another completed sale already carries (#661). */
 const ORDER_ALREADY_USED =
@@ -420,6 +424,13 @@ stripe.post("/prepare-order", async (c) => {
   if (!orderJson) {
     return c.json({ ok: false, error: "encryptedOrder must be a v2 sealed box of at most 16 KB" }, 400);
   }
+  // Order data is only ever stored where it can be erased (#546). The client
+  // falls back to the inline upload at Pay, which create-checkout refuses too.
+  const storeRefusal = attendeeCheckoutRefusal();
+  if (storeRefusal) {
+    console.error(`[stripe/prepare-order] refused: ${storeRefusal}`);
+    return c.json({ ok: false, error: SALES_PAUSED }, 503);
+  }
   // Validated first, so a refusal does not spend the caller's budget.
   const ip = clientIp(c);
   if (!prepareOrderLimiter.peek(ip)) {
@@ -429,7 +440,7 @@ stripe.post("/prepare-order", async (c) => {
   prepareOrderLimiter.record(ip);
 
   try {
-    const orderRef = await uploadToBytes(orderJson);
+    const orderRef = await storeAttendeePayload(orderJson, { kind: "prepared" });
     // A copy of a box another sale already carries lands on that sale's ref
     // (canonical bytes) — refuse to issue it.
     if (orderRefInOtherSale(orderRef, null)) return c.json({ ok: false, error: ORDER_ALREADY_USED }, 409);
@@ -560,7 +571,10 @@ stripe.post("/create-checkout", async (c) => {
   // A pre-uploaded order ref is taken only with the token prepare-order issued for
   // it, so every ref that reaches a mint is one this server stored (#661). Anything
   // else is silently ignored; never echoed to Stripe metadata as-is.
-  const preUploadedRef = acceptedClientOrderRef(orderRef, orderRefToken);
+  // ...and only if it was stored on the attendee batch (#546): a token issued
+  // before that moved (24 h TTL) names a blob that can never be erased.
+  const tokenRef = acceptedClientOrderRef(orderRef, orderRefToken);
+  const preUploadedRef = tokenRef && getOrderRecord(tokenRef) ? tokenRef : null;
 
   // Inline encrypted order (fallback path when client didn't pre-upload).
   // We'll upload in parallel with the event/status reads so Swarm latency
@@ -583,6 +597,16 @@ stripe.post("/create-checkout", async (c) => {
 
   if (!claimerEmail && !verifiedAddress) {
     return c.json({ ok: false, error: "claimerEmail or authenticated wallet session required" }, 400);
+  }
+
+  // Every order write goes to the attendee batch, the fulfilment fallback seal
+  // included, and never to the platform batch (#546). If that storage is not
+  // available, a paid sale would end in "no orderRef" and a refund, so refuse
+  // before the card is charged - the same rule as the keyless check below.
+  const storeRefusal = attendeeCheckoutRefusal();
+  if (storeRefusal) {
+    console.error(`[stripe/create-checkout] refused: ${storeRefusal}`);
+    return c.json({ ok: false, error: SALES_PAUSED }, 503);
   }
 
   // Validation first: everything above this line is a field check, a local
@@ -617,7 +641,7 @@ stripe.post("/create-checkout", async (c) => {
   const [event, inlineUploadedRef] = await Promise.all([
     getEvent(eventId, siteSigner ?? undefined),
     shouldUploadInline
-      ? uploadToBytes(inlineOrderJson!).catch((err) => {
+      ? storeAttendeePayload(inlineOrderJson!, { kind: "checkout", eventId, seriesId }).catch((err) => {
           // Inline upload failure is non-fatal — webhook falls back to the
           // minimal server-built seal so attendee still gets a ticket.
           console.warn("[stripe/create-checkout] Inline order upload failed (continuing):", err);
