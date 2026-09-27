@@ -105,7 +105,7 @@ test("Etherna unreachable before the chunk spread: `unreadable`, never the cache
   assert.equal(exists.status, "unreadable", JSON.stringify(exists));
 });
 
-test("a never-recovered passkey costs one round - versions 0 and 1 - and never asks the pre-versioning address", async () => {
+test("a never-recovered passkey asks versions 0 and 1 only - never the pre-versioning address", async () => {
   newDevice({ ourBee: new Map(), etherna: new Map() });
   assert.deepEqual(await readPortabilityEnvelope({ prfSecret: PRF }), { status: "absent" });
   const asked = serverRequests().map(askedId).sort();
