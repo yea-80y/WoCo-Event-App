@@ -3,6 +3,7 @@ export * from "./keys.js";
 export * from "./brands.js";
 export * from "./secp-hkdf.js";
 export * from "./issuing.js";
+export * from "./personal-sign.js";
 export * from "./feed-signer.js";
 export * from "./passkey-prf.js";
 export { gzip, gunzip, isGzipped, compressionSupported } from "./compress.js";

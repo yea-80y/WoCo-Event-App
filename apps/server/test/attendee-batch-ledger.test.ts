@@ -10,8 +10,8 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PrivateKey, type EnvelopeWithBatchId } from "@ethersphere/bee-js";
-import { concat, getBytes, hexlify, keccak256, verifyMessage } from "ethers";
+import { type EnvelopeWithBatchId } from "@ethersphere/bee-js";
+import { Wallet, concat, getBytes, hexlify, keccak256, verifyMessage } from "ethers";
 
 // The ledger resolves `.data` from cwd at import time, so redirect before import.
 const dir = mkdtempSync(join(tmpdir(), "woco-attendee-slots-"));
@@ -21,11 +21,11 @@ process.env.FEED_PRIVATE_KEY = FEED_KEY;
 
 const ledger = await import("../src/lib/attendee-batch/ledger.js");
 const writer = await import("../src/lib/attendee-batch/writer.js");
-const { splitPayload } = await import("../src/lib/attendee-batch/stamp.js");
+const { splitPayload, stamperKeyFromHex } = await import("../src/lib/attendee-batch/stamp.js");
 
 const FILE = join(dir, ".data", "attendee-slots.json");
-const STAMPER = new PrivateKey("44".repeat(32));
-const STAMPER_ADDRESS = `0x${STAMPER.publicKey().address().toHex()}`;
+const STAMPER = stamperKeyFromHex("44".repeat(32));
+const STAMPER_ADDRESS = new Wallet(`0x${"44".repeat(32)}`).address.toLowerCase();
 
 function onDisk(): any {
   return JSON.parse(readFileSync(FILE, "utf-8"));

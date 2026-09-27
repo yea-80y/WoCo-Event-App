@@ -14,9 +14,15 @@
  *   timestamp = NANOSECONDS, uint64 BE. bee-js's `Stamper` uses milliseconds, and a
  *               millisecond stamp can never replace a nanosecond one, so do not mix them.
  *   signature = personal-sign(keccak256(address || batchId || index || timestamp))
+ *
+ * Signed with `@woco/shared`'s noble-based `personalSignKeccak`, never bee-js's
+ * `PrivateKey`: that one runs the long-term key through a BigInt scalar
+ * multiplication that branches on secret bits, and this key signs on request
+ * paths anyone can trigger. The public address is derived once, at load.
  */
 
-import { BatchId, MerkleTree, PrivateKey, type EnvelopeWithBatchId } from "@ethersphere/bee-js";
+import { BatchId, MerkleTree, type EnvelopeWithBatchId } from "@ethersphere/bee-js";
+import { addressForPrivateKey, personalSignKeccak } from "@woco/shared";
 
 /** Chunks per bucket is 2^(depth - BUCKET_DEPTH); every batch we buy uses 16. */
 export const BUCKET_DEPTH = 16;
@@ -60,8 +66,25 @@ export function nextTimestampNs(after: bigint = 0n, nowMs: number = Date.now()):
   return now > after ? now : after + 1n;
 }
 
+/** The stamper: raw key bytes and the address derived from them once. */
+export interface StamperKey {
+  privateKey: Uint8Array;
+  /** 20 bytes. */
+  address: Uint8Array;
+  /** 0x-prefixed, lowercase. */
+  addressHex: string;
+}
+
+export function stamperKeyFromHex(hex: string): StamperKey {
+  const clean = hex.toLowerCase().replace(/^0x/, "");
+  if (!/^[0-9a-f]{64}$/.test(clean)) throw new Error("stamper key must be 32 bytes of hex");
+  const privateKey = Uint8Array.from(Buffer.from(clean, "hex"));
+  const addressHex = addressForPrivateKey(privateKey).toLowerCase();
+  return { privateKey, address: Uint8Array.from(Buffer.from(addressHex.slice(2), "hex")), addressHex };
+}
+
 export function signStamp(
-  key: PrivateKey,
+  key: StamperKey,
   batchId: BatchId,
   address: Uint8Array,
   slot: number,
@@ -82,8 +105,8 @@ export function signStamp(
   return {
     batchId,
     index,
-    issuer: key.publicKey().address().toUint8Array(),
-    signature: key.sign(data).toUint8Array(),
+    issuer: key.address,
+    signature: personalSignKeccak(data, key.privateKey),
     timestamp,
   };
 }

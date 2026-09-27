@@ -10,8 +10,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PrivateKey, type EnvelopeWithBatchId } from "@ethersphere/bee-js";
-import { concat, getBytes, hashMessage, hexlify, keccak256, recoverAddress, verifyMessage } from "ethers";
+import { type EnvelopeWithBatchId } from "@ethersphere/bee-js";
+import { Wallet, concat, getBytes, hashMessage, hexlify, keccak256, recoverAddress, verifyMessage } from "ethers";
 
 const dir = mkdtempSync(join(tmpdir(), "woco-attendee-burn-"));
 process.chdir(dir);
@@ -20,10 +20,10 @@ process.env.FEED_PRIVATE_KEY = "33".repeat(32);
 const ledger = await import("../src/lib/attendee-batch/ledger.js");
 const writer = await import("../src/lib/attendee-batch/writer.js");
 const burn = await import("../src/lib/attendee-batch/burn.js");
-const { bucketOf, decodeTimestampNs } = await import("../src/lib/attendee-batch/stamp.js");
+const { bucketOf, decodeTimestampNs, stamperKeyFromHex } = await import("../src/lib/attendee-batch/stamp.js");
 
-const STAMPER = new PrivateKey("44".repeat(32));
-const STAMPER_ADDRESS = `0x${STAMPER.publicKey().address().toHex()}`.toLowerCase();
+const STAMPER = stamperKeyFromHex("44".repeat(32));
+const STAMPER_ADDRESS = new Wallet(`0x${"44".repeat(32)}`).address.toLowerCase();
 
 let batchCounter = 0;
 function freshBatch(owner = STAMPER_ADDRESS): string {
@@ -139,7 +139,7 @@ test("an interrupted burn resumes with the identical stamp for the chunk in flig
 test("a stamper that does not own the batch burns nothing", async () => {
   freshBatch();
   const root = await storeOrder(100, "order-3");
-  const other = new PrivateKey("55".repeat(32));
+  const other = stamperKeyFromHex("55".repeat(32));
   const sent: Sent[] = [];
   await assert.rejects(burn.burnOrder(root, { stamper: () => other, upload: honestBurnerBee(sent) }), /does not own/);
   assert.equal(sent.length, 0);

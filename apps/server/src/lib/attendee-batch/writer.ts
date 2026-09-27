@@ -12,7 +12,7 @@
  * too.
  */
 
-import { BatchId, PrivateKey, type EnvelopeWithBatchId } from "@ethersphere/bee-js";
+import { BatchId, type EnvelopeWithBatchId } from "@ethersphere/bee-js";
 import type { Hex64 } from "@woco/shared";
 import { FEED_PRIVATE_KEY, getBee, normalizePk } from "../../config/swarm.js";
 import { MAX_ORDER_BOX_JSON } from "../stripe/order-ref.js";
@@ -25,7 +25,7 @@ import {
   markOrderStored,
   type OrderKind,
 } from "./ledger.js";
-import { decodeTimestampNs, signStamp, splitPayload } from "./stamp.js";
+import { decodeTimestampNs, signStamp, splitPayload, stamperKeyFromHex, type StamperKey } from "./stamp.js";
 
 /**
  * Owns the attendee batch: every stamp on it is signed with this key, and so is
@@ -33,9 +33,9 @@ import { decodeTimestampNs, signStamp, splitPayload } from "./stamp.js";
  * evict any attendee blob and fill the batch, and that should not come with the
  * key that owns every platform feed. Read on first use: `ATTENDEE_STAMPER_PRIVATE_KEY`.
  */
-let stamper: PrivateKey | null | undefined;
+let stamper: StamperKey | null | undefined;
 
-export function getAttendeeStamper(): PrivateKey | null {
+export function getAttendeeStamper(): StamperKey | null {
   if (stamper !== undefined) return stamper;
   const raw = process.env.ATTENDEE_STAMPER_PRIVATE_KEY || "";
   if (!raw) return (stamper = null);
@@ -43,12 +43,11 @@ export function getAttendeeStamper(): PrivateKey | null {
   if (FEED_PRIVATE_KEY && normalizePk(FEED_PRIVATE_KEY).toLowerCase() === key.toLowerCase()) {
     throw new Error("ATTENDEE_STAMPER_PRIVATE_KEY must not be the same key as FEED_PRIVATE_KEY");
   }
-  return (stamper = new PrivateKey(key.slice(2)));
+  return (stamper = stamperKeyFromHex(key));
 }
 
 export function attendeeStamperAddress(): string | null {
-  const key = getAttendeeStamper();
-  return key ? `0x${key.publicKey().address().toHex()}`.toLowerCase() : null;
+  return getAttendeeStamper()?.addressHex ?? null;
 }
 
 /** Why checkout must not take a card right now, or null. */
@@ -88,7 +87,7 @@ export const liveChunkUploader: ChunkUploader = async (envelope, body) => {
 };
 
 export interface StoreAttendeeDeps {
-  stamper: () => PrivateKey | null;
+  stamper: () => StamperKey | null;
   upload: ChunkUploader;
 }
 
@@ -109,7 +108,7 @@ export async function storeAttendeePayload(
 
   const key = deps.stamper();
   if (!key) throw new AttendeeStoreUnavailableError("no stamper key configured");
-  const refusal = attendeeStoreRefusal(`0x${key.publicKey().address().toHex()}`);
+  const refusal = attendeeStoreRefusal(key.addressHex);
   if (refusal) throw new AttendeeStoreUnavailableError(refusal);
 
   const { root, chunks } = await splitPayload(payload);

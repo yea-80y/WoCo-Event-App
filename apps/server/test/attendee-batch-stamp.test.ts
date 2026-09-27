@@ -4,15 +4,17 @@
  * makes the blob impossible to erase later. Neither shows up until it matters,
  * so the bytes are pinned against an independent implementation.
  *
- * The golden vector was produced by Etherchunk's `src/stamper.ts` (Cafe137/etherchunk
- * @ 3bcb3d3) for the same inputs, and the signature is checked with ethers, a
- * separate secp256k1 implementation from the cafe-utility code bee-js signs with.
+ * The layout is pinned against Etherchunk's `src/stamper.ts` (Cafe137/etherchunk
+ * @ 3bcb3d3) for the same inputs. The signature is ours (noble, RFC 6979), so it
+ * differs from Etherchunk's (cafe-utility's own nonce scheme) while signing the
+ * same digest; it is checked byte-for-byte against ethers' RFC 6979 signer and
+ * by recovery.
  */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { BatchId, MerkleTree, PrivateKey, Utils } from "@ethersphere/bee-js";
-import { Wallet, concat, getBytes, hexlify, keccak256, verifyMessage } from "ethers";
+import { BatchId, MerkleTree, Utils } from "@ethersphere/bee-js";
+import { SigningKey, Wallet, concat, getBytes, hashMessage, hexlify, keccak256, verifyMessage } from "ethers";
 import {
   bucketOf,
   decodeTimestampNs,
@@ -21,6 +23,7 @@ import {
   signStamp,
   slotsPerBucket,
   splitPayload,
+  stamperKeyFromHex,
 } from "../src/lib/attendee-batch/stamp.js";
 
 const KEY = "11".repeat(32);
@@ -28,30 +31,33 @@ const BATCH = "22".repeat(32);
 const ADDRESS = getBytes(keccak256(new TextEncoder().encode("woco attendee vector")));
 const NOW_MS = 1_790_000_000_000;
 
-/** Etherchunk stamp for (KEY, BATCH, ADDRESS, slot 3, NOW_MS): batchId || index || timestamp || signature. */
-const ETHERCHUNK_STAMP =
+/** Etherchunk's stamp for (KEY, BATCH, ADDRESS, slot 3, NOW_MS), without its signature: batchId || index || timestamp. */
+const ETHERCHUNK_STAMP_LAYOUT =
   "2222222222222222222222222222222222222222222222222222222222222222" +
   "000050d900000003" +
-  "18d75b8423f30000" +
-  "6dacdc71feb0544e5f64a9e32f1fabc436529d77e0120b8fa797f5cb146fbd83" +
-  "77ec8680bb023dc306030a34957556518642de4f16840a07d6dda034e6c91db9" +
-  "1c";
+  "18d75b8423f30000";
 
-test("a stamp is byte-identical to Etherchunk's for the same inputs", () => {
-  const env = signStamp(new PrivateKey(KEY), new BatchId(BATCH), ADDRESS, 3, nextTimestampNs(0n, NOW_MS));
-  assert.equal(Utils.convertEnvelopeToMarshaledStamp(env).toHex(), ETHERCHUNK_STAMP);
+const stamper = stamperKeyFromHex(KEY);
+
+test("the stamp layout is byte-identical to Etherchunk's for the same inputs", () => {
+  const env = signStamp(stamper, new BatchId(BATCH), ADDRESS, 3, nextTimestampNs(0n, NOW_MS));
+  const marshaled = Utils.convertEnvelopeToMarshaledStamp(env).toHex();
+  assert.equal(marshaled.length, 2 * (32 + 8 + 8 + 65));
+  assert.equal(marshaled.slice(0, ETHERCHUNK_STAMP_LAYOUT.length), ETHERCHUNK_STAMP_LAYOUT);
 });
 
-test("the signature recovers to the issuer over the digest the postage contract checks", () => {
-  const env = signStamp(new PrivateKey(KEY), new BatchId(BATCH), ADDRESS, 3, nextTimestampNs(0n, NOW_MS));
+test("the signature is ethers' RFC 6979 signature over the digest the postage contract checks", () => {
+  const env = signStamp(stamper, new BatchId(BATCH), ADDRESS, 3, nextTimestampNs(0n, NOW_MS));
   const digest = keccak256(concat([ADDRESS, getBytes(`0x${BATCH}`), env.index, env.timestamp]));
   const expected = new Wallet(`0x${KEY}`).address;
   assert.equal(verifyMessage(getBytes(digest), hexlify(env.signature)), expected);
+  assert.equal(hexlify(env.signature), new SigningKey(`0x${KEY}`).sign(hashMessage(getBytes(digest))).serialized);
   assert.equal(hexlify(env.issuer).toLowerCase(), expected.toLowerCase());
+  assert.equal(stamper.addressHex, expected.toLowerCase());
 });
 
 test("the index is the address's 16-bit bucket then the slot, both uint32 BE", () => {
-  const env = signStamp(new PrivateKey(KEY), new BatchId(BATCH), ADDRESS, 7, 1n);
+  const env = signStamp(stamper, new BatchId(BATCH), ADDRESS, 7, 1n);
   assert.equal(bucketOf(ADDRESS), 0x50d9);
   assert.equal(hexlify(env.index), "0x000050d900000007");
 });
@@ -77,7 +83,7 @@ test("slots per bucket follow the depth, and nonsense depths are refused", () =>
 });
 
 test("an address that is not 32 bytes, or a slot out of range, is refused", () => {
-  const key = new PrivateKey(KEY);
+  const key = stamper;
   const batch = new BatchId(BATCH);
   assert.throws(() => signStamp(key, batch, ADDRESS.slice(1), 0, 1n));
   assert.throws(() => signStamp(key, batch, ADDRESS, -1, 1n));

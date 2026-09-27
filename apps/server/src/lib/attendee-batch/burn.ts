@@ -20,13 +20,13 @@
  * included). Readers inside WoCo are gated on the ledger instead.
  */
 
-import { BatchId, Utils, type EnvelopeWithBatchId, type PrivateKey } from "@ethersphere/bee-js";
-import { calculateCacAddress, calculateSocAddress, encodeSpan, socSignDigest } from "@woco/shared";
+import { BatchId, Utils, type EnvelopeWithBatchId } from "@ethersphere/bee-js";
+import { calculateCacAddress, calculateSocAddress, encodeSpan, personalSignKeccak, socSignDigest } from "@woco/shared";
 import { getBytes, keccak256 } from "ethers";
 import { BEE_URL } from "../../config/swarm.js";
 import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "../swarm/upload-queue.js";
 import { getBatchRecord, getOrderRecord, markChunkBurned, planChunkBurn, type OrderRecord } from "./ledger.js";
-import { bucketOf, decodeTimestampNs, signStamp } from "./stamp.js";
+import { bucketOf, decodeTimestampNs, signStamp, type StamperKey } from "./stamp.js";
 import { getAttendeeStamper } from "./writer.js";
 
 const BURNER_PAYLOAD = new TextEncoder().encode("woco/attendee-burn/v1");
@@ -51,8 +51,8 @@ const burners = new Map<string, Burner>();
  * an 8-byte counter, searched from zero, so the result is deterministic. About
  * 65,536 keccaks on average: tens of milliseconds.
  */
-export function burnerFor(key: PrivateKey, bucket: number): Burner {
-  const owner = key.publicKey().address().toUint8Array();
+export function burnerFor(key: StamperKey, bucket: number): Burner {
+  const owner = key.address;
   const cacheKey = `${Buffer.from(owner).toString("hex")}:${bucket}`;
   const cached = burners.get(cacheKey);
   if (cached) return cached;
@@ -63,7 +63,7 @@ export function burnerFor(key: PrivateKey, bucket: number): Burner {
     view.setBigUint64(24, n, false);
     const address = calculateSocAddress(identifier, owner);
     if (bucketOf(address) !== bucket) continue;
-    const signature = key.sign(socSignDigest(identifier, BURNER_CAC)).toUint8Array();
+    const signature = personalSignKeccak(socSignDigest(identifier, BURNER_CAC), key.privateKey);
     const body = new Uint8Array(BURNER_SPAN.length + BURNER_PAYLOAD.length);
     body.set(BURNER_SPAN);
     body.set(BURNER_PAYLOAD, BURNER_SPAN.length);
@@ -105,7 +105,7 @@ export const liveBurnerUploader: BurnerUploader = async (burner, envelope) => {
 };
 
 export interface BurnDeps {
-  stamper: () => PrivateKey | null;
+  stamper: () => StamperKey | null;
   upload: BurnerUploader;
 }
 
@@ -124,8 +124,7 @@ export async function burnOrder(root: string, deps: BurnDeps = liveDeps): Promis
   if (record.state === "burned") return record;
   const batch = getBatchRecord(record.batchId);
   if (!batch) throw new Error(`order ${root} names an unregistered batch`);
-  const issuer = `0x${key.publicKey().address().toHex()}`.toLowerCase();
-  if (batch.owner !== issuer) throw new Error("the stamper key does not own this order's batch");
+  if (batch.owner !== key.addressHex) throw new Error("the stamper key does not own this order's batch");
 
   const batchId = new BatchId(record.batchId);
   let latest = record;

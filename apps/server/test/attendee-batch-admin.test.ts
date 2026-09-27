@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PrivateKey } from "@ethersphere/bee-js";
+import { Wallet } from "ethers";
 
 const dir = mkdtempSync(join(tmpdir(), "woco-attendee-admin-"));
 process.chdir(dir);
@@ -20,7 +20,7 @@ process.env.ATTENDEE_STAMPER_PRIVATE_KEY = "44".repeat(32);
 const admin = await import("../src/lib/attendee-batch/admin.js");
 const ledger = await import("../src/lib/attendee-batch/ledger.js");
 
-const STAMPER = `0x${new PrivateKey("44".repeat(32)).publicKey().address().toHex()}`.toLowerCase();
+const STAMPER = new Wallet(`0x${"44".repeat(32)}`).address.toLowerCase();
 const good = { owner: STAMPER, depth: 20, bucketDepth: 16, immutable: true, batchTTL: 86_400 * 60 };
 const lookup = (chain: admin.ChainBatch | null): admin.BatchLookup => async () => chain;
 
