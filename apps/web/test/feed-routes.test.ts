@@ -271,3 +271,33 @@ test("events, sites and shops stamp through the recorded-gateway mapping, and la
     assert.doesNotMatch(src, /target:[^\n]*includes\("woco-net\.com"\)/, `${file}: a third classification rule`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Who writes an event's feed (#657 sign-off)
+// ---------------------------------------------------------------------------
+
+test("the event feed has ONE client writer, and every call site signs a base the server read fresh", () => {
+  // The server hands back a feed only off a read that showed it is the head
+  // (#657) - true only while nothing on the client signs an event feed some
+  // other way. A new writer or call site is a deliberate diff here.
+  const topicUses: string[] = [];
+  const signs: Record<string, number> = {};
+  for (const file of sourceFiles(SRC)) {
+    const rel = relative(SRC, file);
+    const src = code(readFileSync(file, "utf8"));
+    if (/eventContentTopic\(/.test(src)) topicUses.push(rel);
+    const n = [...src.matchAll(/\bsignEventFeedSoc\(/g)].length - (rel === "lib/api/events.ts" ? 1 : 0);
+    if (n > 0) signs[rel] = n;
+  }
+  assert.deepEqual(topicUses.sort(), [
+    "lib/api/events.ts", // signEventFeedSoc itself, and the manifest's trash entry
+    "lib/attendee/events/EventDetail.svelte", // a read
+    "lib/creator/events/PublishButton.svelte", // the manifest log's label
+  ]);
+  assert.match(code(read("lib/api/events.ts")), /export async function signEventFeedSoc\([\s\S]*?topic: eventContentTopic\(feed\.eventId\),/);
+  assert.deepEqual(signs, {
+    "lib/api/events.ts": 4, // publish (create), update-meta, delete, cancel
+    "lib/api/sub-ens.ts": 1, // stamp-event
+    "lib/creator/events/PublishButton.svelte": 1, // register's returned feed / the held pendingFeed
+  });
+});
