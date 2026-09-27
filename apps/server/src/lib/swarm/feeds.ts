@@ -250,7 +250,16 @@ export interface WriteFeedPageOptions {
    *  bee — stamped chunks propagate to the public net) are unaffected. Only for
    *  COLD single-page feeds: never purchase-path feeds (claims, collections,
    *  directory) and never paged feeds (pages 0..N-1 would keep the old batch
-   *  and die with it — the audit's straddle landmine). */
+   *  and die with it — the audit's straddle landmine).
+   *
+   *  OUTSIDE the content-feed family table (#657): these are platform-signed
+   *  bee FEEDS, not versioned content feeds, and their reads ask our bee only.
+   *  So an Etherna dest has the window a moved family has - our bee sees the
+   *  newest update seconds late (measured) - during which a read returns the
+   *  previous update, and a write whose next index is not cached in-process
+   *  (the first after a restart, `resolveEthernaNextIndex`) can pick an index
+   *  already taken on Etherna, where the first write wins. Tolerable for the
+   *  cold feeds this is allowed on, and one more reason it stays off hot ones. */
   dest?: BatchSelection;
 }
 

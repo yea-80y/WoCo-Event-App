@@ -104,7 +104,7 @@ function harness(over: Partial<RegisterDeps> = {}) {
     }) as RegisterDeps["registerEventOnChain"],
     confirmSeriesOnChain: (async (e, s, id) => {
       registry.set(`${e}|${s}`, id);
-      return FEED;
+      return { feed: FEED, resignable: true };
     }) as RegisterDeps["confirmSeriesOnChain"],
     ...over,
   };

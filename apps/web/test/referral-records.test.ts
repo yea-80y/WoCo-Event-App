@@ -166,6 +166,8 @@ test("a live statement already on the feed is not rewritten — only its index i
   assert.equal(rec.writes.length, 0, "no second version of a live statement");
   assert.deepEqual(rec.order, ["index"]);
   assert.equal(rec.feedReads[0]?.owner, MY_FEED, "the head read is of the referee's OWN feed");
+  // It decides a write, so it must not take our gateway's 404 as final (#689).
+  assert.equal((rec.feedReads[0]?.opts as { thorough?: boolean }).thorough, true);
 });
 
 test("a RETRACTED head is written over — a retraction is not a live statement", async () => {

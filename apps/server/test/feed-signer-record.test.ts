@@ -190,7 +190,8 @@ test("the resolver asks the record before the directory", () => {
 });
 
 test("getEvent checks the creator before it caches or serves a feed", () => {
-  const getEvent = between("export async function getEvent(", "\n}\n");
+  // getEvent is a wrapper; the read (and the cache write) live in getEventRead.
+  const getEvent = between("async function getEventRead(", "\n}\n");
   const accept = getEvent.indexOf("feed = acceptEventFeed(eventId, feed)");
   const deleted = getEvent.indexOf("if (feed?.deleted)");
   const cache = getEvent.indexOf("_eventCache.set(");
@@ -205,9 +206,31 @@ test("the directory's signer is born from the record", () => {
 
 test("registration's cold-cache fallback checks the creator before it primes the cache", () => {
   const confirm = between("export async function confirmSeriesOnChain(", "\nexport ");
-  const read = confirm.indexOf("feed = acceptEventFeed(eventId, await readEventFeedSoc(eventId, signerHint))");
+  const read = confirm.indexOf("feed = acceptEventFeed(eventId, soc.feed)");
   const prime = confirm.indexOf("primeEventCache(eventId, updated)");
   assert.ok(read > 0 && prime > read, "accept the fallback read, then prime");
+});
+
+test("registration primes the money-path cache only off a clean read (#657)", () => {
+  const confirm = between("export async function confirmSeriesOnChain(", "\nexport ");
+  assert.match(confirm, /if \(cacheable\) primeEventCache\(eventId, updated\);\n\s*else invalidateEventCache\(eventId\);/);
+  assert.match(confirm, /cacheable = soc\.scanClean;/);
+  // ...and hands the feed back for re-signing only off the same clean read.
+  assert.match(confirm, /return \{ feed: updated, resignable: cacheable \};/);
+});
+
+test("the owner read offers a creator-index feed for re-signing only off a clean scan (#657)", () => {
+  // Pinned as text: the creator index is a platform feed read through bee-js,
+  // which the executed tests cannot fake (server-scan-routes covers the cache
+  // and getEvent branches of the same read).
+  const local = between("async function resolveOwnEventLocallyRead(", "\n}\n");
+  assert.match(local, /return \{ feed: await applyOnChainEventIds\(res\.feed\), resignable: res\.scanClean \};/);
+  assert.match(local, /if \(cached\) return \{ feed: await applyOnChainEventIds\(cached\), resignable: true \};/);
+});
+
+test("an owner edit's base skips the version cache - a re-sign relayed since does not invalidate it (#657)", () => {
+  const resolve = between("async function resolveEventForOwner(", "\n}\n");
+  assert.match(resolve, /const res = await readEventFeedSocResult\(eventId, signer, \{ fresh: true \}\);/);
 });
 
 test("the public page applies the same creator check, so it never shows what checkout refuses", () => {

@@ -549,7 +549,8 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
       msg === "Not the event creator" ? 403 :
       msg === "Invalid event dates" || msg === "endDate is before startDate" ? 400 :
       msg.startsWith("endDate cannot extend past the on-chain sales end") ? 400 :
-      msg.startsWith("Could not verify the on-chain sales end") ? 503 : 500;
+      // The on-chain sales end, or the event's own latest version (#657).
+      msg.startsWith("Could not verify") ? 503 : 500;
     if (status === 500) console.error("[api] update-meta failed:", err);
     return c.json({ ok: false, error: status === 500 ? "Failed to update event" : msg }, status);
   }

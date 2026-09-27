@@ -283,6 +283,13 @@ stored and escrowed. The reasoning is in
 at create (`.data/event-feed-signers.json`, #670), then the public directory, then the legacy
 platform feed. Never from a request.
 
+**Which store a content-feed read asks** comes from one table shared by client and server,
+`packages/shared/src/swarm/feed-routes.ts` (#657): an `etherna` family asks our bee and Etherna, a
+`woco` family our bee alone. `event` and `site` are discovery rows that ask both, because where one
+was stamped is recorded only inside it. A store that cannot answer makes the read `unavailable`,
+never `absent`. `/api/health` `feedRoutes` shows the table the running server uses; moving a family
+is one line there, with the server deployed before the frontend.
+
 **Client** reads of content feeds resolve by **computed chunk address** and never through Bee's
 `/feeds` endpoint. That is not a preference — it is what keeps every feed readable through
 gateways that do not implement `/feeds`, Etherna included. The **server** does use `/feeds` for
