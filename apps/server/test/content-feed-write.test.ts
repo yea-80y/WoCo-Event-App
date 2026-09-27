@@ -29,6 +29,7 @@ import {
   contentFeedSocIdentifier,
   versionedPageIdentifier,
   versionedSocIdentifier,
+  type FeedFamily,
   type VersionedFeedRead,
 } from "@woco/shared";
 import {
@@ -36,6 +37,7 @@ import {
   writeVersionedContentFeed,
   type FeedWriteIo,
 } from "../src/lib/swarm/content-feed-write.js";
+import type { SocUploadDestination } from "../src/lib/swarm/soc-upload.js";
 
 const SIGNER = new PrivateKey(`0x${"22".repeat(32)}`);
 const OWNER = SIGNER.publicKey().address().toHex().replace(/^0x/, "").toLowerCase();
@@ -47,18 +49,29 @@ function hex(b: Uint8Array): string {
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
-function io(head: VersionedFeedRead) {
-  const uploads: { identifier: string; payload: string }[] = [];
+const DEST: SocUploadDestination = { target: "wocoBee", family: "evidence" };
+
+function io(head: VersionedFeedRead, dest: SocUploadDestination = DEST) {
+  const uploads: { identifier: string; payload: string; dest: SocUploadDestination }[] = [];
   const invalidated: string[] = [];
+  const readFamilies: FeedFamily[] = [];
+  const destFamilies: FeedFamily[] = [];
   const impl: FeedWriteIo = {
-    readHead: async () => head,
-    upload: async (input) => {
-      uploads.push({ identifier: input.identifier, payload: input.payload });
+    readHead: async (_owner, _topic, family) => {
+      readFamilies.push(family);
+      return head;
+    },
+    destination: (family) => {
+      destFamilies.push(family);
+      return dest;
+    },
+    upload: async (input, d) => {
+      uploads.push({ identifier: input.identifier, payload: input.payload, dest: d });
       return undefined;
     },
     invalidate: (owner, topic) => invalidated.push(`${owner}|${topic}`),
   };
-  return { impl, uploads, invalidated };
+  return { impl, uploads, invalidated, readFamilies, destFamilies };
 }
 
 const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -66,7 +79,7 @@ const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 test("a feed with nothing at its head starts at version 0", async () => {
   const t = io({ status: "absent" });
   const res = await writeVersionedContentFeed(
-    { signer: SIGNER, topic: TOPIC, bytes: bytes("hello"), batchId: BATCH },
+    { signer: SIGNER, topic: TOPIC, bytes: bytes("hello"), family: "evidence" },
     t.impl,
   );
   assert.deepEqual(res, { ok: true, version: 0, unchanged: false });
@@ -80,7 +93,7 @@ test("an existing head is followed by the NEXT version, never overwritten", asyn
   // every write reports success.
   const t = io({ status: "found", bytes: bytes("old"), version: 3 });
   const res = await writeVersionedContentFeed(
-    { signer: SIGNER, topic: TOPIC, bytes: bytes("new"), batchId: BATCH },
+    { signer: SIGNER, topic: TOPIC, bytes: bytes("new"), family: "evidence" },
     t.impl,
   );
   assert.deepEqual(res, { ok: true, version: 4, unchanged: false });
@@ -92,7 +105,7 @@ test("an inconclusive head probe refuses to write anything", async () => {
   // would orphan every version already published.
   const t = io({ status: "unavailable", reason: "gateway 503" });
   const res = await writeVersionedContentFeed(
-    { signer: SIGNER, topic: TOPIC, bytes: bytes("new"), batchId: BATCH },
+    { signer: SIGNER, topic: TOPIC, bytes: bytes("new"), family: "evidence" },
     t.impl,
   );
   assert.equal(res.ok, false);
@@ -103,7 +116,7 @@ test("an inconclusive head probe refuses to write anything", async () => {
 test("a caller that says nothing changed gets no write", async () => {
   const t = io({ status: "found", bytes: bytes("same"), version: 7 });
   const res = await writeVersionedContentFeed(
-    { signer: SIGNER, topic: TOPIC, bytes: bytes("same-ish"), batchId: BATCH, unchanged: () => true },
+    { signer: SIGNER, topic: TOPIC, bytes: bytes("same-ish"), family: "evidence", unchanged: () => true },
     t.impl,
   );
   assert.deepEqual(res, { ok: true, version: 7, unchanged: true });
@@ -118,7 +131,7 @@ test("the unchanged predicate is asked about the CURRENT head, not the new bytes
       signer: SIGNER,
       topic: TOPIC,
       bytes: bytes("what-we-would-write"),
-      batchId: BATCH,
+      family: "evidence",
       unchanged: (head) => {
         sawe = new TextDecoder().decode(head);
         return false;
@@ -132,7 +145,7 @@ test("the unchanged predicate is asked about the CURRENT head, not the new bytes
 test("with no predicate, identical bytes are still not rewritten", async () => {
   const t = io({ status: "found", bytes: bytes("same"), version: 2 });
   const res = await writeVersionedContentFeed(
-    { signer: SIGNER, topic: TOPIC, bytes: bytes("same"), batchId: BATCH },
+    { signer: SIGNER, topic: TOPIC, bytes: bytes("same"), family: "evidence" },
     t.impl,
   );
   assert.equal((res as { unchanged: boolean }).unchanged, true);
@@ -145,7 +158,7 @@ test("a payload over one chunk pages, and every page lands BEFORE the manifest n
   const big = new Uint8Array(SOC_MAX_PAYLOAD_SIZE * 2 + 10).fill(65);
   const t = io({ status: "absent" });
   const res = await writeVersionedContentFeed(
-    { signer: SIGNER, topic: TOPIC, bytes: big, batchId: BATCH },
+    { signer: SIGNER, topic: TOPIC, bytes: big, family: "evidence" },
     t.impl,
   );
 
@@ -166,8 +179,8 @@ test("page identifiers are version-scoped, so no reader tears across two version
   const big = new Uint8Array(SOC_MAX_PAYLOAD_SIZE + 1).fill(66);
   const v0 = io({ status: "absent" });
   const v5 = io({ status: "found", bytes: bytes("old"), version: 4 });
-  await writeVersionedContentFeed({ signer: SIGNER, topic: TOPIC, bytes: big, batchId: BATCH }, v0.impl);
-  await writeVersionedContentFeed({ signer: SIGNER, topic: TOPIC, bytes: big, batchId: BATCH }, v5.impl);
+  await writeVersionedContentFeed({ signer: SIGNER, topic: TOPIC, bytes: big, family: "evidence" }, v0.impl);
+  await writeVersionedContentFeed({ signer: SIGNER, topic: TOPIC, bytes: big, family: "evidence" }, v5.impl);
   assert.notEqual(v0.uploads[0]!.identifier, v5.uploads[0]!.identifier);
   assert.equal(v5.uploads[0]!.identifier, hex(versionedPageIdentifier(BASE, 5, 1)));
 });
@@ -176,14 +189,14 @@ test("the version cache is dropped after a write", async () => {
   // Without this the next write in this process reads the stale head, computes
   // the same version, and is silently discarded.
   const t = io({ status: "absent" });
-  await writeVersionedContentFeed({ signer: SIGNER, topic: TOPIC, bytes: bytes("x"), batchId: BATCH }, t.impl);
+  await writeVersionedContentFeed({ signer: SIGNER, topic: TOPIC, bytes: bytes("x"), family: "evidence" }, t.impl);
   assert.deepEqual(t.invalidated, [`${OWNER}|${TOPIC}`]);
 });
 
 test("an empty payload is refused", async () => {
   const t = io({ status: "absent" });
   const res = await writeVersionedContentFeed(
-    { signer: SIGNER, topic: TOPIC, bytes: new Uint8Array(0), batchId: BATCH },
+    { signer: SIGNER, topic: TOPIC, bytes: new Uint8Array(0), family: "evidence" },
     t.impl,
   );
   assert.equal(res.ok, false);
@@ -196,15 +209,15 @@ test("an empty payload is refused", async () => {
 
 test("read-back confirms only the exact version and the exact bytes", async () => {
   const written = bytes("published");
-  const ok = await confirmContentFeedWrite(OWNER, TOPIC, written, 2, io({ status: "found", bytes: written, version: 2 }).impl);
+  const ok = await confirmContentFeedWrite(OWNER, TOPIC, "evidence", written, 2, io({ status: "found", bytes: written, version: 2 }).impl);
   assert.deepEqual(ok, { ok: true });
 
   // A dead batch's shape: the upload said 201 and nothing is there.
-  const absent = await confirmContentFeedWrite(OWNER, TOPIC, written, 2, io({ status: "absent" }).impl);
+  const absent = await confirmContentFeedWrite(OWNER, TOPIC, "evidence", written, 2, io({ status: "absent" }).impl);
   assert.equal(absent.ok, false);
 
   // The predecessor is still at the head — our write went nowhere.
-  const older = await confirmContentFeedWrite(OWNER, TOPIC, written, 2, io({ status: "found", bytes: written, version: 1 }).impl);
+  const older = await confirmContentFeedWrite(OWNER, TOPIC, "evidence", written, 2, io({ status: "found", bytes: written, version: 1 }).impl);
   assert.equal(older.ok, false);
   assert.match((older as { reason: string }).reason, /version/);
 
@@ -212,10 +225,46 @@ test("read-back confirms only the exact version and the exact bytes", async () =
   const different = await confirmContentFeedWrite(
     OWNER,
     TOPIC,
+    "evidence",
     written,
     2,
     io({ status: "found", bytes: bytes("something else"), version: 2 }).impl,
   );
   assert.equal(different.ok, false);
   assert.match((different as { reason: string }).reason, /bytes differ/);
+});
+
+// ---------------------------------------------------------------------------
+// The family decides where the probe reads AND where the stamp lands (#657)
+// ---------------------------------------------------------------------------
+
+test("the probe, every upload and the read-back all follow the caller's family", async () => {
+  const ethernaDest: SocUploadDestination = { target: "etherna", batchId: "cd".repeat(32) };
+  const big = new Uint8Array(SOC_MAX_PAYLOAD_SIZE + 10).fill(7);
+  const t = io({ status: "absent" }, ethernaDest);
+  const res = await writeVersionedContentFeed({ signer: SIGNER, topic: TOPIC, bytes: big, family: "campaignIssuer" }, t.impl);
+  assert.equal(res.ok, true);
+  assert.deepEqual(t.readFamilies, ["campaignIssuer"]);
+  assert.deepEqual(t.destFamilies, ["campaignIssuer"]);
+  // Pages and manifest alike: a feed stamped half in one store is a feed whose
+  // manifest names pages the reader cannot find.
+  assert.equal(t.uploads.length, 3);
+  for (const u of t.uploads) assert.deepEqual(u.dest, ethernaDest);
+
+  const back = io({ status: "found", bytes: big, version: 0, scanClean: true });
+  await confirmContentFeedWrite(OWNER, TOPIC, "campaignIssuer", big, 0, back.impl);
+  assert.deepEqual(back.readFamilies, ["campaignIssuer"]);
+});
+
+test("a store that cannot take the write refuses before any read or postage", async () => {
+  const t = io({ status: "absent" });
+  t.impl.destination = () => {
+    throw new Error("platform batch refused");
+  };
+  await assert.rejects(
+    writeVersionedContentFeed({ signer: SIGNER, topic: TOPIC, bytes: bytes("x"), family: "evidence" }, t.impl),
+    /platform batch refused/,
+  );
+  assert.deepEqual(t.readFamilies, []);
+  assert.equal(t.uploads.length, 0);
 });

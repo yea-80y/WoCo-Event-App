@@ -17,11 +17,10 @@
  * authenticate under the other's AAD, whatever keys it was wrapped to.
  *
  * The version component is driven by `envelope.v` AT OPEN, and the AEAD tag
- * authenticates it implicitly: flipping a v2 envelope's declared version to 1
- * selects the legacy AAD, under which the tag cannot verify — so the version
- * field is downgrade-proof without any extra check. MUST stay byte-identical at
- * seal and open; versions are an explicit allowlist, and an unknown one throws
- * the typed error below rather than guessing an AAD that can only fail opaquely.
+ * authenticates it implicitly, so a declared version cannot be flipped to select
+ * another AAD. MUST stay byte-identical at seal and open. Only the CURRENT version
+ * opens; every other one throws a typed error saying which way it is wrong, because
+ * the callers act on "older" and "newer" in opposite ways.
  */
 
 import { RECOVERY_ENVELOPE_VERSION } from "@woco/shared";
@@ -47,17 +46,31 @@ export class UnknownRecoveryEnvelopeVersionError extends Error {
 }
 
 /**
+ * `envelope.v` names a format this app no longer opens: v1 and v2 wrapped the DEK
+ * with X25519 alone, and #642 retired them (pre-launch, no compat path). Unlike a
+ * NEWER envelope this one is stale, not someone else's work — the portability
+ * self-heal may rewrite it — and the user's way out is to set recovery up again.
+ */
+export class RetiredRecoveryEnvelopeVersionError extends Error {
+  readonly envelopeVersion: number;
+  constructor(v: number) {
+    super(
+      `This backup was made with an older version of WoCo (format ${v}) that can no longer be opened. ` +
+        "Set up account recovery again to replace it.",
+    );
+    this.name = "RetiredRecoveryEnvelopeVersionError";
+    this.envelopeVersion = v;
+  }
+}
+
+/**
  * The AAD for one (role, envelope version, bound address) triple. Namespaced
  * (never a bare address) so the tag is unambiguous, lowercased so casing
  * variation cannot break the bind.
  *
- * Version allowlist — one branch per format ever sealed, never a template:
- *  - v1 (legacy): `woco/recovery/v1:{addr}` — no role component. Envelopes
- *    sealed before roles existed; their role separation rests, as it always
- *    did, on the two roles' independent recipient keys. Kept openable so
- *    pre-v2 escrows still recover.
- *  - v2 (current): `woco/recovery/{role}/v2:{addr}`.
- * Anything else throws {@link UnknownRecoveryEnvelopeVersionError}.
+ *  - v3 (current, #642): `woco/recovery/{role}/v3:{addr}`, X-Wing-wrapped DEK.
+ *  - v1, v2: retired → {@link RetiredRecoveryEnvelopeVersionError}.
+ *  - anything else → {@link UnknownRecoveryEnvelopeVersionError}.
  */
 export function recoveryAadBytes(
   role: RecoveryAadRole,
@@ -65,11 +78,11 @@ export function recoveryAadBytes(
   boundAddress: string,
 ): Uint8Array {
   const addr = boundAddress.toLowerCase();
-  if (envelopeVersion === 1) {
-    return new TextEncoder().encode(`woco/recovery/v1:${addr}`);
-  }
   if (envelopeVersion === RECOVERY_ENVELOPE_VERSION) {
     return new TextEncoder().encode(`woco/recovery/${role}/v${envelopeVersion}:${addr}`);
+  }
+  if (Number.isInteger(envelopeVersion) && envelopeVersion >= 1 && envelopeVersion < RECOVERY_ENVELOPE_VERSION) {
+    throw new RetiredRecoveryEnvelopeVersionError(envelopeVersion);
   }
   throw new UnknownRecoveryEnvelopeVersionError(envelopeVersion);
 }

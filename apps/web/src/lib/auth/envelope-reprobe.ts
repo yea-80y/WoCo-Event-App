@@ -66,9 +66,9 @@ export interface EnvelopeReprobeDeps {
    * the common case, and the common answer is no — so it must cost one miss, not
    * the full read's three. See `portabilityEnvelopeExists`.
    */
-  envelopeExists: (passkeyPrivKey: string) => Promise<EnvelopePresence>;
+  envelopeExists: (prfSecret: string) => Promise<EnvelopePresence>;
   /** Read + open the PRF-sealed envelope. Reached ONLY after a hit, so its lookups succeed. */
-  readEnvelope: (passkeyPrivKey: string) => Promise<PortabilityRead>;
+  readEnvelope: (prfSecret: string) => Promise<PortabilityRead>;
   /** Durable device-local fact: this PRF-EOA opens the preserved Kernel. THE heal. */
   putRecoveryBinding: (seedAddress: string, kernel: string) => Promise<void>;
   /** Durable device-local fact, the opposite direction (#283): this PRF-EOA's
@@ -76,6 +76,10 @@ export interface EnvelopeReprobeDeps {
   writeOrphanTombstone: (kind: ReprobeKind, eoa: string, fact: { kernel: string; owner: string }) => void;
   /** Drop the poisoned `woco:kaddr:` entry (auth-store owns that key's format). */
   clearCachedKernelAddress: (kind: ReprobeKind, eoa: string) => void;
+  /** Drop the seed stored under this PRF-EOA. On a poisoned device it was derived,
+   *  never escrow-restored (a restore writes the binding first, #230), so it is
+   *  the WRONG seed — see the heal below. */
+  clearIdentitySeed: (eoa: string) => Promise<void>;
   /** True only while the store still holds the identity this probe was launched for. */
   isStillSignedInAs: (eoa: string, parent: string) => boolean;
   logout: () => Promise<void>;
@@ -218,11 +222,11 @@ export async function reprobeEnvelope(
     /** The cached parent the fast path just trusted: the address under suspicion. */
     cachedParent: string;
     /** Captured at login, not read from the store, so a concurrent logout cannot swap it. */
-    passkeyPrivKey: string;
+    prfSecret: string;
   },
   deps: EnvelopeReprobeDeps,
 ): Promise<ReprobeOutcome> {
-  const { kind, eoa, cachedParent, passkeyPrivKey } = args;
+  const { kind, eoa, cachedParent, prfSecret } = args;
   const store = deps.storage ?? (globalThis.localStorage as unknown as ReprobeStorage | undefined);
   const now = deps.now ?? (() => Date.now());
   const online = deps.online ?? (() => globalThis.navigator?.onLine !== false);
@@ -299,7 +303,7 @@ export async function reprobeEnvelope(
     writeState(store, kind, eoa, spent);
     let presence: EnvelopePresence;
     try {
-      presence = await deps.envelopeExists(passkeyPrivKey);
+      presence = await deps.envelopeExists(prfSecret);
     } catch (e) {
       return { status: "inconclusive", reason: `envelope probe threw: ${(e as Error).message}` };
     }
@@ -311,7 +315,7 @@ export async function reprobeEnvelope(
 
     let read: PortabilityRead;
     try {
-      read = await deps.readEnvelope(passkeyPrivKey);
+      read = await deps.readEnvelope(prfSecret);
     } catch (e) {
       return { status: "inconclusive", reason: `envelope read threw: ${(e as Error).message}` };
     }
@@ -338,17 +342,25 @@ export async function reprobeEnvelope(
       };
     }
 
-    // HEAL. The binding alone is the repair: `_recoveryKernelFor` is consulted
+    // HEAL. The binding is the repair: `_recoveryKernelFor` is consulted
     // before the kaddr cache, so the next login rebuilds at the preserved address
     // and its slow path restores the identity seed + feed signer through the reviewed
-    // portability block. Deliberately NOT written here: the identity seed (logout's
-    // `clearIdentitySeed` would delete it on the way out) and the verified-binding
-    // marker (the recovered fast path needs secrets this device does not yet
-    // hold, and fewer durable claims is the safer shape).
+    // portability block. Deliberately NOT written here: the identity seed (it comes
+    // from the envelope on that login) and the verified-binding marker (the
+    // recovered fast path needs secrets this device does not yet hold, and fewer
+    // durable claims is the safer shape).
+    //
+    // What IS removed is any seed already stored under this credential. On a
+    // poisoned device it can only have been DERIVED (a passkey establishes silently
+    // from its PRF output) for the wrong Kernel. Left in place it would survive an
+    // account switch — logout's clear only runs if the user is still signed in as
+    // it — and the next login, seeing binding + seed, would skip the envelope and
+    // run the back-fill with the wrong seed.
     //
     // Order is load-bearing: every prefix of it leaves the device correct or
     // retrying. Binding first — once it exists the poisoned cache is unreachable.
     await deps.putRecoveryBinding(eoa, preserved);
+    await deps.clearIdentitySeed(eoa);
     deps.clearCachedKernelAddress(kind, eoa);
     clearState(store, kind, eoa);
 

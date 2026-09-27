@@ -219,13 +219,14 @@ test("the auth store OPTS EXTERNAL WALLETS IN — pinned at the call site", () =
   );
 });
 
-test("the SILENT establish stays web3auth-only", () => {
-  // `silent` skips the confirm dialog. It is correct for web3auth — the raw key
-  // is already in memory and ethers signs it with RFC-6979, so there is no
-  // decision for the user to take and prompting on every page load would be
-  // friction for nothing. Widening it is a different claim: for passkey the PRF
-  // ceremony is the consent, and for web3 the wallet popup IS the wallet's own
-  // policy. Neither may be skipped by an eager path the user did not ask for.
+test("a SILENT establish never starts a ceremony — web3auth's raw key, or a passkey's PRF already in memory", () => {
+  // `silent` skips the busy latch and any dialog. It is correct in exactly two
+  // places, both with nothing left for the user to decide: web3auth, whose raw key
+  // is already in memory (ethers signs it with RFC-6979), and — since #642 — a
+  // passkey whose PRF output the login just produced (the biometric WAS the
+  // consent, and the seed is an HKDF of it). It must never widen to a kind whose
+  // establish is a wallet popup (web3, coinbase) or to a passkey whose PRF output
+  // is NOT in memory, where it would be a biometric nobody asked for.
   const src = readFileSync(
     fileURLToPath(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url)),
     "utf8",
@@ -233,18 +234,71 @@ test("the SILENT establish stays web3auth-only", () => {
   const gates = src
     .split("\n")
     .filter((l) => l.includes("opts.silent") || l.includes("{ silent: true }"));
-  assert.ok(gates.length >= 2, "the silent path must still exist to be constrained");
+  assert.ok(gates.length >= 3, "the silent path must still exist to be constrained");
   for (const line of gates) {
     assert.match(
       line,
-      /web3auth|_getContentFeedSigner|_ensureIdentitySeed/,
-      `a silent establish escaped the web3auth gate: ${line.trim()}`,
+      /web3auth|_getContentFeedSigner|_ensureIdentitySeed|_passkeyPrfSecret/,
+      `a silent establish escaped its gates: ${line.trim()}`,
     );
   }
   const gate = src.split("\n").find((l) => l.includes("const silentRawKey = opts.silent"));
   assert.ok(gate, "the silent signer gate must exist");
-  assert.match(gate, /_kind === "web3auth"/, "only web3auth may establish a seed with no dialog");
+  assert.match(gate, /_kind === "web3auth"/, "only web3auth may SIGN for a seed with no dialog");
   assert.match(gate, /_web3authPrivateKey/, "and only from the web3auth raw key");
+
+  // The passkey half: a silent call without the PRF output in memory is refused
+  // before anything could start a ceremony, and the eager caller checks it too.
+  assert.match(
+    src,
+    /if \(opts\.silent && _kind === "passkey" && !_passkeyPrfSecret\) return false;/,
+  );
+  const eager = src.slice(src.indexOf("async function _establishPasskeySeedEagerly"));
+  assert.match(eager.slice(0, 300), /if \(_kind !== "passkey" \|\| !_passkeyPrfSecret\) return;/);
+});
+
+test("the eager passkey establish can never derive for a rotated credential or an unknown Kernel", () => {
+  // The store is a runes module this suite cannot load, so the ordering is pinned
+  // at the source. Two rules (#642 PR B):
+  //  1. inside `_ensureIdentitySeed`, the stored-seed restore and the recovery-
+  //     binding refusal both run BEFORE the passkey PRF branch — so an eager call
+  //     for a recovered credential returns false instead of deriving a divergent
+  //     seed that the envelope back-fill would then publish;
+  //  2. the main login path skips the eager call after an UNKNOWN envelope read,
+  //     when the login may be sitting on the wrong Kernel.
+  const src = readFileSync(
+    fileURLToPath(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url)),
+    "utf8",
+  );
+  const body = src.slice(src.indexOf("async function _ensureIdentitySeed("));
+  const restore = body.indexOf("if (await restoreIdentitySeed(seedAddr))");
+  const refusal = body.indexOf("if (await _recoveryKernelFor(seedAddr))");
+  const prf = body.indexOf("await establishPasskeyIdentitySeed(seedAddr, _passkeyPrfSecret)");
+  assert.ok(restore > 0 && refusal > restore && prf > refusal, "restore → binding refusal → PRF derive");
+  assert.match(src, /if \(!envelopeUnknown\) await _establishPasskeySeedEagerly\(\);/);
+});
+
+test("a REFUSED back-fill heals the device instead of leaving it on the wrong seed", () => {
+  // With a recovery binding AND a stored seed, login skips the envelope, so a
+  // device whose seed the envelope disagrees with would sign every write with it
+  // forever. The heal mirrors the #245 re-probe's: drop the seed under the
+  // credential FIRST (so even a user who switched away is repaired), then sign out
+  // only if still in that account; the next login restores from the envelope.
+  const src = readFileSync(
+    fileURLToPath(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url)),
+    "utf8",
+  );
+  const caller = src.slice(src.indexOf("async function _maybeBackfillPortabilityEnvelope"));
+  assert.match(
+    caller.slice(0, caller.indexOf("/** The one accessor bundle")),
+    /outcome\.action === "refused"[\s\S]*?await _healRefusedBackfill\(eoa, parent\)/,
+  );
+  const heal = src.slice(src.indexOf("async function _healRefusedBackfill"));
+  const body = heal.slice(0, heal.indexOf("\n}\n"));
+  const clear = body.indexOf("await clearIdentitySeed(eoa)");
+  const guard = body.indexOf("if (!stillIn) return;");
+  const out = body.indexOf("await logout({ force: true })");
+  assert.ok(clear > 0 && guard > clear && out > guard, "clear seed → still-in guard → sign out");
 });
 
 test("requestIdentitySeed derives NO key — the seed is all it returns", async () => {

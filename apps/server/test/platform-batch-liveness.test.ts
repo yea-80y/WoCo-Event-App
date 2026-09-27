@@ -29,6 +29,9 @@ import { TypedDataEncoder, Wallet } from "ethers";
 // Every network host is a closed local port: a mutated run that gets past the
 // guard fails fast on ECONNREFUSED instead of reaching a real service.
 const DEAD = "http://127.0.0.1:9";
+// Requests ROUTE by the canonical host; the env var above only moves where the
+// server's own Etherna calls go (#657) - here, nowhere.
+const ETHERNA = "https://gateway.etherna.io";
 const HOST = "test.woco.local";
 const WOCO_BATCH = "aa".repeat(32);
 const PLATFORM = "6a4b028d5df8" + "c".repeat(52);
@@ -69,7 +72,7 @@ before(async () => {
       purchasedAt: "2026-09-01T00:00:00Z",
       expiresAt: "2099-01-01T00:00:00Z",
       paidUntil: "2099-01-01T00:00:00Z",
-      gateway: DEAD,
+      gateway: ETHERNA,
     },
   }));
 
@@ -113,7 +116,7 @@ async function readEtherna(ethernaStamp: () => Promise<Record<string, unknown>>)
 
 const stamp = (over: Record<string, unknown> = {}) => async () => ({ ...LIVE_STAMP, ...over });
 
-function route(gatewayUrl = DEAD, ownerAddress = OWNER) {
+function route(gatewayUrl = ETHERNA, ownerAddress = OWNER) {
   return router.batchForDeploy({ ownerAddress, gatewayUrl, deployType: "event" });
 }
 
@@ -271,13 +274,13 @@ test("the WoCo gateway never consults the Etherna reading", async () => {
 
 test("an owner with a live batch of their own is routed to it, dead platform batch or not", async () => {
   await readEtherna(async () => notFound());
-  assert.deepEqual(route(DEAD, USER_WITH_BATCH), { batchId: USER_BATCH, target: "etherna" });
+  assert.deepEqual(route(ETHERNA, USER_WITH_BATCH), { batchId: USER_BATCH, target: "etherna" });
 });
 
 test("a website deploy on the free-hosting fallback refuses too", async () => {
   await readEtherna(async () => notFound());
   assertRefused(
-    () => router.batchForDeploy({ ownerAddress: OWNER, gatewayUrl: DEAD, deployType: "website", freeHostingEligible: true }),
+    () => router.batchForDeploy({ ownerAddress: OWNER, gatewayUrl: ETHERNA, deployType: "website", freeHostingEligible: true }),
     /not found/,
   );
 });
@@ -294,6 +297,22 @@ test("user content refuses on a dead platform batch instead of landing on WoCo",
 test("user content still falls back to WoCo when Etherna is simply not configured", () => {
   delete process.env.ETHERNA_PLATFORM_BATCH;
   assert.deepEqual(router.batchForUserContent(OWNER), { batchId: WOCO_BATCH, target: "wocoBee" });
+});
+
+// A server-OWNED feed follows its family's row in the shared table (#657): an
+// Etherna row stamps the platform batch and refuses with it, and - unlike user
+// content - never falls back to WoCo, because its reads and writes would split.
+test("a server-written family stamps where its row says, and an Etherna row refuses rather than detour", async () => {
+  const { destinationForFamily } = await import("../src/lib/swarm/content-feed-write.js");
+  assert.deepEqual(destinationForFamily("campaignIssuer"), { target: "wocoBee", batchId: WOCO_BATCH });
+  assert.deepEqual(destinationForFamily("evidence"), { target: "wocoBee", batchId: WOCO_BATCH });
+  // `social` is client-written today, but it is an Etherna row: the rule a
+  // server-written family inherits the day its row moves.
+  assert.deepEqual(destinationForFamily("social"), { target: "etherna", batchId: PLATFORM });
+  await readEtherna(async () => notFound());
+  assertRefused(() => destinationForFamily("social"), /not found/);
+  delete process.env.ETHERNA_PLATFORM_BATCH;
+  assert.throws(() => destinationForFamily("social"), /ETHERNA_PLATFORM_BATCH not configured/);
 });
 
 test("never refuses without the alarm: every refusing reading is an alarm on /api/health", async () => {
@@ -385,7 +404,7 @@ function assertStorageUnavailable(res: { status: number; json: Record<string, un
 
 test("the /bytes relay answers 503 STORAGE_UNAVAILABLE", async () => {
   await readEtherna(async () => notFound());
-  const res = await postAs("/api/swarm/bytes", { dataB64: Buffer.from("hello").toString("base64"), gatewayUrl: DEAD });
+  const res = await postAs("/api/swarm/bytes", { dataB64: Buffer.from("hello").toString("base64"), gatewayUrl: ETHERNA });
   assertStorageUnavailable(res, "/bytes");
 });
 
@@ -397,14 +416,14 @@ test("the /soc relay answers 503 STORAGE_UNAVAILABLE", async () => {
     signature: "33".repeat(65),
     span: "0400000000000000",
     payload: "44".repeat(32),
-    gatewayUrl: DEAD,
+    gatewayUrl: ETHERNA,
   });
   assertStorageUnavailable(res, "/soc");
 });
 
 test("site publish refuses rather than detour its feed pages to WoCo", async () => {
   await readEtherna(async () => notFound());
-  const res = await postAs("/api/sites", { site: { siteId: "site-610-liveness" }, gatewayUrl: DEAD });
+  const res = await postAs("/api/sites", { site: { siteId: "site-610-liveness" }, gatewayUrl: ETHERNA });
   assertStorageUnavailable(res, "POST /api/sites");
 });
 

@@ -2,12 +2,13 @@
   import { signingRequest } from "../../auth/signing-request.svelte.js";
 
   /**
-   * The one prompt a passkey/web3auth user ever sees for account setup — their
-   * session signature is silent, so this dialog IS the consent moment. It used
+   * The one prompt a web3auth user ever sees for account setup — their session
+   * signature is silent, so this dialog IS the consent moment. (A passkey user
+   * sees none: their seed comes from the PRF output, #642.) It used
    * to render only the EIP-712 type name and the raw fields, which named the
    * bytes correctly and explained nothing.
    *
-   * `action` is the EIP-712 type name (local-signer.ts / passkey-signer.ts pass
+   * `action` is the EIP-712 type name (local-signer.ts passes
    * it straight through), so it is a stable key we can attach human copy to. The
    * raw material never goes away — it moves behind a disclosure, because a
    * signature request that hides what it signs is worse than an unreadable one.

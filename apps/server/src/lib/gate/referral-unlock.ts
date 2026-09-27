@@ -60,7 +60,8 @@ export async function liveReadReferrerIndex(
   const owner = CAMPAIGN_ISSUER_ADDRESS.replace(/^0x/, "").toLowerCase();
   let res: Awaited<ReturnType<typeof readBandedContentFeedJsonResult>>;
   try {
-    res = await readBanded(owner, (band) => referrerIndexTopic(subject, band));
+    // The issuer's own index: read where the issuer writes it.
+    res = await readBanded(owner, (band) => referrerIndexTopic(subject, band), "campaignIssuer");
   } catch (err) {
     console.warn(`[gate] referrer index read threw for ${referrer}:`, err);
     return { status: "unavailable" };

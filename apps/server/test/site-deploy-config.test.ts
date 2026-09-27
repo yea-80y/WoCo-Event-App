@@ -195,14 +195,17 @@ test("FRONTEND_URL widens the app allowlist without displacing the default", () 
     assert.ok(isAllowedAppUrl("https://woco.eth.limo"));
   }));
 
-test("ETHERNA_GATEWAY_URL overrides the etherna entry", () =>
+test("ETHERNA_GATEWAY_URL moves the server's own requests, never the allowlist (#657)", () =>
+  // A deployed page fetches from its gateway in a BROWSER, and the client only
+  // ever offers the canonical host - so an env value on another host used to
+  // refuse every Etherna site deploy while admitting a host no client sends.
   withEnv({ ETHERNA_GATEWAY_URL: "https://gateway.staging.etherna.io", NODE_ENV: "production" }, () => {
     assert.deepEqual(allowedGatewayUrls(), [
       "https://gateway.woco-net.com",
-      "https://gateway.staging.etherna.io",
+      "https://gateway.etherna.io",
     ]);
-    assert.ok(isAllowedGatewayUrl("https://gateway.staging.etherna.io"));
-    assert.ok(!isAllowedGatewayUrl("https://gateway.etherna.io"));
+    assert.ok(isAllowedGatewayUrl("https://gateway.etherna.io"));
+    assert.ok(!isAllowedGatewayUrl("https://gateway.staging.etherna.io"));
   }));
 
 test("loopback is a dev affordance and is refused in production", () => {

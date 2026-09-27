@@ -127,7 +127,7 @@
     if (!backup) return;
     phase = "checking";
     try {
-      const [{ deriveGuardianKeys }, { guardianAddressFor }, { isGuardianRegistered }, { readGuardianAccountIndex }, { autoFindAccount }] =
+      const [{ deriveGuardianKeysForBackup }, { guardianAddressFor }, { isGuardianRegistered }, { readGuardianAccountIndex }, { autoFindAccount }] =
         await Promise.all([
           import("../../auth/recovery-escrow.js"),
           import("../../auth/guardian-address.js"),
@@ -135,7 +135,7 @@
           import("../../swarm/guardian-index-feed.js"),
           import("../../auth/recovery-autofind.js"),
         ]);
-      const gk = await deriveGuardianKeys(backup.address, backup.signTypedData);
+      const gk = await deriveGuardianKeysForBackup(backup);
       guardianKeys = gk;
       // Same helper-built config as setup, derived purely (no RPC) — #161.
       const guardian = guardianAddressFor(guardianConfigForBackup(backup.address));

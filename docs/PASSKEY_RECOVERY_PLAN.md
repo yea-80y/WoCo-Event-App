@@ -738,6 +738,11 @@ in the SAME weighted-ECDSA guardian (§4); this section is about *which* signers
    POD decryption key into shares across friends, any **M-of-N** reconstruct; nobody holds the
    whole key. Bigger crypto lift (§11.6 step 2) — deferred past v1.
 
+> **Update (#642, 2026-09-27):** the DEK wrap is now HPKE with the X-Wing hybrid KEM
+> (ML-KEM-768 + X25519), envelope v3; v1/v2 are retired. Where this plan says "X25519 key" or
+> `crypto_box_seal` for the escrow, read "X-Wing key" and HPKE. A passkey guardian's escrow key
+> comes from its PRF output, not a signature. Current code: `recovery-escrow.ts`.
+
 **MULTIPLE guardians — two distinct shapes, don't conflate (owner asked 2026-06-20):**
 - **1-of-N (multiple INDEPENDENT backups, any ONE recovers)** — the common "add another backup"
   ask. **Structurally most of the way there:** the escrow envelope's `wrappedDeks` is ALREADY an

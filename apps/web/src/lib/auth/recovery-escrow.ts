@@ -12,27 +12,28 @@
  * Construction — KEM/DEM hybrid, every step a single vetted-library call
  * (crypto-lead rationale; the §11 invariant is "never hand-roll ECIES"):
  *  - DEK-WRAP = HPKE (RFC 9180) single-shot seal via `@hpke/core`, suite
- *    DHKEM(X25519,HKDF-SHA256) / HKDF-SHA256 / AES-256-GCM. HPKE is the IETF
- *    standard for "encrypt to a recipient public key" (TLS ECH, MLS); we use
- *    its composed `seal`/`open`, not a self-assembled ECDH+KDF+AEAD. Each
- *    wrapped DEK is `enc(32B X25519) || ct` so an anonymous sender needs no key.
+ *    X-Wing / HKDF-SHA256 / AES-256-GCM (#642). X-Wing is the hybrid KEM
+ *    (ML-KEM-768 + X25519, `@woco/shared/crypto/xwing-hpke`): the envelope sits
+ *    on public storage and carries the account's permanent seed, so the wrap must
+ *    survive a future quantum computer, and it holds while either half does. Each
+ *    wrapped DEK is `enc(1120B X-Wing ciphertext) || ct`.
  *  - BUNDLE-AEAD = XChaCha20-Poly1305 (`@noble/ciphers`) under a random per-
  *    bundle DEK, with role + envelope version + bound address as additional-
  *    data (recovery-aad.ts) so a stolen envelope cannot be replayed against
  *    another account or opened under the other role.
- *  - GUARDIAN KEY is DERIVED, never stored: the guardian EOA signs a fixed
- *    EIP-712 message (the deterministic-signature trick `requestIdentitySeed`
- *    relies on) → keccak → 32-byte seed → HPKE `deriveKeyPair`. Same EOA always
- *    reproduces the same X25519 key, on any device, with nothing at rest.
+ *  - GUARDIAN KEY is DERIVED, never stored, from a 32-byte guardian MASTER. A
+ *    wallet or email guardian's master is keccak256 of a fixed EIP-712 signature
+ *    (the deterministic-signature trick); a PASSKEY guardian's is HKDF of its PRF
+ *    output (`passkeyGuardianEscrowMaster`, #642), so no secp256k1 key stands
+ *    between the passkey and the escrowed seed. Either way the same guardian
+ *    reproduces the same keys on any device, with nothing at rest.
  *
  * v1 = 1-of-1 (single backup-EOA guardian). M-of-N via verifiable secret sharing
  * over the DEK is a later envelope version (§11.6 step 2) — the DEK indirection
  * here is exactly what makes that a content change, not a redesign. The bundle is
  * generic (`secrets: Record<name,secret>`) so slots cost nothing to add (§11.6
- * step 3) — the bundle ships `{ identitySeed, feedSignerPrivKey }` (gathered in
- * recovery-finalize.ts; an earlier version of this header said identitySeed-only and
- * that stale claim derailed a design pass — issuer-curve handover, 2026-09-01).
- * The ISSUING key needs no slot ever: it re-derives from identitySeed (crypto/issuing.ts).
+ * step 3); it ships `{ identitySeed }` and nothing else — the content-feed signer,
+ * the issuing key and the encryption keys are all KDFs of that seed.
  *
  * Confidentiality of the escrow equals the recovery-threshold strength, NOT
  * device-bound secrecy — inherent to all recovery (§11.4). A timelock guards
@@ -41,7 +42,8 @@
  */
 
 import { keccak256, getBytes, Wallet } from "ethers";
-import { CipherSuite, DhkemX25519HkdfSha256, HkdfSha256, Aes256Gcm } from "@hpke/core";
+import { CipherSuite, HkdfSha256, Aes256Gcm } from "@hpke/core";
+import { XWingKem } from "@woco/shared/crypto/xwing-hpke";
 import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { bytesToHex, hexToBytes } from "@noble/ciphers/utils.js";
 import { randomBytes } from "@noble/ciphers/utils.js";
@@ -70,13 +72,13 @@ export interface RecoveryBundle {
 
 /** HPKE suite — stateless for our ops, so one shared instance is safe. */
 const hpke = new CipherSuite({
-  kem: new DhkemX25519HkdfSha256(),
+  kem: new XWingKem(),
   kdf: new HkdfSha256(),
   aead: new Aes256Gcm(),
 });
 
-/** X25519 encapsulated-key length for this KEM (bytes) — the `enc` prefix. */
-const ENC_LEN = 32;
+/** The KEM's encapsulated-key length (1120 for X-Wing) — the `enc` prefix. */
+const ENC_LEN = hpke.kem.encSize;
 /** XChaCha20-Poly1305 nonce length (bytes). */
 const XNONCE_LEN = 24;
 
@@ -85,7 +87,7 @@ function toArrayBuffer(b: Uint8Array): ArrayBuffer {
 }
 
 export interface GuardianEncryptionKeypair {
-  /** Opaque HPKE recipient key handles (X25519). Used to wrap (public) and unwrap (private). */
+  /** Opaque HPKE recipient key handles (X-Wing). Used to wrap (public) and unwrap (private). */
   keyPair: CryptoKeyPair;
   publicKeyHex: string;
 }
@@ -99,7 +101,7 @@ export interface GuardianSocSigner {
 }
 
 export interface GuardianKeys {
-  /** X25519 keypair that wraps/unwraps the escrow DEK (HPKE). */
+  /** X-Wing keypair that wraps/unwraps the escrow DEK (HPKE). */
   encryption: GuardianEncryptionKeypair;
   /** secp256k1 key that owns + signs the guardian-owned recovery SOC. */
   socSigner: GuardianSocSigner;
@@ -114,19 +116,12 @@ const HKDF_INFO_SOC = new TextEncoder().encode("woco/recovery/soc/v1");
 
 /**
  * Derive BOTH guardian keys from ONE deterministic EIP-712 signature by the
- * guardian EOA (§13). Same EOA → same signature → same keys, on any device, with
- * nothing stored. `guardianAddress` is bound into the message so the same wallet
- * signing for a different role yields distinct keys.
- *
- * Construction: keccak the canonical 65-byte signature (getBytes, not the hex
- * string — the same compression identity seed uses) into a uniform 32-byte master
- * secret, then HKDF-SHA256-Expand into two independent 32-byte seeds under
- * distinct `info` labels:
- *  - `hpke/v1`  → X25519 escrow keypair (wraps the DEK).
- *  - `soc/v1`   → secp256k1 key that owns + signs the recovery SOC.
- * A single wallet prompt yields both, and compromising one seed does not expose
- * the other. Seeds are zeroed after use; the returned string keys are the
- * caller's to hold for the duration of the ceremony.
+ * guardian EOA (§13) — the route for wallet and email guardians. Same EOA → same
+ * signature → same keys, on any device, with nothing stored. `guardianAddress` is
+ * bound into the message so the same wallet signing for a different role yields
+ * distinct keys. The master is keccak of the canonical 65-byte signature (getBytes,
+ * not the hex string — the same compression the identity seed uses) and is zeroed
+ * after use.
  */
 export async function deriveGuardianKeys(
   guardianAddress: string,
@@ -141,8 +136,25 @@ export async function deriveGuardianKeys(
       nonce: RECOVERY_ENC_NONCE,
     },
   );
-
   const master = getBytes(keccak256(getBytes(signature)));
+  try {
+    return await guardianKeysFromMaster(master);
+  } finally {
+    master.fill(0);
+  }
+}
+
+/**
+ * The guardian's two keys from its 32-byte MASTER — the step every guardian kind
+ * shares after its own master derivation. HKDF-SHA256-Expand into two independent
+ * seeds under distinct labels:
+ *  - `hpke/v1` → the X-Wing escrow keypair (HPKE `deriveKeyPair`), wraps the DEK;
+ *  - `soc/v1`  → the secp256k1 key that owns + signs the guardian recovery SOC.
+ * Compromising one seed does not expose the other. The master is NOT zeroed here:
+ * the caller owns it (a passkey guardian derives twice, for the setup self-check).
+ */
+export async function guardianKeysFromMaster(master: Uint8Array): Promise<GuardianKeys> {
+  if (master.length !== 32) throw new Error("guardianKeysFromMaster: master must be 32 bytes");
   let hpkeSeed: Uint8Array | null = null;
   let socSeed: Uint8Array | null = null;
   try {
@@ -163,14 +175,29 @@ export async function deriveGuardianKeys(
       socSigner: { privKey: socPrivKey, address: socWallet.address.toLowerCase() },
     };
   } finally {
-    master.fill(0);
     hpkeSeed?.fill(0);
     socSeed?.fill(0);
   }
 }
 
 /**
- * Derive an HPKE (X25519) escrow keypair DIRECTLY from a 32-byte seed, reusing
+ * The guardian keys for a connected backup, by whichever route its kind uses: a
+ * passkey backup carries its own PRF-rooted derivation, every other backup signs.
+ * The ONE entry point setup, recovery and the portal call, so the two routes cannot
+ * be mixed up at a call site.
+ */
+export async function deriveGuardianKeysForBackup(backup: {
+  address: string;
+  signTypedData: EIP712Signer;
+  deriveEscrowKeys?: () => Promise<GuardianKeys>;
+}): Promise<GuardianKeys> {
+  return backup.deriveEscrowKeys
+    ? backup.deriveEscrowKeys()
+    : deriveGuardianKeys(backup.address, backup.signTypedData);
+}
+
+/**
+ * Derive an HPKE (X-Wing) escrow keypair DIRECTLY from a 32-byte seed, reusing
  * the same `hpke.kem.deriveKeyPair` construction as the guardian path. Used by
  * the cross-device portability envelope (CROSS_DEVICE_RECOVERY.md §3): the
  * recipient key is derived from the passkey PRF secret (domain-separated) rather
@@ -190,7 +217,7 @@ export async function deriveEncryptionKeypairFromSeed(
 /**
  * Seal a recovery bundle: fresh DEK → XChaCha20-Poly1305 over the bundle (AAD =
  * role + version + bound address, see recovery-aad.ts) → HPKE-wrap the DEK to
- * each guardian X25519 pubkey. Always seals at the CURRENT envelope version.
+ * each guardian's X-Wing public key. Always seals at the CURRENT envelope version.
  * The returned envelope is safe to store on a public feed. The DEK is zeroed
  * before returning.
  */
@@ -199,7 +226,7 @@ export async function sealRecoveryBundle(args: {
   kernelAddress: string;
   /** Which use of the escrow construction this is — baked into the AAD. */
   role: RecoveryAadRole;
-  /** Guardian X25519 public keys (hex). v1 = exactly one (1-of-1 backup EOA). */
+  /** Guardian X-Wing public keys (hex, 1216 bytes each). One today (1-of-1). */
   guardianPublicKeysHex: string[];
 }): Promise<RecoveryEnvelope> {
   if (args.guardianPublicKeysHex.length === 0) {
@@ -219,7 +246,7 @@ export async function sealRecoveryBundle(args: {
       const sender = await hpke.createSenderContext({ recipientPublicKey });
       const wrappedCt = new Uint8Array(await sender.seal(toArrayBuffer(dek), aad));
       const enc = new Uint8Array(sender.enc);
-      // enc (32B X25519 encapsulation) || HPKE ciphertext of the DEK
+      // enc (1120B X-Wing ciphertext) || HPKE ciphertext of the DEK
       const combined = new Uint8Array(enc.length + wrappedCt.length);
       combined.set(enc, 0);
       combined.set(wrappedCt, enc.length);
@@ -244,16 +271,17 @@ export async function sealRecoveryBundle(args: {
  * guardian's succeeds), then AEAD-decrypts the bundle. The AAD is built from
  * the envelope's DECLARED version (downgrade-proof — a lied-about version
  * selects an AAD the tag cannot verify under; see recovery-aad.ts) and the
- * caller's role, so a v1 envelope stays openable while an unknown version
- * throws `UnknownRecoveryEnvelopeVersionError` — callers must surface that as
- * "update the app", never as corruption. The recovered DEK is zeroed before
+ * caller's role. Only the current version opens: a retired one throws
+ * `RetiredRecoveryEnvelopeVersionError` ("set recovery up again") and an unknown one
+ * `UnknownRecoveryEnvelopeVersionError` ("update the app") — callers must surface
+ * both as such, never as corruption. The recovered DEK is zeroed before
  * returning. Throws on any other failure (wrong guardian, wrong role, tampered
  * envelope, account mismatch).
  */
 export async function openRecoveryBundle(args: {
   envelope: RecoveryEnvelope;
   kernelAddress: string;
-  /** Must match the role the envelope was sealed for (v2+; v1 predates roles). */
+  /** Must match the role the envelope was sealed for. */
   role: RecoveryAadRole;
   guardianKeypair: GuardianEncryptionKeypair;
 }): Promise<RecoveryBundle> {
