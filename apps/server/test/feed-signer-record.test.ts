@@ -190,7 +190,8 @@ test("the resolver asks the record before the directory", () => {
 });
 
 test("getEvent checks the creator before it caches or serves a feed", () => {
-  const getEvent = between("export async function getEvent(", "\n}\n");
+  // getEvent is a wrapper; the read (and the cache write) live in getEventRead.
+  const getEvent = between("async function getEventRead(", "\n}\n");
   const accept = getEvent.indexOf("feed = acceptEventFeed(eventId, feed)");
   const deleted = getEvent.indexOf("if (feed?.deleted)");
   const cache = getEvent.indexOf("_eventCache.set(");
@@ -205,9 +206,15 @@ test("the directory's signer is born from the record", () => {
 
 test("registration's cold-cache fallback checks the creator before it primes the cache", () => {
   const confirm = between("export async function confirmSeriesOnChain(", "\nexport ");
-  const read = confirm.indexOf("feed = acceptEventFeed(eventId, await readEventFeedSoc(eventId, signerHint))");
+  const read = confirm.indexOf("feed = acceptEventFeed(eventId, soc.feed)");
   const prime = confirm.indexOf("primeEventCache(eventId, updated)");
   assert.ok(read > 0 && prime > read, "accept the fallback read, then prime");
+});
+
+test("registration primes the money-path cache only off a clean read (#657)", () => {
+  const confirm = between("export async function confirmSeriesOnChain(", "\nexport ");
+  assert.match(confirm, /if \(cacheable\) primeEventCache\(eventId, updated\);\n\s*else invalidateEventCache\(eventId\);/);
+  assert.match(confirm, /cacheable = soc\.scanClean;/);
 });
 
 test("the public page applies the same creator check, so it never shows what checkout refuses", () => {

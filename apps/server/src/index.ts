@@ -5,7 +5,7 @@ import { serve } from "@hono/node-server";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FEATURES } from "@woco/shared";
+import { FEATURES, FEED_FAMILY_STORES } from "@woco/shared";
 import type { AppEnv } from "./types.js";
 import { buildInfo } from "./config/build-info.js";
 import { requireAuth } from "./middleware/auth.js";
@@ -39,6 +39,7 @@ import { resendWebhook } from "./routes/resend-webhook.js";
 import { sesWebhook } from "./routes/ses-webhook.js";
 import { marketing } from "./routes/marketing.js";
 import { ethernaRoutes } from "./routes/etherna.js";
+import { ethernaFetchBaseNotice } from "./lib/etherna/gateway.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { ensGatewayRoutes, ensGatewayStatus } from "./routes/ens-gateway.js";
 import { subEnsApexHealth } from "./lib/chain/sub-ens-apex.js";
@@ -127,6 +128,12 @@ if (!process.env.ALLOWED_HOSTS) {
   console.warn(
     "[startup] ALLOWED_HOSTS not set — using dev default (localhost:5173,localhost:3001)",
   );
+}
+{
+  // Not fatal: pointing the server's own Etherna calls elsewhere is legitimate.
+  // Said at boot because routing will NOT follow it (#657).
+  const notice = ethernaFetchBaseNotice();
+  if (notice) console.warn(`[startup] ${notice}`);
 }
 
 // A configured proxy with no UPLOAD_SECRET cannot whitelist anything, and an
@@ -315,6 +322,12 @@ function healthReport() {
     // false` while the key IS set means the key derives an address clients do
     // not read — the boot log names both.
     campaignIssuer: campaignIssuerHealth(),
+    // Where each content-feed family is stamped, as THIS build reads and writes
+    // it (#657) - the shared table the frontend is built from too. It is the gate
+    // for moving a family: deploy the server, see the row here, then deploy the
+    // frontend. A frontend that moves a family first writes where this server
+    // does not yet look.
+    feedRoutes: FEED_FAMILY_STORES,
     // The client-SOC relay's limiter (#301). `globalTrippedAt` non-null is the
     // alarm: the per-process ceiling that legitimate traffic never reaches has
     // refused writes with 503 — either an attack on the postage batch or a

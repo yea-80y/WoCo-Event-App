@@ -13,8 +13,9 @@ import { Bee, type Topic, type PrivateKey, FeedIndex } from "@ethersphere/bee-js
 import { Binary } from "cafe-utility";
 import { calculateSocAddress, calculateCacAddress, encodeSpan } from "@woco/shared";
 import { ensureEthernaToken, getCachedEthernaToken } from "./auth.js";
+import { ETHERNA_FETCH_BASE } from "./gateway.js";
 
-const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
+const ETHERNA_GW = ETHERNA_FETCH_BASE;
 
 let _ethernaBee: Bee | null = null;
 

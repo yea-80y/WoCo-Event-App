@@ -30,16 +30,26 @@
  * head may sit in Etherna's store. WoCo-stamped feeds never pay that price.
  * Adding an operator's gateway, or a user's own bee, is one more entry in
  * `sourcesFor`, not a new branch.
+ *
+ * ONE READER FOR BOTH (#657). The server's own feed scans (soc-upload.ts) read
+ * through here too, routed by the caller's FAMILY from the shared table instead
+ * of by a request's gateway. They used to read through a bee-js reader with an
+ * Etherna fallback that ran for every feed and returned "absent" whenever
+ * Etherna could not answer - so a scan of an Etherna-stamped feed during an
+ * Etherna blip stopped at the previous version and called it clean.
  */
 
 import { Signature } from "@ethersphere/bee-js";
 import {
+  FEED_FAMILY_STORES,
   calculateCacAddress,
   calculateSocAddress,
   encodeSpan,
   socSignDigest,
   splitStoredSoc,
   SOC_IDENTIFIER_SIZE,
+  type FeedFamily,
+  type FeedStore,
 } from "@woco/shared";
 import { BEE_URL } from "../../config/swarm.js";
 import { BEE_CALL_TIMEOUT_MS } from "./upload-queue.js";
@@ -47,8 +57,9 @@ import { whitelistHashes } from "./whitelist.js";
 import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
 import { registerEthernaOffer } from "../etherna/upload.js";
 import { isEthernaGateway } from "../etherna/batch-router.js";
+import { ETHERNA_FETCH_BASE } from "../etherna/gateway.js";
 
-const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
+const ETHERNA_GW = ETHERNA_FETCH_BASE;
 const ETHERNA_READ_TIMEOUT_MS = 8_000;
 
 export type RawSocRead =
@@ -212,9 +223,17 @@ export const ethernaSource: SocSource = {
  * here.
  */
 export function sourcesFor(gatewayUrl?: string): SocSource[] {
-  const sources: SocSource[] = [wocoBeeSource];
-  if (gatewayUrl && isEthernaGateway(gatewayUrl)) sources.push(ethernaSource);
-  return sources;
+  return sourcesForStore(gatewayUrl && isEthernaGateway(gatewayUrl) ? "etherna" : "woco");
+}
+
+/** The sources for a store: our bee always, Etherna too for an Etherna store. */
+export function sourcesForStore(store: FeedStore): SocSource[] {
+  return store === "etherna" ? [wocoBeeSource, ethernaSource] : [wocoBeeSource];
+}
+
+/** The sources for a family, from the shared table - the server's own scans. */
+export function sourcesForFamily(family: FeedFamily): SocSource[] {
+  return sourcesForStore(FEED_FAMILY_STORES[family]);
 }
 
 /**
@@ -225,10 +244,16 @@ export function sourcesFor(gatewayUrl?: string): SocSource[] {
 const healed = new Set<string>();
 function healOnFound(source: string, address: string): void {
   if (healed.has(`${source}:${address}`)) return;
-  healed.add(`${source}:${address}`);
-  if (healed.size > 10_000) healed.clear();
+  markHealed(source, address);
   if (source === "wocoBee") whitelistHashes([address]).catch(() => undefined);
   if (source === "etherna") registerEthernaOffer(address).catch(() => undefined);
+}
+
+/** The upload path whitelisted (or offered) this chunk itself, so a read of it
+ *  need not repeat the call. */
+export function markHealed(source: string, address: string): void {
+  healed.add(`${source}:${address}`);
+  if (healed.size > 10_000) healed.clear();
 }
 
 /**
@@ -239,7 +264,9 @@ function healOnFound(source: string, address: string): void {
 export async function readVerifiedSoc(
   ownerHex: string,
   identifierHex: string,
-  opts: { gatewayUrl?: string; sources?: SocSource[] } = {},
+  /** Which sources to ask: explicit `sources` (tests), else the caller's `family`
+   *  (server scans), else the request's `gatewayUrl` (the client fallback). */
+  opts: { gatewayUrl?: string; family?: FeedFamily; sources?: SocSource[] } = {},
 ): Promise<VerifiedSocRead> {
   let owner: string, identifier: string;
   try {
@@ -251,7 +278,7 @@ export async function readVerifiedSoc(
     throw err;
   }
   const address = bytesToHex(calculateSocAddress(hexToBytes(identifier), hexToBytes(owner)));
-  const sources = opts.sources ?? sourcesFor(opts.gatewayUrl);
+  const sources = opts.sources ?? (opts.family ? sourcesForFamily(opts.family) : sourcesFor(opts.gatewayUrl));
 
   // Sequential, in order: the first source is the cheap, authoritative one, and
   // a found there spares the others a request.

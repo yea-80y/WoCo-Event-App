@@ -85,7 +85,8 @@ For a non-feed fixed-identifier SOC, `socId` is just the chosen identifier.
 
 ## Env vars
 
-`ETHERNA_ENABLED`, `ETHERNA_GATEWAY_URL` (default `https://gateway.etherna.io`),
+`ETHERNA_ENABLED`, `ETHERNA_GATEWAY_URL` (default `https://gateway.etherna.io`; since #657 only
+where the server's own requests go - routing always uses the canonical host),
 `ETHERNA_API_KEY` (→ bearer token), plus the own-Bee set (`BEE_URL`, `PROXY_URL`,
 `POSTAGE_BATCH_ID`, `FEED_PRIVATE_KEY`).
 

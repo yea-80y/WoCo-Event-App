@@ -6,7 +6,7 @@ import type {
 import { verifyManifestV2, buildEditionTree, manifestV2Digest, bytesToHex0x, eventContentTopic, FEATURES } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
 import { batchForDeploy, ETHERNA_URL, isEthernaGateway, isWocoGateway, PlatformBatchUnavailable, type BatchSelection } from "../etherna/batch-router.js";
-import { readContentFeedJson, invalidateContentFeedVersion } from "../swarm/soc-upload.js";
+import { readContentFeedJsonResult, invalidateContentFeedVersion } from "../swarm/soc-upload.js";
 import { whitelistHashes } from "../swarm/whitelist.js";
 import { getActiveChainId, type EventContractTarget } from "../chain/event-contract.js";
 import { assertNoOrders } from "./delete-safety.js";
@@ -359,9 +359,15 @@ export async function confirmSeriesOnChain(
   // from it first (recordOnChainEventId above keeps the chain authoritative regardless).
   // The signerHint SOC read stays as the cold-cache fallback (e.g. a retried confirm
   // after a restart, once the client SOC does exist).
-  let feed = await getEvent(eventId);
+  let { feed, cacheable } = await getEventRead(eventId);
   // Same creator check as getEvent: this feed primes the money-path cache below.
-  if (!feed && signerHint) feed = acceptEventFeed(eventId, await readEventFeedSoc(eventId, signerHint));
+  if (!feed && signerHint) {
+    const soc = await readEventFeedSocResult(eventId, signerHint);
+    if (soc.status === "found") {
+      feed = acceptEventFeed(eventId, soc.feed);
+      cacheable = soc.scanClean;
+    }
+  }
   if (!feed) throw new Error("Event not found");
 
   const updated: EventFeed = {
@@ -380,7 +386,10 @@ export async function confirmSeriesOnChain(
   // Re-seed (not just invalidate) with the onChainEventId-merged feed so the test
   // purchase's reserve/claim immediately after registration reads the v2 event from
   // cache instead of racing the still-propagating directory carrier (Problem 2).
-  primeEventCache(eventId, updated);
+  // Not off an inconclusive read (#657): `updated` is built on it, and the next
+  // read merges the on-chain id from the record anyway.
+  if (cacheable) primeEventCache(eventId, updated);
+  else invalidateEventCache(eventId);
 
   // #37: register-success is the directory-snapshot trigger. The on-chain
   // `Registered` log is the enumerator, but its `manifestRef` is a digest (not a
@@ -500,6 +509,9 @@ export interface EventMetaUpdates {
  * check gates every path, and directory entries are additionally re-checked
  * against their own platform-written `creatorAddress` at the write boundary.
  */
+/** Starts "Could not verify", which both owner routes answer with 503. */
+export const EVENT_BASIS_UNVERIFIED = "Could not verify the event's latest version - please try again in a moment";
+
 /**
  * Resolve an event feed for an OWNER mutation (edit/delete), tracking WHERE the
  * basis came from. The trust rules in the {@link updateEventMetadata} doc apply:
@@ -515,9 +527,24 @@ async function resolveEventForOwner(
   let source: "trusted-soc" | "platform" | "hint" | null = null;
   let feed: EventFeed | null = null;
 
+  // The basis of an owner edit is a read-modify-write: the client re-signs what
+  // this returns at the NEXT version, so a base older than the head would erase
+  // the version in between - a cancellation banner, the re-sign carrying the
+  // on-chain id (#651's shape, #657). A read that could not reach the head, or
+  // could not answer, refuses with "try again" rather than falling through.
+  const readBasis = async (signer: string): Promise<EventFeed | null> => {
+    const res = await readEventFeedSocResult(eventId, signer);
+    if (res.status === "absent") return null;
+    if (res.status === "unavailable" || !res.scanClean) {
+      console.warn(`[event] ${eventId}: owner edit refused - ${res.status === "unavailable" ? res.reason : "version scan inconclusive"}`);
+      throw new Error(EVENT_BASIS_UNVERIFIED);
+    }
+    return res.feed;
+  };
+
   const trustedSigner = await resolveCreatorFeedSigner(eventId);
   if (trustedSigner) {
-    feed = await readEventFeedSoc(eventId, trustedSigner);
+    feed = await readBasis(trustedSigner);
     if (feed) source = "trusted-soc";
   }
   // The caller's own creator index is the second TRUSTED carrier: it is
@@ -527,7 +554,7 @@ async function resolveEventForOwner(
   if (!feed) {
     const own = (await getCreatorEvents(parentAddress)).find((e) => e.eventId === eventId);
     if (own?.creatorFeedSigner) {
-      feed = await readEventFeedSoc(eventId, own.creatorFeedSigner);
+      feed = await readBasis(own.creatorFeedSigner);
       if (feed) source = "trusted-soc";
     }
   }
@@ -537,7 +564,7 @@ async function resolveEventForOwner(
     if (feed) source = "platform";
   }
   if (!feed && signerHint) {
-    feed = await readEventFeedSoc(eventId, signerHint);
+    feed = await readBasis(signerHint);
     if (feed) {
       // A hint-read feed MUST self-describe as owned by that exact signer.
       if (feed.creatorFeedSigner?.toLowerCase() !== signerHint.toLowerCase()) {
@@ -816,15 +843,50 @@ export function decodeEventFeed(payload: Uint8Array, expectedEventId: string): E
 }
 
 /**
+ * A client-owned event feed read, without collapsing its answers (#657).
+ * `absent` also covers a feed that does not decode as this event (see
+ * {@link decodeEventFeed}) - every caller treats that as not found.
+ * `scanClean: false` means the version scan could not ask every question, so
+ * the feed may be one the organiser has since replaced: fine to show, never to
+ * keep in the money-path cache or to build the next version on.
+ */
+export type EventFeedSocRead =
+  | { status: "found"; feed: EventFeed; scanClean: boolean }
+  | { status: "absent" }
+  | { status: "unavailable"; reason: string };
+
+/**
  * Read a client-owned event detail feed (Phase B) as a SOC owned by `signer`.
  * The payload is the raw EventFeed JSON the client signed (≤4096 bytes); decode
- * with the null-tolerant feed decoder. Returns null if the chunk is absent (e.g.
- * the client's SOC upload hasn't propagated yet) so callers fall back to legacy.
+ * with the null-tolerant feed decoder.
+ *
+ * Through the `event` DISCOVERY family: new events are stamped on Etherna and
+ * older ones on WoCo, and which one is recorded only inside the payload, so the
+ * scan asks both. The price: a scan-ending miss asks Etherna for every event,
+ * so an Etherna outage makes these reads dirty (served, not cached) rather than
+ * silently stale.
+ */
+export async function readEventFeedSocResult(eventId: string, signer: string): Promise<EventFeedSocRead> {
+  let res: Awaited<ReturnType<typeof readContentFeedJsonResult>>;
+  try {
+    res = await readContentFeedJsonResult(signer.replace(/^0x/, ""), eventContentTopic(eventId), "event");
+  } catch (err) {
+    return { status: "unavailable", reason: err instanceof Error ? err.message : String(err) };
+  }
+  if (res.status === "absent") return res;
+  if (res.status === "unavailable") return { status: "unavailable", reason: res.reason ?? "unavailable" };
+  const feed = decodeEventFeed(res.bytes, eventId);
+  return feed ? { status: "found", feed, scanClean: res.scanClean } : { status: "absent" };
+}
+
+/**
+ * The same read for DISPLAY and other non-caching paths: the feed, or null for
+ * anything else (so callers fall back to legacy). Never the basis of a cache
+ * entry or an owner edit - those use {@link readEventFeedSocResult}.
  */
 export async function readEventFeedSoc(eventId: string, signer: string): Promise<EventFeed | null> {
-  const payload = await readContentFeedJson(signer.replace(/^0x/, ""), eventContentTopic(eventId)).catch(() => null);
-  if (!payload) return null;
-  return decodeEventFeed(payload, eventId);
+  const res = await readEventFeedSocResult(eventId, signer);
+  return res.status === "found" ? res.feed : null;
 }
 
 /**
@@ -875,18 +937,44 @@ async function resolveCreatorFeedSigner(eventId: string): Promise<string | null>
  * @param signerHint  TRUSTED Phase B discovery carrier (directory / SiteEventsIndex).
  */
 export async function getEvent(eventId: string, signerHint?: string): Promise<EventFeed | null> {
+  return (await getEventRead(eventId, signerHint)).feed;
+}
+
+/**
+ * {@link getEvent}, and whether its answer came from a clean read. `cacheable:
+ * false` means the SOC's version scan could not ask every question: the feed is
+ * served but was NOT cached, and a caller must not prime the cache with anything
+ * built on it either (#657).
+ */
+async function getEventRead(
+  eventId: string,
+  signerHint?: string,
+): Promise<{ feed: EventFeed | null; cacheable: boolean }> {
   const now = Date.now();
   const cached = _eventCache.get(eventId);
   // applyOnChainEventIds fills a series' onChainEventId from the server's chain
   // receipt when the signed feed lacks it (client SOC not re-signed). Applied on the
   // cache hit too so a feed cached BEFORE registration still flips to v2.
-  if (cached && cached.expiresAt > now) return await applyOnChainEventIds(cached.feed);
+  if (cached && cached.expiresAt > now) return { feed: await applyOnChainEventIds(cached.feed), cacheable: true };
 
   // Phase B: if the event has a known content-feed signer (hint or directory
   // carrier), read its client-signed SOC. Fall back to the legacy platform feed
   // when there is no signer (legacy event) or the SOC hasn't propagated yet.
   const signer = signerHint ?? (await resolveCreatorFeedSigner(eventId)) ?? undefined;
-  let feed: EventFeed | null = signer ? await readEventFeedSoc(eventId, signer) : null;
+  let feed: EventFeed | null = null;
+  let cacheable = true;
+  if (signer) {
+    const soc = await readEventFeedSocResult(eventId, signer);
+    if (soc.status === "found") {
+      feed = soc.feed;
+      // A dirty scan's version is a lower bound: an organiser's newer version
+      // may sit where the scan could not ask. Good enough to answer with - it is
+      // what the server would have served anyway, and refusing would stop every
+      // sale for the length of an Etherna outage - but not to keep for the
+      // cache's ten minutes.
+      cacheable = soc.scanClean;
+    }
+  }
   if (!feed) {
     const page = await readFeedPageWithRetry(topicEvent(eventId));
     feed = page ? decodeEventFeed(page, eventId) : null;
@@ -895,15 +983,16 @@ export async function getEvent(eventId: string, signerHint?: string): Promise<Ev
   // feed's creator is who gets paid, and the organiser signs the feed.
   feed = acceptEventFeed(eventId, feed);
   // Tombstoned (deleted) events read as not-found on every path — money included.
-  if (feed?.deleted) return null;
+  if (feed?.deleted) return { feed: null, cacheable };
   if (feed) {
-    _eventCache.set(eventId, { feed, expiresAt: now + EVENT_CACHE_TTL_MS });
+    if (cacheable) _eventCache.set(eventId, { feed, expiresAt: now + EVENT_CACHE_TTL_MS });
+    else console.warn(`[event] ${eventId}: served from an inconclusive version scan - not cached`);
     await applyOnChainEventIds(feed);
     for (const s of feed.series) {
       console.log(`[event] Read series "${s.name}" payment:`, s.payment ? JSON.stringify(s.payment) : "FREE");
     }
   }
-  return feed;
+  return { feed, cacheable };
 }
 
 /** Max time to wait for the (slow, cold) global-directory carrier lookup before
