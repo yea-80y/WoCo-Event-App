@@ -505,25 +505,37 @@ export async function resolveLatestSocVersion(
   const hintGiven = hint > 0;
   let start = hintGiven ? Math.min(hint, maxVersion) : 0;
   let hintValidated = false;
-  if (start > 0) {
-    hintValidated = await exists(start);
-    if (!hintValidated) start = 0; // hint unreliable → full scan
-  }
 
-  // A validated hint is already known to exist: the scan continues past it
-  // rather than asking about it a second time.
-  let latest = hintValidated ? start : -1;
-  for (let cursor = hintValidated ? start + 1 : start; cursor <= maxVersion; cursor += VERSION_PROBE_WINDOW) {
-    const width = Math.min(VERSION_PROBE_WINDOW, maxVersion - cursor + 1);
+  // The first window starts AT the hint, so the hint is checked in the same
+  // round trip as the version after it: an accurate hint costs one hit and the
+  // one miss that ends the scan, with nothing asked twice (#689 - a client may
+  // re-ask the server about a hinted version, so a second probe of it was a
+  // second server round trip, and probing the hint on its own first put a
+  // second miss or a second round trip on the common case). An invalid hint
+  // costs the miss after it as well - the rare case, and the alarm.
+  let latest = -1;
+  let cursor = start;
+  while (cursor <= maxVersion) {
+    const from = cursor;
+    const width = Math.min(VERSION_PROBE_WINDOW, maxVersion - from + 1);
     const flags = await Promise.all(
-      Array.from({ length: width }, (_, i) => exists(cursor + i)),
+      Array.from({ length: width }, (_, i) => exists(from + i)),
     );
+    if (from === start && start > 0 && !hintValidated) {
+      if (!flags[0]) {
+        start = 0; // hint unreliable → full scan
+        cursor = 0;
+        continue;
+      }
+      hintValidated = true;
+    }
     let ended = false;
     for (let i = 0; i < width; i++) {
-      if (flags[i]) latest = cursor + i;
+      if (flags[i]) latest = from + i;
       else { ended = true; break; }
     }
     if (ended) break;
+    cursor = from + width;
   }
   return { latest: latest >= 0 ? latest : null, clean, hintGiven, hintValidated, scannedFrom: start };
 }

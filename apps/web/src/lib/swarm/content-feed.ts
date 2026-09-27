@@ -36,6 +36,7 @@ import {
   LEGACY_CONTENT_FEED_VERSION,
   type ContentFeedManifest,
   type SocChunkProbe,
+  type SocReadOutcome,
   SOC_MAX_PAYLOAD_SIZE,
 } from "@woco/shared";
 
@@ -139,13 +140,23 @@ function knownChunkProbe(
   known: (id: Uint8Array) => boolean,
   onGone: (id: Uint8Array) => void = () => undefined,
 ): SocChunkProbe {
+  // Chunks are immutable, so a chunk this read already found is not asked for
+  // again: the resolver finds the head, then the assembler reads the same
+  // address - which in the lag window was a second server round trip.
+  const found = new Map<string, SocReadOutcome>();
   return async (id) => {
-    const first = await probeSoc(owner, id, { thorough, gatewayUrl: route.gatewayUrl });
-    if (thorough || first.status !== "absent" || !known(id)) return first;
-    countEscalation();
-    const again = await probeSoc(owner, id, { thorough: true, gatewayUrl: route.gatewayUrl });
-    if (again.status === "absent") onGone(id);
-    return again;
+    const key = idHex(id);
+    const seen = found.get(key);
+    if (seen) return seen;
+    let outcome = await probeSoc(owner, id, { thorough, gatewayUrl: route.gatewayUrl });
+    if (!thorough && outcome.status === "absent" && known(id)) {
+      countEscalation();
+      outcome = await probeSoc(owner, id, { thorough: true, gatewayUrl: route.gatewayUrl });
+      // Only a definite answer drops the hint: "could not ask" keeps it.
+      if (outcome.status === "absent") onGone(id);
+    }
+    if (outcome.status === "found") found.set(key, outcome);
+    return outcome;
   };
 }
 

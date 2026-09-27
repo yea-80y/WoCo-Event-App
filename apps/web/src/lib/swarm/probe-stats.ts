@@ -171,6 +171,7 @@ export async function measured<T>(label: string, action: () => Promise<T>): Prom
   const before = probeCounts();
   const hintsBefore = hintCounts();
   const statusBefore = gatewayMissStatuses();
+  const escalatedBefore = escalationCount();
   const started = performance.now();
   try {
     return await action();
@@ -198,7 +199,8 @@ export async function measured<T>(label: string, action: () => Promise<T>): Prom
       `[probes] ${label}: ${ms}ms · ${probes} probes (${misses} miss) ` +
         `· gw ${delta.gatewayHit}/${delta.gatewayMiss} · api ${delta.serverHit}/${delta.serverMiss} ` +
         `· gwmiss 403:${s403} 404:${s404} 5xx:${s5xx} ?:${sOther} ` +
-        `· hints ${used} used / ${cold} cold / ${bad} INVALIDATED`,
+        `· hints ${used} used / ${cold} cold / ${bad} INVALIDATED ` +
+        `· re-asked ${escalationCount() - escalatedBefore}`,
     );
   }
 }
