@@ -18,7 +18,8 @@
  * X-Wing's combiner binds the X25519 key and ML-KEM binds H(pk).
  *
  * Import by subpath (`@woco/shared/crypto/sealed-box`) and, in the browser, load it
- * lazily: it carries the lattice code and HPKE, ~25 KB gzipped together.
+ * lazily: it carries the lattice code and HPKE (measured standalone 2026-09-27: X-Wing
+ * ~20 KB gz, `@hpke/core` ~5 KB gz; measure again in the first rail that bundles it).
  */
 
 import { Aes256Gcm, CipherSuite, HkdfSha256 } from "@hpke/core";
@@ -44,12 +45,21 @@ export interface SealContext {
   aad: string;
 }
 
-/** Thrown by `openBox` for anything that is not a v2 box — a typed error so a
- *  caller can say "this was sealed by a format we no longer read". */
+/** Thrown by `openBox` for a box of another VERSION — a typed error so a caller
+ *  can say "this was sealed by a format we no longer read". */
 export class UnsupportedSealedBoxError extends Error {
   constructor(detail: string) {
     super(`unsupported sealed box: ${detail}`);
     this.name = "UnsupportedSealedBoxError";
+  }
+}
+
+/** Thrown by `openBox` for something that claims v2 but is not a well-formed v2
+ *  box — corruption, never "an old format". */
+export class MalformedSealedBoxError extends Error {
+  constructor() {
+    super("malformed sealed box: claims v2 but its fields are not a v2 box");
+    this.name = "MalformedSealedBoxError";
   }
 }
 
@@ -90,11 +100,16 @@ const TAG_BYTES = 16;
  * A v2 box by SHAPE — for the code that must tell "sealed" from "plain" before it
  * has a key (a server refusing to store cleartext, a participant list). Shape only:
  * it proves nothing about who sealed it or whether it opens.
+ *
+ * EXACTLY the three fields. A box with anything beside them is refused, so a
+ * "sealed, therefore safe to store" check can never wave through cleartext riding
+ * next to a valid box.
  */
 export function isSealedBoxV2(x: unknown): x is SealedBoxV2 {
-  if (typeof x !== "object" || x === null) return false;
+  if (typeof x !== "object" || x === null || Array.isArray(x)) return false;
   const b = x as Record<string, unknown>;
   return (
+    Object.keys(b).length === 3 &&
     b.v === SEALED_BOX_VERSION &&
     typeof b.enc === "string" &&
     b.enc.length === XWING_CIPHERTEXT_BYTES * 2 &&
@@ -151,6 +166,7 @@ export async function openBox(
 ): Promise<Uint8Array> {
   if (!isSealedBoxV2(box)) {
     const v = typeof box === "object" && box !== null ? (box as { v?: unknown }).v : undefined;
+    if (v === SEALED_BOX_VERSION) throw new MalformedSealedBoxError();
     throw new UnsupportedSealedBoxError(
       v === undefined ? "no version (the retired X25519-only format?)" : `version ${String(v)}`,
     );

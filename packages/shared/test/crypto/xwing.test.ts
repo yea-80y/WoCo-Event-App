@@ -39,6 +39,7 @@ import {
   orderSealContext,
   listSealContext,
   UnsupportedSealedBoxError,
+  MalformedSealedBoxError,
   ORDER_SEAL_INFO,
   LIST_SEAL_INFO,
 } from "../../src/crypto/sealed-box.js";
@@ -227,9 +228,28 @@ test("the wrong key fails, and a tampered box fails", async () => {
 test("open refuses every box that is not v2 — including the retired X25519 shape", async () => {
   const box = await sealBox(ACCOUNT.publicKey, te.encode("x"), ORDER_CTX);
   const retired = { ephemeralPublicKey: "ab".repeat(32), iv: "00".repeat(12), ciphertext: "00".repeat(32) };
-  for (const bad of [retired, { ...box, v: 1 }, { ...box, v: 3 }, { ...box, enc: box.enc.slice(2) }, null, "box"]) {
+  for (const bad of [retired, { ...box, v: 1 }, { ...box, v: 3 }, null, "box"]) {
     await assert.rejects(openBox(ACCOUNT.secretKey, bad, ORDER_CTX), UnsupportedSealedBoxError);
   }
+});
+
+test("a v2 box with broken fields is MALFORMED, never mistaken for an old format", async () => {
+  const box = await sealBox(ACCOUNT.publicKey, te.encode("x"), ORDER_CTX);
+  for (const bad of [
+    { ...box, enc: box.enc.slice(2) },
+    { ...box, ct: box.ct.toUpperCase() },
+    { ...box, ct: "" },
+  ]) {
+    await assert.rejects(openBox(ACCOUNT.secretKey, bad, ORDER_CTX), MalformedSealedBoxError);
+  }
+});
+
+test("the shape check takes EXACTLY {v, enc, ct} — nothing may ride beside a box", async () => {
+  const box = await sealBox(ACCOUNT.publicKey, te.encode("x"), ORDER_CTX);
+  assert.ok(isSealedBoxV2(box));
+  assert.equal(isSealedBoxV2({ ...box, email: "ada@example.com" }), false);
+  assert.equal(isSealedBoxV2([box.v, box.enc, box.ct]), false);
+  await assert.rejects(openBox(ACCOUNT.secretKey, { ...box, note: "x" }, ORDER_CTX), MalformedSealedBoxError);
 });
 
 test("seal refuses a public key that is not X-Wing: wrong length, or failing the ML-KEM modulus check", async () => {
