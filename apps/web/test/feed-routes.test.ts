@@ -37,10 +37,11 @@ test("each family is stamped where the table says - a move is a deliberate diff 
   const onEtherna = Object.entries(FEED_ROUTES).filter(([, r]) => r.target === "etherna").map(([k]) => k).sort();
   // Profiles have been Etherna since #617; event and site reads ask Etherna
   // because new ones are stamped there; the manifest, social, the referee's
-  // referral statement and the recovery portability + escrow envelopes moved in #689.
+  // referral statement and the three recovery rows moved in #689.
   // Everything else has not moved yet.
   assert.deepEqual(onEtherna, [
-    "event", "manifest", "profile", "recoveryEnvelope", "recoveryPortability", "referral", "site", "social",
+    "event", "guardianIndex", "manifest", "profile", "recoveryEnvelope", "recoveryPortability", "referral", "site",
+    "social",
   ]);
   for (const [family, route] of Object.entries(FEED_ROUTES)) {
     const store = route.target === "etherna" ? ETHERNA_ROUTE : WOCO_ROUTE;
@@ -225,10 +226,11 @@ test("only tests pick where a signed chunk goes: no app code passes a transport"
     "upsertFeedEntry", "trashFeedEntryOnManifest", "restoreFeedEntryOnManifest", "rebuildManifest",
     "writeContentFeedVerified", "writeContentFeedSettling", "addToSubjectIndex", "writeStatement",
     "writePortabilityEnvelope", "backfillPortabilityEnvelope", "uploadRecoveryEnvelopeSoc",
+    "upsertGuardianAccountIndex",
   ];
   const THREADING = new Set([
     "lib/manifest/inventory.ts", "lib/swarm/verified-write.ts", "lib/social/subject-index.ts", "lib/social/social-core.ts",
-    "lib/auth/recovery-portability.ts", "lib/swarm/recovery-feed.ts",
+    "lib/auth/recovery-portability.ts", "lib/swarm/recovery-feed.ts", "lib/swarm/guardian-index-feed.ts",
   ]);
   const offenders: string[] = [];
   let threaded = 0;
@@ -248,7 +250,7 @@ test("only tests pick where a signed chunk goes: no app code passes a transport"
       }
     }
   }
-  assert.ok(threaded >= 14, `only ${threaded} threaded transports seen - the scan is not seeing the threading modules`);
+  assert.ok(threaded >= 15, `only ${threaded} threaded transports seen - the scan is not seeing the threading modules`);
   assert.deepEqual(offenders, []);
 });
 
