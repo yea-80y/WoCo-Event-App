@@ -23,6 +23,9 @@ import type { Hex0x } from "@woco/shared";
 import { requireAccountForAction } from "../auth/ensure-action.js";
 import { get } from "./client.js";
 import { readMyStatement, writeMyStatement, type SocialKind } from "../social/social.js";
+import { STATEMENT_FORMAT } from "../social/social-core.js";
+
+export { kindForVariant } from "../social/social-core.js";
 import { isObservedCount, readCachedCount, rememberCount } from "../social/count-cache.js";
 
 export interface SocialState {
@@ -31,16 +34,6 @@ export interface SocialState {
   count: number | null;
 }
 
-/** A "follow" pill writes a follow; every other variant writes a like. */
-export function kindForVariant(variant: "interested" | "follow"): SocialKind {
-  return variant === "follow" ? "follow" : "like";
-}
-
-/** The statement format each kind tallies under, for the indexer query. */
-const FORMAT: Record<SocialKind, string> = {
-  like: "woco.like.v1",
-  follow: "woco.follow.v1",
-};
 
 /**
  * The public count, or null if nobody could tell us. Never throws: a count is
@@ -53,7 +46,7 @@ const FORMAT: Record<SocialKind, string> = {
 async function fetchCount(kind: SocialKind, subject: Hex0x): Promise<number | null> {
   try {
     const res = await get<{ count: number }>(
-      `/api/social/count?format=${encodeURIComponent(FORMAT[kind])}&subject=${encodeURIComponent(subject)}`,
+      `/api/social/count?format=${encodeURIComponent(STATEMENT_FORMAT[kind])}&subject=${encodeURIComponent(subject)}`,
     );
     // Same test the cache applies, deliberately: a display path that accepts a
     // number the cache would refuse renders a figure ("NaN followers") that no

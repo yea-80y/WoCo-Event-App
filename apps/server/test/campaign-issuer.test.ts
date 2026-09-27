@@ -431,3 +431,41 @@ test("a confirmation primes the gate's referral memo, from the confirmation itse
     gate.resetReferralUnlockMemo();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Every read names its family (#657)
+// ---------------------------------------------------------------------------
+
+test("the referee's statement is read as `referral`; everything the issuer wrote as `campaignIssuer`", async () => {
+  const reads: string[] = [];
+  const base = recorder().deps;
+  const deps: IssuerDeps = {
+    ...base,
+    readHead: async (owner, topic, family) => {
+      reads.push(`head ${topic === STATEMENT_TOPIC ? "statement" : topic.startsWith("woco/badge/") ? "badge" : topic} ${family}`);
+      return base.readHead(owner, topic, family);
+    },
+    readVersion0: async (owner, topic, family) => {
+      reads.push(`v0 ${topic === CONFIRM_TOPIC ? "confirmation" : topic} ${family}`);
+      return base.readVersion0(owner, topic, family);
+    },
+    readBanded: async (owner, topicForBand, family) => {
+      reads.push(`banded index ${family}`);
+      return base.readBanded(owner, topicForBand, family);
+    },
+  };
+  assert.equal((await issuer.confirmReferral(ARGS, deps)).status, "confirmed");
+  await issuer.readConfirmation(REFEREE, deps);
+  await issuer.readBadge(REFEREE, deps);
+  assert.deepEqual(reads, [
+    "v0 confirmation campaignIssuer",
+    // The countersign check: the referee's own feed, wherever `referral` is stamped.
+    "head statement referral",
+    "banded index campaignIssuer",
+    // Both parties' Joined badges, issued off the confirmation.
+    "head badge campaignIssuer",
+    "head badge campaignIssuer",
+    "v0 confirmation campaignIssuer",
+    "head badge campaignIssuer",
+  ]);
+});

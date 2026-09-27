@@ -13,8 +13,7 @@ import {
   provisionEthernaBatch,
   estimateEthernaBatch,
 } from "../lib/etherna/batches.js";
-
-const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
+import { ETHERNA_GATEWAY_URL } from "@woco/shared";
 
 function defaultDepth(): number {
   return Number(process.env.ETHERNA_USER_BATCH_DEPTH ?? "19");
@@ -107,7 +106,8 @@ ethernaRoutes.post("/purchase-batch", requireAuth, async (c) => {
       purchasedAt: result.purchasedAt,
       expiresAt: result.expiresAt,
       paidUntil,
-      gateway: ETHERNA_GW,
+      // Which gateway the batch lives on: a recorded value, so the canonical one.
+      gateway: ETHERNA_GATEWAY_URL,
     });
 
     console.log(`[etherna] provisioned batch ${result.batchId.slice(0, 12)}… for ${parentAddress} (depth=${depth}, ttl=${ttlDays}d, debit ${result.debitXDai} xDai, committed ${result.estimatedBZZ} BZZ)`);

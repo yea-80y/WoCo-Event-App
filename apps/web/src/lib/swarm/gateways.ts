@@ -1,13 +1,22 @@
+import {
+  ETHERNA_GATEWAY_URL,
+  FEED_FAMILIES,
+  FEED_FAMILY_STORES,
+  WOCO_GATEWAY_URL,
+  isEthernaGatewayUrl,
+  type FeedFamily,
+} from "@woco/shared";
+
 /**
- * Canonical gateway URLs. Beyond being read endpoints, these are the ROUTING
- * SIGNAL for server-side batch selection: /api/swarm/soc, /api/swarm/bytes and
- * the site/event deploy endpoints match the gatewayUrl host to decide which
- * postage batch pays (the caller's Etherna batch when they own a live one, the
- * shared Etherna platform batch otherwise, the WoCo platform batch when the
- * WoCo gateway — or nothing — is sent).
+ * Canonical gateway URLs, from `@woco/shared` so client and server recognise the
+ * same hosts (#657). Beyond being read endpoints, these are the ROUTING SIGNAL
+ * for server-side batch selection: /api/swarm/soc, /api/swarm/bytes and the
+ * site/event deploy endpoints match the gatewayUrl host to decide which postage
+ * batch pays (the caller's Etherna batch when they own a live one, the shared
+ * Etherna platform batch otherwise, the WoCo platform batch when the WoCo
+ * gateway — or nothing — is sent).
  */
-export const ETHERNA_GATEWAY_URL = "https://gateway.etherna.io";
-export const WOCO_GATEWAY_URL = "https://gateway.woco-net.com";
+export { ETHERNA_GATEWAY_URL, WOCO_GATEWAY_URL };
 
 /** Type-only brand: only this module can mint a FeedRoute. */
 declare const feedRouteBrand: unique symbol;
@@ -42,58 +51,39 @@ function familyRoute(family: string, store: FeedRoute): FeedRoute {
 }
 
 /**
- * Where each content-feed family is stamped - the one place to read it, and the
- * one place to change it. A family the CLIENT writes uses its entry for reads and
- * writes alike, so the two cannot split. An Etherna route's reads still ask our
- * bee as well, so moving a family never strands what it wrote before.
+ * Where each content-feed family is stamped: one route per row of the SHARED
+ * table (`FEED_FAMILY_STORES`, packages/shared/src/swarm/feed-routes.ts), which
+ * the server reads too (#657) - so a move is one line THERE, never here. A
+ * family the CLIENT writes uses its route for reads and writes alike, so the two
+ * cannot split. An Etherna route's reads still ask our bee as well, so moving a
+ * family never strands what it wrote before.
  *
  * A move has a rollout window (#689): a tab still running the previous app
  * writes the family's next version to the OLD store, at the same address the new
  * app may use on the new one. Every read tries our gateway first, so if the old
  * store is ours, that copy wins and the other is never read. Close other tabs
- * after the frontend deploy.
+ * after the frontend deploy. And the server goes first: its `/api/health`
+ * `feedRoutes` must show the new row before this bundle ships.
  *
- * Two rows are not that shape, and say so: `event` is a read-only discovery
- * route (writes follow each event's own recorded gateway, `feedRouteFor`), and
- * `campaignIssuer` is written by the SERVER, whose choice must move with this row
- * when it moves.
+ * Some rows are not client-written, and the shared table says so: `event` and
+ * `site` are read-only discovery routes (writes follow each feed's own recorded
+ * gateway, `feedRouteFor`), and `campaignIssuer` / `evidence` are written by
+ * the SERVER.
  */
-export const FEED_ROUTES = {
-  /** Profile data + avatar pointer (#617, #651). */
-  profile: familyRoute("profile", ETHERNA_ROUTE),
-  /**
-   * Reading event detail feeds. New events are stamped on Etherna and older ones
-   * on WoCo; an Etherna route asks both, so it reads either. WRITES are not taken
-   * from here: each event names its own gateway (`feedRouteFor(feed.gatewayUrl)`).
-   */
-  event: familyRoute("event", ETHERNA_ROUTE),
-  /** The encrypted-to-self backup/feed manifest (#689). */
-  manifest: familyRoute("manifest", ETHERNA_ROUTE),
-  /** Likes, follows, Interested, and their subject index. */
-  social: familyRoute("social", WOCO_ROUTE),
-  /** The referee's own referral statement and its subject index. */
-  referral: familyRoute("referral", WOCO_ROUTE),
-  /**
-   * Referral confirmations and badges. Written by the SERVER's campaign issuer
-   * (apps/server/src/lib/campaign/issuer.ts), only read here - change both sides
-   * together.
-   */
-  campaignIssuer: familyRoute("campaignIssuer", WOCO_ROUTE),
-  /** Recovery: the portability envelope, the escrow envelope, the guardian's account index. */
-  recoveryPortability: familyRoute("recoveryPortability", WOCO_ROUTE),
-  recoveryEnvelope: familyRoute("recoveryEnvelope", WOCO_ROUTE),
-  guardianIndex: familyRoute("guardianIndex", WOCO_ROUTE),
-  /** Coaster laps and their indexes. Moves last: a wrong read restarts a lifetime count. */
-  credits: familyRoute("credits", WOCO_ROUTE),
-  /** The certificate rail, outside launch scope. */
-  cert: familyRoute("cert", WOCO_ROUTE),
-} as const satisfies Record<string, FeedRoute>;
+export const FEED_ROUTES: { readonly [F in FeedFamily]: FeedRoute } = Object.freeze(
+  Object.fromEntries(
+    FEED_FAMILIES.map((family) => [
+      family,
+      familyRoute(family, FEED_FAMILY_STORES[family] === "etherna" ? ETHERNA_ROUTE : WOCO_ROUTE),
+    ]),
+  ) as { [F in FeedFamily]: FeedRoute },
+);
 
 /**
  * The route for a feed whose storage gateway is recorded ON it (events, sites,
  * shops). That value is organiser-written, so only the Etherna host selects
- * Etherna; the rule is the server's own (`isEthernaGateway`, host suffix), so
- * routing matches.
+ * Etherna - the Etherna host or a subdomain of it, with a dot boundary. The rule
+ * is shared with the server (`isEthernaGatewayUrl`, #657), so routing matches.
  *
  * `undefined` means WoCo: that is what a STORED feed without a gateway was
  * stamped on. (A create REQUEST without one means Etherna instead -
@@ -101,10 +91,5 @@ export const FEED_ROUTES = {
  * value, never a guess.)
  */
 export function feedRouteFor(gatewayUrl: string | undefined): FeedRoute {
-  if (!gatewayUrl) return WOCO_ROUTE;
-  try {
-    return new URL(gatewayUrl).host.endsWith(new URL(ETHERNA_GATEWAY_URL).host) ? ETHERNA_ROUTE : WOCO_ROUTE;
-  } catch {
-    return WOCO_ROUTE;
-  }
+  return isEthernaGatewayUrl(gatewayUrl) ? ETHERNA_ROUTE : WOCO_ROUTE;
 }

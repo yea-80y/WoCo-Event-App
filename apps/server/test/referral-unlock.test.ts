@@ -133,9 +133,9 @@ test("the memo is per address, keyed case-insensitively", async () => {
 type Banded = Parameters<Mod["liveReadReferrerIndex"]>[1];
 
 function banded(answer: VersionedFeedRead | Error) {
-  const seen: Array<{ owner: string; topic0: string; topic3: string }> = [];
-  const read: Banded = async (owner, topicForBand) => {
-    seen.push({ owner, topic0: topicForBand(0), topic3: topicForBand(3) });
+  const seen: Array<{ owner: string; topic0: string; topic3: string; family: string }> = [];
+  const read: Banded = async (owner, topicForBand, family) => {
+    seen.push({ owner, topic0: topicForBand(0), topic3: topicForBand(3), family });
     if (answer instanceof Error) throw answer;
     return { ...answer, band: 0 };
   };
@@ -150,6 +150,8 @@ test("reads at the issuer address every client reads, under the referrer's index
     owner: CAMPAIGN_ISSUER_ADDRESS.slice(2).toLowerCase(),
     topic0: referrerIndexTopic(subject, 0),
     topic3: referrerIndexTopic(subject, 3),
+    // Where the issuer writes it (#657).
+    family: "campaignIssuer",
   }]);
 });
 
