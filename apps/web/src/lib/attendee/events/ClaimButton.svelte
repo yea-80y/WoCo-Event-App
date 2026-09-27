@@ -3,6 +3,7 @@
   import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
   import { CURRENCY_SYMBOLS, calculateBuyerFees } from "@woco/shared";
   import { loadOrderKey } from "./claim/order-key.js";
+  import type { PreparedOrder } from "../../api/stripe.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { getClaimStatus } from "../../api/events.js";
@@ -324,7 +325,7 @@
       // the raw encryptedOrder to /create-checkout, which uploads it in
       // parallel with the Stripe session creation so latency is hidden behind
       // the Stripe API call we'd be doing anyway.
-      let preparedOrderRef: string | undefined;
+      let preparedOrder: PreparedOrder | undefined;
       let inlineEncryptedOrder: SealedBoxV2 | undefined;
       if (orderKey) {
         // Only reuse the pre-uploaded ref if it still matches the live form
@@ -333,7 +334,7 @@
         // upload, which seals the current formData.
         const liveSnapshot = buildOrderSnapshot(linkAccount);
         if (orderPrefetch.ref && orderPrefetch.refSnapshot === liveSnapshot) {
-          preparedOrderRef = orderPrefetch.ref;
+          preparedOrder = orderPrefetch.ref;
         } else if (orderPrefetch.inflight) {
           // A pre-upload is in flight — await it instead of starting a duplicate
           // inline upload. Bound the wait so a stuck Swarm upload can't hang
@@ -346,13 +347,13 @@
               ),
             ]);
             if (result.ref && result.snapshot === liveSnapshot) {
-              preparedOrderRef = result.ref;
+              preparedOrder = result.ref;
             }
           } catch {
             // Awaiting the pre-upload threw — drop through to inline upload below.
           }
         }
-        if (!preparedOrderRef) {
+        if (!preparedOrder) {
           try {
             const { sealBoxJson, orderSealContext } = await import("@woco/shared/crypto/sealed-box");
             inlineEncryptedOrder = await sealBoxJson(
@@ -386,8 +387,8 @@
         seriesId,
         claimerEmail: email,
         quantity: quantity > 1 ? quantity : undefined,
-        orderRef: preparedOrderRef,
-        encryptedOrder: !preparedOrderRef ? inlineEncryptedOrder : undefined,
+        preparedOrder,
+        encryptedOrder: !preparedOrder ? inlineEncryptedOrder : undefined,
         reservationId: reservationHook.reservation?.reservationId,
         // The form is still displayed at this point (handleStripeCheckout returns
         // early to show it and is re-entered), so the opt-out WAS offered and an

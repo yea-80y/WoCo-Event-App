@@ -1,3 +1,5 @@
+import type { PreparedOrder } from "../../../api/stripe.js";
+
 interface UseOrderPrefetchOpts {
   /** Event + series — the seal's binding (`orderSealContext`, #642). */
   eventId: string;
@@ -41,13 +43,14 @@ interface UseOrderPrefetchOpts {
  *    open form keeps the typing debounce active.
  */
 export function useOrderPrefetch(opts: UseOrderPrefetchOpts) {
-  let ref = $state<string | null>(null);
+  // The stored box's ref AND the server's token for it (#661) — never one without the other.
+  let ref = $state<PreparedOrder | null>(null);
   let refSnapshot: string | null = null;
   let uploading = $state(false);
 
   let _timer: ReturnType<typeof setTimeout> | null = null;
   let _seq = 0;
-  let _inflight: Promise<{ ref: string | null; snapshot: string | null }> | null = null;
+  let _inflight: Promise<{ ref: PreparedOrder | null; snapshot: string | null }> | null = null;
   let _firstFired = false;
 
   $effect(() => {
@@ -95,7 +98,7 @@ export function useOrderPrefetch(opts: UseOrderPrefetchOpts) {
     _firstFired = true;
     _timer = setTimeout(() => {
       uploading = true;
-      const work = (async (): Promise<{ ref: string | null; snapshot: string | null }> => {
+      const work = (async (): Promise<{ ref: PreparedOrder | null; snapshot: string | null }> => {
         try {
           // The post-quantum code loads here, on the first seal, never with the page.
           const { sealBoxJson, orderSealContext } = await import("@woco/shared/crypto/sealed-box");

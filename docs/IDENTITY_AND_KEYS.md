@@ -371,7 +371,10 @@ gateway and refuses it unless it hashes to the ref; the order form renders only 
 key, and a checkout with an order form is refused rather than taken unsealed. The organiser's
 client refuses to sign a server-assembled feed naming any other ref. The sealed box goes to Swarm
 and its reference goes **on chain** as the ticket's `orderRef`; the dashboard opens each order
-with the slot's own series.
+with the slot's own series. Checkout takes only references the server stored itself — as
+canonical bytes, so a copy of a box lands on its original's reference, with a signed token for a
+pre-uploaded one — and one completed sale per reference, so no ticket can carry another buyer's
+sealed details (#661, `apps/server/src/lib/stripe/order-ref.ts`).
 
 Contact lists use the same box with `woco/marketing-list/v2:{owner}`, gzipped first (a size
 signal only exploitable with chosen content AND repeated observation; a list too large to store

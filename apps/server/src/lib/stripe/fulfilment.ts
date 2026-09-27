@@ -121,6 +121,9 @@ export interface FulfilmentDeps {
    */
   fetchOrderKey(ref: string): Promise<Uint8Array>;
 
+  /** Is `orderRef` already carried by a sale other than `sessionId`? (#661) */
+  orderRefInOtherSale(orderRef: string, sessionId: string): boolean;
+
   /** Chain. `batchClaimForOnChain` rejects on a revert; partial state is never left. */
   generateBurner(): Burner;
   batchClaimForOnChain(
@@ -370,10 +373,21 @@ export async function fulfilPaidSession(
   // Attendee data: prefer the client's pre-uploaded full-form order ref (passed
   // via session metadata). Falls back to a minimal server-built seal for the
   // edge case where the browser skipped pre-upload (e.g. offline at checkout).
-  const prefetchedOrderRef =
+  //
+  // ONE SALE PER REF (#661, lib/stripe/order-ref.ts). Checkout already refuses a
+  // ref another completed sale carries; this is the backstop for one that became
+  // taken between charge and mint. Such a ref would put ANOTHER buyer's sealed
+  // details against this ticket, so it is dropped and this buyer's own minimal
+  // seal is made instead — the sale still completes, never with someone else's data.
+  const metaRef =
     typeof metaOrderRef === "string" && /^[0-9a-f]{64}$/i.test(metaOrderRef)
       ? metaOrderRef.toLowerCase()
       : undefined;
+  let prefetchedOrderRef = metaRef;
+  if (metaRef && deps.orderRefInOtherSale(metaRef, session.id)) {
+    console.warn(`[fulfilment] ${session.id}: orderRef ${metaRef.slice(0, 10)}… is another sale's — sealing this buyer's own order instead`);
+    prefetchedOrderRef = undefined;
+  }
 
   // ── 1. Event feed (fenced: a feed hiccup degrades the TICKET EMAIL, not the sale) ──
   //

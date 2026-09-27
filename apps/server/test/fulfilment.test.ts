@@ -201,6 +201,8 @@ interface FakeOpts {
   bindReturns?: boolean;
   /** What cancellationGate answers (#644). Default "open". */
   cancellation?: "open" | "cancelled" | "unknown";
+  /** Order refs another completed sale already carries (#661). Default none. */
+  takenRefs?: string[];
 }
 
 function fakeDeps(o: FakeOpts = {}) {
@@ -226,7 +228,7 @@ function fakeDeps(o: FakeOpts = {}) {
   /** The contract each chain-end read went to. */
   const endReadOn: unknown[] = [];
   /** Sale-record writes (#645 part C). */
-  const saleSlots: Array<{ sessionId: string; onChainEventId: string; contract: string; slots: number[] }> = [];
+  const saleSlots: Array<{ sessionId: string; onChainEventId: string; contract: string; slots: number[]; orderRef?: string }> = [];
   const autoRefunds: Array<{ sessionId: string; amount: number }> = [];
   /** Sales handed to a cancellation's refund job (#644). */
   const cancellationQueue: Array<{ eventId: string; sessionId: string; paymentIntentId: string; account: string }> = [];
@@ -289,6 +291,7 @@ function fakeDeps(o: FakeOpts = {}) {
       if (ref !== ORDER_KEY_REF) throw new Error(`unknown order key ref ${ref}`);
       return ORDER_KEY.publicKey;
     },
+    orderRefInOtherSale: (ref: string) => (o.takenRefs ?? []).includes(ref),
     generateBurner: () => {
       boom("generateBurner");
       const n = burnerSeq++;
@@ -312,10 +315,10 @@ function fakeDeps(o: FakeOpts = {}) {
       return slots;
     },
     onChainBatchMax: o.batchMax ?? 100,
-    recordSaleSlots: (sessionId, onChainEventId, contract, slots) => {
+    recordSaleSlots: (sessionId, onChainEventId, contract, slots, orderRef) => {
       // Attempt recorded before the throw: the invariant is that every minted
       // chunk REACHES the record, whether or not the store accepted it.
-      saleSlots.push({ sessionId, onChainEventId, contract, slots });
+      saleSlots.push({ sessionId, onChainEventId, contract, slots, orderRef });
       boom("recordSaleSlots");
     },
     recordAutoRefund: (sessionId, amount) => {
@@ -636,6 +639,21 @@ describe("happy path", () => {
     assert.equal(f.minted.length, 1);
     // The fallback is a real v2 box, bound to this event and series, that the
     // organiser's key opens (#642).
+    const box = JSON.parse(f.uploaded[0]);
+    const order = await openBoxJson<{ seriesId: string }>(ORDER_KEY.secretKey, box, orderSealContext(EVENT_ID, SERIES_ID));
+    assert.equal(order.seriesId, SERIES_ID);
+  });
+
+  test("#661: a prefetched ref ANOTHER sale carries is dropped — this buyer's own seal is minted instead", async () => {
+    const { f, outcome } = await run(
+      {},
+      { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), takenRefs: [ORDER_REF] },
+    );
+    assert.equal(outcome.issued, 2, "the sale still completes");
+    assert.ok(f.calls.includes("uploadToBytes"), "a fresh seal was made");
+    // The mint carries the fresh seal's ref, never the copied one.
+    assert.ok(f.saleSlots.length > 0);
+    assert.ok(f.saleSlots.every((r: { orderRef?: string }) => r.orderRef !== ORDER_REF));
     const box = JSON.parse(f.uploaded[0]);
     const order = await openBoxJson<{ seriesId: string }>(ORDER_KEY.secretKey, box, orderSealContext(EVENT_ID, SERIES_ID));
     assert.equal(order.seriesId, SERIES_ID);

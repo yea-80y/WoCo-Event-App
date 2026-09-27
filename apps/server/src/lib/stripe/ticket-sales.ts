@@ -206,6 +206,21 @@ export function recordSaleStub(input: SaleStubInput): TicketSale {
  * the same on-chain event; a chunk naming another is refused rather than
  * silently re-keying the slots already recorded.
  */
+/**
+ * Is `orderRef` already carried by a sale OTHER than `sessionId` that minted?
+ * One sale per order ref (#661, lib/stripe/order-ref.ts): a copy of another
+ * buyer's public ref must never put their sealed details against a new ticket.
+ * `sessionId` null asks about every sale (a ref about to be issued).
+ */
+export function orderRefInOtherSale(orderRef: string, sessionId: string | null): boolean {
+  ensureLoaded();
+  const ref = orderRef.toLowerCase();
+  for (const sale of Object.values(store)) {
+    if (sale.orderRef === ref && sale.sessionId !== sessionId) return true;
+  }
+  return false;
+}
+
 export function recordSaleSlots(
   sessionId: string,
   onChainEventId: string,

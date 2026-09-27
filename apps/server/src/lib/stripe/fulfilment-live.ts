@@ -28,7 +28,7 @@ import { getSiteTheme, resolveSiteEventSigner } from "../site/service.js";
 import { sendTicketEmail } from "../../routes/tickets.js";
 import { recordFailure } from "../email/failure-ledger.js";
 import { recordPendingRefund } from "./pending-refunds.js";
-import { recordAutoRefund, recordSaleSlots } from "./ticket-sales.js";
+import { recordAutoRefund, recordSaleSlots, orderRefInOtherSale } from "./ticket-sales.js";
 import { addRefundRow, cancellationGate } from "../event/cancellations.js";
 import { kickCancellationRefunds } from "./cancellation-refunds.js";
 import { liveCancellationRefundDeps } from "./cancellation-refunds-live.js";
@@ -48,6 +48,7 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   getOrganiserByStripeAccount,
   uploadToBytes: (data) => uploadToBytes(data),
   fetchOrderKey: (ref) => fetchOrderKey(ref, BEE_URL),
+  orderRefInOtherSale,
   generateBurner,
   batchClaimForOnChain,
   onChainBatchMax: ON_CHAIN_BATCH_MAX,
