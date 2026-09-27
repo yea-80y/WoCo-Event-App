@@ -24,11 +24,10 @@ test("the canonical gateways", () => {
 
 test("each family is stamped where the table says - a move is a deliberate diff here", () => {
   const onEtherna = FEED_FAMILIES.filter((f) => FEED_FAMILY_STORES[f] === "etherna").sort();
-  assert.deepEqual(onEtherna, ["event", "manifest", "profile", "referral", "site", "social"]);
+  assert.deepEqual(onEtherna, ["event", "manifest", "profile", "recoveryPortability", "referral", "site", "social"]);
   const onWoco = FEED_FAMILIES.filter((f) => FEED_FAMILY_STORES[f] === "woco").sort();
   assert.deepEqual(onWoco, [
-    "campaignIssuer", "cert", "credits", "evidence", "guardianIndex",
-    "recoveryEnvelope", "recoveryPortability",
+    "campaignIssuer", "cert", "credits", "evidence", "guardianIndex", "recoveryEnvelope",
   ]);
   assert.ok(Object.isFrozen(FEED_FAMILIES));
 });

@@ -73,7 +73,7 @@ export const FEED_FAMILY_POLICY = {
   campaignIssuer: { store: "woco", stamp: "platform" },
   /** Recovery: the portability envelope, the escrow envelope, the guardian's account
    *  index. Always the platform batch - see {@link FeedStamp}. */
-  recoveryPortability: { store: "woco", stamp: "platform" },
+  recoveryPortability: { store: "etherna", stamp: "platform" },
   recoveryEnvelope: { store: "woco", stamp: "platform" },
   guardianIndex: { store: "woco", stamp: "platform" },
   /** Coaster laps and their indexes. Moves last: a wrong read restarts a lifetime count. */
