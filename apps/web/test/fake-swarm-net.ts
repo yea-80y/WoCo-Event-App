@@ -57,10 +57,14 @@ export interface Net {
   ourBee: Map<string, StoredSoc>;
   etherna: Map<string, StoredSoc>;
   /** Etherna unreachable; a function is asked once per server request that
-   *  consults Etherna, with that request's 0-based index among them. */
-  ethernaDown?: boolean | ((nth: number) => boolean);
+   *  consults Etherna, with that request's 0-based index among them and the
+   *  chunk address asked for. */
+  ethernaDown?: boolean | ((nth: number, address: string) => boolean);
   /** Override what our gateway answers for an address. */
   gateway?: (address: string) => Response | "throw" | undefined;
+  /** Called after the server answered a request for `address` - a test uses it
+   *  to land another writer's chunk between two of ours. */
+  afterServerAnswer?: (address: string) => void;
 }
 
 const isEtherna = (gatewayUrl: string | undefined) =>
@@ -94,8 +98,9 @@ export function install(net: Net) {
       const bee = net.ourBee.get(address);
       // The server asks our bee first and Etherna only on a miss (soc-read.ts).
       const down = !bee && askEtherna
-        && (typeof net.ethernaDown === "function" ? net.ethernaDown(ethernaAsks++) : !!net.ethernaDown);
+        && (typeof net.ethernaDown === "function" ? net.ethernaDown(ethernaAsks++, address) : !!net.ethernaDown);
       const found = bee ?? (askEtherna && !down ? net.etherna.get(address) : undefined);
+      queueMicrotask(() => net.afterServerAnswer?.(address));
       if (found) {
         return Response.json({
           ok: true,
