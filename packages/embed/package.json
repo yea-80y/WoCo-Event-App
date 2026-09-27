@@ -11,8 +11,8 @@
     "build:count": "vite build --config vite.count.config.ts"
   },
   "dependencies": {
-    "@noble/curves": "^2.2.0",
-    "@noble/hashes": "^2.2.0",
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
     "@woco/shared": "*"
   },
   "devDependencies": {

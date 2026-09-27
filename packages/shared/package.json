@@ -19,9 +19,12 @@
     "typescript": "~5.9.3"
   },
   "dependencies": {
+    "@hpke/common": "^1.10.1",
+    "@hpke/core": "^1.9.0",
     "@ipld/dag-cbor": "^9.2.6",
-    "@noble/curves": "^2.2.0",
-    "@noble/hashes": "^2.2.0",
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "@noble/post-quantum": "0.7.1",
     "@openzeppelin/merkle-tree": "^1.0.8"
   }
 }
