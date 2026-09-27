@@ -140,6 +140,13 @@ nothing on a launch path derives it, and no auth path knows about it: §3a.)
 |---|---|---|---|
 | Encryption | X25519 | `HKDF(sha256, seed, salt="", info="woco/encryption/v1", 32)` | `packages/shared/src/crypto/keys.ts` |
 | Issuing | secp256k1 | `HKDF(sha256, seed, salt="", info="woco/issuing/v1/"+gen, 48)` → scalar | `packages/shared/src/crypto/issuing.ts` |
+| Encryption, post-quantum (#642) | X-Wing (ML-KEM-768 + X25519) | `X-Wing.keygen(HKDF(sha256, seed, salt="", info="woco/encryption/xwing/v1", 32))` | `packages/shared/src/crypto/xwing.ts` |
+
+The X-Wing key replaces the X25519 one rail by rail (escrow, contact lists, orders); until a
+rail switches it still seals with X25519, and the X25519 key stays for the quarantined credits
+rail after that. Sealing is HPKE (RFC 9180) over the X-Wing KEM, one box format
+`{ v: 2, enc, ct }` bound to its use and its subject (`packages/shared/src/crypto/sealed-box.ts`).
+Both modules are subpath imports, loaded only where a box is sealed or opened.
 
 ### 3a. The ed25519 holder key is gone from every launch path (#518)
 
