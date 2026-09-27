@@ -22,6 +22,7 @@ import {
   feedRouteFor,
 } from "../src/lib/swarm/gateways.js";
 import { diagnoseManifest, readUserManifestResult } from "../src/lib/manifest/inventory.js";
+import { FEED_FAMILIES, FEED_FAMILY_STORES } from "@woco/shared";
 
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
@@ -34,16 +35,24 @@ const code = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/<!--[\s\
 
 test("each family is stamped where the table says - a move is a deliberate diff here", () => {
   const onEtherna = Object.entries(FEED_ROUTES).filter(([, r]) => r.target === "etherna").map(([k]) => k).sort();
-  // Profiles have been Etherna since #617; event reads ask Etherna because new
-  // events are stamped there; the manifest moved in #689. Everything else has
-  // not moved yet.
-  assert.deepEqual(onEtherna, ["event", "manifest", "profile"]);
+  // Profiles have been Etherna since #617; event and site reads ask Etherna
+  // because new ones are stamped there; the manifest, social and the referee's
+  // referral statement moved in #689. Everything else has not moved yet.
+  assert.deepEqual(onEtherna, ["event", "manifest", "profile", "referral", "site", "social"]);
   for (const [family, route] of Object.entries(FEED_ROUTES)) {
     const store = route.target === "etherna" ? ETHERNA_ROUTE : WOCO_ROUTE;
     assert.equal(route.gatewayUrl, store.gatewayUrl, `${family}: gateway disagrees with its target`);
     assert.equal(route.family, family, `${family}: route names another family`);
     assert.ok(Object.isFrozen(route), `${family}: not frozen`);
   }
+});
+
+test("the client's routes ARE the shared table, row for row - the server reads the same one (#657)", () => {
+  assert.deepEqual(Object.keys(FEED_ROUTES).sort(), [...FEED_FAMILIES].sort(), "a row on one side only");
+  for (const family of FEED_FAMILIES) {
+    assert.equal(FEED_ROUTES[family].target, FEED_FAMILY_STORES[family], `${family}: client and server disagree`);
+  }
+  assert.ok(Object.isFrozen(FEED_ROUTES));
 });
 
 test("every family has its OWN route, so a call using another family's is detectable", () => {
@@ -58,8 +67,9 @@ test("the two routes are frozen and name the canonical gateways", () => {
 });
 
 test("a feed's recorded gateway maps to its route by the server's own rule", () => {
-  // Mirrors `isEthernaGateway` (apps/server/src/lib/etherna/batch-router.ts):
-  // the host must END WITH Etherna's; anything else is the WoCo default.
+  // The shared rule (`isEthernaGatewayUrl`, #657), the one the server's
+  // `isEthernaGateway` calls: Etherna's host or a subdomain, with a dot
+  // boundary; anything else is the WoCo default.
   assert.equal(feedRouteFor(ETHERNA_GATEWAY_URL), ETHERNA_ROUTE);
   assert.equal(feedRouteFor(`${ETHERNA_GATEWAY_URL}/`), ETHERNA_ROUTE);
   assert.equal(feedRouteFor("https://eu.gateway.etherna.io"), ETHERNA_ROUTE);
@@ -69,6 +79,7 @@ test("a feed's recorded gateway maps to its route by the server's own rule", () 
   assert.equal(feedRouteFor("not a url"), WOCO_ROUTE);
   // Organiser-written: a look-alike host must not select Etherna.
   assert.equal(feedRouteFor("https://gateway.etherna.io.example.com"), WOCO_ROUTE);
+  assert.equal(feedRouteFor("https://xgateway.etherna.io"), WOCO_ROUTE);
 });
 
 // ---------------------------------------------------------------------------
@@ -79,7 +90,7 @@ const RAILS: Record<string, string[]> = {
   "lib/api/profiles.ts": ["profile"],
   "lib/attendee/events/EventDetail.svelte": ["event"],
   "lib/manifest/inventory.ts": ["manifest"],
-  "lib/social/social.ts": ["social"],
+  "lib/social/social-core.ts": ["social"],
   "lib/campaign/records.ts": ["campaignIssuer", "referral"],
   "lib/auth/recovery-portability.ts": ["recoveryPortability"],
   "lib/swarm/recovery-feed.ts": ["recoveryEnvelope"],
@@ -209,7 +220,11 @@ test("only tests pick where a signed chunk goes: no app code passes a transport"
   const writers = [
     "writeContentFeed", "writeUserManifest", "upsertBackupEntry", "retireBackupInventory", "retireOneBackup",
     "upsertFeedEntry", "trashFeedEntryOnManifest", "restoreFeedEntryOnManifest", "rebuildManifest",
+    "writeContentFeedVerified", "writeContentFeedSettling", "addToSubjectIndex", "writeStatement",
   ];
+  const THREADING = new Set([
+    "lib/manifest/inventory.ts", "lib/swarm/verified-write.ts", "lib/social/subject-index.ts", "lib/social/social-core.ts",
+  ]);
   const offenders: string[] = [];
   let threaded = 0;
   for (const file of sourceFiles(SRC)) {
@@ -219,8 +234,8 @@ test("only tests pick where a signed chunk goes: no app code passes a transport"
       for (const args of callArgs(src, name)) {
         // `transport?:` is the parameter's own declaration, not a caller passing one.
         const t = args.match(/\btransport\b(?!\?)[^,}\n]*/g) ?? [];
-        // The manifest module hands its own caller's seam through, and nothing else.
-        if (rel === "lib/manifest/inventory.ts" && t.every((x) => /^transport:\s*args\.transport$/.test(x.trim()))) {
+        // These modules hand their own caller's seam through, and nothing else.
+        if (THREADING.has(rel) && t.every((x) => /^transport:\s*(?:args|opts)\.transport$/.test(x.trim()))) {
           threaded += t.length;
           continue;
         }
@@ -228,7 +243,7 @@ test("only tests pick where a signed chunk goes: no app code passes a transport"
       }
     }
   }
-  assert.ok(threaded >= 6, `only ${threaded} threaded transports seen - the scan is not seeing inventory.ts`);
+  assert.ok(threaded >= 11, `only ${threaded} threaded transports seen - the scan is not seeing the threading modules`);
   assert.deepEqual(offenders, []);
 });
 
@@ -255,4 +270,34 @@ test("events, sites and shops stamp through the recorded-gateway mapping, and la
     assert.match(src, /target:\s*feedRouteFor\([^)]*\)\.target/, file);
     assert.doesNotMatch(src, /target:[^\n]*includes\("woco-net\.com"\)/, `${file}: a third classification rule`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Who writes an event's feed (#657 sign-off)
+// ---------------------------------------------------------------------------
+
+test("the event feed has ONE client writer, and every call site signs a base the server read fresh", () => {
+  // The server hands back a feed only off a read that showed it is the head
+  // (#657) - true only while nothing on the client signs an event feed some
+  // other way. A new writer or call site is a deliberate diff here.
+  const topicUses: string[] = [];
+  const signs: Record<string, number> = {};
+  for (const file of sourceFiles(SRC)) {
+    const rel = relative(SRC, file);
+    const src = code(readFileSync(file, "utf8"));
+    if (/eventContentTopic\(/.test(src)) topicUses.push(rel);
+    const n = [...src.matchAll(/\bsignEventFeedSoc\(/g)].length - (rel === "lib/api/events.ts" ? 1 : 0);
+    if (n > 0) signs[rel] = n;
+  }
+  assert.deepEqual(topicUses.sort(), [
+    "lib/api/events.ts", // signEventFeedSoc itself, and the manifest's trash entry
+    "lib/attendee/events/EventDetail.svelte", // a read
+    "lib/creator/events/PublishButton.svelte", // the manifest log's label
+  ]);
+  assert.match(code(read("lib/api/events.ts")), /export async function signEventFeedSoc\([\s\S]*?topic: eventContentTopic\(feed\.eventId\),/);
+  assert.deepEqual(signs, {
+    "lib/api/events.ts": 4, // publish (create), update-meta, delete, cancel
+    "lib/api/sub-ens.ts": 1, // stamp-event
+    "lib/creator/events/PublishButton.svelte": 1, // register's returned feed / the held pendingFeed
+  });
 });

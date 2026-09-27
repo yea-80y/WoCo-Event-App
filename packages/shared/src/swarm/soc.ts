@@ -501,23 +501,37 @@ export async function resolveLatestSocVersion(
   const hintGiven = hint > 0;
   let start = hintGiven ? Math.min(hint, maxVersion) : 0;
   let hintValidated = false;
-  if (start > 0) {
-    hintValidated = await exists(start);
-    if (!hintValidated) start = 0; // hint unreliable → full scan
-  }
 
+  // The first window starts AT the hint, so the hint is checked in the same
+  // round trip as the version after it: an accurate hint costs one hit and the
+  // one miss that ends the scan, with nothing asked twice (#689 - a client may
+  // re-ask the server about a hinted version, so a second probe of it was a
+  // second server round trip, and probing the hint on its own first put a
+  // second miss or a second round trip on the common case). An invalid hint
+  // costs the miss after it as well - the rare case, and the alarm.
   let latest = -1;
-  for (let cursor = start; cursor <= maxVersion; cursor += VERSION_PROBE_WINDOW) {
-    const width = Math.min(VERSION_PROBE_WINDOW, maxVersion - cursor + 1);
+  let cursor = start;
+  while (cursor <= maxVersion) {
+    const from = cursor;
+    const width = Math.min(VERSION_PROBE_WINDOW, maxVersion - from + 1);
     const flags = await Promise.all(
-      Array.from({ length: width }, (_, i) => exists(cursor + i)),
+      Array.from({ length: width }, (_, i) => exists(from + i)),
     );
+    if (from === start && start > 0 && !hintValidated) {
+      if (!flags[0]) {
+        start = 0; // hint unreliable → full scan
+        cursor = 0;
+        continue;
+      }
+      hintValidated = true;
+    }
     let ended = false;
     for (let i = 0; i < width; i++) {
-      if (flags[i]) latest = cursor + i;
+      if (flags[i]) latest = from + i;
       else { ended = true; break; }
     }
     if (ended) break;
+    cursor = from + width;
   }
   return { latest: latest >= 0 ? latest : null, clean, hintGiven, hintValidated, scannedFrom: start };
 }
@@ -790,6 +804,13 @@ export async function assembleContentFeed(
   read: SocChunkProbe,
   baseId: Uint8Array,
   pageIdFor: (page: number) => Uint8Array,
+  /**
+   * The probe for PAGES, when it should differ from `read`. A found manifest
+   * proves its pages exist - the writer uploads them first - so a caller whose
+   * `read` trusts a cheap "absent" can pass a probe that asks harder here, and
+   * a page still settling is not mistaken for a torn write (#689).
+   */
+  readPage: SocChunkProbe = read,
 ): Promise<AssembledContentFeed> {
   const base = await read(baseId);
   if (base.status !== "found") return base;
@@ -808,7 +829,7 @@ export async function assembleContentFeed(
 
   const parts: Uint8Array[] = [];
   for (let i = 1; i <= head.pages; i++) {
-    const page = await read(pageIdFor(i));
+    const page = await readPage(pageIdFor(i));
     if (page.status !== "found") {
       const reason = `multi-chunk page ${i}/${head.pages} ${page.status}`;
       // An ABSENT page under an existing manifest is the torn write described
@@ -863,6 +884,8 @@ export interface VersionedReadOptions {
   /** Ceiling for the version scan — `LAST_VERSION_IN_BAND` for a banded topic.
    *  See {@link resolveLatestSocVersion}. Omit for unbanded feeds. */
   maxVersion?: number;
+  /** The probe for a paged version's pages - see {@link assembleContentFeed}. */
+  readPage?: SocChunkProbe;
   /** Receives the scan diagnostics, so a caller can count what actually happened. */
   onScan?: (d: Pick<SocVersionResolution, "hintGiven" | "hintValidated" | "scannedFrom">) => void;
 }
@@ -884,6 +907,7 @@ export async function readVersionedContentFeed(
       read,
       baseIdFor(latest),
       (page) => versionedPageIdentifier(base, latest, page),
+      opts.readPage,
     );
     if (asm.status === "found") return { status: "found", bytes: asm.bytes, version: latest, scanClean: clean };
     // The probe just confirmed this version PRESENT, so an absent re-read is a
@@ -917,6 +941,7 @@ export async function readVersionedContentFeed(
     read,
     base,
     (page) => contentFeedSocIdentifier(contentFeedPageTopic(topic, page)),
+    opts.readPage,
   );
   if (legacy.status === "found") {
     return { status: "found", bytes: legacy.bytes, version: LEGACY_CONTENT_FEED_VERSION, scanClean: clean };

@@ -12,11 +12,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeJsonAtomic } from "../marketing/persist.js";
 import { ensureEthernaToken } from "./auth.js";
+import { ETHERNA_FETCH_BASE } from "./gateway.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const BATCHES_FILE = join(DATA_DIR, "etherna-batches.json");
 
-const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
+const ETHERNA_GW = ETHERNA_FETCH_BASE;
 const TOKEN_ENDPOINT = process.env.ETHERNA_TOKEN_ENDPOINT || "https://sso.etherna.io/connect/token";
 
 const GNOSIS_BLOCK_SEC = 5;

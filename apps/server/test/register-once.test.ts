@@ -58,7 +58,7 @@ function harness(over: Partial<RegisterDeps> = {}) {
     confirmSeriesOnChain: (async (e, s, id) => {
       calls.confirms++;
       registry.set(`${e}|${s}`, id); // mirrors recordOnChainEventId running first
-      return FEED;
+      return { feed: FEED, resignable: true };
     }) as RegisterDeps["confirmSeriesOnChain"],
     ...over,
   };
@@ -222,7 +222,7 @@ test("a fresh registration hands confirm the contract the tx went to", async () 
     }) as RegisterDeps["registerEventOnChain"],
     confirmSeriesOnChain: (async (_e, _s, _id, _hint, contract) => {
       seen.push(contract);
-      return FEED;
+      return { feed: FEED, resignable: true };
     }) as RegisterDeps["confirmSeriesOnChain"],
   });
   await registerSeriesExactlyOnce({ ...PARAMS, seriesId: "ser-563a" }, h.deps);
@@ -236,7 +236,7 @@ test("healing an already-recorded registration names NO contract — the record 
   const h = harness({
     confirmSeriesOnChain: (async (_e, _s, _id, _hint, contract) => {
       seen.push(contract);
-      return FEED;
+      return { feed: FEED, resignable: true };
     }) as RegisterDeps["confirmSeriesOnChain"],
   });
   h.registry.set("evt-1|ser-563b", "0xalready");
@@ -244,4 +244,16 @@ test("healing an already-recorded registration names NO contract — the record 
   assert.equal(r.status, "already");
   assert.deepEqual(seen, [undefined]);
   assert.equal(h.calls.broadcasts, 0);
+});
+
+test("a feed confirm built on an inconclusive read is not handed back for re-signing (#657)", async () => {
+  const h = harness({
+    confirmSeriesOnChain: (async (e, s, id) => {
+      h.registry.set(`${e}|${s}`, id);
+      return { feed: FEED, resignable: false };
+    }) as RegisterDeps["confirmSeriesOnChain"],
+  });
+  const r = await registerSeriesExactlyOnce({ ...PARAMS, seriesId: "ser-657" }, h.deps);
+  assert.equal(r.status, "registered", "the registration itself stands");
+  assert.equal((r as { feed?: unknown }).feed, undefined, "the client merges the id into the feed it holds instead");
 });

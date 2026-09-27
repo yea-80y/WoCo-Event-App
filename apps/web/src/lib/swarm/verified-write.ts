@@ -34,7 +34,7 @@ import {
   versionedPageIdentifier,
   type SocChunkProbe,
 } from "@woco/shared";
-import { writeContentFeed } from "./content-feed.js";
+import { writeContentFeed, type SocTransport } from "./content-feed.js";
 import type { FeedRoute } from "./gateways.js";
 
 export type VerifiedWriteResult =
@@ -105,6 +105,8 @@ export async function writeContentFeedVerified(args: {
    * error, no warning, and a write that quietly goes on probing.
    */
   knownVersion?: number;
+  /** Test seam — production always posts to our server. */
+  transport?: SocTransport;
 }): Promise<VerifiedWriteResult> {
   return serialise(args.ownerAddress, args.topic, () => writeAndVerify(args));
 }
@@ -116,6 +118,7 @@ async function writeAndVerify(args: {
   data: unknown;
   route: FeedRoute;
   knownVersion?: number;
+  transport?: SocTransport;
 }): Promise<VerifiedWriteResult> {
   const version = await writeContentFeed({
     signerPrivKey: args.signerPrivKey,
@@ -123,6 +126,7 @@ async function writeAndVerify(args: {
     data: args.data,
     route: args.route,
     ...(args.knownVersion !== undefined ? { knownVersion: args.knownVersion } : {}),
+    transport: args.transport,
   });
   return verifyLanded(args, version);
 }
@@ -235,6 +239,8 @@ export function writeContentFeedSettling(args: {
    * dropped silently and every write went on probing.
    */
   knownVersion?: number;
+  /** Test seam — production always posts to our server. */
+  transport?: SocTransport;
 }): Promise<SettlingWrite> {
   let accept!: (w: SettlingWrite) => void;
   let refuse!: (e: unknown) => void;
@@ -249,6 +255,7 @@ export function writeContentFeedSettling(args: {
         data: args.data,
         route: args.route,
         ...(args.knownVersion !== undefined ? { knownVersion: args.knownVersion } : {}),
+        transport: args.transport,
       });
     } catch (e) {
       // The upload itself failed — there is nothing to settle, and the caller
