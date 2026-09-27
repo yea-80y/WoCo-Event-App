@@ -62,7 +62,7 @@ test("both routes enforce it: prepare-order refuses a taken ref, checkout takes 
   assert.match(prepare.slice(0, 3000), /orderRefToken: issueOrderRefToken\(orderRef\)/);
   assert.match(src, /const tokenRef = acceptedClientOrderRef\(orderRef, orderRefToken\);/);
   // #546: a token alone is not enough - the ref must be on the attendee batch.
-  assert.match(src, /const preUploadedRef = tokenRef && getOrderRecord\(tokenRef\) \? tokenRef : null;/);
+  assert.match(src, /const preUploadedRef = tokenRef && getOrderRecord\(tokenRef\) && !isOrderErased\(tokenRef\) \? tokenRef : null;/);
   const refusal = src.indexOf("if (finalOrderRef && orderRefInOtherSale(finalOrderRef, null))");
   const session = src.indexOf("checkout.sessions.create(");
   assert.ok(session > 0, "the Stripe session call must be found, or this check guards nothing");

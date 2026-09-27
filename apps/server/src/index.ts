@@ -97,6 +97,8 @@ import {
 import { logSponsorReadiness } from "./lib/chain/sponsor-wallet.js";
 import { assertEventContractConfig } from "./lib/chain/event-contract.js";
 import { customDomainProxy } from "./middleware/custom-domain.js";
+import { attendeeBatchHealth } from "./lib/attendee-batch/health.js";
+import { refreshAttendeeBatch } from "./lib/attendee-batch/admin.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -407,6 +409,10 @@ function healthReport() {
     // `unreadableRecords` above 0, is an alarm: those events cannot sell, and no
     // event can be created with a signer, until an operator restores the file.
     eventFeedSigners: feedSignerRecordHealth(),
+    // The attendee order batch (#546): red when checkout would refuse sales,
+    // the batch is under the postage TTL floor or its fullest bucket over the
+    // utilization ceiling, or a burn was left unfinished.
+    attendeeBatch: attendeeBatchHealth(),
     // Whether paid checkouts can mint on the events contract (#662): the ticket
     // sponsor still authorised, and on the ledger its hourly mint cap's headroom
     // (`TICKET_MINT_ALLOWANCE_MIN`, default one maximum order). The checkout
@@ -764,6 +770,13 @@ app.get("/woco-embed.js", (c) => {
 const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);
 const server = serve({ fetch: app.fetch, port });
+
+// #546: follow the attendee batch's chain TTL. A top-up extends it and the price
+// oracle moves it; checkout refuses an hour before the recorded expiry.
+const refreshAttendeeTtl = () =>
+  refreshAttendeeBatch().catch((err) => console.warn("[attendee-batch] TTL refresh failed:", (err as Error).message));
+setTimeout(refreshAttendeeTtl, 60_000).unref();
+setInterval(refreshAttendeeTtl, 60 * 60 * 1000).unref();
 
 /**
  * Graceful shutdown.

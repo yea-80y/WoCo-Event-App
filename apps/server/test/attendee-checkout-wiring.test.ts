@@ -25,6 +25,8 @@ const { stripeRoutes } = await import("../src/routes/stripe.js");
 const { __setBeeForTests } = await import("../src/config/swarm.js");
 const ledger = await import("../src/lib/attendee-batch/ledger.js");
 const { readyAttendeeStore, acceptingUploadChunk } = await import("./helpers/attendee-store.js");
+const { canonicalOrderBox } = await import("../src/lib/stripe/order-ref.js");
+const { splitPayload, bucketOf } = await import("../src/lib/attendee-batch/stamp.js");
 
 let feedReads = 0;
 let chunksUploaded = 0;
@@ -84,6 +86,40 @@ test("once ready, prepare-order stores on the attendee batch and returns the rec
   assert.equal(record.kind, "prepared");
   assert.equal(record.state, "stored");
   assert.equal(chunksUploaded, record.chunks.length);
+});
+
+test("an order box sent with an event that does not exist stores nothing", async () => {
+  const before = chunksUploaded;
+  const res = await post(
+    "create-checkout",
+    { eventId: "evt-missing", seriesId: "s1", claimerEmail: "a@example.com", encryptedOrder: { ...BOX, ct: "ee".repeat(64) } },
+    "198.51.100.4",
+  );
+  assert.equal(res.status, 404);
+  assert.equal(chunksUploaded, before, "no slot was spent for a request naming no real event");
+});
+
+test("a full bucket answers the buyer 'paused', never ledger detail", async () => {
+  // A depth-17 batch holds 2 chunks per bucket; fill the bucket this box's root lands in.
+  const box = { ...BOX, ct: "0f".repeat(64) };
+  const { chunks } = await splitPayload(new TextEncoder().encode(canonicalOrderBox(box)!));
+  const bucket = bucketOf(chunks[chunks.length - 1].address);
+  const id = "17".repeat(32);
+  const { stamper } = await readyAttendeeStore();
+  ledger.registerBatch(id, 17, stamper, true, new Date(Date.now() + 30 * 86400_000).toISOString());
+  ledger.setActiveBatch(id);
+  for (const n of [1, 2]) {
+    const a = new Uint8Array(32);
+    a[0] = bucket >> 8;
+    a[1] = bucket & 0xff;
+    a[31] = n;
+    ledger.allocateOrder(a, [a], { kind: "checkout" });
+  }
+  const res = await post("prepare-order", { encryptedOrder: box }, "198.51.100.5");
+  assert.equal(res.status, 503);
+  const body = (await res.json()) as { error: string };
+  assert.match(body.error, /paused/i);
+  assert.doesNotMatch(body.error, /bucket|ledger|batch/i);
 });
 
 test("the organiser's order view checks erasure before it fetches anything", () => {

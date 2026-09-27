@@ -28,7 +28,7 @@ const STAMPER_ADDRESS = new Wallet(`0x${"44".repeat(32)}`).address.toLowerCase()
 let batchCounter = 0;
 function freshBatch(owner = STAMPER_ADDRESS): string {
   const id = (++batchCounter).toString(16).padStart(64, "a");
-  ledger.registerBatch(id, 20, owner, true);
+  ledger.registerBatch(id, 20, owner, true, new Date(Date.now() + 30 * 86400_000).toISOString());
   ledger.setActiveBatch(id);
   return id;
 }

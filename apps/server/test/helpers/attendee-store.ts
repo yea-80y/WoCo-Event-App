@@ -15,7 +15,7 @@ export async function readyAttendeeStore(): Promise<{ batchId: string; stamper: 
   writer._resetAttendeeStamperForTests();
   const stamper = writer.attendeeStamperAddress()!;
   const batchId = randomBytes(32).toString("hex");
-  ledger.registerBatch(batchId, 20, stamper, true);
+  ledger.registerBatch(batchId, 20, stamper, true, new Date(Date.now() + 30 * 86400_000).toISOString());
   ledger.setActiveBatch(batchId);
   return { batchId, stamper };
 }

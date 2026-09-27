@@ -57,7 +57,7 @@ import { clearTallyCache } from "./social.js";
 import { isValidSenderId, liftSender, listForOps, stopSender } from "../lib/sender-pacing/index.js";
 import { attendeeLedgerStatus, setActiveBatch } from "../lib/attendee-batch/ledger.js";
 import { attendeeCheckoutRefusal, attendeeStamperAddress } from "../lib/attendee-batch/writer.js";
-import { registerAttendeeBatch } from "../lib/attendee-batch/admin.js";
+import { refreshAttendeeBatch, registerAttendeeBatch } from "../lib/attendee-batch/admin.js";
 import { burnOrder } from "../lib/attendee-batch/burn.js";
 
 const ops = new Hono<AppEnv>();
@@ -566,6 +566,26 @@ ops.post("/attendee-batch/activate", async (c) => {
     return c.json({ ok: true, data: { checkoutRefusal: attendeeCheckoutRefusal(), ledger: attendeeLedgerStatus() } });
   } catch (err) {
     return c.json({ ok: false, error: (err as Error).message }, 400);
+  }
+});
+
+/**
+ * POST /api/ops/attendee-batch/refresh — body `{ by, batchId? }` (default: the
+ * active batch). Re-reads the batch's TTL from chain. Run it after a top-up:
+ * checkout refuses an hour before the recorded expiry, and the hourly refresh
+ * would otherwise take up to an hour to notice.
+ */
+ops.post("/attendee-batch/refresh", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { batchId?: string; by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required" }, 400);
+  try {
+    const result = await refreshAttendeeBatch(typeof body?.batchId === "string" ? body.batchId : undefined);
+    if (!result) return c.json({ ok: false, error: "No active attendee batch" }, 404);
+    console.log(`[ops] attendee batch ${result.batchId} TTL refreshed by ${by}: expires ${result.expiresAt}`);
+    return c.json({ ok: true, data: { ...result, checkoutRefusal: attendeeCheckoutRefusal() } });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 502);
   }
 });
 

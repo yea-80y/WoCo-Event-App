@@ -129,7 +129,9 @@ export async function burnOrder(root: string, deps: BurnDeps = liveDeps): Promis
   const batchId = new BatchId(record.batchId);
   let latest = record;
   for (const chunk of record.chunks) {
-    if (chunk.burnedAt) continue;
+    // Re-read: a concurrent burn of the same order may have finished this chunk
+    // while we awaited the previous upload. Read and plan are both synchronous.
+    if (getOrderRecord(root)?.chunks.find((c) => c.address === chunk.address)?.burnedAt) continue;
     const burner = burnerFor(key, chunk.bucket);
     const burnTs = planChunkBurn(root, chunk.address);
     const envelope = signStamp(key, batchId, burner.address, chunk.slot, decodeTimestampNs(Buffer.from(burnTs, "hex")));

@@ -46,7 +46,12 @@ import {
 import { checkSeriesOnChainBinding, resolveManifestDigest } from "../lib/event/onchain-binding.js";
 import { lookupOnChainEventId, saleContractFor } from "../lib/event/onchain-registry.js";
 import { attendeeCheckoutRefusal, storeAttendeePayload } from "../lib/attendee-batch/writer.js";
-import { getOrderRecord } from "../lib/attendee-batch/ledger.js";
+import {
+  AttendeeBucketFullError,
+  AttendeeStoreUnavailableError,
+  getOrderRecord,
+  isOrderErased,
+} from "../lib/attendee-batch/ledger.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../lib/stripe/checkout-provenance.js";
 import { liveProvenanceReads, refundTamperedSession } from "../lib/stripe/checkout-provenance-live.js";
@@ -446,9 +451,13 @@ stripe.post("/prepare-order", async (c) => {
     if (orderRefInOtherSale(orderRef, null)) return c.json({ ok: false, error: ORDER_ALREADY_USED }, 409);
     return c.json({ ok: true, orderRef, orderRefToken: issueOrderRefToken(orderRef) });
   } catch (err) {
-    console.error("[stripe/prepare-order] Upload failed:", err);
-    const msg = err instanceof Error ? err.message : "Failed to upload order";
-    return c.json({ ok: false, error: msg }, 500);
+    // Ledger and bee detail stays in the log; the buyer's client falls back to
+    // the inline upload at Pay either way.
+    console.error("[stripe/prepare-order] Store failed:", err);
+    if (err instanceof AttendeeStoreUnavailableError || err instanceof AttendeeBucketFullError) {
+      return c.json({ ok: false, error: SALES_PAUSED }, 503);
+    }
+    return c.json({ ok: false, error: "Could not save your order details. Please try again." }, 500);
   }
 });
 
@@ -574,7 +583,7 @@ stripe.post("/create-checkout", async (c) => {
   // ...and only if it was stored on the attendee batch (#546): a token issued
   // before that moved (24 h TTL) names a blob that can never be erased.
   const tokenRef = acceptedClientOrderRef(orderRef, orderRefToken);
-  const preUploadedRef = tokenRef && getOrderRecord(tokenRef) ? tokenRef : null;
+  const preUploadedRef = tokenRef && getOrderRecord(tokenRef) && !isOrderErased(tokenRef) ? tokenRef : null;
 
   // Inline encrypted order (fallback path when client didn't pre-upload).
   // We'll upload in parallel with the event/status reads so Swarm latency
@@ -638,17 +647,23 @@ stripe.post("/create-checkout", async (c) => {
   // the Stripe destination (creatorAddress→Connect) + amount. siteId is only a
   // pointer; trust is the server-written index, never the request.
   const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
-  const [event, inlineUploadedRef] = await Promise.all([
-    getEvent(eventId, siteSigner ?? undefined),
-    shouldUploadInline
-      ? storeAttendeePayload(inlineOrderJson!, { kind: "checkout", eventId, seriesId }).catch((err) => {
-          // Inline upload failure is non-fatal — webhook falls back to the
-          // minimal server-built seal so attendee still gets a ticket.
-          console.warn("[stripe/create-checkout] Inline order upload failed (continuing):", err);
-          return null as string | null;
-        })
-      : Promise.resolve(null as string | null),
-  ]);
+  const event = await getEvent(eventId, siteSigner ?? undefined);
+  if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
+
+  const series = event.series.find((s) => s.seriesId === seriesId);
+  if (!series) return c.json({ ok: false, error: "Series not found" }, 404);
+
+  // The inline order is stored only once the event and series are real: each
+  // store takes permanent slots in the attendee batch, and a request naming an
+  // event that does not exist must not be able to spend them (#546).
+  const inlineUploadedRef = shouldUploadInline
+    ? await storeAttendeePayload(inlineOrderJson!, { kind: "checkout", eventId, seriesId }).catch((err) => {
+        // Non-fatal: the webhook falls back to the minimal server-built seal
+        // so the attendee still gets a ticket.
+        console.warn("[stripe/create-checkout] Inline order store failed (continuing):", err);
+        return null as string | null;
+      })
+    : null;
   const swarmMs = performance.now() - tSwarm;
 
   // Final ref we'll stamp into Stripe session metadata. Prefer client pre-upload
@@ -659,11 +674,6 @@ stripe.post("/create-checkout", async (c) => {
   if (finalOrderRef && orderRefInOtherSale(finalOrderRef, null)) {
     return c.json({ ok: false, error: ORDER_ALREADY_USED }, 409);
   }
-
-  if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
-
-  const series = event.series.find((s) => s.seriesId === seriesId);
-  if (!series) return c.json({ ok: false, error: "Series not found" }, 404);
 
   // No order box from the buyer AND no organiser key to seal one with: fulfilment
   // would reach "no orderRef" and refund. Refuse before the card is charged

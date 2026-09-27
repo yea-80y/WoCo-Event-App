@@ -45,7 +45,7 @@ let batchCounter = 0;
 /** Register and activate a fresh batch; tests never share one. */
 function freshBatch(depth = 17): string {
   const id = (++batchCounter).toString(16).padStart(64, "0");
-  ledger.registerBatch(id, depth, STAMPER_ADDRESS, true);
+  ledger.registerBatch(id, depth, STAMPER_ADDRESS, true, new Date(Date.now() + 30 * 86400_000).toISOString());
   ledger.setActiveBatch(id);
   return id;
 }
@@ -65,7 +65,7 @@ test("a batch is only registered with the fresh assertion, once, at a sane depth
 
 test("a batch owned by a different key than the stamper refuses checkout", () => {
   const id = "cd".repeat(32);
-  ledger.registerBatch(id, 20, "0x0000000000000000000000000000000000000001", true);
+  ledger.registerBatch(id, 20, "0x0000000000000000000000000000000000000001", true, new Date(Date.now() + 30 * 86400_000).toISOString());
   ledger.setActiveBatch(id);
   assert.match(ledger.attendeeStoreRefusal(STAMPER_ADDRESS) ?? "", /different key/);
   freshBatch();
@@ -153,6 +153,38 @@ test("an order reads as erased from the moment a burn is planned, before any upl
   assert.equal(ledger.isOrderErased(root), true);
   assert.equal(ledger.planChunkBurn(root, record.chunks[0].address), planned, "a second plan returns the first");
   assert.ok(BigInt(`0x${planned}`) > BigInt(`0x${record.chunks[0].ts}`));
+});
+
+test("sales stop an hour before the active batch expires, and resume when its expiry is refreshed", () => {
+  const batch = freshBatch();
+  const now = Date.now();
+  ledger.setBatchExpiry(batch, new Date(now + 2 * 3600_000).toISOString());
+  assert.equal(ledger.attendeeStoreRefusal(STAMPER_ADDRESS, now), null);
+  assert.match(ledger.attendeeStoreRefusal(STAMPER_ADDRESS, now + 61 * 60_000) ?? "", /expires/);
+  ledger.setBatchExpiry(batch, new Date(now + 30 * 86400_000).toISOString());
+  assert.equal(ledger.attendeeStoreRefusal(STAMPER_ADDRESS, now + 61 * 60_000), null);
+});
+
+test("a batch with no recorded expiry refuses sales", () => {
+  const id = "7b".repeat(32);
+  ledger.registerBatch(id, 20, STAMPER_ADDRESS, true);
+  ledger.setActiveBatch(id);
+  assert.match(ledger.attendeeStoreRefusal(STAMPER_ADDRESS) ?? "", /expiry unknown/);
+  freshBatch();
+});
+
+test("an unfinished burn is counted, and a repeated burn confirmation is not an error", () => {
+  freshBatch();
+  const { root, record } = ledger.allocateOrder(addr(18, 2), [addr(18, 1), addr(18, 2)], { kind: "checkout" });
+  const before = ledger.attendeeLedgerStatus().burning;
+  const ts = ledger.planChunkBurn(root, record.chunks[0].address);
+  assert.equal(ledger.attendeeLedgerStatus().burning, before + 1);
+  ledger.markChunkBurned(root, record.chunks[0].address, ts);
+  ledger.markChunkBurned(root, record.chunks[0].address, ts);
+  const ts2 = ledger.planChunkBurn(root, record.chunks[1].address);
+  ledger.markChunkBurned(root, record.chunks[1].address, ts2);
+  assert.equal(ledger.attendeeLedgerStatus().burning, before);
+  assert.equal(ledger.getOrderRecord(root)?.state, "burned");
 });
 
 test("the root must be the last chunk", () => {
@@ -319,7 +351,7 @@ test("the stamper key must not be the feed key", () => {
 
 test("the writer refuses a batch owned by a different key, before signing anything", async () => {
   const id = "9a".repeat(32);
-  ledger.registerBatch(id, 20, "0x0000000000000000000000000000000000000002", true);
+  ledger.registerBatch(id, 20, "0x0000000000000000000000000000000000000002", true, new Date(Date.now() + 30 * 86400_000).toISOString());
   ledger.setActiveBatch(id);
   const uploads: Upload[] = [];
   await assert.rejects(

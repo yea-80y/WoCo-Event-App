@@ -102,6 +102,8 @@ DEV COMMANDS:
   unset = names 503. The platform holds NO key that can repoint a name (registrar v2.2).
   `ATTENDEE_STAMPER_PRIVATE_KEY` owns the attendee order batch (#546): unset, or no active batch it
   owns (`/api/ops/attendee-batch/register` + `/activate`), and checkout refuses (503). Never FEED_PRIVATE_KEY.
+  Register the production batch on the production server ONLY: a second ledger for it evicts live orders
+  (dev scripts blank the key for this reason).
   Optional: `CAMPAIGN_ISSUER_PRIVATE_KEY` — signs referral confirmations + badges
   (#476), address must match `CAMPAIGN_ISSUER_ADDRESS`; unset = confirm 503s.
   Also optional, all with defaults baked in (#421/#522/#420/#598/#662 health alarms; a bad value is
