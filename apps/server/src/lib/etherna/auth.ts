@@ -45,6 +45,9 @@ async function fetchToken(): Promise<TokenCache> {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
+    // Every Etherna-routed read waits on this (#657), the event money path
+    // included, so a hung SSO must end as "unavailable", not as a hung request.
+    signal: AbortSignal.timeout(10_000),
   });
 
   if (!res.ok) {

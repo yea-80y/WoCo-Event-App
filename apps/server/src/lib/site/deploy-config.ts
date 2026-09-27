@@ -13,8 +13,8 @@
  * patching a published site, only deploying a new one.
  */
 
-/** Canonical WoCo gateway — mirrors apps/web/src/lib/swarm/gateways.ts. */
-const WOCO_GATEWAY_URL = "https://gateway.woco-net.com";
+import { ETHERNA_GATEWAY_URL, WOCO_GATEWAY_URL } from "@woco/shared";
+
 /** Where the WoCo app lives when the operator has not said otherwise. */
 const DEFAULT_APP_URL = "https://woco.eth.limo";
 
@@ -248,8 +248,9 @@ function originAllowed(raw: string, allowed: string[]): boolean {
 
 /** Gateways a site may be deployed to and read its content back through. */
 export function allowedGatewayUrls(): string[] {
-  const etherna = stripTrailingSlash(process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io");
-  return [WOCO_GATEWAY_URL, etherna];
+  // The canonical host, not the server's fetch base: a deployed page fetches from
+  // here in a browser, and the client only ever offers the canonical one (#657).
+  return [WOCO_GATEWAY_URL, ETHERNA_GATEWAY_URL];
 }
 
 /**

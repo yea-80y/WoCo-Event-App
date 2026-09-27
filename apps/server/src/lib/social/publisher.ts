@@ -40,7 +40,6 @@ import {
 import {
   getSocialIndexerOwnerHex,
   getSocialIndexerSigner,
-  requirePostageBatch,
   socialIndexerConfigured,
 } from "../../config/swarm.js";
 import { beeBatchState } from "../health/probes.js";
@@ -234,11 +233,11 @@ function liveDeps(): PublisherDeps {
         signer: getSocialIndexerSigner(),
         topic,
         bytes,
-        batchId: requirePostageBatch(),
+        family: "evidence",
         unchanged,
       }),
     confirmWrite: (topic, bytes, version) =>
-      confirmContentFeedWrite(getSocialIndexerOwnerHex(), topic, bytes, version),
+      confirmContentFeedWrite(getSocialIndexerOwnerHex(), topic, "evidence", bytes, version),
     batchState,
     now: () => Date.now(),
   };

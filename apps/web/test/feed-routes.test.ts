@@ -22,6 +22,7 @@ import {
   feedRouteFor,
 } from "../src/lib/swarm/gateways.js";
 import { diagnoseManifest, readUserManifestResult } from "../src/lib/manifest/inventory.js";
+import { FEED_FAMILIES, FEED_FAMILY_STORES } from "@woco/shared";
 
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
@@ -34,16 +35,24 @@ const code = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/<!--[\s\
 
 test("each family is stamped where the table says - a move is a deliberate diff here", () => {
   const onEtherna = Object.entries(FEED_ROUTES).filter(([, r]) => r.target === "etherna").map(([k]) => k).sort();
-  // Profiles have been Etherna since #617; event reads ask Etherna because new
-  // events are stamped there; the manifest and social moved in #689. Everything
-  // else has not moved yet.
-  assert.deepEqual(onEtherna, ["event", "manifest", "profile", "social"]);
+  // Profiles have been Etherna since #617; event and site reads ask Etherna
+  // because new ones are stamped there; the manifest and social moved in #689.
+  // Everything else has not moved yet.
+  assert.deepEqual(onEtherna, ["event", "manifest", "profile", "site", "social"]);
   for (const [family, route] of Object.entries(FEED_ROUTES)) {
     const store = route.target === "etherna" ? ETHERNA_ROUTE : WOCO_ROUTE;
     assert.equal(route.gatewayUrl, store.gatewayUrl, `${family}: gateway disagrees with its target`);
     assert.equal(route.family, family, `${family}: route names another family`);
     assert.ok(Object.isFrozen(route), `${family}: not frozen`);
   }
+});
+
+test("the client's routes ARE the shared table, row for row - the server reads the same one (#657)", () => {
+  assert.deepEqual(Object.keys(FEED_ROUTES).sort(), [...FEED_FAMILIES].sort(), "a row on one side only");
+  for (const family of FEED_FAMILIES) {
+    assert.equal(FEED_ROUTES[family].target, FEED_FAMILY_STORES[family], `${family}: client and server disagree`);
+  }
+  assert.ok(Object.isFrozen(FEED_ROUTES));
 });
 
 test("every family has its OWN route, so a call using another family's is detectable", () => {
@@ -58,8 +67,9 @@ test("the two routes are frozen and name the canonical gateways", () => {
 });
 
 test("a feed's recorded gateway maps to its route by the server's own rule", () => {
-  // Mirrors `isEthernaGateway` (apps/server/src/lib/etherna/batch-router.ts):
-  // the host must END WITH Etherna's; anything else is the WoCo default.
+  // The shared rule (`isEthernaGatewayUrl`, #657), the one the server's
+  // `isEthernaGateway` calls: Etherna's host or a subdomain, with a dot
+  // boundary; anything else is the WoCo default.
   assert.equal(feedRouteFor(ETHERNA_GATEWAY_URL), ETHERNA_ROUTE);
   assert.equal(feedRouteFor(`${ETHERNA_GATEWAY_URL}/`), ETHERNA_ROUTE);
   assert.equal(feedRouteFor("https://eu.gateway.etherna.io"), ETHERNA_ROUTE);
@@ -69,6 +79,7 @@ test("a feed's recorded gateway maps to its route by the server's own rule", () 
   assert.equal(feedRouteFor("not a url"), WOCO_ROUTE);
   // Organiser-written: a look-alike host must not select Etherna.
   assert.equal(feedRouteFor("https://gateway.etherna.io.example.com"), WOCO_ROUTE);
+  assert.equal(feedRouteFor("https://xgateway.etherna.io"), WOCO_ROUTE);
 });
 
 // ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@
  * before it dies saves what was written today.
  */
 
+import { ETHERNA_GATEWAY_URL, isEthernaGatewayUrl, isWocoGatewayUrl } from "@woco/shared";
 import { POSTAGE_BATCH_ID } from "../../config/swarm.js";
 import { getUserBatch } from "./batches.js";
 import { bucketCapacity, isStale } from "../health/alarms.js";
@@ -45,8 +46,9 @@ export interface BatchSelection {
   freeHosted?: boolean;
 }
 
-export const ETHERNA_URL = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
-const WOCO_URL = "https://gateway.woco-net.com";
+/** The canonical Etherna gateway - what feeds record and clients send. Never the
+ *  server's own fetch base (`ETHERNA_FETCH_BASE`, lib/etherna/gateway.ts). */
+export const ETHERNA_URL = ETHERNA_GATEWAY_URL;
 
 export class BatchPurchaseRequired extends Error {
   constructor() {
@@ -134,12 +136,10 @@ function noteRefusal(batchId: string, refusal: string | null): void {
   }
 }
 
+/** The shared host rule (#657): the canonical host or a subdomain of it, with a
+ *  dot boundary, identical on the client. */
 export function isEthernaGateway(url: string): boolean {
-  try {
-    return new URL(url).host.endsWith(new URL(ETHERNA_URL).host);
-  } catch {
-    return url === ETHERNA_URL;
-  }
+  return isEthernaGatewayUrl(url);
 }
 
 /**
@@ -170,11 +170,7 @@ function isLive(batch: { expiresAt: string }): boolean {
 }
 
 export function isWocoGateway(url: string): boolean {
-  try {
-    return new URL(url).host.endsWith(new URL(WOCO_URL).host);
-  } catch {
-    return url === WOCO_URL;
-  }
+  return isWocoGatewayUrl(url);
 }
 
 interface RouterInput {
@@ -232,6 +228,21 @@ export function batchForDeploy(input: RouterInput): BatchSelection {
   }
 
   throw new BatchPurchaseRequired();
+}
+
+/**
+ * Where a SERVER-OWNED feed in an Etherna family is stamped (#657): the shared
+ * platform batch, refused when it cannot take a write (#610). No WoCo fallback,
+ * unlike user content below: the family table says Etherna, and a family's
+ * writes follow its row or its reads and writes split.
+ */
+export function platformEthernaBatch(): BatchSelection {
+  const platform = process.env.ETHERNA_PLATFORM_BATCH;
+  if (!platform) throw new Error("ETHERNA_PLATFORM_BATCH not configured — cannot stamp a server feed on Etherna");
+  const refusal = platformBatchRefusal(platform, ethernaPlatformBatchSnapshot(), Date.now());
+  noteRefusal(platform, refusal);
+  if (refusal) throw new PlatformBatchUnavailable(refusal);
+  return { batchId: platform, target: "etherna" };
 }
 
 /**
