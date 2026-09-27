@@ -30,9 +30,9 @@ defines it; that file is the authority, not this document.
   │  account's 1271 signatures are non-deterministic. A PASSKEY account    │
   │  signs nothing for it: its seed is HKDF of the PRF output (§2, #642).  │
   └──┬──────────────────────────────────┬───────────────────────────────────┘
-     │ AuthorizeSession                 │ two deterministic derivations, signed
-     │ (per session, by the Kernel       │ by the RAW key (never the Kernel)
-     │  or the EOA)                     │ (fixed nonce — same signature forever)
+     │ AuthorizeSession                 │ the seed: a deterministic signature by
+     │ (per session, by the Kernel       │ the RAW key (wallet/email, fixed nonce),
+     │  or the EOA)                     │ or HKDF of the PRF output (passkey)
      ▼                                  │
   ┌──────────────────────┐              ├──────────────────────────────┐
   │ SESSION KEY          │              ▼                              ▼
