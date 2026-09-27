@@ -278,6 +278,29 @@ test("the eager passkey establish can never derive for a rotated credential or a
   assert.match(src, /if \(!envelopeUnknown\) await _establishPasskeySeedEagerly\(\);/);
 });
 
+test("a REFUSED back-fill heals the device instead of leaving it on the wrong seed", () => {
+  // With a recovery binding AND a stored seed, login skips the envelope, so a
+  // device whose seed the envelope disagrees with would sign every write with it
+  // forever. The heal mirrors the #245 re-probe's: drop the seed under the
+  // credential FIRST (so even a user who switched away is repaired), then sign out
+  // only if still in that account; the next login restores from the envelope.
+  const src = readFileSync(
+    fileURLToPath(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url)),
+    "utf8",
+  );
+  const caller = src.slice(src.indexOf("async function _maybeBackfillPortabilityEnvelope"));
+  assert.match(
+    caller.slice(0, caller.indexOf("/** The one accessor bundle")),
+    /outcome\.action === "refused"[\s\S]*?await _healRefusedBackfill\(eoa, parent\)/,
+  );
+  const heal = src.slice(src.indexOf("async function _healRefusedBackfill"));
+  const body = heal.slice(0, heal.indexOf("\n}\n"));
+  const clear = body.indexOf("await clearIdentitySeed(eoa)");
+  const guard = body.indexOf("if (!stillIn) return;");
+  const out = body.indexOf("await logout({ force: true })");
+  assert.ok(clear > 0 && guard > clear && out > guard, "clear seed → still-in guard → sign out");
+});
+
 test("requestIdentitySeed derives NO key — the seed is all it returns", async () => {
   // #518: it used to hand back an ed25519 public key that signed nothing on any
   // launch path. Anything that needs a key derives it from the seed itself, so a

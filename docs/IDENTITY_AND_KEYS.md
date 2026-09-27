@@ -101,7 +101,8 @@ RECOVERY_ENC_DOMAIN  salt 0x7647dc11…8a20   (a guardian's escrow key)
 — `packages/shared/src/auth/eip712.ts`
 
 **A fresh device therefore needs two signatures**, once: the session delegation, and this. Both
-are deferred to the first action that needs them, not taken at login.
+are deferred to the first action that needs them, not taken at login — except for a passkey,
+whose seed needs no signature and is set up at login (below).
 
 **Passkey accounts are the exception: their seed is not a signature (#642).** A passkey has a
 symmetric secret to start from — the 32-byte PRF output — so the seed roots on it:
