@@ -48,7 +48,7 @@ import {
   RetiredRecoveryEnvelopeVersionError,
   UnknownRecoveryEnvelopeVersionError,
 } from "./recovery-aad.js";
-import { writeContentFeed, readContentFeedResult } from "../swarm/content-feed.js";
+import { writeContentFeed, readContentFeedResult, type SocTransport } from "../swarm/content-feed.js";
 import { FEED_ROUTES } from "../swarm/gateways.js";
 
 export interface PortabilityKeys {
@@ -89,6 +89,8 @@ export async function writePortabilityEnvelope(args: {
   prfSecret: string;
   preservedKernelAddress: string;
   identitySeed: string;
+  /** Test seam — production posts through our relay. */
+  transport?: SocTransport;
 }): Promise<void> {
   const { prfSecret, preservedKernelAddress, identitySeed } = args;
   const keys = await derivePortabilityKeys(prfSecret);
@@ -118,14 +120,13 @@ export async function writePortabilityEnvelope(args: {
 
   // Versioned content-feed rail: after a recovery the envelope is REWRITTEN under
   // the new passkey's derived keys — a fixed-identifier SOC would silently discard
-  // that rewrite (immutable chunk). The topic string IS the fixed identifier input,
-  // so `contentFeedSocIdentifier(PORTABILITY_SOC_IDENTIFIER_INPUT)` matches the
-  // legacy identifier and old envelopes stay discoverable via the fallback.
+  // that rewrite (immutable chunk).
   await writeContentFeed({
     signerPrivKey: keys.socOwnerPrivKey,
     topic: PORTABILITY_SOC_IDENTIFIER_INPUT,
     data: payloadObj,
     route: FEED_ROUTES.recoveryPortability,
+    transport: args.transport,
   });
 }
 
@@ -184,7 +185,15 @@ export async function readPortabilityEnvelope(args: {
     // LIFE OF THE DEVICE — the #138 class exactly, which is why `probeSoc`'s
     // own docstring names "a cached negative" as a case that must not take a
     // gateway refusal at face value.
-    { thorough: true, route: FEED_ROUTES.recoveryPortability },
+    //
+    // `skipLegacy`: nothing can sit at the pre-versioning identifier under this
+    // owner. That identifier was last written by code that predates versioning
+    // (2026-07-06), and the owner key moved to the PRF under `.../soc-owner/v2`
+    // on 2026-09-27 (#642), so no chunk older than that exists under it at all.
+    // Asking anyway is a whole extra round on the never-recovered answer - the
+    // common one, on the login path - and since the family moved to Etherna each
+    // round that misses costs our bee's search AND Etherna's (#689).
+    { thorough: true, route: FEED_ROUTES.recoveryPortability, skipLegacy: true },
   );
   if (read.status === "absent") return { status: "absent" };
   if (read.status === "unavailable") {
@@ -250,11 +259,11 @@ export async function readPortabilityEnvelope(args: {
 /**
  * Does an envelope exist for this passkey — ONE chunk lookup, not the full read.
  *
- * `readPortabilityEnvelope` costs three lookups when the answer is no: versions 0
- * and 1 (the resolver's probe window), then the pre-versioning identifier. Every
- * one of those is a search for a chunk that is not there, and a miss is a full
- * network search on our own gateway — the expensive direction in Swarm, and the
- * shape that melted the bee once.
+ * `readPortabilityEnvelope` costs two lookups when the answer is no: versions 0
+ * and 1 (the resolver's probe window). Each is a search for a chunk that is not
+ * there, and a miss is a full network search on our own gateway — the expensive
+ * direction in Swarm, and the shape that melted the bee once — plus, since the
+ * family moved to Etherna (#689), a question to Etherna as well.
  *
  * The background re-probe (#245 fix 4) only ever asks EXISTENCE, and existence
  * needs exactly one question: `writeContentFeed` computes `(latest ?? -1) + 1`, so
@@ -262,14 +271,12 @@ export async function readPortabilityEnvelope(args: {
  * base chunk — including a paged one, whose manifest IS that base chunk. Ask v0;
  * escalate to the full read only on a hit, where the lookups then all succeed.
  *
- * Two deliberate narrowings, neither a regression:
- *  - a hint-less full read ALREADY reports absent when v0 is missing but a later
- *    version exists (`resolveLatestSocVersion` starts at 0 and stops on the first
- *    gap), so this inherits that behaviour rather than introducing it;
- *  - the legacy pre-versioning identifier is not consulted. An envelope written
- *    before versioning landed would be missed here — the cost is that such a
- *    device does not self-heal, which is the status quo it is being lifted out of,
- *    never a wrong address.
+ * One deliberate narrowing, not a regression: a hint-less full read ALREADY
+ * reports absent when v0 is missing but a later version exists
+ * (`resolveLatestSocVersion` starts at 0 and stops on the first gap), so this
+ * inherits that behaviour rather than introducing it. The pre-versioning
+ * identifier is not asked here or by the full read: nothing can be there under a
+ * v2 owner (see `readPortabilityEnvelope`).
  *
  * Three states, for the usual reason: a failed lookup is not an absence.
  */
@@ -402,6 +409,8 @@ export function backfillPortabilityEnvelope(
   args: PortabilityBackfillArgs & {
     /** Test seam — override the deadline (ms). Production always takes the default. */
     deadlineMs?: number;
+    /** Test seam — where the write goes. Production posts through our relay. */
+    transport?: SocTransport;
   },
 ): Promise<PortabilityBackfill> {
   // Keyed by the envelope's SOC owner ADDRESS — public and 1:1 with the passkey —
@@ -436,10 +445,15 @@ function _withDeadline(
   });
 }
 
-async function _backfillOnce(args: PortabilityBackfillArgs): Promise<PortabilityBackfill> {
+async function _backfillOnce(args: PortabilityBackfillArgs & { transport?: SocTransport }): Promise<PortabilityBackfill> {
   const read = await readPortabilityEnvelope({ prfSecret: args.prfSecret });
   const decision = decideBackfill(read, args);
   if (decision.action !== "write") return decision;
-  await writePortabilityEnvelope(args);
+  await writePortabilityEnvelope({
+    prfSecret: args.prfSecret,
+    preservedKernelAddress: args.preservedKernelAddress,
+    identitySeed: args.identitySeed,
+    transport: args.transport,
+  });
   return { action: "wrote", reason: decision.reason };
 }
