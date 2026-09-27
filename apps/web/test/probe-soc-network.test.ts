@@ -15,11 +15,12 @@ import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { contentFeedSocIdentifier, versionedSocIdentifier } from "@woco/shared";
 import { probeSoc } from "../src/lib/swarm/probe-soc.js";
-import { readBandedContentFeed, readContentFeedAtVersion, readContentFeedResult } from "../src/lib/swarm/content-feed.js";
+import { hintKey, readBandedContentFeed, readContentFeedAtVersion, readContentFeedResult, writeContentFeed } from "../src/lib/swarm/content-feed.js";
 import { ETHERNA_GATEWAY_URL, FEED_ROUTES, WOCO_ROUTE } from "../src/lib/swarm/gateways.js";
 import {
   OTHER_KEY,
   OWNER,
+  OWNER_PRIV,
   clearRequests,
   gatewayParam,
   install,
@@ -29,6 +30,7 @@ import {
   serverRequests,
   soc,
   socBytes,
+  transport,
   type Net,
 } from "./fake-swarm-net.js";
 
@@ -111,6 +113,55 @@ test("bytes that are not JSON are called unusable only when the scan could confi
   install({ ourBee: new Map([[junk.address, junk]]), etherna: new Map() });
   const alone = await readContentFeedResult(OWNER, TOPIC, { route: FEED_ROUTES.profile, thorough: true });
   assert.equal((alone as { unusableAt?: number }).unusableAt, 0);
+});
+
+test("a stored hint naming a version that exists nowhere costs one server ask, then is forgotten (#689)", async () => {
+  const v0 = soc(at(0), { v: 0 });
+  install({ ourBee: new Map([[v0.address, v0]]), etherna: new Map() });
+  localStorage.setItem(hintKey(OWNER, TOPIC), "5"); // e.g. a version whose batch is gone
+
+  const first = await readContentFeedResult<{ v: number }>(OWNER, TOPIC, { route: FEED_ROUTES.profile });
+  assert.equal((first as { version: number }).version, 0);
+  assert.equal(serverRequests().length, 1, "the hinted version was asked about once");
+
+  clearRequests();
+  const again = await readContentFeedResult<{ v: number }>(OWNER, TOPIC, { route: FEED_ROUTES.profile });
+  assert.equal((again as { version: number }).version, 0);
+  assert.deepEqual(serverRequests(), [], "the dead hint was asked about again");
+});
+
+test("Etherna unreachable when a hinted version is re-asked: the hint is KEPT, and the next read finds it", async () => {
+  const net = savedMomentsAgo(); // v1 on Etherna only
+  install({ ...net, ethernaDown: true });
+  localStorage.setItem(hintKey(OWNER, TOPIC), "1"); // this device wrote v1
+  const blind = await readContentFeedResult<{ v: number }>(OWNER, TOPIC, { route: FEED_ROUTES.profile });
+  assert.notEqual((blind as { version?: number }).version, 1);
+  assert.equal(localStorage.getItem(hintKey(OWNER, TOPIC)), "1", "\"could not ask\" dropped the hint");
+
+  install(net);
+  const seen = await readContentFeedResult<{ v: number }>(OWNER, TOPIC, { route: FEED_ROUTES.profile });
+  assert.equal((seen as { version: number }).version, 1);
+});
+
+test("in the lag window a read asks the server about its own write once, not once per step", async () => {
+  const net: Net = { ourBee: new Map(), etherna: new Map() };
+  install(net);
+  await writeContentFeed({ signerPrivKey: OWNER_PRIV, topic: TOPIC, data: { v: 0 }, route: FEED_ROUTES.profile, transport: transport(net).transport });
+  clearRequests();
+  const res = await readContentFeedResult<{ v: number }>(OWNER, TOPIC, { route: FEED_ROUTES.profile, skipLegacy: true });
+  assert.equal((res as { version: number }).version, 0);
+  assert.equal(serverRequests().length, 1, "the resolver and the assembler each asked the server");
+});
+
+test("a paged feed saved moments ago reads whole on the device that saved it - its pages are not a torn write", async () => {
+  const net: Net = { ourBee: new Map(), etherna: new Map() };
+  install(net);
+  const big = { bio: "x".repeat(9000) };
+  await writeContentFeed({ signerPrivKey: OWNER_PRIV, topic: TOPIC, data: big, route: FEED_ROUTES.profile, transport: transport(net).transport });
+  assert.equal(net.ourBee.size, 0);
+  const res = await readContentFeedResult<{ bio: string }>(OWNER, TOPIC, { route: FEED_ROUTES.profile });
+  assert.equal(res.status, "found", JSON.stringify(res));
+  assert.equal((res as { value: { bio: string } }).value.bio.length, 9000);
 });
 
 // ---------------------------------------------------------------------------

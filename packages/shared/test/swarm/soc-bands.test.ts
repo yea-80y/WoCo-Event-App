@@ -268,3 +268,44 @@ test("a BAND hint naming an unopened band is the same alarm", async () => {
   assert.equal(r.band, 1, "it still lands");
   assert.equal(r.hintInvalidated, true, "but the restart from zero is reported");
 });
+
+test("a validated hint is asked about once - the scan continues past it (#689)", async () => {
+  // Since #689 a client re-asks the SERVER about a hinted version our gateway
+  // has not got yet, so a second probe of it was a second server round trip.
+  const base = contentFeedSocIdentifier(topicForBand(0));
+  const hinted = bytesToHex(versionedSocIdentifier(base, 5));
+  const feed = fakeFeed([10]);
+  let askedHinted = 0;
+  const read: SocChunkProbe = (id) => {
+    if (bytesToHex(id) === hinted) askedHinted++;
+    return feed.read(id);
+  };
+  const r = await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), 5);
+  assert.equal(r.latest, 9);
+  assert.equal(r.hintValidated, true);
+  assert.equal(askedHinted, 1);
+});
+
+test("an accurate hint costs one hit and ONE miss, in one round trip - the window starts at the hint (#689)", async () => {
+  const base = contentFeedSocIdentifier(topicForBand(0));
+  const feed = fakeFeed([10]);
+  const r = await resolveLatestSocVersion(feed.read, (v) => versionedSocIdentifier(base, v), 9);
+  assert.equal(r.latest, 9, "a hint naming the head resolves to the head");
+  assert.equal(r.hintValidated, true);
+  assert.deepEqual(feed.stats(), { probes: 2, misses: 1 });
+});
+
+test("a hint one behind still finds the head, and an invalid hint still rescans from 0", async () => {
+  const base = contentFeedSocIdentifier(topicForBand(0));
+  const behind = fakeFeed([10]);
+  const r = await resolveLatestSocVersion(behind.read, (v) => versionedSocIdentifier(base, v), 8);
+  assert.equal(r.latest, 9);
+  // [8, 9] hit, then [10, 11] - the window's two misses, as before #689.
+  assert.deepEqual(behind.stats(), { probes: 4, misses: 2 });
+
+  const invalid = fakeFeed([3]);
+  const q = await resolveLatestSocVersion(invalid.read, (v) => versionedSocIdentifier(base, v), 7);
+  assert.equal(q.latest, 2);
+  assert.equal(q.hintValidated, false);
+  assert.equal(q.scannedFrom, 0);
+});
