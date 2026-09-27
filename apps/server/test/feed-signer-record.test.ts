@@ -228,6 +228,11 @@ test("the owner read offers a creator-index feed for re-signing only off a clean
   assert.match(local, /if \(cached\) return \{ feed: await applyOnChainEventIds\(cached\), resignable: true \};/);
 });
 
+test("an owner edit's base skips the version cache - a re-sign relayed since does not invalidate it (#657)", () => {
+  const resolve = between("async function resolveEventForOwner(", "\n}\n");
+  assert.match(resolve, /const res = await readEventFeedSocResult\(eventId, signer, \{ fresh: true \}\);/);
+});
+
 test("the public page applies the same creator check, so it never shows what checkout refuses", () => {
   const display = between("export async function getEventForDisplay(", "\n}\n");
   assert.match(display, /const soc = acceptEventFeed\(eventId, await readEventFeedSoc\(/);

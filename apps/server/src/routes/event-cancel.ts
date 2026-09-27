@@ -26,9 +26,10 @@ import { cancellationGate, cancellationProgress, withCancellation } from "../lib
 
 export const eventCancel = new Hono<AppEnv>();
 
-async function loadOwned(c: Context<AppEnv>, eventId: string) {
+/** `fresh` only where the feed may go back to the organiser to sign (#657). */
+async function loadOwned(c: Context<AppEnv>, eventId: string, opts: { fresh?: boolean } = {}) {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
-  const { feed: event, resignable } = await getEventForOwnerRead(eventId, parentAddress)
+  const { feed: event, resignable } = await getEventForOwnerRead(eventId, parentAddress, opts)
     .catch(() => ({ feed: null, resignable: false }));
   if (!event) return { error: c.json({ ok: false, error: "Event not found" }, 404) };
   if (event.creatorAddress.toLowerCase() !== parentAddress) {
@@ -39,7 +40,7 @@ async function loadOwned(c: Context<AppEnv>, eventId: string) {
 
 eventCancel.post("/:id/cancel", requireAuth, async (c) => {
   const eventId = c.req.param("id");
-  const { event, parentAddress, resignable, error } = await loadOwned(c, eventId);
+  const { event, parentAddress, resignable, error } = await loadOwned(c, eventId, { fresh: true });
   if (error) return error;
   if (event.deleted) return c.json({ ok: false, error: "This event was deleted" }, 409);
   if (organiserCancelClosed(event, cancellationGate(eventId), Date.now())) {

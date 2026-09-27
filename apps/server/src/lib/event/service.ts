@@ -359,10 +359,11 @@ export async function confirmSeriesOnChain(
   // from it first (recordOnChainEventId above keeps the chain authoritative regardless).
   // The signerHint SOC read stays as the cold-cache fallback (e.g. a retried confirm
   // after a restart, once the client SOC does exist).
-  let { feed, cacheable } = await getEventRead(eventId);
+  // Fresh: `updated` goes back to the organiser to sign (#657).
+  let { feed, cacheable } = await getEventRead(eventId, undefined, { fresh: true });
   // Same creator check as getEvent: this feed primes the money-path cache below.
   if (!feed && signerHint) {
-    const soc = await readEventFeedSocResult(eventId, signerHint);
+    const soc = await readEventFeedSocResult(eventId, signerHint, { fresh: true });
     if (soc.status === "found") {
       feed = acceptEventFeed(eventId, soc.feed);
       cacheable = soc.scanClean;
@@ -447,7 +448,7 @@ export async function stampEventSubEns(
   label: string,
   parentAddress: string,
 ): Promise<EventFeed> {
-  const { feed, cacheable } = await getEventRead(eventId);
+  const { feed, cacheable } = await getEventRead(eventId, undefined, { fresh: true });
   if (!feed) throw new Error("Event not found");
   if (feed.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
     throw new Error("Not the event creator");
@@ -539,7 +540,7 @@ async function resolveEventForOwner(
   // on-chain id (#651's shape, #657). A read that could not reach the head, or
   // could not answer, refuses with "try again" rather than falling through.
   const readBasis = async (signer: string): Promise<EventFeed | null> => {
-    const res = await readEventFeedSocResult(eventId, signer);
+    const res = await readEventFeedSocResult(eventId, signer, { fresh: true });
     if (res.status === "absent") return null;
     if (res.status === "unavailable" || !res.scanClean) {
       console.warn(`[event] ${eventId}: owner edit refused - ${res.status === "unavailable" ? res.reason : "version scan inconclusive"}`);
@@ -803,7 +804,9 @@ async function removeEventFromCreatorDirectory(
 // explicitly invalidated on publish/update (see invalidateEventCache), so a
 // longer TTL is safe and significantly reduces Swarm read pressure under
 // bursty buy traffic.
-const _eventCache = new Map<string, { feed: EventFeed; expiresAt: number }>();
+/** `authored`: the server built this feed (create, chain-confirm) and handed it
+ *  to the organiser to sign, rather than read it back from Swarm. */
+const _eventCache = new Map<string, { feed: EventFeed; expiresAt: number; authored: boolean }>();
 const EVENT_CACHE_TTL_MS = 10 * 60_000;
 
 /**
@@ -872,10 +875,17 @@ export type EventFeedSocRead =
  * so an Etherna outage makes these reads dirty (served, not cached) rather than
  * silently stale.
  */
-export async function readEventFeedSocResult(eventId: string, signer: string): Promise<EventFeedSocRead> {
+export async function readEventFeedSocResult(
+  eventId: string,
+  signer: string,
+  /** `fresh`: the result becomes a base someone signs - see readContentFeedJsonResult. */
+  opts: { fresh?: boolean } = {},
+): Promise<EventFeedSocRead> {
   let res: Awaited<ReturnType<typeof readContentFeedJsonResult>>;
   try {
-    res = await readContentFeedJsonResult(signer.replace(/^0x/, ""), eventContentTopic(eventId), "event");
+    res = await readContentFeedJsonResult(signer.replace(/^0x/, ""), eventContentTopic(eventId), "event", {
+      fresh: opts.fresh,
+    });
   } catch (err) {
     return { status: "unavailable", reason: err instanceof Error ? err.message : String(err) };
   }
@@ -955,13 +965,22 @@ export async function getEvent(eventId: string, signerHint?: string): Promise<Ev
 async function getEventRead(
   eventId: string,
   signerHint?: string,
+  /**
+   * `fresh`: the answer becomes a base the organiser's client signs as the next
+   * version (#657). A cache entry READ from Swarm can then be one version behind
+   * - a re-sign relayed since does not invalidate it - so only an entry the
+   * server authored itself is used, and the SOC read skips the version cache.
+   */
+  opts: { fresh?: boolean } = {},
 ): Promise<{ feed: EventFeed | null; cacheable: boolean }> {
   const now = Date.now();
   const cached = _eventCache.get(eventId);
   // applyOnChainEventIds fills a series' onChainEventId from the server's chain
   // receipt when the signed feed lacks it (client SOC not re-signed). Applied on the
   // cache hit too so a feed cached BEFORE registration still flips to v2.
-  if (cached && cached.expiresAt > now) return { feed: await applyOnChainEventIds(cached.feed), cacheable: true };
+  if (cached && cached.expiresAt > now && (!opts.fresh || cached.authored)) {
+    return { feed: await applyOnChainEventIds(cached.feed), cacheable: true };
+  }
 
   // Phase B: if the event has a known content-feed signer (hint or directory
   // carrier), read its client-signed SOC. Fall back to the legacy platform feed
@@ -970,7 +989,7 @@ async function getEventRead(
   let feed: EventFeed | null = null;
   let cacheable = true;
   if (signer) {
-    const soc = await readEventFeedSocResult(eventId, signer);
+    const soc = await readEventFeedSocResult(eventId, signer, { fresh: opts.fresh });
     if (soc.status === "found") {
       feed = soc.feed;
       // A dirty scan's version is a lower bound: an organiser's newer version
@@ -991,7 +1010,7 @@ async function getEventRead(
   // Tombstoned (deleted) events read as not-found on every path — money included.
   if (feed?.deleted) return { feed: null, cacheable };
   if (feed) {
-    if (cacheable) _eventCache.set(eventId, { feed, expiresAt: now + EVENT_CACHE_TTL_MS });
+    if (cacheable) _eventCache.set(eventId, { feed, expiresAt: now + EVENT_CACHE_TTL_MS, authored: false });
     else console.warn(`[event] ${eventId}: served from an inconclusive version scan - not cached`);
     await applyOnChainEventIds(feed);
     for (const s of feed.series) {
@@ -1079,10 +1098,12 @@ export async function getEventForOwner(
 export async function getEventForOwnerRead(
   eventId: string,
   parentAddress: string,
+  /** `fresh` when the feed may be handed back for re-signing - see getEventRead. */
+  opts: { fresh?: boolean } = {},
 ): Promise<{ feed: EventFeed | null; resignable: boolean }> {
-  const local = await resolveOwnEventLocallyRead(eventId, parentAddress);
+  const local = await resolveOwnEventLocallyRead(eventId, parentAddress, opts);
   if (local) return local;
-  const { feed, cacheable } = await getEventRead(eventId);
+  const { feed, cacheable } = await getEventRead(eventId, undefined, opts);
   return { feed, resignable: cacheable };
 }
 
@@ -1102,13 +1123,14 @@ export async function resolveOwnEventLocally(
 async function resolveOwnEventLocallyRead(
   eventId: string,
   parentAddress: string,
+  opts: { fresh?: boolean } = {},
 ): Promise<{ feed: EventFeed; resignable: boolean } | null> {
-  const cached = peekEventCache(eventId);
+  const cached = peekEventCache(eventId, { authoredOnly: opts.fresh });
   if (cached) return { feed: await applyOnChainEventIds(cached), resignable: true };
 
   const own = (await getCreatorEvents(parentAddress)).find((e) => e.eventId === eventId);
   if (!own?.creatorFeedSigner) return null;
-  const res = await readEventFeedSocResult(eventId, own.creatorFeedSigner);
+  const res = await readEventFeedSocResult(eventId, own.creatorFeedSigner, opts);
   if (res.status !== "found" || res.feed.deleted) return null;
   return { feed: await applyOnChainEventIds(res.feed), resignable: res.scanClean };
 }
@@ -1144,9 +1166,10 @@ export function invalidateEventCache(eventId: string): void {
  * cover the just-published window without getEvent's slow missing-feed retry
  * ladder when the event doesn't exist locally.
  */
-export function peekEventCache(eventId: string): EventFeed | null {
+export function peekEventCache(eventId: string, opts: { authoredOnly?: boolean } = {}): EventFeed | null {
   const cached = _eventCache.get(eventId);
   if (!cached || cached.expiresAt <= Date.now()) return null;
+  if (opts.authoredOnly && !cached.authored) return null;
   return cached.feed.deleted ? null : cached.feed;
 }
 
@@ -1160,7 +1183,7 @@ export function peekEventCache(eventId: string): EventFeed | null {
  * cache lets that first read succeed; the carrier is authoritative again after TTL.
  */
 export function primeEventCache(eventId: string, feed: EventFeed): void {
-  _eventCache.set(eventId, { feed, expiresAt: Date.now() + EVENT_CACHE_TTL_MS });
+  _eventCache.set(eventId, { feed, expiresAt: Date.now() + EVENT_CACHE_TTL_MS, authored: true });
 }
 
 interface EventDirectory {

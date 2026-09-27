@@ -193,16 +193,24 @@ export const wocoBeeSource: SocSource = {
  * A short circuit breaker on Etherna (#657). Every Etherna-family scan ends with
  * a question to Etherna, the event money path's included, so an Etherna that
  * HANGS would cost every such read the full timeout (the token request and the
- * chunk read, up to 18 s). After a slow failure - a timeout, a network error, a
- * token failure - Etherna is not asked again for `ETHERNA_BREAKER_MS`; reads say
- * `unavailable` at once, which is what they would have said anyway.
+ * chunk read, up to 18 s). After a SLOW failure - no answer, or an unhappy one,
+ * that took `ETHERNA_SLOW_MS` or more (a timeout, a proxy's 504 after its own
+ * wait, a hung sign-in) - Etherna is not asked again for `ETHERNA_BREAKER_MS`;
+ * reads say `unavailable` at once, which is what they would have said anyway.
  *
- * Not tripped by an HTTP answer, however unhappy: a fast 503 costs no latency,
- * and tripping on one would turn a single blip into 30 s of refused writes for
- * every Etherna family, the client's included (they probe through here).
+ * A FAST failure does not trip it: a quick 503 costs no latency, and pausing on
+ * one would turn a single blip into 30 s of refused writes for every Etherna
+ * family, the client's included (they probe through here).
  */
 export const ETHERNA_BREAKER_MS = 30_000;
-const breaker = { openUntil: 0, reason: null as string | null, trips: 0, now: () => Date.now() };
+export const ETHERNA_SLOW_MS = 3_000;
+const breaker = {
+  openUntil: 0,
+  reason: null as string | null,
+  trips: 0,
+  now: () => Date.now(),
+  slowMs: ETHERNA_SLOW_MS,
+};
 
 function tripBreaker(reason: string): void {
   if (breaker.now() >= breaker.openUntil) {
@@ -213,12 +221,13 @@ function tripBreaker(reason: string): void {
   breaker.reason = reason;
 }
 
-/** Test seam: close the breaker, and optionally pin its clock. */
-export function __resetEthernaBreaker(now?: () => number): void {
+/** Test seam: close the breaker, and optionally pin its clock and what counts as slow. */
+export function __resetEthernaBreaker(opts: { now?: () => number; slowMs?: number } = {}): void {
   breaker.openUntil = 0;
   breaker.reason = null;
   breaker.trips = 0;
-  breaker.now = now ?? (() => Date.now());
+  breaker.now = opts.now ?? (() => Date.now());
+  breaker.slowMs = opts.slowMs ?? ETHERNA_SLOW_MS;
 }
 
 /** Can this server ask Etherna at all? Without the flag and a key, no. */
@@ -261,12 +270,16 @@ export const ethernaSource: SocSource = {
     if (breaker.now() < breaker.openUntil) {
       return { status: "unavailable", reason: `etherna paused after: ${breaker.reason}` };
     }
+    // Real elapsed time, whatever clock the breaker is on.
+    const started = performance.now();
+    const failed = (reason: string): RawSocRead => {
+      if (performance.now() - started >= breaker.slowMs) tripBreaker(reason);
+      return { status: "unavailable", reason };
+    };
     try {
       await ensureEthernaToken();
     } catch (e) {
-      const reason = `etherna token: ${(e as Error)?.message ?? String(e)}`;
-      tripBreaker(reason);
-      return { status: "unavailable", reason };
+      return failed(`etherna token: ${(e as Error)?.message ?? String(e)}`);
     }
     const token = getCachedEthernaToken();
     if (!token) return { status: "unavailable", reason: "etherna token unavailable" };
@@ -274,11 +287,9 @@ export const ethernaSource: SocSource = {
       const r = await fetchRaw(`${ETHERNA_GW}/chunks/${address}`, { headers: { Authorization: `Bearer ${token}` } }, ETHERNA_READ_TIMEOUT_MS);
       if (r.status === 200) return { status: "found", raw: r.body };
       if (r.status === 404) return { status: "absent" };
-      return { status: "unavailable", reason: `etherna HTTP ${r.status}` };
+      return failed(`etherna HTTP ${r.status}`);
     } catch (e) {
-      const reason = `etherna unreachable: ${(e as Error)?.message ?? String(e)}`;
-      tripBreaker(reason);
-      return { status: "unavailable", reason };
+      return failed(`etherna unreachable: ${(e as Error)?.message ?? String(e)}`);
     }
   },
 };

@@ -439,15 +439,21 @@ export async function readContentFeedJsonResult(
   /** `skipLegacy` / `maxVersion`: statement rails only — see
    *  {@link readBandedContentFeedJsonResult}. Events, profiles and sites predate
    *  versioning and DO have legacy chunks, so this must stay opt-in rather than
-   *  becoming the default. */
-  opts: { versionHint?: number; skipLegacy?: boolean; maxVersion?: number } = {},
+   *  becoming the default.
+   *
+   *  `fresh`: never answer from the cached version, only start the scan there.
+   *  For a read whose result someone will SIGN as the next version (#657): a
+   *  write relayed since the cache entry - the organiser's own client re-signing
+   *  a moment ago - does not invalidate it, so the cached "clean" version can be
+   *  one behind, and a feed built on it erases the one in between. */
+  opts: { versionHint?: number; skipLegacy?: boolean; maxVersion?: number; fresh?: boolean } = {},
 ): Promise<VersionedFeedRead> {
   const read = scanProbe(ownerHex, family);
   const key = cfvKey(FEED_FAMILY_STORES[family], ownerHex, baseTopic);
   const base = contentFeedSocIdentifier(baseTopic);
 
   const cached = cfvCache.get(key);
-  if (cached) {
+  if (cached && !opts.fresh) {
     const ttl = cached.version === null ? CFV_ABSENT_TTL_MS : CFV_TTL_MS;
     if (Date.now() - cached.at < ttl) {
       if (cached.version === null) return { status: "absent" };
