@@ -76,6 +76,7 @@ const net = {
   ethernaMode: "up" as Mode,
   /** Addresses our bee answers 503 for, whatever the mode. */
   beeFaulty: new Set<string>(),
+  ssoMode: "up" as "up" | "throw",
   requests: { bee: 0, etherna: 0, sso: 0 },
 };
 
@@ -111,6 +112,7 @@ function fakeFetch(input: string | URL | Request): Promise<Response> {
   }
   if (url.href === SSO) {
     net.requests.sso++;
+    if (net.ssoMode === "throw") return Promise.reject(new TypeError("fetch failed"));
     return Promise.resolve(Response.json({ access_token: "tok", expires_in: 3600 }));
   }
   // The proxy's whitelist self-heal, fire-and-forget.
@@ -169,6 +171,8 @@ beforeEach(() => {
   net.beeMode = "up";
   net.ethernaMode = "up";
   net.beeFaulty.clear();
+  net.ssoMode = "up";
+  rd.__resetEthernaBreaker();
   net.requests = { bee: 0, etherna: 0, sso: 0 };
 });
 
@@ -459,4 +463,96 @@ test("a retraction still only in Etherna's store, with Etherna down, is never co
   const after = await issuer.confirmReferral({ referee, refereeFeed: `0x${OWNER}` as Hex0x, referrer }, deps);
   assert.equal(after.status, "retracted", "and once Etherna answers, the retraction is what it sees");
   assert.deepEqual(writes, []);
+});
+
+test("every other base the organiser's client re-signs is refused or withheld off a dirty read", async () => {
+  const eventId = `657-${++n}-${Date.now()}`;
+  signerRecord.recordEventFeedSigner(eventId, "0x" + OWNER, CREATOR);
+  put(eventContentTopic(eventId), 0, eventVersion(eventId, "v0"), ["bee", "etherna"]);
+  put(eventContentTopic(eventId), 1, eventVersion(eventId, "v1-cancelled-banner"), ["etherna"]);
+  net.ethernaMode = "503";
+
+  // The sub-ENS stamp hands its result back for re-signing: refuse (503).
+  await assert.rejects(
+    events.stampEventSubEns(eventId, "mylabel", CREATOR),
+    (err: Error) => err.message === events.EVENT_BASIS_UNVERIFIED,
+  );
+  // The cancel route's read: served, but not as something to re-sign.
+  const owned = await events.getEventForOwnerRead(eventId, CREATOR);
+  assert.equal(owned.feed?.title, "v0");
+  assert.equal(owned.resignable, false);
+
+  // Etherna back: the head, and it may be re-signed.
+  net.ethernaMode = "up";
+  const clean = await events.getEventForOwnerRead(eventId, CREATOR);
+  assert.equal(clean.feed?.title, "v1-cancelled-banner");
+  assert.equal(clean.resignable, true);
+  const stamped = await events.stampEventSubEns(eventId, "mylabel", CREATOR);
+  assert.equal(stamped.title, "v1-cancelled-banner");
+  assert.equal(stamped.subEnsLabel, "mylabel");
+});
+
+test("the cancel route withholds the feed it could not read as the head, and the stamp route answers 503", async () => {
+  const { readFileSync } = await import("node:fs");
+  const cancel = readFileSync(new URL("../src/routes/event-cancel.ts", import.meta.url), "utf-8");
+  assert.match(cancel, /\.\.\.\(resignable \? \{ eventFeed: withCancellation\(event\) \} : \{\}\)/);
+  assert.doesNotMatch(cancel, /^\s*eventFeed: withCancellation\(event\),/m);
+  const subEns = readFileSync(new URL("../src/routes/sub-ens.ts", import.meta.url), "utf-8");
+  assert.match(subEns, /msg\.startsWith\("Could not verify"\) \? 503/);
+});
+
+// ---------------------------------------------------------------------------
+// Etherna that hangs is paused, not waited on; Etherna that cannot be asked is red
+// ---------------------------------------------------------------------------
+
+test("after Etherna fails slowly, reads stop waiting on it for the breaker window", async () => {
+  let now = 1_000_000;
+  rd.__resetEthernaBreaker(() => now);
+  const t = topic();
+  put(t, 0, "v0", ["etherna"]);
+  net.ethernaMode = "throw"; // a timeout or a dropped connection
+  assert.equal((await up.readVersion0(OWNER, t, "social")).status, "unavailable");
+  const asked = net.requests.etherna;
+
+  net.ethernaMode = "up";
+  assert.equal((await up.readVersion0(OWNER, t, "social")).status, "unavailable", "paused: answered at once");
+  assert.equal(net.requests.etherna, asked, "without asking Etherna");
+  assert.equal((rd.ethernaReadsHealth().breaker as { open: boolean }).open, true);
+
+  now += rd.ETHERNA_BREAKER_MS;
+  assert.equal((await up.readVersion0(OWNER, t, "social")).status, "found", "asked again once the window passes");
+});
+
+test("a fast unhappy answer does not pause Etherna - one blip must not block every write for the window", async () => {
+  const t = topic();
+  put(t, 0, "v0", ["etherna"]);
+  net.ethernaMode = "503";
+  assert.equal((await up.readVersion0(OWNER, t, "social")).status, "unavailable");
+  net.ethernaMode = "up";
+  assert.equal((await up.readVersion0(OWNER, t, "social")).status, "found");
+});
+
+test("a failed Etherna sign-in pauses Etherna too", async () => {
+  const { clearEthernaToken } = await import("../src/lib/etherna/auth.js");
+  clearEthernaToken();
+  net.ssoMode = "throw";
+  assert.equal((await up.readVersion0(OWNER, topic(), "social")).status, "unavailable");
+  assert.equal((rd.ethernaReadsHealth().breaker as { open: boolean }).open, true);
+});
+
+test("ethernaReads is red when a family is on Etherna and this server cannot ask it", () => {
+  assert.equal(rd.ethernaReadsHealth().ok, true);
+  assert.ok((rd.ethernaReadsHealth().families as string[]).includes("social"));
+  const saved = process.env.ETHERNA_ENABLED;
+  try {
+    delete process.env.ETHERNA_ENABLED;
+    assert.equal(rd.ethernaReadsHealth().ok, false);
+    process.env.ETHERNA_ENABLED = "true";
+    const key = process.env.ETHERNA_API_KEY;
+    delete process.env.ETHERNA_API_KEY;
+    assert.equal(rd.ethernaReadsHealth().ok, false);
+    process.env.ETHERNA_API_KEY = key;
+  } finally {
+    process.env.ETHERNA_ENABLED = saved;
+  }
 });

@@ -442,7 +442,11 @@ subEnsRoutes.post("/stamp-event", requireAuth, async (c) => {
   } catch (err) {
     if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     const msg = err instanceof Error ? err.message : "stamp failed";
-    const status = msg === "Event not found" ? 404 : msg === "Not the event creator" ? 403 : 500;
+    const status =
+      msg === "Event not found" ? 404 :
+      msg === "Not the event creator" ? 403 :
+      // The event's latest version could not be read, so nothing to re-sign (#657).
+      msg.startsWith("Could not verify") ? 503 : 500;
     if (status === 500) console.error("[sub-ens] stamp-event failed:", err);
     return c.json({ ok: false, error: msg }, status);
   }
