@@ -22,7 +22,8 @@ import type { SessionProbeResult } from "./session-probe.js";
 /** The accessors the gather step needs — a subset of the finalize deps, shared
  *  with auth-store's mint-time backfill so both callers feed the SAME preamble. */
 export interface BackfillGatherDeps {
-  getPasskeyPrivKey: () => string | null;
+  /** The passkey's PRF output — the root of the portability envelope keys (#642). */
+  getPasskeyPrfSecret: () => string | null;
   /** PRF-EOA address — the key the identity seed and recovery binding are stored under. */
   getSeedAddress: () => string | null;
   /** The preserved Kernel address bound to this passkey at recovery time. */
@@ -122,9 +123,9 @@ export type BackfillGather =
  *    secret it existed to protect.
  */
 export async function gatherBackfillArgs(deps: BackfillGatherDeps): Promise<BackfillGather> {
-  const passkeyPrivKey = deps.getPasskeyPrivKey();
+  const prfSecret = deps.getPasskeyPrfSecret();
   const seedAddress = deps.getSeedAddress();
-  if (!passkeyPrivKey || !seedAddress) {
+  if (!prfSecret || !seedAddress) {
     return {
       status: "unavailable",
       reason: "passkey key material not in memory",
@@ -170,7 +171,7 @@ export async function gatherBackfillArgs(deps: BackfillGatherDeps): Promise<Back
 
   return {
     status: "ready",
-    args: { passkeyPrivKey, preservedKernelAddress: preserved, identitySeed },
+    args: { prfSecret, preservedKernelAddress: preserved, identitySeed },
   };
 }
 
@@ -277,6 +278,11 @@ async function finalizeOnce(
     // session mint's own fire-and-forget backfill) landed it meanwhile.
     if (outcome.action === "deferred") {
       return { status: "failed", reason: outcome.reason, retryable: true, stage: "envelope" };
+    }
+    // A found envelope that disagrees with this device's seed or Kernel. Retrying
+    // reads the same bytes and refuses again, so it is not retryable.
+    if (outcome.action === "refused") {
+      return { status: "failed", reason: outcome.reason, retryable: false, stage: "envelope" };
     }
     return { status: "portable", action: outcome.action };
   } catch (e) {

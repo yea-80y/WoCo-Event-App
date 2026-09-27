@@ -10,8 +10,9 @@ import { buildWeb3AuthOptions, extractRawPrivateKey } from "../auth/web3auth-con
  * only ever SIGNS — it never becomes the logged-in identity.
  *
  * A backup plays TWO crypto roles, which need different signing capabilities:
- *  - ESCROW (setup + recovery): derive the X25519 escrow key from a deterministic
- *    EIP-712 signature → `signTypedData`. Every wallet can do this.
+ *  - ESCROW (setup + recovery): derive the X-Wing escrow key from a deterministic
+ *    EIP-712 signature → `signTypedData`. Every wallet can do this. (A passkey
+ *    backup derives it from its PRF output instead — `deriveEscrowKeys`, #642.)
  *  - GUARDIAN (recovery only): sign the weighted-ECDSA guardian userOp that calls
  *    `target.doRecovery` → a viem/EIP-1193 `Signer`. NOT every provider exposes
  *    one, so it is OPTIONAL and gated by `recoveryReady`. A backup that is not
@@ -26,8 +27,15 @@ import { buildWeb3AuthOptions, extractRawPrivateKey } from "../auth/web3auth-con
  */
 export interface BackupWallet {
   address: string;
-  /** EIP-712 typed-data signer — derives the escrow X25519 key (setup + recovery). */
+  /** EIP-712 typed-data signer — derives the escrow keys (setup + recovery) for every
+   *  kind that has no `deriveEscrowKeys` of its own. */
   signTypedData: EIP712Signer;
+  /**
+   * A PASSKEY backup's own escrow-key derivation, from its PRF output rather than a
+   * signature (#642). When present it is the ONLY route — `deriveGuardianKeysForBackup`
+   * never falls back to signing for such a backup.
+   */
+  deriveEscrowKeys?: () => Promise<import("../auth/recovery-escrow.js").GuardianKeys>;
   /**
    * Build the viem `Signer` (OneOf<EIP1193Provider | WalletClient | LocalAccount |
    * SmartAccount>) that signs the guardian userOp during `recoverAccount`. Absent
@@ -49,7 +57,7 @@ export interface BackupWallet {
  * is self-sufficient (it embeds the key), so it serves BOTH roles with no further
  * dependency on whatever produced the key:
  *  - escrow: viem `signTypedData` is RFC6979-deterministic, so the same key always
- *    re-derives the SAME X25519 escrow key on any device — the property recovery
+ *    re-derives the SAME escrow key on any device — the property recovery
  *    depends on (the setup self-check still verifies it before any irreversible step).
  *  - guardian: a `LocalAccount` is directly a viem `Signer`, and the weighted-ECDSA
  *    approval is an EIP-191 personal_sign it can produce → `recoveryReady: true`.
@@ -87,8 +95,11 @@ export async function backupWalletFromPrivateKey(privateKey: string): Promise<Ba
 /**
  * PASSKEY backup. The friendly factor for a web3auth (email/social) user with a
  * phone but no crypto wallet: a dedicated recovery passkey whose PRF-derived key
- * becomes the guardian. Reuses the SAME keccak256(PRF) construction as the primary
- * passkey login, so it flows straight through `backupWalletFromPrivateKey`.
+ * becomes the guardian. Its ON-CHAIN guardian key reuses the SAME keccak256(PRF)
+ * construction as the primary passkey login, so it flows through
+ * `backupWalletFromPrivateKey`; its ESCROW keys come from the PRF-rooted escrow
+ * master instead of a signature (#642), so the seed it guards is not one secp256k1
+ * break away.
  *
  *  - mode "create" (SETUP): mints a new "WoCo Backup" passkey. A fresh credential
  *    guarantees independence from the primary (its address can't collide), and the
@@ -110,8 +121,18 @@ export async function connectPasskeyBackup(mode: "create" | "get" = "create"): P
   if (!isPasskeySupported()) {
     throw new Error("This device can't create passkeys. Use a crypto wallet or email backup instead.");
   }
-  const { privateKey } = mode === "create" ? await createPasskeyBackupKey() : await getPasskeyBackupKey();
-  return backupWalletFromPrivateKey(privateKey);
+  const { privateKey, escrowMaster } =
+    mode === "create" ? await createPasskeyBackupKey() : await getPasskeyBackupKey();
+  const wallet = await backupWalletFromPrivateKey(privateKey);
+  return {
+    ...wallet,
+    // Setup derives twice (the determinism self-check), so the master is kept for
+    // the backup's lifetime — like the owner key, it lives only in this closure.
+    deriveEscrowKeys: async () => {
+      const { guardianKeysFromMaster } = await import("../auth/recovery-escrow.js");
+      return guardianKeysFromMaster(escrowMaster);
+    },
+  };
 }
 
 /**

@@ -38,7 +38,7 @@ function deps(over: Partial<RecoveryFinalizeDeps> = {}) {
       calls.push("probeSession");
       return { ok: true };
     },
-    getPasskeyPrivKey: () => PRF_KEY,
+    getPasskeyPrfSecret: () => PRF_KEY,
     getSeedAddress: () => PRF_EOA,
     recoveryKernelFor: async (seedAddr) => (seedAddr === PRF_EOA ? PRESERVED : undefined),
     restoreIdentitySeed: async () => IDENTITY_SEED,
@@ -66,7 +66,7 @@ test("passkey happy path: session first, then the server probe, then the envelop
   // encryption key are all KDFs of it, so an envelope can no longer be written
   // carrying half of what the account needs on its next device.
   assert.deepEqual(backfillArgs, [
-    { passkeyPrivKey: PRF_KEY, preservedKernelAddress: PRESERVED, identitySeed: IDENTITY_SEED },
+    { prfSecret: PRF_KEY, preservedKernelAddress: PRESERVED, identitySeed: IDENTITY_SEED },
   ]);
 });
 
@@ -78,7 +78,7 @@ test("#260: the gather helper is the ONE owner of the preamble — payload pinne
   const g = await gatherBackfillArgs(d);
   assert.deepEqual(g, {
     status: "ready",
-    args: { passkeyPrivKey: PRF_KEY, preservedKernelAddress: PRESERVED, identitySeed: IDENTITY_SEED },
+    args: { prfSecret: PRF_KEY, preservedKernelAddress: PRESERVED, identitySeed: IDENTITY_SEED },
   });
 });
 
@@ -99,6 +99,20 @@ test("a deferred backfill is a FAILURE — the envelope is not verifiably there"
   assert.match((r as { reason: string }).reason, /unreadable/);
   // Transient by construction — the retry re-reads and skips cleanly.
   assert.equal((r as { retryable: boolean }).retryable, true);
+});
+
+test("a REFUSED backfill is a non-retryable failure — the envelope disagrees with this device", async () => {
+  let calls = 0;
+  const { d } = deps({
+    backfill: async () => {
+      calls++;
+      return { action: "refused", reason: "envelope names a different identity seed than this device holds" };
+    },
+  });
+  const r = await finalizeRecovery(d, { attempts: 3, _sleep: async () => {} });
+  assert.equal(r.status, "failed");
+  assert.equal((r as { retryable: boolean }).retryable, false, "re-reading the same bytes refuses again");
+  assert.equal(calls, 1, "never retried");
 });
 
 test("a DETERMINISTIC failure is reported as NOT retryable", async () => {

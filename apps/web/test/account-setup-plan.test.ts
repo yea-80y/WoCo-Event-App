@@ -29,10 +29,11 @@ const base: AccountSetupState = {
 
 const plan = (over: Partial<AccountSetupState>) => planAccountSetup({ ...base, ...over });
 
-test("our own dialog is the consent for passkey and web3auth — never a sheet", () => {
-  // Their session signature is silent and the seed signature comes through
-  // SigningConfirmDialog, which explains itself. A pre-flight sheet would be a
-  // screen explaining a screen.
+test("passkey and web3auth never get the sheet — no wallet popup to announce", () => {
+  // Their session signature is silent. Web3auth's seed signature comes through
+  // SigningConfirmDialog, which explains itself; a passkey's seed is derived from
+  // its PRF output with no prompt at all (#642). Either way a pre-flight sheet
+  // would announce a popup that never comes.
   for (const kind of ["passkey", "web3auth"] as const) {
     for (const hasSession of [true, false]) {
       for (const hasSeed of [true, false]) {

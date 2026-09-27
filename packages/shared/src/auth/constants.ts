@@ -52,7 +52,12 @@ export const StorageKeys = {
   CONTENT_FEED_SIGNER_KEY: "woco:auth:content-feed-signer-key",
 } as const;
 
-/** Fixed salt input for passkey PRF → secp256k1 key derivation */
+/**
+ * Fixed salt input for the passkey PRF evaluation. FROZEN twice over: its output is
+ * the root of the Kernel owner key AND (since #642) of the passkey account's identity
+ * seed and portability keys (crypto/passkey-prf.ts). The "secp256k1" in the string is
+ * history, not a description — do not "correct" it.
+ */
 export const PASSKEY_PRF_SALT_INPUT = "woco-passkey-secp256k1-v1";
 
 /** Fixed nonce for the account-keys derivation. FROZEN with the rest of the
@@ -61,7 +66,8 @@ export const PASSKEY_PRF_SALT_INPUT = "woco-passkey-secp256k1-v1";
  *  identity nonce on 2026-09-10; the rename is that byte change made visible.) */
 export const ACCOUNT_KEYS_NONCE = "WOCO-ACCOUNT-KEYS-V1";
 
-/** Fixed nonce for deterministic guardian recovery-escrow X25519 key derivation */
+/** Fixed nonce for the deterministic guardian recovery-escrow key derivation (wallet
+ *  and email guardians; a passkey guardian derives from its PRF output, #642) */
 export const RECOVERY_ENC_NONCE = "WOCO-RECOVERY-ENC-V1";
 
 /** Session delegation expiry duration (30 days in ms) */
