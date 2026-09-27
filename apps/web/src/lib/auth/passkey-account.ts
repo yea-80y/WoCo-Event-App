@@ -4,6 +4,7 @@ import {
   StorageKeys,
   PASSKEY_PRF_SALT_INPUT,
   PASSKEY_PRF_OUTPUT_BYTES,
+  passkeyGuardianEscrowMaster,
   resolvePasskeyRpId,
 } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
@@ -101,11 +102,21 @@ async function deriveKey(prfOutput: ArrayBuffer): Promise<PasskeyKeyMaterial> {
   };
 }
 
-/** A backup-passkey GUARDIAN needs its owner key only. The PRF output would be the
- *  root of a second account's seed, so it never leaves this module. */
-async function deriveGuardianKey(prfOutput: ArrayBuffer): Promise<{ address: string; privateKey: string }> {
-  const { address, privateKey } = await deriveKey(prfOutput);
-  return { address, privateKey };
+/**
+ * What a backup-passkey GUARDIAN yields: its owner key (the on-chain guardian that
+ * signs the recovery userOp) and its escrow master (#642), from which the escrow
+ * and SOC keys derive. The raw PRF output would be the root of a second account's
+ * seed, so it never leaves this module — only purpose-bound children do.
+ */
+export interface PasskeyGuardianMaterial {
+  address: string;
+  privateKey: string;
+  escrowMaster: Uint8Array;
+}
+
+async function deriveGuardianKey(prfOutput: ArrayBuffer): Promise<PasskeyGuardianMaterial> {
+  const { address, privateKey, prfSecret } = await deriveKey(prfOutput);
+  return { address, privateKey, escrowMaster: passkeyGuardianEscrowMaster(prfSecret) };
 }
 
 /** Extract PRF result from a WebAuthn credential response. */
@@ -416,18 +427,19 @@ async function _mintPasskeyAccountImpl(): Promise<
  *   2. Labels the credential "WoCo Backup" so the user can tell it apart from
  *      their login passkey in the authenticator picker during recovery.
  *
- * The key is keccak256(PRF(fixed-salt)) — identical construction to the primary,
- * so getPasskeyBackupKey() re-derives the SAME key at recovery from the SAME
+ * The owner key is keccak256(PRF(fixed-salt)) — identical construction to the
+ * primary — and the escrow master is an HKDF sibling of it (#642), so
+ * getPasskeyBackupKey() re-derives the SAME pair at recovery from the SAME
  * credential. A wrong pick fails SAFE: the derived guardian address won't match
  * the escrow, so recovery is refused rather than mis-applied. Independence from
  * the primary is guaranteed by the caller's own-key block (the derived address
  * can never equal auth.parent / auth.seedAddress).
  */
-export async function createPasskeyBackupKey(): Promise<{ address: string; privateKey: string }> {
+export async function createPasskeyBackupKey(): Promise<PasskeyGuardianMaterial> {
   return ceremony("creation", _createPasskeyBackupKeyImpl);
 }
 
-async function _createPasskeyBackupKeyImpl(): Promise<{ address: string; privateKey: string }> {
+async function _createPasskeyBackupKeyImpl(): Promise<PasskeyGuardianMaterial> {
   const salt = await getPrfSalt();
   const rpId = getPasskeyRpId();
 
@@ -499,11 +511,11 @@ async function _createPasskeyBackupKeyImpl(): Promise<{ address: string; private
  * touch StorageKeys.PASSKEY_CREDENTIAL — the recovering device may already hold a
  * different primary credential we must not disturb.
  */
-export async function getPasskeyBackupKey(): Promise<{ address: string; privateKey: string }> {
+export async function getPasskeyBackupKey(): Promise<PasskeyGuardianMaterial> {
   return ceremony("authentication", _getPasskeyBackupKeyImpl);
 }
 
-async function _getPasskeyBackupKeyImpl(): Promise<{ address: string; privateKey: string }> {
+async function _getPasskeyBackupKeyImpl(): Promise<PasskeyGuardianMaterial> {
   const salt = await getPrfSalt();
   const rpId = getPasskeyRpId();
 

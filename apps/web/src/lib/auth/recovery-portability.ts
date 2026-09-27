@@ -44,7 +44,10 @@ import {
   openRecoveryBundle,
   type GuardianEncryptionKeypair,
 } from "./recovery-escrow.js";
-import { UnknownRecoveryEnvelopeVersionError } from "./recovery-aad.js";
+import {
+  RetiredRecoveryEnvelopeVersionError,
+  UnknownRecoveryEnvelopeVersionError,
+} from "./recovery-aad.js";
 import { writeContentFeed, readContentFeedResult } from "../swarm/content-feed.js";
 import { FEED_ROUTES } from "../swarm/gateways.js";
 
@@ -232,6 +235,11 @@ export async function readPortabilityEnvelope(args: {
     // the self-heal downgrade it by classing it rewritable.
     if (e instanceof UnknownRecoveryEnvelopeVersionError) {
       return { status: "unreadable", reason: e.message };
+    }
+    // An inner envelope in a RETIRED format is stale, not a newer client's work:
+    // the documented self-heal may rewrite it (#642 retired v1/v2).
+    if (e instanceof RetiredRecoveryEnvelopeVersionError) {
+      return { status: "unusable", reason: e.message };
     }
     // Decrypt failure on bytes that exist — corruption, or someone else's chunk at
     // this address. An integrity fault, never an absence.

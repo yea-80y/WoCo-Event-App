@@ -12,6 +12,13 @@
  *   HKDF(prf, "", PORTABILITY_SOC_OWNER_INFO, 48) → the portability envelope's SOC owner
  *   HKDF(prf, "", PORTABILITY_HPKE_INFO, 32)      → the portability envelope's HPKE key
  *
+ * A BACKUP passkey (a recovery guardian, never a login) has one more:
+ *
+ *   HKDF(prf, "", PASSKEY_GUARDIAN_ESCROW_INFO, 32) → the guardian's escrow master, from
+ *                                                   which its escrow and SOC keys derive
+ *                                                   exactly as a wallet guardian's do from
+ *                                                   keccak256(its signature)
+ *
  * WHY THE SEED IS NOT A SIGNATURE FOR PASSKEYS. Wallet and email accounts establish
  * the seed as keccak256 of a deterministic `DeriveAccountKeys` signature, because
  * there is no symmetric secret to start from. A passkey has one. Rooted on the
@@ -50,6 +57,10 @@ export const PORTABILITY_SOC_OWNER_INFO = "woco/recovery/portability/soc-owner/v
 
 /** HKDF info for the portability envelope's HPKE recipient seed. FROZEN. */
 export const PORTABILITY_HPKE_INFO = "woco/recovery/portability/hpke/v2";
+
+/** HKDF info for a backup passkey's guardian escrow master (#642). FROZEN: change it
+ *  and every escrow sealed to a passkey guardian stops opening. */
+export const PASSKEY_GUARDIAN_ESCROW_INFO = "woco/recovery/guardian-passkey/v1";
 
 /** The only PRF output length any derivation accepts. */
 export const PASSKEY_PRF_OUTPUT_BYTES = 32;
@@ -103,4 +114,20 @@ export function portabilitySocOwnerKey(prfSecret: string | Uint8Array): {
  *  (via the HPKE KEM's own `deriveKeyPair`). The caller zeroes it after use. */
 export function portabilityHpkeSeed(prfSecret: string | Uint8Array): Uint8Array {
   return hkdf(sha256, passkeyPrfBytes(prfSecret), new Uint8Array(0), utf8ToBytes(PORTABILITY_HPKE_INFO), 32);
+}
+
+/**
+ * A backup passkey's guardian escrow MASTER — the passkey counterpart of a wallet
+ * guardian's `keccak256(signature)`. Rooted on the PRF output, so the escrowed seed
+ * behind it is not one secp256k1 break away through the guardian's owner key. The
+ * guardian's ON-CHAIN role (signing the recovery userOp) stays that key's job.
+ */
+export function passkeyGuardianEscrowMaster(prfSecret: string | Uint8Array): Uint8Array {
+  return hkdf(
+    sha256,
+    passkeyPrfBytes(prfSecret),
+    new Uint8Array(0),
+    utf8ToBytes(PASSKEY_GUARDIAN_ESCROW_INFO),
+    32,
+  );
 }
