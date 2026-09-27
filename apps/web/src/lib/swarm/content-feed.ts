@@ -20,7 +20,7 @@
 // this module is statically reachable from api/events + api/profiles at first
 // paint, and top-level imports here would drag both libraries into the boot
 // bundle.
-import { countHint } from "./probe-stats.js";
+import { countEscalation, countHint } from "./probe-stats.js";
 import type { FeedRoute } from "./gateways.js";
 import type { SignedSocBody } from "./soc-sign.js";
 import {
@@ -36,6 +36,7 @@ import {
   LEGACY_CONTENT_FEED_VERSION,
   type ContentFeedManifest,
   type SocChunkProbe,
+  type SocReadOutcome,
   SOC_MAX_PAYLOAD_SIZE,
 } from "@woco/shared";
 
@@ -71,26 +72,92 @@ export function hintKey(owner: string, topic: string): string {
   return `${HINT_PREFIX}${o.toLowerCase()}:${topic}`;
 }
 
-function readVersionHint(owner: string, topic: string): number {
+/**
+ * The stored hint, or null when there is none. Version 0 IS a hint (#689): it
+ * says this device wrote or read version 0, which is what lets a first like be
+ * read back before our bee has it (see `knownChunkProbe`).
+ */
+function readVersionHint(owner: string, topic: string): number | null {
   try {
     const v = globalThis.localStorage?.getItem(hintKey(owner, topic));
-    const n = v ? parseInt(v, 10) : 0;
-    return Number.isInteger(n) && n > 0 ? n : 0;
+    if (v === null || v === undefined) return null;
+    const n = parseInt(v, 10);
+    return Number.isInteger(n) && n >= 0 ? n : null;
   } catch {
-    return 0;
+    return null;
   }
 }
 
 /** Store a version hint, only ever RAISING it (a lower value would skip real updates). */
 function bumpVersionHint(owner: string, topic: string, version: number): void {
   try {
-    if (version <= 0) return;
-    if (version > readVersionHint(owner, topic)) {
+    if (version < 0) return;
+    const current = readVersionHint(owner, topic);
+    if (current === null || version > current) {
       globalThis.localStorage?.setItem(hintKey(owner, topic), String(version));
     }
   } catch {
     /* ignore — hint is best-effort */
   }
+}
+
+/** Drop a hint whose version exists nowhere, so it stops costing a server read. */
+function forgetVersionHint(owner: string, topic: string): void {
+  try {
+    globalThis.localStorage?.removeItem(hintKey(owner, topic));
+  } catch {
+    /* ignore — hint is best-effort */
+  }
+}
+
+const idHex = (id: Uint8Array): string => {
+  let s = "";
+  for (const x of id) s += x.toString(16).padStart(2, "0");
+  return s;
+};
+
+/**
+ * A probe that does not take our gateway's "not found" for an answer about a
+ * chunk this device KNOWS exists, and asks the server instead (#689).
+ *
+ * A display read trusts our gateway's 404, which is the cheap path it needs:
+ * most reads are of chunks that do not exist. But a version this device wrote
+ * or already read exists by construction (the hint is bumped only after the
+ * upload was accepted or the bytes verified), so a 404 on it means only that our
+ * bee has not got it yet - which for an Etherna-stamped version lasts seconds to
+ * minutes. Without this the device that just liked something reads its own like
+ * back as "not liked". The extra request is paid only in that window.
+ *
+ * `known` names those chunks; a thorough re-ask that still finds nothing means
+ * the chunk is gone (or the hint was wrong), and `onGone` lets the caller drop
+ * the hint so it is not asked about again on every read.
+ */
+function knownChunkProbe(
+  probeSoc: typeof import("./probe-soc.js").probeSoc,
+  owner: string,
+  route: FeedRoute,
+  thorough: boolean | undefined,
+  known: (id: Uint8Array) => boolean,
+  onGone: (id: Uint8Array) => void = () => undefined,
+): SocChunkProbe {
+  // Chunks are immutable, so a chunk this read already found is not asked for
+  // again: the resolver finds the head, then the assembler reads the same
+  // address - which in the lag window was a second server round trip.
+  const found = new Map<string, SocReadOutcome>();
+  return async (id) => {
+    const key = idHex(id);
+    const seen = found.get(key);
+    if (seen) return seen;
+    let outcome = await probeSoc(owner, id, { thorough, gatewayUrl: route.gatewayUrl });
+    if (!thorough && outcome.status === "absent" && known(id)) {
+      countEscalation();
+      outcome = await probeSoc(owner, id, { thorough: true, gatewayUrl: route.gatewayUrl });
+      // Only a definite answer drops the hint: "could not ask" keeps it.
+      if (outcome.status === "absent") onGone(id);
+    }
+    if (outcome.status === "found") found.set(key, outcome);
+    return outcome;
+  };
 }
 
 /** How a signed chunk leaves the client (`postSignedSoc` in production). The
@@ -188,7 +255,7 @@ export async function writeContentFeed(args: {
     // for a few seconds — and answers unavailable (→ refuse below) rather than
     // absent when Etherna cannot be asked (#156).
     const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: true, gatewayUrl: args.route.gatewayUrl });
-    const hint = args.versionHint ?? readVersionHint(owner, args.topic);
+    const hint = args.versionHint ?? readVersionHint(owner, args.topic) ?? 0;
     const { latest, clean, hintGiven, hintValidated } =
       await resolveLatestSocVersion(read, (v) => versionedSocIdentifier(base, v), hint);
     // The write path resolves with a hint exactly as the read path does, and was
@@ -282,14 +349,18 @@ export async function readContentFeedResult<T>(
   // gateway 403 as absent (probe-soc.ts), those three cases can no longer take
   // the gate's word for it, and a caller that acts on absence must say so.
   // Ordinary display reads leave it off and keep the cheap path.
-  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough, gatewayUrl: opts.route.gatewayUrl });
+  const hint = readVersionHint(owner, topic);
+  const hinted = hint === null ? null : idHex(versionedSocIdentifier(contentFeedSocIdentifier(topic), hint));
+  const read = knownChunkProbe(probeSoc, owner, opts.route, opts.thorough,
+    (id) => idHex(id) === hinted, () => forgetVersionHint(owner, topic));
   // Counted from what the RESOLVER did, not from what we handed it. A stored
   // hint whose version does not resolve restarts the scan from 0, so counting
   // the hint's existence would report the expensive case as the cheap one —
   // which is exactly the bug this instrument had.
-  const hint = readVersionHint(owner, topic);
-  const res = await readVersionedContentFeed(read, topic, hint, {
+  const res = await readVersionedContentFeed(read, topic, hint ?? 0, {
     skipLegacy: opts.skipLegacy,
+    // A found manifest's pages were uploaded before it, so they exist.
+    readPage: knownChunkProbe(probeSoc, owner, opts.route, opts.thorough, () => true),
     onScan: (d) => {
       countHint(!d.hintGiven ? "noHint" : d.hintValidated ? "hintUsed" : "hintInvalidated");
     },
@@ -471,16 +542,29 @@ export async function readBandedContentFeed<T>(
   //
   // Display and head reads do NOT need it: a lap is an exact-address write, so
   // staleness collides, Bee dedupes, and the read-back reports `superseded`.
-  const read: SocChunkProbe = (id) => probeSoc(owner, id, { thorough: opts.thorough, gatewayUrl: opts.route.gatewayUrl });
-
   // SCAN-FIRST. Resolving the band by walking openers first spent its whole
   // probe window on every read, and a probe past the last opened band is a
   // missing-chunk search. Scanning the hinted band first means a band that is
   // not full proves — by the full-band invariant — that no higher band exists,
   // so the warm path probes no openers at all.
   const hintBand = Math.max(opts.hintBand ?? 0, readBandHint(owner, topicForBand));
+
+  // The versions this device knows exist: the hinted version of the hinted band,
+  // and of the band above it - a rollover WRITE stores version 0 of the new band
+  // but no band hint (the writer knows nothing of bands), and that opener is
+  // exactly what a stale read would miss. See `knownChunkProbe`.
+  const known = new Map<string, string>();
+  for (const band of [hintBand, hintBand + 1]) {
+    const topic = topicForBand(band);
+    const v = readVersionHint(owner, topic);
+    if (v !== null) known.set(idHex(versionedSocIdentifier(contentFeedSocIdentifier(topic), v)), topic);
+  }
+  const read = knownChunkProbe(probeSoc, owner, opts.route, opts.thorough,
+    (id) => known.has(idHex(id)),
+    (id) => { const topic = known.get(idHex(id)); if (topic) forgetVersionHint(owner, topic); });
+
   const head = await resolveBandedHead(read, topicForBand, hintBand, (band) =>
-    readVersionHint(owner, topicForBand(band)));
+    readVersionHint(owner, topicForBand(band)) ?? 0);
 
   // Counted HERE, from what the resolution did, and not on the found path below.
   // It used to sit after the `found` return, so a read that resolved ABSENT
@@ -507,6 +591,8 @@ export async function readBandedContentFeed<T>(
     read,
     versionedSocIdentifier(base, head.latest),
     (page) => versionedPageIdentifier(base, head.latest as number, page),
+    // A found manifest's pages were uploaded before it, so they exist.
+    knownChunkProbe(probeSoc, owner, opts.route, opts.thorough, () => true),
   );
   if (asm.status !== "found") {
     // The resolution just confirmed this version PRESENT, so an absent re-read is

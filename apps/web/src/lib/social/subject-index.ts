@@ -10,7 +10,7 @@
  * without inheriting the next fix.
  */
 
-import { readBandedContentFeed } from "../swarm/content-feed.js";
+import { readBandedContentFeed, type SocTransport } from "../swarm/content-feed.js";
 import type { FeedRoute } from "../swarm/gateways.js";
 import { writeContentFeedVerified } from "../swarm/verified-write.js";
 import { LAST_VERSION_IN_BAND, type Hex0x, type SubjectIndexV1 } from "@woco/shared";
@@ -52,6 +52,8 @@ export async function addToSubjectIndex(
   signer: { privKey: string; address: string },
   subject: Hex0x,
   kind: SubjectIndexKind,
+  /** Test seam — production always posts to our server. */
+  opts: { transport?: SocTransport } = {},
 ): Promise<void> {
   try {
     for (let attempt = 0; attempt < INDEX_WRITE_ATTEMPTS; attempt++) {
@@ -97,12 +99,26 @@ export async function addToSubjectIndex(
       const rollover = res.status === "found" && res.version >= LAST_VERSION_IN_BAND;
       const targetBand = rollover ? res.band + 1 : res.band;
 
+      // The version right after the one this list was built from, and no other
+      // (#689). The base read above was thorough and conclusive, so if that
+      // address is taken now, another tab or device wrote it after we read: the
+      // write lands on an existing chunk, which keeps its first bytes (verified
+      // on our bee and on Etherna), and the read-back says `superseded` - which
+      // this loop answers by re-reading and uniting. Letting the writer probe
+      // for the next free version instead would land a list computed from the
+      // OLD base one version later, verified, and erase the other writer's
+      // subject. Also saves the writer's own version probe - a missing-chunk
+      // search on our bee and on Etherna - on every index write.
+      const knownVersion = res.status === "found" && !rollover ? res.version + 1 : 0;
+
       const written = await writeContentFeedVerified({
         signerPrivKey: signer.privKey,
         ownerAddress: signer.address,
         topic: kind.indexTopic(targetBand),
         data: { format: kind.indexFormat, subjects },
         route: kind.route,
+        knownVersion,
+        transport: opts.transport,
       });
       if (written.status !== "superseded") return;
     }
