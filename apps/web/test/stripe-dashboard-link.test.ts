@@ -54,9 +54,25 @@ test("it sits outside the Stripe embed, so it works when the iframes do not load
   assert.equal(opened, closed, "the link renders in every state, not inside an {#if}");
 });
 
+test("cancelling points to the real button, by its real name", () => {
+  // Owner policy (#644): a cancelled event is refunded in full by WoCo; single
+  // refunds are the Stripe Dashboard's. The copy names the cancel button, so it
+  // must match the label CancelEventPanel actually renders.
+  const cancelPanel = readFileSync(
+    new URL("../src/lib/creator/events/CancelEventPanel.svelte", import.meta.url),
+    "utf8",
+  );
+  const label = cancelPanel.match(/<h3>([^<]+)<\/h3>/)?.[1];
+  assert.ok(label, "CancelEventPanel has a heading");
+  const block = MARKUP.slice(MARKUP.indexOf('<div class="dashboard">'), MARKUP.indexOf("</a>"));
+  assert.ok(block.replace(/\s+/g, " ").includes(label), `the Payouts copy names "${label}"`);
+  assert.match(block, /Edit tab/);
+});
+
 test("the copy says refunds are made there, in the owner's register", () => {
   const block = MARKUP.slice(MARKUP.indexOf('<div class="dashboard">'), MARKUP.indexOf("</a>") + 4);
-  assert.match(block, /Refunds/);
-  assert.match(block, /Open your Stripe Dashboard/);
+  const text = block.replace(/\s+/g, " ");
+  assert.match(text, /refunds and disputes are handled in your own Stripe Dashboard/i);
+  assert.match(text, /Open your Stripe Dashboard/);
   assert.doesNotMatch(block, /—/, "spaced hyphen, never an em dash");
 });
