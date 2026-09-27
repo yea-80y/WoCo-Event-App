@@ -41,9 +41,9 @@ export const FEED_FAMILY_STORES = {
   manifest: "etherna",
   /** Likes, follows, Interested, and their subject index (#689). Client-written. */
   social: "etherna",
-  /** The referee's own referral statement and its subject index. Client-written;
+  /** The referee's own referral statement and its subject index (#689). Client-written;
    *  the server's issuer reads it before it countersigns. */
-  referral: "woco",
+  referral: "etherna",
   /** Referral confirmations, badges and the referrer index. SERVER-written by the
    *  campaign issuer, read by clients. */
   campaignIssuer: "woco",
