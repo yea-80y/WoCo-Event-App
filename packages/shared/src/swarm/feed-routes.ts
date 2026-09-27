@@ -75,7 +75,7 @@ export const FEED_FAMILY_POLICY = {
    *  index. Always the platform batch - see {@link FeedStamp}. */
   recoveryPortability: { store: "etherna", stamp: "platform" },
   recoveryEnvelope: { store: "etherna", stamp: "platform" },
-  guardianIndex: { store: "woco", stamp: "platform" },
+  guardianIndex: { store: "etherna", stamp: "platform" },
   /** Coaster laps and their indexes. Moves last: a wrong read restarts a lifetime count. */
   credits: { store: "woco", stamp: "owner" },
   /** The certificate rail, outside launch scope. */
