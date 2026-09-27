@@ -157,6 +157,11 @@ const REFERRAL_INDEX = {
  * With it, a live statement already on the feed is reported as `verified` at
  * its own version and only the index is (idempotently) ensured. A retracted
  * head is NOT a live statement and is written over.
+ *
+ * THOROUGH, because it decides a write (#689). The family is stamped on
+ * Etherna, and a display read takes our gateway's 404 as final - so the
+ * sign-in right after an `unconfirmed` write, with the statement still only in
+ * Etherna's store, would miss it and append the same statement again.
  */
 export async function writeReferralStatement(
   signer: CampaignSigner,
@@ -173,6 +178,7 @@ export async function writeReferralStatement(
   const head = await deps.readFeed(signer.address, referralStatementTopic(subject), {
     route: REFERRAL_INDEX.route,
     skipLegacy: true,
+    thorough: true,
   });
   if (
     head.status === "found" &&

@@ -36,9 +36,9 @@ const code = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/<!--[\s\
 test("each family is stamped where the table says - a move is a deliberate diff here", () => {
   const onEtherna = Object.entries(FEED_ROUTES).filter(([, r]) => r.target === "etherna").map(([k]) => k).sort();
   // Profiles have been Etherna since #617; event and site reads ask Etherna
-  // because new ones are stamped there; the manifest and social moved in #689.
-  // Everything else has not moved yet.
-  assert.deepEqual(onEtherna, ["event", "manifest", "profile", "site", "social"]);
+  // because new ones are stamped there; the manifest, social and the referee's
+  // referral statement moved in #689. Everything else has not moved yet.
+  assert.deepEqual(onEtherna, ["event", "manifest", "profile", "referral", "site", "social"]);
   for (const [family, route] of Object.entries(FEED_ROUTES)) {
     const store = route.target === "etherna" ? ETHERNA_ROUTE : WOCO_ROUTE;
     assert.equal(route.gatewayUrl, store.gatewayUrl, `${family}: gateway disagrees with its target`);

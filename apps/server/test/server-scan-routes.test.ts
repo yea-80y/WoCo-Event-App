@@ -21,9 +21,12 @@ import {
   calculateCacAddress,
   calculateSocAddress,
   contentFeedSocIdentifier,
+  REFERRAL_STATEMENT_FORMAT,
+  campaignAccountSubject,
   encodeSpan,
   eventContentTopic,
   likeStatementTopic,
+  referralStatementTopic,
   versionedSocIdentifier,
   type Hex0x,
 } from "@woco/shared";
@@ -40,6 +43,8 @@ process.env.ETHERNA_ENABLED = "true";
 process.env.ETHERNA_API_KEY = "id.secret";
 process.env.ETHERNA_GATEWAY_URL = ETHERNA_BASE;
 process.env.ETHERNA_TOKEN_ENDPOINT = SSO;
+process.env.CAMPAIGN_ISSUER_PRIVATE_KEY = `0x${"44".repeat(32)}`;
+process.env.POSTAGE_BATCH_ID = "ab".repeat(32);
 
 // Type-only: erased at runtime, so they cannot load a module before the chdir.
 type SocUpload = typeof import("../src/lib/swarm/soc-upload.js");
@@ -49,6 +54,7 @@ type Indexer = typeof import("../src/lib/social/indexer.js");
 type Participants = typeof import("../src/lib/social/participants.js");
 type EventService = typeof import("../src/lib/event/service.js");
 type FeedSignerRecord = typeof import("../src/lib/event/feed-signer-record.js");
+type Issuer = typeof import("../src/lib/campaign/issuer.js");
 let up: SocUpload;
 let rd: SocRead;
 let gw: Gateway;
@@ -56,6 +62,7 @@ let indexer: Indexer;
 let participants: Participants;
 let events: EventService;
 let signerRecord: FeedSignerRecord;
+let issuer: Issuer;
 
 // ---------------------------------------------------------------------------
 // The fake network
@@ -149,6 +156,7 @@ before(async () => {
   participants = await import("../src/lib/social/participants.js");
   events = await import("../src/lib/event/service.js");
   signerRecord = await import("../src/lib/event/feed-signer-record.js");
+  issuer = await import("../src/lib/campaign/issuer.js");
 });
 
 after(() => {
@@ -171,7 +179,7 @@ beforeEach(() => {
 test("a WoCo-routed scan: bee 404 is the verdict, and Etherna is never asked", async () => {
   const t = topic();
   put(t, 0, "v0", ["bee"]);
-  const res = await up.readContentFeedJsonResult(OWNER, t, "referral", { skipLegacy: true });
+  const res = await up.readContentFeedJsonResult(OWNER, t, "campaignIssuer", { skipLegacy: true });
   assert.equal(res.status, "found");
   if (res.status !== "found") return;
   assert.equal(decode(res.bytes), "v0");
@@ -200,7 +208,7 @@ test("a WoCo-routed scan with Etherna DOWN is still clean - it never depended on
 
 test("a bee fault is unavailable, never absent - the old reader called bee's 500 a miss", async () => {
   net.beeMode = "500";
-  const res = await up.readContentFeedJsonResult(OWNER, topic(), "referral", { skipLegacy: true });
+  const res = await up.readContentFeedJsonResult(OWNER, topic(), "campaignIssuer", { skipLegacy: true });
   assert.equal(res.status, "unavailable");
 });
 
@@ -272,7 +280,7 @@ test("an Etherna chunk that fails verification is a fault, not a find and not a 
 test("a WoCo-routed 'absent' is never served to an Etherna-routed read of the same feed", async () => {
   const t = topic();
   put(t, 0, "only-on-etherna", ["etherna"]);
-  const woco = await up.readContentFeedJsonResult(OWNER, t, "referral", { skipLegacy: true });
+  const woco = await up.readContentFeedJsonResult(OWNER, t, "campaignIssuer", { skipLegacy: true });
   assert.equal(woco.status, "absent", "the WoCo route cannot see it - and caches that");
   const eth = await up.readContentFeedJsonResult(OWNER, t, "social", { skipLegacy: true });
   assert.equal(eth.status, "found", "the Etherna route asks for itself");
@@ -281,11 +289,11 @@ test("a WoCo-routed 'absent' is never served to an Etherna-routed read of the sa
 test("invalidation drops every route's cached version", async () => {
   const t = topic();
   put(t, 0, "v0", ["bee"]);
-  await up.readContentFeedJsonResult(OWNER, t, "referral", { skipLegacy: true });
+  await up.readContentFeedJsonResult(OWNER, t, "campaignIssuer", { skipLegacy: true });
   await up.readContentFeedJsonResult(OWNER, t, "social", { skipLegacy: true });
   put(t, 1, "v1", ["bee"]);
   up.invalidateContentFeedVersion(OWNER, t);
-  for (const family of ["referral", "social"] as const) {
+  for (const family of ["campaignIssuer", "social"] as const) {
     const res = await up.readContentFeedJsonResult(OWNER, t, family, { skipLegacy: true });
     assert.equal(res.status === "found" && res.version, 1, family);
   }
@@ -412,4 +420,43 @@ test("an owner edit refuses a base it could not show is the head - the client wo
     events.deleteEventIfNoOrders({ eventId, parentAddress: CREATOR }),
     (err: Error) => err.message === events.EVENT_BASIS_UNVERIFIED,
   );
+});
+
+// ---------------------------------------------------------------------------
+// The countersign check, with the referee's statement on Etherna (#689 family 3)
+// ---------------------------------------------------------------------------
+
+test("a retraction still only in Etherna's store, with Etherna down, is never countersigned over", async () => {
+  issuer.__resetIssuer({ configured: true });
+  const referrer = `0x${"b2".repeat(20)}` as Hex0x;
+  const referee = `0x${"a1".repeat(20)}` as Hex0x;
+  const stmt = (value: boolean) =>
+    JSON.stringify({ format: REFERRAL_STATEMENT_FORMAT, subject: campaignAccountSubject(referrer), value });
+  const t = referralStatementTopic(campaignAccountSubject(referrer));
+  put(t, 0, stmt(true), ["bee", "etherna"]);
+  put(t, 1, stmt(false), ["etherna"]); // withdrawn seconds ago
+  net.ethernaMode = "503";
+
+  const writes: string[] = [];
+  const deps: Parameters<Issuer["confirmReferral"]>[1] = {
+    // The live read, exactly as the issuer's own deps make it.
+    readHead: (owner, topic, family) => up.readContentFeedJsonResult(owner, topic, family, { skipLegacy: true }),
+    readVersion0: async () => ({ status: "absent" }),
+    readBanded: async () => ({ status: "absent", band: 0 }),
+    writeFeed: async (topic) => {
+      writes.push(topic);
+      return { ok: true, version: 0, unchanged: false };
+    },
+    confirmWrite: async () => ({ ok: true }),
+    batchState: async () => ({ usable: true, ttl: 86_400 }),
+    now: () => Date.now(),
+  };
+  const res = await issuer.confirmReferral({ referee, refereeFeed: `0x${OWNER}` as Hex0x, referrer }, deps);
+  assert.equal(res.status, "unavailable", "ask again - never consent read off a scan that could not see the head");
+  assert.deepEqual(writes, [], "no confirmation written");
+
+  net.ethernaMode = "up";
+  const after = await issuer.confirmReferral({ referee, refereeFeed: `0x${OWNER}` as Hex0x, referrer }, deps);
+  assert.equal(after.status, "retracted", "and once Etherna answers, the retraction is what it sees");
+  assert.deepEqual(writes, []);
 });
