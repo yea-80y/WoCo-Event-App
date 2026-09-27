@@ -5,7 +5,7 @@
 import { authPost, authGet, authDelete, apiBase } from "./client.js";
 import { sendCheckout } from "./checkout-request.js";
 import { auth } from "../auth/auth-store.svelte.js";
-import type { SealedBox } from "@woco/shared";
+import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 
 export interface RequirementCategory {
   label: string;
@@ -76,15 +76,22 @@ export async function removeStripeAccount(): Promise<void> {
  * save-order race that was leaving multi-ticket purchases without attendee
  * data on the dashboard.
  */
-export async function prepareStripeOrder(encryptedOrder: SealedBox): Promise<string> {
+/** A stored order box: its ref plus the server's token for it. Checkout accepts a
+ *  pre-uploaded ref only with its token (#661), so the two travel together. */
+export interface PreparedOrder {
+  orderRef: string;
+  orderRefToken: string;
+}
+
+export async function prepareStripeOrder(encryptedOrder: SealedBoxV2): Promise<PreparedOrder> {
   const resp = await fetch(`${apiBase}/api/stripe/prepare-order`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ encryptedOrder }),
   });
-  const data = await resp.json() as { ok: boolean; orderRef?: string; error?: string };
-  if (!data.ok || !data.orderRef) throw new Error(data.error || "Failed to prepare order");
-  return data.orderRef;
+  const data = await resp.json() as { ok: boolean; orderRef?: string; orderRefToken?: string; error?: string };
+  if (!data.ok || !data.orderRef || !data.orderRefToken) throw new Error(data.error || "Failed to prepare order");
+  return { orderRef: data.orderRef, orderRefToken: data.orderRefToken };
 }
 
 /** What the server confirms about a returning buyer's checkout (#567) — never the full email. */
@@ -124,10 +131,11 @@ export async function createCheckoutSession(params: {
   seriesId: string;
   claimerEmail?: string;
   quantity?: number;
-  orderRef?: string;
+  /** A pre-uploaded order box — used only with its token. */
+  preparedOrder?: PreparedOrder;
   /** Raw encrypted order — server uploads in parallel with Stripe session
    *  creation when no pre-uploaded ref is available. */
-  encryptedOrder?: SealedBox;
+  encryptedOrder?: SealedBoxV2;
   /** Slot reservation id from POST /reserve. Server validates + stamps into
    *  Stripe session metadata; webhook consumes on successful claim. */
   reservationId?: string;
@@ -161,7 +169,9 @@ export async function createCheckoutSession(params: {
     seriesId: params.seriesId,
     ...(params.claimerEmail ? { claimerEmail: params.claimerEmail } : {}),
     ...(params.quantity && params.quantity > 1 ? { quantity: params.quantity } : {}),
-    ...(params.orderRef ? { orderRef: params.orderRef } : {}),
+    ...(params.preparedOrder
+      ? { orderRef: params.preparedOrder.orderRef, orderRefToken: params.preparedOrder.orderRefToken }
+      : {}),
     ...(params.encryptedOrder ? { encryptedOrder: params.encryptedOrder } : {}),
     ...(params.reservationId ? { reservationId: params.reservationId } : {}),
     // Tri-state — `false` is a real answer, so this cannot be a truthiness spread.

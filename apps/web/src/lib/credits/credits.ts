@@ -59,14 +59,12 @@ import {
   lapDiaryPrivateSalt,
   validateLapDiaryEntryV1,
   deriveEncryptionKeypairFromSeed,
-  sealJson,
-  openJson,
   type CreditStatementV1,
   type CreditSubjectIndexV2,
   type LapDiaryEntryV1,
-  type SealedBox,
   type Hex0x,
 } from "@woco/shared";
+import { sealJson, openJson, type LegacySealedBox } from "./legacy-seal.js";
 
 
 export type { CreditVisibility } from "./visibility.js";
@@ -297,12 +295,12 @@ async function readHeadAt(
   if (res.status === "absent") return { status: "absent" };
   if (res.status === "unavailable") return { status: "unavailable", reason: res.reason ?? "head unavailable" };
 
-  // A private head is a SealedBox. Failing to open one is NOT absence — real
+  // A private head is a legacy sealed box. Failing to open one is NOT absence — real
   // bytes are at our own address — so it must never read as "never ridden".
   let payload: unknown;
   if (visibility === "private") {
     try {
-      payload = await openJson<unknown>(keys.encPrivKey, res.value as SealedBox);
+      payload = await openJson<unknown>(keys.encPrivKey, res.value as LegacySealedBox);
     } catch {
       return { status: "unavailable", reason: "private head could not be opened" };
     }
@@ -952,7 +950,7 @@ async function readDiaryEntry(
   if (res.status === "absent") return { status: "absent" };
   if (res.status !== "found") return res.unusableAt !== undefined ? { status: "spent" } : { status: "unavailable" };
   try {
-    const entry = await openJson<unknown>(keys.encPrivKey, res.value as SealedBox);
+    const entry = await openJson<unknown>(keys.encPrivKey, res.value as LegacySealedBox);
     // A box at the wrong address is not this lap's entry, whatever it says.
     if (!validateLapDiaryEntryV1(entry) || entry.subject !== subject || entry.seq !== seq) {
       return { status: "spent" };

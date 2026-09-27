@@ -14,7 +14,8 @@ import {
 } from "../../src/event/order-email.js";
 import type { OrderField } from "../../src/crypto/types.js";
 
-const KEY = "ab".repeat(32);
+/** Stands in for a VERIFIED X-Wing order key (#642); the rule only checks presence. */
+const KEY = new Uint8Array(1216).fill(7);
 const emailField: OrderField = { id: ORDER_EMAIL_FIELD_ID, type: "email", label: "Email", required: true };
 const guestEmail: OrderField = { id: "guest", type: "email", label: "Guest's email", required: false };
 const name: OrderField = { id: "name", type: "text", label: "Name", required: true };

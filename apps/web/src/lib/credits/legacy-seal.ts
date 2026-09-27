@@ -1,32 +1,41 @@
 /**
- * ECIES (Elliptic Curve Integrated Encryption Scheme)
+ * QUARANTINED X25519-only sealing — the credits rail and NOTHING else (#642).
  *
- * Standard construction used by Signal, MetaMask eth-sig-util, and
- * libsodium sealed boxes:
+ * This is the hand-assembled ECIES every sealed box used before #642:
  *
- *   seal:  ephemeral X25519 ECDH  →  HKDF-SHA256  →  AES-256-GCM encrypt
- *   open:  recipient X25519 ECDH  →  HKDF-SHA256  →  AES-256-GCM decrypt
+ *   seal:  ephemeral X25519 ECDH → HKDF-SHA256(salt = ephPub, info "woco/order/v1")
+ *          → AES-256-GCM (random 12-byte IV) → { ephemeralPublicKey, iv, ciphertext }
  *
- * Security properties:
- *   - Forward secrecy per message (fresh ephemeral key each time)
- *   - Authenticated encryption (AES-GCM prevents tampering)
- *   - Only the recipient's private key can decrypt
- *   - Uses Web Crypto API for AES-GCM (hardware-accelerated, constant-time)
+ * It is NOT post-quantum: a box sealed here can be opened by whoever breaks X25519
+ * later. Orders, contact lists and the recovery escrow moved to the X-Wing v2 box
+ * (`@woco/shared/crypto/sealed-box`). The credits rail (`woco.credit.v1`, out of
+ * launch scope) keeps this construction frozen inside its own module until it is
+ * migrated, by owner decision — the `holder-key.ts` pattern: an out-of-scope rail
+ * carries its own legacy crypto so no launch path can reach it.
+ * `apps/web/test/no-legacy-seal.test.ts` fails if anything outside `lib/credits/`
+ * seals or opens this way.
+ *
+ * The bytes are unchanged from the shared module it came from, info label
+ * included, so private credits sealed before the move still open.
  */
 
 import { x25519 } from "@noble/curves/ed25519.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
-import type { SealedBox } from "./types.js";
-import { ECIES_INFO } from "./constants.js";
-import { compressionSupported, gzip, gunzip, isGzipped } from "./compress.js";
 
-// @noble/hashes v2 requires `info` as bytes; v1 accepted a string and UTF-8
-// encoded it internally. Encoding it here reproduces the identical derived key
-// (verified against Node's RFC 5869 hkdfSync), so existing sealed boxes stay
-// decryptable. Changing this encoding would silently orphan every sealed order.
-const ECIES_INFO_BYTES = utf8ToBytes(ECIES_INFO);
+/** The retired X25519 box. */
+export interface LegacySealedBox {
+  /** Ephemeral X25519 public key used for ECDH (hex, no 0x prefix) */
+  ephemeralPublicKey: string;
+  /** AES-256-GCM initialisation vector (hex, 24 chars = 12 bytes) */
+  iv: string;
+  /** Encrypted payload with GCM auth tag appended (hex) */
+  ciphertext: string;
+}
+
+// FROZEN with the credits rail's existing sealed statements.
+const LEGACY_ECIES_INFO_BYTES = utf8ToBytes("woco/order/v1");
 
 /** Strip optional 0x prefix and convert hex to bytes. */
 function toBytes(hex: string): Uint8Array {
@@ -49,12 +58,12 @@ function buf(bytes: Uint8Array): ArrayBuffer {
  *
  * @param recipientPublicKey - X25519 public key (hex string or Uint8Array)
  * @param plaintext          - Data to encrypt (raw bytes)
- * @returns SealedBox containing ephemeral public key, IV, and ciphertext
+ * @returns LegacySealedBox containing ephemeral public key, IV, and ciphertext
  */
 export async function seal(
   recipientPublicKey: Uint8Array | string,
   plaintext: Uint8Array,
-): Promise<SealedBox> {
+): Promise<LegacySealedBox> {
   const pubKeyBytes =
     typeof recipientPublicKey === "string"
       ? toBytes(recipientPublicKey)
@@ -68,7 +77,7 @@ export async function seal(
   const shared = x25519.getSharedSecret(ephPrivate, pubKeyBytes);
 
   // 3. HKDF key derivation (salt = ephemeral public key for domain separation)
-  const aesKeyBytes = hkdf(sha256, shared, ephPublic, ECIES_INFO_BYTES, 32);
+  const aesKeyBytes = hkdf(sha256, shared, ephPublic, LEGACY_ECIES_INFO_BYTES, 32);
 
   // 4. AES-256-GCM encrypt via Web Crypto
   const aesKey = await crypto.subtle.importKey(
@@ -97,13 +106,13 @@ export async function seal(
  * Decrypt a sealed box with the recipient's X25519 private key.
  *
  * @param recipientPrivateKey - X25519 private key (hex string or Uint8Array)
- * @param box                 - SealedBox to decrypt
+ * @param box                 - LegacySealedBox to decrypt
  * @returns Decrypted plaintext bytes
  * @throws If decryption fails (wrong key, tampered data, etc.)
  */
 export async function open(
   recipientPrivateKey: Uint8Array | string,
-  box: SealedBox,
+  box: LegacySealedBox,
 ): Promise<Uint8Array> {
   const privKeyBytes =
     typeof recipientPrivateKey === "string"
@@ -118,7 +127,7 @@ export async function open(
   const shared = x25519.getSharedSecret(privKeyBytes, ephPublic);
 
   // 2. HKDF key derivation (same parameters → same AES key)
-  const aesKeyBytes = hkdf(sha256, shared, ephPublic, ECIES_INFO_BYTES, 32);
+  const aesKeyBytes = hkdf(sha256, shared, ephPublic, LEGACY_ECIES_INFO_BYTES, 32);
 
   // 3. AES-256-GCM decrypt via Web Crypto
   const aesKey = await crypto.subtle.importKey(
@@ -152,7 +161,7 @@ const decoder = new TextDecoder();
 export async function sealJson(
   recipientPublicKey: Uint8Array | string,
   data: unknown,
-): Promise<SealedBox> {
+): Promise<LegacySealedBox> {
   return seal(recipientPublicKey, encoder.encode(JSON.stringify(data)));
 }
 
@@ -162,50 +171,8 @@ export async function sealJson(
  */
 export async function openJson<T = unknown>(
   recipientPrivateKey: Uint8Array | string,
-  box: SealedBox,
+  box: LegacySealedBox,
 ): Promise<T> {
   const plaintext = await open(recipientPrivateKey, box);
   return JSON.parse(decoder.decode(plaintext));
-}
-
-/**
- * Encrypt a JSON payload, gzipping it first.
- *
- * For payloads that scale with a user's data. The ciphertext is hex-encoded (2x)
- * and capped server-side, so a raw 20k-contact marketing list overflows the cap
- * on its own; gzip brings it back to roughly a tenth of that.
- *
- * Compress-then-encrypt leaks a size signal about the plaintext. That is only
- * exploitable by an adversary who can inject chosen content into the payload AND
- * repeatedly observe the sealed size (CRIME/BREACH). For a list an organiser
- * writes at their own pace, the channel is not reachable — and the alternative,
- * a list too large to store, is a certain failure rather than a theoretical one.
- *
- * Falls back to uncompressed on engines without CompressionStream;
- * `openJsonAuto` reads either form.
- */
-export async function sealJsonCompressed(
-  recipientPublicKey: Uint8Array | string,
-  data: unknown,
-): Promise<SealedBox> {
-  const raw = encoder.encode(JSON.stringify(data));
-  const body = compressionSupported() ? await gzip(raw) : raw;
-  return seal(recipientPublicKey, body);
-}
-
-/**
- * Decrypt a sealed JSON box written by either `sealJson` or `sealJsonCompressed`.
- *
- * Sniffs the gzip magic number rather than relying on a version field, because
- * the framing has to be decided before the payload can be parsed. Serialised
- * JSON can never begin with those bytes, so blobs sealed before compression
- * existed keep opening unchanged.
- */
-export async function openJsonAuto<T = unknown>(
-  recipientPrivateKey: Uint8Array | string,
-  box: SealedBox,
-): Promise<T> {
-  const plaintext = await open(recipientPrivateKey, box);
-  const json = isGzipped(plaintext) ? await gunzip(plaintext) : plaintext;
-  return JSON.parse(decoder.decode(json));
 }

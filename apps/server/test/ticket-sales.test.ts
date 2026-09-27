@@ -332,3 +332,29 @@ describe("a record file that cannot be read", () => {
     assert.ok(JSON.parse(readFileSync(storeFile, "utf-8")).cs_1);
   });
 });
+
+describe("one sale per order ref (#661)", () => {
+  const REF = "0a".repeat(32);
+  test("a ref another sale minted with is taken; the sale's own ref is not", () => {
+    stub();
+    ts.recordSaleSlots("cs_1", EV, CONTRACT, [4, 5], REF.toUpperCase());
+    assert.equal(ts.getSale("cs_1")!.orderRef, REF, "stored lowercase");
+    assert.equal(ts.orderRefInOtherSale(REF, "cs_2"), true);
+    assert.equal(ts.orderRefInOtherSale(REF, null), true);
+    // A multi-ticket batch shares one ref inside ONE sale — never "another".
+    assert.equal(ts.orderRefInOtherSale(REF, "cs_1"), false);
+    assert.equal(ts.orderRefInOtherSale("0b".repeat(32), null), false);
+  });
+
+  test("a stub that never minted carries no ref, so a retried checkout is not blocked by it", () => {
+    stub({ sessionId: "cs_abandoned" });
+    assert.equal(ts.orderRefInOtherSale(REF, null), false);
+  });
+
+  test("the first ref recorded for a sale sticks", () => {
+    stub();
+    ts.recordSaleSlots("cs_1", EV, CONTRACT, [1], REF);
+    ts.recordSaleSlots("cs_1", EV, CONTRACT, [2], "0c".repeat(32));
+    assert.equal(ts.getSale("cs_1")!.orderRef, REF);
+  });
+});

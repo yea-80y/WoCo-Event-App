@@ -21,6 +21,7 @@
     "@coinbase/wallet-sdk": "^4.3.7",
     "@hpke/core": "^1.9.0",
     "@noble/ciphers": "^2.4.0",
+    "@noble/curves": "^2.4.0",
     "@noble/ed25519": "^3.1.0",
     "@noble/hashes": "^2.4.0",
     "@walletconnect/ethereum-provider": "^2.23.6",

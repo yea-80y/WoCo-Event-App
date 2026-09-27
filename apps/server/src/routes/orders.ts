@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import type { OrderEntry, SealedBox } from "@woco/shared";
+import type { OrderEntry } from "@woco/shared";
+import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
@@ -83,20 +84,21 @@ orders.get("/:id/orders", requireAuth, async (c) => {
         );
 
         // Download encrypted order blobs from Swarm with bounded concurrency.
-        // Each blob is a NaCl SealedBox — only the organiser can decrypt it.
-        // We fetch the ciphertext server-side and return it; decryption happens
-        // exclusively in the client where the X25519 private key lives.
+        // Each blob is a v2 sealed box (X-Wing, #642) — only the organiser can
+        // open it. We fetch the ciphertext server-side and return it; opening
+        // happens exclusively in the client, which holds the key and binds the
+        // box to this event and the SLOT's series.
         const downloadSlot = async (slot: number): Promise<OrderEntry | null> => {
           const slotData = slotResults[slot];
           if (!slotData) return null;
 
           const swarmHex = orderRefToSwarmHex(slotData.orderRef);
-          let encryptedOrder: SealedBox | undefined;
+          let encryptedOrder: SealedBoxV2 | undefined;
 
           if (swarmHex) {
             try {
               const json = await downloadFromBytes(swarmHex);
-              encryptedOrder = JSON.parse(json) as SealedBox;
+              encryptedOrder = JSON.parse(json) as SealedBoxV2;
             } catch (err) {
               console.warn(`[orders/v2] Failed to download orderRef for slot ${slot}:`, err);
             }

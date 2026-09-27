@@ -247,7 +247,7 @@ write queue) went with #207 and are NOT in the tree. `routes/claims.ts` serves o
 `GET /:eventId/series/:seriesId/claim-status`. The one live path is:
 
   reserve (10-min hold, atomic) → Stripe checkout → webhook → fulfilment:
-  seal order to the organiser's X25519 key → one EPHEMERAL BURNER keypair per
+  seal order to the organiser's X-Wing key (#642) → one EPHEMERAL BURNER keypair per
   ticket → `batchClaimFor` as the sponsor → burner signs its ticket message,
   key DISCARDED → email the ticket
 

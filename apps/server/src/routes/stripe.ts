@@ -34,7 +34,8 @@ import { chainEventEndMsAt } from "../lib/event/end-date-guard.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { checkObjectGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
 import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../lib/stripe/checkout-fees.js";
-import type { SealedBox, PayoutsResponse } from "@woco/shared";
+import type { PayoutsResponse } from "@woco/shared";
+import { canonicalOrderBox, issueOrderRefToken, acceptedClientOrderRef } from "../lib/stripe/order-ref.js";
 import { checkSponsorCanMint, type SponsorMintVerdict } from "../lib/chain/sponsor-wallet.js";
 import { sponsorGateRefusal } from "../lib/stripe/sponsor-gate.js";
 import {
@@ -49,7 +50,7 @@ import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../lib/stripe/checkout-provenance.js";
 import { liveProvenanceReads, refundTamperedSession } from "../lib/stripe/checkout-provenance-live.js";
 import { fulfilPaidSession } from "../lib/stripe/fulfilment.js";
-import { getSale, recordSaleStub } from "../lib/stripe/ticket-sales.js";
+import { getSale, recordSaleStub, orderRefInOtherSale } from "../lib/stripe/ticket-sales.js";
 import { alreadyApplied, noteApplied, reconcileChargeEvent } from "../lib/stripe/sale-refunds.js";
 import { liveSaleRefundReads } from "../lib/stripe/sale-refunds-live.js";
 import { liveFulfilmentDeps } from "../lib/stripe/fulfilment-live.js";
@@ -106,6 +107,21 @@ const createCheckoutLimiter = new SlidingWindowLimiter([
   { limit: 30, windowMs: 60_000 },
   { limit: 300, windowMs: 3_600_000 },
 ]);
+
+/**
+ * `prepare-order` is unauthenticated and stamps onto the platform batch, so it gets
+ * the checkout limiter's budget (it precedes every checkout) and a size cap. A real
+ * order box is ~4.5 KB (X-Wing's 1120-byte `enc` plus a form under 1 KB); 16 KB of
+ * JSON is generous and bounds what one call can stamp (#642).
+ */
+const prepareOrderLimiter = new SlidingWindowLimiter([
+  { limit: 30, windowMs: 60_000 },
+  { limit: 300, windowMs: 3_600_000 },
+]);
+
+/** Refusal for an order box that another completed sale already carries (#661). */
+const ORDER_ALREADY_USED =
+  "These order details were already used for another purchase. Refresh the page and fill in the form again.";
 
 // ---------------------------------------------------------------------------
 // 1. Organiser onboarding — create Connected Account + Account Link
@@ -380,8 +396,9 @@ stripe.post("/account-session", requireAuth, async (c) => {
 /**
  * POST /api/stripe/prepare-order
  *
- * Body: { encryptedOrder: SealedBox }
- * Returns: { ok: true, orderRef: Hex64 }
+ * Body: { encryptedOrder: SealedBoxV2 } — exactly a v2 box, ≤ 16 KB of JSON
+ * Returns: { ok: true, orderRef: Hex64, orderRefToken } — the token is what lets
+ * /create-checkout accept this ref (lib/stripe/order-ref.ts, #661)
  *
  * Called by the client immediately before /create-checkout. The returned
  * orderRef is passed to /create-checkout, stored in the Stripe session
@@ -399,14 +416,24 @@ stripe.post("/prepare-order", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const encryptedOrder = body.encryptedOrder as SealedBox | undefined;
-  if (!encryptedOrder || typeof encryptedOrder !== "object") {
-    return c.json({ ok: false, error: "encryptedOrder is required" }, 400);
+  const orderJson = canonicalOrderBox(body.encryptedOrder);
+  if (!orderJson) {
+    return c.json({ ok: false, error: "encryptedOrder must be a v2 sealed box of at most 16 KB" }, 400);
   }
+  // Validated first, so a refusal does not spend the caller's budget.
+  const ip = clientIp(c);
+  if (!prepareOrderLimiter.peek(ip)) {
+    c.header("Retry-After", "60");
+    return c.json({ ok: false, error: "Too many requests from your connection. Wait a minute and try again." }, 429);
+  }
+  prepareOrderLimiter.record(ip);
 
   try {
-    const orderRef = await uploadToBytes(JSON.stringify(encryptedOrder));
-    return c.json({ ok: true, orderRef });
+    const orderRef = await uploadToBytes(orderJson);
+    // A copy of a box another sale already carries lands on that sale's ref
+    // (canonical bytes) — refuse to issue it.
+    if (orderRefInOtherSale(orderRef, null)) return c.json({ ok: false, error: ORDER_ALREADY_USED }, 409);
+    return c.json({ ok: true, orderRef, orderRefToken: issueOrderRefToken(orderRef) });
   } catch (err) {
     console.error("[stripe/prepare-order] Upload failed:", err);
     const msg = err instanceof Error ? err.message : "Failed to upload order";
@@ -453,7 +480,7 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, pageUrl, quantity: rawQty, orderRef, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId, marketingConsent: rawMarketingConsent } = body as {
+  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, pageUrl, quantity: rawQty, orderRef, orderRefToken, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId, marketingConsent: rawMarketingConsent } = body as {
     eventId: string;
     seriesId: string;
     claimerEmail?: string;
@@ -467,7 +494,9 @@ stripe.post("/create-checkout", async (c) => {
     pageUrl?: string;
     quantity?: number;
     orderRef?: string;
-    encryptedOrder?: SealedBox;
+    /** The token prepare-order issued with `orderRef` (#661). */
+    orderRefToken?: string;
+    encryptedOrder?: unknown;
     reservationId?: string;
     /** Deployed site id — passed when checkout originates from an organiser's
      *  site-builder page so the webhook can theme the ticket email + PNG. */
@@ -528,18 +557,18 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "eventId and seriesId are required" }, 400);
   }
 
-  // Validate pre-uploaded order ref — must be a 64-char hex string (Swarm ref).
-  // Anything else is silently ignored; never echoed to Stripe metadata as-is.
-  const preUploadedRef =
-    typeof orderRef === "string" && /^[0-9a-f]{64}$/i.test(orderRef)
-      ? orderRef.toLowerCase()
-      : undefined;
+  // A pre-uploaded order ref is taken only with the token prepare-order issued for
+  // it, so every ref that reaches a mint is one this server stored (#661). Anything
+  // else is silently ignored; never echoed to Stripe metadata as-is.
+  const preUploadedRef = acceptedClientOrderRef(orderRef, orderRefToken);
 
   // Inline encrypted order (fallback path when client didn't pre-upload).
   // We'll upload in parallel with the event/status reads so Swarm latency
   // hides behind the reads.
-  const shouldUploadInline =
-    !preUploadedRef && encryptedOrder && typeof encryptedOrder === "object";
+  // Same acceptance rule as prepare-order; anything else is ignored exactly as a
+  // malformed orderRef is, and the webhook seals the minimal order instead.
+  const inlineOrderJson = preUploadedRef ? null : canonicalOrderBox(encryptedOrder);
+  const shouldUploadInline = inlineOrderJson !== null;
 
   // Soft auth: if session headers are present, verify them. Malformed auth
   // headers are rejected — never silently fall through to anonymous path.
@@ -588,7 +617,7 @@ stripe.post("/create-checkout", async (c) => {
   const [event, inlineUploadedRef] = await Promise.all([
     getEvent(eventId, siteSigner ?? undefined),
     shouldUploadInline
-      ? uploadToBytes(JSON.stringify(encryptedOrder)).catch((err) => {
+      ? uploadToBytes(inlineOrderJson!).catch((err) => {
           // Inline upload failure is non-fatal — webhook falls back to the
           // minimal server-built seal so attendee still gets a ticket.
           console.warn("[stripe/create-checkout] Inline order upload failed (continuing):", err);
@@ -601,11 +630,26 @@ stripe.post("/create-checkout", async (c) => {
   // Final ref we'll stamp into Stripe session metadata. Prefer client pre-upload
   // (fast path — client already did the work before clicking Pay).
   const finalOrderRef = preUploadedRef ?? (inlineUploadedRef ?? undefined);
+  // One sale per order ref (#661): before anything is charged, refuse a box that
+  // another completed sale already carries. Fulfilment re-checks as a backstop.
+  if (finalOrderRef && orderRefInOtherSale(finalOrderRef, null)) {
+    return c.json({ ok: false, error: ORDER_ALREADY_USED }, 409);
+  }
 
   if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
 
   const series = event.series.find((s) => s.seriesId === seriesId);
   if (!series) return c.json({ ok: false, error: "Series not found" }, 404);
+
+  // No order box from the buyer AND no organiser key to seal one with: fulfilment
+  // would reach "no orderRef" and refund. Refuse before the card is charged
+  // (#642 sign-off F3) — only events published without an order key get here.
+  if (!finalOrderRef && !event.encryptionKeyRef) {
+    return c.json(
+      { ok: false, error: "This event isn't set up to take orders yet. Please contact the organiser." },
+      409,
+    );
+  }
 
   if (!series.payment?.stripeEnabled) {
     return c.json({ ok: false, error: "Series does not have Stripe payments enabled" }, 400);

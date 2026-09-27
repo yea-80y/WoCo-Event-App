@@ -27,7 +27,8 @@
  * Only Arbitrum Sepolia (421614) — the locked Kernel/paymaster chain.
  */
 
-import type { Hex0x, PaymentChainId, SealedBox, ClaimedTicket } from "@woco/shared";
+import type { Hex0x, PaymentChainId, ClaimedTicket } from "@woco/shared";
+import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import { USDC_ADDRESSES } from "@woco/shared";
 
 /** Locked rail — ZeroDev Kernel + gasless paymaster run here (Arb Sepolia). */
@@ -111,7 +112,7 @@ export interface SettleAgentPurchaseOpts {
    *  that predate the intent, so a pre-existing matching transfer can't be bound. */
   notBeforeUnix: number;
   /** Optional encrypted order form payload (organiser dashboard). */
-  encryptedOrder?: SealedBox;
+  encryptedOrder?: SealedBoxV2;
 }
 
 export type SettleResult =

@@ -26,6 +26,7 @@ import {
   xwing,
   deriveXWingKeypairFromSeed,
   assertXWingPublicKey,
+  isValidXWingPublicKey,
   XWING_ENCRYPTION_INFO,
 } from "../../src/crypto/xwing.js";
 import { XWingKem } from "../../src/crypto/xwing-hpke.js";
@@ -285,4 +286,13 @@ test("the X-Wing modules are subpath-only — the @woco/shared barrel never pull
   assert.doesNotMatch(barrel, /xwing|sealed-box/);  // incl. sealed-box-shape: subpath only
   const root = readFileSync(here("../../src/index.ts"), "utf8");
   assert.doesNotMatch(root, /xwing|sealed-box/);
+});
+
+test("a key about to be published is checked in full: length and the ML-KEM modulus", () => {
+  assert.equal(isValidXWingPublicKey(ACCOUNT.publicKey), true);
+  assert.equal(isValidXWingPublicKey(ACCOUNT.publicKey.slice(0, 1215)), false);
+  const bad = ACCOUNT.publicKey.slice();
+  bad[0] = 0xff;
+  bad[1] = 0xff;
+  assert.equal(isValidXWingPublicKey(bad), false);
 });

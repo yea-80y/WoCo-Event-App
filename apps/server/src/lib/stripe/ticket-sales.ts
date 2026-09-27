@@ -73,6 +73,13 @@ export interface TicketSale {
   /** Slots minted for this sale (edition = slot + 1). */
   slots: number[];
   /**
+   * The order blob these slots carry on chain (#642). One completed sale per ref
+   * (#661, lib/stripe/order-ref.ts): prepare-order and checkout refuse a ref this
+   * field already names on ANOTHER sale, and fulfilment swaps one for the buyer's
+   * own seal. Only minted sales carry it, so an abandoned checkout blocks nothing.
+   */
+  orderRef?: string;
+  /**
    * Minor units WE refunded or tried to (fulfilment's unfilled part, or a
    * tampered session in full). Recorded before the refund call, so the refund
    * event that follows is recognised as ours whatever order things land in.
@@ -200,11 +207,27 @@ export function recordSaleStub(input: SaleStubInput): TicketSale {
  * the same on-chain event; a chunk naming another is refused rather than
  * silently re-keying the slots already recorded.
  */
+/**
+ * Is `orderRef` already carried by a sale OTHER than `sessionId` that minted?
+ * One sale per order ref (#661, lib/stripe/order-ref.ts): a copy of another
+ * buyer's public ref must never put their sealed details against a new ticket.
+ * `sessionId` null asks about every sale (a ref about to be issued).
+ */
+export function orderRefInOtherSale(orderRef: string, sessionId: string | null): boolean {
+  ensureLoaded();
+  const ref = orderRef.toLowerCase();
+  for (const sale of Object.values(store)) {
+    if (sale.orderRef === ref && sale.sessionId !== sessionId) return true;
+  }
+  return false;
+}
+
 export function recordSaleSlots(
   sessionId: string,
   onChainEventId: string,
   contract: string,
   slots: number[],
+  orderRef?: string,
 ): boolean {
   ensureLoaded();
   const sale = store[sessionId];
@@ -222,6 +245,7 @@ export function recordSaleSlots(
   }
   sale.onChainEventId = id;
   sale.contract = contract.toLowerCase();
+  if (orderRef && !sale.orderRef) sale.orderRef = orderRef.toLowerCase();
   for (const slot of slots) if (!sale.slots.includes(slot)) sale.slots.push(slot);
   persist();
   return true;

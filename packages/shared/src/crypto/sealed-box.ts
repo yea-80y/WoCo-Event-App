@@ -18,8 +18,10 @@
  * X-Wing's combiner binds the X25519 key and ML-KEM binds H(pk).
  *
  * Import by subpath (`@woco/shared/crypto/sealed-box`) and, in the browser, load it
- * lazily: it carries the lattice code and HPKE (measured standalone 2026-09-27: X-Wing
- * ~20 KB gz, `@hpke/core` ~5 KB gz; measure again in the first rail that bundles it).
+ * lazily: it carries the lattice code and HPKE. Measured 2026-09-27: standalone X-Wing
+ * ~20 KB gz and `@hpke/core` ~5 KB gz; the web app keeps both in lazy chunks (main
+ * chunk unchanged); the embed IIFE, which cannot split, grew 23.1 → 35.0 KB gz
+ * (+11.9) when orders moved to this box.
  */
 
 import { Aes256Gcm, CipherSuite, HkdfSha256 } from "@hpke/core";

@@ -28,12 +28,11 @@
 
 import type { Stripe } from "stripe";
 import {
-  sealJson,
   buildTicketCanonicalMessage,
   type EventFeed,
-  type SealedBox,
   type SitePalette,
 } from "@woco/shared";
+import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import { checkSalesWindow } from "../event/sales-window.js";
 import { eventReleaseAfter } from "./payout-policy.js";
 import type { PayoutLedgerEntry } from "./payout-ledger.js";
@@ -113,6 +112,18 @@ export interface FulfilmentDeps {
   /** Swarm /bytes — the fallback order seal. May throw; the caller decides what that means. */
   uploadToBytes(data: string): Promise<string>;
 
+  /**
+   * The organiser's X-Wing order key, read by its ref from OUR OWN bee and verified
+   * against the ref (`verifyOrderKeyChunk`, #642). Throws on any failure. This is not
+   * a new failure domain for the fallback seal: the very next step, uploading the
+   * sealed order, needs the same bee, and the key chunk is always stamped on the
+   * WoCo batch at create (twice when the event lives on Etherna).
+   */
+  fetchOrderKey(ref: string): Promise<Uint8Array>;
+
+  /** Is `orderRef` already carried by a sale other than `sessionId`? (#661) */
+  orderRefInOtherSale(orderRef: string, sessionId: string): boolean;
+
   /** Chain. `batchClaimForOnChain` rejects on a revert; partial state is never left. */
   generateBurner(): Burner;
   batchClaimForOnChain(
@@ -130,7 +141,13 @@ export interface FulfilmentDeps {
    * not throw; fenced anyway, because a missing record costs a void, never a
    * ticket.
    */
-  recordSaleSlots(sessionId: string, onChainEventId: string, contract: string, slots: number[]): void;
+  recordSaleSlots(
+    sessionId: string,
+    onChainEventId: string,
+    contract: string,
+    slots: number[],
+    orderRef?: string,
+  ): void;
   /**
    * What fulfilment itself refunds, recorded BEFORE the refund call so the
    * refund event that follows reads as ours, not the organiser's. Must not
@@ -356,17 +373,28 @@ export async function fulfilPaidSession(
   // Attendee data: prefer the client's pre-uploaded full-form order ref (passed
   // via session metadata). Falls back to a minimal server-built seal for the
   // edge case where the browser skipped pre-upload (e.g. offline at checkout).
-  const prefetchedOrderRef =
+  //
+  // ONE SALE PER REF (#661, lib/stripe/order-ref.ts). Checkout already refuses a
+  // ref another completed sale carries; this is the backstop for one that became
+  // taken between charge and mint. Such a ref would put ANOTHER buyer's sealed
+  // details against this ticket, so it is dropped and this buyer's own minimal
+  // seal is made instead — the sale still completes, never with someone else's data.
+  const metaRef =
     typeof metaOrderRef === "string" && /^[0-9a-f]{64}$/i.test(metaOrderRef)
       ? metaOrderRef.toLowerCase()
       : undefined;
+  let prefetchedOrderRef = metaRef;
+  if (metaRef && deps.orderRefInOtherSale(metaRef, session.id)) {
+    console.warn(`[fulfilment] ${session.id}: orderRef ${metaRef.slice(0, 10)}… is another sale's — sealing this buyer's own order instead`);
+    prefetchedOrderRef = undefined;
+  }
 
   // ── 1. Event feed (fenced: a feed hiccup degrades the TICKET EMAIL, not the sale) ──
   //
   // It used to degrade to "no v2 path" → refund, because the mint target came
   // from here. Since #426 it does not: the feed supplies display fields, and a
   // hiccup costs a title and a series name rather than a paid buyer's tickets.
-  let encryptedOrder: SealedBox | undefined;
+  let encryptedOrder: SealedBoxV2 | undefined;
   let eventTitle = "";
   let eventDate = "";
   /** Event END — anchors when these takings may be paid out (payout-policy.ts). */
@@ -404,13 +432,22 @@ export async function fulfilPaidSession(
         totalSupply = ser.totalSupply;
         feedOnChainEventId = ser.onChainEventId ?? "";
       }
-      if (!prefetchedOrderRef && ev.encryptionKey) {
-        // Fallback minimal seal — only when no pre-uploaded ref is available.
-        encryptedOrder = await sealJson(ev.encryptionKey, {
-          seriesId,
-          ...(claimerEmail ? { claimerEmail } : {}),
-          ...(claimerAddress ? { claimerAddress: claimerAddress.toLowerCase() } : {}),
-        });
+      if (!prefetchedOrderRef && ev.encryptionKeyRef) {
+        // Fallback minimal seal — only when no pre-uploaded ref is available. The key
+        // names who can READ the order, never what is minted or charged, so reading
+        // it from the event feed here is not the #426 hazard: an organiser who
+        // re-signs their feed to another key only locks themselves out.
+        const key = await deps.fetchOrderKey(ev.encryptionKeyRef);
+        const { sealBoxJson, orderSealContext } = await import("@woco/shared/crypto/sealed-box");
+        encryptedOrder = await sealBoxJson(
+          key,
+          {
+            seriesId,
+            ...(claimerEmail ? { claimerEmail } : {}),
+            ...(claimerAddress ? { claimerAddress: claimerAddress.toLowerCase() } : {}),
+          },
+          orderSealContext(eventId, seriesId),
+        );
       }
     }
   } catch (err) {
@@ -999,7 +1036,7 @@ interface MintV2Args {
   /** From the registration record (#563) — never the feed, never today's env default. */
   mintContract: EventContractTarget;
   prefetchedOrderRef: string | undefined;
-  encryptedOrder: SealedBox | undefined;
+  encryptedOrder: SealedBoxV2 | undefined;
   accountClaim: { parentAddress: string } | undefined;
   /** Filled in place: one entry per slot actually minted AND signed. */
   claimedResults: Array<{ edition: number; qrContent: string }>;
@@ -1064,7 +1101,7 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
       // Per chunk, from the contract's own answer: these slots exist on chain
       // whatever happens to the rest of the batch, so a refund must reach them.
       try {
-        deps.recordSaleSlots(a.sessionId, a.v2OnChainEventId, contractKey(a.mintContract), chunkSlots);
+        deps.recordSaleSlots(a.sessionId, a.v2OnChainEventId, contractKey(a.mintContract), chunkSlots, batchOrderRef);
       } catch (err) {
         console.error(`[fulfilment/v2] recordSaleSlots threw — a refund will not void these slots:`, err);
       }

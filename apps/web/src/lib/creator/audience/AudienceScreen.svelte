@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { MarketingContact, MarketingListMeta, ContactConsentState } from "@woco/shared";
-  import { contactConsentState, deriveEncryptionKeypairFromSeed } from "@woco/shared";
+  import { contactConsentState } from "@woco/shared";
   import type { MarketingListPayload } from "@woco/shared";
   import { restoreIdentitySeed } from "../../auth/identity-seed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -66,13 +66,6 @@
     ]);
     const { secretKey, publicKey } = deriveXWingKeypairFromSeed(identitySeed);
     return { secretKey, publicKey, ctx: box.listSealContext(auth.parent), box };
-  }
-
-  /** The key ORDER blobs are still sealed to: the classical X25519 one, until the
-   *  orders rail moves to X-Wing too (#642). Only the attendee import opens orders. */
-  async function getOrderKeys(): Promise<{ privateKey: Uint8Array } | null> {
-    const identitySeed = await getIdentitySeed();
-    return identitySeed ? deriveEncryptionKeypairFromSeed(identitySeed) : null;
   }
 
   /** The identity seed on this device, establishing it first if this is the first
@@ -303,7 +296,7 @@
     {/if}
 
     {#if panel === "attendees"}
-      <AttendeeImport {contacts} busy={saving} getKeys={getOrderKeys} onCommit={commitList} />
+      <AttendeeImport {contacts} busy={saving} {getKeys} onCommit={commitList} />
     {/if}
 
     {#if panel === "contacts" && contacts.length > 0 && consentUnknown}

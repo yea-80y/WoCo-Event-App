@@ -1,8 +1,8 @@
 import { createApiClient, type ApiClient } from "../api/client.js";
 import { getStyles } from "./styles.js";
 import {
-  sealJson,
   calculateBuyerFees,
+  fetchOrderKey,
   orderFormShown,
   orderFormCollectsEmail,
   ORDER_EMAIL_FIELD_ID,
@@ -11,8 +11,8 @@ import {
   CHECKOUT_PRIVACY_SUMMARY,
   type OrderField,
   type PaymentConfig,
-  type SealedBox,
 } from "@woco/shared";
+import { sealBoxJson, orderSealContext, type SealedBoxV2 } from "@woco/shared/crypto/sealed-box";
 import { cacheGet, cacheSet, TTL_7D, embedCacheKey } from "../cache.js";
 import {
   MAX_QTY,
@@ -48,7 +48,8 @@ interface EventData {
   location: string;
   startDate: string;
   series: SeriesSummary[];
-  encryptionKey?: string;
+  /** Content address of the organiser's X-Wing order key (#642). */
+  encryptionKeyRef?: string;
   orderFields?: OrderField[];
   /** #644: the event was cancelled (the API overlays the server's record). */
   cancelledAt?: string;
@@ -88,6 +89,50 @@ interface SeriesState {
 export class WocoTickets extends HTMLElement {
   private api: ApiClient | null = null;
   private event: EventData | null = null;
+
+  /**
+   * The organiser's order key, fetched by the event's `encryptionKeyRef` from the
+   * WoCo gateway (Etherna sends no CORS) and VERIFIED against it (#642). The order
+   * form renders only with it in hand, and nothing is sealed to anything else.
+   * Trust note: the ref itself is as trustworthy as `/api/events/:id`, which this
+   * widget already trusts for the price.
+   */
+  private orderKey: Uint8Array | null = null;
+  private orderKeyFor: string | null = null;
+  private orderKeyPending: Promise<Uint8Array | null> | null = null;
+
+  private ensureOrderKey(): Promise<Uint8Array | null> {
+    const ref = this.event?.encryptionKeyRef;
+    if (!ref) {
+      this.orderKey = null;
+      this.orderKeyFor = null;
+      return Promise.resolve(null);
+    }
+    if (this.orderKeyFor === ref && this.orderKey) return Promise.resolve(this.orderKey);
+    if (this.orderKeyFor === ref && this.orderKeyPending) return this.orderKeyPending;
+    this.orderKeyFor = ref;
+    this.orderKey = null;
+    const pending: Promise<Uint8Array | null> = fetchOrderKey(ref, "https://gateway.woco-net.com")
+      .then(
+        (key) => {
+          if (this.orderKeyFor === ref) this.orderKey = key;
+          return key;
+        },
+        () => null,
+      )
+      .finally(() => {
+        if (this.orderKeyPending === pending) this.orderKeyPending = null;
+      });
+    this.orderKeyPending = pending;
+    return pending;
+  }
+
+  /** Load the key for the event just shown, and re-render once it is in hand. */
+  private refreshOrderKey(): void {
+    void this.ensureOrderKey().then((key) => {
+      if (key && !this.isUserInteracting()) this.render();
+    });
+  }
   private seriesStates: Map<string, SeriesState> = new Map();
   private shadow: ShadowRoot;
   private delegationSetup = false;
@@ -201,6 +246,7 @@ export class WocoTickets extends HTMLElement {
 
     if (cachedEvent) {
       this.event = cachedEvent;
+      this.refreshOrderKey();
       for (const s of cachedEvent.series) {
         const stKey = embedCacheKey.claimStatus(this.eventId, s.seriesId);
         this.seriesStates.set(s.seriesId, this.freshSeriesState(cacheGet<ClaimStatus>(stKey)));
@@ -223,6 +269,7 @@ export class WocoTickets extends HTMLElement {
       const freshEvent = resp.data;
       cacheSet(evKey, freshEvent, TTL_7D);
       this.event = freshEvent;
+      this.refreshOrderKey();
 
       // Fetch claim statuses in parallel
       const statuses = await Promise.all(
@@ -549,7 +596,7 @@ export class WocoTickets extends HTMLElement {
   }
 
   private get hasOrderForm(): boolean {
-    return orderFormShown(this.event?.orderFields, this.event?.encryptionKey);
+    return orderFormShown(this.event?.orderFields, this.orderKey ?? undefined);
   }
 
   /** True when this series can actually be sold here: Stripe rail on, price > 0. */
@@ -632,7 +679,7 @@ export class WocoTickets extends HTMLElement {
       <div class="order-form" data-order-form="${this.esc(s.seriesId)}">
         <div class="hold-slot" data-hold-slot="${this.esc(s.seriesId)}">${this.renderHold(s.seriesId, st)}</div>
         ${this.hasOrderForm ? this.renderOrderFields(s.seriesId, st) : ""}
-        ${orderFormCollectsEmail(this.event?.orderFields, this.event?.encryptionKey)
+        ${orderFormCollectsEmail(this.event?.orderFields, this.orderKey ?? undefined)
           ? ""
           : `<label class="form-field">
           <span class="form-label">Email for your ticket <span class="required">*</span></span>
@@ -848,20 +895,25 @@ export class WocoTickets extends HTMLElement {
   /**
    * Validate required order fields and encrypt the buyer's answers (plus the
    * email, mirroring the main checkout's inline seal) to the organiser's
-   * X25519 key. The fields never leave this page unencrypted — the server
-   * stores the SealedBox and only the organiser's dashboard can open it.
+   * verified X-Wing key, bound to this event and series (#642). The fields never
+   * leave this page unencrypted — the server stores the box and only the
+   * organiser's dashboard can open it.
    *
    * Returns undefined when there is nothing to seal or sealing failed (the
    * server builds a minimal fallback record at fulfilment — same trade the
    * main checkout makes: a lost form answer must not lose the sale). The
    * fields were validated before this runs (validateBuyPanel).
    */
-  private async encryptOrderData(seriesId: string, st: SeriesState, email: string): Promise<SealedBox | undefined> {
-    const encryptionKey = this.event?.encryptionKey;
-    if (!encryptionKey) return undefined;
+  private async encryptOrderData(seriesId: string, st: SeriesState, email: string): Promise<SealedBoxV2 | undefined> {
+    const key = this.orderKey;
+    if (!key) return undefined;
 
     try {
-      return await sealJson(encryptionKey, buildOrderPayload(st.orderFormData, seriesId, email));
+      return await sealBoxJson(
+        key,
+        buildOrderPayload(st.orderFormData, seriesId, email),
+        orderSealContext(this.eventId, seriesId),
+      );
     } catch {
       return undefined;
     }
@@ -877,11 +929,27 @@ export class WocoTickets extends HTMLElement {
     const st = this.seriesStates.get(seriesId);
     if (!st || st.busy || !this.api) return;
 
+    // An order form the organiser asked for, whose key is not verified yet: no
+    // form is on screen and nothing could be sealed. Try once more; if the key
+    // arrives, show the form for the buyer to fill in — never take the order
+    // without it (#642).
+    if (this.event?.orderFields?.length && this.event.encryptionKeyRef && !this.orderKey) {
+      const key = await this.ensureOrderKey();
+      if (key) {
+        st.error = null;
+        this.render();
+        return;
+      }
+      st.error = "We couldn't load this event's order form securely. Check your connection and try again.";
+      this.updateSeries(seriesId);
+      return;
+    }
+
     // One top-to-bottom pass over what the buyer can see; the address comes
     // from the order form's email field when it shows one (#597).
     const verdict = validateBuyPanel({
       fields: this.event?.orderFields,
-      encryptionKey: this.event?.encryptionKey,
+      verifiedKey: this.orderKey ?? undefined,
       formData: st.orderFormData,
       inlineEmail: st.email,
     });

@@ -105,7 +105,7 @@ Every layer, in one example. This is the shortest complete tour of the system.
  ─────────────────────────────────────────────────────    │
  pays by card. Stripe charges the ORGANISER's account      │
  webhook fires:                                            │
-   · order data sealed to the organiser's X25519 key,      2,3
+   · order data sealed to the organiser's X-Wing key,      2,3
      uploaded, its ref kept
    · a throwaway BURNER keypair is generated               1
    · batchClaimFor() mints the slot to that burner         4
@@ -368,7 +368,7 @@ ATTENDEE BUYS
   5. POST /api/events/:id/series/:sid/reserve   → holds a seat
   6. Stripe Checkout — a direct charge on the organiser's connected account
   7. Stripe webhook → fulfilment:
-     · seal the order data to the organiser's X25519 key, upload, keep the ref
+     · seal the order data to the organiser's X-Wing key (#642), upload, keep the ref
      · generate one ephemeral BURNER keypair per ticket
      · batchClaimFor(eventId, burnerAddresses, orderRef) as the sponsor
      · each burner signs its own ticket message, then the key is DISCARDED

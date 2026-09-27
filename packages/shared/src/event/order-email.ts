@@ -17,12 +17,16 @@ export const ORDER_EMAIL_FIELD_ID = "__email";
  * Is the order form actually on screen? Its answers are sealed to the
  * organiser's encryption key, so without that key neither surface renders the
  * fields - and a field that is not rendered cannot be where the email comes from.
+ *
+ * `verifiedKey` is the key BYTES a surface fetched and verified against the
+ * event's `encryptionKeyRef` (`fetchOrderKey`, #642) — never a string lifted from
+ * the feed — so the form can only show when there is a real key to seal to.
  */
 export function orderFormShown(
   fields: readonly OrderField[] | undefined,
-  encryptionKey: string | undefined,
+  verifiedKey: Uint8Array | undefined,
 ): boolean {
-  return !!fields?.length && !!encryptionKey;
+  return !!fields?.length && !!verifiedKey;
 }
 
 /**
@@ -32,9 +36,9 @@ export function orderFormShown(
  */
 export function orderFormCollectsEmail(
   fields: readonly OrderField[] | undefined,
-  encryptionKey: string | undefined,
+  verifiedKey: Uint8Array | undefined,
 ): boolean {
-  return orderFormShown(fields, encryptionKey) && fields!.some((f) => f.id === ORDER_EMAIL_FIELD_ID);
+  return orderFormShown(fields, verifiedKey) && fields!.some((f) => f.id === ORDER_EMAIL_FIELD_ID);
 }
 
 /**
@@ -45,10 +49,10 @@ export function orderFormCollectsEmail(
 export function resolveBuyerEmail(
   formData: Record<string, string>,
   fields: readonly OrderField[] | undefined,
-  encryptionKey: string | undefined,
+  verifiedKey: Uint8Array | undefined,
   inlineEmail: string,
 ): string | null {
-  const raw = orderFormCollectsEmail(fields, encryptionKey)
+  const raw = orderFormCollectsEmail(fields, verifiedKey)
     ? formData[ORDER_EMAIL_FIELD_ID] ?? ""
     : inlineEmail;
   const email = raw.trim();

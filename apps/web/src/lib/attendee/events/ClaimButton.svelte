@@ -1,6 +1,9 @@
 <script lang="ts">
-  import type { OrderField, SealedBox, PaymentConfig } from "@woco/shared";
-  import { sealJson, CURRENCY_SYMBOLS, calculateBuyerFees } from "@woco/shared";
+  import type { OrderField, PaymentConfig } from "@woco/shared";
+  import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
+  import { CURRENCY_SYMBOLS, calculateBuyerFees } from "@woco/shared";
+  import { loadOrderKey } from "./claim/order-key.js";
+  import type { PreparedOrder } from "../../api/stripe.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { getClaimStatus } from "../../api/events.js";
@@ -26,8 +29,9 @@
   interface Props {
     eventId: string;
     seriesId: string;
-    /** Organizer's X25519 public key — present when event collects info */
-    encryptionKey?: string;
+    /** Content address of the organiser's X-Wing order key (#642). The key is
+     *  fetched and VERIFIED here; nothing is sealed to an unverified key. */
+    encryptionKeyRef?: string;
     /** Order form fields — present when event collects info */
     orderFields?: OrderField[];
     /** Override API base URL — used when event is hosted on an organiser's own server */
@@ -52,7 +56,38 @@
     oncancelled?: () => void;
   }
 
-  let { eventId, seriesId, encryptionKey, orderFields, apiUrl, payment, quantity = 1, eager = false, organiserName, oncancelled }: Props = $props();
+  let { eventId, seriesId, encryptionKeyRef, orderFields, apiUrl, payment, quantity = 1, eager = false, organiserName, oncancelled }: Props = $props();
+
+  /**
+   * The organiser's order key, verified against `encryptionKeyRef`. The form only
+   * renders with it in hand (`orderFormShown` takes the bytes, not the ref), and
+   * a checkout WITH an order form is refused until it is — taking an order whose
+   * answers could not be sealed would drop what the organiser marked required.
+   */
+  let orderKey = $state<Uint8Array | undefined>(undefined);
+  let orderKeyState = $state<"none" | "loading" | "ready" | "failed">("none");
+
+  function loadKey(): void {
+    const ref = encryptionKeyRef;
+    if (!ref) {
+      orderKeyState = "none";
+      return;
+    }
+    orderKeyState = "loading";
+    loadOrderKey(ref).then(
+      (key) => {
+        if (encryptionKeyRef !== ref) return;
+        orderKey = key;
+        orderKeyState = "ready";
+      },
+      (err) => {
+        if (encryptionKeyRef !== ref) return;
+        console.warn("[ClaimButton] order key unavailable:", err);
+        orderKeyState = "failed";
+      },
+    );
+  }
+  $effect(loadKey);
 
   /**
    * Link the purchase to the signed-in account only when that costs no prompt:
@@ -108,8 +143,8 @@
   /** Whether the SHOWN order form collects the ticket address - the shared
    *  rule (#597), so the inline box is hidden only when there is a field on
    *  screen to type into. */
-  const hasEmailField = $derived(orderFormCollectsEmail(orderFields, encryptionKey));
-  const hasOrderForm = $derived(orderFormShown(orderFields, encryptionKey));
+  const hasEmailField = $derived(orderFormCollectsEmail(orderFields, orderKey));
+  const hasOrderForm = $derived(orderFormShown(orderFields, orderKey));
 
   /** True while we refresh availability when the form opens. */
   let prefetching = $state(false);
@@ -129,7 +164,7 @@
   });
 
   const getEmailFromForm = (): string | null =>
-    resolveBuyerEmail(formData, orderFields, encryptionKey, "");
+    resolveBuyerEmail(formData, orderFields, orderKey, "");
 
   function applyStatus(s: SeriesClaimStatus) {
     status = s;
@@ -206,9 +241,10 @@
 
   // svelte-ignore state_referenced_locally
   const orderPrefetch = useOrderPrefetch({
+    eventId,
     seriesId,
-    encryptionKey,
-    getShouldPrefetch: () => showOrderForm && !!encryptionKey && formValid(),
+    getKey: () => orderKey,
+    getShouldPrefetch: () => showOrderForm && !!orderKey && formValid(),
     getSnapshot: () => buildOrderSnapshot(),
     getFormData: () => formData,
     getEmail: () => getEmailFromForm() ?? stripeEmail.trim(),
@@ -251,6 +287,15 @@
 
   async function handleStripeCheckout() {
     intentToCheckout = true;
+    // An order form the organiser asked for, whose key we could not verify: no
+    // form can render and nothing could be sealed, so do not take the order (#642).
+    if (orderFields?.length && encryptionKeyRef && !orderKey) {
+      error = orderKeyState === "loading"
+        ? "Loading the order form securely - try again in a moment."
+        : "We couldn't load this event's order form securely. Check your connection and try again.";
+      if (orderKeyState === "failed") loadKey();
+      return;
+    }
     // If there's an order form and it hasn't been shown yet, show it first
     if (hasOrderForm && !showOrderForm) {
       showOrderForm = true;
@@ -280,16 +325,16 @@
       // the raw encryptedOrder to /create-checkout, which uploads it in
       // parallel with the Stripe session creation so latency is hidden behind
       // the Stripe API call we'd be doing anyway.
-      let preparedOrderRef: string | undefined;
-      let inlineEncryptedOrder: SealedBox | undefined;
-      if (encryptionKey) {
+      let preparedOrder: PreparedOrder | undefined;
+      let inlineEncryptedOrder: SealedBoxV2 | undefined;
+      if (orderKey) {
         // Only reuse the pre-uploaded ref if it still matches the live form
         // snapshot. Otherwise the user kept typing after the upload finished
-        // and the ref now points at a stale SealedBox — fall back to inline
+        // and the ref now points at a stale box — fall back to inline
         // upload, which seals the current formData.
         const liveSnapshot = buildOrderSnapshot(linkAccount);
         if (orderPrefetch.ref && orderPrefetch.refSnapshot === liveSnapshot) {
-          preparedOrderRef = orderPrefetch.ref;
+          preparedOrder = orderPrefetch.ref;
         } else if (orderPrefetch.inflight) {
           // A pre-upload is in flight — await it instead of starting a duplicate
           // inline upload. Bound the wait so a stuck Swarm upload can't hang
@@ -302,20 +347,25 @@
               ),
             ]);
             if (result.ref && result.snapshot === liveSnapshot) {
-              preparedOrderRef = result.ref;
+              preparedOrder = result.ref;
             }
           } catch {
             // Awaiting the pre-upload threw — drop through to inline upload below.
           }
         }
-        if (!preparedOrderRef) {
+        if (!preparedOrder) {
           try {
-            inlineEncryptedOrder = await sealJson(encryptionKey, {
-              fields: formData,
-              seriesId,
-              ...(address ? { claimerAddress: address } : {}),
-              ...(email ? { claimerEmail: email } : {}),
-            });
+            const { sealBoxJson, orderSealContext } = await import("@woco/shared/crypto/sealed-box");
+            inlineEncryptedOrder = await sealBoxJson(
+              orderKey,
+              {
+                fields: formData,
+                seriesId,
+                ...(address ? { claimerAddress: address } : {}),
+                ...(email ? { claimerEmail: email } : {}),
+              },
+              orderSealContext(eventId, seriesId),
+            );
           } catch (err) {
             console.warn("[ClaimButton] seal failed, /create-checkout will run without order ref:", err);
           }
@@ -337,8 +387,8 @@
         seriesId,
         claimerEmail: email,
         quantity: quantity > 1 ? quantity : undefined,
-        orderRef: preparedOrderRef,
-        encryptedOrder: !preparedOrderRef ? inlineEncryptedOrder : undefined,
+        preparedOrder,
+        encryptedOrder: !preparedOrder ? inlineEncryptedOrder : undefined,
         reservationId: reservationHook.reservation?.reservationId,
         // The form is still displayed at this point (handleStripeCheckout returns
         // early to show it and is re-entered), so the opt-out WAS offered and an

@@ -166,9 +166,8 @@ nothing on a launch path derives it, and no auth path knows about it: §3a.)
 | Issuing | secp256k1 | `HKDF(sha256, seed, salt="", info="woco/issuing/v1/"+gen, 48)` → scalar | `packages/shared/src/crypto/issuing.ts` |
 | Encryption, post-quantum (#642) | X-Wing (ML-KEM-768 + X25519) | `X-Wing.keygen(HKDF(sha256, seed, salt="", info="woco/encryption/xwing/v1", 32))` | `packages/shared/src/crypto/xwing.ts` |
 
-The X-Wing key replaces the X25519 one rail by rail (escrow, contact lists, orders); until a
-rail switches it still seals with X25519, and the X25519 key stays for the quarantined credits
-rail after that. Sealing is HPKE (RFC 9180) over the X-Wing KEM, one box format
+The X-Wing key replaced the X25519 one on every launch rail (recovery escrow, contact lists,
+orders); the X25519 key survives only for the quarantined credits rail. Sealing is HPKE (RFC 9180) over the X-Wing KEM, one box format
 `{ v: 2, enc, ct }` bound to its use and its subject (`packages/shared/src/crypto/sealed-box.ts`).
 Both modules are subpath imports, loaded only where a box is sealed or opened.
 
@@ -350,36 +349,39 @@ When an attendee buys, their order data is encrypted so that **only the organise
 and it stays encrypted on public storage. This runs on every claim, even for an event with no
 order-form fields at all.
 
-The construction is textbook ECIES (`packages/shared/src/crypto/ecies.ts`):
+Since #642 the box is the **v2 sealed box** (`packages/shared/src/crypto/sealed-box.ts`): HPKE
+(RFC 9180) base mode with the X-Wing hybrid KEM (ML-KEM-768 + X25519), HKDF-SHA256 and
+AES-256-GCM. A box copied off public storage today stays closed to a future quantum computer, and
+it holds while either half of the hybrid does.
 
 ```
-seal:  fresh ephemeral X25519 keypair
-       shared = X25519(ephPriv, organiserPub)
-       aesKey = HKDF-SHA256(shared, salt = ephPub, info = "woco/order/v1", 32)
-       ct     = AES-256-GCM(aesKey, iv = 12 random bytes, plaintext)
-       →  { ephemeralPublicKey, iv, ciphertext }
-
-open:  shared = X25519(organiserPriv, ephPub)   → same HKDF → same key → decrypt
+box  = { v: 2, enc, ct }                 // suite implied by v; any other v is refused
+info = "woco/order/v2"
+aad  = "woco/order/v2:{eventId}:{seriesId}"   // a box lifted into another event/series fails
 ```
 
-Properties, and where each comes from: forward secrecy per message (a fresh ephemeral key every
-time); authenticated encryption (the GCM tag makes tampering a decryption failure); domain
-separation (the ephemeral public key as HKDF salt); and only the recipient's private key opens
-it. AES-GCM runs on Web Crypto, so it is hardware-accelerated and constant-time.
+The organiser's X-Wing key is an HKDF sibling of their seed (`woco/encryption/xwing/v1`), so they
+derive it on any device with no prompt and the platform never holds it. Its 1216-byte **public**
+key is too big to sit in every event feed, so the server publishes it at create as its own chunk
+(on the WoCo batch too when the event lives on Etherna, and whitelisted before the create
+succeeds) and the feed carries only `encryptionKeyRef`, its content address
+(`packages/shared/src/event/order-key.ts`). A buyer's browser fetches the chunk from the WoCo
+gateway and refuses it unless it hashes to the ref; the order form renders only with a verified
+key, and a checkout with an order form is refused rather than taken unsealed. The organiser's
+client refuses to sign a server-assembled feed naming any other ref. The sealed box goes to Swarm
+and its reference goes **on chain** as the ticket's `orderRef`; the dashboard opens each order
+with the slot's own series. Checkout takes only references the server stored itself — as
+canonical bytes, so a copy of a box lands on its original's reference, with a signed token for a
+pre-uploaded one — and one completed sale per reference, so no ticket can carry another buyer's
+sealed details (#661, `apps/server/src/lib/stripe/order-ref.ts`).
 
-The organiser's X25519 **public** key is published in the event feed as `encryptionKey`. The
-matching private key is the HKDF sibling of their object-data seed — so the organiser derives it
-on any device with no extra prompt, and the platform never holds it. The sealed blob is uploaded
-to Swarm and its 32-byte reference goes **on chain** as the ticket's `orderRef`.
+Contact lists use the same box with `woco/marketing-list/v2:{owner}`, gzipped first (a size
+signal only exploitable with chosen content AND repeated observation; a list too large to store
+is the certain failure). The recovery escrow wraps its key with the same KEM through HPKE.
 
-There is a compressed variant, `sealJsonCompressed`, for payloads that scale with a user's data
-(a marketing contact list, where hex encoding doubles the size against a server-side cap). It
-gzips before sealing. That leaks a size signal about the plaintext, which is only exploitable by
-an adversary who can both inject chosen content *and* repeatedly observe the sealed size
-(CRIME/BREACH) — not reachable for a list an organiser writes at their own pace, and the
-alternative is a list too large to store, which is a certain failure rather than a theoretical
-one. `openJsonAuto` reads either form by sniffing the gzip magic number, because the framing has
-to be decided before the payload can be parsed.
+The retired X25519-only ECIES survives only inside the credits rail
+(`apps/web/src/lib/credits/legacy-seal.ts`, out of launch scope), and a test fails if anything
+else uses it.
 
 ---
 

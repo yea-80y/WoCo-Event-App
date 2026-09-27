@@ -17,6 +17,8 @@ import { lookupOnChainEventId, saleContractFor } from "../event/onchain-registry
 import { recordHeld, markVoid } from "./payout-ledger.js";
 import { getOrganiserByStripeAccount } from "./accounts.js";
 import { uploadToBytes } from "../swarm/bytes.js";
+import { fetchOrderKey } from "@woco/shared";
+import { BEE_URL } from "../../config/swarm.js";
 import { batchClaimForOnChain, generateBurner, ON_CHAIN_BATCH_MAX } from "../chain/sponsor-wallet.js";
 import { bindTicket } from "../gate/store.js";
 import { consume as consumeReservation } from "../event/reservation-store.js";
@@ -26,7 +28,7 @@ import { getSiteTheme, resolveSiteEventSigner } from "../site/service.js";
 import { sendTicketEmail } from "../../routes/tickets.js";
 import { recordFailure } from "../email/failure-ledger.js";
 import { recordPendingRefund } from "./pending-refunds.js";
-import { recordAutoRefund, recordSaleSlots } from "./ticket-sales.js";
+import { recordAutoRefund, recordSaleSlots, orderRefInOtherSale } from "./ticket-sales.js";
 import { addRefundRow, cancellationGate } from "../event/cancellations.js";
 import { kickCancellationRefunds } from "./cancellation-refunds.js";
 import { liveCancellationRefundDeps } from "./cancellation-refunds-live.js";
@@ -45,11 +47,13 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   markPayoutVoid: markVoid,
   getOrganiserByStripeAccount,
   uploadToBytes: (data) => uploadToBytes(data),
+  fetchOrderKey: (ref) => fetchOrderKey(ref, BEE_URL),
+  orderRefInOtherSale,
   generateBurner,
   batchClaimForOnChain,
   onChainBatchMax: ON_CHAIN_BATCH_MAX,
-  recordSaleSlots: (sessionId, onChainEventId, contract, slots) => {
-    recordSaleSlots(sessionId, onChainEventId, contract, slots);
+  recordSaleSlots: (sessionId, onChainEventId, contract, slots, orderRef) => {
+    recordSaleSlots(sessionId, onChainEventId, contract, slots, orderRef);
   },
   recordAutoRefund,
   bindTicket,
