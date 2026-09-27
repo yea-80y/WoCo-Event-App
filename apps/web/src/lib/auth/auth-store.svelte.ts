@@ -300,6 +300,25 @@ async function _getContentFeedSignerInner(
  * passkey a biometric, and CSW cannot derive at all — so those three keep their
  * lazy establish at the point where a prompt is something the user asked for.
  */
+/**
+ * Establish a passkey account's seed at LOGIN, while the PRF output that login just
+ * produced is still in memory (#642). Nothing later then needs a biometric for it,
+ * and passive self-reads resolve at once instead of waiting for a first write.
+ *
+ * No gate of its own on purpose: `_ensureIdentitySeed`'s recovery-binding refusal
+ * is the one rule for "never derive a seed for a rotated credential", and a second
+ * copy here could only drift from it. Best-effort — a failure leaves the lazy path
+ * exactly as it was.
+ */
+async function _establishPasskeySeedEagerly(): Promise<void> {
+  if (_kind !== "passkey" || !_passkeyPrfSecret) return;
+  try {
+    await _ensureIdentitySeed({ silent: true });
+  } catch (e) {
+    console.warn("[auth] eager passkey seed establishment failed (non-fatal):", e);
+  }
+}
+
 async function _establishFeedSignerEagerly(): Promise<void> {
   if (_kind !== "web3auth") return;
   try {
@@ -827,12 +846,52 @@ async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
       return;
     }
 
+    // Captured before the await: the back-fill runs in the background, and the
+    // user may have signed out or switched by the time it answers.
+    const eoa = _seedAddress;
+    const parent = _parent;
     const { backfillPortabilityEnvelope } = await import("./recovery-portability.js");
     const outcome = await backfillPortabilityEnvelope(gathered.args);
-    console.log(`[auth] portability envelope back-fill: ${outcome.action} (${outcome.reason})`);
+    if (outcome.action === "refused") {
+      console.error(`[auth] portability envelope back-fill REFUSED: ${outcome.reason}`);
+      if (eoa && parent) await _healRefusedBackfill(eoa, parent);
+    } else {
+      console.log(`[auth] portability envelope back-fill: ${outcome.action} (${outcome.reason})`);
+    }
   } catch (e) {
     console.warn("[auth] portability envelope back-fill failed (non-fatal):", e);
   }
+}
+
+/**
+ * A refused back-fill means this device's seed disagrees with the account's own
+ * envelope. The envelope wins: it was written with the escrow-restored seed at
+ * recovery and the back-fill never overwrites it, while the device's copy can only
+ * have been derived on the wrong Kernel (#245). Logging alone would leave the
+ * device signing every write with the wrong seed, because with a binding AND a
+ * stored seed the next login skips the envelope entirely.
+ *
+ * So, as the #245 re-probe heal does: drop the seed stored under this credential,
+ * and sign out with an explanation if the user is still in that account. The next
+ * login finds binding + no seed, reads the envelope, checks its Kernel's owner on
+ * chain, and restores the right seed.
+ */
+async function _healRefusedBackfill(eoa: string, parent: string): Promise<void> {
+  await clearIdentitySeed(eoa);
+  const stillIn =
+    _kind === "passkey" &&
+    _seedAddress?.toLowerCase() === eoa.toLowerCase() &&
+    _parent?.toLowerCase() === parent.toLowerCase();
+  if (!stillIn) return;
+  try {
+    globalThis.sessionStorage?.setItem(
+      AUTH_NOTICE_KEY,
+      "This device had an out-of-date copy of your account keys. Sign in again to restore them.",
+    );
+  } catch {
+    /* the notice is an explanation, never a step */
+  }
+  await logout({ force: true });
 }
 
 /** The one accessor bundle both backfill preambles read through (#260). */
@@ -1321,6 +1380,7 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, prfSecret: 
               return readPortabilityEnvelope({ prfSecret: key });
             },
             putRecoveryBinding: _putRecoveryBinding,
+            clearIdentitySeed,
             writeOrphanTombstone,
             clearCachedKernelAddress,
             isStillSignedInAs: stillSignedInAs,
@@ -1742,6 +1802,7 @@ async function loginPasskeyResult(
         _seedAddress = account.address;
         _kernel = null;
         await _restoreCachedAuth();
+        await _establishPasskeySeedEagerly();
         _scheduleKernelPrebuild();
         // The cache entry was seeded from an ABSENCE, and #245 proved an absence
         // can be true at the time and false forever after. Throttled, chain-gated
@@ -1839,6 +1900,8 @@ async function loginPasskeyResult(
       | { preserved: `0x${string}`; identitySeed: string }
       | null = null;
     let envelopeAbsent = false;
+    // The read could not say either way, so this login may be on the wrong Kernel.
+    let envelopeUnknown = false;
     const identitySeedPresent = !!(await restoreIdentitySeed(account.address));
     if (!override || !identitySeedPresent) {
       const check = await _verifyPortabilityEnvelope(account.prfSecret, account.address);
@@ -1859,6 +1922,8 @@ async function loginPasskeyResult(
         }
         portabilityRestore = check;
         if (!override) override = check.preserved;
+      } else {
+        envelopeUnknown = true;
       }
     }
 
@@ -1902,6 +1967,11 @@ async function loginPasskeyResult(
     } else {
       await _restoreCachedAuth();
     }
+
+    // Not after an UNKNOWN envelope read: this login may be sitting on a fresh
+    // counterfactual Kernel for an account that was really recovered, and a seed
+    // derived now would belong to the wrong account. That case stays lazy.
+    if (!envelopeUnknown) await _establishPasskeySeedEagerly();
 
     // Seed the returning-device fast path: only a never-recovered login may
     // cache (no binding, probe DEFINITIVELY empty — "unavailable" never lands
@@ -2045,24 +2115,30 @@ async function ensureIdentitySeed(): Promise<boolean> {
 }
 
 /**
- * `silent` establishes the seed with NO confirm dialog, and is only ever true on
- * the web3auth eager path: there the signer is a raw secp256k1 key already in
- * memory, so the "signature" is an internal key-stretch (ethers → RFC-6979) with
- * no decision for the user to take, and prompting on every page load would be
- * friction for nothing. It never widens WHICH kinds can establish silently — a
- * kind whose signer is a wallet or a biometric still prompts, because for those
- * the signature genuinely is the user's decision.
+ * `silent` establishes the seed with NO dialog and NO busy latch, and is only
+ * ever true on the two eager paths. Web3auth: the signer is a raw secp256k1 key
+ * already in memory, so the "signature" is an internal key-stretch (ethers →
+ * RFC-6979) with no decision for the user to take. Passkey (#642): the seed is an
+ * HKDF of the PRF output, and a silent call proceeds only when the login has just
+ * put that output in memory — so the biometric already happened and was the
+ * consent. It never widens WHICH kinds can establish silently: a wallet still
+ * prompts, and a passkey without its PRF output in memory returns false rather
+ * than start a biometric nobody asked for.
  */
 async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boolean> {
   if (_identitySeedPresent) return true;
   if (!isConnected || !_parent) return false;
+  // A silent establish must never START a ceremony. For passkey it is silent only
+  // because the PRF output is already in memory; without it this would be a
+  // biometric the user did not ask for.
+  if (opts.silent && _kind === "passkey" && !_passkeyPrfSecret) return false;
   if (_seedInFlight) return _seedInFlight;
 
-  // The SILENT establish (web3auth eager path only — see _ensureIdentitySeed's
-  // doc) runs INSIDE login/restore flows that own `_busy` themselves; toggling
-  // it here re-enabled the login buttons mid-flow. Only a PROMPTING establish is
-  // a busy state of its own.
-  const prompting = !opts.silent; // silent ⇔ the web3auth eager establish
+  // The SILENT establish (the web3auth and passkey eager paths — see
+  // _ensureIdentitySeed's doc) runs INSIDE login/restore flows that own `_busy`
+  // themselves; toggling it here re-enabled the login buttons mid-flow. Only a
+  // PROMPTING establish is a busy state of its own.
+  const prompting = !opts.silent; // silent ⇔ the web3auth or passkey eager establish
   if (prompting) _busy = true;
   _seedInFlight = (async () => {
     try {

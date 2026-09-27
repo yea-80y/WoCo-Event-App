@@ -101,6 +101,20 @@ test("a deferred backfill is a FAILURE — the envelope is not verifiably there"
   assert.equal((r as { retryable: boolean }).retryable, true);
 });
 
+test("a REFUSED backfill is a non-retryable failure — the envelope disagrees with this device", async () => {
+  let calls = 0;
+  const { d } = deps({
+    backfill: async () => {
+      calls++;
+      return { action: "refused", reason: "envelope names a different identity seed than this device holds" };
+    },
+  });
+  const r = await finalizeRecovery(d, { attempts: 3, _sleep: async () => {} });
+  assert.equal(r.status, "failed");
+  assert.equal((r as { retryable: boolean }).retryable, false, "re-reading the same bytes refuses again");
+  assert.equal(calls, 1, "never retried");
+});
+
 test("a DETERMINISTIC failure is reported as NOT retryable", async () => {
   // An absent seed on a recovered device re-reads identically on every call — no
   // amount of retrying produces one. Calling it retryable is an infinite loop with

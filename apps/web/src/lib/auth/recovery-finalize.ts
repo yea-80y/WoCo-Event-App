@@ -279,6 +279,11 @@ async function finalizeOnce(
     if (outcome.action === "deferred") {
       return { status: "failed", reason: outcome.reason, retryable: true, stage: "envelope" };
     }
+    // A found envelope that disagrees with this device's seed or Kernel. Retrying
+    // reads the same bytes and refuses again, so it is not retryable.
+    if (outcome.action === "refused") {
+      return { status: "failed", reason: outcome.reason, retryable: false, stage: "envelope" };
+    }
     return { status: "portable", action: outcome.action };
   } catch (e) {
     return {
