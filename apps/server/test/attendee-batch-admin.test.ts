@@ -63,6 +63,27 @@ test("registration records the expiry from chain; refresh follows a top-up, and 
   assert.match(ledger.attendeeStoreRefusal(STAMPER) ?? "", /expires/);
 });
 
+test("refresh after a dilution raises the depth, so orders use the new slots; it never lowers it", async () => {
+  const id = "08".repeat(32);
+  await admin.registerAttendeeBatch(id, true, lookup({ ...good, depth: 17 }));
+  ledger.setActiveBatch(id);
+  const inBucket = (n: number) => {
+    const a = new Uint8Array(32);
+    a[0] = 0x12;
+    a[1] = 0x34;
+    a[31] = n;
+    return a;
+  };
+  ledger.allocateOrder(inBucket(1), [inBucket(1)], { kind: "checkout" });
+  ledger.allocateOrder(inBucket(2), [inBucket(2)], { kind: "checkout" });
+  assert.throws(() => ledger.allocateOrder(inBucket(3), [inBucket(3)], { kind: "checkout" }), ledger.AttendeeBucketFullError);
+  await admin.refreshAttendeeBatch(undefined, lookup({ ...good, depth: 18 }));
+  assert.equal(ledger.getBatchRecord(id)?.depth, 18);
+  assert.equal(ledger.allocateOrder(inBucket(3), [inBucket(3)], { kind: "checkout" }).record.chunks[0].slot, 2);
+  await admin.refreshAttendeeBatch(undefined, lookup({ ...good, depth: 17 }));
+  assert.equal(ledger.getBatchRecord(id)?.depth, 18, "a lower chain depth is ignored");
+});
+
 test("health is red while sales are refused and green on a live, roomy batch", async () => {
   const { attendeeBatchHealth } = await import("../src/lib/attendee-batch/health.js");
   const id = "06".repeat(32);
