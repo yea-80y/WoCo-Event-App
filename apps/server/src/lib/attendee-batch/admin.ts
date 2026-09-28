@@ -62,10 +62,11 @@ function expiryFromTtl(ttlSeconds: number, nowMs: number = Date.now()): string {
 /**
  * Re-read the active (or named) batch from chain: its TTL (expiry) and depth.
  * After a top-up this is what lets sales resume; after a dilution it is what
- * lets the ledger use the new slots (dilution halves the TTL, so top up too,
- * then refresh). Hourly it follows the price oracle, which moves the expiry of
- * every batch. A batch no longer on chain, or owned by someone else, records an
- * expiry of now: sales stop.
+ * lets the ledger use the new slots. Order matters: TOP UP FIRST, then dilute
+ * (`increaseDepth` divides the remaining balance across the new slots and
+ * reverts below the contract minimum), then refresh. Hourly it follows the
+ * price oracle, which moves the expiry of every batch. A batch no longer on
+ * chain, or owned by someone else, records an expiry of now: sales stop.
  */
 export async function refreshAttendeeBatch(
   rawBatchId?: string,
