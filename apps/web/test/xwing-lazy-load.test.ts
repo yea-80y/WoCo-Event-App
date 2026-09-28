@@ -2,7 +2,8 @@
  * The post-quantum code stays OUT of the main bundle (#642).
  *
  * X-Wing (ML-KEM-768) and HPKE are ~20 KB gzipped together, needed only where a
- * box is sealed or opened. A STATIC import of them from anything the app loads
+ * box is sealed or opened (or, for the attendee-data key, where its vault is opened:
+ * `attendee-data-key` imports the lattice code to check the key). A STATIC import of them from anything the app loads
  * eagerly would ship that to every visitor. So every static importer is listed
  * here, and each one is itself only ever reached through a dynamic `import()`.
  * Adding a new one fails this test on purpose: load it lazily instead, or add it
@@ -30,7 +31,7 @@ function files(dir: string, out: string[] = []): string[] {
 }
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
-const STATIC = /^\s*import\s+(?!type\b)[^;]*from\s+["']@woco\/shared\/crypto\/(xwing|xwing-hpke|sealed-box)["']/m;
+const STATIC = /^\s*import\s+(?!type\b)[^;]*from\s+["']@woco\/shared\/crypto\/(xwing|xwing-hpke|sealed-box|attendee-data-key)["']/m;
 
 test("only allowlisted modules statically import the X-Wing / sealed-box code", () => {
   const offenders = files(SRC)

@@ -19,6 +19,13 @@
  *                                                   exactly as a wallet guardian's do from
  *                                                   keccak256(its signature)
  *
+ * And ANY passkey enrolled in an account's attendee-data vault (a login passkey, a
+ * backup, or one added to an email or wallet account only for this) has:
+ *
+ *   HKDF(prf, "", PASSKEY_ATTENDEE_DATA_KEK_INFO, 32) → the key that unwraps the
+ *                                                   attendee-data key from the vault
+ *                                                   (`attendee-data-key.ts`, #746)
+ *
  * WHY THE SEED IS NOT A SIGNATURE FOR PASSKEYS. Wallet and email accounts establish
  * the seed as keccak256 of a deterministic `DeriveAccountKeys` signature, because
  * there is no symmetric secret to start from. A passkey has one. Rooted on the
@@ -61,6 +68,11 @@ export const PORTABILITY_HPKE_INFO = "woco/recovery/portability/hpke/v2";
 /** HKDF info for a backup passkey's guardian escrow master (#642). FROZEN: change it
  *  and every escrow sealed to a passkey guardian stops opening. */
 export const PASSKEY_GUARDIAN_ESCROW_INFO = "woco/recovery/guardian-passkey/v1";
+
+/** HKDF info for a passkey's attendee-data vault KEK (#746). FROZEN: change it and no
+ *  passkey opens the vault it was enrolled in. The same label for every role a
+ *  passkey can have: the vault entry, not the label, says which credential it is. */
+export const PASSKEY_ATTENDEE_DATA_KEK_INFO = "woco/attendee-data/kek/passkey-prf/v1";
 
 /** The only PRF output length any derivation accepts. */
 export const PASSKEY_PRF_OUTPUT_BYTES = 32;
@@ -128,6 +140,21 @@ export function passkeyGuardianEscrowMaster(prfSecret: string | Uint8Array): Uin
     passkeyPrfBytes(prfSecret),
     new Uint8Array(0),
     utf8ToBytes(PASSKEY_GUARDIAN_ESCROW_INFO),
+    32,
+  );
+}
+
+/**
+ * The key a passkey unwraps the account's attendee-data key with (#746). Symmetric
+ * all the way down: the vault it opens can sit on public storage without anything
+ * in it resting on a curve.
+ */
+export function passkeyAttendeeDataKek(prfSecret: string | Uint8Array): Uint8Array {
+  return hkdf(
+    sha256,
+    passkeyPrfBytes(prfSecret),
+    new Uint8Array(0),
+    utf8ToBytes(PASSKEY_ATTENDEE_DATA_KEK_INFO),
     32,
   );
 }

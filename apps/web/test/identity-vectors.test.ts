@@ -59,6 +59,8 @@ import {
   PORTABILITY_SOC_OWNER_INFO,
   PORTABILITY_HPKE_INFO,
   PASSKEY_GUARDIAN_ESCROW_INFO,
+  PASSKEY_ATTENDEE_DATA_KEK_INFO,
+  passkeyAttendeeDataKek,
   passkeyGuardianEscrowMaster,
   passkeyIdentitySeed,
   portabilitySocOwnerKey,
@@ -321,6 +323,9 @@ const PASSKEY_PINNED = {
   guardianEscrowMaster: "323038c8e317153f7314b73673c5890e4ba89261daa20c6568efd4ccaa8c4968",
   guardianHpkePubSha256: "a4b93e3e6b61d5ae137c1eea816f99d1bec30dcc4c4f5ecd4fb5e235d34035a9",
   guardianSocOwner: "0x6582108e536267308f5a08b23e14b59c03b46375",
+  /** ANY passkey enrolled in an attendee-data vault (#746, 2026-09-28): the KEK that
+   *  unwraps the attendee-data key. Cross-checked against Python HKDF. */
+  attendeeDataKek: "b0960bf70e2c589e462a8ca7ef9f6dcded4faf07c4ec3ae4cc6cef5fa89138f6",
 } as const;
 
 test("FROZEN: the PRF salt input and its digest", () => {
@@ -336,6 +341,7 @@ test("FROZEN: the PRF-rooted HKDF labels and the at-rest seed AAD, byte for byte
   assert.equal(PORTABILITY_SOC_OWNER_INFO, "woco/recovery/portability/soc-owner/v2");
   assert.equal(PORTABILITY_HPKE_INFO, "woco/recovery/portability/hpke/v2");
   assert.equal(PASSKEY_GUARDIAN_ESCROW_INFO, "woco/recovery/guardian-passkey/v1");
+  assert.equal(PASSKEY_ATTENDEE_DATA_KEK_INFO, "woco/attendee-data/kek/passkey-prf/v1");
   assert.equal(AAD.IDENTITY_SEED("0xAbC"), "woco/device/identity-seed/v2:0xabc");
 });
 
@@ -376,6 +382,10 @@ test("backup passkey: PRF → guardian escrow master → escrow key + SOC owner 
   assert.equal((await guardianKeysFromMaster(master)).socSigner.address, gk.socSigner.address);
 });
 
+test("any vault passkey: PRF → attendee-data KEK pin (#746)", () => {
+  assert.equal(Buffer.from(passkeyAttendeeDataKek(PRF_OUTPUT)).toString("hex"), PASSKEY_PINNED.attendeeDataKek);
+});
+
 test("everything hanging off one PRF output is a different key", () => {
   const values = new Set([
     PASSKEY_PINNED.seed.slice(2),
@@ -388,8 +398,9 @@ test("everything hanging off one PRF output is a different key", () => {
     PASSKEY_PINNED.portabilityHpkePubSha256,
     PASSKEY_PINNED.guardianEscrowMaster,
     PASSKEY_PINNED.guardianSocOwner,
+    PASSKEY_PINNED.attendeeDataKek,
   ]);
-  assert.equal(values.size, 10, "two derivations produced the same value");
+  assert.equal(values.size, 11, "two derivations produced the same value");
 });
 
 test("a PRF output that is not exactly 32 bytes derives nothing", () => {
@@ -398,6 +409,7 @@ test("a PRF output that is not exactly 32 bytes derives nothing", () => {
     assert.throws(() => portabilitySocOwnerKey(bad), /32 bytes/);
     assert.throws(() => portabilityHpkeSeed(bad), /32 bytes/);
     assert.throws(() => passkeyGuardianEscrowMaster(bad), /32 bytes/);
+    assert.throws(() => passkeyAttendeeDataKek(bad), /32 bytes/);
   }
 });
 

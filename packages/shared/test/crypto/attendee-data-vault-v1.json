@@ -1,0 +1,21 @@
+{
+  "v": 1,
+  "parent": "0xabababababababababababababababababababab",
+  "gen": 0,
+  "ref": "0bdab543089905609f7c75fbc5659325d5b82291ed733a576ed4d04dc417d86d",
+  "unlockers": [
+    {
+      "kind": "passkey",
+      "id": "zc3NzQ",
+      "iv": "18bc47999bc77115e080e3c3",
+      "ct": "97d8b6d03f2dd3cb0fc0f86c4ebc12fa62a6ccf14e83d88ae3dead537e994ab55dff5b331f1810c347ad9651ae10d08a",
+      "addedAt": 1759017600000
+    },
+    {
+      "kind": "code",
+      "iv": "2bd9465b5bdd68a233be7d63",
+      "ct": "425d09b1d9d5cbec9f33c853d851a67ea2fed26cb8d647f4b90ee277dacf4f90efed4898ed4730493aaef4f27577d023",
+      "addedAt": 1759017600000
+    }
+  ]
+}
