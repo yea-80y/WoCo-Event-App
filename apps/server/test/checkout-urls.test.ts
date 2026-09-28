@@ -92,6 +92,50 @@ test("a platform checkout from a gateway bundle succeeds onto the canonical app"
   assert.equal(r.successUrl, `https://woco.eth.limo/#/event/${EV}/purchased?stripe=success&session_id=${SID}`);
 });
 
+test("a single-event page on a sub-ENS name succeeds onto its own page, not the main app", () => {
+  const r = checkoutRedirectUrls({ eventId: EV, returnUrl: "https://event.woco.eth.limo/", frontendUrl: unused });
+  assert.equal(r.successUrl, `https://event.woco.eth.limo/#/event/${EV}/purchased?stripe=success&session_id=${SID}`);
+});
+
+test("the returnUrl base keeps the path, without its trailing slash, query or hash", () => {
+  const r = checkoutRedirectUrls({ eventId: EV, returnUrl: "https://tickets.venue.example/p/?x=1#/e", frontendUrl: unused });
+  assert.equal(r.successUrl, `https://tickets.venue.example/p/#/event/${EV}/purchased?stripe=success&session_id=${SID}`);
+});
+
+test("a platform returnUrl on the gateway bundle still succeeds onto the canonical app", () => {
+  const r = checkoutRedirectUrls({ eventId: EV, returnUrl: "https://gateway.woco-net.com/bzz/abc/", frontendUrl: unused });
+  assert.equal(r.successUrl, `https://woco.eth.limo/#/event/${EV}/purchased?stripe=success&session_id=${SID}`);
+});
+
+test("a refused platform returnUrl falls back to the resolved frontend base", () => {
+  for (const returnUrl of [
+    "http://venue.example/",
+    "ftp://venue.example/",
+    "javascript:alert(1)",
+    "https://u:p@venue.example/",
+    `https://venue.example/${"a".repeat(3000)}`,
+  ]) {
+    const r = checkoutRedirectUrls({ eventId: EV, returnUrl, frontendUrl: woco });
+    assert.equal(r.successUrl, `https://woco.eth.limo/#/event/${EV}/purchased?stripe=success&session_id=${SID}`, returnUrl);
+  }
+});
+
+test("siteId, not returnUrl, chooses the site route over the purchased route", () => {
+  const returnUrl = "https://test.woco.eth.limo/";
+  const site = checkoutRedirectUrls({ eventId: EV, siteId: "site_abcdef123", returnUrl, frontendUrl: unused });
+  const page = checkoutRedirectUrls({ eventId: EV, returnUrl, frontendUrl: unused });
+  assert.equal(site.successUrl, `https://test.woco.eth.limo/#/events/${EV}?stripe=success&session_id=${SID}`);
+  assert.equal(page.successUrl, `https://test.woco.eth.limo/#/event/${EV}/purchased?stripe=success&session_id=${SID}`);
+});
+
+test("an event page's cancel follows its cancelUrl, and without one returns to the page", () => {
+  const returnUrl = "https://event.woco.eth.limo/";
+  const both = checkoutRedirectUrls({ eventId: EV, returnUrl, cancelUrl: "https://event.woco.eth.limo/#/", frontendUrl: unused });
+  assert.equal(both.cancelUrl, "https://event.woco.eth.limo/#/?stripe=cancelled");
+  const alone = checkoutRedirectUrls({ eventId: EV, returnUrl, frontendUrl: unused });
+  assert.equal(alone.cancelUrl, `https://event.woco.eth.limo/#/event/${EV}?stripe=cancelled`);
+});
+
 test("the app's cancel marker lands in the hash route's query", () => {
   const cancel = (cancelUrl: string) => checkoutRedirectUrls({ eventId: EV, cancelUrl, frontendUrl: woco }).cancelUrl;
   assert.equal(cancel("https://woco.eth.limo/#/event/abc"), "https://woco.eth.limo/#/event/abc?stripe=cancelled");
@@ -114,6 +158,7 @@ test("every success shape carries the session placeholder verbatim, never encode
     checkoutRedirectUrls({ eventId: EV, pageUrl: "https://venue.example/p", frontendUrl: unused }),
     checkoutRedirectUrls({ eventId: EV, siteId: "site_abcdef123", returnUrl: "https://test.woco.eth.limo/", frontendUrl: unused }),
     checkoutRedirectUrls({ eventId: EV, frontendUrl: woco }),
+    checkoutRedirectUrls({ eventId: EV, returnUrl: "https://event.woco.eth.limo/", frontendUrl: unused }),
   ];
   for (const { successUrl } of shapes) {
     assert.ok(successUrl.endsWith(SID) || successUrl.includes(`${SID}#`), successUrl);

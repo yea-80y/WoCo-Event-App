@@ -4,13 +4,21 @@
  * The embed widget names the organiser page the buyer is on (`pageUrl`), and
  * both success and cancel return there with a `woco=` marker in that page's own
  * query. A WoCo-built site sends `siteId` + `returnUrl` and gets its event route
- * back. The main app sends neither and keeps the platform pages.
+ * back. The main app and the single-event page send `returnUrl` alone and get
+ * the purchased route on that page's host, which both bundles render.
  *
  * A page is an acceptable destination when it is a well-formed https URL (http
  * only on localhost), with no host list: the redirect is issued by Stripe, not by
  * a WoCo origin, and whoever creates a session could as easily host the widget on
  * the page they name, so a list would gate nothing. ALLOWED_HOSTS stays out of
  * this on purpose — it is also the session-delegation host guard.
+ *
+ * Considered and declined (2026-09-28, #567): accepting a `returnUrl` only on a
+ * host provably this event's (a sub-ENS name whose contenthash is the event
+ * page's feed manifest, or a verified custom domain). On one branch it gates
+ * nothing, because the same unauthenticated endpoint accepts any page as
+ * `pageUrl`; on all three it would make organisers register every domain the
+ * widget is pasted on, and add a chain read to checkout.
  */
 
 import { canonicalSuccessUrl } from "./return-url.js";
@@ -97,12 +105,14 @@ export function checkoutRedirectUrls(i: CheckoutUrlInputs): { successUrl: string
     };
   }
 
-  const site = i.siteId ? acceptablePageUrl(i.returnUrl) : null;
-  const base = site
-    ? `${site.origin}${site.pathname.replace(/\/$/, "")}`
-    : i.siteId
-      ? i.frontendUrl()
-      : canonicalSuccessUrl(i.frontendUrl());
+  // The same page rule for every WoCo bundle. A single-event page sends no
+  // siteId, so before this it fell to the platform base and success landed on
+  // the main app instead of its own sub-ENS name or custom domain.
+  const from = acceptablePageUrl(i.returnUrl);
+  const fromBase = from ? `${from.origin}${from.pathname.replace(/\/$/, "")}` : null;
+  const base = i.siteId
+    ? (fromBase ?? i.frontendUrl())
+    : canonicalSuccessUrl(fromBase ?? i.frontendUrl());
   const successUrl = i.siteId
     ? `${base}/#/events/${event}?stripe=success&session_id=${SESSION_PLACEHOLDER}`
     : `${base}/#/event/${event}/purchased?stripe=success&session_id=${SESSION_PLACEHOLDER}`;
