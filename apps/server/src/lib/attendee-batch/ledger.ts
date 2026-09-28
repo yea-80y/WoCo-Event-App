@@ -218,6 +218,30 @@ export function setBatchExpiry(batchId: string, expiresAt: string, nowMs: number
   }
 }
 
+/**
+ * Record a dilution (`increaseDepth`, owner-only, read back from chain by the
+ * refresh): every bucket gains slots, and stamps already issued stay valid
+ * because their indices stay in range. Raises only - a lower depth read from
+ * chain is ignored, since the counters already handed out slots above it.
+ */
+export function raiseBatchDepth(batchId: string, depth: number): boolean {
+  ensureLoaded();
+  if (unreadable) throw new AttendeeStoreUnavailableError(`ledger unreadable: ${unreadable}`);
+  const batch = store.batches[normalizeHex(batchId)];
+  if (!batch) throw new Error(`batch ${batchId} is not registered`);
+  slotsPerBucket(depth);
+  if (depth <= batch.depth) return false;
+  const previous = batch.depth;
+  batch.depth = depth;
+  try {
+    persistOrThrow();
+  } catch (err) {
+    batch.depth = previous;
+    throw err;
+  }
+  return true;
+}
+
 /** Sales stop this long before the active batch is due to expire. */
 const EXPIRY_MARGIN_MS = 60 * 60 * 1000;
 

@@ -9,7 +9,7 @@
  */
 
 import { getBee } from "../../config/swarm.js";
-import { attendeeLedgerStatus, registerBatch, setBatchExpiry, type BatchRecord } from "./ledger.js";
+import { attendeeLedgerStatus, raiseBatchDepth, registerBatch, setBatchExpiry, type BatchRecord } from "./ledger.js";
 import { BUCKET_DEPTH } from "./stamp.js";
 import { attendeeStamperAddress } from "./writer.js";
 
@@ -60,15 +60,18 @@ function expiryFromTtl(ttlSeconds: number, nowMs: number = Date.now()): string {
 }
 
 /**
- * Re-read the active (or named) batch's TTL from chain and record its expiry.
- * After a top-up this is what lets sales resume; hourly it follows the price
- * oracle, which moves the expiry of every batch. A batch no longer on chain,
- * or owned by someone else, records an expiry of now: sales stop.
+ * Re-read the active (or named) batch from chain: its TTL (expiry) and depth.
+ * After a top-up this is what lets sales resume; after a dilution it is what
+ * lets the ledger use the new slots. Order matters: TOP UP FIRST, then dilute
+ * (`increaseDepth` divides the remaining balance across the new slots and
+ * reverts below the contract minimum), then refresh. Hourly it follows the
+ * price oracle, which moves the expiry of every batch. A batch no longer on
+ * chain, or owned by someone else, records an expiry of now: sales stop.
  */
 export async function refreshAttendeeBatch(
   rawBatchId?: string,
   lookup: BatchLookup = liveBatchLookup,
-): Promise<{ batchId: string; expiresAt: string } | null> {
+): Promise<{ batchId: string; expiresAt: string; depth: number | null } | null> {
   const batchId = (rawBatchId ?? attendeeLedgerStatus().active ?? "").toLowerCase().replace(/^0x/, "");
   if (!batchId) return null;
   const stamper = attendeeStamperAddress();
@@ -79,5 +82,6 @@ export async function refreshAttendeeBatch(
   const alive = chain && chain.batchTTL > 0 && chain.owner === stamper;
   const expiresAt = alive ? expiryFromTtl(chain.batchTTL) : new Date().toISOString();
   setBatchExpiry(batchId, expiresAt);
-  return { batchId, expiresAt };
+  if (alive && chain.bucketDepth === BUCKET_DEPTH) raiseBatchDepth(batchId, chain.depth);
+  return { batchId, expiresAt, depth: alive ? chain.depth : null };
 }
