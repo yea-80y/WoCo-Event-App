@@ -6,6 +6,8 @@ import {
   PASSKEY_PRF_OUTPUT_BYTES,
   passkeyGuardianEscrowMaster,
   resolvePasskeyRpId,
+  newBackupUserHandle,
+  isBackupUserHandle,
 } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 
@@ -80,6 +82,26 @@ export interface PasskeyKeyMaterial {
   prfSecret: `0x${string}`;
 }
 
+/**
+ * How a passkey answered: on this device ("platform") or from another device or a
+ * security key ("cross-platform", which includes the QR-code flow). Null when the
+ * browser does not say. The passkey record (#746) is written only from "platform":
+ * a QR-code answer can carry the wrong PRF output, and a record written from one
+ * would pin the passkey to the wrong account.
+ */
+export type PasskeyAttachment = "platform" | "cross-platform" | null;
+
+/** A sign-in or creation: the key material plus which credential produced it. */
+export interface PasskeyLogin extends PasskeyKeyMaterial {
+  credentialId: string;
+  attachment: PasskeyAttachment;
+}
+
+function attachmentOf(credential: PublicKeyCredential): PasskeyAttachment {
+  const a = (credential as { authenticatorAttachment?: string | null }).authenticatorAttachment;
+  return a === "platform" || a === "cross-platform" ? a : null;
+}
+
 /** Derive the owner key + address from the PRF output, and hand the output on.
  *  ethers is imported lazily — this module is in the login modal's boot graph. */
 async function deriveKey(prfOutput: ArrayBuffer): Promise<PasskeyKeyMaterial> {
@@ -119,15 +141,67 @@ async function deriveGuardianKey(prfOutput: ArrayBuffer): Promise<PasskeyGuardia
   return { address, privateKey, escrowMaster: passkeyGuardianEscrowMaster(prfSecret) };
 }
 
+/**
+ * The passkey answered without the secret WoCo derives the account from. Said in
+ * terms of what to do, never "PRF".
+ */
+export class PasskeyPrfUnsupportedError extends Error {
+  constructor() {
+    super(
+      "This password manager can't hold a WoCo passkey yet. Try Google Password Manager, iCloud Keychain or 1Password.",
+    );
+    this.name = "PasskeyPrfUnsupportedError";
+  }
+}
+
 /** Extract PRF result from a WebAuthn credential response. */
 function extractPrfResult(
   extensions: AuthenticationExtensionsClientOutputs,
 ): ArrayBuffer {
   const prf = extensions.prf;
-  if (!prf?.results?.first) {
-    throw new Error("PRF extension did not return a result. Your browser or passkey may not support PRF.");
-  }
+  if (!prf?.results?.first) throw new PasskeyPrfUnsupportedError();
   return toArrayBuffer(prf.results.first);
+}
+
+/**
+ * The PRF output of a credential that was just CREATED. Many authenticators return
+ * it at creation; some report `prf.enabled` without a value, and some (Samsung Pass,
+ * per Corbado's August 2026 measurements) report nothing at all at creation and
+ * answer only when the credential is used. The PRF extension makes evaluation at
+ * creation optional, so the authoritative probe is one assertion against this exact
+ * credential - tried whenever creation gave no value, whatever `enabled` said.
+ */
+async function prfAfterCreate(
+  credential: PublicKeyCredential,
+  rpId: string,
+  salt: Uint8Array<ArrayBuffer>,
+): Promise<ArrayBuffer> {
+  const created = credential.getClientExtensionResults().prf?.results?.first;
+  if (created) return toArrayBuffer(created);
+  const getResult = (await navigator.credentials.get({
+    publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      rpId,
+      allowCredentials: [{ id: new Uint8Array(credential.rawId), type: "public-key" }],
+      userVerification: "required",
+      extensions: {
+        prf: { eval: { first: salt } },
+      },
+    },
+  })) as PublicKeyCredential | null;
+  if (!getResult) throw new Error("Passkey authentication was cancelled.");
+  return extractPrfResult(getResult.getClientExtensionResults());
+}
+
+/**
+ * A backup passkey was picked to SIGN IN. It belongs under Recover account: as a
+ * login it would derive an empty account of its own (#545 A3).
+ */
+export class PasskeyIsBackupError extends Error {
+  constructor() {
+    super("That's the backup passkey for your account. Sign in with your main passkey, or use it under Recover account.");
+    this.name = "PasskeyIsBackupError";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -202,8 +276,8 @@ export class PasskeyCeremonyCancelledError extends Error {
 /**
  * Run a ceremony under the lock, translating a raw NotAllowedError into readable
  * copy. Applied at the exported boundary so it covers BOTH the outer ceremony
- * and any inner one (the create paths do a second get() when the authenticator
- * returns `prf.enabled` without a result) without restructuring either.
+ * and any inner one (the create paths do a second get() when creation returns
+ * no PRF value, `prfAfterCreate`) without restructuring either.
  * Non-NotAllowedError faults — unsupported PRF, RP-ID SecurityError — pass
  * through untouched; they are actionable and must stay legible.
  */
@@ -247,11 +321,11 @@ export function isPasskeySupported(): boolean {
  * cancelled, timed-out or concurrently-rejected ceremony into a brand-new
  * account at a brand-new address, silently forking the user's identity.
  */
-export async function authenticatePasskey(): Promise<PasskeyKeyMaterial> {
+export async function authenticatePasskey(): Promise<PasskeyLogin> {
   return withCeremonyLock(_authenticatePasskeyImpl);
 }
 
-async function _authenticatePasskeyImpl(): Promise<PasskeyKeyMaterial> {
+async function _authenticatePasskeyImpl(): Promise<PasskeyLogin> {
   const salt = await getPrfSalt();
   const rpId = getPasskeyRpId();
 
@@ -279,6 +353,11 @@ async function _authenticatePasskeyImpl(): Promise<PasskeyKeyMaterial> {
 
   if (!credential) throw new PasskeyAssertionUnavailableError();
 
+  // Before anything is derived or pinned: a backup passkey must never become this
+  // device's login credential.
+  const userHandle = (credential.response as AuthenticatorAssertionResponse).userHandle;
+  if (userHandle && isBackupUserHandle(new Uint8Array(userHandle))) throw new PasskeyIsBackupError();
+
   const prfOutput = extractPrfResult(credential.getClientExtensionResults());
 
   // Update stored credential metadata so init() can restore kind on reload
@@ -288,7 +367,11 @@ async function _authenticatePasskeyImpl(): Promise<PasskeyKeyMaterial> {
   };
   await putKV(StorageKeys.PASSKEY_CREDENTIAL, meta);
 
-  return deriveKey(prfOutput);
+  return {
+    ...(await deriveKey(prfOutput)),
+    credentialId: meta.credentialId,
+    attachment: attachmentOf(credential),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +387,7 @@ async function _authenticatePasskeyImpl(): Promise<PasskeyKeyMaterial> {
  * → new Kernel → new address), stranding the user's tickets, feeds and funds on
  * the account they meant to sign in to.
  */
-export async function createPasskeyAccount(): Promise<PasskeyKeyMaterial> {
+export async function createPasskeyAccount(): Promise<PasskeyLogin> {
   return ceremony("creation", _createPasskeyAccountImpl);
 }
 
@@ -333,14 +416,14 @@ export async function pinPasskeyCredential(handle: PasskeyCredentialHandle): Pro
   await putKV(StorageKeys.PASSKEY_CREDENTIAL, handle);
 }
 
-async function _createPasskeyAccountImpl(): Promise<PasskeyKeyMaterial> {
-  const { credential, ...material } = await _mintPasskeyAccountImpl();
+async function _createPasskeyAccountImpl(): Promise<PasskeyLogin> {
+  const { credential, attachment, ...material } = await _mintPasskeyAccountImpl();
   await putKV(StorageKeys.PASSKEY_CREDENTIAL, credential);
-  return material;
+  return { ...material, credentialId: credential.credentialId, attachment };
 }
 
 async function _mintPasskeyAccountImpl(): Promise<
-  PasskeyKeyMaterial & { credential: PasskeyCredentialMeta }
+  PasskeyKeyMaterial & { credential: PasskeyCredentialMeta; attachment: PasskeyAttachment }
 > {
   const salt = await getPrfSalt();
   const rpId = getPasskeyRpId();
@@ -372,45 +455,14 @@ async function _mintPasskeyAccountImpl(): Promise<
     throw new Error("Passkey creation was cancelled.");
   }
 
-  const extensions = credential.getClientExtensionResults();
-
-  // Some browsers return PRF.enabled on creation but not the actual result.
-  // In that case, we need to do a get() call to obtain the PRF output.
-  let prfOutput: ArrayBuffer;
-  if (extensions.prf?.results?.first) {
-    prfOutput = toArrayBuffer(extensions.prf.results.first);
-  } else if (extensions.prf?.enabled) {
-    // PRF supported but result not returned during creation — authenticate to get it
-    const credentialId = new Uint8Array(credential.rawId);
-    const getResult = (await navigator.credentials.get({
-      publicKey: {
-        challenge: crypto.getRandomValues(new Uint8Array(32)),
-        rpId,
-        allowCredentials: [{ id: credentialId, type: "public-key" }],
-        userVerification: "required",
-        extensions: {
-          prf: { eval: { first: salt } },
-        },
-      },
-    })) as PublicKeyCredential | null;
-
-    if (!getResult) {
-      throw new Error("Passkey authentication was cancelled.");
-    }
-    prfOutput = extractPrfResult(getResult.getClientExtensionResults());
-  } else {
-    throw new Error(
-      "Your passkey does not support the PRF extension. " +
-      "Try a different authenticator (e.g. iCloud Keychain, Google Password Manager, or 1Password).",
-    );
-  }
+  const prfOutput = await prfAfterCreate(credential, rpId, salt);
 
   const meta: PasskeyCredentialMeta = {
     credentialId: toBase64url(credential.rawId),
     rpId,
   };
 
-  return { ...(await deriveKey(prfOutput)), credential: meta };
+  return { ...(await deriveKey(prfOutput)), credential: meta, attachment: attachmentOf(credential) };
 }
 
 // ---------------------------------------------------------------------------
@@ -447,7 +499,9 @@ async function _createPasskeyBackupKeyImpl(): Promise<PasskeyGuardianMaterial> {
     publicKey: {
       rp: { name: "WoCo", id: rpId },
       user: {
-        id: crypto.getRandomValues(new Uint8Array(32)),
+        // Tagged so a sign-in that picks it is refused instead of opening an
+        // empty account (#545 A3). Recovery reads it through its own picker.
+        id: newBackupUserHandle(),
         name: "WoCo Backup",
         displayName: "WoCo Backup",
       },
@@ -470,38 +524,7 @@ async function _createPasskeyBackupKeyImpl(): Promise<PasskeyGuardianMaterial> {
     throw new Error("Passkey creation was cancelled.");
   }
 
-  const extensions = credential.getClientExtensionResults();
-
-  // Some browsers return PRF.enabled on creation but not the actual result; in
-  // that case authenticate once to obtain the PRF output (same as the primary).
-  let prfOutput: ArrayBuffer;
-  if (extensions.prf?.results?.first) {
-    prfOutput = toArrayBuffer(extensions.prf.results.first);
-  } else if (extensions.prf?.enabled) {
-    const credentialId = new Uint8Array(credential.rawId);
-    const getResult = (await navigator.credentials.get({
-      publicKey: {
-        challenge: crypto.getRandomValues(new Uint8Array(32)),
-        rpId,
-        allowCredentials: [{ id: credentialId, type: "public-key" }],
-        userVerification: "required",
-        extensions: {
-          prf: { eval: { first: salt } },
-        },
-      },
-    })) as PublicKeyCredential | null;
-
-    if (!getResult) {
-      throw new Error("Passkey authentication was cancelled.");
-    }
-    prfOutput = extractPrfResult(getResult.getClientExtensionResults());
-  } else {
-    throw new Error(
-      "Your passkey does not support the PRF extension. " +
-      "Try a device with iCloud Keychain, Google Password Manager, or 1Password.",
-    );
-  }
-
+  const prfOutput = await prfAfterCreate(credential, rpId, salt);
   return deriveGuardianKey(prfOutput);
 }
 
