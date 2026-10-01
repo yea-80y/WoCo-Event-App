@@ -10,24 +10,29 @@
  * EVERY ENTRY IS A SIGNED STATEMENT, so the list does not depend on the server
  * holding it. A grant is signed by the owner; a removal by the owner or by the
  * removed device itself. The server's registry applies rules a contract could
- * apply unchanged (owner check, one-use nonces, the cap), which is what lets the
- * list move onchain - or be checked by the client from its own copy - without
- * re-signing anything.
+ * apply unchanged (owner check, one-use nonces, the cap), and the field types are
+ * ones a contract stores as they are. A contract on the Kernel chain that computes
+ * this exact domain (no verifyingContract - the salt scopes it) verifies these
+ * signatures as signed; one that insists on verifyingContract needs each grant
+ * signed once more at the move. The client can check its own copy either way.
  *
  * Depth 1: only the owner key mints a grant; a granted key never does. Signed RAW
  * by the owner EOA, exactly like `AuthorizeSession`, in its own domain so neither
- * signature can stand in for the other. No chainId, like `SESSION_DOMAIN`: the
- * owner is read from the Kernel chain, the statements themselves are chain-free.
+ * signature can stand in for the other. Unlike `SESSION_DOMAIN` it carries the
+ * Kernel chain id: a grant asserts "the owner of Kernel P", and the Kernel address
+ * is the same on every chain while its owner need not be.
  *
  * Unchanged after launch: a change here invalidates every grant registered so far
  * (each added device is signed out until its owner adds it again).
  */
 
 import { keccak_256 } from "@noble/hashes/sha3.js";
+import { KERNEL_CHAIN_ID } from "../kernel/chain.js";
 
 export const DEVICE_GRANT_DOMAIN = {
   name: "WoCo Device Grant",
   version: "1",
+  chainId: KERNEL_CHAIN_ID,
   salt: "0xfa35c64aca4cd4fae0d65d63f7c1b9960a481462284fd6cf298108ecaca85de1",
 } as const;
 
@@ -36,8 +41,8 @@ export const DEVICE_GRANT_TYPES = {
     { name: "parent", type: "address" },
     { name: "grantee", type: "address" },
     { name: "credentialTag", type: "bytes32" },
-    { name: "issuedAt", type: "string" },
-    { name: "nonce", type: "string" },
+    { name: "issuedAt", type: "uint256" },
+    { name: "nonce", type: "bytes32" },
   ],
 } as const;
 
@@ -45,7 +50,7 @@ export const DEVICE_GRANT_REVOKE_TYPES = {
   RevokeDeviceGrant: [
     { name: "parent", type: "address" },
     { name: "grantee", type: "address" },
-    { name: "nonce", type: "string" },
+    { name: "nonce", type: "bytes32" },
   ],
 } as const;
 
@@ -57,11 +62,11 @@ export interface DeviceGrantMessage {
   /** `credentialTagOf(credentialId)`: ties the grant to one passkey without
    *  publishing the credentialId. Lowercase 0x hex. */
   credentialTag: string;
-  /** ISO-8601, self-declared by the signing device. Display only. */
-  issuedAt: string;
-  /** One use per account, across grants AND removals: a captured statement
-   *  cannot be submitted twice, so a removed device cannot be re-added by
-   *  replaying the grant that first added it. */
+  /** Unix seconds, self-declared by the signing device. Display only. */
+  issuedAt: number;
+  /** 32 random bytes, lowercase 0x hex. One use per account, across grants AND
+   *  removals: a captured statement cannot be submitted twice, so a removed
+   *  device cannot be re-added by replaying the grant that first added it. */
   nonce: string;
 }
 
@@ -79,7 +84,6 @@ export type SessionRank = "owner" | "device";
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const BYTES32 = /^0x[0-9a-fA-F]{64}$/;
-const NONCE = /^[\x21-\x7e]{8,128}$/;
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 export function credentialTagOf(credentialId: Uint8Array): string {
@@ -114,9 +118,9 @@ export function parseDeviceGrant(v: unknown): DeviceGrantMessage | null {
   const { credentialTag, issuedAt, nonce } = g!;
   if (!pair) return null;
   if (typeof credentialTag !== "string" || !BYTES32.test(credentialTag)) return null;
-  if (typeof issuedAt !== "string" || issuedAt.length > 64 || Number.isNaN(Date.parse(issuedAt))) return null;
-  if (typeof nonce !== "string" || !NONCE.test(nonce)) return null;
-  return { ...pair, credentialTag: credentialTag.toLowerCase(), issuedAt, nonce };
+  if (typeof issuedAt !== "number" || !Number.isSafeInteger(issuedAt) || issuedAt < 0) return null;
+  if (typeof nonce !== "string" || !BYTES32.test(nonce)) return null;
+  return { ...pair, credentialTag: credentialTag.toLowerCase(), issuedAt, nonce: nonce.toLowerCase() };
 }
 
 export function parseDeviceGrantRevoke(v: unknown): DeviceGrantRevokeMessage | null {
@@ -124,6 +128,6 @@ export function parseDeviceGrantRevoke(v: unknown): DeviceGrantRevokeMessage | n
   const r = v as Untrusted<DeviceGrantRevokeMessage>;
   const pair = parsePair(r!.parent, r!.grantee);
   if (!pair) return null;
-  if (typeof r!.nonce !== "string" || !NONCE.test(r!.nonce)) return null;
-  return { ...pair, nonce: r!.nonce };
+  if (typeof r!.nonce !== "string" || !BYTES32.test(r!.nonce)) return null;
+  return { ...pair, nonce: r!.nonce.toLowerCase() };
 }

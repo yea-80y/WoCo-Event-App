@@ -503,8 +503,9 @@ un-revokes.
 
 A Kernel account has one onchain owner, the main passkey. Another passkey of the same person
 signs sessions under a **device grant**: an EIP-712 `DeviceGrant { parent, grantee,
-credentialTag, issuedAt, nonce }` (domain "WoCo Device Grant", no chainId) signed raw by the
-owner, registered at `POST /api/auth/device-grants`. A delegation whose signer is neither the
+credentialTag, issuedAt, nonce }` (domain "WoCo Device Grant" with the Kernel chain id - the
+owner of a Kernel is a per-chain fact; uint256 seconds, bytes32 nonce) signed raw by the owner,
+registered at `POST /api/auth/device-grants`. A delegation whose signer is neither the
 parent nor its owner passes when that key has a live grant, the grant's signer still owns the
 Kernel, and the delegation is newer than the key's last removal; its session rank is `device`
 (`whoami` reports it). Removal is a `RevokeDeviceGrant { parent, grantee, nonce }` signed by the
@@ -514,8 +515,10 @@ granted key never grants.
 
 Every entry is a signed statement and the registry's rules are ones a contract could run (owner
 check, one-use nonces, 10 live grants per owner), so the list can move onchain, or be checked by
-the client from its own copy, without re-signing anything: `verify-delegation.ts` reads it through
-one seam, `lookupDeviceGrant`. `revoke-all` also ends device sessions; a device whose grant is live
+the client from its own copy: `verify-delegation.ts` reads it through one seam,
+`lookupDeviceGrant`. A contract on the Kernel chain that computes this exact domain (no
+verifyingContract) verifies the stored signatures as they are; one that adds verifyingContract
+needs each grant signed once more. `revoke-all` also ends device sessions; a device whose grant is live
 signs a new one on its next request. Store: `.data/device-grants.json`
 (`apps/server/src/lib/auth/device-grants.ts`).
 

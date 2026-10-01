@@ -7,7 +7,8 @@
  * check, one-use nonce per account, at most MAX_DEVICE_GRANTS live under the
  * current owner, times taken on receipt like a block timestamp - and the owner
  * check is injected. Moving the list onchain is replacing this module behind
- * `lookupDeviceGrant`; nothing a client signed changes.
+ * `lookupDeviceGrant`, with the stored statements as its input (device-grant.ts
+ * says when their signatures carry over as they are).
  *
  * MUST SURVIVE RESTARTS. Losing it signs every added device out (each needs a new
  * grant from the main passkey); nothing leaks and nothing is granted. A file that
@@ -82,7 +83,10 @@ export type DeviceGrantRefusal =
   | "not-allowed"
   | "store-unavailable";
 
-export type DeviceGrantResult = { ok: true; record: DeviceGrantRecord } | { ok: false; refusal: DeviceGrantRefusal };
+/** `changed` is false only for a removal that was already in place. */
+export type DeviceGrantResult =
+  | { ok: true; record: DeviceGrantRecord; changed: boolean }
+  | { ok: false; refusal: DeviceGrantRefusal };
 
 /** Does `signer` own `parent` right now? Production: `isKernelOwner` under the
  *  caller's read budget. */
@@ -240,7 +244,7 @@ export async function submitDeviceGrant(
   if (!persist()) {
     console.error(`[device-grants] grant for ${grant.parent.slice(0, 10)}… is live in memory but NOT on disk`);
   }
-  return { ok: true, record };
+  return { ok: true, record, changed: true };
 }
 
 /**
@@ -268,7 +272,7 @@ export async function submitDeviceGrantRevoke(
   // After the await, as for grants.
   const record = state.accounts[revoke.parent]?.grants[revoke.grantee];
   if (!record) return { ok: false, refusal: "not-found" };
-  if (record.revokedAt !== undefined) return { ok: true, record };
+  if (record.revokedAt !== undefined) return { ok: true, record, changed: false };
   if (nonceUsed(revoke.parent, revoke.nonce)) return { ok: false, refusal: "nonce-used" };
   record.revoke = revoke;
   record.revokeSig = body.revokeSig as string;
@@ -282,7 +286,7 @@ export async function submitDeviceGrantRevoke(
   if (!persist()) {
     console.error(`[device-grants] removal for ${revoke.parent.slice(0, 10)}… is live in memory but NOT on disk`);
   }
-  return { ok: true, record };
+  return { ok: true, record, changed: true };
 }
 
 export function deviceGrantHealth(): { ok: boolean; unreadable: boolean; accounts: number } {

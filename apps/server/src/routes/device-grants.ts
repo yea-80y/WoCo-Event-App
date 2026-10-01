@@ -29,6 +29,10 @@ export const deviceGrants = new Hono<AppEnv>();
 
 // Every write appends a nonce that is never pruned, so the per-account bound is
 // also the store's growth bound. Adding a few devices in a sitting is a handful.
+// It is charged ONLY for a write that landed: a device shares its account's
+// bucket, and refused or no-op submissions charged there would let a device
+// spend the owner's budget and block its own removal. Every attempt is charged
+// per IP instead.
 const WRITE_ACCOUNT = new SlidingWindowLimiter([
   { limit: 5, windowMs: 60_000 },
   { limit: 30, windowMs: 24 * 60 * 60_000 },
@@ -50,12 +54,14 @@ const REFUSALS: Record<DeviceGrantRefusal, { status: 400 | 403 | 404 | 409 | 503
 };
 
 function writeLimited(c: { req: { header: (n: string) => string | undefined } }, account: string): boolean {
-  const ak = `a:${account}`;
   const ik = `ip:${clientIp(c)}`;
-  if (!WRITE_ACCOUNT.peek(ak) || !WRITE_IP.peek(ik)) return true;
-  WRITE_ACCOUNT.record(ak);
+  if (!WRITE_ACCOUNT.peek(`a:${account}`) || !WRITE_IP.peek(ik)) return true;
   WRITE_IP.record(ik);
   return false;
+}
+
+function chargeAccount(account: string, result: DeviceGrantResult): void {
+  if (result.ok && result.changed) WRITE_ACCOUNT.record(`a:${account}`);
 }
 
 function ownerCheck(c: { req: { header: (n: string) => string | undefined } }): OwnerCheck {
@@ -79,12 +85,16 @@ deviceGrants.post("/", jsonBodyLimit(MAX_BODY_BYTES), requireAuth, async (c) => 
   const account = c.get("parentAddress").toLowerCase();
   if (writeLimited(c, account)) return c.json({ ok: false, error: "Rate limited" }, 429);
   const body = c.get("body") as { grant?: unknown; grantSig?: unknown };
-  return answer(c, await submitDeviceGrant(account, body, ownerCheck(c)));
+  const result = await submitDeviceGrant(account, body, ownerCheck(c));
+  chargeAccount(account, result);
+  return answer(c, result);
 });
 
 deviceGrants.post("/revoke", jsonBodyLimit(MAX_BODY_BYTES), requireAuth, async (c) => {
   const account = c.get("parentAddress").toLowerCase();
   if (writeLimited(c, account)) return c.json({ ok: false, error: "Rate limited" }, 429);
   const body = c.get("body") as { revoke?: unknown; revokeSig?: unknown };
-  return answer(c, await submitDeviceGrantRevoke(account, body, ownerCheck(c)));
+  const result = await submitDeviceGrantRevoke(account, body, ownerCheck(c));
+  chargeAccount(account, result);
+  return answer(c, result);
 });

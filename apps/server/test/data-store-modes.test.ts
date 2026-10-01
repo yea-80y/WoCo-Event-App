@@ -104,8 +104,8 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
         parent: OWNER,
         grantee: Wallet.createRandom().address.toLowerCase(),
         credentialTag: BYTES32,
-        issuedAt: new Date().toISOString(),
-        nonce: "store-modes-nonce",
+        issuedAt: Math.floor(Date.now() / 1000),
+        nonce: BYTES32,
       };
       const grantSig = await owner.signTypedData(
         sh.DEVICE_GRANT_DOMAIN,

@@ -10,7 +10,7 @@ import {
 } from "@woco/shared";
 import { isSessionRevoked } from "./revocation.js";
 import { verifySmartWalletTypedData } from "./smart-wallet-client.js";
-import { isKernelOwner, readKernelOwner, type OwnerReadOptions } from "./kernel-owner.js";
+import { cachedOwnerIs, isKernelOwner, readKernelOwner, type OwnerReadOptions } from "./kernel-owner.js";
 import { isKernelKnownDeployedOnAnyChain } from "./kernel-deployed.js";
 import { decideSmartWalletPath } from "./smart-wallet-gate.js";
 import { lookupDeviceGrant, type DeviceGrantState } from "./device-grants.js";
@@ -165,14 +165,22 @@ export async function verifyDelegation(
       if (recovered === parent) {
         validSig = true;
       } else if (recovered) {
-        // Grant before owner: asking whether a DEVICE key owns the Kernel is a
-        // cached denial, which #273 re-reads from the chain - every device request
-        // would pay an RPC call. Asking about the grant's signer, the owner, is a
-        // cached confirmation. isKernelOwner also records the account with the
-        // owner as the presenting key (#200/#210), as an owner session would.
-        const grant = await deps.lookupDeviceGrant(parent, recovered);
+        // Whichever check runs first must be a cached CONFIRMATION: a cached
+        // denial is re-read from the chain (#273), so asking "does this device
+        // own the Kernel?" first would cost every device request an RPC call, and
+        // asking about the grant first would cost the same to a device made the
+        // main one while its old grant stands. So: the owner path when the cache
+        // already names this key, else the grant. isKernelOwner records the
+        // account with the owner as the presenting key either way (#200/#210).
+        const grant = cachedOwnerIs(parent, recovered)
+          ? undefined
+          : await deps.lookupDeviceGrant(parent, recovered);
         if (
           grant?.active &&
+          // Device clock against server time, as revokeAllBefore (revocation.ts)
+          // compares. A slow device re-added within its skew of a removal is
+          // refused until wall time passes notBefore + skew; a fast one keeps at
+          // most the 60 s the future-date bound above allows.
           issuedAt > (grant.notBefore ?? -Infinity) &&
           (await isKernelOwner(grant.signer, parent, readOpts))
         ) {

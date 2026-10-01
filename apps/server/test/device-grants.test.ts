@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync, statSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { Wallet, TypedDataEncoder, type TypedDataField } from "ethers";
 import {
@@ -58,6 +58,7 @@ const { requireAuth } = await import("../src/middleware/auth.js");
 const { deviceGrants } = await import("../src/routes/device-grants.js");
 
 const FILE = join(dir, ".data", "device-grants.json");
+const newNonce = () => `0x${randomBytes(32).toString("hex")}`;
 const types = (t: object) => t as unknown as Record<string, TypedDataField[]>;
 
 /** The account: a Kernel address with `owner` as its onchain owner. */
@@ -88,8 +89,8 @@ function grantFor(grantee: string, over: Partial<DeviceGrantMessage> = {}): Devi
     parent: PARENT,
     grantee: grantee.toLowerCase(),
     credentialTag: credentialTagOf(new TextEncoder().encode(grantee)),
-    issuedAt: new Date().toISOString(),
-    nonce: randomUUID(),
+    issuedAt: Math.floor(Date.now() / 1000),
+    nonce: newNonce(),
     ...over,
   };
 }
@@ -98,8 +99,8 @@ async function signGrant(signer: Wallet, grant: DeviceGrantMessage) {
   return { grant, grantSig: await signer.signTypedData(DEVICE_GRANT_DOMAIN, types(DEVICE_GRANT_TYPES), grant) };
 }
 
-async function signRevoke(signer: Wallet, grantee: string, nonce: string = randomUUID()) {
-  const revoke = { parent: PARENT, grantee: grantee.toLowerCase(), nonce };
+async function signRevoke(signer: Wallet, grantee: string, nonce: string = newNonce(), parent = PARENT) {
+  const revoke = { parent, grantee: grantee.toLowerCase(), nonce };
   return {
     revoke,
     revokeSig: await signer.signTypedData(DEVICE_GRANT_DOMAIN, types(DEVICE_GRANT_REVOKE_TYPES), revoke),
@@ -113,12 +114,12 @@ async function addDevice(device: Wallet = Wallet.createRandom()) {
 }
 
 /** A session delegation for PARENT signed by `signer` (owner or device). */
-async function delegation(signer: Wallet, issuedAt = new Date()) {
+async function delegation(signer: Wallet, issuedAt = new Date(), parent = PARENT) {
   const session = Wallet.createRandom();
   const nonce = randomUUID();
   const message = {
     host: HOST,
-    parent: PARENT,
+    parent,
     session: session.address,
     purpose: SESSION_PURPOSE,
     nonce,
@@ -139,16 +140,16 @@ test("the grant and removal digests are pinned, and the browser's digest matches
     parent: "0x1111111111111111111111111111111111111111",
     grantee: "0x2222222222222222222222222222222222222222",
     credentialTag: credentialTagOf(new Uint8Array([1, 2, 3, 4])),
-    issuedAt: "2026-10-01T00:00:00.000Z",
-    nonce: "nonce-0001",
+    issuedAt: 1790812800, // 2026-10-01T00:00:00Z
+    nonce: `0x${"01".repeat(32)}`,
   };
-  const revoke = { parent: grant.parent, grantee: grant.grantee, nonce: "nonce-0002" };
+  const revoke = { parent: grant.parent, grantee: grant.grantee, nonce: `0x${"02".repeat(32)}` };
   const g = TypedDataEncoder.hash(DEVICE_GRANT_DOMAIN, types(DEVICE_GRANT_TYPES), grant);
   const r = TypedDataEncoder.hash(DEVICE_GRANT_DOMAIN, types(DEVICE_GRANT_REVOKE_TYPES), revoke);
   // A changed constant here invalidates every grant already registered.
   assert.equal(grant.credentialTag, "0xa6885b3731702da62e8e4a8f584ac46a7f6822f4e2ba50fba902f67b1588d23b");
-  assert.equal(g, "0x28f6a5f7a330fbf83840e43d42150f78a77c4d0523fec14ded571af8729c5fd0");
-  assert.equal(r, "0x7be401e5af36e8ea210cec56c67562d0fdf4f7daaa6c9f5144c0dab0c8a129b5");
+  assert.equal(g, "0x27e7262dbd67650d8965f3c555a6c489f374c83bbcd56d735618bc1a8b3dbfc2");
+  assert.equal(r, "0x430bb2b5dbde73846b411d85bcfaa5c4ecb41b35ad6a8ebdbbec3efa53d6680f");
   assert.equal(eip712DigestHex(DEVICE_GRANT_DOMAIN, "DeviceGrant", DEVICE_GRANT_TYPES.DeviceGrant, grant), g);
   assert.equal(
     eip712DigestHex(DEVICE_GRANT_DOMAIN, "RevokeDeviceGrant", DEVICE_GRANT_REVOKE_TYPES.RevokeDeviceGrant, revoke),
@@ -156,13 +157,14 @@ test("the grant and removal digests are pinned, and the browser's digest matches
   );
 });
 
-test("parse refuses a grant to the account itself, to nobody, or with a short nonce", () => {
-  const base = { parent: PARENT, grantee: Wallet.createRandom().address, credentialTag: "0x" + "ab".repeat(32), issuedAt: "2026-10-01T00:00:00Z", nonce: "12345678" };
+test("parse refuses a grant to the account itself, to nobody, or with fields a contract would not store", () => {
+  const base = { parent: PARENT, grantee: Wallet.createRandom().address, credentialTag: "0x" + "ab".repeat(32), issuedAt: 1790812800, nonce: "0x" + "cd".repeat(32) };
   assert.ok(parseDeviceGrant(base));
   assert.equal(parseDeviceGrant({ ...base, grantee: PARENT }), null);
   assert.equal(parseDeviceGrant({ ...base, grantee: "0x" + "00".repeat(20) }), null);
-  assert.equal(parseDeviceGrant({ ...base, nonce: "1234567" }), null);
-  assert.equal(parseDeviceGrant({ ...base, issuedAt: "not a date" }), null);
+  assert.equal(parseDeviceGrant({ ...base, nonce: "0x" + "cd".repeat(31) }), null);
+  assert.equal(parseDeviceGrant({ ...base, issuedAt: "2026-10-01T00:00:00Z" }), null);
+  assert.equal(parseDeviceGrant({ ...base, issuedAt: 1.5 }), null);
 });
 
 // ── The registry ────────────────────────────────────────────────────────────
@@ -364,6 +366,85 @@ test("a key with no grant is still refused", async () => {
   assert.notEqual(r.code, AuthErrorCode.DEVICE_REMOVED);
 });
 
+test("a device made the main one, after it was removed, signs in as owner - not DEVICE_REMOVED", async () => {
+  const device = await addDevice();
+  await grants.submitDeviceGrantRevoke(PARENT, await signRevoke(owner, device.address), isOwner);
+  chainOwner = device.address.toLowerCase();
+  ownerMod._resetOwnerCacheForTests();
+  const d = await delegation(device);
+  const r = await verifyDelegation(d.delegation, d.session.address, [HOST], lookup);
+  assert.equal(r.valid, true, r.error);
+  assert.equal(r.rank, "owner");
+});
+
+test("a device made the main one with its old grant still live costs no chain read once cached", async () => {
+  const device = await addDevice();
+  chainOwner = device.address.toLowerCase();
+  ownerMod._resetOwnerCacheForTests();
+  const first = await delegation(device);
+  assert.equal((await verifyDelegation(first.delegation, first.session.address, [HOST], lookup)).rank, "owner");
+  const reads = ownerReads;
+  const again = await delegation(device);
+  assert.equal((await verifyDelegation(again.delegation, again.session.address, [HOST], lookup)).rank, "owner");
+  assert.equal(ownerReads, reads, "a stale grant must not cost a re-read on every request");
+});
+
+test("an unreadable chain after the cache expires refuses a device on a known-deployed account", async () => {
+  const device = await addDevice(); // the owner read recorded the account as deployed
+  assert.ok(deployed.getKernelOwnerRecord(PARENT), "precondition: account recorded");
+  ownerMod._resetOwnerCacheForTests();
+  ownerMod._setOwnerFetchForTests(async () => "error");
+  const d = await delegation(device);
+  const r = await verifyDelegation(d.delegation, d.session.address, [HOST], lookup);
+  assert.equal(r.valid, false);
+  assert.notEqual(r.code, AuthErrorCode.DEVICE_REMOVED);
+});
+
+test("an async grant source (an onchain registry) is awaited on every branch", async () => {
+  const asyncLookup = {
+    lookupDeviceGrant: async (p: string, g: string) => grants.lookupDeviceGrant(p, g),
+  };
+  const device = await addDevice();
+  const d = await delegation(device);
+  assert.equal((await verifyDelegation(d.delegation, d.session.address, [HOST], asyncLookup)).rank, "device");
+  const stranger = await delegation(Wallet.createRandom());
+  const s = await verifyDelegation(stranger.delegation, stranger.session.address, [HOST], asyncLookup);
+  assert.equal(s.valid, false);
+  assert.notEqual(s.code, AuthErrorCode.DEVICE_REMOVED);
+  await grants.submitDeviceGrantRevoke(PARENT, await signRevoke(owner, device.address), isOwner);
+  const removed = await verifyDelegation(d.delegation, d.session.address, [HOST], asyncLookup);
+  assert.equal(removed.code, AuthErrorCode.DEVICE_REMOVED);
+});
+
+test("a grant on one account does not let the same key act for another", async () => {
+  const device = await addDevice();
+  const other = Wallet.createRandom().address.toLowerCase();
+  const d = await delegation(device, new Date(), other);
+  const r = await verifyDelegation(d.delegation, d.session.address, [HOST], lookup);
+  assert.equal(r.valid, false);
+});
+
+test("nonces are per account: the same nonce lands on two accounts", async () => {
+  const nonce = newNonce();
+  const first = PARENT;
+  const a = await signGrant(owner, grantFor(Wallet.createRandom().address, { nonce }));
+  assert.equal((await grants.submitDeviceGrant(first, a, isOwner)).ok, true);
+  PARENT = Wallet.createRandom().address.toLowerCase();
+  const b = await signGrant(owner, grantFor(Wallet.createRandom().address, { nonce }));
+  assert.equal((await grants.submitDeviceGrant(PARENT, b, isOwner)).ok, true);
+});
+
+test("removing a key that was never granted consumes no nonce", async () => {
+  const nonce = newNonce();
+  const ghost = Wallet.createRandom();
+  assert.deepEqual(
+    await grants.submitDeviceGrantRevoke(PARENT, await signRevoke(owner, ghost.address, nonce), isOwner),
+    { ok: false, refusal: "not-found" },
+  );
+  const r = await grants.submitDeviceGrant(PARENT, await signGrant(owner, grantFor(ghost.address, { nonce })), isOwner);
+  assert.equal(r.ok, true);
+});
+
 // ── Through the middleware and routes ───────────────────────────────────────
 
 const app = new Hono();
@@ -377,6 +458,7 @@ async function call(
   method: "GET" | "POST",
   path: string,
   bodyObj?: unknown,
+  ip?: string,
 ) {
   const body = method === "POST" ? JSON.stringify(bodyObj ?? {}) : "";
   const ts = String(Date.now());
@@ -391,6 +473,7 @@ async function call(
       "X-Session-Sig": await d.session.signMessage(challenge),
       "X-Session-Nonce": nonce,
       "X-Session-Timestamp": ts,
+      ...(ip ? { "cf-connecting-ip": ip } : {}),
     },
     ...(method === "POST" ? { body } : {}),
   });
@@ -428,4 +511,27 @@ test("routes: the signature is the authority - an owner session cannot register 
   assert.equal(r.status, 403);
   assert.equal(r.json.code, "not-owner");
   assert.equal(existsSync(FILE), false);
+});
+
+test("routes: a device cannot spend its account's budget and block its own removal", async () => {
+  const ownerSession = await delegation(owner);
+  const device = Wallet.createRandom();
+  const other = Wallet.createRandom();
+  await call(ownerSession, "POST", "/api/auth/device-grants", await signGrant(owner, grantFor(device.address)), "198.51.100.1");
+  await call(ownerSession, "POST", "/api/auth/device-grants", await signGrant(owner, grantFor(other.address)), "198.51.100.1");
+  const otherRemoval = await signRevoke(owner, other.address);
+  await call(ownerSession, "POST", "/api/auth/device-grants/revoke", otherRemoval, "198.51.100.1");
+
+  // From many addresses: refused statements, and a removal that is already in place.
+  const deviceSession = await delegation(device);
+  for (let i = 0; i < 4; i++) {
+    const junk = await call(deviceSession, "POST", "/api/auth/device-grants/revoke", { revoke: { nope: i } }, `203.0.113.${i}`);
+    assert.equal(junk.status, 400);
+    const noop = await call(deviceSession, "POST", "/api/auth/device-grants/revoke", otherRemoval, `203.0.113.${50 + i}`);
+    assert.equal(noop.status, 200);
+  }
+
+  const removal = await call(ownerSession, "POST", "/api/auth/device-grants/revoke", await signRevoke(owner, device.address), "198.51.100.1");
+  assert.equal(removal.status, 200, JSON.stringify(removal.json));
+  assert.equal(grants.lookupDeviceGrant(PARENT, device.address)?.active, false);
 });
