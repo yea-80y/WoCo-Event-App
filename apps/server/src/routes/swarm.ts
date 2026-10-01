@@ -12,9 +12,11 @@ import {
   socRelayGate,
   bytesRelayGate,
   classifyRelayPayload,
+  isSocialPayload,
   SOC_RELAY_MAX_BODY_BYTES,
   BYTES_RELAY_MAX_BODY_BYTES,
 } from "../lib/swarm/soc-relay-limits.js";
+import { checkAttendeeGate } from "../lib/gate/check.js";
 
 /**
  * Generic client-signed Single-Owner-Chunk write rail (Phase A of
@@ -64,6 +66,15 @@ swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, a
     kind: classifyRelayPayload(b.payload),
   });
   if (!gate.allowed) return c.json({ ok: false, error: gate.reason }, gate.status);
+
+  // Likes and follows need the same unlock as a name or a profile (ticket,
+  // Stripe, or a confirmed invite). Same refusal as routes/profiles.ts, which
+  // the client matches to open its unlock flow. After the rate gate, so a flood
+  // is refused before it costs a gate lookup.
+  if (isSocialPayload(b.payload)) {
+    const unlock = await checkAttendeeGate((c.get("parentAddress") as string).toLowerCase());
+    if (!unlock.gated) return c.json({ ok: false, error: "ticket_required" }, 403);
+  }
 
   try {
     // Same routing as /bytes: Etherna user batch when the builder picked the

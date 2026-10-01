@@ -902,6 +902,13 @@ ticket holders — a WoCo-unique, near-Sybil-proof signal) vs (future) personhoo
 (zkPassport-class) as an additive attestation. Counts are reputational, not financial —
 launch-level protection is sufficient.
 
+**Write gate (owner decision 2026-10-01).** Every like/follow write stamps platform storage, so
+writing one needs the same unlock as a name: a ticket in the account, Stripe verification, or a
+confirmed invite (`apps/server/src/lib/gate/check.ts`). The relay (`routes/swarm.ts`) refuses a
+SOC whose payload names a like/follow statement or index format with `ticket_required`; the
+client's `toggleSocial` opens the unlock popup on it. A writer that hides the format writes
+something readers never count, bounded by the general relay limits like any other chunk.
+
 ## Verified facts this plan rests on (all read in source, 2026-07-30..08-01)
 
 - `createBatch(address _owner, …)`: payer ≠ owner (storage-incentives PostageStamp.sol).
