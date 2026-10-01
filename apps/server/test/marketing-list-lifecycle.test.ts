@@ -158,6 +158,57 @@ async function postAs(
   return { status: resp.status, json: (await resp.json()) as Record<string, unknown> };
 }
 
+async function getAs(
+  d: Awaited<ReturnType<typeof mintDelegation>>,
+  path: string,
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  const timestamp = String(Date.now());
+  const nonce = randomUUID();
+  const challenge = ["woco-session-v1", "GET", path, timestamp, nonce, sha256Hex("")].join("\n");
+  const resp = await app.request(path, {
+    method: "GET",
+    headers: {
+      "X-Session-Address": d.session.address,
+      "X-Session-Delegation": Buffer.from(JSON.stringify(d.delegation), "utf-8").toString("base64"),
+      "X-Session-Sig": await d.session.signMessage(challenge),
+      "X-Session-Nonce": nonce,
+      "X-Session-Timestamp": timestamp,
+    },
+  });
+  return { status: resp.status, json: (await resp.json()) as Record<string, unknown> };
+}
+
+test("/list/meta answers null for an organiser with no list", async () => {
+  const d = await mintDelegation();
+  const { status, json } = await getAs(d, "/api/marketing/list/meta");
+  assert.equal(status, 200);
+  assert.deepEqual(json, { ok: true, data: null });
+});
+
+test("/list/meta gives the size of the caller's own list, and nothing of the blob", async () => {
+  const d = await mintDelegation();
+  const other = await mintDelegation();
+  const updatedAt = new Date().toISOString();
+  putList(d.parent.address.toLowerCase(), {
+    swarmRef: "11".repeat(32),
+    count: 3,
+    updatedAt,
+    emailHashes: [hashEmail("a@example.com"), hashEmail("b@example.com"), hashEmail("c@example.com")],
+  });
+
+  const mine = await getAs(d, "/api/marketing/list/meta");
+  assert.equal(mine.status, 200);
+  assert.deepEqual(mine.json, { ok: true, data: { count: 3, updatedAt } });
+
+  const theirs = await getAs(other, "/api/marketing/list/meta");
+  assert.deepEqual(theirs.json, { ok: true, data: null }, "one organiser's list must never answer for another");
+});
+
+test("/list/meta refuses an unsigned request", async () => {
+  const resp = await app.request("/api/marketing/list/meta", { method: "GET" });
+  assert.equal(resp.status, 401);
+});
+
 test("/check answers for the whole batch when one address is unmailable", async () => {
   const d = await mintDelegation();
   const org = d.parent.address.toLowerCase();

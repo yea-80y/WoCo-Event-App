@@ -149,6 +149,17 @@ marketing.post("/list", requireAuth, async (c) => {
   }
 });
 
+/**
+ * Whether a list exists and how big it is, without the sealed blob. The
+ * dashboard's setup card asks this on every open until the organiser has
+ * events, and `/list` would download the whole list from Swarm to answer it.
+ * Memory only, so it cannot fail on a Swarm read.
+ */
+marketing.get("/list/meta", requireAuth, (c) => {
+  const entry = getList(c.get("parentAddress").toLowerCase());
+  return c.json({ ok: true, data: entry ? { count: entry.count, updatedAt: entry.updatedAt } : null });
+});
+
 /** Fetch the stored list: meta + sealed blob (server passthrough from Swarm). */
 marketing.get("/list", requireAuth, async (c) => {
   const org = c.get("parentAddress").toLowerCase();
