@@ -368,6 +368,7 @@ AUTH (server):
   apps/server/src/middleware/auth.ts                 # session delegation + canonical sig verify
   apps/server/src/lib/auth/verify-delegation.ts      # EIP-712 verify + sessionProof + revocation
   apps/server/src/lib/auth/revocation.ts             # nonce blacklist + revoke-all
+  apps/server/src/lib/auth/device-grants.ts          # added passkeys (#746): signed grant registry
 
 CLAIMS / EVENTS:
   apps/server/src/routes/claims.ts                   # claim-status ONLY (v1 claim rail deleted, #207)
@@ -542,6 +543,10 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     to the directory. The server cannot rebuild it (creators are not enumerable); an operator can
     restore one organiser's records, best effort, from their creator index
     `woco/event/creator/{address}`. Unreadable = `/api/health` `eventFeedSigners` alarm)
+  device-grants.json (#746 — each account's added passkeys: owner-signed grants, signed removals
+    and every nonce used. Losing it signs every added device out (re-add from the main passkey);
+    nothing leaks or is granted. Losing the NONCES lets an old removal or grant be replayed.
+    Unreadable = no device signs in, nothing written, `/api/health` `deviceGrants` alarm)
 
 SVELTE 5 / BEE-JS:
 - Svelte 5 `$state` proxy: properties absent from the initial object literal aren't reactive;

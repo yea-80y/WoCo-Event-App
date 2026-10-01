@@ -1,4 +1,5 @@
 import type { AuthErrorCode } from "../types.js";
+import type { SessionRank } from "./device-grant.js";
 
 export type AuthKind = "web3" | "passkey" | "web3auth" | "coinbase" | "zupass" | "none";
 
@@ -54,6 +55,8 @@ export interface VerifyDelegationResult {
   valid: boolean;
   parentAddress?: string;
   sessionAddress?: string;
+  /** Set on success: "device" when a key the owner granted signed the delegation (#746). */
+  rank?: SessionRank;
   error?: string;
   /** Machine-readable classification for the caller's response envelope.
    *  Defaults to SESSION_INVALID at the middleware; set explicitly only where a
