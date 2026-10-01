@@ -23,6 +23,8 @@ import type { Hex0x } from "@woco/shared";
 import { requireAccountForAction } from "../auth/ensure-action.js";
 import { get } from "./client.js";
 import { readMyStatement, writeMyStatement, type SocialKind } from "../social/social.js";
+import { gate } from "../attendee/gate/gate.svelte.js";
+import { isTicketRequired } from "./attendee-gate.js";
 import { STATEMENT_FORMAT } from "../social/social-core.js";
 
 export { kindForVariant } from "../social/social-core.js";
@@ -91,9 +93,15 @@ export async function getSocialState(kind: SocialKind, subject: Hex0x): Promise<
 }
 
 /**
- * Toggle and persist. `null` means the user dismissed sign-in — the caller
- * reverts quietly rather than showing a failure, because nothing failed.
- * A genuine failure throws, so the button can show its retry state.
+ * Toggle and persist. `null` means the user dismissed sign-in or the unlock
+ * popup — the caller reverts quietly rather than showing a failure, because
+ * nothing failed. A genuine failure throws, so the button can show its retry
+ * state.
+ *
+ * Likes and follows need the same unlock as a name (the relay refuses them
+ * with `ticket_required`, apps/server/src/routes/swarm.ts). A known "locked"
+ * opens the unlock popup before anything is written; when the status was not
+ * known, the server's refusal opens it instead, and an unlock retries once.
  */
 export async function toggleSocial(
   kind: SocialKind,
@@ -103,8 +111,15 @@ export async function toggleSocial(
   const ready = await requireAccountForAction({ context: "attendee" });
   if (!ready) return null;
 
+  const status = gate.status ?? (await gate.refresh());
+  if (status && !status.gated && !(await gate.request())) return null;
+
   const next = !prevLiked;
-  const res = await writeMyStatement(kind, subject, next);
+  let res = await writeMyStatement(kind, subject, next);
+  if (!res.ok && isTicketRequired(res.error)) {
+    if (!(await gate.request())) return null;
+    res = await writeMyStatement(kind, subject, next);
+  }
   if (!res.ok) throw new Error(res.error);
 
   // Deliberately no count refetch. The statement has only just been relayed and

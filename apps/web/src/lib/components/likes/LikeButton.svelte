@@ -99,6 +99,9 @@
     // reach a conclusion and the write correctly refused rather than guessing.
     if (/another device|inconclusive/i.test(m)) return "Try again";
     if (/sign in/i.test(m)) return m; // already phrased for a person
+    // The unlock popup said yes but the server still refused: their records
+    // disagree for a moment. Say what happened rather than invite a loop.
+    if (/ticket_required/.test(m)) return "Not unlocked yet";
     return "Not saved — tap to retry";
   }
 

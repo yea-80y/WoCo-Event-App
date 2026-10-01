@@ -56,23 +56,52 @@ const STATEMENT_FORMATS: ReadonlySet<string> = new Set([
 export type RelayPayloadKind = "statement" | "other";
 
 /**
+ * Likes and follows (statements and their subject indexes). Writing them needs
+ * the same unlock as a name, a profile or a photo (lib/gate/check.ts): each one
+ * stamps platform storage, and a free account must not be able to spend it
+ * (owner decision 2026-10-01). Coaster credits are a separate rail and stay out.
+ */
+const SOCIAL_FORMATS: ReadonlySet<string> = new Set([
+  LIKE_STATEMENT_FORMAT,
+  FOLLOW_STATEMENT_FORMAT,
+  LIKE_SUBJECT_INDEX_FORMAT,
+  FOLLOW_SUBJECT_INDEX_FORMAT,
+]);
+
+/** The payload's own `format`, when it is hex-encoded JSON that names one. Never throws. */
+export function payloadFormat(payloadHex: string): string | null {
+  try {
+    const clean = payloadHex.startsWith("0x") ? payloadHex.slice(2) : payloadHex;
+    if (clean.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(clean)) return null;
+    const bytes = new Uint8Array(clean.length / 2);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (!parsed || typeof parsed !== "object") return null;
+    const format = (parsed as { format?: unknown }).format;
+    return typeof format === "string" ? format : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A like or follow write. A writer that hides the format is not one: readers
+ * validate the format, so such a chunk never counts as a like or follow, and
+ * the general relay limits bound it like any other write.
+ */
+export function isSocialPayload(payloadHex: string): boolean {
+  const format = payloadFormat(payloadHex);
+  return format !== null && SOCIAL_FORMATS.has(format);
+}
+
+/**
  * Which bucket a SOC payload belongs in. Never throws: anything that is not
  * JSON with a known statement `format` is "other". A sealed envelope is
  * ordinary JSON with no `format` and lands there too.
  */
 export function classifyRelayPayload(payloadHex: string): RelayPayloadKind {
-  try {
-    const clean = payloadHex.startsWith("0x") ? payloadHex.slice(2) : payloadHex;
-    if (clean.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(clean)) return "other";
-    const bytes = new Uint8Array(clean.length / 2);
-    for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
-    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
-    if (!parsed || typeof parsed !== "object") return "other";
-    const format = (parsed as { format?: unknown }).format;
-    return typeof format === "string" && STATEMENT_FORMATS.has(format) ? "statement" : "other";
-  } catch {
-    return "other";
-  }
+  const format = payloadFormat(payloadHex);
+  return format !== null && STATEMENT_FORMATS.has(format) ? "statement" : "other";
 }
 
 export type RelayBucket = "parent" | "statement" | "ip" | "global";
