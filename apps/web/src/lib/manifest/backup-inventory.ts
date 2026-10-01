@@ -4,7 +4,7 @@
  * The lenient history read this replaces collapsed "the manifest definitively
  * records no backups" and "we could not read the manifest" into one empty
  * array. Every consumer then ACTED on that ambiguity: the nudge told a
- * protected user to add a backup, the studio panel showed "No backup yet" over
+ * protected user to add a backup, the dashboard panel showed "No backup yet" over
  * a transient gateway fault, and — the one that guides an irreversible action —
  * the setup screen silently omitted the "adding a backup resurrects the ones
  * you removed" warning. A security surface may render uncertainty; it may not

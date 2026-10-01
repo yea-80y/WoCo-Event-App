@@ -1,7 +1,7 @@
 /**
  * Badges, drops and badge-gated ticket sales are OFF for launch
  * (FEATURES.badgesAllowed), and the client must not offer a door the server
- * refuses. The Objects TAB stays - it lists every published event's tickets - so
+ * refuses. The Objects PAGE stays - it lists every published event's tickets - so
  * only the creation and gating entry points are guarded.
  *
  * SOURCE SCAN, as in shop-flag-gate.test.ts: these are Svelte components, which
@@ -61,11 +61,11 @@ test("the Create menu offers no 'New object' while badges are off", () => {
   assertAllGuarded(read("lib/layouts/CreatorShell.svelte"), 'create("/creator/objects")', "CreatorShell.svelte");
 });
 
-test("the Objects TAB itself stays in the creator nav", () => {
-  const src = read("lib/layouts/CreatorShell.svelte");
+test("the Objects page stays reachable from the dashboard", () => {
+  const src = read("lib/creator/home/CreatorHome.svelte");
   const i = src.indexOf('navigate("/creator/objects")');
-  assert.notEqual(i, -1, "the Objects tab button is gone");
-  assert.ok(!guardedSpans(src).some(([a, b]) => i > a && i < b), "the Objects tab must not be hidden with badges");
+  assert.notEqual(i, -1, "the dashboard no longer links to the Objects page");
+  assert.ok(!guardedSpans(src).some(([a, b]) => i > a && i < b), "the Objects link must not be hidden with badges");
 });
 
 test("the Objects screen has no create button or create modal while badges are off", () => {

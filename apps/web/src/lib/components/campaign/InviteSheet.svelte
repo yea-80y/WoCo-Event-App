@@ -13,7 +13,7 @@
   import { onMount } from "svelte";
   import { subEnsName } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { studioRole } from "../../auth/studio-role.svelte.js";
+  import { organiserRole } from "../../auth/organiser-role.svelte.js";
   import { inviteSheet } from "../../campaign/invite-sheet.svelte.js";
   import { shareCodes } from "../../campaign/share-codes.js";
   import { loadShareInputs, type ShareInputs } from "../../campaign/share-inputs.js";
@@ -48,7 +48,7 @@
     if (auth.parent) {
       void loadShareInputs(
         auth.parent,
-        { organiser: studioRole.isOrganiser, hasSession: auth.hasSession },
+        { organiser: organiserRole.isOrganiser, hasSession: auth.hasSession },
         (next) => { if (live) inputs = next; },
       );
     }

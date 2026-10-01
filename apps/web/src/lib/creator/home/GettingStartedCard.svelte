@@ -74,7 +74,7 @@
     <header class="gs-head">
       <div>
         <span class="gs-kicker mono"><span class="gs-tag">00 //</span> GETTING STARTED</span>
-        <h2>Set up your studio</h2>
+        <h2>Get set up</h2>
       </div>
       <div class="gs-meta">
         <span class="gs-progress mono">{doneCount}/{steps.length}</span>

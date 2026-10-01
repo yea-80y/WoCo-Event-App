@@ -1,6 +1,6 @@
 <!--
   CreatorHome — the /creator landing.
-  Studio dashboard (not an events list). Three jobs for an organiser:
+  Organiser dashboard (not an events list). Three jobs for an organiser:
     1. Start something new (event / site)
     2. Pick up where you left off (drafts)
     3. Manage existing work (latest events + sites)
@@ -18,7 +18,7 @@
   import DiscardNameDialog from "../builder/DiscardNameDialog.svelte";
   import { discardPlanFor } from "../../sub-ens/discard-availability.js";
   import { onboarding } from "./onboarding.svelte.js";
-  import { studioRole } from "../../auth/studio-role.svelte.js";
+  import { organiserRole } from "../../auth/organiser-role.svelte.js";
   import { canProtectAccount } from "../../auth/backup-prompt.js";
   import WelcomeModal from "./WelcomeModal.svelte";
   import GettingStartedCard from "./GettingStartedCard.svelte";
@@ -37,6 +37,7 @@
   import Webhook from "lucide-svelte/icons/webhook";
   import Wallet from "lucide-svelte/icons/wallet";
   import Banknote from "lucide-svelte/icons/banknote";
+  import Layers from "lucide-svelte/icons/layers";
   import Settings from "lucide-svelte/icons/settings-2";
   import Plus from "lucide-svelte/icons/plus";
   import AlertCircle from "lucide-svelte/icons/circle-alert";
@@ -211,9 +212,9 @@
   onDestroy(() => clearInterval(clockTimer));
 
   // Remember on this device that the account organises, so WoCo shows the way
-  // back into Studio. Display only — nothing is gated on it.
+  // into organiser mode. Display only — nothing is gated on it.
   $effect(() => {
-    if (events.length > 0 || sites.length > 0 || stripeReady === true) studioRole.mark(auth.parent);
+    if (events.length > 0 || sites.length > 0 || stripeReady === true) organiserRole.mark(auth.parent);
   });
 
   // Drive data loading off auth.parent so sign-in, sign-out and account
@@ -321,13 +322,13 @@
 
 <WelcomeModal bind:open={welcomeOpen} />
 
-<div class="studio">
+<div class="dash">
 
   <!-- ── Hero stat strip ─────────────────────────────────────────────── -->
   <section class="hero">
     <div class="hero-row">
       <div class="hero-greet">
-        <span class="kicker kicker--plain"><span class="kicker-tag">STUDIO //</span> CREATOR PORTAL</span>
+        <span class="kicker kicker--plain"><span class="kicker-tag">ORGANISER //</span> DASHBOARD</span>
         <h1>
           {greeting}{#if auth.parent}, <span class="addr mono">{auth.parent.slice(0, 6)}…{auth.parent.slice(-4)}</span>{/if}.
         </h1>
@@ -365,7 +366,7 @@
   {#if !auth.isConnected}
     <section class="signin-callout card">
       <div>
-        <h2>Sign in to enter your studio</h2>
+        <h2>Sign in to see your dashboard</h2>
         <p>Connect your wallet, email, or passkey to start creating events and venue sites.</p>
       </div>
       <button class="btn btn--primary" onclick={() => loginRequest.request()}>Sign in</button>
@@ -712,6 +713,14 @@
         </div>
       </button>
 
+      <button class="tool" onclick={() => navigate("/creator/objects")}>
+        <Layers size={20} strokeWidth={2.25} />
+        <div>
+          <span class="tool-label">Objects</span>
+          <span class="tool-desc">Every ticket you've issued, by event.</span>
+        </div>
+      </button>
+
       <button class="tool" onclick={() => navigate("/creator/payouts")}>
         <Banknote size={20} strokeWidth={2.25} />
         <div>
@@ -785,7 +794,7 @@
 <style>
   /* ── Layout ─────────────────────────────────────────────────────── */
 
-  .studio {
+  .dash {
     max-width: 1100px;
     margin: 0 auto;
     padding: 0 1.25rem 4rem;
