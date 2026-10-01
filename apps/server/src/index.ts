@@ -32,7 +32,6 @@ import { sitesRouter } from "./routes/sites.js";
 import { shopsRouter } from "./routes/shops.js";
 import { objectsRouter } from "./routes/objects.js";
 import { issuerRouter } from "./routes/issuer.js";
-import { tickets } from "./routes/tickets.js";
 import { reservations } from "./routes/reservations.js";
 import { checkin, checkinOrganiser } from "./routes/checkin.js";
 import { ticketPage } from "./routes/ticket-page.js";
@@ -743,9 +742,6 @@ app.route("/api/profile", profiles);
 // Passkey-account recovery escrow (sealed identity-seed bundle) — see
 // docs/PASSKEY_RECOVERY_PLAN.md §11.6.
 app.route("/api/recovery", recovery);
-
-// Ticket actions (send email, etc.)
-app.route("/api/tickets", tickets);
 
 // Resend delivery webhooks (bounce/complaint → global suppression)
 app.route("/api/resend", resendWebhook);

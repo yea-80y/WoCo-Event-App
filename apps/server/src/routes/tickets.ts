@@ -1,5 +1,3 @@
-import { Hono } from "hono";
-import type { AppEnv } from "../types.js";
 import type { SitePalette, TicketDisplay } from "@woco/shared";
 import { buildTicketLink, TICKET_IMAGE_GATEWAYS } from "@woco/shared";
 import { getFromAddress } from "../lib/email/client.js";
@@ -8,12 +6,13 @@ import { renderTicketCardPng } from "../lib/ticket/render-card.js";
 import { mintGateToken } from "../lib/gate/token.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 
-const tickets = new Hono<AppEnv>();
-
-/** Rate limiter: email → timestamps */
-const emailRateMap = new Map<string, number[]>();
-const RATE_LIMIT = 3;
-const RATE_WINDOW = 300_000; // 5 min
+/*
+ * The ticket email: built and sent by Stripe fulfilment only, to the verified
+ * purchase address. There is deliberately no HTTP route here. A public
+ * `POST /api/tickets/send-email` (v1 claim rail) sent this email to any
+ * address with caller-chosen event text and QR content, unauthenticated; it
+ * had no callers after #207 and was removed on 2026-10-02.
+ */
 
 export interface TicketEmailOpts {
   to: string;
@@ -36,10 +35,9 @@ export interface TicketEmailOpts {
    *  ticket page tries it first for the image. */
   imageGateway?: string;
   /** Add the "Add to WoCo" button (Route A gate token). Set ONLY on
-   *  paths where `to` is the VERIFIED purchase email (Stripe webhook). The
-   *  public /send-email route must never set it: its recipient is arbitrary,
-   *  and a gate token minted for an arbitrary inbox would let anyone holding
-   *  a leaked /t link bind the ticket without knowing the purchase email. */
+   *  paths where `to` is the VERIFIED purchase email (Stripe webhook): a gate
+   *  token minted for an arbitrary inbox would let anyone holding a leaked /t
+   *  link bind the ticket without knowing the purchase email. */
   profileCta?: boolean;
   /** Organiser contact address for the Reply-To header. Only affects where
    *  replies land — the From domain stays platform-owned so a bad organiser
@@ -278,57 +276,3 @@ export async function sendTicketEmail(opts: TicketEmailOpts): Promise<void> {
   );
 }
 
-tickets.post("/send-email", async (c) => {
-  const body = await c.req.json().catch(() => null) as {
-    to?: string;
-    eventTitle?: string;
-    eventDate?: string;
-    eventLocation?: string;
-    seriesName?: string;
-    edition?: number | null;
-    totalSupply?: number;
-    qrContent?: string;
-    buyerName?: string;
-    /** Multi-ticket: overrides single edition+qrContent when present */
-    tickets?: Array<{ edition: number | null; qrContent: string }>;
-  } | null;
-
-  if (!body?.to || !body.to.includes("@")) {
-    return c.json({ ok: false, error: "Valid email address required" }, 400);
-  }
-  if (!body.eventTitle || (!body.qrContent && !body.tickets?.length)) {
-    return c.json({ ok: false, error: "Missing required fields" }, 400);
-  }
-
-  // Rate limit per recipient
-  const now = Date.now();
-  const history = (emailRateMap.get(body.to) ?? []).filter((t) => now - t < RATE_WINDOW);
-  if (history.length >= RATE_LIMIT) {
-    return c.json({ ok: false, error: "Too many emails to this address — try again shortly" }, 429);
-  }
-  emailRateMap.set(body.to, [...history, now]);
-
-  const ticketsList = body.tickets?.length
-    ? body.tickets
-    : [{ edition: body.edition ?? null, qrContent: body.qrContent! }];
-
-  try {
-    await sendTicketEmail({
-      to: body.to,
-      eventTitle: body.eventTitle,
-      eventDate: body.eventDate,
-      eventLocation: body.eventLocation,
-      seriesName: body.seriesName,
-      totalSupply: body.totalSupply,
-      tickets: ticketsList,
-      buyerName: body.buyerName,
-    });
-    return c.json({ ok: true });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Email send failed";
-    console.error("[tickets/send-email] error:", err);
-    return c.json({ ok: false, error: msg }, 500);
-  }
-});
-
-export { tickets };
