@@ -263,6 +263,7 @@ export async function requireAuth(c: Context<AppEnv>, next: Next) {
   // Make parent + session + parsed body available to downstream handlers
   c.set("parentAddress", result.parentAddress!);
   c.set("sessionAddress", result.sessionAddress!);
+  c.set("sessionRank", result.rank ?? "owner");
   c.set("body", body);
 
   await next();

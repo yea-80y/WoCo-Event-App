@@ -6,12 +6,14 @@ import {
   FEATURES,
   type SessionDelegation,
   type VerifyDelegationResult,
+  type SessionRank,
 } from "@woco/shared";
 import { isSessionRevoked } from "./revocation.js";
 import { verifySmartWalletTypedData } from "./smart-wallet-client.js";
 import { isKernelOwner, readKernelOwner, type OwnerReadOptions } from "./kernel-owner.js";
 import { isKernelKnownDeployedOnAnyChain } from "./kernel-deployed.js";
 import { decideSmartWalletPath } from "./smart-wallet-gate.js";
+import { lookupDeviceGrant, type DeviceGrantState } from "./device-grants.js";
 
 /**
  * Seam for the two authorities the smart-wallet gate consults (#209).
@@ -38,12 +40,21 @@ export interface DelegationVerifyDeps {
    * Absent = unrestricted. See owner-read-budget.ts.
    */
   chainReadAllowed?: () => boolean;
+  /**
+   * Where device grants are read from (#746). The server registry today; an
+   * onchain registry would answer the same question, which is why it is a seam.
+   */
+  lookupDeviceGrant: (
+    parent: string,
+    grantee: string,
+  ) => DeviceGrantState | undefined | Promise<DeviceGrantState | undefined>;
 }
 
 const DEFAULT_DEPS: DelegationVerifyDeps = {
   isKernelKnownDeployedOnAnyChain,
   readKernelOwner,
   verifySmartWalletTypedData,
+  lookupDeviceGrant,
 };
 
 /**
@@ -62,7 +73,10 @@ const DEFAULT_DEPS: DelegationVerifyDeps = {
  *       /recovered accounts; see kernel-owner.ts). This is the passkey/web3auth
  *       path since the 2026-07 split-brain fix: the raw owner key signs,
  *       message.parent stays the Kernel identity;
- *    c. ERC-1271 (deployed smart account) or ERC-6492 (counterfactual smart
+ *    c. Granted device (#746): recovered is a key the Kernel's CURRENT owner
+ *       granted (device-grants.ts), the grant not removed, and the delegation
+ *       newer than the device's last removal. Session rank "device";
+ *    d. ERC-1271 (deployed smart account) or ERC-6492 (counterfactual smart
  *       account) via RPC — smart wallets (CSW) and pre-fix Kernel-signed
  *       delegations. Feature-flagged with FEATURES.coinbaseLoginAllowed
  *       (#173): while CSW login is off, this path is not offered at all.
@@ -134,6 +148,7 @@ export async function verifyDelegation(
     //      ERC-1271 (deployed smart account) / ERC-6492 (counterfactual),
     //      eth_call via RPC — CSW and pre-fix Kernel-signed delegations.
     let validSig = false;
+    let rank: SessionRank = "owner";
     if (parentSig.length === 132) {
       let recovered: string | null = null;
       try {
@@ -146,10 +161,36 @@ export async function verifyDelegation(
       } catch {
         recovered = null; // not ecrecover-able — fall through to (2)
       }
-      if (recovered) {
-        validSig =
-          recovered === message.parent.toLowerCase() ||
-          (await isKernelOwner(recovered, message.parent, readOpts));
+      const parent = message.parent.toLowerCase();
+      if (recovered === parent) {
+        validSig = true;
+      } else if (recovered) {
+        // Grant before owner: asking whether a DEVICE key owns the Kernel is a
+        // cached denial, which #273 re-reads from the chain - every device request
+        // would pay an RPC call. Asking about the grant's signer, the owner, is a
+        // cached confirmation. isKernelOwner also records the account with the
+        // owner as the presenting key (#200/#210), as an owner session would.
+        const grant = await deps.lookupDeviceGrant(parent, recovered);
+        if (
+          grant?.active &&
+          issuedAt > (grant.notBefore ?? -Infinity) &&
+          (await isKernelOwner(grant.signer, parent, readOpts))
+        ) {
+          validSig = true;
+          rank = "device";
+        } else if (await isKernelOwner(recovered, parent, readOpts)) {
+          // A device made the main one still has its old grant: it is the owner now.
+          validSig = true;
+        } else if (grant && !grant.active) {
+          // Only an explicit removal earns this code. A grant whose signer failed
+          // the owner check may be an RPC outage, and telling a device it was
+          // removed during one is a wrong diagnosis it cannot recover from.
+          return {
+            valid: false,
+            error: "This device was removed from the account",
+            code: AuthErrorCode.DEVICE_REMOVED,
+          };
+        }
       }
     }
     if (!validSig) {
@@ -227,6 +268,7 @@ export async function verifyDelegation(
       valid: true,
       parentAddress: getAddress(message.parent),
       sessionAddress: getAddress(message.session),
+      rank,
     };
   } catch {
     return { valid: false, error: "Verification failed" };

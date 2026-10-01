@@ -94,6 +94,29 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     },
   },
   {
+    store: "auth/device-grants",
+    drive: async () => {
+      const m = await import("../src/lib/auth/device-grants.js");
+      const sh = await import("@woco/shared");
+      const { Wallet } = await import("ethers");
+      const owner = Wallet.createRandom();
+      const grant = {
+        parent: OWNER,
+        grantee: Wallet.createRandom().address.toLowerCase(),
+        credentialTag: BYTES32,
+        issuedAt: new Date().toISOString(),
+        nonce: "store-modes-nonce",
+      };
+      const grantSig = await owner.signTypedData(
+        sh.DEVICE_GRANT_DOMAIN,
+        sh.DEVICE_GRANT_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
+        grant,
+      );
+      const r = await m.submitDeviceGrant(OWNER, { grant, grantSig }, async () => true);
+      if (!r.ok) throw new Error(`device grant not written: ${r.refusal}`);
+    },
+  },
+  {
     store: "issuer/binding",
     drive: async () => {
       const m = await import("../src/lib/issuer/binding.js");

@@ -499,6 +499,26 @@ Revocation: `POST /api/auth/revoke-session` (one nonce) or `/api/auth/revoke-all
 for a parent issued before now). State lives in `.data/revoked-sessions.json` — losing that file
 un-revokes.
 
+### Added passkeys: device grants (#746)
+
+A Kernel account has one onchain owner, the main passkey. Another passkey of the same person
+signs sessions under a **device grant**: an EIP-712 `DeviceGrant { parent, grantee,
+credentialTag, issuedAt, nonce }` (domain "WoCo Device Grant", no chainId) signed raw by the
+owner, registered at `POST /api/auth/device-grants`. A delegation whose signer is neither the
+parent nor its owner passes when that key has a live grant, the grant's signer still owns the
+Kernel, and the delegation is newer than the key's last removal; its session rank is `device`
+(`whoami` reports it). Removal is a `RevokeDeviceGrant { parent, grantee, nonce }` signed by the
+owner or by the device itself, effective on the next request; a removed device gets
+`DEVICE_REMOVED`, never re-minted. A grant is dead the moment the owner rotates. Depth 1: a
+granted key never grants.
+
+Every entry is a signed statement and the registry's rules are ones a contract could run (owner
+check, one-use nonces, 10 live grants per owner), so the list can move onchain, or be checked by
+the client from its own copy, without re-signing anything: `verify-delegation.ts` reads it through
+one seam, `lookupDeviceGrant`. `revoke-all` also ends device sessions; a device whose grant is live
+signs a new one on its next request. Store: `.data/device-grants.json`
+(`apps/server/src/lib/auth/device-grants.ts`).
+
 Paths that deliberately need no session: guest Stripe checkout from the embed widget, the public
 ticket page `/t/…`, and the ENS CCIP-Read gateway.
 
