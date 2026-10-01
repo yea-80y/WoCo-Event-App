@@ -187,6 +187,21 @@ const ARBSYS_ABI = [
   },
 ] as const;
 
+/**
+ * Does a FRESH cache entry name `eoa` as `parent`'s owner? Never reads the chain,
+ * never records anything, and a `false` decides nothing (#273: a cache may confirm,
+ * never condemn). For callers choosing which check to run first so that the one
+ * they run is a cached confirmation (verify-delegation.ts, #746).
+ */
+export function cachedOwnerIs(parent: string, eoa: string): boolean {
+  const cached = _ownerCache.get(parent.toLowerCase());
+  return (
+    cached !== undefined &&
+    Date.now() - cached.fetchedAt < OWNER_CACHE_TTL_MS &&
+    cached.owner === eoa.toLowerCase()
+  );
+}
+
 /** Deterministic Kernel v3.1 address for an owner EOA (lowercased), or null on
  *  computation failure. RPC-free for EntryPoint 0.7. */
 export async function kernelAddressOfOwner(eoaAddress: string): Promise<string | null> {
