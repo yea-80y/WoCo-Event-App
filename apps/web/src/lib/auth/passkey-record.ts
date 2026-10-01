@@ -3,14 +3,15 @@
  * auth/passkey-record.ts. This module reads them on a cold sign-in and writes one
  * when an account is created.
  *
- * WHEN A RECORD IS WRITTEN: once, at account creation, and only when the passkey
- * was created on this device ("platform"). That is the one moment the right account
- * is known for certain. A sign-in cannot be trusted to write one: a passkey answering
- * by QR code may carry the wrong PRF output, and a record written then would pin the
- * passkey to the wrong account for every later device.
+ * WHEN A RECORD IS WRITTEN: once, at account creation - the one moment the account
+ * is known for certain, because whatever the creation ceremony answered IS the
+ * account, even by QR code. A sign-in never writes one: a passkey answering by QR
+ * code may carry a different PRF output than the account was made with, and a
+ * record written then would pin the passkey to the wrong account.
  *
- * WHAT A READ DECIDES: only to REFUSE. Absent or unreadable proceeds exactly as
- * before this guard existed, so a gateway outage never locks anyone out.
+ * WHAT A READ DECIDES: only to REFUSE. Absent, unreadable, or a read that throws
+ * proceeds exactly as before this guard existed, so an outage never locks anyone
+ * out.
  */
 
 import {
@@ -22,7 +23,6 @@ import {
   type PasskeyRecord,
 } from "@woco/shared/auth/passkey-record";
 import type { ContentFeedResult } from "../swarm/content-feed.js";
-import type { PasskeyAttachment } from "./passkey-account.js";
 
 export type PasskeyRecordVerdict = "proceed" | "mismatch" | "backup";
 
@@ -41,11 +41,6 @@ export function credentialIdBytes(credentialId: string): Uint8Array {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
-}
-
-/** Only a passkey created on this device may write its account's record. */
-export function mayWriteRecordAtCreation(attachment: PasskeyAttachment): boolean {
-  return attachment === "platform";
 }
 
 /**
@@ -78,7 +73,11 @@ async function routeFor() {
   return FEED_ROUTES.recoveryPortability;
 }
 
-/** Version 0 of a credential's record, the only version anyone reads. */
+/**
+ * Version 0 of a credential's record, the only version anyone reads. Not `thorough`:
+ * a false absent only misses a refusal (today's behaviour), while thorough would add
+ * a server round trip to every cold sign-in on a passkey that has no record.
+ */
 export async function readPasskeyRecord(credentialId: Uint8Array): Promise<ContentFeedResult<unknown>> {
   const { address } = passkeyRecordOwnerKey(credentialId);
   const { readContentFeedAtVersion } = await import("../swarm/content-feed.js");
@@ -110,7 +109,15 @@ export async function guardPasskeyRecord(
   deps: Pick<PasskeyRecordDeps, "read"> = DEFAULT_DEPS,
 ): Promise<void> {
   const id = credentialIdBytes(credentialId);
-  const verdict = passkeyRecordVerdict(await deps.read(id), id, parent);
+  let read: ContentFeedResult<unknown>;
+  try {
+    read = await deps.read(id);
+  } catch (e) {
+    // A network exception from the reader is an unreadable record, not a refusal.
+    console.warn("[auth] passkey record read failed - proceeding without the check:", e);
+    read = { status: "unavailable", reason: String(e) };
+  }
+  const verdict = passkeyRecordVerdict(read, id, parent);
   if (verdict === "mismatch") throw new PasskeyRecordMismatchError();
   if (verdict === "backup") {
     const { PasskeyIsBackupError } = await import("./passkey-account.js");

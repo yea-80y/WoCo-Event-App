@@ -858,6 +858,8 @@ async function _maybeWritePasskeyRecord(): Promise<void> {
       return;
     }
     if (_kind !== "passkey" || _parent?.toLowerCase() !== pending.parent.toLowerCase()) return;
+    // Never mint a session for this: a write that waits costs nothing, a prompt does.
+    if (!_sessionAddress) return;
     const { ensurePasskeyRecord } = await import("./passkey-record.js");
     const outcome = await ensurePasskeyRecord({ credentialId: pending.credentialId, parent: pending.parent });
     if (outcome === "unavailable") return; // the next session retries
@@ -1123,6 +1125,9 @@ async function init(): Promise<void> {
         _parent = storedParent;
         _seedAddress = storedSeedAddr;
         await _restoreCachedAuth();
+        // A record write that failed earlier retries on load, not only at the next
+        // session mint (up to 30 days away). Needs the restored session; no prompt.
+        void _maybeWritePasskeyRecord();
       } else {
         // Missing SEED_ADDRESS = a pre-Kernel-upgrade session (parent was the
         // PRF-EOA, not the Kernel). Force a clean re-login so the parent becomes
@@ -2003,6 +2008,9 @@ async function loginPasskeyResult(
     _passkeyPrfSecret = account.prfSecret;
     _seedAddress = account.address;
     _kernel = kernel;
+    // Queued the moment the account exists, before anything can mint its first
+    // session (#746): whatever this creation answered IS the account.
+    if (mode === "create") _setPendingPasskeyRecord({ credentialId: account.credentialId, parent: kernel.address });
 
     // An applied envelope means a rotation put THIS credential in charge — any
     // session this device already holds for the preserved parent predates it
@@ -2040,13 +2048,6 @@ async function loginPasskeyResult(
 
     _cleanupAccountListener?.();
     _cleanupAccountListener = null;
-
-    if (mode === "create") {
-      const { mayWriteRecordAtCreation } = await import("./passkey-record.js");
-      if (mayWriteRecordAtCreation(account.attachment)) {
-        _setPendingPasskeyRecord({ credentialId: account.credentialId, parent: kernel.address });
-      }
-    }
 
     console.debug(`[auth] passkey login (full path): ceremony ${Math.round(tCeremony - t0)}ms, total ${Math.round(performance.now() - t0)}ms`);
     return { ok: true };

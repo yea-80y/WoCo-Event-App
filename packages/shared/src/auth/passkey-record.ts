@@ -17,12 +17,12 @@
  *   record  = { v: 1, kind: "main", commit }
  *   commit  = keccak256(PASSKEY_RECORD_COMMIT_LABEL || parent (20 bytes) || credentialId)
  *
- * Version 0 only, because a SOC written at an existing address is a silent no-op:
- * the first record wins and readers ignore anything appended after it. The commit
- * hides both the account and the credential id, so the chunk says only that a
- * record exists. Anyone holding a credential id could write version 0 first, but
- * credential ids are seen only by our origin and the authenticator, and the most a
- * forged record can do is REFUSE a sign-in, never grant one.
+ * Readers read version 0 only. Our bee keeps the first upload at an address, but a
+ * storer may replace it with a later write stamped by the same batch, so "first
+ * write wins" holds for our gateway, not network-wide. Either way a record can only
+ * REFUSE a sign-in, never grant one, and writing one needs the credential id, which
+ * only our origin and the authenticator ever see. The commit hides both the account
+ * and the credential id, so the chunk says only that a record exists.
  *
  * Backup passkeys are recognised without a record: their WebAuthn user handle
  * carries a frozen prefix (`passkey-backup-handle.ts`), which every assertion returns.

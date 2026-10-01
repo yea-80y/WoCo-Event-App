@@ -129,7 +129,17 @@ test("Samsung Pass: nothing at creation -> one assertion against THIS credential
   const acc = await createPasskeyAccount();
   assert.equal(calls.get.length, 1, "the fallback assertion must run even without prf.enabled");
   assert.deepEqual(allowedIds(calls.get[0]), [[...RAW_ID]], "pinned to the credential just created");
+  const pk = (calls.get[0] as { publicKey: { userVerification?: string; rpId?: string } }).publicKey;
+  assert.equal(pk.userVerification, "required", "the fallback must still require the user");
+  assert.equal(pk.rpId, "localhost", "the fallback must ask the same RP");
   assert.match(acc.address, /^0x[0-9a-f]{40}$/);
+});
+
+test("creation reports how the passkey was made, including QR-code and unknown", async () => {
+  reset({ createExt: { prf: { results: { first: PRF } } }, attachment: "cross-platform" });
+  assert.equal((await createPasskeyAccount()).attachment, "cross-platform");
+  reset({ createExt: { prf: { results: { first: PRF } } }, attachment: undefined });
+  assert.equal((await createPasskeyAccount()).attachment, null);
 });
 
 test("prf.enabled without a value still takes the same path", async () => {

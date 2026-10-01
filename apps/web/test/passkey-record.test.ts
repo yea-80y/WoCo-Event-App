@@ -4,7 +4,7 @@
  * The property that matters most is the asymmetry: a record can only ever REFUSE.
  * No record, an unreadable one, or a format this build does not know must all let
  * the sign-in proceed exactly as before - a gateway outage must never lock anyone
- * out. And a record must be written only from a passkey created on this device.
+ * out.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -15,7 +15,6 @@ const {
   credentialIdBytes,
   ensurePasskeyRecord,
   guardPasskeyRecord,
-  mayWriteRecordAtCreation,
   passkeyRecordVerdict,
   PasskeyRecordMismatchError,
 } = await import("../src/lib/auth/passkey-record.ts");
@@ -62,10 +61,18 @@ test("guard throws the refusal the login modal shows, and nothing otherwise", as
   assert.doesNotMatch(msg, /PRF|0x/);
 });
 
-test("only a passkey created on this device may write its record", () => {
-  assert.equal(mayWriteRecordAtCreation("platform"), true);
-  assert.equal(mayWriteRecordAtCreation("cross-platform"), false, "a QR-code creation may carry the wrong PRF output");
-  assert.equal(mayWriteRecordAtCreation(null), false, "unknown is not on-device");
+test("a read that THROWS (a client-side network exception) proceeds - it is unreadable, not a refusal", async () => {
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    await guardPasskeyRecord(CRED, OTHER, {
+      read: async () => {
+        throw new TypeError("Failed to fetch");
+      },
+    });
+  } finally {
+    console.warn = warn;
+  }
 });
 
 test("ensure: writes version 0 once; leaves an existing record; retries when unreadable", async () => {
