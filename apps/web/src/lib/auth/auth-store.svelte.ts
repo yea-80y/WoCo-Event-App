@@ -832,6 +832,46 @@ async function _verifyPortabilityEnvelope(
  * uses, so the two callers can never drift on fields; this caller's posture is
  * best-effort, so any `unavailable` is its silent no-op.
  */
+/**
+ * A just-created account's passkey record (#746) waits here until a session exists:
+ * the SOC relay needs one, and a new account has none until its first action. Kept
+ * in localStorage so a reload in between does not lose it; one slot, keyed by the
+ * account, is enough because only creation sets it.
+ */
+const PENDING_PASSKEY_RECORD_KEY = "woco:passkey-record-pending";
+
+function _setPendingPasskeyRecord(pending: { credentialId: string; parent: string }): void {
+  try {
+    globalThis.localStorage?.setItem(PENDING_PASSKEY_RECORD_KEY, JSON.stringify(pending));
+  } catch {
+    /* without storage the record waits for nothing - the guard just stays inactive */
+  }
+}
+
+async function _maybeWritePasskeyRecord(): Promise<void> {
+  try {
+    const raw = globalThis.localStorage?.getItem(PENDING_PASSKEY_RECORD_KEY);
+    if (!raw) return;
+    const pending = JSON.parse(raw) as { credentialId?: unknown; parent?: unknown };
+    if (typeof pending.credentialId !== "string" || typeof pending.parent !== "string") {
+      globalThis.localStorage?.removeItem(PENDING_PASSKEY_RECORD_KEY);
+      return;
+    }
+    if (_kind !== "passkey" || _parent?.toLowerCase() !== pending.parent.toLowerCase()) return;
+    // Never mint a session for this: a write that waits costs nothing, a prompt does.
+    if (!_sessionAddress) return;
+    const { ensurePasskeyRecord } = await import("./passkey-record.js");
+    const outcome = await ensurePasskeyRecord({ credentialId: pending.credentialId, parent: pending.parent });
+    if (outcome === "unavailable") return; // the next session retries
+    if (outcome === "conflict") {
+      console.error("[auth] this passkey already has a record naming another account - left unchanged");
+    }
+    globalThis.localStorage?.removeItem(PENDING_PASSKEY_RECORD_KEY);
+  } catch (e) {
+    console.warn("[auth] passkey record write failed (non-fatal, retried next session):", e);
+  }
+}
+
 async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
   try {
     if (_kind !== "passkey") return;
@@ -1085,6 +1125,9 @@ async function init(): Promise<void> {
         _parent = storedParent;
         _seedAddress = storedSeedAddr;
         await _restoreCachedAuth();
+        // A record write that failed earlier retries on load, not only at the next
+        // session mint (up to 30 days away). Needs the restored session; no prompt.
+        void _maybeWritePasskeyRecord();
       } else {
         // Missing SEED_ADDRESS = a pre-Kernel-upgrade session (parent was the
         // PRF-EOA, not the Kernel). Force a clean re-login so the parent becomes
@@ -1932,6 +1975,14 @@ async function loginPasskeyResult(
       override ? { address: override } : undefined,
     );
 
+    // #746: refuse a passkey whose record names another account - Apple's
+    // QR-code PRF bug, or a backup picked here - BEFORE this login commits
+    // anything, instead of opening an empty account. A new passkey has no record.
+    if (mode === "signin") {
+      const { guardPasskeyRecord } = await import("./passkey-record.js");
+      await guardPasskeyRecord(account.credentialId, kernel.address);
+    }
+
     await _clearStaleAuthForSwitch(kernel.address);
 
     // Persist the escrow-restored seed + durable binding (mirrors recoverAndRekey).
@@ -1957,6 +2008,9 @@ async function loginPasskeyResult(
     _passkeyPrfSecret = account.prfSecret;
     _seedAddress = account.address;
     _kernel = kernel;
+    // Queued the moment the account exists, before anything can mint its first
+    // session (#746): whatever this creation answered IS the account.
+    if (mode === "create") _setPendingPasskeyRecord({ credentialId: account.credentialId, parent: kernel.address });
 
     // An applied envelope means a rotation put THIS credential in charge — any
     // session this device already holds for the preserved parent predates it
@@ -2083,7 +2137,10 @@ async function ensureSession(): Promise<boolean> {
       // a recovered passkey account if it hasn't been written yet (covers device A
       // right after recovery + an already-recovered Account #2). Fire-and-forget;
       // never block the session on it.
-      if (_kind === "passkey") void _maybeBackfillPortabilityEnvelope();
+      if (_kind === "passkey") {
+        void _maybeBackfillPortabilityEnvelope();
+        void _maybeWritePasskeyRecord();
+      }
       return true;
     } catch (e) {
       console.error("[auth] session delegation failed:", e);
