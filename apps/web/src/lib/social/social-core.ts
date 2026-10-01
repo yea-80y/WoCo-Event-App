@@ -98,7 +98,11 @@ export type SocialWriteResult =
  * the schema is CLOSED, so anything else at this address is foreign bytes, and
  * a display path should show "not liked", not an error.
  */
-export async function readStatement(signer: SocialSigner, kind: SocialKind, subject: Hex0x): Promise<boolean | null> {
+export async function readStatement(
+  signer: Pick<SocialSigner, "address">,
+  kind: SocialKind,
+  subject: Hex0x,
+): Promise<boolean | null> {
   const k = KINDS[kind];
   // `skipLegacy`: statement feeds were born versioned, so a pre-versioning chunk
   // cannot exist — and here ABSENT is the ordinary case, since most subjects are
@@ -154,7 +158,7 @@ export async function writeStatement(
 }
 
 /** Every subject `signer` has ever written a statement about, for this kind. */
-export async function readSubjects(signer: SocialSigner, kind: SocialKind): Promise<Hex0x[]> {
+export async function readSubjects(signer: Pick<SocialSigner, "address">, kind: SocialKind): Promise<Hex0x[]> {
   const k = KINDS[kind];
   const res = await readBandedContentFeed<unknown>(signer.address, k.indexTopic, { route: k.route });
   if (res.status !== "found" || !k.validateIndex(res.value)) return [];
@@ -172,7 +176,7 @@ export type MyFollowsRead =
  * once followed, so each statement is read (four at a time) to leave out the
  * ones unfollowed.
  */
-export async function readFollows(signer: SocialSigner): Promise<MyFollowsRead> {
+export async function readFollows(signer: Pick<SocialSigner, "address">): Promise<MyFollowsRead> {
   const k = KINDS.follow;
   const index = await readBandedContentFeed<unknown>(signer.address, k.indexTopic, { route: k.route });
   if (index.status === "unavailable") return { status: "unavailable" };

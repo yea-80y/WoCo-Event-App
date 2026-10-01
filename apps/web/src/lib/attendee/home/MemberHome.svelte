@@ -61,6 +61,8 @@
 
   $effect(() => {
     const parent = auth.parent;
+    // Re-read when the keys unlock: until then a passkey account's list cannot open.
+    void auth.hasIdentitySeed;
     backupRead = null;
     if (!parent || !canProtectAccount(auth.kind)) return;
     let current = true;

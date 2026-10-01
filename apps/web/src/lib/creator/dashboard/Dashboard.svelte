@@ -14,7 +14,7 @@
     type ServiceNoticeType,
   } from "@woco/shared";
   import { getEventSWR, getEventOrdersSWR } from "../../api/creator-cache.js";
-  import { restoreIdentitySeed } from "../../auth/identity-seed.js";
+  import UnlockPanel from "../../components/auth/UnlockPanel.svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
   import { onMount } from "svelte";
@@ -39,6 +39,9 @@
   let decrypting = $state(false);
   let error = $state<string | null>(null);
   let decryptError = $state<string | null>(null);
+  // The account keys are locked on this device (#746 fix 1): sales still show, and
+  // the attendee details wait for one tap rather than asking on page open.
+  let ordersLocked = $state(false);
 
   let activeTab = $state<"orders" | "broadcast" | "payments" | "door" | "edit">("orders");
 
@@ -423,8 +426,11 @@
    * Decrypt the currently-loaded orders with the organiser's seed-derived key.
    * Replaces the displayed map wholesale. Safe to call multiple times (e.g.
    * once for cached data, again when fresh arrives).
+   *
+   * `prompt` only from a tap: on page open a locked seed shows the unlock panel
+   * instead of a passkey or wallet sheet nobody asked for (#746 fix 1).
    */
-  async function decryptCurrent(): Promise<void> {
+  async function decryptCurrent(prompt = false): Promise<void> {
     if (!ordersResponse) return;
     const hasEncryptedOrders = ordersResponse.orders.some((o) => !!o.encryptedOrder);
     if (!hasEncryptedOrders) return;
@@ -436,23 +442,26 @@
       decrypting = false;
       return;
     }
-    // identity seed is keyed by the PRF-EOA address for passkey (invariant #1), the
-    // parent for everyone else — auth.seedAddress resolves the right one.
-    let identitySeed = await restoreIdentitySeed(auth.seedAddress);
-    if (!identitySeed) {
-      const pk = await auth.ensureIdentitySeed();
-      if (!pk) {
-        decryptError = "You cancelled the signature, so your orders stay locked.";
+    let identitySeed = await auth.getIdentitySeed();
+    if (!identitySeed && prompt) {
+      if (!(await auth.ensureAccountSetup({ identity: true }))) {
+        decryptError = "Attendee details stay locked until you confirm it's you.";
         decrypting = false;
         return;
       }
-      identitySeed = await restoreIdentitySeed(auth.seedAddress);
+      identitySeed = await auth.getIdentitySeed();
+      if (!identitySeed) {
+        decryptError = "No signing key on this device. Restore from recovery to read order details.";
+        decrypting = false;
+        return;
+      }
     }
     if (!identitySeed) {
-      decryptError = "No signing key on this device. Restore from recovery to read order details.";
+      ordersLocked = true;
       decrypting = false;
       return;
     }
+    ordersLocked = false;
 
     // The X-Wing order key (#642) and the box opener, loaded on first use.
     const [{ deriveXWingKeypairFromSeed }, { openBoxJson, orderSealContext }] = await Promise.all([
@@ -488,6 +497,11 @@
 
     decrypting = false;
   }
+
+  // Unlocked elsewhere (a publish, another tab of this page): show the details.
+  $effect(() => {
+    if (auth.hasIdentitySeed && ordersLocked) void decryptCurrent();
+  });
 
   onMount(async () => {
     // Load webhook config from localStorage
@@ -681,7 +695,7 @@
         orders={ordersResponse.orders}
         {decryptedOrders}
         {decrypting}
-        onEnsureDecrypted={decryptCurrent}
+        onEnsureDecrypted={() => decryptCurrent(true)}
       />
     {:else if activeTab === "broadcast"}
       <!-- Broadcast tab -->
@@ -992,6 +1006,10 @@
 
       {#if decryptError}
         <p class="warning">{decryptError}</p>
+      {/if}
+
+      {#if ordersLocked}
+        <UnlockPanel subject="Attendee details" action="Show attendees" onUnlocked={() => decryptCurrent()} />
       {/if}
 
       {@const grouped = groupBySeries(ordersResponse.orders)}

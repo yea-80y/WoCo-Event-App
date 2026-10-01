@@ -5,7 +5,6 @@
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { restoreIdentitySeed } from "../../auth/identity-seed.js";
   import { ensureIssuingKey } from "../../auth/issuing-key.js";
   import { buildEventManifests } from "../../object/event-builder.js";
   import { createEventStreaming, registerSeriesOnChain, signEventFeedSoc, type PublishProgress } from "../../api/events.js";
@@ -149,7 +148,7 @@
       // extra popup. The server publishes it as its own chunk and names it in the
       // feed; `createEventStreaming` refuses to sign a feed naming any other.
       let encryptionPublicKey: string | undefined;
-      const identitySeed = auth.seedAddress ? await restoreIdentitySeed(auth.seedAddress) : null;
+      const identitySeed = await auth.getIdentitySeed();
       if (identitySeed) {
         const [{ deriveXWingKeypairFromSeed }, { bytesToHex }] = await Promise.all([
           import("@woco/shared/crypto/xwing"),

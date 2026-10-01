@@ -48,11 +48,14 @@
     working = true;
     error = null;
     try {
-      // The cancellation itself needs no signing key. The page feed does, and
-      // only a key already on this device is used: no prompt mid-cancellation.
+      // The cancellation itself needs no signing key. The page feed does: ask for
+      // the passkey up front, while this tap is still the gesture (after a reload
+      // the keys are locked, #746 fix 1). Declined, the cancellation and refunds
+      // still go ahead - only the page is not updated - so nothing prompts later.
       let feedSigner: ContentFeedSigner | null = null;
       if (event.creatorFeedSigner) {
         try {
+          await auth.ensureAccountSetup({ identity: true });
           const signer = await auth.getContentFeedSignerIfPresent();
           if (signer && signer.address.toLowerCase() === event.creatorFeedSigner.toLowerCase()) feedSigner = signer;
         } catch {
