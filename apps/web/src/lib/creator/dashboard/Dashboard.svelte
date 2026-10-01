@@ -445,7 +445,9 @@
     let identitySeed = await auth.getIdentitySeed();
     if (!identitySeed && prompt) {
       if (!(await auth.ensureAccountSetup({ identity: true }))) {
-        decryptError = "Attendee details stay locked until you confirm it's you.";
+        decryptError = auth.seedUnavailable
+          ? "Your account keys aren't on this device yet. Sign in again once your backup can be reached."
+          : "Attendee details stay locked until you confirm it's you.";
         decrypting = false;
         return;
       }
@@ -498,9 +500,17 @@
     decrypting = false;
   }
 
-  // Unlocked elsewhere (a publish, another tab of this page): show the details.
+  // Unlocked - by the panel's tap or elsewhere this app open: show the details.
+  // Locked again (the page sat hidden past the relock): hide them, and show the
+  // panel, so a phone found unlocked does not keep attendee details on screen.
   $effect(() => {
-    if (auth.hasIdentitySeed && ordersLocked) void decryptCurrent();
+    if (auth.hasIdentitySeed && ordersLocked && !decrypting) void decryptCurrent();
+  });
+  $effect(() => {
+    if (auth.kind === "passkey" && !auth.hasIdentitySeed && decryptedOrders.size > 0) {
+      decryptedOrders = new Map();
+      ordersLocked = true;
+    }
   });
 
   onMount(async () => {
@@ -1009,7 +1019,7 @@
       {/if}
 
       {#if ordersLocked}
-        <UnlockPanel subject="Attendee details" action="Show attendees" onUnlocked={() => decryptCurrent()} />
+        <UnlockPanel subject="Attendee details" action="Show attendees" />
       {/if}
 
       {@const grouped = groupBySeries(ordersResponse.orders)}

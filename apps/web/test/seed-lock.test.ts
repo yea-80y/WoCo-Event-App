@@ -269,3 +269,84 @@ test("Dashboard: attendee details ask for the passkey only from a tap", () => {
   assert.match(dash, /onEnsureDecrypted=\{\(\) => decryptCurrent\(true\)\}/);
   assert.doesNotMatch(dash, /restoreIdentitySeed|ensureIdentitySeed/);
 });
+
+// ── Sign-off fixes (Fable, #746 fix 1) ─────────────────────────────────────
+
+test("store: the unlocked seed is read only for the account AND credential it was unlocked for", () => {
+  const b = body(STORE, "function _unlockedSeed");
+  assert.match(b, /_unlocked\.seedAddress !== seedAddr\.toLowerCase\(\)/);
+  assert.match(b, /_unlocked\.parent === _parent\.toLowerCase\(\)/);
+});
+
+test("store: a relock waits for a ceremony in flight, and invalidates work that resumes after it", () => {
+  const relock = body(STORE, "function _relockPasskey");
+  assert.match(relock, /if \(_kind !== "passkey" \|\| _passkeyKeyInFlight \|\| _seedInFlight\) return;/);
+  assert.match(relock, /_lockGen\+\+;/);
+  const kernel = body(STORE, "async function _ensureKernel()");
+  const captured = kernel.indexOf("const gen = _lockGen;");
+  const checked = kernel.indexOf("if (gen !== _lockGen) throw");
+  const assigned = kernel.indexOf("_kernel = kernel;");
+  assert.ok(captured > 0 && checked > captured && assigned > checked, "capture -> build -> check -> assign");
+  assert.match(body(STORE, "async function clearAllAuth"), /_lockGen\+\+;/);
+});
+
+test("store: an unlock that finishes after an account switch is not adopted", () => {
+  assert.match(body(STORE, "async function _unlockPasskeySeed"), /if \(_kind !== "passkey" \|\| _parent !== parent\) return false;/);
+});
+
+test("store: a silent restore does not re-stamp a device-window copy", () => {
+  assert.match(body(STORE, "async function _restoreCachedAuth"), /_setUnlockedSeed\(seedAddr, _parent, silent, \{ fromSilentCopy: true \}\)/);
+  const set = body(STORE, "function _setUnlockedSeed");
+  const early = set.indexOf("if (opts.fromSilentCopy) return;");
+  assert.ok(early > 0 && early < set.indexOf("applySeedPolicy("), "return before the policy write");
+});
+
+test("store: a recovered account with no copy here is told so, not that it declined", () => {
+  const unlock = body(STORE, "async function _unlockPasskeySeed");
+  assert.match(unlock, /if \(await _recoveryKernelFor\(seedAddr\)\) \{[\s\S]*?_seedUnavailable = "recovered-no-copy";\s*return false;/);
+  assert.match(body(STORE, "function _setUnlockedSeed"), /_seedUnavailable = null;/);
+  assert.match(body(STORE, "async function clearAllAuth"), /_seedUnavailable = null;/);
+  assert.match(STORE, /get seedUnavailable\(\) \{ return _seedUnavailable; \}/);
+});
+
+test("store: sign-out keeps a recovered account's only copy until a sign-in has locked it", () => {
+  const b = body(STORE, "async function clearAllAuth");
+  const keep = b.slice(b.indexOf("const keepUnlockedLegacy ="), b.indexOf("if (keepUnlockedLegacy)"));
+  for (const term of ['_kind === "passkey"', "!_passkeyPrfSecret", "_recoveryKernelFor(seedAddr)", "!(await hasLockedSeed(seedAddr)"]) {
+    assert.ok(keep.includes(term), `the exception must require ${term}`);
+  }
+  assert.match(b, /if \(keepUnlockedLegacy\) \{[\s\S]*?clearPublicKeys[\s\S]*?\} else \{\s*await step\("identity-seed", \(\) => clearIdentitySeed\(seedAddr\)\);/);
+});
+
+test("Audience: a failed load cannot loop, the list opens once, and only a save asks", () => {
+  const aud = read("../src/lib/creator/audience/AudienceScreen.svelte");
+  assert.match(aud, /async function load\(\): Promise<void> \{\s*loading = true;\s*loadError = null;\s*listLocked = false;/);
+  assert.deepEqual(aud.match(/getKeys\(true\)/g)?.length, 1);
+  assert.match(aud, /async function commitList[\s\S]*?getKeys\(true\)/);
+  assert.match(aud, /<UnlockPanel subject="Contact details" action="Show contacts" \/>/, "the effect loads; the panel must not load too");
+});
+
+test("Dashboard: the unlock decrypts once, and a relock hides the details again", () => {
+  const dash = read("../src/lib/creator/dashboard/Dashboard.svelte");
+  assert.match(dash, /if \(auth\.hasIdentitySeed && ordersLocked && !decrypting\) void decryptCurrent\(\);/);
+  assert.match(dash, /<UnlockPanel subject="Attendee details" action="Show attendees" \/>/);
+  assert.match(dash, /if \(auth\.kind === "passkey" && !auth\.hasIdentitySeed && decryptedOrders\.size > 0\) \{\s*decryptedOrders = new Map\(\);\s*ordersLocked = true;/);
+});
+
+test("Cancel: the passkey is asked when the form opens, never between the final press and the refunds", () => {
+  const cancel = read("../src/lib/creator/events/CancelEventPanel.svelte");
+  assert.match(body(cancel.replace(/\n  }\n/g, "\n}\n"), "async function openForm()"), /auth\.ensureAccountSetup\(\{ identity: true \}\)/);
+  assert.doesNotMatch(body(cancel.replace(/\n  }\n/g, "\n}\n"), "async function confirmCancel()"), /ensureAccountSetup|ensureIdentitySeed|getContentFeedSigner\(\)/);
+});
+
+test("copy: the new lines never name the mechanism and use the spaced hyphen", () => {
+  const panel = read("../src/lib/components/auth/UnlockPanel.svelte");
+  const markup = panel.slice(panel.indexOf("</script>"));
+  const messages = [
+    markup,
+    STORE.slice(STORE.indexOf("const SEED_UNAVAILABLE_MESSAGE"), STORE.indexOf("/** The unlocked passkey seed")),
+  ];
+  for (const text of messages) {
+    assert.doesNotMatch(text, /fingerprint|biometric|\bPRF\b|quantum|—/i);
+  }
+});

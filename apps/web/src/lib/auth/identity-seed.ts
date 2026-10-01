@@ -288,6 +288,10 @@ export async function writePublicKeys(
   });
 }
 
+export async function clearPublicKeys(seedAddress: string): Promise<void> {
+  await delKV(publicKeysKey(seedAddress));
+}
+
 export async function readPublicFeedSignerAddress(seedAddress: string, parent: string): Promise<string | null> {
   const record = await getKV<{ parent?: unknown; feedSignerAddress?: unknown }>(publicKeysKey(seedAddress));
   if (!record || record.parent !== parent.toLowerCase()) return null;

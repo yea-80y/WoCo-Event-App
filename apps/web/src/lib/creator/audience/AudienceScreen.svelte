@@ -109,6 +109,7 @@
   async function load(): Promise<void> {
     loading = true;
     loadError = null;
+    listLocked = false;
     try {
       const resp = await getMarketingList();
       if (!resp) {
@@ -202,9 +203,16 @@
     }
   });
 
-  // Unlocked elsewhere this app open: open the list without a second tap.
+  // Unlocked - by the panel's tap or elsewhere this app open: open the list.
+  // Locked again (the page sat hidden past the relock): hide the contacts.
   $effect(() => {
     if (auth.hasIdentitySeed && listLocked && !loading) void load();
+  });
+  $effect(() => {
+    if (auth.kind === "passkey" && !auth.hasIdentitySeed && contacts.length > 0) {
+      contacts = [];
+      listLocked = true;
+    }
   });
 </script>
 
@@ -232,7 +240,7 @@
       <button class="btn-ghost" onclick={() => void load()}>Try again</button>
     </div>
   {:else if listLocked}
-    <UnlockPanel subject="Contact details" action="Show contacts" onUnlocked={load} />
+    <UnlockPanel subject="Contact details" action="Show contacts" />
   {:else}
     {#if contacts.length === 0 && !wizardOpen}
       <div class="empty invite">

@@ -16,8 +16,9 @@
     subject: string;
     /** The button: "Show attendees". */
     action: string;
-    /** Runs once the keys are unlocked. */
-    onUnlocked: () => void | Promise<void>;
+    /** Runs once the keys are unlocked. Pages that already react to
+     *  `auth.hasIdentitySeed` leave it out, or the content loads twice. */
+    onUnlocked?: () => void | Promise<void>;
   } = $props();
 
   let busy = $state(false);
@@ -29,7 +30,7 @@
     try {
       const ok = await auth.ensureAccountSetup({ identity: true });
       declined = !ok;
-      if (ok) await onUnlocked();
+      if (ok) await onUnlocked?.();
     } catch {
       declined = true;
     } finally {
@@ -41,13 +42,19 @@
 <div class="unlock" role="region" aria-label="{subject} locked">
   <p class="unlock-title">{subject} are locked on this device</p>
   <p class="unlock-body">
-    {declined
-      ? `${subject} stay locked until you confirm it's you.`
-      : "Confirm it's you to see them. WoCo asks once each time you open it."}
+    {auth.seedUnavailable
+      ? "Your account keys aren't on this device yet. Sign in again once your backup can be reached."
+      : declined
+        ? `${subject} stay locked until you confirm it's you.`
+        : auth.kind === "passkey"
+          ? "Confirm it's you to see them. WoCo asks once each time you open it."
+          : "Confirm it's you to see them. WoCo asks once on this device."}
   </p>
-  <button class="btn btn--primary" onclick={unlock} disabled={busy}>
-    {busy ? "Confirming it's you…" : declined ? "Try again" : action}
-  </button>
+  {#if !auth.seedUnavailable}
+    <button class="btn btn--primary" onclick={unlock} disabled={busy}>
+      {busy ? "Confirming it's you…" : declined ? "Try again" : action}
+    </button>
+  {/if}
 </div>
 
 <style>

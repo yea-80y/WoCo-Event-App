@@ -26,6 +26,10 @@
   let { event, ordersCount, oncancelled }: Props = $props();
 
   let open = $state(false);
+  // The page feed needs the account keys; asked for on the tap that opens the form,
+  // so nothing prompts between the final press and the refunds (#746 fix 1).
+  let asking = $state(false);
+  let pageLocked = $state(false);
   let typed = $state("");
   let working = $state(false);
   let error = $state<string | null>(null);
@@ -43,19 +47,31 @@
   });
   const platformFeePct = `${PLATFORM_FEE_BP / 100}%`;
 
+  async function openForm() {
+    if (asking) return;
+    if (event.creatorFeedSigner) {
+      asking = true;
+      try {
+        pageLocked = !(await auth.ensureAccountSetup({ identity: true }));
+      } catch {
+        pageLocked = true;
+      } finally {
+        asking = false;
+      }
+    }
+    open = true;
+  }
+
   async function confirmCancel() {
     if (!matches || working) return;
     working = true;
     error = null;
     try {
-      // The cancellation itself needs no signing key. The page feed does: ask for
-      // the passkey up front, while this tap is still the gesture (after a reload
-      // the keys are locked, #746 fix 1). Declined, the cancellation and refunds
-      // still go ahead - only the page is not updated - so nothing prompts later.
+      // The cancellation itself needs no signing key. The page feed does, and only
+      // keys unlocked when the form opened are used: no prompt mid-cancellation.
       let feedSigner: ContentFeedSigner | null = null;
       if (event.creatorFeedSigner) {
         try {
-          await auth.ensureAccountSetup({ identity: true });
           const signer = await auth.getContentFeedSignerIfPresent();
           if (signer && signer.address.toLowerCase() === event.creatorFeedSigner.toLowerCase()) feedSigner = signer;
         } catch {
@@ -89,7 +105,9 @@
     <p class="hint">
       If the event isn't going ahead, cancel it here. Every buyer gets back everything they paid.
     </p>
-    <button class="cancel-btn" onclick={() => (open = true)}>Cancel this event</button>
+    <button class="cancel-btn" onclick={openForm} disabled={asking}>
+      {asking ? "Confirming it's you…" : "Cancel this event"}
+    </button>
   {:else}
     {#if alreadyEnded}
       <p class="warn">
@@ -118,6 +136,10 @@
       <p><strong>This can't be undone.</strong> Afterwards you'll be able to send your attendees a cancellation
         notice - we'll start it for you, and you choose the words.</p>
     </div>
+
+    {#if pageLocked}
+      <p class="hint">Your event page won't show the cancellation until you confirm it's you.</p>
+    {/if}
 
     <label class="confirm">
       <span>Type the event name to confirm: <em>{event.title}</em></span>
