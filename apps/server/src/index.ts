@@ -13,6 +13,7 @@ import { securityHeaders, FRAME_CSP } from "./lib/http/security-headers.js";
 import { CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS } from "./lib/http/cors.js";
 import { buildFramePage } from "./lib/embed/frame-page.js";
 import { revokeSession, revokeAllSessions } from "./lib/auth/revocation.js";
+import { deviceGrantHealth } from "./lib/auth/device-grants.js";
 import { kernelDeployedLoadFailed } from "./lib/auth/kernel-deployed.js";
 import { events } from "./routes/events.js";
 import { claims } from "./routes/claims.js";
@@ -22,6 +23,7 @@ import { ops } from "./routes/ops.js";
 import { siteRoute } from "./routes/site.js";
 import { profiles } from "./routes/profiles.js";
 import { recovery } from "./routes/recovery.js";
+import { deviceGrants } from "./routes/device-grants.js";
 import { broadcast } from "./routes/broadcast.js";
 import { broadcastJobs } from "./routes/broadcast-jobs.js";
 import { domains } from "./routes/domains.js";
@@ -411,6 +413,9 @@ function healthReport() {
     // `unreadableRecords` above 0, is an alarm: those events cannot sell, and no
     // event can be created with a signer, until an operator restores the file.
     eventFeedSigners: feedSignerRecordHealth(),
+    // Added passkeys (#746). `unreadable` is an alarm: every added device is
+    // signed out and no device can be added or removed until the file is restored.
+    deviceGrants: deviceGrantHealth(),
     // The attendee order batch (#546): red when checkout would refuse sales,
     // the batch is under the postage TTL floor or its fullest bucket over the
     // utilization ceiling, or a burn was left unfinished.
@@ -627,6 +632,7 @@ app.post("/api/auth/whoami", requireAuth, (c) => {
     data: {
       parentAddress: c.get("parentAddress"),
       sessionAddress: c.get("sessionAddress"),
+      sessionRank: c.get("sessionRank"),
     },
   });
 });
@@ -658,6 +664,10 @@ app.post("/api/auth/revoke-all", requireAuth, (c) => {
   revokeAllSessions(parentAddress);
   return c.json({ ok: true, message: "All sessions revoked" });
 });
+
+// An account's added passkeys (#746). revoke-all above also ends their sessions;
+// a device whose grant is still live signs a new one on its next request.
+app.route("/api/auth/device-grants", deviceGrants);
 
 // Event routes
 app.route("/api/events", events);
