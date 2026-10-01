@@ -7,7 +7,7 @@
   import TicketGateModal from "./lib/attendee/gate/TicketGateModal.svelte";
   import Splitter from "./lib/landing/Splitter.svelte";
   import AttendeeApp from "./AttendeeApp.svelte";
-  import { studioRole } from "./lib/auth/studio-role.svelte.js";
+  import { organiserRole } from "./lib/auth/organiser-role.svelte.js";
   import { bootRedirectFor } from "./lib/sub-ens/host-label.js";
   import { subEnsName } from "@woco/shared";
   import { onMount } from "svelte";
@@ -123,18 +123,18 @@
     })();
   });
 
-  // A device that has never opened Studio learns the account organises from its
-  // public event list, so WoCo shows the way into Studio there too.
+  // A device that has never opened organiser mode learns the account organises
+  // from its public event list, so WoCo shows the way in there too.
   // Unauthenticated, so it never prompts; one look per account per page load.
   const organiserChecked = new Set<string>();
   $effect(() => {
     const parent = auth.ready ? auth.parent?.toLowerCase() : undefined;
-    if (!parent || studioRole.isOrganiser || organiserChecked.has(parent)) return;
+    if (!parent || organiserRole.isOrganiser || organiserChecked.has(parent)) return;
     organiserChecked.add(parent);
     import("./lib/api/events.js")
       .then((m) => m.getEventsByCreatorResult(parent))
-      .then((resp) => { if (resp.ok && (resp.data?.length ?? 0) > 0) studioRole.mark(parent); })
-      .catch(() => { /* no Studio link until Studio is opened on this device */ });
+      .then((resp) => { if (resp.ok && (resp.data?.length ?? 0) > 0) organiserRole.mark(parent); })
+      .catch(() => { /* no Organiser link until organiser mode is opened on this device */ });
   });
 
   // Lazy-load the creator bundle — attendees never download builder/dashboard code.
@@ -204,14 +204,14 @@
   {/if}
 {:else if router.surface === "creator"}
   {#await creatorAppPromise}
-    <div class="surface-loading">Loading creator portal…</div>
+    <div class="surface-loading">Loading your dashboard…</div>
   {:then Comp}
     {#if Comp}
       <Comp />
     {/if}
   {:catch}
     <div class="surface-loading surface-error">
-      Failed to load creator portal. Please refresh.
+      Couldn't load your dashboard. Refresh the page to try again.
     </div>
   {/await}
 {:else}

@@ -17,7 +17,7 @@
   import { loginRequest } from "../auth/login-request.svelte.js";
   import { navigate } from "../router/router.svelte.js";
   import { classifyRefToken } from "../campaign/referral-capture.js";
-  import { studioRole } from "../auth/studio-role.svelte.js";
+  import { organiserRole } from "../auth/organiser-role.svelte.js";
   import WocoWordmark from "../components/brand/WocoWordmark.svelte";
   import CohortStamp from "../components/campaign/CohortStamp.svelte";
 
@@ -53,7 +53,7 @@
       const ok = await loginRequest.request({ context: "invite" });
       if (!ok) return;
     }
-    studioRole.mark(auth.parent);
+    organiserRole.mark(auth.parent);
     navigate("/creator");
   }
 
@@ -106,7 +106,7 @@
       <h1>Sell tickets from your own page.</h1>
       <p class="sub">And build a following that stays yours, even if you leave.</p>
       <button class="btn btn--primary btn--lg cta" onclick={startHosting}>
-        {signedIn ? "Go to your studio" : "Start hosting"}
+        {signedIn ? "Go to your dashboard" : "Start hosting"}
       </button>
       <p class="alt">
         Just looking for events?

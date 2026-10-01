@@ -5,12 +5,9 @@
   import { loginRequest } from "../auth/login-request.svelte.js";
   import { router, navigate } from "../router/router.svelte.js";
   import SessionStatus from "../components/auth/SessionStatus.svelte";
-  import UserAvatar from "../components/profile/UserAvatar.svelte";
   import WocoWordmark from "../components/brand/WocoWordmark.svelte";
-  import LayoutDashboard from "lucide-svelte/icons/layout-dashboard";
-  import CalendarDays from "lucide-svelte/icons/calendar-days";
-  import Plus from "lucide-svelte/icons/plus";
-  import Monitor from "lucide-svelte/icons/monitor";
+  import TabBar, { type TabItem } from "../components/nav/TabBar.svelte";
+  import NavIcon from "../components/nav/NavIcon.svelte";
   import ShoppingBag from "lucide-svelte/icons/shopping-bag";
   import Layers from "lucide-svelte/icons/layers";
   import ArrowLeft from "lucide-svelte/icons/arrow-left";
@@ -30,8 +27,7 @@
     router.route === "create" ||
     router.route === "embed-setup"
   );
-  const isSites = $derived(router.route === "build" || router.route === "site-builder");
-  const isObjects = $derived(router.route === "creator-objects");
+  const isAudience = $derived(router.route === "audience");
   const isProfile = $derived(router.route === "profile");
 
   let createOpen = $state(false);
@@ -39,7 +35,34 @@
     createOpen = false;
     navigate(path);
   }
+
+  function openProfile() {
+    if (!auth.isConnected || !auth.parent) {
+      void loginRequest.request();
+      return;
+    }
+    navigate(`/creator/profile/${auth.parent.toLowerCase()}`);
+  }
+
+  // Five slots from the first paint, signed in or not, so nothing shifts when
+  // sign-in finishes. Websites live in Build's menu: they are set up once and
+  // edited now and then, which does not earn a tab.
+  const tabs = $derived<TabItem[]>([
+    { id: "dashboard", label: "Dashboard", icon: "dashboard", active: isHome, onclick: () => navigate("/creator") },
+    { id: "events", label: "Events", icon: "events", active: isEvents, onclick: () => navigate("/creator/events") },
+    {
+      id: "build", label: "Build", icon: "build", key: true, haspopup: "menu",
+      expanded: createOpen, onclick: () => { createOpen = !createOpen; },
+    },
+    { id: "audience", label: "Audience", icon: "audience", active: isAudience, onclick: () => navigate("/creator/audience") },
+    {
+      id: "profile", label: "Profile", avatar: auth.isConnected ? auth.parent : null,
+      active: isProfile, onclick: openProfile,
+    },
+  ]);
 </script>
+
+<svelte:window onkeydown={(e) => { if (e.key === "Escape" && createOpen) createOpen = false; }} />
 
 <main>
   <PreLaunchBanner variant="strip" />
@@ -47,23 +70,20 @@
   <header class="top-bar">
     <button class="logo" onclick={() => navigate(auth.isConnected && auth.parent ? "/home" : "/")} aria-label="WoCo home">
       <WocoWordmark height={20} variant="default" />
-      <span class="surface-badge">Studio</span>
+      <span class="surface-badge">Organiser</span>
     </button>
 
     <div class="top-right">
       {#if !auth.ready}
         <span class="loading">Loading...</span>
       {:else if auth.isConnected && auth.parent}
-        <!-- Studio is a workspace you step into; this is the way back to WoCo,
-             the same app every account uses to browse, buy and keep tickets. -->
+        <!-- Organiser mode is a workspace you step into; this is the way back to
+             WoCo, the same app every account uses to browse, buy and keep tickets. -->
         <button class="surface-toggle" onclick={() => navigate("/home")} title="Back to WoCo" aria-label="Back to WoCo">
           <span class="surface-toggle-arrow"><ArrowLeft size={14} strokeWidth={2.5} /></span>
           <span class="surface-toggle-label">WoCo</span>
         </button>
-        <SessionStatus />
-        <button class="top-avatar-btn" onclick={() => navigate(`/creator/profile/${auth.parent!.toLowerCase()}`)}>
-          <UserAvatar address={auth.parent} size={28} />
-        </button>
+        <SessionStatus compact />
       {:else}
         <button class="sign-in-btn" onclick={() => loginRequest.request()}>
           Sign in
@@ -78,70 +98,18 @@
     {/if}
   </section>
 
-  <nav class="bottom-nav">
-    <button
-      class="bottom-nav-item"
-      class:active={isHome}
-      onclick={() => navigate("/creator")}
-    >
-      <span class="nav-icon"><LayoutDashboard size={20} strokeWidth={2.25} /></span>
-      <span class="nav-label">Studio</span>
-    </button>
-    <button
-      class="bottom-nav-item"
-      class:active={isEvents}
-      onclick={() => navigate("/creator/events")}
-    >
-      <span class="nav-icon"><CalendarDays size={20} strokeWidth={2.25} /></span>
-      <span class="nav-label">Events</span>
-    </button>
-    <button
-      class="bottom-nav-item bottom-nav-item--accent"
-      class:active={createOpen}
-      aria-haspopup="menu"
-      aria-expanded={createOpen}
-      onclick={() => { createOpen = !createOpen; }}
-    >
-      <span class="nav-icon" class:rot={createOpen}><Plus size={20} strokeWidth={2.5} /></span>
-      <span class="nav-label">Create</span>
-    </button>
-    <button
-      class="bottom-nav-item"
-      class:active={isSites}
-      onclick={() => navigate("/creator/sites")}
-    >
-      <span class="nav-icon"><Monitor size={20} strokeWidth={2.25} /></span>
-      <span class="nav-label">Sites</span>
-    </button>
-    <button
-      class="bottom-nav-item"
-      class:active={isObjects}
-      onclick={() => navigate("/creator/objects")}
-    >
-      <span class="nav-icon"><Layers size={20} strokeWidth={2.25} /></span>
-      <span class="nav-label">Objects</span>
-    </button>
-    {#if auth.isConnected}
-      <button
-        class="bottom-nav-item profile-nav-item"
-        class:active={isProfile}
-        onclick={() => navigate(auth.parent ? `/creator/profile/${auth.parent.toLowerCase()}` : "/creator/profile")}
-      >
-        <span class="nav-avatar">
-          <UserAvatar address={auth.parent!} size={24} />
-        </span>
-        <span class="nav-label">Profile</span>
-      </button>
-    {/if}
-  </nav>
+  <TabBar label="Organiser" items={tabs} />
 
   {#if createOpen}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <button class="create-scrim" aria-label="Close create menu" onclick={() => { createOpen = false; }}></button>
-    <div class="create-sheet" role="menu">
+    <button class="create-scrim" aria-label="Close menu" onclick={() => { createOpen = false; }}></button>
+    <div class="create-sheet" role="menu" aria-label="Build">
       <button class="create-opt" role="menuitem" onclick={() => create("/creator/events/new")}>
-        <span class="opt-ic"><CalendarDays size={16} strokeWidth={2.25} /></span>
-        <span class="opt-text"><strong>New event</strong><small>Tickets, dates, payments</small></span>
+        <span class="opt-ic"><NavIcon name="events" size={18} /></span>
+        <span class="opt-text"><strong>New event</strong><small>Tickets, dates and payments</small></span>
+      </button>
+      <button class="create-opt" role="menuitem" onclick={() => create("/creator/sites")}>
+        <span class="opt-ic"><NavIcon name="sites" size={18} /></span>
+        <span class="opt-text"><strong>Your website</strong><small>Build or edit your pages, and choose which events show</small></span>
       </button>
       <!-- The router refuses /creator/shops/* while the rail is off (#124), so
            offering this would open the create sheet onto the splitter. -->
@@ -151,10 +119,6 @@
           <span class="opt-text"><strong>New shop</strong><small>Catalog, POS, tap-to-pay</small></span>
         </button>
       {/if}
-      <button class="create-opt" role="menuitem" onclick={() => create("/creator/sites")}>
-        <span class="opt-ic"><Monitor size={16} strokeWidth={2.25} /></span>
-        <span class="opt-text"><strong>New website</strong><small>Multi-page site builder</small></span>
-      </button>
       {#if FEATURES.badgesAllowed}
         <button class="create-opt" role="menuitem" onclick={() => create("/creator/objects")}>
           <span class="opt-ic"><Layers size={16} strokeWidth={2.25} /></span>
@@ -170,7 +134,7 @@
     max-width: 840px;
     margin: 0 auto;
     padding: 0 1.25rem;
-    padding-bottom: 4.5rem;
+    padding-bottom: calc(5rem + env(safe-area-inset-bottom));
   }
 
   .top-bar {
@@ -212,7 +176,7 @@
   .top-right {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 1rem;
     min-width: 0;
     overflow: hidden;
     flex-shrink: 1;
@@ -238,10 +202,9 @@
   }
   .surface-toggle-arrow { font-size: 0.875rem; line-height: 1; }
 
-  @media (max-width: 480px) {
+  @media (max-width: 360px) {
     .surface-toggle-label { display: none; }
     .surface-toggle { padding: 0.3125rem 0.5rem; }
-    .surface-badge { display: none; }
   }
 
   .sign-in-btn {
@@ -256,63 +219,10 @@
   }
   .sign-in-btn:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 
-  .top-avatar-btn {
-    margin-left: 0.375rem;
-    border-radius: 50%;
-    flex-shrink: 0;
-    transition: opacity var(--transition), box-shadow var(--transition);
-    line-height: 0;
-  }
-  .top-avatar-btn:hover { opacity: 0.85; box-shadow: 0 0 0 2px var(--accent-subtle); }
-
   .loading { color: var(--text-muted); font-size: 0.8125rem; }
   .content { padding: 0.25rem 0 2rem; }
 
-  .bottom-nav {
-    position: fixed;
-    bottom: 0; left: 0; right: 0;
-    display: flex;
-    justify-content: center;
-    gap: 0;
-    background: var(--bg-elevated);
-    border-top: 1px solid var(--border);
-    padding: 0.375rem 0;
-    padding-bottom: max(0.375rem, env(safe-area-inset-bottom));
-    z-index: 100;
-    flex-wrap: nowrap;
-  }
-  .bottom-nav-item {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.125rem;
-    padding: 0.375rem 0.75rem;
-    border-radius: var(--radius-sm);
-    transition: all var(--transition);
-    min-width: 0;
-    flex: 1;
-    max-width: 5rem;
-  }
-  .bottom-nav-item:hover { background: var(--accent-subtle); }
-  .bottom-nav-item.active { color: var(--accent-text); }
-  .bottom-nav-item:not(.active) { color: var(--text-muted); }
-  .nav-icon { display: inline-flex; align-items: center; line-height: 0; }
-  .nav-label { font-size: 0.625rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; font-family: var(--font-mono); }
-  .bottom-nav-item--accent .nav-icon {
-    background: var(--accent);
-    color: var(--accent-ink);
-    width: 1.75rem;
-    height: 1.75rem;
-    border-radius: var(--radius-sm);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .bottom-nav-item--accent.active .nav-icon { background: var(--accent-hover); }
-  .bottom-nav-item--accent .nav-icon { transition: transform var(--transition); }
-  .bottom-nav-item--accent .nav-icon.rot { transform: rotate(45deg); }
-
-  /* ── Create action sheet ── */
+  /* ── Build menu ── */
   .create-scrim {
     position: fixed; inset: 0; z-index: 101;
     background: rgba(0, 0, 0, 0.5);
@@ -324,46 +234,38 @@
   .create-sheet {
     position: fixed; z-index: 102;
     left: 50%; transform: translateX(-50%);
-    bottom: calc(4.25rem + env(safe-area-inset-bottom));
-    width: min(320px, calc(100vw - 2rem));
+    bottom: calc(4.75rem + env(safe-area-inset-bottom));
+    width: min(22rem, calc(100vw - 2rem));
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     padding: 0.375rem;
     display: flex; flex-direction: column; gap: 1px;
     box-shadow: 0 20px 48px -20px rgba(0, 0, 0, 0.7);
-    animation: sheet-in 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+    animation: sheet-in 0.22s var(--ease-out);
   }
   @keyframes sheet-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
   .create-opt {
     display: flex; align-items: center; gap: 0.75rem;
-    padding: 0.625rem 0.75rem;
+    padding: 0.6875rem 0.75rem;
     background: none; border: none; cursor: pointer; text-align: left;
     border-radius: var(--radius-sm);
     transition: background var(--transition);
   }
   .create-opt:hover { background: var(--accent-subtle); }
+  .create-opt:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .opt-ic {
     display: grid; place-items: center; flex-shrink: 0;
-    width: 2rem; height: 2rem; border-radius: var(--radius-sm);
+    width: 2.25rem; height: 2.25rem; border-radius: var(--radius-sm);
     background: var(--bg-elevated); border: 1px solid var(--border); color: var(--accent-text);
   }
   .opt-text { display: flex; flex-direction: column; gap: 0.05rem; min-width: 0; }
-  .opt-text strong { font-size: 0.875rem; font-weight: 700; color: var(--text); }
-  .opt-text small { font-size: 0.6875rem; color: var(--text-muted); }
-  .nav-avatar {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.25rem;
-    height: 1.25rem;
-    line-height: 1;
-  }
-  .profile-nav-item.active .nav-avatar :global(.avatar) { box-shadow: 0 0 0 2px var(--accent); }
+  .opt-text strong { font-size: 0.9375rem; font-weight: 600; color: var(--text); }
+  .opt-text small { font-size: 0.75rem; line-height: 1.35; color: var(--text-muted); }
 
-  @media (min-width: 640px) {
-    .bottom-nav-item { padding: 0.375rem 1.75rem; }
-    main { padding-bottom: 5rem; }
+  @media (prefers-reduced-motion: reduce) {
+    .create-scrim, .create-sheet { animation: none; }
   }
+
 </style>

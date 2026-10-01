@@ -23,7 +23,7 @@
  *     /coaster/:subject            coaster (log a lap — reached by QR/link, not nav)
  *
  *   CREATOR surface
- *     /creator                          creator-home  (studio dashboard)
+ *     /creator                          creator-home  (organiser dashboard)
  *     /creator/events                   dashboard-index
  *     /creator/events/new   (and /create) create
  *     /creator/events/:id               dashboard

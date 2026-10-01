@@ -36,8 +36,8 @@
 {#if open}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="modal-backdrop" role="presentation" onclick={handleBackdrop}>
-    <div class="modal" role="dialog" aria-modal="true" aria-label="Welcome to your studio">
-      <span class="kicker mono">STUDIO // WELCOME</span>
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Welcome">
+      <span class="kicker mono">ORGANISER // WELCOME</span>
       <h2>Let's get you set up.</h2>
       <p class="lede">
         One quick question so we can point you at the right first steps —

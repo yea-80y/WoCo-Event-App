@@ -21,7 +21,7 @@
   import { unlocksWhen } from "../gate/unlock-copy.js";
   import { inviteSheet } from "../../campaign/invite-sheet.svelte.js";
   import type { ReferrerIndexRead } from "../../campaign/records.js";
-  import { studioRole } from "../../auth/studio-role.svelte.js";
+  import { organiserRole } from "../../auth/organiser-role.svelte.js";
   import { profileLabel } from "../../sub-ens/roles.js";
   import PassportTicket from "../passport/PassportTicket.svelte";
   import { passportState } from "../passport/passport-state.svelte.js";
@@ -71,9 +71,9 @@
   });
 
   // An organiser unlock proves the account organises even on a device that has
-  // never opened Studio; from then on WoCo shows the way into Studio.
+  // never opened organiser mode; from then on WoCo shows the way in.
   $effect(() => {
-    if (organisesFromUnlock(gate.status?.via)) studioRole.mark(auth.parent);
+    if (organisesFromUnlock(gate.status?.via)) organiserRole.mark(auth.parent);
   });
 
   const inviteStatus = $derived(inviteStatusText(inviteRead));
@@ -81,7 +81,7 @@
   const showBackup = $derived(needsBackupPrompt(auth.kind, backupRead));
 
   function startHosting() {
-    studioRole.mark(auth.parent);
+    organiserRole.mark(auth.parent);
     navigate("/creator");
   }
 </script>
@@ -158,12 +158,12 @@
     {/if}
 
     <div class="row">
-      {#if studioRole.isOrganiser}
+      {#if organiserRole.isOrganiser}
         <div class="row-text">
-          <strong>Your Studio</strong>
+          <strong>Your organiser dashboard</strong>
           <span>Your events, sites and payouts.</span>
         </div>
-        <button class="btn btn--ghost row-btn" onclick={() => navigate("/creator")}>Open Studio</button>
+        <button class="btn btn--ghost row-btn" onclick={() => navigate("/creator")}>Open dashboard</button>
       {:else}
         <div class="row-text">
           <strong>Run events?</strong>
