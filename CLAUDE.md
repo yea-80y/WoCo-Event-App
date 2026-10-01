@@ -58,7 +58,7 @@ FEATURE FLAGS — READ BEFORE ASSUMING A RAIL IS LIVE
 
   cryptoPaymentsAllowed = false   # crypto rail built but unreachable (deferred to #41)
   freeEventsAllowed     = false
-  badgesAllowed         = false   # badge/drop creation + gated ticket sales (#664); Objects tab stays
+  badgesAllowed         = false   # badge/drop creation + gated ticket sales (#664); Objects page stays (dashboard link)
   shopAllowed           = false   # shops, POS, spend-permission draws (#124)
   (also off: agentCommerceAllowed, coinbaseLoginAllowed, organiserSendingDomains)
 

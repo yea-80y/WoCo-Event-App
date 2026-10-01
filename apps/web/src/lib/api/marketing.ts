@@ -33,6 +33,16 @@ export async function getMarketingList(): Promise<MarketingListResponse | null> 
 }
 
 /**
+ * Whether the organiser has a list and its size, without downloading it.
+ * Throws when the server cannot answer, so a fault never reads as "no list".
+ */
+export async function getMarketingListSummary(): Promise<{ count: number; updatedAt: string } | null> {
+  const resp = await authGet<{ count: number; updatedAt: string } | null>("/api/marketing/list/meta");
+  if (!resp.ok) throw new Error(resp.error || "List check failed");
+  return resp.data ?? null;
+}
+
+/**
  * Below the server's MARKETING_MAX_LIST_EMAILS ceiling — a single oversized
  * request is rejected wholesale, which surfaced to importers as a bare
  * "Validation failed" on any list past 20k.

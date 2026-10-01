@@ -55,6 +55,8 @@
   /* Transitions */
   --transition: 0.12s cubic-bezier(0.2, 0.8, 0.2, 1);
   --transition-fast: 0.08s ease-out;
+  /* The curve behind --transition, for animations that set their own duration */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
 
   /* Base */
   font-family: var(--font-body);

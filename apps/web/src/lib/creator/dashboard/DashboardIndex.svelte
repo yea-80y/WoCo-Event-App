@@ -124,8 +124,7 @@
 </script>
 
 <div class="dash-index">
-  <span class="kicker">Creator Studio</span>
-  <h1>My Events</h1>
+  <h1>Your events</h1>
 
   {#if !auth.isConnected}
     <p class="status">Sign in to view your events.</p>

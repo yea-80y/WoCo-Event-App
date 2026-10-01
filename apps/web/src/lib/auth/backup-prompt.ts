@@ -1,5 +1,5 @@
 /**
- * Whether to suggest "Back up your account" — one rule for the studio's safety
+ * Whether to suggest "Back up your account" — one rule for the dashboard's safety
  * panel and the member Home.
  *
  * Only passkey and email (Web3Auth) accounts can install recovery; a wallet

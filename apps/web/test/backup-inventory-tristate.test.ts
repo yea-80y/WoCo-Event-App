@@ -4,7 +4,7 @@
  * The contract under test: only a manifest that was READ (or provably does not
  * exist) may answer "these are the backups" — a read that couldn't tell must
  * come back `unavailable`, because every consumer is a security surface (the
- * add-a-backup nudge, the studio safety panel, and the "adding a backup
+ * add-a-backup nudge, the dashboard safety panel, and the "adding a backup
  * resurrects the ones you removed" warning) and each of them used to act on a
  * collapsed empty array.
  */

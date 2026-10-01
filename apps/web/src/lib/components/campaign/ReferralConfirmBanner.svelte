@@ -7,7 +7,7 @@
   pays on, and the one fact no chunk carries), and the issuer's confirmation —
   reported by that same call — says whether the credit has already been made.
 
-  The layout draws the edge being recorded: referrer -> this studio. One acid
+  The layout draws the edge being recorded: referrer -> this organiser. One acid
   action; the confirmed state swaps the rail for the stamp.
 
   Self-contained lifecycle: hidden until the reads resolve, and hidden for good
@@ -117,7 +117,7 @@
       <div class="ask">
         <div class="ask-copy">
           <span class="kicker mono">REFERRAL // ONE CONFIRMATION NEEDED</span>
-          <h2><span class="mono addr">{short(statement.referrer)}</span> vouched for this studio</h2>
+          <h2><span class="mono addr">{short(statement.referrer)}</span> vouched for you</h2>
           <p>
             Confirm to credit them. They earn a share of the platform fee on your sales - it
             costs you nothing, now or later.
