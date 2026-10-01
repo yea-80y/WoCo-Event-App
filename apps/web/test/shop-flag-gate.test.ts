@@ -146,11 +146,9 @@ test("the creator home Shops panel is not offered while the rail is off", () => 
     /\{#if FEATURES\.shopAllowed\}\s*<div class="panel">\s*<div class="panel-head">\s*<span class="panel-title">\s*<ShoppingBag/,
     "the whole panel goes: every control in it navigates into the shop rail",
   );
-  assert.match(
-    home,
-    /\{#if FEATURES\.shopAllowed\}\s*<div class="stat">\s*<span class="stat-label mono">YOUR SHOPS<\/span>/,
-    "the hero stat would otherwise read a permanent 00",
-  );
+  // The hero stat tiles are gone (2026-10-01); no shop count may come back
+  // outside the panel's own guard, or it would read a permanent zero.
+  assert.doesNotMatch(home, /YOUR SHOPS|shops\.length\)/, "no shop count outside the Shops panel");
   assert.match(
     home,
     /if \(FEATURES\.shopAllowed\) \{\s*shopSWR\.refresh\(\)/,
