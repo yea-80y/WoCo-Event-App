@@ -374,11 +374,26 @@ async function handOver(t: HandOver): Promise<{ registered: boolean }> {
   };
   t.store.write(pending);
   await t.rotate(t.newOwner);
-  const landed = { ...pending, expiresAt: null };
-  t.store.write(landed);
-  await t.becomeDevice();
-  t.onStep?.("finishing");
-  return { registered: await submitAll(landed, t.submit, t.store) };
+  // Past this point the main passkey HAS changed: no failure here may read as
+  // "nothing changed", or a retry would overwrite the landed grants and its own
+  // rotation would be refused (Fable sign-off SHOULD-1).
+  try {
+    const landed = { ...pending, expiresAt: null };
+    t.store.write(landed);
+    await t.becomeDevice();
+    t.onStep?.("finishing");
+    return { registered: await submitAll(landed, t.submit, t.store) };
+  } catch (e) {
+    throw new MakeMainHandedOverError(e);
+  }
+}
+
+/** Something failed after the main passkey changed: never offer to start again. */
+export class MakeMainHandedOverError extends Error {
+  constructor(cause: unknown) {
+    super("Your main passkey changed, but this device didn't finish updating. Sign out, then sign in again.", { cause });
+    this.name = "MakeMainHandedOverError";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +418,7 @@ export interface MakeAddedMainContext extends Omit<HandOver, "newOwner" | "previ
   signGrant: (key: string, parent: string, grantee: string, credentialTag: string) => Promise<SignedGrant>;
   /** This tab carries on as the new main. */
   adopt: (target: PasskeyKey) => Promise<void>;
+  readOwner: (parent: string) => Promise<string | null | "error">;
   store?: PendingStore;
 }
 
@@ -411,11 +427,16 @@ export async function runMakeAddedMain(ctx: MakeAddedMainContext): Promise<{ reg
   const self = ctx.self.toLowerCase();
   const target = { grantee: ctx.target.grantee.toLowerCase(), credentialTag: ctx.target.credentialTag.toLowerCase() };
   checkMakeMainOffer({ v: 1, kind: "make-main", parent, ...target }, { parent, self, devices: ctx.devices });
+  // Read alongside the sheet, so it costs no time: a rotation that landed after its
+  // receipt timed out on an earlier try. Here this device holds the only copy of the
+  // grants - there is no other side polling the chain (Fable sign-off SHOULD-2).
+  const owner = ctx.readOwner(parent).catch(() => "error" as const);
   const added = await ctx.assertTarget();
   // The sheet lets the person pick; only the passkey in that row may become the main.
   if (added.address.toLowerCase() !== target.grantee) {
     throw new Error("That's a different passkey from the one you picked. Nothing changed.");
   }
+  const landedBefore = (await owner) === target.grantee;
   const previous: PairedDevice = { grantee: self, credentialTag: ctx.selfTag.toLowerCase() };
   const others = ctx.devices
     .filter((d) => d.grantee.toLowerCase() !== target.grantee)
@@ -430,8 +451,14 @@ export async function runMakeAddedMain(ctx: MakeAddedMainContext): Promise<{ reg
     previousOwner: self,
     grants,
     store: ctx.store ?? localPendingStore,
+    // Fresh grants for today's list either way; only the rotation is not repeated.
+    rotate: landedBefore ? async () => {} : ctx.rotate,
   });
-  await ctx.adopt(added);
+  try {
+    await ctx.adopt(added);
+  } catch (e) {
+    throw new MakeMainHandedOverError(e);
+  }
   return result;
 }
 
@@ -607,6 +634,7 @@ export async function prepareMakeAddedMain(
             throw asCeremonyCancel(e);
           }),
         signGrant: host.signGrant,
+        readOwner,
         adopt: async (key) => {
           // The old main stays here as a linked passkey: keep its name, and let it be
           // made the main one again from this list.

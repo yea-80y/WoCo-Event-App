@@ -2347,7 +2347,7 @@ async function _signGrant(
 }
 
 /**
- * "Add a passkey on this device" - the main passkey makes another for the same
+ * "Move to another password manager" - the main passkey makes another for the same
  * account, in a different password manager on this device, and grants it.
  *
  * Order (consult 6): the new passkey's envelope first, so the server never holds a
@@ -2358,7 +2358,7 @@ async function _signGrant(
  */
 async function addPasskeyOnThisDevice(
   onStep?: (step: "creating" | "saving" | "linking") => void,
-): Promise<{ provider: PasskeyProviderId }> {
+): Promise<{ provider: PasskeyProviderId; grantee: string }> {
   if (_kind !== "passkey" || _deviceRole) throw new MainPasskeyRequiredError();
   if (!(await ensureAccountSetup({ identity: true }))) throw new Error(_seedLockedMessage());
   await _ensurePasskeyKey();
@@ -2414,7 +2414,7 @@ async function addPasskeyOnThisDevice(
     addedAt: Date.now(),
     credentialId: added.credentialId,
   }).catch((e) => console.warn("[auth] added passkey's label not kept (non-fatal):", e));
-  return { provider: added.provider };
+  return { provider: added.provider, grantee: grant.grantee };
 }
 
 /**
@@ -2497,7 +2497,10 @@ async function linkThisDevice(opts: import("./device-link.js").LinkThisDeviceOpt
 async function _freshMainPasskey(): Promise<void> {
   if (_kind !== "passkey" || _deviceRole || !_seedAddress) throw new MainPasskeyRequiredError();
   if (!_passkeyPrivateKey) {
-    await _ensurePasskeyKey(); // the sheet this asks for IS the fresh confirm
+    // The sheet this asks for IS the fresh confirm.
+    await _ensurePasskeyKey().catch((e) => {
+      throw asCeremonyCancel(e);
+    });
   } else {
     const material = await restorePasskeyAccount({ retryDiscoverable: false }).catch((e) => {
       throw asCeremonyCancel(e);
@@ -2507,6 +2510,10 @@ async function _freshMainPasskey(): Promise<void> {
     }
   }
   if (!(await _unlockPasskeySeed(_seedAddress))) throw new Error(_seedLockedMessage());
+  // That sheet is a confirm too: a full window from now, so the keys cannot lock
+  // under a handover that started at the end of the last one.
+  const seed = _unlockedSeed();
+  if (seed && _parent) _setUnlockedSeed(_seedAddress, _parent, seed);
 }
 
 /** The main device's half, after the person confirmed the code they scanned or typed. */
