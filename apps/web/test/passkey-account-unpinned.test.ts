@@ -67,8 +67,14 @@ const RAW_ID_B64URL = "AQIDBAUGBwgJCgsMDQ4PEA";
 let creates = 0;
 
 function installFakeAuthenticator() {
+  // Authenticator data naming Samsung Pass (#746): rpIdHash 32 | flags (AT set) |
+  // signCount 4 | AAGUID 16, so the creation path's provider read runs for real.
+  const authData = new Uint8Array(60);
+  authData[32] = 0x45;
+  authData.set([0x53, 0x41, 0x4d, 0x53, 0x55, 0x4e, 0x47, 0x00], 37);
   const credential = {
     rawId: RAW_ID.buffer.slice(0) as ArrayBuffer,
+    response: { getAuthenticatorData: () => authData.buffer.slice(0) },
     getClientExtensionResults: () => ({ prf: { results: { first: new Uint8Array(32) } } }),
   };
   Object.defineProperty(globalThis, "navigator", {
@@ -108,7 +114,7 @@ test("createPasskeyAccountUnpinned mints without pinning, and the handle pins ex
   );
   assert.deepEqual(
     fresh.credential,
-    { credentialId: RAW_ID_B64URL, rpId: "localhost" },
+    { credentialId: RAW_ID_B64URL, rpId: "localhost", provider: "samsung-pass" },
     "the handle must carry the minted credential id and RP ID, so the caller can pin it later",
   );
   assert.match(fresh.address, /^0x[0-9a-f]{40}$/, "the PRF-EOA address is what becomes the new Kernel owner");
@@ -117,7 +123,7 @@ test("createPasskeyAccountUnpinned mints without pinning, and the handle pins ex
   await pinPasskeyCredential(fresh.credential);
   assert.deepEqual(
     await getKV(StorageKeys.PASSKEY_CREDENTIAL),
-    { credentialId: RAW_ID_B64URL, rpId: "localhost" },
+    { credentialId: RAW_ID_B64URL, rpId: "localhost", provider: "samsung-pass" },
     "pinPasskeyCredential must store the handle it was given, unchanged",
   );
 });
@@ -131,7 +137,7 @@ test("createPasskeyAccount still pins at mint time", async () => {
 
   assert.deepEqual(
     await getKV(StorageKeys.PASSKEY_CREDENTIAL),
-    { credentialId: RAW_ID_B64URL, rpId: "localhost" },
+    { credentialId: RAW_ID_B64URL, rpId: "localhost", provider: "samsung-pass" },
     "createPasskeyAccount must keep writing the pin itself",
   );
   assert.match(account.address, /^0x[0-9a-f]{40}$/);
