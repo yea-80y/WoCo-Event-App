@@ -263,6 +263,16 @@
     }
   }
 
+  // A passkey account's backup list opens only once its keys unlock (#746 fix 1):
+  // read it again then, if the first read could not say.
+  $effect(() => {
+    if (!auth.hasIdentitySeed || !canProtect || !backupsUnknown) return;
+    auth.getBackupInventory().then((res) => {
+      backupsUnknown = res.status !== "known";
+      backupInventory = res.status === "known" ? res.backups : [];
+    }).catch(() => {});
+  });
+
   // The attendee-list question is asked only while it can change the card:
   // during setup (no events yet) and not already settled on this device.
   $effect(() => {

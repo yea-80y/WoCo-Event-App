@@ -128,6 +128,17 @@ recovered account's seed is still whatever its escrow carried (stored seed wins)
 slot's AAD moved to `woco/device/identity-seed/v2:{addr}` with it, so every device re-derives
 under the new rule rather than keeping a seed from the old one.
 
+**On the device, locked under the passkey (#746 fix 1).** A passkey account's seed is not kept
+under the browser's device key. It is AES-GCM under a key from the PRF output
+(`woco/device/seed-kek/v1`, AAD `woco/device/identity-seed/v3:{seedAddr}:{parent}`), so a reload
+leaves it locked: the sign-in biometric unlocks it, and after a reload the first signing action
+asks the passkey once. It stays in memory until the tab closes, sign-out, or the page has been
+hidden past the relock limit. The locked copy survives sign-out (it opens only with the passkey);
+passive reads use a public record of the feed-signer address, checked against the account. One
+constant, `SEED_UNLOCK_POLICY` (`apps/web/src/lib/auth/seed-unlock-policy.ts`), trades this for a
+silent device-key copy, timed or not. The lock's label is pinned but sticky, not identity-frozen:
+changing it costs each device one re-fetch of its seed.
+
 **These bytes are FROZEN from launch.** The domain name, version and salt, the primary type name
 `DeriveAccountKeys`, all three field names and types, the `purpose` string and the `nonce` are
 every one of them signed input. Change any of them and every account derives a different seed:

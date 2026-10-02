@@ -17,7 +17,6 @@
 
 import { deriveIssuingKey, type IssuerAddress } from "@woco/shared";
 import { auth } from "./auth-store.svelte.js";
-import { restoreIdentitySeed } from "./identity-seed.js";
 
 export interface IssuingKey {
   privateKey: Uint8Array;
@@ -29,12 +28,11 @@ export interface IssuingKey {
  *
  * Runs `ensureIdentitySeed` first (a no-op when the identity exists, the usual
  * case — every calling surface gates on it before building anything), then
- * derives from the stored seed. Throws when no seed can be produced.
+ * derives from the seed it unlocked. Throws when no seed can be produced.
  */
 export async function ensureIssuingKey(gen = 0): Promise<IssuingKey> {
   const hasSeed = await auth.ensureIdentitySeed();
-  const seedAddr = auth.seedAddress;
-  const seed = hasSeed && seedAddr ? await restoreIdentitySeed(seedAddr) : null;
+  const seed = hasSeed ? await auth.getIdentitySeed() : null;
   if (!seed) {
     throw new Error("issuing key unavailable — restore from recovery escrow");
   }

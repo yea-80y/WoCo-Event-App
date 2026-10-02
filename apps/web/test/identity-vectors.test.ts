@@ -59,6 +59,8 @@ import {
   PORTABILITY_SOC_OWNER_INFO,
   PORTABILITY_HPKE_INFO,
   PASSKEY_GUARDIAN_ESCROW_INFO,
+  PASSKEY_SEED_KEK_INFO,
+  passkeySeedKek,
   passkeyGuardianEscrowMaster,
   passkeyIdentitySeed,
   portabilitySocOwnerKey,
@@ -103,7 +105,7 @@ function installFakeIndexedDB() {
 }
 installFakeIndexedDB();
 
-const { requestIdentitySeed, establishPasskeyIdentitySeed, restoreIdentitySeed, clearIdentitySeed } =
+const { requestIdentitySeed, establishPasskeyIdentitySeed, restoreIdentitySeed, clearIdentitySeed, openLockedSeed, clearLockedSeed } =
   await import("../src/lib/auth/identity-seed.ts");
 const { AAD } = await import("../src/lib/auth/storage/encryption.ts");
 const { deriveEncryptionKeypairFromSeed: derivePortabilityHpkeKeypair, guardianKeysFromMaster } = await import(
@@ -321,6 +323,10 @@ const PASSKEY_PINNED = {
   guardianEscrowMaster: "323038c8e317153f7314b73673c5890e4ba89261daa20c6568efd4ccaa8c4968",
   guardianHpkePubSha256: "a4b93e3e6b61d5ae137c1eea816f99d1bec30dcc4c4f5ecd4fb5e235d34035a9",
   guardianSocOwner: "0x6582108e536267308f5a08b23e14b59c03b46375",
+  /** The device seed-lock key (#746 fix 1), cross-checked against the same Python
+   *  HKDF, which also reproduces `seed` above. STICKY, not identity-frozen: a change
+   *  costs each device one re-fetch of its seed, never an identity. */
+  seedKek: "57a33eb83a338b7d6cdaaf49c890258146a4f10ce8eabc948890dc822048b21e",
 } as const;
 
 test("FROZEN: the PRF salt input and its digest", () => {
@@ -339,6 +345,16 @@ test("FROZEN: the PRF-rooted HKDF labels and the at-rest seed AAD, byte for byte
   assert.equal(AAD.IDENTITY_SEED("0xAbC"), "woco/device/identity-seed/v2:0xabc");
 });
 
+test("STICKY: the device seed-lock label, its key and the locked-seed AAD", () => {
+  assert.equal(PASSKEY_SEED_KEK_INFO, "woco/device/seed-kek/v1");
+  assert.equal(Buffer.from(passkeySeedKek(PRF_OUTPUT)).toString("hex"), PASSKEY_PINNED.seedKek);
+  assert.notEqual(PASSKEY_PINNED.seedKek, PASSKEY_PINNED.seed.slice(2), "the lock must never be the seed");
+  assert.equal(
+    AAD.IDENTITY_SEED_LOCKED("0xAbC", "0xDeF"),
+    "woco/device/identity-seed/v3:0xabc:0xdef",
+  );
+});
+
 test("PRF → Kernel owner address pin (the frozen keccak route #642 did not move)", () => {
   // `deriveKey` in passkey-account.ts is private and needs WebAuthn; the source
   // check below pins that it is still exactly this.
@@ -346,12 +362,16 @@ test("PRF → Kernel owner address pin (the frozen keccak route #642 did not mov
   assert.equal(address.toLowerCase(), PASSKEY_PINNED.ownerAddress);
 });
 
-test("PRF → seed pin, through the REAL establish + restore", async () => {
+test("PRF → seed pin, through the REAL establish + unlock", async () => {
+  const parent = "0x00000000000000000000000000000000000000aa";
   await clearIdentitySeed(PASSKEY_PINNED.ownerAddress);
+  await clearLockedSeed(PASSKEY_PINNED.ownerAddress);
   assert.equal(passkeyIdentitySeed(PRF_OUTPUT), PASSKEY_PINNED.seed);
-  const { seed } = await establishPasskeyIdentitySeed(PASSKEY_PINNED.ownerAddress, PRF_OUTPUT);
+  const { seed } = await establishPasskeyIdentitySeed(PASSKEY_PINNED.ownerAddress, parent, PRF_OUTPUT);
   assert.equal(seed, PASSKEY_PINNED.seed, "passkey seed moved — every passkey account's identity changed");
-  assert.equal(await restoreIdentitySeed(PASSKEY_PINNED.ownerAddress), PASSKEY_PINNED.seed);
+  assert.equal(await openLockedSeed(PASSKEY_PINNED.ownerAddress, parent, PRF_OUTPUT), PASSKEY_PINNED.seed);
+  // Locked only (#746 fix 1): nothing opens it without the passkey.
+  assert.equal(await restoreIdentitySeed(PASSKEY_PINNED.ownerAddress), null);
 });
 
 test("passkey seed → the same sibling derivations as every other seed", () => {
@@ -414,7 +434,7 @@ test("the passkey code paths route through the frozen module, and no passkey pat
   assert.match(seedSrc, /const seed = passkeyIdentitySeed\(prfSecret\)/);
 
   const store = stripComments(read("../src/lib/auth/auth-store.svelte.ts"));
-  assert.match(store, /establishPasskeyIdentitySeed\(seedAddr, _passkeyPrfSecret\)/);
+  assert.match(store, /establishPasskeyIdentitySeed\(seedAddr, parent, prf\)/);
   // The confirm-dialog seed signer is gone from every source root.
   assert.deepEqual(
     SCANNED.filter((f) => /createPasskeySigner|passkey-signer/.test(f.code)).map((f) => f.rel),

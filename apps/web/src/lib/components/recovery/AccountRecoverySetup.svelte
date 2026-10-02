@@ -158,6 +158,16 @@
     })();
   });
 
+  // The labels come from the seed-sealed manifest; the backups themselves are read
+  // from chain. A passkey account's keys unlock after a reload only when asked
+  // (#746 fix 1), so fill the labels in then, rather than ask on page open.
+  let labelsReadUnlocked = false;
+  $effect(() => {
+    if (!auth.hasIdentitySeed || labelsReadUnlocked) return;
+    labelsReadUnlocked = true;
+    loadBackupLabels();
+  });
+
   async function refreshProtection(kernel: string) {
     const p = await readBackupProtection(kernel);
     isProtected = p.isProtected;
