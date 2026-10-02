@@ -593,13 +593,17 @@ async function _getPasskeyBackupKeyImpl(): Promise<PasskeyGuardianMaterial> {
 /**
  * Authenticate with a stored passkey credential (pinned by ID).
  * Used for silent re-derivation on page reload when we know which credential to use.
- * Falls back to discoverable mode if stored credential is gone.
+ * Falls back to discoverable mode if stored credential is gone - unless
+ * `retryDiscoverable` is false, where a declined sheet is the answer and the caller
+ * offers the picker on its next attempt (#746 fix 1: cancel must not open a second sheet).
  */
-export async function restorePasskeyAccount(): Promise<PasskeyKeyMaterial> {
-  return withCeremonyLock(_restorePasskeyAccountImpl);
+export async function restorePasskeyAccount(
+  opts: { retryDiscoverable?: boolean } = {},
+): Promise<PasskeyKeyMaterial> {
+  return withCeremonyLock(() => _restorePasskeyAccountImpl(opts.retryDiscoverable ?? true));
 }
 
-async function _restorePasskeyAccountImpl(): Promise<PasskeyKeyMaterial> {
+async function _restorePasskeyAccountImpl(retryDiscoverable: boolean): Promise<PasskeyKeyMaterial> {
   const meta = await getKV<PasskeyCredentialMeta>(StorageKeys.PASSKEY_CREDENTIAL);
   if (!meta) {
     // IDB cleared — fall back to the discoverable picker (sign-in only, never creates)
@@ -627,7 +631,7 @@ async function _restorePasskeyAccountImpl(): Promise<PasskeyKeyMaterial> {
     const prfOutput = extractPrfResult(credential.getClientExtensionResults());
     return deriveKey(prfOutput);
   } catch (e) {
-    if (e instanceof DOMException && e.name === "NotAllowedError") {
+    if (e instanceof DOMException && e.name === "NotAllowedError" && retryDiscoverable) {
       // Ambiguous: the credential may be gone, or the user just cancelled. Do
       // NOT delete the metadata on a guess — a cancel would permanently demote
       // this device to the discoverable path. The discoverable retry below

@@ -271,10 +271,16 @@ test("the eager passkey establish can never derive for a rotated credential or a
     "utf8",
   );
   const body = src.slice(src.indexOf("async function _ensureIdentitySeed("));
-  const restore = body.indexOf("if (await restoreIdentitySeed(seedAddr))");
-  const refusal = body.indexOf("if (await _recoveryKernelFor(seedAddr))");
-  const prf = body.indexOf("await establishPasskeyIdentitySeed(seedAddr, _passkeyPrfSecret)");
-  assert.ok(restore > 0 && refusal > restore && prf > refusal, "restore → binding refusal → PRF derive");
+  // A passkey account never reaches the device-key restore (#746 fix 1): its seed
+  // is locked under the passkey, and a device-key copy there opens silently.
+  const passkey = body.indexOf("if (_kind === \"passkey\") return await _unlockPasskeySeed(seedAddr);");
+  const deviceRestore = body.indexOf("if (await restoreIdentitySeed(seedAddr))");
+  assert.ok(passkey > 0 && deviceRestore > passkey, "passkey branch → device-key restore");
+  const unlock = src.slice(src.indexOf("async function _unlockPasskeySeed("));
+  const open = unlock.indexOf("await openLockedSeed(seedAddr, parent, prf)");
+  const refusal = unlock.indexOf("if (await _recoveryKernelFor(seedAddr))");
+  const prf = unlock.indexOf("await establishPasskeyIdentitySeed(seedAddr, parent, prf)");
+  assert.ok(open > 0 && refusal > open && prf > refusal, "open locked → binding refusal → PRF derive");
   assert.match(src, /if \(!envelopeUnknown\) await _establishPasskeySeedEagerly\(\);/);
 });
 
@@ -295,10 +301,15 @@ test("a REFUSED back-fill heals the device instead of leaving it on the wrong se
   );
   const heal = src.slice(src.indexOf("async function _healRefusedBackfill"));
   const body = heal.slice(0, heal.indexOf("\n}\n"));
-  const clear = body.indexOf("await clearIdentitySeed(eoa)");
+  const clear = body.indexOf("await _clearSeedEverywhere(eoa)");
   const guard = body.indexOf("if (!stillIn) return;");
   const out = body.indexOf("await logout({ force: true })");
   assert.ok(clear > 0 && guard > clear && out > guard, "clear seed → still-in guard → sign out");
+  // Every copy: the locked one would otherwise reopen the wrong seed at next unlock.
+  const wipe = src.slice(src.indexOf("async function _clearSeedEverywhere"));
+  const wipeBody = wipe.slice(0, wipe.indexOf("\n}\n"));
+  assert.match(wipeBody, /await clearIdentitySeed\(eoa\)/);
+  assert.match(wipeBody, /await clearLockedSeed\(eoa\)/);
 });
 
 test("requestIdentitySeed derives NO key — the seed is all it returns", async () => {

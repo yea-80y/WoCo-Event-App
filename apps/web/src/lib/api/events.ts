@@ -70,7 +70,7 @@ async function ownOrderKeyRef(feedSignerAddress: string): Promise<string> {
   const hit = _ownOrderKeyRef.get(key);
   if (hit) return hit;
   const seed = await auth.getIdentitySeed();
-  if (!seed) throw new Error("Your account keys aren't on this device, so the event can't be checked before signing.");
+  if (!seed) throw new Error("Your account keys are locked, so the event can't be checked before signing - confirm it's you and try again.");
   const { deriveXWingKeypairFromSeed } = await import("@woco/shared/crypto/xwing");
   const ref = orderKeyRef(deriveXWingKeypairFromSeed(seed).publicKey);
   _ownOrderKeyRef.set(key, ref);

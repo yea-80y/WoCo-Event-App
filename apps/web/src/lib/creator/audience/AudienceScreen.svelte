@@ -2,7 +2,7 @@
   import type { MarketingContact, MarketingListMeta, ContactConsentState } from "@woco/shared";
   import { contactConsentState } from "@woco/shared";
   import type { MarketingListPayload } from "@woco/shared";
-  import { restoreIdentitySeed } from "../../auth/identity-seed.js";
+  import UnlockPanel from "../../components/auth/UnlockPanel.svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import {
@@ -24,6 +24,9 @@
 
   let loading = $state(true);
   let loadError = $state<string | null>(null);
+  // The list exists but the account keys are locked on this device (#746 fix 1):
+  // it opens on one tap, never by itself on page open.
+  let listLocked = $state(false);
   let meta = $state<MarketingListMeta | null>(null);
   let contacts = $state<MarketingContact[]>([]);
   let suppressedEmails = $state<Set<string>>(new Set());
@@ -57,8 +60,8 @@
    * seal context that binds the list to this account. The post-quantum code is
    * loaded here, on first use, never with the page.
    */
-  async function getKeys() {
-    const identitySeed = await getIdentitySeed();
+  async function getKeys(prompt = false) {
+    const identitySeed = await getIdentitySeed(prompt);
     if (!identitySeed || !auth.parent) return null;
     const [{ deriveXWingKeypairFromSeed }, box] = await Promise.all([
       import("@woco/shared/crypto/xwing"),
@@ -68,14 +71,13 @@
     return { secretKey, publicKey, ctx: box.listSealContext(auth.parent), box };
   }
 
-  /** The identity seed on this device, establishing it first if this is the first
-   *  action that needs it. */
-  async function getIdentitySeed(): Promise<string | null> {
-    if (!auth.seedAddress) return null;
-    const stored = await restoreIdentitySeed(auth.seedAddress);
-    if (stored) return stored;
-    if (!(await auth.ensureIdentitySeed())) return null;
-    return restoreIdentitySeed(auth.seedAddress);
+  /** The identity seed, unlocking it first - only when `prompt`, which only a tap
+   *  passes - if it is locked or not yet on this device. */
+  async function getIdentitySeed(prompt: boolean): Promise<string | null> {
+    const seed = await auth.getIdentitySeed();
+    if (seed || !prompt) return seed;
+    if (!(await auth.ensureAccountSetup({ identity: true }))) return null;
+    return auth.getIdentitySeed();
   }
 
   /** One round trip gives both server-held states; the third (imported) is what
@@ -107,6 +109,7 @@
   async function load(): Promise<void> {
     loading = true;
     loadError = null;
+    listLocked = false;
     try {
       const resp = await getMarketingList();
       if (!resp) {
@@ -117,9 +120,11 @@
       meta = resp.meta;
       const keys = await getKeys();
       if (!keys) {
-        loadError = "Sign in and unlock your identity to open your audience.";
+        if (auth.parent) listLocked = true;
+        else loadError = "Sign in and unlock your identity to open your audience.";
         return;
       }
+      listLocked = false;
       const payload = await keys.box.openBoxJson<MarketingListPayload>(keys.secretKey, resp.sealedList, keys.ctx);
       contacts = payload.contacts;
       await refreshConsentStates(contacts);
@@ -139,7 +144,7 @@
 
   /** Re-seal + upload the full list — the single write path for every change. */
   async function commitList(next: MarketingContact[]): Promise<void> {
-    const keys = await getKeys();
+    const keys = await getKeys(true);
     if (!keys) throw new Error("Identity locked — sign in to save changes");
     saving = true;
     try {
@@ -197,6 +202,18 @@
       void load();
     }
   });
+
+  // Unlocked - by the panel's tap or elsewhere this app open: open the list.
+  // Locked again (the page sat hidden past the relock): hide the contacts.
+  $effect(() => {
+    if (auth.hasIdentitySeed && listLocked && !loading) void load();
+  });
+  $effect(() => {
+    if (auth.kind === "passkey" && !auth.hasIdentitySeed && contacts.length > 0) {
+      contacts = [];
+      listLocked = true;
+    }
+  });
 </script>
 
 <div class="audience">
@@ -222,6 +239,8 @@
       <p class="err">{loadError}</p>
       <button class="btn-ghost" onclick={() => void load()}>Try again</button>
     </div>
+  {:else if listLocked}
+    <UnlockPanel subject="Contact details" action="Show contacts" />
   {:else}
     {#if contacts.length === 0 && !wizardOpen}
       <div class="empty invite">
