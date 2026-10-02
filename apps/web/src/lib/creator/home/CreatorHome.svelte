@@ -251,7 +251,7 @@
 
     // Prompt-free: reads the stored feed-signer blob, no signature. Only
     // meaningful for the kinds that can install guardian recovery.
-    if (canProtect) {
+    if (canProtect && auth.kind !== "passkey") {
       auth.getBackupInventory().then(res => {
         if (token !== loadToken) return;
         backupsUnknown = res.status !== "known";
@@ -266,7 +266,7 @@
   // A passkey account's backup list opens only once its keys unlock (#746 fix 1):
   // read it again then, if the first read could not say.
   $effect(() => {
-    if (!auth.hasIdentitySeed || !canProtect || !backupsUnknown) return;
+    if (!auth.hasIdentitySeed || !canProtect || auth.kind === "passkey" || !backupsUnknown) return;
     auth.getBackupInventory().then((res) => {
       backupsUnknown = res.status !== "known";
       backupInventory = res.status === "known" ? res.backups : [];
@@ -571,7 +571,21 @@
         </div>
 
         <!-- Account safety panel — only for kinds that can install guardian recovery -->
-        {#if canProtect}
+        {#if auth.kind === "passkey"}
+          <!-- A passkey account backs up by linking devices (#746 step 5). -->
+          <div class="panel panel--safety">
+            <div class="panel-head">
+              <span class="panel-title">
+                <ShieldCheck size={16} strokeWidth={2.25} />
+                Account safety
+              </span>
+              <button class="link-quiet" onclick={() => navigate("/passkeys")}>Your passkeys →</button>
+            </div>
+            <div class="panel-empty">
+              <span>Link another device so losing this one doesn't lock you out.</span>
+            </div>
+          </div>
+        {:else if canProtect}
           <div class="panel panel--safety">
             <div class="panel-head">
               <span class="panel-title">

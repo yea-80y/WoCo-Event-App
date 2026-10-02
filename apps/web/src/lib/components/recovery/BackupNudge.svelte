@@ -16,7 +16,8 @@
   // only once its keys unlock (#746 fix 1), so a locked check is retried once then.
   let checkedWith: "locked" | "unlocked" | null = null;
 
-  const canProtect = $derived(auth.kind === "passkey" || auth.kind === "web3auth");
+  // A passkey account adds no backup on Protect (#746 step 5): never nudged there.
+  const canProtect = $derived(auth.kind === "web3auth");
 
   $effect(() => {
     const seedState = auth.hasIdentitySeed ? "unlocked" : "locked";
