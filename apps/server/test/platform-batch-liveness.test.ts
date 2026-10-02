@@ -53,6 +53,7 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), "../src");
 let probes: typeof import("../src/lib/health/probes.js");
 let router: typeof import("../src/lib/etherna/batch-router.js");
 let createEventV2: typeof import("../src/lib/event/service.js").createEventV2;
+let setStripeAccount: typeof import("../src/lib/stripe/accounts.js").setStripeAccount;
 let SESSION_DOMAIN: typeof import("@woco/shared").SESSION_DOMAIN;
 let SESSION_TYPES: typeof import("@woco/shared").SESSION_TYPES;
 let SESSION_PURPOSE: typeof import("@woco/shared").SESSION_PURPOSE;
@@ -79,6 +80,7 @@ before(async () => {
   probes = await import("../src/lib/health/probes.js");
   router = await import("../src/lib/etherna/batch-router.js");
   ({ createEventV2 } = await import("../src/lib/event/service.js"));
+  ({ setStripeAccount } = await import("../src/lib/stripe/accounts.js"));
   ({ SESSION_DOMAIN, SESSION_TYPES, SESSION_PURPOSE, SESSION_EXPIRY_MS } = await import("@woco/shared"));
 
   const { swarmRoutes } = await import("../src/routes/swarm.js");
@@ -372,11 +374,17 @@ async function mintDelegation() {
     SESSION_TYPES as unknown as Parameters<typeof TypedDataEncoder.hash>[1],
     message,
   );
-  return { session, delegation: { message, parentSig } };
+  return { parent, session, delegation: { message, parentSig } };
 }
 
+/**
+ * Website storage and raw uploads now need a verified organiser (2026-10-02),
+ * checked BEFORE the batch is chosen. These cases are about the batch refusal,
+ * so their caller is verified and the refusal under test is the one reached.
+ */
 async function postAs(path: string, body: unknown): Promise<{ status: number; json: Record<string, unknown> }> {
   const d = await mintDelegation();
+  setStripeAccount(d.parent.address.toLowerCase(), `acct_${randomUUID().slice(0, 8)}`, true);
   const text = JSON.stringify(body);
   const timestamp = String(Date.now());
   const nonce = randomUUID();

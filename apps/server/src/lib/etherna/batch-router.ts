@@ -169,6 +169,13 @@ function isLive(batch: { expiresAt: string }): boolean {
   return expiresAt - Date.now() > MIN_BATCH_REMAINING_MS;
 }
 
+/** The owner has their own Etherna batch with usable life left: they pay for
+ *  what they store, so the shared-storage gates do not apply to them. */
+export function hasLiveUserBatch(ownerAddress: string): boolean {
+  const user = getUserBatch(ownerAddress);
+  return !!user && isLive(user);
+}
+
 export function isWocoGateway(url: string): boolean {
   return isWocoGatewayUrl(url);
 }
