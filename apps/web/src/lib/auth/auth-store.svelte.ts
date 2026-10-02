@@ -55,7 +55,7 @@ import {
   clearPublicKeys,
 } from "./identity-seed.js";
 import { SEED_UNLOCK_POLICY, unlockExpiry } from "./seed-unlock-policy.js";
-import { makeMainPendingKey } from "./make-main-key.js";
+import { makeMainPendingKey, linkedEnvelopePendingKey } from "./make-main-key.js";
 import { requestChallenge, sha256Hex } from "./request-challenge.js";
 import { apiBase } from "../api/http.js";
 import {
@@ -73,6 +73,7 @@ import {
   hasStoredPasskeyCredential,
   clearPasskeyCredential,
   createAddedPasskey,
+  asCeremonyCancel,
 } from "./passkey-account.js";
 import { createWeb3Signer, createLocalSigner } from "./signers/index.js";
 import type { BuiltKernel } from "./kernel-account.js";
@@ -802,6 +803,7 @@ async function _restoreCachedAuth(): Promise<void> {
   if (_kind === "passkey") {
     _deviceRole = (await _boundKernelFor(seedAddr))?.role === "device";
     void resumeMakeMain().catch((e) => console.warn("[auth] make-main resume (retried next time):", e));
+    void _retryLinkedEnvelope(seedAddr);
     // Locked at rest (#746 fix 1): present only when this tab already unlocked it,
     // or when SEED_UNLOCK_POLICY keeps a copy that opens without the passkey. A
     // legacy device-key copy counts as LOCKED from this build's first load; it is
@@ -1207,9 +1209,9 @@ async function _maybeWritePasskeyRecord(): Promise<void> {
   }
 }
 
-async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
+async function _maybeBackfillPortabilityEnvelope(): Promise<boolean> {
   try {
-    if (_kind !== "passkey") return;
+    if (_kind !== "passkey") return false;
     const { gatherBackfillArgs } = await import("./recovery-finalize.js");
     const gathered = await gatherBackfillArgs(_backfillGatherDeps());
     if (gathered.status !== "ready") {
@@ -1218,7 +1220,7 @@ async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
       if (!gathered.reason.startsWith("no recovery binding")) {
         console.warn(`[auth] portability back-fill not attempted: ${gathered.reason}`);
       }
-      return;
+      return false;
     }
 
     // Captured before the await: the back-fill runs in the background, and the
@@ -1230,11 +1232,14 @@ async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
     if (outcome.action === "refused") {
       console.error(`[auth] portability envelope back-fill REFUSED: ${outcome.reason}`);
       if (eoa && parent) await _healRefusedBackfill(eoa, parent);
-    } else {
-      console.log(`[auth] portability envelope back-fill: ${outcome.action} (${outcome.reason})`);
+      return false;
     }
+    console.log(`[auth] portability envelope back-fill: ${outcome.action} (${outcome.reason})`);
+    // "deferred" = the read could not answer: not written yet.
+    return outcome.action === "wrote" || outcome.action === "skipped";
   } catch (e) {
     console.warn("[auth] portability envelope back-fill failed (non-fatal):", e);
+    return false;
   }
 }
 
@@ -2227,6 +2232,11 @@ async function _loginAddedPasskey(
     _postAuthNotice(DEVICE_REMOVED_MESSAGE);
     throw new DeviceRemovedError();
   }
+  // The server's owner cache can trail a rotation by minutes (Fable sign-off SHOULD-3):
+  // "owner" while this device's own fresh chain read names another key is no verdict.
+  if (verdict === "owner" && start.onChainOwner && start.onChainOwner.toLowerCase() !== seedAddr.toLowerCase()) {
+    throw new Error(VERDICT_UNREACHABLE_MESSAGE);
+  }
   // Neither refusal below forgets anything: the server says SESSION_INVALID for more
   // than "no grant" (an owner read it could not make, a store it could not read), so
   // a refusal leaves this device as it found it; only `removed` is certain.
@@ -2489,7 +2499,9 @@ async function _freshMainPasskey(): Promise<void> {
   if (!_passkeyPrivateKey) {
     await _ensurePasskeyKey(); // the sheet this asks for IS the fresh confirm
   } else {
-    const material = await restorePasskeyAccount({ retryDiscoverable: false });
+    const material = await restorePasskeyAccount({ retryDiscoverable: false }).catch((e) => {
+      throw asCeremonyCancel(e);
+    });
     if (material.address.toLowerCase() !== _seedAddress.toLowerCase()) {
       throw new Error("That passkey opens a different account. Use the one you signed in with.");
     }
@@ -2512,6 +2524,7 @@ async function approveDeviceLink(code: Uint8Array, offer: import("./device-link.
     self: seedAddr,
     seed,
     grant: (grantee, credentialTag) => _grantDevice(ownerKey, parent, grantee, credentialTag),
+    revoke: (grantee) => removePasskey(grantee),
   });
 }
 
@@ -2582,6 +2595,19 @@ async function approveMakeMain(
   onStep?: (step: "waiting" | "changing" | "finishing") => void,
 ): Promise<{ registered: boolean }> {
   return (await import("./make-main.js")).approveMakeMain(code, offer, _makeMainHost(), onStep);
+}
+
+/** A linked passkey whose envelope write failed at link time (`device-link.ts` leaves
+ *  the marker): write it now, once there is a session and the PRF output is here. One
+ *  storage read otherwise. */
+async function _retryLinkedEnvelope(seedAddr: string): Promise<void> {
+  const key = linkedEnvelopePendingKey(seedAddr);
+  try {
+    if (!globalThis.localStorage?.getItem(key) || !_sessionAddress || !_passkeyPrfSecret) return;
+    if (await _maybeBackfillPortabilityEnvelope()) globalThis.localStorage?.removeItem(key);
+  } catch {
+    /* retried at the next sign-in */
+  }
 }
 
 /** Finish a make-main this device took part in. One storage read unless one is waiting. */

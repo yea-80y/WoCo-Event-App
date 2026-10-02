@@ -98,6 +98,11 @@ function world() {
 }
 
 // Yields to the event loop, so one side's wait never starves the other's.
+const DEVICES: PairedDevice[] = [
+  { grantee: X, credentialTag: TAG_X },
+  { grantee: T, credentialTag: TAG_T },
+];
+
 const noSleep = () => new Promise<void>((r) => setImmediate(r));
 
 function runBoth(over: {
@@ -106,6 +111,9 @@ function runBoth(over: {
   rotate?: (to: string) => Promise<void>;
   laptopNow?: () => number;
   devices?: PairedDevice[];
+  known?: { owner: string; devices: PairedDevice[] };
+  recheck?: () => Promise<PairedDevice[]>;
+  becomeOwner?: () => Promise<void>;
 } = {}) {
   const w = world();
   const m = mailbox();
@@ -113,6 +121,13 @@ function runBoth(over: {
   const laptopStore = memStore();
   let nonce = 0;
   const phoneDone = { promise: null as null | Promise<{ registered: boolean }> };
+  // The phone's waits end once the laptop has finished, either way: nothing it could
+  // still be waiting for will come.
+  let laptopSettled = false;
+  const phoneSleep = async () => {
+    if (laptopSettled) throw new Error("the other device stopped");
+    await noSleep();
+  };
   let shown!: () => void;
   const codeShown = new Promise<void>((r) => (shown = r));
   const laptop = runMakeThisDeviceMain(
@@ -126,13 +141,11 @@ function runBoth(over: {
             parent: PARENT,
             self: M,
             selfTag: TAG_M,
-            devices: over.devices ?? [
-              { grantee: X, credentialTag: TAG_X },
-              { grantee: T, credentialTag: TAG_T },
-            ],
+            devices: over.devices ?? DEVICES,
+            recheckDevices: over.recheck ?? (async () => over.devices ?? DEVICES),
             transport: m,
             store: phoneStore,
-            sleep: noSleep,
+            sleep: phoneSleep,
             writeOwnEnvelope: over.writeOwnEnvelope ?? (async () => void w.log.push("phone:envelope")),
             rotate:
               over.rotate ??
@@ -163,12 +176,13 @@ function runBoth(over: {
           return Promise.all(devices.map((d) => sign(laptopKey, d, (++nonce).toString(16).padStart(2, "0"))));
         }),
       readOwner: async () => w.chain.owner,
-      becomeOwner: async () => void w.log.push("laptop:became-owner"),
+      knownDevices: async () => over.known ?? { owner: M, devices: DEVICES },
+      becomeOwner: over.becomeOwner ?? (async () => void w.log.push("laptop:became-owner")),
       submit: w.server("laptop"),
     },
   );
   // Either side may give up while the test is still awaiting the other.
-  laptop.catch(() => {});
+  laptop.catch(() => {}).finally(() => (laptopSettled = true));
   return { w, laptop, phone: async () => { await codeShown; return phoneDone.promise!; }, phoneStore, laptopStore };
 }
 
@@ -230,7 +244,7 @@ test("no envelope, no rotation", async () => {
   assert.equal(run.phoneStore.map.size, 0);
 });
 
-test("a rotation that cannot be confirmed keeps the grants; the chain decides later", async () => {
+test("a rotation with no receipt keeps the grants; inside the window the chain decides", async () => {
   const run = runBoth({
     rotate: async (to) => {
       run.w.chain.owner = to;
@@ -260,12 +274,12 @@ test("resume: unanswered chain keeps everything; unchanged owner after expiry dr
   const g = await sign(laptopKey, { grantee: M, credentialTag: TAG_M });
   const base: PendingMakeMain = { parent: PARENT, newOwner: X, previousOwner: M, grants: [g], expiresAt: 1_000 };
   store.write(base);
-  assert.equal(await resumeMakeMain({ parent: PARENT, store, readOwner: async () => "error", submit: async () => "done", now: () => 5_000 }), false);
-  assert.equal(store.map.size, 1);
+  assert.equal(await resumeMakeMain({ parent: PARENT, store, readOwner: async () => "error", submit: async () => "done", now: () => 999 }), false);
+  assert.equal(store.map.size, 1, "an unanswered chain inside the window decides nothing");
   assert.equal(await resumeMakeMain({ parent: PARENT, store, readOwner: async () => M, submit: async () => "done", now: () => 999 }), false);
   assert.equal(store.map.size, 1, "inside the window: the other device may still rotate");
-  assert.equal(await resumeMakeMain({ parent: PARENT, store, readOwner: async () => M, submit: async () => "done", now: () => 5_000 }), true);
-  assert.equal(store.map.size, 0, "a rotation that never happened leaves no grant behind");
+  assert.equal(await resumeMakeMain({ parent: PARENT, store, readOwner: async () => "error", submit: async () => "done", now: () => 5_000 }), true);
+  assert.equal(store.map.size, 0, "past the window it goes, without asking the chain");
 
   const g2 = await sign(laptopKey, { grantee: T, credentialTag: TAG_T }, "02");
   store.write({ ...base, grants: [g, g2], expiresAt: null });
@@ -305,6 +319,7 @@ test("the new main refuses an answer that names itself - and signs nothing", asy
           return [];
         },
         readOwner: async () => M,
+        knownDevices: async () => ({ owner: M, devices: DEVICES }),
         becomeOwner: async () => {},
         submit: async () => "done",
       },
@@ -312,6 +327,58 @@ test("the new main refuses an answer that names itself - and signs nothing", asy
     await assert.rejects(run, { message: LINK_CODE_UNKNOWN });
     assert.equal(signed, false);
   }
+});
+
+test("MUST-1: grants with a deadline go once it passes, even if the same key becomes the owner later", async () => {
+  const store = memStore();
+  const g = await sign(laptopKey, { grantee: T, credentialTag: TAG_T });
+  store.write({ parent: PARENT, newOwner: X, previousOwner: M, grants: [g], expiresAt: 1_000 });
+  let submitted = 0;
+  const done = await resumeMakeMain({ parent: PARENT, store, readOwner: async () => X, submit: async () => (submitted++, "done"), now: () => 5_000 });
+  assert.equal(done, true);
+  assert.equal(submitted, 0, "a removed device must not come back through an old grant");
+  assert.equal(store.map.size, 0);
+});
+
+test("the new main refuses an answer that is not this account's own main and devices - and signs nothing", async () => {
+  const stranger = Wallet.createRandom().address.toLowerCase();
+  for (const known of [
+    { owner: stranger, devices: DEVICES },
+    { owner: M, devices: [DEVICES[0]] },
+    { owner: M, devices: [DEVICES[0], { grantee: T, credentialTag: TAG_M }] },
+  ]) {
+    let signed = false;
+    const run = runBoth({
+      known,
+      signGrants: async () => {
+        signed = true;
+        return [];
+      },
+    });
+    await assert.rejects(run.laptop, { message: LINK_CODE_UNKNOWN });
+    assert.equal(signed, false);
+    assert.equal(run.w.chain.owner, M);
+    await run.phone().catch(() => {});
+  }
+});
+
+test("the main stops before the envelope if its devices changed while the other was signing", async () => {
+  const run = runBoth({
+    recheck: async () => [DEVICES[0]],
+    laptopNow: (() => { let t = Date.now(); return () => (t += PAIRING_TTL_MS); })(),
+  });
+  await assert.rejects(run.phone(), /changed while this was in progress/);
+  assert.ok(!run.w.log.some((x) => x.startsWith("phone:envelope") || x.startsWith("phone:rotate")));
+  assert.equal(run.w.chain.owner, M);
+});
+
+test("the new main marks the change landed before it takes the owner role", async () => {
+  let seen: PendingMakeMain | null | undefined;
+  const run = runBoth({ becomeOwner: async () => void (seen = run.laptopStore.read(PARENT)) });
+  await run.laptop;
+  await run.phone();
+  assert.ok(seen);
+  assert.equal(seen!.expiresAt, null);
 });
 
 test("the main refuses an offer for another account, from itself, or for a device it does not list", () => {
@@ -332,6 +399,7 @@ test("grantsMatch: one per device, this account, the new main's signature", asyn
   assert.ok(!grantsMatch(good, { parent: "0x" + "34".repeat(20), newOwner: X, devices }));
   assert.ok(!grantsMatch(good, { parent: PARENT, newOwner: T, devices }));
   assert.ok(!grantsMatch([good[0], await sign(laptopKey, { grantee: T, credentialTag: TAG_M }, "03")], { parent: PARENT, newOwner: X, devices }));
+  assert.ok(!grantsMatch([good[0], await sign(laptopKey, devices[1], "01")], { parent: PARENT, newOwner: X, devices }), "one nonce, two devices");
 });
 
 test("messages: shapes, and no more devices than the cap", async () => {
@@ -385,8 +453,10 @@ test("store: resume costs a storage read and never mints a session; the handover
   const MM = read("../src/lib/auth/make-main.ts");
   assert.match(body(MM, "export async function resumeForHost("), /submit: async \(g\) => \(session \? submitGrant\(g\) : "later"\)/);
   const approve = body(MM, "export async function approveMakeMain(");
-  assert.ok(approve.indexOf("await host.freshMainPasskey();") < approve.indexOf("listDeviceGrants()"));
-  assert.match(approve, /verifyDeviceGrantList\(listed\.data\.grants, \{ parent, owner: self \}\)\.filter\(\(d\) => d\.removedAt === null\)/);
+  const fresh = approve.indexOf("await host.freshMainPasskey();");
+  assert.ok(fresh >= 0 && fresh < approve.indexOf("await liveDevices(parent, self)"));
+  assert.match(approve, /recheckDevices: \(\) => liveDevices\(parent, self\)/);
+  assert.match(body(MM, "async function liveDevices("), /verifyDeviceGrantList\(\(await listGrants\(\)\)\.grants, \{ parent, owner: self \}\)\s*\.filter\(\(d\) => d\.removedAt === null\)/);
   assert.match(body(MM, "export async function submitGrant("), /return res\.ok \|\| res\.code === "nonce-used" \? "done" : "later";/);
   // The store lends state, not flows: the make-main code stays out of every page load.
   assert.doesNotMatch(STORE, /listDeviceGrants|rotateOwnerSelf|writePortabilityEnvelope\(\{ prfSecret: prf/);
@@ -397,4 +467,26 @@ test("rotation: the two validator calls in ONE batch, confirmed at the landing b
   assert.match(k, /calls: \[\s*\{ to: validator, data: d\.encodeFunctionData\(\{ abi, functionName: "onUninstall", args: \["0x"\] \}\) \},\s*\{ to: validator, data: d\.encodeFunctionData\(\{ abi, functionName: "onInstall", args: \[newOwner\.toLowerCase\(\) as Hex\] \}\) \},\s*\]/);
   assert.match(k, /readKernelEcdsaOwnerStrict\(builtKernel\.address, blockNumber\)/);
   assert.match(k, /if \(owner !== newOwner\.toLowerCase\(\)\) \{/);
+});
+
+test("sign-off fixes pinned in the store and screens", () => {
+  // SHOULD-3: an "owner" verdict the device's own chain read contradicts is no verdict.
+  const added = body(STORE, "async function _loginAddedPasskey(");
+  const contradiction = added.indexOf('if (verdict === "owner" && start.onChainOwner && start.onChainOwner.toLowerCase() !== seedAddr.toLowerCase()) {');
+  assert.ok(contradiction > 0 && contradiction < added.indexOf("await clearSession();"), "checked before anything is kept");
+  // A receipt means the rotation ran: an owner read failing after it is "not yet confirmed".
+  const k = body(read("../src/lib/auth/kernel-account.ts"), "export async function rotateOwnerSelf(");
+  assert.match(k, /if \(owner === "error"\) \{[\s\S]*?return \{ txHash, blockNumber, confirmed: false \};/);
+  // The linked envelope is retried only with a session and the PRF output here; the
+  // marker goes only when the envelope is written.
+  const retry = body(STORE, "async function _retryLinkedEnvelope(");
+  assert.match(retry, /if \(!globalThis\.localStorage\?\.getItem\(key\) \|\| !_sessionAddress \|\| !_passkeyPrfSecret\) return;/);
+  assert.match(retry, /if \(await _maybeBackfillPortabilityEnvelope\(\)\) globalThis\.localStorage\?\.removeItem\(key\);/);
+  assert.match(body(STORE, "async function _maybeBackfillPortabilityEnvelope("), /return outcome\.action === "wrote" \|\| outcome\.action === "skipped";/);
+  // SHOULD-4: open panels outlive the role change they cause.
+  const your = read("../src/lib/components/passkeys/YourPasskeys.svelte");
+  const markup = your.slice(your.indexOf("</script>"));
+  assert.ok(markup.indexOf("{#if makingMain}") < markup.indexOf("{#if !loaded}"));
+  assert.ok(markup.indexOf("{#if linking}") < markup.indexOf("{#if !loaded}"));
+  assert.doesNotMatch(markup, /\{#if !owner\}[\s\S]{0,400}<MakeThisDeviceMain/);
 });

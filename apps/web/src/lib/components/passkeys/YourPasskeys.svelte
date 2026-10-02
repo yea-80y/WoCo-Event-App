@@ -154,23 +154,32 @@
   {:else if !isPasskey}
     <p class="muted">This account signs in another way. More than one passkey is for passkey accounts.</p>
   {:else}
-    {#if !owner}
+    {#if !owner && !makingMain}
       <p class="note">
         You're signed in with a linked passkey. To add or remove passkeys, use your main passkey - or make this device the
         main one.
       </p>
-      {#if makingMain}
-        {#await loadMakeThisDeviceMain() then { default: MakeThisDeviceMain }}
-          <MakeThisDeviceMain onchanged={() => { loaded = false; void load(); }} onclose={() => (makingMain = false)} />
-        {:catch}
-          <p class="err">Couldn't open this - check your connection and try again.</p>
-        {/await}
-      {:else}
-        <button class="btn btn--ghost" onclick={() => (makingMain = true)}>Make this device the main one</button>
-      {/if}
+      <button class="btn btn--ghost" onclick={() => (makingMain = true)}>Make this device the main one</button>
+    {/if}
+    <!-- Open panels sit outside the role check and the list: both change under them
+         when a device becomes (or stops being) the main one, and they must stay to
+         say how it went. -->
+    {#if makingMain}
+      {#await loadMakeThisDeviceMain() then { default: MakeThisDeviceMain }}
+        <MakeThisDeviceMain onchanged={() => void load()} onclose={() => (makingMain = false)} />
+      {:catch}
+        <p class="err">Couldn't open this - check your connection and try again.</p>
+      {/await}
+    {/if}
+    {#if linking}
+      {#await loadLinkAnotherDevice() then { default: LinkAnotherDevice }}
+        <LinkAnotherDevice onlinked={() => void load()} onclose={() => (linking = false)} />
+      {:catch}
+        <p class="err">Couldn't open this - check your connection and try again.</p>
+      {/await}
     {/if}
     {#if regrantsWaiting}
-      <p class="muted">Some devices still need to be re-linked - this finishes by itself next time you open Your passkeys.</p>
+      <p class="muted">Some of your other passkeys are still being updated - this finishes by itself next time you open Your passkeys.</p>
     {/if}
 
     {#if !loaded}
@@ -228,13 +237,9 @@
       </ul>
       {#if removeError}<p class="err">{removeError}</p>{/if}
 
-      {#if owner}
+      {#if owner && !makingMain}
         {#if linking}
-          {#await loadLinkAnotherDevice() then { default: LinkAnotherDevice }}
-            <LinkAnotherDevice onlinked={() => { loaded = false; void load(); }} onclose={() => (linking = false)} />
-          {:catch}
-            <p class="err">Couldn't open this - check your connection and try again.</p>
-          {/await}
+          <!-- the panel is open above -->
         {:else if adding === "closed"}
           <button class="btn btn--primary" onclick={() => (linking = true)}>Link another device</button>
           <button class="btn btn--ghost" onclick={() => { adding = "explain"; addError = null; }}>

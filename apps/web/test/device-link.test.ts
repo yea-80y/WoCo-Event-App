@@ -152,6 +152,9 @@ function linkBothSides(
             grant: async (grantee) => {
               m.log.push(`grant:${grantee}`);
             },
+            revoke: async (grantee) => {
+              m.log.push(`revoke:${grantee}`);
+            },
             ...main,
           });
         })();
@@ -247,6 +250,32 @@ test("main: no answer when the grant is refused; never a grant to itself", async
   await assert.rejects(run2.newDevice, { name: "AbortError" });
 });
 
+test("main: an answer that certainly never arrived takes its grant back; one that may have, does not", async () => {
+  const real = { ...offer, recipientPk: newPairingRecipient().publicKeyHex };
+  const offerFor = async () => {
+    const m = mailbox();
+    const one = newPairingCode();
+    const ch = pairingChannel(one);
+    await m.post(ch.id, "offer", await ch.seal("offer", real));
+    return { m, one };
+  };
+  for (const [error, revokes] of [[new PairingExpiredError(), true], [new Error("offline"), false]] as const) {
+    const { m, one } = await offerFor();
+    const log: string[] = [];
+    const run = runApproveDeviceLink(one, real as LinkOffer, {
+      apiBase: "",
+      parent: PARENT,
+      self: MAIN,
+      seed: SEED,
+      transport: { ...m, post: async () => { throw error; } },
+      grant: async (g) => void log.push(`grant:${g}`),
+      revoke: async (g) => void log.push(`revoke:${g}`),
+    });
+    await assert.rejects(run, revokes ? /code expired/ : /remove it from Your passkeys/);
+    assert.deepEqual(log, revokes ? [`grant:${offer.grantee}`, `revoke:${offer.grantee}`] : [`grant:${offer.grantee}`]);
+  }
+});
+
 test("main: a code that is not ours, expired, or carries something else is refused before any confirm", async () => {
   const m = mailbox();
   await assert.rejects(readPairingOffer("not a code", { apiBase: "", transport: m }), { message: LINK_CODE_UNREADABLE });
@@ -296,7 +325,7 @@ test("store: a passkey sheet every time on the main; the new device never links 
   const fresh = body(STORE, "async function _freshMainPasskey(");
   assert.match(fresh, /if \(_kind !== "passkey" \|\| _deviceRole \|\| !_seedAddress\) throw new MainPasskeyRequiredError\(\);/);
   // With the key already in memory there is no silent path: it asks again and checks the answer.
-  assert.match(fresh, /\} else \{\s*const material = await restorePasskeyAccount\(\{ retryDiscoverable: false \}\);\s*if \(material\.address\.toLowerCase\(\) !== _seedAddress\.toLowerCase\(\)\)/);
+  assert.match(fresh, /\} else \{\s*const material = await restorePasskeyAccount\(\{ retryDiscoverable: false \}\)\.catch\(\(e\) => \{\s*throw asCeremonyCancel\(e\);\s*\}\);\s*if \(material\.address\.toLowerCase\(\) !== _seedAddress\.toLowerCase\(\)\)/);
   assert.doesNotMatch(fresh, /ensureOrganiserUnlock/);
   const approve = body(STORE, "async function approveDeviceLink(");
   assert.ok(approve.indexOf("await _freshMainPasskey();") < approve.indexOf("runApproveDeviceLink"));
@@ -307,7 +336,7 @@ test("new device: a reload asks for the same passkey; only its id is kept, and a
   const LINK = read("../src/lib/auth/device-link.ts");
   const b = body(LINK, "export async function pairingPasskey(");
   assert.match(b, /retryDiscoverable: false,\s*credential: passkeyHandleOnThisOrigin\(pending\.credentialId, pending\.provider\)/);
-  assert.match(b, /catch \(e\) \{[\s\S]*?writePairingCredential\(null\);\s*throw e;/);
+  assert.match(b, /catch \(e\) \{[\s\S]*?writePairingCredential\(null\);\s*throw asCeremonyCancel\(e\);/);
   const write = body(LINK, "function writePairingCredential(");
   assert.match(write, /sessionStorage/);
   assert.doesNotMatch(write, /localStorage|prf|privateKey/i);

@@ -24,7 +24,10 @@
  * sign-in or Your passkeys visit. Grants signed for a rotation that never happened
  * are dropped once the code has expired: they must not re-add a device later.
  * Ownership is only ever read from the chain, never from the server's session rank,
- * which lags a rotation by up to its owner cache.
+ * which lags a rotation by up to its owner cache. One residual: a failed attempt's
+ * reply sits in the mailbox for its 10 minutes, so if the same new main succeeds on
+ * a retry inside them, a device of the account could register that older set -
+ * which the new main signed for the same devices, checked against its own list.
  */
 
 import { verifyTypedData, type TypedDataField } from "ethers";
@@ -94,6 +97,14 @@ function signerOf(g: SignedGrant): string | null {
   }
 }
 
+/** The same devices with the same credential tags, in any order. */
+export function sameDevices(a: PairedDevice[], b: PairedDevice[]): boolean {
+  const key = (d: PairedDevice) => `${d.grantee.toLowerCase()}:${d.credentialTag.toLowerCase()}`;
+  const x = a.map(key).sort();
+  const y = b.map(key).sort();
+  return x.length === y.length && new Set(x).size === x.length && x.every((k, i) => k === y[i]);
+}
+
 /** Exactly one grant per expected device, each for this account, each signed by `newOwner`. */
 export function grantsMatch(
   grants: SignedGrant[],
@@ -102,6 +113,8 @@ export function grantsMatch(
   if (grants.length !== expected.devices.length) return false;
   const want = new Map(expected.devices.map((d) => [d.grantee.toLowerCase(), d.credentialTag.toLowerCase()]));
   const seen = new Set<string>();
+  // A repeated nonce would read as "already registered" and leave a device out.
+  if (new Set(grants.map((g) => g.grant.nonce)).size !== grants.length) return false;
   for (const g of grants) {
     const grantee = g.grant.grantee.toLowerCase();
     if (g.grant.parent !== expected.parent.toLowerCase()) return false;
@@ -153,15 +166,21 @@ export async function resumeMakeMain(deps: {
   const store = deps.store ?? localPendingStore;
   const pending = store.read(deps.parent);
   if (!pending) return true;
-  const owner = await deps.readOwner(pending.parent);
-  if (owner === "error") return false;
-  if (owner === pending.newOwner.toLowerCase()) {
-    await deps.settle?.(pending);
-    return submitAll(pending, deps.submit, store);
-  }
+  // Expiry FIRST (Fable sign-off MUST-1): grants with a deadline were signed for a
+  // rotation nobody saw land. Past it they go, whoever owns the account by then - the
+  // same key becoming owner later by another route must not register them, or a
+  // device removed since would come back.
   if (pending.expiresAt !== null && (deps.now ?? Date.now)() > pending.expiresAt) {
     store.clear(pending.parent);
     return true;
+  }
+  const owner = await deps.readOwner(pending.parent);
+  if (owner === "error") return false;
+  if (owner === pending.newOwner.toLowerCase()) {
+    const landed = { ...pending, expiresAt: null };
+    store.write(landed);
+    await deps.settle?.(landed);
+    return submitAll(landed, deps.submit, store);
   }
   return false;
 }
@@ -184,6 +203,8 @@ export interface MakeThisDeviceMainDeps {
   /** Grants for these devices, signed raw by this device's own key. */
   signGrants: (devices: PairedDevice[]) => Promise<SignedGrant[]>;
   readOwner: (parent: string) => Promise<string | null | "error">;
+  /** The account's main passkey and live devices, as this browser verified them. */
+  knownDevices: () => Promise<{ owner: string; devices: PairedDevice[] }>;
   becomeOwner: () => Promise<void>;
   submit: (g: SignedGrant) => Promise<SubmitResult>;
   transport?: PairingTransport;
@@ -220,6 +241,14 @@ export async function runMakeThisDeviceMain(
   if (!answer || answer.previous.grantee === self || answer.devices.some((d) => d.grantee === self)) {
     throw new Error(LINK_CODE_UNKNOWN);
   }
+  // Signed for nobody this account does not already have (Fable sign-off SHOULD-2):
+  // whoever saw the code could have answered first.
+  // The old main by address (its credential tag is known only to it), the others by
+  // address and tag.
+  const known = await deps.knownDevices();
+  if (answer.previous.grantee !== known.owner || !sameDevices(answer.devices, known.devices.filter((d) => d.grantee !== self))) {
+    throw new Error(LINK_CODE_UNKNOWN);
+  }
 
   opts.onStep?.("signing");
   // The old main first: it is the device the person is holding.
@@ -240,8 +269,10 @@ export async function runMakeThisDeviceMain(
     }
     await sleep(3_000);
   }
+  const landed = { ...pending, expiresAt: null };
+  store.write(landed);
   await deps.becomeOwner();
-  return { registered: await submitAll({ ...pending, expiresAt: null }, deps.submit, store) };
+  return { registered: await submitAll(landed, deps.submit, store) };
 }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +286,8 @@ export interface ApproveMakeMainContext {
   selfTag: string;
   /** This account's live linked devices, as this browser verified them. */
   devices: PairedDevice[];
+  /** The same list, read again just before the irreversible step. */
+  recheckDevices: () => Promise<PairedDevice[]>;
   writeOwnEnvelope: () => Promise<void>;
   rotate: (newOwner: string) => Promise<void>;
   becomeDevice: () => Promise<void>;
@@ -302,6 +335,14 @@ export async function runApproveMakeMain(
   );
   if (!reply || !grantsMatch(reply.grants, { parent, newOwner: offer.grantee, devices: [previous, ...devices] })) {
     throw new Error(LINK_CODE_UNKNOWN);
+  }
+
+  // Once more, now: the list may have changed while the other device was signing,
+  // and this read warms the server's owner cache for the registrations after the
+  // rotation (Fable sign-off SHOULD-9).
+  const now = await ctx.recheckDevices();
+  if (!sameDevices(now, ctx.devices)) {
+    throw new Error("Your passkeys changed while this was in progress. Nothing changed - start again on the other device.");
   }
 
   ctx.onStep?.("changing");
@@ -384,9 +425,34 @@ export async function makeThisDeviceMain(opts: MakeThisDeviceMainOptions, host: 
       return out;
     },
     readOwner,
+    knownDevices: async () => {
+      const { grants } = await listGrants();
+      const { ownerFromOwnGrant, verifyDeviceGrantList } = await import("./device-grant-verify.js");
+      const owner = ownerFromOwnGrant(grants, self);
+      if (!owner) throw new Error("Couldn't confirm this device is still linked - try again.");
+      const live = verifyDeviceGrantList(grants, { parent, owner })
+        .filter((d) => d.removedAt === null)
+        .map((d) => ({ grantee: d.grantee, credentialTag: d.credentialTag }));
+      if (!live.some((d) => d.grantee === self)) throw new Error("Couldn't confirm this device is still linked - try again.");
+      return { owner, devices: live };
+    },
     becomeOwner: () => host.becomeOwner(self, parent),
     submit: submitGrant,
   });
+}
+
+async function listGrants() {
+  const { listDeviceGrants } = await import("../api/device-grants.js");
+  const listed = await listDeviceGrants();
+  if (!listed.ok || !listed.data) throw new Error("Couldn't load your passkeys - try again.");
+  return listed.data;
+}
+
+async function liveDevices(parent: string, self: string): Promise<PairedDevice[]> {
+  const { verifyDeviceGrantList } = await import("./device-grant-verify.js");
+  return verifyDeviceGrantList((await listGrants()).grants, { parent, owner: self })
+    .filter((d) => d.removedAt === null)
+    .map((d) => ({ grantee: d.grantee, credentialTag: d.credentialTag }));
 }
 
 export async function approveMakeMain(
@@ -399,17 +465,14 @@ export async function approveMakeMain(
   const { parent, self } = host.account();
   const { seed, prf } = host.unlocked();
   if (!parent || !self || !seed || !prf) throw new Error(host.lockedMessage());
-  const { listDeviceGrants } = await import("../api/device-grants.js");
-  const { verifyDeviceGrantList } = await import("./device-grant-verify.js");
-  const listed = await listDeviceGrants();
-  if (!listed.ok || !listed.data) throw new Error("Couldn't load your passkeys - try again.");
-  const devices = verifyDeviceGrantList(listed.data.grants, { parent, owner: self }).filter((d) => d.removedAt === null);
+  const devices = await liveDevices(parent, self);
   return runApproveMakeMain(code, offer, {
     apiBase: host.apiBase,
     parent,
     self,
     selfTag: await ownCredentialTag(),
     devices,
+    recheckDevices: () => liveDevices(parent, self),
     onStep,
     writeOwnEnvelope: async () => {
       const { writePortabilityEnvelope } = await import("./recovery-portability.js");

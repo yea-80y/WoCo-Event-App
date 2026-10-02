@@ -27,7 +27,7 @@
         onStep: (s) => (stage = s),
         onCode: (c) => (code = c),
       });
-      if (!registered) note = "Some devices still need to be re-linked - this finishes by itself next time you open Your passkeys.";
+      if (!registered) note = "Some of your other passkeys are still being updated - this finishes by itself next time you open Your passkeys.";
       stage = "done";
       onchanged();
     } catch (e) {
@@ -68,7 +68,7 @@
     <p class="muted">The code works for 10 minutes.</p>
     <button class="btn btn--ghost" onclick={() => controller?.abort()}>Cancel</button>
   {:else if stage === "signing"}
-    <p class="muted">Confirm on this device to keep your other devices signed in…</p>
+    <p class="muted">Keeping your other devices signed in…</p>
   {:else if stage === "finishing"}
     <p class="muted">Waiting for the change to go through…</p>
   {:else}

@@ -707,6 +707,11 @@ export async function restorePasskeyAccount(
   return withCeremonyLock(() => _restorePasskeyAccountImpl(opts.retryDiscoverable ?? true, opts.credential));
 }
 
+/** A declined sheet from `restorePasskeyAccount`, in the words the other ceremonies use. */
+export function asCeremonyCancel(e: unknown): unknown {
+  return e instanceof DOMException && e.name === "NotAllowedError" ? new PasskeyCeremonyCancelledError("authentication", e) : e;
+}
+
 /** A credential made on this origin, as the pin and `restorePasskeyAccount` take it -
  *  for a passkey not (yet) pinned here: one being linked (#746 step 4). */
 export function passkeyHandleOnThisOrigin(credentialId: string, provider?: PasskeyProviderId): PasskeyCredentialHandle {

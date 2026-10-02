@@ -220,7 +220,7 @@ export interface PairingTransport {
 
 export class PairingExpiredError extends Error {
   constructor() {
-    super("That code has expired or was already used. Start again.");
+    super("That code has expired, was already used, or was typed wrong. Start again on the other device.");
     this.name = "PairingExpiredError";
   }
 }

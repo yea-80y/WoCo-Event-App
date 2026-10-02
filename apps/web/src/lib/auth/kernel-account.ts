@@ -1048,7 +1048,7 @@ export async function removeAllBackups(
 export async function rotateOwnerSelf(
   builtKernel: BuiltKernel,
   newOwner: string,
-): Promise<{ txHash: string; blockNumber?: bigint }> {
+): Promise<{ txHash: string; blockNumber?: bigint; confirmed: boolean }> {
   const d = await loadRecoveryDeps();
   const validator = d.getValidatorAddress(d.entryPoint, d.kernelVersion) as Address;
   const abi = d.parseAbi(["function onUninstall(bytes)", "function onInstall(bytes)"]);
@@ -1058,14 +1058,18 @@ export async function rotateOwnerSelf(
       { to: validator, data: d.encodeFunctionData({ abi, functionName: "onInstall", args: [newOwner.toLowerCase() as Hex] }) },
     ],
   });
+  // A successful receipt means the batch ran, and it is all-or-nothing: the rotation
+  // happened. An owner read that fails now is "not yet confirmed", never "failed" -
+  // the caller must not treat the grants it holds as for a rotation that never was.
   const owner = await readKernelEcdsaOwnerStrict(builtKernel.address, blockNumber);
   if (owner === "error") {
-    throw new Error(`Couldn't confirm the change yet (tx ${txHash}). Open Your passkeys in a moment to check before trying again.`);
+    console.warn(`[kernel] rotation landed (tx ${txHash}) but its owner read failed; treated as done`);
+    return { txHash, blockNumber, confirmed: false };
   }
   if (owner !== newOwner.toLowerCase()) {
     throw new Error(`The main passkey did not change (tx ${txHash}). Nothing to undo - try again.`);
   }
-  return { txHash, blockNumber };
+  return { txHash, blockNumber, confirmed: true };
 }
 
 export interface RecoverAccountArgs {

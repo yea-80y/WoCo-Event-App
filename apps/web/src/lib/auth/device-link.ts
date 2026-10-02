@@ -31,6 +31,7 @@ import {
   type PasskeyProviderId,
 } from "@woco/shared";
 import {
+  asCeremonyCancel,
   createAddedPasskey,
   passkeyHandleOnThisOrigin,
   pinPasskeyCredential,
@@ -38,6 +39,7 @@ import {
   type PasskeyLogin,
 } from "./passkey-account.js";
 import { credentialIdBytes } from "./passkey-record.js";
+import { linkedEnvelopePendingKey } from "./make-main-key.js";
 import type { LinkSecret, PairingTransport } from "./pairing-channel.js";
 
 const ADDRESS = /^0x[0-9a-f]{40}$/;
@@ -203,7 +205,7 @@ export async function pairingPasskey(): Promise<LinkingPasskey> {
       // Declined, or gone from the manager: either way the next try makes a new one,
       // and this one never opens a second sheet.
       writePairingCredential(null);
-      throw e;
+      throw asCeremonyCancel(e);
     }
   }
   const added = await createAddedPasskey({
@@ -276,7 +278,14 @@ async function settleLinkedPasskey(account: LinkingPasskey, secret: LinkSecret, 
     const { writePortabilityEnvelope } = await import("./recovery-portability.js");
     await writePortabilityEnvelope({ prfSecret: account.prfSecret, preservedKernelAddress: secret.parent, identitySeed: secret.seed });
   } catch (e) {
-    console.warn("[auth] linked passkey's envelope not written yet (retried later):", e);
+    // Retried at the next sign-in (`_retryLinkedEnvelope`); until then this passkey
+    // signs in on this device only.
+    console.warn("[auth] linked passkey's envelope not written yet (retried at next sign-in):", e);
+    try {
+      globalThis.localStorage?.setItem(linkedEnvelopePendingKey(account.address), "1");
+    } catch {
+      /* without storage it waits for a session mint, where the back-fill also runs */
+    }
   }
   try {
     const { writePasskeyRecord } = await import("./passkey-record.js");
@@ -322,6 +331,8 @@ export interface ApproveDeviceLinkContext {
   seed: string;
   /** Owner-signed grant for the new passkey, registered with the server. */
   grant: (grantee: string, credentialTag: string) => Promise<unknown>;
+  /** Take that grant back when the answer certainly never reached the other device. */
+  revoke: (grantee: string) => Promise<unknown>;
   transport?: PairingTransport;
 }
 
@@ -342,9 +353,20 @@ export async function runApproveDeviceLink(
     { parent: ctx.parent, seed: ctx.seed },
     { id: channel.id, grantee: offer.grantee },
   );
-  await (ctx.transport ?? ch.httpPairingTransport(ctx.apiBase)).post(
-    channel.id,
-    "answer",
-    await channel.seal("answer", { v: 1, kind: "link", sealed }),
-  );
+  try {
+    await (ctx.transport ?? ch.httpPairingTransport(ctx.apiBase)).post(
+      channel.id,
+      "answer",
+      await channel.seal("answer", { v: 1, kind: "link", sealed }),
+    );
+  } catch (e) {
+    if (e instanceof ch.PairingExpiredError) {
+      // Certainly not delivered: a grant for a passkey that will never sign in is a
+      // slot taken and a row that lies. Best effort - it can be removed by hand.
+      await ctx.revoke(offer.grantee).catch(() => {});
+      throw new Error("The other device's code expired before it could finish. Nothing was linked - start again there.");
+    }
+    // Maybe delivered: the other device may be signing in now.
+    throw new Error("Couldn't reach the other device. If it doesn't finish linking, remove it from Your passkeys.");
+  }
 }

@@ -131,7 +131,9 @@ export const MAIN_MOVED_NOTICE =
   "Your account's main passkey moved to another device. Sign in again to finish updating this one.";
 
 /** Does this credential's envelope name `parent`? "unknown" for anything short of
- *  a read that answered - including an envelope naming another account. */
+ *  a read that answered - including an envelope naming another account, which no
+ *  history produces and so is never counted as an attempt (it would re-ask at each
+ *  fast-path sign-in, at the price of one lookup). */
 async function envelopeNames(
   deps: EnvelopeReprobeDeps,
   prfSecret: string,

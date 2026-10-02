@@ -12,6 +12,9 @@
 
   let stage = $state<"intro" | "creating" | "waiting" | "linking" | "done">("intro");
   let code = $state<{ typed: string; qr: string } | null>(null);
+  // Which account this device joined - the one check a person has that the answer
+  // came from their own main device (Fable sign-off SHOULD-8).
+  let joined = $state<string | null>(null);
   let error = $state<string | null>(null);
   let controller: AbortController | null = null;
 
@@ -27,6 +30,7 @@
         onCode: (c) => (code = c),
       });
       stage = "done";
+      void name(auth.parent);
     } catch (e) {
       const name = e instanceof Error ? e.name : "";
       error =
@@ -41,6 +45,18 @@
     } finally {
       code = null;
       controller = null;
+    }
+  }
+
+  async function name(parent: string | null): Promise<void> {
+    if (!parent) return;
+    joined = `${parent.slice(0, 6)}…${parent.slice(-4)}`;
+    try {
+      const { getProfile } = await import("../../api/profiles.js");
+      const profile = await getProfile(parent);
+      if (profile?.displayName) joined = profile.displayName;
+    } catch {
+      /* the short address stays */
     }
   }
 
@@ -76,7 +92,9 @@
   {:else if stage === "linking"}
     <p class="muted">Linking…</p>
   {:else}
-    <p class="ok">This device is linked. It signs in with the passkey you just made.</p>
+    <p class="ok">
+      This device is linked{joined ? ` to ${joined}` : ""}. It signs in with the passkey you just made.
+    </p>
     <button class="btn btn--primary" onclick={() => navigate("/home")}>Continue</button>
   {/if}
   {#if error}<p class="err">{error}</p>{/if}

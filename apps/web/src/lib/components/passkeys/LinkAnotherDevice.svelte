@@ -12,7 +12,7 @@
 
   let { onlinked, onclose }: { onlinked: () => void; onclose: () => void } = $props();
 
-  let stage = $state<"scan" | "reading" | "confirm" | "working" | "done">("scan");
+  let stage = $state<"scan" | "reading" | "confirm" | "working" | "done" | "failed">("scan");
   let kind = $state<PairingOffer["kind"]>("link");
   let progress = $state("");
   let camera = $state(false);
@@ -71,7 +71,7 @@
         await auth.approveDeviceLink(pending.code, pending.offer);
       } else {
         const { registered } = await auth.approveMakeMain(pending.code, pending.offer, (s) => (progress = STEP[s] ?? ""));
-        if (!registered) note = "Some devices still need to be re-linked - this finishes by itself next time you open Your passkeys.";
+        if (!registered) note = "Some of your other passkeys are still being updated - this finishes by itself next time you open Your passkeys.";
       }
       pending = null;
       stage = "done";
@@ -83,7 +83,8 @@
           : e instanceof Error
             ? e.message
             : "Nothing was changed.";
-      stage = "confirm";
+      // A make-main answer is sent once the person confirms: this code is spent then.
+      stage = pending?.offer.kind === "make-main" && e instanceof Error && e.name !== "PasskeyCeremonyCancelledError" ? "failed" : "confirm";
     }
   }
 </script>
@@ -129,6 +130,9 @@
       {stage === "working" ? "Working…" : kind === "link" ? "Link device" : "Make it the main passkey"}
     </button>
     <button class="btn btn--ghost" onclick={onclose} disabled={stage === "working"}>Cancel</button>
+  {:else if stage === "failed"}
+    <p class="muted">This code can't be used again. Start again on the other device when you're ready.</p>
+    <button class="btn btn--ghost" onclick={onclose}>Done</button>
   {:else}
     <p class="ok">
       {kind === "link"
