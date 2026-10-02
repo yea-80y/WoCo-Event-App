@@ -23,6 +23,7 @@
    */
   import { auth, MAIN_PASSKEY_REQUIRED_MESSAGE } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
+  import { navigate } from "../../router/router.svelte.js";
   import { connectBackupWallet, connectWeb3AuthBackup, connectPasskeyBackup, type BackupWallet } from "../../wallet/backup-signer.js";
   import { isPasskeySupported } from "../../auth/passkey-account.js";
   import { readBackupProtection } from "../../auth/backup-management.js";
@@ -124,17 +125,8 @@
           { id: "wallet", name: "Crypto wallet",
             hint: "Use MetaMask or any browser wallet." },
         ]
-      : [
-          // Passkey primary — email/social is the most portable, independent backup.
-          { id: "email", name: "Email or social", recommended: true,
-            hint: "Sign in by email or social to create a recovery key. Works on any device." },
-          { id: "wallet", name: "Crypto wallet",
-            hint: "Use MetaMask or any browser wallet." },
-          ...(passkeySupported
-            ? [{ id: "passkey" as const, name: "Another passkey",
-                 hint: "Add a second passkey as backup. Best if it syncs across your devices." }]
-            : []),
-        ],
+      // A passkey account backs up by linking another device (#746 step 5), never here.
+      : [],
   );
 
   $effect(() => {
@@ -258,7 +250,15 @@
     loginRequest.request({ context: "attendee" });
   }
 
+  // A passkey account adds no backup here: "Add a backup" opens Your passkeys, where
+  // a linked device can be let recover the account (#746 step 5).
+  const linkInstead = $derived(auth.kind === "passkey");
+
   function startChoosing() {
+    if (linkInstead) {
+      navigate("/passkeys");
+      return;
+    }
     pendingBackup = null;
     errorMsg = "";
     errorFrom = "add";
@@ -266,6 +266,7 @@
   }
 
   async function chooseAndConnect(method: Method) {
+    if (linkInstead) return startChoosing();
     // Backups are set on the account's own smart account, which only its owner can
     // change (#746): an added passkey is told so before any backup is made.
     if (!auth.isAccountOwner) {
@@ -303,7 +304,7 @@
   }
 
   async function confirmAndInstall() {
-    if (!pendingBackup) return;
+    if (!pendingBackup || linkInstead) return;
     if (!auth.isAccountOwner) {
       errorMsg = MAIN_PASSKEY_REQUIRED_MESSAGE;
       return;
@@ -484,7 +485,7 @@
           can no longer restore this account.
         </p>
       {/if}
-      <button class="btn btn--ghost cta" onclick={startChoosing}>Add a backup</button>
+      <button class="btn btn--ghost cta" onclick={startChoosing}>{linkInstead ? "Link another device" : "Add a backup"}</button>
 
     {:else if phase === "confirm-remove"}
       <p class="kicker">Account safety</p>
@@ -594,7 +595,7 @@
       {/if}
       <p class="footnote">The only way to be fully sure is to run a recovery on another device.</p>
       {#if hookKind !== "other"}
-        <button class="btn btn--ghost cta" onclick={startChoosing}>Add another backup</button>
+        <button class="btn btn--ghost cta" onclick={startChoosing}>{linkInstead ? "Link another device" : "Add another backup"}</button>
       {/if}
       <button class="linkish cta-link danger-link" onclick={startRemove}>Remove all backups</button>
 
@@ -602,12 +603,20 @@
       <p class="kicker">Account safety</p>
       <h1>Protect your account</h1>
       <p class="lede">
-        Add a backup so you can always get back into your account — on any device or sign-in.
+        {linkInstead
+          ? "Link another device, so losing this one doesn't lock you out."
+          : "Add a backup so you can always get back into your account - on any device or sign-in."}
       </p>
       <ul class="reasons">
-        <li><span class="tick">✓</span> Recover on any phone or laptop</li>
-        <li><span class="tick">✓</span> Your events and history come with you</li>
-        <li><span class="tick">✓</span> Only a backup you choose — never WoCo, never anyone else</li>
+        {#if linkInstead}
+          <li><span class="tick">✓</span> A second phone, laptop or password manager you already use</li>
+          <li><span class="tick">✓</span> Your events and history come with you</li>
+          <li><span class="tick">✓</span> Only your own devices - never WoCo, never anyone else</li>
+        {:else}
+          <li><span class="tick">✓</span> Recover on any phone or laptop</li>
+          <li><span class="tick">✓</span> Your events and history come with you</li>
+          <li><span class="tick">✓</span> Only a backup you choose — never WoCo, never anyone else</li>
+        {/if}
       </ul>
       {#if isProtected === null && checkDone}
         <p class="soft-warn" role="note">
@@ -615,7 +624,7 @@
           moment if you'd rather be sure before adding one.
         </p>
       {/if}
-      <button class="btn btn--primary btn--lg cta" onclick={startChoosing}>Add a backup</button>
+      <button class="btn btn--primary btn--lg cta" onclick={startChoosing}>{linkInstead ? "Link another device" : "Add a backup"}</button>
       <p class="footnote">Takes a few seconds — you'll confirm on this device.</p>
 
     {:else if phase === "choosing"}

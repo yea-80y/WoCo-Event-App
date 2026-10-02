@@ -2448,6 +2448,9 @@ async function removePasskey(grantee: string): Promise<void> {
   }
 }
 
+export const PASSKEY_BACKUP_MESSAGE =
+  "Passkey accounts are backed up by linking another device - in Your passkeys.";
+
 /**
  * The server says this device's grant was revoked (`DEVICE_REMOVED` on any
  * request, #746 step 3): forget what it held for the account and sign out, once.
@@ -3457,6 +3460,10 @@ async function setupAccountRecovery(
   if (_kind !== "passkey" && _kind !== "web3auth") {
     throw new Error("Account recovery is only available for passkey or email/social accounts");
   }
+  // A passkey account backs up by linking another device that can recover it
+  // (#746 step 5): every backup here escrows the seed to an email or wallet key,
+  // a second door to keys its attendee data may be sealed to.
+  if (_kind === "passkey") throw new Error(PASSKEY_BACKUP_MESSAGE);
   // Refuse to install a backup we could never recover FROM (e.g. a provider that
   // can derive the escrow key but cannot sign the guardian userOp). Installing it
   // would trap the user with an unrecoverable account.

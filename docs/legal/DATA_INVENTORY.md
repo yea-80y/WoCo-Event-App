@@ -172,8 +172,10 @@ a stated policy** (see §8).
   (`deriveXWingKeypairFromSeed`, `packages/shared/src/crypto/xwing.ts`). For a passkey account the
   seed comes from the passkey and is kept on the device locked under it: it opens only once the
   organiser confirms it's them with their passkey, once each time WoCo is opened
-  (`apps/web/src/lib/auth/identity-seed.ts`). It leaves the browser only sealed, inside the
-  account's own recovery backups.
+  (`apps/web/src/lib/auth/identity-seed.ts`). It leaves the browser only sealed: to the account's
+  own linked passkeys (each passkey's own portability envelope). A passkey account cannot add an
+  email or wallet backup (#746 step 5). Email-login accounts keep their recovery backups, sealed to
+  the backup.
 
 **Precise wording that is true:** *"Order-form answers are encrypted in your browser to a key only
 the event organiser holds. WoCo's servers store the encrypted result and have no ability to read it."*

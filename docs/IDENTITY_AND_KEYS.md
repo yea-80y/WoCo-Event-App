@@ -590,8 +590,16 @@ retry, and a retry after a lost receipt reads the chain first so it never rotate
 a ticket in the account, Stripe verification, or a confirmed invite (`checkAttendeeGate`,
 `routes/device-grants.ts`; widened from verified organisers 10-02): each device stamps storage and a
 move spends sponsored gas, which nothing locked may do. An account with a device record keeps
-managing its devices, and removal is never gated. The sponsored rotation itself goes browser -> ZeroDev, so only server-mediated
-sponsorship (#758) bounds direct use of that key.
+managing its devices, and removal is never gated. Sponsored userOps go browser -> ZeroDev; #758
+adds a server policy ZeroDev is meant to ask first (`routes/zerodev-policy.ts`), but until it is seen
+answering live requests the ZeroDev dashboard policy is the only bound on that key.
+
+**No email or wallet backups on passkey accounts (#746 step 5).** Every Protect-your-account backup
+escrows the seed to an email or wallet key - a second way to the keys an organiser's attendee data is
+sealed to, and a permanent one, since a Swarm copy cannot be recalled. So a passkey account adds none
+(`setupAccountRecovery` refuses; Protect sends it to Your passkeys); existing ones stay removable.
+Email-login accounts keep their options. A passkey account's way back is its synced passkey and the
+devices it links. The refusal is the app's: the server cannot tell a passkey account from an email one.
 
 Paths that deliberately need no session: guest Stripe checkout from the embed widget, the public
 ticket page `/t/…`, and the ENS CCIP-Read gateway.
