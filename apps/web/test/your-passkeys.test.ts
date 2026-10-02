@@ -178,7 +178,7 @@ test("adding excludes the main passkey AND every passkey this device added befor
   assert.match(b, /\.\.\.\(pinned\?\.credentialId \? \[pinned\.credentialId\] : \[\]\),\s*\.\.\.Object\.values\(await readPasskeyMeta\(parent\)\)\.map\(\(m\) => m\.credentialId\),/);
 });
 
-test("more than one passkey is for verified organisers: the screen follows the server's answer", () => {
+test("more than one passkey needs an unlocked account: the screen follows the server's answer", () => {
   const src = readFileSync(fileURLToPath(new URL("../src/lib/components/passkeys/YourPasskeys.svelte", import.meta.url)), "utf8");
   assert.match(src, /canAdd = res\.data\.canAddDevices === true;/);
   const markup = src.slice(src.indexOf("</script>"));

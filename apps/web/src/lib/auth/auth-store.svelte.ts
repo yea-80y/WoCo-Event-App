@@ -58,6 +58,7 @@ import { SEED_UNLOCK_POLICY, unlockExpiry } from "./seed-unlock-policy.js";
 import { makeMainPendingKey, linkedEnvelopePendingKey } from "./make-main-key.js";
 import { requestChallenge, sha256Hex } from "./request-challenge.js";
 import { apiBase } from "../api/http.js";
+import { unlocksWhen } from "../attendee/gate/unlock-copy.js";
 import {
   connectWallet,
   getConnectedAddress,
@@ -2305,6 +2306,7 @@ function _grantRefusalMessage(res: { code?: string; error?: string; status?: num
   if (res.code === "store-unavailable") return "Passkeys can't be changed right now - try again later.";
   if (res.code === "not-owner" || res.code === "not-allowed") return new MainPasskeyRequiredError().message;
   if (res.status === 429) return "Too many changes just now - try again in a minute.";
+  if (res.code === "ticket_required") return unlocksWhen("Linking another device");
   return res.error ?? "Couldn't save that - try again.";
 }
 

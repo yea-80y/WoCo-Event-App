@@ -586,10 +586,11 @@ same seed, so no key the account publishes changes), and the old main stays as a
 Anything that fails after the rotation says so (`MakeMainHandedOverError`) and never offers a
 retry, and a retry after a lost receipt reads the chain first so it never rotates twice.
 
-**Organisers only, for now.** An account's FIRST device grant needs a Stripe-verified organiser
-(`routes/device-grants.ts`, the same check as marketing): each device stamps storage and a move
-spends sponsored gas. An account with a device record keeps managing its devices, and removal is
-never gated. The sponsored rotation itself goes browser -> ZeroDev, so only server-mediated
+**Unlocked accounts only.** An account's FIRST device grant needs the unlock that names need -
+a ticket in the account, Stripe verification, or a confirmed invite (`checkAttendeeGate`,
+`routes/device-grants.ts`; widened from verified organisers 10-02): each device stamps storage and a
+move spends sponsored gas, which nothing locked may do. An account with a device record keeps
+managing its devices, and removal is never gated. The sponsored rotation itself goes browser -> ZeroDev, so only server-mediated
 sponsorship (#758) bounds direct use of that key.
 
 Paths that deliberately need no session: guest Stripe checkout from the embed widget, the public

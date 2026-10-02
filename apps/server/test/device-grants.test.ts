@@ -49,6 +49,14 @@ after(() => {
 
 const HOST = "test.woco.local";
 process.env.ALLOWED_HOSTS = HOST;
+// The unlock check reads Swarm for published events and confirmed invites: point
+// every store at a dead port so those reads fail at once and never leave the host.
+const DEAD = "http://127.0.0.1:9";
+process.env.BEE_URL = DEAD;
+process.env.PROXY_URL = DEAD;
+process.env.ETHERNA_GATEWAY_URL = DEAD;
+process.env.ETHERNA_TOKEN_ENDPOINT = `${DEAD}/token`;
+delete process.env.ATTENDEE_GATE_DISABLED;
 
 const grants = await import("../src/lib/auth/device-grants.js");
 const ownerMod = await import("../src/lib/auth/kernel-owner.js");
@@ -57,6 +65,7 @@ const { verifyDelegation } = await import("../src/lib/auth/verify-delegation.js"
 const { requireAuth } = await import("../src/middleware/auth.js");
 const { deviceGrants } = await import("../src/routes/device-grants.js");
 const { setStripeAccount } = await import("../src/lib/stripe/accounts.js");
+const { bindTicket } = await import("../src/lib/gate/store.js");
 
 const FILE = join(dir, ".data", "device-grants.json");
 const newNonce = () => `0x${randomBytes(32).toString("hex")}`;
@@ -546,7 +555,7 @@ test("routes: a device cannot spend its account's budget and block its own remov
   assert.equal(grants.lookupDeviceGrant(PARENT, device.address)?.active, false);
 });
 
-test("routes: the first device needs a verified organiser; removal and later devices never do", async () => {
+test("routes: the first device needs an unlocked account; removal and later devices never do", async () => {
   const ownerSession = await delegation(owner);
   const device = Wallet.createRandom();
 
@@ -554,23 +563,31 @@ test("routes: the first device needs a verified organiser; removal and later dev
   assert.equal(listed.json.data.canAddDevices, false);
   const refused = await call(ownerSession, "POST", "/api/auth/device-grants", await signGrant(owner, grantFor(device.address)));
   assert.equal(refused.status, 403);
-  assert.equal(refused.json.code, "STRIPE_VERIFICATION_REQUIRED");
+  assert.equal(refused.json.code, "ticket_required");
   assert.equal(existsSync(FILE), false, "nothing stored");
 
   organiser(false);
   const stillRefused = await call(ownerSession, "POST", "/api/auth/device-grants", await signGrant(owner, grantFor(device.address)));
-  assert.equal(stillRefused.status, 403, "a Stripe account that is not verified yet is not enough");
+  assert.equal(stillRefused.status, 403, "a Stripe account that is not verified yet is not an unlock");
 
   organiser();
   assert.equal((await call(ownerSession, "GET", "/api/auth/device-grants")).json.data.canAddDevices, true);
   const added = await call(ownerSession, "POST", "/api/auth/device-grants", await signGrant(owner, grantFor(device.address)));
   assert.equal(added.status, 200, JSON.stringify(added.json));
 
-  // Stripe asks for more details later: the account keeps managing its devices.
+  // The unlock lapses later: the account keeps managing its devices.
   organiser(false);
   assert.equal((await call(ownerSession, "GET", "/api/auth/device-grants")).json.data.canAddDevices, true);
   const second = await call(ownerSession, "POST", "/api/auth/device-grants", await signGrant(owner, grantFor(Wallet.createRandom().address)));
   assert.equal(second.status, 200, JSON.stringify(second.json));
   const removed = await call(ownerSession, "POST", "/api/auth/device-grants/revoke", await signRevoke(owner, device.address));
   assert.equal(removed.status, 200, JSON.stringify(removed.json));
+});
+
+test("routes: a ticket unlocks linking - no Stripe account needed", async () => {
+  const ownerSession = await delegation(owner);
+  bindTicket({ seriesId: `series-${PARENT}`, edition: 1, eventId: `event-${PARENT}`, route: "claim", parentAddress: PARENT });
+  assert.equal((await call(ownerSession, "GET", "/api/auth/device-grants")).json.data.canAddDevices, true);
+  const added = await call(ownerSession, "POST", "/api/auth/device-grants", await signGrant(owner, grantFor(Wallet.createRandom().address)));
+  assert.equal(added.status, 200, JSON.stringify(added.json));
 });
