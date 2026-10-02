@@ -378,6 +378,7 @@ AUTH (server):
   apps/server/src/lib/auth/revocation.ts             # nonce blacklist + revoke-all
   apps/server/src/lib/auth/device-grants.ts          # added passkeys (#746): signed grant registry
   apps/web/src/lib/auth/device-verdict.ts            # added passkey sign-in: the server's verdict before any commit
+  apps/web/src/lib/auth/pairing-channel.ts           # linking another device (#746 step 4): code + sealed mailbox
 
 CLAIMS / EVENTS:
   apps/server/src/routes/claims.ts                   # claim-status ONLY (v1 claim rail deleted, #207)

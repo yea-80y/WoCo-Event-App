@@ -113,16 +113,16 @@ test("adding: envelope first, then the owner-signed grant, then the record; neve
   const b = body(STORE, "async function addPasskeyOnThisDevice(");
   assert.match(b, /if \(_kind !== "passkey" \|\| _deviceRole\) throw new MainPasskeyRequiredError\(\);/);
   const envelope = b.indexOf("await writePortabilityEnvelope(");
-  const register = b.indexOf("await registerDeviceGrant(");
+  const register = b.indexOf("await _grantDevice(");
   const recordWrite = b.indexOf("await writePasskeyRecord(");
   assert.ok(envelope > 0 && register > envelope && recordWrite > register);
-  assert.match(b, /if \(!res\.ok\) throw new Error\(_grantRefusalMessage\(res\)\);/);
+  const grant = body(STORE, "async function _grantDevice(");
+  assert.match(grant, /await registerDeviceGrant\(grant, grantSig\);\s*if \(!res\.ok\) throw new Error\(_grantRefusalMessage\(res\)\);/);
 });
 
 test("the provider never leaves the device: not in the grant, the envelope or the record", () => {
   const b = body(STORE, "async function addPasskeyOnThisDevice(");
-  const grant = b.slice(b.indexOf("const grant: DeviceGrantMessage = {"), b.indexOf("};", b.indexOf("const grant: DeviceGrantMessage = {")));
-  assert.doesNotMatch(grant, /provider/);
+  assert.doesNotMatch(body(STORE, "async function _grantDevice("), /provider/);
   const envelope = b.slice(b.indexOf("await writePortabilityEnvelope("), b.indexOf(");", b.indexOf("await writePortabilityEnvelope(")));
   assert.doesNotMatch(envelope, /provider/);
   const rec = b.slice(b.indexOf("await writePasskeyRecord("), b.indexOf(");", b.indexOf("await writePasskeyRecord(")));

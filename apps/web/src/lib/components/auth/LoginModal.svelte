@@ -10,6 +10,7 @@
   // From its own module: importing this key from envelope-reprobe.ts would hoist
   // that deliberately-lazy module into the entry chunk.
   import { AUTH_NOTICE_KEY } from "../../auth/auth-notice.js";
+  import { navigate } from "../../router/router.svelte.js";
   import { canonicalUrl, hostLabel } from "../../sub-ens/host-label.js";
   import { onMount } from "svelte";
 
@@ -231,7 +232,12 @@
         <!-- Hidden rather than unmounted on the wallet screen, so a passkey
              error or the create-account offer is still there on the way back. -->
         <div class="methods" class:offstage={view !== "main"}>
-          <PasskeyLogin oncomplete={handleComplete} onstart={() => start("passkey")} onsettle={settle} />
+          <PasskeyLogin
+            oncomplete={handleComplete}
+            onstart={() => start("passkey")}
+            onsettle={settle}
+            onlink={() => { close(); navigate("/link"); }}
+          />
 
           <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} />
 

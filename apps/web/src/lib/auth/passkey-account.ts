@@ -702,13 +702,22 @@ async function _getPasskeyBackupKeyImpl(): Promise<PasskeyGuardianMaterial> {
  * offers the picker on its next attempt (#746 fix 1: cancel must not open a second sheet).
  */
 export async function restorePasskeyAccount(
-  opts: { retryDiscoverable?: boolean } = {},
+  opts: { retryDiscoverable?: boolean; credential?: PasskeyCredentialHandle } = {},
 ): Promise<PasskeyKeyMaterial> {
-  return withCeremonyLock(() => _restorePasskeyAccountImpl(opts.retryDiscoverable ?? true));
+  return withCeremonyLock(() => _restorePasskeyAccountImpl(opts.retryDiscoverable ?? true, opts.credential));
 }
 
-async function _restorePasskeyAccountImpl(retryDiscoverable: boolean): Promise<PasskeyKeyMaterial> {
-  const meta = await getKV<PasskeyCredentialMeta>(StorageKeys.PASSKEY_CREDENTIAL);
+/** A credential made on this origin, as the pin and `restorePasskeyAccount` take it -
+ *  for a passkey not (yet) pinned here: one being linked (#746 step 4). */
+export function passkeyHandleOnThisOrigin(credentialId: string, provider?: PasskeyProviderId): PasskeyCredentialHandle {
+  return { credentialId, rpId: getPasskeyRpId(), ...(provider ? { provider } : {}) };
+}
+
+async function _restorePasskeyAccountImpl(
+  retryDiscoverable: boolean,
+  credential?: PasskeyCredentialHandle,
+): Promise<PasskeyKeyMaterial> {
+  const meta = credential ?? (await getKV<PasskeyCredentialMeta>(StorageKeys.PASSKEY_CREDENTIAL));
   if (!meta) {
     // IDB cleared — fall back to the discoverable picker (sign-in only, never creates)
     return _authenticatePasskeyImpl();

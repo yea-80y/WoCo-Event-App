@@ -2268,6 +2268,32 @@ function _grantRefusalMessage(res: { code?: string; error?: string; status?: num
   return res.error ?? "Couldn't save that - try again.";
 }
 
+/** Sign, raw as the owner, and register the grant that makes `grantee` a device of
+ *  `parent` - for both ways a passkey is added. Throws the refusal, in words. */
+async function _grantDevice(
+  ownerKey: string,
+  parent: string,
+  grantee: string,
+  credentialTag: string,
+): Promise<DeviceGrantMessage> {
+  const grant: DeviceGrantMessage = {
+    parent: parent.toLowerCase(),
+    grantee: grantee.toLowerCase(),
+    credentialTag,
+    issuedAt: Math.floor(Date.now() / 1000),
+    nonce: _randomNonce(),
+  };
+  const grantSig = await createLocalSigner(ownerKey, async () => true)(
+    { ...DEVICE_GRANT_DOMAIN },
+    DEVICE_GRANT_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
+    grant as unknown as Record<string, unknown>,
+  );
+  const { registerDeviceGrant } = await import("../api/device-grants.js");
+  const res = await registerDeviceGrant(grant, grantSig);
+  if (!res.ok) throw new Error(_grantRefusalMessage(res));
+  return grant;
+}
+
 /**
  * "Add a passkey on this device" - the main passkey makes another for the same
  * account, in a different password manager on this device, and grants it.
@@ -2320,21 +2346,7 @@ async function addPasskeyOnThisDevice(
   onStep?.("linking");
   const { credentialIdBytes, writePasskeyRecord } = await import("./passkey-record.js");
   const credentialId = credentialIdBytes(added.credentialId);
-  const grant: DeviceGrantMessage = {
-    parent,
-    grantee: added.address.toLowerCase(),
-    credentialTag: credentialTagOf(credentialId),
-    issuedAt: Math.floor(Date.now() / 1000),
-    nonce: _randomNonce(),
-  };
-  const grantSig = await createLocalSigner(ownerKey, async () => true)(
-    { ...DEVICE_GRANT_DOMAIN },
-    DEVICE_GRANT_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
-    grant as unknown as Record<string, unknown>,
-  );
-  const { registerDeviceGrant } = await import("../api/device-grants.js");
-  const res = await registerDeviceGrant(grant, grantSig);
-  if (!res.ok) throw new Error(_grantRefusalMessage(res));
+  const grant = await _grantDevice(ownerKey, parent, added.address, credentialTagOf(credentialId));
 
   // Best-effort past this point: the passkey already works. Without its record
   // the sign-in guard simply has nothing to check; without the label the list
@@ -2398,6 +2410,67 @@ async function onDeviceRemoved(): Promise<void> {
   } finally {
     _forgettingDevice = false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Linking another device (#746 step 4, Fable consult 7). The flows live in the
+// lazily loaded `device-link.ts`; only what needs this store's state is here.
+// ---------------------------------------------------------------------------
+
+/** The new device's half: make its passkey, show a code, sign in once the main answers. */
+async function linkThisDevice(opts: import("./device-link.js").LinkThisDeviceOptions): Promise<void> {
+  if (isConnected) throw new Error("You're already signed in on this device.");
+  if (_busy) throw new Error("A sign-in is already in progress.");
+  const { runLinkThisDevice } = await import("./device-link.js");
+  await runLinkThisDevice(opts, {
+    apiBase,
+    // The server's verdict decides, as for any added passkey; nothing is kept before it.
+    signIn: async (account, secret) => {
+      _busy = true;
+      try {
+        await _loginAddedPasskey(account, { parent: secret.parent, seed: secret.seed });
+      } finally {
+        _busy = false;
+      }
+    },
+  });
+}
+
+/**
+ * A passkey sheet now, whatever the unlock window says, for the actions that hand
+ * this account to another device. A link cannot be undone by removing the device
+ * later - it already holds the account keys - so a phone left unlocked inside the
+ * window must not be able to do it with one tap.
+ */
+async function _freshMainPasskey(): Promise<void> {
+  if (_kind !== "passkey" || _deviceRole || !_seedAddress) throw new MainPasskeyRequiredError();
+  if (!_passkeyPrivateKey) {
+    await _ensurePasskeyKey(); // the sheet this asks for IS the fresh confirm
+  } else {
+    const material = await restorePasskeyAccount({ retryDiscoverable: false });
+    if (material.address.toLowerCase() !== _seedAddress.toLowerCase()) {
+      throw new Error("That passkey opens a different account. Use the one you signed in with.");
+    }
+  }
+  if (!(await _unlockPasskeySeed(_seedAddress))) throw new Error(_seedLockedMessage());
+}
+
+/** The main device's half, after the person confirmed the code they scanned or typed. */
+async function approveDeviceLink(code: Uint8Array, offer: import("./device-link.js").LinkOffer): Promise<void> {
+  await _freshMainPasskey();
+  const parent = _parent?.toLowerCase();
+  const ownerKey = _passkeyPrivateKey;
+  const seedAddr = _seedAddress?.toLowerCase();
+  const seed = _unlockedSeed();
+  if (!parent || !ownerKey || !seedAddr || !seed) throw new Error(_seedLockedMessage());
+  const { runApproveDeviceLink } = await import("./device-link.js");
+  await runApproveDeviceLink(code, offer, {
+    apiBase,
+    parent,
+    self: seedAddr,
+    seed,
+    grant: (grantee, credentialTag) => _grantDevice(ownerKey, parent, grantee, credentialTag),
+  });
 }
 
 async function loginPasskeyResult(
@@ -4221,6 +4294,8 @@ export const auth = {
   get isAccountOwner() { return !(_kind === "passkey" && _deviceRole); },
   onDeviceRemoved,
   addPasskeyOnThisDevice,
+  linkThisDevice,
+  approveDeviceLink,
   removePasskey,
   get isConnected() { return isConnected; },
   get isAuthenticated() { return isAuthenticated; },

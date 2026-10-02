@@ -552,6 +552,16 @@ later returns `DEVICE_REMOVED` does the same and signs out. A device never deriv
 own passkey, and cannot reach the Kernel (`_ensureKernel` throws): names, backups and adding
 passkeys need the main passkey (`auth.isAccountOwner`).
 
+**Linking another device (step 4).** The device being added makes its own passkey and shows a
+code (QR or 26 characters; the QR is deliberately not a URL, so only WoCo's own scanner, opened on
+purpose, can use it). The main device scans it, confirms with a passkey sheet every time, registers
+the grant, then sends the account and seed sealed (X-Wing) to a key that lives only in the new
+device's memory for this pairing; the new device signs in through the same server verdict as any
+added passkey and writes its own envelope. Transport is a 10-minute in-memory mailbox
+(`/api/pairing`, no session) holding bytes sealed under keys from the code, which the server never
+sees: `apps/web/src/lib/auth/pairing-channel.ts` (a swappable `PairingTransport`) and
+`device-link.ts` (message shapes).
+
 Paths that deliberately need no session: guest Stripe checkout from the embed widget, the public
 ticket page `/t/…`, and the ENS CCIP-Read gateway.
 

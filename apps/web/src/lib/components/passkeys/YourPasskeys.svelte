@@ -11,6 +11,7 @@
   } from "../../auth/device-grant-verify.js";
   import { readPasskeyMeta, type AddedPasskeyMeta } from "../../auth/passkey-meta.js";
   import { credentialIdBytes } from "../../auth/passkey-record.js";
+  import LinkAnotherDevice from "./LinkAnotherDevice.svelte";
 
   /**
    * "Your passkeys" (#746 step 3): the main passkey and every passkey it added,
@@ -29,6 +30,8 @@
   let adding = $state<"closed" | "explain" | "creating" | "saving" | "linking">("closed");
   let addError = $state<string | null>(null);
   let addedNote = $state<string | null>(null);
+
+  let linking = $state(false);
 
   let confirming = $state<string | null>(null);
   let removing = $state<string | null>(null);
@@ -205,11 +208,15 @@
       {#if removeError}<p class="err">{removeError}</p>{/if}
 
       {#if owner}
-        {#if adding === "closed"}
-          <button class="btn btn--primary" onclick={() => { adding = "explain"; addError = null; }}>
+        {#if linking}
+          <LinkAnotherDevice onlinked={() => { loaded = false; void load(); }} onclose={() => (linking = false)} />
+        {:else if adding === "closed"}
+          <button class="btn btn--primary" onclick={() => (linking = true)}>Link another device</button>
+          <button class="btn btn--ghost" onclick={() => { adding = "explain"; addError = null; }}>
             Add a passkey on this device
           </button>
-        {:else}
+        {/if}
+        {#if adding !== "closed" && !linking}
           <div class="add">
             <p>
               Pick a different password manager than the one holding your main passkey - another passkey in the same
