@@ -24,6 +24,8 @@
   let thisTag = $state<string | null>(null);
   let loading = $state(false);
   let loaded = $state(false);
+  // More than one passkey is for verified organisers for now; the server decides.
+  let canAdd = $state(false);
   let loadError = $state<string | null>(null);
 
   let adding = $state<"closed" | "explain" | "creating" | "saving" | "linking">("closed");
@@ -84,6 +86,7 @@
         return;
       }
       const grants = res.data.grants;
+      canAdd = res.data.canAddDevices === true;
       const expectedOwner = owner ? auth.seedAddress : ownerFromOwnGrant(grants, auth.seedAddress);
       rows = expectedOwner ? verifyDeviceGrantList(grants, { parent: auth.parent, owner: expectedOwner }) : [];
       loaded = true;
@@ -261,6 +264,11 @@
       {#if owner && !makingMain && !promoting}
         {#if linking}
           <!-- the panel is open above -->
+        {:else if !canAdd}
+          <p class="muted">
+            Linking devices and moving your passkey open once you're a verified organiser - verify your Stripe account in
+            Payments.
+          </p>
         {:else if adding === "closed"}
           <button class="btn btn--primary" onclick={() => (linking = true)}>Link another device</button>
           <button class="btn btn--ghost" onclick={() => { adding = "explain"; addError = null; }}>

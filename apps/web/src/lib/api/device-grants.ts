@@ -4,7 +4,9 @@ import type { ApiResponse, DeviceGrantMessage, DeviceGrantRevokeMessage, Session
 import { authGet, authPost } from "./client.js";
 import type { DeviceGrantRecordWire } from "../auth/device-grant-verify.js";
 
-export function listDeviceGrants(): Promise<ApiResponse<{ grants: DeviceGrantRecordWire[]; sessionRank: SessionRank }>> {
+export function listDeviceGrants(): Promise<
+  ApiResponse<{ grants: DeviceGrantRecordWire[]; sessionRank: SessionRank; canAddDevices?: boolean }>
+> {
   return authGet("/api/auth/device-grants");
 }
 
