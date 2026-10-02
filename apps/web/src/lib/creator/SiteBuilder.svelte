@@ -111,6 +111,7 @@
     domainError = null;
     domainRegistering = true;
     try {
+      await auth.ensureOrganiserUnlock();
       domainEntry = await registerDomain(
         hostname,
         createdEventId,
@@ -328,6 +329,7 @@
     deployError = null;
     deployResult = null;
     try {
+      await auth.ensureOrganiserUnlock();
       const deployed = await deployToSwarm();
       if (!deployed) return;
 

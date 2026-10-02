@@ -85,6 +85,7 @@
     actionLoading = true;
     error = null;
     try {
+      await auth.ensureOrganiserUnlock();
       await connectStripe();
       const link = await getOnboardingLink();
       if (link.alreadyComplete) {

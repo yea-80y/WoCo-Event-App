@@ -65,6 +65,7 @@
   let webhookFormAuthName = $state("Authorization");
   let webhookFormAuthValue = $state("");
   let bulkSending = $state<string | null>(null); // seriesId currently bulk-sending
+  let relayError = $state<string | null>(null);
 
   // Broadcast state
   let broadcastSubject = $state("");
@@ -97,6 +98,7 @@
    */
   async function updateCancelledPage(): Promise<void> {
     if (!event?.cancelledAt) return;
+    await auth.ensureOrganiserUnlock();
     let feedSigner: ContentFeedSigner | null = null;
     if (event.creatorFeedSigner) {
       let signer: ContentFeedSigner | null;
@@ -271,6 +273,13 @@
     const key = orderKey(order);
     const dec = decryptedOrders.get(globalIdx);
     if (!dec) return;
+    relayError = null;
+    try {
+      await auth.ensureOrganiserUnlock();
+    } catch (e) {
+      relayError = e instanceof Error ? e.message : "Couldn't confirm it's you.";
+      return;
+    }
 
     sending = new Set([...sending, key]);
     try {
@@ -313,6 +322,14 @@
   }
 
   async function sendAllUnsent(seriesId: string, seriesOrders: OrderEntry[]) {
+    // Once for the whole run: a decline must stop it, not ask again per order.
+    relayError = null;
+    try {
+      await auth.ensureOrganiserUnlock();
+    } catch (e) {
+      relayError = e instanceof Error ? e.message : "Couldn't confirm it's you.";
+      return;
+    }
     bulkSending = seriesId;
     for (const order of seriesOrders) {
       const key = orderKey(order);
@@ -346,6 +363,12 @@
   async function handleSendBroadcast(resumeOf?: string) {
     if (!event || broadcastSending) return;
     broadcastError = null;
+    try {
+      await auth.ensureOrganiserUnlock();
+    } catch (e) {
+      broadcastError = e instanceof Error ? e.message : "Couldn't confirm it's you.";
+      return;
+    }
 
     const recipients = getEmailRecipients(broadcastSeriesFilter);
     if (recipients.length === 0) {
@@ -1052,6 +1075,7 @@
                     {bulkSending === series.seriesId ? "Sending..." : `Send ${unsent} unsent`}
                   </button>
                 {/if}
+                {#if relayError}<p class="broadcast-error">{relayError}</p>{/if}
               {/if}
             </div>
 

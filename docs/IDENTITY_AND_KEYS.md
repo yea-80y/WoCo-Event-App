@@ -128,16 +128,24 @@ recovered account's seed is still whatever its escrow carried (stored seed wins)
 slot's AAD moved to `woco/device/identity-seed/v2:{addr}` with it, so every device re-derives
 under the new rule rather than keeping a seed from the old one.
 
-**On the device, locked under the passkey (#746 fix 1).** A passkey account's seed is not kept
-under the browser's device key. It is AES-GCM under a key from the PRF output
-(`woco/device/seed-kek/v1`, AAD `woco/device/identity-seed/v3:{seedAddr}:{parent}`), so a reload
-leaves it locked: the sign-in biometric unlocks it, and after a reload the first signing action
-asks the passkey once. It stays in memory until the tab closes, sign-out, or the page has been
-hidden past the relock limit. The locked copy survives sign-out (it opens only with the passkey);
-passive reads use a public record of the feed-signer address, checked against the account. One
-constant, `SEED_UNLOCK_POLICY` (`apps/web/src/lib/auth/seed-unlock-policy.ts`), trades this for a
-silent device-key copy, timed or not. The lock's label is pinned but sticky, not identity-frozen:
-changing it costs each device one re-fetch of its seed.
+**On the device, locked under the passkey (#746).** A passkey account's seed is not kept under
+the browser's device key. It is AES-GCM under a key from the PRF output
+(`woco/device/seed-kek/v1`, AAD `woco/device/identity-seed/v3:{seedAddr}:{parent}`), and survives
+sign-out (it opens only with the passkey). The lock's label is pinned but sticky, not
+identity-frozen: changing it costs each device one re-fetch of its seed.
+
+An unlock - the sign-in, or the one confirm `auth.ensureOrganiserUnlock()` asks before an
+organiser action - opens the seed for a window (`SEED_UNLOCK_POLICY`, two hours), through a copy
+under the device key (`woco/device/identity-seed-window/v1:{seedAddr}:{parent}`) that a reload
+opens silently and never extends; an expired copy is deleted, and an open tab locks on time. The
+window is GitHub's sudo mode: the app's promise, not cryptography, and a browser gate on the
+organiser screens rather than an API boundary.
+
+Everyday posts never ask. They sign with the content-feed signer, an HKDF child of the seed that
+opens neither the seed, the attendee-data key nor the issuing key, kept under the device key with
+no expiry (`woco/device/feed-signer/v1:{seedAddr}:{parent}`, `ensureContentSigner()`). Sign-out, a
+heal and a removed device delete the window copy and the cached signer; a relock keeps the signer.
+Passive reads use a public record of the feed-signer address, checked against the account.
 
 **These bytes are FROZEN from launch.** The domain name, version and salt, the primary type name
 `DeriveAccountKeys`, all three field names and types, the `purpose` string and the `nonce` are

@@ -214,11 +214,11 @@
     saving = true;
     saveError = '';
     try {
-      // Saving writes the profile to the user's OWN content feed, which is
-      // signed by a key derived from the seed — so this needs the account keys,
-      // not just a session. Asking for both up front is what stops the seed
-      // prompt appearing mid-save with no explanation.
-      const ok = await auth.ensureAccountSetup({ identity: true });
+      // Saving writes the profile to the user's OWN content feed, signed by the
+      // content-feed signer - so this needs that key, not just a session. Silent
+      // once the device holds it (#746); asking up front is what stops a prompt
+      // appearing mid-save with no explanation.
+      const ok = await auth.ensureContentSigner();
       if (!ok) { saveError = "Sign-in was cancelled — your changes were not saved."; return; }
       if (!(await ensureUnlocked())) {
         saveError = unlocksWhen("Your profile");

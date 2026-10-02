@@ -129,8 +129,9 @@ Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
    Keys" / `DeriveAccountKeys`, so a fresh device needs TWO signatures total (session
    delegation + this). PASSKEY (#642): HKDF of the PRF output, no signature, never through a
    secp256k1 key — labels FROZEN in `packages/shared/src/crypto/passkey-prf.ts`. A passkey seed at rest is LOCKED
-   under a PRF-derived key (#746 fix 1): unlocked once per app open, relocks after 15 min hidden, one constant
-   `SEED_UNLOCK_POLICY` changes that; prompt-free reads use memory or the public-keys record. `ensureIdentitySeed()` returns a
+   under a PRF-derived key (#746): an unlock (sign-in, or the confirm `auth.ensureOrganiserUnlock()` asks before every
+   organiser action) opens it for 2 h across reloads, one constant `SEED_UNLOCK_POLICY`; everyday posts sign with a cached
+   feed signer (`ensureContentSigner()`) and never ask. `ensureIdentitySeed()` returns a
    BOOLEAN (is the seed available), never a public key. The ed25519 HOLDER key it used to
    derive is GONE from every launch path (#518): `creatorObjectKey` and `holderPubKey` are deleted
    end to end, and no auth surface holds an ed25519 key. Two OUT-OF-LAUNCH-SCOPE rails still

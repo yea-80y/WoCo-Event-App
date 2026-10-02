@@ -8,6 +8,7 @@
     type RequirementCategory,
   } from "../../api/stripe.js";
   import { isSessionInvalid } from "../../api/errors.js";
+  import { auth } from "../../auth/auth-store.svelte.js";
 
   let status = $state<StripeAccountStatus | null>(null);
   let loading = $state(true);
@@ -35,6 +36,7 @@
     actionLoading = true;
     error = null;
     try {
+      await auth.ensureOrganiserUnlock();
       await connectStripe();
       const link = await getOnboardingLink();
       if (link.alreadyComplete) {

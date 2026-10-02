@@ -116,6 +116,7 @@
         return;
       }
 
+      await auth.ensureOrganiserUnlock();
       // Phase B: this event's feed is a client-owned SOC — the edit only becomes
       // visible once WE re-sign it, so fail loudly if the current account can't
       // produce the owning key (e.g. signed in as a different identity).
@@ -150,6 +151,7 @@
     deleting = true;
     deleteError = null;
     try {
+      await auth.ensureOrganiserUnlock();
       // Phase B feeds need the owning key to tombstone the SOC — same fail-loud
       // ownership check as save.
       let feedSigner: ContentFeedSigner | null = null;

@@ -67,6 +67,9 @@
     working = true;
     error = null;
     try {
+      // Silent inside the window the form opened in; a form left open past it asks
+      // again before anything is refunded.
+      await auth.ensureOrganiserUnlock();
       // The cancellation itself needs no signing key. The page feed does, and only
       // keys unlocked when the form opened are used: no prompt mid-cancellation.
       let feedSigner: ContentFeedSigner | null = null;

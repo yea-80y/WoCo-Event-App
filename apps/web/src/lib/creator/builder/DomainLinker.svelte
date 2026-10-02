@@ -3,6 +3,7 @@
   import type { DomainEntry } from '../../api/domains.js';
   import { registerSiteDomain, verifyDomainDns, getSiteDomains, removeDomain } from '../../api/domains.js';
   import { getProviderInstructions } from './domain-instructions.js';
+  import { auth } from '../../auth/auth-store.svelte.js';
 
   interface Props {
     siteId: string;
@@ -68,6 +69,7 @@
     error = '';
     registering = true;
     try {
+      await auth.ensureOrganiserUnlock();
       entry = await registerSiteDomain(h, siteId, contentHash, feedManifestHash);
     } catch (e) {
       error = e instanceof Error ? e.message : 'Registration failed';
@@ -111,6 +113,7 @@
     removing = true;
     error = '';
     try {
+      await auth.ensureOrganiserUnlock();
       await removeDomain(entry.hostname);
       hostnameInput = '';
       entry = null;

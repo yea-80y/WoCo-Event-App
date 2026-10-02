@@ -56,6 +56,12 @@ export const AAD = {
   // (#227/#233) - the tag is.
   IDENTITY_SEED_LOCKED: (seedAddress: string, parent: string) =>
     `woco/device/identity-seed/v3:${seedAddress.toLowerCase()}:${parent.toLowerCase()}`,
+  // The unlock-window copy and the cached feed signer (#746): account-bound for the
+  // same reason - two accounts reachable from one credential share a seed address.
+  IDENTITY_SEED_WINDOW: (seedAddress: string, parent: string) =>
+    `woco/device/identity-seed-window/v1:${seedAddress.toLowerCase()}:${parent.toLowerCase()}`,
+  FEED_SIGNER_CACHE: (seedAddress: string, parent: string) =>
+    `woco/device/feed-signer/v1:${seedAddress.toLowerCase()}:${parent.toLowerCase()}`,
   // Two scoped ZeroDev session keys had AAD constructors here — the sub-ENS mint
   // key until #501, the referral campaign's EAS key until #476. Neither is
   // written any more, and an unused AAD constructor is worse than none (see the

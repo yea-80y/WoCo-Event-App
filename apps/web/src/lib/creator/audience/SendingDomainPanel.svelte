@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { SendingDomainInfo } from "@woco/shared";
   import { onMount } from "svelte";
+  import { auth } from "../../auth/auth-store.svelte.js";
   import {
     getSendingDomain,
     createSendingDomain,
@@ -37,6 +38,7 @@
     error = null;
     working = true;
     try {
+      await auth.ensureOrganiserUnlock();
       info = await createSendingDomain(domainInput.trim().toLowerCase(), localPartInput.trim().toLowerCase());
     } catch (err) {
       error = err instanceof Error ? err.message : "Could not connect that domain.";
@@ -61,6 +63,7 @@
     error = null;
     working = true;
     try {
+      await auth.ensureOrganiserUnlock();
       await removeSendingDomain();
       info = null;
       confirmingRemove = false;

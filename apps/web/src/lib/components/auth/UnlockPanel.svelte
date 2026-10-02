@@ -1,9 +1,10 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
+  import { SEED_UNLOCK_POLICY, unlockPromise } from "../../auth/seed-unlock-policy.js";
 
   /**
    * A page whose content IS the secret, shown while the account keys are locked
-   * (#746 fix 1). The passkey is asked for only when this button is tapped: never on
+   * (#746). The passkey is asked for only when this button is tapped: never on
    * navigation (a sheet nobody asked for gets declined, and Safari refuses one
    * outside a tap), and a declined sheet leaves a page that still works.
    */
@@ -47,7 +48,7 @@
       : declined
         ? `${subject} stay locked until you confirm it's you.`
         : auth.kind === "passkey"
-          ? "Confirm it's you to see them. WoCo asks once each time you open it."
+          ? `Confirm it's you to see them. ${unlockPromise(SEED_UNLOCK_POLICY)}`
           : "Confirm it's you to see them. WoCo asks once on this device."}
   </p>
   {#if !auth.seedUnavailable}

@@ -170,6 +170,7 @@
   }
 
   async function handleDelete(email: string, alsoSuppress: boolean): Promise<void> {
+    await auth.ensureOrganiserUnlock();
     await commitList(contacts.filter((c) => c.email !== email));
     if (alsoSuppress) {
       await suppressContacts([email]);

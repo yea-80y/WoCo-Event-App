@@ -22,6 +22,13 @@ export const StorageKeys = {
   // PUBLIC values derived from a locked seed `{ parent, feedSignerAddress }`, per
   // seed address, so own-profile reads work while the seed is locked.
   PUBLIC_KEYS: "woco:auth:public-keys",
+  // The unlock window (#746): a passkey seed copy under the device key that opens
+  // without the passkey until its `expiresAt`. Per seed address; never the only copy.
+  IDENTITY_SEED_WINDOW: "woco:auth:identity-seed-window",
+  // A passkey account's content-feed signer key under the device key, per seed
+  // address (#746): everyday posts sign with it while the seed is locked. An HKDF
+  // child of the seed, so it opens neither the seed nor the attendee-data key.
+  FEED_SIGNER_CACHE: "woco:auth:feed-signer-cache",
   // Durable RECOVERED-account bindings: a MAP `{ [prfEoaLower]: kernelAddress }`.
   // After recovery the Kernel's sudo owner is rotated but its address is PRESERVED,
   // so the rotated passkey's counterfactual CREATE2 address no longer equals the

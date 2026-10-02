@@ -63,6 +63,7 @@
   async function handleList(ev: DiscoveredEvent) {
     listingId = ev.eventId;
     try {
+      await auth.ensureOrganiserUnlock();
       const json = await authPost<{ eventId: string }>(`/api/events/${ev.eventId}/list`, { sourceApiUrl: ev.sourceApiUrl });
       if (json.ok) {
         const idx = discovered.findIndex(d => d.eventId === ev.eventId);
@@ -80,6 +81,7 @@
   async function handleUnlist(ev: DiscoveredEvent) {
     listingId = ev.eventId;
     try {
+      await auth.ensureOrganiserUnlock();
       const json = await authPost<{ eventId: string }>(`/api/events/${ev.eventId}/unlist`, { sourceApiUrl: ev.sourceApiUrl });
       if (json.ok) {
         const idx = discovered.findIndex(d => d.eventId === ev.eventId);
