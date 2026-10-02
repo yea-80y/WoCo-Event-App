@@ -22,6 +22,7 @@ import {
   isOrphanedCredentialError,
   refuseOrphanedCredential,
   postOrphanedCredentialNotice,
+  MOVED_OR_RECOVERED_MESSAGE,
 } from "./orphaned-credential.js";
 import { readOrphanTombstone, writeOrphanTombstone } from "./orphan-tombstone.js";
 import { guardianConfigForBackup } from "./guardian-config.js";
@@ -281,6 +282,7 @@ const NOT_LINKED_MESSAGE =
   "Couldn't confirm this passkey is linked to the account. Try again - if it keeps happening, add it again from your main passkey.";
 const NOT_SET_UP_MESSAGE = "This passkey wasn't fully set up. Add it again from your main passkey.";
 const KEYS_UNREACHABLE_MESSAGE = "Couldn't fetch your account keys right now - try again.";
+const VERDICT_UNREACHABLE_MESSAGE = "Couldn't check this passkey with WoCo just now - try again in a moment.";
 
 /** Why the seed is not available: not here at all, or the person did not confirm. */
 function _seedLockedMessage(): string {
@@ -1635,9 +1637,10 @@ function writeCachedKernelAddress(kind: "passkey" | "web3auth", eoa: string, ker
   }
 }
 
-/** Drop a cached entry. Only ever called on a HEAL (#245 fix 4) — this cache is
- *  written from a definitive absence, so removing an entry is always safe and
- *  re-writing one from a background path never is. */
+/** Drop a cached entry: on a HEAL (#245 fix 4), and when the main passkey moved to
+ *  another device (#746 step 4) — this cache is written from a definitive absence,
+ *  so removing an entry is always safe and re-writing one from a background path
+ *  never is. */
 function clearCachedKernelAddress(kind: "passkey" | "web3auth", eoa: string): void {
   try {
     globalThis.localStorage?.removeItem(
@@ -1793,6 +1796,8 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, prfSecret: 
         );
         if (outcome.status === "healed") {
           console.warn("[auth] portability envelope found on re-probe — bound to", outcome.preserved);
+        } else if (outcome.status === "moved") {
+          console.warn("[auth] this passkey is no longer the account's main one — next sign-in asks the server");
         } else if (outcome.status === "orphaned") {
           console.warn(
             "[auth] this credential no longer owns its cached account — on-chain owner is",
@@ -2215,10 +2220,20 @@ async function _loginAddedPasskey(
   // a refusal leaves this device as it found it; only `removed` is certain.
   if (verdict === "invalid" && (added || !start.onChainOwner)) throw new Error(NOT_LINKED_MESSAGE);
   if ((verdict === "invalid" || verdict === "unreachable") && !added && start.onChainOwner) {
-    // Not an added passkey, and the chain names another owner: recovered away from
-    // (#255). Without a "device" verdict that stays a refusal, as it was before.
+    // Not an added passkey, its own envelope names this account, and the chain names
+    // another owner. Two histories end here: recovered away (#255), or the account's
+    // old main passkey after another device became the main one, before its new
+    // grant landed (#746 step 4). Both carry an envelope, so nothing here tells them
+    // apart: the words fit both, and it stays a refusal either way. An unanswered
+    // server is no verdict at all, and forgets nothing.
+    if (verdict === "unreachable") throw new Error(VERDICT_UNREACHABLE_MESSAGE);
     clearVerifiedBinding("passkey", seedAddr);
-    throw refuseOrphanedCredential("passkey", { boundKernel: parent, onChainOwner: start.onChainOwner });
+    throw refuseOrphanedCredential(
+      "passkey",
+      { boundKernel: parent, onChainOwner: start.onChainOwner },
+      undefined,
+      MOVED_OR_RECOVERED_MESSAGE,
+    );
   }
 
   // Another passkey of the SAME account may have signed in here before, so the

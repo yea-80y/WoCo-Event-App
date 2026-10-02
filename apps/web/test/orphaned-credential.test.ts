@@ -12,6 +12,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   provenOrphanOwner,
   orphanedCredentialMessage,
@@ -82,4 +84,31 @@ test("the error is recognised by name, so the check survives chunk boundaries", 
   assert.ok(isOrphanedCredentialError(foreign));
   assert.ok(!isOrphanedCredentialError(new Error("anything else")));
   assert.ok(!isOrphanedCredentialError("not an error"));
+});
+
+test("a refusal can carry its own words (#746 step 4): the same ones in the notice and the error", async () => {
+  const { refuseOrphanedCredential, MOVED_OR_RECOVERED_MESSAGE } = await import("../src/lib/auth/orphaned-credential.ts");
+  const posted: string[] = [];
+  const err = refuseOrphanedCredential(
+    "passkey",
+    { boundKernel: "0x" + "1".repeat(40), onChainOwner: "0x" + "2".repeat(40) },
+    { setItem: (_k, v) => void posted.push(v) },
+    MOVED_OR_RECOVERED_MESSAGE,
+  );
+  assert.equal(err.message, MOVED_OR_RECOVERED_MESSAGE);
+  assert.equal(err.name, "OrphanedCredentialError");
+  assert.deepEqual(posted, [MOVED_OR_RECOVERED_MESSAGE]);
+  assert.match(MOVED_OR_RECOVERED_MESSAGE, /made another device your main passkey/);
+  assert.match(MOVED_OR_RECOVERED_MESSAGE, /newer passkey/);
+  assert.doesNotMatch(MOVED_OR_RECOVERED_MESSAGE, /\u2014/);
+});
+
+test("sign-in with a passkey its envelope names but the chain does not: refused in words that fit both histories; no answer is no verdict", () => {
+  const STORE = readFileSync(fileURLToPath(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url)), "utf8");
+  const start = STORE.indexOf('if ((verdict === "invalid" || verdict === "unreachable") && !added && start.onChainOwner) {');
+  assert.ok(start > 0);
+  const b = STORE.slice(start, STORE.indexOf("\n  }\n", start));
+  const unreachable = b.indexOf('if (verdict === "unreachable") throw new Error(VERDICT_UNREACHABLE_MESSAGE);');
+  assert.ok(unreachable > 0 && unreachable < b.indexOf("clearVerifiedBinding("), "an unanswered server forgets nothing");
+  assert.match(b, /MOVED_OR_RECOVERED_MESSAGE,\s*\);/);
 });

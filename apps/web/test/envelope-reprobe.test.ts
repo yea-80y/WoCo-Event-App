@@ -174,6 +174,7 @@ test("an orphaned credential gets a tombstone, the notice, and a sign-out (#283)
   const other = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
   const { d, bindings, cleared, calls, tombstones, notices } = deps({
     readKernelOwner: async () => other,
+    envelopeExists: async () => ({ status: "absent" }),
   });
   const r = await reprobeEnvelope(args, d);
 
@@ -184,13 +185,16 @@ test("an orphaned credential gets a tombstone, the notice, and a sign-out (#283)
   assert.match(notices[0], /recovered on another device/i);
   assert.deepEqual(bindings, [], "no binding for an account this credential does not own");
   assert.deepEqual(cleared, [], "the kaddr entry stays — the tombstone gates everything");
-  assert.deepEqual(calls, [`owner:${PHANTOM}`, "logout"], "no Swarm probe off a settled verdict");
+  // One existence lookup tells a recovered-away credential from a main passkey that
+  // moved (#746 step 4); never the full read when nothing is there.
+  assert.deepEqual(calls, [`owner:${PHANTOM}`, "exists", "logout"]);
 });
 
 test("an orphan discovered after a sign-out is tombstoned QUIETLY — no bystander logout", async () => {
   const other = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
   const { d, calls, tombstones, notices } = deps({
     readKernelOwner: async () => other,
+    envelopeExists: async () => ({ status: "absent" }),
     isStillSignedInAs: () => false,
   });
   const r = await reprobeEnvelope(args, d);
@@ -199,6 +203,68 @@ test("an orphan discovered after a sign-out is tombstoned QUIETLY — no bystand
   assert.deepEqual(tombstones, [{ eoa: EOA, kernel: PHANTOM, owner: other }], "the fact is about the credential, not the session");
   assert.deepEqual(notices, [], "no notice for a refusal that never happened to this session");
   assert.ok(!calls.includes("logout"));
+});
+
+// #746 step 4: a main passkey that made another device the main one reads a foreign
+// owner too - but wrote itself an envelope naming the account first.
+
+const MOVED: PortabilityRead = {
+  status: "found",
+  value: { preservedKernelAddress: PHANTOM.toUpperCase().replace("0X", "0x"), identitySeed: "seed" },
+};
+
+test("a main passkey that moved is never tombstoned: kaddr dropped, signed out to the server's verdict", async () => {
+  const other = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+  const store = memStore();
+  const { d, calls, cleared, tombstones, notices, bindings, seedsCleared } = deps(
+    { readKernelOwner: async () => other, readEnvelope: async () => MOVED },
+    store,
+  );
+  const r = await reprobeEnvelope(args, d);
+
+  assert.deepEqual(r, { status: "moved", signedOut: true });
+  assert.deepEqual(tombstones, []);
+  assert.deepEqual(cleared, [EOA], "the next sign-in must read the envelope, not the cache");
+  assert.deepEqual(bindings, [], "who it is to the account is the server's to say");
+  assert.deepEqual(seedsCleared, [], "its seed is the account's seed");
+  assert.equal(store.map.get(STATE_KEY), undefined);
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], /main passkey moved to another device/);
+  assert.deepEqual(calls, [`owner:${PHANTOM}`, "exists", "envelope", "logout"]);
+});
+
+test("a moved main found after a sign-out is handled quietly", async () => {
+  const { d, calls, notices, tombstones } = deps({
+    readKernelOwner: async () => "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    readEnvelope: async () => MOVED,
+    isStillSignedInAs: () => false,
+  });
+  assert.deepEqual(await reprobeEnvelope(args, d), { status: "moved", signedOut: false });
+  assert.deepEqual(notices, []);
+  assert.deepEqual(tombstones, []);
+  assert.ok(!calls.includes("logout"));
+});
+
+test("foreign owner with an envelope naming ANOTHER account, or an unanswered check: no verdict at all", async () => {
+  for (const over of [
+    { readEnvelope: async () => FOUND },
+    { envelopeExists: async () => ({ status: "unreadable" as const, reason: "x" }) },
+    { readEnvelope: async (): Promise<PortabilityRead> => ({ status: "unreadable", reason: "x" }) },
+    { envelopeExists: async () => { throw new Error("boom"); } },
+  ] as Array<Partial<EnvelopeReprobeDeps>>) {
+    _resetInFlightForTests();
+    const store = memStore();
+    const { d, cleared, tombstones, notices } = deps(
+      { readKernelOwner: async () => "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef", ...over },
+      store,
+    );
+    const r = await reprobeEnvelope(args, d);
+    assert.equal(r.status, "inconclusive");
+    assert.deepEqual(tombstones, []);
+    assert.deepEqual(cleared, []);
+    assert.deepEqual(notices, []);
+    assert.equal(store.map.get(STATE_KEY), undefined, "no attempt spent");
+  }
 });
 
 test("the common case is ONE lookup: the full read never runs when nothing is there", async () => {

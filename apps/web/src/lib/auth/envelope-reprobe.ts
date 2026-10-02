@@ -28,7 +28,9 @@
  * the heal; it cannot redirect it (the envelope is sealed to a PRF-derived HPKE
  * key, so a forged or replayed one decrypts to nothing else). A credential
  * orphaned BY a recovery reads a different owner and gets a TOMBSTONE (#283) —
- * the honest refusal at its next login — see the `orphaned` outcome.
+ * the honest refusal at its next login — see the `orphaned` outcome. A main
+ * passkey that made another device the main one reads a different owner too, but
+ * carries an envelope naming the account: `moved`, never a tombstone (#746).
  *
  * COST, and why the shape is what it is. A Swarm lookup that MISSES is a full
  * network search on our own gateway — the expensive direction, and the shape that
@@ -109,6 +111,13 @@ export type ReprobeOutcome =
    * is signed out if the user is still in it.
    */
   | { status: "orphaned"; owner: string; signedOut: boolean }
+  /**
+   * Deployed, owned by someone else, and this credential's own envelope names the
+   * account: it was the main passkey and another device became the main one
+   * (#746 step 4). The kaddr entry goes, so the next sign-in reads the envelope
+   * and asks the server; signed out if the user is still in it. Never a tombstone.
+   */
+  | { status: "moved"; signedOut: boolean }
   /** Nobody could answer. No durable state written, no attempt consumed. */
   | { status: "inconclusive"; reason: string }
   /** A probe ran and produced no envelope to apply. An attempt IS consumed. */
@@ -117,6 +126,28 @@ export type ReprobeOutcome =
   | { status: "healed"; preserved: string; signedOut: boolean };
 
 const REPROBE_PREFIX = "woco:kreprobe:";
+
+export const MAIN_MOVED_NOTICE =
+  "Your account's main passkey moved to another device. Sign in again to finish updating this one.";
+
+/** Does this credential's envelope name `parent`? "unknown" for anything short of
+ *  a read that answered - including an envelope naming another account. */
+async function envelopeNames(
+  deps: EnvelopeReprobeDeps,
+  prfSecret: string,
+  parent: string,
+): Promise<boolean | "unknown"> {
+  try {
+    const presence = await deps.envelopeExists(prfSecret);
+    if (presence.status === "absent") return false;
+    if (presence.status !== "present") return "unknown";
+    const read = await deps.readEnvelope(prfSecret);
+    if (read.status !== "found") return "unknown";
+    return read.value.preservedKernelAddress.toLowerCase() === parent.toLowerCase() ? true : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 /**
  * Cooldown before attempt n+1, indexed by attempts already made. Five attempts,
@@ -277,7 +308,25 @@ export async function reprobeEnvelope(
         writeState(store, kind, eoa, { ...spent, ok: cachedParent.toLowerCase() });
         return { status: "confirmed" };
       }
-      // Deployed, and this credential does not own it: proof of orphaning.
+      // Deployed, and this credential does not own it. Two histories end here: it
+      // was recovered away, or it was the account's main passkey and made another
+      // device the main one (#746 step 4) - which first writes it an envelope
+      // naming this account. Only the first is permanent, so the envelope decides
+      // (one lookup, on this branch only); the server's verdict comes at the next
+      // sign-in, which the envelope routes it to.
+      const named = await envelopeNames(deps, prfSecret, cachedParent);
+      if (named === "unknown") return { status: "inconclusive", reason: "envelope check unanswered" };
+      if (named) {
+        deps.clearCachedKernelAddress(kind, eoa);
+        clearState(store, kind, eoa);
+        const movedSignedOut = deps.isStillSignedInAs(eoa, cachedParent);
+        if (movedSignedOut) {
+          deps.postNotice?.(MAIN_MOVED_NOTICE);
+          await deps.logout();
+        }
+        return { status: "moved", signedOut: movedSignedOut };
+      }
+      // No envelope: proof of orphaning.
       // This credential has no binding or envelope to trip #255's login guard,
       // so the proof is KEPT as a tombstone (#283) — the login checks it before
       // any cache and refuses honestly. The kaddr entry is deliberately left:
