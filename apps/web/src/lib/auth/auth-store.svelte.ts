@@ -2347,7 +2347,7 @@ async function _signGrant(
 }
 
 /**
- * "Add a passkey on this device" - the main passkey makes another for the same
+ * "Move to another password manager" - the main passkey makes another for the same
  * account, in a different password manager on this device, and grants it.
  *
  * Order (consult 6): the new passkey's envelope first, so the server never holds a
@@ -2358,7 +2358,7 @@ async function _signGrant(
  */
 async function addPasskeyOnThisDevice(
   onStep?: (step: "creating" | "saving" | "linking") => void,
-): Promise<{ provider: PasskeyProviderId }> {
+): Promise<{ provider: PasskeyProviderId; grantee: string }> {
   if (_kind !== "passkey" || _deviceRole) throw new MainPasskeyRequiredError();
   if (!(await ensureAccountSetup({ identity: true }))) throw new Error(_seedLockedMessage());
   await _ensurePasskeyKey();
@@ -2414,7 +2414,7 @@ async function addPasskeyOnThisDevice(
     addedAt: Date.now(),
     credentialId: added.credentialId,
   }).catch((e) => console.warn("[auth] added passkey's label not kept (non-fatal):", e));
-  return { provider: added.provider };
+  return { provider: added.provider, grantee: grant.grantee };
 }
 
 /**
@@ -2497,7 +2497,10 @@ async function linkThisDevice(opts: import("./device-link.js").LinkThisDeviceOpt
 async function _freshMainPasskey(): Promise<void> {
   if (_kind !== "passkey" || _deviceRole || !_seedAddress) throw new MainPasskeyRequiredError();
   if (!_passkeyPrivateKey) {
-    await _ensurePasskeyKey(); // the sheet this asks for IS the fresh confirm
+    // The sheet this asks for IS the fresh confirm.
+    await _ensurePasskeyKey().catch((e) => {
+      throw asCeremonyCancel(e);
+    });
   } else {
     const material = await restorePasskeyAccount({ retryDiscoverable: false }).catch((e) => {
       throw asCeremonyCancel(e);
@@ -2507,6 +2510,10 @@ async function _freshMainPasskey(): Promise<void> {
     }
   }
   if (!(await _unlockPasskeySeed(_seedAddress))) throw new Error(_seedLockedMessage());
+  // That sheet is a confirm too: a full window from now, so the keys cannot lock
+  // under a handover that started at the end of the last one.
+  const seed = _unlockedSeed();
+  if (seed && _parent) _setUnlockedSeed(_seedAddress, _parent, seed);
 }
 
 /** The main device's half, after the person confirmed the code they scanned or typed. */
@@ -2556,6 +2563,37 @@ async function _becomeDevice(seedAddr: string, parent: string): Promise<void> {
   }
 }
 
+/**
+ * Same-phone make-main (#746 step 4): this tab carries on as the new main passkey,
+ * with the key its sheet just gave, so nobody signs in again. The seed is the same,
+ * so the feed signer, issuing key and attendee key do not change - only which
+ * passkey opens them. Written in recoverAndRekey's order: the binding first (it is
+ * what every other write keys off), then the seed, the pin, the address.
+ */
+async function _adoptNewMain(
+  key: { address: string; privateKey: string; prfSecret: string },
+  credential: import("./passkey-account.js").PasskeyCredentialHandle,
+  { parent, seed }: { parent: string; seed: string },
+): Promise<void> {
+  const previous = _seedAddress?.toLowerCase();
+  const self = key.address.toLowerCase();
+  if (_kind !== "passkey" || !previous || _parent?.toLowerCase() !== parent) throw new Error(_seedLockedMessage());
+  await _becomeOwner(self, parent);
+  await storeLockedSeed(self, parent, seed, key.prfSecret);
+  await pinPasskeyCredential(credential);
+  await putKV(StorageKeys.SEED_ADDRESS, self);
+  // What opened the old main's keys without its passkey goes with it, as at sign-out.
+  await clearDeviceUnlock(previous).catch(() => {});
+  _passkeyPrivateKey = key.privateKey;
+  _passkeyPrfSecret = key.prfSecret;
+  _seedAddress = self;
+  _deviceRole = false;
+  _kernel = null;
+  _setUnlockedSeed(self, parent, seed);
+  // The session here was the old main's: the next request mints one with this key.
+  await _restoreAuthAfterRotation();
+}
+
 function _makeMainHost(): import("./make-main.js").MakeMainHost {
   return {
     apiBase,
@@ -2579,6 +2617,7 @@ function _makeMainHost(): import("./make-main.js").MakeMainHost {
     signGrant: _signGrant,
     becomeOwner: _becomeOwner,
     becomeDevice: _becomeDevice,
+    adoptNewMain: _adoptNewMain,
     lockedMessage: _seedLockedMessage,
   };
 }
@@ -2587,6 +2626,11 @@ async function makeThisDeviceMain(
   opts: import("./make-main.js").MakeThisDeviceMainOptions,
 ): Promise<{ registered: boolean }> {
   return (await import("./make-main.js")).makeThisDeviceMain(opts, _makeMainHost());
+}
+
+/** Your passkeys, main device: make a passkey this device added the main one. */
+async function prepareMakeAddedMain(target: import("./device-link.js").PairedDevice) {
+  return (await import("./make-main.js")).prepareMakeAddedMain(target, _makeMainHost());
 }
 
 async function approveMakeMain(
@@ -4451,6 +4495,7 @@ export const auth = {
   approveDeviceLink,
   makeThisDeviceMain,
   approveMakeMain,
+  prepareMakeAddedMain,
   resumeMakeMain,
   removePasskey,
   get isConnected() { return isConnected; },

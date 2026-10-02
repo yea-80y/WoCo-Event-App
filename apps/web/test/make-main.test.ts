@@ -20,10 +20,13 @@ import { Wallet, type TypedDataField } from "ethers";
 import { DEVICE_GRANT_DOMAIN, DEVICE_GRANT_TYPES, credentialTagOf, PAIRING_TTL_MS } from "@woco/shared";
 import {
   grantsMatch,
+  MakeMainHandedOverError,
   resumeMakeMain,
   runApproveMakeMain,
+  runMakeAddedMain,
   runMakeThisDeviceMain,
   checkMakeMainOffer,
+  type MakeAddedMainContext,
   type PendingMakeMain,
   type PendingStore,
 } from "../src/lib/auth/make-main.ts";
@@ -455,7 +458,8 @@ test("store: resume costs a storage read and never mints a session; the handover
   const approve = body(MM, "export async function approveMakeMain(");
   const fresh = approve.indexOf("await host.freshMainPasskey();");
   assert.ok(fresh >= 0 && fresh < approve.indexOf("await liveDevices(parent, self)"));
-  assert.match(approve, /recheckDevices: \(\) => liveDevices\(parent, self\)/);
+  assert.match(approve, /\.\.\.oldMainSteps\(host, \{ parent, self, seed, prf \}\)/);
+  assert.match(body(MM, "function oldMainSteps("), /recheckDevices: \(\) => liveDevices\(a\.parent, a\.self\)/);
   assert.match(body(MM, "async function liveDevices("), /verifyDeviceGrantList\(\(await listGrants\(\)\)\.grants, \{ parent, owner: self \}\)\s*\.filter\(\(d\) => d\.removedAt === null\)/);
   assert.match(body(MM, "export async function submitGrant("), /return res\.ok \|\| res\.code === "nonce-used" \? "done" : "later";/);
   // The store lends state, not flows: the make-main code stays out of every page load.
@@ -489,4 +493,175 @@ test("sign-off fixes pinned in the store and screens", () => {
   assert.ok(markup.indexOf("{#if makingMain}") < markup.indexOf("{#if !loaded}"));
   assert.ok(markup.indexOf("{#if linking}") < markup.indexOf("{#if !loaded}"));
   assert.doesNotMatch(markup, /\{#if !owner\}[\s\S]{0,400}<MakeThisDeviceMain/);
+});
+
+// ---------------------------------------------------------------------------
+// The same phone: the main passkey hands over to a passkey this device added
+// ---------------------------------------------------------------------------
+
+function samePhone(over: Partial<MakeAddedMainContext> & { sheetKey?: Wallet } = {}) {
+  const w = world();
+  const store = memStore();
+  let nonce = 0;
+  const sheetKey = over.sheetKey ?? laptopKey;
+  const ctx: MakeAddedMainContext = {
+    parent: PARENT,
+    self: M,
+    selfTag: TAG_M,
+    target: { grantee: X, credentialTag: TAG_X },
+    devices: DEVICES,
+    store,
+    recheckDevices: async () => DEVICES,
+    assertTarget: async () => {
+      w.log.push("sheet");
+      return { address: sheetKey.address, privateKey: sheetKey.privateKey, prfSecret: "00" };
+    },
+    signGrant: async (key, parent, grantee, credentialTag) => {
+      w.log.push(`signed:${grantee.slice(0, 6)}`);
+      assert.equal(parent, PARENT);
+      return sign(new Wallet(key), { grantee, credentialTag }, (++nonce).toString(16).padStart(2, "0"));
+    },
+    writeOwnEnvelope: async () => void w.log.push("envelope"),
+    rotate: async (to) => {
+      w.log.push(`rotate:${to.slice(0, 6)}`);
+      w.chain.owner = to;
+    },
+    becomeDevice: async () => void w.log.push("became-device"),
+    submit: w.server("phone"),
+    adopt: async (k) => void w.log.push(`adopt:${k.address.toLowerCase().slice(0, 6)}`),
+    readOwner: async () => w.chain.owner,
+    ...over,
+  };
+  return { w, store, run: () => runMakeAddedMain(ctx) };
+}
+
+test("same phone: the row's passkey signs the grants, then the same handover, then this tab becomes it", async () => {
+  const submitted: SignedGrant[] = [];
+  const { w, store, run } = samePhone({ submit: async (g) => (submitted.push(g), w.server("phone")(g)) });
+  assert.deepEqual(await run(), { registered: true });
+  assert.ok(grantsMatch(submitted, { parent: PARENT, newOwner: X, devices: [{ grantee: M, credentialTag: TAG_M }, DEVICES[1]] }));
+  assert.equal(w.chain.owner, X);
+  assert.deepEqual(w.log, [
+    "sheet",
+    `signed:${M.slice(0, 6)}`,
+    `signed:${T.slice(0, 6)}`,
+    "envelope",
+    `rotate:${X.slice(0, 6)}`,
+    "became-device",
+    `phone:registered:${M.slice(0, 6)}`,
+    `phone:registered:${T.slice(0, 6)}`,
+    `adopt:${X.slice(0, 6)}`,
+  ]);
+  assert.equal(store.map.size, 0);
+});
+
+test("same phone: a sheet that answers with another passkey changes nothing", async () => {
+  const { w, run } = samePhone({ sheetKey: tabletKey });
+  await assert.rejects(run(), /different passkey/);
+  assert.deepEqual(w.log, ["sheet"]);
+  assert.equal(w.chain.owner, M);
+});
+
+test("same phone: only a live device of this account, never itself - checked before any sheet", async () => {
+  for (const target of [
+    { grantee: M, credentialTag: TAG_M },
+    { grantee: X, credentialTag: TAG_T },
+    { grantee: "0x" + "77".repeat(20), credentialTag: TAG_X },
+  ]) {
+    const { w, run } = samePhone({ target });
+    await assert.rejects(run());
+    assert.deepEqual(w.log, []);
+  }
+});
+
+test("same phone: a list that changed stops before the envelope; a rotation that fails never adopts", async () => {
+  const changed = samePhone({ recheckDevices: async () => [DEVICES[0]] });
+  await assert.rejects(changed.run(), /changed while this was in progress/);
+  assert.ok(!changed.w.log.some((x) => x === "envelope" || x.startsWith("rotate") || x.startsWith("adopt")));
+  assert.equal(changed.store.map.size, 0);
+
+  const failed = samePhone({
+    rotate: async () => {
+      throw new Error("The main passkey did not change");
+    },
+  });
+  await assert.rejects(failed.run(), /did not change/);
+  assert.ok(!failed.w.log.some((x) => x.startsWith("adopt") || x === "became-device"));
+  const kept = failed.store.map.get(PARENT);
+  assert.ok(kept && kept.expiresAt !== null, "kept with a deadline: dropped if the owner never changed");
+});
+
+test("same phone: grants that did not land wait, landed, for the next visit - and the tab still switches", async () => {
+  const { w, store, run } = samePhone({ submit: async () => "later" });
+  assert.deepEqual(await run(), { registered: false });
+  assert.equal(w.log.at(-1), `adopt:${X.slice(0, 6)}`);
+  const kept = store.map.get(PARENT)!;
+  assert.equal(kept.expiresAt, null);
+  assert.equal(kept.newOwner, X);
+  assert.equal(kept.grants.length, 2);
+});
+
+test("store: same phone - main first, the row's own credential, and the switch in recoverAndRekey's order", () => {
+  const MM = read("../src/lib/auth/make-main.ts");
+  const prep = body(MM, "export async function prepareMakeAddedMain(");
+  const fresh = prep.indexOf("await host.freshMainPasskey();");
+  assert.ok(fresh >= 0 && fresh < prep.indexOf("readPasskeyMeta(parent)"), "the main confirms first");
+  assert.match(prep, /if \(now\.parent !== parent \|\| now\.self !== self \|\| now\.device \|\| !seed \|\| !prf\) throw/);
+  assert.match(prep, /restorePasskeyAccount\(\{ retryDiscoverable: false, credential \}\)/);
+  assert.match(prep, /\.\.\.oldMainSteps\(host, \{ parent, self, seed, prf \}\)/);
+  const adopt = body(STORE, "async function _adoptNewMain(");
+  const order = [
+    "await _becomeOwner(self, parent);",
+    "await storeLockedSeed(self, parent, seed, key.prfSecret);",
+    "await pinPasskeyCredential(credential);",
+    "await putKV(StorageKeys.SEED_ADDRESS, self);",
+    "_seedAddress = self;",
+    "await _restoreAuthAfterRotation();",
+  ].map((s) => adopt.indexOf(s));
+  assert.ok(order.every((i, n) => i > 0 && (n === 0 || i > order[n - 1])), "binding, seed, pin, address, memory, then the session");
+  assert.match(adopt, /_deviceRole = false;/);
+});
+
+test("SHOULD-1: anything failing after the rotation says so - never 'nothing changed'", async () => {
+  for (const over of [
+    { becomeDevice: async () => { throw new Error("storage full"); } },
+    { adopt: async () => { throw new Error("storage full"); } },
+  ] as Partial<MakeAddedMainContext>[]) {
+    const { w, run } = samePhone(over);
+    await assert.rejects(run(), (e: Error) => e instanceof MakeMainHandedOverError && e.name === "MakeMainHandedOverError");
+    assert.equal(w.chain.owner, X);
+  }
+  // A rotation that is refused changed nothing, and says that.
+  const refused = samePhone({ rotate: async () => { throw new Error("The main passkey did not change"); } });
+  await assert.rejects(refused.run(), (e: Error) => !(e instanceof MakeMainHandedOverError));
+});
+
+test("SHOULD-2: a rotation that landed after its receipt timed out is not repeated on the retry", async () => {
+  const { w, store, run } = samePhone();
+  w.chain.owner = X; // the earlier try's op landed late
+  assert.deepEqual(await run(), { registered: true });
+  assert.ok(!w.log.some((x) => x.startsWith("rotate")), "no second rotation");
+  assert.deepEqual(w.log.slice(-4), ["became-device", `phone:registered:${M.slice(0, 6)}`, `phone:registered:${T.slice(0, 6)}`, `adopt:${X.slice(0, 6)}`]);
+  assert.equal(store.map.size, 0);
+  // An owner that cannot be read decides nothing: the rotation runs as usual.
+  const unread = samePhone({ readOwner: async () => "error" });
+  await unread.run();
+  assert.ok(unread.w.log.some((x) => x.startsWith("rotate")));
+});
+
+test("sign-off fixes (same phone) pinned in the store and screens", () => {
+  const fresh = body(STORE, "async function _freshMainPasskey(");
+  assert.match(fresh, /await _ensurePasskeyKey\(\)\.catch\(\(e\) => \{\s*throw asCeremonyCancel\(e\);/, "SHOULD-3");
+  const restamp = fresh.indexOf("if (seed && _parent) _setUnlockedSeed(_seedAddress, _parent, seed);");
+  assert.ok(restamp > fresh.indexOf("await _unlockPasskeySeed(_seedAddress)"), "SHOULD-5: a full window from the fresh sheet");
+  const screen = read("../src/lib/components/passkeys/MakeAddedMain.svelte");
+  assert.match(screen, /e\.name === "MakeMainHandedOverError"/);
+  assert.doesNotMatch(screen, /isAccountOwner/, "SHOULD-1: the role is not the signal");
+  const your = read("../src/lib/components/passkeys/YourPasskeys.svelte");
+  assert.match(your, /const busy = \$derived\(promoting !== null \|\| makingMain \|\| linking\);/);
+  assert.match(your, /\{#if \(owner \|\| mine\) && !busy\}/, "SHOULD-4");
+  // "Move to another password manager": the add is followed by the make-main offer.
+  const add = your.slice(your.indexOf("async function add("), your.indexOf("async function remove("));
+  assert.ok(add.indexOf("await load();") < add.indexOf("promoting = active.find((r) => r.grantee === grantee) ?? null;"));
+  assert.match(your, />\s*Move to another password manager\s*</);
 });

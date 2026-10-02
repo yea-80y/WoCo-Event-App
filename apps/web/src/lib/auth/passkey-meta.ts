@@ -1,7 +1,8 @@
 /**
- * What THIS device knows about the passkeys it added to an account (#746 step 3):
- * the password manager each one went into and its credential id, keyed by the
- * grant's `credentialTag`. Device-local by rule - which manager holds an account's
+ * What THIS device knows about the passkeys it added to an account (#746 step 3),
+ * and about its old main passkey once another was made the main one here (step 4):
+ * the password manager each one is in and its credential id, keyed by the grant's
+ * `credentialTag`. Device-local by rule - which manager holds an account's
  * keys tells someone which account to attack - so it is never sent to the server
  * or written to Swarm, sealed or not. Another device shows a generic label.
  */

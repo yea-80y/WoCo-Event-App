@@ -32,10 +32,13 @@
 
   let linking = $state(false);
   let makingMain = $state(false);
+  // A passkey this device added, being made the main one (same phone, no code).
+  let promoting = $state<VerifiedPasskey | null>(null);
   let regrantsWaiting = $state(false);
   // Their own screens, loaded on the tap: this page carries none of their code.
   const loadLinkAnotherDevice = () => import("./LinkAnotherDevice.svelte");
   const loadMakeThisDeviceMain = () => import("./MakeThisDeviceMain.svelte");
+  const loadMakeAddedMain = () => import("./MakeAddedMain.svelte");
 
   let confirming = $state<string | null>(null);
   let removing = $state<string | null>(null);
@@ -44,6 +47,9 @@
   const isPasskey = $derived(auth.kind === "passkey");
   const owner = $derived(auth.isAccountOwner);
   const active = $derived(rows.filter((r) => r.removedAt === null));
+  // While a handover or link is open the list is what it checks against: no removals
+  // under it (Fable sign-off SHOULD-4).
+  const busy = $derived(promoting !== null || makingMain || linking);
   const removed = $derived(rows.filter((r) => r.removedAt !== null));
 
   function providerName(id: PasskeyProviderId | null | undefined): string | null {
@@ -106,14 +112,14 @@
     // Busy from the tap: unlocking may show a passkey sheet before the first step.
     adding = "creating";
     try {
-      const { provider } = await auth.addPasskeyOnThisDevice((step) => (adding = step));
+      const { provider, grantee } = await auth.addPasskeyOnThisDevice((step) => (adding = step));
       const name = providerName(provider);
-      addedNote = name
-        ? `Added. Sign in with it on any device where ${name} is signed in.`
-        : "Added. Sign in with it wherever that password manager is signed in.";
+      addedNote = name ? `Added to ${name}.` : "Added.";
       adding = "closed";
       loaded = false;
       await load();
+      // The second half of the move, offered at once; it waits for its own tap.
+      promoting = active.find((r) => r.grantee === grantee) ?? null;
     } catch (e) {
       addError =
         e instanceof Error && e.name === "PasskeyCeremonyCancelledError"
@@ -154,7 +160,7 @@
   {:else if !isPasskey}
     <p class="muted">This account signs in another way. More than one passkey is for passkey accounts.</p>
   {:else}
-    {#if !owner && !makingMain}
+    {#if !owner && !makingMain && !promoting}
       <p class="note">
         You're signed in with a linked passkey. To add or remove passkeys, use your main passkey - or make this device the
         main one.
@@ -167,6 +173,18 @@
     {#if makingMain}
       {#await loadMakeThisDeviceMain() then { default: MakeThisDeviceMain }}
         <MakeThisDeviceMain onchanged={() => void load()} onclose={() => (makingMain = false)} />
+      {:catch}
+        <p class="err">Couldn't open this - check your connection and try again.</p>
+      {/await}
+    {/if}
+    {#if promoting}
+      {#await loadMakeAddedMain() then { default: MakeAddedMain }}
+        <MakeAddedMain
+          target={promoting}
+          name={providerName(labels[promoting.credentialTag]?.provider)}
+          onchanged={() => void load()}
+          onclose={() => (promoting = null)}
+        />
       {:catch}
         <p class="err">Couldn't open this - check your connection and try again.</p>
       {/await}
@@ -207,7 +225,7 @@
               <span class="name">{label(r)}</span>
               {#if mine}<span class="chips"><span class="chip">This device</span></span>{/if}
             </div>
-            {#if owner || mine}
+            {#if (owner || mine) && !busy}
               {#if confirming === r.grantee}
                 <div class="confirm">
                   <p>
@@ -221,6 +239,9 @@
                   <button class="btn btn--ghost" onclick={() => (confirming = null)} disabled={removing !== null}>Keep it</button>
                 </div>
               {:else}
+                {#if owner && labels[r.credentialTag]?.credentialId && !promoting}
+                  <button class="btn btn--ghost" onclick={() => (promoting = r)}>Make this the main passkey</button>
+                {/if}
                 <button class="btn btn--ghost" onclick={() => (confirming = r.grantee)}>
                   {mine ? "Remove this passkey" : "Remove"}
                 </button>
@@ -237,20 +258,20 @@
       </ul>
       {#if removeError}<p class="err">{removeError}</p>{/if}
 
-      {#if owner && !makingMain}
+      {#if owner && !makingMain && !promoting}
         {#if linking}
           <!-- the panel is open above -->
         {:else if adding === "closed"}
           <button class="btn btn--primary" onclick={() => (linking = true)}>Link another device</button>
           <button class="btn btn--ghost" onclick={() => { adding = "explain"; addError = null; }}>
-            Add a passkey on this device
+            Move to another password manager
           </button>
         {/if}
         {#if adding !== "closed" && !linking}
           <div class="add">
             <p>
-              Pick a different password manager than the one holding your main passkey - another passkey in the same
-              one adds nothing if you lose it.
+              Pick the password manager you're moving to. You'll make a passkey there, then make it your main one. Your
+              current passkey keeps working until you remove it.
             </p>
             {#if addError}<p class="err">{addError}</p>{/if}
             {#if adding === "explain"}
