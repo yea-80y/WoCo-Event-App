@@ -11,6 +11,7 @@
   } from "../../auth/device-grant-verify.js";
   import { readPasskeyMeta, type AddedPasskeyMeta } from "../../auth/passkey-meta.js";
   import { credentialIdBytes } from "../../auth/passkey-record.js";
+  import { unlocksWhen } from "../../attendee/gate/unlock-copy.js";
 
   /**
    * "Your passkeys" (#746 step 3): the main passkey and every passkey it added,
@@ -24,7 +25,7 @@
   let thisTag = $state<string | null>(null);
   let loading = $state(false);
   let loaded = $state(false);
-  // More than one passkey is for verified organisers for now; the server decides.
+  // More than one passkey needs an unlocked account; the server decides.
   let canAdd = $state(false);
   let loadError = $state<string | null>(null);
 
@@ -265,10 +266,7 @@
         {#if linking}
           <!-- the panel is open above -->
         {:else if !canAdd}
-          <p class="muted">
-            Linking devices and moving your passkey open once you're a verified organiser - verify your Stripe account in
-            Payments.
-          </p>
+          <p class="muted">{unlocksWhen("Linking devices and moving your passkey", true)}</p>
         {:else if adding === "closed"}
           <button class="btn btn--primary" onclick={() => (linking = true)}>Link another device</button>
           <button class="btn btn--ghost" onclick={() => { adding = "explain"; addError = null; }}>
