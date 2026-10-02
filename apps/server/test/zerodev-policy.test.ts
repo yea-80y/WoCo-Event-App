@@ -96,6 +96,7 @@ const op = (callData: Hex, over: Partial<PolicyUserOp> = {}): PolicyUserOp => ({
   nonce: "1",
   callData,
   factory: null,
+  maxCostWei: 0n,
   ...over,
 });
 
@@ -212,7 +213,7 @@ test("the hooked executeUserOp form and unknown selectors are refused", async ()
 test("reads EntryPoint 0.7 and 0.6 bodies; malformed ones are null", () => {
   const callData = buildRegisterGuardianCallData(d, GUARDIAN_KERNEL);
   const v07 = readUserOp({ sender: ACCOUNT, nonce: "0x1f", callData, factory: null, factoryData: null });
-  assert.deepEqual(v07, { sender: ACCOUNT.toLowerCase(), nonce: "31", callData, factory: null });
+  assert.deepEqual(v07, { sender: ACCOUNT.toLowerCase(), nonce: "31", callData, factory: null, maxCostWei: 0n });
   const meta = KernelVersionToAddressesMap[KERNEL_V3_1].metaFactoryAddress!;
   const v06 = readUserOp({ sender: ACCOUNT, nonce: 5, callData, initCode: `${meta}abcdef` });
   assert.equal(v06?.factory, meta.toLowerCase());
@@ -220,6 +221,28 @@ test("reads EntryPoint 0.7 and 0.6 bodies; malformed ones are null", () => {
   assert.equal(readUserOp({ sender: ACCOUNT, nonce: "x", callData }), null);
   assert.equal(readUserOp({ sender: ACCOUNT, nonce: "1", callData: "0x12" }), null);
   assert.equal(readUserOp(null), null);
+});
+
+test("the cost bound is the gas the sender chose x max fee, unpacked or packed", () => {
+  const callData = buildRegisterGuardianCallData(d, GUARDIAN_KERNEL);
+  const unpacked = readUserOp({
+    sender: ACCOUNT, nonce: "1", callData,
+    preVerificationGas: "0x130b0", verificationGasLimit: 3_000_000, callGasLimit: "1000000", maxFeePerGas: "0x1312d00",
+  });
+  assert.equal(unpacked?.maxCostWei, (78_000n + 3_000_000n + 1_000_000n) * 20_000_000n);
+  const word = (hi: bigint, lo: bigint) => `0x${hi.toString(16).padStart(32, "0")}${lo.toString(16).padStart(32, "0")}`;
+  const packed = readUserOp({
+    sender: ACCOUNT, nonce: "1", callData, preVerificationGas: 78_000,
+    accountGasLimits: word(3_000_000n, 1_000_000n), gasFees: word(1n, 20_000_000n),
+  });
+  assert.equal(packed?.maxCostWei, unpacked?.maxCostWei);
+  assert.equal(readUserOp({ sender: ACCOUNT, nonce: "1", callData, maxFeePerGas: "-1" }), null);
+});
+
+test("more than four calls in one batch is refused", async () => {
+  const add = buildAddGuardianCall(encodeFunctionData, GUARDIAN_KERNEL);
+  assert.equal(classifyUserOp(op(await viaExecute([add, add, add, add]))).ok, true);
+  assert.deepEqual(classifyUserOp(op(await viaExecute([add, add, add, add, add]))), { ok: false, reason: "calls" });
 });
 
 // ── WHO and HOW MUCH ─────────────────────────────────────────────────────────
@@ -291,6 +314,46 @@ test("six ops an hour per account; the stub and final request of one op count on
   assert.equal((await p.decide(op(callData, { sender: other, nonce: "7" }))).proceed, true);
 });
 
+test("an op that could cost more than the ceiling is refused, every request, counted or not", async () => {
+  unlocked.add(ACCOUNT.toLowerCase());
+  const p = new SponsorPolicy(deps, 1_000n);
+  const callData = await viaExecute([buildAddGuardianCall(encodeFunctionData, GUARDIAN_KERNEL)]);
+  assert.equal((await p.decide(op(callData, { nonce: "1", maxCostWei: 0n }))).proceed, true, "the stub carries no limits");
+  assert.deepEqual(await p.decide(op(callData, { nonce: "1", maxCostWei: 1_001n })), {
+    proceed: false, reason: "gas", shape: "guardians", subject: ACCOUNT.toLowerCase(),
+  });
+  assert.equal((await p.decide(op(callData, { nonce: "1", maxCostWei: 1_000n }))).proceed, true);
+});
+
+test("the gate's rollout kill-switch never opens the platform's gas", async () => {
+  const p = new SponsorPolicy({ ...deps, gate: async () => ({ gated: true, via: "disabled" }) });
+  const callData = await viaExecute([buildAddGuardianCall(encodeFunctionData, GUARDIAN_KERNEL)]);
+  assert.equal((await p.decide(op(callData))).proceed, false);
+});
+
+test("one guardian op counted against one account never rides free on another", async () => {
+  const p = new SponsorPolicy(deps);
+  const a = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as Address;
+  const b = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as Address;
+  for (const t of [a, b]) {
+    unlocked.add(t);
+    guardians.set(`${t}:${GUARDIAN_KERNEL.toLowerCase()}`, true);
+  }
+  // Six ops recovering A with nonces 1..6 spend A's hour.
+  for (let n = 1; n <= 6; n++) {
+    const callData = await guardianAccount.encodeCalls([{ ...recoveryCall(a), value: 0n }]);
+    assert.equal((await p.decide(op(callData, { sender: GUARDIAN_KERNEL.toLowerCase(), nonce: String(n) }))).proceed, true);
+  }
+  const forA = await guardianAccount.encodeCalls([{ ...recoveryCall(a), value: 0n }]);
+  assert.equal((await p.decide(op(forA, { sender: GUARDIAN_KERNEL.toLowerCase(), nonce: "7" }))).proceed, false, "A is capped");
+  // The same nonces naming B are different ops, each counted on B's budget.
+  const forB = await guardianAccount.encodeCalls([{ ...recoveryCall(b), value: 0n }]);
+  for (let n = 1; n <= 6; n++) {
+    assert.equal((await p.decide(op(forB, { sender: GUARDIAN_KERNEL.toLowerCase(), nonce: String(n) }))).proceed, true);
+  }
+  assert.equal((await p.decide(op(forB, { sender: GUARDIAN_KERNEL.toLowerCase(), nonce: "7" }))).proceed, false, "B is capped too");
+});
+
 test("a refused shape never reaches the gate", async () => {
   const p = new SponsorPolicy(deps);
   const transfer = encodeFunctionData({ abi: parseAbi(["function transfer(address,uint256)"]), functionName: "transfer", args: [GUARDIAN_EOA, 1n] });
@@ -341,4 +404,27 @@ test("route: unset config refuses everything; a wrong secret is a 404; project a
   assert.deepEqual((await post(SECRET, body)).json, { proceed: true, logicalOperator: "and" });
   assert.equal(zerodevPolicyHealth().allowed, 1);
   assert.equal(zerodevPolicyHealth().lastRefusal?.reason, "userop");
+  assert.equal(zerodevPolicyHealth().maxOpCostWei, "500000000000000");
+});
+
+test("route: wrong guesses lock out only the guessing address; a flood past the secret is 'busy'", async () => {
+  _resetZerodevPolicyForTests(deps);
+  unlocked.add(ACCOUNT.toLowerCase());
+  process.env.ZERODEV_POLICY_SECRET = SECRET;
+  process.env.ZERODEV_PROJECT_ID = PROJECT;
+  const userOp = { sender: ACCOUNT, nonce: "0x1", callData: buildRegisterGuardianCallData(d, GUARDIAN_KERNEL), factory: null };
+  const body = { projectId: PROJECT, chainId: KERNEL_CHAIN_ID, userOp };
+  const at = async (ip: string, secret: string) =>
+    (await app.request(`/api/zerodev/policy/${secret}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+      body: JSON.stringify(body),
+    })).status;
+  for (let i = 0; i < 100; i++) assert.equal(await at("198.51.100.1", "x".repeat(40)), 404);
+  assert.equal(await at("198.51.100.1", SECRET), 404, "that address is locked out, right secret or not");
+  assert.equal(await at("198.51.100.2", SECRET), 200, "ZeroDev's address never guessed, so it is never locked out");
+
+  for (let i = 0; i < 119; i++) await post(SECRET, body);
+  assert.deepEqual((await post(SECRET, body)).json, { proceed: false, logicalOperator: "and" });
+  assert.equal(zerodevPolicyHealth().lastRefusal?.reason, "busy");
 });

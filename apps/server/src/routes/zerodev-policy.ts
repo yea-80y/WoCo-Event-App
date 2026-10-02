@@ -32,6 +32,7 @@ import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
 import { getChainRpcUrl } from "../lib/chain/event-contract.js";
 import {
+  DEFAULT_MAX_OP_COST_WEI,
   SponsorPolicy,
   callDataTag,
   readUserOp,
@@ -99,10 +100,31 @@ async function isGuardianLive(account: string, guardian: string): Promise<boolea
 
 const liveDeps: PolicyDeps = { gate: (a) => checkAttendeeGate(a), isGuardian: isGuardianLive };
 
-/** ZeroDev calls from a handful of addresses; this only bounds junk at the path. */
-const newIpLimiter = () => new SlidingWindowLimiter([{ limit: 120, windowMs: 60_000 }]);
-let policy = new SponsorPolicy(liveDeps);
-let ipLimiter = newIpLimiter();
+/** `ZERODEV_POLICY_MAX_OP_COST_WEI`, else the default; a bad value is reported, never fatal. */
+function maxOpCost(): { wei: bigint; configError?: string } {
+  const raw = process.env.ZERODEV_POLICY_MAX_OP_COST_WEI?.trim();
+  if (!raw) return { wei: DEFAULT_MAX_OP_COST_WEI };
+  try {
+    const wei = BigInt(raw);
+    if (wei > 0n) return { wei };
+  } catch {
+    /* reported below */
+  }
+  return { wei: DEFAULT_MAX_OP_COST_WEI, configError: "ZERODEV_POLICY_MAX_OP_COST_WEI is not a positive integer" };
+}
+
+// Wrong secrets per IP: bounds guessing the path without ever counting ZeroDev's
+// own calls, which share a few egress addresses with every other project's junk.
+const newGuessLimiter = () => new SlidingWindowLimiter([{ limit: 100, windowMs: 60 * 60_000 }]);
+// Everything that passes the secret, process-wide: anyone with the public RPC key
+// can send ops through ZeroDev to here, and each new account costs gate reads
+// (Swarm). Real traffic is a few ops a day; a flood is refused as "busy" instead.
+const newCapacity = () => new SlidingWindowLimiter([{ limit: 120, windowMs: 60_000 }]);
+let policy = new SponsorPolicy(liveDeps, maxOpCost().wei);
+let guesses = newGuessLimiter();
+let capacity = newCapacity();
+/** The first bodies' field NAMES are logged once: ZeroDev documents a 0.6 shape, we run 0.7. */
+let shapesLogged = 0;
 
 const stats = {
   allowed: 0,
@@ -113,12 +135,20 @@ const stats = {
 
 /** `/api/health` section: red while sponsorship cannot be decided at all. */
 export function zerodevPolicyHealth() {
-  return { ok: config() !== null, configured: config() !== null, ...stats };
+  const cost = maxOpCost();
+  return {
+    ok: config() !== null,
+    configured: config() !== null,
+    maxOpCostWei: cost.wei.toString(),
+    ...(cost.configError ? { configError: cost.configError } : {}),
+    ...stats,
+  };
 }
 
 export function _resetZerodevPolicyForTests(deps: PolicyDeps = liveDeps): void {
-  policy = new SponsorPolicy(deps);
-  ipLimiter = newIpLimiter();
+  policy = new SponsorPolicy(deps, maxOpCost().wei);
+  guesses = newGuessLimiter();
+  capacity = newCapacity();
   Object.assign(stats, { allowed: 0, refused: 0, lastAllowedAt: null, lastRefusal: null });
 }
 
@@ -143,9 +173,14 @@ export const zerodevPolicy = new Hono<AppEnv>();
 zerodevPolicy.post("/:secret", jsonBodyLimit(MAX_BODY_BYTES), async (c) => {
   const cfg = config();
   if (!cfg) return c.json({ proceed: false }, 503);
+  const ip = clientIp(c);
+  if (!guesses.peek(ip)) return c.notFound();
   const presented = secretDigest(c.req.param("secret") ?? "");
-  if (!timingSafeEqual(presented, cfg.secret)) return c.notFound();
-  if (!ipLimiter.allow(clientIp(c))) return c.json({ proceed: false }, 429);
+  if (!timingSafeEqual(presented, cfg.secret)) {
+    guesses.record(ip);
+    return c.notFound();
+  }
+  if (!capacity.allow("all")) return answer(c, { proceed: false, reason: "busy" }, "");
 
   let body: Record<string, unknown>;
   try {
@@ -155,9 +190,13 @@ zerodevPolicy.post("/:secret", jsonBodyLimit(MAX_BODY_BYTES), async (c) => {
   }
   if (body.projectId !== cfg.projectId) return answer(c, { proceed: false, reason: "project" }, "");
   if (Number(body.chainId) !== KERNEL_CHAIN_ID) return answer(c, { proceed: false, reason: "chain" }, "");
+  if (shapesLogged < 3 && typeof body.userOp === "object" && body.userOp !== null) {
+    shapesLogged++;
+    console.log(`[zerodev-policy] userOp fields: ${Object.keys(body.userOp).sort().join(",")}`);
+  }
   const op = readUserOp(body.userOp);
   if (!op) return answer(c, { proceed: false, reason: "userop" }, "");
 
   const decision = await policy.decide(op);
-  return answer(c, decision, `sender=${short(op.sender)} nonce=0x${BigInt(op.nonce).toString(16)} cd=${callDataTag(op.callData)}`);
+  return answer(c, decision, `sender=${short(op.sender)} nonce=0x${BigInt(op.nonce).toString(16)} cost=${op.maxCostWei} cd=${callDataTag(op.callData)}`);
 });

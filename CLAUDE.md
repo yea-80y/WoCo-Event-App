@@ -106,6 +106,7 @@ DEV COMMANDS:
   (dev scripts blank the key for this reason).
   Sponsorship (#758): `ZERODEV_POLICY_SECRET` + `ZERODEV_PROJECT_ID` — the ZeroDev custom gas policy
   webhook (`/api/zerodev/policy/:secret`); unset = every sponsored userOp refused, `zerodevPolicy` red.
+  Optional `ZERODEV_POLICY_MAX_OP_COST_WEI` (per-op ceiling, default 5e14).
   Optional: `CAMPAIGN_ISSUER_PRIVATE_KEY` — signs referral confirmations + badges
   (#476), address must match `CAMPAIGN_ISSUER_ADDRESS`; unset = confirm 503s.
   Also optional, all with defaults baked in (#421/#522/#420/#598/#662 health alarms; a bad value is

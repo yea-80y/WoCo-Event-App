@@ -42,6 +42,13 @@ export type ReadReferrerIndex = (referrer: string) => Promise<ReferrerIndexRead>
 export const REFERRAL_UNLOCK_RECHECK_MS = 30_000;
 
 const memo = new Map<string, { status: ReferralUnlock; at: number }>();
+/** Keyed by caller-chosen addresses (the sponsorship policy asks for any sender, #758): capped, oldest out (#163). */
+const MEMO_MAX = 10_000;
+function remember(key: string, entry: { status: ReferralUnlock; at: number }): void {
+  memo.delete(key);
+  memo.set(key, entry);
+  while (memo.size > MEMO_MAX) memo.delete(memo.keys().next().value as string);
+}
 
 function parseJson(bytes: Uint8Array): unknown {
   try {
@@ -97,7 +104,7 @@ export async function referralUnlock(
       : res.status === "unavailable"
         ? "unavailable"
         : "none";
-  memo.set(key, { status, at: now() });
+  remember(key, { status, at: now() });
   return status;
 }
 
@@ -108,7 +115,7 @@ export async function referralUnlock(
  * and the unlock they just earned.
  */
 export function noteConfirmedReferral(referrer: string): void {
-  memo.set(referrer.toLowerCase(), { status: "confirmed", at: Date.now() });
+  remember(referrer.toLowerCase(), { status: "confirmed", at: Date.now() });
 }
 
 /** Test seam. */

@@ -14,8 +14,11 @@
  *           recovered: the sender is the GUARDIAN's own Kernel, which is never
  *           unlocked. The guardian must also be on that account's list onchain,
  *           else an op that validates and then reverts still spends our gas.
- *   HOW MUCH - a per-account cap, counted once per userOp (`sender:nonce`), so the
- *           stub and final sponsorship requests and any retry count once.
+ *   HOW MUCH - a ceiling on what ONE op may cost (its gas limits x max fee, which
+ *           is what the EntryPoint can charge the paymaster - the sender picks those
+ *           numbers and the bundler keeps the surplus), and a per-account count,
+ *           once per userOp (`sender:nonce:account`), so the stub and final
+ *           sponsorship requests and any retry count once.
  *
  * The shapes (Fable consult 8; builders in apps/web/src/lib/auth/{recovery-route,
  * guardian-hook,kernel-account}.ts, constants shared via
@@ -72,6 +75,11 @@ export interface PolicyUserOp {
   callData: Hex;
   /** Deployment factory, or null when the account already exists. */
   factory: string | null;
+  /**
+   * The most the paymaster can be charged for the gas this op's sender chose
+   * (`maxCostOf`). 0 on a stub request, which carries no limits yet.
+   */
+  maxCostWei: bigint;
 }
 
 const lc = (s: string) => s.toLowerCase();
@@ -98,6 +106,41 @@ const RECOVERY_ABI = parseAbi([RECOVERY_EXECUTOR_FN]);
 const INSTALL = lc(toFunctionSelector(INSTALL_MODULE_FN));
 const EXECUTE = lc(toFunctionSelector("function execute(bytes32 execMode, bytes executionCalldata)"));
 const HOOK_MUTATORS = new Set(["addGuardian", "revokeGuardian", "setGuardians", "clearGuardians"]);
+const MAX_CALLS = 4;
+
+function uint(v: unknown): bigint | null {
+  if (v === undefined || v === null || v === "" || v === "0x") return 0n;
+  if (typeof v !== "string" && typeof v !== "number" && typeof v !== "bigint") return null;
+  try {
+    const n = BigInt(v);
+    return n < 0n ? null : n;
+  } catch {
+    return null;
+  }
+}
+
+/** A 32-byte word of two packed uint128s (0.7's packed fields), as [high, low]. */
+function unpack128(v: unknown): [bigint, bigint] | null {
+  if (typeof v !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(v)) return null;
+  return [BigInt(`0x${v.slice(2, 34)}`), BigInt(`0x${v.slice(34)}`)];
+}
+
+/**
+ * The most the paymaster can be charged for the gas the SENDER chose: (pVG + vGL +
+ * cGL) x maxFeePerGas, the EntryPoint 0.7 prefund less the paymaster's own two
+ * limits, which ZeroDev sets when it signs and the sender cannot raise. Read from
+ * unpacked fields or 0.7's packed words. Missing fields read as 0 (a stub request).
+ */
+function maxCostOf(op: Record<string, unknown>): bigint | null {
+  const packedLimits = unpack128(op.accountGasLimits);
+  const packedFees = unpack128(op.gasFees);
+  const verification = packedLimits ? packedLimits[0] : uint(op.verificationGasLimit);
+  const call = packedLimits ? packedLimits[1] : uint(op.callGasLimit);
+  const maxFee = packedFees ? packedFees[1] : uint(op.maxFeePerGas);
+  const pre = uint(op.preVerificationGas);
+  if (verification === null || call === null || maxFee === null || pre === null) return null;
+  return (pre + verification + call) * maxFee;
+}
 
 /** Read the fields we use out of ZeroDev's body; null when anything is missing or malformed. */
 export function readUserOp(raw: unknown): PolicyUserOp | null {
@@ -121,7 +164,9 @@ export function readUserOp(raw: unknown): PolicyUserOp | null {
     if (!ADDRESS.test(op.factory)) return null;
     factory = op.factory;
   }
-  return { sender: lc(sender), nonce, callData: callData as Hex, factory: factory && lc(factory) };
+  const maxCostWei = maxCostOf(op);
+  if (maxCostWei === null) return null;
+  return { sender: lc(sender), nonce, callData: callData as Hex, factory: factory && lc(factory), maxCostWei };
 }
 
 interface InnerCall {
@@ -223,6 +268,8 @@ export function classifyUserOp(op: PolicyUserOp): Classified {
   const calls = readExecute(op.callData);
   if (typeof calls === "string") return { ok: false, reason: calls };
   if (calls.length === 0) return { ok: false, reason: "empty" };
+  // WoCo sends at most two calls; four leaves room and bounds the gas a batch can ask for.
+  if (calls.length > MAX_CALLS) return { ok: false, reason: "calls" };
   if (calls.some((c) => c.value !== 0n)) return { ok: false, reason: "value" };
 
   if (calls.length === 1 && calls[0].to !== op.sender && calls[0].to !== HOOK) {
@@ -254,6 +301,13 @@ export type Decision =
   | { proceed: false; reason: string; shape?: SponsorShape; subject?: string };
 
 /**
+ * What one op may cost at most, in wei: 5e14 (0.0005 ETH) is ~25x a normal
+ * Arbitrum One recovery op and still fits the 3M verification fallback and the
+ * 1M recovery call gas at a spiking fee. `ZERODEV_POLICY_MAX_OP_COST_WEI` overrides.
+ */
+export const DEFAULT_MAX_OP_COST_WEI = 500_000_000_000_000n;
+
+/**
  * Six an hour and twenty a day per account: setting up recovery, a few changes
  * and a move is a handful of ops in a session; nothing legitimate does more.
  */
@@ -269,20 +323,27 @@ export class SponsorPolicy {
   private readonly limiter = new SlidingWindowLimiter(SPONSOR_WINDOWS);
   private readonly seen = new Map<string, true>();
 
-  constructor(private readonly deps: PolicyDeps) {}
+  constructor(
+    private readonly deps: PolicyDeps,
+    private readonly maxOpCostWei: bigint = DEFAULT_MAX_OP_COST_WEI,
+  ) {}
 
   async decide(op: PolicyUserOp): Promise<Decision> {
     const shape = classifyUserOp(op);
     if (!shape.ok) return { proceed: false, reason: shape.reason };
     const { subject } = shape;
-    const opKey = `${op.sender}:${op.nonce}`;
+    // Every request, the counted ones too: the stub carries no limits, the final
+    // carries the real ones.
+    if (op.maxCostWei > this.maxOpCostWei) return { proceed: false, reason: "gas", shape: shape.shape, subject };
+    const opKey = `${op.sender}:${op.nonce}:${subject}`;
     const counted = this.seen.has(opKey);
     if (!counted && !this.limiter.peek(subject)) return { proceed: false, reason: "cap", shape: shape.shape, subject };
 
     // A read that cannot answer refuses (the gate already does): the dashboard
     // retries nothing, and the user retries the action.
     const gate = await this.deps.gate(subject).catch((): GateStatus => ({ gated: false }));
-    if (!gate.gated) return { proceed: false, reason: "locked", shape: shape.shape, subject };
+    // The gate's rollout kill-switch opens screens, never the platform's gas.
+    if (!gate.gated || gate.via === "disabled") return { proceed: false, reason: "locked", shape: shape.shape, subject };
     if (shape.guardian) {
       const listed = await this.deps.isGuardian(subject, shape.guardian).catch(() => null);
       if (listed !== true) {
