@@ -350,3 +350,11 @@ test("copy: the new lines never name the mechanism and use the spaced hyphen", (
     assert.doesNotMatch(text, /fingerprint|biometric|\bPRF\b|quantum|—/i);
   }
 });
+
+test("a like or follow unlocks the keys first, while the tap is still the gesture", () => {
+  const social = read("../src/lib/api/social.ts");
+  const toggle = body(social, "export async function toggleSocial");
+  const unlock = toggle.indexOf("await auth.ensureAccountSetup({ identity: true })");
+  const gateRead = toggle.indexOf("gate.refresh()");
+  assert.ok(unlock > 0 && gateRead > unlock, "unlock before the gate's network read");
+});
