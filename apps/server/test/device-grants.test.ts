@@ -56,6 +56,7 @@ const deployed = await import("../src/lib/auth/kernel-deployed.js");
 const { verifyDelegation } = await import("../src/lib/auth/verify-delegation.js");
 const { requireAuth } = await import("../src/middleware/auth.js");
 const { deviceGrants } = await import("../src/routes/device-grants.js");
+const { setStripeAccount } = await import("../src/lib/stripe/accounts.js");
 
 const FILE = join(dir, ".data", "device-grants.json");
 const newNonce = () => `0x${randomBytes(32).toString("hex")}`;
@@ -453,6 +454,12 @@ app.post("/api/test", requireAuth, (c) => c.json({ ok: true, data: { rank: c.get
 
 const sha256Hex = (t: string) => createHash("sha256").update(t, "utf-8").digest("hex");
 
+/** PARENT as a Stripe-verified organiser. No Stripe key in tests, so the live check
+ *  falls back to this record, as it does in a Stripe outage. */
+function organiser(verified = true): void {
+  setStripeAccount(PARENT, `acct_${PARENT.slice(2, 10)}`, verified);
+}
+
 async function call(
   d: Awaited<ReturnType<typeof delegation>>,
   method: "GET" | "POST",
@@ -481,6 +488,7 @@ async function call(
 }
 
 test("routes: owner adds a device, the device signs in as device, removes itself, and is told so", async () => {
+  organiser();
   const ownerSession = await delegation(owner);
   const device = Wallet.createRandom();
 
@@ -505,6 +513,7 @@ test("routes: owner adds a device, the device signs in as device, removes itself
 });
 
 test("routes: the signature is the authority - an owner session cannot register a device-signed grant", async () => {
+  organiser();
   const ownerSession = await delegation(owner);
   const device = Wallet.createRandom();
   const r = await call(ownerSession, "POST", "/api/auth/device-grants", await signGrant(device, grantFor(Wallet.createRandom().address)));
@@ -514,6 +523,7 @@ test("routes: the signature is the authority - an owner session cannot register 
 });
 
 test("routes: a device cannot spend its account's budget and block its own removal", async () => {
+  organiser();
   const ownerSession = await delegation(owner);
   const device = Wallet.createRandom();
   const other = Wallet.createRandom();
@@ -534,4 +544,33 @@ test("routes: a device cannot spend its account's budget and block its own remov
   const removal = await call(ownerSession, "POST", "/api/auth/device-grants/revoke", await signRevoke(owner, device.address), "198.51.100.1");
   assert.equal(removal.status, 200, JSON.stringify(removal.json));
   assert.equal(grants.lookupDeviceGrant(PARENT, device.address)?.active, false);
+});
+
+test("routes: the first device needs a verified organiser; removal and later devices never do", async () => {
+  const ownerSession = await delegation(owner);
+  const device = Wallet.createRandom();
+
+  const listed = await call(ownerSession, "GET", "/api/auth/device-grants");
+  assert.equal(listed.json.data.canAddDevices, false);
+  const refused = await call(ownerSession, "POST", "/api/auth/device-grants", await signGrant(owner, grantFor(device.address)));
+  assert.equal(refused.status, 403);
+  assert.equal(refused.json.code, "STRIPE_VERIFICATION_REQUIRED");
+  assert.equal(existsSync(FILE), false, "nothing stored");
+
+  organiser(false);
+  const stillRefused = await call(ownerSession, "POST", "/api/auth/device-grants", await signGrant(owner, grantFor(device.address)));
+  assert.equal(stillRefused.status, 403, "a Stripe account that is not verified yet is not enough");
+
+  organiser();
+  assert.equal((await call(ownerSession, "GET", "/api/auth/device-grants")).json.data.canAddDevices, true);
+  const added = await call(ownerSession, "POST", "/api/auth/device-grants", await signGrant(owner, grantFor(device.address)));
+  assert.equal(added.status, 200, JSON.stringify(added.json));
+
+  // Stripe asks for more details later: the account keeps managing its devices.
+  organiser(false);
+  assert.equal((await call(ownerSession, "GET", "/api/auth/device-grants")).json.data.canAddDevices, true);
+  const second = await call(ownerSession, "POST", "/api/auth/device-grants", await signGrant(owner, grantFor(Wallet.createRandom().address)));
+  assert.equal(second.status, 200, JSON.stringify(second.json));
+  const removed = await call(ownerSession, "POST", "/api/auth/device-grants/revoke", await signRevoke(owner, device.address));
+  assert.equal(removed.status, 200, JSON.stringify(removed.json));
 });

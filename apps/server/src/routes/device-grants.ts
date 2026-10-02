@@ -16,6 +16,8 @@ import { clientIp } from "../lib/http/client-ip.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { isKernelOwner } from "../lib/auth/kernel-owner.js";
 import { takeOwnerReadBudget } from "../lib/auth/owner-read-budget.js";
+import { getStripeAccount } from "../lib/stripe/accounts.js";
+import { refuseUnlessVerifiedOrganiser } from "../lib/stripe/verification.js";
 import {
   listDeviceGrants,
   submitDeviceGrant,
@@ -75,15 +77,31 @@ function answer(c: Context<AppEnv>, result: DeviceGrantResult) {
   return c.json({ ok: false, error, code: result.refusal }, status);
 }
 
+// More than one passkey is an organiser tool for now (owner 10-02): each added device
+// stamps storage, and moving the main passkey spends sponsored gas. An account that
+// has a device record already passed, so it keeps managing its devices - a Stripe
+// account asked for more details mid-handover must not leave its devices signed out.
+// Removal is never gated.
+const ORGANISERS_ONLY = "Adding passkeys is for verified organisers for now. Verify your Stripe account in Payments, then try again.";
+
 deviceGrants.get("/", requireAuth, (c) => {
-  const records = listDeviceGrants(c.get("parentAddress"));
+  const parent = c.get("parentAddress").toLowerCase();
+  const records = listDeviceGrants(parent);
   if (!records) return c.json({ ok: false, error: REFUSALS["store-unavailable"].error }, 503);
-  return c.json({ ok: true, data: { grants: records, sessionRank: c.get("sessionRank") } });
+  // A hint for the screen, from the local record: the write below checks Stripe live.
+  const canAddDevices = records.length > 0 || getStripeAccount(parent)?.onboardingComplete === true;
+  return c.json({ ok: true, data: { grants: records, sessionRank: c.get("sessionRank"), canAddDevices } });
 });
 
 deviceGrants.post("/", jsonBodyLimit(MAX_BODY_BYTES), requireAuth, async (c) => {
   const account = c.get("parentAddress").toLowerCase();
   if (writeLimited(c, account)) return c.json({ ok: false, error: "Rate limited" }, 429);
+  const records = listDeviceGrants(account);
+  if (!records) return answer(c, { ok: false, refusal: "store-unavailable" });
+  if (records.length === 0) {
+    const refusal = await refuseUnlessVerifiedOrganiser(account, ORGANISERS_ONLY);
+    if (refusal) return c.json(refusal, 403);
+  }
   const body = c.get("body") as { grant?: unknown; grantSig?: unknown };
   const result = await submitDeviceGrant(account, body, ownerCheck(c));
   chargeAccount(account, result);
