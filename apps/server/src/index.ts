@@ -24,6 +24,7 @@ import { siteRoute } from "./routes/site.js";
 import { profiles } from "./routes/profiles.js";
 import { recovery } from "./routes/recovery.js";
 import { deviceGrants } from "./routes/device-grants.js";
+import { pairing } from "./routes/pairing.js";
 import { broadcast } from "./routes/broadcast.js";
 import { broadcastJobs } from "./routes/broadcast-jobs.js";
 import { domains } from "./routes/domains.js";
@@ -667,6 +668,8 @@ app.post("/api/auth/revoke-all", requireAuth, (c) => {
 // An account's added passkeys (#746). revoke-all above also ends their sessions;
 // a device whose grant is still live signs a new one on its next request.
 app.route("/api/auth/device-grants", deviceGrants);
+// Linking another device (#746 step 4): a sealed mailbox, no session.
+app.route("/api/pairing", pairing);
 
 // Event routes
 app.route("/api/events", events);
