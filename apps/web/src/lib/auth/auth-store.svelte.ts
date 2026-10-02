@@ -862,10 +862,14 @@ async function _restoreAuthAfterRotation(): Promise<void> {
 async function _clearStaleAuthForSwitch(address: string): Promise<void> {
   const priorParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
   if (priorParent && priorParent.toLowerCase() !== address.toLowerCase()) {
+    const priorSeedAddr = await getKV<string>(StorageKeys.SEED_ADDRESS);
     await clearSession();
     _feedSignerAddressMemo = null;
     _feedSignerCache = null;
     _unlocked = null;
+    // What opens the outgoing account without its passkey goes with it, as at
+    // sign-out (#746); its locked copy stays.
+    if (priorSeedAddr) await clearDeviceUnlock(priorSeedAddr).catch(() => {});
   }
 }
 
@@ -2918,6 +2922,16 @@ async function _unlockPasskeySeed(seedAddr: string): Promise<boolean> {
   }
   const parent = _parent;
   if (!parent) return false;
+  // Another tab may have confirmed since this one locked: its open window counts
+  // here too, as it would after a reload.
+  if (_seedAddress?.toLowerCase() === seedAddr.toLowerCase()) {
+    const open = await restoreSilentSeed(seedAddr, parent, SEED_UNLOCK_POLICY);
+    if (open) {
+      if (_kind !== "passkey" || _parent !== parent) return false;
+      _setUnlockedSeed(seedAddr, parent, open.seed, { restoredUntil: open.expiresAt });
+      return true;
+    }
+  }
   await _ensurePasskeyKey();
   // `seedAddr` was read before the ceremony; if it was the parent fallback it is
   // not the PRF-EOA, and a seed stored under it would sit behind the wrong AAD.

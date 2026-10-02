@@ -75,7 +75,10 @@
   // still with no ceremony of the campaign's own.
   let refSettleInFlight = false;
   $effect(() => {
-    if (!auth.isAuthenticated || !auth.hasIdentitySeed || refSettleInFlight) return;
+    // A passkey account signs with its cached feed signer while the seed is locked
+    // (#746), so it need not wait for an unlock; the settle leaves the capture in
+    // place when no signer is here.
+    if (!auth.isAuthenticated || !(auth.hasIdentitySeed || auth.kind === "passkey") || refSettleInFlight) return;
     refSettleInFlight = true;
     void (async () => {
       try {

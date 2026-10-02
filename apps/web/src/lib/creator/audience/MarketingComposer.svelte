@@ -257,6 +257,7 @@
 
     testSending = true;
     try {
+      await auth.ensureOrganiserUnlock();
       const res = await sendMarketingTest(fromName.trim(), subject.trim(), buildHtml(), to);
       localStorage.setItem(TEST_EMAIL_KEY, to);
       if (res.sent > 0) {

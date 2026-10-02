@@ -28,9 +28,13 @@ const GATED: Array<[file: string, signature: string, action: string]> = [
   ["creator/dashboard/Dashboard.svelte", "async function handleSendBroadcast", "startBroadcast("],
   ["creator/dashboard/Dashboard.svelte", "async function handleSendBroadcast", "if (!confirm("],
   ["creator/dashboard/Dashboard.svelte", "async function sendOne", "webhookRelay("],
+  ["creator/dashboard/Dashboard.svelte", "async function sendAllUnsent", "for (const order"],
   ["creator/dashboard/Dashboard.svelte", "async function updateCancelledPage", "auth.getContentFeedSigner()"],
   ["creator/audience/MarketingComposer.svelte", "async function handleSend(", "if (!confirm("],
   ["creator/audience/MarketingComposer.svelte", "async function handleSend(", "startBroadcast("],
+  ["creator/audience/MarketingComposer.svelte", "async function handleSendTest", "sendMarketingTest("],
+  ["creator/audience/AudienceScreen.svelte", "async function handleDelete", "suppressContacts("],
+  ["creator/events/CancelEventPanel.svelte", "async function confirmCancel", "cancelEvent("],
   ["creator/dashboard/DashboardIndex.svelte", "async function handleList", "/list`"],
   ["creator/dashboard/DashboardIndex.svelte", "async function handleUnlist", "/unlist`"],
   ["creator/dashboard/StripeConnect.svelte", "async function handleConnect", "connectStripe()"],
@@ -47,6 +51,7 @@ const GATED: Array<[file: string, signature: string, action: string]> = [
   ["creator/events/EditEventPanel.svelte", "async function handleDelete", "auth.getContentFeedSigner()"],
   ["creator/builder/MultiSiteBuilder.svelte", "const publishSequence = async () => {", "uploadSiteImage("],
   ["creator/SiteBuilder.svelte", "async function handleDeploy", "deployToSwarm()"],
+  ["creator/SiteBuilder.svelte", "async function handleRegisterDomain", "registerDomain("],
 ];
 
 for (const [file, signature, action] of GATED) {
@@ -55,6 +60,24 @@ for (const [file, signature, action] of GATED) {
     assert.match(before(src, signature, action), /await auth\.ensureOrganiserUnlock\(\);/);
   });
 }
+
+test("the gate runs only where a row says - never on page open (onMount, $effect)", () => {
+  const rows = new Map<string, Set<string>>();
+  for (const [file, signature] of GATED) rows.set(file, (rows.get(file) ?? new Set()).add(signature));
+  for (const [file, signatures] of rows) {
+    const calls = read(`../src/lib/${file}`).match(/auth\.ensureOrganiserUnlock\(\)/g)?.length ?? 0;
+    assert.equal(calls, signatures.size, `${file}: every ensureOrganiserUnlock call needs a GATED row`);
+  }
+});
+
+test("a declined confirm stops a bulk webhook run instead of asking once per order", () => {
+  const dash = read("../src/lib/creator/dashboard/Dashboard.svelte");
+  assert.match(
+    before(dash, "async function sendAllUnsent", "for (const order"),
+    /catch \(e\) \{\s*relayError = e instanceof Error \? e\.message[^;]*;\s*return;/,
+  );
+  assert.match(dash, /\{#if relayError\}<p class="broadcast-error">\{relayError\}<\/p>\{\/if\}/);
+});
 
 test("every gated component imports the auth store it calls", () => {
   for (const file of new Set(GATED.map(([f]) => f))) {

@@ -111,6 +111,7 @@
     domainError = null;
     domainRegistering = true;
     try {
+      await auth.ensureOrganiserUnlock();
       domainEntry = await registerDomain(
         hostname,
         createdEventId,

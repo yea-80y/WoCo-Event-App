@@ -65,6 +65,7 @@
   let webhookFormAuthName = $state("Authorization");
   let webhookFormAuthValue = $state("");
   let bulkSending = $state<string | null>(null); // seriesId currently bulk-sending
+  let relayError = $state<string | null>(null);
 
   // Broadcast state
   let broadcastSubject = $state("");
@@ -272,9 +273,11 @@
     const key = orderKey(order);
     const dec = decryptedOrders.get(globalIdx);
     if (!dec) return;
+    relayError = null;
     try {
       await auth.ensureOrganiserUnlock();
-    } catch {
+    } catch (e) {
+      relayError = e instanceof Error ? e.message : "Couldn't confirm it's you.";
       return;
     }
 
@@ -319,6 +322,14 @@
   }
 
   async function sendAllUnsent(seriesId: string, seriesOrders: OrderEntry[]) {
+    // Once for the whole run: a decline must stop it, not ask again per order.
+    relayError = null;
+    try {
+      await auth.ensureOrganiserUnlock();
+    } catch (e) {
+      relayError = e instanceof Error ? e.message : "Couldn't confirm it's you.";
+      return;
+    }
     bulkSending = seriesId;
     for (const order of seriesOrders) {
       const key = orderKey(order);
@@ -1064,6 +1075,7 @@
                     {bulkSending === series.seriesId ? "Sending..." : `Send ${unsent} unsent`}
                   </button>
                 {/if}
+                {#if relayError}<p class="broadcast-error">{relayError}</p>{/if}
               {/if}
             </div>
 

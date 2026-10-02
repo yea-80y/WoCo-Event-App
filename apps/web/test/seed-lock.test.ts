@@ -409,6 +409,28 @@ test("store: a silent restore keeps the window it found and never re-stamps it",
   assert.ok(early > 0 && early < set.indexOf("writeUnlockWindow("), "return before the window write");
 });
 
+test("store: a restore never re-stamps, and another tab's open window counts before any ceremony", () => {
+  assert.doesNotMatch(body(STORE, "async function _restoreCachedAuth"), /_establishPasskeySeedEagerly/);
+  const unlock = body(STORE, "async function _unlockPasskeySeed");
+  const adopt = unlock.indexOf("restoreSilentSeed(seedAddr, parent, SEED_UNLOCK_POLICY)");
+  assert.ok(adopt > 0 && adopt < unlock.indexOf("await _ensurePasskeyKey()"), "adopt before asking");
+  assert.match(unlock, /_setUnlockedSeed\(seedAddr, parent, open\.seed, \{ restoredUntil: open\.expiresAt \}\)/);
+  assert.match(unlock, /if \(_seedAddress\?\.toLowerCase\(\) === seedAddr\.toLowerCase\(\)\) \{/, "never under the parent fallback");
+});
+
+test("a captured referral settles with the cached signer, not only after an unlock", () => {
+  const app = read("../src/App.svelte");
+  assert.match(app, /if \(!auth\.isAuthenticated \|\| !\(auth\.hasIdentitySeed \|\| auth\.kind === "passkey"\) \|\| refSettleInFlight\) return;/);
+  assert.match(app, /getSigner: \(\) => auth\.getContentFeedSignerIfPresent\(\)/, "the settle still never prompts");
+});
+
+test("store: an account switch drops what opens the outgoing account without its passkey", () => {
+  const sw = body(STORE, "async function _clearStaleAuthForSwitch");
+  const prior = sw.indexOf("const priorSeedAddr = await getKV<string>(StorageKeys.SEED_ADDRESS);");
+  assert.ok(prior > 0 && prior < sw.indexOf("await clearDeviceUnlock(priorSeedAddr)"));
+  assert.doesNotMatch(sw, /clearLockedSeed/);
+});
+
 test("store: a real ceremony inside the window restarts it, for the same account only", () => {
   const eager = body(STORE, "async function _establishPasskeySeedEagerly");
   assert.match(eager, /held\.parent === _parent\?\.toLowerCase\(\) && held\.seedAddress === _seedAddress\?\.toLowerCase\(\)/);
