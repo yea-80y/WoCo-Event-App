@@ -8,6 +8,8 @@ import {
   resolvePasskeyRpId,
   newBackupUserHandle,
   isBackupUserHandle,
+  newAddedUserHandle,
+  isAddedUserHandle,
   aaguidFromAuthenticatorData,
   passkeyProviderFromAaguid,
   type PasskeyProviderId,
@@ -101,6 +103,9 @@ export type PasskeyAttachment = "platform" | "cross-platform" | null;
 export interface PasskeyLogin extends PasskeyKeyMaterial {
   credentialId: string;
   attachment: PasskeyAttachment;
+  /** "added": the credential was made by "Add a passkey" (#746) - it signs in as a
+   *  device of an account, never as an account of its own. */
+  handleKind: "added" | null;
 }
 
 function attachmentOf(credential: PublicKeyCredential): PasskeyAttachment {
@@ -270,6 +275,24 @@ export class PasskeyAssertionUnavailableError extends Error {
  * null), and Chrome's message is raw spec prose ending in a w3.org URL — which
  * the login modal renders verbatim. Wrap it so a plain cancel reads as one.
  */
+/** "Add a passkey" was offered a password manager that already holds one of this
+ *  account's passkeys (`excludeCredentials`, #746). */
+export class PasskeyAlreadyInManagerError extends Error {
+  constructor() {
+    super("That password manager already holds a passkey for this account. Pick a different one.");
+    this.name = "PasskeyAlreadyInManagerError";
+  }
+}
+
+/** "Add a passkey" was answered by another device (a QR code): that passkey would
+ *  open a different account on the device holding it. */
+export class PasskeyNotOnThisDeviceError extends Error {
+  constructor() {
+    super("That passkey would live on another device. Pick a password manager on this one.");
+    this.name = "PasskeyNotOnThisDeviceError";
+  }
+}
+
 export class PasskeyCeremonyCancelledError extends Error {
   readonly cause?: unknown;
   constructor(action: "creation" | "authentication", cause?: unknown) {
@@ -382,6 +405,7 @@ async function _authenticatePasskeyImpl(): Promise<PasskeyLogin> {
     ...(await deriveKey(prfOutput)),
     credentialId: meta.credentialId,
     attachment: attachmentOf(credential),
+    handleKind: userHandle && isAddedUserHandle(new Uint8Array(userHandle)) ? "added" : null,
   };
 }
 
@@ -430,7 +454,7 @@ export async function pinPasskeyCredential(handle: PasskeyCredentialHandle): Pro
 async function _createPasskeyAccountImpl(): Promise<PasskeyLogin> {
   const { credential, attachment, ...material } = await _mintPasskeyAccountImpl();
   await putKV(StorageKeys.PASSKEY_CREDENTIAL, credential);
-  return { ...material, credentialId: credential.credentialId, attachment };
+  return { ...material, credentialId: credential.credentialId, attachment, handleKind: null };
 }
 
 /** The password manager a just-created credential reports (#746); "unknown" when
@@ -489,6 +513,84 @@ async function _mintPasskeyAccountImpl(): Promise<
   };
 
   return { ...(await deriveKey(prfOutput)), credential: meta, attachment: attachmentOf(credential) };
+}
+
+// ---------------------------------------------------------------------------
+// Added passkey (#746 step 3) - a second passkey for the SAME account
+// ---------------------------------------------------------------------------
+
+export interface AddedPasskey extends PasskeyKeyMaterial {
+  credentialId: string;
+  provider: PasskeyProviderId;
+}
+
+/**
+ * Make another passkey for the signed-in account, on THIS device, in a password
+ * manager that does not already hold one of its passkeys. Never pinned as this
+ * device's login - the main passkey stays that; the caller grants it, writes its
+ * envelope and its record.
+ *
+ * - `exclude`: every credential this device knows for the account (base64url), so
+ *   the manager that holds one refuses and the person picks another - a second
+ *   passkey in the same manager is lost with it.
+ * - Platform only, and a cross-platform answer refused: a passkey made through a
+ *   QR code lives on the other device, where its key opens a different account.
+ * - The added user handle tells a later sign-in what it is (`handleKind`).
+ */
+export async function createAddedPasskey(opts: {
+  exclude: readonly string[];
+  /** Shown in the password manager beside the main passkey's "WoCo Account". */
+  createdOn: string;
+}): Promise<AddedPasskey> {
+  return ceremony("creation", () => _createAddedPasskeyImpl(opts));
+}
+
+async function _createAddedPasskeyImpl(opts: {
+  exclude: readonly string[];
+  createdOn: string;
+}): Promise<AddedPasskey> {
+  const salt = await getPrfSalt();
+  const rpId = getPasskeyRpId();
+  const name = `WoCo Account - added ${opts.createdOn}`;
+
+  let credential: PublicKeyCredential | null;
+  try {
+    credential = (await navigator.credentials.create({
+      publicKey: {
+        rp: { name: "WoCo", id: rpId },
+        user: { id: newAddedUserHandle(), name, displayName: name },
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        pubKeyCredParams: [
+          { alg: -7, type: "public-key" },   // ES256
+          { alg: -257, type: "public-key" },  // RS256
+        ],
+        excludeCredentials: opts.exclude.map((id) => ({ id: fromBase64url(id), type: "public-key" as const })),
+        authenticatorSelection: {
+          residentKey: "required",
+          userVerification: "required",
+          authenticatorAttachment: "platform",
+        },
+        extensions: {
+          prf: { eval: { first: salt } },
+        },
+      },
+    })) as PublicKeyCredential | null;
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "InvalidStateError") throw new PasskeyAlreadyInManagerError();
+    throw e;
+  }
+
+  if (!credential) {
+    throw new Error("Passkey creation was cancelled.");
+  }
+  if (attachmentOf(credential) === "cross-platform") throw new PasskeyNotOnThisDeviceError();
+
+  const prfOutput = await prfAfterCreate(credential, rpId, salt);
+  return {
+    ...(await deriveKey(prfOutput)),
+    credentialId: toBase64url(credential.rawId),
+    provider: providerOf(credential),
+  };
 }
 
 // ---------------------------------------------------------------------------

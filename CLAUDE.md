@@ -376,6 +376,7 @@ AUTH (server):
   apps/server/src/lib/auth/verify-delegation.ts      # EIP-712 verify + sessionProof + revocation
   apps/server/src/lib/auth/revocation.ts             # nonce blacklist + revoke-all
   apps/server/src/lib/auth/device-grants.ts          # added passkeys (#746): signed grant registry
+  apps/web/src/lib/auth/device-verdict.ts            # added passkey sign-in: the server's verdict before any commit
 
 CLAIMS / EVENTS:
   apps/server/src/routes/claims.ts                   # claim-status ONLY (v1 claim rail deleted, #207)

@@ -278,7 +278,8 @@ test("the eager passkey establish can never derive for a rotated credential or a
   assert.ok(passkey > 0 && deviceRestore > passkey, "passkey branch → device-key restore");
   const unlock = src.slice(src.indexOf("async function _unlockPasskeySeed("));
   const open = unlock.indexOf("await openLockedSeed(seedAddr, parent, prf)");
-  const refusal = unlock.indexOf("if (await _recoveryKernelFor(seedAddr))");
+  // Either binding refuses (#746 step 3): a recovered OR an added passkey's seed was carried.
+  const refusal = unlock.indexOf("if (await _boundKernelAddress(seedAddr))");
   const prf = unlock.indexOf("await establishPasskeyIdentitySeed(seedAddr, parent, prf)");
   assert.ok(open > 0 && refusal > open && prf > refusal, "open locked → binding refusal → PRF derive");
   assert.match(src, /if \(!envelopeUnknown\) await _establishPasskeySeedEagerly\(\);/);

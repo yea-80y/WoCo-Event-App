@@ -147,6 +147,12 @@ async function authFetch<T>(
     sessionHealth.clear();
     return result;
   }
+  if (result.code === AuthErrorCode.DEVICE_REMOVED) {
+    // This added passkey was removed from the account (#746): no re-sign can fix
+    // it. The store forgets what this device held and signs out, once.
+    void auth.onDeviceRemoved();
+    return result;
+  }
   if (result.code !== AuthErrorCode.SESSION_INVALID) {
     // A wrong device clock is NOT fixable by re-signing — re-signing just
     // reproduces the same out-of-window timestamp. Say what is actually wrong
@@ -301,6 +307,10 @@ export async function authStream(
     .clone()
     .json()
     .catch(() => null) as { code?: string } | null;
+  if (body?.code === AuthErrorCode.DEVICE_REMOVED) {
+    void auth.onDeviceRemoved();
+    return resp;
+  }
   if (body?.code !== AuthErrorCode.SESSION_INVALID) return resp;
 
   await recoverSession(generation);

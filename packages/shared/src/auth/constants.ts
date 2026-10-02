@@ -34,6 +34,13 @@ export const StorageKeys = {
   // address changed"). Persists across logout so re-login works.
   // Legacy single-object blobs are migrated to the map shape on first read.
   RECOVERED_KERNEL_BINDING: "woco:auth:recovered-kernel",
+  // ADDED-passkey bindings (#746 step 3): a MAP `{ [prfEoaLower]: kernelAddress }`,
+  // "this passkey is a device of the Kernel at value" - written only after the
+  // server accepted the passkey's session as a device. Separate from the recovered
+  // map because the chain names someone else as owner here BY DESIGN, so the
+  // recovered paths' owner checks would refuse it as an orphan. Like it: the
+  // Kernel override, and never a seed derived from this passkey.
+  DEVICE_KERNEL_BINDING: "woco:auth:device-kernel",
   PASSKEY_CREDENTIAL: "woco:auth:passkey-credential",
   // RETIRED (#501): the sub-ENS `registerWithPermit` session key's slot. Nothing
   // writes it any more — every name is minted by the WoCo sponsor wallet — but

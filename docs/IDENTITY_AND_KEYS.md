@@ -533,6 +533,17 @@ needs each grant signed once more. `revoke-all` also ends device sessions; a dev
 signs a new one on its next request. Store: `.data/device-grants.json`
 (`apps/server/src/lib/auth/device-grants.ts`).
 
+**Signing in with an added passkey (step 3).** An added passkey has no account of its own: its
+user handle starts `woco-added-v1:`, and its account and seed reach a device through the
+portability envelope the adding device wrote for it (or this device's locked copy). Because the
+chain names the main passkey as owner by design, the sign-in asks the SERVER: a session is signed
+but not stored, one `whoami` answers (`device-verdict.ts`), and only an accepted verdict commits -
+a device binding (`StorageKeys.DEVICE_KERNEL_BINDING`, separate from the recovered map), the locked
+seed and that session. Removed -> the device forgets what it held and says so; any request that
+later returns `DEVICE_REMOVED` does the same and signs out. A device never derives a seed from its
+own passkey, and cannot reach the Kernel (`_ensureKernel` throws): names, backups and adding
+passkeys need the main passkey (`auth.isAccountOwner`).
+
 Paths that deliberately need no session: guest Stripe checkout from the embed widget, the public
 ticket page `/t/…`, and the ENS CCIP-Read gateway.
 

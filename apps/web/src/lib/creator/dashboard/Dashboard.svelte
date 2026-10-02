@@ -446,7 +446,7 @@
     if (!identitySeed && prompt) {
       if (!(await auth.ensureAccountSetup({ identity: true }))) {
         decryptError = auth.seedUnavailable
-          ? "Your account keys aren't on this device yet. Sign in again once your backup can be reached."
+          ? "Your account keys aren't on this device. Sign in again to fetch them."
           : "Attendee details stay locked until you confirm it's you.";
         decrypting = false;
         return;
