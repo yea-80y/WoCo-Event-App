@@ -331,6 +331,12 @@ test("new device screen: leaving it ends the wait; a signed-in device is not off
   assert.match(read("../src/AttendeeApp.svelte"), /const loadLinkThisDevice = \(\) => import\("\.\/lib\/components\/passkeys\/LinkThisDevice\.svelte"\);/);
 });
 
+test("linking has its own screens, each loaded only when opened", () => {
+  const your = read("../src/lib/components/passkeys/YourPasskeys.svelte");
+  assert.doesNotMatch(your, /^\s*import\s+LinkAnotherDevice/m);
+  assert.match(your, /const loadLinkAnotherDevice = \(\) => import\("\.\/LinkAnotherDevice\.svelte"\);/);
+});
+
 test("sign-in sheet: the link entry closes the sheet and opens its own screen", () => {
   assert.match(read("../src/lib/components/auth/PasskeyLogin.svelte"), /\{#if onlink\}/);
   assert.match(read("../src/lib/components/auth/LoginModal.svelte"), /onlink=\{\(\) => \{ close\(\); navigate\("\/link"\); \}\}/);

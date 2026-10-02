@@ -11,7 +11,6 @@
   } from "../../auth/device-grant-verify.js";
   import { readPasskeyMeta, type AddedPasskeyMeta } from "../../auth/passkey-meta.js";
   import { credentialIdBytes } from "../../auth/passkey-record.js";
-  import LinkAnotherDevice from "./LinkAnotherDevice.svelte";
 
   /**
    * "Your passkeys" (#746 step 3): the main passkey and every passkey it added,
@@ -32,6 +31,8 @@
   let addedNote = $state<string | null>(null);
 
   let linking = $state(false);
+  // Its own screen, loaded on the tap: this page carries none of the linking code.
+  const loadLinkAnotherDevice = () => import("./LinkAnotherDevice.svelte");
 
   let confirming = $state<string | null>(null);
   let removing = $state<string | null>(null);
@@ -209,7 +210,11 @@
 
       {#if owner}
         {#if linking}
-          <LinkAnotherDevice onlinked={() => { loaded = false; void load(); }} onclose={() => (linking = false)} />
+          {#await loadLinkAnotherDevice() then { default: LinkAnotherDevice }}
+            <LinkAnotherDevice onlinked={() => { loaded = false; void load(); }} onclose={() => (linking = false)} />
+          {:catch}
+            <p class="err">Couldn't open this - check your connection and try again.</p>
+          {/await}
         {:else if adding === "closed"}
           <button class="btn btn--primary" onclick={() => (linking = true)}>Link another device</button>
           <button class="btn btn--ghost" onclick={() => { adding = "explain"; addError = null; }}>
