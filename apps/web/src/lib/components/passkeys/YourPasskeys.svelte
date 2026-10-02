@@ -32,10 +32,13 @@
 
   let linking = $state(false);
   let makingMain = $state(false);
+  // A passkey this device added, being made the main one (same phone, no code).
+  let promoting = $state<VerifiedPasskey | null>(null);
   let regrantsWaiting = $state(false);
   // Their own screens, loaded on the tap: this page carries none of their code.
   const loadLinkAnotherDevice = () => import("./LinkAnotherDevice.svelte");
   const loadMakeThisDeviceMain = () => import("./MakeThisDeviceMain.svelte");
+  const loadMakeAddedMain = () => import("./MakeAddedMain.svelte");
 
   let confirming = $state<string | null>(null);
   let removing = $state<string | null>(null);
@@ -154,7 +157,7 @@
   {:else if !isPasskey}
     <p class="muted">This account signs in another way. More than one passkey is for passkey accounts.</p>
   {:else}
-    {#if !owner && !makingMain}
+    {#if !owner && !makingMain && !promoting}
       <p class="note">
         You're signed in with a linked passkey. To add or remove passkeys, use your main passkey - or make this device the
         main one.
@@ -167,6 +170,18 @@
     {#if makingMain}
       {#await loadMakeThisDeviceMain() then { default: MakeThisDeviceMain }}
         <MakeThisDeviceMain onchanged={() => void load()} onclose={() => (makingMain = false)} />
+      {:catch}
+        <p class="err">Couldn't open this - check your connection and try again.</p>
+      {/await}
+    {/if}
+    {#if promoting}
+      {#await loadMakeAddedMain() then { default: MakeAddedMain }}
+        <MakeAddedMain
+          target={promoting}
+          name={providerName(labels[promoting.credentialTag]?.provider)}
+          onchanged={() => void load()}
+          onclose={() => (promoting = null)}
+        />
       {:catch}
         <p class="err">Couldn't open this - check your connection and try again.</p>
       {/await}
@@ -221,6 +236,9 @@
                   <button class="btn btn--ghost" onclick={() => (confirming = null)} disabled={removing !== null}>Keep it</button>
                 </div>
               {:else}
+                {#if owner && labels[r.credentialTag]?.credentialId && !promoting}
+                  <button class="btn btn--ghost" onclick={() => (promoting = r)}>Make this the main passkey</button>
+                {/if}
                 <button class="btn btn--ghost" onclick={() => (confirming = r.grantee)}>
                   {mine ? "Remove this passkey" : "Remove"}
                 </button>
@@ -237,7 +255,7 @@
       </ul>
       {#if removeError}<p class="err">{removeError}</p>{/if}
 
-      {#if owner && !makingMain}
+      {#if owner && !makingMain && !promoting}
         {#if linking}
           <!-- the panel is open above -->
         {:else if adding === "closed"}

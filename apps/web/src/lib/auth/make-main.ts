@@ -31,7 +31,7 @@
  */
 
 import { verifyTypedData, type TypedDataField } from "ethers";
-import { DEVICE_GRANT_DOMAIN, DEVICE_GRANT_TYPES, PAIRING_TTL_MS } from "@woco/shared";
+import { DEVICE_GRANT_DOMAIN, DEVICE_GRANT_TYPES, PAIRING_TTL_MS, type PasskeyProviderId } from "@woco/shared";
 import type { PairingTransport } from "./pairing-channel.js";
 import { makeMainPendingKey } from "./make-main-key.js";
 import {
@@ -336,35 +336,103 @@ export async function runApproveMakeMain(
   if (!reply || !grantsMatch(reply.grants, { parent, newOwner: offer.grantee, devices: [previous, ...devices] })) {
     throw new Error(LINK_CODE_UNKNOWN);
   }
+  return handOver({ ...ctx, parent, newOwner: offer.grantee, previousOwner: previous.grantee, grants: reply.grants, store });
+}
 
-  // Once more, now: the list may have changed while the other device was signing,
+/** What the old main does once it holds the new main's grants - the same steps
+ *  whether those came over a code or were signed on this device. */
+type HandOver = Pick<ApproveMakeMainContext, "devices" | "recheckDevices" | "writeOwnEnvelope" | "rotate" | "becomeDevice" | "submit"> & {
+  parent: string;
+  newOwner: string;
+  previousOwner: string;
+  grants: SignedGrant[];
+  store: PendingStore;
+  onStep?: (step: "changing" | "finishing") => void;
+};
+
+async function handOver(t: HandOver): Promise<{ registered: boolean }> {
+  // Once more, now: the list may have changed while the grants were being signed,
   // and this read warms the server's owner cache for the registrations after the
   // rotation (Fable sign-off SHOULD-9).
-  const now = await ctx.recheckDevices();
-  if (!sameDevices(now, ctx.devices)) {
-    throw new Error("Your passkeys changed while this was in progress. Nothing changed - start again on the other device.");
+  const now = await t.recheckDevices();
+  if (!sameDevices(now, t.devices)) {
+    throw new Error("Your passkeys changed while this was in progress. Nothing changed - start again.");
   }
 
-  ctx.onStep?.("changing");
+  t.onStep?.("changing");
   // Its own envelope first: once it is a linked device, that is how it signs in on
   // every device its passkey syncs to. Nothing irreversible has happened yet.
-  await ctx.writeOwnEnvelope();
+  await t.writeOwnEnvelope();
   // Kept before the rotation, so a confirm that cannot be read still leaves them
   // here; they expire only if the owner never changed.
   const pending: PendingMakeMain = {
-    parent,
-    newOwner: offer.grantee,
-    previousOwner: previous.grantee,
-    grants: reply.grants,
+    parent: t.parent,
+    newOwner: t.newOwner,
+    previousOwner: t.previousOwner,
+    grants: t.grants,
     expiresAt: Date.now() + PAIRING_TTL_MS,
   };
-  store.write(pending);
-  await ctx.rotate(offer.grantee);
+  t.store.write(pending);
+  await t.rotate(t.newOwner);
   const landed = { ...pending, expiresAt: null };
-  store.write(landed);
-  await ctx.becomeDevice();
-  ctx.onStep?.("finishing");
-  return { registered: await submitAll(landed, ctx.submit, store) };
+  t.store.write(landed);
+  await t.becomeDevice();
+  t.onStep?.("finishing");
+  return { registered: await submitAll(landed, t.submit, t.store) };
+}
+
+// ---------------------------------------------------------------------------
+// The main passkey handing over to a passkey this device added (same phone, no
+// code): both keys are here, so the new main's grants are signed right here.
+// ---------------------------------------------------------------------------
+
+/** A passkey's key material, as its sheet gives it. */
+export interface PasskeyKey {
+  address: string;
+  privateKey: string;
+  prfSecret: string;
+}
+
+export interface MakeAddedMainContext extends Omit<HandOver, "newOwner" | "previousOwner" | "grants" | "store"> {
+  self: string;
+  selfTag: string;
+  /** The row the person picked: a live device of this account, added on this device. */
+  target: PairedDevice;
+  /** The passkey sheet for that row's credential. */
+  assertTarget: () => Promise<PasskeyKey>;
+  signGrant: (key: string, parent: string, grantee: string, credentialTag: string) => Promise<SignedGrant>;
+  /** This tab carries on as the new main. */
+  adopt: (target: PasskeyKey) => Promise<void>;
+  store?: PendingStore;
+}
+
+export async function runMakeAddedMain(ctx: MakeAddedMainContext): Promise<{ registered: boolean }> {
+  const parent = ctx.parent.toLowerCase();
+  const self = ctx.self.toLowerCase();
+  const target = { grantee: ctx.target.grantee.toLowerCase(), credentialTag: ctx.target.credentialTag.toLowerCase() };
+  checkMakeMainOffer({ v: 1, kind: "make-main", parent, ...target }, { parent, self, devices: ctx.devices });
+  const added = await ctx.assertTarget();
+  // The sheet lets the person pick; only the passkey in that row may become the main.
+  if (added.address.toLowerCase() !== target.grantee) {
+    throw new Error("That's a different passkey from the one you picked. Nothing changed.");
+  }
+  const previous: PairedDevice = { grantee: self, credentialTag: ctx.selfTag.toLowerCase() };
+  const others = ctx.devices
+    .filter((d) => d.grantee.toLowerCase() !== target.grantee)
+    .map((d) => ({ grantee: d.grantee.toLowerCase(), credentialTag: d.credentialTag.toLowerCase() }));
+  // The old main first, as over a code.
+  const grants: SignedGrant[] = [];
+  for (const d of [previous, ...others]) grants.push(await ctx.signGrant(added.privateKey, parent, d.grantee, d.credentialTag));
+  const result = await handOver({
+    ...ctx,
+    parent,
+    newOwner: target.grantee,
+    previousOwner: self,
+    grants,
+    store: ctx.store ?? localPendingStore,
+  });
+  await ctx.adopt(added);
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -384,6 +452,12 @@ export interface MakeMainHost {
   signGrant: (key: string, parent: string, grantee: string, credentialTag: string) => Promise<SignedGrant>;
   becomeOwner: (self: string, parent: string) => Promise<void>;
   becomeDevice: (self: string, parent: string) => Promise<void>;
+  /** Same-phone make-main: this tab carries on as `key`, pinned to `credential`. */
+  adoptNewMain: (
+    key: PasskeyKey,
+    credential: import("./passkey-account.js").PasskeyCredentialHandle,
+    account: { parent: string; seed: string },
+  ) => Promise<void>;
   lockedMessage: () => string;
 }
 
@@ -472,21 +546,84 @@ export async function approveMakeMain(
     self,
     selfTag: await ownCredentialTag(),
     devices,
-    recheckDevices: () => liveDevices(parent, self),
     onStep,
+    ...oldMainSteps(host, { parent, self, seed, prf }),
+  });
+}
+
+/** The old main's side of the handover, the same whichever way the grants came. */
+function oldMainSteps(host: MakeMainHost, a: { parent: string; self: string; seed: string; prf: string }) {
+  return {
+    recheckDevices: () => liveDevices(a.parent, a.self),
     writeOwnEnvelope: async () => {
       const { writePortabilityEnvelope } = await import("./recovery-portability.js");
-      await writePortabilityEnvelope({ prfSecret: prf, preservedKernelAddress: parent, identitySeed: seed });
+      await writePortabilityEnvelope({ prfSecret: a.prf, preservedKernelAddress: a.parent, identitySeed: a.seed });
     },
-    rotate: async (newOwner) => {
+    rotate: async (newOwner: string) => {
       const kernel = await host.kernel();
       if (!kernel) throw new Error(host.lockedMessage());
       const { rotateOwnerSelf } = await import("./kernel-account.js");
       await rotateOwnerSelf(kernel, newOwner);
     },
-    becomeDevice: () => host.becomeDevice(self, parent),
+    becomeDevice: () => host.becomeDevice(a.self, a.parent),
     submit: submitGrant,
-  });
+  };
+}
+
+/**
+ * Make a passkey this device added the main one - the same phone, no code. Two taps,
+ * one passkey sheet each (Safari opens a sheet only from a tap): the main confirms
+ * first, then the passkey in the row. `finish` is the second tap.
+ */
+export async function prepareMakeAddedMain(
+  target: PairedDevice,
+  host: MakeMainHost,
+): Promise<{ finish: (onStep?: (step: "changing" | "finishing") => void) => Promise<{ registered: boolean }> }> {
+  await host.freshMainPasskey();
+  const { parent, self, device } = host.account();
+  if (!parent || !self || device) throw new Error(host.lockedMessage());
+  const { readPasskeyMeta, writePasskeyMeta } = await import("./passkey-meta.js");
+  const meta = (await readPasskeyMeta(parent))[target.credentialTag.toLowerCase()];
+  if (!meta?.credentialId) throw new Error("That passkey wasn't added on this device. Make it the main one from a device it's on.");
+  const devices = await liveDevices(parent, self);
+  const selfTag = await ownCredentialTag();
+  const { passkeyHandleOnThisOrigin, restorePasskeyAccount, asCeremonyCancel } = await import("./passkey-account.js");
+  const credential = passkeyHandleOnThisOrigin(meta.credentialId, meta.provider);
+  return {
+    finish: async (onStep) => {
+      const now = host.account();
+      const { seed, prf } = host.unlocked();
+      if (now.parent !== parent || now.self !== self || now.device || !seed || !prf) throw new Error(host.lockedMessage());
+      return runMakeAddedMain({
+        parent,
+        self,
+        selfTag,
+        target,
+        devices,
+        onStep,
+        ...oldMainSteps(host, { parent, self, seed, prf }),
+        assertTarget: () =>
+          restorePasskeyAccount({ retryDiscoverable: false, credential }).catch((e) => {
+            throw asCeremonyCancel(e);
+          }),
+        signGrant: host.signGrant,
+        adopt: async (key) => {
+          // The old main stays here as a linked passkey: keep its name, and let it be
+          // made the main one again from this list.
+          const { StorageKeys } = await import("@woco/shared");
+          const { getKV } = await import("./storage/indexeddb.js");
+          const pinned = await getKV<{ credentialId?: string; provider?: PasskeyProviderId }>(StorageKeys.PASSKEY_CREDENTIAL);
+          if (pinned?.credentialId) {
+            await writePasskeyMeta(parent, selfTag, { provider: pinned.provider ?? "unknown", addedAt: Date.now(), credentialId: pinned.credentialId }).catch(
+              () => {},
+            );
+          }
+          // The seed as it was unlocked at the tap: the window may close mid-handover.
+          await host.adoptNewMain(key, credential, { parent, seed });
+        },
+      });
+    },
+  };
 }
 
 /** Resume at sign-in or on Your passkeys. Never mints a session: on a passkey that

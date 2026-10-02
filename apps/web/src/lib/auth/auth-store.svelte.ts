@@ -2556,6 +2556,37 @@ async function _becomeDevice(seedAddr: string, parent: string): Promise<void> {
   }
 }
 
+/**
+ * Same-phone make-main (#746 step 4): this tab carries on as the new main passkey,
+ * with the key its sheet just gave, so nobody signs in again. The seed is the same,
+ * so the feed signer, issuing key and attendee key do not change - only which
+ * passkey opens them. Written in recoverAndRekey's order: the binding first (it is
+ * what every other write keys off), then the seed, the pin, the address.
+ */
+async function _adoptNewMain(
+  key: { address: string; privateKey: string; prfSecret: string },
+  credential: import("./passkey-account.js").PasskeyCredentialHandle,
+  { parent, seed }: { parent: string; seed: string },
+): Promise<void> {
+  const previous = _seedAddress?.toLowerCase();
+  const self = key.address.toLowerCase();
+  if (_kind !== "passkey" || !previous || _parent?.toLowerCase() !== parent) throw new Error(_seedLockedMessage());
+  await _becomeOwner(self, parent);
+  await storeLockedSeed(self, parent, seed, key.prfSecret);
+  await pinPasskeyCredential(credential);
+  await putKV(StorageKeys.SEED_ADDRESS, self);
+  // What opened the old main's keys without its passkey goes with it, as at sign-out.
+  await clearDeviceUnlock(previous).catch(() => {});
+  _passkeyPrivateKey = key.privateKey;
+  _passkeyPrfSecret = key.prfSecret;
+  _seedAddress = self;
+  _deviceRole = false;
+  _kernel = null;
+  _setUnlockedSeed(self, parent, seed);
+  // The session here was the old main's: the next request mints one with this key.
+  await _restoreAuthAfterRotation();
+}
+
 function _makeMainHost(): import("./make-main.js").MakeMainHost {
   return {
     apiBase,
@@ -2579,6 +2610,7 @@ function _makeMainHost(): import("./make-main.js").MakeMainHost {
     signGrant: _signGrant,
     becomeOwner: _becomeOwner,
     becomeDevice: _becomeDevice,
+    adoptNewMain: _adoptNewMain,
     lockedMessage: _seedLockedMessage,
   };
 }
@@ -2587,6 +2619,11 @@ async function makeThisDeviceMain(
   opts: import("./make-main.js").MakeThisDeviceMainOptions,
 ): Promise<{ registered: boolean }> {
   return (await import("./make-main.js")).makeThisDeviceMain(opts, _makeMainHost());
+}
+
+/** Your passkeys, main device: make a passkey this device added the main one. */
+async function prepareMakeAddedMain(target: import("./device-link.js").PairedDevice) {
+  return (await import("./make-main.js")).prepareMakeAddedMain(target, _makeMainHost());
 }
 
 async function approveMakeMain(
@@ -4451,6 +4488,7 @@ export const auth = {
   approveDeviceLink,
   makeThisDeviceMain,
   approveMakeMain,
+  prepareMakeAddedMain,
   resumeMakeMain,
   removePasskey,
   get isConnected() { return isConnected; },
