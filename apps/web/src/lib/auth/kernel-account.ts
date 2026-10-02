@@ -1030,6 +1030,48 @@ export async function removeAllBackups(
   return { alreadyAbsent: false, userOpHash, txHash };
 }
 
+// --- Another key as the owner (#746 step 4, "make this device the main one") ---
+
+/**
+ * ONE sudo userOp from the account itself that makes `newOwner` its owner: the same
+ * two validator calls a guardian recovery makes (`doRecovery`), as the account. The
+ * validator refuses `onInstall` while an owner is set (AlreadyInitialized), so the
+ * owner is removed first in the same batch - and a batch is all-or-nothing (the
+ * SDK encodes batch + revert-all), so the account is never left without one.
+ * Deploys the Kernel first if it is still counterfactual. Confirmed by the owner read
+ * at the block it landed in, never by the receipt.
+ *
+ * Fork-verified on Arbitrum One, 2026-10-02: deploy + rotate in one op (two
+ * OwnerRegistered, old then new), ERC-1271 follows the new owner, the old key's ops
+ * are refused (AA24), rotating back works, the root validator's config is unchanged.
+ */
+export async function rotateOwnerSelf(
+  builtKernel: BuiltKernel,
+  newOwner: string,
+): Promise<{ txHash: string; blockNumber?: bigint; confirmed: boolean }> {
+  const d = await loadRecoveryDeps();
+  const validator = d.getValidatorAddress(d.entryPoint, d.kernelVersion) as Address;
+  const abi = d.parseAbi(["function onUninstall(bytes)", "function onInstall(bytes)"]);
+  const { txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
+    calls: [
+      { to: validator, data: d.encodeFunctionData({ abi, functionName: "onUninstall", args: ["0x"] }) },
+      { to: validator, data: d.encodeFunctionData({ abi, functionName: "onInstall", args: [newOwner.toLowerCase() as Hex] }) },
+    ],
+  });
+  // A successful receipt means the batch ran, and it is all-or-nothing: the rotation
+  // happened. An owner read that fails now is "not yet confirmed", never "failed" -
+  // the caller must not treat the grants it holds as for a rotation that never was.
+  const owner = await readKernelEcdsaOwnerStrict(builtKernel.address, blockNumber);
+  if (owner === "error") {
+    console.warn(`[kernel] rotation landed (tx ${txHash}) but its owner read failed; treated as done`);
+    return { txHash, blockNumber, confirmed: false };
+  }
+  if (owner !== newOwner.toLowerCase()) {
+    throw new Error(`The main passkey did not change (tx ${txHash}). Nothing to undo - try again.`);
+  }
+  return { txHash, blockNumber, confirmed: true };
+}
+
 export interface RecoverAccountArgs {
   /** The locked-out user's Kernel address to recover. */
   targetAddress: string;

@@ -141,7 +141,11 @@ account's own posts, which opens nothing else (`woco:auth:feed-signer-cache:*`, 
 sign-out); the account's public content-feed address (`woco:auth:public-keys:*`); which account an added passkey belongs to
 (`woco:auth:device-kernel`); and, on the device that added a passkey, which password
 manager holds it (`woco:auth:passkey-meta:*`). The password manager is never sent to the
-server or written to Swarm.
+server or written to Swarm. While linking another device, that device keeps the id of the
+passkey it made for this tab only (`woco:pairing-credential`, session storage), so a reload
+reuses it; after making another device the main passkey, both devices keep the signed grants
+still to be registered (`woco:make-main:*`) until they are, or until the change is known not
+to have happened.
 
 ### 3.3 IP addresses
 

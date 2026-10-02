@@ -30,6 +30,13 @@
   let addError = $state<string | null>(null);
   let addedNote = $state<string | null>(null);
 
+  let linking = $state(false);
+  let makingMain = $state(false);
+  let regrantsWaiting = $state(false);
+  // Their own screens, loaded on the tap: this page carries none of their code.
+  const loadLinkAnotherDevice = () => import("./LinkAnotherDevice.svelte");
+  const loadMakeThisDeviceMain = () => import("./MakeThisDeviceMain.svelte");
+
   let confirming = $state<string | null>(null);
   let removing = $state<string | null>(null);
   let removeError = $state<string | null>(null);
@@ -63,6 +70,8 @@
       thisTag = pinned?.credentialId ? credentialTagOf(credentialIdBytes(pinned.credentialId)) : null;
       mainProvider = owner ? (pinned?.provider ?? null) : null;
       labels = await readPasskeyMeta(auth.parent);
+      // A make-main this device took part in may still have devices to sign back in.
+      regrantsWaiting = !(await auth.resumeMakeMain().catch(() => false));
       const res = await listDeviceGrants();
       if (!res.ok || !res.data) {
         loadError = res.error ?? "Couldn't load your passkeys - try again.";
@@ -145,8 +154,32 @@
   {:else if !isPasskey}
     <p class="muted">This account signs in another way. More than one passkey is for passkey accounts.</p>
   {:else}
-    {#if !owner}
-      <p class="note">You're signed in with an added passkey. To add or remove passkeys, sign in with your main passkey.</p>
+    {#if !owner && !makingMain}
+      <p class="note">
+        You're signed in with a linked passkey. To add or remove passkeys, use your main passkey - or make this device the
+        main one.
+      </p>
+      <button class="btn btn--ghost" onclick={() => (makingMain = true)}>Make this device the main one</button>
+    {/if}
+    <!-- Open panels sit outside the role check and the list: both change under them
+         when a device becomes (or stops being) the main one, and they must stay to
+         say how it went. -->
+    {#if makingMain}
+      {#await loadMakeThisDeviceMain() then { default: MakeThisDeviceMain }}
+        <MakeThisDeviceMain onchanged={() => void load()} onclose={() => (makingMain = false)} />
+      {:catch}
+        <p class="err">Couldn't open this - check your connection and try again.</p>
+      {/await}
+    {/if}
+    {#if linking}
+      {#await loadLinkAnotherDevice() then { default: LinkAnotherDevice }}
+        <LinkAnotherDevice onlinked={() => void load()} onclose={() => (linking = false)} />
+      {:catch}
+        <p class="err">Couldn't open this - check your connection and try again.</p>
+      {/await}
+    {/if}
+    {#if regrantsWaiting}
+      <p class="muted">Some of your other passkeys are still being updated - this finishes by itself next time you open Your passkeys.</p>
     {/if}
 
     {#if !loaded}
@@ -204,12 +237,16 @@
       </ul>
       {#if removeError}<p class="err">{removeError}</p>{/if}
 
-      {#if owner}
-        {#if adding === "closed"}
-          <button class="btn btn--primary" onclick={() => { adding = "explain"; addError = null; }}>
+      {#if owner && !makingMain}
+        {#if linking}
+          <!-- the panel is open above -->
+        {:else if adding === "closed"}
+          <button class="btn btn--primary" onclick={() => (linking = true)}>Link another device</button>
+          <button class="btn btn--ghost" onclick={() => { adding = "explain"; addError = null; }}>
             Add a passkey on this device
           </button>
-        {:else}
+        {/if}
+        {#if adding !== "closed" && !linking}
           <div class="add">
             <p>
               Pick a different password manager than the one holding your main passkey - another passkey in the same

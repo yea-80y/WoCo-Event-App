@@ -22,6 +22,7 @@ import {
   isOrphanedCredentialError,
   refuseOrphanedCredential,
   postOrphanedCredentialNotice,
+  MOVED_OR_RECOVERED_MESSAGE,
 } from "./orphaned-credential.js";
 import { readOrphanTombstone, writeOrphanTombstone } from "./orphan-tombstone.js";
 import { guardianConfigForBackup } from "./guardian-config.js";
@@ -54,6 +55,7 @@ import {
   clearPublicKeys,
 } from "./identity-seed.js";
 import { SEED_UNLOCK_POLICY, unlockExpiry } from "./seed-unlock-policy.js";
+import { makeMainPendingKey, linkedEnvelopePendingKey } from "./make-main-key.js";
 import { requestChallenge, sha256Hex } from "./request-challenge.js";
 import { apiBase } from "../api/http.js";
 import {
@@ -71,6 +73,7 @@ import {
   hasStoredPasskeyCredential,
   clearPasskeyCredential,
   createAddedPasskey,
+  asCeremonyCancel,
 } from "./passkey-account.js";
 import { createWeb3Signer, createLocalSigner } from "./signers/index.js";
 import type { BuiltKernel } from "./kernel-account.js";
@@ -257,7 +260,7 @@ function _getSeedAddress(): string | null {
 const SEED_UNAVAILABLE_MESSAGE = "Your account keys aren't on this device. Sign in again to fetch them.";
 
 export const MAIN_PASSKEY_REQUIRED_MESSAGE =
-  "This needs your main passkey - the one you created the account with. Use that device.";
+  "This needs your main passkey. Use that device, or make this device the main one in Your passkeys.";
 
 /** An owner-only action (names, backups, adding passkeys) from an added passkey. */
 export class MainPasskeyRequiredError extends Error {
@@ -281,6 +284,7 @@ const NOT_LINKED_MESSAGE =
   "Couldn't confirm this passkey is linked to the account. Try again - if it keeps happening, add it again from your main passkey.";
 const NOT_SET_UP_MESSAGE = "This passkey wasn't fully set up. Add it again from your main passkey.";
 const KEYS_UNREACHABLE_MESSAGE = "Couldn't fetch your account keys right now - try again.";
+const VERDICT_UNREACHABLE_MESSAGE = "Couldn't check this passkey with WoCo just now - try again in a moment.";
 
 /** Why the seed is not available: not here at all, or the person did not confirm. */
 function _seedLockedMessage(): string {
@@ -798,6 +802,8 @@ async function _restoreCachedAuth(): Promise<void> {
   if (!seedAddr) return;
   if (_kind === "passkey") {
     _deviceRole = (await _boundKernelFor(seedAddr))?.role === "device";
+    void resumeMakeMain().catch((e) => console.warn("[auth] make-main resume (retried next time):", e));
+    void _retryLinkedEnvelope(seedAddr);
     // Locked at rest (#746 fix 1): present only when this tab already unlocked it,
     // or when SEED_UNLOCK_POLICY keeps a copy that opens without the passkey. A
     // legacy device-key copy counts as LOCKED from this build's first load; it is
@@ -1020,6 +1026,14 @@ async function _putRecoveryBinding(seedAddress: string, kernel: string): Promise
   await putKV(StorageKeys.RECOVERED_KERNEL_BINDING, bindings);
 }
 
+/** Drop one passkey's recovery binding: it handed the account to another device (#746 step 4). */
+async function _clearRecoveryBinding(seedAddress: string): Promise<void> {
+  const bindings = await _getRecoveryBindings();
+  if (!(seedAddress.toLowerCase() in bindings)) return;
+  delete bindings[seedAddress.toLowerCase()];
+  await putKV(StorageKeys.RECOVERED_KERNEL_BINDING, bindings);
+}
+
 /** ADDED-passkey bindings `{ [prfEoaLower]: kernel }` (#746 step 3), see StorageKeys. */
 async function _getDeviceBindings(): Promise<Record<string, string>> {
   return (await getKV<Record<string, string>>(StorageKeys.DEVICE_KERNEL_BINDING)) ?? {};
@@ -1195,9 +1209,9 @@ async function _maybeWritePasskeyRecord(): Promise<void> {
   }
 }
 
-async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
+async function _maybeBackfillPortabilityEnvelope(): Promise<boolean> {
   try {
-    if (_kind !== "passkey") return;
+    if (_kind !== "passkey") return false;
     const { gatherBackfillArgs } = await import("./recovery-finalize.js");
     const gathered = await gatherBackfillArgs(_backfillGatherDeps());
     if (gathered.status !== "ready") {
@@ -1206,7 +1220,7 @@ async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
       if (!gathered.reason.startsWith("no recovery binding")) {
         console.warn(`[auth] portability back-fill not attempted: ${gathered.reason}`);
       }
-      return;
+      return false;
     }
 
     // Captured before the await: the back-fill runs in the background, and the
@@ -1218,11 +1232,14 @@ async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
     if (outcome.action === "refused") {
       console.error(`[auth] portability envelope back-fill REFUSED: ${outcome.reason}`);
       if (eoa && parent) await _healRefusedBackfill(eoa, parent);
-    } else {
-      console.log(`[auth] portability envelope back-fill: ${outcome.action} (${outcome.reason})`);
+      return false;
     }
+    console.log(`[auth] portability envelope back-fill: ${outcome.action} (${outcome.reason})`);
+    // "deferred" = the read could not answer: not written yet.
+    return outcome.action === "wrote" || outcome.action === "skipped";
   } catch (e) {
     console.warn("[auth] portability envelope back-fill failed (non-fatal):", e);
+    return false;
   }
 }
 
@@ -1635,9 +1652,10 @@ function writeCachedKernelAddress(kind: "passkey" | "web3auth", eoa: string, ker
   }
 }
 
-/** Drop a cached entry. Only ever called on a HEAL (#245 fix 4) — this cache is
- *  written from a definitive absence, so removing an entry is always safe and
- *  re-writing one from a background path never is. */
+/** Drop a cached entry: on a HEAL (#245 fix 4), and when the main passkey moved to
+ *  another device (#746 step 4) — this cache is written from a definitive absence,
+ *  so removing an entry is always safe and re-writing one from a background path
+ *  never is. */
 function clearCachedKernelAddress(kind: "passkey" | "web3auth", eoa: string): void {
   try {
     globalThis.localStorage?.removeItem(
@@ -1726,7 +1744,9 @@ function _verifyRecoveredBindingInBackground(
           _getSeedAddress()?.toLowerCase() === eoa.toLowerCase() &&
           _parent?.toLowerCase() === kernel.toLowerCase();
         if (stillThisSession) {
-          postOrphanedCredentialNotice(kind);
+          // A passkey here may also have made another device the main one (#746
+          // step 4); the next sign-in asks the server which.
+          postOrphanedCredentialNotice(kind, undefined, kind === "passkey" ? MOVED_OR_RECOVERED_MESSAGE : undefined);
           // force: the refusal already decided this session ends — a failed
           // provider logout must not keep the orphan signed in locally.
           await logout({ force: true });
@@ -1793,6 +1813,8 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, prfSecret: 
         );
         if (outcome.status === "healed") {
           console.warn("[auth] portability envelope found on re-probe — bound to", outcome.preserved);
+        } else if (outcome.status === "moved") {
+          console.warn("[auth] this passkey is no longer the account's main one — next sign-in asks the server");
         } else if (outcome.status === "orphaned") {
           console.warn(
             "[auth] this credential no longer owns its cached account — on-chain owner is",
@@ -2210,15 +2232,30 @@ async function _loginAddedPasskey(
     _postAuthNotice(DEVICE_REMOVED_MESSAGE);
     throw new DeviceRemovedError();
   }
+  // The server's owner cache can trail a rotation by minutes (Fable sign-off SHOULD-3):
+  // "owner" while this device's own fresh chain read names another key is no verdict.
+  if (verdict === "owner" && start.onChainOwner && start.onChainOwner.toLowerCase() !== seedAddr.toLowerCase()) {
+    throw new Error(VERDICT_UNREACHABLE_MESSAGE);
+  }
   // Neither refusal below forgets anything: the server says SESSION_INVALID for more
   // than "no grant" (an owner read it could not make, a store it could not read), so
   // a refusal leaves this device as it found it; only `removed` is certain.
   if (verdict === "invalid" && (added || !start.onChainOwner)) throw new Error(NOT_LINKED_MESSAGE);
   if ((verdict === "invalid" || verdict === "unreachable") && !added && start.onChainOwner) {
-    // Not an added passkey, and the chain names another owner: recovered away from
-    // (#255). Without a "device" verdict that stays a refusal, as it was before.
+    // Not an added passkey, its own envelope names this account, and the chain names
+    // another owner. Two histories end here: recovered away (#255), or the account's
+    // old main passkey after another device became the main one, before its new
+    // grant landed (#746 step 4). Both carry an envelope, so nothing here tells them
+    // apart: the words fit both, and it stays a refusal either way. An unanswered
+    // server is no verdict at all, and forgets nothing.
+    if (verdict === "unreachable") throw new Error(VERDICT_UNREACHABLE_MESSAGE);
     clearVerifiedBinding("passkey", seedAddr);
-    throw refuseOrphanedCredential("passkey", { boundKernel: parent, onChainOwner: start.onChainOwner });
+    throw refuseOrphanedCredential(
+      "passkey",
+      { boundKernel: parent, onChainOwner: start.onChainOwner },
+      undefined,
+      MOVED_OR_RECOVERED_MESSAGE,
+    );
   }
 
   // Another passkey of the SAME account may have signed in here before, so the
@@ -2242,6 +2279,9 @@ async function _loginAddedPasskey(
     await _clearDeviceBinding(seedAddr);
   } else {
     await _putDeviceBinding(seedAddr, parent);
+    // Recovered wins in `_boundKernelFor`: a main passkey that handed the account to
+    // another device must not keep reading as the owner here (#746 step 4).
+    await _clearRecoveryBinding(seedAddr);
   }
   if (verdict !== "unreachable") {
     await storeSession(parent, minted.sessionPrivateKey, minted.sessionAddress, minted.delegation);
@@ -2266,6 +2306,44 @@ function _grantRefusalMessage(res: { code?: string; error?: string; status?: num
   if (res.code === "not-owner" || res.code === "not-allowed") return new MainPasskeyRequiredError().message;
   if (res.status === 429) return "Too many changes just now - try again in a minute.";
   return res.error ?? "Couldn't save that - try again.";
+}
+
+/** Sign, raw as the owner, and register the grant that makes `grantee` a device of
+ *  `parent` - for both ways a passkey is added. Throws the refusal, in words. */
+async function _grantDevice(
+  ownerKey: string,
+  parent: string,
+  grantee: string,
+  credentialTag: string,
+): Promise<DeviceGrantMessage> {
+  const { grant, grantSig } = await _signGrant(ownerKey, parent, grantee, credentialTag);
+  const { registerDeviceGrant } = await import("../api/device-grants.js");
+  const res = await registerDeviceGrant(grant, grantSig);
+  if (!res.ok) throw new Error(_grantRefusalMessage(res));
+  return grant;
+}
+
+/** A grant signed raw by `ownerKey`, not yet registered: make-main signs them before
+ *  its key is the owner, and registers them after. */
+async function _signGrant(
+  ownerKey: string,
+  parent: string,
+  grantee: string,
+  credentialTag: string,
+): Promise<{ grant: DeviceGrantMessage; grantSig: string }> {
+  const grant: DeviceGrantMessage = {
+    parent: parent.toLowerCase(),
+    grantee: grantee.toLowerCase(),
+    credentialTag,
+    issuedAt: Math.floor(Date.now() / 1000),
+    nonce: _randomNonce(),
+  };
+  const grantSig = await createLocalSigner(ownerKey, async () => true)(
+    { ...DEVICE_GRANT_DOMAIN },
+    DEVICE_GRANT_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
+    grant as unknown as Record<string, unknown>,
+  );
+  return { grant, grantSig };
 }
 
 /**
@@ -2320,21 +2398,7 @@ async function addPasskeyOnThisDevice(
   onStep?.("linking");
   const { credentialIdBytes, writePasskeyRecord } = await import("./passkey-record.js");
   const credentialId = credentialIdBytes(added.credentialId);
-  const grant: DeviceGrantMessage = {
-    parent,
-    grantee: added.address.toLowerCase(),
-    credentialTag: credentialTagOf(credentialId),
-    issuedAt: Math.floor(Date.now() / 1000),
-    nonce: _randomNonce(),
-  };
-  const grantSig = await createLocalSigner(ownerKey, async () => true)(
-    { ...DEVICE_GRANT_DOMAIN },
-    DEVICE_GRANT_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
-    grant as unknown as Record<string, unknown>,
-  );
-  const { registerDeviceGrant } = await import("../api/device-grants.js");
-  const res = await registerDeviceGrant(grant, grantSig);
-  if (!res.ok) throw new Error(_grantRefusalMessage(res));
+  const grant = await _grantDevice(ownerKey, parent, added.address, credentialTagOf(credentialId));
 
   // Best-effort past this point: the passkey already works. Without its record
   // the sign-in guard simply has nothing to check; without the label the list
@@ -2398,6 +2462,164 @@ async function onDeviceRemoved(): Promise<void> {
   } finally {
     _forgettingDevice = false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Linking another device (#746 step 4, Fable consult 7). The flows live in the
+// lazily loaded `device-link.ts`; only what needs this store's state is here.
+// ---------------------------------------------------------------------------
+
+/** The new device's half: make its passkey, show a code, sign in once the main answers. */
+async function linkThisDevice(opts: import("./device-link.js").LinkThisDeviceOptions): Promise<void> {
+  if (isConnected) throw new Error("You're already signed in on this device.");
+  if (_busy) throw new Error("A sign-in is already in progress.");
+  const { runLinkThisDevice } = await import("./device-link.js");
+  await runLinkThisDevice(opts, {
+    apiBase,
+    // The server's verdict decides, as for any added passkey; nothing is kept before it.
+    signIn: async (account, secret) => {
+      _busy = true;
+      try {
+        await _loginAddedPasskey(account, { parent: secret.parent, seed: secret.seed });
+      } finally {
+        _busy = false;
+      }
+    },
+  });
+}
+
+/**
+ * A passkey sheet now, whatever the unlock window says, for the actions that hand
+ * this account to another device. A link cannot be undone by removing the device
+ * later - it already holds the account keys - so a phone left unlocked inside the
+ * window must not be able to do it with one tap.
+ */
+async function _freshMainPasskey(): Promise<void> {
+  if (_kind !== "passkey" || _deviceRole || !_seedAddress) throw new MainPasskeyRequiredError();
+  if (!_passkeyPrivateKey) {
+    await _ensurePasskeyKey(); // the sheet this asks for IS the fresh confirm
+  } else {
+    const material = await restorePasskeyAccount({ retryDiscoverable: false }).catch((e) => {
+      throw asCeremonyCancel(e);
+    });
+    if (material.address.toLowerCase() !== _seedAddress.toLowerCase()) {
+      throw new Error("That passkey opens a different account. Use the one you signed in with.");
+    }
+  }
+  if (!(await _unlockPasskeySeed(_seedAddress))) throw new Error(_seedLockedMessage());
+}
+
+/** The main device's half, after the person confirmed the code they scanned or typed. */
+async function approveDeviceLink(code: Uint8Array, offer: import("./device-link.js").LinkOffer): Promise<void> {
+  await _freshMainPasskey();
+  const parent = _parent?.toLowerCase();
+  const ownerKey = _passkeyPrivateKey;
+  const seedAddr = _seedAddress?.toLowerCase();
+  const seed = _unlockedSeed();
+  if (!parent || !ownerKey || !seedAddr || !seed) throw new Error(_seedLockedMessage());
+  const { runApproveDeviceLink } = await import("./device-link.js");
+  await runApproveDeviceLink(code, offer, {
+    apiBase,
+    parent,
+    self: seedAddr,
+    seed,
+    grant: (grantee, credentialTag) => _grantDevice(ownerKey, parent, grantee, credentialTag),
+    revoke: (grantee) => removePasskey(grantee),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Making a linked device the main passkey (#746 step 4). The flows live in the
+// lazily loaded `make-main.ts`; this store lends it only what needs its state.
+// ---------------------------------------------------------------------------
+
+/** This passkey is the account's owner now. */
+async function _becomeOwner(seedAddr: string, parent: string): Promise<void> {
+  await _putRecoveryBinding(seedAddr, parent);
+  await _clearDeviceBinding(seedAddr);
+  writeVerifiedBinding("passkey", seedAddr, parent);
+  if (_seedAddress?.toLowerCase() === seedAddr) {
+    _deviceRole = false;
+    _kernel = null;
+  }
+}
+
+/** This passkey handed the account to another: a linked device from now on. */
+async function _becomeDevice(seedAddr: string, parent: string): Promise<void> {
+  await _putDeviceBinding(seedAddr, parent);
+  await _clearRecoveryBinding(seedAddr);
+  clearVerifiedBinding("passkey", seedAddr);
+  clearCachedKernelAddress("passkey", seedAddr);
+  if (_seedAddress?.toLowerCase() === seedAddr) {
+    _deviceRole = true;
+    _kernel = null;
+  }
+}
+
+function _makeMainHost(): import("./make-main.js").MakeMainHost {
+  return {
+    apiBase,
+    account: () => ({
+      passkey: _kind === "passkey",
+      parent: _parent?.toLowerCase() ?? null,
+      self: _seedAddress?.toLowerCase() ?? null,
+      device: _deviceRole,
+      session: !!_sessionAddress,
+    }),
+    ownKey: async () => {
+      await _ensurePasskeyKey();
+      return _passkeyPrivateKey;
+    },
+    freshMainPasskey: _freshMainPasskey,
+    unlocked: () => ({ seed: _unlockedSeed(), prf: _passkeyPrfSecret }),
+    kernel: async () => {
+      await _ensureKernel();
+      return _kernel;
+    },
+    signGrant: _signGrant,
+    becomeOwner: _becomeOwner,
+    becomeDevice: _becomeDevice,
+    lockedMessage: _seedLockedMessage,
+  };
+}
+
+async function makeThisDeviceMain(
+  opts: import("./make-main.js").MakeThisDeviceMainOptions,
+): Promise<{ registered: boolean }> {
+  return (await import("./make-main.js")).makeThisDeviceMain(opts, _makeMainHost());
+}
+
+async function approveMakeMain(
+  code: Uint8Array,
+  offer: import("./device-link.js").MakeMainOffer,
+  onStep?: (step: "waiting" | "changing" | "finishing") => void,
+): Promise<{ registered: boolean }> {
+  return (await import("./make-main.js")).approveMakeMain(code, offer, _makeMainHost(), onStep);
+}
+
+/** A linked passkey whose envelope write failed at link time (`device-link.ts` leaves
+ *  the marker): write it now, once there is a session and the PRF output is here. One
+ *  storage read otherwise. */
+async function _retryLinkedEnvelope(seedAddr: string): Promise<void> {
+  const key = linkedEnvelopePendingKey(seedAddr);
+  try {
+    if (!globalThis.localStorage?.getItem(key) || !_sessionAddress || !_passkeyPrfSecret) return;
+    if (await _maybeBackfillPortabilityEnvelope()) globalThis.localStorage?.removeItem(key);
+  } catch {
+    /* retried at the next sign-in */
+  }
+}
+
+/** Finish a make-main this device took part in. One storage read unless one is waiting. */
+async function resumeMakeMain(): Promise<boolean> {
+  const parent = _parent?.toLowerCase();
+  if (_kind !== "passkey" || !parent) return true;
+  try {
+    if (!globalThis.localStorage?.getItem(makeMainPendingKey(parent))) return true;
+  } catch {
+    return true;
+  }
+  return (await import("./make-main.js")).resumeForHost(_makeMainHost());
 }
 
 async function loginPasskeyResult(
@@ -2539,7 +2761,11 @@ async function loginPasskeyResult(
       const foreignOwner = provenOrphanOwner(answered, account.address);
       if (foreignOwner) {
         clearVerifiedBinding("passkey", account.address);
-        throw refuseOrphanedCredential("passkey", { boundKernel: override, onChainOwner: foreignOwner });
+        // Recovered away (#255) - or this passkey made another device the main one
+        // and is a linked device now (#746 step 4). The server's verdict says which;
+        // without a "device" verdict it is refused, as before.
+        await _loginAddedPasskey(account, { parent: override, seed: null, onChainOwner: foreignOwner });
+        return { ok: true };
       }
       ownerAffirmed = answered !== null && answered.toLowerCase() === account.address.toLowerCase();
     }
@@ -4221,6 +4447,11 @@ export const auth = {
   get isAccountOwner() { return !(_kind === "passkey" && _deviceRole); },
   onDeviceRemoved,
   addPasskeyOnThisDevice,
+  linkThisDevice,
+  approveDeviceLink,
+  makeThisDeviceMain,
+  approveMakeMain,
+  resumeMakeMain,
   removePasskey,
   get isConnected() { return isConnected; },
   get isAuthenticated() { return isAuthenticated; },

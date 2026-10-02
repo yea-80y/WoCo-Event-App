@@ -20,6 +20,7 @@
   const loadShopOrderScreen = () => import("./lib/attendee/shop/ShopOrderScreen.svelte");
   const loadRecoverySetup = () => import("./lib/components/recovery/AccountRecoverySetup.svelte");
   const loadYourPasskeys = () => import("./lib/components/passkeys/YourPasskeys.svelte");
+  const loadLinkThisDevice = () => import("./lib/components/passkeys/LinkThisDevice.svelte");
   const loadRecoverPortal = () => import("./lib/components/recovery/AccountRecoverPortal.svelte");
   const loadSignupLanding = () => import("./lib/attendee/gate/SignupLanding.svelte");
   const loadCoasterPage = () => import("./lib/credits/CoasterPage.svelte");
@@ -100,6 +101,8 @@
     <LazyRoute loader={loadRecoverySetup} />
   {:else if router.route === "passkeys"}
     <LazyRoute loader={loadYourPasskeys} />
+  {:else if router.route === "link"}
+    <LazyRoute loader={loadLinkThisDevice} />
   {:else if router.route === "recover"}
     <LazyRoute loader={loadRecoverPortal} />
   {/if}

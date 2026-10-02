@@ -552,6 +552,30 @@ later returns `DEVICE_REMOVED` does the same and signs out. A device never deriv
 own passkey, and cannot reach the Kernel (`_ensureKernel` throws): names, backups and adding
 passkeys need the main passkey (`auth.isAccountOwner`).
 
+**Linking another device (step 4).** The device being added makes its own passkey and shows a
+code (QR or 26 characters; the QR is deliberately not a URL, so only WoCo's own scanner, opened on
+purpose, can use it). The main device scans it, confirms with a passkey sheet every time, registers
+the grant, then sends the account and seed sealed (X-Wing) to a key that lives only in the new
+device's memory for this pairing; the new device signs in through the same server verdict as any
+added passkey and writes its own envelope. Transport is a 10-minute in-memory mailbox
+(`/api/pairing`, no session) holding bytes sealed under keys from the code, which the server never
+sees: `apps/web/src/lib/auth/pairing-channel.ts` (a swappable `PairingTransport`) and
+`device-link.ts` (message shapes).
+
+**Making a linked device the main passkey (step 4).** One sponsored userOp from the account
+itself re-keys the ECDSA validator (`onUninstall` + `onInstall(newOwner)` in one all-or-nothing
+batch - the calls `doRecovery` makes; `rotateOwnerSelf`, fork-verified on Arbitrum One). Every
+grant the old main signed dies with it, so the order is: the linked device shows a code; the main
+scans it, confirms with a passkey sheet and sends its own passkey and the other devices; the
+linked device signs fresh grants for all of them and sends them back; the main checks them,
+writes its OWN envelope (it becomes a linked device and signs in like one everywhere), rotates,
+and registers the grants, old main first - the new main registers them too, a repeat being
+"done". Both keep the grants until registered (`make-main.ts`, resumed at sign-in); grants for a
+rotation that never happened are dropped once the code expires. Ownership is read from the chain,
+never from the session rank, which lags a rotation by the server's owner cache. A passkey the
+chain no longer names but whose own envelope names the account - recovered away, or a main that
+moved - is never tombstoned: its next sign-in asks the server.
+
 Paths that deliberately need no session: guest Stripe checkout from the embed widget, the public
 ticket page `/t/…`, and the ENS CCIP-Read gateway.
 

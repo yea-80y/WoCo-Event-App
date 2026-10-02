@@ -9,9 +9,11 @@
     onstart?: () => void;
     /** Attempt settled (either way) — the modal returns to the picker. */
     onsettle?: () => void;
+    /** "Link this device" (#746 step 4) was chosen: the modal closes for its screen. */
+    onlink?: () => void;
   }
 
-  let { oncomplete, onstart, onsettle }: Props = $props();
+  let { oncomplete, onstart, onsettle, onlink }: Props = $props();
   let error = $state<string | null>(null);
   let supported = $state(false);
   /** Emphasises the create button after a sign-in found nothing — never auto-clicks it. */
@@ -85,6 +87,12 @@
     >
       New to WoCo? Create a passkey account
     </button>
+
+    {#if onlink}
+      <button class="create-btn" onclick={onlink} disabled={auth.busy}>
+        Signed in on another device? Link this one
+      </button>
+    {/if}
 
     <div class="providers">
       <span class="provider-label">Secured by</span>
