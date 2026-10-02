@@ -20,6 +20,7 @@ import { Wallet, type TypedDataField } from "ethers";
 import { DEVICE_GRANT_DOMAIN, DEVICE_GRANT_TYPES, credentialTagOf, PAIRING_TTL_MS } from "@woco/shared";
 import {
   grantsMatch,
+  MakeMainHandedOverError,
   resumeMakeMain,
   runApproveMakeMain,
   runMakeAddedMain,
@@ -528,6 +529,7 @@ function samePhone(over: Partial<MakeAddedMainContext> & { sheetKey?: Wallet } =
     becomeDevice: async () => void w.log.push("became-device"),
     submit: w.server("phone"),
     adopt: async (k) => void w.log.push(`adopt:${k.address.toLowerCase().slice(0, 6)}`),
+    readOwner: async () => w.chain.owner,
     ...over,
   };
   return { w, store, run: () => runMakeAddedMain(ctx) };
@@ -618,4 +620,48 @@ test("store: same phone - main first, the row's own credential, and the switch i
   ].map((s) => adopt.indexOf(s));
   assert.ok(order.every((i, n) => i > 0 && (n === 0 || i > order[n - 1])), "binding, seed, pin, address, memory, then the session");
   assert.match(adopt, /_deviceRole = false;/);
+});
+
+test("SHOULD-1: anything failing after the rotation says so - never 'nothing changed'", async () => {
+  for (const over of [
+    { becomeDevice: async () => { throw new Error("storage full"); } },
+    { adopt: async () => { throw new Error("storage full"); } },
+  ] as Partial<MakeAddedMainContext>[]) {
+    const { w, run } = samePhone(over);
+    await assert.rejects(run(), (e: Error) => e instanceof MakeMainHandedOverError && e.name === "MakeMainHandedOverError");
+    assert.equal(w.chain.owner, X);
+  }
+  // A rotation that is refused changed nothing, and says that.
+  const refused = samePhone({ rotate: async () => { throw new Error("The main passkey did not change"); } });
+  await assert.rejects(refused.run(), (e: Error) => !(e instanceof MakeMainHandedOverError));
+});
+
+test("SHOULD-2: a rotation that landed after its receipt timed out is not repeated on the retry", async () => {
+  const { w, store, run } = samePhone();
+  w.chain.owner = X; // the earlier try's op landed late
+  assert.deepEqual(await run(), { registered: true });
+  assert.ok(!w.log.some((x) => x.startsWith("rotate")), "no second rotation");
+  assert.deepEqual(w.log.slice(-4), ["became-device", `phone:registered:${M.slice(0, 6)}`, `phone:registered:${T.slice(0, 6)}`, `adopt:${X.slice(0, 6)}`]);
+  assert.equal(store.map.size, 0);
+  // An owner that cannot be read decides nothing: the rotation runs as usual.
+  const unread = samePhone({ readOwner: async () => "error" });
+  await unread.run();
+  assert.ok(unread.w.log.some((x) => x.startsWith("rotate")));
+});
+
+test("sign-off fixes (same phone) pinned in the store and screens", () => {
+  const fresh = body(STORE, "async function _freshMainPasskey(");
+  assert.match(fresh, /await _ensurePasskeyKey\(\)\.catch\(\(e\) => \{\s*throw asCeremonyCancel\(e\);/, "SHOULD-3");
+  const restamp = fresh.indexOf("if (seed && _parent) _setUnlockedSeed(_seedAddress, _parent, seed);");
+  assert.ok(restamp > fresh.indexOf("await _unlockPasskeySeed(_seedAddress)"), "SHOULD-5: a full window from the fresh sheet");
+  const screen = read("../src/lib/components/passkeys/MakeAddedMain.svelte");
+  assert.match(screen, /e\.name === "MakeMainHandedOverError"/);
+  assert.doesNotMatch(screen, /isAccountOwner/, "SHOULD-1: the role is not the signal");
+  const your = read("../src/lib/components/passkeys/YourPasskeys.svelte");
+  assert.match(your, /const busy = \$derived\(promoting !== null \|\| makingMain \|\| linking\);/);
+  assert.match(your, /\{#if \(owner \|\| mine\) && !busy\}/, "SHOULD-4");
+  // "Move to another password manager": the add is followed by the make-main offer.
+  const add = your.slice(your.indexOf("async function add("), your.indexOf("async function remove("));
+  assert.ok(add.indexOf("await load();") < add.indexOf("promoting = active.find((r) => r.grantee === grantee) ?? null;"));
+  assert.match(your, />\s*Move to another password manager\s*</);
 });

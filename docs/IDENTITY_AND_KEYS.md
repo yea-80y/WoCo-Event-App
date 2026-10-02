@@ -576,12 +576,15 @@ never from the session rank, which lags a rotation by the server's owner cache. 
 chain no longer names but whose own envelope names the account - recovered away, or a main that
 moved - is never tombstoned: its next sign-in asks the server.
 
-**Same phone, no code (step 4).** A passkey the main device added itself (another password
-manager on the same phone) can be made the main one from its row: one passkey sheet for the main,
+**Same phone, no code (step 4).** "Move to another password manager" makes a passkey in the
+other manager, then offers to make it the main one; any passkey the main device added itself can
+also be made the main one from its row. One passkey sheet for the main,
 then one for that passkey (two taps - Safari opens a sheet only from a tap). Its key signs the
 grants right there, and the old main runs the same handover as above (`handOver` in
 `make-main.ts`, shared by both paths). The tab then carries on as the new main (`_adoptNewMain`:
 same seed, so no key the account publishes changes), and the old main stays as a linked passkey.
+Anything that fails after the rotation says so (`MakeMainHandedOverError`) and never offers a
+retry, and a retry after a lost receipt reads the chain first so it never rotates twice.
 
 Paths that deliberately need no session: guest Stripe checkout from the embed widget, the public
 ticket page `/t/…`, and the ENS CCIP-Read gateway.
