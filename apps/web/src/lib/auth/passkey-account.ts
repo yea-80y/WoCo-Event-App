@@ -8,6 +8,9 @@ import {
   resolvePasskeyRpId,
   newBackupUserHandle,
   isBackupUserHandle,
+  aaguidFromAuthenticatorData,
+  passkeyProviderFromAaguid,
+  type PasskeyProviderId,
 } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 
@@ -15,6 +18,9 @@ import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 interface PasskeyCredentialMeta {
   credentialId: string; // base64url-encoded
   rpId: string;
+  /** The password manager that made it, read at creation and kept on this device
+   *  only (#746). Absent on passkeys made before that, which cannot be identified later. */
+  provider?: PasskeyProviderId;
 }
 
 /**
@@ -360,10 +366,15 @@ async function _authenticatePasskeyImpl(): Promise<PasskeyLogin> {
 
   const prfOutput = extractPrfResult(credential.getClientExtensionResults());
 
-  // Update stored credential metadata so init() can restore kind on reload
+  // Update stored credential metadata so init() can restore kind on reload. A sign-in
+  // cannot read the provider (#746: creation only), so keep the one recorded for
+  // this same passkey rather than erase it.
+  const credentialId = toBase64url(credential.rawId);
+  const prev = await getKV<PasskeyCredentialMeta>(StorageKeys.PASSKEY_CREDENTIAL);
   const meta: PasskeyCredentialMeta = {
-    credentialId: toBase64url(credential.rawId),
+    credentialId,
     rpId,
+    ...(prev?.credentialId === credentialId && prev.provider ? { provider: prev.provider } : {}),
   };
   await putKV(StorageKeys.PASSKEY_CREDENTIAL, meta);
 
@@ -422,6 +433,20 @@ async function _createPasskeyAccountImpl(): Promise<PasskeyLogin> {
   return { ...material, credentialId: credential.credentialId, attachment };
 }
 
+/** The password manager a just-created credential reports (#746); "unknown" when
+ *  the browser cannot say. Never throws: a label is not worth a failed sign-up. */
+function providerOf(credential: PublicKeyCredential): PasskeyProviderId {
+  try {
+    const response = credential.response as AuthenticatorAttestationResponse & {
+      getAuthenticatorData?: () => ArrayBuffer;
+    };
+    const data = response.getAuthenticatorData?.();
+    return passkeyProviderFromAaguid(data ? aaguidFromAuthenticatorData(new Uint8Array(data)) : null);
+  } catch {
+    return "unknown";
+  }
+}
+
 async function _mintPasskeyAccountImpl(): Promise<
   PasskeyKeyMaterial & { credential: PasskeyCredentialMeta; attachment: PasskeyAttachment }
 > {
@@ -460,6 +485,7 @@ async function _mintPasskeyAccountImpl(): Promise<
   const meta: PasskeyCredentialMeta = {
     credentialId: toBase64url(credential.rawId),
     rpId,
+    provider: providerOf(credential),
   };
 
   return { ...(await deriveKey(prfOutput)), credential: meta, attachment: attachmentOf(credential) };
