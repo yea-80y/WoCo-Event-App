@@ -25,10 +25,11 @@ import {
   LINK_CODE_UNREADABLE,
   parseLinkAnswer,
   parseLinkOffer,
-  readLinkOffer,
+  readPairingOffer,
   runApproveDeviceLink,
   runLinkThisDevice,
   type LinkingPasskey,
+  type LinkOffer,
 } from "../src/lib/auth/device-link.ts";
 import {
   PairingExpiredError,
@@ -138,7 +139,9 @@ function linkBothSides(
       onCode: ({ typed }) => {
         calls.push("code-shown");
         mainDone = (async () => {
-          const { code, offer: got } = await readLinkOffer(typed, { apiBase: "", transport: m });
+          const { code, offer: read } = await readPairingOffer(typed, { apiBase: "", transport: m });
+          assert.equal(read.kind, "link");
+          const got = read as LinkOffer;
           calls.push(`offer:${got.grantee}`);
           await runApproveDeviceLink(code, got, {
             apiBase: "",
@@ -246,16 +249,16 @@ test("main: no answer when the grant is refused; never a grant to itself", async
 
 test("main: a code that is not ours, expired, or carries something else is refused before any confirm", async () => {
   const m = mailbox();
-  await assert.rejects(readLinkOffer("not a code", { apiBase: "", transport: m }), { message: LINK_CODE_UNREADABLE });
-  await assert.rejects(readLinkOffer("0".repeat(26), { apiBase: "", transport: m }), PairingExpiredError);
-  await assert.rejects(readLinkOffer("0".repeat(26), { apiBase: "", transport: { ...m, read: async () => "gone" } }), PairingExpiredError);
+  await assert.rejects(readPairingOffer("not a code", { apiBase: "", transport: m }), { message: LINK_CODE_UNREADABLE });
+  await assert.rejects(readPairingOffer("0".repeat(26), { apiBase: "", transport: m }), PairingExpiredError);
+  await assert.rejects(readPairingOffer("0".repeat(26), { apiBase: "", transport: { ...m, read: async () => "gone" } }), PairingExpiredError);
   const one = newPairingCode();
   const ch = pairingChannel(one);
   await m.post(ch.id, "offer", await ch.seal("offer", { ...offer, kind: "make-main" }));
-  await assert.rejects(readLinkOffer(formatPairingCode(one), { apiBase: "", transport: m }), { message: LINK_CODE_UNKNOWN });
+  await assert.rejects(readPairingOffer(formatPairingCode(one), { apiBase: "", transport: m }), { message: LINK_CODE_UNKNOWN });
   const two = newPairingCode();
   await m.post(pairingChannel(two).id, "offer", "AAAA");
-  await assert.rejects(readLinkOffer(formatPairingCode(two), { apiBase: "", transport: m }), { message: LINK_CODE_UNKNOWN });
+  await assert.rejects(readPairingOffer(formatPairingCode(two), { apiBase: "", transport: m }), { message: LINK_CODE_UNKNOWN });
 });
 
 test("new device: cancelling while waiting signs in to nothing", async () => {

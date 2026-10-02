@@ -562,6 +562,20 @@ added passkey and writes its own envelope. Transport is a 10-minute in-memory ma
 sees: `apps/web/src/lib/auth/pairing-channel.ts` (a swappable `PairingTransport`) and
 `device-link.ts` (message shapes).
 
+**Making a linked device the main passkey (step 4).** One sponsored userOp from the account
+itself re-keys the ECDSA validator (`onUninstall` + `onInstall(newOwner)` in one all-or-nothing
+batch - the calls `doRecovery` makes; `rotateOwnerSelf`, fork-verified on Arbitrum One). Every
+grant the old main signed dies with it, so the order is: the linked device shows a code; the main
+scans it, confirms with a passkey sheet and sends its own passkey and the other devices; the
+linked device signs fresh grants for all of them and sends them back; the main checks them,
+writes its OWN envelope (it becomes a linked device and signs in like one everywhere), rotates,
+and registers the grants, old main first - the new main registers them too, a repeat being
+"done". Both keep the grants until registered (`make-main.ts`, resumed at sign-in); grants for a
+rotation that never happened are dropped once the code expires. Ownership is read from the chain,
+never from the session rank, which lags a rotation by the server's owner cache. A passkey the
+chain no longer names but whose own envelope names the account - recovered away, or a main that
+moved - is never tombstoned: its next sign-in asks the server.
+
 Paths that deliberately need no session: guest Stripe checkout from the embed widget, the public
 ticket page `/t/…`, and the ENS CCIP-Read gateway.
 

@@ -9,6 +9,12 @@
  *                                  the main shows only what it knows.
  *   answer  (main)                 the account and its seed, sealed to that key,
  *                                  sent after the main registered the grant.
+ * Making a linked device the main passkey (`make-main.ts`) uses the same channel:
+ *   offer   (the linked device)    the account and its own passkey;
+ *   answer  (main)                 its own passkey and the account's other devices;
+ *   reply   (the linked device)    grants for all of them, signed by its own key -
+ *                                  so they exist before the main hands over the
+ *                                  account (Fable consult 7).
  * What a message may change is decided by the grant's signature and the server's
  * grant list, never by the message.
  *
@@ -17,7 +23,13 @@
  * passkey, which is what lets the tests run both halves against each other.
  */
 
-import { credentialTagOf, type PasskeyProviderId } from "@woco/shared";
+import {
+  MAX_DEVICE_GRANTS,
+  credentialTagOf,
+  parseDeviceGrant,
+  type DeviceGrantMessage,
+  type PasskeyProviderId,
+} from "@woco/shared";
 import {
   createAddedPasskey,
   passkeyHandleOnThisOrigin,
@@ -31,6 +43,7 @@ import type { LinkSecret, PairingTransport } from "./pairing-channel.js";
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const BYTES32 = /^0x[0-9a-f]{64}$/;
 const XWING_PK_HEX = /^[0-9a-f]{2432}$/;
+const SIG = /^0x[0-9a-fA-F]{130}$/;
 
 export interface LinkOffer {
   v: 1;
@@ -57,6 +70,82 @@ export function parseLinkOffer(v: unknown): LinkOffer | null {
   if (typeof credentialTag !== "string" || !BYTES32.test(credentialTag)) return null;
   if (typeof recipientPk !== "string" || !XWING_PK_HEX.test(recipientPk)) return null;
   return { v: 1, kind: "link", grantee, credentialTag, recipientPk };
+}
+
+export interface MakeMainOffer {
+  v: 1;
+  kind: "make-main";
+  parent: string;
+  grantee: string;
+  credentialTag: string;
+}
+
+export interface PairedDevice {
+  grantee: string;
+  credentialTag: string;
+}
+
+export interface MakeMainAnswer {
+  v: 1;
+  kind: "make-main";
+  /** The main passkey, which becomes a linked device. */
+  previous: PairedDevice;
+  /** Every other live device, to be granted again by the new main. */
+  devices: PairedDevice[];
+}
+
+export interface SignedGrant {
+  grant: DeviceGrantMessage;
+  grantSig: string;
+}
+
+export interface MakeMainReply {
+  v: 1;
+  kind: "make-main";
+  grants: SignedGrant[];
+}
+
+export type PairingOffer = LinkOffer | MakeMainOffer;
+
+function parseDevice(v: unknown): PairedDevice | null {
+  if (!isObject(v)) return null;
+  const { grantee, credentialTag } = v;
+  if (typeof grantee !== "string" || !ADDRESS.test(grantee)) return null;
+  if (typeof credentialTag !== "string" || !BYTES32.test(credentialTag)) return null;
+  return { grantee, credentialTag };
+}
+
+export function parseMakeMainOffer(v: unknown): MakeMainOffer | null {
+  if (!isObject(v) || v.v !== 1 || v.kind !== "make-main") return null;
+  const device = parseDevice(v);
+  if (!device || typeof v.parent !== "string" || !ADDRESS.test(v.parent)) return null;
+  return { v: 1, kind: "make-main", parent: v.parent, ...device };
+}
+
+export function parsePairingOffer(v: unknown): PairingOffer | null {
+  return parseLinkOffer(v) ?? parseMakeMainOffer(v);
+}
+
+export function parseMakeMainAnswer(v: unknown): MakeMainAnswer | null {
+  if (!isObject(v) || v.v !== 1 || v.kind !== "make-main" || !Array.isArray(v.devices)) return null;
+  if (v.devices.length >= MAX_DEVICE_GRANTS) return null;
+  const previous = parseDevice(v.previous);
+  const devices = v.devices.map(parseDevice);
+  if (!previous || devices.some((d) => d === null)) return null;
+  return { v: 1, kind: "make-main", previous, devices: devices as PairedDevice[] };
+}
+
+export function parseMakeMainReply(v: unknown): MakeMainReply | null {
+  if (!isObject(v) || v.v !== 1 || v.kind !== "make-main" || !Array.isArray(v.grants)) return null;
+  if (v.grants.length > MAX_DEVICE_GRANTS) return null;
+  const grants: SignedGrant[] = [];
+  for (const g of v.grants) {
+    if (!isObject(g) || typeof g.grantSig !== "string" || !SIG.test(g.grantSig)) return null;
+    const grant = parseDeviceGrant(g.grant);
+    if (!grant) return null;
+    grants.push({ grant, grantSig: g.grantSig });
+  }
+  return { v: 1, kind: "make-main", grants };
 }
 
 export function parseLinkAnswer(v: unknown): LinkAnswer | null {
@@ -210,17 +299,17 @@ async function settleLinkedPasskey(account: LinkingPasskey, secret: LinkSecret, 
 // ---------------------------------------------------------------------------
 
 /** The offer behind a scanned or typed code, for the person to confirm. Reads only. */
-export async function readLinkOffer(
+export async function readPairingOffer(
   input: string,
   deps: { apiBase: string; transport?: PairingTransport },
-): Promise<{ code: Uint8Array; offer: LinkOffer }> {
+): Promise<{ code: Uint8Array; offer: PairingOffer }> {
   const ch = await import("./pairing-channel.js");
   const code = ch.parsePairingCode(input);
   if (!code) throw new Error(LINK_CODE_UNREADABLE);
   const channel = ch.pairingChannel(code);
   const box = await (deps.transport ?? ch.httpPairingTransport(deps.apiBase)).read(channel.id, "offer");
   if (box === null || box === "gone") throw new ch.PairingExpiredError();
-  const offer = parseLinkOffer(await channel.open("offer", box).catch(() => null));
+  const offer = parsePairingOffer(await channel.open("offer", box).catch(() => null));
   if (!offer) throw new Error(LINK_CODE_UNKNOWN);
   return { code, offer };
 }

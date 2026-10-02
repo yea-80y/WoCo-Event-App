@@ -31,8 +31,11 @@
   let addedNote = $state<string | null>(null);
 
   let linking = $state(false);
-  // Its own screen, loaded on the tap: this page carries none of the linking code.
+  let makingMain = $state(false);
+  let regrantsWaiting = $state(false);
+  // Their own screens, loaded on the tap: this page carries none of their code.
   const loadLinkAnotherDevice = () => import("./LinkAnotherDevice.svelte");
+  const loadMakeThisDeviceMain = () => import("./MakeThisDeviceMain.svelte");
 
   let confirming = $state<string | null>(null);
   let removing = $state<string | null>(null);
@@ -67,6 +70,8 @@
       thisTag = pinned?.credentialId ? credentialTagOf(credentialIdBytes(pinned.credentialId)) : null;
       mainProvider = owner ? (pinned?.provider ?? null) : null;
       labels = await readPasskeyMeta(auth.parent);
+      // A make-main this device took part in may still have devices to sign back in.
+      regrantsWaiting = !(await auth.resumeMakeMain().catch(() => false));
       const res = await listDeviceGrants();
       if (!res.ok || !res.data) {
         loadError = res.error ?? "Couldn't load your passkeys - try again.";
@@ -150,7 +155,22 @@
     <p class="muted">This account signs in another way. More than one passkey is for passkey accounts.</p>
   {:else}
     {#if !owner}
-      <p class="note">You're signed in with an added passkey. To add or remove passkeys, sign in with your main passkey.</p>
+      <p class="note">
+        You're signed in with a linked passkey. To add or remove passkeys, use your main passkey - or make this device the
+        main one.
+      </p>
+      {#if makingMain}
+        {#await loadMakeThisDeviceMain() then { default: MakeThisDeviceMain }}
+          <MakeThisDeviceMain onchanged={() => { loaded = false; void load(); }} onclose={() => (makingMain = false)} />
+        {:catch}
+          <p class="err">Couldn't open this - check your connection and try again.</p>
+        {/await}
+      {:else}
+        <button class="btn btn--ghost" onclick={() => (makingMain = true)}>Make this device the main one</button>
+      {/if}
+    {/if}
+    {#if regrantsWaiting}
+      <p class="muted">Some devices still need to be re-linked - this finishes by itself next time you open Your passkeys.</p>
     {/if}
 
     {#if !loaded}

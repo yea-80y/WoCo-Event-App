@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { encode } from "uqr";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
+  import PairingCode from "./PairingCode.svelte";
 
   /**
    * "Link this device" (#746 step 4), on the device being added: make its own passkey,
@@ -11,19 +11,9 @@
    */
 
   let stage = $state<"intro" | "creating" | "waiting" | "linking" | "done">("intro");
-  let typed = $state("");
-  let qr = $state<{ size: number; path: string } | null>(null);
+  let code = $state<{ typed: string; qr: string } | null>(null);
   let error = $state<string | null>(null);
   let controller: AbortController | null = null;
-
-  function draw(payload: string): void {
-    const { data } = encode(payload, { ecc: "M", border: 2 });
-    let path = "";
-    for (let y = 0; y < data.length; y++) {
-      for (let x = 0; x < data.length; x++) if (data[y][x]) path += `M${x} ${y}h1v1h-1z`;
-    }
-    qr = { size: data.length, path };
-  }
 
   async function start(): Promise<void> {
     if (stage !== "intro") return;
@@ -34,10 +24,7 @@
       await auth.linkThisDevice({
         signal: controller.signal,
         onStep: (s) => (stage = s),
-        onCode: (c) => {
-          typed = c.typed;
-          draw(c.qr);
-        },
+        onCode: (c) => (code = c),
       });
       stage = "done";
     } catch (e) {
@@ -52,8 +39,7 @@
               : "Couldn't link this device. Start again.";
       stage = "intro";
     } finally {
-      qr = null;
-      typed = "";
+      code = null;
       controller = null;
     }
   }
@@ -84,13 +70,7 @@
       On the device you already use, open WoCo, go to Your passkeys and choose Link another device. Scan this code, or
       type it there:
     </p>
-    {#if qr}
-      <svg class="qr" viewBox="0 0 {qr.size} {qr.size}" shape-rendering="crispEdges" role="img" aria-label="Link code">
-        <rect width={qr.size} height={qr.size} class="paper" />
-        <path d={qr.path} class="ink" />
-      </svg>
-    {/if}
-    <p class="code">{typed}</p>
+    {#if code}<PairingCode qr={code.qr} typed={code.typed} />{/if}
     <p class="muted">Waiting for your other device… The code works for 10 minutes.</p>
     <button class="btn btn--ghost" onclick={() => controller?.abort()}>Cancel</button>
   {:else if stage === "linking"}
@@ -118,25 +98,6 @@
   .muted {
     margin: 0;
     color: var(--text-secondary);
-  }
-  .qr {
-    width: min(16rem, 100%);
-    height: auto;
-    border-radius: var(--radius-md);
-  }
-  .paper {
-    fill: var(--text);
-  }
-  .ink {
-    fill: var(--bg);
-  }
-  .code {
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: 1.1rem;
-    letter-spacing: 0.04em;
-    color: var(--text);
-    word-break: break-all;
   }
   .err {
     margin: 0;
