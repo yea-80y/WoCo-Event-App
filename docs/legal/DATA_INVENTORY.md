@@ -130,8 +130,10 @@ claimed "no plaintext store but one" would be false on merge.
 ### 3.2a Kept on the user's device only (never sent to WoCo)
 
 For passkey accounts (#746): the account seed locked under the passkey
-(`woco:auth:identity-seed-locked:*`); the account's public content-feed address
-(`woco:auth:public-keys:*`); which account an added passkey belongs to
+(`woco:auth:identity-seed-locked:*`); after an unlock, a copy that opens without it for about
+two hours and is then deleted (`woco:auth:identity-seed-window:*`); the key that signs the
+account's own posts, which opens nothing else (`woco:auth:feed-signer-cache:*`, deleted at
+sign-out); the account's public content-feed address (`woco:auth:public-keys:*`); which account an added passkey belongs to
 (`woco:auth:device-kernel`); and, on the device that added a passkey, which password
 manager holds it (`woco:auth:passkey-meta:*`). The password manager is never sent to the
 server or written to Swarm.

@@ -341,6 +341,7 @@
      * above when the server raises a gate, so the outer flow can react (open
      * the right modal) and retry. */
     const publishSequence = async () => {
+      await auth.ensureOrganiserUnlock();
       if (pendingLogoBase64) {
         const imgRes = await uploadSiteImage(pendingLogoBase64, gatewayUrl);
         if (!imgRes.ok) {

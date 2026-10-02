@@ -114,6 +114,7 @@
     pendingIds = new Set([...pendingIds, eventId]);
     setError(eventId, null);
     try {
+      await auth.ensureOrganiserUnlock();
       const r = await write();
       if (r.ok && r.data) {
         // Adopt the authoritative index (carries creatorFeedSigner stamps) only

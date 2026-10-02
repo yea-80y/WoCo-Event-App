@@ -75,6 +75,7 @@
     delete errors[eventId];
 
     try {
+      await auth.ensureOrganiserUnlock();
       if (inSite.has(eventId)) {
         const r = await removeSiteEvent(siteId, eventId);
         if (r.ok && r.data) siteEvents = r.data.events;

@@ -289,6 +289,12 @@
       if (!body.trim()) { error = "Message body is required."; return; }
     }
     if (recipients.length === 0) { error = "No reachable contacts to send to."; return; }
+    try {
+      await auth.ensureOrganiserUnlock();
+    } catch (e) {
+      error = e instanceof Error ? e.message : "Couldn't confirm it's you.";
+      return;
+    }
 
     const verb = resumeOf ? "Send again to the contacts who missed it" : `Send "${subject.trim()}"`;
     if (!confirm(`${verb} — ${recipients.length.toLocaleString()} contact${recipients.length === 1 ? "" : "s"}?`)) {

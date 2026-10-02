@@ -43,14 +43,17 @@ import {
   openLockedSeed,
   storeLockedSeed,
   restoreSilentSeed,
-  applySeedPolicy,
-  sweepSilentCopy,
+  writeUnlockWindow,
+  sweepLegacySeed,
+  storeFeedSignerCache,
+  readFeedSignerCache,
+  clearDeviceUnlock,
   writePublicKeys,
   readPublicFeedSignerAddress,
   hasLockedSeed,
   clearPublicKeys,
 } from "./identity-seed.js";
-import { SEED_UNLOCK_POLICY, shouldRelock } from "./seed-unlock-policy.js";
+import { SEED_UNLOCK_POLICY, unlockExpiry } from "./seed-unlock-policy.js";
 import { requestChallenge, sha256Hex } from "./request-challenge.js";
 import { apiBase } from "../api/http.js";
 import {
@@ -111,11 +114,18 @@ let _passkeyPrivateKey: string | null = null;
 // out of one ceremony and neither is derivable from the other.
 let _passkeyPrfSecret: string | null = null;
 let _web3authPrivateKey: string | null = null;
-// A passkey account's UNLOCKED seed (#746 fix 1). At rest it is locked under the
-// passkey, so after a reload it is null until a ceremony (one biometric) opens it.
-// Stamped with the account it belongs to and read only through `_unlockedSeed()`,
-// so an account switch can never hand one account's seed to another.
-let _unlocked: { seedAddress: string; parent: string; seed: string } | null = null;
+// A passkey account's UNLOCKED seed (#746). At rest it is locked under the passkey;
+// an unlock opens it until `expiresAt` (`SEED_UNLOCK_POLICY`; null = until the tab
+// closes). Stamped with the account it belongs to and read only through
+// `_unlockedSeed()`, so an account switch can never hand one account's seed to another.
+let _unlocked: { seedAddress: string; parent: string; seed: string; expiresAt: number | null } | null = null;
+// The content-feed signer a passkey account posts with while its seed is locked
+// (#746), memoised from its cached copy. Survives a relock - that is the point - but
+// never an account switch, a heal or a sign-out.
+let _feedSignerCache: { seedAddress: string; parent: string; signer: ContentFeedSigner } | null = null;
+// Closes the unlock window on time in an open tab; `_expireUnlockIfDue` at every
+// entry point covers a timer the browser throttled.
+let _unlockTimer: ReturnType<typeof setTimeout> | null = null;
 // Set when a passkey account's seed CANNOT be unlocked here, rather than declined:
 // a recovered account with no copy on this device, which only its envelope at
 // sign-in restores. Lets the screens say so instead of "try again".
@@ -279,9 +289,18 @@ function _seedLockedMessage(): string {
     : "Your account keys stay locked until you confirm it's you - try again when you're ready.";
 }
 
-/** The unlocked passkey seed, only for the account it was unlocked for. */
+/** The same, for an organiser action that was refused. */
+function _organiserLockedMessage(): string {
+  return _seedUnavailable
+    ? SEED_UNAVAILABLE_MESSAGE
+    : "Organiser actions stay locked until you confirm it's you - try again when you're ready.";
+}
+
+/** The unlocked passkey seed, only for the account it was unlocked for, and only
+ *  while its window is open. Pure: the relock itself happens at the entry points. */
 function _unlockedSeed(): string | null {
   if (_kind !== "passkey" || !_unlocked || !_parent) return null;
+  if (_unlocked.expiresAt !== null && Date.now() >= _unlocked.expiresAt) return null;
   const seedAddr = _getSeedAddress();
   if (!seedAddr || _unlocked.seedAddress !== seedAddr.toLowerCase()) return null;
   return _unlocked.parent === _parent.toLowerCase() ? _unlocked.seed : null;
@@ -298,27 +317,42 @@ async function _seedIfPresent(): Promise<string | null> {
   return seedAddr ? restoreIdentitySeed(seedAddr) : null;
 }
 
-/** Record a passkey account's seed as unlocked, plus the public values passive
- *  reads need while it is locked again, and the silent copy the policy asks for. */
+/**
+ * Record a passkey account's seed as unlocked until its window closes, plus what
+ * stays usable once it locks again: the public values passive reads need, and the
+ * content-feed signer everyday posts sign with. `restoredUntil` = a silent restore
+ * from the window copy, which keeps the window it found.
+ */
 function _setUnlockedSeed(
   seedAddress: string,
   parent: string,
   seed: string,
-  opts: { fromSilentCopy?: boolean } = {},
+  opts: { restoredUntil?: number } = {},
 ): void {
-  _unlocked = { seedAddress: seedAddress.toLowerCase(), parent: parent.toLowerCase(), seed };
+  const seedAddr = seedAddress.toLowerCase();
+  const account = parent.toLowerCase();
+  // A silent restore is not an unlock: re-stamping here would keep the window open
+  // for as long as the app is reloaded inside it.
+  const expiresAt = opts.restoredUntil ?? unlockExpiry(SEED_UNLOCK_POLICY);
+  _unlocked = { seedAddress: seedAddr, parent: account, seed, expiresAt };
   _identitySeedPresent = true;
   _seedUnavailable = null;
-  const feedSignerAddress = deriveFeedSignerKey(seed).address;
-  _feedSignerAddressMemo = { parent: parent.toLowerCase(), address: feedSignerAddress };
-  void writePublicKeys(seedAddress, { parent, feedSignerAddress }).catch((e) =>
+  _scheduleUnlockExpiry(expiresAt);
+  const signer = deriveFeedSignerKey(seed);
+  _feedSignerAddressMemo = { parent: account, address: signer.address };
+  _feedSignerCache = { seedAddress: seedAddr, parent: account, signer };
+  // These land after this returns; a sign-out in between must win.
+  const gen = _lockGen;
+  const current = () => gen === _lockGen;
+  void writePublicKeys(seedAddr, { parent: account, feedSignerAddress: signer.address }).catch((e) =>
     console.warn("[auth] could not record the public keys (non-fatal):", e),
   );
-  // A silent restore is not an unlock: re-stamping a device-window copy here would
-  // keep the window open for as long as the app is reloaded inside it.
-  if (opts.fromSilentCopy) return;
-  void applySeedPolicy(seedAddress, seed, SEED_UNLOCK_POLICY).catch((e) =>
-    console.warn("[auth] could not apply the seed unlock policy (non-fatal):", e),
+  void storeFeedSignerCache(seedAddr, account, signer, current).catch((e) =>
+    console.warn("[auth] could not keep the feed signer (non-fatal):", e),
+  );
+  if (opts.restoredUntil !== undefined) return;
+  void writeUnlockWindow(seedAddr, account, seed, expiresAt, current).catch((e) =>
+    console.warn("[auth] could not keep the unlock window (non-fatal):", e),
   );
 }
 
@@ -337,18 +371,30 @@ function _relockPasskey(): void {
   _kernel = null;
 }
 
-// The page's last hide, for `SEED_UNLOCK_POLICY.relockAfterHiddenMs`. Judged when the
-// page comes back, which is before anything on it can act: a phone found in a
-// pocket opens locked.
-let _hiddenSince: number | null = null;
+/** Lock again once the unlock window has closed. Called at every entry point that
+ *  could otherwise act on keys left in memory - the PRF output above all, which
+ *  would reopen the locked copy without a new confirm. */
+function _expireUnlockIfDue(): void {
+  if (_unlocked?.expiresAt != null && Date.now() >= _unlocked.expiresAt) _relockPasskey();
+}
+
+function _scheduleUnlockExpiry(expiresAt: number | null): void {
+  if (_unlockTimer !== null) clearTimeout(_unlockTimer);
+  _unlockTimer = null;
+  if (expiresAt === null) return;
+  _unlockTimer = setTimeout(() => {
+    _unlockTimer = null;
+    _expireUnlockIfDue();
+    // Refused while a passkey sheet is open: look again shortly.
+    const open = _unlocked?.expiresAt;
+    if (open != null) _scheduleUnlockExpiry(Math.max(open, Date.now() + 5_000));
+  }, Math.max(0, expiresAt - Date.now()));
+}
+
+// A tab that slept through the end of its window (background timers are throttled)
+// locks as it comes back, before anything on it can act.
 function _onVisibilityChange(): void {
-  if (document.visibilityState === "hidden") {
-    _hiddenSince = Date.now();
-    return;
-  }
-  const since = _hiddenSince;
-  _hiddenSince = null;
-  if (since !== null && shouldRelock(SEED_UNLOCK_POLICY, Date.now() - since)) _relockPasskey();
+  if (document.visibilityState === "visible") _expireUnlockIfDue();
 }
 
 /**
@@ -388,9 +434,15 @@ async function _getContentFeedSignerInner(
   // slot — which is what makes a rotated credential unable to fork the feeds.
   const seedAddr = _getSeedAddress();
   if (!seedAddr) return null;
-  let seed = await _seedIfPresent();
+  // Already here: derived from a seed on the device, or a passkey account's cached
+  // signer while its seed is locked (#746) - an everyday post never asks.
+  const ready = await _feedSignerIfPresent();
+  if (ready) {
+    _feedSignerAddressMemo = { parent: parent.toLowerCase(), address: ready.address };
+    return ready;
+  }
 
-  if (!seed) {
+  {
     // Anti-divergence guard: a RECOVERED account's credential has ROTATED, so
     // establishing a seed here would produce a DIFFERENT one than the account's
     // existing feeds (and encrypted history) were written under — silently
@@ -420,13 +472,36 @@ async function _getContentFeedSignerInner(
     // failed establish THROWS. We NEVER fall through to a platform signer, which
     // would silently split the user's feeds across two owners.
     if (!(await _ensureIdentitySeed(opts))) throw new Error(_seedLockedMessage());
-    seed = await _seedIfPresent();
-    if (!seed) throw new Error(_seedLockedMessage());
   }
+  const seed = await _seedIfPresent();
+  if (!seed) throw new Error(_seedLockedMessage());
 
   const signer = deriveFeedSignerKey(seed);
   _feedSignerAddressMemo = { parent: parent.toLowerCase(), address: signer.address };
   return signer;
+}
+
+/**
+ * The content-feed signer WITHOUT asking anyone: derived from a seed already here,
+ * else - a passkey account whose seed is locked (#746) - its cached copy, read for
+ * exactly this account. Null = this device has neither.
+ */
+async function _feedSignerIfPresent(): Promise<ContentFeedSigner | null> {
+  const seed = await _seedIfPresent();
+  if (seed) return deriveFeedSignerKey(seed);
+  if (_kind !== "passkey" || !_parent) return null;
+  const seedAddr = _getSeedAddress()?.toLowerCase();
+  const parent = _parent.toLowerCase();
+  if (!seedAddr) return null;
+  if (_feedSignerCache?.seedAddress === seedAddr && _feedSignerCache.parent === parent) {
+    return _feedSignerCache.signer;
+  }
+  const cached = await readFeedSignerCache(seedAddr, parent);
+  // The account may have changed while the device key was busy.
+  if (!cached || _kind !== "passkey" || _parent?.toLowerCase() !== parent) return null;
+  if (_getSeedAddress()?.toLowerCase() !== seedAddr) return null;
+  _feedSignerCache = { seedAddress: seedAddr, parent, signer: cached };
+  return cached;
 }
 
 /**
@@ -461,6 +536,13 @@ async function _getContentFeedSignerInner(
  */
 async function _establishPasskeySeedEagerly(): Promise<void> {
   if (_kind !== "passkey" || !_passkeyPrfSecret) return;
+  // The ceremony that just ran is a fresh confirm: it restarts an open window, as
+  // GitHub's sudo mode does on a success (#746).
+  const held = _unlocked;
+  if (held && held.parent === _parent?.toLowerCase() && held.seedAddress === _seedAddress?.toLowerCase()) {
+    _setUnlockedSeed(held.seedAddress, held.parent, held.seed);
+    return;
+  }
   try {
     await _ensureIdentitySeed({ silent: true });
   } catch (e) {
@@ -561,10 +643,8 @@ async function _getContentFeedSignerIfPresent(): Promise<ContentFeedSigner | nul
   const parent = _parent?.toLowerCase();
   if (!parent) return null;
 
-  const seed = await _seedIfPresent();
-  if (!seed) return null;
-
-  const signer = deriveFeedSignerKey(seed);
+  const signer = await _feedSignerIfPresent();
+  if (!signer) return null;
   // Same memo its sibling fills, and for the same reason: the address is a pure
   // function of the seed, so a later passive self-read must not repeat the
   // decrypt. Parent-keyed, so it cannot survive an account switch.
@@ -641,11 +721,8 @@ async function _getBackupHistory(): Promise<BackupInventoryRead> {
  * the manifest with different key material than the other.
  */
 async function _manifestSigner(): Promise<{ privKey: string; address: string } | null> {
-  const address = await _getContentFeedSignerAddress();
-  if (!address) return null;
-  const seed = await _seedIfPresent();
-  if (!seed) return null;
-  return { privKey: deriveFeedSignerKey(seed).privKey, address };
+  const signer = await _feedSignerIfPresent();
+  return signer ? { privKey: signer.privKey, address: signer.address } : null;
 }
 
 async function _readBackupInventoryUncached(parent: string): Promise<import("../manifest/backup-inventory.js").BackupHistoryRead> {
@@ -729,12 +806,13 @@ async function _restoreCachedAuth(): Promise<void> {
       _identitySeedPresent = true;
       return;
     }
-    const silent = await restoreSilentSeed(seedAddr, SEED_UNLOCK_POLICY);
-    if (silent && _parent) {
-      _setUnlockedSeed(seedAddr, _parent, silent, { fromSilentCopy: true });
+    const parent = _parent;
+    const silent = await restoreSilentSeed(seedAddr, parent, SEED_UNLOCK_POLICY);
+    if (silent && _kind === "passkey" && _parent === parent) {
+      _setUnlockedSeed(seedAddr, parent, silent.seed, { restoredUntil: silent.expiresAt });
     } else {
       _identitySeedPresent = false;
-      void sweepSilentCopy(seedAddr, SEED_UNLOCK_POLICY).catch(() => {});
+      void sweepLegacySeed(seedAddr).catch(() => {});
     }
     return;
   }
@@ -786,6 +864,7 @@ async function _clearStaleAuthForSwitch(address: string): Promise<void> {
   if (priorParent && priorParent.toLowerCase() !== address.toLowerCase()) {
     await clearSession();
     _feedSignerAddressMemo = null;
+    _feedSignerCache = null;
     _unlocked = null;
   }
 }
@@ -809,6 +888,7 @@ let _passkeyKeyInFlight: Promise<void> | null = null;
 let _offerPickerNext = false;
 
 async function _ensurePasskeyKey(): Promise<void> {
+  _expireUnlockIfDue();
   if (_passkeyPrivateKey && _passkeyPrfSecret && _seedAddress) return;
   if (_passkeyKeyInFlight) return _passkeyKeyInFlight;
   _passkeyKeyInFlight = (async () => {
@@ -1180,6 +1260,7 @@ async function _clearSeedEverywhere(eoa: string): Promise<void> {
     _unlocked = null;
     if (_kind === "passkey") _identitySeedPresent = false;
   }
+  if (_feedSignerCache?.seedAddress === eoa.toLowerCase()) _feedSignerCache = null;
   await clearIdentitySeed(eoa);
   await clearLockedSeed(eoa);
 }
@@ -2735,6 +2816,7 @@ async function ensureIdentitySeed(): Promise<boolean> {
  * than start a biometric nobody asked for.
  */
 async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boolean> {
+  _expireUnlockIfDue();
   if (_identitySeedPresent) return true;
   if (!isConnected || !_parent) return false;
   // A silent establish must never START a ceremony. For passkey it is silent only
@@ -2891,6 +2973,7 @@ async function _runAccountSetupSteps(steps: AccountSetupStep[]): Promise<boolean
 async function ensureAccountSetup(opts: { identity: boolean }): Promise<boolean> {
   if (!isConnected || !_parent) return false;
   const parent = _parent;
+  _expireUnlockIfDue();
 
   const plan = planAccountSetup({
     kind: _kind,
@@ -2921,6 +3004,34 @@ async function ensureAccountSetup(opts: { identity: boolean }): Promise<boolean>
   }
   accountSetupRequest.close();
   return false;
+}
+
+/**
+ * Ready for an everyday write - a like, a follow, the profile (#746): a session and
+ * the content-feed signer. Silent while this device holds the signer, which a
+ * passkey account keeps after its first unlock; otherwise the usual setup.
+ */
+async function ensureContentSigner(): Promise<boolean> {
+  return ensureAccountSetup({ identity: !(await _feedSignerIfPresent()) });
+}
+
+/**
+ * The confirm before an organiser action (#746): publishing, editing or cancelling
+ * an event, attendee details, broadcasts, payout settings. A passkey account
+ * confirms once, then nothing until the unlock window closes (`SEED_UNLOCK_POLICY`).
+ * Throws with the message to show when the person declines. Other kinds keep their
+ * own gate: a wallet still asks for every signature itself.
+ *
+ * In the browser, so it guards a lost unlocked phone in the app, not the API: a
+ * server check for money and broadcast routes is a later step.
+ */
+async function ensureOrganiserUnlock(): Promise<void> {
+  if (_kind !== "passkey") return;
+  _expireUnlockIfDue();
+  if (_unlockedSeed()) return;
+  if (!(await ensureAccountSetup({ identity: true })) || !_unlockedSeed()) {
+    throw new Error(_organiserLockedMessage());
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3950,6 +4061,9 @@ async function clearAllAuth(): Promise<void> {
   // needed to target this account's per-account identity-seed / feed-signer slots.
   const seedAddr = _getSeedAddress() ?? undefined;
   const parentAddr = _parent ?? undefined;
+  // Before the wipes: an unlock's key writes still in flight check this, so none
+  // can land after them (#746).
+  _lockGen++;
 
   // ORDER + ISOLATION ARE LOAD-BEARING (#183). The identity keys go FIRST and
   // every step is individually guarded: this used to be a straight sequence of
@@ -3994,6 +4108,7 @@ async function clearAllAuth(): Promise<void> {
   if (keepUnlockedLegacy) {
     console.warn("[auth] sign-out kept a recovered account's only seed copy until its next sign-in locks it");
     await step("public-keys", () => clearPublicKeys(seedAddr!));
+    await step("device-unlock", () => clearDeviceUnlock(seedAddr!));
   } else {
     await step("identity-seed", () => clearIdentitySeed(seedAddr));
   }
@@ -4022,6 +4137,8 @@ async function clearAllAuth(): Promise<void> {
   _sessionAddress = null;
   _identitySeedPresent = false;
   _unlocked = null;
+  _feedSignerCache = null;
+  _scheduleUnlockExpiry(null);
   _seedUnavailable = null;
   _deviceRole = false;
   _lockGen++;
@@ -4111,6 +4228,10 @@ export const auth = {
   // The entry point for "make this account ready to act" — call this, not
   // ensureSession/ensureIdentitySeed in sequence, and never count prompts.
   ensureAccountSetup,
+  // An everyday write: silent once this device holds the feed signer (#746).
+  ensureContentSigner,
+  // Before every organiser action: one confirm per unlock window (#746). Throws.
+  ensureOrganiserUnlock,
   grantSpendPermission,
   signTypedDataAsHolder,
   setupAccountRecovery,
@@ -4134,8 +4255,8 @@ export const auth = {
   // key the account owns is a KDF of this: the X25519 encryption key, the
   // secp256k1 issuing key, and — on the out-of-launch-scope credit/cert rails
   // only — the ed25519 holder key. Returns null when not logged in, and for a
-  // passkey account whose seed is locked (#746 fix 1): call
-  // `ensureAccountSetup({ identity: true })` first where the action needs it.
+  // passkey account whose seed is locked (#746): call
+  // `ensureOrganiserUnlock()` first where the action needs it.
   getIdentitySeed: () => _seedIfPresent(),
   // Content-feed signer (Phase B) — the key the user signs their own content
   // feeds with. null = this kind/state can't own feeds (fall back to platform).

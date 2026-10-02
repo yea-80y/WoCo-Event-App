@@ -10,7 +10,7 @@ import {
   type EIP712Signer,
 } from "@woco/shared";
 import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js";
-import { keepsSilentCopy, silentCopyExpiry, type SeedUnlockPolicy } from "./seed-unlock-policy.js";
+import type { SeedUnlockPolicy } from "./seed-unlock-policy.js";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 
 /**
@@ -229,51 +229,125 @@ export async function clearLockedSeed(seedAddress: string): Promise<void> {
   await delKV(lockedSeedKey(seedAddress));
 }
 
-/** The copy that opens WITHOUT the passkey, when the policy keeps one. Expired or
- *  disallowed copies read as absent but are never deleted here: before its first
- *  unlock on this build, a device-key copy may be the only one there is. */
+function windowSeedKey(seedAddress: string): string {
+  return `${StorageKeys.IDENTITY_SEED_WINDOW}:${seedAddress.toLowerCase()}`;
+}
+
+function feedSignerCacheKey(seedAddress: string): string {
+  return `${StorageKeys.FEED_SIGNER_CACHE}:${seedAddress.toLowerCase()}`;
+}
+
+/**
+ * The unlock-window copy (#746): the seed, opening WITHOUT the passkey until its
+ * window closes. Anything else found in the slot - expired, dated further out than
+ * the policy allows (a shortened window, a clock set back), another account's, or
+ * damaged - is deleted: every unlock locks the seed under the passkey first, so this
+ * copy is never the only one.
+ */
 export async function restoreSilentSeed(
   seedAddress: string,
+  parent: string,
   policy: SeedUnlockPolicy,
   now = Date.now(),
-): Promise<string | null> {
-  if (!keepsSilentCopy(policy)) return null;
-  const blob = await getKV<EncryptedBlob>(identitySeedKey(seedAddress));
+): Promise<{ seed: string; expiresAt: number } | null> {
+  const slot = windowSeedKey(seedAddress);
+  const blob = await getKV<EncryptedBlob>(slot);
+  if (!blob) return null;
+  if (policy.mode === "device-window") {
+    try {
+      const { seed, expiresAt } = await decrypt<{ seed: string; expiresAt?: unknown }>(
+        await ensureDeviceKey(),
+        AAD.IDENTITY_SEED_WINDOW(seedAddress, parent),
+        blob,
+      );
+      if (typeof expiresAt === "number" && expiresAt > now && expiresAt <= now + policy.ms) {
+        return { seed, expiresAt };
+      }
+    } catch {
+      /* another account's, or damaged */
+    }
+  }
+  await delKV(slot);
+  return null;
+}
+
+/**
+ * After an unlock: write the window copy to close at `expiresAt` (null = keep none),
+ * then drop the pre-lock device-key copy. `stillCurrent` is asked just before the
+ * write, so an unlock a sign-out overtook leaves nothing behind.
+ */
+export async function writeUnlockWindow(
+  seedAddress: string,
+  parent: string,
+  seed: string,
+  expiresAt: number | null,
+  stillCurrent: () => boolean = () => true,
+): Promise<void> {
+  if (expiresAt === null) {
+    await delKV(windowSeedKey(seedAddress));
+  } else {
+    const blob = await encrypt(await ensureDeviceKey(), AAD.IDENTITY_SEED_WINDOW(seedAddress, parent), {
+      seed,
+      expiresAt,
+    });
+    if (!stillCurrent()) return;
+    await putKV(windowSeedKey(seedAddress), blob);
+  }
+  await sweepLegacySeed(seedAddress);
+}
+
+/** Drop the device-key copy from before the lock - only once the locked copy is on
+ *  the device, so a not-yet-migrated legacy copy is never the casualty. */
+export async function sweepLegacySeed(seedAddress: string): Promise<void> {
+  if (await hasLockedSeed(seedAddress)) await delKV(identitySeedKey(seedAddress));
+}
+
+/**
+ * The content-feed signer key, kept under the device key with no expiry (#746), so
+ * everyday posts never ask for the passkey. An HKDF child of the seed: it opens
+ * neither the seed, the attendee-data key nor the issuing key.
+ */
+export async function storeFeedSignerCache(
+  seedAddress: string,
+  parent: string,
+  signer: { privKey: string; address: string },
+  stillCurrent: () => boolean = () => true,
+): Promise<void> {
+  const blob = await encrypt(await ensureDeviceKey(), AAD.FEED_SIGNER_CACHE(seedAddress, parent), {
+    privKey: signer.privKey,
+    address: signer.address.toLowerCase(),
+  });
+  if (!stillCurrent()) return;
+  await putKV(feedSignerCacheKey(seedAddress), blob);
+}
+
+/** The cached feed signer for exactly this account, else null. Another account's
+ *  copy is left for that account: its own next unlock replaces it. */
+export async function readFeedSignerCache(
+  seedAddress: string,
+  parent: string,
+): Promise<{ privKey: string; address: string } | null> {
+  const blob = await getKV<EncryptedBlob>(feedSignerCacheKey(seedAddress));
   if (!blob) return null;
   try {
-    const { seed, expiresAt } = await decrypt<{ seed: string; expiresAt?: number }>(
+    const { privKey, address } = await decrypt<{ privKey?: unknown; address?: unknown }>(
       await ensureDeviceKey(),
-      AAD.IDENTITY_SEED(seedAddress),
+      AAD.FEED_SIGNER_CACHE(seedAddress, parent),
       blob,
     );
-    if (policy.mode === "device-window" && !(typeof expiresAt === "number" && expiresAt > now)) return null;
-    return seed;
+    if (typeof privKey !== "string" || !/^0x[0-9a-f]{64}$/i.test(privKey)) return null;
+    if (typeof address !== "string" || !/^0x[0-9a-f]{40}$/.test(address)) return null;
+    return { privKey, address };
   } catch {
     return null;
   }
 }
 
-/** Drop a silent copy the policy does not allow - only once the locked copy is on
- *  the device, so a not-yet-migrated legacy copy is never the casualty. */
-export async function sweepSilentCopy(seedAddress: string, policy: SeedUnlockPolicy): Promise<void> {
-  if (keepsSilentCopy(policy)) return;
-  if (await hasLockedSeed(seedAddress)) await delKV(identitySeedKey(seedAddress));
-}
-
-/** After an unlock: write, refresh or drop the silent copy, as the policy says. */
-export async function applySeedPolicy(
-  seedAddress: string,
-  seed: string,
-  policy: SeedUnlockPolicy,
-  now = Date.now(),
-): Promise<void> {
-  if (!keepsSilentCopy(policy)) return sweepSilentCopy(seedAddress, policy);
-  const expiresAt = silentCopyExpiry(policy, now);
-  const encSeed = await encrypt(await ensureDeviceKey(), AAD.IDENTITY_SEED(seedAddress), {
-    seed,
-    ...(expiresAt !== null ? { expiresAt } : {}),
-  });
-  await putKV(identitySeedKey(seedAddress), encSeed);
+/** Close the window and drop the cached feed signer: at sign-out, a heal, or a
+ *  removed device. */
+export async function clearDeviceUnlock(seedAddress: string): Promise<void> {
+  await delKV(windowSeedKey(seedAddress));
+  await delKV(feedSignerCacheKey(seedAddress));
 }
 
 /** PUBLIC values from a seed, kept so own-profile reads work while it is locked.
@@ -362,12 +436,14 @@ export async function storeIdentitySeed(parentAddress: string, seed: string): Pr
  * the legacy single slot is always cleared too (shared-device hygiene — no seed
  * left decryptable at rest after logout). Omitting the address clears only legacy.
  * A passkey account's LOCKED copy is not touched: it opens only with the passkey,
- * so it survives sign-out (`clearLockedSeed` for a heal).
+ * so it survives sign-out (`clearLockedSeed` for a heal). Its window copy and cached
+ * feed signer go: both open without the passkey.
  */
 export async function clearIdentitySeed(address?: string): Promise<void> {
   if (address) {
     await delKV(identitySeedKey(address));
     await delKV(publicKeysKey(address));
+    await clearDeviceUnlock(address);
   }
   await delKV(StorageKeys.IDENTITY_SEED);
 }

@@ -16,6 +16,7 @@
   import type { EventFeed, OrderEntry } from "@woco/shared";
   import { issueDoorPass, pushCheckinRoster, getCheckinStatus, type CheckinStatus } from "../../api/checkin.js";
   import { generateRosterKeyB64url, encryptRoster } from "../../scanner/roster-crypto.js";
+  import { auth } from "../../auth/auth-store.svelte.js";
 
   interface DecryptedOrder {
     fields?: Record<string, string>;
@@ -117,6 +118,7 @@
     confirmRegen = false;
     confirmSwitch = false;
     try {
+      await auth.ensureOrganiserUnlock();
       if (needsDecrypt) await onEnsureDecrypted();
 
       const keyB64url = generateRosterKeyB64url();
@@ -140,6 +142,7 @@
     working = true;
     workError = null;
     try {
+      await auth.ensureOrganiserUnlock();
       if (needsDecrypt) await onEnsureDecrypted();
       const fragment = parseDoorPassFragment(new URL(stored.url).hash);
       if (!fragment) throw new Error("Stored pass is malformed — regenerate it");

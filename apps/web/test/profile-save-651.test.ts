@@ -255,8 +255,8 @@ test("the profile page sends the changed fields, not the whole form", () => {
 test("the changes are decided before any signing prompt, so a no-op save asks for nothing", () => {
   const save = between(page(), "async function saveProfile()", "async function guardRename()");
   const decided = save.indexOf("changedProfileFields(formValues(), formLoaded)");
-  const prompt = save.indexOf("ensureAccountSetup(");
-  assert.ok(decided >= 0 && prompt > decided, "changes must be computed before ensureAccountSetup");
+  const prompt = save.indexOf("ensureContentSigner(");
+  assert.ok(decided >= 0 && prompt > decided, "changes must be computed before ensureContentSigner");
   assert.match(save.slice(decided, prompt), /if \(Object\.keys\(changes\)\.length === 0 && !pendingAvatarDataUrl\) \{ formDirty = false; return; \}/);
 });
 

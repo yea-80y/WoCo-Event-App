@@ -111,10 +111,11 @@ export async function toggleSocial(
 ): Promise<SocialState | null> {
   const ready = await requireAccountForAction({ context: "attendee" });
   if (!ready) return null;
-  // The statement is signed by the account's keys, which a passkey account keeps
-  // locked after a reload (#746 fix 1). Unlock them now, while this tap is still the
-  // gesture: after the gate's network read a browser may refuse the passkey sheet.
-  if (!(await auth.ensureAccountSetup({ identity: true }))) return null;
+  // The statement is signed by the content-feed signer, which a passkey account
+  // keeps on the device after its first unlock (#746), so this is silent. Where it
+  // is not here yet, it asks now, while this tap is still the gesture: after the
+  // gate's network read a browser may refuse the passkey sheet.
+  if (!(await auth.ensureContentSigner())) return null;
 
   const status = gate.status ?? (await gate.refresh());
   if (status && !status.gated && !(await gate.request())) return null;

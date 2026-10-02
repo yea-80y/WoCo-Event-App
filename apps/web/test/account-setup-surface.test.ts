@@ -141,7 +141,6 @@ test("the setup call sites go through ensureAccountSetup", () => {
   for (const rel of [
     "lib/creator/events/PublishButton.svelte",
     "lib/components/object/ObjectCreateModal.svelte",
-    "lib/components/profile/ProfilePage.svelte",
   ]) {
     assert.match(
       read(rel),
@@ -149,6 +148,12 @@ test("the setup call sites go through ensureAccountSetup", () => {
       `${rel} must set the account up through the one entry point`,
     );
   }
+  // A profile save needs only the feed signer (#746); its wrapper is the same entry point.
+  assert.match(read("lib/components/profile/ProfilePage.svelte"), /auth\.ensureContentSigner\(\)/);
+  assert.match(
+    read("lib/auth/auth-store.svelte.ts"),
+    /async function ensureContentSigner\(\): Promise<boolean> \{\s*return ensureAccountSetup\(/,
+  );
 });
 
 test("the auth store exports ensureAccountSetup", () => {

@@ -97,6 +97,7 @@
    */
   async function updateCancelledPage(): Promise<void> {
     if (!event?.cancelledAt) return;
+    await auth.ensureOrganiserUnlock();
     let feedSigner: ContentFeedSigner | null = null;
     if (event.creatorFeedSigner) {
       let signer: ContentFeedSigner | null;
@@ -271,6 +272,11 @@
     const key = orderKey(order);
     const dec = decryptedOrders.get(globalIdx);
     if (!dec) return;
+    try {
+      await auth.ensureOrganiserUnlock();
+    } catch {
+      return;
+    }
 
     sending = new Set([...sending, key]);
     try {
@@ -346,6 +352,12 @@
   async function handleSendBroadcast(resumeOf?: string) {
     if (!event || broadcastSending) return;
     broadcastError = null;
+    try {
+      await auth.ensureOrganiserUnlock();
+    } catch (e) {
+      broadcastError = e instanceof Error ? e.message : "Couldn't confirm it's you.";
+      return;
+    }
 
     const recipients = getEmailRecipients(broadcastSeriesFilter);
     if (recipients.length === 0) {
