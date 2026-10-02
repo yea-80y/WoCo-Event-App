@@ -21,7 +21,7 @@
    *  - removed backups stay removed: every route installed since #164 points at
    *    the WoCo hook, so re-adding no longer resurrects old guardians.
    */
-  import { auth } from "../../auth/auth-store.svelte.js";
+  import { auth, MAIN_PASSKEY_REQUIRED_MESSAGE } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { connectBackupWallet, connectWeb3AuthBackup, connectPasskeyBackup, type BackupWallet } from "../../wallet/backup-signer.js";
   import { isPasskeySupported } from "../../auth/passkey-account.js";
@@ -266,6 +266,12 @@
   }
 
   async function chooseAndConnect(method: Method) {
+    // Backups are set on the account's own smart account, which only its owner can
+    // change (#746): an added passkey is told so before any backup is made.
+    if (!auth.isAccountOwner) {
+      errorMsg = MAIN_PASSKEY_REQUIRED_MESSAGE;
+      return;
+    }
     phase = "connecting";
     connectingMethod = method;
     errorMsg = "";
@@ -298,6 +304,10 @@
 
   async function confirmAndInstall() {
     if (!pendingBackup) return;
+    if (!auth.isAccountOwner) {
+      errorMsg = MAIN_PASSKEY_REQUIRED_MESSAGE;
+      return;
+    }
     phase = "working";
     errorMsg = "";
     try {
@@ -350,6 +360,10 @@
    * unverifiable removal surfaces as an error, not a green tick.
    */
   async function confirmRemove() {
+    if (!auth.isAccountOwner) {
+      errorMsg = MAIN_PASSKEY_REQUIRED_MESSAGE;
+      return;
+    }
     phase = "removing";
     errorMsg = "";
     try {
@@ -378,6 +392,10 @@
    */
   async function revokeOne(guardian: string) {
     if (revokingGuardian) return;
+    if (!auth.isAccountOwner) {
+      revokeError = MAIN_PASSKEY_REQUIRED_MESSAGE;
+      return;
+    }
     revokingGuardian = guardian;
     revokeError = "";
     revokeBookkeepingNote = "";

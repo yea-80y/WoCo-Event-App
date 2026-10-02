@@ -6,6 +6,13 @@ import {
   deriveFeedSignerKey,
   FEATURES,
   KERNEL_CHAIN_ID,
+  DEVICE_GRANT_DOMAIN,
+  DEVICE_GRANT_TYPES,
+  DEVICE_GRANT_REVOKE_TYPES,
+  credentialTagOf,
+  type DeviceGrantMessage,
+  type DeviceGrantRevokeMessage,
+  type PasskeyProviderId,
 } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 import { AUTH_NOTICE_KEY } from "./auth-notice.js";
@@ -59,6 +66,7 @@ import {
   type PasskeyCredentialHandle,
   hasStoredPasskeyCredential,
   clearPasskeyCredential,
+  createAddedPasskey,
 } from "./passkey-account.js";
 import { createWeb3Signer, createLocalSigner } from "./signers/index.js";
 import type { BuiltKernel } from "./kernel-account.js";
@@ -237,10 +245,13 @@ function _getSeedAddress(): string | null {
 
 const SEED_UNAVAILABLE_MESSAGE = "Your account keys aren't on this device. Sign in again to fetch them.";
 
+export const MAIN_PASSKEY_REQUIRED_MESSAGE =
+  "This needs your main passkey - the one you created the account with. Use that device.";
+
 /** An owner-only action (names, backups, adding passkeys) from an added passkey. */
 export class MainPasskeyRequiredError extends Error {
   constructor() {
-    super("This needs your main passkey - the one you created the account with. Use that device.");
+    super(MAIN_PASSKEY_REQUIRED_MESSAGE);
     this.name = "MainPasskeyRequiredError";
   }
 }
@@ -2148,6 +2159,129 @@ async function _loginAddedPasskey(
   _cleanupAccountListener = null;
 }
 
+// ---------------------------------------------------------------------------
+// More than one passkey (#746 step 3): add one on this device, remove one
+// ---------------------------------------------------------------------------
+
+function _randomNonce(): string {
+  return `0x${Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function _grantRefusalMessage(res: { code?: string; error?: string; status?: number }): string {
+  if (res.code === "cap-reached") return "This account already has 10 passkeys. Remove one first.";
+  if (res.code === "store-unavailable") return "Passkeys can't be changed right now - try again later.";
+  if (res.code === "not-owner" || res.code === "not-allowed") return new MainPasskeyRequiredError().message;
+  if (res.status === 429) return "Too many changes just now - try again in a minute.";
+  return res.error ?? "Couldn't save that - try again.";
+}
+
+/**
+ * "Add a passkey on this device" - the main passkey makes another for the same
+ * account, in a different password manager on this device, and grants it.
+ *
+ * Order (consult 6): the new passkey's envelope first, so the server never holds a
+ * grant for a passkey that could not finish signing in; the grant, signed raw by
+ * the owner key (the tap and the passkey sheet were the consent); its record; the
+ * local label. A failure before the grant leaves an unused passkey in the manager,
+ * which its added handle refuses honestly at sign-in.
+ */
+async function addPasskeyOnThisDevice(
+  onStep?: (step: "creating" | "saving" | "linking") => void,
+): Promise<{ provider: PasskeyProviderId }> {
+  if (_kind !== "passkey" || _deviceRole) throw new MainPasskeyRequiredError();
+  if (!(await ensureAccountSetup({ identity: true }))) throw new Error(_seedLockedMessage());
+  await _ensurePasskeyKey();
+  const parent = _parent?.toLowerCase();
+  const ownerKey = _passkeyPrivateKey;
+  const seedAddr = _seedAddress;
+  const seed = _unlockedSeed();
+  if (!parent || !ownerKey || !seedAddr || !seed) throw new Error(_seedLockedMessage());
+
+  const { readPasskeyMeta, writePasskeyMeta } = await import("./passkey-meta.js");
+  const pinned = await getKV<{ credentialId?: string }>(StorageKeys.PASSKEY_CREDENTIAL);
+  const exclude = [
+    ...(pinned?.credentialId ? [pinned.credentialId] : []),
+    ...Object.values(await readPasskeyMeta(parent)).map((m) => m.credentialId),
+  ];
+
+  onStep?.("creating");
+  const added = await createAddedPasskey({
+    exclude,
+    createdOn: new Date().toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }),
+  });
+  if (added.address.toLowerCase() === seedAddr.toLowerCase()) {
+    throw new Error("That is the passkey you're signed in with. Pick a different password manager.");
+  }
+
+  onStep?.("saving");
+  const { writePortabilityEnvelope } = await import("./recovery-portability.js");
+  await writePortabilityEnvelope({ prfSecret: added.prfSecret, preservedKernelAddress: parent, identitySeed: seed });
+
+  onStep?.("linking");
+  const { credentialIdBytes, writePasskeyRecord } = await import("./passkey-record.js");
+  const credentialId = credentialIdBytes(added.credentialId);
+  const grant: DeviceGrantMessage = {
+    parent,
+    grantee: added.address.toLowerCase(),
+    credentialTag: credentialTagOf(credentialId),
+    issuedAt: Math.floor(Date.now() / 1000),
+    nonce: _randomNonce(),
+  };
+  const grantSig = await createLocalSigner(ownerKey, async () => true)(
+    { ...DEVICE_GRANT_DOMAIN },
+    DEVICE_GRANT_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
+    grant as unknown as Record<string, unknown>,
+  );
+  const { registerDeviceGrant } = await import("../api/device-grants.js");
+  const res = await registerDeviceGrant(grant, grantSig);
+  if (!res.ok) throw new Error(_grantRefusalMessage(res));
+
+  // Best-effort past this point: the passkey already works. Without its record
+  // the sign-in guard simply has nothing to check; without the label the list
+  // shows a generic one.
+  try {
+    const { passkeyRecordCommit } = await import("@woco/shared/auth/passkey-record");
+    await writePasskeyRecord(credentialId, { v: 1, kind: "added", commit: passkeyRecordCommit(parent, credentialId) });
+  } catch (e) {
+    console.warn("[auth] added passkey's record not written (non-fatal):", e);
+  }
+  await writePasskeyMeta(parent, grant.credentialTag, {
+    provider: added.provider,
+    addedAt: Date.now(),
+    credentialId: added.credentialId,
+  }).catch((e) => console.warn("[auth] added passkey's label not kept (non-fatal):", e));
+  return { provider: added.provider };
+}
+
+/**
+ * Remove an added passkey: the main passkey removes any, an added one only itself
+ * ("sign this device out"). Signed raw by whichever passkey this is. Removing this
+ * device's own passkey forgets what it held and signs out.
+ */
+async function removePasskey(grantee: string): Promise<void> {
+  const parent = _parent?.toLowerCase();
+  const self = _seedAddress?.toLowerCase();
+  const target = grantee.toLowerCase();
+  if (_kind !== "passkey" || !parent || !self) throw new MainPasskeyRequiredError();
+  if (_deviceRole && target !== self) throw new MainPasskeyRequiredError();
+  await _ensurePasskeyKey();
+  const key = _passkeyPrivateKey;
+  if (!key) throw new Error(_seedLockedMessage());
+  const revoke: DeviceGrantRevokeMessage = { parent, grantee: target, nonce: _randomNonce() };
+  const revokeSig = await createLocalSigner(key, async () => true)(
+    { ...DEVICE_GRANT_DOMAIN },
+    DEVICE_GRANT_REVOKE_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
+    revoke as unknown as Record<string, unknown>,
+  );
+  const { revokeDeviceGrant } = await import("../api/device-grants.js");
+  const res = await revokeDeviceGrant(revoke, revokeSig);
+  if (!res.ok) throw new Error(_grantRefusalMessage(res));
+  if (target === self) {
+    await _forgetAddedPasskey(self);
+    await logout({ force: true });
+  }
+}
+
 /**
  * The server says this device's grant was revoked (`DEVICE_REMOVED` on any
  * request, #746 step 3): forget what it held for the account and sign out, once.
@@ -3940,6 +4074,8 @@ export const auth = {
    *  do what only its owner can (names, backups, adding or removing passkeys). */
   get isAccountOwner() { return !(_kind === "passkey" && _deviceRole); },
   onDeviceRemoved,
+  addPasskeyOnThisDevice,
+  removePasskey,
   get isConnected() { return isConnected; },
   get isAuthenticated() { return isAuthenticated; },
 

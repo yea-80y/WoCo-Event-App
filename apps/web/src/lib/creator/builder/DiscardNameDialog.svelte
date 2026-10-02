@@ -14,7 +14,7 @@
   AUTHORITY is always the holder's own signature.
 -->
 <script lang="ts">
-  import { auth } from "../../auth/auth-store.svelte.js";
+  import { auth, MAIN_PASSKEY_REQUIRED_MESSAGE } from "../../auth/auth-store.svelte.js";
   import { SUB_ENS_DEFAULT_CHAIN_ID, SUB_ENS_DEPLOYMENTS, subEnsName } from "@woco/shared";
   import type { Hex0x } from "@woco/shared";
   import type { ReleaseTypedData } from "../../sub-ens/release-digest.js";
@@ -82,6 +82,11 @@
 
   async function discard() {
     if (!matches || phase === "working") return;
+    if (!auth.isAccountOwner) {
+      errTitle = MAIN_PASSKEY_REQUIRED_MESSAGE;
+      errDetail = "";
+      return;
+    }
     phase = "working";
     errTitle = "";
     errDetail = "";
