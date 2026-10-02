@@ -296,6 +296,9 @@ Frozen rules every statement type shares: `packages/shared/src/statement/discipl
   a namehash keyed an audience to something governance/custody could move
 - Counting is an INDEXER's job, not the platform's; it can publish evidence reports
   (`statement/evidence-report.ts`, #312)
+- Writing one needs the SAME unlock as a name (ticket, Stripe, confirmed invite — `lib/gate/check.ts`):
+  the relay refuses like/follow formats with `ticket_required` (`routes/swarm.ts`, owner 2026-10-01),
+  and `toggleSocial` turns that into the unlock popup
 
 EAS LIKES RAIL DELETED 2026-09-12 (#475) - `shared/src/likes/`, `routes/likes.ts`, `lib/likes/*`,
 `api/likes.ts` and ProfilePage's Following/Trending are all gone. EAS is gone from the tree (#476,
@@ -375,7 +378,7 @@ AUTH (server):
 CLAIMS / EVENTS:
   apps/server/src/routes/claims.ts                   # claim-status ONLY (v1 claim rail deleted, #207)
   apps/server/src/routes/events.ts                   # create / discover / list / unlist
-  apps/server/src/routes/tickets.ts                  # email send (composite PNG + /t link)
+  apps/server/src/routes/tickets.ts                  # ticket email builder (PNG + /t link); fulfilment-only, NO route
   apps/server/src/lib/event/claim-service.ts         # email HMAC + passport collection feed (NOT claims)
   apps/server/src/lib/event/service.ts               # event creation
   apps/server/src/lib/swarm/topics.ts                # feed topic derivation

@@ -95,7 +95,7 @@
     {#if phase === "info"}
       <div class="body">
         <p class="desc">
-          {unlocksWhen("Your name, photo and bio", true)} Got a ticket? Open its
+          {unlocksWhen("Following, likes, and your name, photo and bio", true)} Got a ticket? Open its
           email and tap <strong>Add to WoCo</strong>.
         </p>
         <p class="desc">
