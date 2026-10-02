@@ -264,6 +264,7 @@ export async function requireAuth(c: Context<AppEnv>, next: Next) {
   c.set("parentAddress", result.parentAddress!);
   c.set("sessionAddress", result.sessionAddress!);
   c.set("sessionRank", result.rank ?? "owner");
+  c.set("parentKind", result.parentKind);
   c.set("body", body);
 
   await next();

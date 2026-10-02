@@ -149,6 +149,9 @@ export async function verifyDelegation(
     //      eth_call via RPC — CSW and pre-fix Kernel-signed delegations.
     let validSig = false;
     let rank: SessionRank = "owner";
+    // Set by the branch that proved the signature; a success path that forgets to
+    // classify leaves it unset, and every gate on it then refuses (Fable sign-off).
+    let parentKind: VerifyDelegationResult["parentKind"];
     if (parentSig.length === 132) {
       let recovered: string | null = null;
       try {
@@ -164,6 +167,7 @@ export async function verifyDelegation(
       const parent = message.parent.toLowerCase();
       if (recovered === parent) {
         validSig = true;
+        parentKind = "eoa";
       } else if (recovered) {
         // Whichever check runs first must be a cached CONFIRMATION: a cached
         // denial is re-read from the chain (#273), so asking "does this device
@@ -186,9 +190,11 @@ export async function verifyDelegation(
         ) {
           validSig = true;
           rank = "device";
+          parentKind = "kernel";
         } else if (await isKernelOwner(recovered, parent, readOpts)) {
           // A device made the main one still has its old grant: it is the owner now.
           validSig = true;
+          parentKind = "kernel";
         } else if (grant && !grant.active) {
           // Only an explicit removal earns this code. A grant whose signer failed
           // the owner check may be an RPC outage, and telling a device it was
@@ -230,6 +236,7 @@ export async function verifyDelegation(
         );
         return { valid: false, error: "Invalid signature", code: AuthErrorCode.SESSION_INVALID };
       }
+      parentKind = "smart-wallet";
       try {
         validSig = await deps.verifySmartWalletTypedData({
           address: message.parent as `0x${string}`,
@@ -277,6 +284,7 @@ export async function verifyDelegation(
       parentAddress: getAddress(message.parent),
       sessionAddress: getAddress(message.session),
       rank,
+      parentKind,
     };
   } catch {
     return { valid: false, error: "Verification failed" };

@@ -11,7 +11,7 @@
  * See docs/legal/DATA_INVENTORY.md §5.1 and docs/PAYOUTS.md §4/§6.
  */
 
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth, tryVerifyAuth } from "../middleware/auth.js";
 import { cancellationGate, reopenRefundRow } from "../lib/event/cancellations.js";
@@ -132,8 +132,26 @@ const ORDER_ALREADY_USED =
 // 1. Organiser onboarding — create Connected Account + Account Link
 // ---------------------------------------------------------------------------
 
+const ORGANISER_PASSKEY_ONLY =
+  "Organising uses a passkey account. Create one to host events - this account keeps your tickets.";
+
+/**
+ * Organising needs a passkey account (#746 step 5): attendee data is sealed to the
+ * organiser's seed, and only a passkey roots it outside any email or wallet key. A
+ * wallet account is provably not one; passkey and email logins share the smart
+ * account shape, so the app turns email accounts away before this. On every route
+ * that starts or finishes Stripe onboarding (Fable sign-off: a pre-existing record
+ * must not finish it either). Unset kind is refused, never assumed.
+ */
+const requireSmartAccountOrganiser: MiddlewareHandler<AppEnv> = async (c, next) => {
+  if (c.get("parentKind") !== "kernel") {
+    return c.json({ ok: false, error: ORGANISER_PASSKEY_ONLY, code: "PASSKEY_ACCOUNT_REQUIRED" }, 403);
+  }
+  await next();
+};
+
 /** POST /api/stripe/connect — create a Connected Account for the authenticated organiser */
-stripe.post("/connect", requireAuth, async (c) => {
+stripe.post("/connect", requireAuth, requireSmartAccountOrganiser, async (c) => {
   const organiserAddress = c.get("parentAddress").toLowerCase();
 
   // Check if organiser already has a Stripe account
@@ -165,7 +183,7 @@ stripe.post("/connect", requireAuth, async (c) => {
 });
 
 /** POST /api/stripe/onboarding-link — generate a hosted onboarding URL */
-stripe.post("/onboarding-link", requireAuth, async (c) => {
+stripe.post("/onboarding-link", requireAuth, requireSmartAccountOrganiser, async (c) => {
   const organiserAddress = c.get("parentAddress").toLowerCase();
   const record = getStripeAccount(organiserAddress);
   if (!record) {
@@ -355,7 +373,7 @@ stripe.get("/payouts", requireAuth, async (c) => {
 // schedule (secret expiry, component remount) rather than only on a click.
 const accountSessionRate = new RateWindow(30, 5 * 60 * 1000);
 
-stripe.post("/account-session", requireAuth, async (c) => {
+stripe.post("/account-session", requireAuth, requireSmartAccountOrganiser, async (c) => {
   const organiserAddress = c.get("parentAddress").toLowerCase();
   if (accountSessionRate.isLimited(organiserAddress)) {
     return c.json({ ok: false, error: "Too many attempts — try again in a few minutes." }, 429);

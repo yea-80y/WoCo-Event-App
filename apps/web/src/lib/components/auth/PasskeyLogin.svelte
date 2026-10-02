@@ -2,6 +2,8 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { isPasskeySupported } from "../../auth/passkey-account.js";
   import { onMount } from "svelte";
+  import { loginRequest } from "../../auth/login-request.svelte.js";
+  import { PASSKEY_ONLY_RECOVERY_NOTE } from "../../auth/organiser-account.js";
 
   interface Props {
     oncomplete?: () => void;
@@ -87,6 +89,10 @@
     >
       New to WoCo? Create a passkey account
     </button>
+    {#if loginRequest.context === "invite"}
+      <!-- An organiser's account has no email or wallet backup (#746 step 5): said before it exists. -->
+      <p class="recovery-note">{PASSKEY_ONLY_RECOVERY_NOTE} Link a second device once you're in.</p>
+    {/if}
 
     {#if onlink}
       <button class="create-btn" onclick={onlink} disabled={auth.busy}>
@@ -164,6 +170,13 @@
 
   .passkey-btn:active:not(:disabled) {
     background: var(--accent-press);
+  }
+
+  .recovery-note {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    text-align: center;
   }
 
   .create-btn {

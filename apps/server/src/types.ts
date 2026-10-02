@@ -7,6 +7,8 @@ export type AppEnv = {
     sessionAddress: string;
     /** "device" = signed by a key the owner granted (#746), not the owner. */
     sessionRank: SessionRank;
+    /** What the parent is, as its delegation proved (#746 step 5); unset = unknown, never assumed. */
+    parentKind: "eoa" | "kernel" | "smart-wallet" | undefined;
     body: Record<string, unknown>;
   };
 };

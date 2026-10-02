@@ -601,6 +601,16 @@ sealed to, and a permanent one, since a Swarm copy cannot be recalled. So a pass
 Email-login accounts keep their options. A passkey account's way back is its synced passkey and the
 devices it links. The refusal is the app's: the server cannot tell a passkey account from an email one.
 
+**Organising needs a passkey account (#746 step 5).** The organiser workspace opens only for a
+passkey account (`lib/auth/organiser-account.ts`, gated in `CreatorApp.svelte` so deep links land on
+the explanation), and "Start hosting" signs up with a passkey only. The server cannot tell a passkey
+smart account from an email one - both are an EOA owning a Kernel, and the PRF never reaches it - but
+it can tell a wallet: `verifyDelegation` reports `parentKind` ("eoa" when the wallet signed for
+itself), and `POST /api/stripe/connect` refuses anything but "kernel". An email-login user organises
+from a new passkey account; rotating their Kernel to a passkey would keep the email-rooted seed
+(an in-place upgrade with a fresh passkey-rooted seed is planned, not built). Stripe onboarding links
+and the embedded onboarding session refuse a non-smart-account parent too.
+
 Paths that deliberately need no session: guest Stripe checkout from the embed widget, the public
 ticket page `/t/…`, and the ENS CCIP-Read gateway.
 
