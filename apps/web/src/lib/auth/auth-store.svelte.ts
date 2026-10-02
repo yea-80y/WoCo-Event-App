@@ -30,7 +30,18 @@ import {
   restoreIdentitySeed,
   storeIdentitySeed,
   clearIdentitySeed,
+  clearLockedSeed,
+  openLockedSeed,
+  storeLockedSeed,
+  restoreSilentSeed,
+  applySeedPolicy,
+  sweepSilentCopy,
+  writePublicKeys,
+  readPublicFeedSignerAddress,
+  hasLockedSeed,
+  clearPublicKeys,
 } from "./identity-seed.js";
+import { SEED_UNLOCK_POLICY, shouldRelock } from "./seed-unlock-policy.js";
 import {
   connectWallet,
   getConnectedAddress,
@@ -87,6 +98,18 @@ let _passkeyPrivateKey: string | null = null;
 // out of one ceremony and neither is derivable from the other.
 let _passkeyPrfSecret: string | null = null;
 let _web3authPrivateKey: string | null = null;
+// A passkey account's UNLOCKED seed (#746 fix 1). At rest it is locked under the
+// passkey, so after a reload it is null until a ceremony (one biometric) opens it.
+// Stamped with the account it belongs to and read only through `_unlockedSeed()`,
+// so an account switch can never hand one account's seed to another.
+let _unlocked: { seedAddress: string; parent: string; seed: string } | null = null;
+// Set when a passkey account's seed CANNOT be unlocked here, rather than declined:
+// a recovered account with no copy on this device, which only its envelope at
+// sign-in restores. Lets the screens say so instead of "try again".
+let _seedUnavailable = $state<null | "recovered-no-copy">(null);
+// Bumped by every relock and sign-out, so work that resumes after one - a Kernel
+// build that was waiting on the network - cannot put the keys back.
+let _lockGen = 0;
 
 // ZeroDev Kernel logins (passkey + web3auth). The Kernel smart-account address
 // is the parent identity; the identity seed stays on the raw signer key + its
@@ -111,10 +134,10 @@ let _seedInFlight: Promise<boolean> | null = null;
 let _feedSignerInFlight: Promise<ContentFeedSigner | null> | null = null;
 
 // In-memory memo of the feed-signer ADDRESS for passive self-reads, always
-// validated against the CURRENT parent before use. Never persisted: the only
-// durable secret is the AAD-bound identity SEED, so there is no unauthenticated
-// record that could survive an account switch and leak the previous user's
-// signer into this one's reads.
+// validated against the CURRENT parent before use. Its durable twin for a LOCKED
+// passkey seed is the public-keys record (#746 fix 1), stored per seed address and
+// read back only when its recorded parent is the current one - so it cannot leak
+// a previous account's signer into this one's reads, as a single global cache did.
 let _feedSignerAddressMemo: { parent: string; address: string } | null = null;
 
 // ---------------------------------------------------------------------------
@@ -204,6 +227,88 @@ function _getSeedAddress(): string | null {
   return _parent;
 }
 
+const SEED_UNAVAILABLE_MESSAGE =
+  "Your account keys aren't on this device yet. Sign in again once your backup can be reached.";
+
+/** Why the seed is not available: not here at all, or the person did not confirm. */
+function _seedLockedMessage(): string {
+  return _seedUnavailable
+    ? SEED_UNAVAILABLE_MESSAGE
+    : "Your account keys stay locked until you confirm it's you - try again when you're ready.";
+}
+
+/** The unlocked passkey seed, only for the account it was unlocked for. */
+function _unlockedSeed(): string | null {
+  if (_kind !== "passkey" || !_unlocked || !_parent) return null;
+  const seedAddr = _getSeedAddress();
+  if (!seedAddr || _unlocked.seedAddress !== seedAddr.toLowerCase()) return null;
+  return _unlocked.parent === _parent.toLowerCase() ? _unlocked.seed : null;
+}
+
+/**
+ * The seed WITHOUT asking anyone: a passkey account's unlocked copy, or for every
+ * other kind the device-key copy. Null means "not available now" - for a passkey
+ * account after a reload, until the next ceremony.
+ */
+async function _seedIfPresent(): Promise<string | null> {
+  if (_kind === "passkey") return _unlockedSeed();
+  const seedAddr = _getSeedAddress();
+  return seedAddr ? restoreIdentitySeed(seedAddr) : null;
+}
+
+/** Record a passkey account's seed as unlocked, plus the public values passive
+ *  reads need while it is locked again, and the silent copy the policy asks for. */
+function _setUnlockedSeed(
+  seedAddress: string,
+  parent: string,
+  seed: string,
+  opts: { fromSilentCopy?: boolean } = {},
+): void {
+  _unlocked = { seedAddress: seedAddress.toLowerCase(), parent: parent.toLowerCase(), seed };
+  _identitySeedPresent = true;
+  _seedUnavailable = null;
+  const feedSignerAddress = deriveFeedSignerKey(seed).address;
+  _feedSignerAddressMemo = { parent: parent.toLowerCase(), address: feedSignerAddress };
+  void writePublicKeys(seedAddress, { parent, feedSignerAddress }).catch((e) =>
+    console.warn("[auth] could not record the public keys (non-fatal):", e),
+  );
+  // A silent restore is not an unlock: re-stamping a device-window copy here would
+  // keep the window open for as long as the app is reloaded inside it.
+  if (opts.fromSilentCopy) return;
+  void applySeedPolicy(seedAddress, seed, SEED_UNLOCK_POLICY).catch((e) =>
+    console.warn("[auth] could not apply the seed unlock policy (non-fatal):", e),
+  );
+}
+
+/**
+ * Lock a passkey account's keys again: the seed, the owner key, the PRF output and
+ * the Kernel built from it go together, so the next signing action asks the passkey
+ * once. Never mid-ceremony - a key arriving after the relock would undo it.
+ */
+function _relockPasskey(): void {
+  if (_kind !== "passkey" || _passkeyKeyInFlight || _seedInFlight) return;
+  _lockGen++;
+  _unlocked = null;
+  _identitySeedPresent = false;
+  _passkeyPrivateKey = null;
+  _passkeyPrfSecret = null;
+  _kernel = null;
+}
+
+// The page's last hide, for `SEED_UNLOCK_POLICY.relockAfterHiddenMs`. Judged when the
+// page comes back, which is before anything on it can act: a phone found in a
+// pocket opens locked.
+let _hiddenSince: number | null = null;
+function _onVisibilityChange(): void {
+  if (document.visibilityState === "hidden") {
+    _hiddenSince = Date.now();
+    return;
+  }
+  const since = _hiddenSince;
+  _hiddenSince = null;
+  if (since !== null && shouldRelock(SEED_UNLOCK_POLICY, Date.now() - since)) _relockPasskey();
+}
+
 /**
  * The user's content-feed signer (Phase B), or null when this kind/state can't
  * own client-signed feeds. The address is the SOC owner + the registry value.
@@ -241,7 +346,7 @@ async function _getContentFeedSignerInner(
   // slot — which is what makes a rotated credential unable to fork the feeds.
   const seedAddr = _getSeedAddress();
   if (!seedAddr) return null;
-  let seed = await restoreIdentitySeed(seedAddr);
+  let seed = await _seedIfPresent();
 
   if (!seed) {
     // Anti-divergence guard: a RECOVERED account's credential has ROTATED, so
@@ -261,7 +366,10 @@ async function _getContentFeedSignerInner(
     // assigned on passkey paths, so for a web3auth session it is null and
     // `_recoveryKernelFor` would return undefined at its first line — inert for
     // exactly the population the paragraph above describes.
-    if (await _recoveryKernelFor(_getSeedAddress())) {
+    // Not for passkey (#746 fix 1): a recovered passkey account keeps its carried
+    // seed LOCKED on the device and opens it below; `_ensureIdentitySeed` refuses
+    // to derive for it when there is none.
+    if (_kind !== "passkey" && (await _recoveryKernelFor(_getSeedAddress()))) {
       throw new Error(
         "Recovered account feed signer unavailable — restore from recovery escrow required; refusing to derive a divergent key.",
       );
@@ -269,11 +377,9 @@ async function _getContentFeedSignerInner(
     // FAIL-LOUD: these kinds MUST own client-signed content, so a refused or
     // failed establish THROWS. We NEVER fall through to a platform signer, which
     // would silently split the user's feeds across two owners.
-    if (!(await _ensureIdentitySeed(opts))) {
-      throw new Error("Could not unlock your account keys — your content can't be signed without them.");
-    }
-    seed = await restoreIdentitySeed(seedAddr);
-    if (!seed) throw new Error("Could not unlock your account keys — your content can't be signed without them.");
+    if (!(await _ensureIdentitySeed(opts))) throw new Error(_seedLockedMessage());
+    seed = await _seedIfPresent();
+    if (!seed) throw new Error(_seedLockedMessage());
   }
 
   const signer = deriveFeedSignerKey(seed);
@@ -301,9 +407,10 @@ async function _getContentFeedSignerInner(
  * lazy establish at the point where a prompt is something the user asked for.
  */
 /**
- * Establish a passkey account's seed at LOGIN, while the PRF output that login just
- * produced is still in memory (#642). Nothing later then needs a biometric for it,
- * and passive self-reads resolve at once instead of waiting for a first write.
+ * Unlock (or first establish) a passkey account's seed while the PRF output a
+ * ceremony just produced is in memory (#642, #746 fix 1) - at login, and after any
+ * later ceremony. Nothing else then needs a biometric for it this app open, and
+ * passive self-reads resolve at once instead of waiting for a first write.
  *
  * No gate of its own on purpose: `_ensureIdentitySeed`'s recovery-binding refusal
  * is the one rule for "never derive a seed for a rotated credential", and a second
@@ -347,11 +454,19 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
   if (!parent) return null;
   if (_feedSignerAddressMemo?.parent === parent) return _feedSignerAddressMemo.address;
 
-  const seedAddr = _getSeedAddress();
-  const seed = seedAddr ? await restoreIdentitySeed(seedAddr) : null;
+  const seed = await _seedIfPresent();
   if (seed) {
     const address = deriveFeedSignerKey(seed).address;
     _feedSignerAddressMemo = { parent, address };
+    return address;
+  }
+
+  // A passkey account whose seed is locked (#746 fix 1): the address is public, and
+  // the last unlock recorded it for exactly this account.
+  if (_kind === "passkey") {
+    const seedAddr = _getSeedAddress();
+    const address = seedAddr ? await readPublicFeedSignerAddress(seedAddr, parent) : null;
+    if (address) _feedSignerAddressMemo = { parent, address };
     return address;
   }
 
@@ -387,9 +502,9 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
  * their first authenticated page load after following an invite. A ceremony
  * there is unexplained, and an unexplained ceremony is one the user declines.
  *
- * So this may only ever use a seed ALREADY on the device: `restoreIdentitySeed`
- * is a device-key decrypt and `deriveFeedSignerKey` an HKDF, neither of which
- * asks the user for anything. Null — never a prompt — for Coinbase Smart Wallet
+ * So this may only ever use a seed ALREADY available: `_seedIfPresent` is a
+ * passkey account's unlocked seed or another kind's device-key decrypt, and
+ * `deriveFeedSignerKey` an HKDF, none of which asks the user for anything. Null — never a prompt — for Coinbase Smart Wallet
  * (client feeds parked), when not signed in, and on a device with no seed yet.
  * The caller's answer to null is to WAIT: the seed arrives with whatever action
  * the user takes next, and `auth.hasIdentitySeed` tells them when.
@@ -404,8 +519,7 @@ async function _getContentFeedSignerIfPresent(): Promise<ContentFeedSigner | nul
   const parent = _parent?.toLowerCase();
   if (!parent) return null;
 
-  const seedAddr = _getSeedAddress();
-  const seed = seedAddr ? await restoreIdentitySeed(seedAddr) : null;
+  const seed = await _seedIfPresent();
   if (!seed) return null;
 
   const signer = deriveFeedSignerKey(seed);
@@ -487,8 +601,7 @@ async function _getBackupHistory(): Promise<BackupInventoryRead> {
 async function _manifestSigner(): Promise<{ privKey: string; address: string } | null> {
   const address = await _getContentFeedSignerAddress();
   if (!address) return null;
-  const seedAddr = _getSeedAddress();
-  const seed = seedAddr ? await restoreIdentitySeed(seedAddr) : null;
+  const seed = await _seedIfPresent();
   if (!seed) return null;
   return { privKey: deriveFeedSignerKey(seed).privKey, address };
 }
@@ -561,9 +674,26 @@ async function _restoreCachedAuth(): Promise<void> {
   // it must never be called with the Kernel address for a passkey user — the
   // PRF-EOA address is loaded from storage in init() before this runs.
   const seedAddr = _getSeedAddress();
-  if (seedAddr) {
-    _identitySeedPresent = !!(await restoreIdentitySeed(seedAddr));
+  if (!seedAddr) return;
+  if (_kind === "passkey") {
+    // Locked at rest (#746 fix 1): present only when this tab already unlocked it,
+    // or when SEED_UNLOCK_POLICY keeps a copy that opens without the passkey. A
+    // legacy device-key copy counts as LOCKED from this build's first load; it is
+    // locked under the passkey, then dropped, at the first unlock.
+    if (_unlockedSeed()) {
+      _identitySeedPresent = true;
+      return;
+    }
+    const silent = await restoreSilentSeed(seedAddr, SEED_UNLOCK_POLICY);
+    if (silent && _parent) {
+      _setUnlockedSeed(seedAddr, _parent, silent, { fromSilentCopy: true });
+    } else {
+      _identitySeedPresent = false;
+      void sweepSilentCopy(seedAddr, SEED_UNLOCK_POLICY).catch(() => {});
+    }
+    return;
   }
+  _identitySeedPresent = !!(await restoreIdentitySeed(seedAddr));
 }
 
 /**
@@ -611,6 +741,7 @@ async function _clearStaleAuthForSwitch(address: string): Promise<void> {
   if (priorParent && priorParent.toLowerCase() !== address.toLowerCase()) {
     await clearSession();
     _feedSignerAddressMemo = null;
+    _unlocked = null;
   }
 }
 
@@ -628,12 +759,22 @@ async function _clearStaleAuthForSwitch(address: string): Promise<void> {
  * backstop for races this doesn't cover).
  */
 let _passkeyKeyInFlight: Promise<void> | null = null;
+// A declined or failed ceremony offers the account picker on the NEXT attempt, not
+// straight after: cancelling the passkey sheet must not open a second one (#746 fix 1).
+let _offerPickerNext = false;
 
 async function _ensurePasskeyKey(): Promise<void> {
   if (_passkeyPrivateKey && _passkeyPrfSecret && _seedAddress) return;
   if (_passkeyKeyInFlight) return _passkeyKeyInFlight;
   _passkeyKeyInFlight = (async () => {
-    const result = await restorePasskeyAccount();
+    let result: Awaited<ReturnType<typeof restorePasskeyAccount>>;
+    try {
+      result = await restorePasskeyAccount({ retryDiscoverable: _offerPickerNext });
+    } catch (e) {
+      _offerPickerNext = true;
+      throw e;
+    }
+    _offerPickerNext = false;
 
     // A biometric sheet can stay open across a sign-out: `clearAllAuth` nulls
     // `_seedAddress` AND deletes the KV slot, so an orphaned ceremony settling
@@ -705,6 +846,9 @@ async function _ensurePasskeyKey(): Promise<void> {
     // would strand it and let the next caller start a second ceremony.
     if (_passkeyKeyInFlight === inFlight) _passkeyKeyInFlight = null;
   }
+  // Whatever asked for the passkey - a session, the Kernel, the seed - the same
+  // ceremony unlocks the seed, so one biometric covers them all.
+  void _establishPasskeySeedEagerly();
 }
 
 /**
@@ -917,7 +1061,7 @@ async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
  * chain, and restores the right seed.
  */
 async function _healRefusedBackfill(eoa: string, parent: string): Promise<void> {
-  await clearIdentitySeed(eoa);
+  await _clearSeedEverywhere(eoa);
   const stillIn =
     _kind === "passkey" &&
     _seedAddress?.toLowerCase() === eoa.toLowerCase() &&
@@ -934,13 +1078,30 @@ async function _healRefusedBackfill(eoa: string, parent: string): Promise<void> 
   await logout({ force: true });
 }
 
+/** A seed known to be WRONG for this credential (a heal): every copy goes, the
+ *  locked one included, and the unlocked one if it is this credential's. */
+async function _clearSeedEverywhere(eoa: string): Promise<void> {
+  if (_unlocked?.seedAddress === eoa.toLowerCase()) {
+    _unlocked = null;
+    if (_kind === "passkey") _identitySeedPresent = false;
+  }
+  await clearIdentitySeed(eoa);
+  await clearLockedSeed(eoa);
+}
+
 /** The one accessor bundle both backfill preambles read through (#260). */
 function _backfillGatherDeps(): import("./recovery-finalize.js").BackfillGatherDeps {
   return {
     getPasskeyPrfSecret: () => _passkeyPrfSecret,
     getSeedAddress: () => _seedAddress,
     recoveryKernelFor: _recoveryKernelFor,
-    restoreIdentitySeed,
+    // The back-fill runs with the PRF output in memory: the unlocked seed, or the
+    // locked copy opened with it. Never the device-key copy (#746 fix 1).
+    restoreIdentitySeed: async (seedAddress: string) => {
+      const unlocked = _unlockedSeed();
+      if (unlocked && _unlocked?.seedAddress === seedAddress.toLowerCase()) return unlocked;
+      return _passkeyPrfSecret && _parent ? openLockedSeed(seedAddress, _parent, _passkeyPrfSecret) : null;
+    },
   };
 }
 
@@ -961,6 +1122,7 @@ async function _ensureKernel(): Promise<void> {
   await _ensurePasskeyKey();
   if (_kernel) return;
   if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable — cannot build Kernel");
+  const gen = _lockGen;
   const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
   const override = await _recoveryKernelFor(_seedAddress);
   const kernel = await buildKernelFromPrivateKey(
@@ -972,6 +1134,9 @@ async function _ensureKernel(): Promise<void> {
       "Kernel address mismatch on restore — refusing to attach a divergent smart account.",
     );
   }
+  // The keys were locked (or the account signed out) while this build waited on the
+  // network: the Kernel carries the owner key, so it must not outlive the relock.
+  if (gen !== _lockGen) throw new Error("Your account keys were locked while it was being prepared - try again.");
   _kernel = kernel;
 }
 
@@ -1053,6 +1218,7 @@ function _retryWeb3AuthKeyInBackground(attempt = 0): void {
 
 async function init(): Promise<void> {
   if (_ready) return;
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", _onVisibilityChange);
 
   try {
     const kind = await getKV<AuthKind>(StorageKeys.AUTH_KIND);
@@ -1423,7 +1589,7 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, prfSecret: 
               return readPortabilityEnvelope({ prfSecret: key });
             },
             putRecoveryBinding: _putRecoveryBinding,
-            clearIdentitySeed,
+            clearIdentitySeed: _clearSeedEverywhere,
             writeOrphanTombstone,
             clearCachedKernelAddress,
             isStillSignedInAs: stillSignedInAs,
@@ -1865,7 +2031,7 @@ async function loginPasskeyResult(
       // fast path. Owner staleness is re-checked in the background; the Kernel
       // rebuilds lazily at the preserved address via the binding (`_ensureKernel`
       // honours it and still asserts the parent).
-      const seed = await restoreIdentitySeed(account.address);
+      const seed = await openLockedSeed(account.address, override.toLowerCase(), account.prfSecret);
       if (seed) {
         const parent = override.toLowerCase();
         await _clearStaleAuthForSwitch(parent);
@@ -1878,6 +2044,7 @@ async function loginPasskeyResult(
         _passkeyPrfSecret = account.prfSecret;
         _seedAddress = account.address;
         _kernel = null;
+        _setUnlockedSeed(account.address, parent, seed);
         await _restoreCachedAuth();
         _verifyRecoveredBindingInBackground("passkey", override, account.address);
         _scheduleKernelPrebuild();
@@ -1937,15 +2104,18 @@ async function loginPasskeyResult(
     //       content feed it owns would fork under a new signer address. The envelope
     //       is the ONLY silent restore channel — the guardian escrow needs the
     //       guardian's signature.
-    // The presence probe below doubles as self-heal: restoreIdentitySeed drops a
-    // foreign-AAD blob.
+    // The presence probe below doubles as self-heal: openLockedSeed drops a copy
+    // locked for another account. Only meaningful with an override - without one
+    // the envelope is consulted whatever the device holds.
     let portabilityRestore:
       | { preserved: `0x${string}`; identitySeed: string }
       | null = null;
     let envelopeAbsent = false;
     // The read could not say either way, so this login may be on the wrong Kernel.
     let envelopeUnknown = false;
-    const identitySeedPresent = !!(await restoreIdentitySeed(account.address));
+    const identitySeedPresent = override
+      ? !!(await openLockedSeed(account.address, override, account.prfSecret))
+      : false;
     if (!override || !identitySeedPresent) {
       const check = await _verifyPortabilityEnvelope(account.prfSecret, account.address);
       if (check === null) {
@@ -1992,15 +2162,17 @@ async function loginPasskeyResult(
     // KDF of this seed, so storing the seed restores ownership of the recovered
     // account's existing content feeds by construction.
     if (portabilityRestore) {
-      await storeIdentitySeed(account.address, portabilityRestore.identitySeed);
+      // Under the account this login commits to, so the eager unlock below opens it:
+      // the same address as the envelope's today, by construction rather than by luck.
+      await storeLockedSeed(account.address, kernel.address, portabilityRestore.identitySeed, account.prfSecret);
       await _putRecoveryBinding(account.address, portabilityRestore.preserved);
       _feedSignerAddressMemo = null;
     }
 
     await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, kernel.address);
-    // PRF-EOA address persisted so the seed restores on reload without a biometric
-    // and with the correct AAD (invariant #1).
+    // PRF-EOA address persisted so the locked seed is found on reload and opens
+    // under the correct AAD (invariant #1).
     await putKV(StorageKeys.SEED_ADDRESS, account.address);
     _kind = "passkey";
     _parent = kernel.address;
@@ -2205,6 +2377,8 @@ async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boo
       const seedAddr = _getSeedAddress();
       if (!seedAddr) return false;
 
+      if (_kind === "passkey") return await _unlockPasskeySeed(seedAddr);
+
       // Prefer an already-stored seed over re-deriving from a fresh signature.
       // CRITICAL after recovery: the passkey credential (PRF-EOA) has rotated, so
       // a fresh requestIdentitySeed() would derive a DIVERGENT seed and clobber the
@@ -2238,22 +2412,6 @@ async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boo
         return false;
       }
 
-      // No stored seed (first login on this device). A passkey establishes it from
-      // its PRF output (#642): no signature and no dialog — the biometric behind
-      // `_ensurePasskeyKey` is the consent. The recovery-binding refusal above has
-      // already run, so this is never a rotated credential.
-      if (_kind === "passkey") {
-        await _ensurePasskeyKey();
-        // `seedAddr` was read before the ceremony; if it was the parent fallback it
-        // is not the PRF-EOA, and a seed stored under it would sit behind the wrong AAD.
-        if (!_passkeyPrfSecret || _seedAddress?.toLowerCase() !== seedAddr.toLowerCase()) {
-          throw new Error("Passkey PRF output unavailable for identity derivation");
-        }
-        await establishPasskeyIdentitySeed(seedAddr, _passkeyPrfSecret);
-        _identitySeedPresent = true;
-        return true;
-      }
-
       // Every other kind signs `DeriveAccountKeys` with its deterministic signer.
       const silentRawKey = opts.silent && _kind === "web3auth" ? _web3authPrivateKey : null;
       const signer = silentRawKey
@@ -2279,6 +2437,45 @@ async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boo
     }
   })();
   return _seedInFlight;
+}
+
+/**
+ * Unlock a passkey account's seed (#746 fix 1): one ceremony if the PRF output is
+ * not in memory, then open the copy locked under it - or, on a device that has
+ * none, establish it from the PRF output (#642). Runs inside `_ensureIdentitySeed`'s
+ * single flight and under its silent guard.
+ *
+ * Never derives for a RECOVERED credential: its seed was carried across and cannot
+ * be re-derived from it; without a locked copy it comes back only through the
+ * envelope at login. A divergent seed would fork every feed the account owns.
+ */
+async function _unlockPasskeySeed(seedAddr: string): Promise<boolean> {
+  if (_unlockedSeed()) {
+    _identitySeedPresent = true;
+    return true;
+  }
+  const parent = _parent;
+  if (!parent) return false;
+  await _ensurePasskeyKey();
+  // `seedAddr` was read before the ceremony; if it was the parent fallback it is
+  // not the PRF-EOA, and a seed stored under it would sit behind the wrong AAD.
+  const prf = _passkeyPrfSecret;
+  if (!prf || _seedAddress?.toLowerCase() !== seedAddr.toLowerCase()) {
+    throw new Error("Passkey PRF output unavailable for identity derivation");
+  }
+  let seed = await openLockedSeed(seedAddr, parent, prf);
+  if (!seed) {
+    if (await _recoveryKernelFor(seedAddr)) {
+      console.error("[auth] recovered account identity seed missing — refusing to re-derive a divergent seed");
+      _seedUnavailable = "recovered-no-copy";
+      return false;
+    }
+    seed = (await establishPasskeyIdentitySeed(seedAddr, parent, prf)).seed;
+  }
+  // The account may have changed while the sheet was open; its seed is not ours.
+  if (_kind !== "passkey" || _parent !== parent) return false;
+  _setUnlockedSeed(seedAddr, parent, seed);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -2495,7 +2692,7 @@ async function setupAccountRecovery(
   await ensureIdentitySeed();
   const seedAddr = _getSeedAddress();
   if (!seedAddr) throw new Error("Could not access your identity key");
-  const seed = await restoreIdentitySeed(seedAddr);
+  const seed = await _seedIfPresent();
   if (!seed) throw new Error("Could not access your identity key — open your dashboard once, then retry");
 
   const { deriveGuardianKeysForBackup, sealRecoveryBundle, openRecoveryBundle } = await import(
@@ -3199,7 +3396,11 @@ async function recoverAndRekey(args: {
     // deriving a new address from the rotated credential — by construction, with
     // no second secret to store and no way for the two to fall out of step.
     // AFTER _clearStaleAuthForSwitch, which clears it.
-    await storeIdentitySeed(newSeedAddress, identitySeed);
+    if (newOwnerKind === "passkey" && newOwnerPrfSecret) {
+      await storeLockedSeed(newSeedAddress, target, identitySeed, newOwnerPrfSecret);
+    } else {
+      await storeIdentitySeed(newSeedAddress, identitySeed);
+    }
     // The primary-login pin (#158), passkey branch only. It sits HERE, between the
     // seed and AUTH_KIND, because `init()` requires the pin AND the parent address
     // AND the seed address together: writing it in this order means that three-way
@@ -3234,7 +3435,11 @@ async function recoverAndRekey(args: {
     // Mark the escrow-restored seed present so the dashboard decrypts immediately
     // and ensureIdentitySeed short-circuits (never re-derives a divergent seed from
     // the rotated credential).
-    _identitySeedPresent = !!(await restoreIdentitySeed(newSeedAddress));
+    if (newOwnerKind === "passkey") {
+      _setUnlockedSeed(newSeedAddress, target, identitySeed);
+    } else {
+      _identitySeedPresent = !!(await restoreIdentitySeed(newSeedAddress));
+    }
 
     // Kill the session the rotation just invalidated — LAST, immediately before
     // the restore that would otherwise resurrect it (client-side twin of #200's
@@ -3406,8 +3611,27 @@ async function clearAllAuth(): Promise<void> {
   await step("session", () => clearSession());
   // Dropping the seed drops the feed signer, the issuing key and the encryption
   // key with it — there is one secret at rest now, so there is one thing to wipe
-  // and no way to wipe half an account on a shared device.
-  await step("identity-seed", () => clearIdentitySeed(seedAddr));
+  // and no way to wipe half an account on a shared device. A passkey account's
+  // LOCKED copy stays (#746 fix 1): it opens only with the passkey, which is the
+  // device's own guard, and it lets a recovered account sign back in without its
+  // envelope.
+  // ONE exception (#746 fix 1): a RECOVERED passkey account whose seed this build has
+  // not yet locked - restored from a reload, never unlocked - holds its only copy on
+  // this device under the device key. Deleting it would leave the envelope as the
+  // only way back, and that can be unreachable. It stays until the next sign-in
+  // locks it under the passkey and deletes it then.
+  const keepUnlockedLegacy =
+    _kind === "passkey" &&
+    !_passkeyPrfSecret &&
+    !!seedAddr &&
+    !!(await _recoveryKernelFor(seedAddr).catch(() => undefined)) &&
+    !(await hasLockedSeed(seedAddr).catch(() => true));
+  if (keepUnlockedLegacy) {
+    console.warn("[auth] sign-out kept a recovered account's only seed copy until its next sign-in locks it");
+    await step("public-keys", () => clearPublicKeys(seedAddr!));
+  } else {
+    await step("identity-seed", () => clearIdentitySeed(seedAddr));
+  }
   // Legacy slots from builds that stored the feed signer as its OWN secret and
   // cached its address in cleartext. Nothing writes either any more; both are
   // swept so a device carrying one does not keep an orphaned key blob (and a
@@ -3432,6 +3656,9 @@ async function clearAllAuth(): Promise<void> {
   _parent = null;
   _sessionAddress = null;
   _identitySeedPresent = false;
+  _unlocked = null;
+  _seedUnavailable = null;
+  _lockGen++;
   _passkeyPrivateKey = null;
   _passkeyPrfSecret = null;
   _web3authPrivateKey = null;
@@ -3490,6 +3717,8 @@ export const auth = {
   get loginStage() { return _loginStage; },
   get hasSession() { return hasSession; },
   get hasIdentitySeed() { return hasIdentitySeed; },
+  /** "recovered-no-copy": the keys cannot be unlocked on this device (not declined). */
+  get seedUnavailable() { return _seedUnavailable; },
   get isConnected() { return isConnected; },
   get isAuthenticated() { return isAuthenticated; },
 
@@ -3532,8 +3761,10 @@ export const auth = {
   // `restoreIdentitySeed(auth.parent)` reads a slot that is never written. Every
   // key the account owns is a KDF of this: the X25519 encryption key, the
   // secp256k1 issuing key, and — on the out-of-launch-scope credit/cert rails
-  // only — the ed25519 holder key. Returns null when not logged in.
-  getIdentitySeed: () => { const a = _getSeedAddress(); return a ? restoreIdentitySeed(a) : Promise.resolve(null); },
+  // only — the ed25519 holder key. Returns null when not logged in, and for a
+  // passkey account whose seed is locked (#746 fix 1): call
+  // `ensureAccountSetup({ identity: true })` first where the action needs it.
+  getIdentitySeed: () => _seedIfPresent(),
   // Content-feed signer (Phase B) — the key the user signs their own content
   // feeds with. null = this kind/state can't own feeds (fall back to platform).
   getContentFeedSigner: () => _getContentFeedSigner(),

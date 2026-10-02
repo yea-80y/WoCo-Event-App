@@ -12,14 +12,17 @@
   const SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
 
   let visible = $state(false);
-  let checked = false;
+  // The seed state the last check ran with: a passkey account's backup list opens
+  // only once its keys unlock (#746 fix 1), so a locked check is retried once then.
+  let checkedWith: "locked" | "unlocked" | null = null;
 
   const canProtect = $derived(auth.kind === "passkey" || auth.kind === "web3auth");
 
   $effect(() => {
-    if (checked) return;
+    const seedState = auth.hasIdentitySeed ? "unlocked" : "locked";
+    if (checkedWith === "unlocked" || checkedWith === seedState) return;
     if (!auth.isConnected || !canProtect) return;
-    checked = true;
+    checkedWith = seedState;
     const snoozedUntil = Number(localStorage.getItem(SNOOZE_KEY) ?? 0);
     if (Date.now() < snoozedUntil) return;
     auth.getBackupInventory()

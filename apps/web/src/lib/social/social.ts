@@ -24,11 +24,16 @@ async function requireSigner(): Promise<SocialSigner> {
   return { privKey: signer.privKey, address: signer.address };
 }
 
-/** The caller's current statement about `subject` - see `readStatement`. */
+/**
+ * The caller's current statement about `subject` - see `readStatement`. Reads need
+ * only the feed's ADDRESS, which resolves without a prompt; asking for the signer
+ * here put a passkey sheet on every like button once the seed stopped opening
+ * silently (#746 fix 1).
+ */
 export async function readMyStatement(kind: SocialKind, subject: Hex0x): Promise<boolean | null> {
-  const signer = await auth.getContentFeedSigner();
-  if (!signer) return null;
-  return readStatement(signer, kind, subject);
+  const address = await auth.getContentFeedSignerAddress();
+  if (!address) return null;
+  return readStatement({ address }, kind, subject);
 }
 
 /** Write the caller's statement about `subject` - see `writeStatement`. */
@@ -44,19 +49,17 @@ export async function writeMyStatement(kind: SocialKind, subject: Hex0x, value: 
 
 /** Every subject the caller has ever written a statement about, for this kind. */
 export async function readMySubjects(kind: SocialKind): Promise<Hex0x[]> {
-  const signer = await auth.getContentFeedSigner();
-  if (!signer) return [];
-  return readSubjects(signer, kind);
+  const address = await auth.getContentFeedSignerAddress();
+  if (!address) return [];
+  return readSubjects({ address }, kind);
 }
 
 /**
- * The accounts this user currently follows, for a screen that must never raise
- * a prompt: only a seed already on this device is used, and `not-ready` means
- * there is none yet. `readMySubjects` cannot serve here — its signer getter
- * prompts on web3 and passkey.
+ * The accounts this user currently follows, for a screen that must never raise a
+ * prompt: `not-ready` means this device does not know the feed's address yet.
  */
 export async function readMyFollowsIfReady(): Promise<MyFollowsRead> {
-  const signer = await auth.getContentFeedSignerIfPresent();
-  if (!signer) return { status: "not-ready" };
-  return readFollows(signer);
+  const address = await auth.getContentFeedSignerAddress();
+  if (!address) return { status: "not-ready" };
+  return readFollows({ address });
 }

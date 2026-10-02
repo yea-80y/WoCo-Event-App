@@ -62,6 +62,16 @@ export const PORTABILITY_HPKE_INFO = "woco/recovery/portability/hpke/v2";
  *  and every escrow sealed to a passkey guardian stops opening. */
 export const PASSKEY_GUARDIAN_ESCROW_INFO = "woco/recovery/guardian-passkey/v1";
 
+/**
+ * HKDF info for the key that locks the identity seed ON A DEVICE (#746 fix 1). STICKY,
+ * not identity-frozen: changing it strands every device's locked copy, so each fetches
+ * its seed once more (derives it again, or opens the envelope / pairing for a carried
+ * seed) - no identity moves. Its own label, never a reused one: `PASSKEY_SEED_INFO`
+ * IS the seed, and `PORTABILITY_HPKE_INFO` is the envelope's KEM key. From the PRF,
+ * never from the owner key, whose public half every session signature reveals.
+ */
+export const PASSKEY_SEED_KEK_INFO = "woco/device/seed-kek/v1";
+
 /** The only PRF output length any derivation accepts. */
 export const PASSKEY_PRF_OUTPUT_BYTES = 32;
 
@@ -98,6 +108,12 @@ export function passkeyPrfBytes(prfSecret: string | Uint8Array): Uint8Array {
 export function passkeyIdentitySeed(prfSecret: string | Uint8Array): Hex0x {
   const okm = hkdf(sha256, passkeyPrfBytes(prfSecret), new Uint8Array(0), utf8ToBytes(PASSKEY_SEED_INFO), 32);
   return `0x${bytesToHex(okm)}` as Hex0x;
+}
+
+/** The 32 raw bytes of the device seed-lock key. The caller imports them as a
+ *  non-extractable AES-GCM key and zeroes them. */
+export function passkeySeedKek(prfSecret: string | Uint8Array): Uint8Array {
+  return hkdf(sha256, passkeyPrfBytes(prfSecret), new Uint8Array(0), utf8ToBytes(PASSKEY_SEED_KEK_INFO), 32);
 }
 
 /** The secp256k1 key that owns this credential's portability envelope SOC. */

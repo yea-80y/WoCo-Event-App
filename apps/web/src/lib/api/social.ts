@@ -21,6 +21,7 @@
 
 import type { Hex0x } from "@woco/shared";
 import { requireAccountForAction } from "../auth/ensure-action.js";
+import { auth } from "../auth/auth-store.svelte.js";
 import { get } from "./client.js";
 import { readMyStatement, writeMyStatement, type SocialKind } from "../social/social.js";
 import { gate } from "../attendee/gate/gate.svelte.js";
@@ -110,6 +111,10 @@ export async function toggleSocial(
 ): Promise<SocialState | null> {
   const ready = await requireAccountForAction({ context: "attendee" });
   if (!ready) return null;
+  // The statement is signed by the account's keys, which a passkey account keeps
+  // locked after a reload (#746 fix 1). Unlock them now, while this tap is still the
+  // gesture: after the gate's network read a browser may refuse the passkey sheet.
+  if (!(await auth.ensureAccountSetup({ identity: true }))) return null;
 
   const status = gate.status ?? (await gate.refresh());
   if (status && !status.gated && !(await gate.request())) return null;

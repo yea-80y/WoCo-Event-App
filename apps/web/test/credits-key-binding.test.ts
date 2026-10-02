@@ -90,12 +90,18 @@ const AUTH_STORE = readFileSync(
 test("the bound seed accessor resolves the address through _getSeedAddress()", () => {
   const line = AUTH_STORE.split("\n").find((l) => l.trimStart().startsWith("getIdentitySeed: () =>"));
   assert.ok(line, "getIdentitySeed must be exported as a bound accessor");
-  assert.match(
-    line,
-    /_getSeedAddress\(\)/,
-    "getIdentitySeed must resolve the seed address the same way ensureIdentitySeed " +
-      "stores it — two resolvers is the bug, not the wrong constant",
-  );
+  assert.match(line, /_seedIfPresent\(\)/, "getIdentitySeed must read through the one prompt-free resolver");
+  // Both of its routes - a passkey account's unlocked seed and every other kind's
+  // device copy - must resolve the seed address the way ensureIdentitySeed stores it.
+  for (const fn of ["async function _seedIfPresent", "function _unlockedSeed"]) {
+    const start = AUTH_STORE.indexOf(fn);
+    assert.ok(start > 0, `${fn} must exist`);
+    assert.match(
+      AUTH_STORE.slice(start, AUTH_STORE.indexOf("\n}\n", start)),
+      /_getSeedAddress\(\)/,
+      "two resolvers is the bug, not the wrong constant",
+    );
+  }
 });
 
 test("the auth store exposes NO key accessor to reach past the seed", () => {

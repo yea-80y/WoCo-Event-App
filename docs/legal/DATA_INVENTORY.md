@@ -147,8 +147,12 @@ a stated policy** (see §8).
 - The only callers of the ECIES open functions are in the organiser's browser:
   `Dashboard.svelte:380,398` (orders, `openJson`), `AudienceScreen.svelte:95` (contact list,
   `openJsonAuto`) and `AttendeeImport.svelte:68` (imported attendee orders, `openJson`).
-- The decryption key is derived from the organiser's POD seed, itself derived client-side from a
-  wallet signature (`apps/web/src/lib/auth/pod-identity.ts`). The seed never leaves the browser.
+- The decryption key is derived in the organiser's browser from their account seed
+  (`deriveXWingKeypairFromSeed`, `packages/shared/src/crypto/xwing.ts`). For a passkey account the
+  seed comes from the passkey and is kept on the device locked under it: it opens only once the
+  organiser confirms it's them with their passkey, once each time WoCo is opened
+  (`apps/web/src/lib/auth/identity-seed.ts`). It leaves the browser only sealed, inside the
+  account's own recovery backups.
 
 **Precise wording that is true:** *"Order-form answers are encrypted in your browser to a key only
 the event organiser holds. WoCo's servers store the encrypted result and have no ability to read it."*

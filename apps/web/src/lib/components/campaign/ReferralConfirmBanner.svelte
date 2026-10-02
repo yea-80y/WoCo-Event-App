@@ -40,13 +40,13 @@
   // Only once a session already exists — a home-screen mount must never trigger
   // a ceremony just to work out what to render.
   //
-  // `hasIdentitySeed` as well, for the same reason App.svelte's settle effect
-  // depends on it: the statement being read lives on a feed whose owner is
-  // derived from the seed, so a device that has none reads nothing and this
-  // would otherwise stay blank for the rest of the session — including the
-  // session in which the seed finally arrives and the statement is written.
+  // `hasIdentitySeed` is a dependency, not a condition: the statement lives on a
+  // feed whose owner derives from the seed, so the read re-runs when the seed
+  // arrives or unlocks. Not a condition, because a passkey account's seed is locked
+  // after every reload (#746 fix 1) while its feed address is still known.
   $effect(() => {
-    if (!auth.isAuthenticated || !auth.hasIdentitySeed || loading) return;
+    void auth.hasIdentitySeed;
+    if (!auth.isAuthenticated || loading) return;
     loading = true;
     void load().finally(() => { loading = false; });
   });

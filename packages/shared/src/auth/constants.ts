@@ -16,6 +16,12 @@ export const StorageKeys = {
   // The Kernel smart-account address is the parent; the seed must stay on the raw
   // PRF-EOA address (invariant #1) so it survives the future Option 2 swap.
   SEED_ADDRESS: "woco:auth:seed-address",
+  // A passkey account's seed, locked under a key from its PRF output (#746 fix 1):
+  // per seed address, opens only with that passkey. Survives sign-out.
+  IDENTITY_SEED_LOCKED: "woco:auth:identity-seed-locked",
+  // PUBLIC values derived from a locked seed `{ parent, feedSignerAddress }`, per
+  // seed address, so own-profile reads work while the seed is locked.
+  PUBLIC_KEYS: "woco:auth:public-keys",
   // Durable RECOVERED-account bindings: a MAP `{ [prfEoaLower]: kernelAddress }`.
   // After recovery the Kernel's sudo owner is rotated but its address is PRESERVED,
   // so the rotated passkey's counterfactual CREATE2 address no longer equals the
