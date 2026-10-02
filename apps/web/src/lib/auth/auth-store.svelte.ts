@@ -9,6 +9,7 @@ import {
   DEVICE_GRANT_DOMAIN,
   DEVICE_GRANT_TYPES,
   DEVICE_GRANT_REVOKE_TYPES,
+  MAX_DEVICE_GRANTS,
   credentialTagOf,
   type DeviceGrantMessage,
   type DeviceGrantRevokeMessage,
@@ -266,7 +267,8 @@ export class DeviceRemovedError extends Error {
 
 const DEVICE_REMOVED_MESSAGE =
   "This device was removed from the account - ask for a new invite from your main passkey.";
-const NOT_LINKED_MESSAGE = "This passkey isn't linked to the account yet. Add it again from your main passkey.";
+const NOT_LINKED_MESSAGE =
+  "Couldn't confirm this passkey is linked to the account. Try again - if it keeps happening, add it again from your main passkey.";
 const NOT_SET_UP_MESSAGE = "This passkey wasn't fully set up. Add it again from your main passkey.";
 const KEYS_UNREACHABLE_MESSAGE = "Couldn't fetch your account keys right now - try again.";
 
@@ -705,7 +707,9 @@ async function repairUserManifest(seed: import("@woco/shared").UserManifest | nu
  */
 async function _restoreCachedAuth(): Promise<void> {
   if (!_parent) return;
-  const session = await restoreSession(_parent);
+  // A passkey session must be one THIS passkey signed (#746): two passkeys of one
+  // account share the parent-keyed slot, and the AAD cannot tell them apart.
+  const session = await restoreSession(_parent, _kind === "passkey" ? (_seedAddress ?? undefined) : undefined);
   if (session) {
     _sessionAddress = session.sessionWallet.address;
   }
@@ -2121,17 +2125,21 @@ async function _loginAddedPasskey(
     _postAuthNotice(DEVICE_REMOVED_MESSAGE);
     throw new DeviceRemovedError();
   }
-  if (verdict === "invalid") {
-    if (added || !start.onChainOwner) {
-      if (added) await _forgetAddedPasskey(seedAddr);
-      throw new Error(NOT_LINKED_MESSAGE);
-    }
-    // Not an added passkey, and the chain names another owner: recovered away
-    // from (#255). The binding and seed stay, as on the binding-guard refusal.
+  // Neither refusal below forgets anything: the server says SESSION_INVALID for more
+  // than "no grant" (an owner read it could not make, a store it could not read), so
+  // a refusal leaves this device as it found it; only `removed` is certain.
+  if (verdict === "invalid" && (added || !start.onChainOwner)) throw new Error(NOT_LINKED_MESSAGE);
+  if ((verdict === "invalid" || verdict === "unreachable") && !added && start.onChainOwner) {
+    // Not an added passkey, and the chain names another owner: recovered away from
+    // (#255). Without a "device" verdict that stays a refusal, as it was before.
     clearVerifiedBinding("passkey", seedAddr);
     throw refuseOrphanedCredential("passkey", { boundKernel: parent, onChainOwner: start.onChainOwner });
   }
 
+  // Another passkey of the SAME account may have signed in here before, so the
+  // parent-keyed session slot can hold its delegation: a new credential means a new
+  // session, whatever the parent (as `_restoreAuthAfterRotation` puts it).
+  await clearSession();
   await _clearStaleAuthForSwitch(parent);
   await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
   await putKV(StorageKeys.PARENT_ADDRESS, parent);
@@ -2168,7 +2176,7 @@ function _randomNonce(): string {
 }
 
 function _grantRefusalMessage(res: { code?: string; error?: string; status?: number }): string {
-  if (res.code === "cap-reached") return "This account already has 10 passkeys. Remove one first.";
+  if (res.code === "cap-reached") return `This account already has ${MAX_DEVICE_GRANTS} added passkeys. Remove one first.`;
   if (res.code === "store-unavailable") return "Passkeys can't be changed right now - try again later.";
   if (res.code === "not-owner" || res.code === "not-allowed") return new MainPasskeyRequiredError().message;
   if (res.status === 429) return "Too many changes just now - try again in a minute.";
@@ -2215,7 +2223,14 @@ async function addPasskeyOnThisDevice(
 
   onStep?.("saving");
   const { writePortabilityEnvelope } = await import("./recovery-portability.js");
-  await writePortabilityEnvelope({ prfSecret: added.prfSecret, preservedKernelAddress: parent, identitySeed: seed });
+  try {
+    await writePortabilityEnvelope({ prfSecret: added.prfSecret, preservedKernelAddress: parent, identitySeed: seed });
+  } catch (e) {
+    console.warn("[auth] added passkey's envelope not written:", e);
+    throw new Error(
+      "Couldn't save the new passkey to your account - try again. You can delete the unused one from that password manager.",
+    );
+  }
 
   onStep?.("linking");
   const { credentialIdBytes, writePasskeyRecord } = await import("./passkey-record.js");

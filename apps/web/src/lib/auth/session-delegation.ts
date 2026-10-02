@@ -138,8 +138,12 @@ export async function storeSession(
  * blob cannot be decrypted. A delegation signed by one wallet can never be
  * re-attached to a different active identity: the AES-GCM auth tag fails
  * before the plaintext-level guard below ever runs (defence in depth).
+ *
+ * `expectedSigner`, when given, is the key that must have signed the delegation.
+ * Two passkeys of ONE account share the parent, so the AAD cannot keep one's
+ * session from the other (#746): a delegation signed by another key is dropped.
  */
-export async function restoreSession(expectedParent: string): Promise<{
+export async function restoreSession(expectedParent: string, expectedSigner?: string): Promise<{
   sessionWallet: Wallet;
   delegation: SessionDelegation;
 } | null> {
@@ -189,11 +193,29 @@ export async function restoreSession(expectedParent: string): Promise<{
     return null;
   }
 
-  const { Wallet } = await import("ethers");
+  const { Wallet, verifyTypedData } = await import("ethers");
   const sessionWallet = new Wallet(privateKey);
   if (sessionWallet.address !== address) {
     await clearSession();
     return null;
+  }
+
+  if (expectedSigner) {
+    let signer: string | null = null;
+    try {
+      signer = verifyTypedData(
+        SESSION_DOMAIN,
+        SESSION_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
+        delegation.message,
+        delegation.parentSig,
+      );
+    } catch {
+      signer = null;
+    }
+    if (signer?.toLowerCase() !== expectedSigner.toLowerCase()) {
+      await clearSession();
+      return null;
+    }
   }
 
   return { sessionWallet, delegation };

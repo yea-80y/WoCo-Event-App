@@ -79,15 +79,23 @@
     }
   }
 
-  // Only with a session already here: minting one is a passkey prompt, and a page
-  // open is not the moment for one.
+  // Once per visit, and only with a session already here: minting one is a passkey
+  // prompt, and a page open is not the moment for one. NOT reactive on purpose - a
+  // failed load must wait for the button, not retry against the server in a loop.
+  let autoTried = false;
   $effect(() => {
-    if (isPasskey && auth.hasSession && !loaded && !loading) void load();
+    if (isPasskey && auth.hasSession && !autoTried) {
+      autoTried = true;
+      void load();
+    }
   });
 
   async function add(): Promise<void> {
+    if (adding !== "explain") return;
     addError = null;
     addedNote = null;
+    // Busy from the tap: unlocking may show a passkey sheet before the first step.
+    adding = "creating";
     try {
       const { provider } = await auth.addPasskeyOnThisDevice((step) => (adding = step));
       const name = providerName(provider);

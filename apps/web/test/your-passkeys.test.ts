@@ -136,9 +136,14 @@ test("removing: a device only itself, and removing yourself signs this device ou
   assert.match(b, /if \(target === self\) \{\s*await _forgetAddedPasskey\(self\);\s*await logout\(\{ force: true \}\);/);
 });
 
-test("the screen never asks for a passkey on page open, and never leaves this origin", () => {
+test("the screen never asks for a passkey on page open, never loops, and never leaves this origin", () => {
   const screen = read("../src/lib/components/passkeys/YourPasskeys.svelte");
-  assert.match(screen, /if \(isPasskey && auth\.hasSession && !loaded && !loading\) void load\(\);/);
+  // Once per visit, from a NON-reactive flag: a reactive one re-ran a failing load
+  // in a tight loop against the server (Fable sign-off #1).
+  assert.match(screen, /let autoTried = false;\s*\$effect\(\(\) => \{\s*if \(isPasskey && auth\.hasSession && !autoTried\) \{\s*autoTried = true;\s*void load\(\);/);
+  assert.doesNotMatch(screen, /let autoTried = \$state/);
+  // One add at a time: busy from the tap.
+  assert.match(screen, /if \(adding !== "explain"\) return;[\s\S]*?adding = "creating";\s*try \{/);
   assert.doesNotMatch(screen, /href="#\//);
   assert.doesNotMatch(read("../src/lib/components/profile/ProfilePage.svelte"), /href="#\/passkeys"/);
 });
@@ -151,6 +156,7 @@ test("every live owner-only action tells an added passkey so before any passkey 
     ["../src/lib/components/recovery/AccountRecoverySetup.svelte", "async function confirmAndInstall()"],
     ["../src/lib/components/recovery/AccountRecoverySetup.svelte", "async function confirmRemove()"],
     ["../src/lib/components/recovery/AccountRecoverySetup.svelte", "async function revokeOne("],
+    ["../src/lib/creator/builder/SubENSPicker.svelte", "async function doRelink()"],
   ];
   for (const [file, fn] of sources) {
     const src = read(file);
@@ -159,4 +165,15 @@ test("every live owner-only action tells an added passkey so before any passkey 
     const head = src.slice(start, start + 600);
     assert.match(head, /if \(!auth\.isAccountOwner\) \{[\s\S]*?MAIN_PASSKEY_REQUIRED_MESSAGE;[\s\S]*?return;/, `${fn} must check first`);
   }
+});
+
+test("a name an added passkey could never point is not minted by it", () => {
+  const picker = read("../src/lib/creator/builder/SubENSPicker.svelte");
+  const start = picker.indexOf("async function doClaim()");
+  assert.match(picker.slice(start, start + 500), /if \(auth\.isConnected && !auth\.isAccountOwner\) \{\s*claimError = MAIN_PASSKEY_REQUIRED_MESSAGE;\s*return;/);
+});
+
+test("adding excludes the main passkey AND every passkey this device added before", () => {
+  const b = body(STORE, "async function addPasskeyOnThisDevice(");
+  assert.match(b, /\.\.\.\(pinned\?\.credentialId \? \[pinned\.credentialId\] : \[\]\),\s*\.\.\.Object\.values\(await readPasskeyMeta\(parent\)\)\.map\(\(m\) => m\.credentialId\),/);
 });

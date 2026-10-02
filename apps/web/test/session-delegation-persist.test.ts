@@ -75,3 +75,14 @@ test("the default still stores, as every other sign-in expects", async () => {
   const minted = await requestSessionDelegation(parent, signer, device.address);
   assert.equal((await restoreSession(parent))?.sessionWallet.address, minted.sessionAddress);
 });
+
+test("a session another key signed for the same account is dropped, not re-attached", async () => {
+  data.clear();
+  const minted = await requestSessionDelegation(parent, signer, device.address);
+  const other = Wallet.createRandom();
+  assert.equal(await restoreSession(parent, other.address), null);
+  assert.equal(data.has(StorageKeys.SESSION_KEY), false, "the other key's session is wiped");
+  const again = await requestSessionDelegation(parent, signer, device.address);
+  assert.equal((await restoreSession(parent, device.address))?.sessionWallet.address, again.sessionAddress);
+  assert.notEqual(minted.sessionAddress, again.sessionAddress);
+});

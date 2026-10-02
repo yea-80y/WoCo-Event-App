@@ -51,8 +51,7 @@ test("a device never takes the owner's caches or background owner checks", () =>
 test("a removal is forgotten; a credential recovered away from keeps its seed and binding", () => {
   const b = body(STORE, "async function _loginAddedPasskey(");
   assert.match(b, /if \(verdict === "removed"\) \{\s*await _forgetAddedPasskey\(seedAddr\);[\s\S]*?throw new DeviceRemovedError\(\);/);
-  const invalid = b.slice(b.indexOf('if (verdict === "invalid")'), b.indexOf("await _clearStaleAuthForSwitch("));
-  assert.match(invalid, /if \(added\) await _forgetAddedPasskey\(seedAddr\);/);
+  const invalid = b.slice(b.indexOf('if (verdict === "invalid"'), b.indexOf("await _clearStaleAuthForSwitch("));
   assert.match(invalid, /throw refuseOrphanedCredential\(/);
   const forget = body(STORE, "async function _forgetAddedPasskey(");
   assert.match(forget, /_clearDeviceBinding\(seedAddress\)/);
@@ -92,4 +91,30 @@ test("the never-derive rule and the Kernel override hold for either binding", ()
   assert.match(STORE, /recoveryKernelFor: _boundKernelAddress,/);
   const bound = body(STORE, "async function _boundKernelFor(");
   assert.ok(bound.indexOf("_recoveryKernelFor(") < bound.indexOf("_getDeviceBindings()"), "recovered wins");
+});
+
+test("a new credential gets a new session even for the same account", () => {
+  const b = body(STORE, "async function _loginAddedPasskey(");
+  const clear = b.indexOf("await clearSession();");
+  assert.ok(clear > b.indexOf("await deviceVerdict(") && clear < b.indexOf("await _clearStaleAuthForSwitch(parent);"));
+  assert.match(body(STORE, "async function _restoreCachedAuth("), /restoreSession\(_parent, _kind === "passkey" \? \(_seedAddress \?\? undefined\) : undefined\)/);
+});
+
+test("an uncertain refusal leaves the device as it found it; an orphan without a verdict is still refused", () => {
+  const b = body(STORE, "async function _loginAddedPasskey(");
+  const refusals = b.slice(b.indexOf('if (verdict === "invalid"'), b.indexOf("await clearSession();"));
+  assert.doesNotMatch(refusals, /_forgetAddedPasskey/, "only `removed` forgets");
+  assert.match(refusals, /if \(\(verdict === "invalid" \|\| verdict === "unreachable"\) && !added && start\.onChainOwner\) \{[\s\S]*?throw refuseOrphanedCredential/);
+});
+
+test("a restored passkey session knows whether it is a device", () => {
+  assert.match(body(STORE, "async function _restoreCachedAuth("), /_deviceRole = \(await _boundKernelFor\(seedAddr\)\)\?\.role === "device";/);
+});
+
+test("the verdict sends exactly the session headers every other request sends", () => {
+  const names = (src: string) => [...src.matchAll(/"(X-Session-[A-Za-z]+)"/g)].map((m) => m[1]).sort();
+  const verdict = names(read("../src/lib/auth/device-verdict.ts"));
+  const client = names(read("../src/lib/api/client.ts"));
+  assert.ok(verdict.length === 5, "five session headers");
+  assert.deepEqual(verdict, [...new Set(client)].sort());
 });

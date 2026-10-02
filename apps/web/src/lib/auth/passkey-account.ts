@@ -279,7 +279,9 @@ export class PasskeyAssertionUnavailableError extends Error {
  *  account's passkeys (`excludeCredentials`, #746). */
 export class PasskeyAlreadyInManagerError extends Error {
   constructor() {
-    super("That password manager already holds a passkey for this account. Pick a different one.");
+    super(
+      "That password manager already holds a passkey for this account. Pick a different one, or set up a second password manager on this device first.",
+    );
     this.name = "PasskeyAlreadyInManagerError";
   }
 }
