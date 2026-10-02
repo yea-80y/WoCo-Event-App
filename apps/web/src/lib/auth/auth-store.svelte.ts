@@ -6,6 +6,14 @@ import {
   deriveFeedSignerKey,
   FEATURES,
   KERNEL_CHAIN_ID,
+  DEVICE_GRANT_DOMAIN,
+  DEVICE_GRANT_TYPES,
+  DEVICE_GRANT_REVOKE_TYPES,
+  MAX_DEVICE_GRANTS,
+  credentialTagOf,
+  type DeviceGrantMessage,
+  type DeviceGrantRevokeMessage,
+  type PasskeyProviderId,
 } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 import { AUTH_NOTICE_KEY } from "./auth-notice.js";
@@ -23,6 +31,7 @@ import {
   signWithSession,
   getSessionDelegation,
   clearSession,
+  storeSession,
 } from "./session-delegation.js";
 import {
   requestIdentitySeed,
@@ -42,6 +51,8 @@ import {
   clearPublicKeys,
 } from "./identity-seed.js";
 import { SEED_UNLOCK_POLICY, shouldRelock } from "./seed-unlock-policy.js";
+import { requestChallenge, sha256Hex } from "./request-challenge.js";
+import { apiBase } from "../api/http.js";
 import {
   connectWallet,
   getConnectedAddress,
@@ -56,9 +67,11 @@ import {
   type PasskeyCredentialHandle,
   hasStoredPasskeyCredential,
   clearPasskeyCredential,
+  createAddedPasskey,
 } from "./passkey-account.js";
 import { createWeb3Signer, createLocalSigner } from "./signers/index.js";
 import type { BuiltKernel } from "./kernel-account.js";
+import type { PasskeyLogin } from "./passkey-account.js";
 import type { ContentFeedSigner } from "../swarm/content-feed.js";
 import { signingRequest } from "./signing-request.svelte.js";
 import { accountSetupRequest } from "./account-setup-request.svelte.js";
@@ -107,6 +120,10 @@ let _unlocked: { seedAddress: string; parent: string; seed: string } | null = nu
 // a recovered account with no copy on this device, which only its envelope at
 // sign-in restores. Lets the screens say so instead of "try again".
 let _seedUnavailable = $state<null | "recovered-no-copy">(null);
+// This passkey is an ADDED one (#746 step 3): a device of the account, not its
+// owner. Set from the device binding in `_restoreCachedAuth`, which the server's
+// verdict wrote; never inferred from a response.
+let _deviceRole = $state(false);
 // Bumped by every relock and sign-out, so work that resumes after one - a Kernel
 // build that was waiting on the network - cannot put the keys back.
 let _lockGen = 0;
@@ -227,8 +244,33 @@ function _getSeedAddress(): string | null {
   return _parent;
 }
 
-const SEED_UNAVAILABLE_MESSAGE =
-  "Your account keys aren't on this device yet. Sign in again once your backup can be reached.";
+const SEED_UNAVAILABLE_MESSAGE = "Your account keys aren't on this device. Sign in again to fetch them.";
+
+export const MAIN_PASSKEY_REQUIRED_MESSAGE =
+  "This needs your main passkey - the one you created the account with. Use that device.";
+
+/** An owner-only action (names, backups, adding passkeys) from an added passkey. */
+export class MainPasskeyRequiredError extends Error {
+  constructor() {
+    super(MAIN_PASSKEY_REQUIRED_MESSAGE);
+    this.name = "MainPasskeyRequiredError";
+  }
+}
+
+/** Thrown at sign-in when this passkey's grant was revoked (#746 step 3). */
+export class DeviceRemovedError extends Error {
+  constructor() {
+    super(DEVICE_REMOVED_MESSAGE);
+    this.name = "DeviceRemovedError";
+  }
+}
+
+const DEVICE_REMOVED_MESSAGE =
+  "This device was removed from the account - ask for a new invite from your main passkey.";
+const NOT_LINKED_MESSAGE =
+  "Couldn't confirm this passkey is linked to the account. Try again - if it keeps happening, add it again from your main passkey.";
+const NOT_SET_UP_MESSAGE = "This passkey wasn't fully set up. Add it again from your main passkey.";
+const KEYS_UNREACHABLE_MESSAGE = "Couldn't fetch your account keys right now - try again.";
 
 /** Why the seed is not available: not here at all, or the person did not confirm. */
 function _seedLockedMessage(): string {
@@ -665,7 +707,9 @@ async function repairUserManifest(seed: import("@woco/shared").UserManifest | nu
  */
 async function _restoreCachedAuth(): Promise<void> {
   if (!_parent) return;
-  const session = await restoreSession(_parent);
+  // A passkey session must be one THIS passkey signed (#746): two passkeys of one
+  // account share the parent-keyed slot, and the AAD cannot tell them apart.
+  const session = await restoreSession(_parent, _kind === "passkey" ? (_seedAddress ?? undefined) : undefined);
   if (session) {
     _sessionAddress = session.sessionWallet.address;
   }
@@ -676,6 +720,7 @@ async function _restoreCachedAuth(): Promise<void> {
   const seedAddr = _getSeedAddress();
   if (!seedAddr) return;
   if (_kind === "passkey") {
+    _deviceRole = (await _boundKernelFor(seedAddr))?.role === "device";
     // Locked at rest (#746 fix 1): present only when this tab already unlocked it,
     // or when SEED_UNLOCK_POLICY keeps a copy that opens without the passkey. A
     // legacy device-key copy counts as LOCKED from this build's first load; it is
@@ -891,6 +936,46 @@ async function _putRecoveryBinding(seedAddress: string, kernel: string): Promise
   await putKV(StorageKeys.RECOVERED_KERNEL_BINDING, bindings);
 }
 
+/** ADDED-passkey bindings `{ [prfEoaLower]: kernel }` (#746 step 3), see StorageKeys. */
+async function _getDeviceBindings(): Promise<Record<string, string>> {
+  return (await getKV<Record<string, string>>(StorageKeys.DEVICE_KERNEL_BINDING)) ?? {};
+}
+
+async function _putDeviceBinding(seedAddress: string, kernel: string): Promise<void> {
+  const bindings = await _getDeviceBindings();
+  bindings[seedAddress.toLowerCase()] = kernel.toLowerCase();
+  await putKV(StorageKeys.DEVICE_KERNEL_BINDING, bindings);
+}
+
+async function _clearDeviceBinding(seedAddress: string): Promise<void> {
+  const bindings = await _getDeviceBindings();
+  if (!(seedAddress.toLowerCase() in bindings)) return;
+  delete bindings[seedAddress.toLowerCase()];
+  await putKV(StorageKeys.DEVICE_KERNEL_BINDING, bindings);
+}
+
+/**
+ * The Kernel this passkey acts for when it is not its own counterfactual, and in
+ * which role: "recovered" (rotated in as the owner) or "device" (granted by the
+ * owner, #746). Recovered wins - a passkey made the main one leaves its device
+ * binding behind. The Kernel override and the never-derive-a-seed rule read both;
+ * the owner checks at sign-in dispatch on the role.
+ */
+async function _boundKernelFor(
+  seedAddress: string | null,
+): Promise<{ kernel: `0x${string}`; role: "recovered" | "device" } | undefined> {
+  if (!seedAddress) return undefined;
+  const recovered = await _recoveryKernelFor(seedAddress);
+  if (recovered) return { kernel: recovered, role: "recovered" };
+  const device = (await _getDeviceBindings())[seedAddress.toLowerCase()];
+  return device ? { kernel: device as `0x${string}`, role: "device" } : undefined;
+}
+
+/** Either binding's Kernel - for the rules that hold whatever the role. */
+async function _boundKernelAddress(seedAddress: string | null): Promise<`0x${string}` | undefined> {
+  return (await _boundKernelFor(seedAddress))?.kernel;
+}
+
 /**
  * NEW-DEVICE recovered-passkey check (CROSS_DEVICE_RECOVERY.md §3). When a passkey
  * logs in with NO local recovery binding, it could still be a recovered account
@@ -917,7 +1002,7 @@ async function _verifyPortabilityEnvelope(
   seedAddress: string,
 ): Promise<
   | { preserved: `0x${string}`; identitySeed: string }
-  | { orphaned: { preserved: string; onChainOwner: string } }
+  | { foreign: { preserved: string; identitySeed: string; onChainOwner: string | null } }
   | null
   | "unavailable"
 > {
@@ -941,15 +1026,25 @@ async function _verifyPortabilityEnvelope(
     // the login can refuse honestly (#255). Silence (null read) stays
     // "unavailable", not "absent": an RPC blip on the owner read must neither
     // poison the returning-device cache nor condemn the credential.
-    const { readKernelEcdsaOwner } = await import("./kernel-account.js");
-    const owner = await readKernelEcdsaOwner(opened.preservedKernelAddress);
-    const foreignOwner = provenOrphanOwner(owner, seedAddress);
-    if (foreignOwner) {
-      return { orphaned: { preserved: opened.preservedKernelAddress, onChainOwner: foreignOwner } };
-    }
-    if (!owner) {
+    // STRICT read (#746 step 3): "nobody answered" stays unavailable, while "no
+    // owner" (an undeployed Kernel, which most organisers' are) and "someone else"
+    // both mean this passkey does not own the account. That is an ADDED passkey -
+    // or one recovered away from - and only the server can say which, so the seed
+    // is kept for the verdict rather than dropped.
+    const { readKernelEcdsaOwnerStrict } = await import("./kernel-account.js");
+    const owner = await readKernelEcdsaOwnerStrict(opened.preservedKernelAddress);
+    if (owner === "error") {
       console.warn("[auth] portability envelope owner check unanswered — ignoring for this login");
       return "unavailable";
+    }
+    if (owner === null || owner.toLowerCase() !== seedAddress.toLowerCase()) {
+      return {
+        foreign: {
+          preserved: opened.preservedKernelAddress,
+          identitySeed: opened.identitySeed,
+          onChainOwner: owner,
+        },
+      };
     }
     return {
       preserved: opened.preservedKernelAddress as `0x${string}`,
@@ -1094,7 +1189,7 @@ function _backfillGatherDeps(): import("./recovery-finalize.js").BackfillGatherD
   return {
     getPasskeyPrfSecret: () => _passkeyPrfSecret,
     getSeedAddress: () => _seedAddress,
-    recoveryKernelFor: _recoveryKernelFor,
+    recoveryKernelFor: _boundKernelAddress,
     // The back-fill runs with the PRF output in memory: the unlocked seed, or the
     // locked copy opened with it. Never the device-key copy (#746 fix 1).
     restoreIdentitySeed: async (seedAddress: string) => {
@@ -1119,12 +1214,18 @@ function _backfillGatherDeps(): import("./recovery-finalize.js").BackfillGatherD
  * override == the stored parent), so a wrong passkey is still caught.
  */
 async function _ensureKernel(): Promise<void> {
+  // An added passkey is not the Kernel's owner: every userOp it signed would be
+  // refused on chain. The screens gate these actions; this is the backstop, before
+  // any prompt (#746 step 3).
+  if ((await _boundKernelFor(_seedAddress ?? _getSeedAddress()))?.role === "device") {
+    throw new MainPasskeyRequiredError();
+  }
   await _ensurePasskeyKey();
   if (_kernel) return;
   if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable — cannot build Kernel");
   const gen = _lockGen;
   const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
-  const override = await _recoveryKernelFor(_seedAddress);
+  const override = await _boundKernelAddress(_seedAddress);
   const kernel = await buildKernelFromPrivateKey(
     _passkeyPrivateKey,
     override ? { address: override } : undefined,
@@ -1956,9 +2057,267 @@ async function loginPasskey(mode: "signin" | "create" = "signin"): Promise<boole
 }
 
 /** Same flow, but surfaces WHY it failed so the UI can offer the right next step. */
+/** One line for the login modal to explain a refusal (the #255 notice channel). */
+function _postAuthNotice(message: string): void {
+  try {
+    globalThis.sessionStorage?.setItem(AUTH_NOTICE_KEY, message);
+  } catch {
+    /* the notice is an explanation, never a step */
+  }
+}
+
+/** Forget an added passkey on this device: its binding and every copy of the seed
+ *  it held. Its locked copy would otherwise reopen for an account it left. */
+async function _forgetAddedPasskey(seedAddress: string): Promise<void> {
+  await _clearDeviceBinding(seedAddress);
+  await _clearSeedEverywhere(seedAddress);
+}
+
+/**
+ * Sign in with an ADDED passkey (#746 step 3): a device of account `parent`, granted
+ * by its owner, never its owner. The seed comes from this device's locked copy, or
+ * from the envelope the adding device wrote for this passkey.
+ *
+ * The SERVER decides, before anything is committed here: a session is signed but
+ * not stored, and one `whoami` answers whether the grant is live. Accepted ->
+ * commit as a device (or as the owner, if the passkey was made the main one);
+ * removed or unknown -> refuse with storage untouched, beyond forgetting what this
+ * device held for an added passkey. No answer -> commit; the first action says.
+ */
+async function _loginAddedPasskey(
+  account: PasskeyLogin,
+  start: { parent: string; seed: string | null; onChainOwner?: string | null; fromBinding?: boolean },
+): Promise<void> {
+  const seedAddr = account.address;
+  const parent = start.parent.toLowerCase();
+  let seed = start.seed ?? (await openLockedSeed(seedAddr, parent, account.prfSecret));
+  if (!seed) {
+    const { readPortabilityEnvelope } = await import("./recovery-portability.js");
+    const read = await readPortabilityEnvelope({ prfSecret: account.prfSecret });
+    if (read.status === "found" && read.value.preservedKernelAddress.toLowerCase() === parent) {
+      seed = read.value.identitySeed;
+    } else {
+      // An envelope naming another account makes the binding a stale cache: drop
+      // it, and the next attempt follows the envelope.
+      if (read.status === "found") await _clearDeviceBinding(seedAddr);
+      throw new Error(read.status === "absent" ? NOT_SET_UP_MESSAGE : KEYS_UNREACHABLE_MESSAGE);
+    }
+  }
+
+  const { guardPasskeyRecord } = await import("./passkey-record.js");
+  await guardPasskeyRecord(account.credentialId, parent);
+
+  const minted = await requestSessionDelegation(
+    parent,
+    createLocalSigner(account.privateKey, async () => true),
+    seedAddr,
+    { persist: false },
+  );
+  const { deviceVerdict } = await import("./device-verdict.js");
+  const verdict = await deviceVerdict({
+    delegation: minted.delegation,
+    sessionPrivateKey: minted.sessionPrivateKey,
+    base: apiBase,
+  });
+  const added = account.handleKind === "added" || start.fromBinding === true;
+  if (verdict === "removed") {
+    await _forgetAddedPasskey(seedAddr);
+    _postAuthNotice(DEVICE_REMOVED_MESSAGE);
+    throw new DeviceRemovedError();
+  }
+  // Neither refusal below forgets anything: the server says SESSION_INVALID for more
+  // than "no grant" (an owner read it could not make, a store it could not read), so
+  // a refusal leaves this device as it found it; only `removed` is certain.
+  if (verdict === "invalid" && (added || !start.onChainOwner)) throw new Error(NOT_LINKED_MESSAGE);
+  if ((verdict === "invalid" || verdict === "unreachable") && !added && start.onChainOwner) {
+    // Not an added passkey, and the chain names another owner: recovered away from
+    // (#255). Without a "device" verdict that stays a refusal, as it was before.
+    clearVerifiedBinding("passkey", seedAddr);
+    throw refuseOrphanedCredential("passkey", { boundKernel: parent, onChainOwner: start.onChainOwner });
+  }
+
+  // Another passkey of the SAME account may have signed in here before, so the
+  // parent-keyed session slot can hold its delegation: a new credential means a new
+  // session, whatever the parent (as `_restoreAuthAfterRotation` puts it).
+  await clearSession();
+  await _clearStaleAuthForSwitch(parent);
+  await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
+  await putKV(StorageKeys.PARENT_ADDRESS, parent);
+  await putKV(StorageKeys.SEED_ADDRESS, seedAddr);
+  _kind = "passkey";
+  _parent = parent;
+  _passkeyPrivateKey = account.privateKey;
+  _passkeyPrfSecret = account.prfSecret;
+  _seedAddress = seedAddr;
+  _kernel = null;
+  await storeLockedSeed(seedAddr, parent, seed, account.prfSecret);
+  if (verdict === "owner") {
+    // Made the main one since it was added: the account's own passkey now.
+    await _putRecoveryBinding(seedAddr, parent);
+    await _clearDeviceBinding(seedAddr);
+  } else {
+    await _putDeviceBinding(seedAddr, parent);
+  }
+  if (verdict !== "unreachable") {
+    await storeSession(parent, minted.sessionPrivateKey, minted.sessionAddress, minted.delegation);
+  }
+  _setUnlockedSeed(seedAddr, parent, seed);
+  await _restoreCachedAuth();
+  _cleanupAccountListener?.();
+  _cleanupAccountListener = null;
+}
+
+// ---------------------------------------------------------------------------
+// More than one passkey (#746 step 3): add one on this device, remove one
+// ---------------------------------------------------------------------------
+
+function _randomNonce(): string {
+  return `0x${Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function _grantRefusalMessage(res: { code?: string; error?: string; status?: number }): string {
+  if (res.code === "cap-reached") return `This account already has ${MAX_DEVICE_GRANTS} added passkeys. Remove one first.`;
+  if (res.code === "store-unavailable") return "Passkeys can't be changed right now - try again later.";
+  if (res.code === "not-owner" || res.code === "not-allowed") return new MainPasskeyRequiredError().message;
+  if (res.status === 429) return "Too many changes just now - try again in a minute.";
+  return res.error ?? "Couldn't save that - try again.";
+}
+
+/**
+ * "Add a passkey on this device" - the main passkey makes another for the same
+ * account, in a different password manager on this device, and grants it.
+ *
+ * Order (consult 6): the new passkey's envelope first, so the server never holds a
+ * grant for a passkey that could not finish signing in; the grant, signed raw by
+ * the owner key (the tap and the passkey sheet were the consent); its record; the
+ * local label. A failure before the grant leaves an unused passkey in the manager,
+ * which its added handle refuses honestly at sign-in.
+ */
+async function addPasskeyOnThisDevice(
+  onStep?: (step: "creating" | "saving" | "linking") => void,
+): Promise<{ provider: PasskeyProviderId }> {
+  if (_kind !== "passkey" || _deviceRole) throw new MainPasskeyRequiredError();
+  if (!(await ensureAccountSetup({ identity: true }))) throw new Error(_seedLockedMessage());
+  await _ensurePasskeyKey();
+  const parent = _parent?.toLowerCase();
+  const ownerKey = _passkeyPrivateKey;
+  const seedAddr = _seedAddress;
+  const seed = _unlockedSeed();
+  if (!parent || !ownerKey || !seedAddr || !seed) throw new Error(_seedLockedMessage());
+
+  const { readPasskeyMeta, writePasskeyMeta } = await import("./passkey-meta.js");
+  const pinned = await getKV<{ credentialId?: string }>(StorageKeys.PASSKEY_CREDENTIAL);
+  const exclude = [
+    ...(pinned?.credentialId ? [pinned.credentialId] : []),
+    ...Object.values(await readPasskeyMeta(parent)).map((m) => m.credentialId),
+  ];
+
+  onStep?.("creating");
+  const added = await createAddedPasskey({
+    exclude,
+    createdOn: new Date().toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }),
+  });
+  if (added.address.toLowerCase() === seedAddr.toLowerCase()) {
+    throw new Error("That is the passkey you're signed in with. Pick a different password manager.");
+  }
+
+  onStep?.("saving");
+  const { writePortabilityEnvelope } = await import("./recovery-portability.js");
+  try {
+    await writePortabilityEnvelope({ prfSecret: added.prfSecret, preservedKernelAddress: parent, identitySeed: seed });
+  } catch (e) {
+    console.warn("[auth] added passkey's envelope not written:", e);
+    throw new Error(
+      "Couldn't save the new passkey to your account - try again. You can delete the unused one from that password manager.",
+    );
+  }
+
+  onStep?.("linking");
+  const { credentialIdBytes, writePasskeyRecord } = await import("./passkey-record.js");
+  const credentialId = credentialIdBytes(added.credentialId);
+  const grant: DeviceGrantMessage = {
+    parent,
+    grantee: added.address.toLowerCase(),
+    credentialTag: credentialTagOf(credentialId),
+    issuedAt: Math.floor(Date.now() / 1000),
+    nonce: _randomNonce(),
+  };
+  const grantSig = await createLocalSigner(ownerKey, async () => true)(
+    { ...DEVICE_GRANT_DOMAIN },
+    DEVICE_GRANT_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
+    grant as unknown as Record<string, unknown>,
+  );
+  const { registerDeviceGrant } = await import("../api/device-grants.js");
+  const res = await registerDeviceGrant(grant, grantSig);
+  if (!res.ok) throw new Error(_grantRefusalMessage(res));
+
+  // Best-effort past this point: the passkey already works. Without its record
+  // the sign-in guard simply has nothing to check; without the label the list
+  // shows a generic one.
+  try {
+    const { passkeyRecordCommit } = await import("@woco/shared/auth/passkey-record");
+    await writePasskeyRecord(credentialId, { v: 1, kind: "added", commit: passkeyRecordCommit(parent, credentialId) });
+  } catch (e) {
+    console.warn("[auth] added passkey's record not written (non-fatal):", e);
+  }
+  await writePasskeyMeta(parent, grant.credentialTag, {
+    provider: added.provider,
+    addedAt: Date.now(),
+    credentialId: added.credentialId,
+  }).catch((e) => console.warn("[auth] added passkey's label not kept (non-fatal):", e));
+  return { provider: added.provider };
+}
+
+/**
+ * Remove an added passkey: the main passkey removes any, an added one only itself
+ * ("sign this device out"). Signed raw by whichever passkey this is. Removing this
+ * device's own passkey forgets what it held and signs out.
+ */
+async function removePasskey(grantee: string): Promise<void> {
+  const parent = _parent?.toLowerCase();
+  const self = _seedAddress?.toLowerCase();
+  const target = grantee.toLowerCase();
+  if (_kind !== "passkey" || !parent || !self) throw new MainPasskeyRequiredError();
+  if (_deviceRole && target !== self) throw new MainPasskeyRequiredError();
+  await _ensurePasskeyKey();
+  const key = _passkeyPrivateKey;
+  if (!key) throw new Error(_seedLockedMessage());
+  const revoke: DeviceGrantRevokeMessage = { parent, grantee: target, nonce: _randomNonce() };
+  const revokeSig = await createLocalSigner(key, async () => true)(
+    { ...DEVICE_GRANT_DOMAIN },
+    DEVICE_GRANT_REVOKE_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
+    revoke as unknown as Record<string, unknown>,
+  );
+  const { revokeDeviceGrant } = await import("../api/device-grants.js");
+  const res = await revokeDeviceGrant(revoke, revokeSig);
+  if (!res.ok) throw new Error(_grantRefusalMessage(res));
+  if (target === self) {
+    await _forgetAddedPasskey(self);
+    await logout({ force: true });
+  }
+}
+
+/**
+ * The server says this device's grant was revoked (`DEVICE_REMOVED` on any
+ * request, #746 step 3): forget what it held for the account and sign out, once.
+ */
+let _forgettingDevice = false;
+async function onDeviceRemoved(): Promise<void> {
+  const seedAddr = _seedAddress;
+  if (_forgettingDevice || _kind !== "passkey" || !seedAddr || !_deviceRole) return;
+  _forgettingDevice = true;
+  try {
+    await _forgetAddedPasskey(seedAddr);
+    _postAuthNotice(DEVICE_REMOVED_MESSAGE);
+    await logout({ force: true });
+  } finally {
+    _forgettingDevice = false;
+  }
+}
+
 async function loginPasskeyResult(
   mode: "signin" | "create" = "signin",
-): Promise<{ ok: boolean; error?: Error; noAssertion?: boolean; orphaned?: boolean }> {
+): Promise<{ ok: boolean; error?: Error; noAssertion?: boolean; orphaned?: boolean; removed?: boolean }> {
   // Not a ceremony failure — no prompt ran. Say so, rather than letting the UI
   // render "authentication failed" for a collision with an in-flight login.
   if (_busy) return { ok: false, error: new Error("A sign-in is already in progress.") };
@@ -1988,7 +2347,14 @@ async function loginPasskeyResult(
       });
     }
 
-    let override = await _recoveryKernelFor(account.address);
+    // An ADDED passkey this device has signed in with before (#746 step 3): the
+    // server decides, never the chain owner, which names the main passkey by design.
+    const bound = await _boundKernelFor(account.address);
+    if (bound?.role === "device") {
+      await _loginAddedPasskey(account, { parent: bound.kernel, seed: null, fromBinding: true });
+      return { ok: true };
+    }
+    let override = bound?.kernel;
 
     // FAST PATH (returning device, never-recovered passkey): a previous login
     // on this device already resolved this PRF-EOA — Kernel address cached, the
@@ -1998,7 +2364,9 @@ async function loginPasskeyResult(
     // rebuilt lazily on first on-chain use (`_ensureKernel`, which asserts the
     // address against this parent), exactly like the reload-restore path.
     if (!override) {
-      const cachedKernel = readCachedKernelAddress("passkey", account.address);
+      // Never for an added passkey: it has no account of its own to cache.
+      const cachedKernel =
+        account.handleKind === "added" ? null : readCachedKernelAddress("passkey", account.address);
       if (cachedKernel) {
         await _clearStaleAuthForSwitch(cachedKernel);
         await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
@@ -2121,23 +2489,34 @@ async function loginPasskeyResult(
       if (check === null) {
         envelopeAbsent = true; // definitive — makes this login cacheable below
       } else if (check !== "unavailable") {
-        if ("orphaned" in check) {
-          // Same proof as the binding guard above, reached without a local
-          // binding (e.g. a twice-recovered account's older credential on a
-          // new device): the credential's own envelope names a Kernel the
-          // chain says belongs to someone else now. Refuse honestly (#255)
-          // rather than mint the counterfactual.
-          clearVerifiedBinding("passkey", account.address);
-          throw refuseOrphanedCredential("passkey", {
-            boundKernel: check.orphaned.preserved,
-            onChainOwner: check.orphaned.onChainOwner,
-          });
+        if ("foreign" in check) {
+          if (check.foreign.onChainOwner === null && account.handleKind !== "added") {
+            // An undeployed Kernel named by a credential that was not made by "Add
+            // a passkey": says nothing, as before (#746 step 3 kept this case).
+            envelopeUnknown = true;
+          } else {
+            // The envelope names an account this passkey does not own: an added
+            // passkey, or one recovered away from (#255). The server says which.
+            await _loginAddedPasskey(account, {
+              parent: check.foreign.preserved,
+              seed: check.foreign.identitySeed,
+              onChainOwner: check.foreign.onChainOwner,
+            });
+            return { ok: true };
+          }
+        } else {
+          portabilityRestore = check;
+          if (!override) override = check.preserved;
         }
-        portabilityRestore = check;
-        if (!override) override = check.preserved;
       } else {
         envelopeUnknown = true;
       }
+    }
+
+    // An added passkey has no account of its own: without its envelope it must not
+    // fall through to minting its counterfactual one.
+    if (account.handleKind === "added" && !override) {
+      throw new Error(envelopeAbsent ? NOT_SET_UP_MESSAGE : KEYS_UNREACHABLE_MESSAGE);
     }
 
     const kernel = await buildKernelFromPrivateKey(
@@ -2236,6 +2615,7 @@ async function loginPasskeyResult(
       // The modal's one-shot notice already explains this refusal — the flag
       // lets the button suppress a duplicate error line, not restyle it.
       orphaned: isOrphanedCredentialError(err),
+      removed: err.name === "DeviceRemovedError",
     };
   } finally {
     _busy = false;
@@ -2465,7 +2845,9 @@ async function _unlockPasskeySeed(seedAddr: string): Promise<boolean> {
   }
   let seed = await openLockedSeed(seedAddr, parent, prf);
   if (!seed) {
-    if (await _recoveryKernelFor(seedAddr)) {
+    // Recovered OR added (#746): either way the seed was carried here, and this
+    // passkey's own derivation would be a different account.
+    if (await _boundKernelAddress(seedAddr)) {
       console.error("[auth] recovered account identity seed missing — refusing to re-derive a divergent seed");
       _seedUnavailable = "recovered-no-copy";
       return false;
@@ -3496,15 +3878,7 @@ async function signRequest(
 
   const nonce = crypto.randomUUID();
   const timestamp = Date.now().toString();
-  const bodyHash = await sha256Hex(body);
-  const challenge = [
-    "woco-session-v1",
-    method.toUpperCase(),
-    path,
-    timestamp,
-    nonce,
-    bodyHash,
-  ].join("\n");
+  const challenge = requestChallenge(method, path, timestamp, nonce, await sha256Hex(body));
 
   // `hasSession` can be true (derived from in-memory _sessionAddress) while the
   // underlying IndexedDB blob is gone (expired, host changed, parent-mismatch,
@@ -3533,15 +3907,6 @@ async function signRequest(
   };
 }
 
-/** SHA-256 hex of a UTF-8 string (for request body binding). */
-async function sha256Hex(text: string): Promise<string> {
-  const bytes = new TextEncoder().encode(text);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  const hex = Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-  return hex;
-}
 
 // ---------------------------------------------------------------------------
 // Logout / Forget Identity
@@ -3658,6 +4023,7 @@ async function clearAllAuth(): Promise<void> {
   _identitySeedPresent = false;
   _unlocked = null;
   _seedUnavailable = null;
+  _deviceRole = false;
   _lockGen++;
   _passkeyPrivateKey = null;
   _passkeyPrfSecret = null;
@@ -3719,6 +4085,12 @@ export const auth = {
   get hasIdentitySeed() { return hasIdentitySeed; },
   /** "recovered-no-copy": the keys cannot be unlocked on this device (not declined). */
   get seedUnavailable() { return _seedUnavailable; },
+  /** False only for an ADDED passkey (#746): a device of the account, which cannot
+   *  do what only its owner can (names, backups, adding or removing passkeys). */
+  get isAccountOwner() { return !(_kind === "passkey" && _deviceRole); },
+  onDeviceRemoved,
+  addPasskeyOnThisDevice,
+  removePasskey,
   get isConnected() { return isConnected; },
   get isAuthenticated() { return isAuthenticated; },
 

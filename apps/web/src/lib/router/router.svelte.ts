@@ -144,6 +144,7 @@ function matchRoute(pathWithQuery: string): Match {
     return { route: "signup", params: gt ? { gt } : {}, surface: "attendee" };
   }
   if (path === "/protect") return { route: "protect", params: {}, surface: "attendee" };
+  if (path === "/passkeys") return { route: "passkeys", params: {}, surface: "attendee" };
   if (path === "/recover") return { route: "recover", params: {}, surface: "attendee" };
   if (path === "/profile") return { route: "profile", params: {}, surface: "attendee" };
   const soonMatch = path.match(/^\/soon\/(.+)$/);

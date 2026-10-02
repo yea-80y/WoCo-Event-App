@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { auth } from "../../auth/auth-store.svelte.js";
+  import { auth, MAIN_PASSKEY_REQUIRED_MESSAGE } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { checkSubEnsLabel, claimSubEnsLabel, getOwnedSubEns, type OwnedSubEnsName } from "../../api/sub-ens.js";
   import { gate } from "../../attendee/gate/gate.svelte.js";
@@ -281,6 +281,11 @@
   // ── Claim ────────────────────────────────────────────────────────────────────
   async function doClaim() {
     if (claiming || checkPhase !== 'ok') return;
+    // A name an added passkey mints could never be pointed by it (#746).
+    if (auth.isConnected && !auth.isAccountOwner) {
+      claimError = MAIN_PASSKEY_REQUIRED_MESSAGE;
+      return;
+    }
 
     if (!auth.isConnected) {
       const ok = await loginRequest.request();
@@ -330,6 +335,10 @@
   // Re-link: name already owned on-chain, just update the profile pointer
   async function doRelink() {
     if (claiming) return;
+    if (!auth.isAccountOwner) {
+      claimError = MAIN_PASSKEY_REQUIRED_MESSAGE;
+      return;
+    }
     claiming = true;
     claimError = '';
     const label = rawInput.toLowerCase().trim();

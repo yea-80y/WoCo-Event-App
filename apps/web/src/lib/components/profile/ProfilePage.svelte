@@ -872,6 +872,15 @@
             </span>
           </div>
 
+          {#if auth.kind === "passkey"}
+            <div class="info-row">
+              <span class="info-label">Passkeys</span>
+              <!-- navigate(), never href="#/...": the gateway <base href> would send it off
+                   this origin, where the passkey opens a different account. -->
+              <button class="info-value link-btn" onclick={() => navigate("/passkeys")}>Your passkeys</button>
+            </div>
+          {/if}
+
           <div class="info-row">
             <span class="info-label">Address</span>
             <button class="addr-copy-btn" onclick={copyAddress} title={viewAddress}>
@@ -1494,6 +1503,16 @@
   .info-label {
     font-size: 0.8125rem;
     color: var(--text-secondary);
+  }
+
+  .info-value.link-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    color: var(--accent-text);
+    text-decoration: underline;
+    text-underline-offset: 2px;
   }
 
   .info-value {

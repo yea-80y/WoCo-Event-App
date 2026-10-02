@@ -303,7 +303,7 @@ test("store: a silent restore does not re-stamp a device-window copy", () => {
 
 test("store: a recovered account with no copy here is told so, not that it declined", () => {
   const unlock = body(STORE, "async function _unlockPasskeySeed");
-  assert.match(unlock, /if \(await _recoveryKernelFor\(seedAddr\)\) \{[\s\S]*?_seedUnavailable = "recovered-no-copy";\s*return false;/);
+  assert.match(unlock, /if \(await _boundKernelAddress\(seedAddr\)\) \{[\s\S]*?_seedUnavailable = "recovered-no-copy";\s*return false;/);
   assert.match(body(STORE, "function _setUnlockedSeed"), /_seedUnavailable = null;/);
   assert.match(body(STORE, "async function clearAllAuth"), /_seedUnavailable = null;/);
   assert.match(STORE, /get seedUnavailable\(\) \{ return _seedUnavailable; \}/);

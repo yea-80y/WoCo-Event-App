@@ -11,7 +11,7 @@
   Who may sign which pointer is decided in `sub-ens/pointer-policy.ts`.
 -->
 <script lang="ts">
-  import { auth } from "../../auth/auth-store.svelte.js";
+  import { auth, MAIN_PASSKEY_REQUIRED_MESSAGE } from "../../auth/auth-store.svelte.js";
   import { subEnsName, type SiteFeedOwner } from "@woco/shared";
   import { subEnsErrorFrom, subEnsErrorDetail } from "../../sub-ens/errors.js";
   import { pointerBlockedReason, type PointerPurpose } from "../../sub-ens/pointer-policy.js";
@@ -39,6 +39,12 @@
 
   async function point() {
     if (phase === "working" || blocked) return;
+    // Only the account's owner can sign as the name's holder (#746): say so before
+    // any passkey sheet, rather than fail after one.
+    if (!auth.isAccountOwner) {
+      errText = MAIN_PASSKEY_REQUIRED_MESSAGE;
+      return;
+    }
     phase = "working";
     errText = "";
     try {

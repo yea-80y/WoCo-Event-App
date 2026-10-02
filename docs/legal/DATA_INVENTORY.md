@@ -88,6 +88,7 @@ Enumerated from source, not assumed:
 | `referrals.json`, `badges-index.json` | **Yes** | Wallet addresses |
 | `storage-ledger.json` | Indirect | Bytes uploaded per owner address |
 | `revoked-sessions.json`, `consumed-*.json` | Indirect | Session nonces, tx hashes, Stripe session ids, Resend event ids — replay prevention |
+| `device-grants.json` | Indirect | An account's added passkeys (#746): each one's key address and a hash of its credential id, the account owner's signed grant and any signed removal, and every nonce used. No names, no device or password-manager details. Must survive restarts (losing it signs added passkeys out) |
 | `event-listing-state.json`, `etherna-batches.json`, `onchain-events.json`, `pending-registrations.json`, `domains.json`, `manifest.json`, `shop-*.json` | Mostly not | Operational state; shop stores contain wallet addresses |
 | `email-failures.json` | **Yes — plaintext, transactional only** | Ledger of email the platform failed to deliver — either after every retry, or because the provider accepted it and then hard-bounced it (`routes/ses-webhook.ts`). `transactional` entries store the buyer's plaintext address: it is the only copy on disk (the claimers feed stores `emailHash`) and exists solely to deliver the ticket already paid for — Art. 6(1)(b). `marketing` entries store the HMAC hash only. Mode 0600, 90-day retention. A 1,000-entry cap bounds the file, but UNRESOLVED transactional entries are exempt from it and bounded by retention alone — a size cap that discarded evidence of a paid-but-undelivered ticket would defeat the store's purpose. Disclosed under Art. 15 and redacted under Art. 17 by the §6 procedure. The stored provider diagnostic is scrubbed of email-shaped text before it is written or logged, so the address exists in exactly one field per entry — the one erasure knows how to remove — rather than in a second, unreachable copy inside the error string — `failure-ledger.ts` |
 | `broadcast-jobs/{jobId}.json` | **Yes** (pseudonymous) | One file per background broadcast. HMAC `emailHash`es of everyone it delivered to, plus counters, subject and the organiser's own message body. **No plaintext addresses, ever.** Purpose: send-once accounting — it is what lets a broadcast killed by a restart be resumed without mailing anyone twice. Mode 0600. Retention **7 days** from the job's end (the resume window), and at most 20 records per organiser — except a record of a job killed by a restart that nobody has resumed, which is kept the full 7 days regardless of the cap: it is the `/api/health` alarm and the resume path, and evicting it would clear the alarm while the broadcast is still half-sent. Disclosed under Art. 15 (`broadcastsContaining`, surfaced by the §6 procedure). **Deliberately NOT erased under Art. 17**: removing a hash would make a resumed broadcast mail the person who asked to be forgotten. Erasure is effective by the suppression mark instead, which the send path re-checks per recipient — so a request stops a *live* job immediately — and the record itself expires in 7 days. `broadcast-jobs.ts` |
@@ -125,6 +126,15 @@ claimed "no plaintext store but one" would be false on merge.
   `/api/broadcasts/jobs/:id/chunk` and are held — encrypted — until the send drains. See
   `broadcast-chunks/*.bin` in §3.1. This is the one place the "hashed-and-discarded" description
   above stopped being true, and it is stated here rather than left to be inferred.
+
+### 3.2a Kept on the user's device only (never sent to WoCo)
+
+For passkey accounts (#746): the account seed locked under the passkey
+(`woco:auth:identity-seed-locked:*`); the account's public content-feed address
+(`woco:auth:public-keys:*`); which account an added passkey belongs to
+(`woco:auth:device-kernel`); and, on the device that added a passkey, which password
+manager holds it (`woco:auth:passkey-meta:*`). The password manager is never sent to the
+server or written to Swarm.
 
 ### 3.3 IP addresses
 
