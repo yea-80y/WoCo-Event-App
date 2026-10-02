@@ -177,3 +177,12 @@ test("adding excludes the main passkey AND every passkey this device added befor
   const b = body(STORE, "async function addPasskeyOnThisDevice(");
   assert.match(b, /\.\.\.\(pinned\?\.credentialId \? \[pinned\.credentialId\] : \[\]\),\s*\.\.\.Object\.values\(await readPasskeyMeta\(parent\)\)\.map\(\(m\) => m\.credentialId\),/);
 });
+
+test("more than one passkey is for verified organisers: the screen follows the server's answer", () => {
+  const src = readFileSync(fileURLToPath(new URL("../src/lib/components/passkeys/YourPasskeys.svelte", import.meta.url)), "utf8");
+  assert.match(src, /canAdd = res\.data\.canAddDevices === true;/);
+  const markup = src.slice(src.indexOf("</script>"));
+  const gate = markup.indexOf("{:else if !canAdd}");
+  assert.ok(gate > 0 && gate < markup.indexOf("Link another device</button>"), "no link or move offer before the gate");
+  assert.ok(gate < markup.indexOf("Move to another password manager"));
+});
