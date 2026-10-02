@@ -126,6 +126,11 @@ claimed "no plaintext store but one" would be false on merge.
   `/api/broadcasts/jobs/:id/chunk` and are held — encrypted — until the send drains. See
   `broadcast-chunks/*.bin` in §3.1. This is the one place the "hashed-and-discarded" description
   above stopped being true, and it is stated here rather than left to be inferred.
+- **Linking another device (#746).** `/api/pairing` holds, for at most 10 minutes and in memory
+  only, the few messages two of a person's devices exchange while linking. Each is sealed under a
+  key from a code the devices share by QR or typing, which WoCo never sees, so the server cannot
+  read them; the account keys inside are sealed again to a key that exists only on the device being
+  linked. A restart discards them. `lib/auth/pairing-mailbox.ts`
 
 ### 3.2a Kept on the user's device only (never sent to WoCo)
 
