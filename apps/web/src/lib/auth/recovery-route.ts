@@ -21,8 +21,21 @@ import {
   type HookCall,
 } from "./guardian-hook.js";
 
-/** ZeroDev recovery ACTION singleton (Arb Sepolia) — delegatecalled by the route. */
-export const RECOVERY_ACTION_ADDRESS = "0xe884C2868CC82c16177eC73a93f7D9E6F3A5DC6E" as const;
+export {
+  RECOVERY_ACTION_ADDRESS,
+  RECOVERY_FALLBACK_MODULE_TYPE,
+  RECOVERY_EXECUTOR_FN,
+  INSTALL_MODULE_FN,
+  UNINSTALL_MODULE_FN,
+  KERNEL_SELECTOR_CONFIG_ABI,
+} from "@woco/shared/kernel/recovery-contracts";
+import {
+  RECOVERY_ACTION_ADDRESS,
+  RECOVERY_FALLBACK_MODULE_TYPE,
+  RECOVERY_EXECUTOR_FN,
+  INSTALL_MODULE_FN,
+  UNINSTALL_MODULE_FN,
+} from "@woco/shared/kernel/recovery-contracts";
 
 /**
  * The CALLER HOOK every new route is installed with — WoCo's own, with
@@ -33,44 +46,6 @@ export const RECOVERY_ACTION_ADDRESS = "0xe884C2868CC82c16177eC73a93f7D9E6F3A5DC
  */
 export const RECOVERY_CALLER_HOOK = WOCO_GUARDIAN_HOOK;
 export { LEGACY_ZERODEV_CALLER_HOOK };
-
-/** ERC-7579 fallback module — the recovery action is a selector-routed fallback. */
-export const RECOVERY_FALLBACK_MODULE_TYPE = 3n;
-
-export const RECOVERY_EXECUTOR_FN = "function doRecovery(address _validator, bytes calldata _data)";
-export const INSTALL_MODULE_FN =
-  "function installModule(uint256 _type, address _module, bytes calldata _initData)";
-export const UNINSTALL_MODULE_FN =
-  "function uninstallModule(uint256 _type, address _module, bytes calldata _deInitData)";
-
-/**
- * `selectorConfig(bytes4) → (hook, target, callType)` — Kernel v3.1's public getter
- * over the fallback-route table (`core/SelectorManager.sol:29`, struct at :19). A
- * static struct, so the three words come back inline with no head offset.
- *
- * Confirmed by raw `eth_call` on Arb Sepolia against a live protected account:
- * installed returns `(0x990a9FC8…, 0xe884C286…, 0xff)`, absent returns three zero
- * words. `callType` is Kernel's `CallType` user-defined value type over `bytes1`.
- */
-export const KERNEL_SELECTOR_CONFIG_ABI = [
-  {
-    type: "function",
-    name: "selectorConfig",
-    stateMutability: "view",
-    inputs: [{ name: "selector", type: "bytes4" }],
-    outputs: [
-      {
-        name: "",
-        type: "tuple",
-        components: [
-          { name: "hook", type: "address" },
-          { name: "target", type: "address" },
-          { name: "callType", type: "bytes1" },
-        ],
-      },
-    ],
-  },
-] as const;
 
 /**
  * The viem helpers these builders need. Passed in rather than imported so

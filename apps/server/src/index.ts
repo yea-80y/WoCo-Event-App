@@ -24,6 +24,7 @@ import { siteRoute } from "./routes/site.js";
 import { profiles } from "./routes/profiles.js";
 import { recovery } from "./routes/recovery.js";
 import { deviceGrants } from "./routes/device-grants.js";
+import { zerodevPolicy, zerodevPolicyHealth } from "./routes/zerodev-policy.js";
 import { pairing } from "./routes/pairing.js";
 import { broadcast } from "./routes/broadcast.js";
 import { broadcastJobs } from "./routes/broadcast-jobs.js";
@@ -416,6 +417,11 @@ function healthReport() {
     // Added passkeys (#746). `unreadable` is an alarm: every added device is
     // signed out and no device can be added or removed until the file is restored.
     deviceGrants: deviceGrantHealth(),
+    // Sponsored userOps (#758): ZeroDev asks the policy route before paying. Red
+    // when the secret or project id is unset - every sponsorship is then refused,
+    // so recovery, backups and "make this device the main one" all fail. Counts
+    // since boot; `lastRefusal.reason` names the rule that refused.
+    zerodevPolicy: zerodevPolicyHealth(),
     // The attendee order batch (#546): red when checkout would refuse sales,
     // the batch is under the postage TTL floor or its fullest bucket over the
     // utilization ceiling, or a burn was left unfinished.
@@ -668,6 +674,8 @@ app.post("/api/auth/revoke-all", requireAuth, (c) => {
 // An account's added passkeys (#746). revoke-all above also ends their sessions;
 // a device whose grant is still live signs a new one on its next request.
 app.route("/api/auth/device-grants", deviceGrants);
+// ZeroDev's custom gas policy asks here before sponsoring a userOp (#758).
+app.route("/api/zerodev/policy", zerodevPolicy);
 // Linking another device (#746 step 4): a sealed mailbox, no session.
 app.route("/api/pairing", pairing);
 
