@@ -149,6 +149,11 @@ swarmRoutes.post("/bytes", jsonBodyLimit(BYTES_RELAY_MAX_BODY_BYTES), requireAut
   // Up to 16 chunks per call, so its own (tighter) gate (#301).
   const gate = bytesRelayGate.decide({ parent: parentAddress, ip: clientIp(c), kind: "other" });
   if (!gate.allowed) return c.json({ ok: false, error: gate.reason }, gate.status);
+
+  // Raw bytes stamp platform storage, up to 16 chunks a call; no screen uses
+  // this route. Same unlock as a name (owner decision 2026-10-02).
+  const unlock = await checkAttendeeGate(parentAddress.toLowerCase());
+  if (!unlock.gated) return c.json({ ok: false, error: "ticket_required" }, 403);
   try {
     // Route to the event's batch — Etherna when the builder picked it (events
     // never trigger a batch purchase; falls back to the platform Etherna batch).

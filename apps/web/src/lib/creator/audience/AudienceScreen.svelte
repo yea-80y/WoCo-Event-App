@@ -345,7 +345,7 @@
       <StripeVerifyGate
         bind:verified={stripeVerified}
         title="Verify Stripe to send broadcasts"
-        sub="Marketing email sends on WoCo's shared reputation, so broadcasting needs a connected, verified Stripe account — it's free and verifies who you are. Your contact list is yours either way: importing and managing it needs nothing."
+        sub="Marketing email sends on WoCo's shared reputation, so broadcasting needs a connected, verified Stripe account — it's free and verifies who you are. Adding contacts to your list needs the same verification; removing them never does."
       />
       {#if stripeVerified}
         <MarketingComposer {contacts} {suppressedEmails} {provenEmails} initialEventId={announceEventId} />

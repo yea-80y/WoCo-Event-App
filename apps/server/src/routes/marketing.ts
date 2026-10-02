@@ -117,6 +117,21 @@ marketing.post("/list", requireAuth, async (c) => {
     }
     const { emails, unmailable, unmailableCount } = normalized;
 
+    // Adding anyone needs a verified organiser (owner decision 2026-10-02): every
+    // save stores the whole list on platform storage. Removing never does, so an
+    // organiser can always erase a contact, verified or not. "Only removes" = a
+    // list already exists and every address is already on it.
+    const prior = getList(org);
+    const priorHashes = new Set(prior?.emailHashes ?? []);
+    const onlyRemoves = prior !== null && emails.every((e) => priorHashes.has(hashEmail(e)));
+    if (!onlyRemoves) {
+      const refusal = await refuseUnlessVerifiedOrganiser(
+        org,
+        "Adding contacts needs a verified Stripe account. Verify in Payments, then try again. Removing contacts never needs it.",
+      );
+      if (refusal) return c.json(refusal, 403);
+    }
+
     const data = await withOrgLock(org, async () => {
       const emailHashes = [...new Set(emails.map(hashEmail))];
       const swarmRef = await uploadToBytes(JSON.stringify(sealedList), undefined, {

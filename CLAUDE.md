@@ -325,7 +325,9 @@ PUBLISH FLOW (two-step):
    on the gateway, re-upserts the directory entry. Returns `{ contentHash, feedManifestHash, siteUrl }`
 
 AUTH: all write endpoints require the same EIP-712 session delegation used by events. Owner
-is stamped server-side from the verified parentAddress.
+is stamped server-side from the verified parentAddress. Save, logo upload and deploy also need a Stripe-verified
+organiser or the owner's own live Etherna batch, on EVERY gateway (2026-10-02 — the router's
+free-hosting check alone covered only the Etherna fallback).
 
 MY SITES: `GET /api/sites/mine` reads the creator's Swarm directory. localStorage
 `woco:my-sites` is a write-through cache seeded for instant paint; the API is truth.

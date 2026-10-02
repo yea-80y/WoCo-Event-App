@@ -30,8 +30,8 @@ import {
   getPlatformOwner,
   BEE_URL,
 } from "../config/swarm.js";
-import { batchForDeploy, BatchPurchaseRequired, PlatformBatchUnavailable, StripeVerificationRequired, type BatchSelection } from "../lib/etherna/batch-router.js";
-import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
+import { batchForDeploy, BatchPurchaseRequired, PlatformBatchUnavailable, StripeVerificationRequired, hasLiveUserBatch, type BatchSelection } from "../lib/etherna/batch-router.js";
+import { isVerifiedOrganiser, refuseUnlessVerifiedOrganiser } from "../lib/stripe/verification.js";
 import { recordUpload, getFreeHostedBytes } from "../lib/swarm/storage-ledger.js";
 
 /** Per-owner byte cap for free-hosted (shared platform batch) website deploys.
@@ -205,8 +205,22 @@ const CONTACT_RATE_WINDOW = 15 * 60_000;
 // Returns the content hash for use in logoSwarmRef / gallery refs.
 // ---------------------------------------------------------------------------
 
+/**
+ * Website storage is for Stripe-verified organisers, or accounts paying for
+ * their own Etherna batch - on EVERY gateway. The router's free-hosting check
+ * covers only the Etherna fallback; a request naming the WoCo gateway (or none)
+ * used to reach the WoCo batch with no check at all, a whole site bundle per
+ * deploy. Checked before anything is stored (owner decision 2026-10-02).
+ */
+async function websiteStorageRefusal(parentAddress: string): Promise<{ ok: false; error: string; code: string } | null> {
+  if (hasLiveUserBatch(parentAddress)) return null;
+  return refuseUnlessVerifiedOrganiser(parentAddress, new StripeVerificationRequired().message);
+}
+
 sitesRouter.post("/upload-image", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const refusal = await websiteStorageRefusal(parentAddress);
+  if (refusal) return c.json(refusal, 403);
   try {
     const body = await c.req.json() as { image?: string; gatewayUrl?: string };
     if (!body.image || typeof body.image !== "string") {
@@ -277,6 +291,8 @@ sitesRouter.post("/upload-image", requireAuth, async (c) => {
 
 sitesRouter.post("/", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
+  const refusal = await websiteStorageRefusal(parentAddress);
+  if (refusal) return c.json(refusal, 403);
 
   try {
     const body = await c.req.json() as { site?: Site; events?: SiteEventEntry[]; siteFeedSigner?: string; gatewayUrl?: string };
@@ -709,6 +725,8 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const siteId = c.req.param("id");
   if (!isSafeIdParam(siteId)) return malformedId(c, "siteId");
+  const refusal = await websiteStorageRefusal(parentAddress);
+  if (refusal) return c.json(refusal, 403);
 
   let tmpDir: string | null = null;
   let tarPath: string | null = null;
