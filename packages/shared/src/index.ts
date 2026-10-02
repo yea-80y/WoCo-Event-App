@@ -6,6 +6,7 @@ export * from "./auth/passkey-rp.js";
 export * from "./auth/eip712.js";
 export * from "./auth/eip712-digest.js";
 export * from "./auth/passkey-backup-handle.js";
+export * from "./auth/passkey-providers.js";
 export * from "./auth/device-grant.js";
 export * from "./event/types.js";
 export * from "./event/tags.js";
