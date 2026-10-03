@@ -10,7 +10,7 @@ import {
 } from "@woco/shared";
 import { isSessionRevoked } from "./revocation.js";
 import { verifySmartWalletTypedData } from "./smart-wallet-client.js";
-import { cachedOwnerIs, isKernelOwner, readKernelOwner, type OwnerReadOptions } from "./kernel-owner.js";
+import { accountSignerKind, cachedSignerIs, readKernelOwner, type OwnerReadOptions } from "./kernel-owner.js";
 import { isKernelKnownDeployedOnAnyChain } from "./kernel-deployed.js";
 import { decideSmartWalletPath } from "./smart-wallet-gate.js";
 import { lookupDeviceGrant, type DeviceGrantState } from "./device-grants.js";
@@ -72,7 +72,9 @@ const DEFAULT_DEPS: DelegationVerifyDeps = {
  *       deterministic counterfactual match, or live on-chain owner for rotated
  *       /recovered accounts; see kernel-owner.ts). This is the passkey/web3auth
  *       path since the 2026-07 split-brain fix: the raw owner key signs,
- *       message.parent stays the Kernel identity;
+ *       message.parent stays the Kernel identity. For an account whose passkeys
+ *       are co-owners (#746), recovered is on its weighted list, and a device
+ *       record that was removed refuses it at once (DEVICE_REMOVED);
  *    c. Granted device (#746): recovered is a key the Kernel's CURRENT owner
  *       granted (device-grants.ts), the grant not removed, and the delegation
  *       newer than the device's last removal. Session rank "device";
@@ -173,25 +175,40 @@ export async function verifyDelegation(
         // denial is re-read from the chain (#273), so asking "does this device
         // own the Kernel?" first would cost every device request an RPC call, and
         // asking about the grant first would cost the same to a device made the
-        // main one while its old grant stands. So: the owner path when the cache
-        // already names this key, else the grant. isKernelOwner records the
+        // main one while its old grant stands. So: the signer path when the cache
+        // already names this key, else the grant. The owner check records the
         // account with the owner as the presenting key either way (#200/#210).
-        const grant = cachedOwnerIs(parent, recovered)
+        const grant = cachedSignerIs(parent, recovered)
           ? undefined
           : await deps.lookupDeviceGrant(parent, recovered);
-        if (
-          grant?.active &&
-          // Device clock against server time, as revokeAllBefore (revocation.ts)
-          // compares. A slow device re-added within its skew of a removal is
-          // refused until wall time passes notBefore + skew; a fast one keeps at
-          // most the 60 s the future-date bound above allows.
-          issuedAt > (grant.notBefore ?? -Infinity) &&
-          (await isKernelOwner(grant.signer, parent, readOpts))
-        ) {
+        // Device clock against server time, as revokeAllBefore (revocation.ts)
+        // compares. A slow device re-added within its skew of a removal is
+        // refused until wall time passes notBefore + skew; a fast one keeps at
+        // most the 60 s the future-date bound above allows.
+        const afterRemoval = (g: DeviceGrantState) => issuedAt > (g.notBefore ?? -Infinity);
+        const signer =
+          grant?.active && afterRemoval(grant) && (await accountSignerKind(grant.signer, parent, readOpts))
+            ? "granted"
+            : await accountSignerKind(recovered, parent, readOpts);
+        if (signer === "granted") {
           validSig = true;
           rank = "device";
           parentKind = "kernel";
-        } else if (await isKernelOwner(recovered, parent, readOpts)) {
+        } else if (signer === "co-owner") {
+          // Removing a passkey takes it off the list onchain AND removes its device
+          // record. The chain answer can be a minute old (kernel-owner.ts); the
+          // record is what makes the removal immediate (#746).
+          const record = grant ?? (await deps.lookupDeviceGrant(parent, recovered));
+          if (record && (!record.active || !afterRemoval(record))) {
+            return {
+              valid: false,
+              error: "This device was removed from the account",
+              code: AuthErrorCode.DEVICE_REMOVED,
+            };
+          }
+          validSig = true;
+          parentKind = "kernel";
+        } else if (signer === "owner") {
           // A device made the main one still has its old grant: it is the owner now.
           validSig = true;
           parentKind = "kernel";

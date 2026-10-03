@@ -14,7 +14,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { jsonBodyLimit } from "../lib/http/body-limit.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
-import { isKernelOwner } from "../lib/auth/kernel-owner.js";
+import { isAccountSigner } from "../lib/auth/kernel-owner.js";
 import { takeOwnerReadBudget } from "../lib/auth/owner-read-budget.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
 import {
@@ -67,7 +67,7 @@ function chargeAccount(account: string, result: DeviceGrantResult): void {
 
 function ownerCheck(c: { req: { header: (n: string) => string | undefined } }): OwnerCheck {
   return (signer, parent) =>
-    isKernelOwner(signer, parent, { chainReadAllowed: () => takeOwnerReadBudget(clientIp(c)) });
+    isAccountSigner(signer, parent, { chainReadAllowed: () => takeOwnerReadBudget(clientIp(c)) });
 }
 
 function answer(c: Context<AppEnv>, result: DeviceGrantResult) {

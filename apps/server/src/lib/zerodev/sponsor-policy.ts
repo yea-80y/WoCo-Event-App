@@ -31,6 +31,13 @@
  *   rotate         `execute` batch of exactly [ECDSA onUninstall(0x), onInstall(owner)]
  *                  - "make this device the main one"
  *   recover        `execute` single `target.doRecovery(ECDSA validator, owner)` from a guardian
+ *   co-owners      `execute` batch of exactly [self.changeRootValidator(weighted, no hook, list),
+ *                  self.uninstallValidation(ECDSA)] - the second passkey makes every passkey a
+ *                  co-owner (#746, @woco/shared/kernel/co-owners)
+ *   renew          `execute` single `weighted.renew(list)` - add or remove a co-owner
+ * Both co-owner shapes carry a list only when it is 1..10 distinct keys, every weight 1,
+ * threshold 1, no delay: the validator accepts an empty list or an unreachable threshold
+ * and the account is then locked for good (WoCo-Contracts WeightedRootKernel.t.sol F5).
  * `execute` is accepted only with the default exec type and a single or batch call
  * type, no value on any call, and no `executeUserOp` prefix: WoCo sends none of those.
  *
@@ -59,10 +66,19 @@ import {
   WOCO_GUARDIAN_HOOK,
   WOCO_GUARDIAN_HOOK_ABI,
 } from "@woco/shared/kernel/recovery-contracts";
+import {
+  CHANGE_ROOT_VALIDATOR_FN,
+  ECDSA_ROOT_ID,
+  isValidCoOwnerList,
+  UNINSTALL_VALIDATION_FN,
+  WEIGHTED_ECDSA_VALIDATOR_V3_1,
+  WEIGHTED_RENEW_FN,
+  WEIGHTED_ROOT_ID,
+} from "@woco/shared/kernel/co-owners";
 import type { GateStatus } from "../gate/check.js";
 import { SlidingWindowLimiter } from "../http/rate-limit.js";
 
-export type SponsorShape = "install-route" | "guardians" | "remove-route" | "rotate" | "recover";
+export type SponsorShape = "install-route" | "guardians" | "remove-route" | "rotate" | "recover" | "co-owners" | "renew";
 
 export type Classified =
   | { ok: true; shape: SponsorShape; subject: string; guardian?: string }
@@ -107,6 +123,9 @@ const INSTALL = lc(toFunctionSelector(INSTALL_MODULE_FN));
 const EXECUTE = lc(toFunctionSelector("function execute(bytes32 execMode, bytes executionCalldata)"));
 const HOOK_MUTATORS = new Set(["addGuardian", "revokeGuardian", "setGuardians", "clearGuardians"]);
 const MAX_CALLS = 4;
+const WEIGHTED = lc(WEIGHTED_ECDSA_VALIDATOR_V3_1);
+const CO_OWNER_ABI = parseAbi([WEIGHTED_RENEW_FN, CHANGE_ROOT_VALIDATOR_FN, UNINSTALL_VALIDATION_FN]);
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 function uint(v: unknown): bigint | null {
   if (v === undefined || v === null || v === "" || v === "0x") return 0n;
@@ -236,6 +255,52 @@ function validatorCall(call: InnerCall, name: "onUninstall" | "onInstall"): Hex 
   }
 }
 
+/** The co-owner list the account will hold: 1..10 distinct keys, weight 1 each,
+ *  threshold 1, no delay - anything else locks the account or is not WoCo's. */
+function validCoOwnerConfig(signers: readonly string[], weights: readonly (number | bigint)[], threshold: number | bigint, delay: number | bigint): boolean {
+  return (
+    isValidCoOwnerList(signers) &&
+    weights.length === signers.length &&
+    weights.every((w) => BigInt(w) === 1n) &&
+    BigInt(threshold) === 1n &&
+    BigInt(delay) === 0n
+  );
+}
+
+function isRenew(call: InnerCall): boolean {
+  if (call.to !== WEIGHTED) return false;
+  try {
+    const d = decodeFunctionData({ abi: CO_OWNER_ABI, data: call.data });
+    if (d.functionName !== "renew") return false;
+    const [signers, weights, threshold, delay] = d.args as [readonly string[], readonly number[], number, number];
+    return validCoOwnerConfig(signers, weights, threshold, delay);
+  } catch {
+    return false;
+  }
+}
+
+/** [changeRootValidator(weighted, no hook, list, 0x), uninstallValidation(ECDSA, 0x, 0x)], both on the sender. */
+function isCoOwnerSwitch(calls: InnerCall[], sender: string): boolean {
+  if (calls.length !== 2 || calls[0].to !== sender || calls[1].to !== sender) return false;
+  try {
+    const change = decodeFunctionData({ abi: CO_OWNER_ABI, data: calls[0].data });
+    if (change.functionName !== "changeRootValidator") return false;
+    const [root, hook, enable, hookData] = change.args as [Hex, string, Hex, Hex];
+    if (lc(root) !== WEIGHTED_ROOT_ID || lc(hook) !== ZERO_ADDRESS || hookData !== "0x") return false;
+    const [signers, weights, threshold, delay] = decodeAbiParameters(
+      parseAbiParameters("address[], uint24[], uint24, uint48"),
+      enable,
+    ) as unknown as [readonly string[], readonly number[], number, number];
+    if (!validCoOwnerConfig(signers, weights, threshold, delay)) return false;
+    const drop = decodeFunctionData({ abi: CO_OWNER_ABI, data: calls[1].data });
+    if (drop.functionName !== "uninstallValidation") return false;
+    const [vId, deinit, hookDeinit] = drop.args as [Hex, Hex, Hex];
+    return lc(vId) === ECDSA_ROOT_ID && deinit === "0x" && hookDeinit === "0x";
+  } catch {
+    return false;
+  }
+}
+
 function recoveryTarget(call: InnerCall): string | null {
   try {
     const d = decodeFunctionData({ abi: RECOVERY_ABI, data: call.data });
@@ -272,6 +337,14 @@ export function classifyUserOp(op: PolicyUserOp): Classified {
   if (calls.length > MAX_CALLS) return { ok: false, reason: "calls" };
   if (calls.some((c) => c.value !== 0n)) return { ok: false, reason: "value" };
 
+  if (calls.length === 1 && calls[0].to === WEIGHTED) {
+    return isRenew(calls[0]) ? { ok: true, shape: "renew", subject: op.sender } : { ok: false, reason: "co-owners" };
+  }
+  if (calls.length === 2 && calls[0].to === op.sender && calls[1].to === op.sender && !isRouteUninstall(calls[0], op.sender)) {
+    return isCoOwnerSwitch(calls, op.sender)
+      ? { ok: true, shape: "co-owners", subject: op.sender }
+      : { ok: false, reason: "co-owners" };
+  }
   if (calls.length === 1 && calls[0].to !== op.sender && calls[0].to !== HOOK) {
     const target = recoveryTarget(calls[0]);
     return target ? { ok: true, shape: "recover", subject: target, guardian: op.sender } : { ok: false, reason: "call" };

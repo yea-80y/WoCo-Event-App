@@ -51,6 +51,19 @@
  * one IMMEDIATE retry on a sub-second RPC blip, turning a blip into the "session
  * ended" banner. Upstream load during an outage is bounded by the budget and the
  * shared in-flight read instead.
+ *
+ * CO-OWNERS (#746, Fable consult 9). An account with more than one passkey moves
+ * its root to ZeroDev's WeightedECDSAValidator: every passkey a signer, any one
+ * enough (`@woco/shared/kernel/co-owners`). It then has no single owner, and the
+ * ECDSA storage reads empty (the switch uninstalls that validation). So the owner
+ * read also reads the account's ROOT, and `isAccountSigner` - what sessions use -
+ * asks the weighted list whether THIS key is on it: one atomic read of the root
+ * and the key's weight, ordered per key exactly as owner reads are ordered per
+ * account. A key confirmed on the list makes the account durably known-weighted,
+ * so an unreadable chain refuses it instead of falling back to the counterfactual
+ * (which the first passkey matches forever, removed or not). A positive answer is
+ * cached for one minute, not five: a key removed from the list stops signing in
+ * within that, and at once when its device record is revoked (verify-delegation).
  */
 
 import { getEntryPoint, KERNEL_V3_1 } from "@zerodev/sdk/constants";
@@ -60,10 +73,19 @@ import { arbitrum, arbitrumSepolia } from "viem/chains";
 import { KERNEL_CHAIN_ID, type KernelChainId } from "@woco/shared";
 import { getChainRpcUrl } from "../chain/event-contract.js";
 import {
+  ECDSA_ROOT_ID,
+  KERNEL_ROOT_VALIDATOR_ABI,
+  WEIGHTED_ECDSA_VALIDATOR_V3_1,
+  WEIGHTED_GUARDIAN_ABI,
+  WEIGHTED_ROOT_ID,
+} from "@woco/shared/kernel/co-owners";
+import {
   isKernelKnownDeployed,
   knownOwnerDisagreesOnAnyChain,
   getKernelOwnerRecord,
+  getKernelWeightedRecord,
   recordKernelOwner,
+  recordKernelWeighted,
 } from "./kernel-deployed.js";
 import { observeOwnerRead, type OwnerRead } from "./kernel-owner-ordering.js";
 
@@ -135,24 +157,64 @@ const _kernelOfCache = new Map<string, string>();
  *  therefore re-reads the chain before any rejection that a cached value
  *  decided. Steady-state traffic (owner matches) never pays the extra call;
  *  a wrong-key attempt pays one eth_call, within the caller's read budget. */
-const _ownerCache = new Map<string, { owner: string | null; block: number; fetchedAt: number }>();
+const _ownerCache = new Map<string, { owner: string | null; root: RootKind; block: number; fetchedAt: number }>();
 const OWNER_CACHE_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * The account's root validator as one read saw it. `none`: no code at the
+ * address (undeployed) or a root that did not read; the ECDSA owner then decides
+ * exactly as before co-owners existed. Only `weighted` changes the path.
+ */
+export type RootKind = "ecdsa" | "weighted" | "none" | "other";
+interface OwnerState extends OwnerRead {
+  root: RootKind;
+}
+
 /** kernel (lower) → the raw chain read in flight, shared by concurrent callers. */
-const _inFlightReads = new Map<string, Promise<OwnerRead>>();
+const _inFlightReads = new Map<string, Promise<OwnerState>>();
+
+/** One read of a key against a co-owned account: the root, the key's weight on
+ *  the weighted list, and the L2 block, from a single `eth_call`. */
+export interface SignerRead {
+  root: RootKind;
+  weight: number;
+  block: number;
+}
+
+/** `${kernel}:${eoa}` → the last membership answer accepted. Positive answers
+ *  confirm for MEMBER_CACHE_TTL_MS; a negative one is never decided from cache. */
+const _memberCache = new Map<string, { member: boolean; block: number; fetchedAt: number }>();
+const MEMBER_CACHE_TTL_MS = 60 * 1000;
+const MEMBER_CACHE_MAX = 5_000;
+/** `${kernel}:${eoa}` → the last membership CHANGE seen and its block: a read
+ *  that contradicts it from no later a block predates it (kernel-owner-ordering.ts,
+ *  per key). In memory: a removal is made durable by its device record. */
+const _memberOrder = new Map<string, { member: boolean; block: number }>();
+const _inFlightMember = new Map<string, Promise<SignerRead>>();
 
 /** Test seam — replaces the on-chain owner fetch (RPC-free tests); null restores.
  *  The override returns what the chain would: the owner AND the block it was read
- *  at, so tests can replay reads out of order. */
-let _ownerFetchOverride: ((kernel: string) => Promise<OwnerRead | "error">) | null = null;
+ *  at, so tests can replay reads out of order. `root` defaults to `ecdsa` when an
+ *  owner is named and `none` when not. */
+let _ownerFetchOverride: ((kernel: string) => Promise<(OwnerRead & { root?: RootKind }) | "error">) | null = null;
 export function _setOwnerFetchForTests(
-  f: ((kernel: string) => Promise<OwnerRead | "error">) | null,
+  f: ((kernel: string) => Promise<(OwnerRead & { root?: RootKind }) | "error">) | null,
 ): void {
   _ownerFetchOverride = f;
+}
+/** Test seam — replaces the co-owner membership fetch; null restores. */
+let _memberFetchOverride: ((kernel: string, eoa: string) => Promise<SignerRead | "error">) | null = null;
+export function _setMemberFetchForTests(
+  f: ((kernel: string, eoa: string) => Promise<SignerRead | "error">) | null,
+): void {
+  _memberFetchOverride = f;
 }
 export function _resetOwnerCacheForTests(): void {
   _ownerCache.clear();
   _inFlightReads.clear();
+  _memberCache.clear();
+  _memberOrder.clear();
+  _inFlightMember.clear();
 }
 export function _cacheSizesForTests(): { owner: number; kernelOf: number } {
   return { owner: _ownerCache.size, kernelOf: _kernelOfCache.size };
@@ -202,6 +264,24 @@ export function cachedOwnerIs(parent: string, eoa: string): boolean {
   );
 }
 
+/** {@link cachedOwnerIs}, or a fresh cached confirmation that `eoa` is on the
+ *  account's co-owner list. The same rule: true confirms, false decides nothing. */
+export function cachedSignerIs(parent: string, eoa: string): boolean {
+  if (cachedOwnerIs(parent, eoa)) return true;
+  const m = _memberCache.get(`${parent.toLowerCase()}:${eoa.toLowerCase()}`);
+  return m !== undefined && m.member && Date.now() - m.fetchedAt < MEMBER_CACHE_TTL_MS;
+}
+
+/** What `rootValidator()` answered, as a kind. Pure. */
+export function rootKindOf(result: { status: string; result?: unknown }): RootKind {
+  if (result.status !== "success" || typeof result.result !== "string") return "none";
+  const v = result.result.toLowerCase();
+  if (v === ECDSA_ROOT_ID) return "ecdsa";
+  if (v === WEIGHTED_ROOT_ID) return "weighted";
+  if (/^0x0*$/.test(v)) return "none";
+  return "other";
+}
+
 /** Deterministic Kernel v3.1 address for an owner EOA (lowercased), or null on
  *  computation failure. RPC-free for EntryPoint 0.7. */
 export async function kernelAddressOfOwner(eoaAddress: string): Promise<string | null> {
@@ -236,23 +316,26 @@ export async function readKernelOwner(
   const key = kernelAddress.toLowerCase();
   const cached = _ownerCache.get(key);
   if (cached && Date.now() - cached.fetchedAt < OWNER_CACHE_TTL_MS) return cached.owner;
-  return _fetchAndCacheOwner(key, undefined, opts);
+  const state = await _fetchOwnerState(key, undefined, opts);
+  return state === "error" ? "error" : state.owner;
 }
 
 /** The raw chain call, one per Kernel at a time: concurrent callers share it. */
-function _readOwnerAtBlock(key: string): Promise<OwnerRead> {
+function _readOwnerAtBlock(key: string): Promise<OwnerState> {
   const inFlight = _inFlightReads.get(key);
   if (inFlight) return inFlight;
-  const p = (async (): Promise<OwnerRead> => {
+  const p = (async (): Promise<OwnerState> => {
     if (_ownerFetchOverride) {
       const read = await _ownerFetchOverride(key);
       if (read === "error") throw new Error("owner fetch override: error");
-      return read;
+      return { ...read, root: read.root ?? (read.owner ? "ecdsa" : "none") };
     }
     const validatorAddress = getValidatorAddress(entryPoint, kernelVersion);
-    // One atomic read: the owner and the L2 block it was read at, from a single
-    // `eth_call` through Multicall3 so both come from one replica at one state.
-    const [l2Block, owner] = await client().multicall({
+    // One atomic read: the owner, the account's root and the L2 block it was read
+    // at, from a single `eth_call` through Multicall3 so all come from one replica
+    // at one state. The root may not read (no code at the address - undeployed);
+    // the block and the owner must.
+    const [l2Block, owner, root] = await client().multicall({
       contracts: [
         { address: ARBSYS_ADDRESS, abi: ARBSYS_ABI, functionName: "arbBlockNumber" },
         {
@@ -261,11 +344,14 @@ function _readOwnerAtBlock(key: string): Promise<OwnerRead> {
           functionName: "ecdsaValidatorStorage",
           args: [key as Address],
         },
+        { address: key as Address, abi: KERNEL_ROOT_VALIDATOR_ABI, functionName: "rootValidator" },
       ],
-      allowFailure: false,
+      allowFailure: true,
     });
-    const lower = !owner || owner.toLowerCase() === zeroAddress ? null : owner.toLowerCase();
-    return { owner: lower, block: Number(l2Block) };
+    if (l2Block.status !== "success" || owner.status !== "success") throw new Error("owner read failed");
+    const o = owner.result;
+    const lower = !o || o.toLowerCase() === zeroAddress ? null : o.toLowerCase();
+    return { owner: lower, root: rootKindOf(root), block: Number(l2Block.result) };
   })();
   _inFlightReads.set(key, p);
   p.finally(() => _inFlightReads.delete(key)).catch(() => {});
@@ -279,11 +365,11 @@ function _readOwnerAtBlock(key: string): Promise<OwnerRead> {
  *
  *  `presentedBy` is the EOA whose delegation triggered the read, when there is
  *  one — it decides whether a store record may be CREATED (ordering.ts, #210). */
-async function _fetchAndCacheOwner(
+async function _fetchOwnerState(
   key: string,
   presentedBy: string | undefined,
   opts: OwnerReadOptions,
-): Promise<string | null | "error"> {
+): Promise<OwnerState | "error"> {
   // Joining a read already in flight costs nothing, so it needs no budget.
   // A read this caller would START does.
   if (!_inFlightReads.has(key) && opts.chainReadAllowed && !opts.chainReadAllowed()) {
@@ -292,15 +378,27 @@ async function _fetchAndCacheOwner(
   }
   try {
     const read = await _readOwnerAtBlock(key);
+    if (read.root === "weighted") {
+      // A co-owned account has no single owner to order: its ECDSA storage is
+      // empty by design and says nothing. Membership is read per key.
+      const state: OwnerState = { owner: null, root: "weighted", block: read.block };
+      _ownerCache.set(key, { ...state, fetchedAt: Date.now() });
+      capMap(_ownerCache, OWNER_CACHE_MAX);
+      return state;
+    }
+    // A replica from before the account moved to co-owners still shows the ECDSA
+    // root and its first owner. It predates what we know: discard it.
+    const weighted = getKernelWeightedRecord(key);
+    if (weighted && read.block <= weighted.block) return "error";
     // Reconcile with what we already know, durably: a confirmed owner marks the
     // account deployed (so a LATER failed read refuses instead of falling back
     // to the counterfactual — #200, kernel-deployed.ts), and a rotation advances
     // the record so no lagging replica can roll it back.
     const owner = observeOwnerRead(key, read, presentedBy);
     if (owner === "stale") return "error";
-    _ownerCache.set(key, { owner, block: read.block, fetchedAt: Date.now() });
+    _ownerCache.set(key, { owner, root: read.root, block: read.block, fetchedAt: Date.now() });
     capMap(_ownerCache, OWNER_CACHE_MAX);
-    return owner;
+    return { owner, root: read.root, block: read.block };
   } catch {
     return "error";
   }
@@ -404,7 +502,10 @@ export async function isKernelOwner(
 
   const cached = _ownerCache.get(parent);
   const cacheFresh = cached !== undefined && Date.now() - cached.fetchedAt < OWNER_CACHE_TTL_MS;
-  const ownerRead = cacheFresh ? cached.owner : await _fetchAndCacheOwner(parent, eoa, opts);
+  const state = cacheFresh ? cached : await _fetchOwnerState(parent, eoa, opts);
+  // A co-owned account has no single owner; `isAccountSigner` decides for it.
+  if (state !== "error" && state.root === "weighted") return false;
+  const ownerRead = state === "error" ? "error" : state.owner;
   const allowed = await _decideFromRead(ownerRead, eoa, parent);
   if (allowed && cacheFresh && cached.owner === eoa && !getKernelOwnerRecord(parent)) {
     // A confirmation from cache is as much a confirmed read as the one that
@@ -421,7 +522,126 @@ export async function isKernelOwner(
   // chain before rejecting. The refresh also retires a rotated-OUT key on its
   // very next request instead of at TTL expiry — the #200 grace window shrinks
   // to first contact by the new owner.
-  return _decideFromRead(await _fetchAndCacheOwner(parent, eoa, opts), eoa, parent);
+  const again = await _fetchOwnerState(parent, eoa, opts);
+  if (again !== "error" && again.root === "weighted") return false;
+  return _decideFromRead(again === "error" ? "error" : again.owner, eoa, parent);
+}
+
+/**
+ * How `eoa` may sign for the account at `parent`: as its single ECDSA `owner`
+ * (every account until it holds two passkeys - exactly `isKernelOwner`), as a
+ * `co-owner` on its weighted list (#746), or not at all.
+ *
+ * A Kernel that is not known to be co-owned takes the owner path first, so a
+ * one-passkey account pays nothing new. When that path finds the root is the
+ * weighted validator - from the read it made, or the re-read a cached denial
+ * forces - the list decides.
+ */
+export async function accountSignerKind(
+  eoaAddress: string,
+  parentAddress: string,
+  opts: OwnerReadOptions = {},
+): Promise<"owner" | "co-owner" | null> {
+  const eoa = eoaAddress.toLowerCase();
+  const parent = parentAddress.toLowerCase();
+  const knownWeighted = () => getKernelWeightedRecord(parent) !== undefined || _ownerCache.get(parent)?.root === "weighted";
+  if (knownWeighted()) return (await _isWeightedMember(eoa, parent, opts)) ? "co-owner" : null;
+  if (await isKernelOwner(eoa, parent, opts)) return "owner";
+  if (knownWeighted()) return (await _isWeightedMember(eoa, parent, opts)) ? "co-owner" : null;
+  return null;
+}
+
+/** May `eoa` sign for `parent` - as its owner or as one of its co-owners? */
+export async function isAccountSigner(
+  eoaAddress: string,
+  parentAddress: string,
+  opts: OwnerReadOptions = {},
+): Promise<boolean> {
+  return (await accountSignerKind(eoaAddress, parentAddress, opts)) !== null;
+}
+
+/**
+ * Is `eoa` on the co-owner list of `parent`, which is known to be co-owned?
+ *
+ * Unreadable means NO: the account is known co-owned, so the counterfactual says
+ * nothing about who controls it. A read that contradicts the last change seen for
+ * this key, from no later a block, predates it and is not acted on. A read showing
+ * the ECDSA root again is a replica from before the switch (refused) or, from a
+ * later block, a root that changed back - and then the owner path decides.
+ */
+async function _isWeightedMember(eoa: string, parent: string, opts: OwnerReadOptions): Promise<boolean> {
+  const key = `${parent}:${eoa}`;
+  const cached = _memberCache.get(key);
+  if (cached && cached.member && Date.now() - cached.fetchedAt < MEMBER_CACHE_TTL_MS) return true;
+  const read = await _fetchMember(parent, eoa, opts);
+  if (read === "error") return false;
+  if (read.root !== "weighted") {
+    const rec = getKernelWeightedRecord(parent);
+    if (rec && read.block <= rec.block) return false;
+    _ownerCache.delete(parent);
+    return isKernelOwner(eoa, parent, opts);
+  }
+  const member = read.weight > 0;
+  const seen = _memberOrder.get(key);
+  if (seen && seen.member !== member && read.block <= seen.block) {
+    console.warn(`[kernel-owner] stale co-owner read for ${parent.slice(0, 10)}… discarded`);
+    return false;
+  }
+  if (!seen || seen.member !== member) {
+    _memberOrder.set(key, { member, block: read.block });
+    capMap(_memberOrder, MEMBER_CACHE_MAX);
+  }
+  _memberCache.set(key, { member, block: read.block, fetchedAt: Date.now() });
+  capMap(_memberCache, MEMBER_CACHE_MAX);
+  // Confirmed: the key on the list is the key presenting (#210 - only a confirmed
+  // read creates a record).
+  if (member) recordKernelWeighted(parent, read.block);
+  return member;
+}
+
+async function _fetchMember(parent: string, eoa: string, opts: OwnerReadOptions): Promise<SignerRead | "error"> {
+  const key = `${parent}:${eoa}`;
+  if (!_inFlightMember.has(key) && opts.chainReadAllowed && !opts.chainReadAllowed()) {
+    console.warn(`[kernel-owner] co-owner read for ${parent.slice(0, 10)}… refused: read budget exhausted`);
+    return "error";
+  }
+  try {
+    return await _readMemberAtBlock(parent, eoa);
+  } catch {
+    return "error";
+  }
+}
+
+/** The raw chain call, one per (Kernel, key) at a time. */
+function _readMemberAtBlock(parent: string, eoa: string): Promise<SignerRead> {
+  const key = `${parent}:${eoa}`;
+  const inFlight = _inFlightMember.get(key);
+  if (inFlight) return inFlight;
+  const p = (async (): Promise<SignerRead> => {
+    if (_memberFetchOverride) {
+      const read = await _memberFetchOverride(parent, eoa);
+      if (read === "error") throw new Error("member fetch override: error");
+      return read;
+    }
+    const [l2Block, root, guardian] = await client().multicall({
+      contracts: [
+        { address: ARBSYS_ADDRESS, abi: ARBSYS_ABI, functionName: "arbBlockNumber" },
+        { address: parent as Address, abi: KERNEL_ROOT_VALIDATOR_ABI, functionName: "rootValidator" },
+        {
+          address: WEIGHTED_ECDSA_VALIDATOR_V3_1 as Address,
+          abi: WEIGHTED_GUARDIAN_ABI,
+          functionName: "guardian",
+          args: [eoa as Address, parent as Address],
+        },
+      ],
+      allowFailure: true,
+    });
+    if (l2Block.status !== "success" || guardian.status !== "success") throw new Error("co-owner read failed");
+    return { root: rootKindOf(root), weight: Number(guardian.result[0]), block: Number(l2Block.result) };
+  })();
+  _inFlightMember.set(key, p);
+  p.finally(() => _inFlightMember.delete(key)).catch(() => {});
+  return p;
 }
 
 async function _decideFromRead(

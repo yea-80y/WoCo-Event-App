@@ -96,5 +96,5 @@ test("a wallet account cannot start or finish Stripe onboarding: organising need
 test("a success path that does not classify the parent leaves it unset - never the permissive default", () => {
   const src = readFileSync(fileURLToPath(new URL("../src/lib/auth/verify-delegation.ts", import.meta.url)), "utf8");
   assert.match(src, /let parentKind: VerifyDelegationResult\["parentKind"\];/);
-  assert.equal((src.match(/parentKind = "kernel";/g) ?? []).length, 2, "the device branch and the owner branch, explicitly");
+  assert.equal((src.match(/parentKind = "kernel";/g) ?? []).length, 3, "the device, co-owner and owner branches, explicitly");
 });

@@ -434,3 +434,86 @@ test("a yes stands on its own ('or'); a no can never become a yes ('and')", asyn
   assert.deepEqual(policyReply(true), { proceed: true, logicalOperator: "or" });
   assert.deepEqual(policyReply(false), { proceed: false, logicalOperator: "and" });
 });
+
+// ── Co-owners (#746): every passkey a signer on the weighted root ──────────────
+// Built with the ZeroDev SDK's own encoders: the Kernel v3.1 ABI its
+// changeSudoValidator uses, and the weighted plugin's getUpdateConfigCall. The
+// enable data is the plugin's getEnableData layout (descending signers).
+
+const { KernelV3_1AccountAbi } = await import("@zerodev/sdk");
+const { getUpdateConfigCall } = await import("@zerodev/weighted-ecdsa-validator");
+const WEIGHTED_V31 = "0xeD89244160CfE273800B58b1B534031699dFeEEE" as Address;
+const P1 = "0x5555555555555555555555555555555555555555" as Address;
+const P2 = "0x6666666666666666666666666666666666666666" as Address;
+const desc = (xs: Address[]) => [...xs].sort((a, b) => (a.toLowerCase() < b.toLowerCase() ? 1 : -1));
+const enableOf = (signers: Address[], weights?: number[], threshold = 1, delay = 0) =>
+  encodeAbiParameters(parseAbiParameters("address[], uint24[], uint24, uint48"), [
+    desc(signers),
+    weights ?? signers.map(() => 1),
+    threshold,
+    delay,
+  ]);
+const switchCalls = (enable: Hex, over: { root?: Hex; hook?: Address; dropped?: Address } = {}): Call[] => [
+  {
+    to: ACCOUNT,
+    data: encodeFunctionData({
+      abi: KernelV3_1AccountAbi,
+      functionName: "changeRootValidator",
+      args: [over.root ?? (`0x01${WEIGHTED_V31.slice(2)}` as Hex), over.hook ?? "0x0000000000000000000000000000000000000000", enable, "0x"],
+    }),
+  },
+  {
+    to: ACCOUNT,
+    data: encodeFunctionData({
+      abi: KernelV3_1AccountAbi,
+      functionName: "uninstallValidation",
+      args: [`0x01${(over.dropped ?? ECDSA).slice(2)}` as Hex, "0x", "0x"],
+    }),
+  },
+];
+const renewCall = (signers: Address[], threshold = 1, weight = 1): Call => {
+  const c = getUpdateConfigCall(entryPoint, KERNEL_V3_1, { threshold, signers: signers.map((address) => ({ address, weight })) });
+  return { to: c.to as Address, data: c.data as Hex };
+};
+
+test("co-owners: the switch is changeRootValidator(weighted) + uninstallValidation(ECDSA), one batch", async () => {
+  const c = classifyUserOp(op(await viaExecute(switchCalls(enableOf([P1, P2])))));
+  assert.deepEqual(c, { ok: true, shape: "co-owners", subject: ACCOUNT.toLowerCase() });
+  // a counterfactual account deploys and switches in its first op
+  const { metaFactoryAddress } = KernelVersionToAddressesMap[KERNEL_V3_1];
+  const first = await viaExecute(switchCalls(enableOf([P1, P2])));
+  assert.equal(classifyUserOp(op(first, { factory: metaFactoryAddress!.toLowerCase() })).ok, true);
+});
+
+test("co-owners: renew through the weighted plugin's own update call", async () => {
+  const c = classifyUserOp(op(await viaExecute([renewCall([P1, P2, NEW_OWNER])])));
+  assert.deepEqual(c, { ok: true, shape: "renew", subject: ACCOUNT.toLowerCase() });
+  assert.equal(classifyUserOp(op(await viaExecute([renewCall([P2])]))).ok, true, "down to one passkey");
+});
+
+test("co-owners: a list that would lock the account is never paid for", async () => {
+  const refused = async (calls: Call[], why: string) =>
+    assert.deepEqual(classifyUserOp(op(await viaExecute(calls))), { ok: false, reason: "co-owners" }, why);
+  await refused([renewCall([])], "empty list");
+  await refused([renewCall([P1, P2], 2)], "threshold above one");
+  await refused([renewCall([P1], 1, 2)], "weight above one");
+  await refused([renewCall([P1, P1])], "the same key twice");
+  const eleven = Array.from({ length: 11 }, (_, i) => `0x${(i + 1).toString(16).padStart(40, "0")}` as Address);
+  await refused([renewCall(eleven)], "more than ten");
+  await refused([{ to: WEIGHTED_V31, data: encodeFunctionData({ abi: parseAbi(["function renew(address[],uint24[],uint24,uint48)"]), functionName: "renew", args: [[P1], [1], 1, 60] }) }], "a delay");
+  await refused(switchCalls(enableOf([])), "switch to an empty list");
+  await refused(switchCalls(enableOf([P1, P2], [1, 1], 2)), "switch with threshold two");
+});
+
+test("co-owners: the switch without dropping ECDSA, with a hook, or to another root is refused", async () => {
+  const enable = enableOf([P1, P2]);
+  assert.equal(classifyUserOp(op(await viaExecute([switchCalls(enable)[0]]))).ok, false, "alone: the old key keeps a 1271 path");
+  assert.equal(classifyUserOp(op(await viaExecute(switchCalls(enable, { hook: GUARDIAN_EOA })))).ok, false, "with a hook");
+  assert.equal(classifyUserOp(op(await viaExecute(switchCalls(enable, { root: `0x01${GUARDIAN_EOA.slice(2)}` as Hex })))).ok, false, "another root");
+  assert.equal(classifyUserOp(op(await viaExecute(switchCalls(enable, { dropped: GUARDIAN_EOA })))).ok, false, "drops another validation");
+  const reversed = switchCalls(enable).reverse();
+  assert.equal(classifyUserOp(op(await viaExecute(reversed))).ok, false, "uninstall first would drop the live root");
+  // renew aimed at anything but the weighted validator is not a renew
+  const elsewhere = { ...renewCall([P1, P2]), to: GUARDIAN_EOA };
+  assert.equal(classifyUserOp(op(await viaExecute([elsewhere]))).ok, false);
+});

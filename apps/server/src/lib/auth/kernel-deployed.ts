@@ -69,6 +69,13 @@ interface KernelRecord {
   owner?: string;
   block?: number;
   ownerSeenAt?: string;
+  /** The account moved to the weighted root - every passkey a co-owner (#746) -
+   *  first confirmed at `rootBlock`. A read from no later than that block naming
+   *  the ECDSA root is a replica from before the switch. An older build ignores
+   *  both fields and refuses the account (its ECDSA owner reads empty): it fails
+   *  closed on a rollback. */
+  root?: "weighted";
+  rootBlock?: number;
 }
 
 interface DeployedState {
@@ -253,6 +260,35 @@ export function recordKernelOwner(kernelAddress: string, owner: string, block: n
   };
   reindex();
   persist();
+}
+
+/**
+ * Record that this Kernel's root is the weighted validator (#746), confirmed at
+ * this block by a key on its list. The FIRST sighting is kept - it is the
+ * change-point later reads are ordered against - and the record also marks the
+ * account known-deployed, so an unreadable chain refuses it rather than falling
+ * back to the counterfactual (a removed first passkey still matches that).
+ */
+export function recordKernelWeighted(kernelAddress: string, block: number): void {
+  load();
+  const existing = currentChainRecord(kernelAddress);
+  if (existing?.root === "weighted") return;
+  state.kernels[recordKey(kernelAddress)] = {
+    ...(existing ?? {}),
+    chainId: KERNEL_CHAIN_ID,
+    firstSeen: existing?.firstSeen ?? new Date().toISOString(),
+    root: "weighted",
+    rootBlock: block,
+  };
+  reindex();
+  persist();
+}
+
+/** The block this Kernel was first confirmed on the weighted root, on the current chain. */
+export function getKernelWeightedRecord(kernelAddress: string): { block: number } | undefined {
+  load();
+  const rec = currentChainRecord(kernelAddress);
+  return rec?.root === "weighted" && typeof rec.rootBlock === "number" ? { block: rec.rootBlock } : undefined;
 }
 
 /**
