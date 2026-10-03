@@ -504,7 +504,10 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     `{chainId}:{address}` and a record from another chain is ignored, never deleted.
     Losing it reopens the #200 windows, silently, on the next deploy: the
     counterfactual fallback returns and a lagging RPC replica can roll the owner
-    back to a retired key)
+    back to a retired key. Since #746 a record can also say `root: "weighted"` (every
+    passkey a co-owner): losing it lets a REMOVED first passkey back in through its
+    counterfactual during an RPC outage. A build older than #746 ignores the field
+    and refuses co-owned accounts - fails closed on a rollback)
   stripe-accounts.json · stripe-payout-ledger.json · stripe-payout-intents.json
   pending-refunds.json (#367 — auto-refunds Stripe refused to create; losing it = a buyer
     charged with no ticket and no refund, and no alarm; `/api/health` `pendingRefunds`)
