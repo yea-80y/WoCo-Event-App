@@ -20,6 +20,10 @@
   let supported = $state(false);
   /** Emphasises the create button after a sign-in found nothing — never auto-clicks it. */
   let offerCreate = $state(false);
+  /** "Can't find your passkey on this device?" (#746), opened by its link or after a sign-in found nothing. */
+  let showHelp = $state(false);
+  /** After a new account: its passkey stays on this kind of device (Samsung Pass, Windows Hello). */
+  let stays = $state<{ name: string; worksOn: string } | null>(null);
 
   onMount(() => {
     supported = isPasskeySupported();
@@ -40,6 +44,12 @@
     try {
       const res = await auth.loginPasskeyResult(mode);
       if (res.ok) {
+        if (mode === "create") {
+          // Say once, while it is fresh, that this passkey will not reach a laptop (#746).
+          const { stayingPasskeyNote } = await import("../../auth/passkey-reach.js");
+          stays = await stayingPasskeyNote().catch(() => null);
+          if (stays) return;
+        }
         oncomplete?.();
         return;
       }
@@ -49,6 +59,7 @@
         // the same thing twice.
       } else if (res.noAssertion && mode === "signin") {
         offerCreate = true;
+        showHelp = true;
         error = "No passkey was used. If you cancelled, try again — otherwise you can create a new account below.";
       } else {
         error = res.error?.message ?? "Passkey authentication failed. Try again or use another method.";
@@ -59,7 +70,16 @@
   }
 </script>
 
-{#if supported}
+{#if supported && stays}
+  <div class="passkey-login stays" role="status">
+    <p class="stays-title">Your passkey is in {stays.name}</p>
+    <p class="stays-body">
+      {stays.worksOn}. To use WoCo on a laptop too, add another password manager - like Google Password Manager - from
+      Your passkeys, once you have a ticket or an invite.
+    </p>
+    <button class="passkey-btn" onclick={() => { stays = null; oncomplete?.(); }}>Got it</button>
+  </div>
+{:else if supported}
   <div class="passkey-login">
     <button
       class="passkey-btn"
@@ -96,8 +116,18 @@
 
     {#if onlink}
       <button class="create-btn" onclick={onlink} disabled={auth.busy}>
-        Signed in on another device? Link this one
+        Already use WoCo on your phone? Add this device
       </button>
+    {/if}
+
+    {#if !showHelp}
+      <button class="help-link" onclick={() => (showHelp = true)} disabled={auth.busy}>
+        Can't find your passkey on this device?
+      </button>
+    {:else}
+      {#await import("./PasskeyHelp.svelte") then { default: PasskeyHelp }}
+        <PasskeyHelp busy={auth.busy} onretry={() => run("signin")} {onlink} />
+      {/await}
     {/if}
 
     <div class="providers">
@@ -170,6 +200,27 @@
 
   .passkey-btn:active:not(:disabled) {
     background: var(--accent-press);
+  }
+
+  .help-link {
+    padding: 0.5rem 0;
+    border: 0;
+    background: none;
+    color: var(--accent-text);
+    font: inherit;
+    font-size: 0.8125rem;
+    cursor: pointer;
+  }
+
+  .stays p {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+  }
+
+  .stays .stays-title {
+    color: var(--text);
+    font-weight: 600;
   }
 
   .recovery-note {

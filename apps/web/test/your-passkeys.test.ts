@@ -109,11 +109,11 @@ function body(src: string, signature: string): string {
   return src.slice(start, src.indexOf("\n}\n", start));
 }
 
-test("adding: envelope first, then the owner-signed grant, then the record; never from a device", () => {
+test("adding: envelope first, then on the list with its record, then the passkey record; never from a linked device", () => {
   const b = body(STORE, "async function addPasskeyOnThisDevice(");
   assert.match(b, /if \(_kind !== "passkey" \|\| _deviceRole\) throw new MainPasskeyRequiredError\(\);/);
   const envelope = b.indexOf("await writePortabilityEnvelope(");
-  const register = b.indexOf("await _grantDevice(");
+  const register = b.indexOf("await _addCoOwnerWithRecord(added.address");
   const recordWrite = b.indexOf("await writePasskeyRecord(");
   assert.ok(envelope > 0 && register > envelope && recordWrite > register);
   const grant = body(STORE, "async function _grantDevice(");
@@ -130,10 +130,18 @@ test("the provider never leaves the device: not in the grant, the envelope or th
   assert.doesNotMatch(read("../src/lib/api/device-grants.ts"), /provider/i);
 });
 
-test("removing: a device only itself, and removing yourself signs this device out", () => {
-  const b = body(STORE, "async function removePasskey(");
+test("removing: a legacy device only itself, a co-owner any - confirmed fresh, off the list before the record", () => {
+  const confirm = body(STORE, "async function removePasskey(");
+  assert.match(confirm, /if \(!_deviceRole\) await _freshMainPasskey\(\);\s*await _removePasskeyConfirmed\(grantee\);/);
+  const b = body(STORE, "async function _removePasskeyConfirmed(");
   assert.match(b, /if \(_deviceRole && target !== self\) throw new MainPasskeyRequiredError\(\);/);
-  assert.match(b, /if \(target === self\) \{\s*await _forgetAddedPasskey\(self\);\s*await logout\(\{ force: true \}\);/);
+  // The list change lands before the device record is removed (Fable sign-off).
+  assert.ok(b.indexOf("await _removeCoOwner(target);") < b.indexOf("await _removeRecordAfterList(parent, target);"), "off the list first");
+  assert.match(b, /if \(target === self\) await _forgetThisPasskey\(self\);/);
+  assert.match(
+    body(STORE, "async function _forgetThisPasskey("),
+    /await _clearRecoveryBinding\(self\);\s*clearVerifiedBinding\("passkey", self\);[\s\S]*?await _forgetAddedPasskey\(self\);\s*await logout\(\{ force: true \}\);/,
+  );
 });
 
 test("the screen never asks for a passkey on page open, never loops, and never leaves this origin", () => {
@@ -180,9 +188,11 @@ test("adding excludes the main passkey AND every passkey this device added befor
 
 test("more than one passkey needs an unlocked account: the screen follows the server's answer", () => {
   const src = readFileSync(fileURLToPath(new URL("../src/lib/components/passkeys/YourPasskeys.svelte", import.meta.url)), "utf8");
-  assert.match(src, /canAdd = res\.data\.canAddDevices === true;/);
+  const data = readFileSync(fileURLToPath(new URL("../src/lib/auth/your-passkeys-data.ts", import.meta.url)), "utf8");
+  assert.match(data, /canAdd: res\.data\.canAddDevices === true/);
+  assert.match(src, /canAdd = res\.canAdd;/);
   const markup = src.slice(src.indexOf("</script>"));
-  const gate = markup.indexOf("{:else if !canAdd}");
-  assert.ok(gate > 0 && gate < markup.indexOf("Link another device</button>"), "no link or move offer before the gate");
-  assert.ok(gate < markup.indexOf("Move to another password manager"));
+  const gate = markup.indexOf("{#if !canAdd}");
+  assert.ok(gate > 0 && gate < markup.indexOf("Add another device</button>"), "no add offer before the gate");
+  assert.ok(gate < markup.indexOf("Add a password manager here"));
 });

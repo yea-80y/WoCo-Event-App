@@ -229,7 +229,7 @@ test("a main passkey that moved is never tombstoned: kaddr dropped, signed out t
   assert.deepEqual(seedsCleared, [], "its seed is the account's seed");
   assert.equal(store.map.get(STATE_KEY), undefined);
   assert.equal(notices.length, 1);
-  assert.match(notices[0], /main passkey moved to another device/);
+  assert.match(notices[0], /Your passkeys changed on another device/);
   assert.deepEqual(calls, [`owner:${PHANTOM}`, "exists", "envelope", "logout"]);
 });
 
@@ -399,4 +399,20 @@ test("a user who left mid-probe still gets the binding, but no forced sign-out",
   assert.deepEqual(seedsCleared, [EOA]);
   assert.deepEqual(notices, []);
   assert.ok(!calls.includes("logout"));
+});
+
+test("off a co-owned account's list is not decided on one read: inconclusive, nothing written or signed out (#746)", async () => {
+  // With no envelope a single foreign read would tombstone; with one naming the account it would sign
+  // out. Neither may happen on one "off the list" read.
+  for (const envelope of [
+    { envelopeExists: async () => ({ status: "absent" as const }), readEnvelope: async () => ({ status: "absent" as const }) },
+    {},
+  ]) {
+    _resetInFlightForTests();
+    const { d, calls, tombstones } = deps({ readKernelOwner: async () => "not-on-list", ...envelope });
+    const r = await reprobeEnvelope(args, d);
+    assert.equal(r.status, "inconclusive");
+    assert.equal(tombstones.length, 0, "never a tombstone for a key that can be added again");
+    assert.ok(!calls.includes("logout"), "never signed out on one read");
+  }
 });

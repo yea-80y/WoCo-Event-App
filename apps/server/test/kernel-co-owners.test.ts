@@ -470,3 +470,36 @@ test("a lagging read that shows a listed key OFF the list writes no removal floo
     restoreClock();
   }
 });
+
+test("SHOULD-5: the first passkey removing itself right after the switch is floored with no co-owner seen yet", async () => {
+  ownerRead = () => ({ owner: A.address.toLowerCase(), root: "ecdsa", block: 10 });
+  assert.equal(await kind(A), "owner"); // owner A on record; no weighted record yet
+  assert.equal(deployed.getKernelWeightedRecord(PARENT), undefined);
+  list(B); // switched and A already taken off, all before any co-owner session
+  memberRead = (eoa) => ({ root: "weighted", weight: weights.get(eoa) ?? 0, block: 70 });
+  assert.equal(await owner.noteCoOwnerRemoved(A.address, PARENT), true);
+  assert.deepEqual(deployed.getKernelWeightedRecord(PARENT), { block: 70 });
+  assert.equal(deployed.coOwnerRemovedBlock(PARENT, A.address), 70);
+});
+
+test("on a co-owned account only the list admits; 'removed' only on evidence, never on a read it could not make", async () => {
+  list(A, B);
+  assert.equal(await kind(B), "co-owner"); // recorded co-owned
+  const g = grantFor(C.address);
+  await grants.submitDeviceGrant(PARENT, { grant: g, grantSig: await A.signTypedData(DEVICE_GRANT_DOMAIN, types(DEVICE_GRANT_TYPES), g) }, signerCheck);
+  // C has a live record signed by a listed key, but C is not on the list: refused - without the
+  // code that makes a device forget itself, since nothing says it was REMOVED.
+  const plain = await verify(C);
+  assert.equal(plain.valid, false, "the record's signer being listed admits nothing");
+  assert.notEqual(plain.code, AuthErrorCode.DEVICE_REMOVED);
+  // The list cannot be read (outage, spent budget): still refused, still no "removed".
+  memberRead = () => "error";
+  owner._resetOwnerCacheForTests();
+  const outage = await verify(C);
+  assert.equal(outage.valid, false);
+  assert.notEqual(outage.code, AuthErrorCode.DEVICE_REMOVED, "an unreadable list is not evidence of removal");
+  // A removal on record IS evidence.
+  deployed.recordCoOwnerRemoved(PARENT, C.address, 90);
+  const floored = await verify(C);
+  assert.equal(floored.code, AuthErrorCode.DEVICE_REMOVED);
+});

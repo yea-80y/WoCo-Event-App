@@ -55,7 +55,7 @@ export function orphanedCredentialMessage(kind: OrphanedCredentialKind): string 
  * landed (#746 step 4). Nothing on the device tells those apart, so the words fit both.
  */
 export const MOVED_OR_RECOVERED_MESSAGE =
-  "This passkey doesn't open this account on its own any more. If you just made another device your main passkey, open Your passkeys on that device, then sign in here again. Otherwise sign in with the passkey you chose when you recovered the account.";
+  "This passkey doesn't open this account any more - it may have been removed. Sign in with one of your other passkeys, or with the one you chose when you recovered the account.";
 
 /** Distinguished by `name`, not instanceof, so checks survive chunk boundaries. */
 export class OrphanedCredentialError extends Error {

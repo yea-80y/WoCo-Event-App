@@ -11,7 +11,7 @@ import {
 import { isSessionRevoked } from "./revocation.js";
 import { verifySmartWalletTypedData } from "./smart-wallet-client.js";
 import { accountSignerKind, cachedSignerIs, readKernelOwner, type OwnerReadOptions } from "./kernel-owner.js";
-import { getKernelWeightedRecord, isKernelKnownDeployedOnAnyChain } from "./kernel-deployed.js";
+import { coOwnerRemovedBlock, getKernelWeightedRecord, isKernelKnownDeployedOnAnyChain } from "./kernel-deployed.js";
 import { decideSmartWalletPath } from "./smart-wallet-gate.js";
 import { lookupDeviceGrant, type DeviceGrantState } from "./device-grants.js";
 
@@ -189,12 +189,23 @@ export async function verifyDelegation(
         let signer: "granted" | "owner" | "co-owner" | null;
         if (getKernelWeightedRecord(parent)) {
           // A co-owned account: every passkey signs as itself, so its rank never
-          // depends on which cache is warm (Fable sign-off MUST-1). A device record
-          // that only a grant admits is the fallback.
+          // depends on which cache is warm (Fable sign-off MUST-1) - and ONLY the list
+          // admits. A grant no longer does: a key taken off the list whose record
+          // removal never arrived would otherwise keep signing in through it
+          // (background commit review). "Removed" is said only on EVIDENCE - a removed
+          // record, or a removal on record - because the client forgets the device on it:
+          // a list it could not read (an outage, a spent read budget) or a replica behind
+          // a fresh add is refused WITHOUT the code, and nothing is forgotten (re-check MUST).
           signer = await accountSignerKind(recovered, parent, readOpts);
           if (!signer) {
             grant = await deps.lookupDeviceGrant(parent, recovered);
-            signer = await viaGrant(grant);
+            if (grant && (!grant.active || !afterRemoval(grant) || coOwnerRemovedBlock(parent, recovered) !== undefined)) {
+              return {
+                valid: false,
+                error: "This device was removed from the account",
+                code: AuthErrorCode.DEVICE_REMOVED,
+              };
+            }
           }
         } else {
           grant = cachedSignerIs(parent, recovered) ? undefined : await deps.lookupDeviceGrant(parent, recovered);

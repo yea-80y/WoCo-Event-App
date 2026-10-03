@@ -67,6 +67,11 @@
 <main>
   <PreLaunchBanner variant="strip" />
   <SessionEndedBanner />
+  {#if auth.kind === "passkey" && auth.hasSession}
+    {#await import("../components/passkeys/NewPasskeyBanner.svelte") then { default: NewPasskeyBanner }}
+      <NewPasskeyBanner />
+    {/await}
+  {/if}
   <header class="top-bar">
     <button class="logo" onclick={() => navigate(auth.isConnected && auth.parent ? "/home" : "/")} aria-label="WoCo home">
       <WocoWordmark height={20} variant="default" />

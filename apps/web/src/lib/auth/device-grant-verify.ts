@@ -38,15 +38,17 @@ function grantSigner(message: object, sig: unknown): string | null {
 
 export function verifyDeviceGrantList(
   records: readonly DeviceGrantRecordWire[],
-  expected: { parent: string; owner: string },
+  expected: { parent: string; owner: string } | { parent: string; signers: readonly string[] },
 ): VerifiedPasskey[] {
   const parent = expected.parent.toLowerCase();
-  const owner = expected.owner.toLowerCase();
+  // A co-owned account (#746): a record is good when ANY of its passkeys signed it.
+  const allowed = new Set(("owner" in expected ? [expected.owner] : expected.signers).map((s) => s.toLowerCase()));
   const out: VerifiedPasskey[] = [];
   for (const r of records) {
     const grant = parseDeviceGrant(r.grant);
     if (!grant || grant.parent !== parent) continue;
-    if (grantSigner(grant, r.grantSig) !== owner) continue;
+    const signer = grantSigner(grant, r.grantSig);
+    if (!signer || !allowed.has(signer)) continue;
     const removedAt = typeof r.revokedAt === "number" ? r.revokedAt : null;
     out.push({ grantee: grant.grantee, credentialTag: grant.credentialTag, issuedAt: grant.issuedAt, removedAt });
   }

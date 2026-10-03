@@ -55,7 +55,7 @@ import {
   clearPublicKeys,
 } from "./identity-seed.js";
 import { SEED_UNLOCK_POLICY, unlockExpiry } from "./seed-unlock-policy.js";
-import { makeMainPendingKey, linkedEnvelopePendingKey } from "./make-main-key.js";
+import { linkedEnvelopePendingKey } from "./make-main-key.js";
 import { requestChallenge, sha256Hex } from "./request-challenge.js";
 import { apiBase } from "../api/http.js";
 import { unlocksWhen } from "../attendee/gate/unlock-copy.js";
@@ -261,9 +261,9 @@ function _getSeedAddress(): string | null {
 const SEED_UNAVAILABLE_MESSAGE = "Your account keys aren't on this device. Sign in again to fetch them.";
 
 export const MAIN_PASSKEY_REQUIRED_MESSAGE =
-  "This needs your main passkey. Use that device, or make this device the main one in Your passkeys.";
+  "This device was linked before every passkey could do everything. To do this here, remove it and add it again from one of your other passkeys.";
 
-/** An owner-only action (names, backups, adding passkeys) from an added passkey. */
+/** An owner-only action (names, adding passkeys) from a device linked before co-owners (#746). */
 export class MainPasskeyRequiredError extends Error {
   constructor() {
     super(MAIN_PASSKEY_REQUIRED_MESSAGE);
@@ -280,10 +280,10 @@ export class DeviceRemovedError extends Error {
 }
 
 const DEVICE_REMOVED_MESSAGE =
-  "This device was removed from the account - ask for a new invite from your main passkey.";
+  "This device was removed from your account. To use it again, add it from one of your other passkeys.";
 const NOT_LINKED_MESSAGE =
-  "Couldn't confirm this passkey is linked to the account. Try again - if it keeps happening, add it again from your main passkey.";
-const NOT_SET_UP_MESSAGE = "This passkey wasn't fully set up. Add it again from your main passkey.";
+  "Couldn't confirm this passkey is on your account. Try again - if it keeps happening, add it again from one of your other passkeys.";
+const NOT_SET_UP_MESSAGE = "This passkey wasn't fully set up. Add it again from one of your other passkeys.";
 const KEYS_UNREACHABLE_MESSAGE = "Couldn't fetch your account keys right now - try again.";
 const VERDICT_UNREACHABLE_MESSAGE = "Couldn't check this passkey with WoCo just now - try again in a moment.";
 
@@ -803,8 +803,9 @@ async function _restoreCachedAuth(): Promise<void> {
   if (!seedAddr) return;
   if (_kind === "passkey") {
     _deviceRole = (await _boundKernelFor(seedAddr))?.role === "device";
-    void resumeMakeMain().catch((e) => console.warn("[auth] make-main resume (retried next time):", e));
+    if (_deviceRole && _parent) void _upgradeIfCoOwner(seedAddr, _parent);
     void _retryLinkedEnvelope(seedAddr);
+    void _retryPendingRemovals().catch(() => {});
     // Locked at rest (#746 fix 1): present only when this tab already unlocked it,
     // or when SEED_UNLOCK_POLICY keeps a copy that opens without the passkey. A
     // legacy device-key copy counts as LOCKED from this build's first load; it is
@@ -1130,8 +1131,8 @@ async function _verifyPortabilityEnvelope(
     // both mean this passkey does not own the account. That is an ADDED passkey -
     // or one recovered away from - and only the server can say which, so the seed
     // is kept for the verdict rather than dropped.
-    const { readKernelEcdsaOwnerStrict } = await import("./kernel-account.js");
-    const owner = await readKernelEcdsaOwnerStrict(opened.preservedKernelAddress);
+    const { readKernelSignerFor } = await import("./kernel-account.js");
+    const owner = await readKernelSignerFor(opened.preservedKernelAddress, seedAddress);
     if (owner === "error") {
       console.warn("[auth] portability envelope owner check unanswered — ignoring for this login");
       return "unavailable";
@@ -1324,15 +1325,20 @@ async function _ensureKernel(): Promise<void> {
     throw new MainPasskeyRequiredError();
   }
   await _ensurePasskeyKey();
-  if (_kernel) return;
+  // A Kernel built at sign-in assumed the ECDSA root; the first signature reads the
+  // account's root and opens it with the validator it really has (co-owners, #746).
+  if (_kernel?.rootChecked) return;
   if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable — cannot build Kernel");
   const gen = _lockGen;
-  const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
+  const { buildKernelFromPrivateKey, readKernelRoot } = await import("./kernel-account.js");
   const override = await _boundKernelAddress(_seedAddress);
-  const kernel = await buildKernelFromPrivateKey(
-    _passkeyPrivateKey,
-    override ? { address: override } : undefined,
-  );
+  const at = override ?? _kernel?.address ?? _parent?.toLowerCase();
+  const root = at ? await readKernelRoot(at) : "none";
+  if (root === "error") throw new Error("Couldn't reach the network to prepare your account - try again.");
+  const kernel = await buildKernelFromPrivateKey(_passkeyPrivateKey, {
+    ...(override || root === "weighted" ? { address: override ?? at } : {}),
+    root: root === "weighted" ? "weighted" : "ecdsa",
+  });
   if (_parent && kernel.address !== _parent.toLowerCase()) {
     throw new Error(
       "Kernel address mismatch on restore — refusing to attach a divergent smart account.",
@@ -1710,6 +1716,32 @@ function clearVerifiedBinding(kind: "passkey" | "web3auth", eoa: string): void {
   }
 }
 
+/** Off a co-owned account's list twice, ten seconds apart: a replica a few blocks
+ *  behind a fresh add must not sign a just-linked passkey out (Fable sign-off SHOULD-3).
+ *  `seenOnce`: the caller's own read already said so - only the second is made. */
+async function _offListConfirmed(kernel: string, eoa: string, seenOnce = false): Promise<boolean> {
+  const { readKernelSignerFor, NOT_ON_LIST } = await import("./kernel-account.js");
+  if (!seenOnce && (await readKernelSignerFor(kernel, eoa)) !== NOT_ON_LIST) return false;
+  await new Promise((r) => setTimeout(r, 10_000));
+  return (await readKernelSignerFor(kernel, eoa)) === NOT_ON_LIST;
+}
+
+/** The never-recovered fast path makes no chain read: a FIRST passkey removed from
+ *  another device would open the account here until its first server call. One
+ *  background check ends it with the removed words instead (SHOULD-3). */
+function _verifyCoOwnerInBackground(kernel: string, eoa: string): void {
+  void (async () => {
+    try {
+      if (!(await _offListConfirmed(kernel, eoa))) return;
+      const stillThisSession =
+        _kind === "passkey" && _seedAddress?.toLowerCase() === eoa.toLowerCase() && _parent?.toLowerCase() === kernel.toLowerCase();
+      if (stillThisSession) await onDeviceRemoved();
+    } catch {
+      /* transient - the next sign-in checks again, and the server refuses meanwhile */
+    }
+  })();
+}
+
 /** Off-critical-path twin of the login-time stale-binding guard: re-check the
  *  preserved Kernel's on-chain ECDSA owner after a recovered-account fast-path
  *  login. A confirmed mismatch means this credential was orphaned by a recovery
@@ -1726,8 +1758,17 @@ function _verifyRecoveredBindingInBackground(
 ): void {
   void (async () => {
     try {
-      const { readKernelEcdsaOwner } = await import("./kernel-account.js");
-      const foreignOwner = provenOrphanOwner(await readKernelEcdsaOwner(kernel), eoa);
+      const { readKernelSignerFor, NOT_ON_LIST } = await import("./kernel-account.js");
+      const signer = await readKernelSignerFor(kernel, eoa);
+      if (signer === NOT_ON_LIST) {
+        // A co-owner taken off the list: confirmed twice, then the removed words (#746).
+        if (await _offListConfirmed(kernel, eoa, true)) {
+          const still = _kind === kind && _getSeedAddress()?.toLowerCase() === eoa.toLowerCase() && _parent?.toLowerCase() === kernel.toLowerCase();
+          if (still) await onDeviceRemoved();
+        }
+        return;
+      }
+      const foreignOwner = provenOrphanOwner(signer === "error" ? null : signer, eoa);
       if (foreignOwner) {
         console.warn(
           "[auth] recovered-account binding went stale — on-chain owner is",
@@ -1782,11 +1823,12 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, prfSecret: 
         // ladder attempt, and never touches the PRF key after logout.
         if (!stillSignedInAs(eoa, cachedParent)) return;
         const { reprobeEnvelope } = await import("./envelope-reprobe.js");
-        const { readKernelEcdsaOwnerStrict } = await import("./kernel-account.js");
+        const { readKernelSignerFor } = await import("./kernel-account.js");
         const outcome = await reprobeEnvelope(
           { kind: "passkey", eoa, cachedParent, prfSecret },
           {
-            readKernelOwner: readKernelEcdsaOwnerStrict,
+            // A co-owned account reads as this key when it is on the list (#746).
+            readKernelOwner: (kernel) => readKernelSignerFor(kernel, eoa),
             envelopeExists: async (key) => {
               const { portabilityEnvelopeExists } = await import("./recovery-portability.js");
               return portabilityEnvelopeExists({ prfSecret: key });
@@ -2233,6 +2275,10 @@ async function _loginAddedPasskey(
     _postAuthNotice(DEVICE_REMOVED_MESSAGE);
     throw new DeviceRemovedError();
   }
+  // On the account's co-owner list = one of its passkeys like any other, whatever
+  // the server's cache says this minute (#746, Fable consult 9: role from the chain).
+  const { readKernelSignerFor } = await import("./kernel-account.js");
+  const onList = (await readKernelSignerFor(parent, seedAddr)) === seedAddr.toLowerCase();
   // The server's owner cache can trail a rotation by minutes (Fable sign-off SHOULD-3):
   // "owner" while this device's own fresh chain read names another key is no verdict.
   if (verdict === "owner" && start.onChainOwner && start.onChainOwner.toLowerCase() !== seedAddr.toLowerCase()) {
@@ -2274,8 +2320,8 @@ async function _loginAddedPasskey(
   _seedAddress = seedAddr;
   _kernel = null;
   await storeLockedSeed(seedAddr, parent, seed, account.prfSecret);
-  if (verdict === "owner") {
-    // Made the main one since it was added: the account's own passkey now.
+  if (verdict === "owner" || onList) {
+    // A co-owner, or made the main one since it was added: the account's own passkey now.
     await _putRecoveryBinding(seedAddr, parent);
     await _clearDeviceBinding(seedAddr);
   } else {
@@ -2308,6 +2354,44 @@ function _grantRefusalMessage(res: { code?: string; error?: string; status?: num
   if (res.status === 429) return "Too many changes just now - try again in a minute.";
   if (res.code === "ticket_required") return unlocksWhen("Linking another device");
   return res.error ?? "Couldn't save that - try again.";
+}
+
+/** A linked device whose key is now on the account's co-owner list is one of its
+ *  passkeys like any other: it becomes an owner here (#746). The chain decides; a
+ *  read that fails changes nothing. */
+async function _upgradeIfCoOwner(seedAddr: string, parent: string): Promise<void> {
+  try {
+    const { readKernelSignerFor } = await import("./kernel-account.js");
+    if ((await readKernelSignerFor(parent, seedAddr)) === seedAddr.toLowerCase()) {
+      await _becomeOwner(seedAddr.toLowerCase(), parent.toLowerCase());
+    }
+  } catch (e) {
+    console.warn("[auth] co-owner check skipped:", e);
+  }
+}
+
+/** What the lazily loaded co-owner flows (`co-owner-flows.ts`) borrow from this store. */
+function _coOwnerHost(): import("./co-owner-flows.js").CoOwnerHost {
+  return {
+    ensureKernel: _ensureKernel,
+    kernel: () => _kernel,
+    self: () => _seedAddress?.toLowerCase() ?? null,
+    parent: () => _parent?.toLowerCase() ?? null,
+    dropKernel: () => {
+      _kernel = null;
+    },
+    lockedMessage: _seedLockedMessage,
+  };
+}
+
+/** A new passkey on the list, then its device record - or off the list again (#746). */
+async function _addCoOwnerWithRecord<T>(key: string, record: () => Promise<T>): Promise<T> {
+  return (await import("./co-owner-flows.js")).addCoOwnerWithRecord(_coOwnerHost(), key, record);
+}
+
+/** Take `key` off the account's co-owner list, if it is on it. The last one never. */
+async function _removeCoOwner(key: string): Promise<void> {
+  return (await import("./co-owner-flows.js")).removeCoOwner(_coOwnerHost(), key);
 }
 
 /** Sign, raw as the owner, and register the grant that makes `grantee` a device of
@@ -2363,7 +2447,8 @@ async function addPasskeyOnThisDevice(
 ): Promise<{ provider: PasskeyProviderId; grantee: string }> {
   if (_kind !== "passkey" || _deviceRole) throw new MainPasskeyRequiredError();
   if (!(await ensureAccountSetup({ identity: true }))) throw new Error(_seedLockedMessage());
-  await _ensurePasskeyKey();
+  // Adding a passkey changes who controls the account: it always asks fresh (#746).
+  await _freshMainPasskey();
   const parent = _parent?.toLowerCase();
   const ownerKey = _passkeyPrivateKey;
   const seedAddr = _seedAddress;
@@ -2400,7 +2485,9 @@ async function addPasskeyOnThisDevice(
   onStep?.("linking");
   const { credentialIdBytes, writePasskeyRecord } = await import("./passkey-record.js");
   const credentialId = credentialIdBytes(added.credentialId);
-  const grant = await _grantDevice(ownerKey, parent, added.address, credentialTagOf(credentialId));
+  const grant = await _addCoOwnerWithRecord(added.address, () =>
+    _grantDevice(ownerKey, parent, added.address, credentialTagOf(credentialId)),
+  );
 
   // Best-effort past this point: the passkey already works. Without its record
   // the sign-in guard simply has nothing to check; without the label the list
@@ -2425,27 +2512,156 @@ async function addPasskeyOnThisDevice(
  * device's own passkey forgets what it held and signs out.
  */
 async function removePasskey(grantee: string): Promise<void> {
+  if (_kind !== "passkey" || !_parent || !_seedAddress) throw new MainPasskeyRequiredError();
+  // Removing a passkey changes who controls the account: a co-owner confirms fresh (#746).
+  if (!_deviceRole) await _freshMainPasskey();
+  await _removePasskeyConfirmed(grantee);
+}
+
+/** `removePasskey` past its confirm - also the undelivered-link cleanup, which runs
+ *  straight after the approval's own fresh confirm. */
+async function _removePasskeyConfirmed(grantee: string): Promise<void> {
   const parent = _parent?.toLowerCase();
   const self = _seedAddress?.toLowerCase();
   const target = grantee.toLowerCase();
   if (_kind !== "passkey" || !parent || !self) throw new MainPasskeyRequiredError();
   if (_deviceRole && target !== self) throw new MainPasskeyRequiredError();
-  await _ensurePasskeyKey();
+  if (_deviceRole) {
+    // A device linked before co-owners holds no onchain right: its record is all there is.
+    await _ensurePasskeyKey();
+    const signed = await _signRecordRemoval(parent, target);
+    const { revokeDeviceGrant } = await import("../api/device-grants.js");
+    const res = await revokeDeviceGrant(signed.revoke, signed.revokeSig);
+    if (!res.ok) throw new Error(_grantRefusalMessage(res));
+  } else if (target === self) {
+    // The passkey this device is signed in with: its record goes FIRST, while this
+    // session still verifies - once off the list the server admits it no more (Fable
+    // re-check). The device cooperates, so the off-the-list-first rule is not needed
+    // here; the list change needs no session. Then forget it here, whatever happened.
+    const signed = await _signRecordRemoval(parent, self);
+    const { revokeDeviceGrant } = await import("../api/device-grants.js");
+    const res = await revokeDeviceGrant(signed.revoke, signed.revokeSig);
+    if (!res.ok && res.code !== "not-found") throw new Error(_grantRefusalMessage(res));
+    try {
+      await _removeCoOwner(self);
+    } catch (e) {
+      console.error("[auth] own passkey's record removed but the list change failed:", e);
+      throw new Error("Signed out here, but your account still lists this passkey. Remove it from one of your other passkeys.");
+    } finally {
+      await _forgetThisPasskey(self);
+    }
+    return;
+  } else {
+    // A co-owner removes any OTHER passkey: OFF THE LIST FIRST. The device record goes
+    // only after the change lands, or a device that can still sign onchain would be
+    // signed out while able to put itself back (#746, Fable sign-off).
+    await _removeCoOwner(target);
+    await _removeRecordAfterList(parent, target);
+  }
+  if (target === self) await _forgetThisPasskey(self);
+}
+
+/**
+ * Remove several passkeys at once - the new-passkey alert's "No - remove them": one
+ * confirm, one list change, then each record (Fable sign-off NIT-2).
+ */
+async function removePasskeys(grantees: string[]): Promise<void> {
+  const parent = _parent?.toLowerCase();
+  const self = _seedAddress?.toLowerCase();
+  if (_kind !== "passkey" || !parent || !self || _deviceRole) throw new MainPasskeyRequiredError();
+  const targets = [...new Set(grantees.map((g) => g.toLowerCase()))];
+  if (targets.length === 0) return;
+  await _freshMainPasskey();
+  await (await import("./co-owner-flows.js")).removeCoOwners(_coOwnerHost(), targets);
+  // Every record is tried; a failed one is kept pending by _removeRecordAfterList.
+  let firstError: unknown = null;
+  for (const t of targets) {
+    try {
+      await _removeRecordAfterList(parent, t);
+    } catch (e) {
+      firstError ??= e;
+    }
+  }
+  if (targets.includes(self)) await _forgetThisPasskey(self);
+  if (firstError) throw firstError;
+}
+
+/** This device's own passkey left the account: forget it here and sign out. */
+async function _forgetThisPasskey(self: string): Promise<void> {
+  await _clearRecoveryBinding(self);
+  clearVerifiedBinding("passkey", self);
+  // A first passkey has no binding: without this the next tap re-enters the fast path.
+  clearCachedKernelAddress("passkey", self);
+  await _forgetAddedPasskey(self);
+  await logout({ force: true });
+}
+
+async function _signRecordRemoval(parent: string, grantee: string): Promise<{ revoke: DeviceGrantRevokeMessage; revokeSig: string }> {
   const key = _passkeyPrivateKey;
   if (!key) throw new Error(_seedLockedMessage());
-  const revoke: DeviceGrantRevokeMessage = { parent, grantee: target, nonce: _randomNonce() };
+  const revoke: DeviceGrantRevokeMessage = { parent, grantee, nonce: _randomNonce() };
   const revokeSig = await createLocalSigner(key, async () => true)(
     { ...DEVICE_GRANT_DOMAIN },
     DEVICE_GRANT_REVOKE_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
     revoke as unknown as Record<string, unknown>,
   );
-  const { revokeDeviceGrant } = await import("../api/device-grants.js");
-  const res = await revokeDeviceGrant(revoke, revokeSig);
-  if (!res.ok) throw new Error(_grantRefusalMessage(res));
-  if (target === self) {
-    await _forgetAddedPasskey(self);
-    await logout({ force: true });
+  return { revoke, revokeSig };
+}
+
+const pendingRemovalKey = (parent: string) => `woco:pending-record-removal:${parent.toLowerCase()}`;
+type PendingRemoval = { revoke: DeviceGrantRevokeMessage; revokeSig: string };
+
+function _readPendingRemovals(parent: string): PendingRemoval[] {
+  try {
+    const v = JSON.parse(globalThis.localStorage?.getItem(pendingRemovalKey(parent)) ?? "[]") as unknown;
+    return Array.isArray(v) ? (v as PendingRemoval[]) : [];
+  } catch {
+    return [];
   }
+}
+
+function _writePendingRemovals(parent: string, list: PendingRemoval[]): void {
+  try {
+    if (list.length === 0) globalThis.localStorage?.removeItem(pendingRemovalKey(parent));
+    else globalThis.localStorage?.setItem(pendingRemovalKey(parent), JSON.stringify(list));
+  } catch {
+    /* blocked storage: the error the person saw still tells them to try again */
+  }
+}
+
+const RECORD_NOT_YET_REMOVED_MESSAGE =
+  "That passkey is off your account onchain, but WoCo couldn't record it yet - it may still open your account until it does. WoCo tries again next time you open it; you can also try again now.";
+
+/**
+ * The record removal after a landed list change (Fable sign-off SHOULD-1): retried
+ * a few times; if it still fails, the signed removal is kept and retried at the next
+ * open, and the person is told the passkey may still have access until then.
+ */
+async function _removeRecordAfterList(parent: string, grantee: string): Promise<void> {
+  const signed = await _signRecordRemoval(parent, grantee);
+  const { revokeDeviceGrant } = await import("../api/device-grants.js");
+  for (const waitMs of [0, 1500, 4000]) {
+    if (waitMs) await new Promise((r) => setTimeout(r, waitMs));
+    const res = await revokeDeviceGrant(signed.revoke, signed.revokeSig).catch(() => ({ ok: false as const, status: 0 }));
+    if (res.ok) return;
+  }
+  _writePendingRemovals(parent, [..._readPendingRemovals(parent), signed]);
+  throw new Error(RECORD_NOT_YET_REMOVED_MESSAGE);
+}
+
+/** Retry record removals a list change left behind (at sign-in restore, with a session). */
+async function _retryPendingRemovals(): Promise<void> {
+  const parent = _parent?.toLowerCase();
+  if (!parent || !_sessionAddress) return;
+  const pending = _readPendingRemovals(parent);
+  if (pending.length === 0) return;
+  const { revokeDeviceGrant } = await import("../api/device-grants.js");
+  const left: PendingRemoval[] = [];
+  for (const p of pending) {
+    const res = await revokeDeviceGrant(p.revoke, p.revokeSig).catch(() => ({ ok: false as const }));
+    if (!res.ok) left.push(p);
+  }
+  _writePendingRemovals(parent, left);
 }
 
 export const PASSKEY_BACKUP_MESSAGE =
@@ -2458,9 +2674,13 @@ export const PASSKEY_BACKUP_MESSAGE =
 let _forgettingDevice = false;
 async function onDeviceRemoved(): Promise<void> {
   const seedAddr = _seedAddress;
-  if (_forgettingDevice || _kind !== "passkey" || !seedAddr || !_deviceRole) return;
+  if (_forgettingDevice || _kind !== "passkey" || !seedAddr) return;
   _forgettingDevice = true;
   try {
+    // A co-owner holds the account through its recovery binding (#746): forget it too.
+    await _clearRecoveryBinding(seedAddr);
+    clearVerifiedBinding("passkey", seedAddr);
+    clearCachedKernelAddress("passkey", seedAddr);
     await _forgetAddedPasskey(seedAddr);
     _postAuthNotice(DEVICE_REMOVED_MESSAGE);
     await logout({ force: true });
@@ -2535,14 +2755,14 @@ async function approveDeviceLink(code: Uint8Array, offer: import("./device-link.
     parent,
     self: seedAddr,
     seed,
-    grant: (grantee, credentialTag) => _grantDevice(ownerKey, parent, grantee, credentialTag),
-    revoke: (grantee) => removePasskey(grantee),
+    grant: (grantee, credentialTag) => _addCoOwnerWithRecord(grantee, () => _grantDevice(ownerKey, parent, grantee, credentialTag)),
+    revoke: (grantee) => _removePasskeyConfirmed(grantee),
   });
 }
 
 // ---------------------------------------------------------------------------
-// Making a linked device the main passkey (#746 step 4). The flows live in the
-// lazily loaded `make-main.ts`; this store lends it only what needs its state.
+// A passkey's role (#746). Every passkey on the account's co-owner list is an
+// owner here; the chain decides (`_upgradeIfCoOwner`, `_loginAddedPasskey`).
 // ---------------------------------------------------------------------------
 
 /** This passkey is the account's owner now. */
@@ -2556,96 +2776,6 @@ async function _becomeOwner(seedAddr: string, parent: string): Promise<void> {
   }
 }
 
-/** This passkey handed the account to another: a linked device from now on. */
-async function _becomeDevice(seedAddr: string, parent: string): Promise<void> {
-  await _putDeviceBinding(seedAddr, parent);
-  await _clearRecoveryBinding(seedAddr);
-  clearVerifiedBinding("passkey", seedAddr);
-  clearCachedKernelAddress("passkey", seedAddr);
-  if (_seedAddress?.toLowerCase() === seedAddr) {
-    _deviceRole = true;
-    _kernel = null;
-  }
-}
-
-/**
- * Same-phone make-main (#746 step 4): this tab carries on as the new main passkey,
- * with the key its sheet just gave, so nobody signs in again. The seed is the same,
- * so the feed signer, issuing key and attendee key do not change - only which
- * passkey opens them. Written in recoverAndRekey's order: the binding first (it is
- * what every other write keys off), then the seed, the pin, the address.
- */
-async function _adoptNewMain(
-  key: { address: string; privateKey: string; prfSecret: string },
-  credential: import("./passkey-account.js").PasskeyCredentialHandle,
-  { parent, seed }: { parent: string; seed: string },
-): Promise<void> {
-  const previous = _seedAddress?.toLowerCase();
-  const self = key.address.toLowerCase();
-  if (_kind !== "passkey" || !previous || _parent?.toLowerCase() !== parent) throw new Error(_seedLockedMessage());
-  await _becomeOwner(self, parent);
-  await storeLockedSeed(self, parent, seed, key.prfSecret);
-  await pinPasskeyCredential(credential);
-  await putKV(StorageKeys.SEED_ADDRESS, self);
-  // What opened the old main's keys without its passkey goes with it, as at sign-out.
-  await clearDeviceUnlock(previous).catch(() => {});
-  _passkeyPrivateKey = key.privateKey;
-  _passkeyPrfSecret = key.prfSecret;
-  _seedAddress = self;
-  _deviceRole = false;
-  _kernel = null;
-  _setUnlockedSeed(self, parent, seed);
-  // The session here was the old main's: the next request mints one with this key.
-  await _restoreAuthAfterRotation();
-}
-
-function _makeMainHost(): import("./make-main.js").MakeMainHost {
-  return {
-    apiBase,
-    account: () => ({
-      passkey: _kind === "passkey",
-      parent: _parent?.toLowerCase() ?? null,
-      self: _seedAddress?.toLowerCase() ?? null,
-      device: _deviceRole,
-      session: !!_sessionAddress,
-    }),
-    ownKey: async () => {
-      await _ensurePasskeyKey();
-      return _passkeyPrivateKey;
-    },
-    freshMainPasskey: _freshMainPasskey,
-    unlocked: () => ({ seed: _unlockedSeed(), prf: _passkeyPrfSecret }),
-    kernel: async () => {
-      await _ensureKernel();
-      return _kernel;
-    },
-    signGrant: _signGrant,
-    becomeOwner: _becomeOwner,
-    becomeDevice: _becomeDevice,
-    adoptNewMain: _adoptNewMain,
-    lockedMessage: _seedLockedMessage,
-  };
-}
-
-async function makeThisDeviceMain(
-  opts: import("./make-main.js").MakeThisDeviceMainOptions,
-): Promise<{ registered: boolean }> {
-  return (await import("./make-main.js")).makeThisDeviceMain(opts, _makeMainHost());
-}
-
-/** Your passkeys, main device: make a passkey this device added the main one. */
-async function prepareMakeAddedMain(target: import("./device-link.js").PairedDevice) {
-  return (await import("./make-main.js")).prepareMakeAddedMain(target, _makeMainHost());
-}
-
-async function approveMakeMain(
-  code: Uint8Array,
-  offer: import("./device-link.js").MakeMainOffer,
-  onStep?: (step: "waiting" | "changing" | "finishing") => void,
-): Promise<{ registered: boolean }> {
-  return (await import("./make-main.js")).approveMakeMain(code, offer, _makeMainHost(), onStep);
-}
-
 /** A linked passkey whose envelope write failed at link time (`device-link.ts` leaves
  *  the marker): write it now, once there is a session and the PRF output is here. One
  *  storage read otherwise. */
@@ -2657,18 +2787,6 @@ async function _retryLinkedEnvelope(seedAddr: string): Promise<void> {
   } catch {
     /* retried at the next sign-in */
   }
-}
-
-/** Finish a make-main this device took part in. One storage read unless one is waiting. */
-async function resumeMakeMain(): Promise<boolean> {
-  const parent = _parent?.toLowerCase();
-  if (_kind !== "passkey" || !parent) return true;
-  try {
-    if (!globalThis.localStorage?.getItem(makeMainPendingKey(parent))) return true;
-  } catch {
-    return true;
-  }
-  return (await import("./make-main.js")).resumeForHost(_makeMainHost());
 }
 
 async function loginPasskeyResult(
@@ -2741,6 +2859,7 @@ async function loginPasskeyResult(
         // can be true at the time and false forever after. Throttled, chain-gated
         // re-check — see _scheduleEnvelopeReprobe.
         _scheduleEnvelopeReprobe(cachedKernel, account.address, account.prfSecret);
+        _verifyCoOwnerInBackground(cachedKernel, account.address);
         _cleanupAccountListener?.();
         _cleanupAccountListener = null;
         console.debug(`[auth] passkey login (fast path): ceremony ${Math.round(tCeremony - t0)}ms, total ${Math.round(performance.now() - t0)}ms`);
@@ -2784,7 +2903,7 @@ async function loginPasskeyResult(
     // If this passkey is the rotated owner of a RECOVERED account, its Kernel
     // address was preserved (≠ this key's counterfactual) — honour the durable
     // binding so we log into the real account, not a fresh counterfactual one.
-    const { buildKernelFromPrivateKey, readKernelEcdsaOwnerStrict } = await import("./kernel-account.js");
+    const { buildKernelFromPrivateKey, readKernelSignerFor } = await import("./kernel-account.js");
     const hadBinding = !!override;
 
     // Guard: verify the local binding's Kernel still has this PRF-EOA as its
@@ -2805,7 +2924,7 @@ async function loginPasskeyResult(
     // verification that never ran.
     let ownerAffirmed = false;
     if (override) {
-      const ownerRead = await readKernelEcdsaOwnerStrict(override);
+      const ownerRead = await readKernelSignerFor(override, account.address);
       const answered = ownerRead !== "error" ? ownerRead : null;
       const foreignOwner = provenOrphanOwner(answered, account.address);
       if (foreignOwner) {
@@ -3373,6 +3492,9 @@ async function signTypedDataAsHolder(typed: {
     if (typed.domain.chainId !== KERNEL_CHAIN_ID) {
       throw new Error("This account can't sign for that network yet. Nothing was signed.");
     }
+    // An ECDSA-built Kernel may predate a switch another device made: its 1271 would
+    // name the uninstalled ECDSA validation. Re-read the root first (Fable sign-off SHOULD-2).
+    if (_kind === "passkey" && _kernel?.sudo.kind === "ecdsa") _kernel.rootChecked = false;
     await _ensureKernelForKind();
     if (!_kernel) throw new Error("Account unavailable — please sign in again. Nothing was signed.");
     const { createKernelTypedDataSigner } = await import("./kernel-account.js");
@@ -4502,11 +4624,8 @@ export const auth = {
   addPasskeyOnThisDevice,
   linkThisDevice,
   approveDeviceLink,
-  makeThisDeviceMain,
-  approveMakeMain,
-  prepareMakeAddedMain,
-  resumeMakeMain,
   removePasskey,
+  removePasskeys,
   get isConnected() { return isConnected; },
   get isAuthenticated() { return isAuthenticated; },
 

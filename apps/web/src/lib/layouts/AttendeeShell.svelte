@@ -63,6 +63,11 @@
 <main class:with-nav={signedIn}>
   <PreLaunchBanner variant="strip" />
   <SessionEndedBanner />
+  {#if auth.kind === "passkey" && auth.hasSession}
+    {#await import("../components/passkeys/NewPasskeyBanner.svelte") then { default: NewPasskeyBanner }}
+      <NewPasskeyBanner />
+    {/await}
+  {/if}
   <ReferralCaptureBanner />
   <header class="top-bar">
     <button class="logo" onclick={() => navigate(signedIn ? "/home" : "/")} aria-label="WoCo home">

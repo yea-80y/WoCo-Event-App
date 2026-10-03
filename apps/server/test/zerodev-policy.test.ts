@@ -526,3 +526,16 @@ test("co-owners: a list out of the validator's order is refused (it would revert
   const enableAsc = encodeAbiParameters(parseAbiParameters("address[], uint24[], uint24, uint48"), [ascending, [1, 1], 1, 0]);
   assert.equal(classifyUserOp(op(await viaExecute(switchCalls(enableAsc)))).ok, false);
 });
+
+test("co-owners: the app's own builders are exactly what the policy pays for", async () => {
+  const { coOwnerSwitchCalls, coOwnerRenewCall } = await import("../../web/src/lib/auth/co-owner-calls.js");
+  const enc = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as never;
+  const sw = coOwnerSwitchCalls(enc, ACCOUNT, [P1, P2]).map((c) => ({ to: c.to as Address, data: c.data }));
+  assert.deepEqual(classifyUserOp(op(await viaExecute(sw))), { ok: true, shape: "co-owners", subject: ACCOUNT.toLowerCase() });
+  const rn = coOwnerRenewCall(enc, [P1, P2, NEW_OWNER]);
+  assert.deepEqual(classifyUserOp(op(await viaExecute([{ to: rn.to as Address, data: rn.data }]))), {
+    ok: true,
+    shape: "renew",
+    subject: ACCOUNT.toLowerCase(),
+  });
+});

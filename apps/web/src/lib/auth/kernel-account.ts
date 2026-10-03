@@ -102,7 +102,8 @@ type KernelAccount = CreateKernelAccountReturnType<"0.7">;
  */
 export interface KernelSudoValidator {
   validator: KernelValidator;
-  kind: "ecdsa" | "passkey";
+  /** `weighted`: the account's passkeys are co-owners (#746) and this key is one of them. */
+  kind: "ecdsa" | "passkey" | "weighted";
 }
 
 export interface BuiltKernel {
@@ -111,6 +112,10 @@ export interface BuiltKernel {
   account: KernelAccount;
   kernelClient: KernelAccountClient;
   sudo: KernelSudoValidator;
+  /** Set when the build read the account's root on chain and chose its validator from it;
+   *  absent for a build that assumed the ECDSA root (sign-in), which `_ensureKernel`
+   *  checks before the first signature. */
+  rootChecked?: boolean;
 }
 
 function getRpcUrl(): string {
@@ -137,8 +142,9 @@ function getRpcUrl(): string {
  */
 export async function buildKernelFromPrivateKey(
   privateKey: string,
-  opts?: { address?: string },
+  opts?: { address?: string; root?: "ecdsa" | "weighted" },
 ): Promise<BuiltKernel> {
+  if (opts?.root === "weighted") return buildCoOwnerKernel(privateKey, opts.address);
   const [
     { createPublicClient, http },
     { privateKeyToAccount },
@@ -196,6 +202,60 @@ export async function buildKernelFromPrivateKey(
     account,
     kernelClient,
     sudo,
+    ...(opts?.root === "ecdsa" ? { rootChecked: true } : {}),
+  };
+}
+
+/**
+ * A co-owned account (#746): its root is the weighted validator and this key is one
+ * of its signers. Always at a known, deployed address - an account becomes co-owned
+ * only by the switch, which deploys it - so there is no counterfactual to derive and
+ * the validator needs no enable data. One local signer: any one is enough.
+ */
+async function buildCoOwnerKernel(privateKey: string, address: string | undefined): Promise<BuiltKernel> {
+  if (!address) throw new Error("A co-owned account is always opened at its own address.");
+  const [
+    { createPublicClient, http },
+    { privateKeyToAccount },
+    { createKernelAccount, createKernelAccountClient, createZeroDevPaymasterClient },
+    { getEntryPoint, KERNEL_V3_1 },
+    { createWeightedECDSAValidator },
+  ] = await Promise.all([
+    import("viem"),
+    import("viem/accounts"),
+    import("@zerodev/sdk"),
+    import("@zerodev/sdk/constants"),
+    import("@zerodev/weighted-ecdsa-validator"),
+  ]);
+  const rpcUrl = getRpcUrl();
+  const entryPoint = getEntryPoint("0.7");
+  const kernelVersion = KERNEL_V3_1;
+  const publicClient = createPublicClient({ chain: KERNEL_CHAIN, transport: http(rpcUrl) });
+  const validator = await createWeightedECDSAValidator(publicClient, {
+    entryPoint,
+    kernelVersion,
+    signers: [privateKeyToAccount(privateKey as Address)],
+  });
+  const account = await createKernelAccount(publicClient, {
+    plugins: { sudo: validator },
+    entryPoint,
+    kernelVersion,
+    address: address as Address,
+  });
+  const paymaster = createZeroDevPaymasterClient({ chain: KERNEL_CHAIN, transport: http(rpcUrl) });
+  const kernelClient = createKernelAccountClient({
+    account,
+    chain: KERNEL_CHAIN,
+    bundlerTransport: http(rpcUrl),
+    client: publicClient,
+    paymaster: sponsoredPaymasterHooks((args) => paymaster.sponsorUserOperation(args)),
+  });
+  return {
+    address: account.address.toLowerCase(),
+    account,
+    kernelClient,
+    sudo: { validator: validator as unknown as KernelValidator, kind: "weighted" },
+    rootChecked: true,
   };
 }
 
@@ -1068,6 +1128,202 @@ export async function rotateOwnerSelf(
   }
   if (owner !== newOwner.toLowerCase()) {
     throw new Error(`The main passkey did not change (tx ${txHash}). Nothing to undo - try again.`);
+  }
+  return { txHash, blockNumber, confirmed: true };
+}
+
+// ---------------------------------------------------------------------------
+// Co-owners (#746, Fable consult 9): every passkey a signer on the weighted root.
+// The calls are built in ./co-owner-calls.js (pure, classified by the server's
+// sponsorship tests); these are the reads and the one send.
+// ---------------------------------------------------------------------------
+
+/** For a co-owned account and a key that is not on its list: never an address, so it
+ *  equals no key, and every owner check reads it as "someone else". */
+export { NOT_ON_LIST } from "./co-owner-calls.js";
+const LIST_END = "0xffffffffffffffffffffffffffffffffffffffff";
+
+async function coOwnerReadDeps() {
+  const [{ createPublicClient, http, zeroAddress }, { getEntryPoint, KERNEL_V3_1 }, { getValidatorAddress }, co] =
+    await Promise.all([
+      import("viem"),
+      import("@zerodev/sdk/constants"),
+      import("@zerodev/ecdsa-validator"),
+      import("@woco/shared/kernel/co-owners"),
+    ]);
+  return {
+    publicClient: createPublicClient({ chain: KERNEL_CHAIN, transport: http(getRpcUrl()) }),
+    zeroAddress,
+    ecdsaValidator: getValidatorAddress(getEntryPoint("0.7"), KERNEL_V3_1) as Address,
+    co,
+  };
+}
+
+/** What `rootValidator()` says: "none" for no code (undeployed) or anything unread. */
+function rootOf(co: typeof import("@woco/shared/kernel/co-owners"), r: { status: string; result?: unknown }): "ecdsa" | "weighted" | "none" {
+  if (r.status !== "success" || typeof r.result !== "string") return "none";
+  const v = r.result.toLowerCase();
+  return v === co.WEIGHTED_ROOT_ID ? "weighted" : v === co.ECDSA_ROOT_ID ? "ecdsa" : "none";
+}
+
+/** The account's root validator, or "error" when nobody answered. */
+export async function readKernelRoot(kernelAddress: string): Promise<"ecdsa" | "weighted" | "none" | "error"> {
+  try {
+    const d = await coOwnerReadDeps();
+    const [root] = await d.publicClient.multicall({
+      contracts: [{ address: kernelAddress as Address, abi: d.co.KERNEL_ROOT_VALIDATOR_ABI, functionName: "rootValidator" }],
+      allowFailure: true,
+    });
+    return rootOf(d.co, root);
+  } catch (e) {
+    console.warn("[kernel] readKernelRoot failed:", e);
+    return "error";
+  }
+}
+
+/**
+ * Who controls the account, as THIS key's checks need it - one read, at `blockNumber`
+ * when given. While the root is ECDSA: exactly readKernelEcdsaOwnerStrict (the owner,
+ * `null` undeployed). Once the account is co-owned: `eoa` itself when it is on the
+ * list, {@link NOT_ON_LIST} when it is not - so `owner === eoa` stays the one test
+ * every caller already makes, and a removed key reads as foreign. "error" = unanswered.
+ */
+export async function readKernelSignerFor(
+  kernelAddress: string,
+  eoa: string,
+  blockNumber?: bigint,
+): Promise<string | null | "error"> {
+  try {
+    const d = await coOwnerReadDeps();
+    const [root, owner, guardian, storage] = await d.publicClient.multicall({
+      contracts: [
+        { address: kernelAddress as Address, abi: d.co.KERNEL_ROOT_VALIDATOR_ABI, functionName: "rootValidator" },
+        { address: d.ecdsaValidator, abi: ECDSA_VALIDATOR_STORAGE_ABI, functionName: "ecdsaValidatorStorage", args: [kernelAddress as Address] },
+        {
+          address: d.co.WEIGHTED_ECDSA_VALIDATOR_V3_1 as Address,
+          abi: d.co.WEIGHTED_GUARDIAN_ABI,
+          functionName: "guardian",
+          args: [eoa as Address, kernelAddress as Address],
+        },
+        {
+          address: d.co.WEIGHTED_ECDSA_VALIDATOR_V3_1 as Address,
+          abi: d.co.WEIGHTED_STORAGE_ABI,
+          functionName: "weightedStorage",
+          args: [kernelAddress as Address],
+        },
+      ],
+      allowFailure: true,
+      ...(blockNumber !== undefined ? { blockNumber } : {}),
+    });
+    if (owner.status !== "success" || guardian.status !== "success" || storage.status !== "success") return "error";
+    const { signerFromRead } = await import("./co-owner-calls.js");
+    const o = owner.result as string;
+    return signerFromRead(
+      {
+        root: rootOf(d.co, root),
+        owner: !o || o.toLowerCase() === d.zeroAddress.toLowerCase() ? null : o,
+        weight: Number((guardian.result as readonly [number, string])[0]),
+        threshold: Number((storage.result as readonly [number, number, number, string])[1]),
+      },
+      eoa,
+    );
+  } catch (e) {
+    console.warn("[kernel] readKernelSignerFor failed:", e);
+    return "error";
+  }
+}
+
+/**
+ * The co-owner list of a co-owned account, at one block (the validator keeps it as
+ * a linked list, so a read pinned to one block is one state); `null` when the root
+ * is not the weighted validator; "error" when it could not be read - including when
+ * the answering replica is behind a list change this device has already made, so no
+ * whole-list write is ever computed from a list that predates one (Fable sign-off
+ * MUST-1: a removal reversed by the next renew). The floor is #510's.
+ */
+export async function readCoOwners(kernelAddress: string, blockNumber?: bigint): Promise<string[] | null | "error"> {
+  try {
+    const d = await coOwnerReadDeps();
+    let at = blockNumber;
+    if (at === undefined) {
+      const { decidePinnedBlock, rememberedLandingBlock } = await import("./recovery-landing-block.js");
+      const pin = decidePinnedBlock({ head: await d.publicClient.getBlockNumber(), minBlock: rememberedLandingBlock(kernelAddress) });
+      if ("lagging" in pin) return "error";
+      at = pin.pin;
+    }
+    const [root, storage] = await d.publicClient.multicall({
+      contracts: [
+        { address: kernelAddress as Address, abi: d.co.KERNEL_ROOT_VALIDATOR_ABI, functionName: "rootValidator" },
+        {
+          address: d.co.WEIGHTED_ECDSA_VALIDATOR_V3_1 as Address,
+          abi: d.co.WEIGHTED_STORAGE_ABI,
+          functionName: "weightedStorage",
+          args: [kernelAddress as Address],
+        },
+      ],
+      allowFailure: true,
+      blockNumber: at,
+    });
+    if (storage.status !== "success") return "error";
+    if (rootOf(d.co, root) !== "weighted") return null;
+    const list: string[] = [];
+    let next = (storage.result as readonly [number, number, number, string])[3].toLowerCase();
+    while (next !== LIST_END && next !== d.zeroAddress.toLowerCase()) {
+      if (list.length >= d.co.MAX_CO_OWNERS || list.includes(next)) return "error";
+      list.push(next);
+      const g = (await d.publicClient.readContract({
+        address: d.co.WEIGHTED_ECDSA_VALIDATOR_V3_1 as Address,
+        abi: d.co.WEIGHTED_GUARDIAN_ABI,
+        functionName: "guardian",
+        args: [next as Address, kernelAddress as Address],
+        blockNumber: at,
+      })) as readonly [number, string];
+      next = g[1].toLowerCase();
+    }
+    return list;
+  } catch (e) {
+    console.warn("[kernel] readCoOwners failed:", e);
+    return "error";
+  }
+}
+
+/**
+ * Make the account's co-owner list exactly `signers` - the switch when the root is
+ * still ECDSA (also deploys a counterfactual account), renew once it is weighted.
+ * One sponsored userOp, signed by this device's key; the list is read back at the
+ * block the op landed in. A landed op with a failed read-back is `confirmed: false`
+ * (done, not yet seen) - never reported as a failure.
+ */
+export async function setCoOwners(
+  builtKernel: BuiltKernel,
+  root: "ecdsa" | "weighted" | "none",
+  signers: readonly string[],
+): Promise<{ txHash: string; blockNumber?: bigint; confirmed: boolean }> {
+  const [{ encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters }, calls] = await Promise.all([
+    import("viem"),
+    import("./co-owner-calls.js"),
+  ]);
+  const d = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as unknown as import("./co-owner-calls.js").CoOwnerEncoders;
+  const op =
+    root === "weighted"
+      ? [calls.coOwnerRenewCall(d, signers)]
+      : calls.coOwnerSwitchCalls(d, builtKernel.address, signers);
+  const { txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
+    calls: op.map((c) => ({ to: c.to as Address, data: c.data as Hex, value: 0n })),
+  });
+  // Every later list read on this device must be at least this new (MUST-1).
+  if (blockNumber !== undefined) {
+    const { rememberLandingBlock } = await import("./recovery-landing-block.js");
+    rememberLandingBlock(builtKernel.address, blockNumber);
+  }
+  const after = await readCoOwners(builtKernel.address, blockNumber);
+  if (after === "error") {
+    console.warn(`[kernel] co-owner change landed (tx ${txHash}) but its read-back failed; treated as done`);
+    return { txHash, blockNumber, confirmed: false };
+  }
+  const want = [...signers].map((s) => s.toLowerCase()).sort().join();
+  if (after === null || [...after].sort().join() !== want) {
+    throw new Error(`Your passkeys did not change (tx ${txHash}). Nothing to undo - try again.`);
   }
   return { txHash, blockNumber, confirmed: true };
 }

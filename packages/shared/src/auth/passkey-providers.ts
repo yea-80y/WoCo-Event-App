@@ -13,13 +13,32 @@
  * else is "other", and a missing or all-zero AAGUID is "unknown".
  */
 
+/**
+ * `worksOn`: where a passkey in this manager can be used, in words for the person
+ * holding it (#746 - "so they can gauge what to do if they ever hit a barrier").
+ * `travels`: it reaches a laptop or desktop beyond the device that made it; when
+ * false, sign-up suggests adding a second manager. Fable consult 9 Q6 checked these;
+ * Microsoft Password Manager's sync claim is the least certain and stays general.
+ */
 export const PASSKEY_PROVIDERS = {
-  "google-password-manager": { name: "Google Password Manager", aaguids: ["ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4"] },
+  "google-password-manager": {
+    name: "Google Password Manager",
+    aaguids: ["ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4"],
+    worksOn: "Works on Android, and in Chrome on any computer",
+    travels: true,
+  },
   "apple-passwords": {
     name: "Apple Passwords",
     aaguids: ["fbfc3007-154e-4ecc-8c0b-6e020557d7bd", "dd4ec289-e01d-41c9-bb89-70fa845d4bf2"],
+    worksOn: "Works on iPhone, iPad and Mac",
+    travels: true,
   },
-  "samsung-pass": { name: "Samsung Pass", aaguids: ["53414d53-554e-4700-0000-000000000000"] },
+  "samsung-pass": {
+    name: "Samsung Pass",
+    aaguids: ["53414d53-554e-4700-0000-000000000000"],
+    worksOn: "Works on Samsung phones and tablets",
+    travels: false,
+  },
   "windows-hello": {
     name: "Windows Hello",
     aaguids: [
@@ -27,13 +46,25 @@ export const PASSKEY_PROVIDERS = {
       "9ddd1817-af5a-4672-a2b9-3e3dd95000a9",
       "6028b017-b1d4-4c02-b4b3-afcdafc96bb2",
     ],
+    worksOn: "Works on this computer only",
+    travels: false,
   },
-  "microsoft-password-manager": { name: "Microsoft Password Manager", aaguids: ["d3452668-01fd-4c12-926c-83a4204853aa"] },
-  "chrome-mac": { name: "Chrome on Mac", aaguids: ["adce0002-35bc-c60a-648b-0b25f1f05503"] },
-  "1password": { name: "1Password", aaguids: ["bada5566-a7aa-401f-bd96-45619a55120d"] },
-  bitwarden: { name: "Bitwarden", aaguids: ["d548826e-79b4-db40-a3d8-11116f7e8349"] },
-  dashlane: { name: "Dashlane", aaguids: ["531126d6-e717-415c-9320-3d9aa6981239"] },
-  "proton-pass": { name: "Proton Pass", aaguids: ["50726f74-6f6e-5061-7373-50726f746f6e"] },
+  "microsoft-password-manager": {
+    name: "Microsoft Password Manager",
+    aaguids: ["d3452668-01fd-4c12-926c-83a4204853aa"],
+    worksOn: "Works where you're signed in to your Microsoft account",
+    travels: true,
+  },
+  "chrome-mac": {
+    name: "Chrome on Mac",
+    aaguids: ["adce0002-35bc-c60a-648b-0b25f1f05503"],
+    worksOn: "Works in Chrome on this Mac only",
+    travels: false,
+  },
+  "1password": { name: "1Password", aaguids: ["bada5566-a7aa-401f-bd96-45619a55120d"], worksOn: "Works anywhere you use 1Password", travels: true },
+  bitwarden: { name: "Bitwarden", aaguids: ["d548826e-79b4-db40-a3d8-11116f7e8349"], worksOn: "Works anywhere you use Bitwarden", travels: true },
+  dashlane: { name: "Dashlane", aaguids: ["531126d6-e717-415c-9320-3d9aa6981239"], worksOn: "Works anywhere you use Dashlane", travels: true },
+  "proton-pass": { name: "Proton Pass", aaguids: ["50726f74-6f6e-5061-7373-50726f746f6e"], worksOn: "Works anywhere you use Proton Pass", travels: true },
 } as const;
 
 export type PasskeyProviderId = keyof typeof PASSKEY_PROVIDERS | "other" | "unknown";

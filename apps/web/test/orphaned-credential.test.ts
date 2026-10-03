@@ -98,8 +98,9 @@ test("a refusal can carry its own words (#746 step 4): the same ones in the noti
   assert.equal(err.message, MOVED_OR_RECOVERED_MESSAGE);
   assert.equal(err.name, "OrphanedCredentialError");
   assert.deepEqual(posted, [MOVED_OR_RECOVERED_MESSAGE]);
-  assert.match(MOVED_OR_RECOVERED_MESSAGE, /made another device your main passkey/);
-  assert.match(MOVED_OR_RECOVERED_MESSAGE, /the passkey you chose when you recovered the account/);
+  // Since every passkey is a co-owner (#746) there is no "main" to move: removed, or recovered away.
+  assert.match(MOVED_OR_RECOVERED_MESSAGE, /it may have been removed/);
+  assert.match(MOVED_OR_RECOVERED_MESSAGE, /the one you chose when you recovered the account/);
   assert.doesNotMatch(MOVED_OR_RECOVERED_MESSAGE, /\u2014/);
 });
 

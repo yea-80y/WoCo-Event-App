@@ -128,7 +128,7 @@ export type ReprobeOutcome =
 const REPROBE_PREFIX = "woco:kreprobe:";
 
 export const MAIN_MOVED_NOTICE =
-  "Your account's main passkey moved to another device. Sign in again to finish updating this one.";
+  "Your passkeys changed on another device. Sign in again to finish updating this one.";
 
 /** Does this credential's envelope name `parent`? "unknown" for anything short of
  *  a read that answered - including an envelope naming another account, which no
@@ -304,6 +304,9 @@ export async function reprobeEnvelope(
     }
     // Past the free gate every path below is a verdict, so one attempt record
     // serves them all; the heal path's clearState overrides it.
+    // Off a co-owned account's list: not decided on ONE read - the confirmed check
+    // (`_verifyCoOwnerInBackground`, two reads 10 s apart) owns it (#746, Fable re-check).
+    if (owner === "not-on-list") return { status: "inconclusive", reason: "off the co-owner list" };
     const spent = { n: state.n + 1, at: t, ok: state.ok };
     if (owner !== null) {
       if (owner === eoa.toLowerCase()) {
