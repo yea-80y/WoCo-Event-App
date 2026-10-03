@@ -152,6 +152,19 @@ export function _resetZerodevPolicyForTests(deps: PolicyDeps = liveDeps): void {
   Object.assign(stats, { allowed: 0, refused: 0, lastAllowedAt: null, lastRefusal: null });
 }
 
+/**
+ * ZeroDev pays when ANY policy entry passes, and this webhook's entry passes only
+ * when our reply says "or" - with "and" it also needs ZeroDev's own checks, which
+ * this entry has none of (measured live 2026-10-02: an unlocked account's op was
+ * refused under "and" with no chain policy, and a locked one was paid under "and"
+ * while a chain policy stood). So: "or" with a yes, so a yes stands on its own;
+ * "and" with a no, so a no can never be turned into a yes. The dashboard keeps NO
+ * chain/contract/wallet policy, or that entry would pay past every refusal here.
+ */
+export function policyReply(proceed: boolean): { proceed: boolean; logicalOperator: "or" | "and" } {
+  return { proceed, logicalOperator: proceed ? "or" : "and" };
+}
+
 const short = (a?: string) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "-");
 
 function answer(c: { json: (b: unknown, s?: number) => Response }, d: Decision, logLine: string): Response {
@@ -165,7 +178,7 @@ function answer(c: { json: (b: unknown, s?: number) => Response }, d: Decision, 
     stats.lastRefusal = { at, reason: d.reason };
     console.log(`[zerodev-policy] refuse ${d.reason} ${logLine} account=${short(d.subject)} shape=${d.shape ?? "-"}`);
   }
-  return c.json({ proceed: d.proceed, logicalOperator: "and" });
+  return c.json(policyReply(d.proceed));
 }
 
 export const zerodevPolicy = new Hono<AppEnv>();

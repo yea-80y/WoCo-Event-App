@@ -401,7 +401,7 @@ test("route: unset config refuses everything; a wrong secret is a 404; project a
   assert.deepEqual((await post(SECRET, { ...body, projectId: "another" })).json, { proceed: false, logicalOperator: "and" });
   assert.deepEqual((await post(SECRET, { ...body, chainId: 421614 })).json, { proceed: false, logicalOperator: "and" });
   assert.deepEqual((await post(SECRET, { ...body, userOp: { ...userOp, sender: "0x12" } })).json, { proceed: false, logicalOperator: "and" });
-  assert.deepEqual((await post(SECRET, body)).json, { proceed: true, logicalOperator: "and" });
+  assert.deepEqual((await post(SECRET, body)).json, { proceed: true, logicalOperator: "or" });
   assert.equal(zerodevPolicyHealth().allowed, 1);
   assert.equal(zerodevPolicyHealth().lastRefusal?.reason, "userop");
   assert.equal(zerodevPolicyHealth().maxOpCostWei, "500000000000000");
@@ -427,4 +427,10 @@ test("route: wrong guesses lock out only the guessing address; a flood past the 
   for (let i = 0; i < 119; i++) await post(SECRET, body);
   assert.deepEqual((await post(SECRET, body)).json, { proceed: false, logicalOperator: "and" });
   assert.equal(zerodevPolicyHealth().lastRefusal?.reason, "busy");
+});
+
+test("a yes stands on its own ('or'); a no can never become a yes ('and')", async () => {
+  const { policyReply } = await import("../src/routes/zerodev-policy.js");
+  assert.deepEqual(policyReply(true), { proceed: true, logicalOperator: "or" });
+  assert.deepEqual(policyReply(false), { proceed: false, logicalOperator: "and" });
 });
