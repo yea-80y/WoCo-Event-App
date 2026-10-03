@@ -65,9 +65,10 @@ test("a device cannot reach the Kernel: the gate is the first thing _ensureKerne
   assert.match(b, /throw new MainPasskeyRequiredError\(\)/);
 });
 
-test("the envelope check reads the owner strictly and keeps the seed when someone else owns it", () => {
+test("the envelope check reads the signer strictly and keeps the seed when someone else owns it", () => {
   const b = body(STORE, "async function _verifyPortabilityEnvelope(");
-  assert.match(b, /readKernelEcdsaOwnerStrict\(opened\.preservedKernelAddress\)/);
+  // Co-owners (#746): this key on the account's list reads as itself, off it as foreign.
+  assert.match(b, /readKernelSignerFor\(opened\.preservedKernelAddress, seedAddress\)/);
   assert.match(b, /if \(owner === "error"\) \{[\s\S]*?return "unavailable";/);
   assert.match(b, /foreign: \{\s*preserved: opened\.preservedKernelAddress,\s*identitySeed: opened\.identitySeed,/);
 });
@@ -78,11 +79,13 @@ test("an added passkey without its envelope never falls through to an account of
   assert.ok(guard > 0 && guard < login.indexOf("await buildKernelFromPrivateKey("), "refused before the Kernel is built");
 });
 
-test("a removal reported on any request signs the device out, once, and only a device", () => {
+test("a removal reported on any request signs the passkey device out, once - a co-owner too", () => {
   const client = read("../src/lib/api/client.ts");
   assert.equal(client.match(/AuthErrorCode\.DEVICE_REMOVED\) \{\s*(\/\/[^\n]*\n\s*)*void auth\.onDeviceRemoved\(\);/g)?.length, 2, "authFetch and authStream");
   const hook = body(STORE, "async function onDeviceRemoved(");
-  assert.match(hook, /if \(_forgettingDevice \|\| _kind !== "passkey" \|\| !seedAddr \|\| !_deviceRole\) return;/);
+  // Since #746 every added passkey is a co-owner holding the account through its recovery binding.
+  assert.match(hook, /if \(_forgettingDevice \|\| _kind !== "passkey" \|\| !seedAddr\) return;/);
+  assert.match(hook, /await _clearRecoveryBinding\(seedAddr\);[\s\S]*?await _forgetAddedPasskey\(seedAddr\);/);
 });
 
 test("the never-derive rule and the Kernel override hold for either binding", () => {

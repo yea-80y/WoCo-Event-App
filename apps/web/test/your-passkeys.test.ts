@@ -130,10 +130,17 @@ test("the provider never leaves the device: not in the grant, the envelope or th
   assert.doesNotMatch(read("../src/lib/api/device-grants.ts"), /provider/i);
 });
 
-test("removing: a device only itself, and removing yourself signs this device out", () => {
-  const b = body(STORE, "async function removePasskey(");
+test("removing: a legacy device only itself, a co-owner any - confirmed fresh, off the list before the record", () => {
+  const confirm = body(STORE, "async function removePasskey(");
+  assert.match(confirm, /if \(!_deviceRole\) await _freshMainPasskey\(\);\s*await _removePasskeyConfirmed\(grantee\);/);
+  const b = body(STORE, "async function _removePasskeyConfirmed(");
   assert.match(b, /if \(_deviceRole && target !== self\) throw new MainPasskeyRequiredError\(\);/);
-  assert.match(b, /if \(target === self\) \{\s*await _forgetAddedPasskey\(self\);\s*await logout\(\{ force: true \}\);/);
+  // The list change lands before the device record is removed (Fable sign-off).
+  assert.ok(b.indexOf("await _removeCoOwner(target);") < b.indexOf("await revokeDeviceGrant("), "off the list first");
+  assert.match(
+    b,
+    /if \(target === self\) \{\s*await _clearRecoveryBinding\(self\);\s*clearVerifiedBinding\("passkey", self\);\s*await _forgetAddedPasskey\(self\);\s*await logout\(\{ force: true \}\);/,
+  );
 });
 
 test("the screen never asks for a passkey on page open, never loops, and never leaves this origin", () => {
