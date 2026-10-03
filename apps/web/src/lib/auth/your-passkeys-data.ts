@@ -21,6 +21,8 @@ export interface PasskeyRow {
   onThisDevice: boolean;
   /** The passkey this tab is signed in with. */
   signedInWith: boolean;
+  /** Linked by a device record before co-owners: signs in, holds no onchain right. */
+  linkedBefore: boolean;
 }
 
 export interface PasskeyRows {
@@ -41,7 +43,7 @@ export function providerWorksOn(id: PasskeyProviderId | null | undefined): strin
 
 export async function loadPasskeyRows(parent: string, self: string): Promise<PasskeyRows> {
   const me = self.toLowerCase();
-  const [{ readCoOwners }, { listDeviceGrants }, { verifyDeviceGrantList }, { readPasskeyMeta }] = await Promise.all([
+  const [{ readCoOwners, readKernelSignerFor }, { listDeviceGrants }, { verifyDeviceGrantList }, { readPasskeyMeta }] = await Promise.all([
     import("./kernel-account.js"),
     import("../api/device-grants.js"),
     import("./device-grant-verify.js"),
@@ -55,12 +57,22 @@ export async function loadPasskeyRows(parent: string, self: string): Promise<Pas
   ]);
   if (list === "error") throw new Error("Couldn't read your passkeys - check your connection and try again.");
   if (!res.ok || !res.data) throw new Error(res.error ?? "Couldn't read your passkeys - try again.");
-  const keys = list ?? [me];
+  // One passkey: the account's ECDSA owner (on a device linked before co-owners that is
+  // NOT this key, so it is read, not assumed).
+  let keys: string[];
+  if (list !== null) keys = list;
+  else {
+    const owner = await readKernelSignerFor(parent, me);
+    keys = typeof owner === "string" && owner.startsWith("0x") ? [owner] : [me];
+  }
   const records = verifyDeviceGrantList(res.data.grants, { parent, signers: keys }).filter((r) => r.removedAt === null);
   const byKey = new Map(records.map((r) => [r.grantee.toLowerCase(), r]));
   const pinnedTag = pinned?.credentialId ? credentialTagOf(credentialIdBytes(pinned.credentialId)).toLowerCase() : null;
+  // Devices linked by a record before co-owners: not on the list, still sign in - shown,
+  // and removable, so nothing that opens the account is invisible (Fable sign-off SHOULD-4).
+  const linkedBefore = records.map((r) => r.grantee.toLowerCase()).filter((g) => !keys.includes(g));
 
-  const rows = keys.map((key): PasskeyRow => {
+  const rows = [...keys, ...linkedBefore].map((key): PasskeyRow => {
     const k = key.toLowerCase();
     const record = byKey.get(k);
     const tag = record?.credentialTag.toLowerCase() ?? null;
@@ -72,6 +84,7 @@ export async function loadPasskeyRows(parent: string, self: string): Promise<Pas
       provider: local?.provider ?? (signedInWith ? (pinned?.provider ?? null) : null),
       onThisDevice: signedInWith || local !== undefined || (tag !== null && tag === pinnedTag),
       signedInWith,
+      linkedBefore: !keys.includes(k),
     };
   });
   // The passkey you are using first, then this device's others, then the rest, newest last.

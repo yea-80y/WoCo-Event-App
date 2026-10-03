@@ -75,7 +75,7 @@
     <p class="stays-title">Your passkey is in {stays.name}</p>
     <p class="stays-body">
       {stays.worksOn}. To use WoCo on a laptop too, add another password manager - like Google Password Manager - from
-      Your passkeys.
+      Your passkeys, once you have a ticket or an invite.
     </p>
     <button class="passkey-btn" onclick={() => { stays = null; oncomplete?.(); }}>Got it</button>
   </div>

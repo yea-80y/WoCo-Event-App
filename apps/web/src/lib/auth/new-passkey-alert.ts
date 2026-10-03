@@ -59,9 +59,11 @@ export async function passkeysAddedSinceLastLook(parent: string, self: string): 
   return added;
 }
 
-/** "Yes, it was me": remember the list as it is now. */
-export async function acknowledgePasskeys(parent: string): Promise<void> {
-  const { readCoOwners } = await import("./kernel-account.js");
-  const list = await readCoOwners(parent);
-  if (Array.isArray(list)) writeSeen(parent, list);
+/**
+ * "Yes, it was me" (or after removing them): remember exactly the passkeys the alert
+ * SHOWED - never a fresh read, which could quietly accept one added after the alert
+ * appeared (background commit review: a check-then-act gap).
+ */
+export function acknowledgePasskeys(parent: string, shown: readonly string[]): void {
+  writeSeen(parent, [...(readSeen(parent) ?? []), ...shown]);
 }

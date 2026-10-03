@@ -119,3 +119,26 @@ export function coOwnerRenewCall(d: CoOwnerEncoders, signers: readonly string[])
     }),
   };
 }
+
+/** The chain's answers `readKernelSignerFor` decides on, in one read. */
+export interface SignerRead {
+  root: "ecdsa" | "weighted" | "none";
+  /** ECDSA validator storage (null = none). */
+  owner: string | null;
+  /** This key's weight on the weighted list. */
+  weight: number;
+  threshold: number;
+}
+
+/** Marker for "co-owned, and this key is not on the list" - never an address. */
+export const NOT_ON_LIST = "not-on-list" as const;
+
+/**
+ * Who controls the account as THIS key's checks need it. Pure. Co-owned: the key
+ * itself when it carries the threshold's weight, NOT_ON_LIST when not. Otherwise the
+ * ECDSA owner (null = no owner, i.e. undeployed).
+ */
+export function signerFromRead(r: SignerRead, eoa: string): string | null {
+  if (r.root === "weighted") return r.threshold > 0 && r.weight >= r.threshold ? eoa.toLowerCase() : NOT_ON_LIST;
+  return r.owner ? r.owner.toLowerCase() : null;
+}

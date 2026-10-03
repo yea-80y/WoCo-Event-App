@@ -805,6 +805,7 @@ async function _restoreCachedAuth(): Promise<void> {
     _deviceRole = (await _boundKernelFor(seedAddr))?.role === "device";
     if (_deviceRole && _parent) void _upgradeIfCoOwner(seedAddr, _parent);
     void _retryLinkedEnvelope(seedAddr);
+    void _retryPendingRemovals().catch(() => {});
     // Locked at rest (#746 fix 1): present only when this tab already unlocked it,
     // or when SEED_UNLOCK_POLICY keeps a copy that opens without the passkey. A
     // legacy device-key copy counts as LOCKED from this build's first load; it is
@@ -1715,6 +1716,31 @@ function clearVerifiedBinding(kind: "passkey" | "web3auth", eoa: string): void {
   }
 }
 
+/** Off a co-owned account's list twice, ten seconds apart: a replica a few blocks
+ *  behind a fresh add must not sign a just-linked passkey out (Fable sign-off SHOULD-3). */
+async function _offListConfirmed(kernel: string, eoa: string): Promise<boolean> {
+  const { readKernelSignerFor, NOT_ON_LIST } = await import("./kernel-account.js");
+  if ((await readKernelSignerFor(kernel, eoa)) !== NOT_ON_LIST) return false;
+  await new Promise((r) => setTimeout(r, 10_000));
+  return (await readKernelSignerFor(kernel, eoa)) === NOT_ON_LIST;
+}
+
+/** The never-recovered fast path makes no chain read: a FIRST passkey removed from
+ *  another device would open the account here until its first server call. One
+ *  background check ends it with the removed words instead (SHOULD-3). */
+function _verifyCoOwnerInBackground(kernel: string, eoa: string): void {
+  void (async () => {
+    try {
+      if (!(await _offListConfirmed(kernel, eoa))) return;
+      const stillThisSession =
+        _kind === "passkey" && _seedAddress?.toLowerCase() === eoa.toLowerCase() && _parent?.toLowerCase() === kernel.toLowerCase();
+      if (stillThisSession) await onDeviceRemoved();
+    } catch {
+      /* transient - the next sign-in checks again, and the server refuses meanwhile */
+    }
+  })();
+}
+
 /** Off-critical-path twin of the login-time stale-binding guard: re-check the
  *  preserved Kernel's on-chain ECDSA owner after a recovered-account fast-path
  *  login. A confirmed mismatch means this credential was orphaned by a recovery
@@ -1731,8 +1757,16 @@ function _verifyRecoveredBindingInBackground(
 ): void {
   void (async () => {
     try {
-      const { readKernelSignerFor } = await import("./kernel-account.js");
+      const { readKernelSignerFor, NOT_ON_LIST } = await import("./kernel-account.js");
       const signer = await readKernelSignerFor(kernel, eoa);
+      if (signer === NOT_ON_LIST) {
+        // A co-owner taken off the list: confirmed twice, then the removed words (#746).
+        if (await _offListConfirmed(kernel, eoa)) {
+          const still = _kind === kind && _getSeedAddress()?.toLowerCase() === eoa.toLowerCase() && _parent?.toLowerCase() === kernel.toLowerCase();
+          if (still) await onDeviceRemoved();
+        }
+        return;
+      }
       const foreignOwner = provenOrphanOwner(signer === "error" ? null : signer, eoa);
       if (foreignOwner) {
         console.warn(
@@ -2235,15 +2269,15 @@ async function _loginAddedPasskey(
     base: apiBase,
   });
   const added = account.handleKind === "added" || start.fromBinding === true;
-  // On the account's co-owner list = one of its passkeys like any other, whatever
-  // the server's cache says this minute (#746, Fable consult 9: role from the chain).
-  const { readKernelSignerFor } = await import("./kernel-account.js");
-  const onList = (await readKernelSignerFor(parent, seedAddr)) === seedAddr.toLowerCase();
   if (verdict === "removed") {
     await _forgetAddedPasskey(seedAddr);
     _postAuthNotice(DEVICE_REMOVED_MESSAGE);
     throw new DeviceRemovedError();
   }
+  // On the account's co-owner list = one of its passkeys like any other, whatever
+  // the server's cache says this minute (#746, Fable consult 9: role from the chain).
+  const { readKernelSignerFor } = await import("./kernel-account.js");
+  const onList = (await readKernelSignerFor(parent, seedAddr)) === seedAddr.toLowerCase();
   // The server's owner cache can trail a rotation by minutes (Fable sign-off SHOULD-3):
   // "owner" while this device's own fresh chain read names another key is no verdict.
   if (verdict === "owner" && start.onChainOwner && start.onChainOwner.toLowerCase() !== seedAddr.toLowerCase()) {
@@ -2491,28 +2525,115 @@ async function _removePasskeyConfirmed(grantee: string): Promise<void> {
   const target = grantee.toLowerCase();
   if (_kind !== "passkey" || !parent || !self) throw new MainPasskeyRequiredError();
   if (_deviceRole && target !== self) throw new MainPasskeyRequiredError();
-  if (_deviceRole) await _ensurePasskeyKey();
-  // A co-owner removes any passkey, itself included: OFF THE LIST FIRST. The device
-  // record goes only after the change lands, or a device that can still sign onchain
-  // would be signed out while able to put itself back (#746, Fable sign-off).
-  else await _removeCoOwner(target);
+  if (_deviceRole) {
+    // A device linked before co-owners holds no onchain right: its record is all there is.
+    await _ensurePasskeyKey();
+    const signed = await _signRecordRemoval(parent, target);
+    const { revokeDeviceGrant } = await import("../api/device-grants.js");
+    const res = await revokeDeviceGrant(signed.revoke, signed.revokeSig);
+    if (!res.ok) throw new Error(_grantRefusalMessage(res));
+  } else {
+    // A co-owner removes any passkey, itself included: OFF THE LIST FIRST. The device
+    // record goes only after the change lands, or a device that can still sign onchain
+    // would be signed out while able to put itself back (#746, Fable sign-off).
+    await _removeCoOwner(target);
+    await _removeRecordAfterList(parent, target);
+  }
+  if (target === self) await _forgetThisPasskey(self);
+}
+
+/**
+ * Remove several passkeys at once - the new-passkey alert's "No - remove them": one
+ * confirm, one list change, then each record (Fable sign-off NIT-2).
+ */
+async function removePasskeys(grantees: string[]): Promise<void> {
+  const parent = _parent?.toLowerCase();
+  const self = _seedAddress?.toLowerCase();
+  if (_kind !== "passkey" || !parent || !self || _deviceRole) throw new MainPasskeyRequiredError();
+  const targets = [...new Set(grantees.map((g) => g.toLowerCase()))];
+  if (targets.length === 0) return;
+  await _freshMainPasskey();
+  await (await import("./co-owner-flows.js")).removeCoOwners(_coOwnerHost(), targets);
+  for (const t of targets) await _removeRecordAfterList(parent, t);
+  if (targets.includes(self)) await _forgetThisPasskey(self);
+}
+
+/** This device's own passkey left the account: forget it here and sign out. */
+async function _forgetThisPasskey(self: string): Promise<void> {
+  await _clearRecoveryBinding(self);
+  clearVerifiedBinding("passkey", self);
+  // A first passkey has no binding: without this the next tap re-enters the fast path.
+  clearCachedKernelAddress("passkey", self);
+  await _forgetAddedPasskey(self);
+  await logout({ force: true });
+}
+
+async function _signRecordRemoval(parent: string, grantee: string): Promise<{ revoke: DeviceGrantRevokeMessage; revokeSig: string }> {
   const key = _passkeyPrivateKey;
   if (!key) throw new Error(_seedLockedMessage());
-  const revoke: DeviceGrantRevokeMessage = { parent, grantee: target, nonce: _randomNonce() };
+  const revoke: DeviceGrantRevokeMessage = { parent, grantee, nonce: _randomNonce() };
   const revokeSig = await createLocalSigner(key, async () => true)(
     { ...DEVICE_GRANT_DOMAIN },
     DEVICE_GRANT_REVOKE_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
     revoke as unknown as Record<string, unknown>,
   );
-  const { revokeDeviceGrant } = await import("../api/device-grants.js");
-  const res = await revokeDeviceGrant(revoke, revokeSig);
-  if (!res.ok) throw new Error(_grantRefusalMessage(res));
-  if (target === self) {
-    await _clearRecoveryBinding(self);
-    clearVerifiedBinding("passkey", self);
-    await _forgetAddedPasskey(self);
-    await logout({ force: true });
+  return { revoke, revokeSig };
+}
+
+const pendingRemovalKey = (parent: string) => `woco:pending-record-removal:${parent.toLowerCase()}`;
+type PendingRemoval = { revoke: DeviceGrantRevokeMessage; revokeSig: string };
+
+function _readPendingRemovals(parent: string): PendingRemoval[] {
+  try {
+    const v = JSON.parse(globalThis.localStorage?.getItem(pendingRemovalKey(parent)) ?? "[]") as unknown;
+    return Array.isArray(v) ? (v as PendingRemoval[]) : [];
+  } catch {
+    return [];
   }
+}
+
+function _writePendingRemovals(parent: string, list: PendingRemoval[]): void {
+  try {
+    if (list.length === 0) globalThis.localStorage?.removeItem(pendingRemovalKey(parent));
+    else globalThis.localStorage?.setItem(pendingRemovalKey(parent), JSON.stringify(list));
+  } catch {
+    /* blocked storage: the error the person saw still tells them to try again */
+  }
+}
+
+const RECORD_NOT_YET_REMOVED_MESSAGE =
+  "That passkey is off your account onchain, but WoCo couldn't record it yet - it may still open your account until it does. WoCo tries again next time you open it; you can also try again now.";
+
+/**
+ * The record removal after a landed list change (Fable sign-off SHOULD-1): retried
+ * a few times; if it still fails, the signed removal is kept and retried at the next
+ * open, and the person is told the passkey may still have access until then.
+ */
+async function _removeRecordAfterList(parent: string, grantee: string): Promise<void> {
+  const signed = await _signRecordRemoval(parent, grantee);
+  const { revokeDeviceGrant } = await import("../api/device-grants.js");
+  for (const waitMs of [0, 1500, 4000]) {
+    if (waitMs) await new Promise((r) => setTimeout(r, waitMs));
+    const res = await revokeDeviceGrant(signed.revoke, signed.revokeSig).catch(() => ({ ok: false as const, status: 0 }));
+    if (res.ok) return;
+  }
+  _writePendingRemovals(parent, [..._readPendingRemovals(parent), signed]);
+  throw new Error(RECORD_NOT_YET_REMOVED_MESSAGE);
+}
+
+/** Retry record removals a list change left behind (at sign-in restore, with a session). */
+async function _retryPendingRemovals(): Promise<void> {
+  const parent = _parent?.toLowerCase();
+  if (!parent || !_sessionAddress) return;
+  const pending = _readPendingRemovals(parent);
+  if (pending.length === 0) return;
+  const { revokeDeviceGrant } = await import("../api/device-grants.js");
+  const left: PendingRemoval[] = [];
+  for (const p of pending) {
+    const res = await revokeDeviceGrant(p.revoke, p.revokeSig).catch(() => ({ ok: false as const }));
+    if (!res.ok) left.push(p);
+  }
+  _writePendingRemovals(parent, left);
 }
 
 export const PASSKEY_BACKUP_MESSAGE =
@@ -2531,6 +2652,7 @@ async function onDeviceRemoved(): Promise<void> {
     // A co-owner holds the account through its recovery binding (#746): forget it too.
     await _clearRecoveryBinding(seedAddr);
     clearVerifiedBinding("passkey", seedAddr);
+    clearCachedKernelAddress("passkey", seedAddr);
     await _forgetAddedPasskey(seedAddr);
     _postAuthNotice(DEVICE_REMOVED_MESSAGE);
     await logout({ force: true });
@@ -2709,6 +2831,7 @@ async function loginPasskeyResult(
         // can be true at the time and false forever after. Throttled, chain-gated
         // re-check — see _scheduleEnvelopeReprobe.
         _scheduleEnvelopeReprobe(cachedKernel, account.address, account.prfSecret);
+        _verifyCoOwnerInBackground(cachedKernel, account.address);
         _cleanupAccountListener?.();
         _cleanupAccountListener = null;
         console.debug(`[auth] passkey login (fast path): ceremony ${Math.round(tCeremony - t0)}ms, total ${Math.round(performance.now() - t0)}ms`);
@@ -3341,6 +3464,9 @@ async function signTypedDataAsHolder(typed: {
     if (typed.domain.chainId !== KERNEL_CHAIN_ID) {
       throw new Error("This account can't sign for that network yet. Nothing was signed.");
     }
+    // An ECDSA-built Kernel may predate a switch another device made: its 1271 would
+    // name the uninstalled ECDSA validation. Re-read the root first (Fable sign-off SHOULD-2).
+    if (_kind === "passkey" && _kernel?.sudo.kind === "ecdsa") _kernel.rootChecked = false;
     await _ensureKernelForKind();
     if (!_kernel) throw new Error("Account unavailable — please sign in again. Nothing was signed.");
     const { createKernelTypedDataSigner } = await import("./kernel-account.js");
@@ -4471,6 +4597,7 @@ export const auth = {
   linkThisDevice,
   approveDeviceLink,
   removePasskey,
+  removePasskeys,
   get isConnected() { return isConnected; },
   get isAuthenticated() { return isAuthenticated; },
 

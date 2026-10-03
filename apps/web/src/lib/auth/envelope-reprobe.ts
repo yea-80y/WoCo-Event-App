@@ -127,6 +127,9 @@ export type ReprobeOutcome =
 
 const REPROBE_PREFIX = "woco:kreprobe:";
 
+export const REMOVED_FROM_ACCOUNT_NOTICE =
+  "This passkey was removed from your account. Sign in with one of your other passkeys.";
+
 export const MAIN_MOVED_NOTICE =
   "Your passkeys changed on another device. Sign in again to finish updating this one.";
 
@@ -341,7 +344,8 @@ export async function reprobeEnvelope(
       deps.writeOrphanTombstone(kind, eoa, { kernel: cachedParent, owner });
       const orphanSignedOut = deps.isStillSignedInAs(eoa, cachedParent);
       if (orphanSignedOut) {
-        deps.postNotice?.(orphanedCredentialMessage(kind));
+        // A co-owned account that no longer lists this passkey: removed, not recovered (#746).
+        deps.postNotice?.(owner === "not-on-list" ? REMOVED_FROM_ACCOUNT_NOTICE : orphanedCredentialMessage(kind));
         await deps.logout();
       }
       return { status: "orphaned", owner, signedOut: orphanSignedOut };

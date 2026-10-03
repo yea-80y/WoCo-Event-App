@@ -10,12 +10,12 @@
 <div class="help" role="region" aria-label="Can't find your passkey on this device?">
   <p class="help-title">It lives in the password manager you made it with.</p>
   <div class="help-option">
-    <p><strong>Google Password Manager, 1Password or Bitwarden</strong></p>
+    <p><strong>Google Password Manager, 1Password, Bitwarden - or Apple Passwords on a Mac</strong></p>
     <p>Sign in to it on this device - in Chrome for Google - then try again.</p>
     <button class="option-btn" onclick={onretry} disabled={busy}>Try again</button>
   </div>
   <div class="help-option">
-    <p><strong>Samsung Pass, Apple Passwords or Windows Hello</strong></p>
+    <p><strong>Samsung Pass, Windows Hello - or Apple Passwords on a Windows or Android device</strong></p>
     <p>These stay on their own devices. Add this device from your phone instead.</p>
     {#if onlink}
       <button class="option-btn" onclick={onlink} disabled={busy}>Add this device</button>

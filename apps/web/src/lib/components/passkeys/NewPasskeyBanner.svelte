@@ -26,19 +26,20 @@
 
   async function itWasMe(): Promise<void> {
     if (!auth.parent) return;
-    const parent = auth.parent;
+    const shown = added;
     added = [];
-    const m = await import("../../auth/new-passkey-alert.js");
-    await m.acknowledgePasskeys(parent).catch(() => {});
+    (await import("../../auth/new-passkey-alert.js")).acknowledgePasskeys(auth.parent, shown);
   }
 
   async function removeThem(): Promise<void> {
     working = true;
     error = null;
+    const shown = added;
     try {
-      for (const k of added) await auth.removePasskey(k);
+      // One confirm and one list change for all of them.
+      await auth.removePasskeys(shown);
       added = [];
-      if (auth.parent) await (await import("../../auth/new-passkey-alert.js")).acknowledgePasskeys(auth.parent);
+      if (auth.parent) (await import("../../auth/new-passkey-alert.js")).acknowledgePasskeys(auth.parent, shown);
     } catch (e) {
       error = e instanceof Error && e.name !== "PasskeyCeremonyCancelledError" ? e.message : "Nothing was removed.";
     } finally {

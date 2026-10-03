@@ -136,10 +136,11 @@ test("removing: a legacy device only itself, a co-owner any - confirmed fresh, o
   const b = body(STORE, "async function _removePasskeyConfirmed(");
   assert.match(b, /if \(_deviceRole && target !== self\) throw new MainPasskeyRequiredError\(\);/);
   // The list change lands before the device record is removed (Fable sign-off).
-  assert.ok(b.indexOf("await _removeCoOwner(target);") < b.indexOf("await revokeDeviceGrant("), "off the list first");
+  assert.ok(b.indexOf("await _removeCoOwner(target);") < b.indexOf("await _removeRecordAfterList(parent, target);"), "off the list first");
+  assert.match(b, /if \(target === self\) await _forgetThisPasskey\(self\);/);
   assert.match(
-    b,
-    /if \(target === self\) \{\s*await _clearRecoveryBinding\(self\);\s*clearVerifiedBinding\("passkey", self\);\s*await _forgetAddedPasskey\(self\);\s*await logout\(\{ force: true \}\);/,
+    body(STORE, "async function _forgetThisPasskey("),
+    /await _clearRecoveryBinding\(self\);\s*clearVerifiedBinding\("passkey", self\);[\s\S]*?await _forgetAddedPasskey\(self\);\s*await logout\(\{ force: true \}\);/,
   );
 });
 

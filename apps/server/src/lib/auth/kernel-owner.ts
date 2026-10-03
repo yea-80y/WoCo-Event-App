@@ -650,9 +650,12 @@ export async function noteCoOwnerRemoved(
 ): Promise<boolean> {
   const eoa = eoaAddress.toLowerCase();
   const parent = parentAddress.toLowerCase();
-  if (!getKernelWeightedRecord(parent)) return false;
   const read = await _fetchMember(parent, eoa, opts);
   if (read === "error" || read.root !== "weighted") return false;
+  // The route calls this only for a removal a signer of this account signed and whose
+  // session it verified: the account is ours and co-owned - record it, so the first
+  // passkey removing itself right after the switch is floored (Fable sign-off SHOULD-5).
+  recordKernelWeighted(parent, read.block);
   const threshold = read.threshold ?? 1;
   if (threshold > 0 && read.weight >= threshold) return false;
   const evidence =

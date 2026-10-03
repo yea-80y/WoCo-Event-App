@@ -45,20 +45,20 @@ test("linking and adding put the new key on the list BEFORE its device record (a
 });
 
 test("a list change is signed by this device and the Kernel is rebuilt after it", () => {
-  for (const sig of ["export async function addCoOwner(", "export async function removeCoOwner("]) {
+  for (const sig of ["export async function addCoOwner(", "export async function removeCoOwners("]) {
     const b = body(FLOWS, sig);
     assert.match(b, /await h\.ensureKernel\(\);/);
     assert.match(b, /await setCoOwners\(h\.kernel\(\)!,/);
     assert.match(b, /h\.dropKernel\(\);/, "its root may have changed");
   }
-  assert.match(body(FLOWS, "export async function removeCoOwner("), /listWithout\(list, key\)/, "never the last passkey");
+  assert.match(body(FLOWS, "export async function removeCoOwners("), /listWithout\(acc, k\)/, "never the last passkey");
 });
 
 test("the chain decides a passkey's role: on the list = an owner here", () => {
   const login = body(STORE, "async function _loginAddedPasskey(");
   assert.match(login, /const onList = \(await readKernelSignerFor\(parent, seedAddr\)\) === seedAddr\.toLowerCase\(\);/);
   assert.match(login, /if \(verdict === "owner" \|\| onList\) \{/);
-  assert.ok(login.indexOf("const onList") < login.indexOf('if (verdict === "removed")'), "read before any commit");
+  assert.ok(login.indexOf("const onList") < login.indexOf("await clearSession();"), "read before any commit");
   assert.match(body(STORE, "async function _restoreCachedAuth("), /if \(_deviceRole && _parent\) void _upgradeIfCoOwner\(seedAddr, _parent\);/);
 });
 
@@ -68,4 +68,25 @@ test("every owner check that decides a sign-in reads the co-owner list too", () 
   assert.match(body(STORE, "function _scheduleEnvelopeReprobe("), /readKernelOwner: \(kernel\) => readKernelSignerFor\(kernel, eoa\),/);
   assert.match(STORE, /const ownerRead = await readKernelSignerFor\(override, account\.address\);/);
   assert.doesNotMatch(body(STORE, "async function loginPasskeyResult("), /readKernelEcdsaOwnerStrict/);
+});
+
+test("sign-off fixes: list reads floored, record removal retried, removed passkeys noticed, 1271 re-checked", () => {
+  const kernel = read("../src/lib/auth/kernel-account.ts");
+  const rc = kernel.slice(kernel.indexOf("export async function readCoOwners("), kernel.indexOf("export async function setCoOwners("));
+  assert.match(rc, /decidePinnedBlock\(\{ head: await d\.publicClient\.getBlockNumber\(\), minBlock: rememberedLandingBlock\(kernelAddress\) \}\)/, "MUST-1");
+  assert.match(rc, /if \("lagging" in pin\) return "error";/);
+  const sc = kernel.slice(kernel.indexOf("export async function setCoOwners("));
+  assert.ok(sc.indexOf("rememberLandingBlock(builtKernel.address, blockNumber)") < sc.indexOf("const after = await readCoOwners("), "floor raised before the read-back");
+  const rm = body(STORE, "async function _removeRecordAfterList(");
+  assert.match(rm, /for \(const waitMs of \[0, 1500, 4000\]\)/, "SHOULD-1: retried");
+  assert.match(rm, /_writePendingRemovals\(parent, \[\.\.\._readPendingRemovals\(parent\), signed\]\);\s*throw new Error\(RECORD_NOT_YET_REMOVED_MESSAGE\);/);
+  assert.match(body(STORE, "async function _restoreCachedAuth("), /void _retryPendingRemovals\(\)/);
+  const conf = body(STORE, "async function _removePasskeyConfirmed(");
+  assert.ok(conf.indexOf("await _removeCoOwner(target);") < conf.indexOf("await _removeRecordAfterList(parent, target);"));
+  assert.match(STORE, /_scheduleEnvelopeReprobe\(cachedKernel, account\.address, account\.prfSecret\);\s*_verifyCoOwnerInBackground\(cachedKernel, account\.address\);/, "SHOULD-3");
+  assert.match(body(STORE, "async function _offListConfirmed("), /setTimeout\(r, 10_000\)/, "confirmed twice, never on one lagging read");
+  assert.match(body(STORE, "async function _forgetThisPasskey("), /clearCachedKernelAddress\("passkey", self\);/);
+  assert.match(STORE, /if \(_kind === "passkey" && _kernel\?\.sudo\.kind === "ecdsa"\) _kernel\.rootChecked = false;\s*await _ensureKernelForKind\(\);/, "SHOULD-2");
+  const login = body(STORE, "async function _loginAddedPasskey(");
+  assert.ok(login.indexOf('if (verdict === "removed")') < login.indexOf("const onList"), "NIT-6: no chain read before a removal");
 });

@@ -5,6 +5,13 @@
  */
 import type { BuiltKernel } from "./kernel-account.js";
 
+/** The chain reads and the one write these flows use - kernel-account.ts's, or a test's. */
+export interface CoOwnerChain {
+  readKernelRoot(kernel: string): Promise<"ecdsa" | "weighted" | "none" | "error">;
+  readCoOwners(kernel: string): Promise<string[] | null | "error">;
+  setCoOwners(kernel: BuiltKernel, root: "ecdsa" | "weighted" | "none", signers: readonly string[]): Promise<unknown>;
+}
+
 export interface CoOwnerHost {
   /** Open this device's Kernel with the validator the account really has. */
   ensureKernel(): Promise<void>;
@@ -14,6 +21,12 @@ export interface CoOwnerHost {
   /** The account's root may have changed: rebuild the Kernel on its next use. */
   dropKernel(): void;
   lockedMessage(): string;
+  /** Absent in the app: the real reads load on first use. */
+  chain?: CoOwnerChain;
+}
+
+async function chainOf(h: CoOwnerHost): Promise<CoOwnerChain> {
+  return h.chain ?? (await import("./kernel-account.js"));
 }
 
 /** The account's co-owner list now, from chain: this key alone while the root is still
@@ -22,7 +35,7 @@ async function currentCoOwners(h: CoOwnerHost): Promise<{ root: "ecdsa" | "weigh
   const kernel = h.kernel();
   const self = h.self();
   if (!kernel || !self) throw new Error(h.lockedMessage());
-  const { readKernelRoot, readCoOwners } = await import("./kernel-account.js");
+  const { readKernelRoot, readCoOwners } = await chainOf(h);
   const root = await readKernelRoot(kernel.address);
   if (root === "error") throw new Error("Couldn't reach the network - nothing was changed. Try again.");
   if (root !== "weighted") return { root, list: [self] };
@@ -41,7 +54,7 @@ export async function addCoOwner(h: CoOwnerHost, key: string): Promise<boolean> 
   await h.ensureKernel();
   const { root, list } = await currentCoOwners(h);
   if (list.includes(key.toLowerCase())) return false;
-  const [{ listWith }, { setCoOwners }] = await Promise.all([import("./co-owner-calls.js"), import("./kernel-account.js")]);
+  const [{ listWith }, { setCoOwners }] = await Promise.all([import("./co-owner-calls.js"), chainOf(h)]);
   await setCoOwners(h.kernel()!, root, listWith(list, key));
   h.dropKernel();
   return true;
@@ -49,11 +62,19 @@ export async function addCoOwner(h: CoOwnerHost, key: string): Promise<boolean> 
 
 /** Take `key` off the account's co-owner list, if it is on it. The last one never. */
 export async function removeCoOwner(h: CoOwnerHost, key: string): Promise<void> {
+  return removeCoOwners(h, [key]);
+}
+
+/** Take several keys off in ONE list change. Keys not on the list are ignored; the last passkey never goes. */
+export async function removeCoOwners(h: CoOwnerHost, keys: readonly string[]): Promise<void> {
   await h.ensureKernel();
   const { root, list } = await currentCoOwners(h);
-  if (root !== "weighted" || !list.includes(key.toLowerCase())) return;
-  const [{ listWithout }, { setCoOwners }] = await Promise.all([import("./co-owner-calls.js"), import("./kernel-account.js")]);
-  await setCoOwners(h.kernel()!, "weighted", listWithout(list, key));
+  if (root !== "weighted") return;
+  const going = keys.map((k) => k.toLowerCase()).filter((k) => list.includes(k));
+  if (going.length === 0) return;
+  const [{ listWithout }, { setCoOwners }] = await Promise.all([import("./co-owner-calls.js"), chainOf(h)]);
+  const next = going.reduce<string[]>((acc, k) => listWithout(acc, k), list);
+  await setCoOwners(h.kernel()!, "weighted", next);
   h.dropKernel();
 }
 

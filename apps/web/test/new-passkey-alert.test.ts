@@ -28,3 +28,20 @@ test("mounted in both shells, only for a passkey account with a session, loaded 
     assert.doesNotMatch(src, /import NewPasskeyBanner from/);
   }
 });
+
+test("acknowledging remembers exactly the passkeys shown - never a fresh read (no check-then-act gap)", async () => {
+  const store = new Map<string, string>();
+  (globalThis as { localStorage?: unknown }).localStorage = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, v),
+    removeItem: (k: string) => void store.delete(k),
+  };
+  const { acknowledgePasskeys } = await import("../src/lib/auth/new-passkey-alert.js");
+  const parent = a(9);
+  store.set(`woco:passkeys:seen:${parent}`, JSON.stringify([a(1)]));
+  acknowledgePasskeys(parent, [a(2)]);
+  assert.deepEqual(JSON.parse(store.get(`woco:passkeys:seen:${parent}`)!), [a(1), a(2)]);
+  const src = readFileSync(new URL("../src/lib/auth/new-passkey-alert.ts", import.meta.url), "utf8");
+  const ack = src.slice(src.indexOf("export function acknowledgePasskeys("));
+  assert.doesNotMatch(ack.slice(0, ack.indexOf("\n}\n")), /readCoOwners/);
+});

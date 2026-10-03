@@ -470,3 +470,14 @@ test("a lagging read that shows a listed key OFF the list writes no removal floo
     restoreClock();
   }
 });
+
+test("SHOULD-5: the first passkey removing itself right after the switch is floored with no co-owner seen yet", async () => {
+  ownerRead = () => ({ owner: A.address.toLowerCase(), root: "ecdsa", block: 10 });
+  assert.equal(await kind(A), "owner"); // owner A on record; no weighted record yet
+  assert.equal(deployed.getKernelWeightedRecord(PARENT), undefined);
+  list(B); // switched and A already taken off, all before any co-owner session
+  memberRead = (eoa) => ({ root: "weighted", weight: weights.get(eoa) ?? 0, block: 70 });
+  assert.equal(await owner.noteCoOwnerRemoved(A.address, PARENT), true);
+  assert.deepEqual(deployed.getKernelWeightedRecord(PARENT), { block: 70 });
+  assert.equal(deployed.coOwnerRemovedBlock(PARENT, A.address), 70);
+});

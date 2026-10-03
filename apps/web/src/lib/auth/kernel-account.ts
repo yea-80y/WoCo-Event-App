@@ -1140,7 +1140,7 @@ export async function rotateOwnerSelf(
 
 /** For a co-owned account and a key that is not on its list: never an address, so it
  *  equals no key, and every owner check reads it as "someone else". */
-export const NOT_ON_LIST = "not-on-list" as const;
+export { NOT_ON_LIST } from "./co-owner-calls.js";
 const LIST_END = "0xffffffffffffffffffffffffffffffffffffffff";
 
 async function coOwnerReadDeps() {
@@ -1216,13 +1216,17 @@ export async function readKernelSignerFor(
       ...(blockNumber !== undefined ? { blockNumber } : {}),
     });
     if (owner.status !== "success" || guardian.status !== "success" || storage.status !== "success") return "error";
-    if (rootOf(d.co, root) === "weighted") {
-      const weight = Number((guardian.result as readonly [number, string])[0]);
-      const threshold = Number((storage.result as readonly [number, number, number, string])[1]);
-      return threshold > 0 && weight >= threshold ? eoa.toLowerCase() : NOT_ON_LIST;
-    }
+    const { signerFromRead } = await import("./co-owner-calls.js");
     const o = owner.result as string;
-    return !o || o.toLowerCase() === d.zeroAddress.toLowerCase() ? null : o.toLowerCase();
+    return signerFromRead(
+      {
+        root: rootOf(d.co, root),
+        owner: !o || o.toLowerCase() === d.zeroAddress.toLowerCase() ? null : o,
+        weight: Number((guardian.result as readonly [number, string])[0]),
+        threshold: Number((storage.result as readonly [number, number, number, string])[1]),
+      },
+      eoa,
+    );
   } catch (e) {
     console.warn("[kernel] readKernelSignerFor failed:", e);
     return "error";
@@ -1232,12 +1236,21 @@ export async function readKernelSignerFor(
 /**
  * The co-owner list of a co-owned account, at one block (the validator keeps it as
  * a linked list, so a read pinned to one block is one state); `null` when the root
- * is not the weighted validator; "error" when it could not be read.
+ * is not the weighted validator; "error" when it could not be read - including when
+ * the answering replica is behind a list change this device has already made, so no
+ * whole-list write is ever computed from a list that predates one (Fable sign-off
+ * MUST-1: a removal reversed by the next renew). The floor is #510's.
  */
 export async function readCoOwners(kernelAddress: string, blockNumber?: bigint): Promise<string[] | null | "error"> {
   try {
     const d = await coOwnerReadDeps();
-    const at = blockNumber ?? (await d.publicClient.getBlockNumber());
+    let at = blockNumber;
+    if (at === undefined) {
+      const { decidePinnedBlock, rememberedLandingBlock } = await import("./recovery-landing-block.js");
+      const pin = decidePinnedBlock({ head: await d.publicClient.getBlockNumber(), minBlock: rememberedLandingBlock(kernelAddress) });
+      if ("lagging" in pin) return "error";
+      at = pin.pin;
+    }
     const [root, storage] = await d.publicClient.multicall({
       contracts: [
         { address: kernelAddress as Address, abi: d.co.KERNEL_ROOT_VALIDATOR_ABI, functionName: "rootValidator" },
@@ -1298,6 +1311,11 @@ export async function setCoOwners(
   const { txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
     calls: op.map((c) => ({ to: c.to as Address, data: c.data as Hex, value: 0n })),
   });
+  // Every later list read on this device must be at least this new (MUST-1).
+  if (blockNumber !== undefined) {
+    const { rememberLandingBlock } = await import("./recovery-landing-block.js");
+    rememberLandingBlock(builtKernel.address, blockNumber);
+  }
   const after = await readCoOwners(builtKernel.address, blockNumber);
   if (after === "error") {
     console.warn(`[kernel] co-owner change landed (tx ${txHash}) but its read-back failed; treated as done`);

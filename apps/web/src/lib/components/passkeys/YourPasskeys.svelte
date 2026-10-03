@@ -40,8 +40,11 @@
     return new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
   }
 
+  // "Your first passkey" only when exactly one passkey has no date - that one is it.
+  const undated = $derived(rows.filter((r) => r.addedAt === null && !r.linkedBefore).length);
   function title(r: PasskeyRow): string {
-    return names?.name(r.provider) ?? (r.addedAt === null ? "Your first passkey" : "Passkey");
+    if (r.linkedBefore) return names?.name(r.provider) ?? "Linked device";
+    return names?.name(r.provider) ?? (r.addedAt === null && undated === 1 ? "Your first passkey" : "Passkey");
   }
 
   async function load(): Promise<void> {
@@ -131,8 +134,8 @@
   {:else}
     {#if linkedOnly}
       <p class="note">
-        This device was linked before every passkey could do everything. To add or remove passkeys here, remove it and
-        add it again from one of your other passkeys.
+        This device was linked before every passkey could do everything, so it can't add or remove passkeys. Remove it
+        below, then add it again from one of your other passkeys to give it full access.
       </p>
     {/if}
 
@@ -152,13 +155,14 @@
               <div class="who">
                 <span class="name">{title(r)}</span>
                 {#if where}<span class="where">{where}</span>{/if}
+                {#if r.linkedBefore}<span class="where">Linked before every passkey could do everything - it can sign in, not change passkeys</span>{/if}
                 <span class="meta">
                   {#if r.addedAt !== null}<span>Added {day(r.addedAt)}</span>{/if}
                   {#if r.signedInWith}<span class="tag">Signed in here</span>
                   {:else if r.onThisDevice}<span class="tag">On this device</span>{/if}
                 </span>
               </div>
-              {#if !linkedOnly && rows.length > 1 && confirming !== r.key}
+              {#if (linkedOnly ? r.signedInWith : rows.length > 1) && confirming !== r.key}
                 <button
                   class="remove"
                   onclick={() => { confirming = r.key; removeError = null; }}
