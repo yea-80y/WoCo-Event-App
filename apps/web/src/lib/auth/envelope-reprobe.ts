@@ -127,9 +127,6 @@ export type ReprobeOutcome =
 
 const REPROBE_PREFIX = "woco:kreprobe:";
 
-export const REMOVED_FROM_ACCOUNT_NOTICE =
-  "This passkey was removed from your account. Sign in with one of your other passkeys.";
-
 export const MAIN_MOVED_NOTICE =
   "Your passkeys changed on another device. Sign in again to finish updating this one.";
 
@@ -307,6 +304,9 @@ export async function reprobeEnvelope(
     }
     // Past the free gate every path below is a verdict, so one attempt record
     // serves them all; the heal path's clearState overrides it.
+    // Off a co-owned account's list: not decided on ONE read - the confirmed check
+    // (`_verifyCoOwnerInBackground`, two reads 10 s apart) owns it (#746, Fable re-check).
+    if (owner === "not-on-list") return { status: "inconclusive", reason: "off the co-owner list" };
     const spent = { n: state.n + 1, at: t, ok: state.ok };
     if (owner !== null) {
       if (owner === eoa.toLowerCase()) {
@@ -344,8 +344,7 @@ export async function reprobeEnvelope(
       deps.writeOrphanTombstone(kind, eoa, { kernel: cachedParent, owner });
       const orphanSignedOut = deps.isStillSignedInAs(eoa, cachedParent);
       if (orphanSignedOut) {
-        // A co-owned account that no longer lists this passkey: removed, not recovered (#746).
-        deps.postNotice?.(owner === "not-on-list" ? REMOVED_FROM_ACCOUNT_NOTICE : orphanedCredentialMessage(kind));
+        deps.postNotice?.(orphanedCredentialMessage(kind));
         await deps.logout();
       }
       return { status: "orphaned", owner, signedOut: orphanSignedOut };

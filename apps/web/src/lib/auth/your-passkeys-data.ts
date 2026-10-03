@@ -65,6 +65,7 @@ export async function loadPasskeyRows(parent: string, self: string): Promise<Pas
   if (list !== null) keys = list;
   else {
     const owner = await readKernelSignerFor(parent, me);
+    if (owner === "error") throw new Error("Couldn't read your passkeys - check your connection and try again.");
     keys = typeof owner === "string" && owner.startsWith("0x") ? [owner] : [me];
   }
   const records = verifyDeviceGrantList(res.data.grants, { parent, signers: keys }).filter((r) => r.removedAt === null);

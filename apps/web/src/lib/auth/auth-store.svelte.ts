@@ -1717,10 +1717,11 @@ function clearVerifiedBinding(kind: "passkey" | "web3auth", eoa: string): void {
 }
 
 /** Off a co-owned account's list twice, ten seconds apart: a replica a few blocks
- *  behind a fresh add must not sign a just-linked passkey out (Fable sign-off SHOULD-3). */
-async function _offListConfirmed(kernel: string, eoa: string): Promise<boolean> {
+ *  behind a fresh add must not sign a just-linked passkey out (Fable sign-off SHOULD-3).
+ *  `seenOnce`: the caller's own read already said so - only the second is made. */
+async function _offListConfirmed(kernel: string, eoa: string, seenOnce = false): Promise<boolean> {
   const { readKernelSignerFor, NOT_ON_LIST } = await import("./kernel-account.js");
-  if ((await readKernelSignerFor(kernel, eoa)) !== NOT_ON_LIST) return false;
+  if (!seenOnce && (await readKernelSignerFor(kernel, eoa)) !== NOT_ON_LIST) return false;
   await new Promise((r) => setTimeout(r, 10_000));
   return (await readKernelSignerFor(kernel, eoa)) === NOT_ON_LIST;
 }
@@ -1761,7 +1762,7 @@ function _verifyRecoveredBindingInBackground(
       const signer = await readKernelSignerFor(kernel, eoa);
       if (signer === NOT_ON_LIST) {
         // A co-owner taken off the list: confirmed twice, then the removed words (#746).
-        if (await _offListConfirmed(kernel, eoa)) {
+        if (await _offListConfirmed(kernel, eoa, true)) {
           const still = _kind === kind && _getSeedAddress()?.toLowerCase() === eoa.toLowerCase() && _parent?.toLowerCase() === kernel.toLowerCase();
           if (still) await onDeviceRemoved();
         }
@@ -2532,10 +2533,28 @@ async function _removePasskeyConfirmed(grantee: string): Promise<void> {
     const { revokeDeviceGrant } = await import("../api/device-grants.js");
     const res = await revokeDeviceGrant(signed.revoke, signed.revokeSig);
     if (!res.ok) throw new Error(_grantRefusalMessage(res));
+  } else if (target === self) {
+    // The passkey this device is signed in with: its record goes FIRST, while this
+    // session still verifies - once off the list the server admits it no more (Fable
+    // re-check). The device cooperates, so the off-the-list-first rule is not needed
+    // here; the list change needs no session. Then forget it here, whatever happened.
+    const signed = await _signRecordRemoval(parent, self);
+    const { revokeDeviceGrant } = await import("../api/device-grants.js");
+    const res = await revokeDeviceGrant(signed.revoke, signed.revokeSig);
+    if (!res.ok && res.code !== "not-found") throw new Error(_grantRefusalMessage(res));
+    try {
+      await _removeCoOwner(self);
+    } catch (e) {
+      console.error("[auth] own passkey's record removed but the list change failed:", e);
+      throw new Error("Signed out here, but your account still lists this passkey. Remove it from one of your other passkeys.");
+    } finally {
+      await _forgetThisPasskey(self);
+    }
+    return;
   } else {
-    // A co-owner removes any passkey, itself included: OFF THE LIST FIRST. The device
-    // record goes only after the change lands, or a device that can still sign onchain
-    // would be signed out while able to put itself back (#746, Fable sign-off).
+    // A co-owner removes any OTHER passkey: OFF THE LIST FIRST. The device record goes
+    // only after the change lands, or a device that can still sign onchain would be
+    // signed out while able to put itself back (#746, Fable sign-off).
     await _removeCoOwner(target);
     await _removeRecordAfterList(parent, target);
   }
@@ -2554,8 +2573,17 @@ async function removePasskeys(grantees: string[]): Promise<void> {
   if (targets.length === 0) return;
   await _freshMainPasskey();
   await (await import("./co-owner-flows.js")).removeCoOwners(_coOwnerHost(), targets);
-  for (const t of targets) await _removeRecordAfterList(parent, t);
+  // Every record is tried; a failed one is kept pending by _removeRecordAfterList.
+  let firstError: unknown = null;
+  for (const t of targets) {
+    try {
+      await _removeRecordAfterList(parent, t);
+    } catch (e) {
+      firstError ??= e;
+    }
+  }
   if (targets.includes(self)) await _forgetThisPasskey(self);
+  if (firstError) throw firstError;
 }
 
 /** This device's own passkey left the account: forget it here and sign out. */

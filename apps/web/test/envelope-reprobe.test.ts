@@ -400,3 +400,11 @@ test("a user who left mid-probe still gets the binding, but no forced sign-out",
   assert.deepEqual(notices, []);
   assert.ok(!calls.includes("logout"));
 });
+
+test("off a co-owned account's list is not decided on one read: inconclusive, nothing written or signed out (#746)", async () => {
+  const { d, calls, tombstones } = deps({ readKernelOwner: async () => "not-on-list" });
+  const r = await reprobeEnvelope(args, d);
+  assert.equal(r.status, "inconclusive");
+  assert.equal(tombstones.length, 0, "never a tombstone for a key that can be added again");
+  assert.ok(!calls.includes("logout"), "never signed out on one read");
+});

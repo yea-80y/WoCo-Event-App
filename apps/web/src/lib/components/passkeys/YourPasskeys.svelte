@@ -160,7 +160,7 @@
                 {#if r.linkedBefore}
                   <span class="where">
                     {coOwned
-                      ? "Linked the old way - it no longer opens your account. Remove it, then add it again to use it."
+                      ? "No longer opens your account - remove it. Add the device again to use it."
                       : "Linked the old way - it signs in, but can't change passkeys or names."}
                   </span>
                 {/if}

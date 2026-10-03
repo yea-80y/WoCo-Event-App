@@ -90,3 +90,14 @@ test("sign-off fixes: list reads floored, record removal retried, removed passke
   const login = body(STORE, "async function _loginAddedPasskey(");
   assert.ok(login.indexOf('if (verdict === "removed")') < login.indexOf("const onList"), "NIT-6: no chain read before a removal");
 });
+
+test("removing your own passkey: its record first (while the session verifies), then the list, then forget - always", () => {
+  const b = body(STORE, "async function _removePasskeyConfirmed(");
+  const self = b.slice(b.indexOf("} else if (target === self) {"), b.indexOf("} else {", b.indexOf("} else if (target === self) {")));
+  assert.ok(self.indexOf("await revokeDeviceGrant(signed.revoke, signed.revokeSig);") < self.indexOf("await _removeCoOwner(self);"), "record before list");
+  assert.match(self, /if \(!res\.ok && res\.code !== "not-found"\) throw/, "the first passkey has no record");
+  assert.match(self, /\} finally \{\s*await _forgetThisPasskey\(self\);\s*\}/, "forgotten here whatever the list change did");
+  // Other devices: off the list first.
+  const other = b.slice(b.lastIndexOf("} else {"));
+  assert.ok(other.indexOf("await _removeCoOwner(target);") < other.indexOf("await _removeRecordAfterList(parent, target);"));
+});
