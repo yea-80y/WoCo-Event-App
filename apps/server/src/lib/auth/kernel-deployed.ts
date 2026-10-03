@@ -69,6 +69,18 @@ interface KernelRecord {
   owner?: string;
   block?: number;
   ownerSeenAt?: string;
+  /** The account moved to the weighted root - every passkey a co-owner (#746) -
+   *  first confirmed at `rootBlock`. A read from no later than that block naming
+   *  the ECDSA root is a replica from before the switch. An older build ignores
+   *  both fields and refuses the account (its ECDSA owner reads empty): it fails
+   *  closed on a rollback. */
+  root?: "weighted";
+  rootBlock?: number;
+  /** Co-owner key (lowercase) → the latest block it was seen OFF the list after
+   *  being on it. A read naming it listed from no later a block predates its
+   *  removal (Fable sign-off SHOULD-4: the in-memory change-point alone is lost on
+   *  a restart and evictable). One entry per removed key of a recorded account. */
+  removed?: Record<string, number>;
 }
 
 interface DeployedState {
@@ -253,6 +265,56 @@ export function recordKernelOwner(kernelAddress: string, owner: string, block: n
   };
   reindex();
   persist();
+}
+
+/**
+ * Record that this Kernel's root is the weighted validator (#746), confirmed at
+ * this block by a key on its list. The FIRST sighting is kept - it is the
+ * change-point later reads are ordered against - and the record also marks the
+ * account known-deployed, so an unreadable chain refuses it rather than falling
+ * back to the counterfactual (a removed first passkey still matches that).
+ */
+export function recordKernelWeighted(kernelAddress: string, block: number): void {
+  load();
+  const existing = currentChainRecord(kernelAddress);
+  if (existing?.root === "weighted") return;
+  state.kernels[recordKey(kernelAddress)] = {
+    ...(existing ?? {}),
+    chainId: KERNEL_CHAIN_ID,
+    firstSeen: existing?.firstSeen ?? new Date().toISOString(),
+    root: "weighted",
+    rootBlock: block,
+  };
+  reindex();
+  persist();
+}
+
+/**
+ * Record that `eoa` was read OFF this co-owned account's list at `block`. Only for an
+ * account already recorded co-owned (bounded like the record itself); keeps the
+ * latest block, so a key removed, re-added and removed again is floored at the last.
+ */
+export function recordCoOwnerRemoved(kernelAddress: string, eoa: string, block: number): void {
+  load();
+  const rec = currentChainRecord(kernelAddress);
+  if (rec?.root !== "weighted") return;
+  const key = eoa.toLowerCase();
+  if ((rec.removed?.[key] ?? -1) >= block) return;
+  rec.removed = { ...(rec.removed ?? {}), [key]: block };
+  persist();
+}
+
+/** The latest block `eoa` was seen removed from this co-owned account, if any. */
+export function coOwnerRemovedBlock(kernelAddress: string, eoa: string): number | undefined {
+  load();
+  return currentChainRecord(kernelAddress)?.removed?.[eoa.toLowerCase()];
+}
+
+/** The block this Kernel was first confirmed on the weighted root, on the current chain. */
+export function getKernelWeightedRecord(kernelAddress: string): { block: number } | undefined {
+  load();
+  const rec = currentChainRecord(kernelAddress);
+  return rec?.root === "weighted" && typeof rec.rootBlock === "number" ? { block: rec.rootBlock } : undefined;
 }
 
 /**

@@ -88,7 +88,8 @@ export type DeviceGrantResult =
   | { ok: true; record: DeviceGrantRecord; changed: boolean }
   | { ok: false; refusal: DeviceGrantRefusal };
 
-/** Does `signer` own `parent` right now? Production: `isKernelOwner` under the
+/** May `signer` sign for `parent` right now - its owner, or one of its co-owners
+ *  (#746)? Production: `isAccountSigner` under the
  *  caller's read budget. */
 export type OwnerCheck = (signer: string, parent: string) => Promise<boolean>;
 
