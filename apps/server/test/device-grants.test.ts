@@ -459,7 +459,9 @@ test("removing a key that was never granted consumes no nonce", async () => {
 
 const app = new Hono();
 app.route("/api/auth/device-grants", deviceGrants);
-app.post("/api/test", requireAuth, (c) => c.json({ ok: true, data: { rank: c.get("sessionRank") } }));
+app.post("/api/test", requireAuth, (c) =>
+  c.json({ ok: true, data: { rank: c.get("sessionRank"), parentKind: c.get("parentKind") } }),
+);
 
 const sha256Hex = (t: string) => createHash("sha256").update(t, "utf-8").digest("hex");
 
@@ -499,6 +501,7 @@ async function call(
 test("routes: owner adds a device, the device signs in as device, removes itself, and is told so", async () => {
   organiser();
   const ownerSession = await delegation(owner);
+  assert.equal((await call(ownerSession, "POST", "/api/test", {})).json.data.parentKind, "kernel");
   const device = Wallet.createRandom();
 
   const added = await call(ownerSession, "POST", "/api/auth/device-grants", await signGrant(owner, grantFor(device.address)));
@@ -508,6 +511,7 @@ test("routes: owner adds a device, the device signs in as device, removes itself
   const who = await call(deviceSession, "POST", "/api/test", {});
   assert.equal(who.status, 200, JSON.stringify(who.json));
   assert.equal(who.json.data.rank, "device");
+  assert.equal(who.json.data.parentKind, "kernel", "a granted device acts for a smart account (#746 step 5)");
 
   const listed = await call(deviceSession, "GET", "/api/auth/device-grants");
   assert.equal(listed.json.data.grants.length, 1);

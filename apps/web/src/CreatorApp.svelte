@@ -1,6 +1,7 @@
 <script lang="ts">
   import { router, navigate } from "./lib/router/router.svelte.js";
   import { auth } from "./lib/auth/auth-store.svelte.js";
+  import { canOrganise } from "./lib/auth/organiser-account.js";
   import CreatorShell from "./lib/layouts/CreatorShell.svelte";
   import EventForm from "./lib/creator/events/EventForm.svelte";
   import EmbedSetup from "./lib/creator/embed/EmbedSetup.svelte";
@@ -82,7 +83,10 @@
 </script>
 
 <CreatorShell>
-  {#if router.route === "creator-home"}
+  <!-- Organising needs a passkey account (#746 step 5); deep links land here too. -->
+  {#if auth.ready && auth.isConnected && !canOrganise(auth.kind) && router.route !== "profile"}
+    <LazyRoute loader={() => import("./lib/creator/gate/OrganiserNeedsPasskey.svelte")} />
+  {:else if router.route === "creator-home"}
     <CreatorHome />
   {:else if router.route === "create"}
     <EventForm />

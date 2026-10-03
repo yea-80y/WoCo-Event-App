@@ -168,7 +168,9 @@
           {#if authing || view === "wallet"}
             <!-- The context line describes the first screen's choices, not this one. -->
           {:else if loginRequest.context === "invite"}
-            <p class="context-sub">Takes a minute. Then you verify with Stripe so you can get paid.</p>
+            <p class="context-sub">
+              Organisers sign in with a passkey. Takes a minute. Then you verify with Stripe so you can get paid.
+            </p>
           {:else if loginRequest.context === "ticket"}
             <p class="context-sub">Sign in, or create a free account. Your ticket goes straight into it.</p>
           {/if}
@@ -239,14 +241,17 @@
             onlink={() => { close(); navigate("/link"); }}
           />
 
-          <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} />
+          <!-- Organising needs a passkey account (#746 step 5): "Start hosting" offers no other way in. -->
+          {#if loginRequest.context !== "invite"}
+            <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} />
 
-          <div class="wallet-door">
-            <span>Already use a crypto wallet?</span>
-            <button type="button" class="text-btn" onclick={() => (view = "wallet")}>
-              Connect it <span aria-hidden="true">→</span>
-            </button>
-          </div>
+            <div class="wallet-door">
+              <span>Already use a crypto wallet?</span>
+              <button type="button" class="text-btn" onclick={() => (view = "wallet")}>
+                Connect it <span aria-hidden="true">→</span>
+              </button>
+            </div>
+          {/if}
         </div>
 
         {#if view === "wallet"}
