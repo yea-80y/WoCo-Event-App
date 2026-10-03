@@ -402,9 +402,17 @@ test("a user who left mid-probe still gets the binding, but no forced sign-out",
 });
 
 test("off a co-owned account's list is not decided on one read: inconclusive, nothing written or signed out (#746)", async () => {
-  const { d, calls, tombstones } = deps({ readKernelOwner: async () => "not-on-list" });
-  const r = await reprobeEnvelope(args, d);
-  assert.equal(r.status, "inconclusive");
-  assert.equal(tombstones.length, 0, "never a tombstone for a key that can be added again");
-  assert.ok(!calls.includes("logout"), "never signed out on one read");
+  // With no envelope a single foreign read would tombstone; with one naming the account it would sign
+  // out. Neither may happen on one "off the list" read.
+  for (const envelope of [
+    { envelopeExists: async () => ({ status: "absent" as const }), readEnvelope: async () => ({ status: "absent" as const }) },
+    {},
+  ]) {
+    _resetInFlightForTests();
+    const { d, calls, tombstones } = deps({ readKernelOwner: async () => "not-on-list", ...envelope });
+    const r = await reprobeEnvelope(args, d);
+    assert.equal(r.status, "inconclusive");
+    assert.equal(tombstones.length, 0, "never a tombstone for a key that can be added again");
+    assert.ok(!calls.includes("logout"), "never signed out on one read");
+  }
 });
