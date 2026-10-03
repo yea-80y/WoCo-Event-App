@@ -325,3 +325,14 @@ test("isKernelOwner on a known co-owned account discards a replica from before t
   ownerRead = () => ({ owner: A.address.toLowerCase(), root: "ecdsa", block: 40 });
   assert.equal(await owner.isKernelOwner(A.address, PARENT), false);
 });
+
+test("a key written into the dropped ECDSA storage is not a signer when the root does not read", async () => {
+  // After the switch an old recovery route can still rewrite ECDSA storage; onchain that opens
+  // nothing (WoCo-Contracts WeightedRootKernel.t.sol F7). The server must agree.
+  list(A, B);
+  assert.equal(await kind(B), "co-owner");
+  owner._resetOwnerCacheForTests();
+  memberRead = () => ({ root: "none", weight: 0, block: 95 });
+  ownerRead = () => ({ owner: C.address.toLowerCase(), root: "none", block: 95 });
+  assert.equal(await kind(C), null);
+});
