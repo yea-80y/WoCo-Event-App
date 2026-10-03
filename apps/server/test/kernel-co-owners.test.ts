@@ -336,3 +336,123 @@ test("a key written into the dropped ECDSA storage is not a signer when the root
   ownerRead = () => ({ owner: C.address.toLowerCase(), root: "none", block: 95 });
   assert.equal(await kind(C), null);
 });
+
+// ── Fable sign-off fixes ────────────────────────────────────────────────────
+
+test("MUST-1: a co-owner holding an active device record signs in as owner, cold cache or warm", async () => {
+  list(A, B);
+  assert.equal(await kind(B), "co-owner"); // the account is now recorded co-owned
+  const g = grantFor(B.address);
+  await grants.submitDeviceGrant(PARENT, { grant: g, grantSig: await A.signTypedData(DEVICE_GRANT_DOMAIN, types(DEVICE_GRANT_TYPES), g) }, signerCheck);
+  owner._resetOwnerCacheForTests();
+  const cold = await verify(B);
+  assert.equal(cold.valid, true, cold.error);
+  assert.equal(cold.rank, "owner", "cold");
+  const warm = await verify(B);
+  assert.equal(warm.rank, "owner", "warm - the same answer whichever cache is warm");
+});
+
+test("SHOULD-2: once a co-owner's read shows the weighted root, a cached pre-switch owner stops confirming", async () => {
+  ownerRead = () => ({ owner: A.address.toLowerCase(), root: "ecdsa", block: 10 });
+  assert.equal(await kind(A), "owner"); // a cache entry from before the switch
+  assert.equal(owner.cachedOwnerIs(PARENT, A.address), true);
+  list(B);
+  ownerRead = () => ({ owner: null, root: "weighted", block: 60 });
+  memberRead = (eoa) => ({ root: "weighted", weight: weights.get(eoa) ?? 0, block: 60 });
+  deployed.recordKernelWeighted(PARENT, 55); // known co-owned: B goes straight to the list
+  assert.equal(await kind(B), "co-owner");
+  assert.equal(owner.cachedOwnerIs(PARENT, A.address), false, "ended by B's first contact");
+});
+
+test("SHOULD-3: an account on record becomes durably co-owned from any read of the weighted root", async () => {
+  ownerRead = () => ({ owner: A.address.toLowerCase(), root: "ecdsa", block: 10 });
+  assert.equal(await kind(A), "owner"); // records the owner A
+  owner._resetOwnerCacheForTests();
+  ownerRead = () => ({ owner: null, root: "weighted", block: 60 });
+  assert.equal(await kind(C), null); // an unconfirmed read - but of an account already on record
+  assert.deepEqual(deployed.getKernelWeightedRecord(PARENT), { block: 60 });
+  // Restart, then two lagging replicas from before the switch: A must not be the owner again.
+  owner._resetOwnerCacheForTests();
+  memberRead = () => ({ root: "ecdsa", weight: 0, block: 55 });
+  ownerRead = () => ({ owner: A.address.toLowerCase(), root: "ecdsa", block: 55 });
+  assert.equal(await kind(A), null);
+});
+
+test("SHOULD-4: the first passkey's removal is a durable floor - a restart and an older read do not bring it back", async () => {
+  ownerRead = () => ({ owner: A.address.toLowerCase(), root: "ecdsa", block: 10 });
+  assert.equal(await kind(A), "owner"); // owner A on record
+  ownerRead = () => ({ owner: null, root: "weighted", block: 60 });
+  list(A, B);
+  owner._resetOwnerCacheForTests();
+  assert.equal(await kind(B), "co-owner");
+  list(B);
+  memberRead = (eoa) => ({ root: "weighted", weight: weights.get(eoa) ?? 0, block: 70 });
+  assert.equal(await kind(A), null); // seen off the list at 70: floored (the recorded owner)
+  assert.equal(deployed.coOwnerRemovedBlock(PARENT, A.address), 70);
+  owner._resetOwnerCacheForTests(); // restart: the in-memory change-point is gone
+  memberRead = () => ({ root: "weighted", weight: 1, block: 65 }); // a lagging replica: still listed
+  assert.equal(await kind(A), null, "an older read must not readmit the removed key");
+  memberRead = () => ({ root: "weighted", weight: 1, block: 75 }); // genuinely re-added later
+  assert.equal(await kind(A), "co-owner");
+});
+
+test("SHOULD-4: noteCoOwnerRemoved floors only a key known to have been on the list", async () => {
+  ownerRead = () => ({ owner: A.address.toLowerCase(), root: "ecdsa", block: 10 });
+  assert.equal(await kind(A), "owner");
+  ownerRead = () => ({ owner: null, root: "weighted", block: 60 });
+  list(A, B);
+  owner._resetOwnerCacheForTests();
+  assert.equal(await kind(B), "co-owner");
+  list(B);
+  memberRead = (eoa) => ({ root: "weighted", weight: weights.get(eoa) ?? 0, block: 80 });
+  assert.equal(await owner.noteCoOwnerRemoved(B.address, PARENT), false, "still listed");
+  assert.equal(await owner.noteCoOwnerRemoved(C.address, PARENT), false, "never known: no entry");
+  assert.equal(deployed.coOwnerRemovedBlock(PARENT, C.address), undefined);
+  assert.equal(await owner.noteCoOwnerRemoved(A.address, PARENT), true, "the first passkey, off the list");
+  assert.equal(deployed.coOwnerRemovedBlock(PARENT, A.address), 80);
+});
+
+test("NIT-8: the list's threshold is read - one key under a higher threshold is not a signer", async () => {
+  memberRead = () => ({ root: "weighted", weight: 1, threshold: 2, block: 50 });
+  assert.equal(await kind(B), null);
+});
+
+test("route: removing the first passkey (no device record) on a co-owned account is accepted and floored", async () => {
+  const { Hono } = await import("hono");
+  const { requireAuth } = await import("../src/middleware/auth.js");
+  const { deviceGrants } = await import("../src/routes/device-grants.js");
+  const { createHash } = await import("node:crypto");
+  const app = new Hono();
+  app.route("/api/auth/device-grants", deviceGrants);
+  ownerRead = () => ({ owner: A.address.toLowerCase(), root: "ecdsa", block: 10 });
+  assert.equal(await kind(A), "owner");
+  ownerRead = () => ({ owner: null, root: "weighted", block: 60 });
+  list(A, B);
+  owner._resetOwnerCacheForTests();
+  assert.equal(await kind(B), "co-owner");
+  list(B); // A taken off the list onchain
+  memberRead = (eoa) => ({ root: "weighted", weight: weights.get(eoa) ?? 0, block: 90 });
+  const revoke = { parent: PARENT, grantee: A.address.toLowerCase(), nonce: newNonce() };
+  const body = JSON.stringify({ revoke, revokeSig: await B.signTypedData(DEVICE_GRANT_DOMAIN, types(DEVICE_GRANT_REVOKE_TYPES), revoke) });
+  const d = await delegation(B);
+  const path = "/api/auth/device-grants/revoke";
+  const ts = String(Date.now());
+  const nonce = randomUUID();
+  const challenge = ["woco-session-v1", "POST", path, ts, nonce, createHash("sha256").update(body, "utf-8").digest("hex")].join("\n");
+  const resp = await app.request(path, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Session-Address": d.session.address,
+      "X-Session-Delegation": Buffer.from(JSON.stringify(d.delegation)).toString("base64"),
+      "X-Session-Sig": await d.session.signMessage(challenge),
+      "X-Session-Nonce": nonce,
+      "X-Session-Timestamp": ts,
+    },
+    body,
+  });
+  const json = (await resp.json()) as Record<string, unknown>;
+  assert.equal(resp.status, 200, JSON.stringify(json));
+  assert.equal(json.ok, true);
+  assert.equal(deployed.coOwnerRemovedBlock(PARENT, A.address), 90);
+});

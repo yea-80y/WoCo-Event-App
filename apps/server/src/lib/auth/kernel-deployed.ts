@@ -76,6 +76,11 @@ interface KernelRecord {
    *  closed on a rollback. */
   root?: "weighted";
   rootBlock?: number;
+  /** Co-owner key (lowercase) → the latest block it was seen OFF the list after
+   *  being on it. A read naming it listed from no later a block predates its
+   *  removal (Fable sign-off SHOULD-4: the in-memory change-point alone is lost on
+   *  a restart and evictable). One entry per removed key of a recorded account. */
+  removed?: Record<string, number>;
 }
 
 interface DeployedState {
@@ -282,6 +287,27 @@ export function recordKernelWeighted(kernelAddress: string, block: number): void
   };
   reindex();
   persist();
+}
+
+/**
+ * Record that `eoa` was read OFF this co-owned account's list at `block`. Only for an
+ * account already recorded co-owned (bounded like the record itself); keeps the
+ * latest block, so a key removed, re-added and removed again is floored at the last.
+ */
+export function recordCoOwnerRemoved(kernelAddress: string, eoa: string, block: number): void {
+  load();
+  const rec = currentChainRecord(kernelAddress);
+  if (rec?.root !== "weighted") return;
+  const key = eoa.toLowerCase();
+  if ((rec.removed?.[key] ?? -1) >= block) return;
+  rec.removed = { ...(rec.removed ?? {}), [key]: block };
+  persist();
+}
+
+/** The latest block `eoa` was seen removed from this co-owned account, if any. */
+export function coOwnerRemovedBlock(kernelAddress: string, eoa: string): number | undefined {
+  load();
+  return currentChainRecord(kernelAddress)?.removed?.[eoa.toLowerCase()];
 }
 
 /** The block this Kernel was first confirmed on the weighted root, on the current chain. */

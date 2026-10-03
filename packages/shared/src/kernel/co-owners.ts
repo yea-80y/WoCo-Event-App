@@ -57,6 +57,21 @@ export const WEIGHTED_GUARDIAN_ABI = [
   },
 ] as const;
 
+export const WEIGHTED_STORAGE_ABI = [
+  {
+    type: "function",
+    name: "weightedStorage",
+    stateMutability: "view",
+    inputs: [{ name: "kernel", type: "address" }],
+    outputs: [
+      { name: "totalWeight", type: "uint24" },
+      { name: "threshold", type: "uint24" },
+      { name: "delay", type: "uint48" },
+      { name: "firstGuardian", type: "address" },
+    ],
+  },
+] as const;
+
 export const WEIGHTED_RENEW_FN = "function renew(address[] _guardians, uint24[] _weights, uint24 _threshold, uint48 _delay)";
 export const CHANGE_ROOT_VALIDATOR_FN =
   "function changeRootValidator(bytes21 _rootValidator, address hook, bytes validatorData, bytes hookData)";

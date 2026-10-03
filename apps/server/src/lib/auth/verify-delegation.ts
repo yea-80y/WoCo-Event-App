@@ -11,7 +11,7 @@ import {
 import { isSessionRevoked } from "./revocation.js";
 import { verifySmartWalletTypedData } from "./smart-wallet-client.js";
 import { accountSignerKind, cachedSignerIs, readKernelOwner, type OwnerReadOptions } from "./kernel-owner.js";
-import { isKernelKnownDeployedOnAnyChain } from "./kernel-deployed.js";
+import { getKernelWeightedRecord, isKernelKnownDeployedOnAnyChain } from "./kernel-deployed.js";
 import { decideSmartWalletPath } from "./smart-wallet-gate.js";
 import { lookupDeviceGrant, type DeviceGrantState } from "./device-grants.js";
 
@@ -178,18 +178,28 @@ export async function verifyDelegation(
         // main one while its old grant stands. So: the signer path when the cache
         // already names this key, else the grant. The owner check records the
         // account with the owner as the presenting key either way (#200/#210).
-        const grant = cachedSignerIs(parent, recovered)
-          ? undefined
-          : await deps.lookupDeviceGrant(parent, recovered);
         // Device clock against server time, as revokeAllBefore (revocation.ts)
         // compares. A slow device re-added within its skew of a removal is
         // refused until wall time passes notBefore + skew; a fast one keeps at
         // most the 60 s the future-date bound above allows.
         const afterRemoval = (g: DeviceGrantState) => issuedAt > (g.notBefore ?? -Infinity);
-        const signer =
-          grant?.active && afterRemoval(grant) && (await accountSignerKind(grant.signer, parent, readOpts))
-            ? "granted"
-            : await accountSignerKind(recovered, parent, readOpts);
+        const viaGrant = async (g: DeviceGrantState | undefined) =>
+          g?.active && afterRemoval(g) && (await accountSignerKind(g.signer, parent, readOpts)) ? "granted" : null;
+        let grant: DeviceGrantState | undefined;
+        let signer: "granted" | "owner" | "co-owner" | null;
+        if (getKernelWeightedRecord(parent)) {
+          // A co-owned account: every passkey signs as itself, so its rank never
+          // depends on which cache is warm (Fable sign-off MUST-1). A device record
+          // that only a grant admits is the fallback.
+          signer = await accountSignerKind(recovered, parent, readOpts);
+          if (!signer) {
+            grant = await deps.lookupDeviceGrant(parent, recovered);
+            signer = await viaGrant(grant);
+          }
+        } else {
+          grant = cachedSignerIs(parent, recovered) ? undefined : await deps.lookupDeviceGrant(parent, recovered);
+          signer = (await viaGrant(grant)) ?? (await accountSignerKind(recovered, parent, readOpts));
+        }
         if (signer === "granted") {
           validSig = true;
           rank = "device";

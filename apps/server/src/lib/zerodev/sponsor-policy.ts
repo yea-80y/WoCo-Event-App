@@ -70,6 +70,7 @@ import {
   CHANGE_ROOT_VALIDATOR_FN,
   ECDSA_ROOT_ID,
   isValidCoOwnerList,
+  sortCoOwners,
   UNINSTALL_VALIDATION_FN,
   WEIGHTED_ECDSA_VALIDATOR_V3_1,
   WEIGHTED_RENEW_FN,
@@ -255,11 +256,14 @@ function validatorCall(call: InnerCall, name: "onUninstall" | "onInstall"): Hex 
   }
 }
 
-/** The co-owner list the account will hold: 1..10 distinct keys, weight 1 each,
- *  threshold 1, no delay - anything else locks the account or is not WoCo's. */
+/** The co-owner list the account will hold: 1..10 distinct keys in the order the
+ *  validator requires (descending, as the ZeroDev plugin writes it - any other order
+ *  reverts on our gas), weight 1 each, threshold 1, no delay - anything else locks
+ *  the account or is not WoCo's. */
 function validCoOwnerConfig(signers: readonly string[], weights: readonly (number | bigint)[], threshold: number | bigint, delay: number | bigint): boolean {
   return (
     isValidCoOwnerList(signers) &&
+    sortCoOwners(signers).join() === signers.map((s) => s.toLowerCase()).join() &&
     weights.length === signers.length &&
     weights.every((w) => BigInt(w) === 1n) &&
     BigInt(threshold) === 1n &&

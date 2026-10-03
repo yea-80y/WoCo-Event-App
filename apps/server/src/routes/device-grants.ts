@@ -14,7 +14,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { jsonBodyLimit } from "../lib/http/body-limit.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
-import { isAccountSigner } from "../lib/auth/kernel-owner.js";
+import { isAccountSigner, noteCoOwnerRemoved } from "../lib/auth/kernel-owner.js";
 import { takeOwnerReadBudget } from "../lib/auth/owner-read-budget.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
 import {
@@ -25,6 +25,7 @@ import {
   type DeviceGrantRefusal,
   type OwnerCheck,
 } from "../lib/auth/device-grants.js";
+import { parseDeviceGrantRevoke } from "@woco/shared";
 
 export const deviceGrants = new Hono<AppEnv>();
 
@@ -118,5 +119,19 @@ deviceGrants.post("/revoke", jsonBodyLimit(MAX_BODY_BYTES), requireAuth, async (
   const body = c.get("body") as { revoke?: unknown; revokeSig?: unknown };
   const result = await submitDeviceGrantRevoke(account, body, ownerCheck(c));
   chargeAccount(account, result);
+  // A co-owned account (#746): the removal is also kept as a durable floor on the
+  // chain answer, so no older read brings the key back - and for the first passkey,
+  // which has no device record, this is the whole removal. "not-found" is only
+  // returned after the statement's signature and signer were accepted.
+  if (result.ok || result.refusal === "not-found") {
+    const grantee = result.ok ? result.record.grant.grantee : parseDeviceGrantRevoke(body.revoke)?.grantee;
+    const floored = grantee
+      ? await noteCoOwnerRemoved(grantee, account, {
+          chainReadAllowed: () => takeOwnerReadBudget(clientIp(c)),
+          knownDevice: result.ok,
+        })
+      : false;
+    if (!result.ok && floored) return c.json({ ok: true, data: null });
+  }
   return answer(c, result);
 });

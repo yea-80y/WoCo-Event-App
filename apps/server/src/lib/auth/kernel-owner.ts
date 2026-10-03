@@ -62,8 +62,11 @@
  * account. A key confirmed on the list makes the account durably known-weighted,
  * so an unreadable chain refuses it instead of falling back to the counterfactual
  * (which the first passkey matches forever, removed or not). A positive answer is
- * cached for one minute, not five: a key removed from the list stops signing in
- * within that, and at once when its device record is revoked (verify-delegation).
+ * cached for one minute, not five: once the account is known co-owned, a key
+ * removed from the list stops signing in within that, and at once when its device
+ * record is removed (verify-delegation). Each key's removal is kept durably as a
+ * floor (kernel-deployed.ts `removed`), so no older read brings it back - not
+ * after a restart, not after the in-memory change-point is evicted.
  */
 
 import { getEntryPoint, KERNEL_V3_1 } from "@zerodev/sdk/constants";
@@ -78,12 +81,15 @@ import {
   WEIGHTED_ECDSA_VALIDATOR_V3_1,
   WEIGHTED_GUARDIAN_ABI,
   WEIGHTED_ROOT_ID,
+  WEIGHTED_STORAGE_ABI,
 } from "@woco/shared/kernel/co-owners";
 import {
+  coOwnerRemovedBlock,
   isKernelKnownDeployed,
   knownOwnerDisagreesOnAnyChain,
   getKernelOwnerRecord,
   getKernelWeightedRecord,
+  recordCoOwnerRemoved,
   recordKernelOwner,
   recordKernelWeighted,
 } from "./kernel-deployed.js";
@@ -174,16 +180,18 @@ interface OwnerState extends OwnerRead {
 const _inFlightReads = new Map<string, Promise<OwnerState>>();
 
 /** One read of a key against a co-owned account: the root, the key's weight on
- *  the weighted list, and the L2 block, from a single `eth_call`. */
+ *  the weighted list, the list's threshold and the L2 block, from a single
+ *  `eth_call`. `threshold` defaults to 1 (test seam). */
 export interface SignerRead {
   root: RootKind;
   weight: number;
   block: number;
+  threshold?: number;
 }
 
-/** `${kernel}:${eoa}` → the last membership answer accepted. Positive answers
- *  confirm for MEMBER_CACHE_TTL_MS; a negative one is never decided from cache. */
-const _memberCache = new Map<string, { member: boolean; block: number; fetchedAt: number }>();
+/** `${kernel}:${eoa}` → the last POSITIVE membership answer, confirming for
+ *  MEMBER_CACHE_TTL_MS. A negative one is never decided from cache, so it is not kept. */
+const _memberCache = new Map<string, { block: number; fetchedAt: number }>();
 const MEMBER_CACHE_TTL_MS = 60 * 1000;
 const MEMBER_CACHE_MAX = 5_000;
 /** `${kernel}:${eoa}` → the last membership CHANGE seen and its block: a read
@@ -267,9 +275,13 @@ export function cachedOwnerIs(parent: string, eoa: string): boolean {
 /** {@link cachedOwnerIs}, or a fresh cached confirmation that `eoa` is on the
  *  account's co-owner list. The same rule: true confirms, false decides nothing. */
 export function cachedSignerIs(parent: string, eoa: string): boolean {
-  if (cachedOwnerIs(parent, eoa)) return true;
-  const m = _memberCache.get(`${parent.toLowerCase()}:${eoa.toLowerCase()}`);
-  return m !== undefined && m.member && Date.now() - m.fetchedAt < MEMBER_CACHE_TTL_MS;
+  return cachedOwnerIs(parent, eoa) || _memberConfirmed(parent.toLowerCase(), eoa.toLowerCase());
+}
+
+/** A fresh positive membership answer newer than the key's last removal. */
+function _memberConfirmed(parent: string, eoa: string): boolean {
+  const m = _memberCache.get(`${parent}:${eoa}`);
+  return m !== undefined && Date.now() - m.fetchedAt < MEMBER_CACHE_TTL_MS && m.block > (coOwnerRemovedBlock(parent, eoa) ?? -1);
 }
 
 /** What `rootValidator()` answered, as a kind. Pure. */
@@ -380,7 +392,10 @@ async function _fetchOwnerState(
     const read = await _readOwnerAtBlock(key);
     if (read.root === "weighted") {
       // A co-owned account has no single owner to order: its ECDSA storage is
-      // empty by design and says nothing. Membership is read per key.
+      // empty by design and says nothing. Membership is read per key. An account
+      // already on record (seen with an owner) is UPDATED to co-owned at once - an
+      // update, as a rotation updates it; nothing is created by this read (#210).
+      if (isKernelKnownDeployed(key)) recordKernelWeighted(key, read.block);
       const state: OwnerState = { owner: null, root: "weighted", block: read.block };
       _ownerCache.set(key, { ...state, fetchedAt: Date.now() });
       capMap(_ownerCache, OWNER_CACHE_MAX);
@@ -571,8 +586,7 @@ export async function isAccountSigner(
  */
 async function _isWeightedMember(eoa: string, parent: string, opts: OwnerReadOptions): Promise<boolean> {
   const key = `${parent}:${eoa}`;
-  const cached = _memberCache.get(key);
-  if (cached && cached.member && Date.now() - cached.fetchedAt < MEMBER_CACHE_TTL_MS) return true;
+  if (_memberConfirmed(parent, eoa)) return true;
   const read = await _fetchMember(parent, eoa, opts);
   if (read === "error") return false;
   if (read.root !== "weighted") {
@@ -584,9 +598,22 @@ async function _isWeightedMember(eoa: string, parent: string, opts: OwnerReadOpt
     const state = await _fetchOwnerState(parent, eoa, opts);
     return state !== "error" && state.root === "ecdsa" && state.owner === eoa;
   }
-  const member = read.weight > 0;
+  // The account's root is weighted at this block: a cached single owner from
+  // before the switch must not keep confirming the first passkey (Fable sign-off
+  // SHOULD-2 - the #273 "first contact by the new owner" rule).
+  const oc = _ownerCache.get(parent);
+  if (!oc || oc.block < read.block) {
+    _ownerCache.set(parent, { owner: null, root: "weighted", block: read.block, fetchedAt: Date.now() });
+    capMap(_ownerCache, OWNER_CACHE_MAX);
+  }
+  const threshold = read.threshold ?? 1;
+  const member = threshold > 0 && read.weight >= threshold;
   const seen = _memberOrder.get(key);
-  if (seen && seen.member !== member && read.block <= seen.block) {
+  const removedAt = coOwnerRemovedBlock(parent, eoa);
+  if (
+    (seen && seen.member !== member && read.block <= seen.block) ||
+    (member && removedAt !== undefined && read.block <= removedAt)
+  ) {
     console.warn(`[kernel-owner] stale co-owner read for ${parent.slice(0, 10)}… discarded`);
     return false;
   }
@@ -594,12 +621,47 @@ async function _isWeightedMember(eoa: string, parent: string, opts: OwnerReadOpt
     _memberOrder.set(key, { member, block: read.block });
     capMap(_memberOrder, MEMBER_CACHE_MAX);
   }
-  _memberCache.set(key, { member, block: read.block, fetchedAt: Date.now() });
-  capMap(_memberCache, MEMBER_CACHE_MAX);
-  // Confirmed: the key on the list is the key presenting (#210 - only a confirmed
-  // read creates a record).
-  if (member) recordKernelWeighted(parent, read.block);
+  if (member) {
+    _memberCache.set(key, { block: read.block, fetchedAt: Date.now() });
+    capMap(_memberCache, MEMBER_CACHE_MAX);
+    // Confirmed: the key on the list is the key presenting (#210 - only a confirmed
+    // read creates a record).
+    recordKernelWeighted(parent, read.block);
+  } else {
+    _memberCache.delete(key);
+    // Durable floor for a key we know WAS on the list: this process saw it there,
+    // or it is the account's recorded owner from before the switch.
+    if (seen?.member || getKernelOwnerRecord(parent)?.owner === eoa) recordCoOwnerRemoved(parent, eoa, read.block);
+  }
   return member;
+}
+
+/**
+ * A co-owner asked to remove `eoa` (the device-record removal route). Read it
+ * fresh and, if it is off the list and is a key we know was on it - a device
+ * record (`knownDevice`), this process's memory, or the recorded owner from
+ * before the switch (the first passkey, which has no device record) - floor it
+ * durably. Returns whether the floor is in place. Never grants anything.
+ */
+export async function noteCoOwnerRemoved(
+  eoaAddress: string,
+  parentAddress: string,
+  opts: OwnerReadOptions & { knownDevice?: boolean } = {},
+): Promise<boolean> {
+  const eoa = eoaAddress.toLowerCase();
+  const parent = parentAddress.toLowerCase();
+  if (!getKernelWeightedRecord(parent)) return false;
+  const read = await _fetchMember(parent, eoa, opts);
+  if (read === "error" || read.root !== "weighted") return false;
+  const threshold = read.threshold ?? 1;
+  if (threshold > 0 && read.weight >= threshold) return false;
+  const evidence =
+    opts.knownDevice === true || _memberOrder.get(`${parent}:${eoa}`)?.member === true || getKernelOwnerRecord(parent)?.owner === eoa;
+  if (!evidence) return false;
+  _memberCache.delete(`${parent}:${eoa}`);
+  _memberOrder.set(`${parent}:${eoa}`, { member: false, block: read.block });
+  recordCoOwnerRemoved(parent, eoa, read.block);
+  return true;
 }
 
 async function _fetchMember(parent: string, eoa: string, opts: OwnerReadOptions): Promise<SignerRead | "error"> {
@@ -626,7 +688,7 @@ function _readMemberAtBlock(parent: string, eoa: string): Promise<SignerRead> {
       if (read === "error") throw new Error("member fetch override: error");
       return read;
     }
-    const [l2Block, root, guardian] = await client().multicall({
+    const [l2Block, root, guardian, storage] = await client().multicall({
       contracts: [
         { address: ARBSYS_ADDRESS, abi: ARBSYS_ABI, functionName: "arbBlockNumber" },
         { address: parent as Address, abi: KERNEL_ROOT_VALIDATOR_ABI, functionName: "rootValidator" },
@@ -636,11 +698,24 @@ function _readMemberAtBlock(parent: string, eoa: string): Promise<SignerRead> {
           functionName: "guardian",
           args: [eoa as Address, parent as Address],
         },
+        {
+          address: WEIGHTED_ECDSA_VALIDATOR_V3_1 as Address,
+          abi: WEIGHTED_STORAGE_ABI,
+          functionName: "weightedStorage",
+          args: [parent as Address],
+        },
       ],
       allowFailure: true,
     });
-    if (l2Block.status !== "success" || guardian.status !== "success") throw new Error("co-owner read failed");
-    return { root: rootKindOf(root), weight: Number(guardian.result[0]), block: Number(l2Block.result) };
+    if (l2Block.status !== "success" || guardian.status !== "success" || storage.status !== "success") {
+      throw new Error("co-owner read failed");
+    }
+    return {
+      root: rootKindOf(root),
+      weight: Number(guardian.result[0]),
+      threshold: Number(storage.result[1]),
+      block: Number(l2Block.result),
+    };
   })();
   _inFlightMember.set(key, p);
   p.finally(() => _inFlightMember.delete(key)).catch(() => {});

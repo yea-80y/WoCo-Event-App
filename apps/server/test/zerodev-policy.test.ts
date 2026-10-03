@@ -517,3 +517,12 @@ test("co-owners: the switch without dropping ECDSA, with a hook, or to another r
   const elsewhere = { ...renewCall([P1, P2]), to: GUARDIAN_EOA };
   assert.equal(classifyUserOp(op(await viaExecute([elsewhere]))).ok, false);
 });
+
+test("co-owners: a list out of the validator's order is refused (it would revert on our gas)", async () => {
+  const renewAbi = parseAbi(["function renew(address[],uint24[],uint24,uint48)"]);
+  const ascending = [P1, P2].sort((a, b) => (a.toLowerCase() < b.toLowerCase() ? -1 : 1));
+  const call = { to: WEIGHTED_V31, data: encodeFunctionData({ abi: renewAbi, functionName: "renew", args: [ascending, [1, 1], 1, 0] }) };
+  assert.deepEqual(classifyUserOp(op(await viaExecute([call]))), { ok: false, reason: "co-owners" });
+  const enableAsc = encodeAbiParameters(parseAbiParameters("address[], uint24[], uint24, uint48"), [ascending, [1, 1], 1, 0]);
+  assert.equal(classifyUserOp(op(await viaExecute(switchCalls(enableAsc)))).ok, false);
+});
