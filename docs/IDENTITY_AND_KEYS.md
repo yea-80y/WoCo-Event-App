@@ -544,7 +544,10 @@ answer confirms for one minute.
 credentialTag, issuedAt, nonce }` (domain "WoCo Device Grant"), now signed by ANY co-owner and
 registered at `POST /api/auth/device-grants`: it carries the date the screen shows, and its removal
 (`RevokeDeviceGrant`) refuses that device at once (`DEVICE_REMOVED`), ahead of the minute-long chain
-answer. Removing a passkey takes it off the list FIRST, then removes the record - never the other way,
+answer. On a co-owned account only the list admits: a key with a record that is NOT on the list is
+refused as removed, even when a listed key signed its record - so a record removal that never arrived
+cannot keep a removed passkey signed in. Devices linked by a record alone before co-owners stop
+signing in when their account switches; the list shows them for removal. Removing a passkey takes it off the list FIRST, then removes the record - never the other way,
 or a device with onchain control would be signed out while able to put itself back. The first
 passkey has no record; the removal route floors it instead. Store: `.data/device-grants.json`.
 

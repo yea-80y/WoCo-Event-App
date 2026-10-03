@@ -15,6 +15,7 @@
 
   let rows = $state<PasskeyRow[]>([]);
   let canAdd = $state(false);
+  let coOwned = $state(false);
   let loading = $state(false);
   let loaded = $state(false);
   let loadError = $state<string | null>(null);
@@ -56,6 +57,7 @@
       names = { name: data.providerName, worksOn: data.providerWorksOn };
       const res = await data.loadPasskeyRows(auth.parent, auth.seedAddress);
       rows = res.rows;
+      coOwned = res.coOwned;
       canAdd = res.canAdd;
       loaded = true;
     } catch (e) {
@@ -155,7 +157,13 @@
               <div class="who">
                 <span class="name">{title(r)}</span>
                 {#if where}<span class="where">{where}</span>{/if}
-                {#if r.linkedBefore}<span class="where">Linked before every passkey could do everything - it can sign in, not change passkeys</span>{/if}
+                {#if r.linkedBefore}
+                  <span class="where">
+                    {coOwned
+                      ? "Linked the old way - it no longer opens your account. Remove it, then add it again to use it."
+                      : "Linked the old way - it signs in, but can't change passkeys or names."}
+                  </span>
+                {/if}
                 <span class="meta">
                   {#if r.addedAt !== null}<span>Added {day(r.addedAt)}</span>{/if}
                   {#if r.signedInWith}<span class="tag">Signed in here</span>

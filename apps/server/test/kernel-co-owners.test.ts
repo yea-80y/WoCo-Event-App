@@ -481,3 +481,14 @@ test("SHOULD-5: the first passkey removing itself right after the switch is floo
   assert.deepEqual(deployed.getKernelWeightedRecord(PARENT), { block: 70 });
   assert.equal(deployed.coOwnerRemovedBlock(PARENT, A.address), 70);
 });
+
+test("on a co-owned account only the list admits: a key off it with a LIVE record is removed, not a device", async () => {
+  list(A, B);
+  assert.equal(await kind(B), "co-owner"); // recorded co-owned
+  const g = grantFor(C.address);
+  await grants.submitDeviceGrant(PARENT, { grant: g, grantSig: await A.signTypedData(DEVICE_GRANT_DOMAIN, types(DEVICE_GRANT_TYPES), g) }, signerCheck);
+  // C has a live record signed by a listed key, but C is not on the list.
+  const r = await verify(C);
+  assert.equal(r.valid, false);
+  assert.equal(r.code, AuthErrorCode.DEVICE_REMOVED, "the record's signer being listed admits nothing");
+});

@@ -27,6 +27,8 @@ export interface PasskeyRow {
 
 export interface PasskeyRows {
   rows: PasskeyRow[];
+  /** The account's passkeys are co-owners: only the list opens it. */
+  coOwned: boolean;
   /** The server's answer: adding needs an unlocked account. */
   canAdd: boolean;
 }
@@ -95,5 +97,5 @@ export async function loadPasskeyRows(parent: string, self: string): Promise<Pas
         ? (a.onThisDevice ? -1 : 1)
         : (a.addedAt ?? 0) - (b.addedAt ?? 0),
   );
-  return { rows, canAdd: res.data.canAddDevices === true };
+  return { rows, coOwned: list !== null, canAdd: res.data.canAddDevices === true };
 }

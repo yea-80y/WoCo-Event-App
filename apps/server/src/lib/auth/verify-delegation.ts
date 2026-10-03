@@ -189,12 +189,21 @@ export async function verifyDelegation(
         let signer: "granted" | "owner" | "co-owner" | null;
         if (getKernelWeightedRecord(parent)) {
           // A co-owned account: every passkey signs as itself, so its rank never
-          // depends on which cache is warm (Fable sign-off MUST-1). A device record
-          // that only a grant admits is the fallback.
+          // depends on which cache is warm (Fable sign-off MUST-1) - and ONLY the list
+          // admits. A grant no longer does: a key taken off the list whose record
+          // removal never arrived would otherwise keep signing in through it
+          // (background commit review). A key with a record that is not on the list
+          // is a removed passkey, or a device linked before co-owners: removed either way.
           signer = await accountSignerKind(recovered, parent, readOpts);
           if (!signer) {
             grant = await deps.lookupDeviceGrant(parent, recovered);
-            signer = await viaGrant(grant);
+            if (grant) {
+              return {
+                valid: false,
+                error: "This device was removed from the account",
+                code: AuthErrorCode.DEVICE_REMOVED,
+              };
+            }
           }
         } else {
           grant = cachedSignerIs(parent, recovered) ? undefined : await deps.lookupDeviceGrant(parent, recovered);
