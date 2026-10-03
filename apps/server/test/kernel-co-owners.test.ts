@@ -456,3 +456,17 @@ test("route: removing the first passkey (no device record) on a co-owned account
   assert.equal(json.ok, true);
   assert.equal(deployed.coOwnerRemovedBlock(PARENT, A.address), 90);
 });
+
+test("a lagging read that shows a listed key OFF the list writes no removal floor", async () => {
+  list(A, B);
+  memberRead = (eoa) => ({ root: "weighted", weight: weights.get(eoa) ?? 0, block: 60 });
+  assert.equal(await kind(B), "co-owner"); // B seen on the list at 60
+  try {
+    later(61_000);
+    memberRead = () => ({ root: "weighted", weight: 0, block: 55 }); // older than what we know
+    assert.equal(await kind(B), null);
+    assert.equal(deployed.coOwnerRemovedBlock(PARENT, B.address), undefined, "no false removal on record");
+  } finally {
+    restoreClock();
+  }
+});
