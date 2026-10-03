@@ -294,3 +294,33 @@ test("rootValidator() answers map to a kind; only the two WoCo roots are recogni
   assert.equal(owner.rootKindOf({ status: "success", result: `0x${"00".repeat(21)}` }), "none");
   assert.equal(owner.rootKindOf({ status: "success", result: `0x01${"ab".repeat(20)}` }), "other");
 });
+
+test("an account seen co-owned never falls back to the counterfactual, whatever the root read says", async () => {
+  // Known co-owned from the cache only (no confirmed key yet, so no durable record).
+  ownerRead = () => ({ owner: null, root: "weighted", block: 50 });
+  assert.equal(await kind(C), null); // warms the cache: root weighted
+  assert.equal(deployed.getKernelWeightedRecord(PARENT), undefined);
+  // The member read cannot read the root; the owner read then finds no code and no owner.
+  memberRead = () => ({ root: "none", weight: 0, block: 60 });
+  ownerRead = () => ({ owner: null, root: "none", block: 60 });
+  assert.equal(await owner.kernelAddressOfOwner(A.address), PARENT);
+  assert.equal(await kind(A), null, "a removed first passkey must not come back through its counterfactual");
+});
+
+test("a root changed back to ECDSA at a later block: only the owner it names signs", async () => {
+  list(A, B);
+  assert.equal(await kind(B), "co-owner"); // known co-owned at block 50
+  owner._resetOwnerCacheForTests();
+  memberRead = () => ({ root: "ecdsa", weight: 0, block: 90 });
+  ownerRead = () => ({ owner: B.address.toLowerCase(), root: "ecdsa", block: 90 });
+  assert.equal(await kind(B), "co-owner");
+  assert.equal(await kind(A), null, "not the named owner - and never its counterfactual");
+});
+
+test("isKernelOwner on a known co-owned account discards a replica from before the switch", async () => {
+  list(A, B);
+  assert.equal(await kind(B), "co-owner"); // weighted recorded at block 50
+  owner._resetOwnerCacheForTests();
+  ownerRead = () => ({ owner: A.address.toLowerCase(), root: "ecdsa", block: 40 });
+  assert.equal(await owner.isKernelOwner(A.address, PARENT), false);
+});

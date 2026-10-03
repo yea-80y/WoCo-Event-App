@@ -567,7 +567,7 @@ export async function isAccountSigner(
  * nothing about who controls it. A read that contradicts the last change seen for
  * this key, from no later a block, predates it and is not acted on. A read showing
  * the ECDSA root again is a replica from before the switch (refused) or, from a
- * later block, a root that changed back - and then the owner path decides.
+ * later block, a root that changed back - and then only the owner it names decides.
  */
 async function _isWeightedMember(eoa: string, parent: string, opts: OwnerReadOptions): Promise<boolean> {
   const key = `${parent}:${eoa}`;
@@ -576,10 +576,15 @@ async function _isWeightedMember(eoa: string, parent: string, opts: OwnerReadOpt
   const read = await _fetchMember(parent, eoa, opts);
   if (read === "error") return false;
   if (read.root !== "weighted") {
-    const rec = getKernelWeightedRecord(parent);
-    if (rec && read.block <= rec.block) return false;
+    // Only the ECDSA root can follow a weighted one. A root that does not read on
+    // an account seen co-owned is unreadable, not "undeployed": refuse.
+    if (read.root !== "ecdsa") return false;
+    // The ECDSA root again: a replica from before the switch (the owner read
+    // discards it) or a root changed back - and then only a NAMED owner decides,
+    // never the counterfactual, which the first passkey matches forever.
     _ownerCache.delete(parent);
-    return isKernelOwner(eoa, parent, opts);
+    const state = await _fetchOwnerState(parent, eoa, opts);
+    return state !== "error" && state.root === "ecdsa" && state.owner === eoa;
   }
   const member = read.weight > 0;
   const seen = _memberOrder.get(key);
