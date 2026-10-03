@@ -2365,6 +2365,22 @@ async function _addCoOwner(key: string): Promise<void> {
   _kernel = null;
 }
 
+/**
+ * A new passkey goes on the list, then gets its device record. If the record fails,
+ * the key comes off the list again: a key with full control onchain and no record to
+ * remove it by must never be left behind (background commit review). The caller's
+ * later failures (an undelivered link answer) remove it through `revoke`.
+ */
+async function _addCoOwnerWithRecord<T>(key: string, record: () => Promise<T>): Promise<T> {
+  await _addCoOwner(key);
+  try {
+    return await record();
+  } catch (e) {
+    await _removeCoOwner(key).catch((undo) => console.error("[auth] could not take back a passkey without a record:", undo));
+    throw e;
+  }
+}
+
 /** Take `key` off the account's co-owner list, if it is on it. The last one never. */
 async function _removeCoOwner(key: string): Promise<void> {
   await _ensureKernel();
@@ -2466,8 +2482,9 @@ async function addPasskeyOnThisDevice(
   onStep?.("linking");
   const { credentialIdBytes, writePasskeyRecord } = await import("./passkey-record.js");
   const credentialId = credentialIdBytes(added.credentialId);
-  await _addCoOwner(added.address);
-  const grant = await _grantDevice(ownerKey, parent, added.address, credentialTagOf(credentialId));
+  const grant = await _addCoOwnerWithRecord(added.address, () =>
+    _grantDevice(ownerKey, parent, added.address, credentialTagOf(credentialId)),
+  );
 
   // Best-effort past this point: the passkey already works. Without its record
   // the sign-in guard simply has nothing to check; without the label the list
@@ -2620,10 +2637,7 @@ async function approveDeviceLink(code: Uint8Array, offer: import("./device-link.
     parent,
     self: seedAddr,
     seed,
-    grant: async (grantee, credentialTag) => {
-      await _addCoOwner(grantee);
-      return _grantDevice(ownerKey, parent, grantee, credentialTag);
-    },
+    grant: (grantee, credentialTag) => _addCoOwnerWithRecord(grantee, () => _grantDevice(ownerKey, parent, grantee, credentialTag)),
     revoke: (grantee) => _removePasskeyConfirmed(grantee),
   });
 }

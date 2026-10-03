@@ -27,11 +27,15 @@ test("the Kernel used for signing is opened with the validator the account reall
 
 test("linking and adding put the new key on the list BEFORE its device record (and before the new device is told)", () => {
   const approve = body(STORE, "async function approveDeviceLink(");
-  assert.ok(approve.indexOf("await _addCoOwner(grantee);") < approve.indexOf("return _grantDevice(ownerKey, parent, grantee, credentialTag);"));
+  assert.match(approve, /grant: \(grantee, credentialTag\) => _addCoOwnerWithRecord\(grantee, \(\) => _grantDevice\(ownerKey, parent, grantee, credentialTag\)\),/);
   assert.match(approve, /revoke: \(grantee\) => _removePasskeyConfirmed\(grantee\),/, "the undelivered-answer cleanup does not ask again");
   const add = body(STORE, "async function addPasskeyOnThisDevice(");
   assert.match(add, /await _freshMainPasskey\(\);/, "adding asks fresh");
-  assert.ok(add.indexOf("await _addCoOwner(added.address);") < add.indexOf("await _grantDevice(ownerKey, parent, added.address"));
+  assert.match(add, /await _addCoOwnerWithRecord\(added\.address, \(\) =>\s*_grantDevice\(ownerKey, parent, added\.address,/);
+  // On the list first; a failed record takes it off again - never full control without a record.
+  const both = body(STORE, "async function _addCoOwnerWithRecord<T>(");
+  assert.ok(both.indexOf("await _addCoOwner(key);") < both.indexOf("return await record();"));
+  assert.match(both, /catch \(e\) \{\s*await _removeCoOwner\(key\)/);
 });
 
 test("a list change is signed by this device and the Kernel is rebuilt after it", () => {
