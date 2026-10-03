@@ -518,81 +518,64 @@ Revocation: `POST /api/auth/revoke-session` (one nonce) or `/api/auth/revoke-all
 for a parent issued before now). State lives in `.data/revoked-sessions.json` — losing that file
 un-revokes.
 
-### Added passkeys: device grants (#746)
+### More than one passkey: every passkey a co-owner (#746)
 
-A Kernel account has one onchain owner, the main passkey. Another passkey of the same person
-signs sessions under a **device grant**: an EIP-712 `DeviceGrant { parent, grantee,
-credentialTag, issuedAt, nonce }` (domain "WoCo Device Grant" with the Kernel chain id - the
-owner of a Kernel is a per-chain fact; uint256 seconds, bytes32 nonce) signed raw by the owner,
-registered at `POST /api/auth/device-grants`. A delegation whose signer is neither the
-parent nor its owner passes when that key has a live grant, the grant's signer still owns the
-Kernel, and the delegation is newer than the key's last removal; its session rank is `device`
-(`whoami` reports it). Removal is a `RevokeDeviceGrant { parent, grantee, nonce }` signed by the
-owner or by the device itself, effective on the next request; a removed device gets
-`DEVICE_REMOVED`, never re-minted. A grant is dead the moment the owner rotates. Depth 1: a
-granted key never grants.
+An account starts with one passkey: its PRF-derived key is the owner on ZeroDev's ECDSAValidator,
+the Kernel root. When it adds its second passkey, ONE sponsored userOp moves the root to ZeroDev's
+**WeightedECDSAValidator** - one signer per passkey, weight 1, threshold 1 - so any one passkey
+signs userOps and ERC-1271 alone, and nothing ever moves between devices. That op is a batch,
+`[changeRootValidator(weighted, no hook, list), uninstallValidation(ECDSA)]`: without the uninstall
+the first passkey would keep an ERC-1271 path (names) that taking it off the list cannot close.
+Later changes are `renew(list)`. Every list is 1..10 distinct keys, weight 1, threshold 1, no delay -
+the validator accepts an empty list or an unreachable threshold, and the account is then locked for
+good. Facts pinned against the bytecode deployed on Arbitrum One: WoCo-Contracts
+`test/WeightedRootKernel.t.sol`. Calls: `apps/web/src/lib/auth/co-owner-calls.ts`; flows:
+`co-owner-flows.ts`; reads: `kernel-account.ts` (`readKernelRoot`, `readCoOwners`,
+`readKernelSignerFor`); constants: `@woco/shared/kernel/co-owners`.
 
-Every entry is a signed statement and the registry's rules are ones a contract could run (owner
-check, one-use nonces, 10 live grants per owner), so the list can move onchain, or be checked by
-the client from its own copy: `verify-delegation.ts` reads it through one seam,
-`lookupDeviceGrant`. A contract on the Kernel chain that computes this exact domain (no
-verifyingContract) verifies the stored signatures as they are; one that adds verifyingContract
-needs each grant signed once more. `revoke-all` also ends device sessions; a device whose grant is live
-signs a new one on its next request. Store: `.data/device-grants.json`
-(`apps/server/src/lib/auth/device-grants.ts`).
+**Who may sign in.** The server asks the chain (`accountSignerKind` in `lib/auth/kernel-owner.ts`):
+the ECDSA owner while the root is ECDSA (unchanged), a key on the weighted list once co-owned. A
+co-owned account is durably recorded (`kernel-deployed.json` `root: "weighted"`), after which an
+unreadable chain refuses and the first passkey's counterfactual - true forever - is never evidence.
+Each removed key is floored durably (`removed`), so no older read brings it back. A positive list
+answer confirms for one minute.
 
-**Signing in with an added passkey (step 3).** An added passkey has no account of its own: its
-user handle starts `woco-added-v1:`, and its account and seed reach a device through the
-portability envelope the adding device wrote for it (or this device's locked copy). Because the
-chain names the main passkey as owner by design, the sign-in asks the SERVER: a session is signed
-but not stored, one `whoami` answers (`device-verdict.ts`), and only an accepted verdict commits -
-a device binding (`StorageKeys.DEVICE_KERNEL_BINDING`, separate from the recovered map), the locked
-seed and that session. Removed -> the device forgets what it held and says so; any request that
-later returns `DEVICE_REMOVED` does the same and signs out. A device never derives a seed from its
-own passkey, and cannot reach the Kernel (`_ensureKernel` throws): names, backups and adding
-passkeys need the main passkey (`auth.isAccountOwner`).
+**Device records.** Every added passkey still gets an EIP-712 `DeviceGrant { parent, grantee,
+credentialTag, issuedAt, nonce }` (domain "WoCo Device Grant"), now signed by ANY co-owner and
+registered at `POST /api/auth/device-grants`: it carries the date the screen shows, and its removal
+(`RevokeDeviceGrant`) refuses that device at once (`DEVICE_REMOVED`), ahead of the minute-long chain
+answer. Removing a passkey takes it off the list FIRST, then removes the record - never the other way,
+or a device with onchain control would be signed out while able to put itself back. The first
+passkey has no record; the removal route floors it instead. Store: `.data/device-grants.json`.
 
-**Linking another device (step 4).** The device being added makes its own passkey and shows a
-code (QR or 26 characters; the QR is deliberately not a URL, so only WoCo's own scanner, opened on
-purpose, can use it). The main device scans it, confirms with a passkey sheet every time, registers
-the grant, then sends the account and seed sealed (X-Wing) to a key that lives only in the new
-device's memory for this pairing; the new device signs in through the same server verdict as any
-added passkey and writes its own envelope. Transport is a 10-minute in-memory mailbox
-(`/api/pairing`, no session) holding bytes sealed under keys from the code, which the server never
-sees: `apps/web/src/lib/auth/pairing-channel.ts` (a swappable `PairingTransport`) and
-`device-link.ts` (message shapes).
+**A device's role comes from the chain.** On the list = an owner on that device (recovery binding,
+`_upgradeIfCoOwner` at restore, `_loginAddedPasskey` at sign-in). Every owner check that decides a
+sign-in reads the list too (`readKernelSignerFor`: the key itself on the list, `NOT_ON_LIST` off it),
+or the first passkey would read "no owner" after the switch.
 
-**Making a linked device the main passkey (step 4).** One sponsored userOp from the account
-itself re-keys the ECDSA validator (`onUninstall` + `onInstall(newOwner)` in one all-or-nothing
-batch - the calls `doRecovery` makes; `rotateOwnerSelf`, fork-verified on Arbitrum One). Every
-grant the old main signed dies with it, so the order is: the linked device shows a code; the main
-scans it, confirms with a passkey sheet and sends its own passkey and the other devices; the
-linked device signs fresh grants for all of them and sends them back; the main checks them,
-writes its OWN envelope (it becomes a linked device and signs in like one everywhere), rotates,
-and registers the grants, old main first - the new main registers them too, a repeat being
-"done". Both keep the grants until registered (`make-main.ts`, resumed at sign-in); grants for a
-rotation that never happened are dropped once the code expires. Ownership is read from the chain,
-never from the session rank, which lags a rotation by the server's owner cache. A passkey the
-chain no longer names but whose own envelope names the account - recovered away, or a main that
-moved - is never tombstoned: its next sign-in asks the server.
+**Adding another device.** The device being added makes its own passkey and shows a code (QR or 26
+characters; not a URL, so only WoCo's own scanner can use it). Any of the account's devices scans it
+and confirms with a fresh passkey sheet; it puts the new key on the list, registers its record (a
+failed record takes the key off again), then sends the account and seed sealed (X-Wing) to a key that
+lives only in the new device's memory for this pairing. Transport: a 10-minute in-memory mailbox
+(`/api/pairing`) holding bytes the server cannot read (`pairing-channel.ts`, `device-link.ts`).
+"Add a password manager here" does the same on one device: a fresh confirm, a passkey in the other
+manager, on the list, its record.
 
-**Same phone, no code (step 4).** "Move to another password manager" makes a passkey in the
-other manager, then offers to make it the main one; any passkey the main device added itself can
-also be made the main one from its row. One passkey sheet for the main,
-then one for that passkey (two taps - Safari opens a sheet only from a tap). Its key signs the
-grants right there, and the old main runs the same handover as above (`handOver` in
-`make-main.ts`, shared by both paths). The tab then carries on as the new main (`_adoptNewMain`:
-same seed, so no key the account publishes changes), and the old main stays as a linked passkey.
-Anything that fails after the rotation says so (`MakeMainHandedOverError`) and never offers a
-retry, and a retry after a lost receipt reads the chain first so it never rotates twice.
+**A removed device keeps what it already holds.** Removal stops a passkey signing in and acting
+onchain, but the account's keys all come from one seed that never changes: a removed device can still
+open attendee details it can reach and publish as the account. Hence "only your own devices - never
+someone else's, staff included". A new attendee key on removal is deferred work.
 
-**Unlocked accounts only.** An account's FIRST device grant needs the unlock that names need -
-a ticket in the account, Stripe verification, or a confirmed invite (`checkAttendeeGate`,
-`routes/device-grants.ts`; widened from verified organisers 10-02): each device stamps storage and a
-move spends sponsored gas, which nothing locked may do. An account with a device record keeps
-managing its devices, and removal is never gated. Sponsored userOps go browser -> ZeroDev; #758
-adds a server policy ZeroDev is meant to ask first (`routes/zerodev-policy.ts`), but until it is seen
-answering live requests the ZeroDev dashboard policy is the only bound on that key.
+**New-passkey alert.** Each device remembers the chain's list as last seen; a key added since then
+is named on the next open ("Yes, it was me / No - remove it"). `new-passkey-alert.ts`.
+
+**Unlocked accounts only.** An account's FIRST device record needs the unlock that names need - a
+ticket in the account, Stripe verification, or a confirmed invite (`checkAttendeeGate`,
+`routes/device-grants.ts`): each device stamps storage and every list change spends sponsored gas,
+which nothing locked may do. Removal is never gated. Every sponsored userOp is first answered by
+WoCo's ZeroDev policy webhook (`routes/zerodev-policy.ts`, #758), which pays only for WoCo's own
+shapes - the switch and `renew` among them, and never a list that would lock an account.
 
 **No email or wallet backups on passkey accounts (#746 step 5).** Every Protect-your-account backup
 escrows the seed to an email or wallet key - a second way to the keys an organiser's attendee data is
