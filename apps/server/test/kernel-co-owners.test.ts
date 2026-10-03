@@ -285,3 +285,12 @@ test("a removed record refuses a key the chain still lists (a member re-listed w
   const r = await verify(B);
   assert.equal(r.code, AuthErrorCode.DEVICE_REMOVED);
 });
+
+test("rootValidator() answers map to a kind; only the two WoCo roots are recognised", async () => {
+  const { ECDSA_ROOT_ID, WEIGHTED_ROOT_ID } = await import("@woco/shared/kernel/co-owners");
+  assert.equal(owner.rootKindOf({ status: "success", result: WEIGHTED_ROOT_ID.toUpperCase().replace("0X", "0x") }), "weighted");
+  assert.equal(owner.rootKindOf({ status: "success", result: ECDSA_ROOT_ID }), "ecdsa");
+  assert.equal(owner.rootKindOf({ status: "failure" }), "none", "no code at the address: undeployed");
+  assert.equal(owner.rootKindOf({ status: "success", result: `0x${"00".repeat(21)}` }), "none");
+  assert.equal(owner.rootKindOf({ status: "success", result: `0x01${"ab".repeat(20)}` }), "other");
+});
