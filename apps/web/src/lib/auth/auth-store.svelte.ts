@@ -2335,73 +2335,28 @@ async function _upgradeIfCoOwner(seedAddr: string, parent: string): Promise<void
   }
 }
 
-/** The account's co-owner list now, from chain: this key alone while the root is still
- *  ECDSA (it signs the switch, so it must be that owner). Throws when unread. */
-async function _currentCoOwners(): Promise<{ root: "ecdsa" | "weighted" | "none"; list: string[] }> {
-  const kernel = _kernel;
-  const self = _seedAddress?.toLowerCase();
-  if (!kernel || !self) throw new Error(_seedLockedMessage());
-  const { readKernelRoot, readCoOwners } = await import("./kernel-account.js");
-  const root = await readKernelRoot(kernel.address);
-  if (root === "error") throw new Error("Couldn't reach the network - nothing was changed. Try again.");
-  if (root !== "weighted") return { root, list: [self] };
-  const list = await readCoOwners(kernel.address);
-  if (list === "error" || list === null) throw new Error("Couldn't read your passkeys - nothing was changed. Try again.");
-  return { root, list };
+/** What the lazily loaded co-owner flows (`co-owner-flows.ts`) borrow from this store. */
+function _coOwnerHost(): import("./co-owner-flows.js").CoOwnerHost {
+  return {
+    ensureKernel: _ensureKernel,
+    kernel: () => _kernel,
+    self: () => _seedAddress?.toLowerCase() ?? null,
+    parent: () => _parent?.toLowerCase() ?? null,
+    dropKernel: () => {
+      _kernel = null;
+    },
+    lockedMessage: _seedLockedMessage,
+  };
 }
 
-/**
- * Put `key` on the account's co-owner list (#746): the switch the first time (one
- * sponsored op that also deploys a counterfactual account), renew after. Signed by
- * this device's key; the Kernel is rebuilt afterwards because its root may have changed.
- * True when this call added it; false when it was on the list already.
- */
-async function _addCoOwner(key: string): Promise<boolean> {
-  await _ensureKernel();
-  const { root, list } = await _currentCoOwners();
-  if (list.includes(key.toLowerCase())) return false;
-  const [{ listWith }, { setCoOwners }] = await Promise.all([import("./co-owner-calls.js"), import("./kernel-account.js")]);
-  await setCoOwners(_kernel!, root, listWith(list, key));
-  _kernel = null;
-  return true;
-}
-
-/**
- * A new passkey goes on the list, then gets its device record. If the record fails,
- * the key comes off the list again: a key with full control onchain and no record to
- * remove it by must never be left behind (background commit review). The caller's
- * later failures (an undelivered link answer) remove it through `revoke`.
- */
+/** A new passkey on the list, then its device record - or off the list again (#746). */
 async function _addCoOwnerWithRecord<T>(key: string, record: () => Promise<T>): Promise<T> {
-  // Only what THIS call put on the list is ever taken back: a key already on it is a
-  // passkey of the account's, record or not (background commit review).
-  const added = await _addCoOwner(key);
-  try {
-    return await record();
-  } catch (e) {
-    if (added) {
-      try {
-        await _removeCoOwner(key);
-      } catch (undo) {
-        // Never silent: the key still has access until someone removes it.
-        console.error("[auth] could not take back a passkey without a record:", undo);
-        throw new Error(
-          "The new passkey was added to your account but couldn't be saved. Remove it in Your passkeys before trying again.",
-        );
-      }
-    }
-    throw e;
-  }
+  return (await import("./co-owner-flows.js")).addCoOwnerWithRecord(_coOwnerHost(), key, record);
 }
 
 /** Take `key` off the account's co-owner list, if it is on it. The last one never. */
 async function _removeCoOwner(key: string): Promise<void> {
-  await _ensureKernel();
-  const { root, list } = await _currentCoOwners();
-  if (root !== "weighted" || !list.includes(key.toLowerCase())) return;
-  const [{ listWithout }, { setCoOwners }] = await Promise.all([import("./co-owner-calls.js"), import("./kernel-account.js")]);
-  await setCoOwners(_kernel!, "weighted", listWithout(list, key));
-  _kernel = null;
+  return (await import("./co-owner-flows.js")).removeCoOwner(_coOwnerHost(), key);
 }
 
 /** Sign, raw as the owner, and register the grant that makes `grantee` a device of

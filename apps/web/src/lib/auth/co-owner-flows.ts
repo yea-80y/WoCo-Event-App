@@ -1,0 +1,92 @@
+/**
+ * Putting a passkey on the account's co-owner list and taking one off (#746, every
+ * passkey a co-owner). Loaded on the tap: the store lends only its state
+ * (`_coOwnerHost` in auth-store.svelte.ts), so none of this is in a page load.
+ */
+import type { BuiltKernel } from "./kernel-account.js";
+
+export interface CoOwnerHost {
+  /** Open this device's Kernel with the validator the account really has. */
+  ensureKernel(): Promise<void>;
+  kernel(): BuiltKernel | null;
+  self(): string | null;
+  parent(): string | null;
+  /** The account's root may have changed: rebuild the Kernel on its next use. */
+  dropKernel(): void;
+  lockedMessage(): string;
+}
+
+/** The account's co-owner list now, from chain: this key alone while the root is still
+ *  ECDSA (it signs the switch, so it must be that owner). Throws when unread. */
+async function currentCoOwners(h: CoOwnerHost): Promise<{ root: "ecdsa" | "weighted" | "none"; list: string[] }> {
+  const kernel = h.kernel();
+  const self = h.self();
+  if (!kernel || !self) throw new Error(h.lockedMessage());
+  const { readKernelRoot, readCoOwners } = await import("./kernel-account.js");
+  const root = await readKernelRoot(kernel.address);
+  if (root === "error") throw new Error("Couldn't reach the network - nothing was changed. Try again.");
+  if (root !== "weighted") return { root, list: [self] };
+  const list = await readCoOwners(kernel.address);
+  if (list === "error" || list === null) throw new Error("Couldn't read your passkeys - nothing was changed. Try again.");
+  return { root, list };
+}
+
+/**
+ * Put `key` on the account's co-owner list: the switch the first time (one sponsored
+ * op that also deploys a counterfactual account), renew after. Signed by this
+ * device's key; the Kernel is rebuilt afterwards because its root may have changed.
+ * True when this call added it; false when it was on the list already.
+ */
+export async function addCoOwner(h: CoOwnerHost, key: string): Promise<boolean> {
+  await h.ensureKernel();
+  const { root, list } = await currentCoOwners(h);
+  if (list.includes(key.toLowerCase())) return false;
+  const [{ listWith }, { setCoOwners }] = await Promise.all([import("./co-owner-calls.js"), import("./kernel-account.js")]);
+  await setCoOwners(h.kernel()!, root, listWith(list, key));
+  h.dropKernel();
+  return true;
+}
+
+/** Take `key` off the account's co-owner list, if it is on it. The last one never. */
+export async function removeCoOwner(h: CoOwnerHost, key: string): Promise<void> {
+  await h.ensureKernel();
+  const { root, list } = await currentCoOwners(h);
+  if (root !== "weighted" || !list.includes(key.toLowerCase())) return;
+  const [{ listWithout }, { setCoOwners }] = await Promise.all([import("./co-owner-calls.js"), import("./kernel-account.js")]);
+  await setCoOwners(h.kernel()!, "weighted", listWithout(list, key));
+  h.dropKernel();
+}
+
+/**
+ * A new passkey goes on the list, then gets its device record. If the record fails,
+ * the key comes off the list again: a key with full control onchain and no record to
+ * remove it by must never be left behind (background commit review). Only what THIS
+ * call put on the list is ever taken back - a key already on it is a passkey of the
+ * account's, record or not - and a failed undo is never silent. The caller's later
+ * failures (an undelivered link answer) remove it through `revoke`.
+ */
+export async function addCoOwnerWithRecord<T>(h: CoOwnerHost, key: string, record: () => Promise<T>): Promise<T> {
+  const added = await addCoOwner(h, key);
+  try {
+    const result = await record();
+    // This device added it: its own new-passkey alert must not ask about it.
+    const parent = h.parent();
+    if (added && parent) {
+      void import("./new-passkey-alert.js").then((m) => m.rememberOwnPasskey(parent, key)).catch(() => {});
+    }
+    return result;
+  } catch (e) {
+    if (added) {
+      try {
+        await removeCoOwner(h, key);
+      } catch (undo) {
+        // Never silent: the key still has access until someone removes it.
+        console.error("[auth] could not take back a passkey without a record:", undo);
+        throw new Error(
+          "The new passkey was added to your account but couldn't be saved. Remove it in Your passkeys before trying again.",
+        );
+      }
+    }
+    throw e;
+  }
+}

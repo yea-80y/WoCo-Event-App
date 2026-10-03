@@ -9,12 +9,12 @@ import { readFileSync } from "node:fs";
 
 const read = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
 const STORE = read("../src/lib/auth/auth-store.svelte.ts");
+const FLOWS = read("../src/lib/auth/co-owner-flows.ts");
 function body(src: string, signature: string): string {
   const start = src.indexOf(signature);
   assert.ok(start >= 0, `missing: ${signature}`);
-  const next = src.indexOf("\nasync function ", start + signature.length);
-  const nextFn = src.indexOf("\nfunction ", start + signature.length);
-  const end = [next, nextFn].filter((i) => i > 0).sort((x, y) => x - y)[0] ?? src.length;
+  const ends = ["\nasync function ", "\nfunction ", "\nexport "].map((m) => src.indexOf(m, start + signature.length));
+  const end = ends.filter((i) => i > 0).sort((x, y) => x - y)[0] ?? src.length;
   return src.slice(start, end);
 }
 
@@ -33,22 +33,25 @@ test("linking and adding put the new key on the list BEFORE its device record (a
   assert.match(add, /await _freshMainPasskey\(\);/, "adding asks fresh");
   assert.match(add, /await _addCoOwnerWithRecord\(added\.address, \(\) =>\s*_grantDevice\(ownerKey, parent, added\.address,/);
   // On the list first; a failed record takes it off again - never full control without a record.
-  const both = body(STORE, "async function _addCoOwnerWithRecord<T>(");
-  assert.ok(both.indexOf("const added = await _addCoOwner(key);") < both.indexOf("return await record();"));
+  const both = body(FLOWS, "export async function addCoOwnerWithRecord<T>(");
+  assert.ok(both.indexOf("const added = await addCoOwner(h, key);") < both.indexOf("const result = await record();"));
   // Only what this call added is taken back, and a failed undo is never silent.
-  assert.match(both, /if \(added\) \{\s*try \{\s*await _removeCoOwner\(key\);/);
+  assert.match(both, /if \(added\) \{\s*try \{\s*await removeCoOwner\(h, key\);/);
   assert.match(both, /throw new Error\(\s*"The new passkey was added to your account but couldn't be saved/);
-  assert.match(body(STORE, "async function _addCoOwner("), /if \(list\.includes\(key\.toLowerCase\(\)\)\) return false;/);
+  assert.match(body(FLOWS, "export async function addCoOwner("), /if \(list\.includes\(key\.toLowerCase\(\)\)\) return false;/);
+  // The flows load on the tap; the store only lends its state.
+  assert.match(body(STORE, "async function _addCoOwnerWithRecord<T>("), /\(await import\("\.\/co-owner-flows\.js"\)\)\.addCoOwnerWithRecord\(_coOwnerHost\(\), key, record\)/);
+  assert.doesNotMatch(STORE, /^import [^\n]*co-owner-flows/m);
 });
 
 test("a list change is signed by this device and the Kernel is rebuilt after it", () => {
-  for (const sig of ["async function _addCoOwner(", "async function _removeCoOwner("]) {
-    const b = body(STORE, sig);
-    assert.match(b, /await _ensureKernel\(\);/);
-    assert.match(b, /await setCoOwners\(_kernel!,/);
-    assert.match(b, /_kernel = null;/, "its root may have changed");
+  for (const sig of ["export async function addCoOwner(", "export async function removeCoOwner("]) {
+    const b = body(FLOWS, sig);
+    assert.match(b, /await h\.ensureKernel\(\);/);
+    assert.match(b, /await setCoOwners\(h\.kernel\(\)!,/);
+    assert.match(b, /h\.dropKernel\(\);/, "its root may have changed");
   }
-  assert.match(body(STORE, "async function _removeCoOwner("), /listWithout\(list, key\)/, "never the last passkey");
+  assert.match(body(FLOWS, "export async function removeCoOwner("), /listWithout\(list, key\)/, "never the last passkey");
 });
 
 test("the chain decides a passkey's role: on the list = an owner here", () => {
