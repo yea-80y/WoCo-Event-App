@@ -313,8 +313,9 @@ test("a root changed back to ECDSA at a later block: only the owner it names sig
   owner._resetOwnerCacheForTests();
   memberRead = () => ({ root: "ecdsa", weight: 0, block: 90 });
   ownerRead = () => ({ owner: B.address.toLowerCase(), root: "ecdsa", block: 90 });
-  assert.equal(await kind(B), "co-owner");
+  // A first: B's confirmation below rightly rewrites the record to the ECDSA owner.
   assert.equal(await kind(A), null, "not the named owner - and never its counterfactual");
+  assert.equal(await kind(B), "co-owner");
 });
 
 test("isKernelOwner on a known co-owned account discards a replica from before the switch", async () => {

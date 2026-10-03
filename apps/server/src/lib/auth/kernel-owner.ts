@@ -576,12 +576,10 @@ async function _isWeightedMember(eoa: string, parent: string, opts: OwnerReadOpt
   const read = await _fetchMember(parent, eoa, opts);
   if (read === "error") return false;
   if (read.root !== "weighted") {
-    // Only the ECDSA root can follow a weighted one. A root that does not read on
-    // an account seen co-owned is unreadable, not "undeployed": refuse.
-    if (read.root !== "ecdsa") return false;
-    // The ECDSA root again: a replica from before the switch (the owner read
-    // discards it) or a root changed back - and then only a NAMED owner decides,
-    // never the counterfactual, which the first passkey matches forever.
+    // A replica from before the switch (the owner read discards it), a root changed
+    // back to ECDSA, or a root that does not read - which on an account seen
+    // co-owned means unreadable, not undeployed. Only an owner the ECDSA root NAMES
+    // decides, never the counterfactual, which the first passkey matches forever.
     _ownerCache.delete(parent);
     const state = await _fetchOwnerState(parent, eoa, opts);
     return state !== "error" && state.root === "ecdsa" && state.owner === eoa;
