@@ -4,21 +4,18 @@
   import type { PairingOffer } from "../../auth/device-link.js";
 
   /**
-   * "Link another device" (#746 step 4), on the main device: read the code the other
-   * device shows - with WoCo's own scanner or typed, never a phone's camera app - then
-   * confirm with a passkey sheet every time, whatever the unlock window says. The code
-   * either links that device or, if it is already linked, makes it the main passkey.
+   * "Add another device" (#746), on any of the account's passkeys: read the code the
+   * other device shows - with WoCo's own scanner or typed, never a phone's camera app -
+   * then confirm with a passkey sheet every time, whatever the unlock window says. The
+   * other device's passkey goes on the account's list: a co-owner like this one.
    */
 
   let { onlinked, onclose }: { onlinked: () => void; onclose: () => void } = $props();
 
-  let stage = $state<"scan" | "reading" | "confirm" | "working" | "done" | "failed">("scan");
-  let kind = $state<PairingOffer["kind"]>("link");
-  let progress = $state("");
+  let stage = $state<"scan" | "reading" | "confirm" | "working" | "done">("scan");
   let camera = $state(false);
   let typed = $state("");
   let error = $state<string | null>(null);
-  let note = $state<string | null>(null);
   let pending: { code: Uint8Array; offer: PairingOffer } | null = null;
 
   const loadCamera = () => import("../../scanner/QrCamera.svelte");
@@ -42,7 +39,6 @@
     error = null;
     try {
       pending = await link.readPairingOffer(input, { apiBase });
-      kind = pending.offer.kind;
       stage = "confirm";
     } catch (e) {
       error = e instanceof Error ? e.message : link.LINK_CODE_UNKNOWN;
@@ -55,24 +51,12 @@
     if (data.trim().toLowerCase().startsWith("woco-pair:")) void use(data);
   }
 
-  const STEP: Record<string, string> = {
-    waiting: "Confirm on the other device…",
-    changing: "Changing your main passkey…",
-    finishing: "Finishing…",
-  };
-
   async function approve(): Promise<void> {
     if (stage !== "confirm" || !pending) return;
     stage = "working";
     error = null;
-    progress = "";
     try {
-      if (pending.offer.kind === "link") {
-        await auth.approveDeviceLink(pending.code, pending.offer);
-      } else {
-        const { registered } = await auth.approveMakeMain(pending.code, pending.offer, (s) => (progress = STEP[s] ?? ""));
-        if (!registered) note = "Some of your other passkeys are still being updated - this finishes by itself next time you open Your passkeys.";
-      }
+      await auth.approveDeviceLink(pending.code, pending.offer);
       pending = null;
       stage = "done";
       onlinked();
@@ -83,15 +67,19 @@
           : e instanceof Error
             ? e.message
             : "Nothing was changed.";
-      // A make-main answer is sent once the person confirms: this code is spent then.
-      stage = pending?.offer.kind === "make-main" && e instanceof Error && e.name !== "PasskeyCeremonyCancelledError" ? "failed" : "confirm";
+      stage = "confirm";
     }
   }
 </script>
 
 <div class="link">
   {#if stage === "scan" || stage === "reading"}
-    <p>On the other device, open WoCo and choose Link this device. Then scan the code it shows, or type it here.</p>
+    <p class="panel-title">Add another device</p>
+    <p>
+      Same password manager on both - like Google Password Manager on this phone and in Chrome on your laptop? Just sign
+      in there. Nothing to add.
+    </p>
+    <p>Otherwise, on the other device open woco.eth.limo, tap Sign in, then Add this device. Scan the code it shows.</p>
     {#if camera}
       {#await loadCamera() then { default: QrCamera }}
         <QrCamera onScan={scanned} paused={stage !== "scan"} />
@@ -114,32 +102,16 @@
     </form>
     <button class="btn btn--ghost" onclick={onclose}>Not now</button>
   {:else if stage === "confirm" || stage === "working"}
-    {#if kind === "link"}
-      <p>
-        Link the other device to your account? Only continue if you started this yourself, on your own device, a moment
-        ago. It will be able to act as you, including reading your attendee details.
-      </p>
-    {:else}
-      <p>
-        Make the other device your main passkey? This one will still sign in, as a linked device. Only the main passkey
-        can add or remove passkeys, change names or set up backups. You can make this one the main passkey again later.
-      </p>
-    {/if}
-    {#if stage === "working" && progress}<p class="muted">{progress}</p>{/if}
+    <p class="panel-title">Add this device to your account?</p>
+    <p>Only continue if you started this yourself, on your own device, a moment ago.</p>
+    <p>It will be able to do everything this device can - including removing your other passkeys.</p>
     <button class="btn btn--primary" onclick={approve} disabled={stage === "working"}>
-      {stage === "working" ? "Working…" : kind === "link" ? "Link device" : "Make it the main passkey"}
+      {stage === "working" ? "Adding…" : "Add device"}
     </button>
     <button class="btn btn--ghost" onclick={onclose} disabled={stage === "working"}>Cancel</button>
-  {:else if stage === "failed"}
-    <p class="muted">This code can't be used again. Start again on the other device when you're ready.</p>
-    <button class="btn btn--ghost" onclick={onclose}>Done</button>
+    <p class="muted">Your device will ask you to confirm it's you.</p>
   {:else}
-    <p class="ok">
-      {kind === "link"
-        ? "Linked. Finish on the other device."
-        : "Done - the other device is now your main passkey. This one stays signed in as a linked device."}
-    </p>
-    {#if note}<p class="muted">{note}</p>{/if}
+    <p class="ok">Added. Finish on the other device.</p>
     <button class="btn btn--ghost" onclick={onclose}>Done</button>
   {/if}
   {#if error}<p class="err">{error}</p>{/if}
@@ -171,6 +143,14 @@
     color: var(--text);
     font-family: var(--font-mono);
     text-transform: uppercase;
+  }
+  .link .panel-title {
+    color: var(--text);
+    font-weight: 500;
+  }
+  .muted {
+    color: var(--text-muted);
+    font-size: 0.875rem;
   }
   .err {
     margin: 0;

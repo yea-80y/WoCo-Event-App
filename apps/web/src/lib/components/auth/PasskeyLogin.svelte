@@ -96,7 +96,7 @@
 
     {#if onlink}
       <button class="create-btn" onclick={onlink} disabled={auth.busy}>
-        Signed in on another device? Link this one
+        Already use WoCo on your phone? Add this device
       </button>
     {/if}
 

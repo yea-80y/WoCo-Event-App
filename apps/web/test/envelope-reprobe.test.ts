@@ -229,7 +229,7 @@ test("a main passkey that moved is never tombstoned: kaddr dropped, signed out t
   assert.deepEqual(seedsCleared, [], "its seed is the account's seed");
   assert.equal(store.map.get(STATE_KEY), undefined);
   assert.equal(notices.length, 1);
-  assert.match(notices[0], /main passkey moved to another device/);
+  assert.match(notices[0], /Your passkeys changed on another device/);
   assert.deepEqual(calls, [`owner:${PHANTOM}`, "exists", "envelope", "logout"]);
 });
 

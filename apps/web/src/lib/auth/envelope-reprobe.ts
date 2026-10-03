@@ -128,7 +128,7 @@ export type ReprobeOutcome =
 const REPROBE_PREFIX = "woco:kreprobe:";
 
 export const MAIN_MOVED_NOTICE =
-  "Your account's main passkey moved to another device. Sign in again to finish updating this one.";
+  "Your passkeys changed on another device. Sign in again to finish updating this one.";
 
 /** Does this credential's envelope name `parent`? "unknown" for anything short of
  *  a read that answered - including an envelope naming another account, which no

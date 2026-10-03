@@ -109,11 +109,11 @@ function body(src: string, signature: string): string {
   return src.slice(start, src.indexOf("\n}\n", start));
 }
 
-test("adding: envelope first, then the owner-signed grant, then the record; never from a device", () => {
+test("adding: envelope first, then on the list with its record, then the passkey record; never from a linked device", () => {
   const b = body(STORE, "async function addPasskeyOnThisDevice(");
   assert.match(b, /if \(_kind !== "passkey" \|\| _deviceRole\) throw new MainPasskeyRequiredError\(\);/);
   const envelope = b.indexOf("await writePortabilityEnvelope(");
-  const register = b.indexOf("await _grantDevice(");
+  const register = b.indexOf("await _addCoOwnerWithRecord(added.address");
   const recordWrite = b.indexOf("await writePasskeyRecord(");
   assert.ok(envelope > 0 && register > envelope && recordWrite > register);
   const grant = body(STORE, "async function _grantDevice(");
@@ -187,9 +187,11 @@ test("adding excludes the main passkey AND every passkey this device added befor
 
 test("more than one passkey needs an unlocked account: the screen follows the server's answer", () => {
   const src = readFileSync(fileURLToPath(new URL("../src/lib/components/passkeys/YourPasskeys.svelte", import.meta.url)), "utf8");
-  assert.match(src, /canAdd = res\.data\.canAddDevices === true;/);
+  const data = readFileSync(fileURLToPath(new URL("../src/lib/auth/your-passkeys-data.ts", import.meta.url)), "utf8");
+  assert.match(data, /canAdd: res\.data\.canAddDevices === true/);
+  assert.match(src, /canAdd = res\.canAdd;/);
   const markup = src.slice(src.indexOf("</script>"));
-  const gate = markup.indexOf("{:else if !canAdd}");
-  assert.ok(gate > 0 && gate < markup.indexOf("Link another device</button>"), "no link or move offer before the gate");
-  assert.ok(gate < markup.indexOf("Move to another password manager"));
+  const gate = markup.indexOf("{#if !canAdd}");
+  assert.ok(gate > 0 && gate < markup.indexOf("Add another device</button>"), "no add offer before the gate");
+  assert.ok(gate < markup.indexOf("Add a password manager here"));
 });

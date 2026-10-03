@@ -55,7 +55,7 @@ import {
   clearPublicKeys,
 } from "./identity-seed.js";
 import { SEED_UNLOCK_POLICY, unlockExpiry } from "./seed-unlock-policy.js";
-import { makeMainPendingKey, linkedEnvelopePendingKey } from "./make-main-key.js";
+import { linkedEnvelopePendingKey } from "./make-main-key.js";
 import { requestChallenge, sha256Hex } from "./request-challenge.js";
 import { apiBase } from "../api/http.js";
 import { unlocksWhen } from "../attendee/gate/unlock-copy.js";
@@ -261,9 +261,9 @@ function _getSeedAddress(): string | null {
 const SEED_UNAVAILABLE_MESSAGE = "Your account keys aren't on this device. Sign in again to fetch them.";
 
 export const MAIN_PASSKEY_REQUIRED_MESSAGE =
-  "This needs your main passkey. Use that device, or make this device the main one in Your passkeys.";
+  "This device was linked before every passkey could do everything. To do this here, remove it and add it again from one of your other passkeys.";
 
-/** An owner-only action (names, backups, adding passkeys) from an added passkey. */
+/** An owner-only action (names, adding passkeys) from a device linked before co-owners (#746). */
 export class MainPasskeyRequiredError extends Error {
   constructor() {
     super(MAIN_PASSKEY_REQUIRED_MESSAGE);
@@ -280,10 +280,10 @@ export class DeviceRemovedError extends Error {
 }
 
 const DEVICE_REMOVED_MESSAGE =
-  "This device was removed from the account - ask for a new invite from your main passkey.";
+  "This device was removed from your account. To use it again, add it from one of your other passkeys.";
 const NOT_LINKED_MESSAGE =
-  "Couldn't confirm this passkey is linked to the account. Try again - if it keeps happening, add it again from your main passkey.";
-const NOT_SET_UP_MESSAGE = "This passkey wasn't fully set up. Add it again from your main passkey.";
+  "Couldn't confirm this passkey is on your account. Try again - if it keeps happening, add it again from one of your other passkeys.";
+const NOT_SET_UP_MESSAGE = "This passkey wasn't fully set up. Add it again from one of your other passkeys.";
 const KEYS_UNREACHABLE_MESSAGE = "Couldn't fetch your account keys right now - try again.";
 const VERDICT_UNREACHABLE_MESSAGE = "Couldn't check this passkey with WoCo just now - try again in a moment.";
 
@@ -804,7 +804,6 @@ async function _restoreCachedAuth(): Promise<void> {
   if (_kind === "passkey") {
     _deviceRole = (await _boundKernelFor(seedAddr))?.role === "device";
     if (_deviceRole && _parent) void _upgradeIfCoOwner(seedAddr, _parent);
-    void resumeMakeMain().catch((e) => console.warn("[auth] make-main resume (retried next time):", e));
     void _retryLinkedEnvelope(seedAddr);
     // Locked at rest (#746 fix 1): present only when this tab already unlocked it,
     // or when SEED_UNLOCK_POLICY keeps a copy that opens without the passkey. A
@@ -2355,14 +2354,16 @@ async function _currentCoOwners(): Promise<{ root: "ecdsa" | "weighted" | "none"
  * Put `key` on the account's co-owner list (#746): the switch the first time (one
  * sponsored op that also deploys a counterfactual account), renew after. Signed by
  * this device's key; the Kernel is rebuilt afterwards because its root may have changed.
+ * True when this call added it; false when it was on the list already.
  */
-async function _addCoOwner(key: string): Promise<void> {
+async function _addCoOwner(key: string): Promise<boolean> {
   await _ensureKernel();
   const { root, list } = await _currentCoOwners();
-  if (list.includes(key.toLowerCase())) return;
+  if (list.includes(key.toLowerCase())) return false;
   const [{ listWith }, { setCoOwners }] = await Promise.all([import("./co-owner-calls.js"), import("./kernel-account.js")]);
   await setCoOwners(_kernel!, root, listWith(list, key));
   _kernel = null;
+  return true;
 }
 
 /**
@@ -2372,11 +2373,23 @@ async function _addCoOwner(key: string): Promise<void> {
  * later failures (an undelivered link answer) remove it through `revoke`.
  */
 async function _addCoOwnerWithRecord<T>(key: string, record: () => Promise<T>): Promise<T> {
-  await _addCoOwner(key);
+  // Only what THIS call put on the list is ever taken back: a key already on it is a
+  // passkey of the account's, record or not (background commit review).
+  const added = await _addCoOwner(key);
   try {
     return await record();
   } catch (e) {
-    await _removeCoOwner(key).catch((undo) => console.error("[auth] could not take back a passkey without a record:", undo));
+    if (added) {
+      try {
+        await _removeCoOwner(key);
+      } catch (undo) {
+        // Never silent: the key still has access until someone removes it.
+        console.error("[auth] could not take back a passkey without a record:", undo);
+        throw new Error(
+          "The new passkey was added to your account but couldn't be saved. Remove it in Your passkeys before trying again.",
+        );
+      }
+    }
     throw e;
   }
 }
@@ -2643,8 +2656,8 @@ async function approveDeviceLink(code: Uint8Array, offer: import("./device-link.
 }
 
 // ---------------------------------------------------------------------------
-// Making a linked device the main passkey (#746 step 4). The flows live in the
-// lazily loaded `make-main.ts`; this store lends it only what needs its state.
+// A passkey's role (#746). Every passkey on the account's co-owner list is an
+// owner here; the chain decides (`_upgradeIfCoOwner`, `_loginAddedPasskey`).
 // ---------------------------------------------------------------------------
 
 /** This passkey is the account's owner now. */
@@ -2658,96 +2671,6 @@ async function _becomeOwner(seedAddr: string, parent: string): Promise<void> {
   }
 }
 
-/** This passkey handed the account to another: a linked device from now on. */
-async function _becomeDevice(seedAddr: string, parent: string): Promise<void> {
-  await _putDeviceBinding(seedAddr, parent);
-  await _clearRecoveryBinding(seedAddr);
-  clearVerifiedBinding("passkey", seedAddr);
-  clearCachedKernelAddress("passkey", seedAddr);
-  if (_seedAddress?.toLowerCase() === seedAddr) {
-    _deviceRole = true;
-    _kernel = null;
-  }
-}
-
-/**
- * Same-phone make-main (#746 step 4): this tab carries on as the new main passkey,
- * with the key its sheet just gave, so nobody signs in again. The seed is the same,
- * so the feed signer, issuing key and attendee key do not change - only which
- * passkey opens them. Written in recoverAndRekey's order: the binding first (it is
- * what every other write keys off), then the seed, the pin, the address.
- */
-async function _adoptNewMain(
-  key: { address: string; privateKey: string; prfSecret: string },
-  credential: import("./passkey-account.js").PasskeyCredentialHandle,
-  { parent, seed }: { parent: string; seed: string },
-): Promise<void> {
-  const previous = _seedAddress?.toLowerCase();
-  const self = key.address.toLowerCase();
-  if (_kind !== "passkey" || !previous || _parent?.toLowerCase() !== parent) throw new Error(_seedLockedMessage());
-  await _becomeOwner(self, parent);
-  await storeLockedSeed(self, parent, seed, key.prfSecret);
-  await pinPasskeyCredential(credential);
-  await putKV(StorageKeys.SEED_ADDRESS, self);
-  // What opened the old main's keys without its passkey goes with it, as at sign-out.
-  await clearDeviceUnlock(previous).catch(() => {});
-  _passkeyPrivateKey = key.privateKey;
-  _passkeyPrfSecret = key.prfSecret;
-  _seedAddress = self;
-  _deviceRole = false;
-  _kernel = null;
-  _setUnlockedSeed(self, parent, seed);
-  // The session here was the old main's: the next request mints one with this key.
-  await _restoreAuthAfterRotation();
-}
-
-function _makeMainHost(): import("./make-main.js").MakeMainHost {
-  return {
-    apiBase,
-    account: () => ({
-      passkey: _kind === "passkey",
-      parent: _parent?.toLowerCase() ?? null,
-      self: _seedAddress?.toLowerCase() ?? null,
-      device: _deviceRole,
-      session: !!_sessionAddress,
-    }),
-    ownKey: async () => {
-      await _ensurePasskeyKey();
-      return _passkeyPrivateKey;
-    },
-    freshMainPasskey: _freshMainPasskey,
-    unlocked: () => ({ seed: _unlockedSeed(), prf: _passkeyPrfSecret }),
-    kernel: async () => {
-      await _ensureKernel();
-      return _kernel;
-    },
-    signGrant: _signGrant,
-    becomeOwner: _becomeOwner,
-    becomeDevice: _becomeDevice,
-    adoptNewMain: _adoptNewMain,
-    lockedMessage: _seedLockedMessage,
-  };
-}
-
-async function makeThisDeviceMain(
-  opts: import("./make-main.js").MakeThisDeviceMainOptions,
-): Promise<{ registered: boolean }> {
-  return (await import("./make-main.js")).makeThisDeviceMain(opts, _makeMainHost());
-}
-
-/** Your passkeys, main device: make a passkey this device added the main one. */
-async function prepareMakeAddedMain(target: import("./device-link.js").PairedDevice) {
-  return (await import("./make-main.js")).prepareMakeAddedMain(target, _makeMainHost());
-}
-
-async function approveMakeMain(
-  code: Uint8Array,
-  offer: import("./device-link.js").MakeMainOffer,
-  onStep?: (step: "waiting" | "changing" | "finishing") => void,
-): Promise<{ registered: boolean }> {
-  return (await import("./make-main.js")).approveMakeMain(code, offer, _makeMainHost(), onStep);
-}
-
 /** A linked passkey whose envelope write failed at link time (`device-link.ts` leaves
  *  the marker): write it now, once there is a session and the PRF output is here. One
  *  storage read otherwise. */
@@ -2759,18 +2682,6 @@ async function _retryLinkedEnvelope(seedAddr: string): Promise<void> {
   } catch {
     /* retried at the next sign-in */
   }
-}
-
-/** Finish a make-main this device took part in. One storage read unless one is waiting. */
-async function resumeMakeMain(): Promise<boolean> {
-  const parent = _parent?.toLowerCase();
-  if (_kind !== "passkey" || !parent) return true;
-  try {
-    if (!globalThis.localStorage?.getItem(makeMainPendingKey(parent))) return true;
-  } catch {
-    return true;
-  }
-  return (await import("./make-main.js")).resumeForHost(_makeMainHost());
 }
 
 async function loginPasskeyResult(
@@ -4604,10 +4515,6 @@ export const auth = {
   addPasskeyOnThisDevice,
   linkThisDevice,
   approveDeviceLink,
-  makeThisDeviceMain,
-  approveMakeMain,
-  prepareMakeAddedMain,
-  resumeMakeMain,
   removePasskey,
   get isConnected() { return isConnected; },
   get isAuthenticated() { return isAuthenticated; },

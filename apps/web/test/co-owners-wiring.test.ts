@@ -34,8 +34,11 @@ test("linking and adding put the new key on the list BEFORE its device record (a
   assert.match(add, /await _addCoOwnerWithRecord\(added\.address, \(\) =>\s*_grantDevice\(ownerKey, parent, added\.address,/);
   // On the list first; a failed record takes it off again - never full control without a record.
   const both = body(STORE, "async function _addCoOwnerWithRecord<T>(");
-  assert.ok(both.indexOf("await _addCoOwner(key);") < both.indexOf("return await record();"));
-  assert.match(both, /catch \(e\) \{\s*await _removeCoOwner\(key\)/);
+  assert.ok(both.indexOf("const added = await _addCoOwner(key);") < both.indexOf("return await record();"));
+  // Only what this call added is taken back, and a failed undo is never silent.
+  assert.match(both, /if \(added\) \{\s*try \{\s*await _removeCoOwner\(key\);/);
+  assert.match(both, /throw new Error\(\s*"The new passkey was added to your account but couldn't be saved/);
+  assert.match(body(STORE, "async function _addCoOwner("), /if \(list\.includes\(key\.toLowerCase\(\)\)\) return false;/);
 });
 
 test("a list change is signed by this device and the Kernel is rebuilt after it", () => {

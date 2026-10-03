@@ -5,9 +5,9 @@
   import PairingCode from "./PairingCode.svelte";
 
   /**
-   * "Link this device" (#746 step 4), on the device being added: make its own passkey,
-   * show a code for the main device to scan, and sign in once that device answers.
-   * Nothing is stored here until the main device has confirmed and the server agrees.
+   * "Add this device" (#746), on the device being added: make its own passkey, show a
+   * code for one of the account's devices to scan, and sign in once it answers. Nothing
+   * is stored here until that device has confirmed and the server agrees.
    */
 
   let stage = $state<"intro" | "creating" | "waiting" | "linking" | "done">("intro");
@@ -65,15 +65,15 @@
 </script>
 
 <section class="link-this">
-  <h2>Link this device</h2>
+  <h2>Add this device</h2>
 
   {#if auth.isConnected && stage !== "done"}
     <p class="muted">You're already signed in on this device.</p>
     <button class="btn btn--ghost" onclick={() => navigate("/passkeys")}>Your passkeys</button>
   {:else if stage === "intro" || stage === "creating"}
     <p class="muted">
-      You'll make a passkey on this device, then confirm from the device you already use. Nothing changes until that
-      device confirms.
+      You'll make a passkey on this device, then confirm on the device you already use. Nothing changes until it
+      confirms.
     </p>
     <button class="btn btn--primary" onclick={start} disabled={stage === "creating"}>
       {stage === "creating" ? "Making a passkey…" : "Make a passkey for this device"}
@@ -83,8 +83,8 @@
     </button>
   {:else if stage === "waiting"}
     <p class="muted">
-      On the device you already use, open WoCo, go to Your passkeys and choose Link another device. Scan this code, or
-      type it there:
+      On the device you already use, open WoCo, go to Your passkeys and tap Add another device. Scan this code, or type
+      it there:
     </p>
     {#if code}<PairingCode qr={code.qr} typed={code.typed} />{/if}
     <p class="muted">Waiting for your other device… The code works for 10 minutes.</p>
@@ -93,7 +93,8 @@
     <p class="muted">Linking…</p>
   {:else}
     <p class="ok">
-      This device is linked{joined ? ` to ${joined}` : ""}. It signs in with the passkey you just made.
+      This device is on your account{joined ? `, ${joined}` : ""}. It signs in with the passkey you just made and can do
+      everything your other device can.
     </p>
     <button class="btn btn--primary" onclick={() => navigate("/home")}>Continue</button>
   {/if}
