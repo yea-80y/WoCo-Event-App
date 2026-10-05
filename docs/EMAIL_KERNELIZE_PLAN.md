@@ -1,5 +1,19 @@
 # Email-Kernelize Plan — give Web3Auth (email/social) users a ZeroDev Kernel
 
+Status (2026-10-05): P1-P3 are on main (d591bbf, e4c1900, c4576e3): a `web3auth` login's parent
+is a Kernel (`apps/web/src/lib/auth/auth-store.svelte.ts:145-157`). This file is now a record;
+where it disagrees with the code, the code wins:
+- Change 2 was not built as written - the raw Web3Auth key, not a Kernel 1271 signer, signs
+  `AuthorizeSession` (`auth-store.svelte.ts:206-211`).
+- The feed signer is HKDF from the identity seed (info `woco/feed-signer/v1`,
+  `packages/shared/src/crypto/feed-signer.ts:5`), not a keccak of the raw key under its own
+  domain. "POD" is the identity seed now (#518, #532).
+- P2's target is gone: EAS and its session key are deleted (#475, #476); likes/follows are
+  Swarm statements on the user's own feed, no userOp.
+- The Kernel is on Arbitrum One (42161), not Arbitrum Sepolia (`kernel-account.ts:3`).
+- P4 is moot: shops are off (`shopAllowed = false`) and organising needs a passkey account
+  (#768), so an email account is attendee-only.
+
 Status: **P1+P2+P3 BUILT + typecheck-green (2026-06-21), committed (P1 d591bbf,
 P2 e4c1900, P3 c4576e3). NOT yet LIVE-verified** — blocked on the frontend deploy
 (LAUNCH_PLAN step 3; Web3Auth fails on localhost). Run the §Verify checklist the

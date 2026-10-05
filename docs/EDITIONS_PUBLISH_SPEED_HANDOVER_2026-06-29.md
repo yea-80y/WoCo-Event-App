@@ -1,5 +1,9 @@
 # Handover — event publish (create step 1→2) is slow (2026-06-29)
 
+> **Historical record (status 2026-10-05).** A June 2026 handover on slow event publishing (per-object Etherna uploads plus the editions publisher); the editions feed and the
+> v1 claim path it served were later retired (#207), and its "pod" is now "object".
+> Current: [TICKETING.md](./TICKETING.md), [ETHERNA_INTEGRATION.md](./ETHERNA_INTEGRATION.md).
+
 Branch `feat/feed-signer-recovery`. Read `CLAUDE.md` + memory
 `project_client_feeds_editions_gap`, `woco_builder_is_event_creator`,
 `project_etherna_integration`, `project_phase_b_carrier_discovery` FIRST. Terse.

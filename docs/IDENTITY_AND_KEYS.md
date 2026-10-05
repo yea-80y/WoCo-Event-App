@@ -2,8 +2,8 @@
 
 Every key a WoCo account has, what derives it, what it signs, and why it exists.
 
-**Verified against `main` on 2026-09-08.** Every constant below is quoted from the file that
-defines it; that file is the authority, not this document.
+**Verified against `main` (94364b56) on 2026-10-05.** Every constant below is quoted from the
+file that defines it; that file is the authority, not this document.
 
 > **Naming (2026-09-10).** The retired noun is gone from prose AND from every code name,
 > file name and wire literal, so a future 0xPARC integration arrives into an empty
@@ -33,40 +33,38 @@ defines it; that file is the authority, not this document.
      │ AuthorizeSession                 │ the seed: a deterministic signature by
      │ (per session, by the Kernel       │ the RAW key (wallet/email, fixed nonce),
      │  or the EOA)                     │ or HKDF of the PRF output (passkey)
-     ▼                                  │
-  ┌──────────────────────┐              ├──────────────────────────────┐
-  │ SESSION KEY          │              ▼                              ▼
-  │ secp256k1, random    │    ┌───────────────────────┐   ┌────────────────────────┐
-  │ 30-day expiry        │    │ OBJECT-DATA SEED      │   │ CONTENT-FEED SIGNER    │
-  │ Signs every API      │    │ 32 bytes              │   │ secp256k1              │
-  │ request (EIP-191)    │    │ keccak256(sig bytes)  │   │ keccak256(sig bytes)   │
-  └──────────────────────┘    └──────┬────────────────┘   │ Owns the user's        │
-                                     │                     │ content chunks         │
-                    ┌────────────────┼──────────────────┐  └────────────────────────┘
-                    │                │                  │
-                    ▼                ▼                  ▼
-                              ┌──────────────┐ ┌─────────────────────┐
-                              │ ENCRYPTION   │ │ ISSUING KEY         │
-                              │ X25519       │ │ secp256k1           │
-                              │ HKDF         │ │ HKDF, generation-   │
-                              │ "woco/       │ │ parameterised       │
-                              │  encryption/ │ │                     │
-                              │  v1"         │ │ Signs editions +    │
-                              │              │ │ manifests. Identity │
-                              │ Opens sealed │ │ of record = its     │
-                              │ orders       │ │ 20-byte ADDRESS     │
-                              └──────────────┘ └─────────────────────┘
+     ▼                                  ▼
+  ┌──────────────────────┐    ┌──────────────────────────────────────────────┐
+  │ SESSION KEY          │    │ IDENTITY SEED - 32 bytes, NOT a key          │
+  │ secp256k1, random    │    │ the HKDF root of everything below            │
+  │ 30-day expiry        │    └──────┬────────────────┬───────────────┬──────┘
+  │ Signs every API      │           │                │               │
+  │ request (EIP-191)    │           ▼                ▼               ▼
+  └──────────────────────┘  ┌────────────────┐ ┌──────────────┐ ┌──────────────┐
+                            │ ISSUING KEY    │ │ CONTENT-FEED │ │ ENCRYPTION   │
+                            │ secp256k1      │ │ SIGNER       │ │ KEYPAIR      │
+                            │ "woco/issuing/ │ │ secp256k1    │ │ X-Wing       │
+                            │  v1/{gen}"     │ │ "woco/feed-  │ │ (ML-KEM-768  │
+                            │ Signs          │ │  signer/v1"  │ │  + X25519)   │
+                            │ manifests,     │ │ Owns the     │ │ Opens sealed │
+                            │ certs, binding │ │ user's       │ │ orders and   │
+                            │ Identity = its │ │ content      │ │ contact      │
+                            │ 20-byte ADDRESS│ │ chunks       │ │ lists        │
+                            └────────────────┘ └──────────────┘ └──────────────┘
 ```
 
-Four keys, and the count is not incidental — each one exists because a *role* had to be
-separated, not because a layer was convenient. There used to be a fifth, an ed25519 holder
-identity derived from the seed; it is gone from every launch path (§3a).
+Four keys: the parent, the session key, the issuing key and the content-feed signer. The seed is
+not one of them; it is the root that also yields the encryption keypair. The count is not
+incidental - each key exists because a *role* had to be separated, not because a layer was
+convenient. There used to be a fifth, an ed25519 holder identity derived from the seed; it is gone
+from every launch path (§3a). The classical X25519 key (`woco/encryption/v1`) still derives from
+the seed for the quarantined credits rail only.
 
 ---
 
 ## 2. Sign-to-derive: ONE signature, and everything hangs off it
 
-There is exactly one sign-to-derive step left. The object-data seed is produced this way; the
+There is exactly one sign-to-derive step left. The identity seed is produced this way; the
 content-feed signer used to have a second signature of its own and no longer does — it is an
 HKDF sibling of this seed (§5).
 
@@ -175,20 +173,24 @@ Two details that took real defects to learn:
 
 ## 3. The siblings off one seed
 
-One 32-byte seed produces two keys on two curves, and their independence is the whole point.
-(A third sibling, an ed25519 holder key, still exists for two out-of-launch-scope rails — but
-nothing on a launch path derives it, and no auth path knows about it: §3a.)
+One 32-byte seed produces the issuing key, the content-feed signer and the encryption keypair,
+and their independence is the whole point. (An ed25519 holder key and a classical X25519 key
+still derive from it for two out-of-launch-scope rails - but nothing on a launch path derives
+them, and no auth path knows about them: §3a.)
 
 | Key | Curve | Derivation | Defined in |
 |---|---|---|---|
-| Encryption | X25519 | `HKDF(sha256, seed, salt="", info="woco/encryption/v1", 32)` | `packages/shared/src/crypto/keys.ts` |
 | Issuing | secp256k1 | `HKDF(sha256, seed, salt="", info="woco/issuing/v1/"+gen, 48)` → scalar | `packages/shared/src/crypto/issuing.ts` |
-| Encryption, post-quantum (#642) | X-Wing (ML-KEM-768 + X25519) | `X-Wing.keygen(HKDF(sha256, seed, salt="", info="woco/encryption/xwing/v1", 32))` | `packages/shared/src/crypto/xwing.ts` |
+| Content-feed signer | secp256k1 | `HKDF(sha256, seed, salt="", info="woco/feed-signer/v1", 48)` → scalar (§5) | `packages/shared/src/crypto/feed-signer.ts` |
+| Encryption (#642) | X-Wing (ML-KEM-768 + X25519) | `X-Wing.keygen(HKDF(sha256, seed, salt="", info="woco/encryption/xwing/v1", 32))` | `packages/shared/src/crypto/xwing.ts` |
+| Encryption, classical (credits rail only) | X25519 | `HKDF(sha256, seed, salt="", info="woco/encryption/v1", 32)` | `packages/shared/src/crypto/keys.ts` |
 
-The X-Wing key replaced the X25519 one on every launch rail (recovery escrow, contact lists,
-orders); the X25519 key survives only for the quarantined credits rail. Sealing is HPKE (RFC 9180) over the X-Wing KEM, one box format
-`{ v: 2, enc, ct }` bound to its use and its subject (`packages/shared/src/crypto/sealed-box.ts`).
-Both modules are subpath imports, loaded only where a box is sealed or opened.
+X-Wing replaced X25519 on every launch rail: orders and contact lists are sealed to this key, and
+the recovery escrow's key wrap uses the same KEM under the guardian's own key. The X25519 key
+survives only for the quarantined credits rail and the private statement-topic salt
+(`statement/discipline.ts`). Sealing is HPKE (RFC 9180) over the X-Wing KEM, one box format `{ v: 2, enc, ct }` bound to its use and its subject
+(`packages/shared/src/crypto/sealed-box.ts`). Both modules are subpath imports, loaded only where
+a box is sealed or opened.
 
 ### 3a. The ed25519 holder key is gone from every launch path (#518)
 
@@ -219,8 +221,9 @@ surface reports every attendee as un-certifiable. The organiser's paste path sti
 join comes back when the cert rail migrates to secp256k1.
 
 **The distinction that matters, because the obvious reading is wrong:** the **seed is not the
-ed25519 account.** The seed is 32 bytes — `keccak256` of one EIP-712 signature — and it is the
-root for every derivation. ed25519 happens to use it *verbatim*; the encryption and issuing keys
+ed25519 account.** The seed is 32 bytes — `keccak256` of one EIP-712 signature, or HKDF of the
+PRF output for a passkey — and it is the root for every derivation. ed25519 happens to use it
+*verbatim*; the encryption and issuing keys
 use it through HKDF. Dropping the ed25519 derivation from the launch paths therefore:
 
 - keeps the seed,
@@ -365,7 +368,7 @@ more.
 ## 6. Sealed order envelopes
 
 When an attendee buys, their order data is encrypted so that **only the organiser** can read it,
-and it stays encrypted on public storage. This runs on every claim, even for an event with no
+and it stays encrypted on public storage. This runs on every sale, even for an event with no
 order-form fields at all.
 
 Since #642 the box is the **v2 sealed box** (`packages/shared/src/crypto/sealed-box.ts`): HPKE
@@ -387,20 +390,28 @@ succeeds) and the feed carries only `encryptionKeyRef`, its content address
 (`packages/shared/src/event/order-key.ts`). A buyer's browser fetches the chunk from the WoCo
 gateway and refuses it unless it hashes to the ref; the order form renders only with a verified
 key, and a checkout with an order form is refused rather than taken unsealed. The organiser's
-client refuses to sign a server-assembled feed naming any other ref. The sealed box goes to Swarm
-and its reference goes **on chain** as the ticket's `orderRef`; the dashboard opens each order
-with the slot's own series. Checkout takes only references the server stored itself — as
-canonical bytes, so a copy of a box lands on its original's reference, with a signed token for a
-pre-uploaded one — and one completed sale per reference, so no ticket can carry another buyer's
-sealed details (#661, `apps/server/src/lib/stripe/order-ref.ts`).
+client refuses to sign a server-assembled feed naming any other ref. Its reference goes **on
+chain** as the ticket's `orderRef`; the dashboard opens each order with the slot's own series.
+Checkout takes only references the server issued itself — over canonical bytes, so a copy of a box
+lands on its original's reference, with a signed token from `prepare-order` — and one completed
+sale per reference, so no ticket can carry another buyer's sealed details (#661,
+`apps/server/src/lib/stripe/order-ref.ts`).
+
+**Paid-only storage (#546).** The box reaches Swarm only once its sale is paid. Until then the
+server holds the ciphertext (`.data/held-orders/`); an unpaid hold is deleted after 24 hours. A
+paid box is stored on a dedicated attendee batch, and the server records which batch slot holds
+each chunk (`attendee-slots.json`), so an operator can erase one order on request by overwriting
+those slots (`lib/attendee-batch/burn.ts`). That reaches every storer of our stamp; it cannot
+reach a copy someone else stamped, or a retrieval cache. When a browser sent no box, the server seals a minimal order
+itself (ticket type, the buyer's email and address).
 
 Contact lists use the same box with `woco/marketing-list/v2:{owner}`, gzipped first (a size
 signal only exploitable with chosen content AND repeated observation; a list too large to store
 is the certain failure). The recovery escrow wraps its key with the same KEM through HPKE.
 
 The retired X25519-only ECIES survives only inside the credits rail
-(`apps/web/src/lib/credits/legacy-seal.ts`, out of launch scope), and a test fails if anything
-else uses it.
+(`apps/web/src/lib/credits/legacy-seal.ts`, out of launch scope); `crypto/ecies.ts` is gone, and
+`apps/web/test/no-legacy-seal.test.ts` fails if anything else uses the old seal.
 
 ---
 
@@ -410,15 +421,21 @@ Nothing is signed at login. Login only connects.
 
 | Trigger | What it establishes |
 |---|---|
-| First action needing the API | `ensureSession()` → the EIP-712 delegation |
-| Publish, or first dashboard decrypt | `ensureIdentitySeed()` → the account seed (the only remaining derivation signature) |
+| First action needing the API | `auth.ensureAccountSetup({ identity: false })` → the EIP-712 delegation |
+| Publish, or first dashboard decrypt | `auth.ensureAccountSetup({ identity: true })` → the delegation and the seed, whichever this device lacks |
 | Publish (issuance) | `ensureIssuingKey()` → HKDF from the seed, no prompt |
 | First content write | the content-feed signer → HKDF from the seed, no prompt of its own |
+| An organiser action on a passkey account | `auth.ensureOrganiserUnlock()` → opens the locked seed for the unlock window (§2) |
 
-Only two rows there cost a signature. The issuing key and the feed signer are computed from the
-seed, so once it exists they are free — and a web3auth login establishes the seed silently at
-login (its raw key is in memory and ethers signs it with RFC-6979), which is what makes a cold
-device render that user's own profile and avatar instead of a blank.
+`ensureAccountSetup` is the ONE entry point. It plans the outstanding steps
+(`lib/auth/account-setup-plan.ts`) and, for external wallets only, explains them first; call sites
+never chain `ensureSession()` and `ensureIdentitySeed()` themselves, and never count the prompts.
+How many a person sees depends on the login kind: a passkey sees no dialog (its session is signed
+silently and its seed comes from the PRF output), a web3auth login signs both silently - the seed
+at login, because its raw key is in memory and ethers signs with RFC-6979, falling back to one
+confirm if that fails - and an external wallet shows two popups. The silent web3auth seed is what
+makes a cold device render that user's own profile and avatar instead of a blank. The issuing key
+and the feed signer are computed from the seed, so once it exists they are free.
 
 `ensureIssuingKey()` (`apps/web/src/lib/auth/issuing-key.ts`) is a thin wrapper with one rule:
 **fail loud, never fall through.** With no seed available it throws. It must never quietly hand
@@ -436,7 +453,7 @@ The authoritative list is the `AuthKind` union in `packages/shared/src/auth/type
 
 | Shown as | Kind | Parent account | State |
 |---|---|---|---|
-| Passkey | `passkey` | ZeroDev Kernel on Arbitrum One; sudo signer is a secp256k1 key derived from the passkey's PRF extension | Live |
+| Passkey | `passkey` | ZeroDev Kernel on Arbitrum One. Root validator: ECDSA over a secp256k1 key derived from the passkey's PRF output, moved to WeightedECDSA (every passkey a co-owner) when a second passkey is added (§9) | Live. The only kind that can organise (#768) |
 | Email | `web3auth` | Also a Kernel | Live, on a Web3Auth **devnet** project |
 | Wallets | `web3` | MetaMask / WalletConnect EOA | Live |
 | Coinbase | `coinbase` | Coinbase Smart Wallet | Built, `coinbaseLoginAllowed = false` |
@@ -445,14 +462,16 @@ The authoritative list is the `AuthKind` union in `packages/shared/src/auth/type
 **Why Coinbase Smart Wallet is off** is worth understanding, because it is the clearest
 illustration of what sign-to-derive costs. A smart account's signatures are not
 byte-reproducible: ERC-6492-wrapped before deployment, bare ERC-1271 after — definitional, not a
-quirk. Feeds already park CSW users; object-data identity does not. So a CSW user's
+quirk. Feeds already park CSW users; the identity seed does not. So a CSW user's
 ticket-signing and dashboard-decryption identity would **fork on an ordinary logout→login**. The
 fix is a CSW escrow path (a random seed and feed key, escrowed and restored per device), not a
 workaround. The rule it establishes: **never sign-to-derive for a smart account.**
 
-Passkey and email logins are both Kernels, so both are subject to credential rotation and both
-depend on escrow for identity stability. `apps/web/src/lib/auth/` carries the full state machine;
-`auth-store.svelte.ts` is the entry point.
+Passkey and email logins are both Kernels. An email account's credential can rotate on guardian
+recovery, so its identity stability depends on escrow (stored seed wins). A passkey account adds
+no email or wallet backup (§9); its way back is its synced passkey and the devices it has linked,
+and its seed travels between devices sealed. `apps/web/src/lib/auth/` carries the full state
+machine; `auth-store.svelte.ts` is the entry point.
 
 A Kernel can hold a sub-ENS name, and the registry treats the account as the holder: whatever
 the account can be made to do, the name follows. WoCo's Kernels install only the guardian hook,
@@ -460,8 +479,8 @@ and that must stay so. A session key or an executor module on a name-holding Ker
 holder authority outside the registry's own rules (audit 950 design review).
 
 **Removed, and not to be reintroduced from older docs:** the Para embedded wallet and the local
-encrypted browser account were both deleted to cut eager bundle size. `SiteLoginModal.svelte:3`
-and `backup-signer.ts:173` carry comments explaining why.
+encrypted browser account were both deleted to cut eager bundle size (`e127c97`).
+`SiteLoginModal.svelte` carries a comment explaining why.
 
 ---
 
@@ -587,7 +606,7 @@ sealed to, and a permanent one, since a Swarm copy cannot be recalled. So a pass
 Email-login accounts keep their options. A passkey account's way back is its synced passkey and the
 devices it links. The refusal is the app's: the server cannot tell a passkey account from an email one.
 
-**Organising needs a passkey account (#746 step 5).** The organiser workspace opens only for a
+**Organising needs a passkey account (#746 step 5, #768).** The organiser workspace opens only for a
 passkey account (`lib/auth/organiser-account.ts`, gated in `CreatorApp.svelte` so deep links land on
 the explanation), and "Start hosting" signs up with a passkey only. The server cannot tell a passkey
 smart account from an email one - both are an EOA owning a Kernel, and the PRF never reaches it - but
@@ -597,8 +616,10 @@ from a new passkey account; rotating their Kernel to a passkey would keep the em
 (an in-place upgrade with a fresh passkey-rooted seed is planned, not built). Stripe onboarding links
 and the embedded onboarding session refuse a non-smart-account parent too.
 
-Paths that deliberately need no session: guest Stripe checkout from the embed widget, the public
-ticket page `/t/…`, and the ENS CCIP-Read gateway.
+Paths that deliberately need no session: guest Stripe checkout from the embed widget, the door
+scanner (a door-pass header instead), and the ENS CCIP-Read gateway. The ticket page needs no
+server at all: it is a static file with the ticket in the URL fragment (#690); the old `/t/…`
+route answers 410.
 
 Server side: `apps/server/src/middleware/auth.ts` and
 `apps/server/src/lib/auth/verify-delegation.ts`. Client side:
@@ -610,14 +631,16 @@ Server side: `apps/server/src/middleware/auth.ts` and
 
 | Signer | Signs | Never signs |
 |---|---|---|
-| Parent account | `AuthorizeSession`; issuer-registry rotation statements (EIP-712) | API requests, feeds, tickets — **and, for a Kernel, the two derivations** (§2) |
+| Parent account | `AuthorizeSession`; issuer-registry rotation statements (EIP-712); on a co-owned passkey account, any one passkey signs userOps and ERC-1271 alone | API requests, feeds, tickets — **and, for a Kernel, the seed derivation** (§2) |
 | Session key | Every authenticated API request (EIP-191 canonical challenge) | Anything durable |
 | Content-feed signer | The user's content chunks (profile, event, site, likes, follows) | Credentials |
 | Issuing key | `woco.manifest.v2`, `woco.cert.v1`, the issuer binding | Individual editions |
 | Holder identity (ed25519) | Cert possession challenges, credit statements — **both out of launch scope**, and it is derived on demand from the seed rather than held (§3a) | Tickets. Editions. Manifests. Anything on a live path |
 | **Ticket burner (secp256k1)** | **The ticket.** One per-purchase key signs one canonical message, then is discarded. Its address is the on-chain `slotOwner` — the verifier's trust root | Anything else, ever |
 | Platform feed key | More than its name suggests: the directory pointer, the **site events index** (a deliberate trust carrier — see below), the creator site directory, the issuer-registry log relay, recovery status, the marketing-list pointer, shop config, the passport collection, **and any event or site feed whose client sent no feed signer** | Producing a signature for a key it does not hold — it cannot forge a user's signed object |
-| Sponsor wallet | Chain transactions: `registerEvent`, `batchClaimFor` | Anything a user authors |
+| Ticket sponsor wallet | Chain transactions: `registerEvent`, `batchClaimFor` | Anything a user authors |
+| Names sponsor (a separate key) | Sub-ENS mints, and relaying holder-signed pointer and release writes | Anything that repoints a name on its own - the platform holds no such key |
+| Attendee-batch stamper | Postage stamps for paid order chunks, and the burners that erase one (#546) | Any feed or user content |
 | ENS gateway key | CCIP-Read answers for `*.woco.eth` | Anything else |
 
 The invariant behind the whole table: **the parent never signs feeds or requests, and no signer
@@ -633,7 +656,9 @@ the directory entry, or the site events index, which `routes/sites.ts` calls "a 
 trust carrier ... consumed on the claim/payment path".
 
 So a compromised server cannot forge a signed object, but it **can point a reader at a different
-author**. Nothing in the bytes contradicts it.
+author**. Nothing in the bytes contradicts it. Since #670 the server pins each event's signer at
+create (`.data/event-feed-signers.json`, write-once), so a request can no longer re-point the money
+path - but that record is still server state, not something a reader can check.
 
 The repository already contains the fix for this shape of problem, applied to a different key:
 the **issuer registry** (`packages/shared/src/issuer/types.ts`) is parent-signed EIP-712

@@ -1,5 +1,9 @@
 # Coaster Credits — Rider-Signed Credentials Plan
 
+> **Status (2026-10-05).** Design record. BUILT since: `woco.credit.v1` laps (`packages/shared/src/credit/`, `apps/web/src/lib/credits/`), the verification page, collecting screen and overlay, credits in the passport (#604) and a private lap-time log (#602, #606). The code marks the rail out of launch scope.
+> Still holds: the frozen discipline and payloads, the chain boundary, the identity and visibility decisions. Superseded: issuers sign with the secp256k1 issuing key (#443); the coaster / milestone / commemorative credential layer is not built and badge creation is off (`badgesAllowed = false`, #664); the ed25519 holder key is derived on demand from the seed (`apps/web/src/lib/credits/holder-key.ts`, #518); private credits seal with the quarantined X25519 box in `apps/web/src/lib/credits/legacy-seal.ts` (#642).
+> Social subjects are account addresses (see [SWARM_SOCIAL_PLAN.md](./SWARM_SOCIAL_PLAN.md)). "POD" below means object (formerly called POD; renamed object, 2026-09-10).
+
 STATUS (2026-08-14): P0 FROZEN. The statement discipline and the v1 payload schemas are
 frozen — see "FROZEN AT P0" below; the normative code is
 `packages/shared/src/{statement,credit,social}/`. Build not started. Identity and
@@ -1234,7 +1238,8 @@ two rules fixed, contents open, design before P1); the exit-token format inside 
 (P3, independently versioned); the evidence-manifest type (view plane); witness batches (P4);
 subject-bytes32 derivation for social subjects (#172's build — the profile namehash in
 `likes/subject.ts` is identity-level, survives the EAS retirement, and remains the intended
-derivation).
+derivation). [2026-10-05: superseded. A profile subject is the account address
+(`packages/shared/src/social/subject.ts`, 2026-09-03); `likes/` is deleted.]
 
 ## Data structures
 
@@ -1925,6 +1930,9 @@ new facts.
   `deriveEncryptionKeypairFromPodSeed` (`packages/shared/src/crypto/keys.ts:71`) — deterministic,
   same on any device, no extra wallet prompt. Seal/open are `sealJson`/`openJson`
   (`packages/shared/src/crypto/ecies.ts`). No new crypto and no new key ceremony.
+  [2026-10-05: `ecies.ts` is gone. The same bytes now live in
+  `apps/web/src/lib/credits/legacy-seal.ts`, quarantined to this rail (#642); the key is
+  `deriveEncryptionKeypairFromSeed`.]
 - Publishing writes the statement in the clear. An indexer cannot count what it cannot read,
   so encrypted credits are the rider's private record and published ones feed public counts.
 

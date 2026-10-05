@@ -3,9 +3,11 @@
 Two standalone IIFE bundles for organiser pages outside the platform:
 
 - `dist/woco-embed.js` — `<woco-tickets>`: event card + ticket series with an
-  inline buy flow. Email (+ any order-form fields, sealed client-side to the
-  organiser's X25519 key) → guest Stripe checkout → ticket delivered by email.
-  No wallet, no passkey, no account: the v2 rail mints at payment, so the
+  inline buy flow. Opening the buy panel holds the seats, with a countdown
+  (#568). Email (+ any order-form fields, sealed client-side to the organiser's
+  X-Wing key, #642) → guest Stripe checkout → back to the organiser's page,
+  which confirms the order (#567) → ticket delivered by email.
+  No wallet, no passkey, no account: the ticket mints at payment, so the
   widget's only job is to start a checkout session honestly.
 - `dist/woco-count.js` + `dist/overlay.html` — `<woco-lap-count>` and the OBS
   overlay (see `vite.count.config.ts` for why the overlay is one file).

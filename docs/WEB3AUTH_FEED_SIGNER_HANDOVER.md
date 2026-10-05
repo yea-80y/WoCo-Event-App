@@ -1,5 +1,9 @@
 # Web3Auth client feed-signer — handover (next phase)
 
+> **Historical record (status 2026-10-05).** A July 2026 plan for email (Web3Auth) feed signers derived straight from the Web3Auth key, beside sign-to-derive for wallets;
+> every login kind's feed signer is now an HKDF child of the identity seed (2026-09-10).
+> Current: [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md).
+
 **Opened 2026-07-01 (Opus).** Continues the client-owned content-feeds headline
 (`project_client_feeds_per_kind_settled`). The recovery-escrow de-platforming
 (PLAN §13, commit `77e1666`) is a completed side-branch — this is the return to

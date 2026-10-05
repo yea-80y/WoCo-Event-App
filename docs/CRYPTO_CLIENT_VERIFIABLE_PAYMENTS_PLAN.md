@@ -1,5 +1,28 @@
 # Crypto payments — client-verifiable, chain-anchored money fields (Path B)
 
+> **Status (2026-10-05): OFF - `FEATURES.cryptoPaymentsAllowed = false`** (deferred to #41,
+> `packages/shared/src/features.ts`). `POST /api/payment/quote` returns 403
+> (`apps/server/src/index.ts:536`) and event create refuses a `cryptoEnabled` series
+> (`apps/server/src/routes/events.ts:276`). Path B is **not started**.
+>
+> **Built:** quote signing and onchain payment verification (`apps/server/src/lib/payment/`).
+> `verifyPayment` is now called only by the shop rail, itself off. **No crypto ticket settlement
+> exists:** the `claims.ts` claim route this plan threads through was deleted with the v1 rail
+> (#207) - `claims.ts` serves only claim-status - so there is no crypto purchase path to secure today.
+>
+> **Turning it on needs** (the flag's comment): events registered with a real `priceBaseUnits`
+> (today 0n) plus a client-side `payAndClaimWithPermit` flow. Both live on `WoCoEventV2`
+> (`contracts/src/WoCoEventV2.sol:378`); the live ticket ledger (`WoCoTicketLedger`) has neither, so
+> the crypto rail also needs a decision on which contract carries it.
+>
+> **Superseded facts below (read with these):** `ManifestV1Body` and `packages/shared/src/pod/` are
+> gone. The live manifest is `woco.manifest.v2` (`ManifestV2Body`,
+> `packages/shared/src/edition/types.ts:62`), personal-signed by the organiser's secp256k1 issuing
+> key, not an ed25519 key. It still commits only to supply, issuer and metadata root - **no money
+> fields** - so the gap this plan closes is still real. The name `woco.manifest.v2` that step 1
+> proposes is taken, so a money commit would be a new format version. Line references are from
+> 2026-06 and have moved. "POD" below is the former name of what is now called an object.
+
 > Design doc, opened 2026-06-24. Pickup-ready follow-up to the SiteBuilder
 > client-signed-events work (Path A). **Not started.** Do this when the crypto
 > rail goes live (today Stripe is the only live payment method — memory

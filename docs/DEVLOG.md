@@ -2,6 +2,68 @@
 
 Running history of completed work and roadmap. Stable architecture and conventions live in `CLAUDE.md`.
 
+Entries before 2026-09-10 use the retired noun "POD" for what is now called "object".
+
+---
+
+## Catch-up: merged work, 2026-09-25 to 2026-10-04
+
+Written after the fact from the merged PRs, grouped by theme. Detail lives in each PR.
+
+### Ticketing and money path
+
+- Stripe creates the application fee after `checkout.session.completed`, so every sale read as `foreign` and was dropped. The fee is now waited for; one requested but not yet created is retried, never foreign (#669, #666).
+- Unlisted events sell: each event's feed signer and verified creator are pinned at create in a write-once store, and a feed naming a different creator is refused (#676, #670).
+- Event pages: the page feed is owned by the organiser's signer, and only the event's creator may publish it (#682, #614, #679).
+- Ticket links: no buyer name in the URL (#688); the emailed link opens a static ticket page on Swarm with the ticket in the URL fragment, and `/t` answers 410 (#690); the v1 public ticket-email route is removed (#754).
+- Minimum ticket price of one unit of its currency (#694).
+- Refunds and disputes (#645 part C): one sale record per paid session; a refund or chargeback voids the tickets it paid for, the door answers `refunded`, the orders view flags it, and an open dispute or unsettled refund holds the payout (#696, #699, #700, #702). Single refunds point to the organiser's own Stripe Dashboard (#683).
+- Cancel an event and refund everyone (#644): server record and refund job, an Edit-tab button confirmed by the typed event name, "Cancelled" on the event page (#703, #704, #717); terms cover the platform fee on cancellations and refunds (#695).
+- Door check-in admits a ticket once: one-scanner mode binds the pass to one phone; several-scanner mode claims each admission atomically on the server (#710, #641).
+- Card checkout never opens a wallet - a purchase links to the account only when a session key is already on the device (#712). A single-event page's checkout returns to that page (#747, #567).
+- `/api/health`: a mint-ramp alarm as card mints approach the ledger's hourly cap, and `/api/health/alarms` answers 503 on a red watched section (#673, #672).
+
+### Passkey accounts (#746)
+
+- Sign-in: Samsung Pass sign-up, a wrong-account guard keyed by credential id, tagged backup passkeys (#748); each device remembers which password manager holds its passkey (#756).
+- The seed at rest is locked under a PRF-derived key; organiser actions confirm once, then stay open for 2 hours; everyday posts sign with a cached content-feed signer (#755, #760).
+- More than one passkey per account: signed device grants (#751), "Your passkeys" (#759), linking another device through a code-sealed pairing mailbox (#761, #762, #763); the first added passkey needs the name unlock (#764, #765).
+- Passkey accounts back up by linking a device, not by email or wallet escrow (#767). Organising needs a passkey account; the server's Stripe Connect routes refuse any parent that is not a smart account (#768).
+- Every passkey a co-owner: the Kernel root moves to ZeroDev's WeightedECDSAValidator when a second passkey is added, any passkey can add or remove others, make-main is gone (#770, #771).
+- Sponsorship: a ZeroDev custom gas policy asks our server before paying, bounding which calls, which accounts and how much (#766, #769; part of #758).
+
+### X-Wing sealing (#642)
+
+- The passkey identity seed is an HKDF of the PRF output, set up at login (#724, #725).
+- X-Wing KEM (ML-KEM-768 + X25519), an HPKE adapter and the v2 sealed box (#726).
+- Moved onto it: the recovery escrow and portability envelope, with passkey guardians rooted on their PRF (#728); organiser contact lists (#729); orders - the organiser's X-Wing public key is published as its own chunk and checkout seals to it (#730).
+
+### Attendee order erasure (#546)
+
+- Attendee order chunks are stamped with our own stamper on a dedicated batch, with a write-ahead slot ledger, so a single order can be erased by overwriting its slots (#743).
+- Only paid orders reach Swarm: held from checkout, stored at fulfilment; checkout refuses before charging when an order could not be stored (#744). The batch grows by dilution and the ledger follows it (#745).
+
+### Etherna storage (#689)
+
+- Family by family, reads and writes move together onto Etherna's batch: the manifest (#715), likes, follows and Interested (#718), the referee's referral statement (#723), and recovery data - portability envelope, escrow, guardian index (#740, #741, #742).
+- Server feed reads use the client's per-family store table, so a store that cannot answer reads as unavailable, never absent (#721, #657). A dead Etherna platform batch refuses writes (#678, #610; entry below).
+
+### Names and the name unlock
+
+- The sub-ENS certificate warm-up waits out eth.limo's issuance instead of hanging up at 10 s (#713, #707).
+- The event name plate stops calling the name this event's permanent address - a name belongs to the brand and is repointed (#714, #708).
+- Likes and follows need the same unlock as a name (#753). Four more storage doors close to unverified accounts: site save and deploy need a Stripe-verified organiser or the owner's own Etherna batch, growing a contact list needs a verified organiser, and raw uploads and issuer statements need the name unlock (#757).
+
+### Organiser UX
+
+- One tab bar for WoCo and organiser mode, "Studio" renamed "Organiser" (#750); the dashboard opens on the one next step (#752).
+- Sign-in leads with passkey and email; wallets get their own screen (#686).
+- Home page fee declaration and a How it works page (#687); links between legal documents land on the right document (#685).
+
+### Also
+
+- Builds carry only the env settings their code reads (#684, #660). The Swarm read path leaves the auth-bound client, so the real readers run in tests (#681, #658).
+
 ---
 
 ## A dead Etherna platform batch refuses writes instead of swallowing them (#610, 2026-09-25)

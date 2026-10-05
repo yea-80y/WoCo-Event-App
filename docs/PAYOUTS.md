@@ -2,10 +2,14 @@
 
 Authoritative for payout timing, the Stripe Connect configuration it depends on, and
 the constraints Stripe imposes on it. Pricing/fee arithmetic lives in
-`PRICING_AND_EMAIL.md` (§15/§16 are the current sections); this doc is the mechanism.
+`PRICING_AND_EMAIL.md` (§15-§18 are the current sections); this doc is the mechanism.
 
 Built 2026-07-27. Every Stripe behaviour below is either quoted from their docs with a
 link, or flagged **UNVERIFIED**. Nothing here is inferred.
+
+**Status (2026-10-05):** live on Stripe test keys (pre-launch). New connected accounts get
+the full Stripe Dashboard (§4.1, #650). Refunds, chargebacks and event cancellations now void
+tickets and hold payouts (§2, "Refunds, voids and cancellations").
 
 ---
 
@@ -48,11 +52,17 @@ money".
 | `POST /api/stripe/account-session` | Client secret for the Connect embedded components on the payouts screen (replaced the deleted Express `dashboard-link`). Minted per request, never stored. |
 | `creator/payouts/PayoutsScreen.svelte` | The organiser's Payouts screen at `#/creator/payouts` (issue #93). |
 | `creator/payouts/payouts-model.ts` | Pure grouping/totalling/labelling for that screen. |
-| `test/payout-release.test.ts` · `test/payout-view.test.ts` | 36 tests over the failure modes below; 13 over the organiser-facing response. |
+| `lib/stripe/checkout-provenance.ts` | The webhook fulfils only Checkout Sessions we created, unaltered (#649, §4.1). |
+| `lib/stripe/ticket-sales.ts` | `.data/ticket-sales.json` - the sale record: session → payment intent + minted slots + refunds. Voids go through it (#696). |
+| `lib/stripe/sale-refunds.ts` | Refund and dispute webhooks → ticket voids. Reads Stripe, never issues a refund (#696, #700). |
+| `lib/event/cancellations.ts` · `lib/stripe/cancellation-refunds.ts` | `.data/event-cancellations.json` - cancelled events + one refund row per sale (#703). |
+| `test/payout-release.test.ts` · `test/payout-view.test.ts` | The failure modes below; the organiser-facing response. |
 
 Wired into `routes/stripe.ts`: `interval: "manual"` at account creation; a self-healing
 correction on `account.updated`; a ledger entry on every paid session (tickets **and**
-shop orders); a void on full auto-refund. Sweep starts in `index.ts`.
+shop orders - the shop rail is off, `shopAllowed`); a void on full auto-refund; refund and
+dispute events (`charge.refunded`, `refund.updated`, `refund.failed`, `charge.dispute.*`) reconcile the sale
+record. Sweep starts in `index.ts`.
 
 ### Why a per-sale ledger and not "pay out the balance"
 
@@ -87,6 +97,27 @@ is open the sale is likewise held (`held: "dispute"`).
 never paid, never voided — `markVoid` is terminal and a won dispute gives the money back. Once
 closed, each dispute's balance transactions (the withdrawal, and the reinstatement if won) are
 netted like refunds, so a lost dispute takes the sale to ≤ 0 and the void branch retires it.
+
+### Refunds, voids and cancellations (#645 part C, #644)
+
+Tickets follow the money, so the door never admits a ticket whose payment went back.
+
+- **Refunds.** Organisers refund from their own Stripe Dashboard. The webhook re-reads the
+  charge and voids the refunded tickets (#696); a voided ticket is refused at the door and
+  flagged to the organiser (#699). A chargeback voids every slot of the sale; a won dispute
+  lifts it (#700). An organiser's own (non-WoCo) sale is recognised and ignored.
+- **Cancel an event and refund everyone** (#703, #704). `POST /api/events/:id/cancel`
+  persists the cancellation first; from then checkout, seat holds and fulfilment refuse the
+  event, and a job refunds every sale. The organiser's window closes
+  `ORGANISER_CANCEL_WINDOW_DAYS` after the event ends. An unreadable cancellations file
+  refuses every sale (fail closed).
+- **Payout hold.** A cancelled event's sales are held until each refund settles and are
+  **never forced out by the §3.1 ceiling** - paying out a balance a buyer's refund is waiting
+  on is worse than a late payout (`payout-release.ts`). A journalled intent that includes such
+  a sale is not replayed.
+- **Our fee.** The auto-refund for a sale we could not fulfil returns it (above). Cancellation
+  refunds follow `CANCELLATION_RETURNS_PLATFORM_FEE` (false: kept, as `ORGANISER_TERMS.md` §6
+  says, #695). Rates and policy: `PRICING_AND_EMAIL.md`.
 
 The balance transaction is also where the **settlement currency** comes from: a charge
 presented in a currency the account has no bank account for is converted to the
@@ -158,7 +189,8 @@ business's country."*
 - `payout-policy.ts` subtracts a **7-day safety margin**, so a missed sweep or an API
   outage cannot push us past the deadline. Breaching it is a compliance problem.
 - Ceiling-forced releases are flagged `forcedByCeiling` on the entry, logged as a
-  warning, and tagged in the payout's Stripe metadata. These are the sales where our
+  warning, and tagged in the payout's Stripe metadata. Exception: a cancelled event's
+  sales are never forced out (§2). These are the sales where our
   attendee-protection story does not hold, and they must be visible rather than silent.
 
 **For that exposed tail, delayed payouts provide no protection.** Refunds still work —
@@ -200,7 +232,9 @@ Support also confirmed (same chat): **payout schedules are unaffected by Managed
 
 Since #90, `POST /api/stripe/connect` creates every account with **controller
 properties**, never `type` (`lib/stripe/account-params.ts`, pinned by
-`test/account-params.test.ts`):
+`test/account-params.test.ts`). Connect, onboarding and the account session need a
+smart-account (passkey) organiser; a wallet account gets 403 `PASSKEY_ACCOUNT_REQUIRED`
+(#768):
 
 | | Value | Meaning |
 |---|---|---|
@@ -257,7 +291,7 @@ The rest of this section is the `none` history, kept for its evidence.
 
 #### The earlier move to `none` (2026-07-31)
 
-The `express` row above is what the code still ships. It is wrong, and Stripe
+At the time the code shipped `express`. That was wrong, and Stripe
 said so: `stripe_dashboard.type = "express"` with `losses.payments = "stripe"`
 is **rejected by `accounts.create`** ("your platform must collect fees and be
 liable…", 2026-07-30), and the specialist's second email withdrew the recipe
@@ -293,7 +327,8 @@ sandbox e2e.
 ### 4.2 Requirements do not surface themselves
 
 Stripe can raise a new requirement long after onboarding, and payouts stop when
-it does. With no Stripe dashboard, the organiser has nothing to check. So
+it does. A legacy `none` account has no Stripe dashboard to check, and a `full`
+organiser is not expected to watch one. So
 `account.updated` chases them by email — deduplicated on the outstanding set
 with a 72h cooldown, and recorded in `.data/stripe-requirement-nudges.json`
 with a `firstDueAt` that survives a change of requirement. That file is the
@@ -310,7 +345,7 @@ All in `payout-policy.ts`. Changing them changes when real money moves.
 | Constant | Value | Why |
 |---|---|---|
 | `POST_EVENT_RELEASE_DAYS` | 2 | Covers same-night no-show/refund requests after the event ends. |
-| `SHOP_RELEASE_DAYS` | 7 | Shop/POS goods are delivered immediately — no event to wait for. Without this rule the manual schedule would freeze merchants' shop takings **forever**, since it holds the whole account balance, not just ticket money. |
+| `SHOP_RELEASE_DAYS` | 7 | Shop/POS goods are delivered immediately — no event to wait for. Without this rule the manual schedule would freeze merchants' shop takings **forever**, since it holds the whole account balance, not just ticket money. (Shop rail off, `shopAllowed`.) |
 | `FALLBACK_RELEASE_DAYS` | 14 | Event with no parseable date. Must neither strand funds nor dump them immediately. |
 | `HOLD_CEILING_SAFETY_DAYS` | 7 | Margin inside Stripe's country limit. |
 | Sweep interval | 1h | Payout timing is measured in days. No sweep at boot — a restart loop must not hammer Stripe. |
@@ -336,7 +371,8 @@ for Nice. The fresh-account e2e still has not passed: the 2026-07-30 attempt
 failed on `accounts.create`, and the fix is §4.1's controller change, which is
 itself gated on the same reply.
 
-1. **Self-payout restriction: not needed.** Express Dashboard cannot initiate payouts and
+1. **Self-payout restriction: not needed** (Express/`none` only; for `full` see §4.1).
+   Express Dashboard cannot initiate payouts and
    we have not enabled schedule editing — §3.2 has the verbatim confirmation.
 2. **Schedules survive Managed Risk: confirmed.** "Payout schedule is not affected by
    Managed Risk" (chat, 2026-07-29).

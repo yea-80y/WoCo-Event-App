@@ -1,5 +1,9 @@
 # Handover — replace the EOA event-registration sponsor with the ZeroDev Kernel + paymaster
 
+> **Historical record (status 2026-10-05).** A June 2026 proposal to move onchain event registration and card-sale mints from the server's sponsor wallet to a ZeroDev Kernel
+> and paymaster; it was not adopted - both still go through the sponsor wallet, and ZeroDev sponsors only account operations under a server-side policy (#758).
+> Current: [TICKETING.md](./TICKETING.md), [PASSKEY_SMART_WALLET.md](./PASSKEY_SMART_WALLET.md).
+
 > Requested by owner 2026-06-29. NOT started. This is a meaningful change (not a
 > one-liner) — scoped here for a dedicated chat. Read `CLAUDE.md` (AUTH + ZeroDev),
 > memory `project_zerodev_passkey`, `project_zerodev_incident_202606`,

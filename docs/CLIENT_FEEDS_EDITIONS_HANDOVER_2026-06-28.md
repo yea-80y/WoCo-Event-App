@@ -1,5 +1,9 @@
 # Handover — client-signed event feeds: editions gap + path forward (2026-06-28)
 
+> **Historical record (status 2026-10-05).** A June 2026 handover on the Swarm editions feed behind claims on client-signed events; the editions feed and the v1 claim rail
+> were later retired (#207), and a ticket is now an onchain slot minted at Stripe fulfilment.
+> Current: [TICKETING.md](./TICKETING.md), [SWARM_DATA_MODEL.md](./SWARM_DATA_MODEL.md).
+
 Branch: `feat/feed-signer-recovery` (NOT merged). Read `CLAUDE.md` + memory
 `woco_builder_is_event_creator`, `project_phase_b_carrier_discovery` FIRST.
 SiteBuilder IS the event creator. Keep docs terse.

@@ -1,28 +1,63 @@
 # Etherna Gateway Integration
 
 > **Reconstructed 2026-06-21** (the original `ETHERNA_INTEGRATION.md` was deleted).
-> Rebuilt from memory (`project_etherna_integration`, `project_etherna_legacy_soc`,
-> `project_etherna_batch_registry`) + current code. Verify file:line against the
-> tree before relying — the surviving companion is
-> `ETHERNA_COMMIT4_HANDOVER_2026-05-18.md`.
+> Rebuilt from private notes + the code of the time. The companion
+> `ETHERNA_COMMIT4_HANDOVER_2026-05-18.md` is not in the public repo.
 
-## Purpose
+**Verified against `main` (94364b56) on 2026-10-05.** The routing section below was rewritten to
+match the code; the gotchas, SOC protocol and batch notes are kept as recorded, with stale
+parts marked.
+
+Etherna is a Swarm gateway: what it stamps reaches the public network like any other Bee upload
+(measured 2026-07-14, [ETHERNA_USER_CONTENT_HANDOVER.md](./ETHERNA_USER_CONTENT_HANDOVER.md)).
+"On Etherna" means "stamped with an Etherna batch", never "off Swarm".
+
+## Purpose (as recorded 2026-06)
 
 Migrate WoCo off its self-hosted Bee + bee-proxy toward Etherna's hosted gateway
 (`gateway.etherna.io`, a Bee fork called **Beehive**). End state = everything on
 Etherna; we retire our own Bee node. **Do not propose alternatives** (the owner has
 explicitly rejected `gateway.ethswarm.org` and keeping our Bee for end-user reads).
 
-## Current routing (phased — verified in `apps/server/src/config/swarm.ts`)
+Today (2026-10) the move is per family and partial; platform feeds and the frontend still live
+on our own Bee.
 
-| Path | Bee instance | Batch | Notes |
-|---|---|---|---|
-| **Main app feeds** (events, profile, claims, recovery escrow) | **our own Bee** — `getBee()` (`BEE_URL`) | our platform batch — `requirePostageBatch()` (`POSTAGE_BATCH_ID`) | signed by the platform key `FEED_PRIVATE_KEY` |
-| **Per-deploy site content** (multisite collections + pointer feed) | **Etherna** — `getEthernaBee()` (`lib/etherna/upload.ts`) | Etherna batch (platform shared, or per-user — see batch model) | bearer-token auth |
+## Current routing (2026-10-05)
 
-So `getBee()` **always** talks to our local/own node; Etherna is reached **only**
-through `lib/etherna/upload.ts`. A single `ETHERNA_ENABLED` flag is too coarse — any
-new Swarm write must consciously choose its target.
+**One table, shared by client and server:** `FEED_FAMILY_STORES` in
+`packages/shared/src/swarm/feed-routes.ts` (#657). Client and server deploy separately, so two
+tables would split a family between stores for the gap between deploys - and a feed read from
+one store and written to another resolves its previous version as current (#651). The server
+reports the table it runs at `/api/health` `feedRoutes`.
+
+| Store | Families |
+|---|---|
+| **Etherna** (read from our Bee AND Etherna, so a move never strands old versions) | `profile`, `event` and `site` (discovery rows: new ones on Etherna, old ones on WoCo, recorded inside the feed), `manifest`, `social`, `referral`, `recoveryPortability`, `recoveryEnvelope`, `guardianIndex` |
+| **WoCo** (our Bee only) | `campaignIssuer`, `credits` (moves last), `cert`, `evidence` |
+
+Outside the table:
+
+| Path | Where |
+|---|---|
+| Sites, event pages and new events (#617) | Etherna. The builder always targets the Etherna gateway; the picker is gone (#618). |
+| A site's platform-written feeds (pointer, legacy config, events index) | Where the site lives - Etherna (#48) |
+| Platform feeds (event directory + snapshot, creator site directory, issuer relay, ...) | Our Bee, `POSTAGE_BATCH_ID`, signed by `FEED_PRIVATE_KEY` |
+| The frontend itself | Our Bee |
+
+**Which Etherna batch** (`lib/etherna/batch-router.ts`): the owner's own live batch, else the
+shared `ETHERNA_PLATFORM_BATCH`. A website on the platform batch is free hosting and needs a
+Stripe-verified organiser; every website write also needs that or the owner's own batch. A dead
+platform batch refuses the write (503, #610) instead of stamping into a void; a merely low one
+is an alarm (`/api/health` `postage`). An expired user batch counts as no batch.
+
+`getBee()` is our own node. Etherna is reached through `lib/etherna/*` and the Swarm read/write
+helpers (`lib/swarm/soc-read.ts`, `soc-upload.ts`, `bytes.ts`, `feeds.ts`). A server scan of an
+Etherna family that cannot reach Etherna answers `unavailable`, never absent (#657).
+`/api/health` `ethernaReads` is red when Etherna families exist but `ETHERNA_ENABLED` /
+`ETHERNA_API_KEY` are unset.
+
+**Etherna sends no CORS headers.** Browsers read Etherna-stamped data through the WoCo gateway
+(e.g. the organiser's order key, `packages/shared/src/event/order-key.ts`).
 
 ## Two read/write gotchas on Etherna (Beehive)
 
@@ -71,9 +106,13 @@ For a non-feed fixed-identifier SOC, `socId` is just the chosen identifier.
   (same file-backed pattern as `stripe-accounts.json` — survives restart, no DB).
 - Renewal: top up at `expiresAt - 7d` against `paidUntil`; stop renewing once
   `paidUntil < now` (let TTL lapse). Credit unit is **xDai**, not BZZ.
-- The provisioned depth-20 platform batch (`fc957ecd…956bb9a`, ~688 MB, from
-  2026-04-30, ~45-day TTL) is the shared one; check/buy via
+- (2026-06 record, not current) The provisioned depth-20 platform batch (`fc957ecd…956bb9a`,
+  ~688 MB, from 2026-04-30, ~45-day TTL) was the shared one. The live platform batch is
+  whatever `ETHERNA_PLATFORM_BATCH` names; its health is `/api/health` `postage`. Check/buy via
   `etherna-batch-check.ts` / `etherna-buy-platform-batch.ts`.
+- Per-user purchase (`POST /api/etherna/purchase-batch`) is opt-in: it refuses unless
+  `BATCH_PER_USER_AUTO_PROVISION=true`, which stays off while free hosting covers sites and
+  event pages.
 
 ## Key files & scripts
 
@@ -87,12 +126,14 @@ For a non-feed fixed-identifier SOC, `socId` is just the chosen identifier.
 
 `ETHERNA_ENABLED`, `ETHERNA_GATEWAY_URL` (default `https://gateway.etherna.io`; since #657 only
 where the server's own requests go - routing always uses the canonical host),
-`ETHERNA_API_KEY` (→ bearer token), plus the own-Bee set (`BEE_URL`, `PROXY_URL`,
-`POSTAGE_BATCH_ID`, `FEED_PRIVATE_KEY`).
+`ETHERNA_API_KEY` (→ bearer token), `ETHERNA_PLATFORM_BATCH`, `ETHERNA_USER_BATCH_*`,
+`ETHERNA_PURCHASE_MAX_BZZ`, `BATCH_PER_USER_AUTO_PROVISION`, `FREE_HOSTING` (default on),
+plus the own-Bee set (`BEE_URL`, `PROXY_URL`, `POSTAGE_BATCH_ID`, `FEED_PRIVATE_KEY`).
 
 ## Relevance to client-side feed signer / recovery
 
-See `CLIENT_FEED_SIGNER_HANDOVER.md` → "Etherna compatibility". The recovery
-portability envelope stays on our own Bee for Phase A (no Etherna dependency), and is
-designed Etherna-safe (inline payload + read-by-chunk-address) so the end-state move
-is a routing change, gated behind the SOC probe.
+See `CLIENT_FEED_SIGNER_HANDOVER.md` → "Etherna compatibility". ~~The recovery
+portability envelope stays on our own Bee for Phase A~~ - superseded: the recovery families
+(portability envelope, escrow envelope, guardian index) moved to Etherna on 2026-09-27
+(#740-#742, part of #689), read from every store. The design (inline payload +
+read-by-chunk-address) is what made it a routing change.

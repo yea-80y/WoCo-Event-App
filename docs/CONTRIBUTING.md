@@ -2,7 +2,7 @@
 
 How to get the repo running, how to land a change, and the traps that have caught people before.
 
-**Verified against `main` on 2026-09-08.**
+**Verified against `main` (94364b56) on 2026-10-05.**
 
 ---
 
@@ -12,8 +12,13 @@ How to get the repo running, how to land a change, and the traps that have caugh
 node --version        # >= 24. .nvmrc pins 24; CI and the server Docker image match it.
 git clone …
 npm install           # from the repo root — this is an npm workspaces monorepo
-npm run check         # typecheck everything. Do this first; it proves the install worked.
+npm run check         # typecheck shared, web, embed and registry. Do this first.
+npm run build:server  # the SERVER typecheck - it has no `check` script (see below)
 ```
+
+`npm run check` runs each workspace's `check` script, and `apps/server` has none: its typecheck
+is `build:server` (`tsc` with `noEmit` - the server runs from source under `tsx`, so there is no
+build output).
 
 `packages/shared` ships **raw TypeScript** (`main: ./src/index.ts`). Consumers compile it, so
 there is nothing to build there — only to typecheck.
@@ -37,64 +42,88 @@ npm run dev:web       # :5173, /api proxied to VITE_DEV_API_URL
 npm run dev:server    # :3001
 ```
 
-> **Read this before you run it.** `dev:server` opens an SSH tunnel to the **production** Bee
-> node and `apps/server/.env` points `BEE_URL` at the tunnel. Anything you publish locally lands
-> in the real platform feeds — the global event directory included. There is no local Bee in the
-> dev loop, and the tunnel needs credentials you may not have.
+> **Read this before you run it.** `dev:server` (`apps/server/scripts/dev-with-tunnel.mjs`)
+> opens an SSH tunnel to the **production** Bee node and gateway proxy, and `apps/server/.env`
+> points `BEE_URL` at the tunnel. Anything you publish locally lands in the real platform feeds -
+> the global event directory included. There is no local Bee in the dev loop, and the tunnel
+> needs credentials you may not have.
 >
 > `npm run dev:notunnel -w @woco/server` skips the tunnel, but Swarm reads then fail unless
 > `BEE_URL_FALLBACK` is set to a gateway.
+>
+> Both dev scripts blank `ATTENDEE_STAMPER_PRIVATE_KEY`, so a local checkout refuses with 503.
+> Why: a second server stamping the production attendee batch would reuse its slots and evict
+> live orders (#546).
 
-Server configuration is `apps/server/.env`. `apps/server/.env.example` is 356 lines and documents
+Server configuration is `apps/server/.env`. `apps/server/.env.example` is 475 lines and documents
 most keys with their rationale — read it rather than guessing, but **it is not complete**.
 
-> **Known gap that will bite you.** `WOCO_EVENT_CHAIN_ID` and `WOCO_EVENT_VERSION_{chainId}` are
-> **not in `.env.example`**. Production sets `421614` / `v2` (Arbitrum Sepolia, `WoCoEventV2`).
-> Unset, the server defaults to chain `84532` (Base Sepolia) and version `v1` — so a fresh local
-> server registers events on a different contract on a different chain, with no warning. Set both
-> before touching anything ticket-shaped. Frontend configuration is
-`apps/web/.env*` (`VITE_` prefix); `apps/web/.env.production.example` shows the production shape.
-**Never commit a populated `.env`.**
+> **Known gap that will bite you.** The ticket-contract keys are **not in `.env.example`**:
+> `WOCO_EVENT_CHAIN_ID`, `WOCO_EVENT_VERSION_{chainId}` and `WOCO_EVENT_ADDRESS_LEDGER_{chainId}`
+> (`apps/server/src/lib/chain/event-contract.ts`). Production runs Arbitrum Sepolia (`421614`)
+> with version `ledger` (`WoCoTicketLedger`); the code's built-in ledger address table is empty,
+> so the ledger address must come from the env. Unset, the server defaults to chain `84532`
+> (Base Sepolia) and version `v1` — a fresh local server registers events on a different contract
+> on a different chain, with no warning. An unknown version string throws. Also without an entry
+> of their own: `WOCO_SPONSOR_PRIVATE_KEY` (the ticket sponsor that mints; named only in
+> comments) and `CHECKIN_PASS_SECRET` (door check-in).
+
+Frontend configuration is `apps/web/.env*` (`VITE_` prefix); `apps/web/.env.production.example`
+shows the production shape. **Never commit a populated `.env`.**
 
 ### To exercise event creation and ticketing
 
-You need a Stripe **test** Connect account. Card payments are on by default for a ticket tier and
-the server live-checks `charges_enabled` before allowing a publish, so connect and verify an
-account via **Dashboard → Payments** (test mode with test identity is fine). To publish without
-Stripe, untick **Card payments** on the tier. The gate applies only to card payments — sub-ENS
-names, profiles and social actions need no Stripe.
+You need a **passkey account** and a Stripe **test** Connect account.
+
+- **Passkey only (#768).** The organiser area opens only for a passkey account, and the server's
+  Stripe connect, onboarding-link and account-session routes refuse any parent that is not a
+  smart account. Why: attendee data is sealed to a key from the account's seed, and only a
+  passkey roots that seed outside every email and wallet key.
+- **Stripe is mandatory to publish.** Card is the only live payment method and free events are
+  off (`packages/shared/src/features.ts`), so every tier has card payments and a price of at
+  least `MIN_TICKET_PRICE` (1). The server live-checks `charges_enabled` before a publish. Connect
+  and verify via **Organiser → Payouts** (test mode with test identity is fine). The server's
+  refusal text still says "Dashboard → Payments".
+- Sub-ENS names, profiles, likes and follows need an unlock (a ticket, Stripe verification or
+  a confirmed invite - `apps/server/src/lib/gate/check.ts`), not a Stripe account as such.
 
 ### Other build targets
 
 ```bash
-npm run build:web        # → apps/web/dist/
-npm run build:server     # tsc typecheck + build
+npm run build:web        # → apps/web/dist/  (app + the static ticket page, ticket.html)
+npm run build:server     # tsc typecheck only (noEmit)
 npm run build:embed      # BOTH embed bundles → packages/embed/dist/
-npm run build:multisite   # → apps/web/dist-multisite/   deployed-site runtime
+npm run build:multisite   # → apps/web/dist-multisite/   multi-page website runtime
+npm run build:site        # → apps/web/dist-site/        single-event page runtime
 npm run build:scanner     # → apps/web/dist-scanner/     door-scanner PWA
-npm run build:site        # → apps/web/dist-site/        legacy single-site generator
+npm run build:registry    # → apps/registry/dist/         World Computer Registry UI
 ```
 
-`build:site` and `build:multisite` produce **different** bundles for **different** purposes. The
-server bakes `dist-multisite/` into every published organiser site. Building the wrong one is a
-recurring mistake.
+`build:site` and `build:multisite` produce **different** bundles, and both are live. The server
+bakes `dist-multisite/` into every published website (`routes/sites.ts`) and `dist-site/` into
+every published event page (`routes/site.ts`). Building the wrong one is a recurring mistake,
+and a change to shared site code (checkout, sealing, auth) needs both.
 
 ---
 
 ## 2. Tests
 
 ```bash
-npm run check                # typecheck every workspace
-npm test -w @woco/shared     # frozen formats, crypto, topics — ~33 files
-npm run test:server          # ~91 files — money paths, auth, concurrency
-npm test -w @woco/web        # identity-derivation golden vectors
-npm test -w @woco/embed      # lap-count honesty rules
+npm run check                # typecheck shared, web, embed, registry
+npm run build:server         # typecheck server
+npm test -w @woco/shared     # frozen formats, crypto, topics - 52 files
+npm run test:server          # 163 files - money paths, auth, concurrency
+npm test -w @woco/web        # 156 files - identity golden vectors + DOM-free app rules
+npm test -w @woco/embed      # 5 files - lap-count honesty, checkout, seat hold, return
 ```
+
+File counts as of 94364b56. Test counts grow fast; count them, do not trust this line.
 
 Tests are plain `node --test` with `tsx` — no Jest, no Vitest.
 
 `.github/workflows/ci.yml` runs: typecheck shared → test shared → test web → typecheck server →
-test server → typecheck web → build web → test embed → typecheck embed → build embed. Actions are
+test server → typecheck web → build web → test embed → typecheck embed → build embed. It does not
+typecheck `apps/registry` or build `dist-site`, `dist-multisite` or `dist-scanner`. Actions are
 pinned by commit SHA, and `npm ci --ignore-scripts` means no dependency runs code at install time
 in CI — a future dependency that genuinely needs its install script will fail there, visibly,
 which is the point.
@@ -134,8 +163,8 @@ Two conventions worth adopting, both learned the hard way:
 
 `main` is protected. Branch → PR → green CI → merge.
 
-**One PR per independently revertible concern.** Merges are squashed, so the PR *is* the revert
-unit. Two unrelated fixes in one PR cannot be undone separately.
+**One PR per independently revertible concern.** PRs land as a squash or a merge commit; either
+way the PR *is* the revert unit. Two unrelated fixes in one PR cannot be undone separately.
 
 - Merge `main` into your branch (or use GitHub's *Update branch*). Do not rebase-and-force.
 - Check `git status` before **every** commit, and stage your own files explicitly. Concurrent
@@ -145,11 +174,13 @@ unit. Two unrelated fixes in one PR cannot be undone separately.
 
 ### Commit and PR style
 
-Look at `git log --oneline` and match it. Titles are `type(scope): what changed`, written as a
-statement about behaviour rather than about the diff:
+Look at `git log --oneline` and match it. Titles are a statement about behaviour rather than
+about the diff, ending with the issue number. Recent ones lead with the area (`Server:`, `App:`);
+older ones use `type(scope):`. Both are fine:
 
 ```
-feat(sub-ens): pickers hide the profile name; rename waits for the cooldown
+Organising needs a passkey account (#746)
+Server: an account seen co-owned never falls back to the counterfactual (#746)
 feat(sub-ens): every name error reaches the user as a sentence
 ```
 
@@ -179,10 +210,12 @@ It is a **nested checkout, gitignored by the monorepo.** `git status` at the roo
 changes to it. `master` is protected — PRs only, enforced for admins, so never push to it
 directly.
 
-Solidity in there: `WoCoEventV2` (the live ticket ledger), `WoCoTicketLedger` (merged, not
-deployed), `WoCoRegistrar` + `durin/` (sub-ENS), `WoCoEscrow`, `ContentHashRegistry`, and
-`recovery/`. `contracts/deployments/*.json` is the record of what is actually deployed where —
-treat those files as the source of truth for addresses.
+Solidity in there: `WoCoTicketLedger` (the live ticket ledger - the server mints on Arbitrum
+Sepolia; also deployed on Arbitrum One, server not switched yet), `WoCoEventV2` and `WoCoEvent`
+(its predecessors), `WoCoRegistrar` + `WoCoSubEnsDeployer` + `durin/` (sub-ENS), `WoCoEscrow`,
+`ContentHashRegistry`, and `recovery/`. `contracts/deployments/*.json` is the record of what is
+actually deployed where — treat those files as the source of truth for addresses.
+[DEPLOYMENTS.md](./DEPLOYMENTS.md) is the readable summary.
 
 `contracts-stylus/` (Rust/WASM) **is** in this repo, and holds the like-aggregator that was
 superseded along with the EAS social rail.
@@ -225,7 +258,8 @@ superseded along with the EAS social rail.
 |---|---|
 | `Vite base` not `'./'` | Absolute paths break under Swarm `/bzz/` URLs. |
 | Publishing from a local dev server | It writes to the **production** feeds. |
-| Rebuilding `dist-site` instead of `dist-multisite` | The published organiser sites do not change. |
+| Rebuilding `dist-site` instead of `dist-multisite` (or the reverse) | Websites bake `dist-multisite`, event pages bake `dist-site`. The one you skipped does not change, and organisers must re-publish to pick up either. |
+| `npm run check` as the full typecheck | It skips the server. Run `npm run build:server` too. |
 | `docker compose restart` after an env change | Reuses the env the container was *created* with and silently ignores `env_file` changes. Use `up -d`. |
 | Deploying an empty gateway whitelist | Real data starts reading as **absent**, and absent looks clean to the erasure guards. |
 | Planning a feed write off a lenient read | `null` means absent **or** transient, and those need opposite responses. |

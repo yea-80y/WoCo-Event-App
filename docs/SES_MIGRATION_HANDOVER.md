@@ -6,6 +6,12 @@ restate rates here. Production-access case record: `SES_PRODUCTION_ACCESS.md`.
 **Status (2026-09-22): LIVE since the 2026-07-31 cutover.** This file is the design record
 of the migration. Current state and what is next: `EMAIL_NEXT_HANDOVER.md`.
 
+**Status (2026-10-05):** still live on SES. Phase 2 (§4) is not started and
+`organiserSendingDomains` stays `false`. The Resend adapter has NOT been deleted (#627 open):
+`resendProvider`, `routes/resend-webhook.ts` and the `resend` dependency remain, and the code
+default for `EMAIL_PROVIDER` is still `resend`. Contact lists are now sealed with X-Wing (#729),
+not X25519 ECIES (§6).
+
 ---
 
 ## 1. What shipped
@@ -183,6 +189,8 @@ Ranked by how much a wrong answer costs.
    bundle in-process. That is what mainstream validators do. Is it enough here?
 3. **`Permanent` vs `Transient` suppression policy** (`ses-webhook.ts`). I suppress every
    `Permanent` subtype and every complaint; I do not suppress `Transient` or `Undetermined`.
+   *(Since #628 a complaint with feedback type `not-spam` is not suppressed - it reports the
+   mail as wanted, and a suppression mark is never erased.)*
    `Permanent/OnAccountSuppressionList` is the debatable one — AWS says it does not count
    toward the bounce rate, and suppressing on it makes SES's list and ours agree. I think
    that is right; worth a second opinion.
@@ -221,7 +229,8 @@ Three things that will bite:
   (`PRICING_AND_EMAIL.md` §5).
 
 **Delete Resend when phase 2 ships**, or by **2026-10-01** if phase 2 slips and SES has run
-clean — whichever is first. That removes: `resendProvider` in `send.ts`, `client.ts`'s
+clean — whichever is first. *(2026-10-05: the date has passed and none of the list below is
+deleted yet; tracked as #627.)* That removes: `resendProvider` in `send.ts`, `client.ts`'s
 `getResend`, `routes/resend-webhook.ts`, `lib/marketing/consumed-webhook-events.ts` (which
 is unbounded and grows forever — the SNS one is capped), the `resend` dependency, and the
 `RESEND_*` env fallbacks in `client.ts`.
@@ -348,8 +357,8 @@ of it was **wrong** in a way worth recording.
 
 **The wrong version.** "With a queue, change the API from a client-supplied recipient array
 to *send to list N*, and let the server enumerate." That cannot be built. Contact lists are
-ECIES-sealed **client-side** to the organiser's X25519 key
-(`packages/shared/src/marketing/types.ts`). The server holds an opaque sealed blob plus a
+sealed **client-side** to the organiser's own key - X-Wing in a v2 sealed box since #729
+(`packages/shared/src/crypto/sealed-box.ts`; X25519 ECIES when this was written). The server holds an opaque sealed blob plus a
 set of `emailHash`es — it cannot decrypt, so it cannot enumerate. The client posting
 plaintext recipients is not an accident of the current design; it is the only party that
 *can*.
@@ -464,6 +473,10 @@ Swarm read per series per chunk, and a blip midway would make real attendees loo
 like strangers — `getAttendeeEmailHashes` now distinguishes `unreadableSeries`
 from `unverifiableSeries` so that is expressible at all. "An unreadable page is
 not an empty page" (`4fedca9`), applied to membership.
+*(Superseded: the claimers feeds went with the v1 rail (#207). Membership now comes from
+the attendee index appended at Stripe fulfilment (#387, `lib/event/attendee-emails.ts`),
+a local store, so there is no unreadable case; `getAttendeeEmailHashes` returns `hashes`
+and `unverifiableSeries`. Still snapshotted once at job creation.)*
 
 **Cancellation stops what has not been sent and says so.** Every ESP that
 publishes its semantics says the same thing — Resend: "Canceling a broadcast only

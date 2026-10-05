@@ -1,5 +1,16 @@
 # Platform Feed Signer — What It Still Writes (audit 2026-07-14)
 
+Status (2026-10-05): RECORD of 2026-07-14; line numbers are as of that date. Superseded since:
+- The v1 Swarm claim rail is DELETED (PR #207, 2026-08-09) with its ledger (`topicClaims`,
+  `topicClaimers`, `topicPendingClaims`), `claimTicket()` and `POST /api/claim`.
+  `routes/claims.ts` serves claim-status only; every ticket is minted onchain on
+  `WoCoTicketLedger` by Stripe fulfilment. The "two claim rails" section below no longer
+  describes the system.
+- `cryptoPaymentsAllowed` is now `false` (it was `true` at audit time); shops are off
+  (`shopAllowed = false`).
+- Batch routing moved on with the Etherna consolidation (#689). The `writeFeedPage` choke point
+  and its platform signer still stand (`apps/server/src/lib/swarm/feeds.ts:213,266`).
+
 Verified by reading source, not by assumption. Every fact below cites `file:line`.
 
 `writeFeedPage()` (`apps/server/src/lib/swarm/feeds.ts:227`) is the **single choke point**
@@ -59,7 +70,7 @@ Crypto is an enabled path, not dead code: `FEATURES.cryptoPaymentsAllowed: true`
 `freeEventsAllowed: false` (`packages/shared/src/features.ts:6-9`). So today the payment
 is on-chain but the ticket is not.
 
-**Therefore the Swarm claim ledger is NOT removable legacy** — it is the live rail for
+(Superseded 2026-08-09: the ledger was deleted with the v1 rail, PR #207.) **Therefore the Swarm claim ledger is NOT removable legacy** — it is the live rail for
 every claim that is not a Stripe purchase against a registered series. Deleting it breaks
 crypto claims. The correct fix is to bring the other routes ONTO the on-chain/Swarm
 hybrid, after which the Swarm-only ledger can be retired.

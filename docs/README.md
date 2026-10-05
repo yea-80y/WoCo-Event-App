@@ -4,7 +4,7 @@ This folder is nine months of design records, plans and handovers. Most of it wa
 capture a decision at the moment it was made, which makes it valuable and also means **age
 matters**. This index sorts every tracked document by how much you should trust it today.
 
-**Index reviewed 2026-09-08.** Dates are the last commit that touched the file.
+**Index reviewed 2026-10-05**, against `main` at 94364b56. Dates are the last commit that touched the file.
 
 > **Only `docs/*.md` and `docs/legal/*.md` are tracked.** Some documents on a developer's disk
 > are deliberately gitignored (local plans and handovers, and the ops runbook). If a doc is
@@ -17,9 +17,11 @@ matters**. This index sorts every tracked document by how much you should trust 
 | Doc | What it covers |
 |---|---|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | The system, layer by layer: what the server is for, which chain does what, how a request is authenticated, how an event is created and sold |
-| [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md) | All five keys, sign-to-derive, the issuer-curve migration, sealed order envelopes, login methods |
+| [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md) | All four keys, the one identity seed, sealed envelopes (X-Wing), passkey accounts, login methods |
 | [SWARM_DATA_MODEL.md](./SWARM_DATA_MODEL.md) | Chunks and addressing, mutable feeds from immutable chunks, topic derivation, bands, postage, the gateway whitelist |
-| [TICKETING.md](./TICKETING.md) | Manifests and Merkle roots, sale and mint, what makes a ticket genuine, the door, certificates |
+| [TICKETING.md](./TICKETING.md) | Manifests and Merkle roots, sale and mint, what makes a ticket genuine, the door, refunds, certificates |
+| [OBJECTS.md](./OBJECTS.md) | What a signed object is, how it differs from a verifiable credential, and why it is not called a POD |
+| [DEPLOYMENTS.md](./DEPLOYMENTS.md) | Every contract address by chain, and why tickets mint on Sepolia until launch |
 | [SITE_BUILDER.md](./SITE_BUILDER.md) | How organiser websites are built, published and addressed |
 | [SUBENS_IDENTITY.md](./SUBENS_IDENTITY.md) | `*.woco.eth` names, and how mainnet ENS resolves to an L2 registry |
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | Setup, tests, CI gates, conventions, traps |
@@ -108,17 +110,18 @@ trusting a snapshot.
 
 ---
 
-## Built but switched off
+## Switched off, or designed but not built
 
-The code exists; the flag is `false` in `packages/shared/src/features.ts`. Read the flag's own
-comment first — it says what is missing and what turning it on would require.
+Where a flag is named, the code exists and the flag is `false` in
+`packages/shared/src/features.ts`. Read the flag's own comment first - it says what is missing
+and what turning it on would require.
 
 | Doc | Flag |
 |---|---|
 | [CRYPTO_CLIENT_VERIFIABLE_PAYMENTS_PLAN.md](./CRYPTO_CLIENT_VERIFIABLE_PAYMENTS_PLAN.md) | `cryptoPaymentsAllowed` |
 | [WOCO_AGENT_ARCHITECTURE.md](./WOCO_AGENT_ARCHITECTURE.md) · [AGENT_COMMERCE_SURFACE.md](./AGENT_COMMERCE_SURFACE.md) | `agentCommerceAllowed` — and the v1 mint path it used is **deleted**, so the rail refuses outright |
-| [SHOP_AND_LOYALTY.md](./SHOP_AND_LOYALTY.md) | Shop and POS routes are live; the **USDC spend-permission rail** described here is the crypto side and is off |
-| [ATTENDEE_GATE_RESALE_PLAN.md](./ATTENDEE_GATE_RESALE_PLAN.md) | The gate is live; resale is built and untested |
+| [SHOP_AND_LOYALTY.md](./SHOP_AND_LOYALTY.md) | `shopAllowed` - shops, POS and spend-permission draws are all off (#124); badge and loyalty creation is off too (`badgesAllowed`, #664) |
+| [ATTENDEE_GATE_RESALE_PLAN.md](./ATTENDEE_GATE_RESALE_PLAN.md) | No flag: the attendee gate is live. Resale and moving a card ticket onto an account are design only, not built |
 
 ---
 
@@ -144,7 +147,7 @@ Kept for provenance. **Do not build from these** — each is superseded by somet
 | [EAS_SOCIAL_GRAPH.md](./EAS_SOCIAL_GRAPH.md) (2026-06) | [SWARM_SOCIAL_PLAN.md](./SWARM_SOCIAL_PLAN.md) — likes and follows left EAS |
 | [STYLUS_AGGREGATOR.md](./STYLUS_AGGREGATOR.md) (2026-06) | Nothing — the on-chain trending engine went with EAS |
 | [ONCHAIN_TICKETING.md](./ONCHAIN_TICKETING.md) (2026-06) | [TICKETING.md](./TICKETING.md). Its `WoCoEventV2` contract description is still accurate; the surrounding flow is not |
-| [BUILDATHON_SUBMISSION.md](./BUILDATHON_SUBMISSION.md) · [DEMO.md](./DEMO.md) (2026-06) | The buildathon entry, as submitted |
+| [BUILDATHON_SUBMISSION.md](./BUILDATHON_SUBMISSION.md) · [DEMO.md](./DEMO.md) (2026-06) | An earlier competition entry, kept as submitted. Most rails it describes are off or removed |
 | [LAUNCH_PLAN.md](./LAUNCH_PLAN.md) (2026-06) | GitHub issue #353 |
 | [WoCo-Events-Architecture-2026-02-28.pdf](./WoCo-Events-Architecture-2026-02-28.pdf) | The February architecture deck |
 
