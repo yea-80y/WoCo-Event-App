@@ -1187,15 +1187,10 @@ function _setPendingPasskeyRecord(pending: { credentialId: string; parent: strin
   }
 }
 
-/** The pending slot, or null when there is none or it does not parse. */
-function _readPendingPasskeyRecord(): { credentialId: string; parent: string } | null {
+/** The pending slot's raw text; null when there is none or storage is unavailable. */
+function _pendingPasskeyRecordRaw(): string | null {
   try {
-    const raw = globalThis.localStorage?.getItem(PENDING_PASSKEY_RECORD_KEY);
-    if (!raw) return null;
-    const pending = JSON.parse(raw) as { credentialId?: unknown; parent?: unknown };
-    return typeof pending.credentialId === "string" && typeof pending.parent === "string"
-      ? { credentialId: pending.credentialId, parent: pending.parent }
-      : null;
+    return globalThis.localStorage?.getItem(PENDING_PASSKEY_RECORD_KEY) ?? null;
   } catch {
     return null;
   }
@@ -1203,8 +1198,10 @@ function _readPendingPasskeyRecord(): { credentialId: string; parent: string } |
 
 async function _maybeWritePasskeyRecord(): Promise<void> {
   try {
-    if (!globalThis.localStorage?.getItem(PENDING_PASSKEY_RECORD_KEY)) return;
-    const pending = _readPendingPasskeyRecord();
+    const raw = _pendingPasskeyRecordRaw();
+    if (!raw) return;
+    const { ensurePasskeyRecord, parsePendingPasskeyRecord } = await import("./passkey-record.js");
+    const pending = parsePendingPasskeyRecord(raw);
     if (!pending) {
       globalThis.localStorage?.removeItem(PENDING_PASSKEY_RECORD_KEY);
       return;
@@ -1212,7 +1209,6 @@ async function _maybeWritePasskeyRecord(): Promise<void> {
     if (_kind !== "passkey" || _parent?.toLowerCase() !== pending.parent.toLowerCase()) return;
     // Never mint a session for this: a write that waits costs nothing, a prompt does.
     if (!_sessionAddress) return;
-    const { ensurePasskeyRecord } = await import("./passkey-record.js");
     const outcome = await ensurePasskeyRecord({ credentialId: pending.credentialId, parent: pending.parent });
     if (outcome === "unavailable") return; // the next session retries
     if (outcome === "conflict") {
@@ -2236,9 +2232,9 @@ function _postAuthNotice(message: string): void {
  * the same passkey and account - lets the sign-in commit.
  */
 async function _guardPasskeyRecord(account: PasskeyLogin, parent: string): Promise<void> {
-  const { guardPasskeyRecord } = await import("./passkey-record.js");
+  const { guardPasskeyRecord, parsePendingPasskeyRecord } = await import("./passkey-record.js");
   await guardPasskeyRecord(account.credentialId, parent, account.attachment, {
-    pending: _readPendingPasskeyRecord(),
+    pending: parsePendingPasskeyRecord(_pendingPasskeyRecordRaw()),
   });
 }
 

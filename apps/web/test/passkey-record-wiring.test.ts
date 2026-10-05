@@ -71,7 +71,7 @@ test("the guard helper passes the attachment and this device's pending record", 
   const fn = fnBody("_guardPasskeyRecord");
   assert.match(
     fn,
-    /guardPasskeyRecord\(account\.credentialId, parent, account\.attachment, \{\s*pending: _readPendingPasskeyRecord\(\),\s*\}\)/,
+    /guardPasskeyRecord\(account\.credentialId, parent, account\.attachment, \{\s*pending: parsePendingPasskeyRecord\(_pendingPasskeyRecordRaw\(\)\),\s*\}\)/,
   );
 });
 
@@ -126,6 +126,12 @@ test("a record is queued only from a creation, the moment the account is committ
   assert.equal(body.split("_setPendingPasskeyRecord(").length - 1, 1, "no other login path may queue a record");
   // Creation and recovery are the only two places a record is queued.
   assert.equal(store.split("_setPendingPasskeyRecord({").length - 1, 2);
+});
+
+test("the pending slot is read from the one key both the queue and the check use", () => {
+  const fn = store.slice(store.indexOf("function _pendingPasskeyRecordRaw("));
+  assert.match(fn.slice(0, 300), /return globalThis\.localStorage\?\.getItem\(PENDING_PASSKEY_RECORD_KEY\) \?\? null;/);
+  assert.match(store, /globalThis\.localStorage\?\.setItem\(PENDING_PASSKEY_RECORD_KEY, JSON\.stringify\(pending\)\)/);
 });
 
 test("the pending write uses the queued slot, never prompts, and keeps the slot when unreadable", () => {

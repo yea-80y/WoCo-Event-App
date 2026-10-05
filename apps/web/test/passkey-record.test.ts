@@ -24,6 +24,7 @@ const {
   credentialIdBytes,
   ensurePasskeyRecord,
   guardPasskeyRecord,
+  parsePendingPasskeyRecord,
   passkeyRecordVerdict,
   pendingRecordMatches,
   signInRecordOutcome,
@@ -119,6 +120,15 @@ test("outcome matrix: from another device only a match - or this device's own pe
     }
     assert.equal(signInRecordOutcome(r, "cross-platform", false), expected.strict[r], `cross-platform/${r}`);
     assert.equal(signInRecordOutcome(r, "cross-platform", true), expected.strictPending[r], `cross-platform/${r}/pending`);
+  }
+});
+
+test("pending slot: parses only a well-formed record", () => {
+  const ok = { credentialId: CRED, parent: PARENT };
+  assert.deepEqual(parsePendingPasskeyRecord(JSON.stringify(ok)), ok);
+  assert.deepEqual(parsePendingPasskeyRecord(JSON.stringify({ ...ok, extra: 1 })), ok);
+  for (const raw of [null, undefined, "", "not json", "null", "[]", JSON.stringify({ credentialId: CRED }), JSON.stringify({ credentialId: 1, parent: PARENT })]) {
+    assert.equal(parsePendingPasskeyRecord(raw), null, String(raw));
   }
 });
 

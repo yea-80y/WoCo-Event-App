@@ -99,6 +99,19 @@ export function passkeyRecordVerdict(
   return reading === "backup" || reading === "mismatch" ? reading : "proceed";
 }
 
+/** The pending slot's text as a record to write, or null when it is not one. */
+export function parsePendingPasskeyRecord(raw: string | null | undefined): PendingPasskeyRecord | null {
+  if (!raw) return null;
+  try {
+    const pending = JSON.parse(raw) as { credentialId?: unknown; parent?: unknown } | null;
+    return pending && typeof pending.credentialId === "string" && typeof pending.parent === "string"
+      ? { credentialId: pending.credentialId, parent: pending.parent }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Whether this device's pending slot names exactly this credential and account. */
 export function pendingRecordMatches(
   pending: PendingPasskeyRecord | null | undefined,
