@@ -6,8 +6,8 @@ Decision record. Verified figures, 2026-07-27. Companion to `docs/SEO_PLAN.md`.
 post-event payouts and the Managed Risk controller block ship (`PAYOUTS.md`), the daily cap
 is floored at list size (E2). Fees as charged: `PLATFORM_FEE_BP` (`packages/shared/src/event/types.ts`),
 the booking-fee floor and default and `MIN_TICKET_PRICE` (`packages/shared/src/features.ts`),
-`checkout-fees.ts`. Not built: tiers, entitlements, the per-ticket cap (§7), organiser sending
-domains (`organiserSendingDomains` off). Stripe is on test keys (pre-launch).
+`checkout-fees.ts`. Not built: tiers, entitlements, organiser sending domains
+(`organiserSendingDomains` off). The platform fee is a flat percentage with no per-ticket cap (§7). Stripe is on test keys (pre-launch).
 
 When written, nothing here was built except §8 item 1. Treat §3 (the free/paid line) and §7 (tiers) as
 the decisions to lock before any billing code is written.
@@ -363,7 +363,9 @@ Flat fee vs percentage crosses over at **~£15.30/ticket**:
 | £25 | £0.375 | £0.23 | TT |
 | £100 | £1.50 | £0.23 | TT, 6× |
 
-**Decision: keep the percentage, add a per-ticket cap — "1.5%, never more than £1.00 per ticket."** *(Not built: checkout charges a flat `PLATFORM_FEE_BP` with no per-ticket cap, `checkout-fees.ts`. Separately, `ORGANISER_TERMS.md` §6 commits that the rate itself never goes above 1.5%, #687.)* Costs nothing on the £10–30 ticket that is most of the market, keeps WoCo cheapest against TT pay-as-you-sell at every price, and stops festivals and £80 dinners being structurally lost to TT.
+**Decision (owner, 2026-10-05): a flat 1.5% with no per-ticket cap, and a minimum ticket price of £1 / $1 / €1** (`MIN_TICKET_PRICE` in `packages/shared/src/features.ts`, #694). Checkout charges `PLATFORM_FEE_BP` with no cap (`checkout-fees.ts`), and `ORGANISER_TERMS.md` §6 commits that the rate never goes above 1.5% (#687). This accepts that Ticket Tailor's flat fee is cheaper above about £15 a ticket (table above).
+
+*Refuted:* an earlier draft of this section recorded "1.5%, never more than £1.00 per ticket". That was a misreading of the £1 minimum ticket price; it was never built and is not the policy.
 
 Percentage stays the headline because the market is anchored on Skiddle's 10%. And TT has not won despite being cheap because prepaid credits are a cashflow ask and **TT brings no audience** — Skiddle and Fatsoma win on discovery, not price. WoCo's fight is audience + organiser-owned website + owned contact list.
 
@@ -396,7 +398,7 @@ Tier on what costs money: **contacts, sending domains, sites**. Do **not** tier 
 | 4 | ~~**`Reply-To` source**~~ ✅ E1 - site contact email on ticket email; sending-domain fallback waits on item 9 | — |
 | 5 | **Fix `MARKETING_DAILY_CAP`** — floor at list size ✅ E2; still open: per-tier, and never below the contact allowance (§3). Split attendee-broadcast throttling (rate) from marketing caps (volume). | §7 sign-off |
 | 6 | **Entitlements store** — `.data/entitlements.json`, per-organiser tier; contacts / storage / sites / caps all read from it | §7 sign-off |
-| 7 | **Per-ticket fee cap** — 1.5% capped at £1.00 in `application_fee_amount` (`routes/stripe.ts`); keep in sync with the 150bp escrow contract | §7 sign-off |
+| 7 | ~~**Per-ticket fee cap**~~ - dropped (owner, 2026-10-05): the fee is a flat 1.5%; the £1 figure is the minimum ticket price (#694) | — |
 | 8 | ~~**SES provider** behind the §8.1 seam~~ ✅ 2026-07-30 — `lib/email/ses-provider.ts`, SESv2 `Simple` content (native inline attachments), + send-rate limiter, retry classification and durable failure ledger | — |
 | 9 | **SES domain verification** — verified identities + DKIM + poll, replacing Resend Domains API. **Phase 2**, design in `SES_MIGRATION_HANDOVER.md` | 8 |
 | 10 | ~~**SNS bounce/complaint webhook**~~ ✅ 2026-07-30 — `routes/ses-webhook.ts` + `lib/email/sns-verify.ts`, signature-verified, Permanent-only bounce suppression | — |
