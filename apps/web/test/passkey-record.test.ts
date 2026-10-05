@@ -139,6 +139,9 @@ test("pending slot: matches only the exact credential and account, account case-
   assert.equal(pendingRecordMatches({ credentialId: CRED, parent: PARENT }, CRED, PARENT.toUpperCase().replace("0X", "0x")), true);
   assert.equal(pendingRecordMatches({ credentialId: CRED, parent: OTHER }, CRED, PARENT), false);
   assert.equal(pendingRecordMatches({ credentialId: OTHER_CRED, parent: PARENT }, CRED, PARENT), false);
+  // base64url is case-sensitive: the same letters in another case are another credential.
+  assert.notEqual(CRED.toLowerCase(), CRED);
+  assert.equal(pendingRecordMatches({ credentialId: CRED.toLowerCase(), parent: PARENT }, CRED, PARENT), false);
   assert.equal(pendingRecordMatches(null, CRED, PARENT), false);
   assert.equal(pendingRecordMatches(undefined, CRED, PARENT), false);
 });
@@ -208,6 +211,15 @@ test("the read is thorough exactly when an absent would refuse", async () => {
   await guardPasskeyRecord(CRED, PARENT, "platform", { read });
   await guardPasskeyRecord(CRED, PARENT, null, { read });
   assert.deepEqual(seen, [true, undefined, undefined]);
+});
+
+test("refusal names are wire: the login matches on them to restore the pin and to steer", () => {
+  assert.deepEqual(
+    [PasskeyFromAnotherDeviceError, PasskeyRecordUnreadableError, PasskeyRecordMismatchError, PasskeyIsBackupError].map(
+      (C) => new C().name,
+    ),
+    ["PasskeyFromAnotherDeviceError", "PasskeyRecordUnreadableError", "PasskeyRecordMismatchError", "PasskeyIsBackupError"],
+  );
 });
 
 test("every refusal reads as plain words: no PRF, biometric, hex address or em dash", () => {

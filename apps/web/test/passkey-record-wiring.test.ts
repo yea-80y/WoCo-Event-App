@@ -86,16 +86,13 @@ test("a record refusal puts back the pin the ceremony replaced - and nothing els
   );
   assert.ok(catchAt > 0 && restore > catchAt, "restored only on the failure path");
   assert.equal(body.split("_restoreReplacedPin(").length - 1, 1, "never on success");
+  // Exactly the record check's refusals, each thrown before any commit - a wider set
+  // would put back the old pin after a later failure and split it from the account.
   const set = store.slice(store.indexOf("const RECORD_REFUSALS"), store.indexOf("]);", store.indexOf("const RECORD_REFUSALS")));
-  for (const name of [
-    "PasskeyFromAnotherDeviceError",
-    "PasskeyRecordUnreadableError",
-    "PasskeyRecordMismatchError",
-    "PasskeyIsBackupError",
-  ]) {
-    assert.ok(set.includes(`"${name}"`), name);
-  }
-  assert.doesNotMatch(set, /PasskeyAssertionUnavailableError/, "a cancelled sheet pinned nothing");
+  assert.deepEqual(
+    [...set.matchAll(/"(\w+)"/g)].map((m) => m[1]).sort(),
+    ["PasskeyFromAnotherDeviceError", "PasskeyIsBackupError", "PasskeyRecordMismatchError", "PasskeyRecordUnreadableError"],
+  );
   const fn = store.slice(store.indexOf("async function _restoreReplacedPin("));
   assert.match(fn.slice(0, 400), /if \(pin\) await putKV\(StorageKeys\.PASSKEY_CREDENTIAL, pin\);\s*else await delKV\(StorageKeys\.PASSKEY_CREDENTIAL\);/);
 });
