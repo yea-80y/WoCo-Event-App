@@ -1,5 +1,12 @@
 # Client feed-signer architecture — external review (Fable, 2026-07-02)
 
+> **Status (2026-10-05).** Review record. Its verdict "keep sign-to-derive" was reversed on
+> 2026-09-10: the feed signer is now HKDF of the identity seed (`packages/shared/src/crypto/feed-signer.ts`),
+> with no signature or stored copy of its own, and the escrow carries only the seed. A passkey
+> seed is HKDF of the PRF output (#724). Still holds: F1/F2 fixes, the rejected alternatives,
+> and F4 (escrow confidentiality = guardian strength). EAS (#475, #476) and the ed25519 POD key
+> (#518) are gone (formerly called POD; renamed object, 2026-09-10). Current: [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md).
+
 Fresh-eyes crypto/CTO review of the client-owned content-feed signer work
 (branch `feat/feed-signer-recovery`, WIP unification included). **Verdict: the
 settled design is sound — keep it.** Findings + the lock-down plan below so the

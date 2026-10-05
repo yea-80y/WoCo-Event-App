@@ -1,5 +1,20 @@
 # Email / Web3Auth Login — Technical Overview
 
+Status (2026-10-05): Web3Auth PnP is still the email/social login (devnet until launch), but
+this overview predates three changes, so the sections below are history where they disagree:
+- The parent identity is a ZeroDev **Kernel** smart account built from the Web3Auth key,
+  not the bare EOA (`apps/web/src/lib/auth/auth-store.svelte.ts:145-157`,
+  `docs/EMAIL_KERNELIZE_PLAN.md`). The raw Web3Auth key still signs `AuthorizeSession`
+  (`auth-store.svelte.ts:206-211`) and still roots the seed, via the EOA address.
+- "POD identity" / `pod-identity.ts` / ed25519 are gone (#518, #532): the key signs the
+  frozen "WoCo Account Keys" message once and its keccak256 is the identity seed
+  (`apps/web/src/lib/auth/identity-seed.ts:54`; `docs/IDENTITY_AND_KEYS.md`).
+- An email account cannot organise - organising needs a passkey account (#768,
+  `apps/web/src/lib/auth/organiser-account.ts`) - so the payout-gate section is moot; crypto
+  payouts are off anyway (`cryptoPaymentsAllowed = false`). The `local` login kind is
+  deleted. Email accounts CAN now add a guardian backup
+  (`apps/web/src/lib/auth/backup-prompt.ts:11-13`).
+
 WoCo's "email / phone / social" sign-in is backed by **Web3Auth PnP (Plug-and-Play)**.
 It replaced the earlier Para integration (`para-account.ts` is gone; the `para`
 auth-kind is removed — see the payout-gate note below). Auth kind: **`web3auth`**.
@@ -22,7 +37,7 @@ Code:
   viem privateKeyToAccount(pk)  →  Ethereum EOA (this is `parent`)
           │
           ▼
-  EIP-712 session delegation + POD identity (same path as a web3 wallet)
+  EIP-712 session delegation + identity seed (same path as a web3 wallet)
 ```
 
 1. `loginWithWeb3Auth()` opens the PnP modal; on success returns `{ address, privateKey }`.

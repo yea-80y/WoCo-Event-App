@@ -1,4 +1,24 @@
-# WoCo Shop + POD Loyalty
+# WoCo Shop + Object Loyalty
+
+> **Status (2026-10-05): OFF - `FEATURES.shopAllowed = false`** (`packages/shared/src/features.ts`, #124).
+> Shops, the POS, tap-to-pay, shop Stripe checkout and the USDC spend-permission draw are all
+> unreachable. The flag hides the client routes and builder entry points, and the server refuses
+> every `/api/shops/*` call with 403 - the gate is the router's first middleware
+> (`apps/server/src/routes/shops.ts:72-87`), so a cached client or an already-published organiser
+> site cannot reach the rail either. Standalone badge creation and holdings-gated sales are off
+> separately (`badgesAllowed = false`, #664); checkout still enforces a gate an existing series
+> carries.
+>
+> **Built:** catalog, web shop + `productGrid` section, POS, Stripe card checkout, USDC quote, the
+> spend-permission draw (`apps/server/src/lib/shop/`) and milestone badge issuance
+> (`lib/shop/loyalty.ts`). Everything below describes that build, not a live service.
+>
+> **Turning it on needs** the shop launch plus a server deploy (the flag's comment). A site published
+> while the flag was off bakes it into its bundle, so it shows no shop until re-published; the server
+> gate is the authoritative one. The crypto rails also wait on the security audit noted under
+> Honest state.
+
+Objects were formerly called PODs; this doc uses the current noun.
 
 A merchant shop — catalog, web storefront, and a staff POS — settling in **USDC** on **Arbitrum
 Sepolia (`421614`)**, with an on-chain loyalty layer. Built on the same event stack (series,
@@ -27,7 +47,7 @@ credit token**. The same USDC in the user's own wallet is spendable anywhere. Tw
 events:
 
 - **Card** — Stripe Connect (direct charge on the merchant's connected account + webhook → order
-  paid), the live rail today.
+  paid). Built; off with the rest of the shop rail.
 - **Crypto (USDC)** — two sub-flows:
   - **Per-order signed quote** (web shop / online): the server issues an HMAC-signed, one-shot quote
     committing to an exact USDC amount; payment is verified on-chain by exact amount + recipient +
@@ -64,31 +84,34 @@ This is the *same primitive* the [agent commerce surface](./WOCO_AGENT_ARCHITECT
 agent's bounded budget and a festival tap-to-pay band are two faces of one capped, non-custodial
 spend permission.
 
-## 4. POD loyalty — derive points, mint badges
+## 4. Object loyalty — derive points, mint badges
 
-PODs are the ownable-asset layer, with one schema and a `kind` discriminator:
+Objects are the ownable-asset layer, with one schema and a `kind` discriminator:
 `ticket` · `badge` (loyalty) · `collectible` (drops) · `authenticity` (transferable cert; stubbed).
 
 - **Points are derived, not stored** — `points = floor(Σ order.total × earnRate) − Σ redemptions`,
-  a pure function of the existing order feed. A point is a decrementing redeemable balance; a POD is
-  immutable — so points are never PODs and there is no per-point write.
-- **Badges (PODs) mint only at spend milestones** — rare, durable, soulbound. Issuance signs a
+  a pure function of the existing order feed. A point is a decrementing redeemable balance; an object
+  is immutable — so points are never objects and there is no per-point write.
+- **Badges (objects) mint only at spend milestones** — rare, durable, soulbound. Issuance signs a
   manifest and mints on-chain (sponsored).
 - **USDC spend is also on-chain**, so it is trustlessly summable for portable, cross-merchant
   reputation; card spend stays in the merchant-trusted order feed (points are a merchant liability,
   not a trustless asset).
 
-## 5. POD-holdings gating (events + products)
+## 5. Object-holdings gating (events + products)
 
-A claim or purchase can be gated on POD holdings (count-based, a specific manifest, or a time
+A purchase can be gated on object holdings (count-based, a specific manifest, or a time
 window):
 
 - A single shared **holdings primitive** (`holdsAtLeast` / `getHoldings`) unifies the on-chain slot
   owner and the collection feed, and is reused by event gating, product gating, and milestone
   eligibility.
 - Events can gate **on-chain** (`WoCoEventV2`'s drop-gate hook) so the crypto-claim path needs no
-  server in the gate; product gating is a server holdings check at order time. Multi-POD any/all
+  server in the gate; product gating is a server holdings check at order time. Multi-object any/all
   gates with a time window are supported.
+- Creating a gated series is refused while `badgesAllowed` is off
+  (`apps/server/src/lib/event/service.ts:158`); checkout still enforces a gate an existing series
+  carries, so turning the flag off never opens a gated sale to everyone.
 
 The holdings **read is already decentralised** (slot owner is public on-chain; the collection feed
 reads from the Swarm gateway). Only enforcement at issuance is server-mediated — and only because
@@ -101,10 +124,11 @@ issuance already is (the platform feed-signing key + postage). The gate adds no 
 - The **0.25% crypto fee is recorded but not yet collected** on the direct-transfer rail — splitting
   a single ERC-20 transfer non-custodially needs a forwarder/splitter (a later milestone); funds go
   in full to the merchant today rather than break the non-custodial model to collect a fee.
-- Card (Stripe) is the live *card* rail for paying customers today; the USDC quote and
-  spend-permission rails are built and **verified on-chain** (the standalone agent rail settles real
-  USDC E2E — the agent/USDC path never touches Stripe), with the spend-permission cumulative cap
+- The whole shop rail is off (`shopAllowed = false`, banner above). The card checkout, USDC quote
+  and spend-permission rails are built. The draw shape was proven onchain by the agent rail's
+  2026-06-12 run; the shop's own crypto settle has no live onchain E2E. The cumulative cap is
   enforced server-side as described above. Crypto is intentionally **held back from real customers
   until a security audit** (not yet done).
-- The agentic (x402) purchasing hook converges on the same verified-transfer settlement; the
-  standalone agent rail is verified on-chain (see [`WOCO_AGENT_ARCHITECTURE.md`](./WOCO_AGENT_ARCHITECTURE.md)).
+- The agentic (x402) purchasing hook converges on the same verified-transfer settlement. The agent
+  rail is itself off and cannot settle today (`agentCommerceAllowed = false`, see
+  [`WOCO_AGENT_ARCHITECTURE.md`](./WOCO_AGENT_ARCHITECTURE.md)).

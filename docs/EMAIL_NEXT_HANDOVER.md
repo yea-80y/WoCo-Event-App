@@ -1,6 +1,15 @@
 # Email work — where it stands and what is next
 
 Written 2026-08-02, at the end of #100; launch state added 2026-09-22 (next section).
+
+**Status (2026-10-05):** SES is the live provider. Shipped since the launch-state note: #621
+(an SES `not-spam` report no longer suppresses, PR #628), the unsubscribe-page wrap fix (#629),
+organiser contact lists sealed with X-Wing (#729), the public ticket-email route removed (#754 -
+tickets are emailed only by Stripe fulfilment), ticket links that carry no buyer name (#688) and
+open a static page with the ticket in the URL fragment (#690). Resend is NOT yet removed: the
+adapter, `routes/resend-webhook.ts` and the `resend` dependency are still in the tree, and the
+code default for `EMAIL_PROVIDER` is still `resend` (`lib/email/send.ts`) - #627 is open.
+Organiser sending domains stay off (`organiserSendingDomains = false`, `packages/shared/src/features.ts`).
 Companion to `SES_MIGRATION_HANDOVER.md`
 (which holds the SES design record and the §4a review board) and
 `PRICING_AND_EMAIL.md` (rates — never restate them elsewhere).
@@ -12,8 +21,8 @@ Companion to `SES_MIGRATION_HANDOVER.md`
 **Code: done for launch.** Live on `e9574b1a`, `/api/health` `.email` all green on
 2026-09-22 (0 undelivered tickets, `bounceLedger` untagged 0, pacing `tagging: true`,
 marketing sender set). Shipped: #99, #96, #100, #104, #387/#388, #392/#394, #410, #619
-(+ #620). #621 (not-spam must not suppress) and the unsubscribe-page wrap fix are on their
-own PRs.
+(+ #620). #621 (not-spam must not suppress) and the unsubscribe-page wrap fix followed as
+#628 and #629.
 
 **Resend is being removed (#627) — owner decision 2026-09-22.** It is not a rollback: flipping
 `EMAIL_PROVIDER=resend` would cap all mail at the free tier's 100/day, and Resend is not
@@ -30,7 +39,7 @@ opt-in). #133 items 1–3 (per-sender rates, automatic stop, paced first send) s
 **Owner, outside the code** (none of these can be seen from the repo):
 - support@ and privacy@woco-net.com receive mail (MX is Zoho) — privacy@ is the Privacy
   Policy's rights address.
-- Rotate the AWS access key that passed through a chat on 2026-07-31.
+- Credential housekeeping: see the private ops runbook.
 - In the SES console: `mail.woco-net.com` shows DKIM verified; note the reputation page
   before and after the first organiser send.
 - Google Postmaster Tools for `woco-net.com` (no verification record in DNS on 2026-09-22).
@@ -83,7 +92,8 @@ on a `Permanent` bounce or a `Reject` and writes a ledger entry carrying the
 - **Ledger before suppress.** Consume-before-process means a throw after the
   consume loses the event permanently, and a lost suppression self-heals (the
   address bounces again) while a lost ledger entry does not.
-- **Complaints suppress but do not ledger.** The message was delivered. It costs
+- **Complaints suppress but do not ledger** (except an SES `not-spam` report, which
+  suppresses nothing since #628 - it says the mail was wanted). The message was delivered. It costs
   the person no future ticket either — the suppression list is consumed only by
   `marketing-send.ts`. Real loss returns later as
   `Permanent/OnAccountSuppressionList`, which IS ledgered.
@@ -97,8 +107,8 @@ on a `Permanent` bounce or a `Reject` and writes a ledger entry carrying the
 
 **Still open, deliberately:**
 
-- **`routes/resend-webhook.ts` is NOT covered.** Moot: Resend is being removed
-  (#627, owner decision 2026-09-22).
+- **`routes/resend-webhook.ts` is NOT covered.** Moot while SES is the provider: Resend
+  is to be removed (#627, owner decision 2026-09-22; still open on 2026-10-05).
 - **AWS-side wiring is unverifiable from code.** Tags are published only through
   a **configuration-set event destination** — identity-level feedback
   notifications carry none — and `Reject` must be enabled on that destination to
@@ -147,10 +157,9 @@ either by accident.
 
 **Deployed 2026-08-03. No outage — the var was already set.** An earlier draft
 of this section warned that merging would 503 every marketing send until
-`EMAIL_FROM_MARKETING` was configured. That was wrong: it is set on both the
-laptop master and the VM to `news@mail.woco-net.com`, a subdomain distinct from
-the transactional `woco-net.com`, which is exactly the lane split this issue
-asks for. `/api/health` → `email.marketingSender.ok` is `true` in production.
+`EMAIL_FROM_MARKETING` was configured. That was wrong: it was already set, to a
+sender on a subdomain distinct from the transactional `woco-net.com`, which is
+exactly the lane split this issue asks for. `/api/health` → `email.marketingSender.ok` is `true` in production.
 The claim came from misreading a `grep -o` that truncated at the `=`; check a
 value's LENGTH, never a pattern that stops before it.
 
@@ -231,7 +240,8 @@ phone**, which is the genuine unknown, not on architecture.
 The big one, gated on the paid tier. §4 of the SES handover has the API mapping
 and the three things that will bite (1 req/s on non-send actions, 10,000
 identities per region, reputation split per organiser). Deleting Resend is no
-longer tied to this: it goes now (#627, owner decision 2026-09-22).
+longer tied to this (#627, owner decision 2026-09-22; not yet done on 2026-10-05).
+Still flag-gated off: `organiserSendingDomains` in `packages/shared/src/features.ts`.
 
 ### 6. #60, #81 — compliance and launch-ops leftovers
 

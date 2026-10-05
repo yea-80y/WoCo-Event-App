@@ -3,6 +3,10 @@
 Record of what we told AWS, so a later follow-up can be answered consistently.
 Everything here must stay TRUE against the code; if a limit changes, change it here.
 
+**Status (2026-10-05):** production access granted; SES is the live provider. The reply below
+is kept as sent. Where the code has moved since, the internal notes under the table and after
+the reply say how - describe those, not the reply, if AWS asks.
+
 Identity: `woco-net.com`, Easy DKIM (2048-bit), region **eu-west-2**, custom MAIL FROM
 `bounce.woco-net.com`, DMARC `p=none` with aggregate reporting.
 
@@ -29,8 +33,8 @@ Quote these, not round approximations — AWS re-reads the case on later increas
 
 | Control | Value | Where |
 |---|---|---|
-| Recipients per broadcast request | 1,000 | `MAX_BROADCAST_RECIPIENTS`, `routes/marketing.ts` |
-| Broadcasts per hour, per organiser | 2 | `BROADCAST_RATE_LIMIT` |
+| Recipients per broadcast request | 1,000 | `MAX_BROADCAST_RECIPIENTS` - removed with #100, see note below |
+| Broadcasts per hour, per organiser | 2 | `MARKETING_PER_HOUR`, `routes/broadcast-jobs.ts` (was `BROADCAST_RATE_LIMIT`) |
 | Rolling 24h ceiling, per organiser | `max(2,000, organiser's stored list size)` | `send-cap.ts` `effectiveDailyCap()` |
 | Contacts per organiser list | 20,000 | `MARKETING_MAX_LIST_EMAILS` |
 
@@ -130,6 +134,20 @@ sent. Screenshots of both are attached.
 record (`p=none` with aggregate reporting while we establish a baseline).
 
 ---
+
+**Internal note, not sent to AWS - where the code has moved since the reply (2026-10-05):**
+
+- Ticket link: since #688 it carries no buyer name, and since #690 it opens a static page on the
+  app origin with the signed ticket in the URL fragment, so the signature reaches no server
+  (`packages/shared/src/ticket/link.ts`; the old server route `/t` answers 410).
+- Complaints: an SES complaint with feedback type `not-spam` is not suppressed (#628,
+  `routes/ses-webhook.ts`) - it says the mail was wanted. Every other complaint and every
+  `Permanent` bounce still goes to the global tier.
+- Attendee mail now goes through the background queue (`/api/broadcasts/jobs`, `kind: "event"`)
+  and every recipient is checked by hash against the attendee index appended at Stripe
+  fulfilment (#387). The old per-event endpoint answers 410.
+- Contact lists are sealed client-side with the organiser's X-Wing key (#729); the server still
+  stores only HMAC hashes.
 
 ## The sending domain resolves — apex redirect added 2026-07-27
 

@@ -1,5 +1,12 @@
 # Retiring the v1 claim rail — handover
 
+Status (2026-10-05): DONE - merged 2026-08-09 as PR #207. Kept as the record of why the rail was
+deleted rather than hardened. Since then: the embed was rebuilt on the v2 guest Stripe checkout
+(#461), so the "embed still renders v1 claim flows" note is closed; `orders.ts` now reads slots
+through `mapWithConcurrency` (`apps/server/src/routes/orders.ts:78`), closing that item under
+"Issues to file"; and the supply ledger is now `WoCoTicketLedger`. Branch, worktree and starter
+prompt below are historical.
+
 STATUS 2026-08-08 (evening). Branch `fix/retire-v1-claim-rail`, worktree
 `~/projects/woco-wt-v1retire`. **Phase 2 COMPLETE** — the rail is deleted, the
 three fail-closed fixes are in, server tsc clean + 515 tests green, web

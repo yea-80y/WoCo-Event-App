@@ -2,7 +2,7 @@
 
 `label.woco.eth` names as the identity primitive for user profiles and organiser brands.
 
-**Verified against `main` and the live `/api/health` on 2026-09-08.**
+**Verified against `main` (94364b56) on 2026-10-05.**
 
 ---
 
@@ -22,10 +22,16 @@ Because the name is an NFT rather than a database row:
 Names are browsable at `<label>.woco.eth.limo`. That suffix is `SUB_ENS_WEB_SUFFIX` in
 `packages/shared/src/sub-ens/web.ts` and appears **nowhere else** — a test fails if a literal
 reappears under `apps/web/src`. It has moved before (a day on `.link` over a misread of eth.limo's
-on-demand certificates), which is exactly why it is a single constant. eth.limo issues a
-subname's certificate at its first TLS handshake, only once the name resolves to a contenthash,
-and rate-limits the ask per hostname — so the server warms it once after every contenthash
-receipt, and nothing should link to a name before that.
+on-demand certificates), which is exactly why it is a single constant.
+
+**Certificates (since 2026-09-28):** eth.limo holds **wildcard** certificates for
+`*.woco.eth.limo` and `*.woco.eth.link`, so every one-level name opens with no per-name
+certificate, no `/ask` budget and no first-open wait. eth.limo still caches a resolution for
+300 s, so a new pointer shows after that cache turns over. History: before the wildcard, eth.limo
+issued each subname's certificate on demand at its first TLS handshake, rate-limited per hostname,
+so the server warmed it once after every contenthash receipt
+(`apps/server/src/lib/sub-ens/cert-warmup.ts`). That warm-up still runs, as a fallback in case the
+wildcard lapses (#707, #557 closed). The comment in `web.ts` still describes the on-demand model.
 
 ---
 
@@ -85,8 +91,9 @@ refusal in `apps/server/src/lib/ens-gateway/ccip.ts` is a security control, not 
 validation — nothing is signed until the request has been proved to be about a name this gateway
 may answer for, and the answer has come from the registry rather than from the request.
 
-`/api/health` reports the gateway's live configuration: `signer`, `chainId`, `registry`, `parent`
-and a `crossCheck` flag.
+`/api/health` `ensGateway` reports the gateway's live configuration: `signer`, `resolvers` (each
+with the L1 chain bound into its signed hash, or null for v1), `chainId` (the L2), `registry`,
+`parent` and a `crossCheck` flag.
 
 ---
 
@@ -103,11 +110,17 @@ and a `crossCheck` flag.
   per-name nonce, expiration) and `POST /api/sub-ens/set-contenthash` relays it; no WoCo key can
   repoint a name. It is asked for once, at BIND: a site name points at the site's feed manifest,
   which every publish advances, so publishing never needs a chain write or a prompt. A profile
-  name points at the app (`SUB_ENS_APEX_CONTENTHASH`) and nowhere else. Web3 wallets sign
-  directly; passkey and web3auth sign as their Kernel (ERC-1271); a Coinbase Smart Wallet's
-  signature only verifies on Base, so its holder will act by its own transaction.
-- Claiming is behind the **attendee gate**: hold a ticket, or be an organiser
-  ([TICKETING.md § The attendee gate](./TICKETING.md#7-the-attendee-gate)).
+  name points at the app (`SUB_ENS_APEX_CONTENTHASH`) and nowhere else. An **event-page** name
+  points at a feed the organiser owns (`woco-site-{eventId}`, #614/#682), so republishing an
+  event page needs no new pointer signature either. Web3 wallets sign directly; passkey and
+  web3auth sign as their Kernel (ERC-1271). Coinbase Smart Wallet login is off
+  (`coinbaseLoginAllowed`); its signature only verifies on Base, so such a holder would act by
+  its own transaction.
+- A publish shows at its name after about 5 minutes: files spread from Etherna, then eth.limo's
+  300 s cache (#613, #624).
+- Claiming is behind the **attendee gate**: a ticket, published events, Stripe verification or a
+  confirmed referral (`apps/server/src/lib/gate/check.ts`;
+  [TICKETING.md § The attendee gate](./TICKETING.md#7-the-attendee-gate-the-account-unlock)).
 
 ### Why the Kernel and the registry must share a chain
 
@@ -140,7 +153,7 @@ deliberately outlives the name it refers to — nothing deletes a record, becaus
 
 Administrative reclaim is `adminTransfer` — **transfer-only, no timelock**, held by the Safe.
 
-### Registry v2.2 rules (they arrive with the v2.2 cutover)
+### Registry v2.2 rules (live since the 2026-09-21 cutover)
 
 After audit 950 the registry refuses ERC-721 delegation, because a name's holder has every power
 over it and an approval let the approvee become the holder. What that means in practice:

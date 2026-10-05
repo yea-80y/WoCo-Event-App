@@ -4,11 +4,20 @@ Design note, 2026-07-27. Written after the CSV-import work (PR #78) raised the
 question: how does a ticket buyer become a marketing contact without duplicating
 people or breaking consent?
 
+**Status (2026-10-05):** the model below is built. What changed under it: claims are now
+*orders* (the v1 claim rail went with #207), sealed with the organiser's X-Wing key (#730)
+and stored on the attendee batch, where each one can be erased (#743-#745). Contact lists are
+sealed with X-Wing too (#729). Attendee mail goes through the background queue
+(`/api/broadcasts/jobs`, `kind: "event"`) and is checked against the attendee index written at
+Stripe fulfilment (#387); the old per-event endpoint answers 410.
+
 > **CORRECTED 2026-07-27, later the same day.** Two of the three findings below
 > were acted on and one was WRONG. Read this box before the rest of the note.
 >
 > - The broadcast hole is **FIXED** — `/api/events/:id/broadcast` now requires
->   every recipient to hold a ticket (`lib/event/attendee-emails.ts`).
+>   every recipient to hold a ticket (`lib/event/attendee-emails.ts`). *(That endpoint
+>   is retired (410) since #100; the same check runs on `kind: "event"` jobs in
+>   `routes/broadcast-jobs.ts`, against the attendee index (#387).)*
 > - "There is no marketing opt-in at purchase" was **incorrect**. The field is
 >   `marketingConsent`, not `marketingOptIn`; the original grep was for a name
 >   that never existed. The opt-in control, the versioned wording
@@ -33,7 +42,11 @@ contact records those sends draw from.
 
 ---
 
-## What exists today (verified in code, not assumed)
+## What existed on 2026-07-27 (verified in code then)
+
+*Since then: the claim is an order sealed to the organiser's X-Wing key (#730); attendee mail
+is a `kind: "event"` job at 5 per hour, chunked rather than capped at 500 per request, still not
+Stripe-gated and still outside the marketing daily cap (`routes/broadcast-jobs.ts`).*
 
 Two contact worlds that never touch:
 
@@ -133,7 +146,7 @@ has no key, and giving it one would collapse the whole trust model.
 
 Recommended: **the opt-in rides in the already-sealed claim data.** Claims are
 already sealed to the organiser's X25519 key at claim time, and the Dashboard
-already decrypts them. So:
+already decrypts them. *(Now orders, sealed to the organiser's X-Wing key since #730.)* So:
 
 1. ✅ **BUILT.** Checkout collects a structured marketing opt-in — unticked by
    default (pre-ticked boxes are not valid consent; CJEU *Planet49*), with the
@@ -162,5 +175,10 @@ client-first architecture intact.
   former; worth confirming before wiring.
 - Erasure (Art 17) currently has to hit the sealed blob AND the claim data AND
   preserve the suppression hash. Needs a single deletion path before this grows.
+  *(2026-10-05: partly closed. Server-side marketing stores erase through
+  `lib/marketing/subject-request.ts`, which keeps suppression marks; one stored order is
+  erased by burning its slots on the attendee batch (#743-#745,
+  `lib/attendee-batch/burn.ts`). These are still two paths, and the organiser's own sealed
+  list is edited in their browser.)*
 - Does raising `MARKETING_MAX_LIST_EMAILS` above 20k make sense now that gzip put
   the storage ceiling near 175k? Browser memory, not storage, is the new limit.

@@ -1,8 +1,8 @@
-> **SUPERSEDED.** The Stylus trending aggregator computed over EAS like attestations, and likes
-> left EAS for Swarm. Nothing replaces it on chain — counting is now an indexer reading public
-> feeds ([SWARM_SOCIAL_PLAN.md](./SWARM_SOCIAL_PLAN.md)). Kept as the record of the contract.
-
 # Stylus Trending Aggregator (#5)
+
+> **Historical record (status 2026-10-05).** The record of the Stylus contract that ranked EAS like attestations; likes left EAS for Swarm (#475, #476) and nothing
+> replaces it onchain - counting is an indexer reading public feeds.
+> Current: [SWARM_SOCIAL_PLAN.md](./SWARM_SOCIAL_PLAN.md).
 
 A trustless trending/ranking engine for the [EAS social graph](./EAS_SOCIAL_GRAPH.md), written in
 **Rust and compiled to WASM** as an **Arbitrum Stylus** contract on **Arbitrum Sepolia (`421614`)**.

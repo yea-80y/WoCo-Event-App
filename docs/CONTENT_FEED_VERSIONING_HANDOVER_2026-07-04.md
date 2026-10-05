@@ -1,5 +1,13 @@
 # Content-feed versioning — SOC overwrite is a silent no-op (2026-07-04)
 
+> **Status (2026-10-05).** Handover record; the versioned rail is BUILT and in use
+> (`apps/web/src/lib/swarm/content-feed.ts`). Still holds: the
+> root cause (Bee keeps the first payload at a SOC address) and the identifier scheme in
+> `packages/shared/src/swarm/soc.ts`. Changed since: the probe window is 2, not 8
+> (`VERSION_PROBE_WINDOW`), and growing feeds are banded with discoverable band openers
+> (`resolveBandedHead` in `soc.ts`; band rules in `packages/shared/src/statement/discipline.ts`). The "Ops note" below is
+> dated and not current. See [SWARM_DATA_MODEL.md](./SWARM_DATA_MODEL.md).
+
 Diagnosed by Fable. Implementation intended for Opus. Read `CLAUDE.md` first.
 
 ## STATUS 2026-07-06 (Opus): IMPLEMENTED — typecheck + unit tests green, NOT deployed

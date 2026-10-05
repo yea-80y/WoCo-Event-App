@@ -1,5 +1,19 @@
 # NEXT — the working order
 
+> **Snapshot, not the plan (status 2026-10-05).** The living plan is GitHub issue #353. This file is a snapshot,
+> last substantively edited on 2026-09-06. Done since it was written, checked against merged PRs and code:
+>
+> - The 2026-08-09 tier 1 security list: #212, #216, #209, #219 (PRs #247-#250).
+> - Tier 2 recovery and server-cache items: #234 (PR #366), #161 (#355), #157 (#362), #163 and #210 (#352), #236 (#304),
+>   #237 and #238 (resolved by #284); #164, listed below as deferred, was built (#357).
+> - Security workstream S3/S4/S7: strict CSP (#146, PRs #380/#381/#395), the embed claim fix (#143, PR #406), embed
+>   typecheck in CI (#144, PR #407), the web3auth guard (#174).
+> - The "Now - in flight" claim-feed paging row (#113-#117) is closed, and the whole v1 claim rail was then deleted (#207).
+> - Email track: the Amazon SES provider and SNS bounce/complaint webhook are built (`apps/server/src/lib/email/ses-provider.ts`, `sns-verify.ts`).
+> - Hygiene: Node 24 (#9), svelte-check in CI (#11), event-page schema.org markup (#55, PR #75).
+>
+> Read anything else here from #353, not from this file.
+
 The single ordered list. GitHub issues are the *what*; this is the *when*. If a plan only
 exists in a chat message, it does not exist. Update this file when the order changes.
 

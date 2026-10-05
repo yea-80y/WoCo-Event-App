@@ -1,5 +1,15 @@
 # Cross-Device Recovered Passkeys — Design
 
+> **Status (2026-10-05).** Design record; the fix is BUILT. The portability envelope
+> (`apps/web/src/lib/auth/recovery-portability.ts`) carries `{ preservedKernelAddress, identitySeed }`
+> sealed, so a recovered passkey works on any device; it is stamped on Etherna's batch (#740).
+> Still holds: §3's shape and the onchain owner check. Superseded: both keys are HKDF of the
+> PRF output (`woco/recovery/portability/{soc-owner,hpke}/v2`, `packages/shared/src/crypto/passkey-prf.ts`,
+> #642), not a signature; §4's open question is settled - the feed signer is an HKDF child of the
+> seed (2026-09-10), so nothing but the seed is escrowed. "POD seed" below is the identity seed
+> (formerly called POD; renamed object, 2026-09-10). Current: [PASSKEY_RECOVERY_PLAN.md](./PASSKEY_RECOVERY_PLAN.md)
+> "Current state", [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md).
+
 **Status:** DESIGN (2026-06-21). The bug is diagnosed and the fix is specified here;
 implementation is gated behind the client-side feed signer (see "Dependency" below).
 Companion docs: [`PASSKEY_AUTH.md`](./PASSKEY_AUTH.md),

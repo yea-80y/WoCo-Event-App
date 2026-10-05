@@ -1,5 +1,12 @@
 # Frontend load-time baseline — woco.eth.limo
 
+> **Status (2026-10-05):** a measurement record. The 2026-07-17 BEFORE table is still the only
+> baseline; the AFTER run was never recorded, so do not quote these numbers as current. Since
+> then: eth.limo holds wildcard certificates for `*.woco.eth.limo` (2026-09-28), which removes
+> the first-open certificate wait for sub-names but is not measured here; the 300 s eth.limo
+> resolution cache still applies. Rerun before citing the ~3.3 s TTFB floor (SEO_PLAN.md relies
+> on it). `perf-summarize.py` is still tracked (`scripts/`).
+
 Method: Lighthouse (local chromium via `npx`, no install needed), performance
 category only, 3 routes x 2 throttle profiles. Routes are hash-based SPA
 routes — loading a URL with `#/route` directly still exercises real network

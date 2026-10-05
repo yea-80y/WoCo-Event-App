@@ -1,5 +1,9 @@
 # Handover — client-owned feeds across all auth kinds (+ profiles & sites)
 
+> **Historical record (status 2026-10-05).** A June 2026 working handover on content-feed signers per login kind; since 2026-09-10 every kind's feed signer is an HKDF child
+> of the one identity seed (no escrow or sign-to-derive of its own), the "POD seed" it names is now the identity seed, and Coinbase login is off.
+> Current: [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md), [SWARM_DATA_MODEL.md](./SWARM_DATA_MODEL.md).
+
 **Created:** 2026-06-30. Branch: `feat/feed-signer-recovery`.
 Read this whole file first. Facts below are **verified against the code** (file:line
 cited) — do NOT re-derive them; that is what burns tokens. Working style: crypto-expert

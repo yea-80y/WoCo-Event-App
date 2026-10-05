@@ -4,7 +4,7 @@ This folder is nine months of design records, plans and handovers. Most of it wa
 capture a decision at the moment it was made, which makes it valuable and also means **age
 matters**. This index sorts every tracked document by how much you should trust it today.
 
-**Index reviewed 2026-09-08.** Dates are the last commit that touched the file.
+**Index reviewed 2026-10-05**, against `main` at 94364b56. Dates are the last commit that touched the file.
 
 > **Only `docs/*.md` and `docs/legal/*.md` are tracked.** Some documents on a developer's disk
 > are deliberately gitignored (local plans and handovers, and the ops runbook). If a doc is
@@ -17,9 +17,11 @@ matters**. This index sorts every tracked document by how much you should trust 
 | Doc | What it covers |
 |---|---|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | The system, layer by layer: what the server is for, which chain does what, how a request is authenticated, how an event is created and sold |
-| [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md) | All five keys, sign-to-derive, the issuer-curve migration, sealed order envelopes, login methods |
+| [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md) | All four keys, the one identity seed, sealed envelopes (X-Wing), passkey accounts, login methods |
 | [SWARM_DATA_MODEL.md](./SWARM_DATA_MODEL.md) | Chunks and addressing, mutable feeds from immutable chunks, topic derivation, bands, postage, the gateway whitelist |
-| [TICKETING.md](./TICKETING.md) | Manifests and Merkle roots, sale and mint, what makes a ticket genuine, the door, certificates |
+| [TICKETING.md](./TICKETING.md) | Manifests and Merkle roots, sale and mint, what makes a ticket genuine, the door, refunds, certificates |
+| [OBJECTS.md](./OBJECTS.md) | What a signed object is, how it differs from a verifiable credential, and why it is not called a POD |
+| [DEPLOYMENTS.md](./DEPLOYMENTS.md) | Every contract address by chain, and why tickets mint on Sepolia until launch |
 | [SITE_BUILDER.md](./SITE_BUILDER.md) | How organiser websites are built, published and addressed |
 | [SUBENS_IDENTITY.md](./SUBENS_IDENTITY.md) | `*.woco.eth` names, and how mainnet ENS resolves to an L2 registry |
 | [CONTRIBUTING.md](./CONTRIBUTING.md) | Setup, tests, CI gates, conventions, traps |
@@ -54,8 +56,8 @@ linking.
 ### State and direction
 | Doc | Date |
 |---|---|
-| [DEVLOG.md](./DEVLOG.md) — running history of completed work | 2026-09-06 |
-| [NEXT.md](./NEXT.md) — the working order | 2026-09-06 |
+| [DEVLOG.md](./DEVLOG.md) — running history of completed work | 2026-10-05 |
+| [NEXT.md](./NEXT.md) - a 2026-09-06 snapshot of the working order; the living plan is issue #353 | 2026-10-05 |
 
 The living launch plan is **GitHub issue #353**, not a file. Re-read it top-down rather than
 trusting a snapshot.
@@ -63,62 +65,63 @@ trusting a snapshot.
 ### Payments, money, email
 | Doc | Date |
 |---|---|
-| [PAYMENTS_INTEGRATION.md](./PAYMENTS_INTEGRATION.md) — Stripe mechanics, reservations, the ticket card | 2026-08-23 |
-| [EMAIL_NEXT_HANDOVER.md](./EMAIL_NEXT_HANDOVER.md) — **start here for email work** | 2026-08-17 |
-| [SES_MIGRATION_HANDOVER.md](./SES_MIGRATION_HANDOVER.md) · [SES_PRODUCTION_ACCESS.md](./SES_PRODUCTION_ACCESS.md) | 2026-08-02 |
-| [CONTACT_MANAGEMENT_DESIGN.md](./CONTACT_MANAGEMENT_DESIGN.md) | 2026-07-28 |
-| [EVENT_CREATION_ANTI_ABUSE.md](./EVENT_CREATION_ANTI_ABUSE.md) | 2026-06-17 |
+| [PAYMENTS_INTEGRATION.md](./PAYMENTS_INTEGRATION.md) — Stripe mechanics, reservations, the ticket card | 2026-10-05 |
+| [EMAIL_NEXT_HANDOVER.md](./EMAIL_NEXT_HANDOVER.md) — **start here for email work** | 2026-10-05 |
+| [SES_MIGRATION_HANDOVER.md](./SES_MIGRATION_HANDOVER.md) · [SES_PRODUCTION_ACCESS.md](./SES_PRODUCTION_ACCESS.md) | 2026-10-05 |
+| [CONTACT_MANAGEMENT_DESIGN.md](./CONTACT_MANAGEMENT_DESIGN.md) | 2026-10-05 |
+| [EVENT_CREATION_ANTI_ABUSE.md](./EVENT_CREATION_ANTI_ABUSE.md) | 2026-10-05 |
 
 ### Storage and social
 | Doc | Date |
 |---|---|
-| [SWARM_SOCIAL_PLAN.md](./SWARM_SOCIAL_PLAN.md) — **authoritative** on the Swarm-native social graph | 2026-08-21 |
-| [COASTER_CREDITS_PLAN.md](./COASTER_CREDITS_PLAN.md) — the credits rail, and the design record for the frozen statement discipline | 2026-08-20 |
-| [CLIENT_FEED_SIGNER_HANDOVER.md](./CLIENT_FEED_SIGNER_HANDOVER.md) — why users own their feeds | 2026-08-06 |
-| [FEED_SIGNER_REVIEW_2026-07-02.md](./FEED_SIGNER_REVIEW_2026-07-02.md) — the review that kept sign-to-derive | 2026-07-02 |
-| [CONTENT_FEED_VERSIONING_HANDOVER_2026-07-04.md](./CONTENT_FEED_VERSIONING_HANDOVER_2026-07-04.md) — versioned feeds | 2026-07-06 |
-| [ETHERNA_INTEGRATION.md](./ETHERNA_INTEGRATION.md) · [ETHERNA_USER_CONTENT_HANDOVER.md](./ETHERNA_USER_CONTENT_HANDOVER.md) — the second storage origin | 2026-08-06 |
-| [EVENTS_DIRECTORY.md](./EVENTS_DIRECTORY.md) — the chain-log directory + snapshot | 2026-07-17 |
+| [SWARM_SOCIAL_PLAN.md](./SWARM_SOCIAL_PLAN.md) — **authoritative** on the Swarm-native social graph | 2026-10-05 |
+| [COASTER_CREDITS_PLAN.md](./COASTER_CREDITS_PLAN.md) — the credits rail, and the design record for the frozen statement discipline | 2026-10-05 |
+| [CLIENT_FEED_SIGNER_HANDOVER.md](./CLIENT_FEED_SIGNER_HANDOVER.md) — why users own their feeds | 2026-10-05 |
+| [FEED_SIGNER_REVIEW_2026-07-02.md](./FEED_SIGNER_REVIEW_2026-07-02.md) — the review that kept sign-to-derive | 2026-10-05 |
+| [CONTENT_FEED_VERSIONING_HANDOVER_2026-07-04.md](./CONTENT_FEED_VERSIONING_HANDOVER_2026-07-04.md) — versioned feeds | 2026-10-05 |
+| [ETHERNA_INTEGRATION.md](./ETHERNA_INTEGRATION.md) · [ETHERNA_USER_CONTENT_HANDOVER.md](./ETHERNA_USER_CONTENT_HANDOVER.md) — the second storage origin | 2026-10-05 |
+| [EVENTS_DIRECTORY.md](./EVENTS_DIRECTORY.md) — the chain-log directory + snapshot | 2026-10-05 |
 
 ### Identity, accounts, recovery
 | Doc | Date |
 |---|---|
-| [PASSKEY_RECOVERY_PLAN.md](./PASSKEY_RECOVERY_PLAN.md) — guardian escrow, the envelope, the threat model | 2026-08-23 |
-| [CROSS_DEVICE_RECOVERY.md](./CROSS_DEVICE_RECOVERY.md) — the portability envelope | 2026-06-21 |
-| [RECOVERY_VERIFICATION_CHECKLIST.md](./RECOVERY_VERIFICATION_CHECKLIST.md) — the supervised test sequence | 2026-06-21 |
-| [PASSKEY_SMART_WALLET.md](./PASSKEY_SMART_WALLET.md) — the Kernel design and the Option 1 / Option 2 call | 2026-09-03 |
+| [PASSKEY_RECOVERY_PLAN.md](./PASSKEY_RECOVERY_PLAN.md) — guardian escrow, the envelope, the threat model | 2026-10-05 |
+| [CROSS_DEVICE_RECOVERY.md](./CROSS_DEVICE_RECOVERY.md) — the portability envelope | 2026-10-05 |
+| [RECOVERY_VERIFICATION_CHECKLIST.md](./RECOVERY_VERIFICATION_CHECKLIST.md) — the supervised test sequence | 2026-10-05 |
+| [PASSKEY_SMART_WALLET.md](./PASSKEY_SMART_WALLET.md) — the Kernel design and the Option 1 / Option 2 call | 2026-10-05 |
 
 ### Sites, SEO, performance
 | Doc | Date |
 |---|---|
-| [SEO_PLAN.md](./SEO_PLAN.md) — **authoritative** on SEO and custom domains | 2026-08-10 |
-| [SEO_GUIDANCE.md](./SEO_GUIDANCE.md) | 2026-07-28 |
-| [SITE_BUILDER.md](./SITE_BUILDER.md) — **current**: publish/deploy flow, feeds, quota | 2026-09-08 |
-| [MULTI_PAGE_SITE_BUILDER.md](./MULTI_PAGE_SITE_BUILDER.md) — the original design record | 2026-05-01 |
-| [SITE_EVENTS_CLIENT_SIGNED_HANDOVER.md](./SITE_EVENTS_CLIENT_SIGNED_HANDOVER.md) | 2026-07-13 |
-| [PERF_BASELINE_ETH_LIMO.md](./PERF_BASELINE_ETH_LIMO.md) | 2026-07-28 |
-| [self-hosted-setup.md](./self-hosted-setup.md) — running your own instance | 2026-02-25 |
+| [SEO_PLAN.md](./SEO_PLAN.md) — **authoritative** on SEO and custom domains | 2026-10-05 |
+| [SEO_GUIDANCE.md](./SEO_GUIDANCE.md) | 2026-10-05 |
+| [SITE_BUILDER.md](./SITE_BUILDER.md) — **current**: publish/deploy flow, feeds, quota | 2026-10-05 |
+| [MULTI_PAGE_SITE_BUILDER.md](./MULTI_PAGE_SITE_BUILDER.md) — the original design record | 2026-10-05 |
+| [SITE_EVENTS_CLIENT_SIGNED_HANDOVER.md](./SITE_EVENTS_CLIENT_SIGNED_HANDOVER.md) | 2026-10-05 |
+| [PERF_BASELINE_ETH_LIMO.md](./PERF_BASELINE_ETH_LIMO.md) | 2026-10-05 |
+| [self-hosted-setup.md](./self-hosted-setup.md) — running your own instance | 2026-10-05 |
 
 ### Security reviews
 | Doc | Date |
 |---|---|
 | [CRYPTO_AUDIT_2026-04-08.md](./CRYPTO_AUDIT_2026-04-08.md) → [SECURITY_FIXES_2026-04-09.md](./SECURITY_FIXES_2026-04-09.md) | 2026-04 |
-| [PLATFORM_SIGNER_AUDIT.md](./PLATFORM_SIGNER_AUDIT.md) — what the platform signer may touch | 2026-07-16 |
-| [V1_RETIREMENT_HANDOVER.md](./V1_RETIREMENT_HANDOVER.md) — what the v1 claim rail removal deleted | 2026-08-09 |
+| [PLATFORM_SIGNER_AUDIT.md](./PLATFORM_SIGNER_AUDIT.md) — what the platform signer may touch | 2026-10-05 |
+| [V1_RETIREMENT_HANDOVER.md](./V1_RETIREMENT_HANDOVER.md) — what the v1 claim rail removal deleted | 2026-10-05 |
 
 ---
 
-## Built but switched off
+## Switched off, or designed but not built
 
-The code exists; the flag is `false` in `packages/shared/src/features.ts`. Read the flag's own
-comment first — it says what is missing and what turning it on would require.
+Where a flag is named, the code exists and the flag is `false` in
+`packages/shared/src/features.ts`. Read the flag's own comment first - it says what is missing
+and what turning it on would require.
 
 | Doc | Flag |
 |---|---|
 | [CRYPTO_CLIENT_VERIFIABLE_PAYMENTS_PLAN.md](./CRYPTO_CLIENT_VERIFIABLE_PAYMENTS_PLAN.md) | `cryptoPaymentsAllowed` |
 | [WOCO_AGENT_ARCHITECTURE.md](./WOCO_AGENT_ARCHITECTURE.md) · [AGENT_COMMERCE_SURFACE.md](./AGENT_COMMERCE_SURFACE.md) | `agentCommerceAllowed` — and the v1 mint path it used is **deleted**, so the rail refuses outright |
-| [SHOP_AND_LOYALTY.md](./SHOP_AND_LOYALTY.md) | Shop and POS routes are live; the **USDC spend-permission rail** described here is the crypto side and is off |
-| [ATTENDEE_GATE_RESALE_PLAN.md](./ATTENDEE_GATE_RESALE_PLAN.md) | The gate is live; resale is built and untested |
+| [SHOP_AND_LOYALTY.md](./SHOP_AND_LOYALTY.md) | `shopAllowed` - shops, POS and spend-permission draws are all off (#124); badge and loyalty creation is off too (`badgesAllowed`, #664) |
+| [ATTENDEE_GATE_RESALE_PLAN.md](./ATTENDEE_GATE_RESALE_PLAN.md) | No flag: the attendee gate is live. Resale and moving a card ticket onto an account are design only, not built |
 
 ---
 
@@ -144,7 +147,7 @@ Kept for provenance. **Do not build from these** — each is superseded by somet
 | [EAS_SOCIAL_GRAPH.md](./EAS_SOCIAL_GRAPH.md) (2026-06) | [SWARM_SOCIAL_PLAN.md](./SWARM_SOCIAL_PLAN.md) — likes and follows left EAS |
 | [STYLUS_AGGREGATOR.md](./STYLUS_AGGREGATOR.md) (2026-06) | Nothing — the on-chain trending engine went with EAS |
 | [ONCHAIN_TICKETING.md](./ONCHAIN_TICKETING.md) (2026-06) | [TICKETING.md](./TICKETING.md). Its `WoCoEventV2` contract description is still accurate; the surrounding flow is not |
-| [BUILDATHON_SUBMISSION.md](./BUILDATHON_SUBMISSION.md) · [DEMO.md](./DEMO.md) (2026-06) | The buildathon entry, as submitted |
+| [BUILDATHON_SUBMISSION.md](./BUILDATHON_SUBMISSION.md) · [DEMO.md](./DEMO.md) (2026-06) | An earlier competition entry, kept as submitted. Most rails it describes are off or removed |
 | [LAUNCH_PLAN.md](./LAUNCH_PLAN.md) (2026-06) | GitHub issue #353 |
 | [WoCo-Events-Architecture-2026-02-28.pdf](./WoCo-Events-Architecture-2026-02-28.pdf) | The February architecture deck |
 

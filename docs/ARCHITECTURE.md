@@ -9,8 +9,8 @@ Companions: [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md) (keys and signing),
 [SWARM_DATA_MODEL.md](./SWARM_DATA_MODEL.md) (storage), [TICKETING.md](./TICKETING.md)
 (the ticket lifecycle), [CONTRIBUTING.md](./CONTRIBUTING.md) (running it).
 
-**Verified against `main` on 2026-09-08.** Where this document states an address, a constant or
-a flag, the file it came from is named — check there rather than trusting this copy.
+**Verified against `main` (94364b56) on 2026-10-05.** Where this document states an address, a
+constant or a flag, the file it came from is named - check there rather than trusting this copy.
 
 ---
 
@@ -103,21 +103,25 @@ Every layer, in one example. This is the shortest complete tour of the system.
                                                           │
  BUYER                                                    │
  ─────────────────────────────────────────────────────    │
+ the browser seals the order form to the organiser's
+   X-Wing key; the server HOLDS the box until paid         2
  pays by card. Stripe charges the ORGANISER's account      │
  webhook fires:                                            │
-   · order data sealed to the organiser's X-Wing key,      2,3
-     uploaded, its ref kept
    · a throwaway BURNER keypair is generated               1
    · batchClaimFor() mints the slot to that burner         4
    · the burner signs ONE message, then is DISCARDED       2
-   · ticket emailed: an image and a /t/… link              5
+   · the paid box is stored; its ref is onchain            3,4
+   · ticket emailed: an image and a static-page link,
+     the ticket in the URL fragment                        5
                                                           │
  AT THE DOOR                                              │
  ─────────────────────────────────────────────────────    │
- scanner reads the QR, offline                             5
+ scanner reads the QR                                      5
  recovers the signature → compares against the             2,4
    on-chain slot owner
  verdict: valid · unverified (chain unreachable) · invalid
+   · refunded (the door pack lists voided slots)
+ admits it ONCE across every scanner                       5
 ```
 
 Four things that example is designed to make obvious:
@@ -126,9 +130,13 @@ Four things that example is designed to make obvious:
 2. **The buyer never needs a wallet.** The platform mints to a burner whose key lives for
    milliseconds. The on-chain slot owner is the trust root.
 3. **The order data is unreadable to us.** It is sealed to the organiser's key before it leaves
-   the browser, and the platform never holds the matching private key.
-4. **Verification does not need our server.** It needs the message, the signature and a chain
-   read. The scanner works offline for exactly this reason.
+   the browser, and the platform never holds the matching private key. Only when a browser sent
+   no box does the server seal a minimal record itself (ticket type, and the buyer's email or
+   account address, which it already has). The box goes on Swarm only once paid, so it can be erased (#546).
+4. **Verification does not need our server.** It needs the message, the signature and the
+   onchain slot owner. Admission is different: a ticket gets in once across every scanner, so a
+   shared door asks the server to claim it, and only a pass bound to one phone admits offline
+   (#641).
 
 ### 1.5 What each package is *for*
 
@@ -164,7 +172,7 @@ constant.
                 ▼                                      │ chunk address
         ┌──────────────────────────┐                   │
         │  API (apps/server)       │                   │
-        │  Hono · ~35 routes       │                   │
+        │  Hono · ~36 routers      │                   │
         │   · verifies signatures  │                   │
         │   · pays for storage     │                   │
         │   · holds the secrets    │                   │
@@ -181,8 +189,11 @@ constant.
 Note the two arrows out of the browser — but read the asymmetry carefully, because it is
 narrower than it looks.
 
-**Writes always go through the server**, because storage has to be paid for with the platform
-postage batch.
+**Writes always go through the server**, because storage has to be paid for with a postage batch
+the server stamps with: WoCo's own, Etherna's platform batch, or the account's own Etherna batch
+(`apps/server/src/lib/etherna/batch-router.ts`). An account with no ticket, Stripe verification or
+confirmed invite cannot make the platform pay: likes, follows, names, profiles, raw uploads and
+issuer statements answer `ticket_required` until it unlocks (#753, #757).
 
 **Reads are split, and the split is not "content goes direct".** Gateway-direct today: profiles
 when the caller already holds the signer, social statements, and recovery envelopes — all
@@ -201,10 +212,10 @@ design protects; it is not a claim that the running app avoids the server.
 
 | Output | Entry | Runs where |
 |---|---|---|
-| `dist/` | `index.html` | The platform app, at `woco.eth.limo` |
+| `dist/` | `index.html`, `verify.html`, `ticket.html` | The platform app, at `woco.eth.limo`. The same collection carries the standalone verification page and the static ticket page (`vite.ticket.config.ts`: one file, script inlined, `connect-src 'none'`). |
 | `dist-multisite/` | `multi-site.html` | Each **deployed organiser site** — a standalone Swarm collection with `window.SITE_CONFIG` injected at deploy time. No server at page load. |
-| `dist-scanner/` | `scanner.html` | The **door-scanner PWA**. Deliberately has no auth stack and no Swarm reads — provisioned entirely by a door-pass URL, works offline once provisioned. |
-| `dist-site/` | — | The older single-site generator. Superseded by multisite. |
+| `dist-scanner/` | `scanner.html` | The **door-scanner PWA**. Deliberately has no auth stack and no Swarm reads - provisioned entirely by a door-pass URL. Whether it admits offline depends on the pass's door mode ([TICKETING.md §5](./TICKETING.md#5-at-the-door)). |
+| `dist-site/` | `site.html` | Each published **single-event page**. The event-page builder (`apps/server/src/routes/site.ts`) bakes this bundle in, so - as with multisite - a change reaches nobody until each page is re-published. |
 
 `packages/embed` builds separately: two IIFE bundles that third-party pages load directly. The
 server serves `woco-embed.js` off its own filesystem at `GET /embed/woco-embed.js` and builds it
@@ -220,26 +231,29 @@ jobs.
 
 | Chain | What lives there | Defined in |
 |---|---|---|
-| **Arbitrum One** (`42161`) | Sub-ENS registry + registrar (`*.woco.eth` names as ERC-721), ZeroDev **Kernel** smart accounts for passkey and email logins, the guardian recovery hook | `packages/shared/src/sub-ens/addresses.ts`, `packages/shared/src/kernel/chain.ts` |
-| **Arbitrum Sepolia** (`421614`) | The **on-chain ticket ledger** — `WoCoEventV2`. Tickets are still on testnet, and this chain is selected by **env, not by code default** — see the warning below. | `apps/server/src/lib/chain/event-contract.ts` + `WOCO_EVENT_CHAIN_ID` |
-| **Ethereum mainnet** (`1`) | `woco.eth` itself, and the `L1Resolver` that answers for every subname by EIP-3668 CCIP-Read | `contracts/deployments/1-l1resolver.json` |
+| **Arbitrum One** (`42161`) | Sub-ENS v2.2 registry + registrar (`*.woco.eth` names as ERC-721), ZeroDev **Kernel** smart accounts for passkey and email logins, their paymaster, the guardian recovery hook. A copy of `WoCoTicketLedger` is deployed here too (2026-09-25) but the server does not mint on it yet. | `packages/shared/src/sub-ens/addresses.ts`, `packages/shared/src/kernel/{chain,recovery-contracts}.ts` |
+| **Arbitrum Sepolia** (`421614`) | The **live ticket ledger** - `WoCoTicketLedger`, which stamps the real organiser as owner of record. Registrations made earlier on `WoCoEventV2` still verify, because each record names its own contract (#563). Tickets are still on testnet, and this chain is selected by **env, not by code default** - see the warning below. | `apps/server/src/lib/chain/event-contract.ts` + `WOCO_EVENT_CHAIN_ID` |
+| **Ethereum mainnet** (`1`) | `woco.eth` itself, and the `L1Resolver` (v2) that answers for every subname by EIP-3668 CCIP-Read | the contracts repo, `deployments/1-l1resolver.json` |
 
 So a live name is real mainnet ENS resolution, backed by a mainnet resolver that calls out to our
 gateway, which reads an Arbitrum One registry — while the tickets those names point at are minted
-on a testnet. That asymmetry is deliberate for pre-launch and is a launch-day item.
+on a testnet. That asymmetry is deliberate for pre-launch; moving the server onto the Arbitrum One
+ledger is a launch-day item.
 
-> **The ticket chain is env-selected, and the code default is something else.** Production sets
-> `WOCO_EVENT_CHAIN_ID=421614` and `WOCO_EVENT_VERSION_421614=v2`. With neither set the server
-> falls back to chain **`84532` (Base Sepolia)** and contract version **`v1`** — the old
-> `WoCoEvent` at `0x00824e22…`. **Neither variable appears in `.env.example`**, so a fresh local
-> server silently registers events on a different contract on a different chain than production.
-> Set both before touching anything ticket-shaped.
+> **The ticket contract is env-selected, and the code default is something else.** Production
+> selects the ledger on `421614` through `WOCO_EVENT_CHAIN_ID` and `WOCO_EVENT_VERSION_421614`, and
+> because `DEPLOYED_LEDGER` in `event-contract.ts` is still an empty map, its address comes from
+> `WOCO_EVENT_ADDRESS_LEDGER_421614` as well. With nothing set the server falls back to chain
+> **`84532` (Base Sepolia)** and contract version **`v1`** - the old `WoCoEvent`. **None of these
+> variables appears in `.env.example`**, so a fresh local server silently registers events on a
+> different contract on a different chain than production. Set them before touching anything
+> ticket-shaped.
 
 **Addresses are deliberately not listed here.** They have exactly one owner each, so a stale
 copy cannot appear in two places: sub-ENS registry / registrar / L1Resolver →
-[SUBENS_IDENTITY.md § Where it lives](./SUBENS_IDENTITY.md#where-it-lives); the ticket contract →
-`apps/server/src/lib/chain/event-contract.ts`. The deployment records in
-`contracts/deployments/*.json` are the source of truth for all of them.
+[SUBENS_IDENTITY.md § Where it lives](./SUBENS_IDENTITY.md#where-it-lives); ticket contracts →
+[DEPLOYMENTS.md](./DEPLOYMENTS.md). The deployment records in the contracts repository
+(`deployments/*.json`) are the source of truth for all of them.
 
 Two constants have to stay equal — `KERNEL_CHAIN_ID` and `SUB_ENS_DEFAULT_CHAIN_ID` — because a
 name holder must answer ERC-1271 on the same chain the registry asks on. They are separate
@@ -258,6 +272,10 @@ in agreement.
    signed until the request is proved to be about a name this gateway may answer for, and the
    answer has come from the registry rather than from the request.
 
+In a browser a name is reached through eth.limo. Since 2026-09-28 eth.limo holds wildcard
+certificates for `*.woco.eth.limo` and `*.woco.eth.link`, so a new name no longer waits for a
+per-name certificate.
+
 Full detail: [SUBENS_IDENTITY.md](./SUBENS_IDENTITY.md).
 
 ---
@@ -269,23 +287,24 @@ exactly four kinds of responsibility.
 
 **(a) It verifies, then stamps.** Users sign their own content chunks. The server independently
 re-derives the chunk address from the submitted bytes, checks the signature recovers to the
-claimed owner, then pays for the storage with the platform postage batch and uploads
+claimed owner, then pays for the storage with a postage batch (§2) and uploads
 (`POST /api/swarm/soc` → `apps/server/src/lib/swarm/soc-upload.ts`). It cannot forge user
-content, and it is not in the read path.
+content. It does relay many reads (§2), but cannot alter what a signature covers.
 
 **(b) It holds what a browser cannot.** Stripe secret keys, the SES credentials, the email HMAC
-secret, the payment-quote HMAC secret, the platform postage batch, the sponsor wallet's private
-key, the ENS gateway signing key. This is the honest reason a server exists at all in a
-"decentralised" app.
+secret, the payment-quote HMAC secret, the postage batches, the ticket sponsor wallet's private
+key, the separate names sponsor key, the attendee-batch stamper key, the ENS gateway signing key.
+This is the honest reason a server exists at all in a "decentralised" app.
 
 **(c) It writes to chain on a user's behalf.** Event registration and ticket minting go through a
-platform **sponsor wallet** — `WOCO_SPONSOR_PRIVATE_KEY`, currently
-`0x7b318c46a6FDC544212ebd83335f6b7414A97925` — so a card buyer who never touches a wallet still
-gets an on-chain ticket. The contract gates those calls behind an `authorisedSponsors`
-allow-list, which is checked before a checkout is allowed to charge: an unauthorised sponsor
-would make every paid claim revert `NotAuthorised` *after* the money was taken. Note that the
-deployment records name the `initialSponsor` at deploy time, not the current allow-list — that
-only chain can answer.
+platform **sponsor wallet** (`WOCO_SPONSOR_PRIVATE_KEY`), so a card buyer who never touches a
+wallet still gets an on-chain ticket. The contract gates those calls behind an
+`authorisedSponsors` allow-list, which is checked before a checkout is allowed to charge: an
+unauthorised sponsor would make every paid claim revert `NotAuthorised` *after* the money was
+taken. The ledger also caps each sponsor's mints per hour (`sponsorMintAllowance`), and checkout
+refuses a sale the cap cannot mint (#662, #665). Note that the deployment records name the
+`initialSponsor` at deploy time, not the current allow-list - that only chain can answer.
+Sub-ENS names are minted by a different sponsor key; the server refuses to boot if the two match.
 
 **(d) It keeps a small amount of durable local state.** About forty JSON files under `.data/`,
 written through `writeJsonAtomic` (0600 by construction, enforced by
@@ -305,6 +324,11 @@ is operationally load-bearing:
 | `pending-refunds.json` | Refunds Stripe refused to create. Losing it means a buyer charged with no ticket, no refund and no alarm. |
 | `profile-names.json` | Which sub-ENS name is an account's *profile* name, plus its rename clock. A registry says who **holds** a name, never what it is **for**. Fails open by design. |
 | `revoked-sessions.json` | Session revocation. Losing it un-revokes. |
+| `event-feed-signers.json` | eventId → the organiser's feed signer, pinned at create (#670). The money path's only carrier for an unlisted event. Fails closed. |
+| `ticket-sales.json` | Each sale's payment intent and minted slots. Refunds and chargebacks void tickets through it; losing it lets refunded tickets in at the door again. |
+| `event-cancellations.json` | Cancelled events and the refund owed on each sale (#644). Losing it lets a cancelled event sell again. |
+| `held-orders/` · `attendee-slots.json` | Paid order boxes not yet on Swarm, and which batch slot holds each stored order - the only way to erase one (#546). |
+| `device-grants.json` | Each account's added passkeys and every nonce used (#746). Losing it signs added devices out. |
 
 The full annotated list, with the reasoning for each, is in `CLAUDE.md` under
 `.data` FILES THAT MUST SURVIVE RESTARTS. `.data/broadcast-chunks/` is the deliberate opposite
@@ -340,41 +364,56 @@ can find each step in the code.
 ```
 ORGANISER PUBLISHES
   1. Fill the whole form. No wallet popup yet ("build first, sign later").
+     The organiser area opens only for a passkey account (#768).
   2. On publish:
-     · ensureSession()      → EIP-712 delegation if none
+     · auth.ensureAccountSetup({ identity: true }) → whatever this device
+                              still lacks: the session delegation, the seed
      · ensureIssuingKey()   → derive the secp256k1 issuing key (fails LOUD, never
                               silently falls back to another signer)
+     · derive the X-Wing order key from the seed; send only its PUBLIC half
      · build one edition body per ticket, Merkle-root them, sign ONE manifest
      · sign an issuer-binding proof-of-possession over the parent address
   3. POST /api/events  (streams progress; RETURNS the assembled feed)
      · verifies the issuer binding, pins parent → issuer in issuer-bindings.json
+     · publishes the order public key as its own chunk; the feed carries its ref
+     · pins the event's feed signer in event-feed-signers.json (#670)
      · returns `eventFeed` — it does NOT write it. "The server has no key"
        (routes/events.ts). The CLIENT signs that exact feed and uploads it as
-       its own SOC; a failure there fails the publish
+       its own SOC; a failure there fails the publish. A paid event defers
+       that write and signs once, after registration
      · `creatorFeedSigner` is OPTIONAL here. Omit it and the event feed is
-       written PLATFORM-signed instead (the legacy path)
+       written PLATFORM-signed instead (the legacy path; every live login kind
+       except the disabled Coinbase one sends a signer)
   3b. POST /api/events/:id/register-on-chain — a SEPARATE authenticated call,
       made once PER SERIES by the publish button
-     · sends registerEvent from the sponsor wallet, records the result in
-       onchain-events.json (see §4 — truth, not cache), and returns the updated
-       feed for the OWNER to re-sign, so onChainEventId lands inside the
-       client-signed SOC
+     · sends registerEvent from the sponsor wallet, records the result AND the
+       contract it landed on in onchain-events.json (see §4 — truth, not
+       cache), and returns the updated feed for the OWNER to re-sign, so
+       onChainEventId lands inside the client-signed SOC
   4. Directory: a debounced rebuild groups on-chain registrations, resolves each
      one's creator-signed content, and publishes an immutable snapshot blob
      behind a platform-signed pointer feed. The snapshot is a CACHE — a missed
      rebuild costs freshness, never integrity.
 
 ATTENDEE BUYS
-  5. POST /api/events/:id/series/:sid/reserve   → holds a seat
-  6. Stripe Checkout — a direct charge on the organiser's connected account
-  7. Stripe webhook → fulfilment:
-     · seal the order data to the organiser's X-Wing key (#642), upload, keep the ref
+  5. POST /api/events/:id/series/:sid/reserve   → holds a seat for 10 minutes
+  6. POST /api/stripe/prepare-order → the box the browser sealed to the
+     organiser's X-Wing key is HELD, not stored; returns its ref + a token
+  7. POST /api/stripe/create-checkout → Stripe Checkout, a direct charge on the
+     organiser's connected account. Refused if the sponsor's hourly mint cap
+     cannot cover it, or the event is cancelled
+  8. Stripe webhook → fulfilment, only for a session whose provenance and
+     integrity tag verify (lib/stripe/checkout-provenance.ts):
+     · mark the held box paid; with none, the server seals a minimal order
      · generate one ephemeral BURNER keypair per ticket
      · batchClaimFor(eventId, burnerAddresses, orderRef) as the sponsor
      · each burner signs its own ticket message, then the key is DISCARDED
-     · email the ticket (composite PNG + a /t/… link)
-  8. Any failure after the charge triggers an automatic refund; refunds Stripe
+     · store the paid box on the attendee batch (#546)
+     · email the ticket (composite PNG + a /ticket.html#… link)
+  9. Any failure after the charge triggers an automatic refund; refunds Stripe
      refuses go to pending-refunds.json and raise a /api/health alarm.
+ 10. A refund, a chargeback or a cancelled event voids the sale's tickets at
+     the door (ticket-sales.json, event-cancellations.json).
 ```
 
 Full lifecycle, including what makes a ticket genuine and what happens at the door:
@@ -390,7 +429,9 @@ the paragraph here exists to tell you whether that is the document you want.
 ### Identity, accounts and recovery
 Three live login methods — passkey, email and wallet — of which the first two are ZeroDev Kernel
 smart accounts on Arbitrum One. Each account derives one key per **role** rather than reusing
-one; recovery is a guardian escrow the server can store but never open.
+one. Organising needs a passkey account (#768), and every passkey on an account is an equal
+co-owner (#770, #771). Email accounts can keep a guardian escrow the server can neither open nor
+forge; a passkey account's way back is its synced passkey and the devices it has linked.
 → **[IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md)** ·
 [PASSKEY_SMART_WALLET.md](./PASSKEY_SMART_WALLET.md) ·
 [PASSKEY_RECOVERY_PLAN.md](./PASSKEY_RECOVERY_PLAN.md)
@@ -406,8 +447,9 @@ system.
 ### Ticketing and credentials
 One signed manifest per series committing to a Merkle root over every edition; no per-ticket
 signature. Sale is Stripe-only, the mint goes to an ephemeral burner, and verification is a
-signature recovery compared against the on-chain slot owner. The same machinery issues badges and
-certificates.
+signature recovery compared against the on-chain slot owner. A ticket is admitted once across
+every scanner, and refunds, chargebacks and cancellations void it at the door. The same machinery
+can issue badges and certificates; both are off for launch.
 → **[TICKETING.md](./TICKETING.md)** · [V1_RETIREMENT_HANDOVER.md](./V1_RETIREMENT_HANDOVER.md)
 
 ### Payments, payouts and pricing
@@ -435,7 +477,8 @@ and custom domains)
 Likes and follows are chain-free Swarm statements written to the user's own feed. Counting is
 left to indexers reading public feeds, which is a design choice rather than a gap: a Swarm feed
 has exactly one owner-signer, so there is no shared state to write a count into. Retraction is a
-written `value: false`, never a deletion.
+written `value: false`, never a deletion. Writing one needs the unlock a name needs - a ticket,
+Stripe verification or a confirmed invite (#753).
 → **[SWARM_SOCIAL_PLAN.md](./SWARM_SOCIAL_PLAN.md)** (authoritative) ·
 [COASTER_CREDITS_PLAN.md](./COASTER_CREDITS_PLAN.md) (the credits rail, and the design record for
 the frozen statement discipline)

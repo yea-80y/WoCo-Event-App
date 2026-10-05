@@ -2,6 +2,14 @@
 
 Status: DESIGN (not started). Author thread: 2026-06-16. Owner: yea-80y.
 
+Status (2026-10-05): still DESIGN, nothing built - no enclave code in `apps/` or
+`packages/`. Two facts below have moved since 2026-06-16: sub-ENS contenthash writes are now
+HOLDER-signed (`setContenthashWithSignature`) and the sponsor only relays them - the platform
+holds no key that can repoint a name (`apps/server/src/lib/chain/sub-ens-contract.ts:117-137`);
+and the registry/registrar addresses live in `packages/shared/src/sub-ens/addresses.ts`, not
+the Durin pair quoted in section 7. Session delegation is still EIP-712 `AuthorizeSession`
+(`packages/shared/src/auth/eip712.ts`); passkey and email logins sign it silently.
+
 One-liner: a content-addressed, origin-isolated signing surface that any platform can
 embed, whose code a user (or relying party) can cryptographically verify is the audited
 build before they ever sign. Universal-ready, WoCo-first. EOA **and** passkey are
@@ -156,13 +164,14 @@ Bee (optionally + Swarmy for a second Swarm copy).
 
 **omnipin L2 support is NOT a WoCo need (verified 2026-06-16).** WoCo already writes sub-ENS
 contenthash in-house via the custom **WoCoRegistrar** (`apps/server/src/lib/chain/sub-ens-contract.ts`):
-`setContenthash(string label, bytes)` + `registerWithPermit(...)`, sponsor-gated. That is NOT the
+at the time `setContenthash(string label, bytes)` + `registerWithPermit(...)`, sponsor-gated
+(since replaced by the holder-signed `setContenthashWithSignature` - see Status). That is NOT the
 canonical `setContenthash(bytes32 node, bytes)` resolver omnipin drives (omnipin also resolves the
 resolver via the L1 ENS registry, where Durin sub-names don't exist). So omnipin cannot and need
 not drive WoCo's L2 path. A generic omnipin L2 PR (`--chain` + `--resolver` for *standard* L2
 resolvers, e.g. ENSv2/Basenames) is worthwhile as an ecosystem contribution + dev-relationship
 move, but it is explicitly NOT a WoCo dependency and would not cover custom permissioned registrars.
-Durin addrs (Arb Sepolia 421614): Registrar `0x206e5e…BEd3`, L2Registry `0x41Fb19…84807`.
+Durin addrs at the time (Arb Sepolia 421614, superseded - current pair in `packages/shared/src/sub-ens/addresses.ts`): Registrar `0x206e5e…BEd3`, L2Registry `0x41Fb19…84807`.
 
 ## 8. Threat model
 
