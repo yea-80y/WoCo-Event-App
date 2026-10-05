@@ -1187,12 +1187,25 @@ function _setPendingPasskeyRecord(pending: { credentialId: string; parent: strin
   }
 }
 
-async function _maybeWritePasskeyRecord(): Promise<void> {
+/** The pending slot, or null when there is none or it does not parse. */
+function _readPendingPasskeyRecord(): { credentialId: string; parent: string } | null {
   try {
     const raw = globalThis.localStorage?.getItem(PENDING_PASSKEY_RECORD_KEY);
-    if (!raw) return;
+    if (!raw) return null;
     const pending = JSON.parse(raw) as { credentialId?: unknown; parent?: unknown };
-    if (typeof pending.credentialId !== "string" || typeof pending.parent !== "string") {
+    return typeof pending.credentialId === "string" && typeof pending.parent === "string"
+      ? { credentialId: pending.credentialId, parent: pending.parent }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function _maybeWritePasskeyRecord(): Promise<void> {
+  try {
+    if (!globalThis.localStorage?.getItem(PENDING_PASSKEY_RECORD_KEY)) return;
+    const pending = _readPendingPasskeyRecord();
+    if (!pending) {
       globalThis.localStorage?.removeItem(PENDING_PASSKEY_RECORD_KEY);
       return;
     }
@@ -2216,6 +2229,38 @@ function _postAuthNotice(message: string): void {
   }
 }
 
+/**
+ * The passkey-record check (#746) every passkey sign-in runs before it commits to
+ * `parent`; refuses by throwing. From another device (a phone by QR code, or a
+ * security key) only a confirmed record - or this device's own unwritten one for
+ * the same passkey and account - lets the sign-in commit.
+ */
+async function _guardPasskeyRecord(account: PasskeyLogin, parent: string): Promise<void> {
+  const { guardPasskeyRecord } = await import("./passkey-record.js");
+  await guardPasskeyRecord(account.credentialId, parent, account.attachment, {
+    pending: _readPendingPasskeyRecord(),
+  });
+}
+
+/** Refusals the record check makes - each before the sign-in commits anything. */
+const RECORD_REFUSALS: ReadonlySet<string> = new Set([
+  "PasskeyFromAnotherDeviceError",
+  "PasskeyRecordUnreadableError",
+  "PasskeyRecordMismatchError",
+  "PasskeyIsBackupError",
+]);
+
+/** Put back the pin a refused sign-in's ceremony overwrote. Best-effort: a stale pin
+ *  costs a wrong passkey sheet at the next unlock, never a wrong account. */
+async function _restoreReplacedPin(pin: PasskeyLogin["replacedPin"]): Promise<void> {
+  try {
+    if (pin) await putKV(StorageKeys.PASSKEY_CREDENTIAL, pin);
+    else await delKV(StorageKeys.PASSKEY_CREDENTIAL);
+  } catch (e) {
+    console.warn("[auth] could not restore this device's passkey after a refused sign-in:", e);
+  }
+}
+
 /** Forget an added passkey on this device: its binding and every copy of the seed
  *  it held. Its locked copy would otherwise reopen for an account it left. */
 async function _forgetAddedPasskey(seedAddress: string): Promise<void> {
@@ -2254,8 +2299,7 @@ async function _loginAddedPasskey(
     }
   }
 
-  const { guardPasskeyRecord } = await import("./passkey-record.js");
-  await guardPasskeyRecord(account.credentialId, parent);
+  await _guardPasskeyRecord(account, parent);
 
   const minted = await requestSessionDelegation(
     parent,
@@ -2791,7 +2835,14 @@ async function _retryLinkedEnvelope(seedAddr: string): Promise<void> {
 
 async function loginPasskeyResult(
   mode: "signin" | "create" = "signin",
-): Promise<{ ok: boolean; error?: Error; noAssertion?: boolean; orphaned?: boolean; removed?: boolean }> {
+): Promise<{
+  ok: boolean;
+  error?: Error;
+  noAssertion?: boolean;
+  orphaned?: boolean;
+  removed?: boolean;
+  otherDevice?: boolean;
+}> {
   // Not a ceremony failure — no prompt ran. Say so, rather than letting the UI
   // render "authentication failed" for a collision with an in-flight login.
   if (_busy) return { ok: false, error: new Error("A sign-in is already in progress.") };
@@ -2800,9 +2851,13 @@ async function loginPasskeyResult(
 
   const t0 = performance.now();
   let tCeremony = t0;
+  // The ceremony pins whatever answered before any check can refuse it; a refusal
+  // puts the previous pin back (undefined = nothing to restore).
+  let replacedPin: PasskeyLogin["replacedPin"];
   try {
     const account =
       mode === "create" ? await createPasskeyAccount() : await authenticatePasskey();
+    replacedPin = account.replacedPin;
     tCeremony = performance.now();
     _loginStage = "finalizing";
 
@@ -2842,6 +2897,10 @@ async function loginPasskeyResult(
       const cachedKernel =
         account.handleKind === "added" ? null : readCachedKernelAddress("passkey", account.address);
       if (cachedKernel) {
+        // From another device the record must confirm even a cached account (#746):
+        // a QR-code answer before this check could have cached an empty one.
+        // Platform answers stay read-free here.
+        if (account.attachment === "cross-platform") await _guardPasskeyRecord(account, cachedKernel);
         await _clearStaleAuthForSwitch(cachedKernel);
         await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
         await putKV(StorageKeys.PARENT_ADDRESS, cachedKernel);
@@ -2877,6 +2936,7 @@ async function loginPasskeyResult(
       const seed = await openLockedSeed(account.address, override.toLowerCase(), account.prfSecret);
       if (seed) {
         const parent = override.toLowerCase();
+        if (account.attachment === "cross-platform") await _guardPasskeyRecord(account, parent);
         await _clearStaleAuthForSwitch(parent);
         await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
         await putKV(StorageKeys.PARENT_ADDRESS, parent);
@@ -3006,10 +3066,7 @@ async function loginPasskeyResult(
     // #746: refuse a passkey whose record names another account - Apple's
     // QR-code PRF bug, or a backup picked here - BEFORE this login commits
     // anything, instead of opening an empty account. A new passkey has no record.
-    if (mode === "signin") {
-      const { guardPasskeyRecord } = await import("./passkey-record.js");
-      await guardPasskeyRecord(account.credentialId, kernel.address);
-    }
+    if (mode === "signin") await _guardPasskeyRecord(account, kernel.address);
 
     await _clearStaleAuthForSwitch(kernel.address);
 
@@ -3087,6 +3144,7 @@ async function loginPasskeyResult(
     // old copy collapsed every cause into one unactionable sentence.
     const err = e instanceof Error ? e : new Error(String(e));
     console.error(`[auth] passkey login failed (${mode}): ${err.name}: ${err.message}`, e);
+    if (replacedPin !== undefined && RECORD_REFUSALS.has(err.name)) await _restoreReplacedPin(replacedPin);
     return {
       ok: false,
       error: err,
@@ -3095,6 +3153,9 @@ async function loginPasskeyResult(
       // lets the button suppress a duplicate error line, not restyle it.
       orphaned: isOrphanedCredentialError(err),
       removed: err.name === "DeviceRemovedError",
+      // Answered from another device without a confirmed account: the screen
+      // points at "Add this device" (#746).
+      otherDevice: err.name === "PasskeyFromAnotherDeviceError",
     };
   } finally {
     _busy = false;
@@ -4316,6 +4377,9 @@ async function recoverAndRekey(args: {
     // are already down. A death before this line is healed by the next sign-in,
     // which is discoverable and rewrites the pin itself.
     if (pendingCredential) await pinPasskeyCredential(pendingCredential);
+    // Its record (#746), written once a session exists: without one, a sign-in with
+    // this new passkey from another device - a security key always is - is refused.
+    if (pendingCredential) _setPendingPasskeyRecord({ credentialId: pendingCredential.credentialId, parent: target });
     await putKV(StorageKeys.AUTH_KIND, newOwnerKind as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, target);
     await putKV(StorageKeys.SEED_ADDRESS, newSeedAddress);
