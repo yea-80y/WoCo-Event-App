@@ -56,8 +56,8 @@ linking.
 ### State and direction
 | Doc | Date |
 |---|---|
-| [DEVLOG.md](./DEVLOG.md) — running history of completed work | 2026-09-06 |
-| [NEXT.md](./NEXT.md) — the working order | 2026-09-06 |
+| [DEVLOG.md](./DEVLOG.md) — running history of completed work | 2026-10-05 |
+| [NEXT.md](./NEXT.md) - a 2026-09-06 snapshot of the working order; the living plan is issue #353 | 2026-10-05 |
 
 The living launch plan is **GitHub issue #353**, not a file. Re-read it top-down rather than
 trusting a snapshot.
@@ -65,48 +65,48 @@ trusting a snapshot.
 ### Payments, money, email
 | Doc | Date |
 |---|---|
-| [PAYMENTS_INTEGRATION.md](./PAYMENTS_INTEGRATION.md) — Stripe mechanics, reservations, the ticket card | 2026-08-23 |
-| [EMAIL_NEXT_HANDOVER.md](./EMAIL_NEXT_HANDOVER.md) — **start here for email work** | 2026-08-17 |
-| [SES_MIGRATION_HANDOVER.md](./SES_MIGRATION_HANDOVER.md) · [SES_PRODUCTION_ACCESS.md](./SES_PRODUCTION_ACCESS.md) | 2026-08-02 |
-| [CONTACT_MANAGEMENT_DESIGN.md](./CONTACT_MANAGEMENT_DESIGN.md) | 2026-07-28 |
-| [EVENT_CREATION_ANTI_ABUSE.md](./EVENT_CREATION_ANTI_ABUSE.md) | 2026-06-17 |
+| [PAYMENTS_INTEGRATION.md](./PAYMENTS_INTEGRATION.md) — Stripe mechanics, reservations, the ticket card | 2026-10-05 |
+| [EMAIL_NEXT_HANDOVER.md](./EMAIL_NEXT_HANDOVER.md) — **start here for email work** | 2026-10-05 |
+| [SES_MIGRATION_HANDOVER.md](./SES_MIGRATION_HANDOVER.md) · [SES_PRODUCTION_ACCESS.md](./SES_PRODUCTION_ACCESS.md) | 2026-10-05 |
+| [CONTACT_MANAGEMENT_DESIGN.md](./CONTACT_MANAGEMENT_DESIGN.md) | 2026-10-05 |
+| [EVENT_CREATION_ANTI_ABUSE.md](./EVENT_CREATION_ANTI_ABUSE.md) | 2026-10-05 |
 
 ### Storage and social
 | Doc | Date |
 |---|---|
-| [SWARM_SOCIAL_PLAN.md](./SWARM_SOCIAL_PLAN.md) — **authoritative** on the Swarm-native social graph | 2026-08-21 |
-| [COASTER_CREDITS_PLAN.md](./COASTER_CREDITS_PLAN.md) — the credits rail, and the design record for the frozen statement discipline | 2026-08-20 |
-| [CLIENT_FEED_SIGNER_HANDOVER.md](./CLIENT_FEED_SIGNER_HANDOVER.md) — why users own their feeds | 2026-08-06 |
-| [FEED_SIGNER_REVIEW_2026-07-02.md](./FEED_SIGNER_REVIEW_2026-07-02.md) — the review that kept sign-to-derive | 2026-07-02 |
-| [CONTENT_FEED_VERSIONING_HANDOVER_2026-07-04.md](./CONTENT_FEED_VERSIONING_HANDOVER_2026-07-04.md) — versioned feeds | 2026-07-06 |
-| [ETHERNA_INTEGRATION.md](./ETHERNA_INTEGRATION.md) · [ETHERNA_USER_CONTENT_HANDOVER.md](./ETHERNA_USER_CONTENT_HANDOVER.md) — the second storage origin | 2026-08-06 |
-| [EVENTS_DIRECTORY.md](./EVENTS_DIRECTORY.md) — the chain-log directory + snapshot | 2026-07-17 |
+| [SWARM_SOCIAL_PLAN.md](./SWARM_SOCIAL_PLAN.md) — **authoritative** on the Swarm-native social graph | 2026-10-05 |
+| [COASTER_CREDITS_PLAN.md](./COASTER_CREDITS_PLAN.md) — the credits rail, and the design record for the frozen statement discipline | 2026-10-05 |
+| [CLIENT_FEED_SIGNER_HANDOVER.md](./CLIENT_FEED_SIGNER_HANDOVER.md) — why users own their feeds | 2026-10-05 |
+| [FEED_SIGNER_REVIEW_2026-07-02.md](./FEED_SIGNER_REVIEW_2026-07-02.md) — the review that kept sign-to-derive | 2026-10-05 |
+| [CONTENT_FEED_VERSIONING_HANDOVER_2026-07-04.md](./CONTENT_FEED_VERSIONING_HANDOVER_2026-07-04.md) — versioned feeds | 2026-10-05 |
+| [ETHERNA_INTEGRATION.md](./ETHERNA_INTEGRATION.md) · [ETHERNA_USER_CONTENT_HANDOVER.md](./ETHERNA_USER_CONTENT_HANDOVER.md) — the second storage origin | 2026-10-05 |
+| [EVENTS_DIRECTORY.md](./EVENTS_DIRECTORY.md) — the chain-log directory + snapshot | 2026-10-05 |
 
 ### Identity, accounts, recovery
 | Doc | Date |
 |---|---|
-| [PASSKEY_RECOVERY_PLAN.md](./PASSKEY_RECOVERY_PLAN.md) — guardian escrow, the envelope, the threat model | 2026-08-23 |
-| [CROSS_DEVICE_RECOVERY.md](./CROSS_DEVICE_RECOVERY.md) — the portability envelope | 2026-06-21 |
-| [RECOVERY_VERIFICATION_CHECKLIST.md](./RECOVERY_VERIFICATION_CHECKLIST.md) — the supervised test sequence | 2026-06-21 |
-| [PASSKEY_SMART_WALLET.md](./PASSKEY_SMART_WALLET.md) — the Kernel design and the Option 1 / Option 2 call | 2026-09-03 |
+| [PASSKEY_RECOVERY_PLAN.md](./PASSKEY_RECOVERY_PLAN.md) — guardian escrow, the envelope, the threat model | 2026-10-05 |
+| [CROSS_DEVICE_RECOVERY.md](./CROSS_DEVICE_RECOVERY.md) — the portability envelope | 2026-10-05 |
+| [RECOVERY_VERIFICATION_CHECKLIST.md](./RECOVERY_VERIFICATION_CHECKLIST.md) — the supervised test sequence | 2026-10-05 |
+| [PASSKEY_SMART_WALLET.md](./PASSKEY_SMART_WALLET.md) — the Kernel design and the Option 1 / Option 2 call | 2026-10-05 |
 
 ### Sites, SEO, performance
 | Doc | Date |
 |---|---|
-| [SEO_PLAN.md](./SEO_PLAN.md) — **authoritative** on SEO and custom domains | 2026-08-10 |
-| [SEO_GUIDANCE.md](./SEO_GUIDANCE.md) | 2026-07-28 |
-| [SITE_BUILDER.md](./SITE_BUILDER.md) — **current**: publish/deploy flow, feeds, quota | 2026-09-08 |
-| [MULTI_PAGE_SITE_BUILDER.md](./MULTI_PAGE_SITE_BUILDER.md) — the original design record | 2026-05-01 |
-| [SITE_EVENTS_CLIENT_SIGNED_HANDOVER.md](./SITE_EVENTS_CLIENT_SIGNED_HANDOVER.md) | 2026-07-13 |
-| [PERF_BASELINE_ETH_LIMO.md](./PERF_BASELINE_ETH_LIMO.md) | 2026-07-28 |
-| [self-hosted-setup.md](./self-hosted-setup.md) — running your own instance | 2026-02-25 |
+| [SEO_PLAN.md](./SEO_PLAN.md) — **authoritative** on SEO and custom domains | 2026-10-05 |
+| [SEO_GUIDANCE.md](./SEO_GUIDANCE.md) | 2026-10-05 |
+| [SITE_BUILDER.md](./SITE_BUILDER.md) — **current**: publish/deploy flow, feeds, quota | 2026-10-05 |
+| [MULTI_PAGE_SITE_BUILDER.md](./MULTI_PAGE_SITE_BUILDER.md) — the original design record | 2026-10-05 |
+| [SITE_EVENTS_CLIENT_SIGNED_HANDOVER.md](./SITE_EVENTS_CLIENT_SIGNED_HANDOVER.md) | 2026-10-05 |
+| [PERF_BASELINE_ETH_LIMO.md](./PERF_BASELINE_ETH_LIMO.md) | 2026-10-05 |
+| [self-hosted-setup.md](./self-hosted-setup.md) — running your own instance | 2026-10-05 |
 
 ### Security reviews
 | Doc | Date |
 |---|---|
 | [CRYPTO_AUDIT_2026-04-08.md](./CRYPTO_AUDIT_2026-04-08.md) → [SECURITY_FIXES_2026-04-09.md](./SECURITY_FIXES_2026-04-09.md) | 2026-04 |
-| [PLATFORM_SIGNER_AUDIT.md](./PLATFORM_SIGNER_AUDIT.md) — what the platform signer may touch | 2026-07-16 |
-| [V1_RETIREMENT_HANDOVER.md](./V1_RETIREMENT_HANDOVER.md) — what the v1 claim rail removal deleted | 2026-08-09 |
+| [PLATFORM_SIGNER_AUDIT.md](./PLATFORM_SIGNER_AUDIT.md) — what the platform signer may touch | 2026-10-05 |
+| [V1_RETIREMENT_HANDOVER.md](./V1_RETIREMENT_HANDOVER.md) — what the v1 claim rail removal deleted | 2026-10-05 |
 
 ---
 
