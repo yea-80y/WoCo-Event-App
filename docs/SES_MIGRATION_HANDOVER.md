@@ -60,72 +60,28 @@ whole claim path over an email problem), but the loss is no longer invisible.
 
 ---
 
-## 2. What the user must do in AWS — BEFORE flipping the flag
+## 2. What production SES needs
 
-Nothing here is optional. Steps 3–5 are what AWS required when it granted production access.
+The account-specific checklist (billing plan, IAM user, region, deploy and warm-up) moved
+to the private ops runbook on 2026-10-05. What the code depends on:
 
-0. **Set `SES_MAX_SEND_RATE=8` NOW, before the next deploy.** ✅ done 2026-07-30.
-   The limiter shipped in #98 applies to whichever provider is active, and until cutover
-   that is **Resend, which caps at 10 req/s per team** — while the code default is 12.
-   (This is still an improvement: the old path ran ~25 req/s into that same limit.) Raise
-   it to 12 **at** cutover, not before.
-1. **Confirm the account is on the AWS *Paid* plan.** A Free-plan account self-closes at
-   6 months or when credits run out — a total ticket-delivery outage. See
-   `PRICING_AND_EMAIL.md` §6.
-   **Seeing the $100 credit does NOT settle this** (checked 2026-07-30): both plan types
-   receive up to $200, so the Credits page is consistent with either. Check **Billing and
-   Cost Management → Payment preferences** for an attached payment method instead. Strong
-   circumstantial evidence we are already on Paid: a direct-debit mandate was set up, and
-   AWS granted production SES access at 50k/day, which Free-plan service restrictions
-   would not allow.
-2. **Check the SES plan** (SES console → **Pricing plan** page — per-region, not the
-   Account dashboard). We were defaulted to Essentials; **Cancel plan** returns the
-   account to à la carte (verified against the SES dev guide 2026-07-30: for a
-   defaulted account the *first* cancellation takes effect immediately, later changes
-   at the next billing cycle). ~37% cheaper per §6. Before cancelling, confirm on that
-   page that no feature we actually use is plan-gated — we use none of the bundled
-   ones today. Never Pro. (Do not confuse the two: "do NOT switch" applies to **Pro**;
-   à la carte is available and cheaper.)
-3. **Create an IAM user** with *only* `ses:SendEmail`, and put the key in
-   `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. Do not reuse an admin key. The
-   `Resource` list MUST name **both** the identity ARN and the configuration-set ARN
-   (`identity/woco-net.com` + `configuration-set/woco-events`): SESv2 authorises
-   `SendEmail` against the configuration set too once `ConfigurationSetName` is set —
-   which we stamp on every send — and an identity-only policy is denied at that point
-   (verified 2026-07-31: the AccessDenied names the configuration-set resource).
-4. **Create a configuration set** named to match `SES_CONFIGURATION_SET` (e.g.
-   `woco-events`). **Without it no bounce or complaint events are emitted at all**, so
-   nothing feeds suppression — this is the step that is easy to skip and expensive to miss.
-5. **Add an SNS event destination** on that configuration set for `Bounce` and `Complaint`
-   (add `Reject`, `DeliveryDelay` if useful — the route ignores them safely). Create the SNS
-   topic (**Standard** — SES does not support FIFO), then **edit the topic's access policy
-   to allow SES to publish — the console does NOT add this automatically** (SES dev guide,
-   "Set up an Amazon SNS event destination", verified 2026-07-31): a statement with
-   `Principal: {Service: ses.amazonaws.com}`, `Action: sns:Publish`, `Resource: <topic ARN>`,
-   `Condition: StringEquals {AWS:SourceAccount: <account id>, AWS:SourceArn:
-   arn:aws:ses:eu-west-2:<account id>:configuration-set/woco-events}`. Skipping this is the
-   second silent killer: the event destination exists, SNS denies every publish, no events
-   arrive, and nothing on our side errors. Then subscribe
-   `https://events-api.woco-net.com/api/ses/webhook` as an **HTTPS** endpoint. Put the topic ARN in `SES_SNS_TOPIC_ARN` **and restart the server before
-   subscribing** — the webhook fails closed without it, so the confirmation would be
-   rejected. The route auto-confirms the subscription once the ARN is set.
-6. **Enable SignatureVersion 2** on the topic, then set `SNS_REQUIRE_SIGNATURE_V2=true`.
-7. **MAIL FROM domain** — `bounce.woco-net.com` is already configured per
-   `SES_PRODUCTION_ACCESS.md`; confirm it still shows *Verified* in the SES console.
-8. Deploy (CLAUDE.local.md STEP 1 + STEP 2), then verify:
-   `curl https://events-api.woco-net.com/api/health | jq .email` → `provider: "ses"`.
-9. **Warm up.** Do not send a broadcast on day one. Ticket email only for the first couple
-   of weeks; the domain reputation is cold.
+- An IAM key limited to `ses:SendEmail`, whose `Resource` names **both** the sending identity
+  and the configuration set: SESv2 authorises `SendEmail` against the configuration set once
+  `ConfigurationSetName` is stamped, which every send does.
+- A configuration set named by `SES_CONFIGURATION_SET`. Without it no bounce or complaint
+  events are emitted, so nothing feeds suppression.
+- An SNS event destination on it for `Bounce` and `Complaint`, on a Standard topic whose
+  access policy lets SES publish (the console does not add this). Otherwise SNS silently
+  denies every publish.
+- The topic ARN in `SES_SNS_TOPIC_ARN` **before** the webhook is subscribed: the webhook
+  fails closed without it and auto-confirms the subscription once it is set. Then
+  SignatureVersion 2 on the topic and `SNS_REQUIRE_SIGNATURE_V2=true`.
+- `SES_MAX_SEND_RATE` set to the account's send rate.
 
-**Rollback:** set `EMAIL_PROVIDER=resend`, redeploy env. No data migration either way —
-suppression, consent and contact blobs are all ours.
+**Rollback:** set `EMAIL_PROVIDER=resend`. No data migration either way - suppression,
+consent and contact blobs are all ours.
 
 ---
-
-## 3a. The failover is a launch-window crutch, not an availability strategy
-
-Added after challenge, and after checking the DNS. Two findings change how much
-weight it can carry.
 
 **Authentication is fine.** Both providers can send as `woco-net.com` simultaneously
 today — verified 2026-07-30:

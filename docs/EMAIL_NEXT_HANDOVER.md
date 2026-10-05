@@ -39,7 +39,7 @@ opt-in). #133 items 1–3 (per-sender rates, automatic stop, paced first send) s
 **Owner, outside the code** (none of these can be seen from the repo):
 - support@ and privacy@woco-net.com receive mail (MX is Zoho) — privacy@ is the Privacy
   Policy's rights address.
-- Rotate the AWS access key that passed through a chat on 2026-07-31.
+- Credential housekeeping: see the private ops runbook.
 - In the SES console: `mail.woco-net.com` shows DKIM verified; note the reputation page
   before and after the first organiser send.
 - Google Postmaster Tools for `woco-net.com` (no verification record in DNS on 2026-09-22).
@@ -157,10 +157,9 @@ either by accident.
 
 **Deployed 2026-08-03. No outage — the var was already set.** An earlier draft
 of this section warned that merging would 503 every marketing send until
-`EMAIL_FROM_MARKETING` was configured. That was wrong: it is set on both the
-laptop master and the VM to `news@mail.woco-net.com`, a subdomain distinct from
-the transactional `woco-net.com`, which is exactly the lane split this issue
-asks for. `/api/health` → `email.marketingSender.ok` is `true` in production.
+`EMAIL_FROM_MARKETING` was configured. That was wrong: it was already set, to a
+sender on a subdomain distinct from the transactional `woco-net.com`, which is
+exactly the lane split this issue asks for. `/api/health` → `email.marketingSender.ok` is `true` in production.
 The claim came from misreading a `grep -o` that truncated at the `=`; check a
 value's LENGTH, never a pattern that stops before it.
 

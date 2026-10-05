@@ -466,49 +466,21 @@ email addresses, or any credential.
   fsyncs before the rename, and reports a failed write on `/api/health` instead of
   logging it and carrying on with in-memory state disk does not have.
 
-✅ **Host hardening done 2026-07-27.** The live store was directory `755` / files `644` —
-world-readable to any host account — as were `server.env` (which holds `FEED_PRIVATE_KEY`,
-both Stripe webhook secrets, `EMAIL_HASH_SECRET`, `PAYMENT_QUOTE_SECRET` and
-`SHOP_SPENDER_SECRET`) and the Cloudflare tunnel token, which sat on cloudflared's
-command line and so was readable from `/proc/<pid>/cmdline` by any user.
-
-| | Before | After |
-|---|---|---|
-| `/opt/woco/woco-data` | `755` dirs / `644` files | `700` / `600` |
-| `/opt/woco/server.env` | `644` | `600` |
-| `/opt/woco/docker-compose.yml` | `644` | `600` |
-| Tunnel token | `ExecStart --token …` (cmdline is world-readable `444`) | `EnvironmentFile=/etc/cloudflared/env` `600`; `environ` is `400` owner-only |
-
-Safe because the server container runs as **uid 0** — it bypasses the mode bits, so
-tightening them cannot stop it writing. Verified after the change: container write+read+
-delete inside `.data`, the payout audit reading `stripe-accounts.json`, both tunnel
-hostnames serving, and `setpriv` as an unprivileged uid denied on both paths. Rollback:
-`/root/woco-data.modes.bak.*` (exact prior modes) and `/root/cloudflared.service.bak.*`.
+✅ **Host hardening done 2026-07-27.** The live store and the server's environment file are
+owner-only on the host (0700 / 0600). The specifics, and the backup position, are in the
+private ops runbook.
 
 > ⚠️ **If the Dockerfile ever gains a `USER` directive**, root-owned `600` files become
 > unreadable to the server and every store breaks at once. The mode tightening is only
 > safe while the container is root.
 
-> ⚠️ **Still open:** no encryption at rest beyond the provider's disk, and **no verified
-> backup of `woco-data`** — a lost ledger strands organiser funds. That is now the largest
-> remaining risk to this store, and it is a data-loss risk rather than an access one.
-
 ## 9. Operations
 
-```bash
-# Audit the payout schedule on every connected account (read-only), on the VM.
-# -w /app matters: the store is process.cwd()/.data and the server's cwd is /app.
-# From the wrong directory it finds no accounts — the script exits 1 rather than
-# reporting a clean audit of nothing.
-docker compose exec -w /app server npx tsx apps/server/scripts/payout-schedule-audit.ts
-docker compose exec -w /app server npx tsx apps/server/scripts/payout-schedule-audit.ts --fix
-
-# Locally against the dev store
-cd apps/server && npx tsx scripts/payout-schedule-audit.ts
-
-# Watch the sweep
-docker compose logs -f server | grep payout
-```
+The payout-schedule audit is `apps/server/scripts/payout-schedule-audit.ts` (read-only;
+`--fix` corrects). Run it from the server's working directory: the store is
+`process.cwd()/.data`, and from anywhere else it finds no accounts and exits 1 rather than
+reporting a clean audit of nothing. How to run it against production is in the private ops
+runbook.
 
 `.data/stripe-payout-ledger.json` **MUST survive restarts** — same class as
 `stripe-accounts.json` and `marketing-suppression.json`. Losing it either strands
