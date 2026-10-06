@@ -49,6 +49,7 @@ function resetLedger(): void {
   rmSync(intentsFile, { recursive: true, force: true });
   ledger.__resetForTests();
   intents.__resetForTests();
+  release.__resetSweepStateForTests();
 }
 
 beforeEach(() => resetLedger());
@@ -239,13 +240,24 @@ test("currencies are never mixed into one payout", async () => {
   );
 });
 
-test("a refunded sale is voided, not paid out", async () => {
+test("a refunded sale is carried as a debt — not paid out, not voided (#781)", async () => {
   held("cs_refunded");
-  // Fully refunded: the application fee was not returned, so net goes negative.
+  // Fully refunded: the fees were not returned, so net goes negative. That money
+  // has left the balance; voiding it would drop it from the arithmetic.
   const { gateway, payouts } = fakeGateway({ nets: { cs_refunded: -150 } });
   await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
   assert.equal(payouts.length, 0);
-  assert.equal(ledger.getEntry("cs_refunded")?.status, "void");
+  assert.equal(ledger.getEntry("cs_refunded")?.status, "held");
+  assert.equal(ledger.getEntry("cs_refunded")?.netAmount, -150);
+});
+
+test("a due sale that comes to exactly nothing is voided", async () => {
+  held("cs_zero");
+  const { gateway, payouts } = fakeGateway({ nets: { cs_zero: 0 } });
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(payouts.length, 0);
+  assert.deepEqual(outcome!.voided, ["cs_zero"]);
+  assert.equal(ledger.getEntry("cs_zero")?.status, "void");
 });
 
 test("an unresolvable net leaves the entry held rather than guessing", async () => {
@@ -515,12 +527,13 @@ test("a cached net is re-read every sweep, so a late refund shrinks the payout",
   assert.equal(ledger.getEntry("cs_a")?.netAmount, 4_840, "cache updated for reporting");
 });
 
-test("a fully refunded sale voids even after its net was cached", async () => {
+test("a fully refunded sale becomes a debt even after its net was cached", async () => {
   held("cs_a", { grossAmount: 10_000, netAmount: 9_680 });
   const { gateway, payouts } = fakeGateway({ nets: { cs_a: -150 } });
   await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
   assert.equal(payouts.length, 0);
-  assert.equal(ledger.getEntry("cs_a")?.status, "void");
+  assert.equal(ledger.getEntry("cs_a")?.status, "held");
+  assert.equal(ledger.getEntry("cs_a")?.netAmount, -150, "fresh net, not the cached 9680");
 });
 
 // ---------------------------------------------------------------------------
@@ -745,7 +758,8 @@ test("a cancelled event's sale is held until its refunds settle — even past th
   const { gateway: g2 } = fakeGateway({ nets: { cs_cx: -300 }, country: "GB" });
   g2.cancellationHold = () => false;
   await release.runReleaseSweep(g2, at("2026-04-10T01:00:00.000Z"));
-  assert.equal(ledger.getEntry("cs_cx")?.status, "void", "once settled, the refunded sale nets below zero and voids");
+  assert.equal(ledger.getEntry("cs_cx")?.status, "held", "once settled it nets below zero: a debt, not a void (#781)");
+  assert.equal(ledger.getEntry("cs_cx")?.netAmount, -300);
 });
 
 test("a journalled payout is not replayed once a sale in it belongs to a cancelled event (#644)", async () => {
@@ -776,9 +790,10 @@ test("a journalled payout is not replayed once a sale in it belongs to a cancell
   await release.runReleaseSweep(gateway, at("2026-02-06T00:00:00.000Z"));
   assert.equal(intents.getIntent(ACCT, "gbp"), undefined, "abandoned once the key has expired");
   assert.equal(payouts.length, 1);
-  assert.equal(payouts[0]!.amount, 7_000, "only the sale that was not refunded");
+  assert.equal(payouts[0]!.amount, 6_700, "the sale that was not refunded, less the fees kept on the one that was (#781)");
   assert.notEqual(payouts[0]!.idempotencyKey, key);
-  assert.equal(ledger.getEntry("cs_x")?.status, "void", "re-resolved fresh: the refunded sale voids");
+  assert.equal(ledger.getEntry("cs_x")?.status, "released", "re-resolved fresh: the refunded sale is netted");
+  assert.equal(ledger.getEntry("cs_x")?.payoutId, payouts[0]!.id);
 });
 
 test("the live eventCancelled asks about the EVENT, and an unreadable record counts as cancelled (#644)", async () => {
@@ -944,4 +959,202 @@ test("listByOrganiser only returns that organiser's entries", () => {
   assert.equal(mine[0]!.sessionId, "cs_1");
   // Address casing must not leak entries between organisers.
   assert.equal(ledger.listByOrganiser(ORG.toUpperCase()).length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Debts (#781) — a sale a refund or chargeback takes below zero is netted
+// ---------------------------------------------------------------------------
+
+// The owner's two sandbox organisers, as found on 2026-10-06.
+const F1 = "acct_1UKR9sDWSXJ2ZzY3";
+const F2 = "acct_1UDCgTDWPU4NxJWH";
+
+test("F1: a cancelled sale's kept fees come off the other event's payout — 2962 paid, not deferred for ever", async () => {
+  // One sale held (net 3131, event over); one sale of a cancelled event,
+  // refunded with the fees kept (-169). Stripe's available balance: 2962.
+  held("cs_f1_sale", { stripeAccountId: F1, eventId: "ev_f1", grossAmount: 3_300 });
+  // The cancelled event's own date is months away: settled, it is due now.
+  held("cs_f1_cx", { stripeAccountId: F1, eventId: "ev_f1_cx", grossAmount: 3_300, releaseAfter: "2026-06-01T00:00:00.000Z" });
+  const { gateway, payouts } = fakeGateway({ nets: { cs_f1_sale: 3_131, cs_f1_cx: -169 }, available: 2_962 });
+  gateway.cancellationHold = () => false;
+  gateway.eventCancelled = (eventId) => eventId === "ev_f1_cx";
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(payouts.length, 1);
+  assert.equal(payouts[0]!.amount, 2_962);
+  assert.deepEqual(outcome!.debts, ["cs_f1_cx"]);
+  assert.equal(ledger.getEntry("cs_f1_sale")?.payoutId, payouts[0]!.id);
+  const debt = ledger.getEntry("cs_f1_cx")!;
+  assert.equal(debt.status, "released", "released by the payout it was deducted from");
+  assert.equal(debt.payoutId, payouts[0]!.id);
+  assert.equal(debt.netAmount, -169);
+});
+
+test("a cancelled event's kept fees are netted even when the balance has room — never paid from another event's takings", async () => {
+  // Another event's sale is held (not due) and its money is in the balance, so
+  // the due sale fits without the debt. Paying it in full would spend 169 of
+  // that event's takings.
+  held("cs_due", { eventId: "ev_done", grossAmount: 3_300 });
+  held("cs_cx", { eventId: "ev_cx", grossAmount: 3_300, releaseAfter: "2026-06-01T00:00:00.000Z" });
+  held("cs_other", { eventId: "ev_later", grossAmount: 10_300, releaseAfter: "2026-06-01T00:00:00.000Z" });
+  const { gateway, payouts } = fakeGateway({ nets: { cs_due: 3_131, cs_cx: -169, cs_other: 10_000 }, available: 12_962 });
+  gateway.cancellationHold = () => false;
+  gateway.eventCancelled = (eventId) => eventId === "ev_cx";
+  await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(payouts[0]!.amount, 2_962, "the 10000 left behind is exactly the other event's");
+  assert.equal(ledger.getEntry("cs_other")?.status, "held");
+});
+
+test("F2: a sale voided before #781 is reopened, re-read and netted; the 85 nothing accounts for is never paid", async () => {
+  held("cs_f2_sale", { stripeAccountId: F2, grossAmount: 3_300 });
+  held("cs_f2_old", { stripeAccountId: F2, grossAmount: 3_300 });
+  ledger.setNetAmount("cs_f2_old", -970);
+  ledger.markVoid("cs_f2_old", "no net proceeds — refunded or fees exceeded takings");
+  const stuck = fakeGateway({ nets: { cs_f2_sale: 3_131 }, available: 2_246 });
+  await release.runReleaseSweep(stuck.gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(stuck.payouts.length, 0, "as found: 3131 never fits 2246");
+
+  assert.equal(ledger.reopenVoid("cs_f2_sale"), null, "only a void can be reopened");
+  assert.equal(ledger.reopenVoid("cs_f2_old")?.status, "held");
+  const { gateway, payouts } = fakeGateway({ nets: { cs_f2_sale: 3_131, cs_f2_old: -970 }, available: 2_246 });
+  await release.runReleaseSweep(gateway, at("2026-02-05T01:00:00.000Z"));
+  assert.equal(payouts[0]!.amount, 2_161, "3131 - 970; the surplus stays in the balance");
+});
+
+test("a reopened entry is netted at what Stripe says now, not at the net cached when it was voided", async () => {
+  held("cs_sale", { grossAmount: 3_300 });
+  held("cs_old", { grossAmount: 3_300 });
+  ledger.setNetAmount("cs_old", -970);
+  ledger.markVoid("cs_old", "test");
+  ledger.reopenVoid("cs_old");
+  // A reversal posted after the void: the sale is really -885.
+  const { gateway, payouts } = fakeGateway({ nets: { cs_sale: 3_131, cs_old: -885 }, available: 2_246 });
+  await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(payouts[0]!.amount, 2_246);
+  assert.equal(ledger.getEntry("cs_old")?.netAmount, -885);
+});
+
+test("a refund flagged on a sale whose event is still ahead is netted at the next payout, not at its event's date", async () => {
+  held("cs_due", { grossAmount: 5_000 });
+  held("cs_future", { eventId: "ev_future", releaseAfter: "2026-09-01T00:00:00.000Z" });
+  assert.equal(ledger.flagForRecheck("cs_future"), true);
+  assert.equal(ledger.flagForRecheck("cs_unknown"), false, "an organiser's own sale has no ledger entry");
+  const { gateway, payouts } = fakeGateway({ nets: { cs_due: 5_000, cs_future: -400 }, available: 4_600 });
+  await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(payouts[0]!.amount, 4_600);
+  assert.equal(ledger.getEntry("cs_future")?.status, "released");
+});
+
+test("a flagged sale that is not due and still worth something is read, never paid", async () => {
+  held("cs_future", { releaseAfter: "2026-09-01T00:00:00.000Z" });
+  ledger.flagForRecheck("cs_future");
+  const { gateway, payouts } = fakeGateway({ nets: { cs_future: 6_000 } });
+  await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(payouts.length, 0);
+  const e = ledger.getEntry("cs_future")!;
+  assert.equal(e.status, "held");
+  assert.equal(e.netAmount, 6_000);
+  assert.equal(e.recheck, undefined, "read, so the flag clears");
+});
+
+test("a flag survives while the refund is still settling, so the sale is read again next sweep", async () => {
+  held("cs_future", { releaseAfter: "2026-09-01T00:00:00.000Z" });
+  ledger.flagForRecheck("cs_future");
+  const { gateway } = fakeGateway();
+  gateway.resolveNet = async () => ({ held: "refund" });
+  await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(ledger.getEntry("cs_future")?.recheck, true);
+});
+
+test("a debt whose flag was lost is found by the shortfall scan — at most once a day, and only when something due does not fit", async () => {
+  held("cs_due", { grossAmount: 5_000 });
+  held("cs_future", { releaseAfter: "2026-09-01T00:00:00.000Z" });
+  const reads: string[] = [];
+  const { gateway, payouts } = fakeGateway({ nets: { cs_due: 5_000, cs_future: 7_000 }, available: 1_000 });
+  const inner = gateway.resolveNet;
+  gateway.resolveNet = async (e) => {
+    reads.push(e.sessionId);
+    return inner(e);
+  };
+  await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.deepEqual(reads, ["cs_due", "cs_future"], "something due did not fit: the not-due sale is read");
+  reads.length = 0;
+  await release.runReleaseSweep(gateway, at("2026-02-05T01:00:00.000Z"));
+  assert.deepEqual(reads, ["cs_due"], "not again within the day");
+  reads.length = 0;
+  await release.runReleaseSweep(gateway, at("2026-02-06T01:00:00.000Z"));
+  assert.deepEqual(reads, ["cs_due", "cs_future"]);
+  assert.equal(payouts.length, 0, "a positive net that is not due is never paid");
+
+  // The same scan finding a debt: netted, and the due sale fits.
+  resetLedger();
+  held("cs_due", { grossAmount: 5_000 });
+  held("cs_future", { releaseAfter: "2026-09-01T00:00:00.000Z" });
+  const found = fakeGateway({ nets: { cs_due: 5_000, cs_future: -400 }, available: 4_600 });
+  await release.runReleaseSweep(found.gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(found.payouts[0]!.amount, 4_600);
+
+  // Everything due fits: no scan at all.
+  resetLedger();
+  held("cs_due", { grossAmount: 5_000 });
+  held("cs_future", { releaseAfter: "2026-09-01T00:00:00.000Z" });
+  const fits = fakeGateway({ nets: { cs_due: 5_000 } });
+  const fitReads: string[] = [];
+  const fitInner = fits.gateway.resolveNet;
+  fits.gateway.resolveNet = async (e) => {
+    fitReads.push(e.sessionId);
+    return fitInner(e);
+  };
+  await release.runReleaseSweep(fits.gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.deepEqual(fitReads, ["cs_due"]);
+});
+
+// `heldPastCeiling` reads the real clock, so entries recorded "now" keep it at
+// zero and leave `ok` to the alarm under test.
+const RECORDED_NOW = () => new Date().toISOString();
+
+test("debts larger than everything due: no payout, all held, and the account is reported as owing", async () => {
+  held("cs_due", { grossAmount: 3_300, recordedAt: RECORDED_NOW() });
+  held("cs_chargeback", { releaseAfter: "2026-09-01T00:00:00.000Z", recordedAt: RECORDED_NOW() });
+  ledger.flagForRecheck("cs_chargeback");
+  // A lost chargeback (amount + fee) on a balance that held 3131: Stripe's balance is now negative.
+  const { gateway, payouts } = fakeGateway({ nets: { cs_due: 3_131, cs_chargeback: -5_300 }, available: -2_169 });
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(payouts.length, 0);
+  assert.equal(outcome!.owes, true);
+  assert.equal(ledger.getEntry("cs_due")?.status, "held");
+  assert.equal(ledger.getEntry("cs_chargeback")?.status, "held");
+  const h = release.payoutSweepHealth();
+  assert.equal(h.accountsOwing, 1);
+  assert.equal(h.ok, false);
+
+  // New takings cover the debt: paid, and the alarm clears.
+  held("cs_new", { grossAmount: 3_300, recordedAt: RECORDED_NOW() });
+  const covered = fakeGateway({ nets: { cs_due: 3_131, cs_chargeback: -5_300, cs_new: 3_131 }, available: 962 });
+  await release.runReleaseSweep(covered.gateway, at("2026-02-05T01:00:00.000Z"));
+  assert.equal(covered.payouts[0]!.amount, 962);
+  assert.equal(release.payoutSweepHealth().accountsOwing, 0);
+  assert.equal(release.payoutSweepHealth().ok, true);
+});
+
+test("a due sale that has not fitted the balance for over a week alarms; a few days of pending funds does not", async () => {
+  held("cs_due", { grossAmount: 5_000, recordedAt: RECORDED_NOW() });
+  const short = fakeGateway({ nets: { cs_due: 5_000 }, available: 4_000 });
+  await release.runReleaseSweep(short.gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(release.payoutSweepHealth().balanceShort, 0, "4 days past due: funds may still be pending");
+  assert.equal(release.payoutSweepHealth().ok, true);
+  await release.runReleaseSweep(short.gateway, at("2026-02-09T00:00:00.000Z"));
+  const h = release.payoutSweepHealth();
+  assert.equal(h.balanceShort, 1);
+  assert.equal(h.oldestBalanceShortSince, "2026-02-01T00:00:00.000Z");
+  assert.equal(h.ok, false);
+
+  const paid = fakeGateway({ nets: { cs_due: 5_000 }, available: 5_000 });
+  await release.runReleaseSweep(paid.gateway, at("2026-02-09T01:00:00.000Z"));
+  assert.equal(release.payoutSweepHealth().balanceShort, 0, "rebuilt each sweep: cleared once it pays");
+});
+
+test("the hold-ceiling count ignores debts: they hold no funds", () => {
+  held("cs_debt", { netAmount: -169 });
+  held("cs_funds", { netAmount: 3_131 });
+  assert.equal(release.heldPastCeiling(at("2026-12-01T00:00:00.000Z")).count, 1);
 });

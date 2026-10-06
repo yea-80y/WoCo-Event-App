@@ -44,6 +44,7 @@ import {
 } from "../lib/stripe/pending-refunds.js";
 import { liveRefundGateway } from "../lib/stripe/pending-refunds-live.js";
 import { acknowledgePartialRefund, listFlaggedSales, ticketSalesHealth } from "../lib/stripe/ticket-sales.js";
+import { reopenVoid } from "../lib/stripe/payout-ledger.js";
 import { getEvent } from "../lib/event/service.js";
 import { getRecordedFeedSigner } from "../lib/event/feed-signer-record.js";
 import { getStripeAccount } from "../lib/stripe/accounts.js";
@@ -412,6 +413,27 @@ ops.post("/ticket-sales/:sessionId/acknowledge-partial-refund", async (c) => {
   }
   console.log(`[ops] partial refund on ${sessionId} acknowledged by ${by}`);
   return c.json({ ok: true, data: { acknowledged: true, health: ticketSalesHealth() } });
+});
+
+/**
+ * POST /api/ops/payouts/:sessionId/reopen   { by }
+ *
+ * Put a voided payout entry back under the release sweep (#781). Before #781 a
+ * sale that a refund took below zero was voided, and the fees Stripe kept on it
+ * dropped out of the arithmetic, so every later payout on that account was
+ * short and deferred for ever. Reopened, the next sweep re-reads the sale from
+ * Stripe and nets what it is really worth into the account's next payout. Only
+ * a void can be reopened; this moves no money itself.
+ */
+ops.post("/payouts/:sessionId/reopen", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const body = (await c.req.json().catch(() => null)) as { by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  const entry = reopenVoid(sessionId);
+  if (!entry) return c.json({ ok: false, error: "No voided payout entry for that session" }, 404);
+  console.log(`[ops] payout entry ${sessionId} (${entry.stripeAccountId}) reopened by ${by}`);
+  return c.json({ ok: true, data: { reopened: true, stripeAccountId: entry.stripeAccountId, status: entry.status } });
 });
 
 /**

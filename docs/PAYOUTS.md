@@ -118,6 +118,19 @@ Tickets follow the money, so the door never admits a ticket whose payment went b
 - **Our fee.** The auto-refund for a sale we could not fulfil returns it (above). Cancellation
   refunds follow `CANCELLATION_RETURNS_PLATFORM_FEE` (false: kept, as `ORGANISER_TERMS.md` §6
   says, #695). Rates and policy: `PRICING_AND_EMAIL.md`.
+- **Debts (#781).** Stripe never returns its processing fee on a refund, and a chargeback adds
+  its own fee, so a refunded or charged-back sale nets BELOW zero - money already gone from the
+  pooled balance. It is never voided (that dropped the debt and left every later payout on the
+  account short, deferred for ever). It stays held and is netted into the account's next payout,
+  debts first, then due sales oldest-first while they fit; it is released with that payout's id.
+  Only a net of exactly 0 voids. A refund or dispute webhook flags the sale (`recheck`) so the
+  sweep reads it at once, whatever its date; a cancelled event's settled sale is due at once; and
+  once a day, when something due does not fit, the sweep reads the not-yet-due sales as the
+  backstop for a lost flag. Debts larger than everything due pay nothing and alarm
+  (`payoutSweep.accountsOwing`); a due sale that has not fitted for 7 days alarms
+  (`payoutSweep.balanceShort`). `POST /api/ops/payouts/:sessionId/reopen` puts a pre-#781 void
+  back under the sweep. Not yet handled: a refund or chargeback AFTER the payout (the
+  chargeback window opens on the event date) and failed payouts (#784).
 
 The balance transaction is also where the **settlement currency** comes from: a charge
 presented in a currency the account has no bank account for is converted to the
