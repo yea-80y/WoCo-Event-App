@@ -491,8 +491,8 @@ function assertInvariant(
     const c = f.mintedOn[i] as { chainId: number; address: string };
     assert.equal(r.contract, `${c.chainId}:${c.address.toLowerCase()}`);
   });
-  // 5. A full refund voids the payout entry; a partial leaves it held; a
-  //    refund that did not land leaves it held too (the money is still there).
+  // 5. A full refund flags the payout entry for a recheck (#781); a partial leaves it alone; a
+  //    refund that did not land leaves it alone too (the money is still there).
   if (outcome.refund.kind === "created" && outcome.issued === 0) {
     assert.deepEqual(f.rechecked, [s.id], "a full refund flags the payout entry for a recheck (#781: netted, not voided)");
   } else {

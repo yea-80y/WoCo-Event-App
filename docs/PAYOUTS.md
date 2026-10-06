@@ -124,10 +124,12 @@ Tickets follow the money, so the door never admits a ticket whose payment went b
   account short, deferred for ever). It stays held and is netted into the account's next payout,
   debts first, then due sales oldest-first while they fit; it is released with that payout's id.
   Only a net of exactly 0 voids. A refund or dispute webhook flags the sale (`recheck`) so the
-  sweep reads it at once, whatever its date; a cancelled event's settled sale is due at once; and
+  sweep reads it at once, whatever its date; a cancelled event's settled sale is read at once (a
+  positive remainder still keeps its date); and
   once a day, when something due does not fit, the sweep reads the not-yet-due sales as the
-  backstop for a lost flag. Debts larger than everything due pay nothing and alarm
-  (`payoutSweep.accountsOwing`); a due sale that has not fitted for 7 days alarms
+  backstop for a lost flag. A known debt that cannot be read holds that sweep's payout. Debts
+  larger than everything due pay nothing and are counted (`payoutSweep.accountsOwing`, not an
+  alarm: only new sales clear it); a due sale that has not fitted for 7 days alarms
   (`payoutSweep.balanceShort`). `POST /api/ops/payouts/:sessionId/reopen` puts a pre-#781 void
   back under the sweep. Not yet handled: a refund or chargeback AFTER the payout (the
   chargeback window opens on the event date) and failed payouts (#784).

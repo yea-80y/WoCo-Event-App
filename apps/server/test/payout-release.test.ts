@@ -1125,7 +1125,8 @@ test("debts larger than everything due: no payout, all held, and the account is 
   assert.equal(ledger.getEntry("cs_chargeback")?.status, "held");
   const h = release.payoutSweepHealth();
   assert.equal(h.accountsOwing, 1);
-  assert.equal(h.ok, false);
+  assert.equal(h.balanceShort, 0, "explained by the debt, so not a short balance");
+  assert.equal(h.ok, true, "counted, not paged: only the organiser selling again clears it");
 
   // New takings cover the debt: paid, and the alarm clears.
   held("cs_new", { grossAmount: 3_300, recordedAt: RECORDED_NOW() });
@@ -1133,7 +1134,6 @@ test("debts larger than everything due: no payout, all held, and the account is 
   await release.runReleaseSweep(covered.gateway, at("2026-02-05T01:00:00.000Z"));
   assert.equal(covered.payouts[0]!.amount, 962);
   assert.equal(release.payoutSweepHealth().accountsOwing, 0);
-  assert.equal(release.payoutSweepHealth().ok, true);
 });
 
 test("a due sale that has not fitted the balance for over a week alarms; a few days of pending funds does not", async () => {
@@ -1157,4 +1157,63 @@ test("the hold-ceiling count ignores debts: they hold no funds", () => {
   held("cs_debt", { netAmount: -169 });
   held("cs_funds", { netAmount: 3_131 });
   assert.equal(release.heldPastCeiling(at("2026-12-01T00:00:00.000Z")).count, 1);
+});
+
+test("a cancelled event's sale an operator resolved (nothing refunded in Stripe) is not paid before its date", async () => {
+  held("cs_resolved", { eventId: "ev_cx", releaseAfter: "2026-06-01T00:00:00.000Z" });
+  const { gateway, payouts } = fakeGateway({ nets: { cs_resolved: 9_680 } });
+  gateway.cancellationHold = () => false;
+  gateway.eventCancelled = () => true;
+  await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(payouts.length, 0, "read early only to net a debt; a positive keeps its date");
+  assert.equal(ledger.getEntry("cs_resolved")?.netAmount, 9_680);
+  await release.runReleaseSweep(gateway, at("2026-06-02T00:00:00.000Z"));
+  assert.equal(payouts[0]!.amount, 9_680);
+});
+
+test("a known debt that cannot be read this sweep holds the payout rather than paying without it", async () => {
+  held("cs_due", { grossAmount: 5_000 });
+  held("cs_debt", { releaseAfter: "2026-09-01T00:00:00.000Z", netAmount: -400 });
+  const { gateway, payouts } = fakeGateway({ nets: { cs_due: 5_000, cs_debt: null }, available: 4_600 });
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(payouts.length, 0);
+  assert.equal(outcome!.error, "a known debt could not be read");
+
+  const ok = fakeGateway({ nets: { cs_due: 5_000, cs_debt: -400 }, available: 4_600 });
+  await release.runReleaseSweep(ok.gateway, at("2026-02-05T01:00:00.000Z"));
+  assert.equal(ok.payouts[0]!.amount, 4_600);
+});
+
+test("a debt that hit the hold ceiling does not mark the payout or itself as ceiling-forced", async () => {
+  // Old enough for the ceiling, event still ahead; the sale paid is event-due.
+  held("cs_old_debt", { recordedAt: "2026-01-01T00:00:00.000Z", releaseAfter: "2026-09-01T00:00:00.000Z", netAmount: -300 });
+  held("cs_due", { recordedAt: "2026-04-01T00:00:00.000Z", releaseAfter: "2026-04-05T00:00:00.000Z" });
+  const { gateway, payouts } = fakeGateway({ nets: { cs_old_debt: -300, cs_due: 5_000 }, country: "GB" });
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-04-10T00:00:00.000Z"));
+  assert.equal(payouts[0]!.amount, 4_700);
+  assert.equal(payouts[0]!.metadata.woco_forced_by_hold_ceiling, undefined);
+  assert.equal(outcome!.forcedByCeiling, false);
+  assert.equal(ledger.getEntry("cs_old_debt")?.forcedByCeiling, undefined);
+});
+
+test("funds held past the ceiling make the payout section page", () => {
+  held("cs_stuck", { netAmount: 3_131 });
+  const h = release.payoutSweepHealth();
+  assert.ok(h.heldPastCeiling >= 1);
+  assert.equal(h.ok, false);
+});
+
+test("when only part of what is due fits and the debt cancels it out, nothing is paid — never a zero or negative payout", async () => {
+  // Debt 500; due sales 300 (settled) and 400 (still pending). With both, the
+  // account is owed 200 — but only 300 is available net of the debt's draw.
+  held("cs_debt", { releaseAfter: "2026-09-01T00:00:00.000Z" });
+  ledger.flagForRecheck("cs_debt");
+  held("cs_a", { recordedAt: "2026-01-01T00:00:00.000Z" });
+  held("cs_b", { recordedAt: "2026-01-02T00:00:00.000Z" });
+  const { gateway, payouts } = fakeGateway({ nets: { cs_debt: -500, cs_a: 300, cs_b: 400 }, available: -200 });
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(payouts.length, 0);
+  assert.equal(outcome!.owes, undefined, "not owing: with everything due it nets +200");
+  assert.deepEqual(outcome!.deferred.slice().sort(), ["cs_a", "cs_b"]);
+  assert.equal(outcome!.shortSince, "2026-02-01T00:00:00.000Z");
 });

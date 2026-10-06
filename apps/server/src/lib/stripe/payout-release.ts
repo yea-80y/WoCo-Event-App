@@ -479,12 +479,14 @@ async function readNets(
   outcome: ReleaseOutcome,
   debts: ReadNet[],
   positives: ReadNet[],
-): Promise<void> {
+): Promise<{ debtUnread: boolean }> {
+  let debtUnread = false;
   for (const c of candidates) {
     const { entry } = c;
     const resolved = await gateway.resolveNet(entry);
     if (resolved === null) {
       if (c.payable) outcome.deferred.push(entry.sessionId);
+      if ((entry.netAmount ?? 0) < 0) debtUnread = true;
       continue;
     }
     if ("held" in resolved) {
@@ -528,6 +530,7 @@ async function readNets(
       positives.push({ ...c, net });
     }
   }
+  return { debtUnread };
 }
 
 /**
@@ -629,17 +632,18 @@ export async function releaseForAccount(
     const ceiling = holdCeilingAt(entry.recordedAt, country);
     const ceilingHit = nowMs >= new Date(ceiling).getTime();
     // Past the hold above, a cancelled event's sale has had its refund settle.
-    // Its event will not happen, so its date protects nothing: due now, which
-    // is what lets the fees kept on that refund be netted straight away.
+    // It is read at once so the fees kept on that refund are netted straight
+    // away. A positive remainder (an operator resolved the row: the buyer was
+    // made whole another way) still waits for its date like any other sale.
     const cancelled = !!entry.eventId && gateway.eventCancelled?.(entry.eventId) === true;
-    if (eventDue || ceilingHit || cancelled) {
+    if (eventDue || ceilingHit) {
       toRead.push({
         entry,
         payable: true,
-        forced: ceilingHit && !eventDue && !cancelled,
-        dueSince: eventDue ? entry.releaseAfter : ceilingHit ? ceiling : undefined,
+        forced: ceilingHit && !eventDue,
+        dueSince: eventDue ? entry.releaseAfter : ceiling,
       });
-    } else if (entry.recheck || (entry.netAmount ?? 0) < 0) {
+    } else if (cancelled || entry.recheck || (entry.netAmount ?? 0) < 0) {
       toRead.push({ entry, payable: false, forced: false });
     } else {
       notDue.push(entry);
@@ -649,13 +653,31 @@ export async function releaseForAccount(
 
   const debts: ReadNet[] = [];
   const positives: ReadNet[] = [];
-  await readNets(toRead, gateway, currency, outcome, debts, positives);
+  const { debtUnread } = await readNets(toRead, gateway, currency, outcome, debts, positives);
   if (positives.length === 0) {
     if (debts.length > 0) {
       console.log(
         `[payout-release] ${stripeAccountId} ${currency}: ${debts.length} debt(s) wait for the next due sale`,
       );
     }
+    return outcome;
+  }
+  if (debtUnread) {
+    // A sale known to be below zero could not be read this sweep. Paying without
+    // it would spend another event's takings by that much, so wait an hour.
+    outcome.error = "a known debt could not be read";
+    outcome.deferred.push(...positives.map((p) => p.entry.sessionId));
+    return outcome;
+  }
+  if (debts.length > 0 && sumNets(debts) + sumNets(positives) <= 0) {
+    // The debts outweigh everything due, so no selection can pay anything. The
+    // sales stay held until new takings cover the debt.
+    outcome.owes = true;
+    outcome.deferred.push(...positives.map((p) => p.entry.sessionId));
+    console.warn(
+      `[payout-release] ${stripeAccountId} ${currency}: debts of ${-sumNets(debts)} exceed the ` +
+        `${sumNets(positives)} due — nothing payable until new sales cover them`,
+    );
     return outcome;
   }
 
@@ -688,26 +710,17 @@ export async function releaseForAccount(
     if (debts.length > known) selection = selectForPayout(debts, positives, available);
   }
   const { chosen, rest, total } = selection;
-  outcome.deferred.push(...rest.map((p) => p.entry.sessionId));
-  const shortSince = rest.map((p) => p.dueSince).filter((d): d is string => !!d).sort()[0];
+  const paying = chosen.length > 0 && total > 0;
+  const unpaid = paying ? rest : positives;
+  outcome.deferred.push(...unpaid.map((p) => p.entry.sessionId));
+  const shortSince = unpaid.map((p) => p.dueSince).filter((d): d is string => !!d).sort()[0];
   if (shortSince) outcome.shortSince = shortSince;
 
-  if (chosen.length === 0 || total <= 0) {
-    if (chosen.length > 0) {
-      // The debts outweigh every due sale that fits. Nothing is payable, and the
-      // sales stay held until new takings cover the debt.
-      outcome.owes = true;
-      outcome.deferred.push(...chosen.map((p) => p.entry.sessionId));
-      console.warn(
-        `[payout-release] ${stripeAccountId} ${currency}: debts of ${-sumNets(debts)} exceed the ` +
-          `${sumNets(chosen)} due — nothing payable until new sales cover them`,
-      );
-    } else {
-      console.log(
-        `[payout-release] ${stripeAccountId} ${currency}: ${positives.length} due but ` +
-          `available=${available} — deferring to next sweep`,
-      );
-    }
+  if (!paying) {
+    console.log(
+      `[payout-release] ${stripeAccountId} ${currency}: ${positives.length} due but ` +
+        `available=${available} — deferring to next sweep`,
+    );
     return outcome;
   }
 
@@ -723,7 +736,7 @@ export async function releaseForAccount(
     stripeAccountId,
     currency,
     sessionIds,
-    forcedSessionIds: selected.filter((p) => p.forced).map((p) => p.entry.sessionId),
+    forcedSessionIds: chosen.filter((p) => p.forced).map((p) => p.entry.sessionId),
     amount: total,
     idempotencyKey: idempotencyKeyFor(sessionIds),
     createdAt: now.toISOString(),
@@ -913,7 +926,7 @@ export function payoutSweepHealth(): {
    */
   balanceShort: number;
   oldestBalanceShortSince: string | null;
-  /** Groups whose debts outweigh everything due: nothing payable until new sales cover them. */
+  /** Groups whose debts outweigh everything due: nothing payable until new sales cover them. Counted, not an alarm. */
   accountsOwing: number;
 } {
   const running = timer !== null;
@@ -924,9 +937,9 @@ export function payoutSweepHealth(): {
   const breached = heldPastCeiling();
   const heals = pendingScheduleHeals().length;
   return {
-    ok:
-      !stale && breached.count === 0 && heals === 0 &&
-      groupAlarms.balanceShort === 0 && groupAlarms.accountsOwing === 0,
+    // `accountsOwing` is left out: only the organiser selling again clears it,
+    // so it would hold the whole section red for months with nothing to do.
+    ok: !stale && breached.count === 0 && heals === 0 && groupAlarms.balanceShort === 0,
     running,
     lastRunAt: health.lastRunAt,
     runs: health.runs,
