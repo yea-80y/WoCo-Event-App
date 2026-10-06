@@ -124,14 +124,16 @@ for fraud, or for anything else that cannot lawfully be limited.
 
 Subject to that:
 
-- We are **not liable for the event itself** — its cancellation, quality, safety or conduct. That is
-  the organiser's responsibility.
+- We are **not liable for the event itself** - whether it goes ahead, is postponed or changed, and
+  its quality, safety or conduct. That is the organiser's responsibility.
+- We are **not liable for arrangements you make around an event**, such as travel, accommodation,
+  time off work or childcare.
 - We are **not liable for losses caused by you losing your own keys**, where you control them.
 - We are **not liable for failures of public decentralised networks** outside our control.
 - We are not liable for indirect or consequential loss, or loss of profit, revenue or opportunity.
 
-**Where we are at fault**, our total liability to you is limited to the greater of the fees we
-received in connection with the affected transaction, or £[LIABILITY CAP].
+**Where we are at fault**, we are responsible for loss or damage that is a foreseeable result of us
+breaking these terms or not using reasonable care and skill in the services we provide.
 
 If you are a consumer, this section does not affect your statutory rights, and you may bring claims
 against the organiser directly.
