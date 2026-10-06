@@ -395,3 +395,35 @@ test("TICKET_SPONSOR_MIN_ETH moves the floor", async () => {
     delete process.env.TICKET_SPONSOR_MIN_ETH;
   }
 });
+
+test("no ticket sponsor key reads RED on the balance check too, naming the variable", async () => {
+  const { SponsorKeyUnconfigured } = await import("../src/lib/chain/sponsor-wallet.js");
+  await probes.refreshTicketMinting(
+    readers(AUTHORISED, async () => { throw new SponsorKeyUnconfigured(); }),
+    silent,
+  );
+  const c = probes.ticketMintingHealth().checks.sponsorBalance;
+  assert.equal(c.ok, false);
+  assert.match(c.reason ?? "", /WOCO_SPONSOR_PRIVATE_KEY/);
+});
+
+test("an unset events chain reads RED on the balance check, and the section reports chainId null (#607)", async () => {
+  const saved = process.env.WOCO_EVENT_CHAIN_ID;
+  delete process.env.WOCO_EVENT_CHAIN_ID;
+  try {
+    await probes.refreshTicketMinting(
+      readers(
+        async () => { throw new EventContractConfigError("WOCO_EVENT_CHAIN_ID is not set"); },
+        async () => { throw new EventContractConfigError("WOCO_EVENT_CHAIN_ID is not set"); },
+      ),
+      silent,
+    );
+    const s = probes.ticketMintingHealth();
+    assert.equal(s.chainId, null);
+    assert.equal(s.checks.sponsorBalance.ok, false);
+    assert.equal(s.ok, false);
+  } finally {
+    if (saved === undefined) delete process.env.WOCO_EVENT_CHAIN_ID;
+    else process.env.WOCO_EVENT_CHAIN_ID = saved;
+  }
+});

@@ -638,7 +638,9 @@ export async function refreshTicketMinting(
     ticketSponsorReading =
       err instanceof SponsorKeyUnconfigured
         ? { at: Date.now(), value: null, error: TICKET_SPONSOR_UNCONFIGURED, detail: null }
-        : failed(err);
+        : err instanceof EventContractConfigError
+          ? { at: Date.now(), value: null, error: TICKET_CONTRACT_MISCONFIGURED, detail: err.message }
+          : failed(err);
   }
   const section = ticketMintingHealth();
   noteVerdict("ticketMinting.sponsorAuthorised", section.checks.sponsorAuthorised, log, ticketMintReading.detail);
@@ -1006,7 +1008,8 @@ export function ticketMintingHealth(now: number = Date.now()): TicketMintingSect
     : evaluateTicketMintRamp({ reading: policy?.allowance ?? null, alarmPct: cfg.alarmPct, reason: ticketMintReading.error });
   const sponsorBalance =
     ticketSponsorReading.error === TICKET_SPONSOR_UNCONFIGURED
-      ? { ok: false as const, reason: TICKET_SPONSOR_UNCONFIGURED }
+      || ticketSponsorReading.error === TICKET_CONTRACT_MISCONFIGURED
+      ? { ok: false as const, reason: ticketSponsorReading.error }
       : evaluateTicketSponsorBalance({
           balanceWei: ticketSponsorReading.value,
           minWei: parseEther(cfg.sponsorMinEth),

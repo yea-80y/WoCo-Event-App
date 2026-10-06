@@ -98,8 +98,11 @@ const DEPLOYED_LEDGER: Record<number, string> = {};
 export function getActiveChainId(): number {
   const raw = (process.env.WOCO_EVENT_CHAIN_ID ?? "").trim();
   if (raw === "") throw new EventContractConfigError("WOCO_EVENT_CHAIN_ID is not set - the events chain has no default");
-  if (!/^[1-9]\d{0,15}$/.test(raw)) throw new EventContractConfigError(`WOCO_EVENT_CHAIN_ID="${raw}" is not a chain id`);
-  return Number(raw);
+  const id = Number(raw);
+  if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(id)) {
+    throw new EventContractConfigError(`WOCO_EVENT_CHAIN_ID="${raw}" is not a chain id`);
+  }
+  return id;
 }
 
 /**

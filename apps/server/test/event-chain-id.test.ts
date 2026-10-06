@@ -24,7 +24,7 @@ test("unset or empty refuses, naming the variable - never a default chain", () =
 });
 
 test("a value that is not a chain id refuses instead of parsing a prefix", () => {
-  for (const v of ["84532x", "abc", "0", "-1", "4.2", "0x66eee", "12345678901234567"]) {
+  for (const v of ["84532x", "abc", "0", "-1", "4.2", "0x66eee", "12345678901234567", "9999999999999999"]) {
     process.env.WOCO_EVENT_CHAIN_ID = v;
     assert.throws(() => getActiveChainId(), EventContractConfigError, v);
   }
