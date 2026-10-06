@@ -59,6 +59,12 @@ export interface OrderRecord {
   kind: OrderKind;
   eventId?: string;
   seriesId?: string;
+  /** The event's creator, lowercase 0x, from the record pinned at create (#676).
+   *  Groups an organiser's orders: what moves to their own batch one day. */
+  organiser?: string;
+  /** HMAC of the buyer's email (`hashEmail`): finds a person's orders for an
+   *  access or erasure request. Never the address itself. */
+  emailHash?: string;
   createdAt: string;
   /** `allocated` = slots reserved, upload not confirmed (a crash, or still in flight).
    *  Treat it as possibly on the network: burnable, never reissued. */
@@ -281,7 +287,7 @@ export interface AllocatedOrder {
 export function allocateOrder(
   root: Uint8Array,
   chunkAddresses: Uint8Array[],
-  meta: { kind: OrderKind; eventId?: string; seriesId?: string },
+  meta: { kind: OrderKind; eventId?: string; seriesId?: string; organiser?: string; emailHash?: string },
   nowMs: number = Date.now(),
 ): AllocatedOrder {
   ensureLoaded();
@@ -332,6 +338,8 @@ export function allocateOrder(
     kind: meta.kind,
     ...(meta.eventId ? { eventId: meta.eventId } : {}),
     ...(meta.seriesId ? { seriesId: meta.seriesId } : {}),
+    ...(meta.organiser ? { organiser: meta.organiser.toLowerCase() } : {}),
+    ...(meta.emailHash ? { emailHash: meta.emailHash } : {}),
     createdAt: new Date(nowMs).toISOString(),
     state: "allocated",
     chunks,
@@ -531,4 +539,12 @@ export function _resetAttendeeLedgerForTests(): void {
   store = emptyStore();
   loaded = false;
   unreadable = null;
+}
+
+/** Every order recorded against this email hash, any state: an access or erasure request (#546). */
+export function ordersForEmailHash(emailHash: string): Array<{ root: string; record: OrderRecord }> {
+  ensureLoaded();
+  return Object.entries(store.orders)
+    .filter(([, o]) => o.emailHash === emailHash)
+    .map(([root, o]) => ({ root, record: structuredClone(o) }));
 }

@@ -196,3 +196,48 @@ test("the organiser's order view checks erasure before it fetches anything", () 
   assert.ok(check > 0 && heldGate > check, "a held order is served only when not erased");
   assert.ok(guard > heldGate && fetch > guard, "erasure is decided before the download, and gates it");
 });
+
+test("#546: a stored order carries its organiser and the buyer's email hash, and the ops lookup finds it", async () => {
+  await readyAttendeeStore();
+  const { recordEventFeedSigner } = await import("../src/lib/event/feed-signer-record.js");
+  const { hashEmail } = await import("../src/lib/event/claim-service.js");
+  const organiser = "0x" + "5c".repeat(20);
+  recordEventFeedSigner("e-lookup", "0x" + "da".repeat(20), organiser);
+  const emailHash = hashEmail(" Buyer@Example.com ");
+
+  const deps = { stamper: writer.getAttendeeStamper, upload: async (_e: unknown, body: Uint8Array) => (await acceptingUploadChunk(_e, body)).reference.toHex() };
+  const json = canonicalOrderBox({ ...BOX, ct: "e1".repeat(77) })!;
+  const ref = await writer.orderRefOf(json);
+  held.commitHold(ref, json, { eventId: "e-lookup", seriesId: "s1" });
+  assert.equal(held.markHeldPaid(ref, "cs_lookup", Date.now(), { emailHash }), true);
+  assert.equal(held.getHeldOrder(ref)?.emailHash, emailHash, "the hash rides the hold until storage");
+
+  process.env.OPS_TOKEN = "t".repeat(40);
+  const { ops } = await import("../src/routes/ops.js");
+  const opsApp = new Hono();
+  opsApp.route("/api/ops", ops);
+  const lookup = async (body: unknown) => {
+    const res = await opsApp.request("/api/ops/attendee-batch/lookup", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${"t".repeat(40)}` },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: (await res.json()) as { data?: { orders: { root: string; organiser: string | null; state: string }[]; held: { root: string }[] } } };
+  };
+
+  const beforeStore = await lookup({ email: "buyer@example.com" });
+  assert.deepEqual(beforeStore.body.data?.held.map((h) => h.root), [ref], "paid but not stored yet: found among the holds");
+
+  await writer.storeHeldOrder(ref, deps as never);
+  const rec = ledger.getOrderRecord(ref);
+  assert.equal(rec?.organiser, organiser, "organiser from the record pinned at create");
+  assert.equal(rec?.emailHash, emailHash);
+
+  const afterStore = await lookup({ email: "BUYER@example.com" });
+  assert.equal(afterStore.status, 200);
+  assert.deepEqual(afterStore.body.data?.orders.map((o) => [o.root, o.organiser, o.state]), [[ref, organiser, "stored"]]);
+  assert.deepEqual(afterStore.body.data?.held, []);
+  assert.equal((await lookup({ emailHash })).body.data?.orders.length, 1, "the hash works as well as the address");
+  assert.equal((await lookup({})).status, 400);
+  assert.equal((await lookup({ email: "someone-else@example.com" })).body.data?.orders.length, 0);
+});

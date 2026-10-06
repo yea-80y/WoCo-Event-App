@@ -54,6 +54,9 @@ export interface HeldOrder {
   /** Set by fulfilment before the mint. From then on the hold never expires. */
   paidAt?: string;
   sessionId?: string;
+  /** The buyer's email HMAC, set with `paidAt`, so the stored order carries it
+   *  even when the retry worker stores it later (#546). */
+  emailHash?: string;
 }
 
 const committed = new Map<string, HeldOrder>();
@@ -183,13 +186,18 @@ export function getHeldOrder(root: string): HeldOrder | null {
  * unreadable) or another session already claimed it: the caller then seals
  * the minimal order instead.
  */
-export function markHeldPaid(root: string, sessionId: string, nowMs: number = Date.now()): boolean {
+export function markHeldPaid(
+  root: string,
+  sessionId: string,
+  nowMs: number = Date.now(),
+  buyer: { emailHash?: string } = {},
+): boolean {
   ensureLoaded();
   const k = key(root);
   const o = committed.get(k);
   if (!o) return false;
   if (o.paidAt) return o.sessionId === sessionId;
-  const next = { ...o, paidAt: new Date(nowMs).toISOString(), sessionId };
+  const next = { ...o, paidAt: new Date(nowMs).toISOString(), sessionId, ...(buyer.emailHash ? { emailHash: buyer.emailHash } : {}) };
   if (!writeHold(k, next)) return false;
   committed.set(k, next);
   return true;
