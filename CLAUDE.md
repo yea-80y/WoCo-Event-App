@@ -511,6 +511,8 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     counterfactual during an RPC outage. A build older than #746 ignores the field
     and refuses co-owned accounts - fails closed on a rollback)
   stripe-accounts.json · stripe-payout-ledger.json · stripe-payout-intents.json
+  stripe-payout-surplus.json (#781 part 2 — surplus clocks. Losing it only restarts the 7-day
+    wait before money the ledger cannot explain is paid out; it never pays early)
   pending-refunds.json (#367 — auto-refunds Stripe refused to create; losing it = a buyer
     charged with no ticket and no refund, and no alarm; `/api/health` `pendingRefunds`)
   marketing-consent.json (Art. 7(1) evidence for checkout opt-ins)

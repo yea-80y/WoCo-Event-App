@@ -351,3 +351,16 @@ test("a sale a refund took below zero reads as fees owed, then fees deducted —
 
   assert.equal(entryStatusLabel(entry({ status: "held", netAmount: 0 }), NOW).badge, "Held", "zero is not a debt");
 });
+
+test("balance adjustments group on their own and read as deducted or paid, never as a sale (#781 part 2)", () => {
+  const minus = entry({ sessionId: "recon_a", kind: "reconciliation", eventId: undefined, status: "released", netAmount: -65, releasedAt: "2026-07-30T09:00:00.000Z" });
+  const plus = entry({ sessionId: "recon_b", kind: "reconciliation", eventId: undefined, status: "released", netAmount: 50, releasedAt: "2026-07-30T09:00:00.000Z" });
+  const groups = groupPayouts([minus, plus, entry()]);
+  const adj = groups.find((g) => g.key === "adjustments")!;
+  assert.equal(adj.title, "Balance adjustments");
+  assert.equal(adj.entries.length, 2);
+  const d = entryStatusLabel(minus, NOW, "en-GB");
+  assert.equal(d.badge, "Deducted");
+  assert.match(d.detail, /30 Jul/);
+  assert.equal(entryStatusLabel(plus, NOW, "en-GB").badge, "Paid out");
+});

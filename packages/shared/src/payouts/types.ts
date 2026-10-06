@@ -14,9 +14,14 @@ export type PayoutEntryStatus = "held" | "released" | "void";
 
 /** One paid Checkout Session, as the organiser sees it. */
 export interface PayoutEntryView {
-  /** Stripe Checkout Session id — one sale. */
+  /** Stripe Checkout Session id — one sale. A reconciliation row's own id. */
   sessionId: string;
-  kind: "event" | "shop";
+  /**
+   * `reconciliation`: not a sale — money a payout deducted or added because the
+   * balance changed outside any sale (a chargeback after an earlier payout, a
+   * debt Stripe recovered from the organiser's bank, a won dispute).
+   */
+  kind: "event" | "shop" | "reconciliation";
   eventId?: string;
   shopId?: string;
   /** Lowercase ISO code the buyer was charged in. */
