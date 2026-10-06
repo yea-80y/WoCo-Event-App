@@ -132,6 +132,9 @@ export function forgetEmailHash(emailHash: string): number {
  */
 export const CONSENT_KEPT_AFTER_BASIS_MS = 183 * 24 * 60 * 60 * 1000;
 
+/** A sweep's drops are already gone from memory, so a failed write must be retried by flag. */
+let sweepUnpersisted = false;
+
 /**
  * Drop consent records whose basis ended more than six months ago (#547).
  *
@@ -139,7 +142,8 @@ export const CONSENT_KEPT_AFTER_BASIS_MS = 183 * 24 * 60 * 60 * 1000;
  * unsubscribe, a decline, a complaint or a bounce, dated by its suppression
  * mark. Not being on the organiser's contact list is NOT an end - a checkout
  * opt-in is usually added to a list later. A record whose basis still stands is
- * kept however old, which is what the policy says.
+ * kept however old, which is what the policy says. A record made AFTER the mark
+ * (a renewed opt-in the mark still blocks) is dated from itself, not the mark.
  *
  * @returns how many records were dropped.
  */
@@ -152,15 +156,18 @@ export function sweepExpiredConsents(
   for (const [org, byHash] of Object.entries(consents)) {
     for (const hash of Object.keys(byHash)) {
       const ended = basisEndedAt(hash, org);
-      if (ended && now - Date.parse(ended) > CONSENT_KEPT_AFTER_BASIS_MS) {
+      if (!ended) continue;
+      const endedMs = Math.max(Date.parse(ended), Date.parse(byHash[hash].ts) || 0);
+      if (now - endedMs > CONSENT_KEPT_AFTER_BASIS_MS) {
         delete byHash[hash];
         dropped++;
       }
     }
     if (Object.keys(byHash).length === 0) delete consents[org];
   }
-  if (dropped && !persistToDisk()) {
-    console.warn(`[consent] swept ${dropped} expired records in memory; the write failed and retries next sweep`);
+  if (dropped || sweepUnpersisted) {
+    sweepUnpersisted = !persistToDisk();
+    if (sweepUnpersisted) console.warn(`[consent] sweep write failed; retrying on the next sweep`);
   }
   return dropped;
 }

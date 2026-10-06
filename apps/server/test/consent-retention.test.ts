@@ -51,6 +51,11 @@ test("suppressedSince: none, per-organiser, the earlier of global and per-organi
   suppression.suppressOrg("h-lifted", ORG, "declined", ago(400));
   assert.equal(suppression.liftDeclineOnConsent("h-lifted", ORG, ago(300)), true);
   assert.equal(suppression.suppressedSince("h-lifted", ORG), null, "a decline superseded by consent is not an end");
+
+  // Only a decline can be lifted. If an unsubscribe ever gains a lift path, this
+  // fails, rather than a permanent end quietly turning temporary.
+  assert.equal(suppression.liftDeclineOnConsent("h-org", ORG, ago(1)), false);
+  assert.equal(suppression.suppressedSince("h-org", ORG), ago(10));
 });
 
 test("the sweep drops only records whose basis ended more than six months ago", () => {
@@ -81,4 +86,22 @@ test("end to end: an unsubscribe over six months old ends the record; another or
   consent.sweepExpiredConsents(undefined, NOW);
   assert.equal(consent.getConsent("c-e2e", ORG), null);
   assert.ok(consent.getConsent("c-e2e", OTHER), "an unsubscribe from one organiser ends only that basis");
+});
+
+test("a renewed opt-in made after an old unsubscribe is dated from itself, not the mark", () => {
+  // The unsubscribe still blocks sending (it is never lifted), but the newer
+  // record is the evidence a resubscribe would need: it gets its own six months.
+  consent.recordConsent("c-renewed", ORG, record(ago(20)));
+  const endedLongAgo = (h: string) => (h === "c-renewed" ? ago(400) : null);
+  const dropped = consent.sweepExpiredConsents(endedLongAgo, NOW);
+  assert.equal(dropped, 0);
+  assert.ok(consent.getConsent("c-renewed", ORG));
+  // Six months after the renewed record, it goes.
+  assert.equal(consent.sweepExpiredConsents(endedLongAgo, NOW + 200 * DAY), 1);
+});
+
+test("exactly six months (183 days) is kept; one day more is dropped", () => {
+  consent.recordConsent("c-edge", ORG, record(ago(400)));
+  assert.equal(consent.sweepExpiredConsents((h: string) => (h === "c-edge" ? ago(183) : null), NOW), 0);
+  assert.equal(consent.sweepExpiredConsents((h: string) => (h === "c-edge" ? ago(184) : null), NOW), 1);
 });
