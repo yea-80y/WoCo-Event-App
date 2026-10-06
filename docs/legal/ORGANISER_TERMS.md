@@ -1,11 +1,7 @@
 # Organiser Terms
 
-**Last updated:** [DATE OF PUBLICATION]
+**Last updated:** 6 October 2026
 **Version:** 1.0
-
-> **⚠️ PRE-LAUNCH DRAFT — NOT YET IN FORCE.** Complete `[PLACEHOLDERS]` and have a UK solicitor
-> review. Section 6 (chargeback liability) is the commercially critical clause — see
-> `docs/legal/DATA_INVENTORY.md` §5.1 for why.
 
 These terms apply if you use WoCo to **sell tickets, run events, publish a site, or contact an
 audience**. They are in addition to the [Terms of Service](./TERMS_OF_SERVICE.md).
@@ -278,4 +274,4 @@ these terms.**
 Governed by the law of **England and Wales**; the courts of England and Wales have exclusive
 jurisdiction.
 
-WoCo Network Ltd · company number 17370809 · 128 City Road, London EC1V 2NX, United Kingdom · [SUPPORT EMAIL]
+WoCo Network Ltd · company number 17370809 · 128 City Road, London EC1V 2NX, United Kingdom · support@woco-net.com

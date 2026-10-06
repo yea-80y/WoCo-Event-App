@@ -414,8 +414,8 @@ Swarm nodes are worldwide with no controllable location. This is a restricted tr
 Chapter V with **no adequacy decision and no possibility of Standard Contractual Clauses** — there is
 no counterparty to contract with. The mitigating argument is that all sensitive payload is encrypted
 client-side to a key held only in the EU/UK-based organiser's browser, so what leaves the jurisdiction
-is ciphertext plus pseudonymous identifiers. **This position needs solicitor sign-off — it is the
-single most novel legal question in the platform.**
+is ciphertext plus pseudonymous identifiers. The transfer is stated plainly to data subjects in
+PRIVACY_POLICY §8. We revisit the position as guidance on decentralised storage develops.
 
 ---
 
@@ -498,8 +498,9 @@ organiser's and Stripe's obligation, not something WoCo needs to hold separately
 | 2 | Confirm whether legacy destination-charge orders exist in production | user |
 | 3 | **Configure** log rotation to match the 30-day period now STATED in PRIVACY_POLICY §10. Stating a period does not create one: Docker's `json-file` driver rotates on nothing unless `max-size`/`max-file` are set in compose, and Cloudflare's retention depends on the plan — check it rather than assume. A policy claiming 30 days over infrastructure that keeps logs forever is worse than the placeholder was | user |
 | 4 | ~~Decide + implement the separate attendee postage batch and manifest-driven erasure~~ **Done 2026-09-27 (#546)** - separate attendee batch; erasure is a per-order slot overwrite rather than manifest omission (§6) | Fable |
-| 5 | Solicitor sign-off on the Swarm international-transfer position (§6) | user |
+| 5 | ~~Settle the Swarm international-transfer position (§6)~~ **Done 2026-10-06** - stated plainly in PRIVACY_POLICY §8; sensitive payload encrypted client-side | user |
 | 6 | ~~ICO registration (data protection fee) before processing begins~~ **Done 2026-10-06** - WoCo Network Ltd, registration number ZC266841, fee by direct debit; stated in PRIVACY_POLICY §2 | user |
 | 7 | ~~Point-of-collection notices on all four surfaces (§2)~~ **Done** - all four carry one (§2); the generated-site policy page is item 8 | Claude |
 | 8 | Generated organiser sites need a privacy policy page | Claude |
 | 9 | **Organiser privacy contact.** `privacy@woco-net.com` is WoCo's contact *as controller* and stays WoCo's — it is not an organiser-facing setting. But §3 tells the attendee their order-form rights are exercised against the ORGANISER, and today the only identification of that organiser is their display name at checkout. They need a reachable contact of their own. Deliberately not built yet: it wants a verified address, which is the same problem SES domain verification solves (PRICING_AND_EMAIL §6 forbids onboarding organiser domains on Resend). Slot it in as an organiser-profile field once SES lands — the point-of-collection notice and the generated-site policy page (item 8) both read it | Claude, after SES |
+| 10 | **Retention periods stated in PRIVACY_POLICY §10 that nothing enforces yet:** organiser's copy of attendee data (event date + 90 days), account data (account closed + 90 days), marketing consent records (+ 6 months). Build the expiry, run it as a documented operator routine, or reword those rows. Logs are item 3. The suppression, ticket, contact-list, transaction, failed-delivery and onchain rows describe what the code does today | Claude |

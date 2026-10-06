@@ -1,11 +1,7 @@
 # Data Processing Addendum
 
-**Last updated:** [DATE OF PUBLICATION]
+**Last updated:** 6 October 2026
 **Version:** 1.0
-
-> **⚠️ PRE-LAUNCH DRAFT — NOT YET IN FORCE.** Complete `[PLACEHOLDERS]` and have a UK solicitor
-> review. This is the Article 28 contract; its content is largely prescribed by statute, so
-> deviations should be deliberate.
 
 This Addendum forms part of the [Organiser Terms](./ORGANISER_TERMS.md) between
 WoCo Network Ltd (company number 17370809) ("**Processor**", "we") and the organiser ("**Controller**", "you").
@@ -217,7 +213,7 @@ regulatory fines under Article 82.
 | **ZeroDev** | Passkey smart-account infrastructure | US | UK IDTA |
 | **Arbitrum** | Onchain event registration and ticket records - public and permanent | Global | Technical safeguard — see §5 |
 
-Current as at [DATE]. The live list is maintained at [SUB-PROCESSOR PAGE URL].
+Current as at 6 October 2026. This annex is the live list: we change it here, with the notice set out in section 4.
 
 ---
 

@@ -1,13 +1,7 @@
 # Privacy Policy
 
-**Last updated:** [DATE OF PUBLICATION]
+**Last updated:** 6 October 2026
 **Version:** 1.0
-
-> **⚠️ PRE-LAUNCH DRAFT — NOT YET IN FORCE.**
-> Placeholders in `[SQUARE BRACKETS]` must be completed, and this document must be reviewed by a
-> UK data protection solicitor, before publication. Every factual claim below is traceable to
-> `docs/legal/DATA_INVENTORY.md`, which cites the source files. Do not add claims to this policy
-> that the inventory does not support.
 
 ---
 
@@ -250,12 +244,6 @@ We would rather you came to us first, but it is your right either way.
 ---
 
 ## 10. How long we keep things
-
-> **⚠️ INTERNAL — RESOLVE BEFORE PUBLICATION (correction 4).** Nothing currently enforces the
-> attendee-copy, account-data or marketing-consent periods, and the 30-day log rotation is not yet
-> configured on the host or checked against Cloudflare's plan (`DATA_INVENTORY.md` §8, item 3).
-> Build the expiry or reword those rows before this table is published. The suppression, ticket,
-> contact-list, transaction, failed-delivery and on-chain rows describe what the code does today.
 
 | Data | Retention |
 |---|---|

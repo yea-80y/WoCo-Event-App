@@ -1,11 +1,7 @@
 # Terms of Service
 
-**Last updated:** [DATE OF PUBLICATION]
+**Last updated:** 6 October 2026
 **Version:** 1.0
-
-> **⚠️ PRE-LAUNCH DRAFT — NOT YET IN FORCE.** Complete the `[PLACEHOLDERS]` and have a UK solicitor
-> review before publication. Consumer terms are subject to the Consumer Rights Act 2015 fairness
-> test; an unfair term is unenforceable, so the wording here matters commercially, not just legally.
 
 These terms cover **using WoCo as an attendee** — browsing events, buying tickets, holding tickets.
 If you run events, the [Organiser Terms](./ORGANISER_TERMS.md) also apply.
@@ -40,7 +36,7 @@ permission; use bots or automation to obtain tickets; interfere with the platfor
 availability; attempt to access data belonging to others; or use WoCo to send spam or harass anyone.
 
 We may suspend or close an account that breaches these terms. Where we do, we will tell you why
-unless we are legally prevented from doing so, and you can appeal to [SUPPORT EMAIL].
+unless we are legally prevented from doing so, and you can appeal to support@woco-net.com.
 
 ### Your account and your keys
 
@@ -199,7 +195,7 @@ have jurisdiction.
 If you live elsewhere in the UK, you may bring proceedings in your local courts. If you are a
 consumer in the EU, mandatory protections of your home country still apply.
 
-**Please contact us first** at [SUPPORT EMAIL] — most things are resolved quickly that way.
+**Please contact us first** at support@woco-net.com — most things are resolved quickly that way.
 
 ---
 
@@ -207,4 +203,4 @@ consumer in the EU, mandatory protections of your home country still apply.
 
 WoCo Network Ltd
 128 City Road, London EC1V 2NX, United Kingdom
-[SUPPORT EMAIL]
+support@woco-net.com
