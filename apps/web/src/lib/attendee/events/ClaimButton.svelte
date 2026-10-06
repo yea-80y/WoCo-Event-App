@@ -158,9 +158,12 @@
 
   const formValid = $derived(() => {
     if (!orderFields?.length) return true;
-    return orderFields.every((f) =>
+    const fieldsFilled = orderFields.every((f) =>
       !orderFieldRequired(f, { canUseAccount: linked }) || (formData[f.id] ?? "").trim().length > 0
     );
+    // With no email field in the form and no account, OrderForm shows its own
+    // email box - the ticket's only address, so it gates Pay as well (#639).
+    return fieldsFilled && (hasEmailField || linked || stripeEmail.trim().length > 0);
   });
 
   const getEmailFromForm = (): string | null =>
