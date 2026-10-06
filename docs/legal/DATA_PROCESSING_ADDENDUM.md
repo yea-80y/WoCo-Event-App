@@ -5,9 +5,7 @@
 
 > **⚠️ PRE-LAUNCH DRAFT — NOT YET IN FORCE.** Complete `[PLACEHOLDERS]` and have a UK solicitor
 > review. This is the Article 28 contract; its content is largely prescribed by statute, so
-> deviations should be deliberate. Section 5.3's storage-expiry step (and its 90-day window) is
-> gated on the separate attendee postage batch — see the internal warning in `PRIVACY_POLICY.md` §8
-> before publishing either document.
+> deviations should be deliberate.
 
 This Addendum forms part of the [Organiser Terms](./ORGANISER_TERMS.md) between
 WoCo Network Ltd (company number 17370809) ("**Processor**", "we") and the organiser ("**Controller**", "you").
@@ -99,15 +97,16 @@ You acknowledge and instruct us that:
 1. **Attendee data is stored on Swarm**, a public decentralised storage network operated by
    independent third parties worldwide. It is not a conventional hosted database.
 2. **Data is split into chunks and replicated** across nodes we do not operate and cannot identify.
-3. **Individual records cannot be deleted mid-cycle.** Erasure is achieved by (a) removing the record
-   from the platform immediately, so it is no longer shown or used, and (b) allowing its storage to
-   expire without renewal, after which the network's garbage collection drops it — completed within
-   90 days of the request. **There is no decryption key we
+3. **Attendee order records are erased by overwriting.** Erasure is achieved by (a) removing the
+   record from the platform immediately, so it is no longer shown or used, and (b) overwriting every
+   chunk of it in its exact storage slot with newer data, so the nodes storing it replace it -
+   completed within 90 days of the request. **There is no decryption key we
    can destroy on your behalf** — the key that seals your attendee data is derived from your own
    credentials, exists only in your browser, and is re-derivable by you on any device. It is also a
    single key per organiser, so it could not be used to erase one attendee's record in any event.
 4. **We cannot guarantee destruction of every copy.** A third party may have retrieved or retained
-   data before erasure. We cannot verify network-wide garbage collection.
+   data before erasure. Erasure does not reach a copy a third party stored under its own postage
+   stamp, or short-lived retrieval caches.
 5. **Order-form data and contact lists are encrypted client-side to your key.** We cannot read them.
    This means we **cannot** retrieve, correct, export or inspect that content on your behalf — you
    must do so through your dashboard. **If you lose your credentials, the data is unrecoverable.**
@@ -118,10 +117,9 @@ You acknowledge and instruct us that:
 6. **Correction is by supersession, not overwrite.** A corrected record is published as a new version
    and is what the platform uses from then on. The earlier version remains publicly retrievable
    from the network — supersession does not hide prior versions — until its storage lapses.
-7. **Attendee identifiers are pseudonymised, not encrypted, at network level.** Ticket records carry
-   keyed one-way hashes of a wallet address or email address on a public network; wallet hashes are
-   salted per event series so records cannot be linked across events. Order-form content is
-   encrypted; these identifiers are hashed but not encrypted.
+7. **Ticket records carry no wallet address or email address.** Each ticket is a slot on an onchain
+   ledger held by a single-use address created at the sale, with a reference to the encrypted order
+   record; the slot and the reference are public and permanent. Order-form content is encrypted.
 8. **This constitutes a restricted international transfer** for which no adequacy decision exists and
    standard contractual clauses are not achievable, there being no identifiable counterparty. The
    safeguard relied upon is **technical**: client-side encryption before data leaves the browser, so
@@ -141,8 +139,8 @@ data.
 
 We implement appropriate technical and organisational measures, including:
 
-- **Client-side encryption** of order data and contact lists (X25519 key agreement, AES-256-GCM) to a
-  key derived from your credentials. Our servers have no code path to decrypt.
+- **Client-side encryption** of order data and contact lists (X-Wing hybrid key encapsulation -
+  ML-KEM-768 with X25519 - and AES-256-GCM) to a key derived from your credentials. Our servers have no code path to decrypt.
 - **Email addresses stored as keyed HMAC-SHA256 hashes** rather than plaintext — except that the
   recipient of a transactional email that could not be delivered after every retry is retained in
   plaintext on an access-restricted failure ledger, solely to remediate that delivery, until
@@ -209,7 +207,7 @@ regulatory fines under Article 82.
 | Sub-processor | Purpose | Location | Transfer mechanism |
 |---|---|---|---|
 | **Stripe** | Payment processing, organiser onboarding | US / Ireland | UK IDTA / adequacy |
-| **Resend** | Transactional and marketing email delivery | US | UK IDTA |
+| **Amazon SES (AWS)** | Transactional and marketing email delivery | UK (London region) | AWS Data Processing Addendum |
 | **Cloudflare** | CDN, DNS, DDoS protection, tunnelling | Global | UK IDTA |
 | **Hetzner** | Server and node hosting | Germany | UK adequacy |
 | **Swarm network** | Decentralised storage | Global, uncontrolled | Technical safeguard — see §5 |
@@ -217,7 +215,7 @@ regulatory fines under Article 82.
 | **Photon (Komoot)** | Geocoding at event creation | Germany | UK adequacy |
 | **Web3Auth** | Social and email sign-in | US | UK IDTA |
 | **ZeroDev** | Passkey smart-account infrastructure | US | UK IDTA |
-| **Arbitrum / EAS** | On-chain attestations — public and permanent | Global | Technical safeguard — see §5 |
+| **Arbitrum** | Onchain event registration and ticket records - public and permanent | Global | Technical safeguard — see §5 |
 
 Current as at [DATE]. The live list is maintained at [SUB-PROCESSOR PAGE URL].
 
@@ -225,4 +223,4 @@ Current as at [DATE]. The live list is maintained at [SUB-PROCESSOR PAGE URL].
 
 ## Annex 2 — Technical and organisational measures
 
-As set out in section 6 above, and in our [Security Posture](../SECURITY_POSTURE.md).
+As set out in section 6 above.

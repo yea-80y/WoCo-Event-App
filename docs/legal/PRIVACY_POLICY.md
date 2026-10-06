@@ -19,9 +19,9 @@ position genuinely different from a conventional ticketing site, in two ways tha
 - **We usually cannot read your data.** When you fill in an order form, your answers are encrypted
   in your browser to a key only the event organiser holds. Our servers store the encrypted result
   and have no technical ability to open it.
-- **Some records cannot be individually deleted.** Ticket records live on a public decentralised
-  storage network. We can make them permanently unreadable and stop paying to keep them alive, but
-  we cannot reach into that network and remove a specific item. We explain this fully in section 8.
+- **Some records cannot be deleted.** Each ticket is recorded onchain, and onchain records are
+  public and permanent. Your encrypted order details are stored on a public decentralised storage
+  network; on request we erase them there. We explain this fully in section 8.
 
 The event organiser — not WoCo — is responsible for your attendee data. We handle it on their
 instructions. For some things, such as security and our unsubscribe records, we are responsible in
@@ -71,7 +71,8 @@ We are the **controller** in our own right for:
 - **our unsubscribe and suppression records** — see section 6, which explains why we hold these
   ourselves rather than leaving them to organisers
 - **security, fraud and abuse prevention** — IP addresses, rate-limit counters, session records
-- **likes and follows** — these are public on-chain attestations you choose to create
+- **likes and follows** — these are public signed statements, written to your own feed on Swarm,
+  that you choose to create
 - **payment administration records** — the link between an organiser and their Stripe account
 
 ### Where we are not involved at all
@@ -153,7 +154,7 @@ unsubscribe link. You cannot opt out of those while you hold a ticket.
 |---|---|---|
 | **The event organiser** | Your attendee data — this is the point of buying a ticket | Wherever they are |
 | **Stripe** | Card payment and organiser onboarding | US / Ireland |
-| **Resend** | Sending ticket and marketing email | US |
+| **Amazon SES (AWS)** | Sending ticket and marketing email | UK |
 | **Cloudflare** | Content delivery and DDoS protection | Global |
 | **Hetzner** | Server hosting | Germany |
 | **Swarm network** | Decentralised storage — see section 8 | Global |
@@ -161,7 +162,7 @@ unsubscribe link. You cannot opt out of those while you hold a ticket.
 | **Photon / Komoot** | Address lookup when an organiser creates an event | Germany |
 | **Web3Auth** | Social and email sign-in | US |
 | **ZeroDev** | Passkey wallet infrastructure | US |
-| **Arbitrum / EAS** | On-chain likes and event registration — **public and permanent** | Global |
+| **Arbitrum** | Onchain event registration and tickets - **public and permanent** | Global |
 
 We do not sell your personal data. We never have and we do not intend to.
 
@@ -174,12 +175,11 @@ We may disclose data where legally required, or to establish or defend legal cla
 This is the section most unlike a conventional privacy policy, and the one we would most want you to
 read before you buy a ticket.
 
-**What goes onto the public network.** Ticket records are stored on Swarm, a public decentralised
-storage network. For each ticket this includes an edition number, timestamps, and an identifier for
-the holder — a keyed one-way hash of a wallet address or email address, never the address itself.
-Wallet hashes are additionally salted per event, so your attendance at one event cannot be linked
-to your attendance at another by anyone reading the network. Where an order
-form was used, it also includes the encrypted answers.
+**What goes onto the public network.** Each ticket is a numbered slot on an onchain ticket ledger,
+held by a single-use address created for that sale - not your wallet address or your email
+address. The slot also records a reference to your order details, which are encrypted to the
+organiser and stored on Swarm, a public decentralised storage network, once your payment is
+confirmed.
 
 **What this means in practice:**
 
@@ -188,37 +188,30 @@ form was used, it also includes the encrypted answers.
 - **Sensitive content is encrypted before it leaves your browser.** Order-form answers are encrypted
   to a key only the organiser holds. What reaches the network is unreadable ciphertext plus
   pseudonymous identifiers.
-- **We cannot delete an individual item.** No one can. The network is designed that way.
+- **Your order details can be erased; onchain records cannot.** Both are explained below.
 
 **So how does deletion work?** Two stages:
 
 1. **We remove it from WoCo, straight away.** Your record stops being shown or used anywhere on the
    platform — the organiser's dashboard, our feeds, ticket lookups. This takes effect on the day we
    action your request, not at the end of any window.
-2. **Its storage is left to expire.** Data persists on Swarm only while its storage is paid for.
-   When the storage covering an erased record lapses without being renewed, the network's own
-   garbage collection removes it: chunks whose storage has lapsed stop earning their storers any
-   reward, so they are dropped. We complete this within 90 days of your request.
-
-> **⚠️ INTERNAL — RESOLVE BEFORE PUBLICATION (correction 3).** Stage 2 is not operable per person
-> today: attendee records share one postage batch with tickets, profiles and platform data, so one
-> record's storage cannot be allowed to lapse on its own. The separate attendee batch +
-> manifest-driven omission (`DATA_INVENTORY.md` §7, open item 4) must exist before this section —
-> and the 90-day commitment above — is published.
+2. **We erase it from the network.** Your order details are stored where we can overwrite them:
+   every piece of the record is replaced, in the exact storage slot it occupies, by newer data, so
+   the computers storing it replace it too. We complete this within 90 days of your request.
 
 **What we cannot honestly promise.** Two things, and we would rather say them plainly:
 
-- **Records already written to the network stay there until their storage lapses.** We cannot reach
-  in and delete an individual item mid-cycle — nobody can, including us. What we control is whether
-  we keep paying to keep it alive.
+- **Erasure does not reach copies outside our storage.** It does not reach a copy someone else
+  stored on the network and pays for themselves, or short-lived retrieval caches.
 - **We cannot guarantee every copy everywhere is gone.** Someone could have retrieved a copy while
-  it was live, and we have no way to verify garbage collection across a network we do not operate.
-  This is true of any system — a website, a cloud provider, any other ticketing platform — but on a
-  public network we would rather state it than let you assume otherwise.
+  it was live. This is true of any system — a website, a cloud provider, any other ticketing
+  platform — but on a public network we would rather state it than let you assume otherwise.
 
-**On-chain records are permanent and cannot be erased at all.** If you use likes or follows, or
-register an event on-chain, that record is public and permanent by design. Please treat anything you
-put on-chain as public forever.
+**Onchain records are permanent and cannot be erased at all.** Each ticket's slot on the ledger,
+with the reference to your order details it records, and any event registered onchain, are public
+and permanent by design. Please treat anything you put onchain as public forever. Likes and follows
+are public signed statements written to your own feed on Swarm: unliking or unfollowing publishes a
+retraction, and the earlier statement stays retrievable from the network.
 
 **International transfers.** Because Swarm nodes are worldwide, personal data is transferred outside
 the UK to countries without a UK adequacy decision, and standard contractual clauses are not possible
@@ -227,7 +220,7 @@ content is encrypted client-side before it leaves your device, so what crosses b
 and pseudonymous identifiers. **We are telling you this plainly because you should be able to decide
 with the facts in front of you.**
 
-For our conventional suppliers (Stripe, Resend, Cloudflare, Hetzner and others in section 7),
+For our conventional suppliers (Stripe, Amazon SES, Cloudflare, Hetzner and others in section 7),
 transfers rely on the UK International Data Transfer Addendum or an adequacy decision.
 
 ---
@@ -243,8 +236,8 @@ Four honest caveats:
 
 1. **For attendee data, the organiser decides.** They are the controller. We will pass your request on
    and help, but we cannot grant it for them — and for encrypted order data, we cannot read it.
-2. **Erasure works as described in section 8.** Immediate removal from the platform; storage lapses
-   within 90 days after that; no guarantee that every copy on a public network is gone.
+2. **Erasure works as described in section 8.** Immediate removal from the platform; your order
+   details overwritten on the network within 90 days; onchain records are not erased.
 3. **Correction has the same limit.** We can publish a corrected record, and that is what the
    platform will use from then on. The earlier version remains publicly retrievable from the
    network — correcting does not hide it — until its storage lapses.
@@ -285,8 +278,9 @@ under your control. If you want it erased, ask and we will action it.
 
 ## 11. Security
 
-Order-form answers and contact lists are encrypted in the browser using X25519 key agreement with
-AES-256-GCM, to a key derived from the organiser's own credentials. Our servers can create these
+Order-form answers and contact lists are encrypted in the browser using X-Wing hybrid key
+encapsulation (ML-KEM-768 with X25519) and AES-256-GCM, to a key derived from the organiser's own
+credentials. Our servers can create these
 encrypted records but have no code path to open them.
 
 Email addresses are stored as keyed HMAC-SHA256 hashes rather than plaintext, with two narrow
@@ -307,7 +301,7 @@ required timeframes.
 
 WoCo uses **no advertising or tracking cookies and no third-party analytics.**
 
-We use browser local storage for things the app cannot work without: your session, cached event data
+We use browser storage for things the app cannot work without: your session, cached event data
 for speed, and your preferences. Because these are strictly necessary, no consent banner is required.
 
 Third parties you interact with directly — Stripe at checkout, your wallet provider, Web3Auth if you
