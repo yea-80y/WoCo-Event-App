@@ -177,7 +177,7 @@ export class PasskeyPrfUnsupportedError extends Error {
  */
 export class PasskeyFromAnotherDeviceError extends Error {
   constructor() {
-    super("That sign-in came from your phone - add this computer from your phone instead.");
+    super("That passkey answered from another device - add this one from your phone instead.");
     this.name = "PasskeyFromAnotherDeviceError";
   }
 }

@@ -232,7 +232,7 @@ test("every refusal reads as plain words: no PRF, biometric, hex address or em d
   }
   assert.equal(
     new PasskeyFromAnotherDeviceError().message,
-    "That sign-in came from your phone - add this computer from your phone instead.",
+    "That passkey answered from another device - add this one from your phone instead.",
   );
 });
 
