@@ -23,6 +23,10 @@
  * a surplus is the organiser's and is paid once it has lasted a week. Each lands
  * as a `reconciliation` row with its payout, so a payout's rows add up to it,
  * and nothing that moved outside a sale is deducted twice or kept (#781 part 2).
+ * The measure uses each held sale's LAST READ net. A stale-high one nets too
+ * much now and pays it back as surplus once read; a stale-low one (a reversal
+ * whose webhook flag was lost) can pay a surplus a not-due sale really holds,
+ * which the week's wait and that sale's own read put right.
  *
  * Ordering invariant that keeps this safe under crashes: we choose the set of
  * entries FIRST, journal a payout INTENT (set + amount + idempotency key), pay
@@ -41,7 +45,6 @@ import { getStripe } from "./client.js";
 import { BALANCE_SHORT_ALARM_DAYS, SURPLUS_ALARM_DAYS, SURPLUS_SETTLE_DAYS, holdCeilingAt } from "./payout-policy.js";
 import { pendingScheduleHeals, retryPendingScheduleHeals } from "./payout-schedule.js";
 import {
-  flagForRecheck,
   getEntry,
   listAccountGroups,
   listHeld,
@@ -52,7 +55,7 @@ import {
   type PayoutLedgerEntry,
   type ReconRow,
 } from "./payout-ledger.js";
-import { clearSurplus, listSurplusClocks, observeSurplus } from "./payout-surplus.js";
+import { listSurplusClocks, observeSurplus, reduceSurplus } from "./payout-surplus.js";
 import { OPEN_DISPUTE_STATUSES } from "./dispute-status.js";
 import { cancellationGate, getCancellation, isSaleRefundSettled } from "../event/cancellations.js";
 import {
@@ -175,6 +178,8 @@ export interface ReleaseOutcome {
   rho?: number;
   /** The part of this payout no sale accounts for (its reconciliation row). */
   recon?: number;
+  /** Released with nothing to pay: what was owed and what was due cancelled out. */
+  settledWithoutPayout?: boolean;
   error?: string;
 }
 
@@ -460,7 +465,7 @@ async function settlePendingIntent(
       forcedSessionIds: intent.forcedSessionIds,
       recon: reconRowFor(intent),
     });
-    if ((intent.recon?.amount ?? 0) > 0) clearSurplus(intent.stripeAccountId, intent.currency);
+    if ((intent.recon?.amount ?? 0) > 0) reduceSurplus(intent.stripeAccountId, intent.currency, intent.recon!.amount);
     clearIntent(intent.stripeAccountId, intent.currency);
     outcome.released.push(...intent.sessionIds);
     outcome.amount += intent.amount;
@@ -573,8 +578,7 @@ async function readNets(
       continue;
     }
     const { net, currency: settledIn, unsettled } = resolved;
-    setNetAmount(entry.sessionId, net, settledIn);
-    if (unsettled) flagForRecheck(entry.sessionId);
+    setNetAmount(entry.sessionId, net, settledIn, { recheck: !!unsettled });
     if (settledIn !== currency) {
       // The charge settled in a different currency than this group is paying
       // (Stripe converted it into the account's default currency). The net is
@@ -643,10 +647,13 @@ function selectForPayout(
  * What the balance holds beyond (or short of) the held ledger, in one currency
  * (#781 part 2): available + pending, less every held sale's last read net.
  */
-function ledgerGap(stripeAccountId: string, currency: string, bal: { available: number; pending: number }): number {
+function ledgerGap(entries: PayoutLedgerEntry[], currency: string, bal: { available: number; pending: number }): number {
+  // The sweep's own snapshot, not a fresh `listHeld()`: a sale recorded mid-sweep
+  // has no net yet, and reserving its gross would read its fees as a shortfall.
+  // Left out, it is a surplus for one sweep, which the next sweep zeroes.
   let reserved = 0;
-  for (const e of listHeld()) {
-    if (e.stripeAccountId !== stripeAccountId || (e.settlementCurrency ?? e.currency) !== currency) continue;
+  for (const e of entries) {
+    if (e.status !== "held" || (e.settlementCurrency ?? e.currency) !== currency) continue;
     reserved += e.netAmount ?? e.grossAmount;
   }
   return bal.available + bal.pending - reserved;
@@ -779,7 +786,7 @@ export async function releaseForAccount(
   // or fees; above zero, a debt Stripe recovered from the organiser's bank, a
   // dispute won after payout, a top-up, an own payment. Pending money cancels
   // out, so settlement timing never reads as either.
-  let rho = ledgerGap(stripeAccountId, currency, bal);
+  let rho = ledgerGap(entries, currency, bal);
   if (rho < 0 && notDue.length > 0 && shortfallScanDue(stripeAccountId, currency, nowMs)) {
     // The balance holds less than the ledger says. A refund on a sale that is
     // not due yet would explain it with its sale named, and its recheck flag
@@ -792,7 +799,7 @@ export async function releaseForAccount(
       debts,
       positives,
     );
-    rho = ledgerGap(stripeAccountId, currency, bal);
+    rho = ledgerGap(entries, currency, bal);
   }
   outcome.rho = rho;
 
@@ -804,7 +811,7 @@ export async function releaseForAccount(
       : 0;
 
   const owed = sumNets(debts) + Math.min(0, rho);
-  if (owed < 0 && owed + sumNets(positives) <= 0) {
+  if (owed < 0 && owed + sumNets(positives) + surplusDue < 0) {
     // What is owed outweighs everything due, so no selection can pay anything.
     // The sales stay held until new takings cover it.
     outcome.owes = true;
@@ -826,13 +833,19 @@ export async function releaseForAccount(
   const { chosen, rest, total: salesTotal } = selectForPayout(debts, positives, bal.available, Math.min(0, rho));
   const surplusPaid = surplusDue > 0 ? Math.max(0, Math.min(surplusDue, bal.available - salesTotal)) : 0;
   const total = salesTotal + surplusPaid;
-  const paying = total > 0 && (chosen.length > 0 || surplusPaid > 0);
-  const unpaid = paying ? rest : positives;
+  const releasable = chosen.length > 0 || surplusPaid > 0;
+  const paying = total > 0 && releasable;
+  // Exactly nothing to pay: what is owed and what is due or surplus cancel out
+  // (a cancelled event's kept fees, which Stripe then recovered from the bank).
+  // Settled on the ledger with no payout, so nothing stays "owed" for money
+  // Stripe already took, and no surplus waits for ever.
+  const settling = total === 0 && releasable;
+  const unpaid = paying || settling ? rest : positives;
   outcome.deferred.push(...unpaid.map((p) => p.entry.sessionId));
   const shortSince = unpaid.map((p) => p.dueSince).filter((d): d is string => !!d).sort()[0];
   if (shortSince) outcome.shortSince = shortSince;
 
-  if (!paying) {
+  if (!paying && !settling) {
     if (positives.length > 0) {
       console.log(
         `[payout-release] ${stripeAccountId} ${currency}: ${positives.length} due but ` +
@@ -857,6 +870,25 @@ export async function releaseForAccount(
   const sessionIds = [...selected.map((p) => p.entry.sessionId), ...(recon ? [recon.id] : [])];
   const forced = chosen.some((p) => p.forced);
   outcome.forcedByCeiling = outcome.forcedByCeiling || forced;
+
+  if (settling) {
+    // No money moves, so no Stripe call and no journal: one ledger write.
+    const settlementId = `settle_${stripeAccountId}_${currency}_${nowMs}`;
+    markManyReleased(sessionIds, settlementId, {
+      forcedSessionIds: chosen.filter((p) => p.forced).map((p) => p.entry.sessionId),
+      ...(recon ? { recon: { ...recon, stripeAccountId, currency } } : {}),
+    });
+    if (surplusPaid > 0) reduceSurplus(stripeAccountId, currency, surplusPaid);
+    outcome.released.push(...sessionIds);
+    outcome.debts.push(...debts.map((d) => d.entry.sessionId));
+    outcome.settledWithoutPayout = true;
+    if (recon) outcome.recon = recon.amount;
+    console.log(
+      `[payout-release] ${stripeAccountId} ${currency}: ${selected.length} sale(s) settled against ` +
+        `${recon ? `a balance ${recon.amount < 0 ? "shortfall" : "surplus"} of ${Math.abs(recon.amount)}` : "each other"} — nothing to pay`,
+    );
+    return outcome;
+  }
 
   // Journal the intent BEFORE Stripe is called. From here until clearIntent,
   // any crash or ambiguous failure leaves the exact set + key on disk, and the
@@ -891,7 +923,7 @@ export async function releaseForAccount(
     // One write for the whole set: a per-entry loop interrupted half way would
     // leave already-paid entries "held", i.e. selectable again under a new key.
     markManyReleased(sessionIds, payoutId, { forcedSessionIds: intent.forcedSessionIds, recon: reconRowFor(intent) });
-    if (surplusPaid > 0) clearSurplus(stripeAccountId, currency);
+    if (surplusPaid > 0) reduceSurplus(stripeAccountId, currency, surplusPaid);
     clearIntent(stripeAccountId, currency);
     outcome.released.push(...sessionIds);
     outcome.debts.push(...debts.map((d) => d.entry.sessionId));

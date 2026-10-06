@@ -174,19 +174,27 @@ export function listByOrganiser(organiserAddress: string): PayoutLedgerEntry[] {
 
 /**
  * Record the latest resolved net (and, when the charge settled in a different
- * currency, which one), and clear any recheck flag: the sweep has just read the
- * sale. Reporting only — the sweep re-resolves from Stripe on every run
+ * currency, which one), and clear any recheck flag — or keep it, for a net that
+ * may still move: the sweep has just read the sale. Reporting only — the sweep re-resolves from Stripe on every run
  * precisely so a refund landing between sweeps is never missed.
  */
-export function setNetAmount(sessionId: string, netAmount: number, settlementCurrency?: string): void {
+export function setNetAmount(
+  sessionId: string,
+  netAmount: number,
+  settlementCurrency?: string,
+  opts: { recheck?: boolean } = {},
+): void {
   ensureLoaded();
   const e = store[sessionId];
   if (!e) return;
   const currency = settlementCurrency && settlementCurrency !== e.currency ? settlementCurrency : e.settlementCurrency;
-  if (e.netAmount === netAmount && e.settlementCurrency === currency && !e.recheck) return;
+  // `recheck: true` keeps the flag for a net that may still move (#781 part 2).
+  const recheck = !!opts.recheck;
+  if (e.netAmount === netAmount && e.settlementCurrency === currency && !!e.recheck === recheck) return;
   e.netAmount = netAmount;
   if (currency) e.settlementCurrency = currency;
-  delete e.recheck;
+  if (recheck) e.recheck = true;
+  else delete e.recheck;
   persist();
 }
 

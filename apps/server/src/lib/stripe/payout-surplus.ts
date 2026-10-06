@@ -80,12 +80,17 @@ export function observeSurplus(stripeAccountId: string, currency: string, rho: n
   return clock;
 }
 
-/** The surplus was paid out: start again if any is left. */
-export function clearSurplus(stripeAccountId: string, currency: string): void {
+/**
+ * `paid` of the surplus went out. What is left keeps its clock: it has lasted
+ * just as long, and was only held back by the available balance.
+ */
+export function reduceSurplus(stripeAccountId: string, currency: string, paid: number): void {
   ensureLoaded();
   const key = keyFor(stripeAccountId, currency);
-  if (!store[key]) return;
-  delete store[key];
+  const clock = store[key];
+  if (!clock) return;
+  clock.min -= paid;
+  if (clock.min <= 0) delete store[key];
   persist();
 }
 

@@ -1373,7 +1373,7 @@ test("a dispute won after payout is paid back on its own once it has lasted a we
   assertPayoutsMatchRows(won.payouts);
 });
 
-test("a balance that cannot be read, or has no row for the currency, nets nothing and pays nothing", async () => {
+test("a balance that cannot be read nets nothing and pays nothing (a missing currency row is pinned on the live read)", async () => {
   held("cs_due", { grossAmount: 100 });
   const { gateway, payouts } = fakeGateway({ nets: { cs_due: 100 }, available: null });
   const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
@@ -1474,4 +1474,90 @@ test("the live balance read: a currency with no row is unreadable, never zero", 
   assert.deepEqual(await release.balanceFromStripe(fakeStripe as never, ACCT, "GBP"), { available: 2_962, pending: 100 });
   assert.deepEqual(await release.balanceFromStripe(fakeStripe as never, ACCT, "eur"), { available: 0, pending: 5 });
   assert.equal(await release.balanceFromStripe(fakeStripe as never, ACCT, "usd"), null);
+});
+
+test("an organiser's own money is paid out after the wait even with an old fee debt held and nothing due", async () => {
+  // A kept fee (-18) sits as a debt; nothing is due; their own Dashboard payment
+  // of 1000 settled. The surplus is 1018 against the ledger (#785's shape).
+  held("cs_debt", { releaseAfter: "2026-09-01T00:00:00.000Z", netAmount: -18 });
+  const { gateway, payouts } = fakeGateway({ nets: { cs_debt: -18 }, available: 1_000, pending: 0 });
+  await release.runReleaseSweep(gateway, at("2026-02-01T00:00:00.000Z"));
+  assert.equal(payouts.length, 0, "waiting");
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-08T01:00:00.000Z"));
+  assert.equal(payouts[0]!.amount, 1_000, "their 1000, the fee they owed netted from the surplus");
+  assert.equal(outcome!.owes, undefined);
+  assert.equal(ledger.getEntry("cs_debt")?.status, "released");
+  assertPayoutsMatchRows(payouts);
+});
+
+test("kept fees that Stripe recovered from the bank are settled on the ledger with no payout, and nothing alarms", async () => {
+  // A cancelled event's kept fees (-169) are held debts; Stripe debited the bank
+  // to cover them, so the balance is 0 and the surplus exactly cancels the debt.
+  held("cs_cx", { eventId: "ev_cx", releaseAfter: "2026-09-01T00:00:00.000Z", netAmount: -169 });
+  const { gateway, payouts } = fakeGateway({ nets: { cs_cx: -169 }, available: 0, pending: 0 });
+  await release.runReleaseSweep(gateway, at("2026-02-01T00:00:00.000Z"));
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-08T01:00:00.000Z"));
+  assert.equal(payouts.length, 0, "nothing to pay");
+  assert.equal(outcome!.settledWithoutPayout, true);
+  const debt = ledger.getEntry("cs_cx")!;
+  assert.equal(debt.status, "released");
+  assert.ok(debt.payoutId?.startsWith("settle_"));
+  const recon = ledger.listByOrganiser(ORG).find((e) => e.kind === "reconciliation")!;
+  assert.equal(recon.netAmount, 169);
+  assert.equal(recon.payoutId, debt.payoutId, "the settlement's rows add up to zero");
+  assert.equal(surplus.listSurplusClocks().length, 0, "the surplus is spent, so no clock is left to alarm");
+});
+
+test("a surplus that shrank during the wait is paid at its smallest, not its latest", async () => {
+  held("cs_old");
+  ledger.markManyReleased(["cs_old"], "po_earlier");
+  const start = fakeGateway({ available: 50, pending: 0, idPrefix: "po_a" });
+  await release.runReleaseSweep(start.gateway, at("2026-03-01T00:00:00.000Z"));
+  const low = fakeGateway({ available: 30, pending: 0, idPrefix: "po_b" });
+  await release.runReleaseSweep(low.gateway, at("2026-03-03T00:00:00.000Z"));
+  const back = fakeGateway({ available: 50, pending: 0, idPrefix: "po_c" });
+  await release.runReleaseSweep(back.gateway, at("2026-03-08T01:00:00.000Z"));
+  assert.equal(back.payouts[0]!.amount, 30, "only what lasted the whole week");
+});
+
+test("a surplus still in pending starts the clock but is not paid until it is available; a part paid keeps its clock", async () => {
+  held("cs_old");
+  ledger.markManyReleased(["cs_old"], "po_earlier");
+  const pendingOnly = fakeGateway({ available: 0, pending: 50, idPrefix: "po_p" });
+  await release.runReleaseSweep(pendingOnly.gateway, at("2026-03-01T00:00:00.000Z"));
+  await release.runReleaseSweep(pendingOnly.gateway, at("2026-03-08T01:00:00.000Z"));
+  assert.equal(pendingOnly.payouts.length, 0, "a payout can only use available money");
+
+  const part = fakeGateway({ available: 20, pending: 30, idPrefix: "po_q" });
+  await release.runReleaseSweep(part.gateway, at("2026-03-08T02:00:00.000Z"));
+  assert.equal(part.payouts[0]!.amount, 20);
+  const clock = surplus.listSurplusClocks()[0]!;
+  assert.equal(clock.since, "2026-03-01T00:00:00.000Z", "the rest keeps the clock it has already served");
+  assert.equal(clock.min, 30);
+
+  const rest = fakeGateway({ available: 30, pending: 0, idPrefix: "po_r" });
+  await release.runReleaseSweep(rest.gateway, at("2026-03-08T03:00:00.000Z"));
+  assert.equal(rest.payouts[0]!.amount, 30, "no second week's wait");
+});
+
+test("a crashed SURPLUS payout: recovery writes its row and spends the surplus clock", async () => {
+  held("cs_old");
+  ledger.markManyReleased(["cs_old"], "po_earlier");
+  const { gateway, payouts } = fakeGateway({ available: 50, pending: 0 });
+  await release.runReleaseSweep(gateway, at("2026-03-01T00:00:00.000Z"));
+  const realCreate = gateway.createPayout;
+  gateway.createPayout = async (args) => {
+    await realCreate(args);
+    throw new Error("crash after Stripe accepted the payout");
+  };
+  await release.runReleaseSweep(gateway, at("2026-03-08T01:00:00.000Z"));
+  assert.equal(payouts.length, 1);
+  gateway.createPayout = realCreate;
+  const after = fakeGateway({ available: 0, pending: 0 });
+  after.gateway.findPayoutByIntent = gateway.findPayoutByIntent;
+  await release.runReleaseSweep(after.gateway, at("2026-03-08T02:00:00.000Z"));
+  const recon = ledger.listByOrganiser(ORG).find((e) => e.kind === "reconciliation");
+  assert.equal(recon?.netAmount, 50);
+  assert.equal(recon?.payoutId, payouts[0]!.id);
+  assert.equal(surplus.listSurplusClocks().length, 0);
 });
