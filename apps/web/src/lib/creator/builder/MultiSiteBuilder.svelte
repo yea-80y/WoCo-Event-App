@@ -167,10 +167,10 @@
     const addr = auth.isConnected && auth.parent ? auth.parent.toLowerCase() : null;
     if (addr === _prevAddr) return;
     _prevAddr = addr;
+    siteNames = {};
 
     if (!addr) {
       mySites = [];
-      siteNames = {};
       screen = 'builder'; // stay in builder — no auth needed for draft/preview
       return;
     }

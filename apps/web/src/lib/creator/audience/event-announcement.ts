@@ -14,6 +14,7 @@
  * insertion point the server's compliance footer looks for
  * (`lib/email/marketing-footer.ts` → `withFooter`).
  */
+import { CANONICAL_APP_ORIGIN } from "../../sub-ens/host-label.js";
 
 const BG = "#0c0d12";
 const SURFACE = "#15161f";
@@ -43,8 +44,6 @@ export interface EventAnnouncementInput {
   eventUrl: string;
 }
 
-/** Where the app is publicly reachable, for links that leave the browser. */
-const PUBLIC_APP_ORIGIN = "https://woco.eth.limo";
 
 /**
  * Absolute, publicly-resolvable event URL for the CTA: always the canonical app
@@ -54,7 +53,7 @@ const PUBLIC_APP_ORIGIN = "https://woco.eth.limo";
  * the path-style `/event/{id}` this used to build opened the app's home page.
  */
 export function publicEventUrl(eventId: string): string {
-  return `${PUBLIC_APP_ORIGIN}/#/event/${encodeURIComponent(eventId)}`;
+  return `${CANONICAL_APP_ORIGIN}/#/event/${encodeURIComponent(eventId)}`;
 }
 
 export function escapeHtml(value: string): string {
