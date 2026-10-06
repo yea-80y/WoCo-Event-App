@@ -31,11 +31,8 @@ our own right. Section 3 sets out exactly which is which.
 
 ## 2. Who we are
 
-[COMPANY LEGAL NAME] ("WoCo", "we", "us") is a company registered in England and Wales,
-company number [NUMBER], registered office [REGISTERED OFFICE ADDRESS].
-
-We are registered with the Information Commissioner's Office, registration number
-[ICO REGISTRATION NUMBER].
+WoCo Network Ltd, trading as WoCo and World Computer ("WoCo", "we", "us"), is a company
+registered in England and Wales, company number 17370809, registered office 128 City Road, London EC1V 2NX, United Kingdom.
 
 **Privacy contact:** privacy@woco-net.com
 
@@ -327,6 +324,6 @@ in-app notice before they take effect. The version and date are at the top.
 
 ## 14. Contact
 
-[COMPANY LEGAL NAME]
-[REGISTERED OFFICE ADDRESS]
+WoCo Network Ltd
+128 City Road, London EC1V 2NX, United Kingdom
 privacy@woco-net.com

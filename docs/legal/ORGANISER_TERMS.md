@@ -278,4 +278,4 @@ these terms.**
 Governed by the law of **England and Wales**; the courts of England and Wales have exclusive
 jurisdiction.
 
-[COMPANY LEGAL NAME] · [REGISTERED OFFICE ADDRESS] · [SUPPORT EMAIL]
+WoCo Network Ltd · company number 17370809 · 128 City Road, London EC1V 2NX, United Kingdom · [SUPPORT EMAIL]

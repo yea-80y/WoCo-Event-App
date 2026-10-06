@@ -10,7 +10,7 @@
 > before publishing either document.
 
 This Addendum forms part of the [Organiser Terms](./ORGANISER_TERMS.md) between
-[COMPANY LEGAL NAME] ("**Processor**", "we") and the organiser ("**Controller**", "you").
+WoCo Network Ltd (company number 17370809) ("**Processor**", "we") and the organiser ("**Controller**", "you").
 It applies whenever we process personal data on your behalf.
 
 It is incorporated automatically when you create an event — you do not need to sign anything. If

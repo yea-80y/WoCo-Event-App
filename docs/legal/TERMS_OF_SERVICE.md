@@ -14,8 +14,8 @@ If you run events, the [Organiser Terms](./ORGANISER_TERMS.md) also apply.
 
 ## 1. Who you are contracting with
 
-WoCo is operated by [COMPANY LEGAL NAME], registered in England and Wales, company number [NUMBER],
-registered office [ADDRESS] ("WoCo", "we", "us").
+WoCo is operated by WoCo Network Ltd, trading as WoCo and World Computer, registered in England and
+Wales, company number 17370809, registered office 128 City Road, London EC1V 2NX, United Kingdom ("WoCo", "we", "us").
 
 **Important — we do not sell you the ticket.** When you buy a ticket, your contract for the event is
 with the **event organiser**, not with us. We provide the platform they use to sell it, and we act as
@@ -205,6 +205,6 @@ consumer in the EU, mandatory protections of your home country still apply.
 
 ## 11. Contact
 
-[COMPANY LEGAL NAME]
-[REGISTERED OFFICE ADDRESS]
+WoCo Network Ltd
+128 City Road, London EC1V 2NX, United Kingdom
 [SUPPORT EMAIL]
