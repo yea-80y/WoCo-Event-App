@@ -479,14 +479,14 @@ async function readNets(
   outcome: ReleaseOutcome,
   debts: ReadNet[],
   positives: ReadNet[],
-): Promise<{ debtUnread: boolean }> {
-  let debtUnread = false;
+): Promise<{ debtUnread: string[] }> {
+  const debtUnread: string[] = [];
   for (const c of candidates) {
     const { entry } = c;
     const resolved = await gateway.resolveNet(entry);
     if (resolved === null) {
       if (c.payable) outcome.deferred.push(entry.sessionId);
-      if ((entry.netAmount ?? 0) < 0) debtUnread = true;
+      if ((entry.netAmount ?? 0) < 0) debtUnread.push(entry.sessionId);
       continue;
     }
     if ("held" in resolved) {
@@ -662,11 +662,15 @@ export async function releaseForAccount(
     }
     return outcome;
   }
-  if (debtUnread) {
+  if (debtUnread.length > 0) {
     // A sale known to be below zero could not be read this sweep. Paying without
     // it would spend another event's takings by that much, so wait an hour.
     outcome.error = "a known debt could not be read";
     outcome.deferred.push(...positives.map((p) => p.entry.sessionId));
+    console.warn(
+      `[payout-release] ${stripeAccountId} ${currency}: payout held — known debt(s) ${debtUnread.join(", ")} ` +
+        `could not be read this sweep`,
+    );
     return outcome;
   }
   if (debts.length > 0 && sumNets(debts) + sumNets(positives) <= 0) {

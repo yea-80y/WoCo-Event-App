@@ -1159,16 +1159,31 @@ test("the hold-ceiling count ignores debts: they hold no funds", () => {
   assert.equal(release.heldPastCeiling(at("2026-12-01T00:00:00.000Z")).count, 1);
 });
 
-test("a cancelled event's sale an operator resolved (nothing refunded in Stripe) is not paid before its date", async () => {
+test("a cancelled event's sale an operator resolved (nothing refunded in Stripe) is paid only by its date or the ceiling", async () => {
   held("cs_resolved", { eventId: "ev_cx", releaseAfter: "2026-06-01T00:00:00.000Z" });
-  const { gateway, payouts } = fakeGateway({ nets: { cs_resolved: 9_680 } });
+  const { gateway, payouts } = fakeGateway({ nets: { cs_resolved: 9_680 }, country: "GB" });
   gateway.cancellationHold = () => false;
   gateway.eventCancelled = () => true;
   await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
   assert.equal(payouts.length, 0, "read early only to net a debt; a positive keeps its date");
   assert.equal(ledger.getEntry("cs_resolved")?.netAmount, 9_680);
-  await release.runReleaseSweep(gateway, at("2026-06-02T00:00:00.000Z"));
+  // Recorded 1 Jan: the GB ceiling (90 days less the margin) falls before its date.
+  await release.runReleaseSweep(gateway, at("2026-04-01T00:00:00.000Z"));
   assert.equal(payouts[0]!.amount, 9_680);
+  assert.equal(ledger.getEntry("cs_resolved")?.forcedByCeiling, true);
+});
+
+test("a known debt whose read is HELD (a dispute on a refunded charge) does not block the payout", async () => {
+  // Only a failed read holds the payout. A held one could last a dispute's
+  // lifetime; the debt it hides is fee-sized, and it nets once the dispute closes.
+  held("cs_due", { grossAmount: 5_000 });
+  held("cs_debt", { releaseAfter: "2026-09-01T00:00:00.000Z", netAmount: -169 });
+  const { gateway, payouts } = fakeGateway({ nets: { cs_due: 5_000 } });
+  const inner = gateway.resolveNet;
+  gateway.resolveNet = async (e) => (e.sessionId === "cs_debt" ? { held: "dispute" } : inner(e));
+  await release.runReleaseSweep(gateway, at("2026-02-05T00:00:00.000Z"));
+  assert.equal(payouts[0]!.amount, 5_000);
+  assert.equal(ledger.getEntry("cs_debt")?.status, "held");
 });
 
 test("a known debt that cannot be read this sweep holds the payout rather than paying without it", async () => {
