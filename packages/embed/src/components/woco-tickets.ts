@@ -3,6 +3,7 @@ import { getStyles } from "./styles.js";
 import {
   calculateBuyerFees,
   fetchOrderKey,
+  orderFieldRequired,
   orderFormShown,
   orderFormCollectsEmail,
   ORDER_EMAIL_FIELD_ID,
@@ -643,7 +644,7 @@ export class WocoTickets extends HTMLElement {
 
       fieldsHtml += `
         <label class="form-field">
-          <span class="form-label">${this.esc(f.label)}${f.required || f.id === ORDER_EMAIL_FIELD_ID ? ' <span class="required">*</span>' : ""}</span>
+          <span class="form-label">${this.esc(f.label)}${orderFieldRequired(f, { canUseAccount: false }) ? ' <span class="required">*</span>' : ""}</span>
           ${inputHtml}
         </label>
       `;

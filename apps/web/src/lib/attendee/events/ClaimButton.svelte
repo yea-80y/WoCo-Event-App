@@ -9,7 +9,7 @@
   import { getClaimStatus } from "../../api/events.js";
   import { createCheckoutSession } from "../../api/stripe.js";
   import type { SeriesClaimStatus } from "@woco/shared";
-  import { orderFormCollectsEmail, orderFormShown, resolveBuyerEmail } from "@woco/shared";
+  import { orderFieldRequired, orderFormCollectsEmail, orderFormShown, resolveBuyerEmail } from "@woco/shared";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
   import { buildOrderSnapshot as buildOrderSnapshotPure } from "./claim/helpers.js";
@@ -159,7 +159,7 @@
   const formValid = $derived(() => {
     if (!orderFields?.length) return true;
     return orderFields.every((f) =>
-      !f.required || (formData[f.id] ?? "").trim().length > 0
+      !orderFieldRequired(f, { canUseAccount: linked }) || (formData[f.id] ?? "").trim().length > 0
     );
   });
 
