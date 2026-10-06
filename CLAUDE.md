@@ -94,9 +94,10 @@ DEV COMMANDS:
 - Required server env (names only; see `apps/server/.env.example`): EMAIL_HASH_SECRET,
   PAYMENT_QUOTE_SECRET, STRIPE_WEBHOOK_SECRET + STRIPE_WEBHOOK_SECRET_PLATFORM,
   SHOP_SPENDER_SECRET, ZERODEV_RPC, POSTAGE_BATCH_ID, FEED_PRIVATE_KEY, ALLOWED_HOSTS,
-  PUBLIC_API_BASE. Optional: SOCIAL_INDEXER_PRIVATE_KEY — signs the indexer's published
-  evidence reports (#312), never user data; its address must match `SOCIAL_INDEXER_ADDRESS`
-  in `packages/shared`. Unset = reports served on request, never published.
+  PUBLIC_API_BASE, WOCO_EVENT_CHAIN_ID (no default since #607 - boot refuses).
+  Optional: SOCIAL_INDEXER_PRIVATE_KEY — signs the indexer's published evidence reports
+  (#312), never user data; its address must match `SOCIAL_INDEXER_ADDRESS` in `packages/shared`.
+  Unset = reports served on request, never published.
   Sub-ENS: `SUB_ENS_SPONSOR_PRIVATE_KEY` — the NAMES sponsor (mints + relays holder-signed
   pointer/release writes), never the same key as `WOCO_SPONSOR_PRIVATE_KEY` (boot refuses);
   unset = names 503. The platform holds NO key that can repoint a name (registrar v2.2).
@@ -113,6 +114,7 @@ DEV COMMANDS:
   ignored and reported as `configError`, never fatal): `PAYMASTER_DEPOSIT_MIN_ETH`,
   `POSTAGE_TTL_MIN_SECONDS`, `POSTAGE_UTILIZATION_MAX_PCT`, `BEE_CHAIN_LAG_MAX_BLOCKS`,
   `ENS_MAINNET_RPC_URL`, `ENS_EXPIRY_MIN_DAYS`, `SUB_ENS_SPONSOR_MIN_ETH`,
+  `TICKET_SPONSOR_MIN_ETH` (ticket sponsor gas, default 0.0005, #706),
   `TICKET_MINT_ALLOWANCE_MIN` (ledger sponsor mint-cap headroom, default 10), `TICKET_MINT_ALARM_PCT`
   (busy-hour share of the cap, default 50, #672). `GET /api/health/alarms[?sections=a,b.c]` is 503 when a
   watched section is red - point the uptime monitor there, not at `/api/health` (always 200).

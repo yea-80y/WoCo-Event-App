@@ -32,6 +32,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// The events chain is required since #607; these tests do not depend on which one.
+process.env.WOCO_EVENT_CHAIN_ID ??= "421614";
+
 const VICTIM_EVENT = "evt-victim-434";
 const VICTIM_SERIES = "ser-victim-434";
 const ATTACKER_EVENT = "evt-attacker-434";

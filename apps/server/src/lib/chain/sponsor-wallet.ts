@@ -410,6 +410,13 @@ export async function readTicketMintPolicy(): Promise<TicketMintPolicy> {
   return { contract, sponsor: sponsor.toLowerCase(), sponsorAuthorised, allowance };
 }
 
+/** The ticket sponsor's ETH on the active events chain, for `/api/health` (#706). */
+export async function readTicketSponsorBalance(): Promise<bigint> {
+  if (!process.env.WOCO_SPONSOR_PRIVATE_KEY) throw new SponsorKeyUnconfigured();
+  const wallet = getSponsorWallet();
+  return wallet.provider!.getBalance(wallet.address);
+}
+
 /**
  * Boot-time readiness probe. Logs loudly if the sponsor can't mint on the
  * active contract so a misconfigured deploy is caught immediately rather than

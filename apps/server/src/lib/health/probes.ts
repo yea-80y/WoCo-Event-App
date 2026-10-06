@@ -32,6 +32,7 @@ import {
 } from "../chain/event-contract.js";
 import {
   readTicketMintPolicy,
+  readTicketSponsorBalance,
   SponsorKeyUnconfigured,
   type TicketMintPolicy,
 } from "../chain/sponsor-wallet.js";
@@ -61,6 +62,7 @@ import {
   evaluateTicketMintAllowance,
   evaluateTicketMintRamp,
   evaluateTicketSponsorAuthorised,
+  evaluateTicketSponsorBalance,
   type GlobalMintReading,
   type TicketMintReading,
   evaluateStamp,
@@ -150,6 +152,7 @@ let policyReading = empty<RegistrarPolicy>();
 let cswFactoryReading = empty<string>();
 
 let ticketMintReading = empty<TicketMintPolicy>();
+let ticketSponsorReading = empty<bigint>();
 
 /**
  * The busiest mint windows of the last week (#672), keyed by window end, so a
@@ -222,6 +225,8 @@ export interface HealthReaders {
   cswFactoryCodehash(): Promise<string>;
   /** `authorisedSponsors` and, on the ledger, `sponsorMintAllowance` for the ticket sponsor. */
   ticketMintPolicy(): Promise<TicketMintPolicy>;
+  /** The ticket sponsor's ETH on the active events chain. Throws when no key is set. */
+  ticketSponsorBalance(): Promise<bigint>;
 }
 
 const ENTRY_POINT_ABI = ["function balanceOf(address account) view returns (uint256)"];
@@ -388,6 +393,7 @@ export const liveReaders: HealthReaders = {
   // must never name that key's accessor (the sub-ENS watch reads the NAMES
   // key, and subens-minting-health.test.ts holds the line).
   ticketMintPolicy: () => withTimeout(readTicketMintPolicy(), "events contract ticket mint policy"),
+  ticketSponsorBalance: () => withTimeout(readTicketSponsorBalance(), "ticket sponsor getBalance"),
 };
 
 // ---------------------------------------------------------------------------
@@ -605,7 +611,8 @@ const SPONSOR_UNCONFIGURED = "no names sponsor wallet configured (SUB_ENS_SPONSO
 
 /**
  * Whether paid checkouts can mint (#662): the ticket sponsor is authorised on
- * the events contract, and — on the ledger — its hourly mint cap has headroom.
+ * the events contract, can pay the gas (#706), and — on the ledger — its hourly
+ * mint cap has headroom.
  * The checkout gate refuses a sale the cap cannot mint, so a spent or stopped
  * cap shows up as "tickets not on sale"; this is where an operator sees why,
  * and sees it coming.
@@ -625,8 +632,19 @@ export async function refreshTicketMinting(
           ? { at: Date.now(), value: null, error: TICKET_CONTRACT_MISCONFIGURED, detail: err.message }
           : failed(err);
   }
+  try {
+    ticketSponsorReading = { at: Date.now(), value: await readers.ticketSponsorBalance(), error: null, detail: null };
+  } catch (err) {
+    ticketSponsorReading =
+      err instanceof SponsorKeyUnconfigured
+        ? { at: Date.now(), value: null, error: TICKET_SPONSOR_UNCONFIGURED, detail: null }
+        : err instanceof EventContractConfigError
+          ? { at: Date.now(), value: null, error: TICKET_CONTRACT_MISCONFIGURED, detail: err.message }
+          : failed(err);
+  }
   const section = ticketMintingHealth();
   noteVerdict("ticketMinting.sponsorAuthorised", section.checks.sponsorAuthorised, log, ticketMintReading.detail);
+  noteVerdict("ticketMinting.sponsorBalance", section.checks.sponsorBalance, log, ticketSponsorReading.detail);
   noteVerdict("ticketMinting.mintAllowance", section.checks.mintAllowance, log, ticketMintReading.detail);
   noteVerdict("ticketMinting.mintRamp", section.checks.mintRamp, log, ticketMintReading.detail);
 }
@@ -946,10 +964,12 @@ export function subEnsMintingHealth(now: number = Date.now()): SubEnsMintingSect
  */
 export interface TicketMintingSection {
   ok: Verdict;
-  chainId: number;
+  chainId: number | null;
   contract: string | null;
   version: EventContractVersion | null;
   sponsor: string | null;
+  sponsorBalanceEth: string | null;
+  sponsorMinEth: string;
   /** `"no-cap"` on V1/V2; null until read. `unlimited` = the ledger's UNLIMITED_MINTS. */
   allowance: (TicketMintReading & { unlimited: boolean }) | "no-cap" | null;
   minMintable: number;
@@ -957,10 +977,19 @@ export interface TicketMintingSection {
   alarmPct: number;
   /** The busiest open window of the last 7 days on this contract; null if none. */
   peak7d: { used: number; perHour: number; pct: number; windowEndedAt: string } | null;
-  checks: { sponsorAuthorised: Check; mintAllowance: Check; mintRamp: Check };
+  checks: { sponsorAuthorised: Check; sponsorBalance: Check; mintAllowance: Check; mintRamp: Check };
   stale: boolean;
   checkedAt: string | null;
   configError?: string;
+}
+
+/** Boot refuses an unset chain (#607); health must still answer if that was bypassed. */
+function activeChainIdOrNull(): number | null {
+  try {
+    return getActiveChainId();
+  } catch {
+    return null;
+  }
 }
 
 export function ticketMintingHealth(now: number = Date.now()): TicketMintingSection {
@@ -977,13 +1006,26 @@ export function ticketMintingHealth(now: number = Date.now()): TicketMintingSect
   const mintRamp = unconfigured
     ? { ok: false as const, reason: ticketMintReading.error! }
     : evaluateTicketMintRamp({ reading: policy?.allowance ?? null, alarmPct: cfg.alarmPct, reason: ticketMintReading.error });
+  const sponsorBalance =
+    ticketSponsorReading.error === TICKET_SPONSOR_UNCONFIGURED
+      || ticketSponsorReading.error === TICKET_CONTRACT_MISCONFIGURED
+      ? { ok: false as const, reason: ticketSponsorReading.error }
+      : evaluateTicketSponsorBalance({
+          balanceWei: ticketSponsorReading.value,
+          minWei: parseEther(cfg.sponsorMinEth),
+          reason: ticketSponsorReading.error,
+        });
   const allowance = policy?.allowance ?? null;
+  const reads = [ticketMintReading.at, ticketSponsorReading.at];
+  const oldest = reads.some((at) => at === null) ? null : Math.min(...(reads as number[]));
   return {
-    ok: combine([sponsorAuthorised, mintAllowance, mintRamp]),
-    chainId: policy?.contract.chainId ?? getActiveChainId(),
+    ok: combine([sponsorAuthorised, sponsorBalance, mintAllowance, mintRamp]),
+    chainId: policy?.contract.chainId ?? activeChainIdOrNull(),
     contract: policy?.contract.address ?? null,
     version: policy?.contract.version ?? null,
     sponsor: policy?.sponsor ?? null,
+    sponsorBalanceEth: ticketSponsorReading.value === null ? null : formatEther(ticketSponsorReading.value),
+    sponsorMinEth: cfg.sponsorMinEth,
     allowance:
       allowance === null || allowance === "no-cap"
         ? allowance
@@ -991,9 +1033,9 @@ export function ticketMintingHealth(now: number = Date.now()): TicketMintingSect
     minMintable: cfg.minMintable,
     alarmPct: cfg.alarmPct,
     peak7d: mintPeak7d(now),
-    checks: { sponsorAuthorised, mintAllowance, mintRamp },
-    stale: isStale(ticketMintReading.at, now, PROBE_INTERVAL_MS),
-    checkedAt: ticketMintReading.at === null ? null : new Date(ticketMintReading.at).toISOString(),
+    checks: { sponsorAuthorised, sponsorBalance, mintAllowance, mintRamp },
+    stale: isStale(oldest, now, PROBE_INTERVAL_MS),
+    checkedAt: oldest === null ? null : new Date(oldest).toISOString(),
     ...(cfg.configError ? { configError: cfg.configError } : {}),
   };
 }
@@ -1090,6 +1132,7 @@ export function __resetHealthProbes(): void {
   policyReading = empty<RegistrarPolicy>();
   cswFactoryReading = empty<string>();
   ticketMintReading = empty<TicketMintPolicy>();
+  ticketSponsorReading = empty<bigint>();
   mintPeaks = { contract: null, windows: new Map() };
   lastVerdict.clear();
   provider = null;

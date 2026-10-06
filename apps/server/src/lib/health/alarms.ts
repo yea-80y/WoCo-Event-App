@@ -37,7 +37,7 @@ export interface ThresholdConfig {
   postage: Thresholds & { configError?: string };
   ensParent: { minDays: number; configError?: string };
   subEnsMinting: { sponsorMinEth: string; configError?: string };
-  ticketMinting: { minMintable: number; alarmPct: number; configError?: string };
+  ticketMinting: { minMintable: number; alarmPct: number; sponsorMinEth: string; configError?: string };
 }
 
 export const DEFAULT_PAYMASTER_MIN_ETH = "0.0005";
@@ -79,6 +79,14 @@ export const DEFAULT_TICKET_MINT_ALLOWANCE_MIN = 10;
  * signal: a stolen sponsor key minting flat out crosses half the cap in minutes.
  */
 export const DEFAULT_TICKET_MINT_ALARM_PCT = 50;
+/**
+ * The TICKET sponsor's floor on the active events chain (#706). It pays the gas
+ * for every paid mint, and a dry wallet fails after the card is charged: the
+ * mint reverts, fulfilment auto-refunds, and the organiser's sales silently do
+ * not happen. Same figure as the names sponsor: ~25M gas at Arbitrum One's
+ * 0.02 gwei, roughly 200 single-ticket mints of warning.
+ */
+export const DEFAULT_TICKET_SPONSOR_MIN_ETH = "0.0005";
 
 /** A decimal ETH amount, no exponent, at most 18 decimals — `parseEther` fodder. */
 const DECIMAL_ETH = /^\d+(\.\d{1,18})?$/;
@@ -143,13 +151,14 @@ export function readThresholdsFromEnv(env: NodeJS.ProcessEnv): ThresholdConfig {
   const ticketInvalid: string[] = [];
   const minMintable = envInt(env, "TICKET_MINT_ALLOWANCE_MIN", DEFAULT_TICKET_MINT_ALLOWANCE_MIN, ticketInvalid);
   const alarmPct = envPct(env, "TICKET_MINT_ALARM_PCT", DEFAULT_TICKET_MINT_ALARM_PCT, ticketInvalid);
+  const ticketSponsorMinEth = envEth(env, "TICKET_SPONSOR_MIN_ETH", DEFAULT_TICKET_SPONSOR_MIN_ETH, ticketInvalid);
 
   return {
     paymaster: { minEth, configError: configError(pmInvalid) },
     postage: { ttlMinSeconds, utilizationMaxPct, chainLagMaxBlocks, configError: configError(postInvalid) },
     ensParent: { minDays, configError: configError(ensInvalid) },
     subEnsMinting: { sponsorMinEth, configError: configError(mintInvalid) },
-    ticketMinting: { minMintable, alarmPct, configError: configError(ticketInvalid) },
+    ticketMinting: { minMintable, alarmPct, sponsorMinEth: ticketSponsorMinEth, configError: configError(ticketInvalid) },
   };
 }
 
@@ -458,6 +467,19 @@ export function evaluateTicketSponsorAuthorised(r: { authorised: boolean | null;
     return {
       ok: false,
       reason: "the ticket sponsor key is not an authorised sponsor on the events contract — every paid checkout is refused",
+    };
+  }
+  return { ok: true };
+}
+
+/** Whether the ticket sponsor can still pay for mints on the active events chain (#706). */
+export function evaluateTicketSponsorBalance(r: { balanceWei: bigint | null; minWei: bigint; reason?: string | null }): Check {
+  if (r.balanceWei === null) return { ok: null, reason: r.reason || "ticket sponsor balance could not be read" };
+  if (r.balanceWei < r.minWei) {
+    return {
+      ok: false,
+      reason:
+        "ticket sponsor wallet below minimum on the events chain - paid checkouts will charge, fail to mint and auto-refund",
     };
   }
   return { ok: true };
