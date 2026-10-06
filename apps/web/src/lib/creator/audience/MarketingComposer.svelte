@@ -86,7 +86,7 @@
         location: ev.location,
         imageUrl: firstImageUrl(ev.imageHash, WOCO_GATEWAY_URL),
       },
-      eventUrl: publicEventUrl(ev.eventId, window.location.origin),
+      eventUrl: publicEventUrl(ev.eventId),
     });
   }
 

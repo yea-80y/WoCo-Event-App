@@ -104,20 +104,11 @@ test("date formats as a readable UK line", () => {
   assert.match(when, /15 August 2026/);
 });
 
-test("a dev-server origin never ships localhost links to an audience", () => {
-  for (const local of ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost"]) {
-    assert.equal(publicEventUrl("evt_1", local), "https://woco.eth.limo/event/evt_1");
-  }
-});
-
-test("a real origin is kept, trailing slash and all", () => {
-  assert.equal(publicEventUrl("evt_1", "https://woco.eth.limo/"), "https://woco.eth.limo/event/evt_1");
-  assert.equal(
-    publicEventUrl("evt_1", "https://gateway.woco-net.com"),
-    "https://gateway.woco-net.com/event/evt_1",
-  );
-  // A host merely containing "localhost" is a real host, not the dev server.
-  assert.match(publicEventUrl("e", "https://localhost.example.com"), /^https:\/\/localhost\.example\.com/);
+test("the CTA is always the canonical app host, as a hash route (#576)", () => {
+  // Never the composer's origin: a gateway host is never shown to people and a
+  // dev server's is dead for every recipient. A path route opens the home page.
+  assert.equal(publicEventUrl("evt_1"), "https://woco.eth.limo/#/event/evt_1");
+  assert.equal(publicEventUrl("a/b c"), "https://woco.eth.limo/#/event/a%2Fb%20c");
 });
 
 test("preheader carries the tagline, hidden and escaped", () => {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ETHERNA_GATEWAY_URL } from "../swarm/gateways.js";
+  import { CANONICAL_APP_ORIGIN } from "../sub-ens/host-label.js";
   import { subEnsWebUrl, type ClaimMode, type OrderField, type PaymentConfig } from "@woco/shared";
   import { auth } from "../auth/auth-store.svelte.js";
   import { loginRequest } from "../auth/login-request.svelte.js";
@@ -143,12 +144,18 @@
     }
   }
 
+  // Never a gateway path (#576): the event's WoCo name once it points at this
+  // page, else the event in the app.
   const eventSiteUrl = $derived(
-    deployResult
-      ? `${gatewayUrl.trim()}/bzz/${deployResult.contentHash}/`
-      : ""
+    !deployResult || !createdEventId
+      ? ""
+      : subEnsPhase === "done" && subEnsLabel
+        ? subEnsWebUrl(subEnsLabel)
+        : `${CANONICAL_APP_ORIGIN}/#/event/${createdEventId}`
   );
-  const dashboardUrl = $derived(eventSiteUrl ? `${eventSiteUrl}#/dashboard` : "");
+  const dashboardUrl = $derived(
+    eventSiteUrl ? `${CANONICAL_APP_ORIGIN}/#/creator/events/${createdEventId}` : ""
+  );
   const ensHash = $derived(deployResult?.feedManifestHash ? `bzz://${deployResult.feedManifestHash}` : "");
 
   // The name follows the page's FEED only when this deploy's update was signed

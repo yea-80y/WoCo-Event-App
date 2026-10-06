@@ -17,6 +17,9 @@ import {
   type RegisterParams,
 } from "../src/lib/event/register-once.js";
 
+// The events chain is required since #607; these tests do not depend on which one.
+process.env.WOCO_EVENT_CHAIN_ID ??= "421614";
+
 const PARAMS: RegisterParams = {
   eventId: "evt-1",
   seriesId: "ser-1",

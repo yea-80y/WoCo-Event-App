@@ -68,14 +68,11 @@
         {/if}
         <!-- The web link is gated on previewUrl, not shown beside it for symmetry:
              a name with no contenthash resolves to a gateway error page, so
-             offering it would advertise a broken address. -->
+             offering it would advertise a broken address. Only the name itself is
+             linked - never a gateway path (#576). -->
         {#if n.previewUrl || ondiscard}
           <span class="name-actions">
             {#if n.previewUrl}
-              <a class="preview-link" href={n.previewUrl} target="_blank" rel="noopener" title="Preview current content">
-                Preview
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M3 1h6v6M9 1L3.5 6.5M4 2H1v7h7V6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              </a>
               <a class="preview-link preview-link--open" href={subEnsWebUrl(n.label)} target="_blank" rel="noopener" title="Live on ENS — open this address">
                 Open ↗
               </a>
