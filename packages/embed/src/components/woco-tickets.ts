@@ -611,10 +611,9 @@ export class WocoTickets extends HTMLElement {
     // `maxlength` is interpolated RAW into a double-quoted attribute below, so
     // escaping is not enough — coerce, because the value is not trustworthy.
     // `OrderField.maxLength` is typed `number?` but that is a COMPILE-TIME claim
-    // about our own code; the value arrives as JSON from the event manifest and
-    // the server never validates orderFields (it destructures and passes the
-    // array straight through — apps/server/src/routes/events.ts, whose
-    // validation block covers title/dates/tags/geo/payment only). A crafted
+    // about our own code; the value arrives as JSON from the event manifest. The
+    // server validates orderFields only at create (lib/event/order-fields.ts,
+    // #720), and a client-signed event feed can still carry anything. A crafted
     // event carrying `maxLength: '1" onfocus="…'` would otherwise break out of
     // the attribute. Emitting it only when it really is a positive integer
     // enforces the contract the type merely asserts.

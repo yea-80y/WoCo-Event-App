@@ -34,6 +34,7 @@ import { chainEventEndMsAt } from "../lib/event/end-date-guard.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { checkObjectGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
 import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../lib/stripe/checkout-fees.js";
+import { claimerEmailRefusal } from "../lib/stripe/claimer-email.js";
 import type { PayoutsResponse } from "@woco/shared";
 import { canonicalOrderBox, issueOrderRefToken, acceptedClientOrderRef } from "../lib/stripe/order-ref.js";
 import { checkSponsorCanMint, type SponsorMintVerdict } from "../lib/chain/sponsor-wallet.js";
@@ -614,6 +615,8 @@ stripe.post("/create-checkout", async (c) => {
     verifiedAddress = authResult.parentAddress.toLowerCase();
   }
 
+  const emailRefusal = claimerEmailRefusal(claimerEmail);
+  if (emailRefusal) return c.json({ ok: false, error: emailRefusal }, 400);
   if (!claimerEmail && !verifiedAddress) {
     return c.json({ ok: false, error: "claimerEmail or authenticated wallet session required" }, 400);
   }
