@@ -21,6 +21,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeJsonAtomic } from "./persist.js";
+import { suppressedSince } from "./suppression-store.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "marketing-consent.json");
@@ -123,6 +124,45 @@ export function forgetEmailHash(emailHash: string): number {
   }
   if (removed) persistToDisk();
   return removed;
+}
+
+/**
+ * How long consent evidence outlives the basis it supports - Privacy Policy
+ * §10, "while the organiser can still mail you on that basis, plus 6 months".
+ */
+export const CONSENT_KEPT_AFTER_BASIS_MS = 183 * 24 * 60 * 60 * 1000;
+
+/**
+ * Drop consent records whose basis ended more than six months ago (#547).
+ *
+ * The basis ends when the address becomes unmailable for that organiser: an
+ * unsubscribe, a decline, a complaint or a bounce, dated by its suppression
+ * mark. Not being on the organiser's contact list is NOT an end - a checkout
+ * opt-in is usually added to a list later. A record whose basis still stands is
+ * kept however old, which is what the policy says.
+ *
+ * @returns how many records were dropped.
+ */
+export function sweepExpiredConsents(
+  basisEndedAt: (emailHash: string, organiserAddress: string) => string | null = suppressedSince,
+  now: number = Date.now(),
+): number {
+  ensureLoaded();
+  let dropped = 0;
+  for (const [org, byHash] of Object.entries(consents)) {
+    for (const hash of Object.keys(byHash)) {
+      const ended = basisEndedAt(hash, org);
+      if (ended && now - Date.parse(ended) > CONSENT_KEPT_AFTER_BASIS_MS) {
+        delete byHash[hash];
+        dropped++;
+      }
+    }
+    if (Object.keys(byHash).length === 0) delete consents[org];
+  }
+  if (dropped && !persistToDisk()) {
+    console.warn(`[consent] swept ${dropped} expired records in memory; the write failed and retries next sweep`);
+  }
+  return dropped;
 }
 
 /**

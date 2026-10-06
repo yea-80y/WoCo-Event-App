@@ -190,6 +190,20 @@ export function suppressionSources(emailHash: string, organiserAddress: string):
   return out;
 }
 
+/**
+ * Since when this address has been unmailable for this organiser: the earliest
+ * ACTIVE blocking mark, global or per-organiser, or null when none is. The
+ * consent sweep dates "the basis ended" from it (#547).
+ */
+export function suppressedSince(emailHash: string, organiserAddress: string): string | null {
+  ensureLoaded();
+  const entry = entries.get(emailHash);
+  if (!entry) return null;
+  const active = [entry.global, entry.orgs[organiserAddress.toLowerCase()]].filter(suppresses);
+  if (active.length === 0) return null;
+  return active.map((m) => m!.ts).sort((a, b) => Date.parse(a) - Date.parse(b))[0];
+}
+
 /** Is this address suppressed for this organiser (globally or per-org)? */
 export function isSuppressed(emailHash: string, organiserAddress: string): boolean {
   ensureLoaded();
