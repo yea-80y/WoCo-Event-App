@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { OrderField, SeriesClaimStatus } from "@woco/shared";
+  import { orderFieldRequired } from "@woco/shared";
   import {
     MARKETING_CONSENT_NOTICE,
     TRANSACTIONAL_EMAIL_NOTICE,
@@ -76,7 +77,7 @@
       <label class="form-field">
         <span class="form-label">
           {field.label || field.placeholder || field.type}
-          {#if field.required}<span class="required">*</span>{/if}
+          {#if orderFieldRequired(field, { canUseAccount: authConnected })}<span class="required">*</span>{/if}
         </span>
         {#if field.type === "textarea"}
           <textarea
