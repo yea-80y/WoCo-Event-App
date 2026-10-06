@@ -57,9 +57,6 @@
             <input type="checkbox" class="ss-checkbox" {checked}
               onchange={() => toggle(site.siteId)} />
             <span class="ss-site-name">{site.brandName || site.siteId}</span>
-            {#if site.deployedUrl}
-              <span class="ss-site-url">{site.deployedUrl.replace(/^https?:\/\//, "").replace(/\/$/, "")}</span>
-            {/if}
           </label>
         </li>
       {/each}
@@ -98,8 +95,4 @@
 
   .ss-site-name { font-size: 0.875rem; font-weight: 600; color: var(--text); flex: 1; min-width: 0; }
 
-  .ss-site-url {
-    font-size: 0.75rem; font-family: var(--font-mono); color: var(--text-muted);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 12rem;
-  }
 </style>

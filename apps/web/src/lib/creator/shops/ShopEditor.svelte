@@ -18,6 +18,7 @@
   import { publishSite, deploySite } from "../../api/sites.js";
   import { GATEWAYS } from "../builder/gateways.js";
   import { feedRouteFor } from "../../swarm/gateways.js";
+  import { CANONICAL_APP_ORIGIN } from "../../sub-ens/host-label.js";
   import { newSiteFromShop, siteConfigTopic } from "@woco/shared";
   import { logFeedToManifest } from "../../manifest/feed-log.js";
   import ShopCatalogEditor from "./ShopCatalogEditor.svelte";
@@ -67,7 +68,7 @@
   const storefrontKey = $derived(`woco:shop-storefront:${shopId}`);
 
   const tapUrl = $derived(
-    typeof window !== "undefined" ? `${window.location.origin}/#/shops/${shopId}/tap` : "",
+    `${CANONICAL_APP_ORIGIN}/#/shops/${shopId}/tap`,
   );
   const posPath = $derived(`/creator/shops/${shopId}/pos`);
 

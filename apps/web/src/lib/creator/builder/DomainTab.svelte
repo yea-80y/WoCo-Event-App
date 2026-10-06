@@ -14,7 +14,7 @@
   <div class="domain-empty">
     <div class="transform-visual" aria-hidden="true">
       <div class="url-row url-row--before">
-        <span class="url-protocol">https://</span><span class="url-host url-host--dim">gateway.woco-net.com/bzz/</span><span class="url-hash">a3f9c2…</span>
+        <span class="url-protocol">bzz://</span><span class="url-hash">a3f9c2e81b7d4f06…</span>
       </div>
       <div class="arrow-wrap">
         <svg width="20" height="28" viewBox="0 0 20 28" fill="none">
@@ -91,7 +91,6 @@
 
   .url-protocol       { color: var(--text-muted); opacity: 0.5; }
   .url-protocol--after { opacity: 0.7; }
-  .url-host--dim      { font-size: 0.75rem; color: var(--text-muted); opacity: 0.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .url-hash           { font-size: 0.75rem; color: var(--text-muted); opacity: 0.4; }
   .url-host--lime     { font-size: 1rem; font-weight: 700; color: #C7F23A; letter-spacing: -0.02em; }
 

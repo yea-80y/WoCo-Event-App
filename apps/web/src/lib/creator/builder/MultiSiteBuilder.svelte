@@ -26,6 +26,7 @@
   import NamePointerPrompt from "../../components/sub-ens/NamePointerPrompt.svelte";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import { getStripeAccountStatus } from "../../api/stripe.js";
+  import { getOwnedSubEns } from "../../api/sub-ens.js";
   import { describeSubEnsError, subEnsErrorDetail } from "../../sub-ens/errors.js";
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -101,6 +102,8 @@
   // known (the auth effect below). Reading at module init time would risk
   // showing whichever address last wrote to localStorage on a shared device.
   let mySites    = $state<MySiteRecord[]>([]);
+  /** Swarm hash -> the WoCo name pointed at it, so a My Sites card shows its address (#576). */
+  let siteNames  = $state<Record<string, string>>({});
   let screen     = $state<'my-sites' | 'builder'>('my-sites');
   let tab        = $state<'template' | 'brand' | 'pages' | 'nav' | 'events' | 'shop' | 'domain'>('brand');
 
@@ -164,6 +167,7 @@
     const addr = auth.isConnected && auth.parent ? auth.parent.toLowerCase() : null;
     if (addr === _prevAddr) return;
     _prevAddr = addr;
+    siteNames = {};
 
     if (!addr) {
       mySites = [];
@@ -180,6 +184,15 @@
         const ok = await auth.ensureSession();
         if (!ok || _prevAddr !== addr) return;
       }
+
+      getOwnedSubEns().then((res) => {
+        if (_prevAddr !== addr || !res.ok || !res.data) return;
+        siteNames = Object.fromEntries(
+          res.data.names
+            .filter((n) => n.contentHash && n.role !== 'profile')
+            .map((n) => [n.contentHash!.toLowerCase(), n.label]),
+        );
+      }).catch(() => {});
 
       const swr = getMySitesSWR(addr);
       mySites = swr.cached ? [...swr.cached] : [];
@@ -648,6 +661,7 @@
   {:else if screen === 'my-sites'}
     <MySitesScreen
       sites={mySites}
+      {siteNames}
       gatewayUrl={gatewayUrl}
       onopen={handleOpenSite}
       onnew={handleNewSite}
