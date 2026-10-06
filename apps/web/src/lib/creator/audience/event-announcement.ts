@@ -47,18 +47,14 @@ export interface EventAnnouncementInput {
 const PUBLIC_APP_ORIGIN = "https://woco.eth.limo";
 
 /**
- * Absolute, publicly-resolvable event URL for the CTA.
- *
- * A broadcast composed on a dev server must NOT ship `http://localhost:5173/...`
- * links — they are dead for every recipient — so a local origin falls back to
- * the public one.
+ * Absolute, publicly-resolvable event URL for the CTA: always the canonical app
+ * host, as a hash route. The composer's own origin is never used - a gateway
+ * host is never shown to people (#576) and a dev server's is dead for every
+ * recipient. The hash matters too: the app routes by `location.hash` only, so
+ * the path-style `/event/{id}` this used to build opened the app's home page.
  */
-export function publicEventUrl(eventId: string, origin: string): string {
-  const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(
-    origin.replace(/\/$/, ""),
-  );
-  const base = isLocal ? PUBLIC_APP_ORIGIN : origin.replace(/\/$/, "");
-  return `${base}/event/${encodeURIComponent(eventId)}`;
+export function publicEventUrl(eventId: string): string {
+  return `${PUBLIC_APP_ORIGIN}/#/event/${encodeURIComponent(eventId)}`;
 }
 
 export function escapeHtml(value: string): string {
