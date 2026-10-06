@@ -1,5 +1,9 @@
 # Cryptographic Security Audit -- WoCo Event Platform
 
+> **Historical record (status 2026-10-05).** A point-in-time review of the April 2026 code, whose findings were addressed as recorded in [SECURITY_FIXES_2026-04-09.md](./SECURITY_FIXES_2026-04-09.md);
+> much of what it reviewed (ed25519 "POD" signing, X25519-only sealing, the v1 claim and crypto-payment paths) has since been replaced, deleted or switched off.
+> Current: [ARCHITECTURE.md](./ARCHITECTURE.md), [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md).
+
 **Date:** 2026-04-08
 **Revision:** 2 (added findings 9.1-9.5 from second pass)
 **Scope:** All cryptographic signing, key derivation, encryption, payment verification, and session management code.

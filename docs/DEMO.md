@@ -1,7 +1,8 @@
-> **HISTORICAL — the Arbitrum Buildathon demo, June 2026.** The agent-commerce rail it shows is
-> now switched off (`agentCommerceAllowed = false`) and the v1 mint path it used is deleted.
-
 # Demo — Autonomous Agent Commerce
+
+> **Historical record (status 2026-10-05).** The demo from an earlier competition entry, kept as submitted in mid-2026; the agent-commerce rail it shows is off
+> (`agentCommerceAllowed = false`), and the entry's other rails (EAS likes, the Stylus aggregator, the USDC shop) are off or removed.
+> Current: [ARCHITECTURE.md](./ARCHITECTURE.md), [TICKETING.md](./TICKETING.md).
 
 A ~1-minute screen recording of an AI agent **buying an event ticket on its own**, paying in USDC on
 Arbitrum Sepolia — without ever holding the user's funds.

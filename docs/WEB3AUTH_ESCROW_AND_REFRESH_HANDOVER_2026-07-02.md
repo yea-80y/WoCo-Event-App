@@ -1,5 +1,9 @@
 # Handover — web3auth guardian escrow (Fable #3) + Vite refresh-logout fix (2026-07-02)
 
+> **Historical record (status 2026-10-05).** A July 2026 working handover on guardian escrow for email (Web3Auth) accounts and a dev-only refresh logout; the escrow now
+> carries only the identity seed (the feed signer derives from it since 2026-09-10) and is X-Wing-wrapped (#642).
+> Current: [PASSKEY_RECOVERY_PLAN.md](./PASSKEY_RECOVERY_PLAN.md), [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md).
+
 Branch `feat/feed-signer-recovery`. Continues `WEB3AUTH_GUARDIAN_ESCROW_HANDOVER_2026-07-02.md`
 and the Fable lock-down plan in `FEED_SIGNER_REVIEW_2026-07-02.md` §"Lock-down plan".
 

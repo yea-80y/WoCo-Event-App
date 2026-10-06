@@ -1,12 +1,32 @@
 # WoCo Agent Commerce — Architecture & How It Works
 
+> **Status (2026-10-05): OFF - `FEATURES.agentCommerceAllowed = false`**
+> (`packages/shared/src/features.ts`). `/api/agent/grant-params`, `/quote` and `/buy` return 403
+> (`apps/server/src/routes/agent.ts:45-56`); discovery (`/events`, `/events/:id`, the agent card and
+> OpenAPI) stays open because it reads nothing and moves nothing.
+>
+> **Why off:** the rail minted through the v1 Swarm claim rail, which could charge the buyer and mint
+> nothing. That mint path is deleted (#207), and `settleAgentTicketPurchase` now refuses before
+> verifying or consuming anything (`apps/server/src/lib/agent/spend-authority.ts:122-142`), so even
+> with the flag on, `/buy` ends in a 409 and no ticket.
+>
+> **Built and still in the tree:** server-dictated bounds, the purchase intent, the x402 402
+> handshake, the object-gate check, discovery, the MCP server and the agent-side ZeroDev draw
+> (`apps/server/scripts/agent/`). **Deleted:** the Transfer-log verification, freshness check and
+> one-shot tx consumption described in §6, and the mint itself.
+>
+> **Turning it on needs** a v2 onchain mint path (`claimFor` on the ticket ledger keyed by the paying
+> Kernel - a new design, see `V1_RETIREMENT_HANDOVER.md`) that re-implements the §6 invariants. Not
+> before. The 2026-06-12 run below is a historical record; §10 cannot complete today (its seeder
+> writes a v1 editions feed nothing mints from).
+
 > A standalone explainer of WoCo's **bounded, non-custodial AI-agent commerce** system: how an
 > autonomous agent buys an event ticket on a user's behalf, paying USDC on Arbitrum, **without anyone
 > ever holding the user's funds or an unbounded key.** Written to be read on its own.
 
 - **Network:** Arbitrum Sepolia (`421614`).
-- **Live API:** `https://events-api.woco-net.com` · agent surface under `/api/agent/*`.
-- **Verified E2E (2026-06-12):** draw `0x0e8e688ffdc0e3d686b35beb36eae72f3b8b0d964c9744992be107941c0c44f1`,
+- **API:** agent surface under `/api/agent/*` (money endpoints off - see banner).
+- **Verified E2E (2026-06-12, historical):** draw `0x0e8e688ffdc0e3d686b35beb36eae72f3b8b0d964c9744992be107941c0c44f1`,
   ticket minted edition #1, off-policy draw rejected on-chain.
 
 ---
@@ -147,6 +167,9 @@ transact without bespoke WoCo knowledge.
 
 ## 6. Settlement verification — why the server can trust the draw
 
+> Deleted with the v1 mint path (banner). Kept as the requirements a v2 settlement must meet;
+> only item 4 (the gate check) still runs in `/buy`, before the refusal.
+
 When the agent settles, the server does **not** trust the request body's claim of payment. It reads
 the chain:
 
@@ -159,7 +182,7 @@ the chain:
    a small skew), so a *pre-existing* matching USDC transfer can't be replayed to claim a free ticket.
 3. **One-shot the tx.** The settlement tx hash is consumed in a global registry before minting, so the
    same draw can never mint two tickets (idempotent under retries/concurrency).
-4. **POD gate enforcement.** If the series is gated (holder-only, etc.), the gate is checked against
+4. **Object gate enforcement.** If the series is gated (holder-only, etc.), the gate is checked against
    the funding/claiming Kernel **before** minting — fail-closed, same rule as the human claim path.
 
 Only after all four pass does the server mint the ticket to the **user's Kernel** (the funder and
@@ -193,8 +216,9 @@ and it executes the bounded on-chain purchase end-to-end.
 - **The agent's draw** = reconstruct the granted permission with the agent's own ECDSA signer
   (`deserializePermissionAccount`) and send `USDC.transfer(organiser, amount)` as a userOp. The Kernel
   validates it against the installed policies before it executes.
-- Built on the **same primitives as the rest of WoCo** (the passkey Kernel wallet, EAS, Stylus) — the
-  agent rail reuses the production spend-permission machinery; there is **no Alchemy dependency** and no
+- Built on the **same primitives as the rest of WoCo** (the passkey Kernel wallet) — the agent rail
+  reuses the spend-permission machinery (EAS has since been deleted, #475/#476, and the Stylus
+  aggregator was superseded); there is **no Alchemy dependency** and no
   custodial intermediary.
 
 > **Engineering note (AA23).** The agent's first draw is an *enable-mode* userOp (it installs the
@@ -252,7 +276,7 @@ deliberately wrong-recipient draw being rejected on-chain.
 | File | Role |
 |---|---|
 | `apps/server/src/routes/agent.ts` | the `/api/agent/*` surface (discover, grant-params, quote, x402 buy) |
-| `apps/server/src/lib/agent/spend-authority.ts` | server-dictated bounds + log verification + freshness + mint |
+| `apps/server/src/lib/agent/spend-authority.ts` | server-dictated bounds; settlement now refuses (verification + mint deleted) |
 | `apps/server/src/lib/agent/purchase-intent.ts` | one-time purchase-intent binding (freshness floor) |
 | `apps/server/src/agent/discovery.ts` | `/.well-known/agent.json` + OpenAPI 3.1 generators |
 | `apps/server/scripts/agent/zerodev.ts` | the bounded wallet: user grant build + agent self-key draw |

@@ -1,5 +1,9 @@
 # Feed-Signer Escrow — SUPERSEDED (work shipped)
 
+> **Historical record (status 2026-10-05).** A pre-implementation plan for escrowing the content-feed signer as its own secret; since 2026-09-10 that signer derives from
+> the identity seed, so the seed is the only secret escrowed.
+> Current: [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md), [PASSKEY_RECOVERY_PLAN.md](./PASSKEY_RECOVERY_PLAN.md).
+
 **Status:** DONE. This pre-implementation handover is kept only as a redirect.
 
 The feed-signer escrow it describes is wired and audited (2026-06-30). Shipped in

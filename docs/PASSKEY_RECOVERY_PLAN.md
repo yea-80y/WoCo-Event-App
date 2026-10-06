@@ -1,6 +1,50 @@
 # Passkey Account Recovery — Design / Build Plan
 
-**Status:** Phase 0 spike DONE + PASSING (2026-06-17). **Phase 1 entry verified + MVP landed
+## Current state (2026-10-05)
+
+Keys and devices in full: [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md). Wallet layer:
+[PASSKEY_SMART_WALLET.md](./PASSKEY_SMART_WALLET.md).
+
+- **Who adds a backup.** Email-login (Web3Auth) accounts, at "Protect your account"
+  (`#/protect`, `apps/web/src/lib/components/recovery/AccountRecoverySetup.svelte`). Choices: a
+  recovery passkey (recommended), a different email or social login, or a crypto wallet.
+- **Passkey accounts add none (#767).** Every guardian backup escrows the seed to a second,
+  permanent key - a Swarm copy cannot be recalled. So `setupAccountRecovery` refuses a passkey
+  account, and Protect sends it to "Your passkeys". Its way back is its synced passkey and the
+  devices it links, each an equal co-owner (#746, #770, #771). Existing backups stay listed and
+  removable.
+- **Onchain.** Kernel accounts on Arbitrum One. Setup installs the ZeroDev recovery action as a
+  fallback route guarded by `WoCoGuardianHook` `0xF43524473EBC651969BeCc748462ED27ed39d4Db`
+  (#164; same address on Arbitrum One and Arb Sepolia). The hook holds a real guardian set:
+  per-guardian add and revoke, up to 32. Routes on the old ZeroDev hook are still recognised.
+  A guardian is a deterministic weighted-ECDSA Kernel derived from the backup
+  (`guardian-config.ts`, `guardian-address.ts`). Recovery: the guardian's Kernel calls
+  `doRecovery`, rotating the owner; the account address is kept.
+- **Escrow.** The bundle carries `{ identitySeed }` and nothing else - the feed signer, issuing
+  key and encryption keys are all KDFs of the seed. The DEK is wrapped with HPKE over the X-Wing
+  hybrid KEM (ML-KEM-768 + X25519), envelope v3 (#642); the bundle is XChaCha20-Poly1305,
+  AAD-bound to the account. A wallet or email guardian's key comes from one fixed EIP-712
+  signature; a passkey guardian's from its PRF output (#728).
+  `apps/web/src/lib/auth/recovery-escrow.ts`.
+- **Storage.** Three SOCs, none owned by the platform: the escrow (guardian-derived owner,
+  `apps/web/src/lib/swarm/recovery-feed.ts`), the guardian's account index (#157), and the
+  cross-device portability envelope (PRF-derived owner, `recovery-portability.ts`). All are
+  stamped on Etherna's batch, and every store is asked before the portal says "No backup found"
+  (#740-#742). The server keeps only a presence hint (`apps/server/src/routes/recovery.ts`).
+- **Sponsorship.** Recovery userOps are paid only after our server's ZeroDev policy approves them
+  (#758): known call shape, the recovered account unlocked, the guardian on its onchain list.
+- **Not built.** Timelock and cancel window; M-of-N with verifiable secret sharing. The sweep
+  escape hatch was deleted with zero callers (#166.2).
+
+Everything below is the dated build log (newest phases first, then Phase 0) and the original
+design (§1-§13) - history. Where it disagrees with the list above, the list wins. It says POD
+for what is now the identity seed (formerly called POD; renamed object, 2026-09-10); the
+ed25519 key it describes was removed in #518. Arb Sepolia references predate the move to
+Arbitrum One (#489).
+
+## Status history
+
+**Status (2026-06-17):** Phase 0 spike DONE + PASSING (2026-06-17). **Phase 1 entry verified + MVP landed
 (2026-06-17):** the deployed-account caller-hook flow is PROVEN end-to-end on Arb Sepolia and
 the `setupRecovery` / `recoverAccount` / `sweepToExternal` primitives are implemented behind
 the `KernelSudoValidator` seam (typechecks clean; recovery-portal UX still TODO). The open
@@ -777,7 +821,8 @@ in the SAME weighted-ECDSA guardian (§4); this section is about *which* signers
   guardian set — `decideAddPath`; the by-guardian reverse hint is gone since #157).
 
   **#164 SHIPPED (2026-08-22): the WoCo guardian hook.** Every route is now installed against
-  `WoCoGuardianHook` `0xF43524473EBC651969BeCc748462ED27ed39d4Db` (Arb Sepolia, CREATE2 singleton,
+  `WoCoGuardianHook` `0xF43524473EBC651969BeCc748462ED27ed39d4Db` (Arb Sepolia, and Arbitrum One
+  since 2026-09-07 at the same address; CREATE2 singleton,
   verified; source + 21 Foundry tests in the nested `contracts/` repo, `src/recovery/`). `onInstall`
   SETS the account's guardian set (replace, not OR), `addGuardian` / `revokeGuardian` /
   `clearGuardians` edit it from the account's own sudo `execute`, `guardiansOf` / `isGuardian` are the

@@ -2,7 +2,14 @@
 
 Decision record. Verified figures, 2026-07-27. Companion to `docs/SEO_PLAN.md`.
 
-Nothing here is built except §8 item 1. Treat §3 (the free/paid line) and §7 (tiers) as
+**Status (2026-10-05):** much below is now built - SES is the live ESP (§6), manual
+post-event payouts and the Managed Risk controller block ship (`PAYOUTS.md`), the daily cap
+is floored at list size (E2). Fees as charged: `PLATFORM_FEE_BP` (`packages/shared/src/event/types.ts`),
+the booking-fee floor and default and `MIN_TICKET_PRICE` (`packages/shared/src/features.ts`),
+`checkout-fees.ts`. Not built: tiers, entitlements, organiser sending domains
+(`organiserSendingDomains` off). The platform fee is a flat percentage with no per-ticket cap (§7). Stripe is on test keys (pre-launch).
+
+When written, nothing here was built except §8 item 1. Treat §3 (the free/paid line) and §7 (tiers) as
 the decisions to lock before any billing code is written.
 
 ---
@@ -15,7 +22,7 @@ These got conflated in discussion. Untangled:
 |---|---|---|
 | **100/day** | Resend | Free-tier transactional cap only. **No daily limit on any paid plan.** |
 | **200/day** | AWS SES | **Sandbox.** A new SES account can only send 200/day, to *verified addresses only*, until you request production access. One-time onboarding gate, not a ceiling — production accounts start at 50k/day and scale on reputation. |
-| **2,000/day** | **Ours** | `MARKETING_DAILY_CAP` in `lib/marketing/send-cap.ts:27`. We wrote it as a cold-list reputation guard. Not imposed by any provider. |
+| **2,000/day** | **Ours** | `MARKETING_DAILY_CAP` env, default 2,000, read in `lib/marketing/send-cap.ts`. We wrote it as a cold-list reputation guard. Not imposed by any provider. Floored at the organiser's list size since E2 (§14). |
 
 **So: no provider caps our sends once we are paid and out of sandbox.** Every daily number in the tier table below is our own product decision, and the current 2,000 flat default is wrong — see §3.
 
@@ -42,7 +49,7 @@ items) closed the same day — `docs/PAYOUTS.md` §6 is the record; build item i
 
 `POST /broadcasts` requires a `segment_id` — there is no ad-hoc recipient list. Using it means Resend must **durably store plaintext contacts**, which:
 
-1. **Breaks the sealing model at rest.** Contacts are sealed client-side to the organiser's X25519 key on Swarm; the server holds only `emailHash`. Nuance worth stating honestly: even on `emails.send` Resend sees each plaintext address *in flight* — it is the recipient. The protection is over the **stored list**, not the address in transit (`CLAUDE.md` already records this: plaintext "transits import/check/broadcast bodies transiently — hashed-and-discarded"). Broadcasts converts transient exposure into a durable third-party copy, which is the part that changes `docs/legal/DATA_INVENTORY.md`.
+1. **Breaks the sealing model at rest.** Contacts are sealed client-side to the organiser's X-Wing key on Swarm (#729); the server holds only `emailHash`. Nuance worth stating honestly: even on `emails.send` Resend sees each plaintext address *in flight* — it is the recipient. The protection is over the **stored list**, not the address in transit (`MARKETING_COMPLIANCE.md` records this: plaintext "transits import/check/broadcast bodies transiently — hashed-and-discarded"). Broadcasts converts transient exposure into a durable third-party copy, which is the part that changes `docs/legal/DATA_INVENTORY.md`.
 2. **Bypasses suppression.** Enforced *inside* `sendMarketingBatch`. Resend-side sending never consults our list. Suppression is the legal control; it cannot be delegated.
 3. **Bypasses RFC 8058 headers + provenance footer** — also unconditional in `sendMarketingBatch`.
 4. **Costs ~40×.** 5,000 contacts × 24 sends/yr = 120k emails: Resend Marketing **$480/yr** vs transactional $42 vs SES **$12**.
@@ -66,9 +73,9 @@ The paid line is not "email" — it is **imported lists and own-domain sending**
 | **Audience** | People who bought/claimed a ticket from you — an earned relationship | CSV imports from Skiddle/Fatsoma/RA — a migrated cold list |
 | **Volume** | Unlimited, fair-use throttled | Tiered by **contacts stored** |
 | **From** | `events@woco-net.com` | Organiser's own sending domain |
-| **Code path** | event broadcasts — **already ungated** | `/api/marketing/broadcast` — **already gated** on `charges_enabled` (#59) |
+| **Code path** | event broadcasts — **already ungated** | marketing broadcast jobs (`/api/broadcasts/jobs`, `kind: "marketing"`) — **already gated** on `charges_enabled` (#59) |
 
-The codebase already encodes this line exactly: `CLAUDE.md` records that event broadcasts are "deliberately ungated (attendee-relationship mail must not depend on Stripe)" while `/broadcast` requires `isVerifiedOrganiser`. **No re-architecture needed — only entitlement numbers on top.**
+The codebase already encodes this line exactly: `MARKETING_COMPLIANCE.md` records that event broadcasts are "deliberately ungated (attendee-relationship mail must not depend on Stripe)" while `/broadcast` requires `isVerifiedOrganiser`. **No re-architecture needed — only entitlement numbers on top.**
 
 ### Fair use, not a hard cap
 
@@ -80,13 +87,13 @@ Replace with:
 
 ## 4. Ticket email ownership
 
-**We send it, not Stripe.** `sendTicketEmail` (`routes/tickets.ts:218`) runs from the public `/send-email` route (`:292`) and the Stripe webhook (`routes/stripe.ts:1173`). It renders the 800×1100 composite PNG and attaches it `cid:`-inline.
+**We send it, not Stripe.** `sendTicketEmail` (`routes/tickets.ts`) runs only from Stripe fulfilment (`lib/stripe/fulfilment.ts`), to the verified purchase address; the public `/send-email` route was removed (#754). It renders the composite PNG and attaches it `cid:`-inline.
 
-Stripe *may* additionally send its own payment receipt — we pass `customer_email` (`routes/stripe.ts:626`), so if the organiser has receipts enabled on their connected account the buyer gets two emails. Not a bug; document it for organisers.
+Stripe *may* additionally send its own payment receipt — we pass `customer_email` (`routes/stripe.ts`, create-checkout), so if the organiser has receipts enabled on their connected account the buyer gets two emails. Not a bug; document it for organisers.
 
 ## 5. Organiser sending domains
 
-**Marketing: built and automated.** `routes/marketing.ts` → Resend Domains API → `sending-domain-store.ts` caches `id/status/records`, verify-on-demand. `resolveMarketingFrom()`: verified organiser domain → `EMAIL_FROM_MARKETING` → **null, which refuses the send** (#96 — it never falls back to the transactional address). Organiser adds domain → we return DNS records → they paste → click verify.
+**Marketing: built, switched off** (`organiserSendingDomains = false`; the routes answer 403 `FEATURE_OFF`). `routes/marketing.ts` → Resend Domains API → `sending-domain-store.ts` caches `id/status/records`, verify-on-demand. `resolveMarketingFrom()`: verified organiser domain → `EMAIL_FROM_MARKETING` → **null, which refuses the send** (#96 — it never falls back to the transactional address). Organiser adds domain → we return DNS records → they paste → click verify.
 
 **Transactional: not built.** All ticket email ships from `getFromAddress()` — `"Event Title" <events@woco-net.com>`. Same for `attendee-gate.ts`, `shop-receipt.ts`, `sites.ts`.
 
@@ -97,7 +104,7 @@ Agreed: an organiser with their own domain will not accept platform-branded tick
 
 **Two Resend domains per organiser. Pro caps at 10 → ~5 organisers.** Scale (1,000 domains) is $90/mo. This is the constraint that forces SES, well before volume does.
 
-`Reply-To`: currently only on the site contact form (`sites.ts:611`). `TicketEmailOpts.replyTo` is now plumbed but unsourced — wire `SiteContact.email` (`packages/shared/src/site/types.ts:263`) when `siteId` is present, else the verified sending domain, else omit.
+`Reply-To`: on the site contact form (`sites.ts`) and, since E1 (§14), on ticket email bought through a site (the site's contact email). The verified-sending-domain fallback waits on organiser domains.
 
 ## 6. SES migration — DECIDED, SES is the platform ESP
 
@@ -226,7 +233,7 @@ Marginal cost per active organiser/year, assuming model 1 confirmed:
 
 If the £2 does apply, add ~$24/yr and the total becomes ~$38/yr — enough to make a $50/yr price break-even rather than a business. **This single dashboard check is the difference between those two worlds.**
 
-**Fee floor (#645):** the platform fee on a card sale is `round(subtotal × 1.5%)` (`checkout-fees.ts`), and it must be at least 1 minor unit (`MIN_APPLICATION_FEE_MINOR`). The webhook proves a session is ours by that fee, so a sale with no fee could never be fulfilled. Below the floor (a subtotal under 34p/34c, e.g. one 30p ticket), checkout refuses: "price too low". Organisers never reach it: the minimum ticket price is £1/$1/€1 (`MIN_TICKET_PRICE`, shared `features.ts`), enforced in the editor, at publish and by the server. The 34p floor stays at checkout as the backstop, and for shop orders.
+**Fee floor (#645):** the platform fee on a card sale is `round(subtotal × 1.5%)` (`checkout-fees.ts`), and it must be at least 1 minor unit (`MIN_APPLICATION_FEE_MINOR`). The webhook proves a session is ours by that fee, so a sale with no fee could never be fulfilled. Below the floor (a subtotal under 34p/34c, e.g. one 30p ticket), checkout refuses: "price too low". Organisers never reach it: the minimum ticket price is £1/$1/€1 (`MIN_TICKET_PRICE`, shared `features.ts`, #694), enforced in the editor, at publish and by the server. The 34p floor stays at checkout as the backstop, and for shop orders (shop rail off, `shopAllowed`).
 
 Either way, **price on value not cost** — §7's anchors (Mailchimp $900/yr at 10k contacts, Squarespace £144/yr) set the price, not our margin floor.
 
@@ -246,7 +253,9 @@ This corrects an earlier claim in this doc that "Express means we own the liabil
 
 The determinant is `controller.losses.payments` (Accounts v1) or `defaults.responsibilities.losses_collector` (v2): **`application` = platform liable, `stripe` = Stripe liable.**
 
-**Where we stand today:** `routes/stripe.ts:66` creates accounts with `type: "express"` and no explicit `controller` block. The legacy `type` shorthand implies `losses.payments = "application"`. **So WoCo is liable, by default, because we never chose otherwise.**
+> Superseded by #90 and #645: accounts are now created with a controller block (`losses.payments = "stripe"`, full dashboard) - `PAYOUTS.md` §4. The paragraph below is the 2026-07-27 state.
+
+**Where we stood (2026-07-27):** `routes/stripe.ts:66` created accounts with `type: "express"` and no explicit `controller` block. The legacy `type` shorthand implies `losses.payments = "application"`. **So WoCo is liable, by default, because we never chose otherwise.**
 
 #### The recovery chain — the organiser genuinely is first
 
@@ -304,7 +313,7 @@ They withhold 20% of net sales from payouts as a **rolling reserve**. If refunds
 | **`interval: "manual"`** | Blocks automatic payouts entirely; platform releases funds via the Payouts API when it chooses. **The only control that covers events sold more than 31 days ahead** (festivals, early-bird). |
 | **Platform reserve** | Stripe already holds one against our platform account for this liability. |
 
-**Decision: default connected accounts to delayed payout, released after the event.** `delay_days_override` for short-lead events; `interval: "manual"` plus a post-event release job for anything beyond 31 days. Neither is built — this is a launch blocker for paid ticketing, ahead of every pricing item in §8.
+**Decision: default connected accounts to delayed payout, released after the event.** `delay_days_override` for short-lead events; `interval: "manual"` plus a post-event release job for anything beyond 31 days. ~~Neither is built~~ **Built:** `interval: "manual"` for every sale plus the post-event release job (`PAYOUTS.md`); `delay_days_override` is not used.
 
 Open design questions for that work: whether to hold 100% until after the event or release a portion earlier for organisers with a track record; whether to add our own percentage reserve on top; and how a multi-date/recurring event defines "after the event".
 
@@ -354,7 +363,9 @@ Flat fee vs percentage crosses over at **~£15.30/ticket**:
 | £25 | £0.375 | £0.23 | TT |
 | £100 | £1.50 | £0.23 | TT, 6× |
 
-**Decision: keep the percentage, add a per-ticket cap — "1.5%, never more than £1.00 per ticket."** Costs nothing on the £10–30 ticket that is most of the market, keeps WoCo cheapest against TT pay-as-you-sell at every price, and stops festivals and £80 dinners being structurally lost to TT.
+**Decision (owner, 2026-10-05): a flat 1.5% with no per-ticket cap, and a minimum ticket price of £1 / $1 / €1** (`MIN_TICKET_PRICE` in `packages/shared/src/features.ts`, #694). Checkout charges `PLATFORM_FEE_BP` with no cap (`checkout-fees.ts`), and `ORGANISER_TERMS.md` §6 commits that the rate never goes above 1.5% (#687). This accepts that Ticket Tailor's flat fee is cheaper above about £15 a ticket (table above).
+
+*Refuted:* an earlier draft of this section recorded "1.5%, never more than £1.00 per ticket". That was a misreading of the £1 minimum ticket price; it was never built and is not the policy.
 
 Percentage stays the headline because the market is anchored on Skiddle's 10%. And TT has not won despite being cheap because prepaid credits are a cashflow ask and **TT brings no audience** — Skiddle and Fatsoma win on discovery, not price. WoCo's fight is audience + organiser-owned website + owned contact list.
 
@@ -380,21 +391,21 @@ Tier on what costs money: **contacts, sending domains, sites**. Do **not** tier 
 
 | # | Item | Blocked on |
 |---|---|---|
-| **0** | 🚨 **DELAYED PAYOUTS — launch blocker, ahead of everything else.** Default connected accounts to hold funds until after the event: `delay_days_override` (≤31 days) for short-lead events, `interval: "manual"` + a post-event release job beyond that. Without this, one cancelled mid-size event lands ~£12.5k on WoCo's platform reserve (§7). | design sign-off on hold policy |
+| **0** | ✅ **Built** (manual payouts, `PAYOUTS.md`). 🚨 **DELAYED PAYOUTS — launch blocker, ahead of everything else.** Default connected accounts to hold funds until after the event: `delay_days_override` (≤31 days) for short-lead events, `interval: "manual"` + a post-event release job beyond that. Without this, one cancelled mid-size event lands ~£12.5k on WoCo's platform reserve (§7). | — |
 | 1 | ~~**Close the `lib/email/` seam**~~ ✅ 2026-07-27 `2eda035` — `lib/email/send.ts` single chokepoint, 5 call sites refactored, dead `poller.ts` send removed (recipient was a wallet address — always failed Resend validation). `build:server` clean, tests 41/41. | — |
 | 2 | **Ask Resend** about broadcast volume on the transactional plan (§9) | user |
 | 3 | ~~**Open AWS account + file SES production-access request**~~ ✅ 2026-07-30 — granted 50k/day, 14/s, eu-west-2, out of sandbox | — |
-| 4 | **`Reply-To` source** — `SiteContact.email` when `siteId` present → sending domain → omit. Wire at both `sendTicketEmail` callers. | nothing |
-| 5 | **Fix `MARKETING_DAILY_CAP`** — per-tier, and never below the contact allowance (§3). Split attendee-broadcast throttling (rate) from marketing caps (volume). | §7 sign-off |
+| 4 | ~~**`Reply-To` source**~~ ✅ E1 - site contact email on ticket email; sending-domain fallback waits on item 9 | — |
+| 5 | **Fix `MARKETING_DAILY_CAP`** — floor at list size ✅ E2; still open: per-tier, and never below the contact allowance (§3). Split attendee-broadcast throttling (rate) from marketing caps (volume). | §7 sign-off |
 | 6 | **Entitlements store** — `.data/entitlements.json`, per-organiser tier; contacts / storage / sites / caps all read from it | §7 sign-off |
-| 7 | **Per-ticket fee cap** — 1.5% capped at £1.00 in `application_fee_amount` (`routes/stripe.ts`); keep in sync with the 150bp escrow contract | §7 sign-off |
+| 7 | ~~**Per-ticket fee cap**~~ - dropped (owner, 2026-10-05): the fee is a flat 1.5%; the £1 figure is the minimum ticket price (#694) | — |
 | 8 | ~~**SES provider** behind the §8.1 seam~~ ✅ 2026-07-30 — `lib/email/ses-provider.ts`, SESv2 `Simple` content (native inline attachments), + send-rate limiter, retry classification and durable failure ledger | — |
 | 9 | **SES domain verification** — verified identities + DKIM + poll, replacing Resend Domains API. **Phase 2**, design in `SES_MIGRATION_HANDOVER.md` | 8 |
 | 10 | ~~**SNS bounce/complaint webhook**~~ ✅ 2026-07-30 — `routes/ses-webhook.ts` + `lib/email/sns-verify.ts`, signature-verified, Permanent-only bounce suppression | — |
 | 11 | **Transactional sending domain** — `resolveTransactionalFrom()`, separate subdomain, Venue+ | 6, 9 |
 | 12 | **Stripe Billing subscription rail** for tiers (Billing, not Connect — WoCo is merchant here) | §7 sign-off |
 
-**`CLAUDE.md` corrected 2026-07-27:** the old figure ("UK/EU cards ~2% + 20p … includes Connect +0.5%") was wrong. Direct charges on connected accounts are **1.5% + 20p** UK cards, 1.9% + 20p UK premium, 2.5% + 20p EEA, 3.25% + 20p international (+2% on currency conversion). **No Connect uplift on the processing rate.** Platform-side Connect fees are a separate question still open with Stripe — see §11 and §13; do not build against a number until they answer.
+**`CLAUDE.md` corrected 2026-07-27:** the old figure ("UK/EU cards ~2% + 20p … includes Connect +0.5%") was wrong. Direct charges on connected accounts are **1.5% + 20p** UK cards, 1.9% + 20p UK premium, 2.5% + 20p EEA, 3.25% + 20p international (+2% on currency conversion). **No Connect uplift on the processing rate.** Platform-side Connect fees were a separate question with Stripe — see §11 and §13; resolved in §18.
 
 ### Two independent tracks
 
@@ -512,9 +523,9 @@ The Stripe questions block nothing here. This track can run to completion while 
 | | Item | Detail |
 |---|---|---|
 | ✅ | **ESP seam** | Done `2eda035`. `lib/email/send.ts` is the single chokepoint. |
-| ✅ **E1** | **`Reply-To` source** | Done. `getSiteTheme` now also returns `contactEmail` (`lib/site/service.ts`); the Stripe webhook passes it as `replyTo` (`routes/stripe.ts`). From stays platform-owned — only replies redirect, so an organiser's domain reputation can never affect ticket delivery. The public `/send-email` route has no site context, so no reply-to there by design. |
-| ✅ **E2** | **Fix the daily cap** | Done. `capRemaining(org, minimumCap?)` takes a floor; `effectiveDailyCap` = `max(env, floor)`. `/broadcast` passes the organiser's stored list size, so one full-list send per 24h is always permitted — and the reported `capRemaining` uses the same floor so the UI can't understate the next allowance. At E5 the floor becomes the tier's contact allowance; the env var stays the default for organisers with no tier record. |
-| **E3** | **Stripe receipt collision** | We pass `customer_email` (`routes/stripe.ts:626`) so buyers may get Stripe's receipt *and* our ticket email. Decide: suppress Stripe receipts on connected accounts, or document it. |
+| ✅ **E1** | **`Reply-To` source** | Done. `getSiteTheme` now also returns `contactEmail` (`lib/site/service.ts`); Stripe fulfilment passes it as `replyTo` (`lib/stripe/fulfilment.ts`). From stays platform-owned — only replies redirect, so an organiser's domain reputation can never affect ticket delivery. (The public `/send-email` route was removed, #754.) |
+| ✅ **E2** | **Fix the daily cap** | Done. `capRemaining(org, minimumCap?)` takes a floor; `effectiveDailyCap` = `max(env, floor)`. Starting a marketing broadcast job passes the organiser's stored list size, so one full-list send per 24h is always permitted — and the reported `capRemaining` uses the same floor so the UI can't understate the next allowance. At E5 the floor becomes the tier's contact allowance; the env var stays the default for organisers with no tier record. |
+| ✅ **E3** | **Stripe receipt collision** | We pass `customer_email` (`routes/stripe.ts`, create-checkout) so buyers may get Stripe's receipt *and* our ticket email. Decided: document it for organisers - receipts are the organiser's own dashboard setting, and dropping `customer_email` would lose the prefill without stopping them (comment at the call). |
 
 ### Blocked on the user
 
@@ -708,6 +719,8 @@ Product consequences, for the §7 tier decisions — none of these are code:
 
 > "If you need full control over your connected accounts' payouts and want to restrict your connected accounts from being able to make their own payouts, contact us with a detailed description of your use case."
 
+> Superseded: Stripe confirmed Express cannot self-payout (`PAYOUTS.md` §3.2, 2026-07-29). New accounts are `full`, where self-payout is off only if the platform's Connect dashboard setting turns it off (`PAYOUTS.md` §4.1).
+
 So `interval: "manual"` removes the *automatic* payout — the common case, and worth having — but an Express organiser can still withdraw their own balance before the event. **Until Stripe grants that control, no attendee- or organiser-facing promise may be written as though funds cannot move.** The legal drafts have been written to this limit.
 
 ### Still open with Stripe — send on the live thread
@@ -733,6 +746,8 @@ Manual payouts + post-event release. Mechanism, constants and ops: **`docs/PAYOU
 (which also carries the 2026-07-29 resolutions in §3.2/§6). Hardened 2026-07-29: intent
 journal, nets re-read every sweep, settlement-currency regrouping (PR #86) + schedule-heal
 retry, shop attribution, past-ceiling alarm (#85). 45+ payout tests over the failure modes.
+Since: refund and chargeback voids, dispute and unsettled-refund holds, and the cancelled-event
+hold (#696-#704) - `PAYOUTS.md` §2.
 
 ---
 
@@ -776,8 +791,8 @@ then (2026-07-31 repricing email).
 This confirms `PAYOUTS.md` §4: under `controller.fees.payer = "account"` the £2
 monthly-active-account fee and the 0.25% + 10p payout fee **fall away**. The §15
 table showing Connect fees eating ~20% of gross ticketing revenue described the
-old `type: "express"` configuration and no longer applies once the controller
-block ships.
+old `type: "express"` configuration and no longer applies now the controller
+block has shipped (#90).
 
 `application_fee_amount` (1.5%) continues regardless — confirmed in writing twice
 (§17, `PAYOUTS.md` §6.5).

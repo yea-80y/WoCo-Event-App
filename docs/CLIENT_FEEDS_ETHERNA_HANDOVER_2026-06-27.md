@@ -1,5 +1,9 @@
 # Handover — client feeds + Etherna routing (2026-06-27)
 
+> **Historical record (status 2026-10-05).** A June 2026 session log on escrowing the feed signer and routing event content to Etherna; the feed signer now derives from the
+> identity seed instead of being escrowed (2026-09-10), "POD" is now "object", and storage routing is one per-family table (#689).
+> Current: [ETHERNA_INTEGRATION.md](./ETHERNA_INTEGRATION.md), [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md).
+
 Branch: `feat/feed-signer-recovery` (4 commits, all typecheck-green; server DEPLOYED).
 Read `CLAUDE.md` + memory `woco_builder_is_event_creator` FIRST. The site builder IS
 the event creator — one surface, never "two paths".

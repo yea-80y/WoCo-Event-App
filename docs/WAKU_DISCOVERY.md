@@ -1,6 +1,15 @@
 # Waku Decentralized Event Discovery
 
-WoCo uses the [Waku](https://waku.org/) protocol for decentralized event discovery alongside the Swarm directory. Waku provides real-time event announcements that supplement the authoritative Swarm feed-based directory.
+Status (2026-10-05): NOT IN THE TREE. Built in March 2026, then removed on 2026-03-22
+(`8da139aa`): browser light nodes could not reach nwaku over plain `ws://` from HTTPS pages,
+and all traffic ran through one nwaku node, so there was no real P2P. The interfaces and
+no-op stubs that commit kept (`packages/shared/src/waku/`, `apps/web/src/lib/waku/`) are
+gone too. Discovery today is the Swarm directory feed `woco/event/directory`, served
+through `GET /api/events` (`apps/server/src/routes/events.ts:61`; see
+`docs/EVENTS_DIRECTORY.md`). Everything below is a design reference written in the present
+tense of March 2026 - none of the files, env vars or endpoints it names exist.
+
+WoCo used the [Waku](https://waku.org/) protocol for decentralized event discovery alongside the Swarm directory. Waku provided real-time event announcements that supplemented the authoritative Swarm feed-based directory.
 
 ## Architecture
 
@@ -40,7 +49,7 @@ Every client is a Waku peer. No server intermediary for discovery. This means:
 
 ### nwaku Relay Node (`nwaku/docker-compose.yml`)
 
-Self-hosted [nwaku](https://github.com/waku-org/nwaku) relay node running on the Ubuntu server (192.168.0.144). Provides:
+Self-hosted [nwaku](https://github.com/waku-org/nwaku) relay node, which ran on the former dev server (since decommissioned). Provided:
 
 - **Relay**: propagates messages to the wider Waku network
 - **Filter**: serves real-time subscriptions to the server's light node
@@ -226,13 +235,13 @@ Swarm and Waku serve complementary purposes:
 | **Durability** | Permanent (paid via postage) | Ephemeral (48h store, then gone) |
 | **Trust model** | Verifiable (content-addressed) | Announced but unverified |
 
-**Current flow**: Waku announces events after the event feed is verified on Swarm. Browsers subscribe directly to nwaku via Filter and see new events instantly. `GET /api/events` also merges Swarm + Waku server-side as a fallback for initial page load.
+**Flow while it ran (March 2026)**: Waku announced events after the event feed is verified on Swarm. Browsers subscribe directly to nwaku via Filter and see new events instantly. `GET /api/events` also merges Swarm + Waku server-side as a fallback for initial page load.
 
 **Will we always need the Swarm directory?** Yes, but its role will shift. Today it's the primary listing; Waku supplements it. Long-term, Waku becomes the primary discovery channel, with the Swarm directory serving as a durable backup and verification layer for clients that weren't online when the announcement was broadcast.
 
 ## Waku Roadmap
 
-### Phase 1: Real-time Event Discovery (DONE)
+### Phase 1: Real-time Event Discovery (built, then removed 2026-03-22)
 
 - Server publishes announcements via LightPush on create/list/unlist
 - Browser connects directly to nwaku as a light node peer (no server intermediary)

@@ -3,6 +3,23 @@
 Status: **proposal** (2026-05-01). Supersedes the single-event builder for venues that
 need a full website (Black Prince pub is the first concrete client).
 
+> **Status (2026-10-05, checked against `main` 94364b56):** built; this is the original design
+> record. Still holds: JSON config rendered by the same Svelte components, `window.SITE_CONFIG`
+> injected at deploy, a `SiteEventsIndex` feed so events change without a rebuild, hash routing,
+> template presets. What changed - read [SITE_BUILDER.md](./SITE_BUILDER.md) for the current
+> system:
+> - Runtime is `MultiSiteApp.svelte` (`dist-multisite/`), not `SiteApp.svelte`; the builder is
+>   `MultiSiteBuilder.svelte` at `#/creator/sites` (`#/build` is an alias), with a Domain tab
+>   and no Preview/Publish tabs.
+> - Three templates (`pub-venue-v1`, `nightlife-v1`, `clean-modern-v1`); sections added since:
+>   `image`, `productGrid`. `Site.eventsIndexFeed` is `eventsIndexTopic`; `subEnsLabel` added.
+> - No `PATCH /api/sites/:id`: `POST /api/sites` creates and updates. The config feed holds a
+>   pointer to a client-signed `Site` when the owner has a feed signer; pages split into
+>   `woco/site/pages/{siteId}` on the legacy path.
+> - Sites are stored on Etherna; save, logo upload and deploy need a Stripe-verified organiser
+>   or the owner's own Etherna batch.
+
+
 Goal: let an organiser build a multi-page website from templates, then funnel them
 into creating events that deploy *into* that website. The first venue template (pub)
 becomes a reusable preset; new templates plug into the same schema.

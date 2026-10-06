@@ -1,10 +1,8 @@
-> **PARTLY HISTORICAL — June 2026, written for the Arbitrum Buildathon.**
-> The `WoCoEventV2` contract description below is still accurate and the address is still the
-> live one. The surrounding flow is not: the v1 claim rail has been deleted, `claimFor` is driven
-> by Stripe fulfilment to ephemeral burner addresses, and `WoCoTicketLedger` supersedes V2 but is
-> not deployed. Current: [TICKETING.md](./TICKETING.md).
-
 # On-Chain Ticketing + Smart Wallets
+
+> **Historical record (status 2026-10-05).** A June 2026 description of `WoCoEventV2` on Arbitrum Sepolia and two smart-account logins; the v1 claim rail is deleted (#207),
+> card sales mint at Stripe fulfilment to one-time burner addresses, Kernel accounts moved to Arbitrum One, and Coinbase Smart Wallet login is off.
+> Current: [TICKETING.md](./TICKETING.md), [PASSKEY_SMART_WALLET.md](./PASSKEY_SMART_WALLET.md).
 
 How WoCo issues event tickets on-chain on **Arbitrum Sepolia (`421614`)**, and the two
 smart-account login methods that make every user action gasless. Companion to

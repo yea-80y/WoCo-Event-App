@@ -1,61 +1,43 @@
-# Codex Context
+# Coding-Agent Brief
 
-This file is a lightweight handover for Codex sessions. It captures the current WoCo framing and
-load-bearing project facts so future work does not need to rediscover them from scratch.
+Status (2026-10-05): rewritten. The earlier version described a product framing and rails
+(EAS social graph, Stylus aggregator, Coinbase login, shop and loyalty, agent commerce,
+"POD" credentials) that are deleted or switched off. Do not restore it from history.
 
-## Current Product Framing
+This file is deliberately short. It points at the sources that are kept current instead
+of duplicating them, so it cannot drift far.
 
-WoCo is a decentralised event and commerce platform. It starts with events, tickets, organiser
-websites, storefronts, and loyalty, but the broader thesis is open commerce infrastructure: identity,
-payments, reputation, discovery, and credentials should be portable primitives rather than locked
-inside centralised platforms.
+## Read first, in this order
 
-The platform-tax framing matters, but it should not be the whole story. The stronger framing is:
-WoCo gives organisers, communities, venues, brands, agents, and users programmable commerce rails
-where users own their identity, payments are verifiable, and participation history can travel across
-applications.
+1. `CLAUDE.md` (repo root) - architecture, conventions, key file map, gotchas. Wins over
+   any other doc when they disagree.
+2. `docs/README.md` - index of every doc, sorted by how far to trust each.
+3. `docs/ARCHITECTURE.md` - layers, trust boundaries, one ticket traced end to end.
 
-## Arbitrum Buildathon State
+The code is the ground truth. A doc that disagrees with it is the bug.
 
-The Arbitrum Buildathon submission is documented in `docs/BUILDATHON_SUBMISSION.md`.
+## Load-bearing facts (verify in code before relying on them)
 
-Buildathon work is on Arbitrum Sepolia and includes:
+- WoCo is event ticketing: Svelte 5 web app (`apps/web`), Hono server (`apps/server`),
+  Swarm storage with no database, Arbitrum contracts (`contracts/`, a nested repo).
+- Pre-launch: Stripe test keys, Web3Auth devnet, no real customers.
+- Stripe card is the ONLY live payment method. Every other rail is behind a flag in
+  `packages/shared/src/features.ts`, all currently `false`: free events, crypto payments,
+  agent commerce, shops/POS, Coinbase login, organiser sending domains, badges. Flags gate
+  UI and server validation together.
+- There is no claim endpoint. A sale is reserve -> Stripe Checkout -> webhook -> fulfilment,
+  which mints onchain on `WoCoTicketLedger` (Arbitrum Sepolia today; the same ledger is
+  deployed on Arbitrum One, server not switched yet). See `docs/TICKETING.md`.
+- Four keys per account, one identity seed. See `docs/IDENTITY_AND_KEYS.md`. The ed25519
+  holder key is gone (#518); attendee data is sealed with X-Wing
+  (`packages/shared/src/crypto/xwing.ts`, `sealed-box.ts`).
+- Organising requires a passkey account (#768). The organiser area is called "Organiser".
+- Likes and follows are Swarm-native statements on the user's own feed; EAS is deleted
+  (`docs/SWARM_SOCIAL_PLAN.md`).
+- Product noun is "object" (formerly called POD). CI fails on the old noun.
+- Fees: never restate a rate. `docs/PRICING_AND_EMAIL.md` is the one place for them.
 
-- `WoCoEventV2`: USDC on-chain ticketing with sponsor-gated claim paths.
-- ZeroDev Kernel passkey smart wallets and scoped session keys.
-- Coinbase Smart Wallet login support.
-- `label.woco.eth` sub-ENS identities via Durin L2Registry.
-- EAS likes and follows as a rebuildable on-chain social graph.
-- Rust/WASM Stylus `LikeAggregator` that verifies EAS attestations on-chain.
-- USDC shop and POD loyalty rails.
-- Bounded, non-custodial AI-agent commerce: an agent buys a ticket using its own key and a user-granted
-  spend permission enforced by the user's Kernel wallet.
+## Writing about WoCo
 
-Crypto payments and agent commerce are verified on-chain, but production customer crypto rails are
-held back pending security audit.
-
-## Blog Framing To Preserve
-
-Arbitrum's June 2026 post, "The Architecture of the Programmable Economy", is enterprise-finance
-oriented: predictable costs, compliance, confidentiality, ZK settlement, economic levers, Universal
-Intents, sequencing/priority feeds, and the path from Arbitrum One to dedicated blockchains.
-
-For WoCo, the best tie-in is not "Arbitrum wrote our exact thesis." It is:
-
-Arbitrum is describing the infrastructure layer for programmable markets; WoCo is a concrete
-consumer/community commerce instance of that architecture, where tickets, loyalty, profiles, agent
-spend permissions, and social reputation become interoperable rails.
-
-Avoid over-claiming unbuilt roadmap items. Be explicit about what is live on Arbitrum Sepolia versus
-what maps to Arbitrum's future/dedicated-chain roadmap.
-
-## Discord Context
-
-The user's Arbitrum Discord framing emphasized open standards, portable identities, interoperable
-POD credentials, sub-ENS identities, and positive network effects across teams. Example use cases:
-event/forum gating, loyalty, sports attendance badges, digital mementos, venue/attraction credits,
-proof of participation, gaming avatars/skins/achievements evolving from real-world participation,
-hacker-house trust/reputation, marketplace/payment-link identity, and self-sovereign commerce.
-
-This context should be central in future public writing. It is more distinctive than generic
-"cheaper fees" or "platform tax" copy.
+Say what is live and what is built but off. Do not present a flagged-off rail, a design
+doc or a roadmap item as shipped.
