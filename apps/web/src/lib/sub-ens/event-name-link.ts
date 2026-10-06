@@ -26,6 +26,8 @@ export function feedOfManifestChunk(chunk: Uint8Array): { owner: string; topic: 
     const meta = JSON.parse(match[0]) as Record<string, unknown>;
     const owner = String(meta["swarm-feed-owner"] ?? "").toLowerCase();
     const topic = String(meta["swarm-feed-topic"] ?? "").toLowerCase();
+    // Every WoCo page feed is a sequence feed; another type resolves a different feed.
+    if (meta["swarm-feed-type"] !== "Sequence") return null;
     return /^[0-9a-f]{40}$/.test(owner) && /^[0-9a-f]{64}$/.test(topic) ? { owner, topic } : null;
   } catch {
     return null;
@@ -38,6 +40,19 @@ export interface EventNameDeps {
   chunk(hash: string): Promise<Uint8Array | null>;
 }
 
+/** A chunk our bee has to pull from the network can hang for its whole retrieval timeout. */
+const CHUNK_TIMEOUT_MS = 5000;
+
+/** Live reads. Owned names are read once per call of this (one composer visit):
+ *  the server answers them with a full on-chain scan. */
+export function liveEventNameDeps(): EventNameDeps {
+  let owned: Promise<OwnedSubEnsName[]> | null = null;
+  return {
+    ownedNames: () => (owned ??= liveDeps.ownedNames()),
+    chunk: liveDeps.chunk,
+  };
+}
+
 const liveDeps: EventNameDeps = {
   async ownedNames() {
     // Lazy: the API module pulls in the auth store, which the pure parts never need.
@@ -46,7 +61,7 @@ const liveDeps: EventNameDeps = {
     return res.ok && res.data ? res.data.names : [];
   },
   async chunk(hash) {
-    const res = await fetch(`${WOCO_GATEWAY_URL}/chunks/${hash}`);
+    const res = await fetch(`${WOCO_GATEWAY_URL}/chunks/${hash}`, { signal: AbortSignal.timeout(CHUNK_TIMEOUT_MS) });
     return res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
   },
 };
@@ -59,12 +74,13 @@ export async function eventNameUrl(
   const signer = event.creatorFeedSigner?.toLowerCase().replace(/^0x/, "");
   if (!signer) return null;
   const topic = keccakUtf8(eventPageFeedTopic(event.eventId)).slice(2);
-  for (const n of await deps.ownedNames()) {
-    // A profile name is pinned to the app, never to an event page.
-    if (!n.contentHash || n.role === "profile") continue;
-    const bytes = await deps.chunk(n.contentHash).catch(() => null);
+  // A profile name is pinned to the app, never to an event page.
+  const candidates = (await deps.ownedNames()).filter((n) => n.contentHash && n.role !== "profile");
+  const verdicts = await Promise.all(candidates.map(async (n) => {
+    const bytes = await deps.chunk(n.contentHash!).catch(() => null);
     const feed = bytes ? feedOfManifestChunk(bytes) : null;
-    if (feed?.owner === signer && feed.topic === topic) return subEnsWebUrl(n.label);
-  }
-  return null;
+    return feed?.owner === signer && feed.topic === topic;
+  }));
+  const hit = candidates.find((_, i) => verdicts[i]);
+  return hit ? subEnsWebUrl(hit.label) : null;
 }

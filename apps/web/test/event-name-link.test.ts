@@ -31,6 +31,15 @@ test("reads the feed a real manifest chunk follows", () => {
   assert.equal(feedOfManifestChunk(new Uint8Array(64)), null);
 });
 
+test("an obfuscated manifest (non-zero key) or another feed type reads as no feed", () => {
+  const obfuscated = HACKATHON_MANIFEST.map((b, i) => (i >= 40 ? b ^ 0x5a : b));
+  assert.equal(feedOfManifestChunk(obfuscated), null);
+  const epoch = new TextEncoder().encode(
+    '{"swarm-feed-owner":"dac2ff771c3867d6463c27dda8285a73811e8834","swarm-feed-topic":"' + "ab".repeat(32) + '","swarm-feed-type":"Epoch"}',
+  );
+  assert.equal(feedOfManifestChunk(epoch), null);
+});
+
 test("the name whose content is this event's page feed is the link", async () => {
   const url = await eventNameUrl(
     { eventId: EVENT_ID, creatorFeedSigner: SIGNER },

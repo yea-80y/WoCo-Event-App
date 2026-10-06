@@ -14,7 +14,7 @@
   } from "../../api/broadcasts.js";
   import BroadcastProgress from "./BroadcastProgress.svelte";
   import { getEventsByCreator } from "../../api/events.js";
-  import { eventNameUrl } from "../../sub-ens/event-name-link.js";
+  import { eventNameUrl, liveEventNameDeps } from "../../sub-ens/event-name-link.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { firstImageUrl } from "../../components/site/image-fallback.js";
   import { WOCO_GATEWAY_URL } from "../../swarm/gateways.js";
@@ -56,14 +56,16 @@
 
   /** The event's WoCo name once verified against its page feed; the app link until then. */
   let eventLink = $state<{ eventId: string; url: string } | null>(null);
+  const nameDeps = liveEventNameDeps();
+  const nameByEvent = new Map<string, Promise<string | null>>();
   $effect(() => {
     const ev = selectedEvent;
     if (!ev) return;
-    void eventNameUrl(ev)
-      .then((url) => {
-        if (url && selectedEvent?.eventId === ev.eventId) eventLink = { eventId: ev.eventId, url };
-      })
-      .catch(() => {});
+    let pending = nameByEvent.get(ev.eventId);
+    if (!pending) nameByEvent.set(ev.eventId, (pending = eventNameUrl(ev, nameDeps).catch(() => null)));
+    void pending.then((url) => {
+      if (url && selectedEvent?.eventId === ev.eventId) eventLink = { eventId: ev.eventId, url };
+    });
   });
 
   $effect(() => {
