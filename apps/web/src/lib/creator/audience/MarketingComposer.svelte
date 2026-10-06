@@ -14,6 +14,7 @@
   } from "../../api/broadcasts.js";
   import BroadcastProgress from "./BroadcastProgress.svelte";
   import { getEventsByCreator } from "../../api/events.js";
+  import { eventNameUrl } from "../../sub-ens/event-name-link.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { firstImageUrl } from "../../components/site/image-fallback.js";
   import { WOCO_GATEWAY_URL } from "../../swarm/gateways.js";
@@ -53,6 +54,18 @@
 
   const selectedEvent = $derived(events.find((e) => e.eventId === selectedEventId) ?? null);
 
+  /** The event's WoCo name once verified against its page feed; the app link until then. */
+  let eventLink = $state<{ eventId: string; url: string } | null>(null);
+  $effect(() => {
+    const ev = selectedEvent;
+    if (!ev) return;
+    void eventNameUrl(ev)
+      .then((url) => {
+        if (url && selectedEvent?.eventId === ev.eventId) eventLink = { eventId: ev.eventId, url };
+      })
+      .catch(() => {});
+  });
+
   $effect(() => {
     const owner = auth.parent;
     if (!owner || eventsLoaded) return;
@@ -86,7 +99,7 @@
         location: ev.location,
         imageUrl: firstImageUrl(ev.imageHash, WOCO_GATEWAY_URL),
       },
-      eventUrl: publicEventUrl(ev.eventId),
+      eventUrl: eventLink?.eventId === ev.eventId ? eventLink.url : publicEventUrl(ev.eventId),
     });
   }
 
