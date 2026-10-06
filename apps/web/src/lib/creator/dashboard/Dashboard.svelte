@@ -206,9 +206,11 @@
       const dec = decryptedOrders.get(ordersResponse!.orders.indexOf(order));
       return [
         String(order.edition),
-        order.claimerAddress.startsWith("email:") || order.claimerAddress.startsWith("wallet:")
-          ? dec?.claimerAddress ?? ""
-          : order.claimerAddress,
+        order.erased
+          ? "Erased on request"
+          : order.claimerAddress.startsWith("email:") || order.claimerAddress.startsWith("wallet:")
+            ? dec?.claimerAddress ?? ""
+            : order.claimerAddress,
         dec?.claimerEmail ?? "",
         order.via ?? "",
         order.refund === "refunded"
@@ -1104,8 +1106,12 @@
                     {@const isSending = sending.has(key)}
                     <tr>
                       <td>#{order.edition}</td>
-                      <td class="address" title={order.claimerAddress}>
-                        {#if order.claimerAddress.startsWith("email:")}
+                      <td class="address" title={order.erased ? "" : order.claimerAddress}>
+                        {#if order.erased}
+                          <!-- #546: the record is gone; the address left is only the
+                               ticket's single-use key, meaningless to the organiser. -->
+                          <span class="claim-type">Erased on request</span>
+                        {:else if order.claimerAddress.startsWith("email:")}
                           {#if dec?.claimerEmail}
                             <span class="claim-email">{dec.claimerEmail}</span>
                           {:else}
