@@ -22,6 +22,9 @@ import {
   type IntentDeps,
 } from "../src/lib/event/registration-intent.js";
 
+// The events chain is required since #607; these tests do not depend on which one.
+process.env.WOCO_EVENT_CHAIN_ID ??= "421614";
+
 // ── The ladder itself ────────────────────────────────────────────────────────
 
 const MARKER = { nonce: 40 };
