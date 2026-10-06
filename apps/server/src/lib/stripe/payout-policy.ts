@@ -70,6 +70,23 @@ export const FALLBACK_RELEASE_DAYS = 14;
  */
 export const BALANCE_SHORT_ALARM_DAYS = 7;
 
+/**
+ * How long a balance must hold MORE than the ledger claims before the surplus is
+ * paid to the organiser (#781 part 2). The surplus is theirs (a debt Stripe
+ * recovered from their bank, a dispute won after payout, their own non-WoCo
+ * payment), but a refund Stripe holds for insufficient funds claims the balance
+ * first, and a sale whose webhook has not been recorded yet reads as surplus
+ * until it is. Stripe retries a webhook for up to three days; a week covers it.
+ */
+export const SURPLUS_SETTLE_DAYS = 7;
+
+/**
+ * A surplus still unpaid this long is an alarm: well past the wait, it can only
+ * be stuck (no available funds to pay it from, or a payout that keeps failing),
+ * and Stripe's hold ceiling applies to it like any held money.
+ */
+export const SURPLUS_ALARM_DAYS = 30;
+
 const DAY_MS = 86_400_000;
 
 /** Stripe's hold ceiling for a country, in days, before our safety margin. */

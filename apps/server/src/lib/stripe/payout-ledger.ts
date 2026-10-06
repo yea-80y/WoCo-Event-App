@@ -36,7 +36,13 @@ export interface PayoutLedgerEntry {
   stripeAccountId: string;
   /** Organiser's ETH address (lowercase) — the WoCo-side identity. */
   organiserAddress: string;
-  kind: "event" | "shop";
+  /**
+   * `reconciliation`: not a sale. The part of a payout that settled money the
+   * balance gained or lost outside any sale (#781 part 2) — a chargeback after
+   * an earlier payout, a debt Stripe recovered from the organiser's bank, a won
+   * dispute. Written already released, with its payout.
+   */
+  kind: "event" | "shop" | "reconciliation";
   eventId?: string;
   seriesId?: string;
   shopId?: string;
@@ -240,11 +246,28 @@ export function markReleased(
 export function markManyReleased(
   sessionIds: string[],
   payoutId: string,
-  opts: { forcedSessionIds?: string[] } = {},
+  opts: { forcedSessionIds?: string[]; recon?: ReconRow } = {},
 ): void {
   ensureLoaded();
   const forced = new Set(opts.forcedSessionIds ?? []);
   const releasedAt = new Date().toISOString();
+  // The reconciliation row is written in the SAME persist as the sales, so a
+  // payout's rows always add up to what it paid.
+  if (opts.recon && !store[opts.recon.id]) {
+    const r = opts.recon;
+    store[r.id] = {
+      sessionId: r.id,
+      stripeAccountId: r.stripeAccountId,
+      organiserAddress: r.organiserAddress.toLowerCase(),
+      kind: "reconciliation",
+      currency: r.currency,
+      grossAmount: 0,
+      netAmount: r.amount,
+      recordedAt: releasedAt,
+      releaseAfter: releasedAt,
+      status: "released",
+    };
+  }
   for (const sessionId of sessionIds) {
     const e = store[sessionId];
     if (!e) continue;
@@ -268,6 +291,41 @@ export function markVoid(sessionId: string, reason: string): void {
   e.status = "void";
   e.voidReason = reason.slice(0, 200);
   persist();
+}
+
+/** The money a payout settled that no sale accounts for (#781 part 2). */
+export interface ReconRow {
+  id: string;
+  stripeAccountId: string;
+  organiserAddress: string;
+  /** Payout currency, lowercase. */
+  currency: string;
+  /** Signed minor units: negative = deducted, positive = paid out. */
+  amount: number;
+}
+
+/** The organiser behind a connected account, from any entry it has. */
+export function organiserForAccount(stripeAccountId: string): string | undefined {
+  ensureLoaded();
+  for (const e of Object.values(store)) if (e.stripeAccountId === stripeAccountId) return e.organiserAddress;
+  return undefined;
+}
+
+/**
+ * Every account + payout currency that has held or released money (#781 part 2).
+ * The sweep visits each one, not only those with sales held: a chargeback after
+ * the last payout, or a debt Stripe recovered from the bank, moves an account's
+ * balance with nothing held.
+ */
+export function listAccountGroups(): Array<{ stripeAccountId: string; currency: string }> {
+  ensureLoaded();
+  const seen = new Map<string, { stripeAccountId: string; currency: string }>();
+  for (const e of Object.values(store)) {
+    if (e.status === "void") continue;
+    const currency = e.settlementCurrency ?? e.currency;
+    seen.set(`${e.stripeAccountId}|${currency}`, { stripeAccountId: e.stripeAccountId, currency });
+  }
+  return [...seen.values()];
 }
 
 /** Test seam — resets in-memory state so a fresh file is read. */

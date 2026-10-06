@@ -135,7 +135,7 @@ export function sumByCurrency(entries: PayoutEntryView[]): Record<string, number
 // ---------------------------------------------------------------------------
 
 export interface PayoutGroup {
-  /** Stable identity for keyed rendering: "event:{id}" · "shop:{id}" · "other". */
+  /** Stable identity for keyed rendering: "event:{id}" · "shop:{id}" · "adjustments" · "other". */
   key: string;
   kind: "event" | "shop" | "other";
   id: string | null;
@@ -156,6 +156,7 @@ export type TitleLookup = (kind: "event" | "shop", id: string) => string | undef
 function groupKeyOf(e: PayoutEntryView): { key: string; kind: PayoutGroup["kind"]; id: string | null } {
   if (e.kind === "event" && e.eventId) return { key: `event:${e.eventId}`, kind: "event", id: e.eventId };
   if (e.kind === "shop" && e.shopId) return { key: `shop:${e.shopId}`, kind: "shop", id: e.shopId };
+  if (e.kind === "reconciliation") return { key: "adjustments", kind: "other", id: null };
   return { key: "other", kind: "other", id: null };
 }
 
@@ -184,6 +185,7 @@ export function groupPayouts(entries: PayoutEntryView[], titleOf?: TitleLookup):
           looked ??
           (kind === "event" && id ? `Event ${shortId(id)}`
             : kind === "shop" && id ? `Shop ${shortId(id)}`
+            : key === "adjustments" ? "Balance adjustments"
             : "Other sales"),
         entries: [],
         heldByCurrency: {},
@@ -322,6 +324,14 @@ export function entryStatusLabel(e: PayoutEntryView, now: number, locale?: strin
       // shown verbatim so the organiser sees the actual reason, not a guess.
       detail: e.voidReason ?? "Returned to the buyer — nothing to pay out",
     };
+  }
+  // Not a sale: money a payout deducted or added because the balance changed
+  // outside any sale (#781 part 2). Written already released, with its payout.
+  if (e.kind === "reconciliation") {
+    const when = e.releasedAt ? formatDate(e.releasedAt, now, locale) : formatDate(e.releaseAfter, now, locale);
+    return (e.netAmount ?? 0) < 0
+      ? { tone: "void", badge: "Deducted", detail: `Refunds, disputes or fees after an earlier payout - taken from your payout on ${when}` }
+      : { tone: "released", badge: "Paid out", detail: `Money added to your balance outside a ticket sale - paid out on ${when}` };
   }
   // A refund or chargeback took this sale below zero: Stripe keeps its fees, and
   // so do we. That cost is deducted from a payout, never paid, so "Held" and
