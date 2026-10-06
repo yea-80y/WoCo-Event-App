@@ -11,7 +11,7 @@
 
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { Wallet } from "ethers";
+import { parseEther, Wallet } from "ethers";
 
 import {
   DEFAULT_TICKET_MINT_ALLOWANCE_MIN,
@@ -19,6 +19,7 @@ import {
   evaluateTicketMintAllowance,
   evaluateTicketMintRamp,
   evaluateTicketSponsorAuthorised,
+  evaluateTicketSponsorBalance,
   readThresholdsFromEnv,
 } from "../src/lib/health/alarms.js";
 
@@ -26,6 +27,7 @@ const EVENTS_KEY = Wallet.createRandom().privateKey;
 process.env.WOCO_SPONSOR_PRIVATE_KEY = EVENTS_KEY;
 delete process.env.TICKET_MINT_ALLOWANCE_MIN;
 delete process.env.TICKET_MINT_ALARM_PCT;
+delete process.env.TICKET_SPONSOR_MIN_ETH;
 
 const probes = await import("../src/lib/health/probes.js");
 const { EventContractConfigError } = await import("../src/lib/chain/event-contract.js");
@@ -34,8 +36,10 @@ const LEDGER = { chainId: 421614, address: "0x" + "1e".repeat(20), version: "led
 const RESETS = 1_790_000_000;
 const UNLIMITED = 0xffff_ffff;
 
-function readers(policy: () => Promise<unknown>) {
-  return { ticketMintPolicy: policy } as unknown as Parameters<typeof probes.refreshTicketMinting>[0];
+function readers(policy: () => Promise<unknown>, balance: () => Promise<bigint> = async () => parseEther("1")) {
+  return { ticketMintPolicy: policy, ticketSponsorBalance: balance } as unknown as Parameters<
+    typeof probes.refreshTicketMinting
+  >[0];
 }
 const silent = () => {};
 
@@ -333,4 +337,61 @@ test("#672: a contract change starts the peak afresh - two ledgers' hours never 
     pct: 0,
     windowEndedAt: new Date((RESETS + 60) * 1000).toISOString(),
   });
+});
+
+// ---------------------------------------------------------------------------
+// The sponsor's gas (#706)
+// ---------------------------------------------------------------------------
+
+const AUTHORISED = async () => ({
+  contract: LEDGER,
+  sponsor: "0xabc",
+  sponsorAuthorised: true,
+  allowance: { perHour: UNLIMITED, mintable: UNLIMITED, windowResetsAt: 0 },
+});
+
+test("the ticket sponsor's gas floor defaults to the names sponsor's, and a bad value is reported", () => {
+  assert.equal(readThresholdsFromEnv({}).ticketMinting.sponsorMinEth, "0.0005");
+  const cfg = readThresholdsFromEnv({ TICKET_SPONSOR_MIN_ETH: "1e-3" }).ticketMinting;
+  assert.equal(cfg.sponsorMinEth, "0.0005");
+  assert.match(cfg.configError ?? "", /TICKET_SPONSOR_MIN_ETH/);
+});
+
+test("a ticket sponsor below the floor is an ALARM that says buyers get charged then refunded", () => {
+  const v = evaluateTicketSponsorBalance({ balanceWei: parseEther("0.0004"), minWei: parseEther("0.0005") });
+  assert.equal(v.ok, false);
+  assert.match(v.reason ?? "", /auto-refund/);
+  assert.deepEqual(evaluateTicketSponsorBalance({ balanceWei: parseEther("0.0005"), minWei: parseEther("0.0005") }), {
+    ok: true,
+  });
+  assert.equal(evaluateTicketSponsorBalance({ balanceWei: null, minWei: 1n }).ok, null);
+});
+
+test("a dry ticket sponsor turns the section red even with the cap healthy", async () => {
+  await probes.refreshTicketMinting(readers(AUTHORISED, async () => parseEther("0.0001")), silent);
+  const s = probes.ticketMintingHealth();
+  assert.equal(s.ok, false);
+  assert.equal(s.checks.sponsorBalance.ok, false);
+  assert.equal(s.checks.mintAllowance.ok, true);
+  assert.equal(s.sponsorBalanceEth, "0.0001");
+  assert.equal(s.sponsorMinEth, "0.0005");
+});
+
+test("an unreadable balance is UNKNOWN and does not hide the other checks", async () => {
+  await probes.refreshTicketMinting(readers(AUTHORISED, async () => { throw new Error("socket hang up"); }), silent);
+  const s = probes.ticketMintingHealth();
+  assert.equal(s.ok, null);
+  assert.equal(s.checks.sponsorBalance.ok, null);
+  assert.equal(s.checks.sponsorAuthorised.ok, true);
+  assert.equal(s.sponsorBalanceEth, null);
+});
+
+test("TICKET_SPONSOR_MIN_ETH moves the floor", async () => {
+  process.env.TICKET_SPONSOR_MIN_ETH = "0.00005";
+  try {
+    await probes.refreshTicketMinting(readers(AUTHORISED, async () => parseEther("0.0001")), silent);
+    assert.equal(probes.ticketMintingHealth().checks.sponsorBalance.ok, true);
+  } finally {
+    delete process.env.TICKET_SPONSOR_MIN_ETH;
+  }
 });

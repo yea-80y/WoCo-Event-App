@@ -85,9 +85,21 @@ const DEPLOYED_V2: Record<number, string> = {
  */
 const DEPLOYED_LEDGER: Record<number, string> = {};
 
-/** Chain the server currently uses for event registration. Override via WOCO_EVENT_CHAIN_ID. */
+/**
+ * Chain the server uses for event registration: `WOCO_EVENT_CHAIN_ID`, REQUIRED.
+ *
+ * It used to default to Base Sepolia (84532), a chain nothing watches any more,
+ * so a dropped env line registered events where nobody would look, on another
+ * contract with another sponsor balance and no alarm (#607). The version policy
+ * below allows a default for an absent value; the chain cannot have one, since
+ * every other events setting is read per chain. `assertEventContractConfig`
+ * calls this at boot, so the process refuses to start without it.
+ */
 export function getActiveChainId(): number {
-  return parseInt(process.env.WOCO_EVENT_CHAIN_ID ?? "84532");
+  const raw = (process.env.WOCO_EVENT_CHAIN_ID ?? "").trim();
+  if (raw === "") throw new EventContractConfigError("WOCO_EVENT_CHAIN_ID is not set - the events chain has no default");
+  if (!/^[1-9]\d{0,15}$/.test(raw)) throw new EventContractConfigError(`WOCO_EVENT_CHAIN_ID="${raw}" is not a chain id`);
+  return Number(raw);
 }
 
 /**
