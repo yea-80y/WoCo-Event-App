@@ -335,3 +335,19 @@ test("row labels distinguish held, paid out, early release and refunded", () => 
   assert.equal(refunded.tone, "void");
   assert.equal(refunded.detail, "full refund");
 });
+
+test("a sale a refund took below zero reads as fees owed, then fees deducted — never Held or Paid out (#781)", () => {
+  const owed = entryStatusLabel(entry({ status: "held", netAmount: -169 }), NOW);
+  assert.equal(owed.badge, "Fees owed");
+  assert.match(owed.detail, /next payout/);
+
+  const deducted = entryStatusLabel(
+    entry({ status: "released", netAmount: -169, releasedAt: "2026-07-30T09:00:00.000Z" }),
+    NOW,
+    "en-GB",
+  );
+  assert.equal(deducted.badge, "Fees deducted");
+  assert.equal(deducted.detail, "Taken from your payout on 30 Jul");
+
+  assert.equal(entryStatusLabel(entry({ status: "held", netAmount: 0 }), NOW).badge, "Held", "zero is not a debt");
+});

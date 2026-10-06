@@ -62,8 +62,22 @@ export interface PayoutLedgerEntry {
    * a refund can land at any time before release, so this is a running record
    * for reporting, never a value the sweep trusts without re-reading Stripe.
    * Final only once the entry leaves "held".
+   *
+   * NEGATIVE once a refund or chargeback has taken more than the sale brought
+   * in: Stripe keeps its processing fee on a refund, and our fee stays kept too
+   * unless returned. That money has already left the pooled balance, so the
+   * entry stays held and is netted into the account's next payout (#781).
+   * Released with a negative net = the payout it was deducted from.
    */
   netAmount?: number;
+  /**
+   * Re-read from Stripe on the next sweep, whatever the release date (#781).
+   * Set when a refund or dispute moves on the sale, so a debt is netted at the
+   * next payout instead of waiting for its own event's date. A hint only: the
+   * sweep still reads every amount from Stripe, and a lost flag delays a debt,
+   * it never pays one out.
+   */
+  recheck?: boolean;
   recordedAt: string;
   /** Earliest release — event end + grace, or shop settle delay. */
   releaseAfter: string;
@@ -154,18 +168,53 @@ export function listByOrganiser(organiserAddress: string): PayoutLedgerEntry[] {
 
 /**
  * Record the latest resolved net (and, when the charge settled in a different
- * currency, which one). Reporting only — the sweep re-resolves from Stripe on
- * every run precisely so a refund landing between sweeps is never missed.
+ * currency, which one), and clear any recheck flag: the sweep has just read the
+ * sale. Reporting only — the sweep re-resolves from Stripe on every run
+ * precisely so a refund landing between sweeps is never missed.
  */
 export function setNetAmount(sessionId: string, netAmount: number, settlementCurrency?: string): void {
   ensureLoaded();
   const e = store[sessionId];
   if (!e) return;
+  const currency = settlementCurrency && settlementCurrency !== e.currency ? settlementCurrency : e.settlementCurrency;
+  if (e.netAmount === netAmount && e.settlementCurrency === currency && !e.recheck) return;
   e.netAmount = netAmount;
-  if (settlementCurrency && settlementCurrency !== e.currency) {
-    e.settlementCurrency = settlementCurrency;
-  }
+  if (currency) e.settlementCurrency = currency;
+  delete e.recheck;
   persist();
+}
+
+/**
+ * Ask the next sweep to re-read this sale from Stripe now, whatever its release
+ * date (#781). Called when a refund or dispute moves on it. Returns false when
+ * the ledger has no such sale (an organiser's own, or a shop order).
+ */
+export function flagForRecheck(sessionId: string): boolean {
+  ensureLoaded();
+  const e = store[sessionId];
+  if (!e) return false;
+  if (e.recheck) return true;
+  e.recheck = true;
+  persist();
+  return true;
+}
+
+/**
+ * Put a voided sale back under the sweep (#781). Before #781 a sale whose net
+ * went below zero was voided, and that debt dropped out of the arithmetic while
+ * Stripe had already taken it from the balance. Reopened, the sweep re-reads
+ * the sale from Stripe and nets whatever it is really worth. Only a void can be
+ * reopened: a released sale's money has left.
+ */
+export function reopenVoid(sessionId: string): PayoutLedgerEntry | null {
+  ensureLoaded();
+  const e = store[sessionId];
+  if (!e || e.status !== "void") return null;
+  e.status = "held";
+  e.recheck = true;
+  delete e.voidReason;
+  persist();
+  return e;
 }
 
 export function markReleased(
@@ -208,8 +257,9 @@ export function markManyReleased(
 }
 
 /**
- * Void an entry — refunded, or the claim failed and the money went back. Voiding
- * removes it from the release schedule without pretending it was paid out.
+ * Void an entry whose sale came to exactly nothing. Voiding removes it from the
+ * release schedule without pretending it was paid out. Never for a negative
+ * net: that is a debt the next payout must carry (#781).
  */
 export function markVoid(sessionId: string, reason: string): void {
   ensureLoaded();

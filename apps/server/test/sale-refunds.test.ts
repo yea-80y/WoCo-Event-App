@@ -75,8 +75,12 @@ function fakeReads(o: {
 function fakeStore(sale: TicketSale | undefined, persisting = true, writes = true) {
   const applied: Array<{ sessionId: string; refunded: number; charged: number }> = [];
   const disputeReadings: DisputeReading[] = [];
+  const rechecked: string[] = [];
   const store: SaleRefundStore = {
     persisting: () => persisting,
+    flagPayoutRecheck: (sessionId) => {
+      rechecked.push(sessionId);
+    },
     applyDisputeState: (_sessionId, reading) => {
       disputeReadings.push(reading);
       return { voided: reading.chargeback, unvoided: !reading.chargeback, persisted: writes };
@@ -87,7 +91,7 @@ function fakeStore(sale: TicketSale | undefined, persisting = true, writes = tru
       return { voided: refunded >= charged, unvoided: false, partialAlarm: false, persisted: writes };
     },
   };
-  return { store, applied, disputeReadings };
+  return { store, applied, disputeReadings, rechecked };
 }
 
 const INPUT = { paymentIntentId: "pi_1", account: "acct_1" };
@@ -116,6 +120,20 @@ describe("a recorded sale", () => {
     assert.equal(out.kind, "applied");
     assert.deepEqual(applied, [{ sessionId: "cs_1", refunded: 2000, charged: 2000 }]);
     assert.deepEqual(calls, ["latestCharge", "refundsForCharge"], "no fee lookup: the record already says ours");
+  });
+
+  test("an applied refund or dispute flags the sale for the payout sweep to re-read (#781)", async () => {
+    const refund = fakeStore(SALE);
+    await reconcileChargeEvent(INPUT, fakeReads({ refunds: [{ amount: 2000, status: "succeeded" }] }).reads, refund.store);
+    assert.deepEqual(refund.rechecked, ["cs_1"]);
+
+    const dispute = fakeStore(SALE);
+    await reconcileChargeEvent({ ...INPUT, dispute: true }, fakeReads({ disputes: [{ status: "lost" }] }).reads, dispute.store);
+    assert.deepEqual(dispute.rechecked, ["cs_1"], "a chargeback takes the sale below zero too");
+
+    const unwritten = fakeStore(SALE, true, false);
+    await reconcileChargeEvent(INPUT, fakeReads({ refunds: [{ amount: 2000, status: "succeeded" }] }).reads, unwritten.store);
+    assert.deepEqual(unwritten.rechecked, [], "not applied, so not flagged: Stripe redelivers and the retry flags it");
   });
 
   test("order-free: charge.refunded and refund.failed in either order end at the same state", async () => {

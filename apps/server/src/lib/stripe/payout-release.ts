@@ -11,6 +11,11 @@
  * amount released is always the sum of the ledger entries that are actually DUE —
  * never the raw balance.
  *
+ * A refunded or charged-back sale can be worth LESS than nothing: Stripe keeps
+ * its processing fee and the chargeback fee, and those come out of the same
+ * pooled balance. Such a sale is a debt, netted into the account's next payout,
+ * so the balance left behind always covers every sale still held (#781).
+ *
  * Ordering invariant that keeps this safe under crashes: we choose the set of
  * entries FIRST, journal a payout INTENT (set + amount + idempotency key), pay
  * out exactly the journalled sum, and only then mark the set released — in one
@@ -25,7 +30,7 @@
 import type Stripe from "stripe";
 import { createHash } from "node:crypto";
 import { getStripe } from "./client.js";
-import { holdCeilingAt } from "./payout-policy.js";
+import { BALANCE_SHORT_ALARM_DAYS, holdCeilingAt } from "./payout-policy.js";
 import { pendingScheduleHeals, retryPendingScheduleHeals } from "./payout-schedule.js";
 import {
   getEntry,
@@ -119,15 +124,25 @@ export type ResolvedNet = { net: number; currency: string } | { held: "dispute" 
 export interface ReleaseOutcome {
   stripeAccountId: string;
   currency: string;
-  /** Entries released in this run. */
+  /** Entries released in this run, debts netted into the payout included. */
   released: string[];
   /** Entries due but left held because the balance hadn't settled yet. */
   deferred: string[];
   voided: string[];
+  /** Released entries whose net was negative: deducted from this payout (#781). */
+  debts: string[];
   amount: number;
   payoutId?: string;
   /** True when at least one released entry was forced out by the hold ceiling. */
   forcedByCeiling: boolean;
+  /**
+   * When the oldest sale that is due but did not fit the balance became due.
+   * Pending funds clear within days, so a sale still not fitting long after it
+   * fell due means the balance is short of what the ledger says it holds (#781).
+   */
+  shortSince?: string;
+  /** The account's debts are larger than everything due: nothing can be paid. */
+  owes?: boolean;
   error?: string;
 }
 
@@ -438,6 +453,123 @@ async function settlePendingIntent(
   return true;
 }
 
+/** An entry the sweep reads this run. `payable` = due, so a positive net may be paid. */
+interface Candidate {
+  entry: PayoutLedgerEntry;
+  payable: boolean;
+  forced: boolean;
+  /** When it fell due — the start of the balance-short alarm's clock. */
+  dueSince?: string;
+}
+
+type ReadNet = Candidate & { net: number };
+
+const sumNets = (xs: ReadNet[]): number => xs.reduce((s, x) => s + x.net, 0);
+
+/**
+ * Read each candidate's net from Stripe — fresh EVERY sweep, because a refund
+ * can land between sweeps and a cached net would pay it out anyway — and sort
+ * it: a negative net is a debt (#781), a due positive is payable, a zero on a
+ * due sale voids. An unresolvable or unsettled net stays held, never guessed at.
+ */
+async function readNets(
+  candidates: Candidate[],
+  gateway: PayoutGateway,
+  currency: string,
+  outcome: ReleaseOutcome,
+  debts: ReadNet[],
+  positives: ReadNet[],
+): Promise<{ debtUnread: string[] }> {
+  const debtUnread: string[] = [];
+  for (const c of candidates) {
+    const { entry } = c;
+    const resolved = await gateway.resolveNet(entry);
+    if (resolved === null) {
+      if (c.payable) outcome.deferred.push(entry.sessionId);
+      if ((entry.netAmount ?? 0) < 0) debtUnread.push(entry.sessionId);
+      continue;
+    }
+    if ("held" in resolved) {
+      // Never voided here: `markVoid` is terminal, a won dispute gives the money
+      // back, and a pending refund may yet fail. Held until it is final (the
+      // ceiling alarm still runs). Any recheck flag stays, so it is read again.
+      if (c.payable) outcome.deferred.push(entry.sessionId);
+      console.warn(
+        `[payout-release] ${entry.sessionId}: ` +
+          (resolved.held === "dispute" ? "dispute open" : "refund not settled") +
+          " — held until it is final",
+      );
+      continue;
+    }
+    const { net, currency: settledIn } = resolved;
+    setNetAmount(entry.sessionId, net, settledIn);
+    if (settledIn !== currency) {
+      // The charge settled in a different currency than this group is paying
+      // (Stripe converted it into the account's default currency). The net is
+      // in SETTLEMENT units and must be paid from the settlement balance —
+      // defer; the next sweep regroups the entry under the recorded
+      // settlementCurrency and releases it from the right pot.
+      if (c.payable) outcome.deferred.push(entry.sessionId);
+      console.warn(
+        `[payout-release] ${entry.sessionId}: charged in ${entry.currency} but settled ` +
+          `in ${settledIn} — regrouping under the settlement currency next sweep`,
+      );
+      continue;
+    }
+    if (net < 0) {
+      // Already taken from the pooled balance: carried as a debt, never voided.
+      debts.push({ ...c, net });
+    } else if (net === 0) {
+      // Only a due sale is retired. One read early stays held: its event's date,
+      // not a refund's timing, decides when the sale is finished with.
+      if (c.payable) {
+        markVoid(entry.sessionId, "no net proceeds — refunded in full");
+        outcome.voided.push(entry.sessionId);
+      }
+    } else if (c.payable) {
+      positives.push({ ...c, net });
+    }
+  }
+  return { debtUnread };
+}
+
+/**
+ * Debts first, then due sales oldest-first while the running sum fits the
+ * available balance. `total` is the payout; `rest` are the due sales that did
+ * not fit.
+ */
+function selectForPayout(
+  debts: ReadNet[],
+  positives: ReadNet[],
+  available: number,
+): { chosen: ReadNet[]; rest: ReadNet[]; total: number } {
+  let total = sumNets(debts);
+  const chosen: ReadNet[] = [];
+  for (const p of positives) {
+    if (total + p.net > available) break;
+    chosen.push(p);
+    total += p.net;
+  }
+  return { chosen, rest: positives.slice(chosen.length), total };
+}
+
+/**
+ * The not-yet-due sales of a group whose due sales do not fit are read at most
+ * this often. It is the backstop for a lost recheck flag, so a day's delay in
+ * netting a debt is the whole cost, and reading a large festival's sales every
+ * hour while a gig's last-minute takings are still pending is not.
+ */
+const SHORTFALL_SCAN_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const lastShortfallScan = new Map<string, number>();
+
+function shortfallScanDue(stripeAccountId: string, currency: string, nowMs: number): boolean {
+  const key = `${stripeAccountId}|${currency}`;
+  const last = lastShortfallScan.get(key);
+  if (last !== undefined && nowMs - last < SHORTFALL_SCAN_INTERVAL_MS) return false;
+  lastShortfallScan.set(key, nowMs);
+  return true;
+}
+
 /**
  * Release what is due for one connected account and currency.
  *
@@ -457,6 +589,7 @@ export async function releaseForAccount(
     released: [],
     deferred: [],
     voided: [],
+    debts: [],
     amount: 0,
     forcedByCeiling: false,
   };
@@ -479,9 +612,13 @@ export async function releaseForAccount(
 
   const country = await gateway.accountCountry(stripeAccountId);
 
-  // Which entries are due, and why. The ceiling is a compliance deadline: past it
-  // we must pay out even though the event hasn't happened.
-  const due: Array<{ entry: PayoutLedgerEntry; forced: boolean }> = [];
+  // Which entries to read from Stripe this sweep, and which of them may be PAID.
+  // A due entry (event over, or the ceiling reached) may be paid. Any other entry
+  // is read only when it may carry a debt — a refund or dispute flagged it, or
+  // its last known net was below zero (#781). Netting a debt early can only
+  // lower a payout, and a positive net that is not due is never paid.
+  const toRead: Candidate[] = [];
+  const notDue: PayoutLedgerEntry[] = [];
   for (const entry of entries.slice().sort(byAge)) {
     // A cancelled event's takings fund its refunds (#644): held until every
     // refund is settled, and never forced out by the hold ceiling — paying the
@@ -494,89 +631,106 @@ export async function releaseForAccount(
     const eventDue = nowMs >= new Date(entry.releaseAfter).getTime();
     const ceiling = holdCeilingAt(entry.recordedAt, country);
     const ceilingHit = nowMs >= new Date(ceiling).getTime();
-    if (eventDue || ceilingHit) due.push({ entry, forced: ceilingHit && !eventDue });
+    // Past the hold above, a cancelled event's sale has had its refund settle.
+    // It is read at once so the fees kept on that refund are netted straight
+    // away. A positive remainder (an operator resolved the row: the buyer was
+    // made whole another way) still waits for its date like any other sale.
+    const cancelled = !!entry.eventId && gateway.eventCancelled?.(entry.eventId) === true;
+    if (eventDue || ceilingHit) {
+      toRead.push({
+        entry,
+        payable: true,
+        forced: ceilingHit && !eventDue,
+        dueSince: eventDue ? entry.releaseAfter : ceiling,
+      });
+    } else if (cancelled || entry.recheck || (entry.netAmount ?? 0) < 0) {
+      toRead.push({ entry, payable: false, forced: false });
+    } else {
+      notDue.push(entry);
+    }
   }
-  if (due.length === 0) return outcome;
+  if (toRead.length === 0) return outcome;
 
-  // Resolve what each sale is actually worth — fresh from Stripe EVERY sweep,
-  // because a refund can land between sweeps and a cached net would pay it out
-  // anyway. Voids anything a refund has already emptied; an unresolvable entry
-  // stays held — never guessed at.
-  const payable: Array<{ entry: PayoutLedgerEntry; net: number; forced: boolean }> = [];
-  for (const { entry, forced } of due) {
-    const resolved = await gateway.resolveNet(entry);
-    if (resolved === null) {
-      outcome.deferred.push(entry.sessionId);
-      continue;
-    }
-    if ("held" in resolved) {
-      // Never voided here: `markVoid` is terminal, a won dispute gives the money
-      // back, and a pending refund may yet fail. Held until it is final (the
-      // ceiling alarm still runs).
-      outcome.deferred.push(entry.sessionId);
-      console.warn(
-        `[payout-release] ${entry.sessionId}: ` +
-          (resolved.held === "dispute" ? "dispute open" : "refund not settled") +
-          " — held until it is final",
+  const debts: ReadNet[] = [];
+  const positives: ReadNet[] = [];
+  const { debtUnread } = await readNets(toRead, gateway, currency, outcome, debts, positives);
+  if (positives.length === 0) {
+    if (debts.length > 0) {
+      console.log(
+        `[payout-release] ${stripeAccountId} ${currency}: ${debts.length} debt(s) wait for the next due sale`,
       );
-      continue;
     }
-    const { net, currency: settledIn } = resolved;
-    if (net !== entry.netAmount || settledIn !== (entry.settlementCurrency ?? entry.currency)) {
-      setNetAmount(entry.sessionId, net, settledIn);
-    }
-    if (settledIn !== currency) {
-      // The charge settled in a different currency than this group is paying
-      // (Stripe converted it into the account's default currency). The net is
-      // in SETTLEMENT units and must be paid from the settlement balance —
-      // defer; the next sweep regroups the entry under the recorded
-      // settlementCurrency and releases it from the right pot.
-      outcome.deferred.push(entry.sessionId);
-      console.warn(
-        `[payout-release] ${entry.sessionId}: charged in ${entry.currency} but settled ` +
-          `in ${settledIn} — regrouping under the settlement currency next sweep`,
-      );
-      continue;
-    }
-    if (net <= 0) {
-      markVoid(entry.sessionId, "no net proceeds — refunded or fees exceeded takings");
-      outcome.voided.push(entry.sessionId);
-      continue;
-    }
-    payable.push({ entry, net, forced });
+    return outcome;
   }
-  if (payable.length === 0) return outcome;
+  if (debtUnread.length > 0) {
+    // A sale known to be below zero could not be read this sweep. Paying without
+    // it would spend another event's takings by that much, so wait an hour.
+    outcome.error = "a known debt could not be read";
+    outcome.deferred.push(...positives.map((p) => p.entry.sessionId));
+    console.warn(
+      `[payout-release] ${stripeAccountId} ${currency}: payout held — known debt(s) ${debtUnread.join(", ")} ` +
+        `could not be read this sweep`,
+    );
+    return outcome;
+  }
+  if (debts.length > 0 && sumNets(debts) + sumNets(positives) <= 0) {
+    // The debts outweigh everything due, so no selection can pay anything. The
+    // sales stay held until new takings cover the debt.
+    outcome.owes = true;
+    outcome.deferred.push(...positives.map((p) => p.entry.sessionId));
+    console.warn(
+      `[payout-release] ${stripeAccountId} ${currency}: debts of ${-sumNets(debts)} exceed the ` +
+        `${sumNets(positives)} due — nothing payable until new sales cover them`,
+    );
+    return outcome;
+  }
 
   const available = await gateway.availableBalance(stripeAccountId, currency);
   if (available === null) {
     outcome.error = "balance unavailable";
-    outcome.deferred.push(...payable.map((p) => p.entry.sessionId));
+    outcome.deferred.push(...positives.map((p) => p.entry.sessionId));
     return outcome;
   }
 
-  // Select BEFORE paying: take entries oldest-first while they still fit inside
-  // the settled balance. Anything that doesn't fit stays held for the next sweep
+  // Select BEFORE paying. Every debt first: that money has already left the
+  // balance, so paying the due sales in full would spend another event's held
+  // takings (#781). Then due sales oldest-first while they still fit inside the
+  // settled balance. Anything that doesn't fit stays held for the next sweep
   // (funds in `pending` haven't settled yet — that is normal, not an error).
-  const selected: typeof payable = [];
-  let total = 0;
-  for (const p of payable) {
-    if (total + p.net > available) break;
-    selected.push(p);
-    total += p.net;
+  let selection = selectForPayout(debts, positives, available);
+  if (selection.rest.length > 0 && notDue.length > 0 && shortfallScanDue(stripeAccountId, currency, nowMs)) {
+    // Something due does not fit. A debt on a sale that is not due yet would
+    // explain it, and its recheck flag (set by the refund webhook) may have been
+    // lost. Read those sales once a day as the backstop.
+    const known = debts.length;
+    await readNets(
+      notDue.map((entry) => ({ entry, payable: false, forced: false })),
+      gateway,
+      currency,
+      outcome,
+      debts,
+      positives,
+    );
+    if (debts.length > known) selection = selectForPayout(debts, positives, available);
   }
-  const notSelected = payable.slice(selected.length);
-  outcome.deferred.push(...notSelected.map((p) => p.entry.sessionId));
+  const { chosen, rest, total } = selection;
+  const paying = chosen.length > 0 && total > 0;
+  const unpaid = paying ? rest : positives;
+  outcome.deferred.push(...unpaid.map((p) => p.entry.sessionId));
+  const shortSince = unpaid.map((p) => p.dueSince).filter((d): d is string => !!d).sort()[0];
+  if (shortSince) outcome.shortSince = shortSince;
 
-  if (selected.length === 0 || total <= 0) {
+  if (!paying) {
     console.log(
-      `[payout-release] ${stripeAccountId} ${currency}: ${payable.length} due but ` +
+      `[payout-release] ${stripeAccountId} ${currency}: ${positives.length} due but ` +
         `available=${available} — deferring to next sweep`,
     );
     return outcome;
   }
 
+  const selected = [...debts, ...chosen];
   const sessionIds = selected.map((p) => p.entry.sessionId);
-  const forced = selected.some((p) => p.forced);
+  const forced = chosen.some((p) => p.forced);
   outcome.forcedByCeiling = outcome.forcedByCeiling || forced;
 
   // Journal the intent BEFORE Stripe is called. From here until clearIntent,
@@ -586,7 +740,7 @@ export async function releaseForAccount(
     stripeAccountId,
     currency,
     sessionIds,
-    forcedSessionIds: selected.filter((p) => p.forced).map((p) => p.entry.sessionId),
+    forcedSessionIds: chosen.filter((p) => p.forced).map((p) => p.entry.sessionId),
     amount: total,
     idempotencyKey: idempotencyKeyFor(sessionIds),
     createdAt: now.toISOString(),
@@ -613,12 +767,15 @@ export async function releaseForAccount(
     markManyReleased(sessionIds, payoutId, { forcedSessionIds: intent.forcedSessionIds });
     clearIntent(stripeAccountId, currency);
     outcome.released.push(...sessionIds);
+    outcome.debts.push(...debts.map((d) => d.entry.sessionId));
     outcome.amount += total;
     outcome.payoutId = payoutId;
 
     console.log(
       `[payout-release] Paid out ${total} ${currency} to ${stripeAccountId} ` +
-        `(payout=${payoutId}, sales=${sessionIds.length}${forced ? ", CEILING-FORCED" : ""})`,
+        `(payout=${payoutId}, sales=${chosen.length}` +
+        (debts.length > 0 ? `, debts netted=${debts.length} (${-sumNets(debts)})` : "") +
+        `${forced ? ", CEILING-FORCED" : ""})`,
     );
     if (forced) {
       console.warn(
@@ -683,6 +840,7 @@ export async function runReleaseSweep(
       console.error(`[payout-release] Sweep failed for ${key}:`, err);
     }
   }
+  recordGroupAlarms(outcomes, now);
   return outcomes;
 }
 
@@ -723,6 +881,8 @@ export function heldPastCeiling(now: Date = new Date()): { count: number; oldest
   let oldest: string | null = null;
 
   for (const entry of listHeld()) {
+    // A debt holds no funds, so Stripe's limit on holding them does not apply (#781).
+    if (typeof entry.netAmount === "number" && entry.netAmount <= 0) continue;
     const ceiling = holdCeilingAt(entry.recordedAt, countryCache.get(entry.stripeAccountId));
     if (nowMs < new Date(ceiling).getTime()) continue;
     count++;
@@ -731,7 +891,29 @@ export function heldPastCeiling(now: Date = new Date()): { count: number; oldest
   return { count, oldestBreachedAt: oldest };
 }
 
+/**
+ * Per account+currency alarms from the last sweep (#781), rebuilt whole each
+ * run so a group that has since paid out or emptied drops off. Counts only
+ * leave this module: the health endpoint is public.
+ */
+let groupAlarms = { balanceShort: 0, oldestShortSince: null as string | null, accountsOwing: 0 };
+
+function recordGroupAlarms(outcomes: ReleaseOutcome[], now: Date): void {
+  const cutoff = now.getTime() - BALANCE_SHORT_ALARM_DAYS * 86_400_000;
+  const short = outcomes
+    .map((o) => o.shortSince)
+    .filter((s): s is string => !!s && new Date(s).getTime() <= cutoff)
+    .sort();
+  groupAlarms = {
+    balanceShort: short.length,
+    oldestShortSince: short[0] ?? null,
+    accountsOwing: outcomes.filter((o) => o.owes).length,
+  };
+}
+
 export function payoutSweepHealth(): {
+  /** False on any alarm below, so `/api/health/alarms` pages on it. */
+  ok: boolean;
   running: boolean;
   lastRunAt: string | null;
   runs: number;
@@ -742,6 +924,14 @@ export function payoutSweepHealth(): {
   oldestCeilingBreachAt: string | null;
   /** Accounts still on Stripe's automatic schedule after a failed correction. */
   pendingScheduleHeals: number;
+  /**
+   * Account+currency groups with a sale due for over BALANCE_SHORT_ALARM_DAYS
+   * that does not fit the balance: it holds less than the ledger says (#781).
+   */
+  balanceShort: number;
+  oldestBalanceShortSince: string | null;
+  /** Groups whose debts outweigh everything due: nothing payable until new sales cover them. Counted, not an alarm. */
+  accountsOwing: number;
 } {
   const running = timer !== null;
   // Two-and-a-half missed hourly runs. Measured from boot until the first run
@@ -749,7 +939,11 @@ export function payoutSweepHealth(): {
   const since = health.lastRunAt ?? health.startedAt;
   const stale = running && Date.now() - new Date(since).getTime() > RELEASE_INTERVAL_MS * 2.5;
   const breached = heldPastCeiling();
+  const heals = pendingScheduleHeals().length;
   return {
+    // `accountsOwing` is left out: only the organiser selling again clears it,
+    // so it would hold the whole section red for months with nothing to do.
+    ok: !stale && breached.count === 0 && heals === 0 && groupAlarms.balanceShort === 0,
     running,
     lastRunAt: health.lastRunAt,
     runs: health.runs,
@@ -757,8 +951,17 @@ export function payoutSweepHealth(): {
     lastError: health.lastError,
     heldPastCeiling: breached.count,
     oldestCeilingBreachAt: breached.oldestBreachedAt,
-    pendingScheduleHeals: pendingScheduleHeals().length,
+    pendingScheduleHeals: heals,
+    balanceShort: groupAlarms.balanceShort,
+    oldestBalanceShortSince: groupAlarms.oldestShortSince,
+    accountsOwing: groupAlarms.accountsOwing,
   };
+}
+
+/** Test seam — forget the shortfall-scan clock and the last sweep's alarms. */
+export function __resetSweepStateForTests(): void {
+  lastShortfallScan.clear();
+  groupAlarms = { balanceShort: 0, oldestShortSince: null, accountsOwing: 0 };
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;
