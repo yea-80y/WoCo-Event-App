@@ -34,6 +34,8 @@ our own right. Section 3 sets out exactly which is which.
 WoCo Network Ltd, trading as WoCo and World Computer ("WoCo", "we", "us"), is a company
 registered in England and Wales, company number 17370809, registered office 128 City Road, London EC1V 2NX, United Kingdom.
 
+We are registered with the Information Commissioner's Office, registration number ZC266841.
+
 **Privacy contact:** privacy@woco-net.com
 
 If we ever appoint a Data Protection Officer we will name them here. We are not currently required
