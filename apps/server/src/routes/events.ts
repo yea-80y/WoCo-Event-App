@@ -28,6 +28,7 @@ import { isValidSeriesId } from "../lib/swarm/topics.js";
 import { issueJoinedBadge } from "../lib/campaign/badges.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import { failureSentence } from "../lib/http/error-class.js";
+import { orderFieldsRefusal } from "../lib/event/order-fields.js";
 const events = new Hono<AppEnv>();
 
 // ---------------------------------------------------------------------------
@@ -199,6 +200,8 @@ events.post("/", requireAuth, async (c) => {
   if (!ev?.title || !ev?.startDate || !ev?.endDate) {
     return c.json({ ok: false, error: "Missing event title or dates" }, 400);
   }
+  const fieldsRefusal = orderFieldsRefusal(orderFields);
+  if (fieldsRefusal) return c.json({ ok: false, error: fieldsRefusal }, 400);
   if (!series?.length) {
     return c.json({ ok: false, error: "At least one ticket series required" }, 400);
   }
