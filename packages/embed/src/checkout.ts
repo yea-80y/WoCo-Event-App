@@ -8,6 +8,7 @@
 
 import {
   calculateBuyerFees,
+  orderFieldRequired,
   orderFormShown,
   resolveBuyerEmail,
   ORDER_EMAIL_FIELD_ID,
@@ -53,7 +54,7 @@ export function validateBuyPanel(i: {
       // Never an internal id: OrderFieldsEditor starts every field with label "".
       const label = f.label || f.placeholder || (isEmail ? "Email" : "This field");
       const value = (i.formData[f.id] ?? "").trim();
-      if ((f.required || isEmail) && !value) return { ok: false, error: `${label} is required` };
+      if (orderFieldRequired(f, { canUseAccount: false }) && !value) return { ok: false, error: `${label} is required` };
       if (isEmail && !resolveBuyerEmail(i.formData, i.fields, i.verifiedKey, "")) {
         return { ok: false, error: `Enter a valid email address in ${label}` };
       }

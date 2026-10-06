@@ -9,7 +9,7 @@
   import { getClaimStatus } from "../../api/events.js";
   import { createCheckoutSession } from "../../api/stripe.js";
   import type { SeriesClaimStatus } from "@woco/shared";
-  import { orderFormCollectsEmail, orderFormShown, resolveBuyerEmail } from "@woco/shared";
+  import { orderFieldRequired, orderFormCollectsEmail, orderFormShown, resolveBuyerEmail } from "@woco/shared";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
   import { buildOrderSnapshot as buildOrderSnapshotPure } from "./claim/helpers.js";
@@ -158,9 +158,12 @@
 
   const formValid = $derived(() => {
     if (!orderFields?.length) return true;
-    return orderFields.every((f) =>
-      !f.required || (formData[f.id] ?? "").trim().length > 0
+    const fieldsFilled = orderFields.every((f) =>
+      !orderFieldRequired(f, { canUseAccount: linked }) || (formData[f.id] ?? "").trim().length > 0
     );
+    // With no email field in the form and no account, OrderForm shows its own
+    // email box - the ticket's only address, so it gates Pay as well (#639).
+    return fieldsFilled && (hasEmailField || linked || stripeEmail.trim().length > 0);
   });
 
   const getEmailFromForm = (): string | null =>
