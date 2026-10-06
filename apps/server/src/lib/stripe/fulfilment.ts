@@ -106,7 +106,8 @@ export interface FulfilmentDeps {
 
   /** Payout ledger — must not throw (a failed write is a health alarm, not a claim failure). */
   recordHeldPayout(entry: Omit<PayoutLedgerEntry, "status" | "recordedAt"> & { recordedAt?: string }): void;
-  markPayoutVoid(sessionId: string, reason: string): void;
+  /** A full refund landed: the sweep re-reads the sale and nets the fee it kept (#781). */
+  flagPayoutRecheck(sessionId: string): void;
   getOrganiserByStripeAccount(stripeAccountId: string): string | undefined;
 
   /** Store the fallback order seal on the attendee batch (#546). May throw; the caller decides what that means. */
@@ -902,16 +903,16 @@ export async function fulfilPaidSession(
         console.log(
           `[fulfilment] Auto-refunded ${piId} (refund=${created.id}, amount=${refundParams.amount ?? "full"}, unfilled=${unfilled}/${quantity}) — ${stoppedReason}`,
         );
-        // A wholly refunded sale has no proceeds to release, so drop it from the
-        // payout schedule now rather than leaving it "held" and misreporting the
-        // organiser's pending balance. Partial refunds stay held on purpose: the
-        // release job reads the real balance transactions, so the remaining net is
-        // computed from Stripe rather than re-derived here.
+        // A wholly refunded sale is not voided: Stripe keeps its processing fee,
+        // so the sale nets below zero and that debt must come off the organiser's
+        // next payout (#781). Flagged so the sweep reads it now rather than at the
+        // event's date. Partial refunds need no flag: the sale is still due on
+        // its date and the sweep reads its real balance transactions then.
         if (claimedResults.length === 0) {
           try {
-            deps.markPayoutVoid(session.id, `refunded — ${stoppedReason}`);
+            deps.flagPayoutRecheck(session.id);
           } catch (err) {
-            console.error("[fulfilment] markPayoutVoid threw after a successful refund:", err);
+            console.error("[fulfilment] flagPayoutRecheck threw after a successful refund:", err);
           }
         }
       } catch (refundErr) {

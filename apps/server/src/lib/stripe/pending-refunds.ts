@@ -17,8 +17,8 @@
  *     not repeated — and only then creates, under the same idempotency key
  *     fulfilment used. `charge_already_refunded` is success (an operator did it
  *     from the dashboard).
- *   - A landed FULL refund voids the payout-ledger entry, exactly as fulfilment
- *     would have.
+ *   - A landed FULL refund flags the payout-ledger entry for a recheck, exactly
+ *     as fulfilment would have: the fee Stripe kept is netted, not voided (#781).
  *   - `pendingRefundsHealth` is on `/api/health`: a non-zero `pending` or
  *     `abandoned` is an alarm — somebody paid and has neither ticket nor money.
  *
@@ -187,8 +187,8 @@ export interface RefundGateway {
     connectedAccountId: string | undefined,
     idempotencyKey: string,
   ): Promise<{ id: string }>;
-  /** A landed FULL refund has no proceeds to release. */
-  markPayoutVoid(sessionId: string, reason: string): void;
+  /** A landed FULL refund: the sweep re-reads the sale and nets the fee it kept (#781). */
+  flagPayoutRecheck(sessionId: string): void;
 }
 
 export interface RetryOutcome {
@@ -214,9 +214,9 @@ function settle(e: PendingRefund, refundId: string | undefined, gateway: RefundG
   if (refundId) e.refundId = refundId;
   if (e.amount === undefined) {
     try {
-      gateway.markPayoutVoid(e.sessionId, `refunded (retry) — ${e.reason}`);
+      gateway.flagPayoutRecheck(e.sessionId);
     } catch (err) {
-      console.error(`[pending-refunds] markPayoutVoid threw for ${e.sessionId}:`, err);
+      console.error(`[pending-refunds] flagPayoutRecheck threw for ${e.sessionId}:`, err);
     }
   }
 }

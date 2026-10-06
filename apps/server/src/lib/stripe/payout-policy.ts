@@ -61,6 +61,15 @@ export const SHOP_RELEASE_DAYS = 7;
  */
 export const FALLBACK_RELEASE_DAYS = 14;
 
+/**
+ * How long a due sale may keep not fitting the available balance before it is
+ * an alarm (#781). Card funds become available on a rolling basis of a few days
+ * (Stripe: 2 days, varying by country and account), so a sale bought just before
+ * its event can be due before its money is. A week past due is well beyond that:
+ * the balance is short of what the ledger says it holds.
+ */
+export const BALANCE_SHORT_ALARM_DAYS = 7;
+
 const DAY_MS = 86_400_000;
 
 /** Stripe's hold ceiling for a country, in days, before our safety margin. */

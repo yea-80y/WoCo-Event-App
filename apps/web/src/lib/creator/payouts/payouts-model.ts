@@ -323,6 +323,20 @@ export function entryStatusLabel(e: PayoutEntryView, now: number, locale?: strin
       detail: e.voidReason ?? "Returned to the buyer — nothing to pay out",
     };
   }
+  // A refund or chargeback took this sale below zero: Stripe keeps its fees, and
+  // so do we. That cost is deducted from a payout, never paid, so "Held" and
+  // "Paid out" would misdescribe it (#781).
+  if ((e.netAmount ?? 0) < 0) {
+    if (e.status === "released") {
+      const when = e.releasedAt ? formatDate(e.releasedAt, now, locale) : formatDate(e.releaseAfter, now, locale);
+      return { tone: "void", badge: "Fees deducted", detail: `Taken from your payout on ${when}` };
+    }
+    return {
+      tone: "held",
+      badge: "Fees owed",
+      detail: "Refunded or disputed - the fees on this sale come off your next payout",
+    };
+  }
   if (e.status === "released") {
     const when = e.releasedAt ? formatDate(e.releasedAt, now, locale) : formatDate(e.releaseAfter, now, locale);
     return {

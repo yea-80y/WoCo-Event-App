@@ -4,7 +4,7 @@
  */
 
 import { getStripe } from "./client.js";
-import { markVoid } from "./payout-ledger.js";
+import { flagForRecheck } from "./payout-ledger.js";
 import type { RefundGateway } from "./pending-refunds.js";
 
 export const liveRefundGateway: RefundGateway = {
@@ -35,5 +35,7 @@ export const liveRefundGateway: RefundGateway = {
     return { id: refund.id };
   },
 
-  markPayoutVoid: markVoid,
+  flagPayoutRecheck: (sessionId) => {
+    flagForRecheck(sessionId);
+  },
 };

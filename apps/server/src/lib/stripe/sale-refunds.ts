@@ -55,6 +55,7 @@ import {
   type TicketSale,
 } from "./ticket-sales.js";
 import { CHARGEBACK_STATUSES, INQUIRY_STATUSES, NEEDS_RESPONSE_STATUSES } from "./dispute-status.js";
+import { flagForRecheck } from "./payout-ledger.js";
 
 export interface LatestCharge {
   id: string;
@@ -87,6 +88,12 @@ export interface SaleRefundStore {
   applyDisputeState(sessionId: string, reading: DisputeReading): DisputeStateChange | null;
   /** False while the record file is unreadable: a state applied now would not survive a restart. */
   persisting(): boolean;
+  /**
+   * Have the payout sweep re-read the sale now (#781): a refund or chargeback
+   * can take it below zero, a debt the account's next payout must carry. A
+   * hint only — the sweep reads the amounts from Stripe itself.
+   */
+  flagPayoutRecheck(sessionId: string): void;
 }
 
 const liveStore: SaleRefundStore = {
@@ -94,6 +101,9 @@ const liveStore: SaleRefundStore = {
   applyRefundState,
   applyDisputeState,
   persisting: isPersisting,
+  flagPayoutRecheck: (sessionId) => {
+    flagForRecheck(sessionId);
+  },
 };
 
 export type RefundEventOutcome =
@@ -247,6 +257,7 @@ async function reconcileOnce(
   // recorded dispute state alone rather than clearing it.
   const disputeChange = reading ? store.applyDisputeState(sale.sessionId, reading) : null;
   if (disputeChange && !disputeChange.persisted) return { kind: "retry", reason: "sale record not written" };
+  store.flagPayoutRecheck(sale.sessionId);
   const outcome: RefundEventOutcome = {
     kind: "applied",
     sessionId: sale.sessionId,
