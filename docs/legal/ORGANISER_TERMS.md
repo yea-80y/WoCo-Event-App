@@ -228,8 +228,9 @@ If you have any doubt about your ability to deliver an event, do not sell ticket
 
 Publishing events, sites and images consumes decentralised storage that we pay for.
 
-- Free hosting is offered subject to a **[QUOTA]** limit and to eligibility checks, and is a
-  time-limited launch offer we may withdraw.
+- **Website hosting is free for at least 12 months from the day you first publish your site**, up to
+  **100 MB** per organiser, once your Stripe account is verified. After that we may change or end
+  the offer, and we will give you reasonable notice first. Event pages are always free.
 - Storage is paid for in fixed periods and must be renewed. **If storage expires, published content
   can become permanently unavailable.** We will give reasonable notice before expiry, but keeping
   your content live is ultimately your responsibility.
