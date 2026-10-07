@@ -54,6 +54,7 @@ import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { checkSiteSubEns, type SiteDeploySubEns } from "../lib/sub-ens/site-pointer.js";
 import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
 import { clientIp } from "../lib/http/client-ip.js";
+import { companyFooterHtml } from "../lib/email/company-footer.js";
 
 const sitesRouter = new Hono();
 
@@ -183,7 +184,7 @@ function spawnPromise(cmd: string, args: string[]): Promise<void> {
   });
 }
 
-function buildContactHtml(name: string, email: string, message: string, siteName: string): string {
+export function buildContactHtml(name: string, email: string, message: string, siteName: string): string {
   return `<!DOCTYPE html><html><body style="font-family:system-ui,sans-serif;max-width:600px;margin:40px auto;padding:0 20px;color:#111">
 <h2 style="margin:0 0 1.5rem">New enquiry — ${escHtml(siteName)}</h2>
 <table style="border-collapse:collapse;width:100%">
@@ -192,6 +193,7 @@ function buildContactHtml(name: string, email: string, message: string, siteName
 <tr><td style="padding:8px 0;color:#666;vertical-align:top">Message</td><td style="padding:8px 0;white-space:pre-wrap">${escHtml(message)}</td></tr>
 </table>
 <p style="color:#999;font-size:0.8rem;margin:2rem 0 0">Sent via WoCo contact form</p>
+${companyFooterHtml("#999")}
 </body></html>`;
 }
 
