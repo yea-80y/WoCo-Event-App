@@ -130,8 +130,10 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
     : null;
 
   const multiTicket = tix.length > 1;
-  const ticketBlocks = tix.map(({ edition, qrContent }, i) => {
-    const editionStr = edition != null ? String(edition).padStart(3, "0") : null;
+  // Buyers never see the edition (its sequence leaks how many have sold); a
+  // group order numbers its own tickets so the buyer can hand them out.
+  const ticketBlocks = tix.map(({ qrContent }, i) => {
+    const label = multiTicket ? `Ticket ${i + 1} of ${tix.length}` : "Your ticket";
     // Standalone HTML page: fast server-rendered, no SPA load.
     const pageUrl = ticketUrl(qrContent, display);
     const cid = `woco-card-${i}`;
@@ -140,9 +142,9 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
     const perTicketCta = opts.profileCta && multiTicket ? gateCtaUrl(qrContent, to) : null;
     return `
       <div class="qr-section">
-        ${editionStr ? `<div class="qr-label">Ticket #${editionStr}</div>` : `<div class="qr-label">Show at the door</div>`}
+        <div class="qr-label">${label}</div>
         <img src="cid:${cid}" alt="Ticket — show at the door" class="qr-image" width="320" height="440" />
-        ${pageUrl ? `<a href="${escHtml(pageUrl)}" class="qr-link">Open ticket page${editionStr ? ` #${editionStr}` : ""} →</a>` : ""}
+        ${pageUrl ? `<a href="${escHtml(pageUrl)}" class="qr-link">Open ticket page →</a>` : ""}
         ${perTicketCta ? `<div class="cta-mini"><a href="${escHtml(perTicketCta)}">Add this ticket to WoCo →</a></div>` : ""}
       </div>`;
   }).join("\n");
@@ -157,9 +159,6 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
         </div>` : "";
 
   const countLabel = tix.length > 1 ? `${tix.length} Tickets` : "Your Ticket";
-  const subjectEdition = tix.length === 1 && tix[0].edition != null
-    ? ` #${String(tix[0].edition).padStart(3, "0")}`
-    : tix.length > 1 ? ` (×${tix.length})` : "";
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -196,7 +195,7 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
   <div class="wrap">
     <div class="card">
       <div class="header">
-        <div class="badge">${escHtml(countLabel)}${subjectEdition}</div>
+        <div class="badge">${escHtml(countLabel)}</div>
         <h1>${escHtml(eventTitle)}</h1>
         <div class="meta">
           ${dateStr ? `<div class="meta-row">📅 ${escHtml(dateStr)}</div>` : ""}
@@ -234,24 +233,21 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
 export async function sendTicketEmail(opts: TicketEmailOpts): Promise<void> {
   const fromAddress = getFromAddress();
   const { to, eventTitle, eventDate, eventLocation, tickets: tix, buyerName, palette } = opts;
-  const subjectEdition = tix.length === 1 && tix[0].edition != null
-    ? ` #${String(tix[0].edition).padStart(3, "0")}`
-    : tix.length > 1 ? ` (×${tix.length})` : "";
+  const subject = tix.length > 1 ? `Your ${tix.length} tickets - ${eventTitle}` : `Your ticket - ${eventTitle}`;
 
   const attachments = await Promise.all(
-    tix.map(async ({ edition, qrContent }, i) => {
+    tix.map(async ({ qrContent }, i) => {
       const png = await renderTicketCardPng({
         eventTitle,
         eventDate,
         eventLocation,
-        edition,
+        position: tix.length > 1 ? `${i + 1} of ${tix.length}` : null,
         buyerName,
         qrContent,
         palette,
       });
-      const editionStr = edition != null ? String(edition).padStart(3, "0") : String(i + 1);
       return {
-        filename: `ticket-${editionStr}.png`,
+        filename: tix.length > 1 ? `ticket-${i + 1}-of-${tix.length}.png` : "ticket.png",
         content: png,
         contentId: `woco-card-${i}`,
         contentType: "image/png",
@@ -263,7 +259,7 @@ export async function sendTicketEmail(opts: TicketEmailOpts): Promise<void> {
     {
       from: `"${eventTitle.slice(0, 40)}" <${fromAddress}>`,
       to: [to],
-      subject: `Your ticket${subjectEdition} — ${eventTitle}`,
+      subject,
       html: buildTicketHtml(opts),
       attachments,
       // Attendees reply to ticket email expecting the organiser, not a void.
