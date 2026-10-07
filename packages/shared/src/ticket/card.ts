@@ -51,17 +51,34 @@ export interface TicketPaletteInput {
   border?: string;
 }
 
+/**
+ * An organiser's colour if it is plainly a colour, else undefined. Palette
+ * values are free text from the site builder and reach CSS inside the ticket
+ * email's <style> block, where entity escaping does nothing: "red}</style>..."
+ * would end the block. Only hex, rgb()/hsl() with plain numbers, or a bare
+ * colour name pass.
+ */
+export function safeCssColour(v?: string | null): string | undefined {
+  const s = v?.trim();
+  if (!s) return undefined;
+  if (/^#[0-9a-f]{3,8}$/i.test(s)) return s;
+  if (/^(rgb|hsl)a?\([\d.,%\s/]+\)$/i.test(s)) return s;
+  if (/^[a-z]{3,20}$/i.test(s)) return s;
+  return undefined;
+}
+
 export function ticketCardColours(p?: TicketPaletteInput | null): TicketCardColours {
   const d = WOCO_TICKET_COLOURS;
   if (!p) return d;
+  const muted = safeCssColour(p.muted);
   return {
-    bg: p.bg ?? d.bg,
-    text: p.text ?? d.text,
-    secondary: p.muted ?? d.secondary,
-    muted: p.muted ?? d.muted,
-    dim: p.muted ?? d.dim,
-    accent: p.accent ?? d.accent,
-    border: p.border ?? d.border,
+    bg: safeCssColour(p.bg) ?? d.bg,
+    text: safeCssColour(p.text) ?? d.text,
+    secondary: muted ?? d.secondary,
+    muted: muted ?? d.muted,
+    dim: muted ?? d.dim,
+    accent: safeCssColour(p.accent) ?? d.accent,
+    border: safeCssColour(p.border) ?? d.border,
   };
 }
 

@@ -4,6 +4,8 @@
  * maps search. All built from the event's own fields; nothing is looked up.
  */
 
+import { createHash } from "node:crypto";
+
 /** 20261114T220000Z */
 function icsStamp(d: Date): string {
   return d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
@@ -42,7 +44,8 @@ export function googleCalendarUrl(ev: CalendarEvent): string | null {
 export function directionsUrl(location?: string): string | null {
   const loc = location?.trim();
   if (!loc) return null;
-  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc)}`;
+  // URLSearchParams never throws (encodeURIComponent does, on a lone surrogate).
+  return `https://www.google.com/maps/search/?${new URLSearchParams({ api: "1", query: loc }).toString()}`;
 }
 
 /** RFC 5545 text escaping. */
@@ -72,6 +75,13 @@ function fold(line: string): string {
   return out.join("\r\n ");
 }
 
+/** A stable UID part: the event id, else a hash of title and start, so two
+ *  events never share one and dedupe into a single calendar entry. */
+function uidPart(ev: CalendarEvent, start: Date): string {
+  const id = ev.eventId.replace(/[^A-Za-z0-9._-]/g, "");
+  return id || createHash("sha256").update(`${ev.title}|${start.toISOString()}`).digest("hex").slice(0, 32);
+}
+
 /** The .ics file for one event, or null without a valid start. */
 export function eventIcs(ev: CalendarEvent, now: Date = new Date()): string | null {
   const s = span(ev);
@@ -83,7 +93,7 @@ export function eventIcs(ev: CalendarEvent, now: Date = new Date()): string | nu
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
     "BEGIN:VEVENT",
-    `UID:${ev.eventId.replace(/[^A-Za-z0-9._-]/g, "")}@woco-net.com`,
+    `UID:${uidPart(ev, s.start)}@woco-net.com`,
     `DTSTAMP:${icsStamp(now)}`,
     `DTSTART:${icsStamp(s.start)}`,
     `DTEND:${icsStamp(s.end)}`,

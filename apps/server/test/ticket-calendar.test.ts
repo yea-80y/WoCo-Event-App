@@ -38,7 +38,8 @@ test("no valid start: no calendar link and no .ics", () => {
 });
 
 test("directions search the venue as typed; none without one", () => {
-  assert.equal(directionsUrl(ev.location), "https://www.google.com/maps/search/?api=1&query=The%20Old%20Depot%2C%20Manchester");
+  assert.equal(directionsUrl(ev.location), "https://www.google.com/maps/search/?api=1&query=The+Old+Depot%2C+Manchester");
+  assert.doesNotThrow(() => directionsUrl("Venue \ud800 street"), "a lone surrogate must not throw before the email sends");
   assert.equal(directionsUrl("  "), null);
   assert.equal(directionsUrl(undefined), null);
 });
@@ -52,6 +53,7 @@ test(".ics: one VEVENT, UTC times, escaped text, CRLF, folded at 75 octets", () 
   assert.ok(ics.endsWith("END:VCALENDAR\r\n"));
   assert.match(ics, /\r\nUID:abc123@woco-net\.com\r\n/);
   assert.match(ics, /\r\nDTSTAMP:20261007T120000Z\r\n/);
+  assert.match(ics, /\r\nMETHOD:PUBLISH\r\n/);
   assert.match(ics, /\r\nDTSTART:20261114T220000Z\r\nDTEND:20261115T040000Z\r\n/);
   assert.match(ics, /SUMMARY:Gig\\; with\\, commas\\nand a newline/);
   for (const line of ics.split("\r\n")) {
@@ -74,4 +76,12 @@ test("no field can start a line of its own in the .ics (CR, LF or CRLF, title, p
   }
   assert.ok(!/\r(?!\n)/.test(ics) && !/(?<!\r)\n/.test(ics), "only CRLF line breaks");
   assert.match(ics, /\r\nUID:abcATTENDEEmailtoxexample\.com@woco-net\.com\r\n/);
+});
+
+test("no event id: the UID falls back to a hash, so two events never merge into one entry", () => {
+  const a = eventIcs({ ...ev, eventId: "" })!;
+  const b = eventIcs({ ...ev, eventId: "", title: "Another" })!;
+  const uid = (ics: string) => ics.match(/\r\nUID:([^\r]+)\r\n/)![1];
+  assert.doesNotMatch(uid(a), /^@/);
+  assert.notEqual(uid(a), uid(b));
 });

@@ -558,6 +558,9 @@ describe("happy path", () => {
     assert.equal(mail.imageHash, "00".repeat(32), "the event image reference travels to the ticket link builder");
     assert.equal(mail.profileCta, true, "multi-ticket order keeps per-ticket links");
     assert.deepEqual(mail.failureContext, { stripeSessionId: "cs_test_1", eventId: EVENT_ID, siteId: "site-1" });
+    // The ticket email's calendar entry and times need the event's id and end.
+    assert.equal(mail.eventId, EVENT_ID);
+    assert.equal(mail.eventEndDate, FUTURE);
 
     // Consent: opt-in recorded against the organiser, keyed on the email hash.
     assert.equal(f.consents.length, 1);

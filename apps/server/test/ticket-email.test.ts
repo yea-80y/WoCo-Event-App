@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 process.env.EMAIL_HASH_SECRET ??= "test-secret-for-ticket-email";
 process.env.GATE_TOKEN_SECRET ??= "test-gate-secret-for-ticket-email-0123456789";
 
-const { buildTicketHtml, buildTicketText, buildTicketAttachments, HERO_CID, CARD_BUDGET_BYTES } = await import(
+const { buildTicketHtml, buildTicketText, buildTicketAttachments, sendTicketEmail, HERO_CID, CARD_BUDGET_BYTES } = await import(
   "../src/routes/tickets.ts"
 );
 
@@ -66,6 +66,7 @@ test("the hero photo appears only when one is attached", () => {
 test("organiser text is escaped; the reply line appears only with an organiser address", () => {
   const html = buildTicketHtml({ ...base, eventTitle: `<img src=x onerror=alert(1)>`, seriesName: `"VIP" <b>` });
   assert.doesNotMatch(html, /<img src=x/);
+  assert.doesNotMatch(html, /"VIP" <b>|<b>/);
   assert.match(html, /&lt;img src=x/);
   assert.doesNotMatch(html, /Reply to this email/);
   assert.match(buildTicketHtml({ ...base, replyTo: "org@example.com" }), /Reply to this email to reach the organiser/);
@@ -171,4 +172,41 @@ test("a banner that fails to draw leaves the email without it, not without ticke
   } finally {
     console.error = err;
   }
+});
+
+test("an organiser palette cannot break out of the email's style block", () => {
+  const html = buildTicketHtml({ ...base, palette: { accent: "red}</style><a href=x>pwn</a><style>", bg: "#000" } as never });
+  assert.equal(html.split("</style>").length - 1, 1);
+  assert.doesNotMatch(html, /<a href=x>/);
+  assert.match(html, /#C7F23A/, "the bad colour falls back to WoCo's");
+});
+
+test("the attachment budget leaves room under the tightest inbox limits (~20 MB)", () => {
+  const banner = 2 * 1024 * 1024;
+  assert.ok(((CARD_BUDGET_BYTES + banner) * 4) / 3 < 20 * 1024 * 1024);
+});
+
+test("the sent message carries text, every attachment, the hero, the context and the reply address", async () => {
+  process.env.EMAIL_FROM ??= "tickets@example.com";
+  let sent: { msg: Record<string, unknown>; opts: Record<string, unknown> } | null = null;
+  const attachments = [{ filename: "event.png", content: Buffer.from("h"), contentId: HERO_CID, contentType: "image/png" }];
+  await sendTicketEmail(
+    { ...group, replyTo: "org@example.com", failureContext: { stripeSessionId: "cs_1" } },
+    {
+      build: async () => ({ attachments, hero: true }),
+      send: (async (msg: Record<string, unknown>, opts: Record<string, unknown>) => {
+        sent = { msg, opts };
+      }) as never,
+    },
+  );
+  assert.ok(sent);
+  const { msg, opts } = sent!;
+  assert.equal(msg.subject, "Your 3 tickets - Night Market Live");
+  assert.deepEqual(msg.to, ["buyer@example.com"]);
+  assert.deepEqual(msg.replyTo, ["org@example.com"]);
+  assert.equal(msg.attachments, attachments);
+  assert.match(String(msg.html), new RegExp(`cid:${HERO_CID}`));
+  assert.match(String(msg.text), /You're going: Night Market Live/);
+  assert.equal(opts.priority, "transactional");
+  assert.deepEqual(opts.context, { stripeSessionId: "cs_1" });
 });

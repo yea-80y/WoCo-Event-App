@@ -7,12 +7,17 @@
  * sold): a group order numbers its own tickets ("Ticket 2 of 4"), a single one
  * says "Your ticket". The edition stays inside the QR payload for the door.
  *
- * resvg reads system fonts (DejaVu/Liberation are on every common server
- * image); the browser draws with the app's fonts. Layout, colours and text are
- * identical either way.
+ * FONTS SHIP WITH THE CODE (assets/fonts, DejaVu, free licence): the server
+ * image (node:24-alpine) has no fonts, and resvg draws no text without one -
+ * the ticket name, date and venue would be missing. The browser draws with the
+ * app's fonts; layout, colours and text are identical either way.
+ *
+ * Rendering is async and one image at a time: resvg's sync render blocks the
+ * event loop, and concurrent decodes would multiply memory.
  */
 
-import { Resvg } from "@resvg/resvg-js";
+import { fileURLToPath } from "node:url";
+import { renderAsync, type ResvgRenderOptions } from "@resvg/resvg-js";
 import type { SitePalette } from "@woco/shared";
 import {
   TICKET_CARD_HEIGHT,
@@ -46,6 +51,22 @@ export interface TicketCardData {
 /** Sharp on a phone, small enough to attach a group order's worth. */
 export const TICKET_PNG_WIDTH = 720;
 
+const FONT_DIR = fileURLToPath(new URL("../../assets/fonts/", import.meta.url));
+export const TICKET_FONT_FILES = [
+  "DejaVuSans.ttf",
+  "DejaVuSans-Bold.ttf",
+  "DejaVuSansMono.ttf",
+  "DejaVuSansMono-Bold.ttf",
+].map((f) => FONT_DIR + f);
+
+const FONTS: ResvgRenderOptions["font"] = {
+  fontFiles: TICKET_FONT_FILES,
+  loadSystemFonts: false,
+  defaultFontFamily: "DejaVu Sans",
+  sansSerifFamily: "DejaVu Sans",
+  monospaceFamily: "DejaVu Sans Mono",
+};
+
 /** The email's banner: the photo cropped to 2:1 here, because email clients
  *  cannot be trusted to crop (Outlook ignores object-fit). */
 export const HERO_WIDTH = 1200;
@@ -53,7 +74,8 @@ export const HERO_HEIGHT = 600;
 
 export async function renderHeroPng(photo: EventPhoto): Promise<Buffer> {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${HERO_WIDTH}" height="${HERO_HEIGHT}" viewBox="0 0 ${HERO_WIDTH} ${HERO_HEIGHT}"><image x="0" y="0" width="${HERO_WIDTH}" height="${HERO_HEIGHT}" preserveAspectRatio="xMidYMid slice" href="data:${photo.mime};base64,${photo.bytes.toString("base64")}"/></svg>`;
-  return Buffer.from(new Resvg(svg, { fitTo: { mode: "width", value: HERO_WIDTH } }).render().asPng());
+  const image = await renderAsync(svg, { fitTo: { mode: "width", value: HERO_WIDTH }, font: { loadSystemFonts: false } });
+  return Buffer.from(image.asPng());
 }
 
 export async function renderTicketCardPng(data: TicketCardData): Promise<Buffer> {
@@ -74,15 +96,10 @@ export async function renderTicketCardPng(data: TicketCardData): Promise<Buffer>
     qrContent: data.qrContent,
     photo: data.photo ?? null,
   });
-  const resvg = new Resvg(svg, {
+  const image = await renderAsync(svg, {
     fitTo: { mode: "width", value: TICKET_PNG_WIDTH },
     background: colours.bg,
-    font: {
-      loadSystemFonts: true,
-      defaultFontFamily: "DejaVu Sans",
-      sansSerifFamily: "DejaVu Sans",
-      monospaceFamily: "DejaVu Sans Mono",
-    },
+    font: FONTS,
   });
-  return Buffer.from(resvg.render().asPng());
+  return Buffer.from(image.asPng());
 }

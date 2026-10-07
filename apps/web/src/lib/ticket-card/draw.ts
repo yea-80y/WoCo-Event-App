@@ -25,20 +25,34 @@ const FONTS = {
  * The first URL that loads as a CORS-clean image, else null. Without CORS the
  * canvas would refuse to export, so a gateway that sends no
  * Access-Control-Allow-Origin is skipped and the card is drawn without a photo.
+ * A gateway that does not answer within `timeoutMs` is skipped too: a cold
+ * Swarm read can stall, and the Save button waits on this.
  */
-export function loadCorsImage(urls: string[]): Promise<HTMLImageElement | null> {
+export function loadCorsImage(urls: string[], timeoutMs = 5_000): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
     let i = 0;
     const next = () => {
       if (i >= urls.length) return resolve(null);
       const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.referrerPolicy = "no-referrer";
-      img.onload = () => resolve(img);
-      img.onerror = () => {
+      let settled = false;
+      const advance = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        img.onload = img.onerror = null;
         i += 1;
         next();
       };
+      const timer = setTimeout(advance, timeoutMs);
+      img.crossOrigin = "anonymous";
+      img.referrerPolicy = "no-referrer";
+      img.onload = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(img);
+      };
+      img.onerror = advance;
       img.src = urls[i];
     };
     next();

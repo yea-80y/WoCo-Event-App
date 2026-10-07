@@ -89,8 +89,8 @@ describe("what gets queued for retry", () => {
   });
 
   test("the queue is bounded by bytes, because attachments dominate", () => {
-    // "1,000 messages" is meaningless as a bound: a ticket email carries a
-    // ~100KB composite PNG, a plain one carries nothing.
+    // "1,000 messages" is meaningless as a bound: a ticket email carries up to
+    // ~7 MB of images (10 tickets + banner), a plain one carries nothing.
     const heavy: OutboundEmail = {
       ...MSG,
       attachments: [
@@ -102,11 +102,11 @@ describe("what gets queued for retry", () => {
       ],
     };
     let accepted = 0;
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 40; i++) {
       if (queue.enqueueRetry(`entry-${i}`, heavy, "transactional")) accepted++;
     }
-    assert.ok(accepted >= 3 && accepted <= 4, `expected ~25MB worth, queued ${accepted}`);
-    assert.ok(queue.retryQueueStats().bytes <= 25 * 1024 * 1024);
+    assert.ok(accepted >= 24 && accepted <= 25, `expected ~150MB worth, queued ${accepted}`);
+    assert.ok(queue.retryQueueStats().bytes <= 150 * 1024 * 1024);
   });
 });
 

@@ -18,6 +18,7 @@ import {
   estimateTextWidth,
   splitLocation,
   ticketCardColours,
+  safeCssColour,
   ticketCardOps,
   ticketPositionLabel,
   ticketWhen,
@@ -133,4 +134,14 @@ test("UK time whatever the machine's own zone (the server runs on UTC)", () => {
     if (before === undefined) delete process.env.TZ;
     else process.env.TZ = before;
   }
+});
+
+test("organiser colours pass only when plainly a colour; anything else falls back", () => {
+  for (const ok of ["#fff", "#C7F23A", "#11223344", "rgb(1, 2, 3)", "rgba(1,2,3,0.5)", "hsl(120 50% 50% / 0.5)", "white"]) {
+    assert.equal(safeCssColour(ok), ok, ok);
+  }
+  for (const bad of ["red}</style><a href=x>", "url(x)", "expression(alert(1))", "#12", "red;background:url(x)", "", "  ", undefined, null]) {
+    assert.equal(safeCssColour(bad), undefined, String(bad));
+  }
+  assert.equal(ticketCardColours({ accent: "red}</style><a href=x>" }).accent, WOCO_TICKET_COLOURS.accent);
 });

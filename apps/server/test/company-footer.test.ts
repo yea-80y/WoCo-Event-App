@@ -90,7 +90,9 @@ test("every caller of sendEmail adds the company footer", () => {
     }
   };
   walk(src);
-  const callers = files.filter((p) => /\bsendEmail\(\s*[{\n]/.test(readFileSync(p, "utf8")));
+  const callers = files.filter(
+    (p) => !p.endsWith("/lib/email/send.ts") && /\bsendEmail\(/.test(readFileSync(p, "utf8")),
+  );
   assert.ok(callers.length >= 4, "the scan must find the known senders");
   // The footer may sit in the sender itself or in a builder module it imports.
   const addsFooter = (p: string) => /companyFooterHtml\(/.test(readFileSync(p, "utf8"));

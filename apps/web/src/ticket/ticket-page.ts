@@ -143,11 +143,14 @@ function run(): void {
   save.hidden = false;
   save.addEventListener("click", async () => {
     if (save.disabled) return;
+    const label = save.textContent;
     save.disabled = true;
+    save.textContent = "Saving…";
     try {
       await saveImage(payload, title, display);
     } finally {
       save.disabled = false;
+      save.textContent = label;
     }
   });
 }

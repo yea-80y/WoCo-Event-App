@@ -5,7 +5,7 @@ import { sendEmail, type OutboundAttachment } from "../lib/email/send.js";
 import { renderHeroPng, renderTicketCardPng } from "../lib/ticket/render-card.js";
 import { fetchEventPhoto } from "../lib/ticket/event-photo.js";
 import { directionsUrl, eventIcs, googleCalendarUrl } from "../lib/ticket/calendar.js";
-import { splitLocation, ticketWhen } from "@woco/shared/ticket/card";
+import { safeCssColour, splitLocation, ticketWhen } from "@woco/shared/ticket/card";
 import { mintGateToken } from "../lib/gate/token.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { companyFooterHtml, companyFooterText } from "../lib/email/company-footer.js";
@@ -121,15 +121,17 @@ export function buildTicketHtml(opts: TicketEmailOpts, media: { hero?: boolean }
     image: imageHash,
     gateway: imageGatewayIndex(imageGateway),
   };
-  // Resolved palette — organiser brand when available, WoCo Concrete & Acid otherwise
+  // Resolved palette — organiser brand when available, WoCo Concrete & Acid otherwise.
+  // Every value goes through safeCssColour: these land inside <style>, where an
+  // organiser's free text could otherwise end the block.
   const c = {
-    bg:        p?.bg     ?? '#0B0B09',
-    cardBg:    p?.cardBg ?? '#14140F',
-    text:      p?.text   ?? '#F2EBE0',
-    secondary: p?.muted  ?? '#B5AC9D',
-    muted:     p?.muted  ?? '#8A8478',
-    accent:    p?.accent ?? '#C7F23A',
-    border:    p?.border ?? '#2B2A23',
+    bg:        safeCssColour(p?.bg)     ?? '#0B0B09',
+    cardBg:    safeCssColour(p?.cardBg) ?? '#14140F',
+    text:      safeCssColour(p?.text)   ?? '#F2EBE0',
+    secondary: safeCssColour(p?.muted)  ?? '#B5AC9D',
+    muted:     safeCssColour(p?.muted)  ?? '#8A8478',
+    accent:    safeCssColour(p?.accent) ?? '#C7F23A',
+    border:    safeCssColour(p?.border) ?? '#2B2A23',
   };
   const when = ticketWhen(eventDate, eventEndDate, "long");
   const where = splitLocation(eventLocation);
@@ -182,7 +184,7 @@ export function buildTicketHtml(opts: TicketEmailOpts, media: { hero?: boolean }
     .wrap { max-width: 600px; margin: 0 auto; }
     .top { padding: 20px 28px; font-family: Menlo, Consolas, monospace; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; }
     .brand { font-weight: 700; color: ${c.text}; }
-    .top-r { color: ${c.muted}; float: right; }
+    .top-r { color: ${c.muted}; text-align: right; }
     .hero { display: block; width: 100%; max-width: 600px; height: auto; border: 0; }
     .panel-title { font-size: 17px; font-weight: 700; color: ${c.text}; margin: 0 0 6px; }
     .main { padding: 28px; }
@@ -216,7 +218,10 @@ export function buildTicketHtml(opts: TicketEmailOpts, media: { hero?: boolean }
 </head>
 <body>
   <div class="wrap">
-    <div class="top"><span class="brand">WoCo</span><span class="top-r">${multiTicket ? "Your tickets" : "Your ticket"}</span></div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" class="top"><tr>
+      <td class="brand">WoCo</td>
+      <td class="top-r" align="right">${multiTicket ? "Your tickets" : "Your ticket"}</td>
+    </tr></table>
     ${media.hero ? `<img src="cid:${HERO_CID}" alt="${escHtml(eventTitle)}" class="hero" width="600" height="300" />` : ""}
     <div class="main">
       <div class="kicker">You're going</div>
@@ -283,7 +288,7 @@ export function buildTicketText(opts: TicketEmailOpts): string {
 /** Inline id of the event photo at the top of the email. */
 export const HERO_CID = "woco-hero";
 /** Ticket images above this, all together, are re-drawn without the photo. */
-export const CARD_BUDGET_BYTES = 8 * 1024 * 1024;
+export const CARD_BUDGET_BYTES = 6 * 1024 * 1024;
 
 export interface TicketAttachmentDeps {
   fetchPhoto: typeof fetchEventPhoto;
@@ -299,10 +304,13 @@ export async function buildTicketAttachments(
 ): Promise<{ attachments: OutboundAttachment[]; hero: boolean }> {
   const { eventTitle, eventDate, eventEndDate, eventLocation, seriesName, tickets: tix, palette } = opts;
   const photo = await deps.fetchPhoto(opts.imageHash, imageGatewayIndex(opts.imageGateway)).catch(() => null);
-  const renderCards = (withPhoto: boolean) =>
-    Promise.all(
-      tix.map(({ qrContent }, i) =>
-        deps.renderCard({
+  // One at a time on purpose: each render decodes the photo, and ten at once
+  // would hold ten decoded copies in memory.
+  const renderCards = async (withPhoto: boolean): Promise<Buffer[]> => {
+    const out: Buffer[] = [];
+    for (const [i, { qrContent }] of tix.entries()) {
+      out.push(
+        await deps.renderCard({
           eventTitle,
           eventDate,
           eventEndDate,
@@ -313,8 +321,10 @@ export async function buildTicketAttachments(
           palette,
           photo: withPhoto ? photo : null,
         }),
-      ),
-    );
+      );
+    }
+    return out;
+  };
   let cards: Buffer[] = [];
   try {
     cards = await renderCards(!!photo);
@@ -363,13 +373,21 @@ export async function buildTicketAttachments(
  * top of the email. Every decoration is optional: if the photo, an image or
  * the calendar file fails, the ticket still goes out - someone paid for it.
  */
-export async function sendTicketEmail(opts: TicketEmailOpts): Promise<void> {
+export interface SendTicketDeps {
+  send: typeof sendEmail;
+  build: (opts: TicketEmailOpts) => ReturnType<typeof buildTicketAttachments>;
+}
+
+export async function sendTicketEmail(
+  opts: TicketEmailOpts,
+  deps: SendTicketDeps = { send: sendEmail, build: (o) => buildTicketAttachments(o) },
+): Promise<void> {
   const fromAddress = getFromAddress();
   const { to, eventTitle, tickets: tix } = opts;
   const subject = tix.length > 1 ? `Your ${tix.length} tickets - ${eventTitle}` : `Your ticket - ${eventTitle}`;
-  const { attachments, hero } = await buildTicketAttachments(opts);
+  const { attachments, hero } = await deps.build(opts);
 
-  await sendEmail(
+  await deps.send(
     {
       from: `"${eventTitle.slice(0, 40)}" <${fromAddress}>`,
       to: [to],
