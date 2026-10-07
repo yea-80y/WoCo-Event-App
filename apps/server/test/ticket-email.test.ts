@@ -84,13 +84,14 @@ test("attachments: photo inline once, one image per ticket, a calendar file", as
   const seen: Array<{ position: unknown; photo: unknown }> = [];
   const { attachments, hero } = await buildTicketAttachments(group, {
     fetchPhoto: async () => PHOTO,
+    renderHero: async () => Buffer.from("hero"),
     renderCard: async (d) => {
       seen.push({ position: d.position, photo: d.photo });
       return Buffer.from("png");
     },
   });
   assert.equal(hero, true);
-  assert.deepEqual(attachments.map((a) => a.filename), ["event.jpg", "ticket-1-of-3.png", "ticket-2-of-3.png", "ticket-3-of-3.png", "event.ics"]);
+  assert.deepEqual(attachments.map((a) => a.filename), ["event.png", "ticket-1-of-3.png", "ticket-2-of-3.png", "ticket-3-of-3.png", "event.ics"]);
   assert.equal(attachments[0].contentId, HERO_CID);
   assert.ok(attachments.slice(1).every((a) => a.contentId === undefined), "tickets are ordinary attachments");
   assert.deepEqual(seen.map((s) => s.position), [{ n: 1, of: 3 }, { n: 2, of: 3 }, { n: 3, of: 3 }]);
@@ -102,6 +103,7 @@ test("a single ticket is ticket.png with no position", async () => {
   let position: unknown = "unset";
   const { attachments } = await buildTicketAttachments(base, {
     fetchPhoto: async () => null,
+    renderHero: async () => Buffer.from("hero"),
     renderCard: async (d) => {
       position = d.position;
       return Buffer.from("png");
@@ -115,6 +117,7 @@ test("images over the budget are re-drawn without the photo", async () => {
   const calls: unknown[] = [];
   const { attachments } = await buildTicketAttachments(group, {
     fetchPhoto: async () => PHOTO,
+    renderHero: async () => Buffer.from("hero"),
     renderCard: async (d) => {
       calls.push(d.photo);
       return Buffer.alloc(d.photo ? Math.ceil(CARD_BUDGET_BYTES / 2) : 10);
@@ -130,6 +133,7 @@ test("a photo or image failure never stops the email", async () => {
     fetchPhoto: async () => {
       throw new Error("gateway down");
     },
+    renderHero: async () => Buffer.from("hero"),
     renderCard: async () => Buffer.from("png"),
   });
   assert.equal(noPhoto.hero, false);
@@ -140,11 +144,30 @@ test("a photo or image failure never stops the email", async () => {
   try {
     const noImages = await buildTicketAttachments(group, {
       fetchPhoto: async () => null,
+      renderHero: async () => Buffer.from("hero"),
       renderCard: async () => {
         throw new Error("resvg");
       },
     });
     assert.deepEqual(noImages.attachments.map((a) => a.filename), ["event.ics"]);
+  } finally {
+    console.error = err;
+  }
+});
+
+test("a banner that fails to draw leaves the email without it, not without tickets", async () => {
+  const err = console.error;
+  console.error = () => {};
+  try {
+    const out = await buildTicketAttachments(base, {
+      fetchPhoto: async () => PHOTO,
+      renderHero: async () => {
+        throw new Error("resvg");
+      },
+      renderCard: async () => Buffer.from("png"),
+    });
+    assert.equal(out.hero, false);
+    assert.deepEqual(out.attachments.map((a) => a.filename), ["ticket.png", "event.ics"]);
   } finally {
     console.error = err;
   }

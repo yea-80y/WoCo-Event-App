@@ -46,6 +46,16 @@ export interface TicketCardData {
 /** Sharp on a phone, small enough to attach a group order's worth. */
 export const TICKET_PNG_WIDTH = 720;
 
+/** The email's banner: the photo cropped to 2:1 here, because email clients
+ *  cannot be trusted to crop (Outlook ignores object-fit). */
+export const HERO_WIDTH = 1200;
+export const HERO_HEIGHT = 600;
+
+export async function renderHeroPng(photo: EventPhoto): Promise<Buffer> {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${HERO_WIDTH}" height="${HERO_HEIGHT}" viewBox="0 0 ${HERO_WIDTH} ${HERO_HEIGHT}"><image x="0" y="0" width="${HERO_WIDTH}" height="${HERO_HEIGHT}" preserveAspectRatio="xMidYMid slice" href="data:${photo.mime};base64,${photo.bytes.toString("base64")}"/></svg>`;
+  return Buffer.from(new Resvg(svg, { fitTo: { mode: "width", value: HERO_WIDTH } }).render().asPng());
+}
+
 export async function renderTicketCardPng(data: TicketCardData): Promise<Buffer> {
   const colours = ticketCardColours(data.palette);
   const ops = ticketCardOps({

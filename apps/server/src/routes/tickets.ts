@@ -2,8 +2,8 @@ import type { SitePalette, TicketDisplay } from "@woco/shared";
 import { buildTicketLink, TICKET_IMAGE_GATEWAYS } from "@woco/shared";
 import { getFromAddress } from "../lib/email/client.js";
 import { sendEmail, type OutboundAttachment } from "../lib/email/send.js";
-import { renderTicketCardPng } from "../lib/ticket/render-card.js";
-import { fetchEventPhoto, type EventPhoto } from "../lib/ticket/event-photo.js";
+import { renderHeroPng, renderTicketCardPng } from "../lib/ticket/render-card.js";
+import { fetchEventPhoto } from "../lib/ticket/event-photo.js";
 import { directionsUrl, eventIcs, googleCalendarUrl } from "../lib/ticket/calendar.js";
 import { splitLocation, ticketWhen } from "@woco/shared/ticket/card";
 import { mintGateToken } from "../lib/gate/token.js";
@@ -184,6 +184,7 @@ export function buildTicketHtml(opts: TicketEmailOpts, media: { hero?: boolean }
     .brand { font-weight: 700; color: ${c.text}; }
     .top-r { color: ${c.muted}; float: right; }
     .hero { display: block; width: 100%; max-width: 600px; height: auto; border: 0; }
+    .panel-title { font-size: 17px; font-weight: 700; color: ${c.text}; margin: 0 0 6px; }
     .main { padding: 28px; }
     .kicker { font-family: Menlo, Consolas, monospace; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: ${c.accent}; margin: 0 0 10px; }
     h1 { margin: 0 0 22px; font-size: 32px; line-height: 1.1; font-weight: 800; color: ${c.text}; }
@@ -216,7 +217,7 @@ export function buildTicketHtml(opts: TicketEmailOpts, media: { hero?: boolean }
 <body>
   <div class="wrap">
     <div class="top"><span class="brand">WoCo</span><span class="top-r">${multiTicket ? "Your tickets" : "Your ticket"}</span></div>
-    ${media.hero ? `<img src="cid:${HERO_CID}" alt="${escHtml(eventTitle)}" class="hero" width="600" />` : ""}
+    ${media.hero ? `<img src="cid:${HERO_CID}" alt="${escHtml(eventTitle)}" class="hero" width="600" height="300" />` : ""}
     <div class="main">
       <div class="kicker">You're going</div>
       <h1>${escHtml(eventTitle)}</h1>
@@ -284,18 +285,17 @@ export const HERO_CID = "woco-hero";
 /** Ticket images above this, all together, are re-drawn without the photo. */
 export const CARD_BUDGET_BYTES = 8 * 1024 * 1024;
 
-const PHOTO_EXT: Record<EventPhoto["mime"], string> = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif" };
-
 export interface TicketAttachmentDeps {
   fetchPhoto: typeof fetchEventPhoto;
   renderCard: typeof renderTicketCardPng;
+  renderHero: typeof renderHeroPng;
 }
 
 /** Everything the ticket email attaches, and whether the photo made it in.
  *  Never throws: each part that fails is left out, and the email still goes. */
 export async function buildTicketAttachments(
   opts: TicketEmailOpts,
-  deps: TicketAttachmentDeps = { fetchPhoto: fetchEventPhoto, renderCard: renderTicketCardPng },
+  deps: TicketAttachmentDeps = { fetchPhoto: fetchEventPhoto, renderCard: renderTicketCardPng, renderHero: renderHeroPng },
 ): Promise<{ attachments: OutboundAttachment[]; hero: boolean }> {
   const { eventTitle, eventDate, eventEndDate, eventLocation, seriesName, tickets: tix, palette } = opts;
   const photo = await deps.fetchPhoto(opts.imageHash, imageGatewayIndex(opts.imageGateway)).catch(() => null);
@@ -325,6 +325,15 @@ export async function buildTicketAttachments(
     cards = [];
   }
 
+  let hero: Buffer | null = null;
+  if (photo) {
+    try {
+      hero = await deps.renderHero(photo);
+    } catch (err) {
+      console.error("[tickets] email banner failed - sending without it:", err);
+    }
+  }
+
   let ics: string | null = null;
   try {
     ics = eventIcs({ eventId: opts.eventId ?? "", title: eventTitle, startIso: eventDate, endIso: eventEndDate, location: eventLocation });
@@ -333,9 +342,9 @@ export async function buildTicketAttachments(
   }
 
   return {
-    hero: !!photo,
+    hero: !!hero,
     attachments: [
-      ...(photo ? [{ filename: `event.${PHOTO_EXT[photo.mime]}`, content: photo.bytes, contentId: HERO_CID, contentType: photo.mime }] : []),
+      ...(hero ? [{ filename: "event.png", content: hero, contentId: HERO_CID, contentType: "image/png" }] : []),
       ...cards.map((png, i) => ({
         filename: tix.length > 1 ? `ticket-${i + 1}-of-${tix.length}.png` : "ticket.png",
         content: png,
