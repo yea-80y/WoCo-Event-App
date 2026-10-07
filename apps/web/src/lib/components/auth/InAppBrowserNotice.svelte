@@ -5,13 +5,9 @@
   people inside such a browser download it.
 -->
 <script lang="ts">
-  import {
-    escapeLink,
-    ESCAPE_FAILED_PARAM,
-    ESCAPE_ROUTE_PARAM,
-    IN_APP_NAMES,
-    type InAppBrowser,
-  } from "../../browser/in-app-browser.js";
+  import type { InAppBrowser } from "../../browser/in-app-browser.js";
+  import { ESCAPE_FAILED_PARAM, ESCAPE_ROUTE_PARAM } from "../../browser/in-app-route.js";
+  import { escapeLink, IN_APP_NAMES } from "../../browser/in-app-escape.js";
 
   interface Props {
     found: InAppBrowser;

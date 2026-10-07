@@ -12,7 +12,7 @@
   import { AUTH_NOTICE_KEY } from "../../auth/auth-notice.js";
   import { navigate } from "../../router/router.svelte.js";
   import { canonicalUrl, hostLabel } from "../../sub-ens/host-label.js";
-  import { detectInAppBrowser } from "../../browser/in-app-browser.js";
+  import type { InAppBrowser } from "../../browser/in-app-browser.js";
   import { onMount } from "svelte";
 
   type Method = "passkey" | "email" | "wallet" | "coinbase";
@@ -40,15 +40,21 @@
   const nameHostLabel = typeof window !== "undefined" ? hostLabel(window.location.hostname) : null;
 
   // A social app's built-in browser can sign no one in - no passkeys, and Google
-  // refuses it (#812). Read once: the browser cannot change without a page load.
-  const inAppBrowser =
-    typeof window !== "undefined"
-      ? detectInAppBrowser(navigator.userAgent, {
-          telegramProxy: "TelegramWebviewProxy" in window,
-          publicKeyCredential: "PublicKeyCredential" in window,
-          touchMac: navigator.maxTouchPoints > 1,
-        })
-      : null;
+  // refuses it (#812). Checked once, when the sheet first opens, so detection
+  // stays out of the first load; the browser cannot change without a page load.
+  let inAppBrowser = $state<InAppBrowser | null>(null);
+  let inAppChecked = false;
+  $effect(() => {
+    if (!visible || inAppChecked || typeof window === "undefined") return;
+    inAppChecked = true;
+    void import("../../browser/in-app-browser.js").then((m) => {
+      inAppBrowser = m.detectInAppBrowser(navigator.userAgent, {
+        telegramProxy: "TelegramWebviewProxy" in window,
+        publicKeyCredential: "PublicKeyCredential" in window,
+        touchMac: navigator.maxTouchPoints > 1,
+      });
+    });
+  });
 
   // Recomputed on each open rather than once: this instance outlives its
   // openings, and the hash it should carry across is the route the user is on

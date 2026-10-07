@@ -42,7 +42,7 @@
  */
 
 import { FEATURES } from "@woco/shared";
-import { restoreEscapedRoute } from "../browser/in-app-browser.js";
+import { restoreEscapedRoute } from "../browser/in-app-route.js";
 
 export type Surface = "neutral" | "attendee" | "creator";
 

@@ -6,13 +6,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { detectInAppBrowser } from "../src/lib/browser/in-app-browser.js";
 import {
-  detectInAppBrowser,
-  escapeLink,
+  isCarriableRoute,
   restoreEscapedRoute,
   ESCAPE_FAILED_PARAM,
   ESCAPE_ROUTE_PARAM,
-} from "../src/lib/browser/in-app-browser.js";
+} from "../src/lib/browser/in-app-route.js";
+import { escapeLink } from "../src/lib/browser/in-app-escape.js";
 
 const IOS = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148";
 const ANDROID_WV =
@@ -129,8 +130,55 @@ test("the carried route is put back as the fragment and the parameter removed", 
   assert.equal(replaced, "https://woco.eth.limo/?ref=fb#/event/abc123");
 });
 
-test("only a #/route is accepted; anything else is dropped, never applied", () => {
-  for (const bad of ["javascript:alert(1)", "#notaroute", "%23%2F evil", "https://elsewhere.example/"]) {
+// --- only routes that hold nothing private travel in a query --------------------
+
+test("public routes may travel in the query", () => {
+  for (const ok of [
+    "#/",
+    "#/event/abc123",
+    "#/event/abc-123_X/purchased",
+    "#/ref/0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+    "#/ref/theirvenue",
+    "#/discover",
+    "#/tickets",
+    "#/creator",
+    "#/creator/events/new",
+    "#/legal/privacy",
+    "#/profile/0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+  ]) {
+    assert.equal(isCarriableRoute(ok), true, ok);
+  }
+});
+
+test("a route with a query, or any shape not on the list, never travels", () => {
+  for (const bad of [
+    "#/signup?gt=SECRET_GATE_TOKEN",
+    "#/creator/audience?announce=ev1",
+    "#/event/abc?x=1",
+    "#/link",
+    "#/recover",
+    "#/soon/thing",
+    "#/coaster/0x" + "a".repeat(64),
+    "#/event/a b",
+    "#/../../etc",
+  ]) {
+    assert.equal(isCarriableRoute(bad), false, bad);
+  }
+});
+
+test("Android: a page whose route may not travel gets no intent - only the manual steps", () => {
+  const secret = new URL("https://woco.eth.limo/#/signup?gt=SECRET_GATE_TOKEN");
+  assert.equal(escapeLink({ app: "facebook", os: "android" }, secret), null);
+  assert.equal(escapeLink({ app: "facebook", os: "android" }, secret, { chromeFailed: true }), null);
+});
+
+test("iOS keeps the fragment client-side, so any route may go to Safari", () => {
+  const secret = new URL("https://woco.eth.limo/#/signup?gt=SECRET_GATE_TOKEN");
+  assert.equal(escapeLink({ app: "facebook", os: "ios" }, secret)?.href, `x-safari-${secret.href}`);
+});
+
+test("only a carriable #/route is put back; anything else is dropped, never applied", () => {
+  for (const bad of ["javascript:alert(1)", "#notaroute", "%23%2F evil", "https://elsewhere.example/", "#/signup?gt=x"]) {
     let replaced = "";
     restoreEscapedRoute({ href: `https://woco.eth.limo/?${ESCAPE_ROUTE_PARAM}=${encodeURIComponent(bad)}` }, (u) => (replaced = u));
     assert.equal(replaced, "https://woco.eth.limo/", bad);
@@ -160,4 +208,14 @@ test("the sign-in sheet shows the way out above every sign-in option, loaded onl
   const passkey = modal.indexOf("<PasskeyLogin", notice);
   assert.ok(notice > 0 && passkey > notice);
   assert.ok(!/^\s*import InAppBrowserNotice/m.test(modal), "never in the eager bundle");
+  assert.ok(!/^\s*import \{[^}]*\} from "\.\.\/\.\.\/browser\/in-app-browser\.js"/m.test(modal), "detection is loaded, not imported");
+  assert.ok(modal.includes('void import("../../browser/in-app-browser.js")'));
+});
+
+test("only the small route carrier is eager; detection and the link builder are not", () => {
+  const route = read("../src/lib/browser/in-app-route.ts");
+  assert.ok(!/from "\.\/in-app-(?:browser|escape)\.js"/.test(route.replace(/import type[^;]+;/g, "")));
+  const router = read("../src/lib/router/router.svelte.ts");
+  assert.ok(router.includes('import { restoreEscapedRoute } from "../browser/in-app-route.js";'));
+  assert.ok(!router.includes("in-app-browser.js") && !router.includes("in-app-escape.js"));
 });
