@@ -120,3 +120,17 @@ test("an organiser palette recolours the card; none keeps WoCo's look", () => {
   assert.equal(c.accent, "#ff0055");
   assert.equal(c.dim, "#666666");
 });
+
+test("UK time whatever the machine's own zone (the server runs on UTC)", () => {
+  const before = process.env.TZ;
+  try {
+    for (const tz of ["UTC", "America/New_York", "Asia/Tokyo"]) {
+      process.env.TZ = tz;
+      assert.deepEqual(ticketWhen("2026-07-04T21:00:00Z"), { day: "Sat 4 Jul 2026", time: "22:00" }, tz);
+      assert.equal(ticketWhen("2026-07-04T23:30:00Z").day, "Sun 5 Jul 2026", tz);
+    }
+  } finally {
+    if (before === undefined) delete process.env.TZ;
+    else process.env.TZ = before;
+  }
+});
