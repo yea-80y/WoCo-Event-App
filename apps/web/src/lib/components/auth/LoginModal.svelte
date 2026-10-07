@@ -12,6 +12,7 @@
   import { AUTH_NOTICE_KEY } from "../../auth/auth-notice.js";
   import { navigate } from "../../router/router.svelte.js";
   import { canonicalUrl, hostLabel } from "../../sub-ens/host-label.js";
+  import { detectInAppBrowser } from "../../browser/in-app-browser.js";
   import { onMount } from "svelte";
 
   type Method = "passkey" | "email" | "wallet" | "coinbase";
@@ -37,6 +38,17 @@
   // picker that is guaranteed to fail. Read once: the hostname cannot change
   // without a page load.
   const nameHostLabel = typeof window !== "undefined" ? hostLabel(window.location.hostname) : null;
+
+  // A social app's built-in browser can sign no one in - no passkeys, and Google
+  // refuses it (#812). Read once: the browser cannot change without a page load.
+  const inAppBrowser =
+    typeof window !== "undefined"
+      ? detectInAppBrowser(navigator.userAgent, {
+          telegramProxy: "TelegramWebviewProxy" in window,
+          publicKeyCredential: "PublicKeyCredential" in window,
+          touchMac: navigator.maxTouchPoints > 1,
+        })
+      : null;
 
   // Recomputed on each open rather than once: this instance outlives its
   // openings, and the hash it should carry across is the route the user is on
@@ -234,6 +246,12 @@
         <!-- Hidden rather than unmounted on the wallet screen, so a passkey
              error or the create-account offer is still there on the way back. -->
         <div class="methods" class:offstage={view !== "main"}>
+          {#if inAppBrowser}
+            {#await import("./InAppBrowserNotice.svelte") then { default: InAppBrowserNotice }}
+              <InAppBrowserNotice found={inAppBrowser} />
+            {/await}
+          {/if}
+
           <PasskeyLogin
             oncomplete={handleComplete}
             onstart={() => start("passkey")}
