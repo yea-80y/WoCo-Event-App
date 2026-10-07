@@ -52,6 +52,7 @@ test("times are in the event's zone (UK), across the clock change", () => {
   // A late start crosses midnight UTC but not in London.
   assert.equal(ticketWhen("2026-07-04T23:30:00Z").day, "Sun 5 Jul 2026");
   assert.equal(ticketWhen("2026-11-14T22:00:00Z", "2026-11-14T20:00:00Z").time, "22:00", "an end before the start is ignored");
+  assert.equal(ticketWhen("2026-11-14T22:00:00Z", undefined, "long").day, "Saturday 14 November 2026");
   assert.deepEqual(ticketWhen("not a date"), {});
   assert.deepEqual(ticketWhen(undefined), {});
 });

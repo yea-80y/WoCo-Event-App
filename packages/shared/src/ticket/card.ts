@@ -118,15 +118,20 @@ function validDate(iso?: string): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/** "Sat 14 Nov 2026" and "22:00 - 04:00", in the event's time zone. */
-export function ticketWhen(startIso?: string, endIso?: string): { day?: string; time?: string } {
+/** "Sat 14 Nov 2026" (or "Saturday 14 November 2026") and "22:00 - 04:00", in
+ *  the event's time zone. */
+export function ticketWhen(
+  startIso?: string,
+  endIso?: string,
+  style: "short" | "long" = "short",
+): { day?: string; time?: string } {
   const start = validDate(startIso);
   if (!start) return {};
   // Assembled from parts: the joined en-GB form puts a comma after the weekday.
   const parts = new Intl.DateTimeFormat("en-GB", {
-    weekday: "short",
+    weekday: style,
     day: "numeric",
-    month: "short",
+    month: style,
     year: "numeric",
     timeZone: EVENT_TIME_ZONE,
   }).formatToParts(start);
