@@ -556,7 +556,9 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     sales continue with the minimal seal; `/api/health` `heldOrders` alarms)
   attendee-slots.json (#546 — which slot of the attendee batch holds each order chunk: the ONLY way
     to erase one order. Losing it loses per-record erasure for everything written so far, and that
-    batch must NEVER be registered again (buy a new one). Unreadable = checkout refuses until restored)
+    batch must NEVER be registered again (buy a new one). Unreadable = checkout refuses until restored.
+    Since #797 each record also holds the buyer's email HMAC + organiser: it is the index the ops
+    lookup answers access/erasure requests from, and an EMAIL_HASH_SECRET rotation blinds it)
   event-feed-signers.json (#670 — eventId → the organiser's content-feed signer + verified
     creator, pinned at create, write-once. The money path's ONLY carrier for an UNLISTED event.
     Losing it fails CLOSED: unlisted events stop selling until re-created; listed ones fall back

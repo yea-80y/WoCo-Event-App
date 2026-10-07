@@ -241,3 +241,36 @@ test("#546: a stored order carries its organiser and the buyer's email hash, and
   assert.equal((await lookup({})).status, 400);
   assert.equal((await lookup({ email: "someone-else@example.com" })).body.data?.orders.length, 0);
 });
+
+test("#546: an order erased while only held keeps who it was for, so a later request is answered 'erased'", async () => {
+  await readyAttendeeStore();
+  const { hashEmail } = await import("../src/lib/event/claim-service.js");
+  const emailHash = hashEmail("held-only@example.com");
+  const json = canonicalOrderBox({ ...BOX, ct: "f3".repeat(71) })!;
+  const ref = await writer.orderRefOf(json);
+  held.commitHold(ref, json, { eventId: "e-lookup", seriesId: "s2" });
+  held.markHeldPaid(ref, "cs_heldonly", Date.now(), { emailHash });
+
+  process.env.OPS_TOKEN = "t".repeat(40);
+  const { ops } = await import("../src/routes/ops.js");
+  const opsApp = new Hono();
+  opsApp.route("/api/ops", ops);
+  const auth = { "content-type": "application/json", authorization: `Bearer ${"t".repeat(40)}` };
+  const burn = await opsApp.request(`/api/ops/attendee-batch/orders/${ref}/burn`, {
+    method: "POST", headers: auth, body: JSON.stringify({ by: "test", reason: "erasure request" }),
+  });
+  assert.equal(((await burn.json()) as { data?: { state: string } }).data?.state, "deleted-before-store");
+
+  const rec = ledger.getOrderRecord(ref);
+  assert.equal(rec?.state, "burned");
+  assert.equal(rec?.emailHash, emailHash);
+  assert.equal(rec?.eventId, "e-lookup");
+  assert.equal(rec?.organiser, "0x" + "5c".repeat(20), "organiser from the record pinned at create");
+
+  const res = await opsApp.request("/api/ops/attendee-batch/lookup", {
+    method: "POST", headers: auth, body: JSON.stringify({ email: "held-only@example.com" }),
+  });
+  const data = ((await res.json()) as { data: { orders: { root: string; state: string }[]; held: unknown[] } }).data;
+  assert.deepEqual(data.orders.map((o) => [o.root, o.state]), [[ref, "burned"]]);
+  assert.deepEqual(data.held, []);
+});

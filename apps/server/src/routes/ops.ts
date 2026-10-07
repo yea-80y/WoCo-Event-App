@@ -60,9 +60,9 @@ import { attendeeLedgerStatus, setActiveBatch } from "../lib/attendee-batch/ledg
 import { attendeeCheckoutRefusal, attendeeStamperAddress, isStoreInFlight } from "../lib/attendee-batch/writer.js";
 import { refreshAttendeeBatch, registerAttendeeBatch } from "../lib/attendee-batch/admin.js";
 import { burnOrder } from "../lib/attendee-batch/burn.js";
-import { getOrderRecord, ordersForEmailHash, recordErasedBeforeStore } from "../lib/attendee-batch/ledger.js";
+import { getOrderRecord, ledgerReadable, ordersForEmailHash, recordErasedBeforeStore } from "../lib/attendee-batch/ledger.js";
 import { hashEmail } from "../lib/event/claim-service.js";
-import { getHeldOrder, paidUnstored, releaseHeldOrder } from "../lib/attendee-batch/held-orders.js";
+import { getHeldOrder, heldOrdersHealth, paidUnstored, releaseHeldOrder } from "../lib/attendee-batch/held-orders.js";
 
 const ops = new Hono<AppEnv>();
 
@@ -632,13 +632,20 @@ ops.post("/attendee-batch/orders/:root/burn", async (c) => {
   try {
     // A box still held (not yet on Swarm) is simply deleted: real deletion.
     // Synchronous from here to the tombstone, so no store can start between.
-    const wasHeld = getHeldOrder(root) !== null;
+    const heldBefore = getHeldOrder(root);
+    const wasHeld = heldBefore !== null;
     if (wasHeld && !releaseHeldOrder(root)) {
       return c.json({ ok: false, error: "The held order could not be deleted - see compliancePersistence on /api/health" }, 503);
     }
     if (!getOrderRecord(root)) {
       if (!wasHeld) return c.json({ ok: false, error: "No attendee order with that reference" }, 404);
-      recordErasedBeforeStore(root);
+      const eventId = heldBefore!.eventId;
+      recordErasedBeforeStore(root, {
+        ...(eventId ? { eventId } : {}),
+        ...(heldBefore!.seriesId ? { seriesId: heldBefore!.seriesId } : {}),
+        ...(heldBefore!.emailHash ? { emailHash: heldBefore!.emailHash } : {}),
+        ...(eventId && getRecordedFeedSigner(eventId) ? { organiser: getRecordedFeedSigner(eventId)!.creatorAddress } : {}),
+      });
       console.log(`[ops] attendee order ${root} (held, never stored) deleted by ${by} (${reason})`);
       return c.json({ ok: true, data: { root, state: "deleted-before-store", burnedAt: null } });
     }
@@ -668,6 +675,10 @@ ops.post("/attendee-batch/lookup", async (c) => {
         : "";
   if (!/^[0-9a-f]{64}$/.test(emailHash)) {
     return c.json({ ok: false, error: "Give `email`, or `emailHash` as 64 hex characters" }, 400);
+  }
+  // "No orders" from a store we cannot read would be a false answer to a data subject.
+  if (!ledgerReadable() || heldOrdersHealth().unreadable) {
+    return c.json({ ok: false, error: "The attendee ledger or held orders are unreadable - see /api/health; no answer until restored" }, 503);
   }
   const orders = ordersForEmailHash(emailHash).map(({ root, record }) => ({
     root,
