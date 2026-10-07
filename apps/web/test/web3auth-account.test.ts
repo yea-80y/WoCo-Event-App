@@ -261,3 +261,16 @@ test("an instance still being built when the page drops it never installs itself
   await restoreWeb3AuthSession();
   assert.equal(world.built.length, 1, "the next read builds afresh instead of adopting the stale build");
 });
+
+test("sign-out gives a slow session longer than a reload does, then ends it", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  memory.set("woco:web3auth-session-established", "1");
+  world.stored = { key: KEY_A, loads: "later" };
+  const out = logoutWeb3Auth();
+  await settle();
+  t.mock.timers.tick(10_000); // past the 5 s reload window
+  world.built[0].hydrate(KEY_A);
+  await out;
+  assert.deepEqual(world.built[0].logouts, [{ cleanup: true }]);
+  assert.equal(world.stored, null);
+});
