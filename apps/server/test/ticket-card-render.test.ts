@@ -157,8 +157,11 @@ test("a gateway that never answers is given up on, so fulfilment never hangs", {
     await new Promise((r) => setImmediate(r));
     t.mock.timers.tick(PHOTO_TIMEOUT_MS);
   }
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  // Checked before awaiting: without the abort the promise never settles, and a
+  // test that just awaited it would be cancelled rather than failed.
+  assert.equal(done, true, "still waiting on a gateway after both time limits passed");
   assert.equal(await p, null);
-  assert.ok(done);
 });
 
 test("the shipped fonts exist and are what draws the text (the server image has none)", async () => {
