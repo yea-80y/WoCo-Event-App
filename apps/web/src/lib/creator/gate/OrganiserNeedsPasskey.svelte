@@ -10,11 +10,21 @@
   import { ORGANISER_PASSKEY_MESSAGE } from "../../auth/organiser-account.js";
 
   let busy = $state(false);
+  let error = $state<string | null>(null);
 
   async function createPasskeyAccount(): Promise<void> {
     busy = true;
+    error = null;
     try {
       await auth.logout();
+    } catch (e) {
+      // Sign-out refuses rather than leave an email session behind (#182); say
+      // so here, or the button just stops spinning with nothing explained.
+      error = e instanceof Error ? e.message : "Couldn't sign out - please try again.";
+      busy = false;
+      return;
+    }
+    try {
       if (await loginRequest.request({ context: "invite" })) navigate("/creator");
     } finally {
       busy = false;
@@ -26,6 +36,7 @@
   <h1>Organising uses a passkey account</h1>
   <p>{ORGANISER_PASSKEY_MESSAGE}</p>
   <p class="muted">Your attendees' details are protected by your passkey, so only you can open them.</p>
+  {#if error}<p class="error" role="alert">{error}</p>{/if}
   <button class="btn btn--primary" onclick={createPasskeyAccount} disabled={busy}>
     {busy ? "Signing out…" : "Create a passkey account"}
   </button>
@@ -51,5 +62,8 @@
   }
   .muted {
     color: var(--text-secondary);
+  }
+  .error {
+    color: var(--error);
   }
 </style>

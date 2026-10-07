@@ -25,6 +25,11 @@ import {
   MOVED_OR_RECOVERED_MESSAGE,
 } from "./orphaned-credential.js";
 import { readOrphanTombstone, writeOrphanTombstone } from "./orphan-tombstone.js";
+import {
+  isWeb3AuthSignInError,
+  WEB3AUTH_KEY_GONE_MESSAGE,
+  WEB3AUTH_KEY_LOADING_MESSAGE,
+} from "./web3auth-signin-error.js";
 import { guardianConfigForBackup } from "./guardian-config.js";
 import {
   requestSessionDelegation,
@@ -118,6 +123,8 @@ let _passkeyPrivateKey: string | null = null;
 // out of one ceremony and neither is derivable from the other.
 let _passkeyPrfSecret: string | null = null;
 let _web3authPrivateKey: string | null = null;
+/** The background key retry after a slow reload is still running (#803). */
+let _web3authKeyRetrying = false;
 // A passkey account's UNLOCKED seed (#746). At rest it is locked under the passkey;
 // an unlock opens it until `expiresAt` (`SEED_UNLOCK_POLICY`; null = until the tab
 // closes). Stamped with the account it belongs to and read only through
@@ -206,7 +213,7 @@ async function _getSigner(): Promise<EIP712Signer> {
   if (_kind === "web3auth") {
     // web3auth parent is the Kernel too; AuthorizeSession is signed by the raw
     // Web3Auth EOA key (same owner-of-Kernel server authorization as passkey).
-    if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable for signer");
+    if (!_web3authPrivateKey) throw _web3authKeyMissing();
     return createLocalSigner(_web3authPrivateKey, async () => true);
   }
   if (_kind === "coinbase" && _parent) {
@@ -234,7 +241,7 @@ async function _getSeedSigner(): Promise<EIP712Signer> {
     // INVARIANT #1: object derives from the raw Web3Auth secp256k1 key (ethers
     // Wallet → RFC-6979 deterministic), NOT the Kernel (`_getSigner` returns the
     // non-deterministic 1271 signer, which would corrupt the identity seed).
-    if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable for identity derivation");
+    if (!_web3authPrivateKey) throw _web3authKeyMissing();
     return createLocalSigner(_web3authPrivateKey, (info) => signingRequest.request(info));
   }
   return _getSigner();
@@ -1374,7 +1381,7 @@ async function _ensureKernel(): Promise<void> {
  */
 async function _ensureKernelForWeb3Auth(): Promise<void> {
   if (_kernel) return;
-  if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable — cannot build Kernel");
+  if (!_web3authPrivateKey) throw _web3authKeyMissing();
   const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
   const override = await _recoveryKernelFor(_getSeedAddress());
   const kernel = await buildKernelFromPrivateKey(
@@ -1405,9 +1412,16 @@ async function _ensureKernelForKind(): Promise<void> {
  * re-login. Backs off 2s → 4s → 8s → 16s (capped), giving up after a few tries.
  */
 function _retryWeb3AuthKeyInBackground(attempt = 0): void {
-  if (_web3authPrivateKey || _kind !== "web3auth") return;
+  if (_web3authPrivateKey || _kind !== "web3auth") {
+    _web3authKeyRetrying = false;
+    return;
+  }
+  _web3authKeyRetrying = true;
   setTimeout(async () => {
-    if (_web3authPrivateKey || _kind !== "web3auth") return;
+    if (_web3authPrivateKey || _kind !== "web3auth") {
+      _web3authKeyRetrying = false;
+      return;
+    }
     try {
       const { restoreWeb3AuthSession } = await import("./web3auth-account.js");
       const { decideWeb3AuthKeyRetry } = await import("./web3auth-restore-guard.js");
@@ -1418,17 +1432,33 @@ function _retryWeb3AuthKeyInBackground(attempt = 0): void {
       const d = decideWeb3AuthKeyRetry({ restore: r, adoptedSeedAddr: _web3authSeedAddress });
       if (d.action === "adopt") {
         _web3authPrivateKey = d.privateKey as `0x${string}`;
+        _web3authKeyRetrying = false;
         return;
       }
-      if (d.action === "stop") return; // genuinely logged out — leave cache as-is
+      if (d.action === "stop") {
+        _web3authKeyRetrying = false;
+        return; // genuinely logged out — leave cache as-is
+      }
       if (d.action === "clear") {
+        _web3authKeyRetrying = false;
         console.warn("[auth] live Web3Auth session is not the stored identity — clearing (#183)");
         await clearAllAuth();
         return;
       }
     } catch { /* keep trying */ }
     if (attempt < 4) _retryWeb3AuthKeyInBackground(attempt + 1);
+    else _web3authKeyRetrying = false;
   }, Math.min(2000 * 2 ** attempt, 16000));
+}
+
+/**
+ * The error for an action that needs the Web3Auth key while it is not in
+ * memory. While the background retry may still bring it back, saying the
+ * sign-in "has ended" would be false - and the advice (sign out) would throw
+ * away a session about to work (#803).
+ */
+function _web3authKeyMissing(): Error {
+  return new Error(_web3authKeyRetrying ? WEB3AUTH_KEY_LOADING_MESSAGE : WEB3AUTH_KEY_GONE_MESSAGE);
 }
 
 // ---------------------------------------------------------------------------
@@ -2075,8 +2105,10 @@ async function loginWeb3Auth(): Promise<boolean> {
   } catch (e) {
     // The honest refusal must reach the caller as itself — a `false` here
     // renders as "Sign-in failed — please try again", which is exactly the
-    // advice an orphaned credential must not get.
-    if (isOrphanedCredentialError(e)) throw e;
+    // advice an orphaned credential must not get. Web3Auth's own outcomes
+    // (cancelled, a previous session still loading) carry copy for the person
+    // too (#803).
+    if (isOrphanedCredentialError(e) || isWeb3AuthSignInError(e)) throw e;
     console.error("[auth] web3auth login failed:", e);
     return false;
   } finally {
@@ -4620,6 +4652,7 @@ async function clearAllAuth(): Promise<void> {
   _passkeyPrivateKey = null;
   _passkeyPrfSecret = null;
   _web3authPrivateKey = null;
+  _web3authKeyRetrying = false;
   _seedAddress = null;
   _web3authSeedAddress = null;
   _kernel = null;

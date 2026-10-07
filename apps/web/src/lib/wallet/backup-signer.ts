@@ -212,11 +212,17 @@ export async function connectWeb3AuthBackup(): Promise<BackupWallet> {
   // OTHER-namespace chain so the raw key is reachable, no injected discovery) is
   // shared with the primary login via buildWeb3AuthOptions — keep it single-source.
   const mod = await import("@web3auth/modal");
-  const web3auth = new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId));
-  await web3auth.init();
+  type Survivor = import("../auth/web3auth-survivor.js").Web3AuthSessionInstance;
+  type Instance = InstanceType<typeof mod.Web3Auth>;
+  const build = async (): Promise<Instance> => {
+    const fresh = new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId));
+    await fresh.init();
+    return fresh;
+  };
   // The survivor-relevant slice of the instance (same cast the login side uses —
   // `cachedConnector` isn't in the SDK's public typings).
-  const w = web3auth as unknown as import("../auth/web3auth-survivor.js").Web3AuthSessionInstance;
+  const asSurvivor = (i: Instance) => i as unknown as Survivor;
+  let web3auth = await build();
 
   // #307: this instance shares clientId AND localStorage with the primary email
   // login, so a session surviving there rehydrates HERE, and connect() can then
@@ -225,27 +231,45 @@ export async function connectWeb3AuthBackup(): Promise<BackupWallet> {
   // device, a stranger's takeover power recorded as a deliberate choice.
   // Choosing a guardian must always be an explicit authentication, so end any
   // survivor first — and refuse rather than adopt when it cannot be ended.
-  const { endSurvivingWeb3AuthSession } = await import("../auth/web3auth-survivor.js");
+  // The instance that ended a survivor is swapped for a fresh one (#803): its
+  // login connector is dead after the logout, and the modal would not say so.
+  const { instanceForExplicitSignIn, SURVIVOR_STILL_LOADING_MESSAGE } = await import("../auth/web3auth-survivor.js");
   const { markWeb3AuthSessionEstablished, clearWeb3AuthSessionFlag } = await import(
     "../auth/web3auth-session-flag.js"
   );
   try {
-    await endSurvivingWeb3AuthSession(w);
-  } catch {
+    const ready = await instanceForExplicitSignIn(asSurvivor(web3auth), async () => asSurvivor(await build()));
+    web3auth = ready as unknown as Instance;
+  } catch (e) {
+    if (e instanceof Error && e.message === SURVIVOR_STILL_LOADING_MESSAGE) throw e;
     throw new Error(
       "Couldn't clear a previous email session, so the backup sign-in can't run safely — check your connection and try again.",
     );
   }
+  const w = asSurvivor(web3auth);
+  // The modal does NOT close itself: it sits on a "connected" success screen, and
+  // after an error (popup closed or blocked) it stays open although connect()
+  // has rejected - a second tap there completes a sign-in nothing receives,
+  // and that stray session would outlive sign-out (no flag is set for it).
+  // So close it the moment connect() settles, either way (#803). Internal
+  // field, guarded - a future SDK shape change only loses the close.
+  const closeModal = () => {
+    try {
+      (web3auth as unknown as { loginModal?: { closeModal?: () => void } }).loginModal?.closeModal?.();
+    } catch {
+      /* best effort */
+    }
+  };
 
   // Opens the Web3Auth modal (email + socials). Returns null if the user closes it.
   let provider: Awaited<ReturnType<typeof web3auth.connect>>;
   try {
     provider = await web3auth.connect();
   } catch (e) {
-    // A stored session hydrating LATE (past the rehydration wait's 5s window)
-    // can close the modal and reject — while the instance quietly becomes
-    // connected as the survivor. Same race the primary login guards (#182):
-    // never adopt it, end it and ask for one retry.
+    // Defence in depth: a session hydrating mid-modal can close it and reject —
+    // while the instance quietly becomes connected as the survivor. Same race
+    // the primary login guards (#182): never adopt it, end it and ask for one
+    // retry (which builds fresh instances, so the spent one is never reused).
     if (w.connected) {
       try {
         await w.logout({ cleanup: true });
@@ -255,6 +279,8 @@ export async function connectWeb3AuthBackup(): Promise<BackupWallet> {
       throw new Error("A previous email session interfered with the backup sign-in — please try again.");
     }
     throw e instanceof Error ? e : new Error("Email backup sign-in was cancelled.");
+  } finally {
+    closeModal();
   }
   if (!provider) {
     throw new Error("Email backup sign-in was cancelled.");
@@ -279,17 +305,8 @@ export async function connectWeb3AuthBackup(): Promise<BackupWallet> {
     }
     return { ...wallet, providerLabel };
   } finally {
-    // The modal does NOT auto-close after connect() — it sits on a "connected"
-    // success state. The logout below emits DISCONNECTED, which the modal reacts to
-    // by resetting to its LOGIN page (looks like the flow bounced back to sign-in).
-    // So hide the modal first; then the logout's state change lands on an already
-    // closed modal. Internal field, guarded — a future SDK shape change just falls
-    // back to the prior (cosmetic) behaviour.
-    try {
-      (web3auth as unknown as { loginModal?: { closeModal?: () => void } }).loginModal?.closeModal?.();
-    } catch {
-      /* best effort */
-    }
+    // The modal was closed when connect() settled, so the logout's DISCONNECTED
+    // (which resets the modal to its LOGIN page) lands on a closed modal.
     // Clear the Web3Auth session: the LocalAccount already holds the key, so the
     // instance is no longer needed, and a backup factor must not stay connected
     // (it shares this clientId with the primary email login). Non-fatal — the key
