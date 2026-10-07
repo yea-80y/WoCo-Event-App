@@ -106,11 +106,12 @@ export interface FulfilmentDeps {
 
   /** Payout ledger — must not throw (a failed write is a health alarm, not a claim failure). */
   recordHeldPayout(entry: Omit<PayoutLedgerEntry, "status" | "recordedAt"> & { recordedAt?: string }): void;
-  markPayoutVoid(sessionId: string, reason: string): void;
+  /** A full refund landed: the sweep re-reads the sale and nets the fee it kept (#781). */
+  flagPayoutRecheck(sessionId: string): void;
   getOrganiserByStripeAccount(stripeAccountId: string): string | undefined;
 
   /** Store the fallback order seal on the attendee batch (#546). May throw; the caller decides what that means. */
-  storeOrderBlob(data: string, meta: { eventId: string; seriesId: string }): Promise<string>;
+  storeOrderBlob(data: string, meta: { eventId: string; seriesId: string; emailHash?: string }): Promise<string>;
 
   /**
    * Paid-only storage (#546). The buyer's box was HELD at checkout, not stored:
@@ -119,7 +120,7 @@ export interface FulfilmentDeps {
    * hold (may throw - the retry worker then stores it); `isOrderStored` says
    * whether the ref is already on the attendee batch (a retried webhook).
    */
-  claimHeldOrder(orderRef: string, sessionId: string): boolean;
+  claimHeldOrder(orderRef: string, sessionId: string, emailHash?: string): boolean;
   storeHeldOrder(orderRef: string): Promise<string>;
   /** Drop a claimed hold when the sale issued no ticket: nothing references it. */
   releaseHeldOrder(orderRef: string): boolean;
@@ -407,7 +408,7 @@ export async function fulfilPaidSession(
   // data, so this buyer's minimal order is sealed instead.
   let heldOrderRef: string | undefined;
   if (prefetchedOrderRef) {
-    if (deps.claimHeldOrder(prefetchedOrderRef, session.id)) {
+    if (deps.claimHeldOrder(prefetchedOrderRef, session.id, emailHash)) {
       heldOrderRef = prefetchedOrderRef;
     } else if (!deps.isOrderStored(prefetchedOrderRef)) {
       console.warn(`[fulfilment] ${session.id}: no held or stored order for ${prefetchedOrderRef.slice(0, 10)}… — sealing the minimal order`);
@@ -754,6 +755,7 @@ export async function fulfilPaidSession(
         mintContract,
         prefetchedOrderRef,
         encryptedOrder,
+        emailHash,
         accountClaim,
         claimedResults,
         setStopped: (reason) => {
@@ -902,16 +904,16 @@ export async function fulfilPaidSession(
         console.log(
           `[fulfilment] Auto-refunded ${piId} (refund=${created.id}, amount=${refundParams.amount ?? "full"}, unfilled=${unfilled}/${quantity}) — ${stoppedReason}`,
         );
-        // A wholly refunded sale has no proceeds to release, so drop it from the
-        // payout schedule now rather than leaving it "held" and misreporting the
-        // organiser's pending balance. Partial refunds stay held on purpose: the
-        // release job reads the real balance transactions, so the remaining net is
-        // computed from Stripe rather than re-derived here.
+        // A wholly refunded sale is not voided: Stripe keeps its processing fee,
+        // so the sale nets below zero and that debt must come off the organiser's
+        // next payout (#781). Flagged so the sweep reads it now rather than at the
+        // event's date. Partial refunds need no flag: the sale is still due on
+        // its date and the sweep reads its real balance transactions then.
         if (claimedResults.length === 0) {
           try {
-            deps.markPayoutVoid(session.id, `refunded — ${stoppedReason}`);
+            deps.flagPayoutRecheck(session.id);
           } catch (err) {
-            console.error("[fulfilment] markPayoutVoid threw after a successful refund:", err);
+            console.error("[fulfilment] flagPayoutRecheck threw after a successful refund:", err);
           }
         }
       } catch (refundErr) {
@@ -1082,6 +1084,8 @@ interface MintV2Args {
   prefetchedOrderRef: string | undefined;
 
   encryptedOrder: SealedBoxV2 | undefined;
+  /** The buyer's email HMAC, recorded with the fallback order so it can be found (#546). */
+  emailHash: string | undefined;
   accountClaim: { parentAddress: string } | undefined;
   /** Filled in place: one entry per slot actually minted AND signed. */
   claimedResults: Array<{ edition: number; qrContent: string }>;
@@ -1104,7 +1108,11 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
   let batchOrderRef: string | undefined = a.prefetchedOrderRef;
   if (!batchOrderRef && a.encryptedOrder) {
     try {
-      batchOrderRef = await deps.storeOrderBlob(JSON.stringify(a.encryptedOrder), { eventId, seriesId });
+      batchOrderRef = await deps.storeOrderBlob(JSON.stringify(a.encryptedOrder), {
+        eventId,
+        seriesId,
+        ...(a.emailHash ? { emailHash: a.emailHash } : {}),
+      });
       console.log(`[fulfilment/v2] Fallback order uploaded: ${batchOrderRef}`);
     } catch (err) {
       console.warn("[fulfilment/v2] Fallback order upload failed:", err);

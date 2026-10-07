@@ -14,7 +14,7 @@ import { hashEmail } from "../event/claim-service.js";
 import { getEvent } from "../event/service.js";
 import { chainEventEndMsAt } from "../event/end-date-guard.js";
 import { lookupOnChainEventId, saleContractFor } from "../event/onchain-registry.js";
-import { recordHeld, markVoid } from "./payout-ledger.js";
+import { recordHeld, flagForRecheck } from "./payout-ledger.js";
 import { getOrganiserByStripeAccount } from "./accounts.js";
 import { storeAttendeePayload, storeHeldOrder } from "../attendee-batch/writer.js";
 import { markHeldPaid, releaseHeldOrder } from "../attendee-batch/held-orders.js";
@@ -46,10 +46,12 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   recordHeldPayout: (entry) => {
     recordHeld(entry);
   },
-  markPayoutVoid: markVoid,
+  flagPayoutRecheck: (sessionId) => {
+    flagForRecheck(sessionId);
+  },
   getOrganiserByStripeAccount,
   storeOrderBlob: (data, meta) => storeAttendeePayload(data, { kind: "fallback", ...meta }),
-  claimHeldOrder: (ref, sessionId) => markHeldPaid(ref, sessionId),
+  claimHeldOrder: (ref, sessionId, emailHash) => markHeldPaid(ref, sessionId, Date.now(), { emailHash }),
   storeHeldOrder: (ref) => storeHeldOrder(ref),
   releaseHeldOrder: (ref) => releaseHeldOrder(ref),
   isOrderStored: (ref) => !!getOrderRecord(ref) && !isOrderErased(ref),

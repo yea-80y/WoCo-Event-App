@@ -44,6 +44,7 @@ import {
 } from "../lib/stripe/pending-refunds.js";
 import { liveRefundGateway } from "../lib/stripe/pending-refunds-live.js";
 import { acknowledgePartialRefund, listFlaggedSales, ticketSalesHealth } from "../lib/stripe/ticket-sales.js";
+import { reopenVoid } from "../lib/stripe/payout-ledger.js";
 import { getEvent } from "../lib/event/service.js";
 import { getRecordedFeedSigner } from "../lib/event/feed-signer-record.js";
 import { getStripeAccount } from "../lib/stripe/accounts.js";
@@ -59,8 +60,9 @@ import { attendeeLedgerStatus, setActiveBatch } from "../lib/attendee-batch/ledg
 import { attendeeCheckoutRefusal, attendeeStamperAddress, isStoreInFlight } from "../lib/attendee-batch/writer.js";
 import { refreshAttendeeBatch, registerAttendeeBatch } from "../lib/attendee-batch/admin.js";
 import { burnOrder } from "../lib/attendee-batch/burn.js";
-import { getOrderRecord, recordErasedBeforeStore } from "../lib/attendee-batch/ledger.js";
-import { getHeldOrder, releaseHeldOrder } from "../lib/attendee-batch/held-orders.js";
+import { getOrderRecord, ledgerReadable, ordersForEmailHash, recordErasedBeforeStore } from "../lib/attendee-batch/ledger.js";
+import { hashEmail } from "../lib/event/claim-service.js";
+import { getHeldOrder, heldOrdersHealth, paidUnstored, releaseHeldOrder } from "../lib/attendee-batch/held-orders.js";
 
 const ops = new Hono<AppEnv>();
 
@@ -415,6 +417,27 @@ ops.post("/ticket-sales/:sessionId/acknowledge-partial-refund", async (c) => {
 });
 
 /**
+ * POST /api/ops/payouts/:sessionId/reopen   { by }
+ *
+ * Put a voided payout entry back under the release sweep (#781). Before #781 a
+ * sale that a refund took below zero was voided, and the fees Stripe kept on it
+ * dropped out of the arithmetic, so every later payout on that account was
+ * short and deferred for ever. Reopened, the next sweep re-reads the sale from
+ * Stripe and nets what it is really worth into the account's next payout. Only
+ * a void can be reopened; this moves no money itself.
+ */
+ops.post("/payouts/:sessionId/reopen", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const body = (await c.req.json().catch(() => null)) as { by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  const entry = reopenVoid(sessionId);
+  if (!entry) return c.json({ ok: false, error: "No voided payout entry for that session" }, 404);
+  console.log(`[ops] payout entry ${sessionId} (${entry.stripeAccountId}) reopened by ${by}`);
+  return c.json({ ok: true, data: { reopened: true, stripeAccountId: entry.stripeAccountId, status: entry.status } });
+});
+
+/**
  * POST /api/ops/events/:id/cancel   { by }
  *
  * The platform cancels an event and refunds every buyer (#644) — for an
@@ -442,6 +465,7 @@ ops.post("/events/:id/cancel", async (c) => {
       eventId,
       by: `ops:${by}`,
       organiserAccount: creator ? getStripeAccount(creator.toLowerCase())?.stripeAccountId : undefined,
+      ...(event?.title ? { title: event.title } : {}),
     },
     liveCancelEventDeps,
   );
@@ -609,13 +633,20 @@ ops.post("/attendee-batch/orders/:root/burn", async (c) => {
   try {
     // A box still held (not yet on Swarm) is simply deleted: real deletion.
     // Synchronous from here to the tombstone, so no store can start between.
-    const wasHeld = getHeldOrder(root) !== null;
+    const heldBefore = getHeldOrder(root);
+    const wasHeld = heldBefore !== null;
     if (wasHeld && !releaseHeldOrder(root)) {
       return c.json({ ok: false, error: "The held order could not be deleted - see compliancePersistence on /api/health" }, 503);
     }
     if (!getOrderRecord(root)) {
       if (!wasHeld) return c.json({ ok: false, error: "No attendee order with that reference" }, 404);
-      recordErasedBeforeStore(root);
+      const eventId = heldBefore!.eventId;
+      recordErasedBeforeStore(root, {
+        ...(eventId ? { eventId } : {}),
+        ...(heldBefore!.seriesId ? { seriesId: heldBefore!.seriesId } : {}),
+        ...(heldBefore!.emailHash ? { emailHash: heldBefore!.emailHash } : {}),
+        ...(eventId && getRecordedFeedSigner(eventId) ? { organiser: getRecordedFeedSigner(eventId)!.creatorAddress } : {}),
+      });
       console.log(`[ops] attendee order ${root} (held, never stored) deleted by ${by} (${reason})`);
       return c.json({ ok: true, data: { root, state: "deleted-before-store", burnedAt: null } });
     }
@@ -626,6 +657,43 @@ ops.post("/attendee-batch/orders/:root/burn", async (c) => {
     console.error(`[ops] attendee order ${root} burn by ${by} failed:`, (err as Error).message);
     return c.json({ ok: false, error: (err as Error).message }, 502);
   }
+});
+
+/**
+ * POST /api/ops/attendee-batch/lookup — body `{ email }` or `{ emailHash }`.
+ * One person's attendee orders, for an access or erasure request (#546): every
+ * ledger record under their email hash, any state, plus paid orders still held
+ * for storage. POST so an address never sits in a URL or an access log; only
+ * the hash comes back. Feed each `root` to `.../orders/:root/burn` to erase.
+ */
+ops.post("/attendee-batch/lookup", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { email?: unknown; emailHash?: unknown } | null;
+  const emailHash =
+    typeof body?.emailHash === "string"
+      ? body.emailHash.trim().toLowerCase()
+      : typeof body?.email === "string" && body.email.trim()
+        ? hashEmail(body.email)
+        : "";
+  if (!/^[0-9a-f]{64}$/.test(emailHash)) {
+    return c.json({ ok: false, error: "Give `email`, or `emailHash` as 64 hex characters" }, 400);
+  }
+  // "No orders" from a store we cannot read would be a false answer to a data subject.
+  if (!ledgerReadable() || heldOrdersHealth().unreadable) {
+    return c.json({ ok: false, error: "The attendee ledger or held orders are unreadable - see /api/health; no answer until restored" }, 503);
+  }
+  const orders = ordersForEmailHash(emailHash).map(({ root, record }) => ({
+    root,
+    state: record.state,
+    kind: record.kind,
+    eventId: record.eventId ?? null,
+    organiser: record.organiser ?? null,
+    createdAt: record.createdAt,
+    burnedAt: record.burnedAt ?? null,
+  }));
+  const held = paidUnstored()
+    .filter((o) => o.emailHash === emailHash)
+    .map((o) => ({ root: o.root, eventId: o.eventId ?? null, paidAt: o.paidAt ?? null }));
+  return c.json({ ok: true, data: { emailHash, orders, held } });
 });
 
 export { ops };

@@ -1,7 +1,8 @@
 import {
-  JsonRpcProvider, Contract, Wallet, keccak256, toUtf8Bytes, concat, namehash, hexlify,
+  JsonRpcProvider, Contract, Wallet, type EventLog, type Log, keccak256, toUtf8Bytes, concat, namehash, hexlify,
 } from "ethers";
-import { SUB_ENS_DEFAULT_CHAIN_ID, getSubEnsDeployment, subEnsName } from "@woco/shared";
+import { SUB_ENS_DEFAULT_CHAIN_ID, SUB_ENS_DEPLOYMENTS, getSubEnsDeployment, subEnsName } from "@woco/shared";
+import type { SubEnsDeployment } from "@woco/shared";
 import { getChainRpcUrl } from "./event-contract.js";
 import { sendSponsorTx } from "./sponsor-nonce.js";
 import { warmSubEnsWebCertWhenResolvable } from "../sub-ens/cert-warmup.js";
@@ -478,6 +479,32 @@ export async function getLabelContenthash(label: string): Promise<string | null>
   return raw && raw !== "0x" ? raw : null;
 }
 
+/**
+ * The public Arbitrum RPC refuses an `eth_getLogs` spanning more than this many
+ * blocks, inclusive (measured 2026-10-06: 10,000,000 answers, 10,000,001 is
+ * refused). An unbounded scan asks for 0..latest, over 500M blocks (#782).
+ */
+export const LOG_SCAN_WINDOW = 10_000_000;
+
+/** Inclusive `[from, to]` ranges covering `start..latest`, none wider than `size`. */
+export function logScanWindows(start: number, latest: number, size = LOG_SCAN_WINDOW): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (let from = start; from <= latest; from += size) out.push([from, Math.min(from + size - 1, latest)]);
+  return out;
+}
+
+/**
+ * Where a scan of the registry's logs starts: its deploy block, since no log
+ * predates it. An env override naming a DIFFERENT registry is a contract whose
+ * deploy block this build does not know, so it scans from genesis - slow, but
+ * never short a name.
+ */
+export function registryScanStartBlock(chainId: number): number {
+  const known = (SUB_ENS_DEPLOYMENTS as Record<number, SubEnsDeployment | undefined>)[chainId];
+  if (!known) return 0;
+  return getRegistryAddress(chainId).toLowerCase() === known.registry.toLowerCase() ? known.deployBlock : 0;
+}
+
 export interface OwnedLabel {
   label: string;
   /** 64-hex Swarm hash the name currently points at, or null if unset / non-Swarm. */
@@ -489,20 +516,27 @@ export interface OwnedLabel {
  * from chain — including names minted before this server existed, or moved to
  * the address by a transfer.
  *
- * The L2Registry is a small ERC-721, so a full-range Transfer scan is cheap (a
- * handful of logs). For each token minted/transferred TO the address we confirm
- * the live owner (drops names transferred away), decode the readable name, and
- * read its current contenthash for a preview URL.
+ * The L2Registry is a small ERC-721, so the Transfer scan returns a handful of
+ * logs - but over every block since the registry's deploy, which the RPC will
+ * only search in bounded windows. For each token minted/transferred TO the
+ * address we confirm the live owner (drops names transferred away), decode the
+ * readable name, and read its current contenthash for a preview URL.
  */
 export async function getOwnedLabels(address: string): Promise<OwnedLabel[]> {
   const chainId = getSubEnsChainId();
-  const registry = new Contract(getRegistryAddress(chainId), REGISTRY_ABI, getProvider(chainId));
+  const provider = getProvider(chainId);
+  const registry = new Contract(getRegistryAddress(chainId), REGISTRY_ABI, provider);
   const addr = address.toLowerCase();
 
   // Deduped and confirmed against `ownerOf`, so a self-transfer - which v2.1
   // permits and which changes nothing - is inert here. Never infer a records
   // reset from `Transfer`; only `VersionChanged` means that.
-  const logs = await registry.queryFilter(registry.filters.Transfer!(null, address));
+  const filter = registry.filters.Transfer!(null, address);
+  const latest = await provider.getBlockNumber();
+  const logs: Array<EventLog | Log> = [];
+  for (const [from, to] of logScanWindows(registryScanStartBlock(chainId), latest)) {
+    logs.push(...await registry.queryFilter(filter, from, to));
+  }
   const tokenIds = [...new Set(logs.map((l) => (l as unknown as { args: { tokenId: bigint } }).args.tokenId.toString()))];
 
   const out: OwnedLabel[] = [];

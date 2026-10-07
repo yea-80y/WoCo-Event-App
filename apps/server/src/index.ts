@@ -103,6 +103,7 @@ import { customDomainProxy } from "./middleware/custom-domain.js";
 import { attendeeBatchHealth } from "./lib/attendee-batch/health.js";
 import { refreshAttendeeBatch } from "./lib/attendee-batch/admin.js";
 import { heldOrdersHealth, sweepExpired as sweepHeldOrders } from "./lib/attendee-batch/held-orders.js";
+import { sweepExpiredConsents } from "./lib/marketing/consent-store.js";
 import { retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -800,6 +801,17 @@ const refreshAttendeeTtl = () =>
   refreshAttendeeBatch().catch((err) => console.warn("[attendee-batch] TTL refresh failed:", (err as Error).message));
 setTimeout(refreshAttendeeTtl, 60_000).unref();
 setInterval(refreshAttendeeTtl, 60 * 60 * 1000).unref();
+// #547: consent evidence is kept six months past the end of its basis, no longer.
+const sweepConsents = () => {
+  try {
+    const n = sweepExpiredConsents();
+    if (n) console.log(`[consent] dropped ${n} records whose basis ended over six months ago`);
+  } catch (err) {
+    console.warn("[consent] sweep failed:", (err as Error).message);
+  }
+};
+setTimeout(sweepConsents, 5 * 60_000).unref();
+setInterval(sweepConsents, 24 * 60 * 60 * 1000).unref();
 // #546: store paid orders whose store failed at fulfilment, and delete unpaid
 // holds past their day.
 setInterval(() => {

@@ -108,8 +108,8 @@ We process attendee data only on your instructions, as set out in our
 [Data Processing Addendum](./DATA_PROCESSING_ADDENDUM.md), which forms part of these terms.
 
 **Understand the storage model before you collect anything.** Attendee records are stored on a public
-decentralised network. Records cannot be individually deleted; erasure works by removing the record
-from the platform immediately and then letting its storage on the network expire. The full mechanism and its limits are in the
+decentralised network. Erasure works by removing the record from the platform immediately and then
+overwriting it where it is stored on the network; each ticket's onchain record cannot be erased. The full mechanism and its limits are in the
 [Privacy Policy](./PRIVACY_POLICY.md) section 8. **You are responsible for telling your attendees
 this** where you collect data outside our checkout — for example on your own website.
 

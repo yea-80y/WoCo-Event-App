@@ -28,11 +28,12 @@ choice.
 
 | Name / purpose | Type | What it does | Retention |
 |---|---|---|---|
-| Session and authentication | Local storage | Keeps you signed in; holds your session delegation | Until sign-out or expiry (30 days) |
-| Account keys | IndexedDB | Stores your encrypted local account key, where you use one | Until you delete it |
+| Session and authentication | IndexedDB | Keeps you signed in; holds your session key and session delegation, encrypted on this device | Until sign-out or expiry (30 days) |
+| Account keys | IndexedDB | Holds your account's key material, encrypted on this device; for a passkey account, locked under your passkey | Deleted at sign-out, except a passkey account's copy, which stays on the device until you clear site data |
 | Cached event and site data | Local storage | Lets pages load instantly instead of refetching | Short-lived, per the cache TTL |
-| Reservation client key | Local storage | Identifies your browser's seat holds so they aren't duplicated | ~10 minutes |
-| Purchase recovery | Session storage | Preserves payment proof if a page reload interrupts checkout | Until the tab closes |
+| Reservation client key | Local storage | Identifies your browser's seat holds so they aren't duplicated | Until you clear it (each hold lasts ~10 minutes) |
+| Purchase recovery | Session storage | Keeps your email, ticket quantity and chosen ticket type across the card-payment redirect, so the confirmation shows when you return | Until the tab closes |
+| Door scanner | IndexedDB | Only on a device an organiser sets up to scan tickets: the door pass, guest list and check-ins, so scanning works offline | Until the device is reset in the scanner |
 | Preferences | Local storage | Remembers your settings and dismissed prompts | Until you clear it |
 
 ### Third parties you interact with directly
@@ -53,8 +54,8 @@ back to us.
 
 You can clear site data at any time through your browser settings.
 
-**Be aware:** clearing storage will sign you out, and **if you use a local browser account, it may
-delete the only copy of your key**. Where you control your keys, we cannot recover them. Please make
+**Be aware:** clearing storage will sign you out and **delete the account keys held on this
+device**. Where you control your keys, we cannot recover them. Please make
 sure you have set up recovery before clearing browser data.
 
 ---

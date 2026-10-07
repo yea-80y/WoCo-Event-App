@@ -28,6 +28,7 @@ import {
 import { decodeTimestampNs, signStamp, splitPayload, stamperKeyFromHex, type StamperKey } from "./stamp.js";
 import { getHeldOrder, paidUnstored, releaseHeldOrder } from "./held-orders.js";
 import { isOrderErased } from "./ledger.js";
+import { getRecordedFeedSigner } from "../event/feed-signer-record.js";
 
 /**
  * Owns the attendee batch: every stamp on it is signed with this key, and so is
@@ -111,7 +112,7 @@ const liveDeps: StoreAttendeeDeps = { stamper: getAttendeeStamper, upload: liveC
  */
 export async function storeAttendeePayload(
   data: string | Uint8Array,
-  meta: { kind: OrderKind; eventId?: string; seriesId?: string },
+  meta: { kind: OrderKind; eventId?: string; seriesId?: string; emailHash?: string },
   deps: StoreAttendeeDeps = liveDeps,
 ): Promise<Hex64> {
   const payload = typeof data === "string" ? new TextEncoder().encode(data) : data;
@@ -124,7 +125,13 @@ export async function storeAttendeePayload(
   if (refusal) throw new AttendeeStoreUnavailableError(refusal);
 
   const { root, chunks } = await splitPayload(payload);
-  const { root: rootHex, record } = allocateOrder(root, chunks.map((c) => c.address), meta);
+  // The organiser from the record pinned at create (#676) - server state, never
+  // a feed value - so their orders can be grouped and moved to their own batch.
+  const organiser = meta.eventId ? getRecordedFeedSigner(meta.eventId)?.creatorAddress : undefined;
+  const { root: rootHex, record } = allocateOrder(root, chunks.map((c) => c.address), {
+    ...meta,
+    ...(organiser ? { organiser } : {}),
+  });
   if (record.state === "stored") return rootHex as Hex64;
 
   const bodies = new Map(chunks.map((c) => [Buffer.from(c.address).toString("hex"), c.body]));
@@ -173,7 +180,12 @@ export async function storeHeldOrder(root: string, deps: StoreAttendeeDeps = liv
   try {
     const stored = await storeAttendeePayload(
       held.json,
-      { kind: "checkout", ...(held.eventId ? { eventId: held.eventId } : {}), ...(held.seriesId ? { seriesId: held.seriesId } : {}) },
+      {
+        kind: "checkout",
+        ...(held.eventId ? { eventId: held.eventId } : {}),
+        ...(held.seriesId ? { seriesId: held.seriesId } : {}),
+        ...(held.emailHash ? { emailHash: held.emailHash } : {}),
+      },
       deps,
     );
     if (stored !== ref) throw new Error(`held order ${ref} hashes to ${stored}; not releasing it`);

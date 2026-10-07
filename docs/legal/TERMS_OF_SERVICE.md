@@ -83,9 +83,9 @@ the organiser is responsible for refunding you.
 
 **We are not obliged to refund you from our own funds** for an organiser's cancellation or failure —
 we are not party to the sale. If an organiser becomes insolvent or refuses a refund you are entitled
-to, we will: give you everything we hold that evidences your purchase; support a chargeback with your
-card issuer; and pass on any funds we are holding that are due to you. Your card chargeback rights
-are usually your strongest remedy, and we will not obstruct them.
+to, we will: give you everything we hold that evidences your purchase; and support a chargeback with
+your card issuer. Your card chargeback rights are usually your strongest remedy, and we will not
+obstruct them.
 
 **What our payout timing does and does not do for you.** We generally do not release an organiser's
 takings to them until after their event has happened. That makes it more likely funds are still

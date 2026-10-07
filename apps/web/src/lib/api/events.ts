@@ -269,6 +269,9 @@ export interface CancellationProgress {
   settled?: boolean;
   /** Minor units per currency. */
   totals?: Record<string, { charged: number; refunded: number }>;
+  /** Buyers WoCo itself emailed about the cancellation and their refund (#798), and those it could not reach. */
+  notified?: number;
+  unreachable?: number;
 }
 
 /**

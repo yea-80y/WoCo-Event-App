@@ -259,8 +259,13 @@
             <span class="tile-value mono">{formatMinor(amt, cur)}</span>
           {/each}
           <!-- Always an estimate: a held net is never final (a refund can still
-               land before release), so there is no "Ready to release" state. -->
-          <span class="tile-note">Estimated — a refund can still change it</span>
+               land before release), so there is no "Ready to release" state.
+               Below zero, fees kept on refunds outweigh what is held (#781). -->
+          {#if heldCurrencies.some(([, amt]) => amt < 0)}
+            <span class="tile-note">Fees owed on refunds - they come off your next payout</span>
+          {:else}
+            <span class="tile-note">Estimated — a refund can still change it</span>
+          {/if}
         {/if}
       </div>
 

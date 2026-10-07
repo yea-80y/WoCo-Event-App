@@ -118,6 +118,34 @@ Tickets follow the money, so the door never admits a ticket whose payment went b
 - **Our fee.** The auto-refund for a sale we could not fulfil returns it (above). Cancellation
   refunds follow `CANCELLATION_RETURNS_PLATFORM_FEE` (false: kept, as `ORGANISER_TERMS.md` §6
   says, #695). Rates and policy: `PRICING_AND_EMAIL.md`.
+- **Debts (#781).** Stripe never returns its processing fee on a refund, and a chargeback adds
+  its own fee, so a refunded or charged-back sale nets BELOW zero - money already gone from the
+  pooled balance. It is never voided (that dropped the debt and left every later payout on the
+  account short, deferred for ever). It stays held and is netted into the account's next payout,
+  debts first, then due sales oldest-first while they fit; it is released with that payout's id.
+  Only a net of exactly 0 voids. A refund or dispute webhook flags the sale (`recheck`) so the
+  sweep reads it at once, whatever its date; a cancelled event's settled sale is read at once (a
+  positive remainder still keeps its date); and
+  once a day, when something due does not fit, the sweep reads the not-yet-due sales as the
+  backstop for a lost flag. A known debt that cannot be read holds that sweep's payout. Debts
+  larger than everything due pay nothing and are counted (`payoutSweep.accountsOwing`, not an
+  alarm: only new sales clear it); a due sale that has not fitted for 7 days alarms
+  (`payoutSweep.balanceShort`). `POST /api/ops/payouts/:sessionId/reopen` puts a pre-#781 void
+  back under the sweep.
+- **The balance against the ledger (#781 part 2).** The ledger cannot see everything that moves
+  a balance: a chargeback after the sale was paid out (the window opens on the event date), a
+  debt Stripe recovers by debiting the organiser's bank (`debit_negative_balances` is on for our
+  Managed Risk accounts, even on manual payouts), a dispute won after payout, a top-up, an
+  organiser's own non-WoCo payment (#785). So each sweep measures `available + pending` against
+  the held ledger (each held sale's last read net). Pending money is on both sides, so settlement
+  timing never reads as either. A shortfall is netted from the next payout; a surplus is paid to
+  the organiser once it has lasted `SURPLUS_SETTLE_DAYS` (7; the clock is
+  `.data/stripe-payout-surplus.json` - losing it only restarts the wait). Either lands as a
+  `kind: "reconciliation"` row released with its payout, so a payout always equals its rows.
+  A sale never read is read once first, and a balance or sale that cannot be read pays nothing.
+  An open dispute's posted withdrawal is netted at once; a positive sale is never paid while a
+  dispute or refund on it is unsettled. Alarms: `surplusOverdue` (a surplus unpaid for 30 days).
+  Failed payouts are #784.
 
 The balance transaction is also where the **settlement currency** comes from: a charge
 presented in a currency the account has no bank account for is converted to the

@@ -1,7 +1,7 @@
 # Data Inventory — UK GDPR Article 30 Record of Processing Activities
 
 **Status:** verified against source, 2026-07-26; citations re-verified and fee model corrected
-2026-08-01. **Not** a draft from memory — every claim below cites the file that makes it true.
+2026-08-01; storage, sealing, social and processor entries re-verified 2026-10-05. **Not** a draft from memory — every claim below cites the file that makes it true.
 Re-verify before each material release.
 
 This is the evidence base. The Privacy Policy, DPA and Organiser Terms all derive from it and must
@@ -25,7 +25,7 @@ not survive scrutiny. The accurate split:
 | Organiser's own account data (wallet address, Stripe account link, sub-ENS name, sites) | **Controller** | WoCo determines purposes: operating the platform, billing, abuse prevention. |
 | Marketing suppression list (`marketing-suppression.json`) | **Controller** (independent) | WoCo determines it must exist and enforces it *against* organisers. This is deliberate: it is the guarantee that an unsubscribe survives an organiser re-uploading a CSV. |
 | Server logs, rate-limit counters, IP addresses | **Controller** | Security and abuse prevention, WoCo's own legitimate interest. |
-| Likes / social graph (`likes-index.json` + on-chain EAS) | **Controller** | WoCo's platform feature; attestation is public on Arbitrum. |
+| Likes / follows (public signed statements on the user's own Swarm feed; server index `social-participants.json`) | **Controller** | WoCo's platform feature; the statements are public. Not onchain - EAS is removed (#475, #476). |
 | Card payment data | **Neither** — never touches WoCo | Direct charges on the organiser's Stripe account; card data goes buyer → Stripe. See §5.1. |
 
 **Consequence:** WoCo needs a Privacy Policy (controller-facing), *and* a DPA offered to organisers
@@ -53,15 +53,15 @@ should be stated plainly — but only for order-form data, never as a blanket cl
 Personal data enters WoCo through **four** distinct front ends. Each needs its own point-of-collection
 notice; a policy link in the main app does not cover the other three.
 
-| # | Surface | Code | Collects | Notice status (2026-07-26) |
+| # | Surface | Code | Collects | Notice status (2026-10-05) |
 |---|---|---|---|---|
 | 1 | Main app checkout | `apps/web/src/lib/attendee/events/claim/OrderForm.svelte` | email, order-form fields | **Compliant** (since `8ed69ec`) — the `consent-block` above the action buttons carries `TRANSACTIONAL_EMAIL_NOTICE`, an unticked `MARKETING_CONSENT_NOTICE` opt-in, `CHECKOUT_PRIVACY_SUMMARY` and a Privacy Policy link. Wording is shared with the server via `packages/shared/src/legal/consent.ts` so the stored Art. 7(1) evidence cannot drift from what was shown |
-| 2 | Embed widget on organiser's own domain | `packages/embed/src/components/woco-tickets.ts` | email | **None** |
-| 3 | Organiser site deployed via WoCo | `apps/web/src/MultiSiteApp.svelte`, `contactForm` section (`packages/shared/src/site/types.ts:192`) | name, email, message | **None**, and the generated site has no privacy policy page at all |
+| 2 | Embed widget on organiser's own domain | `packages/embed/src/components/woco-tickets.ts` | email | **Compliant** - `renderConsent` shows the same shared `TRANSACTIONAL_EMAIL_NOTICE`, unticked `MARKETING_CONSENT_NOTICE` opt-in, `CHECKOUT_PRIVACY_SUMMARY` and a Privacy Policy link |
+| 3 | Organiser site deployed via WoCo | `apps/web/src/MultiSiteApp.svelte`, `contactForm` section (`packages/shared/src/site/types.ts:192`) | name, email, message | The contact form carries a notice naming the organiser as responsible and linking WoCo's Privacy Policy (`ContactFormSection.svelte`); the site footer links it too. The generated site still has no organiser privacy policy page of its own |
 | 4 | Direct event page link | routes into surface 1 | as surface 1 | as surface 1 |
 
 Surface 3 is the sharpest risk: WoCo generates a website that collects personal data and ships it
-with no privacy notice, on the organiser's own domain. The organiser is the controller for that
+with no organiser privacy policy page, on the organiser's own domain. The organiser is the controller for that
 data and is very unlikely to realise they have an obligation.
 
 ---
@@ -82,17 +82,23 @@ Enumerated from source, not assumed:
 | `stripe-accounts.json` | **Yes** | Organiser wallet address ↔ Stripe account id |
 | `stripe-payout-ledger.json` | **Yes** | Organiser wallet address + Stripe account/session/PaymentIntent ids, event id, sale and net amounts, release dates. Financial record of the organiser, not the buyer — no attendee identifier. Retained as accounting evidence (§5.2, `payout-ledger.ts`) |
 | `attendee-gate-bindings.json` | **Yes** (pseudonymous) | Ticket ↔ attendee binding |
-| `likes-index.json` | **Yes** | Wallet address ↔ liked subject. Cache of public on-chain attestations |
-| `sub-ens-owners.json` | **Yes** | Wallet address ↔ ENS label |
-| `reservations.json` | **Yes** (pseudonymous) | `X-Client-Key` browser identifier, IP-derived counters, ~10min TTL |
-| `referrals.json`, `badges-index.json` | **Yes** | Wallet addresses |
+| `social-participants.json` | **Yes** | Per public statement subject (likes, follows, credits), the feed-owner addresses known to have written about it, so an indexer knows whose feeds to read. Encrypted payloads refused. A rebuildable cache - `lib/social/participants.ts` |
+| `profile-names.json` | **Yes** | Account address ↔ which sub-ENS name is its profile name, and its rename clock - `lib/profile/name-ledger.ts` |
+| `reservations.json` | **Yes** (pseudonymous) | `X-Client-Key` browser identifier and source IP (per-IP seat cap). A hold lasts ~10 min; the record is swept about an hour after it ends |
 | `storage-ledger.json` | Indirect | Bytes uploaded per owner address |
-| `revoked-sessions.json`, `consumed-*.json` | Indirect | Session nonces, tx hashes, Stripe session ids, Resend event ids — replay prevention |
+| `revoked-sessions.json`, `consumed-*.json` | Indirect | Session nonces, tx hashes, Stripe session ids, Resend and SES event ids — replay prevention |
+| `ticket-sales.json` | **Yes** (pseudonymous) | Stripe session ↔ payment intent, minted ticket slots, order reference, refund and dispute state - what voids a refunded ticket at the door. No email - `lib/stripe/ticket-sales.ts` |
+| `event-cancellations.json` | **Yes** (pseudonymous) | Cancelled events and one refund row per sale, keyed by Stripe session - `lib/event/cancellations.ts` |
+| `pending-refunds.json` | **Yes** (pseudonymous) | Automatic refunds Stripe refused to create, by Stripe session and payment intent, kept until retried. No email - `lib/stripe/pending-refunds.ts` |
+| `held-orders/{root}.json` | **Yes** (encrypted) | One file per order sealed in the buyer's browser, held as ciphertext from checkout until paid and stored on Swarm (unpaid: deleted after 24 h) - `lib/attendee-batch/held-orders.ts` |
+| `attendee-slots.json` | Indirect | Which storage slot of the attendee batch holds each chunk of each order, and its erasure state - what makes one order erasable (§6) - `lib/attendee-batch/ledger.ts` |
+| `door-passes.json`, `checkins/`, `checkin-rosters/` | **Yes** (pseudonymous / encrypted) | Active door pass per event; check-in records (ticket number, time, random device id); the door guest list as ciphertext the server cannot open - `lib/checkin/store.ts` |
+| `event-feed-signers.json` | **Yes** | Event id → the organiser's content-feed signer and verified creator address, pinned at create - `lib/event/feed-signer-record.ts` |
 | `device-grants.json` | Indirect | An account's added passkeys (#746): each one's key address and a hash of its credential id, the account owner's signed grant and any signed removal, and every nonce used. No names, no device or password-manager details. Must survive restarts (losing it signs added passkeys out) |
 | `event-listing-state.json`, `etherna-batches.json`, `onchain-events.json`, `pending-registrations.json`, `domains.json`, `manifest.json`, `shop-*.json` | Mostly not | Operational state; shop stores contain wallet addresses |
-| `email-failures.json` | **Yes — plaintext, transactional only** | Ledger of email the platform failed to deliver — either after every retry, or because the provider accepted it and then hard-bounced it (`routes/ses-webhook.ts`). `transactional` entries store the buyer's plaintext address: it is the only copy on disk (the claimers feed stores `emailHash`) and exists solely to deliver the ticket already paid for — Art. 6(1)(b). `marketing` entries store the HMAC hash only. Mode 0600, 90-day retention. A 1,000-entry cap bounds the file, but UNRESOLVED transactional entries are exempt from it and bounded by retention alone — a size cap that discarded evidence of a paid-but-undelivered ticket would defeat the store's purpose. Disclosed under Art. 15 and redacted under Art. 17 by the §6 procedure. The stored provider diagnostic is scrubbed of email-shaped text before it is written or logged, so the address exists in exactly one field per entry — the one erasure knows how to remove — rather than in a second, unreachable copy inside the error string — `failure-ledger.ts` |
+| `email-failures.json` | **Yes — plaintext, transactional only** | Ledger of email the platform failed to deliver — either after every retry, or because the provider accepted it and then hard-bounced it (`routes/ses-webhook.ts`). `transactional` entries store the buyer's plaintext address: it is the only copy on disk (`event-attendees.json` stores only its hash) and exists solely to deliver the ticket already paid for — Art. 6(1)(b). `marketing` entries store the HMAC hash only. Mode 0600, 90-day retention. A 1,000-entry cap bounds the file, but UNRESOLVED transactional entries are exempt from it and bounded by retention alone — a size cap that discarded evidence of a paid-but-undelivered ticket would defeat the store's purpose. Disclosed under Art. 15 and redacted under Art. 17 by the §6 procedure. The stored provider diagnostic is scrubbed of email-shaped text before it is written or logged, so the address exists in exactly one field per entry — the one erasure knows how to remove — rather than in a second, unreachable copy inside the error string — `failure-ledger.ts` |
 | `broadcast-jobs/{jobId}.json` | **Yes** (pseudonymous) | One file per background broadcast. HMAC `emailHash`es of everyone it delivered to, plus counters, subject and the organiser's own message body. **No plaintext addresses, ever.** Purpose: send-once accounting — it is what lets a broadcast killed by a restart be resumed without mailing anyone twice. Mode 0600. Retention **7 days** from the job's end (the resume window), and at most 20 records per organiser — except a record of a job killed by a restart that nobody has resumed, which is kept the full 7 days regardless of the cap: it is the `/api/health` alarm and the resume path, and evicting it would clear the alarm while the broadcast is still half-sent. Disclosed under Art. 15 (`broadcastsContaining`, surfaced by the §6 procedure). **Deliberately NOT erased under Art. 17**: removing a hash would make a resumed broadcast mail the person who asked to be forgotten. Erasure is effective by the suppression mark instead, which the send path re-checks per recipient — so a request stops a *live* job immediately — and the record itself expires in 7 days. `broadcast-jobs.ts` |
-| `broadcast-chunks/*.bin` | **Yes — plaintext, encrypted at rest** | The recipients of a broadcast that has not finished sending. Contact lists are ECIES-sealed to the organiser client-side, so the server cannot enumerate one; the client posting plaintext addresses is the only way a bulk send can happen, and a background job holds them while it drains. A first send to contacts new to the platform is **paced** (`lib/sender-pacing/`, #619), so the hold lasts as long as the pacing schedule: the same day for about 1,000 new contacts, up to about five days for a first-time sender's full 20,000. **AES-256-GCM under a key generated per job, held only in process memory and never written to disk**; the key is discarded the moment the job ends, so a file that outlives its job is unreadable by anyone, including us, and a backup, VM snapshot or disk image captures ciphertext for which no key exists anywhere. Each chunk is bound to its job, sequence and slot by authenticated data. Contacts new to the platform are stored in chunks of 100 and each chunk is deleted the moment it is sent, so a new contact is on disk only until their own batch goes; contacts already proven deliverable drain first, in chunks of 500, deleted the same way. A hard bound destroys whatever remains whether or not the job finished: for a paced send, the planned schedule plus 24 hours, never more than **7 days**; for an unpaced send, twice the expected drain, at least 15 minutes and at most 4 hours; an abandoned half-uploaded job is destroyed after 15 minutes idle. A restart destroys every held payload permanently, by design, and the organiser resumes with one press, skipping everyone already reached. Mode 0600. Basis: processor acting on the organiser's documented instruction (Art. 28(3)(a)) — same data, same purpose as the former in-request handling, bounded in time (§6 of `docs/SES_MIGRATION_HANDOVER.md`). Art. 15/17: individual records inside a live chunk are not separately addressable; erasure takes effect through the suppression re-check at send time. `broadcast-jobs.ts` |
+| `broadcast-chunks/*.bin` | **Yes — plaintext, encrypted at rest** | The recipients of a broadcast that has not finished sending. Contact lists are sealed to the organiser client-side (`sealed-box.ts`), so the server cannot enumerate one; the client posting plaintext addresses is the only way a bulk send can happen, and a background job holds them while it drains. A first send to contacts new to the platform is **paced** (`lib/sender-pacing/`, #619), so the hold lasts as long as the pacing schedule: the same day for about 1,000 new contacts, up to about five days for a first-time sender's full 20,000. **AES-256-GCM under a key generated per job, held only in process memory and never written to disk**; the key is discarded the moment the job ends, so a file that outlives its job is unreadable by anyone, including us, and a backup, VM snapshot or disk image captures ciphertext for which no key exists anywhere. Each chunk is bound to its job, sequence and slot by authenticated data. Contacts new to the platform are stored in chunks of 100 and each chunk is deleted the moment it is sent, so a new contact is on disk only until their own batch goes; contacts already proven deliverable drain first, in chunks of 500, deleted the same way. A hard bound destroys whatever remains whether or not the job finished: for a paced send, the planned schedule plus 24 hours, never more than **7 days**; for an unpaced send, twice the expected drain, at least 15 minutes and at most 4 hours; an abandoned half-uploaded job is destroyed after 15 minutes idle. A restart destroys every held payload permanently, by design, and the organiser resumes with one press, skipping everyone already reached. Mode 0600. Basis: processor acting on the organiser's documented instruction (Art. 28(3)(a)) — same data, same purpose as the former in-request handling, bounded in time (§6 of `docs/SES_MIGRATION_HANDOVER.md`). Art. 15/17: individual records inside a live chunk are not separately addressable; erasure takes effect through the suppression re-check at send time. `broadcast-jobs.ts` |
 | `sender-pacing/{sender}.json`, `sender-pacing/_platform.json` | **Yes** (pseudonymous) | Per sender (today: organiser wallet): HMAC hashes of contacts to whom a marketing message has been delivered through the platform without a hard bounce (the "proven" set, which exempts them from paced sending), per-batch counts of hard bounces and complaints keyed by batch id, the sender's paused / stopped state and an operator lift log; `_platform.json` holds daily totals only. **No plaintext.** Basis Art. 6(1)(f): protecting the shared sending reputation every organiser depends on (#619). The proven set is kept while the contact remains in the sender's stored list (pruned at each import), disclosed under Art. 15 and **erased under Art. 17** — unlike `broadcast-jobs`, it has no send-once role, and suppression is what keeps an erased subject from being mailed. Batch counters 7 days; lift log 90 days. Must survive restarts: losing it forgets a stop. `lib/sender-pacing/index.ts` |
 
 **Plaintext email addresses on disk — the complete list, verified by inspection:**
@@ -116,10 +122,10 @@ claimed "no plaintext store but one" would be false on merge.
 
 ### 3.2 Transient (in memory, not persisted)
 
-- **Plaintext attendee email.** Arrives in the claim request body or from Stripe, is used to (a) send
+- **Plaintext attendee email.** Arrives in the checkout request body or from Stripe, is used to (a) send
   the ticket via the active ESP and (b) compute `hashEmail()`. Not written to disk in plaintext,
   **except** when every delivery attempt fails — see `email-failures.json` (§3.1).
-  `hashEmail()` = HMAC-SHA256 keyed on `EMAIL_HASH_SECRET` — `claim-service.ts:126`.
+  `hashEmail()` = HMAC-SHA256 keyed on `EMAIL_HASH_SECRET` — `claim-service.ts`.
 - **Plaintext marketing emails** transit `/api/marketing/import|check` bodies because the client
   cannot compute a server-secret HMAC. Hashed and discarded.
 - **Broadcast recipients are NO LONGER transient.** They arrive at
@@ -143,15 +149,16 @@ sign-out); the account's public content-feed address (`woco:auth:public-keys:*`)
 manager holds it (`woco:auth:passkey-meta:*`). The password manager is never sent to the
 server or written to Swarm. While linking another device, that device keeps the id of the
 passkey it made for this tab only (`woco:pairing-credential`, session storage), so a reload
-reuses it; after making another device the main passkey, both devices keep the signed grants
-still to be registered (`woco:make-main:*`) until they are, or until the change is known not
-to have happened.
+reuses it; a newly linked device keeps a flag (`woco:linked-envelope:*`) until its passkey's own
+portability envelope is written.
 
 ### 3.3 IP addresses
 
-Read for rate limiting and abuse prevention in `reservations.ts`, `campaign.ts`, `likes.ts`,
-`events.ts`, `claims.ts`, `agent.ts`, `shops.ts` (all via a local `clientIp()` helper reading
-`x-forwarded-for` / `cf-connecting-ip`). Held in in-memory counters, not persisted to `.data/`.
+Read for rate limiting and abuse prevention in `reservations.ts`, `campaign.ts`, `events.ts`,
+`stripe.ts`, `swarm.ts`, `agent.ts`, `shops.ts` and other routes (all via the shared `clientIp()`
+helper in `lib/http/client-ip.ts`, reading `cf-connecting-ip` only). Held in in-memory counters,
+not persisted to `.data/` - except the source IP on a seat hold (`reservations.json`, swept about an
+hour after the hold ends).
 Also present in Cloudflare and Docker/host logs — **retention there is currently undefined and needs
 a stated policy** (see §8).
 
@@ -161,18 +168,19 @@ a stated policy** (see §8).
 
 **Verified claim:** WoCo's server can encrypt order data but has no code path to decrypt it.
 
-- Sealing and opening live in `packages/shared/src/crypto/ecies.ts` (X25519 ECDH + AES-256-GCM):
-  `seal`, `open`, `sealJson`, `openJson`.
-- `apps/server` imports **`sealJson` only** (`routes/stripe.ts:30`). It never imports `open` or
-  `openJson`. Grep-verified.
-- The only callers of the ECIES open functions are in the organiser's browser:
-  `Dashboard.svelte:380,398` (orders, `openJson`), `AudienceScreen.svelte:95` (contact list,
-  `openJsonAuto`) and `AttendeeImport.svelte:68` (imported attendee orders, `openJson`).
+- Sealing and opening live in `packages/shared/src/crypto/sealed-box.ts`: HPKE (RFC 9180) with
+  X-Wing key encapsulation (ML-KEM-768 with X25519, `xwing-hpke.ts`), HKDF-SHA256 and AES-256-GCM:
+  `sealBox`, `openBox`, `sealBoxJson`, `openBoxJson`. `crypto/ecies.ts` is deleted.
+- `apps/server` imports **`sealBoxJson` only** (`lib/stripe/fulfilment.ts`, the fallback below). It
+  never imports `openBox` or `openBoxJson`. Grep-verified.
+- The only callers of the open functions on orders and lists are in the organiser's browser:
+  `Dashboard.svelte` (orders), `AudienceScreen.svelte` (contact list) and `AttendeeImport.svelte`
+  (imported attendee orders), all `openBoxJson`.
 - The decryption key is derived in the organiser's browser from their account seed
   (`deriveXWingKeypairFromSeed`, `packages/shared/src/crypto/xwing.ts`). For a passkey account the
-  seed comes from the passkey and is kept on the device locked under it: it opens only once the
-  organiser confirms it's them with their passkey, once each time WoCo is opened
-  (`apps/web/src/lib/auth/identity-seed.ts`). It leaves the browser only sealed: to the account's
+  seed comes from the passkey and is kept on the device locked under it: it opens once the
+  organiser confirms it's them with their passkey, and then stays open for two hours, across
+  reloads (`apps/web/src/lib/auth/seed-unlock-policy.ts`, `identity-seed.ts`). It leaves the browser only sealed: to the account's
   own linked passkeys (each passkey's own portability envelope). A passkey account cannot add an
   email or wallet backup (#746 step 5). Email-login accounts keep their recovery backups, sealed to
   the backup.
@@ -182,7 +190,7 @@ the event organiser holds. WoCo's servers store the encrypted result and have no
 
 **Two carve-outs that must not be glossed:**
 
-1. **Stripe fallback path.** `routes/stripe.ts` (search `Fallback minimal seal`) — when no
+1. **Stripe fallback path.** `lib/stripe/fulfilment.ts` (search `Fallback minimal seal`) — when no
    client-sealed order was pre-uploaded, the server seals a minimal record
    `{seriesId, claimerEmail, claimerAddress}` itself. The server therefore momentarily holds that
    email in memory (it came from Stripe) and performs the encryption. It still cannot re-open the
@@ -196,10 +204,10 @@ the event organiser holds. WoCo's servers store the encrypted result and have no
    changes it. Listed here because "encrypted to the organiser" is otherwise read as "nobody else
    has it".
 
-**On the key:** the organiser's POD identity is **ed25519**; sealing uses the **X25519** keypair
-derived from that same seed (`deriveEncryptionKeypairFromPodSeed`). ECIES is X25519 ECDH +
-HKDF-SHA256 + AES-256-GCM. Saying "encrypted with the organiser's ed25519 key" is loose — the
-signing key and the encryption key are different keys from one seed.
+**On the key:** there is no ed25519 identity key any more (#518). Sealing uses an **X-Wing** keypair
+derived from the account seed, `HKDF(seed, "woco/encryption/xwing/v1")` (`xwing.ts`), in HPKE with
+HKDF-SHA256 and AES-256-GCM (`sealed-box.ts`). The signing keys (issuing key, content-feed signer)
+and the encryption key are different keys from one seed.
 
 ---
 
@@ -208,8 +216,8 @@ signing key and the encryption key are different keys from one seed.
 | Party | Purpose | Personal data shared | Location |
 |---|---|---|---|
 | **Stripe** | Card payments, organiser onboarding/KYC | Buyer email + card data (direct to Stripe, never via WoCo), organiser identity documents | US / IE |
-| **Amazon SES (AWS)** | Transactional ticket email + marketing sends — the LIVE provider since 2026-07-31 | Recipient email, name, message content, and per-message tags (below) | EU (eu-west-2) |
-| **Resend** | Same, but held only as the rollback lever (`EMAIL_PROVIDER=resend`); scheduled for deletion 2026-10-01 | Recipient email, name, message content | US |
+| **Amazon SES (AWS)** | Transactional ticket email + marketing sends — the LIVE provider since 2026-07-31 | Recipient email, name, message content, and per-message tags (below) | UK (eu-west-2, London) |
+| **Resend** | Not active. Held only as the operator rollback lever (`EMAIL_PROVIDER=resend`); automatic failover deleted (`send.ts`); scheduled for deletion | Recipient email, name, message content - only if the lever is pulled | US |
 | **Cloudflare** | CDN / tunnel for `events-api.woco-net.com` and `gateway.woco-net.com` | IP address, request metadata | Global |
 | **Hetzner** | VM hosting (server + bee node) | Everything in §3 at rest | Germany (EU) |
 | **Swarm network** | Decentralised storage | See §6 | **Global, uncontrolled** |
@@ -217,11 +225,11 @@ signing key and the encryption key are different keys from one seed.
 | **Photon (Komoot)** | Address geocoding at event creation | Organiser IP + typed venue address | DE |
 | **Web3Auth** | Social/email login → wallet | Email, OAuth identifiers | US |
 | **ZeroDev** | Account-abstraction bundler/paymaster for passkey wallets | Wallet address, operation data | US |
-| **Arbitrum / EAS** | On-chain likes, event registration | Wallet address, attestation subject — **public, permanent** | Global |
+| **Arbitrum** | Onchain event registration and ticket ledger (`WoCoTicketLedger`) | Each ticket's single-use address and order reference - **public, permanent** | Global |
 | **exchangerate-api.com**, **CoinGecko** | FX and ETH pricing | None (no user data) | US |
 
 Crypto payment rails are **off** at launch (`FEATURES.cryptoPaymentsAllowed`), so on-chain payment
-processing is not currently live — but EAS likes and event registration on Arbitrum **are**.
+processing is not currently live — but event registration and the ticket ledger on Arbitrum **are**.
 
 **Per-message tags sent to SES.** Every outbound message carries a small set of
 name/value tags (`lib/email/message-tags.ts`), which SES stores with the send and
@@ -313,28 +321,26 @@ independent nodes worldwide:
 
 | Item | Form | Personal data? |
 |---|---|---|
-| `ClaimerEntry.claimerAddress` | `wallet:{HMAC hash}` or `email:{HMAC hash}` — never a raw address since 2026-08-01. Wallet hashes are keyed (HKDF-separated from the email key) AND salted per series, so the same wallet is unlinkable across events (`hashWalletAddress`, `claim-service.ts`). Legacy entries hold bare lowercase addresses until test-data cleanup | **Yes** — pseudonymous. `packages/shared/src/event/types.ts:598` |
-| `ClaimedTicket.ownerAddressHash` (ticket blobs via claims feed) | per-series keyed hash; raw `ownerAddress` only on pre-2026-08-01 blobs | **Yes** — pseudonymous |
-| Pending-claims feed `claimerKey` + `claimerSealed` | same hashed handle; raw address rides only AES-256-GCM-sealed to the server (approve path needs it) | **Yes** — sealed/pseudonymous |
-| `ClaimerEntry.orderRef` | Swarm ref → ECIES ciphertext of order answers | **Yes**, encrypted |
-| `ClaimerEntry.secondaryEmailHash` | HMAC hash | **Yes** — pseudonymous |
-| Ticket editions / claims feeds | edition number, timestamps, refs | Indirect |
+| v1 claim feeds (claimers, claims, editions, pending-claims) | No longer written - the v1 claim rail is deleted (#207). A ticket is now a slot on the onchain `WoCoTicketLedger`, held by a single-use address generated at the sale | No |
+| Order blob | X-Wing sealed box of the order answers, on the attendee batch, paid orders only (§6 below). Its Swarm reference is also recorded onchain as the slot's `orderRef`, which is public and permanent | **Yes**, encrypted |
+| Like / follow statements | Public signed statements on the user's own feed (`packages/shared/src/social/`); a retraction is a new version, not a deletion | **Yes**, and intentionally public |
 | Profile feeds | display name, avatar, bio — organiser-published | **Yes**, and intentionally public |
-| Marketing contact list blob | ECIES ciphertext, sealed to organiser | **Yes**, encrypted |
+| Marketing contact list blob | X-Wing sealed box, sealed to organiser | **Yes**, encrypted |
 
 **Pseudonymised ≠ anonymous.** HMAC email hashes and wallet addresses are personal data under UK
 GDPR because WoCo holds the key / can re-link them. The policy must treat them as personal data.
 
 ### Erasure — the mechanism we actually have
 
-Swarm chunks are **immutable and cannot be individually deleted**.
+Swarm chunks are **immutable and cannot be individually deleted**, with the one exception below.
 
 > **UPDATED 2026-09-27 (#546) - attendee order blobs are the exception.** From that change on, every
 > order blob is stamped on its own attendee batch by a key WoCo holds, and the slot of each chunk is
 > recorded (`.data/attendee-slots.json`). Erasure overwrites those slots with newer stamps, which
-> evicts the chunks from every storer that receives the overwrite. Not reached: copies someone else
-> stored under their own stamp, and retrieval caches. Blobs written before the change, and every
-> other data type here, are unchanged.
+> evicts the chunks from every storer that receives the overwrite (`lib/attendee-batch/burn.ts`), and
+> WoCo stops serving the order. It runs on request through an operator route (`routes/ops.ts`), not
+> automatically. Not reached: copies someone else stored under their own stamp, and retrieval
+> caches. Blobs written before the change, and every other data type here, are unchanged.
 >
 > **Only PAID orders reach Swarm.** Until the Stripe payment confirms, the sealed box is held on the
 > server (`.data/held-orders/`, one file per order, once the buyer heads to checkout; memory only before that) as
@@ -343,11 +349,11 @@ Swarm chunks are **immutable and cannot be individually deleted**.
 
 > ⚠️ **CORRECTED 2026-08-01 after Fable review.** This section previously claimed crypto-erasure —
 > "destroy or rotate the decryption key" — as mechanism 1. **That capability does not exist.** The
-> order-sealing key is HKDF-derived from a POD seed derived client-side from the organiser's wallet
-> signature (`packages/shared/src/crypto/keys.ts:71-87`,
-> `apps/web/src/lib/auth/pod-identity.ts:36-59`). WoCo never holds it, no key-destruction code
+> order-sealing key is HKDF-derived from the account seed, derived client-side from the organiser's
+> wallet signature or passkey (`packages/shared/src/crypto/xwing.ts`,
+> `apps/web/src/lib/auth/identity-seed.ts`). WoCo never holds it, no key-destruction code
 > exists, and it is deterministically re-derivable on any device — so it cannot be destroyed at all.
-> There is also only ONE static X25519 key per organiser, so it could never erase a single
+> There is also only ONE static encryption key per organiser, so it could never erase a single
 > attendee's record. Do not reintroduce this claim anywhere.
 
 1. **Removal from the platform (immediate).** The record stops being served or used — organiser
@@ -359,19 +365,19 @@ Swarm chunks are **immutable and cannot be individually deleted**.
    The hash manifest built for batch migration is the enumeration mechanism: migrate the hashes to
    keep, omit the hashes to erase, let the old batch die.
 
-> ⚠️ **Mechanism 2 is NOT operable per-subject today.** One platform batch stamps attendee data AND
-> tickets, profiles, site pointers and recovery data — letting it lapse destroys the platform, not
-> one person's record. The separate attendee batch (§7, open item 4) is a prerequisite. Until it is
-> built, no published document may describe per-subject storage expiry in the present tense.
+> ⚠️ **Mechanism 2 is not a per-subject mechanism.** Letting a shared batch lapse destroys
+> everything stamped on it, not one person's record. Per-subject erasure of an attendee order is the
+> slot overwrite on the separate attendee batch (#546, above). No published document may describe
+> per-subject storage expiry.
 
-**What we may honestly claim:** we cease to store the data, we render it permanently unreadable
-immediately, and we stop paying for its persistence so it is garbage-collected from the network
-within the stated window.
+**What we may honestly claim:** we cease to store the data and remove it from the platform
+immediately, and, for an attendee order, we overwrite every chunk of it in its storage slot so
+storers replace it, within the stated window.
 
 **What we must NOT claim:** that the data is provably destroyed everywhere. Swarm is a public
-network; a third party may have retrieved, cached or pinned a chunk before erasure. Garbage
-collection is best-effort and not verifiable by us. This limitation must be disclosed *at the point
-of collection*, not buried.
+network; a third party may have retrieved, cached or pinned a chunk before erasure. The overwrite
+does not reach a copy stored under someone else's stamp, or retrieval caches. This limitation must
+be disclosed *at the point of collection*, not buried.
 
 ### Servicing a request — the actual procedure
 
@@ -398,8 +404,8 @@ anything, so a crash between the two steps over-suppresses rather than under-pro
    They are the controller for their own list — forward the request. Removing the member from
    WoCo's list index makes them unsendable immediately (`/api/marketing/broadcast` rejects any
    recipient not in the index), and the suppression mark holds even if the organiser re-uploads.
-2. **Ticket records on Swarm** — removal from the platform, plus batch expiry once the separate
-   attendee batch exists. See the two warnings above.
+2. **Order blobs on Swarm** - the script does not erase them; the operator burn route does
+   (`routes/ops.ts`, see above). The order reference recorded onchain stays public.
 3. **Stripe** holds its own payment records under its own retention obligations.
 
 ### International transfers
@@ -491,9 +497,9 @@ organiser's and Stripe's obligation, not something WoCo needs to hold separately
 | 1 | ~~Correct `CLAUDE.md` + `stripe.ts:5` — charges are **direct**, not destination~~ **Done 2026-08-01** — both now say direct charges | Claude |
 | 2 | Confirm whether legacy destination-charge orders exist in production | user |
 | 3 | **Configure** log rotation to match the 30-day period now STATED in PRIVACY_POLICY §10. Stating a period does not create one: Docker's `json-file` driver rotates on nothing unless `max-size`/`max-file` are set in compose, and Cloudflare's retention depends on the plan — check it rather than assume. A policy claiming 30 days over infrastructure that keeps logs forever is worse than the placeholder was | user |
-| 4 | Decide + implement the separate attendee postage batch and manifest-driven erasure | Fable |
+| 4 | ~~Decide + implement the separate attendee postage batch and manifest-driven erasure~~ **Done 2026-09-27 (#546)** - separate attendee batch; erasure is a per-order slot overwrite rather than manifest omission (§6) | Fable |
 | 5 | Solicitor sign-off on the Swarm international-transfer position (§6) | user |
 | 6 | ICO registration (data protection fee) before processing begins | user |
-| 7 | Point-of-collection notices on all four surfaces (§2) | Claude |
+| 7 | ~~Point-of-collection notices on all four surfaces (§2)~~ **Done** - all four carry one (§2); the generated-site policy page is item 8 | Claude |
 | 8 | Generated organiser sites need a privacy policy page | Claude |
 | 9 | **Organiser privacy contact.** `privacy@woco-net.com` is WoCo's contact *as controller* and stays WoCo's — it is not an organiser-facing setting. But §3 tells the attendee their order-form rights are exercised against the ORGANISER, and today the only identification of that organiser is their display name at checkout. They need a reachable contact of their own. Deliberately not built yet: it wants a verified address, which is the same problem SES domain verification solves (PRICING_AND_EMAIL §6 forbids onboarding organiser domains on Resend). Slot it in as an organiser-profile field once SES lands — the point-of-collection notice and the generated-site policy page (item 8) both read it | Claude, after SES |
