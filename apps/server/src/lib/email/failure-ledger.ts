@@ -146,7 +146,7 @@ const EMAIL_IN_TEXT =
  */
 const MAX_REDACT_SCAN = 2000;
 
-function redactAddresses(text: string): string {
+export function redactAddresses(text: string): string {
   return text.slice(0, MAX_REDACT_SCAN).replace(EMAIL_IN_TEXT, "[address-redacted]");
 }
 

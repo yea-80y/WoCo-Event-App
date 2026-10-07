@@ -23,7 +23,7 @@
 import { getResend } from "./client.js";
 import { sesProvider } from "./ses-provider.js";
 import { sendRateLimiter, type SendPriority } from "./rate-limiter.js";
-import { recordFailure } from "./failure-ledger.js";
+import { recordFailure, redactAddresses } from "./failure-ledger.js";
 import { enqueueRetry } from "./retry-queue.js";
 import { buildMessageTags } from "./message-tags.js";
 import { recordPlatformAccepted } from "../sender-pacing/index.js";
@@ -233,7 +233,7 @@ async function attemptWithRetries(
       const wait = backoffMs(attempt);
       console.warn(
         `[email] ${p.name} attempt ${attempt}/${maxAttempts} failed (${lastError.code ?? "unknown"}), ` +
-          `retrying in ${Math.round(wait)}ms: ${lastError.message}`,
+          `retrying in ${Math.round(wait)}ms: ${redactAddresses(lastError.message)}`,
       );
       await sleepFn(wait);
     }
@@ -270,7 +270,7 @@ export async function sendVia(
   // paid order it belonged to.
   const outbound: OutboundEmail = msg.tags
     ? msg
-    : { ...msg, tags: buildMessageTags(priority, opts.context) };
+    : { ...msg, tags: buildMessageTags(priority, opts.context, { addressFree: opts.addressFree }) };
 
   const primaryOutcome = await attemptWithRetries(
     active, outbound, priority, maxAttempts, deps.sleep, acquire,
