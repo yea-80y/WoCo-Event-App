@@ -142,7 +142,7 @@ test("a small file claiming a huge image is no photo: decoding it could take the
   assert.equal(await one(Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3])), null, "unreadable size");
 });
 
-test("a gateway that never answers is given up on, so fulfilment never hangs", async (t) => {
+test("a gateway that never answers is given up on, so fulfilment never hangs", { timeout: 5_000 }, async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const hanging = ((_url: string, init?: RequestInit) =>
     new Promise<Response>((_, reject) => {
