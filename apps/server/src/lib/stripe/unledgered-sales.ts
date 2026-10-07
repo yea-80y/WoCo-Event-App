@@ -36,9 +36,10 @@ const DATA_DIR = join(process.cwd(), ".data");
 const UNLEDGERED_FILE = join(DATA_DIR, "stripe-unledgered-charges.json");
 
 /**
- * A sale younger than this is not counted: the webhook records it within
- * seconds. Nothing is lost by waiting, since money new to a balance waits out a
- * whole SURPLUS_SETTLE_DAYS before it can be paid as surplus.
+ * A sale younger than this holds its account's surplus but does not alarm: the
+ * webhook records it within seconds. It must still hold, since a surplus that
+ * shrinks in the same hour (a chargeback after payout) would let the new money
+ * stand in for the part that left.
  */
 export const UNLEDGERED_GRACE_S = 60 * 60;
 /** Each scan re-reads fees from this far before the last one, covering the grace and clock skew. */
@@ -56,6 +57,8 @@ export interface FeeCharge {
   amount: number;
   amountRefunded: number;
   currency: string;
+  /** Stripe returned the charge as a bare id, so nothing about it can be vouched for. */
+  unreadable?: true;
 }
 
 export interface UnledgeredReads {
@@ -72,6 +75,7 @@ export interface OpenSale {
   currency: string;
   amount: number;
   created: number;
+  unreadable?: true;
 }
 
 interface Store {
@@ -121,11 +125,17 @@ export function liveAccountedFor(): (paymentIntentId: string) => boolean {
   };
 }
 
-function isOpen(f: FeeCharge, accountedFor: (pi: string) => boolean, nowSec: number): boolean {
-  if (store.resolved[f.chargeId]) return false;
-  if (nowSec - f.created < UNLEDGERED_GRACE_S) return false;
-  if (f.amountRefunded >= f.amount) return false;
-  return !f.paymentIntentId || !accountedFor(f.paymentIntentId);
+function classify(
+  f: FeeCharge,
+  accountedFor: (pi: string) => boolean,
+  nowSec: number,
+): "closed" | "young" | "open" {
+  if (store.resolved[f.chargeId]) return "closed";
+  if (!f.unreadable) {
+    if (f.amountRefunded >= f.amount) return "closed";
+    if (f.paymentIntentId && accountedFor(f.paymentIntentId)) return "closed";
+  }
+  return nowSec - f.created < UNLEDGERED_GRACE_S ? "young" : "open";
 }
 
 function toOpen(f: FeeCharge): OpenSale {
@@ -136,6 +146,7 @@ function toOpen(f: FeeCharge): OpenSale {
     currency: f.currency,
     amount: f.amount,
     created: f.created,
+    ...(f.unreadable ? { unreadable: true as const } : {}),
   };
 }
 
@@ -153,17 +164,22 @@ export async function scanUnledgeredSales(
   ensureLoaded();
   const nowSec = Math.floor(now.getTime() / 1000);
   const next: Record<string, OpenSale> = {};
+  const young = new Map<string, number>();
   try {
     const seen = new Set<string>();
     for await (const f of reads.listFees(store.cursor === null ? null : store.cursor - RESCAN_OVERLAP_S)) {
       seen.add(f.chargeId);
-      if (isOpen(f, accountedFor, nowSec)) next[f.chargeId] = toOpen(f);
+      const state = classify(f, accountedFor, nowSec);
+      if (state === "open") next[f.chargeId] = toOpen(f);
+      else if (state === "young") young.set(f.account, (young.get(f.account) ?? 0) + 1);
     }
-    // Older than the window: re-read each until it is ledgered or refunded.
+    // Older than the window: re-read each until it is ledgered or refunded. A
+    // fee Stripe no longer returns stays open: unread is not resolved.
     for (const [chargeId, o] of Object.entries(store.open)) {
       if (seen.has(chargeId)) continue;
       const f = await reads.getFee(o.feeId);
-      if (f && isOpen(f, accountedFor, nowSec)) next[chargeId] = toOpen(f);
+      if (!f) next[chargeId] = o;
+      else if (classify(f, accountedFor, nowSec) !== "closed") next[chargeId] = toOpen(f);
     }
   } catch (err) {
     lastError = err instanceof Error ? err.message : String(err);
@@ -183,7 +199,7 @@ export async function scanUnledgeredSales(
   lastScanAt = now.toISOString();
   lastError = null;
 
-  const byAccount = new Map<string, number>();
+  const byAccount = young;
   for (const o of Object.values(next)) byAccount.set(o.account, (byAccount.get(o.account) ?? 0) + 1);
   return byAccount;
 }
@@ -220,11 +236,26 @@ export function unledgeredSalesHealth(): { open: number; lastScanAt: string | nu
 
 export function feeChargeFrom(fee: import("stripe").Stripe.ApplicationFee): FeeCharge {
   const charge = fee.charge;
-  // Expanded on every read: an id alone cannot say whether the sale was refunded.
-  if (typeof charge === "string") throw new Error(`fee ${fee.id}: charge not expanded`);
+  const account = typeof fee.account === "string" ? fee.account : fee.account.id;
+  // An id alone cannot say whether the sale was refunded or ledgered, so the
+  // sale is open on its own account. Throwing would hold every account's
+  // surplus for as long as Stripe keeps returning it this way.
+  if (typeof charge === "string") {
+    return {
+      feeId: fee.id,
+      account,
+      created: fee.created,
+      chargeId: charge,
+      paymentIntentId: null,
+      amount: 0,
+      amountRefunded: 0,
+      currency: fee.currency,
+      unreadable: true,
+    };
+  }
   return {
     feeId: fee.id,
-    account: typeof fee.account === "string" ? fee.account : fee.account.id,
+    account,
     created: fee.created,
     chargeId: charge.id,
     paymentIntentId:

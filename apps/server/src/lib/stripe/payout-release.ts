@@ -1001,6 +1001,9 @@ export async function runReleaseSweep(
     console.error("[payout-release] Unledgered-sales scan threw:", err);
     unledgered = null;
   }
+  // Per account, not per currency: the currency a sale settled in needs its
+  // balance transaction, which the scan does not read, so an open GBP sale
+  // holds a EUR surplus too.
   const surplusHoldFor = (stripeAccountId: string): string | undefined => {
     if (unledgered === null) return "unledgered-sales scan failed";
     const n = unledgered.get(stripeAccountId) ?? 0;

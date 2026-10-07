@@ -119,9 +119,20 @@ test("a released ledger row accounts for the sale; a void one only while Stripe 
   assert.equal((await scan([fee("paid"), fee("void")]))!.get(ACCT), 1);
 });
 
-test("a sale inside the grace hour is not counted yet: the webhook is still recording it", async () => {
+test("a sale inside the grace hour holds its account's surplus but does not alarm yet", async () => {
   const result = await scan([fee("fresh", { created: nowSec - 600 })]);
-  assert.equal(result!.size, 0);
+  assert.equal(result!.get(ACCT), 1, "held: a shrinking surplus must not let it be paid");
+  assert.equal(unledgered.unledgeredSalesHealth().open, 0, "no alarm: the webhook is still recording it");
+  ledgerRow("fresh");
+  assert.equal((await scan([fee("fresh", { created: nowSec - 600 })]))!.size, 0, "once recorded, nothing holds");
+});
+
+test("a charge Stripe returned as a bare id is open on its own account, never a scan failure", async () => {
+  ledgerRow("bare");
+  const result = await scan([fee("bare", { unreadable: true, paymentIntentId: null, amount: 0 }), fee("other", { account: "acct_2" })]);
+  assert.equal(result!.get(ACCT), 1, "even with a ledger row: nothing about it can be matched");
+  assert.equal(result!.get("acct_2"), 1);
+  assert.equal(unledgered.listOpenUnledgeredSales().find((s) => s.chargeId === "ch_bare")?.unreadable, true);
 });
 
 test("refunded in full is not open; a partial refund still is", async () => {
@@ -184,6 +195,10 @@ test("the next scan reads from the cursor minus two days; an older open sale is 
   assert.deepEqual(second.byId, ["fee_old"], "outside the window, so read by id");
   assert.equal(unledgered.unledgeredSalesHealth().open, 1);
 
+  // Stripe stops returning the fee: unread is not resolved.
+  await unledgered.scanUnledgeredSales(fakeReads([]).reads, unledgered.liveAccountedFor(), later);
+  assert.equal(unledgered.unledgeredSalesHealth().open, 1);
+
   ledgerRow("old"); // a late fulfilment
   await unledgered.scanUnledgeredSales(fakeReads([old]).reads, unledgered.liveAccountedFor(), later);
   assert.equal(unledgered.unledgeredSalesHealth().open, 0);
@@ -215,11 +230,12 @@ test("payout health pages while a sale is open", async () => {
   assert.equal(h.ok, false);
 });
 
-test("the live mapper reads an expanded fee, and refuses one whose charge is only an id", () => {
+test("the live mapper reads an expanded fee, and marks one whose charge is only an id unreadable", () => {
   const expanded = {
     id: "fee_1",
     account: "acct_x",
     created: 1_791_309_415,
+    currency: "gbp",
     charge: { id: "ch_1", payment_intent: "pi_1", amount: 2_200, amount_refunded: 0, currency: "gbp" },
   };
   assert.deepEqual(unledgered.feeChargeFrom(expanded as never), {
@@ -232,5 +248,8 @@ test("the live mapper reads an expanded fee, and refuses one whose charge is onl
     amountRefunded: 0,
     currency: "gbp",
   });
-  assert.throws(() => unledgered.feeChargeFrom({ ...expanded, charge: "ch_1" } as never), /not expanded/);
+  const bare = unledgered.feeChargeFrom({ ...expanded, charge: "ch_1" } as never);
+  assert.equal(bare.unreadable, true);
+  assert.equal(bare.chargeId, "ch_1");
+  assert.equal(bare.paymentIntentId, null);
 });
