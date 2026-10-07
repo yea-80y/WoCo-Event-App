@@ -250,13 +250,14 @@ describe("the failure ledger (#99)", () => {
     diagnosticCode?: string;
     messageId?: string;
     subject?: string;
+    addressFree?: boolean;
   }) {
     const emailTags: Record<string, string[]> = {
       "ses:configuration-set": ["woco-events"],
       "ses:source-ip": ["192.0.2.0"],
     };
     if (opts.kind) {
-      for (const [k, v] of Object.entries(tags.buildMessageTags(opts.kind, opts.context))) {
+      for (const [k, v] of Object.entries(tags.buildMessageTags(opts.kind, opts.context, { addressFree: opts.addressFree }))) {
         emailTags[k] = [v];
       }
     }
@@ -314,6 +315,15 @@ describe("the failure ledger (#99)", () => {
     const health = ledger.failureHealth();
     assert.equal(health.ok, false);
     assert.equal(health.unresolvedTransactional, 1);
+  });
+
+  test("#798: a bounced ADDRESS-FREE transactional send (the refund notice) keeps the hash and never the address", async () => {
+    const email = "erased-buyer@example.com";
+    await post(bounceEvent({ email, kind: "transactional", addressFree: true, context: { kind: "cancellation-notice" } }));
+    const [entry] = ledger.listFailures();
+    assert.equal(entry?.kind, "transactional");
+    assert.equal(entry?.recipients[0]?.hash, hashEmail(email));
+    assert.equal(entry?.recipients[0]?.address, undefined, "the sender kept no address, so neither does its bounce");
   });
 
   test("a bounced MARKETING send keeps the hash and never the address", async () => {

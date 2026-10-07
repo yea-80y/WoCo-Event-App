@@ -465,6 +465,7 @@ ops.post("/events/:id/cancel", async (c) => {
       eventId,
       by: `ops:${by}`,
       organiserAccount: creator ? getStripeAccount(creator.toLowerCase())?.stripeAccountId : undefined,
+      ...(event?.title ? { title: event.title } : {}),
     },
     liveCancelEventDeps,
   );
