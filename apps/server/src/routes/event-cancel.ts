@@ -66,6 +66,7 @@ eventCancel.post("/:id/cancel", requireAuth, async (c) => {
       eventId,
       by: `organiser:${parentAddress}`,
       organiserAccount: getStripeAccount(parentAddress)?.stripeAccountId,
+      title: event.title,
     },
     liveCancelEventDeps,
   );

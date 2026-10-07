@@ -669,3 +669,27 @@ describe("rate limiter", () => {
     assert.throws(() => new RateLimiter({ ratePerSecond: 0 }), /must be > 0/);
   });
 });
+
+describe("address-free sends (#798)", () => {
+  test("a failed address-free send leaves only the hash in the ledger and queues no re-send", async () => {
+    const queue = await import("../src/lib/email/retry-queue.js");
+    queue._resetRetryQueueForTest();
+    const primary = flakyProvider("ses", 99, retryable);
+    await assert.rejects(
+      send.sendVia({ primary: primary.provider, secondary: null, sleep: noSleep }, MSG, { maxAttempts: 1, addressFree: true }),
+    );
+    const [entry] = ledger.listFailures();
+    assert.ok(entry!.recipients[0]!.hash, "the hash is kept, so the failure is still visible");
+    assert.equal(entry!.recipients[0]!.address, undefined, "no plaintext address is re-stored");
+    assert.equal(queue.retryQueueStats().pending, 0, "the drain worker has no address to re-send from");
+
+    // Control: an ordinary transactional failure keeps the address and queues a retry.
+    ledger._resetForTest();
+    await assert.rejects(
+      send.sendVia({ primary: primary.provider, secondary: null, sleep: noSleep }, MSG, { maxAttempts: 1 }),
+    );
+    assert.equal(ledger.listFailures()[0]!.recipients[0]!.address, "buyer@example.com");
+    assert.equal(queue.retryQueueStats().pending, 1);
+    queue._resetRetryQueueForTest();
+  });
+});
