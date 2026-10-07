@@ -235,9 +235,6 @@
     ctx.fillStyle = "rgba(245,240,234,0.2)";
     ctx.font = `600 8.5px 'Courier New', monospace`;
     ctx.fillText(series.name.toUpperCase().slice(0, 22), TX, ty);
-    ty += 15;
-    ctx.fillStyle = "rgba(245,240,234,0.1)";
-    ctx.fillText(`OF ${series.totalSupply} TOTAL`, TX, ty);
 
     // ── Perforated divider ──
     const PERF_X = W - 208;
@@ -441,7 +438,6 @@
 
           <div class="ticket-series-info">
             <span class="ticket-series-name">{series.name}</span>
-            <span class="ticket-series-count">of {series.totalSupply}</span>
           </div>
         </div>
       </div>
@@ -851,11 +847,6 @@
     font-family: ui-monospace, 'SF Mono', monospace;
   }
 
-  .ticket-series-count {
-    font-size: 0.5625rem;
-    color: rgba(255, 255, 255, 0.12);
-    font-family: ui-monospace, 'SF Mono', monospace;
-  }
 
   /* ── Perforated divider ── */
   .ticket-perf {

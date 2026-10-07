@@ -159,14 +159,12 @@
         {#if qrSvg}
           <div class="vt-qr">{@html qrSvg}</div>
         {:else}
-          <div class="vt-qr vt-qr--fallback">QR unavailable — show the ticket ID below</div>
+          <div class="vt-qr vt-qr--fallback">QR unavailable - reload this page to try again</div>
         {/if}
         <p class="vt-qr-caption">Present this QR code at the door</p>
       </div>
 
       <footer class="vt-footer">
-        <div class="vt-footer-label">Ticket ID</div>
-        <div class="vt-footer-id">{parsed.raw}</div>
         <p class="vt-footer-note">
           This ticket is cryptographically signed by the organiser and can be
           verified offline. Anyone holding this link can use the ticket.
@@ -299,22 +297,7 @@
     border-top: 1px solid rgba(255, 255, 255, 0.05);
   }
 
-  .vt-footer-label {
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.22);
-    margin-bottom: 0.5rem;
-  }
 
-  .vt-footer-id {
-    font-family: 'SF Mono', 'Cascadia Code', 'Menlo', monospace;
-    font-size: 0.6875rem;
-    color: rgba(255, 255, 255, 0.3);
-    word-break: break-all;
-    line-height: 1.4;
-  }
 
   .vt-footer-note {
     margin: 1rem 0 0;
