@@ -336,11 +336,14 @@ export function listAccountGroups(): Array<{ stripeAccountId: string; currency: 
   return [...seen.values()];
 }
 
-/** The payment intent of every entry, any status: a sale the ledger knows of (#805). */
+/**
+ * The payment intent of every held or released entry (#805). A void is left out:
+ * it says the sale was refunded, and only Stripe's charge can say that still holds.
+ */
 export function ledgeredPaymentIntents(): Set<string> {
   ensureLoaded();
   const out = new Set<string>();
-  for (const e of Object.values(store)) if (e.paymentIntentId) out.add(e.paymentIntentId);
+  for (const e of Object.values(store)) if (e.paymentIntentId && e.status !== "void") out.add(e.paymentIntentId);
   return out;
 }
 

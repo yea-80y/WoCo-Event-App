@@ -109,12 +109,14 @@ test("our fee with no ledger row is open; a ledgered sale is not", async () => {
   assert.deepEqual(unledgered.listOpenUnledgeredSales().map((s) => s.chargeId), ["ch_missed"]);
 });
 
-test("a released or voided ledger row still accounts for the sale", async () => {
+test("a released ledger row accounts for the sale; a void one only while Stripe shows the refund", async () => {
   ledgerRow("paid");
   ledger.markManyReleased(["cs_paid"], "po_1");
   ledgerRow("void");
   ledger.markVoid("cs_void", "test");
-  assert.equal((await scan([fee("paid"), fee("void")]))!.size, 0);
+  assert.equal((await scan([fee("paid"), fee("void", { amountRefunded: 2_200 })]))!.size, 0);
+  // The refund failed after the void (the money came back to the balance).
+  assert.equal((await scan([fee("paid"), fee("void")]))!.get(ACCT), 1);
 });
 
 test("a sale inside the grace hour is not counted yet: the webhook is still recording it", async () => {
@@ -128,18 +130,19 @@ test("refunded in full is not open; a partial refund still is", async () => {
   assert.equal(result!.get(ACCT), 1);
 });
 
-test("a crash after consume (a sale stub, no ledger row) is open; a tampered or fully auto-refunded stub is not", async () => {
+test("a crash after consume (a sale stub, no ledger row) is open, and so is a refund we only recorded", async () => {
   stub("crashed");
   stub("tampered", { tampered: true, autoRefunded: 2_200 });
   stub("refunded");
   sales.recordAutoRefund("cs_refunded", 2_200);
-  stub("partly");
-  sales.recordAutoRefund("cs_partly", 1_100);
-  await scan([fee("crashed"), fee("tampered"), fee("refunded"), fee("partly")]);
+  // `autoRefunded` is written BEFORE the refund call: until Stripe shows it, the money is still there.
+  await scan([fee("crashed"), fee("tampered"), fee("refunded")]);
   assert.deepEqual(
     unledgered.listOpenUnledgeredSales().map((s) => s.chargeId).sort(),
-    ["ch_crashed", "ch_partly"],
+    ["ch_crashed", "ch_refunded", "ch_tampered"],
   );
+  await scan([fee("crashed"), fee("tampered", { amountRefunded: 2_200 }), fee("refunded", { amountRefunded: 2_200 })]);
+  assert.deepEqual(unledgered.listOpenUnledgeredSales().map((s) => s.chargeId), ["ch_crashed"]);
 });
 
 test("a stub whose ledger row has no payment intent is matched through the session", async () => {

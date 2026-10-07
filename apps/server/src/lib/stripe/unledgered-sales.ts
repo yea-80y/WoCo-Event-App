@@ -104,19 +104,20 @@ function persist(): void {
 }
 
 /**
- * Whether a payment intent's sale is accounted for without a surplus: it has a
- * ledger row (any status), or it is ours and was never going to have one - a
- * tampered session refunded in full, or a sale we refunded in full ourselves.
- * The second covers a refund still queued in pending-refunds, which alarms on its own.
+ * Whether a payment intent's sale is in the ledger, held or released: by its
+ * payment intent, or through its sale record for a row written without one.
+ * Nothing we wrote about a refund counts (a void row, `autoRefunded`, a tampered
+ * session): each is recorded before or apart from the refund itself, and a refund
+ * that never happened leaves the money in the balance. Only the charge's own
+ * `amount_refunded` closes a sale that way.
  */
 export function liveAccountedFor(): (paymentIntentId: string) => boolean {
   const ledgered = ledgeredPaymentIntents();
   return (paymentIntentId) => {
     if (ledgered.has(paymentIntentId)) return true;
     const sale = getSaleByPaymentIntent(paymentIntentId);
-    if (!sale) return false;
-    if (getEntry(sale.sessionId)) return true;
-    return sale.tampered === true || (sale.autoRefunded ?? 0) >= sale.amountTotal;
+    const entry = sale ? getEntry(sale.sessionId) : undefined;
+    return !!entry && entry.status !== "void";
   };
 }
 

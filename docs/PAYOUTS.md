@@ -151,7 +151,8 @@ Tickets follow the money, so the door never admits a ticket whose payment went b
   has money in the balance and no ledger row, so it reads as surplus - and its buyer has no ticket.
   Each sweep first lists the PLATFORM's application fees (one call for every account; an
   organiser's own payment carries no fee of ours) and opens any charge, older than an hour and not
-  refunded in full, whose payment intent has no ledger row. While one is open on an account, its
+  refunded in full (Stripe's `amount_refunded`, never our own refund records), with no held or
+  released ledger row. While one is open on an account, its
   surplus is held; due sales still pay. A scan that fails holds every surplus that sweep. It
   closes itself once the sale is ledgered or refunded in full; `GET /api/ops/payouts/unledgered`
   lists them, `POST .../unledgered/:chargeId/resolve { by, reason }` clears one the buyer was made
