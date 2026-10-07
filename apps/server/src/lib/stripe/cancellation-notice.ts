@@ -18,6 +18,7 @@
  */
 
 import { mayDeliverRefundNotice } from "../email/service-notice-crossing.js";
+import { redactAddresses } from "../email/failure-ledger.js";
 import type { SuppressSource } from "../marketing/suppression-store.js";
 import type { CancelNotice, CancelRefundRow } from "../event/cancellations.js";
 
@@ -61,12 +62,17 @@ export function formatAmount(minor: number | undefined, currency: string | undef
 export function plainTitle(title: string | undefined): string | undefined {
   if (!title) return undefined;
   const words = title
-    .replace(/https?:\/\/\S*/gi, " ")
-    .replace(/\bwww\.\S*/gi, " ")
-    .replace(/\S+@\S+/g, " ")
-    .replace(/\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,24}\b\S*/gi, " ")
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
+    // Lookalikes first, so the rules below see what a mail client linkifies:
+    // fullwidth and ideographic dots and @, zero-width characters.
+    .normalize("NFKC")
+    .replace(/[\u3002\uFF61\uFE52\u2024]/gu, ".")
+    .replace(/\p{Cf}/gu, "")
+    .replace(/\p{Cc}/gu, " ")
+    .replace(/https?:\/\/\S*/giu, " ")
+    .replace(/www\.\S*/giu, " ")
+    .replace(/\S+@\S+/gu, " ")
+    .replace(/[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.(?:\p{L}{2,24}|xn--[a-z0-9-]{2,59})(?![\p{L}\p{N}])\S*/giu, " ")
+    .replace(/\s+/gu, " ")
     .trim();
   if (!words) return undefined;
   return words.length > 80 ? `${words.slice(0, 79).trimEnd()}…` : words;
@@ -150,7 +156,7 @@ export async function notifyRow(
     to = await deps.buyerEmail(row.sessionId, row.account);
   } catch (err) {
     // The next pass tries again. A Stripe error names the session, never the buyer.
-    console.warn(`[cancel-notice] ${row.sessionId}: buyer email read failed:`, err instanceof Error ? err.message : String(err));
+    console.warn(`[cancel-notice] ${row.sessionId}: buyer email read failed:`, redactAddresses(err instanceof Error ? err.message : String(err)));
     return "deferred";
   }
   if (!to) {

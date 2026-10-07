@@ -130,6 +130,20 @@ describe("the title, the only organiser text that crosses unsubscribes and erasu
     assert.equal(notice.plainTitle("mail a@b.co"), "mail");
     assert.equal(notice.plainTitle("www.x.io"), undefined, "nothing left: the generic wording is used");
     assert.ok(notice.plainTitle("x".repeat(200))!.length <= 80);
+    // Unicode lookalikes a mail client would still linkify (Fable + security review).
+    for (const t of [
+      "deals example\uFF0Ecom",
+      "deals example\u3002com",
+      "deals example\uFF61com",
+      "deals example\u2024com",
+      "deals tickets\uFF20woco.co",
+      "deals Gig\u200B.com",
+      "deals \u043f\u0440\u0438\u043c\u0435\u0440.\u0440\u0444",
+      "deals xn--e1afmkfd.xn--p1ai",
+      "deals EXAMPLE.COM/x",
+    ]) {
+      assert.equal(notice.plainTitle(t), "deals", JSON.stringify(t));
+    }
     const m = notice.buildCancellationNotice({ variant: "issued", title: "Promo at deals.example.com", status: "done", amount: null });
     assert.doesNotMatch(m.subject + m.text + m.html, /deals\.example/);
   });
