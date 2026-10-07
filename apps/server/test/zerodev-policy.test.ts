@@ -539,3 +539,92 @@ test("co-owners: the app's own builders are exactly what the policy pays for", a
     subject: ACCOUNT.toLowerCase(),
   });
 });
+
+// ── The email -> passkey upgrade (#746, owner 10-07) ─────────────────────────
+// The switch to a list of ONE key: an email account handing itself to its new
+// passkey. A locked account gets exactly one, under a platform-wide daily cap.
+
+test("upgrade: the co-owner switch to one key is its own shape, deployed or counterfactual", async () => {
+  const { coOwnerSwitchCalls } = await import("../../web/src/lib/auth/co-owner-calls.js");
+  const enc = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as never;
+  const sw = coOwnerSwitchCalls(enc, ACCOUNT, [P1]).map((c) => ({ to: c.to as Address, data: c.data }));
+  const callData = await viaExecute(sw);
+  assert.deepEqual(classifyUserOp(op(callData)), { ok: true, shape: "upgrade", subject: ACCOUNT.toLowerCase() });
+  const { metaFactoryAddress } = KernelVersionToAddressesMap[KERNEL_V3_1];
+  assert.deepEqual(classifyUserOp(op(callData, { factory: metaFactoryAddress!.toLowerCase() })), {
+    ok: true,
+    shape: "upgrade",
+    subject: ACCOUNT.toLowerCase(),
+  });
+  // The same checks as any switch: the ECDSA validation must go in the same batch.
+  assert.equal(classifyUserOp(op(await viaExecute([switchCalls(enableOf([P1]))[0]]))).ok, false, "alone");
+  assert.deepEqual(classifyUserOp(op(await viaExecute(switchCalls(enableOf([P1], [2]))))), { ok: false, reason: "co-owners" });
+});
+
+test("upgrade: a locked account is paid for ONE upgrade op - its stub, final and retry - and nothing else", async () => {
+  const p = new SponsorPolicy(deps);
+  const upgrade = await viaExecute(switchCalls(enableOf([P1])));
+  const paid = { proceed: true, shape: "upgrade", subject: ACCOUNT.toLowerCase(), via: "locked-upgrade" };
+  assert.deepEqual(await p.decide(op(upgrade, { nonce: "0" })), paid, "stub");
+  assert.deepEqual(await p.decide(op(upgrade, { nonce: "0" })), paid, "final");
+  assert.deepEqual(await p.decide(op(upgrade, { nonce: "0" })), paid, "a retry of the same op");
+  assert.deepEqual(await p.decide(op(upgrade, { nonce: "1" })), {
+    proceed: false, reason: "once", shape: "upgrade", subject: ACCOUNT.toLowerCase(),
+  }, "a second upgrade op");
+  // Every other op of a locked account stays refused, the upgrade's neighbours included.
+  const locked = async (callData: Hex, shape: string) =>
+    assert.deepEqual(await p.decide(op(callData, { nonce: "5" })), {
+      proceed: false, reason: "locked", shape, subject: ACCOUNT.toLowerCase(),
+    }, shape);
+  await locked(await viaExecute(switchCalls(enableOf([P1, P2]))), "co-owners");
+  await locked(await viaExecute([renewCall([P1, P2])]), "renew");
+  await locked(await viaExecute(buildRemoveRecoveryCalls(d, ACCOUNT)), "remove-route");
+});
+
+test("upgrade: an unlocked account's upgrade is an ordinary paid op and spends no locked allowance", async () => {
+  unlocked.add(ACCOUNT.toLowerCase());
+  const p = new SponsorPolicy(deps);
+  const upgrade = await viaExecute(switchCalls(enableOf([P1])));
+  assert.deepEqual(await p.decide(op(upgrade, { nonce: "0" })), {
+    proceed: true, shape: "upgrade", subject: ACCOUNT.toLowerCase(), via: "ticket",
+  });
+  unlocked.delete(ACCOUNT.toLowerCase());
+  assert.equal((await p.decide(op(upgrade, { nonce: "1" }))).proceed, true, "its one locked upgrade is still there");
+});
+
+test("upgrade: the gate's kill-switch reads as locked - the one upgrade, never more", async () => {
+  const p = new SponsorPolicy({ ...deps, gate: async () => ({ gated: true, via: "disabled" }) });
+  const upgrade = await viaExecute(switchCalls(enableOf([P1])));
+  assert.equal((await p.decide(op(upgrade, { nonce: "0" }))).via, "locked-upgrade");
+  assert.equal((await p.decide(op(upgrade, { nonce: "1" }))).proceed, false);
+  assert.equal((await p.decide(op(await viaExecute([renewCall([P1, P2])]), { nonce: "2" }))).proceed, false);
+});
+
+test("upgrade: locked accounts share a daily cap; one already given still completes past it", async () => {
+  const { LOCKED_UPGRADES_PER_DAY } = await import("../src/lib/zerodev/sponsor-policy.js");
+  const { coOwnerSwitchCalls } = await import("../../web/src/lib/auth/co-owner-calls.js");
+  const enc = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as never;
+  const p = new SponsorPolicy(deps);
+  const sender = (i: number) => `0x${(0xa000 + i).toString(16).padStart(40, "0")}`;
+  const upgradeOf = async (i: number) =>
+    op(await viaExecute(coOwnerSwitchCalls(enc, sender(i), [P1]).map((c) => ({ to: c.to as Address, data: c.data }))), {
+      sender: sender(i),
+      nonce: "0",
+    });
+  for (let i = 0; i < LOCKED_UPGRADES_PER_DAY; i++) {
+    assert.equal((await p.decide(await upgradeOf(i))).proceed, true, `account ${i}`);
+  }
+  assert.deepEqual(await p.decide(await upgradeOf(999)), {
+    proceed: false, reason: "upgrade-cap", shape: "upgrade", subject: sender(999),
+  });
+  assert.equal((await p.decide(await upgradeOf(0))).proceed, true, "the final request of a given one");
+});
+
+test("upgrade: the per-op gas ceiling and the per-account count still apply", async () => {
+  const p = new SponsorPolicy(deps, 1_000n);
+  const upgrade = await viaExecute(switchCalls(enableOf([P1])));
+  assert.deepEqual(await p.decide(op(upgrade, { nonce: "0", maxCostWei: 1_001n })), {
+    proceed: false, reason: "gas", shape: "upgrade", subject: ACCOUNT.toLowerCase(),
+  });
+  assert.equal((await p.decide(op(upgrade, { nonce: "0", maxCostWei: 1_000n }))).proceed, true);
+});
