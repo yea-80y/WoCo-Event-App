@@ -412,6 +412,10 @@ anything, so a crash between the two steps over-suppresses rather than under-pro
    and re-push the door list (PRIVACY_POLICY §8 promises this; ORGANISER_TERMS §4 item 8 and DPA §3
    item 5 oblige them). The organiser's contact is the email on their Stripe connected account.
 
+**An erasure confirmation must not promise "no further contact".** If an erased buyer's event is
+later cancelled, WoCo emails them that their refund is on its way, at the address they paid with,
+read from Stripe at send time and stored nowhere (#798, PR #801). PRIVACY_POLICY §5 and §9 say so.
+
 ### International transfers
 
 Swarm nodes are worldwide with no controllable location. This is a restricted transfer under UK GDPR

@@ -105,6 +105,7 @@ if you believe we have.
 | What we do | Legal basis |
 |---|---|
 | Deliver your ticket and event updates | Contract — you asked us to |
+| Tell you if your event is cancelled and your refund is on its way | Legitimate interests - you need to know what is happening to your money. We read the email you paid with from Stripe when we send it, and keep no copy. It is a service message, not marketing, so it is sent even if you have unsubscribed or asked us to erase your details |
 | Store your encrypted order answers for the organiser | Processing on the organiser's behalf; their basis, usually contract |
 | Send you marketing about an organiser's future events | Consent, or the PECR "soft opt-in" where you bought a ticket and were offered a clear opt-out |
 | Keep our unsubscribe and suppression records | Legal obligation (PECR) and legitimate interests — we cannot honour your opt-out without remembering it |
@@ -233,7 +234,8 @@ Four honest caveats:
 1. **For attendee data, the organiser decides.** They are the controller. We will pass your request on
    and help, but we cannot grant it for them — and for encrypted order data, we cannot read it.
 2. **Erasure works as described in section 8.** Immediate removal from the platform; your order
-   details overwritten on the network within 90 days; onchain records are not erased.
+   details overwritten on the network within 90 days; onchain records are not erased. If the event is
+   later cancelled, we still tell you your refund is on its way (section 5).
 3. **Correction has the same limit.** We can publish a corrected record, and that is what the
    platform will use from then on. The earlier version remains publicly retrievable from the
    network — correcting does not hide it — until its storage lapses.
