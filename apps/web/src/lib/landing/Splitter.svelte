@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
   import { navigate } from "../router/router.svelte.js";
+  import { WOCO_COMPANY_LINE } from "@woco/shared";
   import { loginRequest } from "../auth/login-request.svelte.js";
   import { auth } from "../auth/auth-store.svelte.js";
   import TicketStub from "../components/icons/sprites/TicketStub.svelte";
@@ -450,6 +451,7 @@
       </div>
     </div>
     <div class="footer-fine mono">© 2026 · YOUR FOLLOWING IS YOURS TO KEEP</div>
+    <p class="footer-company">{WOCO_COMPANY_LINE}</p>
   </footer>
 </div>
 
@@ -1307,6 +1309,13 @@
     color: var(--text-dim);
     font-size: 0.625rem;
     letter-spacing: 0.16em;
+    text-align: center;
+  }
+  .footer-company {
+    margin: 0.75rem 0 0;
+    color: var(--text-dim);
+    font-size: 0.6875rem;
+    line-height: 1.5;
     text-align: center;
   }
 </style>

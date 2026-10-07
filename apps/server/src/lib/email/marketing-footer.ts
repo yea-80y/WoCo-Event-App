@@ -12,6 +12,8 @@
  * Callers cannot opt out of any of it; see marketing-send.ts.
  */
 
+import { WOCO_COMPANY_LINE } from "@woco/shared";
+
 export interface FooterContext {
   /** Organiser's brand name, as supplied — escaped here, never pre-escaped. */
   displayName: string;
@@ -49,14 +51,15 @@ export function footerHtml(ctx: FooterContext): string {
 <div style="margin-top:8px;padding-top:16px;border-top:1px solid #33343f;color:#8a8b9a;font-size:12px;line-height:1.6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
 You're receiving this because you opted in to updates from ${name}. Sent via WoCo.<br/>
 <a href="${url}" style="color:#8a8b9a">Unsubscribe</a><br/>
-<span style="color:#6c6d7c">${address}</span>
+<span style="color:#6c6d7c">${address}</span><br/>
+<span style="color:#6c6d7c">${escapeHtml(WOCO_COMPANY_LINE)}</span>
 </div>
 </td></tr></table></td></tr></table>`;
 }
 
 /** Same three obligations, for the text/plain alternative part. */
 export function footerText(ctx: FooterContext): string {
-  return `\n\n---\nYou're receiving this because you opted in to updates from ${ctx.displayName}. Sent via WoCo.\nUnsubscribe: ${ctx.unsubUrl}\n${ctx.postalAddress}\n`;
+  return `\n\n---\nYou're receiving this because you opted in to updates from ${ctx.displayName}. Sent via WoCo.\nUnsubscribe: ${ctx.unsubUrl}\n${ctx.postalAddress}\n${WOCO_COMPANY_LINE}\n`;
 }
 
 /**

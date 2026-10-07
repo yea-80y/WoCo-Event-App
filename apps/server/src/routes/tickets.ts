@@ -5,6 +5,7 @@ import { sendEmail } from "../lib/email/send.js";
 import { renderTicketCardPng } from "../lib/ticket/render-card.js";
 import { mintGateToken } from "../lib/gate/token.js";
 import { hashEmail } from "../lib/event/claim-service.js";
+import { companyFooterHtml } from "../lib/email/company-footer.js";
 
 /*
  * The ticket email: built and sent by Stripe fulfilment only, to the verified
@@ -103,7 +104,7 @@ function escHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-function buildTicketHtml(opts: TicketEmailOpts): string {
+export function buildTicketHtml(opts: TicketEmailOpts): string {
   const { to, eventTitle, eventDate, eventLocation, seriesName, tickets: tix, totalSupply, palette: p, imageHash, imageGateway } = opts;
   const display: TicketDisplay = {
     title: eventTitle,
@@ -214,6 +215,7 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
       </div>
       <div class="footer">
         Powered by WoCo · Decentralised event ticketing on Ethereum Swarm
+        ${companyFooterHtml(c.muted)}
       </div>
     </div>
   </div>
