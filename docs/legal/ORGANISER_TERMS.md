@@ -97,6 +97,10 @@ attendees submit.
    permanently unrecoverable. We cannot recover it — that is the point of the design.
 7. **Tell us within 24 hours** if you become aware of a personal data breach affecting attendee data,
    so we can meet our own notification duties.
+8. **Look after the copies you download.** A guest list you export (for example as a CSV) and the
+   list on your door scanner are your own copies, and we cannot reach them. Keep them secure, keep
+   them only as long as you need them, and when we tell you an attendee's details have been erased,
+   delete that attendee from your copies and refresh your door list.
 
 ### What we do
 

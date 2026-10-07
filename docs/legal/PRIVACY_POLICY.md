@@ -196,7 +196,9 @@ confirmed.
 **What we cannot honestly promise.** Two things, and we would rather say them plainly:
 
 - **Erasure does not reach copies outside our storage.** It does not reach a copy someone else
-  stored on the network and pays for themselves, or short-lived retrieval caches.
+  stored on the network and pays for themselves, or short-lived retrieval caches. Nor does it reach
+  copies the organiser has downloaded, such as an exported guest list or the list on their door
+  scanner. When we erase your details, we tell the organiser, and they must delete their copies too.
 - **We cannot guarantee every copy everywhere is gone.** Someone could have retrieved a copy while
   it was live. This is true of any system — a website, a cloud provider, any other ticketing
   platform — but on a public network we would rather state it than let you assume otherwise.
@@ -248,8 +250,8 @@ We would rather you came to us first, but it is your right either way.
 | Data | Retention |
 |---|---|
 | Your ticket / attendance record | **Indefinitely** — it is your record of having been there, yours to keep or erase |
-| Organiser's copy of attendee data | Event date + 90 days, then removed |
-| Account data | While your account is open, plus 90 days |
+| The organiser's copy of your order details | Encrypted in your browser, so only the organiser can read it, and stored on Swarm. Kept for as long as the organiser needs it. We erase it when the organiser asks, when they stop using WoCo, or when you ask us to (section 9) |
+| Account data | While your account is open. If you ask us to delete your account, we do so within 90 days of your request |
 | Suppression records | Indefinitely — required to honour your opt-out. This is the one record we keep *because* you asked us to stop: deleting it would let the next contact upload put you back |
 | Marketing consent records | While the organiser can still mail you on that basis, plus 6 months. A hashed record of the wording you agreed to and when — it is how we can show your consent was real |
 | Your place on an organiser's contact list | Until the organiser removes you, or you unsubscribe. We hold only a hashed form of your address; the list itself is encrypted to the organiser. While an organiser's email to you is being sent, we also hold your address, encrypted under a key that exists only in the running system, until your message goes out and for at most 7 days |

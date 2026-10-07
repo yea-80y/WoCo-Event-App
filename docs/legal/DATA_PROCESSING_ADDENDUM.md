@@ -60,7 +60,8 @@ We will:
 3. Implement the **security measures** in section 6.
 4. Respect the conditions in section 4 for engaging sub-processors.
 5. **Assist you** — taking account of the nature of processing — in responding to data subject
-   requests, using the tools we make available.
+   requests, using the tools we make available, and **tell you** when we erase a data subject's
+   data at their request, so you can delete it from any copies you hold.
 6. **Assist you** with your obligations on security, breach notification, impact assessments and
    prior consultation.
 7. **Delete or return** personal data at the end of the services, subject to the limits in section 8.
@@ -176,6 +177,11 @@ cannot be deleted.
 
 You may export your attendee data from your dashboard at any time. **Do this before you close your
 account** — we cannot export encrypted data for you.
+
+**Copies you hold.** Data you export from your dashboard, or load onto a door-scanning device, is a
+copy held by you as controller and is outside our processing. You are responsible for keeping it
+secure, for keeping it no longer than you need it, and for deleting a data subject's data from it
+when we tell you it has been erased.
 
 ---
 
