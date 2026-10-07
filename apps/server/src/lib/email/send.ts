@@ -125,6 +125,14 @@ export interface SendEmailOptions {
    * entry for and must update rather than duplicate.
    */
   noLedger?: boolean;
+  /**
+   * Keep no copy of the address if this send fails: the ledger entry holds the
+   * hash only and nothing is queued for the drain worker (which re-sends from
+   * the stored address). For a message whose caller can re-read the address
+   * itself and must not re-store it - the refund notice to a buyer who may have
+   * had their data erased (#798).
+   */
+  addressFree?: boolean;
 }
 
 /** Base backoff. Doubles per attempt, then gets full jitter applied. */
@@ -318,7 +326,7 @@ export async function sendVia(
   if (!opts.noLedger) {
     const entry = recordFailure({
       kind: priority === "marketing" ? "marketing" : "transactional",
-      recipients: msg.to,
+      recipients: opts.addressFree ? [] : msg.to,
       recipientHashes: msg.to.map(hashEmail),
       subject: msg.subject,
       provider: usedProvider,
@@ -344,7 +352,7 @@ export async function sendVia(
     // mailed TWICE. It would also skip the suppression re-check that
     // `sendMarketingBatch` performs and DATA_INVENTORY relies on, mailing
     // someone who unsubscribed between the failure and the retry.
-    if (failure.retryable && priority !== "marketing") {
+    if (failure.retryable && priority !== "marketing" && !opts.addressFree) {
       enqueueRetry(entry.id, outbound, priority);
     }
   }

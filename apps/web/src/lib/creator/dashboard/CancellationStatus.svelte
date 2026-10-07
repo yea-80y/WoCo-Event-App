@@ -91,6 +91,12 @@
           <span class="money"> - {money(t.refunded, currency)} of {money(t.charged, currency)} returned or on its way</span>
         {/each}
       </p>
+      {#if progress.notified}
+        <p>
+          WoCo has emailed {progress.notified} buyer(s) that the event is cancelled and their refund is on its way{#if progress.unreachable},
+          and could not reach {progress.unreachable}{/if}.
+        </p>
+      {/if}
       {#if progress.waitingForFunds}
         <p class="alert">
           {progress.waitingForFunds} refund(s) are more than your Stripe balance can cover right now. Stripe is
