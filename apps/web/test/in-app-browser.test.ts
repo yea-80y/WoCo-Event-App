@@ -97,7 +97,19 @@ test("Android after Chrome failed: the device's default browser, no package name
 
 test("a gateway page keeps its own path - the escape never changes where the passkey lives", () => {
   const gw = new URL("https://gateway.woco-net.com/bzz/abcd/#/creator");
-  assert.ok(escapeLink({ app: "webview", os: "android" }, gw)!.href.startsWith("intent://gateway.woco-net.com/bzz/abcd/?"));
+  assert.ok(escapeLink({ app: "facebook", os: "android" }, gw)!.href.startsWith("intent://gateway.woco-net.com/bzz/abcd/?"));
+});
+
+test("a ';' in the page's own query is encoded, so it cannot break the #Intent;...;end grammar", () => {
+  const href = escapeLink({ app: "facebook", os: "android" }, new URL("https://woco.eth.limo/?a=1;b=2#/discover"))!.href;
+  const beforeIntent = href.slice(0, href.indexOf("#Intent;"));
+  assert.ok(!beforeIntent.includes(";"), beforeIntent);
+});
+
+test("the failed flag never rides into the intent's target", () => {
+  const page = new URL(`https://woco.eth.limo/?${ESCAPE_FAILED_PARAM}=1#/discover`);
+  const href = escapeLink({ app: "facebook", os: "android" }, page, { chromeFailed: true })!.href;
+  assert.ok(!href.slice(0, href.indexOf("#Intent;")).includes(ESCAPE_FAILED_PARAM));
 });
 
 test("iOS: Safari with the whole URL, fragment included", () => {
@@ -115,6 +127,7 @@ test("Instagram on iOS uses its own hand-off to the default browser", () => {
 
 test("apps where no link is known to work get the manual steps only", () => {
   assert.equal(escapeLink({ app: "linkedin", os: "android" }, PAGE), null);
+  assert.equal(escapeLink({ app: "webview", os: "android" }, PAGE), null, "a generic web view is unmeasured - steps only");
   for (const app of ["tiktok", "messenger", "snapchat"] as const) {
     assert.equal(escapeLink({ app, os: "ios" }, PAGE), null, app);
   }
@@ -183,6 +196,17 @@ test("only a carriable #/route is put back; anything else is dropped, never appl
     restoreEscapedRoute({ href: `https://woco.eth.limo/?${ESCAPE_ROUTE_PARAM}=${encodeURIComponent(bad)}` }, (u) => (replaced = u));
     assert.equal(replaced, "https://woco.eth.limo/", bad);
   }
+});
+
+test("a page that already has a route keeps it; the parameter is still removed", () => {
+  let replaced = "";
+  restoreEscapedRoute({ href: `https://woco.eth.limo/?${ESCAPE_ROUTE_PARAM}=%23%2Fdiscover#/creator` }, (u) => (replaced = u));
+  assert.equal(replaced, "https://woco.eth.limo/#/creator");
+});
+
+test("the Chrome fallback reopens the sign-in sheet once, where the next way out is", () => {
+  const modal = read("../src/lib/components/auth/LoginModal.svelte");
+  assert.ok(modal.includes("searchParams.get(ESCAPE_FAILED_PARAM) === \"1\") void loginRequest.request();"));
 });
 
 test("a page without the parameter is left alone", () => {

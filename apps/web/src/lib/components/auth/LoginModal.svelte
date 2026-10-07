@@ -13,6 +13,7 @@
   import { navigate } from "../../router/router.svelte.js";
   import { canonicalUrl, hostLabel } from "../../sub-ens/host-label.js";
   import type { InAppBrowser } from "../../browser/in-app-browser.js";
+  import { ESCAPE_FAILED_PARAM } from "../../browser/in-app-route.js";
   import { onMount } from "svelte";
 
   type Method = "passkey" | "email" | "wallet" | "coinbase";
@@ -25,7 +26,13 @@
   let { open = $bindable(false), onclose }: Props = $props();
 
   // Declare that this bundle can carry a login to a conclusion (#194).
-  onMount(() => loginRequest.register());
+  onMount(() => {
+    loginRequest.register();
+    // The Android escape's fallback: Chrome was not there, so the social app
+    // reloaded this page itself - with the sheet closed. Reopen it once, so the
+    // "Chrome didn't open" line and the next way out are in front of them (#812).
+    if (new URL(window.location.href).searchParams.get(ESCAPE_FAILED_PARAM) === "1") void loginRequest.request();
+  });
 
   // Modal is visible if either prop-driven or store-driven
   const visible = $derived(open || loginRequest.pending);

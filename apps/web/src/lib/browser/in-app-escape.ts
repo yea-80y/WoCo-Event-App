@@ -49,12 +49,15 @@ function intentFor(page: URL, opts: { chrome: boolean }): string | null {
  * The link that reopens `page` in a real browser, or null where no link is
  * known to work from that app (the screen then shows the manual steps only).
  * Measured per app (2026-10-07): LinkedIn on Android breaks intents; TikTok,
- * Messenger and Snapchat on iOS refuse or swallow the Safari hand-off.
+ * Messenger and Snapchat on iOS refuse or swallow the Safari hand-off; a
+ * generic Android web view is unmeasured, so it gets the steps too.
  */
 export function escapeLink(found: InAppBrowser, page: URL, opts: { chromeFailed?: boolean } = {}): EscapeLink | null {
   if (page.protocol !== "https:") return null;
   if (found.os === "android") {
-    if (found.app === "linkedin") return null;
+    // LinkedIn breaks intents; a generic web view's handling of them was never
+    // measured (one that does not hand them on shows an error page).
+    if (found.app === "linkedin" || found.app === "webview") return null;
     const href = intentFor(page, { chrome: !opts.chromeFailed });
     if (!href) return null;
     return opts.chromeFailed ? { kind: "default-browser", href } : { kind: "chrome", href };
