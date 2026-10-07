@@ -9,6 +9,7 @@
  */
 
 import { buildWeb3AuthOptions, extractRawPrivateKey } from "./web3auth-config";
+import { buildEnv } from "../build-env.js";
 import {
   markWeb3AuthSessionEstablished,
   clearWeb3AuthSessionFlag,
@@ -37,19 +38,59 @@ type Web3AuthInstance = {
   removeListener(event: string, fn: (...args: unknown[]) => void): void;
 };
 
-let _instance: Web3AuthInstance | null = null;
+type Web3AuthFactory = () => Promise<Web3AuthInstance | null>;
 
-async function _getInstance() {
-  const clientId = import.meta.env.VITE_WEB3AUTH_CLIENT_ID as string | undefined;
+/** Builds and initialises one SDK instance; null = no clientId in this build. */
+const buildSdkInstance: Web3AuthFactory = async () => {
+  const clientId = buildEnv(() => import.meta.env.VITE_WEB3AUTH_CLIENT_ID as string | undefined);
   if (!clientId) return null;
-
-  if (_instance) return _instance;
-
   const mod = await import("@web3auth/modal");
   const w = new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId));
   await w.init();
-  _instance = w as unknown as Web3AuthInstance;
-  return _instance;
+  return w as unknown as Web3AuthInstance;
+};
+
+let _factory: Web3AuthFactory = buildSdkInstance;
+let _instance: Web3AuthInstance | null = null;
+let _building: Promise<Web3AuthInstance | null> | null = null;
+/** Bumped by every reset, so a build that started before one never installs itself after it. */
+let _generation = 0;
+
+/**
+ * The page's one instance, built once. Single-flight: a background restore
+ * retry and a sign-in click arriving together must not build two - the second
+ * modal removes the first one's container, leaving that instance's modal
+ * detached.
+ */
+async function _getInstance(): Promise<Web3AuthInstance | null> {
+  if (_instance) return _instance;
+  if (!_building) {
+    const gen = _generation;
+    const build = _factory().then((w) => {
+      if (gen === _generation) _instance = w;
+      return w;
+    });
+    _building = build;
+    void build
+      .finally(() => {
+        if (_building === build) _building = null;
+      })
+      .catch(() => {});
+  }
+  return _building;
+}
+
+/** Drop the instance (spent, unknown, or signed out): the next call builds afresh. */
+function _resetInstance(): void {
+  _generation++;
+  _instance = null;
+  _building = null;
+}
+
+/** Test seam: swap the SDK for a fake (null restores the real one). */
+export function setWeb3AuthFactoryForTests(factory: Web3AuthFactory | null): void {
+  _factory = factory ?? buildSdkInstance;
+  _resetInstance();
 }
 
 async function _extractKeyAndAddress(provider: MinimalProvider): Promise<{ address: string; privateKey: `0x${string}` }> {
@@ -85,14 +126,14 @@ export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey
   // An instance that ended a survivor is swapped for a fresh one (#803).
   try {
     w = await instanceForExplicitSignIn(w, async () => {
-      _instance = null;
+      _resetInstance();
       const fresh = await _getInstance();
       if (!fresh) throw new Error(NOT_CONFIGURED);
       return fresh;
     });
   } catch (e) {
     // Whatever instance this touched is spent or unknown: the next attempt builds anew.
-    _instance = null;
+    _resetInstance();
     throw e;
   }
 
@@ -114,7 +155,7 @@ export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey
       } catch {
         /* the retry's pre-modal logout gets another attempt */
       }
-      _instance = null;
+      _resetInstance();
       throw new Error("A previous email session interfered with sign-in — please try again.");
     }
     throw e instanceof Error ? e : new Error("Email sign-in was cancelled.");
@@ -211,7 +252,7 @@ export async function logoutWeb3Auth(): Promise<void> {
   try {
     w = await _getInstance();
   } catch (e) {
-    _instance = null;
+    _resetInstance();
     console.warn("[web3auth] logout: could not build the SDK to end the session:", e);
     throw new Error(
       "Couldn't reach the sign-in service to end your email session — check your connection and try signing out again.",
@@ -239,6 +280,6 @@ export async function logoutWeb3Auth(): Promise<void> {
   } finally {
     // Next call rebuilds from storage: after success that's a clean slate;
     // after failure it gives rehydration a fresh attempt.
-    _instance = null;
+    _resetInstance();
   }
 }

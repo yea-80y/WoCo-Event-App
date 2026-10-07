@@ -19,6 +19,15 @@ import { buildEnv } from "../build-env.js";
 type Web3AuthModule = typeof import("@web3auth/modal");
 
 /**
+ * How long a Web3Auth sign-in lasts: 30 days, the SDK's maximum, matching the
+ * WoCo session it unlocks. Unset, the project dashboard's value applies - 1 day
+ * for ours (read from the project config 2026-10-07) - and the first reload
+ * after it ran out signed the person out of a WoCo session still valid for weeks
+ * (#803). Not a key input: only clientId and network change keys.
+ */
+export const WEB3AUTH_SESSION_SECONDS = 30 * 86400;
+
+/**
  * Constructor options for a Web3Auth instance that yields the raw recovery key.
  * 🔴 FUNDS-CRITICAL: the key is a deterministic function of (user login) ×
  * VITE_WEB3AUTH_CLIENT_ID × network. Changing clientId or network changes every
@@ -63,6 +72,7 @@ export function buildWeb3AuthOptions(mod: Web3AuthModule, clientId: string) {
     disableAnalytics: true,
     chains: [chain],
     defaultChainId: chain.chainId,
+    sessionTime: WEB3AUTH_SESSION_SECONDS,
   };
 }
 

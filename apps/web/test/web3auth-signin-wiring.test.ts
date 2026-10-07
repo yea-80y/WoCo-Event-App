@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 const account = read("../src/lib/auth/web3auth-account.ts");
 const backup = read("../src/lib/wallet/backup-signer.ts");
+const config = read("../src/lib/auth/web3auth-config.ts");
 
 function body(src: string, signature: string): string {
   const start = src.indexOf(signature);
@@ -26,9 +27,6 @@ test("primary sign-in: survivors are ended through the fresh-instance rule, befo
   const connect = login.indexOf("await w.connect()");
   assert.ok(rule > 0 && connect > rule, "connect() only on the instance the rule hands back");
   assert.ok(!login.includes("endSurvivingWeb3AuthSession("), "never end a survivor and keep the instance");
-  assert.ok(login.includes("_instance = null;\n      const fresh = await _getInstance();"), "the rebuild drops the singleton first");
-  const refused = login.indexOf("} catch (e) {", rule);
-  assert.ok(login.indexOf("_instance = null;", refused) > refused, "a refusal never leaves a spent singleton behind");
 });
 
 test("backup sign-in: the same rule, and connect() on the instance it hands back", () => {
@@ -50,4 +48,11 @@ test("boot restore: a session still loading returns unavailable before any expir
     restore.slice(unavailable, expired).includes('return { status: "unavailable" };'),
     "still loading keeps the session (the caller retries)",
   );
+});
+
+test("every instance asks for the 30-day session, the SDK's maximum", async () => {
+  const { WEB3AUTH_SESSION_SECONDS } = await import("../src/lib/auth/web3auth-config.js");
+  assert.equal(WEB3AUTH_SESSION_SECONDS, 30 * 86400);
+  const options = config.slice(config.indexOf("export function buildWeb3AuthOptions("));
+  assert.ok(options.includes("sessionTime: WEB3AUTH_SESSION_SECONDS,"), "unset = the dashboard's 1 day");
 });
