@@ -93,7 +93,7 @@
       </p>
       {#if progress.notified}
         <p>
-          WoCo has emailed {progress.notified} buyer(s) that the event is cancelled and their refund is on its way{#if progress.unreachable},
+          WoCo has emailed {progress.notified} buyer(s) that the event is cancelled and about their refund{#if progress.unreachable},
           and could not reach {progress.unreachable}{/if}.
         </p>
       {/if}

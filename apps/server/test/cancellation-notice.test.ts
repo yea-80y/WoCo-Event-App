@@ -90,6 +90,21 @@ describe("which notice a row is owed", () => {
   });
 });
 
+describe("re-opened rows (Fable sign-off)", () => {
+  test("a re-opened row whose next read failed is NOT told its refund is on its way", () => {
+    // reopenRefundRow keeps `charged` from the old read; a failed read leaves lastError.
+    assert.equal(notice.noticeDue(row({ status: "pending", charged: 1000, lastError: "stripe down", notice: { delayedAt: "t" } })), null);
+    assert.equal(notice.noticeDue(row({ status: "pending", charged: 1000, lastError: "charge_already_refunded" })), null);
+    // Once a read settles it, lastError is cleared and the notice is owed.
+    assert.equal(notice.noticeDue(row({ status: "pending", charged: 1000, notice: { delayedAt: "t" } })), "issued");
+  });
+  test("a success clears earlier failures, so the next notice has its full retries", async () => {
+    const f = fakeNoticeDeps();
+    await notice.notifyRow(EV, "Gig", row({ status: "pending-funds", charged: 1, notice: { failures: 2 } }), f.deps);
+    assert.deepEqual(Object.keys(f.notices.get("cs_1") ?? {}), ["delayedAt"]);
+  });
+});
+
 describe("the message", () => {
   test("names the event and the amount, and carries no promotion", () => {
     const m = notice.buildCancellationNotice({ variant: "issued", title: "Hackathon", status: "done", amount: notice.formatAmount(1250, "gbp") });
@@ -103,6 +118,20 @@ describe("the message", () => {
   test("the title is escaped in the html", () => {
     const m = notice.buildCancellationNotice({ variant: "issued", title: "<b>x</b>", status: "done", amount: null });
     assert.doesNotMatch(m.html, /<b>x<\/b>/);
+  });
+});
+
+describe("the title, the only organiser text that crosses unsubscribes and erasure", () => {
+  test("keeps plain words; drops links, domains and addresses; is capped", () => {
+    assert.equal(notice.plainTitle("Hackathon 2026"), "Hackathon 2026");
+    assert.equal(notice.plainTitle("Gig v2.0 at O2 Arena"), "Gig v2.0 at O2 Arena");
+    assert.equal(notice.plainTitle("BUY NOW at https://spam.example/x !!"), "BUY NOW at !!");
+    assert.equal(notice.plainTitle("tickets at evil.com/deal"), "tickets at");
+    assert.equal(notice.plainTitle("mail a@b.co"), "mail");
+    assert.equal(notice.plainTitle("www.x.io"), undefined, "nothing left: the generic wording is used");
+    assert.ok(notice.plainTitle("x".repeat(200))!.length <= 80);
+    const m = notice.buildCancellationNotice({ variant: "issued", title: "Promo at deals.example.com", status: "done", amount: null });
+    assert.doesNotMatch(m.subject + m.text + m.html, /deals\.example/);
   });
 });
 

@@ -33,8 +33,10 @@ const DELAYED = new Set(["pending-funds", "failed", "abandoned", "disputed"]);
 export function noticeDue(row: CancelRefundRow): NoticeVariant | null {
   const n = row.notice ?? {};
   if (n.issuedAt || n.unreachable || (n.failures ?? 0) >= MAX_NOTICE_FAILURES) return null;
-  // `pending` before any charge read is a pass that learned nothing yet.
-  if (row.status === "pending" && row.charged === undefined) return null;
+  // A `pending` row that has not been read, or whose last read failed (or met
+  // a refund made elsewhere), has learned nothing about THIS refund yet. The
+  // `lastError` half matters after a re-open: the row keeps its old `charged`.
+  if (row.status === "pending" && (row.charged === undefined || row.lastError)) return null;
   if (ISSUED.has(row.status)) return "issued";
   if (DELAYED.has(row.status) && !n.delayedAt) return "delayed";
   return null;
@@ -49,6 +51,27 @@ export function formatAmount(minor: number | undefined, currency: string | undef
   }
 }
 
+/**
+ * The event title as plain words. It is the one piece of organiser-written
+ * text in a message that crosses unsubscribes and erasure, and the organiser
+ * can rename the event just before cancelling - so it may not carry a link, a
+ * domain or an address, and it is kept short. A title reduced to nothing falls
+ * back to the generic wording.
+ */
+export function plainTitle(title: string | undefined): string | undefined {
+  if (!title) return undefined;
+  const words = title
+    .replace(/https?:\/\/\S*/gi, " ")
+    .replace(/\bwww\.\S*/gi, " ")
+    .replace(/\S+@\S+/g, " ")
+    .replace(/\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,24}\b\S*/gi, " ")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!words) return undefined;
+  return words.length > 80 ? `${words.slice(0, 79).trimEnd()}…` : words;
+}
+
 function escHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -59,7 +82,7 @@ export function buildCancellationNotice(input: {
   status: CancelRefundRow["status"];
   amount: string | null;
 }): { subject: string; html: string; text: string } {
-  const event = input.title?.trim() || "An event you booked";
+  const event = plainTitle(input.title) || "An event you booked";
   const refund = input.amount ? `your refund of ${input.amount}` : "your refund";
   const subject = input.variant === "issued"
     ? `${event} is cancelled - your refund is on its way`
@@ -125,8 +148,10 @@ export async function notifyRow(
   let to: string | null;
   try {
     to = await deps.buyerEmail(row.sessionId, row.account);
-  } catch {
-    return "deferred"; // a Stripe read failed: the next pass tries again
+  } catch (err) {
+    // The next pass tries again. A Stripe error names the session, never the buyer.
+    console.warn(`[cancel-notice] ${row.sessionId}: buyer email read failed:`, err instanceof Error ? err.message : String(err));
+    return "deferred";
   }
   if (!to) {
     deps.setNotice(eventId, row.sessionId, { ...notice, unreachable: "no-address" });
@@ -149,6 +174,8 @@ export async function notifyRow(
     return "failed";
   }
   const at = deps.now().toISOString();
-  deps.setNotice(eventId, row.sessionId, variant === "issued" ? { ...notice, issuedAt: at } : { ...notice, delayedAt: at });
+  // A success clears the failure count: the cap is per notice, not per sale.
+  const { failures: _cleared, ...kept } = notice;
+  deps.setNotice(eventId, row.sessionId, variant === "issued" ? { ...kept, issuedAt: at } : { ...kept, delayedAt: at });
   return "sent";
 }
