@@ -154,7 +154,7 @@ function ledgerAsyncFailure(opts: {
   if (!addresses.length) return false;
 
   const hashes = addresses.map(hashEmail);
-  const { kind, context } = readMessageTags(payload.mail?.tags);
+  const { kind, context, addressFree } = readMessageTags(payload.mail?.tags);
   const messageId = payload.mail?.messageId;
   if (messageId) {
     // The TAGGED and UNTAGGED copies of one failure key separately, on purpose.
@@ -185,7 +185,8 @@ function ledgerAsyncFailure(opts: {
     // same order. The alarm for the guess itself is the untagged counter on
     // /api/health, not a per-message health flip.
     kind: kind ?? "marketing",
-    recipients: addresses,
+    // A sender that kept no address (#798) gets no address back from its bounce.
+    recipients: addressFree ? [] : addresses,
     recipientHashes: hashes,
     subject: payload.mail?.commonHeaders?.subject || "(subject not in event)",
     provider: "ses",
