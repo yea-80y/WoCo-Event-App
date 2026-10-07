@@ -92,3 +92,19 @@ test("the SVG escapes every text it draws and embeds the photo only when there i
   const noPhoto = ticketCardSvg(ticketCardOps({ ...input, hasPhoto: false }), { ...size, photo: null });
   assert.doesNotMatch(noPhoto, /<image/);
 });
+
+test("a body with no Content-Length is cut off at the cap, not buffered whole", async () => {
+  let pulled = 0;
+  const chunk = new Uint8Array(256 * 1024);
+  chunk.set(JPEG);
+  const endless = new ReadableStream<Uint8Array>({
+    pull(ctrl) {
+      pulled += 1;
+      ctrl.enqueue(chunk);
+      if (pulled > 1000) ctrl.close();
+    },
+  });
+  const photo = await fetchEventPhoto(HASH, 0, { fetch: (async () => new Response(endless)) as typeof fetch });
+  assert.equal(photo, null);
+  assert.ok(pulled * chunk.byteLength <= PHOTO_MAX_BYTES + 2 * chunk.byteLength, `read ${pulled} chunks`);
+});

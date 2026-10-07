@@ -30,6 +30,26 @@ export function sniffPhoto(bytes: Uint8Array): EventPhoto["mime"] | null {
   return null;
 }
 
+/** The body, or null as soon as it passes `max` bytes: a missing or false
+ *  Content-Length must not let a response be buffered whole. */
+async function readCapped(res: Response, max: number): Promise<Buffer | null> {
+  const reader = res.body?.getReader();
+  if (!reader) return null;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
+
 export interface EventPhotoDeps {
   fetch: typeof fetch;
 }
@@ -51,9 +71,9 @@ export async function fetchEventPhoto(
       if (!res.ok) continue;
       const declared = Number(res.headers.get("content-length") ?? "0");
       if (declared > PHOTO_MAX_BYTES) return null;
-      const bytes = Buffer.from(await res.arrayBuffer());
+      const bytes = await readCapped(res, PHOTO_MAX_BYTES);
+      if (!bytes) return null;
       if (bytes.length === 0) continue;
-      if (bytes.length > PHOTO_MAX_BYTES) return null;
       const mime = sniffPhoto(bytes);
       return mime ? { bytes, mime } : null;
     } catch {

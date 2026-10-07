@@ -60,3 +60,18 @@ test(".ics: one VEVENT, UTC times, escaped text, CRLF, folded at 75 octets", () 
   const unfolded = ics.replace(/\r\n /g, "");
   assert.match(unfolded, new RegExp(`LOCATION:Ünïcödé Hall\\\\, x{120}`));
 });
+
+test("no field can start a line of its own in the .ics (CR, LF or CRLF, title, place or id)", () => {
+  const ics = eventIcs({
+    ...ev,
+    eventId: "abc\r\nATTENDEE:mailto:x@example.com",
+    title: "A\rORGANIZER:evil",
+    location: "B\nDESCRIPTION:evil\r\nX",
+  })!;
+  const lines = ics.split("\r\n");
+  for (const bad of ["ATTENDEE", "ORGANIZER", "DESCRIPTION", "X"]) {
+    assert.ok(!lines.some((l) => l.startsWith(bad)), `${bad} became its own line`);
+  }
+  assert.ok(!/\r(?!\n)/.test(ics) && !/(?<!\r)\n/.test(ics), "only CRLF line breaks");
+  assert.match(ics, /\r\nUID:abcATTENDEEmailtoxexample\.com@woco-net\.com\r\n/);
+});

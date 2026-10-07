@@ -47,7 +47,7 @@ export function directionsUrl(location?: string): string | null {
 
 /** RFC 5545 text escaping. */
 function icsText(s: string): string {
-  return s.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+  return s.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r\n|\r|\n/g, "\\n");
 }
 
 /** Fold a content line at 75 octets, continuation lines starting with a space. */
@@ -83,7 +83,7 @@ export function eventIcs(ev: CalendarEvent, now: Date = new Date()): string | nu
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
     "BEGIN:VEVENT",
-    `UID:${ev.eventId}@woco-net.com`,
+    `UID:${ev.eventId.replace(/[^A-Za-z0-9._-]/g, "")}@woco-net.com`,
     `DTSTAMP:${icsStamp(now)}`,
     `DTSTART:${icsStamp(s.start)}`,
     `DTEND:${icsStamp(s.end)}`,
