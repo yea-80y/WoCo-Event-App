@@ -228,6 +228,8 @@ function fakeDeps(o: FakeOpts = {}) {
   const consumed: string[] = [];
   const minted: string[][] = [];
   const uploaded: string[] = [];
+  /** What the held-order claim and the fallback store were told about the buyer (#546 lookup). */
+  const buyerHashes: Array<{ via: string; emailHash: string | undefined }> = [];
   /** The on-chain event each batch was minted against — the #426 assertion. */
   const mintedAgainst: string[] = [];
   /** The contract each batch was minted on — the #563 assertion. */
@@ -288,9 +290,10 @@ function fakeDeps(o: FakeOpts = {}) {
       boom("getOrganiserByStripeAccount");
       return ORGANISER;
     },
-    storeOrderBlob: async (data: string) => {
+    storeOrderBlob: async (data: string, meta: { emailHash?: string }) => {
       boom("storeOrderBlob");
       uploaded.push(data);
+      buyerHashes.push({ via: "storeOrderBlob", emailHash: meta.emailHash });
       return "aa".repeat(32);
     },
     fetchOrderKey: async (ref: string) => {
@@ -299,8 +302,9 @@ function fakeDeps(o: FakeOpts = {}) {
       return ORDER_KEY.publicKey;
     },
     orderRefInOtherSale: (ref: string) => (o.takenRefs ?? []).includes(ref),
-    claimHeldOrder: () => {
+    claimHeldOrder: (_ref: string, _sessionId: string, emailHash?: string) => {
       boom("claimHeldOrder");
+      buyerHashes.push({ via: "claimHeldOrder", emailHash });
       return o.held ?? false;
     },
     storeHeldOrder: async (ref: string) => {
@@ -407,7 +411,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, uploaded, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue };
+  return { deps, calls, uploaded, buyerHashes, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -689,6 +693,13 @@ describe("happy path", () => {
     assert.equal(f.calls.includes("releaseHeldOrder"), false);
     assert.ok(f.saleSlots.every((r: { orderRef?: string }) => r.orderRef === ORDER_REF));
     assert.equal(f.calls.includes("storeOrderBlob"), false, "no fallback seal");
+  });
+
+  test("#546: the buyer's email hash reaches the held-order claim and the fallback store, so a request can find the order", async () => {
+    const heldRun = await run({}, { held: true });
+    assert.deepEqual(heldRun.f.buyerHashes, [{ via: "claimHeldOrder", emailHash: "h(buyer@example.com)" }]);
+    const fallbackRun = await run({ orderRef: null }, { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }) });
+    assert.deepEqual(fallbackRun.f.buyerHashes, [{ via: "storeOrderBlob", emailHash: "h(buyer@example.com)" }]);
   });
 
   test("#546: a held order whose store fails still mints under its ref - never a refund over it", async () => {
