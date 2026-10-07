@@ -1,7 +1,7 @@
 /**
  * Composite ticket-card image renderer.
  *
- * Builds a self-contained ticket image (event title, date, edition number,
+ * Builds a self-contained ticket image (event title, date, place in the order,
  * buyer email, embedded QR) so a buyer can save / forward / screenshot a
  * single PNG that has everything needed at the door.
  *
@@ -24,8 +24,9 @@ export interface TicketCardData {
   eventDate?: string;
   /** Optional venue / address line */
   eventLocation?: string;
-  /** Edition number (1-indexed). Null when claim is pending an edition. */
-  edition: number | null;
+  /** Place in a group order ("2 of 4"), or null for a single ticket. Never the
+   *  edition: its sequence leaks how many tickets have sold. */
+  position: string | null;
   /** Buyer email — shown on the card so door staff can match ID */
   /** Optional buyer name (from Stripe customer details, when present) */
   buyerName?: string;
@@ -98,7 +99,7 @@ async function renderQrMatrix(content: string): Promise<{ size: number; modules:
 
 /** Build the SVG markup for the ticket card. Pure string concat — no DOM. */
 async function buildSvg(data: TicketCardData): Promise<string> {
-  const { eventTitle, eventDate, eventLocation, edition, buyerName, qrContent, palette: p } = data;
+  const { eventTitle, eventDate, eventLocation, position, buyerName, qrContent, palette: p } = data;
   // Resolved palette — organiser brand when available, WoCo Concrete & Acid otherwise
   const col = {
     bg:     p?.bg     ?? '#0B0B09',
@@ -110,7 +111,7 @@ async function buildSvg(data: TicketCardData): Promise<string> {
     dim:    p?.muted  ?? '#8A8478',
   };
   const dateStr = formatDate(eventDate);
-  const editionStr = edition != null ? `#${String(edition).padStart(3, "0")}` : null;
+  const positionStr = position ? escapeXml(position.toUpperCase()) : null;
 
   const qr = await renderQrMatrix(qrContent);
 
@@ -140,12 +141,12 @@ async function buildSvg(data: TicketCardData): Promise<string> {
   <text x="${WIDTH / 2}" y="92" text-anchor="middle" font-size="14" font-weight="700"
         letter-spacing="6" fill="${col.accent}">WOCO TICKET</text>
 
-  ${editionStr ? `
-  <!-- Edition pill -->
+  ${positionStr ? `
+  <!-- Place in the order -->
   <g>
     <rect x="${(WIDTH - 130) / 2}" y="116" width="130" height="30" rx="2" fill="${col.cardBg}" stroke="${col.border}"/>
     <text x="${WIDTH / 2}" y="136" text-anchor="middle" font-size="13" font-weight="600"
-          letter-spacing="3" fill="${col.accent}">${editionStr}</text>
+          letter-spacing="3" fill="${col.accent}">${positionStr}</text>
   </g>` : ""}
 
   <!-- Event title -->

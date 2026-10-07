@@ -1,14 +1,10 @@
 # Data Processing Addendum
 
-**Last updated:** [DATE OF PUBLICATION]
+**Last updated:** 6 October 2026
 **Version:** 1.0
 
-> **⚠️ PRE-LAUNCH DRAFT — NOT YET IN FORCE.** Complete `[PLACEHOLDERS]` and have a UK solicitor
-> review. This is the Article 28 contract; its content is largely prescribed by statute, so
-> deviations should be deliberate.
-
 This Addendum forms part of the [Organiser Terms](./ORGANISER_TERMS.md) between
-[COMPANY LEGAL NAME] ("**Processor**", "we") and the organiser ("**Controller**", "you").
+WoCo Network Ltd (company number 17370809) ("**Processor**", "we") and the organiser ("**Controller**", "you").
 It applies whenever we process personal data on your behalf.
 
 It is incorporated automatically when you create an event — you do not need to sign anything. If
@@ -64,7 +60,8 @@ We will:
 3. Implement the **security measures** in section 6.
 4. Respect the conditions in section 4 for engaging sub-processors.
 5. **Assist you** — taking account of the nature of processing — in responding to data subject
-   requests, using the tools we make available.
+   requests, using the tools we make available, and **tell you** when we erase a data subject's
+   data at their request, so you can delete it from any copies you hold.
 6. **Assist you** with your obligations on security, breach notification, impact assessments and
    prior consultation.
 7. **Delete or return** personal data at the end of the services, subject to the limits in section 8.
@@ -181,6 +178,11 @@ cannot be deleted.
 You may export your attendee data from your dashboard at any time. **Do this before you close your
 account** — we cannot export encrypted data for you.
 
+**Copies you hold.** Data you export from your dashboard, or load onto a door-scanning device, is a
+copy held by you as controller and is outside our processing. You are responsible for keeping it
+secure, for keeping it no longer than you need it, and for deleting a data subject's data from it
+when we tell you it has been erased.
+
 ---
 
 ## 9. Audit
@@ -217,7 +219,7 @@ regulatory fines under Article 82.
 | **ZeroDev** | Passkey smart-account infrastructure | US | UK IDTA |
 | **Arbitrum** | Onchain event registration and ticket records - public and permanent | Global | Technical safeguard — see §5 |
 
-Current as at [DATE]. The live list is maintained at [SUB-PROCESSOR PAGE URL].
+Current as at 6 October 2026. This annex is the live list: we change it here, with the notice set out in section 4.
 
 ---
 

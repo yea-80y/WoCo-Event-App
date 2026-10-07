@@ -1,13 +1,7 @@
 # Privacy Policy
 
-**Last updated:** [DATE OF PUBLICATION]
+**Last updated:** 6 October 2026
 **Version:** 1.0
-
-> **⚠️ PRE-LAUNCH DRAFT — NOT YET IN FORCE.**
-> Placeholders in `[SQUARE BRACKETS]` must be completed, and this document must be reviewed by a
-> UK data protection solicitor, before publication. Every factual claim below is traceable to
-> `docs/legal/DATA_INVENTORY.md`, which cites the source files. Do not add claims to this policy
-> that the inventory does not support.
 
 ---
 
@@ -31,11 +25,10 @@ our own right. Section 3 sets out exactly which is which.
 
 ## 2. Who we are
 
-[COMPANY LEGAL NAME] ("WoCo", "we", "us") is a company registered in England and Wales,
-company number [NUMBER], registered office [REGISTERED OFFICE ADDRESS].
+WoCo Network Ltd, trading as WoCo and World Computer ("WoCo", "we", "us"), is a company
+registered in England and Wales, company number 17370809, registered office 128 City Road, London EC1V 2NX, United Kingdom.
 
-We are registered with the Information Commissioner's Office, registration number
-[ICO REGISTRATION NUMBER].
+We are registered with the Information Commissioner's Office, registration number ZC266841.
 
 **Privacy contact:** privacy@woco-net.com
 
@@ -112,6 +105,7 @@ if you believe we have.
 | What we do | Legal basis |
 |---|---|
 | Deliver your ticket and event updates | Contract — you asked us to |
+| Tell you if your event is cancelled and your refund is on its way | Legitimate interests - you need to know what is happening to your money. We read the email you paid with from Stripe when we send it, and keep no copy. It is a service message, not marketing, so it is sent even if you have unsubscribed or asked us to erase your details |
 | Store your encrypted order answers for the organiser | Processing on the organiser's behalf; their basis, usually contract |
 | Send you marketing about an organiser's future events | Consent, or the PECR "soft opt-in" where you bought a ticket and were offered a clear opt-out |
 | Keep our unsubscribe and suppression records | Legal obligation (PECR) and legitimate interests — we cannot honour your opt-out without remembering it |
@@ -203,7 +197,9 @@ confirmed.
 **What we cannot honestly promise.** Two things, and we would rather say them plainly:
 
 - **Erasure does not reach copies outside our storage.** It does not reach a copy someone else
-  stored on the network and pays for themselves, or short-lived retrieval caches.
+  stored on the network and pays for themselves, or short-lived retrieval caches. Nor does it reach
+  copies the organiser has downloaded, such as an exported guest list or the list on their door
+  scanner. When we erase your details, we tell the organiser, and they must delete their copies too.
 - **We cannot guarantee every copy everywhere is gone.** Someone could have retrieved a copy while
   it was live. This is true of any system — a website, a cloud provider, any other ticketing
   platform — but on a public network we would rather state it than let you assume otherwise.
@@ -238,7 +234,8 @@ Four honest caveats:
 1. **For attendee data, the organiser decides.** They are the controller. We will pass your request on
    and help, but we cannot grant it for them — and for encrypted order data, we cannot read it.
 2. **Erasure works as described in section 8.** Immediate removal from the platform; your order
-   details overwritten on the network within 90 days; onchain records are not erased.
+   details overwritten on the network within 90 days; onchain records are not erased. If the event is
+   later cancelled, we still tell you your refund is on its way (section 5).
 3. **Correction has the same limit.** We can publish a corrected record, and that is what the
    platform will use from then on. The earlier version remains publicly retrievable from the
    network — correcting does not hide it — until its storage lapses.
@@ -252,17 +249,11 @@ We would rather you came to us first, but it is your right either way.
 
 ## 10. How long we keep things
 
-> **⚠️ INTERNAL — RESOLVE BEFORE PUBLICATION (correction 4).** Nothing currently enforces the
-> attendee-copy, account-data or marketing-consent periods, and the 30-day log rotation is not yet
-> configured on the host or checked against Cloudflare's plan (`DATA_INVENTORY.md` §8, item 3).
-> Build the expiry or reword those rows before this table is published. The suppression, ticket,
-> contact-list, transaction, failed-delivery and on-chain rows describe what the code does today.
-
 | Data | Retention |
 |---|---|
 | Your ticket / attendance record | **Indefinitely** — it is your record of having been there, yours to keep or erase |
-| Organiser's copy of attendee data | Event date + 90 days, then removed |
-| Account data | While your account is open, plus 90 days |
+| The organiser's copy of your order details | Encrypted in your browser, so only the organiser can read it, and stored on Swarm. Kept for as long as the organiser needs it. We erase it when the organiser asks, when they stop using WoCo, or when you ask us to (section 9) |
+| Account data | While your account is open. If you ask us to delete your account, we do so within 90 days of your request |
 | Suppression records | Indefinitely — required to honour your opt-out. This is the one record we keep *because* you asked us to stop: deleting it would let the next contact upload put you back |
 | Marketing consent records | While the organiser can still mail you on that basis, plus 6 months. A hashed record of the wording you agreed to and when — it is how we can show your consent was real |
 | Your place on an organiser's contact list | Until the organiser removes you, or you unsubscribe. We hold only a hashed form of your address; the list itself is encrypted to the organiser. While an organiser's email to you is being sent, we also hold your address, encrypted under a key that exists only in the running system, until your message goes out and for at most 7 days |
@@ -321,6 +312,6 @@ in-app notice before they take effect. The version and date are at the top.
 
 ## 14. Contact
 
-[COMPANY LEGAL NAME]
-[REGISTERED OFFICE ADDRESS]
+WoCo Network Ltd
+128 City Road, London EC1V 2NX, United Kingdom
 privacy@woco-net.com
