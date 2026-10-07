@@ -122,9 +122,12 @@ console.log(`
      It is encrypted to a key only they hold, so only they can rewrite it. They
      are the controller for their list: forward the request to them. Until they
      do, the suppression mark above is what actually stops sends.
-  2. Ticket records on Swarm cannot be individually deleted — the disclosed
-     remedy (CHECKOUT_PRIVACY_SUMMARY) is destroying the key that makes the
-     sealed order readable and letting the storage stamp lapse.
+  2. Sealed order records on Swarm: find them with POST /api/ops/attendee-batch/lookup
+     (this address's email hash) and erase each with
+     POST /api/ops/attendee-batch/orders/:root/burn - within 90 days, as
+     CHECKOUT_PRIVACY_SUMMARY promises (#546, #797). The onchain ticket slot is
+     permanent. Tell the organiser to delete this attendee from any copies they
+     downloaded (Organiser Terms §4 item 8).
   3. Stripe holds its own payment records under its own retention obligations.
 
   Log the request, the date, and what was done. Art. 12(3): respond within one

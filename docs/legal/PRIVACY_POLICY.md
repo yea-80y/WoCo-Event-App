@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Last updated:** 6 October 2026
+**Last updated:** 7 October 2026
 **Version:** 1.0
 
 ---
@@ -158,6 +158,11 @@ unsubscribe link. You cannot opt out of those while you hold a ticket.
 | **Web3Auth** | Social and email sign-in | US |
 | **ZeroDev** | Passkey wallet infrastructure | US |
 | **Arbitrum** | Onchain event registration and tickets - **public and permanent** | Global |
+| **eth.limo** | Serves the entry page of woco.eth.limo and organisers' woco.eth.limo addresses. It says its gateway does not log IP addresses | Not stated by eth.limo |
+| **Google Fonts** | Fonts for the WoCo app and the ticket check page - Google receives your IP address when your browser fetches them | US |
+| **Public blockchain RPC providers** (such as Arbitrum's public endpoint and Ankr) | Reading public onchain data - names, accounts, tickets. They see your IP address and the public addresses looked up | Global |
+
+eth.limo, Google Fonts and the RPC providers receive requests directly from your browser, not from us.
 
 We do not sell your personal data. We never have and we do not intend to.
 

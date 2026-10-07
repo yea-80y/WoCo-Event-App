@@ -1080,6 +1080,12 @@
                 {#if relayError}<p class="broadcast-error">{relayError}</p>{/if}
               {/if}
             </div>
+            {#if event.orderFields && decryptedOrders.size > 0}
+              <p class="csv-note">
+                An exported guest list holds your attendees' details. Keep it secure, delete it when
+                you no longer need it, and remove anyone we tell you has been erased.
+              </p>
+            {/if}
 
             <div class="table-wrap">
               <table>
@@ -1444,6 +1450,13 @@
   .csv-btn:hover {
     border-color: var(--accent);
     color: var(--accent-text);
+  }
+
+  .csv-note {
+    margin: -0.25rem 0 0.75rem;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    line-height: 1.5;
   }
 
   .bulk-send-btn {
