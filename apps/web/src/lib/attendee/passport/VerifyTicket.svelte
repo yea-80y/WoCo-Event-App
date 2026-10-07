@@ -58,9 +58,6 @@
     return params.get("t");
   }
 
-  const editionStr = $derived(
-    parsed?.edition != null ? String(parsed.edition).padStart(3, "0") : null,
-  );
 
   const eventDateStr = $derived.by(() => {
     if (!event?.startDate) return null;
@@ -126,7 +123,7 @@
     <article class="vt-card">
       <header class="vt-header">
         <div class="vt-badge">
-          {#if editionStr}Ticket #{editionStr}{:else}WoCo Ticket{/if}
+          WoCo Ticket
         </div>
         <h1 class="vt-title">{event?.title ?? "Event ticket"}</h1>
         <div class="vt-meta">

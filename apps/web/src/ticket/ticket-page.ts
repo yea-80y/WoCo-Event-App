@@ -62,7 +62,7 @@ function qrSvg(payload: string): SVGSVGElement {
 }
 
 /** Draws the ticket on a canvas and hands the browser a blob: download - no request, works offline. */
-function saveImage(payload: string, title: string, label: string): void {
+function saveImage(payload: string, title: string): void {
   const { data } = encode(payload, { ecc: "M", border: 2 });
   const n = data.length;
   const scale = 10;
@@ -91,14 +91,14 @@ function saveImage(payload: string, title: string, label: string): void {
   ctx.font = `600 22px ${font}`;
   ctx.fillText(clip(title, 34), width / 2, pad + qrPx + 44);
   ctx.font = `500 16px ${font}`;
-  ctx.fillText(`Ticket #${label} · show at the door`, width / 2, pad + qrPx + 78);
+  ctx.fillText("Show at the door", width / 2, pad + qrPx + 78);
 
   canvas.toBlob((blob) => {
     if (!blob) return;
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `ticket-${label}.png`;
+    a.download = "ticket.png";
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -151,15 +151,15 @@ function run(): void {
   }
 
   const { ticket, display } = parsed;
-  const label = String(ticket.edition).padStart(3, "0");
   const title = display.title || "Your ticket";
 
-  setText("num", `#${label}`);
+  // The edition is in the link and the QR (the door needs it), never on the
+  // page: its sequence would tell the buyer how many have sold.
   setText("title", title);
   setText("date", display.date ? formatDate(display.date) : undefined);
   setText("loc", display.location);
   setText("series", display.series);
-  document.title = `Ticket #${label} - ${title}`;
+  document.title = `${title} - ticket`;
   if (display.image) showImage(display.image, display.gateway ?? 0);
 
   // The payload the door scanner reads - identical to the one in the emailed
@@ -167,7 +167,7 @@ function run(): void {
   const payload = `woco://t/${ticket.eventId}/${ticket.seriesId}/${ticket.edition}/${ticket.sig}`;
   qr.replaceChildren(qrSvg(payload));
   save.hidden = false;
-  save.addEventListener("click", () => saveImage(payload, title, label));
+  save.addEventListener("click", () => saveImage(payload, title));
 }
 
 run();
