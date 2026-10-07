@@ -20,6 +20,8 @@
   let supported = $state(false);
   /** Emphasises the create button after a sign-in found nothing — never auto-clicks it. */
   let offerCreate = $state(false);
+  /** A sign-in from another device that could not be confirmed (#746): points at "Add this device". */
+  let otherDevice = $state(false);
   /** "Can't find your passkey on this device?" (#746), opened by its link or after a sign-in found nothing. */
   let showHelp = $state(false);
   /** After a new account: its passkey stays on this kind of device (Samsung Pass, Windows Hello). */
@@ -40,6 +42,7 @@
    */
   async function run(mode: "signin" | "create") {
     error = null;
+    otherDevice = false;
     onstart?.();
     try {
       const res = await auth.loginPasskeyResult(mode);
@@ -57,6 +60,9 @@
         // The modal's one-shot notice explains this refusal (#255, and an added
         // passkey removed from its account, #746) - a red line here would say
         // the same thing twice.
+      } else if (res.otherDevice && onlink) {
+        otherDevice = true;
+        error = res.error?.message ?? null;
       } else if (res.noAssertion && mode === "signin") {
         offerCreate = true;
         showHelp = true;
@@ -115,7 +121,10 @@
     {/if}
 
     {#if onlink}
-      <button class="create-btn" onclick={onlink} disabled={auth.busy}>
+      {#if otherDevice && error}
+        <p class="error" role="alert">{error}</p>
+      {/if}
+      <button class="create-btn" class:emphasised={otherDevice} onclick={onlink} disabled={auth.busy}>
         Already use WoCo on your phone? Add this device
       </button>
     {/if}
@@ -164,7 +173,7 @@
       one makes a separate account — it will not restore an existing one.
     </p>
 
-    {#if error}
+    {#if error && !otherDevice}
       <p class="error">{error}</p>
     {/if}
   </div>

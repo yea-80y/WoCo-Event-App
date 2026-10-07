@@ -1,11 +1,7 @@
 # Organiser Terms
 
-**Last updated:** [DATE OF PUBLICATION]
+**Last updated:** 6 October 2026
 **Version:** 1.0
-
-> **⚠️ PRE-LAUNCH DRAFT — NOT YET IN FORCE.** Complete `[PLACEHOLDERS]` and have a UK solicitor
-> review. Section 6 (chargeback liability) is the commercially critical clause — see
-> `docs/legal/DATA_INVENTORY.md` §5.1 for why.
 
 These terms apply if you use WoCo to **sell tickets, run events, publish a site, or contact an
 audience**. They are in addition to the [Terms of Service](./TERMS_OF_SERVICE.md).
@@ -101,6 +97,10 @@ attendees submit.
    permanently unrecoverable. We cannot recover it — that is the point of the design.
 7. **Tell us within 24 hours** if you become aware of a personal data breach affecting attendee data,
    so we can meet our own notification duties.
+8. **Look after the copies you download.** A guest list you export (for example as a CSV) and the
+   list on your door scanner are your own copies, and we cannot reach them. Keep them secure, keep
+   them only as long as you need them, and when we tell you an attendee's details have been erased,
+   delete that attendee from your copies and refresh your door list.
 
 ### What we do
 
@@ -232,8 +232,9 @@ If you have any doubt about your ability to deliver an event, do not sell ticket
 
 Publishing events, sites and images consumes decentralised storage that we pay for.
 
-- Free hosting is offered subject to a **[QUOTA]** limit and to eligibility checks, and is a
-  time-limited launch offer we may withdraw.
+- **Website hosting is free for at least 12 months from the day you first publish your site**, up to
+  **100 MB** per organiser, once your Stripe account is verified. After that we may change or end
+  the offer, and we will give you reasonable notice first. Event pages are always free.
 - Storage is paid for in fixed periods and must be renewed. **If storage expires, published content
   can become permanently unavailable.** We will give reasonable notice before expiry, but keeping
   your content live is ultimately your responsibility.
@@ -278,4 +279,4 @@ these terms.**
 Governed by the law of **England and Wales**; the courts of England and Wales have exclusive
 jurisdiction.
 
-[COMPANY LEGAL NAME] · [REGISTERED OFFICE ADDRESS] · [SUPPORT EMAIL]
+WoCo Network Ltd · company number 17370809 · 128 City Road, London EC1V 2NX, United Kingdom · support@woco-net.com
