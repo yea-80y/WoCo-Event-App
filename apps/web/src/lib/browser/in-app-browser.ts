@@ -60,7 +60,7 @@ export function detectInAppBrowser(
 ): InAppBrowser | null {
   const os = /Android/i.test(userAgent)
     ? "android"
-    : /iPhone|iPad|iPod/.test(userAgent) || (/Macintosh/.test(userAgent) && hints.touchMac)
+    : /iP(?:hone|ad|od)/.test(userAgent) || (/Macintosh/.test(userAgent) && hints.touchMac)
       ? "ios"
       : "other";
   for (const [app, marker] of MARKERS) {
