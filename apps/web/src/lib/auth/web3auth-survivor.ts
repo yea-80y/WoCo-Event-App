@@ -107,6 +107,9 @@ export function restoreVerdict(
 export const SURVIVOR_STILL_LOADING_MESSAGE =
   "A previous sign-in on this device is still loading - please try again in a moment.";
 
+/** A session appeared where the logout had just cleared one. */
+export const SURVIVOR_INTERFERED_MESSAGE = "A previous email session interfered with sign-in - please try again.";
+
 /**
  * End any session that survives in storage, so the modal ALWAYS runs: an
  * explicit "continue with email" — login or guardian choice — is a request to
@@ -160,7 +163,7 @@ export async function instanceForExplicitSignIn<T extends Web3AuthSessionInstanc
   // The logout above cleared the stored session, so a second survivor means the
   // storage did not clear: refuse rather than loop. The caller discards `fresh`.
   if (await endSurvivingWeb3AuthSession(fresh)) {
-    throw new Error("A previous email session interfered with sign-in - please try again.");
+    throw new Error(SURVIVOR_INTERFERED_MESSAGE);
   }
   return fresh;
 }

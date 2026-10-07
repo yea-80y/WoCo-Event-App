@@ -27,7 +27,10 @@ const memory = new Map<string, string>();
 const { loginWithWeb3Auth, restoreWeb3AuthSession, logoutWeb3Auth, setWeb3AuthFactoryForTests } = await import(
   "../src/lib/auth/web3auth-account.js"
 );
-const { SURVIVOR_STILL_LOADING_MESSAGE } = await import("../src/lib/auth/web3auth-survivor.js");
+const { SURVIVOR_STILL_LOADING_MESSAGE, SURVIVOR_INTERFERED_MESSAGE } = await import(
+  "../src/lib/auth/web3auth-survivor.js"
+);
+const { isWeb3AuthSignInError } = await import("../src/lib/auth/web3auth-signin-error.js");
 
 const KEY_A = "11".repeat(32);
 const KEY_B = "22".repeat(32);
@@ -43,6 +46,8 @@ class FakeSdk extends EventEmitter {
   spent = false;
   connectCalls = 0;
   logouts: Array<{ cleanup?: boolean } | undefined> = [];
+  modalClosed = 0;
+  loginModal = { closeModal: () => void this.modalClosed++ };
 
   constructor(
     private world: World,
@@ -68,6 +73,15 @@ class FakeSdk extends EventEmitter {
   async connect() {
     this.connectCalls++;
     if (this.spent) throw new Error("connect() on a spent instance - the real SDK never settles here (#803)");
+    const fail = this.world.connectFails;
+    if (fail) {
+      if (fail === "survivor-mid-modal") this.hydrate(KEY_A);
+      throw fail === "popup-closed"
+        ? Object.assign(new Error("Wallet popup has been closed by the user"), { code: 5114 })
+        : fail === "modal-closed" || fail === "survivor-mid-modal"
+          ? new Error("User closed the modal")
+          : new Error("boom");
+    }
     this.connected = true;
     this.cachedConnector = "auth";
     this.world.stored = { key: this.nextLoginKey, loads: "at-init" };
@@ -93,6 +107,7 @@ class World {
   /** The key the modal yields when someone completes a sign-in in it. */
   loginKey = KEY_B;
   failInit = false;
+  connectFails: "popup-closed" | "modal-closed" | "survivor-mid-modal" | "other" | null = null;
 
   install(): void {
     setWeb3AuthFactoryForTests(async () => {
@@ -124,6 +139,41 @@ test("sign-in with nothing stored: one instance, the modal's key comes back", as
   assert.equal(r.address, addressOf(KEY_B));
   assert.equal(world.built.length, 1);
   assert.equal(memory.get("woco:web3auth-session-established"), "1");
+  assert.equal(world.built[0].modalClosed, 1, "the SDK's success screen never sits over ours");
+});
+
+for (const how of ["popup-closed", "modal-closed"] as const) {
+  test(`backing out (${how}) is a quiet cancel, and the SDK's modal is closed behind it`, async () => {
+    world.connectFails = how;
+    await assert.rejects(loginWithWeb3Auth(), (e: unknown) => {
+      assert.ok(isWeb3AuthSignInError(e) && e.cancelled);
+      return true;
+    });
+    assert.equal(world.built[0].modalClosed, 1, "no live modal left for a second tap nobody receives");
+    world.connectFails = null;
+    await loginWithWeb3Auth();
+    assert.equal(world.built.length, 1, "a cancel leaves a usable instance");
+  });
+}
+
+test("any other sign-in failure is passed on as itself, modal closed", async () => {
+  world.connectFails = "other";
+  await assert.rejects(loginWithWeb3Auth(), (e: unknown) => {
+    assert.ok(!isWeb3AuthSignInError(e));
+    assert.equal((e as Error).message, "boom");
+    return true;
+  });
+  assert.equal(world.built[0].modalClosed, 1);
+});
+
+test("a session that appears mid-modal is ended, never adopted, and the next try is fresh", async () => {
+  world.connectFails = "survivor-mid-modal";
+  await assert.rejects(loginWithWeb3Auth(), { name: "Web3AuthSignInError", message: SURVIVOR_INTERFERED_MESSAGE });
+  assert.deepEqual(world.built[0].logouts, [{ cleanup: true }]);
+  world.connectFails = null;
+  const r = await loginWithWeb3Auth();
+  assert.equal(r.address, addressOf(KEY_B));
+  assert.equal(world.built.length, 2);
 });
 
 test("#803: a leftover session is ended and sign-in completes on a FRESH instance", async () => {
@@ -143,7 +193,11 @@ test("a leftover that cannot be ended refuses, and the next attempt starts from 
     throw new Error("network down");
   };
   try {
-    await assert.rejects(loginWithWeb3Auth(), /network down/);
+    await assert.rejects(loginWithWeb3Auth(), (e: unknown) => {
+      assert.ok(isWeb3AuthSignInError(e) && !e.cancelled);
+      assert.match((e as Error).message, /couldn't be cleared - check your connection/);
+      return true;
+    });
   } finally {
     FakeSdk.prototype.logout = realLogout;
   }
@@ -159,7 +213,7 @@ test("sign-in over a session still loading waits, then refuses without signing a
   t.mock.timers.enable({ apis: ["setTimeout"] });
   world.stored = { key: KEY_A, loads: "never" };
   const attempt = loginWithWeb3Auth();
-  const outcome = assert.rejects(attempt, { message: SURVIVOR_STILL_LOADING_MESSAGE });
+  const outcome = assert.rejects(attempt, { name: "Web3AuthSignInError", message: SURVIVOR_STILL_LOADING_MESSAGE });
   await settle();
   t.mock.timers.tick(20_000);
   await outcome;

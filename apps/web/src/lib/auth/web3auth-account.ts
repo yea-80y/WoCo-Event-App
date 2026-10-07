@@ -20,7 +20,10 @@ import {
   instanceForExplicitSignIn,
   restoreVerdict,
   EXPLICIT_REHYDRATION_WAIT_MS,
+  SURVIVOR_INTERFERED_MESSAGE,
+  SURVIVOR_STILL_LOADING_MESSAGE,
 } from "./web3auth-survivor.js";
+import { Web3AuthSignInError, isWeb3AuthCancel } from "./web3auth-signin-error.js";
 
 type MinimalProvider = { request: (args: { method: string }) => Promise<unknown> };
 
@@ -134,15 +137,14 @@ export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey
   } catch (e) {
     // Whatever instance this touched is spent or unknown: the next attempt builds anew.
     _resetInstance();
-    throw e;
+    const said = e instanceof Error ? e.message : "";
+    const shown = [SURVIVOR_STILL_LOADING_MESSAGE, SURVIVOR_INTERFERED_MESSAGE, NOT_CONFIGURED].includes(said);
+    throw new Web3AuthSignInError(shown ? said : PREVIOUS_SESSION_NOT_CLEARED_MESSAGE);
   }
 
+  let provider: MinimalProvider | null;
   try {
-    const provider = await w.connect();
-    if (provider) {
-      markWeb3AuthSessionEstablished();
-      return _extractKeyAndAddress(provider);
-    }
+    provider = await w.connect();
   } catch (e) {
     // Defence in depth: the modal never opens over a session still loading
     // (that refuses above), but if one hydrates mid-modal anyway it can close
@@ -156,11 +158,36 @@ export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey
         /* the retry's pre-modal logout gets another attempt */
       }
       _resetInstance();
-      throw new Error("A previous email session interfered with sign-in — please try again.");
+      throw new Web3AuthSignInError(SURVIVOR_INTERFERED_MESSAGE);
     }
-    throw e instanceof Error ? e : new Error("Email sign-in was cancelled.");
+    if (isWeb3AuthCancel(e)) throw new Web3AuthSignInError(SIGN_IN_CANCELLED_MESSAGE, true);
+    throw e instanceof Error ? e : new Error("Email sign-in failed - please try again.");
+  } finally {
+    _closeModal(w);
   }
-  throw new Error("Email sign-in was cancelled.");
+  if (!provider) throw new Web3AuthSignInError(SIGN_IN_CANCELLED_MESSAGE, true);
+  markWeb3AuthSessionEstablished();
+  return _extractKeyAndAddress(provider);
+}
+
+const SIGN_IN_CANCELLED_MESSAGE = "Sign-in was cancelled.";
+const PREVIOUS_SESSION_NOT_CLEARED_MESSAGE =
+  "A previous sign-in on this device couldn't be cleared - check your connection and try again.";
+
+/**
+ * Close the SDK's modal once our sign-in stops listening to it. It does not
+ * close itself after a sign-in (it sits on a success screen over ours), and it
+ * STAYS OPEN after an error such as a closed or blocked popup - by then connect()
+ * has already rejected, so a second tap there completes a sign-in nothing
+ * receives and the person has to start again (#803). Internal field, guarded: a
+ * future SDK shape change only loses the close, which is cosmetic.
+ */
+function _closeModal(w: Web3AuthInstance): void {
+  try {
+    (w as unknown as { loginModal?: { closeModal?: () => void } }).loginModal?.closeModal?.();
+  } catch {
+    /* best effort */
+  }
 }
 
 /**

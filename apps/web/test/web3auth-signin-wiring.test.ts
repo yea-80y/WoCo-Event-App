@@ -56,3 +56,42 @@ test("every instance asks for the 30-day session, the SDK's maximum", async () =
   const options = config.slice(config.indexOf("export function buildWeb3AuthOptions("));
   assert.ok(options.includes("sessionTime: WEB3AUTH_SESSION_SECONDS,"), "unset = the dashboard's 1 day");
 });
+
+const store = read("../src/lib/auth/auth-store.svelte.ts");
+const button = read("../src/lib/components/auth/Web3AuthLogin.svelte");
+const gate = read("../src/lib/creator/gate/OrganiserNeedsPasskey.svelte");
+
+test("the store passes Web3Auth's own outcomes through instead of a bare false", () => {
+  const start = store.indexOf("async function loginWeb3Auth(");
+  const fn = store.slice(start, store.indexOf("\nasync function ", start + 10));
+  assert.ok(fn.includes("if (isOrphanedCredentialError(e) || isWeb3AuthSignInError(e)) throw e;"));
+});
+
+test("a missing Web3Auth key tells the person what to do, never a developer string", () => {
+  assert.ok(!store.includes("Web3Auth key unavailable"), "no raw key message reaches the screen");
+  assert.equal(store.split("throw new Error(WEB3AUTH_KEY_GONE_MESSAGE)").length - 1, 3);
+});
+
+test("the sign-in button stays quiet on a cancel and shows every other outcome", () => {
+  const quiet = button.indexOf("if (isWeb3AuthSignInError(e) && e.cancelled) {");
+  const shown = button.indexOf("} else if (!isOrphanedCredentialError(e)) {", quiet);
+  assert.ok(quiet > 0 && shown > quiet);
+  assert.ok(button.slice(quiet, shown).includes("error = null;"));
+});
+
+test("the organiser gate shows a sign-out refusal instead of silently resetting", () => {
+  const logout = gate.indexOf("await auth.logout();");
+  const caught = gate.indexOf("} catch (e) {", logout);
+  const login = gate.indexOf("loginRequest.request(", logout);
+  assert.ok(logout > 0 && caught > logout && login > caught, "a failed sign-out never opens the passkey sheet");
+  assert.ok(gate.slice(caught, login).includes("return;"));
+  assert.ok(gate.includes('{#if error}<p class="error" role="alert">{error}</p>{/if}'));
+});
+
+test("both of the SDK's ways of backing out count as a cancel", async () => {
+  const { isWeb3AuthCancel } = await import("../src/lib/auth/web3auth-signin-error.js");
+  assert.equal(isWeb3AuthCancel(new Error("User closed the modal")), true);
+  assert.equal(isWeb3AuthCancel(Object.assign(new Error("Wallet popup has been closed by the user"), { code: 5114 })), true);
+  assert.equal(isWeb3AuthCancel(Object.assign(new Error("Failed to connect"), { code: 5111 })), false);
+  assert.equal(isWeb3AuthCancel("User closed the modal"), false);
+});

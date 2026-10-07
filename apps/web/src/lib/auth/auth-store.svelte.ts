@@ -25,6 +25,7 @@ import {
   MOVED_OR_RECOVERED_MESSAGE,
 } from "./orphaned-credential.js";
 import { readOrphanTombstone, writeOrphanTombstone } from "./orphan-tombstone.js";
+import { isWeb3AuthSignInError, WEB3AUTH_KEY_GONE_MESSAGE } from "./web3auth-signin-error.js";
 import { guardianConfigForBackup } from "./guardian-config.js";
 import {
   requestSessionDelegation,
@@ -206,7 +207,7 @@ async function _getSigner(): Promise<EIP712Signer> {
   if (_kind === "web3auth") {
     // web3auth parent is the Kernel too; AuthorizeSession is signed by the raw
     // Web3Auth EOA key (same owner-of-Kernel server authorization as passkey).
-    if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable for signer");
+    if (!_web3authPrivateKey) throw new Error(WEB3AUTH_KEY_GONE_MESSAGE);
     return createLocalSigner(_web3authPrivateKey, async () => true);
   }
   if (_kind === "coinbase" && _parent) {
@@ -234,7 +235,7 @@ async function _getSeedSigner(): Promise<EIP712Signer> {
     // INVARIANT #1: object derives from the raw Web3Auth secp256k1 key (ethers
     // Wallet → RFC-6979 deterministic), NOT the Kernel (`_getSigner` returns the
     // non-deterministic 1271 signer, which would corrupt the identity seed).
-    if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable for identity derivation");
+    if (!_web3authPrivateKey) throw new Error(WEB3AUTH_KEY_GONE_MESSAGE);
     return createLocalSigner(_web3authPrivateKey, (info) => signingRequest.request(info));
   }
   return _getSigner();
@@ -1365,7 +1366,7 @@ async function _ensureKernel(): Promise<void> {
  */
 async function _ensureKernelForWeb3Auth(): Promise<void> {
   if (_kernel) return;
-  if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable — cannot build Kernel");
+  if (!_web3authPrivateKey) throw new Error(WEB3AUTH_KEY_GONE_MESSAGE);
   const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
   const override = await _recoveryKernelFor(_getSeedAddress());
   const kernel = await buildKernelFromPrivateKey(
@@ -2066,8 +2067,10 @@ async function loginWeb3Auth(): Promise<boolean> {
   } catch (e) {
     // The honest refusal must reach the caller as itself — a `false` here
     // renders as "Sign-in failed — please try again", which is exactly the
-    // advice an orphaned credential must not get.
-    if (isOrphanedCredentialError(e)) throw e;
+    // advice an orphaned credential must not get. Web3Auth's own outcomes
+    // (cancelled, a previous session still loading) carry copy for the person
+    // too (#803).
+    if (isOrphanedCredentialError(e) || isWeb3AuthSignInError(e)) throw e;
     console.error("[auth] web3auth login failed:", e);
     return false;
   } finally {

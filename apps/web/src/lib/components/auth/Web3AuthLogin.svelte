@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { isOrphanedCredentialError } from "../../auth/orphaned-credential.js";
+  import { isWeb3AuthSignInError } from "../../auth/web3auth-signin-error.js";
 
   interface Props {
     oncomplete?: () => void;
@@ -30,8 +31,11 @@
       else error = "Sign-in failed — please try again.";
     } catch (e: unknown) {
       // An orphaned-credential refusal (#255) is explained by the modal's
-      // one-shot notice — don't repeat it here.
-      if (!isOrphanedCredentialError(e)) {
+      // one-shot notice — don't repeat it here. Closing Web3Auth's own window
+      // is a choice, not a failure: say nothing (#803).
+      if (isWeb3AuthSignInError(e) && e.cancelled) {
+        error = null;
+      } else if (!isOrphanedCredentialError(e)) {
         error = e instanceof Error ? e.message.slice(0, 120) : "Sign-in failed";
       }
     } finally {
