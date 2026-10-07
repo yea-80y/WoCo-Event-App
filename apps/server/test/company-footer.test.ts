@@ -5,13 +5,14 @@
  *
  * MUTATION: drop `companyFooterHtml(...)` from any builder, or the company
  * line from the marketing footer, and its case goes red; add a new
- * `sendEmail(` caller without the footer and the source scan goes red.
+ * `sendEmail(` caller whose own file and imported builders all lack the footer
+ * and the source scan goes red.
  */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WOCO_COMPANY, WOCO_COMPANY_LINE } from "@woco/shared";
 
@@ -83,7 +84,14 @@ test("every caller of sendEmail adds the company footer", () => {
   walk(src);
   const callers = files.filter((p) => /\bsendEmail\(\s*[{\n]/.test(readFileSync(p, "utf8")));
   assert.ok(callers.length >= 4, "the scan must find the known senders");
+  // The footer may sit in the sender itself or in a builder module it imports.
+  const addsFooter = (p: string) => /companyFooterHtml\(/.test(readFileSync(p, "utf8"));
+  const importedModules = (p: string) =>
+    [...readFileSync(p, "utf8").matchAll(/from "(\.{1,2}\/[^"]+)\.js"/g)].map((m) => join(dirname(p), `${m[1]}.ts`));
   for (const p of callers) {
-    assert.match(readFileSync(p, "utf8"), /companyFooterHtml\(/, `${p.slice(src.length)} sends email without the company footer`);
+    assert.ok(
+      addsFooter(p) || importedModules(p).some((m) => existsSync(m) && addsFooter(m)),
+      `${p.slice(src.length)} sends email without the company footer`,
+    );
   }
 });
