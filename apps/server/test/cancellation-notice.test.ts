@@ -144,6 +144,23 @@ describe("the title, the only organiser text that crosses unsubscribes and erasu
     ]) {
       assert.equal(notice.plainTitle(t), "deals", JSON.stringify(t));
     }
+    // The guarantee, whatever the spelling: no character a link, domain or
+    // address needs survives, and no dot sits between two letters.
+    const hostile = [
+      "evil[.]com", "evil(.)com", "evil .com", "x.y.z.example.org", "a@@b", "mailto:x", "javascript:alert(1)",
+      "\\\\host\\share", "1.2.3.4/promo", "evil\u00B7com", "e\u0301vil.co\u0301m", "EVIL.COM.", "tickets at evil.c0m",
+      "a".repeat(150) + ".com", "St.Patrick's", "ftp://x.y",
+    ];
+    for (const t of hostile) {
+      const out = notice.plainTitle(t) ?? "";
+      assert.doesNotMatch(out, /[/:@\\]/u, JSON.stringify(t));
+      assert.doesNotMatch(out, /\p{L}\.\p{L}/u, JSON.stringify(t));
+      assert.ok(out.length <= 80);
+    }
+    // Ordinary titles survive.
+    assert.equal(notice.plainTitle("Dr. Who Night"), "Dr. Who Night");
+    assert.equal(notice.plainTitle("Rock & Roll! (18+) - £5 entry"), "Rock & Roll! (18+) - £5 entry");
+    assert.equal(notice.plainTitle("Café Night"), "Café Night");
     const m = notice.buildCancellationNotice({ variant: "issued", title: "Promo at deals.example.com", status: "done", amount: null });
     assert.doesNotMatch(m.subject + m.text + m.html, /deals\.example/);
   });

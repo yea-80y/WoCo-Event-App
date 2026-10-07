@@ -55,23 +55,34 @@ export function formatAmount(minor: number | undefined, currency: string | undef
 /**
  * The event title as plain words. It is the one piece of organiser-written
  * text in a message that crosses unsubscribes and erasure, and the organiser
- * can rename the event just before cancelling - so it may not carry a link, a
- * domain or an address, and it is kept short. A title reduced to nothing falls
- * back to the generic wording.
+ * can rename the event just before cancelling, so it must not be able to carry
+ * a link, a domain or an address.
+ *
+ * Two layers. The patterns strip what looks like a URL, an address or a domain
+ * (best effort: it removes the spammer's words too). The guarantee is the
+ * second layer, an ALLOWLIST: letters, marks, numbers, currency, spaces and
+ * plain punctuation - never `/`, `:`, `@` or `\` - and a dot only at the end of
+ * a word or inside a plain number ("v2.0"). With those gone, no domain, URL or
+ * email can be formed, however it is spelled. Capped at 80 characters; a title
+ * reduced to nothing falls back to the generic wording.
  */
 export function plainTitle(title: string | undefined): string | undefined {
   if (!title) return undefined;
   const words = title
-    // Lookalikes first, so the rules below see what a mail client linkifies:
-    // fullwidth and ideographic dots and @, zero-width characters.
+    // What a mail client would linkify: IDNA's full stops and fullwidth forms.
     .normalize("NFKC")
     .replace(/[\u3002\uFF61\uFE52\u2024]/gu, ".")
     .replace(/\p{Cf}/gu, "")
-    .replace(/\p{Cc}/gu, " ")
+    // Layer 1: patterns.
     .replace(/https?:\/\/\S*/giu, " ")
     .replace(/www\.\S*/giu, " ")
     .replace(/\S+@\S+/gu, " ")
     .replace(/[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.(?:\p{L}{2,24}|xn--[a-z0-9-]{2,59})(?![\p{L}\p{N}])\S*/giu, " ")
+    // Layer 2: the allowlist, then dots.
+    .replace(/[^\p{L}\p{M}\p{N}\p{Sc}\s.,'\u2019&!?()#+-]/gu, " ")
+    .split(/\s+/u)
+    .map((tok) => (/^\p{L}{0,3}\d+\.\d+$/u.test(tok) ? tok : tok.replace(/\.(?=.)/gu, " ")))
+    .join(" ")
     .replace(/\s+/gu, " ")
     .trim();
   if (!words) return undefined;
