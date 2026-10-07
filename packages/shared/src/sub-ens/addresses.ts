@@ -29,6 +29,12 @@ export interface SubEnsDeployment {
   registry: Hex0x;
   /** WoCoRegistrar — the mint door the sponsor and the permit rail both go through. */
   registrar: Hex0x;
+  /**
+   * Block of the registry's deploy transaction: no registry log predates it,
+   * so a log scan starts here, not at genesis (#782). Read from the deploy
+   * receipt, not the deployment record alone.
+   */
+  deployBlock: number;
 }
 
 /**
@@ -67,10 +73,12 @@ export const SUB_ENS_DEPLOYMENTS = {
   42161: {
     registry: "0x4c2265470e0134C0a2df6902ebcb5397a40102a8",
     registrar: "0x5974bd7bb11C5a33B3d35996d4D95660F315fFaB",
+    deployBlock: 507_277_293,
   },
   421614: {
     registry: "0xAf3124EE7360c7B9FD06311102f635392da44886",
     registrar: "0x4E28BEB33BB5E4B952F749BfAc4985bb3b97F7BB",
+    deployBlock: 310_421_296,
   },
 } as const satisfies Record<number, SubEnsDeployment>;
 

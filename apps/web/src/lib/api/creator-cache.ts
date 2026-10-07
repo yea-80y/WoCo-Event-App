@@ -33,6 +33,7 @@
 
 import type { ApiResponse, EventDirectoryEntry, EventFeed, SiteDirectoryEntry, ShopDirectoryEntry } from "@woco/shared";
 import { authGet } from "./client.js";
+import { withoutSealedOrders } from "./orders-cache.js";
 import { cacheGet, cacheSet, cacheKey, TTL } from "../cache/cache.js";
 import {
   getEventOrders,
@@ -146,11 +147,12 @@ export function getEventSWR(eventId: string): SWRResult<EventFeed> {
 
 export function getEventOrdersSWR(eventId: string): SWRResult<EventOrdersResponse> {
   const key = cacheKey.eventOrders(eventId);
-  const cached = cacheGet<EventOrdersResponse>(key);
+  const stored = cacheGet<EventOrdersResponse>(key);
+  const cached = stored ? withoutSealedOrders(stored) : null;
   const refresh = async (): Promise<ApiResponse<EventOrdersResponse>> => {
     try {
       const data = await getEventOrders(eventId);
-      cacheSet(key, data, TTL.EVENT_ORDERS);
+      cacheSet(key, withoutSealedOrders(data), TTL.EVENT_ORDERS);
       return { ok: true, data };
     } catch (err) {
       return failed(err, "Could not load orders");

@@ -48,7 +48,7 @@ interface FakeOpts {
 
 function fakeGateway(o: FakeOpts = {}) {
   const created: Array<{ params: Record<string, unknown>; account: string | undefined; key: string }> = [];
-  const voided: string[] = [];
+  const rechecked: string[] = [];
   let seq = 0;
   const gateway: import("../src/lib/stripe/pending-refunds.js").RefundGateway = {
     async findRefundBySession(pi) {
@@ -66,11 +66,11 @@ function fakeGateway(o: FakeOpts = {}) {
       created.push({ params: params as unknown as Record<string, unknown>, account, key });
       return { id: `re_${++seq}` };
     },
-    markPayoutVoid(sessionId) {
-      voided.push(sessionId);
+    flagPayoutRecheck(sessionId) {
+      rechecked.push(sessionId);
     },
   };
-  return { gateway, created, voided };
+  return { gateway, created, rechecked };
 }
 
 function record(over: Partial<Parameters<typeof pr.recordPendingRefund>[0]> = {}) {
@@ -135,13 +135,13 @@ describe("record", () => {
 // ---------------------------------------------------------------------------
 
 describe("retry", () => {
-  test("a refund that already landed (lost response) is recognised, not repeated; full → payout voided", async () => {
+  test("a refund that already landed (lost response) is recognised, not repeated; full → payout flagged for a recheck", async () => {
     record();
     const f = fakeGateway({ existing: { pi_1: "re_landed" } });
     const out = await pr.retryPendingRefunds(f.gateway);
     assert.deepEqual(out, [{ sessionId: "cs_1", result: "done", refundId: "re_landed" }]);
     assert.equal(f.created.length, 0, "must NOT create a second refund");
-    assert.deepEqual(f.voided, ["cs_1"]);
+    assert.deepEqual(f.rechecked, ["cs_1"]);
     assert.equal(pr.getPendingRefund("cs_1")?.status, "done");
     assert.equal(pr.pendingRefundsHealth().pending, 0);
   });
@@ -158,15 +158,15 @@ describe("retry", () => {
     assert.equal(f.created[0].params.amount, 2200);
     assert.equal(f.created[0].params.refund_application_fee, true, "#121 holds on retry too");
     assert.deepEqual(f.created[0].params.metadata, { reason: "ticket-claim-failed", sessionId: "cs_1", quantityUnfilled: "2" });
-    assert.equal(f.voided.length, 0, "a PARTIAL refund leaves the payout entry held");
+    assert.equal(f.rechecked.length, 0, "a PARTIAL refund needs no flag");
     assert.equal(pr.getPendingRefund("cs_1")?.refundId, "re_1");
   });
 
-  test("full refund created on retry voids the payout entry", async () => {
+  test("full refund created on retry flags the payout entry for a recheck", async () => {
     record();
     const f = fakeGateway();
     await pr.retryPendingRefunds(f.gateway);
-    assert.deepEqual(f.voided, ["cs_1"]);
+    assert.deepEqual(f.rechecked, ["cs_1"]);
   });
 
   test("cannot ask Stripe whether it landed → skip this round, no create, no attempt counted", async () => {
@@ -214,7 +214,7 @@ describe("retry", () => {
     const out = await pr.retryPendingRefunds(f.gateway);
     assert.equal(out[0].result, "already-refunded");
     assert.equal(pr.getPendingRefund("cs_1")?.status, "done");
-    assert.deepEqual(f.voided, ["cs_1"], "full refund → nothing to release");
+    assert.deepEqual(f.rechecked, ["cs_1"], "full refund → the sweep nets the fee Stripe kept");
   });
 
   test("a disputed charge is terminal: abandoned at once, no 48 pointless retries", async () => {
@@ -243,7 +243,7 @@ describe("retry", () => {
     const out = await pr.retryPendingRefunds(f.gateway);
     assert.deepEqual(out.map((o) => [o.sessionId, o.result]), [["cs_a", "done"], ["cs_b", "done"]]);
     assert.equal(f.created.length, 1, "only cs_b needed creating");
-    assert.deepEqual(f.voided, ["cs_a"], "cs_b was partial");
+    assert.deepEqual(f.rechecked, ["cs_a"], "cs_b was partial");
   });
 });
 

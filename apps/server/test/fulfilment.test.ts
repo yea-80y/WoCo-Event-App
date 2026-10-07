@@ -164,7 +164,7 @@ type Step =
   | "consumeReservation"
   | "createRefund"
   | "recordPendingRefund"
-  | "markPayoutVoid"
+  | "flagPayoutRecheck"
   | "recordSaleSlots"
   | "recordAutoRefund"
   | "cancellationGate"
@@ -221,13 +221,15 @@ function fakeDeps(o: FakeOpts = {}) {
   /** Rows the MAILER wrote before rejecting with `ledgered: true`. */
   const mailerLedger: string[] = [];
   const held: Array<Record<string, unknown>> = [];
-  const voided: string[] = [];
+  const rechecked: string[] = [];
   const bindings: Array<Record<string, unknown>> = [];
   const consents: Array<Record<string, unknown>> = [];
   const attendees: Array<{ eventId: string; emailHash: string; at: string }> = [];
   const consumed: string[] = [];
   const minted: string[][] = [];
   const uploaded: string[] = [];
+  /** What the held-order claim and the fallback store were told about the buyer (#546 lookup). */
+  const buyerHashes: Array<{ via: string; emailHash: string | undefined }> = [];
   /** The on-chain event each batch was minted against — the #426 assertion. */
   const mintedAgainst: string[] = [];
   /** The contract each batch was minted on — the #563 assertion. */
@@ -278,19 +280,20 @@ function fakeDeps(o: FakeOpts = {}) {
       boom("recordHeldPayout");
       held.push(entry as unknown as Record<string, unknown>);
     },
-    markPayoutVoid: (sessionId) => {
+    flagPayoutRecheck: (sessionId) => {
       // Attempt recorded BEFORE the throw: the invariant checks that a full
-      // refund always REACHES the void, whether or not the store accepted it.
-      voided.push(sessionId);
-      boom("markPayoutVoid");
+      // refund always REACHES the flag, whether or not the store accepted it.
+      rechecked.push(sessionId);
+      boom("flagPayoutRecheck");
     },
     getOrganiserByStripeAccount: () => {
       boom("getOrganiserByStripeAccount");
       return ORGANISER;
     },
-    storeOrderBlob: async (data: string) => {
+    storeOrderBlob: async (data: string, meta: { emailHash?: string }) => {
       boom("storeOrderBlob");
       uploaded.push(data);
+      buyerHashes.push({ via: "storeOrderBlob", emailHash: meta.emailHash });
       return "aa".repeat(32);
     },
     fetchOrderKey: async (ref: string) => {
@@ -299,8 +302,9 @@ function fakeDeps(o: FakeOpts = {}) {
       return ORDER_KEY.publicKey;
     },
     orderRefInOtherSale: (ref: string) => (o.takenRefs ?? []).includes(ref),
-    claimHeldOrder: () => {
+    claimHeldOrder: (_ref: string, _sessionId: string, emailHash?: string) => {
       boom("claimHeldOrder");
+      buyerHashes.push({ via: "claimHeldOrder", emailHash });
       return o.held ?? false;
     },
     storeHeldOrder: async (ref: string) => {
@@ -342,7 +346,7 @@ function fakeDeps(o: FakeOpts = {}) {
       boom("recordSaleSlots");
     },
     recordAutoRefund: (sessionId, amount) => {
-      // Attempt recorded before the throw, like markPayoutVoid.
+      // Attempt recorded before the throw, like flagPayoutRecheck.
       autoRefunds.push({ sessionId, amount });
       boom("recordAutoRefund");
     },
@@ -407,7 +411,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, uploaded, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, voided, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue };
+  return { deps, calls, uploaded, buyerHashes, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -491,12 +495,12 @@ function assertInvariant(
     const c = f.mintedOn[i] as { chainId: number; address: string };
     assert.equal(r.contract, `${c.chainId}:${c.address.toLowerCase()}`);
   });
-  // 5. A full refund voids the payout entry; a partial leaves it held; a
-  //    refund that did not land leaves it held too (the money is still there).
+  // 5. A full refund flags the payout entry for a recheck (#781); a partial leaves it alone; a
+  //    refund that did not land leaves it alone too (the money is still there).
   if (outcome.refund.kind === "created" && outcome.issued === 0) {
-    assert.deepEqual(f.voided, [s.id], "full refund voids the payout entry");
+    assert.deepEqual(f.rechecked, [s.id], "a full refund flags the payout entry for a recheck (#781: netted, not voided)");
   } else {
-    assert.equal(f.voided.length, 0, "only a landed full refund voids the payout entry");
+    assert.equal(f.rechecked.length, 0, "only a landed full refund flags the payout entry");
   }
 }
 
@@ -691,6 +695,13 @@ describe("happy path", () => {
     assert.equal(f.calls.includes("storeOrderBlob"), false, "no fallback seal");
   });
 
+  test("#546: the buyer's email hash reaches the held-order claim and the fallback store, so a request can find the order", async () => {
+    const heldRun = await run({}, { held: true });
+    assert.deepEqual(heldRun.f.buyerHashes, [{ via: "claimHeldOrder", emailHash: "h(buyer@example.com)" }]);
+    const fallbackRun = await run({ orderRef: null }, { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }) });
+    assert.deepEqual(fallbackRun.f.buyerHashes, [{ via: "storeOrderBlob", emailHash: "h(buyer@example.com)" }]);
+  });
+
   test("#546: a held order whose store fails still mints under its ref - never a refund over it", async () => {
     const { f, outcome } = await run({}, { held: true, fail: "storeHeldOrder" });
     assert.equal(outcome.issued, 2);
@@ -763,7 +774,7 @@ describe("skips", () => {
 // ---------------------------------------------------------------------------
 
 describe("stop reasons", () => {
-  test("mint reverts: zero issued, FULL refund through the connected account, payout voided, no email", async () => {
+  test("mint reverts: zero issued, FULL refund through the connected account, payout flagged for a recheck, no email", async () => {
     const { f, outcome } = await run({}, { revertAtChunk: 0 });
     assert.equal(outcome.issued, 0);
     assert.match(outcome.stoppedReason!, /Insufficient supply/);
@@ -780,7 +791,7 @@ describe("stop reasons", () => {
     assert.equal(md.sessionId, "cs_test_1", "the retry job recognises a landed refund by this (#367)");
     assert.equal(f.refunds[0].key, "woco-autorefund-cs_test_1", "idempotent at Stripe (#367)");
     assert.equal(f.pendingRefunds.length, 0);
-    assert.deepEqual(f.voided, ["cs_test_1"]);
+    assert.deepEqual(f.rechecked, ["cs_test_1"]);
     assert.equal(f.emails.length, 0);
     assert.equal(outcome.email, "nothing-issued");
     // No ticket landed → no marketing permission left behind.
@@ -793,7 +804,7 @@ describe("stop reasons", () => {
     assert.equal(outcome.refund.kind, "created");
     assert.equal(f.refunds[0].params.amount, 2200, "one unfilled unit of three");
     assert.equal(f.refunds[0].params.refund_application_fee, true, "pro-rata fee return on a partial (#121)");
-    assert.equal(f.voided.length, 0);
+    assert.equal(f.rechecked.length, 0);
     assert.equal(f.emails[0].tickets.length, 2);
     assert.deepEqual(f.emails[0].tickets.map((t) => t.edition), [1, 2]);
   });
@@ -810,7 +821,7 @@ describe("stop reasons", () => {
     assert.equal(outcome.stoppedReason, "Series is not registered on chain — no mint path");
     assert.equal(f.calls.includes("batchClaimForOnChain"), false);
     assert.equal(outcome.refund.kind, "created");
-    assert.deepEqual(f.voided, ["cs_test_1"]);
+    assert.deepEqual(f.rechecked, ["cs_test_1"]);
   });
 
   // ── #426: the mint binds to the id validated at CHARGE time ──────────────
@@ -849,7 +860,7 @@ describe("stop reasons", () => {
     assert.equal(outcome.stoppedReason, "Ticket registration changed after payment — refunding");
     assert.equal(f.calls.includes("batchClaimForOnChain"), false, "nothing was minted");
     assert.equal(outcome.refund.kind, "created");
-    assert.deepEqual(f.voided, ["cs_test_1"]);
+    assert.deepEqual(f.rechecked, ["cs_test_1"]);
   });
 
   test("a session created before #426 shipped falls back to the server's record", async () => {
@@ -1022,14 +1033,14 @@ describe("every collaborator throws", () => {
     assert.equal(outcome.refund.kind, "created");
     assert.equal(f.refunds[0].params.amount, 2200);
     assert.equal(f.emails[0].tickets.length, 1);
-    assert.equal(f.voided.length, 0);
+    assert.equal(f.rechecked.length, 0);
   });
 
-  test("createRefund throws: recorded for retry with the exact params, payout NOT voided (#367)", async () => {
+  test("createRefund throws: recorded for retry with the exact params, payout NOT flagged (#367)", async () => {
     const { outcome, f } = await run({}, { fail: "createRefund", revertAtChunk: 0 });
     assert.equal(outcome.issued, 0);
     assert.deepEqual(outcome.refund, { kind: "failed", error: "createRefund exploded" });
-    assert.equal(f.voided.length, 0, "payout entry must NOT be voided when no refund landed");
+    assert.equal(f.rechecked.length, 0, "payout entry must NOT be flagged when no refund landed");
     assert.equal(f.emails.length, 0);
     assert.equal(f.pendingRefunds.length, 1);
     const p = f.pendingRefunds[0];
@@ -1102,8 +1113,8 @@ describe("every collaborator throws", () => {
     assert.equal(outcome.refund.kind, "failed");
   });
 
-  test("markPayoutVoid throws after a successful refund: the refund stands", async () => {
-    const { outcome } = await run({}, { fail: "markPayoutVoid", revertAtChunk: 0 });
+  test("flagPayoutRecheck throws after a successful refund: the refund stands", async () => {
+    const { outcome } = await run({}, { fail: "flagPayoutRecheck", revertAtChunk: 0 });
     assert.equal(outcome.refund.kind, "created");
   });
 
@@ -1141,11 +1152,11 @@ test("never rejects, whichever step throws", async () => {
     "saleContractFor", "recordHeldPayout",
     "getOrganiserByStripeAccount", "storeOrderBlob", "generateBurner",
     "signMessage", "batchClaimForOnChain", "bindTicket", "consumeReservation", "createRefund",
-    "markPayoutVoid", "captureCheckoutConsent", "recordAttendeeEmail", "getSiteTheme", "sendTicketEmail",
+    "flagPayoutRecheck", "captureCheckoutConsent", "recordAttendeeEmail", "getSiteTheme", "sendTicketEmail",
     "sendTicketEmailLedgered", "recordUndeliveredTicket",
   ];
   for (const step of steps) {
-    const f = fakeDeps({ fail: step, revertAtChunk: step === "createRefund" || step === "markPayoutVoid" ? 0 : undefined });
+    const f = fakeDeps({ fail: step, revertAtChunk: step === "createRefund" || step === "flagPayoutRecheck" ? 0 : undefined });
     await assert.doesNotReject(() => fulfilPaidSession(session({ wallet: BUYER_WALLET }), PAID_AT, f.deps), step);
   }
 });

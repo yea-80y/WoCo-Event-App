@@ -15,7 +15,7 @@ import {
   relayReleaseWithSignature,
   getSubEnsChainTime,
 } from "../lib/chain/sub-ens-contract.js";
-import { validateLabel } from "@woco/shared";
+import { subEnsWebUrl, validateLabel } from "@woco/shared";
 import { isProfileName, profileNameOf } from "../lib/profile/name-ledger.js";
 import { getApexContenthash } from "../lib/chain/sub-ens-apex.js";
 import { stampEventSubEns } from "../lib/event/service.js";
@@ -25,9 +25,6 @@ import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import type { AppEnv } from "../types.js";
 
-// Preview links resolve through the WoCo gateway (eth.limo .woco.eth resolution is
-// parked until the mainnet resolver cutover — see SUB_ENS_ARBITRUM_PLAN.md).
-const PREVIEW_GATEWAY = "https://gateway.woco-net.com";
 
 export const subEnsRoutes = new Hono<AppEnv>();
 
@@ -294,7 +291,8 @@ subEnsRoutes.get("/owned", requireAuth, async (c) => {
       // "url" means it already points somewhere; "free" means it points nowhere
       // yet — both are bindable, the distinction is only for display.
       role: label === profileName ? "profile" : contentHash ? "url" : "free",
-      ...(contentHash ? { contentHash, previewUrl: `${PREVIEW_GATEWAY}/bzz/${contentHash}/` } : {}),
+      // The name itself, never a gateway path: this URL is shown to people (#576).
+      ...(contentHash ? { contentHash, previewUrl: subEnsWebUrl(label) } : {}),
     }));
     return c.json({ ok: true, data: { names } });
   } catch (err) {

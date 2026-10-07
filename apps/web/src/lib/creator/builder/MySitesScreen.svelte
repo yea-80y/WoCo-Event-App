@@ -1,8 +1,11 @@
 <script lang="ts">
   import type { MySiteRecord } from './types.js';
+  import { subEnsWebUrl } from '@woco/shared';
 
   interface Props {
     sites: MySiteRecord[];
+    /** Swarm hash (lowercase) -> the WoCo name pointed at it. */
+    siteNames?: Record<string, string>;
     gatewayUrl: string;
     onopen: (record: MySiteRecord) => void;
     onnew: () => void;
@@ -11,7 +14,18 @@
     error?: string;
   }
 
-  let { sites, gatewayUrl, onopen, onnew, onloadbyid, loadingId, error }: Props = $props();
+  let { sites, siteNames = {}, gatewayUrl, onopen, onnew, onloadbyid, loadingId, error }: Props = $props();
+
+  /** The name a site is live at, if one points at its feed or its last content. A
+   *  site is never shown at a gateway path (#576): no name, no address. */
+  function siteName(rec: MySiteRecord): string | null {
+    const contentHash = (rec.deployedUrl ?? '').match(/\/bzz\/([a-f0-9]{64})\//)?.[1];
+    for (const h of [rec.feedHash, contentHash]) {
+      const label = h ? siteNames[h.toLowerCase()] : undefined;
+      if (label) return label;
+    }
+    return null;
+  }
 
   let showAdvanced = $state(false);
   let advancedId = $state('');
@@ -130,16 +144,11 @@
                 <p class="card-meta">Not yet published</p>
               {/if}
 
-              {#if rec.deployedUrl}
-                <a
-                  class="card-url"
-                  href={rec.deployedUrl}
-                  target="_blank"
-                  rel="noopener"
-                  title={rec.deployedUrl}
-                >
+              {#if siteName(rec)}
+                {@const url = subEnsWebUrl(siteName(rec)!)}
+                <a class="card-url" href={url} target="_blank" rel="noopener" title={url}>
                   <span class="card-url-icon" aria-hidden="true">↗</span>
-                  {rec.deployedUrl.replace(/^https?:\/\//, '').slice(0, 42)}{rec.deployedUrl.length > 52 ? '…' : ''}
+                  {url.replace(/^https:\/\//, '')}
                 </a>
               {/if}
             </div>

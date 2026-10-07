@@ -61,7 +61,7 @@ export interface OwnedSubEnsName {
   role?: SubEnsNameRole;
   /** 64-hex Swarm hash the name currently points at (absent if unset). */
   contentHash?: string;
-  /** Gateway URL to preview the name's current content (absent if it points nowhere). */
+  /** The name's own web address, `subEnsWebUrl(label)` (absent if it points nowhere). */
   previewUrl?: string;
 }
 

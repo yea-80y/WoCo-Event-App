@@ -42,6 +42,17 @@ export function orderFormCollectsEmail(
 }
 
 /**
+ * Must the buyer fill this field before paying? The organiser's tick, plus one
+ * rule both surfaces share (#639): the platform's email field is required
+ * whenever the buyer has no account the ticket can go to instead, because the
+ * field is then the only way the ticket can arrive. The embed never has one; the
+ * main app has one when the buyer is signed in.
+ */
+export function orderFieldRequired(field: OrderField, opts: { canUseAccount: boolean }): boolean {
+  return field.required || (field.id === ORDER_EMAIL_FIELD_ID && !opts.canUseAccount);
+}
+
+/**
  * The buyer's address: the form's email field when the form collects one, else
  * the surface's own box. Null when the chosen source holds no plausible
  * address - the two are never mixed, because only one of them is on screen.

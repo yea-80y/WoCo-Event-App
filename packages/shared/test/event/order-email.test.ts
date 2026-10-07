@@ -10,6 +10,7 @@ import {
   ORDER_EMAIL_FIELD_ID,
   orderFormShown,
   orderFormCollectsEmail,
+  orderFieldRequired,
   resolveBuyerEmail,
 } from "../../src/event/order-email.js";
 import type { OrderField } from "../../src/crypto/types.js";
@@ -63,5 +64,21 @@ test("blank or implausible values resolve to null", () => {
   for (const v of ["", "   ", "not-an-address"]) {
     assert.equal(resolveBuyerEmail({ [ORDER_EMAIL_FIELD_ID]: v }, [emailField], KEY, ""), null);
     assert.equal(resolveBuyerEmail({}, [name], KEY, v), null);
+  }
+});
+
+test("#639: the platform email field is required for anyone with no account to send the ticket to", () => {
+  const optionalEmail: OrderField = { ...emailField, required: false };
+  // A guest (the embed always; the app when signed out): the field is the only way in.
+  assert.equal(orderFieldRequired(optionalEmail, { canUseAccount: false }), true);
+  // Signed in: the ticket can go to the account, so the organiser's tick decides.
+  assert.equal(orderFieldRequired(optionalEmail, { canUseAccount: true }), false);
+  assert.equal(orderFieldRequired(emailField, { canUseAccount: true }), true);
+});
+
+test("#639: every other field follows the organiser's tick, account or not", () => {
+  for (const canUseAccount of [false, true]) {
+    assert.equal(orderFieldRequired(name, { canUseAccount }), true);
+    assert.equal(orderFieldRequired(guestEmail, { canUseAccount }), false);
   }
 });
