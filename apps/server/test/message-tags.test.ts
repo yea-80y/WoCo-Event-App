@@ -266,3 +266,13 @@ describe("the send path stamps them", () => {
     );
   });
 });
+
+test("#798: an address-free send is tagged, and the tag reads back; ordinary sends carry no such tag", async () => {
+  const t = await import("../src/lib/email/message-tags.js");
+  const free = t.buildMessageTags("transactional", { kind: "cancellation-notice" }, { addressFree: true });
+  assert.equal(free[t.TAG_NO_ADDRESS], "1");
+  assert.equal(t.readMessageTags(Object.fromEntries(Object.entries(free).map(([k, v]) => [k, [v]]))).addressFree, true);
+  const plain = t.buildMessageTags("transactional", { kind: "ticket" });
+  assert.equal(t.TAG_NO_ADDRESS in plain, false);
+  assert.equal(t.readMessageTags(Object.fromEntries(Object.entries(plain).map(([k, v]) => [k, [v]]))).addressFree, false);
+});

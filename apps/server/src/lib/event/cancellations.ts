@@ -69,6 +69,24 @@ export interface CancelRefundRow {
   /** When the row last became `done`. A card refund can still fail for weeks after. */
   doneAt?: string;
   resolvedBy?: string;
+  /** The buyer's cancellation notice (#798). Written by `setRefundNotice` only. */
+  notice?: CancelNotice;
+}
+
+/**
+ * WoCo's own email telling a buyer their event was cancelled (#798). The
+ * address is read from the sale's Stripe checkout at send time and stored
+ * nowhere - only what was sent, and when.
+ */
+export interface CancelNotice {
+  /** "Your refund is on its way" went out. */
+  issuedAt?: string;
+  /** "Your refund is being arranged" went out: the money could not be sent yet. */
+  delayedAt?: string;
+  /** Nothing can be sent: no email on the checkout, or a bounce/complaint mark. Final. */
+  unreachable?: "no-address" | "undeliverable";
+  /** Sends that failed. Retried on later passes up to a cap. */
+  failures?: number;
 }
 
 export interface EventCancellation {
@@ -82,6 +100,8 @@ export interface EventCancellation {
    * replayed create must carry the same value or Stripe rejects the key.
    */
   feeReturned: boolean;
+  /** The event's title when it was cancelled, for the buyers' notice. */
+  title?: string;
   refunds: Record<string, CancelRefundRow>;
 }
 
@@ -180,6 +200,7 @@ export function recordCancellation(input: {
   eventId: string;
   by: string;
   feeReturned: boolean;
+  title?: string;
   now?: Date;
 }): { created: boolean; cancellation: EventCancellation } | null {
   ensureLoaded();
@@ -191,6 +212,7 @@ export function recordCancellation(input: {
     cancelledAt: (input.now ?? new Date()).toISOString(),
     by: input.by,
     feeReturned: input.feeReturned,
+    ...(input.title ? { title: input.title.slice(0, 200) } : {}),
     refunds: {},
   };
   store[input.eventId] = cancellation;
@@ -238,6 +260,19 @@ export function updateRefundRow(
   if (!row) return false;
   const becameDone = patch.status === "done" && row.status !== "done";
   Object.assign(row, patch, { updatedAt: now.toISOString() }, becameDone ? { doneAt: now.toISOString() } : {});
+  return persist();
+}
+
+/**
+ * Record what the buyer's notice did. Separate from `updateRefundRow` on
+ * purpose: `updatedAt` paces the re-reads of done and disputed rows, and an
+ * email must not move the refund schedule.
+ */
+export function setRefundNotice(eventId: string, sessionId: string, notice: CancelNotice): boolean {
+  ensureLoaded();
+  const row = store[eventId]?.refunds[sessionId];
+  if (!row) return false;
+  row.notice = notice;
   return persist();
 }
 
@@ -325,6 +360,9 @@ export interface CancellationProgress {
   settled: boolean;
   /** Minor units per currency: charged, and refunded or in flight. */
   totals: Record<string, { charged: number; refunded: number }>;
+  /** Buyers WoCo has emailed about the cancellation, and those it cannot reach (#798). */
+  notified: number;
+  unreachable: number;
 }
 
 /** Counts and totals for the organiser's progress view. No buyer data. */
@@ -353,6 +391,8 @@ export function cancellationProgress(eventId: string): CancellationProgress | nu
     needsAttention: count("abandoned"),
     settled: isCancellationSettled(eventId),
     totals,
+    notified: rows.filter((r) => r.notice?.issuedAt || r.notice?.delayedAt).length,
+    unreachable: rows.filter((r) => r.notice?.unreachable).length,
   };
 }
 
