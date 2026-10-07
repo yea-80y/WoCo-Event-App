@@ -12,6 +12,8 @@
   import { AUTH_NOTICE_KEY } from "../../auth/auth-notice.js";
   import { navigate } from "../../router/router.svelte.js";
   import { canonicalUrl, hostLabel } from "../../sub-ens/host-label.js";
+  import type { InAppBrowser } from "../../browser/in-app-browser.js";
+  import { ESCAPE_FAILED_PARAM } from "../../browser/in-app-route.js";
   import { onMount } from "svelte";
 
   type Method = "passkey" | "email" | "wallet" | "coinbase";
@@ -24,7 +26,13 @@
   let { open = $bindable(false), onclose }: Props = $props();
 
   // Declare that this bundle can carry a login to a conclusion (#194).
-  onMount(() => loginRequest.register());
+  onMount(() => {
+    loginRequest.register();
+    // The Android escape's fallback: Chrome was not there, so the social app
+    // reloaded this page itself - with the sheet closed. Reopen it once, so the
+    // "Chrome didn't open" line and the next way out are in front of them (#812).
+    if (new URL(window.location.href).searchParams.get(ESCAPE_FAILED_PARAM) === "1") void loginRequest.request();
+  });
 
   // Modal is visible if either prop-driven or store-driven
   const visible = $derived(open || loginRequest.pending);
@@ -37,6 +45,23 @@
   // picker that is guaranteed to fail. Read once: the hostname cannot change
   // without a page load.
   const nameHostLabel = typeof window !== "undefined" ? hostLabel(window.location.hostname) : null;
+
+  // A social app's built-in browser can sign no one in - no passkeys, and Google
+  // refuses it (#812). Checked once, when the sheet first opens, so detection
+  // stays out of the first load; the browser cannot change without a page load.
+  let inAppBrowser = $state<InAppBrowser | null>(null);
+  let inAppChecked = false;
+  $effect(() => {
+    if (!visible || inAppChecked || typeof window === "undefined") return;
+    inAppChecked = true;
+    void import("../../browser/in-app-browser.js").then((m) => {
+      inAppBrowser = m.detectInAppBrowser(navigator.userAgent, {
+        telegramProxy: "TelegramWebviewProxy" in window,
+        publicKeyCredential: "PublicKeyCredential" in window,
+        touchMac: navigator.maxTouchPoints > 1,
+      });
+    });
+  });
 
   // Recomputed on each open rather than once: this instance outlives its
   // openings, and the hash it should carry across is the route the user is on
@@ -234,6 +259,12 @@
         <!-- Hidden rather than unmounted on the wallet screen, so a passkey
              error or the create-account offer is still there on the way back. -->
         <div class="methods" class:offstage={view !== "main"}>
+          {#if inAppBrowser}
+            {#await import("./InAppBrowserNotice.svelte") then { default: InAppBrowserNotice }}
+              <InAppBrowserNotice found={inAppBrowser} />
+            {/await}
+          {/if}
+
           <PasskeyLogin
             oncomplete={handleComplete}
             onstart={() => start("passkey")}

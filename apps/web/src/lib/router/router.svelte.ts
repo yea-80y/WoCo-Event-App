@@ -42,6 +42,7 @@
  */
 
 import { FEATURES } from "@woco/shared";
+import { restoreEscapedRoute } from "../browser/in-app-route.js";
 
 export type Surface = "neutral" | "attendee" | "creator";
 
@@ -244,6 +245,11 @@ function update() {
 }
 
 if (typeof window !== "undefined") {
+  // A page reopened from a social app's browser on Android carries its route in
+  // the query (an intent URL cannot hold a fragment) - put it back first (#812).
+  restoreEscapedRoute(window.location, (url) =>
+    window.history.replaceState(window.history.state, "", new URL(url, window.location.href).href),
+  );
   window.addEventListener("hashchange", update);
   update();
 }
