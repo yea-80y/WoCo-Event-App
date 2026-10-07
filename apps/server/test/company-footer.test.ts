@@ -24,6 +24,7 @@ const { buildRequirementNudge } = await import("../src/lib/email/requirement-nud
 const { buildReceiptHtml } = await import("../src/lib/email/shop-receipt.ts");
 const { footerHtml, footerText } = await import("../src/lib/email/marketing-footer.ts");
 const { companyFooterText } = await import("../src/lib/email/company-footer.ts");
+const { buildCancellationNotice } = await import("../src/lib/stripe/cancellation-notice.ts");
 
 test("the company line names the company, its number, where registered and its office", () => {
   assert.equal(
@@ -62,6 +63,13 @@ test("shop receipt", () => {
   assert.ok(html.includes(WOCO_COMPANY_LINE));
 });
 
+test("cancellation refund notice, both parts, with no link (a pure service message)", () => {
+  const n = buildCancellationNotice({ variant: "issued", title: "Night", status: "succeeded" as never, amount: "£10.00" });
+  assert.ok(n.html.includes(WOCO_COMPANY_LINE));
+  assert.ok(n.text.includes(WOCO_COMPANY_LINE));
+  assert.doesNotMatch(n.html, /<a\b/i, "the company line must not add a link");
+});
+
 test("marketing and service-notice footer, both parts, beside the postal address", () => {
   const ctx = { displayName: "Org", unsubUrl: "https://x/u", postalAddress: "WoCo Network Ltd, 128 City Road" };
   for (const out of [footerHtml(ctx), footerText(ctx)]) {
@@ -88,9 +96,17 @@ test("every caller of sendEmail adds the company footer", () => {
   const addsFooter = (p: string) => /companyFooterHtml\(/.test(readFileSync(p, "utf8"));
   const importedModules = (p: string) =>
     [...readFileSync(p, "utf8").matchAll(/from "(\.{1,2}\/[^"]+)\.js"/g)].map((m) => join(dirname(p), `${m[1]}.ts`));
+  // Senders handed a finished message by their caller, with the builder that adds
+  // the footer (and has its own case above). A new entry needs the same.
+  const passThrough: Record<string, string> = {
+    "/lib/stripe/cancellation-refunds-live.ts": "/lib/stripe/cancellation-notice.ts",
+  };
   for (const p of callers) {
+    const builder = passThrough[p.slice(src.length)];
     assert.ok(
-      addsFooter(p) || importedModules(p).some((m) => existsSync(m) && addsFooter(m)),
+      addsFooter(p) ||
+        importedModules(p).some((m) => existsSync(m) && addsFooter(m)) ||
+        (builder !== undefined && addsFooter(join(src, builder))),
       `${p.slice(src.length)} sends email without the company footer`,
     );
   }
