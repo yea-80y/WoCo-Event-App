@@ -93,9 +93,9 @@ export interface PasskeyKeyMaterial {
 /**
  * How a passkey answered: on this device ("platform") or from another device or a
  * security key ("cross-platform", which includes the QR-code flow). Null when the
- * browser does not say. The passkey record (#746) is written only from "platform":
- * a QR-code answer can carry the wrong PRF output, and a record written from one
- * would pin the passkey to the wrong account.
+ * browser does not say. A QR-code answer can carry the wrong PRF output, so a
+ * "cross-platform" sign-in commits only when the passkey's record (#746) confirms
+ * the account it derived (passkey-record.ts).
  */
 export type PasskeyAttachment = "platform" | "cross-platform" | null;
 
@@ -106,6 +106,9 @@ export interface PasskeyLogin extends PasskeyKeyMaterial {
   /** "added": the credential was made by "Add a passkey" (#746) - it signs in as a
    *  device of an account, never as an account of its own. */
   handleKind: "added" | null;
+  /** Sign-in only: the pin this ceremony overwrote (null = none), so a sign-in
+   *  refused after the ceremony can put it back. */
+  replacedPin?: PasskeyCredentialHandle | null;
 }
 
 function attachmentOf(credential: PublicKeyCredential): PasskeyAttachment {
@@ -162,6 +165,20 @@ export class PasskeyPrfUnsupportedError extends Error {
       "This password manager can't hold a WoCo passkey yet. Try Google Password Manager, iCloud Keychain or 1Password.",
     );
     this.name = "PasskeyPrfUnsupportedError";
+  }
+}
+
+/**
+ * A sign-in answered from another device - a phone by QR code, or a security key -
+ * either without the secret WoCo derives the account from, or with one this
+ * passkey's record does not confirm. Over QR code that secret can differ from the
+ * phone's own, and a different secret is a different, empty account; pairing gives
+ * this device its own passkey instead.
+ */
+export class PasskeyFromAnotherDeviceError extends Error {
+  constructor() {
+    super("That passkey answered from another device - add this one from your phone instead.");
+    this.name = "PasskeyFromAnotherDeviceError";
   }
 }
 
@@ -389,7 +406,12 @@ async function _authenticatePasskeyImpl(): Promise<PasskeyLogin> {
   const userHandle = (credential.response as AuthenticatorAssertionResponse).userHandle;
   if (userHandle && isBackupUserHandle(new Uint8Array(userHandle))) throw new PasskeyIsBackupError();
 
-  const prfOutput = extractPrfResult(credential.getClientExtensionResults());
+  // Here, not inside extractPrfResult, which creation and the unlock share: only a
+  // sign-in from another device is steered to pairing.
+  const attachment = attachmentOf(credential);
+  const extensions = credential.getClientExtensionResults();
+  if (attachment === "cross-platform" && !extensions.prf?.results?.first) throw new PasskeyFromAnotherDeviceError();
+  const prfOutput = extractPrfResult(extensions);
 
   // Update stored credential metadata so init() can restore kind on reload. A sign-in
   // cannot read the provider (#746: creation only), so keep the one recorded for
@@ -406,8 +428,9 @@ async function _authenticatePasskeyImpl(): Promise<PasskeyLogin> {
   return {
     ...(await deriveKey(prfOutput)),
     credentialId: meta.credentialId,
-    attachment: attachmentOf(credential),
+    attachment,
     handleKind: userHandle && isAddedUserHandle(new Uint8Array(userHandle)) ? "added" : null,
+    replacedPin: prev ?? null,
   };
 }
 
