@@ -13,7 +13,9 @@
  * node: nothing from the link is ever parsed as markup.
  */
 import { encode } from "uqr";
-import { parseTicketFragment, TICKET_IMAGE_GATEWAYS } from "@woco/shared/ticket/link";
+import { parseTicketFragment, TICKET_IMAGE_GATEWAYS, type TicketDisplay } from "@woco/shared/ticket/link";
+import { WOCO_TICKET_COLOURS } from "@woco/shared/ticket/card";
+import { downloadCanvas, drawTicketCard, loadCorsImage } from "../lib/ticket-card/draw.js";
 
 const INK = "#0c0d12";
 const PAPER = "#ffffff";
@@ -28,10 +30,6 @@ function setText(id: string, text: string | undefined): void {
   if (!el || !text) return;
   el.textContent = text;
   el.hidden = false;
-}
-
-function clip(s: string, max: number): string {
-  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
 /** The QR as SVG, built node by node. */
@@ -61,56 +59,32 @@ function qrSvg(payload: string): SVGSVGElement {
   return svg;
 }
 
-/** Draws the ticket on a canvas and hands the browser a blob: download - no request, works offline. */
-function saveImage(payload: string, title: string): void {
-  const { data } = encode(payload, { ecc: "M", border: 2 });
-  const n = data.length;
-  const scale = 10;
-  const pad = 32;
-  const qrPx = n * scale;
-  const width = qrPx + pad * 2;
-  const height = width + 112;
+/** The gateways to try for the event image: the one the link names, then the other. */
+function gatewayOrder(preferred: number): number[] {
+  return [preferred, ...TICKET_IMAGE_GATEWAYS.keys()].filter((g, i, all) => all.indexOf(g) === i);
+}
 
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-
-  ctx.fillStyle = PAPER;
-  ctx.fillRect(0, 0, width, height);
-  ctx.fillStyle = INK;
-  for (let y = 0; y < n; y++) {
-    for (let x = 0; x < n; x++) {
-      if (data[y][x]) ctx.fillRect(pad + x * scale, pad + y * scale, scale, scale);
-    }
-  }
-
-  const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
-  ctx.textAlign = "center";
-  ctx.font = `600 22px ${font}`;
-  ctx.fillText(clip(title, 34), width / 2, pad + qrPx + 44);
-  ctx.font = `500 16px ${font}`;
-  ctx.fillText("Show at the door", width / 2, pad + qrPx + 78);
-
-  canvas.toBlob((blob) => {
-    if (!blob) return;
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "ticket.png";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
-  }, "image/png");
+/** Draws the ticket (the same design as the emailed image) and hands the browser a
+ *  blob: download. The photo is included when its gateway allows a canvas to read
+ *  it; otherwise the ticket is drawn without it. */
+async function saveImage(payload: string, title: string, display: TicketDisplay): Promise<void> {
+  const urls = display.image
+    ? gatewayOrder(display.gateway ?? 0).map((g) => `${TICKET_IMAGE_GATEWAYS[g]}/bytes/${display.image}`)
+    : [];
+  const photo = urls.length ? await loadCorsImage(urls) : null;
+  const canvas = drawTicketCard(
+    { title, startIso: display.date, location: display.location, series: display.series, colours: WOCO_TICKET_COLOURS },
+    payload,
+    photo,
+  );
+  await downloadCanvas(canvas, "ticket.png");
 }
 
 /** The event image, from the gateway the link names, falling back to the other. */
 function showImage(hash: string, preferred: number): void {
   const img = byId<HTMLImageElement>("art");
   if (!img) return;
-  const order = [preferred, ...TICKET_IMAGE_GATEWAYS.keys()].filter((g, i, all) => all.indexOf(g) === i);
+  const order = gatewayOrder(preferred);
   let attempt = 0;
   img.referrerPolicy = "no-referrer";
   img.onerror = () => {
@@ -167,7 +141,15 @@ function run(): void {
   const payload = `woco://t/${ticket.eventId}/${ticket.seriesId}/${ticket.edition}/${ticket.sig}`;
   qr.replaceChildren(qrSvg(payload));
   save.hidden = false;
-  save.addEventListener("click", () => saveImage(payload, title));
+  save.addEventListener("click", async () => {
+    if (save.disabled) return;
+    save.disabled = true;
+    try {
+      await saveImage(payload, title, display);
+    } finally {
+      save.disabled = false;
+    }
+  });
 }
 
 run();
