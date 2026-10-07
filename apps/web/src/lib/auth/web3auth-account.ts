@@ -14,7 +14,12 @@ import {
   clearWeb3AuthSessionFlag,
   hasWeb3AuthSessionFlag,
 } from "./web3auth-session-flag.js";
-import { awaitWeb3AuthRehydration, endSurvivingWeb3AuthSession } from "./web3auth-survivor.js";
+import {
+  awaitWeb3AuthRehydration,
+  instanceForExplicitSignIn,
+  restoreVerdict,
+  EXPLICIT_REHYDRATION_WAIT_MS,
+} from "./web3auth-survivor.js";
 
 type MinimalProvider = { request: (args: { method: string }) => Promise<unknown> };
 
@@ -70,13 +75,26 @@ async function _extractKeyAndAddress(provider: MinimalProvider): Promise<{ addre
  * boot path, which runs before any click.
  */
 export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey: `0x${string}` }> {
-  const w = await _getInstance();
-  if (!w) throw new Error("Email login isn't configured yet (missing VITE_WEB3AUTH_CLIENT_ID).");
+  const NOT_CONFIGURED = "Email login isn't configured yet (missing VITE_WEB3AUTH_CLIENT_ID).";
+  let w = await _getInstance();
+  if (!w) throw new Error(NOT_CONFIGURED);
 
   // Throws are surfaced, not swallowed: a survivor we could not end must
   // never be adopted, and proceeding to connect() would adopt it. Shared with
   // the guardian connector (#307), which has the same hole with higher stakes.
-  await endSurvivingWeb3AuthSession(w);
+  // An instance that ended a survivor is swapped for a fresh one (#803).
+  try {
+    w = await instanceForExplicitSignIn(w, async () => {
+      _instance = null;
+      const fresh = await _getInstance();
+      if (!fresh) throw new Error(NOT_CONFIGURED);
+      return fresh;
+    });
+  } catch (e) {
+    // Whatever instance this touched is spent or unknown: the next attempt builds anew.
+    _instance = null;
+    throw e;
+  }
 
   try {
     const provider = await w.connect();
@@ -85,11 +103,11 @@ export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey
       return _extractKeyAndAddress(provider);
     }
   } catch (e) {
-    // A stored session hydrating LATE (past the rehydration wait's 5s window)
-    // can close the modal and reject with "User closed the modal". The old
-    // recovery here ADOPTED the freshly-hydrated session — the #182 bug
-    // through a race window. End it instead and ask for one retry, which
-    // will find it already hydrated and take the logout-then-modal path.
+    // Defence in depth: the modal never opens over a session still loading
+    // (that refuses above), but if one hydrates mid-modal anyway it can close
+    // the modal and reject with "User closed the modal". The old recovery here
+    // ADOPTED it — the #182 bug through a race window. End it instead and ask
+    // for one retry, which builds a fresh instance from the cleared storage.
     if (w.connected) {
       try {
         await w.logout({ cleanup: true });
@@ -141,12 +159,20 @@ export async function restoreWeb3AuthSession(): Promise<Web3AuthRestore> {
   try {
     // Give a cached session time to finish rehydrating before deciding it's gone —
     // otherwise every refresh reads connected=false and logs the user out.
-    const rehydrated = await awaitWeb3AuthRehydration(w);
+    const rehydration = await awaitWeb3AuthRehydration(w);
     console.debug(
       "[web3auth] restore:",
-      { cachedConnector: w.cachedConnector, rehydrated, connected: w.connected, hasProvider: !!w.provider },
+      { cachedConnector: w.cachedConnector, rehydration, connected: w.connected, hasProvider: !!w.provider },
     );
-    if (!w.connected || !w.provider) {
+    const verdict = restoreVerdict(rehydration, w.connected && !!w.provider);
+    if (verdict === "unavailable") {
+      // Still loading when the wait ran out: no answer yet, so NOT a logout
+      // (#803). Reading it as `expired` signed a valid session out on a slow
+      // reload and left it behind for the next sign-in to trip over. The caller
+      // keeps the WoCo session and retries the key in the background.
+      return { status: "unavailable" };
+    }
+    if (verdict === "expired" || !w.provider) {
       // Definitive: the SDK initialised and reports no session — keep the
       // sign-out flag honest so future logouts stay cheap (#182).
       clearWeb3AuthSessionFlag();
@@ -196,10 +222,10 @@ export async function logoutWeb3Auth(): Promise<void> {
   if (!w) return;
 
   try {
-    await awaitWeb3AuthRehydration(w);
-    if (w.connected) {
+    const rehydration = await awaitWeb3AuthRehydration(w, EXPLICIT_REHYDRATION_WAIT_MS);
+    if (rehydration === "connected") {
       await w.logout({ cleanup: true });
-    } else if (w.cachedConnector) {
+    } else if (rehydration === "pending") {
       // A stored session exists but would not hydrate; logout() needs a
       // connected instance, so the stored session would survive it.
       throw new Error("stored session did not rehydrate");
