@@ -48,9 +48,9 @@
   // Legacy compat for single-ticket download
   const qrSvg = $derived(qrSvgs[carouselIdx] ?? null);
 
-  const editionStr = $derived(
-    activeEdition != null ? String(activeEdition).padStart(3, "0") : "—"
-  );
+  // Buyers never see the edition: its sequence would tell them how many have
+  // sold. A group order numbers its own tickets instead ("2 of 4").
+  const positionStr = $derived(isMulti ? `${carouselIdx + 1} of ${allEditions.length}` : "");
 
   function formatEventDate(iso: string): string {
     const d = new Date(iso);
@@ -142,7 +142,7 @@
     ctx.closePath();
   }
 
-  async function renderTicketCanvas(ed: number | null, tk: ClaimedTicket | undefined, svg: string | null): Promise<HTMLCanvasElement> {
+  async function renderTicketCanvas(ed: number | null, tk: ClaimedTicket | undefined, svg: string | null, position: string | null = null): Promise<HTMLCanvasElement> {
     const SCALE = 2;
     const W = 820;
     const H = 390;
@@ -151,7 +151,7 @@
     canvas.height = H * SCALE;
     const ctx = canvas.getContext("2d")!;
     ctx.scale(SCALE, SCALE);
-    const edStr = ed != null ? String(ed).padStart(3, "0") : null;
+    const edStr = position;
 
     // ── Background ──
     const bg = ctx.createLinearGradient(0, 0, W, H);
@@ -203,7 +203,7 @@
     if (edStr) {
       ctx.fillStyle = "rgba(245,200,100,0.9)";
       ctx.font = `700 16px 'Courier New', monospace`;
-      ctx.fillText(`#${edStr}`, TX + 56, 58);
+      ctx.fillText(edStr.toUpperCase(), TX + 56, 58);
     }
 
     ctx.strokeStyle = "rgba(255,255,255,0.06)";
@@ -235,9 +235,6 @@
     ctx.fillStyle = "rgba(245,240,234,0.2)";
     ctx.font = `600 8.5px 'Courier New', monospace`;
     ctx.fillText(series.name.toUpperCase().slice(0, 22), TX, ty);
-    ty += 15;
-    ctx.fillStyle = "rgba(245,240,234,0.1)";
-    ctx.fillText(`OF ${series.totalSupply} TOTAL`, TX, ty);
 
     // ── Perforated divider ──
     const PERF_X = W - 208;
@@ -271,13 +268,6 @@
         roundRect(ctx, QX - 4, QY - 4, QR + 8, QR + 8, 6);
         ctx.fill();
         ctx.drawImage(qrImg, QX, QY, QR, QR);
-        if (edStr) {
-          ctx.fillStyle = "rgba(245,200,100,0.55)";
-          ctx.font = `600 10px 'Courier New', monospace`;
-          ctx.textAlign = "center";
-          ctx.fillText(`#${edStr} of ${series.totalSupply}`, QX + QR / 2, QY + QR + 18);
-          ctx.textAlign = "left";
-        }
       }
     }
 
@@ -308,8 +298,8 @@
     if (downloading) return;
     downloading = true;
     try {
-      const canvas = await renderTicketCanvas(activeEdition, activeTicket, qrSvg);
-      triggerDownload(canvas, `woco-ticket-${activeEdition ?? "x"}.png`);
+      const canvas = await renderTicketCanvas(activeEdition, activeTicket, qrSvg, positionStr || null);
+      triggerDownload(canvas, isMulti ? `woco-ticket-${carouselIdx + 1}-of-${allEditions.length}.png` : "woco-ticket.png");
     } catch (e) {
       console.error("[TicketSuccess] download failed:", e);
     } finally {
@@ -323,8 +313,8 @@
     try {
       for (let i = 0; i < allEditions.length; i++) {
         const item = allEditions[i];
-        const canvas = await renderTicketCanvas(item.edition, item.ticket, qrSvgs[i] ?? null);
-        triggerDownload(canvas, `woco-ticket-${item.edition}.png`);
+        const canvas = await renderTicketCanvas(item.edition, item.ticket, qrSvgs[i] ?? null, `${i + 1} of ${allEditions.length}`);
+        triggerDownload(canvas, `woco-ticket-${i + 1}-of-${allEditions.length}.png`);
         // Small delay between downloads so browser doesn't block them
         if (i < allEditions.length - 1) await new Promise((r) => setTimeout(r, 300));
       }
@@ -373,9 +363,6 @@
           {:else}
             Ticket secured
           {/if}
-          {#if !isMulti && activeEdition != null}
-            <span class="ts-head-edition">#{editionStr}</span>
-          {/if}
         </span>
         <span class="ts-head-sub">
           {#if isMulti}Showing {carouselIdx + 1} of {allEditions.length} · each has its own QR
@@ -423,8 +410,8 @@
         <div class="ticket-content">
           <div class="ticket-eyebrow">
             <span class="ticket-type-label">TICKET</span>
-            {#if activeEdition != null}
-              <span class="ticket-edition-badge">#{editionStr}</span>
+            {#if positionStr}
+              <span class="ticket-edition-badge">{positionStr}</span>
             {/if}
           </div>
 
@@ -451,7 +438,6 @@
 
           <div class="ticket-series-info">
             <span class="ticket-series-name">{series.name}</span>
-            <span class="ticket-series-count">of {series.totalSupply}</span>
           </div>
         </div>
       </div>
@@ -475,8 +461,8 @@
           {/if}
         </div>
         <div class="stub-footer">
-          {#if activeEdition != null}
-            <span class="stub-num">#{editionStr}</span>
+          {#if positionStr}
+            <span class="stub-num">{positionStr}</span>
           {/if}
           <span class="stub-hint">Scan · Verify</span>
         </div>
@@ -710,17 +696,6 @@
     color: var(--text, #fff);
   }
 
-  .ts-head-edition {
-    font-size: 0.6875rem;
-    font-weight: 700;
-    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
-    color: var(--accent-text, #f59e0b);
-    background: color-mix(in srgb, var(--accent, #f59e0b) 13%, transparent);
-    border: 1px solid color-mix(in srgb, var(--accent, #f59e0b) 24%, transparent);
-    padding: 0.1rem 0.4375rem;
-    border-radius: 4px;
-    letter-spacing: 0.01em;
-  }
 
   .ts-head-sub {
     font-size: 0.75rem;
@@ -872,11 +847,6 @@
     font-family: ui-monospace, 'SF Mono', monospace;
   }
 
-  .ticket-series-count {
-    font-size: 0.5625rem;
-    color: rgba(255, 255, 255, 0.12);
-    font-family: ui-monospace, 'SF Mono', monospace;
-  }
 
   /* ── Perforated divider ── */
   .ticket-perf {
