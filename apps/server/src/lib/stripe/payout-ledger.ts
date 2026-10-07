@@ -336,6 +336,14 @@ export function listAccountGroups(): Array<{ stripeAccountId: string; currency: 
   return [...seen.values()];
 }
 
+/** The payment intent of every entry, any status: a sale the ledger knows of (#805). */
+export function ledgeredPaymentIntents(): Set<string> {
+  ensureLoaded();
+  const out = new Set<string>();
+  for (const e of Object.values(store)) if (e.paymentIntentId) out.add(e.paymentIntentId);
+  return out;
+}
+
 /** Test seam — resets in-memory state so a fresh file is read. */
 export function __resetForTests(): void {
   store = {};

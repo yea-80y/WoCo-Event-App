@@ -146,6 +146,17 @@ Tickets follow the money, so the door never admits a ticket whose payment went b
   An open dispute's posted withdrawal is netted at once; a positive sale is never paid while a
   dispute or refund on it is unsettled. Alarms: `surplusOverdue` (a surplus unpaid for 30 days).
   Failed payouts are #784.
+- **A missed sale is not surplus (#805).** A WoCo sale whose webhook never landed (an outage past
+  Stripe's retries, a wrong signing secret, a crash between consuming the session and recording it)
+  has money in the balance and no ledger row, so it reads as surplus - and its buyer has no ticket.
+  Each sweep first lists the PLATFORM's application fees (one call for every account; an
+  organiser's own payment carries no fee of ours) and opens any charge, older than an hour and not
+  refunded in full, whose payment intent has no ledger row. While one is open on an account, its
+  surplus is held; due sales still pay. A scan that fails holds every surplus that sweep. It
+  closes itself once the sale is ledgered or refunded in full; `GET /api/ops/payouts/unledgered`
+  lists them, `POST .../unledgered/:chargeId/resolve { by, reason }` clears one the buyer was made
+  whole on another way. Alarms: `payoutSweep.unledgeredSales`, `unledgeredScanStale`. State:
+  `.data/stripe-unledgered-charges.json` (losing it = one full rescan; resolutions re-open).
 
 The balance transaction is also where the **settlement currency** comes from: a charge
 presented in a currency the account has no bank account for is converted to the

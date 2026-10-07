@@ -26,7 +26,10 @@
  * The measure uses each held sale's LAST READ net. A stale-high one nets too
  * much now and pays it back as surplus once read; a stale-low one (a reversal
  * whose webhook flag was lost) can pay a surplus a not-due sale really holds,
- * which the week's wait and that sale's own read put right.
+ * which the week's wait and that sale's own read put right. A WoCo sale with no
+ * ledger row at all (its webhook never landed) would also read as surplus, so
+ * while one is open on an account no surplus is paid there (#805,
+ * unledgered-sales.ts).
  *
  * Ordering invariant that keeps this safe under crashes: we choose the set of
  * entries FIRST, journal a payout INTENT (set + amount + idempotency key), pay
@@ -56,6 +59,12 @@ import {
   type ReconRow,
 } from "./payout-ledger.js";
 import { listSurplusClocks, observeSurplus, reduceSurplus } from "./payout-surplus.js";
+import {
+  liveAccountedFor,
+  liveUnledgeredReads,
+  scanUnledgeredSales,
+  unledgeredSalesHealth,
+} from "./unledgered-sales.js";
 import { OPEN_DISPUTE_STATUSES } from "./dispute-status.js";
 import { cancellationGate, getCancellation, isSaleRefundSettled } from "../event/cancellations.js";
 import {
@@ -145,6 +154,13 @@ export interface PayoutGateway {
    * the set was chosen makes its sum stale. Falls back to `eventCancelled`.
    */
   cancelledAfter?(eventId: string, sinceIso: string): boolean;
+  /**
+   * How many unledgered WoCo sales each connected account has (#805), or `null`
+   * when that could not be read. Once per sweep. An account with one, or every
+   * account on `null`, has its surplus held. Optional so a gateway that knows
+   * nothing of them holds nothing.
+   */
+  unledgeredSales?(now: Date): Promise<Map<string, number> | null>;
 }
 
 export type ResolvedNet = { net: number; currency: string; unsettled?: "dispute" | "refund" };
@@ -372,6 +388,10 @@ export const liveGateway: PayoutGateway = {
     if (gate === "open") return false;
     if (gate === "unknown") return true;
     return (getCancellation(eventId)?.cancelledAt ?? "") > sinceIso;
+  },
+
+  unledgeredSales(now) {
+    return scanUnledgeredSales(liveUnledgeredReads, liveAccountedFor(), now);
   },
 
   async accountCountry(stripeAccountId) {
@@ -689,6 +709,8 @@ export async function releaseForAccount(
   entries: PayoutLedgerEntry[],
   gateway: PayoutGateway = liveGateway,
   now: Date = new Date(),
+  /** Why no surplus may be paid this sweep (#805); set by the sweep from `unledgeredSales`. */
+  surplusHold?: string,
 ): Promise<ReleaseOutcome> {
   const outcome: ReleaseOutcome = {
     stripeAccountId,
@@ -805,10 +827,18 @@ export async function releaseForAccount(
 
   // A surplus is the organiser's, paid once it has lasted SURPLUS_SETTLE_DAYS.
   const clock = observeSurplus(stripeAccountId, currency, rho, now);
-  const surplusDue =
+  let surplusDue =
     clock && nowMs - new Date(clock.since).getTime() >= SURPLUS_SETTLE_DAYS * 86_400_000
       ? Math.min(clock.min, rho)
       : 0;
+  // A WoCo sale with no ledger row reads as surplus, and paying it would hand
+  // over a buyer's money before the event, with no cancellation hold (#805).
+  // The clock keeps running; sales that are due still pay.
+  if (surplusDue > 0 && surplusHold) {
+    outcome.error = `surplus held: ${surplusHold}`;
+    console.warn(`[payout-release] ${stripeAccountId} ${currency}: surplus of ${surplusDue} held - ${surplusHold}`);
+    surplusDue = 0;
+  }
 
   const owed = sumNets(debts) + Math.min(0, rho);
   if (owed < 0 && owed + sumNets(positives) + surplusDue < 0) {
@@ -962,6 +992,21 @@ export async function runReleaseSweep(
   gateway: PayoutGateway = liveGateway,
   now: Date = new Date(),
 ): Promise<ReleaseOutcome[]> {
+  // Before anything else, so a platform whose every sale was missed (nothing in
+  // the ledger, so no groups below) still finds them and pages (#805).
+  let unledgered: Map<string, number> | null = new Map();
+  try {
+    if (gateway.unledgeredSales) unledgered = await gateway.unledgeredSales(now);
+  } catch (err) {
+    console.error("[payout-release] Unledgered-sales scan threw:", err);
+    unledgered = null;
+  }
+  const surplusHoldFor = (stripeAccountId: string): string | undefined => {
+    if (unledgered === null) return "unledgered-sales scan failed";
+    const n = unledgered.get(stripeAccountId) ?? 0;
+    return n > 0 ? `${n} WoCo sale(s) with no ledger row` : undefined;
+  };
+
   const held = listHeld();
 
   const groups = new Map<string, PayoutLedgerEntry[]>();
@@ -1004,7 +1049,9 @@ export async function runReleaseSweep(
   for (const [key, entries] of groups) {
     const [stripeAccountId, currency] = key.split("|") as [string, string];
     try {
-      outcomes.push(await releaseForAccount(stripeAccountId, currency, entries, gateway, now));
+      outcomes.push(
+        await releaseForAccount(stripeAccountId, currency, entries, gateway, now, surplusHoldFor(stripeAccountId)),
+      );
     } catch (err) {
       console.error(`[payout-release] Sweep failed for ${key}:`, err);
     }
@@ -1112,6 +1159,14 @@ export function payoutSweepHealth(): {
    * SURPLUS_SETTLE_DAYS.
    */
   surplusOverdue: number;
+  /**
+   * Charges carrying our fee with no ledger row (#805): a buyer who may have no
+   * ticket, and an account whose surplus is held until each is ledgered,
+   * refunded or resolved (`/api/ops/payouts/unledgered`).
+   */
+  unledgeredSales: number;
+  /** No unledgered-sales scan has completed for 2.5 sweeps: every surplus is held, and a missed sale would go unseen. */
+  unledgeredScanStale: boolean;
 } {
   const running = timer !== null;
   // Two-and-a-half missed hourly runs. Measured from boot until the first run
@@ -1122,10 +1177,20 @@ export function payoutSweepHealth(): {
   const heals = pendingScheduleHeals().length;
   const overdueCutoff = Date.now() - SURPLUS_ALARM_DAYS * 86_400_000;
   const surplusOverdue = listSurplusClocks().filter((c) => new Date(c.since).getTime() <= overdueCutoff).length;
+  const scan = unledgeredSalesHealth();
+  const unledgeredScanStale =
+    running && Date.now() - new Date(scan.lastScanAt ?? health.startedAt).getTime() > RELEASE_INTERVAL_MS * 2.5;
   return {
     // `accountsOwing` is left out: only the organiser selling again clears it,
     // so it would hold the whole section red for months with nothing to do.
-    ok: !stale && breached.count === 0 && heals === 0 && groupAlarms.balanceShort === 0 && surplusOverdue === 0,
+    ok:
+      !stale &&
+      breached.count === 0 &&
+      heals === 0 &&
+      groupAlarms.balanceShort === 0 &&
+      surplusOverdue === 0 &&
+      scan.open === 0 &&
+      !unledgeredScanStale,
     running,
     lastRunAt: health.lastRunAt,
     runs: health.runs,
@@ -1138,6 +1203,8 @@ export function payoutSweepHealth(): {
     oldestBalanceShortSince: groupAlarms.oldestShortSince,
     accountsOwing: groupAlarms.accountsOwing,
     surplusOverdue,
+    unledgeredSales: scan.open,
+    unledgeredScanStale,
   };
 }
 
