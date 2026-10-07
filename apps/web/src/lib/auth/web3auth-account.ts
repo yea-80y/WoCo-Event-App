@@ -58,6 +58,10 @@ let _instance: Web3AuthInstance | null = null;
 let _building: Promise<Web3AuthInstance | null> | null = null;
 /** Bumped by every reset, so a build that started before one never installs itself after it. */
 let _generation = 0;
+/** Instances a sign-out has logged out. Marked BEFORE the logout, because the
+ *  sign-out resets the singleton only once it finishes - a sign-in arriving in
+ *  between would otherwise read the spent instance as fresh (#803). */
+const _loggedOut = new WeakSet<Web3AuthInstance>();
 
 /**
  * The page's one instance, built once. Single-flight: a background restore
@@ -140,6 +144,13 @@ export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey
     const said = e instanceof Error ? e.message : "";
     const shown = [SURVIVOR_STILL_LOADING_MESSAGE, SURVIVOR_INTERFERED_MESSAGE, NOT_CONFIGURED].includes(said);
     throw new Web3AuthSignInError(shown ? said : PREVIOUS_SESSION_NOT_CLEARED_MESSAGE);
+  }
+
+  // A sign-out running alongside may have just logged this very instance out:
+  // never connect on it (#803).
+  if (_loggedOut.has(w) || w !== _instance) {
+    _resetInstance();
+    throw new Web3AuthSignInError(SURVIVOR_INTERFERED_MESSAGE);
   }
 
   let provider: MinimalProvider | null;
@@ -292,6 +303,7 @@ export async function logoutWeb3Auth(): Promise<void> {
   try {
     const rehydration = await awaitWeb3AuthRehydration(w, EXPLICIT_REHYDRATION_WAIT_MS);
     if (rehydration === "connected") {
+      _loggedOut.add(w);
       await w.logout({ cleanup: true });
     } else if (rehydration === "pending") {
       // A stored session exists but would not hydrate; logout() needs a

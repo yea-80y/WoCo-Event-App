@@ -10,6 +10,10 @@ export const WEB3AUTH_SIGNIN_ERROR_NAME = "Web3AuthSignInError";
 export const WEB3AUTH_KEY_GONE_MESSAGE =
   "Your Google or email sign-in has ended on this device - sign out, then sign in again with the same account.";
 
+/** The key is not in memory YET: the reload's background retry is still bringing it back. */
+export const WEB3AUTH_KEY_LOADING_MESSAGE =
+  "Your Google or email sign-in is still loading - please try again in a moment.";
+
 export class Web3AuthSignInError extends Error {
   /** They closed the modal or the popup: nothing went wrong, so say nothing. */
   readonly cancelled: boolean;

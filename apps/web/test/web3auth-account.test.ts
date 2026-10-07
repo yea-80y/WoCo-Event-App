@@ -98,6 +98,7 @@ class FakeSdk extends EventEmitter {
     this.cachedConnector = null;
     this.world.stored = null;
     if (o?.cleanup) this.spent = true;
+    if (this.world.logoutGate) await this.world.logoutGate;
   }
 }
 
@@ -108,6 +109,8 @@ class World {
   loginKey = KEY_B;
   failInit = false;
   connectFails: "popup-closed" | "modal-closed" | "survivor-mid-modal" | "other" | null = null;
+  /** Holds a logout open AFTER its state change, like a slow network round trip. */
+  logoutGate: Promise<void> | null = null;
 
   install(): void {
     setWeb3AuthFactoryForTests(async () => {
@@ -327,4 +330,39 @@ test("sign-out gives a slow session longer than a reload does, then ends it", as
   await out;
   assert.deepEqual(world.built[0].logouts, [{ cleanup: true }]);
   assert.equal(world.stored, null);
+});
+
+test("a sign-in that arrives while a sign-out is still finishing never connects on the logged-out instance", async () => {
+  memory.set("woco:web3auth-session-established", "1");
+  world.stored = { key: KEY_A, loads: "at-init" };
+  let release!: () => void;
+  world.logoutGate = new Promise<void>((r) => (release = r));
+  const out = logoutWeb3Auth();
+  await settle(); // the instance is logged out; the sign-out has not reset the singleton yet
+  await assert.rejects(loginWithWeb3Auth(), { name: "Web3AuthSignInError", message: SURVIVOR_INTERFERED_MESSAGE });
+  assert.equal(world.built[0].connectCalls, 0, "the spent instance is never asked to sign in");
+  release();
+  world.logoutGate = null;
+  await out;
+  const r = await loginWithWeb3Auth();
+  assert.equal(r.address, addressOf(KEY_B));
+  assert.equal(world.built.at(-1)!.connectCalls, 1);
+});
+
+test("a reload that was slow and then fails reads unavailable first, expired after, and clears the flag", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  memory.set("woco:web3auth-session-established", "1");
+  world.stored = { key: KEY_A, loads: "later" };
+  const first = restoreWeb3AuthSession();
+  await settle();
+  t.mock.timers.tick(5_000);
+  assert.deepEqual(await first, { status: "unavailable" });
+  assert.equal(memory.get("woco:web3auth-session-established"), "1", "not a verdict yet");
+  const sdk = world.built[0];
+  const retry = restoreWeb3AuthSession();
+  await settle();
+  sdk.cachedConnector = null; // the SDK clears its cache, then reports the failure
+  sdk.emit("rehydration_error");
+  assert.deepEqual(await retry, { status: "expired" });
+  assert.equal(memory.has("woco:web3auth-session-established"), false);
 });
