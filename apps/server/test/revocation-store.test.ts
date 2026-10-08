@@ -34,6 +34,7 @@ function fresh(contents: string | null): void {
 for (const [label, contents] of [
   ["not JSON", "{ truncated"],
   ["JSON of the wrong shape", JSON.stringify({ version: 1, nonces: [] })],
+  ["a file with a malformed entry", JSON.stringify({ version: 1, nonces: ["abc"], revokeAllBefore: {} })],
 ] as const) {
   test(`a ${label} file is never overwritten, and nothing can be revoked until it is restored`, () => {
     fresh(contents);

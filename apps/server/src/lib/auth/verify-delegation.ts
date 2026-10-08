@@ -51,7 +51,7 @@ export interface DelegationVerifyDeps {
   ) => DeviceGrantState | undefined | Promise<DeviceGrantState | undefined>;
 }
 
-export const SESSION_LIFETIME_SLACK_MS = 60_000;
+const SESSION_LIFETIME_SLACK_MS = 60_000;
 
 const DEFAULT_DEPS: DelegationVerifyDeps = {
   isKernelKnownDeployedOnAnyChain,

@@ -127,7 +127,12 @@ function loadFile(): void {
 
     if ("version" in parsed && parsed.version === 1) {
       // A wrong shape must refuse here, not throw on every request later.
-      if (!Array.isArray(parsed.nonces) || !parsed.revokeAllBefore || typeof parsed.revokeAllBefore !== "object") {
+      if (
+        !Array.isArray(parsed.nonces) ||
+        parsed.nonces.some((n) => typeof n?.nonce !== "string" || typeof n?.expiresAt !== "string") ||
+        !parsed.revokeAllBefore ||
+        typeof parsed.revokeAllBefore !== "object"
+      ) {
         throw new Error("unexpected shape");
       }
       state = parsed;
