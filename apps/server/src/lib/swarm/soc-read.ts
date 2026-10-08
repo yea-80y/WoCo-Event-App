@@ -344,8 +344,11 @@ export async function readVerifiedSoc(
   ownerHex: string,
   identifierHex: string,
   /** Which sources to ask: explicit `sources` (tests), else the caller's `family`
-   *  (server scans), else the request's `gatewayUrl` (the client fallback). */
-  opts: { gatewayUrl?: string; family?: FeedFamily; sources?: SocSource[] } = {},
+   *  (server scans), else the request's `gatewayUrl` (the client fallback).
+   *  `heal: false` skips the whitelist/offer bookkeeping on a hit: the feed
+   *  layer's own index checks would otherwise add every platform feed update
+   *  to the gateway whitelist, one file rewrite each. */
+  opts: { gatewayUrl?: string; family?: FeedFamily; sources?: SocSource[]; heal?: boolean } = {},
 ): Promise<VerifiedSocRead> {
   let owner: string, identifier: string;
   try {
@@ -380,7 +383,7 @@ export async function readVerifiedSoc(
   const agg = aggregateSocReads(answers);
   if (agg.status !== "found") return agg;
   const parts = splitStoredSoc(agg.raw)!;
-  healOnFound(agg.from, address);
+  if (opts.heal !== false) healOnFound(agg.from, address);
   return {
     status: "found",
     soc: {

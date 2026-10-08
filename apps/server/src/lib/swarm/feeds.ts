@@ -5,6 +5,8 @@ import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.j
 import type { BatchSelection } from "../etherna/batch-router.js";
 import { writeEthernaFeedPage } from "../etherna/upload.js";
 import { decideFeedWriteRetry } from "./feed-write-retry.js";
+import { feedSources, firstFreeIndex, readFeedUpdate, type FeedDest } from "./feed-index.js";
+import { ethernaSource, wocoBeeSource } from "./soc-read.js";
 
 // ---------------------------------------------------------------------------
 // Binary packing (128 slots x 32 bytes = 4096 bytes)
@@ -90,38 +92,69 @@ function toBytes(res: unknown): Uint8Array | null {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Feed index cache — eliminates findNextIndex round-trip on every write
+// Feed index cache — eliminates the lookup round-trip on most writes
 // ---------------------------------------------------------------------------
 //
-// Every `writeFeedPage` call without a hint forces bee-js to call
-// `findNextIndex`, which does `GET /feeds/{owner}/{topic}` against Bee. That
-// lookup is the dominant cost of a write (1.5–4.5s observed in production
-// logs — same path that surfaces "lookup at failed" warnings in bee-node).
+// A feed lookup (`GET /feeds/{owner}/{topic}`) is the dominant cost of a write
+// (1.5–4.5s observed in production logs), so we cache each topic's next write
+// index and pass it explicitly to the upload.
 //
-// All feeds are written by the single platform signer, so we control all
-// index increments. We cache the next-write index per topic and pass it
-// explicitly to `uploadPayload({ index })`, skipping the lookup entirely.
+// The cache must never move BACKWARDS on a read (#186). A lookup is a lower
+// bound (`feed-index.ts`): our bee sees a new update late - seconds to minutes
+// for an Etherna write - and in that window reports the previous one. A read
+// that lowered the cache made the next write land on a taken index, which keeps
+// the old bytes and answers 201: the edit was lost with success reported. Taking
+// the higher of the two would be wrong the other way: if our last write really
+// was lost, every later one would land past a hole the lookup never walks over.
+// So a lower read only DISPUTES the entry, and the next write checks at the
+// destination whether our last write is there before trusting it.
 //
-// Cache is primed for free by `readFeedPage` (every read returns the current
-// index in headers). Per-topic mutex serialises concurrent writes so the
-// cached value never races with itself. Server restart loses the cache; the
-// next read or first write rebuilds it. If multiple writers ever sign the
-// same feed (Swarm ID), this cache must be revisited per-signer.
-const feedNextIndex = new Map<string, bigint>();
+// Per-topic mutex serialises writes. Server restart loses the cache; the first
+// write per topic resolves its index from the destination. Another process
+// writing the same feeds with the same key (a dev server on the production bee)
+// is caught by the read-back after each write, not by this cache.
+interface FeedIndexEntry {
+  next: bigint;
+  /** The destination a write or a resolution there confirmed `next` at; null =
+   *  only a read of our bee said so, which may be behind. */
+  confirmedAt: FeedDest | null;
+  /** A read reported a lower next index. Checked before the next write. */
+  disputed: boolean;
+}
+const feedNextIndex = new Map<string, FeedIndexEntry>();
 const feedTopicLock = new Map<string, Promise<unknown>>();
+
+/**
+ * Read-your-writes (#186). A read-modify-write that builds on bee's lagging copy
+ * erases the edit made just before it, even when the write lands at the right
+ * index. So for a while after writing, a read that bee answers with an older
+ * update - or not at all - gets the page this server wrote. Generalises the
+ * site events index's own copy (#824, `lib/site/events-index.ts`), same window.
+ */
+export const READ_YOUR_WRITES_MS = 120_000;
+const writtenPages = new Map<string, { index: bigint; page: Uint8Array; at: number }>();
+let now = () => Date.now();
 
 let feedWriteBaseBackoffMs = 500;
 
-/** Tests only — collapse the retry backoff, and read/clear the index cache. */
+/** Tests only — collapse the retry backoff, pin the clock, and read/clear the caches. */
 export const __feedWriteTestHooks = {
   setBaseBackoffMs(ms: number): void {
     feedWriteBaseBackoffMs = ms;
   },
+  setClock(fn: (() => number) | null): void {
+    now = fn ?? (() => Date.now());
+  },
   cachedNextIndex(topic: Topic): bigint | undefined {
-    return feedNextIndex.get(topicKey(topic));
+    return feedNextIndex.get(topicKey(topic))?.next;
+  },
+  cachedEntry(topic: Topic): Readonly<FeedIndexEntry> | undefined {
+    const e = feedNextIndex.get(topicKey(topic));
+    return e ? { ...e } : undefined;
   },
   clearCache(): void {
     feedNextIndex.clear();
+    writtenPages.clear();
   },
 };
 
@@ -129,21 +162,104 @@ function topicKey(topic: Topic): string {
   return topic.toHex();
 }
 
-function rememberNextIndex(topic: Topic, next: FeedIndex | bigint | undefined): void {
-  if (next === undefined) return;
-  const value = typeof next === "bigint" ? next : next.toBigInt();
-  feedNextIndex.set(topicKey(topic), value);
+function platformOwnerHex(): string {
+  return getPlatformOwner().toHex().replace(/^0x/, "").toLowerCase();
+}
+
+/** A read saw `next` as the next index: fill or raise, never lower (see above). */
+function noteReadIndex(key: string, next: bigint): void {
+  const e = feedNextIndex.get(key);
+  if (!e || next > e.next) feedNextIndex.set(key, { next, confirmedAt: null, disputed: false });
+  else if (next < e.next) e.disputed = true;
+}
+
+/** The page this server wrote within the window, or null. */
+function freshWrittenPage(key: string): { index: bigint; page: Uint8Array } | null {
+  const w = writtenPages.get(key);
+  if (!w) return null;
+  if (now() - w.at >= READ_YOUR_WRITES_MS) {
+    writtenPages.delete(key);
+    return null;
+  }
+  return w;
+}
+
+function rememberWrittenPage(key: string, index: bigint, page: Uint8Array): void {
+  if (writtenPages.size >= 512) {
+    for (const [k, w] of writtenPages) if (now() - w.at >= READ_YOUR_WRITES_MS) writtenPages.delete(k);
+  }
+  writtenPages.set(key, { index, page: page.slice(), at: now() });
+}
+
+type FeedLookup =
+  /** `index`/`next` are absent only when bee sent no index headers (bee-js always
+   *  sets them; a test double may not). Unknown is never noted, never preferred. */
+  | { status: "ok"; data: Uint8Array; index?: bigint; next?: bigint }
+  | { status: "absent" }
+  | { status: "error"; error: Error };
+
+function errorStatus(err: unknown): number | undefined {
+  const e = err as { status?: number; response?: { status?: number } } | undefined;
+  return e?.status ?? e?.response?.status;
+}
+
+/** Bee's JSON error message from a bee-js response error, or "". */
+function beeErrorMessage(err: unknown): string {
+  const body = (err as { responseBody?: unknown } | undefined)?.responseBody;
+  let text = "";
+  if (typeof body === "string") text = body;
+  else if (body instanceof ArrayBuffer) text = new TextDecoder().decode(body);
+  else if (body instanceof Uint8Array) text = new TextDecoder().decode(body);
+  else if (body && typeof body === "object") return String((body as { message?: unknown }).message ?? "");
+  try {
+    const m = (JSON.parse(text) as { message?: unknown }).message;
+    return typeof m === "string" ? m : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * `GET /feeds` on our bee, three answers. Bee answers 404 both for a feed with no
+ * update ("no update found") and for a walk that FAILED ("lookup at failed",
+ * `pkg/api/feed.go`). Only the first is absent: reading the second as absent let
+ * a bee hiccup bootstrap an empty index over a live one. Any other 404 is checked
+ * against index 0 directly, so a reworded message costs a read, never a wipe.
+ */
+async function lookupFeed(topic: Topic, ownerHex: string): Promise<FeedLookup> {
+  try {
+    const reader = getBee().makeFeedReader(topic, ownerHex);
+    const result = await withTimeout(reader.downloadPayload(), BEE_CALL_TIMEOUT_MS, `feed read ${topic.toHex().slice(0, 16)}`);
+    const r = result as { feedIndex?: FeedIndex; feedIndexNext?: FeedIndex };
+    const bytes = toBytes(result);
+    if (!bytes) return { status: "error", error: new Error("Feed payload empty or unparseable") };
+    return { status: "ok", data: bytes, index: r.feedIndex?.toBigInt(), next: r.feedIndexNext?.toBigInt() };
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    if (errorStatus(err) !== 404) return { status: "error", error };
+    if (beeErrorMessage(err) === "no update found") return { status: "absent" };
+    const first = await readFeedUpdate(ownerHex, topic, 0n, feedSources("woco"));
+    return first.status === "absent" ? { status: "absent" } : { status: "error", error };
+  }
+}
+
+/** A read of our bee: note the index it saw, and prefer what we just wrote. */
+async function readFeedForCaller(topic: Topic): Promise<FeedLookup> {
+  const key = topicKey(topic);
+  const res = await lookupFeed(topic, platformOwnerHex());
+  if (res.status === "ok" && res.next !== undefined) noteReadIndex(key, res.next);
+  else if (res.status === "absent") noteReadIndex(key, 0n);
+  const mine = freshWrittenPage(key);
+  if (mine && (res.status !== "ok" || (res.index !== undefined && res.index < mine.index))) {
+    return { status: "ok", data: mine.page.slice(), index: mine.index, next: mine.index + 1n };
+  }
+  return res;
 }
 
 export async function readFeedPage(topic: Topic): Promise<Uint8Array | null> {
   try {
-    const reader = getBee().makeFeedReader(topic, getPlatformOwner());
-    const result = await reader.downloadPayload();
-    // Prime the write-index cache from the read response so subsequent writes
-    // skip findNextIndex.
-    const next = (result as { feedIndexNext?: FeedIndex })?.feedIndexNext;
-    if (next) rememberNextIndex(topic, next);
-    return toBytes(result);
+    const res = await readFeedForCaller(topic);
+    return res.status === "ok" ? res.data : null;
   } catch {
     return null;
   }
@@ -152,11 +268,11 @@ export async function readFeedPage(topic: Topic): Promise<Uint8Array | null> {
 /**
  * Discriminated result for write-path reads.
  *  - "ok":     payload returned, safe to use as the prior state of the feed.
- *  - "absent": feed has never been written (Bee 404). Safe to bootstrap.
- *  - "error":  anything else (transient network, 5xx, parse failure). The
- *              caller MUST NOT proceed to a write that would overwrite the
- *              feed's prior contents — doing so would clobber every entry
- *              the read failed to retrieve. Throw, retry later, abort.
+ *  - "absent": feed has never been written (bee "no update found"). Safe to bootstrap.
+ *  - "error":  anything else (transient network, 5xx, a failed lookup, parse
+ *              failure). The caller MUST NOT proceed to a write that would
+ *              overwrite the feed's prior contents — doing so would clobber
+ *              every entry the read failed to retrieve. Throw, retry later, abort.
  *
  * `readFeedPage` (above) collapses all three into `null`, which is fine for
  * read endpoints that fall through to "show nothing" UX. Write paths that
@@ -169,27 +285,10 @@ export type FeedReadStrictResult =
 
 export async function readFeedPageStrict(topic: Topic): Promise<FeedReadStrictResult> {
   try {
-    const reader = getBee().makeFeedReader(topic, getPlatformOwner());
-    const result = await reader.downloadPayload();
-    const next = (result as { feedIndexNext?: FeedIndex })?.feedIndexNext;
-    if (next) rememberNextIndex(topic, next);
-    const bytes = toBytes(result);
-    if (!bytes) {
-      return { status: "error", error: new Error("Feed payload empty or unparseable") };
-    }
-    return { status: "ok", data: bytes };
+    const res = await readFeedForCaller(topic);
+    return res.status === "ok" ? { status: "ok", data: res.data } : res;
   } catch (err) {
-    const status = (err as { status?: number; response?: { status?: number } })?.status
-      ?? (err as { status?: number; response?: { status?: number } })?.response?.status;
-    // Only 404 from the feed lookup means "feed has never been written".
-    // Anything else (5xx, network, parse) is indistinguishable from a
-    // transient failure — treating it as absent would let a hiccup wipe
-    // the directory on the next write.
-    if (status === 404) return { status: "absent" };
-    return {
-      status: "error",
-      error: err instanceof Error ? err : new Error(String(err)),
-    };
+    return { status: "error", error: err instanceof Error ? err : new Error(String(err)) };
   }
 }
 
@@ -234,14 +333,15 @@ function isTransientFeedError(err: unknown): boolean {
 }
 
 export interface WriteFeedPageOptions {
-  /** Caller knows this topic has never been written to. Skips findNextIndex
+  /** Caller knows this topic has never been written to. Skips index resolution
    *  and writes directly at index 0 — saves the lookup-then-404 round-trip
-   *  on every fresh-feed write (event creation, new editions pages). */
+   *  on every fresh-feed write (event creation, new editions pages). If index 0
+   *  turns out to hold another update, the write throws. */
   fresh?: boolean;
-  /** When true (default), Bee queues the upload in the background and returns
-   *  immediately. Set to false for writes that must be readable on the next
-   *  request — e.g. profile updates where the client reads back straight away.
-   *  Ignored for an Etherna dest (that write path is synchronous HTTP). */
+  /** Sent as `swarm-deferred-upload`. Bee 2.7.1 ignores it on `/soc`, which every
+   *  feed update uses: the upload is pushed to its storer before the 201 either
+   *  way (`pkg/api/soc.go`). Kept for the callers that state they need a write
+   *  readable on the next request. Ignored for an Etherna dest. */
   deferred?: boolean;
   /** Routes which batch PAYS for this page (docs/PLATFORM_SIGNER_AUDIT.md
    *  § batch routing). `target:"etherna"` writes the update SOC via the Etherna
@@ -255,11 +355,9 @@ export interface WriteFeedPageOptions {
    *  OUTSIDE the content-feed family table (#657): these are platform-signed
    *  bee FEEDS, not versioned content feeds, and their reads ask our bee only.
    *  So an Etherna dest has the window a moved family has - our bee sees the
-   *  newest update seconds late (measured) - during which a read returns the
-   *  previous update, and a write whose next index is not cached in-process
-   *  (the first after a restart, `resolveEthernaNextIndex`) can pick an index
-   *  already taken on Etherna, where the first write wins. Tolerable for the
-   *  cold feeds this is allowed on, and one more reason it stays off hot ones. */
+   *  newest update seconds to minutes late - during which a read returns the
+   *  previous update. The index cache and read-your-writes above are what keep
+   *  that window from losing an edit (#186). */
   dest?: BatchSelection;
 }
 
@@ -285,81 +383,51 @@ async function doWriteFeedPage(
   page: Uint8Array,
   options: WriteFeedPageOptions,
 ): Promise<void> {
-  // Resolve the next index without paying for findNextIndex when avoidable.
-  let nextIndex: bigint | undefined;
-  if (options.fresh) {
-    // Application asserts this is a brand-new topic. Skip the round-trip.
-    nextIndex = 0n;
-  } else {
-    nextIndex = feedNextIndex.get(key);
-    // Cache miss: fall through to bee-js's internal findNextIndex on first
-    // call (uploadPayload without an index). Subsequent writes will hit the
-    // cache because we record the index post-upload.
-  }
-
+  // An update's payload is its page, inline. A larger one would be wrapped by
+  // bee-js and could never match its own read-back.
+  if (page.length > 4096) throw new Error(`feed page is ${page.length} bytes, max 4096`);
   const etherna = options.dest?.target === "etherna";
-  if (etherna && nextIndex === undefined) {
-    nextIndex = await resolveEthernaNextIndex(topic, key);
-  }
+  const dest: FeedDest = etherna ? "etherna" : "woco";
+  const owner = platformOwnerHex();
+  // Always an explicit index. bee-js's own discovery (`findNextIndex`) answers 0
+  // for ANY bee error, 5xx included, and a write at a taken 0 is silently kept.
+  let index = options.fresh ? 0n : await resolveWriteIndex(topic, key, dest);
 
   const MAX_ATTEMPTS = 5;
   let delay = feedWriteBaseBackoffMs;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
-      if (etherna) {
-        const release = await beeUploadSem.acquire();
-        try {
+      const release = await beeUploadSem.acquire();
+      try {
+        if (etherna) {
           await withTimeout(
             writeEthernaFeedPage({
               topic,
-              index: nextIndex!,
+              index,
               payload: page,
               batchId: options.dest!.batchId,
               signer: getPlatformSigner(),
-              ownerHex: getPlatformOwner().toHex(),
+              ownerHex: owner,
             }),
             BEE_CALL_TIMEOUT_MS,
             `etherna feed write ${key.slice(0, 16)}`,
           );
-        } finally {
-          release();
+        } else {
+          const writer = getBee().makeFeedWriter(topic, getPlatformSigner());
+          await withTimeout(
+            writer.uploadPayload(requirePostageBatch(), page, {
+              index: FeedIndex.fromBigInt(index),
+              deferred: options.deferred ?? true,
+            }),
+            BEE_CALL_TIMEOUT_MS,
+            `feed write ${key.slice(0, 16)}`,
+          );
         }
-        feedNextIndex.set(key, nextIndex! + 1n);
-        return;
-      }
-
-      const writer = getBee().makeFeedWriter(topic, getPlatformSigner());
-      const uploadOpts: { index?: FeedIndex; deferred?: boolean } = {
-        // `swarm-deferred-upload: true` — Bee buffers locally and pushes to
-        // the network in the background. Without this, the upload blocks
-        // until the chunk has been pushed to neighbourhood peers, which
-        // turns every feed write into a wait for network sync.
-        deferred: options.deferred ?? true,
-      };
-      if (nextIndex !== undefined) {
-        uploadOpts.index = FeedIndex.fromBigInt(nextIndex);
-      }
-      const release = await beeUploadSem.acquire();
-      try {
-        await withTimeout(
-          writer.uploadPayload(requirePostageBatch(), page, uploadOpts),
-          BEE_CALL_TIMEOUT_MS,
-          `feed write ${key.slice(0, 16)}`,
-        );
       } finally {
         release();
       }
-      // Record the next index to write — successor of what we just wrote. Only
-      // when WE chose the index: on a cache miss bee-js discovered it and the
-      // upload result does not say which one it used. Caching `0 + 1` there
-      // (the old code, assuming miss ⇒ fresh feed) was wrong for every
-      // existing feed after a restart — the next write then 409'd (#120).
-      // Left unknown, the next write pays one lookup or a read primes it.
-      if (nextIndex !== undefined) feedNextIndex.set(key, nextIndex + 1n);
-      else feedNextIndex.delete(key);
-      return;
     } catch (err: unknown) {
-      const status = (err as any)?.status ?? (err as any)?.response?.status;
+      const status = errorStatus(err);
       const decision = decideFeedWriteRetry({
         status,
         transient: isTransientFeedError(err),
@@ -376,50 +444,74 @@ async function doWriteFeedPage(
           delay = Math.min(delay * 2, 5000);
           continue;
         }
-        case "reset-to-zero":
-          // 404 from the feed chunk lookup (rare) — drop the cache and retry at
-          // index 0. Stops a stale cached index from permanently breaking writes.
-          console.warn(`[swarm] Feed chunk missing (404), resetting feed at index 0...`);
-          feedNextIndex.delete(key);
-          nextIndex = 0n;
-          continue;
         case "rediscover-index":
-          // 409 = a chunk already exists at this index = our cached index is
-          // stale (a read re-primed it backwards, or the first write since a
-          // restart guessed). The write was refused, nothing is corrupted; drop
-          // the cache and let the next attempt re-discover (#120). Etherna
-          // cannot delegate discovery, so re-read strictly — a failed read
-          // throws here rather than guessing.
           console.warn(`[swarm] Feed write 409 conflict — re-discovering index for ${key.slice(0, 16)}...`);
           feedNextIndex.delete(key);
-          nextIndex = etherna ? await resolveEthernaNextIndex(topic, key) : undefined;
+          index = await resolveFeedNextIndex(topic, owner, dest);
           await new Promise((r) => setTimeout(r, delay));
           delay = Math.min(delay * 2, 5000);
           continue;
         case "throw":
-          if (status === 409) feedNextIndex.delete(key); // a `fresh` or final 409: still drop the stale value
           throw err;
       }
     }
+
+    // Read back what is at the index now. A 201 is not evidence our bytes are
+    // there: a taken index keeps the update already on it (another process
+    // writing these feeds with the same key, or a lookup that read behind).
+    // Outside the upload semaphore - a read must not hold up other uploads.
+    const landed = await readFeedUpdate(owner, topic, index, etherna ? [ethernaSource] : [wocoBeeSource]);
+    if (landed.status === "found" && !sameBytes(landed.soc.payload, page)) {
+      if (options.fresh) throw new Error(`feed ${key.slice(0, 16)}: written as fresh but index 0 already holds an update`);
+      console.warn(`[swarm] Feed ${key.slice(0, 16)}: index ${index} already held another update — writing past it`);
+      feedNextIndex.delete(key);
+      index = await firstFreeIndex(owner, topic, index + 1n, feedSources(dest));
+      continue;
+    }
+    // Found with our bytes: confirmed. Not found or not askable: the upload was
+    // accepted, so take it, and have the next write check it is still there.
+    feedNextIndex.set(key, { next: index + 1n, confirmedAt: dest, disputed: landed.status !== "found" });
+    rememberWrittenPage(key, index, page);
+    return;
   }
+  throw new Error(`feed ${key.slice(0, 16)}: no free index after ${MAX_ATTEMPTS} attempts`);
+}
+
+/** The cached index when this destination confirmed it and no read disputes it;
+ *  a disputed one when our last write is still where we put it; else resolve. */
+async function resolveWriteIndex(topic: Topic, key: string, dest: FeedDest): Promise<bigint> {
+  const e = feedNextIndex.get(key);
+  if (e && e.confirmedAt === dest) {
+    if (!e.disputed) return e.next;
+    if (e.next > 0n) {
+      const last = await readFeedUpdate(platformOwnerHex(), topic, e.next - 1n, feedSources(dest));
+      if (last.status === "found") {
+        e.disputed = false;
+        return e.next;
+      }
+    }
+    // Gone (our write was lost: refill the hole, not past it) or cannot tell.
+  }
+  return resolveFeedNextIndex(topic, platformOwnerHex(), dest);
 }
 
 /**
- * The Etherna path posts a raw SOC and cannot delegate index discovery to
- * bee-js — resolve explicitly (our own bee resolves the feed regardless of
- * which batch stamped it). A failed read ABORTS the write: guessing 0 would
- * land on an existing immutable SOC and silently keep the old payload.
+ * The next free index of `owner`'s feed at `dest`: our bee's lookup as the start,
+ * then forward to the first index nothing holds (`feed-index.ts`). Throws when
+ * the lookup or a chunk read cannot answer; callers refuse rather than guess.
+ * Exported for the client-owned site pointer feed (`routes/sites.ts`).
  */
-async function resolveEthernaNextIndex(topic: Topic, key: string): Promise<bigint> {
-  const prior = await readFeedPageStrict(topic); // primes feedNextIndex on ok
-  let nextIndex: bigint | undefined;
-  if (prior.status === "absent") nextIndex = 0n;
-  else if (prior.status === "ok") nextIndex = feedNextIndex.get(key);
-  else throw prior.error;
-  if (nextIndex === undefined) {
-    throw new Error(`feed ${key.slice(0, 16)}: cannot resolve next index for Etherna write`);
-  }
-  return nextIndex;
+export async function resolveFeedNextIndex(topic: Topic, ownerHex: string, dest: FeedDest): Promise<bigint> {
+  const owner = ownerHex.replace(/^0x/, "").toLowerCase();
+  const head = await lookupFeed(topic, owner);
+  if (head.status === "error") throw head.error;
+  return firstFreeIndex(owner, topic, head.status === "ok" ? head.next ?? 0n : 0n, feedSources(dest));
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 // ---------------------------------------------------------------------------

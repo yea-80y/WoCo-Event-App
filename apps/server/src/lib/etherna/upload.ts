@@ -160,12 +160,19 @@ export async function prepareEthernaFeedUpdate(opts: {
   }
   const { reference: feedManifestHash } = await manifestRes.json() as { reference: string };
 
-  // Fresh feed (indexRes 404) → write at index 0; existing feed → use next index.
-  let nextIndex = 0n;
+  // The lookup is where to START, then forward to the first free index
+  // (`feed-index.ts`, #186). Only a 404 starts at 0: any other answer used to
+  // mean 0 as well, and a write at a taken 0 keeps the old pointer, silently.
+  let start = 0n;
   if (indexRes.ok) {
     const h = indexRes.headers.get("swarm-feed-index-next");
-    if (h) nextIndex = new FeedIndex(h).toBigInt();
+    if (h) start = new FeedIndex(h).toBigInt();
+  } else if (indexRes.status !== 404) {
+    throw new Error(`Etherna feed lookup ${indexRes.status} for ${topicHex.slice(0, 16)}`);
   }
+  // Dynamic: soc-read imports this module.
+  const { feedSources, firstFreeIndex } = await import("../swarm/feed-index.js");
+  const nextIndex = await firstFreeIndex(ownerHex, topic, start, feedSources("etherna"));
 
   // 3. Download root chunk (span+data of the content CAC) — POSTed as SOC body.
   const chunkRes = await fetch(`${ETHERNA_GW}/chunks/${contentHash}`, {

@@ -23,6 +23,7 @@ import {
   writeFeedPage,
   encodeJsonFeed,
   decodeJsonFeed,
+  resolveFeedNextIndex,
 } from "../lib/swarm/feeds.js";
 import {
   getBee,
@@ -1034,17 +1035,10 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       });
       if (chunkRes.ok) {
         const chunkBytes = new Uint8Array(await chunkRes.arrayBuffer());
-        let nextIndex = 0;
-        try {
-          const latest = await withTimeout(
-            bee.makeFeedReader(topic, feedOwnerSigner).download(),
-            BEE_CALL_TIMEOUT_MS,
-            "multisite feed index",
-          );
-          if (latest.feedIndexNext) nextIndex = Number(BigInt(`0x${latest.feedIndexNext.toHex()}`));
-        } catch {
-          // No update yet (fresh feed) — index 0.
-        }
+        // Forward from the lookup to the first free index (#186). Any failed
+        // lookup used to read as a fresh feed, and an update signed for a taken
+        // index 0 keeps the old pointer, silently. Now it fails the deploy.
+        const nextIndex = Number(await resolveFeedNextIndex(topic, feedOwnerSigner, "woco"));
         multisiteFeed = {
           nextIndex,
           rootChunkPayloadB64: Buffer.from(chunkBytes.subarray(8)).toString("base64"),
