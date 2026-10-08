@@ -692,7 +692,7 @@ test("health reports the locked upgrades paid and what the per-network limit did
   assert.equal(h.ok, h.configured, "neither number turns the section red");
 });
 
-test("backups off (#186): an op that ADDS a backup is refused before any read; removing them is still paid", async () => {
+test("backups off (#186): an op that ADDS a backup is refused before any read; removing all of them is still paid", async () => {
   enableFeature("accountBackupsAllowed", false);
   try {
     const p = new SponsorPolicy(deps);
