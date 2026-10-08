@@ -18,6 +18,9 @@ import {
   SESSION_PURPOSE,
   SESSION_TYPES,
 } from "@woco/shared";
+import { enableFeature } from "./helpers/features.js";
+
+enableFeature("walletLoginAllowed");
 
 const HOST = "test.woco.local";
 const dir = mkdtempSync(join(tmpdir(), "woco-session-revoked-"));

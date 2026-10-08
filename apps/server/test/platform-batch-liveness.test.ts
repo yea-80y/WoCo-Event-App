@@ -25,6 +25,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Hono } from "hono";
 import { TypedDataEncoder, Wallet } from "ethers";
+import { enableFeature } from "./helpers/features.js";
+
+enableFeature("walletLoginAllowed");
 
 // Every network host is a closed local port: a mutated run that gets past the
 // guard fails fast on ECONNREFUSED instead of reaching a real service.

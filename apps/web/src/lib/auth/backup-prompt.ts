@@ -8,8 +8,11 @@
  * backups" (#166 item 4), so it stays quiet rather than nag a protected account.
  */
 
+import { FEATURES } from "@woco/shared";
+
 export function canProtectAccount(kind: string | null | undefined): boolean {
-  return kind === "passkey" || kind === "web3auth";
+  if (kind === "web3auth") return FEATURES.accountBackupsAllowed;
+  return kind === "passkey";
 }
 
 export function needsBackupPrompt(

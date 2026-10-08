@@ -180,6 +180,13 @@ export async function verifyDelegation(
       }
       const parent = message.parent.toLowerCase();
       if (recovered === parent) {
+        // A wallet login: the parent EOA signed its own delegation. Off for launch
+        // (#186) - the authoritative half of the flag, since a published event page
+        // keeps the bundle, and the wallet sign-in, it was published with.
+        if (!FEATURES.walletLoginAllowed) {
+          console.warn(`[auth] wallet delegation refused for ${message.parent}: walletLoginAllowed is off (#186)`);
+          return { valid: false, error: "Wallet sign-in is not available", code: AuthErrorCode.SESSION_INVALID };
+        }
         validSig = true;
         parentKind = "eoa";
       } else if (recovered) {

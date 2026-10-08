@@ -8,6 +8,7 @@
   import SessionStatus from "./lib/components/auth/SessionStatus.svelte";
   import EventPage from "./lib/components/site/EventPage.svelte";
   import Dashboard from "./lib/creator/dashboard/Dashboard.svelte";
+  import { FEATURES } from "@woco/shared";
 
   // Runtime config (injected by deploy endpoint) takes priority over build-time env vars
   const EVENT_ID =
@@ -17,9 +18,14 @@
 
   let route = $state(parseRoute());
 
+  // An event page is checkout only for launch (owner, 2026-10-08): its one way in
+  // was a wallet, and wallet login is off (#186). Signing in here to check out with
+  // an account is later work; the dashboard route returns with it.
+  const signInHere = FEATURES.walletLoginAllowed;
+
   function parseRoute(): string {
     const hash = window.location.hash.replace(/^#/, "") || "/";
-    if (hash === "/dashboard") return "dashboard";
+    if (hash === "/dashboard" && signInHere) return "dashboard";
     return "event";
   }
 
@@ -60,7 +66,7 @@
         Event not configured. Set <code>VITE_EVENT_ID</code> in your <code>.env.site</code> file.
       </p>
     {:else if route === "event"}
-      <EventPage eventId={EVENT_ID} ondashboard={() => { window.location.hash = "#/dashboard"; }} />
+      <EventPage eventId={EVENT_ID} ondashboard={signInHere ? () => { window.location.hash = "#/dashboard"; } : undefined} />
     {:else if route === "dashboard"}
       {#if !auth.ready}
         <div class="state-center">
@@ -78,7 +84,9 @@
   </section>
 </main>
 
-<SiteLoginModal />
+{#if signInHere}
+  <SiteLoginModal />
+{/if}
 <SigningConfirmDialog />
 <AccountSetupSheet />
 

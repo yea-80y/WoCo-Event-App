@@ -460,9 +460,18 @@ The authoritative list is the `AuthKind` union in `packages/shared/src/auth/type
 |---|---|---|---|
 | Passkey | `passkey` | ZeroDev Kernel on Arbitrum One. Root validator: ECDSA over a secp256k1 key derived from the passkey's PRF output, moved to WeightedECDSA (every passkey a co-owner) when a second passkey is added (§9) | Live. The only kind that can organise (#768) |
 | Email | `web3auth` | Also a Kernel | Live, on a Web3Auth **devnet** project. Can upgrade in place to a passkey (§9) |
-| Wallets | `web3` | MetaMask / WalletConnect EOA | Live |
+| Wallets | `web3` | MetaMask / WalletConnect EOA | Built, `walletLoginAllowed = false` (#186) |
 | Coinbase | `coinbase` | Coinbase Smart Wallet | Built, `coinbaseLoginAllowed = false` |
 | Zupass | `zupass` | — | In the union, **not implemented** |
+
+**Why wallet login is off for launch.** A wallet account's seed is keccak256 of one fixed
+EIP-712 signature, and a wallet signs whatever a site asks: any page that obtains the same
+signature holds that account's keys for good, and the frozen message cannot rotate. No change
+to the message fixes it - only keys that a site cannot ask a wallet for (a passkey). The server
+refuses a delegation signed by its own parent EOA while the flag is off, which also covers a
+published event page that still carries the old wallet sign-in. Wallet backups for email
+accounts derive their escrow key the same way, so they are off too, with email-account backups
+as a whole (`accountBackupsAllowed = false`).
 
 **Why Coinbase Smart Wallet is off** is worth understanding, because it is the clearest
 illustration of what sign-to-derive costs. A smart account's signatures are not

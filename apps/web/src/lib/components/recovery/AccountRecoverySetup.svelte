@@ -28,7 +28,7 @@
   import { isPasskeySupported } from "../../auth/passkey-account.js";
   import { readBackupProtection } from "../../auth/backup-management.js";
   import { describeRecoveryError } from "../../auth/recovery-errors.js";
-  import type { UserManifest } from "@woco/shared";
+  import { FEATURES, type UserManifest } from "@woco/shared";
 
   type Phase =
     | "intro" | "choosing" | "connecting" | "confirming" | "working" | "done"
@@ -89,7 +89,9 @@
   // can't re-derive its keys) and web3auth (raw key is an external-config dependency
   // that can be repointed). Self-custody kinds (web3/local/coinbase) recover from
   // their own wallet, so they see the "already covered" message instead.
-  const canProtect = $derived(auth.kind === "passkey" || auth.kind === "web3auth");
+  // Email accounts' backups are off for launch (`accountBackupsAllowed`, #186).
+  const backupsOff = $derived(auth.kind === "web3auth" && !FEATURES.accountBackupsAllowed);
+  const canProtect = $derived(auth.kind === "passkey" || (auth.kind === "web3auth" && !backupsOff));
 
   // ── Backup-method recommendation ────────────────────────────────────────
   // WHICH factors we offer, and which is best, is fully determined by HOW the
@@ -122,8 +124,10 @@
             : []),
           { id: "email", name: "Different email or social", recommended: !passkeySupported,
             hint: "Sign in with a different provider than the one you use to log in." },
-          { id: "wallet", name: "Crypto wallet",
-            hint: "Use MetaMask or any browser wallet." },
+          // A wallet backup derives its key from a signature any site can ask for (#186).
+          ...(FEATURES.walletLoginAllowed
+            ? [{ id: "wallet" as const, name: "Crypto wallet", hint: "Use MetaMask or any browser wallet." }]
+            : []),
         ]
       // A passkey account backs up by linking another device (#746 step 5), never here.
       : [],
@@ -451,6 +455,14 @@
       <h1>Protect your account</h1>
       <p class="lede">Sign in first, then add a backup so you can get back in if you ever lose this device.</p>
       <button class="btn btn--primary btn--lg cta" onclick={signIn}>Sign in</button>
+
+    {:else if backupsOff}
+      <p class="kicker">Account safety</p>
+      <h1>Backups aren't offered yet</h1>
+      <p class="lede">
+        Account backups for email sign-ins aren't available yet. Your email sign-in works on any
+        device, and each ticket we email you gets you in on its own - keep those emails.
+      </p>
 
     {:else if !canProtect}
       <p class="kicker">Account safety</p>

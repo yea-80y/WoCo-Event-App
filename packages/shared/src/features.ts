@@ -48,6 +48,33 @@ export const FEATURES = {
   // and restored per device), after #164. Never sign-to-derive for smart
   // accounts.
   coinbaseLoginAllowed: false,
+  // Browser-wallet login (MetaMask, WalletConnect - AuthKind "web3"). OFF for
+  // launch (owner decision 2026-10-08, #186). A wallet account's identity seed
+  // is keccak256 of ONE fixed EIP-712 signature, and a wallet signs whatever a
+  // site asks: any page that gets the same signature holds that account's keys,
+  // for good (the message is frozen, so nothing rotates). No change to the
+  // message fixes that - only keys that do not come from a wallet signature do.
+  // Also offers wallets as a recovery backup, which derives its escrow key the
+  // same way. Gates in lockstep: the login and backup choices + loginWeb3 +
+  // session restore (client), and the server refuses a delegation signed by its
+  // own parent EOA - the authoritative half, since a published event page keeps
+  // the bundle it was published with. Turn on only with wallet keys rooted
+  // somewhere a site cannot ask for them (e.g. a passkey).
+  walletLoginAllowed: false,
+  // Recovery backups for email (Web3Auth) accounts - the Protect screen: a
+  // recovery passkey, another email, or a wallet as guardian. OFF for launch
+  // (owner decision 2026-10-08, #186). A backup restores the account, never a
+  // ticket: the account lists tickets, but the signature the door checks exists
+  // only in the ticket email. So it guards profile, likes and names, while the
+  // guardian machinery is large, spends sponsored gas on every set-up, and its
+  // wallet option had the phishing weakness above. Google sign-in already works
+  // on any device. An
+  // email user who wants a stronger account upgrades it to a passkey (#816).
+  // Passkey accounts are unaffected: they back up by adding passkeys. Gates in
+  // lockstep: the Protect screen, its prompts and nudges (client), and the
+  // sponsorship policy refuses the ops that ADD a backup (install-route,
+  // guardians). Removing backups stays paid - the upgrade does it first.
+  accountBackupsAllowed: false,
   // Organiser custom sending domains. OFF for launch, for two independent
   // reasons: the production Resend key is send-only, so the Domains API 401s and
   // the panel could only ever show an error; and PRICING_AND_EMAIL.md §6 forbids

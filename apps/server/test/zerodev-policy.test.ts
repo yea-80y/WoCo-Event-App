@@ -53,6 +53,10 @@ import {
   type PolicyUserOp,
 } from "../src/lib/zerodev/sponsor-policy.js";
 import type { GateStatus } from "../src/lib/gate/check.js";
+import { enableFeature } from "./helpers/features.js";
+
+// The backup ops below are tested as paid; "backups off" has its own test at the end.
+enableFeature("accountBackupsAllowed");
 
 const entryPoint = getEntryPoint("0.7");
 const ECDSA = getValidatorAddress(entryPoint, KERNEL_V3_1);
@@ -686,4 +690,23 @@ test("health reports the locked upgrades paid and what the per-network limit did
   assert.equal(h.lockedUpgradesPaid24h, 0);
   assert.deepEqual(Object.keys(h.upgradeIntents as object).sort(), ["granted24h", "refusedByNetwork24h"]);
   assert.equal(h.ok, h.configured, "neither number turns the section red");
+});
+
+test("backups off (#186): an op that ADDS a backup is refused before any read; removing them is still paid", async () => {
+  enableFeature("accountBackupsAllowed", false);
+  try {
+    const p = new SponsorPolicy(deps);
+    unlocked.add(ACCOUNT.toLowerCase());
+    for (const [callData, shape] of [
+      [buildRegisterGuardianCallData(d, GUARDIAN_KERNEL), "install-route"],
+      [await viaExecute([buildAddGuardianCall(encodeFunctionData, GUARDIAN_KERNEL)]), "guardians"],
+    ] as const) {
+      assert.deepEqual(await p.decide(op(callData)), { proceed: false, reason: "backups-off", shape, subject: ACCOUNT.toLowerCase() });
+    }
+    assert.deepEqual(gateCalls, [], "refused before the gate is read");
+    const removal = await p.decide(op(await viaExecute(buildRemoveRecoveryCalls(d, ACCOUNT)), { nonce: "9" }));
+    assert.equal(removal.proceed, true, "an upgrade to a passkey removes backups first");
+  } finally {
+    enableFeature("accountBackupsAllowed");
+  }
 });
