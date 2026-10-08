@@ -5,7 +5,7 @@
  */
 
 import { profileAvatarContentTopic, profileDataContentTopic } from "@woco/shared";
-import type { FeedKey, PrepareDeps, ProfileCopy, SocialDeps, UpgradeIO, UpgradeStoreHost } from "./upgrade-to-passkey.js";
+import { NO_SESSION_MESSAGE, type FeedKey, type PrepareDeps, type ProfileCopy, type SocialDeps, type UpgradeIO, type UpgradeStoreHost } from "./upgrade-to-passkey.js";
 import { localMarkerStore } from "./upgrade-marker.js";
 
 /** The runners' I/O, live. */
@@ -14,6 +14,13 @@ export function liveUpgradeIO(host: UpgradeStoreHost): UpgradeIO {
     marker: localMarkerStore,
     prepareDeps: (account) => liveUpgradeDeps(host, account),
     social: liveSocialDeps,
+    requestIntent: async () => {
+      const { authPost } = await import("../api/client.js");
+      const res = await authPost<unknown>("/api/auth/upgrade-intent", {});
+      if (res.ok) return;
+      // The per-network limit says so in words; anything else changed nothing.
+      throw new Error(res.code === "upgrade_limit" && res.error ? res.error : NO_SESSION_MESSAGE);
+    },
   };
 }
 

@@ -24,8 +24,9 @@ import {
   postOrphanedCredentialNotice,
   MOVED_OR_RECOVERED_MESSAGE,
   UPGRADED_TO_PASSKEY_MESSAGE,
+  UPGRADE_UNFINISHED_MESSAGE,
 } from "./orphaned-credential.js";
-import { upgradeMarkerKey } from "./upgrade-marker.js";
+import { parseUpgradeMarker, upgradeMarkerKey } from "./upgrade-marker.js";
 import { readOrphanTombstone, writeOrphanTombstone } from "./orphan-tombstone.js";
 import {
   isWeb3AuthSignInError,
@@ -3033,6 +3034,11 @@ async function loginPasskeyResult(
       const answered = ownerRead !== "error" ? ownerRead : null;
       const foreignOwner = provenOrphanOwner(answered, account.address);
       if (foreignOwner) {
+        // Made by an upgrade on this device whose switch has not landed (#746): the
+        // email key still owns the account. Say so - nothing was recovered away.
+        if (_upgradeUnfinishedFor(account.address, override)) {
+          throw refuseOrphanedCredential("passkey", { boundKernel: override, onChainOwner: foreignOwner }, undefined, UPGRADE_UNFINISHED_MESSAGE);
+        }
         clearVerifiedBinding("passkey", account.address);
         // Recovered away (#255) - or this passkey made another device the main one
         // and is a linked device now (#746 step 4). The server's verdict says which;
@@ -4482,6 +4488,16 @@ async function recoverAndRekey(args: {
 // Upgrading an email account to a passkey (#746). The flow lives in the lazily
 // loaded upgrade-to-passkey.ts; only what needs this store's state is here.
 // ---------------------------------------------------------------------------
+
+/** This device prepared an upgrade to `passkey` for `parent` whose switch has not landed (#746). */
+function _upgradeUnfinishedFor(passkey: string, parent: string): boolean {
+  try {
+    const m = parseUpgradeMarker(globalThis.localStorage?.getItem(upgradeMarkerKey(parent)));
+    return !!m && m.stage === "prepared" && m.passkey === passkey.toLowerCase();
+  } catch {
+    return false;
+  }
+}
 
 /** End an email sign-in whose account opens with a passkey now (#746). */
 async function _refuseUpgradedEmailLogin(eoa: string, kernel: string, passkey: string | null): Promise<Error> {

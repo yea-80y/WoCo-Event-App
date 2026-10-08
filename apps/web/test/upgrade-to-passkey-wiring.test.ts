@@ -46,6 +46,23 @@ test("the slow path refuses an email key that is off the list before anything is
   assert.match(slow, /readKernelSignerFor\(kernel\.address, address\)\) === NOT_ON_LIST\) \{\s*throw await _refuseUpgradedEmailLogin\(/);
 });
 
+test("a passkey sign-in mid-upgrade on this device gets the unfinished words, before anything is forgotten", () => {
+  const b = body(STORE, "async function loginPasskeyResult(");
+  const branch = b.slice(b.indexOf("if (foreignOwner) {"));
+  const check = branch.indexOf("_upgradeUnfinishedFor(account.address, override)");
+  const forget = branch.indexOf('clearVerifiedBinding("passkey", account.address)');
+  assert.ok(check > 0 && forget > check, "said before the binding marker is cleared");
+  assert.match(branch, /throw refuseOrphanedCredential\("passkey", [^;]*UPGRADE_UNFINISHED_MESSAGE\)/);
+  const helper = body(STORE, "function _upgradeUnfinishedFor(");
+  assert.match(helper, /m\.stage === "prepared" && m\.passkey === passkey\.toLowerCase\(\)/);
+});
+
+test("the intent is asked for over the signed session; its refusal shows the server's words", () => {
+  const live = read("../src/lib/auth/upgrade-to-passkey-live.ts");
+  assert.match(live, /authPost<unknown>\("\/api\/auth\/upgrade-intent", \{\}\)/);
+  assert.match(live, /res\.code === "upgrade_limit" && res\.error \? res\.error : NO_SESSION_MESSAGE/);
+});
+
 test("the fast path makes no chain read, so the background check follows it", () => {
   const b = body(STORE, "async function loginWeb3Auth(");
   const fast = b.slice(b.indexOf("if (cachedKernel) {"), b.indexOf("// Kernelize"));

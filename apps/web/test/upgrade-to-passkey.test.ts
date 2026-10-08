@@ -557,7 +557,7 @@ test("M1: an old statement nobody could read is kept for the next session, never
 
 // ── The runners, over a fake store ──────────────────────────────────────────
 
-function store(over: { kind?: "web3auth" | "passkey"; session?: boolean; landed?: () => boolean; switchFails?: () => boolean } = {}) {
+function store(over: { kind?: "web3auth" | "passkey"; session?: boolean; landed?: () => boolean; switchFails?: () => boolean; intent?: () => void } = {}) {
   const log: string[] = [];
   const f = fakes();
   const state = { kind: over.kind ?? "web3auth", session: over.session ?? true, passkey: PASSKEY as string | null };
@@ -601,7 +601,15 @@ function store(over: { kind?: "web3auth" | "passkey"; session?: boolean; landed?
       void runResume(host, io);
     },
   };
-  const io = { marker: f.marker, prepareDeps: async () => f.deps, social: async () => f.deps.social };
+  const io = {
+    marker: f.marker,
+    prepareDeps: async () => f.deps,
+    social: async () => f.deps.social,
+    requestIntent: async () => {
+      log.push("requestIntent");
+      over.intent?.();
+    },
+  };
   return { host, io, log, f, state, adopted: () => adopted };
 }
 
@@ -627,6 +635,27 @@ test("run: prepare, retract, the one switch, then adopt -> finalize -> the email
   const reposts = s.f.writes.filter((w) => w.signer === NEW_FEED.address);
   assert.ok(reposts.length === 3 && reposts.every((w) => w.value === true), "moved once a session exists");
   assert.equal(s.f.marker.map.size, 0, "done: the marker goes");
+});
+
+test("run: the intent is asked for after the retraction and before the one op - every attempt", async () => {
+  let refuse = true;
+  const s = store({ landed: () => false, switchFails: () => refuse });
+  await assert.rejects(runUpgrade(s.host, s.io));
+  refuse = false;
+  await runUpgrade(s.host, s.io);
+  const asks = s.log.map((x, i) => (x === "requestIntent" ? i : -1)).filter((i) => i >= 0);
+  const sends = s.log.map((x, i) => (x.startsWith("switch:") ? i : -1)).filter((i) => i >= 0);
+  assert.equal(asks.length, 2, "a fresh intent per attempt");
+  assert.ok(asks[0] < sends[0] && asks[1] < sends[1] && asks[1] > sends[0]);
+  const retraction = s.f.calls.findIndex((c) => c.name === "socialWrite");
+  assert.ok(retraction >= 0);
+});
+
+test("run: an intent refused (the per-network limit) sends nothing and says why", async () => {
+  const s = store({ landed: () => false, intent: () => { throw new Error("Too many upgrades from this network today - try again tomorrow."); } });
+  await assert.rejects(runUpgrade(s.host, s.io), { message: "Too many upgrades from this network today - try again tomorrow." });
+  assert.ok(!s.log.some((x) => x.startsWith("switch:")));
+  assert.equal(s.f.marker.map.get(PARENT)?.stage, "prepared", "kept: a later attempt picks it up");
 });
 
 test("run: no session - nothing is read, made or sent", async () => {

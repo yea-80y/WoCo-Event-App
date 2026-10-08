@@ -643,8 +643,10 @@ the screen in `creator/gate/UpgradeToPasskey.svelte`.
 - **The op.** ONE sponsored userOp, signed by the email key: the co-owner switch with a list of ONE
   key, the passkey's, and the ECDSA validation uninstalled. A counterfactual account deploys in it.
   The email key is never kept as a co-owner (any co-owner holds full control). The server pays it
-  as the `upgrade` shape - for a locked account once, under a platform cap of 20 a day
-  (`lib/zerodev/sponsor-policy.ts`). Any recovery route (email or wallet backups) is removed first,
+  as the `upgrade` shape (`lib/zerodev/sponsor-policy.ts`); for a locked account only against an
+  intent its own session asked for just before (`POST /api/auth/upgrade-intent`, 10 a day per
+  network - the webhook never sees the person's IP). No platform-wide cap: limits stop bad actors,
+  the ZeroDev plan grows with demand. Any recovery route (email or wallet backups) is removed first,
   by its own op. Fork-tested: WoCo-Contracts `test/WeightedRootUpgradeFork.t.sol`.
 - **The seed.** The new seed is the passkey's PRF seed (`passkeyIdentitySeed`) - never derived from,
   signed by or passed through the email key - sealed to the passkey only: its locked copy and its

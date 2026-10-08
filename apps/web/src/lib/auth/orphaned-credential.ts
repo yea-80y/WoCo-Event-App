@@ -63,6 +63,10 @@ export const MOVED_OR_RECOVERED_MESSAGE =
  */
 export const UPGRADED_TO_PASSKEY_MESSAGE = "This account now opens with your passkey. Sign in with it instead.";
 
+/** The passkey an upgrade on this device was making, before its switch landed (#746). */
+export const UPGRADE_UNFINISHED_MESSAGE =
+  "Your upgrade to this passkey isn't finished yet. Sign in with email or Google and finish it in the organiser workspace.";
+
 /** Distinguished by `name`, not instanceof, so checks survive chunk boundaries. */
 export class OrphanedCredentialError extends Error {
   override readonly name = "OrphanedCredentialError";

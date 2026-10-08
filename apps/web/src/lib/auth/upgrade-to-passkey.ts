@@ -444,6 +444,9 @@ export interface UpgradeIO {
   marker: MarkerStore;
   prepareDeps(account: { parent: string; emailKey: string }): Promise<PrepareDeps>;
   social(): Promise<SocialDeps>;
+  /** Ask the server for this attempt's upgrade intent (signed session, per-network
+   *  limit) - what a locked account's op is paid against. Throws the words to show. */
+  requestIntent(): Promise<void>;
 }
 
 export const NO_SESSION_MESSAGE = "Couldn't reach WoCo just now - nothing was changed. Try again.";
@@ -469,6 +472,8 @@ export async function runUpgrade(h: UpgradeStoreHost, io: UpgradeIO, progress: (
   }
   marker = await retractOld(deps, marker, progress);
   progress("Handing your account to your passkey…");
+  // Asked afresh at every attempt, while the email key's session is still good.
+  await io.requestIntent();
   const { confirmed } = await sendUpgradeSwitch(await h.emailKernel(), marker);
   await commitUpgrade(h, io, marker, liveInTab?.passkey === marker.passkey ? liveInTab : null, confirmed);
   liveInTab = null;
