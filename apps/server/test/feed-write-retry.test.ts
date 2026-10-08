@@ -86,8 +86,10 @@ const chunks = new Map<string, Uint8Array>();
 const viaEtherna = new Set<string>();
 
 const net = {
-  /** Our bee's feed walk does not see Etherna writes yet (the lag). */
-  lookupMissesEtherna: false,
+  /** Our bee does not see Etherna writes yet (the lag): neither its feed walk
+   *  nor a chunk read finds them - seconds to minutes in production
+   *  (apps/web/src/lib/swarm/content-feed.ts, knownChunkProbe). */
+  beeMissesEtherna: false,
   /** Our bee's feed walk also stops this many updates short. */
   lookupBehind: 0,
   /** GET /feeds answers this instead of walking. */
@@ -178,7 +180,9 @@ const bee: Server = createServer(async (req, res) => {
   if (req.method === "POST" && path.startsWith("/soc/")) return handleSocPost(req, res, "bee");
   if (req.method === "GET" && path.startsWith("/chunks/")) {
     if (net.beeChunks500) return json(res, 500, { code: 500, message: "read chunk failed" });
-    return handleChunkGet(res, path.split("/")[2]!);
+    const addr = path.split("/")[2]!.toLowerCase();
+    if (net.beeMissesEtherna && viaEtherna.has(addr)) return json(res, 404, { code: 404, message: "chunk not found" });
+    return handleChunkGet(res, addr);
   }
   const m = /^\/feeds\/([0-9a-f]{40})\/([0-9a-f]{64})$/i.exec(path);
   if (req.method === "GET" && m) {
@@ -188,7 +192,7 @@ const bee: Server = createServer(async (req, res) => {
     const topic = knownTopics.find((t) => t.toHex() === m[2]!.toLowerCase());
     const visible = (i: bigint) => {
       const a = topic && addressFor(owner, topic, i);
-      return !!a && chunks.has(a) && !(net.lookupMissesEtherna && viaEtherna.has(a));
+      return !!a && chunks.has(a) && !(net.beeMissesEtherna && viaEtherna.has(a));
     };
     let latest = -1n;
     while (visible(latest + 1n)) latest++;
@@ -274,7 +278,7 @@ beforeEach(() => {
   swarm.__setBeeForTests(null);
   socRead.__resetEthernaBreaker();
   Object.assign(net, {
-    lookupMissesEtherna: false,
+    beeMissesEtherna: false,
     lookupBehind: 0,
     lookupAnswer: null,
     beeChunks500: false,
@@ -312,7 +316,7 @@ describe("the cached next index", () => {
 
   test("THE BUG (#186): an Etherna feed read inside the lag, then edited — the edit lands, nothing is overwritten", async () => {
     const t = freshTopic();
-    net.lookupMissesEtherna = true; // our bee never sees Etherna writes in this test
+    net.beeMissesEtherna = true; // our bee never sees Etherna writes in this test
     await feeds.writeFeedPage(t, page("v1"), { dest: ETHERNA });
     await feeds.writeFeedPage(t, page("v2"), { dest: ETHERNA });
     await feeds.readFeedPageStrict(t); // bee: "no update found"
@@ -415,7 +419,7 @@ describe("resolving the index (cold cache)", () => {
   test("Etherna, cold, lookup behind: walked forward against Etherna", async () => {
     const t = freshTopic();
     for (let i = 0n; i < 3n; i++) seed(t, i, page(`e${i}`), KEY, "etherna");
-    net.lookupMissesEtherna = true;
+    net.beeMissesEtherna = true;
     await feeds.writeFeedPage(t, page("new"), { dest: ETHERNA });
     assert.equal(textAt(OWNER, t, 3n), "new");
     assert.deepEqual(uploads.map((u) => [u.via, u.index]), [["etherna", 3n]]);
@@ -426,21 +430,37 @@ describe("resolving the index (cold cache)", () => {
     await feeds.writeFeedPage(t, page("a"));
     assert.equal(hooks().cachedEntry(t)!.confirmedAt, "woco");
     seed(t, 1n, page("b"), KEY, "etherna"); // someone moved this feed to Etherna before us
-    net.lookupMissesEtherna = true;
+    net.beeMissesEtherna = true;
+    uploads.length = 0;
     await feeds.writeFeedPage(t, page("c"), { dest: ETHERNA });
     assert.equal(textAt(OWNER, t, 2n), "c");
+    assert.deepEqual(uploads.map((u) => u.index), [2n], "no upload onto the taken index 1");
   });
 
   test("a read-primed entry is not trusted for an Etherna write", async () => {
     const t = freshTopic();
     seed(t, 0n, page("a"));
     seed(t, 1n, page("b"), KEY, "etherna");
-    net.lookupMissesEtherna = true;
+    net.beeMissesEtherna = true;
     await feeds.readFeedPage(t); // primes next = 1 from our lagging bee
     assert.equal(hooks().cachedEntry(t)!.confirmedAt, null);
     await feeds.writeFeedPage(t, page("c"), { dest: ETHERNA });
     assert.equal(textAt(OWNER, t, 2n), "c");
     assert.equal(textAt(OWNER, t, 1n), "b");
+    // Not rescued by the read-back: an upload onto a taken index may REPLACE
+    // that update on the network later (a newer stamp), so it must not happen.
+    assert.deepEqual(uploads.map((u) => u.index), [2n]);
+  });
+
+  test("a write after a cold read walks on from the read's index — no second lookup", async () => {
+    const t = freshTopic();
+    seed(t, 0n, page("a"));
+    seed(t, 1n, page("b"));
+    await feeds.readFeedPageStrict(t);
+    const lookups = net.feedLookups;
+    await feeds.writeFeedPage(t, page("c"));
+    assert.equal(net.feedLookups, lookups);
+    assert.equal(textAt(OWNER, t, 2n), "c");
   });
 
   test("resolveFeedNextIndex serves another owner's feed (client-owned site pointer)", async () => {
@@ -531,7 +551,7 @@ describe("read-your-writes", () => {
 
   test("bee says absent or errors inside the window: our page", async () => {
     const t = freshTopic();
-    net.lookupMissesEtherna = true;
+    net.beeMissesEtherna = true;
     await feeds.writeFeedPage(t, page("first"), { dest: ETHERNA });
     const absent = await feeds.readFeedPageStrict(t);
     assert.equal(absent.status === "ok" && feeds.decodeJsonFeed<{ text: string }>(absent.data)?.text, "first");

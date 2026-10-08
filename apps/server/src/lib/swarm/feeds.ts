@@ -477,22 +477,29 @@ async function doWriteFeedPage(
   throw new Error(`feed ${key.slice(0, 16)}: no free index after ${MAX_ATTEMPTS} attempts`);
 }
 
-/** The cached index when this destination confirmed it and no read disputes it;
- *  a disputed one when our last write is still where we put it; else resolve. */
+/**
+ * Where this write goes. The cached index as is when this destination confirmed
+ * it and no read disputes it. Undisputed but unconfirmed here (a read's lookup,
+ * or a write to the other destination): a lower bound, so walk forward from it -
+ * one chunk read when it is right, no second lookup. Disputed: trust it only if
+ * our last write is still where we put it; otherwise resolve from scratch.
+ */
 async function resolveWriteIndex(topic: Topic, key: string, dest: FeedDest): Promise<bigint> {
   const e = feedNextIndex.get(key);
-  if (e && e.confirmedAt === dest) {
-    if (!e.disputed) return e.next;
-    if (e.next > 0n) {
-      const last = await readFeedUpdate(platformOwnerHex(), topic, e.next - 1n, feedSources(dest));
-      if (last.status === "found") {
-        e.disputed = false;
-        return e.next;
-      }
+  const owner = platformOwnerHex();
+  if (e && !e.disputed) {
+    if (e.confirmedAt === dest) return e.next;
+    return firstFreeIndex(owner, topic, e.next, feedSources(dest));
+  }
+  if (e && e.confirmedAt === dest && e.next > 0n) {
+    const last = await readFeedUpdate(owner, topic, e.next - 1n, feedSources(dest));
+    if (last.status === "found") {
+      e.disputed = false;
+      return e.next;
     }
     // Gone (our write was lost: refill the hole, not past it) or cannot tell.
   }
-  return resolveFeedNextIndex(topic, platformOwnerHex(), dest);
+  return resolveFeedNextIndex(topic, owner, dest);
 }
 
 /**
