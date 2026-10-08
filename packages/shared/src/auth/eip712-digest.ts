@@ -1,10 +1,10 @@
 /**
  * Minimal dependency-free EIP-712 digest computation.
  *
- * Used in contexts where ethers is not available (e.g. the embed widget,
- * which signs claim messages with noble/curves secp256k1 directly).
- * The server still verifies via ethers `verifyTypedData`, so the outputs
- * here MUST be byte-identical to what ethers produces for the same input.
+ * Used where ethers should not be pulled in: today the issuer-registry
+ * statement digest (`issuer/types.ts`). Other code hashes the same messages
+ * with ethers, so the outputs here MUST be byte-identical to ethers' for the
+ * same input.
  *
  * Currently supports only the field types WoCo uses: `string`, `address`,
  * `uint256`, `bytes32`. Extending to dynamic arrays / nested structs
@@ -39,6 +39,9 @@ const enc = new TextEncoder();
 function hexToBytes(hex: string): Uint8Array {
   const h = hex.startsWith("0x") || hex.startsWith("0X") ? hex.slice(2) : hex;
   if (h.length % 2 !== 0) throw new Error(`invalid hex length: ${hex}`);
+  // parseInt yields NaN for a non-hex pair and a Uint8Array stores NaN as 0, so
+  // without this two different inputs would hash to one digest.
+  if (!/^[0-9a-fA-F]*$/.test(h)) throw new Error(`invalid hex: ${hex}`);
   const out = new Uint8Array(h.length / 2);
   for (let i = 0; i < out.length; i++) {
     out[i] = parseInt(h.substr(i * 2, 2), 16);

@@ -81,7 +81,7 @@ which is exactly why it is switched off.
 
 ```
 signature = wallet.signTypedData(DOMAIN, TYPES, { purpose, address, nonce: FIXED })
-seed      = keccak256(getBytes(signature))         // the 65 raw signature bytes
+seed      = keccak256(canonicalSignatureBytes(signature))   // 65 bytes: low s, v 27/28
 ```
 
 Two properties make this work. **Determinism**: the nonce is fixed, so the same wallet always
@@ -160,6 +160,11 @@ Two details that took real defects to learn:
 - **Hash the signature *bytes*, not the hex string.** `keccak256(getBytes(sig))` hashes 65
   bytes; `keccak256(toUtf8Bytes(sig))` would hash 132 ASCII characters. The byte form is the
   ecosystem standard. Changing which one you hash changes every user's identity.
+- **Hash one encoding of the signature.** v as 0/1 or 27/28, s low or high, 65 bytes or the
+  64-byte compact form all recover the same address, so a wallet may return any of them.
+  `canonicalSignatureBytes` (`packages/shared/src/auth/canonical-signature.ts`) maps them all to
+  low s, v 27/28 before hashing, and refuses anything else (#186). Canonical input passes through
+  unchanged. The wallet backup's escrow master (`deriveGuardianKeys`) is hashed the same way.
 - **External wallets get signed twice.** We control the nonce generation of our own signers
   (ethers → RFC-6979, deterministic). We do not control MetaMask's. So for external-wallet kinds
   the account-keys derivation signs twice and **throws on mismatch** — an irreproducible wallet
@@ -539,6 +544,11 @@ error that looks like a key problem and is not.
 Revocation: `POST /api/auth/revoke-session` (one nonce) or `/api/auth/revoke-all` (every session
 for a parent issued before now). State lives in `.data/revoked-sessions.json` — losing that file
 un-revokes.
+
+**Known limit: `issuedAt` is the device's clock.** The server accepts a delegation dated up to 60 s
+ahead of its own time, so one minted just before a revoke-all on a fast clock outlives it by up
+to that minute. Left as is: minting a delegation takes the parent key, and whoever holds that can
+mint a fresh one after the revoke anyway. Removing the passkey is what ends that (#186).
 
 ### More than one passkey: every passkey a co-owner (#746)
 

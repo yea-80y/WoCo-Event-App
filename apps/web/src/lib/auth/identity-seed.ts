@@ -4,6 +4,7 @@ import {
   ACCOUNT_KEYS_NONCE,
   ACCOUNT_KEYS_PURPOSE,
   StorageKeys,
+  canonicalSignatureBytes,
   passkeyIdentitySeed,
   passkeySeedKek,
   type EncryptedBlob,
@@ -23,6 +24,10 @@ import { getKV, putKV, delKV } from "./storage/indexeddb.js";
  */
 function identitySeedKey(address: string): string {
   return `${StorageKeys.IDENTITY_SEED}:${address.toLowerCase()}`;
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((x, i) => x === b[i]);
 }
 
 /**
@@ -77,12 +82,13 @@ export async function requestIdentitySeed(
       ACCOUNT_KEYS_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
       message as unknown as Record<string, unknown>,
     );
-  const signature = await sign();
+  // Canonical form (#186): the same signature in another valid encoding is the same seed.
+  const signature = canonicalSignatureBytes(await sign());
   if (opts.verifyDeterminism) {
     // Compared on the SIGNATURE bytes, before anything is derived or stored: a
     // wallet that disagrees with itself must not leave a seed behind for the next
     // session to find and treat as established.
-    if ((await sign()) !== signature) {
+    if (!sameBytes(canonicalSignatureBytes(await sign()), signature)) {
       throw new Error(
         "Your wallet's signature isn't reproducible, so we can't set up your account keys with it. Try a different wallet.",
       );
@@ -91,14 +97,12 @@ export async function requestIdentitySeed(
 
   // Deterministic: same wallet → same signature → same seed.
   // ethers imported lazily — this module is in auth-store's boot graph.
-  // Use getBytes(signature) to hash the canonical signature bytes (65 bytes),
-  // not toUtf8Bytes(signature) which hashes the hex string representation
-  // (132 bytes of ASCII). The byte form is the standard way to compress an
-  // ECDSA signature into a uniform-distribution seed and is what every other
-  // library in the ecosystem does. FROZEN: every key the account owns hangs off
+  // Hash the 65 signature bytes, not the hex string (132 bytes of ASCII). The
+  // byte form is the standard way to compress an ECDSA signature into a
+  // uniform-distribution seed. FROZEN: every key the account owns hangs off
   // these exact bytes.
-  const { keccak256, getBytes } = await import("ethers");
-  const seed = keccak256(getBytes(signature));
+  const { keccak256 } = await import("ethers");
+  const seed = keccak256(signature);
 
   // Encrypt and store seed — AAD binds the blob to the parent address so a
   // stale identity seed left in IndexedDB cannot be decrypted by a different

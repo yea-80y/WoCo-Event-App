@@ -183,6 +183,13 @@ export async function buildKernelFromPrivateKey(
     kernelVersion,
     ...(opts?.address ? { address: opts.address as Address } : {}),
   });
+  // The SDK takes the address from an RPC's `getSenderAddress` revert, and on first
+  // login that answer becomes the user's permanent identity. Recompute it locally
+  // (pure CREATE2 at EntryPoint 0.7 - the same function the server authorizes
+  // sessions against, kernel-owner.ts) so a lying RPC cannot hand us an account (#186).
+  if (!opts?.address && (await counterfactualKernelOf(signer.address)) !== account.address.toLowerCase()) {
+    throw new Error("This account's address doesn't match its key - refusing to sign in.");
+  }
 
   const paymaster = createZeroDevPaymasterClient({
     chain: KERNEL_CHAIN,
