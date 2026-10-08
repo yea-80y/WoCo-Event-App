@@ -4,6 +4,7 @@ import {
   SESSION_TYPES,
   AuthErrorCode,
   FEATURES,
+  SESSION_EXPIRY_MS,
   type SessionDelegation,
   type VerifyDelegationResult,
   type SessionRank,
@@ -50,6 +51,8 @@ export interface DelegationVerifyDeps {
   ) => DeviceGrantState | undefined | Promise<DeviceGrantState | undefined>;
 }
 
+const SESSION_LIFETIME_SLACK_MS = 60_000;
+
 const DEFAULT_DEPS: DelegationVerifyDeps = {
   isKernelKnownDeployedOnAnyChain,
   readKernelOwner,
@@ -63,7 +66,8 @@ const DEFAULT_DEPS: DelegationVerifyDeps = {
  * Checks:
  * 1. Message and signature are present
  * 2. Not expired
- * 3. Not future-dated (1 min clock skew allowed)
+ * 3. Not future-dated (1 min clock skew allowed), and no longer-lived than a
+ *    session our client mints
  * 4. Host matches allowed list (if provided)
  * 5. Claimed session address matches delegation
  * 6. EIP-712 signature is valid for the claimed parent — one of:
@@ -124,6 +128,14 @@ export async function verifyDelegation(
         error: `Delegation issuedAt is ${Math.round(futureBy / 1000)}s in the future — device clock is ahead of server time`,
         code: AuthErrorCode.SESSION_CLOCK_SKEW,
       };
+    }
+
+    // Lifetime cap (#186). Our client mints exactly SESSION_EXPIRY_MS, so a longer
+    // delegation was not made by it, and with no cap one phished signature would
+    // outlive every rotation. The slack covers the client's two clock reads.
+    // SESSION_INVALID (the default), so a refused client simply mints a new one.
+    if (expiresAt - issuedAt > SESSION_EXPIRY_MS + SESSION_LIFETIME_SLACK_MS) {
+      return { valid: false, error: "Delegation lifetime is longer than a session may be" };
     }
 
     // Host check
