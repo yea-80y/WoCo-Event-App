@@ -406,54 +406,59 @@ sitesRouter.post("/", requireAuth, async (c) => {
 
     // Prior server-written signers (trusted) — carried forward if a source read
     // transiently fails so a re-publish never wipes a known carrier.
-    // What this server just wrote beats a bee read that may not have it yet (events-index.ts).
-    const priorIndex = freshWrittenEventsIndex(site.siteId)
-      ?? await readFeedPage(eventsTopic).then((p) => (p ? decodeJsonFeed<SiteEventsIndex>(p) : null)).catch(() => null);
-    const priorSigners = new Map<string, Hex0x>();
-    for (const e of priorIndex?.events ?? []) if (e.creatorFeedSigner) priorSigners.set(e.eventId, e.creatorFeedSigner);
+    // Under the site's events lock (Fable on #824): an add that started before
+    // this publish recorded its index would otherwise build on the older copy
+    // and silently drop the published list.
+    await withEventsIndexLock(site.siteId, async () => {
+      // What this server just wrote beats a bee read that may not have it yet (events-index.ts).
+      const priorIndex = freshWrittenEventsIndex(site.siteId)
+        ?? await readFeedPage(eventsTopic).then((p) => (p ? decodeJsonFeed<SiteEventsIndex>(p) : null)).catch(() => null);
+      const priorSigners = new Map<string, Hex0x>();
+      for (const e of priorIndex?.events ?? []) if (e.creatorFeedSigner) priorSigners.set(e.eventId, e.creatorFeedSigner);
 
-    // The events index STAYS platform-signed regardless of config ownership: it
-    // carries per-event creatorFeedSigner values consumed on the claim/payment
-    // path, so it must remain a server-written trust carrier (93ea980 class).
-    const eventsIndex: SiteEventsIndex = {
-      siteId: site.siteId,
-      schemaVersion: SITE_SCHEMA_VERSION,
-      events: await stampEventSigners(events, parentAddress, priorSigners),
-      updatedAt: now,
-    };
-
-    if (siteFeedSigner) {
-      const pointer: SitePointer = {
-        _woco_site_ptr: 1,
-        ownerAddress: parentAddress,
-        siteFeedSigner: siteFeedSigner as Hex0x,
+      // The events index STAYS platform-signed regardless of config ownership: it
+      // carries per-event creatorFeedSigner values consumed on the claim/payment
+      // path, so it must remain a server-written trust carrier (93ea980 class).
+      const eventsIndex: SiteEventsIndex = {
+        siteId: site.siteId,
+        schemaVersion: SITE_SCHEMA_VERSION,
+        events: await stampEventSigners(events, parentAddress, priorSigners),
         updatedAt: now,
       };
-      await Promise.all([
-        writeFeedPage(configTopic, encodeJsonFeed(pointer), { dest: feedDest }),
-        writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex), { dest: feedDest }),
-      ]);
-    } else {
-      // Legacy platform-written path (client without a feed signer). Config
-      // (without pages) + pages split across two feeds to stay under 4096 bytes.
-      const siteToWrite: Site = {
-        ...site,
-        ownerAddress: parentAddress,
-        createdAt: existing.status === "found" ? existing.site.createdAt : now,
-        updatedAt: now,
-      };
-      const { pages, ...siteShell } = siteToWrite;
-      await Promise.all([
-        writeFeedPage(configTopic, encodeJsonFeed(siteShell), { dest: feedDest }),
-        writeFeedPage(pagesTopic,  encodeJsonFeed({ pages }), { dest: feedDest }),
-        writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex), { dest: feedDest }),
-      ]);
-    }
 
-    // Publish rewrote the events index — drop the events-full memo (declared
-    // below; the closure resolves it at request time) so it doesn't serve stale.
-    rememberWrittenEventsIndex(site.siteId, eventsIndex);
-    _siteEventsFull.delete(site.siteId);
+      if (siteFeedSigner) {
+        const pointer: SitePointer = {
+          _woco_site_ptr: 1,
+          ownerAddress: parentAddress,
+          siteFeedSigner: siteFeedSigner as Hex0x,
+          updatedAt: now,
+        };
+        await Promise.all([
+          writeFeedPage(configTopic, encodeJsonFeed(pointer), { dest: feedDest }),
+          writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex), { dest: feedDest }),
+        ]);
+      } else {
+        // Legacy platform-written path (client without a feed signer). Config
+        // (without pages) + pages split across two feeds to stay under 4096 bytes.
+        const siteToWrite: Site = {
+          ...site,
+          ownerAddress: parentAddress,
+          createdAt: existing.status === "found" ? existing.site.createdAt : now,
+          updatedAt: now,
+        };
+        const { pages, ...siteShell } = siteToWrite;
+        await Promise.all([
+          writeFeedPage(configTopic, encodeJsonFeed(siteShell), { dest: feedDest }),
+          writeFeedPage(pagesTopic,  encodeJsonFeed({ pages }), { dest: feedDest }),
+          writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex), { dest: feedDest }),
+        ]);
+      }
+
+      // Publish rewrote the events index — drop the events-full memo (declared
+      // below; the closure resolves it at request time) so it doesn't serve stale.
+      rememberWrittenEventsIndex(site.siteId, eventsIndex);
+      _siteEventsFull.delete(site.siteId);
+    });
 
     // Upsert into creator's site directory (fire-and-forget — non-fatal).
     upsertCreatorSite(parentAddress, {

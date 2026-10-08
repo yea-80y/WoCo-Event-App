@@ -60,6 +60,7 @@ let dir: string;
 let shared: typeof import("@woco/shared");
 let setStripeAccount: typeof import("../src/lib/stripe/accounts.js").setStripeAccount;
 let topicEvent: typeof import("../src/lib/swarm/topics.js").topicEvent;
+let resolveSiteEventSigner: typeof import("../src/lib/site/service.js").resolveSiteEventSigner;
 
 before(async () => {
   await new Promise<void>((r) => bee.listen(0, "127.0.0.1", r));
@@ -83,6 +84,7 @@ before(async () => {
   f.__feedWriteTestHooks.setBaseBackoffMs(0);
   ({ setStripeAccount } = await import("../src/lib/stripe/accounts.js"));
   ({ topicEvent } = await import("../src/lib/swarm/topics.js"));
+  ({ resolveSiteEventSigner } = await import("../src/lib/site/service.js"));
   const sites = await import("../src/routes/sites.js");
   app = new Hono();
   app.route("/api/sites", sites.sitesRouter);
@@ -104,11 +106,15 @@ function site(owner: Wallet, events: "absent" | "error"): string {
   return siteId;
 }
 
+const signers = new Map<string, string>();
+
 /** An event of `owner`'s that the signer lookup finds on its first read. */
 function event(owner: Wallet): string {
   const eventId = randomUUID();
+  const signer = Wallet.createRandom().address.toLowerCase();
+  signers.set(eventId, signer);
   feeds.set(topicEvent(eventId).toHex().replace(/^0x/, "").toLowerCase(), {
-    json: { eventId, creatorAddress: owner.address.toLowerCase(), creatorFeedSigner: Wallet.createRandom().address.toLowerCase(), title: "t" },
+    json: { eventId, creatorAddress: owner.address.toLowerCase(), creatorFeedSigner: signer, title: "t", series: [] },
   });
   return eventId;
 }
@@ -120,6 +126,14 @@ async function organiser() {
 }
 
 async function addEvent(parent: Wallet, siteId: string, eventId: string) {
+  return call(parent, "POST", `/api/sites/${siteId}/events`, JSON.stringify({ eventId }));
+}
+
+async function removeEvent(parent: Wallet, siteId: string, eventId: string) {
+  return call(parent, "DELETE", `/api/sites/${siteId}/events/${eventId}`, "");
+}
+
+async function call(parent: Wallet, method: "POST" | "DELETE", path: string, body: string) {
   const session = Wallet.createRandom();
   const nonce = randomUUID();
   const message = {
@@ -139,13 +153,11 @@ async function addEvent(parent: Wallet, siteId: string, eventId: string) {
     shared.SESSION_TYPES as unknown as Parameters<typeof TypedDataEncoder.hash>[1],
     message,
   );
-  const path = `/api/sites/${siteId}/events`;
-  const body = JSON.stringify({ eventId });
   const ts = String(Date.now());
   const reqNonce = randomUUID();
-  const challenge = ["woco-session-v1", "POST", path, ts, reqNonce, sha256Hex(body)].join("\n");
+  const challenge = ["woco-session-v1", method, path, ts, reqNonce, sha256Hex(body)].join("\n");
   const resp = await app.request(path, {
-    method: "POST",
+    method,
     headers: {
       "Content-Type": "application/json",
       "X-Session-Address": session.address,
@@ -154,7 +166,7 @@ async function addEvent(parent: Wallet, siteId: string, eventId: string) {
       "X-Session-Nonce": reqNonce,
       "X-Session-Timestamp": ts,
     },
-    body,
+    ...(method === "DELETE" ? {} : { body }),
   });
   return { status: resp.status, json: (await resp.json()) as { ok: boolean; error?: string; data?: { events: Array<{ eventId: string }> } } };
 }
@@ -194,4 +206,29 @@ test("the public list shows an event the moment it is added, with a short browse
   const fullJson = (await full.json()) as { data: { index: { events: Array<{ eventId: string }> } } };
   assert.ok(fullJson.data.index.events.some((e) => e.eventId === eventId));
   assert.equal(full.headers.get("Cache-Control"), "public, max-age=30, stale-while-revalidate=60");
+});
+
+test("a checkout straight after an add finds the new event's signer", async () => {
+  const owner = await organiser();
+  const siteId = site(owner, "absent");
+  const eventId = event(owner);
+  assert.equal((await addEvent(owner, siteId, eventId)).status, 200);
+  // bee never serves the write back, so only the fresh copy can answer
+  assert.equal(await resolveSiteEventSigner(siteId, eventId), signers.get(eventId));
+});
+
+test("remove builds on what was just written; removing an absent event writes nothing", async () => {
+  const owner = await organiser();
+  const siteId = site(owner, "absent");
+  const [a, b] = [event(owner), event(owner)];
+  assert.equal((await addEvent(owner, siteId, a)).status, 200);
+  assert.equal((await addEvent(owner, siteId, b)).status, 200);
+  const removed = await removeEvent(owner, siteId, a);
+  assert.equal(removed.status, 200, removed.json.error);
+  assert.deepEqual(removed.json.data!.events.map((e) => e.eventId), [b]);
+
+  writes.length = 0;
+  const again = await removeEvent(owner, siteId, a);
+  assert.equal(again.status, 200);
+  assert.deepEqual(writes, [], "nothing to remove, nothing written");
 });

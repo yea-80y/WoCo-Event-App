@@ -78,9 +78,3 @@ export function withEventsIndexLock<T>(siteId: string, fn: () => Promise<T>): Pr
   });
   return task;
 }
-
-/** Tests only. */
-export function __resetEventsIndexForTest(): void {
-  written.clear();
-  locks.clear();
-}
