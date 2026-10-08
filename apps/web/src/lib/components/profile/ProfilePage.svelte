@@ -396,7 +396,9 @@
       const res = await authPost("/api/auth/revoke-all", {});
       if (!res.ok) throw new Error(res.error ?? "Revoke failed");
       revokeSuccess = true;
-      setTimeout(() => { revokeSuccess = false; }, 3000);
+      // "Every device" includes this one: sign out here now rather than on the
+      // next request (#186).
+      await auth.onSessionRevoked();
     } catch (err) {
       console.error("Revoke sessions failed:", err);
       revokeFailed = true;
@@ -914,8 +916,8 @@
         <section class="settings-card settings-card--danger">
           <h2 class="card-title">Session security</h2>
           <p class="card-hint">
-            Sign out all active sessions across every device and browser.
-            You'll need to reconnect your wallet next time.
+            Sign out all active sessions on every device and browser, this one included.
+            You'll need to sign in again on each.
           </p>
           <div class="danger-row">
             <div class="session-status">

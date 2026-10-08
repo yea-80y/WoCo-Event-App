@@ -153,6 +153,11 @@ async function authFetch<T>(
     void auth.onDeviceRemoved();
     return result;
   }
+  if (result.code === AuthErrorCode.SESSION_REVOKED) {
+    // Re-signing would silently undo "Sign out everywhere" (#186): sign out.
+    void auth.onSessionRevoked();
+    return result;
+  }
   if (result.code !== AuthErrorCode.SESSION_INVALID) {
     // A wrong device clock is NOT fixable by re-signing — re-signing just
     // reproduces the same out-of-window timestamp. Say what is actually wrong
@@ -311,6 +316,10 @@ export async function authStream(
     .catch(() => null) as { code?: string } | null;
   if (body?.code === AuthErrorCode.DEVICE_REMOVED) {
     void auth.onDeviceRemoved();
+    return resp;
+  }
+  if (body?.code === AuthErrorCode.SESSION_REVOKED) {
+    void auth.onSessionRevoked();
     return resp;
   }
   if (body?.code !== AuthErrorCode.SESSION_INVALID) return resp;

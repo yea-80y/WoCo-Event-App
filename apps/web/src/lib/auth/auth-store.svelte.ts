@@ -292,6 +292,7 @@ export class DeviceRemovedError extends Error {
 
 const DEVICE_REMOVED_MESSAGE =
   "This device was removed from your account. To use it again, add it from one of your other passkeys.";
+const SESSION_REVOKED_MESSAGE = "You were signed out on every device. Sign in again to carry on.";
 const NOT_LINKED_MESSAGE =
   "Couldn't confirm this passkey is on your account. Try again - if it keeps happening, add it again from one of your other passkeys.";
 const NOT_SET_UP_MESSAGE = "This passkey wasn't fully set up. Add it again from one of your other passkeys.";
@@ -2780,6 +2781,21 @@ async function onDeviceRemoved(): Promise<void> {
   }
 }
 
+/** The server revoked this session ("Sign out everywhere"). A silent re-sign
+ *  would undo it, so sign out fully - which also ends an email login's
+ *  Web3Auth session on this device - once, however many requests saw it. */
+let _signingOutRevoked = false;
+async function onSessionRevoked(): Promise<void> {
+  if (_signingOutRevoked || _kind === "none") return;
+  _signingOutRevoked = true;
+  try {
+    _postAuthNotice(SESSION_REVOKED_MESSAGE);
+    await logout({ force: true });
+  } finally {
+    _signingOutRevoked = false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Linking another device (#746 step 4, Fable consult 7). The flows live in the
 // lazily loaded `device-link.ts`; only what needs this store's state is here.
@@ -4945,6 +4961,7 @@ export const auth = {
    *  do what only its owner can (names, backups, adding or removing passkeys). */
   get isAccountOwner() { return !(_kind === "passkey" && _deviceRole); },
   onDeviceRemoved,
+  onSessionRevoked,
   onSessionRejected,
   registerUpgradeFlow,
   upgradeToPasskey,
