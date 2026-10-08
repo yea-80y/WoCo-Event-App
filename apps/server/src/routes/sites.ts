@@ -68,11 +68,58 @@ const DIST_MULTISITE_PATH = resolve(__dirname, "../../../../apps/web/dist-multis
 /**
  * Config read for DISPLAY routes — follows the client-owned pointer (see
  * service.ts). Collapses "absent" and "unavailable" into null, which is right for
- * a page that renders nothing and wrong for anything deciding ownership. The two
- * ownership gates in this file call `resolveSiteConfig` directly for that reason.
+ * a page that renders nothing and wrong for anything deciding ownership. Every
+ * ownership decision in this file (publish, deploy, event add and remove) reads
+ * `resolveSiteConfig` directly for that reason.
  */
 async function readSiteConfig(siteId: string): Promise<Site | null> {
   return (await resolveSiteConfigOrNull(siteId))?.site ?? null;
+}
+
+/**
+ * Event add/remove: only the owner of an EXISTING site may change its index. A
+ * read that cannot decide is a retryable 503, not "Site not found" (#217).
+ */
+async function eventIndexOwnerRefusal(
+  siteId: string,
+  parentAddress: string,
+): Promise<{ status: 403 | 404 | 503; error: string } | null> {
+  const read = await resolveSiteConfig(siteId);
+  if (read.status === "unavailable") {
+    console.warn(`[sites/events] ownership undecidable for ${siteId}: ${read.reason}`);
+    return { status: 503, error: "Could not verify site ownership right now — please try again" };
+  }
+  if (read.status === "absent") return { status: 404, error: "Site not found" };
+  if (read.site.ownerAddress.toLowerCase() !== parentAddress) return { status: 403, error: "Not the site owner" };
+  return null;
+}
+
+/** The SEO + PWA head tags baked into a deployed site. Every interpolation is escaped. */
+export function deployHeadLines(site: Site, gatewayUrl: string): string {
+  const desc = site.theme.siteDescription?.trim() ?? '';
+  const brandNameEsc = escHtml(site.theme.brandName?.trim() || 'WoCo Site');
+  const descEsc = escHtml(desc);
+  const logoRef = site.theme.logoSwarmRef;
+  // Organiser logo when set; WoCo brand image (always bundled in the collection) otherwise.
+  const thumbnailUrl = escHtml(
+    logoRef && !/^0+$/.test(logoRef) ? `${gatewayUrl}/bytes/${logoRef}` : './logo.png',
+  );
+  const themeColorEsc = escHtml(site.theme.palette.accent ?? '');
+
+  return [
+    `  <link rel="manifest" href="./manifest.json">`,
+    thumbnailUrl ? `  <link rel="icon" href="${thumbnailUrl}">` : '',
+    `  <meta name="theme-color" content="${themeColorEsc}">`,
+    desc ? `  <meta name="description" content="${descEsc}">` : '',
+    `  <meta property="og:type" content="website">`,
+    `  <meta property="og:title" content="${brandNameEsc}">`,
+    desc ? `  <meta property="og:description" content="${descEsc}">` : '',
+    thumbnailUrl ? `  <meta property="og:image" content="${thumbnailUrl}">` : '',
+    `  <meta name="twitter:card" content="${thumbnailUrl ? 'summary_large_image' : 'summary'}">`,
+    `  <meta name="twitter:title" content="${brandNameEsc}">`,
+    desc ? `  <meta name="twitter:description" content="${descEsc}">` : '',
+    thumbnailUrl ? `  <meta name="twitter:image" content="${thumbnailUrl}">` : '',
+  ].filter(Boolean).join('\n');
 }
 
 /**
@@ -331,7 +378,8 @@ sitesRouter.post("/", requireAuth, async (c) => {
     // If an existing site is published, only the owner may overwrite it.
     //
     // Three answers, and only ONE of them permits the write (#181). "absent" means
-    // the siteId is genuinely unclaimed. "unavailable" means we could not find out
+    // the network found no site (the best answer a read can give: see service.ts).
+    // "unavailable" means we could not find out
     // — and proceeding on that is what let a caller be stamped owner of somebody
     // else's site by retrying until a Swarm read failed.
     const existing = await resolveSiteConfig(site.siteId);
@@ -576,11 +624,8 @@ sitesRouter.post("/:id/events", requireAuth, async (c) => {
   if (!isSafeIdParam(siteId)) return malformedId(c, "siteId");
 
   try {
-    const site = await readSiteConfig(siteId);
-    if (!site) return c.json({ ok: false, error: "Site not found" }, 404);
-    if (site.ownerAddress.toLowerCase() !== parentAddress) {
-      return c.json({ ok: false, error: "Not the site owner" }, 403);
-    }
+    const refused = await eventIndexOwnerRefusal(siteId, parentAddress);
+    if (refused) return c.json({ ok: false, error: refused.error }, refused.status);
 
     const body = await c.req.json() as { eventId?: string; featured?: boolean };
     if (!body.eventId) return c.json({ ok: false, error: "eventId required" }, 400);
@@ -636,11 +681,8 @@ sitesRouter.delete("/:id/events/:eventId", requireAuth, async (c) => {
   if (!isSafeIdParam(eventId)) return malformedId(c, "eventId");
 
   try {
-    const site = await readSiteConfig(siteId);
-    if (!site) return c.json({ ok: false, error: "Site not found" }, 404);
-    if (site.ownerAddress.toLowerCase() !== parentAddress) {
-      return c.json({ ok: false, error: "Not the site owner" }, 403);
-    }
+    const refused = await eventIndexOwnerRefusal(siteId, parentAddress);
+    if (refused) return c.json({ ok: false, error: refused.error }, refused.status);
 
     const topic = Topic.fromString(siteEventsIndexTopic(siteId));
     const page = await readFeedPage(topic);
@@ -749,13 +791,6 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     if (!resolvedUrls.ok) return c.json({ ok: false, error: resolvedUrls.error }, 400);
     const { apiUrl, gatewayUrl, wocoAppUrl } = resolvedUrls.urls;
 
-    if (!existsSync(DIST_MULTISITE_PATH)) {
-      return c.json({
-        ok: false,
-        error: "Site template not on server. Run `npm run build:web` then rsync apps/web/dist-multisite/ to server.",
-      }, 503);
-    }
-
     // Prefer the site config sent by the client — avoids a Swarm re-read immediately
     // after publishSite (deferred writes can have a brief propagation window).
     // Fall back to Swarm read for direct API calls. Always stamp ownerAddress server-side.
@@ -777,6 +812,14 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     if (published.status === "found" && published.site.ownerAddress.toLowerCase() !== parentAddress) {
       return c.json({ ok: false, error: "Not the site owner" }, 403);
     }
+
+    if (!existsSync(DIST_MULTISITE_PATH)) {
+      return c.json({
+        ok: false,
+        error: "Site template not on server. Run `npm run build:web` then rsync apps/web/dist-multisite/ to server.",
+      }, 503);
+    }
+
     let site: Site;
     if (body.site && body.site.siteId === siteId) {
       site = { ...body.site, ownerAddress: parentAddress };
@@ -839,33 +882,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       ],
     };
 
-    // Build SEO + PWA head tags
-    const desc = site.theme.siteDescription?.trim() ?? '';
-    const brandNameEsc = escHtml(site.theme.brandName?.trim() || 'WoCo Site');
-    const descEsc = escHtml(desc);
-    const logoRef = site.theme.logoSwarmRef;
-    // Organiser logo when set; WoCo brand image (always bundled in the collection) otherwise.
-    const thumbnailUrl = escHtml(
-      logoRef && !/^0+$/.test(logoRef) ? `${gatewayUrl}/bytes/${logoRef}` : './logo.png',
-    );
-    const themeColorEsc = escHtml(site.theme.palette.accent ?? '');
-
-    const headLines = [
-      `  <link rel="manifest" href="./manifest.json">`,
-      thumbnailUrl ? `  <link rel="icon" href="${thumbnailUrl}">` : '',
-      `  <meta name="theme-color" content="${themeColorEsc}">`,
-      desc ? `  <meta name="description" content="${descEsc}">` : '',
-      `  <meta property="og:type" content="website">`,
-      `  <meta property="og:title" content="${brandNameEsc}">`,
-      desc ? `  <meta property="og:description" content="${descEsc}">` : '',
-      thumbnailUrl ? `  <meta property="og:image" content="${thumbnailUrl}">` : '',
-      `  <meta name="twitter:card" content="${thumbnailUrl ? 'summary_large_image' : 'summary'}">`,
-      `  <meta name="twitter:title" content="${brandNameEsc}">`,
-      desc ? `  <meta name="twitter:description" content="${descEsc}">` : '',
-      thumbnailUrl ? `  <meta name="twitter:image" content="${thumbnailUrl}">` : '',
-    ].filter(Boolean).join('\n');
-
-    const injectedWithPwa = injectBeforeHeadClose(injectedHtml, headLines);
+    const injectedWithPwa = injectBeforeHeadClose(injectedHtml, deployHeadLines(site, gatewayUrl));
 
     await fs.cp(DIST_MULTISITE_PATH, tmpDir, { recursive: true });
     await fs.writeFile(join(tmpDir, "multi-site.html"), injectedWithPwa, "utf-8");
