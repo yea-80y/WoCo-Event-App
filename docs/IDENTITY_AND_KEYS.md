@@ -500,9 +500,12 @@ AuthorizeSession {
 }
 ```
 
-`host` is in the signed payload, which is why **`ALLOWED_HOSTS` is the host security guard** —
-`SESSION_DOMAIN` deliberately carries no chainId, so the host is what scopes a delegation to an
-origin. A frontend host missing from `ALLOWED_HOSTS` gets a 403 on every authenticated call.
+`host` is in the signed payload and the server refuses any host not in **`ALLOWED_HOSTS`**
+(`SESSION_DOMAIN` deliberately carries no chainId). That bounds which hosts a delegation can name,
+but `host` is the client's own claim: it does not prove which origin asked for the signature, so a
+wallet user tricked into signing on another site yields a valid delegation. The other fields
+(`purpose`, `statement`, `clientCodeHash`) are not checked. A frontend host missing from
+`ALLOWED_HOSTS` gets a 403 on every authenticated call.
 
 ### The per-request signature (EIP-191, every call)
 

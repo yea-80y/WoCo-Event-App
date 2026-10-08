@@ -64,6 +64,10 @@ interface SeenNonce {
   timestamp: number; // ts the request was signed with (not when seen)
 }
 const _seenNonces = new Map<string, SeenNonce>();
+let _lastNonceSweep = 0;
+/** A full sweep on EVERY request past the threshold is quadratic in the request
+ *  rate (#186); entries only live a little longer, so replay checks are unaffected. */
+const NONCE_SWEEP_INTERVAL_MS = 10_000;
 
 /** Strip expired entries. Called opportunistically — bounded sweep per request. */
 function gcSeenNonces(now: number): void {
@@ -73,6 +77,8 @@ function gcSeenNonces(now: number): void {
   // when its size exceeds a threshold. Bounded work — even at 1k req/s
   // the map stays under 300k entries before GC.
   if (_seenNonces.size < 256) return;
+  if (now - _lastNonceSweep < NONCE_SWEEP_INTERVAL_MS) return;
+  _lastNonceSweep = now;
   for (const [key, entry] of _seenNonces) {
     if (entry.timestamp < cutoff) _seenNonces.delete(key);
   }

@@ -326,7 +326,7 @@ export async function verifyDelegation(
     // so we use it as the authoritative parent address (no separate recovered
     // value — that pattern only existed for the EOA-only ethers flow).
     if (isSessionRevoked(message.nonce, message.parent, message.issuedAt)) {
-      return { valid: false, error: "Session has been revoked" };
+      return { valid: false, error: "Session has been revoked", code: AuthErrorCode.SESSION_REVOKED };
     }
 
     return {

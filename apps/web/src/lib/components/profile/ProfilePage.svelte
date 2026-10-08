@@ -391,12 +391,13 @@
   async function revokeAllSessions() {
     if (revokingAll) return;
     revokingAll = true;
+    let revoked = false;
     try {
       // authPost resolves on a refusal too, so "Done" must wait for ok.
       const res = await authPost("/api/auth/revoke-all", {});
       if (!res.ok) throw new Error(res.error ?? "Revoke failed");
+      revoked = true;
       revokeSuccess = true;
-      setTimeout(() => { revokeSuccess = false; }, 3000);
     } catch (err) {
       console.error("Revoke sessions failed:", err);
       revokeFailed = true;
@@ -404,6 +405,9 @@
     } finally {
       revokingAll = false;
     }
+    // "Every device" includes this one (#186). Outside the try: the server has
+    // already revoked, so a local sign-out hiccup must not read as "failed".
+    if (revoked) await auth.onSessionRevoked();
   }
 
   async function loadProfile() {
@@ -914,8 +918,8 @@
         <section class="settings-card settings-card--danger">
           <h2 class="card-title">Session security</h2>
           <p class="card-hint">
-            Sign out all active sessions across every device and browser.
-            You'll need to reconnect your wallet next time.
+            Sign out all active sessions on every device and browser, this one included.
+            You'll need to sign in again on each.
           </p>
           <div class="danger-row">
             <div class="session-status">

@@ -139,6 +139,7 @@ async function authFetch<T>(
   };
 
   const generation = _recoveryGeneration;
+  const sessionAtSend = auth.sessionAddress;
   const result = await send();
 
   if (result.ok) {
@@ -151,6 +152,11 @@ async function authFetch<T>(
     // This added passkey was removed from the account (#746): no re-sign can fix
     // it. The store forgets what this device held and signs out, once.
     void auth.onDeviceRemoved();
+    return result;
+  }
+  if (result.code === AuthErrorCode.SESSION_REVOKED) {
+    // Re-signing would silently undo "Sign out everywhere" (#186): sign out.
+    if (stillSessionAtSend(sessionAtSend)) void auth.onSessionRevoked();
     return result;
   }
   if (result.code !== AuthErrorCode.SESSION_INVALID) {
@@ -259,6 +265,15 @@ export async function authDelete<T>(path: string, baseUrl?: string): Promise<Api
 }
 
 /**
+ * A late SESSION_REVOKED for a session the user has since replaced must not sign
+ * out the new one. No session before the send means the request minted its own,
+ * so the answer is about the current one.
+ */
+function stillSessionAtSend(sessionAtSend: string | null): boolean {
+  return sessionAtSend === null || auth.sessionAddress === sessionAtSend;
+}
+
+/**
  * Authenticated request whose RESPONSE BODY the caller reads itself — the
  * streaming case, where `authFetch` cannot help because it consumes the body as
  * JSON.
@@ -297,6 +312,7 @@ export async function authStream(
   };
 
   const generation = _recoveryGeneration;
+  const sessionAtSend = auth.sessionAddress;
   const resp = await send();
   if (resp.ok) {
     sessionHealth.clear();
@@ -311,6 +327,10 @@ export async function authStream(
     .catch(() => null) as { code?: string } | null;
   if (body?.code === AuthErrorCode.DEVICE_REMOVED) {
     void auth.onDeviceRemoved();
+    return resp;
+  }
+  if (body?.code === AuthErrorCode.SESSION_REVOKED) {
+    if (stillSessionAtSend(sessionAtSend)) void auth.onSessionRevoked();
     return resp;
   }
   if (body?.code !== AuthErrorCode.SESSION_INVALID) return resp;

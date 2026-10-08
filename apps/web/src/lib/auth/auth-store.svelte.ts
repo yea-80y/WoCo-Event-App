@@ -292,6 +292,7 @@ export class DeviceRemovedError extends Error {
 
 const DEVICE_REMOVED_MESSAGE =
   "This device was removed from your account. To use it again, add it from one of your other passkeys.";
+const SESSION_REVOKED_MESSAGE = "You were signed out on every device. Sign in again to carry on.";
 const NOT_LINKED_MESSAGE =
   "Couldn't confirm this passkey is on your account. Try again - if it keeps happening, add it again from one of your other passkeys.";
 const NOT_SET_UP_MESSAGE = "This passkey wasn't fully set up. Add it again from one of your other passkeys.";
@@ -1520,6 +1521,7 @@ async function init(): Promise<void> {
         setTimeout(async () => {
           if (_kind !== "none") return; // already reconnected elsewhere
           const addr = await getConnectedAddress();
+          if (_kind !== "none") return; // signed in some other way while we waited
           if (addr && addr.toLowerCase() === storedParent.toLowerCase()) {
             _kind = "web3";
             _parent = storedParent;
@@ -2777,6 +2779,21 @@ async function onDeviceRemoved(): Promise<void> {
     await logout({ force: true });
   } finally {
     _forgettingDevice = false;
+  }
+}
+
+/** The server revoked this session ("Sign out everywhere"). A silent re-sign
+ *  would undo it, so sign out fully - which also ends an email login's
+ *  Web3Auth session on this device - once, however many requests saw it. */
+let _signingOutRevoked = false;
+async function onSessionRevoked(): Promise<void> {
+  if (_signingOutRevoked || _kind === "none") return;
+  _signingOutRevoked = true;
+  try {
+    _postAuthNotice(SESSION_REVOKED_MESSAGE);
+    await logout({ force: true });
+  } finally {
+    _signingOutRevoked = false;
   }
 }
 
@@ -4870,6 +4887,11 @@ async function clearAllAuth(): Promise<void> {
   await step("aa-sessions", () => delKV(StorageKeys.WOCO_AA_SESSION));
   // Shared-device safety: drop all user-scoped caches (creator lists, orders, collection, claim status).
   await step("user-caches", () => cacheClearByPrefix(USER_SCOPED_PREFIXES));
+  // A pending empty-accounts logout must not fire into the NEXT sign-in (#186).
+  if (_emptyAccountsTimer) {
+    clearTimeout(_emptyAccountsTimer);
+    _emptyAccountsTimer = null;
+  }
   _kind = "none";
   _parent = null;
   _sessionAddress = null;
@@ -4945,6 +4967,7 @@ export const auth = {
    *  do what only its owner can (names, backups, adding or removing passkeys). */
   get isAccountOwner() { return !(_kind === "passkey" && _deviceRole); },
   onDeviceRemoved,
+  onSessionRevoked,
   onSessionRejected,
   registerUpgradeFlow,
   upgradeToPasskey,

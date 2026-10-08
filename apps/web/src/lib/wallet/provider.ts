@@ -9,6 +9,10 @@ export function setWalletConnectProvider(p: EthereumProvider | null) {
   _ethersProvider = null; // reset when underlying provider changes
 }
 
+export function getWalletConnectProvider(): EthereumProvider | null {
+  return _wcProvider;
+}
+
 export function getProvider(): EthereumProvider | undefined {
   if (typeof window === "undefined") return undefined;
   return (window.ethereum as EthereumProvider | undefined) ?? _wcProvider ?? undefined;
