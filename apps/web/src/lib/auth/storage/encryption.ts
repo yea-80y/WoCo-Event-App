@@ -8,7 +8,18 @@ import { getKV, putKV } from "./indexeddb.js";
  * IndexedDB stores CryptoKey objects natively - the raw key material
  * never leaves the Web Crypto API.
  */
-export async function ensureDeviceKey(): Promise<CryptoKey> {
+let _deviceKeyInFlight: Promise<CryptoKey> | null = null;
+
+export function ensureDeviceKey(): Promise<CryptoKey> {
+  // Two first calls at once would each make a key, and the second write would
+  // replace the one the first caller already encrypted under (#186).
+  _deviceKeyInFlight ??= loadOrCreateDeviceKey().finally(() => {
+    _deviceKeyInFlight = null;
+  });
+  return _deviceKeyInFlight;
+}
+
+async function loadOrCreateDeviceKey(): Promise<CryptoKey> {
   const existing = await getKV<CryptoKey>(StorageKeys.DEVICE_KEY);
   if (existing) return existing;
 

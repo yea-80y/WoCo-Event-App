@@ -11,7 +11,8 @@
   // that deliberately-lazy module into the entry chunk.
   import { AUTH_NOTICE_KEY } from "../../auth/auth-notice.js";
   import { navigate } from "../../router/router.svelte.js";
-  import { canonicalUrl, hostLabel } from "../../sub-ens/host-label.js";
+  import { canonicalUrl } from "../../sub-ens/host-label.js";
+  import { mustSignInElsewhere } from "../../auth/sign-in-host.js";
   import type { InAppBrowser } from "../../browser/in-app-browser.js";
   import { ESCAPE_FAILED_PARAM } from "../../browser/in-app-route.js";
   import { onMount } from "svelte";
@@ -38,13 +39,13 @@
   const visible = $derived(open || loginRequest.pending);
 
   // THE choke point for every sign-in CTA in this app: they all end at
-  // loginRequest.request(), which only this modal can answer. On a WoCo name
-  // host the server will refuse the session — `ALLOWED_HOSTS` excludes
-  // `*.woco.eth.<tld>` on purpose, because a SITE name serves holder-chosen
-  // content under that same suffix — so offer the canonical host instead of a
-  // picker that is guaranteed to fail. Read once: the hostname cannot change
-  // without a page load.
-  const nameHostLabel = typeof window !== "undefined" ? hostLabel(window.location.hostname) : null;
+  // loginRequest.request(), which only this modal can answer. Off the canonical
+  // host a sign-in either fails (a name host: `ALLOWED_HOSTS` excludes
+  // `*.woco.eth.<tld>` on purpose) or lands in the wrong account, so offer
+  // woco.eth.limo instead of a picker (sign-in-host.ts). Read once: the hostname
+  // cannot change without a page load.
+  const offCanonicalHost =
+    typeof window !== "undefined" && mustSignInElsewhere(window.location.hostname, import.meta.env.DEV);
 
   // A social app's built-in browser can sign no one in - no passkeys, and Google
   // refuses it (#812). Checked once, when the sheet first opens, so detection
@@ -205,7 +206,7 @@
         </button>
       </header>
 
-      {#if nameHostLabel}
+      {#if offCanonicalHost}
         <p class="notice" role="status">
           Accounts live on WoCo's main address — sign in there and this page opens with you.
         </p>
@@ -251,10 +252,10 @@
         </div>
       {/if}
 
-      <!-- Not rendered on a name host: every method here ends at a session the
-           server will refuse from this origin, so the redirect above is the
-           only sign-in this page can honestly offer. -->
-      {#if !nameHostLabel}
+      <!-- Not rendered off the canonical host: on a name host every method ends
+           at a session the server refuses, and anywhere else it ends at the wrong
+           account, so the redirect above is the only honest sign-in. -->
+      {#if !offCanonicalHost}
       <div class="options" class:offstage={authing !== null}>
         <!-- Hidden rather than unmounted on the wallet screen, so a passkey
              error or the create-account offer is still there on the way back. -->
