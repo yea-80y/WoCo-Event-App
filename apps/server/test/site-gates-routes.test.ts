@@ -80,8 +80,9 @@ before(async () => {
   mkdirSync(join(dir, ".data"));
 
   shared = await import("@woco/shared");
-  ({ encodeJsonFeed } = await import("../src/lib/swarm/feeds.js"));
-  ({ readFeedPageStrict } = await import("../src/lib/swarm/feeds.js"));
+  const feeds = await import("../src/lib/swarm/feeds.js");
+  ({ encodeJsonFeed, readFeedPageStrict } = feeds);
+  feeds.__feedWriteTestHooks.setBaseBackoffMs(0); // the publish-absent write retries against a 500
   ({ setStripeAccount } = await import("../src/lib/stripe/accounts.js"));
   const sites = await import("../src/routes/sites.js");
   deployHeadLines = sites.deployHeadLines;
