@@ -24,6 +24,7 @@ import { siteRoute } from "./routes/site.js";
 import { profiles } from "./routes/profiles.js";
 import { recovery } from "./routes/recovery.js";
 import { deviceGrants } from "./routes/device-grants.js";
+import { upgradeIntent } from "./routes/upgrade-intent.js";
 import { zerodevPolicy, zerodevPolicyHealth } from "./routes/zerodev-policy.js";
 import { pairing } from "./routes/pairing.js";
 import { broadcast } from "./routes/broadcast.js";
@@ -675,6 +676,9 @@ app.post("/api/auth/revoke-all", requireAuth, (c) => {
 // An account's added passkeys (#746). revoke-all above also ends their sessions;
 // a device whose grant is still live signs a new one on its next request.
 app.route("/api/auth/device-grants", deviceGrants);
+// An email account about to upgrade to a passkey (#746): the per-network limit on
+// the one sponsored op a locked account may have.
+app.route("/api/auth/upgrade-intent", upgradeIntent);
 // ZeroDev's custom gas policy asks here before sponsoring a userOp (#758).
 app.route("/api/zerodev/policy", zerodevPolicy);
 // Linking another device (#746 step 4): a sealed mailbox, no session.

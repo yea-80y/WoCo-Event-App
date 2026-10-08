@@ -14,6 +14,11 @@
  *           recovered: the sender is the GUARDIAN's own Kernel, which is never
  *           unlocked. The guardian must also be on that account's list onchain,
  *           else an op that validates and then reverts still spends our gas.
+ *           ONE exception (owner 10-07): a locked email account may upgrade to a
+ *           passkey - the `upgrade` shape, one op per intent its own session asked
+ *           for (per-IP limited, lib/zerodev/upgrade-intents.ts) - so an account
+ *           holding only a pending referral can organise. Bad-actor limits only, no
+ *           platform-wide cap: the ZeroDev plan is raised with demand (owner 10-08).
  *   HOW MUCH - a ceiling on what ONE op may cost (its gas limits x max fee, which
  *           is what the EntryPoint can charge the paymaster - the sender picks those
  *           numbers and the bundler keeps the surplus), and a per-account count,
@@ -34,6 +39,8 @@
  *   co-owners      `execute` batch of exactly [self.changeRootValidator(weighted, no hook, list),
  *                  self.uninstallValidation(ECDSA)] - the second passkey makes every passkey a
  *                  co-owner (#746, @woco/shared/kernel/co-owners)
+ *   upgrade        the co-owners batch with a list of ONE key: an email account handing itself
+ *                  to its new passkey (#746). A passkey account's switch always lists two.
  *   renew          `execute` single `weighted.renew(list)` - add or remove a co-owner
  * Both co-owner shapes carry a list only when it is 1..10 distinct keys, every weight 1,
  * threshold 1, no delay: the validator accepts an empty list or an unreachable threshold
@@ -78,8 +85,17 @@ import {
 } from "@woco/shared/kernel/co-owners";
 import type { GateStatus } from "../gate/check.js";
 import { SlidingWindowLimiter } from "../http/rate-limit.js";
+import { RollingDayCount } from "./upgrade-intents.js";
 
-export type SponsorShape = "install-route" | "guardians" | "remove-route" | "rotate" | "recover" | "co-owners" | "renew";
+export type SponsorShape =
+  | "install-route"
+  | "guardians"
+  | "remove-route"
+  | "rotate"
+  | "recover"
+  | "co-owners"
+  | "upgrade"
+  | "renew";
 
 export type Classified =
   | { ok: true; shape: SponsorShape; subject: string; guardian?: string }
@@ -283,25 +299,26 @@ function isRenew(call: InnerCall): boolean {
   }
 }
 
-/** [changeRootValidator(weighted, no hook, list, 0x), uninstallValidation(ECDSA, 0x, 0x)], both on the sender. */
-function isCoOwnerSwitch(calls: InnerCall[], sender: string): boolean {
-  if (calls.length !== 2 || calls[0].to !== sender || calls[1].to !== sender) return false;
+/** [changeRootValidator(weighted, no hook, list, 0x), uninstallValidation(ECDSA, 0x, 0x)], both on the sender:
+ *  the number of keys on the list, or 0 when it is not exactly that. */
+function coOwnerSwitchSize(calls: InnerCall[], sender: string): number {
+  if (calls.length !== 2 || calls[0].to !== sender || calls[1].to !== sender) return 0;
   try {
     const change = decodeFunctionData({ abi: CO_OWNER_ABI, data: calls[0].data });
-    if (change.functionName !== "changeRootValidator") return false;
+    if (change.functionName !== "changeRootValidator") return 0;
     const [root, hook, enable, hookData] = change.args as [Hex, string, Hex, Hex];
-    if (lc(root) !== WEIGHTED_ROOT_ID || lc(hook) !== ZERO_ADDRESS || hookData !== "0x") return false;
+    if (lc(root) !== WEIGHTED_ROOT_ID || lc(hook) !== ZERO_ADDRESS || hookData !== "0x") return 0;
     const [signers, weights, threshold, delay] = decodeAbiParameters(
       parseAbiParameters("address[], uint24[], uint24, uint48"),
       enable,
     ) as unknown as [readonly string[], readonly number[], number, number];
-    if (!validCoOwnerConfig(signers, weights, threshold, delay)) return false;
+    if (!validCoOwnerConfig(signers, weights, threshold, delay)) return 0;
     const drop = decodeFunctionData({ abi: CO_OWNER_ABI, data: calls[1].data });
-    if (drop.functionName !== "uninstallValidation") return false;
+    if (drop.functionName !== "uninstallValidation") return 0;
     const [vId, deinit, hookDeinit] = drop.args as [Hex, Hex, Hex];
-    return lc(vId) === ECDSA_ROOT_ID && deinit === "0x" && hookDeinit === "0x";
+    return lc(vId) === ECDSA_ROOT_ID && deinit === "0x" && hookDeinit === "0x" ? signers.length : 0;
   } catch {
-    return false;
+    return 0;
   }
 }
 
@@ -345,9 +362,9 @@ export function classifyUserOp(op: PolicyUserOp): Classified {
     return isRenew(calls[0]) ? { ok: true, shape: "renew", subject: op.sender } : { ok: false, reason: "co-owners" };
   }
   if (calls.length === 2 && calls[0].to === op.sender && calls[1].to === op.sender && !isRouteUninstall(calls[0], op.sender)) {
-    return isCoOwnerSwitch(calls, op.sender)
-      ? { ok: true, shape: "co-owners", subject: op.sender }
-      : { ok: false, reason: "co-owners" };
+    const size = coOwnerSwitchSize(calls, op.sender);
+    if (size === 0) return { ok: false, reason: "co-owners" };
+    return { ok: true, shape: size === 1 ? "upgrade" : "co-owners", subject: op.sender };
   }
   if (calls.length === 1 && calls[0].to !== op.sender && calls[0].to !== HOOK) {
     const target = recoveryTarget(calls[0]);
@@ -371,6 +388,8 @@ export interface PolicyDeps {
   gate(account: string): Promise<GateStatus>;
   /** Is `guardian` on `account`'s recovery list right now? null = could not read. */
   isGuardian(account: string, guardian: string): Promise<boolean | null>;
+  /** Spend the intent the locked account's own session asked for: true when it held one. */
+  upgradeIntent: { spend(account: string): boolean };
 }
 
 export type Decision =
@@ -396,9 +415,11 @@ export const SPONSOR_WINDOWS = [
 /** userOps already counted, so the stub, the final request and a retry count once. */
 const SEEN_MAX = 10_000;
 
+
 export class SponsorPolicy {
   private readonly limiter = new SlidingWindowLimiter(SPONSOR_WINDOWS);
   private readonly seen = new Map<string, true>();
+  private readonly lockedUpgradesPaid = new RollingDayCount();
 
   constructor(
     private readonly deps: PolicyDeps,
@@ -420,7 +441,14 @@ export class SponsorPolicy {
     // retries nothing, and the user retries the action.
     const gate = await this.deps.gate(subject).catch((): GateStatus => ({ gated: false }));
     // The gate's rollout kill-switch opens screens, never the platform's gas.
-    if (!gate.gated || gate.via === "disabled") return { proceed: false, reason: "locked", shape: shape.shape, subject };
+    const locked = !gate.gated || gate.via === "disabled";
+    // A NEW op of a locked account must be an upgrade its own session asked for; the
+    // stub, final and a same-nonce retry of one already counted ride on it.
+    if (locked) {
+      if (shape.shape !== "upgrade") return { proceed: false, reason: "locked", shape: shape.shape, subject };
+      // Spent here: nothing after this refuses an upgrade op (it has no guardian read).
+      if (!counted && !this.deps.upgradeIntent.spend(subject)) return { proceed: false, reason: "no-intent", shape: shape.shape, subject };
+    }
     if (shape.guardian) {
       const listed = await this.deps.isGuardian(subject, shape.guardian).catch(() => null);
       if (listed !== true) {
@@ -432,8 +460,16 @@ export class SponsorPolicy {
       this.limiter.record(subject);
       this.seen.set(opKey, true);
       while (this.seen.size > SEEN_MAX) this.seen.delete(this.seen.keys().next().value as string);
+      if (locked) this.lockedUpgradesPaid.record();
     }
+    if (locked) return { proceed: true, shape: shape.shape, subject, via: "locked-upgrade" };
     return { proceed: true, shape: shape.shape, subject, via: gate.via };
+  }
+
+  /** Locked accounts' upgrade ops paid in the last 24 h - each counted once, not per request.
+   *  No threshold: the number to watch so the ZeroDev plan is raised in time (owner 10-08). */
+  lockedUpgradesPaid24h(): number {
+    return this.lockedUpgradesPaid.count();
   }
 }
 

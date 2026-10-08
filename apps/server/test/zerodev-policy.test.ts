@@ -250,7 +250,9 @@ test("more than four calls in one batch is refused", async () => {
 let unlocked: Set<string>;
 let guardians: Map<string, boolean | null>;
 let gateCalls: string[];
+let intents: Set<string>;
 const deps: PolicyDeps = {
+  upgradeIntent: { spend: (a) => intents.delete(a) },
   async gate(a): Promise<GateStatus> {
     gateCalls.push(a);
     return unlocked.has(a) ? { gated: true, via: "ticket" } : { gated: false };
@@ -263,6 +265,7 @@ beforeEach(() => {
   unlocked = new Set();
   guardians = new Map();
   gateCalls = [];
+  intents = new Set();
 });
 
 test("a locked account is refused; an unlocked one is paid for", async () => {
@@ -538,4 +541,149 @@ test("co-owners: the app's own builders are exactly what the policy pays for", a
     shape: "renew",
     subject: ACCOUNT.toLowerCase(),
   });
+});
+
+// ── The email -> passkey upgrade (#746, owner 10-07) ─────────────────────────
+// The switch to a list of ONE key: an email account handing itself to its new
+// passkey. A locked account gets exactly one, under a platform-wide daily cap.
+
+test("upgrade: the co-owner switch to one key is its own shape, deployed or counterfactual", async () => {
+  const { coOwnerSwitchCalls } = await import("../../web/src/lib/auth/co-owner-calls.js");
+  const enc = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as never;
+  const sw = coOwnerSwitchCalls(enc, ACCOUNT, [P1]).map((c) => ({ to: c.to as Address, data: c.data }));
+  const callData = await viaExecute(sw);
+  assert.deepEqual(classifyUserOp(op(callData)), { ok: true, shape: "upgrade", subject: ACCOUNT.toLowerCase() });
+  const { metaFactoryAddress } = KernelVersionToAddressesMap[KERNEL_V3_1];
+  assert.deepEqual(classifyUserOp(op(callData, { factory: metaFactoryAddress!.toLowerCase() })), {
+    ok: true,
+    shape: "upgrade",
+    subject: ACCOUNT.toLowerCase(),
+  });
+  // The same checks as any switch: the ECDSA validation must go in the same batch.
+  assert.equal(classifyUserOp(op(await viaExecute([switchCalls(enableOf([P1]))[0]]))).ok, false, "alone");
+  assert.deepEqual(classifyUserOp(op(await viaExecute(switchCalls(enableOf([P1], [2]))))), { ok: false, reason: "co-owners" });
+});
+
+test("upgrade: a locked account is paid for an upgrade op only against an intent its session asked for", async () => {
+  const p = new SponsorPolicy(deps);
+  const upgrade = await viaExecute(switchCalls(enableOf([P1])));
+  const subject = ACCOUNT.toLowerCase();
+  assert.deepEqual(await p.decide(op(upgrade, { nonce: "0" })), { proceed: false, reason: "no-intent", shape: "upgrade", subject });
+  intents.add(subject);
+  const paid = { proceed: true, shape: "upgrade", subject, via: "locked-upgrade" };
+  assert.deepEqual(await p.decide(op(upgrade, { nonce: "0" })), paid, "stub");
+  assert.equal(intents.has(subject), false, "the op spent the intent");
+  assert.deepEqual(await p.decide(op(upgrade, { nonce: "0" })), paid, "final: rides on the counted op");
+  assert.deepEqual(await p.decide(op(upgrade, { nonce: "0" })), paid, "a retry at the same nonce");
+  assert.deepEqual(await p.decide(op(upgrade, { nonce: "1" })), { proceed: false, reason: "no-intent", shape: "upgrade", subject }, "a new op needs a new intent");
+  intents.add(subject);
+  assert.deepEqual(await p.decide(op(upgrade, { nonce: "1" })), paid, "after an op that landed and reverted, a fresh intent pays the retry");
+  // Every other op of a locked account stays refused, the upgrade's neighbours included - intent or not.
+  intents.add(subject);
+  const locked = async (callData: Hex, shape: string) =>
+    assert.deepEqual(await p.decide(op(callData, { nonce: "5" })), { proceed: false, reason: "locked", shape, subject }, shape);
+  await locked(await viaExecute(switchCalls(enableOf([P1, P2]))), "co-owners");
+  await locked(await viaExecute([renewCall([P1, P2])]), "renew");
+  await locked(await viaExecute(buildRemoveRecoveryCalls(d, ACCOUNT)), "remove-route");
+  assert.equal(intents.has(subject), true, "a refused op spends nothing");
+});
+
+test("upgrade: the paid count counts each locked upgrade op once, not each request; unlocked ones not at all", async () => {
+  const p = new SponsorPolicy(deps);
+  const upgrade = await viaExecute(switchCalls(enableOf([P1])));
+  intents.add(ACCOUNT.toLowerCase());
+  for (let i = 0; i < 3; i++) await p.decide(op(upgrade, { nonce: "0" })); // stub, final, retry
+  assert.equal(p.lockedUpgradesPaid24h(), 1);
+  await p.decide(op(upgrade, { nonce: "1" })); // no intent: refused, not counted
+  assert.equal(p.lockedUpgradesPaid24h(), 1);
+  unlocked.add(ACCOUNT.toLowerCase());
+  await p.decide(op(upgrade, { nonce: "2" }));
+  assert.equal(p.lockedUpgradesPaid24h(), 1, "an unlocked account's upgrade is not this exception");
+});
+
+test("upgrade: an unlocked account's upgrade is an ordinary paid op and spends no intent", async () => {
+  unlocked.add(ACCOUNT.toLowerCase());
+  intents.add(ACCOUNT.toLowerCase());
+  const p = new SponsorPolicy(deps);
+  const upgrade = await viaExecute(switchCalls(enableOf([P1])));
+  assert.deepEqual(await p.decide(op(upgrade, { nonce: "0" })), {
+    proceed: true, shape: "upgrade", subject: ACCOUNT.toLowerCase(), via: "ticket",
+  });
+  assert.equal(intents.has(ACCOUNT.toLowerCase()), true);
+});
+
+test("upgrade: the gate's kill-switch reads as locked - an intent's one op, never more", async () => {
+  const p = new SponsorPolicy({ ...deps, gate: async () => ({ gated: true, via: "disabled" }) });
+  intents.add(ACCOUNT.toLowerCase());
+  const upgrade = await viaExecute(switchCalls(enableOf([P1])));
+  assert.equal((await p.decide(op(upgrade, { nonce: "0" }))).via, "locked-upgrade");
+  assert.equal((await p.decide(op(upgrade, { nonce: "1" }))).proceed, false);
+  assert.equal((await p.decide(op(await viaExecute([renewCall([P1, P2])]), { nonce: "2" }))).proceed, false);
+});
+
+test("upgrade: no platform-wide cap - every locked account with an intent is paid for (owner 10-08)", async () => {
+  const { coOwnerSwitchCalls } = await import("../../web/src/lib/auth/co-owner-calls.js");
+  const enc = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as never;
+  const p = new SponsorPolicy(deps);
+  const sender = (i: number) => `0x${(0xa000 + i).toString(16).padStart(40, "0")}`;
+  for (let i = 0; i < 50; i++) {
+    intents.add(sender(i));
+    const callData = await viaExecute(coOwnerSwitchCalls(enc, sender(i), [P1]).map((c) => ({ to: c.to as Address, data: c.data })));
+    assert.equal((await p.decide(op(callData, { sender: sender(i), nonce: "0" }))).proceed, true, `account ${i}`);
+  }
+});
+
+test("upgrade: the per-op gas ceiling and the per-account count still apply", async () => {
+  intents.add(ACCOUNT.toLowerCase());
+  const p = new SponsorPolicy(deps, 1_000n);
+  const upgrade = await viaExecute(switchCalls(enableOf([P1])));
+  assert.deepEqual(await p.decide(op(upgrade, { nonce: "0", maxCostWei: 1_001n })), {
+    proceed: false, reason: "gas", shape: "upgrade", subject: ACCOUNT.toLowerCase(),
+  });
+  assert.equal((await p.decide(op(upgrade, { nonce: "0", maxCostWei: 1_000n }))).proceed, true);
+});
+
+// ── The intent store (lib/zerodev/upgrade-intents.ts) ────────────────────────
+
+test("intents: one per grant, spent by its op, gone after its window; ten a day per network", async () => {
+  const { UpgradeIntents, UPGRADE_INTENT_TTL_MS, UPGRADE_INTENTS_PER_IP } = await import("../src/lib/zerodev/upgrade-intents.js");
+  const store = new UpgradeIntents();
+  const t0 = 1_000_000;
+  assert.equal(store.spend(ACCOUNT, t0), false, "none granted");
+  assert.equal(store.grant(ACCOUNT, "1.2.3.4", t0), true);
+  assert.equal(store.spend(ACCOUNT.toUpperCase().replace("0X", "0x"), t0), true, "keyed by the lowercased account");
+  assert.equal(store.spend(ACCOUNT, t0), false, "spent: one op per intent");
+  assert.equal(store.grant(ACCOUNT, "1.2.3.4", t0), true);
+  assert.equal(store.spend(ACCOUNT, t0 + UPGRADE_INTENT_TTL_MS), false, "expired");
+  assert.equal(store.grant(GUARDIAN_EOA, "1.2.3.4", t0), true);
+  assert.equal(store.spend(GUARDIAN_EOA, t0 + UPGRADE_INTENT_TTL_MS - 1), true, "inside its window");
+  assert.equal(UPGRADE_INTENTS_PER_IP, 10, "a household or a venue is not turned away");
+  for (let i = 4; i <= UPGRADE_INTENTS_PER_IP; i++) {
+    assert.equal(store.grant(`0x${i.toString(16).padStart(40, "0")}`, "1.2.3.4", t0), true, `grant ${i} today from this network`);
+  }
+  assert.equal(store.grant(NEW_OWNER, "1.2.3.4", t0), false, "one more refused");
+  assert.equal(store.spend(NEW_OWNER, t0), false);
+  assert.deepEqual(store.stats(t0), { granted24h: UPGRADE_INTENTS_PER_IP, refusedByNetwork24h: 1 }, "health sees both");
+  assert.equal(store.grant(NEW_OWNER, "5.6.7.8", t0), true, "another network has its own share");
+  assert.equal(store.grant(NEW_OWNER, "1.2.3.4", t0 + 24 * 60 * 60_000 + 1), true, "a day later");
+  assert.deepEqual(store.stats(t0 + 2 * 24 * 60 * 60_000), { granted24h: 0, refusedByNetwork24h: 0 }, "the counts roll off");
+});
+
+test("intents: the route charges the caller's network and grants only the signed-in account", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/routes/upgrade-intent.ts", import.meta.url), "utf8");
+  assert.match(src, /upgradeIntent\.post\("\/", jsonBodyLimit\(1024\), requireAuth,/);
+  assert.match(src, /const ip = clientIp\(c\);\s*if \(!upgradeIntents\.grant\(account, ip\)\)/);
+  assert.match(src, /const account = \(c\.get\("parentAddress"\) as string\)\.toLowerCase\(\);/, "the verified session's account, never a body field");
+  const index = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  assert.match(index, /app\.route\("\/api\/auth\/upgrade-intent", upgradeIntent\);/);
+});
+
+test("health reports the locked upgrades paid and what the per-network limit did - numbers, no threshold", async () => {
+  const { zerodevPolicyHealth, _resetZerodevPolicyForTests } = await import("../src/routes/zerodev-policy.js");
+  _resetZerodevPolicyForTests(deps);
+  const h = zerodevPolicyHealth() as Record<string, unknown>;
+  assert.equal(h.lockedUpgradesPaid24h, 0);
+  assert.deepEqual(Object.keys(h.upgradeIntents as object).sort(), ["granted24h", "refusedByNetwork24h"]);
+  assert.equal(h.ok, h.configured, "neither number turns the section red");
 });
