@@ -11,6 +11,9 @@
  *    output. That library is not a dependency.
  *  - ACCOUNT_KEY's secret half was cross-checked against a by-hand RFC 5869 HKDF
  *    (Python hmac/hashlib).
+ *  - `sealed-box-v2-frozen.json` holds two boxes sealed under ACCOUNT_KEY by
+ *    `sealBoxJson` / `sealBoxJsonCompressed` on 2026-10-08 (main 6171f6f3), each
+ *    opened once before it was frozen. They stand in for live data (#28).
  *
  * A mismatch here is never a test to update: it means a key or a box format moved.
  */
@@ -44,6 +47,7 @@ import {
   ORDER_SEAL_INFO,
   LIST_SEAL_INFO,
 } from "../../src/crypto/sealed-box.js";
+import { isGzipped } from "../../src/crypto/compress.js";
 
 const here = (rel: string) => fileURLToPath(new URL(rel, import.meta.url));
 const DRAFT = JSON.parse(readFileSync(here("./xwing-draft10-vectors.json"), "utf8")) as {
@@ -197,6 +201,23 @@ test("box round-trips, as bytes and as JSON (plain and gzipped)", async () => {
   const big = { contacts: Array.from({ length: 200 }, (_, i) => `person${i}@example.com`) };
   const gz = await sealBoxJsonCompressed(bytesToHex(ACCOUNT.publicKey), big, list);
   assert.deepEqual(await openBoxJson(bytesToHex(ACCOUNT.secretKey), gz, list), big);
+});
+
+// A round trip cannot see a format change that seal and open make together; only
+// bytes sealed by an earlier build can.
+const FROZEN = JSON.parse(readFileSync(here("./sealed-box-v2-frozen.json"), "utf8")) as { order: unknown; list: unknown };
+
+test("FROZEN boxes from an earlier build still open: an order (plain JSON) and a contact list (gzipped)", async () => {
+  assert.deepEqual(await openBoxJson(ACCOUNT.secretKey, FROZEN.order, ORDER_CTX), {
+    name: "Ada Lovelace",
+    email: "ada@example.com",
+    fields: { "Dietary needs": "none" },
+  });
+  const list = listSealContext(OWNER);
+  assert.ok(isGzipped(await openBox(ACCOUNT.secretKey, FROZEN.list, list)), "the list box must exercise the gzip path");
+  assert.deepEqual(await openBoxJson(ACCOUNT.secretKey, FROZEN.list, list), {
+    contacts: Array.from({ length: 200 }, (_, i) => `person${i}@example.com`),
+  });
 });
 
 test("every seal is fresh: the same input never yields the same box", async () => {
