@@ -391,14 +391,13 @@
   async function revokeAllSessions() {
     if (revokingAll) return;
     revokingAll = true;
+    let revoked = false;
     try {
       // authPost resolves on a refusal too, so "Done" must wait for ok.
       const res = await authPost("/api/auth/revoke-all", {});
       if (!res.ok) throw new Error(res.error ?? "Revoke failed");
+      revoked = true;
       revokeSuccess = true;
-      // "Every device" includes this one: sign out here now rather than on the
-      // next request (#186).
-      await auth.onSessionRevoked();
     } catch (err) {
       console.error("Revoke sessions failed:", err);
       revokeFailed = true;
@@ -406,6 +405,9 @@
     } finally {
       revokingAll = false;
     }
+    // "Every device" includes this one (#186). Outside the try: the server has
+    // already revoked, so a local sign-out hiccup must not read as "failed".
+    if (revoked) await auth.onSessionRevoked();
   }
 
   async function loadProfile() {

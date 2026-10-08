@@ -682,8 +682,9 @@ app.post("/api/auth/revoke-all", requireAuth, (c) => {
   return c.json({ ok: true, message: "All sessions revoked" });
 });
 
-// An account's added passkeys (#746). revoke-all above also ends their sessions;
-// a device whose grant is still live signs a new one on its next request.
+// An account's added passkeys (#746). revoke-all above also ends their sessions:
+// each signs out on its next request (SESSION_REVOKED) and, while its grant is
+// live, can sign in again.
 app.route("/api/auth/device-grants", deviceGrants);
 // An email account about to upgrade to a passkey (#746): the per-network limit on
 // the one sponsored op a locked account may have.

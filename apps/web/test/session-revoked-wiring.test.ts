@@ -14,8 +14,12 @@ const STORE = read("../src/lib/auth/auth-store.svelte.ts");
 const PROFILE = read("../src/lib/components/profile/ProfilePage.svelte");
 
 test("both request paths sign out on SESSION_REVOKED, before the SESSION_INVALID re-mint", () => {
-  const hits = CLIENT.match(/AuthErrorCode\.SESSION_REVOKED\) \{\s*(\/\/[^\n]*\n\s*)*void auth\.onSessionRevoked\(\);\s*return/g);
+  const hits = CLIENT.match(/AuthErrorCode\.SESSION_REVOKED\) \{\s*(\/\/[^\n]*\n\s*)*if \(stillSessionAtSend\(sessionAtSend\)\) void auth\.onSessionRevoked\(\);\s*return/g);
   assert.equal(hits?.length, 2, "authFetch and authStream");
+  // The guard compares against the session captured BEFORE the send, so a late
+  // answer for a replaced session cannot sign the new one out.
+  assert.equal(CLIENT.match(/const sessionAtSend = auth\.sessionAddress;\s*const (result|resp) = await send\(\);/g)?.length, 2);
+  assert.match(CLIENT, /sessionAtSend === null \|\| auth\.sessionAddress === sessionAtSend/);
   for (const marker of ["if (result.code === AuthErrorCode.SESSION_REVOKED)", "if (body?.code === AuthErrorCode.SESSION_REVOKED)"]) {
     const at = CLIENT.indexOf(marker);
     assert.ok(at > 0, marker);
@@ -37,6 +41,6 @@ test("'Sign out everywhere' signs this device out too, only after the server agr
   const start = PROFILE.indexOf("async function revokeAllSessions(");
   const body = PROFILE.slice(start, PROFILE.indexOf("\n  }\n", start));
   const ok = body.indexOf("if (!res.ok) throw");
-  const out = body.indexOf("await auth.onSessionRevoked()");
-  assert.ok(ok > 0 && out > ok);
+  const out = body.indexOf("if (revoked) await auth.onSessionRevoked()");
+  assert.ok(ok > 0 && out > body.indexOf("} finally {"), "after the try, so a local hiccup is not reported as a failed revoke");
 });
