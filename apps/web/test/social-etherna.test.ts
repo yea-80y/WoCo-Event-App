@@ -19,12 +19,14 @@ import {
   LIKE_SUBJECT_INDEX_FORMAT,
   contentFeedSocIdentifier,
   followProfileSubject,
+  likeStatementTopic,
   likeSubjectIndexTopic,
   socialEventSubject,
   versionedSocIdentifier,
   type Hex0x,
 } from "@woco/shared";
 import { kindForVariant, readFollows, readStatement, readSubjects, writeStatement } from "../src/lib/social/social-core.js";
+import { readLiveSubjects } from "../src/lib/social/live-subjects.js";
 import { ETHERNA_GATEWAY_URL } from "../src/lib/swarm/gateways.js";
 import {
   OWNER,
@@ -227,4 +229,50 @@ test("a like that opens a new index band reads back on this device before our be
 test("Interested is a like", () => {
   assert.equal(kindForVariant("interested"), "like");
   assert.equal(kindForVariant("follow"), "follow");
+});
+
+// ── The strict read the passkey upgrade moves likes and follows from (#746) ──
+
+test("readLiveSubjects: the subjects still liked - a retraction is left out", async () => {
+  const net: Net = { ourBee: new Map(), etherna: new Map() };
+  install(net);
+  const { transport: send } = transport(net);
+  for (const subject of [A, B, C]) assert.equal((await writeStatement(signer, "like", subject, true, { transport: send })).ok, true);
+  assert.equal((await writeStatement(signer, "like", B, false, { transport: send })).ok, true);
+  assert.deepEqual(await readLiveSubjects(signer, "like"), [A, C]);
+  assert.deepEqual(await readLiveSubjects(signer, "follow"), [], "never followed: nothing, not unavailable");
+});
+
+test("readLiveSubjects: a statement nobody could read makes the whole answer unavailable", async () => {
+  const net: Net = { ourBee: new Map(), etherna: new Map() };
+  install(net);
+  const { transport: send } = transport(net);
+  for (const subject of [A, B]) await writeStatement(signer, "like", subject, true, { transport: send });
+  // The index reached our bee; B's statement is only on an Etherna that stopped answering.
+  const statementOfB = soc(versionedSocIdentifier(contentFeedSocIdentifier(likeStatementTopic(B)), 0), {}).address;
+  assert.ok(net.etherna.has(statementOfB));
+  propagate(net);
+  net.ourBee.delete(statementOfB);
+  net.ethernaDown = (_nth, address) => address === statementOfB;
+  assert.equal(await readLiveSubjects(signer, "like"), "unavailable");
+  net.ethernaDown = false;
+  assert.deepEqual(await readLiveSubjects(signer, "like"), [A, B], "the control: answered, both live");
+});
+
+test("readLiveSubjects: a like whose later retraction cannot be read is unavailable, not live", async () => {
+  const net: Net = { ourBee: new Map(), etherna: new Map() };
+  install(net);
+  const { transport: send } = transport(net);
+  for (const subject of [A, B]) await writeStatement(signer, "like", subject, true, { transport: send });
+  await writeStatement(signer, "like", B, false, { transport: send });
+  // B's "true" (version 0) reached our bee; its retraction (version 1) is only on an
+  // Etherna that stopped answering - the scan for B's head cannot conclude.
+  const retraction = soc(versionedSocIdentifier(contentFeedSocIdentifier(likeStatementTopic(B)), 1), {}).address;
+  assert.ok(net.etherna.has(retraction));
+  propagate(net);
+  net.ourBee.delete(retraction);
+  net.ethernaDown = (_nth, address) => address === retraction;
+  assert.equal(await readLiveSubjects(signer, "like"), "unavailable");
+  net.ethernaDown = false;
+  assert.deepEqual(await readLiveSubjects(signer, "like"), [A], "the control: answered, B is retracted");
 });

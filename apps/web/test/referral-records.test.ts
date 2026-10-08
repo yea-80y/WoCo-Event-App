@@ -42,6 +42,7 @@ import {
 import {
   readBadge,
   readConfirmation,
+  readLiveReferrer,
   readMyReferralStatement,
   readReferrerIndex,
   writeReferralStatement,
@@ -346,4 +347,35 @@ test("the issuer's confirmations, badges and referrer index are read through the
     await run(deps);
     onlyRoute(rec.routes, FEED_ROUTES.campaignIssuer, label);
   }
+});
+
+// ── The strict read the passkey upgrade re-signs from (#746) ──────────────────
+
+test("readLiveReferrer: the live referrer, read thorough - a retraction is skipped", async () => {
+  const retracted = campaignAccountSubject(OTHER);
+  const live = campaignAccountSubject(REFERRER);
+  const { deps, rec } = harness({
+    banded: { [referralSubjectIndexTopic(0)]: { format: REFERRAL_SUBJECT_INDEX_FORMAT, subjects: [retracted, live] } },
+    feeds: {
+      [referralStatementTopic(retracted)]: { format: REFERRAL_STATEMENT_FORMAT, subject: retracted, value: false },
+      [referralStatementTopic(live)]: { format: REFERRAL_STATEMENT_FORMAT, subject: live, value: true },
+    },
+  });
+  assert.equal(await readLiveReferrer(MY_FEED, deps), REFERRER);
+  for (const r of rec.feedReads) assert.equal((r.opts as { thorough?: boolean }).thorough, true, "a write path reads thorough");
+});
+
+test("readLiveReferrer: no index is none; an index nobody could read is unavailable, never none", async () => {
+  assert.equal(await readLiveReferrer(MY_FEED, harness().deps), null);
+  assert.equal(await readLiveReferrer(MY_FEED, harness({ bandedUnavailable: true }).deps), "unavailable");
+});
+
+test("readLiveReferrer: a statement read that is unanswered or inconclusive is unavailable", async () => {
+  const live = campaignAccountSubject(REFERRER);
+  const index = { [referralSubjectIndexTopic(0)]: { format: REFERRAL_SUBJECT_INDEX_FORMAT, subjects: [live] } };
+  const { deps } = harness({ banded: index });
+  deps.readFeed = async () => ({ status: "unavailable", reason: "no answer" });
+  assert.equal(await readLiveReferrer(MY_FEED, deps), "unavailable");
+  deps.readFeed = async () => ({ status: "found", value: { format: REFERRAL_STATEMENT_FORMAT, subject: live, value: true }, version: 3, scanClean: false });
+  assert.equal(await readLiveReferrer(MY_FEED, deps), "unavailable", "a dirty scan may hide a later retraction");
 });

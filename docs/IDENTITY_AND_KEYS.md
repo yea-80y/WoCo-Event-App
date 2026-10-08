@@ -454,7 +454,7 @@ The authoritative list is the `AuthKind` union in `packages/shared/src/auth/type
 | Shown as | Kind | Parent account | State |
 |---|---|---|---|
 | Passkey | `passkey` | ZeroDev Kernel on Arbitrum One. Root validator: ECDSA over a secp256k1 key derived from the passkey's PRF output, moved to WeightedECDSA (every passkey a co-owner) when a second passkey is added (§9) | Live. The only kind that can organise (#768) |
-| Email | `web3auth` | Also a Kernel | Live, on a Web3Auth **devnet** project |
+| Email | `web3auth` | Also a Kernel | Live, on a Web3Auth **devnet** project. Can upgrade in place to a passkey (§9) |
 | Wallets | `web3` | MetaMask / WalletConnect EOA | Live |
 | Coinbase | `coinbase` | Coinbase Smart Wallet | Built, `coinbaseLoginAllowed = false` |
 | Zupass | `zupass` | — | In the union, **not implemented** |
@@ -626,6 +626,40 @@ Server side: `apps/server/src/middleware/auth.ts` and
 `apps/web/src/lib/api/client.ts` (`authPost` / `authGet` / `buildAuthHeaders`).
 
 ---
+
+### An email account upgraded to a passkey, in place (#746)
+
+Organising needs a passkey account, and an email or Google account would otherwise lose its
+tickets to a fresh one. Instead it can hand itself to a new passkey: same Kernel address, so
+tickets, names, the unlock and followers stay (all keyed by the account). Flow:
+`apps/web/src/lib/auth/upgrade-to-passkey.ts` (pure, tested), its I/O in `upgrade-to-passkey-live.ts`,
+the screen in `creator/gate/UpgradeToPasskey.svelte`.
+
+- **Who.** Email/Google accounts, locked ones included. Not wallet accounts (no Kernel to switch),
+  and not an account that hosts events or websites - its feed signer is pinned where the money path
+  reads it (`event-feed-signers.json` is write-once; a site's events index carries it).
+- **The op.** ONE sponsored userOp, signed by the email key: the co-owner switch with a list of ONE
+  key, the passkey's, and the ECDSA validation uninstalled. A counterfactual account deploys in it.
+  The email key is never kept as a co-owner (any co-owner holds full control). The server pays it
+  as the `upgrade` shape - for a locked account once, under a platform cap of 20 a day
+  (`lib/zerodev/sponsor-policy.ts`). Any recovery route (email or wallet backups) is removed first,
+  by its own op. Fork-tested: WoCo-Contracts `test/WeightedRootUpgradeFork.t.sol`.
+- **The seed.** The new seed is the passkey's PRF seed (`passkeyIdentitySeed`) - never derived from,
+  signed by or passed through the email key - sealed to the passkey only: its locked copy and its
+  portability envelope, which is read back before the op. The old seed leaves the device once the
+  op lands. Residual against a fresh account: a future break of the email key's curve links the
+  email to the account address (who, not what) - the data keys never depended on it.
+- **What moves to the new feed signer.** Anything a reader looks for under the CURRENT signer: the
+  profile and an unconfirmed referral statement are copied before the op; likes and follows are
+  retracted under the old signer before the op (`value: false`) and re-posted under the new one after,
+  so the account never counts twice. A visitor reading by the OLD signer (a confirmed referral's
+  `refereeFeed`) sees the old copy, which stays.
+- **Order and resume.** A device marker (`upgrade-marker.ts`, no secrets) records each stage. A
+  refused op changes nothing past the prepared state: the same passkey retries it, or "Undo" puts
+  the likes back. A tab closed after the op lands finishes at the next passkey sign-in.
+- **The email login afterwards** is refused with "This account now opens with your passkey": at once
+  on the upgrading device (tombstone), off the chain elsewhere - in the slow sign-in before anything
+  is written, after the fast path in the background, and when a fresh session is refused.
 
 ## 10. Signing roles, in one table
 

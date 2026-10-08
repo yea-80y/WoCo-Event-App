@@ -194,6 +194,8 @@ async function authFetch<T>(
       // means "proven", never "a request failed".
       _recoverySuppressedUntil = Date.now() + RECOVERY_SUPPRESSION_MS;
       sessionHealth.markEnded();
+      // An email account upgraded to a passkey elsewhere looks exactly like this (#746).
+      auth.onSessionRejected();
       console.warn(
         "[api] a freshly-minted session was rejected too — pausing recovery; " +
           "check ALLOWED_HOSTS and the account's on-chain owner",
@@ -329,6 +331,7 @@ export async function authStream(
     // same way is not curable by minting another.
     _recoverySuppressedUntil = Date.now() + RECOVERY_SUPPRESSION_MS;
     sessionHealth.markEnded();
+    auth.onSessionRejected();
     console.warn(
       "[api] a freshly-minted session was rejected too — pausing recovery; " +
         "check ALLOWED_HOSTS and the account's on-chain owner",
