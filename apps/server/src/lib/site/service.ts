@@ -3,6 +3,7 @@ import { siteCreatorDirectoryTopic, siteConfigTopic, sitePagesTopicFn, siteEvent
 import type { SiteDirectoryEntry, SiteDirectory, Site, SitePalette, SiteEventsIndex, Page, Hex0x, VersionedFeedRead } from "@woco/shared";
 import { readFeedPage, readFeedPageStrict, writeFeedPage, encodeJsonFeed, decodeJsonFeed, type FeedReadStrictResult } from "../swarm/feeds.js";
 import { readContentFeedJsonResult } from "../swarm/soc-upload.js";
+import { freshWrittenEventsIndex } from "./events-index.js";
 
 const DIR_PAGE_LIMIT = 4096;
 
@@ -256,9 +257,14 @@ export async function resolveSiteEventSigner(
   // checkout (stripe.ts) — ULID-ish, conservative charset + length.
   if (!/^[0-9a-zA-Z_-]{8,64}$/.test(siteId)) return null;
   try {
-    const page = await readFeedPage(Topic.fromString(siteEventsIndexTopic(siteId)));
-    if (!page) return null;
-    const index = decodeJsonFeed<SiteEventsIndex>(page);
+    // What this server just wrote beats a bee read that may not have it yet, so a
+    // sale right after an organiser adds the event finds its signer (events-index.ts).
+    let index = freshWrittenEventsIndex(siteId);
+    if (!index) {
+      const page = await readFeedPage(Topic.fromString(siteEventsIndexTopic(siteId)));
+      if (!page) return null;
+      index = decodeJsonFeed<SiteEventsIndex>(page);
+    }
     const entry = index?.events.find((e) => e.eventId === eventId);
     return entry?.creatorFeedSigner ?? null;
   } catch {
