@@ -9,7 +9,7 @@ import { cancellationGate, withCancellation } from "../lib/event/cancellations.j
 import { createEventV2, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, type EventMetaUpdates } from "../lib/event/service.js";
 import { DeleteBlockedError } from "../lib/event/delete-safety.js";
 import { setListed } from "../lib/event/listing-state.js";
-import { isFeedSignerStoreError } from "../lib/event/feed-signer-record.js";
+import { getRecordedFeedSigner, isFeedSignerStoreError } from "../lib/event/feed-signer-record.js";
 import { cardFromFeed, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
 import { getOrganiserNonce, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
 import { registerSeriesExactlyOnce } from "../lib/event/register-once.js";
@@ -612,7 +612,10 @@ events.post("/discover", requireAuth, async (c) => {
   const rawUrl = (body.sourceApiUrl ?? "").trim().replace(/\/$/, "");
   if (!rawUrl) return c.json({ ok: false, error: "sourceApiUrl is required" }, 400);
 
-  const apiBase = rawUrl.startsWith("http") ? rawUrl : "https://" + rawUrl;
+  // A public https source only, and no redirects: a caller's URL must not point
+  // this server at its own network (#186). Anything else discovers from here.
+  const apiBase = sanitisePublicApiUrl(rawUrl.startsWith("http") ? rawUrl : "https://" + rawUrl);
+  if (!apiBase) return c.json({ ok: false, error: "sourceApiUrl must be a public https address" }, 400);
 
   // Cross-server delegation forwarding is no longer supported (auth v2 signs each
   // request against a specific method+path+body, so an incoming sig can't be
@@ -623,7 +626,7 @@ events.post("/discover", requireAuth, async (c) => {
 
   if (!usedMine) {
     try {
-      const resp = await fetch(`${apiBase}/api/events`, { signal: AbortSignal.timeout(15000) });
+      const resp = await fetch(`${apiBase}/api/events`, { redirect: "error", signal: AbortSignal.timeout(15000) });
       if (!resp.ok) return c.json({ ok: false, error: `Source server returned HTTP ${resp.status}` }, 400);
       const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventDirectoryEntry[]; error?: string };
       if (!json.ok) return c.json({ ok: false, error: json.error || "Failed to list events from source" }, 400);
@@ -664,6 +667,13 @@ events.post("/:id/list", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const body = c.get("body") as { sourceApiUrl?: string; signer?: string };
 
+  // An event created here has its creator on record (#670): only that creator
+  // may list it, and no remote server is asked to vouch otherwise (#186).
+  const recorded = getRecordedFeedSigner(eventId);
+  if (recorded && recorded.creatorAddress !== parentAddress) {
+    return c.json({ ok: false, error: "You are not the creator of this event" }, 403);
+  }
+
   // SECURITY: the creatorAddress==parent gate below is only meaningful when the
   // feed comes from a source the caller cannot author. A client-supplied `signer`
   // hint fails that test — anyone can sign a SOC naming any eventId/creator under
@@ -684,10 +694,14 @@ events.post("/:id/list", requireAuth, async (c) => {
   eventFeed = await resolveOwnEventLocally(eventId, parentAddress);
   if (eventFeed) localBasis = true;
 
-  if (!eventFeed && body.sourceApiUrl) {
-    const apiBase = body.sourceApiUrl.trim().replace(/\/$/, "");
+  // Same rule as /discover: a public https source only, no redirects (#186).
+  const apiBase = sanitisePublicApiUrl(body.sourceApiUrl);
+  if (!eventFeed && body.sourceApiUrl && apiBase) {
     try {
-      const resp = await fetch(`${apiBase}/api/events/${eventId}`, { signal: AbortSignal.timeout(15000) });
+      const resp = await fetch(`${apiBase}/api/events/${encodeURIComponent(eventId)}`, {
+        redirect: "error",
+        signal: AbortSignal.timeout(15000),
+      });
       if (!resp.ok) return c.json({ ok: false, error: `Source server returned HTTP ${resp.status}` }, 400);
       const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventFeed; error?: string };
       if (!json.ok || !json.data) return c.json({ ok: false, error: json.error || "Event not found on source server" }, 404);
