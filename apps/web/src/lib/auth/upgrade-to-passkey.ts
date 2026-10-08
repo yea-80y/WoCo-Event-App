@@ -54,6 +54,8 @@ export interface FeedKey {
 export const WALLET_ACCOUNT_MESSAGE = "Wallet accounts can't be upgraded - make a separate organiser account.";
 export const HOSTS_SOMETHING_MESSAGE =
   "This account already has events or a website, so it can't be upgraded - make a separate organiser account.";
+export const LOCKED_DEPLOYED_MESSAGE =
+  "This account can't be upgraded until it's unlocked with a ticket - or make a separate organiser account.";
 export const NO_PASSKEYS_MESSAGE = "This browser can't make passkeys. Open WoCo in Chrome or Safari to upgrade.";
 export const READ_FAILED_MESSAGE = "Couldn't read this account just now - nothing was changed. Try again.";
 export const ENVELOPE_FAILED_MESSAGE =
@@ -72,6 +74,9 @@ export interface PlanInput {
   authKind: string;
   /** Hosts events or websites: yes, no, or could not tell. */
   hostsSomething: boolean | "unknown";
+  /** Can its backups come off? Not for a locked account that is deployed: the removal op is
+   *  sent for every deployed account, and a locked account is paid for the upgrade op only. */
+  backupsRemovable: boolean | "unknown";
   passkeySupported: boolean;
 }
 
@@ -85,8 +90,9 @@ export type UpgradeOffer =
 export function planUpgrade(i: PlanInput): UpgradeOffer {
   if (i.authKind !== "web3auth") return { kind: "separate-only", reason: WALLET_ACCOUNT_MESSAGE };
   if (i.hostsSomething === true) return { kind: "separate-only", reason: HOSTS_SOMETHING_MESSAGE };
+  if (i.backupsRemovable === false) return { kind: "separate-only", reason: LOCKED_DEPLOYED_MESSAGE };
   if (!i.passkeySupported) return { kind: "unavailable", reason: NO_PASSKEYS_MESSAGE };
-  if (i.hostsSomething === "unknown") return { kind: "unavailable", reason: READ_FAILED_MESSAGE };
+  if (i.hostsSomething === "unknown" || i.backupsRemovable === "unknown") return { kind: "unavailable", reason: READ_FAILED_MESSAGE };
   return { kind: "upgrade" };
 }
 
@@ -118,6 +124,8 @@ export interface ProfileCopy {
 
 export interface SocialDeps {
   readLive(feed: string, kind: SocialKind): Promise<Hex0x[] | "unavailable">;
+  /** One statement, read thorough: `null` = none, "unavailable" = no conclusive answer. */
+  readStatement(feed: string, kind: SocialKind, subject: Hex0x): Promise<boolean | null | "unavailable">;
   /** True once the statement is written. */
   write(signer: FeedKey, kind: SocialKind, subject: Hex0x, value: boolean): Promise<boolean>;
 }
@@ -128,6 +136,7 @@ export interface PrepareDeps {
   marker: MarkerStore;
   social: SocialDeps;
   hostsSomething(): Promise<boolean | "unknown">;
+  backupsRemovable(): Promise<boolean | "unknown">;
   /** The account's seed now - the email account's. Null when it is not on the device. */
   oldSeed(): Promise<string | null>;
   readReferrer(feed: string): Promise<Hex0x | null | "unavailable">;
@@ -164,6 +173,10 @@ export async function prepareUpgrade(
   const hosts = await d.hostsSomething();
   if (hosts === true) throw new Error(HOSTS_SOMETHING_MESSAGE);
   if (hosts === "unknown") throw new Error(READ_FAILED_MESSAGE);
+  // Before the ceremony: otherwise every attempt leaves a passkey that opens nothing.
+  const removable = await d.backupsRemovable();
+  if (removable === false) throw new Error(LOCKED_DEPLOYED_MESSAGE);
+  if (removable === "unknown") throw new Error(READ_FAILED_MESSAGE);
   const oldSeed = await d.oldSeed();
   if (!oldSeed) throw new Error(READ_FAILED_MESSAGE);
   const oldFeed = deriveFeedSignerKey(oldSeed).address.toLowerCase();
@@ -368,8 +381,11 @@ export async function finalizeUpgrade(d: FinalizeDeps & { marker: MarkerStore },
 
 /**
  * Re-post the likes and follows under the account's new feed signer, then drop the
- * marker. Only after the switch, and only those the old feed provably retracted.
- * False when any write is still outstanding - the next session tries again.
+ * marker. Only after the switch, and each only once the OLD feed reads it not-true now:
+ * between the retraction and here the old signer may have written it again - a like
+ * pressed while the switch was refused, an Undo in another tab - and then it already
+ * counts once, there. Unread stays for the next session; it is never posted blind.
+ * False when anything is still outstanding.
  */
 export async function moveSocial(
   d: { marker: MarkerStore; social: SocialDeps },
@@ -380,9 +396,10 @@ export async function moveSocial(
   const left: UpgradeMarker = { ...marker, likes: [], follows: [] };
   for (const kind of ["like", "follow"] as const) {
     for (const subject of kind === "like" ? marker.likes : marker.follows) {
-      if (!(await d.social.write(newKey, kind, subject, true).catch(() => false))) {
-        (kind === "like" ? left.likes : left.follows).push(subject);
-      }
+      const old = await d.social.readStatement(marker.oldFeedSigner, kind, subject).catch(() => "unavailable" as const);
+      if (old === true) continue;
+      const moved = old !== "unavailable" && (await d.social.write(newKey, kind, subject, true).catch(() => false));
+      if (!moved) (kind === "like" ? left.likes : left.follows).push(subject);
     }
   }
   if (left.likes.length === 0 && left.follows.length === 0) {

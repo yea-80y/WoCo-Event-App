@@ -4570,6 +4570,8 @@ function _upgradeHost(): import("./upgrade-to-passkey.js").UpgradeStoreHost {
     adoptPasskey: async (marker, live, confirmed) => {
       const { parent, passkey } = marker;
       await _putRecoveryBinding(passkey, parent);
+      // An Undo in another tab may have dropped it; this tab still holds it (Fable sign-off).
+      if (live) await storeLockedSeed(passkey, parent, live.seed, live.prfSecret);
       await pinPasskeyCredential(marker.credential);
       await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
       await putKV(StorageKeys.PARENT_ADDRESS, parent);

@@ -15,6 +15,24 @@ import { KINDS, type SocialKind, type SocialSigner } from "./social-core.js";
  * any read could not answer, so a partial list is never acted on. Thorough, and a
  * head is trusted only from a conclusive scan - a retraction is a later version.
  */
+/** One statement of `signer`'s, read thorough: `null` = none; a head from an
+ *  inconclusive scan is "unavailable", since a later version may say otherwise. */
+export async function readStatementStrict(
+  signer: Pick<SocialSigner, "address">,
+  kind: SocialKind,
+  subject: Hex0x,
+): Promise<boolean | null | "unavailable"> {
+  const k = KINDS[kind];
+  const res = await readContentFeedResult<unknown>(signer.address, k.statementTopic(subject), {
+    route: k.route,
+    skipLegacy: true,
+    thorough: true,
+  });
+  if (res.status === "absent") return null;
+  if (res.status !== "found" || !res.scanClean) return "unavailable";
+  return k.validate(res.value) ? (res.value as LikeStatementV1 | FollowStatementV1).value : null;
+}
+
 export async function readLiveSubjects(
   signer: Pick<SocialSigner, "address">,
   kind: SocialKind,

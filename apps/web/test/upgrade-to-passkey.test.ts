@@ -26,6 +26,7 @@ import {
   COPY_FAILED_MESSAGE,
   ENVELOPE_FAILED_MESSAGE,
   HOSTS_SOMETHING_MESSAGE,
+  LOCKED_DEPLOYED_MESSAGE,
   NO_PASSKEYS_MESSAGE,
   READ_FAILED_MESSAGE,
   RETRACT_FAILED_MESSAGE,
@@ -84,6 +85,10 @@ function fakes(over: Partial<PrepareDeps> & { writeOk?: (signer: FeedKey, subjec
   const rec = (name: string) => (...args: unknown[]) => void calls.push({ name, args });
   const marker = memoryMarkers();
   const writes: Array<{ signer: string; kind: string; subject: Hex0x; value: boolean }> = [];
+  // What each feed says now, as the indexer would read it: the old feed starts with the account's likes.
+  const said = new Map<string, boolean>();
+  const key = (feed: string, kind: string, subject: Hex0x) => `${feed.toLowerCase()}|${kind}|${subject}`;
+  for (const [kind, subject] of [["like", LIKE_A], ["like", LIKE_B], ["follow", FOLLOW_C]] as const) said.set(key(OLD_FEED.address, kind, subject), true);
   const deps: PrepareDeps = {
     parent: PARENT,
     emailKey: EMAIL_KEY,
@@ -96,10 +101,14 @@ function fakes(over: Partial<PrepareDeps> & { writeOk?: (signer: FeedKey, subjec
       write: async (signer, kind, subject, value) => {
         rec("socialWrite")(signer.address, kind, subject, value);
         writes.push({ signer: signer.address, kind, subject, value });
-        return over.writeOk ? over.writeOk(signer, subject, value) : true;
+        const ok = over.writeOk ? over.writeOk(signer, subject, value) : true;
+        if (ok) said.set(key(signer.address, kind, subject), value);
+        return ok;
       },
+      readStatement: async (feed, kind, subject) => said.get(key(feed, kind, subject)) ?? null,
     },
     hostsSomething: async () => (rec("hostsSomething")(), false),
+    backupsRemovable: async () => (rec("backupsRemovable")(), true),
     oldSeed: async () => (rec("oldSeed")(), OLD_SEED),
     readReferrer: async (feed) => (rec("readReferrer")(feed), REFERRER),
     readProfile: async (feed) => (rec("readProfile")(feed), { data: { v: 1, displayName: "A" }, avatar: { v: 1, avatarRef: "ab" } }),
@@ -114,7 +123,16 @@ function fakes(over: Partial<PrepareDeps> & { writeOk?: (signer: FeedKey, subjec
     writeReferral: async (signer, referrer) => rec("writeReferral")(signer.address, referrer),
     ...over,
   };
-  return { deps, calls, marker, writes, names: () => calls.map((c) => c.name) };
+  /** True when some subject reads `true` under BOTH feed signers - the account counted twice. */
+  const countedTwice = () =>
+    [...said.entries()].some(
+      ([k, v]) => v && k.startsWith(OLD_FEED.address.toLowerCase()) && said.get(k.replace(OLD_FEED.address.toLowerCase(), NEW_FEED.address.toLowerCase())) === true,
+    );
+  /** The old feed as a recorded retraction leaves it: every moved subject reads false there. */
+  const oldRetracted = () => {
+    for (const [kind, subject] of [["like", LIKE_A], ["like", LIKE_B], ["follow", FOLLOW_C]] as const) said.set(key(OLD_FEED.address, kind, subject), false);
+  };
+  return { deps, calls, marker, writes, said, key, countedTwice, oldRetracted, names: () => calls.map((c) => c.name) };
 }
 
 /** Every argument any dep was ever handed, flattened to strings. */
@@ -146,27 +164,38 @@ const prepared = (over: Partial<UpgradeMarker> = {}): UpgradeMarker => ({
 // ── Who is offered what ──────────────────────────────────────────────────────
 
 test("plan: an email account with nothing hosted is offered the upgrade", () => {
-  assert.deepEqual(planUpgrade({ authKind: "web3auth", hostsSomething: false, passkeySupported: true }), { kind: "upgrade" });
+  assert.deepEqual(planUpgrade({ authKind: "web3auth", hostsSomething: false, backupsRemovable: true, passkeySupported: true }), { kind: "upgrade" });
 });
 
 test("plan: a wallet account, or one that hosts events or websites, gets the separate account only (PQ2)", () => {
-  assert.deepEqual(planUpgrade({ authKind: "web3", hostsSomething: false, passkeySupported: true }), {
+  assert.deepEqual(planUpgrade({ authKind: "web3", hostsSomething: false, backupsRemovable: true, passkeySupported: true }), {
     kind: "separate-only",
     reason: WALLET_ACCOUNT_MESSAGE,
   });
-  assert.deepEqual(planUpgrade({ authKind: "coinbase", hostsSomething: false, passkeySupported: true }).kind, "separate-only");
-  assert.deepEqual(planUpgrade({ authKind: "web3auth", hostsSomething: true, passkeySupported: true }), {
+  assert.deepEqual(planUpgrade({ authKind: "coinbase", hostsSomething: false, backupsRemovable: true, passkeySupported: true }).kind, "separate-only");
+  assert.deepEqual(planUpgrade({ authKind: "web3auth", hostsSomething: true, backupsRemovable: true, passkeySupported: true }), {
     kind: "separate-only",
     reason: HOSTS_SOMETHING_MESSAGE,
   });
 });
 
+test("plan: a locked account that is already deployed is turned away before any passkey is made (Fable S1)", () => {
+  assert.deepEqual(planUpgrade({ authKind: "web3auth", hostsSomething: false, backupsRemovable: false, passkeySupported: true }), {
+    kind: "separate-only",
+    reason: LOCKED_DEPLOYED_MESSAGE,
+  });
+  assert.deepEqual(planUpgrade({ authKind: "web3auth", hostsSomething: false, backupsRemovable: "unknown", passkeySupported: true }), {
+    kind: "unavailable",
+    reason: READ_FAILED_MESSAGE,
+  });
+});
+
 test("plan: no passkeys in this browser, or an unanswered check, decides nothing", () => {
-  assert.deepEqual(planUpgrade({ authKind: "web3auth", hostsSomething: false, passkeySupported: false }), {
+  assert.deepEqual(planUpgrade({ authKind: "web3auth", hostsSomething: false, backupsRemovable: true, passkeySupported: false }), {
     kind: "unavailable",
     reason: NO_PASSKEYS_MESSAGE,
   });
-  assert.deepEqual(planUpgrade({ authKind: "web3auth", hostsSomething: "unknown", passkeySupported: true }), {
+  assert.deepEqual(planUpgrade({ authKind: "web3auth", hostsSomething: "unknown", backupsRemovable: true, passkeySupported: true }), {
     kind: "unavailable",
     reason: READ_FAILED_MESSAGE,
   });
@@ -208,6 +237,7 @@ test("prepare: reads first, then the passkey, backups off, its hold, the copies,
   const order = f.names().filter((n) => n !== "readLive" && n !== "readReferrer" && n !== "readProfile");
   assert.deepEqual(order, [
     "hostsSomething",
+    "backupsRemovable",
     "oldSeed",
     "mintPasskey",
     "removeBackups",
@@ -238,7 +268,7 @@ test("PQ1: the new seed is passkeyIdentitySeed(PRF) - and the email side never s
   assert.notEqual(NEW_SEED, OLD_SEED);
   // The email key's own steps - the backup removal it signs, the reads of its feed -
   // were handed nothing derived from the passkey.
-  for (const c of f.calls.filter((c) => ["removeBackups", "hostsSomething", "oldSeed", "readLive", "readReferrer", "readProfile"].includes(c.name))) {
+  for (const c of f.calls.filter((c) => ["removeBackups", "hostsSomething", "backupsRemovable", "oldSeed", "readLive", "readReferrer", "readProfile"].includes(c.name))) {
     const args = everyArg([c]);
     assert.ok(!args.includes(NEW_SEED) && !args.includes(PRF), `${c.name} saw the passkey's secret`);
   }
@@ -262,6 +292,14 @@ test("PQ2: an account hosting events or websites is refused before any passkey i
     await assert.rejects(prepareUpgrade(f.deps), { message: hosts === true ? HOSTS_SOMETHING_MESSAGE : READ_FAILED_MESSAGE });
     assert.ok(!f.names().includes("mintPasskey"));
     assert.equal(f.marker.map.size, 0);
+  }
+});
+
+test("prepare: backups that only a paid op could remove stop it before the ceremony (Fable S1)", async () => {
+  for (const [removable, message] of [[false, LOCKED_DEPLOYED_MESSAGE], ["unknown", READ_FAILED_MESSAGE]] as const) {
+    const f = fakes({ backupsRemovable: async () => removable });
+    await assert.rejects(prepareUpgrade(f.deps), { message });
+    assert.ok(!f.names().includes("mintPasskey") && !f.names().includes("removeBackups"));
   }
 });
 
@@ -433,6 +471,7 @@ test("PQ2: finalize wipes the old seed off the device and refuses the email key 
 
 test("move: likes and follows re-posted under the NEW feed, only after the switch, then the marker goes", async () => {
   const f = fakes();
+  f.oldRetracted();
   assert.equal(await moveSocial({ marker: f.marker, social: f.deps.social }, prepared(), NEW_FEED), false, "not before the switch");
   assert.equal(f.writes.length, 0);
   const committed = prepared({ stage: "committed" });
@@ -448,6 +487,7 @@ test("move: likes and follows re-posted under the NEW feed, only after the switc
 
 test("move: a write still refused (a locked account) stays in the marker for the next session", async () => {
   const f = fakes({ writeOk: (_s, subject) => subject !== FOLLOW_C });
+  f.oldRetracted();
   const committed = prepared({ stage: "committed" });
   f.marker.write(committed);
   assert.equal(await moveSocial({ marker: f.marker, social: f.deps.social }, committed, NEW_FEED), false);
@@ -477,6 +517,42 @@ test("cancel: a re-post that does not finish keeps the marker and the passkey's 
   await assert.rejects(cancelUpgrade(f.deps, m));
   assert.ok(!f.calls.some((c) => c.name === "clearPasskeyState"));
   assert.equal(f.marker.map.size, 1);
+});
+
+test("M1(a): a like pressed under the OLD feed while the switch was refused is never re-posted", async () => {
+  const f = fakes();
+  const m = prepared({ retracted: false });
+  f.marker.write(m);
+  const retracted = await retractOld(f.deps, m);
+  // The switch was refused; the person, still an email account, likes B again.
+  await f.deps.social.write(OLD_FEED, "like", LIKE_B, true);
+  const committed = await finalizeUpgrade({ ...finalizeFakes().deps, marker: f.marker }, retracted);
+  assert.equal(await moveSocial({ marker: f.marker, social: f.deps.social }, committed, NEW_FEED), true);
+  assert.equal(f.said.get(f.key(NEW_FEED.address, "like", LIKE_B)), undefined, "B counts once, under the old feed");
+  assert.equal(f.said.get(f.key(NEW_FEED.address, "like", LIKE_A)), true, "the rest moved");
+  assert.equal(f.countedTwice(), false);
+});
+
+test("M1(b): an Undo in another tab while this tab's switch lands leaves nothing counted twice", async () => {
+  const f = fakes();
+  const m = prepared();
+  f.oldRetracted();
+  f.marker.write(m);
+  await cancelUpgrade(f.deps, m); // tab B: everything back under the old feed, marker gone
+  const committed = await finalizeUpgrade({ ...finalizeFakes().deps, marker: f.marker }, m); // tab A: its op landed
+  await moveSocial({ marker: f.marker, social: f.deps.social }, committed, NEW_FEED);
+  assert.equal(f.countedTwice(), false);
+  assert.ok(!f.writes.some((w) => w.signer === NEW_FEED.address), "nothing re-posted under the new feed");
+});
+
+test("M1: an old statement nobody could read is kept for the next session, never posted blind", async () => {
+  const f = fakes();
+  f.deps.social.readStatement = async (_feed, _kind, subject) => (subject === FOLLOW_C ? "unavailable" : false);
+  const committed = prepared({ stage: "committed" });
+  f.marker.write(committed);
+  assert.equal(await moveSocial({ marker: f.marker, social: f.deps.social }, committed, NEW_FEED), false);
+  assert.ok(!f.writes.some((w) => w.subject === FOLLOW_C), "C not posted");
+  assert.deepEqual(f.marker.map.get(PARENT)?.follows, [FOLLOW_C]);
 });
 
 // ── The runners, over a fake store ──────────────────────────────────────────
@@ -599,6 +675,7 @@ test("cancel: refused once the switch has landed; otherwise likes back under the
 
 test("resume: finalizes a landed switch this device never committed; never moves without a session", async () => {
   const s = store({ kind: "passkey", session: false });
+  s.f.oldRetracted();
   s.f.marker.write(prepared());
   await runResume(s.host, s.io);
   assert.ok(s.log.includes("wipeOldSeed"), "the email key's traces out");

@@ -637,7 +637,9 @@ the screen in `creator/gate/UpgradeToPasskey.svelte`.
 
 - **Who.** Email/Google accounts, locked ones included. Not wallet accounts (no Kernel to switch),
   and not an account that hosts events or websites - its feed signer is pinned where the money path
-  reads it (`event-feed-signers.json` is write-once; a site's events index carries it).
+  reads it (`event-feed-signers.json` is write-once; a site's events index carries it). Not a locked
+  account that is already deployed either: its backup removal is an op only an unlocked account is
+  paid for.
 - **The op.** ONE sponsored userOp, signed by the email key: the co-owner switch with a list of ONE
   key, the passkey's, and the ECDSA validation uninstalled. A counterfactual account deploys in it.
   The email key is never kept as a co-owner (any co-owner holds full control). The server pays it
@@ -652,7 +654,10 @@ the screen in `creator/gate/UpgradeToPasskey.svelte`.
 - **What moves to the new feed signer.** Anything a reader looks for under the CURRENT signer: the
   profile and an unconfirmed referral statement are copied before the op; likes and follows are
   retracted under the old signer before the op (`value: false`) and re-posted under the new one after,
-  so the account never counts twice. A visitor reading by the OLD signer (a confirmed referral's
+  each only once the old signer reads it not-true again - a like pressed while the op was refused
+  already counts, there - so the account never counts twice. The one residual: another device still
+  signed in with the email key can write under the old signer until its session dies (at most the
+  server's 5-minute owner cache; usually seconds). A visitor reading by the OLD signer (a confirmed referral's
   `refereeFeed`) sees the old copy, which stays.
 - **Order and resume.** A device marker (`upgrade-marker.ts`, no secrets) records each stage. A
   refused op changes nothing past the prepared state: the same passkey retries it, or "Undo" puts

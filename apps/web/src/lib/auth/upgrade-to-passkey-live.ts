@@ -33,13 +33,32 @@ export async function hostsSomething(parent: string): Promise<boolean | "unknown
   return (events.data?.length ?? 0) > 0 || (sites.data?.length ?? 0) > 0;
 }
 
+/**
+ * Can the account's backups come off? Not when it is deployed and locked: "remove all
+ * backups" sends its op for every deployed account (one RPC's "absent" is no proof), and
+ * a locked account is paid for the upgrade op only. Undeployed needs no op at all.
+ */
+export async function backupsRemovable(parent: string): Promise<boolean | "unknown"> {
+  const [{ readKernelRoot }, { getGateStatus }] = await Promise.all([
+    import("./kernel-account.js"),
+    import("../api/attendee-gate.js"),
+  ]);
+  const root = await readKernelRoot(parent);
+  if (root === "error") return "unknown";
+  if (root === "none") return true;
+  const gate = await getGateStatus();
+  if (!gate.ok || !gate.data) return "unknown";
+  return gate.data.gated && gate.data.via !== "disabled";
+}
+
 export async function liveSocialDeps(): Promise<SocialDeps> {
-  const [{ readLiveSubjects }, { writeStatement }] = await Promise.all([
+  const [{ readLiveSubjects, readStatementStrict }, { writeStatement }] = await Promise.all([
     import("../social/live-subjects.js"),
     import("../social/social-core.js"),
   ]);
   return {
     readLive: (feed, kind) => readLiveSubjects({ address: feed }, kind),
+    readStatement: (feed, kind, subject) => readStatementStrict({ address: feed }, kind, subject),
     write: async (signer, kind, subject, value) => (await writeStatement(signer, kind, subject, value)).ok,
   };
 }
@@ -60,6 +79,7 @@ export async function liveUpgradeDeps(
     putBinding: (passkey, at) => host.putBinding(passkey, at),
 
     hostsSomething: () => hostsSomething(parent),
+    backupsRemovable: () => backupsRemovable(parent),
 
     readReferrer: async (feed) => (await import("../campaign/records.js")).readLiveReferrer(feed),
 

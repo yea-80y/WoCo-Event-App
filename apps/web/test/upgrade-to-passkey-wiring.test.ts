@@ -86,6 +86,8 @@ test("adopting the passkey writes the binding, the pin and the identity keys, an
   const order = ["_putRecoveryBinding(passkey, parent)", "pinPasskeyCredential(marker.credential)", 'putKV(StorageKeys.AUTH_KIND, "passkey"', '_kind = "passkey"'].map(at);
   assert.deepEqual([...order].sort((x, y) => x - y), order);
   assert.match(adopt, /_web3authPrivateKey = null;/);
+  // An Undo in another tab may have dropped the locked seed; the tab that commits holds it (Fable sign-off).
+  assert.match(adopt, /if \(live\) await storeLockedSeed\(passkey, parent, live\.seed, live\.prfSecret\);/);
   assert.doesNotMatch(adopt, /_restoreAuthAfterRotation|resetSession/, "the session is killed by endEmailSession, last");
 });
 

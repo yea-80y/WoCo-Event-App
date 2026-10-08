@@ -26,7 +26,7 @@ import {
   type Hex0x,
 } from "@woco/shared";
 import { kindForVariant, readFollows, readStatement, readSubjects, writeStatement } from "../src/lib/social/social-core.js";
-import { readLiveSubjects } from "../src/lib/social/live-subjects.js";
+import { readLiveSubjects, readStatementStrict } from "../src/lib/social/live-subjects.js";
 import { ETHERNA_GATEWAY_URL } from "../src/lib/swarm/gateways.js";
 import {
   OWNER,
@@ -275,4 +275,21 @@ test("readLiveSubjects: a like whose later retraction cannot be read is unavaila
   assert.equal(await readLiveSubjects(signer, "like"), "unavailable");
   net.ethernaDown = false;
   assert.deepEqual(await readLiveSubjects(signer, "like"), [A], "the control: answered, B is retracted");
+});
+
+test("readStatementStrict: true, a retraction, none - and an inconclusive head is unavailable", async () => {
+  const net: Net = { ourBee: new Map(), etherna: new Map() };
+  install(net);
+  const { transport: send } = transport(net);
+  await writeStatement(signer, "like", A, true, { transport: send });
+  await writeStatement(signer, "like", B, true, { transport: send });
+  await writeStatement(signer, "like", B, false, { transport: send });
+  assert.equal(await readStatementStrict(signer, "like", A), true);
+  assert.equal(await readStatementStrict(signer, "like", B), false);
+  assert.equal(await readStatementStrict(signer, "like", C), null);
+  const retraction = soc(versionedSocIdentifier(contentFeedSocIdentifier(likeStatementTopic(B)), 1), {}).address;
+  propagate(net);
+  net.ourBee.delete(retraction);
+  net.ethernaDown = (_nth, address) => address === retraction;
+  assert.equal(await readStatementStrict(signer, "like", B), "unavailable", "a later retraction may be hiding");
 });

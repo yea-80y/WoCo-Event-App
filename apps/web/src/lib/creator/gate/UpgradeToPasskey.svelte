@@ -11,7 +11,7 @@
   import { PASSKEY_ONLY_RECOVERY_NOTE } from "../../auth/organiser-account.js";
   import { isPasskeySupported } from "../../auth/passkey-account.js";
   import { localMarkerStore, planUpgrade, type UpgradeOffer } from "../../auth/upgrade-to-passkey.js";
-  import { hostsSomething } from "../../auth/upgrade-to-passkey-live.js";
+  import { backupsRemovable, hostsSomething } from "../../auth/upgrade-to-passkey-live.js";
 
   let { onSeparate, separateBusy }: { onSeparate: () => void; separateBusy: boolean } = $props();
 
@@ -35,9 +35,14 @@
     if (pending) return;
     const parent = auth.parent;
     if (!parent) return;
+    const [hosts, removable] = await Promise.all([
+      hostsSomething(parent).catch(() => "unknown" as const),
+      backupsRemovable(parent).catch(() => "unknown" as const),
+    ]);
     offer = planUpgrade({
       authKind: auth.kind,
-      hostsSomething: await hostsSomething(parent).catch(() => "unknown" as const),
+      hostsSomething: hosts,
+      backupsRemovable: removable,
       passkeySupported: isPasskeySupported(),
     });
   }
@@ -100,8 +105,8 @@
       <p>Keeps your tickets, names, profile, likes and follows. Email and Google sign-in for this account stop - your passkey opens it from then on.</p>
       {#if confirming}
         <p class="muted">
-          Your passkey will be the only way into this account. It syncs through your password manager, so it's on your other devices
-          too. Any email backups on this account are removed. {PASSKEY_ONLY_RECOVERY_NOTE}
+          Your passkey will be the only way into this account. If your password manager syncs passkeys, it's on your other devices
+          too. Any account backups are removed. This can't be undone. {PASSKEY_ONLY_RECOVERY_NOTE}
         </p>
         <div class="actions">
           <button class="btn btn--primary" onclick={upgrade} disabled={running}>{running ? "Upgrading…" : "Upgrade now"}</button>
