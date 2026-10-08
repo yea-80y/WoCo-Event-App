@@ -111,6 +111,7 @@
   let addressCopied = $state(false);
   let revokingAll = $state(false);
   let revokeSuccess = $state(false);
+  let revokeFailed = $state(false);
 
   // Edit form
   let editName = $state("");
@@ -391,11 +392,15 @@
     if (revokingAll) return;
     revokingAll = true;
     try {
-      await authPost("/api/auth/revoke-all", {});
+      // authPost resolves on a refusal too, so "Done" must wait for ok.
+      const res = await authPost("/api/auth/revoke-all", {});
+      if (!res.ok) throw new Error(res.error ?? "Revoke failed");
       revokeSuccess = true;
       setTimeout(() => { revokeSuccess = false; }, 3000);
     } catch (err) {
       console.error("Revoke sessions failed:", err);
+      revokeFailed = true;
+      setTimeout(() => { revokeFailed = false; }, 4000);
     } finally {
       revokingAll = false;
     }
@@ -927,6 +932,8 @@
               {:else if revokeSuccess}
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
                 Done
+              {:else if revokeFailed}
+                Didn't work - try again
               {:else}
                 Sign out everywhere
               {/if}

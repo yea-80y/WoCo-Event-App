@@ -48,7 +48,7 @@ app.post("/api/test", requireAuth, (c) =>
 const sha256Hex = (text: string) => createHash("sha256").update(text, "utf-8").digest("hex");
 
 /** Mint a delegation exactly as the browser does (session-delegation.ts). */
-async function mintDelegation(opts: { host?: string; issuedAtOffsetMs?: number } = {}) {
+async function mintDelegation(opts: { host?: string; issuedAtOffsetMs?: number; lifetimeMs?: number } = {}) {
   const parent = Wallet.createRandom();
   const session = Wallet.createRandom();
   const host = opts.host ?? HOST;
@@ -61,7 +61,11 @@ async function mintDelegation(opts: { host?: string; issuedAtOffsetMs?: number }
     purpose: SESSION_PURPOSE,
     nonce,
     issuedAt: new Date(Date.now() + (opts.issuedAtOffsetMs ?? 0)).toISOString(),
-    expiresAt: new Date(Date.now() + SESSION_EXPIRY_MS).toISOString(),
+    expiresAt: new Date(
+      opts.lifetimeMs === undefined
+        ? Date.now() + SESSION_EXPIRY_MS
+        : Date.now() + (opts.issuedAtOffsetMs ?? 0) + opts.lifetimeMs,
+    ).toISOString(),
     sessionProof: await session.signMessage(`${host}:${nonce}`),
     clientCodeHash: "0x" + "00".repeat(32),
     statement: `Authorize ${session.address} as session key for ${host}`,
@@ -207,6 +211,25 @@ test("a clock 2min fast passes the request window but fails issuedAt — and is 
 
 test("issuedAt inside the 60s tolerance still passes — ordinary jitter is not a failure", async () => {
   const d = await mintDelegation({ issuedAtOffsetMs: 30 * 1000 });
+  const body = JSON.stringify({});
+  const { status } = await callWith(await signRequest(d, body), body);
+  assert.equal(status, 200);
+});
+
+test("a delegation SIGNED for longer than a session is SESSION_INVALID (#186)", async () => {
+  // Validly signed, so only the lifetime cap can refuse it: one phished signature
+  // with a far expiry must not outlive every rotation. SESSION_INVALID, so our
+  // own client answers by minting an ordinary 30-day one.
+  const d = await mintDelegation({ lifetimeMs: SESSION_EXPIRY_MS + 5 * 60 * 1000 });
+  const body = JSON.stringify({});
+  const { status, json } = await callWith(await signRequest(d, body), body);
+  assert.equal(status, 403);
+  assert.equal(json.code, AuthErrorCode.SESSION_INVALID);
+  assert.match(String(json.error), /longer than a session/);
+});
+
+test("a full-length session plus clock-read slack still passes the lifetime cap", async () => {
+  const d = await mintDelegation({ lifetimeMs: SESSION_EXPIRY_MS + 30 * 1000 });
   const body = JSON.stringify({});
   const { status } = await callWith(await signRequest(d, body), body);
   assert.equal(status, 200);
