@@ -12,7 +12,7 @@ import { requireAuth } from "./middleware/auth.js";
 import { securityHeaders, FRAME_CSP } from "./lib/http/security-headers.js";
 import { CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS } from "./lib/http/cors.js";
 import { buildFramePage } from "./lib/embed/frame-page.js";
-import { revokeSession, revokeAllSessions } from "./lib/auth/revocation.js";
+import { revokeSession, revokeAllSessions, revocationHealth, RevocationStoreUnavailableError } from "./lib/auth/revocation.js";
 import { deviceGrantHealth } from "./lib/auth/device-grants.js";
 import { kernelDeployedLoadFailed } from "./lib/auth/kernel-deployed.js";
 import { events } from "./routes/events.js";
@@ -419,6 +419,9 @@ function healthReport() {
     // Added passkeys (#746). `unreadable` is an alarm: every added device is
     // signed out and no device can be added or removed until the file is restored.
     deviceGrants: deviceGrantHealth(),
+    // Revoked sessions (#186). `ok: false`: the file is present but unreadable, so
+    // revoked sessions are not refused and nothing can be revoked until it is restored.
+    revocation: revocationHealth(),
     // Sponsored userOps (#758): ZeroDev asks the policy route before paying. Red
     // when the secret or project id is unset - every sponsorship is then refused,
     // so recovery, backups and "make this device the main one" all fail. Counts
@@ -661,7 +664,8 @@ app.post("/api/auth/revoke-session", requireAuth, (c) => {
     }
     revokeSession(nonce, expiresAt);
     return c.json({ ok: true, message: "Session revoked" });
-  } catch {
+  } catch (err) {
+    if (err instanceof RevocationStoreUnavailableError) return c.json({ ok: false, error: err.message }, 503);
     return c.json({ ok: false, error: "Invalid delegation header" }, 400);
   }
 });
@@ -669,7 +673,12 @@ app.post("/api/auth/revoke-session", requireAuth, (c) => {
 // Revoke all sessions for the authenticated parent address
 app.post("/api/auth/revoke-all", requireAuth, (c) => {
   const parentAddress = c.get("parentAddress") as string;
-  revokeAllSessions(parentAddress);
+  try {
+    revokeAllSessions(parentAddress);
+  } catch (err) {
+    if (err instanceof RevocationStoreUnavailableError) return c.json({ ok: false, error: err.message }, 503);
+    throw err;
+  }
   return c.json({ ok: true, message: "All sessions revoked" });
 });
 
