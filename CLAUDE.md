@@ -60,6 +60,8 @@ FEATURE FLAGS — READ BEFORE ASSUMING A RAIL IS LIVE
   freeEventsAllowed     = false
   badgesAllowed         = false   # badge/drop creation + gated ticket sales (#664); Objects page stays (dashboard link)
   shopAllowed           = false   # shops, POS, spend-permission draws (#124)
+  walletLoginAllowed    = false   # MetaMask/WalletConnect login: phishable sign-to-derive seed (#186)
+  accountBackupsAllowed = false   # email accounts' Protect backups; passkey accounts add passkeys (#186)
   (also off: agentCommerceAllowed, coinbaseLoginAllowed, organiserSendingDomains)
 
 Flags gate UI AND server validation in lockstep — an old client cannot reach a disabled

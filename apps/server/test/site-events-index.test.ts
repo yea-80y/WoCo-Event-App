@@ -21,6 +21,9 @@ import { join } from "node:path";
 import { Hono } from "hono";
 import { TypedDataEncoder, Wallet } from "ethers";
 import { Topic } from "@ethersphere/bee-js";
+import { enableFeature } from "./helpers/features.js";
+
+enableFeature("walletLoginAllowed");
 
 const DEAD = "http://127.0.0.1:9";
 const HOST = "test.woco.local";

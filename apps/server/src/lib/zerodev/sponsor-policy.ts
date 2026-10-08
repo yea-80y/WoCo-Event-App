@@ -83,6 +83,7 @@ import {
   WEIGHTED_RENEW_FN,
   WEIGHTED_ROOT_ID,
 } from "@woco/shared/kernel/co-owners";
+import { FEATURES } from "@woco/shared";
 import type { GateStatus } from "../gate/check.js";
 import { SlidingWindowLimiter } from "../http/rate-limit.js";
 import { RollingDayCount } from "./upgrade-intents.js";
@@ -430,6 +431,11 @@ export class SponsorPolicy {
     const shape = classifyUserOp(op);
     if (!shape.ok) return { proceed: false, reason: shape.reason };
     const { subject } = shape;
+    // Email accounts' backups are off for launch (#186): no op that ADDS one is paid.
+    // Removing them stays paid - an upgrade to a passkey removes them first.
+    if (!FEATURES.accountBackupsAllowed && (shape.shape === "install-route" || shape.shape === "guardians")) {
+      return { proceed: false, reason: "backups-off", shape: shape.shape, subject };
+    }
     // Every request, the counted ones too: the stub carries no limits, the final
     // carries the real ones.
     if (op.maxCostWei > this.maxOpCostWei) return { proceed: false, reason: "gas", shape: shape.shape, subject };

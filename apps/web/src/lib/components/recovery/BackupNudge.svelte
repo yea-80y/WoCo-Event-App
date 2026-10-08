@@ -7,6 +7,7 @@
    */
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
+  import { FEATURES } from "@woco/shared";
 
   const SNOOZE_KEY = "woco:backup:snoozed-until";
   const SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -17,7 +18,7 @@
   let checkedWith: "locked" | "unlocked" | null = null;
 
   // A passkey account adds no backup on Protect (#746 step 5): never nudged there.
-  const canProtect = $derived(auth.kind === "web3auth");
+  const canProtect = $derived(auth.kind === "web3auth" && FEATURES.accountBackupsAllowed);
 
   $effect(() => {
     const seedState = auth.hasIdentitySeed ? "unlocked" : "locked";
