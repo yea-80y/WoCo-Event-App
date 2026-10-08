@@ -41,7 +41,9 @@ const bee: Server = createServer((req, res) => {
   }
   const mode = modes.get(m[1]!.toLowerCase()) ?? "absent";
   if (mode === "absent") {
-    res.writeHead(404, { "Content-Type": "application/json" }).end('{"code":404,"message":"Not Found"}');
+    // Bee 2.7.1's answer for a feed with no update (#186: its other 404,
+    // "lookup at failed", is NOT absent).
+    res.writeHead(404, { "Content-Type": "application/json" }).end('{"code":404,"message":"no update found"}');
     return;
   }
   if (mode === "error") {
@@ -165,7 +167,7 @@ const UNDECIDABLE = /Could not verify site ownership/;
 
 // --- The strict reader under every gate ---------------------------------------
 
-test("readFeedPageStrict: a bee 404 is absent, a 500 is an error, a page is ok", async () => {
+test("readFeedPageStrict: bee's \"no update found\" is absent, a 500 is an error, a page is ok", async () => {
   const absent = siteWith("absent");
   const broken = siteWith("error");
   const present = siteWith({ owner: Wallet.createRandom().address.toLowerCase() });

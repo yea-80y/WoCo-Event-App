@@ -29,7 +29,9 @@ const DEAD = "http://127.0.0.1:9";
 const HOST = "test.woco.local";
 
 /** topic hex -> answer for feed reads. Unlisted topics read as absent. */
-const feeds = new Map<string, "error" | { json: Record<string, unknown> }>();
+const feeds = new Map<string, "error" | "lookup-failed" | { json: Record<string, unknown> }>();
+/** GET /chunks answers 500: bee cannot say whether a chunk exists. */
+let chunkReads500 = false;
 const writes: string[] = [];
 let encodeJsonFeed: (data: unknown) => Uint8Array;
 
@@ -41,10 +43,18 @@ const bee: Server = createServer((req, res) => {
     res.writeHead(201, { "Content-Type": "application/json" }).end(JSON.stringify({ reference: "ab".repeat(32) }));
     return;
   }
+  if (chunkReads500 && url.startsWith("/chunks/")) {
+    res.writeHead(500, { "Content-Type": "application/json" }).end('{"code":500,"message":"read chunk failed"}');
+    return;
+  }
   const m = /^\/feeds\/[0-9a-fA-F]{40}\/([0-9a-fA-F]{64})/.exec(url);
   const answer = m ? feeds.get(m[1]!.toLowerCase()) : undefined;
   if (answer === "error") {
     res.writeHead(500).end();
+    return;
+  }
+  if (answer === "lookup-failed") {
+    res.writeHead(404, { "Content-Type": "application/json" }).end('{"code":404,"message":"lookup at failed"}');
     return;
   }
   if (answer) {
@@ -102,10 +112,10 @@ const hex = (topic: string) => Topic.fromString(topic).toHex().replace(/^0x/, ""
 const sha256Hex = (text: string) => createHash("sha256").update(text, "utf-8").digest("hex");
 
 /** A published site owned by `owner`; its events index answers `events`. */
-function site(owner: Wallet, events: "absent" | "error"): string {
+function site(owner: Wallet, events: "absent" | "error" | "lookup-failed"): string {
   const siteId = `site-${randomUUID().slice(0, 12)}`;
   feeds.set(hex(shared.siteConfigTopic(siteId)), { json: { siteId, ownerAddress: owner.address.toLowerCase(), pages: [] } });
-  if (events === "error") feeds.set(hex(shared.siteEventsIndexTopic(siteId)), "error");
+  if (events !== "absent") feeds.set(hex(shared.siteEventsIndexTopic(siteId)), events);
   return siteId;
 }
 
@@ -182,6 +192,20 @@ test("an index we cannot read refuses the edit and writes nothing (it used to wr
   assert.equal(status, 503);
   assert.match(String(json.error), /Could not read this site's events/);
   assert.deepEqual(writes, []);
+});
+
+test("a lookup that FAILED is not an empty index: bee's 404 'lookup at failed' refuses the edit too (#186)", async () => {
+  const owner = await organiser();
+  const siteId = site(owner, "lookup-failed");
+  chunkReads500 = true;
+  writes.length = 0;
+  try {
+    const { status } = await addEvent(owner, siteId, event(owner));
+    assert.equal(status, 503);
+    assert.deepEqual(writes, []);
+  } finally {
+    chunkReads500 = false;
+  }
 });
 
 test("two quick adds both land, though bee never serves back what was written", async () => {
