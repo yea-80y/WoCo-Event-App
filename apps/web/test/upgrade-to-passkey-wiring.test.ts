@@ -49,12 +49,14 @@ test("the slow path refuses an email key that is off the list before anything is
 test("a passkey sign-in mid-upgrade on this device gets the unfinished words, before anything is forgotten", () => {
   const b = body(STORE, "async function loginPasskeyResult(");
   const branch = b.slice(b.indexOf("if (foreignOwner) {"));
-  const check = branch.indexOf("_upgradeUnfinishedFor(account.address, override)");
+  const check = branch.indexOf("_upgradeUnfinishedFor(account.address, override, foreignOwner)");
   const forget = branch.indexOf('clearVerifiedBinding("passkey", account.address)');
   assert.ok(check > 0 && forget > check, "said before the binding marker is cleared");
-  assert.match(branch, /throw refuseOrphanedCredential\("passkey", [^;]*UPGRADE_UNFINISHED_MESSAGE\)/);
+  assert.match(branch, /throw new OrphanedCredentialError\("passkey", foreignOwner, UPGRADE_UNFINISHED_MESSAGE\)/);
   const helper = body(STORE, "function _upgradeUnfinishedFor(");
-  assert.match(helper, /m\.stage === "prepared" && m\.passkey === passkey\.toLowerCase\(\)/);
+  // Only while the email key it started from still owns the account - not after another
+  // device's passkey finished it, or a recovery: those take the device-verdict path (Fable).
+  assert.match(helper, /m\.stage === "prepared" && m\.passkey === passkey\.toLowerCase\(\) && owner\.toLowerCase\(\) === m\.emailKey/);
 });
 
 test("the intent is asked for over the signed session; its refusal shows the server's words", () => {

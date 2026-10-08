@@ -601,6 +601,11 @@ function store(over: { kind?: "web3auth" | "passkey"; session?: boolean; landed?
       void runResume(host, io);
     },
   };
+  const socialWrite = f.deps.social.write;
+  f.deps.social.write = async (signer, kind, subject, value) => {
+    log.push(`social:${value}`);
+    return socialWrite(signer, kind, subject, value);
+  };
   const io = {
     marker: f.marker,
     prepareDeps: async () => f.deps,
@@ -637,25 +642,36 @@ test("run: prepare, retract, the one switch, then adopt -> finalize -> the email
   assert.equal(s.f.marker.map.size, 0, "done: the marker goes");
 });
 
-test("run: the intent is asked for after the retraction and before the one op - every attempt", async () => {
+test("run: the intent comes before the retraction and the op, afresh at every attempt that sends", async () => {
   let refuse = true;
   const s = store({ landed: () => false, switchFails: () => refuse });
   await assert.rejects(runUpgrade(s.host, s.io));
   refuse = false;
   await runUpgrade(s.host, s.io);
-  const asks = s.log.map((x, i) => (x === "requestIntent" ? i : -1)).filter((i) => i >= 0);
-  const sends = s.log.map((x, i) => (x.startsWith("switch:") ? i : -1)).filter((i) => i >= 0);
-  assert.equal(asks.length, 2, "a fresh intent per attempt");
-  assert.ok(asks[0] < sends[0] && asks[1] < sends[1] && asks[1] > sends[0]);
-  const retraction = s.f.calls.findIndex((c) => c.name === "socialWrite");
-  assert.ok(retraction >= 0);
+  const at = (x: string, from = 0) => s.log.indexOf(x, from);
+  const first = at("requestIntent");
+  const second = at("requestIntent", first + 1);
+  assert.ok(first >= 0 && second > first, "a fresh intent per attempt");
+  assert.ok(first < at("social:false") && at("social:false") < at(`switch:${PASSKEY}`), "intent, retraction, op - in that order");
+  assert.ok(second > at(`switch:${PASSKEY}`) && second < at(`switch:${PASSKEY}`, at(`switch:${PASSKEY}`) + 1), "the retry asks before its own op");
 });
 
-test("run: an intent refused (the per-network limit) sends nothing and says why", async () => {
+test("run: an intent refused (the per-network limit) sends nothing, retracts nothing, and says why", async () => {
   const s = store({ landed: () => false, intent: () => { throw new Error("Too many upgrades from this network today - try again tomorrow."); } });
   await assert.rejects(runUpgrade(s.host, s.io), { message: "Too many upgrades from this network today - try again tomorrow." });
   assert.ok(!s.log.some((x) => x.startsWith("switch:")));
-  assert.equal(s.f.marker.map.get(PARENT)?.stage, "prepared", "kept: a later attempt picks it up");
+  assert.ok(!s.log.includes("social:false"), "the likes are where they were");
+  assert.equal(s.f.countedTwice(), false);
+  assert.equal(s.f.marker.map.get(PARENT)?.retracted, false, "kept: a later attempt picks it up");
+});
+
+test("run: an attempt whose op already landed asks for no intent and sends nothing", async () => {
+  const s = store({ landed: () => true });
+  s.f.oldRetracted();
+  s.f.marker.write(prepared());
+  await runUpgrade(s.host, s.io);
+  assert.ok(!s.log.includes("requestIntent") && !s.log.some((x) => x.startsWith("switch:")));
+  assert.ok(s.log.includes("adoptPasskey"), "it commits");
 });
 
 test("run: no session - nothing is read, made or sent", async () => {

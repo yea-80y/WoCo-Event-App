@@ -470,11 +470,14 @@ export async function runUpgrade(h: UpgradeStoreHost, io: UpgradeIO, progress: (
     marker = prepared.marker;
     liveInTab = prepared.live;
   }
+  const chain = await h.emailKernel();
+  // The intent first, afresh at every attempt that will send an op: a refusal then
+  // leaves the likes where they are and nothing has changed. An attempt whose op
+  // already landed (a tab closed on it) sends nothing and asks for nothing.
+  if (!(await switchLanded(chain, marker))) await io.requestIntent();
   marker = await retractOld(deps, marker, progress);
   progress("Handing your account to your passkey…");
-  // Asked afresh at every attempt, while the email key's session is still good.
-  await io.requestIntent();
-  const { confirmed } = await sendUpgradeSwitch(await h.emailKernel(), marker);
+  const { confirmed } = await sendUpgradeSwitch(chain, marker);
   await commitUpgrade(h, io, marker, liveInTab?.passkey === marker.passkey ? liveInTab : null, confirmed);
   liveInTab = null;
   h.resumeLater();

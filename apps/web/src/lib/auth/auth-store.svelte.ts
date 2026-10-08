@@ -22,6 +22,7 @@ import {
   isOrphanedCredentialError,
   refuseOrphanedCredential,
   postOrphanedCredentialNotice,
+  OrphanedCredentialError,
   MOVED_OR_RECOVERED_MESSAGE,
   UPGRADED_TO_PASSKEY_MESSAGE,
   UPGRADE_UNFINISHED_MESSAGE,
@@ -3036,8 +3037,10 @@ async function loginPasskeyResult(
       if (foreignOwner) {
         // Made by an upgrade on this device whose switch has not landed (#746): the
         // email key still owns the account. Say so - nothing was recovered away.
-        if (_upgradeUnfinishedFor(account.address, override)) {
-          throw refuseOrphanedCredential("passkey", { boundKernel: override, onChainOwner: foreignOwner }, undefined, UPGRADE_UNFINISHED_MESSAGE);
+        if (_upgradeUnfinishedFor(account.address, override, foreignOwner)) {
+          console.warn("[auth] this passkey's upgrade has not landed - the email key still owns", override);
+          postOrphanedCredentialNotice("passkey", undefined, UPGRADE_UNFINISHED_MESSAGE);
+          throw new OrphanedCredentialError("passkey", foreignOwner, UPGRADE_UNFINISHED_MESSAGE);
         }
         clearVerifiedBinding("passkey", account.address);
         // Recovered away (#255) - or this passkey made another device the main one
@@ -4489,11 +4492,12 @@ async function recoverAndRekey(args: {
 // loaded upgrade-to-passkey.ts; only what needs this store's state is here.
 // ---------------------------------------------------------------------------
 
-/** This device prepared an upgrade to `passkey` for `parent` whose switch has not landed (#746). */
-function _upgradeUnfinishedFor(passkey: string, parent: string): boolean {
+/** This device prepared an upgrade to `passkey` for `parent`, and the account's owner is still
+ *  the email key that upgrade started from - not another device's passkey, not a recovery (#746). */
+function _upgradeUnfinishedFor(passkey: string, parent: string, owner: string): boolean {
   try {
     const m = parseUpgradeMarker(globalThis.localStorage?.getItem(upgradeMarkerKey(parent)));
-    return !!m && m.stage === "prepared" && m.passkey === passkey.toLowerCase();
+    return !!m && m.stage === "prepared" && m.passkey === passkey.toLowerCase() && owner.toLowerCase() === m.emailKey;
   } catch {
     return false;
   }
@@ -4510,12 +4514,9 @@ async function _refuseUpgradedEmailLogin(eoa: string, kernel: string, passkey: s
   } catch (e) {
     console.warn("[auth] could not clear the Web3Auth session after an upgraded-account refusal:", e);
   }
-  return refuseOrphanedCredential(
-    "web3auth",
-    { boundKernel: kernel, onChainOwner: passkey ?? kernel },
-    undefined,
-    UPGRADED_TO_PASSKEY_MESSAGE,
-  );
+  console.warn("[auth] this email key is off the account's list - it opens with a passkey now:", kernel);
+  postOrphanedCredentialNotice("web3auth", undefined, UPGRADED_TO_PASSKEY_MESSAGE);
+  return new OrphanedCredentialError("web3auth", passkey ?? kernel, UPGRADED_TO_PASSKEY_MESSAGE);
 }
 
 /**
