@@ -15,6 +15,8 @@ import {
   type PasskeyProviderId,
 } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
+import { mustSignInElsewhere } from "./sign-in-host.js";
+import { buildEnv } from "../build-env.js";
 
 /** Credential metadata stored in IndexedDB (not secret) */
 interface PasskeyCredentialMeta {
@@ -38,6 +40,18 @@ export type PasskeyCredentialHandle = PasskeyCredentialMeta;
 // and the embed resolves it too, so a local copy is how #175 shipped.
 function getPasskeyRpId(): string {
   return resolvePasskeyRpId(window.location.hostname);
+}
+
+/** The RP ID for a ceremony - refused off the canonical host (#186, Fable on
+ *  #822): a passkey made or used there is scoped to that hostname, a second
+ *  account. Sign-in already redirects; this also covers the upgrade, add-device
+ *  and backup flows reachable from a session restored on another host. Only
+ *  ceremonies throw: getPasskeyRpId stays safe for restore-time reads. */
+function ceremonyRpId(): string {
+  if (mustSignInElsewhere(window.location.hostname, buildEnv(() => import.meta.env.DEV) === true)) {
+    throw new Error("Passkeys work on woco.eth.limo only - open WoCo there to continue.");
+  }
+  return getPasskeyRpId();
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +389,7 @@ export async function authenticatePasskey(): Promise<PasskeyLogin> {
 
 async function _authenticatePasskeyImpl(): Promise<PasskeyLogin> {
   const salt = await getPrfSalt();
-  const rpId = getPasskeyRpId();
+  const rpId = ceremonyRpId();
 
   let credential: PublicKeyCredential | null;
   try {
@@ -500,7 +514,7 @@ async function _mintPasskeyAccountImpl(): Promise<
   PasskeyKeyMaterial & { credential: PasskeyCredentialMeta; attachment: PasskeyAttachment }
 > {
   const salt = await getPrfSalt();
-  const rpId = getPasskeyRpId();
+  const rpId = ceremonyRpId();
 
   const credential = (await navigator.credentials.create({
     publicKey: {
@@ -575,7 +589,7 @@ async function _createAddedPasskeyImpl(opts: {
   createdOn: string;
 }): Promise<AddedPasskey> {
   const salt = await getPrfSalt();
-  const rpId = getPasskeyRpId();
+  const rpId = ceremonyRpId();
   const name = `WoCo Account - added ${opts.createdOn}`;
 
   let credential: PublicKeyCredential | null;
@@ -646,7 +660,7 @@ export async function createPasskeyBackupKey(): Promise<PasskeyGuardianMaterial>
 
 async function _createPasskeyBackupKeyImpl(): Promise<PasskeyGuardianMaterial> {
   const salt = await getPrfSalt();
-  const rpId = getPasskeyRpId();
+  const rpId = ceremonyRpId();
 
   const credential = (await navigator.credentials.create({
     publicKey: {
@@ -693,7 +707,7 @@ export async function getPasskeyBackupKey(): Promise<PasskeyGuardianMaterial> {
 
 async function _getPasskeyBackupKeyImpl(): Promise<PasskeyGuardianMaterial> {
   const salt = await getPrfSalt();
-  const rpId = getPasskeyRpId();
+  const rpId = ceremonyRpId();
 
   const credential = (await navigator.credentials.get({
     publicKey: {
