@@ -386,7 +386,7 @@
     {/if}
 
     <!-- Organizer creator bar -->
-    {#if auth.parent?.toLowerCase() === event.creatorAddress.toLowerCase()}
+    {#if ondashboard && auth.parent?.toLowerCase() === event.creatorAddress.toLowerCase()}
       <div class="creator-bar">
         <span class="creator-bar-label">You are the organizer</span>
         <button class="creator-bar-btn" onclick={ondashboard}>Dashboard →</button>

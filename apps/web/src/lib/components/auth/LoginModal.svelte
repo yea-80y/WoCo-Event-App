@@ -277,12 +277,14 @@
           {#if loginRequest.context !== "invite"}
             <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} />
 
-            <div class="wallet-door">
-              <span>Already use a crypto wallet?</span>
-              <button type="button" class="text-btn" onclick={() => (view = "wallet")}>
-                Connect it <span aria-hidden="true">→</span>
-              </button>
-            </div>
+            {#if FEATURES.walletLoginAllowed}
+              <div class="wallet-door">
+                <span>Already use a crypto wallet?</span>
+                <button type="button" class="text-btn" onclick={() => (view = "wallet")}>
+                  Connect it <span aria-hidden="true">→</span>
+                </button>
+              </div>
+            {/if}
           {/if}
         </div>
 
@@ -292,7 +294,9 @@
               <span aria-hidden="true">←</span> All sign-in options
             </button>
 
-            <WalletLogin oncomplete={handleComplete} onstart={() => start("wallet")} onsettle={settle} />
+            {#if FEATURES.walletLoginAllowed}
+              <WalletLogin oncomplete={handleComplete} onstart={() => start("wallet")} onsettle={settle} />
+            {/if}
 
             {#if FEATURES.coinbaseLoginAllowed}
               <CoinbaseLogin oncomplete={handleComplete} onstart={() => start("coinbase")} onsettle={settle} />

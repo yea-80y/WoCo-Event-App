@@ -6,24 +6,44 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { FEATURES } from "@woco/shared";
 import { canProtectAccount, needsBackupPrompt } from "../src/lib/auth/backup-prompt.js";
+
+/** Email accounts' backups are off for launch (#186); the rules below are for when they are on. */
+function withBackups<T>(on: boolean, fn: () => T): T {
+  const flags = FEATURES as Record<string, boolean>;
+  const was = flags.accountBackupsAllowed;
+  flags.accountBackupsAllowed = on;
+  try {
+    return fn();
+  } finally {
+    flags.accountBackupsAllowed = was;
+  }
+}
 
 const EMPTY = { status: "known" as const, backups: [] };
 const ONE = { status: "known" as const, backups: [{ method: "passkey" }] };
 const UNREADABLE = { status: "unavailable" as const };
 
-test("passkey and email accounts can be protected; wallets cannot", () => {
+test("while email backups are off (#186), no email account is offered one or prompted", () => {
+  assert.equal(FEATURES.accountBackupsAllowed as boolean, false);
+  assert.equal(canProtectAccount("web3auth"), false);
+  assert.equal(needsBackupPrompt("web3auth", EMPTY), false);
+  assert.equal(canProtectAccount("passkey"), true, "a passkey account still backs up by adding passkeys");
+});
+
+test("passkey and email accounts can be protected; wallets cannot", () => withBackups(true, () => {
   assert.equal(canProtectAccount("passkey"), true);
   assert.equal(canProtectAccount("web3auth"), true);
   assert.equal(canProtectAccount("web3"), false);
   assert.equal(canProtectAccount("coinbase"), false);
   assert.equal(canProtectAccount(null), false);
-});
+}));
 
-test("an email account with no backups is prompted; a passkey account never is (#746 step 5)", () => {
+test("an email account with no backups is prompted; a passkey account never is (#746 step 5)", () => withBackups(true, () => {
   assert.equal(needsBackupPrompt("web3auth", EMPTY), true);
   assert.equal(needsBackupPrompt("passkey", EMPTY), false, "its backups are linked devices, not Protect");
-});
+}));
 
 test("an account that already has a backup is not prompted", () => {
   assert.equal(needsBackupPrompt("web3auth", ONE), false);
@@ -70,5 +90,5 @@ test("Protect offers a passkey account no method, and every 'add' opens Your pas
 
 test("the post-publish nudge never sends a passkey account to Protect", () => {
   const nudge = src("../src/lib/components/recovery/BackupNudge.svelte");
-  assert.match(nudge, /const canProtect = \$derived\(auth\.kind === "web3auth"\);/);
+  assert.match(nudge, /const canProtect = \$derived\(auth\.kind === "web3auth" && FEATURES\.accountBackupsAllowed\);/);
 });

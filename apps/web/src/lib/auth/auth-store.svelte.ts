@@ -1479,6 +1479,12 @@ async function init(): Promise<void> {
     const kind = await getKV<AuthKind>(StorageKeys.AUTH_KIND);
 
     if (kind === "web3") {
+      // A stored wallet session from before the flag flip must not outlive it.
+      if (!FEATURES.walletLoginAllowed) {
+        console.warn("[auth] stored wallet session not restored: walletLoginAllowed is off (#186)");
+        await clearAllAuth();
+        return;
+      }
       // getConnectedAddress() can hang if window.ethereum is injected but broken
       // (e.g. MetaMask inpage.js present but extension unavailable) — cap at 3 s.
       let walletAddr = await Promise.race([
@@ -1952,6 +1958,11 @@ function hasAnyCachedKernelAddress(): boolean {
 // ---------------------------------------------------------------------------
 
 async function loginWeb3(): Promise<boolean> {
+  // Holds even if a path other than the (gated) login choices reaches this.
+  if (!FEATURES.walletLoginAllowed) {
+    console.warn("[auth] wallet login refused: walletLoginAllowed is off (#186)");
+    return false;
+  }
   if (_busy) return false;
   _busy = true;
   _loginStage = "waiting";
