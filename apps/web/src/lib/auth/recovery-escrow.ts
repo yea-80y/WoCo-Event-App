@@ -36,9 +36,11 @@
  * the issuing key and the encryption keys are all KDFs of that seed.
  *
  * Confidentiality of the escrow equals the recovery-threshold strength, NOT
- * device-bound secrecy — inherent to all recovery (§11.4). A timelock guards
- * funds rotation, NOT this at-rest copy: once an attacker meets the unwrap
- * threshold the plaintext is theirs with no "cancel". Escrow the MINIMUM.
+ * device-bound secrecy — inherent to all recovery (§11.4). Nothing slows the
+ * account side either: there is NO timelock and NO notification on recovery,
+ * so whoever meets the threshold rotates the owner at once, with no cancel
+ * window (#160). And this at-rest copy could never be guarded by one: once the
+ * unwrap threshold is met the plaintext is theirs. Escrow the MINIMUM.
  */
 
 import { keccak256, getBytes, Wallet } from "ethers";
