@@ -1,15 +1,16 @@
 /**
- * `/api/events/:id/list` and `/discover` fetch from a caller-supplied server
- * (#186). Two rules, pinned here:
- *  - an event created here is listed only by the creator recorded at create
- *    (#670) - a stranger is refused before any remote server is asked;
+ * `/api/events/:id/list`, `/unlist` and `/discover` fetch from a caller-supplied
+ * server (#186). Two rules, pinned here:
+ *  - an event created here is listed or unlisted only by the creator recorded at
+ *    create (#670) - a stranger is refused before any remote server is asked,
+ *    and an unreadable record file refuses everyone (503) rather than fall back;
  *  - only a public https source is fetched, never a private or plain-http one,
  *    and no redirect is followed.
  */
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
@@ -131,4 +132,34 @@ test("/discover never fetches a private or plain-http source, and follows no red
   calls.length = 0;
   await post(Wallet.createRandom(), "/api/events/discover", { sourceApiUrl: "http://bee-node:1633" });
   assert.deepEqual(calls, [{ url: `${PUBLIC_BASE}/api/events`, redirect: "error" }]);
+});
+
+test("/unlist: a stranger is refused before any fetch, and a private source becomes the public base", async () => {
+  calls.length = 0;
+  const refused = await post(Wallet.createRandom(), `/api/events/${RECORDED_EVENT}/unlist`, { sourceApiUrl: ELSEWHERE });
+  assert.equal(refused.status, 403);
+  assert.deepEqual(calls, []);
+
+  const eventId = randomUUID();
+  await post(Wallet.createRandom(), `/api/events/${eventId}/unlist`, { sourceApiUrl: "http://127.0.0.1:1633" });
+  assert.deepEqual(calls, [{ url: `${PUBLIC_BASE}/api/events/${eventId}`, redirect: "error" }]);
+});
+
+test("an unreadable record file refuses /list and /unlist (503) instead of asking a remote server", async () => {
+  const rec = await import("../src/lib/event/feed-signer-record.js");
+  const file = join(dir, ".data", "event-feed-signers.json");
+  const good = readFileSync(file, "utf-8");
+  writeFileSync(file, "{ truncated");
+  rec.__resetFeedSignerRecordForTest();
+  try {
+    calls.length = 0;
+    for (const action of ["list", "unlist"]) {
+      const { status } = await post(Wallet.createRandom(), `/api/events/${randomUUID()}/${action}`, { sourceApiUrl: ELSEWHERE });
+      assert.equal(status, 503, action);
+    }
+    assert.deepEqual(calls, []);
+  } finally {
+    writeFileSync(file, good);
+    rec.__resetFeedSignerRecordForTest();
+  }
 });

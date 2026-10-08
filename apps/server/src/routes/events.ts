@@ -9,7 +9,7 @@ import { cancellationGate, withCancellation } from "../lib/event/cancellations.j
 import { createEventV2, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, type EventMetaUpdates } from "../lib/event/service.js";
 import { DeleteBlockedError } from "../lib/event/delete-safety.js";
 import { setListed } from "../lib/event/listing-state.js";
-import { getRecordedFeedSigner, isFeedSignerStoreError } from "../lib/event/feed-signer-record.js";
+import { feedSignerRecordHealth, getRecordedFeedSigner, isFeedSignerStoreError } from "../lib/event/feed-signer-record.js";
 import { cardFromFeed, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
 import { getOrganiserNonce, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
 import { registerSeriesExactlyOnce } from "../lib/event/register-once.js";
@@ -655,6 +655,22 @@ events.post("/discover", requireAuth, async (c) => {
   return c.json({ ok: true, data });
 });
 
+/**
+ * An event created here has its creator on record (#670): only that creator may
+ * list or unlist it, and no remote server is asked to vouch otherwise (#186).
+ * An unreadable record file refuses rather than fall back to a remote vouch.
+ */
+function recordedCreatorRefusal(eventId: string, parentAddress: string): { status: 403 | 503; error: string } | null {
+  if (feedSignerRecordHealth().unreadable) {
+    return { status: 503, error: "Event records are unavailable - try again later" };
+  }
+  const recorded = getRecordedFeedSigner(eventId);
+  if (recorded && recorded.creatorAddress !== parentAddress) {
+    return { status: 403, error: "You are not the creator of this event" };
+  }
+  return null;
+}
+
 // POST /api/events/:id/list — authenticated
 // Fetches the event from sourceApiUrl (or WoCo's own server), verifies creator,
 // and adds to WoCo directory. No-op if already listed.
@@ -667,12 +683,8 @@ events.post("/:id/list", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const body = c.get("body") as { sourceApiUrl?: string; signer?: string };
 
-  // An event created here has its creator on record (#670): only that creator
-  // may list it, and no remote server is asked to vouch otherwise (#186).
-  const recorded = getRecordedFeedSigner(eventId);
-  if (recorded && recorded.creatorAddress !== parentAddress) {
-    return c.json({ ok: false, error: "You are not the creator of this event" }, 403);
-  }
+  const refused = recordedCreatorRefusal(eventId, parentAddress);
+  if (refused) return c.json({ ok: false, error: refused.error }, refused.status);
 
   // SECURITY: the creatorAddress==parent gate below is only meaningful when the
   // feed comes from a source the caller cannot author. A client-supplied `signer`
@@ -755,6 +767,9 @@ events.post("/:id/unlist", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const body = c.get("body") as { sourceApiUrl?: string };
 
+  const refused = recordedCreatorRefusal(eventId, parentAddress);
+  if (refused) return c.json({ ok: false, error: refused.error }, refused.status);
+
   // Verify creator — check directory first, then optional sourceApiUrl
   const wocoEntries = await listEvents();
   const dirEntry = wocoEntries.find((e) => e.eventId === eventId);
@@ -764,10 +779,15 @@ events.post("/:id/unlist", requireAuth, async (c) => {
       return c.json({ ok: false, error: "You are not the creator of this event" }, 403);
     }
   } else if (body.sourceApiUrl) {
-    // Event may not be in directory yet — verify via source
-    const apiBase = body.sourceApiUrl.trim().replace(/\/$/, "");
+    // Event may not be in directory yet — verify via source. Same rule as /list:
+    // a public https source only, no redirects (#186).
+    const apiBase = sanitisePublicApiUrl(body.sourceApiUrl);
+    if (!apiBase) return c.json({ ok: false, error: "Could not verify event creator" }, 400);
     try {
-      const resp = await fetch(`${apiBase}/api/events/${eventId}`, { signal: AbortSignal.timeout(15000) });
+      const resp = await fetch(`${apiBase}/api/events/${encodeURIComponent(eventId)}`, {
+        redirect: "error",
+        signal: AbortSignal.timeout(15000),
+      });
       const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventFeed };
       if (!json.ok || !json.data) return c.json({ ok: false, error: "Event not found" }, 404);
       if (json.data.creatorAddress.toLowerCase() !== parentAddress) {
