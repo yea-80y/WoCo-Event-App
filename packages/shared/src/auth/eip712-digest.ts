@@ -1,10 +1,10 @@
 /**
  * Minimal dependency-free EIP-712 digest computation.
  *
- * Used in contexts where ethers is not available (e.g. the embed widget,
- * which signs claim messages with noble/curves secp256k1 directly).
- * The server still verifies via ethers `verifyTypedData`, so the outputs
- * here MUST be byte-identical to what ethers produces for the same input.
+ * Used where ethers should not be pulled in: today the issuer-registry
+ * statement digest (`issuer/types.ts`). Other code hashes the same messages
+ * with ethers, so the outputs here MUST be byte-identical to ethers' for the
+ * same input.
  *
  * Currently supports only the field types WoCo uses: `string`, `address`,
  * `uint256`, `bytes32`. Extending to dynamic arrays / nested structs

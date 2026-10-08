@@ -55,7 +55,10 @@ test("the client computes it exactly as the server authorizes sessions", () => {
   const client = read("../src/lib/auth/kernel-account.ts");
   const fn = client.slice(client.indexOf("export async function counterfactualKernelOf("));
   assert.match(fn.slice(0, 900), /getEntryPoint\("0\.7"\)[\s\S]*KERNEL_V3_1[\s\S]*index: 0n,/);
-  assert.match(read("../../server/src/lib/auth/kernel-owner.ts"), params);
+  const server = read("../../server/src/lib/auth/kernel-owner.ts");
+  assert.match(server, params);
+  assert.match(server, /const entryPoint = getEntryPoint\("0\.7"\);/);
+  assert.match(server, /const kernelVersion = KERNEL_V3_1;/);
 });
 
 test("every build without an override is checked against it, and a mismatch refuses", () => {
