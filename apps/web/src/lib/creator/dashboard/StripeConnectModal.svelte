@@ -127,6 +127,7 @@
   }
 
   async function handleContinue() {
+    if (!organiser) return;
     actionLoading = true;
     error = null;
     try {

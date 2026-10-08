@@ -60,6 +60,7 @@
   }
 
   async function handleContinueOnboarding() {
+    if (!organiser) return;
     actionLoading = true;
     error = null;
     try {

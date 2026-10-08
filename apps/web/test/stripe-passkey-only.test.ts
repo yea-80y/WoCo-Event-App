@@ -23,6 +23,8 @@ test("both Stripe components refuse any other account, in the markup and on the 
     const src = read(`../src/lib/creator/dashboard/${file}.svelte`);
     assert.ok(src.includes(ORGANISER), `${file}: organiser check`);
     assert.match(src, /async function handleConnect\(\) \{\n\s*if \(!organiser\) return;/, `${file}: handleConnect`);
+    const cont = file === "StripeConnect" ? "handleContinueOnboarding" : "handleContinue";
+    assert.match(src, new RegExp(`async function ${cont}\\(\\) \\{\\n\\s*if \\(!organiser\\) return;`), `${file}: ${cont}`);
     assert.ok(src.includes("{#if !organiser}"), `${file}: markup`);
   }
   const modal = read("../src/lib/creator/dashboard/StripeConnectModal.svelte");

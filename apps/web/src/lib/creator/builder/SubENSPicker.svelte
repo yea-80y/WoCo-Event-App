@@ -60,6 +60,8 @@
       stripeStatus = false;
       return;
     }
+    // Not an organiser: Stripe locks nothing, so there is nothing to ask.
+    if (!stripeLocks) return;
     stripeStatus = null;
     getStripeAccountStatus().then((s) => {
       stripeStatus = !!(s.ok && s.onboardingComplete);
