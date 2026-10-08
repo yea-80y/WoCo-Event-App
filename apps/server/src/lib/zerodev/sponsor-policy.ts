@@ -85,6 +85,7 @@ import {
 } from "@woco/shared/kernel/co-owners";
 import type { GateStatus } from "../gate/check.js";
 import { SlidingWindowLimiter } from "../http/rate-limit.js";
+import { RollingDayCount } from "./upgrade-intents.js";
 
 export type SponsorShape =
   | "install-route"
@@ -387,8 +388,8 @@ export interface PolicyDeps {
   gate(account: string): Promise<GateStatus>;
   /** Is `guardian` on `account`'s recovery list right now? null = could not read. */
   isGuardian(account: string, guardian: string): Promise<boolean | null>;
-  /** The locked account's own session asked to upgrade, and no op has spent it yet. */
-  upgradeIntent: { has(account: string): boolean; consume(account: string): void };
+  /** Spend the intent the locked account's own session asked for: true when it held one. */
+  upgradeIntent: { spend(account: string): boolean };
 }
 
 export type Decision =
@@ -418,6 +419,7 @@ const SEEN_MAX = 10_000;
 export class SponsorPolicy {
   private readonly limiter = new SlidingWindowLimiter(SPONSOR_WINDOWS);
   private readonly seen = new Map<string, true>();
+  private readonly lockedUpgradesPaid = new RollingDayCount();
 
   constructor(
     private readonly deps: PolicyDeps,
@@ -444,7 +446,8 @@ export class SponsorPolicy {
     // stub, final and a same-nonce retry of one already counted ride on it.
     if (locked) {
       if (shape.shape !== "upgrade") return { proceed: false, reason: "locked", shape: shape.shape, subject };
-      if (!counted && !this.deps.upgradeIntent.has(subject)) return { proceed: false, reason: "no-intent", shape: shape.shape, subject };
+      // Spent here: nothing after this refuses an upgrade op (it has no guardian read).
+      if (!counted && !this.deps.upgradeIntent.spend(subject)) return { proceed: false, reason: "no-intent", shape: shape.shape, subject };
     }
     if (shape.guardian) {
       const listed = await this.deps.isGuardian(subject, shape.guardian).catch(() => null);
@@ -457,10 +460,16 @@ export class SponsorPolicy {
       this.limiter.record(subject);
       this.seen.set(opKey, true);
       while (this.seen.size > SEEN_MAX) this.seen.delete(this.seen.keys().next().value as string);
-      if (locked) this.deps.upgradeIntent.consume(subject);
+      if (locked) this.lockedUpgradesPaid.record();
     }
     if (locked) return { proceed: true, shape: shape.shape, subject, via: "locked-upgrade" };
     return { proceed: true, shape: shape.shape, subject, via: gate.via };
+  }
+
+  /** Locked accounts' upgrade ops paid in the last 24 h - each counted once, not per request.
+   *  No threshold: the number to watch so the ZeroDev plan is raised in time (owner 10-08). */
+  lockedUpgradesPaid24h(): number {
+    return this.lockedUpgradesPaid.count();
   }
 }
 

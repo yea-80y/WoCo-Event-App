@@ -19,7 +19,10 @@ export const upgradeIntent = new Hono<AppEnv>();
 
 upgradeIntent.post("/", jsonBodyLimit(1024), requireAuth, (c) => {
   const account = (c.get("parentAddress") as string).toLowerCase();
-  if (!upgradeIntents.grant(account, clientIp(c))) {
+  const ip = clientIp(c);
+  if (!upgradeIntents.grant(account, ip)) {
+    // A shared egress turning real people away shows here first (and in /api/health).
+    console.warn(`[upgrade-intent] network limit reached for ${ip}`);
     return c.json({ ok: false, error: UPGRADE_LIMIT_MESSAGE, code: "upgrade_limit" }, 429);
   }
   return c.json({ ok: true });
