@@ -22,8 +22,12 @@ import {
   isOrphanedCredentialError,
   refuseOrphanedCredential,
   postOrphanedCredentialNotice,
+  OrphanedCredentialError,
   MOVED_OR_RECOVERED_MESSAGE,
+  UPGRADED_TO_PASSKEY_MESSAGE,
+  UPGRADE_UNFINISHED_MESSAGE,
 } from "./orphaned-credential.js";
+import { parseUpgradeMarker, upgradeMarkerKey } from "./upgrade-marker.js";
 import { readOrphanTombstone, writeOrphanTombstone } from "./orphan-tombstone.js";
 import {
   isWeb3AuthSignInError,
@@ -813,6 +817,7 @@ async function _restoreCachedAuth(): Promise<void> {
     if (_deviceRole && _parent) void _upgradeIfCoOwner(seedAddr, _parent);
     void _retryLinkedEnvelope(seedAddr);
     void _retryPendingRemovals().catch(() => {});
+    void _resumeUpgrade();
     // Locked at rest (#746 fix 1): present only when this tab already unlocked it,
     // or when SEED_UNLOCK_POLICY keeps a copy that opens without the passkey. A
     // legacy device-key copy counts as LOCKED from this build's first load; it is
@@ -1996,6 +2001,10 @@ async function loginWeb3Auth(): Promise<boolean> {
     const { address, privateKey } = await loginWithWeb3Auth();
     _loginStage = "finalizing";
 
+    // Upgraded to a passkey on this device (#746): the email key opens nothing now.
+    const upgraded = readOrphanTombstone("web3auth", address);
+    if (upgraded) throw await _refuseUpgradedEmailLogin(address, upgraded.kernel, upgraded.owner);
+
     // FAST PATH (returning device): Kernel address already resolved for this
     // EOA on a previous non-recovered login — skip the build (viem/zerodev
     // chunk + ZeroDev RPC); `_ensureKernelForWeb3Auth` rebuilds + asserts
@@ -2019,6 +2028,9 @@ async function loginWeb3Auth(): Promise<boolean> {
         await _restoreCachedAuth();
         await _establishFeedSignerEagerly();
         _scheduleKernelPrebuild();
+        // The cache makes no chain read: an account upgraded to a passkey from
+        // another device is found here instead (#746).
+        _verifyEmailKeyInBackground(cachedKernel, address);
         _cleanupAccountListener?.();
         _cleanupAccountListener = null;
         return true;
@@ -2036,7 +2048,9 @@ async function loginWeb3Auth(): Promise<boolean> {
     // account, not a fresh counterfactual one. (No portability-envelope path here:
     // that channel is PRF-sealed and passkey-only; a web3auth account re-opened on a
     // NEW device recovers by re-running the portal.)
-    const { buildKernelFromPrivateKey, readKernelEcdsaOwner } = await import("./kernel-account.js");
+    const { buildKernelFromPrivateKey, readKernelEcdsaOwner, readKernelSignerFor, NOT_ON_LIST } = await import(
+      "./kernel-account.js"
+    );
     const override = fastOverride;
     if (override) {
       // Stale-binding guard (mirror loginPasskey): only trust the local binding
@@ -2069,6 +2083,11 @@ async function loginWeb3Auth(): Promise<boolean> {
       privateKey,
       override ? { address: override } : undefined,
     );
+    // Upgraded to a passkey (#746): the email key is off the list, so every session it
+    // signed would be refused - say so instead of entering an account that fails.
+    if ((await readKernelSignerFor(kernel.address, address)) === NOT_ON_LIST) {
+      throw await _refuseUpgradedEmailLogin(address, kernel.address, null);
+    }
 
     await _clearStaleAuthForSwitch(kernel.address);
 
@@ -3016,6 +3035,13 @@ async function loginPasskeyResult(
       const answered = ownerRead !== "error" ? ownerRead : null;
       const foreignOwner = provenOrphanOwner(answered, account.address);
       if (foreignOwner) {
+        // Made by an upgrade on this device whose switch has not landed (#746): the
+        // email key still owns the account. Say so - nothing was recovered away.
+        if (_upgradeUnfinishedFor(account.address, override, foreignOwner)) {
+          console.warn("[auth] this passkey's upgrade has not landed - the email key still owns", override);
+          postOrphanedCredentialNotice("passkey", undefined, UPGRADE_UNFINISHED_MESSAGE);
+          throw new OrphanedCredentialError("passkey", foreignOwner, UPGRADE_UNFINISHED_MESSAGE);
+        }
         clearVerifiedBinding("passkey", account.address);
         // Recovered away (#255) - or this passkey made another device the main one
         // and is a linked device now (#746 step 4). The server's verdict says which;
@@ -3260,6 +3286,7 @@ async function ensureSession(): Promise<boolean> {
       if (_kind === "passkey") {
         void _maybeBackfillPortabilityEnvelope();
         void _maybeWritePasskeyRecord();
+        void _resumeUpgrade();
       }
       return true;
     } catch (e) {
@@ -4461,6 +4488,210 @@ async function recoverAndRekey(args: {
 }
 
 // ---------------------------------------------------------------------------
+// Upgrading an email account to a passkey (#746). The flow lives in the lazily
+// loaded upgrade-to-passkey.ts; only what needs this store's state is here.
+// ---------------------------------------------------------------------------
+
+/** This device prepared an upgrade to `passkey` for `parent`, and the account's owner is still
+ *  the email key that upgrade started from - not another device's passkey, not a recovery (#746). */
+function _upgradeUnfinishedFor(passkey: string, parent: string, owner: string): boolean {
+  try {
+    const m = parseUpgradeMarker(globalThis.localStorage?.getItem(upgradeMarkerKey(parent)));
+    return !!m && m.stage === "prepared" && m.passkey === passkey.toLowerCase() && owner.toLowerCase() === m.emailKey;
+  } catch {
+    return false;
+  }
+}
+
+/** End an email sign-in whose account opens with a passkey now (#746). */
+async function _refuseUpgradedEmailLogin(eoa: string, kernel: string, passkey: string | null): Promise<Error> {
+  clearCachedKernelAddress("web3auth", eoa);
+  clearVerifiedBinding("web3auth", eoa);
+  // Drop the Web3Auth session, or the next tap re-adopts it without asking.
+  try {
+    const { logoutWeb3Auth } = await import("./web3auth-account.js");
+    await logoutWeb3Auth();
+  } catch (e) {
+    console.warn("[auth] could not clear the Web3Auth session after an upgraded-account refusal:", e);
+  }
+  console.warn("[auth] this email key is off the account's list - it opens with a passkey now:", kernel);
+  postOrphanedCredentialNotice("web3auth", undefined, UPGRADED_TO_PASSKEY_MESSAGE);
+  return new OrphanedCredentialError("web3auth", passkey ?? kernel, UPGRADED_TO_PASSKEY_MESSAGE);
+}
+
+/**
+ * An email key whose account was upgraded to a passkey elsewhere (#746) signs sessions
+ * the server refuses. One read decides: an email key is never put on a co-owner list,
+ * so "not on it" cannot be a replica behind an add. Ends this session with the words.
+ */
+function _verifyEmailKeyInBackground(kernel: string, eoa: string): void {
+  void (async () => {
+    try {
+      const { readKernelSignerFor, NOT_ON_LIST } = await import("./kernel-account.js");
+      if ((await readKernelSignerFor(kernel, eoa)) !== NOT_ON_LIST) return;
+      clearCachedKernelAddress("web3auth", eoa);
+      clearVerifiedBinding("web3auth", eoa);
+      const still =
+        _kind === "web3auth" &&
+        _web3authSeedAddress?.toLowerCase() === eoa.toLowerCase() &&
+        _parent?.toLowerCase() === kernel.toLowerCase();
+      if (!still) return;
+      _postAuthNotice(UPGRADED_TO_PASSKEY_MESSAGE);
+      await logout({ force: true });
+    } catch {
+      /* transient - the next sign-in, or the next refused session, checks again */
+    }
+  })();
+}
+
+/** A freshly signed session was refused too (api/client.ts): for an email account
+ *  that may mean it was upgraded to a passkey on another device (#746). */
+function onSessionRejected(): void {
+  if (_kind === "web3auth" && _parent && _web3authSeedAddress) _verifyEmailKeyInBackground(_parent, _web3authSeedAddress);
+}
+
+/**
+ * What the upgrade flow (upgrade-to-passkey.ts) borrows from this store: its state,
+ * and the steps that write its private fields. Everything else is in the flow.
+ */
+function _upgradeHost(): import("./upgrade-to-passkey.js").UpgradeStoreHost {
+  return {
+    emailAccount: () =>
+      _kind === "web3auth" && _parent && _web3authSeedAddress
+        ? { parent: _parent.toLowerCase(), emailKey: _web3authSeedAddress.toLowerCase(), keyReady: !!_web3authPrivateKey }
+        : null,
+    passkeyAccount: () =>
+      _kind === "passkey" && _parent && _seedAddress
+        ? { parent: _parent.toLowerCase(), passkey: _seedAddress.toLowerCase(), hasSession: !!_sessionAddress }
+        : null,
+    keyMissing: _web3authKeyMissing,
+    ensureSession,
+    oldSeed: async () => (_kind === "web3auth" && (await _ensureIdentitySeed({ silent: true })) ? _seedIfPresent() : null),
+    removeBackups: async () => {
+      await removeAccountBackups();
+    },
+    putBinding: _putRecoveryBinding,
+    clearBinding: _clearRecoveryBinding,
+    readSignerFor: async (kernel, eoa) => (await import("./kernel-account.js")).readKernelSignerFor(kernel, eoa),
+    emailKernel: async () => {
+      await _ensureKernelForWeb3Auth();
+      const kernel = _kernel;
+      if (!kernel) throw new Error(WEB3AUTH_KEY_GONE_MESSAGE);
+      const k = await import("./kernel-account.js");
+      return {
+        readKernelRoot: (at) => k.readKernelRoot(at),
+        readKernelSignerFor: (at, eoa) => k.readKernelSignerFor(at, eoa),
+        setCoOwners: (root, signers) => k.setCoOwners(kernel, root, signers),
+      };
+    },
+    adoptPasskey: async (marker, live, confirmed) => {
+      const { parent, passkey } = marker;
+      await _putRecoveryBinding(passkey, parent);
+      // An Undo in another tab may have dropped it; this tab still holds it (Fable sign-off).
+      if (live) await storeLockedSeed(passkey, parent, live.seed, live.prfSecret);
+      await pinPasskeyCredential(marker.credential);
+      await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
+      await putKV(StorageKeys.PARENT_ADDRESS, parent);
+      await putKV(StorageKeys.SEED_ADDRESS, passkey);
+      _kind = "passkey";
+      _parent = parent;
+      _seedAddress = passkey;
+      _deviceRole = false;
+      _passkeyPrivateKey = live?.privateKey ?? null;
+      _passkeyPrfSecret = live?.prfSecret ?? null;
+      _web3authPrivateKey = null;
+      _web3authSeedAddress = null;
+      _web3authKeyRetrying = false;
+      _kernel = null;
+      _unlocked = null;
+      _feedSignerCache = null;
+      _feedSignerAddressMemo = null;
+      if (live) _setUnlockedSeed(passkey, parent, live.seed);
+      if (confirmed) writeVerifiedBinding("passkey", passkey, parent);
+    },
+    finalizeDeps: () => ({
+      tombstoneEmailKey: (emailKey, parent, passkey) => writeOrphanTombstone("web3auth", emailKey, { kernel: parent, owner: passkey }),
+      wipeOldSeed: (emailKey) => clearIdentitySeed(emailKey),
+      forgetEmailLogin: async (emailKey) => {
+        clearCachedKernelAddress("web3auth", emailKey);
+        clearVerifiedBinding("web3auth", emailKey);
+        await _clearRecoveryBinding(emailKey);
+      },
+      queuePasskeyRecord: (credentialId, parent) => _setPendingPasskeyRecord({ credentialId, parent }),
+    }),
+    endEmailSession: async () => {
+      try {
+        const { logoutWeb3Auth } = await import("./web3auth-account.js");
+        await logoutWeb3Auth();
+      } catch (e) {
+        // The tombstone refuses that session here anyway; the chain refuses it everywhere.
+        console.warn("[auth] could not end the Web3Auth session after the upgrade:", e);
+      }
+      await _restoreAuthAfterRotation();
+    },
+    feedKeyIfPresent: () => _getContentFeedSignerIfPresent(),
+    resumeLater: () => void ensureSession().then((ok) => (ok ? _resumeUpgrade() : undefined)),
+  };
+}
+
+/** The flow's two modules, registered by the main app (main.ts) - never imported here,
+ *  so the deployed-site builds that share this store do not carry them. */
+type UpgradeModules = [typeof import("./upgrade-to-passkey.js"), typeof import("./upgrade-to-passkey-live.js")];
+let _upgradeModules: (() => Promise<UpgradeModules>) | null = null;
+function registerUpgradeFlow(load: () => Promise<UpgradeModules>): void {
+  _upgradeModules = load;
+}
+
+async function _upgradeFlow() {
+  if (!_upgradeModules) throw new Error("Upgrading to a passkey isn't available here - open WoCo to do it.");
+  const [flow, live] = await _upgradeModules();
+  const host = _upgradeHost();
+  return { flow, host, io: live.liveUpgradeIO(host) };
+}
+
+/**
+ * Upgrade this email or Google account to a passkey, in place (#746): starts one, or
+ * picks up the one this device prepared. Resolves once the account opens with the
+ * passkey; throws the words to show. Irreversible once the op lands - callers confirm.
+ */
+let _upgradeInFlight: Promise<void> | null = null;
+function upgradeToPasskey(opts: { onProgress?: (msg: string) => void } = {}): Promise<void> {
+  if (!_upgradeInFlight) {
+    _upgradeInFlight = _upgradeFlow()
+      .then(({ flow, host, io }) => flow.runUpgrade(host, io, opts.onProgress))
+      .finally(() => {
+        _upgradeInFlight = null;
+      });
+  }
+  return _upgradeInFlight;
+}
+
+/** Undo the upgrade this device prepared, while its switch has not landed (#746). */
+async function cancelPasskeyUpgrade(): Promise<void> {
+  const { flow, host, io } = await _upgradeFlow();
+  await flow.runCancel(host, io);
+}
+
+/** A passkey account with an upgrade marker on this device: finish what is left (#746).
+ *  One storage read for everyone else - nothing is loaded without a marker. */
+let _resumeUpgradeInFlight: Promise<void> | null = null;
+function _resumeUpgrade(): Promise<void> {
+  if (_resumeUpgradeInFlight || !_upgradeModules || _kind !== "passkey" || !_parent) return _resumeUpgradeInFlight ?? Promise.resolve();
+  try {
+    if (!globalThis.localStorage?.getItem(upgradeMarkerKey(_parent))) return Promise.resolve();
+  } catch {
+    return Promise.resolve();
+  }
+  _resumeUpgradeInFlight = _upgradeFlow()
+    .then(({ flow, host, io }) => flow.runResume(host, io))
+    .catch((e) => console.warn("[auth] upgrade follow-up not finished (retried next session):", e))
+    .finally(() => {
+      _resumeUpgradeInFlight = null;
+    });
+  return _resumeUpgradeInFlight;
+}
+
+// ---------------------------------------------------------------------------
 // API request signing
 // ---------------------------------------------------------------------------
 
@@ -4714,6 +4945,10 @@ export const auth = {
    *  do what only its owner can (names, backups, adding or removing passkeys). */
   get isAccountOwner() { return !(_kind === "passkey" && _deviceRole); },
   onDeviceRemoved,
+  onSessionRejected,
+  registerUpgradeFlow,
+  upgradeToPasskey,
+  cancelPasskeyUpgrade,
   addPasskeyOnThisDevice,
   linkThisDevice,
   approveDeviceLink,

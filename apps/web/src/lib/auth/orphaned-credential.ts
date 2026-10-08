@@ -57,6 +57,16 @@ export function orphanedCredentialMessage(kind: OrphanedCredentialKind): string 
 export const MOVED_OR_RECOVERED_MESSAGE =
   "This passkey doesn't open this account any more - it may have been removed. Sign in with one of your other passkeys, or with the one you chose when you recovered the account.";
 
+/**
+ * For an email or Google sign-in whose account was upgraded to a passkey (#746): the
+ * email key is off the account's list, so every session it signs is refused.
+ */
+export const UPGRADED_TO_PASSKEY_MESSAGE = "This account now opens with your passkey. Sign in with it instead.";
+
+/** The passkey an upgrade on this device was making, before its switch landed (#746). */
+export const UPGRADE_UNFINISHED_MESSAGE =
+  "Your upgrade to this passkey isn't finished yet. Sign in with email or Google and finish it in the organiser workspace.";
+
 /** Distinguished by `name`, not instanceof, so checks survive chunk boundaries. */
 export class OrphanedCredentialError extends Error {
   override readonly name = "OrphanedCredentialError";

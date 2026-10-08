@@ -121,8 +121,8 @@ test("a record is queued only from a creation, the moment the account is committ
   assert.ok(committed > 0 && queue > committed, "queued for the account just committed");
   assert.ok(restore > queue, "queued before anything can mint the account's first session");
   assert.equal(body.split("_setPendingPasskeyRecord(").length - 1, 1, "no other login path may queue a record");
-  // Creation and recovery are the only two places a record is queued.
-  assert.equal(store.split("_setPendingPasskeyRecord({").length - 1, 2);
+  // Creation, recovery and the email -> passkey upgrade (#746) are the only places a record is queued.
+  assert.equal(store.split("_setPendingPasskeyRecord({").length - 1, 3);
 });
 
 test("the pending slot is read from the one key both the queue and the check use", () => {

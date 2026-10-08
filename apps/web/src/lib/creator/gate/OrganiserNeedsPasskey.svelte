@@ -2,12 +2,14 @@
   /**
    * The organiser workspace for an account that is not a passkey account (#746
    * step 5): organising needs one, so this says so and offers to make one. The
-   * account keeps its tickets, names and profile; the new one is separate.
+   * account keeps its tickets, names and profile; the new one is separate. An email
+   * or Google account may instead upgrade itself in place (UpgradeToPasskey).
    */
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
   import { ORGANISER_PASSKEY_MESSAGE } from "../../auth/organiser-account.js";
+  import UpgradeToPasskey from "./UpgradeToPasskey.svelte";
 
   let busy = $state(false);
   let error = $state<string | null>(null);
@@ -34,12 +36,18 @@
 
 <section class="needs-passkey">
   <h1>Organising uses a passkey account</h1>
-  <p>{ORGANISER_PASSKEY_MESSAGE}</p>
-  <p class="muted">Your attendees' details are protected by your passkey, so only you can open them.</p>
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
-  <button class="btn btn--primary" onclick={createPasskeyAccount} disabled={busy}>
-    {busy ? "Signing out…" : "Create a passkey account"}
-  </button>
+  {#if auth.kind === "web3auth"}
+    <p class="muted">Your attendees' details are protected by your passkey, so only you can open them.</p>
+    {#if error}<p class="error" role="alert">{error}</p>{/if}
+    <UpgradeToPasskey onSeparate={createPasskeyAccount} separateBusy={busy} />
+  {:else}
+    <p>{ORGANISER_PASSKEY_MESSAGE}</p>
+    <p class="muted">Your attendees' details are protected by your passkey, so only you can open them.</p>
+    {#if error}<p class="error" role="alert">{error}</p>{/if}
+    <button class="btn btn--primary" onclick={createPasskeyAccount} disabled={busy}>
+      {busy ? "Signing out…" : "Create a passkey account"}
+    </button>
+  {/if}
   <button class="btn btn--ghost" onclick={() => navigate("/")} disabled={busy}>Back to Home</button>
 </section>
 
