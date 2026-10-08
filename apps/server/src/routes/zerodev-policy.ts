@@ -39,6 +39,7 @@ import {
   type Decision,
   type PolicyDeps,
 } from "../lib/zerodev/sponsor-policy.js";
+import { upgradeIntents } from "../lib/zerodev/upgrade-intents.js";
 
 const MAX_BODY_BYTES = 16 * 1024;
 const MIN_SECRET_LENGTH = 32;
@@ -98,7 +99,7 @@ async function isGuardianLive(account: string, guardian: string): Promise<boolea
   }
 }
 
-const liveDeps: PolicyDeps = { gate: (a) => checkAttendeeGate(a), isGuardian: isGuardianLive };
+const liveDeps: PolicyDeps = { gate: (a) => checkAttendeeGate(a), isGuardian: isGuardianLive, upgradeIntent: upgradeIntents };
 
 /** `ZERODEV_POLICY_MAX_OP_COST_WEI`, else the default; a bad value is reported, never fatal. */
 function maxOpCost(): { wei: bigint; configError?: string } {
