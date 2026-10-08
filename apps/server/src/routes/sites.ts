@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { Topic, Reference } from "@ethersphere/bee-js";
+import { FeedIndex, Topic, Reference } from "@ethersphere/bee-js";
 import { promises as fs } from "node:fs";
 import { existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
@@ -1070,6 +1070,10 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       } catch {
         // Non-fatal
       }
+      // An explicit index on every upload (#186): without one bee-js discovers
+      // it, which reads behind (or answers 0 on any bee error), and an update
+      // at a taken index keeps the OLD pointer while the deploy reports success.
+      const index = { index: FeedIndex.fromBigInt(await resolveFeedNextIndex(topic, owner.toHex(), "woco")) };
       const writer = bee.makeFeedWriter(topic, signer);
       try {
         await whitelistHashes([contentHash]).catch(() => {});
@@ -1082,13 +1086,13 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         if (payload.length > 4096) {
           console.warn(`[sites/deploy] root chunk ${payload.length}B > 4096 — falling back to legacy SOC write`);
           await withTimeout(
-            writer.uploadReference(batchId, new Reference(contentHash)),
+            writer.uploadReference(batchId, new Reference(contentHash), index),
             BEE_CALL_TIMEOUT_MS,
             "multisite feed write (legacy)",
           );
         } else {
           await withTimeout(
-            writer.uploadPayload(batchId, payload),
+            writer.uploadPayload(batchId, payload, index),
             BEE_CALL_TIMEOUT_MS,
             "multisite feed write (inline)",
           );
@@ -1096,7 +1100,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       } catch (err) {
         console.warn(`[sites/deploy] inline SOC write failed (${(err as Error).message}) — falling back to legacy`);
         await withTimeout(
-          writer.uploadReference(batchId, new Reference(contentHash)),
+          writer.uploadReference(batchId, new Reference(contentHash), index),
           BEE_CALL_TIMEOUT_MS,
           "multisite feed write (legacy fallback)",
         );

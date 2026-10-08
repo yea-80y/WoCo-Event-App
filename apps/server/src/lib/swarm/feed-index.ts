@@ -20,8 +20,10 @@ import { FeedIndex, type Topic } from "@ethersphere/bee-js";
 import { Binary } from "cafe-utility";
 import { ethernaSource, readVerifiedSoc, wocoBeeSource, type SocSource, type VerifiedSocRead } from "./soc-read.js";
 
-/** How far past the lookup a resolution walks before refusing. Lag is a few updates. */
-export const MAX_FORWARD_WALK = 16;
+/** How far past the lookup a resolution walks before refusing. Lag is usually a
+ *  few updates, but one slow probe can cut bee's walk far short; a found chunk is
+ *  a cheap read, and refusing costs the caller an edit. */
+export const MAX_FORWARD_WALK = 64;
 
 /** Where a feed's updates are stamped: our bee, or the Etherna gateway. */
 export type FeedDest = "woco" | "etherna";
@@ -51,6 +53,8 @@ export function readFeedUpdate(
  * The first index at or after `start` that holds no update. Throws when a source
  * cannot say whether an index is taken (writing there might be lost), or when the
  * head is more than MAX_FORWARD_WALK past `start` (the lookup is not a usable start).
+ * For an Etherna feed that includes the 30 s pause after a slow Etherna read
+ * (`soc-read.ts` breaker): a write needing a walk refuses until it lifts.
  */
 export async function firstFreeIndex(
   ownerHex: string,

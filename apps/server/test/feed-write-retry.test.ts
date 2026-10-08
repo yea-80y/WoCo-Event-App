@@ -560,6 +560,60 @@ describe("read-your-writes", () => {
     assert.equal(failed.status, "ok");
   });
 
+  test("PAST the window, a write-path read that bee answers ABSENT for a feed we wrote: our page, once Etherna confirms it (Fable F2)", async () => {
+    let clock = 1_000_000;
+    hooks().setClock(() => clock);
+    const t = freshTopic();
+    net.beeMissesEtherna = true; // the lag outlives the window
+    await feeds.writeFeedPage(t, page("published list"), { dest: ETHERNA });
+    clock += feeds.READ_YOUR_WRITES_MS + 1;
+    const strict = await feeds.readFeedPageStrict(t);
+    assert.equal(strict.status === "ok" && feeds.decodeJsonFeed<{ text: string }>(strict.data)?.text, "published list",
+      "absent here used to bootstrap an empty list and wipe the published one");
+    assert.equal(await feeds.readFeedPage(t), null, "a display read takes bee's answer, as before");
+    await feeds.writeFeedPage(t, page("published list + new event"), { dest: ETHERNA });
+    assert.equal(textAt(OWNER, t, 1n), "published list + new event");
+  });
+
+  test("past the window, bee OLDER than our write: a write-path read still gets ours", async () => {
+    let clock = 1_000_000;
+    hooks().setClock(() => clock);
+    const t = freshTopic();
+    await feeds.writeFeedPage(t, page("a"));
+    await feeds.writeFeedPage(t, page("b"));
+    clock += feeds.READ_YOUR_WRITES_MS + 1;
+    net.lookupBehind = 1;
+    const strict = await feeds.readFeedPageStrict(t);
+    assert.equal(strict.status === "ok" && feeds.decodeJsonFeed<{ text: string }>(strict.data)?.text, "b");
+    assert.equal(feeds.decodeJsonFeed<{ text: string }>((await feeds.readFeedPage(t))!)?.text, "a");
+  });
+
+  test("past the window, our update GONE: bee's answer stands, and the next write refills the hole", async () => {
+    let clock = 1_000_000;
+    hooks().setClock(() => clock);
+    const t = freshTopic();
+    await feeds.writeFeedPage(t, page("a"));
+    await feeds.writeFeedPage(t, page("b"));
+    chunks.delete(addressFor(OWNER, t, 1n));
+    clock += feeds.READ_YOUR_WRITES_MS + 1;
+    const strict = await feeds.readFeedPageStrict(t);
+    assert.equal(strict.status === "ok" && feeds.decodeJsonFeed<{ text: string }>(strict.data)?.text, "a");
+    await feeds.writeFeedPage(t, page("a + c"));
+    assert.equal(textAt(OWNER, t, 1n), "a + c");
+  });
+
+  test("past the window, our update cannot be confirmed: a write-path read refuses", async () => {
+    let clock = 1_000_000;
+    hooks().setClock(() => clock);
+    const t = freshTopic();
+    await feeds.writeFeedPage(t, page("a"));
+    await feeds.writeFeedPage(t, page("b"));
+    clock += feeds.READ_YOUR_WRITES_MS + 1;
+    net.lookupBehind = 1;
+    net.beeChunks500 = true;
+    assert.equal((await feeds.readFeedPageStrict(t)).status, "error");
+  });
+
   test("the returned page is a copy", async () => {
     const t = freshTopic();
     await feeds.writeFeedPage(t, page("a"));
@@ -594,4 +648,38 @@ describe("prepareEthernaFeedUpdate", () => {
     net.ethernaFeeds = { status: 200, next: 1n };
     assert.equal((await prep(t, OTHER_OWNER)).nextIndex, 3n);
   });
+});
+
+// ---------------------------------------------------------------------------
+// No feed upload without an index, anywhere in the server
+// ---------------------------------------------------------------------------
+
+test("every bee-js feed upload in the server names its index (F1: the WoCo site pointer did not)", async () => {
+  const { readFileSync, readdirSync, statSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (p.endsWith(".ts")) files.push(p);
+    }
+  };
+  walk(new URL("../src", import.meta.url).pathname);
+  let calls = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    for (const m of src.matchAll(/\.(uploadPayload|uploadReference)\(/g)) {
+      // The argument list up to the matching close paren.
+      let depth = 0;
+      let end = m.index! + m[0].length - 1;
+      for (; end < src.length; end++) {
+        if (src[end] === "(") depth++;
+        else if (src[end] === ")" && --depth === 0) break;
+      }
+      calls++;
+      assert.match(src.slice(m.index!, end), /index/, `${f}: ${src.slice(m.index!, end + 1)}`);
+    }
+  }
+  assert.ok(calls >= 4, "the scan found the known call sites");
 });

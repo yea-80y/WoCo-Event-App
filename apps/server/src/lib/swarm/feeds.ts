@@ -127,12 +127,16 @@ const feedTopicLock = new Map<string, Promise<unknown>>();
 /**
  * Read-your-writes (#186). A read-modify-write that builds on bee's lagging copy
  * erases the edit made just before it, even when the write lands at the right
- * index. So for a while after writing, a read that bee answers with an older
- * update - or not at all - gets the page this server wrote. Generalises the
- * site events index's own copy (#824, `lib/site/events-index.ts`), same window.
+ * index. So a read that bee answers with an older update - or not at all - gets
+ * the page this server last wrote: unchecked for READ_YOUR_WRITES_MS (#824's
+ * window, `lib/site/events-index.ts`), and after it, for a write path only, once
+ * the destination confirms our update is still there. Bee's lag runs to minutes,
+ * and a list rebuilt from "absent" there wipes it with success reported. The
+ * last page per topic, newest MAX_WRITTEN_PAGES topics (4 KB each).
  */
 export const READ_YOUR_WRITES_MS = 120_000;
-const writtenPages = new Map<string, { index: bigint; page: Uint8Array; at: number }>();
+const MAX_WRITTEN_PAGES = 1024;
+const writtenPages = new Map<string, { index: bigint; page: Uint8Array; at: number; dest: FeedDest }>();
 let now = () => Date.now();
 
 let feedWriteBaseBackoffMs = 500;
@@ -173,22 +177,10 @@ function noteReadIndex(key: string, next: bigint): void {
   else if (next < e.next) e.disputed = true;
 }
 
-/** The page this server wrote within the window, or null. */
-function freshWrittenPage(key: string): { index: bigint; page: Uint8Array } | null {
-  const w = writtenPages.get(key);
-  if (!w) return null;
-  if (now() - w.at >= READ_YOUR_WRITES_MS) {
-    writtenPages.delete(key);
-    return null;
-  }
-  return w;
-}
-
-function rememberWrittenPage(key: string, index: bigint, page: Uint8Array): void {
-  if (writtenPages.size >= 512) {
-    for (const [k, w] of writtenPages) if (now() - w.at >= READ_YOUR_WRITES_MS) writtenPages.delete(k);
-  }
-  writtenPages.set(key, { index, page: page.slice(), at: now() });
+function rememberWrittenPage(key: string, index: bigint, page: Uint8Array, dest: FeedDest): void {
+  writtenPages.delete(key);
+  writtenPages.set(key, { index, page: page.slice(), at: now(), dest });
+  if (writtenPages.size > MAX_WRITTEN_PAGES) writtenPages.delete(writtenPages.keys().next().value!);
 }
 
 type FeedLookup =
@@ -243,22 +235,39 @@ async function lookupFeed(topic: Topic, ownerHex: string): Promise<FeedLookup> {
   }
 }
 
-/** A read of our bee: note the index it saw, and prefer what we just wrote. */
-async function readFeedForCaller(topic: Topic): Promise<FeedLookup> {
+/**
+ * A read of our bee: note the index it saw, and prefer what we wrote when bee is
+ * behind it (see `writtenPages`). `forWrite`: past the window, ask the destination
+ * - our update there: ours; gone: bee's answer is the truth; cannot tell: error.
+ * A display read past the window takes bee's answer, as it always did.
+ */
+async function readFeedForCaller(topic: Topic, forWrite: boolean): Promise<FeedLookup> {
   const key = topicKey(topic);
-  const res = await lookupFeed(topic, platformOwnerHex());
+  const owner = platformOwnerHex();
+  const res = await lookupFeed(topic, owner);
   if (res.status === "ok" && res.next !== undefined) noteReadIndex(key, res.next);
   else if (res.status === "absent") noteReadIndex(key, 0n);
-  const mine = freshWrittenPage(key);
-  if (mine && (res.status !== "ok" || (res.index !== undefined && res.index < mine.index))) {
-    return { status: "ok", data: mine.page.slice(), index: mine.index, next: mine.index + 1n };
+  const mine = writtenPages.get(key);
+  if (!mine) return res;
+  if (res.status === "ok" && (res.index === undefined || res.index >= mine.index)) return res;
+  const ours: FeedLookup = { status: "ok", data: mine.page.slice(), index: mine.index, next: mine.index + 1n };
+  if (now() - mine.at < READ_YOUR_WRITES_MS) return ours;
+  if (!forWrite) return res;
+  const there = await readFeedUpdate(owner, topic, mine.index, feedSources(mine.dest));
+  if (there.status === "found" && sameBytes(there.soc.payload, mine.page)) return ours;
+  if (there.status === "absent") {
+    writtenPages.delete(key);
+    return res;
   }
-  return res;
+  return {
+    status: "error",
+    error: new Error(`feed ${key.slice(0, 16)}: our bee is behind this server's update ${mine.index}, which cannot be confirmed`),
+  };
 }
 
 export async function readFeedPage(topic: Topic): Promise<Uint8Array | null> {
   try {
-    const res = await readFeedForCaller(topic);
+    const res = await readFeedForCaller(topic, false);
     return res.status === "ok" ? res.data : null;
   } catch {
     return null;
@@ -285,7 +294,7 @@ export type FeedReadStrictResult =
 
 export async function readFeedPageStrict(topic: Topic): Promise<FeedReadStrictResult> {
   try {
-    const res = await readFeedForCaller(topic);
+    const res = await readFeedForCaller(topic, true);
     return res.status === "ok" ? { status: "ok", data: res.data } : res;
   } catch (err) {
     return { status: "error", error: err instanceof Error ? err : new Error(String(err)) };
@@ -471,7 +480,7 @@ async function doWriteFeedPage(
     // Found with our bytes: confirmed. Not found or not askable: the upload was
     // accepted, so take it, and have the next write check it is still there.
     feedNextIndex.set(key, { next: index + 1n, confirmedAt: dest, disputed: landed.status !== "found" });
-    rememberWrittenPage(key, index, page);
+    rememberWrittenPage(key, index, page, dest);
     return;
   }
   throw new Error(`feed ${key.slice(0, 16)}: no free index after ${MAX_ATTEMPTS} attempts`);
