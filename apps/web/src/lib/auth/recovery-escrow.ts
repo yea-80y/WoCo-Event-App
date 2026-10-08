@@ -56,6 +56,7 @@ import {
   RECOVERY_ENC_TYPES,
   RECOVERY_ENC_NONCE,
   RECOVERY_ENVELOPE_VERSION,
+  canonicalSignatureBytes,
   type EIP712Signer,
   type RecoveryEnvelope,
 } from "@woco/shared";
@@ -121,7 +122,7 @@ const HKDF_INFO_SOC = new TextEncoder().encode("woco/recovery/soc/v1");
  * guardian EOA (§13) — the route for wallet and email guardians. Same EOA → same
  * signature → same keys, on any device, with nothing stored. `guardianAddress` is
  * bound into the message so the same wallet signing for a different role yields
- * distinct keys. The master is keccak of the canonical 65-byte signature (getBytes,
+ * distinct keys. The master is keccak of the canonical 65-byte signature (bytes,
  * not the hex string — the same compression the identity seed uses) and is zeroed
  * after use.
  */
@@ -138,7 +139,8 @@ export async function deriveGuardianKeys(
       nonce: RECOVERY_ENC_NONCE,
     },
   );
-  const master = getBytes(keccak256(getBytes(signature)));
+  // Canonical form (#186): a backup wallet that re-encodes its signature must still open its escrow.
+  const master = getBytes(keccak256(canonicalSignatureBytes(signature)));
   try {
     return await guardianKeysFromMaster(master);
   } finally {

@@ -39,6 +39,9 @@ const enc = new TextEncoder();
 function hexToBytes(hex: string): Uint8Array {
   const h = hex.startsWith("0x") || hex.startsWith("0X") ? hex.slice(2) : hex;
   if (h.length % 2 !== 0) throw new Error(`invalid hex length: ${hex}`);
+  // parseInt yields NaN for a non-hex pair and a Uint8Array stores NaN as 0, so
+  // without this two different inputs would hash to one digest.
+  if (!/^[0-9a-fA-F]*$/.test(h)) throw new Error(`invalid hex: ${hex}`);
   const out = new Uint8Array(h.length / 2);
   for (let i = 0; i < out.length; i++) {
     out[i] = parseInt(h.substr(i * 2, 2), 16);

@@ -78,8 +78,10 @@ function countingSigner(sigHex: string) {
   const sign: EIP712Signer = (async () => { calls++; return sigHex; }) as unknown as EIP712Signer;
   return { sign, calls: () => calls };
 }
-const SIG_A = "0x" + "ab".repeat(65);
-const SIG_B = "0x" + "cd".repeat(65);
+// Shaped like real signatures (s in the low half, v 27/28): the seed path rejects
+// a v it does not know and re-encodes a high s (#186).
+const SIG_A = "0x" + "ab".repeat(32) + "12".repeat(32) + "1b";
+const SIG_B = "0x" + "cd".repeat(32) + "34".repeat(32) + "1c";
 const seedFromSig = (sig: string) => keccak256(getBytes(sig));
 
 test("the seed is keccak256 of the canonical signature BYTES", async () => {
@@ -125,7 +127,7 @@ function flakySigner() {
   let calls = 0;
   const sign: EIP712Signer = (async () => {
     calls++;
-    return "0x" + calls.toString(16).padStart(2, "0").repeat(65);
+    return "0x" + calls.toString(16).padStart(2, "0").repeat(32) + "12".repeat(32) + "1b";
   }) as unknown as EIP712Signer;
   return { sign, calls: () => calls };
 }
@@ -426,4 +428,94 @@ test("the SEED decides the identity, not the address it was filed under", async 
 
   assert.equal(await restoreIdentitySeed(PRF_EOA), seed);
   assert.equal(await restoreIdentitySeed(KERNEL_PARENT), seed);
+});
+
+// ---------------------------------------------------------------------------
+// One signature, several encodings (#186)
+// ---------------------------------------------------------------------------
+//
+// v as 0/1 or 27/28, s low or high, 65 bytes or the 64-byte compact form: all
+// the same signature. A wallet that switched encoding must not hand its user a
+// different seed, nor leave a backup wallet unable to open its escrow.
+
+const SECP256K1_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+
+/** Every valid encoding of a canonical (low s, v 27/28) 65-byte signature. */
+function encodingsOf(sig: string): Record<string, string> {
+  const r = sig.slice(2, 66);
+  const s = BigInt("0x" + sig.slice(66, 130));
+  const v = parseInt(sig.slice(130, 132), 16);
+  const hex32 = (n: bigint) => n.toString(16).padStart(64, "0");
+  const parity = v - 27;
+  return {
+    canonical: sig,
+    rawV: "0x" + r + hex32(s) + (v - 27).toString(16).padStart(2, "0"),
+    highS: "0x" + r + hex32(SECP256K1_N - s) + (27 + (parity ^ 1)).toString(16),
+    highSRawV: "0x" + r + hex32(SECP256K1_N - s) + (parity ^ 1).toString(16).padStart(2, "0"),
+    compact: "0x" + r + hex32(s | (BigInt(parity) << 255n)),
+  };
+}
+
+const variantWallet = async () => {
+  const { Wallet } = await import("ethers");
+  return new Wallet("0x" + "5e".repeat(32));
+};
+const signWith = (wallet: { signTypedData: (...a: never[]) => Promise<string> }): EIP712Signer =>
+  ((d: unknown, t: unknown, m: unknown) =>
+    (wallet.signTypedData as (...a: unknown[]) => Promise<string>)(d, t, m)) as unknown as EIP712Signer;
+
+test("every encoding of the same wallet signature gives the SAME seed", async () => {
+  const wallet = await variantWallet();
+  let canonicalSig = "";
+  const capture: EIP712Signer = (async (...args: unknown[]) => {
+    canonicalSig = await (signWith(wallet) as (...a: unknown[]) => Promise<string>)(...args);
+    return canonicalSig;
+  }) as unknown as EIP712Signer;
+  await clearIdentitySeed(wallet.address);
+  const { seed } = await requestIdentitySeed(wallet.address, capture);
+  assert.equal(seed, seedFromSig(canonicalSig), "canonical input passes through byte for byte");
+
+  for (const [name, encoded] of Object.entries(encodingsOf(canonicalSig))) {
+    await clearIdentitySeed(wallet.address);
+    const { seed: s } = await requestIdentitySeed(wallet.address, countingSigner(encoded).sign);
+    assert.equal(s, seed, `${name} encoding moved the seed`);
+  }
+});
+
+test("a wallet that answers in two encodings of one signature passes the determinism check", async () => {
+  const wallet = await variantWallet();
+  const sig = await (signWith(wallet) as (...a: unknown[]) => Promise<string>)(
+    { name: "x" }, { M: [{ name: "a", type: "string" }] }, { a: "b" },
+  );
+  const forms = Object.values(encodingsOf(sig));
+  let calls = 0;
+  const alternating: EIP712Signer = (async () => forms[calls++ % forms.length]) as unknown as EIP712Signer;
+  await clearIdentitySeed(wallet.address);
+  const { seed } = await requestIdentitySeed(wallet.address, alternating, { verifyDeterminism: true });
+  assert.equal(seed, seedFromSig(sig));
+});
+
+test("a signature with no valid v is refused, not hashed", async () => {
+  await clearIdentitySeed();
+  const bad = SIG_A.slice(0, -2) + "02";
+  await assert.rejects(
+    () => requestIdentitySeed("0x1111111111111111111111111111111111111111", countingSigner(bad).sign),
+    /unexpected v/,
+  );
+});
+
+test("a backup wallet's escrow keys survive a change of signature encoding", async () => {
+  const { deriveGuardianKeys } = await import("../src/lib/auth/recovery-escrow.ts");
+  const wallet = await variantWallet();
+  let canonicalSig = "";
+  const capture: EIP712Signer = (async (...args: unknown[]) => {
+    canonicalSig = await (signWith(wallet) as (...a: unknown[]) => Promise<string>)(...args);
+    return canonicalSig;
+  }) as unknown as EIP712Signer;
+  const base = await deriveGuardianKeys(wallet.address, capture);
+  for (const [name, encoded] of Object.entries(encodingsOf(canonicalSig))) {
+    const keys = await deriveGuardianKeys(wallet.address, countingSigner(encoded).sign);
+    assert.equal(keys.socSigner.address, base.socSigner.address, `${name} encoding moved the backup's SOC signer`);
+    assert.equal(keys.encryption.publicKeyHex, base.encryption.publicKeyHex, `${name} encoding moved the backup's escrow key`);
+  }
 });
