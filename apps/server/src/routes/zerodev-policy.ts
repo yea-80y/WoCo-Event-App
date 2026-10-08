@@ -142,6 +142,8 @@ export function zerodevPolicyHealth() {
     configured: config() !== null,
     maxOpCostWei: cost.wei.toString(),
     ...(cost.configError ? { configError: cost.configError } : {}),
+    lockedUpgradesPaid24h: policy.lockedUpgradesPaid24h(),
+    upgradeIntents: upgradeIntents.stats(),
     ...stats,
   };
 }
