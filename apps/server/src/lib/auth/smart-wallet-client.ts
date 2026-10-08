@@ -28,9 +28,10 @@ import { KERNEL_CHAIN_ID } from "@woco/shared";
  * replacing them. Arb Sepolia is one env var away if a pre-#489 delegation ever
  * needs verifying.
  *
- * EOA signatures never need any chain: viem's verifyTypedData short-circuits to
- * local ecrecover for plain-EOA sigs, so the very first client returns true
- * without an RPC call and we never touch the remaining candidates.
+ * Plain EOA logins are proven before this: verify-delegation.ts ecrecovers every
+ * 65-byte signature locally first, and only a miss falls through to here. viem (2.51.3) does NOT short-circuit them - its default
+ * mode runs the ERC-6492 eth_call first and falls back to ecrecover only when
+ * that call throws - so every signature that reaches this file costs an RPC.
  */
 
 const CHAINS_BY_NAME: Record<string, Chain> = {
@@ -100,9 +101,9 @@ export function getSmartWalletClient(): SmartWalletClient {
 
 /**
  * Verify a typed-data signature across all candidate smart-account home chains.
- * Returns true on the first chain that validates. EOA sigs validate on the first
- * client via local ecrecover (no RPC). Per-chain RPC errors are swallowed so one
- * unreachable RPC can't veto a sig that another chain would accept.
+ * Returns true on the first chain that validates. Per-chain RPC errors are
+ * swallowed so one unreachable RPC can't veto a sig that another chain would
+ * accept.
  */
 export async function verifySmartWalletTypedData(
   params: VerifyTypedDataParams,
