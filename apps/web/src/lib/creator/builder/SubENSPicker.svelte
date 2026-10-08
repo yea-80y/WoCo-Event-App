@@ -4,6 +4,7 @@
   import { checkSubEnsLabel, claimSubEnsLabel, getOwnedSubEns, type OwnedSubEnsName } from "../../api/sub-ens.js";
   import { gate } from "../../attendee/gate/gate.svelte.js";
   import { unlocksWhen } from "../../attendee/gate/unlock-copy.js";
+  import { canOrganise } from "../../auth/organiser-account.js";
   import { isTicketRequired } from "../../api/attendee-gate.js";
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
@@ -44,6 +45,10 @@
   // ── Stripe gate ──────────────────────────────────────────────────────────────
   // null = loading/unknown, false = not connected, true = connected+complete
   let stripeStatus = $state<boolean | null>(null);
+  // Stripe is an organiser's unlock, and organising needs a passkey (#746). Any
+  // other account unlocks a name with a ticket or an invite, which the claim
+  // below asks for (server rule: lib/gate/check.ts) - it is never sent to Stripe.
+  const stripeLocks = $derived(!auth.isConnected || canOrganise(auth.kind));
   let stripeModalOpen = $state(false);
 
   $effect(() => {
@@ -361,7 +366,7 @@
   }
 </script>
 
-{#if stripeStatus !== true}
+{#if stripeLocks && stripeStatus !== true}
   <!-- ── Stripe gate ─────────────────────────────────────────────────────── -->
   <div class="picker picker--locked">
     {#if stripeStatus === null}
@@ -383,7 +388,7 @@
             <p class="lock-title">Claim your free <code class="inline-code">.woco.eth</code> address</p>
             <p class="lock-sub">
               {#if !auth.isConnected}
-                Connect your wallet to get started.
+                Sign in to get started.
               {:else}
                 Verify your business via Stripe to unlock — takes 2 minutes.
               {/if}
@@ -393,7 +398,7 @@
 
         <button class="setup-btn" onclick={openStripeSetup}>
           {#if !auth.isConnected}
-            Connect wallet →
+            Sign in →
           {:else}
             Set up Stripe →
           {/if}

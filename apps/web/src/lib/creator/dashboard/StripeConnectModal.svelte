@@ -7,6 +7,8 @@
   } from "../../api/stripe.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
+  import { canOrganise, ORGANISER_PASSKEY_MESSAGE } from "../../auth/organiser-account.js";
+  import { navigate } from "../../router/router.svelte.js";
   import { shouldStopWaiting, subscribeStripeReturn } from "./stripe-return-handoff.js";
 
   interface Props {
@@ -81,7 +83,17 @@
     }
   }
 
+  // Stripe is an organiser's step, and organising needs a passkey (#746). The server
+  // cannot tell a passkey account from an email one, so this refusal is the check.
+  const organiser = $derived(!auth.isConnected || canOrganise(auth.kind));
+
+  function startHosting() {
+    close();
+    navigate("/creator");
+  }
+
   async function handleConnect() {
+    if (!organiser) return;
     actionLoading = true;
     error = null;
     try {
@@ -198,7 +210,14 @@
       <!-- Content -->
       <div class="modal-content">
 
-        {#if loading}
+        {#if !organiser}
+          <div class="modal-state">
+            <p class="state-title">Hosting uses a passkey account</p>
+            <p class="state-desc">{ORGANISER_PASSKEY_MESSAGE}</p>
+            <button class="modal-cta" onclick={startHosting}>Start hosting</button>
+          </div>
+
+        {:else if loading}
           <div class="modal-loading">
             <div class="modal-spinner"></div>
             <span>Checking your Stripe account...</span>
