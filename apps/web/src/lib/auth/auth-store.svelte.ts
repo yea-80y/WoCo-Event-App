@@ -1521,6 +1521,7 @@ async function init(): Promise<void> {
         setTimeout(async () => {
           if (_kind !== "none") return; // already reconnected elsewhere
           const addr = await getConnectedAddress();
+          if (_kind !== "none") return; // signed in some other way while we waited
           if (addr && addr.toLowerCase() === storedParent.toLowerCase()) {
             _kind = "web3";
             _parent = storedParent;
@@ -4886,6 +4887,11 @@ async function clearAllAuth(): Promise<void> {
   await step("aa-sessions", () => delKV(StorageKeys.WOCO_AA_SESSION));
   // Shared-device safety: drop all user-scoped caches (creator lists, orders, collection, claim status).
   await step("user-caches", () => cacheClearByPrefix(USER_SCOPED_PREFIXES));
+  // A pending empty-accounts logout must not fire into the NEXT sign-in (#186).
+  if (_emptyAccountsTimer) {
+    clearTimeout(_emptyAccountsTimer);
+    _emptyAccountsTimer = null;
+  }
   _kind = "none";
   _parent = null;
   _sessionAddress = null;

@@ -26,8 +26,11 @@ export interface ResolvedSite {
  * THREE ANSWERS, NOT TWO — and the third is the point (#181).
  *
  *   found        the site's config, with its ownership provenance.
- *   absent       the feed provably holds no site. A caller MAY treat the siteId
- *                as unclaimed.
+ *   absent       the network found no site. Not a proof: a bee 404 is a failed
+ *                search, and a page written moments ago can still 404 while it
+ *                propagates. No read can do better, so a caller MAY treat the
+ *                siteId as unclaimed. Nothing serialises two publishes of the same
+ *                absent siteId: both pass, and the last write wins (#217).
  *   unavailable  neither could be established: a network fault, bytes that will
  *                not decode, a payload naming a different site, or a config with
  *                no address to compare a caller against. Nothing may be
