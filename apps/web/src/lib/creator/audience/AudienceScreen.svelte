@@ -60,24 +60,27 @@
    * seal context that binds the list to this account. The post-quantum code is
    * loaded here, on first use, never with the page.
    */
-  async function getKeys(prompt = false) {
-    const identitySeed = await getIdentitySeed(prompt);
-    if (!identitySeed || !auth.parent) return null;
-    const [{ deriveXWingKeypairFromSeed }, box] = await Promise.all([
-      import("@woco/shared/crypto/xwing"),
+  async function getKeys(prompt = false, toSeal = false) {
+    const secrets = await getAccountSecrets(prompt, toSeal);
+    if (!secrets || !auth.parent) return null;
+    const [{ orderKeysOf }, box] = await Promise.all([
+      import("../../keyring/order-keys.js"),
       import("@woco/shared/crypto/sealed-box"),
     ]);
-    const { secretKey, publicKey } = deriveXWingKeypairFromSeed(identitySeed);
-    return { secretKey, publicKey, ctx: box.listSealContext(auth.parent), box };
+    // New lists seal to the CURRENT generation; an older one opens with its own (#186).
+    const { publicKey, secretKeys } = await orderKeysOf(secrets);
+    return { secretKeys, publicKey, ctx: box.listSealContext(auth.parent), box };
   }
 
-  /** The identity seed, unlocking it first - only when `prompt`, which only a tap
-   *  passes - if it is locked or not yet on this device. */
-  async function getIdentitySeed(prompt: boolean): Promise<string | null> {
-    const seed = await auth.getIdentitySeed();
-    if (seed || !prompt) return seed;
+  /** The account's secrets, unlocking first - only when `prompt`, which only a tap
+   *  passes - if they are locked or not yet on this device. */
+  async function getAccountSecrets(prompt: boolean, toSeal: boolean): Promise<{ current: string; all: string[] } | null> {
+    // Sealing needs the CONFIRMED current generation (#186) - a list sealed to keys the
+    // account left would open for a removed passkey. Opening takes whatever is held.
+    const secrets = await auth.getAccountSecrets({ toSeal });
+    if (secrets || !prompt) return secrets;
     if (!(await auth.ensureAccountSetup({ identity: true }))) return null;
-    return auth.getIdentitySeed();
+    return auth.getAccountSecrets({ toSeal });
   }
 
   /** One round trip gives both server-held states; the third (imported) is what
@@ -125,7 +128,8 @@
         return;
       }
       listLocked = false;
-      const payload = await keys.box.openBoxJson<MarketingListPayload>(keys.secretKey, resp.sealedList, keys.ctx);
+      const { openJsonWithAnyKey } = await import("../../keyring/order-keys.js");
+      const payload = await openJsonWithAnyKey<MarketingListPayload>(keys.secretKeys, resp.sealedList, keys.ctx);
       contacts = payload.contacts;
       await refreshConsentStates(contacts);
     } catch (err) {
@@ -144,7 +148,7 @@
 
   /** Re-seal + upload the full list — the single write path for every change. */
   async function commitList(next: MarketingContact[]): Promise<void> {
-    const keys = await getKeys(true);
+    const keys = await getKeys(true, true);
     if (!keys) throw new Error("Identity locked — sign in to save changes");
     saving = true;
     try {

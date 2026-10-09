@@ -36,6 +36,8 @@ import {
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEvent, getEventForOwner, getEventBySigner } from "../lib/event/service.js";
+import { eventKeys } from "../lib/keyring/event-keys.js";
+import { currentRing } from "../lib/keyring/current-ring.js";
 import { getOnChainEventAt, getSlotDataAt } from "../lib/chain/event-contract.js";
 import { registrationContractFor } from "../lib/event/onchain-registry.js";
 import { contractKey } from "../lib/chain/event-contract.js";
@@ -110,7 +112,13 @@ checkinOrganiser.post("/:id/door-pass", requireAuth, async (c) => {
     // Stamp the content-feed signer into the pass record — the organiser is
     // authenticated here, so this is the last point where an unlisted event's
     // signer can be resolved from trusted state. /pack has no parent address.
-    const token = issueDoorPass(eventId, exp, event.creatorFeedSigner, mode);
+    // The organiser's key generation now (#186): a pass made before a passkey is
+    // removed stops working when the account's keys move on.
+    const ring = await currentRing(c.get("parentAddress"));
+    if (ring.status === "unavailable") {
+      return c.json({ ok: false, error: "Couldn't check your account's keys right now - try again in a minute" }, 503);
+    }
+    const token = issueDoorPass(eventId, exp, event.creatorFeedSigner, mode, ring.status === "ring" ? ring.ring.gen : 0);
     return c.json({ ok: true, data: { token, exp, mode } });
   } catch (err) {
     console.error("[checkin] door-pass issue failed:", err);
@@ -161,7 +169,9 @@ checkinOrganiser.get("/:id/checkin-status", requireAuth, async (c) => {
 
 const checkin = new Hono<AppEnv>();
 
-type AuthorisedPass = { ok: true; signer?: string; mode: DoorMode; device?: string };
+type AuthorisedPass = { ok: true; signer?: string; mode: DoorMode; device?: string; gen: number };
+
+const REVOKED = "Door pass revoked — ask the organiser for a new one";
 
 /** Verify X-Door-Pass and confirm it was issued for the URL's event. */
 function authorisePass(c: Context<AppEnv>): AuthorisedPass | { ok: false; resp: Response } {
@@ -172,7 +182,7 @@ function authorisePass(c: Context<AppEnv>): AuthorisedPass | { ok: false; resp: 
   const verdict = verifyDoorPass(token);
   if (!verdict.ok) {
     const message =
-      verdict.reason === "revoked" ? "Door pass revoked — ask the organiser for a new one"
+      verdict.reason === "revoked" ? REVOKED
       : verdict.reason === "expired" ? "Door pass expired"
       : "Invalid door pass";
     return { ok: false, resp: c.json({ ok: false, error: message, reason: verdict.reason }, 401) };
@@ -183,9 +193,33 @@ function authorisePass(c: Context<AppEnv>): AuthorisedPass | { ok: false; resp: 
   return {
     ok: true,
     mode: verdict.mode,
+    gen: verdict.gen,
     ...(verdict.signer ? { signer: verdict.signer } : {}),
     ...(verdict.device ? { device: verdict.device } : {}),
   };
+}
+
+/**
+ * A pass issued before the organiser's keys last moved (#186) is revoked: a passkey was
+ * removed since, and if that device made the pass it still holds the token and the
+ * roster key. `unreadable` decides what happens when the keys cannot be read: the pack
+ * (the attendee roster) refuses; sync and claim go on, so a door is not stopped by an
+ * RPC outage - they never hand out the roster, and a pass made since is still exact.
+ */
+async function outdatedPass(
+  c: Context<AppEnv>,
+  eventId: string,
+  auth: AuthorisedPass,
+  unreadable: "refuse" | "allow",
+): Promise<Response | null> {
+  const keys = await eventKeys(eventId);
+  if (keys.kind === "unavailable") {
+    return unreadable === "refuse"
+      ? c.json({ ok: false, error: "Couldn't check this door pass right now - try again in a minute" }, 503)
+      : null;
+  }
+  if (keys.kind === "ring" && keys.gen > auth.gen) return c.json({ ok: false, error: REVOKED, reason: "revoked" }, 401);
+  return null;
 }
 
 const DEVICE_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
@@ -233,6 +267,8 @@ checkin.get("/:eventId/pack", async (c) => {
     return c.json({ ok: false, error: "Could not register this scanner - try again" }, 503);
   }
   if (refused) return refused;
+  const outdated = await outdatedPass(c, eventId, auth, "refuse");
+  if (outdated) return outdated;
   try {
     // An unlisted (skipAutoList) client-signed event is in no global directory, so
     // getEvent() cannot resolve it and the scanner would 404 at the door. The pass
@@ -317,6 +353,8 @@ checkin.post("/:eventId/sync", async (c) => {
   }
   const refused = checkDevice(c, auth, deviceFrom(c, body.deviceId), false);
   if (refused) return refused;
+  const outdated = await outdatedPass(c, c.req.param("eventId"), auth, "allow");
+  if (outdated) return outdated;
 
   try {
     const result = mergeCheckins(c.req.param("eventId"), body.checkins);
@@ -341,6 +379,8 @@ checkin.post("/:eventId/claim", async (c) => {
   if (!device) return c.json({ ok: false, error: "This scanner needs updating - reload the page and try again" }, 400);
   const refused = checkDevice(c, auth, device, false);
   if (refused) return refused;
+  const outdated = await outdatedPass(c, c.req.param("eventId"), auth, "allow");
+  if (outdated) return outdated;
 
   const body = (await c.req.json().catch(() => null)) as Partial<CheckinClaimRequest> | null;
   const record: CheckinRecord = {

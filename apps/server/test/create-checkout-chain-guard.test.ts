@@ -86,7 +86,9 @@ before(async () => {
 
   // Registered — and recorded — while the platform ran on the old chain.
   registry.recordOnChainEventId(EVENT_ID, SERIES_ID, ON_CHAIN_ID, { chainId: OLD_CHAIN, address: V2_ADDR, version: "v2" });
-  service.primeEventCache(EVENT_ID, {
+  // A platform-signed event (no organiser signer, no record): checkout asks where its
+  // feed is before selling a record-less event (#186), and here the server wrote it.
+  const platformFeed = {
     v: 1,
     eventId: EVENT_ID,
     title: "Sold on the test chain",
@@ -111,7 +113,13 @@ before(async () => {
       manifestRef: "0x" + "cd".repeat(32),
       payment: { stripeEnabled: true, price: "20.00", currency: "GBP" },
     }],
-  } as unknown as EventFeed);
+  } as unknown as EventFeed;
+  // Only an event with a record of its signer sells (#186); no key ring for its creator.
+  const { recordEventFeedSigner } = await import("../src/lib/event/feed-signer-record.js");
+  recordEventFeedSigner(EVENT_ID, ("0x" + "22".repeat(20)) as `0x${string}`, platformFeed.creatorAddress as `0x${string}`);
+  const { noRings } = await import("./helpers/key-ring.js");
+  noRings();
+  service.primeEventCache(EVENT_ID, platformFeed);
 });
 
 after(() => {

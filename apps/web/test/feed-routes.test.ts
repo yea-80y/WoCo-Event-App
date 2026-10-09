@@ -300,11 +300,16 @@ test("the event feed has ONE client writer, and every call site signs a base the
     "lib/api/events.ts", // signEventFeedSoc itself, and the manifest's trash entry
     "lib/attendee/events/EventDetail.svelte", // a read
     "lib/creator/events/PublishButton.svelte", // the manifest log's label
+    "lib/keyring/rotate-live.ts", // #186: a removal reads its own events, thorough + clean
   ]);
   assert.match(code(read("lib/api/events.ts")), /export async function signEventFeedSoc\([\s\S]*?topic: eventContentTopic\(feed\.eventId\),/);
   assert.deepEqual(signs, {
     "lib/api/events.ts": 4, // publish (create), update-meta, delete, cancel
     "lib/api/sub-ens.ts": 1, // stamp-event
     "lib/creator/events/PublishButton.svelte": 1, // register's returned feed / the held pendingFeed
+    // #186: a removal copies each event to the NEXT generation's signer - version 0 of a
+    // new feed, from a thorough, clean read of the old one's head, so nothing newer exists
+    // to overwrite (the #657 hazard this test guards).
+    "lib/keyring/rotate-live.ts": 1,
   });
 });

@@ -26,6 +26,9 @@ import {
   isValidCoOwnerList,
   sortCoOwners,
 } from "@woco/shared/kernel/co-owners";
+import { KEY_RING_ANCHOR_ABI, KEY_RING_ANCHOR_ADDRESS, ringRefToAnchor } from "@woco/shared/keyring/anchor";
+
+const NO_RING = `0x${"0".repeat(64)}`;
 
 type Hex = `0x${string}`;
 
@@ -116,6 +119,25 @@ export function coOwnerRenewCall(d: CoOwnerEncoders, signers: readonly string[])
       abi: d.parseAbi([WEIGHTED_RENEW_FN]),
       functionName: "renew",
       args: [sorted, sorted.map(() => 1), 1, 0],
+    }),
+  };
+}
+
+/**
+ * The key ring rides LAST in the same op (#186): `setRing(prev, next)` on the anchor,
+ * so a removal and the keys it takes away land together or not at all, and a stale
+ * `prev` (another device moved the ring) reverts the whole batch. `prev` null = the
+ * account's first ring.
+ */
+export function coOwnerRingCall(d: CoOwnerEncoders, prevRef: string | null, nextRef: string): CoOwnerCall {
+  const anchor = (ref: string | null) => (ref === null ? NO_RING : ringRefToAnchor(ref)) as Hex;
+  return {
+    to: KEY_RING_ANCHOR_ADDRESS as Hex,
+    value: 0n,
+    data: d.encodeFunctionData({
+      abi: d.parseAbi([...KEY_RING_ANCHOR_ABI]),
+      functionName: "setRing",
+      args: [anchor(prevRef), anchor(nextRef)],
     }),
   };
 }

@@ -176,7 +176,7 @@ const between = (from: string, to: string) => {
 
 test("create records the signer BEFORE the cache is primed and the feed goes out for signing", () => {
   const create = between("export async function createEventV2(", "\nexport ");
-  const rec = create.indexOf("recordEventFeedSigner(eventId, creatorFeedSigner, creatorAddress)");
+  const rec = create.indexOf("recordEventFeedSigner(eventId, creatorFeedSigner, creatorAddress, encryptionKeyRef)");
   const prime = create.indexOf("primeEventCache(eventId, eventFeed)");
   assert.ok(rec > 0 && prime > rec, "record, then prime");
   assert.match(create, /if \(creatorFeedSigner\) recordEventFeedSigner\(/, "optional: no signer, no record");

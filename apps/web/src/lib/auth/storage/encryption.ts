@@ -73,6 +73,14 @@ export const AAD = {
     `woco/device/identity-seed-window/v1:${seedAddress.toLowerCase()}:${parent.toLowerCase()}`,
   FEED_SIGNER_CACHE: (seedAddress: string, parent: string) =>
     `woco/device/feed-signer/v1:${seedAddress.toLowerCase()}:${parent.toLowerCase()}`,
+  // The later account secrets a key ring handed this passkey (#186), locked and
+  // window copies: account-bound like the seed's, never under the seed's own labels.
+  ACCOUNT_CHAIN_LOCKED: (seedAddress: string, parent: string) =>
+    `woco/device/account-chain/v1:${seedAddress.toLowerCase()}:${parent.toLowerCase()}`,
+  ACCOUNT_CHAIN_WINDOW: (seedAddress: string, parent: string) =>
+    `woco/device/account-chain-window/v1:${seedAddress.toLowerCase()}:${parent.toLowerCase()}`,
+  PENDING_ROTATION: (seedAddress: string, parent: string) =>
+    `woco/device/pending-rotation/v1:${seedAddress.toLowerCase()}:${parent.toLowerCase()}`,
   // Two scoped ZeroDev session keys had AAD constructors here — the sub-ENS mint
   // key until #501, the referral campaign's EAS key until #476. Neither is
   // written any more, and an unused AAD constructor is worse than none (see the

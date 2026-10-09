@@ -547,6 +547,69 @@ test("co-owners: the app's own builders are exactly what the policy pays for", a
   });
 });
 
+// ── The key ring (#186) ──────────────────────────────────────────────────────
+// setRing on the anchor rides LAST on a co-owner change, so a removal and the keys it
+// takes away land in one op; alone, it gives a passkey the keys at the same generation.
+
+const { KEY_RING_ANCHOR_ABI, KEY_RING_ANCHOR_ADDRESS } = await import("@woco/shared/keyring/anchor");
+const ringAbi = parseAbi(KEY_RING_ANCHOR_ABI);
+const NO_RING_HEX = `0x${"0".repeat(64)}` as Hex;
+const ringCall = (ring: Hex = `0x${"ab".repeat(32)}` as Hex, to: Address = KEY_RING_ANCHOR_ADDRESS as Address): Call => ({
+  to,
+  data: encodeFunctionData({ abi: ringAbi, functionName: "setRing", args: [NO_RING_HEX, ring] }),
+});
+
+test("ring: last on a renew or on the switch keeps that shape; alone it is its own", async () => {
+  const subject = ACCOUNT.toLowerCase();
+  assert.deepEqual(classifyUserOp(op(await viaExecute([renewCall([P1, P2]), ringCall()]))), { ok: true, shape: "renew", subject });
+  assert.deepEqual(classifyUserOp(op(await viaExecute([...switchCalls(enableOf([P1, P2])), ringCall()]))), {
+    ok: true,
+    shape: "co-owners",
+    subject,
+  });
+  assert.deepEqual(classifyUserOp(op(await viaExecute([ringCall()]))), { ok: true, shape: "ring", subject });
+});
+
+test("ring: never zero, never first or twice, never on another shape, never another call on the anchor", async () => {
+  const refused = async (calls: Call[], why: string) =>
+    assert.equal(classifyUserOp(op(await viaExecute(calls))).ok, false, why);
+  await refused([ringCall(NO_RING_HEX)], "a zero ring (the contract reverts: our gas for nothing)");
+  await refused([ringCall(), renewCall([P1, P2])], "before the list change");
+  await refused([ringCall(), renewCall([P1, P2]), ringCall()], "twice");
+  const { coOwnerSwitchCalls } = await import("../../web/src/lib/auth/co-owner-calls.js");
+  const enc = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as never;
+  const upgrade = coOwnerSwitchCalls(enc, ACCOUNT, [P1]).map((c) => ({ to: c.to as Address, data: c.data }));
+  await refused([...upgrade, ringCall()], "on the locked-account upgrade");
+  await refused([...switchCalls(enableOf([])), ringCall()], "after a list that would lock the account");
+  const view = { to: KEY_RING_ANCHOR_ADDRESS as Address, data: encodeFunctionData({ abi: ringAbi, functionName: "ringOf", args: [ACCOUNT] }) };
+  await refused([renewCall([P1, P2]), view], "anything but setRing on the anchor");
+  await refused([ringCall(undefined, GUARDIAN_EOA)], "setRing on another contract");
+});
+
+test("ring: the app's own builders - renew + ring, switch + ring, ring alone - are what the policy pays for", async () => {
+  const { coOwnerSwitchCalls, coOwnerRenewCall, coOwnerRingCall } = await import("../../web/src/lib/auth/co-owner-calls.js");
+  const enc = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as never;
+  const subject = ACCOUNT.toLowerCase();
+  const as = (c: { to: string; data: Hex }) => ({ to: c.to as Address, data: c.data });
+  const ring = as(coOwnerRingCall(enc, "aa".repeat(32), "bb".repeat(32)));
+  const first = as(coOwnerRingCall(enc, null, "bb".repeat(32)));
+  assert.deepEqual(classifyUserOp(op(await viaExecute([as(coOwnerRenewCall(enc, [P1, P2])), ring]))), { ok: true, shape: "renew", subject });
+  assert.deepEqual(classifyUserOp(op(await viaExecute([...coOwnerSwitchCalls(enc, ACCOUNT, [P1, P2]).map(as), first]))), {
+    ok: true,
+    shape: "co-owners",
+    subject,
+  });
+  assert.deepEqual(classifyUserOp(op(await viaExecute([ring]))), { ok: true, shape: "ring", subject });
+});
+
+test("ring: a locked account's ring op is refused like any other", async () => {
+  const p = new SponsorPolicy(deps);
+  const callData = await viaExecute([ringCall()]);
+  assert.deepEqual(await p.decide(op(callData)), { proceed: false, reason: "locked", shape: "ring", subject: ACCOUNT.toLowerCase() });
+  unlocked.add(ACCOUNT.toLowerCase());
+  assert.deepEqual(await p.decide(op(callData)), { proceed: true, shape: "ring", subject: ACCOUNT.toLowerCase(), via: "ticket" });
+});
+
 // ── The email -> passkey upgrade (#746, owner 10-07) ─────────────────────────
 // The switch to a list of ONE key: an email account handing itself to its new
 // passkey. A locked account gets exactly one, under a platform-wide daily cap.

@@ -21,6 +21,7 @@
  * Load lazily: it pulls in the sealed box (lattice code + HPKE).
  */
 
+import { parseAccountChain, type AccountChain } from "./account-chain.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
@@ -177,6 +178,9 @@ export function newPairingRecipient(): PairingRecipient {
 export interface LinkSecret {
   parent: string;
   seed: string;
+  /** The account's later secrets (#186), when it has a key ring: the new device holds
+   *  the current generation from the start, then adds itself to the ring. */
+  chain?: AccountChain | null;
 }
 
 function linkContext(id: string, grantee: string) {
@@ -188,7 +192,9 @@ export function sealLinkSecret(
   secret: LinkSecret,
   ctx: { id: string; grantee: string },
 ): Promise<SealedBoxV2> {
-  const plain = utf8ToBytes(JSON.stringify({ v: 1, parent: secret.parent.toLowerCase(), seed: secret.seed }));
+  const plain = utf8ToBytes(
+    JSON.stringify({ v: 1, parent: secret.parent.toLowerCase(), seed: secret.seed, ...(secret.chain ? { chain: secret.chain } : {}) }),
+  );
   return sealBox(hexToBytes(recipientPublicKeyHex), plain, linkContext(ctx.id, ctx.grantee));
 }
 
@@ -201,11 +207,14 @@ export async function openLinkSecret(
   ctx: { id: string; grantee: string },
 ): Promise<LinkSecret> {
   const plain = await openBox(recipient.secretKey, box, linkContext(ctx.id, ctx.grantee));
-  const v = JSON.parse(new TextDecoder().decode(plain)) as { v?: unknown; parent?: unknown; seed?: unknown };
+  const v = JSON.parse(new TextDecoder().decode(plain)) as { v?: unknown; parent?: unknown; seed?: unknown; chain?: unknown };
   if (v.v !== 1 || typeof v.parent !== "string" || !ADDRESS.test(v.parent) || typeof v.seed !== "string" || !SEED.test(v.seed)) {
     throw new Error("pairing secret is not in the expected shape");
   }
-  return { parent: v.parent, seed: v.seed };
+  if (v.chain === undefined) return { parent: v.parent, seed: v.seed };
+  const chain = parseAccountChain(v.chain);
+  if (!chain) throw new Error("pairing secret is not in the expected shape");
+  return { parent: v.parent, seed: v.seed, chain };
 }
 
 // ---------------------------------------------------------------------------

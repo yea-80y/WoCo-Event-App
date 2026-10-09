@@ -7,7 +7,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { getClaimStatus } from "../../api/events.js";
-  import { createCheckoutSession } from "../../api/stripe.js";
+  import { createCheckoutSession, OrderKeyStaleError } from "../../api/stripe.js";
   import type { SeriesClaimStatus } from "@woco/shared";
   import { orderFieldRequired, orderFormCollectsEmail, orderFormShown, resolveBuyerEmail } from "@woco/shared";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
@@ -66,9 +66,16 @@
    */
   let orderKey = $state<Uint8Array | undefined>(undefined);
   let orderKeyState = $state<"none" | "loading" | "ready" | "failed">("none");
+  // The ref `orderKey`'s bytes were verified against - what a box declares it was
+  // sealed to (#186), never a ref whose key is still loading.
+  let orderKeyFor = $state<string | undefined>(undefined);
+  // The key the server named after refusing a box sealed to an older one (#186).
+  let keyRefOverride = $state<string | null>(null);
+  const orderKeyRef = $derived(keyRefOverride ?? encryptionKeyRef);
+  let staleRetried = false;
 
   function loadKey(): void {
-    const ref = encryptionKeyRef;
+    const ref = orderKeyRef;
     if (!ref) {
       orderKeyState = "none";
       return;
@@ -76,12 +83,13 @@
     orderKeyState = "loading";
     loadOrderKey(ref).then(
       (key) => {
-        if (encryptionKeyRef !== ref) return;
+        if (orderKeyRef !== ref) return;
         orderKey = key;
+        orderKeyFor = ref;
         orderKeyState = "ready";
       },
       (err) => {
-        if (encryptionKeyRef !== ref) return;
+        if (orderKeyRef !== ref) return;
         console.warn("[ClaimButton] order key unavailable:", err);
         orderKeyState = "failed";
       },
@@ -236,17 +244,19 @@
   // ──────────────────────────────────────────────────────────────
   // Pre-upload + reservation hooks
   // ──────────────────────────────────────────────────────────────
+  // The key is part of the snapshot: a box sealed to a key since replaced is stale (#186).
   const buildOrderSnapshot = (link: boolean = linked): string => buildOrderSnapshotPure(
     formData,
     getEmailFromForm() ?? stripeEmail.trim(),
     link ? auth.parent?.toLowerCase() ?? "" : "",
-  );
+  ) + `|${orderKeyFor ?? ""}`;
 
   // svelte-ignore state_referenced_locally
   const orderPrefetch = useOrderPrefetch({
     eventId,
     seriesId,
     getKey: () => orderKey,
+    getKeyRef: () => orderKeyFor,
     getShouldPrefetch: () => showOrderForm && !!orderKey && formValid(),
     getSnapshot: () => buildOrderSnapshot(),
     getFormData: () => formData,
@@ -292,7 +302,7 @@
     intentToCheckout = true;
     // An order form the organiser asked for, whose key we could not verify: no
     // form can render and nothing could be sealed, so do not take the order (#642).
-    if (orderFields?.length && encryptionKeyRef && !orderKey) {
+    if (orderFields?.length && orderKeyRef && !orderKey) {
       error = orderKeyState === "loading"
         ? "Loading the order form securely - try again in a moment."
         : "We couldn't load this event's order form securely. Check your connection and try again.";
@@ -392,6 +402,7 @@
         quantity: quantity > 1 ? quantity : undefined,
         preparedOrder,
         encryptedOrder: !preparedOrder ? inlineEncryptedOrder : undefined,
+        encryptionKeyRef: orderKeyFor,
         reservationId: reservationHook.reservation?.reservationId,
         // The form is still displayed at this point (handleStripeCheckout returns
         // early to show it and is re-entered), so the opt-out WAS offered and an
@@ -411,6 +422,26 @@
       // event page, Back goes to the events list, not into a stale Stripe session.
       window.location.replace(url);
     } catch (err) {
+      // Sealed to a key the organiser has since replaced (#186): take the key the
+      // server names - verified against its ref - re-seal, and try ONCE more.
+      if (err instanceof OrderKeyStaleError && err.current && err.current !== orderKeyFor && !staleRetried) {
+        staleRetried = true;
+        try {
+          keyRefOverride = err.current;
+          const key = await loadOrderKey(err.current);
+          orderKey = key;
+          orderKeyFor = err.current;
+          orderKeyState = "ready";
+          stripeLoading = false;
+          await handleStripeCheckout();
+          return;
+        } catch (retryErr) {
+          error = retryErr instanceof Error ? retryErr.message : "Failed to start checkout";
+        } finally {
+          staleRetried = false;
+        }
+        return;
+      }
       error = err instanceof Error ? err.message : "Failed to start checkout";
     } finally {
       stripeLoading = false;
