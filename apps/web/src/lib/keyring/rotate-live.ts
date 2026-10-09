@@ -2,10 +2,11 @@
  * The real steps `rotate.ts` sequences when a passkey is removed (#186). Lazy: loaded
  * on the tap, never with a page.
  *
- * Reads go through the server, which before the flip resolves everything under the
- * account's CURRENT keys (the ring the anchor names) - so what is copied is what readers
- * see now, not a version a removed passkey could have written under an older signer.
+ * The account's own events and site configs are read straight from Swarm under the
+ * signer this device holds (only the lists of ids come from the platform indexes), so
+ * what is re-signed is exactly what the organiser signed.
  */
+import { eventPageFeedTopic, multisiteFeedTopic } from "@woco/shared";
 import type { ContentFeedSigner } from "../swarm/content-feed.js";
 import type { AccountChain } from "../auth/account-chain.js";
 import type { PasskeyKeys } from "./members.js";
@@ -53,10 +54,16 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
    * tap, so only when every value is pinned to what this device knows (#186): the name is
    * the one in the organiser's OWN signed copy (never the server's reply), the deploy's
    * feed is the organiser's and this device signed its update under the new key, and the
-   * target is that deploy's feed manifest. Anything else is not signed: the name keeps
-   * pointing where it did, and the done screen says to point it again.
+   * target is a feed manifest - read and hash-checked HERE, not taken from the reply - for
+   * the new signer and the topic this device derives. Anything else is not signed: the
+   * name keeps pointing where it did, and the done screen says to point it again.
    */
-  async function repoint(ownLabel: string | undefined, deploy: { feedManifestHash?: string; subEns?: unknown }, signedUnderNewKey: boolean): Promise<void> {
+  async function repoint(
+    ownLabel: string | undefined,
+    deploy: { feedManifestHash?: string; subEns?: unknown },
+    signedUnderNewKey: boolean,
+    expected: { owner: string; topic: string },
+  ): Promise<void> {
     const p = deploy.subEns as { status?: string; label?: string; target?: string } | undefined;
     if (p?.status !== "awaiting_signature") return;
     const { pointerBlockedReason } = await import("../sub-ens/pointer-policy.js");
@@ -67,10 +74,41 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
       typeof deploy.feedManifestHash === "string" &&
       /^[0-9a-f]{64}$/.test(deploy.feedManifestHash) &&
       p.target === deploy.feedManifestHash &&
-      pointerBlockedReason("passkey", "site", "client", true, ownLabel) === null;
+      pointerBlockedReason("passkey", "site", "client", true, ownLabel) === null &&
+      (await manifestFollows(deploy.feedManifestHash, expected));
     if (!ok) throw new Error(`the name ${ownLabel ?? p.label ?? "(unknown)"} was not re-pointed: the deploy did not match what this device signed`);
     const { pointNameAt } = await import("../sub-ens/pointer.js");
     await pointNameAt(ownLabel!, p.target!, (typed) => h.signTypedDataAsHolder(typed));
+  }
+
+  /**
+   * Does the feed manifest at `hash` follow `owner`'s feed at `topic` (the topic string,
+   * hashed here)? The root chunk is fetched and checked against its address on this
+   * device, so the answer does not rest on whoever served it.
+   */
+  async function manifestFollows(hash: string, expected: { owner: string; topic: string }): Promise<boolean> {
+    const [{ WOCO_GATEWAY_URL }, { calculateCacAddress }, { feedOfManifestChunk }, { keccak_256 }, { bytesToHex, utf8ToBytes }] =
+      await Promise.all([
+        import("../swarm/gateways.js"),
+        import("@woco/shared/swarm/soc"),
+        import("../sub-ens/event-name-link.js"),
+        import("@noble/hashes/sha3.js"),
+        import("@noble/hashes/utils.js"),
+      ]);
+    try {
+      const res = await fetch(`${WOCO_GATEWAY_URL}/chunks/${hash}`, { signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) return false;
+      const raw = new Uint8Array(await res.arrayBuffer());
+      if (raw.length <= 8 || bytesToHex(calculateCacAddress(raw.subarray(0, 8), raw.subarray(8))) !== hash) return false;
+      const feed = feedOfManifestChunk(raw);
+      return (
+        !!feed &&
+        feed.owner === expected.owner.toLowerCase().replace(/^0x/, "") &&
+        feed.topic === bytesToHex(keccak_256(utf8ToBytes(expected.topic)))
+      );
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -268,7 +306,10 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
           );
           if (!dep.ok || !dep.data) throw new Error(dep.error ?? `site ${entry.siteId} not redeployed`);
           // deploySite signs the pointer-feed update itself, under the key it was given.
-          await repoint(site.subEnsLabel, dep.data, !!dep.data.multisiteFeed);
+          await repoint(site.subEnsLabel, dep.data, !!dep.data.multisiteFeed, {
+            owner: keys.feedSigner.address,
+            topic: multisiteFeedTopic(entry.siteId),
+          });
         }
       },
       pages: async (keys: NewKeys) => {
@@ -286,7 +327,10 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
             keys.feedSigner,
           );
           if (!dep.ok || !dep.data) throw new Error(dep.error ?? `page ${e.eventId} not redeployed`);
-          await repoint(feed.subEnsLabel, dep.data, dep.feedSigned && dep.data.feedOwner === "client");
+          await repoint(feed.subEnsLabel, dep.data, dep.feedSigned && dep.data.feedOwner === "client", {
+            owner: keys.feedSigner.address,
+            topic: eventPageFeedTopic(e.eventId),
+          });
         }
       },
       list: async (keys: NewKeys) => {

@@ -27,8 +27,13 @@ test("a name is re-pointed only for the organiser's own label, a deploy this dev
   }
   assert.match(r, /if \(!ok\) throw new Error/);
   assert.match(r, /pointNameAt\(ownLabel!, p\.target!/, "the label signed is ours, never the reply's");
-  assert.match(LIVE, /await repoint\(site\.subEnsLabel, dep\.data, !!dep\.data\.multisiteFeed\);/);
-  assert.match(LIVE, /await repoint\(feed\.subEnsLabel, dep\.data, dep\.feedSigned && dep\.data\.feedOwner === "client"\);/);
+  assert.match(r, /&&\s*\(await manifestFollows\(deploy\.feedManifestHash, expected\)\);/, "the target's manifest checked here");
+  assert.match(LIVE, /await repoint\(site\.subEnsLabel, dep\.data, !!dep\.data\.multisiteFeed, \{\s*owner: keys\.feedSigner\.address,\s*topic: multisiteFeedTopic\(entry\.siteId\),/);
+  assert.match(LIVE, /await repoint\(feed\.subEnsLabel, dep\.data, dep\.feedSigned && dep\.data\.feedOwner === "client", \{\s*owner: keys\.feedSigner\.address,\s*topic: eventPageFeedTopic\(e\.eventId\),/);
+  const m = body("async function manifestFollows(");
+  assert.match(m, /calculateCacAddress\(raw\.subarray\(0, 8\), raw\.subarray\(8\)\)\) !== hash\) return false;/, "hash-checked on this device");
+  assert.match(m, /feed\.owner === expected\.owner/);
+  assert.match(m, /feed\.topic === bytesToHex\(keccak_256\(utf8ToBytes\(expected\.topic\)\)\)/);
 });
 
 test("own feeds are read thorough, and an unreadable or inconclusive one stops the removal", () => {
