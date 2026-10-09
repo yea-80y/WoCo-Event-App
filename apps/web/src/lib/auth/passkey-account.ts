@@ -334,9 +334,11 @@ export class PasskeyNotOnThisDeviceError extends Error {
  */
 export class PasskeyBrowserRefusedError extends Error {
   readonly cause?: unknown;
+  readonly host: string;
   constructor(host: string, cause?: unknown) {
     super(`This browser can't use passkeys on ${host}. Open WoCo in Chrome, Brave, Edge or Safari to continue.`);
     this.name = "PasskeyBrowserRefusedError";
+    this.host = host;
     this.cause = cause;
   }
 }

@@ -63,6 +63,7 @@ const {
 function assertRefusal(e: unknown): true {
   assert.ok(e instanceof PasskeyBrowserRefusedError, `expected the named refusal, got ${String(e)}`);
   assert.match(e.message, /This browser can't use passkeys on woco\.eth\.limo\./);
+  assert.equal(e.host, HOST, "the host travels with the error, for the sign-in sheet's advice");
   assert.ok(e.cause instanceof DOMException && e.cause.name === "SecurityError", "the raw refusal stays attached");
   return true;
 }
