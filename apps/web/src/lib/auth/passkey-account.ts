@@ -343,8 +343,8 @@ export class PasskeyBrowserRefusedError extends Error {
   }
 }
 
-/** Only when the RP ID IS the page's host: then a SecurityError cannot be a mismatch
- *  of ours, and Firefox words a blocked-storage refusal identically. */
+/** Only when the RP ID IS the page's host: a SecurityError there cannot be a mismatch
+ *  of ours. (Storage faults surface from IndexedDB, outside these wrappers.) */
 function namedRefusal(e: unknown, rpId: string | undefined): unknown {
   return e instanceof DOMException && e.name === "SecurityError" && rpId === window.location.hostname
     ? new PasskeyBrowserRefusedError(rpId, e)
