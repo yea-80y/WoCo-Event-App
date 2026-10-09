@@ -567,6 +567,10 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     to the directory. The server cannot rebuild it (creators are not enumerable); an operator can
     restore one organiser's records, best effort, from their creator index
     `woco/event/creator/{address}`. Unreadable = `/api/health` `eventFeedSigners` alarm)
+  name-targets.json (feed manifest -> the collection a deploy last baked there: the ONLY thing a site or
+    event-page name may show - the CCIP gateway's WoCo-built rule never signs the holder's pointer. Losing it
+    fails SAFE: every such name shows the app until republished. Unreadable = never overwritten, every such
+    name shows the app, `/api/health` `nameTargets` alarm)
   device-grants.json (#746 — each account's added passkeys: owner-signed grants, signed removals
     and every nonce used. Losing it signs every added device out (re-add from the main passkey);
     nothing leaks or is granted. Losing the NONCES lets an old removal or grant be replayed.
