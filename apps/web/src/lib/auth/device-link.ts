@@ -255,6 +255,8 @@ export interface ApproveDeviceLinkContext {
   /** This passkey's own address: a code from this device is refused. */
   self: string;
   seed: string;
+  /** The account's later secrets (#186), read as the answer is sealed - after the grant. */
+  chain?: () => import("./account-chain.js").AccountChain | null;
   /** Owner-signed grant for the new passkey, registered with the server. */
   grant: (grantee: string, credentialTag: string) => Promise<unknown>;
   /** Take that grant back when the answer certainly never reached the other device. */
@@ -276,7 +278,7 @@ export async function runApproveDeviceLink(
   const channel = ch.pairingChannel(code);
   const sealed = await ch.sealLinkSecret(
     offer.recipientPk,
-    { parent: ctx.parent, seed: ctx.seed },
+    { parent: ctx.parent, seed: ctx.seed, chain: ctx.chain?.() ?? null },
     { id: channel.id, grantee: offer.grantee },
   );
   try {

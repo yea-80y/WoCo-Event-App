@@ -24,7 +24,7 @@ test("an unlock derives and caches no signer itself; it resets the verdict and l
 
 test("the signer is committed only on an \"ok\" verdict, and any failure is short of ok", () => {
   const load = body("async function _loadAccountChain");
-  assert.match(load, /_keysVerdict = verdict;\s*if \(verdict === "ok"\) _commitSigner\(\);/);
+  assert.match(load, /_keysVerdict = verdict;\s*if \(verdict === "ok"\) \{\s*_commitSigner\(\);/);
   assert.match(load, /catch \(e\) \{[\s\S]*_keysVerdict = "unknown";/);
   assert.match(body("function _commitSigner"), /deriveFeedSignerKey\(currentSecretOf\(u\.seed, u\.chain\)\)/);
 });
@@ -73,3 +73,19 @@ test("an adopted ring is stored locked BEFORE it is used, and the box key is zer
 test("sign-out and an account switch close the chain's window copy too", () => {
   assert.equal((STORE.match(/clearChainWindow\(/g) ?? []).length, 2);
 });
+
+test("adding or linking: the ring includes this device, is built from the CONFIRMED generation, and never re-seals to a key off the list", () => {
+  const r = body("async function _ringForChange");
+  assert.ok(r.indexOf("await _requireCurrentKeys({ prompt: true });") < r.indexOf("members.ringWithMembers("));
+  assert.match(r, /if \(ref !== held\) throw new Error\(_keysVerdictMessage\("behind"\)\);/);
+  assert.match(r, /onChain: \[\.\.\.listed, \.\.\.add\.map\(\(m\) => m\.statement\.coOwner\)\]/);
+  assert.match(r, /const selfMember = inRing\.has\(self\) \? \[\] : \[await members\.memberOf\(/);
+});
+
+test("a linked device stores the handed-over secrets BEFORE it signs in, then adds itself", () => {
+  const link = body("async function linkThisDevice");
+  const store = link.indexOf("await storeLockedChain(");
+  assert.ok(store > 0 && store < link.indexOf("await _loginAddedPasskey("), "chain before the sign-in's unlock");
+  assert.ok(link.indexOf("void _enrolSelfInKeyRing();") > link.indexOf("await _loginAddedPasskey("));
+});
+

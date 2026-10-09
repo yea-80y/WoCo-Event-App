@@ -425,10 +425,38 @@ async function _loadAccountChain(seedAddr: string, parent: string, gen: number, 
     const verdict = await _verifyCurrentKeys(prf);
     if (!current()) return;
     _keysVerdict = verdict;
-    if (verdict === "ok") _commitSigner();
+    if (verdict === "ok") {
+      _commitSigner();
+      // A co-owned account's passkey with no ring entry yet adds itself (#186), once.
+      if (prf && _unlocked?.chain?.ringRef !== _enrolledAt(seedAddr)) void _enrolSelfOnce(seedAddr);
+    }
   } catch (e) {
     console.warn("[auth] account keys could not be checked:", e);
     if (current()) _keysVerdict = "unknown";
+  }
+}
+
+/** The ring this passkey last confirmed itself in, so an unlock does not re-check it every time. */
+function _enrolledAt(seedAddr: string): string | null {
+  try {
+    return globalThis.localStorage?.getItem(`woco:keyring:enrolled:${seedAddr}`) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function _enrolSelfOnce(seedAddr: string): Promise<void> {
+  await _enrolSelfInKeyRing();
+  const ref = _unlocked?.chain?.ringRef;
+  if (!ref) return;
+  try {
+    const { fetchKeyRing } = await import("../keyring/ring-read.js");
+    const ring = await fetchKeyRing(ref);
+    if (ring.entries.some((e) => e.statement.coOwner === seedAddr)) {
+      globalThis.localStorage?.setItem(`woco:keyring:enrolled:${seedAddr}`, ref);
+    }
+  } catch {
+    /* checked again at the next unlock */
   }
 }
 
@@ -2741,8 +2769,94 @@ function _coOwnerHost(): import("./co-owner-flows.js").CoOwnerHost {
 }
 
 /** A new passkey on the list, then its device record - or off the list again (#746). */
-async function _addCoOwnerWithRecord<T>(key: string, record: () => Promise<T>): Promise<T> {
-  return (await import("./co-owner-flows.js")).addCoOwnerWithRecord(_coOwnerHost(), key, record);
+async function _addCoOwnerWithRecord<T>(
+  key: string,
+  record: () => Promise<T>,
+  ring?: { prev: string | null; next: string },
+): Promise<T> {
+  return (await import("./co-owner-flows.js")).addCoOwnerWithRecord(_coOwnerHost(), key, record, ring);
+}
+
+type RingChange = { prev: string | null; next: string; chain: AccountChain };
+
+/**
+ * The account's key ring for a co-owner change made from this device (#186), stored and
+ * ready to ride in the same op - or null when nothing about the ring changes. The ring
+ * always includes THIS passkey (a device that changes the account must be able to open
+ * its keys), never re-seals to a key that is off the list, and is built only from the
+ * CONFIRMED current generation: a device behind refuses rather than fork the ring.
+ * `add`: members of passkeys being added whose keys are on this device.
+ */
+async function _ringForChange(add: import("@woco/shared/keyring/ring").KeyRingMember[]): Promise<RingChange | null> {
+  if (_kind !== "passkey") return null;
+  await _requireCurrentKeys({ prompt: true });
+  const u = _unlocked;
+  const self = _seedAddress?.toLowerCase();
+  const ownerKey = _passkeyPrivateKey;
+  const prf = _passkeyPrfSecret;
+  if (!u || !self || !ownerKey || !prf) throw new Error(_seedLockedMessage());
+  const [members, { fetchKeyRing }, kernel] = await Promise.all([
+    import("../keyring/members.js"),
+    import("../keyring/ring-read.js"),
+    import("./kernel-account.js"),
+  ]);
+  const ref = await _readAnchor(u.parent, { fresh: true });
+  const held = u.chain?.ringRef ?? null;
+  if (ref === "error" || (ref === null && held !== null)) throw new Error(_keysVerdictMessage("unknown"));
+  if (ref !== held) throw new Error(_keysVerdictMessage("behind"));
+  const current = ref ? { ref, ring: await fetchKeyRing(ref) } : null;
+  const root = await kernel.readKernelRoot(u.parent);
+  if (root === "error") throw new Error(_keysVerdictMessage("unknown"));
+  const listed = root === "weighted" ? await kernel.readCoOwners(u.parent) : [self];
+  if (listed === "error" || listed === null) throw new Error(_keysVerdictMessage("unknown"));
+  // One passkey and nothing added: no ring is needed until the account has a second.
+  if (add.length === 0 && root !== "weighted") return null;
+  const inRing = new Set(current?.ring.entries.map((e) => e.statement.coOwner) ?? []);
+  const selfMember = inRing.has(self) ? [] : [await members.memberOf(u.parent, { address: self, privateKey: ownerKey, prfSecret: prf })];
+  if (add.length === 0 && selfMember.length === 0) return null;
+  const ring = await members.ringWithMembers({
+    parent: u.parent,
+    seed: u.seed,
+    chain: u.chain,
+    current,
+    onChain: [...listed, ...add.map((m) => m.statement.coOwner)],
+    add: [...selfMember, ...add],
+  });
+  const next = await members.storeKeyRing(ring);
+  return { prev: ref, next, chain: { ringRef: next, gen: ring.gen, secrets: u.chain?.secrets ?? [] } };
+}
+
+/** The ring this device just named onchain is the account's now: hold it as current. */
+async function _adoptOwnRing(chain: AccountChain): Promise<void> {
+  const u = _unlocked;
+  const prf = _passkeyPrfSecret;
+  if (!u || !prf) return;
+  await storeLockedChain(u.seedAddress, u.parent, chain, prf);
+  _applyChain(chain, { persistWindow: true });
+  _anchorMemo = { account: u.parent, ref: chain.ringRef, at: Date.now() };
+  _keysVerdict = "ok";
+  _commitSigner();
+}
+
+/**
+ * Put THIS passkey into the account's key ring when it holds the current keys but has
+ * no entry yet (#186) - a device just linked, or one from before key rings. One
+ * sponsored op, once; a failure is retried at the next unlock. Without an entry, the
+ * next removal would leave this device without the account's new keys.
+ */
+async function _enrolSelfInKeyRing(): Promise<void> {
+  try {
+    if (_kind !== "passkey" || _deviceRole || !(await _currentKeysConfirmed())) return;
+    const ring = await _ringForChange([]);
+    if (!ring) return;
+    await _ensureKernel();
+    if (!_kernel) return;
+    const { setKeyRingAlone } = await import("./kernel-account.js");
+    const res = await setKeyRingAlone(_kernel, { prev: ring.prev, next: ring.next });
+    if (res.confirmed) await _adoptOwnRing(ring.chain);
+  } catch (e) {
+    console.warn("[auth] could not add this passkey to the account's keys yet (retried at the next unlock):", e);
+  }
 }
 
 /** Take `key` off the account's co-owner list, if it is on it. The last one never. */
@@ -2841,9 +2955,16 @@ async function addPasskeyOnThisDevice(
   onStep?.("linking");
   const { credentialIdBytes, writePasskeyRecord } = await import("./passkey-record.js");
   const credentialId = credentialIdBytes(added.credentialId);
-  const grant = await _addCoOwnerWithRecord(added.address, () =>
-    _grantDevice(ownerKey, parent, added.address, credentialTagOf(credentialId)),
+  // Both passkeys are on this device: the new one goes into the account's key ring in
+  // the same op that puts it on the list (#186).
+  const { memberOf } = await import("../keyring/members.js");
+  const ring = await _ringForChange([await memberOf(parent, added)]);
+  const grant = await _addCoOwnerWithRecord(
+    added.address,
+    () => _grantDevice(ownerKey, parent, added.address, credentialTagOf(credentialId)),
+    ring ?? undefined,
   );
+  if (ring) await _adoptOwnRing(ring.chain).catch((e) => console.warn("[auth] own ring not recorded (non-fatal):", e));
 
   // Best-effort past this point: the passkey already works. Without its record
   // the sign-in guard simply has nothing to check; without the label the list
@@ -3076,10 +3197,16 @@ async function linkThisDevice(opts: import("./device-link.js").LinkThisDeviceOpt
     signIn: async (account, secret) => {
       _busy = true;
       try {
+        // The account's later secrets first (#186), locked under this passkey, so the
+        // unlock the sign-in makes opens the current generation, not generation 0.
+        if (secret.chain) {
+          await storeLockedChain(account.address.toLowerCase(), secret.parent, secret.chain, account.prfSecret);
+        }
         await _loginAddedPasskey(account, { parent: secret.parent, seed: secret.seed });
       } finally {
         _busy = false;
       }
+      void _enrolSelfInKeyRing();
     },
   });
 }
@@ -3121,12 +3248,25 @@ async function approveDeviceLink(code: Uint8Array, offer: import("./device-link.
   const seed = _unlockedSeed();
   if (!parent || !ownerKey || !seedAddr || !seed) throw new Error(_seedLockedMessage());
   const { runApproveDeviceLink } = await import("./device-link.js");
+  // The new device cannot sign its ring entry before it knows the account (#186): this
+  // device makes sure the ring exists with itself in it, hands the account's later
+  // secrets over in the sealed answer, and the new device adds itself once signed in.
+  const ring = await _ringForChange([]);
   await runApproveDeviceLink(code, offer, {
     apiBase,
     parent,
     self: seedAddr,
     seed,
-    grant: (grantee, credentialTag) => _addCoOwnerWithRecord(grantee, () => _grantDevice(ownerKey, parent, grantee, credentialTag)),
+    chain: () => _unlocked?.chain ?? null,
+    grant: async (grantee, credentialTag) => {
+      const grant = await _addCoOwnerWithRecord(
+        grantee,
+        () => _grantDevice(ownerKey, parent, grantee, credentialTag),
+        ring ?? undefined,
+      );
+      if (ring) await _adoptOwnRing(ring.chain).catch((e) => console.warn("[auth] own ring not recorded (non-fatal):", e));
+      return grant;
+    },
     revoke: (grantee) => _removePasskeyConfirmed(grantee),
   });
 }

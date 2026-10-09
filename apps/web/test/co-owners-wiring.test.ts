@@ -27,20 +27,23 @@ test("the Kernel used for signing is opened with the validator the account reall
 
 test("linking and adding put the new key on the list BEFORE its device record (and before the new device is told)", () => {
   const approve = body(STORE, "async function approveDeviceLink(");
-  assert.match(approve, /grant: \(grantee, credentialTag\) => _addCoOwnerWithRecord\(grantee, \(\) => _grantDevice\(ownerKey, parent, grantee, credentialTag\)\),/);
+  assert.match(approve, /grant: async \(grantee, credentialTag\) => \{\s*const grant = await _addCoOwnerWithRecord\(\s*grantee,\s*\(\) => _grantDevice\(ownerKey, parent, grantee, credentialTag\),\s*ring \?\? undefined,\s*\);/);
+  // #186: the key ring is ready BEFORE the grant, so it rides in the same op.
+  assert.ok(approve.indexOf("const ring = await _ringForChange([]);") < approve.indexOf("runApproveDeviceLink("));
   assert.match(approve, /revoke: \(grantee\) => _removePasskeyConfirmed\(grantee\),/, "the undelivered-answer cleanup does not ask again");
   const add = body(STORE, "async function addPasskeyOnThisDevice(");
   assert.match(add, /await _freshMainPasskey\(\);/, "adding asks fresh");
-  assert.match(add, /await _addCoOwnerWithRecord\(added\.address, \(\) =>\s*_grantDevice\(ownerKey, parent, added\.address,/);
+  assert.match(add, /await _addCoOwnerWithRecord\(\s*added\.address,\s*\(\) => _grantDevice\(ownerKey, parent, added\.address,[\s\S]*?ring \?\? undefined,/);
+  assert.ok(add.indexOf("const ring = await _ringForChange([await memberOf(parent, added)]);") < add.indexOf("await _addCoOwnerWithRecord("));
   // On the list first; a failed record takes it off again - never full control without a record.
   const both = body(FLOWS, "export async function addCoOwnerWithRecord<T>(");
-  assert.ok(both.indexOf("const added = await addCoOwner(h, key);") < both.indexOf("const result = await record();"));
+  assert.ok(both.indexOf("const added = await addCoOwner(h, key, ring);") < both.indexOf("const result = await record();"));
   // Only what this call added is taken back, and a failed undo is never silent.
   assert.match(both, /if \(added\) \{\s*try \{\s*await removeCoOwner\(h, key\);/);
   assert.match(both, /throw new Error\(\s*"The new passkey was added to your account but couldn't be saved/);
   assert.match(body(FLOWS, "export async function addCoOwner("), /if \(list\.includes\(key\.toLowerCase\(\)\)\) return false;/);
   // The flows load on the tap; the store only lends its state.
-  assert.match(body(STORE, "async function _addCoOwnerWithRecord<T>("), /\(await import\("\.\/co-owner-flows\.js"\)\)\.addCoOwnerWithRecord\(_coOwnerHost\(\), key, record\)/);
+  assert.match(body(STORE, "async function _addCoOwnerWithRecord<T>("), /\(await import\("\.\/co-owner-flows\.js"\)\)\.addCoOwnerWithRecord\(_coOwnerHost\(\), key, record, ring\)/);
   assert.doesNotMatch(STORE, /^import [^\n]*co-owner-flows/m);
 });
 

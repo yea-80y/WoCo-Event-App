@@ -113,7 +113,7 @@ test("adding: envelope first, then on the list with its record, then the passkey
   const b = body(STORE, "async function addPasskeyOnThisDevice(");
   assert.match(b, /if \(_kind !== "passkey" \|\| _deviceRole\) throw new MainPasskeyRequiredError\(\);/);
   const envelope = b.indexOf("await writePortabilityEnvelope(");
-  const register = b.indexOf("await _addCoOwnerWithRecord(added.address");
+  const register = b.indexOf("await _addCoOwnerWithRecord(\n    added.address,");
   const recordWrite = b.indexOf("await writePasskeyRecord(");
   assert.ok(envelope > 0 && register > envelope && recordWrite > register);
   const grant = body(STORE, "async function _grantDevice(");

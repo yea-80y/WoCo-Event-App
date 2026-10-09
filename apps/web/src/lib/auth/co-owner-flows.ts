@@ -99,8 +99,14 @@ export async function removeCoOwners(
  * account's, record or not - and a failed undo is never silent. The caller's later
  * failures (an undelivered link answer) remove it through `revoke`.
  */
-export async function addCoOwnerWithRecord<T>(h: CoOwnerHost, key: string, record: () => Promise<T>): Promise<T> {
-  const added = await addCoOwner(h, key);
+export async function addCoOwnerWithRecord<T>(
+  h: CoOwnerHost,
+  key: string,
+  record: () => Promise<T>,
+  /** The account's key ring moving in the same op (#186). */
+  ring?: { prev: string | null; next: string },
+): Promise<T> {
+  const added = await addCoOwner(h, key, ring);
   try {
     const result = await record();
     // This device added it: its own new-passkey alert must not ask about it.
