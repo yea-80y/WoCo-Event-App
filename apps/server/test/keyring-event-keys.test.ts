@@ -186,3 +186,42 @@ test("the money-path cache: an entry read under the old signer is a miss once th
   const read = await service.getEvent(EVENT);
   assert.notEqual(read?.creatorFeedSigner, F0, `served the old generation's feed (${Date.now() - t} ms)`);
 });
+
+test("checkout: a box sealed to anything but the current key is stale once the account has a ring", () => {
+  const ring = { kind: "ring", creator: CREATOR, feedSigner: F1, orderKeyRef: K1, gen: 1 } as const;
+  assert.equal(keysMod.isStaleOrderKey(ring, K1), false);
+  assert.equal(keysMod.isStaleOrderKey(ring, K0), true, "the old generation's key");
+  assert.equal(keysMod.isStaleOrderKey(ring, undefined), true, "undeclared: a client from before the ring");
+  const rec = { kind: "record", creator: CREATOR, feedSigner: F0, orderKeyRef: K0 } as const;
+  assert.equal(keysMod.isStaleOrderKey(rec, undefined), false, "no ring: an older client still sells");
+  assert.equal(keysMod.isStaleOrderKey(rec, K0), false);
+  assert.equal(keysMod.isStaleOrderKey(rec, K1), true);
+  assert.equal(keysMod.isStaleOrderKey({ kind: "record", creator: CREATOR, feedSigner: F0, orderKeyRef: null }, K1), false);
+  assert.equal(keysMod.isStaleOrderKey({ kind: "legacy" }, K1), false);
+});
+
+
+test("keys that cannot be read: the feed is not read at all (never under the old signer)", async () => {
+  process.chdir(dir);
+  record.recordEventFeedSigner(EVENT, F0, CREATOR, K0);
+  process.chdir(originalCwd);
+  ringOf.set(CREATOR, "down");
+  stubRings();
+  const r = await service.readEventFeedSocResult(EVENT, F0);
+  assert.equal(r.status, "unavailable");
+  assert.match(r.status === "unavailable" ? r.reason : "", /organiser keys unreadable/);
+  // getEvent: nothing cached, so nothing served - and fast, no platform-feed ladder.
+  const t = Date.now();
+  assert.equal(await service.getEvent(EVENT), null);
+  assert.ok(Date.now() - t < 2000, "returned without the retry ladder");
+});
+
+test("an event with no record is still under its organiser's ring, through the directory entry", async () => {
+  const entry = async () => ({ creatorAddress: CREATOR, creatorFeedSigner: F0 });
+  assert.deepEqual(await keysMod.eventKeys(EVENT, entry), { kind: "record", creator: CREATOR, feedSigner: F0, orderKeyRef: null });
+  assert.deepEqual(await keysMod.eventKeys(EVENT, async () => ({ creatorAddress: CREATOR })), { kind: "legacy" });
+  assert.deepEqual(await keysMod.eventKeys(EVENT, async () => null), { kind: "legacy" });
+  const r = await realRing(CREATOR);
+  const keys = await keysMod.eventKeys(EVENT, entry);
+  assert.equal(keys.kind === "ring" && keys.feedSigner, r.feedSigner);
+});

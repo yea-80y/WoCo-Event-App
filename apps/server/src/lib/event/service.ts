@@ -934,8 +934,10 @@ export async function readEventFeedSocResult(
 ): Promise<EventFeedSocRead> {
   // The organiser's CURRENT keys (#186) override any signer a caller brings: once the
   // account has a key ring, the feed lives under the ring's signer, and the signer
-  // recorded at create is one a removed passkey may still hold.
-  const keys = await eventKeys(eventId);
+  // recorded at create is one a removed passkey may still hold. Keys that cannot be
+  // read mean no read at all: falling back to the old signer is exactly that hole.
+  const keys = await eventKeys(eventId, () => directoryEntryOf(eventId));
+  if (keys.kind === "unavailable") return { status: "unavailable", reason: `organiser keys unreadable: ${keys.reason}` };
   let res: Awaited<ReturnType<typeof readContentFeedJsonResult>>;
   try {
     res = await readContentFeedJsonResult(feedSignerFor(keys, signer).replace(/^0x/, ""), eventContentTopic(eventId), "event", {
@@ -949,7 +951,7 @@ export async function readEventFeedSocResult(
   const feed = decodeEventFeed(res.bytes, eventId);
   if (!feed) return { status: "absent" };
   // Keys that could not be read: served, never cached or built on.
-  return { status: "found", feed: withAuthoritativeOrderKey(eventId, feed, keys), scanClean: res.scanClean && keys.kind !== "unavailable" };
+  return { status: "found", feed: withAuthoritativeOrderKey(eventId, feed, keys), scanClean: res.scanClean };
 }
 
 /**
@@ -986,6 +988,13 @@ function resolutionSigner(eventId: string, feed: EventFeed): Hex0x | undefined {
  * before the record existed. Null for legacy (platform-signed) events and events
  * created without a signer: those read the platform feed.
  */
+/** The platform-written directory's entry for an event, for events with no record. */
+async function directoryEntryOf(eventId: string): Promise<{ creatorAddress: string; creatorFeedSigner?: string } | null> {
+  if (getRecordedFeedSigner(eventId)) return null;
+  const entries = await listEvents();
+  return entries.find((e) => e.eventId === eventId) ?? null;
+}
+
 async function resolveCreatorFeedSigner(eventId: string): Promise<string | null> {
   const recorded = getRecordedFeedSigner(eventId);
   if (recorded) return recorded.signer;
@@ -1032,7 +1041,7 @@ async function getEventRead(
 ): Promise<{ feed: EventFeed | null; cacheable: boolean }> {
   const now = Date.now();
   const cached = _eventCache.get(eventId);
-  const keys = await eventKeys(eventId);
+  const keys = await eventKeys(eventId, () => directoryEntryOf(eventId));
   // An entry read under a signer the organiser's account has moved on from is a miss.
   const sameKeys = !cached || keys.kind !== "ring" || cached.signer === keys.feedSigner;
   // applyOnChainEventIds fills a series' onChainEventId from the server's chain
@@ -1040,6 +1049,11 @@ async function getEventRead(
   // cache hit too so a feed cached BEFORE registration still flips to v2.
   if (cached && sameKeys && cached.expiresAt > now && (!opts.fresh || cached.authored)) {
     return { feed: await applyOnChainEventIds(withAuthoritativeOrderKey(eventId, cached.feed, keys)), cacheable: true };
+  }
+  // Not the platform feed either: a Phase B event has none, and its keys are unknown.
+  if (keys.kind === "unavailable") {
+    console.warn(`[event] ${eventId}: organiser keys unreadable (${keys.reason}) - not served`);
+    return { feed: null, cacheable: false };
   }
 
   // Phase B: if the event has a known content-feed signer (hint or directory
