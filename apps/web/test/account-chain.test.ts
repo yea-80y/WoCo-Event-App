@@ -84,12 +84,15 @@ test("the current secret is the newest generation; every secret keeps the seed a
 
 test("a chain read back is checked whole, never trusted half-read", () => {
   assert.deepEqual(parseAccountChain(CHAIN), CHAIN);
+  const seen0 = { ringRef: CHAIN.ringRef, gen: 0, secrets: [] };
+  assert.deepEqual(parseAccountChain(seen0), seen0, "a ring at generation 0: remembered, no secrets");
+  assert.equal(currentSecretOf(S0, seen0), S0);
   for (const bad of [
     { ...CHAIN, gen: 3 },
     { ...CHAIN, secrets: [S1, ""] },
     { ...CHAIN, secrets: [S1, "0x12"] },
     { ...CHAIN, ringRef: "AB".repeat(32) },
-    { ...CHAIN, gen: 0, secrets: [] },
+    { ...CHAIN, gen: -1, secrets: [] },
     null,
   ]) {
     assert.equal(parseAccountChain(bad), null);

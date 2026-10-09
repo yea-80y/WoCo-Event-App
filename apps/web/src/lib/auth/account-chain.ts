@@ -10,6 +10,9 @@
  *
  *   chain = { ringRef, gen, secrets: [S_1 .. S_gen] }   ("" = a generation never opened)
  *
+ * A chain at gen 0 holds no secrets: the account has a ring (its first passkey was
+ * added) but no removal yet, and the ring is remembered so it is not fetched again.
+ *
  * `ringRef` is the ring it came from, so a device can tell when the anchor moved on.
  * `gen` only ever rises here: an older ring is never adopted over a newer one.
  */
@@ -34,16 +37,16 @@ export function parseAccountChain(x: unknown): AccountChain | null {
   if (typeof x !== "object" || x === null) return null;
   const { ringRef, gen, secrets } = x as Record<string, unknown>;
   if (typeof ringRef !== "string" || !REF.test(ringRef)) return null;
-  if (typeof gen !== "number" || !Number.isSafeInteger(gen) || gen < 1) return null;
+  if (typeof gen !== "number" || !Number.isSafeInteger(gen) || gen < 0) return null;
   if (!Array.isArray(secrets) || secrets.length !== gen) return null;
   if (!secrets.every((s) => s === "" || (typeof s === "string" && SECRET.test(s)))) return null;
-  if (secrets[gen - 1] === "") return null;
+  if (gen > 0 && secrets[gen - 1] === "") return null;
   return { ringRef, gen, secrets: secrets as string[] };
 }
 
 /** The current generation's secret. */
 export function currentSecretOf(seed: string, chain: AccountChain | null): string {
-  return chain ? chain.secrets[chain.gen - 1]! : seed;
+  return chain && chain.gen > 0 ? chain.secrets[chain.gen - 1]! : seed;
 }
 
 /** Every secret this device has, generation 0 first; holes left out. */

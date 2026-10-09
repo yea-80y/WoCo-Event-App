@@ -1166,6 +1166,31 @@ async function coOwnerReadDeps() {
   };
 }
 
+/**
+ * The account's entry on the key-ring anchor (#186): the Swarm reference of its current
+ * key ring, null when it never had one (generation 0), "error" when nobody answered -
+ * which is never taken for "none".
+ */
+export async function readRingAnchor(account: string): Promise<string | null | "error"> {
+  try {
+    const [d, { KEY_RING_ANCHOR_ABI, KEY_RING_ANCHOR_ADDRESS, anchorToRingRef }, { parseAbi }] = await Promise.all([
+      coOwnerReadDeps(),
+      import("@woco/shared/keyring/anchor"),
+      import("viem"),
+    ]);
+    const value = await d.publicClient.readContract({
+      address: KEY_RING_ANCHOR_ADDRESS as Address,
+      abi: parseAbi(KEY_RING_ANCHOR_ABI),
+      functionName: "ringOf",
+      args: [account as Address],
+    });
+    return anchorToRingRef(value as string);
+  } catch (e) {
+    console.warn("[kernel] readRingAnchor failed:", e);
+    return "error";
+  }
+}
+
 /** What `rootValidator()` says: "none" for no code (undeployed) or anything unread. */
 function rootOf(co: typeof import("@woco/shared/kernel/co-owners"), r: { status: string; result?: unknown }): "ecdsa" | "weighted" | "none" {
   if (r.status !== "success" || typeof r.result !== "string") return "none";

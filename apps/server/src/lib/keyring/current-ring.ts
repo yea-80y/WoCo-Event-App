@@ -19,13 +19,12 @@ import { createPublicClient, http, parseAbi, type Address, type PublicClient } f
 import { arbitrum, arbitrumSepolia } from "viem/chains";
 import { KERNEL_CHAIN_ID } from "@woco/shared";
 import { KEY_RING_ANCHOR_ABI, KEY_RING_ANCHOR_ADDRESS, anchorToRingRef } from "@woco/shared/keyring/anchor";
-import { parseKeyRing, type KeyRing } from "@woco/shared/keyring/ring";
+import { MAX_KEY_RING_BYTES, parseKeyRing, type KeyRing } from "@woco/shared/keyring/ring";
 import { readBytesTree } from "@woco/shared/swarm/bytes-tree";
 import { getChainRpcUrl } from "../chain/event-contract.js";
 import { ethernaSource, wocoBeeSource } from "../swarm/soc-read.js";
 
-/** A ring holds at most ten X-Wing entries plus a back blob: well under this. */
-export const MAX_KEY_RING_BYTES = 64 * 1024;
+export { MAX_KEY_RING_BYTES };
 export const ANCHOR_TTL_MS = 30_000;
 const RING_CACHE_MAX = 1_000;
 
