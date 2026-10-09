@@ -40,7 +40,7 @@ test("backup sign-in: the same rule, and connect() on the instance it hands back
 
 test("boot restore: a session still loading returns unavailable before any expired verdict", () => {
   const restore = body(account, "export async function restoreWeb3AuthSession(");
-  const verdict = restore.indexOf("const verdict = restoreVerdict(rehydration, w.connected && !!w.provider);");
+  const verdict = restore.indexOf("const verdict = restoreVerdict(rehydration, isWeb3AuthSessionLive(w) && !!w.provider);");
   const unavailable = restore.indexOf('if (verdict === "unavailable") {', verdict);
   const expired = restore.indexOf('if (verdict === "expired" || !w.provider) {', verdict);
   assert.ok(verdict > 0 && unavailable > verdict && expired > unavailable);

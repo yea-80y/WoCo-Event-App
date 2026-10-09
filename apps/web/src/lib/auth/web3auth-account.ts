@@ -18,6 +18,7 @@ import {
 import {
   awaitWeb3AuthRehydration,
   instanceForExplicitSignIn,
+  isWeb3AuthSessionLive,
   restoreVerdict,
   EXPLICIT_REHYDRATION_WAIT_MS,
   SURVIVOR_INTERFERED_MESSAGE,
@@ -32,6 +33,7 @@ type MinimalProvider = { request: (args: { method: string }) => Promise<unknown>
 // is (asynchronously) rehydrating after init().
 type Web3AuthInstance = {
   connected: boolean;
+  status: string;
   provider: MinimalProvider | null;
   cachedConnector: string | null;
   init(): Promise<void>;
@@ -162,6 +164,9 @@ export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey
     // the modal and reject with "User closed the modal". The old recovery here
     // ADOPTED it — the #182 bug through a race window. End it instead and ask
     // for one retry, which builds a fresh instance from the cleared storage.
+    // `connected` (the stored name) is deliberately the wider read here, not
+    // `isWeb3AuthSessionLive`: anything the SDK still names is ended or refused,
+    // and a logout it cannot run is swallowed.
     if (w.connected) {
       try {
         await w.logout({ cleanup: true });
@@ -241,9 +246,9 @@ export async function restoreWeb3AuthSession(): Promise<Web3AuthRestore> {
     const rehydration = await awaitWeb3AuthRehydration(w);
     console.debug(
       "[web3auth] restore:",
-      { cachedConnector: w.cachedConnector, rehydration, connected: w.connected, hasProvider: !!w.provider },
+      { cachedConnector: w.cachedConnector, rehydration, status: w.status, hasProvider: !!w.provider },
     );
-    const verdict = restoreVerdict(rehydration, w.connected && !!w.provider);
+    const verdict = restoreVerdict(rehydration, isWeb3AuthSessionLive(w) && !!w.provider);
     if (verdict === "unavailable") {
       // Still loading when the wait ran out: no answer yet, so NOT a logout
       // (#803). Reading it as `expired` signed a valid session out on a slow

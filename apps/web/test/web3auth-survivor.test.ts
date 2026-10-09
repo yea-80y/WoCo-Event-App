@@ -19,7 +19,11 @@ import {
   type Web3AuthSessionInstance,
 } from "../src/lib/auth/web3auth-survivor.js";
 
-/** Mirrors the SDK's slice: event listeners on the instance, and a cleanup
+/** A session that is up: what the SDK's logout() requires. */
+const LIVE = { connected: true, status: "connected" } as const;
+
+/** Mirrors the SDK's slice: event listeners on the instance, a logout that
+ *  refuses unless the session is LIVE (the SDK's own precondition), and a cleanup
  *  logout that leaves the instance SPENT - connect() on it never works (#803). */
 function fakeInstance(over: Partial<Web3AuthSessionInstance> = {}) {
   const calls: Array<{ cleanup?: boolean } | undefined> = [];
@@ -30,10 +34,15 @@ function fakeInstance(over: Partial<Web3AuthSessionInstance> = {}) {
     emit: (event: string) => void;
   } = {
     connected: false,
+    status: "ready",
     cachedConnector: null,
     logout: async (o) => {
       calls.push(o);
+      if (!w.connected || !["connected", "authorized"].includes(w.status)) {
+        throw new Error("Wallet is not connected. No wallet is connected");
+      }
       w.connected = false;
+      w.status = "ready";
       w.cachedConnector = null;
       if (o?.cleanup) w.spent = true;
     },
@@ -48,7 +57,7 @@ function fakeInstance(over: Partial<Web3AuthSessionInstance> = {}) {
 }
 
 test("a connected survivor is ended with cleanup before the caller may open the modal", async () => {
-  const w = fakeInstance({ connected: true });
+  const w = fakeInstance(LIVE);
   assert.equal(await endSurvivingWeb3AuthSession(w), true);
   assert.deepEqual(w.calls, [{ cleanup: true }]);
 });
@@ -61,7 +70,7 @@ test("a fresh instance (no stored session) ends nothing and resolves instantly",
 
 test("a survivor that cannot be ended REJECTS — the caller must refuse, never adopt", async () => {
   const w = fakeInstance({
-    connected: true,
+    ...LIVE,
     logout: async () => {
       throw new Error("network down");
     },
@@ -74,7 +83,7 @@ test("a STALE session the SDK already discarded resolves — logout throwing ove
   // during rehydration and drops the session itself, so logout() throws with
   // nothing connected. Refusing here told the user a network story and blocked a
   // first guardian sign-in that was already safe.
-  const w = fakeInstance({ connected: true, cachedConnector: "auth" });
+  const w = fakeInstance({ ...LIVE, cachedConnector: "auth" });
   w.logout = async () => {
     w.connected = false;
     w.cachedConnector = null;
@@ -84,8 +93,16 @@ test("a STALE session the SDK already discarded resolves — logout throwing ove
   assert.equal(await endSurvivingWeb3AuthSession(w), true);
 });
 
+test("a logout that RESOLVES with the session still named rejects — a no-op is not an ending", async () => {
+  const w = fakeInstance({ ...LIVE, cachedConnector: "auth" });
+  w.logout = async (o) => {
+    w.calls.push(o); // the SDK's early return while DISCONNECTING: nothing changes
+  };
+  await assert.rejects(endSurvivingWeb3AuthSession(w), /survived logout/);
+});
+
 test("logout failing with a cached connector STILL stored rejects — that session can answer connect()", async () => {
-  const w = fakeInstance({ connected: true, cachedConnector: "auth" });
+  const w = fakeInstance({ ...LIVE, cachedConnector: "auth" });
   w.logout = async () => {
     w.connected = false;
     throw new Error("network down");
@@ -100,9 +117,47 @@ test("a stored session that finishes loading inside the wait reads connected", a
   const wait = awaitWeb3AuthRehydration(w, 1_000);
   setTimeout(() => {
     w.connected = true;
+    w.status = "connected";
     w.emit("connected");
   }, 10);
   assert.equal(await wait, "connected");
+});
+
+// --- a stored connector name is not a live session (owner's phone, 2026-10-09) --
+// v10 reloads `connectedConnectorName` from localStorage when the instance is
+// built, so `connected` is true straight after init() while the stored session is
+// still reconnecting. Read as live, the cleanup's logout() went in early, the SDK
+// refused ("No wallet is connected") with the session still standing, and every
+// sign-in on that device failed with "couldn't be cleared".
+
+/** What init() leaves when storage holds a session: named, cached, not yet up. */
+const STORED = { connected: true, status: "ready", cachedConnector: "auth" } as const;
+
+test("a stored connector name alone is never read as live", async () => {
+  assert.equal(await awaitWeb3AuthRehydration(fakeInstance(STORED), 20), "pending");
+});
+
+test("the cleanup waits for a stored session to reconnect, then ends it", async () => {
+  const w = fakeInstance(STORED);
+  setTimeout(() => {
+    w.status = "connected";
+    w.emit("connected");
+  }, 10);
+  assert.equal(await endSurvivingWeb3AuthSession(w, 1_000), true);
+  assert.deepEqual(w.calls, [{ cleanup: true }]);
+});
+
+test("a connected event before the status is live does not end the wait", async () => {
+  const w = fakeInstance(STORED);
+  const wait = awaitWeb3AuthRehydration(w, 1_000);
+  setTimeout(() => w.emit("connected"), 5);
+  setTimeout(() => {
+    // The reconnect then fails: the SDK clears its cache and says so.
+    w.connected = false;
+    w.cachedConnector = null;
+    w.emit("rehydration_error");
+  }, 15);
+  assert.equal(await wait, "none");
 });
 
 test("a stored session still loading when the wait runs out reads PENDING, never none", async () => {
@@ -154,7 +209,7 @@ test("no survivor: the same instance is used and nothing is rebuilt", async () =
 });
 
 test("a survivor is ended and the SPENT instance swapped for a fresh one", async () => {
-  const w = fakeInstance({ connected: true });
+  const w = fakeInstance(LIVE);
   const fresh = fakeInstance();
   const ready = await instanceForExplicitSignIn(w, async () => fresh);
   assert.deepEqual(w.calls, [{ cleanup: true }]);
@@ -164,7 +219,7 @@ test("a survivor is ended and the SPENT instance swapped for a fresh one", async
 });
 
 test("the #507 stale-session path also swaps the instance it touched", async () => {
-  const w = fakeInstance({ connected: true, cachedConnector: "auth" });
+  const w = fakeInstance({ ...LIVE, cachedConnector: "auth" });
   w.logout = async () => {
     w.connected = false;
     w.cachedConnector = null;
@@ -176,16 +231,16 @@ test("the #507 stale-session path also swaps the instance it touched", async () 
 });
 
 test("a second survivor on the fresh instance refuses rather than loop", async () => {
-  const w = fakeInstance({ connected: true });
+  const w = fakeInstance(LIVE);
   await assert.rejects(
-    instanceForExplicitSignIn(w, async () => fakeInstance({ connected: true })),
+    instanceForExplicitSignIn(w, async () => fakeInstance(LIVE)),
     /interfered/,
   );
 });
 
 test("a survivor that cannot be ended never reaches a rebuild", async () => {
   const w = fakeInstance({
-    connected: true,
+    ...LIVE,
     logout: async () => {
       throw new Error("network down");
     },

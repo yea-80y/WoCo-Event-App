@@ -3,7 +3,10 @@
  * against a fake SDK that keeps the real one's two traps (#803):
  *
  *  - a stored session lives in storage SHARED by every instance, and loads
- *    asynchronously after init();
+ *    asynchronously after init() - yet `connected` reads true from the moment
+ *    the instance is built, because the SDK reloads the connector's NAME from
+ *    storage; only `status` says whether it is live, and logout() refuses until
+ *    it is (the owner's phone, 2026-10-09);
  *  - `logout({ cleanup: true })` leaves the instance SPENT. The real SDK then
  *    swallows every sign-in click and connect() never settles; the fake throws
  *    instead, so a regression fails here rather than hanging.
@@ -39,8 +42,19 @@ const addressOf = (k: string) => privateKeyToAccount(`0x${k}`).address.toLowerCa
 /** What the browser's storage holds for Web3Auth: one session, shared by every instance. */
 type Stored = { key: string; loads: "at-init" | "later" | "never" } | null;
 
+const LIVE_STATUSES = ["connected", "authorized"];
+
+/** The SDK's provider exists from init(), session or not (noModal.js:71); it
+ *  serves the key only once a session is bound to it. */
+const unboundProvider = () => ({
+  request: async (): Promise<unknown> => {
+    throw new Error("no session bound to the provider yet");
+  },
+});
+
 class FakeSdk extends EventEmitter {
   connected = false;
+  status = "not_ready";
   provider: { request: (a: { method: string }) => Promise<unknown> } | null = null;
   cachedConnector: string | null = null;
   spent = false;
@@ -57,15 +71,19 @@ class FakeSdk extends EventEmitter {
   }
 
   async init(): Promise<void> {
+    this.status = "ready";
+    this.provider = unboundProvider();
     const s = this.world.stored;
     if (!s) return;
     this.cachedConnector = "auth";
+    this.connected = true;
     if (s.loads === "at-init") this.hydrate(s.key);
   }
 
   /** The stored session finishes loading (the SDK's async rehydration). */
   hydrate(key: string): void {
     this.connected = true;
+    this.status = "connected";
     this.provider = { request: async () => key };
     this.emit("connected");
   }
@@ -83,6 +101,7 @@ class FakeSdk extends EventEmitter {
           : new Error("boom");
     }
     this.connected = true;
+    this.status = "connected";
     this.cachedConnector = "auth";
     this.world.stored = { key: this.nextLoginKey, loads: "at-init" };
     const key = this.nextLoginKey;
@@ -92,9 +111,12 @@ class FakeSdk extends EventEmitter {
 
   async logout(o?: { cleanup?: boolean }): Promise<void> {
     this.logouts.push(o);
-    if (!this.connected) throw new Error("No wallet is connected");
+    if (!this.connected || !LIVE_STATUSES.includes(this.status)) throw new Error("No wallet is connected");
+    // The SDK's early return while a connector is still DISCONNECTING.
+    if (this.world.logoutNoop) return;
     this.connected = false;
-    this.provider = null;
+    this.status = "ready";
+    this.provider = unboundProvider();
     this.cachedConnector = null;
     this.world.stored = null;
     if (o?.cleanup) this.spent = true;
@@ -111,6 +133,8 @@ class World {
   connectFails: "popup-closed" | "modal-closed" | "survivor-mid-modal" | "other" | null = null;
   /** Holds a logout open AFTER its state change, like a slow network round trip. */
   logoutGate: Promise<void> | null = null;
+  /** logout() resolves having ended nothing - the session stays named and stored. */
+  logoutNoop = false;
 
   install(): void {
     setWeb3AuthFactoryForTests(async () => {
@@ -210,6 +234,18 @@ test("a leftover that cannot be ended refuses, and the next attempt starts from 
   assert.equal(r.address, addressOf(KEY_B));
   assert.equal(world.built.length, 3, "the refused attempt's instance is not reused");
   assert.deepEqual(world.built.map((b) => b.connectCalls), [0, 0, 1]);
+});
+
+test("a logout that resolves without ending the session refuses - never reported as cleared", async () => {
+  world.stored = { key: KEY_A, loads: "at-init" };
+  world.logoutNoop = true;
+  await assert.rejects(loginWithWeb3Auth(), (e: unknown) => {
+    assert.ok(isWeb3AuthSignInError(e));
+    assert.match((e as Error).message, /couldn't be cleared/);
+    return true;
+  });
+  assert.deepEqual(world.built.map((b) => b.connectCalls), [0], "no modal over a session still stored");
+  assert.notEqual(world.stored, null);
 });
 
 test("sign-in over a session still loading waits, then refuses without signing anyone in", async (t) => {
