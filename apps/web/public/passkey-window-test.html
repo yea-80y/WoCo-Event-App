@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Sign in to WoCo</title>
+<!--
+  The sign-in window of the window-design TEST, served on app.woco.eth.limo (the
+  passkey host). It answers exactly one request, from https://woco.eth.limo only, and
+  sends back timings and yes/no checks - never PRF output or any key. The test
+  passkey's user handle starts "woco-popup-test:" and it uses its own PRF salt, so
+  nothing real can ever derive an account from it.
+-->
+<style>
+  :root { --bg:#fff; --text:#16161a; --muted:#5b5b66; --border:#dcdce3; --accent:#2f4ee0; --bad:#b42318; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111114; --text:#ececf1; --muted:#a3a3ad; --border:#2c2c33; --accent:#7d93ff; --bad:#ff7a6e; } }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+    display:flex; align-items:center; justify-content:center; }
+  .card { width:100%; max-width:22rem; padding:1.5rem 1.25rem; text-align:center; }
+  img { width:56px; height:56px; border-radius:14px; }
+  h1 { font-size:1.2rem; margin:.75rem 0 .25rem; }
+  p { margin:.25rem 0 1rem; color:var(--muted); }
+  .asker { color:var(--text); font-weight:600; }
+  button { font:inherit; padding:.8rem 1rem; border-radius:.6rem; border:1px solid var(--border); background:var(--accent); color:#fff; width:100%; cursor:pointer; }
+  button.link { background:none; border:none; color:var(--muted); width:auto; margin-top:.5rem; text-decoration:underline; }
+  .err { color:var(--bad); font-size:.9rem; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<div class="card">
+  <img src="./logo.png" alt="WoCo">
+  <h1 id="title">Sign in to WoCo</h1>
+  <p id="msg">Waiting for the page that opened this window...</p>
+  <button id="go" type="button" hidden>Continue</button>
+  <button class="link" id="cancel" type="button">Cancel</button>
+  <p class="err" id="err" hidden></p>
+</div>
+<script>
+// PROTOCOL-START
+var PASSKEY_HOST = "app.woco.eth.limo";
+var ALLOWED_OPENER = "https://woco.eth.limo";
+var TEST_HANDLE_PREFIX = "woco-popup-test:";
+var TEST_PRF_SALT_INPUT = "woco-popup-test-prf-v1";
+
+/** One request, from the allowed origin, from the window that opened us - nothing else. */
+function acceptRequest(ev, opener, alreadyAccepted) {
+  if (alreadyAccepted) return null;
+  if (ev.origin !== ALLOWED_OPENER || ev.source !== opener || !opener) return null;
+  var d = ev.data || {};
+  if (d.type !== "request" || typeof d.nonce !== "string" || d.nonce.length < 16) return null;
+  if (d.action !== "create" && d.action !== "get") return null;
+  return { nonce: d.nonce, action: d.action };
+}
+// PROTOCOL-END
+
+var $ = function (id) { return document.getElementById(id); };
+var fromCache = !!(navigator.serviceWorker && navigator.serviceWorker.controller);
+var swError = "";
+var loadMs = 0;
+
+function fail(text) { $("msg").textContent = ""; $("err").textContent = text; $("err").hidden = false; $("go").hidden = true; }
+
+if (location.hostname !== PASSKEY_HOST) {
+  fail("This window only works on " + PASSKEY_HOST + ".");
+} else if (!window.opener) {
+  fail("Open this from https://woco.eth.limo/popup-test.html");
+} else {
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.register("./passkey-window-test-sw.js", { scope: "./passkey-window-test" })
+      .catch(function (e) { swError = (e && e.name) + ": " + (e && e.message); });
+  } else {
+    swError = "no service worker support";
+  }
+  var accepted = null, replyTo = null, tShown = 0;
+  window.addEventListener("message", function (ev) {
+    var req = acceptRequest(ev, window.opener, accepted !== null);
+    if (!req) return;
+    accepted = req;
+    replyTo = { source: ev.source, origin: ev.origin };
+    $("title").textContent = req.action === "create" ? "Create your WoCo passkey" : "Sign in to WoCo";
+    $("msg").textContent = "";
+    var who = document.createElement("span"); who.className = "asker"; who.textContent = "woco.eth.limo";
+    $("msg").appendChild(who);
+    $("msg").appendChild(document.createTextNode(req.action === "create" ? " wants to create a passkey for you." : " wants you to sign in with your passkey."));
+    $("go").hidden = false;
+    tShown = performance.now();
+  });
+  loadMs = performance.now();
+  window.opener.postMessage({ type: "ready" }, ALLOWED_OPENER);
+
+  $("go").addEventListener("click", function () {
+    if (!accepted) return;
+    $("go").disabled = true;
+    var tapMs = performance.now() - tShown;
+    var t0 = performance.now();
+    var res = { ok: false, loadMs: loadMs, fromCache: fromCache, tapMs: tapMs, ceremonyMs: 0, prfOk: false, attachment: null, swError: swError };
+    crypto.subtle.digest("SHA-256", new TextEncoder().encode(TEST_PRF_SALT_INPUT)).then(function (saltBuf) {
+      var salt = new Uint8Array(saltBuf);
+      if (accepted.action === "create") {
+        var prefix = new TextEncoder().encode(TEST_HANDLE_PREFIX);
+        var handle = new Uint8Array(prefix.length + 16);
+        handle.set(prefix); handle.set(crypto.getRandomValues(new Uint8Array(16)), prefix.length);
+        return navigator.credentials.create({ publicKey: {
+          rp: { name: "WoCo (popup test)", id: PASSKEY_HOST },
+          user: { id: handle, name: "WoCo popup test", displayName: "WoCo popup test" },
+          challenge: crypto.getRandomValues(new Uint8Array(32)),
+          pubKeyCredParams: [{ alg: -7, type: "public-key" }, { alg: -257, type: "public-key" }],
+          authenticatorSelection: { residentKey: "required", userVerification: "required" },
+          extensions: { prf: { eval: { first: salt } } },
+        } });
+      }
+      return navigator.credentials.get({ publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        rpId: PASSKEY_HOST,
+        userVerification: "required",
+        extensions: { prf: { eval: { first: salt } } },
+      } });
+    }).then(function (cred) {
+      res.ceremonyMs = performance.now() - t0;
+      var ext = cred && cred.getClientExtensionResults ? cred.getClientExtensionResults() : {};
+      // Booleans only: the PRF bytes themselves never leave this window.
+      res.prfOk = !!(ext.prf && ((ext.prf.results && ext.prf.results.first) || ext.prf.enabled));
+      res.attachment = (cred && cred.authenticatorAttachment) || null;
+      res.ok = !!cred;
+    }, function (e) {
+      res.ceremonyMs = performance.now() - t0;
+      res.errorName = (e && e.name) || "Error";
+      res.errorMessage = (e && e.message) || String(e);
+    }).then(function () {
+      replyTo.source.postMessage({ type: "result", nonce: accepted.nonce, result: res }, replyTo.origin);
+      window.close();
+    });
+  });
+}
+$("cancel").addEventListener("click", function () { window.close(); });
+</script>
+</body>
+</html>

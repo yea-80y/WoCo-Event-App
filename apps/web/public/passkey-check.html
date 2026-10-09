@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>WoCo passkey check</title>
+<!--
+  Does this browser let a page on a CHILD of woco.eth.limo use a woco.eth.limo
+  passkey? A holder-authored sub-name page must never be able to; current Chrome
+  and Firefox refuse since `*.eth.limo` joined the Public Suffix List (2026-09-01),
+  and Apple's copy of that list is unknown. app.woco.eth.limo is a child we control,
+  so it stands in for any sub-name. On woco.eth.limo itself the same request is the
+  control: a passkey sheet must appear there, or the check proves nothing.
+
+  Asks for an assertion only - no PRF extension, no allowCredentials - and keeps
+  nothing: no account key can come out of this page.
+-->
+<style>
+  :root {
+    --bg: #ffffff; --text: #16161a; --muted: #5b5b66; --border: #dcdce3;
+    --good: #0f7b3f; --bad: #b42318; --warn: #8a5a00; --accent: #2f4ee0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111114; --text: #ececf1; --muted: #a3a3ad; --border: #2c2c33;
+      --good: #4cc27f; --bad: #ff7a6e; --warn: #f0b74a; --accent: #7d93ff; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 34rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
+  h1 { font-size: 1.35rem; margin: 0 0 .5rem; }
+  .where { color: var(--muted); margin: 0 0 1.25rem; }
+  button { font: inherit; padding: .8rem 1.1rem; border-radius: .6rem; border: 1px solid var(--border);
+    background: var(--accent); color: #fff; width: 100%; cursor: pointer; }
+  button.secondary { background: transparent; color: var(--text); width: auto; margin-right: .5rem; }
+  .hint { color: var(--muted); font-size: .9rem; }
+  .verdict { font-weight: 600; font-size: 1.1rem; margin: 1.25rem 0 .5rem; }
+  .good { color: var(--good); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: .8rem; color: var(--muted);
+    border: 1px solid var(--border); border-radius: .5rem; padding: .75rem; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>WoCo passkey check</h1>
+  <p class="where" id="where"></p>
+  <button id="go" type="button">Run the check</button>
+  <p class="hint">If a Face ID, fingerprint or passkey sheet appears, tap Cancel.</p>
+  <div id="ask" hidden>
+    <p>Did a Face ID, fingerprint or passkey sheet appear before this?</p>
+    <button class="secondary" id="yes" type="button">Yes, a sheet appeared</button>
+    <button class="secondary" id="no" type="button">No sheet</button>
+  </div>
+  <p class="verdict" id="verdict"></p>
+  <pre id="out" hidden></pre>
+</main>
+<script>
+// VERDICT-START
+var RP_ID = "woco.eth.limo";
+
+/** "control" on the passkey host itself, "test" on any child of it, else "other". */
+function roleFor(hostname) {
+  if (hostname === RP_ID) return "control";
+  if (hostname.slice(-(RP_ID.length + 1)) === "." + RP_ID) return "test";
+  return "other";
+}
+
+/**
+ * outcome: "assertion" (a passkey was used), "security" (SecurityError), "sheet"
+ * (NotAllowedError after a sheet the person saw), "nosheet" (NotAllowedError with no
+ * sheet - a tap or focus problem, never a result), or "error".
+ */
+function verdictFor(role, outcome) {
+  if (outcome === "nosheet") return { tone: "warn", text: "No result yet - tap Run the check again." };
+  if (outcome === "error") return { tone: "warn", text: "Unexpected error - send a screenshot." };
+  var reached = outcome === "assertion" || outcome === "sheet";
+  if (role === "test") {
+    return reached
+      ? { tone: "bad", text: "OPEN - this browser let a child address ask for a WoCo passkey." }
+      : { tone: "good", text: "BLOCKED - good. This browser will not let a sub-name page use a WoCo passkey." };
+  }
+  if (role === "control") {
+    return reached
+      ? { tone: "good", text: "Control OK - passkeys can be requested on woco.eth.limo here." }
+      : { tone: "warn", text: "Control refused - this browser does not allow passkeys on woco.eth.limo (expected in Firefox)." };
+  }
+  return { tone: "warn", text: "Open this page on woco.eth.limo or app.woco.eth.limo." };
+}
+// VERDICT-END
+
+var role = roleFor(location.hostname);
+var $ = function (id) { return document.getElementById(id); };
+$("where").textContent = role === "control"
+  ? "Control run on " + location.hostname + " - a passkey sheet should appear."
+  : role === "test"
+    ? "Test run on " + location.hostname + " - a child address asking for a " + RP_ID + " passkey."
+    : "This page only means something on " + RP_ID + " or a child of it.";
+
+var last = null;
+
+function show(outcome) {
+  var v = verdictFor(role, outcome);
+  var el = $("verdict");
+  el.textContent = v.text;
+  el.className = "verdict " + v.tone;
+  $("ask").hidden = true;
+  $("out").hidden = false;
+  $("out").textContent = [
+    "page: " + location.hostname + " (" + role + ")",
+    "result: " + outcome + (last ? " / " + last.name + ": " + last.message : ""),
+    "time: " + (last ? last.ms + " ms" : "-"),
+    "browser: " + navigator.userAgent,
+    "checked: " + new Date().toISOString(),
+  ].join("\n");
+}
+
+$("go").addEventListener("click", function () {
+  $("verdict").textContent = "";
+  $("out").hidden = true;
+  $("ask").hidden = true;
+  if (!window.PublicKeyCredential || !navigator.credentials) {
+    last = { name: "Unsupported", message: "no WebAuthn in this browser", ms: 0 };
+    show("error");
+    return;
+  }
+  var t0 = performance.now();
+  navigator.credentials.get({
+    publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      rpId: RP_ID,
+      userVerification: "preferred",
+      timeout: 60000,
+    },
+  }).then(function () {
+    last = { name: "ok", message: "a passkey answered", ms: Math.round(performance.now() - t0) };
+    show("assertion");
+  }, function (e) {
+    last = { name: (e && e.name) || "Error", message: (e && e.message) || String(e), ms: Math.round(performance.now() - t0) };
+    if (last.name === "SecurityError") show("security");
+    else if (last.name === "NotAllowedError") { $("ask").hidden = false; }
+    else show("error");
+  });
+});
+$("yes").addEventListener("click", function () { show("sheet"); });
+$("no").addEventListener("click", function () { show("nosheet"); });
+</script>
+</body>
+</html>

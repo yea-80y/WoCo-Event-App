@@ -220,7 +220,7 @@ async function prfAfterCreate(
 ): Promise<ArrayBuffer> {
   const created = credential.getClientExtensionResults().prf?.results?.first;
   if (created) return toArrayBuffer(created);
-  const getResult = (await navigator.credentials.get({
+  const getResult = (await credentialsGet({
     publicKey: {
       challenge: crypto.getRandomValues(new Uint8Array(32)),
       rpId,
@@ -326,6 +326,44 @@ export class PasskeyNotOnThisDeviceError extends Error {
   }
 }
 
+/**
+ * The browser refused passkeys for this address before any prompt. Firefox refuses
+ * an RP ID that is itself on the Public Suffix List, even when it equals the page's
+ * host, and `*.eth.limo` joined that list on 2026-09-01 - so woco.eth.limo is one.
+ * Chromium and WebKit accept the exact match. Nothing WoCo sends can change it.
+ */
+export class PasskeyBrowserRefusedError extends Error {
+  readonly cause?: unknown;
+  readonly host: string;
+  constructor(host: string, cause?: unknown) {
+    super(`This browser can't use passkeys on ${host}. Open WoCo in Chrome, Brave, Edge or Safari to continue.`);
+    this.name = "PasskeyBrowserRefusedError";
+    this.host = host;
+    this.cause = cause;
+  }
+}
+
+/** Only when the RP ID IS the page's host: a SecurityError there cannot be a mismatch
+ *  of ours. (Storage faults surface from IndexedDB, outside these wrappers.) */
+function namedRefusal(e: unknown, rpId: string | undefined): unknown {
+  return e instanceof DOMException && e.name === "SecurityError" && rpId === window.location.hostname
+    ? new PasskeyBrowserRefusedError(rpId, e)
+    : e;
+}
+
+/** Every ceremony calls the browser through these two, so none shows the raw refusal. */
+function credentialsGet(options: CredentialRequestOptions): Promise<Credential | null> {
+  return navigator.credentials.get(options).catch((e: unknown) => {
+    throw namedRefusal(e, options.publicKey?.rpId);
+  });
+}
+
+function credentialsCreate(options: CredentialCreationOptions): Promise<Credential | null> {
+  return navigator.credentials.create(options).catch((e: unknown) => {
+    throw namedRefusal(e, options.publicKey?.rp.id);
+  });
+}
+
 export class PasskeyCeremonyCancelledError extends Error {
   readonly cause?: unknown;
   constructor(action: "creation" | "authentication", cause?: unknown) {
@@ -394,7 +432,7 @@ async function _authenticatePasskeyImpl(): Promise<PasskeyLogin> {
   let credential: PublicKeyCredential | null;
   try {
     // Discoverable mode (no allowCredentials) → user picks from all passkeys for this RP
-    credential = (await navigator.credentials.get({
+    credential = (await credentialsGet({
       publicKey: {
         challenge: crypto.getRandomValues(new Uint8Array(32)),
         rpId,
@@ -516,7 +554,7 @@ async function _mintPasskeyAccountImpl(): Promise<
   const salt = await getPrfSalt();
   const rpId = ceremonyRpId();
 
-  const credential = (await navigator.credentials.create({
+  const credential = (await credentialsCreate({
     publicKey: {
       rp: { name: "WoCo", id: rpId },
       user: {
@@ -594,7 +632,7 @@ async function _createAddedPasskeyImpl(opts: {
 
   let credential: PublicKeyCredential | null;
   try {
-    credential = (await navigator.credentials.create({
+    credential = (await credentialsCreate({
       publicKey: {
         rp: { name: "WoCo", id: rpId },
         user: { id: newAddedUserHandle(), name, displayName: name },
@@ -662,7 +700,7 @@ async function _createPasskeyBackupKeyImpl(): Promise<PasskeyGuardianMaterial> {
   const salt = await getPrfSalt();
   const rpId = ceremonyRpId();
 
-  const credential = (await navigator.credentials.create({
+  const credential = (await credentialsCreate({
     publicKey: {
       rp: { name: "WoCo", id: rpId },
       user: {
@@ -709,7 +747,7 @@ async function _getPasskeyBackupKeyImpl(): Promise<PasskeyGuardianMaterial> {
   const salt = await getPrfSalt();
   const rpId = ceremonyRpId();
 
-  const credential = (await navigator.credentials.get({
+  const credential = (await credentialsGet({
     publicKey: {
       challenge: crypto.getRandomValues(new Uint8Array(32)),
       rpId,
@@ -769,7 +807,7 @@ async function _restorePasskeyAccountImpl(
   const credentialId = fromBase64url(meta.credentialId);
 
   try {
-    const credential = (await navigator.credentials.get({
+    const credential = (await credentialsGet({
       publicKey: {
         challenge: crypto.getRandomValues(new Uint8Array(32)),
         rpId: meta.rpId,
