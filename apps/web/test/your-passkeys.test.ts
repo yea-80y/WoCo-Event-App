@@ -140,7 +140,7 @@ test("removing: a legacy device only itself, a co-owner any - confirmed fresh, o
   // #186: another passkey leaves through the removal's rotation - off the list in the flip,
   // its device record only after it (rotate.ts runs the after steps past the flip).
   const rot = read("../src/lib/keyring/rotate.ts");
-  assert.ok(rot.indexOf("await s.flip(pending.going") < rot.indexOf("await s.after[step](keys, { going: p.going });"), "off the list first");
+  assert.ok(rot.indexOf("await s.flip(pending.going") < rot.indexOf("await s.after[step](keys, { going: p.going, ring: p.nextRing! });"), "off the list first");
   assert.ok(read("../src/lib/keyring/rotate.ts").includes('"records"'));
   const keys = read("../src/lib/keyring/account-keys.ts");
   assert.match(keys, /removeRecord: \(key\) => h\.removeRecordAfterList\(u\.parent, key\),/);

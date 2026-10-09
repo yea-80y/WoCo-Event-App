@@ -35,7 +35,9 @@ keyring.post("/refresh", requireAuth, async (c) => {
   }
   PER_ACCOUNT.record(account);
   PER_IP.record(ik);
-  const r = await currentRing(account, { fresh: true });
+  // What the chain says NOW: the device checks it names the ring it just set, so a
+  // cached answer from before the move must not pass for one.
+  const r = await currentRing(account, { fresh: true, strict: true });
   if (r.status === "unavailable") {
     console.warn(`[keyring] refresh for ${account}: ${r.reason}`);
     return c.json({ ok: false, error: "Couldn't read your account's keys from the network - try again." }, 503);

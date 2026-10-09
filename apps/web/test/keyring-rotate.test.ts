@@ -188,3 +188,23 @@ test("while a flipped removal is finishing, a different removal waits", async ()
   assert.ok(!h.calls.some((c) => c.startsWith("adopt")), "already held: not adopted again");
   assert.ok(h.calls.includes("after:pages"));
 });
+
+test("the device record goes right after the server is told, ahead of the redeploys", () => {
+  assert.deepEqual(AFTER_STEPS.slice(0, 2), ["server", "records"]);
+});
+
+test("a flip that does not land is not a flip: nothing after it runs, and the removal can resume", async () => {
+  const h = harness({ flip: async () => ({ confirmed: false }) });
+  await assert.rejects(rotateOnRemoval(h.steps, [R.address]), /didn't land/);
+  assert.equal(h.pending?.phase, "copying");
+  assert.ok(!h.calls.some((c) => c.startsWith("adopt") || c.startsWith("after")));
+});
+
+test("a flipped removal whose anchor reads no ring is retried later, never dropped", async () => {
+  const h = harness();
+  h.setPending({ v: 1, parent: PARENT, going: [R.address], gen: 1, secret: "0x" + "5e".repeat(32), prevRing: RING0, nextRing: "b1".repeat(32), phase: "flipped", after: [...AFTER_STEPS] });
+  h.setAnchor(null);
+  await assert.rejects(rotateOnRemoval(h.steps, [], { resume: true }), RotationRefusedError);
+  assert.equal(h.pending?.phase, "flipped", "kept for the next open");
+  assert.ok(!h.calls.includes("clear"));
+});

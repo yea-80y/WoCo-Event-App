@@ -184,9 +184,10 @@ function rpcReason(e: unknown): string {
 
 /**
  * The account's current ring. `fresh` skips the anchor cache - for the account's own
- * device telling us it just moved.
+ * device telling us it just moved. `strict`: an unreadable chain is unavailable even
+ * with a ring seen before - for an answer that says what the chain says NOW.
  */
-export async function currentRing(account: string, opts: { fresh?: boolean } = {}): Promise<CurrentRing> {
+export async function currentRing(account: string, opts: { fresh?: boolean; strict?: boolean } = {}): Promise<CurrentRing> {
   const a = account.toLowerCase();
   return holdHighWater(a, await readCurrent(a, opts));
 }
@@ -232,7 +233,7 @@ async function holdHighWater(a: string, r: CurrentRing): Promise<CurrentRing> {
   return r;
 }
 
-async function readCurrent(a: string, opts: { fresh?: boolean }): Promise<CurrentRing> {
+async function readCurrent(a: string, opts: { fresh?: boolean; strict?: boolean }): Promise<CurrentRing> {
   const cached = anchors.get(a);
   if (cached && !opts.fresh && deps.now() - cached.at < ANCHOR_TTL_MS) return resolve(a, cached.ref);
 
@@ -240,7 +241,7 @@ async function readCurrent(a: string, opts: { fresh?: boolean }): Promise<Curren
   try {
     read = anchorToRingRef(await deps.readAnchor(a));
   } catch (e) {
-    if (!cached) return { status: "unavailable", reason: `anchor unreadable: ${rpcReason(e)}` };
+    if (!cached || opts.strict) return { status: "unavailable", reason: `anchor unreadable: ${rpcReason(e)}` };
     console.warn(`[keyring] ${a}: anchor unreadable, using the ring last seen`);
     return resolve(a, cached.ref);
   }

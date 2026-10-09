@@ -87,7 +87,7 @@ test("sign-off fixes: list reads floored, record removal retried, removed passke
   const conf = body(STORE, "async function _removePasskeyConfirmed(");
   assert.match(conf, /await _rotateOnRemoval\(\[target\]\);/);
   const rot = read("../src/lib/keyring/rotate.ts");
-  assert.ok(rot.indexOf("await s.flip(pending.going") < rot.indexOf("await s.after[step](keys, { going: p.going });"), "#186: off the list in the flip, records after");
+  assert.ok(rot.indexOf("await s.flip(pending.going") < rot.indexOf("await s.after[step](keys, { going: p.going, ring: p.nextRing! });"), "#186: off the list in the flip, records after");
   assert.match(STORE, /_scheduleEnvelopeReprobe\(cachedKernel, account\.address, account\.prfSecret\);\s*_verifyCoOwnerInBackground\(cachedKernel, account\.address\);/, "SHOULD-3");
   assert.match(body(STORE, "async function _offListConfirmed("), /setTimeout\(r, 10_000\)/, "confirmed twice, never on one lagging read");
   assert.match(body(STORE, "async function _forgetThisPasskey("), /clearCachedKernelAddress\("passkey", self\);/);

@@ -14,8 +14,8 @@
  *   5. flip      ONE op: the passkey off the list AND the anchor onto the new ring. Before
  *                it, readers follow the old keys; after it, the new - never a mix
  *   6. adopt     this device holds S' as current
- *   7. after     the server told; site pointers, live sites, event pages and names moved;
- *                the contact list re-sealed; the passkey's device record removed;
+ *   7. after     the server told; the passkey's device record removed; site pointers,
+ *                live sites, event pages and names moved; the contact list re-sealed;
  *                likes and follows re-made under the new signer
  *
  * A step before the flip that fails leaves the account exactly as it was (the removed
@@ -47,7 +47,9 @@ export interface PendingRotation {
 }
 
 export type AfterStep = "server" | "sites" | "pages" | "list" | "records" | "social";
-export const AFTER_STEPS: readonly AfterStep[] = ["server", "sites", "pages", "list", "records", "social"];
+// The removed passkey's device record goes right after the server is told: it is what
+// signs that passkey out, and the redeploys after it can take minutes.
+export const AFTER_STEPS: readonly AfterStep[] = ["server", "records", "sites", "pages", "list", "social"];
 
 export type RotationProgress =
   | { step: "keys" }
@@ -88,7 +90,8 @@ export interface RotationSteps {
   /** The flip: one op taking `going` off the list and moving the anchor. */
   flip(going: string[], ring: { prev: string | null; next: string }): Promise<{ confirmed: boolean }>;
   adopt(chain: AccountChain): Promise<void>;
-  after: Record<AfterStep, (keys: NewKeys, ctx: { going: string[] }) => Promise<void>>;
+  /** `ring`: the new ring the flip put on the anchor. */
+  after: Record<AfterStep, (keys: NewKeys, ctx: { going: string[]; ring: string }) => Promise<void>>;
   progress(p: RotationProgress): void;
 }
 
@@ -142,7 +145,12 @@ export async function rotateOnRemoval(
     pending = { ...pending, phase: "flipped", after: [...AFTER_STEPS] };
     await s.savePending(pending);
   }
-  // A flipped removal is resumed only while its generation is still the account's.
+  // A flipped removal is resumed only while its generation is still the account's. The
+  // contract never clears an entry, so no ring at all is a lagging read: try again later,
+  // never drop what is left to do.
+  if (pending?.phase === "flipped" && anchor === null) {
+    throw new RotationRefusedError("Couldn't read your account's keys - try again in a moment.");
+  }
   if (pending?.phase === "flipped") {
     const heldGen = s.chain?.gen ?? 0;
     let anchoredGen: number | null = null;
@@ -202,7 +210,8 @@ export async function rotateOnRemoval(
     const nextRing = await s.storeRing({ gen, secret: pending!.secret, prevRing: anchor, members });
     pending = { ...pending!, nextRing };
     await s.savePending(pending);
-    await s.flip(pending.going, { prev: anchor, next: nextRing });
+    const flipped = await s.flip(pending.going, { prev: anchor, next: nextRing });
+    if (!flipped.confirmed) throw new Error("Your account's new keys didn't land - nothing else was changed. Try again.");
     pending = { ...pending, phase: "flipped", after: [...AFTER_STEPS] };
     await s.savePending(pending);
   }
@@ -218,7 +227,7 @@ export async function rotateOnRemoval(
   const left: AfterStep[] = [];
   for (const step of p.after ?? AFTER_STEPS) {
     try {
-      await s.after[step](keys, { going: p.going });
+      await s.after[step](keys, { going: p.going, ring: p.nextRing! });
     } catch (e) {
       console.warn(`[keyring] removal step "${step}" not finished (retried on the next open):`, e);
       left.push(step);

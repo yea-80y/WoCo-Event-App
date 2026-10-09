@@ -242,10 +242,12 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
     adopt: (chain) => h.adopt(chain),
 
     after: {
-      server: async () => {
+      server: async (_keys: NewKeys, ctx: { ring: string }) => {
         const { authPost } = await import("../api/client.js");
-        const res = await authPost("/api/keyring/refresh", {});
+        const res = await authPost<{ ref: string; gen: number } | null>("/api/keyring/refresh", {});
         if (!res.ok) throw new Error(res.error ?? "refresh failed");
+        // Told only when it names the ring just set - else it is retried at the next open.
+        if (res.data?.ref !== ctx.ring) throw new Error("the server has not seen the new keys yet");
       },
       sites: async (keys: NewKeys) => {
         const [{ getSiteEvents, publishSite, deploySite }, { ETHERNA_GATEWAY_URL }] = await Promise.all([
