@@ -116,6 +116,7 @@
           getSigner: () => auth.getContentFeedSignerIfPresent(),
           write: writeReferralStatement,
           clear: capture.clearCapturedRef,
+          arm: (referrer, feed) => import("./lib/api/campaign.js").then((m) => m.armReferral(referrer, feed)),
         });
       } catch {
         // Every outcome that matters is already a return value; a thrown import

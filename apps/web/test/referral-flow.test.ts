@@ -132,3 +132,27 @@ test("the signer getter is the ONLY signer source", async () => {
   assert.equal(state.writes.length, 0, "no signer must mean no write");
   assert.equal(state.signerCalls, 1, "and exactly one attempt to get one");
 });
+
+test("a verified statement is armed with the server - this referrer, this feed", async () => {
+  const { deps } = harness({ ref: REFERRER });
+  const armed: Array<[Hex0x, Hex0x]> = [];
+  assert.equal(await settleCapturedReferral({ ...deps, arm: async (r, f) => { armed.push([r, f]); } }), "written");
+  assert.deepEqual(armed, [[REFERRER, SIGNER.address]]);
+});
+
+test("nothing is armed off a write that is not on the feed", async () => {
+  const { deps } = harness({
+    ref: REFERRER,
+    write: async () => ({ status: "unconfirmed", version: 3, reason: "read-back timed out" }),
+  });
+  const armed: unknown[] = [];
+  await settleCapturedReferral({ ...deps, arm: async (...a) => { armed.push(a); } });
+  assert.equal(armed.length, 0);
+});
+
+test("a failed arm changes nothing - the Home auto-confirm is the backstop", async () => {
+  const { deps, state } = harness({ ref: REFERRER });
+  const outcome = await settleCapturedReferral({ ...deps, arm: async () => { throw new Error("server down"); } });
+  assert.equal(outcome, "written");
+  assert.equal(state.cleared, 1);
+});
