@@ -146,10 +146,19 @@ test("create-checkout: an organiser-signed event with no record is not sold (own
   const { creatorFeedSigner: _dropped, ...withoutSigner } = cached as EventFeed & { creatorFeedSigner?: string };
   service.primeEventCache(LEGACY, withoutSigner as EventFeed);
   assert.deepEqual(await buy(), { status: 409, code: "EVENT_NEEDS_REPUBLISH" });
-  // A platform-signed legacy event (the server wrote its feed) still sells; an
-  // unreadable answer pauses the sale rather than guess.
-  service.__setPlatformFeedReadForTests(async () => ({ status: "ok", data: new Uint8Array(1) }));
-  assert.notEqual((await buy()).code, "EVENT_NEEDS_REPUBLISH");
+  // A platform-signed legacy event (the server wrote its feed) still sells - and what is
+  // sold is THAT feed, not an organiser-signed copy found first: here the copy says
+  // "free" and the platform feed says "5.00", and only a 5.00 sale gets past the price.
+  const { encodeJsonFeed } = await import("../src/lib/swarm/feeds.js");
+  const platformFeed = { ...withoutSigner, title: "Platform copy" } as EventFeed;
+  service.primeEventCache(LEGACY, {
+    ...withoutSigner,
+    series: [{ seriesId: SERIES, name: "GA", totalSupply: 10, price: 0, payment: { price: "0", currency: "GBP", stripeEnabled: true } }],
+  } as unknown as EventFeed);
+  service.__setPlatformFeedReadForTests(async () => ({ status: "ok", data: encodeJsonFeed(platformFeed) }));
+  const sold = await buy();
+  assert.notEqual(sold.code, "EVENT_NEEDS_REPUBLISH");
+  assert.notEqual(sold.status, 400, "the organiser copy's invalid price was not what got checked");
   service.__setPlatformFeedReadForTests(async () => ({ status: "error", error: new Error("bee down") }));
   assert.equal((await buy()).status, 503);
   service.__setPlatformFeedReadForTests(null);

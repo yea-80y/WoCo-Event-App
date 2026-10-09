@@ -26,7 +26,8 @@ import {
   getOrganiserByStripeAccount,
   deleteStripeAccount,
 } from "../lib/stripe/accounts.js";
-import { getEvent, isPlatformSignedEvent } from "../lib/event/service.js";
+import { getEvent, getPlatformEvent } from "../lib/event/service.js";
+import type { EventFeed } from "@woco/shared";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
 import { checkoutExpiresAt } from "../lib/event/checkout-expiry.js";
@@ -680,7 +681,27 @@ stripe.post("/create-checkout", async (c) => {
   // the Stripe destination (creatorAddress→Connect) + amount. siteId is only a
   // pointer; trust is the server-written index, never the request.
   const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
-  const event = await getEvent(eventId, siteSigner ?? undefined);
+  // The organiser's keys first (#186): they decide WHICH feed may be sold.
+  const keys = await eventKeys(eventId);
+  if (keys.kind === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
+  let event: EventFeed | null;
+  if (keys.kind === "legacy") {
+    // An event with no record (made before #670) sells only from its platform-signed
+    // feed, the one feed no organiser key can write - and exactly that feed is sold.
+    // An organiser-signed one has no trust root at all (owner 10-09): not sold.
+    const platform = await getPlatformEvent(eventId);
+    if (platform === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
+    if (!platform) {
+      if (!(await getEvent(eventId, siteSigner ?? undefined))) return c.json({ ok: false, error: "Event not found" }, 404);
+      return c.json(
+        { ok: false, error: "This event can't take orders. The organiser needs to publish it again.", code: "EVENT_NEEDS_REPUBLISH" },
+        409,
+      );
+    }
+    event = platform;
+  } else {
+    event = await getEvent(eventId, siteSigner ?? undefined);
+  }
   if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
 
   const series = event.series.find((s) => s.seriesId === seriesId);
@@ -690,22 +711,6 @@ stripe.post("/create-checkout", async (c) => {
   // between prepare-order and here is caught too. Keys that cannot be read stop the
   // sale rather than guess. Only a box the buyer sent is checked: none means the
   // fulfilment fallback seals one to the event's key, which is the current one.
-  const keys = await eventKeys(eventId);
-  if (keys.kind === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
-  // An organiser-signed event with no record (made before #670) has no trust root at all:
-  // its feed alone says who made it and who is paid, and a removed passkey can rewrite it.
-  // Not sold (owner 10-09); the organiser re-creates it. Only a platform-signed feed - one
-  // the server wrote - still sells, decided by where the feed is, never by its own fields.
-  if (keys.kind === "legacy") {
-    const platform = await isPlatformSignedEvent(eventId);
-    if (platform === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
-    if (!platform) {
-      return c.json(
-        { ok: false, error: "This event can't take orders. The organiser needs to publish it again.", code: "EVENT_NEEDS_REPUBLISH" },
-        409,
-      );
-    }
-  }
   if (preparedRef || inlineOrderJson) {
     const bodyKey = typeof (body as { encryptionKeyRef?: unknown }).encryptionKeyRef === "string"
       ? (body as { encryptionKeyRef: string }).encryptionKeyRef

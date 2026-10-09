@@ -88,8 +88,7 @@ before(async () => {
   registry.recordOnChainEventId(EVENT_ID, SERIES_ID, ON_CHAIN_ID, { chainId: OLD_CHAIN, address: V2_ADDR, version: "v2" });
   // A platform-signed event (no organiser signer, no record): checkout asks where its
   // feed is before selling a record-less event (#186), and here the server wrote it.
-  service.__setPlatformFeedReadForTests(async () => ({ status: "ok", data: new Uint8Array(1) }));
-  service.primeEventCache(EVENT_ID, {
+  const platformFeed = {
     v: 1,
     eventId: EVENT_ID,
     title: "Sold on the test chain",
@@ -114,7 +113,10 @@ before(async () => {
       manifestRef: "0x" + "cd".repeat(32),
       payment: { stripeEnabled: true, price: "20.00", currency: "GBP" },
     }],
-  } as unknown as EventFeed);
+  } as unknown as EventFeed;
+  const { encodeJsonFeed } = await import("../src/lib/swarm/feeds.js");
+  service.__setPlatformFeedReadForTests(async () => ({ status: "ok", data: encodeJsonFeed(platformFeed) }));
+  service.primeEventCache(EVENT_ID, platformFeed);
 });
 
 after(() => {
