@@ -24,6 +24,7 @@ import { siteRoute } from "./routes/site.js";
 import { profiles } from "./routes/profiles.js";
 import { recovery } from "./routes/recovery.js";
 import { deviceGrants } from "./routes/device-grants.js";
+import { keyring } from "./routes/keyring.js";
 import { upgradeIntent } from "./routes/upgrade-intent.js";
 import { zerodevPolicy, zerodevPolicyHealth } from "./routes/zerodev-policy.js";
 import { pairing } from "./routes/pairing.js";
@@ -686,6 +687,7 @@ app.post("/api/auth/revoke-all", requireAuth, (c) => {
 // each signs out on its next request (SESSION_REVOKED) and, while its grant is
 // live, can sign in again.
 app.route("/api/auth/device-grants", deviceGrants);
+app.route("/api/keyring", keyring);
 // An email account about to upgrade to a passkey (#746): the per-network limit on
 // the one sponsored op a locked account may have.
 app.route("/api/auth/upgrade-intent", upgradeIntent);
