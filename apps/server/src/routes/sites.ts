@@ -53,6 +53,7 @@ import { sendEmail } from "../lib/email/send.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { checkSiteSubEns, type SiteDeploySubEns } from "../lib/sub-ens/site-pointer.js";
+import { recordNameTarget } from "../lib/sub-ens/name-targets.js";
 import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import { companyFooterHtml } from "../lib/email/company-footer.js";
@@ -1105,6 +1106,12 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
           "multisite feed write (legacy fallback)",
         );
       }
+    }
+
+    // The site's name shows THIS build, whatever its feed later says: the CCIP
+    // gateway signs the ledger's latest ref, never the holder's feed (name-targets.ts).
+    if (feedManifestHash) {
+      recordNameTarget(feedManifestHash, { kind: "site", id: siteId, owner: parentAddress, latestRef: contentHash });
     }
 
     // Etherna gates anonymous reads behind an OFFER. The content chunk is offered at

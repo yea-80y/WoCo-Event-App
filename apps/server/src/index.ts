@@ -74,6 +74,7 @@ import { eventCancel } from "./routes/event-cancel.js";
 import { saleRefundEventsHealth } from "./lib/stripe/sale-refunds.js";
 import { alarmGate } from "./lib/health/alarm-gate.js";
 import { feedSignerRecordHealth } from "./lib/event/feed-signer-record.js";
+import { nameTargetsHealth } from "./lib/sub-ens/name-targets.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
@@ -416,6 +417,10 @@ function healthReport() {
     // `unreadableRecords` above 0, is an alarm: those events cannot sell, and no
     // event can be created with a signer, until an operator restores the file.
     eventFeedSigners: feedSignerRecordHealth(),
+    // What each WoCo-built feed last published (name-targets.json): the only content a
+    // site or event-page name may show (the CCIP gateway's WoCo-built rule). `unreadable`
+    // is an alarm: every such name shows the app, and nothing is recorded, until restored.
+    nameTargets: nameTargetsHealth(),
     // Added passkeys (#746). `unreadable` is an alarm: every added device is
     // signed out and no device can be added or removed until the file is restored.
     deviceGrants: deviceGrantHealth(),

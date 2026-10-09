@@ -14,6 +14,7 @@ import { recordUpload } from "../lib/swarm/storage-ledger.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { uploadCollectionToEtherna, registerEthernaOffer, prepareEthernaFeedUpdate } from "../lib/etherna/upload.js";
 import { checkSiteSubEns, type SiteDeploySubEns } from "../lib/sub-ens/site-pointer.js";
+import { recordNameTarget } from "../lib/sub-ens/name-targets.js";
 import {
   injectBeforeHeadClose,
   isSafeIdParam,
@@ -212,6 +213,8 @@ site.post("/deploy", requireAuth, async (c) => {
       // Etherna answers 402 to an anonymous /bzz/{manifest}/ without an offer.
       void registerEthernaOffer(feedManifestHash).catch((e) =>
         console.warn("[site/deploy] etherna feed-manifest offer failed (non-fatal):", e));
+      // The page's name shows THIS build, whatever the feed later says (name-targets.ts).
+      recordNameTarget(feedManifestHash, { kind: "event", id: eventId, owner: parentAddress, latestRef: contentHash });
     }
 
     // Does the name already follow this feed? Read-only chain state, so the
