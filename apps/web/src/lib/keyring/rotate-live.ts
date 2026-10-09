@@ -91,7 +91,7 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
       await Promise.all([
         import("../swarm/gateways.js"),
         import("@woco/shared/swarm/soc"),
-        import("../sub-ens/event-name-link.js"),
+        import("../swarm/feed-manifest.js"),
         import("@noble/hashes/sha3.js"),
         import("@noble/hashes/utils.js"),
       ]);
