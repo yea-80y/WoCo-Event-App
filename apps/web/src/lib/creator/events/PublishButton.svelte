@@ -149,7 +149,7 @@
       // feed; `createEventStreaming` refuses to sign a feed naming any other.
       let encryptionPublicKey: string | undefined;
       // The account's CURRENT generation (#186): after a passkey removal, never the seed's.
-      const secrets = await auth.getAccountSecrets();
+      const secrets = await auth.getAccountSecrets({ toSeal: true });
       if (secrets) {
         const [{ deriveXWingKeypairFromSeed }, { bytesToHex }] = await Promise.all([
           import("@woco/shared/crypto/xwing"),

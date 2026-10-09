@@ -317,10 +317,13 @@ export async function storeFeedSignerCache(
   parent: string,
   signer: { privKey: string; address: string },
   stillCurrent: () => boolean = () => true,
+  /** The key ring this signer is the current generation of (#186); null = no ring. */
+  ringRef: string | null = null,
 ): Promise<void> {
   const blob = await encrypt(await ensureDeviceKey(), AAD.FEED_SIGNER_CACHE(seedAddress, parent), {
     privKey: signer.privKey,
     address: signer.address.toLowerCase(),
+    ringRef,
   });
   if (!stillCurrent()) return;
   await putKV(feedSignerCacheKey(seedAddress), blob);
@@ -331,18 +334,20 @@ export async function storeFeedSignerCache(
 export async function readFeedSignerCache(
   seedAddress: string,
   parent: string,
-): Promise<{ privKey: string; address: string } | null> {
+): Promise<{ privKey: string; address: string; ringRef: string | null } | null> {
   const blob = await getKV<EncryptedBlob>(feedSignerCacheKey(seedAddress));
   if (!blob) return null;
   try {
-    const { privKey, address } = await decrypt<{ privKey?: unknown; address?: unknown }>(
+    const { privKey, address, ringRef } = await decrypt<{ privKey?: unknown; address?: unknown; ringRef?: unknown }>(
       await ensureDeviceKey(),
       AAD.FEED_SIGNER_CACHE(seedAddress, parent),
       blob,
     );
     if (typeof privKey !== "string" || !/^0x[0-9a-f]{64}$/i.test(privKey)) return null;
     if (typeof address !== "string" || !/^0x[0-9a-f]{40}$/.test(address)) return null;
-    return { privKey, address };
+    // A copy from before key rings (#186) belongs to no ring: good only while there is none.
+    if (ringRef !== undefined && ringRef !== null && (typeof ringRef !== "string" || !/^[0-9a-f]{64}$/.test(ringRef))) return null;
+    return { privKey, address, ringRef: typeof ringRef === "string" ? ringRef : null };
   } catch {
     return null;
   }

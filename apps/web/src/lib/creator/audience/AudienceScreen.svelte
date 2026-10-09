@@ -60,8 +60,8 @@
    * seal context that binds the list to this account. The post-quantum code is
    * loaded here, on first use, never with the page.
    */
-  async function getKeys(prompt = false) {
-    const secrets = await getAccountSecrets(prompt);
+  async function getKeys(prompt = false, toSeal = false) {
+    const secrets = await getAccountSecrets(prompt, toSeal);
     if (!secrets || !auth.parent) return null;
     const [{ orderKeysOf }, box] = await Promise.all([
       import("../../keyring/order-keys.js"),
@@ -74,11 +74,13 @@
 
   /** The account's secrets, unlocking first - only when `prompt`, which only a tap
    *  passes - if they are locked or not yet on this device. */
-  async function getAccountSecrets(prompt: boolean): Promise<{ current: string; all: string[] } | null> {
-    const secrets = await auth.getAccountSecrets();
+  async function getAccountSecrets(prompt: boolean, toSeal: boolean): Promise<{ current: string; all: string[] } | null> {
+    // Sealing needs the CONFIRMED current generation (#186) - a list sealed to keys the
+    // account left would open for a removed passkey. Opening takes whatever is held.
+    const secrets = await auth.getAccountSecrets({ toSeal });
     if (secrets || !prompt) return secrets;
     if (!(await auth.ensureAccountSetup({ identity: true }))) return null;
-    return auth.getAccountSecrets();
+    return auth.getAccountSecrets({ toSeal });
   }
 
   /** One round trip gives both server-held states; the third (imported) is what
@@ -146,7 +148,7 @@
 
   /** Re-seal + upload the full list — the single write path for every change. */
   async function commitList(next: MarketingContact[]): Promise<void> {
-    const keys = await getKeys(true);
+    const keys = await getKeys(true, true);
     if (!keys) throw new Error("Identity locked — sign in to save changes");
     saving = true;
     try {

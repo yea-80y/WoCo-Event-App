@@ -71,7 +71,7 @@ async function ownOrderKeyRef(feedSignerAddress: string): Promise<string> {
   const hit = _ownOrderKeyRef.get(key);
   if (hit) return hit;
   // The CURRENT generation's key (#186), the one the feed signer comes from too.
-  const secrets = await auth.getAccountSecrets();
+  const secrets = await auth.getAccountSecrets({ toSeal: true });
   if (!secrets) throw new Error("Your account keys are locked, so the event can't be checked before signing - confirm it's you and try again.");
   const { deriveXWingKeypairFromSeed } = await import("@woco/shared/crypto/xwing");
   const ref = orderKeyRef(deriveXWingKeypairFromSeed(secrets.current).publicKey);

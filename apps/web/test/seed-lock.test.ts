@@ -215,7 +215,10 @@ test("a write a sign-out overtook leaves nothing behind", async () => {
 test("the cached feed signer opens only for its account, and is left for that account", async () => {
   await fresh();
   await seedMod.storeFeedSignerCache(ADDR, PARENT, SIGNER);
-  assert.deepEqual(await seedMod.readFeedSignerCache(ADDR, PARENT), SIGNER);
+  // ringRef null = committed while the account had no key ring (#186).
+  assert.deepEqual(await seedMod.readFeedSignerCache(ADDR, PARENT), { ...SIGNER, ringRef: null });
+  await seedMod.storeFeedSignerCache(ADDR, PARENT, SIGNER, () => true, "cd".repeat(32));
+  assert.deepEqual(await seedMod.readFeedSignerCache(ADDR, PARENT), { ...SIGNER, ringRef: "cd".repeat(32) });
   assert.equal(await seedMod.readFeedSignerCache(ADDR, OTHER_PARENT), null);
   assert.equal(data.has(CACHE_SLOT), true);
 });
@@ -331,9 +334,12 @@ test("store: a sign-out wins over an unlock's writes still in flight", () => {
   const bump = out.indexOf("_lockGen++;");
   assert.ok(bump > 0 && bump < out.indexOf('await step("identity-keys"'), "bump before the first wipe");
   const set = body(STORE, "function _setUnlockedSeed");
-  assert.match(set, /const gen = _lockGen;\s*const current = \(\) => gen === _lockGen;/);
-  assert.match(set, /storeFeedSignerCache\(seedAddr, account, signer, current\)/);
+  assert.match(set, /const current = \(\) => gen === _lockGen;/);
   assert.match(set, /writeUnlockWindow\(seedAddr, account, seed, expiresAt, current\)/);
+  // The signer's cache is written once the keys are confirmed (#186), under the same guard.
+  const commit = body(STORE, "function _commitSigner");
+  assert.match(commit, /const gen = _lockGen;\s*const current = \(\) => gen === _lockGen;/);
+  assert.match(commit, /storeFeedSignerCache\(u\.seedAddress, u\.parent, signer, current, u\.chain\?\.ringRef \?\? null\)/);
 });
 
 test("store: organiser actions confirm once per window; other kinds keep their own gate", () => {
@@ -463,8 +469,9 @@ test("store: sign-out keeps a recovered account's only copy until a sign-in has 
 test("Audience: a failed load cannot loop, the list opens once, and only a save asks", () => {
   const aud = read("../src/lib/creator/audience/AudienceScreen.svelte");
   assert.match(aud, /async function load\(\): Promise<void> \{\s*loading = true;\s*loadError = null;\s*listLocked = false;/);
-  assert.deepEqual(aud.match(/getKeys\(true\)/g)?.length, 1);
-  assert.match(aud, /async function commitList[\s\S]*?getKeys\(true\)/);
+  // Only a save asks - and it seals, so it needs the confirmed current keys (#186).
+  assert.deepEqual(aud.match(/getKeys\(true/g)?.length, 1);
+  assert.match(aud, /async function commitList[\s\S]*?getKeys\(true, true\)/);
   assert.match(aud, /<UnlockPanel subject="Contact details" action="Show contacts" \/>/, "the effect loads; the panel must not load too");
 });
 
