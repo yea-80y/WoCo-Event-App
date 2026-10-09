@@ -68,6 +68,11 @@
       <NewPasskeyBanner />
     {/await}
   {/if}
+  {#if auth.removalProgress || auth.pendingRemoval || auth.removalDone || auth.keyRingNotice}
+    {#await import("../components/passkeys/KeyRingStatus.svelte") then { default: KeyRingStatus }}
+      <KeyRingStatus />
+    {/await}
+  {/if}
   <ReferralCaptureBanner />
   <header class="top-bar">
     <button class="logo" onclick={() => navigate(signedIn ? "/home" : "/")} aria-label="WoCo home">

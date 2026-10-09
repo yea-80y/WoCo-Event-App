@@ -150,6 +150,8 @@ let _keyRingNotice = $state<null | "keyless" | "changed">(null);
 // A removal this device began and did not finish before its flip (#186): it waits for
 // the person to press "Finish removing". One past the flip finishes by itself.
 let _pendingRemoval = $state<null | { going: string[] }>(null);
+// The last removal that finished here, for its done screen (#186).
+let _removalDone = $state<import("../keyring/account-keys.js").RemovalDone | null>(null);
 // The content-feed signer a passkey account posts with while its seed is locked
 // (#746), memoised from its cached copy. Survives a relock - that is the point - but
 // never an account switch, a heal or a sign-out.
@@ -433,6 +435,10 @@ function _keysHost(): AccountKeysHost {
     setPendingRemoval: (p) => {
       _pendingRemoval = p;
     },
+    setRemovalDone: (d) => {
+      _removalDone = d;
+    },
+    parent: () => _parent,
     seedLockedMessage: () => _seedLockedMessage(),
   };
 }
@@ -1050,6 +1056,7 @@ async function _clearStaleAuthForSwitch(address: string): Promise<void> {
     _anchorMemo = null;
     _keyRingNotice = null;
     _pendingRemoval = null;
+    _removalDone = null;
     // What opens the outgoing account without its passkey goes with it, as at
     // sign-out (#746); its locked copy stays.
     if (priorSeedAddr) {
@@ -5136,6 +5143,7 @@ async function clearAllAuth(): Promise<void> {
   _anchorMemo = null;
   _keyRingNotice = null;
   _pendingRemoval = null;
+  _removalDone = null;
   _scheduleUnlockExpiry(null);
   _seedUnavailable = null;
   _deviceRole = false;
@@ -5223,12 +5231,18 @@ export const auth = {
   get pendingRemoval() {
     return _pendingRemoval;
   },
+  get removalDone() {
+    return _removalDone;
+  },
+  dismissRemovalDone: () => {
+    _removalDone = null;
+  },
   finishRemoval: async () => {
     await _freshMainPasskey();
-    const res = await _rotateOnRemoval([], { resume: true });
-    _pendingRemoval = null;
-    return res;
+    return _rotateOnRemoval([], { resume: true });
   },
+  // Passkeys a removal now would leave without the new keys - a hint for its confirm.
+  passkeysWithoutKeys: async () => (await _keys()).passkeysWithoutKeys(_keysHost()),
   get isConnected() { return isConnected; },
   get isAuthenticated() { return isAuthenticated; },
 

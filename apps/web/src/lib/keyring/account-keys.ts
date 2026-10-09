@@ -25,6 +25,16 @@ import type { RotationProgress, RotationResult } from "./rotate.js";
 
 export type KeysVerdict = "pending" | "ok" | "behind" | "keyless" | "foreign" | "unknown";
 
+/** A removal that finished, for its done screen. */
+export interface RemovalDone {
+  /** Steps after the flip still to do; retried at the next unlock. */
+  unfinished: string[];
+  /** Passkeys left without the new keys. */
+  keyless: string[];
+  /** The account had events moved - so any door pass made before now stopped working. */
+  hadEvents: boolean;
+}
+
 export interface UnlockedSeed {
   seedAddress: string;
   parent: string;
@@ -61,6 +71,9 @@ export interface AccountKeysHost {
   signTypedDataAsHolder(typed: unknown): Promise<string>;
   setRemovalProgress(p: RotationProgress | null): void;
   setPendingRemoval(p: { going: string[] } | null): void;
+  setRemovalDone(d: RemovalDone): void;
+  /** The account (Kernel) signed in, whether or not its keys are open. */
+  parent(): string | null;
   seedLockedMessage(): string;
 }
 
@@ -375,11 +388,12 @@ export async function rotateOnRemovalFor(h: AccountKeysHost, going: string[], op
   const ownerKey = h.ownerKey();
   const self = h.self();
   if (!h.isPasskey() || !u || !prf || !ownerKey || !self) throw new Error(h.seedLockedMessage());
-  const [{ rotateOnRemoval }, { liveRotationSteps }, flows] = await Promise.all([
+  const [{ rotateOnRemoval, RotationRefusedError }, { liveRotationSteps }, flows] = await Promise.all([
     import("./rotate.js"),
     import("./rotate-live.js"),
     import("../auth/co-owner-flows.js"),
   ]);
+  let events = 0;
   const steps = liveRotationSteps({
     parent: u.parent,
     self: { address: self, privateKey: ownerKey, prfSecret: prf },
@@ -394,11 +408,55 @@ export async function rotateOnRemovalFor(h: AccountKeysHost, going: string[], op
     adopt: (chain) => adoptOwnRing(h, chain),
     signTypedDataAsHolder: (typed) => h.signTypedDataAsHolder(typed),
     removeRecord: (key) => h.removeRecordAfterList(u.parent, key),
-    progress: (p) => h.setRemovalProgress(p),
+    progress: (p) => {
+      if (p.step === "events") events = Math.max(events, p.total);
+      h.setRemovalProgress(p);
+    },
   });
   try {
-    return await rotateOnRemoval(steps, going, opts);
+    const res = await rotateOnRemoval(steps, going, opts);
+    h.setPendingRemoval(null);
+    h.setRemovalDone({ ...res, hadEvents: events > 0 });
+    return res;
+  } catch (e) {
+    // Refused = nothing began. Anything else may have left a removal half-done here:
+    // say so, so the person can finish it (the passkey works until then).
+    if (!(e instanceof RotationRefusedError)) await notePendingRemoval(h, u.seedAddress, u.parent, prf);
+    throw e;
   } finally {
     h.setRemovalProgress(null);
+  }
+}
+
+async function notePendingRemoval(h: AccountKeysHost, seedAddr: string, parent: string, prf: string): Promise<void> {
+  try {
+    const { openPendingRotation } = await import("./pending-rotation.js");
+    const p = (await openPendingRotation(seedAddr, parent, prf)) as import("./rotate.js").PendingRotation | null;
+    if (p && p.parent === parent && p.phase === "copying") h.setPendingRemoval({ going: p.going });
+  } catch {
+    /* found again at the next unlock */
+  }
+}
+
+/**
+ * The account's passkeys with no entry in its key ring - the ones a removal now would
+ * leave without the new keys (they would need setting up again). Best effort: a hint
+ * for the confirm screen, never a gate; [] when anything is unreadable.
+ */
+export async function passkeysWithoutKeys(h: AccountKeysHost): Promise<string[]> {
+  try {
+    const parent = h.parent()?.toLowerCase();
+    const self = h.self();
+    if (!h.isPasskey() || !parent || !self) return [];
+    const ref = await readAnchor(h, parent);
+    if (ref === "error") return [];
+    const [{ fetchKeyRing }, { readCoOwners }] = await Promise.all([import("./ring-read.js"), import("../auth/kernel-account.js")]);
+    const list = await readCoOwners(parent);
+    if (list === "error" || list === null) return [];
+    const ring = ref ? await fetchKeyRing(ref) : null;
+    const have = new Set(ring?.entries.map((e) => e.statement.coOwner) ?? []);
+    return list.map((a) => a.toLowerCase()).filter((a) => a !== self && !have.has(a));
+  } catch {
+    return [];
   }
 }
