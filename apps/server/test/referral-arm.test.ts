@@ -28,6 +28,8 @@ const REFEREE = "0x1111111111111111111111111111111111111111";
 const REFERRER = "0x2222222222222222222222222222222222222222";
 const OTHER = "0x3333333333333333333333333333333333333333";
 const FEED = "0x4444444444444444444444444444444444444444";
+/** Arms are stamped with the real clock; the injected one is read relative to it. */
+let NOW = Date.now();
 
 type ArmMod = typeof import("../src/lib/campaign/referral-arm.js");
 type AccountsMod = typeof import("../src/lib/stripe/accounts.js");
@@ -42,7 +44,10 @@ before(async () => {
   accounts = await import("../src/lib/stripe/accounts.js");
 });
 
-beforeEach(() => arm.resetArmsForTest());
+beforeEach(() => {
+  arm.resetArmsForTest();
+  NOW = Date.now();
+});
 
 const record = { referee: REFEREE, refereeFeed: FEED, referrer: REFERRER } as unknown;
 
@@ -52,6 +57,7 @@ function deps(verified: boolean, result: ConfirmResult | Error) {
     calls,
     deps: {
       verified: () => verified,
+      now: () => NOW,
       confirm: async (args: { referee: string; refereeFeed: string; referrer: string }) => {
         calls.push(args);
         if (result instanceof Error) throw result;
@@ -93,7 +99,7 @@ test("unavailable and a throw keep the arm for a retry", async () => {
   assert.ok(arm.armedReferral(REFEREE));
 });
 
-for (const status of ["already", "no-statement", "retracted"] as const) {
+for (const status of ["already", "retracted"] as const) {
   test(`${status} is final: the arm is dropped`, async () => {
     arm.armReferral(REFEREE, REFERRER, FEED);
     const result = (status === "already" ? { status, record } : { status }) as ConfirmResult;
@@ -102,6 +108,39 @@ for (const status of ["already", "no-statement", "retracted"] as const) {
     assert.equal(arm.armedReferral(REFEREE), undefined);
   });
 }
+
+test("no-statement keeps the arm while it is young - that read can be a false absent", async () => {
+  arm.armReferral(REFEREE, REFERRER, FEED);
+  const h = deps(true, { status: "no-statement" });
+  assert.equal(await arm.confirmArmedReferral(REFEREE, h.deps), "retry");
+  assert.ok(arm.armedReferral(REFEREE));
+});
+
+test("no-statement drops an arm older than the ceiling", async () => {
+  arm.armReferral(REFEREE, REFERRER, FEED);
+  NOW = Date.now() + arm.ARM_MAX_AGE_MS + 1;
+  const h = deps(true, { status: "no-statement" });
+  assert.equal(await arm.confirmArmedReferral(REFEREE, h.deps), "no-statement");
+  assert.equal(arm.armedReferral(REFEREE), undefined);
+});
+
+test("only a charges AND payouts read marks the account verified", () => {
+  const heard: string[] = [];
+  accounts.onStripeVerified((a) => heard.push(a));
+  const ORG = "0x5555555555555555555555555555555555555555";
+  accounts.setStripeAccount(ORG, "acct_sync", false);
+
+  accounts.syncStripeVerdict(ORG, "acct_sync", { charges_enabled: true, payouts_enabled: false });
+  assert.equal(accounts.stripeVerificationComplete(ORG), false);
+  assert.deepEqual(heard, []);
+
+  accounts.syncStripeVerdict(ORG, "acct_sync", { charges_enabled: true, payouts_enabled: true });
+  assert.equal(accounts.stripeVerificationComplete(ORG), true);
+  assert.deepEqual(heard, [ORG]);
+
+  accounts.syncStripeVerdict(ORG, "acct_sync", { charges_enabled: true, payouts_enabled: false });
+  assert.equal(accounts.stripeVerificationComplete(ORG), false);
+});
 
 test("the first arm stands", () => {
   arm.armReferral(REFEREE, REFERRER, FEED);

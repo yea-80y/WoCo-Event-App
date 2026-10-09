@@ -23,6 +23,9 @@ import { confirmReferral, type ConfirmResult } from "./issuer.js";
 
 const ARMS_FILE = join(process.cwd(), ".data", "referral-arms.json");
 
+/** How long `no-statement` is retried before the arm is dropped (see below). */
+export const ARM_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
 interface Arm {
   referrer: string;
   feed: string;
@@ -76,18 +79,25 @@ export type ArmOutcome = "none" | "not-verified" | "retry" | Exclude<ConfirmResu
 export interface ArmDeps {
   verified: (address: string) => boolean;
   confirm: (args: { referee: string; refereeFeed: string; referrer: string }) => Promise<ConfirmResult>;
+  now: () => number;
 }
 
-const liveDeps: ArmDeps = { verified: stripeVerificationComplete, confirm: (args) => confirmReferral(args) };
+const liveDeps: ArmDeps = {
+  verified: stripeVerificationComplete,
+  confirm: (args) => confirmReferral(args),
+  now: () => Date.now(),
+};
 
 /**
  * Confirm `referee`'s armed referral if they are verified. Safe to call on every
  * verified write: with nothing armed it is a map lookup.
  *
- * Every answer but `unavailable` ends the arm - confirmed, already confirmed
- * (to anyone), no statement, retracted - because none of them changes on a
- * retry. `unavailable` keeps it for the next `account.updated` or the Home
- * backstop.
+ * `confirmed`, `already` (to anyone) and `retracted` end the arm: none changes
+ * on a retry. `unavailable` keeps it for the next `account.updated`, and so does
+ * `no-statement` until the arm is `ARM_MAX_AGE_MS` old - the issuer's statement
+ * read is not a thorough one, so a statement seconds old (the `/arm` route's
+ * immediate confirm) can read as absent, while an arm only exists after the
+ * client read the statement back (Fable sign-off, #837).
  */
 export async function confirmArmedReferral(referee: string, deps: ArmDeps = liveDeps): Promise<ArmOutcome> {
   const key = referee.toLowerCase();
@@ -102,6 +112,7 @@ export async function confirmArmedReferral(referee: string, deps: ArmDeps = live
     return "retry";
   }
   if (result.status === "unavailable") return "retry";
+  if (result.status === "no-statement" && deps.now() - Date.parse(arm.at) < ARM_MAX_AGE_MS) return "retry";
   disarm(key);
   console.log(`[campaign] armed referral for ${key} -> ${result.status}`);
   return result.status;

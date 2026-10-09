@@ -125,6 +125,23 @@ export function setStripeAccount(
   announceIfVerified(key);
 }
 
+/**
+ * Sync the cached verdict from an account just retrieved from Stripe: charges
+ * AND payouts, whatever the caller itself gates on. The flag fires the referral
+ * confirm (`onStripeVerified`), a write-once record, so a charges-only read must
+ * never set it (Fable sign-off, #837).
+ */
+export function syncStripeVerdict(
+  organiserAddress: string,
+  stripeAccountId: string,
+  account: { charges_enabled?: boolean | null; payouts_enabled?: boolean | null },
+): void {
+  const complete = !!(account.charges_enabled && account.payouts_enabled);
+  if (complete !== getStripeAccount(organiserAddress)?.onboardingComplete) {
+    setStripeAccount(organiserAddress, stripeAccountId, complete);
+  }
+}
+
 /** Record the account's default currency without touching onboarding state. */
 export function setDefaultCurrency(stripeAccountId: string, defaultCurrency: string): void {
   ensureLoaded();

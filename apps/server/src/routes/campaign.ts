@@ -132,7 +132,10 @@ campaignRoutes.post("/referrals/arm", requireAuth, async (c) => {
   if (!referrer || !ADDR.test(referrer) || !refereeFeed || !ADDR.test(refereeFeed)) {
     return c.json({ ok: false, error: "Invalid referral" }, 400);
   }
-  if (referrer === parent) return c.json({ ok: false, error: "You can't refer yourself" }, 400);
+  if (referrer === parent) {
+    noteRefusal();
+    return c.json({ ok: false, error: "You can't refer yourself" }, 400);
+  }
   if (!CONFIRM_LIMIT.allowAll([`p:${parent}`, `ip:${clientIp(c)}`])) {
     return c.json({ ok: false, error: "Too many requests — slow down." }, 429);
   }
