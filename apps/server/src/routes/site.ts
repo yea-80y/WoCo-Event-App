@@ -195,6 +195,7 @@ site.post("/deploy", requireAuth, async (c) => {
     // client-owned site (sites.ts), on the content's batch (#48).
     let feedManifestHash = "";
     let pageFeed: { owner: string; nextIndex: number; rootChunkPayloadB64: string } | undefined;
+    let nameRecorded = true;
     if (body.clientFeed === true) {
       const prep = await prepareEthernaFeedUpdate({
         topic: Topic.fromString(eventPageFeedTopic(eventId)),
@@ -214,7 +215,8 @@ site.post("/deploy", requireAuth, async (c) => {
       void registerEthernaOffer(feedManifestHash).catch((e) =>
         console.warn("[site/deploy] etherna feed-manifest offer failed (non-fatal):", e));
       // The page's name shows THIS build, whatever the feed later says (name-targets.ts).
-      recordNameTarget(feedManifestHash, { kind: "event", id: eventId, owner: parentAddress, latestRef: contentHash });
+      // Not recorded = the name still shows the previous build, so the response says so.
+      nameRecorded = recordNameTarget(feedManifestHash, { kind: "event", id: eventId, owner: parentAddress, latestRef: contentHash });
     }
 
     // Does the name already follow this feed? Read-only chain state, so the
@@ -240,6 +242,7 @@ site.post("/deploy", requireAuth, async (c) => {
         feedManifestHash,
         ...(pageFeed ? { feedOwner: "client" as const, pageFeed } : {}),
         ...(subEns ? { subEns } : {}),
+        ...(nameRecorded ? {} : { nameRecorded: false as const }),
       },
     });
 

@@ -1110,8 +1110,10 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
 
     // The site's name shows THIS build, whatever its feed later says: the CCIP
     // gateway signs the ledger's latest ref, never the holder's feed (name-targets.ts).
+    // Not recorded = the name still shows the previous build, so the response says so.
+    let nameRecorded = true;
     if (feedManifestHash) {
-      recordNameTarget(feedManifestHash, { kind: "site", id: siteId, owner: parentAddress, latestRef: contentHash });
+      nameRecorded = recordNameTarget(feedManifestHash, { kind: "site", id: siteId, owner: parentAddress, latestRef: contentHash });
     }
 
     // Etherna gates anonymous reads behind an OFFER. The content chunk is offered at
@@ -1193,6 +1195,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         ...(multisiteFeed ? { multisiteFeed } : {}),
         // What happened to the site's sub-ENS name, when it has one.
         ...(subEns ? { subEns } : {}),
+        ...(nameRecorded ? {} : { nameRecorded: false as const }),
       },
     });
 

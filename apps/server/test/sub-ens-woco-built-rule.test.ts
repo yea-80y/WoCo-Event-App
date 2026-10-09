@@ -254,6 +254,42 @@ test("an unreadable ledger serves nothing (every name shows the app), alarms, an
   store.__resetNameTargetsForTest();
 });
 
+test("a republish repairs an unreadable record for its own manifest, and leaves the others on disk", () => {
+  const OTHER = h("e");
+  mkdirSync(join(dir, ".data"), { recursive: true });
+  writeFileSync(FILE, JSON.stringify({ [MANIFEST]: { kind: "site", id: 7 }, [OTHER]: "junk" }));
+  store.__resetNameTargetsForTest();
+  assert.equal(store.nameTargetsHealth().unreadableRecords, 2);
+  assert.equal(store.recordNameTarget(MANIFEST, { kind: "site", id: "site-1", owner: OWNER, latestRef: BUILT }), true);
+  assert.equal(store.nameTargetsHealth().unreadableRecords, 1);
+  const disk = JSON.parse(readFileSync(FILE, "utf-8")) as Record<string, unknown>;
+  assert.equal((disk[MANIFEST] as { latestRef?: string }).latestRef, BUILT, "the new record, not the garbage, is on disk");
+  assert.equal(disk[OTHER], "junk", "another manifest's unreadable record is kept untouched");
+  store.__resetNameTargetsForTest();
+  assert.equal(store.lookupNameTarget(MANIFEST), BUILT, "and it survives a restart");
+  writeFileSync(FILE, "{}");
+  store.__resetNameTargetsForTest();
+});
+
+test("a failed write serves nothing new and keeps the unreadable record it would have replaced", () => {
+  mkdirSync(join(dir, ".data"), { recursive: true });
+  writeFileSync(FILE, JSON.stringify({ [MANIFEST]: "junk" }));
+  store.__resetNameTargetsForTest();
+  // The atomic write goes through FILE.tmp: a directory there makes it fail.
+  mkdirSync(`${FILE}.tmp`);
+  try {
+    assert.equal(store.recordNameTarget(MANIFEST, { kind: "site", id: "site-1", owner: OWNER, latestRef: BUILT }), false);
+  } finally {
+    rmSync(`${FILE}.tmp`, { recursive: true, force: true });
+  }
+  assert.equal(store.lookupNameTarget(MANIFEST), null, "not durable, not served");
+  const health = store.nameTargetsHealth();
+  assert.equal(health.writeFailures, 1);
+  assert.equal(health.unreadableRecords, 1, "the record it would have replaced is still accounted for");
+  writeFileSync(FILE, "{}");
+  store.__resetNameTargetsForTest();
+});
+
 // ---------------------------------------------------------------------------
 // The deploy routes write it
 // ---------------------------------------------------------------------------
@@ -264,14 +300,30 @@ test("both deploy routes record what they baked, and only when there is a feed m
   const sites = source("../src/routes/sites.ts");
   assert.match(
     sites,
-    /if \(feedManifestHash\) \{\s*recordNameTarget\(feedManifestHash, \{ kind: "site", id: siteId, owner: parentAddress, latestRef: contentHash \}\);/,
+    /if \(feedManifestHash\) \{\s*nameRecorded = recordNameTarget\(feedManifestHash, \{ kind: "site", id: siteId, owner: parentAddress, latestRef: contentHash \}\);/,
   );
   const page = source("../src/routes/site.ts");
   const clientFeed = page.indexOf("if (body.clientFeed === true) {");
-  const rec = page.indexOf('recordNameTarget(feedManifestHash, { kind: "event", id: eventId, owner: parentAddress, latestRef: contentHash });');
+  const rec = page.indexOf('nameRecorded = recordNameTarget(feedManifestHash, { kind: "event", id: eventId, owner: parentAddress, latestRef: contentHash });');
   const assigned = page.indexOf("feedManifestHash = prep.feedManifestHash;");
   assert.ok(clientFeed > 0 && assigned > clientFeed && rec > assigned, "inside the feed branch, after the manifest is known");
   assert.ok(page.indexOf("}", rec) < page.indexOf("let subEns", clientFeed), "and only there");
+});
+
+test("a deploy whose build was not recorded says so, so the builder can tell the holder", () => {
+  // Otherwise the name silently keeps the previous build while the deploy reads as done.
+  for (const rel of ["../src/routes/sites.ts", "../src/routes/site.ts"]) {
+    const src = source(rel);
+    assert.match(src, /let nameRecorded = true;/, rel);
+    assert.match(src, /\.\.\.\(nameRecorded \? \{\} : \{ nameRecorded: false as const \}\),/, rel);
+  }
+});
+
+test("the ledger is loaded at boot, so an unreadable file alarms before the first lookup", () => {
+  const index = source("../src/index.ts");
+  const boot = index.indexOf("startCampaignIssuer();\n");
+  assert.ok(boot > 0);
+  assert.ok(index.indexOf("nameTargetsHealth()", boot) > boot, "called at top level after boot starts, not only in healthReport");
 });
 
 test("the gateway route wires the rule to the real apex and ledger", () => {

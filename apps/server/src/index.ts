@@ -922,3 +922,9 @@ startEvidencePublisher();
 // clients read, and refuses to write anywhere else if it does not.
 // Inert without CAMPAIGN_ISSUER_PRIVATE_KEY: confirmations answer 503.
 startCampaignIssuer();
+// Load the name-targets ledger now, not on the first name lookup, so an unreadable
+// file alarms in the boot log and on /api/health from the first second.
+{
+  const names = nameTargetsHealth();
+  console.log(`[startup] name targets: ${names.count} built${names.ok ? "" : " - ALARM, see /api/health nameTargets"}`);
+}

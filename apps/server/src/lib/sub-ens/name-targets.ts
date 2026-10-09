@@ -118,6 +118,10 @@ export function recordNameTarget(
   const prev = targets.get(manifest);
   const next: NameTarget = { kind: t.kind, id: t.id, owner, latestRef, at: new Date().toISOString() };
   targets.set(manifest, next);
+  // A fresh deploy repairs an unreadable record for the same manifest; kept, it
+  // would be written over the new one and the name could never be fixed.
+  const garbage = unparsed.get(manifest);
+  const hadGarbage = unparsed.delete(manifest);
   const out: Record<string, unknown> = Object.fromEntries(targets);
   for (const [k, v] of unparsed) out[k] = v;
   if (!writeJsonAtomic(FILE, out, "name-targets")) {
@@ -125,6 +129,7 @@ export function recordNameTarget(
     // would make the name's content depend on whether we restart.
     if (prev) targets.set(manifest, prev);
     else targets.delete(manifest);
+    if (hadGarbage) unparsed.set(manifest, garbage);
     writeFailures++;
     return false;
   }
