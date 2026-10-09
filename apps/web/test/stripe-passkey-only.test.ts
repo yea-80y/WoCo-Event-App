@@ -9,6 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { canOrganise } from "../src/lib/auth/organiser-account.js";
+import { nameLockFrom } from "../src/lib/attendee/gate/name-lock.js";
 
 const read = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
 const ORGANISER = 'const organiser = $derived(!auth.isConnected || canOrganise(auth.kind));';
@@ -40,9 +41,22 @@ test("Profile's Wallet tab offers card payments to organisers only", () => {
   assert.doesNotMatch(branch, /Card Payments|payouts/);
 });
 
-test("the name picker locks behind Stripe for organisers only", () => {
+test("the name picker shows its Stripe panel to organisers only, from the server verdict", () => {
+  // The lock is the server's unlock verdict through one rule (attendee/gate/name-lock.ts),
+  // never a Stripe read of the picker's own. The rule itself keeps the panel, and its
+  // "Set up Stripe" button, from every account that cannot organise - even one the
+  // server calls locked, since the claim's refusal opens the unlock flow instead.
+  for (const kind of ["web3auth", "web3", "coinbase", null]) {
+    const lock = nameLockFrom({ connected: true, organiserKind: canOrganise(kind), gate: { gated: false }, gateLoading: false });
+    assert.equal(lock, "open", `${kind}: never the Stripe panel`);
+  }
+  assert.equal(
+    nameLockFrom({ connected: true, organiserKind: canOrganise("passkey"), gate: { gated: false }, gateLoading: false }),
+    "locked",
+  );
   const picker = read("../src/lib/creator/builder/SubENSPicker.svelte");
-  assert.ok(picker.includes("const stripeLocks = $derived(!auth.isConnected || canOrganise(auth.kind));"));
-  assert.ok(picker.includes("{#if stripeLocks && stripeStatus !== true}"));
+  assert.ok(picker.includes("organiserKind: canOrganise(auth.kind),"), "the picker feeds the rule the same check");
+  assert.ok(picker.includes('{#if lock !== "open"}'), "the panel branches on the rule's answer alone");
+  assert.doesNotMatch(picker, /getStripeAccountStatus|stripeStatus/, "no Stripe read of its own");
   assert.doesNotMatch(picker, /Connect wallet/);
 });
