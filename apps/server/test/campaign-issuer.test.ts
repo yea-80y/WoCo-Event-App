@@ -136,6 +136,9 @@ beforeEach(() => {
 // The confirmation slot
 // ---------------------------------------------------------------------------
 
+/** Lets the fire-and-forget badge writes land before a test looks. */
+const settle = () => new Promise((r) => setImmediate(r));
+
 test("a confirmation already at version 0 ends the attempt, even for another referrer", async () => {
   const { deps, writes } = recorder({
     readVersion0: async () => ({ status: "found", bytes: confirmation(OTHER) }),
@@ -145,8 +148,46 @@ test("a confirmation already at version 0 ends the attempt, even for another ref
 
   assert.equal(res.status, "already");
   assert.equal(res.status === "already" && res.record.referrer, OTHER);
-  assert.equal(writes.length, 0, "the slot is spent — nothing may be written");
+  assert.equal(confirmWrites(writes).length, 0, "the slot is spent — it may never be written again");
   assert.equal(issuer.campaignIssuerHealth().alreadyConfirmed, 1);
+});
+
+test("a standing confirmation is FINISHED on a repeat - for the referrer it names, not the one asked about", async () => {
+  // The shape a timed-out read-back leaves: the chunk landed, the index and the
+  // badges never ran, and the referee's next attempt reads `already`.
+  const { deps, writes } = recorder({
+    readVersion0: async () => ({ status: "found", bytes: confirmation(OTHER) }),
+  });
+
+  await issuer.confirmReferral(ARGS, deps);
+  await settle();
+
+  const S_O = campaignAccountSubject(OTHER);
+  const index = writes.find((w) => w.topic === referrerIndexTopic(S_O, 0));
+  assert.ok(index, "the named referrer's index is appended");
+  assert.deepEqual(dec(index!.bytes), { format: REFERRER_INDEX_FORMAT, subjects: [S_E] });
+  assert.equal(writes.some((w) => w.topic === referrerIndexTopic(S_R, 0)), false, "never the asked-about referrer's");
+  assert.ok(writes.some((w) => w.topic === BADGE_TOPIC), "the referee's badge");
+  assert.ok(writes.some((w) => w.topic === badgeTopic(S_O, "joined")), "the referrer's badge");
+});
+
+test("repairConfirmation finishes a standing confirmation once per process, and not at all when switched off", async () => {
+  const record = JSON.parse(new TextDecoder().decode(confirmation(REFERRER)));
+  const first = recorder();
+  await issuer.repairConfirmation(record, first.deps);
+  await settle();
+  assert.ok(first.writes.some((w) => w.topic === referrerIndexTopic(S_R, 0)));
+
+  const again = recorder();
+  await issuer.repairConfirmation(record, again.deps);
+  await settle();
+  assert.equal(again.writes.length, 0, "a second status read costs nothing");
+
+  issuer.__resetIssuer({ configured: false });
+  const off = recorder();
+  await issuer.repairConfirmation(record, off.deps);
+  await settle();
+  assert.equal(off.writes.length, 0);
 });
 
 test("foreign bytes at version 0 refuse, permanently and loudly", async () => {

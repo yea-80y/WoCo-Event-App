@@ -316,6 +316,11 @@ export async function confirmReferral(
       const existing = parseJson(slot.bytes);
       if (validateReferralConfirmationV1(existing)) {
         health.alreadyConfirmed++;
+        // A standing confirmation may be one whose read-back timed out after the
+        // chunk landed, which returned before the steps below ran. They are all
+        // idempotent, so a repeat finishes them rather than leaving the referrer
+        // locked out of the unlock and both parties without a badge for good.
+        await finishConfirmation(existing, deps);
         return { status: "already", record: existing };
       }
       // Version 0 is spent and holds something this issuer would never have
@@ -387,24 +392,55 @@ export async function confirmReferral(
     health.confirmations++;
     health.lastWriteAt = new Date(deps.now()).toISOString();
 
-    // The referrer's name unlocks on this (#575) — told to the gate from the
-    // confirmation itself, because the index append below can fail without
-    // unmaking it.
-    noteConfirmedReferral(referrer);
-
-    // The index is a CONVENIENCE for the referrer's dashboard — every entry is
-    // re-derivable from the confirmations themselves — so its failure is
-    // recorded and does not unmake a confirmation that is already on Swarm.
-    await appendReferrerIndex(referrer, referee, deps);
-
-    // A confirmed referral is a first meaningful action for both parties.
-    void issueBadge(referee, deps);
-    void issueBadge(referrer, deps);
-
+    await finishConfirmation(record, deps);
     return { status: "confirmed", record };
   } finally {
     inFlight.delete(referee);
   }
+}
+
+/**
+ * Everything a confirmation on Swarm entitles the two parties to. Idempotent end
+ * to end - the index append skips a subject already listed, a badge is never
+ * written over an existing one - so it runs after a fresh write, on every repeat
+ * of a standing one, and from {@link repairConfirmation}.
+ */
+async function finishConfirmation(record: ReferralConfirmationV1, deps: IssuerDeps): Promise<void> {
+  // The referrer's name unlocks on this (#575) — told to the gate from the
+  // confirmation itself, because the index append below can fail without
+  // unmaking it.
+  noteConfirmedReferral(record.referrer);
+
+  // The index is a CONVENIENCE for the referrer's dashboard — every entry is
+  // re-derivable from the confirmations themselves — so its failure is
+  // recorded and does not unmake a confirmation that is already on Swarm.
+  await appendReferrerIndex(record.referrer, record.referee, deps);
+
+  // A confirmed referral is a first meaningful action for both parties.
+  void issueBadge(record.referee, deps);
+  void issueBadge(record.referrer, deps);
+}
+
+/** Referees whose standing confirmation this process has already finished. */
+const repaired = new Set<string>();
+const REPAIRED_MAX = 10_000;
+
+/**
+ * Finish a confirmation the referee's status read found standing, once per
+ * process. Without it a confirmation whose read-back timed out stays half done
+ * forever: the referee's Home sees it and never asks to confirm again.
+ */
+export function repairConfirmation(record: ReferralConfirmationV1, deps: IssuerDeps = liveDeps()): Promise<void> {
+  if (!health.configured) return Promise.resolve();
+  const key = record.referee.toLowerCase();
+  if (repaired.has(key)) return Promise.resolve();
+  if (repaired.size >= REPAIRED_MAX) repaired.clear();
+  repaired.add(key);
+  return finishConfirmation(record, deps).catch((err) => {
+    // Unfinished, so the next status read may try again.
+    repaired.delete(key);
+    console.warn(`[campaign] repair failed for ${key}:`, err);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +702,7 @@ export function campaignIssuerHealth(): Record<string, unknown> {
 export function __resetIssuer(opts: { configured?: boolean } = {}): void {
   inFlight.clear();
   badgesInFlight.clear();
+  repaired.clear();
   Object.assign(health, {
     configured: opts.configured ?? false,
     confirmations: 0,
