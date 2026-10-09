@@ -108,3 +108,16 @@ test("a tree that is not the shape bee makes for its size is refused at the root
   await assert.rejects(readBytesTree(ref, fetch, 10_000), /children its span needs/);
   assert.equal(fetched, 1, "refused before any child is fetched");
 });
+
+test("a chunk served wrong is the source's fault; a wrong tree is the reference's", async () => {
+  const d = data(10_000);
+  const m = store(d);
+  const leaf = bytesTreeChunks(d)[0]!.address;
+  const bad = m.get(leaf)!.slice();
+  bad[30] ^= 1;
+  const served = new Map(m).set(leaf, bad);
+  const e1 = await readBytesTree(bytesTreeRoot(d), fetchFrom(served), 10_000).catch((e) => e);
+  assert.ok(e1 instanceof BytesTreeMismatchError && e1.fromSource === true);
+  const e2 = await readBytesTree(bytesTreeRoot(d), fetchFrom(m), 9_999).catch((e) => e);
+  assert.ok(e2 instanceof BytesTreeMismatchError && e2.fromSource === false);
+});

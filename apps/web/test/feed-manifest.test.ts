@@ -70,3 +70,16 @@ test("a properly obfuscated manifest is read through its key, as bee does", () =
   const body = REAL.subarray(8 + 32).map((b, i) => b ^ key[i % 32]!);
   assert.deepEqual(feedOfManifestChunk(chunkOf(Uint8Array.from([...key, ...body]))), { owner: OWNER, topic: TOPIC });
 });
+
+test("the bytes bee skips or reads differently are refused too: another bitmap bit, a padded prefix, a longer prefix", () => {
+  // Offsets in the chunk: span 8, key 32, version 31, target length 1, target 32 -> bitmap at 104; fork at 136.
+  const extraBit = REAL.slice();
+  extraBit[104] |= 1;
+  assert.equal(feedOfManifestChunk(extraBit), null);
+  const paddedPrefix = REAL.slice();
+  paddedPrefix[136 + 2 + 5] = 0x41;
+  assert.equal(feedOfManifestChunk(paddedPrefix), null);
+  const longerPrefix = REAL.slice();
+  longerPrefix[136 + 1] = 2; // "/" then a zero byte: another path to bee
+  assert.equal(feedOfManifestChunk(longerPrefix), null);
+});

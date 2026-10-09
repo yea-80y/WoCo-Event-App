@@ -288,3 +288,12 @@ test("a high-water file that cannot be read is never written, and health says so
   assert.equal(writes, 0);
   assert.equal(keyRingHealth().ok, false);
 });
+
+test("strict: a chain that cannot answer is unavailable, even with a ring seen before", async () => {
+  const { ref } = await ringFor(ACCOUNT, 1);
+  anchor.set(ACCOUNT, `0x${ref}`);
+  await currentRing(ACCOUNT);
+  anchorDown = true;
+  assert.equal((await currentRing(ACCOUNT, { fresh: true })).status, "ring", "an event read keeps the ring seen");
+  assert.equal((await currentRing(ACCOUNT, { fresh: true, strict: true })).status, "unavailable", "refresh says what the chain says NOW");
+});

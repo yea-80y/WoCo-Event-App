@@ -41,3 +41,7 @@ test("own feeds are read thorough, and an unreadable or inconclusive one stops t
   assert.match(r, /thorough: true/);
   assert.match(r, /if \(res\.status === "unavailable" \|\| \(res\.status === "found" && !res\.scanClean\)\) \{\s*throw/);
 });
+
+test("the server is counted as told only when it names the ring just set", () => {
+  assert.match(LIVE, /if \(res\.data\?\.ref !== ctx\.ring\) throw new Error/);
+});
