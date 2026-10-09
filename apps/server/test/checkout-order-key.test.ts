@@ -117,3 +117,27 @@ test("create-checkout: keys that cannot be read pause the sale, even with the ev
   const res = await post("create-checkout", { eventId: EVENT, seriesId: SERIES, claimerEmail: "a@example.com", encryptedOrder: BOX, encryptionKeyRef: K0 });
   assert.equal(res.status, 503);
 });
+
+test("create-checkout: an organiser-signed event with no record is not sold (owner 10-09)", async () => {
+  noRings();
+  const LEGACY = "e0000000-0000-4000-8000-0000000000c9";
+  service.primeEventCache(LEGACY, {
+    v: 1,
+    eventId: LEGACY,
+    title: "Before records",
+    description: "",
+    imageHash: "00".repeat(32),
+    startDate: "2099-01-01T00:00:00.000Z",
+    endDate: "2099-01-02T00:00:00.000Z",
+    location: "L",
+    creatorAddress: CREATOR,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    encryptionKeyRef: K0,
+    creatorFeedSigner: F0,
+    series: [{ seriesId: SERIES, name: "GA", totalSupply: 10, price: 5, payment: { price: "5.00", currency: "GBP", stripeEnabled: true } }],
+  } as unknown as EventFeed);
+  assert.deepEqual(await post("create-checkout", { eventId: LEGACY, seriesId: SERIES, claimerEmail: "a@example.com", encryptedOrder: BOX, encryptionKeyRef: K0 }), {
+    status: 409,
+    code: "EVENT_NEEDS_REPUBLISH",
+  });
+});

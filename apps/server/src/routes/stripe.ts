@@ -692,6 +692,16 @@ stripe.post("/create-checkout", async (c) => {
   // fulfilment fallback seals one to the event's key, which is the current one.
   const keys = await eventKeys(eventId);
   if (keys.kind === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
+  // An organiser-signed event with no record (made before #670) has no trust root at all:
+  // its feed alone says who made it and who is paid, and a removed passkey can rewrite it.
+  // Not sold (owner 10-09); the organiser re-creates it. Platform-signed legacy feeds
+  // carry no organiser signer and are unaffected.
+  if (keys.kind === "legacy" && event.creatorFeedSigner) {
+    return c.json(
+      { ok: false, error: "This event can't take orders. The organiser needs to publish it again.", code: "EVENT_NEEDS_REPUBLISH" },
+      409,
+    );
+  }
   if (preparedRef || inlineOrderJson) {
     const bodyKey = typeof (body as { encryptionKeyRef?: unknown }).encryptionKeyRef === "string"
       ? (body as { encryptionKeyRef: string }).encryptionKeyRef
