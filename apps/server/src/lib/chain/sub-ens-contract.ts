@@ -1,11 +1,12 @@
 import {
-  JsonRpcProvider, Contract, Wallet, type EventLog, type Log, keccak256, toUtf8Bytes, concat, namehash, hexlify,
+  JsonRpcProvider, Contract, Wallet, type EventLog, type Log, keccak256, toUtf8Bytes, concat, namehash,
 } from "ethers";
 import { SUB_ENS_DEFAULT_CHAIN_ID, SUB_ENS_DEPLOYMENTS, getSubEnsDeployment, subEnsName } from "@woco/shared";
 import type { SubEnsDeployment } from "@woco/shared";
 import { getChainRpcUrl } from "./event-contract.js";
 import { sendSponsorTx } from "./sponsor-nonce.js";
 import { warmSubEnsWebCertWhenResolvable } from "../sub-ens/cert-warmup.js";
+import { servedContenthashFor } from "../ens-gateway/served-contenthash.js";
 import { publicContenthashQueryUrl } from "../ens-gateway/public-url.js";
 
 // namehash("woco.eth") — the base node of our L2Registry.
@@ -158,26 +159,10 @@ const REGISTRAR_ABI = [
   "error Unauthorized(bytes32 node)",
 ];
 
-// ENS contenthash encoding for a Swarm BZZ hash (EIP-1577 / ENSIP-7).
-// Layout: swarm-manifest codec varint (0xe4,0x01=228) | version 0x01 | network varint (0xfa,0x01=250) | keccak-256 code 0x1b | hash length 0x20 | 32-byte hash
-const SWARM_ENS_PREFIX = Buffer.from("e40101fa011b20", "hex");
-
-export function encodeSwarmContenthash(hexHash: string): Uint8Array {
-  const clean = hexHash.replace(/^0x/, "");
-  if (!/^[a-f0-9]{64}$/i.test(clean)) throw new Error("Swarm hash must be 64 hex chars (32 bytes)");
-  return Buffer.concat([SWARM_ENS_PREFIX, Buffer.from(clean, "hex")]);
-}
-
-const SWARM_ENS_PREFIX_HEX = SWARM_ENS_PREFIX.toString("hex");
-
-/** Reverse of encodeSwarmContenthash — recovers the 64-hex Swarm hash, or null for a
- *  non-Swarm / empty record. Used to build a preview URL for a name's current target. */
-export function decodeSwarmContenthash(contenthash: string): string | null {
-  const clean = (contenthash || "").replace(/^0x/, "").toLowerCase();
-  if (!clean.startsWith(SWARM_ENS_PREFIX_HEX)) return null;
-  const hash = clean.slice(SWARM_ENS_PREFIX_HEX.length);
-  return /^[a-f0-9]{64}$/.test(hash) ? hash : null;
-}
+// The Swarm contenthash codec lives in a dependency-free module so the CCIP
+// gateway can share it; re-exported here for every existing caller.
+export { encodeSwarmContenthash, decodeSwarmContenthash } from "../sub-ens/swarm-contenthash.js";
+import { encodeSwarmContenthash, decodeSwarmContenthash } from "../sub-ens/swarm-contenthash.js";
 
 const _providers = new Map<number, JsonRpcProvider>();
 
@@ -624,11 +609,15 @@ export async function relaySignedContenthash(
   // No signature in the log: it is a bearer authorisation until mined.
   console.log(`[sub-ens] pointer relayed label=${label} hash=${swarmHash.slice(0, 10)}… txHash=${receipt.hash}`);
   // Fire-and-forget: the receipt is the fact callers wait for; the warm-up is a
-  // courtesy, and it waits until eth.limo can resolve the new pointer (#557).
-  void warmSubEnsWebCertWhenResolvable(
-    label,
-    { contenthash: hexlify(contenthash), swarmHash },
-    publicContenthashQueryUrl(subEnsName(label), chainId, getRegistryAddress(chainId)),
-  );
+  // courtesy, and it waits until eth.limo can resolve the name (#557) - to what the
+  // gateway's WoCo-built rule serves for this pointer, not the pointer itself.
+  const served = servedContenthashFor(swarmHash);
+  if (served) {
+    void warmSubEnsWebCertWhenResolvable(
+      label,
+      served,
+      publicContenthashQueryUrl(subEnsName(label), chainId, getRegistryAddress(chainId)),
+    );
+  }
   return receipt.hash as string;
 }

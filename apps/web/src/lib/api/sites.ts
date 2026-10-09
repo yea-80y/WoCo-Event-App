@@ -65,6 +65,8 @@ export interface DeploySiteResult {
    * `awaiting_signature` means the HOLDER must sign that pointer once.
    */
   subEns?: SiteDeploySubEns;
+  /** The server could not record this build for the name: it still shows the previous one. */
+  nameRecorded?: false;
 }
 
 /**
@@ -115,6 +117,8 @@ export interface DeployEventPageResult {
   pageFeed?: { owner: string; nextIndex: number; rootChunkPayloadB64: string };
   /** The name's state against the page feed, when a name was sent (#614). */
   subEns?: SiteDeploySubEns;
+  /** The server could not record this build for the name: it still shows the previous one. */
+  nameRecorded?: false;
 }
 
 /**
