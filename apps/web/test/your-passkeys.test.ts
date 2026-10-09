@@ -142,7 +142,9 @@ test("removing: a legacy device only itself, a co-owner any - confirmed fresh, o
   const rot = read("../src/lib/keyring/rotate.ts");
   assert.ok(rot.indexOf("await s.flip(pending.going") < rot.indexOf("await s.after[step](keys, { going: p.going });"), "off the list first");
   assert.ok(read("../src/lib/keyring/rotate.ts").includes('"records"'));
-  assert.match(body(STORE, "async function _rotateOnRemoval("), /removeRecord: \(key\) => _removeRecordAfterList\(u\.parent, key\),/);
+  const keys = read("../src/lib/keyring/account-keys.ts");
+  assert.match(keys, /removeRecord: \(key\) => h\.removeRecordAfterList\(u\.parent, key\),/);
+  assert.match(body(STORE, "function _keysHost("), /removeRecordAfterList: \(parent, key\) => _removeRecordAfterList\(parent, key\),/);
   assert.match(b, /if \(target === self\) await _forgetThisPasskey\(self\);/);
   assert.match(
     body(STORE, "async function _forgetThisPasskey("),

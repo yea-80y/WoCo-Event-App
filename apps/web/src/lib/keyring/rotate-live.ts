@@ -152,15 +152,15 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
       return { secret, feedSigner: k.feedSigner, orderKeyRef: k.orderKeyRef, orderPublicKey: k.orderKey.publicKey };
     },
     loadPending: async () => {
-      const { openPendingRotation } = await import("../auth/account-chain.js");
+      const { openPendingRotation } = await import("./pending-rotation.js");
       return (await openPendingRotation(self, parent, h.self.prfSecret)) as PendingRotation | null;
     },
     savePending: async (p) => {
-      const { storePendingRotation } = await import("../auth/account-chain.js");
+      const { storePendingRotation } = await import("./pending-rotation.js");
       await storePendingRotation(self, parent, p, h.self.prfSecret);
     },
     clearPending: async () => {
-      const { clearPendingRotation } = await import("../auth/account-chain.js");
+      const { clearPendingRotation } = await import("./pending-rotation.js");
       await clearPendingRotation(self);
     },
 

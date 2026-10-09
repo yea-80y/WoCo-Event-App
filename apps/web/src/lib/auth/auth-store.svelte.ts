@@ -64,17 +64,8 @@ import {
   clearPublicKeys,
 } from "./identity-seed.js";
 import { SEED_UNLOCK_POLICY, unlockExpiry } from "./seed-unlock-policy.js";
-import {
-  allSecretsOf,
-  clearChainWindow,
-  currentSecretOf,
-  hasLockedChain,
-  openLockedChain,
-  restoreChainWindow,
-  storeLockedChain,
-  writeChainWindow,
-  type AccountChain,
-} from "./account-chain.js";
+import { allSecretsOf, clearChainWindow, currentSecretOf, storeLockedChain, type AccountChain } from "./account-chain.js";
+import type { AccountKeysHost, KeysVerdict } from "../keyring/account-keys.js";
 import { linkedEnvelopePendingKey } from "./make-main-key.js";
 import { requestChallenge, sha256Hex } from "./request-challenge.js";
 import { apiBase } from "../api/http.js";
@@ -151,12 +142,14 @@ let _chainLoad: Promise<void> | null = null;
 // Whether this unlock's generation is CONFIRMED current (#186). Only "ok" signs or
 // seals; "behind" = the chain names a newer ring (an unlock takes it); "keyless" = this
 // passkey was left out of it; "unknown" = the chain could not be read.
-type KeysVerdict = "pending" | "ok" | "behind" | "keyless" | "foreign" | "unknown";
 let _keysVerdict: KeysVerdict = "pending";
 let _anchorMemo: { account: string; ref: string | null; at: number } | null = null;
 // What the last ring check found worth saying (#186): this passkey was left out of the
 // account's keys, or the keys moved on from another passkey. Null = nothing to say.
 let _keyRingNotice = $state<null | "keyless" | "changed">(null);
+// A removal this device began and did not finish before its flip (#186): it waits for
+// the person to press "Finish removing". One past the flip finishes by itself.
+let _pendingRemoval = $state<null | { going: string[] }>(null);
 // The content-feed signer a passkey account posts with while its seed is locked
 // (#746), memoised from its cached copy. Survives a relock - that is the point - but
 // never an account switch, a heal or a sign-out.
@@ -398,78 +391,63 @@ function _setUnlockedSeed(
   _chainLoad = _loadAccountChain(seedAddr, account, gen, "unlock");
 }
 
+// The key-ring flows (#186) load lazily: the store keeps the state and the gates that
+// read it, and lends both through `_keysHost()` - every page load stays as light as before.
+const _keys = () => import("../keyring/account-keys.js");
+
+function _keysHost(): AccountKeysHost {
+  return {
+    isPasskey: () => _kind === "passkey",
+    deviceRole: () => !!_deviceRole,
+    unlocked: () => _unlocked,
+    setChain: (chain) => {
+      if (_unlocked) _unlocked = { ..._unlocked, chain };
+    },
+    lockGen: () => _lockGen,
+    prf: () => _passkeyPrfSecret,
+    ownerKey: () => _passkeyPrivateKey,
+    self: () => _seedAddress?.toLowerCase() ?? null,
+    relock: () => _relockPasskey(),
+    setVerdict: (v) => {
+      _keysVerdict = v;
+    },
+    setNotice: (n) => {
+      _keyRingNotice = n;
+    },
+    commitSigner: () => _commitSigner(),
+    requireCurrentKeys: (o) => _requireCurrentKeys(o),
+    currentKeysConfirmed: () => _currentKeysConfirmed(),
+    anchorMemo: () => _anchorMemo,
+    setAnchorMemo: (m) => {
+      _anchorMemo = m;
+    },
+    ensurePasskeyKey: () => _ensurePasskeyKey(),
+    ensureKernel: () => _ensureKernel(),
+    kernel: () => _kernel,
+    coOwnerHost: () => _coOwnerHost(),
+    removeRecordAfterList: (parent, key) => _removeRecordAfterList(parent, key),
+    signTypedDataAsHolder: (typed) => signTypedDataAsHolder(typed as Parameters<typeof signTypedDataAsHolder>[0]),
+    setRemovalProgress: (p) => {
+      _removalProgress = p;
+    },
+    setPendingRemoval: (p) => {
+      _pendingRemoval = p;
+    },
+    seedLockedMessage: () => _seedLockedMessage(),
+  };
+}
+
 /**
- * The account's later secrets (#186), right after its seed unlocked: opened with the
- * passkey when a ceremony just ran, else from the window copy, then checked against the
- * chain. A seed restored from its window while the chain's window copy is missing - but
- * a locked chain exists - is relocked rather than run on generation 0. ANY failure
- * leaves the verdict short of "ok": nothing then signs or seals (fail closed).
+ * The account's later secrets, right after its seed unlocked (`account-keys.ts`). ANY
+ * failure - the module not loading included - leaves the verdict short of "ok": nothing
+ * then signs or seals (fail closed).
  */
 async function _loadAccountChain(seedAddr: string, parent: string, gen: number, mode: "window" | "unlock"): Promise<void> {
-  const current = () => gen === _lockGen && _unlocked?.seedAddress === seedAddr && _unlocked.parent === parent;
   try {
-    const prf = mode === "unlock" ? _passkeyPrfSecret : null;
-    if (!_unlocked?.chain) {
-      const chain = prf
-        ? await openLockedChain(seedAddr, parent, prf)
-        : await restoreChainWindow(seedAddr, parent, SEED_UNLOCK_POLICY);
-      if (!current()) return;
-      if (chain) {
-        _applyChain(chain, { persistWindow: !!prf });
-      } else if (!prf && (await hasLockedChain(seedAddr))) {
-        console.warn("[auth] account keys have no open window copy - locking until the next confirm");
-        if (current()) _relockPasskey();
-        return;
-      }
-    }
-    const verdict = await _verifyCurrentKeys(prf);
-    if (!current()) return;
-    _keysVerdict = verdict;
-    if (verdict === "ok") {
-      _commitSigner();
-      // A co-owned account's passkey with no ring entry yet adds itself (#186), once.
-      if (prf && _unlocked?.chain?.ringRef !== _enrolledAt(seedAddr)) void _enrolSelfOnce(seedAddr);
-    }
+    await (await _keys()).loadAccountChain(_keysHost(), seedAddr, parent, gen, mode);
   } catch (e) {
     console.warn("[auth] account keys could not be checked:", e);
-    if (current()) _keysVerdict = "unknown";
-  }
-}
-
-/** The ring this passkey last confirmed itself in, so an unlock does not re-check it every time. */
-function _enrolledAt(seedAddr: string): string | null {
-  try {
-    return globalThis.localStorage?.getItem(`woco:keyring:enrolled:${seedAddr}`) ?? null;
-  } catch {
-    return null;
-  }
-}
-
-async function _enrolSelfOnce(seedAddr: string): Promise<void> {
-  await _enrolSelfInKeyRing();
-  const ref = _unlocked?.chain?.ringRef;
-  if (!ref) return;
-  try {
-    const { fetchKeyRing } = await import("../keyring/ring-read.js");
-    const ring = await fetchKeyRing(ref);
-    if (ring.entries.some((e) => e.statement.coOwner === seedAddr)) {
-      globalThis.localStorage?.setItem(`woco:keyring:enrolled:${seedAddr}`, ref);
-    }
-  } catch {
-    /* checked again at the next unlock */
-  }
-}
-
-/** Use `chain` as the account's later secrets from now on (the signer is committed by a verdict). */
-function _applyChain(chain: AccountChain, opts: { persistWindow: boolean }): void {
-  const u = _unlocked;
-  if (!u) return;
-  _unlocked = { ...u, chain };
-  if (opts.persistWindow) {
-    const gen = _lockGen;
-    void writeChainWindow(u.seedAddress, u.parent, chain, u.expiresAt, () => gen === _lockGen).catch((e) =>
-      console.warn("[auth] could not keep the account keys' window (non-fatal):", e),
-    );
+    if (gen === _lockGen) _keysVerdict = "unknown";
   }
 }
 
@@ -494,86 +472,9 @@ function _commitSigner(): void {
   );
 }
 
-/**
- * Is what this device holds the account's current generation? Reads the anchor (no
- * passkey needed). A newer ring is adopted only with the PRF in hand - its entry opens
- * with this passkey's box key; without it the answer is "behind".
- */
-async function _verifyCurrentKeys(prf: string | null): Promise<KeysVerdict> {
-  if (_kind !== "passkey") return "ok";
-  const u = _unlocked;
-  if (!u) return "unknown";
-  const ref = await _readAnchor(u.parent, { fresh: true });
-  if (ref === "error") return "unknown";
-  const held = u.chain?.ringRef ?? null;
-  // The contract never clears an entry: none while a ring is held is a lagging read.
-  if (ref === held || ref === null) return "ok";
-  if (!prf) return "behind";
-  return _syncKeyRing(prf);
-}
-
-/**
- * Take the account's current key ring (#186), with this passkey's PRF output in hand.
- */
-async function _syncKeyRing(prf: string): Promise<KeysVerdict> {
-  const u = _unlocked;
-  const coOwner = _seedAddress?.toLowerCase();
-  if (_kind !== "passkey" || !u || !coOwner) return "unknown";
-  const gen = _lockGen;
-  const [{ adoptKeyRing }, { fetchKeyRing }, { readRingAnchor }, { passkeyBoxKeypair }] = await Promise.all([
-    import("../keyring/adopt.js"),
-    import("../keyring/ring-read.js"),
-    import("./kernel-account.js"),
-    import("@woco/shared/keyring/account-secret"),
-  ]);
-  const box = passkeyBoxKeypair(prf);
-  try {
-    const res = await adoptKeyRing({
-      parent: u.parent,
-      coOwner,
-      boxSecretKey: box.secretKey,
-      seed: u.seed,
-      held: u.chain,
-      readAnchor: readRingAnchor,
-      fetchRing: fetchKeyRing,
-    });
-    const stillOurs = gen === _lockGen && _unlocked?.seedAddress === u.seedAddress && _unlocked.parent === u.parent;
-    if (!stillOurs) return "unknown";
-    switch (res.status) {
-      case "adopted": {
-        await storeLockedChain(u.seedAddress, u.parent, res.chain, prf);
-        const before = u.chain?.gen ?? 0;
-        _applyChain(res.chain, { persistWindow: true });
-        if (res.chain.gen > before) _keyRingNotice = "changed";
-        return "ok";
-      }
-      case "none":
-      case "current":
-      case "older":
-        return "ok";
-      case "keyless":
-        _keyRingNotice = "keyless";
-        return "keyless";
-      case "foreign":
-        console.error("[auth] the account's key ring does not belong to this seed - not used");
-        return "foreign";
-      default:
-        console.warn(`[auth] key ring check: ${res.reason}`);
-        return "unknown";
-    }
-  } finally {
-    box.secretKey.fill(0);
-  }
-}
-
-/** The anchor, cached briefly for the silent paths that ask it often (fresh at every unlock). */
+/** The anchor, cached briefly for the silent paths that ask it often. */
 async function _readAnchor(account: string, opts: { fresh?: boolean } = {}): Promise<string | null | "error"> {
-  const now = Date.now();
-  if (!opts.fresh && _anchorMemo?.account === account && now - _anchorMemo.at < 30_000) return _anchorMemo.ref;
-  const { readRingAnchor } = await import("./kernel-account.js");
-  const ref = await readRingAnchor(account);
-  if (ref !== "error") _anchorMemo = { account, ref, at: now };
-  return ref;
+  return (await _keys()).readAnchor(_keysHost(), account, opts);
 }
 
 /**
@@ -585,14 +486,8 @@ async function _readAnchor(account: string, opts: { fresh?: boolean } = {}): Pro
 async function _requireCurrentKeys(opts: { prompt?: boolean } = {}): Promise<void> {
   if (_kind !== "passkey") return;
   if (_chainLoad) await _chainLoad;
-  if (_keysVerdict === "behind" && opts.prompt) {
-    await _ensurePasskeyKey();
-    const prf = _passkeyPrfSecret;
-    const verdict = prf ? await _verifyCurrentKeys(prf) : "unknown";
-    _keysVerdict = verdict;
-    if (verdict === "ok") _commitSigner();
-  }
-  if (_keysVerdict !== "ok") throw new Error(_keysVerdictMessage(_keysVerdict));
+  if (_keysVerdict === "behind" && opts.prompt) await (await _keys()).catchUp(_keysHost());
+  if (_keysVerdict !== "ok") throw new Error((await _keys()).keysVerdictMessage(_keysVerdict));
 }
 
 /** As `_requireCurrentKeys`, for silent paths: true only when the current generation is confirmed. */
@@ -600,19 +495,6 @@ async function _currentKeysConfirmed(): Promise<boolean> {
   if (_kind !== "passkey") return true;
   if (_chainLoad) await _chainLoad.catch(() => {});
   return _keysVerdict === "ok";
-}
-
-function _keysVerdictMessage(v: KeysVerdict): string {
-  switch (v) {
-    case "behind":
-      return "Your account's keys changed on another of your passkeys. Confirm it's you to update this device.";
-    case "keyless":
-      return "This passkey doesn't have your account's latest keys. Open WoCo on another of your passkeys to set it up.";
-    case "foreign":
-      return "This device's keys don't match your account. Sign in again.";
-    default:
-      return "Couldn't check your account's keys right now - try again in a moment.";
-  }
 }
 
 /** The secret everything this account signs or seals NOW is derived from. */
@@ -1165,6 +1047,9 @@ async function _clearStaleAuthForSwitch(address: string): Promise<void> {
     _feedSignerAddressMemo = null;
     _feedSignerCache = null;
     _unlocked = null;
+    _anchorMemo = null;
+    _keyRingNotice = null;
+    _pendingRemoval = null;
     // What opens the outgoing account without its passkey goes with it, as at
     // sign-out (#746); its locked copy stays.
     if (priorSeedAddr) {
@@ -2777,83 +2662,20 @@ async function _addCoOwnerWithRecord<T>(
   return (await import("./co-owner-flows.js")).addCoOwnerWithRecord(_coOwnerHost(), key, record, ring);
 }
 
-type RingChange = { prev: string | null; next: string; chain: AccountChain };
-
-/**
- * The account's key ring for a co-owner change made from this device (#186), stored and
- * ready to ride in the same op - or null when nothing about the ring changes. The ring
- * always includes THIS passkey (a device that changes the account must be able to open
- * its keys), never re-seals to a key that is off the list, and is built only from the
- * CONFIRMED current generation: a device behind refuses rather than fork the ring.
- * `add`: members of passkeys being added whose keys are on this device.
- */
-async function _ringForChange(add: import("@woco/shared/keyring/ring").KeyRingMember[]): Promise<RingChange | null> {
-  if (_kind !== "passkey") return null;
-  await _requireCurrentKeys({ prompt: true });
-  const u = _unlocked;
-  const self = _seedAddress?.toLowerCase();
-  const ownerKey = _passkeyPrivateKey;
-  const prf = _passkeyPrfSecret;
-  if (!u || !self || !ownerKey || !prf) throw new Error(_seedLockedMessage());
-  const [members, { fetchKeyRing }, kernel] = await Promise.all([
-    import("../keyring/members.js"),
-    import("../keyring/ring-read.js"),
-    import("./kernel-account.js"),
-  ]);
-  const ref = await _readAnchor(u.parent, { fresh: true });
-  const held = u.chain?.ringRef ?? null;
-  if (ref === "error" || (ref === null && held !== null)) throw new Error(_keysVerdictMessage("unknown"));
-  if (ref !== held) throw new Error(_keysVerdictMessage("behind"));
-  const current = ref ? { ref, ring: await fetchKeyRing(ref) } : null;
-  const root = await kernel.readKernelRoot(u.parent);
-  if (root === "error") throw new Error(_keysVerdictMessage("unknown"));
-  const listed = root === "weighted" ? await kernel.readCoOwners(u.parent) : [self];
-  if (listed === "error" || listed === null) throw new Error(_keysVerdictMessage("unknown"));
-  // One passkey and nothing added: no ring is needed until the account has a second.
-  if (add.length === 0 && root !== "weighted") return null;
-  const inRing = new Set(current?.ring.entries.map((e) => e.statement.coOwner) ?? []);
-  const selfMember = inRing.has(self) ? [] : [await members.memberOf(u.parent, { address: self, privateKey: ownerKey, prfSecret: prf })];
-  if (add.length === 0 && selfMember.length === 0) return null;
-  const ring = await members.ringWithMembers({
-    parent: u.parent,
-    seed: u.seed,
-    chain: u.chain,
-    current,
-    onChain: [...listed, ...add.map((m) => m.statement.coOwner)],
-    add: [...selfMember, ...add],
-  });
-  const next = await members.storeKeyRing(ring);
-  return { prev: ref, next, chain: { ringRef: next, gen: ring.gen, secrets: u.chain?.secrets ?? [] } };
+/** The account's key ring for a co-owner change made from this device (`account-keys.ts`). */
+async function _ringForChange(add: import("@woco/shared/keyring/ring").KeyRingMember[]) {
+  return (await _keys()).ringForChange(_keysHost(), add);
 }
 
 /** The ring this device just named onchain is the account's now: hold it as current. */
 async function _adoptOwnRing(chain: AccountChain): Promise<void> {
-  const u = _unlocked;
-  const prf = _passkeyPrfSecret;
-  if (!u || !prf) return;
-  await storeLockedChain(u.seedAddress, u.parent, chain, prf);
-  _applyChain(chain, { persistWindow: true });
-  _anchorMemo = { account: u.parent, ref: chain.ringRef, at: Date.now() };
-  _keysVerdict = "ok";
-  _commitSigner();
+  return (await _keys()).adoptOwnRing(_keysHost(), chain);
 }
 
-/**
- * Put THIS passkey into the account's key ring when it holds the current keys but has
- * no entry yet (#186) - a device just linked, or one from before key rings. One
- * sponsored op, once; a failure is retried at the next unlock. Without an entry, the
- * next removal would leave this device without the account's new keys.
- */
+/** Put THIS passkey into the account's key ring when it has no entry yet; once, retried at unlock. */
 async function _enrolSelfInKeyRing(): Promise<void> {
   try {
-    if (_kind !== "passkey" || _deviceRole || !(await _currentKeysConfirmed())) return;
-    const ring = await _ringForChange([]);
-    if (!ring) return;
-    await _ensureKernel();
-    if (!_kernel) return;
-    const { setKeyRingAlone } = await import("./kernel-account.js");
-    const res = await setKeyRingAlone(_kernel, { prev: ring.prev, next: ring.next });
-    if (res.confirmed) await _adoptOwnRing(ring.chain);
+    await (await _keys()).enrolSelfInKeyRing(_keysHost());
   } catch (e) {
     console.warn("[auth] could not add this passkey to the account's keys yet (retried at the next unlock):", e);
   }
@@ -3062,49 +2884,12 @@ async function removePasskeys(grantees: string[]): Promise<void> {
 /** The step of a removal under way, for its progress sheet (#186). Null = none. */
 let _removalProgress = $state<import("../keyring/rotate.js").RotationProgress | null>(null);
 
-/**
- * Remove passkeys and move the account to new keys (#186), or finish a removal this
- * device started (`resume`). Needs the account's CURRENT generation confirmed and this
- * passkey's keys in hand - the caller has asked for a fresh confirm.
- */
+/** Remove passkeys and move the account to new keys (#186), or finish one (`resume`). */
 async function _rotateOnRemoval(
   going: string[],
   opts: { resume?: boolean } = {},
 ): Promise<import("../keyring/rotate.js").RotationResult> {
-  await _requireCurrentKeys({ prompt: true });
-  const u = _unlocked;
-  const prf = _passkeyPrfSecret;
-  const ownerKey = _passkeyPrivateKey;
-  const self = _seedAddress?.toLowerCase();
-  if (_kind !== "passkey" || !u || !prf || !ownerKey || !self) throw new Error(_seedLockedMessage());
-  const [{ rotateOnRemoval }, { liveRotationSteps }, flows] = await Promise.all([
-    import("../keyring/rotate.js"),
-    import("../keyring/rotate-live.js"),
-    import("./co-owner-flows.js"),
-  ]);
-  const steps = liveRotationSteps({
-    parent: u.parent,
-    self: { address: self, privateKey: ownerKey, prfSecret: prf },
-    seed: u.seed,
-    chain: u.chain,
-    oldSigner: deriveFeedSignerKey(currentSecretOf(u.seed, u.chain)),
-    oldSecrets: allSecretsOf(u.seed, u.chain),
-    flip: async (g, ring) => {
-      await flows.removeCoOwnersWithRing(_coOwnerHost(), g, ring);
-      return { confirmed: true };
-    },
-    adopt: (chain) => _adoptOwnRing(chain),
-    signTypedDataAsHolder: (typed) => signTypedDataAsHolder(typed as Parameters<typeof signTypedDataAsHolder>[0]),
-    removeRecord: (key) => _removeRecordAfterList(u.parent, key),
-    progress: (p) => {
-      _removalProgress = p;
-    },
-  });
-  try {
-    return await rotateOnRemoval(steps, going, opts);
-  } finally {
-    _removalProgress = null;
-  }
+  return (await _keys()).rotateOnRemovalFor(_keysHost(), going, opts);
 }
 
 /** This device's own passkey left the account: forget it here and sign out. */
@@ -5346,6 +5131,11 @@ async function clearAllAuth(): Promise<void> {
   _identitySeedPresent = false;
   _unlocked = null;
   _feedSignerCache = null;
+  _chainLoad = null;
+  _keysVerdict = "pending";
+  _anchorMemo = null;
+  _keyRingNotice = null;
+  _pendingRemoval = null;
   _scheduleUnlockExpiry(null);
   _seedUnavailable = null;
   _deviceRole = false;
@@ -5430,9 +5220,14 @@ export const auth = {
   get removalProgress() {
     return _removalProgress;
   },
+  get pendingRemoval() {
+    return _pendingRemoval;
+  },
   finishRemoval: async () => {
     await _freshMainPasskey();
-    return _rotateOnRemoval([], { resume: true });
+    const res = await _rotateOnRemoval([], { resume: true });
+    _pendingRemoval = null;
+    return res;
   },
   get isConnected() { return isConnected; },
   get isAuthenticated() { return isAuthenticated; },

@@ -37,7 +37,11 @@ test("the raw seed is read only where nothing rotates", () => {
 });
 
 test("the feed signer is derived only in the auth store (and the generation-0 upgrade)", () => {
-  assert.deepEqual(users(/\bderiveFeedSignerKey\(/), ["lib/auth/auth-store.svelte.ts", "lib/auth/upgrade-to-passkey.ts"]);
+  assert.deepEqual(users(/\bderiveFeedSignerKey\(/), [
+    "lib/auth/auth-store.svelte.ts",
+    "lib/auth/upgrade-to-passkey.ts",
+    "lib/keyring/account-keys.ts", // the store's lazy half: a removal's outgoing signer
+  ]);
 });
 
 test("the order key is derived only from the account's secrets", () => {
