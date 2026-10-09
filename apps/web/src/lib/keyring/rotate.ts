@@ -114,26 +114,57 @@ function chainAfter(held: AccountChain | null, gen: number, ring: string, secret
 }
 
 /**
- * Remove `going` from the account and move it to new keys - or finish a removal that
- * was interrupted. Throws before the flip with the account unchanged.
+ * Remove `going` from the account and move it to new keys - or, with `resume`, finish a
+ * removal that was interrupted. Throws before the flip with the account unchanged.
+ *
+ * A pending removal is continued only when it is the SAME removal: `resume`, or the same
+ * passkeys against the same ring. A request to remove someone else never inherits an old
+ * pending list - the confirm the person saw names who goes. And a pending removal the
+ * account has since moved past (another device rotated again) is dropped, never resumed:
+ * adopting its secret would roll this device back to keys a later-removed passkey holds.
  */
-export async function rotateOnRemoval(s: RotationSteps, going: readonly string[]): Promise<RotationResult> {
+export async function rotateOnRemoval(
+  s: RotationSteps,
+  going: readonly string[],
+  opts: { resume?: boolean } = {},
+): Promise<RotationResult> {
   const parent = s.parent.toLowerCase();
   const self = s.self.toLowerCase();
+  const requested = [...new Set(going.map((g) => g.toLowerCase()))].sort();
   let pending = await s.loadPending();
   if (pending && pending.parent !== parent) pending = null;
 
   const anchor = await s.readAnchor();
   if (anchor === "error") throw new RotationRefusedError("Couldn't read your account's keys - nothing was changed. Try again.");
 
-  // A removal that already flipped: only what comes after is left.
+  // An interrupted flip that landed: only what comes after is left.
   if (pending?.phase === "copying" && pending.nextRing && anchor === pending.nextRing) {
     pending = { ...pending, phase: "flipped", after: [...AFTER_STEPS] };
     await s.savePending(pending);
   }
+  // A flipped removal is resumed only while its generation is still the account's.
+  if (pending?.phase === "flipped") {
+    const heldGen = s.chain?.gen ?? 0;
+    let anchoredGen: number | null = null;
+    if (anchor === pending.nextRing) anchoredGen = pending.gen;
+    else if (anchor) anchoredGen = (await s.fetchRing(anchor)).gen;
+    if (anchoredGen !== pending.gen || heldGen > pending.gen) {
+      console.warn("[keyring] a pending removal the account has moved past - dropped");
+      await s.clearPending();
+      pending = null;
+      if (opts.resume) return { unfinished: [], keyless: [] };
+    } else if (!opts.resume && requested.join() !== [...pending.going].sort().join()) {
+      throw new RotationRefusedError("A removal is still finishing on this device. Let it finish, then try again.");
+    }
+  }
+  if (opts.resume && !pending) return { unfinished: [], keyless: [] };
+
   let keyless: string[] = [];
   if (!pending || pending.phase === "copying") {
-    const goingNow = (pending?.going ?? going).map((g) => g.toLowerCase());
+    // Copying never resumes into a different removal than the one asked for.
+    const samePending = pending && (opts.resume || requested.join() === [...pending.going].sort().join());
+    const goingNow = samePending ? pending!.going.map((g) => g.toLowerCase()) : requested;
+    if (goingNow.length === 0) throw new RotationRefusedError("Pick a passkey to remove.");
     if (goingNow.includes(self)) throw new RotationRefusedError("Remove this passkey from another of your passkeys.");
     const held = s.chain?.ringRef ?? null;
     if (anchor !== held) throw new RotationRefusedError("Your account's keys changed on another device. Open this page again, then remove the passkey.");
@@ -144,14 +175,14 @@ export async function rotateOnRemoval(s: RotationSteps, going: readonly string[]
     if (!remaining.includes(self)) throw new RotationRefusedError("This device isn't one of the account's passkeys any more.");
 
     const gen = (s.chain?.gen ?? 0) + 1;
-    // The SAME S' on a resume: a ring sealed with an earlier attempt's secret may
-    // already be stored, and the flip may even have landed with it.
-    if (!pending || pending.prevRing !== anchor || pending.gen !== gen) {
+    // The SAME S' only for the same removal against the same ring: a ring sealed with an
+    // earlier attempt's secret may already be stored, and its flip may even land.
+    if (!samePending || pending!.prevRing !== anchor || pending!.gen !== gen) {
       pending = { v: 1, parent, going: goingNow, gen, secret: s.newSecret(), prevRing: anchor, phase: "copying" };
       await s.savePending(pending);
     }
     s.progress({ step: "keys" });
-    const keys = await s.keysOf(pending.secret);
+    const keys = await s.keysOf(pending!.secret);
 
     s.progress({ step: "events", done: 0, total: 0 });
     await s.copyEvents(keys, (done, total) => s.progress({ step: "events", done, total }));
@@ -168,20 +199,24 @@ export async function rotateOnRemoval(s: RotationSteps, going: readonly string[]
     keyless = remaining.filter((a) => !members.some((m) => m.statement.coOwner === a));
 
     s.progress({ step: "onchain" });
-    const nextRing = await s.storeRing({ gen, secret: pending.secret, prevRing: anchor, members });
-    pending = { ...pending, nextRing };
+    const nextRing = await s.storeRing({ gen, secret: pending!.secret, prevRing: anchor, members });
+    pending = { ...pending!, nextRing };
     await s.savePending(pending);
     await s.flip(pending.going, { prev: anchor, next: nextRing });
     pending = { ...pending, phase: "flipped", after: [...AFTER_STEPS] };
     await s.savePending(pending);
   }
 
-  // Flipped: S' is the account's. Hold it, then move what readers follow.
-  await s.adopt(chainAfter(s.chain, pending.gen, pending.nextRing!, pending.secret));
+  // Flipped, and still the account's generation: hold it (never backwards), then move
+  // what readers follow.
+  const p = pending!;
+  if ((s.chain?.gen ?? 0) < p.gen || (s.chain?.gen === p.gen && s.chain.secrets.at(-1) !== p.secret)) {
+    await s.adopt(chainAfter(s.chain, p.gen, p.nextRing!, p.secret));
+  }
   s.progress({ step: "after" });
-  const keys = await s.keysOf(pending.secret);
+  const keys = await s.keysOf(p.secret);
   const left: AfterStep[] = [];
-  for (const step of pending.after ?? AFTER_STEPS) {
+  for (const step of p.after ?? AFTER_STEPS) {
     try {
       await s.after[step](keys);
     } catch (e) {
@@ -190,6 +225,6 @@ export async function rotateOnRemoval(s: RotationSteps, going: readonly string[]
     }
   }
   if (left.length === 0) await s.clearPending();
-  else await s.savePending({ ...pending, after: left });
+  else await s.savePending({ ...p, after: left });
   return { unfinished: left, keyless };
 }

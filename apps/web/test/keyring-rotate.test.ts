@@ -125,7 +125,7 @@ test("a removal interrupted after the flip resumes with only what comes after - 
   const h = harness();
   h.setPending({ v: 1, parent: PARENT, going: [R.address], gen: 1, secret: "0x" + "77".repeat(32), prevRing: RING0, nextRing: "b2".repeat(32), phase: "copying" });
   h.setAnchor("b2".repeat(32));
-  await rotateOnRemoval(h.steps, [R.address]);
+  await rotateOnRemoval(h.steps, [], { resume: true });
   assert.ok(!h.calls.includes("events") && !h.calls.some((c) => c.startsWith("flip")));
   assert.ok(h.calls.includes(`adopt:gen1:0x${"77".repeat(32)}`));
 });
@@ -152,4 +152,39 @@ test("a remaining passkey with no ring entry is reported keyless, never sealed t
   const h = harness({ readCoOwners: async () => [A.address, B.address, R.address, C.address] });
   const res = await rotateOnRemoval(h.steps, [R.address]);
   assert.deepEqual(res.keyless, [C.address]);
+});
+
+test("a request to remove someone else never inherits an old pending list", async () => {
+  const h = harness();
+  // An earlier attempt to remove B stopped before its flip.
+  h.setPending({ v: 1, parent: PARENT, going: [B.address], gen: 1, secret: "0x" + "99".repeat(32), prevRing: RING0, phase: "copying" });
+  await rotateOnRemoval(h.steps, [R.address]);
+  const flip = h.calls.find((c) => c.startsWith("flip:"))!;
+  assert.match(flip, new RegExp(`^flip:${R.address}:`), "the passkey asked about goes, not the pending one");
+  assert.ok(!h.calls.includes(`adopt:gen1:0x${"99".repeat(32)}`), "and with a fresh secret");
+});
+
+test("a flipped removal the account has moved past is dropped, never adopted - no rollback", async () => {
+  const h = harness();
+  h.setPending({ v: 1, parent: PARENT, going: [R.address], gen: 1, secret: "0x" + "66".repeat(32), prevRing: RING0, nextRing: "b3".repeat(32), phase: "flipped", after: ["sites"] });
+  // Another device rotated again: the anchor names a generation-2 ring.
+  const g2 = { ...(await ring0()), gen: 2 } as KeyRing;
+  const h2 = harness({ fetchRing: async () => g2, chain: { ringRef: "c2".repeat(32), gen: 2, secrets: ["0x" + "01".repeat(32), "0x" + "02".repeat(32)] } });
+  h2.setPending(h.pending);
+  h2.setAnchor("c2".repeat(32));
+  const res = await rotateOnRemoval(h2.steps, [], { resume: true });
+  assert.deepEqual(res, { unfinished: [], keyless: [] });
+  assert.ok(!h2.calls.some((c) => c.startsWith("adopt") || c.startsWith("after")), JSON.stringify(h2.calls));
+  assert.equal(h2.pending, null);
+});
+
+test("while a flipped removal is finishing, a different removal waits", async () => {
+  const h = harness({ chain: { ringRef: "b4".repeat(32), gen: 1, secrets: ["0x" + "44".repeat(32)] } });
+  h.setPending({ v: 1, parent: PARENT, going: [R.address], gen: 1, secret: "0x" + "44".repeat(32), prevRing: RING0, nextRing: "b4".repeat(32), phase: "flipped", after: ["pages"] });
+  h.setAnchor("b4".repeat(32));
+  await assert.rejects(rotateOnRemoval(h.steps, [B.address]), /still finishing/);
+  const res = await rotateOnRemoval(h.steps, [], { resume: true });
+  assert.deepEqual(res.unfinished, []);
+  assert.ok(!h.calls.some((c) => c.startsWith("adopt")), "already held: not adopted again");
+  assert.ok(h.calls.includes("after:pages"));
 });
