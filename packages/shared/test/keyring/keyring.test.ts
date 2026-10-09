@@ -332,6 +332,11 @@ test("parse: closed schema, exact sizes, and a newer version is refused, never r
     { ...ring, prev: "0x12" },
     { ...ring, parent: ring.parent.toUpperCase() },
   ];
+  bad.push(
+    // A key swapped in under another passkey's signed statement.
+    { ...ring, entries: [{ ...ring.entries[0], boxKey: ring.entries[1]!.boxKey }, ring.entries[1]] },
+    { ...ring, entries: [{ ...ring.entries[0], boxKey: ring.entries[0]!.boxKey.slice(2) }] },
+  );
   for (const x of bad) assert.throws(() => parseKeyRing(x), MalformedKeyRingError);
   // A properly signed statement, but for another account.
   const a = passkey(1);
@@ -352,3 +357,17 @@ test("parse: closed schema, exact sizes, and a newer version is refused, never r
   }
   assert.throws(() => parseKeyRing(new Uint8Array([0xff, 0xfe])), MalformedKeyRingError);
 });
+
+test("the next writer's members come from the ring alone, less the removed passkey", async () => {
+  const { ring, a, b } = await twoPasskeyRing();
+  const { keyRingMembers } = await import("../../src/keyring/ring.js");
+  const next = keyRingMembers(ring, [b.address.toUpperCase().replace("0X", "0x")]);
+  assert.deepEqual(next.map((m) => m.statement.coOwner), [a.address]);
+  assert.equal(bytesToHex(next[0]!.boxPublicKey), bytesToHex(a.box.publicKey));
+  const r2 = await buildKeyRing({ parent: PARENT, gen: 2, prev: NO_RING, secret: newAccountSecret(), prior: [newAccountSecret(), newAccountSecret()], members: next });
+  await assert.rejects(
+    openKeyRing(r2, { expectedParent: PARENT, coOwner: b.address, boxSecretKey: b.box.secretKey }),
+    (e: unknown) => e instanceof KeyRingOpenError && e.reason === "not-enrolled",
+  );
+});
+
