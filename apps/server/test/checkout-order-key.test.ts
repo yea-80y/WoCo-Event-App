@@ -136,8 +136,21 @@ test("create-checkout: an organiser-signed event with no record is not sold (own
     creatorFeedSigner: F0,
     series: [{ seriesId: SERIES, name: "GA", totalSupply: 10, price: 5, payment: { price: "5.00", currency: "GBP", stripeEnabled: true } }],
   } as unknown as EventFeed);
-  assert.deepEqual(await post("create-checkout", { eventId: LEGACY, seriesId: SERIES, claimerEmail: "a@example.com", encryptedOrder: BOX, encryptionKeyRef: K0 }), {
-    status: 409,
-    code: "EVENT_NEEDS_REPUBLISH",
-  });
+  // No platform feed for it: the server never wrote one, so an organiser did.
+  service.__setPlatformFeedReadForTests(async () => ({ status: "absent" }));
+  const buy = () => post("create-checkout", { eventId: LEGACY, seriesId: SERIES, claimerEmail: "a@example.com", encryptedOrder: BOX, encryptionKeyRef: K0 });
+  assert.deepEqual(await buy(), { status: 409, code: "EVENT_NEEDS_REPUBLISH" });
+  // The same feed without its creatorFeedSigner field: whoever signs it can drop the
+  // field, so the decision is where the feed is (no platform feed here), not what it says.
+  const cached = await service.getEvent(LEGACY);
+  const { creatorFeedSigner: _dropped, ...withoutSigner } = cached as EventFeed & { creatorFeedSigner?: string };
+  service.primeEventCache(LEGACY, withoutSigner as EventFeed);
+  assert.deepEqual(await buy(), { status: 409, code: "EVENT_NEEDS_REPUBLISH" });
+  // A platform-signed legacy event (the server wrote its feed) still sells; an
+  // unreadable answer pauses the sale rather than guess.
+  service.__setPlatformFeedReadForTests(async () => ({ status: "ok", data: new Uint8Array(1) }));
+  assert.notEqual((await buy()).code, "EVENT_NEEDS_REPUBLISH");
+  service.__setPlatformFeedReadForTests(async () => ({ status: "error", error: new Error("bee down") }));
+  assert.equal((await buy()).status, 503);
+  service.__setPlatformFeedReadForTests(null);
 });

@@ -86,6 +86,9 @@ before(async () => {
 
   // Registered — and recorded — while the platform ran on the old chain.
   registry.recordOnChainEventId(EVENT_ID, SERIES_ID, ON_CHAIN_ID, { chainId: OLD_CHAIN, address: V2_ADDR, version: "v2" });
+  // A platform-signed event (no organiser signer, no record): checkout asks where its
+  // feed is before selling a record-less event (#186), and here the server wrote it.
+  service.__setPlatformFeedReadForTests(async () => ({ status: "ok", data: new Uint8Array(1) }));
   service.primeEventCache(EVENT_ID, {
     v: 1,
     eventId: EVENT_ID,

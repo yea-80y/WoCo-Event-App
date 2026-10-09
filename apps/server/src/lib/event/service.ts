@@ -26,6 +26,7 @@ import { cardFromFeed, getEventsSnapshot, scheduleSnapshotRebuild } from "./dire
 import {
   readFeedPage,
   readFeedPageStrict,
+  type FeedReadStrictResult,
   readFeedPageWithRetry,
   writeFeedPage,
   encodeJsonFeed,
@@ -1227,6 +1228,26 @@ export async function getEventBySigner(eventId: string, signer: string): Promise
   const feed = await readEventFeedSoc(eventId, signer);
   if (!feed || feed.deleted) return null;
   return applyOnChainEventIds(feed);
+}
+
+/**
+ * Is this event platform-signed - written by the server's own feed key, never by an
+ * organiser (#186)? For an event with no record that is the only trust root there is:
+ * the server writes the platform feed only for events made without an organiser signer,
+ * and nothing an organiser - or a removed passkey - signs can create one. Decided by
+ * where the feed IS, never by what an organiser-signed feed says about itself.
+ */
+let platformFeedRead: (eventId: string) => Promise<FeedReadStrictResult> = (eventId) => readFeedPageStrict(topicEvent(eventId));
+
+/** Tests only: where `isPlatformSignedEvent` looks. Null restores the live read. */
+export function __setPlatformFeedReadForTests(fn: ((eventId: string) => Promise<FeedReadStrictResult>) | null): void {
+  platformFeedRead = fn ?? ((eventId) => readFeedPageStrict(topicEvent(eventId)));
+}
+
+export async function isPlatformSignedEvent(eventId: string): Promise<boolean | "unavailable"> {
+  const page = await platformFeedRead(eventId);
+  if (page.status === "error") return "unavailable";
+  return page.status === "ok";
 }
 
 /** Invalidate the event cache after a publish/update so the next read is fresh. */

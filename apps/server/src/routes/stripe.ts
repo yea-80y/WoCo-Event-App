@@ -26,7 +26,7 @@ import {
   getOrganiserByStripeAccount,
   deleteStripeAccount,
 } from "../lib/stripe/accounts.js";
-import { getEvent } from "../lib/event/service.js";
+import { getEvent, isPlatformSignedEvent } from "../lib/event/service.js";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
 import { checkoutExpiresAt } from "../lib/event/checkout-expiry.js";
@@ -694,13 +694,17 @@ stripe.post("/create-checkout", async (c) => {
   if (keys.kind === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
   // An organiser-signed event with no record (made before #670) has no trust root at all:
   // its feed alone says who made it and who is paid, and a removed passkey can rewrite it.
-  // Not sold (owner 10-09); the organiser re-creates it. Platform-signed legacy feeds
-  // carry no organiser signer and are unaffected.
-  if (keys.kind === "legacy" && event.creatorFeedSigner) {
-    return c.json(
-      { ok: false, error: "This event can't take orders. The organiser needs to publish it again.", code: "EVENT_NEEDS_REPUBLISH" },
-      409,
-    );
+  // Not sold (owner 10-09); the organiser re-creates it. Only a platform-signed feed - one
+  // the server wrote - still sells, decided by where the feed is, never by its own fields.
+  if (keys.kind === "legacy") {
+    const platform = await isPlatformSignedEvent(eventId);
+    if (platform === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
+    if (!platform) {
+      return c.json(
+        { ok: false, error: "This event can't take orders. The organiser needs to publish it again.", code: "EVENT_NEEDS_REPUBLISH" },
+        409,
+      );
+    }
   }
   if (preparedRef || inlineOrderJson) {
     const bodyKey = typeof (body as { encryptionKeyRef?: unknown }).encryptionKeyRef === "string"
