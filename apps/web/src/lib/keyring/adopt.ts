@@ -10,7 +10,7 @@
  *   - the ring already held           -> nothing to do
  *   - a LOWER generation than held    -> a lagging RPC: keep what is held
  *   - no entry for this passkey       -> keyless: another passkey has to give it keys
- *   - its generation 0 is not our seed -> another account's lineage: refused, logged
+ *   - its generation 0 is missing or not our seed -> another lineage: refused, logged
  *   - otherwise                       -> the new chain, to store locked and use
  *
  * Pure: the chain read, the fetch and the box key are passed in.
@@ -77,8 +77,9 @@ export async function adoptKeyRing(input: AdoptInput): Promise<AdoptResult> {
   }
   try {
     const gen0 = ring.gen === 0 ? opened.secret : opened.prior[0];
-    // A hole at generation 0 cannot be checked; a mismatch is another lineage.
-    if (gen0 && hex(gen0) !== input.seed.toLowerCase()) return { status: "foreign" };
+    // Generation 0 is this account's seed, always: missing or different is another
+    // lineage (the parser already refuses a hole there - checked again, not assumed).
+    if (!gen0 || hex(gen0) !== input.seed.toLowerCase()) return { status: "foreign" };
 
     const secrets: string[] = [];
     for (let g = 1; g < ring.gen; g++) {

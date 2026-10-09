@@ -352,7 +352,11 @@ test("parse: closed schema, exact sizes, and a newer version is refused, never r
     members: [{ statement: statementFor(a), boxPublicKey: a.box.publicKey }],
   });
   assert.deepEqual(three.back.holes, [1, 2]);
-  for (const holes of [[2, 1], [1, 1], [1, 3]]) {
+  await assert.rejects(
+    buildKeyRing({ parent: PARENT, gen: 2, prev: NO_RING, secret: newAccountSecret(), prior: [null, newAccountSecret()], members: [{ statement: statementFor(a), boxPublicKey: a.box.publicKey }] }),
+    /generation 0/,
+  );
+  for (const holes of [[2, 1], [1, 1], [1, 3], [0, 1], [0]]) {
     assert.throws(() => parseKeyRing({ ...three, back: { ...three.back, holes } }), MalformedKeyRingError);
   }
   assert.throws(() => parseKeyRing(new Uint8Array([0xff, 0xfe])), MalformedKeyRingError);

@@ -185,6 +185,7 @@ async function sealBack(secret: Uint8Array, parent: string, gen: number, prior: 
     else plain.set(assertAccountSecret(s), i * ACCOUNT_SECRET_BYTES);
   });
   if (gen > 0 && holes.length === gen) throw new Error("key ring: every earlier generation is a hole");
+  if (holes.includes(0)) throw new Error("key ring: generation 0 (the identity seed) is never a hole");
   try {
     const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
     const ct = await crypto.subtle.encrypt(
@@ -344,6 +345,9 @@ export function parseKeyRing(x: unknown): KeyRing {
     malformed("back.holes must be ascending generations below gen");
   }
   if (gen > 0 && holes.length === gen) malformed("every earlier generation is a hole");
+  // Generation 0 is the identity seed, which every passkey of the account holds: a
+  // writer without it is not one of them, and a reader checks its lineage against it.
+  if (holes.includes(0)) malformed("generation 0 is never a hole");
 
   return {
     v: KEY_RING_VERSION,
