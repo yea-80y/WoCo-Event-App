@@ -46,15 +46,16 @@ const K1 = "1b".repeat(32);
 const BOX = { v: 2, enc: "ab".repeat(1120), ct: "cd".repeat(64) };
 
 let ipSeq = 0;
-async function post(path: string, body: unknown): Promise<{ status: number; code?: string }> {
+async function post(path: string, body: unknown): Promise<{ status: number; code?: string; encryptionKeyRef?: string }> {
   const ip = `198.51.100.${++ipSeq}`;
   const res = await app.request(`/api/stripe/${path}`, {
     method: "POST",
     headers: { "content-type": "application/json", "cf-connecting-ip": ip },
     body: JSON.stringify(body),
   });
-  const json = (await res.json().catch(() => ({}))) as { code?: string };
-  return { status: res.status, code: json.code };
+  const json = (await res.json().catch(() => ({}))) as { code?: string; encryptionKeyRef?: string };
+  // A refusal names the key to re-seal to (#186).
+  return { status: res.status, code: json.code, ...(json.encryptionKeyRef ? { encryptionKeyRef: json.encryptionKeyRef } : {}) };
 }
 
 record.recordEventFeedSigner(EVENT, F0, CREATOR, K0);
@@ -67,6 +68,7 @@ test("prepare-order, no ring: an undeclared key passes (older clients); a declar
   assert.deepEqual(await post("prepare-order", { encryptedOrder: BOX, eventId: EVENT, encryptionKeyRef: K1 }), {
     status: 409,
     code: "ORDER_KEY_STALE",
+    encryptionKeyRef: K0,
   });
 });
 
@@ -77,6 +79,7 @@ test("prepare-order, ring: only the ring's key passes; the old one and none are 
     assert.deepEqual(await post("prepare-order", { encryptedOrder: BOX, eventId: EVENT, encryptionKeyRef }), {
       status: 409,
       code: "ORDER_KEY_STALE",
+      encryptionKeyRef: r.orderKeyRef,
     });
   }
 });
@@ -105,8 +108,9 @@ test("create-checkout: a box sealed to the old generation's key is refused at ch
   } as unknown as EventFeed;
   service.primeEventCache(EVENT, feed);
   const base = { eventId: EVENT, seriesId: SERIES, claimerEmail: "a@example.com", encryptedOrder: BOX };
-  assert.deepEqual(await post("create-checkout", { ...base, encryptionKeyRef: K0 }), { status: 409, code: "ORDER_KEY_STALE" });
-  assert.deepEqual(await post("create-checkout", base), { status: 409, code: "ORDER_KEY_STALE" });
+  const stale = { status: 409, code: "ORDER_KEY_STALE", encryptionKeyRef: r.orderKeyRef };
+  assert.deepEqual(await post("create-checkout", { ...base, encryptionKeyRef: K0 }), stale);
+  assert.deepEqual(await post("create-checkout", base), stale);
   const ok = await post("create-checkout", { ...base, encryptionKeyRef: r.orderKeyRef });
   assert.notEqual(ok.code, "ORDER_KEY_STALE");
 });

@@ -50,7 +50,7 @@ import { lookupOnChainEventId, saleContractFor } from "../lib/event/onchain-regi
 import { attendeeCheckoutRefusal, orderRefOf } from "../lib/attendee-batch/writer.js";
 import { getOrderRecord, isOrderErased } from "../lib/attendee-batch/ledger.js";
 import { commitHold, getHeldOrder, holdPrepared } from "../lib/attendee-batch/held-orders.js";
-import { eventKeys, isStaleOrderKey, type EventKeys } from "../lib/keyring/event-keys.js";
+import { authoritativeOrderKeyRef, eventKeys, isStaleOrderKey, type EventKeys } from "../lib/keyring/event-keys.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../lib/stripe/checkout-provenance.js";
 import { liveProvenanceReads, refundTamperedSession } from "../lib/stripe/checkout-provenance-live.js";
@@ -438,8 +438,16 @@ const ORDER_KEY_STALE =
   "This page is out of date - the organiser's details changed. Reload the page and try again; you have not been charged.";
 const ORDER_KEY_REF_RE = /^[0-9a-f]{64}$/;
 
-function orderKeyRefusal(keys: EventKeys, declared: string | undefined): string | null {
-  return isStaleOrderKey(keys, declared) ? ORDER_KEY_STALE : null;
+/**
+ * The refusal for a box sealed to a key the event no longer sells under, or null. It
+ * names the current key, so the page re-seals once without a refetch that a cache
+ * could answer stale - the same server-served value the page sealed to in the first
+ * place, and the key's bytes are checked against it before use.
+ */
+function orderKeyRefusal(keys: EventKeys, declared: string | undefined): Record<string, unknown> | null {
+  if (!isStaleOrderKey(keys, declared)) return null;
+  const current = authoritativeOrderKeyRef(keys);
+  return { ok: false, error: ORDER_KEY_STALE, code: "ORDER_KEY_STALE", ...(current ? { encryptionKeyRef: current } : {}) };
 }
 
 stripe.post("/prepare-order", async (c) => {
@@ -477,7 +485,7 @@ stripe.post("/prepare-order", async (c) => {
     const keys = await eventKeys(body.eventId);
     if (keys.kind === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
     const refusal = orderKeyRefusal(keys, declaredKey);
-    if (refusal) return c.json({ ok: false, error: refusal, code: "ORDER_KEY_STALE" }, 409);
+    if (refusal) return c.json(refusal, 409);
   }
 
   try {
@@ -717,7 +725,7 @@ stripe.post("/create-checkout", async (c) => {
       : undefined;
     const declared = (preparedRef ? getHeldOrder(preparedRef)?.orderKeyRef : undefined) ?? (bodyKey && ORDER_KEY_REF_RE.test(bodyKey) ? bodyKey : undefined);
     const refusal = orderKeyRefusal(keys, declared);
-    if (refusal) return c.json({ ok: false, error: refusal, code: "ORDER_KEY_STALE" }, 409);
+    if (refusal) return c.json(refusal, 409);
   }
 
   // Paid-only storage (#546): the buyer is on the way to pay, so the box is
