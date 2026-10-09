@@ -936,7 +936,7 @@ export async function readEventFeedSocResult(
   // account has a key ring, the feed lives under the ring's signer, and the signer
   // recorded at create is one a removed passkey may still hold. Keys that cannot be
   // read mean no read at all: falling back to the old signer is exactly that hole.
-  const keys = await eventKeys(eventId, () => directoryEntryOf(eventId));
+  const keys = await eventKeys(eventId);
   if (keys.kind === "unavailable") return { status: "unavailable", reason: `organiser keys unreadable: ${keys.reason}` };
   let res: Awaited<ReturnType<typeof readContentFeedJsonResult>>;
   try {
@@ -988,13 +988,6 @@ function resolutionSigner(eventId: string, feed: EventFeed): Hex0x | undefined {
  * before the record existed. Null for legacy (platform-signed) events and events
  * created without a signer: those read the platform feed.
  */
-/** The platform-written directory's entry for an event, for events with no record. */
-async function directoryEntryOf(eventId: string): Promise<{ creatorAddress: string; creatorFeedSigner?: string } | null> {
-  if (getRecordedFeedSigner(eventId)) return null;
-  const entries = await listEvents();
-  return entries.find((e) => e.eventId === eventId) ?? null;
-}
-
 async function resolveCreatorFeedSigner(eventId: string): Promise<string | null> {
   const recorded = getRecordedFeedSigner(eventId);
   if (recorded) return recorded.signer;
@@ -1041,7 +1034,7 @@ async function getEventRead(
 ): Promise<{ feed: EventFeed | null; cacheable: boolean }> {
   const now = Date.now();
   const cached = _eventCache.get(eventId);
-  const keys = await eventKeys(eventId, () => directoryEntryOf(eventId));
+  const keys = await eventKeys(eventId);
   // An entry read under a signer the organiser's account has moved on from is a miss.
   const sameKeys = !cached || keys.kind !== "ring" || cached.signer === keys.feedSigner;
   // applyOnChainEventIds fills a series' onChainEventId from the server's chain
@@ -1206,7 +1199,7 @@ async function resolveOwnEventLocallyRead(
   parentAddress: string,
   opts: { fresh?: boolean } = {},
 ): Promise<{ feed: EventFeed; resignable: boolean } | null> {
-  const cached = peekEventCache(eventId, { authoredOnly: opts.fresh });
+  const cached = await cachedUnderCurrentKeys(eventId, { authoredOnly: opts.fresh });
   if (cached) return { feed: await applyOnChainEventIds(cached), resignable: true };
 
   const own = (await getCreatorEvents(parentAddress)).find((e) => e.eventId === eventId);
@@ -1247,6 +1240,20 @@ export function invalidateEventCache(eventId: string): void {
  * cover the just-published window without getEvent's slow missing-feed retry
  * ladder when the event doesn't exist locally.
  */
+/**
+ * {@link peekEventCache} with the money path's key rule (#186): an entry read under a
+ * signer the organiser's account has left is not served, and the feed carries the
+ * current order key. For callers that can afford one cached ring lookup.
+ */
+async function cachedUnderCurrentKeys(eventId: string, opts: { authoredOnly?: boolean } = {}): Promise<EventFeed | null> {
+  const feed = peekEventCache(eventId, opts);
+  if (!feed) return null;
+  const keys = await eventKeys(eventId);
+  if (keys.kind === "unavailable") return feed;
+  if (keys.kind === "ring" && _eventCache.get(eventId)?.signer !== keys.feedSigner) return null;
+  return withAuthoritativeOrderKey(eventId, feed, keys);
+}
+
 export function peekEventCache(eventId: string, opts: { authoredOnly?: boolean } = {}): EventFeed | null {
   const cached = _eventCache.get(eventId);
   if (!cached || cached.expiresAt <= Date.now()) return null;

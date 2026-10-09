@@ -31,35 +31,21 @@ export type EventKeys =
   | { kind: "unavailable"; creator: string; feedSigner: string; reason: string };
 
 /**
- * `directoryEntry`: for an event with no record (created before #670), its creator
- * and signer from the platform-written directory - trusted, never a request. Such an
- * event is still under its organiser's ring: without this, a removed passkey could go
- * on writing every event the account made before the record existed.
+ * An event with no record (created before #670) is `legacy`: its feed's own fields are
+ * the only description of who made it - the directory card is built from that feed too
+ * (`cardFromFeed`) - so there is nothing a removed passkey could not rewrite to point
+ * elsewhere. Such events keep their old behaviour; re-creating one gives it a record.
  */
-export async function eventKeys(
-  eventId: string,
-  directoryEntry?: () => Promise<{ creatorAddress: string; creatorFeedSigner?: string } | null>,
-): Promise<EventKeys> {
+export async function eventKeys(eventId: string): Promise<EventKeys> {
   const rec = getRecordedFeedSigner(eventId);
-  let creator: string;
-  let signer: string;
-  let recordedKey: string | null = null;
-  if (rec) {
-    creator = rec.creatorAddress.toLowerCase();
-    signer = rec.signer;
-    recordedKey = rec.orderKeyRef ?? null;
-  } else {
-    const entry = directoryEntry ? await directoryEntry().catch(() => null) : null;
-    if (!entry?.creatorFeedSigner) return { kind: "legacy" };
-    creator = entry.creatorAddress.toLowerCase();
-    signer = entry.creatorFeedSigner.toLowerCase();
-  }
+  if (!rec) return { kind: "legacy" };
+  const creator = rec.creatorAddress.toLowerCase();
   const r = await currentRing(creator);
   if (r.status === "ring") {
     return { kind: "ring", creator, feedSigner: r.ring.feedSigner, orderKeyRef: r.ring.orderKeyRef, gen: r.ring.gen };
   }
-  if (r.status === "none") return { kind: "record", creator, feedSigner: signer, orderKeyRef: recordedKey };
-  return { kind: "unavailable", creator, feedSigner: signer, reason: r.reason };
+  if (r.status === "none") return { kind: "record", creator, feedSigner: rec.signer, orderKeyRef: rec.orderKeyRef ?? null };
+  return { kind: "unavailable", creator, feedSigner: rec.signer, reason: r.reason };
 }
 
 /** The signer to read the event's feed from, given the one the caller would have used. */

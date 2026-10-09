@@ -216,12 +216,16 @@ test("keys that cannot be read: the feed is not read at all (never under the old
   assert.ok(Date.now() - t < 2000, "returned without the retry ladder");
 });
 
-test("an event with no record is still under its organiser's ring, through the directory entry", async () => {
-  const entry = async () => ({ creatorAddress: CREATOR, creatorFeedSigner: F0 });
-  assert.deepEqual(await keysMod.eventKeys(EVENT, entry), { kind: "record", creator: CREATOR, feedSigner: F0, orderKeyRef: null });
-  assert.deepEqual(await keysMod.eventKeys(EVENT, async () => ({ creatorAddress: CREATOR })), { kind: "legacy" });
-  assert.deepEqual(await keysMod.eventKeys(EVENT, async () => null), { kind: "legacy" });
+test("owner reads follow the same key rule as the money path (no old-generation cache entry)", async () => {
+  process.chdir(dir);
+  record.recordEventFeedSigner(EVENT, F0, CREATOR, K0);
+  process.chdir(originalCwd);
+  service.primeEventCache(EVENT, feed());
+  assert.equal((await service.resolveOwnEventLocally(EVENT, CREATOR))?.creatorFeedSigner, F0, "no ring: served");
   const r = await realRing(CREATOR);
-  const keys = await keysMod.eventKeys(EVENT, entry);
-  assert.equal(keys.kind === "ring" && keys.feedSigner, r.feedSigner);
+  const t = Date.now();
+  const after = await service.resolveOwnEventLocally(EVENT, CREATOR);
+  assert.notEqual(after?.creatorFeedSigner, F0, `served the old generation's entry (${Date.now() - t} ms)`);
+  service.primeEventCache(EVENT, feed({ creatorFeedSigner: r.feedSigner as EventFeed["creatorFeedSigner"] }));
+  assert.equal((await service.resolveOwnEventLocally(EVENT, CREATOR))?.encryptionKeyRef, r.orderKeyRef);
 });
