@@ -110,3 +110,10 @@ test("create-checkout: a box sealed to the old generation's key is refused at ch
   const ok = await post("create-checkout", { ...base, encryptionKeyRef: r.orderKeyRef });
   assert.notEqual(ok.code, "ORDER_KEY_STALE");
 });
+
+test("create-checkout: keys that cannot be read pause the sale, even with the event cached", async () => {
+  // The event is still in the money-path cache from the test above; the chain is not.
+  noRings({ down: true });
+  const res = await post("create-checkout", { eventId: EVENT, seriesId: SERIES, claimerEmail: "a@example.com", encryptedOrder: BOX, encryptionKeyRef: K0 });
+  assert.equal(res.status, 503);
+});
