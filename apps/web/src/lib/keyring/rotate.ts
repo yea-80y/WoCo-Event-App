@@ -88,7 +88,7 @@ export interface RotationSteps {
   /** The flip: one op taking `going` off the list and moving the anchor. */
   flip(going: string[], ring: { prev: string | null; next: string }): Promise<{ confirmed: boolean }>;
   adopt(chain: AccountChain): Promise<void>;
-  after: Record<AfterStep, (keys: NewKeys) => Promise<void>>;
+  after: Record<AfterStep, (keys: NewKeys, ctx: { going: string[] }) => Promise<void>>;
   progress(p: RotationProgress): void;
 }
 
@@ -218,7 +218,7 @@ export async function rotateOnRemoval(
   const left: AfterStep[] = [];
   for (const step of p.after ?? AFTER_STEPS) {
     try {
-      await s.after[step](keys);
+      await s.after[step](keys, { going: p.going });
     } catch (e) {
       console.warn(`[keyring] removal step "${step}" not finished (retried on the next open):`, e);
       left.push(step);

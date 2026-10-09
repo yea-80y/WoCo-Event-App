@@ -75,7 +75,7 @@ function harness(over: Partial<RotationSteps> = {}) {
       return { confirmed: true };
     },
     adopt: async (chain) => void calls.push(`adopt:gen${chain.gen}:${chain.secrets.at(-1)}`),
-    after: Object.fromEntries(AFTER_STEPS.map((st) => [st, async () => void calls.push(`after:${st}`)])) as RotationSteps["after"],
+    after: Object.fromEntries(AFTER_STEPS.map((st) => [st, async (_k: unknown, ctx: { going: string[] }) => void calls.push(st === "records" ? `after:records:${ctx.going.join(",")}` : `after:${st}`)])) as RotationSteps["after"],
     progress: () => {},
     ...over,
   };
@@ -96,7 +96,7 @@ test("removal: copy under the new signer, store the ring for the rest, ONE flip,
     `flip:${R.address}:${RING0}->${"b1".repeat(32)}`,
     "save:flipped+ring",
     `adopt:gen1:0x${"5e".repeat(32)}`,
-    ...AFTER_STEPS.map((st) => `after:${st}`),
+    ...AFTER_STEPS.map((st) => (st === "records" ? `after:records:${R.address}` : `after:${st}`)),
     "clear",
   ]);
   assert.deepEqual(res, { unfinished: [], keyless: [] });

@@ -1,0 +1,301 @@
+/**
+ * The real steps `rotate.ts` sequences when a passkey is removed (#186). Lazy: loaded
+ * on the tap, never with a page.
+ *
+ * Reads go through the server, which before the flip resolves everything under the
+ * account's CURRENT keys (the ring the anchor names) - so what is copied is what readers
+ * see now, not a version a removed passkey could have written under an older signer.
+ */
+import type { ContentFeedSigner } from "../swarm/content-feed.js";
+import type { AccountChain } from "../auth/account-chain.js";
+import type { PasskeyKeys } from "./members.js";
+import type { NewKeys, PendingRotation, RotationProgress, RotationSteps } from "./rotate.js";
+
+/** What the auth store lends a removal: its state, and the steps only it can take. */
+export interface RotationHost {
+  parent: string;
+  self: PasskeyKeys;
+  seed: string;
+  chain: AccountChain | null;
+  /** The account's CURRENT signer and secrets - the generation being left. */
+  oldSigner: ContentFeedSigner;
+  oldSecrets: string[];
+  /** The flip: `going` off the list and the anchor onto `ring`, in one op. */
+  flip(going: string[], ring: { prev: string | null; next: string }): Promise<{ confirmed: boolean }>;
+  adopt(chain: AccountChain): Promise<void>;
+  signTypedDataAsHolder(typed: unknown): Promise<string>;
+  removeRecord(key: string): Promise<void>;
+  progress(p: RotationProgress): void;
+}
+
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
+const WOCO_APP_URL = import.meta.env.VITE_APP_URL ?? "https://woco.eth.limo";
+
+function bytes(hex: string): Uint8Array {
+  const h = hex.startsWith("0x") ? hex.slice(2) : hex;
+  const out = new Uint8Array(h.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+function hex(b: Uint8Array): string {
+  let s = "0x";
+  for (const x of b) s += x.toString(16).padStart(2, "0");
+  return s;
+}
+
+export function liveRotationSteps(h: RotationHost): RotationSteps {
+  const parent = h.parent.toLowerCase();
+  const self = h.self.address.toLowerCase();
+
+  /** Point a WoCo name at a fresh deploy's feed, when the deploy says it waits for the holder. */
+  async function repoint(subEns: unknown): Promise<void> {
+    const p = subEns as { status?: string; label?: string; target?: string } | undefined;
+    if (p?.status !== "awaiting_signature" || !p.label || !p.target) return;
+    const { pointNameAt } = await import("../sub-ens/pointer.js");
+    await pointNameAt(p.label, p.target, (typed) => h.signTypedDataAsHolder(typed));
+  }
+
+  /**
+   * The account's own events and sites, read straight from Swarm under the signer this
+   * device holds - not through the server, so what is re-signed is exactly what the
+   * organiser signed. Thorough reads: "absent" here decides what is copied, and an
+   * unreadable feed stops the removal before anything changes (a skipped event would
+   * be unreadable after the flip). Only the lists of ids come from the platform indexes.
+   */
+  async function readOwn<T>(signer: string, topic: string, family: "event" | "site"): Promise<T | null> {
+    const [{ readContentFeedResult }, { FEED_ROUTES }] = await Promise.all([
+      import("../swarm/content-feed.js"),
+      import("../swarm/gateways.js"),
+    ]);
+    const res = await readContentFeedResult<T>(signer, topic, { route: FEED_ROUTES[family], thorough: true });
+    // A found version from an inconclusive scan may not be the newest: copying it
+    // could move an older version, so it stops the removal like an unreadable one.
+    if (res.status === "unavailable" || (res.status === "found" && !res.scanClean)) {
+      throw new Error("Couldn't read all of your events and websites - nothing was changed. Try again.");
+    }
+    return res.status === "found" ? res.value : null;
+  }
+
+  async function ownEvents(signer = h.oldSigner.address) {
+    const [{ getEventsByCreatorResult }, { eventContentTopic }] = await Promise.all([
+      import("../api/events.js"),
+      import("@woco/shared"),
+    ]);
+    const res = await getEventsByCreatorResult(parent);
+    if (!res.ok) throw new Error("Couldn't read your events - nothing was changed. Try again.");
+    const out: import("@woco/shared").EventFeed[] = [];
+    for (const e of res.data ?? []) {
+      const feed = await readOwn<import("@woco/shared").EventFeed>(signer, eventContentTopic(e.eventId), "event");
+      // Absent under this signer: platform-signed or another account's - not moved.
+      if (!feed || feed.eventId !== e.eventId || feed.deleted) continue;
+      out.push(feed);
+    }
+    return out;
+  }
+
+  async function ownSites() {
+    const { getCreatorSites } = await import("../api/sites.js");
+    const res = await getCreatorSites();
+    if (!res.ok) throw new Error("Couldn't read your websites - nothing was changed. Try again.");
+    return (res.data ?? []).filter((s) => s.siteFeedSigner?.toLowerCase() === h.oldSigner.address.toLowerCase());
+  }
+
+  async function ownSiteConfig(siteId: string, signer: string) {
+    const { siteConfigTopic } = await import("@woco/shared");
+    const site = await readOwn<import("@woco/shared").Site>(signer, siteConfigTopic(siteId), "site");
+    if (!site || site.siteId !== siteId) throw new Error("Couldn't read one of your websites - nothing was changed. Try again.");
+    return site;
+  }
+
+  return {
+    parent,
+    self,
+    seed: h.seed,
+    chain: h.chain,
+    readAnchor: async () => (await import("../auth/kernel-account.js")).readRingAnchor(parent),
+    readCoOwners: async () => {
+      const r = await (await import("../auth/kernel-account.js")).readCoOwners(parent);
+      return r === "error" || r === null ? "error" : r;
+    },
+    fetchRing: async (ref) => (await import("./ring-read.js")).fetchKeyRing(ref),
+    selfMember: async () => (await import("./members.js")).memberOf(parent, h.self),
+    newSecret: () => {
+      const s = crypto.getRandomValues(new Uint8Array(32));
+      try {
+        return hex(s);
+      } finally {
+        s.fill(0);
+      }
+    },
+    keysOf: async (secret) => {
+      const { accountKeysOf } = await import("@woco/shared/keyring/account-secret");
+      const k = accountKeysOf(bytes(secret));
+      return { secret, feedSigner: k.feedSigner, orderKeyRef: k.orderKeyRef, orderPublicKey: k.orderKey.publicKey };
+    },
+    loadPending: async () => {
+      const { openPendingRotation } = await import("../auth/account-chain.js");
+      return (await openPendingRotation(self, parent, h.self.prfSecret)) as PendingRotation | null;
+    },
+    savePending: async (p) => {
+      const { storePendingRotation } = await import("../auth/account-chain.js");
+      await storePendingRotation(self, parent, p, h.self.prfSecret);
+    },
+    clearPending: async () => {
+      const { clearPendingRotation } = await import("../auth/account-chain.js");
+      await clearPendingRotation(self);
+    },
+
+    copyEvents: async (keys, progress) => {
+      const { signEventFeedSoc } = await import("../api/events.js");
+      const events = await ownEvents();
+      let done = 0;
+      progress(0, events.length);
+      for (const feed of events) {
+        const next = {
+          ...feed,
+          creatorFeedSigner: keys.feedSigner.address as typeof feed.creatorFeedSigner,
+          ...(feed.encryptionKeyRef !== undefined ? { encryptionKeyRef: keys.orderKeyRef } : {}),
+        };
+        await signEventFeedSoc(next, keys.feedSigner, undefined, keys.orderKeyRef);
+        progress(++done, events.length);
+      }
+    },
+
+    copySiteConfigs: async (keys) => {
+      const [{ writeContentFeed }, { siteConfigTopic }, { feedRouteFor, ETHERNA_GATEWAY_URL }] = await Promise.all([
+        import("../swarm/content-feed.js"),
+        import("@woco/shared"),
+        import("../swarm/gateways.js"),
+      ]);
+      for (const entry of await ownSites()) {
+        const site = await ownSiteConfig(entry.siteId, h.oldSigner.address);
+        await writeContentFeed({
+          signerPrivKey: keys.feedSigner.privKey,
+          topic: siteConfigTopic(entry.siteId),
+          data: { ...site, updatedAt: Date.now() },
+          route: feedRouteFor(ETHERNA_GATEWAY_URL),
+        });
+      }
+    },
+
+    copyProfile: async (keys) => {
+      const [{ readContentFeed, writeContentFeed }, { FEED_ROUTES }, { profileDataContentTopic, profileAvatarContentTopic }] = await Promise.all([
+        import("../swarm/content-feed.js"),
+        import("../swarm/gateways.js"),
+        import("@woco/shared"),
+      ]);
+      const route = FEED_ROUTES.profile;
+      for (const topic of [profileDataContentTopic(parent), profileAvatarContentTopic(parent)]) {
+        const data = await readContentFeed<unknown>(h.oldSigner.address, topic, { route });
+        if (data) await writeContentFeed({ signerPrivKey: keys.feedSigner.privKey, topic, data, route });
+      }
+    },
+
+    storeRing: async ({ gen, secret, prevRing, members }) => {
+      const [{ buildKeyRing, NO_RING }, { storeKeyRing }, { accountKeysOf }] = await Promise.all([
+        import("@woco/shared/keyring/ring"),
+        import("./members.js"),
+        import("@woco/shared/keyring/account-secret"),
+      ]);
+      const prior: (Uint8Array | null)[] = [bytes(h.seed)];
+      for (let g = 1; g < gen; g++) {
+        const s = h.chain?.secrets[g - 1] ?? "";
+        prior.push(s ? bytes(s) : null);
+      }
+      const secretBytes = bytes(secret);
+      try {
+        const ring = await buildKeyRing({
+          parent,
+          gen,
+          prev: prevRing ? `0x${prevRing}` : NO_RING,
+          secret: secretBytes,
+          prior: prior.slice(0, gen),
+          members,
+        });
+        return await storeKeyRing(ring, accountKeysOf(secretBytes).orderKey.publicKey);
+      } finally {
+        secretBytes.fill(0);
+        for (const p of prior) p?.fill(0);
+      }
+    },
+
+    flip: (going, ring) => h.flip(going, ring),
+    adopt: (chain) => h.adopt(chain),
+
+    after: {
+      server: async () => {
+        const { authPost } = await import("../api/client.js");
+        const res = await authPost("/api/keyring/refresh", {});
+        if (!res.ok) throw new Error(res.error ?? "refresh failed");
+      },
+      sites: async (keys: NewKeys) => {
+        const [{ getSiteEvents, publishSite, deploySite }, { ETHERNA_GATEWAY_URL }] = await Promise.all([
+          import("../api/sites.js"),
+          import("../swarm/gateways.js"),
+        ]);
+        for (const entry of await ownSites()) {
+          // Our own copy under the new signer - nobody else can have written it.
+          const site = await ownSiteConfig(entry.siteId, keys.feedSigner.address);
+          const events = await getSiteEvents(entry.siteId);
+          if (!events.ok) throw new Error(`site ${entry.siteId} events unreadable`);
+          const pub = await publishSite(site, events.data?.events ?? [], keys.feedSigner, ETHERNA_GATEWAY_URL);
+          if (!pub.ok) throw new Error(pub.error ?? `site ${entry.siteId} not republished`);
+          const dep = await deploySite(
+            entry.siteId,
+            { apiUrl: API_URL, gatewayUrl: ETHERNA_GATEWAY_URL, wocoAppUrl: WOCO_APP_URL, site },
+            keys.feedSigner,
+          );
+          if (!dep.ok || !dep.data) throw new Error(dep.error ?? `site ${entry.siteId} not redeployed`);
+          await repoint(dep.data.subEns);
+        }
+      },
+      pages: async (keys: NewKeys) => {
+        const [{ deployEventPage }, { ETHERNA_GATEWAY_URL }] = await Promise.all([
+          import("../api/sites.js"),
+          import("../swarm/gateways.js"),
+        ]);
+        // Our own copies under the new signer: which events carry a name.
+        for (const feed of await ownEvents(keys.feedSigner.address)) {
+          if (!feed.subEnsLabel) continue;
+          const e = feed;
+          const dep = await deployEventPage(
+            e.eventId,
+            { apiUrl: API_URL, gatewayUrl: feed.gatewayUrl ?? ETHERNA_GATEWAY_URL, subEnsLabel: feed.subEnsLabel },
+            keys.feedSigner,
+          );
+          if (!dep.ok || !dep.data) throw new Error(dep.error ?? `page ${e.eventId} not redeployed`);
+          await repoint(dep.data.subEns);
+        }
+      },
+      list: async (keys: NewKeys) => {
+        const [{ getMarketingList, uploadMarketingList }, { listSealContext, sealBoxJsonCompressed }, { orderKeysOf, openJsonWithAnyKey }] =
+          await Promise.all([import("../api/marketing.js"), import("@woco/shared/crypto/sealed-box"), import("./order-keys.js")]);
+        const resp = await getMarketingList();
+        if (!resp?.sealedList) return;
+        const ctx = listSealContext(parent);
+        const { secretKeys } = await orderKeysOf({ current: h.oldSecrets.at(-1)!, all: h.oldSecrets });
+        const payload = await openJsonWithAnyKey<{ version: 1; contacts: { email: string }[] }>(secretKeys, resp.sealedList, ctx);
+        const sealed = await sealBoxJsonCompressed(keys.orderPublicKey, payload, ctx);
+        await uploadMarketingList(sealed, payload.contacts.map((c) => c.email));
+      },
+      // The removed passkeys' device records, off the list first (#746 order) - the
+      // flip already did that.
+      records: async (_keys: NewKeys, { going }) => {
+        for (const key of going) await h.removeRecord(key);
+      },
+      social: async (keys: NewKeys) => {
+        const { liveSocialDeps } = await import("../auth/upgrade-to-passkey-live.js");
+        const social = await liveSocialDeps();
+        for (const kind of ["like", "follow"] as const) {
+          const subjects = await social.readLive(h.oldSigner.address, kind);
+          if (subjects === "unavailable") throw new Error(`${kind}s unreadable`);
+          for (const subject of subjects) {
+            if (!(await social.write(keys.feedSigner, kind, subject, true))) throw new Error(`${kind} not moved`);
+          }
+        }
+      },
+    },
+    progress: (p) => h.progress(p),
+  };
+}
