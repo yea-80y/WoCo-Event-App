@@ -582,6 +582,10 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     Losing it only reopens that window; present-but-unreadable is never overwritten; `/api/health`
     `keyRing` alarms, also when an account stays below its mark for 10 min - remove its entry with
     the server stopped if the recorded generation is wrong)
+  name-targets.json (feed manifest -> the collection a deploy last baked there: the ONLY thing a site or
+    event-page name may show - the CCIP gateway's WoCo-built rule never signs the holder's pointer. Losing it
+    fails SAFE: every such name shows the app until republished. Unreadable = never overwritten, every such
+    name shows the app, `/api/health` `nameTargets` alarm)
   device-grants.json (#746 — each account's added passkeys: owner-signed grants, signed removals
     and every nonce used. Losing it signs every added device out (re-add from the main passkey);
     nothing leaks or is granted. Losing the NONCES lets an old removal or grant be replayed.

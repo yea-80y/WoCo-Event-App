@@ -54,6 +54,7 @@ import { sendEmail } from "../lib/email/send.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { checkSiteSubEns, type SiteDeploySubEns } from "../lib/sub-ens/site-pointer.js";
+import { recordNameTarget } from "../lib/sub-ens/name-targets.js";
 import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import { companyFooterHtml } from "../lib/email/company-footer.js";
@@ -1119,6 +1120,14 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       }
     }
 
+    // The site's name shows THIS build, whatever its feed later says: the CCIP
+    // gateway signs the ledger's latest ref, never the holder's feed (name-targets.ts).
+    // Not recorded = the name still shows the previous build, so the response says so.
+    let nameRecorded = true;
+    if (feedManifestHash) {
+      nameRecorded = recordNameTarget(feedManifestHash, { kind: "site", id: siteId, owner: parentAddress, latestRef: contentHash });
+    }
+
     // Etherna gates anonymous reads behind an OFFER. The content chunk is offered at
     // upload and each feed UPDATE SOC is offered by its writer; the FEED MANIFEST
     // must be offered too or the ENS/domain link `/bzz/{feedManifestHash}/` returns
@@ -1198,6 +1207,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         ...(multisiteFeed ? { multisiteFeed } : {}),
         // What happened to the site's sub-ENS name, when it has one.
         ...(subEns ? { subEns } : {}),
+        ...(nameRecorded ? {} : { nameRecorded: false as const }),
       },
     });
 
