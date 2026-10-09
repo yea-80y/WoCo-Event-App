@@ -392,3 +392,18 @@ test("the largest ring the format allows - ten passkeys at the last generation -
   assert.ok(size <= MAX_KEY_RING_BYTES, `${size} bytes`);
   assert.ok(MAX_KEY_RING_BYTES <= 128 * 4096, "one intermediate chunk of leaves");
 });
+
+test("the same ring built twice is never the same bytes, so an anchor value never repeats (audit #983 L-1)", async () => {
+  const ps = [passkey(1), passkey(2)];
+  const args = {
+    parent: PARENT,
+    gen: 1,
+    prev: NO_RING,
+    secret: newAccountSecret(),
+    prior: [newAccountSecret()],
+    members: ps.map((p) => ({ statement: statementFor(p), boxPublicKey: p.box.publicKey })),
+  };
+  const a = encodeKeyRing(await buildKeyRing(args));
+  const b = encodeKeyRing(await buildKeyRing(args));
+  assert.notEqual(Buffer.from(a).toString("hex"), Buffer.from(b).toString("hex"));
+});

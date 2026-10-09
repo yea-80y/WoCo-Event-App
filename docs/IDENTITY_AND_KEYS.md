@@ -665,7 +665,11 @@ first added passkey makes the first ring.
 `ringOf(account)`, `setRing(expectedPrev, ring)` compare-and-swap - `@woco/shared/keyring/anchor`),
 called by the account's Kernel in the SAME op as the co-owner change, so the list and the keys never
 disagree. Devices and the server read it; nothing about it depends on WoCo's server. `/api/health`
-`keyRing` is red while the anchor has no code on the chain.
+`keyRing` is red while the anchor has no code on the chain. Audited (LeftClaw job #983, 2026-10-09:
+0 critical/high/medium): only the account writes its entry, and any ONE co-owner can (1-of-N, as with
+the list itself). A rollback to an older ring is refused by readers - the server pauses below the
+generation it has seen, devices never step back - and a ring's address never repeats, since every
+build is randomised.
 
 **A device** keeps its chain `{ringRef, gen, secrets}` locked under the passkey like the seed
 (`account-chain.ts`) and signs or seals only on a CONFIRMED current generation: each unlock reads the
