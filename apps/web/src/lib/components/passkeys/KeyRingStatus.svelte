@@ -23,6 +23,29 @@
   let finishing = $state(false);
   let error = $state<string | null>(null);
 
+  // A passkey left out of the keys asks another for them with a code.
+  let keysCode = $state<{ typed: string; qr: string } | null>(null);
+  let asking = $state(false);
+
+  async function askForKeys(): Promise<void> {
+    asking = true;
+    error = null;
+    try {
+      const verdict = await auth.requestKeys({ onCode: (c) => (keysCode = c) });
+      if (verdict !== "ok") error = "The keys were saved, but this device couldn't take them yet. Close and reopen WoCo.";
+    } catch (e) {
+      error =
+        e instanceof Error && (e.name === "PasskeyCeremonyCancelledError" || e.name === "NotAllowedError")
+          ? "Nothing changed."
+          : e instanceof Error
+            ? e.message
+            : "Couldn't show the code - try again.";
+    } finally {
+      asking = false;
+      keysCode = null;
+    }
+  }
+
   async function finish(): Promise<void> {
     finishing = true;
     error = null;
@@ -84,7 +107,19 @@
   </div>
 {:else if auth.keyRingNotice === "keyless"}
   <div class="box warn" role="alert">
-    <p class="body">This passkey doesn't have your account's latest keys. Open WoCo on another of your passkeys to set it up.</p>
+    <p class="body">
+      This passkey doesn't have your account's latest keys. Open WoCo on another of your passkeys and scan this code.
+    </p>
+    {#if keysCode}
+      {#await import("./PairingCode.svelte") then { default: PairingCode }}
+        <PairingCode qr={keysCode.qr} typed={keysCode.typed} />
+      {/await}
+    {:else}
+      <div class="pair">
+        <button class="btn btn--primary" onclick={askForKeys} disabled={asking}>{asking ? "Opening…" : "Show the code"}</button>
+      </div>
+    {/if}
+    {#if error}<p class="err">{error}</p>{/if}
   </div>
 {/if}
 

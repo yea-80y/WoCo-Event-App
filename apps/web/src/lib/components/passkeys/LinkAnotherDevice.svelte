@@ -10,13 +10,18 @@
    * other device's passkey goes on the account's list: a co-owner like this one.
    */
 
-  let { onlinked, onclose }: { onlinked: () => void; onclose: () => void } = $props();
+  // `keys` (#186): opened from a passkey that needs the account's keys - its code
+  // asks for them, and nothing is added to the account.
+  let { onlinked, onclose, mode = "link" }: { onlinked: () => void; onclose: () => void; mode?: "link" | "keys" } = $props();
 
   let stage = $state<"scan" | "reading" | "confirm" | "working" | "done">("scan");
   let camera = $state(false);
   let typed = $state("");
   let error = $state<string | null>(null);
   let pending: { code: Uint8Array; offer: PairingOffer } | null = null;
+  let gaveKeys = $state(false);
+  // The code read asks for keys (#186), not to add a device.
+  let keysRequest = $state(false);
 
   const loadCamera = () => import("../../scanner/QrCamera.svelte");
 
@@ -39,6 +44,7 @@
     error = null;
     try {
       pending = await link.readPairingOffer(input, { apiBase });
+      keysRequest = pending.offer.kind === "keys";
       stage = "confirm";
     } catch (e) {
       error = e instanceof Error ? e.message : link.LINK_CODE_UNKNOWN;
@@ -56,7 +62,9 @@
     stage = "working";
     error = null;
     try {
-      await auth.approveDeviceLink(pending.code, pending.offer);
+      if (pending.offer.kind === "keys") await auth.giveKeys(pending.code, pending.offer);
+      else await auth.approveDeviceLink(pending.code, pending.offer);
+      gaveKeys = pending.offer.kind === "keys";
       pending = null;
       stage = "done";
       onlinked();
@@ -73,13 +81,18 @@
 </script>
 
 <div class="link">
-  {#if stage === "scan" || stage === "reading"}
+  {#if (stage === "scan" || stage === "reading") && mode === "keys"}
+    <p class="panel-title">Give it keys</p>
+    <p>On the other device, open WoCo and tap Show the code. Scan the code it shows.</p>
+  {:else if stage === "scan" || stage === "reading"}
     <p class="panel-title">Add another device</p>
     <p>
       Same password manager on both - like Google Password Manager on this phone and in Chrome on your laptop? Just sign
       in there. Nothing to add.
     </p>
     <p>Otherwise, on the other device open woco.eth.limo, tap Sign in, then Add this device. Scan the code it shows.</p>
+  {/if}
+  {#if stage === "scan" || stage === "reading"}
     {#if camera}
       {#await loadCamera() then { default: QrCamera }}
         <QrCamera onScan={scanned} paused={stage !== "scan"} />
@@ -101,6 +114,14 @@
       </button>
     </form>
     <button class="btn btn--ghost" onclick={onclose}>Not now</button>
+  {:else if (stage === "confirm" || stage === "working") && keysRequest}
+    <p class="panel-title">Give this passkey your account's keys?</p>
+    <p>Only continue if you started this yourself, on your own device, a moment ago.</p>
+    <button class="btn btn--primary" onclick={approve} disabled={stage === "working"}>
+      {stage === "working" ? "Saving…" : "Give it keys"}
+    </button>
+    <button class="btn btn--ghost" onclick={onclose} disabled={stage === "working"}>Cancel</button>
+    <p class="muted">Your device will ask you to confirm it's you.</p>
   {:else if stage === "confirm" || stage === "working"}
     <p class="panel-title">Add this device to your account?</p>
     <p>Only continue if you started this yourself, on your own device, a moment ago.</p>
@@ -111,7 +132,7 @@
     <button class="btn btn--ghost" onclick={onclose} disabled={stage === "working"}>Cancel</button>
     <p class="muted">Your device will ask you to confirm it's you.</p>
   {:else}
-    <p class="ok">Added. Finish on the other device.</p>
+    <p class="ok">{gaveKeys ? "Keys saved. Finish on the other device." : "Added. Finish on the other device."}</p>
     <button class="btn btn--ghost" onclick={onclose}>Done</button>
   {/if}
   {#if error}<p class="err">{error}</p>{/if}

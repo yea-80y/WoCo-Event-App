@@ -56,7 +56,7 @@ export interface AccountKeysHost {
   self(): string | null;
   relock(): void;
   setVerdict(v: KeysVerdict): void;
-  setNotice(n: "keyless" | "changed"): void;
+  setNotice(n: "keyless" | "changed" | null): void;
   commitSigner(): void;
   /** The store's gates: the verdict, waited for (and caught up once with `prompt`). */
   requireCurrentKeys(opts: { prompt?: boolean }): Promise<void>;
@@ -347,6 +347,78 @@ async function enrolSelfOnce(h: AccountKeysHost, seedAddr: string): Promise<void
   } catch {
     /* checked again at the next unlock */
   }
+}
+
+// ---------------------------------------------------------------------------
+// A passkey left out of the keys: one asks, another gives
+// ---------------------------------------------------------------------------
+
+/**
+ * Give the account's keys to a passkey ALREADY on it that a removal left without them:
+ * its member (sent through a code) goes into the ring, the same generation, in one op.
+ * A passkey not on the onchain list is refused - adding one is "Add another device".
+ */
+export async function giveKeysTo(h: AccountKeysHost, wire: unknown): Promise<void> {
+  const parent = h.parent()?.toLowerCase();
+  const self = h.self();
+  if (!h.isPasskey() || !parent || !self) throw new Error(h.seedLockedMessage());
+  const [{ memberFromWire }, { readCoOwners, setKeyRingAlone }] = await Promise.all([
+    import("./members.js"),
+    import("../auth/kernel-account.js"),
+  ]);
+  const member = await memberFromWire(wire, parent);
+  if (!member) throw new Error("That code isn't from one of your passkeys.");
+  const who = member.statement.coOwner;
+  if (who === self) throw new Error("That code is from this device. Scan the one on the other device.");
+  const list = await readCoOwners(parent);
+  if (list === "error" || list === null) throw new Error(keysVerdictMessage("unknown"));
+  if (!list.map((a) => a.toLowerCase()).includes(who)) {
+    throw new Error("That passkey isn't on your account. To add a device, use Add another device.");
+  }
+  const ring = await ringForChange(h, [member]);
+  if (!ring) throw new Error(keysVerdictMessage("unknown"));
+  await h.ensureKernel();
+  const kernel = h.kernel();
+  if (!kernel) throw new Error(h.seedLockedMessage());
+  const res = await setKeyRingAlone(kernel, { prev: ring.prev, next: ring.next });
+  if (!res.confirmed) throw new Error("Couldn't save the keys - nothing changed. Try again.");
+  await adoptOwnRing(h, ring.chain);
+}
+
+/**
+ * This passkey, left out of the account's keys, asks another for them: shows a code
+ * with its member, waits until it is in the ring, then takes the ring. The ring read
+ * right after the other device saved it may lag, so it is read a few times.
+ */
+export async function requestKeys(
+  h: AccountKeysHost,
+  opts: { onCode: (code: { typed: string; qr: string }) => void; signal?: AbortSignal },
+): Promise<KeysVerdict> {
+  await h.ensurePasskeyKey();
+  const u = h.unlocked();
+  const prf = h.prf();
+  const ownerKey = h.ownerKey();
+  const self = h.self();
+  if (!h.isPasskey() || !u || !prf || !ownerKey || !self) throw new Error(h.seedLockedMessage());
+  const [{ memberOf, memberToWire }, { runGetKeys }, { apiBase }] = await Promise.all([
+    import("./members.js"),
+    import("../auth/device-link.js"),
+    import("../api/http.js"),
+  ]);
+  const member = await memberOf(u.parent, { address: self, privateKey: ownerKey, prfSecret: prf });
+  await runGetKeys(opts, { apiBase, member: memberToWire(member) });
+  let verdict: KeysVerdict = "unknown";
+  for (const waitMs of [0, 2000, 5000]) {
+    if (waitMs) await new Promise((r) => setTimeout(r, waitMs));
+    verdict = await verifyCurrentKeys(h, h.prf());
+    if (verdict === "ok") break;
+  }
+  h.setVerdict(verdict);
+  if (verdict === "ok") {
+    h.commitSigner();
+    h.setNotice(null);
+  }
+  return verdict;
 }
 
 // ---------------------------------------------------------------------------

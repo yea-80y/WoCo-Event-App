@@ -5243,6 +5243,16 @@ export const auth = {
   },
   // Passkeys a removal now would leave without the new keys - a hint for its confirm.
   passkeysWithoutKeys: async () => (await _keys()).passkeysWithoutKeys(_keysHost()),
+  // A passkey left out of the account's keys (#186): this one asks with a code...
+  requestKeys: async (opts: { onCode: (code: { typed: string; qr: string }) => void; signal?: AbortSignal }) =>
+    (await _keys()).requestKeys(_keysHost(), opts),
+  // ...and another, on the account, gives them - one confirm, one op.
+  giveKeys: async (code: Uint8Array, offer: import("./device-link.js").KeysOffer) => {
+    if (_deviceRole) throw new MainPasskeyRequiredError();
+    await _freshMainPasskey();
+    const [{ runGiveKeys }, { apiBase: base }] = await Promise.all([import("./device-link.js"), import("../api/http.js")]);
+    await runGiveKeys(code, offer, { apiBase: base, give: async (member) => (await _keys()).giveKeysTo(_keysHost(), member) });
+  },
   get isConnected() { return isConnected; },
   get isAuthenticated() { return isAuthenticated; },
 

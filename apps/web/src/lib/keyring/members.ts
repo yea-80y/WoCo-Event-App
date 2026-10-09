@@ -22,6 +22,38 @@ function bytes(hex: string): Uint8Array {
   return out;
 }
 
+/** A member as it travels between this account's devices (a keyless passkey's code). */
+export interface WireMember {
+  statement: unknown;
+  boxKey: string;
+}
+
+export function memberToWire(m: KeyRingMember): WireMember {
+  let hex = "";
+  for (const b of m.boxPublicKey) hex += b.toString(16).padStart(2, "0");
+  return { statement: m.statement, boxKey: hex };
+}
+
+/**
+ * A member another device sent, or null: its statement must verify (signed by the
+ * passkey it names, for `parent`) and its box key must be the one the statement names.
+ * Self-authenticating, so it can come any way at all - only that passkey's PRF opens
+ * what is sealed to its box key.
+ */
+export async function memberFromWire(x: unknown, parent: string): Promise<KeyRingMember | null> {
+  const w = x as Partial<WireMember> | null;
+  if (!w || typeof w !== "object" || typeof w.boxKey !== "string" || !/^[0-9a-f]{2432}$/.test(w.boxKey)) return null;
+  const [{ verifyBoxKeyStatement }, { boxKeyRefOf }] = await Promise.all([
+    import("@woco/shared/keyring/box-key"),
+    import("@woco/shared/keyring/ring"),
+  ]);
+  const statement = verifyBoxKeyStatement(w.statement);
+  if (!statement || statement.parent !== parent.toLowerCase()) return null;
+  const boxPublicKey = bytes(w.boxKey);
+  if (boxKeyRefOf(boxPublicKey) !== statement.boxKeyRef) return null;
+  return { statement, boxPublicKey };
+}
+
 /** This passkey as a ring member of `parent`. */
 export async function memberOf(parent: string, key: PasskeyKeys): Promise<KeyRingMember> {
   const [{ passkeyBoxKeypair }, { signBoxKeyStatement }, { boxKeyRefOf }] = await Promise.all([

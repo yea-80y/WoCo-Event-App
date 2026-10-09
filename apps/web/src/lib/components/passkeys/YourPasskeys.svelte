@@ -33,6 +33,9 @@
   // whether this device holds a door pass the new keys would stop.
   let withoutKeys = $state<string[]>([]);
   let doorPassHere = $state(false);
+  // Passkeys on the account a removal left without its keys: give them keys, or remove them.
+  let needsKeys = $state<string[]>([]);
+  let linkMode = $state<"link" | "keys">("link");
 
   const loadLinkAnotherDevice = () => import("./LinkAnotherDevice.svelte");
 
@@ -64,6 +67,7 @@
       coOwned = res.coOwned;
       canAdd = res.canAdd;
       loaded = true;
+      if (coOwned) void auth.passkeysWithoutKeys().then((k) => (needsKeys = k));
     } catch (e) {
       loadError = e instanceof Error ? e.message : "Couldn't read your passkeys - try again.";
     } finally {
@@ -211,6 +215,15 @@
                 >Remove</button>
               {/if}
             </div>
+            {#if needsKeys.includes(r.key) && !linkedOnly && confirming !== r.key}
+              <div class="confirm">
+                <p>{title(r)} needs your account's keys.</p>
+                <div class="pair">
+                  <button class="btn btn--ghost" onclick={() => { linkMode = "keys"; linking = true; }} disabled={busy}>Give it keys</button>
+                  <button class="btn btn--ghost" onclick={() => openConfirm(r.key)} disabled={busy}>Remove it</button>
+                </div>
+              </div>
+            {/if}
             {#if confirming === r.key}
               <div class="confirm">
                 {#if r.signedInWith}
@@ -249,7 +262,7 @@
 
       {#if linking}
         {#await loadLinkAnotherDevice() then { default: LinkAnotherDevice }}
-          <LinkAnotherDevice onlinked={() => { loaded = false; void load(); }} onclose={() => (linking = false)} />
+          <LinkAnotherDevice mode={linkMode} onlinked={() => { loaded = false; void load(); }} onclose={() => { linking = false; linkMode = "link"; }} />
         {:catch}
           <p class="err">Couldn't open this - check your connection and try again.</p>
         {/await}
@@ -294,7 +307,7 @@
         {:else}
           <div class="actions">
             <div class="action">
-              <button class="btn btn--primary" onclick={() => (linking = true)} disabled={busy}>Add another device</button>
+              <button class="btn btn--primary" onclick={() => { linkMode = "link"; linking = true; }} disabled={busy}>Add another device</button>
               <p class="hint">A laptop or another phone that can't use these passkeys.</p>
             </div>
             <div class="action">
