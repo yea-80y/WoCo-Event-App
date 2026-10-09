@@ -1,6 +1,8 @@
 /**
- * The site runtime renders organiser links only through `safeHref`, and holds no
- * passkey code at all (a site page must never be able to ask for one).
+ * The site runtime renders organiser links only through `safeHref`, and its own
+ * components call no WebAuthn API. This is a SOURCE scan: the built site bundles
+ * still carry passkey-account.ts through imports, refused on a name host at run
+ * time by `ceremonyRpId()`; a build-output canary waits on #833.
  *
  * MUTATION: put `href={section.ctaHref}` back in HeroSection and the first test goes
  * red; add a `navigator.credentials` call to any site component and the second does.
@@ -27,7 +29,7 @@ function walk(dir: string): string[] {
   });
 }
 
-test("site pages hold no passkey code", () => {
+test("site components call no WebAuthn API themselves", () => {
   const files = [...walk(join(SRC, "lib/components/site")), join(SRC, "MultiSiteApp.svelte")];
   assert.ok(files.length > 10, "the scan reaches the site components");
   for (const f of files) assert.ok(!readFileSync(f, "utf8").includes("navigator.credentials"), f);
