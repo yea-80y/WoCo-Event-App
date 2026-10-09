@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { HeroSection as HeroSectionType } from '@woco/shared';
+  import { safeHref, safeSwarmRef, type HeroSection as HeroSectionType } from '@woco/shared';
 
   interface Props {
     section: HeroSectionType;
@@ -8,26 +8,25 @@
 
   let { section, gatewayUrl }: Props = $props();
 
-  const bgStyle = $derived(
-    section.bgImageRef
-      ? `background-image: url(${gatewayUrl}/bytes/${section.bgImageRef})`
-      : ''
-  );
+  // Organiser input: a link that is not an ordinary one renders as no button at all.
+  const ctaHref = $derived(safeHref(section.ctaHref));
+  const bgRef = $derived(safeSwarmRef(section.bgImageRef));
+  const bgStyle = $derived(bgRef ? `background-image: url(${gatewayUrl}/bytes/${bgRef})` : '');
 </script>
 
 <section
   class="hero"
   style={bgStyle}
-  class:has-bg={!!section.bgImageRef}
-  class:heading-only={!section.subheading && !(section.ctaLabel && section.ctaHref)}
+  class:has-bg={!!bgRef}
+  class:heading-only={!section.subheading && !(section.ctaLabel && ctaHref)}
 >
   <div class="inner">
     <h1>{section.heading}</h1>
     {#if section.subheading}
       <p class="sub">{section.subheading}</p>
     {/if}
-    {#if section.ctaLabel && section.ctaHref}
-      <a class="cta" href={section.ctaHref}>{section.ctaLabel}</a>
+    {#if section.ctaLabel && ctaHref}
+      <a class="cta" href={ctaHref}>{section.ctaLabel}</a>
     {/if}
   </div>
 </section>
