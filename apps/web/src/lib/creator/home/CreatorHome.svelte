@@ -94,6 +94,8 @@
   let audienceCount = $state<Read<number>>(LOADING);
   let audienceAsked = false;
   let stripeModalOpen = $state(false);
+  /** Re-reads the referral box after a reload, which is what follows Stripe onboarding. */
+  let referralRecheck = $state(0);
 
   // Kernel-backed kinds can install guardian recovery (see AccountRecoverySetup.svelte
   // for the full rationale). Self-custody kinds (web3/local/coinbase) recover from
@@ -315,6 +317,7 @@
 
   function reload(): void {
     if (!auth.parent) return;
+    referralRecheck++;
     if (stripeSessionDead) {
       void loginRequest.request().then((ok) => { if (ok && auth.parent) loadFor(auth.parent.toLowerCase()); });
       return;
@@ -388,7 +391,7 @@
     <h1>{greeting}{#if profileName}, <span class="who">{profileName}</span>{/if}.</h1>
   </header>
 
-  <ReferralConfirmBanner />
+  <ReferralConfirmBanner recheck={referralRecheck} />
 
   {#if !auth.isConnected}
     <section class="signin-callout card">

@@ -55,6 +55,15 @@ export function confirmReferral(referrer: Hex0x, refereeFeed: Hex0x) {
   });
 }
 
+/**
+ * Tell the issuer where this account's referral statement is, so it can confirm
+ * it the moment Stripe verifies the account, whether or not they are in the app
+ * then. A pointer the server re-reads, never a claim it acts on unread.
+ */
+export function armReferral(referrer: Hex0x, refereeFeed: Hex0x) {
+  return authPost<Record<string, never>>("/api/campaign/referrals/arm", { referrer, refereeFeed });
+}
+
 /** Stripe state + any existing confirmation — the two facts the banner gates on. */
 export function getReferralStatus() {
   return authGet<ReferralStatusResponse>("/api/campaign/referrals/status");

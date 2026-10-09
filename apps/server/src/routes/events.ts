@@ -21,7 +21,7 @@ import { batchForDeploy, PlatformBatchUnavailable } from "../lib/etherna/batch-r
 import type { SeriesManifestBlob } from "@woco/shared";
 import { manifestV2Digest, validateSignedManifestV2, bytesToHex0x } from "@woco/shared";
 import { verifyAndPinIssuerBinding } from "../lib/issuer/binding.js";
-import { deleteStripeAccount, getStripeAccount, setStripeAccount } from "../lib/stripe/accounts.js";
+import { deleteStripeAccount, getStripeAccount, syncStripeVerdict } from "../lib/stripe/accounts.js";
 import { currencyAllowedFor } from "../lib/stripe/currency-policy.js";
 import { getStripe } from "../lib/stripe/client.js";
 import { sanitisePublicApiUrl } from "../lib/url/public-api-url.js";
@@ -333,19 +333,12 @@ events.post("/", requireAuth, async (c) => {
     try {
       const s = getStripe();
       const account = await s.accounts.retrieve(stripeRecord.stripeAccountId);
+      syncStripeVerdict(parentAddress.toLowerCase(), stripeRecord.stripeAccountId, account);
       if (!account.charges_enabled) {
-        // Keep local cache in sync
-        if (stripeRecord.onboardingComplete) {
-          setStripeAccount(parentAddress.toLowerCase(), stripeRecord.stripeAccountId, false);
-        }
         return c.json({
           ok: false,
           error: "Your Stripe account is not yet verified. Complete identity verification in Dashboard → Payments.",
         }, 403);
-      }
-      // Sync cache if it was behind
-      if (!stripeRecord.onboardingComplete) {
-        setStripeAccount(parentAddress.toLowerCase(), stripeRecord.stripeAccountId, true);
       }
     } catch (err: any) {
       if (err?.statusCode === 404 || err?.code === "resource_missing") {

@@ -69,6 +69,7 @@ import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-re
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
 import { ticketSalesHealth } from "./lib/stripe/ticket-sales.js";
+import { onStripeVerified } from "./lib/stripe/accounts.js";
 import { cancellationsStoreHealth } from "./lib/event/cancellations.js";
 import { cancellationJobHealth, startCancellationRefundJob } from "./lib/stripe/cancellation-refunds.js";
 import { liveCancellationRefundDeps } from "./lib/stripe/cancellation-refunds-live.js";
@@ -80,6 +81,7 @@ import { nameTargetsHealth } from "./lib/sub-ens/name-targets.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
+import { confirmArmedReferral } from "./lib/campaign/referral-arm.js";
 import {
   startHealthProbes,
   paymasterHealth,
@@ -929,6 +931,8 @@ startEvidencePublisher();
 // clients read, and refuses to write anywhere else if it does not.
 // Inert without CAMPAIGN_ISSUER_PRIVATE_KEY: confirmations answer 503.
 startCampaignIssuer();
+// A referee's armed referral is confirmed the moment Stripe verifies them.
+onStripeVerified((address) => void confirmArmedReferral(address));
 // Load the name-targets ledger now, not on the first name lookup, so an unreadable
 // file alarms in the boot log and on /api/health from the first second.
 {

@@ -62,6 +62,12 @@ export interface SettleReferralDeps {
     referrer: Hex0x,
   ) => Promise<VerifiedWriteResult>;
   clear: () => void;
+  /**
+   * Hand the written statement's location to the issuer, which confirms it when
+   * Stripe verifies the account. Best-effort: a missed arm only waits for the
+   * Home auto-confirm, so its failure never touches the capture.
+   */
+  arm?: (referrer: Hex0x, feed: Hex0x) => Promise<unknown>;
 }
 
 export async function settleCapturedReferral(deps: SettleReferralDeps): Promise<SettleOutcome> {
@@ -89,6 +95,7 @@ export async function settleCapturedReferral(deps: SettleReferralDeps): Promise<
     // which is cheap because the write is idempotent (see records.ts).
     if (written.status !== "verified") return "deferred";
     deps.clear();
+    void deps.arm?.(referrer, signer.address as Hex0x).catch(() => {});
     return "written";
   } catch {
     // Kept on purpose: a failed network call says nothing about whether the
