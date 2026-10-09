@@ -156,7 +156,12 @@ export async function endSurvivingWeb3AuthSession(
     // no cached connector means no survivor can answer connect(), which is the
     // whole invariant. Re-throw only while a session still stands.
     if (w.connected || w.cachedConnector) throw e;
+    return true;
   }
+  // A logout can also RESOLVE without ending anything: the SDK returns early
+  // while its connector is still DISCONNECTING from an earlier attempt. Re-read
+  // here too, so a no-op is never reported as ended.
+  if (w.connected || w.cachedConnector) throw new Error("stored session survived logout");
   return true;
 }
 

@@ -44,6 +44,14 @@ type Stored = { key: string; loads: "at-init" | "later" | "never" } | null;
 
 const LIVE_STATUSES = ["connected", "authorized"];
 
+/** The SDK's provider exists from init(), session or not (noModal.js:71); it
+ *  serves the key only once a session is bound to it. */
+const unboundProvider = () => ({
+  request: async (): Promise<unknown> => {
+    throw new Error("no session bound to the provider yet");
+  },
+});
+
 class FakeSdk extends EventEmitter {
   connected = false;
   status = "not_ready";
@@ -64,6 +72,7 @@ class FakeSdk extends EventEmitter {
 
   async init(): Promise<void> {
     this.status = "ready";
+    this.provider = unboundProvider();
     const s = this.world.stored;
     if (!s) return;
     this.cachedConnector = "auth";
@@ -103,9 +112,11 @@ class FakeSdk extends EventEmitter {
   async logout(o?: { cleanup?: boolean }): Promise<void> {
     this.logouts.push(o);
     if (!this.connected || !LIVE_STATUSES.includes(this.status)) throw new Error("No wallet is connected");
+    // The SDK's early return while a connector is still DISCONNECTING.
+    if (this.world.logoutNoop) return;
     this.connected = false;
     this.status = "ready";
-    this.provider = null;
+    this.provider = unboundProvider();
     this.cachedConnector = null;
     this.world.stored = null;
     if (o?.cleanup) this.spent = true;
@@ -122,6 +133,8 @@ class World {
   connectFails: "popup-closed" | "modal-closed" | "survivor-mid-modal" | "other" | null = null;
   /** Holds a logout open AFTER its state change, like a slow network round trip. */
   logoutGate: Promise<void> | null = null;
+  /** logout() resolves having ended nothing - the session stays named and stored. */
+  logoutNoop = false;
 
   install(): void {
     setWeb3AuthFactoryForTests(async () => {
@@ -221,6 +234,18 @@ test("a leftover that cannot be ended refuses, and the next attempt starts from 
   assert.equal(r.address, addressOf(KEY_B));
   assert.equal(world.built.length, 3, "the refused attempt's instance is not reused");
   assert.deepEqual(world.built.map((b) => b.connectCalls), [0, 0, 1]);
+});
+
+test("a logout that resolves without ending the session refuses - never reported as cleared", async () => {
+  world.stored = { key: KEY_A, loads: "at-init" };
+  world.logoutNoop = true;
+  await assert.rejects(loginWithWeb3Auth(), (e: unknown) => {
+    assert.ok(isWeb3AuthSignInError(e));
+    assert.match((e as Error).message, /couldn't be cleared/);
+    return true;
+  });
+  assert.deepEqual(world.built.map((b) => b.connectCalls), [0], "no modal over a session still stored");
+  assert.notEqual(world.stored, null);
 });
 
 test("sign-in over a session still loading waits, then refuses without signing anyone in", async (t) => {

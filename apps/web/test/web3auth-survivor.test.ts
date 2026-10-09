@@ -93,6 +93,14 @@ test("a STALE session the SDK already discarded resolves — logout throwing ove
   assert.equal(await endSurvivingWeb3AuthSession(w), true);
 });
 
+test("a logout that RESOLVES with the session still named rejects — a no-op is not an ending", async () => {
+  const w = fakeInstance({ ...LIVE, cachedConnector: "auth" });
+  w.logout = async (o) => {
+    w.calls.push(o); // the SDK's early return while DISCONNECTING: nothing changes
+  };
+  await assert.rejects(endSurvivingWeb3AuthSession(w), /survived logout/);
+});
+
 test("logout failing with a cached connector STILL stored rejects — that session can answer connect()", async () => {
   const w = fakeInstance({ ...LIVE, cachedConnector: "auth" });
   w.logout = async () => {

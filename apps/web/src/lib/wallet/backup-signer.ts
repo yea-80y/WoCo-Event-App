@@ -270,6 +270,9 @@ export async function connectWeb3AuthBackup(): Promise<BackupWallet> {
     // while the instance quietly becomes connected as the survivor. Same race
     // the primary login guards (#182): never adopt it, end it and ask for one
     // retry (which builds fresh instances, so the spent one is never reused).
+    // `connected` (the stored name) is deliberately the wider read here, not
+    // `isWeb3AuthSessionLive`: anything the SDK still names is ended or refused,
+    // and a logout it cannot run is swallowed.
     if (w.connected) {
       try {
         await w.logout({ cleanup: true });

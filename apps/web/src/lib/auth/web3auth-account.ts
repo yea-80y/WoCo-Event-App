@@ -164,6 +164,9 @@ export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey
     // the modal and reject with "User closed the modal". The old recovery here
     // ADOPTED it — the #182 bug through a race window. End it instead and ask
     // for one retry, which builds a fresh instance from the cleared storage.
+    // `connected` (the stored name) is deliberately the wider read here, not
+    // `isWeb3AuthSessionLive`: anything the SDK still names is ended or refused,
+    // and a logout it cannot run is swallowed.
     if (w.connected) {
       try {
         await w.logout({ cleanup: true });
