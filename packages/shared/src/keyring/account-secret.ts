@@ -67,7 +67,9 @@ export function accountKeysOf(secret: Uint8Array): AccountKeys {
 /**
  * A door pass's roster key: any device of the account at this generation derives it,
  * so nothing is stored in the clear. `passId` is the server's id for the pass, so a
- * new pass is a new key even for the same event.
+ * new pass is a new key even for the same event. FROZEN: the label, the empty salt and
+ * the id charset `[0-9A-Za-z_-]{1,128}` - which keeps the string unambiguous, and so
+ * makes the event id's charset part of the format.
  */
 export function doorPassRosterKey(secret: Uint8Array, eventId: string, passId: string): Uint8Array {
   if (!ID_RE.test(eventId) || !ID_RE.test(passId)) {

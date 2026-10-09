@@ -26,6 +26,21 @@
  * passkey writes a new ring at the SAME generation (same secret, one more entry);
  * removing one writes gen + 1 with a fresh secret and no entry for it.
  *
+ * FROZEN AT LAUNCH - the canonical bytes (`encodeKeyRing`; the ring store accepts only
+ * these) are compact JSON with keys in exactly this order:
+ *   ring       v, parent, gen, prev, feedSigner, orderKeyRef, entries, back
+ *   entry      statement, boxKey, box
+ *   statement  parent, coOwner, boxKeyRef, issuedAt, sig
+ *   box        v, enc, ct
+ *   back       iv, ct, holes
+ * Refs come in two encodings: `boxKeyRef` and `prev` are 0x-bytes32, `orderKeyRef` is
+ * bare 64-hex. `prev` is a hint nobody verifies - the anchor's compare-and-swap is the
+ * real order. The ring names no chain: it is chain-bound only through its statements'
+ * EIP-712 domain. A gen-0 ring's back `ct` is the 16-byte tag over nothing. The anchor
+ * holds the bytes32 of an UNENCRYPTED `/bytes` reference: only plain trees at most
+ * MAX_KEY_RING_BYTES are ever written (an encrypted ref is 64 bytes and cannot be
+ * anchored), and readers refuse any tree that is not the shape bee makes for its size.
+ *
  * Import by subpath, lazily in the browser: this loads the lattice code.
  */
 

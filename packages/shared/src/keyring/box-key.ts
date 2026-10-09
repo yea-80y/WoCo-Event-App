@@ -19,7 +19,11 @@
  * the passkey, and the statement is public.
  *
  * FROZEN once a statement exists: change the domain or the type and every ring entry
- * written so far names a statement that no longer verifies.
+ * written so far names a statement that no longer verifies. `issuedAt` is uint256 on the
+ * wire but read as a safe integer (0..2^53-1). A statement carries no freshness and is
+ * reused across rings and generations - it names a key, it grants nothing. The 0x1901
+ * EIP-712 envelope keeps its digest apart from userOps (personal-sign) and sessions
+ * (another domain).
  */
 
 import { KERNEL_CHAIN_ID } from "../kernel/chain.js";
