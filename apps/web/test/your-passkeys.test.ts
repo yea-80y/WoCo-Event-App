@@ -136,7 +136,13 @@ test("removing: a legacy device only itself, a co-owner any - confirmed fresh, o
   const b = body(STORE, "async function _removePasskeyConfirmed(");
   assert.match(b, /if \(_deviceRole && target !== self\) throw new MainPasskeyRequiredError\(\);/);
   // The list change lands before the device record is removed (Fable sign-off).
-  assert.ok(b.indexOf("await _removeCoOwner(target);") < b.indexOf("await _removeRecordAfterList(parent, target);"), "off the list first");
+  assert.match(b, /await _rotateOnRemoval\(\[target\]\);/);
+  // #186: another passkey leaves through the removal's rotation - off the list in the flip,
+  // its device record only after it (rotate.ts runs the after steps past the flip).
+  const rot = read("../src/lib/keyring/rotate.ts");
+  assert.ok(rot.indexOf("await s.flip(pending.going") < rot.indexOf("await s.after[step](keys, { going: p.going });"), "off the list first");
+  assert.ok(read("../src/lib/keyring/rotate.ts").includes('"records"'));
+  assert.match(body(STORE, "async function _rotateOnRemoval("), /removeRecord: \(key\) => _removeRecordAfterList\(u\.parent, key\),/);
   assert.match(b, /if \(target === self\) await _forgetThisPasskey\(self\);/);
   assert.match(
     body(STORE, "async function _forgetThisPasskey("),

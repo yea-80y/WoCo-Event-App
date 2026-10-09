@@ -3029,11 +3029,10 @@ async function _removePasskeyConfirmed(grantee: string): Promise<void> {
     }
     return;
   } else {
-    // A co-owner removes any OTHER passkey: OFF THE LIST FIRST. The device record goes
-    // only after the change lands, or a device that can still sign onchain would be
-    // signed out while able to put itself back (#746, Fable sign-off).
-    await _removeCoOwner(target);
-    await _removeRecordAfterList(parent, target);
+    // A co-owner removes any OTHER passkey (#186): the account moves to new keys the
+    // removed one never sees, in the same op that takes it OFF THE LIST FIRST; its
+    // device record goes after the flip lands (#746, Fable sign-off).
+    await _rotateOnRemoval([target]);
   }
   if (target === self) await _forgetThisPasskey(self);
 }
@@ -3049,18 +3048,63 @@ async function removePasskeys(grantees: string[]): Promise<void> {
   const targets = [...new Set(grantees.map((g) => g.toLowerCase()))];
   if (targets.length === 0) return;
   await _freshMainPasskey();
-  await (await import("./co-owner-flows.js")).removeCoOwners(_coOwnerHost(), targets);
-  // Every record is tried; a failed one is kept pending by _removeRecordAfterList.
-  let firstError: unknown = null;
-  for (const t of targets) {
-    try {
-      await _removeRecordAfterList(parent, t);
-    } catch (e) {
-      firstError ??= e;
-    }
+  // The others leave with a move to new keys (#186) - one flip for all of them, their
+  // records after it. This device's own passkey leaving needs none: it holds them anyway.
+  const others = targets.filter((t) => t !== self);
+  if (others.length > 0) await _rotateOnRemoval(others);
+  if (targets.includes(self)) {
+    await (await import("./co-owner-flows.js")).removeCoOwners(_coOwnerHost(), [self]);
+    await _removeRecordAfterList(parent, self).catch((e) => console.warn("[auth] own record not removed:", e));
+    await _forgetThisPasskey(self);
   }
-  if (targets.includes(self)) await _forgetThisPasskey(self);
-  if (firstError) throw firstError;
+}
+
+/** The step of a removal under way, for its progress sheet (#186). Null = none. */
+let _removalProgress = $state<import("../keyring/rotate.js").RotationProgress | null>(null);
+
+/**
+ * Remove passkeys and move the account to new keys (#186), or finish a removal this
+ * device started (`resume`). Needs the account's CURRENT generation confirmed and this
+ * passkey's keys in hand - the caller has asked for a fresh confirm.
+ */
+async function _rotateOnRemoval(
+  going: string[],
+  opts: { resume?: boolean } = {},
+): Promise<import("../keyring/rotate.js").RotationResult> {
+  await _requireCurrentKeys({ prompt: true });
+  const u = _unlocked;
+  const prf = _passkeyPrfSecret;
+  const ownerKey = _passkeyPrivateKey;
+  const self = _seedAddress?.toLowerCase();
+  if (_kind !== "passkey" || !u || !prf || !ownerKey || !self) throw new Error(_seedLockedMessage());
+  const [{ rotateOnRemoval }, { liveRotationSteps }, flows] = await Promise.all([
+    import("../keyring/rotate.js"),
+    import("../keyring/rotate-live.js"),
+    import("./co-owner-flows.js"),
+  ]);
+  const steps = liveRotationSteps({
+    parent: u.parent,
+    self: { address: self, privateKey: ownerKey, prfSecret: prf },
+    seed: u.seed,
+    chain: u.chain,
+    oldSigner: deriveFeedSignerKey(currentSecretOf(u.seed, u.chain)),
+    oldSecrets: allSecretsOf(u.seed, u.chain),
+    flip: async (g, ring) => {
+      await flows.removeCoOwnersWithRing(_coOwnerHost(), g, ring);
+      return { confirmed: true };
+    },
+    adopt: (chain) => _adoptOwnRing(chain),
+    signTypedDataAsHolder: (typed) => signTypedDataAsHolder(typed as Parameters<typeof signTypedDataAsHolder>[0]),
+    removeRecord: (key) => _removeRecordAfterList(u.parent, key),
+    progress: (p) => {
+      _removalProgress = p;
+    },
+  });
+  try {
+    return await rotateOnRemoval(steps, going, opts);
+  } finally {
+    _removalProgress = null;
+  }
 }
 
 /** This device's own passkey left the account: forget it here and sign out. */
@@ -5381,6 +5425,15 @@ export const auth = {
   approveDeviceLink,
   removePasskey,
   removePasskeys,
+  // A removal under way (#186): its step for the progress sheet, and finishing one this
+  // device started (a closed tab, a step that failed after the flip).
+  get removalProgress() {
+    return _removalProgress;
+  },
+  finishRemoval: async () => {
+    await _freshMainPasskey();
+    return _rotateOnRemoval([], { resume: true });
+  },
   get isConnected() { return isConnected; },
   get isAuthenticated() { return isAuthenticated; },
 

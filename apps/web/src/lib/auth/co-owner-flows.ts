@@ -15,6 +15,8 @@ export interface CoOwnerChain {
     signers: readonly string[],
     ring?: { prev: string | null; next: string },
   ): Promise<unknown>;
+  setKeyRingAlone(kernel: BuiltKernel, ring: { prev: string | null; next: string }): Promise<{ confirmed: boolean }>;
+  readRingAnchor(account: string): Promise<string | null | "error">;
 }
 
 export interface CoOwnerHost {
@@ -89,6 +91,36 @@ export async function removeCoOwners(
   const next = going.reduce<string[]>((acc, k) => listWithout(acc, k), list);
   await setCoOwners(h.kernel()!, "weighted", next, ring);
   h.dropKernel();
+}
+
+/**
+ * A removal's FLIP (#186): the passkeys off the list and the account's key ring onto
+ * `ring` in ONE op. If another device already took them off, the ring still moves (a
+ * ring-only op) - the new keys must land whatever the list says. The anchor is read
+ * back: the flip is done only when it names the new ring.
+ */
+export async function removeCoOwnersWithRing(
+  h: CoOwnerHost,
+  keys: readonly string[],
+  ring: { prev: string | null; next: string },
+): Promise<void> {
+  await h.ensureKernel();
+  const { root, list } = await currentCoOwners(h);
+  if (root !== "weighted") throw new Error("This account has only one passkey - nothing to remove.");
+  const going = keys.map((k) => k.toLowerCase()).filter((k) => list.includes(k));
+  const chain = await chainOf(h);
+  if (going.length === 0) {
+    await chain.setKeyRingAlone(h.kernel()!, ring);
+  } else {
+    const { listWithout } = await import("./co-owner-calls.js");
+    const next = going.reduce<string[]>((acc, k) => listWithout(acc, k), list);
+    await chain.setCoOwners(h.kernel()!, "weighted", next, ring);
+  }
+  h.dropKernel();
+  const parent = h.parent();
+  if (parent && (await chain.readRingAnchor(parent)) !== ring.next) {
+    throw new Error("Your account's new keys didn't land - nothing else was changed. Try again.");
+  }
 }
 
 /**

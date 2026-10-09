@@ -48,12 +48,29 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
   const parent = h.parent.toLowerCase();
   const self = h.self.address.toLowerCase();
 
-  /** Point a WoCo name at a fresh deploy's feed, when the deploy says it waits for the holder. */
-  async function repoint(subEns: unknown): Promise<void> {
-    const p = subEns as { status?: string; label?: string; target?: string } | undefined;
-    if (p?.status !== "awaiting_signature" || !p.label || !p.target) return;
+  /**
+   * Point a WoCo name at a deploy this removal just made - signed by the HOLDER with no
+   * tap, so only when every value is pinned to what this device knows (#186): the name is
+   * the one in the organiser's OWN signed copy (never the server's reply), the deploy's
+   * feed is the organiser's and this device signed its update under the new key, and the
+   * target is that deploy's feed manifest. Anything else is not signed: the name keeps
+   * pointing where it did, and the done screen says to point it again.
+   */
+  async function repoint(ownLabel: string | undefined, deploy: { feedManifestHash?: string; subEns?: unknown }, signedUnderNewKey: boolean): Promise<void> {
+    const p = deploy.subEns as { status?: string; label?: string; target?: string } | undefined;
+    if (p?.status !== "awaiting_signature") return;
+    const { pointerBlockedReason } = await import("../sub-ens/pointer-policy.js");
+    const ok =
+      !!ownLabel &&
+      p.label === ownLabel &&
+      signedUnderNewKey &&
+      typeof deploy.feedManifestHash === "string" &&
+      /^[0-9a-f]{64}$/.test(deploy.feedManifestHash) &&
+      p.target === deploy.feedManifestHash &&
+      pointerBlockedReason("passkey", "site", "client", true, ownLabel) === null;
+    if (!ok) throw new Error(`the name ${ownLabel ?? p.label ?? "(unknown)"} was not re-pointed: the deploy did not match what this device signed`);
     const { pointNameAt } = await import("../sub-ens/pointer.js");
-    await pointNameAt(p.label, p.target, (typed) => h.signTypedDataAsHolder(typed));
+    await pointNameAt(ownLabel!, p.target!, (typed) => h.signTypedDataAsHolder(typed));
   }
 
   /**
@@ -68,7 +85,8 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
       import("../swarm/content-feed.js"),
       import("../swarm/gateways.js"),
     ]);
-    const res = await readContentFeedResult<T>(signer, topic, { route: FEED_ROUTES[family], thorough: true });
+    const route = family === "event" ? FEED_ROUTES.event : FEED_ROUTES.site;
+    const res = await readContentFeedResult<T>(signer, topic, { route, thorough: true });
     // A found version from an inconclusive scan may not be the newest: copying it
     // could move an older version, so it stops the removal like an unreadable one.
     if (res.status === "unavailable" || (res.status === "found" && !res.scanClean)) {
@@ -247,7 +265,8 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
             keys.feedSigner,
           );
           if (!dep.ok || !dep.data) throw new Error(dep.error ?? `site ${entry.siteId} not redeployed`);
-          await repoint(dep.data.subEns);
+          // deploySite signs the pointer-feed update itself, under the key it was given.
+          await repoint(site.subEnsLabel, dep.data, !!dep.data.multisiteFeed);
         }
       },
       pages: async (keys: NewKeys) => {
@@ -265,7 +284,7 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
             keys.feedSigner,
           );
           if (!dep.ok || !dep.data) throw new Error(dep.error ?? `page ${e.eventId} not redeployed`);
-          await repoint(dep.data.subEns);
+          await repoint(feed.subEnsLabel, dep.data, dep.feedSigned && dep.data.feedOwner === "client");
         }
       },
       list: async (keys: NewKeys) => {

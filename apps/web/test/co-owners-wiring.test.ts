@@ -85,7 +85,9 @@ test("sign-off fixes: list reads floored, record removal retried, removed passke
   assert.match(rm, /_writePendingRemovals\(parent, \[\.\.\._readPendingRemovals\(parent\), signed\]\);\s*throw new Error\(RECORD_NOT_YET_REMOVED_MESSAGE\);/);
   assert.match(body(STORE, "async function _restoreCachedAuth("), /void _retryPendingRemovals\(\)/);
   const conf = body(STORE, "async function _removePasskeyConfirmed(");
-  assert.ok(conf.indexOf("await _removeCoOwner(target);") < conf.indexOf("await _removeRecordAfterList(parent, target);"));
+  assert.match(conf, /await _rotateOnRemoval\(\[target\]\);/);
+  const rot = read("../src/lib/keyring/rotate.ts");
+  assert.ok(rot.indexOf("await s.flip(pending.going") < rot.indexOf("await s.after[step](keys, { going: p.going });"), "#186: off the list in the flip, records after");
   assert.match(STORE, /_scheduleEnvelopeReprobe\(cachedKernel, account\.address, account\.prfSecret\);\s*_verifyCoOwnerInBackground\(cachedKernel, account\.address\);/, "SHOULD-3");
   assert.match(body(STORE, "async function _offListConfirmed("), /setTimeout\(r, 10_000\)/, "confirmed twice, never on one lagging read");
   assert.match(body(STORE, "async function _forgetThisPasskey("), /clearCachedKernelAddress\("passkey", self\);/);
@@ -102,5 +104,5 @@ test("removing your own passkey: its record first (while the session verifies), 
   assert.match(self, /\} finally \{\s*await _forgetThisPasskey\(self\);\s*\}/, "forgotten here whatever the list change did");
   // Other devices: off the list first.
   const other = b.slice(b.lastIndexOf("} else {"));
-  assert.ok(other.indexOf("await _removeCoOwner(target);") < other.indexOf("await _removeRecordAfterList(parent, target);"));
+  assert.match(other, /await _rotateOnRemoval\(\[target\]\);/);
 });
