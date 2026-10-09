@@ -22,6 +22,7 @@
  *  how the SDK signals that a stored session is asynchronously rehydrating). */
 export type Web3AuthSessionInstance = {
   connected: boolean;
+  status: string;
   cachedConnector: string | null;
   logout(options?: { cleanup?: boolean }): Promise<void>;
   on(event: string, fn: (...args: unknown[]) => void): void;
@@ -36,6 +37,21 @@ export type Web3AuthSessionInstance = {
  */
 export type Web3AuthRehydration = "connected" | "none" | "pending";
 
+/** The SDK's CONNECTED_STATUSES - what its own logout() requires. */
+const LIVE_STATUSES: ReadonlySet<string> = new Set(["connected", "authorized"]);
+
+/**
+ * A session that is actually up, by the test the SDK's logout() applies. Never
+ * `connected` alone: v10 derives that from a connector name it reloads from
+ * localStorage when the instance is built, so a stored session reads connected
+ * before it has reconnected. Trusting it sent logout() in early, the SDK refused
+ * ("No wallet is connected") with the session still standing, and every
+ * sign-in on that device failed until its storage was cleared.
+ */
+export function isWeb3AuthSessionLive(w: Web3AuthSessionInstance): boolean {
+  return w.connected && LIVE_STATUSES.has(w.status);
+}
+
 /** Page load: a slow answer keeps the person signed in (restore reads `pending`
  *  as transient and retries), so the wait stays short. */
 export const BOOT_REHYDRATION_WAIT_MS = 5_000;
@@ -48,24 +64,25 @@ export const EXPLICIT_REHYDRATION_WAIT_MS = 20_000;
 /**
  * Wait for a cached Web3Auth session to finish rehydrating. In v10 the modal
  * rehydrates the stored connector INSIDE a non-awaited `CONNECTORS_UPDATED`
- * handler, so `w.connected` is still false the instant `init()` resolves — reading
- * it immediately makes a valid session look logged-out (silent logout on refresh)
- * and leaves the SDK in a half-connected state that then bypasses the OTP on the
- * next explicit login. We only block when `cachedConnector` says a session exists;
- * a fresh page (no cache) resolves instantly so the login screen isn't delayed.
+ * handler, so the session is not live the instant `init()` resolves (even though
+ * `connected` may already say so - see `isWeb3AuthSessionLive`). Reading it then
+ * makes a valid session look logged-out (silent logout on refresh) and leaves the
+ * SDK in a half-connected state that then bypasses the OTP on the next explicit
+ * login. We only block when `cachedConnector` says a session exists; a fresh page
+ * (no cache) resolves instantly so the login screen isn't delayed.
  */
 export async function awaitWeb3AuthRehydration(
   w: Web3AuthSessionInstance,
   timeoutMs: number = BOOT_REHYDRATION_WAIT_MS,
 ): Promise<Web3AuthRehydration> {
-  if (w.connected) return "connected";
+  if (isWeb3AuthSessionLive(w)) return "connected";
   if (!w.cachedConnector) return "none";
 
   const { CONNECTOR_EVENTS } = await import("@web3auth/modal");
   // The SDK clears `cachedConnector` before it re-emits a failure, so a failure
   // with the cache still set is read as still pending, never as gone.
   const current = (): Web3AuthRehydration =>
-    w.connected ? "connected" : w.cachedConnector ? "pending" : "none";
+    isWeb3AuthSessionLive(w) ? "connected" : w.cachedConnector ? "pending" : "none";
   return new Promise<Web3AuthRehydration>((resolve) => {
     let settled = false;
     const finish = (v: Web3AuthRehydration) => {
@@ -78,7 +95,9 @@ export async function awaitWeb3AuthRehydration(
       w.removeListener(CONNECTOR_EVENTS.REHYDRATION_ERROR, onFailed);
       resolve(v);
     };
-    const onConnected = () => finish("connected");
+    const onConnected = () => {
+      if (isWeb3AuthSessionLive(w)) finish("connected");
+    };
     const onFailed = () => finish(current());
     const timer = setTimeout(() => finish(current()), timeoutMs);
     w.on(CONNECTOR_EVENTS.CONNECTED, onConnected);

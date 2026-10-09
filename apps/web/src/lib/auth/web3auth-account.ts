@@ -18,6 +18,7 @@ import {
 import {
   awaitWeb3AuthRehydration,
   instanceForExplicitSignIn,
+  isWeb3AuthSessionLive,
   restoreVerdict,
   EXPLICIT_REHYDRATION_WAIT_MS,
   SURVIVOR_INTERFERED_MESSAGE,
@@ -32,6 +33,7 @@ type MinimalProvider = { request: (args: { method: string }) => Promise<unknown>
 // is (asynchronously) rehydrating after init().
 type Web3AuthInstance = {
   connected: boolean;
+  status: string;
   provider: MinimalProvider | null;
   cachedConnector: string | null;
   init(): Promise<void>;
@@ -241,9 +243,9 @@ export async function restoreWeb3AuthSession(): Promise<Web3AuthRestore> {
     const rehydration = await awaitWeb3AuthRehydration(w);
     console.debug(
       "[web3auth] restore:",
-      { cachedConnector: w.cachedConnector, rehydration, connected: w.connected, hasProvider: !!w.provider },
+      { cachedConnector: w.cachedConnector, rehydration, status: w.status, hasProvider: !!w.provider },
     );
-    const verdict = restoreVerdict(rehydration, w.connected && !!w.provider);
+    const verdict = restoreVerdict(rehydration, isWeb3AuthSessionLive(w) && !!w.provider);
     if (verdict === "unavailable") {
       // Still loading when the wait ran out: no answer yet, so NOT a logout
       // (#803). Reading it as `expired` signed a valid session out on a slow

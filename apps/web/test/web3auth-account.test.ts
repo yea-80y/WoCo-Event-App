@@ -3,7 +3,10 @@
  * against a fake SDK that keeps the real one's two traps (#803):
  *
  *  - a stored session lives in storage SHARED by every instance, and loads
- *    asynchronously after init();
+ *    asynchronously after init() - yet `connected` reads true from the moment
+ *    the instance is built, because the SDK reloads the connector's NAME from
+ *    storage; only `status` says whether it is live, and logout() refuses until
+ *    it is (the owner's phone, 2026-10-09);
  *  - `logout({ cleanup: true })` leaves the instance SPENT. The real SDK then
  *    swallows every sign-in click and connect() never settles; the fake throws
  *    instead, so a regression fails here rather than hanging.
@@ -39,8 +42,11 @@ const addressOf = (k: string) => privateKeyToAccount(`0x${k}`).address.toLowerCa
 /** What the browser's storage holds for Web3Auth: one session, shared by every instance. */
 type Stored = { key: string; loads: "at-init" | "later" | "never" } | null;
 
+const LIVE_STATUSES = ["connected", "authorized"];
+
 class FakeSdk extends EventEmitter {
   connected = false;
+  status = "not_ready";
   provider: { request: (a: { method: string }) => Promise<unknown> } | null = null;
   cachedConnector: string | null = null;
   spent = false;
@@ -57,15 +63,18 @@ class FakeSdk extends EventEmitter {
   }
 
   async init(): Promise<void> {
+    this.status = "ready";
     const s = this.world.stored;
     if (!s) return;
     this.cachedConnector = "auth";
+    this.connected = true;
     if (s.loads === "at-init") this.hydrate(s.key);
   }
 
   /** The stored session finishes loading (the SDK's async rehydration). */
   hydrate(key: string): void {
     this.connected = true;
+    this.status = "connected";
     this.provider = { request: async () => key };
     this.emit("connected");
   }
@@ -83,6 +92,7 @@ class FakeSdk extends EventEmitter {
           : new Error("boom");
     }
     this.connected = true;
+    this.status = "connected";
     this.cachedConnector = "auth";
     this.world.stored = { key: this.nextLoginKey, loads: "at-init" };
     const key = this.nextLoginKey;
@@ -92,8 +102,9 @@ class FakeSdk extends EventEmitter {
 
   async logout(o?: { cleanup?: boolean }): Promise<void> {
     this.logouts.push(o);
-    if (!this.connected) throw new Error("No wallet is connected");
+    if (!this.connected || !LIVE_STATUSES.includes(this.status)) throw new Error("No wallet is connected");
     this.connected = false;
+    this.status = "ready";
     this.provider = null;
     this.cachedConnector = null;
     this.world.stored = null;
