@@ -32,6 +32,7 @@ import {
   noteRefusal,
   readBadge,
   readConfirmation,
+  repairConfirmation,
 } from "../lib/campaign/issuer.js";
 import { armReferral, confirmArmedReferral } from "../lib/campaign/referral-arm.js";
 import { stripeVerificationComplete } from "../lib/stripe/accounts.js";
@@ -154,6 +155,7 @@ campaignRoutes.post("/referrals/arm", requireAuth, async (c) => {
 campaignRoutes.get("/referrals/status", requireAuth, async (c) => {
   const parent = c.get("parentAddress").toLowerCase();
   const read = await readConfirmation(parent);
+  if (read.status === "found") void repairConfirmation(read.record);
   return c.json({
     ok: true,
     data: {
