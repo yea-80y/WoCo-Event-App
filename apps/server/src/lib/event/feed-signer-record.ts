@@ -42,6 +42,7 @@ import { writeJsonAtomic } from "../marketing/persist.js";
 
 const FILE = join(process.cwd(), ".data", "event-feed-signers.json");
 const ADDRESS = /^0x[0-9a-f]{40}$/;
+const ORDER_KEY_REF = /^[0-9a-f]{64}$/;
 
 export interface FeedSignerRecord {
   /** The organiser's content-feed signer, lowercase. */
@@ -49,6 +50,9 @@ export interface FeedSignerRecord {
   /** The verified session parent that created the event, lowercase. */
   creatorAddress: Hex0x;
   recordedAt: string;
+  /** The order key the server validated and published at create (#186): what buyers
+   *  seal to while the account has no key ring. Absent on records made before it. */
+  orderKeyRef?: string;
 }
 
 /** Thrown when a write would change an existing record. */
@@ -99,7 +103,13 @@ function parseRecord(v: unknown): FeedSignerRecord | null {
   if (typeof r.signer !== "string" || !ADDRESS.test(r.signer)) return null;
   if (typeof r.creatorAddress !== "string" || !ADDRESS.test(r.creatorAddress)) return null;
   if (typeof r.recordedAt !== "string") return null;
-  return { signer: r.signer, creatorAddress: r.creatorAddress, recordedAt: r.recordedAt };
+  if (r.orderKeyRef !== undefined && (typeof r.orderKeyRef !== "string" || !ORDER_KEY_REF.test(r.orderKeyRef))) return null;
+  return {
+    signer: r.signer,
+    creatorAddress: r.creatorAddress,
+    recordedAt: r.recordedAt,
+    ...(r.orderKeyRef !== undefined ? { orderKeyRef: r.orderKeyRef } : {}),
+  };
 }
 
 function refuseFile(why: string): void {
@@ -146,7 +156,7 @@ function ensureLoaded(): void {
  * Pin an event's signer and creator. Called once, from `createEventV2`, before
  * the create answers. Idempotent only for identical values.
  */
-export function recordEventFeedSigner(eventId: string, signer: string, creatorAddress: string): void {
+export function recordEventFeedSigner(eventId: string, signer: string, creatorAddress: string, orderKeyRef?: string): void {
   ensureLoaded();
   if (fileUnreadable) {
     throw new FeedSignerStoreUnreadableError(`event-feed-signers.json ${fileUnreadable}`);
@@ -156,12 +166,20 @@ export function recordEventFeedSigner(eventId: string, signer: string, creatorAd
   if (!ADDRESS.test(s) || !ADDRESS.test(c)) {
     throw new Error("recordEventFeedSigner: signer and creator must be 0x-prefixed 20-byte addresses");
   }
+  if (orderKeyRef !== undefined && !ORDER_KEY_REF.test(orderKeyRef)) {
+    throw new Error("recordEventFeedSigner: orderKeyRef must be 64 lowercase hex characters");
+  }
   const prev = records.get(eventId);
   if (prev || unparsed.has(eventId)) {
-    if (prev && prev.signer === s && prev.creatorAddress === c) return;
+    if (prev && prev.signer === s && prev.creatorAddress === c && prev.orderKeyRef === orderKeyRef) return;
     throw new FeedSignerRebindError(`event ${eventId} already has a recorded feed signer`);
   }
-  const rec: FeedSignerRecord = { signer: s as Hex0x, creatorAddress: c as Hex0x, recordedAt: new Date().toISOString() };
+  const rec: FeedSignerRecord = {
+    signer: s as Hex0x,
+    creatorAddress: c as Hex0x,
+    recordedAt: new Date().toISOString(),
+    ...(orderKeyRef !== undefined ? { orderKeyRef } : {}),
+  };
   records.set(eventId, rec);
   const out: Record<string, unknown> = Object.fromEntries(records);
   for (const [id, v] of unparsed) out[id] = v;
