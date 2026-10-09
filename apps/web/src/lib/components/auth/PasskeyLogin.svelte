@@ -1,6 +1,7 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { isPasskeySupported } from "../../auth/passkey-account.js";
+  import { isPasskeySupported, PasskeyBrowserRefusedError } from "../../auth/passkey-account.js";
+  import { passkeyRefusalAdvice } from "../../auth/passkey-refusal-copy.js";
   import { onMount } from "svelte";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { PASSKEY_ONLY_RECOVERY_NOTE } from "../../auth/organiser-account.js";
@@ -67,6 +68,8 @@
         offerCreate = true;
         showHelp = true;
         error = "No passkey was used. If you cancelled, try again — otherwise you can create a new account below.";
+      } else if (res.error instanceof PasskeyBrowserRefusedError) {
+        error = passkeyRefusalAdvice(res.error.host, loginRequest.context === "invite");
       } else {
         error = res.error?.message ?? "Passkey authentication failed. Try again or use another method.";
       }
