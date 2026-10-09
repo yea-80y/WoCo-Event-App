@@ -576,9 +576,12 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     to the directory. The server cannot rebuild it (creators are not enumerable); an operator can
     restore one organiser's records, best effort, from their creator index
     `woco/event/creator/{address}`. Unreadable = `/api/health` `eventFeedSigners` alarm)
-  keyring-high-water.json (#186 — per account, the highest key-ring generation this server has seen,
-    so a lagging RPC replica after a restart cannot hand back an older generation's keys. Losing it
-    only reopens that window; present-but-unreadable is never overwritten; `/api/health` `keyRing`)
+  keyring-high-water.json (#186 — per account, the highest key-ring generation this server has seen.
+    A chain read below it PAUSES that organiser's sales (never serves the remembered ring: rings are
+    unsigned), so a lagging replica after a restart cannot hand back an older generation's keys.
+    Losing it only reopens that window; present-but-unreadable is never overwritten; `/api/health`
+    `keyRing` alarms, also when an account stays below its mark for 10 min - remove its entry with
+    the server stopped if the recorded generation is wrong)
   device-grants.json (#746 — each account's added passkeys: owner-signed grants, signed removals
     and every nonce used. Losing it signs every added device out (re-add from the main passkey);
     nothing leaks or is granted. Losing the NONCES lets an old removal or grant be replayed.

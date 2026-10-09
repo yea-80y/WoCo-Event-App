@@ -20,9 +20,17 @@ const REF_BYTES = 32;
 /** Children per intermediate chunk. */
 const BRANCHES = SOC_MAX_PAYLOAD_SIZE / REF_BYTES;
 
-/** A blob whose chunks do not add up to the reference it was read under. */
+/**
+ * A blob whose chunks do not add up to the reference it was read under. `fromSource`:
+ * a chunk did not hash to its address - what a source SERVED was wrong, which says
+ * nothing about the reference (another source may serve it right). Otherwise the
+ * verified chunks themselves are wrong, which is true of the reference for good.
+ */
 export class BytesTreeMismatchError extends Error {
-  constructor(detail: string) {
+  constructor(
+    detail: string,
+    readonly fromSource = false,
+  ) {
     super(`bytes tree rejected: ${detail}`);
     this.name = "BytesTreeMismatchError";
   }
@@ -60,12 +68,12 @@ export async function readBytesTree(
   async function node(address: string): Promise<{ span: number; payload: Uint8Array }> {
     const raw = await fetchChunk(address);
     if (raw.length < SOC_SPAN_SIZE || raw.length > SOC_SPAN_SIZE + SOC_MAX_PAYLOAD_SIZE) {
-      throw new BytesTreeMismatchError(`chunk ${address} has an impossible length`);
+      throw new BytesTreeMismatchError(`chunk ${address} has an impossible length`, true);
     }
     const spanBytes = raw.subarray(0, SOC_SPAN_SIZE);
     const payload = raw.slice(SOC_SPAN_SIZE);
     if (bytesToHex(calculateCacAddress(spanBytes, payload)) !== address) {
-      throw new BytesTreeMismatchError(`chunk ${address} does not hash to its address`);
+      throw new BytesTreeMismatchError(`chunk ${address} does not hash to its address`, true);
     }
     return { span: decodeSpan(spanBytes), payload };
   }

@@ -686,7 +686,9 @@ This device's own passkey leaving needs no new keys.
 from the ring's signer and sold under its order key whatever a feed says; a box declares the key it
 was sealed to and a stale one is refused `ORDER_KEY_STALE`, naming the current key (the page re-seals
 once). Unreadable keys pause sales, never guess. Door passes record their generation; older ones are
-revoked. An event with no create-time record sells only from the platform feed.
+revoked. An event with no create-time record sells only from the platform feed. A chain read below
+the highest generation the server has seen pauses that organiser's sales until it catches up
+(`.data/keyring-high-water.json`) - never the remembered ring, since rings are unsigned.
 
 **Still true after a removal:** what the passkey already downloaded stays on it, and an external domain
 or raw feed link pointing at an old feed is the organiser's to update.

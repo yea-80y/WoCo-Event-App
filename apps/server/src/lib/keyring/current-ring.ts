@@ -12,7 +12,8 @@
  * reference forever (content-addressed). When the chain cannot be read, the last ring
  * seen for the account is used: rings only move forward, so a stale one is at worst the
  * generation before a removal this server has not seen yet. With nothing seen, the
- * answer is `unavailable` - never "no ring", which would mean generation 0.
+ * answer is `unavailable` - never "no ring", which would mean generation 0. A read BELOW
+ * the highest generation seen (`.data/keyring-high-water.json`) is `unavailable` too.
  */
 
 import { readFileSync } from "node:fs";
@@ -115,12 +116,17 @@ const liveDeps: CurrentRingDeps = {
 let deps: CurrentRingDeps = liveDeps;
 const anchors = new Map<string, { ref: string | null; at: number }>();
 const rings = new Map<string, KeyRing>();
-// Refs that did not give a ring: a content-addressed ref that fails to verify or parse
-// never will (kept for good); chunks not found may arrive, so those wait a minute.
-// Either way an account cannot make its event reads refetch a bad ring every time.
+// Refs that did not give a ring: verified chunks that do not make a ring never will
+// (kept for good); chunks not found, or served wrong by a source, may yet arrive right,
+// so those wait a minute. Either way an account cannot make its event reads refetch a
+// bad ring every time.
 const badRings = new Map<string, { reason: string; until: number }>();
 let highWater: Map<string, { gen: number; ref: string }> | null = null;
 let highWaterUnreadable = false;
+/** Accounts whose chain read is below the generation seen, and since when. */
+const behind = new Map<string, number>();
+/** Behind for longer than this is no lagging replica: an alarm. */
+const BEHIND_ALARM_MS = 10 * 60_000;
 
 /** Tests only: swap the chain and Swarm reads, and forget everything cached. The
  *  high-water marks live in memory unless the test passes its own. */
@@ -136,6 +142,7 @@ export function _setCurrentRingDepsForTests(d: Partial<CurrentRingDeps> | null):
   badRings.clear();
   highWater = null;
   highWaterUnreadable = false;
+  behind.clear();
 }
 
 function boundedSet<V>(m: Map<string, V>, k: string, v: V, max: number): void {
@@ -154,7 +161,7 @@ async function ringAt(ref: string, account: string): Promise<KeyRing> {
       bytes = await readBytesTree(ref, deps.fetchChunk, MAX_KEY_RING_BYTES);
     } catch (e) {
       const reason = (e as Error)?.message ?? String(e);
-      const until = e instanceof BytesTreeMismatchError ? Infinity : deps.now() + MISSING_RING_RETRY_MS;
+      const until = e instanceof BytesTreeMismatchError && !e.fromSource ? Infinity : deps.now() + MISSING_RING_RETRY_MS;
       boundedSet(badRings, ref, { reason, until }, RING_CACHE_MAX);
       throw e;
     }
@@ -208,22 +215,23 @@ function highWaterMarks(): Map<string, { gen: number; ref: string }> {
 
 /**
  * Never below the highest generation this server has EVER seen for the account, across
- * restarts (the in-memory rule in `readCurrent` covers a running process only): a
- * lagging replica answering an older ring would hand the money path keys a removed
- * passkey still holds. Versions within a generation share its keys, so the mark is the
- * generation.
+ * restarts: a lagging replica answering an older ring would hand the money path keys a
+ * removed passkey still holds. A read below it is UNAVAILABLE - the account's sales
+ * pause - never the ring seen before: rings are unsigned and only the chain vouches for
+ * one, so serving the remembered ring would turn one bad chain answer into keys used
+ * for good. A real lag clears in seconds; one that lasts is an alarm. Versions within a
+ * generation share its keys, so the mark is the generation.
  */
 async function holdHighWater(a: string, r: CurrentRing): Promise<CurrentRing> {
   if (r.status === "unavailable") return r;
   const marks = highWaterMarks();
   const hw = marks.get(a);
   if (hw && (r.status === "none" || r.ring.gen < hw.gen)) {
-    console.error(`[keyring] ${a}: chain read is behind generation ${hw.gen} already seen - keeping it`);
-    const held = await resolve(a, hw.ref);
-    if (held.status !== "ring") return { status: "unavailable", reason: `generation ${hw.gen} seen before is unreadable` };
-    boundedSet(anchors, a, { ref: hw.ref, at: deps.now() }, ANCHOR_CACHE_MAX);
-    return held;
+    if (!behind.has(a)) behind.set(a, deps.now());
+    console.error(`[keyring] ${a}: chain read is below generation ${hw.gen} already seen - paused until it catches up`);
+    return { status: "unavailable", reason: `chain read is below generation ${hw.gen} seen before` };
   }
+  behind.delete(a);
   if (r.status === "ring" && (!hw || r.ring.gen > hw.gen)) {
     marks.set(a, { gen: r.ring.gen, ref: r.ref });
     if (!highWaterUnreadable && !deps.saveHighWater(Object.fromEntries(marks))) {
@@ -244,17 +252,6 @@ async function readCurrent(a: string, opts: { fresh?: boolean; strict?: boolean 
     if (!cached || opts.strict) return { status: "unavailable", reason: `anchor unreadable: ${rpcReason(e)}` };
     console.warn(`[keyring] ${a}: anchor unreadable, using the ring last seen`);
     return resolve(a, cached.ref);
-  }
-  // Never step back behind a ring already seen: a lagging replica can answer with an
-  // older entry, and an older generation is keys a removed passkey still holds.
-  if (cached?.ref && read !== cached.ref) {
-    const before = await resolve(a, cached.ref);
-    const now = read === null ? null : await resolve(a, read);
-    if (before.status === "ring" && (now === null || (now.status === "ring" && now.ring.gen < before.ring.gen))) {
-      console.error(`[keyring] ${a}: chain read is behind the ring already seen (${cached.ref}) - keeping it`);
-      boundedSet(anchors, a, { ref: cached.ref, at: deps.now() }, ANCHOR_CACHE_MAX);
-      return before;
-    }
   }
   boundedSet(anchors, a, { ref: read, at: deps.now() }, ANCHOR_CACHE_MAX);
   return resolve(a, read);
@@ -291,11 +288,33 @@ export async function refreshKeyRingAnchor(): Promise<void> {
   }
 }
 
-export function keyRingHealth(): { ok: boolean | null; anchor: string; chainId: number; checkedAt: string | null; reason?: string } {
+export function keyRingHealth(): {
+  ok: boolean | null;
+  anchor: string;
+  chainId: number;
+  checkedAt: string | null;
+  reason?: string;
+  behindAccounts?: number;
+} {
   highWaterMarks();
+  const base = { anchor: KEY_RING_ANCHOR_ADDRESS, chainId: KERNEL_CHAIN_ID };
   if (highWaterUnreadable) {
-    return { anchor: KEY_RING_ANCHOR_ADDRESS, chainId: KERNEL_CHAIN_ID, ok: false, checkedAt: anchorCheck.checkedAt, reason: "keyring-high-water.json is unreadable - restore it" };
+    return { ...base, ok: false, checkedAt: anchorCheck.checkedAt, reason: "keyring-high-water.json is unreadable - restore it" };
   }
-  return { anchor: KEY_RING_ANCHOR_ADDRESS, chainId: KERNEL_CHAIN_ID, ...anchorCheck };
+  const now = deps.now();
+  const stuck = [...behind.values()].filter((since) => now - since > BEHIND_ALARM_MS).length;
+  if (stuck > 0) {
+    return {
+      ...base,
+      ok: false,
+      checkedAt: anchorCheck.checkedAt,
+      behindAccounts: stuck,
+      reason:
+        `${stuck} account(s) read below a key-ring generation seen before for over 10 minutes - their sales are paused. ` +
+        "A lagging RPC, or a wrong answer recorded: check the chain, and if the recorded generation is wrong, remove that " +
+        "account's entry from keyring-high-water.json with the server stopped",
+    };
+  }
+  return { ...base, ...anchorCheck, ...(behind.size ? { behindAccounts: behind.size } : {}) };
 }
 

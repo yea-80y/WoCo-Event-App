@@ -90,17 +90,19 @@ test("an unreadable chain: unavailable with nothing seen, the last ring once one
   assert.equal(r.status === "ring" && r.ref, ref);
 });
 
-test("a lagging read never steps back to an older generation, or to no ring", async () => {
+test("a read below a generation seen pauses the account - never an older generation, no ring, or the ring remembered", async () => {
   const g0 = await ringFor(ACCOUNT, 0);
   const g1 = await ringFor(ACCOUNT, 1);
   anchor.set(ACCOUNT, `0x${g1.ref}`);
   await currentRing(ACCOUNT);
   anchor.set(ACCOUNT, `0x${g0.ref}`);
-  const back = await currentRing(ACCOUNT, { fresh: true });
-  assert.equal(back.status === "ring" && back.ref, g1.ref);
+  assert.equal((await currentRing(ACCOUNT, { fresh: true })).status, "unavailable");
   anchor.delete(ACCOUNT);
-  const none = await currentRing(ACCOUNT, { fresh: true });
-  assert.equal(none.status === "ring" && none.ref, g1.ref);
+  assert.equal((await currentRing(ACCOUNT, { fresh: true })).status, "unavailable");
+  // Caught up again: the chain's answer is taken.
+  anchor.set(ACCOUNT, `0x${g1.ref}`);
+  const caught = await currentRing(ACCOUNT, { fresh: true });
+  assert.equal(caught.status === "ring" && caught.ref, g1.ref);
   // Forward is always taken.
   const g2 = await ringFor(ACCOUNT, 2);
   anchor.set(ACCOUNT, `0x${g2.ref}`);
@@ -181,15 +183,17 @@ test("health: red when no contract answers at the anchor; a failed read keeps th
   assert.doesNotMatch(h.reason ?? "", /SECRETKEY/);
 });
 
-test("a ring that does not verify is not fetched again; one not found waits a minute", async () => {
+test("bytes that verify but are no ring are not fetched again; a ring not found waits a minute", async () => {
   const { ref } = await ringFor(ACCOUNT, 1);
-  const forged = chunks.get(ref)!.slice();
-  forged[forged.length - 1] ^= 1;
+  const notARing = new TextEncoder().encode(JSON.stringify({ v: 1, hello: "world" }));
+  for (const c of bytesTreeChunks(notARing)) chunks.set(c.address, c.chunk);
+  const junk = bytesTreeRoot(notARing);
   let fetches = 0;
   let missing = true;
+  let named = junk;
   const setDeps = (serve: (a: string) => Uint8Array | undefined) =>
     _setCurrentRingDepsForTests({
-      readAnchor: async () => `0x${ref}`,
+      readAnchor: async () => `0x${named}`,
       fetchChunk: async (a) => {
         fetches++;
         const c = serve(a);
@@ -198,11 +202,14 @@ test("a ring that does not verify is not fetched again; one not found waits a mi
       },
       now: () => clock,
     });
-  setDeps((a) => (a === ref ? forged : chunks.get(a)));
+  setDeps((a) => chunks.get(a));
   for (let i = 0; i < 5; i++) assert.equal((await currentRing(ACCOUNT, { fresh: true })).status, "unavailable");
-  assert.equal(fetches, 1, "a bad ring costs one fetch, ever");
+  clock += 24 * 60 * 60_000;
+  assert.equal((await currentRing(ACCOUNT, { fresh: true })).status, "unavailable");
+  assert.equal(fetches, 1, "a ref that is no ring costs one fetch, ever");
 
   fetches = 0;
+  named = ref;
   setDeps((a) => (missing ? undefined : chunks.get(a)));
   for (let i = 0; i < 5; i++) assert.equal((await currentRing(ACCOUNT, { fresh: true })).status, "unavailable");
   assert.equal(fetches, 1, "a missing ring is not refetched on every read");
@@ -227,8 +234,43 @@ test("the highest generation seen survives a restart: a lagging read after it is
   assert.equal((await currentRing(ACCOUNT)).status, "ring");
   assert.deepEqual(disk[ACCOUNT], { gen: 2, ref: g2.ref });
   boot(g1.ref); // a restart, and a replica one generation behind
-  const r = await currentRing(ACCOUNT);
-  assert.equal(r.status === "ring" && r.ref, g2.ref);
+  assert.equal((await currentRing(ACCOUNT)).status, "unavailable");
+});
+
+test("one wrong chain answer is never served for good: a below-mark read pauses, and a lasting one alarms", async () => {
+  const { keyRingHealth } = await import("../src/lib/keyring/current-ring.js");
+  const real = await ringFor(ACCOUNT, 1);
+  const bogus = await ringFor(ACCOUNT, 9); // anyone can build a ring naming any account
+  anchor.set(ACCOUNT, `0x${bogus.ref}`); // one bad answer
+  await currentRing(ACCOUNT);
+  anchor.set(ACCOUNT, `0x${real.ref}`);
+  const r = await currentRing(ACCOUNT, { fresh: true });
+  assert.equal(r.status, "unavailable", "never the remembered ring");
+  assert.notEqual(keyRingHealth().ok, false, "a short lag is no alarm");
+  clock += 11 * 60_000;
+  await currentRing(ACCOUNT, { fresh: true });
+  assert.equal(keyRingHealth().ok, false);
+  assert.equal(keyRingHealth().behindAccounts, 1);
+});
+
+test("a chunk a source served wrong is tried again later, not held against the ring", async () => {
+  const { ref } = await ringFor(ACCOUNT, 1);
+  let wrong = true;
+  _setCurrentRingDepsForTests({
+    readAnchor: async () => `0x${ref}`,
+    fetchChunk: async (a) => {
+      const c = chunks.get(a)!;
+      if (!wrong || a !== ref) return c;
+      const bad = c.slice();
+      bad[bad.length - 1] ^= 1;
+      return bad;
+    },
+    now: () => clock,
+  });
+  assert.equal((await currentRing(ACCOUNT)).status, "unavailable");
+  wrong = false;
+  clock += 60_000;
+  assert.equal((await currentRing(ACCOUNT, { fresh: true })).status, "ring");
 });
 
 test("a high-water file that cannot be read is never written, and health says so", async () => {
