@@ -4,7 +4,7 @@
  * sides share one wire format: { iv: b64, ciphertext: b64 } over UTF-8 JSON.
  */
 
-import { base64UrlDecode, base64UrlEncode, type EncryptedRoster, type RosterEntry } from "@woco/shared";
+import { base64UrlDecode, type EncryptedRoster, type RosterEntry } from "@woco/shared";
 
 function b64encode(bytes: Uint8Array): string {
   let bin = "";
@@ -17,10 +17,6 @@ function b64decode(s: string): Uint8Array {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
-}
-
-export function generateRosterKeyB64url(): string {
-  return base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)));
 }
 
 async function importKey(keyB64url: string, usage: KeyUsage): Promise<CryptoKey> {
