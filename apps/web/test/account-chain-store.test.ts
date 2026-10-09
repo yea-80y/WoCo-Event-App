@@ -133,4 +133,6 @@ test("a passkey leaving this device takes the account's later secrets with its s
     assert.ok(clear.includes(step), step);
   }
   assert.match(body("async function _forgetAddedPasskey"), /await _clearSeedEverywhere\(seedAddress\);/);
+  // In memory too: nothing decided about those keys survives them.
+  assert.match(clear, /_keysVerdict = "pending";\s*_chainLoad = null;\s*_anchorMemo = null;\s*_feedSignerAddressMemo = null;/);
 });

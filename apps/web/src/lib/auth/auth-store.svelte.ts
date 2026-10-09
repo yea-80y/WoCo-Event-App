@@ -1477,6 +1477,14 @@ async function _clearSeedEverywhere(eoa: string): Promise<void> {
     _unlocked = null;
     if (_kind === "passkey") _identitySeedPresent = false;
   }
+  if (_seedAddress?.toLowerCase() === eoa.toLowerCase()) {
+    // What was decided about the keys being cleared goes with them (#186): no verdict,
+    // ring or signer address outlives the seed it was worked out from.
+    _keysVerdict = "pending";
+    _chainLoad = null;
+    _anchorMemo = null;
+    _feedSignerAddressMemo = null;
+  }
   if (_feedSignerCache?.seedAddress === eoa.toLowerCase()) _feedSignerCache = null;
   await clearIdentitySeed(eoa);
   await clearLockedSeed(eoa);
