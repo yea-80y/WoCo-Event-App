@@ -89,10 +89,6 @@ test("once ready, prepare-order HOLDS the box and stores nothing on Swarm (#546 
 });
 
 test("an order box sent with an event that does not exist holds and stores nothing", async () => {
-  // No platform feed either: bee answers "no update found" for a feed never written
-  // (#186 reads it for every event with no record before selling it).
-  const service = await import("../src/lib/event/service.js");
-  service.__setPlatformFeedReadForTests(async () => ({ status: "absent" }));
   const before = chunksUploaded;
   const box = { ...BOX, ct: "ee".repeat(64) };
   const res = await post(

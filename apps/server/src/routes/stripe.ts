@@ -26,7 +26,7 @@ import {
   getOrganiserByStripeAccount,
   deleteStripeAccount,
 } from "../lib/stripe/accounts.js";
-import { getEvent, getPlatformEvent } from "../lib/event/service.js";
+import { getEvent } from "../lib/event/service.js";
 import type { EventFeed } from "@woco/shared";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
@@ -692,24 +692,19 @@ stripe.post("/create-checkout", async (c) => {
   // The organiser's keys first (#186): they decide WHICH feed may be sold.
   const keys = await eventKeys(eventId);
   if (keys.kind === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
-  let event: EventFeed | null;
   if (keys.kind === "legacy") {
-    // An event with no record (made before #670) sells only from its platform-signed
-    // feed, the one feed no organiser key can write - and exactly that feed is sold.
-    // An organiser-signed one has no trust root at all (owner 10-09): not sold.
-    const platform = await getPlatformEvent(eventId);
-    if (platform === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
-    if (!platform) {
-      if (!(await getEvent(eventId, siteSigner ?? undefined))) return c.json({ ok: false, error: "Event not found" }, 404);
-      return c.json(
-        { ok: false, error: "This event can't take orders. The organiser needs to publish it again.", code: "EVENT_NEEDS_REPUBLISH" },
-        409,
-      );
-    }
-    event = platform;
-  } else {
-    event = await getEvent(eventId, siteSigner ?? undefined);
+    // No record of who signs this event (made before #670, or platform-written for a
+    // login with no feed signer, none of which can organise now): nothing ties its feed
+    // to its organiser, so a removed passkey could rewrite what is sold - and fulfilment
+    // would read that copy. Not sold (owner 10-09, Fable sign-off S5; no compat paths
+    // pre-launch). Publishing it again gives it a record.
+    if (!(await getEvent(eventId, siteSigner ?? undefined))) return c.json({ ok: false, error: "Event not found" }, 404);
+    return c.json(
+      { ok: false, error: "This event can't take orders. The organiser needs to publish it again.", code: "EVENT_NEEDS_REPUBLISH" },
+      409,
+    );
   }
+  const event: EventFeed | null = await getEvent(eventId, siteSigner ?? undefined);
   if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
 
   const series = event.series.find((s) => s.seriesId === seriesId);

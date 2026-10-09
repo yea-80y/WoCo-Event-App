@@ -11,7 +11,7 @@ Entries before 2026-09-10 use the retired noun "POD" for what is now called "obj
 - A removed passkey kept the identity seed: it could open new orders and sign as the account. Now each removal makes a random account secret the removed passkey never sees; the content-feed signer, order key and door-pass roster key come from it. Design consult with Fable before building; the owner chose an onchain anchor over the server pointer it proposed.
 - Key ring: the secret sealed to each remaining passkey's box key; earlier secrets under the current one. Anchor: `WoCoKeyRing` on Arbitrum One, set by the Kernel in the same op as the co-owner change.
 - Removal copies events, sites and profile to the new signer, flips list + anchor in one op, then redeploys sites and event pages, re-points their WoCo names, re-seals the contact list and re-makes likes and follows. Resumes after a closed tab.
-- Server: reads events under the ring's signer, sells under its order key, refuses a box sealed to a replaced key (`ORDER_KEY_STALE`, the page re-seals once), pauses sales when keys can't be read, revokes older door passes. Record-less events sell only from the platform feed.
+- Server: reads events under the ring's signer, sells under its order key, refuses a box sealed to a replaced key (`ORDER_KEY_STALE`, the page re-seals once), pauses sales when keys can't be read, revokes older door passes. Events with no create-time record are not sold (publish again).
 - A passkey a removal left without keys gets them back by code. Door-pass roster keys are derived, never stored. Detail: `docs/IDENTITY_AND_KEYS.md`.
 
 ---

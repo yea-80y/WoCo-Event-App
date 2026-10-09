@@ -114,8 +114,11 @@ before(async () => {
       payment: { stripeEnabled: true, price: "20.00", currency: "GBP" },
     }],
   } as unknown as EventFeed;
-  const { encodeJsonFeed } = await import("../src/lib/swarm/feeds.js");
-  service.__setPlatformFeedReadForTests(async () => ({ status: "ok", data: encodeJsonFeed(platformFeed) }));
+  // Only an event with a record of its signer sells (#186); no key ring for its creator.
+  const { recordEventFeedSigner } = await import("../src/lib/event/feed-signer-record.js");
+  recordEventFeedSigner(EVENT_ID, ("0x" + "22".repeat(20)) as `0x${string}`, platformFeed.creatorAddress as `0x${string}`);
+  const { noRings } = await import("./helpers/key-ring.js");
+  noRings();
   service.primeEventCache(EVENT_ID, platformFeed);
 });
 

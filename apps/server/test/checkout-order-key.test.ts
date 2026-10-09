@@ -122,7 +122,7 @@ test("create-checkout: keys that cannot be read pause the sale, even with the ev
   assert.equal(res.status, 503);
 });
 
-test("create-checkout: an organiser-signed event with no record is not sold (owner 10-09)", async () => {
+test("create-checkout: an event with no record is not sold, whoever signed it (owner 10-09, Fable S5)", async () => {
   noRings();
   const LEGACY = "e0000000-0000-4000-8000-0000000000c9";
   service.primeEventCache(LEGACY, {
@@ -137,33 +137,9 @@ test("create-checkout: an organiser-signed event with no record is not sold (own
     creatorAddress: CREATOR,
     createdAt: "2026-01-01T00:00:00.000Z",
     encryptionKeyRef: K0,
-    creatorFeedSigner: F0,
     series: [{ seriesId: SERIES, name: "GA", totalSupply: 10, price: 5, payment: { price: "5.00", currency: "GBP", stripeEnabled: true } }],
   } as unknown as EventFeed);
-  // No platform feed for it: the server never wrote one, so an organiser did.
-  service.__setPlatformFeedReadForTests(async () => ({ status: "absent" }));
-  const buy = () => post("create-checkout", { eventId: LEGACY, seriesId: SERIES, claimerEmail: "a@example.com", encryptedOrder: BOX, encryptionKeyRef: K0 });
-  assert.deepEqual(await buy(), { status: 409, code: "EVENT_NEEDS_REPUBLISH" });
-  // The same feed without its creatorFeedSigner field: whoever signs it can drop the
-  // field, so the decision is where the feed is (no platform feed here), not what it says.
-  const cached = await service.getEvent(LEGACY);
-  const { creatorFeedSigner: _dropped, ...withoutSigner } = cached as EventFeed & { creatorFeedSigner?: string };
-  service.primeEventCache(LEGACY, withoutSigner as EventFeed);
-  assert.deepEqual(await buy(), { status: 409, code: "EVENT_NEEDS_REPUBLISH" });
-  // A platform-signed legacy event (the server wrote its feed) still sells - and what is
-  // sold is THAT feed, not an organiser-signed copy found first: here the copy says
-  // "free" and the platform feed says "5.00", and only a 5.00 sale gets past the price.
-  const { encodeJsonFeed } = await import("../src/lib/swarm/feeds.js");
-  const platformFeed = { ...withoutSigner, title: "Platform copy" } as EventFeed;
-  service.primeEventCache(LEGACY, {
-    ...withoutSigner,
-    series: [{ seriesId: SERIES, name: "GA", totalSupply: 10, price: 0, payment: { price: "0", currency: "GBP", stripeEnabled: true } }],
-  } as unknown as EventFeed);
-  service.__setPlatformFeedReadForTests(async () => ({ status: "ok", data: encodeJsonFeed(platformFeed) }));
-  const sold = await buy();
-  assert.notEqual(sold.code, "EVENT_NEEDS_REPUBLISH");
-  assert.notEqual(sold.status, 400, "the organiser copy's invalid price was not what got checked");
-  service.__setPlatformFeedReadForTests(async () => ({ status: "error", error: new Error("bee down") }));
-  assert.equal((await buy()).status, 503);
-  service.__setPlatformFeedReadForTests(null);
+  const buy = (eventId: string) => post("create-checkout", { eventId, seriesId: SERIES, claimerEmail: "a@example.com", encryptedOrder: BOX, encryptionKeyRef: K0 });
+  assert.deepEqual(await buy(LEGACY), { status: 409, code: "EVENT_NEEDS_REPUBLISH" });
+  assert.equal((await buy("e0000000-0000-4000-8000-00000000dead")).status, 404);
 });

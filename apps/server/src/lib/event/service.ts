@@ -26,7 +26,6 @@ import { cardFromFeed, getEventsSnapshot, scheduleSnapshotRebuild } from "./dire
 import {
   readFeedPage,
   readFeedPageStrict,
-  type FeedReadStrictResult,
   readFeedPageWithRetry,
   writeFeedPage,
   encodeJsonFeed,
@@ -1226,30 +1225,6 @@ async function resolveOwnEventLocallyRead(
  */
 export async function getEventBySigner(eventId: string, signer: string): Promise<EventFeed | null> {
   const feed = await readEventFeedSoc(eventId, signer);
-  if (!feed || feed.deleted) return null;
-  return applyOnChainEventIds(feed);
-}
-
-/**
- * The event's PLATFORM-signed feed - the one the server's own feed key wrote - or null
- * when there is none (#186). For an event with no record this is the only trust root:
- * the server writes a platform feed only for events made without an organiser signer,
- * and nothing an organiser (or a removed passkey) signs can create one. A sale of a
- * record-less event uses exactly this feed: deciding by it and then selling whatever
- * `getEvent` found - which tries an organiser-signed copy first - would sell the copy.
- */
-let platformFeedRead: (eventId: string) => Promise<FeedReadStrictResult> = (eventId) => readFeedPageStrict(topicEvent(eventId));
-
-/** Tests only: where `getPlatformEvent` reads. Null restores the live read. */
-export function __setPlatformFeedReadForTests(fn: ((eventId: string) => Promise<FeedReadStrictResult>) | null): void {
-  platformFeedRead = fn ?? ((eventId) => readFeedPageStrict(topicEvent(eventId)));
-}
-
-export async function getPlatformEvent(eventId: string): Promise<EventFeed | null | "unavailable"> {
-  const page = await platformFeedRead(eventId);
-  if (page.status === "error") return "unavailable";
-  if (page.status === "absent") return null;
-  const feed = decodeEventFeed(page.data, eventId);
   if (!feed || feed.deleted) return null;
   return applyOnChainEventIds(feed);
 }
