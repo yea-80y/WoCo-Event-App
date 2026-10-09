@@ -56,6 +56,12 @@ const CHAIN_ID = 421614;
 /** What the loader itself will compute, so the env-var name in config tests matches. */
 const DEFAULT_CHAIN = getSubEnsChainId();
 const TTL = 600;
+/**
+ * The WoCo-built rule's inputs for the tests that are not about it: no app
+ * configured, nothing deployed, so a `contenthash` read signs empty. The rule's own
+ * tests are in sub-ens-woco-built-rule.test.ts.
+ */
+const NO_APEX = { apexHash: () => null, lookupBuilt: () => null };
 const NOW = 1_800_000_000;
 
 const CONFIG: CcipHandlerConfig = {
@@ -116,7 +122,7 @@ function stuff(opts: StuffOpts = {}): string {
 function handler(overrides: Partial<CcipHandlerConfig> = {}, readL2?: () => Promise<string>) {
   return createCcipHandler(
     { ...CONFIG, ...overrides },
-    { readL2: readL2 ?? (async () => L2_RESULT), now: () => NOW },
+    { contenthash: NO_APEX, readL2: readL2 ?? (async () => L2_RESULT), now: () => NOW },
   );
 }
 
@@ -250,7 +256,7 @@ test("golden vector: the v2 response L1Resolver v2 is pinned to accept", async (
       chainId: 42161,
       registryAddresses: [V22_REGISTRY],
     },
-    { readL2: async () => result, now: () => 1_800_000_000 },
+    { contenthash: NO_APEX, readL2: async () => result, now: () => 1_800_000_000 },
   )(V2, request);
   assert.equal(out.status, 200);
   assert.equal(
@@ -772,7 +778,7 @@ function memoHandler(opts: { memo?: ResponseMemo<{ data: string }>; now?: () => 
   const state = { reads: 0 };
   const memo = opts.memo ?? new ResponseMemo<{ data: string }>(30_000);
   const handler = createCcipHandler(CONFIG, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       state.reads += 1;
       return L2_RESULT;
     },
@@ -817,7 +823,7 @@ test("memo: SENDER case cannot be varied to miss the memo", async () => {
   const handler = createCcipHandler(
     { ...CONFIG, allowedSenders: [mixed.toLowerCase()] },
     {
-      readL2: async () => {
+      contenthash: NO_APEX, readL2: async () => {
         reads += 1;
         return L2_RESULT;
       },
@@ -843,7 +849,7 @@ test("a pinned sender in NON-EIP-55 mixed case is answered, not thrown", async (
   assert.throws(() => getAddress(mixed), /checksum/, "fixture must be a BAD checksum");
   const out = await createCcipHandler(
     { ...CONFIG, allowedSenders: [mixed.toLowerCase()] },
-    { readL2: async () => L2_RESULT, now: () => NOW },
+    { contenthash: NO_APEX, readL2: async () => L2_RESULT, now: () => NOW },
   )(mixed, stuff());
   assert.equal(out.status, 200);
 });
@@ -870,7 +876,7 @@ test("memo: the SENDER is part of the key — one resolver's answer is never ser
   const config = { ...CONFIG, allowedSenders: [RESOLVER.toLowerCase(), OTHER_RESOLVER.toLowerCase()] };
   let reads = 0;
   const handler = createCcipHandler(config, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       reads += 1;
       return L2_RESULT;
     },
@@ -893,7 +899,7 @@ test("memo: the SENDER is part of the key — one resolver's answer is never ser
 test("memo: a REFUSAL is never stored — a transient RPC failure is not pinned", async () => {
   let reads = 0;
   const handler = createCcipHandler(CONFIG, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       reads += 1;
       if (reads === 1) throw new Error("transient");
       return L2_RESULT;
@@ -913,7 +919,7 @@ test("memo: an entry stops being served once it goes stale", async () => {
   let clock = NOW;
   let reads = 0;
   const handler = createCcipHandler(CONFIG, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       reads += 1;
       return L2_RESULT;
     },
@@ -939,7 +945,7 @@ test("memo: freshness is judged on the handler's clock, not the wall clock", asy
   const handler = createCcipHandler(
     { ...CONFIG, ttlSeconds: 60 },
     {
-      readL2: async () => {
+      contenthash: NO_APEX, readL2: async () => {
         reads += 1;
         return L2_RESULT;
       },
@@ -984,7 +990,7 @@ test("memo: the TTL is clamped to half the signature's life", () => {
 test("memo: a handler with NO memo behaves exactly as before", async () => {
   let reads = 0;
   const handler = createCcipHandler(CONFIG, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       reads += 1;
       return L2_RESULT;
     },
@@ -1044,7 +1050,7 @@ test("rate limit: applies to the DISABLED gateway too", async () => {
 test("rate limit: the limiter runs BEFORE the handler, so a refused request costs no L2 read", async () => {
   let reads = 0;
   const counting = createCcipHandler(CONFIG, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       reads += 1;
       return L2_RESULT;
     },
@@ -1079,7 +1085,7 @@ test("rate limit: the shipped windows allow a real page load and cap a sustained
 test("an L2 failure logs through the injected logger and not to the console", async () => {
   const logged: string[] = [];
   const out = await createCcipHandler(CONFIG, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       throw new Error("RPC exploded");
     },
     now: () => NOW,
@@ -1093,7 +1099,7 @@ test("an L2 failure logs through the injected logger and not to the console", as
 
 test("the 502 body never carries the read failure's detail", async () => {
   const out = await createCcipHandler(CONFIG, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       throw new Error("disagree: https://rpc-a.example => 0xaaa | https://rpc-b.example => 0xbbb");
     },
     now: () => NOW,
@@ -1121,7 +1127,7 @@ const CUTOVER_CONFIG: CcipHandlerConfig = {
 test("cutover: each registry in the pair is served, read from the registry the request names", async () => {
   const reads: string[] = [];
   const h = createCcipHandler(CUTOVER_CONFIG, {
-    readL2: async (registry) => {
+    contenthash: NO_APEX, readL2: async (registry) => {
       reads.push(registry.toLowerCase());
       return L2_RESULT;
     },
@@ -1142,7 +1148,7 @@ test("cutover: each registry in the pair is served, read from the registry the r
 });
 
 test("cutover: an answer about one registry does not verify as an answer about the other", async () => {
-  const h = createCcipHandler(CUTOVER_CONFIG, { readL2: async () => L2_RESULT, now: () => NOW });
+  const h = createCcipHandler(CUTOVER_CONFIG, { contenthash: NO_APEX, readL2: async () => L2_RESULT, now: () => NOW });
   const outgoing = stuff({ registry: REGISTRY });
   const incoming = stuff({ registry: INCOMING_REGISTRY });
   const out = await h(RESOLVER, outgoing);
@@ -1158,7 +1164,7 @@ test("cutover: an answer about one registry does not verify as an answer about t
 test("cutover: a registry outside the pair is refused before any read", async () => {
   let read = false;
   const h = createCcipHandler(CUTOVER_CONFIG, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       read = true;
       return L2_RESULT;
     },
@@ -1174,7 +1180,7 @@ test("cutover: a registry outside the pair is refused before any read", async ()
 test("cutover: the memo keeps the two registries' answers apart", async () => {
   let reads = 0;
   const h = createCcipHandler(CUTOVER_CONFIG, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       reads += 1;
       return L2_RESULT;
     },
