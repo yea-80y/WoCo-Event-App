@@ -229,3 +229,9 @@ test("owner reads follow the same key rule as the money path (no old-generation 
   service.primeEventCache(EVENT, feed({ creatorFeedSigner: r.feedSigner as EventFeed["creatorFeedSigner"] }));
   assert.equal((await service.resolveOwnEventLocally(EVENT, CREATOR))?.encryptionKeyRef, r.orderKeyRef);
 });
+
+test("an event create refused for outdated or unreadable keys says which, with its code", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/routes/events.ts", import.meta.url), "utf8");
+  assert.match(src, /err instanceof AccountKeysChangedError \|\| err instanceof AccountKeysUnavailableError\s*\? \{ code: err\.code \}/);
+});
