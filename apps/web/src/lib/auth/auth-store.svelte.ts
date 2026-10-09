@@ -64,6 +64,17 @@ import {
   clearPublicKeys,
 } from "./identity-seed.js";
 import { SEED_UNLOCK_POLICY, unlockExpiry } from "./seed-unlock-policy.js";
+import {
+  allSecretsOf,
+  clearChainWindow,
+  currentSecretOf,
+  hasLockedChain,
+  openLockedChain,
+  restoreChainWindow,
+  storeLockedChain,
+  writeChainWindow,
+  type AccountChain,
+} from "./account-chain.js";
 import { linkedEnvelopePendingKey } from "./make-main-key.js";
 import { requestChallenge, sha256Hex } from "./request-challenge.js";
 import { apiBase } from "../api/http.js";
@@ -133,7 +144,16 @@ let _web3authKeyRetrying = false;
 // an unlock opens it until `expiresAt` (`SEED_UNLOCK_POLICY`; null = until the tab
 // closes). Stamped with the account it belongs to and read only through
 // `_unlockedSeed()`, so an account switch can never hand one account's seed to another.
-let _unlocked: { seedAddress: string; parent: string; seed: string; expiresAt: number | null } | null = null;
+let _unlocked: { seedAddress: string; parent: string; seed: string; expiresAt: number | null; chain: AccountChain | null } | null = null;
+// The account's later secrets (#186) load right after the seed unlocks; the getters
+// that sign or seal wait for it, so nothing is signed under a generation the account
+// has left. `_ringSync` then asks the chain for a newer ring (bounded wait, see
+// `_chainReady`).
+let _chainLoad: Promise<void> | null = null;
+let _ringSync: Promise<void> | null = null;
+// What the last ring check found worth saying (#186): this passkey was left out of the
+// account's keys, or the keys moved on from another passkey. Null = nothing to say.
+let _keyRingNotice = $state<null | "keyless" | "changed">(null);
 // The content-feed signer a passkey account posts with while its seed is locked
 // (#746), memoised from its cached copy. Survives a relock - that is the point - but
 // never an account switch, a heal or a sign-out.
@@ -351,11 +371,15 @@ function _setUnlockedSeed(
   // A silent restore is not an unlock: re-stamping here would keep the window open
   // for as long as the app is reloaded inside it.
   const expiresAt = opts.restoredUntil ?? unlockExpiry(SEED_UNLOCK_POLICY);
-  _unlocked = { seedAddress: seedAddr, parent: account, seed, expiresAt };
+  // A re-stamp of the same account keeps its later secrets; anything else starts at
+  // the seed until `_loadAccountChain` finds them.
+  const prior = _unlocked;
+  const chain = prior && prior.seedAddress === seedAddr && prior.parent === account && prior.seed === seed ? prior.chain : null;
+  _unlocked = { seedAddress: seedAddr, parent: account, seed, expiresAt, chain };
   _identitySeedPresent = true;
   _seedUnavailable = null;
   _scheduleUnlockExpiry(expiresAt);
-  const signer = deriveFeedSignerKey(seed);
+  const signer = deriveFeedSignerKey(currentSecretOf(seed, chain));
   _feedSignerAddressMemo = { parent: account, address: signer.address };
   _feedSignerCache = { seedAddress: seedAddr, parent: account, signer };
   // These land after this returns; a sign-out in between must win.
@@ -367,10 +391,136 @@ function _setUnlockedSeed(
   void storeFeedSignerCache(seedAddr, account, signer, current).catch((e) =>
     console.warn("[auth] could not keep the feed signer (non-fatal):", e),
   );
-  if (opts.restoredUntil !== undefined) return;
+  if (opts.restoredUntil !== undefined) {
+    _chainLoad = _loadAccountChain(seedAddr, account, gen, "window");
+    return;
+  }
   void writeUnlockWindow(seedAddr, account, seed, expiresAt, current).catch((e) =>
     console.warn("[auth] could not keep the unlock window (non-fatal):", e),
   );
+  _chainLoad = _loadAccountChain(seedAddr, account, gen, "unlock");
+}
+
+/**
+ * The account's later secrets (#186), right after its seed unlocked: opened with the
+ * passkey when a ceremony just ran, else from the window copy. A seed restored from its
+ * window while the chain's window copy is missing - but a locked chain exists - is
+ * relocked: signing under generation 0 there would sign under keys the account left.
+ * Then, with the PRF in hand, the chain is asked for a newer ring.
+ */
+async function _loadAccountChain(seedAddr: string, parent: string, gen: number, mode: "window" | "unlock"): Promise<void> {
+  const current = () => gen === _lockGen && _unlocked?.seedAddress === seedAddr && _unlocked.parent === parent;
+  try {
+    if (!_unlocked?.chain) {
+      const prf = mode === "unlock" ? _passkeyPrfSecret : null;
+      const chain = prf
+        ? await openLockedChain(seedAddr, parent, prf)
+        : await restoreChainWindow(seedAddr, parent, SEED_UNLOCK_POLICY);
+      if (!current()) return;
+      if (chain) {
+        _applyChain(chain, { persistWindow: !!prf });
+      } else if (!prf && (await hasLockedChain(seedAddr))) {
+        console.warn("[auth] account keys have no open window copy - locking until the next confirm");
+        if (current()) _relockPasskey();
+        return;
+      }
+    }
+    if (mode === "unlock" && _passkeyPrfSecret && current()) {
+      _ringSync = _syncKeyRing().catch((e) => console.warn("[auth] key ring check failed (non-fatal):", e));
+    }
+  } catch (e) {
+    console.warn("[auth] account keys could not be loaded (non-fatal):", e);
+  }
+}
+
+/** Use `chain` as the account's later secrets from now on: re-derive what signs. */
+function _applyChain(chain: AccountChain, opts: { persistWindow: boolean }): void {
+  const u = _unlocked;
+  if (!u) return;
+  _unlocked = { ...u, chain };
+  const signer = deriveFeedSignerKey(currentSecretOf(u.seed, chain));
+  _feedSignerAddressMemo = { parent: u.parent, address: signer.address };
+  _feedSignerCache = { seedAddress: u.seedAddress, parent: u.parent, signer };
+  const gen = _lockGen;
+  const current = () => gen === _lockGen;
+  void writePublicKeys(u.seedAddress, { parent: u.parent, feedSignerAddress: signer.address }).catch((e) =>
+    console.warn("[auth] could not record the public keys (non-fatal):", e),
+  );
+  void storeFeedSignerCache(u.seedAddress, u.parent, signer, current).catch((e) =>
+    console.warn("[auth] could not keep the feed signer (non-fatal):", e),
+  );
+  if (opts.persistWindow) {
+    void writeChainWindow(u.seedAddress, u.parent, chain, u.expiresAt, current).catch((e) =>
+      console.warn("[auth] could not keep the account keys' window (non-fatal):", e),
+    );
+  }
+}
+
+/**
+ * Ask the chain for the account's current key ring and take it if it is newer (#186).
+ * Needs this passkey's PRF output: its entry opens with the box key the PRF gives.
+ */
+async function _syncKeyRing(): Promise<void> {
+  const u = _unlocked;
+  const prf = _passkeyPrfSecret;
+  const coOwner = _seedAddress?.toLowerCase();
+  if (_kind !== "passkey" || !u || !prf || !coOwner) return;
+  const gen = _lockGen;
+  const [{ adoptKeyRing }, { fetchKeyRing }, { readRingAnchor }, { passkeyBoxKeypair }] = await Promise.all([
+    import("../keyring/adopt.js"),
+    import("../keyring/ring-read.js"),
+    import("./kernel-account.js"),
+    import("@woco/shared/keyring/account-secret"),
+  ]);
+  const box = passkeyBoxKeypair(prf);
+  try {
+    const res = await adoptKeyRing({
+      parent: u.parent,
+      coOwner,
+      boxSecretKey: box.secretKey,
+      seed: u.seed,
+      held: u.chain,
+      readAnchor: readRingAnchor,
+      fetchRing: fetchKeyRing,
+    });
+    const stillOurs = gen === _lockGen && _unlocked?.seedAddress === u.seedAddress && _unlocked.parent === u.parent;
+    if (!stillOurs) return;
+    if (res.status === "adopted") {
+      await storeLockedChain(u.seedAddress, u.parent, res.chain, prf);
+      const before = u.chain?.gen ?? 0;
+      _applyChain(res.chain, { persistWindow: true });
+      _keyRingNotice = res.chain.gen > before ? "changed" : null;
+    } else if (res.status === "keyless") {
+      _keyRingNotice = "keyless";
+    } else if (res.status === "foreign") {
+      console.error("[auth] the account's key ring does not belong to this seed - not used");
+    } else if (res.status === "unreadable") {
+      console.warn(`[auth] key ring check: ${res.reason}`);
+    }
+  } finally {
+    box.secretKey.fill(0);
+  }
+}
+
+/** Wait for the account's later secrets, and a little for a newer ring - never long:
+ *  the server refuses anything made under keys the account has left. */
+async function _chainReady(): Promise<void> {
+  if (_chainLoad) await _chainLoad;
+  if (_ringSync) await Promise.race([_ringSync, new Promise((r) => setTimeout(r, 5_000))]);
+}
+
+/** The secret everything this account signs or seals NOW is derived from. */
+function _currentSecretFor(seed: string): string {
+  return _kind === "passkey" && _unlocked?.seed === seed ? currentSecretOf(seed, _unlocked.chain) : seed;
+}
+
+/** Every secret this device holds for the account, generation 0 first, and the current one. */
+async function _accountSecretsIfPresent(): Promise<{ current: string; all: string[] } | null> {
+  const seed = await _seedIfPresent();
+  if (!seed) return null;
+  await _chainReady();
+  const chain = _kind === "passkey" && _unlocked?.seed === seed ? _unlocked.chain : null;
+  return { current: currentSecretOf(seed, chain), all: allSecretsOf(seed, chain) };
 }
 
 /**
@@ -382,6 +532,8 @@ function _relockPasskey(): void {
   if (_kind !== "passkey" || _passkeyKeyInFlight || _seedInFlight) return;
   _lockGen++;
   _unlocked = null;
+  _chainLoad = null;
+  _ringSync = null;
   _identitySeedPresent = false;
   _passkeyPrivateKey = null;
   _passkeyPrfSecret = null;
@@ -492,8 +644,9 @@ async function _getContentFeedSignerInner(
   }
   const seed = await _seedIfPresent();
   if (!seed) throw new Error(_seedLockedMessage());
+  await _chainReady();
 
-  const signer = deriveFeedSignerKey(seed);
+  const signer = deriveFeedSignerKey(_currentSecretFor(seed));
   _feedSignerAddressMemo = { parent: parent.toLowerCase(), address: signer.address };
   return signer;
 }
@@ -505,7 +658,10 @@ async function _getContentFeedSignerInner(
  */
 async function _feedSignerIfPresent(): Promise<ContentFeedSigner | null> {
   const seed = await _seedIfPresent();
-  if (seed) return deriveFeedSignerKey(seed);
+  if (seed) {
+    await _chainReady();
+    return deriveFeedSignerKey(_currentSecretFor(seed));
+  }
   if (_kind !== "passkey" || !_parent) return null;
   const seedAddr = _getSeedAddress()?.toLowerCase();
   const parent = _parent.toLowerCase();
@@ -597,7 +753,8 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
 
   const seed = await _seedIfPresent();
   if (seed) {
-    const address = deriveFeedSignerKey(seed).address;
+    await _chainReady();
+    const address = deriveFeedSignerKey(_currentSecretFor(seed)).address;
     _feedSignerAddressMemo = { parent, address };
     return address;
   }
@@ -890,7 +1047,10 @@ async function _clearStaleAuthForSwitch(address: string): Promise<void> {
     _unlocked = null;
     // What opens the outgoing account without its passkey goes with it, as at
     // sign-out (#746); its locked copy stays.
-    if (priorSeedAddr) await clearDeviceUnlock(priorSeedAddr).catch(() => {});
+    if (priorSeedAddr) {
+      await clearDeviceUnlock(priorSeedAddr).catch(() => {});
+      await clearChainWindow(priorSeedAddr).catch(() => {});
+    }
   }
 }
 
@@ -4875,6 +5035,7 @@ async function clearAllAuth(): Promise<void> {
     console.warn("[auth] sign-out kept a recovered account's only seed copy until its next sign-in locks it");
     await step("public-keys", () => clearPublicKeys(seedAddr!));
     await step("device-unlock", () => clearDeviceUnlock(seedAddr!));
+    await step("account-chain-window", () => clearChainWindow(seedAddr!));
   } else {
     await step("identity-seed", () => clearIdentitySeed(seedAddr));
   }
@@ -5038,6 +5199,21 @@ export const auth = {
   // passkey account whose seed is locked (#746): call
   // `ensureOrganiserUnlock()` first where the action needs it.
   getIdentitySeed: () => _seedIfPresent(),
+  // The account's CURRENT secret and every secret this device holds (#186). Everything
+  // that signs content or seals to the organiser derives from `current`; opening orders
+  // tries `all` (sealed under whichever generation was current then). Generation 0 is
+  // the identity seed, so for an account that never removed a passkey both are the seed.
+  // The issuing key, escrow and portability stay on `getIdentitySeed`.
+  getAccountSecrets: () => _accountSecretsIfPresent(),
+  // Why the account's keys need attention here, if they do (#186): "keyless" = this
+  // passkey was left out of the account's latest keys; "changed" = another passkey moved
+  // them on (a removal). Null = nothing to say.
+  get keyRingNotice() {
+    return _keyRingNotice;
+  },
+  dismissKeyRingNotice: () => {
+    _keyRingNotice = null;
+  },
   // Content-feed signer (Phase B) — the key the user signs their own content
   // feeds with. null = this kind/state can't own feeds (fall back to platform).
   getContentFeedSigner: () => _getContentFeedSigner(),

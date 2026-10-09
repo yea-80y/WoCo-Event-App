@@ -367,7 +367,8 @@ test("passive likes, follows and subjects read by ADDRESS - never a prompt on pa
 test("Dashboard: attendee details ask for the passkey only from a tap", () => {
   const dash = read("../src/lib/creator/dashboard/Dashboard.svelte");
   const decrypt = body(dash.replace(/\n  }\n/g, "\n}\n"), "async function decryptCurrent(prompt = false)");
-  assert.match(decrypt, /if \(!identitySeed && prompt\) \{\s*if \(!\(await auth\.ensureAccountSetup\(\{ identity: true \}\)\)\)/);
+  // The account's secrets (#186) - the seed and any later generations - not the bare seed.
+  assert.match(decrypt, /if \(!secrets && prompt\) \{\s*if \(!\(await auth\.ensureAccountSetup\(\{ identity: true \}\)\)\)/);
   // Every call without `true` is a page-open path; the one with it is a button.
   assert.deepEqual(dash.match(/decryptCurrent\(true\)/g)?.length, 1);
   assert.match(dash, /onEnsureDecrypted=\{\(\) => decryptCurrent\(true\)\}/);
@@ -405,8 +406,13 @@ test("store: a silent restore keeps the window it found and never re-stamps it",
   );
   const set = body(STORE, "function _setUnlockedSeed");
   assert.match(set, /const expiresAt = opts\.restoredUntil \?\? unlockExpiry\(SEED_UNLOCK_POLICY\);/);
-  const early = set.indexOf("if (opts.restoredUntil !== undefined) return;");
-  assert.ok(early > 0 && early < set.indexOf("writeUnlockWindow("), "return before the window write");
+  // The restore branch returns before the window write (#186: it first starts loading
+  // the account's later secrets from their window copy - never a fresh stamp).
+  const early = set.indexOf("if (opts.restoredUntil !== undefined)");
+  const write = set.indexOf("writeUnlockWindow(");
+  assert.ok(early > 0 && early < write, "the restore branch comes before the window write");
+  assert.match(set.slice(early, write), /return;/, "return before the window write");
+  assert.match(set.slice(early, write), /_loadAccountChain\(seedAddr, account, gen, "window"\)/);
 });
 
 test("store: a restore never re-stamps, and another tab's open window counts before any ceremony", () => {

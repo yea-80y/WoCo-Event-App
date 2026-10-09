@@ -57,6 +57,11 @@ export function allSecretsOf(seed: string, chain: AccountChain | null): string[]
 const lockedKey = (seedAddress: string) => `${StorageKeys.ACCOUNT_CHAIN_LOCKED}:${seedAddress.toLowerCase()}`;
 const windowKey = (seedAddress: string) => `${StorageKeys.ACCOUNT_CHAIN_WINDOW}:${seedAddress.toLowerCase()}`;
 
+/** Is a locked chain on this device? No decrypt, no passkey. */
+export async function hasLockedChain(seedAddress: string): Promise<boolean> {
+  return (await getKV<EncryptedBlob>(lockedKey(seedAddress))) !== null;
+}
+
 export async function storeLockedChain(seedAddress: string, parent: string, chain: AccountChain, prfSecret: string): Promise<void> {
   const kek = await importSeedKek(prfSecret);
   await putKV(lockedKey(seedAddress), await encrypt(kek, AAD.ACCOUNT_CHAIN_LOCKED(seedAddress, parent), chain));
