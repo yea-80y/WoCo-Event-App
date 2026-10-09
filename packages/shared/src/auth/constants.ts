@@ -35,6 +35,9 @@ export const StorageKeys = {
   ACCOUNT_CHAIN_LOCKED: "woco:auth:account-chain-locked",
   // Their unlock-window copy under the device key, beside the seed's (#186).
   ACCOUNT_CHAIN_WINDOW: "woco:auth:account-chain-window",
+  // A passkey removal under way (#186): the new secret and how far it got, locked like
+  // the chain, so a closed tab resumes with the SAME secret. Per seed address.
+  PENDING_ROTATION: "woco:auth:pending-rotation",
   // Durable RECOVERED-account bindings: a MAP `{ [prfEoaLower]: kernelAddress }`.
   // After recovery the Kernel's sudo owner is rotated but its address is PRESERVED,
   // so the rotated passkey's counterfactual CREATE2 address no longer equals the

@@ -39,12 +39,16 @@ export async function signEventFeedSoc(
   feed: EventFeed,
   signer: ContentFeedSigner,
   knownVersion?: number,
+  /** A passkey removal moving the feed to the NEXT generation's signer (#186) names
+   *  that generation's order key: the account's current one is still the old. */
+  nextGenerationOrderKeyRef?: string,
 ): Promise<number> {
   // The one guard every event-feed signature passes (#642) — see assertFeedIsOurs.
   assertFeedIsOurs(feed, {
     feedSigner: signer.address,
     parent: auth.parent ?? "",
-    orderKeyRef: feed.encryptionKeyRef !== undefined ? await ownOrderKeyRef(signer.address) : undefined,
+    orderKeyRef:
+      feed.encryptionKeyRef !== undefined ? (nextGenerationOrderKeyRef ?? (await ownOrderKeyRef(signer.address))) : undefined,
   });
   return writeContentFeed({
     signerPrivKey: signer.privKey,

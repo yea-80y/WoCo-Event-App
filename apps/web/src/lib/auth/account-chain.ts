@@ -131,3 +131,35 @@ export async function clearChainWindow(seedAddress: string): Promise<void> {
 export async function clearLockedChain(seedAddress: string): Promise<void> {
   await delKV(lockedKey(seedAddress));
 }
+
+// ---------------------------------------------------------------------------
+// A removal under way (#186): its new secret, locked under the passkey like the chain
+// ---------------------------------------------------------------------------
+
+const pendingKey = (seedAddress: string) => `${StorageKeys.PENDING_ROTATION}:${seedAddress.toLowerCase()}`;
+
+export async function storePendingRotation(seedAddress: string, parent: string, pending: unknown, prfSecret: string): Promise<void> {
+  const kek = await importSeedKek(prfSecret);
+  await putKV(pendingKey(seedAddress), await encrypt(kek, AAD.PENDING_ROTATION(seedAddress, parent), pending));
+}
+
+/** The pending removal for this account, opened with the passkey; null when none (or another account's). */
+export async function openPendingRotation(seedAddress: string, parent: string, prfSecret: string): Promise<unknown | null> {
+  const blob = await getKV<EncryptedBlob>(pendingKey(seedAddress));
+  if (!blob) return null;
+  try {
+    return await decrypt(await importSeedKek(prfSecret), AAD.PENDING_ROTATION(seedAddress, parent), blob);
+  } catch {
+    return null;
+  }
+}
+
+/** Is a removal under way on this device? No decrypt. */
+export async function hasPendingRotation(seedAddress: string): Promise<boolean> {
+  return (await getKV<EncryptedBlob>(pendingKey(seedAddress))) !== null;
+}
+
+export async function clearPendingRotation(seedAddress: string): Promise<void> {
+  await delKV(pendingKey(seedAddress));
+}
+

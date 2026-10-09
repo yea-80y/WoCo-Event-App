@@ -103,7 +103,7 @@ export async function ringWithMembers(args: {
 }
 
 /** Store a ring for the account to name onchain; returns its reference, checked against its own bytes. */
-export async function storeKeyRing(ring: KeyRing): Promise<string> {
+export async function storeKeyRing(ring: KeyRing, orderPublicKey?: Uint8Array): Promise<string> {
   const [{ encodeKeyRing }, { bytesTreeRoot }, { authPost }] = await Promise.all([
     import("@woco/shared/keyring/ring"),
     import("@woco/shared/swarm/bytes-tree"),
@@ -113,7 +113,12 @@ export async function storeKeyRing(ring: KeyRing): Promise<string> {
   const expected = bytesTreeRoot(encoded);
   let b64 = "";
   for (let i = 0; i < encoded.length; i += 0x8000) b64 += String.fromCharCode(...encoded.subarray(i, i + 0x8000));
-  const res = await authPost<{ ref: string }>("/api/keyring/ring", { dataB64: btoa(b64) });
+  let keyB64 = "";
+  if (orderPublicKey) for (let i = 0; i < orderPublicKey.length; i += 0x8000) keyB64 += String.fromCharCode(...orderPublicKey.subarray(i, i + 0x8000));
+  const res = await authPost<{ ref: string }>("/api/keyring/ring", {
+    dataB64: btoa(b64),
+    ...(orderPublicKey ? { orderKeyB64: btoa(keyB64) } : {}),
+  });
   if (!res.ok || !res.data) throw new Error(res.error ?? "Couldn't save your account's keys - try again.");
   if (res.data.ref !== expected) throw new Error("Your account's keys were not stored as sent - try again.");
   return expected;
