@@ -36,6 +36,8 @@ import {
   KEY_RING_BACK_INFO,
   KEY_RING_ENTRY_INFO,
   KeyRingOpenError,
+  MAX_KEY_RING_BYTES,
+  MAX_KEY_RING_GEN,
   MalformedKeyRingError,
   NO_RING,
   UnsupportedKeyRingError,
@@ -375,3 +377,18 @@ test("the next writer's members come from the ring alone, less the removed passk
   );
 });
 
+
+test("the largest ring the format allows - ten passkeys at the last generation - fits the size bound, in one tree level", async () => {
+  const ten = Array.from({ length: 10 }, (_, i) => passkey(i + 1));
+  const ring = await buildKeyRing({
+    parent: PARENT,
+    gen: MAX_KEY_RING_GEN,
+    prev: NO_RING,
+    secret: newAccountSecret(),
+    prior: Array.from({ length: MAX_KEY_RING_GEN }, () => newAccountSecret()),
+    members: ten.map((p) => ({ statement: statementFor(p), boxPublicKey: p.box.publicKey })),
+  });
+  const size = encodeKeyRing(ring).length;
+  assert.ok(size <= MAX_KEY_RING_BYTES, `${size} bytes`);
+  assert.ok(MAX_KEY_RING_BYTES <= 128 * 4096, "one intermediate chunk of leaves");
+});

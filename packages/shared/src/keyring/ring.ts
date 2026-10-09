@@ -52,8 +52,9 @@ export const KEY_RING_BACK_INFO = "woco/keyring/back/v1";
 /** The anchor value of an account that has never had a ring. */
 export const NO_RING = `0x${"0".repeat(64)}`;
 
-/** Ten entries with their keys and a back blob fit well inside this. */
-export const MAX_KEY_RING_BYTES = 64 * 1024;
+/** Ten entries with their keys and a back blob at MAX_KEY_RING_GEN fit inside this
+ *  (measured: about 116 KB), and it is still one level of a `/bytes` tree. */
+export const MAX_KEY_RING_BYTES = 160 * 1024;
 
 /** The largest generation a ring may name: keeps the back blob small and every count exact. */
 export const MAX_KEY_RING_GEN = 1000;
