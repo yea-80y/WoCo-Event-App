@@ -1,3 +1,4 @@
+import { AccountKeysChangedError, AccountKeysUnavailableError, assertCurrentKeys } from "../lib/keyring/event-keys.js";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { FeedIndex, Topic, Reference } from "@ethersphere/bee-js";
@@ -378,6 +379,17 @@ sitesRouter.post("/", requireAuth, async (c) => {
     const siteFeedSigner = body.siteFeedSigner?.toLowerCase();
     if (siteFeedSigner && !/^0x[0-9a-f]{40}$/.test(siteFeedSigner)) {
       return c.json({ ok: false, error: "Invalid siteFeedSigner" }, 400);
+    }
+    // The account's CURRENT signer only (#186): a device that has not taken the keys of
+    // a removal yet would point the site at a signer readers no longer follow.
+    if (siteFeedSigner) {
+      try {
+        await assertCurrentKeys(parentAddress, siteFeedSigner, undefined);
+      } catch (e) {
+        if (e instanceof AccountKeysChangedError) return c.json({ ok: false, error: e.message, code: e.code }, 409);
+        if (e instanceof AccountKeysUnavailableError) return c.json({ ok: false, error: e.message, code: e.code }, 503);
+        throw e;
+      }
     }
 
     // If an existing site is published, only the owner may overwrite it.

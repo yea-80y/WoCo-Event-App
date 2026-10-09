@@ -1,3 +1,4 @@
+import { currentRing } from "../keyring/current-ring.js";
 import { Topic } from "@ethersphere/bee-js";
 import { siteCreatorDirectoryTopic, siteConfigTopic, sitePagesTopicFn, siteEventsIndexTopic, isSitePointer } from "@woco/shared";
 import type { SiteDirectoryEntry, SiteDirectory, Site, SitePalette, SiteEventsIndex, Page, Hex0x, VersionedFeedRead } from "@woco/shared";
@@ -63,6 +64,11 @@ export interface SiteConfigReaders {
   readConfigPage: (topic: Topic) => Promise<FeedReadStrictResult>;
   readPointerTarget: (ownerHex: string, baseTopic: string) => Promise<VersionedFeedRead>;
   readPagesPage: (topic: Topic) => Promise<Uint8Array | null>;
+  /**
+   * The owner's current content-feed signer per their key ring (#186): null = no ring,
+   * `unavailable` = the ring could not be read. Absent (a test's readers) = no ring.
+   */
+  ownerRingSigner?: (owner: string) => Promise<string | null | "unavailable">;
 }
 
 const DEFAULT_READERS: SiteConfigReaders = {
@@ -71,6 +77,10 @@ const DEFAULT_READERS: SiteConfigReaders = {
   // WoCo, and nothing outside the payload says which, so it asks both.
   readPointerTarget: (ownerHex, baseTopic) => readContentFeedJsonResult(ownerHex, baseTopic, "site"),
   readPagesPage: readFeedPage,
+  ownerRingSigner: async (owner) => {
+    const r = await currentRing(owner);
+    return r.status === "ring" ? r.ring.feedSigner : r.status === "none" ? null : "unavailable";
+  },
 };
 
 /**
@@ -112,8 +122,13 @@ export async function resolveSiteConfig(
   if (!head) return { status: "unavailable", reason: "config feed payload did not decode" };
 
   if (isSitePointer(head)) {
+    // The owner's CURRENT signer (#186): once their account has a key ring, the config
+    // lives under it, and the signer the pointer names may be one a removed passkey holds
+    // (it carries the ticket-email Reply-To). Unreadable keys: nothing is read.
+    const ringSigner = readers.ownerRingSigner ? await readers.ownerRingSigner(head.ownerAddress.toLowerCase()) : null;
+    if (ringSigner === "unavailable") return { status: "unavailable", reason: "site owner's keys unreadable" };
     const payload = await readers
-      .readPointerTarget(head.siteFeedSigner.replace(/^0x/, ""), siteConfigTopic(siteId))
+      .readPointerTarget((ringSigner ?? head.siteFeedSigner).replace(/^0x/, ""), siteConfigTopic(siteId))
       .catch((e: unknown) => ({ status: "unavailable" as const, reason: String(e) }));
 
     if (payload.status === "unavailable") {
@@ -142,7 +157,7 @@ export async function resolveSiteConfig(
     if (!ownerIsEstablishable(site)) {
       return { status: "unavailable", reason: "pointer carries no usable ownerAddress" };
     }
-    return { status: "found", site, siteFeedSigner: head.siteFeedSigner };
+    return { status: "found", site, siteFeedSigner: (ringSigner ?? head.siteFeedSigner) as Hex0x };
   }
 
   // Legacy platform-written site. The payload decoded and is not a pointer, but
