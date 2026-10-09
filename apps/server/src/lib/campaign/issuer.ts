@@ -404,8 +404,12 @@ export async function confirmReferral(
  * to end - the index append skips a subject already listed, a badge is never
  * written over an existing one - so it runs after a fresh write, on every repeat
  * of a standing one, and from {@link repairConfirmation}.
+ *
+ * Resolves to whether the referrer's index is KNOWN to list the referee. The
+ * badges are not part of that answer: they fire and forget, and the next
+ * qualifying action retries one that did not land.
  */
-async function finishConfirmation(record: ReferralConfirmationV1, deps: IssuerDeps): Promise<void> {
+async function finishConfirmation(record: ReferralConfirmationV1, deps: IssuerDeps): Promise<boolean> {
   // The referrer's name unlocks on this (#575) — told to the gate from the
   // confirmation itself, because the index append below can fail without
   // unmaking it.
@@ -414,33 +418,61 @@ async function finishConfirmation(record: ReferralConfirmationV1, deps: IssuerDe
   // The index is a CONVENIENCE for the referrer's dashboard — every entry is
   // re-derivable from the confirmations themselves — so its failure is
   // recorded and does not unmake a confirmation that is already on Swarm.
-  await appendReferrerIndex(record.referrer, record.referee, deps);
+  const indexed = await appendReferrerIndex(record.referrer, record.referee, deps);
 
   // A confirmed referral is a first meaningful action for both parties.
   void issueBadge(record.referee, deps);
   void issueBadge(record.referrer, deps);
+  return indexed;
 }
 
-/** Referees whose standing confirmation this process has already finished. */
-const repaired = new Set<string>();
+/**
+ * Referee -> when a status read may repair them again: `Infinity` once the
+ * index append is known to have landed (nothing is left to do, ever), and for
+ * the attempt's own duration, so two status reads in flight at once do not both
+ * append; otherwise the retry time, see {@link REPAIR_RETRY_MS}.
+ */
+const repaired = new Map<string, number>();
 const REPAIRED_MAX = 10_000;
 
 /**
- * Finish a confirmation the referee's status read found standing, once per
- * process. Without it a confirmation whose read-back timed out stays half done
- * forever: the referee's Home sees it and never asks to confirm again.
+ * How long a repair whose index append did NOT land stands before the next
+ * status read tries again. The gate's memo keeps "unavailable" for the same
+ * window and for the same reason: a bee outage must neither be remembered as
+ * done nor cost every Home open a failing banded read.
+ */
+export const REPAIR_RETRY_MS = 30_000;
+
+/**
+ * Finish a confirmation the referee's status read found standing. Without it a
+ * confirmation whose read-back timed out stays half done forever: the referee's
+ * Home sees it and never asks to confirm again.
+ *
+ * Once per process ONLY when the index append landed. Marking it done before
+ * that would reopen the same hole one layer up: an append that failed during a
+ * bee hiccup would never be retried until the next deploy, and nothing but this
+ * read ever retries it (the referee never confirms again, and the referrer
+ * cannot: the record is keyed by the referee).
  */
 export function repairConfirmation(record: ReferralConfirmationV1, deps: IssuerDeps = liveDeps()): Promise<void> {
   if (!health.configured) return Promise.resolve();
   const key = record.referee.toLowerCase();
-  if (repaired.has(key)) return Promise.resolve();
+  const again = repaired.get(key);
+  if (again !== undefined && deps.now() < again) return Promise.resolve();
   if (repaired.size >= REPAIRED_MAX) repaired.clear();
-  repaired.add(key);
-  return finishConfirmation(record, deps).catch((err) => {
-    // Unfinished, so the next status read may try again.
-    repaired.delete(key);
-    console.warn(`[campaign] repair failed for ${key}:`, err);
-  });
+  repaired.set(key, Infinity);
+  const retryLater = (): void => {
+    repaired.set(key, deps.now() + REPAIR_RETRY_MS);
+  };
+  return finishConfirmation(record, deps).then(
+    (indexed) => {
+      if (!indexed) retryLater();
+    },
+    (err) => {
+      retryLater();
+      console.warn(`[campaign] repair failed for ${key}:`, err);
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -458,20 +490,26 @@ export function repairConfirmation(record: ReferralConfirmationV1, deps: IssuerD
  * A read-modify-write, which is why an inconclusive scan refuses: writing the
  * subjects this reader could see over a head it could not confirm is how a list
  * silently loses everything added since.
+ *
+ * Never throws, and resolves to whether the index is KNOWN to list the referee:
+ * it runs after the confirmation is already on Swarm, from paths that answer
+ * "confirmed" or "already", so a fault here is a recorded index failure and
+ * never an error response for a referral that did in fact confirm.
  */
 export async function appendReferrerIndex(
   referrer: string,
   referee: string,
   deps: IssuerDeps = liveDeps(),
-): Promise<void> {
+): Promise<boolean> {
   const referrerSubject = campaignAccountSubject(referrer);
   const refereeSubject = campaignAccountSubject(referee);
   const topicForBand = (band: number): string => referrerIndexTopic(referrerSubject, band);
 
-  const noteFailure = (label: string, detail?: string): void => {
+  const noteFailure = (label: string, detail?: string): false => {
     health.indexFailed++;
     health.lastIndexError = label;
     if (detail) console.warn(`[campaign] referrer index ${label}: ${detail}`);
+    return false;
   };
 
   const issuerOwner = getCampaignIssuerOwnerHex();
@@ -480,32 +518,22 @@ export async function appendReferrerIndex(
     current = await deps.readBanded(issuerOwner, topicForBand, "campaignIssuer");
   } catch (err) {
     // The banded read walks openers through a probe that THROWS on any fault
-    // but not-found. This runs after the confirmation is already on Swarm, so
-    // a throw here must be a recorded index failure, never an error response
-    // for a referral that did in fact confirm.
-    noteFailure("read threw", err instanceof Error ? err.message : String(err));
-    return;
+    // but not-found.
+    return noteFailure("read threw", err instanceof Error ? err.message : String(err));
   }
-  if (current.status === "unavailable") {
-    noteFailure("read unavailable", current.reason);
-    return;
-  }
+  if (current.status === "unavailable") return noteFailure("read unavailable", current.reason);
 
   let subjects: Hex0x[];
   let targetBand: number;
   if (current.status === "found") {
-    if (!current.scanClean) {
-      noteFailure("read inconclusive");
-      return;
-    }
+    if (!current.scanClean) return noteFailure("read inconclusive");
     const existing = parseJson(current.bytes);
     if (!validateReferrerIndexV1(existing)) {
       // Foreign bytes at an address we own: appending would mean inventing the
       // predecessor list, so the append stops and says so.
-      noteFailure("foreign bytes at the index head");
-      return;
+      return noteFailure("foreign bytes at the index head");
     }
-    if (existing.subjects.includes(refereeSubject)) return;
+    if (existing.subjects.includes(refereeSubject)) return true;
     subjects = [...existing.subjects, refereeSubject];
     targetBand = current.version >= LAST_VERSION_IN_BAND ? current.band + 1 : current.band;
   } else {
@@ -517,19 +545,28 @@ export async function appendReferrerIndex(
   const bytes = new TextEncoder().encode(JSON.stringify(next));
   const topic = topicForBand(targetBand);
 
-  const write = await deps.writeFeed(topic, bytes);
-  if (!write.ok) {
-    noteFailure("write failed", write.reason);
-    return;
-  }
-  if (write.unchanged) return;
+  try {
+    // The floor every write here honours (see MIN_BATCH_TTL_SECONDS), checked at
+    // THIS write and not only by the confirm that usually precedes it: a repair
+    // from the status read reaches here with no confirm in front of it.
+    const state = await deps.batchState();
+    if (state.usable === false || (state.ttl !== null && state.ttl < MIN_BATCH_TTL_SECONDS)) {
+      return noteFailure("postage batch unusable or expiring");
+    }
 
-  const confirmed = await deps.confirmWrite(topic, bytes, write.version);
-  if (!confirmed.ok) {
-    noteFailure("read-back failed", confirmed.reason);
-    return;
+    const write = await deps.writeFeed(topic, bytes);
+    if (!write.ok) return noteFailure("write failed", write.reason);
+    if (write.unchanged) return true;
+
+    const confirmed = await deps.confirmWrite(topic, bytes, write.version);
+    if (!confirmed.ok) return noteFailure("read-back failed", confirmed.reason);
+  } catch (err) {
+    // The upload and the read-back reach bee over the network and throw on a
+    // fault, like the read above.
+    return noteFailure("write threw", err instanceof Error ? err.message : String(err));
   }
   health.indexAppends++;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
