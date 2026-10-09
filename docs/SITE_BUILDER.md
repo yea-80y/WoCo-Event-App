@@ -94,6 +94,13 @@ They are separate because they fail differently. Publishing is a data write and 
 retry; deploying uploads megabytes and touches the gateway. Splitting them means a failed deploy
 does not lose the site.
 
+**A passkey removal redeploys every site and event page (#186).** Their pointer feeds are signed by
+the organiser's content-feed signer, which a removed passkey still holds - so a removal republishes
+each under the account's NEW signer, redeploys it, and re-points its woco.eth name (holder-signed on
+this device, only for the label in the organiser's own copy and the deploy it just signed). Custom
+domains linked here follow the deploy; anything else pointing at the old feed is the organiser's to
+update. See `docs/IDENTITY_AND_KEYS.md`.
+
 The creator-directory upsert is **fire-and-forget on both steps** — a failure there is non-fatal,
 because "your site exists but is missing from your list" is recoverable and "your site did not
 publish" is not.
