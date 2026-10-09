@@ -17,7 +17,7 @@ import { jsonBodyLimit } from "../lib/http/body-limit.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
-import { parseKeyRing } from "@woco/shared/keyring/ring";
+import { encodeKeyRing, parseKeyRing } from "@woco/shared/keyring/ring";
 import { bytesTreeChunks } from "@woco/shared/swarm/bytes-tree";
 
 export const keyring = new Hono<AppEnv>();
@@ -61,7 +61,14 @@ keyring.post("/ring", jsonBodyLimit(MAX_KEY_RING_BYTES * 2), requireAuth, async 
   const bytes = new Uint8Array(Buffer.from(body.dataB64, "base64"));
   if (bytes.length < 1 || bytes.length > MAX_KEY_RING_BYTES) return c.json({ ok: false, error: "Ring too large" }, 413);
   try {
-    if (parseKeyRing(bytes).parent !== account) return c.json({ ok: false, error: "This ring is for a different account" }, 403);
+    const ring = parseKeyRing(bytes);
+    // Byte for byte the canonical encoding, nothing else: JSON.parse forgives duplicate
+    // keys and whitespace, and the gateway is about to serve exactly these bytes - a
+    // "ring" with anything smuggled beside its fields is not stored.
+    if (Buffer.compare(Buffer.from(encodeKeyRing(ring)), Buffer.from(bytes)) !== 0) {
+      return c.json({ ok: false, error: "Not a key ring this server reads" }, 400);
+    }
+    if (ring.parent !== account) return c.json({ ok: false, error: "This ring is for a different account" }, 403);
   } catch {
     return c.json({ ok: false, error: "Not a key ring this server reads" }, 400);
   }

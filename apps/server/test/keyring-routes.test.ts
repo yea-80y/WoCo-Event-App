@@ -82,6 +82,22 @@ test("ring store: refuses anything but a ring, and a ring for another account", 
   assert.match(res.json.error, /different account/);
 });
 
+test("ring store: only the canonical bytes - nothing smuggled beside the fields", async () => {
+  const s = await walletSession();
+  await installRing(s.parent);
+  const r = await currentRing(s.parent);
+  const canonical = Buffer.from(encodeKeyRing(r.status === "ring" ? r.ring : (null as never))).toString("utf8");
+  const smuggled = [
+    canonical.replace('{"v":1', '{"v":1,"parent":"<script>alert(1)</script>"'), // duplicate key, last wins in JSON.parse
+    canonical + "   \n\n",
+    " " + canonical,
+  ];
+  for (const text of smuggled) {
+    const res = await post("/api/keyring/ring", s, { dataB64: Buffer.from(text).toString("base64") });
+    assert.equal(res.status, 400, text.slice(0, 40));
+  }
+});
+
 test("ring store: a ring for the caller's account still needs an unlocked account", async () => {
   const s = await walletSession();
   await installRing(s.parent);
