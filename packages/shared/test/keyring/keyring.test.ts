@@ -333,5 +333,22 @@ test("parse: closed schema, exact sizes, and a newer version is refused, never r
     { ...ring, parent: ring.parent.toUpperCase() },
   ];
   for (const x of bad) assert.throws(() => parseKeyRing(x), MalformedKeyRingError);
+  // A properly signed statement, but for another account.
+  const a = passkey(1);
+  const foreign = statementFor(a, "0x" + "cd".repeat(20));
+  assert.throws(() => parseKeyRing({ ...ring, entries: [{ ...ring.entries[0], statement: foreign }] }), /names another account/);
+  // Holes must be ascending, distinct and below gen.
+  const three = await buildKeyRing({
+    parent: PARENT,
+    gen: 3,
+    prev: NO_RING,
+    secret: newAccountSecret(),
+    prior: [newAccountSecret(), null, null],
+    members: [{ statement: statementFor(a), boxPublicKey: a.box.publicKey }],
+  });
+  assert.deepEqual(three.back.holes, [1, 2]);
+  for (const holes of [[2, 1], [1, 1], [1, 3]]) {
+    assert.throws(() => parseKeyRing({ ...three, back: { ...three.back, holes } }), MalformedKeyRingError);
+  }
   assert.throws(() => parseKeyRing(new Uint8Array([0xff, 0xfe])), MalformedKeyRingError);
 });

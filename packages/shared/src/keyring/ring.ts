@@ -246,7 +246,6 @@ export async function buildKeyRing(args: {
   for (const m of args.members) {
     const statement = verifyBoxKeyStatement(m.statement);
     if (!statement) throw new Error("key ring: a member's box key statement does not verify");
-    if (statement.parent !== parent) throw new Error("key ring: a member's statement names another account");
     if (boxKeyRefOf(m.boxPublicKey) !== statement.boxKeyRef) throw new Error("key ring: a member's box key does not match its statement");
     const box = await sealBox(m.boxPublicKey, args.secret, keyRingEntryContext(parent, gen, statement.coOwner, statement.boxKeyRef));
     entries.push({ statement, box });
