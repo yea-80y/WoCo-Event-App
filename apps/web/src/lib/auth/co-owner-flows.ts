@@ -9,7 +9,12 @@ import type { BuiltKernel } from "./kernel-account.js";
 export interface CoOwnerChain {
   readKernelRoot(kernel: string): Promise<"ecdsa" | "weighted" | "none" | "error">;
   readCoOwners(kernel: string): Promise<string[] | null | "error">;
-  setCoOwners(kernel: BuiltKernel, root: "ecdsa" | "weighted" | "none", signers: readonly string[]): Promise<unknown>;
+  setCoOwners(
+    kernel: BuiltKernel,
+    root: "ecdsa" | "weighted" | "none",
+    signers: readonly string[],
+    ring?: { prev: string | null; next: string },
+  ): Promise<unknown>;
 }
 
 export interface CoOwnerHost {
@@ -50,12 +55,16 @@ async function currentCoOwners(h: CoOwnerHost): Promise<{ root: "ecdsa" | "weigh
  * device's key; the Kernel is rebuilt afterwards because its root may have changed.
  * True when this call added it; false when it was on the list already.
  */
-export async function addCoOwner(h: CoOwnerHost, key: string): Promise<boolean> {
+export async function addCoOwner(
+  h: CoOwnerHost,
+  key: string,
+  ring?: { prev: string | null; next: string },
+): Promise<boolean> {
   await h.ensureKernel();
   const { root, list } = await currentCoOwners(h);
   if (list.includes(key.toLowerCase())) return false;
   const [{ listWith }, { setCoOwners }] = await Promise.all([import("./co-owner-calls.js"), chainOf(h)]);
-  await setCoOwners(h.kernel()!, root, listWith(list, key));
+  await setCoOwners(h.kernel()!, root, listWith(list, key), ring);
   h.dropKernel();
   return true;
 }
@@ -66,7 +75,11 @@ export async function removeCoOwner(h: CoOwnerHost, key: string): Promise<void> 
 }
 
 /** Take several keys off in ONE list change. Keys not on the list are ignored; the last passkey never goes. */
-export async function removeCoOwners(h: CoOwnerHost, keys: readonly string[]): Promise<void> {
+export async function removeCoOwners(
+  h: CoOwnerHost,
+  keys: readonly string[],
+  ring?: { prev: string | null; next: string },
+): Promise<void> {
   await h.ensureKernel();
   const { root, list } = await currentCoOwners(h);
   if (root !== "weighted") return;
@@ -74,7 +87,7 @@ export async function removeCoOwners(h: CoOwnerHost, keys: readonly string[]): P
   if (going.length === 0) return;
   const [{ listWithout }, { setCoOwners }] = await Promise.all([import("./co-owner-calls.js"), chainOf(h)]);
   const next = going.reduce<string[]>((acc, k) => listWithout(acc, k), list);
-  await setCoOwners(h.kernel()!, "weighted", next);
+  await setCoOwners(h.kernel()!, "weighted", next, ring);
   h.dropKernel();
 }
 

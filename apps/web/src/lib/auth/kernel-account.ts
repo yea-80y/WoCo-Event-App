@@ -1330,16 +1330,18 @@ export async function setCoOwners(
   builtKernel: BuiltKernel,
   root: "ecdsa" | "weighted" | "none",
   signers: readonly string[],
+  /** The account's key ring moving in the SAME op (#186): last call, `prev` = what the anchor holds now. */
+  ring?: { prev: string | null; next: string },
 ): Promise<{ txHash: string; blockNumber?: bigint; confirmed: boolean }> {
   const [{ encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters }, calls] = await Promise.all([
     import("viem"),
     import("./co-owner-calls.js"),
   ]);
   const d = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as unknown as import("./co-owner-calls.js").CoOwnerEncoders;
-  const op =
-    root === "weighted"
-      ? [calls.coOwnerRenewCall(d, signers)]
-      : calls.coOwnerSwitchCalls(d, builtKernel.address, signers);
+  const op = [
+    ...(root === "weighted" ? [calls.coOwnerRenewCall(d, signers)] : calls.coOwnerSwitchCalls(d, builtKernel.address, signers)),
+    ...(ring ? [calls.coOwnerRingCall(d, ring.prev, ring.next)] : []),
+  ];
   const { txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
     calls: op.map((c) => ({ to: c.to as Address, data: c.data as Hex, value: 0n })),
   });
@@ -1357,7 +1359,31 @@ export async function setCoOwners(
   if (after === null || [...after].sort().join() !== want) {
     throw new Error(`Your passkeys did not change (tx ${txHash}). Nothing to undo - try again.`);
   }
+  // One batch: the list moved, so the ring did too. Read back all the same, as the list is.
+  if (ring && (await readRingAnchor(builtKernel.address)) !== ring.next) {
+    console.warn(`[kernel] co-owner change landed (tx ${txHash}) but the key ring read back differently; treated as unconfirmed`);
+    return { txHash, blockNumber, confirmed: false };
+  }
   return { txHash, blockNumber, confirmed: true };
+}
+
+/**
+ * Move only the account's key ring (#186): a passkey already on the list given the
+ * account's keys, at the same generation. One sponsored op; `prev` makes it a
+ * compare-and-swap, so a ring another device moved meanwhile reverts it.
+ */
+export async function setKeyRingAlone(
+  builtKernel: BuiltKernel,
+  ring: { prev: string | null; next: string },
+): Promise<{ txHash: string; confirmed: boolean }> {
+  const [{ encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters }, calls] = await Promise.all([
+    import("viem"),
+    import("./co-owner-calls.js"),
+  ]);
+  const d = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as unknown as import("./co-owner-calls.js").CoOwnerEncoders;
+  const c = calls.coOwnerRingCall(d, ring.prev, ring.next);
+  const { txHash } = await sendSudoUserOp(builtKernel.kernelClient, { calls: [{ to: c.to as Address, data: c.data as Hex, value: 0n }] });
+  return { txHash, confirmed: (await readRingAnchor(builtKernel.address)) === ring.next };
 }
 
 export interface RecoverAccountArgs {

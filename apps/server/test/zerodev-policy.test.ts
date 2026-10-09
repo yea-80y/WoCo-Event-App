@@ -586,6 +586,22 @@ test("ring: never zero, never first or twice, never on another shape, never anot
   await refused([ringCall(undefined, GUARDIAN_EOA)], "setRing on another contract");
 });
 
+test("ring: the app's own builders - renew + ring, switch + ring, ring alone - are what the policy pays for", async () => {
+  const { coOwnerSwitchCalls, coOwnerRenewCall, coOwnerRingCall } = await import("../../web/src/lib/auth/co-owner-calls.js");
+  const enc = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as never;
+  const subject = ACCOUNT.toLowerCase();
+  const as = (c: { to: string; data: Hex }) => ({ to: c.to as Address, data: c.data });
+  const ring = as(coOwnerRingCall(enc, "aa".repeat(32), "bb".repeat(32)));
+  const first = as(coOwnerRingCall(enc, null, "bb".repeat(32)));
+  assert.deepEqual(classifyUserOp(op(await viaExecute([as(coOwnerRenewCall(enc, [P1, P2])), ring]))), { ok: true, shape: "renew", subject });
+  assert.deepEqual(classifyUserOp(op(await viaExecute([...coOwnerSwitchCalls(enc, ACCOUNT, [P1, P2]).map(as), first]))), {
+    ok: true,
+    shape: "co-owners",
+    subject,
+  });
+  assert.deepEqual(classifyUserOp(op(await viaExecute([ring]))), { ok: true, shape: "ring", subject });
+});
+
 test("ring: a locked account's ring op is refused like any other", async () => {
   const p = new SponsorPolicy(deps);
   const callData = await viaExecute([ringCall()]);
