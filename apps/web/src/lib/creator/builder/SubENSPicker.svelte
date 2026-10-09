@@ -6,7 +6,7 @@
   import { unlocksWhen } from "../../attendee/gate/unlock-copy.js";
   import { canOrganise } from "../../auth/organiser-account.js";
   import { isTicketRequired } from "../../api/attendee-gate.js";
-  import { getStripeAccountStatus } from "../../api/stripe.js";
+  import { nameLockFrom } from "../../attendee/gate/name-lock.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import OwnedNamesList from "./OwnedNamesList.svelte";
   import { bindableNames, hidesProfileName } from "../../sub-ens/roles.js";
@@ -22,7 +22,11 @@
     /** Unlink the name from THIS site. The name is not released — it stays in
      *  the organiser's account and can be pointed at something else. */
     onunlink?: () => void;
-    /** Parent can pre-fetch and pass; if undefined, picker self-checks. */
+    /**
+     * A parent's own live Stripe answer. It never decides the lock (the server's
+     * unlock verdict does): a flip to true means that live check just synced the
+     * stored flag the verdict reads, so the picker re-reads the verdict.
+     */
     stripeConnected?: boolean;
     /** If parent manages the Stripe modal lifecycle, provide this callback. */
     onstripesetup?: () => void;
@@ -42,31 +46,31 @@
 
   let { claimedLabel = $bindable<string | undefined>(undefined), targetHash = '', onclaim, onunlink, stripeConnected, onstripesetup, singleName = false, onbeforerename }: Props = $props();
 
-  // ── Stripe gate ──────────────────────────────────────────────────────────────
-  // null = loading/unknown, false = not connected, true = connected+complete
-  let stripeStatus = $state<boolean | null>(null);
-  // Stripe is an organiser's unlock, and organising needs a passkey (#746). Any
-  // other account unlocks a name with a ticket or an invite, which the claim
-  // below asks for (server rule: lib/gate/check.ts) - it is never sent to Stripe.
-  const stripeLocks = $derived(!auth.isConnected || canOrganise(auth.kind));
+  // ── Unlock gate ──────────────────────────────────────────────────────────────
+  // ONE rule, the server's (lib/gate/check.ts): a ticket, published events, Stripe
+  // or a confirmed invite. The picker reads its verdict through the gate store and
+  // decides nothing of its own (attendee/gate/name-lock.ts). Stripe is offered on
+  // the lock panel as the unlock a passkey account can start here (#746).
+  let gateSettled = $state(false);
   let stripeModalOpen = $state(false);
 
   $effect(() => {
-    if (stripeConnected !== undefined) {
-      stripeStatus = stripeConnected;
-      return;
-    }
-    if (!auth.isConnected) {
-      stripeStatus = false;
-      return;
-    }
-    // Not an organiser: Stripe locks nothing, so there is nothing to ask.
-    if (!stripeLocks) return;
-    stripeStatus = null;
-    getStripeAccountStatus().then((s) => {
-      stripeStatus = !!(s.ok && s.onboardingComplete);
-    }).catch(() => { stripeStatus = false; });
+    // A parent's Stripe answer flipping to true re-reads the verdict: its live
+    // check synced the stored flag the server rule reads.
+    void stripeConnected;
+    gateSettled = false;
+    // The read is silent and needs a session; with none, the form shows and the
+    // claim asks for one (a passive check must never raise a signing prompt).
+    if (!auth.isConnected || !auth.hasSession) { gateSettled = true; return; }
+    void gate.refresh().finally(() => { gateSettled = true; });
   });
+
+  const lock = $derived(nameLockFrom({
+    connected: auth.isConnected,
+    organiserKind: canOrganise(auth.kind),
+    gate: gate.status,
+    gateLoading: !gateSettled,
+  }));
 
   function openStripeSetup() {
     if (onstripesetup) {
@@ -81,8 +85,10 @@
   }
 
   function onStripeConnected() {
-    stripeStatus = true;
     stripeModalOpen = false;
+    // The modal heard "complete" from Stripe's own answer, which synced the stored
+    // flag: the verdict is re-read rather than assumed.
+    void gate.refresh();
   }
 
   // ── Claim vs reuse-existing ───────────────────────────────────────────────────
@@ -368,10 +374,10 @@
   }
 </script>
 
-{#if stripeLocks && stripeStatus !== true}
-  <!-- ── Stripe gate ─────────────────────────────────────────────────────── -->
+{#if lock !== "open"}
+  <!-- ── Unlock gate (verdict: server lib/gate/check.ts) ─────────────────── -->
   <div class="picker picker--locked">
-    {#if stripeStatus === null}
+    {#if lock === "checking"}
       <div class="lock-loading">
         <span class="spinner" aria-label="Checking…"></span>
         <span class="lock-loading-text">Checking your account…</span>
@@ -389,17 +395,17 @@
           <div class="lock-text">
             <p class="lock-title">Claim your free <code class="inline-code">.woco.eth</code> address</p>
             <p class="lock-sub">
-              {#if !auth.isConnected}
+              {#if lock === "signed-out"}
                 Sign in to get started.
               {:else}
-                Verify your business via Stripe to unlock — takes 2 minutes.
+                {unlocksWhen("Your name")} Stripe takes about 2 minutes.
               {/if}
             </p>
           </div>
         </div>
 
         <button class="setup-btn" onclick={openStripeSetup}>
-          {#if !auth.isConnected}
+          {#if lock === "signed-out"}
             Sign in →
           {:else}
             Set up Stripe →
