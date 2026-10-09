@@ -94,6 +94,9 @@ type PassRegistry = Record<string, {
   mode?: DoorMode;
   /** "single" passes: the one device allowed to use this pass, set by its first pack. */
   device?: string;
+  /** The organiser's key generation when the pass was issued (#186). A newer one means
+   *  a passkey was removed since, and this pass may be in its hands. Absent = 0. */
+  gen?: number;
 }>;
 
 function readPasses(): PassRegistry {
@@ -104,7 +107,7 @@ function readPasses(): PassRegistry {
  * Issue (or rotate) the door pass for an event. Rotation replaces the stored
  * jti, which immediately invalidates every previously issued token.
  */
-export function issueDoorPass(eventId: string, exp: number, signer?: string, mode: DoorMode = "several"): string {
+export function issueDoorPass(eventId: string, exp: number, signer?: string, mode: DoorMode = "several", gen = 0): string {
   const payload: DoorPassPayload = {
     v: DOOR_PASS_VERSION,
     eventId,
@@ -114,13 +117,13 @@ export function issueDoorPass(eventId: string, exp: number, signer?: string, mod
   const passes = readPasses();
   // A new jti starts with no bound device: regenerating is how an organiser
   // moves a single-scanner pass to another phone.
-  passes[eventId] = { jti: payload.jti, exp, mode, ...(signer ? { signer } : {}) };
+  passes[eventId] = { jti: payload.jti, exp, mode, ...(signer ? { signer } : {}), ...(gen > 0 ? { gen } : {}) };
   writeJson(PASSES_FILE, "checkin-passes", passes);
   return encodeDoorPassToken(payload, passTag(payload));
 }
 
 export type PassVerdict =
-  | { ok: true; eventId: string; signer?: string; mode: DoorMode; device?: string }
+  | { ok: true; eventId: string; signer?: string; mode: DoorMode; device?: string; gen: number }
   | { ok: false; reason: "malformed" | "bad-sig" | "expired" | "revoked" };
 
 /** Verify a door-pass token: HMAC tag, expiry, and active-jti (revocation). */
@@ -144,6 +147,7 @@ export function verifyDoorPass(token: string): PassVerdict {
     ok: true,
     eventId: payload.eventId,
     mode: active.mode ?? "several",
+    gen: active.gen ?? 0,
     ...(active.signer ? { signer: active.signer } : {}),
     ...(active.device ? { device: active.device } : {}),
   };
