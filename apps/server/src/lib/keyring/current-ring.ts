@@ -39,6 +39,8 @@ export interface CurrentRingDeps {
   readAnchor(account: string): Promise<string>;
   /** A chunk as `GET /chunks/{address}` returns it. Throws when no source has it. */
   fetchChunk(address: string): Promise<Uint8Array>;
+  /** The anchor's runtime code, for the health probe. Throws when the chain cannot answer. */
+  readAnchorCode(): Promise<string | undefined>;
   now(): number;
 }
 
@@ -69,6 +71,7 @@ const liveDeps: CurrentRingDeps = {
     }
     throw new Error(`chunk ${address} not found`);
   },
+  readAnchorCode: () => client().getCode({ address: KEY_RING_ANCHOR_ADDRESS as Address }),
   now: () => Date.now(),
 };
 
@@ -146,3 +149,30 @@ async function resolve(account: string, ref: string | null): Promise<CurrentRing
     return { status: "unavailable", reason: `ring ${ref} unreadable: ${(e as Error)?.message ?? String(e)}` };
   }
 }
+
+// ---------------------------------------------------------------------------
+// Health: the anchor must exist. Without it every ring read fails, and since an
+// unreadable ring is never taken for "no ring", every recorded event stops being
+// read - so a server deployed ahead of the contract is a red alarm, not a quiet outage.
+// ---------------------------------------------------------------------------
+
+let anchorCheck: { ok: boolean | null; checkedAt: string | null; reason?: string } = { ok: null, checkedAt: null };
+
+export async function refreshKeyRingAnchor(): Promise<void> {
+  const checkedAt = new Date(deps.now()).toISOString();
+  try {
+    const code = await deps.readAnchorCode();
+    anchorCheck = code && code !== "0x"
+      ? { ok: true, checkedAt }
+      : { ok: false, checkedAt, reason: "no contract at the key-ring anchor: every organiser-signed event is unreadable until it is deployed" };
+  } catch (e) {
+    // A failed read says nothing about the contract: keep the last verdict, note why.
+    anchorCheck = { ...anchorCheck, checkedAt, reason: `anchor code unreadable: ${rpcReason(e)}` };
+    if (anchorCheck.ok === null) anchorCheck = { ok: null, checkedAt, reason: anchorCheck.reason };
+  }
+}
+
+export function keyRingHealth(): { ok: boolean | null; anchor: string; chainId: number; checkedAt: string | null; reason?: string } {
+  return { anchor: KEY_RING_ANCHOR_ADDRESS, chainId: KERNEL_CHAIN_ID, ...anchorCheck };
+}
+

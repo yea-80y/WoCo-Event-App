@@ -158,3 +158,25 @@ test("an unreadable chain is reported without the RPC's URL", async () => {
   assert.doesNotMatch(r2.status === "unavailable" ? r2.reason : "", /SECRETKEY/);
 });
 
+
+test("health: red when no contract answers at the anchor; a failed read keeps the last verdict", async () => {
+  const { refreshKeyRingAnchor, keyRingHealth } = await import("../src/lib/keyring/current-ring.js");
+  let code: string | Error = "0x";
+  _setCurrentRingDepsForTests({
+    readAnchorCode: async () => {
+      if (code instanceof Error) throw code;
+      return code;
+    },
+    now: () => clock,
+  });
+  await refreshKeyRingAnchor();
+  assert.equal(keyRingHealth().ok, false, "no code: alarm");
+  code = "0x6080604052";
+  await refreshKeyRingAnchor();
+  assert.equal(keyRingHealth().ok, true);
+  code = Object.assign(new Error("URL: https://x/SECRETKEY"), { shortMessage: "HTTP request failed." });
+  await refreshKeyRingAnchor();
+  const h = keyRingHealth();
+  assert.equal(h.ok, true, "an RPC blip says nothing about the contract");
+  assert.doesNotMatch(h.reason ?? "", /SECRETKEY/);
+});

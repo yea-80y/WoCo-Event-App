@@ -25,6 +25,7 @@ import { profiles } from "./routes/profiles.js";
 import { recovery } from "./routes/recovery.js";
 import { deviceGrants } from "./routes/device-grants.js";
 import { keyring } from "./routes/keyring.js";
+import { keyRingHealth } from "./lib/keyring/current-ring.js";
 import { upgradeIntent } from "./routes/upgrade-intent.js";
 import { zerodevPolicy, zerodevPolicyHealth } from "./routes/zerodev-policy.js";
 import { pairing } from "./routes/pairing.js";
@@ -420,6 +421,10 @@ function healthReport() {
     // Added passkeys (#746). `unreadable` is an alarm: every added device is
     // signed out and no device can be added or removed until the file is restored.
     deviceGrants: deviceGrantHealth(),
+    // The key-ring anchor (#186): red when no contract answers at its address. Every
+    // organiser-signed event read asks it for the organiser's current keys and refuses
+    // when it cannot tell, so a server running ahead of the contract reads no events.
+    keyRing: keyRingHealth(),
     // Revoked sessions (#186). `ok: false`: the file is present but unreadable, so
     // revoked sessions are not refused and nothing can be revoked until it is restored.
     revocation: revocationHealth(),
