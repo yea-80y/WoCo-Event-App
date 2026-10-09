@@ -22,6 +22,7 @@ import {
   maxSelectableQty,
   buildOrderPayload,
   buildCheckoutBody,
+  staleOrderKeyRef,
   reserveOutcome,
   parseReturn,
   resolvePageUrl,
@@ -925,7 +926,7 @@ export class WocoTickets extends HTMLElement {
    * minted by the webhook at payment and delivered by email — nothing is
    * claimed in-page, so there is no signing ceremony and no account here.
    */
-  private async handleCheckout(seriesId: string) {
+  private async handleCheckout(seriesId: string, staleRetry = false) {
     const st = this.seriesStates.get(seriesId);
     if (!st || st.busy || !this.api) return;
 
@@ -960,6 +961,8 @@ export class WocoTickets extends HTMLElement {
     }
     const email = verdict.email;
 
+    // The ref of the key the box is sealed to - declared with it (#186).
+    const sealedTo = this.orderKey ? this.orderKeyFor : null;
     const encryptedOrder = await this.encryptOrderData(seriesId, st, email);
 
     st.busy = true;
@@ -1002,11 +1005,23 @@ export class WocoTickets extends HTMLElement {
         marketingConsent: st.consent,
         pageUrl: this.pageUrl,
         encryptedOrder,
+        ...(encryptedOrder && sealedTo ? { encryptionKeyRef: sealedTo } : {}),
         reservationId,
       });
 
       const resp = await this.api.post<never>("/api/stripe/create-checkout", body);
       const url = (resp as Record<string, unknown>).url;
+      // Sealed to a key the organiser has since replaced (#186): take the key the server
+      // names - verified against its ref before use - re-seal, and try ONCE more.
+      const fresh = !resp.ok && !staleRetry && this.event ? staleOrderKeyRef(resp as Record<string, unknown>, sealedTo) : null;
+      if (fresh && this.event) {
+        this.event.encryptionKeyRef = fresh;
+        st.busy = false;
+        if (await this.ensureOrderKey()) {
+          await this.handleCheckout(seriesId, true);
+          return;
+        }
+      }
       if (!resp.ok || typeof url !== "string") {
         st.error = (resp.error as string) || "Failed to start checkout";
         st.busy = false;

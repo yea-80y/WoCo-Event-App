@@ -27,6 +27,7 @@ import {
   deleteStripeAccount,
 } from "../lib/stripe/accounts.js";
 import { getEvent } from "../lib/event/service.js";
+import type { EventFeed } from "@woco/shared";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
 import { checkoutExpiresAt } from "../lib/event/checkout-expiry.js";
@@ -49,6 +50,7 @@ import { lookupOnChainEventId, saleContractFor } from "../lib/event/onchain-regi
 import { attendeeCheckoutRefusal, orderRefOf } from "../lib/attendee-batch/writer.js";
 import { getOrderRecord, isOrderErased } from "../lib/attendee-batch/ledger.js";
 import { commitHold, getHeldOrder, holdPrepared } from "../lib/attendee-batch/held-orders.js";
+import { authoritativeOrderKeyRef, eventKeys, isStaleOrderKey, type EventKeys } from "../lib/keyring/event-keys.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../lib/stripe/checkout-provenance.js";
 import { liveProvenanceReads, refundTamperedSession } from "../lib/stripe/checkout-provenance-live.js";
@@ -432,6 +434,22 @@ stripe.post("/account-session", requireAuth, requireSmartAccountOrganiser, async
  * fires, the full form data is already on Swarm, so every claim in a multi-
  * ticket batch gets the same orderRef with zero coordination.
  */
+const ORDER_KEY_STALE =
+  "This page is out of date - the organiser's details changed. Reload the page and try again; you have not been charged.";
+const ORDER_KEY_REF_RE = /^[0-9a-f]{64}$/;
+
+/**
+ * The refusal for a box sealed to a key the event no longer sells under, or null. It
+ * names the current key, so the page re-seals once without a refetch that a cache
+ * could answer stale - the same server-served value the page sealed to in the first
+ * place, and the key's bytes are checked against it before use.
+ */
+function orderKeyRefusal(keys: EventKeys, declared: string | undefined): Record<string, unknown> | null {
+  if (!isStaleOrderKey(keys, declared)) return null;
+  const current = authoritativeOrderKeyRef(keys);
+  return { ok: false, error: ORDER_KEY_STALE, code: "ORDER_KEY_STALE", ...(current ? { encryptionKeyRef: current } : {}) };
+}
+
 stripe.post("/prepare-order", async (c) => {
   let body: Record<string, unknown>;
   try {
@@ -459,6 +477,17 @@ stripe.post("/prepare-order", async (c) => {
   }
   prepareOrderLimiter.record(ip);
 
+  // The key it was sealed to (#186), when the client says - checked again at checkout.
+  const declaredKey = typeof body.encryptionKeyRef === "string" && ORDER_KEY_REF_RE.test(body.encryptionKeyRef)
+    ? body.encryptionKeyRef
+    : undefined;
+  if (typeof body.eventId === "string" && body.eventId) {
+    const keys = await eventKeys(body.eventId);
+    if (keys.kind === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
+    const refusal = orderKeyRefusal(keys, declaredKey);
+    if (refusal) return c.json(refusal, 409);
+  }
+
   try {
     // Paid-only storage (#546): nothing goes to Swarm here. The box is held in
     // memory under the root it WILL have, and stored once its sale is paid.
@@ -466,7 +495,7 @@ stripe.post("/prepare-order", async (c) => {
     // A copy of a box another sale already carries lands on that sale's ref
     // (canonical bytes) — refuse to issue it.
     if (orderRefInOtherSale(orderRef, null)) return c.json({ ok: false, error: ORDER_ALREADY_USED }, 409);
-    holdPrepared(orderRef, orderJson);
+    holdPrepared(orderRef, orderJson, Date.now(), declaredKey ? { orderKeyRef: declaredKey } : {});
     return c.json({ ok: true, orderRef, orderRefToken: issueOrderRefToken(orderRef) });
   } catch (err) {
     console.error("[stripe/prepare-order] Hold failed:", err);
@@ -660,11 +689,39 @@ stripe.post("/create-checkout", async (c) => {
   // the Stripe destination (creatorAddress→Connect) + amount. siteId is only a
   // pointer; trust is the server-written index, never the request.
   const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
-  const event = await getEvent(eventId, siteSigner ?? undefined);
+  // The organiser's keys first (#186): they decide WHICH feed may be sold.
+  const keys = await eventKeys(eventId);
+  if (keys.kind === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
+  if (keys.kind === "legacy") {
+    // No record of who signs this event (made before #670, or platform-written for a
+    // login with no feed signer, none of which can organise now): nothing ties its feed
+    // to its organiser, so a removed passkey could rewrite what is sold - and fulfilment
+    // would read that copy. Not sold (owner 10-09, Fable sign-off S5; no compat paths
+    // pre-launch). Publishing it again gives it a record.
+    if (!(await getEvent(eventId, siteSigner ?? undefined))) return c.json({ ok: false, error: "Event not found" }, 404);
+    return c.json(
+      { ok: false, error: "This event can't take orders. The organiser needs to publish it again.", code: "EVENT_NEEDS_REPUBLISH" },
+      409,
+    );
+  }
+  const event: EventFeed | null = await getEvent(eventId, siteSigner ?? undefined);
   if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
 
   const series = event.series.find((s) => s.seriesId === seriesId);
   if (!series) return c.json({ ok: false, error: "Series not found" }, 404);
+
+  // The box must be sealed to the key this event sells under NOW (#186): a rotation
+  // between prepare-order and here is caught too. Keys that cannot be read stop the
+  // sale rather than guess. Only a box the buyer sent is checked: none means the
+  // fulfilment fallback seals one to the event's key, which is the current one.
+  if (preparedRef || inlineOrderJson) {
+    const bodyKey = typeof (body as { encryptionKeyRef?: unknown }).encryptionKeyRef === "string"
+      ? (body as { encryptionKeyRef: string }).encryptionKeyRef
+      : undefined;
+    const declared = (preparedRef ? getHeldOrder(preparedRef)?.orderKeyRef : undefined) ?? (bodyKey && ORDER_KEY_REF_RE.test(bodyKey) ? bodyKey : undefined);
+    const refusal = orderKeyRefusal(keys, declared);
+    if (refusal) return c.json(refusal, 409);
+  }
 
   // Paid-only storage (#546): the buyer is on the way to pay, so the box is
   // HELD on disk (surviving a restart before the webhook) and stored on the

@@ -8,6 +8,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { cancellationGate, withCancellation } from "../lib/event/cancellations.js";
 import { createEventV2, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, type EventMetaUpdates } from "../lib/event/service.js";
 import { DeleteBlockedError } from "../lib/event/delete-safety.js";
+import { AccountKeysChangedError, AccountKeysUnavailableError } from "../lib/keyring/event-keys.js";
 import { setListed } from "../lib/event/listing-state.js";
 import { feedSignerRecordHealth, getRecordedFeedSigner, isFeedSignerStoreError } from "../lib/event/feed-signer-record.js";
 import { cardFromFeed, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
@@ -434,7 +435,10 @@ events.post("/", requireAuth, async (c) => {
       const message = isFeedSignerStoreError(err)
         ? "Publishing is paused while the server is repaired. Nothing was created - please try again later."
         : err instanceof Error ? err.message : "Failed to create event";
-      const code = err instanceof PlatformBatchUnavailable ? { code: err.code } : {};
+      const code =
+        err instanceof PlatformBatchUnavailable || err instanceof AccountKeysChangedError || err instanceof AccountKeysUnavailableError
+          ? { code: err.code }
+          : {};
       stream.writeln(JSON.stringify({ type: "error", ok: false, error: message, ...code }));
     }
   });

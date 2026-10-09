@@ -83,13 +83,43 @@ export interface PreparedOrder {
   orderRefToken: string;
 }
 
-export async function prepareStripeOrder(encryptedOrder: SealedBoxV2): Promise<PreparedOrder> {
+/**
+ * The order was sealed to a key the organiser has moved on from (#186): `current` is
+ * the key the server says to re-seal to (its bytes are checked against it before use).
+ */
+export class OrderKeyStaleError extends Error {
+  constructor(
+    message: string,
+    readonly current: string | null,
+  ) {
+    super(message);
+    this.name = "OrderKeyStaleError";
+  }
+}
+
+function staleRefusal(data: { code?: unknown; error?: unknown; encryptionKeyRef?: unknown }): OrderKeyStaleError | null {
+  if (data.code !== "ORDER_KEY_STALE") return null;
+  const ref = typeof data.encryptionKeyRef === "string" && /^[0-9a-f]{64}$/.test(data.encryptionKeyRef) ? data.encryptionKeyRef : null;
+  return new OrderKeyStaleError(typeof data.error === "string" ? data.error : "This page is out of date - reload it and try again.", ref);
+}
+
+/** `sealedTo`: the event and the order key the box was sealed to, checked by the server (#186). */
+export async function prepareStripeOrder(
+  encryptedOrder: SealedBoxV2,
+  sealedTo?: { eventId: string; encryptionKeyRef?: string },
+): Promise<PreparedOrder> {
   const resp = await fetch(`${apiBase}/api/stripe/prepare-order`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ encryptedOrder }),
+    body: JSON.stringify({
+      encryptedOrder,
+      ...(sealedTo ? { eventId: sealedTo.eventId } : {}),
+      ...(sealedTo?.encryptionKeyRef ? { encryptionKeyRef: sealedTo.encryptionKeyRef } : {}),
+    }),
   });
-  const data = await resp.json() as { ok: boolean; orderRef?: string; orderRefToken?: string; error?: string };
+  const data = await resp.json() as { ok: boolean; orderRef?: string; orderRefToken?: string; error?: string; code?: string; encryptionKeyRef?: string };
+  const stale = staleRefusal(data);
+  if (stale) throw stale;
   if (!data.ok || !data.orderRef || !data.orderRefToken) throw new Error(data.error || "Failed to prepare order");
   return { orderRef: data.orderRef, orderRefToken: data.orderRefToken };
 }
@@ -136,6 +166,8 @@ export async function createCheckoutSession(params: {
   /** Raw encrypted order — server uploads in parallel with Stripe session
    *  creation when no pre-uploaded ref is available. */
   encryptedOrder?: SealedBoxV2;
+  /** The order key `encryptedOrder` was sealed to (#186) - checked by the server. */
+  encryptionKeyRef?: string;
   /** Slot reservation id from POST /reserve. Server validates + stamps into
    *  Stripe session metadata; webhook consumes on successful claim. */
   reservationId?: string;
@@ -173,6 +205,7 @@ export async function createCheckoutSession(params: {
       ? { orderRef: params.preparedOrder.orderRef, orderRefToken: params.preparedOrder.orderRefToken }
       : {}),
     ...(params.encryptedOrder ? { encryptedOrder: params.encryptedOrder } : {}),
+    ...(params.encryptedOrder && params.encryptionKeyRef ? { encryptionKeyRef: params.encryptionKeyRef } : {}),
     ...(params.reservationId ? { reservationId: params.reservationId } : {}),
     // Tri-state — `false` is a real answer, so this cannot be a truthiness spread.
     ...(params.marketingConsent !== undefined
@@ -188,6 +221,8 @@ export async function createCheckoutSession(params: {
     fetch: (input, init) => fetch(input, init),
     apiBase,
   });
+  const stale = data.ok ? null : staleRefusal(data);
+  if (stale) throw stale;
   if (!data.ok || !data.url) throw new CheckoutError(data.error || "Failed to create checkout session", !!data.gated);
   return { url: data.url };
 }

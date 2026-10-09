@@ -148,13 +148,14 @@
       // extra popup. The server publishes it as its own chunk and names it in the
       // feed; `createEventStreaming` refuses to sign a feed naming any other.
       let encryptionPublicKey: string | undefined;
-      const identitySeed = await auth.getIdentitySeed();
-      if (identitySeed) {
+      // The account's CURRENT generation (#186): after a passkey removal, never the seed's.
+      const secrets = await auth.getAccountSecrets({ toSeal: true });
+      if (secrets) {
         const [{ deriveXWingKeypairFromSeed }, { bytesToHex }] = await Promise.all([
           import("@woco/shared/crypto/xwing"),
           import("@noble/hashes/utils.js"),
         ]);
-        encryptionPublicKey = bytesToHex(deriveXWingKeypairFromSeed(identitySeed).publicKey);
+        encryptionPublicKey = bytesToHex(deriveXWingKeypairFromSeed(secrets.current).publicKey);
       }
 
       // The derived secp256k1 issuing key — signs every manifest below AND the

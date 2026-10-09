@@ -240,7 +240,9 @@ test("a SILENT establish never starts a ceremony — web3auth's raw key, or a pa
   for (const line of gates) {
     assert.match(
       line,
-      /web3auth|_getContentFeedSigner|_ensureIdentitySeed|_passkeyPrfSecret/,
+      // `_requireCurrentKeys({ prompt: !opts.silent })` (#186) uses `silent` only to
+      // FORBID a ceremony: a silent caller whose keys are behind gets a refusal, never a sheet.
+      /web3auth|_getContentFeedSigner|_ensureIdentitySeed|_passkeyPrfSecret|_requireCurrentKeys\(\{ prompt: !opts\.silent \}\)/,
       `a silent establish escaped its gates: ${line.trim()}`,
     );
   }

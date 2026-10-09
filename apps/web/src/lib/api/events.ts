@@ -39,12 +39,16 @@ export async function signEventFeedSoc(
   feed: EventFeed,
   signer: ContentFeedSigner,
   knownVersion?: number,
+  /** A passkey removal moving the feed to the NEXT generation's signer (#186) names
+   *  that generation's order key: the account's current one is still the old. */
+  nextGenerationOrderKeyRef?: string,
 ): Promise<number> {
   // The one guard every event-feed signature passes (#642) — see assertFeedIsOurs.
   assertFeedIsOurs(feed, {
     feedSigner: signer.address,
     parent: auth.parent ?? "",
-    orderKeyRef: feed.encryptionKeyRef !== undefined ? await ownOrderKeyRef(signer.address) : undefined,
+    orderKeyRef:
+      feed.encryptionKeyRef !== undefined ? (nextGenerationOrderKeyRef ?? (await ownOrderKeyRef(signer.address))) : undefined,
   });
   return writeContentFeed({
     signerPrivKey: signer.privKey,
@@ -60,8 +64,9 @@ export async function signEventFeedSoc(
 
 /**
  * This organiser's order-key ref: the content address of the X-Wing key derived
- * from THEIR seed (#642). Memoised per feed signer — the signer is a KDF of the
- * same seed, so a different account can never hit another's entry. The lattice
+ * from THEIR current account secret (#642, #186). Memoised per feed signer — the
+ * signer is a KDF of the same secret, so neither another account nor another
+ * generation can hit another's entry. The lattice
  * code loads here, on the first sign that needs it.
  */
 const _ownOrderKeyRef = new Map<string, string>();
@@ -69,10 +74,11 @@ async function ownOrderKeyRef(feedSignerAddress: string): Promise<string> {
   const key = feedSignerAddress.toLowerCase();
   const hit = _ownOrderKeyRef.get(key);
   if (hit) return hit;
-  const seed = await auth.getIdentitySeed();
-  if (!seed) throw new Error("Your account keys are locked, so the event can't be checked before signing - confirm it's you and try again.");
+  // The CURRENT generation's key (#186), the one the feed signer comes from too.
+  const secrets = await auth.getAccountSecrets({ toSeal: true });
+  if (!secrets) throw new Error("Your account keys are locked, so the event can't be checked before signing - confirm it's you and try again.");
   const { deriveXWingKeypairFromSeed } = await import("@woco/shared/crypto/xwing");
-  const ref = orderKeyRef(deriveXWingKeypairFromSeed(seed).publicKey);
+  const ref = orderKeyRef(deriveXWingKeypairFromSeed(secrets.current).publicKey);
   _ownOrderKeyRef.set(key, ref);
   return ref;
 }

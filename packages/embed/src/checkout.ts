@@ -92,6 +92,8 @@ export interface CheckoutBodyInputs {
   /** The organiser page the buyer is on (see resolvePageUrl), when it is known. */
   pageUrl?: string;
   encryptedOrder?: SealedBoxV2;
+  /** The order key `encryptedOrder` was sealed to (#186) - checked by the server. */
+  encryptionKeyRef?: string;
   reservationId?: string;
 }
 
@@ -111,8 +113,20 @@ export function buildCheckoutBody(i: CheckoutBodyInputs): Record<string, unknown
   if (i.pageUrl) body.pageUrl = i.pageUrl;
   if (i.quantity > 1) body.quantity = i.quantity;
   if (i.encryptedOrder) body.encryptedOrder = i.encryptedOrder;
+  if (i.encryptedOrder && i.encryptionKeyRef) body.encryptionKeyRef = i.encryptionKeyRef;
   if (i.reservationId) body.reservationId = i.reservationId;
   return body;
+}
+
+/**
+ * The key a stale-key refusal names (#186), when it is one to re-seal to: the box was
+ * sealed to a key the organiser has since replaced. Null for any other answer, or one
+ * naming the key already used (re-sealing to it again would change nothing).
+ */
+export function staleOrderKeyRef(resp: Record<string, unknown>, sealedTo: string | null): string | null {
+  if (resp.code !== "ORDER_KEY_STALE") return null;
+  const ref = resp.encryptionKeyRef;
+  return typeof ref === "string" && /^[0-9a-f]{64}$/.test(ref) && ref !== sealedTo ? ref : null;
 }
 
 export type ReserveOutcome =

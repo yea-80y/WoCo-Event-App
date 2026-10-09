@@ -7,6 +7,8 @@ interface UseOrderPrefetchOpts {
   /** Reactive: the organiser's VERIFIED X-Wing order key. Undefined ⇒ the hook
    *  does nothing (the Pay click seals inline, or the server's fallback does). */
   getKey: () => Uint8Array | undefined;
+  /** Reactive: the ref `getKey()`'s bytes were verified against - declared with the box (#186). */
+  getKeyRef: () => string | undefined;
   /** Reactive: should we currently be pre-uploading? Typically `showOrderForm
    *  && !!key && formValid()`. Read inside the $effect so any dep change
    *  re-evaluates. */
@@ -91,6 +93,7 @@ export function useOrderPrefetch(opts: UseOrderPrefetchOpts) {
     const capturedSnapshot = snapshot;
     const formData = opts.getFormData();
     const key = opts.getKey();
+    const keyRef = opts.getKeyRef();
     if (!key) return;
     // 0ms on first fire (form just became valid) and on Pay accelerator;
     // otherwise 1500ms idle so typing doesn't spam orphan boxes.
@@ -113,7 +116,7 @@ export function useOrderPrefetch(opts: UseOrderPrefetchOpts) {
             orderSealContext(opts.eventId, opts.seriesId),
           );
           const { prepareStripeOrder } = await import("../../../api/stripe.js");
-          const uploadedRef = await prepareStripeOrder(sealed);
+          const uploadedRef = await prepareStripeOrder(sealed, { eventId: opts.eventId, ...(keyRef ? { encryptionKeyRef: keyRef } : {}) });
           // A later trigger may have superseded us — drop stale result silently.
           if (mySeq === _seq) {
             ref = uploadedRef;

@@ -42,6 +42,11 @@
  *   upgrade        the co-owners batch with a list of ONE key: an email account handing itself
  *                  to its new passkey (#746). A passkey account's switch always lists two.
  *   renew          `execute` single `weighted.renew(list)` - add or remove a co-owner
+ *   ring           `execute` single `anchor.setRing(prev, ring)` - the account's key ring moves
+ *                  without a list change (a passkey given the keys, #186)
+ * The co-owners and renew shapes may END with that same `setRing` call: a removal is
+ * [renew(list without it), setRing(prev, next)], so the keys it lost and its place on the
+ * list change in one op or not at all. A ring is never zero, and rides on no other shape.
  * Both co-owner shapes carry a list only when it is 1..10 distinct keys, every weight 1,
  * threshold 1, no delay: the validator accepts an empty list or an unreachable threshold
  * and the account is then locked for good (WoCo-Contracts WeightedRootKernel.t.sol F5).
@@ -84,6 +89,7 @@ import {
   WEIGHTED_ROOT_ID,
 } from "@woco/shared/kernel/co-owners";
 import { FEATURES } from "@woco/shared";
+import { KEY_RING_ANCHOR_ABI, KEY_RING_ANCHOR_ADDRESS } from "@woco/shared/keyring/anchor";
 import type { GateStatus } from "../gate/check.js";
 import { SlidingWindowLimiter } from "../http/rate-limit.js";
 import { RollingDayCount } from "./upgrade-intents.js";
@@ -96,7 +102,8 @@ export type SponsorShape =
   | "recover"
   | "co-owners"
   | "upgrade"
-  | "renew";
+  | "renew"
+  | "ring";
 
 export type Classified =
   | { ok: true; shape: SponsorShape; subject: string; guardian?: string }
@@ -144,6 +151,8 @@ const MAX_CALLS = 4;
 const WEIGHTED = lc(WEIGHTED_ECDSA_VALIDATOR_V3_1);
 const CO_OWNER_ABI = parseAbi([WEIGHTED_RENEW_FN, CHANGE_ROOT_VALIDATOR_FN, UNINSTALL_VALIDATION_FN]);
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const RING_ANCHOR = lc(KEY_RING_ANCHOR_ADDRESS);
+const RING_ABI = parseAbi(KEY_RING_ANCHOR_ABI);
 
 function uint(v: unknown): bigint | null {
   if (v === undefined || v === null || v === "" || v === "0x") return 0n;
@@ -323,6 +332,20 @@ function coOwnerSwitchSize(calls: InnerCall[], sender: string): number {
   }
 }
 
+/** `anchor.setRing(prev, ring)` with a non-zero ring - the contract refuses zero, and a
+ *  call it would revert is gas we pay for nothing. */
+function isSetRing(call: InnerCall): boolean {
+  if (call.to !== RING_ANCHOR) return false;
+  try {
+    const d = decodeFunctionData({ abi: RING_ABI, data: call.data });
+    if (d.functionName !== "setRing") return false;
+    const [, ring] = d.args as [Hex, Hex];
+    return BigInt(ring) !== 0n;
+  } catch {
+    return false;
+  }
+}
+
 function recoveryTarget(call: InnerCall): string | null {
   try {
     const d = decodeFunctionData({ abi: RECOVERY_ABI, data: call.data });
@@ -359,30 +382,43 @@ export function classifyUserOp(op: PolicyUserOp): Classified {
   if (calls.length > MAX_CALLS) return { ok: false, reason: "calls" };
   if (calls.some((c) => c.value !== 0n)) return { ok: false, reason: "value" };
 
+  // The key ring (#186): last, after a co-owner change, or alone. Anywhere else, never.
+  const ringLast = isSetRing(calls[calls.length - 1]!);
+  if (calls.some((c, i) => c.to === RING_ANCHOR && !(ringLast && i === calls.length - 1))) {
+    return { ok: false, reason: "ring" };
+  }
+  if (!ringLast) return classifyCalls(calls, op.sender);
+  if (calls.length === 1) return { ok: true, shape: "ring", subject: op.sender };
+  const inner = classifyCalls(calls.slice(0, -1), op.sender);
+  return inner.ok && (inner.shape === "renew" || inner.shape === "co-owners") ? inner : { ok: false, reason: "ring" };
+}
+
+/** The `execute` calls of every shape but the ring's, classified. */
+function classifyCalls(calls: InnerCall[], sender: string): Classified {
   if (calls.length === 1 && calls[0].to === WEIGHTED) {
-    return isRenew(calls[0]) ? { ok: true, shape: "renew", subject: op.sender } : { ok: false, reason: "co-owners" };
+    return isRenew(calls[0]) ? { ok: true, shape: "renew", subject: sender } : { ok: false, reason: "co-owners" };
   }
-  if (calls.length === 2 && calls[0].to === op.sender && calls[1].to === op.sender && !isRouteUninstall(calls[0], op.sender)) {
-    const size = coOwnerSwitchSize(calls, op.sender);
+  if (calls.length === 2 && calls[0].to === sender && calls[1].to === sender && !isRouteUninstall(calls[0], sender)) {
+    const size = coOwnerSwitchSize(calls, sender);
     if (size === 0) return { ok: false, reason: "co-owners" };
-    return { ok: true, shape: size === 1 ? "upgrade" : "co-owners", subject: op.sender };
+    return { ok: true, shape: size === 1 ? "upgrade" : "co-owners", subject: sender };
   }
-  if (calls.length === 1 && calls[0].to !== op.sender && calls[0].to !== HOOK) {
+  if (calls.length === 1 && calls[0].to !== sender && calls[0].to !== HOOK) {
     const target = recoveryTarget(calls[0]);
-    return target ? { ok: true, shape: "recover", subject: target, guardian: op.sender } : { ok: false, reason: "call" };
+    return target ? { ok: true, shape: "recover", subject: target, guardian: sender } : { ok: false, reason: "call" };
   }
   if (calls.length === 2 && validatorCall(calls[0], "onUninstall") === "0x") {
     const owner = validatorCall(calls[1], "onInstall");
     return owner !== null && owner.length === 42
-      ? { ok: true, shape: "rotate", subject: op.sender }
+      ? { ok: true, shape: "rotate", subject: sender }
       : { ok: false, reason: "call" };
   }
   let uninstalls = 0;
   for (const c of calls) {
-    if (isRouteUninstall(c, op.sender)) uninstalls++;
+    if (isRouteUninstall(c, sender)) uninstalls++;
     else if (!isHookMutator(c)) return { ok: false, reason: "call" };
   }
-  return { ok: true, shape: uninstalls > 0 ? "remove-route" : "guardians", subject: op.sender };
+  return { ok: true, shape: uninstalls > 0 ? "remove-route" : "guardians", subject: sender };
 }
 
 export interface PolicyDeps {

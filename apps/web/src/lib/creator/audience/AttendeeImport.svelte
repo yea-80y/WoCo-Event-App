@@ -26,8 +26,9 @@
   interface Props {
     contacts: MarketingContact[];
     busy: boolean;
-    /** The organiser's X-Wing secret key — orders are sealed to it (#642). */
-    getKeys: () => Promise<{ secretKey: Uint8Array } | null>;
+    /** The organiser's X-Wing secret keys, newest first — each order is sealed to the
+     *  generation current when it was bought (#642, #186). */
+    getKeys: () => Promise<{ secretKeys: Uint8Array[] } | null>;
     onCommit: (next: MarketingContact[]) => Promise<void>;
   }
 
@@ -61,14 +62,17 @@
       if (!keys) throw new Error("Unlock your identity to read attendee data.");
 
       const { orders } = await getEventOrders(ev.eventId);
-      const { openBoxJson, orderSealContext } = await import("@woco/shared/crypto/sealed-box");
+      const [{ orderSealContext }, { openJsonWithAnyKey }] = await Promise.all([
+        import("@woco/shared/crypto/sealed-box"),
+        import("../../keyring/order-keys.js"),
+      ]);
       const claims: DecryptedClaim[] = [];
       for (const order of orders) {
         if (!order.encryptedOrder) continue;
         try {
           claims.push(
-            await openBoxJson<DecryptedClaim>(
-              keys.secretKey,
+            await openJsonWithAnyKey<DecryptedClaim>(
+              keys.secretKeys,
               order.encryptedOrder,
               orderSealContext(ev.eventId, order.seriesId),
             ),

@@ -606,10 +606,7 @@ lives only in the new device's memory for this pairing. Transport: a 10-minute i
 "Add a password manager here" does the same on one device: a fresh confirm, a passkey in the other
 manager, on the list, its record.
 
-**A removed device keeps what it already holds.** Removal stops a passkey signing in and acting
-onchain, but the account's keys all come from one seed that never changes: a removed device can still
-open attendee details it can reach and publish as the account. Hence "only your own devices - never
-someone else's, staff included". A new attendee key on removal is deferred work.
+**Removing a passkey moves the account to new keys (#186).** See the next section.
 
 **New-passkey alert.** Each device remembers the chain's list as last seen; a key added since then
 is named on the next open ("Yes, it was me / No - remove it"). `new-passkey-alert.ts`.
@@ -646,6 +643,59 @@ route answers 410.
 Server side: `apps/server/src/middleware/auth.ts` and
 `apps/server/src/lib/auth/verify-delegation.ts`. Client side:
 `apps/web/src/lib/api/client.ts` (`authPost` / `authGet` / `buildAuthHeaders`).
+
+### Removing a passkey: the account moves to new keys (#186)
+
+A removed passkey keeps the identity seed, so what the account signs or seals AFTER a removal comes
+from a random **account secret** it never sees: generation 0 is the seed, each removal makes
+S_{g+1}. Off the current secret: the content-feed signer (`woco/feed-signer/v1`), the X-Wing order
+key (`woco/encryption/xwing/v1`) and the door-pass roster key (`woco/door-pass/roster/v1:{eventId}:
+{jti}`) - `@woco/shared/keyring/account-secret`. The issuing key and portability envelopes stay on the
+seed: safe only while nothing verifies issuing signatures out of band (a cert rail going live must
+move it to S_g).
+
+**Key ring** (`@woco/shared/keyring/ring`, v1, canonical `/bytes`, at most 64 KB): S_g sealed (X-Wing,
+`woco/keyring/entry/v1`) to each passkey's **box key** - X-Wing keygen of HKDF(PRF,
+`woco/passkey/box/v1`), named by a `BoxKey` statement the passkey's own key signs (EIP-712 "WoCo Box
+Key", `box-key.ts`) - and S_0..S_{g-1} in one AES-GCM blob under HKDF(S_g, `woco/keyring/back/v1`).
+It also names the generation's feed signer and order-key ref, so a device checks what it opened. The
+first added passkey makes the first ring.
+
+**Anchor.** The current ring is onchain: `WoCoKeyRing` (ownerless CREATE2 singleton, Arbitrum One,
+`ringOf(account)`, `setRing(expectedPrev, ring)` compare-and-swap - `@woco/shared/keyring/anchor`),
+called by the account's Kernel in the SAME op as the co-owner change, so the list and the keys never
+disagree. Devices and the server read it; nothing about it depends on WoCo's server. `/api/health`
+`keyRing` is red while the anchor has no code on the chain. Audited (LeftClaw job #983, 2026-10-09:
+0 critical/high/medium): only the account writes its entry, and any ONE co-owner can (1-of-N, as with
+the list itself). A rollback to an older ring is refused by readers - the server pauses below the
+generation it has seen, devices never step back - and a ring's address never repeats, since every
+build is randomised.
+
+**A device** keeps its chain `{ringRef, gen, secrets}` locked under the passkey like the seed
+(`account-chain.ts`) and signs or seals only on a CONFIRMED current generation: each unlock reads the
+anchor - `ok`; `behind` takes the newer ring with the passkey; `keyless` (left out), `foreign` and
+`unknown` refuse (`keyring/account-keys.ts`, lazy). A passkey with no ring entry adds itself once; one
+a removal left out gets keys from another by code ("Give it keys" - the code carries only its signed
+box key, and only a passkey already on the list is given them).
+
+**Removal** (`keyring/rotate.ts` + `rotate-live.ts`): S' kept as a pending rotation (a closed tab
+resumes with the same one) -> events, site configs and profile copied to the new signer, read thorough
+and clean from Swarm -> ring stored -> ONE op: passkeys off the list AND the anchor on the new ring ->
+this device adopts -> server told, sites and event pages redeployed and their WoCo names re-pointed
+(only on values this device signed), contact list re-sealed, device records removed, likes and follows
+re-made. A failure before the flip changes nothing; after it, the rest resumes at the next unlock.
+This device's own passkey leaving needs no new keys.
+
+**The server follows the anchor** (`lib/keyring/current-ring.ts`, `event-keys.ts`): events are read
+from the ring's signer and sold under its order key whatever a feed says; a box declares the key it
+was sealed to and a stale one is refused `ORDER_KEY_STALE`, naming the current key (the page re-seals
+once). Unreadable keys pause sales, never guess. Door passes record their generation; older ones are
+revoked. An event with no create-time record of its signer is not sold - publishing it again gives it one. A chain read below
+the highest generation the server has seen pauses that organiser's sales until it catches up
+(`.data/keyring-high-water.json`) - never the remembered ring, since rings are unsigned.
+
+**Still true after a removal:** what the passkey already downloaded stays on it, and an external domain
+or raw feed link pointing at an old feed is the organiser's to update.
 
 ---
 
