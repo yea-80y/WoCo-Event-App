@@ -3,7 +3,7 @@
  * that should hold it, plus every earlier secret under the current one.
  *
  *   ring    = { v: 1, parent, gen, prev, feedSigner, orderKeyRef, entries, back }
- *   entry   = { statement: BoxKeyStatement, box: sealBox(S_g, boxKey, entry context) }
+ *   entry   = { statement: BoxKeyStatement, boxKey, box: sealBox(S_g, boxKey, entry context) }
  *   back    = AES-256-GCM(HKDF(S_g, "", "woco/keyring/back/v1"), S_0 ‖ … ‖ S_{g-1})
  *
  * WHERE ITS AUTHORITY COMES FROM. The ring is stored as content-addressed bytes, and
@@ -14,8 +14,9 @@
  * against that address before they are parsed. `prev` names the anchor value this ring
  * replaced, so a device sees when the ring moved past one it never opened.
  *
- * Every entry is a box-key statement signed by its passkey, so the writer seals only to
- * keys their own passkeys stated; the AAD binds the entry to the account, generation,
+ * Every entry is a box-key statement signed by its passkey, with the key itself, so the
+ * writer seals only to keys their own passkeys stated, and the next writer can seal to the
+ * same members from this ring alone - nothing else to fetch; the AAD binds the entry to the account, generation,
  * passkey and key, so an entry moved to another slot fails its tag. The back blob makes
  * the newest ring enough on its own: one entry opened gives every generation's keys,
  * which is what reading older orders needs. A generation the writer could not open
@@ -35,6 +36,7 @@ import { MAX_CO_OWNERS } from "../kernel/co-owners.js";
 import { isOrderKeyRef, orderKeyRef } from "../event/order-key.js";
 import { openBox, sealBox, type SealContext } from "../crypto/sealed-box.js";
 import { isSealedBoxV2, type SealedBoxV2 } from "../crypto/sealed-box-shape.js";
+import { XWING_PUBLIC_KEY_BYTES } from "../crypto/xwing.js";
 import { accountKeysOf, assertAccountSecret, ACCOUNT_SECRET_BYTES } from "./account-secret.js";
 import { verifyBoxKeyStatement, type BoxKeyStatement } from "./box-key.js";
 
@@ -59,11 +61,14 @@ const HEX = /^[0-9a-f]*$/;
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
 const RING_FIELDS = ["back", "entries", "feedSigner", "gen", "orderKeyRef", "parent", "prev", "v"];
-const ENTRY_FIELDS = ["box", "statement"];
+const ENTRY_FIELDS = ["box", "boxKey", "statement"];
+const BOX_KEY_HEX = XWING_PUBLIC_KEY_BYTES * 2;
 const BACK_FIELDS = ["ct", "holes", "iv"];
 
 export interface KeyRingEntry {
   statement: BoxKeyStatement;
+  /** The 1216-byte X-Wing public key the statement names, hex. */
+  boxKey: string;
   box: SealedBoxV2;
 }
 
@@ -248,7 +253,7 @@ export async function buildKeyRing(args: {
     if (!statement) throw new Error("key ring: a member's box key statement does not verify");
     if (boxKeyRefOf(m.boxPublicKey) !== statement.boxKeyRef) throw new Error("key ring: a member's box key does not match its statement");
     const box = await sealBox(m.boxPublicKey, args.secret, keyRingEntryContext(parent, gen, statement.coOwner, statement.boxKeyRef));
-    entries.push({ statement, box });
+    entries.push({ statement, boxKey: bytesToHex(m.boxPublicKey), box });
   }
   const ring: KeyRing = {
     v: KEY_RING_VERSION,
@@ -318,9 +323,11 @@ export function parseKeyRing(x: unknown): KeyRing {
     if (statement.parent !== parent) malformed("an entry's statement names another account");
     if (seen.has(statement.coOwner)) malformed("two entries for one passkey");
     seen.add(statement.coOwner);
+    if (typeof e.boxKey !== "string" || e.boxKey.length !== BOX_KEY_HEX || !HEX.test(e.boxKey)) malformed("an entry's box key");
+    if (boxKeyRefOf(hexToBytes(e.boxKey)) !== statement.boxKeyRef) malformed("an entry's box key is not the one its statement names");
     if (!isSealedBoxV2(e.box) || e.box.ct.length !== (ACCOUNT_SECRET_BYTES + TAG_BYTES) * 2) malformed("an entry's box");
     if (!HEX.test(e.box.enc) || !HEX.test(e.box.ct)) malformed("an entry's box is not lowercase hex");
-    return { statement, box: { v: e.box.v, enc: e.box.enc, ct: e.box.ct } };
+    return { statement, boxKey: e.boxKey, box: { v: e.box.v, enc: e.box.enc, ct: e.box.ct } };
   });
 
   if (!isPlainObject(back)) malformed("back");
@@ -404,3 +411,16 @@ export function coOwnersWithoutEntry(ring: KeyRing, coOwners: readonly string[])
   const have = new Set(ring.entries.map((e) => e.statement.coOwner));
   return coOwners.map((c) => c.toLowerCase()).filter((c) => !have.has(c));
 }
+
+/**
+ * The ring's members as the next writer seals to them: each statement with its key.
+ * `except` leaves passkeys out (the one being removed). The caller still checks every
+ * member against the account's list on chain - a ring names who WAS a member.
+ */
+export function keyRingMembers(ring: KeyRing, except: readonly string[] = []): KeyRingMember[] {
+  const drop = new Set(except.map((a) => a.toLowerCase()));
+  return ring.entries
+    .filter((e) => !drop.has(e.statement.coOwner))
+    .map((e) => ({ statement: e.statement, boxPublicKey: hexToBytes(e.boxKey) }));
+}
+
