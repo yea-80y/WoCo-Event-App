@@ -130,3 +130,31 @@ test("bytes that are not the named ring, or a ring of another account, are unava
   assert.equal(r.status, "unavailable");
   assert.match(r.status === "unavailable" ? r.reason : "", /names account/);
 });
+
+test("a ring cached for one account is never another account's, whatever its anchor names", async () => {
+  const a = await ringFor(ACCOUNT, 1);
+  anchor.set(ACCOUNT, `0x${a.ref}`);
+  assert.equal((await currentRing(ACCOUNT)).status, "ring");
+  const B = "0x" + "cd".repeat(20);
+  anchor.set(B, `0x${a.ref}`); // B points its own entry at A's ring
+  const r = await currentRing(B);
+  assert.equal(r.status, "unavailable");
+});
+
+test("an unreadable chain is reported without the RPC's URL", async () => {
+  _setCurrentRingDepsForTests({
+    readAnchor: async () => {
+      const e = new Error("HTTP request failed.\n\nURL: https://arb-mainnet.example/v2/SECRETKEY\nRequest body: {}");
+      (e as Error & { shortMessage: string }).shortMessage = "HTTP request failed.";
+      throw e;
+    },
+    now: () => clock,
+  });
+  const r = await currentRing(ACCOUNT);
+  assert.equal(r.status, "unavailable");
+  assert.doesNotMatch(r.status === "unavailable" ? r.reason : "", /SECRETKEY|https?:/);
+  _setCurrentRingDepsForTests({ readAnchor: async () => { throw new Error("URL: https://x/SECRETKEY"); }, now: () => clock });
+  const r2 = await currentRing(ACCOUNT);
+  assert.doesNotMatch(r2.status === "unavailable" ? r2.reason : "", /SECRETKEY/);
+});
+

@@ -84,14 +84,26 @@ export function _setCurrentRingDepsForTests(d: Partial<CurrentRingDeps> | null):
 }
 
 async function ringAt(ref: string, account: string): Promise<KeyRing> {
-  const hit = rings.get(ref);
-  if (hit) return hit;
-  const ring = parseKeyRing(await readBytesTree(ref, deps.fetchChunk, MAX_KEY_RING_BYTES));
-  // The anchor is the account's own entry; a ring naming anyone else is not its ring.
+  let ring = rings.get(ref);
+  if (!ring) {
+    ring = parseKeyRing(await readBytesTree(ref, deps.fetchChunk, MAX_KEY_RING_BYTES));
+    rings.set(ref, ring);
+    while (rings.size > RING_CACHE_MAX) rings.delete(rings.keys().next().value as string);
+  }
+  // On EVERY answer, cached or not: any account may write any reference into its own
+  // entry, so another account's ring is never this account's, however it was cached.
   if (ring.parent !== account) throw new Error(`ring ${ref} names account ${ring.parent}`);
-  rings.set(ref, ring);
-  while (rings.size > RING_CACHE_MAX) rings.delete(rings.keys().next().value as string);
   return ring;
+}
+
+/**
+ * An RPC failure, said without the RPC: viem puts the request URL in `message`, and an
+ * RPC URL can carry a provider key (`RPC_URL_{chainId}`). Its `shortMessage` does not.
+ */
+function rpcReason(e: unknown): string {
+  const short = (e as { shortMessage?: unknown } | null)?.shortMessage;
+  if (typeof short === "string" && short) return short;
+  return "RPC error";
 }
 
 /**
@@ -107,7 +119,7 @@ export async function currentRing(account: string, opts: { fresh?: boolean } = {
   try {
     read = anchorToRingRef(await deps.readAnchor(a));
   } catch (e) {
-    if (!cached) return { status: "unavailable", reason: `anchor unreadable: ${(e as Error)?.message ?? String(e)}` };
+    if (!cached) return { status: "unavailable", reason: `anchor unreadable: ${rpcReason(e)}` };
     console.warn(`[keyring] ${a}: anchor unreadable, using the ring last seen`);
     return resolve(a, cached.ref);
   }
