@@ -98,6 +98,17 @@ test("ring store: only the canonical bytes - nothing smuggled beside the fields"
   }
 });
 
+test("ring store: an order key sent with the ring must be the ring's own", async () => {
+  const s = await walletSession();
+  await installRing(s.parent);
+  const r = await currentRing(s.parent);
+  const bytes = encodeKeyRing(r.status === "ring" ? r.ring : (null as never));
+  const wrong = new Uint8Array(1216).fill(7);
+  const res = await post("/api/keyring/ring", s, { dataB64: Buffer.from(bytes).toString("base64"), orderKeyB64: Buffer.from(wrong).toString("base64") });
+  assert.equal(res.status, 400);
+  assert.match(res.json.error, /not this ring's/);
+});
+
 test("ring store: a ring for the caller's account still needs an unlocked account", async () => {
   const s = await walletSession();
   await installRing(s.parent);

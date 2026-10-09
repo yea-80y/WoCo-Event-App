@@ -18,6 +18,7 @@ import { checkAttendeeGate } from "../lib/gate/check.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { encodeKeyRing, parseKeyRing } from "@woco/shared/keyring/ring";
+import { ORDER_KEY_BYTES, orderKeyRef } from "@woco/shared";
 import { bytesTreeChunks } from "@woco/shared/swarm/bytes-tree";
 
 export const keyring = new Hono<AppEnv>();
@@ -56,12 +57,17 @@ const RING_PER_ACCOUNT = new SlidingWindowLimiter([
  */
 keyring.post("/ring", jsonBodyLimit(MAX_KEY_RING_BYTES * 2), requireAuth, async (c) => {
   const account = c.get("parentAddress").toLowerCase();
-  const body = c.get("body") as { dataB64?: unknown } | undefined;
+  const body = c.get("body") as { dataB64?: unknown; orderKeyB64?: unknown } | undefined;
   if (typeof body?.dataB64 !== "string") return c.json({ ok: false, error: "Missing dataB64" }, 400);
   const bytes = new Uint8Array(Buffer.from(body.dataB64, "base64"));
   if (bytes.length < 1 || bytes.length > MAX_KEY_RING_BYTES) return c.json({ ok: false, error: "Ring too large" }, 413);
+  // The generation's order key travels with its ring: buyers seal to it the moment the
+  // ring is named, so it must already be readable through the gateway.
+  const orderKey = typeof body.orderKeyB64 === "string" ? new Uint8Array(Buffer.from(body.orderKeyB64, "base64")) : null;
+  let ringOrderKeyRef: string;
   try {
     const ring = parseKeyRing(bytes);
+    ringOrderKeyRef = ring.orderKeyRef;
     // Byte for byte the canonical encoding, nothing else: JSON.parse forgives duplicate
     // keys and whitespace, and the gateway is about to serve exactly these bytes - a
     // "ring" with anything smuggled beside its fields is not stored.
@@ -71,6 +77,9 @@ keyring.post("/ring", jsonBodyLimit(MAX_KEY_RING_BYTES * 2), requireAuth, async 
     if (ring.parent !== account) return c.json({ ok: false, error: "This ring is for a different account" }, 403);
   } catch {
     return c.json({ ok: false, error: "Not a key ring this server reads" }, 400);
+  }
+  if (orderKey && (orderKey.length !== ORDER_KEY_BYTES || orderKeyRef(orderKey) !== ringOrderKeyRef)) {
+    return c.json({ ok: false, error: "That order key is not this ring's" }, 400);
   }
   if (!RING_PER_ACCOUNT.peek(account)) {
     c.header("Retry-After", "3600");
@@ -87,7 +96,13 @@ keyring.post("/ring", jsonBodyLimit(MAX_KEY_RING_BYTES * 2), requireAuth, async 
       console.error(`[keyring] ring upload for ${account} returned ${ref}, expected ${expected}`);
       return c.json({ ok: false, error: "The ring could not be stored - try again." }, 502);
     }
-    await whitelistHashes(chunks.map((ch) => ch.address));
+    const whitelist = chunks.map((ch) => ch.address);
+    if (orderKey) {
+      const keyRef = (await uploadToBytes(orderKey)).toLowerCase().replace(/^0x/, "");
+      if (keyRef !== ringOrderKeyRef) throw new Error(`order key upload returned ${keyRef}`);
+      whitelist.push(keyRef);
+    }
+    await whitelistHashes(whitelist);
     return c.json({ ok: true, data: { ref } });
   } catch (err) {
     console.error("[keyring] ring store failed:", (err as Error)?.message ?? err);
