@@ -80,3 +80,31 @@ test("the size bound is checked at the root, before any child is fetched", async
 test("a malformed reference is refused", async () => {
   await assert.rejects(readBytesTree("AB".repeat(32), async () => new Uint8Array(), 10), /64 lowercase hex/);
 });
+
+test("a tree that is not the shape bee makes for its size is refused at the root: no deep single-child chains", async () => {
+  const { calculateCacAddress, encodeSpan } = await import("../../src/swarm/soc.js");
+  const store = new Map<string, Uint8Array>();
+  const put = (span: number, payload: Uint8Array): string => {
+    const s = encodeSpan(span);
+    const addr = bytesToHex(calculateCacAddress(s, payload));
+    const chunk = new Uint8Array(s.length + payload.length);
+    chunk.set(s);
+    chunk.set(payload, s.length);
+    store.set(addr, chunk);
+    return addr;
+  };
+  // A chain of intermediates, each with ONE child and the same 5000-byte span.
+  let ref = put(5000, new Uint8Array(32).fill(1));
+  for (let i = 0; i < 50; i++) {
+    const p = new Uint8Array(32);
+    p.set(Buffer.from(ref, "hex"));
+    ref = put(5000, p);
+  }
+  let fetched = 0;
+  const fetch = async (a: string) => {
+    fetched++;
+    return fetchFrom(store)(a);
+  };
+  await assert.rejects(readBytesTree(ref, fetch, 10_000), /children its span needs/);
+  assert.equal(fetched, 1, "refused before any child is fetched");
+});

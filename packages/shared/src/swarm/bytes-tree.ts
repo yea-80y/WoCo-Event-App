@@ -80,9 +80,12 @@ export async function readBytesTree(
     }
     if (payload.length === 0 || payload.length % REF_BYTES !== 0) throw new BytesTreeMismatchError("an intermediate chunk is not a list of references");
     // Each child but the last holds the same full subtree size; the last holds the rest.
+    // The child count is the one bee's splitter makes for this span, no other: a tree of
+    // single-child intermediates would otherwise pass every span check at any depth.
     const children = payload.length / REF_BYTES;
     let full = SOC_MAX_PAYLOAD_SIZE;
-    while (full * children < span) full *= BRANCHES;
+    while (full * BRANCHES < span) full *= BRANCHES;
+    if (children !== Math.ceil(span / full)) throw new BytesTreeMismatchError("an intermediate chunk does not have the children its span needs");
     const rest = span - full * (children - 1);
     if (rest <= 0 || rest > full) throw new BytesTreeMismatchError("an intermediate chunk's span does not fit its children");
     const out = new Uint8Array(span);

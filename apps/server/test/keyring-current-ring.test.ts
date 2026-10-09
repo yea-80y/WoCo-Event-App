@@ -180,3 +180,69 @@ test("health: red when no contract answers at the anchor; a failed read keeps th
   assert.equal(h.ok, true, "an RPC blip says nothing about the contract");
   assert.doesNotMatch(h.reason ?? "", /SECRETKEY/);
 });
+
+test("a ring that does not verify is not fetched again; one not found waits a minute", async () => {
+  const { ref } = await ringFor(ACCOUNT, 1);
+  const forged = chunks.get(ref)!.slice();
+  forged[forged.length - 1] ^= 1;
+  let fetches = 0;
+  let missing = true;
+  const setDeps = (serve: (a: string) => Uint8Array | undefined) =>
+    _setCurrentRingDepsForTests({
+      readAnchor: async () => `0x${ref}`,
+      fetchChunk: async (a) => {
+        fetches++;
+        const c = serve(a);
+        if (!c) throw new Error("absent");
+        return c;
+      },
+      now: () => clock,
+    });
+  setDeps((a) => (a === ref ? forged : chunks.get(a)));
+  for (let i = 0; i < 5; i++) assert.equal((await currentRing(ACCOUNT, { fresh: true })).status, "unavailable");
+  assert.equal(fetches, 1, "a bad ring costs one fetch, ever");
+
+  fetches = 0;
+  setDeps((a) => (missing ? undefined : chunks.get(a)));
+  for (let i = 0; i < 5; i++) assert.equal((await currentRing(ACCOUNT, { fresh: true })).status, "unavailable");
+  assert.equal(fetches, 1, "a missing ring is not refetched on every read");
+  missing = false;
+  clock += 60_000;
+  assert.equal((await currentRing(ACCOUNT, { fresh: true })).status, "ring", "and is tried again after a minute");
+});
+
+test("the highest generation seen survives a restart: a lagging read after it is not taken", async () => {
+  const g1 = await ringFor(ACCOUNT, 1);
+  const g2 = await ringFor(ACCOUNT, 2);
+  let disk: Record<string, { gen: number; ref: string }> = {};
+  const boot = (anchorRef: string) =>
+    _setCurrentRingDepsForTests({
+      readAnchor: async () => `0x${anchorRef}`,
+      fetchChunk: async (a) => chunks.get(a) ?? Promise.reject(new Error("absent")),
+      now: () => clock,
+      loadHighWater: () => ({ ...disk }),
+      saveHighWater: (v) => ((disk = { ...v }), true),
+    });
+  boot(g2.ref);
+  assert.equal((await currentRing(ACCOUNT)).status, "ring");
+  assert.deepEqual(disk[ACCOUNT], { gen: 2, ref: g2.ref });
+  boot(g1.ref); // a restart, and a replica one generation behind
+  const r = await currentRing(ACCOUNT);
+  assert.equal(r.status === "ring" && r.ref, g2.ref);
+});
+
+test("a high-water file that cannot be read is never written, and health says so", async () => {
+  const { keyRingHealth } = await import("../src/lib/keyring/current-ring.js");
+  const g1 = await ringFor(ACCOUNT, 1);
+  let writes = 0;
+  _setCurrentRingDepsForTests({
+    readAnchor: async () => `0x${g1.ref}`,
+    fetchChunk: async (a) => chunks.get(a) ?? Promise.reject(new Error("absent")),
+    now: () => clock,
+    loadHighWater: () => "unreadable",
+    saveHighWater: () => (writes++, true),
+  });
+  assert.equal((await currentRing(ACCOUNT)).status, "ring");
+  assert.equal(writes, 0);
+  assert.equal(keyRingHealth().ok, false);
+});
