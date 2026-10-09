@@ -155,7 +155,8 @@ function publicKeysKey(seedAddress: string): string {
   return `${StorageKeys.PUBLIC_KEYS}:${seedAddress.toLowerCase()}`;
 }
 
-async function importSeedKek(prfSecret: string): Promise<CryptoKey> {
+/** The passkey's seed-lock key; the account-secret chain is locked under it too (#186). */
+export async function importSeedKek(prfSecret: string): Promise<CryptoKey> {
   const derived = passkeySeedKek(prfSecret);
   // A plain ArrayBuffer copy, as encryption.ts does: WebCrypto's types refuse a
   // view that might sit on a SharedArrayBuffer.
