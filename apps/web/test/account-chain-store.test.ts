@@ -98,7 +98,8 @@ test("an adopted ring is stored locked BEFORE it is used, and the box key is zer
 });
 
 test("sign-out and an account switch close the chain's window copy too", () => {
-  assert.equal((STORE.match(/clearChainWindow\(/g) ?? []).length, 2);
+  // Sign-out, an account switch, and a passkey leaving this device with its seed.
+  assert.equal((STORE.match(/clearChainWindow\(/g) ?? []).length, 3);
 });
 
 test("adding or linking: the ring includes this device, is built from the CONFIRMED generation, and never re-seals to a key off the list", () => {
@@ -124,4 +125,12 @@ test("an unfinished removal: past the flip it finishes by itself, before it the 
   const left = kbody("async function removalLeftHere");
   assert.match(left, /if \(flipped\) await rotateOnRemovalFor\(h, \[\], \{ resume: true \}\);\s*else h\.setPendingRemoval\(\{ going: p\.going \}\);/);
   assert.match(left, /if \(!p \|\| p\.parent !== u\.parent\) return;/);
+});
+
+test("a passkey leaving this device takes the account's later secrets with its seed", () => {
+  const clear = body("async function _clearSeedEverywhere");
+  for (const step of ["await clearLockedSeed(eoa);", "await clearLockedChain(eoa);", "await clearChainWindow(eoa);", ".clearPendingRotation(eoa);"]) {
+    assert.ok(clear.includes(step), step);
+  }
+  assert.match(body("async function _forgetAddedPasskey"), /await _clearSeedEverywhere\(seedAddress\);/);
 });

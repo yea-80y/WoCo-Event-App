@@ -64,7 +64,7 @@ import {
   clearPublicKeys,
 } from "./identity-seed.js";
 import { SEED_UNLOCK_POLICY, unlockExpiry } from "./seed-unlock-policy.js";
-import { allSecretsOf, clearChainWindow, currentSecretOf, storeLockedChain, type AccountChain } from "./account-chain.js";
+import { allSecretsOf, clearChainWindow, clearLockedChain, currentSecretOf, storeLockedChain, type AccountChain } from "./account-chain.js";
 import type { AccountKeysHost, KeysVerdict } from "../keyring/account-keys.js";
 import { linkedEnvelopePendingKey } from "./make-main-key.js";
 import { requestChallenge, sha256Hex } from "./request-challenge.js";
@@ -1480,6 +1480,16 @@ async function _clearSeedEverywhere(eoa: string): Promise<void> {
   if (_feedSignerCache?.seedAddress === eoa.toLowerCase()) _feedSignerCache = null;
   await clearIdentitySeed(eoa);
   await clearLockedSeed(eoa);
+  // The account's later secrets go with the seed (#186): a passkey leaving the account
+  // takes nothing it could open them with, and they are no use without it.
+  await clearLockedChain(eoa);
+  await clearChainWindow(eoa);
+  await (await import("../keyring/pending-rotation.js")).clearPendingRotation(eoa);
+  try {
+    globalThis.localStorage?.removeItem(`woco:keyring:enrolled:${eoa.toLowerCase()}`);
+  } catch {
+    /* nothing kept */
+  }
 }
 
 /** The one accessor bundle both backfill preambles read through (#260). */
