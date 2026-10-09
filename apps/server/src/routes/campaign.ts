@@ -33,6 +33,7 @@ import {
   readBadge,
   readConfirmation,
 } from "../lib/campaign/issuer.js";
+import { armReferral, confirmArmedReferral } from "../lib/campaign/referral-arm.js";
 import { stripeVerificationComplete } from "../lib/stripe/accounts.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
@@ -111,6 +112,33 @@ campaignRoutes.post("/referrals/confirm", requireAuth, async (c) => {
     default:
       return c.json({ ok: false, error: "Could not confirm right now — try again" }, 503);
   }
+});
+
+/**
+ * POST /api/campaign/referrals/arm — the referee's client, having just written
+ * its statement, says where it is so the issuer can confirm it the moment
+ * Stripe verifies them (`lib/campaign/referral-arm.ts`).
+ *
+ * Body: `{ referrer, refereeFeed }`, the same pair and the same trust as
+ * `/confirm`: a pointer the issuer re-reads before it signs, so a wrong one
+ * confirms nothing. An already-verified referee is confirmed now - their
+ * verification will not be announced again until Stripe next writes.
+ */
+campaignRoutes.post("/referrals/arm", requireAuth, async (c) => {
+  const parent = c.get("parentAddress").toLowerCase();
+  const body = (c.get("body") ?? {}) as { referrer?: string; refereeFeed?: string };
+  const referrer = body.referrer?.toLowerCase();
+  const refereeFeed = body.refereeFeed?.toLowerCase();
+  if (!referrer || !ADDR.test(referrer) || !refereeFeed || !ADDR.test(refereeFeed)) {
+    return c.json({ ok: false, error: "Invalid referral" }, 400);
+  }
+  if (referrer === parent) return c.json({ ok: false, error: "You can't refer yourself" }, 400);
+  if (!CONFIRM_LIMIT.allowAll([`p:${parent}`, `ip:${clientIp(c)}`])) {
+    return c.json({ ok: false, error: "Too many requests — slow down." }, 429);
+  }
+  armReferral(parent, referrer, refereeFeed);
+  if (stripeVerificationComplete(parent)) void confirmArmedReferral(parent);
+  return c.json({ ok: true });
 });
 
 /**

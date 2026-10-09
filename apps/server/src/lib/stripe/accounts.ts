@@ -58,6 +58,31 @@ function persist(): void {
   writeJsonAtomic(ACCOUNTS_FILE, store, "stripe-accounts", { pretty: true });
 }
 
+/**
+ * Told after every write that leaves an account verified - the referral
+ * campaign confirms on it (`lib/campaign/referral-arm.ts`) without this store
+ * importing the campaign. Every verified write, not only the flip: the webhook
+ * repeats while verified, and that repeat is the retry for a confirm that could
+ * not answer the first time.
+ */
+const verifiedListeners: Array<(organiserAddress: string) => void> = [];
+
+export function onStripeVerified(listener: (organiserAddress: string) => void): void {
+  verifiedListeners.push(listener);
+}
+
+function announceIfVerified(key: string): void {
+  if (store[key]?.onboardingComplete !== true) return;
+  for (const listener of verifiedListeners) {
+    // A listener's fault must never surface as a failed Stripe write.
+    try {
+      listener(key);
+    } catch (err) {
+      console.error("[stripe-accounts] verified listener threw:", err);
+    }
+  }
+}
+
 export function getStripeAccount(organiserAddress: string): StripeAccountRecord | undefined {
   ensureLoaded();
   return store[organiserAddress.toLowerCase()];
@@ -97,6 +122,7 @@ export function setStripeAccount(
       : {}),
   };
   persist();
+  announceIfVerified(key);
 }
 
 /** Record the account's default currency without touching onboarding state. */
@@ -125,6 +151,7 @@ export function updateOnboardingStatus(
         updatedAt: new Date().toISOString(),
       };
       persist();
+      announceIfVerified(key);
       return;
     }
   }
