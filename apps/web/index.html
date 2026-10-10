@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="./logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Home-screen install. The manifest link is added at boot by
+         src/lib/pwa/manifest-link.ts, never here: under the deploy's <base href>
+         a static one would pin installs to one immutable build. -->
+    <meta name="theme-color" content="#0B0B09" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="WoCo" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
     <title>WoCo — World Computer for events</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
