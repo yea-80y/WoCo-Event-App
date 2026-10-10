@@ -77,7 +77,7 @@
 <div class="invite-page">
   <header class="top">
     <button class="brand" onclick={() => navigate("/")} aria-label="WoCo home">
-      <WocoWordmark height={20} variant="default" showTagline={false} />
+      <WocoWordmark height={20} variant="default" face="display" showTagline={false} />
     </button>
     {#if auth.ready && !signedIn}
       <button class="btn btn--text" onclick={() => loginRequest.request()}>Sign in</button>
