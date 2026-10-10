@@ -30,8 +30,11 @@ const production = (map: string): string => {
 const origin = (url: string) => new URL(url).origin;
 const allows = (directive: string, source: string) => APP_POLICY[directive]?.includes(source) ?? false;
 
-test("the session service (HTTP), citadel and signer APIs: allowed in connect-src", () => {
-  for (const map of ["STORAGE_SERVER_MAP", "CITADEL_SERVER_MAP"]) {
+// v11 also calls citadel from our page: PUT /v1/auth/audit on every social-login start
+// and failure, GET /v1/user in getUserInfo() (the email backup's label), and POST
+// /v1/auth/session to authorise the stored session - all on api.web3auth.io, pinned below.
+test("the session service (HTTP), citadel and the project-config API: allowed in connect-src", () => {
+  for (const map of ["STORAGE_SERVER_MAP", "CITADEL_SERVER_MAP", "DASHBOARD_PUBLIC_API_MAP"]) {
     const o = origin(production(map));
     assert.equal(o, "https://api.web3auth.io", map);
     assert.ok(allows("connect-src", o), `${map} -> ${o}`);
@@ -49,6 +52,8 @@ test("the sign-in frame, the modal's assets and the captcha it mounts in our doc
   assert.ok(allows("frame-src", "https://auth.web3auth.io"), "the /v11/frame lives here");
   assert.ok(allows("connect-src", "https://assets.web3auth.io"), "wallet registry");
   assert.ok(allows("img-src", "https://images.web3auth.io"), "login-method icons");
+  // The modal's injected stylesheet @imports Inter from Google Fonts.
+  assert.ok(allows("style-src", "https://fonts.googleapis.com") && allows("font-src", "https://fonts.gstatic.com"));
   for (const d of ["script-src", "frame-src", "style-src", "connect-src"]) {
     assert.ok(allows(d, "https://hcaptcha.com") && allows(d, "https://*.hcaptcha.com"), `hcaptcha in ${d}`);
   }
