@@ -47,7 +47,7 @@
 <div class="about">
   <header class="top">
     <button class="brand" onclick={() => navigate("/")} aria-label="WoCo home">
-      <WocoWordmark height={22} variant="default" />
+      <WocoWordmark height={22} variant="default" face="display" />
     </button>
     <nav class="top-nav">
       <button class="link" onclick={() => navigate("/discover")}>Discover</button>

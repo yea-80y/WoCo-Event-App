@@ -11,6 +11,9 @@
     height       cap-height of the WOCO wordmark in CSS pixels
     variant      "default" (bone + accent) | "solid" (full accent) | "ink" (all bone)
     showTagline  show "// WORLD COMPUTER" beneath the wordmark (default true)
+    face         "mono" (the terminal lockup, as above) | "display": "WoCo" in
+                 Space Grotesk, the headline and app-icon face, over a plain
+                 "WORLD COMPUTER". The top-left logo uses "display" (owner 2026-10-10).
     onclick      optional click handler — wraps in a button
 -->
 <script lang="ts">
@@ -18,6 +21,7 @@
     height?: number;
     variant?: "default" | "solid" | "ink";
     showTagline?: boolean;
+    face?: "mono" | "display";
     onclick?: () => void;
     title?: string;
   }
@@ -25,6 +29,7 @@
     height = 24,
     variant = "default",
     showTagline = true,
+    face = "mono",
     onclick,
     title = "WoCo — World Computer",
   }: Props = $props();
@@ -38,19 +43,19 @@
 </script>
 
 {#if onclick}
-  <button class="mark mark-btn" {onclick} aria-label={title} style:--mark-h="{height}px">
+  <button class="mark mark-btn" class:display={face === "display"} {onclick} aria-label={title} style:--mark-h="{height}px">
     {@render mark()}
   </button>
 {:else}
-  <span class="mark" aria-label={title} role="img" style:--mark-h="{height}px">
+  <span class="mark" class:display={face === "display"} aria-label={title} role="img" style:--mark-h="{height}px">
     {@render mark()}
   </span>
 {/if}
 
 {#snippet mark()}
-  <span class="word" style:color={wordColor}>WOCO</span>
+  <span class="word" style:color={wordColor}>{face === "display" ? "WoCo" : "WOCO"}</span>
   {#if showTagline}
-    <span class="tag" style:color={tagColor}>// WORLD COMPUTER</span>
+    <span class="tag" style:color={tagColor}>{face === "display" ? "WORLD COMPUTER" : "// WORLD COMPUTER"}</span>
   {/if}
 {/snippet}
 
@@ -78,6 +83,11 @@
   .word {
     font-size: var(--mark-h);
     line-height: 0.9;
+  }
+  .display .word {
+    font-family: var(--font-display);
+    font-size: calc(var(--mark-h) * 1.1);
+    letter-spacing: -0.035em;
   }
   .tag {
     /* Tagline ≈ 36% of wordmark height — sits as a true descriptor underline */

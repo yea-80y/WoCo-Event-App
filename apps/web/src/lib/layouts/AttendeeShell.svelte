@@ -75,7 +75,7 @@
   <header class="top-bar">
     <!-- Always the home page, signed in or not: the portals are one tap away on the right. -->
     <button class="logo" onclick={() => navigate("/")} aria-label="WoCo home">
-      <WocoWordmark height={20} variant="default" />
+      <WocoWordmark height={20} variant="default" face="display" />
     </button>
 
     <!-- Both portals, signed in or not. No Sign in here: each portal's home

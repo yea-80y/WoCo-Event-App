@@ -78,7 +78,7 @@
   <header class="top-bar">
     <!-- Always the home page; "Organisers" lit in the switch says which portal this is. -->
     <button class="logo" onclick={() => navigate("/")} aria-label="WoCo home">
-      <WocoWordmark height={20} variant="default" />
+      <WocoWordmark height={20} variant="default" face="display" />
     </button>
 
     <!-- Both portals, signed in or not. No Sign in here: the dashboard leads

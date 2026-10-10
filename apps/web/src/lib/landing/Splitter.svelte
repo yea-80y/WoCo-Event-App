@@ -34,7 +34,7 @@
   <!-- ── Top bar ─────────────────────────────────────────────────────── -->
   <header class="top">
     <button class="brand" onclick={() => navigate("/")} aria-label="WoCo home">
-      <WocoWordmark height={22} variant="default" />
+      <WocoWordmark height={22} variant="default" face="display" />
     </button>
     <!-- The same two portals, signed in or not: each opens first and asks for a
          sign-in inside where it needs one (PortalSwitch). -->
