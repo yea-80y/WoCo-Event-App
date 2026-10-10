@@ -1,3 +1,6 @@
+// First, and imports nothing: the install manifest link is in place before any
+// other boot code runs (see the module for why it is not static HTML).
+import './lib/pwa/manifest-link'
 import { mount } from 'svelte'
 import './app.css'
 import App from './App.svelte'
