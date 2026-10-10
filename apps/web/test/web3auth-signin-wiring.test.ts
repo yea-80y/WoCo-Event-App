@@ -24,8 +24,14 @@ function body(src: string, signature: string): string {
 test("primary sign-in: survivors are ended through the fresh-instance rule, before connect()", () => {
   const login = body(account, "export async function loginWithWeb3Auth(");
   const rule = login.indexOf("w = await instanceForExplicitSignIn(w,");
-  const connect = login.indexOf("await w.connect()");
-  assert.ok(rule > 0 && connect > rule, "connect() only on the instance the rule hands back");
+  // connect() is handed to the sign-in wait (web3auth-signin-wait.ts) on `instance`,
+  // which is `w` AS THE RULE RETURNED IT: aliased after the rule, never reassigned.
+  const alias = login.indexOf("const instance = w;", rule);
+  const connect = login.indexOf("instance.connect()", alias);
+  assert.ok(rule > 0 && alias > rule && connect > alias, "connect() only on the instance the rule hands back");
+  assert.equal(login.match(/\.connect\(/g)?.length, 1, "one connect() call in the sign-in, on no other instance");
+  const between = login.slice(rule + 1, connect).replace("const instance = w;", "");
+  assert.ok(!/\b(?:w|instance) = /.test(between), "neither w nor its alias is reassigned between the rule and connect()");
   assert.ok(!login.includes("endSurvivingWeb3AuthSession("), "never end a survivor and keep the instance");
 });
 

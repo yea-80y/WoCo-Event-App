@@ -47,7 +47,8 @@
 <section class="in-app" role="note" aria-labelledby="in-app-title">
   <p id="in-app-title" class="title">Open WoCo in your browser to sign in</p>
   <p class="body">
-    {appName ? `${appName}'s` : "This app's"} built-in browser can't use passkeys or Google sign-in.
+    {appName ? `${appName}'s` : "This app's"} built-in browser can't use passkeys, and Google sign-in often doesn't
+    come back to it.
   </p>
   {#if chromeFailed}
     <p class="body">Chrome didn't open - try your usual browser instead.</p>

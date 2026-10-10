@@ -24,7 +24,8 @@ import {
   SURVIVOR_INTERFERED_MESSAGE,
   SURVIVOR_STILL_LOADING_MESSAGE,
 } from "./web3auth-survivor.js";
-import { Web3AuthSignInError, isWeb3AuthCancel } from "./web3auth-signin-error.js";
+import { Web3AuthSignInError, WEB3AUTH_TIMED_OUT_MESSAGE, isWeb3AuthCancel } from "./web3auth-signin-error.js";
+import { awaitWeb3AuthSignIn, browserSignInWaitDeps, type SignInWaitDeps } from "./web3auth-signin-wait.js";
 
 type MinimalProvider = { request: (args: { method: string }) => Promise<unknown> };
 
@@ -56,8 +57,11 @@ const buildSdkInstance: Web3AuthFactory = async () => {
 };
 
 let _factory: Web3AuthFactory = buildSdkInstance;
+let _waitDeps: () => SignInWaitDeps = browserSignInWaitDeps;
 let _instance: Web3AuthInstance | null = null;
 let _building: Promise<Web3AuthInstance | null> | null = null;
+/** Ends the sign-in wait that is open (the sheet was closed over it); null = none. */
+let _abortWait: (() => void) | null = null;
 /** Bumped by every reset, so a build that started before one never installs itself after it. */
 let _generation = 0;
 /** Instances a sign-out has logged out. Marked BEFORE the logout, because the
@@ -96,9 +100,11 @@ function _resetInstance(): void {
   _building = null;
 }
 
-/** Test seam: swap the SDK for a fake (null restores the real one). */
-export function setWeb3AuthFactoryForTests(factory: Web3AuthFactory | null): void {
+/** Test seam: swap the SDK for a fake (null restores the real one), and the page
+ *  the sign-in wait watches (null restores the browser's). */
+export function setWeb3AuthFactoryForTests(factory: Web3AuthFactory | null, waitDeps?: () => SignInWaitDeps): void {
   _factory = factory ?? buildSdkInstance;
+  _waitDeps = waitDeps ?? browserSignInWaitDeps;
   _resetInstance();
 }
 
@@ -123,8 +129,16 @@ async function _extractKeyAndAddress(provider: MinimalProvider): Promise<{ addre
  * is therefore ENDED before the modal opens. The one legitimate silent
  * adoption — same person, page reload — is `restoreWeb3AuthSession`, the
  * boot path, which runs before any click.
+ *
+ * The wait for the pop-up's result is `awaitWeb3AuthSignIn` (a page the browser
+ * suspended can be handed the result long after the person is back; owner
+ * decision 2026-10-10): `onStall` fires when the spinner's time is up, the SDK's
+ * loader is closed, and a result that lands in the grace after that still signs
+ * the person in.
  */
-export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey: `0x${string}` }> {
+export async function loginWithWeb3Auth(
+  opts: { onStall?: () => void } = {},
+): Promise<{ address: string; privateKey: `0x${string}` }> {
   const NOT_CONFIGURED = "Email login isn't configured yet (missing VITE_WEB3AUTH_CLIENT_ID).";
   let w = await _getInstance();
   if (!w) throw new Error(NOT_CONFIGURED);
@@ -156,34 +170,65 @@ export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey
   }
 
   let provider: MinimalProvider | null;
+  const instance = w;
+  const wait = awaitWeb3AuthSignIn<MinimalProvider>(
+    instance,
+    instance.connect(),
+    {
+      onStall: () => {
+        // The SDK's loader has no close of its own while connecting (#841); its
+        // modal closing is what lets the sheet show the message instead. The
+        // connector goes on waiting for the pop-up underneath, and so do we.
+        _closeModal(instance);
+        opts.onStall?.();
+      },
+      isCancel: isWeb3AuthCancel,
+    },
+    _waitDeps(),
+  );
+  _abortWait = wait.abort;
   try {
-    provider = await w.connect();
-  } catch (e) {
-    // Defence in depth: the modal never opens over a session still loading
-    // (that refuses above), but if one hydrates mid-modal anyway it can close
-    // the modal and reject with "User closed the modal". The old recovery here
-    // ADOPTED it — the #182 bug through a race window. End it instead and ask
-    // for one retry, which builds a fresh instance from the cleared storage.
-    // `connected` (the stored name) is deliberately the wider read here, not
-    // `isWeb3AuthSessionLive`: anything the SDK still names is ended or refused,
-    // and a logout it cannot run is swallowed.
-    if (w.connected) {
-      try {
-        await w.logout({ cleanup: true });
-      } catch {
-        /* the retry's pre-modal logout gets another attempt */
-      }
-      _resetInstance();
-      throw new Web3AuthSignInError(SURVIVOR_INTERFERED_MESSAGE);
+    const outcome = await wait.outcome;
+    if (outcome.kind === "failed") {
+      const e = outcome.error;
+      // Defence in depth: the modal never opens over a session still loading
+      // (that refuses above), but if one hydrates mid-modal anyway it can close
+      // the modal and reject with "User closed the modal". The old recovery here
+      // ADOPTED it — the #182 bug through a race window. End it instead and ask
+      // for one retry, which builds a fresh instance from the cleared storage.
+      // `connected` (the stored name) is deliberately the wider read here, not
+      // `isWeb3AuthSessionLive`: anything the SDK still names is ended or refused,
+      // and a logout it cannot run is swallowed.
+      if (w.connected) await _endInterferingSession(w);
+      throw e instanceof Error ? e : new Error("Email sign-in failed - please try again.");
     }
-    if (isWeb3AuthCancel(e)) throw new Web3AuthSignInError(SIGN_IN_CANCELLED_MESSAGE, true);
-    throw e instanceof Error ? e : new Error("Email sign-in failed - please try again.");
+    if (outcome.kind === "cancelled") {
+      // The same hydrated-survivor read as a failure: a cancel over a session
+      // the SDK names is never a clean cancel (the "survivor-mid-modal" case).
+      if (w.connected) await _endInterferingSession(w);
+      throw new Web3AuthSignInError(SIGN_IN_CANCELLED_MESSAGE, true);
+    }
+    if (outcome.kind === "timed-out") throw new Web3AuthSignInError(WEB3AUTH_TIMED_OUT_MESSAGE, false, true);
+    if (outcome.recovered) console.debug("[web3auth] sign-in result picked up by the re-check, not the SDK's promise");
+    provider = outcome.provider;
   } finally {
+    _abortWait = null;
     _closeModal(w);
   }
   if (!provider) throw new Web3AuthSignInError(SIGN_IN_CANCELLED_MESSAGE, true);
   markWeb3AuthSessionEstablished();
   return _extractKeyAndAddress(provider);
+}
+
+/** A session the SDK names where the sign-in did not make one: ended, never adopted (#182). */
+async function _endInterferingSession(w: Web3AuthInstance): Promise<never> {
+  try {
+    await w.logout({ cleanup: true });
+  } catch {
+    /* the retry's pre-modal logout gets another attempt */
+  }
+  _resetInstance();
+  throw new Web3AuthSignInError(SURVIVOR_INTERFERED_MESSAGE);
 }
 
 const SIGN_IN_CANCELLED_MESSAGE = "Sign-in was cancelled.";
@@ -198,9 +243,12 @@ const PREVIOUS_SESSION_NOT_CLEARED_MESSAGE =
  * `onCloseLoader`) - so without this the spinner outlives the sheet behind it.
  * Closing the SDK's modal makes connect() settle: rejected as a cancel while
  * nothing is connected, resolved as a sign-in if the pop-up had just finished.
+ * After a stall the modal is already closed and the wait is listening on its
+ * own, so the wait is ended too (web3auth-signin-wait.ts).
  */
 export function cancelWeb3AuthSignIn(): void {
   if (_instance) _closeModal(_instance);
+  _abortWait?.();
 }
 
 /**

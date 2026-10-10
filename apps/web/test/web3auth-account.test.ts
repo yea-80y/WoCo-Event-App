@@ -32,7 +32,34 @@ const { loginWithWeb3Auth, restoreWeb3AuthSession, logoutWeb3Auth, cancelWeb3Aut
 const { SURVIVOR_STILL_LOADING_MESSAGE, SURVIVOR_INTERFERED_MESSAGE } = await import(
   "../src/lib/auth/web3auth-survivor.js"
 );
-const { isWeb3AuthSignInError } = await import("../src/lib/auth/web3auth-signin-error.js");
+const { isWeb3AuthSignInError, WEB3AUTH_TIMED_OUT_MESSAGE } = await import("../src/lib/auth/web3auth-signin-error.js");
+const { SIGN_IN_POLL_MS, SIGN_IN_STALL_AFTER_WATCHED_MS, SIGN_IN_GRACE_MS } = await import(
+  "../src/lib/auth/web3auth-signin-wait.js"
+);
+type SignInWaitDeps = import("../src/lib/auth/web3auth-signin-wait.js").SignInWaitDeps;
+
+/** The page the sign-in wait watches: scripted, so no real timers (web3auth-signin-wait.test.ts has the unit tests). */
+class Page {
+  watching = false;
+  listeners = new Set<() => void>();
+  polls = new Map<unknown, () => void>();
+  deps = (): SignInWaitDeps => ({
+    listen: (fn) => {
+      this.listeners.add(fn);
+      return () => this.listeners.delete(fn);
+    },
+    watching: () => this.watching,
+    setInterval: (fn) => {
+      const h = {};
+      this.polls.set(h, fn);
+      return h;
+    },
+    clearInterval: (h) => void this.polls.delete(h),
+  });
+  tick(ms: number): void {
+    for (let t = 0; t < ms; t += SIGN_IN_POLL_MS) for (const fn of [...this.polls.values()]) fn();
+  }
+}
 
 const KEY_A = "11".repeat(32);
 const KEY_B = "22".repeat(32);
@@ -90,12 +117,25 @@ class FakeSdk extends EventEmitter {
     if (s.loads === "at-init") this.hydrate(s.key);
   }
 
-  /** The stored session finishes loading (the SDK's async rehydration). */
+  /** The stored session finishes loading (the SDK's async rehydration; its
+   *  CONNECTED event says `reconnected: true`, authConnector.js). */
   hydrate(key: string): void {
     this.connected = true;
     this.status = "connected";
     this.provider = { request: async () => key };
-    this.emit("connected");
+    this.emit("connected", { reconnected: true });
+  }
+
+  /** The pop-up's result reaches the connector AFTER the modal's promise is
+   *  gone (closed by our stall, or never answered): a connection this sign-in
+   *  made, `reconnected: false`, that nothing resolves on its own. */
+  lateResult(key: string): void {
+    this.connected = true;
+    this.status = "connected";
+    this.cachedConnector = "auth";
+    this.world.stored = { key, loads: "at-init" };
+    this.provider = { request: async () => key };
+    this.emit("connected", { reconnected: false });
   }
 
   async connect() {
@@ -153,6 +193,7 @@ class World {
   logoutNoop = false;
   /** The sign-in pop-up completes (or not) somewhere this page never hears about. */
   popupNeverAnswers = false;
+  page = new Page();
 
   install(): void {
     setWeb3AuthFactoryForTests(async () => {
@@ -161,7 +202,7 @@ class World {
       this.built.push(sdk);
       await sdk.init();
       return sdk;
-    });
+    }, this.page.deps);
   }
 }
 
@@ -225,6 +266,90 @@ test("a pop-up whose result never comes back can be cancelled from our sheet: th
 test("cancelling with no sign-in under way does nothing", async () => {
   cancelWeb3AuthSignIn();
   assert.equal(world.built.length, 0, "never builds the SDK");
+});
+
+// --- the late result (an iPhone, 2026-10-10) -----------------------------------
+
+test("a result that reaches the connector while the modal's promise never settles signs the person in by itself", async () => {
+  world.popupNeverAnswers = true;
+  const attempt = loginWithWeb3Auth();
+  await settle();
+  const sdk = world.built[0];
+  assert.ok(sdk.pendingConnect, "the SDK's promise is still open");
+  sdk.lateResult(KEY_B);
+  const r = await attempt;
+  assert.equal(r.address, addressOf(KEY_B));
+  assert.equal(sdk.modalClosed, 1, "the SDK's success screen never sits over ours");
+  assert.equal(memory.get("woco:web3auth-session-established"), "1");
+});
+
+test("the spinner is bounded: watched time runs out, the SDK's loader is closed, the sheet is told, and a result in the grace still signs in", async () => {
+  world.popupNeverAnswers = true;
+  let stalls = 0;
+  const attempt = loginWithWeb3Auth({ onStall: () => stalls++ });
+  await settle();
+  const sdk = world.built[0];
+  world.page.watching = true;
+  world.page.tick(SIGN_IN_STALL_AFTER_WATCHED_MS);
+  assert.equal(stalls, 1);
+  assert.equal(sdk.modalClosed, 1, "the loader with no close of its own is closed for the person");
+  await settle();
+  assert.equal(sdk.pendingConnect, null, "the SDK's promise was settled by that close (a cancel) - and ignored");
+  world.page.tick(45 * SIGN_IN_POLL_MS); // the socket's own ping timeout, then its re-ask
+  sdk.lateResult(KEY_B);
+  const r = await attempt;
+  assert.equal(r.address, addressOf(KEY_B), "picked up with no action from the person");
+  assert.equal(sdk.modalClosed, 2);
+});
+
+test("a stalled wait with nothing in the grace ends with the retry message, and the instance stays usable", async () => {
+  world.popupNeverAnswers = true;
+  const attempt = loginWithWeb3Auth();
+  const outcome = assert.rejects(attempt, (e: unknown) => {
+    assert.ok(isWeb3AuthSignInError(e) && e.timedOut && !e.cancelled);
+    assert.equal((e as Error).message, WEB3AUTH_TIMED_OUT_MESSAGE);
+    assert.match((e as Error).message, /Try again/);
+    return true;
+  });
+  await settle();
+  world.page.watching = true;
+  world.page.tick(SIGN_IN_STALL_AFTER_WATCHED_MS + SIGN_IN_GRACE_MS);
+  await outcome;
+  world.popupNeverAnswers = false;
+  const r = await loginWithWeb3Auth();
+  assert.equal(r.address, addressOf(KEY_B));
+  assert.equal(world.built.length, 1);
+});
+
+test("closing our sheet during a stall ends the wait as a quiet cancel", async () => {
+  world.popupNeverAnswers = true;
+  const attempt = loginWithWeb3Auth();
+  const outcome = assert.rejects(attempt, (e: unknown) => {
+    assert.ok(isWeb3AuthSignInError(e) && e.cancelled);
+    return true;
+  });
+  await settle();
+  world.page.watching = true;
+  world.page.tick(SIGN_IN_STALL_AFTER_WATCHED_MS);
+  await settle();
+  cancelWeb3AuthSignIn();
+  await outcome;
+  assert.equal(world.page.polls.size, 0, "nothing left polling");
+});
+
+test("a session that rehydrates mid-wait is never picked up by the re-check (#182)", async () => {
+  world.popupNeverAnswers = true;
+  const attempt = loginWithWeb3Auth();
+  const outcome = assert.rejects(attempt, { name: "Web3AuthSignInError", message: SURVIVOR_INTERFERED_MESSAGE });
+  await settle();
+  const sdk = world.built[0];
+  sdk.hydrate(KEY_A);
+  world.page.tick(5 * SIGN_IN_POLL_MS);
+  await settle();
+  assert.ok(sdk.pendingConnect, "not adopted: the wait is still open");
+  cancelWeb3AuthSignIn();
+  await outcome;
+  assert.deepEqual(sdk.logouts, [{ cleanup: true }], "ended, as before");
 });
 
 test("any other sign-in failure is passed on as itself, modal closed", async () => {

@@ -120,7 +120,9 @@ let _busy = $state(false);
 // Login progress for the modal's authenticating scene — display-only, never
 // gates logic. "waiting" = the user-facing credential step (WebAuthn prompt,
 // wallet popup, Web3Auth modal); "finalizing" = post-credential account setup.
-let _loginStage = $state<"waiting" | "finalizing" | null>(null);
+/** "stalled": a Web3Auth wait whose spinner's time is up - the sheet shows a message
+ *  and a way out while the wait goes on listening (web3auth-signin-wait.ts). */
+let _loginStage = $state<"waiting" | "stalled" | "finalizing" | null>(null);
 
 // In-memory only — never exposed reactively
 let _passkeyPrivateKey: string | null = null;
@@ -2205,7 +2207,11 @@ async function loginWeb3Auth(): Promise<boolean> {
   try {
     const { loginWithWeb3Auth, cancelWeb3AuthSignIn } = await import("./web3auth-account.js");
     _cancelLogin = cancelWeb3AuthSignIn;
-    const { address, privateKey } = await loginWithWeb3Auth();
+    const { address, privateKey } = await loginWithWeb3Auth({
+      onStall: () => {
+        _loginStage = "stalled";
+      },
+    });
     _cancelLogin = null;
     _loginStage = "finalizing";
 
