@@ -3,6 +3,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { isOrphanedCredentialError } from "../../auth/orphaned-credential.js";
   import { isWeb3AuthSignInError } from "../../auth/web3auth-signin-error.js";
+  import { isSignInFailedError, SIGN_IN_FAILED_MESSAGE } from "../../auth/signin-failure.js";
   import type { InAppBrowser } from "../../browser/in-app-browser.js";
   import type { EscapeLink } from "../../browser/in-app-escape.js";
 
@@ -20,6 +21,8 @@
   let { oncomplete, onstart, onsettle, inApp }: Props = $props();
 
   let error = $state<string | null>(null);
+  /** A failure with no words of its own carries a short code to screenshot (signin-failure.ts). */
+  let errorCode = $state<string | null>(null);
   /** The attempt under way, so Try again can wait for the cancelled one to settle. */
   let attempt: Promise<unknown> | null = null;
 
@@ -47,13 +50,18 @@
 
   async function login() {
     error = null;
+    errorCode = null;
     onstart?.();
     const run = auth.loginWeb3Auth();
     attempt = run;
     try {
       const ok = await run;
       if (ok) oncomplete?.();
-      else error = "Sign-in failed — please try again.";
+      else {
+        // Only when another sign-in was already under way (the store's busy guard).
+        error = SIGN_IN_FAILED_MESSAGE;
+        errorCode = "W3A-busy";
+      }
     } catch (e: unknown) {
       // An orphaned-credential refusal (#255) is explained by the modal's
       // one-shot notice — don't repeat it here. Closing Web3Auth's own window
@@ -61,7 +69,8 @@
       if (isWeb3AuthSignInError(e) && e.cancelled) {
         error = null;
       } else if (!isOrphanedCredentialError(e)) {
-        error = e instanceof Error ? e.message.slice(0, 160) : "Sign-in failed";
+        error = e instanceof Error ? e.message.slice(0, 160) : SIGN_IN_FAILED_MESSAGE;
+        if (isSignInFailedError(e)) errorCode = e.code;
       }
     } finally {
       onsettle?.();
@@ -99,6 +108,9 @@
     </button>
     {#if error}
       <p class="error">{error}</p>
+      {#if errorCode}
+        <p class="error-code">Code: <code>{errorCode}</code></p>
+      {/if}
       {#if escape}
         <a class="open-btn" href={escape.href}>{escapeLabel}</a>
       {/if}
@@ -189,6 +201,19 @@
     font-size: 0.875rem;
     margin: 0;
     text-align: center;
+  }
+
+  .error-code {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+
+  .error-code code {
+    user-select: all;
+    -webkit-user-select: all;
   }
 
   .spinner {

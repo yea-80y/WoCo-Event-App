@@ -26,6 +26,7 @@ import {
 } from "./web3auth-survivor.js";
 import { Web3AuthSignInError, WEB3AUTH_TIMED_OUT_MESSAGE, isWeb3AuthCancel } from "./web3auth-signin-error.js";
 import { awaitWeb3AuthSignIn, browserSignInWaitDeps, type SignInWaitDeps } from "./web3auth-signin-wait.js";
+import { markSignInStep } from "./signin-failure.js";
 
 type MinimalProvider = { request: (args: { method: string }) => Promise<unknown> };
 
@@ -140,7 +141,14 @@ export async function loginWithWeb3Auth(
   opts: { onStall?: () => void } = {},
 ): Promise<{ address: string; privateKey: `0x${string}` }> {
   const NOT_CONFIGURED = "Email login isn't configured yet (missing VITE_WEB3AUTH_CLIENT_ID).";
-  let w = await _getInstance();
+  // Each raw failure below is marked with its step, for the code the sign-in
+  // button shows (signin-failure.ts); the error itself is passed on unchanged.
+  let w: Web3AuthInstance | null;
+  try {
+    w = await _getInstance();
+  } catch (e) {
+    throw markSignInStep(e, "sdk");
+  }
   if (!w) throw new Error(NOT_CONFIGURED);
 
   // Throws are surfaced, not swallowed: a survivor we could not end must
@@ -171,6 +179,7 @@ export async function loginWithWeb3Auth(
 
   let provider: MinimalProvider | null;
   const instance = w;
+  let stalled = false;
   const wait = awaitWeb3AuthSignIn<MinimalProvider>(
     instance,
     instance.connect(),
@@ -179,6 +188,7 @@ export async function loginWithWeb3Auth(
         // The SDK's loader has no close of its own while connecting (#841); its
         // modal closing is what lets the sheet show the message instead. The
         // connector goes on waiting for the pop-up underneath, and so do we.
+        stalled = true;
         _closeModal(instance);
         opts.onStall?.();
       },
@@ -200,7 +210,9 @@ export async function loginWithWeb3Auth(
       // `isWeb3AuthSessionLive`: anything the SDK still names is ended or refused,
       // and a logout it cannot run is swallowed.
       if (w.connected) await _endInterferingSession(w);
-      throw e instanceof Error ? e : new Error("Email sign-in failed - please try again.");
+      // A non-Error rejection (the auth iframe's LOGIN_FAILED string) is wrapped
+      // with its value kept as the cause - that value is the clue the code carries.
+      throw markSignInStep(e, "connect", [`st.${w.status}`, ...(stalled ? ["stalled"] : [])]);
     }
     if (outcome.kind === "cancelled") {
       // The same hydrated-survivor read as a failure: a cancel over a session
@@ -217,7 +229,11 @@ export async function loginWithWeb3Auth(
   }
   if (!provider) throw new Web3AuthSignInError(SIGN_IN_CANCELLED_MESSAGE, true);
   markWeb3AuthSessionEstablished();
-  return _extractKeyAndAddress(provider);
+  try {
+    return await _extractKeyAndAddress(provider);
+  } catch (e) {
+    throw markSignInStep(e, "key");
+  }
 }
 
 /** A session the SDK names where the sign-in did not make one: ended, never adopted (#182). */
