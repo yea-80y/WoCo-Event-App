@@ -255,8 +255,8 @@
           of the ticket price, and it only goes down: the organiser terms cap it
           at 1.5% and stop any update to those terms raising the cap.
         </p>
-        <!-- DELETE AT LAUNCH, alongside PreLaunchBanner: both name the test
-             rails (Stripe test mode, Arbitrum Sepolia). -->
+        <!-- DELETE AT LAUNCH, alongside ClaimButton's test-card line: both name
+             the test rails (Stripe test mode, Arbitrum Sepolia). -->
         <p class="note">
           WoCo is pre-launch. Until launch, card payments run in Stripe's test
           mode and tickets are recorded on Arbitrum Sepolia, a test network.

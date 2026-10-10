@@ -10,7 +10,8 @@
   // From its own module: importing this key from envelope-reprobe.ts would hoist
   // that deliberately-lazy module into the entry chunk.
   import { AUTH_NOTICE_KEY } from "../../auth/auth-notice.js";
-  import { navigate } from "../../router/router.svelte.js";
+  import { router, navigate } from "../../router/router.svelte.js";
+  import { isOrganiserSignIn } from "../../auth/organiser-account.js";
   import { canonicalUrl } from "../../sub-ens/host-label.js";
   import { mustSignInElsewhere } from "../../auth/sign-in-host.js";
   import type { InAppBrowser } from "../../browser/in-app-browser.js";
@@ -37,6 +38,11 @@
 
   // Modal is visible if either prop-driven or store-driven
   const visible = $derived(open || loginRequest.pending);
+
+  // Organisers sign in with a passkey only (#746): Start hosting, the organiser
+  // portal's Sign in, and every organiser screen's own button. Attendees keep
+  // email as well. Gated by where the request came from - one modal, not two.
+  const organiserSignIn = $derived(isOrganiserSignIn(loginRequest.context, router.surface));
 
   // THE choke point for every sign-in CTA in this app: they all end at
   // loginRequest.request(), which only this modal can answer. Off the canonical
@@ -200,6 +206,7 @@
               : view === "wallet" ? "Connect a wallet"
               : loginRequest.context === "invite" ? "Create your account"
               : loginRequest.context === "ticket" ? "Add your ticket"
+              : organiserSignIn ? "Organiser sign in"
               : "Sign in"}
           </h2>
           {#if authing || view === "wallet"}
@@ -210,6 +217,8 @@
             </p>
           {:else if loginRequest.context === "ticket"}
             <p class="context-sub">Sign in, or create a free account. Your ticket goes straight into it.</p>
+          {:else if organiserSignIn}
+            <p class="context-sub">Organisers sign in with a passkey. New here? Creating one takes a minute.</p>
           {/if}
         </div>
         <button class="close-btn" onclick={close} aria-label="Close">
@@ -281,7 +290,7 @@
             {#await import("./InAppBrowserNotice.svelte") then { default: InAppBrowserNotice }}
               <InAppBrowserNotice found={inAppBrowser} />
             {/await}
-            {#if loginRequest.context !== "invite"}
+            {#if !organiserSignIn}
               <div class="group-label"><span>Or try here anyway</span></div>
               <Web3AuthLogin
                 oncomplete={handleComplete}
@@ -294,14 +303,15 @@
             {/if}
           {:else}
           <PasskeyLogin
+            organiser={organiserSignIn}
             oncomplete={handleComplete}
             onstart={() => start("passkey")}
             onsettle={settle}
             onlink={() => { close(); navigate("/link"); }}
           />
 
-          <!-- Organising needs a passkey account (#746 step 5): "Start hosting" offers no other way in. -->
-          {#if loginRequest.context !== "invite"}
+          <!-- Organising needs a passkey account (#746 step 5): an organiser sign-in offers no other way in. -->
+          {#if !organiserSignIn}
             <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} inApp={null} />
 
             {#if FEATURES.walletLoginAllowed}

@@ -397,7 +397,7 @@
     <section class="signin-callout card">
       <div>
         <h2>Sign in to see your dashboard</h2>
-        <p>Use your passkey, email or wallet to create events and sell tickets.</p>
+        <p>Organisers sign in with a passkey. New here? Create one in a minute and start selling tickets.</p>
       </div>
       <button class="btn btn--primary" onclick={() => loginRequest.request()}>Sign in</button>
     </section>

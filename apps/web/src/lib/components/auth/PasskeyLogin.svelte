@@ -7,7 +7,6 @@
     passkeyRefusalAdvice,
   } from "../../auth/passkey-refusal-copy.js";
   import { onMount } from "svelte";
-  import { loginRequest } from "../../auth/login-request.svelte.js";
   import { PASSKEY_ONLY_RECOVERY_NOTE } from "../../auth/organiser-account.js";
 
   interface Props {
@@ -18,11 +17,15 @@
     onsettle?: () => void;
     /** "Link this device" (#746 step 4) was chosen: the modal closes for its screen. */
     onlink?: () => void;
+    /** An organiser sign-in (`isOrganiserSignIn`): a passkey is the only way in, so say so where it can't work. */
+    organiser?: boolean;
   }
 
-  let { oncomplete, onstart, onsettle, onlink }: Props = $props();
+  let { oncomplete, onstart, onsettle, onlink, organiser = false }: Props = $props();
   let error = $state<string | null>(null);
   let supported = $state(false);
+  /** Set with `supported` on mount, so the no-passkey line never flashes before the check. */
+  let checked = $state(false);
   /** Emphasises the create button after a sign-in found nothing — never auto-clicks it. */
   let offerCreate = $state(false);
   /** A sign-in from another device that could not be confirmed (#746): points at "Add this device". */
@@ -34,6 +37,7 @@
 
   onMount(() => {
     supported = isPasskeySupported();
+    checked = true;
     // Warm the chunks the post-biometric path needs (ethers; viem/zerodev on
     // first-device logins) so the click never stalls on a download.
     if (supported) void auth.prefetchPasskeySdk();
@@ -82,9 +86,9 @@
       } else if (mode === "create" && res.error?.name === "PasskeyCeremonyCancelledError" && (apple = appleDevice())) {
         // After a sheet (a quick refusal is noSheet, above): on an iPhone or iPad this
         // is also what "no password manager set up for passkeys" ends in.
-        error = passkeyCreateRefusedAdvice(apple, loginRequest.context === "invite");
+        error = passkeyCreateRefusedAdvice(apple, organiser);
       } else if (res.error instanceof PasskeyBrowserRefusedError) {
-        error = passkeyRefusalAdvice(res.error.host, loginRequest.context === "invite");
+        error = passkeyRefusalAdvice(res.error.host, organiser);
       } else {
         error = res.error?.message ?? "Passkey authentication failed. Try again or use another method.";
       }
@@ -133,7 +137,7 @@
     >
       New to WoCo? Create a passkey account
     </button>
-    {#if loginRequest.context === "invite"}
+    {#if organiser}
       <!-- An organiser's account has no email or wallet backup (#746 step 5): said before it exists. -->
       <p class="recovery-note">{PASSKEY_ONLY_RECOVERY_NOTE} Link a second device once you're in.</p>
     {/if}
@@ -195,6 +199,11 @@
       <p class="error" role="alert">{error}</p>
     {/if}
   </div>
+{:else if checked && organiser}
+  <!-- Nothing else is offered to an organiser, so an empty sheet here would be a dead end. -->
+  <p class="error" role="alert">
+    This browser can't use passkeys, and organising needs one - open WoCo in Chrome, Brave, Edge or Safari to continue.
+  </p>
 {/if}
 
 <style>

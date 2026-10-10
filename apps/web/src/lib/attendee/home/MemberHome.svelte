@@ -91,8 +91,8 @@
 <div class="member-home">
   {#if !auth.parent}
     <section class="signed-out">
-      <h1>Your invite and your name live here.</h1>
-      <p class="lead">Sign in to share your invite and see who verified through it.</p>
+      <h1>Your tickets, your invite and your name live here.</h1>
+      <p class="lead">Sign in to see your tickets, share your invite and see who verified through it.</p>
       <button class="btn btn--primary" onclick={() => loginRequest.request({ context: "attendee" })}>
         Sign in
       </button>

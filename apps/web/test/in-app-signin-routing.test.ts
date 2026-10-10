@@ -47,7 +47,7 @@ test("in an in-app browser the way out comes first, then the email sign-in as a 
 
 test("an organiser invite in an in-app browser gets the way out and an explanation, never a passkey ceremony", () => {
   const { inApp } = branches();
-  const invite = inApp.indexOf('{#if loginRequest.context !== "invite"}');
+  const invite = inApp.indexOf("{#if !organiserSignIn}");
   const other = inApp.indexOf("{:else}", invite);
   assert.ok(invite > 0 && other > invite);
   assert.match(inApp.slice(other), /Organiser accounts use a passkey, which this browser can't create/);

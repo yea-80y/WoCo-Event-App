@@ -1,18 +1,16 @@
 <!--
   Splitter — the root landing at /.
   Funnels visitors to either the organiser or attendee surface.
-  Design spec: memory/project_ui_theming_direction.md ("Own your scene.")
+  Design spec: memory/project_ui_theming_direction.md (headline now "Built Different", owner 2026-10-10)
 -->
 <script lang="ts">
   import { navigate } from "../router/router.svelte.js";
   import { WOCO_COMPANY_LINE } from "@woco/shared";
-  import { loginRequest } from "../auth/login-request.svelte.js";
-  import { auth } from "../auth/auth-store.svelte.js";
   import TicketStub from "../components/icons/sprites/TicketStub.svelte";
   import DoorOpen from "../components/icons/sprites/DoorOpen.svelte";
   import SprayCan from "../components/icons/sprites/SprayCan.svelte";
   import WocoWordmark from "../components/brand/WocoWordmark.svelte";
-  import PreLaunchBanner from "../components/status/PreLaunchBanner.svelte";
+  import PortalSwitch from "../components/nav/PortalSwitch.svelte";
   import InstallSlot from "../pwa/InstallSlot.svelte";
   import ArrowRight from "lucide-svelte/icons/arrow-right";
   // Two photographs, two jobs. `crowd` is screen-blended so its pure-black
@@ -33,22 +31,17 @@
 
 
 <div class="root">
-  <PreLaunchBanner />
-
   <!-- ── Top bar ─────────────────────────────────────────────────────── -->
   <header class="top">
     <button class="brand" onclick={() => navigate("/")} aria-label="WoCo home">
       <WocoWordmark height={22} variant="default" />
     </button>
-    <nav class="top-nav">
+    <!-- The same two portals, signed in or not: each opens first and asks for a
+         sign-in inside where it needs one (PortalSwitch). -->
+    <div class="top-nav">
       <button class="link" onclick={() => navigate("/discover")}>Discover</button>
-      <button class="link" onclick={() => navigate("/creator")}>For organisers</button>
-      {#if auth.isConnected}
-        <button class="btn btn--ghost btn-sm" onclick={() => navigate("/tickets")}>My tickets</button>
-      {:else}
-        <button class="btn btn--ghost btn-sm" onclick={() => loginRequest.request()}>Sign in</button>
-      {/if}
-    </nav>
+      <PortalSwitch />
+    </div>
   </header>
 
   <!-- Install offer: a slim card under the top bar, never a modal (lazy, see InstallSlot). -->
@@ -73,7 +66,7 @@
       </div>
 
       <h1 class="hero-headline">
-        Own your <span class="tag-display headline-tag">scene</span>.
+        Built <span class="tag-display headline-tag">Different</span>
       </h1>
 
       <p class="hero-sub">
@@ -515,11 +508,10 @@
   }
   .link:hover { color: var(--accent); border-bottom-color: var(--accent); }
   .link-quiet { color: var(--text-muted); }
-  .btn-sm { padding: 0.5rem 0.875rem; font-size: 0.8125rem; }
 
   @media (max-width: 640px) {
     .top-nav { gap: 0.875rem; }
-    .top-nav .link:nth-child(1) { display: none; }
+    .top-nav > .link { display: none; }
   }
 
   /* ── Hero ──────────────────────────────────────────────────────── */
@@ -625,6 +617,11 @@
     .hero-light picture { --lit: 0.5; --lit-peak: 0.6; }
   }
 
+  /* The one kicker read as a line, not a label: larger than the others. */
+  .hero-kicker .mono-kicker {
+    font-size: 0.875rem;
+  }
+
   /* Phone: stop overlaying and give the photograph its own band above the
      headline. Behind type it had to be dimmed to about half strength to stay
      legible, which wasted it; in a band of its own it runs at full strength.
@@ -678,6 +675,11 @@
       color: var(--text);
       font-weight: 700;
       text-shadow: 0 0 2px var(--bg), 0 1px 8px var(--bg);
+      /* A step up from 11px (owner 2026-10-10), with the tracking brought in. */
+      font-size: 0.75rem;
+      letter-spacing: 0.04em;
+      /* Two even lines rather than one long and an orphaned word. */
+      text-wrap: balance;
     }
   }
   .hero-kicker {

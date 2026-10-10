@@ -10,8 +10,7 @@
   import NavIcon from "../components/nav/NavIcon.svelte";
   import ShoppingBag from "lucide-svelte/icons/shopping-bag";
   import Layers from "lucide-svelte/icons/layers";
-  import ArrowLeft from "lucide-svelte/icons/arrow-left";
-  import PreLaunchBanner from "../components/status/PreLaunchBanner.svelte";
+  import PortalSwitch from "../components/nav/PortalSwitch.svelte";
   import SessionEndedBanner from "../components/auth/SessionEndedBanner.svelte";
 
   interface Props {
@@ -38,7 +37,7 @@
 
   function openProfile() {
     if (!auth.isConnected || !auth.parent) {
-      void loginRequest.request();
+      void loginRequest.request({ context: "creator" });
       return;
     }
     navigate(`/creator/profile/${auth.parent.toLowerCase()}`);
@@ -65,7 +64,6 @@
 <svelte:window onkeydown={(e) => { if (e.key === "Escape" && createOpen) createOpen = false; }} />
 
 <main>
-  <PreLaunchBanner variant="strip" />
   <SessionEndedBanner />
   {#if auth.kind === "passkey" && auth.hasSession}
     {#await import("../components/passkeys/NewPasskeyBanner.svelte") then { default: NewPasskeyBanner }}
@@ -78,24 +76,21 @@
     {/await}
   {/if}
   <header class="top-bar">
-    <button class="logo" onclick={() => navigate(auth.isConnected && auth.parent ? "/home" : "/")} aria-label="WoCo home">
+    <!-- Always the home page; "Organisers" lit in the switch says which portal this is. -->
+    <button class="logo" onclick={() => navigate("/")} aria-label="WoCo home">
       <WocoWordmark height={20} variant="default" />
-      <span class="surface-badge">Organiser</span>
     </button>
 
     <div class="top-right">
       {#if !auth.ready}
         <span class="loading">Loading...</span>
       {:else if auth.isConnected && auth.parent}
-        <!-- Organiser mode is a workspace you step into; this is the way back to
-             WoCo, the same app every account uses to browse, buy and keep tickets. -->
-        <button class="surface-toggle" onclick={() => navigate("/home")} title="Back to WoCo" aria-label="Back to WoCo">
-          <span class="surface-toggle-arrow"><ArrowLeft size={14} strokeWidth={2.5} /></span>
-          <span class="surface-toggle-label">WoCo</span>
-        </button>
+        <PortalSwitch current="organiser" />
         <SessionStatus compact />
       {:else}
-        <button class="sign-in-btn" onclick={() => loginRequest.request()}>
+        <PortalSwitch current="organiser" />
+        <!-- An organiser sign-in: passkey only (isOrganiserSignIn). -->
+        <button class="sign-in-btn" onclick={() => loginRequest.request({ context: "creator" })}>
           Sign in
         </button>
       {/if}
@@ -170,19 +165,6 @@
   }
   .logo:hover { transform: translate(-1px, -1px); }
 
-  .surface-badge {
-    display: inline-block;
-    padding: 0.125rem 0.4375rem;
-    font-family: var(--font-mono);
-    font-size: 0.625rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--accent-ink);
-    background: var(--accent);
-    border-radius: var(--radius-sm);
-  }
-
   .top-right {
     display: flex;
     align-items: center;
@@ -190,31 +172,6 @@
     min-width: 0;
     overflow: hidden;
     flex-shrink: 1;
-  }
-
-  .surface-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0.3125rem 0.625rem;
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--text-muted);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    transition: all var(--transition);
-    white-space: nowrap;
-  }
-  .surface-toggle:hover {
-    color: var(--accent-text);
-    border-color: var(--accent);
-  }
-  .surface-toggle-arrow { font-size: 0.875rem; line-height: 1; }
-
-  @media (max-width: 360px) {
-    .surface-toggle-label { display: none; }
-    .surface-toggle { padding: 0.3125rem 0.5rem; }
   }
 
   .sign-in-btn {
@@ -228,6 +185,12 @@
     white-space: nowrap;
   }
   .sign-in-btn:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+  /* Logo, both portals and Sign in on one row down to a 360px phone. */
+  @media (max-width: 400px) {
+    .top-right { gap: 0.625rem; }
+    .sign-in-btn { padding: 0.375rem 0.625rem; }
+  }
 
   .loading { color: var(--text-muted); font-size: 0.8125rem; }
   .content { padding: 0.25rem 0 2rem; }
