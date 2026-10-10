@@ -255,18 +255,13 @@
           <p>
             Most tickets are a barcode in an email - once it's scanned, it's
             spent. A WoCo ticket is a signed record in an open format, recorded
-            onchain, so any app can read it and check it's real without asking
-            us.
+            onchain, so anyone can check it's real without asking us.
           </p>
           <p>
-            That gives it a life after the door. The tickets someone holds
-            become a record of the events they go to - and with their say-so,
-            that's how you'll see who keeps coming back.
-          </p>
-          <p>
-            Other platforms keep that picture to themselves. Here it belongs to
-            the person it's about, and is shared only where they choose. We're
-            building the opt-in tools for this next.
+            And it's theirs, not ours. Tickets are just the start - every event
+            someone goes to adds to a record they own. With their say-so, that
+            gives you insight no ticketing platform can: who your real regulars
+            are.
           </p>
           </div>
           <span class="built-spec mono">Open format · signed · onchain</span>
