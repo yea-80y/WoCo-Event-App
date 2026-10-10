@@ -15,8 +15,11 @@ import { isFirefoxAndroidUserAgent, isIosUserAgent } from "./install-capture.js"
 
 export type InstallOffer = "prompt" | "ios" | "firefox-android";
 
-/** Routes the offer may appear on: the home screens. Never sign-in, an event page or checkout. */
-export const INSTALL_ROUTES: ReadonlySet<string> = new Set(["home", "discover", "member-home"]);
+/**
+ * Routes the offer may appear on: the landing page at / (`splitter`, where most
+ * people arrive) and the attendee home screens. Never sign-in, an event page or checkout.
+ */
+export const INSTALL_ROUTES: ReadonlySet<string> = new Set(["splitter", "home", "discover", "member-home"]);
 
 /** A dismissal holds this long before the offer may come back once. */
 export const DISMISS_GAP_MS = 120 * 24 * 60 * 60 * 1000;

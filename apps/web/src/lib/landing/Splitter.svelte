@@ -13,6 +13,7 @@
   import SprayCan from "../components/icons/sprites/SprayCan.svelte";
   import WocoWordmark from "../components/brand/WocoWordmark.svelte";
   import PreLaunchBanner from "../components/status/PreLaunchBanner.svelte";
+  import InstallSlot from "../pwa/InstallSlot.svelte";
   import ArrowRight from "lucide-svelte/icons/arrow-right";
   // Two photographs, two jobs. `crowd` is screen-blended so its pure-black
   // pixels resolve to exactly --bg and the frame dissolves — it is a light
@@ -49,6 +50,11 @@
       {/if}
     </nav>
   </header>
+
+  <!-- Install offer: a slim card under the top bar, never a modal (lazy, see InstallSlot). -->
+  <div class="install-slot">
+    <InstallSlot />
+  </div>
 
   <!-- ── Hero ────────────────────────────────────────────────────────── -->
   <section class="hero scanlines grain">
@@ -462,6 +468,14 @@
     background: var(--bg);
     color: var(--text);
     min-height: 100vh;
+  }
+
+  /* ── Install offer ─────────────────────────────────────────────── */
+
+  .install-slot {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 1.5rem;
   }
 
   /* ── Top bar ────────────────────────────────────────────────────── */
