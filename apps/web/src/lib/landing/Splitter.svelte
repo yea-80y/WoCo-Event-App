@@ -258,10 +258,11 @@
             onchain, so anyone can check it's real without asking us.
           </p>
           <p>
-            And it's theirs, not ours. Tickets are just the start - every event
-            someone goes to adds to a record they own. With their say-so, that
-            gives you insight no ticketing platform can: who your real regulars
-            are.
+            And it's theirs, not ours - which makes it something to build on.
+            Open a presale only to people who came last time, or give your
+            regulars a discount. Tickets are just the start: as more businesses
+            join, the same record can carry loyalty points and purchases at the
+            bar, the shop or the venue next door.
           </p>
           </div>
           <span class="built-spec mono">Open format · signed · onchain</span>
