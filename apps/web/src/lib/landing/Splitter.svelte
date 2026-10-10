@@ -247,29 +247,47 @@
       </div>
 
       <div class="built-grid">
-        <!-- Leads, full width: the claim incumbents cannot make. -->
+        <!-- Leads, full width: the claim incumbents cannot make. Text on the
+             left; on the right, what one record can carry. Only the ticket is
+             lit: presale gating is built but flagged off (badgesAllowed), and
+             loyalty and purchases are where this goes, not features. -->
         <article class="built-item built-item--lead">
-          <span class="built-label mono">Open</span>
-          <h3>More than a QR code.</h3>
-          <div class="lead-body">
-          <p>
-            Most tickets are a barcode in an email - once it's scanned, it's
-            spent. A WoCo ticket is a signed record in an open format, recorded
-            onchain, so anyone can check it's real without asking us.
-          </p>
-          <p>
-            And it's theirs, not ours - which makes it something to build on.
-            Open a presale only to people who came last time, or give your
-            regulars a discount. Tickets are just the start: as more businesses
-            join, the same record can carry loyalty points and purchases at the
-            bar, the shop or the venue next door.
-          </p>
-          <p class="lead-close">
-            This is the start of an ecosystem where people control their own
-            record - and that unlocks insight no single ticketing platform can
-            achieve.
-          </p>
+          <div class="lead-text">
+            <span class="built-label mono">Open</span>
+            <h3>More than a QR code.</h3>
+            <p>
+              Most tickets are a barcode in an email - once it's scanned, it's
+              spent. A WoCo ticket is a signed record in an open format, recorded
+              onchain, so anyone can check it's real without asking us.
+            </p>
+            <p>
+              It's something to build on. Open a presale only to people who came
+              last time, or give your regulars a discount. Tickets are just the
+              start: as more businesses join, the same record can carry loyalty
+              points and purchases at the bar, the shop or the venue next door.
+            </p>
+            <p class="lead-close">
+              This is the start of an ecosystem where people control their own
+              record - and that unlocks insight no single ticketing platform can
+              achieve.
+            </p>
           </div>
+
+          <div class="record">
+            <span class="record-head mono">// One record</span>
+            <ol class="record-list">
+              <li class="record-row is-live">
+                <span class="record-dot" aria-hidden="true"></span>
+                <span>Ticket</span>
+                <span class="record-tag mono">Live</span>
+              </li>
+              <li class="record-row"><span class="record-dot" aria-hidden="true"></span><span>Presale access</span></li>
+              <li class="record-row"><span class="record-dot" aria-hidden="true"></span><span>Regulars' discount</span></li>
+              <li class="record-row"><span class="record-dot" aria-hidden="true"></span><span>Loyalty points</span></li>
+              <li class="record-row"><span class="record-dot" aria-hidden="true"></span><span>Purchases next door</span></li>
+            </ol>
+          </div>
+
           <span class="built-spec mono">Open format · signed · onchain</span>
         </article>
 
@@ -973,15 +991,20 @@
   /* The lead card takes the full row; the two below share the next. */
   @media (min-width: 880px) {
     .built-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .built-item--lead { grid-column: 1 / -1; }
-    /* The two paragraphs side by side, the closing line across both. */
-    .lead-body {
+    /* One reading column beside the record, never text spread edge to edge. */
+    /* Scoped to the grid so it outranks .built-item's flex column below. */
+    .built-grid .built-item--lead {
+      grid-column: 1 / -1;
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0 2.5rem;
+      grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.75fr);
+      grid-template-areas: "text record" "spec spec";
+      column-gap: 3.5rem;
+      padding: 2.25rem 2.25rem 1.75rem;
     }
-    .built-item--lead .lead-body p + p { margin-top: 0; }
-    .built-item--lead .lead-body .lead-close { grid-column: 1 / -1; margin-top: 1.25rem; }
+    .lead-text { grid-area: text; }
+    .record { grid-area: record; align-self: center; }
+    .built-item--lead .built-spec { grid-area: spec; }
+    .built-grid .built-item--lead h3 { font-size: clamp(1.625rem, 2.4vw, 2rem); }
   }
 
   .built-item {
@@ -994,6 +1017,7 @@
     border-radius: var(--radius-sm);
   }
   .built-label {
+    display: block;
     font-size: 0.6875rem;
     font-weight: 700;
     text-transform: uppercase;
@@ -1015,10 +1039,67 @@
   }
   .built-item p + p { margin-top: 0.625rem; }
   .built-item p:last-of-type { margin-bottom: 1.25rem; }
-  .lead-body { margin-bottom: 1.25rem; }
+  .lead-text p { max-width: 58ch; }
   /* The card's closing line: the one sentence an organiser should leave with. */
-  .lead-body .lead-close { color: var(--text); font-weight: 500; }
-  .lead-body p:last-of-type { margin-bottom: 0; }
+  .built-item .lead-close { color: var(--text); font-weight: 500; margin-top: 1rem; }
+
+  /* What one record can carry: the ticket lit, the rest still to come. */
+  .record {
+    margin-bottom: 1.25rem;
+    padding: 1.25rem 1.375rem 1rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .record-head {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-size: 0.625rem;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--text-muted);
+  }
+  .record-list { list-style: none; margin: 0; padding: 0; }
+  .record-row {
+    position: relative;
+    display: grid;
+    grid-template-columns: 0.75rem 1fr auto;
+    align-items: center;
+    gap: 0.875rem;
+    padding: 0.5625rem 0;
+    font-size: 0.9375rem;
+    color: var(--text-muted);
+  }
+  /* The dashed thread from one stop to the next. */
+  .record-row:not(:last-child)::after {
+    content: "";
+    position: absolute;
+    left: calc(0.375rem - 0.5px);
+    top: calc(50% + 0.5rem);
+    height: calc(100% - 1rem);
+    border-left: 1px dashed var(--border-hover);
+  }
+  .record-dot {
+    width: 0.625rem;
+    height: 0.625rem;
+    justify-self: center;
+    border: 1.5px solid var(--border-hover);
+    border-radius: 50%;
+    background: var(--bg-surface);
+  }
+  .record-row.is-live { color: var(--text); font-weight: 600; }
+  .record-row.is-live .record-dot {
+    background: var(--accent);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 4px var(--accent-subtle);
+  }
+  .record-tag {
+    font-size: 0.625rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--accent);
+  }
   /* Pinned to the bottom so the three spec lines sit on one baseline however
      long each paragraph runs. */
   .built-spec {
