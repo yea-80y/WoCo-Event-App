@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 
 import {
   decideInstallOffer,
+  installMethod,
   readInstallMemory,
   writeInstallMemory,
   DISMISS_GAP_MS,
@@ -83,7 +84,7 @@ test("never inside a social app's built-in browser - the open-in-browser notice 
 });
 
 test("only on the landing page and the home screens, never during sign-in, signing or checkout", () => {
-  for (const route of ["splitter", "home", "discover", "member-home"]) assert.ok(INSTALL_ROUTES.has(route), route);
+  for (const route of ["splitter", "home", "discover", "member-home", "creator-home"]) assert.ok(INSTALL_ROUTES.has(route), route);
   assert.equal(decideInstallOffer(inputs({ userAgent: IPHONE_SAFARI, route: "splitter" })), "ios", "the landing page at / is where most people arrive");
   for (const route of INSTALL_ROUTES) assert.equal(decideInstallOffer(inputs({ hasPrompt: true, route })), "prompt", route);
   for (const route of ["event", "event-purchased", "signup", "profile", "protect", "passkeys", "link", "recover", "legal", "about", "invite"]) {
@@ -136,12 +137,21 @@ test("the prompt is captured at boot; the banner itself stays out of the first l
   assert.ok(!/^\s*import\s/m.test(capture), "install-capture.ts imports nothing, so it adds nothing to boot");
   // Every placement goes through the one slot, which fetches the banner lazily and only where an install is possible.
   assert.match(slot, /\{#if installable && INSTALL_ROUTES\.has\(router\.route\)\}\s*\{#await import\("\.\/InstallBanner\.svelte"\)/);
-  for (const host of ["../src/AttendeeApp.svelte", "../src/lib/landing/Splitter.svelte", "../src/lib/pwa/InstallSlot.svelte"]) {
+  for (const host of [
+    "../src/AttendeeApp.svelte",
+    "../src/lib/layouts/CreatorShell.svelte",
+    "../src/lib/landing/Splitter.svelte",
+    "../src/lib/pwa/InstallSlot.svelte",
+    "../src/lib/components/profile/ProfilePage.svelte",
+  ]) {
     const src = read(host);
     assert.ok(!/import\s+InstallBanner\s+from/.test(src), `${host}: the banner component is loaded lazily, never statically`);
   }
   assert.match(read("../src/AttendeeApp.svelte"), /<InstallSlot \/>/);
   assert.match(read("../src/lib/landing/Splitter.svelte"), /<InstallSlot \/>/, "the landing page at / offers the install too");
+  assert.match(read("../src/lib/layouts/CreatorShell.svelte"), /<InstallSlot \/>/, "the organiser dashboard offers it too");
+  // The permanent entry: Profile's Account card, shared by both portals, lazily loaded.
+  assert.match(read("../src/lib/components/profile/ProfilePage.svelte"), /\{#await import\("\.\.\/\.\.\/pwa\/InstallAppRow\.svelte"\)/);
 });
 
 test("the boot capture holds the prompt once, hides the browser's own bar, and knows the installed app", async () => {
@@ -192,4 +202,17 @@ test("the boot capture holds the prompt once, hides the browser's own bar, and k
     g.window = saved.window;
     if (saved.navigator) Object.defineProperty(globalThis, "navigator", saved.navigator);
   }
+});
+
+test("the permanent Profile row ignores route and dismissal, never the installed app", () => {
+  const base = { userAgent: IPHONE_SAFARI, touchMac: false, standalone: false, hasPrompt: false, inAppBrowser: false };
+  assert.equal(installMethod(base), "ios", "iOS gets the Add to Home Screen steps");
+  assert.equal(installMethod({ ...base, userAgent: ANDROID_CHROME, hasPrompt: true }), "prompt");
+  assert.equal(installMethod({ ...base, userAgent: FIREFOX_ANDROID }), "firefox-android");
+  assert.equal(installMethod({ ...base, standalone: true }), null, "hidden inside the installed app");
+  assert.equal(installMethod({ ...base, installed: true }), null);
+  assert.equal(installMethod({ ...base, inAppBrowser: true }), null);
+  assert.equal(installMethod({ ...base, userAgent: FIREFOX_DESKTOP }), null, "no install path: no row");
+  // A banner dismissal does not hide the permanent row.
+  assert.equal(decideInstallOffer(inputs({ userAgent: IPHONE_SAFARI, memory: { dismissedAt: NOW } })), null);
 });

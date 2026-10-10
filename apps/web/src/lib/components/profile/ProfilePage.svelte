@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isStandalone } from "../../pwa/install-capture.js";
   import NamePointerPrompt from "../sub-ens/NamePointerPrompt.svelte";
   import type { UserProfile, EventDirectoryEntry } from "@woco/shared";
   import { socialProfileSubject, FEATURES } from "@woco/shared";
@@ -903,6 +904,13 @@
               {/if}
             </button>
           </div>
+
+          <!-- Permanent install entry for organisers and attendees alike (lazy chunk). -->
+          {#if !isStandalone()}
+            {#await import("../../pwa/InstallAppRow.svelte") then { default: InstallAppRow }}
+              <InstallAppRow />
+            {/await}
+          {/if}
 
           {#if profile?.updatedAt}
             <div class="info-row">
