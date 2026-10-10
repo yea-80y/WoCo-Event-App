@@ -14,7 +14,7 @@ export function passkeyRefusalAdvice(host: string, invite: boolean): string {
 /** An iPhone or iPad, from what the page can see. iPadOS Safari reports a desktop
  *  Mac, so a Mac user agent with a touch screen is an iPad. */
 export function appleTouchDevice(userAgent: string, maxTouchPoints: number): "iPhone" | "iPad" | null {
-  if (/iPhone|iPod/.test(userAgent)) return "iPhone";
+  if (/iP(?:hone|od)/.test(userAgent)) return "iPhone";
   if (/iPad/.test(userAgent) || (/Macintosh/.test(userAgent) && maxTouchPoints > 1)) return "iPad";
   return null;
 }
