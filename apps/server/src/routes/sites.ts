@@ -59,6 +59,7 @@ import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../
 import { clientIp } from "../lib/http/client-ip.js";
 import { companyFooterHtml } from "../lib/email/company-footer.js";
 import { freshWrittenEventsIndex, readEventsIndexForWrite, rememberWrittenEventsIndex, withEventsIndexLock } from "../lib/site/events-index.js";
+import { CONTROL_JSON_MAX_BYTES, SWARM_CHUNK_MAX_BYTES, errorSnippet, readCapped, readCappedJson } from "../lib/http/read-capped.js";
 
 const sitesRouter = new Hono();
 
@@ -979,11 +980,10 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       });
 
       if (!uploadResp.ok) {
-        const text = await uploadResp.text().catch(() => "");
-        throw new Error(`Swarm upload failed ${uploadResp.status}: ${text.slice(0, 300)}`);
+        throw new Error(`Swarm upload failed ${uploadResp.status}: ${await errorSnippet(uploadResp, 300)}`);
       }
 
-      ({ reference: contentHash } = await uploadResp.json() as { reference: string });
+      ({ reference: contentHash } = await readCappedJson<{ reference: string }>(uploadResp, CONTROL_JSON_MAX_BYTES, "bzz upload"));
     }
 
     // Every deploy lands in the storage ledger regardless of batch: it is both
@@ -1047,7 +1047,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         signal: AbortSignal.timeout(BEE_CALL_TIMEOUT_MS),
       });
       if (chunkRes.ok) {
-        const chunkBytes = new Uint8Array(await chunkRes.arrayBuffer());
+        const chunkBytes = await readCapped(chunkRes, SWARM_CHUNK_MAX_BYTES, "root chunk");
         // Forward from the lookup to the first free index (#186). Any failed
         // lookup used to read as a fresh feed, and an update signed for a taken
         // index 0 keeps the old pointer, silently. Now it fails the deploy.
@@ -1094,7 +1094,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
           signal: AbortSignal.timeout(BEE_CALL_TIMEOUT_MS),
         });
         if (!chunkRes.ok) throw new Error(`fetch root chunk ${chunkRes.status}`);
-        const chunkBytes = new Uint8Array(await chunkRes.arrayBuffer());
+        const chunkBytes = await readCapped(chunkRes, SWARM_CHUNK_MAX_BYTES, "root chunk");
         const payload = chunkBytes.subarray(8);
         if (payload.length > 4096) {
           console.warn(`[sites/deploy] root chunk ${payload.length}B > 4096 — falling back to legacy SOC write`);

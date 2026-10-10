@@ -1,4 +1,9 @@
 import { Bee, PrivateKey } from "@ethersphere/bee-js";
+import { capBeeResponses } from "../lib/swarm/bee-read-cap.js";
+
+// Before any Bee exists: every bee-js response in this process is capped
+// (`lib/swarm/bee-read-cap.ts`), the Etherna-targeted Bee included.
+capBeeResponses();
 
 export const ETHERNA_ENABLED = process.env.ETHERNA_ENABLED === "true";
 
