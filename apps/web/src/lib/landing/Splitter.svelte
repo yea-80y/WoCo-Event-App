@@ -264,6 +264,11 @@
             join, the same record can carry loyalty points and purchases at the
             bar, the shop or the venue next door.
           </p>
+          <p class="lead-close">
+            This is the start of an ecosystem where people control their own
+            record - and that unlocks insight no single ticketing platform can
+            achieve.
+          </p>
           </div>
           <span class="built-spec mono">Open format · signed · onchain</span>
         </article>
@@ -969,11 +974,14 @@
   @media (min-width: 880px) {
     .built-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .built-item--lead { grid-column: 1 / -1; }
+    /* The two paragraphs side by side, the closing line across both. */
     .lead-body {
-      columns: 2;
-      column-gap: 2.5rem;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0 2.5rem;
     }
-    .lead-body p { break-inside: avoid; }
+    .built-item--lead .lead-body p + p { margin-top: 0; }
+    .built-item--lead .lead-body .lead-close { grid-column: 1 / -1; margin-top: 1.25rem; }
   }
 
   .built-item {
@@ -1008,6 +1016,8 @@
   .built-item p + p { margin-top: 0.625rem; }
   .built-item p:last-of-type { margin-bottom: 1.25rem; }
   .lead-body { margin-bottom: 1.25rem; }
+  /* The card's closing line: the one sentence an organiser should leave with. */
+  .lead-body .lead-close { color: var(--text); font-weight: 500; }
   .lead-body p:last-of-type { margin-bottom: 0; }
   /* Pinned to the bottom so the three spec lines sit on one baseline however
      long each paragraph runs. */
