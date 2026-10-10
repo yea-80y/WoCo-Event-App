@@ -1,18 +1,16 @@
 <!--
   Splitter — the root landing at /.
   Funnels visitors to either the organiser or attendee surface.
-  Design spec: memory/project_ui_theming_direction.md ("Own your scene.")
+  Design spec: memory/project_ui_theming_direction.md (headline now "Built Different", owner 2026-10-10)
 -->
 <script lang="ts">
   import { navigate } from "../router/router.svelte.js";
   import { WOCO_COMPANY_LINE } from "@woco/shared";
-  import { loginRequest } from "../auth/login-request.svelte.js";
-  import { auth } from "../auth/auth-store.svelte.js";
   import TicketStub from "../components/icons/sprites/TicketStub.svelte";
   import DoorOpen from "../components/icons/sprites/DoorOpen.svelte";
   import SprayCan from "../components/icons/sprites/SprayCan.svelte";
   import WocoWordmark from "../components/brand/WocoWordmark.svelte";
-  import PreLaunchBanner from "../components/status/PreLaunchBanner.svelte";
+  import PortalSwitch from "../components/nav/PortalSwitch.svelte";
   import InstallSlot from "../pwa/InstallSlot.svelte";
   import ArrowRight from "lucide-svelte/icons/arrow-right";
   // Two photographs, two jobs. `crowd` is screen-blended so its pure-black
@@ -33,22 +31,17 @@
 
 
 <div class="root">
-  <PreLaunchBanner />
-
   <!-- ── Top bar ─────────────────────────────────────────────────────── -->
   <header class="top">
     <button class="brand" onclick={() => navigate("/")} aria-label="WoCo home">
       <WocoWordmark height={22} variant="default" />
     </button>
-    <nav class="top-nav">
+    <!-- The same two portals, signed in or not: each opens first and asks for a
+         sign-in inside where it needs one (PortalSwitch). -->
+    <div class="top-nav">
       <button class="link" onclick={() => navigate("/discover")}>Discover</button>
-      <button class="link" onclick={() => navigate("/creator")}>For organisers</button>
-      {#if auth.isConnected}
-        <button class="btn btn--ghost btn-sm" onclick={() => navigate("/tickets")}>My tickets</button>
-      {:else}
-        <button class="btn btn--ghost btn-sm" onclick={() => loginRequest.request()}>Sign in</button>
-      {/if}
-    </nav>
+      <PortalSwitch />
+    </div>
   </header>
 
   <!-- Install offer: a slim card under the top bar, never a modal (lazy, see InstallSlot). -->
@@ -73,7 +66,7 @@
       </div>
 
       <h1 class="hero-headline">
-        Own your <span class="tag-display headline-tag">scene</span>.
+        Built <span class="tag-display headline-tag">Different</span>
       </h1>
 
       <p class="hero-sub">
@@ -236,9 +229,12 @@
   </section>
 
   <!-- ── Built differently — what the architecture buys an organiser ────
-       Three claims, each checked against the code: verify.ts (offline check
+       Three claims, each checked against the code: woco.edition.v1 (an open,
+       signed format, minted onchain - TICKETING.md), verify.ts (offline check
        against pre-downloaded slot owners), DATA_INVENTORY.md §4 (the server
-       seals and has no code path to open). Nothing here may say more. -->
+       seals and has no code path to open). The opt-in insight is NOT built and
+       is said as where this goes, never as a feature. Nothing here may say
+       more. A ticket is emailed, not "on their phone": no wallet holds it. -->
   <section class="built">
     <div class="built-inner">
       <div class="built-head">
@@ -251,16 +247,44 @@
       </div>
 
       <div class="built-grid">
+        <!-- Leads, full width: the claim incumbents cannot make. Presale gating
+             is built but flagged off (badgesAllowed), and loyalty and purchases
+             are where this goes - "can", never "does". -->
+        <article class="built-item built-item--lead">
+          <div class="lead-text">
+            <span class="built-label mono">Open</span>
+            <h3>More than a QR code.</h3>
+            <p>
+              Most tickets are a barcode in an email - once it's scanned, it's
+              spent. A WoCo ticket is a signed record in an open format, recorded
+              onchain, so anyone can check it's real without asking us.
+            </p>
+            <p>
+              It's something to build on. Open a presale only to people who came
+              last time, or give your regulars a discount. Tickets are just the
+              start: as more businesses join, the same record can carry loyalty
+              points and purchases at the bar, the shop or the venue next door.
+            </p>
+          </div>
+
+          <!-- The card's takeaway, set as a statement beside the text. -->
+          <p class="lead-close">
+            This is the start of an ecosystem where people control their own
+            record - and that unlocks insight no single ticketing platform can
+            achieve.
+          </p>
+
+          <span class="built-spec mono">Open format · signed · onchain</span>
+        </article>
+
         <article class="built-item">
           <span class="built-label mono">Signed</span>
           <h3>Scans with no signal.</h3>
           <p>
-            Every ticket is signed when it's issued and recorded onchain. The
-            door phone checks that signature itself, against a list it
-            downloaded before doors - so a basement with no bars scans as fast
-            as anywhere.
+            The door phone checks each ticket's signature itself, against a list
+            it downloaded before doors - so a basement with no bars scans as
+            fast as anywhere.
           </p>
-          <p>Anyone can check a WoCo ticket is real, without asking us.</p>
           <span class="built-spec mono">Signed at issue · checked offline</span>
         </article>
 
@@ -274,18 +298,6 @@
           </p>
           <p>Your mailing list is stored the same way.</p>
           <span class="built-spec mono">X25519 + AES-256-GCM</span>
-        </article>
-
-        <article class="built-item">
-          <span class="built-label mono">Kept</span>
-          <h3>A ticket they keep.</h3>
-          <p>
-            The ticket doesn't die at the door. It stays on their phone as proof
-            they were there, and you can build on that: open the presale to
-            everyone who came last time, or put a fiver off the third visit.
-          </p>
-          <p>No email address needed. The ticket is the proof.</p>
-          <span class="built-spec mono">One ticket · one holder</span>
         </article>
       </div>
 
@@ -384,8 +396,8 @@
         <span class="mono-kicker">// THE WORLD COMPUTER</span>
         <h3>Events are where the World Computer starts.</h3>
         <p>
-          Every ticket here is a signed object, held by the person it was issued
-          to and recorded on open networks instead of in our database. That isn't
+          Every ticket here is a signed object in an open format, recorded on
+          open networks instead of in our database. That isn't
           a ticketing feature - it's a foundation. The same rails can carry any
           marketplace where a platform sits in the middle today, owning the
           buyers, the sellers and the data.
@@ -515,11 +527,10 @@
   }
   .link:hover { color: var(--accent); border-bottom-color: var(--accent); }
   .link-quiet { color: var(--text-muted); }
-  .btn-sm { padding: 0.5rem 0.875rem; font-size: 0.8125rem; }
 
   @media (max-width: 640px) {
     .top-nav { gap: 0.875rem; }
-    .top-nav .link:nth-child(1) { display: none; }
+    .top-nav > .link { display: none; }
   }
 
   /* ── Hero ──────────────────────────────────────────────────────── */
@@ -625,6 +636,11 @@
     .hero-light picture { --lit: 0.5; --lit-peak: 0.6; }
   }
 
+  /* The one kicker read as a line, not a label: larger than the others. */
+  .hero-kicker .mono-kicker {
+    font-size: 0.875rem;
+  }
+
   /* Phone: stop overlaying and give the photograph its own band above the
      headline. Behind type it had to be dimmed to about half strength to stay
      legible, which wasted it; in a band of its own it runs at full strength.
@@ -678,6 +694,11 @@
       color: var(--text);
       font-weight: 700;
       text-shadow: 0 0 2px var(--bg), 0 1px 8px var(--bg);
+      /* A step up from 11px (owner 2026-10-10), with the tracking brought in. */
+      font-size: 0.75rem;
+      letter-spacing: 0.04em;
+      /* Two even lines rather than one long and an orphaned word. */
+      text-wrap: balance;
     }
   }
   .hero-kicker {
@@ -705,6 +726,9 @@
   .headline-tag {
     color: var(--accent);
     font-weight: 400;
+    /* Bungee's square capitals run heavier than the round ones "scene" had, so
+       the tag sits a step under the line to keep the balance (owner 2026-10-10). */
+    font-size: 0.85em;
     /* Bungee already runs heavy; let it carry the weight */
     letter-spacing: 0.01em;
     margin: 0 0.05em;
@@ -950,8 +974,32 @@
     grid-template-columns: 1fr;
     gap: 1rem;
   }
-  @media (min-width: 960px) {
-    .built-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  /* The lead card takes the full row; the two below share the next. */
+  @media (min-width: 880px) {
+    .built-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    /* One reading column beside the takeaway, never text spread edge to edge. */
+    /* Scoped to the grid so it outranks .built-item's flex column below. */
+    .built-grid .built-item--lead {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.75fr);
+      grid-template-areas: "text close" "spec spec";
+      column-gap: 3.5rem;
+      padding: 2.25rem 2.25rem 1.75rem;
+    }
+    .lead-text { grid-area: text; }
+    .built-grid .built-item--lead .lead-close {
+      grid-area: close;
+      align-self: center;
+      margin: 0 0 1.25rem;
+      padding-left: 1.5rem;
+      border-left: 2px solid var(--accent);
+      font-size: clamp(1.25rem, 1.9vw, 1.5rem);
+      line-height: 1.3;
+      letter-spacing: -0.02em;
+    }
+    .built-item--lead .built-spec { grid-area: spec; }
+    .built-grid .built-item--lead h3 { font-size: clamp(1.625rem, 2.4vw, 2rem); }
   }
 
   .built-item {
@@ -964,6 +1012,7 @@
     border-radius: var(--radius-sm);
   }
   .built-label {
+    display: block;
     font-size: 0.6875rem;
     font-weight: 700;
     text-transform: uppercase;
@@ -985,6 +1034,10 @@
   }
   .built-item p + p { margin-top: 0.625rem; }
   .built-item p:last-of-type { margin-bottom: 1.25rem; }
+  .lead-text p { max-width: 58ch; }
+  /* The card's closing line: the one sentence an organiser should leave with. */
+  .built-item .lead-close { color: var(--text); font-weight: 600; margin: 0 0 1.25rem; }
+
   /* Pinned to the bottom so the three spec lines sit on one baseline however
      long each paragraph runs. */
   .built-spec {

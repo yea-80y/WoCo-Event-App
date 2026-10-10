@@ -244,6 +244,6 @@ test("PasskeyLogin: the iOS advice is for a creation refused after a sheet, afte
   );
   const generic = passkeyButton.indexOf("Passkey authentication failed. Try again or use another method.");
   assert.ok(noSheet > 0 && ios > noSheet && generic > ios);
-  assert.ok(passkeyButton.includes('passkeyCreateRefusedAdvice(apple, loginRequest.context === "invite")'));
+  assert.ok(passkeyButton.includes('passkeyCreateRefusedAdvice(apple, organiser)'));
   assert.ok(passkeyButton.includes("appleTouchDevice(navigator.userAgent, navigator.maxTouchPoints ?? 0)"));
 });

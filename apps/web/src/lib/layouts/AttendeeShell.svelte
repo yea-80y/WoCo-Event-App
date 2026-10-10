@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { auth } from "../auth/auth-store.svelte.js";
-  import { loginRequest } from "../auth/login-request.svelte.js";
   import { router, navigate } from "../router/router.svelte.js";
   import { organiserRole } from "../auth/organiser-role.svelte.js";
   import { inviteSheet } from "../campaign/invite-sheet.svelte.js";
@@ -10,7 +9,7 @@
   import SessionStatus from "../components/auth/SessionStatus.svelte";
   import UserAvatar from "../components/profile/UserAvatar.svelte";
   import WocoWordmark from "../components/brand/WocoWordmark.svelte";
-  import PreLaunchBanner from "../components/status/PreLaunchBanner.svelte";
+  import PortalSwitch from "../components/nav/PortalSwitch.svelte";
   import SessionEndedBanner from "../components/auth/SessionEndedBanner.svelte";
   import ReferralCaptureBanner from "../components/campaign/ReferralCaptureBanner.svelte";
   import TabBar, { type TabItem } from "../components/nav/TabBar.svelte";
@@ -21,8 +20,8 @@
   let { children }: Props = $props();
 
   const signedIn = $derived(auth.ready && auth.isConnected && !!auth.parent);
-  // WoCo is the same for every account; an organiser also gets the way into
-  // organiser mode. Display only: every organiser route checks for itself.
+  // Every top bar offers both portals now (PortalSwitch); this only decides
+  // whether to warm organiser mode's bundle for an account that organises.
   const showOrganiser = $derived(
     signedIn && (organiserRole.isOrganiser || organisesFromUnlock(gate.status?.via)),
   );
@@ -61,7 +60,6 @@
 </script>
 
 <main class:with-nav={signedIn}>
-  <PreLaunchBanner variant="strip" />
   <SessionEndedBanner />
   {#if auth.kind === "passkey" && auth.hasSession}
     {#await import("../components/passkeys/NewPasskeyBanner.svelte") then { default: NewPasskeyBanner }}
@@ -75,22 +73,17 @@
   {/if}
   <ReferralCaptureBanner />
   <header class="top-bar">
-    <button class="logo" onclick={() => navigate(signedIn ? "/home" : "/")} aria-label="WoCo home">
+    <!-- Always the home page, signed in or not: the portals are one tap away on the right. -->
+    <button class="logo" onclick={() => navigate("/")} aria-label="WoCo home">
       <WocoWordmark height={20} variant="default" />
     </button>
 
+    <!-- Both portals, signed in or not. No Sign in here: each portal's home
+         leads with its own, and the switch is the one way in to either. -->
     <div class="top-right">
-      {#if !auth.ready}
-        <span class="loading">Loading...</span>
-      {:else if signedIn}
-        {#if showOrganiser}
-          <button class="top-link" onclick={() => navigate("/creator")}>Organiser</button>
-        {/if}
+      <PortalSwitch current="attendee" />
+      {#if signedIn}
         <SessionStatus compact />
-      {:else}
-        <button class="top-link" onclick={() => loginRequest.request({ context: "attendee" })}>
-          Sign in
-        </button>
       {/if}
     </div>
   </header>
@@ -150,17 +143,10 @@
     flex-shrink: 1;
   }
 
-  .top-link {
-    padding: 0.3125rem 0;
-    font-size: 0.8125rem;
-    font-weight: 600;
-    color: var(--text-muted);
-    white-space: nowrap;
-    transition: color var(--transition);
+  @media (max-width: 400px) {
+    .top-right { gap: 0.625rem; }
   }
-  .top-link:hover { color: var(--text); }
 
-  .loading { color: var(--text-muted); font-size: 0.8125rem; }
   .content { padding: 0.25rem 0 2rem; }
 
 </style>
