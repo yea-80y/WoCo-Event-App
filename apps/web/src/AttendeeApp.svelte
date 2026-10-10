@@ -6,6 +6,8 @@
   import Home from "./lib/attendee/home/Home.svelte";
   import ComingSoon from "./lib/attendee/coming-soon/ComingSoon.svelte";
   import { getExternalEventApi } from "./lib/api/event-api-registry.js";
+  import { isStandalone } from "./lib/pwa/install-capture.js";
+  import { INSTALL_ROUTES } from "./lib/pwa/install-offer.js";
 
   // Route-level code splitting: only Home ships in the boot chunk (Swarm
   // round-trips are slow, so the eager graph must stay minimal). Every other
@@ -43,6 +45,11 @@
 </script>
 
 <AttendeeShell>
+  {#if INSTALL_ROUTES.has(router.route) && !isStandalone()}
+    {#await import("./lib/pwa/InstallBanner.svelte") then { default: InstallBanner }}
+      <InstallBanner />
+    {/await}
+  {/if}
   {#if router.route === "home" || router.route === "discover"}
     <Home />
   {:else if router.route === "member-home"}
