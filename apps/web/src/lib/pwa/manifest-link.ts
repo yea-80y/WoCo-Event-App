@@ -20,7 +20,12 @@
 
 export const MANIFEST_FILE = "manifest.json";
 
-/** The app root for a page URL: `{origin}/bzz/{ref}/` when served through a gateway path, else `{origin}/`. */
+/**
+ * The app root for a page URL: `{origin}/bzz/{ref}/` when served through a gateway
+ * path, else `{origin}/`. The manifest scope is that root WITH its slash, so a page
+ * at `/bzz/{ref}` (no slash) is out of scope and Chrome will not install it - bee
+ * 301s that path to the slashed one today; keep that redirect at the proxy.
+ */
 export function appRoot(pageUrl: string): string {
   const url = new URL(pageUrl);
   const bzz = /^\/bzz\/[^/]+(?:\/|$)/.exec(url.pathname);

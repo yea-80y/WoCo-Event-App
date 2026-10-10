@@ -40,6 +40,7 @@ test("the manifest href is absolute, so the deploy's <base href> can never redir
   assert.ok(!/<link[^>]+rel=["']manifest["']/i.test(indexHtml), "a static manifest link in index.html resolves against the deploy's <base href> and pins installs to one build");
 });
 
+// Reads the first `import` line, so an `import type` placed above it would fail this - move it below.
 test("main.ts imports the manifest link first, before any other boot code", () => {
   const firstImport = mainTs.match(/^import\s+[^\n]*$/m)?.[0] ?? "";
   assert.match(firstImport, /lib\/pwa\/manifest-link/);
