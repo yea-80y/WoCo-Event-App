@@ -206,6 +206,25 @@ function extractPrfResult(
 }
 
 /**
+ * The passkey EXISTS, but the assertion that was to hand over its secret (the
+ * `prfAfterCreate` fallback) was refused. The browser says NotAllowedError for a
+ * cancelled sheet and for a ceremony it would not start - this second one runs well
+ * after the tap that started the creation, so a browser that wants a fresh gesture
+ * refuses it before any sheet. Either way the credential is in the password manager
+ * and a sign-in with it (one tap, one ceremony) finishes the account.
+ */
+export class PasskeyCreatedWithoutSecretError extends Error {
+  readonly cause?: unknown;
+  constructor(cause?: unknown) {
+    super(
+      "Your passkey was created, but the follow-up confirmation that gives WoCo its secret didn't complete. Tap Sign in with Passkey and choose it to finish.",
+    );
+    this.name = "PasskeyCreatedWithoutSecretError";
+    this.cause = cause;
+  }
+}
+
+/**
  * The PRF output of a credential that was just CREATED. Many authenticators return
  * it at creation; some report `prf.enabled` without a value, and some (Samsung Pass,
  * per Corbado's August 2026 measurements) report nothing at all at creation and
@@ -220,17 +239,25 @@ async function prfAfterCreate(
 ): Promise<ArrayBuffer> {
   const created = credential.getClientExtensionResults().prf?.results?.first;
   if (created) return toArrayBuffer(created);
-  const getResult = (await credentialsGet({
-    publicKey: {
-      challenge: crypto.getRandomValues(new Uint8Array(32)),
-      rpId,
-      allowCredentials: [{ id: new Uint8Array(credential.rawId), type: "public-key" }],
-      userVerification: "required",
-      extensions: {
-        prf: { eval: { first: salt } },
+  let getResult: PublicKeyCredential | null;
+  try {
+    getResult = (await credentialsGet({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        rpId,
+        allowCredentials: [{ id: new Uint8Array(credential.rawId), type: "public-key" }],
+        userVerification: "required",
+        extensions: {
+          prf: { eval: { first: salt } },
+        },
       },
-    },
-  })) as PublicKeyCredential | null;
+    })) as PublicKeyCredential | null;
+  } catch (e) {
+    // Not "creation was cancelled": the creation succeeded. Said as what it is, so
+    // the person signs in with the passkey they now have instead of making another.
+    if (e instanceof DOMException && e.name === "NotAllowedError") throw new PasskeyCreatedWithoutSecretError(e);
+    throw e;
+  }
   if (!getResult) throw new Error("Passkey authentication was cancelled.");
   return extractPrfResult(getResult.getClientExtensionResults());
 }
@@ -291,14 +318,40 @@ function withCeremonyLock<T>(fn: () => Promise<T>): Promise<T> {
  */
 export class PasskeyAssertionUnavailableError extends Error {
   readonly cause?: unknown;
+  /** The browser refused before any sheet could open (see `isQuickRefusal`): the
+   *  person chose nothing, so "you may have cancelled" and the create offer are wrong. */
+  readonly noSheet: boolean;
   constructor(cause?: unknown) {
+    const noSheet = isQuickRefusal(cause);
     super(
-      "No passkey was used. You may have cancelled, or there may be no WoCo passkey on this device.",
+      noSheet
+        ? PROMPT_DID_NOT_OPEN_MESSAGE
+        : "No passkey was used. You may have cancelled, or there may be no WoCo passkey on this device.",
     );
     this.name = "PasskeyAssertionUnavailableError";
     this.cause = cause;
+    this.noSheet = noSheet;
   }
 }
+
+/**
+ * A NotAllowedError that came back faster than a sheet can be shown and dismissed
+ * (iOS: a Face ID or passkey sheet takes longer than this to appear and be
+ * cancelled). WebKit refuses like that before any prompt when it will not run the
+ * ceremony at all: no user gesture it accepts, another ceremony still pending, or an
+ * embedded web view (an app's built-in browser) whose host app is not associated
+ * with this domain. Copy only - never a decision: a slow refusal keeps the wording
+ * it always had, and a quick one gets told the prompt never opened.
+ */
+const QUICK_REFUSAL_MS = 500;
+const quickRefusals = new WeakSet<object>();
+
+export function isQuickRefusal(e: unknown): boolean {
+  return typeof e === "object" && e !== null && quickRefusals.has(e);
+}
+
+export const PROMPT_DID_NOT_OPEN_MESSAGE =
+  "The passkey prompt didn't open. Tap the button again - if it still doesn't open, this browser can't use passkeys here, so open WoCo in Safari or Chrome.";
 
 /**
  * A ceremony was cancelled or refused by the platform. Browsers reject a
@@ -351,25 +404,36 @@ function namedRefusal(e: unknown, rpId: string | undefined): unknown {
     : e;
 }
 
-/** Every ceremony calls the browser through these two, so none shows the raw refusal. */
-function credentialsGet(options: CredentialRequestOptions): Promise<Credential | null> {
-  return navigator.credentials.get(options).catch((e: unknown) => {
-    throw namedRefusal(e, options.publicKey?.rpId);
+/** Every ceremony calls the browser through these two, so none shows the raw refusal,
+ *  and a refusal quicker than any sheet is remembered as one (`isQuickRefusal`). */
+function browserCeremony<T>(run: () => Promise<T>, rpId: string | undefined): Promise<T> {
+  const t0 = performance.now();
+  return run().catch((e: unknown) => {
+    if (e instanceof DOMException && e.name === "NotAllowedError" && performance.now() - t0 < QUICK_REFUSAL_MS) {
+      quickRefusals.add(e);
+    }
+    throw namedRefusal(e, rpId);
   });
 }
 
+function credentialsGet(options: CredentialRequestOptions): Promise<Credential | null> {
+  return browserCeremony(() => navigator.credentials.get(options), options.publicKey?.rpId);
+}
+
 function credentialsCreate(options: CredentialCreationOptions): Promise<Credential | null> {
-  return navigator.credentials.create(options).catch((e: unknown) => {
-    throw namedRefusal(e, options.publicKey?.rp.id);
-  });
+  return browserCeremony(() => navigator.credentials.create(options), options.publicKey?.rp.id);
 }
 
 export class PasskeyCeremonyCancelledError extends Error {
   readonly cause?: unknown;
+  /** No sheet was shown: the browser refused to start the ceremony (`isQuickRefusal`). */
+  readonly noSheet: boolean;
   constructor(action: "creation" | "authentication", cause?: unknown) {
-    super(`Passkey ${action} was cancelled or not permitted by your device.`);
+    const noSheet = isQuickRefusal(cause);
+    super(noSheet ? PROMPT_DID_NOT_OPEN_MESSAGE : `Passkey ${action} was cancelled or not permitted by your device.`);
     this.name = "PasskeyCeremonyCancelledError";
     this.cause = cause;
+    this.noSheet = noSheet;
   }
 }
 
