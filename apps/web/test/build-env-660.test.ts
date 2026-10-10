@@ -111,9 +111,18 @@ test("the installed Web3Auth dependency is still the shape the rewrite expects",
   const out = withoutDependencyEnvRead(file, readFileSync(file, "utf8"));
   assert.ok(out && "code" in out, out && "error" in out ? out.error : "file not recognised");
 
-  // The rewrite changes nothing only while its one caller asks for a setting no build sets.
-  const constants = readFileSync(join(caller, "dist/lib.esm/utils/constants.js"), "utf8");
-  assert.deepEqual([...constants.matchAll(/getEnvVariable\(([^)]*)\)/g)].map((m) => m[1]), ['"VITE_APP_INFURA_PROJECT_KEY"']);
+  // The rewrite changes nothing only while no caller asks for a setting a build sets.
+  // Since the v11 upgrade (@toruslabs/ethereum-controllers 9.13) nothing calls it at
+  // all; v10's copy asked only for VITE_APP_INFURA_PROJECT_KEY, which we never set.
+  const calls = (dir: string): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((d) =>
+      d.isDirectory()
+        ? calls(join(dir, d.name))
+        : d.name.endsWith(".js")
+          ? [...readFileSync(join(dir, d.name), "utf8").matchAll(/getEnvVariable\(([^)]*)\)/g)].map((m) => m[1])
+          : [],
+    );
+  assert.deepEqual(calls(join(caller, "dist/lib.esm")), []);
 });
 
 test("every bundle this app builds runs the guard", () => {
