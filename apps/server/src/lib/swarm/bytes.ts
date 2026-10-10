@@ -113,7 +113,10 @@ export async function uploadToBytes(
   // Never store what `downloadFromBytes` would refuse to read back: the two
   // ceilings are one constant, so a blob the server wrote is always readable.
   if (bytes.byteLength > SWARM_READ_MAX_BYTES) {
-    throw new ResponseTooLargeError(SWARM_READ_MAX_BYTES, "bytes upload");
+    throw Object.assign(
+      new Error(`bytes upload: ${bytes.byteLength} bytes exceeds the ${SWARM_READ_MAX_BYTES}-byte read ceiling`),
+      { status: 413 },
+    );
   }
   await ensureEthernaToken();
 
@@ -236,18 +239,14 @@ class WocoBeeTooLargeError extends ResponseTooLargeError {}
  * its content, so the verdict can never change and the ref is never fetched
  * again — a feed that names one costs the server one capped read, not one per
  * checkout. Only OUR bee's verdict is kept: Etherna is a third party, and
- * remembering its answer would let it blacklist a legitimate ref. Bounded;
- * oldest forgotten first.
+ * remembering its answer would let it blacklist a legitimate ref. Bounded the
+ * way `soc-read.ts`'s `healed` set is: cleared whole past 10k.
  */
 const oversizedRefs = new Set<string>();
-const OVERSIZED_REFS_MAX = 10_000;
 
 function rememberOversized(ref: string): void {
-  if (oversizedRefs.size >= OVERSIZED_REFS_MAX) {
-    const oldest = oversizedRefs.values().next().value;
-    if (oldest !== undefined) oversizedRefs.delete(oldest);
-  }
   oversizedRefs.add(ref);
+  if (oversizedRefs.size > 10_000) oversizedRefs.clear();
 }
 
 /**

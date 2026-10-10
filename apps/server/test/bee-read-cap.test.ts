@@ -20,6 +20,11 @@ const hits = new Map<string, number>();
 const server: Server = createServer((req, res) => {
   const url = req.url ?? "";
   hits.set(url, (hits.get(url) ?? 0) + 1);
+  if (url.startsWith("/chunks/")) {
+    // A proxy-style 404 page, larger than any chunk.
+    res.writeHead(404, { "content-type": "text/html" });
+    return res.end("<html>" + "x".repeat(16 * 1024) + "</html>");
+  }
   const big = url.includes(REF_BIG) || url.startsWith("/feeds/");
   res.writeHead(200, { "content-type": "application/octet-stream", "swarm-feed-index": "0000000000000000" });
   if (!big) return res.end(Buffer.alloc(CAP, 0x7b));
@@ -41,6 +46,7 @@ delete process.env.ETHERNA_ENABLED;
 const { capBeeResponses, isBeeResponseTooLarge } = await import("../src/lib/swarm/bee-read-cap.js");
 const { downloadFromBytes } = await import("../src/lib/swarm/bytes.js");
 const { ResponseTooLargeError } = await import("../src/lib/http/read-capped.js");
+const { wocoBeeSource } = await import("../src/lib/swarm/soc-read.js");
 // config/swarm.ts installed the production cap on import; tighten it for the test.
 capBeeResponses(CAP);
 const bee = new Bee(base);
@@ -82,4 +88,8 @@ test("downloadFromBytes: oversized is a 413, never retried, and remembered", asy
 
 test("downloadFromBytes still returns a body under the cap unchanged", async () => {
   assert.equal(await downloadFromBytes(REF_SMALL), "{".repeat(CAP));
+});
+
+test("a 404 with a body larger than a chunk is still `absent`, not a read failure", async () => {
+  assert.deepEqual(await wocoBeeSource.read("dd".repeat(32)), { status: "absent" });
 });

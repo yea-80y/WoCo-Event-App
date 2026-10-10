@@ -169,7 +169,13 @@ export function aggregateSocReads(
 
 async function fetchRaw(url: string, init: RequestInit, timeoutMs: number): Promise<{ status: number; body: Uint8Array }> {
   const r = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
-  // One chunk is all any source may answer; Etherna is a third party.
+  // A found chunk is one chunk at most (Etherna is a third party). Any other
+  // status is judged on the status alone: its body (a proxy's HTML 404 page)
+  // must not turn an `absent` verdict into a read failure.
+  if (r.status !== 200) {
+    await r.body?.cancel().catch(() => {});
+    return { status: r.status, body: new Uint8Array(0) };
+  }
   const body = await readCapped(r, SWARM_CHUNK_MAX_BYTES, "chunk read");
   return { status: r.status, body };
 }
