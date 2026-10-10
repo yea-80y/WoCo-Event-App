@@ -28,6 +28,7 @@ import { sanitisePublicApiUrl } from "../lib/url/public-api-url.js";
 import { isValidSeriesId } from "../lib/swarm/topics.js";
 import { issueJoinedBadge } from "../lib/campaign/badges.js";
 import { clientIp } from "../lib/http/client-ip.js";
+import { SWARM_READ_MAX_BYTES, readCappedJson, readPrefix } from "../lib/http/read-capped.js";
 import { failureSentence } from "../lib/http/error-class.js";
 import { orderFieldsRefusal } from "../lib/event/order-fields.js";
 const events = new Hono<AppEnv>();
@@ -625,7 +626,10 @@ events.post("/discover", requireAuth, async (c) => {
     try {
       const resp = await fetch(`${apiBase}/api/events`, { redirect: "error", signal: AbortSignal.timeout(15000) });
       if (!resp.ok) return c.json({ ok: false, error: `Source server returned HTTP ${resp.status}` }, 400);
-      const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventDirectoryEntry[]; error?: string };
+      // The host is the organiser's choice: read a bounded body, like any Swarm read.
+      const json = await readCappedJson<{ ok: boolean; data?: import("@woco/shared").EventDirectoryEntry[]; error?: string }>(
+        resp, SWARM_READ_MAX_BYTES, "source event list",
+      );
       if (!json.ok) return c.json({ ok: false, error: json.error || "Failed to list events from source" }, 400);
       remoteEntries = json.data ?? [];
     } catch (err) {
@@ -712,7 +716,9 @@ events.post("/:id/list", requireAuth, async (c) => {
         signal: AbortSignal.timeout(15000),
       });
       if (!resp.ok) return c.json({ ok: false, error: `Source server returned HTTP ${resp.status}` }, 400);
-      const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventFeed; error?: string };
+      const json = await readCappedJson<{ ok: boolean; data?: import("@woco/shared").EventFeed; error?: string }>(
+        resp, SWARM_READ_MAX_BYTES, "source event",
+      );
       if (!json.ok || !json.data) return c.json({ ok: false, error: json.error || "Event not found on source server" }, 404);
       eventFeed = json.data;
     } catch (err) {
@@ -785,7 +791,9 @@ events.post("/:id/unlist", requireAuth, async (c) => {
         redirect: "error",
         signal: AbortSignal.timeout(15000),
       });
-      const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventFeed };
+      const json = await readCappedJson<{ ok: boolean; data?: import("@woco/shared").EventFeed }>(
+        resp, SWARM_READ_MAX_BYTES, "source event",
+      );
       if (!json.ok || !json.data) return c.json({ ok: false, error: "Event not found" }, 404);
       if (json.data.creatorAddress.toLowerCase() !== parentAddress) {
         return c.json({ ok: false, error: "You are not the creator of this event" }, 403);
@@ -1149,19 +1157,16 @@ events.post("/import-url", requireAuth, async (c) => {
         "Accept-Language": "en-GB,en;q=0.9",
       },
     });
-    clearTimeout(timeout);
+    // The timer stays armed through the body read below: a slow body is a
+    // timeout too. On an early return it fires later and aborts the unread body.
     if (!resp.ok) return c.json({ ok: false, error: `Fetch failed: ${resp.status}` }, 422);
     const ct = resp.headers.get("content-type") ?? "";
     if (!ct.includes("text/html") && !ct.includes("text/plain")) {
       return c.json({ ok: false, error: "URL does not appear to be an HTML page" }, 422);
     }
-    // Limit to 512 KB to avoid huge pages
-    const buf = await resp.arrayBuffer();
-    if (buf.byteLength > 512 * 1024) {
-      html = new TextDecoder().decode(buf.slice(0, 512 * 1024));
-    } else {
-      html = new TextDecoder().decode(buf);
-    }
+    // The first 512 KB only; the rest of a huge page is never downloaded.
+    html = new TextDecoder().decode(await readPrefix(resp, 512 * 1024));
+    clearTimeout(timeout);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("abort") || msg.includes("Abort")) {

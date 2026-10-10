@@ -59,6 +59,7 @@ import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
 import { registerEthernaOffer } from "../etherna/upload.js";
 import { isEthernaGateway } from "../etherna/batch-router.js";
 import { ETHERNA_FETCH_BASE } from "../etherna/gateway.js";
+import { SWARM_CHUNK_MAX_BYTES, readCapped } from "../http/read-capped.js";
 
 const ETHERNA_GW = ETHERNA_FETCH_BASE;
 const ETHERNA_READ_TIMEOUT_MS = 8_000;
@@ -168,7 +169,14 @@ export function aggregateSocReads(
 
 async function fetchRaw(url: string, init: RequestInit, timeoutMs: number): Promise<{ status: number; body: Uint8Array }> {
   const r = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
-  const body = new Uint8Array(await r.arrayBuffer());
+  // A found chunk is one chunk at most (Etherna is a third party). Any other
+  // status is judged on the status alone: its body (a proxy's HTML 404 page)
+  // must not turn an `absent` verdict into a read failure.
+  if (r.status !== 200) {
+    await r.body?.cancel().catch(() => {});
+    return { status: r.status, body: new Uint8Array(0) };
+  }
+  const body = await readCapped(r, SWARM_CHUNK_MAX_BYTES, "chunk read");
   return { status: r.status, body };
 }
 

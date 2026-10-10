@@ -28,6 +28,7 @@ import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "../swarm/upload-
 import { getBatchRecord, getOrderRecord, markChunkBurned, planChunkBurn, type OrderRecord } from "./ledger.js";
 import { bucketOf, decodeTimestampNs, signStamp, type StamperKey } from "./stamp.js";
 import { getAttendeeStamper } from "./writer.js";
+import { CONTROL_JSON_MAX_BYTES, errorSnippet, readCappedJson } from "../http/read-capped.js";
 
 const BURNER_PAYLOAD = new TextEncoder().encode("woco/attendee-burn/v1");
 const BURNER_SPAN = encodeSpan(BURNER_PAYLOAD.length);
@@ -96,8 +97,8 @@ export const liveBurnerUploader: BurnerUploader = async (burner, envelope) => {
       BEE_CALL_TIMEOUT_MS,
       "attendee burn",
     );
-    if (!resp.ok) throw new Error(`bee /soc ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 200)}`);
-    const { reference } = (await resp.json()) as { reference: string };
+    if (!resp.ok) throw new Error(`bee /soc ${resp.status}: ${await errorSnippet(resp, 200)}`);
+    const { reference } = await readCappedJson<{ reference: string }>(resp, CONTROL_JSON_MAX_BYTES, "attendee burn");
     return reference.toLowerCase().replace(/^0x/, "");
   } finally {
     release();

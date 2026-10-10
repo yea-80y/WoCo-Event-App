@@ -6,6 +6,15 @@ import type { BatchSelection } from "../etherna/batch-router.js";
 import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.js";
 import type { Hex64 } from "@woco/shared";
 import { ETHERNA_FETCH_BASE } from "../etherna/gateway.js";
+import {
+  CONTROL_JSON_MAX_BYTES,
+  ResponseTooLargeError,
+  SWARM_READ_MAX_BYTES,
+  errorSnippet,
+  readCappedJson,
+  readCappedText,
+} from "../http/read-capped.js";
+import { isBeeResponseTooLarge } from "./bee-read-cap.js";
 
 const ETHERNA_GW = ETHERNA_FETCH_BASE;
 
@@ -44,10 +53,9 @@ async function uploadBytesToEtherna(bytes: Uint8Array, batchId: string): Promise
     body: bytes as unknown as BodyInit,
   });
   if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw new HttpStatusError(resp.status, `Etherna /bytes upload ${resp.status}: ${text.slice(0, 200)}`);
+    throw new HttpStatusError(resp.status, `Etherna /bytes upload ${resp.status}: ${await errorSnippet(resp, 200)}`);
   }
-  const { reference } = await resp.json() as { reference: string };
+  const { reference } = await readCappedJson<{ reference: string }>(resp, CONTROL_JSON_MAX_BYTES, "etherna /bytes upload");
   // Fire-and-forget the offer: it only enables ANONYMOUS gateway reads (e.g. the
   // event image). The server's own claim/reserve reads are bearer-authed
   // (downloadFromEthernaBytes), so they resolve before the offer propagates.
@@ -102,6 +110,14 @@ export async function uploadToBytes(
   options?: { redundancyLevel?: RedundancyLevel },
 ): Promise<Hex64> {
   const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+  // Never store what `downloadFromBytes` would refuse to read back: the two
+  // ceilings are one constant, so a blob the server wrote is always readable.
+  if (bytes.byteLength > SWARM_READ_MAX_BYTES) {
+    throw Object.assign(
+      new Error(`bytes upload: ${bytes.byteLength} bytes exceeds the ${SWARM_READ_MAX_BYTES}-byte read ceiling`),
+      { status: 413 },
+    );
+  }
   await ensureEthernaToken();
 
   const toEtherna = selection?.target === "etherna";
@@ -186,23 +202,51 @@ async function decodeDownload(result: unknown): Promise<string> {
   throw new Error(`Unexpected downloadData type: ${typeof result}`);
 }
 
-/** Read a ref from the WoCo bee (timeout-bounded so a miss can't hang 60s alone). */
-async function downloadFromWocoBee(ref: string): Promise<string> {
-  const result = await withTimeout(getBee().downloadData(ref), BEE_CALL_TIMEOUT_MS, "bytes download");
-  return decodeDownload(result);
+/** Read a ref from the WoCo bee. The process-wide bee-js cap (`bee-read-cap.ts`)
+ *  bounds the body; `signal` ends the transfer itself on timeout or once the
+ *  other source has answered, rather than leaving it downloading unobserved. */
+async function downloadFromWocoBee(ref: string, signal: AbortSignal): Promise<string> {
+  try {
+    const result = await withTimeout(getBee().downloadData(ref, undefined, { signal }), BEE_CALL_TIMEOUT_MS, "bytes download");
+    return await decodeDownload(result);
+  } catch (err) {
+    if (isBeeResponseTooLarge(err)) throw new WocoBeeTooLargeError(SWARM_READ_MAX_BYTES, "bytes download");
+    throw err;
+  }
 }
 
 /** Read a ref from Etherna /bytes. Bearer-authed (we own the batch), so it works
  *  even before the anonymous offer propagates. */
-async function downloadFromEthernaBytes(ref: string): Promise<string> {
+async function downloadFromEthernaBytes(ref: string, signal: AbortSignal): Promise<string> {
   const token = getCachedEthernaToken();
   const resp = await withTimeout(
-    fetch(`${ETHERNA_GW}/bytes/${ref}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} }),
+    fetch(`${ETHERNA_GW}/bytes/${ref}`, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal }),
     BEE_CALL_TIMEOUT_MS,
     "etherna bytes download",
   );
-  if (!resp.ok) throw new Error(`Etherna /bytes ${resp.status}`);
-  return await resp.text();
+  if (!resp.ok) {
+    await resp.body?.cancel().catch(() => {});
+    throw new Error(`Etherna /bytes ${resp.status}`);
+  }
+  return await readCappedText(resp, SWARM_READ_MAX_BYTES, "etherna bytes download");
+}
+
+/** Our own bee's size verdict — the only one remembered (see `oversizedRefs`). */
+class WocoBeeTooLargeError extends ResponseTooLargeError {}
+
+/**
+ * Refs our bee has shown to be over the read ceiling. A Swarm ref is the hash of
+ * its content, so the verdict can never change and the ref is never fetched
+ * again — a feed that names one costs the server one capped read, not one per
+ * checkout. Only OUR bee's verdict is kept: Etherna is a third party, and
+ * remembering its answer would let it blacklist a legitimate ref. Bounded the
+ * way `soc-read.ts`'s `healed` set is: cleared whole past 10k.
+ */
+const oversizedRefs = new Set<string>();
+
+function rememberOversized(ref: string): void {
+  oversizedRefs.add(ref);
+  if (oversizedRefs.size > 10_000) oversizedRefs.clear();
 }
 
 /**
@@ -211,20 +255,31 @@ async function downloadFromEthernaBytes(ref: string): Promise<string> {
  * gateway choice routes the WRITE; this read does not carry that choice). RACE both
  * sources and take whichever has it — a WoCo-bee read of Etherna-only content would
  * otherwise block for the full 60s timeout. ETHERNA_ENABLED gates the extra read.
+ *
+ * At most `SWARM_READ_MAX_BYTES` is read from either source. Over it is a
+ * `ResponseTooLargeError` (status 413), never retried.
  */
 export async function downloadFromBytes(ref: string): Promise<string> {
+  const key = ref.toLowerCase().replace(/^0x/, "");
+  if (oversizedRefs.has(key)) throw new ResponseTooLargeError(SWARM_READ_MAX_BYTES, "bytes download");
   await ensureEthernaToken();
 
   let delay = 500;
   let lastErr: unknown;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const sources = [downloadFromWocoBee(ref)];
-    if (process.env.ETHERNA_ENABLED === "true") sources.push(downloadFromEthernaBytes(ref));
+    const transfer = new AbortController();
+    const sources = [downloadFromWocoBee(ref, transfer.signal)];
+    if (process.env.ETHERNA_ENABLED === "true") sources.push(downloadFromEthernaBytes(ref, transfer.signal));
     try {
       return await Promise.any(sources);
     } catch (err: unknown) {
       // Promise.any → AggregateError when ALL sources reject; classify the last.
-      const inner = err instanceof AggregateError ? err.errors[err.errors.length - 1] : err;
+      const errors = err instanceof AggregateError ? err.errors : [err];
+      if (errors.some((e) => e instanceof WocoBeeTooLargeError)) {
+        rememberOversized(key);
+        throw new ResponseTooLargeError(SWARM_READ_MAX_BYTES, "bytes download");
+      }
+      const inner = errors[errors.length - 1];
       lastErr = inner;
       if (isTransientSwarmError(inner) && attempt < 4) {
         const reason = (inner as any)?.message ?? (inner as any)?.code ?? (inner as any)?.status;
@@ -234,6 +289,10 @@ export async function downloadFromBytes(ref: string): Promise<string> {
         continue;
       }
       throw inner;
+    } finally {
+      // The winner is done; a loser, or a source still running after a
+      // timeout, stops transferring now.
+      transfer.abort();
     }
   }
 

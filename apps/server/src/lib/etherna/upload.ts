@@ -14,6 +14,7 @@ import { Binary } from "cafe-utility";
 import { calculateSocAddress, calculateCacAddress, encodeSpan } from "@woco/shared";
 import { ensureEthernaToken, getCachedEthernaToken } from "./auth.js";
 import { ETHERNA_FETCH_BASE } from "./gateway.js";
+import { CONTROL_JSON_MAX_BYTES, SWARM_CHUNK_MAX_BYTES, errorSnippet, readCapped, readCappedJson } from "../http/read-capped.js";
 
 const ETHERNA_GW = ETHERNA_FETCH_BASE;
 
@@ -76,10 +77,9 @@ export async function uploadCollectionToEtherna(opts: BzzUploadOpts): Promise<st
   });
 
   if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw new Error(`Etherna /bzz upload failed ${resp.status}: ${text.slice(0, 300)}`);
+    throw new Error(`Etherna /bzz upload failed ${resp.status}: ${await errorSnippet(resp, 300)}`);
   }
-  const { reference } = await resp.json() as { reference: string };
+  const { reference } = await readCappedJson<{ reference: string }>(resp, CONTROL_JSON_MAX_BYTES, "etherna /bzz upload");
   return reference;
 }
 
@@ -98,8 +98,7 @@ export async function registerEthernaOffer(ref: string): Promise<void> {
   });
   if (!r.ok && r.status !== 409) {
     // 409 = already offered; treat as success
-    const text = await r.text().catch(() => "");
-    throw new Error(`Etherna offer-register failed ${r.status}: ${text.slice(0, 200)}`);
+    throw new Error(`Etherna offer-register failed ${r.status}: ${await errorSnippet(r, 200)}`);
   }
 }
 
@@ -155,14 +154,18 @@ export async function prepareEthernaFeedUpdate(opts: {
   ]);
 
   if (!manifestRes.ok) {
-    const text = await manifestRes.text().catch(() => "");
-    throw new Error(`Etherna feed manifest ${manifestRes.status}: ${text.slice(0, 200)}`);
+    throw new Error(`Etherna feed manifest ${manifestRes.status}: ${await errorSnippet(manifestRes, 200)}`);
   }
-  const { reference: feedManifestHash } = await manifestRes.json() as { reference: string };
+  const { reference: feedManifestHash } = await readCappedJson<{ reference: string }>(
+    manifestRes, CONTROL_JSON_MAX_BYTES, "etherna feed manifest",
+  );
 
   // The lookup is where to START, then forward to the first free index
   // (`feed-index.ts`, #186). Only a 404 starts at 0: any other answer used to
   // mean 0 as well, and a write at a taken 0 keeps the old pointer, silently.
+  // Only the headers are wanted; the body is the feed's resolved content, which
+  // the feed's owner chooses. Cancel it rather than leave it transferring.
+  await indexRes.body?.cancel().catch(() => {});
   let start = 0n;
   if (indexRes.ok) {
     const h = indexRes.headers.get("swarm-feed-index-next");
@@ -179,7 +182,7 @@ export async function prepareEthernaFeedUpdate(opts: {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!chunkRes.ok) throw new Error(`Chunk download ${chunkRes.status}: ${contentHash.slice(0, 12)}…`);
-  const chunkBytes = new Uint8Array(await chunkRes.arrayBuffer());
+  const chunkBytes = await readCapped(chunkRes, SWARM_CHUNK_MAX_BYTES, "etherna root chunk");
 
   return { feedManifestHash, nextIndex, chunkBytes };
 }
@@ -229,8 +232,7 @@ export async function writeEthernaFeedPage(opts: {
     body: Buffer.from(Binary.concatBytes(span, opts.payload)),
   });
   if (!postRes.ok) {
-    const text = await postRes.text().catch(() => "");
-    const err = new Error(`Etherna feed-page write ${postRes.status}: ${text.slice(0, 200)}`) as Error & { status?: number };
+    const err = new Error(`Etherna feed-page write ${postRes.status}: ${await errorSnippet(postRes, 200)}`) as Error & { status?: number };
     err.status = postRes.status;
     throw err;
   }
@@ -286,8 +288,7 @@ export async function writeEthernaFeedUpdate(opts: {
     body: Buffer.from(chunkBytes),
   });
   if (!postRes.ok) {
-    const text = await postRes.text().catch(() => "");
-    throw new Error(`Etherna SOC write ${postRes.status}: ${text.slice(0, 200)}`);
+    throw new Error(`Etherna SOC write ${postRes.status}: ${await errorSnippet(postRes, 200)}`);
   }
 
   // Offer the update SOC's chunk so an anonymous feed dereference over this update
