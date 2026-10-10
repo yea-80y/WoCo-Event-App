@@ -34,6 +34,7 @@ import {
   WEB3AUTH_KEY_GONE_MESSAGE,
   WEB3AUTH_KEY_LOADING_MESSAGE,
 } from "./web3auth-signin-error.js";
+import { SignInFailedError, signInFailureCode, type SignInStep } from "./signin-failure.js";
 import { guardianConfigForBackup } from "./guardian-config.js";
 import {
   requestSessionDelegation,
@@ -2203,6 +2204,10 @@ async function loginWeb3Auth(): Promise<boolean> {
   if (_busy) return false;
   _busy = true;
   _loginStage = "waiting";
+  // Where this attempt is, for the code a failure shows (signin-failure.ts).
+  const t0 = performance.now();
+  let step: SignInStep = "sdk";
+  let fast = false;
 
   try {
     const { loginWithWeb3Auth, cancelWeb3AuthSignIn } = await import("./web3auth-account.js");
@@ -2215,6 +2220,7 @@ async function loginWeb3Auth(): Promise<boolean> {
     _cancelLogin = null;
     _loginStage = "finalizing";
 
+    step = "tombstone";
     // Upgraded to a passkey on this device (#746): the email key opens nothing now.
     const upgraded = readOrphanTombstone("web3auth", address);
     if (upgraded) throw await _refuseUpgradedEmailLogin(address, upgraded.kernel, upgraded.owner);
@@ -2224,11 +2230,15 @@ async function loginWeb3Auth(): Promise<boolean> {
     // chunk + ZeroDev RPC); `_ensureKernelForWeb3Auth` rebuilds + asserts
     // lazily, exactly like the reload-restore path. Binding checked first so a
     // recovered account always resolves through its preserved address.
+    step = "lookup";
     const fastOverride = await _recoveryKernelFor(address);
     if (!fastOverride) {
       const cachedKernel = readCachedKernelAddress("web3auth", address);
       if (cachedKernel) {
+        fast = true;
+        step = "switch";
         await _clearStaleAuthForSwitch(cachedKernel);
+        step = "store";
         await putKV(StorageKeys.AUTH_KIND, "web3auth" as AuthKind);
         await putKV(StorageKeys.PARENT_ADDRESS, cachedKernel);
         await putKV(StorageKeys.SEED_ADDRESS, address);
@@ -2239,7 +2249,9 @@ async function loginWeb3Auth(): Promise<boolean> {
         _kernel = null;
         _passkeyPrivateKey = null;
         _passkeyPrfSecret = null;
+        step = "restore";
         await _restoreCachedAuth();
+        step = "feed";
         await _establishFeedSignerEagerly();
         _scheduleKernelPrebuild();
         // The cache makes no chain read: an account upgraded to a passkey from
@@ -2262,6 +2274,7 @@ async function loginWeb3Auth(): Promise<boolean> {
     // account, not a fresh counterfactual one. (No portability-envelope path here:
     // that channel is PRF-sealed and passkey-only; a web3auth account re-opened on a
     // NEW device recovers by re-running the portal.)
+    step = "kernel";
     const { buildKernelFromPrivateKey, readKernelEcdsaOwner, readKernelSignerFor, NOT_ON_LIST } = await import(
       "./kernel-account.js"
     );
@@ -2274,6 +2287,7 @@ async function loginWeb3Auth(): Promise<boolean> {
       // falling through to a fresh counterfactual account. Binding and seed
       // stay (nothing signs in, so the #233 foreign-seed landmine has no
       // trigger, and the kept binding is what keeps that path unreachable).
+      step = "owner";
       const foreignOwner = provenOrphanOwner(await readKernelEcdsaOwner(override), address);
       if (foreignOwner) {
         clearVerifiedBinding("web3auth", address);
@@ -2293,18 +2307,22 @@ async function loginWeb3Auth(): Promise<boolean> {
         throw refusal;
       }
     }
+    step = "kernel";
     const kernel = await buildKernelFromPrivateKey(
       privateKey,
       override ? { address: override } : undefined,
     );
+    step = "signer";
     // Upgraded to a passkey (#746): the email key is off the list, so every session it
     // signed would be refused - say so instead of entering an account that fails.
     if ((await readKernelSignerFor(kernel.address, address)) === NOT_ON_LIST) {
       throw await _refuseUpgradedEmailLogin(address, kernel.address, null);
     }
 
+    step = "switch";
     await _clearStaleAuthForSwitch(kernel.address);
 
+    step = "store";
     await putKV(StorageKeys.AUTH_KIND, "web3auth" as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, kernel.address);
     // Web3Auth EOA persisted as the seed address so the seed restores on reload with
@@ -2318,8 +2336,10 @@ async function loginWeb3Auth(): Promise<boolean> {
     _passkeyPrivateKey = null;
     _passkeyPrfSecret = null;
 
+    step = "restore";
     await _restoreCachedAuth();
 
+    step = "feed";
     // Establish the client feed signer now (silent, deterministic) so profile +
     // other client feeds resolve immediately — logout wipes the on-device blob, so
     // without this a re-login would read the empty legacy feed until the next write.
@@ -2336,14 +2356,23 @@ async function loginWeb3Auth(): Promise<boolean> {
 
     return true;
   } catch (e) {
-    // The honest refusal must reach the caller as itself — a `false` here
-    // renders as "Sign-in failed — please try again", which is exactly the
-    // advice an orphaned credential must not get. Web3Auth's own outcomes
+    // The honest refusal must reach the caller as itself — the generic
+    // "Sign-in failed - please try again" below is exactly the advice an
+    // orphaned credential must not get. Web3Auth's own outcomes
     // (cancelled, a previous session still loading) carry copy for the person
     // too (#803).
     if (isOrphanedCredentialError(e) || isWeb3AuthSignInError(e)) throw e;
-    console.error("[auth] web3auth login failed:", e);
-    return false;
+    // Anything else has no words for the person, so it gets a code they can
+    // screenshot: where it failed and what kind of error, never what it said.
+    const code = signInFailureCode(e, {
+      step,
+      elapsedMs: performance.now() - t0,
+      fast,
+      hidden: globalThis.document?.visibilityState === "hidden",
+      offline: globalThis.navigator?.onLine === false,
+    });
+    console.error(`[auth] web3auth login failed (${code}):`, e);
+    throw new SignInFailedError(code, e);
   } finally {
     _cancelLogin = null;
     _busy = false;

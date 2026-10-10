@@ -33,6 +33,7 @@ const { SURVIVOR_STILL_LOADING_MESSAGE, SURVIVOR_INTERFERED_MESSAGE } = await im
   "../src/lib/auth/web3auth-survivor.js"
 );
 const { isWeb3AuthSignInError, WEB3AUTH_TIMED_OUT_MESSAGE } = await import("../src/lib/auth/web3auth-signin-error.js");
+const { signInStepOf, describeSignInError } = await import("../src/lib/auth/signin-failure.js");
 const { SIGN_IN_POLL_MS, SIGN_IN_STALL_AFTER_WATCHED_MS, SIGN_IN_GRACE_MS } = await import(
   "../src/lib/auth/web3auth-signin-wait.js"
 );
@@ -154,7 +155,10 @@ class FakeSdk extends EventEmitter {
         ? Object.assign(new Error("Wallet popup has been closed by the user"), { code: 5114 })
         : fail === "modal-closed" || fail === "survivor-mid-modal"
           ? new Error("User closed the modal")
-          : new Error("boom");
+          : fail === "iframe-string"
+            ? // The auth iframe's LOGIN_FAILED value, rejected as it is (AuthProvider.js).
+              "Login failed, reason: unknown"
+            : new Error("boom");
     }
     this.connected = true;
     this.status = "connected";
@@ -186,7 +190,7 @@ class World {
   /** The key the modal yields when someone completes a sign-in in it. */
   loginKey = KEY_B;
   failInit = false;
-  connectFails: "popup-closed" | "modal-closed" | "survivor-mid-modal" | "other" | null = null;
+  connectFails: "popup-closed" | "modal-closed" | "survivor-mid-modal" | "iframe-string" | "other" | null = null;
   /** Holds a logout open AFTER its state change, like a slow network round trip. */
   logoutGate: Promise<void> | null = null;
   /** logout() resolves having ended nothing - the session stays named and stored. */
@@ -360,6 +364,35 @@ test("any other sign-in failure is passed on as itself, modal closed", async () 
     return true;
   });
   assert.equal(world.built[0].modalClosed, 1);
+});
+
+test("a failed sign-in is marked as the connect step, with the SDK's status, for the code the button shows", async () => {
+  world.connectFails = "other";
+  await assert.rejects(loginWithWeb3Auth(), (e: unknown) => {
+    assert.deepEqual(signInStepOf(e), { step: "connect", notes: ["st.ready"] });
+    return true;
+  });
+});
+
+test("a rejection that is not an Error keeps its value as the clue, instead of a generic replacement", async () => {
+  world.connectFails = "iframe-string";
+  await assert.rejects(loginWithWeb3Auth(), (e: unknown) => {
+    assert.ok(e instanceof Error && !isWeb3AuthSignInError(e));
+    assert.equal(signInStepOf(e)?.step, "connect");
+    assert.equal(describeSignInError(e), "Rejected~login-failed-unknown");
+    return true;
+  });
+  world.connectFails = null;
+  await loginWithWeb3Auth();
+  assert.equal(world.built.length, 1, "the instance is still usable afterwards");
+});
+
+test("an SDK that cannot start is marked as the sdk step", async () => {
+  world.failInit = true;
+  await assert.rejects(loginWithWeb3Auth(), (e: unknown) => {
+    assert.equal(signInStepOf(e)?.step, "sdk");
+    return true;
+  });
 });
 
 test("a session that appears mid-modal is ended, never adopted, and the next try is fresh", async () => {

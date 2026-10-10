@@ -1,7 +1,11 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
   import { isPasskeySupported, PasskeyBrowserRefusedError } from "../../auth/passkey-account.js";
-  import { passkeyRefusalAdvice } from "../../auth/passkey-refusal-copy.js";
+  import {
+    appleTouchDevice,
+    passkeyCreateRefusedAdvice,
+    passkeyRefusalAdvice,
+  } from "../../auth/passkey-refusal-copy.js";
   import { onMount } from "svelte";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { PASSKEY_ONLY_RECOVERY_NOTE } from "../../auth/organiser-account.js";
@@ -41,7 +45,10 @@
    * cancelled", so making a new one is offered, never assumed. Choosing wrong
    * strands the user's tickets and funds on the account they meant to reach.
    */
+  const appleDevice = () => appleTouchDevice(navigator.userAgent, navigator.maxTouchPoints ?? 0);
+
   async function run(mode: "signin" | "create") {
+    let apple: ReturnType<typeof appleDevice> = null;
     error = null;
     otherDevice = false;
     onstart?.();
@@ -72,6 +79,10 @@
         offerCreate = true;
         showHelp = true;
         error = "No passkey was used. If you cancelled, try again — otherwise you can create a new account below.";
+      } else if (mode === "create" && res.error?.name === "PasskeyCeremonyCancelledError" && (apple = appleDevice())) {
+        // After a sheet (a quick refusal is noSheet, above): on an iPhone or iPad this
+        // is also what "no password manager set up for passkeys" ends in.
+        error = passkeyCreateRefusedAdvice(apple, loginRequest.context === "invite");
       } else if (res.error instanceof PasskeyBrowserRefusedError) {
         error = passkeyRefusalAdvice(res.error.host, loginRequest.context === "invite");
       } else {
@@ -181,7 +192,7 @@
     </p>
 
     {#if error && !otherDevice}
-      <p class="error">{error}</p>
+      <p class="error" role="alert">{error}</p>
     {/if}
   </div>
 {/if}
