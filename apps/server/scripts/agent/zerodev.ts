@@ -49,7 +49,7 @@ const GAS_ALLOWANCE_WEI = 200000000000000000n; // 0.2 ETH
  * incident returns a stub verificationGasLimit, and (2) this draw enables a
  * permission validator whose call policy matches USDC.transfer's ABI args
  * (recipient EQUAL + value LE ceiling) plus timestamp/rate-limit/gas policies —
- * far heavier to validate than the EAS path's flat selector-only policy. With a
+ * far heavier to validate than a flat selector-only policy. With a
  * too-low verificationGasLimit the account's validateUserOp runs out of gas and
  * reverts with EMPTY data, surfacing as `AA23 reverted 0x`. Verified on-chain:
  * 800k OOM-reverts, 3M succeeds. Sponsored + Arb gas is ~free, so we provision

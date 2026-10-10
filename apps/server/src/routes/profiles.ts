@@ -2,16 +2,16 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getProfile, updateProfile, uploadAvatar } from "../lib/profile/service.js";
+import { PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
 import {
   getLabelOwner,
   getLabelContenthash,
-  updateSubEnsContenthash,
   decodeSwarmContenthash,
 } from "../lib/chain/sub-ens-contract.js";
 import { getApexContenthash } from "../lib/chain/sub-ens-apex.js";
 import { bindProfileName, nameChangeStatus, unbindProfileName } from "../lib/profile/name-ledger.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
-import type { UpdateProfileRequest } from "@woco/shared";
+import type { PointerRequest, UpdateProfileRequest } from "@woco/shared";
 
 export const profiles = new Hono<AppEnv>();
 
@@ -57,7 +57,14 @@ profiles.get("/:address", async (c) => {
  * write. A refused bind writes nothing at all.
  */
 type BindOutcome =
-  | { ok: true; label: string; nextChangeAllowedAt: number | null; freeCorrectionUsed: boolean; warning?: "points_at_site" }
+  | {
+      ok: true;
+      label: string;
+      nextChangeAllowedAt: number | null;
+      freeCorrectionUsed: boolean;
+      warning?: "points_at_site";
+      pointer?: PointerRequest;
+    }
   | { ok: false; status: 403 | 409 | 502; body: Record<string, unknown> };
 
 /**
@@ -68,7 +75,6 @@ type BindOutcome =
 export interface ProfileBindDeps {
   readOwner: (label: string) => Promise<string | null>;
   readContenthash: (label: string) => Promise<string | null>;
-  writeContenthash: (label: string, swarmHash: string) => Promise<string>;
   apexContenthash: () => string | null;
 }
 
@@ -80,7 +86,6 @@ export async function verifyAndBindProfileName(
   const {
     readOwner = getLabelOwner,
     readContenthash = getLabelContenthash,
-    writeContenthash = updateSubEnsContenthash,
     apexContenthash = getApexContenthash,
   } = deps;
   const label = rawLabel.toLowerCase().trim();
@@ -119,29 +124,31 @@ export async function verifyAndBindProfileName(
 
   // Point the name at the app, so typing it into a browser opens this profile.
   // On-chain rather than a gateway special case: every resolver path then agrees,
-  // and it survives a profile-names.json loss.
-  const contenthash = await readContenthash(label);
+  // and it survives a profile-names.json loss. The HOLDER signs that pointer
+  // (registrar v2.2): the bind only says what to sign, and a bind never waits
+  // on it or fails for it.
   const apex = apexContenthash();
-
-  if (!contenthash) {
-    // Fire-and-forget, like the site-deploy hook: the bind is already recorded
-    // and a courtesy write must never fail or delay it.
-    if (apex) {
-      void writeContenthash(label, apex)
-        .then(() => console.log(`[api] profile name ${label}.woco.eth → app ${apex.slice(0, 10)}…`))
-        .catch((e) => console.warn("[api] profile name contenthash update failed:", e));
-    }
+  let contenthash: string | null;
+  try {
+    contenthash = await readContenthash(label);
+  } catch (err) {
+    // Unreadable is not empty: asking for a signature now could have the holder
+    // overwrite a site pointer they chose. The bind stands; the ask can wait.
+    console.warn("[api] profile name contenthash read failed:", (err as { shortMessage?: string })?.shortMessage ?? "unspecified");
     return bound;
   }
 
-  // Already the app — nothing to write, and nothing to warn about either.
+  if (!contenthash) {
+    return apex ? { ...bound, pointer: { status: "awaiting_signature", target: apex } } : bound;
+  }
+
+  // Already the app — nothing to sign, and nothing to warn about either.
   if (apex && decodeSwarmContenthash(contenthash) === apex) return bound;
 
   // Allowed, but worth saying out loud: this name is already a live URL. It
-  // keeps resolving to that site — the binding points protect it from being
-  // repointed from here on, and clearing it on-chain is a holder action we do
-  // not offer yet. Deliberately NOT overwritten with the apex: a contenthash
-  // that is not ours is somewhere the holder pointed the name on purpose.
+  // keeps resolving to that site. Deliberately NOT offered the apex: a
+  // contenthash that is not ours is somewhere the holder pointed the name on
+  // purpose.
   return { ...bound, warning: "points_at_site" as const };
 }
 
@@ -151,19 +158,21 @@ profiles.post("/", requireAuth, async (c) => {
   const body = c.get("body") as Record<string, unknown>;
   console.log(`[api] POST /api/profile parent=${parentAddress} keys=${Object.keys(body).join(",")}`);
 
-  // Attendee gate: profiles are unlocked by a purchased ticket (or by being
-  // an organiser). UI catches "ticket_required" and routes to the gate flow.
+  // Attendee gate — the rule is lib/gate/check.ts (#575). The error code predates
+  // the wider rule; the UI matches on it to open the unlock flow.
   const gate = await checkAttendeeGate(parentAddress);
   if (!gate.gated) {
     return c.json({ ok: false, error: "ticket_required" }, 403);
   }
 
   const updates: UpdateProfileRequest = {
-    displayName: body.displayName as string | undefined,
-    bio: body.bio as string | undefined,
-    website: body.website as string | undefined,
-    twitterHandle: body.twitterHandle as string | undefined,
-    farcasterHandle: body.farcasterHandle as string | undefined,
+    // Types are not checked here: `mergeProfileText` stores only strings and
+    // treats anything else as "keep", so a malformed field can only be a no-op.
+    displayName: body.displayName as string | null | undefined,
+    bio: body.bio as string | null | undefined,
+    website: body.website as string | null | undefined,
+    twitterHandle: body.twitterHandle as string | null | undefined,
+    farcasterHandle: body.farcasterHandle as string | null | undefined,
   };
 
   // Validate lengths
@@ -179,6 +188,7 @@ profiles.post("/", requireAuth, async (c) => {
   // the account's ADDRESS, so binding, changing or losing a name moves no
   // audience (see packages/shared/src/social/subject.ts).
   let bindWarning: "points_at_site" | undefined;
+  let bindPointer: PointerRequest | undefined;
   let bindStatus: { nextChangeAllowedAt: number | null; freeCorrectionUsed: boolean } | undefined;
   if (body.subEnsLabel === null) {
     // Explicit unbind. Needs no ownership proof — it can only make the profile
@@ -192,6 +202,7 @@ profiles.post("/", requireAuth, async (c) => {
       if (!outcome.ok) return c.json({ ok: false, ...outcome.body }, outcome.status);
       updates.subEnsLabel = outcome.label;
       bindWarning = outcome.warning;
+      bindPointer = outcome.pointer;
       bindStatus = {
         nextChangeAllowedAt: outcome.nextChangeAllowedAt,
         freeCorrectionUsed: outcome.freeCorrectionUsed,
@@ -201,7 +212,13 @@ profiles.post("/", requireAuth, async (c) => {
 
   try {
     const profile = await updateProfile(parentAddress, updates);
-    return c.json({ ok: true, data: profile, ...(bindWarning ? { warning: bindWarning } : {}), ...(bindStatus ?? {}) });
+    return c.json({
+      ok: true,
+      data: profile,
+      ...(bindWarning ? { warning: bindWarning } : {}),
+      ...(bindPointer ? { pointer: bindPointer } : {}),
+      ...(bindStatus ?? {}),
+    });
   } catch (err) {
     console.error("[api] updateProfile error:", err);
     const msg = err instanceof Error ? err.message : String(err);
@@ -232,6 +249,7 @@ profiles.post("/verify-label", requireAuth, async (c) => {
       nextChangeAllowedAt: outcome.nextChangeAllowedAt,
       freeCorrectionUsed: outcome.freeCorrectionUsed,
       ...(outcome.warning ? { warning: outcome.warning } : {}),
+      ...(outcome.pointer ? { pointer: outcome.pointer } : {}),
     },
   });
 });
@@ -277,6 +295,7 @@ profiles.post("/avatar", requireAuth, async (c) => {
     const avatarRef = await uploadAvatar(parentAddress, bytes, { writeFeed: body.clientOwned !== true });
     return c.json({ ok: true, data: { avatarRef } });
   } catch (err) {
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     console.error("[api] uploadAvatar error:", err);
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ ok: false, error: `Failed to upload avatar: ${msg}` }, 500);

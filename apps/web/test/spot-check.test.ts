@@ -43,9 +43,9 @@ const OWNER_2 = `0x${"22".repeat(20)}` as Hex0x;
 const GATEWAY = "https://gateway.example.test";
 
 /**
- * ed25519 public key for a seed, via node:crypto: this workspace resolves
- * `@noble/curves` to a copy whose exports map has no `./ed25519.js`, while
- * `@woco/shared` resolves its own. Signing therefore stays inside shared.
+ * ed25519 public key for a seed, via node:crypto — an implementation
+ * independent of the @noble code under test, so the check cannot pass by
+ * agreeing with itself. Signing stays inside shared.
  */
 const PKCS8_ED25519_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
 function publicKeyHex(seed: Uint8Array): string {

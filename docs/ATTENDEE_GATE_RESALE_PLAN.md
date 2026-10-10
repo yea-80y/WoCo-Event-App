@@ -1,7 +1,46 @@
 # Attendee Account Gate, Ticket Identity-Binding & Resale — Architecture Plan
 
-Status: DESIGN AGREED 2026-07-11 — not yet built.
+Status: DESIGN AGREED 2026-07-11. **Gate BUILT and enforced; resale NOT built; account import
+onto the chain is design only** (2026-10-05).
 Prereq reading: CLAUDE.md (auth architecture), docs/CRYPTO_AUDIT_2026-04-08.md.
+
+## Status (2026-10-05)
+
+**Built - the attendee gate (§3).** One rule, `checkAttendeeGate`
+(`apps/server/src/lib/gate/check.ts`), unlocks an account by any of: a ticket binding, published
+events, completed Stripe verification, or a confirmed referral (#575, `check.ts:6-21`). A locked
+account gets `ticket_required` (403) on profile save and photo upload
+(`apps/server/src/routes/profiles.ts:163,275`), a sub-ENS name (`routes/sub-ens.ts:322`) and
+like/follow writes (`routes/swarm.ts:74-77`); it also fronts sponsorship and device grants.
+Client: `apps/web/src/lib/attendee/gate/`.
+- **Route A (email CTA) is the ticket path.** The ticket email carries a single-use HMAC token
+  (`lib/gate/token.ts`, minted in `routes/tickets.ts:63`); redeeming it binds one edition to one
+  account (`routes/attendee-gate.ts`). An account that buys while signed in is bound at purchase
+  (`lib/stripe/fulfilment.ts:1193-1212`, route `claim`).
+- **Route B and wallet binding are deleted** with the v1 claim rail - they read v1 claims feeds that
+  onchain tickets never wrote (`routes/attendee-gate.ts:9-14`).
+- Bindings + the one-shot nullifier live in `.data/attendee-gate-bindings.json`
+  (`lib/gate/store.ts:22`), not the `ticket-gate-nullifiers.json` named in §3.
+
+**Not built:** `owner` stamping, `woco.ticket.claimed.v2`, the "Download ticket" object (§3, §7
+steps 4-5), resale (§5), the recipient-account Stripe rail, wallet passes.
+
+**Superseded facts - read §1-§3 with these.** Every ed25519 key in this doc is gone: the
+organiser's issuing key is secp256k1 and signs one manifest (Merkle root), nothing per edition; the
+attendee ed25519 holder key was removed (#518), so the platform holds no holder identity. Steps that
+sign with a "POD key" need re-specifying on secp256k1 before they can be built. The v1 rail and its
+public claims feeds (`woco/pod/claims/*`) are deleted (#207), so §2's v1-QR caveat is moot - the
+card-paid burner ticket is the only kind. "POD" below is the former name of what is now called an
+object.
+
+**Contract fact (changes §5 fact 3).** The live ledger, `WoCoTicketLedger`, HAS owner-authorised
+transfer: `transferSlot` (`contracts/src/WoCoTicketLedger.sol:607`) and
+`transferSlotWithSignature` (`:680`, holder signs, anyone submits). Burning is impossible, and a
+platform- or sponsor-authorised transfer - one of the two authorisation options under "V3 with
+`transferSlot`" below - was considered and rejected (#298, `WoCoTicketLedger.sol:561-570`). Card
+tickets are owned by a burner whose key is discarded at fulfilment, so no one can move them: an
+imported card ticket stays where it is. Movable tickets must be minted to a key their holder
+controls. #266 concerns `WoCoEventV2`, not the ledger.
 
 ## 1. Key inventory (do not conflate)
 
@@ -93,7 +132,7 @@ possession of ≥1 ticket. Wallet-claimed tickets need no gate (claimer address 
 ### Anonymous purchase → account import → resale (verified 2026-08-12)
 
 The launch model sells to buyers with no account: Stripe only, ticket by email, on-chain
-slot owned by a burner the server generates and **destroys** (`stripe.ts:1258-1309`,
+slot owned by a burner the server generates and **destroys** (`apps/server/src/lib/stripe/fulfilment.ts:1127-1186`,
 "Nothing about the burner is persisted apart from its address"). Resale therefore always
 begins with an import. Three facts govern how that works.
 
@@ -112,8 +151,11 @@ that assumes an imported ticket is on-chain-owned by the importer is wrong.
 **3. `WoCoEventV2` has no transfer function.** `slots[eventId][slot]` is written at
 `:315`, `:360`, `:422`, `:460` — all inside claim functions — and never again;
 `slotOwner` (`:687`) is a view. The contract is immutable (no proxy, no initialize). So
-step 1 of §5 settlement cannot execute today, and the old-QR invalidation it depends on
+step 1 of §5 settlement cannot execute on it, and the old-QR invalidation it depends on
 (`slotOwner` rotation) does not happen either. Tracked as #266.
+*2026-10-05:* tickets now mint on `WoCoTicketLedger`, which does have owner-authorised
+`transferSlot` / `transferSlotWithSignature` (see Status). The owner of a card ticket is still
+the discarded burner, so for card tickets step 1 still has nothing to authorise against.
 
 Two routes out, to decide before launch:
 

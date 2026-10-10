@@ -78,8 +78,10 @@ function countingSigner(sigHex: string) {
   const sign: EIP712Signer = (async () => { calls++; return sigHex; }) as unknown as EIP712Signer;
   return { sign, calls: () => calls };
 }
-const SIG_A = "0x" + "ab".repeat(65);
-const SIG_B = "0x" + "cd".repeat(65);
+// Shaped like real signatures (s in the low half, v 27/28): the seed path rejects
+// a v it does not know and re-encodes a high s (#186).
+const SIG_A = "0x" + "ab".repeat(32) + "12".repeat(32) + "1b";
+const SIG_B = "0x" + "cd".repeat(32) + "34".repeat(32) + "1c";
 const seedFromSig = (sig: string) => keccak256(getBytes(sig));
 
 test("the seed is keccak256 of the canonical signature BYTES", async () => {
@@ -125,7 +127,7 @@ function flakySigner() {
   let calls = 0;
   const sign: EIP712Signer = (async () => {
     calls++;
-    return "0x" + calls.toString(16).padStart(2, "0").repeat(65);
+    return "0x" + calls.toString(16).padStart(2, "0").repeat(32) + "12".repeat(32) + "1b";
   }) as unknown as EIP712Signer;
   return { sign, calls: () => calls };
 }
@@ -219,13 +221,14 @@ test("the auth store OPTS EXTERNAL WALLETS IN — pinned at the call site", () =
   );
 });
 
-test("the SILENT establish stays web3auth-only", () => {
-  // `silent` skips the confirm dialog. It is correct for web3auth — the raw key
-  // is already in memory and ethers signs it with RFC-6979, so there is no
-  // decision for the user to take and prompting on every page load would be
-  // friction for nothing. Widening it is a different claim: for passkey the PRF
-  // ceremony is the consent, and for web3 the wallet popup IS the wallet's own
-  // policy. Neither may be skipped by an eager path the user did not ask for.
+test("a SILENT establish never starts a ceremony — web3auth's raw key, or a passkey's PRF already in memory", () => {
+  // `silent` skips the busy latch and any dialog. It is correct in exactly two
+  // places, both with nothing left for the user to decide: web3auth, whose raw key
+  // is already in memory (ethers signs it with RFC-6979), and — since #642 — a
+  // passkey whose PRF output the login just produced (the biometric WAS the
+  // consent, and the seed is an HKDF of it). It must never widen to a kind whose
+  // establish is a wallet popup (web3, coinbase) or to a passkey whose PRF output
+  // is NOT in memory, where it would be a biometric nobody asked for.
   const src = readFileSync(
     fileURLToPath(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url)),
     "utf8",
@@ -233,18 +236,85 @@ test("the SILENT establish stays web3auth-only", () => {
   const gates = src
     .split("\n")
     .filter((l) => l.includes("opts.silent") || l.includes("{ silent: true }"));
-  assert.ok(gates.length >= 2, "the silent path must still exist to be constrained");
+  assert.ok(gates.length >= 3, "the silent path must still exist to be constrained");
   for (const line of gates) {
     assert.match(
       line,
-      /web3auth|_getContentFeedSigner|_ensureIdentitySeed/,
-      `a silent establish escaped the web3auth gate: ${line.trim()}`,
+      // `_requireCurrentKeys({ prompt: !opts.silent })` (#186) uses `silent` only to
+      // FORBID a ceremony: a silent caller whose keys are behind gets a refusal, never a sheet.
+      /web3auth|_getContentFeedSigner|_ensureIdentitySeed|_passkeyPrfSecret|_requireCurrentKeys\(\{ prompt: !opts\.silent \}\)/,
+      `a silent establish escaped its gates: ${line.trim()}`,
     );
   }
   const gate = src.split("\n").find((l) => l.includes("const silentRawKey = opts.silent"));
   assert.ok(gate, "the silent signer gate must exist");
-  assert.match(gate, /_kind === "web3auth"/, "only web3auth may establish a seed with no dialog");
+  assert.match(gate, /_kind === "web3auth"/, "only web3auth may SIGN for a seed with no dialog");
   assert.match(gate, /_web3authPrivateKey/, "and only from the web3auth raw key");
+
+  // The passkey half: a silent call without the PRF output in memory is refused
+  // before anything could start a ceremony, and the eager caller checks it too.
+  assert.match(
+    src,
+    /if \(opts\.silent && _kind === "passkey" && !_passkeyPrfSecret\) return false;/,
+  );
+  const eager = src.slice(src.indexOf("async function _establishPasskeySeedEagerly"));
+  assert.match(eager.slice(0, 300), /if \(_kind !== "passkey" \|\| !_passkeyPrfSecret\) return;/);
+});
+
+test("the eager passkey establish can never derive for a rotated credential or an unknown Kernel", () => {
+  // The store is a runes module this suite cannot load, so the ordering is pinned
+  // at the source. Two rules (#642 PR B):
+  //  1. inside `_ensureIdentitySeed`, the stored-seed restore and the recovery-
+  //     binding refusal both run BEFORE the passkey PRF branch — so an eager call
+  //     for a recovered credential returns false instead of deriving a divergent
+  //     seed that the envelope back-fill would then publish;
+  //  2. the main login path skips the eager call after an UNKNOWN envelope read,
+  //     when the login may be sitting on the wrong Kernel.
+  const src = readFileSync(
+    fileURLToPath(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url)),
+    "utf8",
+  );
+  const body = src.slice(src.indexOf("async function _ensureIdentitySeed("));
+  // A passkey account never reaches the device-key restore (#746 fix 1): its seed
+  // is locked under the passkey, and a device-key copy there opens silently.
+  const passkey = body.indexOf("if (_kind === \"passkey\") return await _unlockPasskeySeed(seedAddr);");
+  const deviceRestore = body.indexOf("if (await restoreIdentitySeed(seedAddr))");
+  assert.ok(passkey > 0 && deviceRestore > passkey, "passkey branch → device-key restore");
+  const unlock = src.slice(src.indexOf("async function _unlockPasskeySeed("));
+  const open = unlock.indexOf("await openLockedSeed(seedAddr, parent, prf)");
+  // Either binding refuses (#746 step 3): a recovered OR an added passkey's seed was carried.
+  const refusal = unlock.indexOf("if (await _boundKernelAddress(seedAddr))");
+  const prf = unlock.indexOf("await establishPasskeyIdentitySeed(seedAddr, parent, prf)");
+  assert.ok(open > 0 && refusal > open && prf > refusal, "open locked → binding refusal → PRF derive");
+  assert.match(src, /if \(!envelopeUnknown\) await _establishPasskeySeedEagerly\(\);/);
+});
+
+test("a REFUSED back-fill heals the device instead of leaving it on the wrong seed", () => {
+  // With a recovery binding AND a stored seed, login skips the envelope, so a
+  // device whose seed the envelope disagrees with would sign every write with it
+  // forever. The heal mirrors the #245 re-probe's: drop the seed under the
+  // credential FIRST (so even a user who switched away is repaired), then sign out
+  // only if still in that account; the next login restores from the envelope.
+  const src = readFileSync(
+    fileURLToPath(new URL("../src/lib/auth/auth-store.svelte.ts", import.meta.url)),
+    "utf8",
+  );
+  const caller = src.slice(src.indexOf("async function _maybeBackfillPortabilityEnvelope"));
+  assert.match(
+    caller.slice(0, caller.indexOf("/** The one accessor bundle")),
+    /outcome\.action === "refused"[\s\S]*?await _healRefusedBackfill\(eoa, parent\)/,
+  );
+  const heal = src.slice(src.indexOf("async function _healRefusedBackfill"));
+  const body = heal.slice(0, heal.indexOf("\n}\n"));
+  const clear = body.indexOf("await _clearSeedEverywhere(eoa)");
+  const guard = body.indexOf("if (!stillIn) return;");
+  const out = body.indexOf("await logout({ force: true })");
+  assert.ok(clear > 0 && guard > clear && out > guard, "clear seed → still-in guard → sign out");
+  // Every copy: the locked one would otherwise reopen the wrong seed at next unlock.
+  const wipe = src.slice(src.indexOf("async function _clearSeedEverywhere"));
+  const wipeBody = wipe.slice(0, wipe.indexOf("\n}\n"));
+  assert.match(wipeBody, /await clearIdentitySeed\(eoa\)/);
+  assert.match(wipeBody, /await clearLockedSeed\(eoa\)/);
 });
 
 test("requestIdentitySeed derives NO key — the seed is all it returns", async () => {
@@ -360,4 +430,94 @@ test("the SEED decides the identity, not the address it was filed under", async 
 
   assert.equal(await restoreIdentitySeed(PRF_EOA), seed);
   assert.equal(await restoreIdentitySeed(KERNEL_PARENT), seed);
+});
+
+// ---------------------------------------------------------------------------
+// One signature, several encodings (#186)
+// ---------------------------------------------------------------------------
+//
+// v as 0/1 or 27/28, s low or high, 65 bytes or the 64-byte compact form: all
+// the same signature. A wallet that switched encoding must not hand its user a
+// different seed, nor leave a backup wallet unable to open its escrow.
+
+const SECP256K1_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+
+/** Every valid encoding of a canonical (low s, v 27/28) 65-byte signature. */
+function encodingsOf(sig: string): Record<string, string> {
+  const r = sig.slice(2, 66);
+  const s = BigInt("0x" + sig.slice(66, 130));
+  const v = parseInt(sig.slice(130, 132), 16);
+  const hex32 = (n: bigint) => n.toString(16).padStart(64, "0");
+  const parity = v - 27;
+  return {
+    canonical: sig,
+    rawV: "0x" + r + hex32(s) + (v - 27).toString(16).padStart(2, "0"),
+    highS: "0x" + r + hex32(SECP256K1_N - s) + (27 + (parity ^ 1)).toString(16),
+    highSRawV: "0x" + r + hex32(SECP256K1_N - s) + (parity ^ 1).toString(16).padStart(2, "0"),
+    compact: "0x" + r + hex32(s | (BigInt(parity) << 255n)),
+  };
+}
+
+const variantWallet = async () => {
+  const { Wallet } = await import("ethers");
+  return new Wallet("0x" + "5e".repeat(32));
+};
+const signWith = (wallet: { signTypedData: (...a: never[]) => Promise<string> }): EIP712Signer =>
+  ((d: unknown, t: unknown, m: unknown) =>
+    (wallet.signTypedData as (...a: unknown[]) => Promise<string>)(d, t, m)) as unknown as EIP712Signer;
+
+test("every encoding of the same wallet signature gives the SAME seed", async () => {
+  const wallet = await variantWallet();
+  let canonicalSig = "";
+  const capture: EIP712Signer = (async (...args: unknown[]) => {
+    canonicalSig = await (signWith(wallet) as (...a: unknown[]) => Promise<string>)(...args);
+    return canonicalSig;
+  }) as unknown as EIP712Signer;
+  await clearIdentitySeed(wallet.address);
+  const { seed } = await requestIdentitySeed(wallet.address, capture);
+  assert.equal(seed, seedFromSig(canonicalSig), "canonical input passes through byte for byte");
+
+  for (const [name, encoded] of Object.entries(encodingsOf(canonicalSig))) {
+    await clearIdentitySeed(wallet.address);
+    const { seed: s } = await requestIdentitySeed(wallet.address, countingSigner(encoded).sign);
+    assert.equal(s, seed, `${name} encoding moved the seed`);
+  }
+});
+
+test("a wallet that answers in two encodings of one signature passes the determinism check", async () => {
+  const wallet = await variantWallet();
+  const sig = await (signWith(wallet) as (...a: unknown[]) => Promise<string>)(
+    { name: "x" }, { M: [{ name: "a", type: "string" }] }, { a: "b" },
+  );
+  const forms = Object.values(encodingsOf(sig));
+  let calls = 0;
+  const alternating: EIP712Signer = (async () => forms[calls++ % forms.length]) as unknown as EIP712Signer;
+  await clearIdentitySeed(wallet.address);
+  const { seed } = await requestIdentitySeed(wallet.address, alternating, { verifyDeterminism: true });
+  assert.equal(seed, seedFromSig(sig));
+});
+
+test("a signature with no valid v is refused, not hashed", async () => {
+  await clearIdentitySeed();
+  const bad = SIG_A.slice(0, -2) + "02";
+  await assert.rejects(
+    () => requestIdentitySeed("0x1111111111111111111111111111111111111111", countingSigner(bad).sign),
+    /unexpected v/,
+  );
+});
+
+test("a backup wallet's escrow keys survive a change of signature encoding", async () => {
+  const { deriveGuardianKeys } = await import("../src/lib/auth/recovery-escrow.ts");
+  const wallet = await variantWallet();
+  let canonicalSig = "";
+  const capture: EIP712Signer = (async (...args: unknown[]) => {
+    canonicalSig = await (signWith(wallet) as (...a: unknown[]) => Promise<string>)(...args);
+    return canonicalSig;
+  }) as unknown as EIP712Signer;
+  const base = await deriveGuardianKeys(wallet.address, capture);
+  for (const [name, encoded] of Object.entries(encodingsOf(canonicalSig))) {
+    const keys = await deriveGuardianKeys(wallet.address, countingSigner(encoded).sign);
+    assert.equal(keys.socSigner.address, base.socSigner.address, `${name} encoding moved the backup's SOC signer`);
+    assert.equal(keys.encryption.publicKeyHex, base.encryption.publicKeyHex, `${name} encoding moved the backup's escrow key`);
+  }
 });

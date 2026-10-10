@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Context, Next } from "hono";
 import { randomUUID } from "node:crypto";
 import { parseUnits, formatUnits, verifyTypedData, type TypedDataField } from "ethers";
 import type { AppEnv } from "../types.js";
@@ -38,6 +39,7 @@ import { getStripeAccount } from "../lib/stripe/accounts.js";
 import { validateReturnUrl, getFrontendUrl, canonicalSuccessUrl } from "../lib/stripe/return-url.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import {
+  FEATURES,
   priceOrder,
   moneyToMinor,
   PLATFORM_FEE_BP,
@@ -62,8 +64,27 @@ import type {
   RegisterSpendPermissionRequest,
   PaySpendPermissionRequest,
 } from "@woco/shared";
+import { signCheckoutTag } from "../lib/stripe/checkout-provenance.js";
+import { MIN_APPLICATION_FEE_MINOR } from "../lib/stripe/checkout-fees.js";
 
 const shopsRouter = new Hono<AppEnv>();
+
+// Kill switch for the whole shop rail (#124). Every route on this router either
+// moves money (Stripe checkout, the USDC spend-permission draw) or feeds the
+// screen that does, so the gate is the router's FIRST middleware rather than a
+// per-route list: a new endpoint added below is closed by default instead of
+// being remembered. It sits ahead of requireAuth on purpose — an unauthenticated
+// probe should learn "off", not "unauthorised". Hiding the client routes is not
+// the same as closing the feature: a cached client, or a deployed organiser site
+// that baked the old flag into its bundle at publish time, still calls here.
+shopsRouter.use("*", shopGate);
+
+async function shopGate(c: Context<AppEnv>, next: Next) {
+  if (!FEATURES.shopAllowed) {
+    return c.json({ ok: false, error: "Shops are not available" }, 403);
+  }
+  await next();
+}
 
 // ---------------------------------------------------------------------------
 // Rate limiter — public order creation writes to Swarm (postage cost); bound
@@ -470,6 +491,9 @@ shopsRouter.post("/:id/orders/:orderId/checkout", async (c) => {
     // Platform fee taken from the merchant's cut (standard retail). Buyer pays
     // exactly the priced total; merchant absorbs Stripe + platform fee.
     const applicationFee = Math.round((amountMinor * PLATFORM_FEE_BP) / 10_000);
+    if (applicationFee < MIN_APPLICATION_FEE_MINOR) {
+      return c.json({ ok: false, error: "Order total is too low to pay by card" }, 400);
+    }
 
     const body = (await c.req.json().catch(() => ({}))) as { returnUrl?: string; cancelUrl?: string };
     const frontendUrl = canonicalSuccessUrl(validateReturnUrl(body.returnUrl) ?? getFrontendUrl(c));
@@ -482,6 +506,26 @@ shopsRouter.post("/:id/orders/:orderId/checkout", async (c) => {
     const cancelUrl = validatedCancel
       ? `${validatedCancel}${validatedCancel.includes("?") ? "&" : "?"}stripe=cancelled`
       : `${frontendUrl}/#/shop/${shopId}?stripe=cancelled`;
+
+    const sessionMetadata: Record<string, string> = {
+      shopId,
+      orderId,
+      orderCode: order.code,
+      // Stored so a refund can be issued through the connected account later.
+      connectedAccountId: merchant.stripeAccountId,
+    };
+    // #645: the shop order shares the ticket webhook, which only acts on a
+    // session whose integrity tag verifies and whose fee is ours
+    // (lib/stripe/checkout-provenance.ts). Summed the way Stripe totals line items.
+    const sessionAmount = order.lines.reduce((n, l) => n + moneyToMinor(l.unitPrice) * l.qty, 0);
+    const clientReferenceId = signCheckoutTag({
+      account: merchant.stripeAccountId,
+      currency,
+      amountSubtotal: sessionAmount,
+      amountTotal: sessionAmount,
+      applicationFee,
+      metadata: sessionMetadata,
+    });
 
     const s = getStripe();
     const session = await s.checkout.sessions.create(
@@ -499,13 +543,8 @@ shopsRouter.post("/:id/orders/:orderId/checkout", async (c) => {
           application_fee_amount: applicationFee,
           // No transfer_data — direct charge settles on the connected account.
         },
-        metadata: {
-          shopId,
-          orderId,
-          orderCode: order.code,
-          // Stored so a refund can be issued through the connected account later.
-          connectedAccountId: merchant.stripeAccountId,
-        },
+        metadata: sessionMetadata,
+        client_reference_id: clientReferenceId,
         success_url: successUrl,
         cancel_url: cancelUrl,
       },

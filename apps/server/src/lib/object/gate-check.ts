@@ -29,6 +29,7 @@ import { getOnChainHolding } from "./holdings.js";
 import { getCertHolding, loadVerifiedBadgeManifest } from "./cert-holdings.js";
 import { isRetiredIssuer } from "../issuer/binding.js";
 import { getOnChainEvent } from "../chain/event-contract.js";
+import { errorClass } from "../http/error-class.js";
 
 /**
  * What a claimer supplied to satisfy CERTIFICATE gates, plus what the server
@@ -157,7 +158,11 @@ export async function validateObjectGate(
     try {
       ev = await getOnChainEvent(g.onChainEventId, g.chainId);
     } catch (err) {
-      return { ok: false, error: `gate chain read failed: ${(err as Error).message}` };
+      // This verdict is wrapped by createEventV2 and streamed to the organiser's
+      // browser (service.ts -> events.ts), and the read uses the keyed RPC URL,
+      // which ethers puts in its error text (#540). Class only; detail to the log.
+      console.error("[gate-check] chain read failed:", err);
+      return { ok: false, error: `gate chain read failed (${errorClass(err)})` };
     }
     const binding = verifyObjectGateBinding(g, ev?.manifestRef ?? null);
     if (!binding.ok) return binding;

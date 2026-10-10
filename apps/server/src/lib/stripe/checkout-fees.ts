@@ -23,6 +23,14 @@ export interface CardFees {
   totalApplicationFee: number;
 }
 
+/**
+ * The smallest platform fee a card sale may carry, in minor units. A sale whose
+ * fee rounds to 0 creates no ApplicationFee, and the webhook proves a session is
+ * ours by that fee (#645, checkout-provenance.ts) - so it would be charged and
+ * never fulfilled. Both create routes refuse below this: "price too low".
+ */
+export const MIN_APPLICATION_FEE_MINOR = 1;
+
 export function computeCardFees(
   payment: { feePassedToCustomer?: boolean; buyerFeePercent?: number },
   priceFloat: number,

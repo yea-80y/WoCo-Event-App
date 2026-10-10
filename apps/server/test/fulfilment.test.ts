@@ -21,6 +21,8 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import type { EventFeed } from "@woco/shared";
+import { deriveXWingKeypairFromSeed } from "@woco/shared/crypto/xwing";
+import { openBoxJson, orderSealContext } from "@woco/shared/crypto/sealed-box";
 import {
   fulfilPaidSession,
   type FulfilmentDeps,
@@ -37,7 +39,13 @@ const SERIES_ID = "sr-000000000001";
 const ON_CHAIN_EVENT_ID = "0x" + "ab".repeat(32);
 const MANIFEST_REF = "cd".repeat(32);
 const ORDER_REF = "ef".repeat(32);
+/** The organiser's real X-Wing order key, so the fallback seal genuinely seals (#642). */
+const ORDER_KEY = deriveXWingKeypairFromSeed("0x" + "5e".repeat(32));
+const ORDER_KEY_REF = "0b".repeat(32);
 const ORGANISER = "0x" + "11".repeat(20);
+/** Where the default series' registration lives, as the server's record names it (#563). */
+const RECORDED_CONTRACT = { chainId: 421614, address: "0x" + "c2".repeat(20), version: "v2" as const };
+const RECORDED_CONTRACT_KEY = `421614:${"0x" + "c2".repeat(20)}`;
 const BUYER_WALLET = "0x" + "22".repeat(20);
 const ACCT = "acct_test_1";
 const FUTURE = "2099-01-01T00:00:00.000Z";
@@ -90,6 +98,11 @@ interface SessionOpts {
    * must still fulfil from the server's registration record.
    */
   onChainEventId?: string | null;
+  /**
+   * The contract the sale was validated against, as create-checkout stamps it
+   * (#563). Absent by default: a session from before that shipped.
+   */
+  onChainContract?: string;
   /** Drop eventId/seriesId entirely — "not our session". */
   noEventKeys?: boolean;
   /**
@@ -115,6 +128,7 @@ function session(o: SessionOpts = {}): FulfilmentSession {
   if (o.consent !== null) md.marketingConsent = o.consent ?? "1";
   if (o.connectedAccountId !== null) md.connectedAccountId = o.connectedAccountId ?? ACCT;
   if (o.onChainEventId !== null) md.onChainEventId = o.onChainEventId ?? ON_CHAIN_EVENT_ID;
+  if (o.onChainContract) md.onChainContract = o.onChainContract;
   if (o.legacyHolderPubKey) md.holderPubKey = o.legacyHolderPubKey;
   return {
     id: "cs_test_1",
@@ -136,9 +150,13 @@ type Step =
   | "getEvent"
   | "chainEventEndMs"
   | "lookupOnChainEventId"
+  | "saleContractFor"
   | "recordHeldPayout"
   | "getOrganiserByStripeAccount"
-  | "uploadToBytes"
+  | "storeOrderBlob"
+  | "claimHeldOrder"
+  | "storeHeldOrder"
+  | "releaseHeldOrder"
   | "generateBurner"
   | "signMessage"
   | "batchClaimForOnChain"
@@ -146,7 +164,11 @@ type Step =
   | "consumeReservation"
   | "createRefund"
   | "recordPendingRefund"
-  | "markPayoutVoid"
+  | "flagPayoutRecheck"
+  | "recordSaleSlots"
+  | "recordAutoRefund"
+  | "cancellationGate"
+  | "enqueueCancellationRefund"
   | "captureCheckoutConsent"
   | "recordAttendeeEmail"
   | "getSiteTheme"
@@ -168,12 +190,26 @@ interface FakeOpts {
    * no longer decides.
    */
   recorded?: string | null;
+  /**
+   * What `saleContractFor` answers (#563). Default: ok, RECORDED_CONTRACT.
+   */
+  sale?: ReturnType<FulfilmentDeps["saleContractFor"]>;
   /** Contract batch cap. Default 100 (one chunk for any test quantity). */
   batchMax?: number;
   /** Chunk index (0-based) at which batchClaimFor reverts. Default: never. */
   revertAtChunk?: number;
   /** Ticket index at which signMessage throws (with fail = "signMessage"). Default 0. */
   signFailAt?: number;
+  /** What bindTicket answers. Default true; false = the store already holds this edition. */
+  bindReturns?: boolean;
+  /** What cancellationGate answers (#644). Default "open". */
+  cancellation?: "open" | "cancelled" | "unknown";
+  /** Order refs another completed sale already carries (#661). Default none. */
+  takenRefs?: string[];
+  /** Whether the session's orderRef is a box HELD since checkout (#546). Default false. */
+  held?: boolean;
+  /** Whether a non-held orderRef is already on the attendee batch. Default true. */
+  orderStored?: boolean;
 }
 
 function fakeDeps(o: FakeOpts = {}) {
@@ -185,14 +221,26 @@ function fakeDeps(o: FakeOpts = {}) {
   /** Rows the MAILER wrote before rejecting with `ledgered: true`. */
   const mailerLedger: string[] = [];
   const held: Array<Record<string, unknown>> = [];
-  const voided: string[] = [];
+  const rechecked: string[] = [];
   const bindings: Array<Record<string, unknown>> = [];
   const consents: Array<Record<string, unknown>> = [];
   const attendees: Array<{ eventId: string; emailHash: string; at: string }> = [];
   const consumed: string[] = [];
   const minted: string[][] = [];
+  const uploaded: string[] = [];
+  /** What the held-order claim and the fallback store were told about the buyer (#546 lookup). */
+  const buyerHashes: Array<{ via: string; emailHash: string | undefined }> = [];
   /** The on-chain event each batch was minted against — the #426 assertion. */
   const mintedAgainst: string[] = [];
+  /** The contract each batch was minted on — the #563 assertion. */
+  const mintedOn: unknown[] = [];
+  /** The contract each chain-end read went to. */
+  const endReadOn: unknown[] = [];
+  /** Sale-record writes (#645 part C). */
+  const saleSlots: Array<{ sessionId: string; onChainEventId: string; contract: string; slots: number[]; orderRef?: string }> = [];
+  const autoRefunds: Array<{ sessionId: string; amount: number }> = [];
+  /** Sales handed to a cancellation's refund job (#644). */
+  const cancellationQueue: Array<{ eventId: string; sessionId: string; paymentIntentId: string; account: string }> = [];
   let nextSlot = 0;
   let chunkIdx = 0;
   let burnerSeq = 0;
@@ -215,32 +263,59 @@ function fakeDeps(o: FakeOpts = {}) {
       boom("getEvent");
       return o.event === undefined ? eventFeed() : o.event;
     },
-    chainEventEndMs: async () => {
+    chainEventEndMs: async (_id, contract) => {
       boom("chainEventEndMs");
+      endReadOn.push(contract);
       return o.chainEndMs === undefined ? Date.parse(FUTURE) : o.chainEndMs;
     },
     lookupOnChainEventId: () => {
       boom("lookupOnChainEventId");
       return o.recorded === undefined ? ON_CHAIN_EVENT_ID : o.recorded;
     },
+    saleContractFor: () => {
+      boom("saleContractFor");
+      return o.sale ?? { ok: true, contract: RECORDED_CONTRACT };
+    },
     recordHeldPayout: (entry) => {
       boom("recordHeldPayout");
       held.push(entry as unknown as Record<string, unknown>);
     },
-    markPayoutVoid: (sessionId) => {
+    flagPayoutRecheck: (sessionId) => {
       // Attempt recorded BEFORE the throw: the invariant checks that a full
-      // refund always REACHES the void, whether or not the store accepted it.
-      voided.push(sessionId);
-      boom("markPayoutVoid");
+      // refund always REACHES the flag, whether or not the store accepted it.
+      rechecked.push(sessionId);
+      boom("flagPayoutRecheck");
     },
     getOrganiserByStripeAccount: () => {
       boom("getOrganiserByStripeAccount");
       return ORGANISER;
     },
-    uploadToBytes: async () => {
-      boom("uploadToBytes");
+    storeOrderBlob: async (data: string, meta: { emailHash?: string }) => {
+      boom("storeOrderBlob");
+      uploaded.push(data);
+      buyerHashes.push({ via: "storeOrderBlob", emailHash: meta.emailHash });
       return "aa".repeat(32);
     },
+    fetchOrderKey: async (ref: string) => {
+      boom("fetchOrderKey");
+      if (ref !== ORDER_KEY_REF) throw new Error(`unknown order key ref ${ref}`);
+      return ORDER_KEY.publicKey;
+    },
+    orderRefInOtherSale: (ref: string) => (o.takenRefs ?? []).includes(ref),
+    claimHeldOrder: (_ref: string, _sessionId: string, emailHash?: string) => {
+      boom("claimHeldOrder");
+      buyerHashes.push({ via: "claimHeldOrder", emailHash });
+      return o.held ?? false;
+    },
+    storeHeldOrder: async (ref: string) => {
+      boom("storeHeldOrder");
+      return ref;
+    },
+    releaseHeldOrder: () => {
+      boom("releaseHeldOrder");
+      return true;
+    },
+    isOrderStored: () => o.orderStored ?? true,
     generateBurner: () => {
       boom("generateBurner");
       const n = burnerSeq++;
@@ -253,20 +328,41 @@ function fakeDeps(o: FakeOpts = {}) {
         },
       };
     },
-    batchClaimForOnChain: async (ev, burners) => {
+    batchClaimForOnChain: async (ev, burners, _ref, contract) => {
       boom("batchClaimForOnChain");
       const idx = chunkIdx++;
       if (o.revertAtChunk === idx) throw new Error("execution reverted: Insufficient supply");
       minted.push(burners);
       mintedAgainst.push(ev);
+      mintedOn.push(contract);
       const slots = burners.map(() => nextSlot++);
       return slots;
     },
     onChainBatchMax: o.batchMax ?? 100,
+    recordSaleSlots: (sessionId, onChainEventId, contract, slots, orderRef) => {
+      // Attempt recorded before the throw: the invariant is that every minted
+      // chunk REACHES the record, whether or not the store accepted it.
+      saleSlots.push({ sessionId, onChainEventId, contract, slots, orderRef });
+      boom("recordSaleSlots");
+    },
+    recordAutoRefund: (sessionId, amount) => {
+      // Attempt recorded before the throw, like flagPayoutRecheck.
+      autoRefunds.push({ sessionId, amount });
+      boom("recordAutoRefund");
+    },
     bindTicket: (b) => {
       boom("bindTicket");
+      if (o.bindReturns === false) return false;
       bindings.push(b as unknown as Record<string, unknown>);
       return true;
+    },
+    cancellationGate: () => {
+      boom("cancellationGate");
+      return o.cancellation ?? "open";
+    },
+    enqueueCancellationRefund: (input) => {
+      boom("enqueueCancellationRefund");
+      cancellationQueue.push(input);
     },
     consumeReservation: (id) => {
       boom("consumeReservation");
@@ -315,7 +411,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, voided, bindings, consents, attendees, consumed, minted, mintedAgainst };
+  return { deps, calls, uploaded, buyerHashes, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -349,6 +445,11 @@ function assertInvariant(
     assert.ok(outcome.stoppedReason, "unfilled tickets need a stop reason");
     if (outcome.refund.kind === "created") {
       assert.equal(refundedUnits(outcome, s), unfilled, "refund covers exactly the unfilled units");
+    } else if (outcome.refund.kind === "queued-cancellation") {
+      // #644: the cancellation's own job refunds it — exactly one hand-over, and
+      // no second refund created here under a different fee policy.
+      assert.equal(f.cancellationQueue.length, 1, "handed to the cancellation exactly once");
+      assert.equal(f.refunds.length, 0, "no auto-refund beside the cancellation's");
     } else if (outcome.refund.kind === "failed") {
       // #367: a refund that could not be created is RECORDED for retry (the
       // attempt is made even if the store itself then throws).
@@ -372,12 +473,34 @@ function assertInvariant(
     assert.equal(outcome.email, "nothing-issued");
     assert.equal(f.emails.length, 0);
   }
-  // 3. A full refund voids the payout entry; a partial leaves it held; a
-  //    refund that did not land leaves it held too (the money is still there).
-  if (outcome.refund.kind === "created" && outcome.issued === 0) {
-    assert.deepEqual(f.voided, [s.id], "full refund voids the payout entry");
+  // 3. Every refund we attempt is recorded as OURS first, at the amount we
+  //    asked for, so its refund event is never read as the organiser's (#645).
+  if (outcome.refund.kind === "created" || outcome.refund.kind === "failed") {
+    assert.equal(f.autoRefunds.length, 1, "one auto-refund record per refund attempt");
+    assert.equal(f.autoRefunds[0].sessionId, s.id);
+    const asked = f.refunds[0]?.params.amount ?? f.pendingRefunds[0]?.amount ?? (s.amount_total ?? 0);
+    assert.equal(f.autoRefunds[0].amount, asked, "recorded amount = the amount refunded");
+    assert.ok(f.calls.indexOf("recordAutoRefund") < f.calls.indexOf("createRefund"), "recorded BEFORE the refund call");
   } else {
-    assert.equal(f.voided.length, 0, "only a landed full refund voids the payout entry");
+    assert.equal(f.autoRefunds.length, 0, "no refund, no auto-refund record");
+  }
+  // 4. Every minted chunk reaches the sale record, under this session, keyed
+  //    to the event and contract it was minted against (#645: voids key on the
+  //    slot, so a slot that never reached the record can never be voided).
+  assert.equal(f.saleSlots.length, f.minted.length, "one sale-record write per minted chunk");
+  f.saleSlots.forEach((r, i) => {
+    assert.equal(r.sessionId, s.id);
+    assert.equal(r.slots.length, f.minted[i].length);
+    assert.equal(r.onChainEventId, f.mintedAgainst[i]);
+    const c = f.mintedOn[i] as { chainId: number; address: string };
+    assert.equal(r.contract, `${c.chainId}:${c.address.toLowerCase()}`);
+  });
+  // 5. A full refund flags the payout entry for a recheck (#781); a partial leaves it alone; a
+  //    refund that did not land leaves it alone too (the money is still there).
+  if (outcome.refund.kind === "created" && outcome.issued === 0) {
+    assert.deepEqual(f.rechecked, [s.id], "a full refund flags the payout entry for a recheck (#781: netted, not voided)");
+  } else {
+    assert.equal(f.rechecked.length, 0, "only a landed full refund flags the payout entry");
   }
 }
 
@@ -432,9 +555,12 @@ describe("happy path", () => {
     );
     assert.match(mail.tickets[0].qrContent, new RegExp(`^woco://t/${EVENT_ID}/${SERIES_ID}/1/sig0$`));
     assert.equal(mail.replyTo, "org@example.com");
-    assert.equal(mail.siteId, "site-1");
+    assert.equal(mail.imageHash, "00".repeat(32), "the event image reference travels to the ticket link builder");
     assert.equal(mail.profileCta, true, "multi-ticket order keeps per-ticket links");
     assert.deepEqual(mail.failureContext, { stripeSessionId: "cs_test_1", eventId: EVENT_ID, siteId: "site-1" });
+    // The ticket email's calendar entry and times need the event's id and end.
+    assert.equal(mail.eventId, EVENT_ID);
+    assert.equal(mail.eventEndDate, FUTURE);
 
     // Consent: opt-in recorded against the organiser, keyed on the email hash.
     assert.equal(f.consents.length, 1);
@@ -466,6 +592,30 @@ describe("happy path", () => {
     const { f } = await run({ quantity: 1, wallet: BUYER_WALLET });
     assert.equal(f.bindings.length, 1);
     assert.equal(f.emails[0].profileCta, false);
+  });
+
+  // #582: the automatic add is an accessory that may fail; the email button is
+  // its only fallback, and for this order shape it used to be left out.
+  test("single ticket for a signed-in buyer whose automatic add throws: the email offers Add to WoCo", async () => {
+    const { f, outcome } = await run({ quantity: 1, wallet: BUYER_WALLET }, { fail: "bindTicket" });
+    assert.equal(outcome.issued, 1);
+    assert.equal(outcome.refund.kind, "not-needed");
+    assert.equal(outcome.email, "sent");
+    assert.equal(f.bindings.length, 0);
+    assert.equal(f.emails[0].profileCta, true, "nothing was added, so the email must offer to");
+  });
+
+  test("single ticket for a signed-in buyer whose automatic add is refused: the email offers Add to WoCo", async () => {
+    const { f } = await run({ quantity: 1, wallet: BUYER_WALLET }, { bindReturns: false });
+    assert.equal(f.bindings.length, 0);
+    assert.equal(f.emails[0].profileCta, true);
+  });
+
+  test("a group order for a signed-in buyer keeps the per-ticket links whether or not the first was added", async () => {
+    const { f: added } = await run({ quantity: 2, wallet: BUYER_WALLET });
+    assert.equal(added.emails[0].profileCta, true);
+    const { f: notAdded } = await run({ quantity: 2, wallet: BUYER_WALLET }, { fail: "bindTicket" });
+    assert.equal(notAdded.emails[0].profileCta, true);
   });
 
   test("an in-flight session carrying a legacy holderPubKey binds WITHOUT one", async () => {
@@ -510,15 +660,86 @@ describe("happy path", () => {
   });
 
   test("no prefetched orderRef: the fallback seal is uploaded and used", async () => {
-    const { f } = await run({ orderRef: null }, { event: eventFeed({ encryptionKey: "ab".repeat(32) }) });
-    assert.ok(f.calls.includes("uploadToBytes"));
+    const { f } = await run({ orderRef: null }, { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }) });
+    assert.ok(f.calls.includes("fetchOrderKey"));
+    assert.ok(f.calls.includes("storeOrderBlob"));
     assert.equal(f.minted.length, 1);
+    // The fallback is a real v2 box, bound to this event and series, that the
+    // organiser's key opens (#642).
+    const box = JSON.parse(f.uploaded[0]);
+    const order = await openBoxJson<{ seriesId: string }>(ORDER_KEY.secretKey, box, orderSealContext(EVENT_ID, SERIES_ID));
+    assert.equal(order.seriesId, SERIES_ID);
+  });
+
+  test("#661: a prefetched ref ANOTHER sale carries is dropped — this buyer's own seal is minted instead", async () => {
+    const { f, outcome } = await run(
+      {},
+      { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), takenRefs: [ORDER_REF] },
+    );
+    assert.equal(outcome.issued, 2, "the sale still completes");
+    assert.ok(f.calls.includes("storeOrderBlob"), "a fresh seal was made");
+    // The mint carries the fresh seal's ref, never the copied one.
+    assert.ok(f.saleSlots.length > 0);
+    assert.ok(f.saleSlots.every((r: { orderRef?: string }) => r.orderRef !== ORDER_REF));
+    const box = JSON.parse(f.uploaded[0]);
+    const order = await openBoxJson<{ seriesId: string }>(ORDER_KEY.secretKey, box, orderSealContext(EVENT_ID, SERIES_ID));
+    assert.equal(order.seriesId, SERIES_ID);
+  });
+
+  test("#546: a held order is claimed before the mint and stored only AFTER tickets exist, under its own ref", async () => {
+    const { f, outcome } = await run({}, { held: true });
+    assert.equal(outcome.issued, 2);
+    const claim = f.calls.indexOf("claimHeldOrder");
+    const mint = f.calls.indexOf("batchClaimForOnChain");
+    const store = f.calls.indexOf("storeHeldOrder");
+    assert.ok(claim >= 0 && mint > claim && store > mint, `claim -> mint -> store, got ${f.calls.join(",")}`);
+    assert.equal(f.calls.includes("releaseHeldOrder"), false);
+    assert.ok(f.saleSlots.every((r: { orderRef?: string }) => r.orderRef === ORDER_REF));
+    assert.equal(f.calls.includes("storeOrderBlob"), false, "no fallback seal");
+  });
+
+  test("#546: the buyer's email hash reaches the held-order claim and the fallback store, so a request can find the order", async () => {
+    const heldRun = await run({}, { held: true });
+    assert.deepEqual(heldRun.f.buyerHashes, [{ via: "claimHeldOrder", emailHash: "h(buyer@example.com)" }]);
+    const fallbackRun = await run({ orderRef: null }, { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }) });
+    assert.deepEqual(fallbackRun.f.buyerHashes, [{ via: "storeOrderBlob", emailHash: "h(buyer@example.com)" }]);
+  });
+
+  test("#546: a held order whose store fails still mints under its ref - never a refund over it", async () => {
+    const { f, outcome } = await run({}, { held: true, fail: "storeHeldOrder" });
+    assert.equal(outcome.issued, 2);
+    assert.deepEqual(outcome.refund, { kind: "not-needed" });
+    assert.ok(f.saleSlots.every((r: { orderRef?: string }) => r.orderRef === ORDER_REF));
+  });
+
+  test("#546: a sale that issues NO ticket drops its held order - a refunded buyer's box is never stored", async () => {
+    const { f, outcome } = await run({}, { held: true, revertAtChunk: 0 });
+    assert.equal(outcome.issued, 0);
+    assert.equal(f.calls.includes("storeHeldOrder"), false);
+    assert.ok(f.calls.includes("releaseHeldOrder"));
+  });
+
+  test("#546: a ref with nothing held and nothing stored points at no data - the minimal order is sealed", async () => {
+    const { f, outcome } = await run({}, { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), orderStored: false });
+    assert.equal(outcome.issued, 2);
+    assert.ok(f.calls.includes("storeOrderBlob"), "a fresh seal was made");
+    assert.ok(f.saleSlots.every((r: { orderRef?: string }) => r.orderRef !== ORDER_REF));
+  });
+
+  test("the order key cannot be read: no fallback seal, so the sale stops and refunds", async () => {
+    const { outcome, f } = await run(
+      { orderRef: null },
+      { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), fail: "fetchOrderKey" },
+    );
+    assert.equal(outcome.issued, 0);
+    assert.equal(outcome.stoppedReason, "No orderRef available for on-chain claim");
+    assert.equal(f.calls.includes("storeOrderBlob"), false);
   });
 
   test("the mint path makes NO Swarm read (#368): a prefetched orderRef means no bytes call at all", async () => {
     const { f, outcome } = await run();
     assert.equal(outcome.issued, 2);
-    assert.equal(f.calls.includes("uploadToBytes"), false);
+    assert.equal(f.calls.includes("storeOrderBlob"), false);
     assert.equal(f.calls.some((c) => /download/i.test(c)), false);
   });
 
@@ -556,7 +777,7 @@ describe("skips", () => {
 // ---------------------------------------------------------------------------
 
 describe("stop reasons", () => {
-  test("mint reverts: zero issued, FULL refund through the connected account, payout voided, no email", async () => {
+  test("mint reverts: zero issued, FULL refund through the connected account, payout flagged for a recheck, no email", async () => {
     const { f, outcome } = await run({}, { revertAtChunk: 0 });
     assert.equal(outcome.issued, 0);
     assert.match(outcome.stoppedReason!, /Insufficient supply/);
@@ -573,7 +794,7 @@ describe("stop reasons", () => {
     assert.equal(md.sessionId, "cs_test_1", "the retry job recognises a landed refund by this (#367)");
     assert.equal(f.refunds[0].key, "woco-autorefund-cs_test_1", "idempotent at Stripe (#367)");
     assert.equal(f.pendingRefunds.length, 0);
-    assert.deepEqual(f.voided, ["cs_test_1"]);
+    assert.deepEqual(f.rechecked, ["cs_test_1"]);
     assert.equal(f.emails.length, 0);
     assert.equal(outcome.email, "nothing-issued");
     // No ticket landed → no marketing permission left behind.
@@ -586,7 +807,7 @@ describe("stop reasons", () => {
     assert.equal(outcome.refund.kind, "created");
     assert.equal(f.refunds[0].params.amount, 2200, "one unfilled unit of three");
     assert.equal(f.refunds[0].params.refund_application_fee, true, "pro-rata fee return on a partial (#121)");
-    assert.equal(f.voided.length, 0);
+    assert.equal(f.rechecked.length, 0);
     assert.equal(f.emails[0].tickets.length, 2);
     assert.deepEqual(f.emails[0].tickets.map((t) => t.edition), [1, 2]);
   });
@@ -603,7 +824,7 @@ describe("stop reasons", () => {
     assert.equal(outcome.stoppedReason, "Series is not registered on chain — no mint path");
     assert.equal(f.calls.includes("batchClaimForOnChain"), false);
     assert.equal(outcome.refund.kind, "created");
-    assert.deepEqual(f.voided, ["cs_test_1"]);
+    assert.deepEqual(f.rechecked, ["cs_test_1"]);
   });
 
   // ── #426: the mint binds to the id validated at CHARGE time ──────────────
@@ -642,7 +863,7 @@ describe("stop reasons", () => {
     assert.equal(outcome.stoppedReason, "Ticket registration changed after payment — refunding");
     assert.equal(f.calls.includes("batchClaimForOnChain"), false, "nothing was minted");
     assert.equal(outcome.refund.kind, "created");
-    assert.deepEqual(f.voided, ["cs_test_1"]);
+    assert.deepEqual(f.rechecked, ["cs_test_1"]);
   });
 
   test("a session created before #426 shipped falls back to the server's record", async () => {
@@ -663,6 +884,56 @@ describe("stop reasons", () => {
     const { f, outcome } = await run({}, { fail: "lookupOnChainEventId" });
     assert.equal(outcome.issued, 2);
     assert.equal(f.mintedAgainst[0], ON_CHAIN_EVENT_ID);
+  });
+
+  // ── #563: the mint goes to the contract the registration LIVES on ────────
+
+  test("mints on the contract the registration record names, and reads its end there", async () => {
+    const { f, outcome } = await run({}, {});
+    assert.equal(outcome.issued, 2);
+    assert.deepEqual(f.mintedOn, [RECORDED_CONTRACT]);
+    assert.deepEqual(f.endReadOn, [RECORDED_CONTRACT]);
+  });
+
+  test("a session validated against the recorded contract mints", async () => {
+    const { f, outcome } = await run({ onChainContract: RECORDED_CONTRACT_KEY }, {});
+    assert.equal(outcome.issued, 2);
+    assert.deepEqual(f.mintedOn, [RECORDED_CONTRACT]);
+  });
+
+  test("the record names a DIFFERENT contract than checkout validated: refund, mint nothing", async () => {
+    const { f, outcome } = await run({ onChainContract: `421614:0x${"99".repeat(20)}` }, {});
+    assert.equal(outcome.issued, 0);
+    assert.equal(outcome.stoppedReason, "Ticket contract changed after payment — refunding");
+    assert.equal(f.calls.includes("batchClaimForOnChain"), false);
+    assert.equal(outcome.refund.kind, "created");
+  });
+
+  test("no contract can be named: refund, never a guessed mint", async () => {
+    const { f, outcome } = await run({}, { sale: { ok: false, reason: "no-contract" } });
+    assert.equal(outcome.stoppedReason, "No events contract to mint on — refunding");
+    assert.equal(f.calls.includes("batchClaimForOnChain"), false);
+    assert.equal(outcome.refund.kind, "created");
+  });
+
+  test("a registration on another chain than the active one refunds — a live charge never mints there", async () => {
+    // A session created before a chain flip and paid after it.
+    const { f, outcome } = await run(
+      { onChainContract: RECORDED_CONTRACT_KEY },
+      { sale: { ok: false, reason: "other-chain", contract: RECORDED_CONTRACT, activeChainId: 42161 } },
+    );
+    assert.equal(outcome.issued, 0);
+    assert.equal(outcome.stoppedReason, "Ticket registration is on another chain — refunding");
+    assert.equal(f.calls.includes("batchClaimForOnChain"), false);
+    assert.equal(f.calls.includes("chainEventEndMs"), false, "the other chain is not even read");
+    assert.equal(outcome.refund.kind, "created");
+  });
+
+  test("the contract lookup throwing refunds, and never rejects", async () => {
+    const { f, outcome } = await run({}, { fail: "saleContractFor" });
+    assert.equal(outcome.issued, 0);
+    assert.equal(f.calls.includes("batchClaimForOnChain"), false);
+    assert.equal(outcome.refund.kind, "created");
   });
 
   test("event feed says the event has ended: refund without broadcasting", async () => {
@@ -727,6 +998,7 @@ describe("every collaborator throws", () => {
     { step: "generateBurner", issued: 0, refund: "created", email: "nothing-issued", note: "unknown throw before the mint" },
     { step: "batchClaimForOnChain", issued: 0, refund: "created", email: "nothing-issued", note: "revert" },
     { step: "bindTicket", issued: 2, refund: "not-needed", email: "sent", note: "the #313 hole — accessory" },
+    { step: "recordSaleSlots", issued: 2, refund: "not-needed", email: "sent", note: "a missing record costs a void, never a ticket (#645)" },
     { step: "consumeReservation", issued: 2, refund: "not-needed", email: "sent", note: "store hiccup" },
     { step: "captureCheckoutConsent", issued: 2, refund: "not-needed", email: "sent", note: "store hiccup" },
     { step: "getSiteTheme", issued: 2, refund: "not-needed", email: "sent", note: "default palette" },
@@ -764,14 +1036,14 @@ describe("every collaborator throws", () => {
     assert.equal(outcome.refund.kind, "created");
     assert.equal(f.refunds[0].params.amount, 2200);
     assert.equal(f.emails[0].tickets.length, 1);
-    assert.equal(f.voided.length, 0);
+    assert.equal(f.rechecked.length, 0);
   });
 
-  test("createRefund throws: recorded for retry with the exact params, payout NOT voided (#367)", async () => {
+  test("createRefund throws: recorded for retry with the exact params, payout NOT flagged (#367)", async () => {
     const { outcome, f } = await run({}, { fail: "createRefund", revertAtChunk: 0 });
     assert.equal(outcome.issued, 0);
     assert.deepEqual(outcome.refund, { kind: "failed", error: "createRefund exploded" });
-    assert.equal(f.voided.length, 0, "payout entry must NOT be voided when no refund landed");
+    assert.equal(f.rechecked.length, 0, "payout entry must NOT be flagged when no refund landed");
     assert.equal(f.emails.length, 0);
     assert.equal(f.pendingRefunds.length, 1);
     const p = f.pendingRefunds[0];
@@ -791,6 +1063,50 @@ describe("every collaborator throws", () => {
     assert.equal(f.emails[0].tickets.length, 2, "the issued tickets still go out");
   });
 
+  test("sale record (#645): each chunk's slots, and the partial auto-refund recorded as ours", async () => {
+    const { f } = await run({ quantity: 3, amountTotal: 6600 }, { batchMax: 2, revertAtChunk: 1 });
+    assert.deepEqual(
+      f.saleSlots.map((r) => r.slots),
+      [[0, 1]],
+      "only the chunk that landed; the reverted one minted nothing",
+    );
+    assert.equal(f.saleSlots[0].onChainEventId, ON_CHAIN_EVENT_ID);
+    assert.deepEqual(f.autoRefunds, [{ sessionId: "cs_test_1", amount: 2200 }]);
+  });
+
+  test("cancelled event (#644): nothing minted, the sale is handed to the cancellation, no second refund", async () => {
+    const { outcome, f } = await run({}, { cancellation: "cancelled" });
+    assert.equal(outcome.issued, 0);
+    assert.equal(f.minted.length, 0);
+    assert.deepEqual(outcome.refund, { kind: "queued-cancellation" });
+    assert.deepEqual(f.cancellationQueue, [{ eventId: EVENT_ID, sessionId: "cs_test_1", paymentIntentId: "pi_1", account: ACCT }]);
+    assert.equal(f.autoRefunds.length, 0);
+    assert.match(outcome.stoppedReason!, /cancelled/);
+  });
+
+  test("cancelled event, hand-over throws: the generic auto-refund runs instead — the buyer is refunded either way", async () => {
+    const { outcome, f } = await run({}, { cancellation: "cancelled", fail: "enqueueCancellationRefund" });
+    assert.equal(outcome.refund.kind, "created");
+    assert.equal(f.refunds.length, 1);
+    assert.equal(f.minted.length, 0);
+  });
+
+  test("cancellation record unreadable: the paid buyer is minted (a restored cancellation refunds them)", async () => {
+    const { outcome } = await run({}, { cancellation: "unknown" });
+    assert.equal(outcome.issued, 2);
+  });
+
+  test("the cancellation check throwing never costs a paid buyer their tickets", async () => {
+    const { outcome } = await run({}, { fail: "cancellationGate" });
+    assert.equal(outcome.issued, 2);
+  });
+
+  test("recordAutoRefund throws: the refund still goes out", async () => {
+    const { outcome, f } = await run({}, { fail: "recordAutoRefund", revertAtChunk: 0 });
+    assert.equal(outcome.refund.kind, "created");
+    assert.equal(f.refunds.length, 1);
+  });
+
   test("createRefund AND recordPendingRefund throw: still resolves, outcome still honest", async () => {
     const f = fakeDeps({ fail: "createRefund", revertAtChunk: 0 });
     f.deps.recordPendingRefund = () => {
@@ -800,8 +1116,8 @@ describe("every collaborator throws", () => {
     assert.equal(outcome.refund.kind, "failed");
   });
 
-  test("markPayoutVoid throws after a successful refund: the refund stands", async () => {
-    const { outcome } = await run({}, { fail: "markPayoutVoid", revertAtChunk: 0 });
+  test("flagPayoutRecheck throws after a successful refund: the refund stands", async () => {
+    const { outcome } = await run({}, { fail: "flagPayoutRecheck", revertAtChunk: 0 });
     assert.equal(outcome.refund.kind, "created");
   });
 
@@ -817,10 +1133,10 @@ describe("every collaborator throws", () => {
     assert.equal(outcome.issued, 2);
   });
 
-  test("uploadToBytes throws on the fallback seal: stops before the mint, refunds", async () => {
+  test("storeOrderBlob throws on the fallback seal: stops before the mint, refunds", async () => {
     const { outcome, f } = await run(
       { orderRef: null },
-      { event: eventFeed({ encryptionKey: "ab".repeat(32) }), fail: "uploadToBytes" },
+      { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), fail: "storeOrderBlob" },
     );
     assert.equal(outcome.issued, 0);
     assert.equal(outcome.stoppedReason, "No orderRef available for on-chain claim");
@@ -835,14 +1151,15 @@ describe("every collaborator throws", () => {
 
 test("never rejects, whichever step throws", async () => {
   const steps: Step[] = [
-    "hashEmail", "resolveSiteEventSigner", "getEvent", "chainEventEndMs", "lookupOnChainEventId", "recordHeldPayout",
-    "getOrganiserByStripeAccount", "uploadToBytes", "generateBurner",
+    "hashEmail", "resolveSiteEventSigner", "getEvent", "chainEventEndMs", "lookupOnChainEventId",
+    "saleContractFor", "recordHeldPayout",
+    "getOrganiserByStripeAccount", "storeOrderBlob", "generateBurner",
     "signMessage", "batchClaimForOnChain", "bindTicket", "consumeReservation", "createRefund",
-    "markPayoutVoid", "captureCheckoutConsent", "recordAttendeeEmail", "getSiteTheme", "sendTicketEmail",
+    "flagPayoutRecheck", "captureCheckoutConsent", "recordAttendeeEmail", "getSiteTheme", "sendTicketEmail",
     "sendTicketEmailLedgered", "recordUndeliveredTicket",
   ];
   for (const step of steps) {
-    const f = fakeDeps({ fail: step, revertAtChunk: step === "createRefund" || step === "markPayoutVoid" ? 0 : undefined });
+    const f = fakeDeps({ fail: step, revertAtChunk: step === "createRefund" || step === "flagPayoutRecheck" ? 0 : undefined });
     await assert.doesNotReject(() => fulfilPaidSession(session({ wallet: BUYER_WALLET }), PAID_AT, f.deps), step);
   }
 });

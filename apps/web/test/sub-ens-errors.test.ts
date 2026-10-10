@@ -16,6 +16,7 @@ import {
   subEnsErrorFrom,
 } from "../src/lib/sub-ens/errors.js";
 import { ApiError } from "../src/lib/api/errors.js";
+import { unlocksWhen } from "../src/lib/attendee/gate/unlock-copy.js";
 
 const NOW = Date.UTC(2026, 8, 6, 12, 0, 0);
 
@@ -89,7 +90,7 @@ test("not_owner explains the loss; the two unverified spellings both mean 'we co
 
 test("ticket_required is left to the gate flow — a title, nothing else", () => {
   const d = describeSubEnsError({ error: "ticket_required" });
-  assert.equal(d.title, "Link a ticket to unlock your account first");
+  assert.equal(d.title, unlocksWhen("Your name"));
   assert.equal(d.detail, undefined);
 });
 
@@ -164,4 +165,14 @@ test("a plain Error and a mint-cap ApiError both survive the narrowing", () => {
     data: { windowResetsAt },
   });
   assert.equal(subEnsErrorFrom(capped, "fallback").retryAt, windowResetsAt * 1000);
+});
+
+test("a name with names beneath it, and a lagging chain clock, each say what to do", () => {
+  assert.deepEqual(describeSubEnsError({ error: "has_children" }), {
+    title: "This name has names beneath it.",
+    detail: "Release or move those first, then this one.",
+  });
+  const late = describeSubEnsError({ error: "expiration_too_far" });
+  assert.match(late.title, /clock is behind/);
+  assert.equal(late.detail, "Try again in a few minutes.");
 });

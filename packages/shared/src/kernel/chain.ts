@@ -28,3 +28,29 @@ export const KERNEL_CHAIN_ID = 42161 as const;
 
 /** The literal above as a type, so a map over it is exhaustive by the compiler. */
 export type KernelChainId = typeof KERNEL_CHAIN_ID;
+
+/**
+ * ERC-4337 EntryPoint v0.7 — the same address on every chain it is deployed to.
+ *
+ * Only ever READ from here: `balanceOf(paymaster)` is the paymaster's deposit,
+ * which is what actually pays for a userOp. Shared rather than server-local
+ * because it is a property of the account-abstraction stack the client builds
+ * for, not of the health endpoint that happens to watch it today.
+ */
+export const ENTRY_POINT_V07_ADDRESS = "0x0000000071727De22E5E9d8BAf0edAc6f37da032" as const;
+
+/**
+ * WoCo's self-funded ZeroDev Sponsorship Paymaster on {@link KERNEL_CHAIN_ID}.
+ *
+ * WHY IT IS WATCHED. Every Kernel userOp — recovery setup, add/remove backup,
+ * name discard, a guardian's recovery — is paid for by this paymaster's
+ * EntryPoint deposit, and the ops go client → ZeroDev without the server ever
+ * seeing one. When the deposit empties, each of them fails with the cliff-guard
+ * "temporarily unavailable" and nothing on our side would otherwise notice
+ * (#522). The deposit is a public read, so the server can watch it even though
+ * it cannot see the ops.
+ *
+ * NOT the ZeroDev monthly policy caps (sponsored gas and ops per month): those
+ * are dashboard-only. Two ceilings, one visible here.
+ */
+export const SELF_FUNDED_PAYMASTER_ADDRESS = "0xc99c11AD232a24e1158156b1F46495Cc8069c08f" as const;

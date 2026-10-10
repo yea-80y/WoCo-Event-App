@@ -24,7 +24,9 @@ import {
   writeContentFeed,
   readContentFeedResult,
   type ContentFeedResult,
+  type SocTransport,
 } from "./content-feed.js";
+import { FEED_ROUTES } from "./gateways.js";
 
 /**
  * Sign + upload the sealed recovery envelope as a guardian-owned SOC.
@@ -33,17 +35,21 @@ import {
  *
  * Written through the VERSIONED content-feed rail: re-writes (new recipients /
  * rotation) would otherwise be silently discarded (a SOC at a fixed identifier is
- * immutable). Legacy pre-versioning envelopes remain readable via the fallback.
+ * immutable).
  */
 export async function uploadRecoveryEnvelopeSoc(args: {
   socSignerPrivKey: string;
   kernelAddress: string;
   envelope: RecoveryEnvelope;
+  /** Test seam — production posts through our relay. */
+  transport?: SocTransport;
 }): Promise<void> {
   await writeContentFeed({
     signerPrivKey: args.socSignerPrivKey,
     topic: recoveryContentTopic(args.kernelAddress),
     data: args.envelope,
+    route: FEED_ROUTES.recoveryEnvelope,
+    transport: args.transport,
   });
 }
 
@@ -51,8 +57,7 @@ export async function uploadRecoveryEnvelopeSoc(args: {
  * Read the guardian-owned recovery envelope SOC. `socOwnerAddress` is the guardian
  * SOC signer address the client derives LOCALLY from the connected backup wallet
  * (`deriveGuardianKeys().socSigner.address`) — no platform lookup in the loop. The
- * read is self-verifying (see `probeSoc`). Resolves the latest version and falls
- * back to the legacy fixed identifier.
+ * read is self-verifying (see `probeSoc`) and resolves the latest version.
  *
  * It keeps "this account has no backup" apart from "we could not find out" (#228).
  *
@@ -68,5 +73,18 @@ export async function readRecoveryEnvelopeSocResult(
   socOwnerAddress: string,
   kernelAddress: string,
 ): Promise<ContentFeedResult<RecoveryEnvelope>> {
-  return readContentFeedResult<RecoveryEnvelope>(socOwnerAddress, recoveryContentTopic(kernelAddress));
+  return readContentFeedResult<RecoveryEnvelope>(socOwnerAddress, recoveryContentTopic(kernelAddress), {
+    route: FEED_ROUTES.recoveryEnvelope,
+    // THOROUGH: this `absent` is told to a locked-out user as "No backup found -
+    // recovery isn't possible", which is exactly the "security decision" the
+    // reader's contract reserves `thorough` for. Our gateway's 404 (or its gate's
+    // 403, after a lost whitelist entry) cannot say that; only every store can -
+    // and an escrow uploaded through Etherna sits on Etherna's node before it has
+    // spread through Swarm to our bee (#689).
+    thorough: true,
+    // Nothing usable can sit at the pre-versioning identifier: it was last
+    // written before versioning (2026-07-06), so anything there is a v1 envelope,
+    // which #642 retired. Asking costs a round of every store for nothing.
+    skipLegacy: true,
+  });
 }

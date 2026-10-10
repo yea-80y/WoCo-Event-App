@@ -12,8 +12,7 @@
    * ticket and left the box alone is an attendee, not a marketing contact, and
    * this screen must never be the thing that quietly promotes them.
    */
-  import type { MarketingContact, EventDirectoryEntry, SealedBox } from "@woco/shared";
-  import { openJson } from "@woco/shared";
+  import type { MarketingContact, EventDirectoryEntry } from "@woco/shared";
   import { getEventsByCreator, getEventOrders } from "../../api/events.js";
   import { checkMarketingEmails } from "../../api/marketing.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -27,7 +26,9 @@
   interface Props {
     contacts: MarketingContact[];
     busy: boolean;
-    getKeys: () => Promise<{ privateKey: Uint8Array } | null>;
+    /** The organiser's X-Wing secret keys, newest first — each order is sealed to the
+     *  generation current when it was bought (#642, #186). */
+    getKeys: () => Promise<{ secretKeys: Uint8Array[] } | null>;
     onCommit: (next: MarketingContact[]) => Promise<void>;
   }
 
@@ -61,11 +62,21 @@
       if (!keys) throw new Error("Unlock your identity to read attendee data.");
 
       const { orders } = await getEventOrders(ev.eventId);
+      const [{ orderSealContext }, { openJsonWithAnyKey }] = await Promise.all([
+        import("@woco/shared/crypto/sealed-box"),
+        import("../../keyring/order-keys.js"),
+      ]);
       const claims: DecryptedClaim[] = [];
       for (const order of orders) {
         if (!order.encryptedOrder) continue;
         try {
-          claims.push(await openJson<DecryptedClaim>(keys.privateKey, order.encryptedOrder as SealedBox));
+          claims.push(
+            await openJsonWithAnyKey<DecryptedClaim>(
+              keys.secretKeys,
+              order.encryptedOrder,
+              orderSealContext(ev.eventId, order.seriesId),
+            ),
+          );
         } catch {
           // A blob sealed to a rotated key, or a truncated upload. Skipping is
           // right — one unreadable order must not fail the whole scan.

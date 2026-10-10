@@ -6,13 +6,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { PaymentConfig } from "@woco/shared";
+import type { OrderField, PaymentConfig } from "@woco/shared";
 import {
   seriesPayable,
-  validateEmail,
+  validateBuyPanel,
   maxSelectableQty,
   buildOrderPayload,
   buildCheckoutBody,
+  staleOrderKeyRef,
   reserveOutcome,
   MAX_QTY,
 } from "../src/checkout.js";
@@ -58,7 +59,7 @@ const baseInputs = {
   claimerEmail: "a@b.co",
   quantity: 1,
   marketingConsent: false,
-  cancelUrl: "https://venue.example/tickets",
+  pageUrl: "https://venue.example/tickets",
 };
 
 test("quantity 1 is omitted from the body (server default), >1 is sent", () => {
@@ -71,14 +72,21 @@ test("marketingConsent is always an explicit boolean — an untouched box is a r
   assert.equal(buildCheckoutBody({ ...baseInputs, marketingConsent: true }).marketingConsent, true);
 });
 
-test("no returnUrl is ever sent — the organiser's domain cannot pass ALLOWED_HOSTS", () => {
+test("the page goes as pageUrl, and no returnUrl or cancelUrl is sent - the server derives both redirects from it (#567)", () => {
   const body = buildCheckoutBody({
     ...baseInputs,
     encryptedOrder: { ephemeralPublicKey: "e", iv: "i", ciphertext: "c" },
     reservationId: "r1",
   });
+  assert.equal(body.pageUrl, "https://venue.example/tickets");
   assert.equal("returnUrl" in body, false);
-  assert.equal(body.cancelUrl, "https://venue.example/tickets");
+  assert.equal("cancelUrl" in body, false);
+});
+
+test("with no known page, neither pageUrl nor cancelUrl is sent, so the server's WoCo pages apply", () => {
+  const body = buildCheckoutBody({ ...baseInputs, pageUrl: undefined });
+  assert.equal("pageUrl" in body, false);
+  assert.equal("cancelUrl" in body, false);
 });
 
 test("absent encryptedOrder / reservationId are omitted, not sent as undefined", () => {
@@ -132,8 +140,69 @@ test("quantity picker is capped by availability and by the server clamp", () => 
   assert.equal(maxSelectableQty(NaN), MAX_QTY); // unreadable count falls back to the server clamp
 });
 
-test("email is trimmed; an address that cannot receive a ticket is refused", () => {
-  assert.equal(validateEmail("  a@b.co  "), "a@b.co");
-  assert.equal(validateEmail("nope"), null);
-  assert.equal(validateEmail("   "), null);
+// ── #597: the buy panel reads the order form's email field ──────────────────
+
+/** Stands in for a VERIFIED X-Wing order key (#642); the panel only checks presence. */
+const KEY = new Uint8Array(1216).fill(7);
+const EMAIL: OrderField = { id: "__email", type: "email", label: "Email", required: true };
+const NAME: OrderField = { id: "name", type: "text", label: "Name", required: true };
+const GUEST: OrderField = { id: "guest", type: "email", label: "Guest's email", required: false };
+const panel = (fields: OrderField[] | undefined, formData: Record<string, string>, inlineEmail = "", key: Uint8Array | undefined = KEY) =>
+  validateBuyPanel({ fields, verifiedKey: key, formData, inlineEmail });
+
+test("the default order form's email field is the ticket address (the #597 dead-end)", () => {
+  assert.deepEqual(panel([EMAIL, NAME], { __email: " buyer@example.com ", name: "Ann" }), { ok: true, email: "buyer@example.com" });
+});
+
+test("a blank email field is refused by its own label, even when the organiser left it optional", () => {
+  // No wallet or account path here: that field is the only way a ticket arrives.
+  const optional = { ...EMAIL, required: false, label: "Your email" };
+  assert.deepEqual(panel([optional], {}), { ok: false, error: "Your email is required" });
+});
+
+test("an implausible email in the form names the field to fix", () => {
+  assert.deepEqual(panel([EMAIL], { __email: "not-an-address" }), { ok: false, error: "Enter a valid email address in Email" });
+});
+
+test("an unlabelled field is named by its placeholder, never by its internal id", () => {
+  const bare: OrderField = { id: "field_1727000000000", type: "text", label: "", required: true };
+  assert.deepEqual(panel([bare], {}), { ok: false, error: "This field is required" });
+  assert.deepEqual(panel([{ ...bare, placeholder: "Your name" }], {}), { ok: false, error: "Your name is required" });
+});
+
+test("errors come top to bottom, in the order the buyer sees the fields", () => {
+  assert.deepEqual(panel([NAME, EMAIL], {}), { ok: false, error: "Name is required" });
+  assert.deepEqual(panel([EMAIL, NAME], {}), { ok: false, error: "Email is required" });
+});
+
+test("with no email field in the form, the widget's own box is the address", () => {
+  assert.deepEqual(panel([NAME], { name: "Ann" }, "me@example.com"), { ok: true, email: "me@example.com" });
+  assert.deepEqual(panel([NAME], { name: "Ann" }, ""), { ok: false, error: "Enter a valid email address" });
+  assert.deepEqual(panel(undefined, {}, " me@example.com "), { ok: true, email: "me@example.com" });
+});
+
+test("a guest's email field never becomes the ticket address", () => {
+  assert.deepEqual(panel([GUEST], { guest: "friend@example.com" }, "me@example.com"), { ok: true, email: "me@example.com" });
+});
+
+test("a form that cannot be shown (no organiser key) falls back to the widget's box, never a dead-end", () => {
+  const noKey = validateBuyPanel({ fields: [EMAIL], verifiedKey: undefined, formData: {}, inlineEmail: "me@example.com" });
+  assert.deepEqual(noKey, { ok: true, email: "me@example.com" });
+});
+
+test("the sealed key is declared only with a box (#186)", () => {
+  const box = { v: 2, enc: "ab", ct: "cd" } as unknown as NonNullable<Parameters<typeof buildCheckoutBody>[0]["encryptedOrder"]>;
+  const k = "0a".repeat(32);
+  assert.equal(buildCheckoutBody({ ...baseInputs, encryptedOrder: box, encryptionKeyRef: k }).encryptionKeyRef, k);
+  assert.equal("encryptionKeyRef" in buildCheckoutBody({ ...baseInputs, encryptionKeyRef: k }), false);
+});
+
+test("a stale-key refusal names a key to re-seal to - only a well-formed, different one", () => {
+  const k0 = "0a".repeat(32);
+  const k1 = "1b".repeat(32);
+  assert.equal(staleOrderKeyRef({ ok: false, code: "ORDER_KEY_STALE", encryptionKeyRef: k1 }, k0), k1);
+  assert.equal(staleOrderKeyRef({ ok: false, code: "ORDER_KEY_STALE", encryptionKeyRef: k0 }, k0), null, "the same key again changes nothing");
+  assert.equal(staleOrderKeyRef({ ok: false, code: "ORDER_KEY_STALE", encryptionKeyRef: "XYZ" }, k0), null);
+  assert.equal(staleOrderKeyRef({ ok: false, code: "OTHER", encryptionKeyRef: k1 }, k0), null);
+  assert.equal(staleOrderKeyRef({ ok: false, code: "ORDER_KEY_STALE" }, k0), null);
 });

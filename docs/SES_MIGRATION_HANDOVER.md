@@ -3,8 +3,14 @@
 Built 2026-07-30. Cost/pricing authority stays in `PRICING_AND_EMAIL.md` §6 — do not
 restate rates here. Production-access case record: `SES_PRODUCTION_ACCESS.md`.
 
-**Status: code complete and tested, NOT yet cut over.** The switch is `EMAIL_PROVIDER=ses`
-in `apps/server/.env`, and it must not be flipped until §2 is done.
+**Status (2026-09-22): LIVE since the 2026-07-31 cutover.** This file is the design record
+of the migration. Current state and what is next: `EMAIL_NEXT_HANDOVER.md`.
+
+**Status (2026-10-05):** still live on SES. Phase 2 (§4) is not started and
+`organiserSendingDomains` stays `false`. The Resend adapter has NOT been deleted (#627 open):
+`resendProvider`, `routes/resend-webhook.ts` and the `resend` dependency remain, and the code
+default for `EMAIL_PROVIDER` is still `resend`. Contact lists are now sealed with X-Wing (#729),
+not X25519 ECIES (§6).
 
 ---
 
@@ -54,72 +60,28 @@ whole claim path over an email problem), but the loss is no longer invisible.
 
 ---
 
-## 2. What the user must do in AWS — BEFORE flipping the flag
+## 2. What production SES needs
 
-Nothing here is optional. Steps 3–5 are what AWS required when it granted production access.
+The account-specific checklist (billing plan, IAM user, region, deploy and warm-up) moved
+to the private ops runbook on 2026-10-05. What the code depends on:
 
-0. **Set `SES_MAX_SEND_RATE=8` NOW, before the next deploy.** ✅ done 2026-07-30.
-   The limiter shipped in #98 applies to whichever provider is active, and until cutover
-   that is **Resend, which caps at 10 req/s per team** — while the code default is 12.
-   (This is still an improvement: the old path ran ~25 req/s into that same limit.) Raise
-   it to 12 **at** cutover, not before.
-1. **Confirm the account is on the AWS *Paid* plan.** A Free-plan account self-closes at
-   6 months or when credits run out — a total ticket-delivery outage. See
-   `PRICING_AND_EMAIL.md` §6.
-   **Seeing the $100 credit does NOT settle this** (checked 2026-07-30): both plan types
-   receive up to $200, so the Credits page is consistent with either. Check **Billing and
-   Cost Management → Payment preferences** for an attached payment method instead. Strong
-   circumstantial evidence we are already on Paid: a direct-debit mandate was set up, and
-   AWS granted production SES access at 50k/day, which Free-plan service restrictions
-   would not allow.
-2. **Check the SES plan** (SES console → **Pricing plan** page — per-region, not the
-   Account dashboard). We were defaulted to Essentials; **Cancel plan** returns the
-   account to à la carte (verified against the SES dev guide 2026-07-30: for a
-   defaulted account the *first* cancellation takes effect immediately, later changes
-   at the next billing cycle). ~37% cheaper per §6. Before cancelling, confirm on that
-   page that no feature we actually use is plan-gated — we use none of the bundled
-   ones today. Never Pro. (Do not confuse the two: "do NOT switch" applies to **Pro**;
-   à la carte is available and cheaper.)
-3. **Create an IAM user** with *only* `ses:SendEmail`, and put the key in
-   `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. Do not reuse an admin key. The
-   `Resource` list MUST name **both** the identity ARN and the configuration-set ARN
-   (`identity/woco-net.com` + `configuration-set/woco-events`): SESv2 authorises
-   `SendEmail` against the configuration set too once `ConfigurationSetName` is set —
-   which we stamp on every send — and an identity-only policy is denied at that point
-   (verified 2026-07-31: the AccessDenied names the configuration-set resource).
-4. **Create a configuration set** named to match `SES_CONFIGURATION_SET` (e.g.
-   `woco-events`). **Without it no bounce or complaint events are emitted at all**, so
-   nothing feeds suppression — this is the step that is easy to skip and expensive to miss.
-5. **Add an SNS event destination** on that configuration set for `Bounce` and `Complaint`
-   (add `Reject`, `DeliveryDelay` if useful — the route ignores them safely). Create the SNS
-   topic (**Standard** — SES does not support FIFO), then **edit the topic's access policy
-   to allow SES to publish — the console does NOT add this automatically** (SES dev guide,
-   "Set up an Amazon SNS event destination", verified 2026-07-31): a statement with
-   `Principal: {Service: ses.amazonaws.com}`, `Action: sns:Publish`, `Resource: <topic ARN>`,
-   `Condition: StringEquals {AWS:SourceAccount: <account id>, AWS:SourceArn:
-   arn:aws:ses:eu-west-2:<account id>:configuration-set/woco-events}`. Skipping this is the
-   second silent killer: the event destination exists, SNS denies every publish, no events
-   arrive, and nothing on our side errors. Then subscribe
-   `https://events-api.woco-net.com/api/ses/webhook` as an **HTTPS** endpoint. Put the topic ARN in `SES_SNS_TOPIC_ARN` **and restart the server before
-   subscribing** — the webhook fails closed without it, so the confirmation would be
-   rejected. The route auto-confirms the subscription once the ARN is set.
-6. **Enable SignatureVersion 2** on the topic, then set `SNS_REQUIRE_SIGNATURE_V2=true`.
-7. **MAIL FROM domain** — `bounce.woco-net.com` is already configured per
-   `SES_PRODUCTION_ACCESS.md`; confirm it still shows *Verified* in the SES console.
-8. Deploy (CLAUDE.local.md STEP 1 + STEP 2), then verify:
-   `curl https://events-api.woco-net.com/api/health | jq .email` → `provider: "ses"`.
-9. **Warm up.** Do not send a broadcast on day one. Ticket email only for the first couple
-   of weeks; the domain reputation is cold.
+- An IAM key limited to `ses:SendEmail`, whose `Resource` names **both** the sending identity
+  and the configuration set: SESv2 authorises `SendEmail` against the configuration set once
+  `ConfigurationSetName` is stamped, which every send does.
+- A configuration set named by `SES_CONFIGURATION_SET`. Without it no bounce or complaint
+  events are emitted, so nothing feeds suppression.
+- An SNS event destination on it for `Bounce` and `Complaint`, on a Standard topic whose
+  access policy lets SES publish (the console does not add this). Otherwise SNS silently
+  denies every publish.
+- The topic ARN in `SES_SNS_TOPIC_ARN` **before** the webhook is subscribed: the webhook
+  fails closed without it and auto-confirms the subscription once it is set. Then
+  SignatureVersion 2 on the topic and `SNS_REQUIRE_SIGNATURE_V2=true`.
+- `SES_MAX_SEND_RATE` set to the account's send rate.
 
-**Rollback:** set `EMAIL_PROVIDER=resend`, redeploy env. No data migration either way —
-suppression, consent and contact blobs are all ours.
+**Rollback:** set `EMAIL_PROVIDER=resend`. No data migration either way - suppression,
+consent and contact blobs are all ours.
 
 ---
-
-## 3a. The failover is a launch-window crutch, not an availability strategy
-
-Added after challenge, and after checking the DNS. Two findings change how much
-weight it can carry.
 
 **Authentication is fine.** Both providers can send as `woco-net.com` simultaneously
 today — verified 2026-07-30:
@@ -154,10 +116,14 @@ restart loses the pending retries and leaves the entry unresolved for
 `/api/ops/email-failures` — worse than an automatic retry, far better than the
 `console.error` all of this replaced.
 
-Resend remains ONLY as the `EMAIL_PROVIDER=resend` rollback lever. The
-`SendDeps.secondary` seam stays under test so the failover *rules* (transactional
-only, never on a permanent error) survive if a second funded provider is ever
-added — but production passes null.
+Resend then remained only as an `EMAIL_PROVIDER=resend` rollback lever. **Owner
+decision 2026-09-22: Resend is not a rollback, and it is being removed (#627).** Flipping
+to it would cap all mail at the free tier's 100/day and silently switch off the
+controls built since: Resend is not sent our message tags, so async bounces stop
+reaching the ledger (#99) and sender pacing (#619) stops counting bounces and
+complaints. The `SendDeps.secondary` seam stays under test so the failover *rules*
+(transactional only, never on a permanent error) survive if a second funded
+provider is ever added — but production passes null.
 
 ---
 
@@ -179,6 +145,8 @@ Ranked by how much a wrong answer costs.
    bundle in-process. That is what mainstream validators do. Is it enough here?
 3. **`Permanent` vs `Transient` suppression policy** (`ses-webhook.ts`). I suppress every
    `Permanent` subtype and every complaint; I do not suppress `Transient` or `Undetermined`.
+   *(Since #628 a complaint with feedback type `not-spam` is not suppressed - it reports the
+   mail as wanted, and a suppression mark is never erased.)*
    `Permanent/OnAccountSuppressionList` is the debatable one — AWS says it does not count
    toward the bounce rate, and suppressing on it makes SES's list and ours agree. I think
    that is right; worth a second opinion.
@@ -217,7 +185,8 @@ Three things that will bite:
   (`PRICING_AND_EMAIL.md` §5).
 
 **Delete Resend when phase 2 ships**, or by **2026-10-01** if phase 2 slips and SES has run
-clean — whichever is first. That removes: `resendProvider` in `send.ts`, `client.ts`'s
+clean — whichever is first. *(2026-10-05: the date has passed and none of the list below is
+deleted yet; tracked as #627.)* That removes: `resendProvider` in `send.ts`, `client.ts`'s
 `getResend`, `routes/resend-webhook.ts`, `lib/marketing/consumed-webhook-events.ts` (which
 is unbounded and grows forever — the SNS one is capped), the `resend` dependency, and the
 `RESEND_*` env fallbacks in `client.ts`.
@@ -231,7 +200,7 @@ record; do not close a row without a commit reference.
 
 | # | Finding | Status |
 |---|---|---|
-| **1** | **ASYNC BOUNCES NEVER REACH THE LEDGER** — see below | 🔴 **OPEN — #99, blocks LAUNCH (not cutover)** |
+| **1** | **ASYNC BOUNCES NEVER REACH THE LEDGER** — see below | ✅ `556038b9` (#99, PR #126) — message tags on every send, ledgered from the bounce handler |
 | 2 | `QueueOverflowError` bypassed the ledger: `acquire()` sat outside the `try`, so a full queue threw past `recordFailure` into the Stripe webhook's `console.error` — the original bug, re-created | ✅ `757d57e` |
 | 3 | A marketing flood evicted unresolved transactional evidence *and* cleared the health alarm: `prune()` sliced newest-1000 regardless of kind | ✅ `757d57e` |
 | 4 | `eraseSubject` did not cover `email-failures.json` — Art. 17 gap on the only plaintext store | ✅ `757d57e` |
@@ -242,7 +211,7 @@ record; do not close a row without a commit reference.
 | 9 | Ledger records only `msg.to[0]`; a future multi-recipient transactional send would lose recipients 2..n | ✅ `fa6a0b2` — `recipients: [{hash, address?}]`, legacy shape migrated on read |
 | 10 | `attempts` in the ledger is approximate (`retryable ? maxAttempts : 1`), ignores failover attempts | ✅ `fa6a0b2` — real provider-call count, 0 on a queue overflow |
 | 11 | No ops surface: `listFailures`/`resolveFailure` have no route, so remediation means editing `.data/` over SSH | ✅ `5b9f5b0`+`04a097e` — `/api/ops/email-failures`, `OPS_TOKEN`, list always redacted |
-| 12 | Forged-message fetch amplification: any POST with a novel valid-host `SigningCertURL` triggers an outbound fetch from an unauthenticated endpoint | 🟡 Open — pin path to `/SimpleNotificationService-*.pem` and/or rate-limit |
+| 12 | Forged-message fetch amplification: any POST with a novel valid-host `SigningCertURL` triggers an outbound fetch from an unauthenticated endpoint | ✅ `962da5ab` (#104, PR #386) — path pinned, empty query and fragment |
 | 13 | Webhook consumes the `MessageId` **before** processing, so a crash between the two loses the bounce permanently | ✅ `fa6a0b2` — commented. The ordering is what #99 needs once the handler also ledgers |
 | 14 | **#100's record sweep evicted a died-unresumed job** — the per-org 20-record cap ranked purely by recency, so 20 later terminal records (or expired drafts, which nothing rate-limits) deleted the death record: `/api/health` went green with the broadcast half-sent, and the resume 404'd because its `sentHashes` went too. Row 3's lesson (unresolved evidence is exempt from size caps), not carried into the new store. Retention was also keyed on `createdAt`, so a boot after a week-long outage would delete the record it had just written 60s later | ✅ fix/broadcast-died-record-eviction — died-unresumed records exempt from the cap, retention keyed on `finishedAt`; confirmed by repro before the fix |
 | 15 | `POST /api/broadcasts/jobs` is not rate-limited — the hourly window burns at `start` only, so an organiser (or their retrying client) can mint unbounded drafts, each holding an encrypted chunk file for up to 15 min and a dedupe Set in memory. Gated to verified organisers / event owners, and the TTL bounds each draft, so resource growth is slow — but it is unbounded in job count | 🟡 Open — low; consider a per-org draft ceiling |
@@ -253,12 +222,12 @@ closed in the same sweep — the Art. 15 report and the operator script did not 
 at all (so an access report omitted the one store holding the subject's plaintext address), and
 the `DATA_INVENTORY` cap wording predated the eviction exemption.
 
-Tracked on GitHub: **#99** (finding 1, cutover blocker) · **#100** (queue + drain worker — SHIPPED,
-and rows 9, 10, 11, 13 closed with it) · **#101** (list cap). Rows 9–13 stayed **here**, not on GitHub — they are a comment, an assertion and a cosmetic field, and six issues for that is noise while one bucket issue is unclosable. Rows 11 and the batched-persist note are natural pickups for #100's drain worker. The one exception is the SNS cert-fetch hardening, which is standalone security work: **#104**. Phase 2 sending domains: **#103**.
+Tracked on GitHub: **#99** (finding 1 — SHIPPED) · **#100** (queue + drain worker — SHIPPED,
+and rows 9, 10, 11, 13 closed with it) · **#101** (list cap). Rows 9–13 stayed **here**, not on GitHub — they are a comment, an assertion and a cosmetic field, and six issues for that is noise while one bucket issue is unclosable. Rows 11 and the batched-persist note are natural pickups for #100's drain worker. The one exception is the SNS cert-fetch hardening, which is standalone security work: **#104** (SHIPPED). Phase 2 sending domains: **#103**.
 
-### Finding 1 — the half of the bug that is still open
+### Finding 1 — CLOSED by #99 (`556038b9`); kept as the record of why
 
-**Blocks LAUNCH, not the cutover — corrected 2026-07-30.** `routes/resend-webhook.ts` has the
+**Blocked LAUNCH, not the cutover — corrected 2026-07-30.** `routes/resend-webhook.ts` has the
 identical gap: it suppresses the hash and never ledgers. So this is **pre-existing on both
 providers**, not introduced by the migration, and cutting over to SES is neutral with respect to
 it. Holding the cutover would burn the low-volume warm-up window that was the whole reason for
@@ -344,8 +313,8 @@ of it was **wrong** in a way worth recording.
 
 **The wrong version.** "With a queue, change the API from a client-supplied recipient array
 to *send to list N*, and let the server enumerate." That cannot be built. Contact lists are
-ECIES-sealed **client-side** to the organiser's X25519 key
-(`packages/shared/src/marketing/types.ts`). The server holds an opaque sealed blob plus a
+sealed **client-side** to the organiser's own key - X-Wing in a v2 sealed box since #729
+(`packages/shared/src/crypto/sealed-box.ts`; X25519 ECIES when this was written). The server holds an opaque sealed blob plus a
 set of `emailHash`es — it cannot decrypt, so it cannot enumerate. The client posting
 plaintext recipients is not an accident of the current design; it is the only party that
 *can*.
@@ -460,6 +429,10 @@ Swarm read per series per chunk, and a blip midway would make real attendees loo
 like strangers — `getAttendeeEmailHashes` now distinguishes `unreadableSeries`
 from `unverifiableSeries` so that is expressible at all. "An unreadable page is
 not an empty page" (`4fedca9`), applied to membership.
+*(Superseded: the claimers feeds went with the v1 rail (#207). Membership now comes from
+the attendee index appended at Stripe fulfilment (#387, `lib/event/attendee-emails.ts`),
+a local store, so there is no unreadable case; `getAttendeeEmailHashes` returns `hashes`
+and `unverifiableSeries`. Still snapshotted once at job creation.)*
 
 **Cancellation stops what has not been sent and says so.** Every ESP that
 publishes its semantics says the same thing — Resend: "Canceling a broadcast only
@@ -482,5 +455,5 @@ mechanism instead) and `broadcast-chunks/*.bin`. §3.2's "hashed-and-discarded"
 claim was amended: broadcast recipients are no longer transient, and saying so is
 not optional.
 
-**Still open:** #99 (async bounces → ledger) and #101 (the list cap). Board row
-12 (SNS cert-fetch hardening) is #104.
+**Still open:** #101 (the list cap). #99 shipped as `556038b9`; board row 12 (SNS
+cert-fetch hardening) shipped as #104 (`962da5ab`).

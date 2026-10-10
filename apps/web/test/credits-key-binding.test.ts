@@ -90,12 +90,18 @@ const AUTH_STORE = readFileSync(
 test("the bound seed accessor resolves the address through _getSeedAddress()", () => {
   const line = AUTH_STORE.split("\n").find((l) => l.trimStart().startsWith("getIdentitySeed: () =>"));
   assert.ok(line, "getIdentitySeed must be exported as a bound accessor");
-  assert.match(
-    line,
-    /_getSeedAddress\(\)/,
-    "getIdentitySeed must resolve the seed address the same way ensureIdentitySeed " +
-      "stores it — two resolvers is the bug, not the wrong constant",
-  );
+  assert.match(line, /_seedIfPresent\(\)/, "getIdentitySeed must read through the one prompt-free resolver");
+  // Both of its routes - a passkey account's unlocked seed and every other kind's
+  // device copy - must resolve the seed address the way ensureIdentitySeed stores it.
+  for (const fn of ["async function _seedIfPresent", "function _unlockedSeed"]) {
+    const start = AUTH_STORE.indexOf(fn);
+    assert.ok(start > 0, `${fn} must exist`);
+    assert.match(
+      AUTH_STORE.slice(start, AUTH_STORE.indexOf("\n}\n", start)),
+      /_getSeedAddress\(\)/,
+      "two resolvers is the bug, not the wrong constant",
+    );
+  }
 });
 
 test("the auth store exposes NO key accessor to reach past the seed", () => {
@@ -229,16 +235,16 @@ test("the holder secret IS the seed, verbatim — no KDF stands between them", a
   // The frozen credit/cert vectors depend on this exactly as much as on the
   // curve. Checked against an INDEPENDENT ed25519 implementation (@noble/curves,
   // a different package from the @noble/ed25519 holder-key.ts uses) so this
-  // cannot pass by agreeing with itself. NO `.js` on the specifier: apps/web
-  // hoists a @noble/curves whose exports map has no `./ed25519.js` (the same
-  // trap spot-check.test.ts documents).
-  const { ed25519 } = await import("@noble/curves/ed25519");
+  // cannot pass by agreeing with itself. apps/web declares @noble/curves 2.x
+  // itself since #642 (the quarantined legacy seal needs x25519), so the `.js`
+  // specifier resolves to that copy, not to whatever ethers hoists.
+  const { ed25519 } = await import("@noble/curves/ed25519.js");
   const seedHex = "77".repeat(32);
   const kp = await deriveHolderKeypair(seedHex);
   assert.deepEqual(Array.from(kp.privateKey), Array.from(Buffer.from(seedHex, "hex")));
   assert.equal(
     kp.publicKeyHex,
-    "0x" + Buffer.from(ed25519.getPublicKey(Buffer.from(seedHex, "hex"))).toString("hex"),
+    "0x" + Buffer.from(ed25519.getPublicKey(new Uint8Array(Buffer.from(seedHex, "hex")))).toString("hex"),
   );
   // 0x-prefixed seeds are the form the auth store stores, and must derive the same key.
   assert.equal((await deriveHolderKeypair("0x" + seedHex)).publicKeyHex, kp.publicKeyHex);

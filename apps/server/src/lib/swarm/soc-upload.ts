@@ -19,9 +19,9 @@
  * without the passkey).
  *
  * Etherna-safe by construction: the payload is carried INLINE (never a ref-style
- * SOC), and reads resolve by COMPUTED CHUNK ADDRESS via makeSOCReader (GET
- * /chunks/{addr}), never via /feeds (which 401s anonymously on Etherna). Phase A
- * stays on our own Bee (getBee); the read shape works identically on both.
+ * SOC), and reads resolve by COMPUTED CHUNK ADDRESS (GET /chunks/{addr}, through
+ * the verified reader in soc-read.ts), never via /feeds (which 401s anonymously
+ * on Etherna). The read shape works identically on both stores.
  */
 
 import { Signature } from "@ethersphere/bee-js";
@@ -29,7 +29,6 @@ import {
   calculateCacAddress,
   calculateSocAddress,
   socSignDigest,
-  splitStoredSoc,
   encodeSpan,
   readVersionedContentFeed,
   type VersionedFeedRead,
@@ -41,19 +40,25 @@ import {
   versionedSocIdentifier,
   versionedPageIdentifier,
   LEGACY_CONTENT_FEED_VERSION,
+  FEED_FAMILY_STORES,
+  type FeedFamily,
+  type FeedStore,
   type SocChunkProbe,
+  type SocReadOutcome,
   SOC_IDENTIFIER_SIZE,
   SOC_SIGNATURE_SIZE,
   SOC_MAX_PAYLOAD_SIZE,
 } from "@woco/shared";
-import { BEE_URL, getBee, requirePostageBatch } from "../../config/swarm.js";
+import { BEE_URL, requirePostageBatch } from "../../config/swarm.js";
 import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.js";
 import { whitelistHashes } from "./whitelist.js";
+import { markHealed, readVerifiedSoc } from "./soc-read.js";
 import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
 import { registerEthernaOffer } from "../etherna/upload.js";
 import { observeStatementBytes } from "../social/participants.js";
+import { ETHERNA_FETCH_BASE } from "../etherna/gateway.js";
 
-const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
+const ETHERNA_GW = ETHERNA_FETCH_BASE;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -274,16 +279,17 @@ export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDes
         if (!(resp.status === 429 || resp.status >= 500)) e.status = 502;
         throw e;
       }
-      // Already whitelisted above, before the upload. Only the local bookkeeping
-      // set is updated here, so `readSocPayload`'s self-heal does not re-ask.
-      whitelistedSocs.add(socAddress);
+      // Already whitelisted above, before the upload. Only the read path's
+      // bookkeeping is updated here, so its self-heal does not re-ask.
+      markHealed("wocoBee", socAddress);
       if (etherna) {
         // Etherna gates anonymous reads behind an OFFER (else 402). Register one for
         // the SOC's chunk address so any device can read it from Etherna's own
         // gateway. Non-fatal — the chunk is stored regardless; a missing offer only
-        // blocks anonymous reads there.
+        // blocks anonymous reads there, and the next server read of it retries.
         try {
           await registerEthernaOffer(socAddress);
+          markHealed("etherna", socAddress);
         } catch (e) {
           console.warn("[swarm] Etherna SOC offer failed (non-fatal):", e);
         }
@@ -292,7 +298,7 @@ export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDes
       // be inverted from it — but a PUBLIC statement's payload names its own
       // format and subject, which is everything needed to recompute the topic.
       // Sealed payloads are refused there by an explicit shape check, NOT by
-      // being unreadable: a SealedBox is ordinary JSON and parses fine (see
+      // being unreadable: a sealed box is ordinary JSON and parses fine (see
       // `looksSealed`). Bookkeeping for a view-plane cache — never awaited, and
       // it must never fail a user's write.
       observeStatementBytes(ownerHex, payload);
@@ -318,115 +324,23 @@ export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDes
 }
 
 /**
- * SOC addresses this process has confirmed whitelisted on the read proxy —
- * dedupes the self-healing whitelist below so hot chunks don't re-POST the
- * proxy admin endpoint on every read.
+ * The probe every server scan uses: the verified reader, asked the sources the
+ * caller's FAMILY names in the shared table (#657). Tri-state all the way down -
+ * a source that cannot answer is `unavailable`, which clears the scan's `clean`
+ * flag instead of ending it on a false "absent". Only a malformed owner or
+ * identifier throws.
  */
-const whitelistedSocs = new Set<string>();
-
-/**
- * Read a SOC's inline payload by computed chunk address (Etherna-safe). Returns
- * the raw payload bytes, or null if the chunk is not found.
- *
- * SELF-HEALING WHITELIST: a successful read proves the chunk exists and is
- * publicly readable, so we (fire-and-forget) whitelist its address on the
- * gateway proxy. This repairs chunks whose write-time whitelist call failed
- * (it's non-fatal there) — without it those chunks 403 on the gateway forever
- * and every client read pays the server fallback.
- */
-export async function readSocPayload(ownerHex: string, identifierHex: string): Promise<Uint8Array | null> {
-  let owner: string, identifier: string;
-  try {
-    owner = bytesToHex(hexToBytes(ownerHex, 20));
-    identifier = bytesToHex(hexToBytes(identifierHex, SOC_IDENTIFIER_SIZE));
-  } catch {
-    const err = new Error("Invalid owner or identifier") as Error & { status: number };
-    err.status = 400;
-    throw err;
-  }
-  try {
-    const soc = await getBee().makeSOCReader(owner).download(identifier);
-    const address = bytesToHex(calculateSocAddress(hexToBytes(identifier), hexToBytes(owner)));
-    if (!whitelistedSocs.has(address)) {
-      whitelistHashes([address])
-        .then(() => whitelistedSocs.add(address))
-        .catch(() => undefined);
-    }
-    return soc.payload.toUint8Array();
-  } catch (err: unknown) {
-    const status = (err as { status?: number })?.status ?? (err as { response?: { status?: number } })?.response?.status;
-    const msg = String((err as Error)?.message ?? "").toLowerCase();
-    const bodyMsg = String(
-      (err as { responseBody?: Buffer })?.responseBody?.toString() ?? "",
-    ).toLowerCase();
-    const notFound =
-      status === 404 ||
-      msg.includes("not found") || msg.includes("404") ||
-      // Bee returns 500 "read chunk failed" for chunks that don't exist yet
-      (status === 500 && bodyMsg.includes("read chunk failed"));
-    if (!notFound) throw err;
-    // Etherna-stamped SOCs DO reach the public net and are normally retrievable
-    // here (verified 2026-07-14: SOC stamped on Etherna, HTTP 200 from our bee
-    // seconds later). This fallback is a backstop for the retrieval window — a
-    // just-written chunk whose push hasn't settled in its storer neighbourhood
-    // yet — not a routing workaround. Etherna's own gateway always has the chunk
-    // locally, so it answers while the network search would still miss.
-    return readSocFromEtherna(owner, identifier);
-  }
+function scanProbe(ownerHex: string, family: FeedFamily): SocChunkProbe {
+  return async (id) => {
+    const res = await readVerifiedSoc(ownerHex, bytesToHex(id), { family });
+    return res.status === "found" ? { status: "found", bytes: res.soc.payload } : res;
+  };
 }
 
-/**
- * Read a SOC from the Etherna gateway by computed chunk address, with a bearer
- * token (bypasses the anonymous-read offer gate). The response is UNTRUSTED raw
- * chunk bytes, so the SOC signature is re-verified against the claimed owner and
- * the identifier is checked before the payload is returned. On success the
- * chunk's OFFER is (re-)registered fire-and-forget — self-heals SOCs whose
- * write-time offer failed (non-fatal there), which otherwise 402 for every
- * anonymous reader forever. Returns null when Etherna is unconfigured, the
- * chunk is absent, or verification fails.
- */
-async function readSocFromEtherna(ownerHex: string, identifierHex: string): Promise<Uint8Array | null> {
-  try {
-    await ensureEthernaToken();
-  } catch {
-    return null;
-  }
-  const token = getCachedEthernaToken();
-  if (!token) return null;
-
-  const ownerBytes = hexToBytes(ownerHex, 20);
-  const identifier = hexToBytes(identifierHex, SOC_IDENTIFIER_SIZE);
-  const address = bytesToHex(calculateSocAddress(identifier, ownerBytes));
-
-  let raw: Uint8Array;
-  try {
-    const r = await fetch(`${ETHERNA_GW}/chunks/${address}`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!r.ok) return null;
-    raw = new Uint8Array(await r.arrayBuffer());
-  } catch {
-    return null;
-  }
-
-  // Stored SOC layout lives in shared — a browser-side evidence spot-check
-  // needs the same split, and two readers disagreeing about where the payload
-  // starts surfaces as garbled JSON rather than as an error.
-  const parts = splitStoredSoc(raw);
-  if (!parts) return null;
-  const { identifier: id, signature: sig, span, payload } = parts;
-  if (bytesToHex(id) !== bytesToHex(identifier)) return null;
-  try {
-    const digest = socSignDigest(id, calculateCacAddress(span, payload));
-    const recovered = new Signature(sig).recoverPublicKey(digest).address().toHex().toLowerCase();
-    if (recovered.replace(/^0x/, "") !== bytesToHex(ownerBytes).toLowerCase()) return null;
-  } catch {
-    return null;
-  }
-
-  registerEthernaOffer(address).catch(() => undefined);
-  return payload;
+/** Version 0 of a topic, read exactly - for the write-once slots the campaign
+ *  issuer treats as the record. */
+export async function readVersion0(ownerHex: string, topic: string, family: FeedFamily): Promise<SocReadOutcome> {
+  return scanProbe(ownerHex, family)(versionedSocIdentifier(contentFeedSocIdentifier(topic), 0));
 }
 
 // ---------------------------------------------------------------------------
@@ -439,6 +353,10 @@ async function readSocFromEtherna(ownerHex: string, identifierHex: string): Prom
 // directory cache). Absent feeds get a much shorter TTL so a publish-then-read
 // flow (client signs SOC v0, then register-on-chain reads it back) isn't blocked
 // by a stale negative.
+//
+// Keyed by STORE as well as feed: a verdict reached without asking Etherna says
+// nothing about what Etherna holds, so it must never answer a read that would
+// have asked it.
 // ---------------------------------------------------------------------------
 
 const CFV_TTL_MS = 30_000;
@@ -447,39 +365,10 @@ const CFV_ABSENT_TTL_MS = 5_000;
 /** version: >=0 versioned, LEGACY_CONTENT_FEED_VERSION legacy chunk, null absent. */
 const cfvCache = new Map<string, { version: number | null; at: number }>();
 
-/**
- * Read a client-owned content feed by owner + topic STRING, resolving the latest
- * VERSION of the single-owner sequence feed and reassembling the multi-chunk paged
- * form when present (mirrors the client `readContentFeed`). Probes versioned
- * identifiers first, then falls back to the legacy pre-versioning fixed identifier
- * so feeds written before the versioning fix stay readable. Returns the raw JSON
- * bytes, or null if absent / a page is missing.
- *
- * `versionHint` is an optional lower bound (e.g. a directory-carried feedVersion);
- * the read still probes forward from it, so a stale-low hint only costs a few reads.
- */
-export async function readContentFeedJson(
-  ownerHex: string,
-  baseTopic: string,
-  versionHint = 0,
-): Promise<Uint8Array | null> {
-  const res = await readContentFeedJsonResult(ownerHex, baseTopic, versionHint);
-  return res.status === "found" ? res.bytes : null;
+function cfvKey(store: FeedStore, ownerHex: string, baseTopic: string): string {
+  return `${store}:${ownerHex.toLowerCase().replace(/^0x/, "")}:${baseTopic}`;
 }
 
-/**
- * The same read, without collapsing the three answers into two.
- *
- * `readContentFeedJson` returns null for "this feed holds nothing" and for "the
- * network did not answer" alike. That is fine for a display path that falls
- * through to showing nothing. It is NOT fine for an AUTHORISATION gate, where the
- * two answers point opposite ways: absent means the caller may claim the name,
- * unavailable means we cannot say who owns it and must refuse (#181, and the
- * #154/#155/#170/#171 class before it).
- *
- * `readVersionedContentFeed` already distinguishes them; this only stops throwing
- * the distinction away.
- */
 /**
  * Banded variant: resolve which band of a feed family is open, then read its
  * head. This is the indexer's half of the banding scheme — an independent
@@ -495,13 +384,15 @@ export async function readContentFeedJson(
 export async function readBandedContentFeedJsonResult(
   ownerHex: string,
   topicForBand: (band: number) => string,
+  family: FeedFamily,
 ): Promise<VersionedFeedRead & { band: number }> {
-  const read: SocChunkProbe = async (id) => {
-    const bytes = await readSocPayload(ownerHex, bytesToHex(id));
-    return bytes ? { status: "found", bytes } : { status: "absent" };
-  };
-  const open = await resolveOpenBand(read, topicForBand);
-  if (!open.exists) return { status: "absent", band: open.band };
+  const open = await resolveOpenBand(scanProbe(ownerHex, family), topicForBand);
+  // A walk that could not ask every opener has not shown the band is empty.
+  if (!open.exists) {
+    return open.clean
+      ? { status: "absent", band: open.band }
+      : { status: "unavailable", reason: "band walk inconclusive", band: open.band };
+  }
   // Statement feeds postdate versioning, so a legacy chunk cannot exist. The
   // indexer walks every participant, and an absent participant would otherwise
   // cost one guaranteed missing-chunk search EACH.
@@ -509,40 +400,60 @@ export async function readBandedContentFeedJsonResult(
   // participant's feed on every pass, so probing v64/v65 of each full band cost
   // two missing-chunk searches per participant per pass — on the shared node.
   // Versions above the last slot cannot exist in a banded feed by construction.
-  const res = await readContentFeedJsonResult(ownerHex, topicForBand(open.band), 0, {
+  const res = await readContentFeedJsonResult(ownerHex, topicForBand(open.band), family, {
     skipLegacy: true,
     maxVersion: LAST_VERSION_IN_BAND,
   });
+  // A walk that stopped early may have stopped below the open band, so the head
+  // it read is a lower bound however clean its own scan was.
+  if (res.status === "found" && !open.clean) return { ...res, scanClean: false, band: open.band };
   return { ...res, band: open.band };
 }
 
+/**
+ * Read a content feed by owner + topic STRING, resolving the latest VERSION of
+ * the single-owner sequence feed and reassembling the multi-chunk paged form when
+ * present (mirrors the client `readContentFeed`). Probes versioned identifiers
+ * first, then falls back to the legacy pre-versioning fixed identifier so feeds
+ * written before the versioning fix stay readable.
+ *
+ * Three answers, never two. Absent means the feed holds nothing; unavailable
+ * means a source could not be asked. The difference points opposite ways for an
+ * AUTHORISATION gate (absent: the caller may claim the name; unavailable: refuse,
+ * #181) and for a WRITER (absent: write version 0; unavailable: the next version
+ * cannot be known). A `found` from a scan that could not ask every question
+ * carries `scanClean: false`: its version is a lower bound, not the head.
+ *
+ * `family` is REQUIRED: it decides which sources are asked (#657). A read of an
+ * Etherna-stamped family that skips Etherna misses a version still on its way to
+ * our bee and resolves the one before it as current.
+ *
+ * `versionHint` is an optional lower bound (e.g. a directory-carried
+ * feedVersion); the read still probes forward from it, so a stale-low hint only
+ * costs a few reads.
+ */
 export async function readContentFeedJsonResult(
   ownerHex: string,
   baseTopic: string,
-  versionHint = 0,
-  /** Statement rails only — see {@link readBandedContentFeedJsonResult}. Events,
-   *  profiles and sites predate versioning and DO have legacy chunks, so this
-   *  must stay opt-in rather than becoming the default. */
-  opts: { skipLegacy?: boolean; maxVersion?: number } = {},
+  family: FeedFamily,
+  /** `skipLegacy` / `maxVersion`: statement rails only — see
+   *  {@link readBandedContentFeedJsonResult}. Events, profiles and sites predate
+   *  versioning and DO have legacy chunks, so this must stay opt-in rather than
+   *  becoming the default.
+   *
+   *  `fresh`: never answer from the cached version, only start the scan there.
+   *  For a read whose result someone will SIGN as the next version (#657): a
+   *  write relayed since the cache entry - the organiser's own client re-signing
+   *  a moment ago - does not invalidate it, so the cached "clean" version can be
+   *  one behind, and a feed built on it erases the one in between. */
+  opts: { versionHint?: number; skipLegacy?: boolean; maxVersion?: number; fresh?: boolean } = {},
 ): Promise<VersionedFeedRead> {
-  // `readSocPayload` THROWS every fault except a bee not-found, so a transient
-  // fault propagates out of this function rather than being cached as "no such
-  // feed" — the distinction the probe needs is mostly already there.
-  //
-  // Not airtight: after bee's not-found, `readSocFromEtherna` also returns null
-  // when Etherna is unconfigured or its own read fails, so a null can still be an
-  // Etherna-side "couldn't tell" riding a bee "definitely not". Narrow (bee has
-  // already run a full network search by then) and unchanged by this commit —
-  // closing it belongs with #156, which is about trusting that fallback at all.
-  const read: SocChunkProbe = async (id) => {
-    const bytes = await readSocPayload(ownerHex, bytesToHex(id));
-    return bytes ? { status: "found", bytes } : { status: "absent" };
-  };
-  const key = `${ownerHex.toLowerCase().replace(/^0x/, "")}:${baseTopic}`;
+  const read = scanProbe(ownerHex, family);
+  const key = cfvKey(FEED_FAMILY_STORES[family], ownerHex, baseTopic);
   const base = contentFeedSocIdentifier(baseTopic);
 
   const cached = cfvCache.get(key);
-  if (cached) {
+  if (cached && !opts.fresh) {
     const ttl = cached.version === null ? CFV_ABSENT_TTL_MS : CFV_TTL_MS;
     if (Date.now() - cached.at < ttl) {
       if (cached.version === null) return { status: "absent" };
@@ -566,7 +477,7 @@ export async function readContentFeedJsonResult(
   }
 
   // Probe forward from the best lower bound we have (caller hint vs cached).
-  const hint = Math.max(versionHint, cached?.version ?? 0);
+  const hint = Math.max(opts.versionHint ?? 0, cached?.version ?? 0);
   const res = await readVersionedContentFeed(read, baseTopic, hint, {
     skipLegacy: opts.skipLegacy,
     maxVersion: opts.maxVersion,
@@ -586,8 +497,10 @@ export async function readContentFeedJsonResult(
 /**
  * Drop the cached latest-version for a topic — called after a same-process write
  * lands a new version so the next read re-probes instead of serving the TTL-stale
- * predecessor.
+ * predecessor. Every store's entry, since the write may be read by any route.
  */
 export function invalidateContentFeedVersion(ownerHex: string, baseTopic: string): void {
-  cfvCache.delete(`${ownerHex.toLowerCase().replace(/^0x/, "")}:${baseTopic}`);
+  for (const store of ["etherna", "woco"] as const satisfies readonly FeedStore[]) {
+    cfvCache.delete(cfvKey(store, ownerHex, baseTopic));
+  }
 }

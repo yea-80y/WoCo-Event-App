@@ -1,31 +1,24 @@
 /**
- * First-visit organiser onboarding state (welcome question + Getting Started
- * checklist on CreatorHome). Step completion for Stripe/events/sites is DERIVED
- * from data the home screen already loads; only what it can't cheaply know is
- * persisted here, per-parent in localStorage:
- *   - whether the welcome question was answered (and its answer)
- *   - whether an audience import ever completed (reading the real list means
- *     downloading + unsealing a Swarm blob — too heavy for the home screen)
- * Device-local by design: the worst cross-device outcome is replaying a
- * two-tap welcome on a second device.
+ * What the dashboard's setup card cannot cheaply ask the server: whether the
+ * attendee-list step is settled on this device, because the importer finished
+ * here or the organiser chose "Skip, I'm starting fresh". Per parent, in
+ * localStorage.
+ *
+ * Device-local by design. A device that has neither asks the server whether a
+ * list exists (`next-step.ts`), so the worst cross-device outcome is the skip
+ * being offered again on a second device before the first event.
  */
 
 const KEY_PREFIX = "woco:onboarding:";
 
 export interface OnboardingRecord {
-  seenWelcome: boolean;
-  dismissed: boolean;
-  /** "yes" = already runs events on another platform → the audience-import
-   *  step is promoted right after Stripe; "no" hides it. */
-  hostsElsewhere: "yes" | "no" | null;
   importedAudience: boolean;
+  skippedImport: boolean;
 }
 
 const EMPTY: OnboardingRecord = {
-  seenWelcome: false,
-  dismissed: false,
-  hostsElsewhere: null,
   importedAudience: false,
+  skippedImport: false,
 };
 
 function keyFor(parent: string): string {
@@ -36,7 +29,8 @@ function read(parent: string): OnboardingRecord {
   try {
     const raw = globalThis.localStorage?.getItem(keyFor(parent));
     if (!raw) return { ...EMPTY };
-    return { ...EMPTY, ...(JSON.parse(raw) as Partial<OnboardingRecord>) };
+    const stored = JSON.parse(raw) as Partial<OnboardingRecord>;
+    return { importedAudience: stored.importedAudience === true, skippedImport: stored.skippedImport === true };
   } catch {
     return { ...EMPTY };
   }
@@ -57,6 +51,11 @@ let boundParent: string | null = null;
 class OnboardingStore {
   record = $state<OnboardingRecord>({ ...EMPTY });
 
+  /** The attendee-list step needs nothing more from this device. */
+  get importSettled(): boolean {
+    return this.record.importedAudience || this.record.skippedImport;
+  }
+
   /** Bind the store to the signed-in parent (CreatorHome's auth effect). */
   loadFor(parent: string): void {
     boundParent = parent.toLowerCase();
@@ -68,28 +67,16 @@ class OnboardingStore {
     this.record = { ...EMPTY };
   }
 
-  private patch(p: Partial<OnboardingRecord>): void {
-    this.record = { ...this.record, ...p };
+  skipImport(): void {
+    this.record = { ...this.record, skippedImport: true };
     if (boundParent) write(boundParent, this.record);
-  }
-
-  answerWelcome(hostsElsewhere: "yes" | "no"): void {
-    this.patch({ seenWelcome: true, hostsElsewhere });
-  }
-
-  skipWelcome(): void {
-    this.patch({ seenWelcome: true });
-  }
-
-  dismiss(): void {
-    this.patch({ dismissed: true });
   }
 }
 
 export const onboarding = new OnboardingStore();
 
-/** Called from the audience import path (AudienceScreen) — records completion
- *  for the checklist without the home screen having to read the sealed list. */
+/** Called from the audience import path (AudienceScreen) — settles the setup
+ *  step without the dashboard having to read the sealed list. */
 export function markAudienceImported(parent: string): void {
   const rec = read(parent);
   if (rec.importedAudience) return;

@@ -2,9 +2,9 @@
   The organiser's own Stripe account, embedded.
 
   Replaces the "Manage bank details" button that opened the Express Dashboard.
-  Under Managed Risk with `stripe_dashboard.type = "none"` that dashboard does
-  not exist, so these two components are the only way an organiser can see what
-  Stripe still needs from them and change the bank account they get paid into.
+  Accounts now have their own full Stripe Dashboard (#645), but these two
+  components keep what Stripe still needs from the organiser, and the bank
+  account they get paid into, on the payouts screen where they already look.
 
   Two components, two jobs:
     notification-banner — what Stripe needs from you, if anything
@@ -28,6 +28,7 @@
   import { onDestroy } from "svelte";
   import { getAccountSession } from "../../api/payouts.js";
   import {
+    STRIPE_DASHBOARD_URL,
     loadConnectScript,
     connectAppearance,
     connectFailure,
@@ -37,6 +38,7 @@
   } from "./connect-embed.js";
   import AlertCircle from "lucide-svelte/icons/circle-alert";
   import RefreshCw from "lucide-svelte/icons/refresh-cw";
+  import ExternalLink from "lucide-svelte/icons/external-link";
 
   interface Props {
     /**
@@ -164,6 +166,23 @@
     Stripe asks you to sign in before showing or changing them.
   </p>
 
+  <!-- The only pointer an organiser gets to where refunds live (#645). Outside
+       the embed on purpose: it must work when Stripe's iframes fail to load. -->
+  <div class="dashboard">
+    <p class="blurb">
+      Cancelling an event? Use Cancel event and refund everyone on the event's Edit tab - WoCo
+      refunds every buyer for you, up to 2 days after the event ends.
+    </p>
+    <p class="blurb">
+      Single refunds and disputes are handled in your own Stripe Dashboard - find the payment
+      and choose Refund. A refund is paid from your takings.
+    </p>
+    <a class="dash-link" href={STRIPE_DASHBOARD_URL} target="_blank" rel="noopener noreferrer">
+      Open your Stripe Dashboard
+      <ExternalLink size={13} strokeWidth={2.25} />
+    </a>
+  </div>
+
   <!-- Both hosts stay in the DOM across every state: Stripe mounts live iframes
        into these nodes, and removing them would tear the iframe out. Collapsed
        with a class instead — including the banner, which renders nothing at all
@@ -239,6 +258,35 @@
     line-height: 1.55;
     color: var(--text-muted);
     max-width: 60ch;
+  }
+
+  .dashboard {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  /* Quiet on purpose: acid on this screen means "you need to act". */
+  .dash-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.8125rem;
+    color: var(--text);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    text-decoration-color: var(--text-dim);
+    transition: text-decoration-color var(--transition);
+  }
+
+  .dash-link:hover {
+    text-decoration-color: var(--text);
+  }
+
+  .dash-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
 
   .embed {

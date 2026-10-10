@@ -3,12 +3,13 @@
   import { isPastEvent } from "../../utils/events.js";
   import { formatDistanceKm } from "../../utils/geo-distance.js";
   import CreatorChip from "../../components/profile/CreatorChip.svelte";
+  import { firstImageUrl, useNextImageUrl } from "../../components/site/image-fallback.js";
 
   interface Props {
     // Superset of EventDirectoryEntry: SnapshotCard (global directory, #37) carries
     // tags/geo; per-creator listings still pass plain EventDirectoryEntry, so both
     // must satisfy this shape without widening the shared type itself.
-    event: EventDirectoryEntry & { tags?: EventTag[]; geo?: EventGeo };
+    event: EventDirectoryEntry & { tags?: EventTag[]; geo?: EventGeo; gatewayUrl?: string };
     /** Whether the current user owns a ticket for this event */
     owned?: boolean;
     /** "Near me" distance (km) from the discovery filter — shown as a badge when set. */
@@ -43,9 +44,11 @@
 <div class="card" role="button" tabindex="0" onclick={handleClick} class:has-ext={!!event.apiUrl} class:is-past={isPast}>
   {#if event.imageHash}
     <img
-      src="{BEE_GATEWAY}/bytes/{event.imageHash}"
+      src={firstImageUrl(event.imageHash, BEE_GATEWAY, event.gatewayUrl)}
       alt={event.title}
       class="card-image"
+      data-image-gateway-index="0"
+      onerror={(e) => useNextImageUrl(e, event.imageHash, BEE_GATEWAY, event.gatewayUrl)}
     />
   {:else}
     <div class="card-image placeholder"></div>

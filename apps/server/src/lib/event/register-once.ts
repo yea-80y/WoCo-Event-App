@@ -47,6 +47,7 @@ import {
   clearPendingRegistration as realClearPending,
 } from "./onchain-registry.js";
 import { resolveRegistrationIntent as realResolveIntent } from "./registration-intent.js";
+import { getDefaultEventContract } from "../chain/event-contract.js";
 
 export type RegisterResult =
   | { status: "registered"; onChainEventId: string; txHash?: string; feed?: EventFeed }
@@ -95,6 +96,16 @@ const defaultDeps: RegisterDeps = {
   confirmSeriesOnChain: realConfirmSeriesOnChain,
 };
 
+/**
+ * The feed to hand the organiser's client for re-signing, or none: a feed built
+ * on a read that could not show it is the head would be signed over the newer
+ * version (#657). Without one the client merges the on-chain id into the feed
+ * it already holds (PublishButton).
+ */
+function resignableFeed(confirmed: { feed: EventFeed; resignable: boolean }): EventFeed | undefined {
+  return confirmed.resignable ? confirmed.feed : undefined;
+}
+
 /** `${eventId}|${seriesId}` → the registration currently running in THIS process. */
 const inFlight = new Map<string, Promise<RegisterResult>>();
 
@@ -122,7 +133,7 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
   if (recorded) {
     // The tx landed; only the feed write is outstanding. Re-run it — confirm is
     // itself idempotent (it re-records the same id and rewrites the same feed).
-    const feed = await deps.confirmSeriesOnChain(eventId, seriesId, recorded, signerHint);
+    const feed = resignableFeed(await deps.confirmSeriesOnChain(eventId, seriesId, recorded, signerHint));
     deps.clearPending(eventId, seriesId);
     console.log(`[register-once] ${eventId}/${seriesId} already registered (${recorded}) — feed healed`);
     return { status: "already", onChainEventId: recorded, feed };
@@ -130,13 +141,26 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
 
   const pending = deps.lookupPending(eventId, seriesId);
   if (pending && pending.txHash) {
+    // OUR OWN RECEIPT OUTRANKS A MANIFEST MATCH, and this ordering is the rule,
+    // not an accident of layout (#434). `byManifestRef` is first-writer-wins and
+    // the digest is creator-supplied and public, so an attacker who registers a
+    // COPY of this series' manifest earlier than we did becomes the entry
+    // `findByManifestRef` returns. Adopting that answer would bind their on-chain
+    // event to this series and wedge the real registration behind a
+    // RegistrationRebindError forever. A receipt cannot be raced: it names the
+    // event OUR tx created. So the manifest ladder below is for markers that have
+    // no receipt to consult, and never a shortcut past one.
     const outcome = await deps.resolveRegisterTx(pending.txHash, pending.nonce);
     if (outcome.status === "pending") {
       console.log(`[register-once] ${eventId}/${seriesId} tx ${pending.txHash} still in flight — not re-sending`);
       return { status: "pending", txHash: pending.txHash };
     }
     if (outcome.status === "registered") {
-      const feed = await deps.confirmSeriesOnChain(eventId, seriesId, outcome.onChainEventId, signerHint);
+      // The receipt was read and parsed against the env-selected contract, so
+      // that is the contract it was found on (#563).
+      const feed = resignableFeed(await deps.confirmSeriesOnChain(
+        eventId, seriesId, outcome.onChainEventId, signerHint, getDefaultEventContract(),
+      ));
       deps.clearPending(eventId, seriesId);
       console.log(`[register-once] ${eventId}/${seriesId} recovered from broadcast tx ${outcome.txHash}`);
       return { status: "registered", onChainEventId: outcome.onChainEventId, txHash: outcome.txHash, feed };
@@ -151,7 +175,10 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
     // wrong guess mints a duplicate on-chain event.
     const outcome = await deps.resolveIntent(pending, manifestRef);
     if (outcome.status === "registered") {
-      const feed = await deps.confirmSeriesOnChain(eventId, seriesId, outcome.onChainEventId, signerHint);
+      // Resolved by walking the env-selected contract (#563).
+      const feed = resignableFeed(await deps.confirmSeriesOnChain(
+        eventId, seriesId, outcome.onChainEventId, signerHint, getDefaultEventContract(),
+      ));
       deps.clearPending(eventId, seriesId);
       console.log(`[register-once] ${eventId}/${seriesId} intent marker resolved to ${outcome.onChainEventId}`);
       return { status: "registered", onChainEventId: outcome.onChainEventId, feed };
@@ -164,17 +191,20 @@ async function register(params: RegisterParams, deps: RegisterDeps): Promise<Reg
     deps.clearPending(eventId, seriesId);
   }
 
-  const { onChainEventId, txHash } = await deps.registerEventOnChain(
+  // The marker carries the manifest digest as well as the nonce (#434): it is what
+  // lets the tier-3 fill refuse to hand THIS registration's on-chain event to
+  // another series while the confirm below has not run yet.
+  const { onChainEventId, txHash, contract } = await deps.registerEventOnChain(
     supply,
     manifestRef,
     v2Params,
-    (tx) => deps.recordPending(eventId, seriesId, tx),
-    (r) => deps.recordIntent(eventId, seriesId, r),
+    (tx) => deps.recordPending(eventId, seriesId, tx, manifestRef),
+    (r) => deps.recordIntent(eventId, seriesId, r, manifestRef),
   );
 
   // A throw here leaves the marker in place ON PURPOSE: the tx is already on chain,
   // and step 3 of the next attempt is what turns it back into a completed registration.
-  const feed = await deps.confirmSeriesOnChain(eventId, seriesId, onChainEventId, signerHint);
+  const feed = resignableFeed(await deps.confirmSeriesOnChain(eventId, seriesId, onChainEventId, signerHint, contract));
   deps.clearPending(eventId, seriesId);
   return { status: "registered", onChainEventId, txHash, feed };
 }

@@ -28,18 +28,19 @@
 
 import type { Stripe } from "stripe";
 import {
-  sealJson,
   buildTicketCanonicalMessage,
   type EventFeed,
-  type SealedBox,
   type SitePalette,
 } from "@woco/shared";
+import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import { checkSalesWindow } from "../event/sales-window.js";
 import { eventReleaseAfter } from "./payout-policy.js";
 import type { PayoutLedgerEntry } from "./payout-ledger.js";
 import type { GateBinding } from "../gate/store.js";
 import type { CaptureConsentInput } from "../marketing/consent-capture.js";
 import type { TicketEmailOpts } from "../../routes/tickets.js";
+import { contractKey, type EventContractTarget } from "../chain/event-contract.js";
+import type { SaleContract } from "../event/onchain-registry.js";
 
 // ---------------------------------------------------------------------------
 // Inputs
@@ -80,8 +81,19 @@ export interface FulfilmentDeps {
   resolveSiteEventSigner(siteId: string, eventId: string): Promise<string | null>;
   getEvent(eventId: string, signerHint?: string): Promise<EventFeed | null>;
 
-  /** `null` = "could not determine" (transport); the caller fails OPEN. */
-  chainEventEndMs(onChainEventId: string): Promise<number | null>;
+  /**
+   * The registered sales end on `contract`. `null` = "could not determine"
+   * (transport); the caller fails OPEN.
+   */
+  chainEventEndMs(onChainEventId: string, contract: EventContractTarget): Promise<number | null>;
+
+  /**
+   * The contract this server's registration record says the series lives on
+   * (#563) — the mint target — provided it is on the active chain. Zero I/O.
+   * Anything but `ok` refunds: nothing can name a contract, or the record is on
+   * another chain than the one a live charge may mint on.
+   */
+  saleContractFor(eventId: string, seriesId: string): SaleContract;
 
   /**
    * The on-chain event THIS server registered for a series — its own
@@ -94,23 +106,88 @@ export interface FulfilmentDeps {
 
   /** Payout ledger — must not throw (a failed write is a health alarm, not a claim failure). */
   recordHeldPayout(entry: Omit<PayoutLedgerEntry, "status" | "recordedAt"> & { recordedAt?: string }): void;
-  markPayoutVoid(sessionId: string, reason: string): void;
+  /** A full refund landed: the sweep re-reads the sale and nets the fee it kept (#781). */
+  flagPayoutRecheck(sessionId: string): void;
   getOrganiserByStripeAccount(stripeAccountId: string): string | undefined;
 
-  /** Swarm /bytes — the fallback order seal. May throw; the caller decides what that means. */
-  uploadToBytes(data: string): Promise<string>;
+  /** Store the fallback order seal on the attendee batch (#546). May throw; the caller decides what that means. */
+  storeOrderBlob(data: string, meta: { eventId: string; seriesId: string; emailHash?: string }): Promise<string>;
+
+  /**
+   * Paid-only storage (#546). The buyer's box was HELD at checkout, not stored:
+   * `claimHeldOrder` marks it paid (persisted, before the mint) and says whether
+   * one is held; `storeHeldOrder` puts it on the attendee batch and drops the
+   * hold (may throw - the retry worker then stores it); `isOrderStored` says
+   * whether the ref is already on the attendee batch (a retried webhook).
+   */
+  claimHeldOrder(orderRef: string, sessionId: string, emailHash?: string): boolean;
+  storeHeldOrder(orderRef: string): Promise<string>;
+  /** Drop a claimed hold when the sale issued no ticket: nothing references it. */
+  releaseHeldOrder(orderRef: string): boolean;
+  isOrderStored(orderRef: string): boolean;
+
+  /**
+   * The organiser's X-Wing order key, read by its ref from OUR OWN bee and verified
+   * against the ref (`verifyOrderKeyChunk`, #642). Throws on any failure. This is not
+   * a new failure domain for the fallback seal: the very next step, uploading the
+   * sealed order, needs the same bee, and the key chunk is always stamped on the
+   * WoCo batch at create (twice when the event lives on Etherna).
+   */
+  fetchOrderKey(ref: string): Promise<Uint8Array>;
+
+  /** Is `orderRef` already carried by a sale other than `sessionId`? (#661) */
+  orderRefInOtherSale(orderRef: string, sessionId: string): boolean;
 
   /** Chain. `batchClaimForOnChain` rejects on a revert; partial state is never left. */
   generateBurner(): Burner;
-  batchClaimForOnChain(onChainEventId: string, burners: string[], orderRefBytes32: string): Promise<number[]>;
+  batchClaimForOnChain(
+    onChainEventId: string,
+    burners: string[],
+    orderRefBytes32: string,
+    contract: EventContractTarget,
+  ): Promise<number[]>;
   /** Contract batch cap — `ON_CHAIN_BATCH_MAX` in production. */
   onChainBatchMax: number;
+
+  /**
+   * Sale record (#645 part C): the slots one mint chunk produced, keyed to the
+   * on-chain event minted against — what a refund or dispute later voids. Must
+   * not throw; fenced anyway, because a missing record costs a void, never a
+   * ticket.
+   */
+  recordSaleSlots(
+    sessionId: string,
+    onChainEventId: string,
+    contract: string,
+    slots: number[],
+    orderRef?: string,
+  ): void;
+  /**
+   * What fulfilment itself refunds, recorded BEFORE the refund call so the
+   * refund event that follows reads as ours, not the organiser's. Must not
+   * throw; fenced anyway.
+   */
+  recordAutoRefund(sessionId: string, amount: number): void;
 
   /** Gate binding. THROWS when it cannot persist — fenced here, correct at /redeem. */
   bindTicket(binding: Omit<GateBinding, "boundAt" | "parentAddress"> & { parentAddress: string }): boolean;
 
   /** Seat hold — `null` when unknown or already consumed. */
   consumeReservation(reservationId: string): { quantity: number } | null;
+
+  /**
+   * Whether the event was cancelled (#644), from the server's own record. Zero
+   * I/O. "unknown" (the record is unreadable) mints: the buyer has paid, and a
+   * cancellation, once readable again, refunds every sale it finds.
+   */
+  cancellationGate(eventId: string): "open" | "cancelled" | "unknown";
+  /**
+   * Hand a sale paid into a cancelled event to the cancellation's refund job,
+   * so it is refunded under the cancellation's fee policy like every other
+   * sale of the event. THROWS when it could not be handed over — the generic
+   * auto-refund then runs instead, so the buyer is refunded either way.
+   */
+  enqueueCancellationRefund(input: { eventId: string; sessionId: string; paymentIntentId: string; account: string }): void;
 
   /** The refund call. Rejects on any Stripe error; the caller records the outcome. */
   createRefund(
@@ -187,7 +264,9 @@ export type RefundOutcome =
   /** The refund call threw. The buyer is still charged — see #367. */
   | { kind: "failed"; error: string }
   /** Stopped, but the session carries no payment intent to refund against. */
-  | { kind: "no-payment-intent" };
+  | { kind: "no-payment-intent" }
+  /** The event was cancelled: the cancellation's refund job refunds this sale (#644). */
+  | { kind: "queued-cancellation" };
 
 export interface FulfilmentOutcome {
   sessionId: string;
@@ -249,6 +328,7 @@ export async function fulfilPaidSession(
     marketingConsent: metaConsent,
     connectedAccountId: metaConnectedAccountId,
     onChainEventId: metaOnChainEventId,
+    onChainContract: metaOnChainContract,
   } = session.metadata ?? {};
 
   const quantity = Math.max(1, Math.min(10, parseInt(qtyStr ?? "1", 10) || 1));
@@ -307,17 +387,41 @@ export async function fulfilPaidSession(
   // Attendee data: prefer the client's pre-uploaded full-form order ref (passed
   // via session metadata). Falls back to a minimal server-built seal for the
   // edge case where the browser skipped pre-upload (e.g. offline at checkout).
-  const prefetchedOrderRef =
+  //
+  // ONE SALE PER REF (#661, lib/stripe/order-ref.ts). Checkout already refuses a
+  // ref another completed sale carries; this is the backstop for one that became
+  // taken between charge and mint. Such a ref would put ANOTHER buyer's sealed
+  // details against this ticket, so it is dropped and this buyer's own minimal
+  // seal is made instead — the sale still completes, never with someone else's data.
+  const metaRef =
     typeof metaOrderRef === "string" && /^[0-9a-f]{64}$/i.test(metaOrderRef)
       ? metaOrderRef.toLowerCase()
       : undefined;
+  let prefetchedOrderRef = metaRef;
+  if (metaRef && deps.orderRefInOtherSale(metaRef, session.id)) {
+    console.warn(`[fulfilment] ${session.id}: orderRef ${metaRef.slice(0, 10)}… is another sale's — sealing this buyer's own order instead`);
+    prefetchedOrderRef = undefined;
+  }
+  // Paid-only storage (#546): the ref names a box HELD since checkout. Claim it
+  // for this paid session now (persisted, so a crash before the store cannot
+  // lose it); if nothing is held and nothing is stored, the ref points at no
+  // data, so this buyer's minimal order is sealed instead.
+  let heldOrderRef: string | undefined;
+  if (prefetchedOrderRef) {
+    if (deps.claimHeldOrder(prefetchedOrderRef, session.id, emailHash)) {
+      heldOrderRef = prefetchedOrderRef;
+    } else if (!deps.isOrderStored(prefetchedOrderRef)) {
+      console.warn(`[fulfilment] ${session.id}: no held or stored order for ${prefetchedOrderRef.slice(0, 10)}… — sealing the minimal order`);
+      prefetchedOrderRef = undefined;
+    }
+  }
 
   // ── 1. Event feed (fenced: a feed hiccup degrades the TICKET EMAIL, not the sale) ──
   //
   // It used to degrade to "no v2 path" → refund, because the mint target came
   // from here. Since #426 it does not: the feed supplies display fields, and a
   // hiccup costs a title and a series name rather than a paid buyer's tickets.
-  let encryptedOrder: SealedBox | undefined;
+  let encryptedOrder: SealedBoxV2 | undefined;
   let eventTitle = "";
   let eventDate = "";
   /** Event END — anchors when these takings may be paid out (payout-policy.ts). */
@@ -329,6 +433,8 @@ export async function fulfilPaidSession(
   let eventCreatorAddress = "";
   let eventLocation = "";
   let seriesName = "";
+  let eventImageHash = "";
+  let eventImageGateway = "";
   let totalSupply = 0;
   /** The feed's own copy — used ONLY to notice a disagreement, never to mint. */
   let feedOnChainEventId = "";
@@ -345,19 +451,30 @@ export async function fulfilPaidSession(
       eventEndDate = ev.endDate ?? "";
       eventCreatorAddress = (ev.creatorAddress ?? "").toLowerCase();
       eventLocation = ev.location ?? "";
+      eventImageHash = ev.imageHash ?? "";
+      eventImageGateway = ev.gatewayUrl ?? "";
       const ser = ev.series.find((s) => s.seriesId === seriesId);
       if (ser) {
         seriesName = ser.name;
         totalSupply = ser.totalSupply;
         feedOnChainEventId = ser.onChainEventId ?? "";
       }
-      if (!prefetchedOrderRef && ev.encryptionKey) {
-        // Fallback minimal seal — only when no pre-uploaded ref is available.
-        encryptedOrder = await sealJson(ev.encryptionKey, {
-          seriesId,
-          ...(claimerEmail ? { claimerEmail } : {}),
-          ...(claimerAddress ? { claimerAddress: claimerAddress.toLowerCase() } : {}),
-        });
+      if (!prefetchedOrderRef && ev.encryptionKeyRef) {
+        // Fallback minimal seal — only when no pre-uploaded ref is available. The key
+        // names who can READ the order, never what is minted or charged, so reading
+        // it from the event feed here is not the #426 hazard: an organiser who
+        // re-signs their feed to another key only locks themselves out.
+        const key = await deps.fetchOrderKey(ev.encryptionKeyRef);
+        const { sealBoxJson, orderSealContext } = await import("@woco/shared/crypto/sealed-box");
+        encryptedOrder = await sealBoxJson(
+          key,
+          {
+            seriesId,
+            ...(claimerEmail ? { claimerEmail } : {}),
+            ...(claimerAddress ? { claimerAddress: claimerAddress.toLowerCase() } : {}),
+          },
+          orderSealContext(eventId, seriesId),
+        );
       }
     }
   } catch (err) {
@@ -376,9 +493,10 @@ export async function fulfilPaidSession(
   //
   // Two server-controlled values, and the feed is not consulted for either:
   //   · `validated` — stamped into the Stripe session at checkout, after the
-  //     binding check passed. The organiser cannot write session metadata
-  //     (controller.stripe_dashboard.type = "none"), so it is as trustworthy as
-  //     the decision it records.
+  //     binding check passed. The webhook only reaches here for a session whose
+  //     integrity tag verifies and whose application fee is ours (#645,
+  //     lib/stripe/checkout-provenance.ts), so it is as trustworthy as the
+  //     decision it records, whatever the organiser can do in their own account.
   //   · `recorded`  — this server's registration record, read now.
   //
   // Absent metadata means a session created before this shipped; those fall
@@ -434,6 +552,50 @@ export async function fulfilPaidSession(
     if (mintTarget) {
       isV2 = true;
       v2OnChainEventId = mintTarget;
+    }
+  }
+
+  // ── 1c. WHICH CONTRACT to mint on (#563) ──
+  //
+  // The registration record's, never the feed's and never today's env default:
+  // a successor contract runs beside the old one, and a series stays on the
+  // contract it was registered on until it sells out. create-checkout stamped
+  // the contract its checks read (`onChainContract`, integrity-tagged like the
+  // id); if the record now names another, neither is safe to mint into, so the
+  // sale refunds — the same tripwire as the id above. A session created before
+  // this shipped carries none and follows the record.
+  let mintContract: EventContractTarget | undefined;
+  if (isV2 && !bindingStopReason) {
+    let sale: SaleContract | null = null;
+    try {
+      sale = deps.saleContractFor(eventId, seriesId);
+    } catch (err) {
+      console.error("[fulfilment] registration-contract lookup threw — refunding:", err);
+    }
+    if (sale?.ok) mintContract = sale.contract;
+    const validatedContract =
+      typeof metaOnChainContract === "string" && metaOnChainContract.length > 0 ? metaOnChainContract : null;
+    if (sale && !sale.ok && sale.reason === "other-chain") {
+      // A session created before a chain flip and paid after it: the charge is
+      // live on the new chain, the registration is not.
+      console.error(
+        `[fulfilment] BLOCKED — registration is on ${contractKey(sale.contract)}, the active chain is ` +
+        `${sale.activeChainId} (eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)}) — refunding (see #563)`,
+      );
+      bindingStopReason = "Ticket registration is on another chain — refunding";
+    } else if (!mintContract) {
+      console.error(
+        `[fulfilment] BLOCKED — no events contract to mint on ` +
+        `(eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)}) — refunding (see #563)`,
+      );
+      bindingStopReason = "No events contract to mint on — refunding";
+    } else if (validatedContract && validatedContract.toLowerCase() !== contractKey(mintContract)) {
+      console.error(
+        `[fulfilment] BLOCKED — events contract changed between checkout and mint ` +
+        `(eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)} ` +
+        `validated=${validatedContract} recorded=${contractKey(mintContract)}) — refunding (see #563)`,
+      );
+      bindingStopReason = "Ticket contract changed after payment — refunding";
     }
   }
 
@@ -501,6 +663,8 @@ export async function fulfilPaidSession(
 
   const claimedResults: Array<{ edition: number; qrContent: string }> = [];
   let stoppedReason: string | null = bindingStopReason;
+  /** Whether the signed-in buyer's first ticket landed in their account (#582). */
+  let accountClaimBound = false;
 
   // ── 3. Sales-window re-checks (fail OPEN on anything but a definitive "ended") ──
   // #300 rider: a payment can complete after the event's end — inside the
@@ -526,9 +690,9 @@ export async function fulfilPaidSession(
   // keeps the feed check above green while every mint reverts. Memo hit in the
   // common case (create-checkout warmed it); fail-OPEN on a transport error —
   // the contract remains the authority and refuses the mint itself.
-  if (isV2 && !stoppedReason) {
+  if (isV2 && !stoppedReason && mintContract) {
     try {
-      const chainEndMs = await deps.chainEventEndMs(v2OnChainEventId);
+      const chainEndMs = await deps.chainEventEndMs(v2OnChainEventId, mintContract);
       if (chainEndMs !== null && Date.now() >= chainEndMs) {
         console.warn(
           `[fulfilment] on-chain sales end passed before payment completed — refunding without ` +
@@ -541,27 +705,64 @@ export async function fulfilPaidSession(
     }
   }
 
+  // ── 3b. Cancelled event (#644) ──
+  // The cancellation is checked last before the mint, from the server's record,
+  // never the feed. A sale that reaches here after the event was cancelled is
+  // refunded by the cancellation's own job (same fee policy as every other sale
+  // of the event); if it cannot be handed over, the auto-refund below runs.
+  let refundByCancellation = false;
+  if (!stoppedReason) {
+    let gate: "open" | "cancelled" | "unknown" = "open";
+    try {
+      gate = deps.cancellationGate(eventId);
+    } catch (err) {
+      console.error("[fulfilment] cancellation check threw — continuing to mint:", err);
+    }
+    if (gate === "cancelled") {
+      stoppedReason = "Event cancelled — refunded with every other sale";
+      const piForCancel = paymentIntentId(session);
+      if (piForCancel && metaConnectedAccountId) {
+        try {
+          deps.enqueueCancellationRefund({
+            eventId,
+            sessionId: session.id,
+            paymentIntentId: piForCancel,
+            account: metaConnectedAccountId,
+          });
+          refundByCancellation = true;
+        } catch (err) {
+          console.error("[fulfilment] could not hand the sale to the cancellation — auto-refunding instead:", err);
+        }
+      }
+      console.warn(`[fulfilment] ${session.id}: event ${eventId.slice(0, 8)} is cancelled — not minting`);
+    }
+  }
+
   // ── 4. Mint (the whole block is fenced: an unexpected throw becomes a
   //       stoppedReason, never an escape past the refund) ──
   if (stoppedReason) {
     // Sales re-check refused the mint — fall through to the refund + payout
     // void below with zero claims, exactly as a SalesClosed revert would have.
-  } else if (isV2) {
+  } else if (isV2 && mintContract) {
     try {
-      await mintV2({
+      const minted = await mintV2({
         deps,
+        sessionId: session.id,
         eventId,
         seriesId,
         quantity,
         v2OnChainEventId,
+        mintContract,
         prefetchedOrderRef,
         encryptedOrder,
+        emailHash,
         accountClaim,
         claimedResults,
         setStopped: (reason) => {
           stoppedReason = reason;
         },
       });
+      accountClaimBound = minted.accountClaimBound;
     } catch (err) {
       // Nothing inside mintV2 is meant to reach here — every known failure sets
       // stoppedReason and returns. This is the fence for the unknown one: a
@@ -594,6 +795,24 @@ export async function fulfilPaidSession(
     stoppedReason = "Series is not registered on chain — no mint path";
   }
 
+  // ── 4b. The held order box (#546): stored only once tickets exist ──
+  // Its ref is the root of the held bytes, known already, so the mint above
+  // never waited on this, and a failed store never refunds a paid sale: the
+  // hold stays paid, the retry worker stores it, and the organiser's view
+  // serves it from the hold meanwhile. A sale that issued NO ticket is being
+  // refunded: its box is dropped, never stored - that buyer did not buy.
+  if (heldOrderRef) {
+    if (claimedResults.length > 0) {
+      try {
+        await deps.storeHeldOrder(heldOrderRef);
+      } catch (err) {
+        console.warn(`[fulfilment] Held order ${heldOrderRef.slice(0, 10)}… not stored yet (retry worker will):`, err);
+      }
+    } else if (!deps.releaseHeldOrder(heldOrderRef)) {
+      console.error(`[fulfilment] ${session.id}: refunded sale's held order ${heldOrderRef.slice(0, 10)}… could not be dropped`);
+    }
+  }
+
   // ── 5. Release the seat hold (fenced: a store hiccup must not block the refund) ──
   // Now release the seat hold — all claims that were going to land have
   // landed. Doing this here (vs. at webhook entry) means concurrent /reserve
@@ -620,7 +839,9 @@ export async function fulfilPaidSession(
   const unfilled = quantity - claimedResults.length;
   let refund: RefundOutcome = { kind: "not-needed" };
   const piId = paymentIntentId(session);
-  if (stoppedReason && unfilled > 0) {
+  if (refundByCancellation) {
+    refund = { kind: "queued-cancellation" };
+  } else if (stoppedReason && unfilled > 0) {
     if (!piId) {
       refund = { kind: "no-payment-intent" };
       console.error(`[fulfilment] stopped (${stoppedReason}) but session ${session.id} has no payment intent to refund`);
@@ -667,6 +888,14 @@ export async function fulfilPaidSession(
       if (claimedResults.length > 0 && refundAmount > 0) {
         refundParams.amount = refundAmount;
       }
+      // Recorded as an ATTEMPT, before Stripe is called: if the call throws, the
+      // retry job (#367) lands this same refund later, and its event must still
+      // read as ours.
+      try {
+        deps.recordAutoRefund(session.id, refundParams.amount ?? amountTotal);
+      } catch (err) {
+        console.error("[fulfilment] recordAutoRefund threw (continuing to refund):", err);
+      }
       try {
         // Idempotent at Stripe for 24h: a retry after a lost response returns
         // the original refund instead of minting a second (partial) one.
@@ -675,16 +904,16 @@ export async function fulfilPaidSession(
         console.log(
           `[fulfilment] Auto-refunded ${piId} (refund=${created.id}, amount=${refundParams.amount ?? "full"}, unfilled=${unfilled}/${quantity}) — ${stoppedReason}`,
         );
-        // A wholly refunded sale has no proceeds to release, so drop it from the
-        // payout schedule now rather than leaving it "held" and misreporting the
-        // organiser's pending balance. Partial refunds stay held on purpose: the
-        // release job reads the real balance transactions, so the remaining net is
-        // computed from Stripe rather than re-derived here.
+        // A wholly refunded sale is not voided: Stripe keeps its processing fee,
+        // so the sale nets below zero and that debt must come off the organiser's
+        // next payout (#781). Flagged so the sweep reads it now rather than at the
+        // event's date. Partial refunds need no flag: the sale is still due on
+        // its date and the sweep reads its real balance transactions then.
         if (claimedResults.length === 0) {
           try {
-            deps.markPayoutVoid(session.id, `refunded — ${stoppedReason}`);
+            deps.flagPayoutRecheck(session.id);
           } catch (err) {
-            console.error("[fulfilment] markPayoutVoid threw after a successful refund:", err);
+            console.error("[fulfilment] flagPayoutRecheck threw after a successful refund:", err);
           }
         }
       } catch (refundErr) {
@@ -777,23 +1006,28 @@ export async function fulfilPaidSession(
     try {
       await deps.sendTicketEmail({
         to: claimerEmail,
+        eventId,
         eventTitle: title,
         eventDate,
+        eventEndDate: eventEndDate || undefined,
         eventLocation,
         seriesName,
         totalSupply,
         tickets: claimedResults,
         buyerName,
         palette: siteTheme?.palette,
-        siteId: metaSiteId || undefined,
+        imageHash: eventImageHash || undefined,
+        imageGateway: eventImageGateway || undefined,
         // Attendee replies reach the organiser instead of a void. Absent for
         // events with no site, or no contact email set on it.
         replyTo: siteTheme?.contactEmail,
         // `to` here IS the verified purchase email (Stripe checkout) — the
-        // only path allowed to mint Route A gate tokens. Skipped when a
-        // signed-in buyer's single ticket was already bound at claim time;
-        // multi-ticket orders keep the per-ticket links for forwarding.
-        profileCta: !accountClaim || claimedResults.length > 1,
+        // only path allowed to mint Route A gate tokens. The button is for what
+        // is NOT in an account yet: every ticket of an anonymous order, the
+        // other tickets of a group order (per-ticket links for forwarding), and
+        // a signed-in buyer's single ticket when the add above did not land
+        // (#582). Only a ticket that was actually added goes without it.
+        profileCta: !accountClaimBound || claimedResults.length > 1,
         // The buyer has paid. If every retry and the failover both fail, this
         // is what makes the undelivered ticket findable — see
         // lib/email/failure-ledger.ts.
@@ -841,12 +1075,19 @@ export async function fulfilPaidSession(
 
 interface MintV2Args {
   deps: FulfilmentDeps;
+  /** The sale the minted slots are recorded under (#645 part C). */
+  sessionId: string;
   eventId: string;
   seriesId: string;
   quantity: number;
   v2OnChainEventId: string;
+  /** From the registration record (#563) — never the feed, never today's env default. */
+  mintContract: EventContractTarget;
   prefetchedOrderRef: string | undefined;
-  encryptedOrder: SealedBox | undefined;
+
+  encryptedOrder: SealedBoxV2 | undefined;
+  /** The buyer's email HMAC, recorded with the fallback order so it can be found (#546). */
+  emailHash: string | undefined;
   accountClaim: { parentAddress: string } | undefined;
   /** Filled in place: one entry per slot actually minted AND signed. */
   claimedResults: Array<{ edition: number; qrContent: string }>;
@@ -857,8 +1098,11 @@ interface MintV2Args {
  * The on-chain rail. Every KNOWN failure sets a stop reason and returns — the
  * caller turns that into a refund. Only an unknown throw escapes, and the
  * caller fences that too.
+ *
+ * Returns whether the buyer's account claim was actually bound, so the email
+ * can offer Add to WoCo exactly when there is something left to add (#582).
  */
-async function mintV2(a: MintV2Args): Promise<void> {
+async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
   const { deps, eventId, seriesId, quantity, claimedResults } = a;
 
   // Resolve the orderRef once for the whole batch (all tickets share one
@@ -866,7 +1110,11 @@ async function mintV2(a: MintV2Args): Promise<void> {
   let batchOrderRef: string | undefined = a.prefetchedOrderRef;
   if (!batchOrderRef && a.encryptedOrder) {
     try {
-      batchOrderRef = await deps.uploadToBytes(JSON.stringify(a.encryptedOrder));
+      batchOrderRef = await deps.storeOrderBlob(JSON.stringify(a.encryptedOrder), {
+        eventId,
+        seriesId,
+        ...(a.emailHash ? { emailHash: a.emailHash } : {}),
+      });
       console.log(`[fulfilment/v2] Fallback order uploaded: ${batchOrderRef}`);
     } catch (err) {
       console.warn("[fulfilment/v2] Fallback order upload failed:", err);
@@ -881,7 +1129,7 @@ async function mintV2(a: MintV2Args): Promise<void> {
 
   if (!batchOrderRef) {
     a.setStopped("No orderRef available for on-chain claim");
-    return;
+    return { accountClaimBound: false };
   }
 
   const orderRefBytes32 = "0x" + batchOrderRef;
@@ -903,8 +1151,15 @@ async function mintV2(a: MintV2Args): Promise<void> {
     const chunk = burners.slice(chunkStart, chunkStart + deps.onChainBatchMax);
     const chunkAddresses = chunk.map((w) => w.address);
     try {
-      const chunkSlots = await deps.batchClaimForOnChain(a.v2OnChainEventId, chunkAddresses, orderRefBytes32);
+      const chunkSlots = await deps.batchClaimForOnChain(a.v2OnChainEventId, chunkAddresses, orderRefBytes32, a.mintContract);
       slotsForBurners.push(...chunkSlots);
+      // Per chunk, from the contract's own answer: these slots exist on chain
+      // whatever happens to the rest of the batch, so a refund must reach them.
+      try {
+        deps.recordSaleSlots(a.sessionId, a.v2OnChainEventId, contractKey(a.mintContract), chunkSlots, batchOrderRef);
+      } catch (err) {
+        console.error(`[fulfilment/v2] recordSaleSlots threw — a refund will not void these slots:`, err);
+      }
       console.log(
         `[fulfilment/v2] batchClaimFor chunk ${chunkStart}..${chunkStart + chunk.length} ` +
         `→ slots=${chunkSlots[0]}..${chunkSlots[chunkSlots.length - 1]}`,
@@ -945,6 +1200,7 @@ async function mintV2(a: MintV2Args): Promise<void> {
   // stamp (the contract is the ledger), but the buyer's account still
   // gets its gate binding at purchase — first edition only, same
   // group-buy reasoning as before.
+  let accountClaimBound = false;
   if (a.accountClaim && slotsForBurners.length > 0) {
     const firstEdition = slotsForBurners[0] + 1;
     // `bindTicket` throws when the binding cannot be persisted — correct at
@@ -952,10 +1208,12 @@ async function mintV2(a: MintV2Args): Promise<void> {
     // the refund decision and the ticket email, so an escaping throw would
     // leave the buyer charged, the QR contents discarded, no email, no refund,
     // and nothing in the undelivered-ticket ledger. The binding is an
-    // accessory at purchase — the email carries a bind-later path — so it
-    // degrades on its own rather than taking fulfilment with it.
+    // accessory at purchase, so it degrades on its own rather than taking
+    // fulfilment with it — and the outcome is REPORTED, because the email's
+    // Add to WoCo button is the bind-later path and it used to be omitted for
+    // exactly this order shape (#582).
     try {
-      const bound = deps.bindTicket({
+      accountClaimBound = deps.bindTicket({
         seriesId,
         edition: firstEdition,
         eventId,
@@ -963,15 +1221,21 @@ async function mintV2(a: MintV2Args): Promise<void> {
         paid: true,
         route: "claim",
       });
-      if (bound) {
+      if (accountClaimBound) {
         console.log(`[gate] bound ${seriesId}#${firstEdition} → ${a.accountClaim.parentAddress} (claim, on-chain)`);
+      } else {
+        console.error(
+          `[gate] ${seriesId}#${firstEdition} already bound — not added to ${a.accountClaim.parentAddress}; ` +
+            `the ticket email will offer Add to WoCo`,
+        );
       }
     } catch (err) {
       console.error(
         `[gate] could not bind ${seriesId}#${firstEdition} for ${a.accountClaim.parentAddress} — ` +
-          `fulfilment continues, attendee can bind from the ticket email:`,
+          `fulfilment continues, the ticket email will offer Add to WoCo:`,
         err,
       );
     }
   }
+  return { accountClaimBound };
 }

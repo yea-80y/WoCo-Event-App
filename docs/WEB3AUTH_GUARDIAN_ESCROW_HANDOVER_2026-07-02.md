@@ -1,5 +1,9 @@
 # Handover — web3auth guardian escrow + recovery-target choice (Fable #3)
 
+> **Historical record (status 2026-10-05).** A July 2026 handover for email (Web3Auth) guardian recovery sealing both the "POD seed" and the feed signer; the seed (now the
+> identity seed) is the only escrowed secret since 2026-09-10, the escrow is X-Wing-wrapped (#642), and passkey accounts back up by linking a device (#767).
+> Current: [PASSKEY_RECOVERY_PLAN.md](./PASSKEY_RECOVERY_PLAN.md), [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md).
+
 Branch `feat/feed-signer-recovery`. Start a FRESH chat from this doc. Read
 alongside `FEED_SIGNER_REVIEW_2026-07-02.md` (lock-down plan §3) and
 `PASSKEY_RECOVERY_PLAN.md` (§11 escrow, §13 guardian SOC).

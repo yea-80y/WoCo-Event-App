@@ -12,6 +12,7 @@
   import { onMount } from "svelte";
   import { navigate } from "../../router/router.svelte.js";
   import { getEvent } from "../../api/events.js";
+  import { getCheckoutStatus } from "../../api/stripe.js";
   import type { EventFeed } from "@woco/shared";
   import { cacheGet, cacheKey } from "../../cache/cache.js";
 
@@ -23,22 +24,24 @@
   // Hydrate sync from sessionStorage so the page renders correct content on
   // first paint. The keys are set in ClaimButton.handleStripeCheckout()
   // immediately before window.location.replace(url).
-  function readStash(): { email: string | null; qty: number; seriesId: string | null } {
-    if (typeof window === "undefined") return { email: null, qty: 1, seriesId: null };
+  function readStash(): { email: string | null; qty: number; seriesId: string | null; linked: boolean } {
+    if (typeof window === "undefined") return { email: null, qty: 1, seriesId: null, linked: false };
     try {
       const seriesId = sessionStorage.getItem(`woco:stripe-returning:${eventId}`);
-      if (!seriesId) return { email: null, qty: 1, seriesId: null };
+      if (!seriesId) return { email: null, qty: 1, seriesId: null, linked: false };
       const formRaw = sessionStorage.getItem(`woco:stripe-form:${eventId}:${seriesId}`);
       let email: string | null = null;
       let qty = 1;
+      let linked = false;
       if (formRaw) {
-        const parsed = JSON.parse(formRaw) as { claimerEmail?: string; quantity?: number };
+        const parsed = JSON.parse(formRaw) as { claimerEmail?: string; quantity?: number; linked?: boolean };
         email = parsed.claimerEmail ?? null;
         if (parsed.quantity && Number.isInteger(parsed.quantity)) qty = parsed.quantity;
+        linked = parsed.linked === true;
       }
-      return { email, qty, seriesId };
+      return { email, qty, seriesId, linked };
     } catch {
-      return { email: null, qty: 1, seriesId: null };
+      return { email: null, qty: 1, seriesId: null, linked: false };
     }
   }
 
@@ -46,6 +49,11 @@
   let email = $state(_stash.email);
   let qty = $state(_stash.qty);
   const seriesId = _stash.seriesId;
+  // A checkout that started on another origin (an embed with no page to return
+  // to, or a new tab) left no stash here, so the server confirms the order (#567).
+  let emailMasked = $state<string | null>(null);
+  /** #644: the event was cancelled — this buyer's payment is refunded, no ticket follows. */
+  let cancelled = $state(false);
 
   // Best-effort event title from cache. Don't block first paint on a fetch —
   // the success card stands alone without it; the line just renders without a
@@ -59,6 +67,18 @@
       getEvent(eventId).then((fresh) => {
         if (fresh) eventTitle = fresh.title;
       }).catch(() => { /* non-fatal */ });
+    }
+
+    // Asked even when the stash has the email: only the server knows whether
+    // the event was cancelled while the buyer was at Stripe (#644).
+    const sessionId = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("session_id");
+    if (sessionId) {
+      getCheckoutStatus(eventId, sessionId).then((status) => {
+        if (!status) return;
+        if (status.status === "cancelled") cancelled = true;
+        if (!email) emailMasked = status.emailMasked;
+        if (!seriesId) qty = status.quantity;
+      });
     }
 
     // Clean up the form stash now that we've used it. Keep `stripe-returning`
@@ -81,6 +101,21 @@
 </script>
 
 <div class="page">
+  {#if cancelled}
+  <div class="card">
+    <h1 class="title">Event cancelled</h1>
+    {#if eventTitle}
+      <p class="event-line">{eventTitle}</p>
+    {/if}
+    <p class="lede">
+      This event was cancelled, so no ticket will be issued. If your payment went through, it is being refunded in
+      full to the card you paid with - refunds usually arrive within 5-10 working days.
+    </p>
+    <div class="actions">
+      <button class="btn-primary" onclick={handleBackToEvent}>Back to event</button>
+    </div>
+  </div>
+  {:else}
   <div class="card">
     <div class="check" aria-hidden="true">
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
@@ -101,20 +136,34 @@
       <span class="email-label">Sent to</span>
       {#if email}
         <span class="email-addr">{email}</span>
+      {:else if emailMasked}
+        <span class="email-addr">{emailMasked}</span>
       {:else}
-        <span class="email-addr email-addr--unknown">your email</span>
+        <span class="email-addr email-addr--unknown">the address you entered</span>
       {/if}
     </div>
 
     <ul class="steps">
       <li><span class="bullet"></span>Check your inbox in the next few minutes.</li>
       <li><span class="bullet"></span>If you don't see it, check your spam folder.</li>
+      <!-- A linked checkout adds the first ticket to the account at fulfilment
+           (the request carried the session); a guest adds it from the email.
+           What was SENT decides, not whether someone is signed in now. -->
+      {#if _stash.linked}
+        <li><span class="bullet"></span>{qty > 1
+          ? "Your first ticket goes into your passport for you. Forward the others from the email."
+          : "It goes into your passport for you."}</li>
+      {:else}
+        <li><span class="bullet"></span>{qty > 1
+          ? "Tap Add to WoCo in the email to keep one in your passport, and forward the others."
+          : "Tap Add to WoCo in the email to keep it in your passport."}</li>
+      {/if}
       <li><span class="bullet"></span>Show the QR code in the email at the door.</li>
     </ul>
 
-    <!-- Email-only release: tickets are delivered to the inbox; there is no
-         on-platform MyTickets collection yet, so don't offer "View my tickets"
-         — it would land the buyer on an empty page. Back-to-event only. -->
+    <!-- No "See my passport" button: the ticket reaches the passport only once
+         fulfilment adds it or the buyer taps Add to WoCo in the email, so at this
+         moment the passport could still be missing it. Back-to-event only. -->
     <div class="actions">
       <button class="btn-primary" onclick={handleBackToEvent}>Back to event</button>
     </div>
@@ -123,6 +172,7 @@
       A receipt has been sent by Stripe. Need help? Contact the organiser.
     </p>
   </div>
+  {/if}
 </div>
 
 <style>

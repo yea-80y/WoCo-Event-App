@@ -22,7 +22,7 @@ export interface ApiResponse<T = unknown> {
  * Machine-readable codes for the session-auth layer (`requireAuth`).
  *
  * The client keys its recovery on these, never on the human-readable message —
- * the three cases need materially different responses:
+ * the cases need materially different responses:
  *
  *  - SESSION_INVALID   the stored delegation is not acceptable to the server
  *                      (bad/expired/revoked signature, host mismatch, session
@@ -35,11 +35,23 @@ export interface ApiResponse<T = unknown> {
  *  - SESSION_REPLAY    nonce already seen. Transient and self-correcting on the
  *                      next request; the delegation itself is fine, so there is
  *                      nothing to re-establish.
+ *  - DEVICE_REMOVED    the key signing for this account is an added device whose
+ *                      grant was revoked (#746). Re-signing is refused the same
+ *                      way; the device needs a new grant from the main passkey.
+ *                      Sent ONLY for an explicit revoke - a grant whose signer
+ *                      fails an owner read may be an RPC outage, so that stays
+ *                      SESSION_INVALID.
+ *  - SESSION_REVOKED   the session was revoked ("Sign out everywhere", or this
+ *                      one session). Not SESSION_INVALID: a client that can sign
+ *                      silently (passkey, email) would mint a fresh session and
+ *                      undo the revoke, so the client signs out instead (#186).
  */
 export const AuthErrorCode = {
   SESSION_INVALID: "SESSION_INVALID",
   SESSION_CLOCK_SKEW: "SESSION_CLOCK_SKEW",
   SESSION_REPLAY: "SESSION_REPLAY",
+  DEVICE_REMOVED: "DEVICE_REMOVED",
+  SESSION_REVOKED: "SESSION_REVOKED",
 } as const;
 
 export type AuthErrorCode = (typeof AuthErrorCode)[keyof typeof AuthErrorCode];

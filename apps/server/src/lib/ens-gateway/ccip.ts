@@ -17,13 +17,16 @@ import {
   Interface,
   SigningKey,
   concat,
+  ensNormalize,
   getAddress,
   getBytes,
+  hexlify,
   keccak256,
   namehash,
   toBeHex,
 } from "ethers";
 import type { ResponseMemo } from "./memo.js";
+import { decodeSwarmContenthash, encodeSwarmContenthash } from "../sub-ens/swarm-contenthash.js";
 
 // ---------------------------------------------------------------------------
 // ABI surface
@@ -65,6 +68,52 @@ export const INNER_SELECTOR_ALLOWLIST: ReadonlySet<string> = new Set(
     .filter((f): f is FunctionFragment => f.type === "function")
     .map((f) => f.selector.toLowerCase()),
 );
+
+/** Derived like the allowlist: the one record the WoCo-built rule rewrites. */
+export const CONTENTHASH_SELECTOR = new Interface(INNER_ABI).getFunction("contenthash")!.selector.toLowerCase();
+
+// ---------------------------------------------------------------------------
+// What a sub-name may show
+// ---------------------------------------------------------------------------
+
+/** Which branch answered a `contenthash` read. Counted on /api/health. */
+export type ContenthashAnswer = "depth" | "empty" | "apex" | "built" | "foreign";
+
+/**
+ * The WoCo-built rule. The passkey RP ID is `woco.eth.limo`, and a browser whose
+ * Public Suffix List predates 2026-09-01 lets any page under it ask for the user's
+ * passkey - whose PRF output IS the account. So no holder-authored page may ever
+ * be served at a name, and this gateway, the one road to a signature, never signs
+ * the holder's pointer as it stands:
+ *
+ *   - deeper than one label below the parent: nothing (a holder can mint
+ *     `x.alice.woco.eth` and write its records, so depth is a rule of its own);
+ *   - no record: nothing;
+ *   - the app itself: the app;
+ *   - a feed manifest the server deployed: the immutable collection it last
+ *     baked there (name-targets.ts), never whatever the feed now says;
+ *   - anything else, any codec: the app. A fallback, not a refusal - a refusal
+ *     is not memoised, so one hostile pointer would put the RPC back in the
+ *     firing line on every lookup, and eth.limo negative-caches it.
+ *
+ * With no apex configured, "the app" is nothing.
+ */
+export function contenthashPolicy(input: {
+  depth: number;
+  l2Contenthash: string;
+  apexHash: string | null;
+  lookupBuilt: (feedManifestHash: string) => string | null;
+}): { contenthash: string; answer: ContenthashAnswer } {
+  const app = input.apexHash ? hexlify(encodeSwarmContenthash(input.apexHash)) : "0x";
+  if (input.depth !== 1) return { contenthash: "0x", answer: "depth" };
+  const raw = (input.l2Contenthash || "0x").toLowerCase();
+  if (raw === "0x") return { contenthash: "0x", answer: "empty" };
+  const hash = decodeSwarmContenthash(raw);
+  if (hash && input.apexHash && hash === input.apexHash.toLowerCase()) return { contenthash: app, answer: "apex" };
+  const built = hash ? input.lookupBuilt(hash) : null;
+  if (built) return { contenthash: hexlify(encodeSwarmContenthash(built)), answer: "built" };
+  return { contenthash: app, answer: "foreign" };
+}
 
 // ---------------------------------------------------------------------------
 // DNS wire-format names
@@ -159,22 +208,30 @@ export function decodeInnerNode(data: string): string {
 
 /**
  * Byte-exact mirror of `SignatureVerifier.makeSignatureHash`
- * (contracts/src/durin/lib/SignatureVerifier.sol:13-29):
+ * (contracts/src/durin/lib/SignatureVerifier.sol):
  *
- *   keccak256(abi.encodePacked(hex"1900", target, expires, keccak256(request), keccak256(result)))
+ *   v2:     keccak256(abi.encodePacked(hex"1900", target, uint256 chainId, expires, keccak256(request), keccak256(result)))
+ *   legacy: keccak256(abi.encodePacked(hex"1900", target, expires, keccak256(request), keccak256(result)))
  *
  * `target` is the L1 resolver (`address(this)` at verify time), NOT this gateway.
+ * `chainId` is the chain that resolver lives on: pass it for an L1Resolver v2
+ * (audit 964 M-2), omit it only for the v1 resolver still live at 0x1720…,
+ * which verifies the legacy preimage. The two preimages differ in length
+ * (126 vs 94 bytes), so one key signing both cannot have either verify as the
+ * other.
  */
 export function makeSignatureHash(
   target: string,
   expires: bigint,
   request: Uint8Array | string,
   result: string,
+  chainId: bigint | null = null,
 ): string {
   return keccak256(
     concat([
       "0x1900",
       getAddress(target), // 20 bytes
+      ...(chainId === null ? [] : [toBeHex(chainId, 32)]), // uint256, big-endian
       toBeHex(expires, 8), // uint64, big-endian
       keccak256(request),
       keccak256(result),
@@ -195,8 +252,20 @@ export interface CcipHandlerConfig {
   signerPrivateKey: string;
   /** Lowercased L1Resolver addresses whose `OffchainLookup` this gateway answers. */
   allowedSenders: string[];
+  /**
+   * Lowercased sender -> the chain it lives on, for every resolver that binds
+   * the chain id into its signed hash (L1Resolver v2). A sender absent here is
+   * signed in the legacy format (v1). Which format a sender verifies is fixed
+   * by its bytecode, so it is configuration, never inferred from a request.
+   */
+  senderChainIds?: Record<string, number>;
   chainId: number;
-  registryAddress: string;
+  /**
+   * The L2 registries this gateway reads and signs for, the minting registry
+   * first. One outside a registry cutover; the outgoing and incoming pair
+   * during one — see `loadEnsGatewayConfig`.
+   */
+  registryAddresses: string[];
   /** Lowercased 2LD, e.g. "woco.eth". Only names strictly BELOW it are served. */
   parentName: string;
   ttlSeconds: number;
@@ -206,6 +275,17 @@ export type ReadL2 = (registry: string, name: Uint8Array, data: string) => Promi
 
 export interface CcipHandlerDeps {
   readL2: ReadL2;
+  /**
+   * Inputs to the WoCo-built rule (`contenthashPolicy`). Required, so no wiring can
+   * forget it and fall back to signing the holder's pointer.
+   */
+  contenthash: {
+    /** The app's own Swarm reference (SUB_ENS_APEX_CONTENTHASH), or null. */
+    apexHash: () => string | null;
+    /** The collection the server last deployed behind a feed manifest, or null. */
+    lookupBuilt: (feedManifestHash: string) => string | null;
+    onAnswer?: (answer: ContenthashAnswer) => void;
+  };
   /** UNIX seconds. Injectable so tests can pin the expiry window. */
   now?: () => number;
   /**
@@ -242,7 +322,7 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
   const signingKey = new SigningKey(config.signerPrivateKey);
   const parent = config.parentName.toLowerCase();
   const allowedSenders = new Set(config.allowedSenders.map((s) => s.toLowerCase()));
-  const registry = config.registryAddress.toLowerCase();
+  const registries = new Set(config.registryAddresses.map((r) => r.toLowerCase()));
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
   const memo = deps.memo;
   // ONE clock for both. The memo's freshness and the signature's deadline are
@@ -250,6 +330,7 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
   // memo hit could outlive the signature it holds.
   const nowMs = () => now() * 1000;
   const logError = deps.logError ?? ((message, err) => console.error(message, err));
+  const coder = AbiCoder.defaultAbiCoder();
 
   return async (senderParam, dataParam) => {
     // 1. Shape.
@@ -286,7 +367,9 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
     //     already passed every remaining check, and every one of those checks is
     //     a pure function of (sender, data) and process-immutable config. The
     //     one thing that does move is the signature's deadline, and the memo
-    //     re-tests that on every read.
+    //     re-tests that on every read. A `contenthash` answer also depends on the
+    //     deploy ledger, so it can trail a new deploy by at most the memo window
+    //     (MEMO_TTL_MS, 30 s) - never show a pointer the rule refused.
     //
     //     LOWERCASED, and that is load-bearing rather than tidy: the signature
     //     covers the request BYTES, so `0xAB…` and `0xab…` are the same request
@@ -309,7 +392,10 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
     //    attacker-chosen until pinned: without this an attacker names their own
     //    contract on their own chain and this gateway signs whatever it returns.
     if (call.targetChainId !== BigInt(config.chainId)) return refuse(403, "registry not served");
-    if (call.targetRegistryAddress.toLowerCase() !== registry) {
+    // Two registries only during a cutover. Which one a lookup names is fixed by
+    // the L1 resolver at the time, and the signature binds the request that
+    // names it, so an answer about one never verifies as an answer about the other.
+    if (!registries.has(call.targetRegistryAddress.toLowerCase())) {
       return refuse(403, "registry not served");
     }
 
@@ -320,12 +406,21 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
     } catch (err) {
       return refuse(400, `could not decode name: ${(err as Error).message}`);
     }
-    const lower = name.toLowerCase();
+    // ONE parser for every check below AND for the node in step 6: namehash runs
+    // ENS normalisation (UTS-46), so a check on a merely lower-cased name would
+    // see a full-width dot as part of one label while its node is a deeper name's.
+    let norm: string;
+    try {
+      norm = ensNormalize(name);
+    } catch (err) {
+      return refuse(400, `could not normalise name: ${(err as Error).message}`);
+    }
     // The apex belongs to the L1 registry's own records, not to the L2 registry
     // this gateway reads. Given its own message so the refusal is legible in logs.
-    if (lower === parent) return refuse(403, "apex is not served by this gateway");
+    if (norm === parent) return refuse(403, "apex is not served by this gateway");
     // Leading dot is load-bearing: `xwoco.eth` and `woco.eth.evil.eth` must both fail.
-    if (!lower.endsWith(`.${parent}`)) return refuse(403, `only names under ${parent} are served`);
+    if (!norm.endsWith(`.${parent}`)) return refuse(403, `only names under ${parent} are served`);
+    const depth = norm.slice(0, norm.length - parent.length - 1).split(".").length;
 
     // 6. Which record, and that the node the L2 will read really is this name's.
     //    Without the equality check the name is decorative: the L2 answers about
@@ -338,30 +433,61 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
     }
     let expectedNode: string;
     try {
-      expectedNode = namehash(name).toLowerCase();
+      expectedNode = namehash(norm).toLowerCase();
     } catch (err) {
-      return refuse(400, `could not namehash ${name}: ${(err as Error).message}`);
+      return refuse(400, `could not namehash ${norm}: ${(err as Error).message}`);
     }
     if (node !== expectedNode) return refuse(400, "node does not match name");
+    const isContenthash = call.data.slice(0, 10).toLowerCase() === CONTENTHASH_SELECTOR;
 
     // 7. Read the pinned L2 registry. A failure is NOT an empty answer — signing
     //    "0x" over an RPC blip is a signed assertion that the record is unset.
     let result: string;
-    try {
-      result = await deps.readL2(call.targetRegistryAddress, call.name, call.data);
-    } catch (err) {
-      // The message carries the cross-check detail (which endpoints, what they
-      // each said) and may name our providers, so it goes to the log and NEVER
-      // into the response — the caller learns only that the read failed.
-      logError(`[ens-gateway] L2 read failed for ${name}:`, err);
-      return refuse(502, "could not read the L2 registry");
+    if (isContenthash && depth !== 1) {
+      // Answered without the L2: nothing below one label is ever shown.
+      result = coder.encode(["bytes"], ["0x"]);
+      deps.contenthash.onAnswer?.("depth");
+    } else {
+      try {
+        result = await deps.readL2(call.targetRegistryAddress, call.name, call.data);
+      } catch (err) {
+        // The message carries the cross-check detail (which endpoints, what they
+        // each said) and may name our providers, so it goes to the log and NEVER
+        // into the response — the caller learns only that the read failed.
+        logError(`[ens-gateway] L2 read failed for ${name}:`, err);
+        return refuse(502, "could not read the L2 registry");
+      }
+      if (isContenthash) {
+        // The holder's pointer AUTHORISES; what is signed is what the rule says.
+        let l2Contenthash: string;
+        try {
+          l2Contenthash = coder.decode(["bytes"], result)[0] as string;
+        } catch {
+          l2Contenthash = "0x00"; // undecodable: not a record we can vouch for -> the app
+        }
+        const decided = contenthashPolicy({
+          depth,
+          l2Contenthash,
+          apexHash: deps.contenthash.apexHash(),
+          lookupBuilt: deps.contenthash.lookupBuilt,
+        });
+        deps.contenthash.onAnswer?.(decided.answer);
+        result = coder.encode(["bytes"], [decided.contenthash]);
+      }
     }
 
     // 8. Sign. `request` is the RAW calldata bytes from the URL, because the L1
     //    resolver passes `callData` as `extraData` (L1Resolver.sol:242-248) and
     //    the verifier hashes `extraData` as `request` (L1Resolver.sol:186-189).
     const expires = BigInt(now() + config.ttlSeconds);
-    const hash = makeSignatureHash(sender, expires, getBytes(dataParam), result);
+    const boundChain = config.senderChainIds?.[sender];
+    const hash = makeSignatureHash(
+      sender,
+      expires,
+      getBytes(dataParam),
+      result,
+      boundChain === undefined ? null : BigInt(boundChain),
+    );
     const sig = signingKey.sign(hash).serialized;
 
     const body = { data: encodeGatewayResponse(result, expires, sig) };

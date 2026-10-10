@@ -10,20 +10,22 @@ export interface UserProfile {
   twitterHandle?: string;
   farcasterHandle?: string;
   avatarRef?: string;
-  /** Claimed sub-ENS label (e.g. "punkpub" for punkpub.woco.eth). Makes the
-   *  profile a likeable/followable subject — its namehash is the like subject
-   *  (see `profileSubject`). Written client-side after a successful claim. */
+  /** Claimed sub-ENS label (e.g. "punkpub" for punkpub.woco.eth). A display name
+   *  and web address only: follows are keyed by the ACCOUNT ADDRESS, never by this
+   *  name (owner decision 2026-09-03). Written client-side after a successful claim. */
   subEnsLabel?: string;
   updatedAt: string;
 }
 
 /** Request body for POST /api/profile */
 export interface UpdateProfileRequest {
-  displayName?: string;
-  bio?: string;
-  website?: string;
-  twitterHandle?: string;
-  farcasterHandle?: string;
+  /** Text fields: a string sets it, `null` (or "") removes it, omitted keeps it.
+   *  Applied by `mergeProfileText` on both save paths (#652). */
+  displayName?: string | null;
+  bio?: string | null;
+  website?: string | null;
+  twitterHandle?: string | null;
+  farcasterHandle?: string | null;
   /** Sub-ENS label to bind to this profile. The server verifies the caller
    *  owns `{label}.woco.eth` on-chain before persisting (see profiles route),
    *  then records the bind in the name ledger so the rename cooldown and the

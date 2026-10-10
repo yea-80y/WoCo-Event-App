@@ -59,8 +59,8 @@ export interface AccountSession {
 /**
  * Mint a client secret for the Stripe Connect embedded components.
  *
- * Replaces the Express Dashboard login link: under Managed Risk with
- * `stripe_dashboard.type = "none"` there is no Express Dashboard to link to.
+ * Replaces the Express Dashboard login link, which Stripe refuses for our
+ * controller-created accounts.
  *
  * The secret is single-use and lives about two minutes, and connect.js calls
  * this again whenever it needs a fresh one — so it is minted per request and

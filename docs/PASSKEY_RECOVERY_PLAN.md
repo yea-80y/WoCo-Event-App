@@ -1,6 +1,50 @@
 # Passkey Account Recovery — Design / Build Plan
 
-**Status:** Phase 0 spike DONE + PASSING (2026-06-17). **Phase 1 entry verified + MVP landed
+## Current state (2026-10-05)
+
+Keys and devices in full: [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md). Wallet layer:
+[PASSKEY_SMART_WALLET.md](./PASSKEY_SMART_WALLET.md).
+
+- **Who adds a backup.** Email-login (Web3Auth) accounts, at "Protect your account"
+  (`#/protect`, `apps/web/src/lib/components/recovery/AccountRecoverySetup.svelte`). Choices: a
+  recovery passkey (recommended), a different email or social login, or a crypto wallet.
+- **Passkey accounts add none (#767).** Every guardian backup escrows the seed to a second,
+  permanent key - a Swarm copy cannot be recalled. So `setupAccountRecovery` refuses a passkey
+  account, and Protect sends it to "Your passkeys". Its way back is its synced passkey and the
+  devices it links, each an equal co-owner (#746, #770, #771). Existing backups stay listed and
+  removable.
+- **Onchain.** Kernel accounts on Arbitrum One. Setup installs the ZeroDev recovery action as a
+  fallback route guarded by `WoCoGuardianHook` `0xF43524473EBC651969BeCc748462ED27ed39d4Db`
+  (#164; same address on Arbitrum One and Arb Sepolia). The hook holds a real guardian set:
+  per-guardian add and revoke, up to 32. Routes on the old ZeroDev hook are still recognised.
+  A guardian is a deterministic weighted-ECDSA Kernel derived from the backup
+  (`guardian-config.ts`, `guardian-address.ts`). Recovery: the guardian's Kernel calls
+  `doRecovery`, rotating the owner; the account address is kept.
+- **Escrow.** The bundle carries `{ identitySeed }` and nothing else - the feed signer, issuing
+  key and encryption keys are all KDFs of the seed. The DEK is wrapped with HPKE over the X-Wing
+  hybrid KEM (ML-KEM-768 + X25519), envelope v3 (#642); the bundle is XChaCha20-Poly1305,
+  AAD-bound to the account. A wallet or email guardian's key comes from one fixed EIP-712
+  signature; a passkey guardian's from its PRF output (#728).
+  `apps/web/src/lib/auth/recovery-escrow.ts`.
+- **Storage.** Three SOCs, none owned by the platform: the escrow (guardian-derived owner,
+  `apps/web/src/lib/swarm/recovery-feed.ts`), the guardian's account index (#157), and the
+  cross-device portability envelope (PRF-derived owner, `recovery-portability.ts`). All are
+  stamped on Etherna's batch, and every store is asked before the portal says "No backup found"
+  (#740-#742). The server keeps only a presence hint (`apps/server/src/routes/recovery.ts`).
+- **Sponsorship.** Recovery userOps are paid only after our server's ZeroDev policy approves them
+  (#758): known call shape, the recovered account unlocked, the guardian on its onchain list.
+- **Not built.** Timelock and cancel window; M-of-N with verifiable secret sharing. The sweep
+  escape hatch was deleted with zero callers (#166.2).
+
+Everything below is the dated build log (newest phases first, then Phase 0) and the original
+design (§1-§13) - history. Where it disagrees with the list above, the list wins. It says POD
+for what is now the identity seed (formerly called POD; renamed object, 2026-09-10); the
+ed25519 key it describes was removed in #518. Arb Sepolia references predate the move to
+Arbitrum One (#489).
+
+## Status history
+
+**Status (2026-06-17):** Phase 0 spike DONE + PASSING (2026-06-17). **Phase 1 entry verified + MVP landed
 (2026-06-17):** the deployed-account caller-hook flow is PROVEN end-to-end on Arb Sepolia and
 the `setupRecovery` / `recoverAccount` / `sweepToExternal` primitives are implemented behind
 the `KernelSudoValidator` seam (typechecks clean; recovery-portal UX still TODO). The open
@@ -738,6 +782,11 @@ in the SAME weighted-ECDSA guardian (§4); this section is about *which* signers
    POD decryption key into shares across friends, any **M-of-N** reconstruct; nobody holds the
    whole key. Bigger crypto lift (§11.6 step 2) — deferred past v1.
 
+> **Update (#642, 2026-09-27):** the DEK wrap is now HPKE with the X-Wing hybrid KEM
+> (ML-KEM-768 + X25519), envelope v3; v1/v2 are retired. Where this plan says "X25519 key" or
+> `crypto_box_seal` for the escrow, read "X-Wing key" and HPKE. A passkey guardian's escrow key
+> comes from its PRF output, not a signature. Current code: `recovery-escrow.ts`.
+
 **MULTIPLE guardians — two distinct shapes, don't conflate (owner asked 2026-06-20):**
 - **1-of-N (multiple INDEPENDENT backups, any ONE recovers)** — the common "add another backup"
   ask. **Structurally most of the way there:** the escrow envelope's `wrappedDeks` is ALREADY an
@@ -772,19 +821,34 @@ in the SAME weighted-ECDSA guardian (§4); this section is about *which* signers
   guardian set — `decideAddPath`; the by-guardian reverse hint is gone since #157).
 
   **#164 SHIPPED (2026-08-22): the WoCo guardian hook.** Every route is now installed against
-  `WoCoGuardianHook` `0xF43524473EBC651969BeCc748462ED27ed39d4Db` (Arb Sepolia, CREATE2 singleton,
+  `WoCoGuardianHook` `0xF43524473EBC651969BeCc748462ED27ed39d4Db` (Arb Sepolia, and Arbitrum One
+  since 2026-09-07 at the same address; CREATE2 singleton,
   verified; source + 21 Foundry tests in the nested `contracts/` repo, `src/recovery/`). `onInstall`
   SETS the account's guardian set (replace, not OR), `addGuardian` / `revokeGuardian` /
   `clearGuardians` edit it from the account's own sudo `execute`, `guardiansOf` / `isGuardian` are the
   on-chain truth the UI lists. So: **per-backup "Remove" exists**, "add another" APPENDS, and
   re-installing REPLACES — the resurrection hazard above is over (proven live on a real Kernel route
   by `apps/web/scripts/recovery-hook-harness.ts`: revoke refuses, re-install does not resurrect).
+  **#571 (2026-09-13):** that replace rests on the install's `0xff` hook flag. Kernel's route
+  uninstall never calls the hook, so the set outlives the route, and an install without the flag
+  would keep it. "Remove all backups" therefore sends ONE batch - `uninstallModule(3, …)` then
+  `clearGuardians()` - and reads back an empty set as well as a gone route. WoCo-Contracts
+  `test/WoCoGuardianHookKernel.t.sol` runs these paths against the deployed Kernel v3.1 bytecode.
   Routes installed before the switch still point at the ZeroDev hook: recognised on read
   (`hookKind: "legacy"`), still recover through it, no per-guardian revoke, and the next "add"
   REPLACES the route (the confirm step says so). Client: `guardian-hook.ts` (ABI, calldata,
   `decideAddPath` — an unreadable route REFUSES rather than guessing install-vs-append);
   #161's single config source + pure/SDK cross-checked derivation live in `guardian-config.ts` /
   `guardian-address.ts`.
+
+  **#510 (2026-09-11): the reads that decide are pinned.** Every route read on this surface
+  goes through `readRecoveryRouteNoOlderThan` — route + guardian set answered at ONE block,
+  no older than the last recovery write this device saw (`recovery-landing-block.ts`, recorded
+  inside each write helper once its read-back proves the change). A replica behind that bound
+  is never asked: it reads `unknown`, which `decideAddPath` refuses, instead of `absent` —
+  the answer that maps to the REPLACING install and silently drops the earlier backups. A
+  device that has never seen this account change has no bound, so there #505's
+  `checkAddAgainstPriorProtection` remains the only guard.
 
 ### 12.3 Primary-method-aware prompting (the "don't suggest the same account" rule)
 - **Reliable signal = the app's own known login method** (passkey / email-wallet / web3 / local),

@@ -5,6 +5,15 @@ import {
   type SessionDelegation,
   deriveFeedSignerKey,
   FEATURES,
+  KERNEL_CHAIN_ID,
+  DEVICE_GRANT_DOMAIN,
+  DEVICE_GRANT_TYPES,
+  DEVICE_GRANT_REVOKE_TYPES,
+  MAX_DEVICE_GRANTS,
+  credentialTagOf,
+  type DeviceGrantMessage,
+  type DeviceGrantRevokeMessage,
+  type PasskeyProviderId,
 } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 import { AUTH_NOTICE_KEY } from "./auth-notice.js";
@@ -13,8 +22,18 @@ import {
   isOrphanedCredentialError,
   refuseOrphanedCredential,
   postOrphanedCredentialNotice,
+  OrphanedCredentialError,
+  MOVED_OR_RECOVERED_MESSAGE,
+  UPGRADED_TO_PASSKEY_MESSAGE,
+  UPGRADE_UNFINISHED_MESSAGE,
 } from "./orphaned-credential.js";
+import { parseUpgradeMarker, upgradeMarkerKey } from "./upgrade-marker.js";
 import { readOrphanTombstone, writeOrphanTombstone } from "./orphan-tombstone.js";
+import {
+  isWeb3AuthSignInError,
+  WEB3AUTH_KEY_GONE_MESSAGE,
+  WEB3AUTH_KEY_LOADING_MESSAGE,
+} from "./web3auth-signin-error.js";
 import { guardianConfigForBackup } from "./guardian-config.js";
 import {
   requestSessionDelegation,
@@ -22,13 +41,35 @@ import {
   signWithSession,
   getSessionDelegation,
   clearSession,
+  storeSession,
 } from "./session-delegation.js";
 import {
   requestIdentitySeed,
+  establishPasskeyIdentitySeed,
   restoreIdentitySeed,
   storeIdentitySeed,
   clearIdentitySeed,
+  clearLockedSeed,
+  openLockedSeed,
+  storeLockedSeed,
+  restoreSilentSeed,
+  writeUnlockWindow,
+  sweepLegacySeed,
+  storeFeedSignerCache,
+  readFeedSignerCache,
+  clearDeviceUnlock,
+  writePublicKeys,
+  readPublicFeedSignerAddress,
+  hasLockedSeed,
+  clearPublicKeys,
 } from "./identity-seed.js";
+import { SEED_UNLOCK_POLICY, unlockExpiry } from "./seed-unlock-policy.js";
+import { allSecretsOf, clearChainWindow, clearLockedChain, currentSecretOf, storeLockedChain, type AccountChain } from "./account-chain.js";
+import type { AccountKeysHost, KeysVerdict } from "../keyring/account-keys.js";
+import { linkedEnvelopePendingKey } from "./make-main-key.js";
+import { requestChallenge, sha256Hex } from "./request-challenge.js";
+import { apiBase } from "../api/http.js";
+import { unlocksWhen } from "../attendee/gate/unlock-copy.js";
 import {
   connectWallet,
   getConnectedAddress,
@@ -38,11 +79,17 @@ import {
   authenticatePasskey,
   restorePasskeyAccount,
   createPasskeyAccount,
+  createPasskeyAccountUnpinned,
+  pinPasskeyCredential,
+  type PasskeyCredentialHandle,
   hasStoredPasskeyCredential,
   clearPasskeyCredential,
+  createAddedPasskey,
+  asCeremonyCancel,
 } from "./passkey-account.js";
-import { createWeb3Signer, createLocalSigner, createPasskeySigner } from "./signers/index.js";
+import { createWeb3Signer, createLocalSigner } from "./signers/index.js";
 import type { BuiltKernel } from "./kernel-account.js";
+import type { PasskeyLogin } from "./passkey-account.js";
 import type { ContentFeedSigner } from "../swarm/content-feed.js";
 import { signingRequest } from "./signing-request.svelte.js";
 import { accountSetupRequest } from "./account-setup-request.svelte.js";
@@ -53,6 +100,7 @@ import {
   type AccountSetupStep,
 } from "./account-setup-plan.js";
 import { cacheClearByPrefix, USER_SCOPED_PREFIXES } from "../cache/cache.js";
+import { BackupInventoryMemo } from "../manifest/backup-inventory-memo.js";
 
 // ---------------------------------------------------------------------------
 // State (Svelte 5 runes)
@@ -72,16 +120,66 @@ let _busy = $state(false);
 // Login progress for the modal's authenticating scene — display-only, never
 // gates logic. "waiting" = the user-facing credential step (WebAuthn prompt,
 // wallet popup, Web3Auth modal); "finalizing" = post-credential account setup.
-let _loginStage = $state<"waiting" | "finalizing" | null>(null);
+/** "stalled": a Web3Auth wait whose spinner's time is up - the sheet shows a message
+ *  and a way out while the wait goes on listening (web3auth-signin-wait.ts). */
+let _loginStage = $state<"waiting" | "stalled" | "finalizing" | null>(null);
 
 // In-memory only — never exposed reactively
 let _passkeyPrivateKey: string | null = null;
+// The passkey's PRF output (#642): the root of its identity seed and portability
+// keys. Set and cleared at exactly the sites `_passkeyPrivateKey` is — the two come
+// out of one ceremony and neither is derivable from the other.
+let _passkeyPrfSecret: string | null = null;
 let _web3authPrivateKey: string | null = null;
+/** The background key retry after a slow reload is still running (#803). */
+let _web3authKeyRetrying = false;
+/** Set while a Web3Auth sign-in waits on the SDK's pop-up: closes the SDK's modal
+ *  so that wait settles (its own loader cannot be closed while connecting). */
+let _cancelLogin: (() => void) | null = null;
+// A passkey account's UNLOCKED seed (#746). At rest it is locked under the passkey;
+// an unlock opens it until `expiresAt` (`SEED_UNLOCK_POLICY`; null = until the tab
+// closes). Stamped with the account it belongs to and read only through
+// `_unlockedSeed()`, so an account switch can never hand one account's seed to another.
+let _unlocked: { seedAddress: string; parent: string; seed: string; expiresAt: number | null; chain: AccountChain | null } | null = null;
+// The account's later secrets (#186) load right after the seed unlocks and are checked
+// against the chain; the getters that sign or seal wait for that verdict.
+let _chainLoad: Promise<void> | null = null;
+// Whether this unlock's generation is CONFIRMED current (#186). Only "ok" signs or
+// seals; "behind" = the chain names a newer ring (an unlock takes it); "keyless" = this
+// passkey was left out of it; "unknown" = the chain could not be read.
+let _keysVerdict: KeysVerdict = "pending";
+let _anchorMemo: { account: string; ref: string | null; at: number } | null = null;
+// What the last ring check found worth saying (#186): this passkey was left out of the
+// account's keys, or the keys moved on from another passkey. Null = nothing to say.
+let _keyRingNotice = $state<null | "keyless" | "changed">(null);
+// A removal this device began and did not finish before its flip (#186): it waits for
+// the person to press "Finish removing". One past the flip finishes by itself.
+let _pendingRemoval = $state<null | { going: string[] }>(null);
+// The last removal that finished here, for its done screen (#186).
+let _removalDone = $state<import("../keyring/account-keys.js").RemovalDone | null>(null);
+// The content-feed signer a passkey account posts with while its seed is locked
+// (#746), memoised from its cached copy. Survives a relock - that is the point - but
+// never an account switch, a heal or a sign-out.
+let _feedSignerCache: { seedAddress: string; parent: string; signer: ContentFeedSigner; ringRef: string | null } | null = null;
+// Closes the unlock window on time in an open tab; `_expireUnlockIfDue` at every
+// entry point covers a timer the browser throttled.
+let _unlockTimer: ReturnType<typeof setTimeout> | null = null;
+// Set when a passkey account's seed CANNOT be unlocked here, rather than declined:
+// a recovered account with no copy on this device, which only its envelope at
+// sign-in restores. Lets the screens say so instead of "try again".
+let _seedUnavailable = $state<null | "recovered-no-copy">(null);
+// This passkey is an ADDED one (#746 step 3): a device of the account, not its
+// owner. Set from the device binding in `_restoreCachedAuth`, which the server's
+// verdict wrote; never inferred from a response.
+let _deviceRole = $state(false);
+// Bumped by every relock and sign-out, so work that resumes after one - a Kernel
+// build that was waiting on the network - cannot put the keys back.
+let _lockGen = 0;
 
 // ZeroDev Kernel logins (passkey + web3auth). The Kernel smart-account address
 // is the parent identity; the identity seed stays on the raw signer key + its
 // EOA address (invariant #1 — deterministic, wallet-independent).
-//  - _seedAddress: passkey PRF-EOA address — seed EIP-712 address field + AAD.
+//  - _seedAddress: passkey PRF-EOA address — the seed's storage slot + AAD key.
 //  - _web3authSeedAddress: Web3Auth EOA address — the Web3Auth seed address + AAD
 //    (the Kernel parent is NOT the seed key; same invariant #1 as passkey).
 //  - _kernel: the built Kernel (account + client + sudo validator), cached in
@@ -101,10 +199,10 @@ let _seedInFlight: Promise<boolean> | null = null;
 let _feedSignerInFlight: Promise<ContentFeedSigner | null> | null = null;
 
 // In-memory memo of the feed-signer ADDRESS for passive self-reads, always
-// validated against the CURRENT parent before use. Never persisted: the only
-// durable secret is the AAD-bound identity SEED, so there is no unauthenticated
-// record that could survive an account switch and leak the previous user's
-// signer into this one's reads.
+// validated against the CURRENT parent before use. Its durable twin for a LOCKED
+// passkey seed is the public-keys record (#746 fix 1), stored per seed address and
+// read back only when its recorded parent is the current one - so it cannot leak
+// a previous account's signer into this one's reads, as a single global cache did.
 let _feedSignerAddressMemo: { parent: string; address: string } | null = null;
 
 // ---------------------------------------------------------------------------
@@ -128,13 +226,13 @@ async function _getSigner(): Promise<EIP712Signer> {
     return createWeb3Signer(_parent);
   }
   if (_kind === "passkey") {
-    // Passkey parent stays the ZeroDev Kernel (identity/EAS attester), but
+    // Passkey parent stays the ZeroDev Kernel (the user's identity), but
     // AuthorizeSession is signed by the RAW PRF-EOA key — ecrecover-able, so
     // the server verifies it RPC-free and authorizes by owner-of-Kernel
     // (kernel-owner.ts). Replaces Kernel ERC-1271, which needed deployed +
     // owner==live-key + working RPC and 403-wedged recovered/rotated accounts
     // (2026-07 split-brain fix). Silent (no confirm dialog) like the Kernel
-    // signer it replaces. The seed uses _getSeedSigner() instead (invariant #1).
+    // signer it replaces. The seed never signs at all for passkey (#642).
     await _ensurePasskeyKey();
     if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable for signer");
     return createLocalSigner(_passkeyPrivateKey, async () => true);
@@ -142,7 +240,7 @@ async function _getSigner(): Promise<EIP712Signer> {
   if (_kind === "web3auth") {
     // web3auth parent is the Kernel too; AuthorizeSession is signed by the raw
     // Web3Auth EOA key (same owner-of-Kernel server authorization as passkey).
-    if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable for signer");
+    if (!_web3authPrivateKey) throw _web3authKeyMissing();
     return createLocalSigner(_web3authPrivateKey, async () => true);
   }
   if (_kind === "coinbase" && _parent) {
@@ -153,27 +251,24 @@ async function _getSigner(): Promise<EIP712Signer> {
 }
 
 /**
- * Signer used ONLY for identity seed derivation.
+ * Signer used ONLY for identity seed derivation, for the kinds whose seed IS a
+ * signature. Passkey is not one of them: its seed roots on the PRF output
+ * (`establishPasskeyIdentitySeed`, #642), so no passkey path signs for it.
  *
- * INVARIANT #1: object must be derived from a DETERMINISTIC signature. For passkey
- * logins that is the raw PRF-EOA secp256k1 key (ethers Wallet → RFC-6979), NOT
- * the Kernel (smart-account 1271 signatures are non-deterministic and would
- * corrupt the user's encryption + ticket-signing identity). For every other
- * kind the object signer is the same as the request signer.
+ * INVARIANT #1: the seed must come from a DETERMINISTIC signature — the raw key
+ * (ethers Wallet → RFC-6979), never a Kernel (smart-account 1271 signatures are
+ * non-deterministic and would corrupt the user's encryption + ticket-signing
+ * identity). For web3 the seed signer is the same as the request signer.
  */
 async function _getSeedSigner(): Promise<EIP712Signer> {
   if (_kind === "passkey") {
-    await _ensurePasskeyKey();
-    if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable for identity derivation");
-    return createPasskeySigner(_passkeyPrivateKey, (info) =>
-      signingRequest.request(info),
-    );
+    throw new Error("A passkey account's seed comes from its PRF output, never a signature");
   }
   if (_kind === "web3auth") {
     // INVARIANT #1: object derives from the raw Web3Auth secp256k1 key (ethers
     // Wallet → RFC-6979 deterministic), NOT the Kernel (`_getSigner` returns the
     // non-deterministic 1271 signer, which would corrupt the identity seed).
-    if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable for identity derivation");
+    if (!_web3authPrivateKey) throw _web3authKeyMissing();
     return createLocalSigner(_web3authPrivateKey, (info) => signingRequest.request(info));
   }
   return _getSigner();
@@ -195,6 +290,285 @@ function _getSeedAddress(): string | null {
   // on restore before this is read.
   if (_kind === "web3auth") return _web3authSeedAddress ?? _parent;
   return _parent;
+}
+
+const SEED_UNAVAILABLE_MESSAGE = "Your account keys aren't on this device. Sign in again to fetch them.";
+
+export const MAIN_PASSKEY_REQUIRED_MESSAGE =
+  "This device was linked before every passkey could do everything. To do this here, remove it and add it again from one of your other passkeys.";
+
+/** An owner-only action (names, adding passkeys) from a device linked before co-owners (#746). */
+export class MainPasskeyRequiredError extends Error {
+  constructor() {
+    super(MAIN_PASSKEY_REQUIRED_MESSAGE);
+    this.name = "MainPasskeyRequiredError";
+  }
+}
+
+/** Thrown at sign-in when this passkey's grant was revoked (#746 step 3). */
+export class DeviceRemovedError extends Error {
+  constructor() {
+    super(DEVICE_REMOVED_MESSAGE);
+    this.name = "DeviceRemovedError";
+  }
+}
+
+const DEVICE_REMOVED_MESSAGE =
+  "This device was removed from your account. To use it again, add it from one of your other passkeys.";
+const SESSION_REVOKED_MESSAGE = "You were signed out on every device. Sign in again to carry on.";
+const NOT_LINKED_MESSAGE =
+  "Couldn't confirm this passkey is on your account. Try again - if it keeps happening, add it again from one of your other passkeys.";
+const NOT_SET_UP_MESSAGE = "This passkey wasn't fully set up. Add it again from one of your other passkeys.";
+const KEYS_UNREACHABLE_MESSAGE = "Couldn't fetch your account keys right now - try again.";
+const VERDICT_UNREACHABLE_MESSAGE = "Couldn't check this passkey with WoCo just now - try again in a moment.";
+
+/** Why the seed is not available: not here at all, or the person did not confirm. */
+function _seedLockedMessage(): string {
+  return _seedUnavailable
+    ? SEED_UNAVAILABLE_MESSAGE
+    : "Your account keys stay locked until you confirm it's you - try again when you're ready.";
+}
+
+/** The same, for an organiser action that was refused. */
+function _organiserLockedMessage(): string {
+  return _seedUnavailable
+    ? SEED_UNAVAILABLE_MESSAGE
+    : "Organiser actions stay locked until you confirm it's you - try again when you're ready.";
+}
+
+/** The unlocked passkey seed, only for the account it was unlocked for, and only
+ *  while its window is open. Pure: the relock itself happens at the entry points. */
+function _unlockedSeed(): string | null {
+  if (_kind !== "passkey" || !_unlocked || !_parent) return null;
+  if (_unlocked.expiresAt !== null && Date.now() >= _unlocked.expiresAt) return null;
+  const seedAddr = _getSeedAddress();
+  if (!seedAddr || _unlocked.seedAddress !== seedAddr.toLowerCase()) return null;
+  return _unlocked.parent === _parent.toLowerCase() ? _unlocked.seed : null;
+}
+
+/**
+ * The seed WITHOUT asking anyone: a passkey account's unlocked copy, or for every
+ * other kind the device-key copy. Null means "not available now" - for a passkey
+ * account after a reload, until the next ceremony.
+ */
+async function _seedIfPresent(): Promise<string | null> {
+  if (_kind === "passkey") return _unlockedSeed();
+  const seedAddr = _getSeedAddress();
+  return seedAddr ? restoreIdentitySeed(seedAddr) : null;
+}
+
+/**
+ * Record a passkey account's seed as unlocked until its window closes, plus what
+ * stays usable once it locks again: the public values passive reads need, and the
+ * content-feed signer everyday posts sign with. `restoredUntil` = a silent restore
+ * from the window copy, which keeps the window it found.
+ */
+function _setUnlockedSeed(
+  seedAddress: string,
+  parent: string,
+  seed: string,
+  opts: { restoredUntil?: number } = {},
+): void {
+  const seedAddr = seedAddress.toLowerCase();
+  const account = parent.toLowerCase();
+  // A silent restore is not an unlock: re-stamping here would keep the window open
+  // for as long as the app is reloaded inside it.
+  const expiresAt = opts.restoredUntil ?? unlockExpiry(SEED_UNLOCK_POLICY);
+  // A re-stamp of the same account keeps its later secrets; anything else starts with
+  // none until `_loadAccountChain` finds them.
+  const prior = _unlocked;
+  const chain = prior && prior.seedAddress === seedAddr && prior.parent === account && prior.seed === seed ? prior.chain : null;
+  _unlocked = { seedAddress: seedAddr, parent: account, seed, expiresAt, chain };
+  _identitySeedPresent = true;
+  _seedUnavailable = null;
+  _scheduleUnlockExpiry(expiresAt);
+  // Nothing signs, seals or is cached as this account's signer until the chain says
+  // which generation is current (#186): `_loadAccountChain` sets the verdict and only
+  // an "ok" commits the signer.
+  _keysVerdict = "pending";
+  const gen = _lockGen;
+  if (opts.restoredUntil !== undefined) {
+    _chainLoad = _loadAccountChain(seedAddr, account, gen, "window");
+    return;
+  }
+  const current = () => gen === _lockGen;
+  void writeUnlockWindow(seedAddr, account, seed, expiresAt, current).catch((e) =>
+    console.warn("[auth] could not keep the unlock window (non-fatal):", e),
+  );
+  _chainLoad = _loadAccountChain(seedAddr, account, gen, "unlock");
+}
+
+// The key-ring flows (#186) load lazily: the store keeps the state and the gates that
+// read it, and lends both through `_keysHost()` - every page load stays as light as before.
+const _keys = () => import("../keyring/account-keys.js");
+
+function _keysHost(): AccountKeysHost {
+  return {
+    isPasskey: () => _kind === "passkey",
+    deviceRole: () => !!_deviceRole,
+    unlocked: () => _unlocked,
+    setChain: (chain) => {
+      if (_unlocked) _unlocked = { ..._unlocked, chain };
+    },
+    lockGen: () => _lockGen,
+    prf: () => _passkeyPrfSecret,
+    ownerKey: () => _passkeyPrivateKey,
+    self: () => _seedAddress?.toLowerCase() ?? null,
+    relock: () => _relockPasskey(),
+    setVerdict: (v) => {
+      _keysVerdict = v;
+    },
+    setNotice: (n) => {
+      _keyRingNotice = n;
+    },
+    commitSigner: () => _commitSigner(),
+    requireCurrentKeys: (o) => _requireCurrentKeys(o),
+    currentKeysConfirmed: () => _currentKeysConfirmed(),
+    anchorMemo: () => _anchorMemo,
+    setAnchorMemo: (m) => {
+      _anchorMemo = m;
+    },
+    ensurePasskeyKey: () => _ensurePasskeyKey(),
+    ensureKernel: () => _ensureKernel(),
+    kernel: () => _kernel,
+    coOwnerHost: () => _coOwnerHost(),
+    removeRecordAfterList: (parent, key) => _removeRecordAfterList(parent, key),
+    signTypedDataAsHolder: (typed) => signTypedDataAsHolder(typed as Parameters<typeof signTypedDataAsHolder>[0]),
+    setRemovalProgress: (p) => {
+      _removalProgress = p;
+    },
+    setPendingRemoval: (p) => {
+      _pendingRemoval = p;
+    },
+    setRemovalDone: (d) => {
+      _removalDone = d;
+    },
+    parent: () => _parent,
+    seedLockedMessage: () => _seedLockedMessage(),
+  };
+}
+
+/**
+ * The account's later secrets, right after its seed unlocked (`account-keys.ts`). ANY
+ * failure - the module not loading included - leaves the verdict short of "ok": nothing
+ * then signs or seals (fail closed).
+ */
+async function _loadAccountChain(seedAddr: string, parent: string, gen: number, mode: "window" | "unlock"): Promise<void> {
+  try {
+    await (await _keys()).loadAccountChain(_keysHost(), seedAddr, parent, gen, mode);
+  } catch (e) {
+    console.warn("[auth] account keys could not be checked:", e);
+    if (gen === _lockGen) _keysVerdict = "unknown";
+  }
+}
+
+/**
+ * The current generation's signer, now that the chain confirmed it: in memory, as the
+ * cached copy everyday posts sign with while the seed is locked (stamped with the ring
+ * it belongs to, so a later move is noticed), and as the public address self-reads use.
+ */
+function _commitSigner(): void {
+  const u = _unlocked;
+  if (!u) return;
+  const signer = deriveFeedSignerKey(currentSecretOf(u.seed, u.chain));
+  _feedSignerAddressMemo = { parent: u.parent, address: signer.address };
+  _feedSignerCache = { seedAddress: u.seedAddress, parent: u.parent, signer, ringRef: u.chain?.ringRef ?? null };
+  const gen = _lockGen;
+  const current = () => gen === _lockGen;
+  void writePublicKeys(u.seedAddress, { parent: u.parent, feedSignerAddress: signer.address }).catch((e) =>
+    console.warn("[auth] could not record the public keys (non-fatal):", e),
+  );
+  void storeFeedSignerCache(u.seedAddress, u.parent, signer, current, u.chain?.ringRef ?? null).catch((e) =>
+    console.warn("[auth] could not keep the feed signer (non-fatal):", e),
+  );
+}
+
+/** The anchor, cached briefly for the silent paths that ask it often. */
+async function _readAnchor(account: string, opts: { fresh?: boolean } = {}): Promise<string | null | "error"> {
+  return (await _keys()).readAnchor(_keysHost(), account, opts);
+}
+
+/**
+ * The verdict for this unlock, waiting for it. With `prompt`, a device that is merely
+ * BEHIND asks for the passkey once and takes the newer ring. Anything short of "ok"
+ * throws: signing or sealing under a generation the account has left is exactly what
+ * removing a passkey must stop.
+ */
+async function _requireCurrentKeys(opts: { prompt?: boolean } = {}): Promise<void> {
+  if (_kind !== "passkey") return;
+  if (_chainLoad) await _chainLoad;
+  if (_keysVerdict === "behind" && opts.prompt) await (await _keys()).catchUp(_keysHost());
+  if (_keysVerdict !== "ok") throw new Error((await _keys()).keysVerdictMessage(_keysVerdict));
+}
+
+/** As `_requireCurrentKeys`, for silent paths: true only when the current generation is confirmed. */
+async function _currentKeysConfirmed(): Promise<boolean> {
+  if (_kind !== "passkey") return true;
+  if (_chainLoad) await _chainLoad.catch(() => {});
+  return _keysVerdict === "ok";
+}
+
+/** The secret everything this account signs or seals NOW is derived from. */
+function _currentSecretFor(seed: string): string {
+  return _kind === "passkey" && _unlocked?.seed === seed ? currentSecretOf(seed, _unlocked.chain) : seed;
+}
+
+/**
+ * Every secret this device holds for the account, generation 0 first, and the current
+ * one. `toSeal`: the caller will sign or seal with `current`, so the generation must be
+ * CONFIRMED current (prompting once when this device is only behind); opening old boxes
+ * needs no such check.
+ */
+async function _accountSecretsIfPresent(opts: { toSeal?: boolean } = {}): Promise<{ current: string; all: string[]; gen: number } | null> {
+  const seed = await _seedIfPresent();
+  if (!seed) return null;
+  if (opts.toSeal) await _requireCurrentKeys({ prompt: true });
+  else if (_chainLoad) await _chainLoad.catch(() => {});
+  const chain = _kind === "passkey" && _unlocked?.seed === seed ? _unlocked.chain : null;
+  return { current: currentSecretOf(seed, chain), all: allSecretsOf(seed, chain), gen: chain?.gen ?? 0 };
+}
+
+/**
+ * Lock a passkey account's keys again: the seed, the owner key, the PRF output and
+ * the Kernel built from it go together, so the next signing action asks the passkey
+ * once. Never mid-ceremony - a key arriving after the relock would undo it.
+ */
+function _relockPasskey(): void {
+  if (_kind !== "passkey" || _passkeyKeyInFlight || _seedInFlight) return;
+  _lockGen++;
+  _unlocked = null;
+  _chainLoad = null;
+  _keysVerdict = "pending";
+  _identitySeedPresent = false;
+  _passkeyPrivateKey = null;
+  _passkeyPrfSecret = null;
+  _kernel = null;
+}
+
+/** Lock again once the unlock window has closed. Called at every entry point that
+ *  could otherwise act on keys left in memory - the PRF output above all, which
+ *  would reopen the locked copy without a new confirm. */
+function _expireUnlockIfDue(): void {
+  if (_unlocked?.expiresAt != null && Date.now() >= _unlocked.expiresAt) _relockPasskey();
+}
+
+function _scheduleUnlockExpiry(expiresAt: number | null): void {
+  if (_unlockTimer !== null) clearTimeout(_unlockTimer);
+  _unlockTimer = null;
+  if (expiresAt === null) return;
+  _unlockTimer = setTimeout(() => {
+    _unlockTimer = null;
+    _expireUnlockIfDue();
+    // Refused while a passkey sheet is open: look again shortly.
+    const open = _unlocked?.expiresAt;
+    if (open != null) _scheduleUnlockExpiry(Math.max(open, Date.now() + 5_000));
+  }, Math.max(0, expiresAt - Date.now()));
+}
+
+// A tab that slept through the end of its window (background timers are throttled)
+// locks as it comes back, before anything on it can act.
+function _onVisibilityChange(): void {
+  if (document.visibilityState === "visible") _expireUnlockIfDue();
 }
 
 /**
@@ -234,9 +608,15 @@ async function _getContentFeedSignerInner(
   // slot — which is what makes a rotated credential unable to fork the feeds.
   const seedAddr = _getSeedAddress();
   if (!seedAddr) return null;
-  let seed = await restoreIdentitySeed(seedAddr);
+  // Already here: derived from a seed on the device, or a passkey account's cached
+  // signer while its seed is locked (#746) - an everyday post never asks.
+  const ready = await _feedSignerIfPresent();
+  if (ready) {
+    _feedSignerAddressMemo = { parent: parent.toLowerCase(), address: ready.address };
+    return ready;
+  }
 
-  if (!seed) {
+  {
     // Anti-divergence guard: a RECOVERED account's credential has ROTATED, so
     // establishing a seed here would produce a DIFFERENT one than the account's
     // existing feeds (and encrypted history) were written under — silently
@@ -254,7 +634,10 @@ async function _getContentFeedSignerInner(
     // assigned on passkey paths, so for a web3auth session it is null and
     // `_recoveryKernelFor` would return undefined at its first line — inert for
     // exactly the population the paragraph above describes.
-    if (await _recoveryKernelFor(_getSeedAddress())) {
+    // Not for passkey (#746 fix 1): a recovered passkey account keeps its carried
+    // seed LOCKED on the device and opens it below; `_ensureIdentitySeed` refuses
+    // to derive for it when there is none.
+    if (_kind !== "passkey" && (await _recoveryKernelFor(_getSeedAddress()))) {
       throw new Error(
         "Recovered account feed signer unavailable — restore from recovery escrow required; refusing to derive a divergent key.",
       );
@@ -262,16 +645,49 @@ async function _getContentFeedSignerInner(
     // FAIL-LOUD: these kinds MUST own client-signed content, so a refused or
     // failed establish THROWS. We NEVER fall through to a platform signer, which
     // would silently split the user's feeds across two owners.
-    if (!(await _ensureIdentitySeed(opts))) {
-      throw new Error("Could not unlock your account keys — your content can't be signed without them.");
-    }
-    seed = await restoreIdentitySeed(seedAddr);
-    if (!seed) throw new Error("Could not unlock your account keys — your content can't be signed without them.");
+    if (!(await _ensureIdentitySeed(opts))) throw new Error(_seedLockedMessage());
   }
+  const seed = await _seedIfPresent();
+  if (!seed) throw new Error(_seedLockedMessage());
+  await _requireCurrentKeys({ prompt: !opts.silent });
 
-  const signer = deriveFeedSignerKey(seed);
+  const signer = deriveFeedSignerKey(_currentSecretFor(seed));
   _feedSignerAddressMemo = { parent: parent.toLowerCase(), address: signer.address };
   return signer;
+}
+
+/**
+ * The content-feed signer WITHOUT asking anyone: derived from a seed already here,
+ * else - a passkey account whose seed is locked (#746) - its cached copy, read for
+ * exactly this account. Null = this device has neither.
+ */
+async function _feedSignerIfPresent(): Promise<ContentFeedSigner | null> {
+  const seed = await _seedIfPresent();
+  if (seed) {
+    if (!(await _currentKeysConfirmed())) return null;
+    return deriveFeedSignerKey(_currentSecretFor(seed));
+  }
+  if (_kind !== "passkey" || !_parent) return null;
+  const seedAddr = _getSeedAddress()?.toLowerCase();
+  const parent = _parent.toLowerCase();
+  if (!seedAddr) return null;
+  let cached: { signer: ContentFeedSigner; ringRef: string | null } | null =
+    _feedSignerCache?.seedAddress === seedAddr && _feedSignerCache.parent === parent
+      ? { signer: _feedSignerCache.signer, ringRef: _feedSignerCache.ringRef }
+      : null;
+  if (!cached) {
+    const read = await readFeedSignerCache(seedAddr, parent);
+    // The account may have changed while the device key was busy.
+    if (!read || _kind !== "passkey" || _parent?.toLowerCase() !== parent) return null;
+    if (_getSeedAddress()?.toLowerCase() !== seedAddr) return null;
+    cached = { signer: { privKey: read.privKey, address: read.address } as ContentFeedSigner, ringRef: read.ringRef };
+    _feedSignerCache = { seedAddress: seedAddr, parent, ...cached };
+  }
+  // A cached signer is good only for the ring it was committed under (#186): if the
+  // account's keys moved on since, it signs nothing until the next unlock takes them.
+  const anchor = await _readAnchor(parent);
+  if (anchor === "error" || (anchor !== null && anchor !== cached.ringRef)) return null;
+  return cached.signer;
 }
 
 /**
@@ -293,6 +709,33 @@ async function _getContentFeedSignerInner(
  * passkey a biometric, and CSW cannot derive at all — so those three keep their
  * lazy establish at the point where a prompt is something the user asked for.
  */
+/**
+ * Unlock (or first establish) a passkey account's seed while the PRF output a
+ * ceremony just produced is in memory (#642, #746 fix 1) - at login, and after any
+ * later ceremony. Nothing else then needs a biometric for it this app open, and
+ * passive self-reads resolve at once instead of waiting for a first write.
+ *
+ * No gate of its own on purpose: `_ensureIdentitySeed`'s recovery-binding refusal
+ * is the one rule for "never derive a seed for a rotated credential", and a second
+ * copy here could only drift from it. Best-effort — a failure leaves the lazy path
+ * exactly as it was.
+ */
+async function _establishPasskeySeedEagerly(): Promise<void> {
+  if (_kind !== "passkey" || !_passkeyPrfSecret) return;
+  // The ceremony that just ran is a fresh confirm: it restarts an open window, as
+  // GitHub's sudo mode does on a success (#746).
+  const held = _unlocked;
+  if (held && held.parent === _parent?.toLowerCase() && held.seedAddress === _seedAddress?.toLowerCase()) {
+    _setUnlockedSeed(held.seedAddress, held.parent, held.seed);
+    return;
+  }
+  try {
+    await _ensureIdentitySeed({ silent: true });
+  } catch (e) {
+    console.warn("[auth] eager passkey seed establishment failed (non-fatal):", e);
+  }
+}
+
 async function _establishFeedSignerEagerly(): Promise<void> {
   if (_kind !== "web3auth") return;
   try {
@@ -321,11 +764,20 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
   if (!parent) return null;
   if (_feedSignerAddressMemo?.parent === parent) return _feedSignerAddressMemo.address;
 
-  const seedAddr = _getSeedAddress();
-  const seed = seedAddr ? await restoreIdentitySeed(seedAddr) : null;
+  const seed = await _seedIfPresent();
   if (seed) {
-    const address = deriveFeedSignerKey(seed).address;
+    if (!(await _currentKeysConfirmed())) return null;
+    const address = deriveFeedSignerKey(_currentSecretFor(seed)).address;
     _feedSignerAddressMemo = { parent, address };
+    return address;
+  }
+
+  // A passkey account whose seed is locked (#746 fix 1): the address is public, and
+  // the last unlock recorded it for exactly this account.
+  if (_kind === "passkey") {
+    const seedAddr = _getSeedAddress();
+    const address = seedAddr ? await readPublicFeedSignerAddress(seedAddr, parent) : null;
+    if (address) _feedSignerAddressMemo = { parent, address };
     return address;
   }
 
@@ -349,6 +801,45 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
 }
 
 /**
+ * The user's content-feed SIGNER resolved WITHOUT a prompt — the twin of
+ * {@link _getContentFeedSignerAddress}, returning the key rather than only the
+ * address it computes.
+ *
+ * WHY A SECOND ENTRY POINT EXISTS, when `_getContentFeedSigner` already returns
+ * a signer: that one ESTABLISHES the seed when the device has none, which is a
+ * wallet popup or a biometric. It is the right behaviour at a write the user
+ * asked for. It is the wrong behaviour for the referral statement, which is
+ * written on the user's behalf at a moment they did not ask to sign anything —
+ * their first authenticated page load after following an invite. A ceremony
+ * there is unexplained, and an unexplained ceremony is one the user declines.
+ *
+ * So this may only ever use a seed ALREADY available: `_seedIfPresent` is a
+ * passkey account's unlocked seed or another kind's device-key decrypt, and
+ * `deriveFeedSignerKey` an HKDF, none of which asks the user for anything. Null — never a prompt — for Coinbase Smart Wallet
+ * (client feeds parked), when not signed in, and on a device with no seed yet.
+ * The caller's answer to null is to WAIT: the seed arrives with whatever action
+ * the user takes next, and `auth.hasIdentitySeed` tells them when.
+ *
+ * Deliberately does NOT reuse `_getContentFeedSigner({ silent: true })`:
+ * `silent` only suppresses the confirm dialog for web3auth (see its doc), so on
+ * web3 and passkey that call still prompts. A flag whose meaning depends on the
+ * login kind cannot carry a guarantee this function has to make unconditionally.
+ */
+async function _getContentFeedSignerIfPresent(): Promise<ContentFeedSigner | null> {
+  if (_kind === "coinbase") return null;
+  const parent = _parent?.toLowerCase();
+  if (!parent) return null;
+
+  const signer = await _feedSignerIfPresent();
+  if (!signer) return null;
+  // Same memo its sibling fills, and for the same reason: the address is a pure
+  // function of the seed, so a later passive self-read must not repeat the
+  // decrypt. Parent-keyed, so it cannot survive an account switch.
+  _feedSignerAddressMemo = { parent, address: signer.address };
+  return signer;
+}
+
+/**
  * The user's configured recovery backups from their encrypted-to-self manifest
  * (Increment 3a) — the LOGGED-IN comfort layer that lets the "Protect your
  * account" panel show what's already set up. Prompt-free: both the SOC owner
@@ -356,17 +847,9 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
  * decrypt, never a PRF/wallet signature), so passive UI can call it freely.
  * Returns [] when not signed in, no feed signer established, or no manifest yet.
  */
-// Session memo for the backup inventory. A user without a manifest pays a full
-// failed-SOC-probe fan-out (gateway 403s + server 404s) on EVERY passive panel
-// mount otherwise. In-memory only — this is decrypted private metadata (guardian
-// addresses) and must not land in localStorage. Concurrent callers (CreatorHome
-// + BackupNudge) share one in-flight read. Only DEFINITIVE answers are memoized
-// (#166 item 4): pinning "couldn't read" for 10 minutes would hide the panel's
-// recovery on the next mount, while pinning a definitive answer is exactly what
-// the memo is for.
-let _backupInvMemo: { parent: string; at: number; backups: import("@woco/shared").BackupInventoryEntry[] } | null = null;
-let _backupInvFlight: { parent: string; promise: Promise<BackupInventoryRead> } | null = null;
-const BACKUP_INV_TTL_MS = 10 * 60 * 1000;
+// Session memo for the backup inventory - what it may keep, and why a write must
+// drop it, is in backup-inventory-memo.ts.
+const _backupInv = new BackupInventoryMemo(10 * 60 * 1000);
 
 /**
  * What the backup panels may claim (#166 item 4). `unavailable` means NOTHING
@@ -377,7 +860,18 @@ const BACKUP_INV_TTL_MS = 10 * 60 * 1000;
  */
 export type BackupInventoryRead =
   | { status: "known"; backups: import("@woco/shared").BackupInventoryEntry[] }
-  | { status: "unavailable"; reason?: string };
+  | {
+      status: "unavailable";
+      reason?: string;
+      /**
+       * The manifest is FROZEN at this version — permanent, so the panel must
+       * offer repair instead of "try again" (#190). Unset = a fault that may
+       * clear by itself, which must keep the transient copy.
+       */
+      unusableAt?: number;
+      /** Saved by a newer app: reload to update, never repair. */
+      newerFormat?: boolean;
+    };
 
 /** The account's LIVE backups — retired ones are filtered out (see getRetiredBackups). */
 async function getBackupInventory(): Promise<BackupInventoryRead> {
@@ -404,40 +898,70 @@ async function getRetiredBackups(): Promise<BackupInventoryRead> {
 async function _getBackupHistory(): Promise<BackupInventoryRead> {
   const parent = _parent;
   if (!parent) return { status: "unavailable", reason: "not signed in" };
-  const memo = _backupInvMemo;
-  if (memo && memo.parent === parent && Date.now() - memo.at < BACKUP_INV_TTL_MS) {
-    return { status: "known", backups: memo.backups };
-  }
-  if (_backupInvFlight?.parent === parent) return _backupInvFlight.promise;
-  const promise = _readBackupInventoryUncached(parent).finally(() => {
-    _backupInvFlight = null;
-  });
-  _backupInvFlight = { parent, promise };
-  return promise;
+  return _backupInv.read(parent, () => _readBackupInventoryUncached(parent));
 }
 
-async function _readBackupInventoryUncached(parent: string): Promise<BackupInventoryRead> {
+/**
+ * The prompt-free manifest signer, or null when this device has none (a fresh
+ * device before the seed lands, or a recovered one whose escrow restore never
+ * ran). Shared by the panel read and the #190 repair path so neither can reach
+ * the manifest with different key material than the other.
+ */
+async function _manifestSigner(): Promise<{ privKey: string; address: string } | null> {
+  const signer = await _feedSignerIfPresent();
+  return signer ? { privKey: signer.privKey, address: signer.address } : null;
+}
+
+async function _readBackupInventoryUncached(parent: string): Promise<import("../manifest/backup-inventory.js").BackupHistoryRead> {
   // No prompt-free signer on this device (or none yet — it may appear right
   // after login, so this is never memoized). Without it the manifest cannot be
   // read, and "couldn't read" is not "no backups".
-  const address = await _getContentFeedSignerAddress();
-  if (!address) return { status: "unavailable", reason: "no feed signer on this device" };
-  const seedAddr = _getSeedAddress();
-  const seed = seedAddr ? await restoreIdentitySeed(seedAddr) : null;
-  if (!seed) return { status: "unavailable", reason: "no feed signer on this device" };
-  const { privKey } = deriveFeedSignerKey(seed);
+  const signer = await _manifestSigner();
+  if (!signer) return { status: "unavailable", reason: "no feed signer on this device" };
+  const { privKey, address } = signer;
   try {
     // Read the FULL history — the memo backs both the live-backups view and the
     // retired-guardian warning, and one read serves both.
     const { readBackupHistoryResult } = await import("../manifest/backup-inventory.js");
-    const read = await readBackupHistoryResult({ signer: { privKey, address }, parentAddress: parent });
-    if (read.status === "known") {
-      _backupInvMemo = { parent, at: Date.now(), backups: read.backups };
-    }
-    return read;
+    return await readBackupHistoryResult({ signer: { privKey, address }, parentAddress: parent });
   } catch (e) {
     return { status: "unavailable", reason: String(e) };
   }
+}
+
+/**
+ * Diagnose a manifest the panel could not read (#190) — is it frozen for good, and
+ * is there an older copy to seed a rebuild from? Reads only; writes nothing.
+ *
+ * Lives here rather than in the panel because it needs the feed-signer SECRET (the
+ * manifest is sealed to it), and no component may hold that.
+ */
+async function diagnoseUserManifest(): Promise<import("../manifest/inventory.js").ManifestDiagnosis> {
+  const parent = _parent;
+  if (!parent) return { kind: "transient", reason: "not signed in" };
+  const signer = await _manifestSigner();
+  // No signer is genuinely "can't tell from this device" — never a frozen verdict,
+  // which would offer to overwrite a manifest nobody here can even read.
+  if (!signer) return { kind: "transient", reason: "no feed signer on this device" };
+  const { diagnoseManifest } = await import("../manifest/inventory.js");
+  return diagnoseManifest({ signer, parentAddress: parent });
+}
+
+/**
+ * Write a fresh manifest past a frozen version, seeded with `seed` (or empty).
+ * Throws when the manifest turns out to be readable or merely offline — the guard
+ * lives in `rebuildManifest`, which re-reads before it writes. Returns the version
+ * written; drops the panel memo so the next read shows the rebuilt list.
+ */
+async function repairUserManifest(seed: import("@woco/shared").UserManifest | null): Promise<number> {
+  const parent = _parent;
+  if (!parent) throw new Error("Sign in first.");
+  const signer = await _manifestSigner();
+  if (!signer) throw new Error("This device can't read your saved list yet — sign in again, then retry.");
+  const { rebuildManifest } = await import("../manifest/inventory.js");
+  const version = await rebuildManifest({ signer, parentAddress: parent, seed });
+  _backupInv.drop(); // the panel must read the rebuilt manifest, not the pre-repair memo
+  return version;
 }
 
 /**
@@ -447,7 +971,9 @@ async function _readBackupInventoryUncached(parent: string): Promise<BackupInven
  */
 async function _restoreCachedAuth(): Promise<void> {
   if (!_parent) return;
-  const session = await restoreSession(_parent);
+  // A passkey session must be one THIS passkey signed (#746): two passkeys of one
+  // account share the parent-keyed slot, and the AAD cannot tell them apart.
+  const session = await restoreSession(_parent, _kind === "passkey" ? (_seedAddress ?? undefined) : undefined);
   if (session) {
     _sessionAddress = session.sessionWallet.address;
   }
@@ -456,9 +982,32 @@ async function _restoreCachedAuth(): Promise<void> {
   // it must never be called with the Kernel address for a passkey user — the
   // PRF-EOA address is loaded from storage in init() before this runs.
   const seedAddr = _getSeedAddress();
-  if (seedAddr) {
-    _identitySeedPresent = !!(await restoreIdentitySeed(seedAddr));
+  if (!seedAddr) return;
+  if (_kind === "passkey") {
+    _deviceRole = (await _boundKernelFor(seedAddr))?.role === "device";
+    if (_deviceRole && _parent) void _upgradeIfCoOwner(seedAddr, _parent);
+    void _retryLinkedEnvelope(seedAddr);
+    void _retryPendingRemovals().catch(() => {});
+    void _resumeUpgrade();
+    // Locked at rest (#746 fix 1): present only when this tab already unlocked it,
+    // or when SEED_UNLOCK_POLICY keeps a copy that opens without the passkey. A
+    // legacy device-key copy counts as LOCKED from this build's first load; it is
+    // locked under the passkey, then dropped, at the first unlock.
+    if (_unlockedSeed()) {
+      _identitySeedPresent = true;
+      return;
+    }
+    const parent = _parent;
+    const silent = await restoreSilentSeed(seedAddr, parent, SEED_UNLOCK_POLICY);
+    if (silent && _kind === "passkey" && _parent === parent) {
+      _setUnlockedSeed(seedAddr, parent, silent.seed, { restoredUntil: silent.expiresAt });
+    } else {
+      _identitySeedPresent = false;
+      void sweepLegacySeed(seedAddr).catch(() => {});
+    }
+    return;
   }
+  _identitySeedPresent = !!(await restoreIdentitySeed(seedAddr));
 }
 
 /**
@@ -504,8 +1053,21 @@ async function _restoreAuthAfterRotation(): Promise<void> {
 async function _clearStaleAuthForSwitch(address: string): Promise<void> {
   const priorParent = await getKV<string>(StorageKeys.PARENT_ADDRESS);
   if (priorParent && priorParent.toLowerCase() !== address.toLowerCase()) {
+    const priorSeedAddr = await getKV<string>(StorageKeys.SEED_ADDRESS);
     await clearSession();
     _feedSignerAddressMemo = null;
+    _feedSignerCache = null;
+    _unlocked = null;
+    _anchorMemo = null;
+    _keyRingNotice = null;
+    _pendingRemoval = null;
+    _removalDone = null;
+    // What opens the outgoing account without its passkey goes with it, as at
+    // sign-out (#746); its locked copy stays.
+    if (priorSeedAddr) {
+      await clearDeviceUnlock(priorSeedAddr).catch(() => {});
+      await clearChainWindow(priorSeedAddr).catch(() => {});
+    }
   }
 }
 
@@ -523,12 +1085,23 @@ async function _clearStaleAuthForSwitch(address: string): Promise<void> {
  * backstop for races this doesn't cover).
  */
 let _passkeyKeyInFlight: Promise<void> | null = null;
+// A declined or failed ceremony offers the account picker on the NEXT attempt, not
+// straight after: cancelling the passkey sheet must not open a second one (#746 fix 1).
+let _offerPickerNext = false;
 
 async function _ensurePasskeyKey(): Promise<void> {
-  if (_passkeyPrivateKey && _seedAddress) return;
+  _expireUnlockIfDue();
+  if (_passkeyPrivateKey && _passkeyPrfSecret && _seedAddress) return;
   if (_passkeyKeyInFlight) return _passkeyKeyInFlight;
   _passkeyKeyInFlight = (async () => {
-    const result = await restorePasskeyAccount();
+    let result: Awaited<ReturnType<typeof restorePasskeyAccount>>;
+    try {
+      result = await restorePasskeyAccount({ retryDiscoverable: _offerPickerNext });
+    } catch (e) {
+      _offerPickerNext = true;
+      throw e;
+    }
+    _offerPickerNext = false;
 
     // A biometric sheet can stay open across a sign-out: `clearAllAuth` nulls
     // `_seedAddress` AND deletes the KV slot, so an orphaned ceremony settling
@@ -588,7 +1161,8 @@ async function _ensurePasskeyKey(): Promise<void> {
     }
 
     _passkeyPrivateKey = result.privateKey;
-    _seedAddress = result.address; // PRF-EOA address — seed derivation/AAD key
+    _passkeyPrfSecret = result.prfSecret;
+    _seedAddress = result.address; // PRF-EOA address — seed slot/AAD key
   })();
   const inFlight = _passkeyKeyInFlight;
   try {
@@ -599,6 +1173,9 @@ async function _ensurePasskeyKey(): Promise<void> {
     // would strand it and let the next caller start a second ceremony.
     if (_passkeyKeyInFlight === inFlight) _passkeyKeyInFlight = null;
   }
+  // Whatever asked for the passkey - a session, the Kernel, the seed - the same
+  // ceremony unlocks the seed, so one biometric covers them all.
+  void _establishPasskeySeedEagerly();
 }
 
 /**
@@ -641,6 +1218,54 @@ async function _putRecoveryBinding(seedAddress: string, kernel: string): Promise
   await putKV(StorageKeys.RECOVERED_KERNEL_BINDING, bindings);
 }
 
+/** Drop one passkey's recovery binding: it handed the account to another device (#746 step 4). */
+async function _clearRecoveryBinding(seedAddress: string): Promise<void> {
+  const bindings = await _getRecoveryBindings();
+  if (!(seedAddress.toLowerCase() in bindings)) return;
+  delete bindings[seedAddress.toLowerCase()];
+  await putKV(StorageKeys.RECOVERED_KERNEL_BINDING, bindings);
+}
+
+/** ADDED-passkey bindings `{ [prfEoaLower]: kernel }` (#746 step 3), see StorageKeys. */
+async function _getDeviceBindings(): Promise<Record<string, string>> {
+  return (await getKV<Record<string, string>>(StorageKeys.DEVICE_KERNEL_BINDING)) ?? {};
+}
+
+async function _putDeviceBinding(seedAddress: string, kernel: string): Promise<void> {
+  const bindings = await _getDeviceBindings();
+  bindings[seedAddress.toLowerCase()] = kernel.toLowerCase();
+  await putKV(StorageKeys.DEVICE_KERNEL_BINDING, bindings);
+}
+
+async function _clearDeviceBinding(seedAddress: string): Promise<void> {
+  const bindings = await _getDeviceBindings();
+  if (!(seedAddress.toLowerCase() in bindings)) return;
+  delete bindings[seedAddress.toLowerCase()];
+  await putKV(StorageKeys.DEVICE_KERNEL_BINDING, bindings);
+}
+
+/**
+ * The Kernel this passkey acts for when it is not its own counterfactual, and in
+ * which role: "recovered" (rotated in as the owner) or "device" (granted by the
+ * owner, #746). Recovered wins - a passkey made the main one leaves its device
+ * binding behind. The Kernel override and the never-derive-a-seed rule read both;
+ * the owner checks at sign-in dispatch on the role.
+ */
+async function _boundKernelFor(
+  seedAddress: string | null,
+): Promise<{ kernel: `0x${string}`; role: "recovered" | "device" } | undefined> {
+  if (!seedAddress) return undefined;
+  const recovered = await _recoveryKernelFor(seedAddress);
+  if (recovered) return { kernel: recovered, role: "recovered" };
+  const device = (await _getDeviceBindings())[seedAddress.toLowerCase()];
+  return device ? { kernel: device as `0x${string}`, role: "device" } : undefined;
+}
+
+/** Either binding's Kernel - for the rules that hold whatever the role. */
+async function _boundKernelAddress(seedAddress: string | null): Promise<`0x${string}` | undefined> {
+  return (await _boundKernelFor(seedAddress))?.kernel;
+}
+
 /**
  * NEW-DEVICE recovered-passkey check (CROSS_DEVICE_RECOVERY.md §3). When a passkey
  * logs in with NO local recovery binding, it could still be a recovered account
@@ -663,17 +1288,17 @@ async function _putRecoveryBinding(seedAddress: string, kernel: string): Promise
  * session exists.
  */
 async function _verifyPortabilityEnvelope(
-  passkeyPrivKey: string,
+  prfSecret: string,
   seedAddress: string,
 ): Promise<
   | { preserved: `0x${string}`; identitySeed: string }
-  | { orphaned: { preserved: string; onChainOwner: string } }
+  | { foreign: { preserved: string; identitySeed: string; onChainOwner: string | null } }
   | null
   | "unavailable"
 > {
   try {
     const { readPortabilityEnvelope } = await import("./recovery-portability.js");
-    const read = await readPortabilityEnvelope({ passkeyPrivKey });
+    const read = await readPortabilityEnvelope({ prfSecret });
     if (read.status === "absent") return null;
     if (read.status !== "found") {
       // Either bytes were there and we could not use them (`unusable`), or nobody
@@ -691,15 +1316,25 @@ async function _verifyPortabilityEnvelope(
     // the login can refuse honestly (#255). Silence (null read) stays
     // "unavailable", not "absent": an RPC blip on the owner read must neither
     // poison the returning-device cache nor condemn the credential.
-    const { readKernelEcdsaOwner } = await import("./kernel-account.js");
-    const owner = await readKernelEcdsaOwner(opened.preservedKernelAddress);
-    const foreignOwner = provenOrphanOwner(owner, seedAddress);
-    if (foreignOwner) {
-      return { orphaned: { preserved: opened.preservedKernelAddress, onChainOwner: foreignOwner } };
-    }
-    if (!owner) {
+    // STRICT read (#746 step 3): "nobody answered" stays unavailable, while "no
+    // owner" (an undeployed Kernel, which most organisers' are) and "someone else"
+    // both mean this passkey does not own the account. That is an ADDED passkey -
+    // or one recovered away from - and only the server can say which, so the seed
+    // is kept for the verdict rather than dropped.
+    const { readKernelSignerFor } = await import("./kernel-account.js");
+    const owner = await readKernelSignerFor(opened.preservedKernelAddress, seedAddress);
+    if (owner === "error") {
       console.warn("[auth] portability envelope owner check unanswered — ignoring for this login");
       return "unavailable";
+    }
+    if (owner === null || owner.toLowerCase() !== seedAddress.toLowerCase()) {
+      return {
+        foreign: {
+          preserved: opened.preservedKernelAddress,
+          identitySeed: opened.identitySeed,
+          onChainOwner: owner,
+        },
+      };
     }
     return {
       preserved: opened.preservedKernelAddress as `0x${string}`,
@@ -726,9 +1361,58 @@ async function _verifyPortabilityEnvelope(
  * uses, so the two callers can never drift on fields; this caller's posture is
  * best-effort, so any `unavailable` is its silent no-op.
  */
-async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
+/**
+ * A just-created account's passkey record (#746) waits here until a session exists:
+ * the SOC relay needs one, and a new account has none until its first action. Kept
+ * in localStorage so a reload in between does not lose it; one slot, keyed by the
+ * account, is enough because only creation sets it.
+ */
+const PENDING_PASSKEY_RECORD_KEY = "woco:passkey-record-pending";
+
+function _setPendingPasskeyRecord(pending: { credentialId: string; parent: string }): void {
   try {
-    if (_kind !== "passkey") return;
+    globalThis.localStorage?.setItem(PENDING_PASSKEY_RECORD_KEY, JSON.stringify(pending));
+  } catch {
+    /* without storage the record waits for nothing - the guard just stays inactive */
+  }
+}
+
+/** The pending slot's raw text; null when there is none or storage is unavailable. */
+function _pendingPasskeyRecordRaw(): string | null {
+  try {
+    return globalThis.localStorage?.getItem(PENDING_PASSKEY_RECORD_KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function _maybeWritePasskeyRecord(): Promise<void> {
+  try {
+    const raw = _pendingPasskeyRecordRaw();
+    if (!raw) return;
+    const { ensurePasskeyRecord, parsePendingPasskeyRecord } = await import("./passkey-record.js");
+    const pending = parsePendingPasskeyRecord(raw);
+    if (!pending) {
+      globalThis.localStorage?.removeItem(PENDING_PASSKEY_RECORD_KEY);
+      return;
+    }
+    if (_kind !== "passkey" || _parent?.toLowerCase() !== pending.parent.toLowerCase()) return;
+    // Never mint a session for this: a write that waits costs nothing, a prompt does.
+    if (!_sessionAddress) return;
+    const outcome = await ensurePasskeyRecord({ credentialId: pending.credentialId, parent: pending.parent });
+    if (outcome === "unavailable") return; // the next session retries
+    if (outcome === "conflict") {
+      console.error("[auth] this passkey already has a record naming another account - left unchanged");
+    }
+    globalThis.localStorage?.removeItem(PENDING_PASSKEY_RECORD_KEY);
+  } catch (e) {
+    console.warn("[auth] passkey record write failed (non-fatal, retried next session):", e);
+  }
+}
+
+async function _maybeBackfillPortabilityEnvelope(): Promise<boolean> {
+  try {
+    if (_kind !== "passkey") return false;
     const { gatherBackfillArgs } = await import("./recovery-finalize.js");
     const gathered = await gatherBackfillArgs(_backfillGatherDeps());
     if (gathered.status !== "ready") {
@@ -737,24 +1421,103 @@ async function _maybeBackfillPortabilityEnvelope(): Promise<void> {
       if (!gathered.reason.startsWith("no recovery binding")) {
         console.warn(`[auth] portability back-fill not attempted: ${gathered.reason}`);
       }
-      return;
+      return false;
     }
 
+    // Captured before the await: the back-fill runs in the background, and the
+    // user may have signed out or switched by the time it answers.
+    const eoa = _seedAddress;
+    const parent = _parent;
     const { backfillPortabilityEnvelope } = await import("./recovery-portability.js");
     const outcome = await backfillPortabilityEnvelope(gathered.args);
+    if (outcome.action === "refused") {
+      console.error(`[auth] portability envelope back-fill REFUSED: ${outcome.reason}`);
+      if (eoa && parent) await _healRefusedBackfill(eoa, parent);
+      return false;
+    }
     console.log(`[auth] portability envelope back-fill: ${outcome.action} (${outcome.reason})`);
+    // "deferred" = the read could not answer: not written yet.
+    return outcome.action === "wrote" || outcome.action === "skipped";
   } catch (e) {
     console.warn("[auth] portability envelope back-fill failed (non-fatal):", e);
+    return false;
+  }
+}
+
+/**
+ * A refused back-fill means this device's seed disagrees with the account's own
+ * envelope. The envelope wins: it was written with the escrow-restored seed at
+ * recovery and the back-fill never overwrites it, while the device's copy can only
+ * have been derived on the wrong Kernel (#245). Logging alone would leave the
+ * device signing every write with the wrong seed, because with a binding AND a
+ * stored seed the next login skips the envelope entirely.
+ *
+ * So, as the #245 re-probe heal does: drop the seed stored under this credential,
+ * and sign out with an explanation if the user is still in that account. The next
+ * login finds binding + no seed, reads the envelope, checks its Kernel's owner on
+ * chain, and restores the right seed.
+ */
+async function _healRefusedBackfill(eoa: string, parent: string): Promise<void> {
+  await _clearSeedEverywhere(eoa);
+  const stillIn =
+    _kind === "passkey" &&
+    _seedAddress?.toLowerCase() === eoa.toLowerCase() &&
+    _parent?.toLowerCase() === parent.toLowerCase();
+  if (!stillIn) return;
+  try {
+    globalThis.sessionStorage?.setItem(
+      AUTH_NOTICE_KEY,
+      "This device had an out-of-date copy of your account keys. Sign in again to restore them.",
+    );
+  } catch {
+    /* the notice is an explanation, never a step */
+  }
+  await logout({ force: true });
+}
+
+/** A seed known to be WRONG for this credential (a heal): every copy goes, the
+ *  locked one included, and the unlocked one if it is this credential's. */
+async function _clearSeedEverywhere(eoa: string): Promise<void> {
+  if (_unlocked?.seedAddress === eoa.toLowerCase()) {
+    _unlocked = null;
+    if (_kind === "passkey") _identitySeedPresent = false;
+  }
+  if (_seedAddress?.toLowerCase() === eoa.toLowerCase()) {
+    // What was decided about the keys being cleared goes with them (#186): no verdict,
+    // ring or signer address outlives the seed it was worked out from.
+    _keysVerdict = "pending";
+    _chainLoad = null;
+    _anchorMemo = null;
+    _feedSignerAddressMemo = null;
+  }
+  if (_feedSignerCache?.seedAddress === eoa.toLowerCase()) _feedSignerCache = null;
+  await clearIdentitySeed(eoa);
+  await clearLockedSeed(eoa);
+  // The account's later secrets go with the seed (#186): a passkey leaving the account
+  // takes nothing it could open them with, and they are no use without it.
+  await clearLockedChain(eoa);
+  await clearChainWindow(eoa);
+  await (await import("../keyring/pending-rotation.js")).clearPendingRotation(eoa);
+  try {
+    globalThis.localStorage?.removeItem(`woco:keyring:enrolled:${eoa.toLowerCase()}`);
+  } catch {
+    /* nothing kept */
   }
 }
 
 /** The one accessor bundle both backfill preambles read through (#260). */
 function _backfillGatherDeps(): import("./recovery-finalize.js").BackfillGatherDeps {
   return {
-    getPasskeyPrivKey: () => _passkeyPrivateKey,
+    getPasskeyPrfSecret: () => _passkeyPrfSecret,
     getSeedAddress: () => _seedAddress,
-    recoveryKernelFor: _recoveryKernelFor,
-    restoreIdentitySeed,
+    recoveryKernelFor: _boundKernelAddress,
+    // The back-fill runs with the PRF output in memory: the unlocked seed, or the
+    // locked copy opened with it. Never the device-key copy (#746 fix 1).
+    restoreIdentitySeed: async (seedAddress: string) => {
+      const unlocked = _unlockedSeed();
+      if (unlocked && _unlocked?.seedAddress === seedAddress.toLowerCase()) return unlocked;
+      return _passkeyPrfSecret && _parent ? openLockedSeed(seedAddress, _parent, _passkeyPrfSecret) : null;
+    },
   };
 }
 
@@ -772,20 +1535,35 @@ function _backfillGatherDeps(): import("./recovery-finalize.js").BackfillGatherD
  * override == the stored parent), so a wrong passkey is still caught.
  */
 async function _ensureKernel(): Promise<void> {
+  // An added passkey is not the Kernel's owner: every userOp it signed would be
+  // refused on chain. The screens gate these actions; this is the backstop, before
+  // any prompt (#746 step 3).
+  if ((await _boundKernelFor(_seedAddress ?? _getSeedAddress()))?.role === "device") {
+    throw new MainPasskeyRequiredError();
+  }
   await _ensurePasskeyKey();
-  if (_kernel) return;
+  // A Kernel built at sign-in assumed the ECDSA root; the first signature reads the
+  // account's root and opens it with the validator it really has (co-owners, #746).
+  if (_kernel?.rootChecked) return;
   if (!_passkeyPrivateKey) throw new Error("Passkey key unavailable — cannot build Kernel");
-  const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
-  const override = await _recoveryKernelFor(_seedAddress);
-  const kernel = await buildKernelFromPrivateKey(
-    _passkeyPrivateKey,
-    override ? { address: override } : undefined,
-  );
+  const gen = _lockGen;
+  const { buildKernelFromPrivateKey, readKernelRoot } = await import("./kernel-account.js");
+  const override = await _boundKernelAddress(_seedAddress);
+  const at = override ?? _kernel?.address ?? _parent?.toLowerCase();
+  const root = at ? await readKernelRoot(at) : "none";
+  if (root === "error") throw new Error("Couldn't reach the network to prepare your account - try again.");
+  const kernel = await buildKernelFromPrivateKey(_passkeyPrivateKey, {
+    ...(override || root === "weighted" ? { address: override ?? at } : {}),
+    root: root === "weighted" ? "weighted" : "ecdsa",
+  });
   if (_parent && kernel.address !== _parent.toLowerCase()) {
     throw new Error(
       "Kernel address mismatch on restore — refusing to attach a divergent smart account.",
     );
   }
+  // The keys were locked (or the account signed out) while this build waited on the
+  // network: the Kernel carries the owner key, so it must not outlive the relock.
+  if (gen !== _lockGen) throw new Error("Your account keys were locked while it was being prepared - try again.");
   _kernel = kernel;
 }
 
@@ -804,7 +1582,7 @@ async function _ensureKernel(): Promise<void> {
  */
 async function _ensureKernelForWeb3Auth(): Promise<void> {
   if (_kernel) return;
-  if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable — cannot build Kernel");
+  if (!_web3authPrivateKey) throw _web3authKeyMissing();
   const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
   const override = await _recoveryKernelFor(_getSeedAddress());
   const kernel = await buildKernelFromPrivateKey(
@@ -835,9 +1613,16 @@ async function _ensureKernelForKind(): Promise<void> {
  * re-login. Backs off 2s → 4s → 8s → 16s (capped), giving up after a few tries.
  */
 function _retryWeb3AuthKeyInBackground(attempt = 0): void {
-  if (_web3authPrivateKey || _kind !== "web3auth") return;
+  if (_web3authPrivateKey || _kind !== "web3auth") {
+    _web3authKeyRetrying = false;
+    return;
+  }
+  _web3authKeyRetrying = true;
   setTimeout(async () => {
-    if (_web3authPrivateKey || _kind !== "web3auth") return;
+    if (_web3authPrivateKey || _kind !== "web3auth") {
+      _web3authKeyRetrying = false;
+      return;
+    }
     try {
       const { restoreWeb3AuthSession } = await import("./web3auth-account.js");
       const { decideWeb3AuthKeyRetry } = await import("./web3auth-restore-guard.js");
@@ -848,17 +1633,33 @@ function _retryWeb3AuthKeyInBackground(attempt = 0): void {
       const d = decideWeb3AuthKeyRetry({ restore: r, adoptedSeedAddr: _web3authSeedAddress });
       if (d.action === "adopt") {
         _web3authPrivateKey = d.privateKey as `0x${string}`;
+        _web3authKeyRetrying = false;
         return;
       }
-      if (d.action === "stop") return; // genuinely logged out — leave cache as-is
+      if (d.action === "stop") {
+        _web3authKeyRetrying = false;
+        return; // genuinely logged out — leave cache as-is
+      }
       if (d.action === "clear") {
+        _web3authKeyRetrying = false;
         console.warn("[auth] live Web3Auth session is not the stored identity — clearing (#183)");
         await clearAllAuth();
         return;
       }
     } catch { /* keep trying */ }
     if (attempt < 4) _retryWeb3AuthKeyInBackground(attempt + 1);
+    else _web3authKeyRetrying = false;
   }, Math.min(2000 * 2 ** attempt, 16000));
+}
+
+/**
+ * The error for an action that needs the Web3Auth key while it is not in
+ * memory. While the background retry may still bring it back, saying the
+ * sign-in "has ended" would be false - and the advice (sign out) would throw
+ * away a session about to work (#803).
+ */
+function _web3authKeyMissing(): Error {
+  return new Error(_web3authKeyRetrying ? WEB3AUTH_KEY_LOADING_MESSAGE : WEB3AUTH_KEY_GONE_MESSAGE);
 }
 
 // ---------------------------------------------------------------------------
@@ -867,11 +1668,18 @@ function _retryWeb3AuthKeyInBackground(attempt = 0): void {
 
 async function init(): Promise<void> {
   if (_ready) return;
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", _onVisibilityChange);
 
   try {
     const kind = await getKV<AuthKind>(StorageKeys.AUTH_KIND);
 
     if (kind === "web3") {
+      // A stored wallet session from before the flag flip must not outlive it.
+      if (!FEATURES.walletLoginAllowed) {
+        console.warn("[auth] stored wallet session not restored: walletLoginAllowed is off (#186)");
+        await clearAllAuth();
+        return;
+      }
       // getConnectedAddress() can hang if window.ethereum is injected but broken
       // (e.g. MetaMask inpage.js present but extension unavailable) — cap at 3 s.
       let walletAddr = await Promise.race([
@@ -914,6 +1722,7 @@ async function init(): Promise<void> {
         setTimeout(async () => {
           if (_kind !== "none") return; // already reconnected elsewhere
           const addr = await getConnectedAddress();
+          if (_kind !== "none") return; // signed in some other way while we waited
           if (addr && addr.toLowerCase() === storedParent.toLowerCase()) {
             _kind = "web3";
             _parent = storedParent;
@@ -939,6 +1748,9 @@ async function init(): Promise<void> {
         _parent = storedParent;
         _seedAddress = storedSeedAddr;
         await _restoreCachedAuth();
+        // A record write that failed earlier retries on load, not only at the next
+        // session mint (up to 30 days away). Needs the restored session; no prompt.
+        void _maybeWritePasskeyRecord();
       } else {
         // Missing SEED_ADDRESS = a pre-Kernel-upgrade session (parent was the
         // PRF-EOA, not the Kernel). Force a clean re-login so the parent becomes
@@ -1094,9 +1906,10 @@ function writeCachedKernelAddress(kind: "passkey" | "web3auth", eoa: string, ker
   }
 }
 
-/** Drop a cached entry. Only ever called on a HEAL (#245 fix 4) — this cache is
- *  written from a definitive absence, so removing an entry is always safe and
- *  re-writing one from a background path never is. */
+/** Drop a cached entry: on a HEAL (#245 fix 4), and when the main passkey moved to
+ *  another device (#746 step 4) — this cache is written from a definitive absence,
+ *  so removing an entry is always safe and re-writing one from a background path
+ *  never is. */
 function clearCachedKernelAddress(kind: "passkey" | "web3auth", eoa: string): void {
   try {
     globalThis.localStorage?.removeItem(
@@ -1150,6 +1963,32 @@ function clearVerifiedBinding(kind: "passkey" | "web3auth", eoa: string): void {
   }
 }
 
+/** Off a co-owned account's list twice, ten seconds apart: a replica a few blocks
+ *  behind a fresh add must not sign a just-linked passkey out (Fable sign-off SHOULD-3).
+ *  `seenOnce`: the caller's own read already said so - only the second is made. */
+async function _offListConfirmed(kernel: string, eoa: string, seenOnce = false): Promise<boolean> {
+  const { readKernelSignerFor, NOT_ON_LIST } = await import("./kernel-account.js");
+  if (!seenOnce && (await readKernelSignerFor(kernel, eoa)) !== NOT_ON_LIST) return false;
+  await new Promise((r) => setTimeout(r, 10_000));
+  return (await readKernelSignerFor(kernel, eoa)) === NOT_ON_LIST;
+}
+
+/** The never-recovered fast path makes no chain read: a FIRST passkey removed from
+ *  another device would open the account here until its first server call. One
+ *  background check ends it with the removed words instead (SHOULD-3). */
+function _verifyCoOwnerInBackground(kernel: string, eoa: string): void {
+  void (async () => {
+    try {
+      if (!(await _offListConfirmed(kernel, eoa))) return;
+      const stillThisSession =
+        _kind === "passkey" && _seedAddress?.toLowerCase() === eoa.toLowerCase() && _parent?.toLowerCase() === kernel.toLowerCase();
+      if (stillThisSession) await onDeviceRemoved();
+    } catch {
+      /* transient - the next sign-in checks again, and the server refuses meanwhile */
+    }
+  })();
+}
+
 /** Off-critical-path twin of the login-time stale-binding guard: re-check the
  *  preserved Kernel's on-chain ECDSA owner after a recovered-account fast-path
  *  login. A confirmed mismatch means this credential was orphaned by a recovery
@@ -1166,8 +2005,17 @@ function _verifyRecoveredBindingInBackground(
 ): void {
   void (async () => {
     try {
-      const { readKernelEcdsaOwner } = await import("./kernel-account.js");
-      const foreignOwner = provenOrphanOwner(await readKernelEcdsaOwner(kernel), eoa);
+      const { readKernelSignerFor, NOT_ON_LIST } = await import("./kernel-account.js");
+      const signer = await readKernelSignerFor(kernel, eoa);
+      if (signer === NOT_ON_LIST) {
+        // A co-owner taken off the list: confirmed twice, then the removed words (#746).
+        if (await _offListConfirmed(kernel, eoa, true)) {
+          const still = _kind === kind && _getSeedAddress()?.toLowerCase() === eoa.toLowerCase() && _parent?.toLowerCase() === kernel.toLowerCase();
+          if (still) await onDeviceRemoved();
+        }
+        return;
+      }
+      const foreignOwner = provenOrphanOwner(signer === "error" ? null : signer, eoa);
       if (foreignOwner) {
         console.warn(
           "[auth] recovered-account binding went stale — on-chain owner is",
@@ -1185,7 +2033,9 @@ function _verifyRecoveredBindingInBackground(
           _getSeedAddress()?.toLowerCase() === eoa.toLowerCase() &&
           _parent?.toLowerCase() === kernel.toLowerCase();
         if (stillThisSession) {
-          postOrphanedCredentialNotice(kind);
+          // A passkey here may also have made another device the main one (#746
+          // step 4); the next sign-in asks the server which.
+          postOrphanedCredentialNotice(kind, undefined, kind === "passkey" ? MOVED_OR_RECOVERED_MESSAGE : undefined);
           // force: the refusal already decided this session ends — a failed
           // provider logout must not keep the orphan signed in locally.
           await logout({ force: true });
@@ -1207,7 +2057,7 @@ function _verifyRecoveredBindingInBackground(
  *  Deferred past the Kernel prebuild so the two don't contend for the first
  *  seconds after login, and past any plausible first user action, so the sign-out
  *  a heal performs lands on an idle screen rather than mid-flow. */
-function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, passkeyPrivKey: string): void {
+function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, prfSecret: string): void {
   const stillSignedInAs = (e: string, parent: string): boolean =>
     _kind === "passkey" &&
     _seedAddress?.toLowerCase() === e.toLowerCase() &&
@@ -1220,20 +2070,22 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, passkeyPriv
         // ladder attempt, and never touches the PRF key after logout.
         if (!stillSignedInAs(eoa, cachedParent)) return;
         const { reprobeEnvelope } = await import("./envelope-reprobe.js");
-        const { readKernelEcdsaOwnerStrict } = await import("./kernel-account.js");
+        const { readKernelSignerFor } = await import("./kernel-account.js");
         const outcome = await reprobeEnvelope(
-          { kind: "passkey", eoa, cachedParent, passkeyPrivKey },
+          { kind: "passkey", eoa, cachedParent, prfSecret },
           {
-            readKernelOwner: readKernelEcdsaOwnerStrict,
+            // A co-owned account reads as this key when it is on the list (#746).
+            readKernelOwner: (kernel) => readKernelSignerFor(kernel, eoa),
             envelopeExists: async (key) => {
               const { portabilityEnvelopeExists } = await import("./recovery-portability.js");
-              return portabilityEnvelopeExists({ passkeyPrivKey: key });
+              return portabilityEnvelopeExists({ prfSecret: key });
             },
             readEnvelope: async (key) => {
               const { readPortabilityEnvelope } = await import("./recovery-portability.js");
-              return readPortabilityEnvelope({ passkeyPrivKey: key });
+              return readPortabilityEnvelope({ prfSecret: key });
             },
             putRecoveryBinding: _putRecoveryBinding,
+            clearIdentitySeed: _clearSeedEverywhere,
             writeOrphanTombstone,
             clearCachedKernelAddress,
             isStillSignedInAs: stillSignedInAs,
@@ -1251,6 +2103,8 @@ function _scheduleEnvelopeReprobe(cachedParent: string, eoa: string, passkeyPriv
         );
         if (outcome.status === "healed") {
           console.warn("[auth] portability envelope found on re-probe — bound to", outcome.preserved);
+        } else if (outcome.status === "moved") {
+          console.warn("[auth] this passkey is no longer the account's main one — next sign-in asks the server");
         } else if (outcome.status === "orphaned") {
           console.warn(
             "[auth] this credential no longer owns its cached account — on-chain owner is",
@@ -1299,6 +2153,11 @@ function hasAnyCachedKernelAddress(): boolean {
 // ---------------------------------------------------------------------------
 
 async function loginWeb3(): Promise<boolean> {
+  // Holds even if a path other than the (gated) login choices reaches this.
+  if (!FEATURES.walletLoginAllowed) {
+    console.warn("[auth] wallet login refused: walletLoginAllowed is off (#186)");
+    return false;
+  }
   if (_busy) return false;
   _busy = true;
   _loginStage = "waiting";
@@ -1346,9 +2205,19 @@ async function loginWeb3Auth(): Promise<boolean> {
   _loginStage = "waiting";
 
   try {
-    const { loginWithWeb3Auth } = await import("./web3auth-account.js");
-    const { address, privateKey } = await loginWithWeb3Auth();
+    const { loginWithWeb3Auth, cancelWeb3AuthSignIn } = await import("./web3auth-account.js");
+    _cancelLogin = cancelWeb3AuthSignIn;
+    const { address, privateKey } = await loginWithWeb3Auth({
+      onStall: () => {
+        _loginStage = "stalled";
+      },
+    });
+    _cancelLogin = null;
     _loginStage = "finalizing";
+
+    // Upgraded to a passkey on this device (#746): the email key opens nothing now.
+    const upgraded = readOrphanTombstone("web3auth", address);
+    if (upgraded) throw await _refuseUpgradedEmailLogin(address, upgraded.kernel, upgraded.owner);
 
     // FAST PATH (returning device): Kernel address already resolved for this
     // EOA on a previous non-recovered login — skip the build (viem/zerodev
@@ -1369,9 +2238,13 @@ async function loginWeb3Auth(): Promise<boolean> {
         _web3authSeedAddress = address;
         _kernel = null;
         _passkeyPrivateKey = null;
+        _passkeyPrfSecret = null;
         await _restoreCachedAuth();
         await _establishFeedSignerEagerly();
         _scheduleKernelPrebuild();
+        // The cache makes no chain read: an account upgraded to a passkey from
+        // another device is found here instead (#746).
+        _verifyEmailKeyInBackground(cachedKernel, address);
         _cleanupAccountListener?.();
         _cleanupAccountListener = null;
         return true;
@@ -1380,7 +2253,7 @@ async function loginWeb3Auth(): Promise<boolean> {
 
     // Kernelize: build the ZeroDev Kernel from the raw Web3Auth key. The Kernel
     // address (not the EOA) becomes the parent identity, so email users get the
-    // gasless on-chain rails (likes/follows) — `attester == parent` holds because
+    // gasless on-chain rail (the referral attestation) — `attester == parent` holds because
     // the Kernel is msg.sender. The seed stays on the raw EOA key (invariant #1).
     //
     // If this web3auth key is the rotated owner of a RECOVERED account, its Kernel
@@ -1389,7 +2262,9 @@ async function loginWeb3Auth(): Promise<boolean> {
     // account, not a fresh counterfactual one. (No portability-envelope path here:
     // that channel is PRF-sealed and passkey-only; a web3auth account re-opened on a
     // NEW device recovers by re-running the portal.)
-    const { buildKernelFromPrivateKey, readKernelEcdsaOwner } = await import("./kernel-account.js");
+    const { buildKernelFromPrivateKey, readKernelEcdsaOwner, readKernelSignerFor, NOT_ON_LIST } = await import(
+      "./kernel-account.js"
+    );
     const override = fastOverride;
     if (override) {
       // Stale-binding guard (mirror loginPasskey): only trust the local binding
@@ -1422,6 +2297,11 @@ async function loginWeb3Auth(): Promise<boolean> {
       privateKey,
       override ? { address: override } : undefined,
     );
+    // Upgraded to a passkey (#746): the email key is off the list, so every session it
+    // signed would be refused - say so instead of entering an account that fails.
+    if ((await readKernelSignerFor(kernel.address, address)) === NOT_ON_LIST) {
+      throw await _refuseUpgradedEmailLogin(address, kernel.address, null);
+    }
 
     await _clearStaleAuthForSwitch(kernel.address);
 
@@ -1436,6 +2316,7 @@ async function loginWeb3Auth(): Promise<boolean> {
     _web3authSeedAddress = address;
     _kernel = kernel;
     _passkeyPrivateKey = null;
+    _passkeyPrfSecret = null;
 
     await _restoreCachedAuth();
 
@@ -1457,14 +2338,26 @@ async function loginWeb3Auth(): Promise<boolean> {
   } catch (e) {
     // The honest refusal must reach the caller as itself — a `false` here
     // renders as "Sign-in failed — please try again", which is exactly the
-    // advice an orphaned credential must not get.
-    if (isOrphanedCredentialError(e)) throw e;
+    // advice an orphaned credential must not get. Web3Auth's own outcomes
+    // (cancelled, a previous session still loading) carry copy for the person
+    // too (#803).
+    if (isOrphanedCredentialError(e) || isWeb3AuthSignInError(e)) throw e;
     console.error("[auth] web3auth login failed:", e);
     return false;
   } finally {
+    _cancelLogin = null;
     _busy = false;
     _loginStage = null;
   }
+}
+
+/**
+ * The sign-in sheet was closed mid-attempt. Only a Web3Auth sign-in has anything
+ * to cancel (its pop-up wait); a passkey ceremony is the browser's own sheet and
+ * settles by itself. Never clears `busy`: the attempt clears it when it settles.
+ */
+function cancelLogin(): void {
+  _cancelLogin?.();
 }
 
 /**
@@ -1570,6 +2463,7 @@ async function loginCoinbase(): Promise<boolean> {
     _kind = "coinbase";
     _parent = address;
     _passkeyPrivateKey = null;
+    _passkeyPrfSecret = null;
 
     await _restoreCachedAuth();
 
@@ -1597,9 +2491,701 @@ async function loginPasskey(mode: "signin" | "create" = "signin"): Promise<boole
 }
 
 /** Same flow, but surfaces WHY it failed so the UI can offer the right next step. */
+/** One line for the login modal to explain a refusal (the #255 notice channel). */
+function _postAuthNotice(message: string): void {
+  try {
+    globalThis.sessionStorage?.setItem(AUTH_NOTICE_KEY, message);
+  } catch {
+    /* the notice is an explanation, never a step */
+  }
+}
+
+/**
+ * The passkey-record check (#746) every passkey sign-in runs before it commits to
+ * `parent`; refuses by throwing. From another device (a phone by QR code, or a
+ * security key) only a confirmed record - or this device's own unwritten one for
+ * the same passkey and account - lets the sign-in commit.
+ */
+async function _guardPasskeyRecord(account: PasskeyLogin, parent: string): Promise<void> {
+  const { guardPasskeyRecord, parsePendingPasskeyRecord } = await import("./passkey-record.js");
+  await guardPasskeyRecord(account.credentialId, parent, account.attachment, {
+    pending: parsePendingPasskeyRecord(_pendingPasskeyRecordRaw()),
+  });
+}
+
+/** Refusals the record check makes - each before the sign-in commits anything. */
+const RECORD_REFUSALS: ReadonlySet<string> = new Set([
+  "PasskeyFromAnotherDeviceError",
+  "PasskeyRecordUnreadableError",
+  "PasskeyRecordMismatchError",
+  "PasskeyIsBackupError",
+]);
+
+/** Put back the pin a refused sign-in's ceremony overwrote. Best-effort: a stale pin
+ *  costs a wrong passkey sheet at the next unlock, never a wrong account. */
+async function _restoreReplacedPin(pin: PasskeyLogin["replacedPin"]): Promise<void> {
+  try {
+    if (pin) await putKV(StorageKeys.PASSKEY_CREDENTIAL, pin);
+    else await delKV(StorageKeys.PASSKEY_CREDENTIAL);
+  } catch (e) {
+    console.warn("[auth] could not restore this device's passkey after a refused sign-in:", e);
+  }
+}
+
+/** Forget an added passkey on this device: its binding and every copy of the seed
+ *  it held. Its locked copy would otherwise reopen for an account it left. */
+async function _forgetAddedPasskey(seedAddress: string): Promise<void> {
+  await _clearDeviceBinding(seedAddress);
+  await _clearSeedEverywhere(seedAddress);
+}
+
+/**
+ * Sign in with an ADDED passkey (#746 step 3): a device of account `parent`, granted
+ * by its owner, never its owner. The seed comes from this device's locked copy, or
+ * from the envelope the adding device wrote for this passkey.
+ *
+ * The SERVER decides, before anything is committed here: a session is signed but
+ * not stored, and one `whoami` answers whether the grant is live. Accepted ->
+ * commit as a device (or as the owner, if the passkey was made the main one);
+ * removed or unknown -> refuse with storage untouched, beyond forgetting what this
+ * device held for an added passkey. No answer -> commit; the first action says.
+ */
+async function _loginAddedPasskey(
+  account: PasskeyLogin,
+  start: { parent: string; seed: string | null; onChainOwner?: string | null; fromBinding?: boolean },
+): Promise<void> {
+  const seedAddr = account.address;
+  const parent = start.parent.toLowerCase();
+  let seed = start.seed ?? (await openLockedSeed(seedAddr, parent, account.prfSecret));
+  if (!seed) {
+    const { readPortabilityEnvelope } = await import("./recovery-portability.js");
+    const read = await readPortabilityEnvelope({ prfSecret: account.prfSecret });
+    if (read.status === "found" && read.value.preservedKernelAddress.toLowerCase() === parent) {
+      seed = read.value.identitySeed;
+    } else {
+      // An envelope naming another account makes the binding a stale cache: drop
+      // it, and the next attempt follows the envelope.
+      if (read.status === "found") await _clearDeviceBinding(seedAddr);
+      throw new Error(read.status === "absent" ? NOT_SET_UP_MESSAGE : KEYS_UNREACHABLE_MESSAGE);
+    }
+  }
+
+  await _guardPasskeyRecord(account, parent);
+
+  const minted = await requestSessionDelegation(
+    parent,
+    createLocalSigner(account.privateKey, async () => true),
+    seedAddr,
+    { persist: false },
+  );
+  const { deviceVerdict } = await import("./device-verdict.js");
+  const verdict = await deviceVerdict({
+    delegation: minted.delegation,
+    sessionPrivateKey: minted.sessionPrivateKey,
+    base: apiBase,
+  });
+  const added = account.handleKind === "added" || start.fromBinding === true;
+  if (verdict === "removed") {
+    await _forgetAddedPasskey(seedAddr);
+    _postAuthNotice(DEVICE_REMOVED_MESSAGE);
+    throw new DeviceRemovedError();
+  }
+  // On the account's co-owner list = one of its passkeys like any other, whatever
+  // the server's cache says this minute (#746, Fable consult 9: role from the chain).
+  const { readKernelSignerFor } = await import("./kernel-account.js");
+  const onList = (await readKernelSignerFor(parent, seedAddr)) === seedAddr.toLowerCase();
+  // The server's owner cache can trail a rotation by minutes (Fable sign-off SHOULD-3):
+  // "owner" while this device's own fresh chain read names another key is no verdict.
+  if (verdict === "owner" && start.onChainOwner && start.onChainOwner.toLowerCase() !== seedAddr.toLowerCase()) {
+    throw new Error(VERDICT_UNREACHABLE_MESSAGE);
+  }
+  // Neither refusal below forgets anything: the server says SESSION_INVALID for more
+  // than "no grant" (an owner read it could not make, a store it could not read), so
+  // a refusal leaves this device as it found it; only `removed` is certain.
+  if (verdict === "invalid" && (added || !start.onChainOwner)) throw new Error(NOT_LINKED_MESSAGE);
+  if ((verdict === "invalid" || verdict === "unreachable") && !added && start.onChainOwner) {
+    // Not an added passkey, its own envelope names this account, and the chain names
+    // another owner. Two histories end here: recovered away (#255), or the account's
+    // old main passkey after another device became the main one, before its new
+    // grant landed (#746 step 4). Both carry an envelope, so nothing here tells them
+    // apart: the words fit both, and it stays a refusal either way. An unanswered
+    // server is no verdict at all, and forgets nothing.
+    if (verdict === "unreachable") throw new Error(VERDICT_UNREACHABLE_MESSAGE);
+    clearVerifiedBinding("passkey", seedAddr);
+    throw refuseOrphanedCredential(
+      "passkey",
+      { boundKernel: parent, onChainOwner: start.onChainOwner },
+      undefined,
+      MOVED_OR_RECOVERED_MESSAGE,
+    );
+  }
+
+  // Another passkey of the SAME account may have signed in here before, so the
+  // parent-keyed session slot can hold its delegation: a new credential means a new
+  // session, whatever the parent (as `_restoreAuthAfterRotation` puts it).
+  await clearSession();
+  await _clearStaleAuthForSwitch(parent);
+  await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
+  await putKV(StorageKeys.PARENT_ADDRESS, parent);
+  await putKV(StorageKeys.SEED_ADDRESS, seedAddr);
+  _kind = "passkey";
+  _parent = parent;
+  _passkeyPrivateKey = account.privateKey;
+  _passkeyPrfSecret = account.prfSecret;
+  _seedAddress = seedAddr;
+  _kernel = null;
+  await storeLockedSeed(seedAddr, parent, seed, account.prfSecret);
+  if (verdict === "owner" || onList) {
+    // A co-owner, or made the main one since it was added: the account's own passkey now.
+    await _putRecoveryBinding(seedAddr, parent);
+    await _clearDeviceBinding(seedAddr);
+  } else {
+    await _putDeviceBinding(seedAddr, parent);
+    // Recovered wins in `_boundKernelFor`: a main passkey that handed the account to
+    // another device must not keep reading as the owner here (#746 step 4).
+    await _clearRecoveryBinding(seedAddr);
+  }
+  if (verdict !== "unreachable") {
+    await storeSession(parent, minted.sessionPrivateKey, minted.sessionAddress, minted.delegation);
+  }
+  _setUnlockedSeed(seedAddr, parent, seed);
+  await _restoreCachedAuth();
+  _cleanupAccountListener?.();
+  _cleanupAccountListener = null;
+}
+
+// ---------------------------------------------------------------------------
+// More than one passkey (#746 step 3): add one on this device, remove one
+// ---------------------------------------------------------------------------
+
+function _randomNonce(): string {
+  return `0x${Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function _grantRefusalMessage(res: { code?: string; error?: string; status?: number }): string {
+  if (res.code === "cap-reached") return `This account already has ${MAX_DEVICE_GRANTS} added passkeys. Remove one first.`;
+  if (res.code === "store-unavailable") return "Passkeys can't be changed right now - try again later.";
+  if (res.code === "not-owner" || res.code === "not-allowed") return new MainPasskeyRequiredError().message;
+  if (res.status === 429) return "Too many changes just now - try again in a minute.";
+  if (res.code === "ticket_required") return unlocksWhen("Linking another device");
+  return res.error ?? "Couldn't save that - try again.";
+}
+
+/** A linked device whose key is now on the account's co-owner list is one of its
+ *  passkeys like any other: it becomes an owner here (#746). The chain decides; a
+ *  read that fails changes nothing. */
+async function _upgradeIfCoOwner(seedAddr: string, parent: string): Promise<void> {
+  try {
+    const { readKernelSignerFor } = await import("./kernel-account.js");
+    if ((await readKernelSignerFor(parent, seedAddr)) === seedAddr.toLowerCase()) {
+      await _becomeOwner(seedAddr.toLowerCase(), parent.toLowerCase());
+    }
+  } catch (e) {
+    console.warn("[auth] co-owner check skipped:", e);
+  }
+}
+
+/** What the lazily loaded co-owner flows (`co-owner-flows.ts`) borrow from this store. */
+function _coOwnerHost(): import("./co-owner-flows.js").CoOwnerHost {
+  return {
+    ensureKernel: _ensureKernel,
+    kernel: () => _kernel,
+    self: () => _seedAddress?.toLowerCase() ?? null,
+    parent: () => _parent?.toLowerCase() ?? null,
+    dropKernel: () => {
+      _kernel = null;
+    },
+    lockedMessage: _seedLockedMessage,
+  };
+}
+
+/** A new passkey on the list, then its device record - or off the list again (#746). */
+async function _addCoOwnerWithRecord<T>(
+  key: string,
+  record: () => Promise<T>,
+  ring?: { prev: string | null; next: string },
+): Promise<T> {
+  return (await import("./co-owner-flows.js")).addCoOwnerWithRecord(_coOwnerHost(), key, record, ring);
+}
+
+/** The account's key ring for a co-owner change made from this device (`account-keys.ts`). */
+async function _ringForChange(add: import("@woco/shared/keyring/ring").KeyRingMember[]) {
+  return (await _keys()).ringForChange(_keysHost(), add);
+}
+
+/** The ring this device just named onchain is the account's now: hold it as current. */
+async function _adoptOwnRing(chain: AccountChain): Promise<void> {
+  return (await _keys()).adoptOwnRing(_keysHost(), chain);
+}
+
+/** Put THIS passkey into the account's key ring when it has no entry yet; once, retried at unlock. */
+async function _enrolSelfInKeyRing(): Promise<void> {
+  try {
+    await (await _keys()).enrolSelfInKeyRing(_keysHost());
+  } catch (e) {
+    console.warn("[auth] could not add this passkey to the account's keys yet (retried at the next unlock):", e);
+  }
+}
+
+/** Take `key` off the account's co-owner list, if it is on it. The last one never. */
+async function _removeCoOwner(key: string): Promise<void> {
+  return (await import("./co-owner-flows.js")).removeCoOwner(_coOwnerHost(), key);
+}
+
+/** Sign, raw as the owner, and register the grant that makes `grantee` a device of
+ *  `parent` - for both ways a passkey is added. Throws the refusal, in words. */
+async function _grantDevice(
+  ownerKey: string,
+  parent: string,
+  grantee: string,
+  credentialTag: string,
+): Promise<DeviceGrantMessage> {
+  const { grant, grantSig } = await _signGrant(ownerKey, parent, grantee, credentialTag);
+  const { registerDeviceGrant } = await import("../api/device-grants.js");
+  const res = await registerDeviceGrant(grant, grantSig);
+  if (!res.ok) throw new Error(_grantRefusalMessage(res));
+  return grant;
+}
+
+/** A grant signed raw by `ownerKey`, not yet registered: make-main signs them before
+ *  its key is the owner, and registers them after. */
+async function _signGrant(
+  ownerKey: string,
+  parent: string,
+  grantee: string,
+  credentialTag: string,
+): Promise<{ grant: DeviceGrantMessage; grantSig: string }> {
+  const grant: DeviceGrantMessage = {
+    parent: parent.toLowerCase(),
+    grantee: grantee.toLowerCase(),
+    credentialTag,
+    issuedAt: Math.floor(Date.now() / 1000),
+    nonce: _randomNonce(),
+  };
+  const grantSig = await createLocalSigner(ownerKey, async () => true)(
+    { ...DEVICE_GRANT_DOMAIN },
+    DEVICE_GRANT_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
+    grant as unknown as Record<string, unknown>,
+  );
+  return { grant, grantSig };
+}
+
+/**
+ * "Move to another password manager" - the main passkey makes another for the same
+ * account, in a different password manager on this device, and grants it.
+ *
+ * Order (consult 6): the new passkey's envelope first, so the server never holds a
+ * grant for a passkey that could not finish signing in; the grant, signed raw by
+ * the owner key (the tap and the passkey sheet were the consent); its record; the
+ * local label. A failure before the grant leaves an unused passkey in the manager,
+ * which its added handle refuses honestly at sign-in.
+ */
+async function addPasskeyOnThisDevice(
+  onStep?: (step: "creating" | "saving" | "linking") => void,
+): Promise<{ provider: PasskeyProviderId; grantee: string }> {
+  if (_kind !== "passkey" || _deviceRole) throw new MainPasskeyRequiredError();
+  if (!(await ensureAccountSetup({ identity: true }))) throw new Error(_seedLockedMessage());
+  // Adding a passkey changes who controls the account: it always asks fresh (#746).
+  await _freshMainPasskey();
+  const parent = _parent?.toLowerCase();
+  const ownerKey = _passkeyPrivateKey;
+  const seedAddr = _seedAddress;
+  const seed = _unlockedSeed();
+  if (!parent || !ownerKey || !seedAddr || !seed) throw new Error(_seedLockedMessage());
+
+  const { readPasskeyMeta, writePasskeyMeta } = await import("./passkey-meta.js");
+  const pinned = await getKV<{ credentialId?: string }>(StorageKeys.PASSKEY_CREDENTIAL);
+  const exclude = [
+    ...(pinned?.credentialId ? [pinned.credentialId] : []),
+    ...Object.values(await readPasskeyMeta(parent)).map((m) => m.credentialId),
+  ];
+
+  onStep?.("creating");
+  const added = await createAddedPasskey({
+    exclude,
+    createdOn: new Date().toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }),
+  });
+  if (added.address.toLowerCase() === seedAddr.toLowerCase()) {
+    throw new Error("That is the passkey you're signed in with. Pick a different password manager.");
+  }
+
+  onStep?.("saving");
+  const { writePortabilityEnvelope } = await import("./recovery-portability.js");
+  try {
+    await writePortabilityEnvelope({ prfSecret: added.prfSecret, preservedKernelAddress: parent, identitySeed: seed });
+  } catch (e) {
+    console.warn("[auth] added passkey's envelope not written:", e);
+    throw new Error(
+      "Couldn't save the new passkey to your account - try again. You can delete the unused one from that password manager.",
+    );
+  }
+
+  onStep?.("linking");
+  const { credentialIdBytes, writePasskeyRecord } = await import("./passkey-record.js");
+  const credentialId = credentialIdBytes(added.credentialId);
+  // Both passkeys are on this device: the new one goes into the account's key ring in
+  // the same op that puts it on the list (#186).
+  const { memberOf } = await import("../keyring/members.js");
+  const ring = await _ringForChange([await memberOf(parent, added)]);
+  const grant = await _addCoOwnerWithRecord(
+    added.address,
+    () => _grantDevice(ownerKey, parent, added.address, credentialTagOf(credentialId)),
+    ring ?? undefined,
+  );
+  if (ring) await _adoptOwnRing(ring.chain).catch((e) => console.warn("[auth] own ring not recorded (non-fatal):", e));
+
+  // Best-effort past this point: the passkey already works. Without its record
+  // the sign-in guard simply has nothing to check; without the label the list
+  // shows a generic one.
+  try {
+    const { passkeyRecordCommit } = await import("@woco/shared/auth/passkey-record");
+    await writePasskeyRecord(credentialId, { v: 1, kind: "added", commit: passkeyRecordCommit(parent, credentialId) });
+  } catch (e) {
+    console.warn("[auth] added passkey's record not written (non-fatal):", e);
+  }
+  await writePasskeyMeta(parent, grant.credentialTag, {
+    provider: added.provider,
+    addedAt: Date.now(),
+    credentialId: added.credentialId,
+  }).catch((e) => console.warn("[auth] added passkey's label not kept (non-fatal):", e));
+  return { provider: added.provider, grantee: grant.grantee };
+}
+
+/**
+ * Remove an added passkey: the main passkey removes any, an added one only itself
+ * ("sign this device out"). Signed raw by whichever passkey this is. Removing this
+ * device's own passkey forgets what it held and signs out.
+ */
+async function removePasskey(grantee: string): Promise<void> {
+  if (_kind !== "passkey" || !_parent || !_seedAddress) throw new MainPasskeyRequiredError();
+  // Removing a passkey changes who controls the account: a co-owner confirms fresh (#746).
+  if (!_deviceRole) await _freshMainPasskey();
+  await _removePasskeyConfirmed(grantee);
+}
+
+/** `removePasskey` past its confirm - also the undelivered-link cleanup, which runs
+ *  straight after the approval's own fresh confirm. */
+async function _removePasskeyConfirmed(grantee: string): Promise<void> {
+  const parent = _parent?.toLowerCase();
+  const self = _seedAddress?.toLowerCase();
+  const target = grantee.toLowerCase();
+  if (_kind !== "passkey" || !parent || !self) throw new MainPasskeyRequiredError();
+  if (_deviceRole && target !== self) throw new MainPasskeyRequiredError();
+  if (_deviceRole) {
+    // A device linked before co-owners holds no onchain right: its record is all there is.
+    await _ensurePasskeyKey();
+    const signed = await _signRecordRemoval(parent, target);
+    const { revokeDeviceGrant } = await import("../api/device-grants.js");
+    const res = await revokeDeviceGrant(signed.revoke, signed.revokeSig);
+    if (!res.ok) throw new Error(_grantRefusalMessage(res));
+  } else if (target === self) {
+    // The passkey this device is signed in with: its record goes FIRST, while this
+    // session still verifies - once off the list the server admits it no more (Fable
+    // re-check). The device cooperates, so the off-the-list-first rule is not needed
+    // here; the list change needs no session. Then forget it here, whatever happened.
+    const signed = await _signRecordRemoval(parent, self);
+    const { revokeDeviceGrant } = await import("../api/device-grants.js");
+    const res = await revokeDeviceGrant(signed.revoke, signed.revokeSig);
+    if (!res.ok && res.code !== "not-found") throw new Error(_grantRefusalMessage(res));
+    try {
+      await _removeCoOwner(self);
+    } catch (e) {
+      console.error("[auth] own passkey's record removed but the list change failed:", e);
+      throw new Error("Signed out here, but your account still lists this passkey. Remove it from one of your other passkeys.");
+    } finally {
+      await _forgetThisPasskey(self);
+    }
+    return;
+  } else {
+    // A co-owner removes any OTHER passkey (#186): the account moves to new keys the
+    // removed one never sees, in the same op that takes it OFF THE LIST FIRST; its
+    // device record goes after the flip lands (#746, Fable sign-off).
+    await _rotateOnRemoval([target]);
+  }
+  if (target === self) await _forgetThisPasskey(self);
+}
+
+/**
+ * Remove several passkeys at once - the new-passkey alert's "No - remove them": one
+ * confirm, one list change, then each record (Fable sign-off NIT-2).
+ */
+async function removePasskeys(grantees: string[]): Promise<void> {
+  const parent = _parent?.toLowerCase();
+  const self = _seedAddress?.toLowerCase();
+  if (_kind !== "passkey" || !parent || !self || _deviceRole) throw new MainPasskeyRequiredError();
+  const targets = [...new Set(grantees.map((g) => g.toLowerCase()))];
+  if (targets.length === 0) return;
+  await _freshMainPasskey();
+  // The others leave with a move to new keys (#186) - one flip for all of them, their
+  // records after it. This device's own passkey leaving needs none: it holds them anyway.
+  const others = targets.filter((t) => t !== self);
+  if (others.length > 0) await _rotateOnRemoval(others);
+  if (targets.includes(self)) {
+    await (await import("./co-owner-flows.js")).removeCoOwners(_coOwnerHost(), [self]);
+    await _removeRecordAfterList(parent, self).catch((e) => console.warn("[auth] own record not removed:", e));
+    await _forgetThisPasskey(self);
+  }
+}
+
+/** The step of a removal under way, for its progress sheet (#186). Null = none. */
+let _removalProgress = $state<import("../keyring/rotate.js").RotationProgress | null>(null);
+
+/** Remove passkeys and move the account to new keys (#186), or finish one (`resume`). */
+async function _rotateOnRemoval(
+  going: string[],
+  opts: { resume?: boolean } = {},
+): Promise<import("../keyring/rotate.js").RotationResult> {
+  return (await _keys()).rotateOnRemovalFor(_keysHost(), going, opts);
+}
+
+/** This device's own passkey left the account: forget it here and sign out. */
+async function _forgetThisPasskey(self: string): Promise<void> {
+  await _clearRecoveryBinding(self);
+  clearVerifiedBinding("passkey", self);
+  // A first passkey has no binding: without this the next tap re-enters the fast path.
+  clearCachedKernelAddress("passkey", self);
+  await _forgetAddedPasskey(self);
+  await logout({ force: true });
+}
+
+async function _signRecordRemoval(parent: string, grantee: string): Promise<{ revoke: DeviceGrantRevokeMessage; revokeSig: string }> {
+  const key = _passkeyPrivateKey;
+  if (!key) throw new Error(_seedLockedMessage());
+  const revoke: DeviceGrantRevokeMessage = { parent, grantee, nonce: _randomNonce() };
+  const revokeSig = await createLocalSigner(key, async () => true)(
+    { ...DEVICE_GRANT_DOMAIN },
+    DEVICE_GRANT_REVOKE_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
+    revoke as unknown as Record<string, unknown>,
+  );
+  return { revoke, revokeSig };
+}
+
+const pendingRemovalKey = (parent: string) => `woco:pending-record-removal:${parent.toLowerCase()}`;
+type PendingRemoval = { revoke: DeviceGrantRevokeMessage; revokeSig: string };
+
+function _readPendingRemovals(parent: string): PendingRemoval[] {
+  try {
+    const v = JSON.parse(globalThis.localStorage?.getItem(pendingRemovalKey(parent)) ?? "[]") as unknown;
+    return Array.isArray(v) ? (v as PendingRemoval[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function _writePendingRemovals(parent: string, list: PendingRemoval[]): void {
+  try {
+    if (list.length === 0) globalThis.localStorage?.removeItem(pendingRemovalKey(parent));
+    else globalThis.localStorage?.setItem(pendingRemovalKey(parent), JSON.stringify(list));
+  } catch {
+    /* blocked storage: the error the person saw still tells them to try again */
+  }
+}
+
+const RECORD_NOT_YET_REMOVED_MESSAGE =
+  "That passkey is off your account onchain, but WoCo couldn't record it yet - it may still open your account until it does. WoCo tries again next time you open it; you can also try again now.";
+
+/**
+ * The record removal after a landed list change (Fable sign-off SHOULD-1): retried
+ * a few times; if it still fails, the signed removal is kept and retried at the next
+ * open, and the person is told the passkey may still have access until then.
+ */
+async function _removeRecordAfterList(parent: string, grantee: string): Promise<void> {
+  const signed = await _signRecordRemoval(parent, grantee);
+  const { revokeDeviceGrant } = await import("../api/device-grants.js");
+  for (const waitMs of [0, 1500, 4000]) {
+    if (waitMs) await new Promise((r) => setTimeout(r, waitMs));
+    const res = await revokeDeviceGrant(signed.revoke, signed.revokeSig).catch(() => ({ ok: false as const, status: 0 }));
+    if (res.ok) return;
+  }
+  _writePendingRemovals(parent, [..._readPendingRemovals(parent), signed]);
+  throw new Error(RECORD_NOT_YET_REMOVED_MESSAGE);
+}
+
+/** Retry record removals a list change left behind (at sign-in restore, with a session). */
+async function _retryPendingRemovals(): Promise<void> {
+  const parent = _parent?.toLowerCase();
+  if (!parent || !_sessionAddress) return;
+  const pending = _readPendingRemovals(parent);
+  if (pending.length === 0) return;
+  const { revokeDeviceGrant } = await import("../api/device-grants.js");
+  const left: PendingRemoval[] = [];
+  for (const p of pending) {
+    const res = await revokeDeviceGrant(p.revoke, p.revokeSig).catch(() => ({ ok: false as const }));
+    if (!res.ok) left.push(p);
+  }
+  _writePendingRemovals(parent, left);
+}
+
+export const PASSKEY_BACKUP_MESSAGE =
+  "Passkey accounts are backed up by linking another device - in Your passkeys.";
+
+/**
+ * The server says this device's grant was revoked (`DEVICE_REMOVED` on any
+ * request, #746 step 3): forget what it held for the account and sign out, once.
+ */
+let _forgettingDevice = false;
+async function onDeviceRemoved(): Promise<void> {
+  const seedAddr = _seedAddress;
+  if (_forgettingDevice || _kind !== "passkey" || !seedAddr) return;
+  _forgettingDevice = true;
+  try {
+    // A co-owner holds the account through its recovery binding (#746): forget it too.
+    await _clearRecoveryBinding(seedAddr);
+    clearVerifiedBinding("passkey", seedAddr);
+    clearCachedKernelAddress("passkey", seedAddr);
+    await _forgetAddedPasskey(seedAddr);
+    _postAuthNotice(DEVICE_REMOVED_MESSAGE);
+    await logout({ force: true });
+  } finally {
+    _forgettingDevice = false;
+  }
+}
+
+/** The server revoked this session ("Sign out everywhere"). A silent re-sign
+ *  would undo it, so sign out fully - which also ends an email login's
+ *  Web3Auth session on this device - once, however many requests saw it. */
+let _signingOutRevoked = false;
+async function onSessionRevoked(): Promise<void> {
+  if (_signingOutRevoked || _kind === "none") return;
+  _signingOutRevoked = true;
+  try {
+    _postAuthNotice(SESSION_REVOKED_MESSAGE);
+    await logout({ force: true });
+  } finally {
+    _signingOutRevoked = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Linking another device (#746 step 4, Fable consult 7). The flows live in the
+// lazily loaded `device-link.ts`; only what needs this store's state is here.
+// ---------------------------------------------------------------------------
+
+/** The new device's half: make its passkey, show a code, sign in once the main answers. */
+async function linkThisDevice(opts: import("./device-link.js").LinkThisDeviceOptions): Promise<void> {
+  if (isConnected) throw new Error("You're already signed in on this device.");
+  if (_busy) throw new Error("A sign-in is already in progress.");
+  const { runLinkThisDevice } = await import("./device-link.js");
+  await runLinkThisDevice(opts, {
+    apiBase,
+    // The server's verdict decides, as for any added passkey; nothing is kept before it.
+    signIn: async (account, secret) => {
+      _busy = true;
+      try {
+        // The account's later secrets first (#186), locked under this passkey, so the
+        // unlock the sign-in makes opens the current generation, not generation 0.
+        if (secret.chain) {
+          await storeLockedChain(account.address.toLowerCase(), secret.parent, secret.chain, account.prfSecret);
+        }
+        await _loginAddedPasskey(account, { parent: secret.parent, seed: secret.seed });
+      } finally {
+        _busy = false;
+      }
+      void _enrolSelfInKeyRing();
+    },
+  });
+}
+
+/**
+ * A passkey sheet now, whatever the unlock window says, for the actions that hand
+ * this account to another device. A link cannot be undone by removing the device
+ * later - it already holds the account keys - so a phone left unlocked inside the
+ * window must not be able to do it with one tap.
+ */
+async function _freshMainPasskey(): Promise<void> {
+  if (_kind !== "passkey" || _deviceRole || !_seedAddress) throw new MainPasskeyRequiredError();
+  if (!_passkeyPrivateKey) {
+    // The sheet this asks for IS the fresh confirm.
+    await _ensurePasskeyKey().catch((e) => {
+      throw asCeremonyCancel(e);
+    });
+  } else {
+    const material = await restorePasskeyAccount({ retryDiscoverable: false }).catch((e) => {
+      throw asCeremonyCancel(e);
+    });
+    if (material.address.toLowerCase() !== _seedAddress.toLowerCase()) {
+      throw new Error("That passkey opens a different account. Use the one you signed in with.");
+    }
+  }
+  if (!(await _unlockPasskeySeed(_seedAddress))) throw new Error(_seedLockedMessage());
+  // That sheet is a confirm too: a full window from now, so the keys cannot lock
+  // under a handover that started at the end of the last one.
+  const seed = _unlockedSeed();
+  if (seed && _parent) _setUnlockedSeed(_seedAddress, _parent, seed);
+}
+
+/** The main device's half, after the person confirmed the code they scanned or typed. */
+async function approveDeviceLink(code: Uint8Array, offer: import("./device-link.js").LinkOffer): Promise<void> {
+  await _freshMainPasskey();
+  const parent = _parent?.toLowerCase();
+  const ownerKey = _passkeyPrivateKey;
+  const seedAddr = _seedAddress?.toLowerCase();
+  const seed = _unlockedSeed();
+  if (!parent || !ownerKey || !seedAddr || !seed) throw new Error(_seedLockedMessage());
+  const { runApproveDeviceLink } = await import("./device-link.js");
+  // The new device cannot sign its ring entry before it knows the account (#186): this
+  // device makes sure the ring exists with itself in it, hands the account's later
+  // secrets over in the sealed answer, and the new device adds itself once signed in.
+  const ring = await _ringForChange([]);
+  await runApproveDeviceLink(code, offer, {
+    apiBase,
+    parent,
+    self: seedAddr,
+    seed,
+    chain: () => _unlocked?.chain ?? null,
+    grant: async (grantee, credentialTag) => {
+      const grant = await _addCoOwnerWithRecord(
+        grantee,
+        () => _grantDevice(ownerKey, parent, grantee, credentialTag),
+        ring ?? undefined,
+      );
+      if (ring) await _adoptOwnRing(ring.chain).catch((e) => console.warn("[auth] own ring not recorded (non-fatal):", e));
+      return grant;
+    },
+    revoke: (grantee) => _removePasskeyConfirmed(grantee),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// A passkey's role (#746). Every passkey on the account's co-owner list is an
+// owner here; the chain decides (`_upgradeIfCoOwner`, `_loginAddedPasskey`).
+// ---------------------------------------------------------------------------
+
+/** This passkey is the account's owner now. */
+async function _becomeOwner(seedAddr: string, parent: string): Promise<void> {
+  await _putRecoveryBinding(seedAddr, parent);
+  await _clearDeviceBinding(seedAddr);
+  writeVerifiedBinding("passkey", seedAddr, parent);
+  if (_seedAddress?.toLowerCase() === seedAddr) {
+    _deviceRole = false;
+    _kernel = null;
+  }
+}
+
+/** A linked passkey whose envelope write failed at link time (`device-link.ts` leaves
+ *  the marker): write it now, once there is a session and the PRF output is here. One
+ *  storage read otherwise. */
+async function _retryLinkedEnvelope(seedAddr: string): Promise<void> {
+  const key = linkedEnvelopePendingKey(seedAddr);
+  try {
+    if (!globalThis.localStorage?.getItem(key) || !_sessionAddress || !_passkeyPrfSecret) return;
+    if (await _maybeBackfillPortabilityEnvelope()) globalThis.localStorage?.removeItem(key);
+  } catch {
+    /* retried at the next sign-in */
+  }
+}
+
 async function loginPasskeyResult(
   mode: "signin" | "create" = "signin",
-): Promise<{ ok: boolean; error?: Error; noAssertion?: boolean; orphaned?: boolean }> {
+): Promise<{
+  ok: boolean;
+  error?: Error;
+  noAssertion?: boolean;
+  noSheet?: boolean;
+  orphaned?: boolean;
+  removed?: boolean;
+  otherDevice?: boolean;
+}> {
   // Not a ceremony failure — no prompt ran. Say so, rather than letting the UI
   // render "authentication failed" for a collision with an in-flight login.
   if (_busy) return { ok: false, error: new Error("A sign-in is already in progress.") };
@@ -1608,9 +3194,13 @@ async function loginPasskeyResult(
 
   const t0 = performance.now();
   let tCeremony = t0;
+  // The ceremony pins whatever answered before any check can refuse it; a refusal
+  // puts the previous pin back (undefined = nothing to restore).
+  let replacedPin: PasskeyLogin["replacedPin"];
   try {
     const account =
       mode === "create" ? await createPasskeyAccount() : await authenticatePasskey();
+    replacedPin = account.replacedPin;
     tCeremony = performance.now();
     _loginStage = "finalizing";
 
@@ -1629,7 +3219,14 @@ async function loginPasskeyResult(
       });
     }
 
-    let override = await _recoveryKernelFor(account.address);
+    // An ADDED passkey this device has signed in with before (#746 step 3): the
+    // server decides, never the chain owner, which names the main passkey by design.
+    const bound = await _boundKernelFor(account.address);
+    if (bound?.role === "device") {
+      await _loginAddedPasskey(account, { parent: bound.kernel, seed: null, fromBinding: true });
+      return { ok: true };
+    }
+    let override = bound?.kernel;
 
     // FAST PATH (returning device, never-recovered passkey): a previous login
     // on this device already resolved this PRF-EOA — Kernel address cached, the
@@ -1639,8 +3236,14 @@ async function loginPasskeyResult(
     // rebuilt lazily on first on-chain use (`_ensureKernel`, which asserts the
     // address against this parent), exactly like the reload-restore path.
     if (!override) {
-      const cachedKernel = readCachedKernelAddress("passkey", account.address);
+      // Never for an added passkey: it has no account of its own to cache.
+      const cachedKernel =
+        account.handleKind === "added" ? null : readCachedKernelAddress("passkey", account.address);
       if (cachedKernel) {
+        // From another device the record must confirm even a cached account (#746):
+        // a QR-code answer before this check could have cached an empty one.
+        // Platform answers stay read-free here.
+        if (account.attachment === "cross-platform") await _guardPasskeyRecord(account, cachedKernel);
         await _clearStaleAuthForSwitch(cachedKernel);
         await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
         await putKV(StorageKeys.PARENT_ADDRESS, cachedKernel);
@@ -1648,14 +3251,17 @@ async function loginPasskeyResult(
         _kind = "passkey";
         _parent = cachedKernel;
         _passkeyPrivateKey = account.privateKey;
+        _passkeyPrfSecret = account.prfSecret;
         _seedAddress = account.address;
         _kernel = null;
         await _restoreCachedAuth();
+        await _establishPasskeySeedEagerly();
         _scheduleKernelPrebuild();
         // The cache entry was seeded from an ABSENCE, and #245 proved an absence
         // can be true at the time and false forever after. Throttled, chain-gated
         // re-check — see _scheduleEnvelopeReprobe.
-        _scheduleEnvelopeReprobe(cachedKernel, account.address, account.privateKey);
+        _scheduleEnvelopeReprobe(cachedKernel, account.address, account.prfSecret);
+        _verifyCoOwnerInBackground(cachedKernel, account.address);
         _cleanupAccountListener?.();
         _cleanupAccountListener = null;
         console.debug(`[auth] passkey login (fast path): ceremony ${Math.round(tCeremony - t0)}ms, total ${Math.round(performance.now() - t0)}ms`);
@@ -1670,9 +3276,10 @@ async function loginPasskeyResult(
       // fast path. Owner staleness is re-checked in the background; the Kernel
       // rebuilds lazily at the preserved address via the binding (`_ensureKernel`
       // honours it and still asserts the parent).
-      const seed = await restoreIdentitySeed(account.address);
+      const seed = await openLockedSeed(account.address, override.toLowerCase(), account.prfSecret);
       if (seed) {
         const parent = override.toLowerCase();
+        if (account.attachment === "cross-platform") await _guardPasskeyRecord(account, parent);
         await _clearStaleAuthForSwitch(parent);
         await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
         await putKV(StorageKeys.PARENT_ADDRESS, parent);
@@ -1680,8 +3287,10 @@ async function loginPasskeyResult(
         _kind = "passkey";
         _parent = parent;
         _passkeyPrivateKey = account.privateKey;
+        _passkeyPrfSecret = account.prfSecret;
         _seedAddress = account.address;
         _kernel = null;
+        _setUnlockedSeed(account.address, parent, seed);
         await _restoreCachedAuth();
         _verifyRecoveredBindingInBackground("passkey", override, account.address);
         _scheduleKernelPrebuild();
@@ -1697,7 +3306,7 @@ async function loginPasskeyResult(
     // If this passkey is the rotated owner of a RECOVERED account, its Kernel
     // address was preserved (≠ this key's counterfactual) — honour the durable
     // binding so we log into the real account, not a fresh counterfactual one.
-    const { buildKernelFromPrivateKey, readKernelEcdsaOwnerStrict } = await import("./kernel-account.js");
+    const { buildKernelFromPrivateKey, readKernelSignerFor } = await import("./kernel-account.js");
     const hadBinding = !!override;
 
     // Guard: verify the local binding's Kernel still has this PRF-EOA as its
@@ -1718,12 +3327,23 @@ async function loginPasskeyResult(
     // verification that never ran.
     let ownerAffirmed = false;
     if (override) {
-      const ownerRead = await readKernelEcdsaOwnerStrict(override);
+      const ownerRead = await readKernelSignerFor(override, account.address);
       const answered = ownerRead !== "error" ? ownerRead : null;
       const foreignOwner = provenOrphanOwner(answered, account.address);
       if (foreignOwner) {
+        // Made by an upgrade on this device whose switch has not landed (#746): the
+        // email key still owns the account. Say so - nothing was recovered away.
+        if (_upgradeUnfinishedFor(account.address, override, foreignOwner)) {
+          console.warn("[auth] this passkey's upgrade has not landed - the email key still owns", override);
+          postOrphanedCredentialNotice("passkey", undefined, UPGRADE_UNFINISHED_MESSAGE);
+          throw new OrphanedCredentialError("passkey", foreignOwner, UPGRADE_UNFINISHED_MESSAGE);
+        }
         clearVerifiedBinding("passkey", account.address);
-        throw refuseOrphanedCredential("passkey", { boundKernel: override, onChainOwner: foreignOwner });
+        // Recovered away (#255) - or this passkey made another device the main one
+        // and is a linked device now (#746 step 4). The server's verdict says which;
+        // without a "device" verdict it is refused, as before.
+        await _loginAddedPasskey(account, { parent: override, seed: null, onChainOwner: foreignOwner });
+        return { ok: true };
       }
       ownerAffirmed = answered !== null && answered.toLowerCase() === account.address.toLowerCase();
     }
@@ -1741,39 +3361,62 @@ async function loginPasskeyResult(
     //       content feed it owns would fork under a new signer address. The envelope
     //       is the ONLY silent restore channel — the guardian escrow needs the
     //       guardian's signature.
-    // The presence probe below doubles as self-heal: restoreIdentitySeed drops a
-    // foreign-AAD blob.
+    // The presence probe below doubles as self-heal: openLockedSeed drops a copy
+    // locked for another account. Only meaningful with an override - without one
+    // the envelope is consulted whatever the device holds.
     let portabilityRestore:
       | { preserved: `0x${string}`; identitySeed: string }
       | null = null;
     let envelopeAbsent = false;
-    const identitySeedPresent = !!(await restoreIdentitySeed(account.address));
+    // The read could not say either way, so this login may be on the wrong Kernel.
+    let envelopeUnknown = false;
+    const identitySeedPresent = override
+      ? !!(await openLockedSeed(account.address, override, account.prfSecret))
+      : false;
     if (!override || !identitySeedPresent) {
-      const check = await _verifyPortabilityEnvelope(account.privateKey, account.address);
+      const check = await _verifyPortabilityEnvelope(account.prfSecret, account.address);
       if (check === null) {
         envelopeAbsent = true; // definitive — makes this login cacheable below
       } else if (check !== "unavailable") {
-        if ("orphaned" in check) {
-          // Same proof as the binding guard above, reached without a local
-          // binding (e.g. a twice-recovered account's older credential on a
-          // new device): the credential's own envelope names a Kernel the
-          // chain says belongs to someone else now. Refuse honestly (#255)
-          // rather than mint the counterfactual.
-          clearVerifiedBinding("passkey", account.address);
-          throw refuseOrphanedCredential("passkey", {
-            boundKernel: check.orphaned.preserved,
-            onChainOwner: check.orphaned.onChainOwner,
-          });
+        if ("foreign" in check) {
+          if (check.foreign.onChainOwner === null && account.handleKind !== "added") {
+            // An undeployed Kernel named by a credential that was not made by "Add
+            // a passkey": says nothing, as before (#746 step 3 kept this case).
+            envelopeUnknown = true;
+          } else {
+            // The envelope names an account this passkey does not own: an added
+            // passkey, or one recovered away from (#255). The server says which.
+            await _loginAddedPasskey(account, {
+              parent: check.foreign.preserved,
+              seed: check.foreign.identitySeed,
+              onChainOwner: check.foreign.onChainOwner,
+            });
+            return { ok: true };
+          }
+        } else {
+          portabilityRestore = check;
+          if (!override) override = check.preserved;
         }
-        portabilityRestore = check;
-        if (!override) override = check.preserved;
+      } else {
+        envelopeUnknown = true;
       }
+    }
+
+    // An added passkey has no account of its own: without its envelope it must not
+    // fall through to minting its counterfactual one.
+    if (account.handleKind === "added" && !override) {
+      throw new Error(envelopeAbsent ? NOT_SET_UP_MESSAGE : KEYS_UNREACHABLE_MESSAGE);
     }
 
     const kernel = await buildKernelFromPrivateKey(
       account.privateKey,
       override ? { address: override } : undefined,
     );
+
+    // #746: refuse a passkey whose record names another account - Apple's
+    // QR-code PRF bug, or a backup picked here - BEFORE this login commits
+    // anything, instead of opening an empty account. A new passkey has no record.
+    if (mode === "signin") await _guardPasskeyRecord(account, kernel.address);
 
     await _clearStaleAuthForSwitch(kernel.address);
 
@@ -1784,21 +3427,27 @@ async function loginPasskeyResult(
     // KDF of this seed, so storing the seed restores ownership of the recovered
     // account's existing content feeds by construction.
     if (portabilityRestore) {
-      await storeIdentitySeed(account.address, portabilityRestore.identitySeed);
+      // Under the account this login commits to, so the eager unlock below opens it:
+      // the same address as the envelope's today, by construction rather than by luck.
+      await storeLockedSeed(account.address, kernel.address, portabilityRestore.identitySeed, account.prfSecret);
       await _putRecoveryBinding(account.address, portabilityRestore.preserved);
       _feedSignerAddressMemo = null;
     }
 
     await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, kernel.address);
-    // PRF-EOA address persisted so the seed restores on reload without a biometric
-    // and with the correct AAD (invariant #1).
+    // PRF-EOA address persisted so the locked seed is found on reload and opens
+    // under the correct AAD (invariant #1).
     await putKV(StorageKeys.SEED_ADDRESS, account.address);
     _kind = "passkey";
     _parent = kernel.address;
     _passkeyPrivateKey = account.privateKey;
+    _passkeyPrfSecret = account.prfSecret;
     _seedAddress = account.address;
     _kernel = kernel;
+    // Queued the moment the account exists, before anything can mint its first
+    // session (#746): whatever this creation answered IS the account.
+    if (mode === "create") _setPendingPasskeyRecord({ credentialId: account.credentialId, parent: kernel.address });
 
     // An applied envelope means a rotation put THIS credential in charge — any
     // session this device already holds for the preserved parent predates it
@@ -1809,6 +3458,11 @@ async function loginPasskeyResult(
     } else {
       await _restoreCachedAuth();
     }
+
+    // Not after an UNKNOWN envelope read: this login may be sitting on a fresh
+    // counterfactual Kernel for an account that was really recovered, and a seed
+    // derived now would belong to the wrong account. That case stays lazy.
+    if (!envelopeUnknown) await _establishPasskeySeedEagerly();
 
     // Seed the returning-device fast path: only a never-recovered login may
     // cache (no binding, probe DEFINITIVELY empty — "unavailable" never lands
@@ -1840,13 +3494,20 @@ async function loginPasskeyResult(
     // old copy collapsed every cause into one unactionable sentence.
     const err = e instanceof Error ? e : new Error(String(e));
     console.error(`[auth] passkey login failed (${mode}): ${err.name}: ${err.message}`, e);
+    if (replacedPin !== undefined && RECORD_REFUSALS.has(err.name)) await _restoreReplacedPin(replacedPin);
     return {
       ok: false,
       error: err,
       noAssertion: err.name === "PasskeyAssertionUnavailableError",
+      // The browser refused before any sheet: nothing was chosen, so no create offer.
+      noSheet: (err as { noSheet?: boolean }).noSheet === true,
       // The modal's one-shot notice already explains this refusal — the flag
       // lets the button suppress a duplicate error line, not restyle it.
       orphaned: isOrphanedCredentialError(err),
+      removed: err.name === "DeviceRemovedError",
+      // Answered from another device without a confirmed account: the screen
+      // points at "Add this device" (#746).
+      otherDevice: err.name === "PasskeyFromAnotherDeviceError",
     };
   } finally {
     _busy = false;
@@ -1920,7 +3581,11 @@ async function ensureSession(): Promise<boolean> {
       // a recovered passkey account if it hasn't been written yet (covers device A
       // right after recovery + an already-recovered Account #2). Fire-and-forget;
       // never block the session on it.
-      if (_kind === "passkey") void _maybeBackfillPortabilityEnvelope();
+      if (_kind === "passkey") {
+        void _maybeBackfillPortabilityEnvelope();
+        void _maybeWritePasskeyRecord();
+        void _resumeUpgrade();
+      }
       return true;
     } catch (e) {
       console.error("[auth] session delegation failed:", e);
@@ -1952,24 +3617,31 @@ async function ensureIdentitySeed(): Promise<boolean> {
 }
 
 /**
- * `silent` establishes the seed with NO confirm dialog, and is only ever true on
- * the web3auth eager path: there the signer is a raw secp256k1 key already in
- * memory, so the "signature" is an internal key-stretch (ethers → RFC-6979) with
- * no decision for the user to take, and prompting on every page load would be
- * friction for nothing. It never widens WHICH kinds can establish silently — a
- * kind whose signer is a wallet or a biometric still prompts, because for those
- * the signature genuinely is the user's decision.
+ * `silent` establishes the seed with NO dialog and NO busy latch, and is only
+ * ever true on the two eager paths. Web3auth: the signer is a raw secp256k1 key
+ * already in memory, so the "signature" is an internal key-stretch (ethers →
+ * RFC-6979) with no decision for the user to take. Passkey (#642): the seed is an
+ * HKDF of the PRF output, and a silent call proceeds only when the login has just
+ * put that output in memory — so the biometric already happened and was the
+ * consent. It never widens WHICH kinds can establish silently: a wallet still
+ * prompts, and a passkey without its PRF output in memory returns false rather
+ * than start a biometric nobody asked for.
  */
 async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boolean> {
+  _expireUnlockIfDue();
   if (_identitySeedPresent) return true;
   if (!isConnected || !_parent) return false;
+  // A silent establish must never START a ceremony. For passkey it is silent only
+  // because the PRF output is already in memory; without it this would be a
+  // biometric the user did not ask for.
+  if (opts.silent && _kind === "passkey" && !_passkeyPrfSecret) return false;
   if (_seedInFlight) return _seedInFlight;
 
-  // The SILENT establish (web3auth eager path only — see _ensureIdentitySeed's
-  // doc) runs INSIDE login/restore flows that own `_busy` themselves; toggling
-  // it here re-enabled the login buttons mid-flow. Only a PROMPTING establish is
-  // a busy state of its own.
-  const prompting = !opts.silent; // silent ⇔ the web3auth eager establish
+  // The SILENT establish (the web3auth and passkey eager paths — see
+  // _ensureIdentitySeed's doc) runs INSIDE login/restore flows that own `_busy`
+  // themselves; toggling it here re-enabled the login buttons mid-flow. Only a
+  // PROMPTING establish is a busy state of its own.
+  const prompting = !opts.silent; // silent ⇔ the web3auth or passkey eager establish
   if (prompting) _busy = true;
   _seedInFlight = (async () => {
     try {
@@ -1978,6 +3650,8 @@ async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boo
       // restoreIdentitySeed below needs no signer, so resolve the address first.
       const seedAddr = _getSeedAddress();
       if (!seedAddr) return false;
+
+      if (_kind === "passkey") return await _unlockPasskeySeed(seedAddr);
 
       // Prefer an already-stored seed over re-deriving from a fresh signature.
       // CRITICAL after recovery: the passkey credential (PRF-EOA) has rotated, so
@@ -2012,9 +3686,7 @@ async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boo
         return false;
       }
 
-      // No stored seed (first login on this device) → establish it with the
-      // deterministic PRF-EOA signer (passkey) / parent signer (others).
-      // _getSeedSigner() runs _ensurePasskeyKey() internally, so _seedAddress is set.
+      // Every other kind signs `DeriveAccountKeys` with its deterministic signer.
       const silentRawKey = opts.silent && _kind === "web3auth" ? _web3authPrivateKey : null;
       const signer = silentRawKey
         ? createLocalSigner(silentRawKey, async () => true)
@@ -2039,6 +3711,57 @@ async function _ensureIdentitySeed(opts: { silent?: boolean } = {}): Promise<boo
     }
   })();
   return _seedInFlight;
+}
+
+/**
+ * Unlock a passkey account's seed (#746 fix 1): one ceremony if the PRF output is
+ * not in memory, then open the copy locked under it - or, on a device that has
+ * none, establish it from the PRF output (#642). Runs inside `_ensureIdentitySeed`'s
+ * single flight and under its silent guard.
+ *
+ * Never derives for a RECOVERED credential: its seed was carried across and cannot
+ * be re-derived from it; without a locked copy it comes back only through the
+ * envelope at login. A divergent seed would fork every feed the account owns.
+ */
+async function _unlockPasskeySeed(seedAddr: string): Promise<boolean> {
+  if (_unlockedSeed()) {
+    _identitySeedPresent = true;
+    return true;
+  }
+  const parent = _parent;
+  if (!parent) return false;
+  // Another tab may have confirmed since this one locked: its open window counts
+  // here too, as it would after a reload.
+  if (_seedAddress?.toLowerCase() === seedAddr.toLowerCase()) {
+    const open = await restoreSilentSeed(seedAddr, parent, SEED_UNLOCK_POLICY);
+    if (open) {
+      if (_kind !== "passkey" || _parent !== parent) return false;
+      _setUnlockedSeed(seedAddr, parent, open.seed, { restoredUntil: open.expiresAt });
+      return true;
+    }
+  }
+  await _ensurePasskeyKey();
+  // `seedAddr` was read before the ceremony; if it was the parent fallback it is
+  // not the PRF-EOA, and a seed stored under it would sit behind the wrong AAD.
+  const prf = _passkeyPrfSecret;
+  if (!prf || _seedAddress?.toLowerCase() !== seedAddr.toLowerCase()) {
+    throw new Error("Passkey PRF output unavailable for identity derivation");
+  }
+  let seed = await openLockedSeed(seedAddr, parent, prf);
+  if (!seed) {
+    // Recovered OR added (#746): either way the seed was carried here, and this
+    // passkey's own derivation would be a different account.
+    if (await _boundKernelAddress(seedAddr)) {
+      console.error("[auth] recovered account identity seed missing — refusing to re-derive a divergent seed");
+      _seedUnavailable = "recovered-no-copy";
+      return false;
+    }
+    seed = (await establishPasskeyIdentitySeed(seedAddr, parent, prf)).seed;
+  }
+  // The account may have changed while the sheet was open; its seed is not ours.
+  if (_kind !== "passkey" || _parent !== parent) return false;
+  _setUnlockedSeed(seedAddr, parent, seed);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -2072,6 +3795,7 @@ async function _runAccountSetupSteps(steps: AccountSetupStep[]): Promise<boolean
 async function ensureAccountSetup(opts: { identity: boolean }): Promise<boolean> {
   if (!isConnected || !_parent) return false;
   const parent = _parent;
+  _expireUnlockIfDue();
 
   const plan = planAccountSetup({
     kind: _kind,
@@ -2105,28 +3829,92 @@ async function ensureAccountSetup(opts: { identity: boolean }): Promise<boolean>
 }
 
 /**
- * Ensure a scoped EAS session key exists for the Kernel, minting one on first
- * use. Selector-scoped to attest/revoke and nothing else — the deeply-nested
- * AttestationRequest ABI in a shared key's enable-data is what broke paymaster
- * gas estimation, so these permissions get a key of their own. Returns the
- * Kernel address that owns the key. Available to both Kernel-backed kinds
- * (passkey + web3auth) — email users like/follow gaslessly.
+ * Ready for an everyday write - a like, a follow, the profile (#746): a session and
+ * the content-feed signer. Silent while this device holds the signer, which a
+ * passkey account keeps after its first unlock; otherwise the usual setup.
  */
-async function ensureEasSessionKey(): Promise<string> {
-  if (_kind !== "passkey" && _kind !== "web3auth") {
-    throw new Error("ensureEasSessionKey: only available for passkey/web3auth logins");
+async function ensureContentSigner(): Promise<boolean> {
+  return ensureAccountSetup({ identity: !(await _feedSignerIfPresent()) });
+}
+
+/**
+ * The confirm before an organiser action (#746): publishing, editing or cancelling
+ * an event, attendee details, broadcasts, payout settings. A passkey account
+ * confirms once, then nothing until the unlock window closes (`SEED_UNLOCK_POLICY`).
+ * Throws with the message to show when the person declines. Other kinds keep their
+ * own gate: a wallet still asks for every signature itself.
+ *
+ * In the browser, so it guards a lost unlocked phone in the app, not the API: a
+ * server check for money and broadcast routes is a later step.
+ */
+async function ensureOrganiserUnlock(): Promise<void> {
+  if (_kind !== "passkey") return;
+  _expireUnlockIfDue();
+  if (_unlockedSeed()) return;
+  if (!(await ensureAccountSetup({ identity: true })) || !_unlockedSeed()) {
+    throw new Error(_organiserLockedMessage());
   }
-  await _ensureKernelForKind();
-  if (!_kernel) throw new Error("Kernel unavailable — cannot mint EAS session key");
-  const { hasEasSessionKey, createEasSessionKey } = await import("./kernel-account.js");
-  // Kernel-address-aware check: a stored key minted for a DIFFERENT Kernel
-  // (a pre-pinning recovered-account blob, or an account switch) reports false
-  // and is replaced instead of silently attesting from a divergent account —
-  // the heal path for the 2026-07-10 split-brain.
-  if (!(await hasEasSessionKey(_kernel.address))) {
-    await createEasSessionKey(_kernel);
+}
+
+// ---------------------------------------------------------------------------
+// Signing as the HOLDER (sub-ENS pointer + release)
+// ---------------------------------------------------------------------------
+
+/**
+ * Sign EIP-712 typed data as the account that HOLDS this login's names —
+ * `auth.parent`, which the registrar and registry check. Never the session key
+ * and never the seed key: neither holds anything on chain.
+ *
+ *   web3              → the injected wallet, switched to the domain's chain
+ *                       first (wallets refuse typed data for an inactive chain).
+ *   passkey, web3auth → the Kernel's own ERC-1271 signature. While the account
+ *                       is undeployed viem's smart-account wrapper makes it
+ *                       ERC-6492, and the contracts' validator simulates the
+ *                       deploy and accepts it — proven on Arbitrum Sepolia
+ *                       2026-09-19, with the account left undeployed. The
+ *                       passkey build may ask for the passkey; the click that
+ *                       got here is the deliberate gesture.
+ *   coinbase          → refused. A Coinbase Smart Wallet signs for Base whatever
+ *                       the domain says, so no signature of its can verify on
+ *                       the names' chain; its holder acts by its own
+ *                       transaction (Fable sponsor-key consult §11.1), which is
+ *                       not built yet.
+ */
+async function signTypedDataAsHolder(typed: {
+  domain: { chainId: number } & Record<string, unknown>;
+  types: Record<string, Array<{ name: string; type: string }>>;
+  message: Record<string, unknown>;
+}): Promise<string> {
+  const parent = _parent;
+  if (!parent) throw new Error("Sign in again first. Nothing was signed.");
+  if (_kind === "web3") {
+    const [{ switchChain }, { getEthersProvider }, { JsonRpcSigner }] = await Promise.all([
+      import("../payment/chains.js"),
+      import("../wallet/provider.js"),
+      import("ethers"),
+    ]);
+    await switchChain(typed.domain.chainId as Parameters<typeof switchChain>[0]);
+    const signer = new JsonRpcSigner(await getEthersProvider(), parent);
+    return signer.signTypedData(typed.domain, typed.types, typed.message);
   }
-  return _kernel.address;
+  if (_kind === "passkey" || _kind === "web3auth") {
+    // A Kernel's ERC-1271 answer is bound to the chain it lives on. Asked to sign
+    // for another chain, it would produce a signature that chain's contract can
+    // never accept — so refuse here, before any passkey prompt, rather than
+    // after the relay refuses it (Fable sign-off F7; `releaseRails` does the
+    // same for discards).
+    if (typed.domain.chainId !== KERNEL_CHAIN_ID) {
+      throw new Error("This account can't sign for that network yet. Nothing was signed.");
+    }
+    // An ECDSA-built Kernel may predate a switch another device made: its 1271 would
+    // name the uninstalled ECDSA validation. Re-read the root first (Fable sign-off SHOULD-2).
+    if (_kind === "passkey" && _kernel?.sudo.kind === "ecdsa") _kernel.rootChecked = false;
+    await _ensureKernelForKind();
+    if (!_kernel) throw new Error("Account unavailable — please sign in again. Nothing was signed.");
+    const { createKernelTypedDataSigner } = await import("./kernel-account.js");
+    return createKernelTypedDataSigner(_kernel.account)(typed.domain, typed.types, typed.message);
+  }
+  throw new Error("Signing for a name isn't available for this sign-in method yet. Nothing was signed.");
 }
 
 // ---------------------------------------------------------------------------
@@ -2167,10 +3955,11 @@ async function grantSpendPermission(args: {
  * web3auth):
  *  1. install the on-chain recovery route pinned to a guardian derived from the
  *     backup wallet (sudo/passkey userOp, sponsored),
- *  2. escrow the account SEED — sealed to an X25519 key the backup wallet derives
- *     by signing a fixed message — so a recovered account also restores ticket
- *     decryption, its issuing identity and ownership of its content feeds (funds
- *     recovery alone cannot; §11.1). ONE secret covers all three: the encryption
+ *  2. escrow the account SEED — sealed to an X-Wing key the backup derives (a
+ *     wallet by signing a fixed message, a passkey from its PRF output, #642) — so
+ *     a recovered account also restores ticket decryption, its issuing identity
+ *     and ownership of its content feeds (funds recovery alone cannot; §11.1).
+ *     ONE secret covers all three: the encryption
  *     key, the issuing key and the feed signer are all KDFs of the seed, so there
  *     is nothing else that could go missing from the bundle.
  *
@@ -2203,10 +3992,14 @@ async function setupAccountRecovery(
    * this guards — see `checkAddAgainstPriorProtection`.
    */
   prior: import("./guardian-hook.js").PriorProtection,
-): Promise<{ guardianAddress: string; txHash: string }> {
+): Promise<{ guardianAddress: string; txHash: string; guardians: string[] }> {
   if (_kind !== "passkey" && _kind !== "web3auth") {
     throw new Error("Account recovery is only available for passkey or email/social accounts");
   }
+  // A passkey account backs up by linking another device that can recover it
+  // (#746 step 5): every backup here escrows the seed to an email or wallet key,
+  // a second door to keys its attendee data may be sealed to.
+  if (_kind === "passkey") throw new Error(PASSKEY_BACKUP_MESSAGE);
   // Refuse to install a backup we could never recover FROM (e.g. a provider that
   // can derive the escrow key but cannot sign the guardian userOp). Installing it
   // would trap the user with an unrecoverable account.
@@ -2221,10 +4014,10 @@ async function setupAccountRecovery(
   await ensureIdentitySeed();
   const seedAddr = _getSeedAddress();
   if (!seedAddr) throw new Error("Could not access your identity key");
-  const seed = await restoreIdentitySeed(seedAddr);
+  const seed = await _seedIfPresent();
   if (!seed) throw new Error("Could not access your identity key — open your dashboard once, then retry");
 
-  const { deriveGuardianKeys, sealRecoveryBundle, openRecoveryBundle } = await import(
+  const { deriveGuardianKeysForBackup, sealRecoveryBundle, openRecoveryBundle } = await import(
     "./recovery-escrow.js"
   );
 
@@ -2242,9 +4035,10 @@ async function setupAccountRecovery(
   // rather than prompts.
   const feedSigner = await _getContentFeedSigner();
 
-  // ONE guardian signature derives BOTH the HPKE escrow key and the SOC signer
-  // that OWNS the guardian recovery SOC (§13) — no second wallet prompt.
-  const gk = await deriveGuardianKeys(backup.address, backup.signTypedData);
+  // ONE guardian master (a wallet's signature, or a passkey's PRF output) derives
+  // BOTH the HPKE escrow key and the SOC signer that OWNS the guardian recovery SOC
+  // (§13) — no second wallet prompt.
+  const gk = await deriveGuardianKeysForBackup(backup);
   const envelope = await sealRecoveryBundle({
     bundle: { version: 1, secrets },
     kernelAddress,
@@ -2257,7 +4051,7 @@ async function setupAccountRecovery(
   // SAME SOC owner address. A non-deterministic backup signature would otherwise
   // either make the bundle un-openable or orphan the guardian SOC — caught here,
   // failing loudly at setup instead of silently at recovery time.
-  const gk2 = await deriveGuardianKeys(backup.address, backup.signTypedData);
+  const gk2 = await deriveGuardianKeysForBackup(backup);
   const check = await openRecoveryBundle({ envelope, kernelAddress, role: "guardian", guardianKeypair: gk2.encryption });
   if (check.secrets.identitySeed !== seed || gk2.socSigner.address !== gk.socSigner.address) {
     throw new Error(
@@ -2269,7 +4063,7 @@ async function setupAccountRecovery(
   // Decide the on-chain write BEFORE persisting anything, so a refusal leaves no
   // trace at all (the escrow SOC below is guardian-owned and idempotent, but there
   // is no reason to write it for an add that will not happen).
-  const { deriveGuardianAddress, setupRecovery, addGuardianOnChain, readRecoveryRoute, readGuardianSet } =
+  const { deriveGuardianAddress, setupRecovery, addGuardianOnChain, readRecoveryRouteNoOlderThan } =
     await import("./kernel-account.js");
   const { decideAddPath, checkAddAgainstPriorProtection, expectedGuardiansAfterAdd } = await import(
     "./guardian-hook.js"
@@ -2289,8 +4083,12 @@ async function setupAccountRecovery(
   // than guesses — guessing "install" against a WoCo-routed account would silently
   // drop every other backup. A legacy (ZeroDev-hook) route is replaced on purpose:
   // that is the upgrade, and the UI has warned that its old guardians stop working.
-  const route = await readRecoveryRoute(kernelAddress);
-  const set = route.state === "installed" && route.hookKind === "woco" ? await readGuardianSet(kernelAddress) : null;
+  // PINNED to a block no older than the last recovery write this device saw (#510),
+  // and the set is read at that SAME block. Asked at "latest", this pair is exactly
+  // what one lagging replica turns into a silent drop: `absent` → `install` → the
+  // hook's set is REPLACED by this guardian alone. A replica behind the bound now
+  // answers `unknown`, which `decideAddPath` refuses.
+  const { route, set } = await readRecoveryRouteNoOlderThan(kernelAddress);
   // ... and the fresh read must also AGREE with what the panel already showed the
   // user (#505). `absent` is the dangerous answer here: it maps to `install`, which
   // pins the hook's set to exactly this guardian, and one lagging replica is enough
@@ -2352,6 +4150,7 @@ async function setupAccountRecovery(
       } catch (err) {
         console.warn("[recovery] retiring legacy-hook backup rows failed (non-fatal):", err);
       }
+      _backupInv.drop(); // whatever the upsert below does, the list has changed
     }
   }
 
@@ -2416,13 +4215,17 @@ async function setupAccountRecovery(
           maskedEmail: backup.meta?.maskedEmail,
         },
       });
-      _backupInvMemo = null; // next panel read sees the new entry
+      _backupInv.drop(); // next panel read sees the new entry
     } catch (err) {
       console.warn("[recovery] backup-inventory manifest write failed (non-fatal):", err);
     }
   }
 
-  return { guardianAddress, txHash };
+  // The guardian set is returned because it was PROVEN, not guessed: both writes
+  // read the whole set back at their landing block and throw unless it matches
+  // (`assertGuardianSetAfterWrite`). The panel shows this instead of re-reading a
+  // chain that may still be catching up — and the next add is checked against it.
+  return { guardianAddress, txHash, guardians: expectedGuardiansAfter };
 }
 
 /**
@@ -2444,7 +4247,7 @@ async function removeAccountBackups(
 
   // BEST-EFFORT, and it must stay that way. `_getContentFeedSigner` throws outright
   // for a recovered account whose escrow restore didn't happen, and for a passkey
-  // with no stored signer it falls through to sign-to-derive (a biometric prompt).
+  // with no stored seed it falls through to establishing one (a biometric prompt).
   // Letting either reach the caller would block the on-chain revoke entirely — for
   // exactly the user most likely to need it — over a cosmetic manifest update.
   const feedSigner = await _getContentFeedSigner().catch(() => null);
@@ -2456,7 +4259,7 @@ async function removeAccountBackups(
     feedSigner,
     expectInstalled: opts.expectInstalled,
   });
-  _backupInvMemo = null; // the panel must not keep listing revoked backups
+  _backupInv.drop(); // the panel must not keep listing revoked backups
   return outcome;
 }
 
@@ -2484,7 +4287,7 @@ async function revokeAccountBackup(
     guardianAddress,
     feedSigner,
   });
-  _backupInvMemo = null; // the panel must not keep listing the revoked backup as live
+  _backupInv.drop(); // the panel must not keep listing the revoked backup as live
   return outcome;
 }
 
@@ -2493,7 +4296,7 @@ async function revokeAccountBackup(
  * §11.6). The locked-out user is on a NEW device with no session; they have only
  * their backup wallet and the lost account's address. This:
  *
- *  0. PRE-FLIGHT: decrypts the recovery escrow with the backup's derived X25519 key
+ *  0. PRE-FLIGHT: decrypts the recovery escrow with the backup's derived X-Wing key
  *     BEFORE any irreversible step. Only the genuine account's envelope is sealed
  *     to this guardian (the seal key comes from an unforgeable backup signature),
  *     so a failed decrypt — wrong address typed, or a poisoned auto-find hint —
@@ -2560,63 +4363,37 @@ async function recoverAndRekey(args: {
     // account can read AND decrypt it. A wrong address or a poisoned auto-find hint
     // fails here — before a passkey is minted or the on-chain owner is rotated.
     // This is the security linchpin of recovery.
-    const { deriveGuardianKeys, openRecoveryBundle } = await import("./recovery-escrow.js");
+    const { deriveGuardianKeysForBackup, openRecoveryBundle } = await import("./recovery-escrow.js");
     let gk = args.guardianKeys ?? null;
     if (!gk) {
-      onProgress?.("Confirm the signature in your backup wallet to unlock this account's data");
-      gk = await deriveGuardianKeys(backup.address, backup.signTypedData);
+      onProgress?.("Confirm with your backup to unlock this account's data");
+      gk = await deriveGuardianKeysForBackup(backup);
     }
 
     // Read the guardian-owned escrow SOC (owner derived LOCALLY from the backup
-    // wallet — no platform signer in the loop, §13), falling back to the legacy
-    // platform-signed feed for accounts protected before this migration. If there
-    // is nothing to restore, recovery would strand the identity seed — refuse before
-    // touching the chain.
-    // Tri-state, because this decides whether to tell a locked-out user their
-    // account cannot be recovered (#228). The lenient read collapses "no escrow"
-    // and "the gateway didn't answer" into one `null`, and the message below is
-    // terminal-sounding — a blip must not read as a missing backup. The portal's
-    // own pre-check already states this rule; the ceremony was not keeping it.
-    const { readRecoveryEnvelopeSocResult } = await import("../swarm/recovery-feed.js");
-    const socRead = await readRecoveryEnvelopeSocResult(gk.socSigner.address, target);
-    let envelope = socRead.status === "found" ? socRead.value : null;
-    if (!envelope) {
-      // The legacy platform feed is only consulted when the guardian-owned SOC is
-      // definitively ABSENT — a pre-§13 account. An unreadable SOC is not evidence
-      // that this is such an account, and its absence on the legacy feed would then
-      // compound one unknown into a false verdict.
-      if (socRead.status === "absent") {
-        const { fetchRecoveryEnvelope } = await import("../api/recovery.js");
-        envelope = await fetchRecoveryEnvelope(target);
-      } else {
-        throw new Error(
-          "We couldn't reach your backup right now — this doesn't mean it's missing. " +
-            "Check your connection and try again in a moment.",
-        );
-      }
-    }
-    if (!envelope) throw new Error("No backup found for that account — recovery isn't possible.");
-
-    let identitySeed: string;
-    try {
-      const bundle = await openRecoveryBundle({ envelope, kernelAddress: target, role: "guardian", guardianKeypair: gk.encryption });
+    // wallet — no platform signer in the loop, §13). If there is nothing to
+    // restore, recovery would strand the identity seed — refuse before touching
+    // the chain. What the user is told for each outcome (#228, #642, #689) lives
+    // in `openEscrow`, where every branch runs under test.
+    const guardianKeys = gk;
+    const [{ readRecoveryEnvelopeSocResult }, { openEscrow }] = await Promise.all([
+      import("../swarm/recovery-feed.js"),
+      import("./escrow-read.js"),
+    ]);
+    const socRead = await readRecoveryEnvelopeSocResult(guardianKeys.socSigner.address, target);
+    // The whole account: restored verbatim, and the feed signer, issuing key and
+    // encryption key all fall back out of it — so the recovered account keeps
+    // owning the feeds it wrote and the issuer identity it published under.
+    const identitySeed = await openEscrow(socRead, async (envelope) => {
+      const bundle = await openRecoveryBundle({
+        envelope,
+        kernelAddress: target,
+        role: "guardian",
+        guardianKeypair: guardianKeys.encryption,
+      });
       if (!bundle.secrets.identitySeed) throw new Error("missing identitySeed");
-      // The whole account: restored verbatim, and the feed signer, issuing key and
-      // encryption key all fall back out of it — so the recovered account keeps
-      // owning the feeds it wrote and the issuer identity it published under.
-      identitySeed = bundle.secrets.identitySeed;
-    } catch (e) {
-      // An envelope from a NEWER app version is the one failure that is not
-      // "wrong wallet" — the version is public metadata on a public feed, so
-      // being specific leaks nothing, and the generic message would send the
-      // user hunting through wallets when the fix is to update the app.
-      const { UnknownRecoveryEnvelopeVersionError } = await import("./recovery-aad.js");
-      if (e instanceof UnknownRecoveryEnvelopeVersionError) throw e;
-      // Don't leak whether it was a wrong account vs a corrupt blob.
-      throw new Error(
-        "That backup wallet can't unlock this account. Check you connected the right backup wallet and chose the right account.",
-      );
-    }
+      return bundle.secrets.identitySeed;
+    });
 
     // (0b) ON-CHAIN PRE-FLIGHT: is this backup's guardian actually registered on
     // the target account? The escrow decrypt above proves the user IS the escrow
@@ -2652,6 +4429,14 @@ async function recoverAndRekey(args: {
     // re-homed under the new owner EOA (PRF-EOA for passkey, Web3Auth EOA otherwise).
     let newOwnerAddress: string;
     let newOwnerPrivKey: `0x${string}`;
+    // Passkey branch only: the fresh credential's PRF output, which roots the
+    // portability envelope this device writes after the rotation (#642).
+    let newOwnerPrfSecret: string | null = null;
+    // #158: the minted passkey's metadata, held UNWRITTEN until the commit block.
+    // Which credential this device logs in with is local state, so it is committed
+    // with the other local state once the rotation is proven — not at mint time,
+    // when every step between here and the commit could still abort.
+    let pendingCredential: PasskeyCredentialHandle | null = null;
     // #234: set by the web3auth branch when its owner scan completed, so the
     // post-rotation tail re-scan below can pick up where the pre-scan left off.
     let ownerScanHead: bigint | undefined;
@@ -2745,125 +4530,168 @@ async function recoverAndRekey(args: {
       }
     } else {
       onProgress?.("Create a new passkey on this device…");
-      const fresh = await createPasskeyAccount();
+      // UNPINNED (#158). The new owner address is the PRF-EOA, so the passkey must
+      // exist before the rotation; making it this device's login credential must
+      // not, or a later abort strands the pin on an account nobody owns.
+      const fresh = await createPasskeyAccountUnpinned();
       newOwnerAddress = fresh.address; // PRF-EOA == ECDSA sudo owner of the rebuilt Kernel
       newOwnerPrivKey = fresh.privateKey;
+      newOwnerPrfSecret = fresh.prfSecret;
+      pendingCredential = fresh.credential;
     }
     const newSeedAddress = newOwnerAddress;
 
-    // (2) Guardian (backup wallet) calls doRecovery → rotate sudo to the new owner.
-    onProgress?.("Approve in your backup wallet to move this account to your new sign-in…");
-    const guardianSigner = await backup.getGuardianSigner();
-    const { recoverAccount } = await import("./kernel-account.js");
-    const { txHash, blockNumber } = await recoverAccount({
-      targetAddress: target,
-      // The SAME config object the pre-flight derived `expectedGuardian` from —
-      // reconstructing it separately here is how setup-time and recovery-time
-      // guardian addresses could silently diverge (#161).
-      guardianConfig: guardianConfigForCheck,
-      guardianSigners: [guardianSigner],
-      newOwnerAddress,
-    });
-
-    // (2b) POST-CONDITION: prove on-chain that the owner actually rotated, before
-    // ANY irreversible local commit below. The old `kernel.address !== target`
-    // assertion could not do this — buildKernelFromPrivateKey passes the address
-    // override straight through to createKernelAccount, so it compared `target`
-    // to itself and was true whatever happened on-chain (#152). A userOp that is
-    // included but reverts now throws in sendSudoUserOp (#151); this catches the
-    // rest (wrong validator, a rotation that landed elsewhere, chain reorg).
-    //
-    // Fails CLOSED, including on an unreadable chain: nothing has been committed
-    // at this point, so refusing costs the user a retry, whereas proceeding
-    // wrongly tells them "you're back in" and invites them to discard the old
-    // device that still holds the only working credential.
-    // The message it fails with is NOT interchangeable (#226). `readKernelEcdsaOwner`
-    // returns null for BOTH "the owner is someone else" and "the read threw", so the
-    // original text — "your account has NOT been changed" — asserted a fact it had
-    // never observed. Said to the one user whose old credential may have just been
-    // retired on-chain, it is the worst possible advice: it tells them to keep using
-    // a dead sign-in and stop retrying, when a retry is exactly what heals it (the
-    // escrow, the guardian registration and doRecovery all survive).
-    //
-    // So the two answers are kept apart. `removeAllBackups` already does this —
-    // "did not take effect" vs "couldn't confirm; it may well have worked".
-    onProgress?.("Confirming the change on-chain…");
-    // PINNED to the block the rotation landed in (#236) — the removeAllBackups
-    // precedent, now plumbed through recoverAccount. Reaching this loop at all
-    // means the userOp receipt SUCCEEDED (#151 throws on included-but-reverted),
-    // so at "latest" the common way to see a non-matching owner was a replica
-    // lagging the receipt — and the user was then told "this account still has
-    // its previous sign-in" about a rotation that landed. A pinned replica that
-    // lacks the block errors instead (→ "unconfirmed", retried below), and a
-    // pinned ANSWER is immutable block state — final either way, judged by
-    // rotation-confirm.ts. Only errored reads are worth the remaining attempts.
-    const { readKernelEcdsaOwnerStrict } = await import("./kernel-account.js");
-    const { judgeRotationRead, rotationReadIsFinal } = await import("./rotation-confirm.js");
-    let verdict: import("./rotation-confirm.js").RotationReadVerdict = "unconfirmed";
-    for (let attempt = 0; attempt < ROTATION_CONFIRM_ATTEMPTS; attempt++) {
-      verdict = judgeRotationRead(
-        await readKernelEcdsaOwnerStrict(target, blockNumber),
+    // Declared out here because the commit block below needs both, and the block
+    // that produces them is now scoped by the log-and-rethrow guard.
+    let txHash: string;
+    let kernel: BuiltKernel;
+    // Everything from here to the commit block is abortable, and on the passkey
+    // branch an abort leaves ONE thing behind that no code can clean up: the
+    // resident passkey now sitting in the user's authenticator. Name it in the log
+    // so a support conversation can identify the stray credential, and rethrow
+    // untouched — the messages below are written for the user and several of them
+    // (not-effective vs unconfirmed) are deliberately not interchangeable.
+    try {
+      // (2) Guardian (backup wallet) calls doRecovery → rotate sudo to the new owner.
+      onProgress?.("Approve in your backup wallet to move this account to your new sign-in…");
+      const guardianSigner = await backup.getGuardianSigner();
+      const { recoverAccount } = await import("./kernel-account.js");
+      const rotated = await recoverAccount({
+        targetAddress: target,
+        // The SAME config object the pre-flight derived `expectedGuardian` from —
+        // reconstructing it separately here is how setup-time and recovery-time
+        // guardian addresses could silently diverge (#161).
+        guardianConfig: guardianConfigForCheck,
+        guardianSigners: [guardianSigner],
         newOwnerAddress,
-      );
-      if (rotationReadIsFinal(verdict, blockNumber !== undefined)) break;
-      if (attempt < ROTATION_CONFIRM_ATTEMPTS - 1) {
-        await new Promise((r) => setTimeout(r, ROTATION_CONFIRM_DELAY_MS));
-      }
-    }
-    if (verdict !== "confirmed") {
-      throw new Error(
-        verdict === "not-effective"
-          ? // The chain answered — at the rotation's own block, when pinned —
-            // and named somebody else. The only case that justifies telling
-            // the user nothing changed.
-            "The recovery didn't take effect — this account still has its previous sign-in. " +
-              "Keep using your existing sign-in, and try recovering again."
-          : // Nobody could answer. It may have worked. Say so, and send them
-            // back to the portal rather than back to a sign-in that might be dead.
-            "We couldn't confirm the change on-chain — it may well have gone through. " +
-              "Don't assume either way: run recovery again and it will pick up wherever it landed.",
-      );
-    }
-
-    // (2c) TAIL RE-SCAN (#234). Both devices can scan clean and both rotate —
-    // window = scan duration + inclusion + log-index lag, and no client-side
-    // design closes it without an on-chain mutex. It is made LOUD instead: one
-    // cheap page from the pre-scan head (minus a reorg margin) to now. A collision
-    // found here cannot be un-rotated, but NOTHING local has been written yet, so
-    // the client refuses to commit, says so plainly, and routes the user to
-    // re-recover this account onto a fresh passkey — the rotation that just landed
-    // is itself the event that proves the collision. Fails closed like the pre-scan.
-    if (newOwnerKind === "web3auth" && ownerScanHead !== undefined && ownerScanIO) {
-      onProgress?.("Re-checking this sign-in on-chain…");
-      const { scanOwnedAccounts, OWNER_SCAN_REORG_MARGIN } = await import("./owned-accounts-scan.js");
-      const { counterfactualKernelOf } = await import("./kernel-account.js");
-      const tail = await scanOwnedAccounts({
-        eoa: newOwnerAddress,
-        exclude: [target, await counterfactualKernelOf(newOwnerAddress)],
-        io: ownerScanIO,
-        fromBlock: ownerScanHead - OWNER_SCAN_REORG_MARGIN,
       });
-      if (tail.status === "collision") {
-        console.warn("[auth] post-rotation owner scan found a collision:", tail.kernels);
-        throw new Error(
-          "Another recovery used this same sign-in while this one was running, so it now opens " +
-            "two accounts. Nothing was saved on this device. To keep the accounts apart, run " +
-            "recovery for this account again and choose \"Passkey on this device\".",
-        );
-      }
-      if (tail.status === "unknown") {
-        console.warn("[auth] post-rotation owner scan did not complete:", tail.reason);
-        throw new Error(
-          "We couldn't re-check this sign-in on-chain after the change — it may well have gone " +
-            "through. Nothing was saved on this device. Run recovery again and it will pick up " +
-            "wherever it landed.",
-        );
-      }
-    }
+      txHash = rotated.txHash;
+      const blockNumber = rotated.blockNumber;
 
-    // (3) Rebuild the Kernel at the OLD address with the NEW owner key.
-    const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
-    const kernel = await buildKernelFromPrivateKey(newOwnerPrivKey, { address: target });
+      // (2b) POST-CONDITION: prove on-chain that the owner actually rotated, before
+      // ANY irreversible local commit below. The old `kernel.address !== target`
+      // assertion could not do this — buildKernelFromPrivateKey passes the address
+      // override straight through to createKernelAccount, so it compared `target`
+      // to itself and was true whatever happened on-chain (#152). A userOp that is
+      // included but reverts now throws in sendSudoUserOp (#151); this catches the
+      // rest (wrong validator, a rotation that landed elsewhere, chain reorg).
+      //
+      // Fails CLOSED, including on an unreadable chain: nothing has been committed
+      // at this point, so refusing costs the user a retry, whereas proceeding
+      // wrongly tells them "you're back in" and invites them to discard the old
+      // device that still holds the only working credential. That claim is true of
+      // local state on BOTH branches since #158 moved the credential pin into the
+      // commit block; the single thing a refusal here cannot take back is the
+      // resident passkey the authenticator now holds, which owns no account and
+      // which the user can delete.
+      // The message it fails with is NOT interchangeable (#226). `readKernelEcdsaOwner`
+      // returns null for BOTH "the owner is someone else" and "the read threw", so the
+      // original text — "your account has NOT been changed" — asserted a fact it had
+      // never observed. Said to the one user whose old credential may have just been
+      // retired on-chain, it is the worst possible advice: it tells them to keep using
+      // a dead sign-in and stop retrying, when a retry is exactly what heals it (the
+      // escrow, the guardian registration and doRecovery all survive).
+      //
+      // So the two answers are kept apart. `removeAllBackups` already does this —
+      // "did not take effect" vs "couldn't confirm; it may well have worked".
+      onProgress?.("Confirming the change on-chain…");
+      // PINNED to the block the rotation landed in (#236) — the removeAllBackups
+      // precedent, now plumbed through recoverAccount. Reaching this loop at all
+      // means the userOp receipt SUCCEEDED (#151 throws on included-but-reverted),
+      // so at "latest" the common way to see a non-matching owner was a replica
+      // lagging the receipt — and the user was then told "this account still has
+      // its previous sign-in" about a rotation that landed. A pinned replica that
+      // lacks the block errors instead (→ "unconfirmed", retried below), and a
+      // pinned ANSWER is immutable block state — final either way, judged by
+      // rotation-confirm.ts. Only errored reads are worth the remaining attempts.
+      const { readKernelEcdsaOwnerStrict } = await import("./kernel-account.js");
+      const { judgeRotationRead, rotationReadIsFinal } = await import("./rotation-confirm.js");
+      let verdict: import("./rotation-confirm.js").RotationReadVerdict = "unconfirmed";
+      for (let attempt = 0; attempt < ROTATION_CONFIRM_ATTEMPTS; attempt++) {
+        verdict = judgeRotationRead(
+          await readKernelEcdsaOwnerStrict(target, blockNumber),
+          newOwnerAddress,
+        );
+        if (rotationReadIsFinal(verdict, blockNumber !== undefined)) break;
+        if (attempt < ROTATION_CONFIRM_ATTEMPTS - 1) {
+          await new Promise((r) => setTimeout(r, ROTATION_CONFIRM_DELAY_MS));
+        }
+      }
+      if (verdict !== "confirmed") {
+        throw new Error(
+          verdict === "not-effective"
+            ? // The chain answered — at the rotation's own block, when pinned —
+              // and named somebody else. The only case that justifies telling
+              // the user nothing changed.
+              "The recovery didn't take effect — this account still has its previous sign-in. " +
+                "Keep using your existing sign-in, and try recovering again."
+            : // Nobody could answer. It may have worked. Say so, and send them
+              // back to the portal rather than back to a sign-in that might be dead.
+              "We couldn't confirm the change on-chain — it may well have gone through. " +
+                "Don't assume either way: run recovery again and it will pick up wherever it landed.",
+        );
+      }
+
+      // The rotation is confirmed at `blockNumber`, and it went THROUGH the recovery
+      // route — so the route provably existed at that block. This device is about to
+      // become the account's own device (step 5 logs in as it), and its recovery panel
+      // must not then be told "no backup" by a replica standing before this point
+      // (#510). A lower bound, recorded the moment it is proven.
+      if (blockNumber !== undefined) {
+        const { rememberLandingBlock } = await import("./recovery-landing-block.js");
+        rememberLandingBlock(target, blockNumber);
+      }
+
+      // (2c) TAIL RE-SCAN (#234). Both devices can scan clean and both rotate —
+      // window = scan duration + inclusion + log-index lag, and no client-side
+      // design closes it without an on-chain mutex. It is made LOUD instead: one
+      // cheap page from the pre-scan head (minus a reorg margin) to now. A collision
+      // found here cannot be un-rotated, but NOTHING local has been written yet
+      // (structurally so on either branch since #158, not just on this one), so
+      // the client refuses to commit, says so plainly, and routes the user to
+      // re-recover this account onto a fresh passkey — the rotation that just landed
+      // is itself the event that proves the collision. Fails closed like the pre-scan.
+      if (newOwnerKind === "web3auth" && ownerScanHead !== undefined && ownerScanIO) {
+        onProgress?.("Re-checking this sign-in on-chain…");
+        const { scanOwnedAccounts, OWNER_SCAN_REORG_MARGIN } = await import("./owned-accounts-scan.js");
+        const { counterfactualKernelOf } = await import("./kernel-account.js");
+        const tail = await scanOwnedAccounts({
+          eoa: newOwnerAddress,
+          exclude: [target, await counterfactualKernelOf(newOwnerAddress)],
+          io: ownerScanIO,
+          fromBlock: ownerScanHead - OWNER_SCAN_REORG_MARGIN,
+        });
+        if (tail.status === "collision") {
+          console.warn("[auth] post-rotation owner scan found a collision:", tail.kernels);
+          throw new Error(
+            "Another recovery used this same sign-in while this one was running, so it now opens " +
+              "two accounts. Nothing was saved on this device. To keep the accounts apart, run " +
+              "recovery for this account again and choose \"Passkey on this device\".",
+          );
+        }
+        if (tail.status === "unknown") {
+          console.warn("[auth] post-rotation owner scan did not complete:", tail.reason);
+          throw new Error(
+            "We couldn't re-check this sign-in on-chain after the change — it may well have gone " +
+              "through. Nothing was saved on this device. Run recovery again and it will pick up " +
+              "wherever it landed.",
+          );
+        }
+      }
+
+      // (3) Rebuild the Kernel at the OLD address with the NEW owner key.
+      const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
+      kernel = await buildKernelFromPrivateKey(newOwnerPrivKey, { address: target });
+    } catch (e) {
+      if (pendingCredential) {
+        console.warn(
+          "[auth] recovery aborted after the passkey was created — credential",
+          pendingCredential.credentialId,
+          "is resident in this authenticator and owns no account; it was never pinned as this device's login.",
+        );
+      }
+      throw e;
+    }
 
     // (4) Establish the session as the recovered account (mirrors loginPasskey,
     // but pinned to the preserved address with the escrow-restored identity seed).
@@ -2890,7 +4718,21 @@ async function recoverAndRekey(args: {
     // deriving a new address from the rotated credential — by construction, with
     // no second secret to store and no way for the two to fall out of step.
     // AFTER _clearStaleAuthForSwitch, which clears it.
-    await storeIdentitySeed(newSeedAddress, identitySeed);
+    if (newOwnerKind === "passkey" && newOwnerPrfSecret) {
+      await storeLockedSeed(newSeedAddress, target, identitySeed, newOwnerPrfSecret);
+    } else {
+      await storeIdentitySeed(newSeedAddress, identitySeed);
+    }
+    // The primary-login pin (#158), passkey branch only. It sits HERE, between the
+    // seed and AUTH_KIND, because `init()` requires the pin AND the parent address
+    // AND the seed address together: writing it in this order means that three-way
+    // requirement can only ever become satisfiable once the binding and the seed
+    // are already down. A death before this line is healed by the next sign-in,
+    // which is discoverable and rewrites the pin itself.
+    if (pendingCredential) await pinPasskeyCredential(pendingCredential);
+    // Its record (#746), written once a session exists: without one, a sign-in with
+    // this new passkey from another device - a security key always is - is refused.
+    if (pendingCredential) _setPendingPasskeyRecord({ credentialId: pendingCredential.credentialId, parent: target });
     await putKV(StorageKeys.AUTH_KIND, newOwnerKind as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, target);
     await putKV(StorageKeys.SEED_ADDRESS, newSeedAddress);
@@ -2906,8 +4748,10 @@ async function recoverAndRekey(args: {
       _web3authPrivateKey = newOwnerPrivKey;
       _web3authSeedAddress = newSeedAddress;
       _passkeyPrivateKey = null;
+      _passkeyPrfSecret = null;
     } else {
       _passkeyPrivateKey = newOwnerPrivKey;
+      _passkeyPrfSecret = newOwnerPrfSecret;
       _web3authPrivateKey = null;
       _web3authSeedAddress = null;
     }
@@ -2916,7 +4760,11 @@ async function recoverAndRekey(args: {
     // Mark the escrow-restored seed present so the dashboard decrypts immediately
     // and ensureIdentitySeed short-circuits (never re-derives a divergent seed from
     // the rotated credential).
-    _identitySeedPresent = !!(await restoreIdentitySeed(newSeedAddress));
+    if (newOwnerKind === "passkey") {
+      _setUnlockedSeed(newSeedAddress, target, identitySeed);
+    } else {
+      _identitySeedPresent = !!(await restoreIdentitySeed(newSeedAddress));
+    }
 
     // Kill the session the rotation just invalidated — LAST, immediately before
     // the restore that would otherwise resurrect it (client-side twin of #200's
@@ -2935,6 +4783,210 @@ async function recoverAndRekey(args: {
   } finally {
     _busy = false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Upgrading an email account to a passkey (#746). The flow lives in the lazily
+// loaded upgrade-to-passkey.ts; only what needs this store's state is here.
+// ---------------------------------------------------------------------------
+
+/** This device prepared an upgrade to `passkey` for `parent`, and the account's owner is still
+ *  the email key that upgrade started from - not another device's passkey, not a recovery (#746). */
+function _upgradeUnfinishedFor(passkey: string, parent: string, owner: string): boolean {
+  try {
+    const m = parseUpgradeMarker(globalThis.localStorage?.getItem(upgradeMarkerKey(parent)));
+    return !!m && m.stage === "prepared" && m.passkey === passkey.toLowerCase() && owner.toLowerCase() === m.emailKey;
+  } catch {
+    return false;
+  }
+}
+
+/** End an email sign-in whose account opens with a passkey now (#746). */
+async function _refuseUpgradedEmailLogin(eoa: string, kernel: string, passkey: string | null): Promise<Error> {
+  clearCachedKernelAddress("web3auth", eoa);
+  clearVerifiedBinding("web3auth", eoa);
+  // Drop the Web3Auth session, or the next tap re-adopts it without asking.
+  try {
+    const { logoutWeb3Auth } = await import("./web3auth-account.js");
+    await logoutWeb3Auth();
+  } catch (e) {
+    console.warn("[auth] could not clear the Web3Auth session after an upgraded-account refusal:", e);
+  }
+  console.warn("[auth] this email key is off the account's list - it opens with a passkey now:", kernel);
+  postOrphanedCredentialNotice("web3auth", undefined, UPGRADED_TO_PASSKEY_MESSAGE);
+  return new OrphanedCredentialError("web3auth", passkey ?? kernel, UPGRADED_TO_PASSKEY_MESSAGE);
+}
+
+/**
+ * An email key whose account was upgraded to a passkey elsewhere (#746) signs sessions
+ * the server refuses. One read decides: an email key is never put on a co-owner list,
+ * so "not on it" cannot be a replica behind an add. Ends this session with the words.
+ */
+function _verifyEmailKeyInBackground(kernel: string, eoa: string): void {
+  void (async () => {
+    try {
+      const { readKernelSignerFor, NOT_ON_LIST } = await import("./kernel-account.js");
+      if ((await readKernelSignerFor(kernel, eoa)) !== NOT_ON_LIST) return;
+      clearCachedKernelAddress("web3auth", eoa);
+      clearVerifiedBinding("web3auth", eoa);
+      const still =
+        _kind === "web3auth" &&
+        _web3authSeedAddress?.toLowerCase() === eoa.toLowerCase() &&
+        _parent?.toLowerCase() === kernel.toLowerCase();
+      if (!still) return;
+      _postAuthNotice(UPGRADED_TO_PASSKEY_MESSAGE);
+      await logout({ force: true });
+    } catch {
+      /* transient - the next sign-in, or the next refused session, checks again */
+    }
+  })();
+}
+
+/** A freshly signed session was refused too (api/client.ts): for an email account
+ *  that may mean it was upgraded to a passkey on another device (#746). */
+function onSessionRejected(): void {
+  if (_kind === "web3auth" && _parent && _web3authSeedAddress) _verifyEmailKeyInBackground(_parent, _web3authSeedAddress);
+}
+
+/**
+ * What the upgrade flow (upgrade-to-passkey.ts) borrows from this store: its state,
+ * and the steps that write its private fields. Everything else is in the flow.
+ */
+function _upgradeHost(): import("./upgrade-to-passkey.js").UpgradeStoreHost {
+  return {
+    emailAccount: () =>
+      _kind === "web3auth" && _parent && _web3authSeedAddress
+        ? { parent: _parent.toLowerCase(), emailKey: _web3authSeedAddress.toLowerCase(), keyReady: !!_web3authPrivateKey }
+        : null,
+    passkeyAccount: () =>
+      _kind === "passkey" && _parent && _seedAddress
+        ? { parent: _parent.toLowerCase(), passkey: _seedAddress.toLowerCase(), hasSession: !!_sessionAddress }
+        : null,
+    keyMissing: _web3authKeyMissing,
+    ensureSession,
+    oldSeed: async () => (_kind === "web3auth" && (await _ensureIdentitySeed({ silent: true })) ? _seedIfPresent() : null),
+    removeBackups: async () => {
+      await removeAccountBackups();
+    },
+    putBinding: _putRecoveryBinding,
+    clearBinding: _clearRecoveryBinding,
+    readSignerFor: async (kernel, eoa) => (await import("./kernel-account.js")).readKernelSignerFor(kernel, eoa),
+    emailKernel: async () => {
+      await _ensureKernelForWeb3Auth();
+      const kernel = _kernel;
+      if (!kernel) throw new Error(WEB3AUTH_KEY_GONE_MESSAGE);
+      const k = await import("./kernel-account.js");
+      return {
+        readKernelRoot: (at) => k.readKernelRoot(at),
+        readKernelSignerFor: (at, eoa) => k.readKernelSignerFor(at, eoa),
+        setCoOwners: (root, signers) => k.setCoOwners(kernel, root, signers),
+      };
+    },
+    adoptPasskey: async (marker, live, confirmed) => {
+      const { parent, passkey } = marker;
+      await _putRecoveryBinding(passkey, parent);
+      // An Undo in another tab may have dropped it; this tab still holds it (Fable sign-off).
+      if (live) await storeLockedSeed(passkey, parent, live.seed, live.prfSecret);
+      await pinPasskeyCredential(marker.credential);
+      await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
+      await putKV(StorageKeys.PARENT_ADDRESS, parent);
+      await putKV(StorageKeys.SEED_ADDRESS, passkey);
+      _kind = "passkey";
+      _parent = parent;
+      _seedAddress = passkey;
+      _deviceRole = false;
+      _passkeyPrivateKey = live?.privateKey ?? null;
+      _passkeyPrfSecret = live?.prfSecret ?? null;
+      _web3authPrivateKey = null;
+      _web3authSeedAddress = null;
+      _web3authKeyRetrying = false;
+      _kernel = null;
+      _unlocked = null;
+      _feedSignerCache = null;
+      _feedSignerAddressMemo = null;
+      if (live) _setUnlockedSeed(passkey, parent, live.seed);
+      if (confirmed) writeVerifiedBinding("passkey", passkey, parent);
+    },
+    finalizeDeps: () => ({
+      tombstoneEmailKey: (emailKey, parent, passkey) => writeOrphanTombstone("web3auth", emailKey, { kernel: parent, owner: passkey }),
+      wipeOldSeed: (emailKey) => clearIdentitySeed(emailKey),
+      forgetEmailLogin: async (emailKey) => {
+        clearCachedKernelAddress("web3auth", emailKey);
+        clearVerifiedBinding("web3auth", emailKey);
+        await _clearRecoveryBinding(emailKey);
+      },
+      queuePasskeyRecord: (credentialId, parent) => _setPendingPasskeyRecord({ credentialId, parent }),
+    }),
+    endEmailSession: async () => {
+      try {
+        const { logoutWeb3Auth } = await import("./web3auth-account.js");
+        await logoutWeb3Auth();
+      } catch (e) {
+        // The tombstone refuses that session here anyway; the chain refuses it everywhere.
+        console.warn("[auth] could not end the Web3Auth session after the upgrade:", e);
+      }
+      await _restoreAuthAfterRotation();
+    },
+    feedKeyIfPresent: () => _getContentFeedSignerIfPresent(),
+    resumeLater: () => void ensureSession().then((ok) => (ok ? _resumeUpgrade() : undefined)),
+  };
+}
+
+/** The flow's two modules, registered by the main app (main.ts) - never imported here,
+ *  so the deployed-site builds that share this store do not carry them. */
+type UpgradeModules = [typeof import("./upgrade-to-passkey.js"), typeof import("./upgrade-to-passkey-live.js")];
+let _upgradeModules: (() => Promise<UpgradeModules>) | null = null;
+function registerUpgradeFlow(load: () => Promise<UpgradeModules>): void {
+  _upgradeModules = load;
+}
+
+async function _upgradeFlow() {
+  if (!_upgradeModules) throw new Error("Upgrading to a passkey isn't available here - open WoCo to do it.");
+  const [flow, live] = await _upgradeModules();
+  const host = _upgradeHost();
+  return { flow, host, io: live.liveUpgradeIO(host) };
+}
+
+/**
+ * Upgrade this email or Google account to a passkey, in place (#746): starts one, or
+ * picks up the one this device prepared. Resolves once the account opens with the
+ * passkey; throws the words to show. Irreversible once the op lands - callers confirm.
+ */
+let _upgradeInFlight: Promise<void> | null = null;
+function upgradeToPasskey(opts: { onProgress?: (msg: string) => void } = {}): Promise<void> {
+  if (!_upgradeInFlight) {
+    _upgradeInFlight = _upgradeFlow()
+      .then(({ flow, host, io }) => flow.runUpgrade(host, io, opts.onProgress))
+      .finally(() => {
+        _upgradeInFlight = null;
+      });
+  }
+  return _upgradeInFlight;
+}
+
+/** Undo the upgrade this device prepared, while its switch has not landed (#746). */
+async function cancelPasskeyUpgrade(): Promise<void> {
+  const { flow, host, io } = await _upgradeFlow();
+  await flow.runCancel(host, io);
+}
+
+/** A passkey account with an upgrade marker on this device: finish what is left (#746).
+ *  One storage read for everyone else - nothing is loaded without a marker. */
+let _resumeUpgradeInFlight: Promise<void> | null = null;
+function _resumeUpgrade(): Promise<void> {
+  if (_resumeUpgradeInFlight || !_upgradeModules || _kind !== "passkey" || !_parent) return _resumeUpgradeInFlight ?? Promise.resolve();
+  try {
+    if (!globalThis.localStorage?.getItem(upgradeMarkerKey(_parent))) return Promise.resolve();
+  } catch {
+    return Promise.resolve();
+  }
+  _resumeUpgradeInFlight = _upgradeFlow()
+    .then(({ flow, host, io }) => flow.runResume(host, io))
+    .catch((e) => console.warn("[auth] upgrade follow-up not finished (retried next session):", e))
+    .finally(() => {
+      _resumeUpgradeInFlight = null;
+    });
+  return _resumeUpgradeInFlight;
 }
 
 // ---------------------------------------------------------------------------
@@ -2973,15 +5025,7 @@ async function signRequest(
 
   const nonce = crypto.randomUUID();
   const timestamp = Date.now().toString();
-  const bodyHash = await sha256Hex(body);
-  const challenge = [
-    "woco-session-v1",
-    method.toUpperCase(),
-    path,
-    timestamp,
-    nonce,
-    bodyHash,
-  ].join("\n");
+  const challenge = requestChallenge(method, path, timestamp, nonce, await sha256Hex(body));
 
   // `hasSession` can be true (derived from in-memory _sessionAddress) while the
   // underlying IndexedDB blob is gone (expired, host changed, parent-mismatch,
@@ -3010,15 +5054,6 @@ async function signRequest(
   };
 }
 
-/** SHA-256 hex of a UTF-8 string (for request body binding). */
-async function sha256Hex(text: string): Promise<string> {
-  const bytes = new TextEncoder().encode(text);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  const hex = Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-  return hex;
-}
 
 // ---------------------------------------------------------------------------
 // Logout / Forget Identity
@@ -3062,6 +5097,9 @@ async function clearAllAuth(): Promise<void> {
   // needed to target this account's per-account identity-seed / feed-signer slots.
   const seedAddr = _getSeedAddress() ?? undefined;
   const parentAddr = _parent ?? undefined;
+  // Before the wipes: an unlock's key writes still in flight check this, so none
+  // can land after them (#746).
+  _lockGen++;
 
   // ORDER + ISOLATION ARE LOAD-BEARING (#183). The identity keys go FIRST and
   // every step is individually guarded: this used to be a straight sequence of
@@ -3088,8 +5126,29 @@ async function clearAllAuth(): Promise<void> {
   await step("session", () => clearSession());
   // Dropping the seed drops the feed signer, the issuing key and the encryption
   // key with it — there is one secret at rest now, so there is one thing to wipe
-  // and no way to wipe half an account on a shared device.
-  await step("identity-seed", () => clearIdentitySeed(seedAddr));
+  // and no way to wipe half an account on a shared device. A passkey account's
+  // LOCKED copy stays (#746 fix 1): it opens only with the passkey, which is the
+  // device's own guard, and it lets a recovered account sign back in without its
+  // envelope.
+  // ONE exception (#746 fix 1): a RECOVERED passkey account whose seed this build has
+  // not yet locked - restored from a reload, never unlocked - holds its only copy on
+  // this device under the device key. Deleting it would leave the envelope as the
+  // only way back, and that can be unreachable. It stays until the next sign-in
+  // locks it under the passkey and deletes it then.
+  const keepUnlockedLegacy =
+    _kind === "passkey" &&
+    !_passkeyPrfSecret &&
+    !!seedAddr &&
+    !!(await _recoveryKernelFor(seedAddr).catch(() => undefined)) &&
+    !(await hasLockedSeed(seedAddr).catch(() => true));
+  if (keepUnlockedLegacy) {
+    console.warn("[auth] sign-out kept a recovered account's only seed copy until its next sign-in locks it");
+    await step("public-keys", () => clearPublicKeys(seedAddr!));
+    await step("device-unlock", () => clearDeviceUnlock(seedAddr!));
+    await step("account-chain-window", () => clearChainWindow(seedAddr!));
+  } else {
+    await step("identity-seed", () => clearIdentitySeed(seedAddr));
+  }
   // Legacy slots from builds that stored the feed signer as its OWN secret and
   // cached its address in cleartext. Nothing writes either any more; both are
   // swept so a device carrying one does not keep an orphaned key blob (and a
@@ -3102,21 +5161,39 @@ async function clearAllAuth(): Promise<void> {
       delKV(StorageKeys.CONTENT_FEED_SIGNER_ADDRESS),
     ]),
   );
-  // Drop the scoped ZeroDev session key. Re-login mints fresh. WOCO_AA_SESSION
-  // is the RETIRED sub-ENS mint key's slot (#501): nothing writes it any more,
-  // but devices from before the deletion still hold one and a serialized
-  // permission account is not something to leave lying in IndexedDB.
-  await step("aa-sessions", () =>
-    Promise.all([delKV(StorageKeys.WOCO_AA_SESSION), delKV(StorageKeys.WOCO_AA_EAS_SESSION)]),
-  );
+  // WOCO_AA_SESSION is the RETIRED sub-ENS mint key's slot (#501): nothing
+  // writes it any more, but devices from before the deletion still hold one and
+  // a serialized permission account is not something to leave lying in
+  // IndexedDB. (The referral campaign's key had a slot beside it until #476;
+  // that name is gone, so its stale blobs are simply orphaned.)
+  await step("aa-sessions", () => delKV(StorageKeys.WOCO_AA_SESSION));
   // Shared-device safety: drop all user-scoped caches (creator lists, orders, collection, claim status).
   await step("user-caches", () => cacheClearByPrefix(USER_SCOPED_PREFIXES));
+  // A pending empty-accounts logout must not fire into the NEXT sign-in (#186).
+  if (_emptyAccountsTimer) {
+    clearTimeout(_emptyAccountsTimer);
+    _emptyAccountsTimer = null;
+  }
   _kind = "none";
   _parent = null;
   _sessionAddress = null;
   _identitySeedPresent = false;
+  _unlocked = null;
+  _feedSignerCache = null;
+  _chainLoad = null;
+  _keysVerdict = "pending";
+  _anchorMemo = null;
+  _keyRingNotice = null;
+  _pendingRemoval = null;
+  _removalDone = null;
+  _scheduleUnlockExpiry(null);
+  _seedUnavailable = null;
+  _deviceRole = false;
+  _lockGen++;
   _passkeyPrivateKey = null;
+  _passkeyPrfSecret = null;
   _web3authPrivateKey = null;
+  _web3authKeyRetrying = false;
   _seedAddress = null;
   _web3authSeedAddress = null;
   _kernel = null;
@@ -3125,8 +5202,7 @@ async function clearAllAuth(): Promise<void> {
   _feedSignerInFlight = null;
   _passkeyKeyInFlight = null;
   _feedSignerAddressMemo = null;
-  _backupInvMemo = null;
-  _backupInvFlight = null;
+  _backupInv.drop();
 }
 
 // ---------------------------------------------------------------------------
@@ -3173,6 +5249,52 @@ export const auth = {
   get loginStage() { return _loginStage; },
   get hasSession() { return hasSession; },
   get hasIdentitySeed() { return hasIdentitySeed; },
+  /** "recovered-no-copy": the keys cannot be unlocked on this device (not declined). */
+  get seedUnavailable() { return _seedUnavailable; },
+  /** False only for an ADDED passkey (#746): a device of the account, which cannot
+   *  do what only its owner can (names, backups, adding or removing passkeys). */
+  get isAccountOwner() { return !(_kind === "passkey" && _deviceRole); },
+  onDeviceRemoved,
+  onSessionRevoked,
+  onSessionRejected,
+  registerUpgradeFlow,
+  upgradeToPasskey,
+  cancelPasskeyUpgrade,
+  addPasskeyOnThisDevice,
+  linkThisDevice,
+  approveDeviceLink,
+  removePasskey,
+  removePasskeys,
+  // A removal under way (#186): its step for the progress sheet, and finishing one this
+  // device started (a closed tab, a step that failed after the flip).
+  get removalProgress() {
+    return _removalProgress;
+  },
+  get pendingRemoval() {
+    return _pendingRemoval;
+  },
+  get removalDone() {
+    return _removalDone;
+  },
+  dismissRemovalDone: () => {
+    _removalDone = null;
+  },
+  finishRemoval: async () => {
+    await _freshMainPasskey();
+    return _rotateOnRemoval([], { resume: true });
+  },
+  // Passkeys a removal now would leave without the new keys - a hint for its confirm.
+  passkeysWithoutKeys: async () => (await _keys()).passkeysWithoutKeys(_keysHost()),
+  // A passkey left out of the account's keys (#186): this one asks with a code...
+  requestKeys: async (opts: { onCode: (code: { typed: string; qr: string }) => void; signal?: AbortSignal }) =>
+    (await _keys()).requestKeys(_keysHost(), opts),
+  // ...and another, on the account, gives them - one confirm, one op.
+  giveKeys: async (code: Uint8Array, offer: import("./device-link.js").KeysOffer) => {
+    if (_deviceRole) throw new MainPasskeyRequiredError();
+    await _freshMainPasskey();
+    const [{ runGiveKeys }, { apiBase: base }] = await Promise.all([import("./device-link.js"), import("../api/http.js")]);
+    await runGiveKeys(code, offer, { apiBase: base, give: async (member) => (await _keys()).giveKeysTo(_keysHost(), member) });
+  },
   get isConnected() { return isConnected; },
   get isAuthenticated() { return isAuthenticated; },
 
@@ -3182,6 +5304,7 @@ export const auth = {
   loginPasskey,
   loginPasskeyResult,
   loginWeb3Auth,
+  cancelLogin,
   loginCoinbase,
   prefetchCoinbaseSdk,
   prefetchPasskeySdk,
@@ -3193,8 +5316,12 @@ export const auth = {
   // The entry point for "make this account ready to act" — call this, not
   // ensureSession/ensureIdentitySeed in sequence, and never count prompts.
   ensureAccountSetup,
-  ensureEasSessionKey,
+  // An everyday write: silent once this device holds the feed signer (#746).
+  ensureContentSigner,
+  // Before every organiser action: one confirm per unlock window (#746). Throws.
+  ensureOrganiserUnlock,
   grantSpendPermission,
+  signTypedDataAsHolder,
   setupAccountRecovery,
   removeAccountBackups,
   recoverAndRekey,
@@ -3215,13 +5342,33 @@ export const auth = {
   // `restoreIdentitySeed(auth.parent)` reads a slot that is never written. Every
   // key the account owns is a KDF of this: the X25519 encryption key, the
   // secp256k1 issuing key, and — on the out-of-launch-scope credit/cert rails
-  // only — the ed25519 holder key. Returns null when not logged in.
-  getIdentitySeed: () => { const a = _getSeedAddress(); return a ? restoreIdentitySeed(a) : Promise.resolve(null); },
+  // only — the ed25519 holder key. Returns null when not logged in, and for a
+  // passkey account whose seed is locked (#746): call
+  // `ensureOrganiserUnlock()` first where the action needs it.
+  getIdentitySeed: () => _seedIfPresent(),
+  // The account's CURRENT secret and every secret this device holds (#186). Everything
+  // that signs content or seals to the organiser derives from `current`; opening orders
+  // tries `all` (sealed under whichever generation was current then). Generation 0 is
+  // the identity seed, so for an account that never removed a passkey both are the seed.
+  // The issuing key, escrow and portability stay on `getIdentitySeed`.
+  getAccountSecrets: (opts: { toSeal?: boolean } = {}) => _accountSecretsIfPresent(opts),
+  // Why the account's keys need attention here, if they do (#186): "keyless" = this
+  // passkey was left out of the account's latest keys; "changed" = another passkey moved
+  // them on (a removal). Null = nothing to say.
+  get keyRingNotice() {
+    return _keyRingNotice;
+  },
+  dismissKeyRingNotice: () => {
+    _keyRingNotice = null;
+  },
   // Content-feed signer (Phase B) — the key the user signs their own content
   // feeds with. null = this kind/state can't own feeds (fall back to platform).
   getContentFeedSigner: () => _getContentFeedSigner(),
   // Self-read SOC owner address — no prompt (see _getContentFeedSignerAddress).
   getContentFeedSignerAddress: () => _getContentFeedSignerAddress(),
+  // The SIGNER, for a write made on the user's behalf at a moment they did not
+  // ask to sign anything. Never prompts; null until this device holds the seed.
+  getContentFeedSignerIfPresent: () => _getContentFeedSignerIfPresent(),
   // Configured recovery backups from the encrypted-to-self manifest — prompt-free
   // read for the "Protect your account" panel (Increment 3a).
   getBackupInventory: () => getBackupInventory(),
@@ -3229,6 +5376,11 @@ export const auth = {
   // panel can show. (Until #164 they were ALSO a live hazard: re-adding resurrected
   // them on the legacy hook. The WoCo hook's set-semantics ended that.)
   getRetiredBackups: () => getRetiredBackups(),
+  // #190 repair path, for a manifest whose latest version will never open. Two
+  // calls, never one: diagnose only READS, so the panel can show the user what a
+  // rebuild would cost before anything is written.
+  diagnoseUserManifest: () => diagnoseUserManifest(),
+  repairUserManifest: (seed: import("@woco/shared").UserManifest | null) => repairUserManifest(seed),
   // Revoke ONE backup on-chain (#164) — proven by read-back, then bookkeeping.
   revokeAccountBackup: (guardianAddress: string) => revokeAccountBackup(guardianAddress),
 };

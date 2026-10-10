@@ -3,8 +3,8 @@
  *
  * WHY IT IS IN MEMORY. Retrying a ledger entry is not possible: the ledger
  * records that a message failed, not the message. A ticket email cannot be
- * rebuilt from it — that needs the signed QR payload and a ~100KB composite
- * PNG, and persisting those would create a durable copy of ticket material with
+ * rebuilt from it — that needs the signed QR payload and the ticket images
+ * (up to ~7 MB for a 10-ticket order with its banner), and persisting those would create a durable copy of ticket material with
  * its own retention and erasure obligations, to widen a window that does not
  * need widening. SES outages are minutes to hours
  * (docs/SES_MIGRATION_HANDOVER.md §3a), so a queue that lives as long as the
@@ -46,7 +46,7 @@ export const RETRY_SCHEDULE_MS = [60_000, 5 * 60_000, 15 * 60_000, 30 * 60_000, 
  * attachments in memory, so "1,000 messages" is a meaningless bound — it is
  * anywhere from 100KB to 100MB depending on what failed.
  */
-const MAX_QUEUE_BYTES = 25 * 1024 * 1024;
+const MAX_QUEUE_BYTES = 150 * 1024 * 1024;
 
 export interface RetryItem {
   /** Ledger entry this retry belongs to — updated, never duplicated. */

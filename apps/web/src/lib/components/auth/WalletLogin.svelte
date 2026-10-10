@@ -147,7 +147,7 @@
     font-weight: 600;
     border-radius: var(--radius-sm);
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
     transition: background var(--transition);
     display: flex;
     align-items: center;
@@ -166,6 +166,7 @@
 
   .wc-btn {
     background: #3b99fc;
+    color: #fff;
   }
 
   .wc-btn:hover:not(:disabled) {

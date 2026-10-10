@@ -1,4 +1,5 @@
 import type { AuthErrorCode } from "../types.js";
+import type { SessionRank } from "./device-grant.js";
 
 export type AuthKind = "web3" | "passkey" | "web3auth" | "coinbase" | "zupass" | "none";
 
@@ -54,6 +55,15 @@ export interface VerifyDelegationResult {
   valid: boolean;
   parentAddress?: string;
   sessionAddress?: string;
+  /** Set on success: "device" when a key the owner granted signed the delegation (#746). */
+  rank?: SessionRank;
+  /**
+   * Set on success: what the parent IS, as the signature proved it. "eoa" = a plain
+   * wallet signed for itself; "kernel" = a key that owns (or was granted by the
+   * owner of) a WoCo smart account - passkey and email logins alike, which the
+   * server cannot tell apart; "smart-wallet" = ERC-1271/6492.
+   */
+  parentKind?: "eoa" | "kernel" | "smart-wallet";
   error?: string;
   /** Machine-readable classification for the caller's response envelope.
    *  Defaults to SESSION_INVALID at the middleware; set explicitly only where a

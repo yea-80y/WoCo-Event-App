@@ -17,13 +17,15 @@
   import { createShop, updateShop, getShop, getShopOrders } from "../../api/shops.js";
   import { publishSite, deploySite } from "../../api/sites.js";
   import { GATEWAYS } from "../builder/gateways.js";
+  import { feedRouteFor } from "../../swarm/gateways.js";
+  import { CANONICAL_APP_ORIGIN } from "../../sub-ens/host-label.js";
   import { newSiteFromShop, siteConfigTopic } from "@woco/shared";
   import { logFeedToManifest } from "../../manifest/feed-log.js";
   import ShopCatalogEditor from "./ShopCatalogEditor.svelte";
   import ShopLoyaltyEditor from "./ShopLoyaltyEditor.svelte";
 
-  const API_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_API_URL ?? "http://localhost:3001";
-  const WOCO_APP_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_APP_URL ?? "https://woco.eth.limo";
+  const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
+  const WOCO_APP_URL = import.meta.env.VITE_APP_URL ?? "https://woco.eth.limo";
   const DEFAULT_GATEWAY = GATEWAYS.find((g) => g.default)?.url ?? GATEWAYS[0].url;
   const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 
@@ -66,7 +68,7 @@
   const storefrontKey = $derived(`woco:shop-storefront:${shopId}`);
 
   const tapUrl = $derived(
-    typeof window !== "undefined" ? `${window.location.origin}/#/shops/${shopId}/tap` : "",
+    `${CANONICAL_APP_ORIGIN}/#/shops/${shopId}/tap`,
   );
   const posPath = $derived(`/creator/shops/${shopId}/pos`);
 
@@ -191,7 +193,7 @@
       });
 
       const feedSigner = await auth.getContentFeedSigner();
-      const pub = await publishSite(site, [], feedSigner);
+      const pub = await publishSite(site, [], feedSigner, DEFAULT_GATEWAY);
       if (!pub.ok) throw new Error(pub.error ?? "Publish failed");
 
       const dep = await deploySite(siteId, { apiUrl: API_URL, gatewayUrl: DEFAULT_GATEWAY, wocoAppUrl: WOCO_APP_URL, site }, feedSigner);
@@ -210,7 +212,7 @@
           contentHash: dep.data.contentHash,
           ...(dep.data.feedManifestHash ? { feedManifestHash: dep.data.feedManifestHash } : {}),
         },
-        target: DEFAULT_GATEWAY.includes("woco-net.com") ? "woco" : "etherna",
+        target: feedRouteFor(DEFAULT_GATEWAY).target,
       });
     } catch (e) {
       deployErr = e instanceof Error ? e.message : "Deploy failed";

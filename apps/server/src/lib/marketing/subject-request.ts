@@ -12,6 +12,7 @@ import { persistFailureCount } from "./persist.js";
 import { marksFor, suppressGlobal, suppressOrg } from "./suppression-store.js";
 import { eraseRecipient, failuresForHash, type EmailFailure } from "../email/failure-ledger.js";
 import { broadcastsContaining, type BroadcastRecord } from "../email/broadcast-jobs.js";
+import { forgetHash as forgetPacingProof, sendersProvenFor } from "../sender-pacing/index.js";
 
 export interface SubjectReport {
   emailHash: string;
@@ -34,6 +35,12 @@ export interface SubjectReport {
    * reached them on a given date is processing we hold and must disclose.
    */
   broadcasts: BroadcastRecord[];
+  /**
+   * Senders for whom this address is recorded as delivered-without-a-bounce,
+   * which exempts it from paced sending (#619). Hash-only, but it is a fact we
+   * hold about a delivery to this person, so it is disclosed.
+   */
+  pacingProof: string[];
 }
 
 export interface ErasureResult {
@@ -70,6 +77,7 @@ export function reportSubject(emailHash: string, organiser?: string): SubjectRep
     // Scoped to the named controller when one is given: a broadcast belongs to
     // the organiser who sent it, unlike the platform-level failure ledger.
     broadcasts: broadcastsContaining(emailHash).filter((b) => !org || b.org === org),
+    pacingProof: sendersProvenFor(emailHash).filter((s) => !org || s === org),
   };
 }
 
@@ -103,6 +111,11 @@ export function eraseSubject(emailHash: string, organiser?: string, at: string =
     : forgetEmailHash(emailHash);
 
   const listsRemovedFrom = removeFromLists(emailHash, org);
+
+  // Pacing proof has no send-once role (unlike a broadcast's record), so it is
+  // erased; the suppression mark above is what keeps the subject from being
+  // mailed. Written through `writeJsonAtomic`, so `persisted` below covers it.
+  forgetPacingProof(emailHash, org);
 
   // Unscoped: the ledger is platform-level, not per-organiser — a transactional
   // ticket failure belongs to no organiser's marketing relationship. A scoped

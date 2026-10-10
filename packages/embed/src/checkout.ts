@@ -6,7 +6,16 @@
  * pinned in one place.
  */
 
-import { calculateBuyerFees, type PaymentConfig, type SealedBox } from "@woco/shared";
+import {
+  calculateBuyerFees,
+  orderFieldRequired,
+  orderFormShown,
+  resolveBuyerEmail,
+  ORDER_EMAIL_FIELD_ID,
+  type OrderField,
+  type PaymentConfig,
+} from "@woco/shared";
+import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 
 /** Server-side clamp is RESERVATION_MAX_QTY / create-checkout's own max(10). */
 export const MAX_QTY = 10;
@@ -21,10 +30,38 @@ export function seriesPayable(payment: PaymentConfig | undefined): boolean {
   return !!calculateBuyerFees(payment, 1)?.cardTotal;
 }
 
-/** Trimmed email, or null when it cannot receive a ticket. */
-export function validateEmail(raw: string): string | null {
-  const email = raw.trim();
-  return email && email.includes("@") ? email : null;
+export type BuyPanelVerdict = { ok: true; email: string } | { ok: false; error: string };
+
+/**
+ * The buy panel's checks, top to bottom in the order the buyer sees them, so
+ * the first message names the first thing to fix (#597).
+ *
+ * The ticket address comes from the shared rule (`resolveBuyerEmail`): the
+ * order form's own email field when the form shows one, else the widget's box.
+ * This widget has no wallet or account path, so that field is required here
+ * whatever the organiser ticked - it is the only way the ticket can arrive.
+ */
+export function validateBuyPanel(i: {
+  fields: readonly OrderField[] | undefined;
+  /** The organiser's order key as VERIFIED bytes (#642), or undefined. */
+  verifiedKey: Uint8Array | undefined;
+  formData: Record<string, string>;
+  inlineEmail: string;
+}): BuyPanelVerdict {
+  if (orderFormShown(i.fields, i.verifiedKey)) {
+    for (const f of i.fields!) {
+      const isEmail = f.id === ORDER_EMAIL_FIELD_ID;
+      // Never an internal id: OrderFieldsEditor starts every field with label "".
+      const label = f.label || f.placeholder || (isEmail ? "Email" : "This field");
+      const value = (i.formData[f.id] ?? "").trim();
+      if (orderFieldRequired(f, { canUseAccount: false }) && !value) return { ok: false, error: `${label} is required` };
+      if (isEmail && !resolveBuyerEmail(i.formData, i.fields, i.verifiedKey, "")) {
+        return { ok: false, error: `Enter a valid email address in ${label}` };
+      }
+    }
+  }
+  const email = resolveBuyerEmail(i.formData, i.fields, i.verifiedKey, i.inlineEmail);
+  return email ? { ok: true, email } : { ok: false, error: "Enter a valid email address" };
 }
 
 /** Quantity the picker may offer: 1..min(10, available), never below 1. */
@@ -52,32 +89,44 @@ export interface CheckoutBodyInputs {
   /** The consent box was rendered, so the opt-out WAS offered — an untouched
    *  box is an explicit refusal (recorded as a suppression), not "never asked". */
   marketingConsent: boolean;
-  /** The organiser's page URL — Stripe's cancel button returns the buyer
-   *  exactly there. The server falls back to the platform event page if it
-   *  is not a well-formed https URL. */
-  cancelUrl: string;
-  encryptedOrder?: SealedBox;
+  /** The organiser page the buyer is on (see resolvePageUrl), when it is known. */
+  pageUrl?: string;
+  encryptedOrder?: SealedBoxV2;
+  /** The order key `encryptedOrder` was sealed to (#186) - checked by the server. */
+  encryptionKeyRef?: string;
   reservationId?: string;
 }
 
 /**
- * The exact create-checkout wire body. Deliberately NO returnUrl: the
- * organiser's domain cannot be in ALLOWED_HOSTS, so the server would refuse
- * it — omitting it selects the platform's purchased page, and the ticket
- * email is the durable artifact either way.
+ * The exact create-checkout wire body. No returnUrl and no cancelUrl: the server
+ * derives both Stripe redirects from `pageUrl` (#567), and without a page it
+ * sends the buyer to the WoCo pages — the ticket email is the durable artifact
+ * either way.
  */
 export function buildCheckoutBody(i: CheckoutBodyInputs): Record<string, unknown> {
   const body: Record<string, unknown> = {
     eventId: i.eventId,
     seriesId: i.seriesId,
     claimerEmail: i.claimerEmail,
-    cancelUrl: i.cancelUrl,
     marketingConsent: i.marketingConsent,
   };
+  if (i.pageUrl) body.pageUrl = i.pageUrl;
   if (i.quantity > 1) body.quantity = i.quantity;
   if (i.encryptedOrder) body.encryptedOrder = i.encryptedOrder;
+  if (i.encryptedOrder && i.encryptionKeyRef) body.encryptionKeyRef = i.encryptionKeyRef;
   if (i.reservationId) body.reservationId = i.reservationId;
   return body;
+}
+
+/**
+ * The key a stale-key refusal names (#186), when it is one to re-seal to: the box was
+ * sealed to a key the organiser has since replaced. Null for any other answer, or one
+ * naming the key already used (re-sealing to it again would change nothing).
+ */
+export function staleOrderKeyRef(resp: Record<string, unknown>, sealedTo: string | null): string | null {
+  if (resp.code !== "ORDER_KEY_STALE") return null;
+  const ref = resp.encryptionKeyRef;
+  return typeof ref === "string" && /^[0-9a-f]{64}$/.test(ref) && ref !== sealedTo ? ref : null;
 }
 
 export type ReserveOutcome =
@@ -104,4 +153,92 @@ export function reserveOutcome(
     return { kind: "blocked", message: "Not enough tickets left at this quantity" };
   }
   return { kind: "proceed" };
+}
+
+// ---------------------------------------------------------------------------
+// Returning from Stripe (#567)
+// ---------------------------------------------------------------------------
+
+function httpUrl(raw: string): string | undefined {
+  try {
+    const u = new URL(raw);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The organiser page the buyer is on. Inside the /embed/frame iframe the frame's
+ * own URL is WoCo's, never the organiser's, so only the snippet's `page-url` can
+ * name the page there; without it the server's WoCo pages apply.
+ */
+export function resolvePageUrl(pageUrlAttr: string | null, href: string, framed: boolean): string | undefined {
+  const named = pageUrlAttr ? httpUrl(pageUrlAttr) : undefined;
+  if (named) return named;
+  return framed ? undefined : httpUrl(href);
+}
+
+export type ReturnMarker = { kind: "success"; sessionId: string } | { kind: "cancelled" };
+
+/** The return marker the server put in the page's query, when this page load is a return from Stripe. */
+export function parseReturn(pageUrl: string | undefined): ReturnMarker | null {
+  if (!pageUrl) return null;
+  let params: URLSearchParams;
+  try {
+    params = new URL(pageUrl).searchParams;
+  } catch {
+    return null;
+  }
+  const marker = params.get("woco");
+  if (marker === "cancelled") return { kind: "cancelled" };
+  if (marker !== "success") return null;
+  const sessionId = params.get("session_id") ?? "";
+  return /^cs_(?:test|live)_[A-Za-z0-9]{10,200}$/.test(sessionId) ? { kind: "success", sessionId } : null;
+}
+
+/** `href` without the return marker, every other query pair and the hash left as they were. */
+export function withoutReturnMarker(href: string): string {
+  const hashAt = href.indexOf("#");
+  const beforeHash = hashAt === -1 ? href : href.slice(0, hashAt);
+  const hash = hashAt === -1 ? "" : href.slice(hashAt);
+  const q = beforeHash.indexOf("?");
+  if (q === -1) return href;
+  const kept = beforeHash
+    .slice(q + 1)
+    .split("&")
+    .filter((pair) => {
+      const key = pair.split("=")[0];
+      return pair !== "" && key !== "woco" && key !== "session_id";
+    })
+    .join("&");
+  return `${beforeHash.slice(0, q)}${kept ? `?${kept}` : ""}${hash}`;
+}
+
+export type ReturnView =
+  | { kind: "checking" }
+  | { kind: "paid"; quantity: number; emailMasked: string | null }
+  | { kind: "unpaid" }
+  /** #644: the event was cancelled — no ticket, any payment refunded. */
+  | { kind: "cancelled" }
+  | { kind: "unconfirmed" };
+
+/**
+ * What the widget may say about a return, from the server's answer alone. A
+ * marker in the URL proves nothing was paid, so anything short of a well-formed
+ * confirmation reads as "unconfirmed", never "paid".
+ */
+export function returnView(resp: { ok: boolean; data?: unknown } | null): ReturnView {
+  const d = resp?.ok && resp.data && typeof resp.data === "object" ? resp.data as Record<string, unknown> : null;
+  if (!d) return { kind: "unconfirmed" };
+  if (d.status === "cancelled") return { kind: "cancelled" };
+  if (d.status === "open" || d.status === "expired") return { kind: "unpaid" };
+  if (d.status !== "paid" || !Number.isInteger(d.quantity) || (d.quantity as number) < 1) {
+    return { kind: "unconfirmed" };
+  }
+  return {
+    kind: "paid",
+    quantity: d.quantity as number,
+    emailMasked: typeof d.emailMasked === "string" ? d.emailMasked : null,
+  };
 }

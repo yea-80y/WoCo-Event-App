@@ -13,6 +13,9 @@ import type { EditionV1Body, Hex0x, ManifestV2Body } from "@woco/shared";
 import { buildEditionTree, issuingAddress, signManifestV2 } from "@woco/shared";
 import { issueObjectType } from "../src/lib/object/issuance.js";
 
+// The events chain is required since #607; these tests do not depend on which one.
+process.env.WOCO_EVENT_CHAIN_ID ??= "421614";
+
 /** The issuing key (secp256k1) — its ADDRESS is the v2 issuer identity. */
 const ISSUER_PRIV = new Uint8Array(32).fill(7);
 const ISSUER = issuingAddress(ISSUER_PRIV);

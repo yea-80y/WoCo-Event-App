@@ -1,11 +1,7 @@
 # Terms of Service
 
-**Last updated:** [DATE OF PUBLICATION]
+**Last updated:** 6 October 2026
 **Version:** 1.0
-
-> **⚠️ PRE-LAUNCH DRAFT — NOT YET IN FORCE.** Complete the `[PLACEHOLDERS]` and have a UK solicitor
-> review before publication. Consumer terms are subject to the Consumer Rights Act 2015 fairness
-> test; an unfair term is unenforceable, so the wording here matters commercially, not just legally.
 
 These terms cover **using WoCo as an attendee** — browsing events, buying tickets, holding tickets.
 If you run events, the [Organiser Terms](./ORGANISER_TERMS.md) also apply.
@@ -14,8 +10,8 @@ If you run events, the [Organiser Terms](./ORGANISER_TERMS.md) also apply.
 
 ## 1. Who you are contracting with
 
-WoCo is operated by [COMPANY LEGAL NAME], registered in England and Wales, company number [NUMBER],
-registered office [ADDRESS] ("WoCo", "we", "us").
+WoCo is operated by WoCo Network Ltd, trading as WoCo and World Computer, registered in England and
+Wales, company number 17370809, registered office 128 City Road, London EC1V 2NX, United Kingdom ("WoCo", "we", "us").
 
 **Important — we do not sell you the ticket.** When you buy a ticket, your contract for the event is
 with the **event organiser**, not with us. We provide the platform they use to sell it, and we act as
@@ -40,7 +36,7 @@ permission; use bots or automation to obtain tickets; interfere with the platfor
 availability; attempt to access data belonging to others; or use WoCo to send spam or harass anyone.
 
 We may suspend or close an account that breaches these terms. Where we do, we will tell you why
-unless we are legally prevented from doing so, and you can appeal to [SUPPORT EMAIL].
+unless we are legally prevented from doing so, and you can appeal to support@woco-net.com.
 
 ### Your account and your keys
 
@@ -83,9 +79,9 @@ the organiser is responsible for refunding you.
 
 **We are not obliged to refund you from our own funds** for an organiser's cancellation or failure —
 we are not party to the sale. If an organiser becomes insolvent or refuses a refund you are entitled
-to, we will: give you everything we hold that evidences your purchase; support a chargeback with your
-card issuer; and pass on any funds we are holding that are due to you. Your card chargeback rights
-are usually your strongest remedy, and we will not obstruct them.
+to, we will: give you everything we hold that evidences your purchase; and support a chargeback with
+your card issuer. Your card chargeback rights are usually your strongest remedy, and we will not
+obstruct them.
 
 **What our payout timing does and does not do for you.** We generally do not release an organiser's
 takings to them until after their event has happened. That makes it more likely funds are still
@@ -128,14 +124,16 @@ for fraud, or for anything else that cannot lawfully be limited.
 
 Subject to that:
 
-- We are **not liable for the event itself** — its cancellation, quality, safety or conduct. That is
-  the organiser's responsibility.
+- We are **not liable for the event itself** - whether it goes ahead, is postponed or changed, and
+  its quality, safety or conduct. That is the organiser's responsibility.
+- We are **not liable for arrangements you make around an event**, such as travel, accommodation,
+  time off work or childcare.
 - We are **not liable for losses caused by you losing your own keys**, where you control them.
 - We are **not liable for failures of public decentralised networks** outside our control.
 - We are not liable for indirect or consequential loss, or loss of profit, revenue or opportunity.
 
-**Where we are at fault**, our total liability to you is limited to the greater of the fees we
-received in connection with the affected transaction, or £[LIABILITY CAP].
+**Where we are at fault**, we are responsible for loss or damage that is a foreseeable result of us
+breaking these terms or not using reasonable care and skill in the services we provide.
 
 If you are a consumer, this section does not affect your statutory rights, and you may bring claims
 against the organiser directly.
@@ -172,9 +170,16 @@ If you share a referral link and an organiser signs up through it, WoCo pays you
 set a different rate for different referrers or different periods. Any change applies from the
 date of notice and **does not affect earnings you have already accrued**.
 
-Earnings build up per sale and are released after the event, at the same time the organiser is
-paid. WoCo intends to move referral payouts to automated stablecoin settlement once the relevant
-contracts have been independently audited; until then they are paid manually.
+Earnings accrue from the referred organiser's first sale after their referral is confirmed, and are
+calculated from the platform fee WoCo keeps on each sale, net of any fee WoCo returns. A sale's
+earnings become payable once its event has taken place and the organiser has been paid.
+
+Payable earnings are paid monthly in a stablecoin in pounds sterling, euros or US dollars,
+depending on what is available to you, to the wallet linked to your WoCo account (we will tell you
+which network before the first payout). Where that currency differs from the currency of the sale,
+we convert at the rate we obtain on the payout date.
+We aim to make the first payout on or before 31 December 2026. If that date changes, we will tell
+you before it does, and your earnings keep accruing in the meantime.
 
 Referral earnings are payment for introducing a customer. **They are not an investment and give
 you no interest in WoCo.**
@@ -192,12 +197,12 @@ have jurisdiction.
 If you live elsewhere in the UK, you may bring proceedings in your local courts. If you are a
 consumer in the EU, mandatory protections of your home country still apply.
 
-**Please contact us first** at [SUPPORT EMAIL] — most things are resolved quickly that way.
+**Please contact us first** at support@woco-net.com — most things are resolved quickly that way.
 
 ---
 
 ## 11. Contact
 
-[COMPANY LEGAL NAME]
-[REGISTERED OFFICE ADDRESS]
-[SUPPORT EMAIL]
+WoCo Network Ltd
+128 City Road, London EC1V 2NX, United Kingdom
+support@woco-net.com

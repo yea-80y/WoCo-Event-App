@@ -23,9 +23,10 @@
 import { getResend } from "./client.js";
 import { sesProvider } from "./ses-provider.js";
 import { sendRateLimiter, type SendPriority } from "./rate-limiter.js";
-import { recordFailure } from "./failure-ledger.js";
+import { recordFailure, redactAddresses } from "./failure-ledger.js";
 import { enqueueRetry } from "./retry-queue.js";
 import { buildMessageTags } from "./message-tags.js";
+import { recordPlatformAccepted } from "../sender-pacing/index.js";
 import { hashEmail } from "../event/claim-service.js";
 import {
   EmailSendError,
@@ -124,6 +125,14 @@ export interface SendEmailOptions {
    * entry for and must update rather than duplicate.
    */
   noLedger?: boolean;
+  /**
+   * Keep no copy of the address if this send fails: the ledger entry holds the
+   * hash only and nothing is queued for the drain worker (which re-sends from
+   * the stored address). For a message whose caller can re-read the address
+   * itself and must not re-store it - the refund notice to a buyer who may have
+   * had their data erased (#798).
+   */
+  addressFree?: boolean;
 }
 
 /** Base backoff. Doubles per attempt, then gets full jitter applied. */
@@ -224,7 +233,7 @@ async function attemptWithRetries(
       const wait = backoffMs(attempt);
       console.warn(
         `[email] ${p.name} attempt ${attempt}/${maxAttempts} failed (${lastError.code ?? "unknown"}), ` +
-          `retrying in ${Math.round(wait)}ms: ${lastError.message}`,
+          `retrying in ${Math.round(wait)}ms: ${redactAddresses(lastError.message)}`,
       );
       await sleepFn(wait);
     }
@@ -261,12 +270,17 @@ export async function sendVia(
   // paid order it belonged to.
   const outbound: OutboundEmail = msg.tags
     ? msg
-    : { ...msg, tags: buildMessageTags(priority, opts.context) };
+    : { ...msg, tags: buildMessageTags(priority, opts.context, { addressFree: opts.addressFree }) };
 
   const primaryOutcome = await attemptWithRetries(
     active, outbound, priority, maxAttempts, deps.sleep, acquire,
   );
-  if (!primaryOutcome.error) return;
+  if (!primaryOutcome.error) {
+    // The denominator of the platform-wide bounce and complaint alarm (#619):
+    // every message the provider accepted, of both kinds, counted once, here.
+    recordPlatformAccepted(outbound.to.length);
+    return;
+  }
 
   let failure = primaryOutcome.error;
   let attempts = primaryOutcome.attempts;
@@ -312,7 +326,7 @@ export async function sendVia(
   if (!opts.noLedger) {
     const entry = recordFailure({
       kind: priority === "marketing" ? "marketing" : "transactional",
-      recipients: msg.to,
+      recipients: opts.addressFree ? [] : msg.to,
       recipientHashes: msg.to.map(hashEmail),
       subject: msg.subject,
       provider: usedProvider,
@@ -338,7 +352,7 @@ export async function sendVia(
     // mailed TWICE. It would also skip the suppression re-check that
     // `sendMarketingBatch` performs and DATA_INVENTORY relies on, mailing
     // someone who unsubscribed between the failure and the retry.
-    if (failure.retryable && priority !== "marketing") {
+    if (failure.retryable && priority !== "marketing" && !opts.addressFree) {
       enqueueRetry(entry.id, outbound, priority);
     }
   }

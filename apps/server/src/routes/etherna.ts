@@ -13,8 +13,7 @@ import {
   provisionEthernaBatch,
   estimateEthernaBatch,
 } from "../lib/etherna/batches.js";
-
-const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
+import { ETHERNA_GATEWAY_URL } from "@woco/shared";
 
 function defaultDepth(): number {
   return Number(process.env.ETHERNA_USER_BATCH_DEPTH ?? "19");
@@ -27,6 +26,17 @@ function defaultMarginPct(): number {
 }
 function maxBZZ(): number {
   return Number(process.env.ETHERNA_PURCHASE_MAX_BZZ ?? "0.5");
+}
+
+/**
+ * Buying a per-user batch is OPT-IN (#44). Every purchase spends the platform's
+ * Etherna credit, and while FREE_HOSTING routes sites and event pages to the
+ * platform batch nothing in the product asks anyone to buy one - so an unset or
+ * mistyped value must refuse rather than spend. Switch on together with the paid
+ * gate (#44) when organisers are asked to buy their own.
+ */
+export function perUserBatchPurchaseEnabled(value = process.env.BATCH_PER_USER_AUTO_PROVISION): boolean {
+  return value === "true";
 }
 
 const ethernaRoutes = new Hono();
@@ -63,7 +73,7 @@ ethernaRoutes.get("/purchase-preview", requireAuth, async (c) => {
 ethernaRoutes.post("/purchase-batch", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
 
-  if (process.env.BATCH_PER_USER_AUTO_PROVISION === "false") {
+  if (!perUserBatchPurchaseEnabled()) {
     return c.json({ ok: false, error: "Per-user batch provisioning disabled" }, 403);
   }
 
@@ -96,7 +106,8 @@ ethernaRoutes.post("/purchase-batch", requireAuth, async (c) => {
       purchasedAt: result.purchasedAt,
       expiresAt: result.expiresAt,
       paidUntil,
-      gateway: ETHERNA_GW,
+      // Which gateway the batch lives on: a recorded value, so the canonical one.
+      gateway: ETHERNA_GATEWAY_URL,
     });
 
     console.log(`[etherna] provisioned batch ${result.batchId.slice(0, 12)}… for ${parentAddress} (depth=${depth}, ttl=${ttlDays}d, debit ${result.debitXDai} xDai, committed ${result.estimatedBZZ} BZZ)`);
@@ -111,8 +122,9 @@ ethernaRoutes.post("/purchase-batch", requireAuth, async (c) => {
       },
     });
   } catch (err) {
+    // Detail stays in the log: provider error text is not for the browser.
     console.error("[etherna/purchase-batch]", err);
-    return c.json({ ok: false, error: err instanceof Error ? err.message : "Purchase failed" }, 500);
+    return c.json({ ok: false, error: "Purchase failed" }, 500);
   }
 });
 

@@ -13,6 +13,8 @@
    * load, filtering, grid, and states are done.
    */
   import type { ObjectDirectoryEntry, ObjectCategory, ObjectKind } from "@woco/shared";
+  import { FEATURES } from "@woco/shared";
+  import { navigate } from "../../router/router.svelte.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { getMyObjects, setObjectCategories } from "../../api/objects.js";
   import { onMount } from "svelte";
@@ -166,25 +168,29 @@
   onsaved={onDrawerSaved}
 />
 
-<ObjectCreateModal
-  open={createOpen}
-  {categories}
-  onclose={() => (createOpen = false)}
-  oncreated={onCreated}
-/>
+{#if FEATURES.badgesAllowed}
+  <ObjectCreateModal
+    open={createOpen}
+    {categories}
+    onclose={() => (createOpen = false)}
+    oncreated={onCreated}
+  />
+{/if}
 
 <div class="objectEntry-manager">
   <div class="page-head">
     <div class="head-left">
       <h1>Objects</h1>
       <span class="kicker">
-        Drops · loyalty badges · access passes
+        {FEATURES.badgesAllowed ? "Drops · loyalty badges · access passes" : "Tickets from your events"}
       </span>
     </div>
-    <button class="btn btn--primary" onclick={onCreate}>
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="square"><path d="M6 1v10M1 6h10" /></svg>
-      Create object
-    </button>
+    {#if FEATURES.badgesAllowed}
+      <button class="btn btn--primary" onclick={onCreate}>
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="square"><path d="M6 1v10M1 6h10" /></svg>
+        Create object
+      </button>
+    {/if}
   </div>
 
   {#if phase === "ready" && objects.length > 0}
@@ -298,12 +304,17 @@
     <div class="empty-state">
       <div class="empty-mark" aria-hidden="true">◈</div>
       <span class="kicker">No objects yet</span>
-      <p>
-        Objects are your ownable assets — event tickets, loyalty badges, limited
-        drops. Publish an event and its tickets appear here automatically, or
-        create a badge to reward your community.
-      </p>
-      <button class="btn btn--primary" onclick={onCreate}>Create your first object</button>
+      {#if FEATURES.badgesAllowed}
+        <p>
+          Objects are your ownable assets — event tickets, loyalty badges, limited
+          drops. Publish an event and its tickets appear here automatically, or
+          create a badge to reward your community.
+        </p>
+        <button class="btn btn--primary" onclick={onCreate}>Create your first object</button>
+      {:else}
+        <p>Publish an event and its tickets appear here automatically.</p>
+        <button class="btn btn--primary" onclick={() => navigate("/creator/events/new")}>Create an event</button>
+      {/if}
     </div>
   {:else if filtered.length === 0}
     <div class="empty-state">

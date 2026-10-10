@@ -1,5 +1,9 @@
 # Handover — web3auth client feeds + postage batch architecture (2026-07-02)
 
+> **Historical record (status 2026-10-05).** A July 2026 session log on email (Web3Auth) content feeds and postage-batch routing; email accounts' feed signers now derive
+> from the identity seed rather than the Web3Auth key (2026-09-10), and batch routing has since changed (#610, #689).
+> Current: [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md), [ETHERNA_INTEGRATION.md](./ETHERNA_INTEGRATION.md), [SWARM_DATA_MODEL.md](./SWARM_DATA_MODEL.md).
+
 Branch `feat/feed-signer-recovery`. Two intertwined workstreams. Read with
 `FEED_SIGNER_REVIEW_2026-07-02.md` (Fable) and `CLIENT_FEEDS_AUTH_KINDS_HANDOVER.md`.
 

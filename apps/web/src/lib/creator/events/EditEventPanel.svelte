@@ -6,6 +6,7 @@
   import ImageUpload from "./ImageUpload.svelte";
   import LocationPicker from "./LocationPicker.svelte";
   import GenreTagPicker from "./GenreTagPicker.svelte";
+  import CancelEventPanel from "./CancelEventPanel.svelte";
   import { toLocalInput } from "./date.js";
 
   interface Props {
@@ -16,9 +17,11 @@
     /** Approval requests still pending — also blocks delete. */
     onsaved: (feed: EventFeed) => void;
     ondeleted: () => void;
+    /** #644: the event was cancelled; the feed carries `cancelledAt`. */
+    oncancelled: (feed: EventFeed, feedUpdated: boolean) => void;
   }
 
-  let { event, ordersCount, onsaved, ondeleted }: Props = $props();
+  let { event, ordersCount, onsaved, ondeleted, oncancelled }: Props = $props();
 
   const BEE_GATEWAY = import.meta.env.VITE_GATEWAY_URL || "https://gateway.woco-net.com";
 
@@ -113,6 +116,7 @@
         return;
       }
 
+      await auth.ensureOrganiserUnlock();
       // Phase B: this event's feed is a client-owned SOC — the edit only becomes
       // visible once WE re-sign it, so fail loudly if the current account can't
       // produce the owning key (e.g. signed in as a different identity).
@@ -147,6 +151,7 @@
     deleting = true;
     deleteError = null;
     try {
+      await auth.ensureOrganiserUnlock();
       // Phase B feeds need the owning key to tombstone the SOC — same fail-loud
       // ownership check as save.
       let feedSigner: ContentFeedSigner | null = null;
@@ -244,6 +249,8 @@
   <button class="btn btn--primary save-btn" onclick={save} disabled={!canSave}>
     {saving ? "Saving…" : "Save changes"}
   </button>
+
+  <CancelEventPanel {event} {ordersCount} {oncancelled} />
 
   <div class="danger-zone">
     <h3>Delete event</h3>

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { ETHERNA_GATEWAY_URL } from "../swarm/gateways.js";
+  import { CANONICAL_APP_ORIGIN } from "../sub-ens/host-label.js";
   import { subEnsWebUrl, type ClaimMode, type OrderField, type PaymentConfig } from "@woco/shared";
   import { auth } from "../auth/auth-store.svelte.js";
   import { loginRequest } from "../auth/login-request.svelte.js";
@@ -8,13 +10,13 @@
   import PublishButton from "./events/PublishButton.svelte";
   import StripeVerifyGate from "./events/StripeVerifyGate.svelte";
   import ImportUrlPanel, { type ImportPreview, type ImportTier } from "./events/ImportUrlPanel.svelte";
-  import GatewayPicker from "./builder/GatewayPicker.svelte";
   import AdvancedSetup from "./builder/AdvancedSetup.svelte";
   import SiteSelector from "./builder/SiteSelector.svelte";
   import EventDomainPicker, { type EventDomainIntent } from "./builder/EventDomainPicker.svelte";
   import BackupNudge from "../components/recovery/BackupNudge.svelte";
-  import { addSiteEvent } from "../api/sites.js";
-  import { claimSubEnsLabel, setSubEnsContenthash, stampEventSubEns } from "../api/sub-ens.js";
+  import { addSiteEvent, deployEventPage, type DeployEventPageResult } from "../api/sites.js";
+  import { claimSubEnsLabel, stampEventSubEns } from "../api/sub-ens.js";
+  import NamePointerPrompt from "../components/sub-ens/NamePointerPrompt.svelte";
   import { describeSubEnsError, subEnsErrorDetail } from "../sub-ens/errors.js";
   import { registerDomain, verifyDomainDns, type DomainEntry } from "../api/domains.js";
 
@@ -72,14 +74,16 @@
   }
 
   // Step 2 — deploy targets
-  let gatewayUrl = $state("https://gateway.etherna.io");
+  // Event pages are always stored on and served by Etherna (owner decision
+  // 2026-09-22): the organiser no longer picks a gateway.
+  const gatewayUrl = ETHERNA_GATEWAY_URL;
   let listOnWoco = $state(false);
   let selectedSiteIds = $state<string[]>([]);
   let siteAddErrors = $state<Record<string, string>>({});
 
   // Sub-ENS for this event — intent captured here, acted on after deploy (needs contentHash)
   let domainIntent = $state<EventDomainIntent>({ mode: "none" });
-  let subEnsPhase = $state<"idle" | "pending" | "done" | "error">("idle");
+  let subEnsPhase = $state<"idle" | "pending" | "sign" | "done" | "error">("idle");
   let subEnsLabel = $state("");
   let subEnsError = $state<string | null>(null);
   /** A name that registered fine but did not make it onto the event feed. */
@@ -88,7 +92,7 @@
   // Step 3 — live + domain (deploy state)
   let deploying = $state(false);
   let deployError = $state<string | null>(null);
-  let deployResult = $state<{ contentHash: string; feedManifestHash: string } | null>(null);
+  let deployResult = $state<(DeployEventPageResult & { feedSigned: boolean }) | null>(null);
 
   let listingOnWoco = $state(false);
   let wocoListError = $state<string | null>(null);
@@ -108,6 +112,7 @@
     domainError = null;
     domainRegistering = true;
     try {
+      await auth.ensureOrganiserUnlock();
       domainEntry = await registerDomain(
         hostname,
         createdEventId,
@@ -139,28 +144,49 @@
     }
   }
 
+  // Never a gateway path (#576): the event's WoCo name once it points at this
+  // page, else the event in the app.
   const eventSiteUrl = $derived(
-    deployResult
-      ? `${gatewayUrl.trim()}/bzz/${deployResult.contentHash}/`
-      : ""
+    !deployResult || !createdEventId
+      ? ""
+      : subEnsPhase === "done" && subEnsLabel
+        ? subEnsWebUrl(subEnsLabel)
+        : `${CANONICAL_APP_ORIGIN}/#/event/${createdEventId}`
   );
-  const dashboardUrl = $derived(eventSiteUrl ? `${eventSiteUrl}#/dashboard` : "");
+  const dashboardUrl = $derived(
+    eventSiteUrl ? `${CANONICAL_APP_ORIGIN}/#/creator/events/${createdEventId}` : ""
+  );
   const ensHash = $derived(deployResult?.feedManifestHash ? `bzz://${deployResult.feedManifestHash}` : "");
 
-  async function deployToSwarm(): Promise<{ contentHash: string; feedManifestHash: string } | null> {
+  // The name follows the page's FEED only when this deploy's update was signed
+  // with the organiser's own key (#614) - never on the server's word alone.
+  // Otherwise the fixed page version, which no key can change.
+  const pointerFollowsFeed = $derived(
+    !!deployResult && deployResult.feedOwner === "client" && deployResult.feedSigned && !!deployResult.feedManifestHash,
+  );
+  const pointerTarget = $derived(
+    deployResult ? (pointerFollowsFeed ? deployResult.feedManifestHash : deployResult.contentHash) : "",
+  );
+
+  async function deployToSwarm(): Promise<(DeployEventPageResult & { feedSigned: boolean }) | null> {
     if (!createdEventId) return null;
     try {
-      const json = await authPost<{ contentHash: string; feedManifestHash: string }>(
-        "/api/site/deploy",
+      // The page's feed is the organiser's own (#614): this key signs each
+      // update, so a name bound to it follows every republish unsigned. The
+      // name is sent only to ask whether it already follows the feed.
+      const feedSigner = await auth.getContentFeedSigner();
+      const json = await deployEventPage(
+        createdEventId,
         {
-          eventId: createdEventId,
-          gatewayUrl: gatewayUrl.trim(),
           apiUrl,
+          gatewayUrl: gatewayUrl.trim(),
+          ...(domainIntent.mode === "existing" && domainIntent.label ? { subEnsLabel: domainIntent.label } : {}),
         },
+        feedSigner,
       );
       if (json.ok && json.data) {
-        deployResult = json.data;
-        return json.data;
+        deployResult = { ...json.data, feedSigned: json.feedSigned };
+        return deployResult;
       }
       deployError = json.error || "Deploy failed";
       return null;
@@ -199,12 +225,13 @@
     }
   }
 
-  // Route the chosen sub-ENS at the freshly deployed event page. Runs after deploy
-  // because it needs the contentHash. "new" mints through the WoCo sponsor wallet —
-  // EVERY login kind, no exceptions (#489) — with the contenthash set in the same tx;
-  // "existing" repoints an owned label via the ownership-checked set-contenthash
-  // endpoint.
-  async function runSubEnsTask(contentHash: string) {
+  // Route the chosen sub-ENS at the freshly deployed event page. "new" mints an
+  // EMPTY name through the WoCo sponsor wallet — every login kind (#489); then,
+  // in both modes, the HOLDER signs the pointer (registrar v2.2), which needs
+  // their click (`NamePointerPrompt`). The target is the page's FEED when this
+  // deploy's update was signed with the organiser's own key (#614), so later
+  // republishes ask nothing; otherwise the fixed page version.
+  async function runSubEnsTask() {
     const intent = domainIntent;
     if (intent.mode === "none") return;
     if (intent.mode === "new" && !intent.label) {
@@ -213,32 +240,36 @@
       return;
     }
 
-    subEnsPhase = "pending";
     subEnsError = null;
     subEnsStampWarning = null;
     subEnsLabel = intent.label;
+    if (intent.mode === "existing") {
+      // Already following this page's feed: nothing to sign (#614).
+      subEnsPhase = pointerFollowsFeed && deployResult?.subEns?.status === "ok" ? "done" : "sign";
+      return;
+    }
+    subEnsPhase = "pending";
     try {
-      if (intent.mode === "new") {
-        const res = await claimSubEnsLabel({
-          label: intent.label,
-          swarmHash: contentHash,
-          description: intent.description,
-        });
-        if (!res.ok) { subEnsPhase = "error"; subEnsError = res.error ?? "Could not claim the name"; return; }
-      } else {
-        const res = await setSubEnsContenthash(intent.label, contentHash);
-        if (!res.ok) { subEnsPhase = "error"; subEnsError = res.error ?? "Could not update the name"; return; }
+      const res = await claimSubEnsLabel({ label: intent.label });
+      if (!res.ok) {
+        const d = describeSubEnsError({ error: res.error, data: (res as { data?: { windowResetsAt?: number } }).data });
+        const detail = subEnsErrorDetail(d);
+        subEnsPhase = "error";
+        subEnsError = `${d.title}${detail ? ` ${detail}` : ""}`;
+        return;
       }
-      // Display hint on the event feed (event pages show the name + social row).
-      // Non-fatal — chain ownership is authoritative — but not silent: a missed
-      // stamp means the event page shows no name, and only the organiser can
-      // decide whether that is worth retrying (#484).
-      if (createdEventId) void stampEventLabel(intent.label, createdEventId);
-      subEnsPhase = "done";
+      subEnsPhase = "sign";
     } catch (e) {
       subEnsPhase = "error";
       subEnsError = e instanceof Error ? e.message : "Sub-ENS update failed";
     }
+  }
+
+  /** The holder signed and the pointer landed: now the event page may show the
+   *  name. Display hint only — non-fatal, but not silent (#484). */
+  function onSubEnsPointed() {
+    if (createdEventId) void stampEventLabel(subEnsLabel, createdEventId);
+    subEnsPhase = "done";
   }
 
   /**
@@ -305,6 +336,7 @@
     deployError = null;
     deployResult = null;
     try {
+      await auth.ensureOrganiserUnlock();
       const deployed = await deployToSwarm();
       if (!deployed) return;
 
@@ -314,7 +346,7 @@
       siteAddErrors = {};
       step = 3;
       void runPostDeployTasks([...selectedSiteIds]);
-      void runSubEnsTask(deployed.contentHash);
+      void runSubEnsTask();
     } catch (e) {
       deployError = e instanceof Error ? e.message : "Unexpected error during deploy";
     } finally {
@@ -329,7 +361,7 @@
   }
 
   function retrySubEns() {
-    if (deployResult) void runSubEnsTask(deployResult.contentHash);
+    if (deployResult) void runSubEnsTask();
   }
 
   const subEnsName = $derived(subEnsLabel ? `${subEnsLabel}.woco.eth` : "");
@@ -371,14 +403,6 @@
         </div>
       {:else}
         <div class="event-form">
-          <div class="field-group">
-            <label class="field-label" for="gw-picker">Gateway</label>
-            <GatewayPicker bind:value={gatewayUrl} />
-            <p class="field-hint">
-              The Swarm gateway that will host and serve your deployed event site.
-            </p>
-          </div>
-
           {#if anyCardEnabled}
             <StripeVerifyGate bind:verified={stripeVerified} />
           {/if}
@@ -554,7 +578,7 @@
         <div class="output-section-header">
           <span class="output-section-title">ENS content hash</span>
         </div>
-        {#if deployResult?.feedManifestHash}
+        {#if pointerFollowsFeed}
           <div class="output-url-row">
             <code class="output-url">{ensHash}</code>
             <button class="btn-ghost copy-btn" onclick={() => copyText(ensHash)}>Copy</button>
@@ -581,8 +605,17 @@
           {#if subEnsPhase === "pending"}
             <div class="progress-status">
               <div class="spinner"></div>
-              <span>{domainIntent.mode === "new" ? "Registering" : "Repointing"} <code>{subEnsName}</code> on Arbitrum…</span>
+              <span>Registering <code>{subEnsName}</code> on Arbitrum…</span>
             </div>
+          {:else if subEnsPhase === "sign" && deployResult}
+            <NamePointerPrompt
+              label={subEnsLabel}
+              target={pointerTarget}
+              targetIsFeed={pointerFollowsFeed}
+              feedOwner={pointerFollowsFeed ? "client" : undefined}
+              purpose="event-page"
+              ondone={onSubEnsPointed}
+            />
           {:else if subEnsPhase === "done"}
             <div class="subens-claimed">
               <span class="subens-name">{subEnsName}</span>
@@ -815,11 +848,6 @@
 
   /* ── Form fields ─────────────────────────────────────────────────────────── */
   .field-group { display: flex; flex-direction: column; gap: 0.375rem; }
-  .field-label {
-    font-size: 0.875rem; font-weight: 600; color: var(--text);
-    display: flex; align-items: center; gap: 0.375rem;
-  }
-  .field-hint { font-size: 0.8125rem; color: var(--text-muted); margin: 0; line-height: 1.5; }
 
   .site-add-error { margin: 0; font-size: 0.8125rem; color: var(--error); }
   .site-add-error code { font-family: var(--font-mono); font-size: 0.75rem; }

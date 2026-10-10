@@ -193,6 +193,28 @@ test("generation sequencing: skips, duplicates and pre-seed rotations are refuse
   assert.equal(registry.getIssuerRegistry(PARENT).statements.length, 1);
 });
 
+test("a seed statement claiming ANOTHER account's issuer is refused through the relay (#457)", async () => {
+  reset();
+  assert.equal((await registry.relayIssuerStatement(PARENT, await statement(0))).ok, true);
+
+  // A second account publishing a seed for the SAME issuing address: its
+  // parent signature is its own, its PoP is genuine (same key, its own parent
+  // in the message), and the log is empty, so nothing but the global index
+  // stands between it and a published claim on someone else's issuer identity.
+  const other = OTHER_WALLET.address.toLowerCase() as `0x${string}`;
+  const r = await registry.relayIssuerStatement(
+    other,
+    await statement(0, { parent: other, signer: OTHER_WALLET }),
+  );
+  assert.equal(r.ok, false);
+  assert.match((r as { error: string }).error, /already bound to a different account/);
+
+  assert.equal(binding.getIssuerBinding(other), null, "no pin for the claimant");
+  assert.equal(registry.getIssuerRegistry(other).statements.length, 0, "and nothing published");
+  assert.equal(binding.getIssuerBinding(PARENT)?.issuer, GEN0.address, "the holder is untouched");
+  assert.equal(binding.issuerBindingHealth().crossClaimRefusals, 1);
+});
+
 test("a seed statement carrying a rotation co-signature is refused", async () => {
   reset();
   const prevSig = signPersonalMessage(

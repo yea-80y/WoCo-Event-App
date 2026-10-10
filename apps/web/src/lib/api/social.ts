@@ -21,8 +21,14 @@
 
 import type { Hex0x } from "@woco/shared";
 import { requireAccountForAction } from "../auth/ensure-action.js";
+import { auth } from "../auth/auth-store.svelte.js";
 import { get } from "./client.js";
 import { readMyStatement, writeMyStatement, type SocialKind } from "../social/social.js";
+import { gate } from "../attendee/gate/gate.svelte.js";
+import { isTicketRequired } from "./attendee-gate.js";
+import { STATEMENT_FORMAT } from "../social/social-core.js";
+
+export { kindForVariant } from "../social/social-core.js";
 import { isObservedCount, readCachedCount, rememberCount } from "../social/count-cache.js";
 
 export interface SocialState {
@@ -31,16 +37,6 @@ export interface SocialState {
   count: number | null;
 }
 
-/** A "follow" pill writes a follow; every other variant writes a like. */
-export function kindForVariant(variant: "heart" | "follow"): SocialKind {
-  return variant === "follow" ? "follow" : "like";
-}
-
-/** The statement format each kind tallies under, for the indexer query. */
-const FORMAT: Record<SocialKind, string> = {
-  like: "woco.like.v1",
-  follow: "woco.follow.v1",
-};
 
 /**
  * The public count, or null if nobody could tell us. Never throws: a count is
@@ -53,7 +49,7 @@ const FORMAT: Record<SocialKind, string> = {
 async function fetchCount(kind: SocialKind, subject: Hex0x): Promise<number | null> {
   try {
     const res = await get<{ count: number }>(
-      `/api/social/count?format=${encodeURIComponent(FORMAT[kind])}&subject=${encodeURIComponent(subject)}`,
+      `/api/social/count?format=${encodeURIComponent(STATEMENT_FORMAT[kind])}&subject=${encodeURIComponent(subject)}`,
     );
     // Same test the cache applies, deliberately: a display path that accepts a
     // number the cache would refuse renders a figure ("NaN followers") that no
@@ -98,9 +94,15 @@ export async function getSocialState(kind: SocialKind, subject: Hex0x): Promise<
 }
 
 /**
- * Toggle and persist. `null` means the user dismissed sign-in — the caller
- * reverts quietly rather than showing a failure, because nothing failed.
- * A genuine failure throws, so the button can show its retry state.
+ * Toggle and persist. `null` means the user dismissed sign-in or the unlock
+ * popup — the caller reverts quietly rather than showing a failure, because
+ * nothing failed. A genuine failure throws, so the button can show its retry
+ * state.
+ *
+ * Likes and follows need the same unlock as a name (the relay refuses them
+ * with `ticket_required`, apps/server/src/routes/swarm.ts). A known "locked"
+ * opens the unlock popup before anything is written; when the status was not
+ * known, the server's refusal opens it instead, and an unlock retries once.
  */
 export async function toggleSocial(
   kind: SocialKind,
@@ -109,9 +111,21 @@ export async function toggleSocial(
 ): Promise<SocialState | null> {
   const ready = await requireAccountForAction({ context: "attendee" });
   if (!ready) return null;
+  // The statement is signed by the content-feed signer, which a passkey account
+  // keeps on the device after its first unlock (#746), so this is silent. Where it
+  // is not here yet, it asks now, while this tap is still the gesture: after the
+  // gate's network read a browser may refuse the passkey sheet.
+  if (!(await auth.ensureContentSigner())) return null;
+
+  const status = gate.status ?? (await gate.refresh());
+  if (status && !status.gated && !(await gate.request())) return null;
 
   const next = !prevLiked;
-  const res = await writeMyStatement(kind, subject, next);
+  let res = await writeMyStatement(kind, subject, next);
+  if (!res.ok && isTicketRequired(res.error)) {
+    if (!(await gate.request())) return null;
+    res = await writeMyStatement(kind, subject, next);
+  }
   if (!res.ok) throw new Error(res.error);
 
   // Deliberately no count refetch. The statement has only just been relayed and

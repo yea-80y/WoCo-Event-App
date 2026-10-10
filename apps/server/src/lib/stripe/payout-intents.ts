@@ -30,8 +30,14 @@ export interface PayoutIntent {
   sessionIds: string[];
   /** Subset of sessionIds that were ceiling-forced, for the ledger flags. */
   forcedSessionIds: string[];
-  /** Minor units — the sum of the set's resolved nets at selection time. */
+  /** Minor units — the sum of the set's resolved nets at selection time, plus `recon`. */
   amount: number;
+  /**
+   * The part of `amount` no sale accounts for (#781 part 2): the balance's own
+   * shortfall or surplus against the ledger. Its row is written when the set is
+   * marked released, so a recovered intent writes it too.
+   */
+  recon?: { id: string; amount: number; organiserAddress: string };
   idempotencyKey: string;
   createdAt: string;
 }

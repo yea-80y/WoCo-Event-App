@@ -17,7 +17,7 @@
  * not stop it, and reopening shows where it got to.
  */
 
-import type { ServiceNoticeType } from "@woco/shared";
+import type { PacingPosition, ServiceNoticeType } from "@woco/shared";
 import { authPost, authGet } from "./client.js";
 import { apiError } from "./errors.js";
 
@@ -30,7 +30,16 @@ export type BroadcastJobState =
   | "completed"
   | "cancelled"
   | "died"
-  | "expired";
+  | "expired"
+  | "stopped";
+
+/** Why a live paced send is not sending right now (#619). */
+export interface BroadcastWaiting {
+  for: "next-batch" | "day-ceiling" | "bounce-hold" | "complaint-hold";
+  until?: string;
+  /** For a pause: the server's explanation, with its numbers. Shown verbatim. */
+  message?: string;
+}
 
 export interface BroadcastJobStatus {
   jobId: string;
@@ -58,6 +67,30 @@ export interface BroadcastJobStatus {
   /** True when re-running it would mail exactly the people who were missed. */
   resumable: boolean;
   note?: string;
+  /** Contacts already reached through WoCo — they go straight away. */
+  proven: number;
+  /** Contacts new to the platform — they go in paced batches (#619). */
+  unproven: number;
+  sentProven: number;
+  sentUnproven: number;
+  waiting?: BroadcastWaiting;
+}
+
+/** Where the organiser stands on the pacing ladder, for the composer's estimate. */
+export interface PacingInfo {
+  state: "open" | "held" | "stopped";
+  scope?: "new" | "all";
+  /** Set when sending is paused or stopped — shown verbatim. */
+  notice?: string;
+  position: PacingPosition;
+  rung: number;
+  batchSize: number;
+  dayRemaining: number;
+}
+
+export async function getPacing(): Promise<PacingInfo | null> {
+  const resp = await authGet<PacingInfo>("/api/broadcasts/pacing");
+  return resp.data ?? null;
 }
 
 export interface BroadcastRecipient {
@@ -165,7 +198,7 @@ export async function cancelBroadcastJob(jobId: string): Promise<BroadcastJobSta
 }
 
 export function isBroadcastFinished(job: BroadcastJobStatus): boolean {
-  return ["completed", "cancelled", "died", "expired"].includes(job.state);
+  return ["completed", "cancelled", "died", "expired", "stopped"].includes(job.state);
 }
 
 /**

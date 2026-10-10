@@ -39,7 +39,7 @@
       {#if email}
         <span class="ses-email-addr">{email}</span>
       {:else}
-        <span class="ses-email-addr ses-email-addr--unknown">your email</span>
+        <span class="ses-email-addr ses-email-addr--unknown">the address you entered</span>
       {/if}
     </div>
 

@@ -46,6 +46,7 @@ import {
   type Hex0x,
 } from "@woco/shared";
 import { readPublishedReport } from "./published-report.js";
+import { buildEnv } from "../build-env.js";
 
 /** The only statement format this page reads. Laps, not likes: the two tally
  *  families need different explanations of what their evidence proves, and one
@@ -386,9 +387,7 @@ export function resolveCoaster(
  * it used so re-running the count needs no cooperation from us.
  */
 export function indexerBase(): string {
-  // Guarded rather than bare: the pure half of this module is exercised under
-  // plain node, where `import.meta.env` does not exist at all.
-  return import.meta.env?.VITE_API_URL || "";
+  return buildEnv(() => import.meta.env.VITE_API_URL as string | undefined) || "";
 }
 
 export function manifestUrl(subject: Hex0x, base = indexerBase()): string {

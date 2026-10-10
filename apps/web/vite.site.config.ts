@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { nodePolyfills } from 'vite-plugin-node-polyfills'
+import { noEnvObject } from './vite-plugins/no-env-object'
 
 /**
  * Vite config for generating the site-builder output.
@@ -11,7 +12,6 @@ import { nodePolyfills } from 'vite-plugin-node-polyfills'
  *   VITE_API_URL       — organiser's self-hosted backend URL
  *   VITE_GATEWAY_URL   — Swarm gateway for image/asset serving
  *   VITE_EVENT_ID      — the specific event to display
- *   VITE_PARA_API_KEY  — Para wallet API key
  */
 export default defineConfig({
   base: './',
@@ -20,6 +20,7 @@ export default defineConfig({
   plugins: [
     nodePolyfills({ globals: { Buffer: true, process: true } }),
     svelte(),
+    noEnvObject(),
   ],
   build: {
     outDir: 'dist-site',

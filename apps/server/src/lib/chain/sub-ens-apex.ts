@@ -28,7 +28,7 @@ export interface ApexContenthash {
  * environment or the module cache.
  *
  * A `0x` prefix is REFUSED rather than stripped: the var is documented as the
- * bare reference `updateSubEnsContenthash` takes, and quietly normalising a
+ * bare reference a pointer write takes, and quietly normalising a
  * value that does not match the documented shape hides the one mistake worth
  * catching — a hash pasted from somewhere it is not the same hash.
  */

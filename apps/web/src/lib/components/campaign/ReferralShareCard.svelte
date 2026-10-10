@@ -1,41 +1,29 @@
 <!--
   ReferralShareCard — the user's referral link, on their own profile.
 
-  The link prefers a WoCo sub-ENS name the sharer owns (`#/ref/theirvenue`) and
-  falls back to their address. That is not cosmetic: the name is what the
-  RECIPIENT is shown when they land, so a named organiser's invite says who they
-  are instead of forty hex characters.
+  The link carries the sharer's PROFILE name once the chain confirms it
+  (`#/ref/theirvenue`), and their address otherwise. That is not cosmetic: the
+  name is what the RECIPIENT is shown when they land, and an address link shows
+  them no name at all. Never another name they own: a site or event name would
+  read as that page inviting.
 
-  No longer zero-fetch, deliberately. It costs one authenticated read of names
-  the organiser already owns, on a profile screen that is already fetching. The
-  address link paints first and is swapped only if a name comes back, so a
-  failed or slow lookup degrades to exactly the previous behaviour rather than
-  to an empty card.
+  The address link works from first paint and is swapped only if a name comes
+  back, so a failed or slow lookup still leaves a working card. The link is
+  printed only once it is a name; an address link is copied, never shown.
 -->
 <script lang="ts">
   import type { Hex0x } from "@woco/shared";
   import { onMount } from "svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { referralLink } from "../../api/campaign.js";
+  import { verifiedProfileName } from "../../sub-ens/profile-name.js";
 
   let copied = $state(false);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
   let ensLabel = $state<string | null>(null);
 
-  onMount(async () => {
-    if (!auth.parent) return;
-    try {
-      const { getOwnedSubEns } = await import("../../api/sub-ens.js");
-      const resp = await getOwnedSubEns();
-      // Sorted so a sharer with several names gets a STABLE link — a referral
-      // link that changes between visits is one people cannot recognise as
-      // theirs, and old copies of it must keep working anyway (they do: the
-      // router resolves whichever name was shared).
-      const names = [...(resp.data?.names ?? [])].map((n) => n.label).sort();
-      ensLabel = names[0] ?? null;
-    } catch {
-      // Falls back to the address link — the card is never empty.
-    }
+  onMount(() => {
+    if (auth.parent) void verifiedProfileName(auth.parent).then((name) => { ensLabel = name; });
   });
 
   const link = $derived(
@@ -55,7 +43,7 @@
       clearTimeout(copyTimer);
       copyTimer = setTimeout(() => (copied = false), 2000);
     } catch {
-      // Clipboard unavailable — the link is selectable text either way.
+      // Clipboard unavailable — a name link is selectable text either way.
     }
   }
 </script>
@@ -66,11 +54,11 @@
     <h3>Bring a venue on board</h3>
     <p>
       Know someone who runs events? When they join through your link and start selling,
-      you earn a share of the platform fee on every sale — recorded on-chain, paid on
-      real revenue.
+      you earn a share of the platform fee on every sale, paid monthly in stablecoin once
+      each event has taken place and the organiser has been paid.
     </p>
     <div class="link-row">
-      <span class="link mono" title={link}>{displayLink}</span>
+      {#if ensLabel}<span class="link mono" title={link}>{displayLink}</span>{/if}
       <button class="copy-btn" onclick={copy} aria-live="polite">
         {copied ? "Copied" : "Copy link"}
       </button>
@@ -124,6 +112,7 @@
     user-select: all;
   }
   .copy-btn {
+    min-height: 2.125rem;
     font-family: var(--font-display);
     font-weight: 600;
     font-size: 0.8125rem;

@@ -50,7 +50,7 @@ import {
 } from "@woco/shared";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import type { VersionedFeedRead } from "@woco/shared";
+import type { FeedFamily, VersionedFeedRead } from "@woco/shared";
 import { readBandedContentFeedJsonResult, readContentFeedJsonResult } from "../swarm/soc-upload.js";
 import { participantsFor } from "./participants.js";
 
@@ -142,10 +142,32 @@ export const FORMAT_BANDING: Record<IndexableFormat, "banded" | "pinned"> = {
  * feeds postdate versioning, and an absent participant would otherwise cost one
  * guaranteed missing-chunk search each, on every pass.
  */
-const readPinnedBandFeed: StatementFeedReader = async (ownerHex, topicForBand) => {
-  const res = await readContentFeedJsonResult(ownerHex, topicForBand(0), 0, { skipLegacy: true });
-  return { ...res, band: 0 };
+function readPinnedBandFeed(family: FeedFamily): StatementFeedReader {
+  return async (ownerHex, topicForBand) => {
+    const res = await readContentFeedJsonResult(ownerHex, topicForBand(0), family, { skipLegacy: true });
+    return { ...res, band: 0 };
+  };
+}
+
+/**
+ * The family each format's statements live in (#657), so a read asks the store
+ * the shared table names. Likes and follows moved to Etherna in #689 while this
+ * indexer still asked only our bee (plus an Etherna fallback that scored an
+ * Etherna failure as "said nothing"); now an Etherna failure is `unreadable`, a
+ * gap the evidence names, never a silent drop from the count.
+ */
+export const FORMAT_FAMILY: Record<IndexableFormat, FeedFamily> = {
+  "woco.credit.v1": "credits",
+  "woco.like.v1": "social",
+  "woco.follow.v1": "social",
 };
+
+function liveReader(format: IndexableFormat): StatementFeedReader {
+  const family = FORMAT_FAMILY[format];
+  return FORMAT_BANDING[format] === "banded"
+    ? (ownerHex, topicForBand) => readBandedContentFeedJsonResult(ownerHex, topicForBand, family)
+    : readPinnedBandFeed(family);
+}
 
 /**
  * A subject's topic FAMILY, one topic per band.
@@ -229,8 +251,7 @@ export async function indexSubject(
   subject: Hex0x,
   readFeed?: StatementFeedReader,
 ): Promise<IndexResult> {
-  const read = readFeed
-    ?? (FORMAT_BANDING[format] === "banded" ? readBandedContentFeedJsonResult : readPinnedBandFeed);
+  const read = readFeed ?? liveReader(format);
   const participants = participantsFor(format, subject);
   const topics = topicForBand(format, subject);
   const unreadable: string[] = [];

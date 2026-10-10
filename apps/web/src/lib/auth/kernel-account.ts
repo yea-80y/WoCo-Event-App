@@ -30,19 +30,21 @@ import { arbitrum, arbitrumSepolia } from "viem/chains";
 import type { KernelValidator } from "@zerodev/sdk/types";
 import type { CreateKernelAccountReturnType, KernelAccountClient } from "@zerodev/sdk";
 import type { EIP712Signer } from "@woco/shared";
-import { StorageKeys, EAS_ADDRESS, KERNEL_CHAIN_ID, type KernelChainId } from "@woco/shared";
-import { EAS_SESSION_ABI } from "../eas/eas-abi.js";
-import { ensureDeviceKey, encrypt, decrypt, AAD } from "./storage/encryption.js";
+import { KERNEL_CHAIN_ID, type KernelChainId } from "@woco/shared";
 import { sponsoredPaymasterHooks } from "./sponsored-paymaster.js";
-import { getKV, putKV, delKV } from "./storage/indexeddb.js";
 import {
   KERNEL_SELECTOR_CONFIG_ABI,
   RECOVERY_EXECUTOR_FN,
   buildRegisterGuardianCallData,
-  buildUninstallRecoveryCallData,
+  buildRemoveRecoveryCalls,
   recoveryRouteSelector,
 } from "./recovery-route.js";
 import type { GuardianConfig } from "./guardian-config.js";
+import {
+  readRouteNoOlderThan,
+  rememberLandingBlock,
+  type PinnedRouteRead,
+} from "./recovery-landing-block.js";
 import { assertGuardianAddressAgrees } from "./guardian-address.js";
 import {
   LEGACY_HOOK_ALLOWED_ABI,
@@ -82,9 +84,6 @@ const KERNEL_CHAINS = {
 
 export const KERNEL_CHAIN: Chain = KERNEL_CHAINS[KERNEL_CHAIN_ID satisfies KernelChainId];
 
-/** Scoped session-key lifetime — mirrors the 30-day HTTP session window. */
-const SESSION_KEY_TTL_SECONDS = 30 * 24 * 60 * 60;
-
 /**
  * Total gas budget (wei) the scoped session key may consume across all its
  * userOps (the GasPolicy `allowed` cap). 0.2 ETH-equivalent — effectively
@@ -103,7 +102,8 @@ type KernelAccount = CreateKernelAccountReturnType<"0.7">;
  */
 export interface KernelSudoValidator {
   validator: KernelValidator;
-  kind: "ecdsa" | "passkey";
+  /** `weighted`: the account's passkeys are co-owners (#746) and this key is one of them. */
+  kind: "ecdsa" | "passkey" | "weighted";
 }
 
 export interface BuiltKernel {
@@ -112,6 +112,10 @@ export interface BuiltKernel {
   account: KernelAccount;
   kernelClient: KernelAccountClient;
   sudo: KernelSudoValidator;
+  /** Set when the build read the account's root on chain and chose its validator from it;
+   *  absent for a build that assumed the ECDSA root (sign-in), which `_ensureKernel`
+   *  checks before the first signature. */
+  rootChecked?: boolean;
 }
 
 function getRpcUrl(): string {
@@ -138,8 +142,9 @@ function getRpcUrl(): string {
  */
 export async function buildKernelFromPrivateKey(
   privateKey: string,
-  opts?: { address?: string },
+  opts?: { address?: string; root?: "ecdsa" | "weighted" },
 ): Promise<BuiltKernel> {
+  if (opts?.root === "weighted") return buildCoOwnerKernel(privateKey, opts.address);
   const [
     { createPublicClient, http },
     { privateKeyToAccount },
@@ -178,6 +183,13 @@ export async function buildKernelFromPrivateKey(
     kernelVersion,
     ...(opts?.address ? { address: opts.address as Address } : {}),
   });
+  // The SDK takes the address from an RPC's `getSenderAddress` revert, and on first
+  // login that answer becomes the user's permanent identity. Recompute it locally
+  // (pure CREATE2 at EntryPoint 0.7 - the same function the server authorizes
+  // sessions against, kernel-owner.ts) so a lying RPC cannot hand us an account (#186).
+  if (!opts?.address && (await counterfactualKernelOf(signer.address)) !== account.address.toLowerCase()) {
+    throw new Error("This account's address doesn't match its key - refusing to sign in.");
+  }
 
   const paymaster = createZeroDevPaymasterClient({
     chain: KERNEL_CHAIN,
@@ -197,6 +209,60 @@ export async function buildKernelFromPrivateKey(
     account,
     kernelClient,
     sudo,
+    ...(opts?.root === "ecdsa" ? { rootChecked: true } : {}),
+  };
+}
+
+/**
+ * A co-owned account (#746): its root is the weighted validator and this key is one
+ * of its signers. Always at a known, deployed address - an account becomes co-owned
+ * only by the switch, which deploys it - so there is no counterfactual to derive and
+ * the validator needs no enable data. One local signer: any one is enough.
+ */
+async function buildCoOwnerKernel(privateKey: string, address: string | undefined): Promise<BuiltKernel> {
+  if (!address) throw new Error("A co-owned account is always opened at its own address.");
+  const [
+    { createPublicClient, http },
+    { privateKeyToAccount },
+    { createKernelAccount, createKernelAccountClient, createZeroDevPaymasterClient },
+    { getEntryPoint, KERNEL_V3_1 },
+    { createWeightedECDSAValidator },
+  ] = await Promise.all([
+    import("viem"),
+    import("viem/accounts"),
+    import("@zerodev/sdk"),
+    import("@zerodev/sdk/constants"),
+    import("@zerodev/weighted-ecdsa-validator"),
+  ]);
+  const rpcUrl = getRpcUrl();
+  const entryPoint = getEntryPoint("0.7");
+  const kernelVersion = KERNEL_V3_1;
+  const publicClient = createPublicClient({ chain: KERNEL_CHAIN, transport: http(rpcUrl) });
+  const validator = await createWeightedECDSAValidator(publicClient, {
+    entryPoint,
+    kernelVersion,
+    signers: [privateKeyToAccount(privateKey as Address)],
+  });
+  const account = await createKernelAccount(publicClient, {
+    plugins: { sudo: validator },
+    entryPoint,
+    kernelVersion,
+    address: address as Address,
+  });
+  const paymaster = createZeroDevPaymasterClient({ chain: KERNEL_CHAIN, transport: http(rpcUrl) });
+  const kernelClient = createKernelAccountClient({
+    account,
+    chain: KERNEL_CHAIN,
+    bundlerTransport: http(rpcUrl),
+    client: publicClient,
+    paymaster: sponsoredPaymasterHooks((args) => paymaster.sponsorUserOperation(args)),
+  });
+  return {
+    address: account.address.toLowerCase(),
+    account,
+    kernelClient,
+    sudo: { validator: validator as unknown as KernelValidator, kind: "weighted" },
+    rootChecked: true,
   };
 }
 
@@ -233,9 +299,12 @@ export function createKernelTypedDataSigner(account: KernelAccount): EIP712Signe
 // identity, can do nothing but the one call it was scoped to until it expires.
 // This is invariant #3: scoped, never sudo.
 //
-// ONE such key survives: the EAS likes/following key below. The sub-ENS
-// registerWithPermit key was deleted with the gasless mint rail (#501) — every
-// name is minted by the WoCo sponsor wallet, for every login kind.
+// NO device-resident scoped key survives. The sub-ENS registerWithPermit key
+// went with the gasless mint rail (#501) — every name is minted by the WoCo
+// sponsor wallet — and the referral campaign's EAS key went with the EAS rail
+// (#476). What remains below is the shop SPEND PERMISSION, which is the same
+// policy machinery used the other way round: the blob it produces is an
+// approval, sudo-signed and handed to the venue, and holds no private key.
 // ---------------------------------------------------------------------------
 
 /** Shared ZeroDev/viem runtime bits for the session-key path (lazy-loaded). */
@@ -335,7 +404,7 @@ export interface ShopSpendGrantArgs {
 /**
  * Build + sudo-sign a spend-permission approval for the venue spender and return
  * the serialized blob (no private key). ONE passkey ceremony — the sudo signer
- * is the already-unlocked PRF Kernel, same as createEasSessionKey.
+ * is the already-unlocked PRF Kernel.
  *
  * On-chain constraints embedded in the approval (the trustless backstop):
  *  - call policy: target = USDC, fn = transfer, arg `to` EQUAL merchant,
@@ -415,196 +484,6 @@ export async function grantShopSpendPermission(args: ShopSpendGrantArgs): Promis
 }
 
 /**
- * Address embedded in a stored serialized permission-account blob, or null when
- * the blob is missing, was encrypted for a different Kernel (AAD mismatch), or
- * doesn't parse. Cheap: decrypt + JSON only — no account deserialization, no RPC.
- * The serialized format is @zerodev/permissions' base64(JSON) with
- * `accountParams.accountAddress` (the userOp sender the blob will act as).
- */
-function extractSessionAccountAddress(serialized: string): string | null {
-  try {
-    const bytes = Uint8Array.from(atob(serialized), (c) => c.codePointAt(0) ?? 0);
-    const params = JSON.parse(new TextDecoder().decode(bytes)) as {
-      accountParams?: { accountAddress?: string };
-    };
-    return params?.accountParams?.accountAddress?.toLowerCase() ?? null;
-  } catch {
-    return null;
-  }
-}
-
-async function storedSessionKeyAddress(
-  storageKey: string,
-  aad: string,
-): Promise<string | null> {
-  const blob = await getKV<import("@woco/shared").EncryptedBlob>(storageKey);
-  if (!blob) return null;
-  try {
-    const deviceKey = await ensureDeviceKey();
-    return extractSessionAccountAddress(await decrypt<string>(deviceKey, aad, blob));
-  } catch {
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// EAS likes/following session key (#4) — the only scoped session key left.
-// Pinned to EAS attest + revoke by 4-byte SELECTOR, not the deeply-nested
-// AttestationRequest ABI: that nested tuple in enable-data is what broke
-// paymaster gas estimation, and while these permissions shared a key with the
-// sub-ENS mint it poisoned that too. Selector-only keeps the enable-data flat.
-// It keeps its own slot (WOCO_AA_EAS_SESSION) and its own AAD.
-// ---------------------------------------------------------------------------
-
-/** 4-byte selectors for EAS attest/revoke, derived from the canonical ABI. */
-async function easSelectors(): Promise<{ attest: Hex; revoke: Hex }> {
-  const { toFunctionSelector } = await import("viem");
-  const attest = EAS_SESSION_ABI.find((i) => i.type === "function" && i.name === "attest");
-  const revoke = EAS_SESSION_ABI.find((i) => i.type === "function" && i.name === "revoke");
-  if (!attest || !revoke) throw new Error("EAS_SESSION_ABI missing attest/revoke");
-  return {
-    attest: toFunctionSelector(attest),
-    revoke: toFunctionSelector(revoke),
-  };
-}
-
-/**
- * Mint a fresh EAS session key for the Kernel — selector-scoped to EAS
- * attest+revoke only — serialize, encrypt (AAD-bound to the Kernel), and persist
- * to its own IndexedDB slot. One passkey ceremony: the in-memory PRF sudo
- * signs the enable data, so no extra prompt beyond the one that unlocked it.
- */
-export async function createEasSessionKey(builtKernel: BuiltKernel): Promise<string> {
-  const d = await loadSessionDeps();
-  const sel = await easSelectors();
-
-  const sessionPk = d.generatePrivateKey();
-  const sessionSigner = await d.toECDSASigner({ signer: d.privateKeyToAccount(sessionPk) });
-  const validUntil = Math.floor(Date.now() / 1000) + SESSION_KEY_TTL_SECONDS;
-
-  const policies = [
-    d.toCallPolicy({
-      policyVersion: d.CallPolicyVersion.V0_0_5,
-      // Selector-only (PermissionManual): target + 4-byte selector, NO abi —
-      // keeps the nested AttestationRequest tuple out of enable-data.
-      permissions: [
-        { target: EAS_ADDRESS as Address, selector: sel.attest },
-        { target: EAS_ADDRESS as Address, selector: sel.revoke },
-      ],
-    }),
-    d.toGasPolicy({ allowed: SESSION_GAS_ALLOWANCE_WEI }),
-    d.toTimestampPolicy({ validUntil }),
-  ];
-
-  const permissionPlugin = await d.toPermissionValidator(d.publicClient, {
-    signer: sessionSigner,
-    policies,
-    entryPoint: d.entryPoint,
-    kernelVersion: d.kernelVersion,
-  });
-
-  const sessionAccount = await d.createKernelAccount(d.publicClient, {
-    plugins: { sudo: builtKernel.sudo.validator, regular: permissionPlugin },
-    entryPoint: d.entryPoint,
-    kernelVersion: d.kernelVersion,
-    // Pin to the built Kernel's address — a recovered
-    // account's attester must be the preserved Kernel, not the rotated sudo
-    // key's counterfactual. This was the 2026-07-10 likes split-brain: the
-    // attestation landed from a freshly-deployed wrong-address Kernel while the
-    // HTTP session authenticated the real account, so /api/likes/record 403'd.
-    address: builtKernel.address as Address,
-  });
-
-  const serialized = await d.serializePermissionAccount(sessionAccount, sessionPk);
-  const deviceKey = await ensureDeviceKey();
-  const blob = await encrypt(deviceKey, AAD.WOCO_AA_EAS_SESSION(builtKernel.address), serialized);
-  await putKV(StorageKeys.WOCO_AA_EAS_SESSION, blob);
-
-  return sessionAccount.address.toLowerCase();
-}
-
-/** True if an EAS session key usable by THIS Kernel is persisted on this
- *  device. A blob for a DIFFERENT Kernel (an account switch, or a pre-pinning
- *  recovered-account blob) reports false so the caller re-mints. */
-export async function hasEasSessionKey(kernelAddress: string): Promise<boolean> {
-  const stored = await storedSessionKeyAddress(
-    StorageKeys.WOCO_AA_EAS_SESSION,
-    AAD.WOCO_AA_EAS_SESSION(kernelAddress),
-  );
-  return stored === kernelAddress.toLowerCase();
-}
-
-/** Drop the persisted EAS session key (logout / identity switch). */
-export async function clearEasSessionKey(): Promise<void> {
-  await delKV(StorageKeys.WOCO_AA_EAS_SESSION);
-}
-
-/**
- * Rebuild a gasless Kernel client backed by the stored EAS session key — no
- * passkey prompt. Returns null when none is stored. Decryption is AAD-bound to
- * `kernelAddress`, so a key minted by a different Kernel will not open.
- */
-export async function getEasSessionClient(
-  kernelAddress: string,
-): Promise<KernelAccountClient | null> {
-  const blob = await getKV<import("@woco/shared").EncryptedBlob>(StorageKeys.WOCO_AA_EAS_SESSION);
-  if (!blob) return null;
-
-  const d = await loadSessionDeps();
-  const deviceKey = await ensureDeviceKey();
-  let serialized: string;
-  try {
-    serialized = await decrypt<string>(deviceKey, AAD.WOCO_AA_EAS_SESSION(kernelAddress), blob);
-  } catch {
-    // AAD mismatch — the blob belongs to a different Kernel (account switch
-    // without logout). Unusable for this identity; wipe so the caller re-mints.
-    await clearEasSessionKey();
-    return null;
-  }
-
-  const sessionAccount = await d.deserializePermissionAccount(
-    d.publicClient,
-    d.entryPoint,
-    d.kernelVersion,
-    serialized,
-  );
-
-  // Heal: a pre-pinning blob for a recovered
-  // account would attest from the wrong Kernel — discard so the caller
-  // re-mints against the active address.
-  if (sessionAccount.address.toLowerCase() !== kernelAddress.toLowerCase()) {
-    console.warn(
-      "[kernel] stored EAS session key is for",
-      sessionAccount.address,
-      "not the active Kernel",
-      kernelAddress,
-      "— discarding",
-    );
-    await clearEasSessionKey();
-    return null;
-  }
-
-  const paymaster = d.createZeroDevPaymasterClient({
-    chain: KERNEL_CHAIN,
-    transport: d.http(d.rpcUrl),
-  });
-
-  return d.createKernelAccountClient({
-    account: sessionAccount,
-    chain: KERNEL_CHAIN,
-    bundlerTransport: d.http(d.rpcUrl),
-    client: d.publicClient,
-    paymaster: sponsoredPaymasterHooks((args) => paymaster.sponsorUserOperation(args)),
-  });
-}
-
-/**
- * Send a gasless userOp through a WoCo session-key Kernel client — the single
- * choke point every session-key action goes through (today: EAS like/follow),
- * so send + receipt handling lives in one place. Returns the userOp hash + full
- * receipt (callers read txHash; EAS reads logs for the attestation UID).
- */
-/**
  * ZeroDev incident workaround (2026-06): their RPC intermittently returns a
  * stub verificationGasLimit of 1 from gas estimation, which their own bundler
  * then rejects ("verificationGasLimit must be at least 10000"). An explicitly
@@ -613,12 +492,13 @@ export async function getEasSessionClient(
  * sponsorship stays valid.
  *
  * Ceiling sized for the WORST case: a brand-new account's FIRST userOp, which
- * deploys the Kernel AND runs session-key enable-mode validation with the heavy
- * EAS call policy in a single simulateValidation. That path measured ~3M; 800k
- * (fine for already-deployed "use mode" ops) reverted with AA26 over
- * verificationGasLimit on first like/follow. Same latent ceiling as the agent
- * commerce / shop rail (project_agent_commerce_aa23). Sponsored + only the limit,
- * not the spend — unused verification gas is not charged.
+ * deploys the Kernel AND runs session-key enable-mode validation in a single
+ * simulateValidation. Measured on the retired attestation rail, whose call
+ * policy that path enabled: ~3M succeeded, while 800k (fine for already-deployed
+ * "use mode" ops) reverted with AA26 over verificationGasLimit on the first
+ * write. Same latent ceiling as the agent commerce / shop rail
+ * (project_agent_commerce_aa23). Sponsored + only the limit, not the spend —
+ * unused verification gas is not charged.
  *
  * 2026-07 ZeroDev TAM response: could not reproduce; estimation now returns
  * healthy values (~660k on a fresh enable-mode op) and they recommend
@@ -663,41 +543,13 @@ function isStubVerificationGasError(err: unknown): boolean {
   return false;
 }
 
-export async function sendSessionUserOp(
-  client: KernelAccountClient,
-  calls: { to: Address; data: Hex; value?: bigint }[],
-): Promise<{
-  userOpHash: Hex;
-  receipt: Awaited<ReturnType<KernelAccountClient["waitForUserOperationReceipt"]>>;
-}> {
-  let userOpHash: Hex;
-  try {
-    userOpHash = await client.sendUserOperation({ calls });
-  } catch (err) {
-    if (!isStubVerificationGasError(err)) throw err;
-    // Full error (contains the rejected userOp JSON) — evidence for the ZeroDev ticket.
-    console.warn("[kernel] stub verificationGasLimit — failing request was:", err);
-    console.warn(
-      "[kernel] retrying with explicit verificationGasLimit",
-      VERIFICATION_GAS_FALLBACK,
-    );
-    userOpHash = await client.sendUserOperation({
-      calls,
-      verificationGasLimit: VERIFICATION_GAS_FALLBACK,
-    });
-  }
-  const receipt = await client.waitForUserOperationReceipt({ hash: userOpHash });
-  assertUserOpSucceeded(userOpHash, receipt);
-  return { userOpHash, receipt };
-}
-
 // ---------------------------------------------------------------------------
 // Account recovery (docs/PASSKEY_RECOVERY_PLAN.md) — guardian-gated signer
 // rotation, so a passkey Kernel can safely HOLD funds. The sudo signer (ECDSA
 // over PRF) is unchanged for daily use; recovery is a SEPARATE escape path.
 //
-// DEPLOYED-account model (the realistic WoCo case — sub-ENS / likes already
-// deploy these Kernels), verified end-to-end on Arb Sepolia (the chain the
+// DEPLOYED-account model (the realistic WoCo case — sub-ENS and referrals
+// already deploy these Kernels), verified end-to-end on Arb Sepolia (the chain the
 // Kernel ran on before #489) by
 // scripts/recovery-spike-caller-hook.ts (recovery tx 0x17f0622…, address
 // preserved, old key dead): install the recovery ACTION as a fallback module
@@ -808,7 +660,7 @@ export async function deriveGuardianAddress(config: GuardianConfig): Promise<str
   return assertGuardianAddressAgrees(config, account.address);
 }
 
-/** Send a sudo-signed userOp through the built Kernel, with the same stub-verificationGas retry as sendSessionUserOp. */
+/** Send a sudo-signed userOp through the built Kernel, with the stub-verificationGas retry above. */
 async function sendSudoUserOp(
   client: KernelAccountClient,
   op: { callData?: Hex; calls?: { to: Address; data: Hex; value?: bigint }[]; callGasLimit?: bigint },
@@ -848,7 +700,7 @@ export async function setupRecovery(
   builtKernel: BuiltKernel,
   guardianAddress: string,
   opts: { expectedGuardiansAfter: string[] },
-): Promise<{ userOpHash: string; txHash: string }> {
+): Promise<{ userOpHash: string; txHash: string; blockNumber?: bigint }> {
   const d = await loadRecoveryDeps();
   const callData = buildRegisterGuardianCallData(d, guardianAddress as Address);
   const { userOpHash, txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, { callData });
@@ -872,7 +724,11 @@ export async function setupRecovery(
     );
   }
   await assertGuardianSetAfterWrite(builtKernel.address, opts.expectedGuardiansAfter, blockNumber, txHash);
-  return { userOpHash, txHash };
+  // This device has now SEEN this account's route change, so no later read of it may
+  // be answered by a replica that predates this block (#510). Recorded here, at the
+  // one place the change is proven, so no caller can forget it.
+  if (blockNumber !== undefined) rememberLandingBlock(builtKernel.address, blockNumber);
+  return { userOpHash, txHash, blockNumber };
 }
 
 /**
@@ -925,7 +781,7 @@ export async function addGuardianOnChain(
   builtKernel: BuiltKernel,
   guardianAddress: string,
   opts: { expectedGuardiansAfter: string[] },
-): Promise<{ userOpHash: string; txHash: string }> {
+): Promise<{ userOpHash: string; txHash: string; blockNumber?: bigint }> {
   const d = await loadRecoveryDeps();
   const { userOpHash, txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
     calls: [buildAddGuardianCall(d.encodeFunctionData, guardianAddress as Address)],
@@ -944,7 +800,8 @@ export async function addGuardianOnChain(
     );
   }
   await assertGuardianSetAfterWrite(builtKernel.address, opts.expectedGuardiansAfter, blockNumber, txHash);
-  return { userOpHash, txHash };
+  if (blockNumber !== undefined) rememberLandingBlock(builtKernel.address, blockNumber);
+  return { userOpHash, txHash, blockNumber };
 }
 
 /**
@@ -955,7 +812,7 @@ export async function addGuardianOnChain(
 export async function revokeGuardianOnChain(
   builtKernel: BuiltKernel,
   guardianAddress: string,
-): Promise<{ userOpHash: string; txHash: string }> {
+): Promise<{ userOpHash: string; txHash: string; blockNumber?: bigint }> {
   const d = await loadRecoveryDeps();
   const { userOpHash, txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
     calls: [buildRevokeGuardianCall(d.encodeFunctionData, guardianAddress as Address)],
@@ -973,15 +830,14 @@ export async function revokeGuardianOnChain(
         "reopen this screen in a moment to check before assuming either way.",
     );
   }
-  return { userOpHash, txHash };
+  if (blockNumber !== undefined) rememberLandingBlock(builtKernel.address, blockNumber);
+  return { userOpHash, txHash, blockNumber };
 }
 
-// --- Removing recovery (#165) ----------------------------------------------
+// --- Removing recovery (#165, #571) ------------------------------------------
 //
-// There is NO per-guardian revoke. The ZeroDev caller hook's `onInstall` ORs each
-// guardian into `allowed[guardian][kernel]` and nothing ever clears it, so a
-// replaced backup keeps permanent takeover power (#148). What CAN be removed is
-// the SELECTOR ROUTE itself, which sits in front of every guardian:
+// What disables EVERY guardian at once is removing the SELECTOR ROUTE, which sits
+// in front of all of them:
 //
 //   Kernel.sol:454-456   uninstallModule(3, …) → _uninstallSelector(bytes4(deInitData[0:4]), deInitData[4:])
 //   SelectorManager:63-73 zeroes hook, target and callType for that selector
@@ -992,10 +848,13 @@ export async function revokeGuardianOnChain(
 // `zerodevapp/kernel@release/v3.1`, and the live account reports
 // `accountId() == "kernel.advanced.v0.3.1"`.
 //
-// TWO THINGS THIS DOES NOT DO, and the product must not claim otherwise:
+// TWO THINGS THE UNINSTALL ALONE DOES NOT DO, and the product must not claim otherwise:
 //  - `_uninstallSelector` discards the hook it returns and never calls its
-//    `onUninstall`, so `allowed[…]` survives. RE-INSTALLING against the same hook
-//    address resurrects every past guardian.
+//    `onUninstall`, so the hook's own storage survives. For the legacy ZeroDev hook
+//    that is `allowed[…]`, which nothing can clear, so no install ever names that
+//    hook again (#148). For the WoCo hook it is the guardian set, which a later
+//    install keeps unless it carries the 0xff flag, so `removeAllBackups` empties
+//    the set in the same batch (#571).
 //  - it cannot un-disclose the escrow: each guardian's SOC still holds a bundle
 //    sealed to it (identitySeed + feed-signer key). Removal ends TAKEOVER, not the
 //    secrets a backup was already given.
@@ -1110,6 +969,35 @@ export async function readRecoveryRoute(
   }
 }
 
+/**
+ * THE route read for the backup-management surface (#510) — route + WoCo guardian
+ * set, both answered at ONE block that is no older than the last recovery write
+ * this device saw. A replica behind that bound yields `unknown`, never `absent`.
+ *
+ * Use this and not `readRecoveryRoute` wherever a read decides what to SHOW or
+ * what to WRITE: bare `readRecoveryRoute` at "latest" is the read that lets one
+ * lagging replica turn "add another backup" into an install that drops the first
+ * (`recovery-landing-block.ts` has the full sequence). The bare form stays for
+ * reads that already carry their own pin — every post-write read-back does.
+ */
+export async function readRecoveryRouteNoOlderThan(kernelAddress: string): Promise<PinnedRouteRead> {
+  return readRouteNoOlderThan(kernelAddress, {
+    headBlock: async () => {
+      const { createPublicClient, http } = await import("viem");
+      const publicClient = createPublicClient({ chain: KERNEL_CHAIN, transport: http(getRpcUrl()) });
+      // Same guard readRecoveryRoute applies: a wrong-chain RPC's block height is
+      // not this chain's, and pinning to it would be nonsense. Throwing here is
+      // read as unreadable, which is the honest answer.
+      if (!(await isConfiguredChain(publicClient))) {
+        throw new Error(`RPC does not serve chain ${KERNEL_CHAIN_ID}`);
+      }
+      return publicClient.getBlockNumber();
+    },
+    readRoute: readRecoveryRoute,
+    readSet: readGuardianSet,
+  });
+}
+
 export interface RemoveAllBackupsResult {
   /** The account is not deployed, so no route can exist and no userOp was sent. */
   alreadyAbsent: boolean;
@@ -1119,13 +1007,14 @@ export interface RemoveAllBackupsResult {
 
 /**
  * "Remove all backups" — one sudo userOp that uninstalls the `doRecovery` route,
- * disabling EVERY registered guardian at once (per-guardian revoke does not exist).
+ * disabling EVERY registered guardian at once, and empties the WoCo hook's set in
+ * the same batch so no later install can revive it (#571; `buildRemoveRecoveryCalls`).
  *
  * Success is proven by an on-chain READ-BACK, never by the transaction: Kernel
  * does not revert when the selector was never installed, so a green receipt says
- * nothing about whether anything was removed. Throws if the route survives, and
- * throws if the chain cannot be re-read afterwards — an unverified removal must
- * never be reported as done.
+ * nothing about whether anything was removed. Throws if the route or any listed
+ * guardian survives, and throws if the chain cannot be re-read afterwards — an
+ * unverified removal must never be reported as done.
  *
  * WHY IT SENDS THE USEROP EVEN WHEN THE ROUTE LOOKS ABSENT. `getCode` and
  * `selectorConfig` are answers from ONE load-balanced RPC, not chain truth. A
@@ -1146,7 +1035,10 @@ export async function removeAllBackups(
   builtKernel: BuiltKernel,
   opts: { expectInstalled?: boolean } = {},
 ): Promise<RemoveAllBackupsResult> {
-  const before = await readRecoveryRoute(builtKernel.address);
+  // PINNED (#510): at "latest" a replica behind this device's last recovery write
+  // could answer "no code" for a deployed account, which `expectInstalled` would
+  // then report as a contradiction to a user whose removal was perfectly possible.
+  const { route: before } = await readRecoveryRouteNoOlderThan(builtKernel.address);
   if (before.deployed === false) {
     if (opts.expectInstalled) {
       throw new Error(
@@ -1159,7 +1051,7 @@ export async function removeAllBackups(
 
   const d = await loadRecoveryDeps();
   const { userOpHash, txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
-    callData: buildUninstallRecoveryCallData(d),
+    calls: buildRemoveRecoveryCalls(d, builtKernel.address as Address),
   });
 
   // PINNED to the block the uninstall landed in. Asked at "latest", this read can
@@ -1181,7 +1073,317 @@ export async function removeAllBackups(
         "reopen this screen in a moment to check before assuming either way.",
     );
   }
+  // A gone route is not the whole removal (#571): the hook's set must be empty too,
+  // or a later install that lacks the 0xff flag would bring it back. Read at the SAME
+  // block, from the hook's own storage, for the reason every write here does.
+  const set = await readGuardianSet(builtKernel.address, blockNumber);
+  if (set.state === "unknown") {
+    throw new Error(
+      `Couldn't confirm the removal onchain yet (tx ${txHash}). It may well have worked - ` +
+        "reopen this screen in a moment to check before assuming either way.",
+    );
+  }
+  if (set.guardians.length > 0) {
+    throw new Error(
+      `Removal did not fully take effect: the recovery route is gone, but the account still ` +
+        `lists ${set.guardians.length} backup(s) as of block ${blockNumber ?? "?"} (tx ${txHash}). ` +
+        "Please try again.",
+    );
+  }
+  // The route is provably gone as of this block — the strongest form of "this
+  // device has seen the route change", and the one that must never be read back
+  // over by a replica that still shows the route installed.
+  if (blockNumber !== undefined) rememberLandingBlock(builtKernel.address, blockNumber);
   return { alreadyAbsent: false, userOpHash, txHash };
+}
+
+// --- Another key as the owner (#746 step 4, "make this device the main one") ---
+
+/**
+ * ONE sudo userOp from the account itself that makes `newOwner` its owner: the same
+ * two validator calls a guardian recovery makes (`doRecovery`), as the account. The
+ * validator refuses `onInstall` while an owner is set (AlreadyInitialized), so the
+ * owner is removed first in the same batch - and a batch is all-or-nothing (the
+ * SDK encodes batch + revert-all), so the account is never left without one.
+ * Deploys the Kernel first if it is still counterfactual. Confirmed by the owner read
+ * at the block it landed in, never by the receipt.
+ *
+ * Fork-verified on Arbitrum One, 2026-10-02: deploy + rotate in one op (two
+ * OwnerRegistered, old then new), ERC-1271 follows the new owner, the old key's ops
+ * are refused (AA24), rotating back works, the root validator's config is unchanged.
+ */
+export async function rotateOwnerSelf(
+  builtKernel: BuiltKernel,
+  newOwner: string,
+): Promise<{ txHash: string; blockNumber?: bigint; confirmed: boolean }> {
+  const d = await loadRecoveryDeps();
+  const validator = d.getValidatorAddress(d.entryPoint, d.kernelVersion) as Address;
+  const abi = d.parseAbi(["function onUninstall(bytes)", "function onInstall(bytes)"]);
+  const { txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
+    calls: [
+      { to: validator, data: d.encodeFunctionData({ abi, functionName: "onUninstall", args: ["0x"] }) },
+      { to: validator, data: d.encodeFunctionData({ abi, functionName: "onInstall", args: [newOwner.toLowerCase() as Hex] }) },
+    ],
+  });
+  // A successful receipt means the batch ran, and it is all-or-nothing: the rotation
+  // happened. An owner read that fails now is "not yet confirmed", never "failed" -
+  // the caller must not treat the grants it holds as for a rotation that never was.
+  const owner = await readKernelEcdsaOwnerStrict(builtKernel.address, blockNumber);
+  if (owner === "error") {
+    console.warn(`[kernel] rotation landed (tx ${txHash}) but its owner read failed; treated as done`);
+    return { txHash, blockNumber, confirmed: false };
+  }
+  if (owner !== newOwner.toLowerCase()) {
+    throw new Error(`The main passkey did not change (tx ${txHash}). Nothing to undo - try again.`);
+  }
+  return { txHash, blockNumber, confirmed: true };
+}
+
+// ---------------------------------------------------------------------------
+// Co-owners (#746, Fable consult 9): every passkey a signer on the weighted root.
+// The calls are built in ./co-owner-calls.js (pure, classified by the server's
+// sponsorship tests); these are the reads and the one send.
+// ---------------------------------------------------------------------------
+
+/** For a co-owned account and a key that is not on its list: never an address, so it
+ *  equals no key, and every owner check reads it as "someone else". */
+export { NOT_ON_LIST } from "./co-owner-calls.js";
+const LIST_END = "0xffffffffffffffffffffffffffffffffffffffff";
+
+async function coOwnerReadDeps() {
+  const [{ createPublicClient, http, zeroAddress }, { getEntryPoint, KERNEL_V3_1 }, { getValidatorAddress }, co] =
+    await Promise.all([
+      import("viem"),
+      import("@zerodev/sdk/constants"),
+      import("@zerodev/ecdsa-validator"),
+      import("@woco/shared/kernel/co-owners"),
+    ]);
+  return {
+    publicClient: createPublicClient({ chain: KERNEL_CHAIN, transport: http(getRpcUrl()) }),
+    zeroAddress,
+    ecdsaValidator: getValidatorAddress(getEntryPoint("0.7"), KERNEL_V3_1) as Address,
+    co,
+  };
+}
+
+/**
+ * The account's entry on the key-ring anchor (#186): the Swarm reference of its current
+ * key ring, null when it never had one (generation 0), "error" when nobody answered -
+ * which is never taken for "none".
+ */
+export async function readRingAnchor(account: string): Promise<string | null | "error"> {
+  try {
+    const [d, { KEY_RING_ANCHOR_ABI, KEY_RING_ANCHOR_ADDRESS, anchorToRingRef }, { parseAbi }] = await Promise.all([
+      coOwnerReadDeps(),
+      import("@woco/shared/keyring/anchor"),
+      import("viem"),
+    ]);
+    const value = await d.publicClient.readContract({
+      address: KEY_RING_ANCHOR_ADDRESS as Address,
+      abi: parseAbi(KEY_RING_ANCHOR_ABI),
+      functionName: "ringOf",
+      args: [account as Address],
+    });
+    return anchorToRingRef(value as string);
+  } catch (e) {
+    console.warn("[kernel] readRingAnchor failed:", e);
+    return "error";
+  }
+}
+
+/** What `rootValidator()` says: "none" for no code (undeployed) or anything unread. */
+function rootOf(co: typeof import("@woco/shared/kernel/co-owners"), r: { status: string; result?: unknown }): "ecdsa" | "weighted" | "none" {
+  if (r.status !== "success" || typeof r.result !== "string") return "none";
+  const v = r.result.toLowerCase();
+  return v === co.WEIGHTED_ROOT_ID ? "weighted" : v === co.ECDSA_ROOT_ID ? "ecdsa" : "none";
+}
+
+/** The account's root validator, or "error" when nobody answered. */
+export async function readKernelRoot(kernelAddress: string): Promise<"ecdsa" | "weighted" | "none" | "error"> {
+  try {
+    const d = await coOwnerReadDeps();
+    const [root] = await d.publicClient.multicall({
+      contracts: [{ address: kernelAddress as Address, abi: d.co.KERNEL_ROOT_VALIDATOR_ABI, functionName: "rootValidator" }],
+      allowFailure: true,
+    });
+    return rootOf(d.co, root);
+  } catch (e) {
+    console.warn("[kernel] readKernelRoot failed:", e);
+    return "error";
+  }
+}
+
+/**
+ * Who controls the account, as THIS key's checks need it - one read, at `blockNumber`
+ * when given. While the root is ECDSA: exactly readKernelEcdsaOwnerStrict (the owner,
+ * `null` undeployed). Once the account is co-owned: `eoa` itself when it is on the
+ * list, {@link NOT_ON_LIST} when it is not - so `owner === eoa` stays the one test
+ * every caller already makes, and a removed key reads as foreign. "error" = unanswered.
+ */
+export async function readKernelSignerFor(
+  kernelAddress: string,
+  eoa: string,
+  blockNumber?: bigint,
+): Promise<string | null | "error"> {
+  try {
+    const d = await coOwnerReadDeps();
+    const [root, owner, guardian, storage] = await d.publicClient.multicall({
+      contracts: [
+        { address: kernelAddress as Address, abi: d.co.KERNEL_ROOT_VALIDATOR_ABI, functionName: "rootValidator" },
+        { address: d.ecdsaValidator, abi: ECDSA_VALIDATOR_STORAGE_ABI, functionName: "ecdsaValidatorStorage", args: [kernelAddress as Address] },
+        {
+          address: d.co.WEIGHTED_ECDSA_VALIDATOR_V3_1 as Address,
+          abi: d.co.WEIGHTED_GUARDIAN_ABI,
+          functionName: "guardian",
+          args: [eoa as Address, kernelAddress as Address],
+        },
+        {
+          address: d.co.WEIGHTED_ECDSA_VALIDATOR_V3_1 as Address,
+          abi: d.co.WEIGHTED_STORAGE_ABI,
+          functionName: "weightedStorage",
+          args: [kernelAddress as Address],
+        },
+      ],
+      allowFailure: true,
+      ...(blockNumber !== undefined ? { blockNumber } : {}),
+    });
+    if (owner.status !== "success" || guardian.status !== "success" || storage.status !== "success") return "error";
+    const { signerFromRead } = await import("./co-owner-calls.js");
+    const o = owner.result as string;
+    return signerFromRead(
+      {
+        root: rootOf(d.co, root),
+        owner: !o || o.toLowerCase() === d.zeroAddress.toLowerCase() ? null : o,
+        weight: Number((guardian.result as readonly [number, string])[0]),
+        threshold: Number((storage.result as readonly [number, number, number, string])[1]),
+      },
+      eoa,
+    );
+  } catch (e) {
+    console.warn("[kernel] readKernelSignerFor failed:", e);
+    return "error";
+  }
+}
+
+/**
+ * The co-owner list of a co-owned account, at one block (the validator keeps it as
+ * a linked list, so a read pinned to one block is one state); `null` when the root
+ * is not the weighted validator; "error" when it could not be read - including when
+ * the answering replica is behind a list change this device has already made, so no
+ * whole-list write is ever computed from a list that predates one (Fable sign-off
+ * MUST-1: a removal reversed by the next renew). The floor is #510's.
+ */
+export async function readCoOwners(kernelAddress: string, blockNumber?: bigint): Promise<string[] | null | "error"> {
+  try {
+    const d = await coOwnerReadDeps();
+    let at = blockNumber;
+    if (at === undefined) {
+      const { decidePinnedBlock, rememberedLandingBlock } = await import("./recovery-landing-block.js");
+      const pin = decidePinnedBlock({ head: await d.publicClient.getBlockNumber(), minBlock: rememberedLandingBlock(kernelAddress) });
+      if ("lagging" in pin) return "error";
+      at = pin.pin;
+    }
+    const [root, storage] = await d.publicClient.multicall({
+      contracts: [
+        { address: kernelAddress as Address, abi: d.co.KERNEL_ROOT_VALIDATOR_ABI, functionName: "rootValidator" },
+        {
+          address: d.co.WEIGHTED_ECDSA_VALIDATOR_V3_1 as Address,
+          abi: d.co.WEIGHTED_STORAGE_ABI,
+          functionName: "weightedStorage",
+          args: [kernelAddress as Address],
+        },
+      ],
+      allowFailure: true,
+      blockNumber: at,
+    });
+    if (storage.status !== "success") return "error";
+    if (rootOf(d.co, root) !== "weighted") return null;
+    const list: string[] = [];
+    let next = (storage.result as readonly [number, number, number, string])[3].toLowerCase();
+    while (next !== LIST_END && next !== d.zeroAddress.toLowerCase()) {
+      if (list.length >= d.co.MAX_CO_OWNERS || list.includes(next)) return "error";
+      list.push(next);
+      const g = (await d.publicClient.readContract({
+        address: d.co.WEIGHTED_ECDSA_VALIDATOR_V3_1 as Address,
+        abi: d.co.WEIGHTED_GUARDIAN_ABI,
+        functionName: "guardian",
+        args: [next as Address, kernelAddress as Address],
+        blockNumber: at,
+      })) as readonly [number, string];
+      next = g[1].toLowerCase();
+    }
+    return list;
+  } catch (e) {
+    console.warn("[kernel] readCoOwners failed:", e);
+    return "error";
+  }
+}
+
+/**
+ * Make the account's co-owner list exactly `signers` - the switch when the root is
+ * still ECDSA (also deploys a counterfactual account), renew once it is weighted.
+ * One sponsored userOp, signed by this device's key; the list is read back at the
+ * block the op landed in. A landed op with a failed read-back is `confirmed: false`
+ * (done, not yet seen) - never reported as a failure.
+ */
+export async function setCoOwners(
+  builtKernel: BuiltKernel,
+  root: "ecdsa" | "weighted" | "none",
+  signers: readonly string[],
+  /** The account's key ring moving in the SAME op (#186): last call, `prev` = what the anchor holds now. */
+  ring?: { prev: string | null; next: string },
+): Promise<{ txHash: string; blockNumber?: bigint; confirmed: boolean }> {
+  const [{ encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters }, calls] = await Promise.all([
+    import("viem"),
+    import("./co-owner-calls.js"),
+  ]);
+  const d = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as unknown as import("./co-owner-calls.js").CoOwnerEncoders;
+  const op = [
+    ...(root === "weighted" ? [calls.coOwnerRenewCall(d, signers)] : calls.coOwnerSwitchCalls(d, builtKernel.address, signers)),
+    ...(ring ? [calls.coOwnerRingCall(d, ring.prev, ring.next)] : []),
+  ];
+  const { txHash, blockNumber } = await sendSudoUserOp(builtKernel.kernelClient, {
+    calls: op.map((c) => ({ to: c.to as Address, data: c.data as Hex, value: 0n })),
+  });
+  // Every later list read on this device must be at least this new (MUST-1).
+  if (blockNumber !== undefined) {
+    const { rememberLandingBlock } = await import("./recovery-landing-block.js");
+    rememberLandingBlock(builtKernel.address, blockNumber);
+  }
+  const after = await readCoOwners(builtKernel.address, blockNumber);
+  if (after === "error") {
+    console.warn(`[kernel] co-owner change landed (tx ${txHash}) but its read-back failed; treated as done`);
+    return { txHash, blockNumber, confirmed: false };
+  }
+  const want = [...signers].map((s) => s.toLowerCase()).sort().join();
+  if (after === null || [...after].sort().join() !== want) {
+    throw new Error(`Your passkeys did not change (tx ${txHash}). Nothing to undo - try again.`);
+  }
+  // One batch: the list moved, so the ring did too. Read back all the same, as the list is.
+  if (ring && (await readRingAnchor(builtKernel.address)) !== ring.next) {
+    console.warn(`[kernel] co-owner change landed (tx ${txHash}) but the key ring read back differently; treated as unconfirmed`);
+    return { txHash, blockNumber, confirmed: false };
+  }
+  return { txHash, blockNumber, confirmed: true };
+}
+
+/**
+ * Move only the account's key ring (#186): a passkey already on the list given the
+ * account's keys, at the same generation. One sponsored op; `prev` makes it a
+ * compare-and-swap, so a ring another device moved meanwhile reverts it.
+ */
+export async function setKeyRingAlone(
+  builtKernel: BuiltKernel,
+  ring: { prev: string | null; next: string },
+): Promise<{ txHash: string; confirmed: boolean }> {
+  const [{ encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters }, calls] = await Promise.all([
+    import("viem"),
+    import("./co-owner-calls.js"),
+  ]);
+  const d = { encodeFunctionData, encodeAbiParameters, parseAbi, parseAbiParameters } as unknown as import("./co-owner-calls.js").CoOwnerEncoders;
+  const c = calls.coOwnerRingCall(d, ring.prev, ring.next);
+  const { txHash } = await sendSudoUserOp(builtKernel.kernelClient, { calls: [{ to: c.to as Address, data: c.data as Hex, value: 0n }] });
+  return { txHash, confirmed: (await readRingAnchor(builtKernel.address)) === ring.next };
 }
 
 export interface RecoverAccountArgs {

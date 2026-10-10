@@ -5,16 +5,18 @@ import { uploadSignedSoc, type SignedSocInput } from "../lib/swarm/soc-upload.js
 import { readVerifiedSoc } from "../lib/swarm/soc-read.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
-import { batchForDeploy } from "../lib/etherna/batch-router.js";
+import { batchForDeploy, PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import { jsonBodyLimit } from "../lib/http/body-limit.js";
 import {
   socRelayGate,
   bytesRelayGate,
   classifyRelayPayload,
+  isSocialPayload,
   SOC_RELAY_MAX_BODY_BYTES,
   BYTES_RELAY_MAX_BODY_BYTES,
 } from "../lib/swarm/soc-relay-limits.js";
+import { checkAttendeeGate } from "../lib/gate/check.js";
 
 /**
  * Generic client-signed Single-Owner-Chunk write rail (Phase A of
@@ -65,6 +67,15 @@ swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, a
   });
   if (!gate.allowed) return c.json({ ok: false, error: gate.reason }, gate.status);
 
+  // Likes and follows need the same unlock as a name or a profile (ticket,
+  // Stripe, or a confirmed invite). Same refusal as routes/profiles.ts, which
+  // the client matches to open its unlock flow. After the rate gate, so a flood
+  // is refused before it costs a gate lookup.
+  if (isSocialPayload(b.payload)) {
+    const unlock = await checkAttendeeGate((c.get("parentAddress") as string).toLowerCase());
+    if (!unlock.gated) return c.json({ ok: false, error: "ticket_required" }, 403);
+  }
+
   try {
     // Same routing as /bytes: Etherna user batch when the builder picked the
     // Etherna gateway (platform Etherna batch fallback), WoCo platform otherwise.
@@ -82,6 +93,7 @@ swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, a
     }, selection);
     return c.json({ ok: true, data: ref });
   } catch (err) {
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     const status = (err as { status?: number })?.status;
     if (status === 400) {
       return c.json({ ok: false, error: (err as Error).message }, 400);
@@ -137,6 +149,11 @@ swarmRoutes.post("/bytes", jsonBodyLimit(BYTES_RELAY_MAX_BODY_BYTES), requireAut
   // Up to 16 chunks per call, so its own (tighter) gate (#301).
   const gate = bytesRelayGate.decide({ parent: parentAddress, ip: clientIp(c), kind: "other" });
   if (!gate.allowed) return c.json({ ok: false, error: gate.reason }, gate.status);
+
+  // Raw bytes stamp platform storage, up to 16 chunks a call; no screen uses
+  // this route. Same unlock as a name (owner decision 2026-10-02).
+  const unlock = await checkAttendeeGate(parentAddress.toLowerCase());
+  if (!unlock.gated) return c.json({ ok: false, error: "ticket_required" }, 403);
   try {
     // Route to the event's batch — Etherna when the builder picked it (events
     // never trigger a batch purchase; falls back to the platform Etherna batch).
@@ -148,6 +165,7 @@ swarmRoutes.post("/bytes", jsonBodyLimit(BYTES_RELAY_MAX_BODY_BYTES), requireAut
     const ref = await uploadToBytes(new Uint8Array(bytes), selection);
     return c.json({ ok: true, data: { ref } });
   } catch (err) {
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     console.error("[swarm] bytes stamp failed:", err);
     return c.json({ ok: false, error: "Bytes upload failed" }, 502);
   }

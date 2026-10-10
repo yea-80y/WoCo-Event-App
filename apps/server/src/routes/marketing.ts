@@ -15,14 +15,17 @@ import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
 import { RedundancyLevel } from "@ethersphere/bee-js";
 import { FEATURES, MAILABLE_EMAIL_RE, MARKETING_MAX_LIST_EMAILS } from "@woco/shared";
+import { isSealedBoxV2, type SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { isVerifiedOrganiser } from "../lib/stripe/verification.js";
+import { refuseUnlessVerifiedOrganiser } from "../lib/stripe/verification.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { getList, putList, withOrgLock } from "../lib/marketing/list-store.js";
 import { normalizeEmails } from "../lib/marketing/emails.js";
 import { suppressedSubset, suppressOrg } from "../lib/marketing/suppression-store.js";
 import { consentedSubset } from "../lib/marketing/consent-store.js";
+import { pruneProven } from "../lib/sender-pacing/index.js";
+import { reachedBefore } from "../lib/email/broadcast-pacing.js";
 import { sendMarketingBatch } from "../lib/email/marketing-send.js";
 import { getResend, getMarketingFromAddress } from "../lib/email/client.js";
 import {
@@ -81,21 +84,6 @@ const MAX_SEALED_JSON = 6_000_000;
  */
 const TEST_SEND_RATE_WINDOW = 3_600_000;
 
-interface SealedBoxShape {
-  ephemeralPublicKey: string;
-  iv: string;
-  ciphertext: string;
-}
-
-function isSealedBox(v: unknown): v is SealedBoxShape {
-  if (!v || typeof v !== "object") return false;
-  const b = v as Record<string, unknown>;
-  return (
-    typeof b.ephemeralPublicKey === "string" &&
-    typeof b.iv === "string" &&
-    typeof b.ciphertext === "string"
-  );
-}
 
 /** Shape/size refusal — the one thing content-tolerant normalisation still rejects. */
 function badShape(max: number): string {
@@ -109,8 +97,11 @@ marketing.post("/list", requireAuth, async (c) => {
 
   try {
     const sealedList = body.sealedList;
-    if (!isSealedBox(sealedList)) {
-      return c.json({ ok: false, error: "sealedList must be a SealedBox" }, 400);
+    // Exactly a v2 box (#642: X-Wing, bound to this organiser) — the strict shape,
+    // so no cleartext can ride in beside the ciphertext. The retired X25519 shape
+    // is refused like anything else.
+    if (!isSealedBoxV2(sealedList)) {
+      return c.json({ ok: false, error: "sealedList must be a v2 sealed box" }, 400);
     }
     if (JSON.stringify(sealedList).length > MAX_SEALED_JSON) {
       return c.json({ ok: false, error: "Sealed list too large (max ~20k contacts)" }, 413);
@@ -126,6 +117,21 @@ marketing.post("/list", requireAuth, async (c) => {
     }
     const { emails, unmailable, unmailableCount } = normalized;
 
+    // Adding anyone needs a verified organiser (owner decision 2026-10-02): every
+    // save stores the whole list on platform storage. Removing never does, so an
+    // organiser can always erase a contact, verified or not. "Only removes" = a
+    // list already exists and every address is already on it.
+    const prior = getList(org);
+    const priorHashes = new Set(prior?.emailHashes ?? []);
+    const onlyRemoves = prior !== null && emails.every((e) => priorHashes.has(hashEmail(e)));
+    if (!onlyRemoves) {
+      const refusal = await refuseUnlessVerifiedOrganiser(
+        org,
+        "Adding contacts needs a verified Stripe account. Verify in Payments, then try again. Removing contacts never needs it.",
+      );
+      if (refusal) return c.json(refusal, 403);
+    }
+
     const data = await withOrgLock(org, async () => {
       const emailHashes = [...new Set(emails.map(hashEmail))];
       const swarmRef = await uploadToBytes(JSON.stringify(sealedList), undefined, {
@@ -138,6 +144,9 @@ marketing.post("/list", requireAuth, async (c) => {
         encodeJsonFeed({ version: 1, swarmRef, count, updatedAt }),
       );
       putList(org, { swarmRef, count, updatedAt, emailHashes });
+      // Pacing proof exists to exempt a contact on this list; one who left it
+      // has nothing to be exempted from (#619).
+      pruneProven(org, new Set(emailHashes));
       return { swarmRef, count, updatedAt };
     });
 
@@ -155,6 +164,17 @@ marketing.post("/list", requireAuth, async (c) => {
   }
 });
 
+/**
+ * Whether a list exists and how big it is, without the sealed blob. The
+ * dashboard's setup card asks this on every open until the organiser has
+ * events, and `/list` would download the whole list from Swarm to answer it.
+ * Memory only, so it cannot fail on a Swarm read.
+ */
+marketing.get("/list/meta", requireAuth, (c) => {
+  const entry = getList(c.get("parentAddress").toLowerCase());
+  return c.json({ ok: true, data: entry ? { count: entry.count, updatedAt: entry.updatedAt } : null });
+});
+
 /** Fetch the stored list: meta + sealed blob (server passthrough from Swarm). */
 marketing.get("/list", requireAuth, async (c) => {
   const org = c.get("parentAddress").toLowerCase();
@@ -162,7 +182,7 @@ marketing.get("/list", requireAuth, async (c) => {
     const entry = getList(org);
     if (!entry) return c.json({ ok: true, data: null });
 
-    const sealedList = JSON.parse(await downloadFromBytes(entry.swarmRef)) as SealedBoxShape;
+    const sealedList = JSON.parse(await downloadFromBytes(entry.swarmRef)) as SealedBoxV2;
     return c.json({
       ok: true,
       data: {
@@ -177,7 +197,11 @@ marketing.get("/list", requireAuth, async (c) => {
   }
 });
 
-/** Which of these emails are suppressed / already stored / hold a consent record? */
+/**
+ * Which of these emails are suppressed / already stored / hold a consent
+ * record / have already been reached through us (`proven`, #619 — they skip
+ * pacing, so the composer can say how many go straight away)?
+ */
 marketing.post("/check", requireAuth, async (c) => {
   const org = c.get("parentAddress").toLowerCase();
   const body = c.get("body") as Record<string, unknown>;
@@ -209,13 +233,16 @@ marketing.post("/check", requireAuth, async (c) => {
   const suppressed: string[] = [];
   const alreadyInList: string[] = [];
   const consented: string[] = [];
+  const proven: string[] = [];
   for (const [h, e] of hashToEmail) {
     if (suppressedHashes.has(h)) suppressed.push(e);
     if (storedHashes.has(h)) alreadyInList.push(e);
     if (consentedHashes.has(h)) consented.push(e);
+    // The same rule the send path classifies by.
+    if (reachedBefore(org, h)) proven.push(e);
   }
 
-  return c.json({ ok: true, data: { suppressed, alreadyInList, consented } });
+  return c.json({ ok: true, data: { suppressed, alreadyInList, consented, proven } });
 });
 
 /** Manual per-organiser suppression (contact delete + "also unsubscribe"). */
@@ -245,15 +272,11 @@ marketing.post("/suppress", requireAuth, async (c) => {
  *  domain slots) is gated. Event broadcasts are deliberately NOT gated here:
  *  attendee-relationship mail (e.g. cancellations) must not depend on Stripe. */
 async function requireVerifiedSender(org: string): Promise<Response | null> {
-  if (await isVerifiedOrganiser(org)) return null;
-  return Response.json(
-    {
-      ok: false,
-      error: "Connect and verify a Stripe account to send marketing (free — it verifies your identity and protects everyone's deliverability)",
-      code: "STRIPE_VERIFICATION_REQUIRED",
-    },
-    { status: 403 },
+  const refusal = await refuseUnlessVerifiedOrganiser(
+    org,
+    "Connect and verify a Stripe account to send marketing (free — it verifies your identity and protects everyone's deliverability)",
   );
+  return refusal ? Response.json(refusal, { status: 403 }) : null;
 }
 
 /**

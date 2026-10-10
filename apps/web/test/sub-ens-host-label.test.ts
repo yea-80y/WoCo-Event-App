@@ -14,6 +14,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   CANONICAL_APP_ORIGIN,
   bootRedirectFor,
@@ -56,4 +58,15 @@ test("bootRedirectFor leaves a real route alone, and never fires off a name host
   assert.equal(bootRedirectFor("nabil.woco.eth.link", "#/event/abc"), null);
   assert.equal(bootRedirectFor("woco.eth.limo", ""), null);
   assert.equal(bootRedirectFor("gateway.woco-net.com", ""), null);
+});
+
+test("a name host holds the home page back while its profile resolves, and not forever", () => {
+  // The owner saw the home page flash before their profile opened: the lookup
+  // runs after mount, so the default route painted first. App.svelte is a runes
+  // component this runner cannot load, so the SOURCE is what gets pinned.
+  const app = readFileSync(fileURLToPath(new URL("../src/App.svelte", import.meta.url)), "utf8");
+  const neutral = app.slice(app.indexOf('router.surface === "neutral"}'), app.indexOf('router.surface === "creator"}'));
+  assert.match(neutral, /\{#if holdingForNameProfile && router\.route === "splitter"\}[\s\S]*\{:else\}\s*<Splitter \/>/);
+  assert.match(app, /setTimeout\(\(\) => \{ holdingForNameProfile = false; \}, NAME_HOST_HOLD_MS\)/);
+  assert.match(app, /did not resolve to a profile[^\n]*\n\s*holdingForNameProfile = false;/);
 });

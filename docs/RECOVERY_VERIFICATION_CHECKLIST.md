@@ -1,5 +1,12 @@
 # Passkey Recovery — Live Verification Checklist
 
+> **Status (2026-10-05).** Written 2026-06 for a passkey account with a wallet backup on Arbitrum
+> Sepolia. That setup can no longer be made: passkey accounts add no email or wallet backup (#767)
+> and Kernels run on Arbitrum One (#489). §2-§4 describe the recover-and-rekey ceremony that
+> email-login accounts with a guardian still use; prompt order may differ. The escrow is now a guardian-owned SOC on Etherna's batch
+> (#741), not a server-written `woco/recovery/{kernel}` feed, and "POD" data means data sealed to the
+> identity seed (formerly called POD; renamed object, 2026-09-10). Current: [PASSKEY_RECOVERY_PLAN.md](./PASSKEY_RECOVERY_PLAN.md) "Current state".
+
 **Purpose:** prove the wired recover-and-rekey ceremony works end to end in a real browser
 BEFORE it is advertised for funds-holding accounts or used to relax the organiser-payout gate.
 The on-chain rotation and the escrow round-trip are spike-proven *individually*; this verifies

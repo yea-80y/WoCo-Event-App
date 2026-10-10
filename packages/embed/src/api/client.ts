@@ -1,6 +1,12 @@
+export interface RequestOptions {
+  headers?: Record<string, string>;
+  /** Lets a best-effort call, such as releasing a seat hold on Cancel, outlive a navigation. */
+  keepalive?: boolean;
+}
+
 export interface ApiClient {
   get<T = unknown>(path: string): Promise<{ ok: boolean; data?: T; error?: string }>;
-  post<T = unknown>(path: string, body: unknown): Promise<{ ok: boolean; data?: T; error?: string } & Record<string, unknown>>;
+  post<T = unknown>(path: string, body: unknown, opts?: RequestOptions): Promise<{ ok: boolean; data?: T; error?: string } & Record<string, unknown>>;
 }
 
 /**

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { isWalletAvailable } from "../../wallet/provider.js";
+  import { navigate, routeHref } from "../../router/router.svelte.js";
   import { connectWallet } from "../../wallet/connection.js";
 
   interface Props {
@@ -95,7 +96,7 @@
       <p class="modal-error">{error}</p>
     {/if}
 
-    <p class="modal-hint">You can also manage your wallet from your <a href="#/profile" onclick={(e: MouseEvent) => { e.preventDefault(); onClose(); import("../../router/router.svelte.js").then(r => r.navigate("/profile")); }}>Profile</a>.</p>
+    <p class="modal-hint">You can also manage your wallet from your <a href={routeHref("/profile")} onclick={(e: MouseEvent) => { e.preventDefault(); onClose(); navigate("/profile"); }}>Profile</a>.</p>
   </div>
 </div>
 

@@ -49,6 +49,24 @@ export function orphanedCredentialMessage(kind: OrphanedCredentialKind): string 
     : "This account was recovered on another device. Sign in with the passkey or email you chose during recovery.";
 }
 
+/**
+ * For a passkey that its own envelope still names: recovered away, or the account's
+ * old main passkey after another device became the main one, before its new grant
+ * landed (#746 step 4). Nothing on the device tells those apart, so the words fit both.
+ */
+export const MOVED_OR_RECOVERED_MESSAGE =
+  "This passkey doesn't open this account any more - it may have been removed. Sign in with one of your other passkeys, or with the one you chose when you recovered the account.";
+
+/**
+ * For an email or Google sign-in whose account was upgraded to a passkey (#746): the
+ * email key is off the account's list, so every session it signs is refused.
+ */
+export const UPGRADED_TO_PASSKEY_MESSAGE = "This account now opens with your passkey. Sign in with it instead.";
+
+/** The passkey an upgrade on this device was making, before its switch landed (#746). */
+export const UPGRADE_UNFINISHED_MESSAGE =
+  "Your upgrade to this passkey isn't finished yet. Sign in with email or Google and finish it in the organiser workspace.";
+
 /** Distinguished by `name`, not instanceof, so checks survive chunk boundaries. */
 export class OrphanedCredentialError extends Error {
   override readonly name = "OrphanedCredentialError";
@@ -56,8 +74,8 @@ export class OrphanedCredentialError extends Error {
   /** Evidence for the console, never for the UI. */
   readonly onChainOwner: string;
 
-  constructor(kind: OrphanedCredentialKind, onChainOwner: string) {
-    super(orphanedCredentialMessage(kind));
+  constructor(kind: OrphanedCredentialKind, onChainOwner: string, message = orphanedCredentialMessage(kind)) {
+    super(message);
     this.kind = kind;
     this.onChainOwner = onChainOwner;
   }
@@ -81,9 +99,10 @@ export interface OrphanNoticeSink {
 export function postOrphanedCredentialNotice(
   kind: OrphanedCredentialKind,
   sink: OrphanNoticeSink | undefined = globalThis.sessionStorage,
+  message = orphanedCredentialMessage(kind),
 ): void {
   try {
-    sink?.setItem(AUTH_NOTICE_KEY, orphanedCredentialMessage(kind));
+    sink?.setItem(AUTH_NOTICE_KEY, message);
   } catch {
     /* explanation only */
   }
@@ -98,6 +117,7 @@ export function refuseOrphanedCredential(
   kind: OrphanedCredentialKind,
   details: { boundKernel: string; onChainOwner: string },
   sink?: OrphanNoticeSink,
+  message?: string,
 ): OrphanedCredentialError {
   console.warn(
     `[auth] ${kind} credential is orphaned — bound Kernel`,
@@ -106,6 +126,6 @@ export function refuseOrphanedCredential(
     details.onChainOwner,
     "— refusing the login instead of minting a counterfactual account (#255)",
   );
-  postOrphanedCredentialNotice(kind, sink ?? globalThis.sessionStorage);
-  return new OrphanedCredentialError(kind, details.onChainOwner);
+  postOrphanedCredentialNotice(kind, sink ?? globalThis.sessionStorage, message);
+  return new OrphanedCredentialError(kind, details.onChainOwner, message);
 }

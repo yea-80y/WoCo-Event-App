@@ -1,8 +1,8 @@
 <script lang="ts">
   import type { MarketingContact, MarketingListMeta, ContactConsentState } from "@woco/shared";
-  import { deriveEncryptionKeypairFromSeed, sealJsonCompressed, openJsonAuto, contactConsentState } from "@woco/shared";
+  import { contactConsentState } from "@woco/shared";
   import type { MarketingListPayload } from "@woco/shared";
-  import { restoreIdentitySeed } from "../../auth/identity-seed.js";
+  import UnlockPanel from "../../components/auth/UnlockPanel.svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import {
@@ -24,12 +24,18 @@
 
   let loading = $state(true);
   let loadError = $state<string | null>(null);
+  // The list exists but the account keys are locked on this device (#746 fix 1):
+  // it opens on one tap, never by itself on page open.
+  let listLocked = $state(false);
   let meta = $state<MarketingListMeta | null>(null);
   let contacts = $state<MarketingContact[]>([]);
   let suppressedEmails = $state<Set<string>>(new Set());
   /** Contacts who ticked the opt-in themselves — the server holds the evidence,
    *  keyed by hash, so this is the only way the client can know. */
   let consentedEmails = $state<Set<string>>(new Set());
+  /** Contacts this organiser has already reached through WoCo without a bounce
+   *  (or who opted in at their checkout) — they skip paced sending (#619). */
+  let provenEmails = $state<Set<string>>(new Set());
   /** The consent/suppression read failed, so the labels and counts below are
    *  not evidence of anything — distinct from everyone being 'imported'. */
   let consentUnknown = $state(false);
@@ -49,17 +55,32 @@
   /** Abuse gate (#59): sending requires a Stripe-verified organiser. */
   let stripeVerified = $state<boolean | null>(null);
 
-  /** X25519 keys derived from the organiser's identity seed (decrypt + re-seal). */
-  async function getKeys(): Promise<{ privateKey: Uint8Array; publicKey: Uint8Array } | null> {
-    if (!auth.seedAddress) return null;
-    let identitySeed = await restoreIdentitySeed(auth.seedAddress);
-    if (!identitySeed) {
-      const pk = await auth.ensureIdentitySeed();
-      if (!pk) return null;
-      identitySeed = await restoreIdentitySeed(auth.seedAddress);
-    }
-    if (!identitySeed) return null;
-    return deriveEncryptionKeypairFromSeed(identitySeed);
+  /**
+   * The organiser's X-Wing keys (#642), derived from the identity seed, plus the
+   * seal context that binds the list to this account. The post-quantum code is
+   * loaded here, on first use, never with the page.
+   */
+  async function getKeys(prompt = false, toSeal = false) {
+    const secrets = await getAccountSecrets(prompt, toSeal);
+    if (!secrets || !auth.parent) return null;
+    const [{ orderKeysOf }, box] = await Promise.all([
+      import("../../keyring/order-keys.js"),
+      import("@woco/shared/crypto/sealed-box"),
+    ]);
+    // New lists seal to the CURRENT generation; an older one opens with its own (#186).
+    const { publicKey, secretKeys } = await orderKeysOf(secrets);
+    return { secretKeys, publicKey, ctx: box.listSealContext(auth.parent), box };
+  }
+
+  /** The account's secrets, unlocking first - only when `prompt`, which only a tap
+   *  passes - if they are locked or not yet on this device. */
+  async function getAccountSecrets(prompt: boolean, toSeal: boolean): Promise<{ current: string; all: string[] } | null> {
+    // Sealing needs the CONFIRMED current generation (#186) - a list sealed to keys the
+    // account left would open for a removed passkey. Opening takes whatever is held.
+    const secrets = await auth.getAccountSecrets({ toSeal });
+    if (secrets || !prompt) return secrets;
+    if (!(await auth.ensureAccountSetup({ identity: true }))) return null;
+    return auth.getAccountSecrets({ toSeal });
   }
 
   /** One round trip gives both server-held states; the third (imported) is what
@@ -68,12 +89,14 @@
     if (list.length === 0) {
       suppressedEmails = new Set();
       consentedEmails = new Set();
+      provenEmails = new Set();
       return;
     }
     try {
       const res = await checkMarketingEmails(list.map((c) => c.email));
       suppressedEmails = new Set(res.suppressed);
       consentedEmails = new Set(res.consented ?? []);
+      provenEmails = new Set(res.proven ?? []);
       consentUnknown = false;
     } catch {
       // Non-fatal for sending — the server is the enforcement boundary and
@@ -89,6 +112,7 @@
   async function load(): Promise<void> {
     loading = true;
     loadError = null;
+    listLocked = false;
     try {
       const resp = await getMarketingList();
       if (!resp) {
@@ -99,14 +123,24 @@
       meta = resp.meta;
       const keys = await getKeys();
       if (!keys) {
-        loadError = "Sign in and unlock your identity to open your audience.";
+        if (auth.parent) listLocked = true;
+        else loadError = "Sign in and unlock your identity to open your audience.";
         return;
       }
-      const payload = await openJsonAuto<MarketingListPayload>(keys.privateKey, resp.sealedList);
+      listLocked = false;
+      const { openJsonWithAnyKey } = await import("../../keyring/order-keys.js");
+      const payload = await openJsonWithAnyKey<MarketingListPayload>(keys.secretKeys, resp.sealedList, keys.ctx);
       contacts = payload.contacts;
       await refreshConsentStates(contacts);
     } catch (err) {
-      loadError = err instanceof Error ? err.message : "Could not open your audience.";
+      // A list saved before #642 was sealed with the retired X25519 format. Say so
+      // plainly: the fix is to import it again, not to retry.
+      loadError =
+        err instanceof Error && err.name === "UnsupportedSealedBoxError"
+          ? "Your saved audience uses an older format that can no longer be opened. Import your contacts again to replace it."
+          : err instanceof Error
+            ? err.message
+            : "Could not open your audience.";
     } finally {
       loading = false;
     }
@@ -114,11 +148,15 @@
 
   /** Re-seal + upload the full list — the single write path for every change. */
   async function commitList(next: MarketingContact[]): Promise<void> {
-    const keys = await getKeys();
+    const keys = await getKeys(true, true);
     if (!keys) throw new Error("Identity locked — sign in to save changes");
     saving = true;
     try {
-      const sealed = await sealJsonCompressed(keys.publicKey, { version: 1, contacts: next } satisfies MarketingListPayload);
+      const sealed = await keys.box.sealBoxJsonCompressed(
+        keys.publicKey,
+        { version: 1, contacts: next } satisfies MarketingListPayload,
+        keys.ctx,
+      );
       meta = await uploadMarketingList(sealed, next.map((c) => c.email));
       contacts = next;
       if (next.length > 0 && auth.parent) markAudienceImported(auth.parent);
@@ -136,6 +174,7 @@
   }
 
   async function handleDelete(email: string, alsoSuppress: boolean): Promise<void> {
+    await auth.ensureOrganiserUnlock();
     await commitList(contacts.filter((c) => c.email !== email));
     if (alsoSuppress) {
       await suppressContacts([email]);
@@ -168,6 +207,18 @@
       void load();
     }
   });
+
+  // Unlocked - by the panel's tap or elsewhere this app open: open the list.
+  // Locked again (the page sat hidden past the relock): hide the contacts.
+  $effect(() => {
+    if (auth.hasIdentitySeed && listLocked && !loading) void load();
+  });
+  $effect(() => {
+    if (auth.kind === "passkey" && !auth.hasIdentitySeed && contacts.length > 0) {
+      contacts = [];
+      listLocked = true;
+    }
+  });
 </script>
 
 <div class="audience">
@@ -193,6 +244,8 @@
       <p class="err">{loadError}</p>
       <button class="btn-ghost" onclick={() => void load()}>Try again</button>
     </div>
+  {:else if listLocked}
+    <UnlockPanel subject="Contact details" action="Show contacts" />
   {:else}
     {#if contacts.length === 0 && !wizardOpen}
       <div class="empty invite">
@@ -297,10 +350,10 @@
       <StripeVerifyGate
         bind:verified={stripeVerified}
         title="Verify Stripe to send broadcasts"
-        sub="Marketing email sends on WoCo's shared reputation, so broadcasting needs a connected, verified Stripe account — it's free and verifies who you are. Your contact list is yours either way: importing and managing it needs nothing."
+        sub="Marketing email sends on WoCo's shared reputation, so broadcasting needs a connected, verified Stripe account — it's free and verifies who you are. Adding contacts to your list needs the same verification; removing them never does."
       />
       {#if stripeVerified}
-        <MarketingComposer {contacts} {suppressedEmails} initialEventId={announceEventId} />
+        <MarketingComposer {contacts} {suppressedEmails} {provenEmails} initialEventId={announceEventId} />
       {/if}
     {/if}
 

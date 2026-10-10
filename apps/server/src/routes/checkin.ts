@@ -8,7 +8,13 @@
  *
  * Door-pass-authed via X-Door-Pass header (mounted under /api/checkin):
  *   GET  /:eventId/pack       offline verification pack for scanner devices
+ *   POST /:eventId/claim      admit one ticket - first claim anywhere wins (#641)
  *   POST /:eventId/sync       merge a device's check-ins, return full set
+ *
+ * Every scanner request also carries X-Scanner-Device. A "single" pass is bound
+ * to the first device that loads its pack and refused on any other, because that
+ * one device is allowed to admit offline; a "several" pass admits only through
+ * /claim.
  *
  * The pack contains only public/derivable data (on-chain slot owners, claim
  * ledger hashes) plus the roster ciphertext — a leaked pass token exposes no
@@ -16,16 +22,26 @@
  */
 
 import { Hono, type Context } from "hono";
-import type {
-  CheckinPack,
-  CheckinSeries,
-  CheckinSyncRequest,
-  EncryptedRoster,
+import {
+  SCANNER_DEVICE_HEADER,
+  type CheckinClaimRequest,
+  type CheckinClaimResponse,
+  type CheckinPack,
+  type CheckinRecord,
+  type CheckinSeries,
+  type CheckinSyncRequest,
+  type DoorMode,
+  type EncryptedRoster,
 } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEvent, getEventForOwner, getEventBySigner } from "../lib/event/service.js";
-import { getOnChainEvent, getSlotData, getActiveChainId } from "../lib/chain/event-contract.js";
+import { eventKeys } from "../lib/keyring/event-keys.js";
+import { currentRing } from "../lib/keyring/current-ring.js";
+import { getOnChainEventAt, getSlotDataAt } from "../lib/chain/event-contract.js";
+import { registrationContractFor } from "../lib/event/onchain-registry.js";
+import { contractKey } from "../lib/chain/event-contract.js";
+import { voidedSlots } from "../lib/stripe/ticket-sales.js";
 import {
   issueDoorPass,
   verifyDoorPass,
@@ -33,6 +49,8 @@ import {
   readRoster,
   readCheckins,
   mergeCheckins,
+  claimCheckin,
+  bindSinglePassDevice,
 } from "../lib/checkin/store.js";
 import { mapWithConcurrency, SLOT_READ_CONCURRENCY } from "../lib/util/concurrency.js";
 
@@ -85,12 +103,23 @@ checkinOrganiser.post("/:id/door-pass", requireAuth, async (c) => {
     (Number.isFinite(endMs) ? Math.max(endMs, Date.now()) + 24 * 3600_000 : Date.now() + 7 * 24 * 3600_000) / 1000,
   );
 
+  // Anything but an explicit "single" is "several": the mode that cannot admit
+  // a ticket twice is the default, including for clients that send no mode.
+  const body = c.get("body") as { mode?: unknown } | undefined;
+  const mode: DoorMode = body?.mode === "single" ? "single" : "several";
+
   try {
     // Stamp the content-feed signer into the pass record — the organiser is
     // authenticated here, so this is the last point where an unlisted event's
     // signer can be resolved from trusted state. /pack has no parent address.
-    const token = issueDoorPass(eventId, exp, event.creatorFeedSigner);
-    return c.json({ ok: true, data: { token, exp } });
+    // The organiser's key generation now (#186): a pass made before a passkey is
+    // removed stops working when the account's keys move on.
+    const ring = await currentRing(c.get("parentAddress"));
+    if (ring.status === "unavailable") {
+      return c.json({ ok: false, error: "Couldn't check your account's keys right now - try again in a minute" }, 503);
+    }
+    const token = issueDoorPass(eventId, exp, event.creatorFeedSigner, mode, ring.status === "ring" ? ring.ring.gen : 0);
+    return c.json({ ok: true, data: { token, exp, mode } });
   } catch (err) {
     console.error("[checkin] door-pass issue failed:", err);
     return c.json({ ok: false, error: "Door pass signing is not configured on this server" }, 500);
@@ -140,8 +169,12 @@ checkinOrganiser.get("/:id/checkin-status", requireAuth, async (c) => {
 
 const checkin = new Hono<AppEnv>();
 
+type AuthorisedPass = { ok: true; signer?: string; mode: DoorMode; device?: string; gen: number };
+
+const REVOKED = "Door pass revoked — ask the organiser for a new one";
+
 /** Verify X-Door-Pass and confirm it was issued for the URL's event. */
-function authorisePass(c: Context<AppEnv>): { ok: true; signer?: string } | { ok: false; resp: Response } {
+function authorisePass(c: Context<AppEnv>): AuthorisedPass | { ok: false; resp: Response } {
   const token = c.req.header("X-Door-Pass");
   if (!token) {
     return { ok: false, resp: c.json({ ok: false, error: "Missing door pass" }, 401) };
@@ -149,7 +182,7 @@ function authorisePass(c: Context<AppEnv>): { ok: true; signer?: string } | { ok
   const verdict = verifyDoorPass(token);
   if (!verdict.ok) {
     const message =
-      verdict.reason === "revoked" ? "Door pass revoked — ask the organiser for a new one"
+      verdict.reason === "revoked" ? REVOKED
       : verdict.reason === "expired" ? "Door pass expired"
       : "Invalid door pass";
     return { ok: false, resp: c.json({ ok: false, error: message, reason: verdict.reason }, 401) };
@@ -157,7 +190,63 @@ function authorisePass(c: Context<AppEnv>): { ok: true; signer?: string } | { ok
   if (verdict.eventId !== c.req.param("eventId")) {
     return { ok: false, resp: c.json({ ok: false, error: "Door pass is for a different event" }, 403) };
   }
-  return { ok: true, ...(verdict.signer ? { signer: verdict.signer } : {}) };
+  return {
+    ok: true,
+    mode: verdict.mode,
+    gen: verdict.gen,
+    ...(verdict.signer ? { signer: verdict.signer } : {}),
+    ...(verdict.device ? { device: verdict.device } : {}),
+  };
+}
+
+/**
+ * A pass issued before the organiser's keys last moved (#186) is revoked: a passkey was
+ * removed since, and if that device made the pass it still holds the token and the
+ * roster key. `unreadable` decides what happens when the keys cannot be read: the pack
+ * (the attendee roster) refuses; sync and claim go on, so a door is not stopped by an
+ * RPC outage - they never hand out the roster, and a pass made since is still exact.
+ */
+async function outdatedPass(
+  c: Context<AppEnv>,
+  eventId: string,
+  auth: AuthorisedPass,
+  unreadable: "refuse" | "allow",
+): Promise<Response | null> {
+  const keys = await eventKeys(eventId);
+  if (keys.kind === "unavailable") {
+    return unreadable === "refuse"
+      ? c.json({ ok: false, error: "Couldn't check this door pass right now - try again in a minute" }, 503)
+      : null;
+  }
+  if (keys.kind === "ring" && keys.gen > auth.gen) return c.json({ ok: false, error: REVOKED, reason: "revoked" }, 401);
+  return null;
+}
+
+const DEVICE_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+
+function deviceFrom(c: Context<AppEnv>, fallback?: unknown): string | null {
+  const raw = c.req.header(SCANNER_DEVICE_HEADER) ?? (typeof fallback === "string" ? fallback : undefined);
+  return raw && DEVICE_ID_RE.test(raw) ? raw : null;
+}
+
+const WRONG_DEVICE =
+  "This door pass is for one scanner and is already in use on another phone. " +
+  "To use more phones, ask the organiser to regenerate it for several scanners.";
+
+/**
+ * For a "single" pass, refuse any device but the bound one. `bindTo` names the
+ * event only on /pack, the one request a device must make before it can scan:
+ * that is where the first device claims the pass.
+ */
+function checkDevice(c: Context<AppEnv>, auth: AuthorisedPass, device: string | null, bindTo: string | null): Response | null {
+  if (auth.mode !== "single") return null;
+  if (!device) {
+    return c.json({ ok: false, error: "This scanner needs updating - reload the page and try again" }, 400);
+  }
+  // The event comes from the caller: a helper typed on a bare Context cannot read
+  // the route's `:eventId` (hono 4.13 types it `string | undefined` there).
+  const allowed = bindTo !== null ? bindSinglePassDevice(bindTo, device) : auth.device === device;
+  return allowed ? null : c.json({ ok: false, error: WRONG_DEVICE, reason: "wrong-device" }, 409);
 }
 
 checkin.get("/:eventId/pack", async (c) => {
@@ -165,6 +254,23 @@ checkin.get("/:eventId/pack", async (c) => {
   if (!auth.ok) return auth.resp;
 
   const eventId = c.req.param("eventId");
+  // Required in EVERY mode, not only "single": a scanner bundle from before #641
+  // sends no device id and ignores the door mode, admitting offline on its own
+  // set. Refusing it a pack is what keeps it from provisioning onto a shared door.
+  const device = deviceFrom(c);
+  if (!device) {
+    return c.json({ ok: false, error: "This scanner needs updating - reload the page and try again" }, 400);
+  }
+  let refused: Response | null;
+  try {
+    refused = checkDevice(c, auth, device, eventId);
+  } catch (err) {
+    console.error("[checkin] single-scanner binding could not be saved:", err);
+    return c.json({ ok: false, error: "Could not register this scanner - try again" }, 503);
+  }
+  if (refused) return refused;
+  const outdated = await outdatedPass(c, eventId, auth, "refuse");
+  if (outdated) return outdated;
   try {
     // An unlisted (skipAutoList) client-signed event is in no global directory, so
     // getEvent() cannot resolve it and the scanner would 404 at the door. The pass
@@ -174,7 +280,6 @@ checkin.get("/:eventId/pack", async (c) => {
       ?? await getEvent(eventId);
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
 
-    const chainId = getActiveChainId();
     const series: CheckinSeries[] = [];
 
     for (const s of event.series) {
@@ -189,17 +294,32 @@ checkin.get("/:eventId/pack", async (c) => {
       // empty entry rather than falling back to a Swarm feed no longer written.
       if (s.swarmManifestRef && s.onChainEventId) {
         entry.onChainEventId = s.onChainEventId as CheckinSeries["onChainEventId"];
-        const onChain = await getOnChainEvent(s.onChainEventId, chainId).catch(() => null);
-        const slotCount = onChain ? Number(onChain.nextSlot) : 0;
+        // Owners are read on the contract the registration lives on (#563), so
+        // a ticket on an older contract still verifies at the door after a
+        // cutover. None resolvable reads as no slots: the door refuses.
+        const contract = registrationContractFor(eventId, s.seriesId);
+        const onChainEventId = s.onChainEventId;
+        const onChain = contract
+          ? await getOnChainEventAt(contract, onChainEventId).catch(() => null)
+          : null;
+        const slotCount = contract && onChain ? Number(onChain.nextSlot) : 0;
         const owners = await mapWithConcurrency(
           Array.from({ length: slotCount }, (_, slot) => slot),
           SLOT_READ_CONCURRENCY,
           async (slot) => {
-            const data = await getSlotData(s.onChainEventId!, slot, chainId).catch(() => null);
+            if (!contract) return "";
+            const data = await getSlotDataAt(contract, onChainEventId, slot).catch(() => null);
             return data?.owner?.toLowerCase() ?? "";
           },
         );
         entry.slotOwners = owners;
+        // Refunded sales (#645): keyed by the same (event, slot) the owners are,
+        // on the same contract. The scanner checks these only after the
+        // signature verifies, so listing a slot here never makes a forgery pass.
+        if (contract) {
+          const refunded = voidedSlots(onChainEventId, contractKey(contract));
+          if (refunded.length > 0) entry.voidSlots = refunded;
+        }
       }
       series.push(entry);
     }
@@ -212,6 +332,7 @@ checkin.get("/:eventId/pack", async (c) => {
       series,
       roster: readRoster(eventId) ?? undefined,
       checkins: readCheckins(eventId),
+      doorMode: auth.mode,
       generatedAt: new Date().toISOString(),
     };
     return c.json({ ok: true, data: pack });
@@ -232,9 +353,61 @@ checkin.post("/:eventId/sync", async (c) => {
   if (body.checkins.length > MAX_SYNC_RECORDS) {
     return c.json({ ok: false, error: "Too many records in one sync" }, 413);
   }
+  const refused = checkDevice(c, auth, deviceFrom(c, body.deviceId), null);
+  if (refused) return refused;
+  const outdated = await outdatedPass(c, c.req.param("eventId"), auth, "allow");
+  if (outdated) return outdated;
 
-  const result = mergeCheckins(c.req.param("eventId"), body.checkins);
-  return c.json({ ok: true, data: result });
+  try {
+    const result = mergeCheckins(c.req.param("eventId"), body.checkins);
+    return c.json({ ok: true, data: result });
+  } catch (err) {
+    console.error("[checkin] sync could not be recorded:", err);
+    return c.json({ ok: false, error: "Check-ins could not be recorded" }, 503);
+  }
+});
+
+/**
+ * Admit one ticket (#641). The scanner has already verified the signature and
+ * refund status offline; this decides only whether the ticket is already in -
+ * across every scanner, atomically. The scanner shows green on "admitted" and
+ * on nothing else: a timeout, a 503 or no connection is "couldn't confirm".
+ */
+checkin.post("/:eventId/claim", async (c) => {
+  const auth = authorisePass(c);
+  if (!auth.ok) return auth.resp;
+
+  const device = deviceFrom(c);
+  if (!device) return c.json({ ok: false, error: "This scanner needs updating - reload the page and try again" }, 400);
+  const refused = checkDevice(c, auth, device, null);
+  if (refused) return refused;
+  const outdated = await outdatedPass(c, c.req.param("eventId"), auth, "allow");
+  if (outdated) return outdated;
+
+  const body = (await c.req.json().catch(() => null)) as Partial<CheckinClaimRequest> | null;
+  const record: CheckinRecord = {
+    seriesId: body?.seriesId as string,
+    edition: body?.edition as number,
+    at: body?.at as string,
+    method: body?.method as CheckinRecord["method"],
+    claimId: body?.claimId as string,
+    deviceId: device,
+  };
+
+  let result;
+  try {
+    result = claimCheckin(c.req.param("eventId"), record);
+  } catch (err) {
+    if (err instanceof Error && err.message === "invalid check-in claim") {
+      return c.json({ ok: false, error: "Malformed check-in claim" }, 400);
+    }
+    // Not recorded means not admitted: the door must not act on a claim a
+    // restart could forget.
+    console.error("[checkin] claim could not be recorded:", err);
+    return c.json({ ok: false, error: "Check-in could not be recorded" }, 503);
+  }
+  const data: CheckinClaimResponse = { ...result, serverTime: new Date().toISOString() };
+  return c.json({ ok: true, data });
 });
 
 export { checkin, checkinOrganiser };

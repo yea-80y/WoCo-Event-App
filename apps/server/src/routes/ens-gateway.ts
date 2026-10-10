@@ -10,7 +10,9 @@
 import { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { AppEnv } from "../types.js";
-import { createCcipHandler, type CcipHandler } from "../lib/ens-gateway/ccip.js";
+import { createCcipHandler, type CcipHandler, type ContenthashAnswer } from "../lib/ens-gateway/ccip.js";
+import { getApexContenthash } from "../lib/chain/sub-ens-apex.js";
+import { lookupNameTarget } from "../lib/sub-ens/name-targets.js";
 import { loadEnsGatewayConfig, ensGatewaySignerAddress } from "../lib/ens-gateway/config.js";
 import { createL2Reader, redactRpcUrl } from "../lib/ens-gateway/l2-reader.js";
 import { ResponseMemo, memoTtlMsFor } from "../lib/ens-gateway/memo.js";
@@ -94,9 +96,18 @@ if ("disabled" in loaded) {
 } else {
   console.log(
     `[ens-gateway] serving *.${loaded.parentName} — signer=${ensGatewaySignerAddress(loaded)} ` +
-    `chain=${loaded.chainId} registry=${loaded.registryAddress} ttl=${loaded.ttlSeconds}s ` +
-    `resolvers=${loaded.allowedSenders.join(",")}`,
+    `chain=${loaded.chainId} registries=${loaded.registryAddresses.join(",")} ttl=${loaded.ttlSeconds}s ` +
+    `resolvers=${describeResolvers(loaded).map((r) => `${r.address}(${r.boundChainId === null ? "legacy" : `bound to chain ${r.boundChainId}`})`).join(",")}`,
   );
+  if (loaded.registryAddresses.length > 1) {
+    // A cutover window is meant to last minutes: answers about the outgoing
+    // registry must stop as soon as L1 points at the incoming one
+    // (WoCo-Contracts #21), so an open window is announced, not implied.
+    console.warn(
+      `[ens-gateway] REGISTRY CUTOVER WINDOW OPEN — serving ${loaded.registryAddresses.length} registries. ` +
+      "Unset ENS_GATEWAY_REGISTRY_ADDRESSES as soon as L1Resolver.l2Registry(woco.eth) names the incoming one.",
+    );
+  }
   // Redacted: provider URLs routinely carry the API key in the path or query.
   const hosts = loaded.rpcUrls.map(redactRpcUrl).join(",");
   if (loaded.rpcUrls.length > 1) {
@@ -110,12 +121,20 @@ if ("disabled" in loaded) {
   }
 }
 
+/** Since boot. `foreign` is a name whose pointer the WoCo-built rule replaced with the app. */
+const contenthashAnswers: Record<ContenthashAnswer, number> = { depth: 0, empty: 0, apex: 0, built: 0, foreign: 0 };
+
 export const ensGatewayRoutes = createEnsGatewayRoutes(
   "disabled" in loaded
     ? loaded
     : createCcipHandler(loaded, {
         readL2: createL2Reader(loaded.chainId, loaded.rpcUrls),
         memo: memo ?? undefined,
+        contenthash: {
+          apexHash: getApexContenthash,
+          lookupBuilt: lookupNameTarget,
+          onAnswer: (a) => { contenthashAnswers[a]++; },
+        },
       }),
 );
 
@@ -129,36 +148,87 @@ export const ensGatewayRoutes = createEnsGatewayRoutes(
  * at our resolver. Endpoint URLs are NOT reported: they carry provider
  * credentials, and naming our providers on a public endpoint would hand an
  * attacker the "knock one over, lie on the survivor" target list.
+ *
+ * `registry` is the minting registry. `registries` is everything served, and has
+ * two entries only while a registry cutover window is open
+ * (ENS_GATEWAY_REGISTRY_ADDRESSES). `cutoverWindowOpen` says so directly, so a
+ * window left open can be flagged without anyone having to read an array's
+ * length.
  */
-export function ensGatewayStatus(): {
+export function ensGatewayStatus(): EnsGatewayStatus {
+  return ensGatewayStatusOf(loaded, memo?.size() ?? 0, contenthashAnswers);
+}
+
+/**
+ * Each served resolver and the signed format it gets: the L1 chain bound into
+ * its hash (L1Resolver v2), or null for the legacy format (v1). Named
+ * `boundChainId` so it is not read as `chainId` above, which is the L2.
+ */
+function describeResolvers(config: {
+  allowedSenders: string[];
+  senderChainIds?: Record<string, number>;
+}): Array<{ address: string; boundChainId: number | null }> {
+  return config.allowedSenders.map((address) => ({
+    address,
+    boundChainId: config.senderChainIds?.[address] ?? null,
+  }));
+}
+
+export interface EnsGatewayStatus {
   configured: boolean;
   signer: string | null;
+  /** Must match what each resolver verifies: its L1 chain for v2, null (legacy) for v1. */
+  resolvers: Array<{ address: string; boundChainId: number | null }>;
   chainId: number | null;
   registry: string | null;
+  registries: string[];
+  cutoverWindowOpen: boolean;
   parent: string | null;
   crossCheck: boolean;
   memoEntries: number;
+  /** `contenthash` answers by branch since boot (WoCo-built rule). Counts only. */
+  contenthashAnswers: Record<ContenthashAnswer, number>;
   reason?: string;
-} {
-  if ("disabled" in loaded) {
+}
+
+/**
+ * The status of a given config. Split from `ensGatewayStatus` because the
+ * module's own config is read from the environment once, at import, which a
+ * test cannot vary.
+ */
+export function ensGatewayStatusOf(
+  config: ReturnType<typeof loadEnsGatewayConfig>,
+  memoEntries: number,
+  answers: Record<ContenthashAnswer, number> = { depth: 0, empty: 0, apex: 0, built: 0, foreign: 0 },
+): EnsGatewayStatus {
+  const contenthashAnswers = { ...answers };
+  if ("disabled" in config) {
     return {
       configured: false,
       signer: null,
+      resolvers: [],
       chainId: null,
       registry: null,
+      registries: [],
+      cutoverWindowOpen: false,
       parent: null,
       crossCheck: false,
       memoEntries: 0,
-      reason: loaded.disabled,
+      contenthashAnswers,
+      reason: config.disabled,
     };
   }
   return {
     configured: true,
-    signer: ensGatewaySignerAddress(loaded),
-    chainId: loaded.chainId,
-    registry: loaded.registryAddress,
-    parent: loaded.parentName,
-    crossCheck: loaded.rpcUrls.length > 1,
-    memoEntries: memo?.size() ?? 0,
+    signer: ensGatewaySignerAddress(config),
+    resolvers: describeResolvers(config),
+    chainId: config.chainId,
+    registry: config.registryAddresses[0]!,
+    registries: config.registryAddresses,
+    cutoverWindowOpen: config.registryAddresses.length > 1,
+    parent: config.parentName,
+    crossCheck: config.rpcUrls.length > 1,
+    memoEntries,
+    contenthashAnswers,
   };
 }

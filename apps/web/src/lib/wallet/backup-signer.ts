@@ -10,8 +10,9 @@ import { buildWeb3AuthOptions, extractRawPrivateKey } from "../auth/web3auth-con
  * only ever SIGNS — it never becomes the logged-in identity.
  *
  * A backup plays TWO crypto roles, which need different signing capabilities:
- *  - ESCROW (setup + recovery): derive the X25519 escrow key from a deterministic
- *    EIP-712 signature → `signTypedData`. Every wallet can do this.
+ *  - ESCROW (setup + recovery): derive the X-Wing escrow key from a deterministic
+ *    EIP-712 signature → `signTypedData`. Every wallet can do this. (A passkey
+ *    backup derives it from its PRF output instead — `deriveEscrowKeys`, #642.)
  *  - GUARDIAN (recovery only): sign the weighted-ECDSA guardian userOp that calls
  *    `target.doRecovery` → a viem/EIP-1193 `Signer`. NOT every provider exposes
  *    one, so it is OPTIONAL and gated by `recoveryReady`. A backup that is not
@@ -26,8 +27,15 @@ import { buildWeb3AuthOptions, extractRawPrivateKey } from "../auth/web3auth-con
  */
 export interface BackupWallet {
   address: string;
-  /** EIP-712 typed-data signer — derives the escrow X25519 key (setup + recovery). */
+  /** EIP-712 typed-data signer — derives the escrow keys (setup + recovery) for every
+   *  kind that has no `deriveEscrowKeys` of its own. */
   signTypedData: EIP712Signer;
+  /**
+   * A PASSKEY backup's own escrow-key derivation, from its PRF output rather than a
+   * signature (#642). When present it is the ONLY route — `deriveGuardianKeysForBackup`
+   * never falls back to signing for such a backup.
+   */
+  deriveEscrowKeys?: () => Promise<import("../auth/recovery-escrow.js").GuardianKeys>;
   /**
    * Build the viem `Signer` (OneOf<EIP1193Provider | WalletClient | LocalAccount |
    * SmartAccount>) that signs the guardian userOp during `recoverAccount`. Absent
@@ -49,7 +57,7 @@ export interface BackupWallet {
  * is self-sufficient (it embeds the key), so it serves BOTH roles with no further
  * dependency on whatever produced the key:
  *  - escrow: viem `signTypedData` is RFC6979-deterministic, so the same key always
- *    re-derives the SAME X25519 escrow key on any device — the property recovery
+ *    re-derives the SAME escrow key on any device — the property recovery
  *    depends on (the setup self-check still verifies it before any irreversible step).
  *  - guardian: a `LocalAccount` is directly a viem `Signer`, and the weighted-ECDSA
  *    approval is an EIP-191 personal_sign it can produce → `recoveryReady: true`.
@@ -87,8 +95,11 @@ export async function backupWalletFromPrivateKey(privateKey: string): Promise<Ba
 /**
  * PASSKEY backup. The friendly factor for a web3auth (email/social) user with a
  * phone but no crypto wallet: a dedicated recovery passkey whose PRF-derived key
- * becomes the guardian. Reuses the SAME keccak256(PRF) construction as the primary
- * passkey login, so it flows straight through `backupWalletFromPrivateKey`.
+ * becomes the guardian. Its ON-CHAIN guardian key reuses the SAME keccak256(PRF)
+ * construction as the primary passkey login, so it flows through
+ * `backupWalletFromPrivateKey`; its ESCROW keys come from the PRF-rooted escrow
+ * master instead of a signature (#642), so the seed it guards is not one secp256k1
+ * break away.
  *
  *  - mode "create" (SETUP): mints a new "WoCo Backup" passkey. A fresh credential
  *    guarantees independence from the primary (its address can't collide), and the
@@ -110,8 +121,18 @@ export async function connectPasskeyBackup(mode: "create" | "get" = "create"): P
   if (!isPasskeySupported()) {
     throw new Error("This device can't create passkeys. Use a crypto wallet or email backup instead.");
   }
-  const { privateKey } = mode === "create" ? await createPasskeyBackupKey() : await getPasskeyBackupKey();
-  return backupWalletFromPrivateKey(privateKey);
+  const { privateKey, escrowMaster } =
+    mode === "create" ? await createPasskeyBackupKey() : await getPasskeyBackupKey();
+  const wallet = await backupWalletFromPrivateKey(privateKey);
+  return {
+    ...wallet,
+    // Setup derives twice (the determinism self-check), so the master is kept for
+    // the backup's lifetime — like the owner key, it lives only in this closure.
+    deriveEscrowKeys: async () => {
+      const { guardianKeysFromMaster } = await import("../auth/recovery-escrow.js");
+      return guardianKeysFromMaster(escrowMaster);
+    },
+  };
 }
 
 /**
@@ -191,11 +212,17 @@ export async function connectWeb3AuthBackup(): Promise<BackupWallet> {
   // OTHER-namespace chain so the raw key is reachable, no injected discovery) is
   // shared with the primary login via buildWeb3AuthOptions — keep it single-source.
   const mod = await import("@web3auth/modal");
-  const web3auth = new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId));
-  await web3auth.init();
+  type Survivor = import("../auth/web3auth-survivor.js").Web3AuthSessionInstance;
+  type Instance = InstanceType<typeof mod.Web3Auth>;
+  const build = async (): Promise<Instance> => {
+    const fresh = new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId));
+    await fresh.init();
+    return fresh;
+  };
   // The survivor-relevant slice of the instance (same cast the login side uses —
   // `cachedConnector` isn't in the SDK's public typings).
-  const w = web3auth as unknown as import("../auth/web3auth-survivor.js").Web3AuthSessionInstance;
+  const asSurvivor = (i: Instance) => i as unknown as Survivor;
+  let web3auth = await build();
 
   // #307: this instance shares clientId AND localStorage with the primary email
   // login, so a session surviving there rehydrates HERE, and connect() can then
@@ -204,27 +231,48 @@ export async function connectWeb3AuthBackup(): Promise<BackupWallet> {
   // device, a stranger's takeover power recorded as a deliberate choice.
   // Choosing a guardian must always be an explicit authentication, so end any
   // survivor first — and refuse rather than adopt when it cannot be ended.
-  const { endSurvivingWeb3AuthSession } = await import("../auth/web3auth-survivor.js");
+  // The instance that ended a survivor is swapped for a fresh one (#803): its
+  // login connector is dead after the logout, and the modal would not say so.
+  const { instanceForExplicitSignIn, SURVIVOR_STILL_LOADING_MESSAGE } = await import("../auth/web3auth-survivor.js");
   const { markWeb3AuthSessionEstablished, clearWeb3AuthSessionFlag } = await import(
     "../auth/web3auth-session-flag.js"
   );
   try {
-    await endSurvivingWeb3AuthSession(w);
-  } catch {
+    const ready = await instanceForExplicitSignIn(asSurvivor(web3auth), async () => asSurvivor(await build()));
+    web3auth = ready as unknown as Instance;
+  } catch (e) {
+    if (e instanceof Error && e.message === SURVIVOR_STILL_LOADING_MESSAGE) throw e;
     throw new Error(
       "Couldn't clear a previous email session, so the backup sign-in can't run safely — check your connection and try again.",
     );
   }
+  const w = asSurvivor(web3auth);
+  // The modal does NOT close itself: it sits on a "connected" success screen, and
+  // after an error (popup closed or blocked) it stays open although connect()
+  // has rejected - a second tap there completes a sign-in nothing receives,
+  // and that stray session would outlive sign-out (no flag is set for it).
+  // So close it the moment connect() settles, either way (#803). Internal
+  // field, guarded - a future SDK shape change only loses the close.
+  const closeModal = () => {
+    try {
+      (web3auth as unknown as { loginModal?: { closeModal?: () => void } }).loginModal?.closeModal?.();
+    } catch {
+      /* best effort */
+    }
+  };
 
   // Opens the Web3Auth modal (email + socials). Returns null if the user closes it.
   let provider: Awaited<ReturnType<typeof web3auth.connect>>;
   try {
     provider = await web3auth.connect();
   } catch (e) {
-    // A stored session hydrating LATE (past the rehydration wait's 5s window)
-    // can close the modal and reject — while the instance quietly becomes
-    // connected as the survivor. Same race the primary login guards (#182):
-    // never adopt it, end it and ask for one retry.
+    // Defence in depth: a session hydrating mid-modal can close it and reject —
+    // while the instance quietly becomes connected as the survivor. Same race
+    // the primary login guards (#182): never adopt it, end it and ask for one
+    // retry (which builds fresh instances, so the spent one is never reused).
+    // `connected` (the stored name) is deliberately the wider read here, not
+    // `isWeb3AuthSessionLive`: anything the SDK still names is ended or refused,
+    // and a logout it cannot run is swallowed.
     if (w.connected) {
       try {
         await w.logout({ cleanup: true });
@@ -234,6 +282,8 @@ export async function connectWeb3AuthBackup(): Promise<BackupWallet> {
       throw new Error("A previous email session interfered with the backup sign-in — please try again.");
     }
     throw e instanceof Error ? e : new Error("Email backup sign-in was cancelled.");
+  } finally {
+    closeModal();
   }
   if (!provider) {
     throw new Error("Email backup sign-in was cancelled.");
@@ -258,17 +308,8 @@ export async function connectWeb3AuthBackup(): Promise<BackupWallet> {
     }
     return { ...wallet, providerLabel };
   } finally {
-    // The modal does NOT auto-close after connect() — it sits on a "connected"
-    // success state. The logout below emits DISCONNECTED, which the modal reacts to
-    // by resetting to its LOGIN page (looks like the flow bounced back to sign-in).
-    // So hide the modal first; then the logout's state change lands on an already
-    // closed modal. Internal field, guarded — a future SDK shape change just falls
-    // back to the prior (cosmetic) behaviour.
-    try {
-      (web3auth as unknown as { loginModal?: { closeModal?: () => void } }).loginModal?.closeModal?.();
-    } catch {
-      /* best effort */
-    }
+    // The modal was closed when connect() settled, so the logout's DISCONNECTED
+    // (which resets the modal to its LOGIN page) lands on a closed modal.
     // Clear the Web3Auth session: the LocalAccount already holds the key, so the
     // instance is no longer needed, and a backup factor must not stay connected
     // (it shares this clientId with the primary email login). Non-fatal — the key

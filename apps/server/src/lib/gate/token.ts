@@ -1,5 +1,5 @@
 /**
- * Route A gate token — the single-use "Create your WoCo profile" credential
+ * Route A gate token — the single-use "Add to WoCo" credential
  * embedded in ticket emails (docs/ATTENDEE_GATE_RESALE_PLAN.md §3, Route A).
  *
  * Clicking the link proves control of the purchase inbox: the token is minted

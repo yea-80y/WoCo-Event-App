@@ -8,7 +8,18 @@ import { getKV, putKV } from "./indexeddb.js";
  * IndexedDB stores CryptoKey objects natively - the raw key material
  * never leaves the Web Crypto API.
  */
-export async function ensureDeviceKey(): Promise<CryptoKey> {
+let _deviceKeyInFlight: Promise<CryptoKey> | null = null;
+
+export function ensureDeviceKey(): Promise<CryptoKey> {
+  // Two first calls at once would each make a key, and the second write would
+  // replace the one the first caller already encrypted under (#186).
+  _deviceKeyInFlight ??= loadOrCreateDeviceKey().finally(() => {
+    _deviceKeyInFlight = null;
+  });
+  return _deviceKeyInFlight;
+}
+
+async function loadOrCreateDeviceKey(): Promise<CryptoKey> {
   const existing = await getKV<CryptoKey>(StorageKeys.DEVICE_KEY);
   if (existing) return existing;
 
@@ -43,15 +54,38 @@ export const AAD = {
     `woco/device/session-key/v1:${parent.toLowerCase()}`,
   SESSION_DELEGATION: (parent: string) =>
     `woco/device/session-delegation/v1:${parent.toLowerCase()}`,
+  // v2 since #642, when passkey seeds moved from a signature to the PRF output. The
+  // bump is what makes every device converge: a v1 blob fails its tag, the restore
+  // deletes it, and the seed is re-established under the current rule. Without it a
+  // device holding the old signature-derived seed would keep it (stored seed wins)
+  // while every new device derived the PRF seed: one account, two identities.
   IDENTITY_SEED: (parent: string) =>
-    `woco/device/identity-seed/v1:${parent.toLowerCase()}`,
-  // ZeroDev scoped EAS session key, bound to the Kernel (smart-account) address
-  // that owns it. A serialized permission account written under one Kernel
-  // cannot be decrypted by a different Kernel on the same device. (The sub-ENS
-  // mint key had its own AAD beside this one until #501 deleted that rail; its
-  // stored blobs are now only ever DELETED, which needs no AAD.)
-  WOCO_AA_EAS_SESSION: (kernel: string) =>
-    `woco/device/aa-eas-session/v1:${kernel.toLowerCase()}`,
+    `woco/device/identity-seed/v2:${parent.toLowerCase()}`,
+  // A passkey account's seed under its PRF-derived lock (#746 fix 1). Binds the
+  // ACCOUNT too, not just the owner key: the locked copy survives sign-out, so the
+  // logout wipe can no longer be what keeps one credential's two accounts apart
+  // (#227/#233) - the tag is.
+  IDENTITY_SEED_LOCKED: (seedAddress: string, parent: string) =>
+    `woco/device/identity-seed/v3:${seedAddress.toLowerCase()}:${parent.toLowerCase()}`,
+  // The unlock-window copy and the cached feed signer (#746): account-bound for the
+  // same reason - two accounts reachable from one credential share a seed address.
+  IDENTITY_SEED_WINDOW: (seedAddress: string, parent: string) =>
+    `woco/device/identity-seed-window/v1:${seedAddress.toLowerCase()}:${parent.toLowerCase()}`,
+  FEED_SIGNER_CACHE: (seedAddress: string, parent: string) =>
+    `woco/device/feed-signer/v1:${seedAddress.toLowerCase()}:${parent.toLowerCase()}`,
+  // The later account secrets a key ring handed this passkey (#186), locked and
+  // window copies: account-bound like the seed's, never under the seed's own labels.
+  ACCOUNT_CHAIN_LOCKED: (seedAddress: string, parent: string) =>
+    `woco/device/account-chain/v1:${seedAddress.toLowerCase()}:${parent.toLowerCase()}`,
+  ACCOUNT_CHAIN_WINDOW: (seedAddress: string, parent: string) =>
+    `woco/device/account-chain-window/v1:${seedAddress.toLowerCase()}:${parent.toLowerCase()}`,
+  PENDING_ROTATION: (seedAddress: string, parent: string) =>
+    `woco/device/pending-rotation/v1:${seedAddress.toLowerCase()}:${parent.toLowerCase()}`,
+  // Two scoped ZeroDev session keys had AAD constructors here — the sub-ENS mint
+  // key until #501, the referral campaign's EAS key until #476. Neither is
+  // written any more, and an unused AAD constructor is worse than none (see the
+  // note below): whatever blobs remain are only ever DELETED, which needs no AAD.
+
   // A CONTENT_FEED_SIGNER entry sat here while the feed signer was stored as its
   // own secret. The signer is derived from the seed now, so nothing is encrypted
   // under that label — and an unused AAD constructor is worse than none, because

@@ -96,3 +96,27 @@ export function shouldRetryCold(
 ): boolean {
   return settlement === "superseded" && retryAllowed;
 }
+
+/**
+ * Merge the two partitions' subject indexes into the one list a rider's
+ * collection actually is.
+ *
+ * PUBLIC WINS a subject present in both, and that is the same tie-break
+ * {@link decideVisibility} makes on the single-subject path, for the same
+ * reason: a subject is in both partitions only MID-PUBLISH, where the public
+ * head is the newer one and the private entry is the one being retired.
+ * Preferring private there would read a retired head — a lower count than the
+ * rider has, on the screen that lists what they own.
+ *
+ * Pure, and here rather than in `credits.ts`, because that module reaches the
+ * auth store and this rule is worth asserting directly.
+ */
+export function mergeSubjectPartitions(
+  pub: readonly { subject: string; band: number }[],
+  priv: readonly { subject: string; band: number }[],
+): { subject: string; band: number; visibility: CreditVisibility }[] {
+  const merged = new Map<string, { subject: string; band: number; visibility: CreditVisibility }>();
+  for (const e of priv) merged.set(e.subject, { ...e, visibility: "private" });
+  for (const e of pub) merged.set(e.subject, { ...e, visibility: "public" });
+  return [...merged.values()];
+}

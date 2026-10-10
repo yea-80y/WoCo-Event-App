@@ -6,7 +6,7 @@
  * GLOBAL public directory?" no longer has a home — the chain `Registered` log
  * carries no unlist/tombstone event, and it's not organiser content (it's WoCo's
  * curation decision about WoCo's own directory). So it lives here, file-backed like
- * `onchain-events.json` / `likes-index.json`, read through a single seam
+ * `onchain-events.json`, read through a single seam
  * (`isListedForSnapshot`) so a future portable/community-moderated home is a
  * non-breaking swap.
  *

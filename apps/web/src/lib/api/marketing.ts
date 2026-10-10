@@ -6,8 +6,8 @@
 
 import { authPost, authGet, authDelete } from "./client.js";
 import { apiError } from "./errors.js";
+import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import type {
-  SealedBox,
   MarketingListMeta,
   MarketingListResponse,
   MarketingCheckResult,
@@ -15,7 +15,7 @@ import type {
 } from "@woco/shared";
 
 export async function uploadMarketingList(
-  sealedList: SealedBox,
+  sealedList: SealedBoxV2,
   emails: string[],
 ): Promise<MarketingListMeta> {
   const resp = await authPost<MarketingListMeta>("/api/marketing/list", {
@@ -33,6 +33,16 @@ export async function getMarketingList(): Promise<MarketingListResponse | null> 
 }
 
 /**
+ * Whether the organiser has a list and its size, without downloading it.
+ * Throws when the server cannot answer, so a fault never reads as "no list".
+ */
+export async function getMarketingListSummary(): Promise<{ count: number; updatedAt: string } | null> {
+  const resp = await authGet<{ count: number; updatedAt: string } | null>("/api/marketing/list/meta");
+  if (!resp.ok) throw new Error(resp.error || "List check failed");
+  return resp.data ?? null;
+}
+
+/**
  * Below the server's MARKETING_MAX_LIST_EMAILS ceiling — a single oversized
  * request is rejected wholesale, which surfaced to importers as a bare
  * "Validation failed" on any list past 20k.
@@ -43,6 +53,7 @@ export async function checkMarketingEmails(emails: string[]): Promise<MarketingC
   const suppressed: string[] = [];
   const alreadyInList: string[] = [];
   const consented: string[] = [];
+  const proven: string[] = [];
 
   for (let i = 0; i < emails.length; i += CHECK_BATCH_SIZE) {
     const batch = emails.slice(i, i + CHECK_BATCH_SIZE);
@@ -51,9 +62,10 @@ export async function checkMarketingEmails(emails: string[]): Promise<MarketingC
     suppressed.push(...resp.data.suppressed);
     alreadyInList.push(...resp.data.alreadyInList);
     consented.push(...(resp.data.consented ?? []));
+    proven.push(...(resp.data.proven ?? []));
   }
 
-  return { suppressed, alreadyInList, consented };
+  return { suppressed, alreadyInList, consented, proven };
 }
 
 export async function suppressContacts(emails: string[]): Promise<void> {

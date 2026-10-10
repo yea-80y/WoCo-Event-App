@@ -1,8 +1,8 @@
 /**
  * Serialised nonce management for the platform sponsor wallet.
  *
- * Every module that spends from the sponsor EOA (event register/claim, EAS
- * badges, referral relay, sub-ENS mint, Stylus keeper pokes) shares ONE key,
+ * Every module that spends from the sponsor EOA (event register/claim, sub-ENS
+ * mint) shares ONE key,
  * so they share one nonce sequence. Two sends that overlap — or two sends that
  * merely follow each other faster than the RPC's `pending` view updates — will
  * otherwise be handed the same nonce and one will fail NONCE_EXPIRED.
@@ -15,8 +15,8 @@
  * Two guarantees, and BOTH are needed:
  *
  *  1. A single queue per (chain, signer) across all modules. Per-module locks
- *     (which eas-campaign and stylus-aggregator each grew independently) do not
- *     exclude each other, and the money path had no lock at all.
+ *     (which two now-deleted rails each grew independently) do not exclude each
+ *     other, and the money path had no lock at all.
  *
  *  2. A locally-tracked nonce, not one re-fetched per send. `getTransactionCount(
  *     addr, "pending")` lags behind freshly-mined txs on real RPCs, so a mutex

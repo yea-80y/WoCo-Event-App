@@ -1,23 +1,32 @@
 <script lang="ts">
-  import { auth } from "../../auth/auth-store.svelte.js";
+  import { auth, MAIN_PASSKEY_REQUIRED_MESSAGE } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { checkSubEnsLabel, claimSubEnsLabel, getOwnedSubEns, type OwnedSubEnsName } from "../../api/sub-ens.js";
   import { gate } from "../../attendee/gate/gate.svelte.js";
+  import { unlocksWhen } from "../../attendee/gate/unlock-copy.js";
+  import { canOrganise } from "../../auth/organiser-account.js";
   import { isTicketRequired } from "../../api/attendee-gate.js";
-  import { getStripeAccountStatus } from "../../api/stripe.js";
+  import { nameLockFrom } from "../../attendee/gate/name-lock.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import OwnedNamesList from "./OwnedNamesList.svelte";
   import { bindableNames, hidesProfileName } from "../../sub-ens/roles.js";
+  import { untrack } from "svelte";
   import { subEnsName as buildSubEnsName, subEnsWebUrl } from "@woco/shared";
+  import { subEnsLinkState, SUB_ENS_POLL_INTERVAL_MS, NAME_SHOWS_PUBLISH_AFTER, type SubEnsLinkNote } from "./sub-ens-link-state.js";
 
   interface Props {
     claimedLabel?: string;
-    deployedHash?: string;
+    /** What the name should resolve to once linked: a site's FEED manifest. */
+    targetHash?: string;
     onclaim?: (label: string) => void;
     /** Unlink the name from THIS site. The name is not released — it stays in
      *  the organiser's account and can be pointed at something else. */
     onunlink?: () => void;
-    /** Parent can pre-fetch and pass; if undefined, picker self-checks. */
+    /**
+     * A parent's own live Stripe answer. It never decides the lock (the server's
+     * unlock verdict does): a flip to true means that live check just synced the
+     * stored flag the verdict reads, so the picker re-reads the verdict.
+     */
     stripeConnected?: boolean;
     /** If parent manages the Stripe modal lifecycle, provide this callback. */
     onstripesetup?: () => void;
@@ -35,27 +44,33 @@
     onbeforerename?: () => Promise<boolean> | boolean;
   }
 
-  let { claimedLabel = $bindable<string | undefined>(undefined), deployedHash = '', onclaim, onunlink, stripeConnected, onstripesetup, singleName = false, onbeforerename }: Props = $props();
+  let { claimedLabel = $bindable<string | undefined>(undefined), targetHash = '', onclaim, onunlink, stripeConnected, onstripesetup, singleName = false, onbeforerename }: Props = $props();
 
-  // ── Stripe gate ──────────────────────────────────────────────────────────────
-  // null = loading/unknown, false = not connected, true = connected+complete
-  let stripeStatus = $state<boolean | null>(null);
+  // ── Unlock gate ──────────────────────────────────────────────────────────────
+  // ONE rule, the server's (lib/gate/check.ts): a ticket, published events, Stripe
+  // or a confirmed invite. The picker reads its verdict through the gate store and
+  // decides nothing of its own (attendee/gate/name-lock.ts). Stripe is offered on
+  // the lock panel as the unlock a passkey account can start here (#746).
+  let gateSettled = $state(false);
   let stripeModalOpen = $state(false);
 
   $effect(() => {
-    if (stripeConnected !== undefined) {
-      stripeStatus = stripeConnected;
-      return;
-    }
-    if (!auth.isConnected) {
-      stripeStatus = false;
-      return;
-    }
-    stripeStatus = null;
-    getStripeAccountStatus().then((s) => {
-      stripeStatus = !!(s.ok && s.onboardingComplete);
-    }).catch(() => { stripeStatus = false; });
+    // A parent's Stripe answer flipping to true re-reads the verdict: its live
+    // check synced the stored flag the server rule reads.
+    void stripeConnected;
+    gateSettled = false;
+    // The read is silent and needs a session; with none, the form shows and the
+    // claim asks for one (a passive check must never raise a signing prompt).
+    if (!auth.isConnected || !auth.hasSession) { gateSettled = true; return; }
+    void gate.refresh().finally(() => { gateSettled = true; });
   });
+
+  const lock = $derived(nameLockFrom({
+    connected: auth.isConnected,
+    organiserKind: canOrganise(auth.kind),
+    gate: gate.status,
+    gateLoading: !gateSettled,
+  }));
 
   function openStripeSetup() {
     if (onstripesetup) {
@@ -70,8 +85,10 @@
   }
 
   function onStripeConnected() {
-    stripeStatus = true;
     stripeModalOpen = false;
+    // The modal heard "complete" from Stripe's own answer, which synced the stored
+    // flag: the verdict is re-read rather than assumed.
+    void gate.refresh();
   }
 
   // ── Claim vs reuse-existing ───────────────────────────────────────────────────
@@ -123,8 +140,6 @@
   let checkMsg  = $state('');
 
   // Profile fields shown once the label is confirmed available
-  let showProfile = $derived(checkPhase === 'ok');
-  let profileBio  = $state('');
 
   // Claiming
   let claiming   = $state(false);
@@ -153,6 +168,86 @@
   let claimed = $derived(!!claimedLabel);
   let ensName = $derived(claimedLabel ? buildSubEnsName(claimedLabel) : '');
   let ensUrl  = $derived(claimedLabel ? subEnsWebUrl(claimedLabel) : '');
+
+  // ── Does the name actually resolve yet? (#500) ───────────────────────────────
+  // eth.limo mints the subname TLS certificate on the FIRST request and only if
+  // the name resolves to a contenthash, and a failed ask is spent from a budget
+  // of ~10 per 15 minutes PER HOSTNAME (negatives cached 5 min). So "Open ↗"
+  // waits for on-chain evidence — never for the local fact that a name was
+  // claimed or a deploy was started. Rules + WHY: ./sub-ens-link-state.ts
+  let nameContentHash = $state<string | null>(null);
+  let hashAttempts    = $state(0);
+
+  let linkState = $derived(subEnsLinkState({
+    claimed,
+    singleName,
+    contentHash: nameContentHash,
+    targetHash,
+    attempts: hashAttempts,
+  }));
+
+  const LINK_NOTES: Record<NonNullable<SubEnsLinkNote>, string> = {
+    identity: 'This is your identity and payment name. It does not open as a website.',
+    registering: 'Registering. Your address goes live after the first deploy.',
+    updating: 'Pointing your name at the new version. This can take a minute.',
+    'stale-version': 'Updating to the latest version.',
+    'gave-up': 'Still updating. Check back in a few minutes.',
+  };
+  let linkNote = $derived(linkState.note ? LINK_NOTES[linkState.note] : '');
+
+  // Non-reactive on purpose: which label the answer below belongs to. Reading it
+  // as state would make the effect depend on its own writes.
+  let seenLabel: string | undefined;
+
+  // Re-reads on every label change and whenever the target changes, because
+  // both change what the name should point at. The read is authenticated, so it waits for a
+  // session instead of minting one: a passive status check must never raise a
+  // signing prompt the user did not ask for.
+  $effect(() => {
+    const label  = claimedLabel;
+    const target = targetHash;
+    const ready  = auth.hasSession;
+
+    // A different NAME is a different fact, so forget the old answer. A new
+    // DEPLOY is not: the certificate that name already earned still exists, so
+    // the link stays up (marked stale) instead of blinking out on every publish.
+    if (label !== seenLabel) {
+      seenLabel = label;
+      nameContentHash = null;
+    }
+    if (!label || !ready) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    hashAttempts = 0;
+
+    let attempts = 0;
+    let found: string | null = untrack(() => nameContentHash);
+
+    const read = async () => {
+      // A THROWN read (network down, a non-JSON reply) must count like a failed
+      // one: uncaught, it would end the loop with the "updating" note still on
+      // screen and nothing left to clear it.
+      const res = await getOwnedSubEns().catch(() => null);
+      if (cancelled) return;
+      attempts += 1;
+      // A read that FAILED is not evidence the name points nowhere — leave the
+      // last known answer standing, so a network blip can't retract a link that
+      // works. It still costs an attempt, or a broken endpoint polls forever.
+      if (res && res.ok && res.data) {
+        found = res.data.names.find((n) => n.label === label)?.contentHash ?? null;
+        nameContentHash = found;
+      }
+      hashAttempts = attempts;
+      const { pollAgain } = subEnsLinkState({
+        claimed: true, singleName, contentHash: found, targetHash: target, attempts,
+      });
+      if (pollAgain) timer = setTimeout(() => { void read(); }, SUB_ENS_POLL_INTERVAL_MS);
+    };
+    void read();
+
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  });
 
   // Live preview as user types (before claim)
   let previewLabel = $derived(rawInput.toLowerCase().trim());
@@ -199,6 +294,11 @@
   // ── Claim ────────────────────────────────────────────────────────────────────
   async function doClaim() {
     if (claiming || checkPhase !== 'ok') return;
+    // A name an added passkey mints could never be pointed by it (#746).
+    if (auth.isConnected && !auth.isAccountOwner) {
+      claimError = MAIN_PASSKEY_REQUIRED_MESSAGE;
+      return;
+    }
 
     if (!auth.isConnected) {
       const ok = await loginRequest.request();
@@ -219,17 +319,14 @@
       // is one more thing to keep working on a chain move, and it bought the user
       // nothing the sponsor path does not already give them.
       const attempt = async () =>
-        claimSubEnsLabel({
-          label,
-          description: profileBio.trim() || undefined,
-        });
+        claimSubEnsLabel({ label });
       let res = await attempt();
-      // Attendee gate: names need a ticket-unlocked account (organisers pass
-      // automatically). Open the unlock flow and retry once.
+      // Attendee gate: names need an unlocked account (rule: server
+      // lib/gate/check.ts). Open the unlock flow and retry once.
       if (!res.ok && isTicketRequired(res.error)) {
         const unlocked = await gate.request();
         if (!unlocked) {
-          claimError = 'Claiming a name needs a ticket-unlocked account.';
+          claimError = unlocksWhen('Your name');
           return;
         }
         res = await attempt();
@@ -251,6 +348,10 @@
   // Re-link: name already owned on-chain, just update the profile pointer
   async function doRelink() {
     if (claiming) return;
+    if (!auth.isAccountOwner) {
+      claimError = MAIN_PASSKEY_REQUIRED_MESSAGE;
+      return;
+    }
     claiming = true;
     claimError = '';
     const label = rawInput.toLowerCase().trim();
@@ -273,10 +374,10 @@
   }
 </script>
 
-{#if stripeStatus !== true}
-  <!-- ── Stripe gate ─────────────────────────────────────────────────────── -->
+{#if lock !== "open"}
+  <!-- ── Unlock gate (verdict: server lib/gate/check.ts) ─────────────────── -->
   <div class="picker picker--locked">
-    {#if stripeStatus === null}
+    {#if lock === "checking"}
       <div class="lock-loading">
         <span class="spinner" aria-label="Checking…"></span>
         <span class="lock-loading-text">Checking your account…</span>
@@ -294,18 +395,18 @@
           <div class="lock-text">
             <p class="lock-title">Claim your free <code class="inline-code">.woco.eth</code> address</p>
             <p class="lock-sub">
-              {#if !auth.isConnected}
-                Connect your wallet to get started.
+              {#if lock === "signed-out"}
+                Sign in to get started.
               {:else}
-                Verify your business via Stripe to unlock — takes 2 minutes.
+                {unlocksWhen("Your name")} Stripe takes about 2 minutes.
               {/if}
             </p>
           </div>
         </div>
 
         <button class="setup-btn" onclick={openStripeSetup}>
-          {#if !auth.isConnected}
-            Connect wallet →
+          {#if lock === "signed-out"}
+            Sign in →
           {:else}
             Set up Stripe →
           {/if}
@@ -356,6 +457,9 @@
           {checkingRename ? 'Checking…' : 'Change'}
         </button>
       </div>
+      {#if linkState.note === 'identity'}
+        <p class="claimed-note claimed-note--muted profile-name-note">{linkNote}</p>
+      {/if}
     </div>
   {:else}
     <!-- ── Brand: terminal claimed state ─────────────────────────────────── -->
@@ -387,18 +491,26 @@
             Unlink
           </button>
         {/if}
-        <a class="action-btn action-btn--open" href={ensUrl} target="_blank" rel="noopener" title="Live on ENS — open this address">
-          Open ↗
-        </a>
+        {#if linkState.showOpen}
+          <a class="action-btn action-btn--open" href={ensUrl} target="_blank" rel="noopener" title="Live on ENS — open this address">
+            Open ↗
+          </a>
+        {:else if linkNote}
+          <span class="claimed-link-note">{linkNote}</span>
+        {/if}
       </div>
 
-      {#if deployedHash}
+      {#if linkState.showOpen && linkState.note === 'stale-version'}
+        <p class="claimed-note claimed-note--muted">{linkNote}</p>
+      {/if}
+
+      {#if targetHash}
         <p class="claimed-note">
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true" style="flex-shrink:0">
             <path d="M6 1v7M2 5l4 3 4-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
             <path d="M1 10h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
           </svg>
-          Linked to your site — updates automatically when you publish.
+          Linked to your site. Each publish shows here after {NAME_SHOWS_PUBLISH_AFTER}.
         </p>
         {#if onunlink}
           <p class="claimed-note claimed-note--muted">
@@ -533,26 +645,6 @@
       </p>
     {/if}
 
-    <!-- Profile fields (shown once available) -->
-    {#if showProfile}
-      <div class="profile-fields">
-        <div class="field-group">
-          <label class="field-label" for="ens-bio">Short bio <span class="field-opt">(optional)</span></label>
-          <textarea
-            id="ens-bio"
-            class="field-input field-textarea"
-            placeholder="Describe your venue, brand, or project in a sentence…"
-            rows="2"
-            maxlength="160"
-            bind:value={profileBio}
-          ></textarea>
-          <span class="field-counter">{profileBio.length}/160</span>
-        </div>
-        <p class="field-hint">
-          Stored as ENS text records — portable across any app that reads ENS.
-        </p>
-      </div>
-    {/if}
 
     <!-- Error -->
     {#if claimError}
@@ -878,66 +970,6 @@
 
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* ── Profile fields ─────────────────────────────────────────────────────── */
-  .profile-fields {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    padding: 0.875rem;
-    background: color-mix(in srgb, var(--accent) 3%, var(--bg));
-    border: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border));
-    border-radius: 4px;
-  }
-
-  .field-group { display: flex; flex-direction: column; gap: 0.3rem; position: relative; }
-
-  .field-label {
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-muted);
-  }
-
-  .field-opt { text-transform: none; font-weight: 400; letter-spacing: 0; opacity: 0.65; }
-
-  .field-input {
-    width: 100%;
-    padding: 0.5rem 0.6875rem;
-    font-size: 0.875rem;
-    color: var(--text);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    outline: none;
-    box-sizing: border-box;
-    transition: border-color 130ms;
-    font-family: inherit;
-  }
-
-  .field-input:focus { border-color: var(--accent); }
-
-  .field-textarea { resize: vertical; min-height: 4rem; line-height: 1.5; }
-
-  .field-counter {
-    position: absolute;
-    right: 0;
-    bottom: 0.3rem;
-    font-size: 0.6875rem;
-    color: var(--text-muted);
-    opacity: 0.55;
-    padding: 0 0.6rem;
-    pointer-events: none;
-  }
-
-  .field-hint {
-    margin: 0;
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    opacity: 0.65;
-    line-height: 1.4;
-  }
-
   /* ── Claim button ───────────────────────────────────────────────────────── */
   .claim-btn {
     display: flex;
@@ -1106,6 +1138,15 @@
   }
   .action-btn--open:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
+  /* Sits where Open ↗ would be, so the row keeps its shape while the name is
+     still becoming openable. */
+  .claimed-link-note {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+    max-width: 22rem;
+  }
+
   .claimed-note {
     margin: 0;
     display: flex;
@@ -1115,6 +1156,8 @@
     color: var(--text-muted);
     line-height: 1.4;
   }
+
+  .profile-name-note { margin-top: 0.4375rem; }
 
   /* ── Profile single-name row ────────────────────────────────────────────── */
   .picker--profile-name {

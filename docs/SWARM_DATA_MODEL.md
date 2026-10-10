@@ -3,7 +3,7 @@
 How WoCo stores data without a database: what a chunk is, how an address is computed, how a
 mutable feed is built out of immutable chunks, and how topics are derived.
 
-**Verified against `main` on 2026-09-08.** The normative files are
+**Verified against `main` (94364b56) on 2026-10-05.** The normative files are
 `packages/shared/src/swarm/soc.ts` and `packages/shared/src/statement/discipline.ts`. Anything
 signed and addressed under these rules lives forever at a computed address, so **changing a
 constant or a derivation here is a format bump, never an edit.**
@@ -113,19 +113,28 @@ There are two topic schemes, for two different classes of data.
 ### Path-shaped topics, for platform and content feeds
 
 ```
-woco/event/directory                 global listing (platform-signed pointer)
+woco/event/directory[/snapshot]      global listing (platform-signed pointer → snapshot blob)
 woco/event/{eventId}                 event details + ticket series
 woco/event/creator/{address}[/pN]    per-organiser index (never deleted from)
 woco/profile/data/{address}          profile
 woco/profile/avatar/{address}        avatar ref — a separate feed so it updates independently
 woco/issuer/{parentAddress}          issuer-registry statement log (parent-signed)
-woco/recovery/{kernelAddress}        recovery escrow envelope
+woco/recovery/{kernelAddress}        recovery escrow envelope - a GUARDIAN-owned chunk
+                                     (the client signs it; the platform cannot forge it)
+woco/recovery/status/{kernelAddress} platform-signed presence hint; holds no escrow
+woco/marketing/list/{address}        pointer to the organiser's sealed contact list
 woco/site/config/{siteId}            site JSON, or a platform-signed POINTER to a
                                      client-owned Site chunk (see SITE_BUILDER.md)
 woco/site/{siteId}/events            site events index
+woco/site/creator/{address}[/pN]     an organiser's site directory
 woco-multisite-{siteId}              per-site pointer → latest content hash (for ENS)
+woco-site-{eventId}                  per-event-page pointer, owned by the organiser's
+                                     feed signer (#614)
 woco/object/collection/{address}     a user's collection
 ```
+
+The two `woco-*` pointers are real bee sequence feeds, so a gateway can resolve them via
+`/bzz/{feedManifest}` - that is what a name or a custom domain follows.
 
 Topic components are restricted to `[0-9a-z-]{1,64}`, and this is a **collision guard, not input
 hygiene**. Topics are path-shaped and a paged one ends in `/p{N}` — so a component containing
@@ -211,31 +220,43 @@ for data over 4096 bytes fails on some Bee node configurations.
 
 ## 5. Who pays, and who uploads
 
-Storage on Swarm is paid for with a **postage batch**. WoCo runs a platform batch held
-server-side, which is why a client-signed write still goes through the API:
+Storage on Swarm is paid for with a **postage batch**. The batches are held server-side, which is
+why a client-signed write still goes through the API:
 
 ```
 browser: sign the SOC locally
-   ↓  POST /api/swarm/soc   { owner, identifier, signature, span, payload }
+   ↓  POST /api/swarm/soc   { owner, identifier, signature, span, payload, gatewayUrl? }
 server:  re-derive the CAC address from span+payload
          verify the signature recovers to `owner`
-         stamp with the platform batch and upload
+         stamp with the batch the router picks, and upload
 ```
 
-The stamp step is deliberately a **swappable transport** — a per-user batch, or a
-browser-resident Bee, would drop in without changing the signing model.
+Which batch (`apps/server/src/lib/etherna/batch-router.ts`): the WoCo platform batch on our own bee
+unless the write names the Etherna gateway; then the account's own live Etherna batch, else
+Etherna's platform batch. New events and user content families land on Etherna
+(`feed-routes.ts`, §7). The stamp step stays a **swappable transport** — a per-user batch already
+drops in without changing the signing model.
 
 Guards on that endpoint, in order: a JSON body cap sized to the largest honest request and
 placed *before* auth, so the auth middleware never reads and hashes megabytes; then auth; then
 rate limits per parent, per IP and globally, with a tighter bucket for statement-shaped payloads;
-then signature verification; then the upload. `/api/health` reports the refusal counters.
+then, for a like or follow, the account unlock (a ticket, Stripe verification or a confirmed
+invite, else `ticket_required`, #753); then signature verification; then the upload.
+`/api/health` reports the refusal counters. `POST /api/swarm/bytes` (raw content-addressed bytes)
+and issuer statements need the same unlock (#757).
 
 Organiser sites get a free-hosting quota (latest-deployment bytes per site), tracked in
-`.data/storage-ledger.json`.
+`.data/storage-ledger.json`. Saving, uploading a logo and going live need a Stripe-verified
+organiser or the owner's own live Etherna batch, on every gateway (#757).
+
+Paid attendee orders go on a **separate attendee batch** owned by its own stamper key, so the
+server can erase one order by overwriting its exact slots (#546;
+[IDENTITY_AND_KEYS.md §6](./IDENTITY_AND_KEYS.md#6-sealed-order-envelopes)).
 
 **Batch expiry is the sharp edge.** A stale-synced Bee will happily stamp against a batch that
-has already expired and the upload still reports success. Two separate batches are in play (the
-WoCo platform batch and the Etherna user batch), and they expire independently.
+has already expired and the upload still reports success. Several batches are in play - the WoCo
+platform batch, Etherna's platform batch, per-account Etherna batches and the attendee batch - and
+they expire independently. `/api/health` alarms on the ones the server owns.
 
 ---
 
@@ -274,10 +295,27 @@ those two need opposite responses.
 
 Which key owns which feed is a **settled decision** — don't reopen it from older documents. The
 short version: content feeds are owned by the user's content-feed signer; the platform signer owns
-only platform feeds (the directory pointer); and the feed key is sign-to-derived once, then
-stored and escrowed. The reasoning is in
+platform feeds, plus any event or site feed whose client sent no signer (the legacy path); and
+the feed key is an HKDF child of the identity seed
+(`crypto/feed-signer.ts`), so there is nothing separate to store or escrow - the seed is. The
+older "sign-to-derive once, then store and escrow the feed key" design is superseded (2026-09-10;
+[IDENTITY_AND_KEYS.md §5](./IDENTITY_AND_KEYS.md#5-the-content-feed-signer-is-a-sibling-of-the-seed-not-a-secret-of-its-own)).
+The reasoning for per-kind ownership is in
 [CLIENT_FEED_SIGNER_HANDOVER.md](./CLIENT_FEED_SIGNER_HANDOVER.md) and
 [FEED_SIGNER_REVIEW_2026-07-02.md](./FEED_SIGNER_REVIEW_2026-07-02.md).
+
+**Server** reads of an event's content feed find its signer in server state only: the record pinned
+at create (`.data/event-feed-signers.json`, #670), then the public directory, then the legacy
+platform feed. Never from a request.
+
+**Which store a content-feed read asks** comes from one table shared by client and server,
+`packages/shared/src/swarm/feed-routes.ts` (#657): an `etherna` family asks our bee and Etherna, a
+`woco` family our bee alone. `event` and `site` are discovery rows that ask both, because where one
+was stamped is recorded only inside it. Today the profile, event, site, manifest, social,
+referral and recovery families are `etherna` (#689, #740-#742); the campaign issuer, credits,
+cert and evidence families stay `woco`. A store that cannot answer makes the read `unavailable`,
+never `absent`. `/api/health` `feedRoutes` shows the table the running server uses; moving a family
+is one line there, with the server deployed before the frontend.
 
 **Client** reads of content feeds resolve by **computed chunk address** and never through Bee's
 `/feeds` endpoint. That is not a preference — it is what keeps every feed readable through

@@ -58,6 +58,11 @@ FEATURE FLAGS — READ BEFORE ASSUMING A RAIL IS LIVE
 
   cryptoPaymentsAllowed = false   # crypto rail built but unreachable (deferred to #41)
   freeEventsAllowed     = false
+  badgesAllowed         = false   # badge/drop creation + gated ticket sales (#664); Objects page stays (dashboard link)
+  shopAllowed           = false   # shops, POS, spend-permission draws (#124)
+  walletLoginAllowed    = false   # MetaMask/WalletConnect login: phishable sign-to-derive seed (#186)
+  accountBackupsAllowed = false   # email accounts' Protect backups; passkey accounts add passkeys (#186)
+  (also off: agentCommerceAllowed, coinbaseLoginAllowed, organiserSendingDomains)
 
 Flags gate UI AND server validation in lockstep — an old client cannot reach a disabled
 rail past the API. Stripe card payment is the ONLY live payment method.
@@ -91,9 +96,30 @@ DEV COMMANDS:
 - Required server env (names only; see `apps/server/.env.example`): EMAIL_HASH_SECRET,
   PAYMENT_QUOTE_SECRET, STRIPE_WEBHOOK_SECRET + STRIPE_WEBHOOK_SECRET_PLATFORM,
   SHOP_SPENDER_SECRET, ZERODEV_RPC, POSTAGE_BATCH_ID, FEED_PRIVATE_KEY, ALLOWED_HOSTS,
-  PUBLIC_API_BASE. Optional: SOCIAL_INDEXER_PRIVATE_KEY — signs the indexer's published
-  evidence reports (#312), never user data; its address must match `SOCIAL_INDEXER_ADDRESS`
-  in `packages/shared`. Unset = reports served on request, never published.
+  PUBLIC_API_BASE, WOCO_EVENT_CHAIN_ID (no default since #607 - boot refuses).
+  Optional: SOCIAL_INDEXER_PRIVATE_KEY — signs the indexer's published evidence reports
+  (#312), never user data; its address must match `SOCIAL_INDEXER_ADDRESS` in `packages/shared`.
+  Unset = reports served on request, never published.
+  Sub-ENS: `SUB_ENS_SPONSOR_PRIVATE_KEY` — the NAMES sponsor (mints + relays holder-signed
+  pointer/release writes), never the same key as `WOCO_SPONSOR_PRIVATE_KEY` (boot refuses);
+  unset = names 503. The platform holds NO key that can repoint a name (registrar v2.2).
+  `ATTENDEE_STAMPER_PRIVATE_KEY` owns the attendee order batch (#546): unset, or no active batch it
+  owns (`/api/ops/attendee-batch/register` + `/activate`), and checkout refuses (503). Never FEED_PRIVATE_KEY.
+  Register the production batch on the production server ONLY: a second ledger for it evicts live orders
+  (dev scripts blank the key for this reason).
+  Sponsorship (#758): `ZERODEV_POLICY_SECRET` + `ZERODEV_PROJECT_ID` — the ZeroDev custom gas policy
+  webhook (`/api/zerodev/policy/:secret`); unset = every sponsored userOp refused, `zerodevPolicy` red.
+  Optional `ZERODEV_POLICY_MAX_OP_COST_WEI` (per-op ceiling, default 5e14).
+  Optional: `CAMPAIGN_ISSUER_PRIVATE_KEY` — signs referral confirmations + badges
+  (#476), address must match `CAMPAIGN_ISSUER_ADDRESS`; unset = confirm 503s.
+  Also optional, all with defaults baked in (#421/#522/#420/#598/#662 health alarms; a bad value is
+  ignored and reported as `configError`, never fatal): `PAYMASTER_DEPOSIT_MIN_ETH`,
+  `POSTAGE_TTL_MIN_SECONDS`, `POSTAGE_UTILIZATION_MAX_PCT`, `BEE_CHAIN_LAG_MAX_BLOCKS`,
+  `ENS_MAINNET_RPC_URL`, `ENS_EXPIRY_MIN_DAYS`, `SUB_ENS_SPONSOR_MIN_ETH`,
+  `TICKET_SPONSOR_MIN_ETH` (ticket sponsor gas, default 0.0005, #706),
+  `TICKET_MINT_ALLOWANCE_MIN` (ledger sponsor mint-cap headroom, default 10), `TICKET_MINT_ALARM_PCT`
+  (busy-hour share of the cap, default 50, #672). `GET /api/health/alarms[?sections=a,b.c]` is 503 when a
+  watched section is red - point the uptime monitor there, not at `/api/health` (always 200).
 
 ============================================================================
 AUTH ARCHITECTURE
@@ -105,10 +131,14 @@ issuer-curve migration #443, PRs #447–#453, 2026-09-01).
 Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
 1. Primary wallet (secp256k1) — permanent identity
 2. Session key (secp256k1, random, 30-day expiry) — signs API requests
-3. Identity SEED (32 bytes, keccak256 of ONE deterministic EIP-712 signature under
-   "WoCo Account Keys" / `DeriveAccountKeys`) — NOT a key: the HKDF root for 4, 5 and the
-   X25519 encryption key. A fresh device therefore needs TWO signatures total: the session
-   delegation and this. `ensureIdentitySeed()` returns a
+3. Identity SEED (32 bytes) — NOT a key: the HKDF root for 4, 5 and the X25519 encryption
+   key. Wallet/email: keccak256 of ONE deterministic EIP-712 signature under "WoCo Account
+   Keys" / `DeriveAccountKeys`, so a fresh device needs TWO signatures total (session
+   delegation + this). PASSKEY (#642): HKDF of the PRF output, no signature, never through a
+   secp256k1 key — labels FROZEN in `packages/shared/src/crypto/passkey-prf.ts`. A passkey seed at rest is LOCKED
+   under a PRF-derived key (#746): an unlock (sign-in, or the confirm `auth.ensureOrganiserUnlock()` asks before every
+   organiser action) opens it for 2 h across reloads, one constant `SEED_UNLOCK_POLICY`; everyday posts sign with a cached
+   feed signer (`ensureContentSigner()`) and never ask. `ensureIdentitySeed()` returns a
    BOOLEAN (is the seed available), never a public key. The ed25519 HOLDER key it used to
    derive is GONE from every launch path (#518): `creatorObjectKey` and `holderPubKey` are deleted
    end to end, and no auth surface holds an ed25519 key. Two OUT-OF-LAUNCH-SCOPE rails still
@@ -130,6 +160,13 @@ Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
    IS that rule now — one AAD-bound slot, one escrow secret, and a rotated credential cannot
    fork the feeds because it cannot change the seed. Never falls back to platform signing.
    Coinbase Smart Wallet stays parked (non-deterministic 1271 ⇒ no reproducible seed).
+
+ACCOUNT SECRET GENERATIONS (#186): a passkey removal makes a RANDOM account secret S_{g+1} (S_0 =
+the seed); keys 5, the X-Wing order key and the door-pass roster key derive from the CURRENT one
+(the issuing key stays on S_0). The current generation is a key ring named onchain by `WoCoKeyRing`
+(`@woco/shared/keyring/*`), set in the same Kernel op as the co-owner change. Clients sign/seal only
+on a CONFIRMED-current verdict (`apps/web/src/lib/keyring/account-keys.ts`, lazy); the server reads
+events under the ring's signer and refuses boxes sealed to a replaced key. `docs/IDENTITY_AND_KEYS.md`.
 
 NAMING (owner decision, extended 2026-09-10): the retired noun is gone from every code
 name, file name and wire literal, so a real 0xPARC POD integration would arrive into an
@@ -159,7 +196,7 @@ what is already on the device. `ensureIssuingKey()` (`lib/auth/issuing-key.ts`) 
 seed + derivation — FAIL LOUD when no seed, never another signer.
 
 Global login popup pattern: `loginRequest.request() → Promise<boolean>` — opens
-`LoginModal` from any component. Used by ClaimButton, PublishButton, MyTickets, nav.
+`LoginModal` from any component. Used by ClaimButton, PublishButton, nav.
 
 CANONICAL REQUEST SIGNING (auth v2, 2026-04-09):
 
@@ -231,7 +268,7 @@ write queue) went with #207 and are NOT in the tree. `routes/claims.ts` serves o
 `GET /:eventId/series/:seriesId/claim-status`. The one live path is:
 
   reserve (10-min hold, atomic) → Stripe checkout → webhook → fulfilment:
-  seal order to the organiser's X25519 key → one EPHEMERAL BURNER keypair per
+  seal order to the organiser's X-Wing key (#642) → one EPHEMERAL BURNER keypair per
   ticket → `batchClaimFor` as the sponsor → burner signs its ticket message,
   key DISCARDED → email the ticket
 
@@ -274,21 +311,15 @@ Frozen rules every statement type shares: `packages/shared/src/statement/discipl
   a namehash keyed an audience to something governance/custody could move
 - Counting is an INDEXER's job, not the platform's; it can publish evidence reports
   (`statement/evidence-report.ts`, #312)
+- Writing one needs the SAME unlock as a name (ticket, Stripe, confirmed invite — `lib/gate/check.ts`):
+  the relay refuses like/follow formats with `ticket_required` (`routes/swarm.ts`, owner 2026-10-01),
+  and `toggleSocial` turns that into the unlock popup
 
-SUPERSEDED EAS RAIL (below) — `packages/shared/src/likes/` + `apps/web/src/lib/eas/` are its
-remains, kept for the abuse model. ProfilePage's Following/Trending still read it (#475) and
-referral badges still sit on it (#476). Do NOT build new social on it.
-
-- Attester = the user's own account (user-attested). Parent IS the attester here, unlike
-  feeds: web3 = parent EOA signs own-gas; passkey = Kernel attests gasless via scoped
-  session key. Both: `attester == parent` — that check is the linchpin.
-- Schema `bytes32 subject,uint8 subjectType` (revocable), UID `0x62c5b546…dda64`
-  (registered + verified on Arb Sepolia, also `EAS_SCHEMA_UID` env).
-- Stylus aggregator (#5, shipped 2026-06-11) on Arb Sepolia
-  `0x7dbf8d3a58bebb642fa1a478bbffba4675f1ba20`. ABI + address in `packages/shared` likes/types.ts.
-  GOTCHA: Stylus multi-value returns = ONE ABI tuple — fragments need `returns (tuple(...))`.
-- Server is a CACHE not truth: `.data/likes-index.json` is a projection, rebuildable from
-  chain logs (`reconcileFromChain`).
+EAS LIKES RAIL DELETED 2026-09-12 (#475) - `shared/src/likes/`, `routes/likes.ts`, `lib/likes/*`,
+`api/likes.ts` and ProfilePage's Following/Trending are all gone. EAS is gone from the tree (#476,
+2026-09-13): referrals and cohort badges are Swarm-native signed records
+(`packages/shared/src/campaign/records.ts`, server `lib/campaign/issuer.ts`, client
+`lib/campaign/records.ts`); `packages/shared/test/no-eas.test.ts` fails CI on any EAS symbol.
 
 ============================================================================
 MULTI-PAGE SITE BUILDER
@@ -309,7 +340,9 @@ PUBLISH FLOW (two-step):
    on the gateway, re-upserts the directory entry. Returns `{ contentHash, feedManifestHash, siteUrl }`
 
 AUTH: all write endpoints require the same EIP-712 session delegation used by events. Owner
-is stamped server-side from the verified parentAddress.
+is stamped server-side from the verified parentAddress. Save, logo upload and deploy also need a Stripe-verified
+organiser or the owner's own live Etherna batch, on EVERY gateway (2026-10-02 — the router's
+free-hosting check alone covered only the Etherna fallback).
 
 MY SITES: `GET /api/sites/mine` reads the creator's Swarm directory. localStorage
 `woco:my-sites` is a write-through cache seeded for instant paint; the API is truth.
@@ -357,11 +390,16 @@ AUTH (server):
   apps/server/src/middleware/auth.ts                 # session delegation + canonical sig verify
   apps/server/src/lib/auth/verify-delegation.ts      # EIP-712 verify + sessionProof + revocation
   apps/server/src/lib/auth/revocation.ts             # nonce blacklist + revoke-all
+  apps/server/src/lib/auth/device-grants.ts          # added passkeys (#746): signed grant registry
+  apps/web/src/lib/auth/device-verdict.ts            # added passkey sign-in: the server's verdict before any commit
+  apps/web/src/lib/auth/pairing-channel.ts           # linking another device (#746 step 4): code + sealed mailbox
+  apps/web/src/lib/keyring/{account-keys,rotate,rotate-live,adopt,members}.ts  # #186 key ring: verdict, removal, repair
+  apps/server/src/lib/keyring/{current-ring,event-keys}.ts  # #186 server reads the anchor; ORDER_KEY_STALE
 
 CLAIMS / EVENTS:
   apps/server/src/routes/claims.ts                   # claim-status ONLY (v1 claim rail deleted, #207)
   apps/server/src/routes/events.ts                   # create / discover / list / unlist
-  apps/server/src/routes/tickets.ts                  # email send (composite PNG + /t link)
+  apps/server/src/routes/tickets.ts                  # ticket email builder (PNG + /t link); fulfilment-only, NO route
   apps/server/src/lib/event/claim-service.ts         # email HMAC + passport collection feed (NOT claims)
   apps/server/src/lib/event/service.ts               # event creation
   apps/server/src/lib/swarm/topics.ts                # feed topic derivation
@@ -371,19 +409,12 @@ CLAIMS / EVENTS:
   packages/shared/src/issuer/types.ts                # issuer-registry statements + log verify
   apps/server/src/lib/issuer/{binding,registry}.ts   # PoP pin + rotation relay
 
-EAS LIKES:
-  apps/web/src/lib/eas/{eas-abi,attest}.ts           # attestLike/revokeLike
-  apps/server/src/routes/likes.ts                    # verify-on-chain record + reads
-  apps/server/src/lib/likes/eas-onchain.ts           # getVerifiedLike (linchpin) + reconcileFromChain
-  apps/server/src/lib/likes/index-store.ts           # .data/likes-index.json projection
-  packages/shared/src/likes/types.ts                 # schema, SubjectType, EAS addresses
-
 FRONTEND COMPONENTS:
   apps/web/src/App.svelte                            # shell: top bar + routing + bottom nav
   apps/web/src/lib/components/auth/{LoginModal,SigningConfirmDialog}.svelte
   apps/web/src/lib/attendee/events/{ClaimButton,EventCard,EventDetail}.svelte
   apps/web/src/lib/creator/events/PublishButton.svelte
-  apps/web/src/lib/attendee/passport/MyTickets.svelte
+  apps/web/src/lib/attendee/passport/{PassportTab,PassportTicket}.svelte
   apps/web/src/lib/creator/dashboard/Dashboard.svelte
   apps/web/src/lib/creator/embed/EmbedSetup.svelte
   apps/web/src/lib/components/profile/{ProfilePage,UserAvatar,CreatorChip,WalletTab,ConnectWalletModal}.svelte
@@ -459,7 +490,9 @@ feed a read-modify-write pass `thorough` and never trust the gate for this reaso
 are encrypted under a key held only in the running process, so a restart makes them
 permanently unreadable and the boot sweep deletes them. A deploy therefore kills in-flight
 broadcasts; the organiser resumes from the builder. Check for running jobs before deploying:
-`curl https://events-api.woco-net.com/api/health | jq .email.broadcasts`
+`curl https://events-api.woco-net.com/api/health | jq .email.broadcasts` — `pendingRecipients`
+0 is safe. Paced first sends (#619) run for hours or days, so `pacedJobs` will often be non-zero;
+deploying then is acceptable (the organiser's resume is one press and exact), just deliberate.
 
 `.data/` FILES THAT MUST SURVIVE RESTARTS (loaded on startup — don't delete):
   consumed-tx-hashes.json · revoked-sessions.json · consumed-stripe-sessions.json
@@ -468,14 +501,29 @@ broadcasts; the organiser resumes from the builder. Check for running jobs befor
     `byEventSeries` CANNOT be rebuilt from chain: the walk fills `byManifestRef`
     only, and a registered series never re-enters the tier-3 fill. Losing it
     stops ALL sales until restored. It was a pure cache before #424 — it is not
-    one now)
+    one now. Since #563 a record also names its CONTRACT (chain, address,
+    version) and mints/reads follow it, so do NOT wipe it at a contract cutover
+    (at a CHAIN flip a record on the old chain still verifies, never sells);
+    pre-#563 records are bare id strings, never rewritten. ROLLBACK HAZARD: a
+    build older than #563 loads the file only up to the first new-shape record
+    (a swallowed TypeError), boots normally, and on its next registration
+    OVERWRITES the file with that partial map — silently dropping every
+    registration #563 made after it. Back the file up before any rollback. If
+    the old build then records anything, its file is the partial map: on
+    rolling forward, restore the backup and re-add the bare-string records the
+    old build wrote (this build reads them))
   kernel-deployed.json (which Kernels have been seen with an on-chain owner, WHICH
     owner, at which L2 block, and — since #489 — on which CHAIN: records are keyed
     `{chainId}:{address}` and a record from another chain is ignored, never deleted.
     Losing it reopens the #200 windows, silently, on the next deploy: the
     counterfactual fallback returns and a lagging RPC replica can roll the owner
-    back to a retired key)
+    back to a retired key. Since #746 a record can also say `root: "weighted"` (every
+    passkey a co-owner): losing it lets a REMOVED first passkey back in through its
+    counterfactual during an RPC outage. A build older than #746 ignores the field
+    and refuses co-owned accounts - fails closed on a rollback)
   stripe-accounts.json · stripe-payout-ledger.json · stripe-payout-intents.json
+  stripe-payout-surplus.json (#781 part 2 — surplus clocks. Losing it only restarts the 7-day
+    wait before money the ledger cannot explain is paid out; it never pays early)
   pending-refunds.json (#367 — auto-refunds Stripe refused to create; losing it = a buyer
     charged with no ticket and no refund, and no alarm; `/api/health` `pendingRefunds`)
   marketing-consent.json (Art. 7(1) evidence for checkout opt-ins)
@@ -492,6 +540,8 @@ broadcasts; the organiser resumes from the builder. Check for running jobs befor
     organiser can tell attendees their event is cancelled, and it CANNOT be rebuilt: the
     plaintext address is never stored anywhere we could re-derive it from)
   marketing-suppression.json (losing it = emailing unsubscribers, a legal breach)
+  sender-pacing/ (#619 — each sender's ramp, 7-day bounce/complaint counts, stops and the
+    proven set. Losing it FORGETS A STOP and lets a stopped organiser mail again)
   marketing-lists.json · marketing-domains.json · marketing-send-log.json
   consumed-resend-events.json
   consumed-sns-events.json (also dedupes the failure-ledger write for an async bounce —
@@ -502,6 +552,44 @@ broadcasts; the organiser resumes from the builder. Check for running jobs befor
   event-listing-state.json (#37 global-directory overlay) — if lost, the builder self-heals by
   reseeding from the last snapshot (directory-snapshot.ts) rather than publishing an empty
   directory, but that only recovers events already in a snapshot
+  ticket-sales.json (#645 part C — sessionId → payment intent + minted slots + what we
+    refunded ourselves. Refunds and chargebacks void tickets THROUGH it. Losing it fails OPEN:
+    every refunded ticket reads valid at the door again. The money side does not depend on
+    it (the payout sweep re-reads Stripe). Present-but-unreadable is never overwritten)
+  event-cancellations.json (#644 — cancelled events + one refund row per sale. The ONLY
+    authority the money path reads for "cancelled": checkout, holds and fulfilment refuse from
+    it, payouts hold the event's takings until its refunds settle. Losing it lets a cancelled
+    event SELL AGAIN and forgets which buyers are still owed. Present-but-unreadable is never
+    overwritten and refuses EVERY sale (fail closed) until restored; `/api/health`
+    `eventCancellations` alarms)
+  held-orders/*.json (#546, one file per hold — sealed order boxes held from checkout until PAID, then stored on the
+    attendee batch. A paid entry not yet stored exists NOWHERE else. Unreadable = never overwritten;
+    sales continue with the minimal seal; `/api/health` `heldOrders` alarms)
+  attendee-slots.json (#546 — which slot of the attendee batch holds each order chunk: the ONLY way
+    to erase one order. Losing it loses per-record erasure for everything written so far, and that
+    batch must NEVER be registered again (buy a new one). Unreadable = checkout refuses until restored.
+    Since #797 each record also holds the buyer's email HMAC + organiser: it is the index the ops
+    lookup answers access/erasure requests from, and an EMAIL_HASH_SECRET rotation blinds it)
+  event-feed-signers.json (#670 — eventId → the organiser's content-feed signer + verified
+    creator, pinned at create, write-once. The money path's ONLY carrier for an UNLISTED event.
+    Losing it fails CLOSED: unlisted events stop selling until re-created; listed ones fall back
+    to the directory. The server cannot rebuild it (creators are not enumerable); an operator can
+    restore one organiser's records, best effort, from their creator index
+    `woco/event/creator/{address}`. Unreadable = `/api/health` `eventFeedSigners` alarm)
+  keyring-high-water.json (#186 — per account, the highest key-ring generation this server has seen.
+    A chain read below it PAUSES that organiser's sales (never serves the remembered ring: rings are
+    unsigned), so a lagging replica after a restart cannot hand back an older generation's keys.
+    Losing it only reopens that window; present-but-unreadable is never overwritten; `/api/health`
+    `keyRing` alarms, also when an account stays below its mark for 10 min - remove its entry with
+    the server stopped if the recorded generation is wrong)
+  name-targets.json (feed manifest -> the collection a deploy last baked there: the ONLY thing a site or
+    event-page name may show - the CCIP gateway's WoCo-built rule never signs the holder's pointer. Losing it
+    fails SAFE: every such name shows the app until republished. Unreadable = never overwritten, every such
+    name shows the app, `/api/health` `nameTargets` alarm)
+  device-grants.json (#746 — each account's added passkeys: owner-signed grants, signed removals
+    and every nonce used. Losing it signs every added device out (re-add from the main passkey);
+    nothing leaks or is granted. Losing the NONCES lets an old removal or grant be replayed.
+    Unreadable = no device signs in, nothing written, `/api/health` `deviceGrants` alarm)
 
 SVELTE 5 / BEE-JS:
 - Svelte 5 `$state` proxy: properties absent from the initial object literal aren't reactive;
@@ -511,7 +599,8 @@ SVELTE 5 / BEE-JS:
 
 RUNTIME:
 - Local account sign-out clears session but keeps keypair for re-login
-- `MyTickets` triggers `ensureSession` on mount (lazy EIP-712), not just on login
+- The passport (Profile tab, `#/tickets`) never prompts on open: its tickets are the unlock
+  status's linked tickets, read only when a session is already on the device
 - Embed widget is card-only (#141 decision): guest Stripe checkout, no wallet/passkey/account.
   Bump the `?v=` cache-buster (EmbedSetup + the frame page) whenever its behaviour changes
 - Web3 auth init: if the wallet isn't immediately available after redirect, session restores

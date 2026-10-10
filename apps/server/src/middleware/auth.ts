@@ -1,4 +1,5 @@
-import type { Context, Next } from "hono";
+import type { Context } from "hono";
+import { createMiddleware } from "hono/factory";
 import { verifyMessage } from "ethers";
 import { createHash } from "node:crypto";
 import { AuthErrorCode } from "@woco/shared";
@@ -64,6 +65,10 @@ interface SeenNonce {
   timestamp: number; // ts the request was signed with (not when seen)
 }
 const _seenNonces = new Map<string, SeenNonce>();
+let _lastNonceSweep = 0;
+/** A full sweep on EVERY request past the threshold is quadratic in the request
+ *  rate (#186); entries only live a little longer, so replay checks are unaffected. */
+const NONCE_SWEEP_INTERVAL_MS = 10_000;
 
 /** Strip expired entries. Called opportunistically — bounded sweep per request. */
 function gcSeenNonces(now: number): void {
@@ -73,6 +78,8 @@ function gcSeenNonces(now: number): void {
   // when its size exceeds a threshold. Bounded work — even at 1k req/s
   // the map stays under 300k entries before GC.
   if (_seenNonces.size < 256) return;
+  if (now - _lastNonceSweep < NONCE_SWEEP_INTERVAL_MS) return;
+  _lastNonceSweep = now;
   for (const [key, entry] of _seenNonces) {
     if (entry.timestamp < cutoff) _seenNonces.delete(key);
   }
@@ -145,7 +152,13 @@ function rejectAuth(
   return c.json({ ok: false, error: reason, ...(code ? { code } : {}) }, status);
 }
 
-export async function requireAuth(c: Context<AppEnv>, next: Next) {
+/**
+ * Declared through hono's factory, not as a plain `(c, next)` function: a plain
+ * middleware argument erases the route's path type, and from hono 4.13 every
+ * `c.req.param()` behind it reads `string | undefined`. The factory keeps the
+ * handler's `/:id` typed. Same function at runtime.
+ */
+export const requireAuth = createMiddleware<AppEnv>(async (c, next) => {
   const method = c.req.method.toUpperCase();
   const path = new URL(c.req.url).pathname + new URL(c.req.url).search;
 
@@ -263,10 +276,12 @@ export async function requireAuth(c: Context<AppEnv>, next: Next) {
   // Make parent + session + parsed body available to downstream handlers
   c.set("parentAddress", result.parentAddress!);
   c.set("sessionAddress", result.sessionAddress!);
+  c.set("sessionRank", result.rank ?? "owner");
+  c.set("parentKind", result.parentKind);
   c.set("body", body);
 
   await next();
-}
+});
 
 /** SHA-256 hex digest of a UTF-8 string. */
 function sha256Hex(text: string): string {

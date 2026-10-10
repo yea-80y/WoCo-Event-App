@@ -1,28 +1,30 @@
 <script lang="ts">
-  import type { UserProfile, EventDirectoryEntry, LikeSubject } from "@woco/shared";
-  import { SubjectType, socialProfileSubject } from "@woco/shared";
+  import NamePointerPrompt from "../sub-ens/NamePointerPrompt.svelte";
+  import type { UserProfile, EventDirectoryEntry } from "@woco/shared";
+  import { socialProfileSubject, FEATURES } from "@woco/shared";
   import { getProfile, updateProfile, uploadAvatar, getProfileNameStatus } from "../../api/profiles.js";
+  import { changedProfileFields, type ProfileFormFields } from "../../api/profile-save.js";
   import { gate } from "../../attendee/gate/gate.svelte.js";
   import { isTicketRequired } from "../../api/attendee-gate.js";
+  import { unlocksWhen } from "../../attendee/gate/unlock-copy.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
-  import { setExternalEventApi, setEventFeedSigner } from "../../api/event-api-registry.js";
+  import { openEvent } from "../../attendee/events/open-event.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { authPost, authGet } from "../../api/client.js";
-  import { getFollowing, getTrending } from "../../api/likes.js";
-  import { rememberLabel, nameForSubject } from "../../likes/label-cache.js";
+  import { rememberLabel } from "../../profile/label-cache.js";
   import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
   import { subEnsErrorFrom, subEnsErrorDetail, formatRetryAt } from "../../sub-ens/errors.js";
   import { canOpenRename, type ProfileNameStatus } from "../../sub-ens/rename.js";
   import { discardPlanFor } from "../../sub-ens/discard-availability.js";
   import { subEnsName } from "@woco/shared";
-  import type { TrendingSubject } from "@woco/shared";
   import UserAvatar from "./UserAvatar.svelte";
   import ReferralShareCard from "../campaign/ReferralShareCard.svelte";
   import CohortStamp from "../campaign/CohortStamp.svelte";
-  import { getBadge } from "../../api/campaign.js";
-  import type { BadgeRecord } from "@woco/shared";
+  import { readBadge } from "../../campaign/records.js";
+  import type { BadgeV1, Hex0x } from "@woco/shared";
   import WalletTab from "./WalletTab.svelte";
+  import PassportTab from "../../attendee/passport/PassportTab.svelte";
   import SubENSPicker from "../../creator/builder/SubENSPicker.svelte";
   import DiscardNameDialog from "../../creator/builder/DiscardNameDialog.svelte";
   import LikeButton from "../likes/LikeButton.svelte";
@@ -32,13 +34,15 @@
   import { isPastEvent } from "../../utils/events.js";
   import { onMount, onDestroy } from "svelte";
 
-  type ProfileTab = "profile" | "wallet" | "events" | "following";
+  type ProfileTab = "profile" | "passport" | "wallet" | "events";
 
   interface Props {
     address?: string;
+    /** "passport" opens on the passport (`#/tickets`). */
+    tab?: string;
   }
 
-  let { address: propAddress }: Props = $props();
+  let { address: propAddress, tab: propTab }: Props = $props();
 
   const viewAddress = $derived(propAddress?.toLowerCase() || auth.parent?.toLowerCase() || "");
 
@@ -61,20 +65,22 @@
   let loading = $state(true);
   let saving = $state(false);
 
-  // Cohort badge (public read, one tiny GET keyed on the viewed address).
-  let badge = $state<BadgeRecord | null>(null);
+  // Cohort badge — read STRAIGHT FROM the issuer's feed (#476), not from the
+  // platform. The badge's whole value is that WoCo vouched, and a signed chunk
+  // carries that on its own; an API answer only carried WoCo's word for it.
+  let badge = $state<BadgeV1 | null>(null);
   $effect(() => {
     badge = null;
     if (!viewAddress) return;
-    getBadge(viewAddress as `0x${string}`).then((resp) => {
-      if (resp.ok) badge = resp.data ?? null;
-    }).catch(() => {});
+    readBadge(viewAddress as Hex0x).then((b) => { badge = b; }).catch(() => {});
   });
   let saveError = $state('');
   let ensBindError = $state('');
   let ensBindDetail = $state('');
   /** A bind that worked but has a caveat — rendered as a note, never as red. */
   let ensBindWarning = $state('');
+  /** The bound name is empty and should open the app: the holder signs that. */
+  let ensPointer = $state<{ label: string; target: string } | null>(null);
   /** Cooldown refusal, shown INSTEAD of opening the name picker. */
   let renameBlocked = $state('');
   /** The name this account was known by before the rename that just succeeded. */
@@ -97,14 +103,15 @@
   // (same pattern as Home.svelte's discovery tabs).
   let eventsNow = $state(Date.now());
   let eventsClockTimer: ReturnType<typeof setInterval>;
-  let following = $state<LikeSubject[]>([]);
-  let followingLoaded = $state(false);
-  let followingLoading = $state(false);
-  let trending = $state<TrendingSubject[]>([]);
   let activeTab = $state<ProfileTab>("profile");
+  // Follows the route, so leaving `#/tickets` for your profile lands on Profile.
+  $effect(() => {
+    activeTab = propTab === "passport" ? "passport" : "profile";
+  });
   let addressCopied = $state(false);
   let revokingAll = $state(false);
   let revokeSuccess = $state(false);
+  let revokeFailed = $state(false);
 
   // Edit form
   let editName = $state("");
@@ -113,6 +120,12 @@
   let editTwitter = $state("");
   let editFarcaster = $state("");
   let formDirty = $state(false);
+  // What the form was filled with, so a save sends only what the user changed.
+  let formLoaded = $state<ProfileFormFields>({ displayName: "", bio: "", website: "", twitterHandle: "", farcasterHandle: "" });
+
+  function formValues(): ProfileFormFields {
+    return { displayName: editName, bio: editBio, website: editWebsite, twitterHandle: editTwitter, farcasterHandle: editFarcaster };
+  }
 
   let fileInput: HTMLInputElement | undefined = $state(undefined);
 
@@ -147,11 +160,21 @@
   }
 
   function initForm() {
-    editName = profile?.displayName ?? "";
-    editBio = profile?.bio ?? "";
-    editWebsite = profile?.website ?? "";
-    editTwitter = profile?.twitterHandle ?? "";
-    editFarcaster = profile?.farcasterHandle ?? "";
+    // Built from `profile` alone: this runs inside an effect, and reading the edit
+    // fields back would make it re-run on every keystroke.
+    const loaded: ProfileFormFields = {
+      displayName: profile?.displayName ?? "",
+      bio: profile?.bio ?? "",
+      website: profile?.website ?? "",
+      twitterHandle: profile?.twitterHandle ?? "",
+      farcasterHandle: profile?.farcasterHandle ?? "",
+    };
+    editName = loaded.displayName;
+    editBio = loaded.bio;
+    editWebsite = loaded.website;
+    editTwitter = loaded.twitterHandle;
+    editFarcaster = loaded.farcasterHandle;
+    formLoaded = loaded;
     formDirty = false;
   }
 
@@ -184,35 +207,38 @@
 
   async function saveProfile() {
     if ((!formDirty && !pendingAvatarDataUrl) || saving) return;
+    // Only what the user changed - the form was filled from a display read that can
+    // lag a save by minutes, and an untouched stale value would overwrite it (#651).
+    // Decided before any prompt: typed-then-undone has nothing to sign for.
+    const changes = formDirty ? changedProfileFields(formValues(), formLoaded) : {};
+    if (Object.keys(changes).length === 0 && !pendingAvatarDataUrl) { formDirty = false; return; }
     saving = true;
     saveError = '';
     try {
-      // Saving writes the profile to the user's OWN content feed, which is
-      // signed by a key derived from the seed — so this needs the account keys,
-      // not just a session. Asking for both up front is what stops the seed
-      // prompt appearing mid-save with no explanation.
-      const ok = await auth.ensureAccountSetup({ identity: true });
+      // Saving writes the profile to the user's OWN content feed, signed by the
+      // content-feed signer - so this needs that key, not just a session. Silent
+      // once the device holds it (#746); asking up front is what stops a prompt
+      // appearing mid-save with no explanation.
+      const ok = await auth.ensureContentSigner();
       if (!ok) { saveError = "Sign-in was cancelled — your changes were not saved."; return; }
       if (!(await ensureUnlocked())) {
-        saveError = "Link a ticket to unlock your profile first.";
+        saveError = unlocksWhen("Your profile");
         return;
       }
       const prevAvatarRef = profile?.avatarRef;
       let merged: UserProfile | null = profile;
 
-      // Text fields — only write the data feed when the user actually edited them.
-      if (formDirty) {
-        const updated = await updateProfile({
-          displayName: editName || undefined,
-          bio: editBio || undefined,
-          website: editWebsite || undefined,
-          twitterHandle: editTwitter || undefined,
-          farcasterHandle: editFarcaster || undefined,
-        });
+      if (Object.keys(changes).length > 0) {
+        const updated = await updateProfile(changes);
         // updateProfile already cached the fresh profile — don't invalidate, or the
         // next read races feed propagation and blanks it. Carry the avatar forward
         // (the data feed doesn't store avatarRef — it lives in a separate feed).
         if (updated) merged = { ...updated, avatarRef: updated.avatarRef ?? prevAvatarRef };
+        // The text is saved whatever the avatar upload below does: make it the
+        // form's baseline now, or a failed upload leaves the next save diffing
+        // against the old profile.
+        formDirty = false;
+        if (merged) profile = merged;
       }
 
       // Avatar — upload the STAGED image now (on Save), not on file-select.
@@ -233,7 +259,7 @@
       // silently didn't stick (the feed-signer setup path can throw or be
       // declined, and the write itself can fail after signing).
       saveError = isTicketRequired(err)
-        ? "Link a ticket to unlock your profile first."
+        ? unlocksWhen("Your profile")
         : err instanceof Error ? err.message : "Failed to save profile — please try again.";
       console.error("Failed to save profile:", err);
     } finally {
@@ -275,15 +301,16 @@
     ensBindError = '';
     ensBindDetail = '';
     ensBindWarning = '';
+    ensPointer = null;
     renameBlocked = '';
     // Captured BEFORE the bind: after it, the ledger no longer calls this the
     // profile name, which is exactly why the relay will now accept releasing it.
     const previous = profile?.subEnsLabel;
     try {
-      const updated = await updateProfile(
-        { subEnsLabel: label },
-        () => { ensBindWarning = 'This name already points at a site, and keeps doing so.'; },
-      );
+      const updated = await updateProfile({ subEnsLabel: label }, (outcome) => {
+        if (outcome.warning) ensBindWarning = 'This name already points at a site, and keeps doing so.';
+        if (outcome.pointer) ensPointer = { label, target: outcome.pointer.target };
+      });
       if (updated) {
         profile = updated;
         // updateProfile already wrote the fresh profile to cache — don't
@@ -296,7 +323,7 @@
       if (isTicketRequired(err)) {
         const unlocked = await gate.request();
         if (unlocked) return handleSubEnsClaim(label);
-        ensBindError = 'Link a ticket to unlock your account first';
+        ensBindError = unlocksWhen('Your name');
         return;
       }
       const described = subEnsErrorFrom(err, 'Failed to save name to profile');
@@ -364,20 +391,28 @@
   async function revokeAllSessions() {
     if (revokingAll) return;
     revokingAll = true;
+    let revoked = false;
     try {
-      await authPost("/api/auth/revoke-all", {});
+      // authPost resolves on a refusal too, so "Done" must wait for ok.
+      const res = await authPost("/api/auth/revoke-all", {});
+      if (!res.ok) throw new Error(res.error ?? "Revoke failed");
+      revoked = true;
       revokeSuccess = true;
-      setTimeout(() => { revokeSuccess = false; }, 3000);
     } catch (err) {
       console.error("Revoke sessions failed:", err);
+      revokeFailed = true;
+      setTimeout(() => { revokeFailed = false; }, 4000);
     } finally {
       revokingAll = false;
     }
+    // "Every device" includes this one (#186). Outside the try: the server has
+    // already revoked, so a local sign-out hiccup must not read as "failed".
+    if (revoked) await auth.onSessionRevoked();
   }
 
   async function loadProfile() {
     if (!viewAddress) { loading = false; return; }
-    try { profile = await getProfile(viewAddress); rememberLabel(profile?.subEnsLabel); }
+    try { profile = await getProfile(viewAddress); rememberLabel(viewAddress, profile?.subEnsLabel); }
     catch { /* no profile yet */ }
     finally { loading = false; }
   }
@@ -421,30 +456,9 @@
       .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime()),
   );
 
-  function openEvent(event: EventDirectoryEntry) {
-    if (event.apiUrl) setExternalEventApi(event.eventId, event.apiUrl);
-    setEventFeedSigner(event.eventId, event.creatorFeedSigner);
-    navigate(`/event/${event.eventId}`);
-  }
-
-  async function loadFollowing() {
-    if (followingLoaded || followingLoading || !viewAddress) return;
-    followingLoading = true;
-    try {
-      const [f, t] = await Promise.all([
-        getFollowing(viewAddress),
-        getTrending(undefined, 10),
-      ]);
-      if (f) following = f;
-      if (t) trending = t;
-    } catch { /* silent */ }
-    finally { followingLoading = false; followingLoaded = true; }
-  }
-
   function switchTab(tab: ProfileTab) {
     activeTab = tab;
     if (tab === "events" && !eventsLoaded) loadEvents();
-    if (tab === "following" && !followingLoaded) loadFollowing();
   }
 
   // Reset on address/auth change. Keyed on isConnected too, not just the address:
@@ -460,8 +474,12 @@
     _prevView = key;
     profile = null; events = []; eventsLoaded = false; eventsLoading = false; eventsFailed = false;
     eventsSubTab = "upcoming";
-    following = []; followingLoaded = false; followingLoading = false;
-    trending = []; avatarPreviewUrl = null; pendingAvatarDataUrl = null;
+    avatarPreviewUrl = null; pendingAvatarDataUrl = null;
+    // Writes only - reading the form here would make this effect track it. Text
+    // typed under one account must not ride into another account's first save.
+    editName = ""; editBio = ""; editWebsite = ""; editTwitter = ""; editFarcaster = "";
+    formLoaded = { displayName: "", bio: "", website: "", twitterHandle: "", farcasterHandle: "" };
+    formDirty = false;
     if (!v) {
       loading = false;
       if (!auth.isConnected) loginRequest.request().then(ok => { if (!ok) navigate("/"); });
@@ -541,10 +559,13 @@
       {:else}
         <div class="name-row">
           <h1 class="display-name">{displayName}</h1>
-          {#if badge}
+          <!-- `value === true` only: a revoked badge is a LATER version of the
+               same record, so `readBadge` returns it and the display rule is
+               here. Truthiness alone would render a revocation as a badge. -->
+          {#if badge?.value === true}
             <span
               class="cohort-mark"
-              title={badge.epoch === 0 ? "Early adopter — cohort attested on-chain" : `Cohort ${badge.epoch} — attested on-chain`}
+              title={badge.epoch === 0 ? "Early adopter - signed by WoCo" : `Cohort ${badge.epoch} - signed by WoCo`}
             >
               <CohortStamp epoch={badge.epoch} size={36} />
             </span>
@@ -665,6 +686,13 @@
       >Profile</button>
       <button
         class="tab-btn"
+        class:tab-active={activeTab === "passport"}
+        onclick={() => switchTab("passport")}
+        role="tab"
+        aria-selected={activeTab === "passport"}
+      >Passport</button>
+      <button
+        class="tab-btn"
         class:tab-active={activeTab === "wallet"}
         onclick={() => switchTab("wallet")}
         role="tab"
@@ -677,13 +705,12 @@
         role="tab"
         aria-selected={activeTab === "events"}
       >Events</button>
-      <button
-        class="tab-btn"
-        class:tab-active={activeTab === "following"}
-        onclick={() => switchTab("following")}
-        role="tab"
-        aria-selected={activeTab === "following"}
-      >Following</button>
+      <!--
+        No Following tab. The follow list and the Trending tally read the retired
+        EAS rail, so what they rendered was June test attestations rather than
+        anyone's actual follows. Both come back on the Swarm-native rail
+        (`lib/social/`) — #475.
+      -->
     </div>
   {/if}
 
@@ -694,7 +721,7 @@
       <div class="tab-body">
 
         {#if needsUnlock}
-          <!-- Attendee gate: profile features unlock with a purchased ticket -->
+          <!-- Attendee gate: rule in unlock-copy.ts / server lib/gate/check.ts -->
           <section class="settings-card unlock-card">
             <div class="unlock-row">
               <div class="unlock-icon">
@@ -703,15 +730,14 @@
                 </svg>
               </div>
               <div class="unlock-text">
-                <p class="unlock-title">Unlock your account with a ticket</p>
+                <p class="unlock-title">Unlock your name, photo and bio</p>
                 <p class="unlock-sub">
-                  Your profile, name and follows unlock once you link a ticket —
-                  use the link in your purchase email, or a ticket claimed with
-                  this account.
+                  {unlocksWhen("They", true)} Got a ticket? Open its email and tap Add to
+                  WoCo; one you buy while signed in is added for you.
                 </p>
               </div>
             </div>
-            <button class="save-btn" onclick={() => gate.request()}>Link a ticket</button>
+            <button class="save-btn" onclick={() => navigate("/discover")}>Find an event</button>
           </section>
         {/if}
 
@@ -835,6 +861,9 @@
           {#if ensBindWarning}
             <p class="ens-bind-warning">{ensBindWarning}</p>
           {/if}
+          {#if ensPointer}
+            <NamePointerPrompt label={ensPointer.label} target={ensPointer.target} targetIsFeed={true} purpose="profile" />
+          {/if}
         </section>
 
         <!-- Account info -->
@@ -851,6 +880,15 @@
               {authKindLabel[auth.kind ?? ""] ?? "Unknown"}
             </span>
           </div>
+
+          {#if auth.kind === "passkey"}
+            <div class="info-row">
+              <span class="info-label">Passkeys</span>
+              <!-- navigate(), never href="#/...": the gateway <base href> would send it off
+                   this origin, where the passkey opens a different account. -->
+              <button class="info-value link-btn" onclick={() => navigate("/passkeys")}>Your passkeys</button>
+            </div>
+          {/if}
 
           <div class="info-row">
             <span class="info-label">Address</span>
@@ -880,8 +918,8 @@
         <section class="settings-card settings-card--danger">
           <h2 class="card-title">Session security</h2>
           <p class="card-hint">
-            Sign out all active sessions across every device and browser.
-            You'll need to reconnect your wallet next time.
+            Sign out all active sessions on every device and browser, this one included.
+            You'll need to sign in again on each.
           </p>
           <div class="danger-row">
             <div class="session-status">
@@ -898,6 +936,8 @@
               {:else if revokeSuccess}
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
                 Done
+              {:else if revokeFailed}
+                Didn't work - try again
               {:else}
                 Sign out everywhere
               {/if}
@@ -908,9 +948,18 @@
       </div>
     {/if}
 
+    {#if activeTab === "passport"}
+      <div class="tab-body">
+        <PassportTab {badge} />
+      </div>
+    {/if}
+
     {#if activeTab === "wallet"}
       <div class="tab-body">
-        {#if auth.kind === "passkey"}
+        <!-- A spending wallet only ever funds a shop draw, so it goes with the
+             rail (#124). Import left static: this file lazy-loads nothing, and
+             the screen is already behind a tab. -->
+        {#if FEATURES.shopAllowed && auth.kind === "passkey"}
           <SpendingWallet />
         {/if}
         <WalletTab />
@@ -950,117 +999,6 @@
             {@render eventsLogGrid(upcomingEvents, "Nothing upcoming — anything you publish next lands here.")}
           {:else}
             {@render eventsLogGrid(pastEvents, "Nothing in the past yet.")}
-          {/if}
-        {/if}
-      </div>
-    {/if}
-
-    {#if activeTab === "following"}
-      <div class="tab-body">
-        {#if followingLoading}
-          <div class="events-loading">
-            <span class="spin-md"></span>
-            <span>Loading…</span>
-          </div>
-        {:else}
-          {@const followedEvents = following.filter(s => s.type === SubjectType.Event)}
-          {@const followedProfiles = following.filter(s => s.type === SubjectType.Profile)}
-
-          {#if following.length === 0}
-            <div class="events-empty">
-              <div class="empty-icon">
-                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M12 21L3.5 12.5C1.5 10.5 1.5 7.2 3.5 5.2C5.5 3.2 8.8 3.2 10.8 5.2L12 6.4L13.2 5.2C15.2 3.2 18.5 3.2 20.5 5.2C22.5 7.2 22.5 10.5 20.5 12.5L12 21Z"/>
-                </svg>
-              </div>
-              <p class="empty-title">Nothing liked yet</p>
-              <p class="empty-sub">Like events to build your on-chain social graph.</p>
-            </div>
-          {:else}
-            {#if followedEvents.length > 0}
-              <div class="follow-section">
-                <h3 class="follow-heading">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-                    <line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/>
-                    <line x1="3" y1="10" x2="21" y2="10"/>
-                  </svg>
-                  Events <span class="follow-count">{followedEvents.length}</span>
-                </h3>
-                <div class="follow-list">
-                  {#each followedEvents as s}
-                    <div class="follow-item">
-                      <span class="follow-type-dot ev-dot"></span>
-                      <a
-                        class="follow-id"
-                        href="https://sepolia.arbiscan.io/address/{s.id}"
-                        target="_blank"
-                        rel="noopener"
-                        title={s.id}
-                      >{s.id.slice(0, 10)}…{s.id.slice(-8)}</a>
-                    </div>
-                  {/each}
-                </div>
-              </div>
-            {/if}
-
-            {#if followedProfiles.length > 0}
-              <div class="follow-section">
-                <h3 class="follow-heading">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-                    <circle cx="12" cy="7" r="4"/>
-                  </svg>
-                  Profiles <span class="follow-count">{followedProfiles.length}</span>
-                </h3>
-                <div class="follow-list">
-                  {#each followedProfiles as s}
-                    {@const name = nameForSubject(s.id)}
-                    <div class="follow-item">
-                      <span class="follow-type-dot pr-dot"></span>
-                      {#if name}
-                        <span class="follow-name" title={s.id}>{name}</span>
-                      {:else}
-                        <span class="follow-id" title={s.id}>{s.id.slice(0, 10)}…{s.id.slice(-8)}</span>
-                      {/if}
-                    </div>
-                  {/each}
-                </div>
-              </div>
-            {/if}
-          {/if}
-
-          {#if followingLoaded && trending.length > 0}
-            <div class="follow-section trending-section">
-              <h3 class="follow-heading">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/>
-                  <polyline points="16 7 22 7 22 13"/>
-                </svg>
-                Trending
-              </h3>
-              <div class="trending-list">
-                {#each trending as t, i}
-                  {@const tName = t.subjectType === SubjectType.Profile ? nameForSubject(t.subject) : null}
-                  <div class="trending-row">
-                    <span class="trending-rank">#{i + 1}</span>
-                    <span class="trending-type-dot" class:ev-dot={t.subjectType === SubjectType.Event} class:pr-dot={t.subjectType === SubjectType.Profile}></span>
-                    <span class="trending-label">{t.subjectType === SubjectType.Event ? "Event" : "Profile"}</span>
-                    {#if tName}
-                      <span class="trending-name" title={t.subject}>{tName}</span>
-                    {:else}
-                      <span class="trending-id" title={t.subject}>{t.subject.slice(0, 8)}…{t.subject.slice(-6)}</span>
-                    {/if}
-                    <span class="trending-count">
-                      <svg width="10" height="10" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
-                        <path d="M12 21L3.5 12.5C1.5 10.5 1.5 7.2 3.5 5.2C5.5 3.2 8.8 3.2 10.8 5.2L12 6.4L13.2 5.2C15.2 3.2 18.5 3.2 20.5 5.2C22.5 7.2 22.5 10.5 20.5 12.5L12 21Z"/>
-                      </svg>
-                      {t.count}
-                    </span>
-                  </div>
-                {/each}
-              </div>
-            </div>
           {/if}
         {/if}
       </div>
@@ -1578,6 +1516,16 @@
     color: var(--text-secondary);
   }
 
+  .info-value.link-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    color: var(--accent-text);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
   .info-value {
     display: inline-flex;
     align-items: center;
@@ -1840,154 +1788,6 @@
 
   @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.8; } }
-
-  /* ── Following tab ───────────────────────────────────────── */
-  .follow-section {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    padding: 1.125rem 1.25rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-  }
-
-  .follow-heading {
-    margin: 0;
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    font-size: 0.6875rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-muted);
-  }
-
-  .follow-count {
-    font-family: var(--font-mono, "SF Mono", "Fira Code", monospace);
-    color: var(--text-dim);
-  }
-
-  .follow-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.375rem;
-  }
-
-  .follow-item {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.375rem 0.5rem;
-    border-radius: var(--radius-sm);
-    background: var(--bg);
-    border: 1px solid var(--border);
-  }
-
-  .follow-type-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  .ev-dot { background: var(--accent); }
-  .pr-dot { background: var(--text-muted); }
-
-  .follow-id {
-    font-family: var(--font-mono, "SF Mono", "Fira Code", monospace);
-    font-size: 0.6875rem;
-    color: var(--text-secondary);
-    text-decoration: none;
-    transition: color 0.15s ease;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  a.follow-id:hover { color: var(--accent); }
-
-  .follow-name {
-    font-size: 0.8125rem;
-    font-weight: 600;
-    color: var(--accent-text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .trending-name {
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--accent-text);
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .trending-section { margin-top: 0.5rem; }
-
-  .trending-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-
-  .trending-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.375rem 0.5rem;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border);
-    background: var(--bg);
-  }
-
-  .trending-rank {
-    font-family: var(--font-mono, "SF Mono", "Fira Code", monospace);
-    font-size: 0.625rem;
-    color: var(--text-dim);
-    min-width: 1.25rem;
-  }
-
-  .trending-type-dot {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  .trending-label {
-    font-size: 0.6875rem;
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    min-width: 2.5rem;
-  }
-
-  .trending-id {
-    font-family: var(--font-mono, "SF Mono", "Fira Code", monospace);
-    font-size: 0.6875rem;
-    color: var(--text-secondary);
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .trending-count {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    font-family: var(--font-mono, "SF Mono", "Fira Code", monospace);
-    font-size: 0.6875rem;
-    font-weight: 600;
-    color: var(--accent);
-    flex-shrink: 0;
-  }
 
   /* ── Responsive ──────────────────────────────────────────── */
   @media (max-width: 480px) {

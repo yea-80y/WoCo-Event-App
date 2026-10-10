@@ -21,12 +21,14 @@
    *  - removed backups stay removed: every route installed since #164 points at
    *    the WoCo hook, so re-adding no longer resurrects old guardians.
    */
-  import { auth } from "../../auth/auth-store.svelte.js";
+  import { auth, MAIN_PASSKEY_REQUIRED_MESSAGE } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
+  import { navigate } from "../../router/router.svelte.js";
   import { connectBackupWallet, connectWeb3AuthBackup, connectPasskeyBackup, type BackupWallet } from "../../wallet/backup-signer.js";
   import { isPasskeySupported } from "../../auth/passkey-account.js";
   import { readBackupProtection } from "../../auth/backup-management.js";
   import { describeRecoveryError } from "../../auth/recovery-errors.js";
+  import { FEATURES, type UserManifest } from "@woco/shared";
 
   type Phase =
     | "intro" | "choosing" | "connecting" | "confirming" | "working" | "done"
@@ -67,6 +69,19 @@
   let revokeError = $state("");
   let revokeBookkeepingNote = $state("");
 
+  // ── Frozen backup list (#190) ───────────────────────────────────────────
+  // The manifest read behind the labels fails two ways that used to look
+  // identical. A fault that may clear stays SILENT here (labels are a memory-jog
+  // and the list itself is chain truth). A FROZEN manifest is the opposite: its
+  // latest version exists and will never open, so every mutator refuses forever
+  // and no amount of waiting helps. This panel is where that dead end gets a way
+  // out - and the way out writes, so the user sees the cost first.
+  let manifestFrozen = $state<{ newerFormat: boolean } | null>(null);
+  let manifestSeed = $state<{ version: number; manifest: UserManifest } | null>(null);
+  let diagnosing = $state(false);
+  let repairing = $state(false);
+  let repairError = $state("");
+
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
   const addrDisplay = (a: string) => `${a.slice(0, 10)}…${a.slice(-8)}`;
   const signedIn = $derived(auth.isConnected);
@@ -74,7 +89,9 @@
   // can't re-derive its keys) and web3auth (raw key is an external-config dependency
   // that can be repointed). Self-custody kinds (web3/local/coinbase) recover from
   // their own wallet, so they see the "already covered" message instead.
-  const canProtect = $derived(auth.kind === "passkey" || auth.kind === "web3auth");
+  // Email accounts' backups are off for launch (`accountBackupsAllowed`, #186).
+  const backupsOff = $derived(auth.kind === "web3auth" && !FEATURES.accountBackupsAllowed);
+  const canProtect = $derived(auth.kind === "passkey" || (auth.kind === "web3auth" && !backupsOff));
 
   // ── Backup-method recommendation ────────────────────────────────────────
   // WHICH factors we offer, and which is best, is fully determined by HOW the
@@ -107,20 +124,13 @@
             : []),
           { id: "email", name: "Different email or social", recommended: !passkeySupported,
             hint: "Sign in with a different provider than the one you use to log in." },
-          { id: "wallet", name: "Crypto wallet",
-            hint: "Use MetaMask or any browser wallet." },
-        ]
-      : [
-          // Passkey primary — email/social is the most portable, independent backup.
-          { id: "email", name: "Email or social", recommended: true,
-            hint: "Sign in by email or social to create a recovery key. Works on any device." },
-          { id: "wallet", name: "Crypto wallet",
-            hint: "Use MetaMask or any browser wallet." },
-          ...(passkeySupported
-            ? [{ id: "passkey" as const, name: "Another passkey",
-                 hint: "Add a second passkey as backup. Best if it syncs across your devices." }]
+          // A wallet backup derives its key from a signature any site can ask for (#186).
+          ...(FEATURES.walletLoginAllowed
+            ? [{ id: "wallet" as const, name: "Crypto wallet", hint: "Use MetaMask or any browser wallet." }]
             : []),
-        ],
+        ]
+      // A passkey account backs up by linking another device (#746 step 5), never here.
+      : [],
   );
 
   $effect(() => {
@@ -144,6 +154,16 @@
     })();
   });
 
+  // The labels come from the seed-sealed manifest; the backups themselves are read
+  // from chain. A passkey account's keys unlock after a reload only when asked
+  // (#746 fix 1), so fill the labels in then, rather than ask on page open.
+  let labelsReadUnlocked = false;
+  $effect(() => {
+    if (!auth.hasIdentitySeed || labelsReadUnlocked) return;
+    labelsReadUnlocked = true;
+    loadBackupLabels();
+  });
+
   async function refreshProtection(kernel: string) {
     const p = await readBackupProtection(kernel);
     isProtected = p.isProtected;
@@ -158,15 +178,70 @@
   function loadBackupLabels() {
     auth.getBackupInventory()
       .then((r) => {
-        if (r.status !== "known") return;
+        if (r.status !== "known") {
+          // A fault that may clear on its own gets no surface at all — offering a
+          // repair there would overwrite a manifest that is probably intact.
+          if (r.unusableAt === undefined) return;
+          manifestFrozen = { newerFormat: r.newerFormat === true };
+          // Lazily, and exactly once per failed read: the seed walk costs real
+          // network reads, so it must never hang off a render. A newer envelope
+          // needs no seed — it is not damaged and must not be rebuilt.
+          if (!r.newerFormat) void diagnoseFrozenManifest();
+          return;
+        }
         const next: typeof backupLabels = {};
         for (const b of r.backups) {
           next[b.guardianAddress.toLowerCase()] = { method: b.method, providerLabel: b.providerLabel, addedAt: b.addedAt };
         }
         backupLabels = next;
+        manifestFrozen = null;
+        manifestSeed = null;
       })
       .catch(() => { /* labels only */ });
   }
+
+  /** Read-only: classify the failure and find the newest copy that still opens. */
+  async function diagnoseFrozenManifest() {
+    diagnosing = true;
+    try {
+      const d = await auth.diagnoseUserManifest();
+      // Anything other than "frozen" RETRACTS the notice — the manifest either
+      // reads now or is merely offline, and neither may be offered a rebuild.
+      if (d.kind !== "frozen") {
+        manifestFrozen = null;
+        manifestSeed = null;
+        return;
+      }
+      manifestFrozen = { newerFormat: d.newerFormat };
+      manifestSeed = d.seed;
+    } catch (e) {
+      console.warn("[recovery] manifest diagnosis failed:", e);
+      manifestFrozen = null;
+      manifestSeed = null;
+    } finally {
+      diagnosing = false;
+    }
+  }
+
+  async function repairBackupList() {
+    repairing = true;
+    repairError = "";
+    try {
+      await auth.repairUserManifest(manifestSeed?.manifest ?? null);
+      manifestFrozen = null;
+      manifestSeed = null;
+      loadBackupLabels(); // back to the normal render, off the rebuilt manifest
+    } catch (e) {
+      console.warn("[recovery] manifest repair failed:", e);
+      repairError = e instanceof Error ? e.message : String(e);
+    } finally {
+      repairing = false;
+    }
+  }
+
+  const seedDate = (ms: number) =>
+    new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
   function backupLabel(guardian: string): string {
     const l = backupLabels[guardian.toLowerCase()];
@@ -179,7 +254,15 @@
     loginRequest.request({ context: "attendee" });
   }
 
+  // A passkey account adds no backup here: "Add a backup" opens Your passkeys, where
+  // a linked device can be let recover the account (#746 step 5).
+  const linkInstead = $derived(auth.kind === "passkey");
+
   function startChoosing() {
+    if (linkInstead) {
+      navigate("/passkeys");
+      return;
+    }
     pendingBackup = null;
     errorMsg = "";
     errorFrom = "add";
@@ -187,6 +270,13 @@
   }
 
   async function chooseAndConnect(method: Method) {
+    if (linkInstead) return startChoosing();
+    // Backups are set on the account's own smart account, which only its owner can
+    // change (#746): an added passkey is told so before any backup is made.
+    if (!auth.isAccountOwner) {
+      errorMsg = MAIN_PASSKEY_REQUIRED_MESSAGE;
+      return;
+    }
     phase = "connecting";
     connectingMethod = method;
     errorMsg = "";
@@ -218,11 +308,15 @@
   }
 
   async function confirmAndInstall() {
-    if (!pendingBackup) return;
+    if (!pendingBackup || linkInstead) return;
+    if (!auth.isAccountOwner) {
+      errorMsg = MAIN_PASSKEY_REQUIRED_MESSAGE;
+      return;
+    }
     phase = "working";
     errorMsg = "";
     try {
-      await auth.setupAccountRecovery(
+      const added = await auth.setupAccountRecovery(
         {
           ...pendingBackup,
           // Record HOW this backup was added in the user's encrypted-to-self manifest
@@ -243,6 +337,13 @@
       backupAddress = pendingBackup.address;
       isProtected = true; // the install succeeded, so the route is on-chain
       protectionSource = "chain";
+      // The set the write PROVED, read back in full at its landing block — not a
+      // re-read of a chain that may still be catching up (#510). Leaving this stale
+      // is how the next add on this screen would be checked against the set from
+      // BEFORE this one: both writes leave the route on the WoCo hook, so that is
+      // the hook kind too.
+      hookKind = "woco";
+      onChainGuardians = added.guardians;
       phase = "done";
     } catch (e) {
       console.warn("[recovery] backup install failed:", e);
@@ -264,6 +365,10 @@
    * unverifiable removal surfaces as an error, not a green tick.
    */
   async function confirmRemove() {
+    if (!auth.isAccountOwner) {
+      errorMsg = MAIN_PASSKEY_REQUIRED_MESSAGE;
+      return;
+    }
     phase = "removing";
     errorMsg = "";
     try {
@@ -292,6 +397,10 @@
    */
   async function revokeOne(guardian: string) {
     if (revokingGuardian) return;
+    if (!auth.isAccountOwner) {
+      revokeError = MAIN_PASSKEY_REQUIRED_MESSAGE;
+      return;
+    }
     revokingGuardian = guardian;
     revokeError = "";
     revokeBookkeepingNote = "";
@@ -347,6 +456,14 @@
       <p class="lede">Sign in first, then add a backup so you can get back in if you ever lose this device.</p>
       <button class="btn btn--primary btn--lg cta" onclick={signIn}>Sign in</button>
 
+    {:else if backupsOff}
+      <p class="kicker">Account safety</p>
+      <h1>Backups aren't offered yet</h1>
+      <p class="lede">
+        Account backups for email sign-ins aren't available yet. Your email sign-in works on any
+        device, and each ticket we email you gets you in on its own - keep those emails.
+      </p>
+
     {:else if !canProtect}
       <p class="kicker">Account safety</p>
       <h1>You're already covered</h1>
@@ -380,7 +497,7 @@
           can no longer restore this account.
         </p>
       {/if}
-      <button class="btn btn--ghost cta" onclick={startChoosing}>Add a backup</button>
+      <button class="btn btn--ghost cta" onclick={startChoosing}>{linkInstead ? "Link another device" : "Add a backup"}</button>
 
     {:else if phase === "confirm-remove"}
       <p class="kicker">Account safety</p>
@@ -490,7 +607,7 @@
       {/if}
       <p class="footnote">The only way to be fully sure is to run a recovery on another device.</p>
       {#if hookKind !== "other"}
-        <button class="btn btn--ghost cta" onclick={startChoosing}>Add another backup</button>
+        <button class="btn btn--ghost cta" onclick={startChoosing}>{linkInstead ? "Link another device" : "Add another backup"}</button>
       {/if}
       <button class="linkish cta-link danger-link" onclick={startRemove}>Remove all backups</button>
 
@@ -498,20 +615,28 @@
       <p class="kicker">Account safety</p>
       <h1>Protect your account</h1>
       <p class="lede">
-        Add a backup so you can always get back into your account — on any device or sign-in.
+        {linkInstead
+          ? "Link another device, so losing this one doesn't lock you out."
+          : "Add a backup so you can always get back into your account - on any device or sign-in."}
       </p>
       <ul class="reasons">
-        <li><span class="tick">✓</span> Recover on any phone or laptop</li>
-        <li><span class="tick">✓</span> Your events and history come with you</li>
-        <li><span class="tick">✓</span> Only a backup you choose — never WoCo, never anyone else</li>
+        {#if linkInstead}
+          <li><span class="tick">✓</span> A second phone, laptop or password manager you already use</li>
+          <li><span class="tick">✓</span> Your events and history come with you</li>
+          <li><span class="tick">✓</span> Only your own devices - never WoCo, never anyone else</li>
+        {:else}
+          <li><span class="tick">✓</span> Recover on any phone or laptop</li>
+          <li><span class="tick">✓</span> Your events and history come with you</li>
+          <li><span class="tick">✓</span> Only a backup you choose — never WoCo, never anyone else</li>
+        {/if}
       </ul>
       {#if isProtected === null && checkDone}
         <p class="soft-warn" role="note">
-          We couldn't check whether this account already has a backup. Adding one is safe
-          either way — it adds to any you already have.
+          We couldn't check whether this account already has a backup — try again in a
+          moment if you'd rather be sure before adding one.
         </p>
       {/if}
-      <button class="btn btn--primary btn--lg cta" onclick={startChoosing}>Add a backup</button>
+      <button class="btn btn--primary btn--lg cta" onclick={startChoosing}>{linkInstead ? "Link another device" : "Add a backup"}</button>
       <p class="footnote">Takes a few seconds — you'll confirm on this device.</p>
 
     {:else if phase === "choosing"}
@@ -637,6 +762,45 @@
       {:else}
         <button class="btn btn--primary btn--lg cta" onclick={startChoosing}>Try again</button>
       {/if}
+    {/if}
+
+    <!-- The list above is chain truth and is unaffected; what is stuck is the
+         account's own saved copy (labels + the feed keep-list). Only on the
+         resting screen: mid-flow, this would be noise the user cannot act on. -->
+    {#if manifestFrozen && phase === "intro"}
+      <div class="repair">
+        <h2 class="repair-title">Your backup list can't be read</h2>
+        {#if manifestFrozen.newerFormat}
+          <p class="security-note" role="note">
+            It was saved by a newer version of WoCo. Reload to update this app, then try again.
+          </p>
+          <button class="btn btn--ghost cta" onclick={() => location.reload()}>Reload</button>
+        {:else}
+          <p class="security-note" role="note">The saved copy is damaged.</p>
+          {#if diagnosing}
+            <p class="hint-sm" aria-live="polite"><span class="spinner"></span> Looking for an earlier copy…</p>
+          {:else}
+            {#if manifestSeed}
+              <p class="repair-body">
+                The last readable copy is from {seedDate(manifestSeed.manifest.updatedAt)} with
+                {count(manifestSeed.manifest.backups.length, "backup", "backups")} and
+                {count(manifestSeed.manifest.feeds?.length ?? 0, "feed", "feeds")}. Anything added
+                after that will be missing from the list. Your content itself is not deleted.
+              </p>
+            {:else}
+              <p class="repair-body">
+                No earlier readable copy was found. Repairing starts a fresh, empty list.
+              </p>
+            {/if}
+            {#if repairError}
+              <p class="error" role="alert">{repairError}</p>
+            {/if}
+            <button class="btn btn--danger cta" disabled={repairing} onclick={repairBackupList}>
+              {repairing ? "Repairing…" : manifestSeed ? "Repair from that copy" : "Start a fresh list"}
+            </button>
+          {/if}
+        {/if}
+      </div>
     {/if}
   </div>
 </section>
@@ -906,6 +1070,30 @@
     border-radius: var(--radius-md);
     padding: 0.6rem 0.8rem; font-size: 0.88rem; margin: 0 0 1rem;
   }
+
+  /* Frozen-manifest repair (#190) — separated by a rule because it is about a
+     DIFFERENT thing than the panel above it (the saved copy, not the on-chain
+     route), and its one button is destructive. */
+  .repair {
+    margin-top: 1.75rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    text-align: left;
+  }
+  .repair-title {
+    font-family: var(--font-display);
+    font-size: 1.05rem;
+    letter-spacing: -0.01em;
+    margin: 0 0 0.75rem;
+    color: var(--text);
+  }
+  .repair-body {
+    font-size: 0.88rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin: 0 0 1rem;
+  }
+  .repair .cta:disabled { opacity: 0.6; cursor: default; }
 
   .spinner {
     display: inline-block; width: 0.9rem; height: 0.9rem; flex: none;

@@ -1,8 +1,8 @@
-> **HISTORICAL — February 2026.** Passkey login is now a ZeroDev Kernel smart account on
-> Arbitrum One. Current: [PASSKEY_SMART_WALLET.md](./PASSKEY_SMART_WALLET.md) and
-> [PASSKEY_RECOVERY_PLAN.md](./PASSKEY_RECOVERY_PLAN.md).
-
 # Passkey Authentication — Technical Overview
+
+> **Historical record (status 2026-10-05).** The February 2026 design in which a passkey's PRF output became a plain secp256k1 account; a passkey login now opens a
+> ZeroDev Kernel smart account on Arbitrum One, its identity seed is an HKDF of the PRF output (#642), and every passkey on an account is a co-owner (#746).
+> Current: [PASSKEY_SMART_WALLET.md](./PASSKEY_SMART_WALLET.md), [PASSKEY_RECOVERY_PLAN.md](./PASSKEY_RECOVERY_PLAN.md), [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md).
 
 WoCo supports passkey-based authentication using the **WebAuthn PRF extension**
 to deterministically derive an Ethereum (secp256k1) private key from a passkey.
@@ -50,7 +50,7 @@ extensions, and automatic cross-device sync via their existing password manager.
 | **Biometric consent** | Every key derivation requires fingerprint/face/PIN |
 | **Shared RP ID** | RP ID hardcoded to `woco.eth.limo` so all ENS subdomains (e.g. `org1.woco.eth.limo`) produce the same address |
 | **Zero server changes** | Server sees standard EIP-712 signatures — signer-agnostic |
-| **EIP-712 confirmation** | All EIP-712 signing shows a confirmation dialog — passkey users see what they're signing, same as local accounts |
+| **No signing dialogs** | The session delegation is signed silently by the raw PRF-derived key, and the identity seed is HKDF of the PRF output — no signature at all (#642). The biometric is the consent |
 
 ## RP ID Strategy
 
@@ -147,15 +147,13 @@ Page loads → init() reads kind="passkey" + address from IndexedDB
 ```
 User triggers action requiring auth (publish, claim, view tickets)
   → ensureSession() checks for existing valid delegation
-  → If none: calls passkey signer → shows EIP-712 confirmation dialog
-  → User reviews what they are signing, clicks "Sign"
-  → Passkey biometric prompt
-  → PRF derives key → signs EIP-712 AuthorizeSession
+  → If none: passkey biometric prompt (skipped if the PRF output is in memory)
+  → PRF derives key → signs EIP-712 AuthorizeSession silently
   → Delegation cached in IndexedDB (valid 1 year)
 ```
 
-The passkey signer shows the same confirmation dialog as the local account signer —
-users can always see what they are signing before approving.
+There is no confirmation dialog for a passkey: nothing it signs is a decision beyond the
+biometric itself (#642 removed the last one, the seed signature).
 
 ## PRF Extension
 
@@ -250,7 +248,7 @@ delegation.
 | `packages/shared/src/auth/constants.ts` | Storage keys, PRF salt, `PASSKEY_CLAIM_MAX_AGE_MS`, `PASSKEY_CLAIM_PREFIX` |
 | `apps/web/src/lib/auth/webauthn-prf.d.ts` | TypeScript type augmentation for PRF extension |
 | `apps/web/src/lib/auth/passkey-account.ts` | Core: `authenticatePasskey()` (discoverable picker), `createPasskeyAccount()`, `restorePasskeyAccount()`, `getPasskeyRpId()` |
-| `apps/web/src/lib/auth/signers/passkey-signer.ts` | EIP-712 signer — shows confirmation dialog before signing |
+| `packages/shared/src/crypto/passkey-prf.ts` | Identity seed + portability keys from the PRF output (#642; replaced the confirm-dialog seed signer) |
 | `apps/web/src/lib/auth/auth-store.svelte.ts` | State machine: passkey branches, calls `authenticatePasskey()` |
 | `apps/web/src/lib/components/auth/PasskeyLogin.svelte` | UI with provider logos |
 | `apps/web/src/lib/components/auth/LoginModal.svelte` | Integrates PasskeyLogin |

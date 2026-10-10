@@ -2,10 +2,14 @@
 
 Authoritative for payout timing, the Stripe Connect configuration it depends on, and
 the constraints Stripe imposes on it. Pricing/fee arithmetic lives in
-`PRICING_AND_EMAIL.md` (§15/§16 are the current sections); this doc is the mechanism.
+`PRICING_AND_EMAIL.md` (§15-§18 are the current sections); this doc is the mechanism.
 
 Built 2026-07-27. Every Stripe behaviour below is either quoted from their docs with a
 link, or flagged **UNVERIFIED**. Nothing here is inferred.
+
+**Status (2026-10-05):** live on Stripe test keys (pre-launch). New connected accounts get
+the full Stripe Dashboard (§4.1, #650). Refunds, chargebacks and event cancellations now void
+tickets and hold payouts (§2, "Refunds, voids and cancellations").
 
 ---
 
@@ -45,14 +49,20 @@ money".
 | `scripts/payout-schedule-audit.ts` | Audits (and with `--fix`, corrects) the schedule on every existing account. |
 | `GET /api/stripe/payouts` | Organiser's own held/released takings. Backs the terms' promise to tell them when funds release. |
 | `lib/stripe/payout-view.ts` | Ledger → the organiser-facing response. `netIsFinal` + settlement-currency keying live here. |
-| `POST /api/stripe/dashboard-link` | Single-use Express Dashboard login link ("Manage bank details"). Minted per click, never stored or emailed — Stripe's own rule. |
+| `POST /api/stripe/account-session` | Client secret for the Connect embedded components on the payouts screen (replaced the deleted Express `dashboard-link`). Minted per request, never stored. |
 | `creator/payouts/PayoutsScreen.svelte` | The organiser's Payouts screen at `#/creator/payouts` (issue #93). |
 | `creator/payouts/payouts-model.ts` | Pure grouping/totalling/labelling for that screen. |
-| `test/payout-release.test.ts` · `test/payout-view.test.ts` | 36 tests over the failure modes below; 13 over the organiser-facing response. |
+| `lib/stripe/checkout-provenance.ts` | The webhook fulfils only Checkout Sessions we created, unaltered (#649, §4.1). |
+| `lib/stripe/ticket-sales.ts` | `.data/ticket-sales.json` - the sale record: session → payment intent + minted slots + refunds. Voids go through it (#696). |
+| `lib/stripe/sale-refunds.ts` | Refund and dispute webhooks → ticket voids. Reads Stripe, never issues a refund (#696, #700). |
+| `lib/event/cancellations.ts` · `lib/stripe/cancellation-refunds.ts` | `.data/event-cancellations.json` - cancelled events + one refund row per sale (#703). |
+| `test/payout-release.test.ts` · `test/payout-view.test.ts` | The failure modes below; the organiser-facing response. |
 
 Wired into `routes/stripe.ts`: `interval: "manual"` at account creation; a self-healing
 correction on `account.updated`; a ledger entry on every paid session (tickets **and**
-shop orders); a void on full auto-refund. Sweep starts in `index.ts`.
+shop orders - the shop rail is off, `shopAllowed`); a void on full auto-refund; refund and
+dispute events (`charge.refunded`, `refund.updated`, `refund.failed`, `charge.dispute.*`) reconcile the sale
+record. Sweep starts in `index.ts`.
 
 ### Why a per-sale ledger and not "pay out the balance"
 
@@ -73,9 +83,69 @@ The auto-refund in `lib/stripe/fulfilment.ts` (a sale WoCo itself could not fulf
 refund, pro-rata on a partial. ORGANISER_TERMS §6 states it.
 
 The ledger's `netAmount` is a **reporting cache only** — the sweep re-resolves from
-Stripe on every run while an entry is held, because a refund can land between sweeps
-(there is no `charge.refunded` webhook wired) and a trusted cache would pay out the
-pre-refund value.
+Stripe on every run while an entry is held, because a refund can land between sweeps and a
+trusted cache would pay out the pre-refund value. (The `charge.refunded` webhook, #645
+part C, voids TICKETS; the money side never depends on it.) A refund that has not moved
+money yet (`pending` with `insufficient_funds`, or `requires_action`: no balance transaction)
+HOLDS the sale until it lands or fails, so its balance is never paid out from under it (#701).
+A refund that FAILED after its debit posted is netted with its `failure_balance_transaction`
+(the reversal); until the reversal posts it holds too, never a terminal void. While a dispute
+is open the sale is likewise held (`held: "dispute"`).
+
+**Disputes (#645 part C).** A disputed charge's disputes are read too. While one is open
+(`needs_response`, `under_review`, or a `warning_*` inquiry) the sale is **held**:
+never paid, never voided — `markVoid` is terminal and a won dispute gives the money back. Once
+closed, each dispute's balance transactions (the withdrawal, and the reinstatement if won) are
+netted like refunds, so a lost dispute takes the sale to ≤ 0 and the void branch retires it.
+
+### Refunds, voids and cancellations (#645 part C, #644)
+
+Tickets follow the money, so the door never admits a ticket whose payment went back.
+
+- **Refunds.** Organisers refund from their own Stripe Dashboard. The webhook re-reads the
+  charge and voids the refunded tickets (#696); a voided ticket is refused at the door and
+  flagged to the organiser (#699). A chargeback voids every slot of the sale; a won dispute
+  lifts it (#700). An organiser's own (non-WoCo) sale is recognised and ignored.
+- **Cancel an event and refund everyone** (#703, #704). `POST /api/events/:id/cancel`
+  persists the cancellation first; from then checkout, seat holds and fulfilment refuse the
+  event, and a job refunds every sale. The organiser's window closes
+  `ORGANISER_CANCEL_WINDOW_DAYS` after the event ends. An unreadable cancellations file
+  refuses every sale (fail closed).
+- **Payout hold.** A cancelled event's sales are held until each refund settles and are
+  **never forced out by the §3.1 ceiling** - paying out a balance a buyer's refund is waiting
+  on is worse than a late payout (`payout-release.ts`). A journalled intent that includes such
+  a sale is not replayed.
+- **Our fee.** The auto-refund for a sale we could not fulfil returns it (above). Cancellation
+  refunds follow `CANCELLATION_RETURNS_PLATFORM_FEE` (false: kept, as `ORGANISER_TERMS.md` §6
+  says, #695). Rates and policy: `PRICING_AND_EMAIL.md`.
+- **Debts (#781).** Stripe never returns its processing fee on a refund, and a chargeback adds
+  its own fee, so a refunded or charged-back sale nets BELOW zero - money already gone from the
+  pooled balance. It is never voided (that dropped the debt and left every later payout on the
+  account short, deferred for ever). It stays held and is netted into the account's next payout,
+  debts first, then due sales oldest-first while they fit; it is released with that payout's id.
+  Only a net of exactly 0 voids. A refund or dispute webhook flags the sale (`recheck`) so the
+  sweep reads it at once, whatever its date; a cancelled event's settled sale is read at once (a
+  positive remainder still keeps its date); and
+  once a day, when something due does not fit, the sweep reads the not-yet-due sales as the
+  backstop for a lost flag. A known debt that cannot be read holds that sweep's payout. Debts
+  larger than everything due pay nothing and are counted (`payoutSweep.accountsOwing`, not an
+  alarm: only new sales clear it); a due sale that has not fitted for 7 days alarms
+  (`payoutSweep.balanceShort`). `POST /api/ops/payouts/:sessionId/reopen` puts a pre-#781 void
+  back under the sweep.
+- **The balance against the ledger (#781 part 2).** The ledger cannot see everything that moves
+  a balance: a chargeback after the sale was paid out (the window opens on the event date), a
+  debt Stripe recovers by debiting the organiser's bank (`debit_negative_balances` is on for our
+  Managed Risk accounts, even on manual payouts), a dispute won after payout, a top-up, an
+  organiser's own non-WoCo payment (#785). So each sweep measures `available + pending` against
+  the held ledger (each held sale's last read net). Pending money is on both sides, so settlement
+  timing never reads as either. A shortfall is netted from the next payout; a surplus is paid to
+  the organiser once it has lasted `SURPLUS_SETTLE_DAYS` (7; the clock is
+  `.data/stripe-payout-surplus.json` - losing it only restarts the wait). Either lands as a
+  `kind: "reconciliation"` row released with its payout, so a payout always equals its rows.
+  A sale never read is read once first, and a balance or sale that cannot be read pays nothing.
+  An open dispute's posted withdrawal is netted at once; a positive sale is never paid while a
+  dispute or refund on it is unsettled. Alarms: `surplusOverdue` (a surplus unpaid for 30 days).
+  Failed payouts are #784.
 
 The balance transaction is also where the **settlement currency** comes from: a charge
 presented in a currency the account has no bank account for is converted to the
@@ -147,7 +217,8 @@ business's country."*
 - `payout-policy.ts` subtracts a **7-day safety margin**, so a missed sweep or an API
   outage cannot push us past the deadline. Breaching it is a compliance problem.
 - Ceiling-forced releases are flagged `forcedByCeiling` on the entry, logged as a
-  warning, and tagged in the payout's Stripe metadata. These are the sales where our
+  warning, and tagged in the payout's Stripe metadata. Exception: a cancelled event's
+  sales are never forced out (§2). These are the sales where our
   attendee-protection story does not hold, and they must be visible rather than silent.
 
 **For that exposed tail, delayed payouts provide no protection.** Refunds still work —
@@ -158,6 +229,10 @@ an unproven organiser may sell, hold a partial reserve, or require cancellation 
 festival-scale on-sales. Those belong to the §7 tier decisions.
 
 ### 3.2 The manual schedule IS the lock for Express — confirmed 2026-07-29
+
+> **Superseded for new accounts by #645 (2026-09-23).** This section is about Express
+> and `none`. On `full`, the organiser's dashboard has payout controls, and the lock is
+> the platform's Connect dashboard setting — see §4.1.
 
 Earlier revisions of this section treated the platform-controls page's warning
 ("connected accounts can still make manual payouts…") as applying to us and called the
@@ -185,11 +260,13 @@ Support also confirmed (same chat): **payout schedules are unaffected by Managed
 
 Since #90, `POST /api/stripe/connect` creates every account with **controller
 properties**, never `type` (`lib/stripe/account-params.ts`, pinned by
-`test/account-params.test.ts`):
+`test/account-params.test.ts`). Connect, onboarding and the account session need a
+smart-account (passkey) organiser; a wallet account gets 403 `PASSKEY_ACCOUNT_REQUIRED`
+(#768):
 
 | | Value | Meaning |
 |---|---|---|
-| `controller.stripe_dashboard.type` | `express` | Stripe-hosted Express Dashboard |
+| `controller.stripe_dashboard.type` | `full` | the organiser's own Stripe Dashboard (#645; was `none`, §4.1) |
 | `controller.fees.payer` | `account` | organiser pays Stripe processing fees |
 | `controller.losses.payments` | `stripe` | **Stripe** absorbs unrecoverable negative balances |
 | `controller.requirement_collection` | `stripe` | Stripe-hosted onboarding collects KYC |
@@ -214,9 +291,35 @@ Everything in §2 is still required: an organiser paid before their event who
 then cancels leaves attendees unrefundable regardless of who absorbs the
 accounting loss.
 
-### 4.1 The dashboard is moving to `none` — DECIDED, not yet flipped
+### 4.1 The dashboard is now `full` (#645, 2026-09-23)
 
-The `express` row above is what the code still ships. It is wrong, and Stripe
+Owner decision 2026-08-25: organisers get the full Stripe Dashboard, so they can
+refund, answer disputes and set up Radar themselves (#644). Shipped in #645:
+
+- **Accepted by Stripe.** Sandbox 2026-09-23: `accounts.create` takes `full` with
+  `losses.payments=stripe` (reported as `type: "standard"`); the manual schedule
+  sticks and the platform can still set it; our Account Session components mint;
+  Express login links still fail.
+- **Who created a session is proven, not assumed.** An organiser can now create
+  Checkout Sessions on their own account, and the webhook sees them. It fulfils
+  only sessions carrying our application fee and an intact integrity tag
+  (`checkout-provenance.ts`, #645 part A).
+- 🔴 **Self-payout is off only if the platform turns it off.** A full dashboard
+  has one-off payouts; platform schedule controls do not stop them. Before any
+  real organiser: Stripe Dashboard → Settings → Connect → Stripe Dashboard →
+  customise features → payouts OFF, API access OFF (Stripe said API keys would
+  otherwise let an organiser move money), no extensions. Then check it on a
+  sandbox account signed in as the organiser. Without it, the §2 hold is advice.
+- **Retire older accounts.** The dashboard type is fixed at creation.
+  `payout-schedule-audit.ts` flags `none` accounts as LEGACY-SHAPE and
+  `retire-legacy-accounts.ts --delete` removes zero-balance ones. Name the
+  owner's own accounts before running it.
+
+The rest of this section is the `none` history, kept for its evidence.
+
+#### The earlier move to `none` (2026-07-31)
+
+At the time the code shipped `express`. That was wrong, and Stripe
 said so: `stripe_dashboard.type = "express"` with `losses.payments = "stripe"`
 is **rejected by `accounts.create`** ("your platform must collect fees and be
 liable…", 2026-07-30), and the specialist's second email withdrew the recipe
@@ -252,7 +355,8 @@ sandbox e2e.
 ### 4.2 Requirements do not surface themselves
 
 Stripe can raise a new requirement long after onboarding, and payouts stop when
-it does. With no Stripe dashboard, the organiser has nothing to check. So
+it does. A legacy `none` account has no Stripe dashboard to check, and a `full`
+organiser is not expected to watch one. So
 `account.updated` chases them by email — deduplicated on the outstanding set
 with a 72h cooldown, and recorded in `.data/stripe-requirement-nudges.json`
 with a `firstDueAt` that survives a change of requirement. That file is the
@@ -269,7 +373,7 @@ All in `payout-policy.ts`. Changing them changes when real money moves.
 | Constant | Value | Why |
 |---|---|---|
 | `POST_EVENT_RELEASE_DAYS` | 2 | Covers same-night no-show/refund requests after the event ends. |
-| `SHOP_RELEASE_DAYS` | 7 | Shop/POS goods are delivered immediately — no event to wait for. Without this rule the manual schedule would freeze merchants' shop takings **forever**, since it holds the whole account balance, not just ticket money. |
+| `SHOP_RELEASE_DAYS` | 7 | Shop/POS goods are delivered immediately — no event to wait for. Without this rule the manual schedule would freeze merchants' shop takings **forever**, since it holds the whole account balance, not just ticket money. (Shop rail off, `shopAllowed`.) |
 | `FALLBACK_RELEASE_DAYS` | 14 | Event with no parseable date. Must neither strand funds nor dump them immediately. |
 | `HOLD_CEILING_SAFETY_DAYS` | 7 | Margin inside Stripe's country limit. |
 | Sweep interval | 1h | Payout timing is measured in days. No sweep at boot — a restart loop must not hammer Stripe. |
@@ -295,7 +399,8 @@ for Nice. The fresh-account e2e still has not passed: the 2026-07-30 attempt
 failed on `accounts.create`, and the fix is §4.1's controller change, which is
 itself gated on the same reply.
 
-1. **Self-payout restriction: not needed.** Express Dashboard cannot initiate payouts and
+1. **Self-payout restriction: not needed** (Express/`none` only; for `full` see §4.1).
+   Express Dashboard cannot initiate payouts and
    we have not enabled schedule editing — §3.2 has the verbatim confirmation.
 2. **Schedules survive Managed Risk: confirmed.** "Payout schedule is not affected by
    Managed Risk" (chat, 2026-07-29).
@@ -389,49 +494,21 @@ email addresses, or any credential.
   fsyncs before the rename, and reports a failed write on `/api/health` instead of
   logging it and carrying on with in-memory state disk does not have.
 
-✅ **Host hardening done 2026-07-27.** The live store was directory `755` / files `644` —
-world-readable to any host account — as were `server.env` (which holds `FEED_PRIVATE_KEY`,
-both Stripe webhook secrets, `EMAIL_HASH_SECRET`, `PAYMENT_QUOTE_SECRET` and
-`SHOP_SPENDER_SECRET`) and the Cloudflare tunnel token, which sat on cloudflared's
-command line and so was readable from `/proc/<pid>/cmdline` by any user.
-
-| | Before | After |
-|---|---|---|
-| `/opt/woco/woco-data` | `755` dirs / `644` files | `700` / `600` |
-| `/opt/woco/server.env` | `644` | `600` |
-| `/opt/woco/docker-compose.yml` | `644` | `600` |
-| Tunnel token | `ExecStart --token …` (cmdline is world-readable `444`) | `EnvironmentFile=/etc/cloudflared/env` `600`; `environ` is `400` owner-only |
-
-Safe because the server container runs as **uid 0** — it bypasses the mode bits, so
-tightening them cannot stop it writing. Verified after the change: container write+read+
-delete inside `.data`, the payout audit reading `stripe-accounts.json`, both tunnel
-hostnames serving, and `setpriv` as an unprivileged uid denied on both paths. Rollback:
-`/root/woco-data.modes.bak.*` (exact prior modes) and `/root/cloudflared.service.bak.*`.
+✅ **Host hardening done 2026-07-27.** The live store and the server's environment file are
+owner-only on the host (0700 / 0600). The specifics, and the backup position, are in the
+private ops runbook.
 
 > ⚠️ **If the Dockerfile ever gains a `USER` directive**, root-owned `600` files become
 > unreadable to the server and every store breaks at once. The mode tightening is only
 > safe while the container is root.
 
-> ⚠️ **Still open:** no encryption at rest beyond the provider's disk, and **no verified
-> backup of `woco-data`** — a lost ledger strands organiser funds. That is now the largest
-> remaining risk to this store, and it is a data-loss risk rather than an access one.
-
 ## 9. Operations
 
-```bash
-# Audit the payout schedule on every connected account (read-only), on the VM.
-# -w /app matters: the store is process.cwd()/.data and the server's cwd is /app.
-# From the wrong directory it finds no accounts — the script exits 1 rather than
-# reporting a clean audit of nothing.
-docker compose exec -w /app server npx tsx apps/server/scripts/payout-schedule-audit.ts
-docker compose exec -w /app server npx tsx apps/server/scripts/payout-schedule-audit.ts --fix
-
-# Locally against the dev store
-cd apps/server && npx tsx scripts/payout-schedule-audit.ts
-
-# Watch the sweep
-docker compose logs -f server | grep payout
-```
+The payout-schedule audit is `apps/server/scripts/payout-schedule-audit.ts` (read-only;
+`--fix` corrects). Run it from the server's working directory: the store is
+`process.cwd()/.data`, and from anywhere else it finds no accounts and exits 1 rather than
+reporting a clean audit of nothing. How to run it against production is in the private ops
+runbook.
 
 `.data/stripe-payout-ledger.json` **MUST survive restarts** — same class as
 `stripe-accounts.json` and `marketing-suppression.json`. Losing it either strands

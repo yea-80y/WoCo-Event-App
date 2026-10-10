@@ -25,6 +25,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { TypedDataEncoder, Wallet } from "ethers";
+import { enableFeature } from "./helpers/features.js";
+
+enableFeature("walletLoginAllowed");
 
 const HOST = "test.woco.local";
 process.env.ALLOWED_HOSTS = HOST;
@@ -158,6 +161,57 @@ async function postAs(
   return { status: resp.status, json: (await resp.json()) as Record<string, unknown> };
 }
 
+async function getAs(
+  d: Awaited<ReturnType<typeof mintDelegation>>,
+  path: string,
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  const timestamp = String(Date.now());
+  const nonce = randomUUID();
+  const challenge = ["woco-session-v1", "GET", path, timestamp, nonce, sha256Hex("")].join("\n");
+  const resp = await app.request(path, {
+    method: "GET",
+    headers: {
+      "X-Session-Address": d.session.address,
+      "X-Session-Delegation": Buffer.from(JSON.stringify(d.delegation), "utf-8").toString("base64"),
+      "X-Session-Sig": await d.session.signMessage(challenge),
+      "X-Session-Nonce": nonce,
+      "X-Session-Timestamp": timestamp,
+    },
+  });
+  return { status: resp.status, json: (await resp.json()) as Record<string, unknown> };
+}
+
+test("/list/meta answers null for an organiser with no list", async () => {
+  const d = await mintDelegation();
+  const { status, json } = await getAs(d, "/api/marketing/list/meta");
+  assert.equal(status, 200);
+  assert.deepEqual(json, { ok: true, data: null });
+});
+
+test("/list/meta gives the size of the caller's own list, and nothing of the blob", async () => {
+  const d = await mintDelegation();
+  const other = await mintDelegation();
+  const updatedAt = new Date().toISOString();
+  putList(d.parent.address.toLowerCase(), {
+    swarmRef: "11".repeat(32),
+    count: 3,
+    updatedAt,
+    emailHashes: [hashEmail("a@example.com"), hashEmail("b@example.com"), hashEmail("c@example.com")],
+  });
+
+  const mine = await getAs(d, "/api/marketing/list/meta");
+  assert.equal(mine.status, 200);
+  assert.deepEqual(mine.json, { ok: true, data: { count: 3, updatedAt } });
+
+  const theirs = await getAs(other, "/api/marketing/list/meta");
+  assert.deepEqual(theirs.json, { ok: true, data: null }, "one organiser's list must never answer for another");
+});
+
+test("/list/meta refuses an unsigned request", async () => {
+  const resp = await app.request("/api/marketing/list/meta", { method: "GET" });
+  assert.equal(resp.status, 401);
+});
+
 test("/check answers for the whole batch when one address is unmailable", async () => {
   const d = await mintDelegation();
   const org = d.parent.address.toLowerCase();
@@ -200,4 +254,31 @@ test("/suppress honours an unmailable address rather than refusing the call", as
   });
   assert.equal(status, 200);
   assert.deepEqual(json.data, { suppressed: 1 });
+});
+
+// ── The sealed list's shape (#642) ──────────────────────────────────────────
+
+test("/list refuses the retired X25519 box shape", async () => {
+  const d = await mintDelegation();
+  const { status, json } = await postAs(d, "/api/marketing/list", {
+    sealedList: { ephemeralPublicKey: "ab".repeat(32), iv: "00".repeat(12), ciphertext: "00".repeat(32) },
+    emails: [],
+  });
+  assert.equal(status, 400);
+  assert.match(String(json.error), /v2 sealed box/);
+});
+
+test("/list refuses a v2 box with anything riding beside it", async () => {
+  // A store that takes "anything sealed" must never wave cleartext through next
+  // to a valid box — the strict shape is the whole guarantee.
+  const d = await mintDelegation();
+  const box = { v: 2, enc: "ab".repeat(1120), ct: "cd".repeat(48) };
+  for (const sealedList of [
+    { ...box, contacts: ["ada@example.com"] },
+    { ...box, enc: "ab".repeat(1119) },
+    { ...box, v: 3 },
+  ]) {
+    const { status } = await postAs(d, "/api/marketing/list", { sealedList, emails: [] });
+    assert.equal(status, 400);
+  }
 });

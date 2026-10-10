@@ -1,5 +1,9 @@
 # Security Fixes — Crypto Audit Implementation (2026-04-09)
 
+> **Historical record (status 2026-10-05).** The point-in-time fix list for the 2026-04-08 audit, whose findings were addressed as recorded here; several files it names
+> (e.g. `packages/shared/src/pod/verify.ts`, the v1 claim routes) have since been deleted.
+> Current: [ARCHITECTURE.md](./ARCHITECTURE.md), [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md).
+
 Full audit: `docs/CRYPTO_AUDIT_2026-04-08.md`
 
 ---

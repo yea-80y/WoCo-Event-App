@@ -54,7 +54,7 @@ import {
   readBandedContentFeed,
   readContentFeedAtVersion,
 } from "../swarm/content-feed";
-import { WOCO_GATEWAY_URL } from "../swarm/gateways";
+import { FEED_ROUTES, WOCO_GATEWAY_URL } from "../swarm/gateways";
 import { writeContentFeedVerified } from "../swarm/verified-write";
 import { contentFeedSignerFromPrivKey } from "../swarm/content-feed";
 
@@ -150,7 +150,7 @@ export async function readCertLog(
     };
   }
   const topic = topicFor(badge);
-  const head = await readBandedContentFeed<CertLogPageV1>(ownerAddress, topic, { thorough: true });
+  const head = await readBandedContentFeed<CertLogPageV1>(ownerAddress, topic, { route: FEED_ROUTES.cert, thorough: true });
 
   if (head.status === "unavailable" || !head.bandClean) {
     return { ok: false, error: "Could not read this badge's certificate log — try again." };
@@ -166,7 +166,7 @@ export async function readCertLog(
         ownerAddress,
         topic(band),
         version,
-        { thorough: true },
+        { route: FEED_ROUTES.cert, thorough: true },
       );
       // EVERY VERSION BELOW A CLEAN HEAD EXISTS, by construction: pages are
       // written sequentially, each verified before the cursor advances, and a
@@ -447,6 +447,7 @@ export async function issueCertificates(args: {
         topic: topic(cursor.band),
         data: page,
         knownVersion: cursor.version,
+        route: FEED_ROUTES.cert,
       });
     } catch (e) {
       return {
@@ -528,7 +529,7 @@ async function upsertCertifiedBadge(
   band: number,
 ): Promise<boolean> {
   const indexTopic = (b: number) => certSubjectIndexTopic(salt, b);
-  const existing = await readBandedContentFeed<unknown>(keys.feedAddress, indexTopic, { thorough: true });
+  const existing = await readBandedContentFeed<unknown>(keys.feedAddress, indexTopic, { route: FEED_ROUTES.cert, thorough: true });
   if (existing.status === "unavailable" || !existing.bandClean) return false;
 
   // The lenient-read-on-a-write-path trap, refused the way `social.ts` refuses
@@ -561,6 +562,7 @@ async function upsertCertifiedBadge(
     ownerAddress: keys.feedAddress,
     topic: indexTopic(targetBand),
     data: { format: CERT_SUBJECT_INDEX_FORMAT, entries: merged },
+    route: FEED_ROUTES.cert,
   });
   return written.status === "verified";
 }

@@ -22,7 +22,7 @@ import "dotenv/config";
 import { getStripe } from "../src/lib/stripe/client.js";
 import { ensureManualPayoutSchedule } from "../src/lib/stripe/payout-schedule.js";
 import { listStripeAccounts } from "../src/lib/stripe/accounts.js";
-import { isPlatformLiable } from "../src/lib/stripe/account-params.js";
+import { isPlatformLiable, isLegacyShape } from "../src/lib/stripe/account-params.js";
 
 const FIX = process.argv.includes("--fix");
 
@@ -61,7 +61,9 @@ async function main(): Promise<void> {
       if (liable) legacy++;
       const label =
         `${stripeAccountId}  ${organiser.slice(0, 10)}…  country=${account.country ?? "?"}` +
-        `  losses=${account.controller?.losses?.payments ?? "?"}${liable ? " ⚠️ PLATFORM-LIABLE" : ""}`;
+        `  losses=${account.controller?.losses?.payments ?? "?"}${liable ? " ⚠️ PLATFORM-LIABLE" : ""}` +
+        `  dashboard=${account.controller?.stripe_dashboard?.type ?? "?"}` +
+        `${!liable && isLegacyShape(account) ? " ⚠️ LEGACY-SHAPE (retire, #645)" : ""}`;
 
       if (interval === "manual") {
         manual++;

@@ -163,8 +163,8 @@
     return `${sym[currency] ?? ''}${s.payment.price}`;
   }
 
-  function gatewayImageUrl(imageHash: string | undefined): string | undefined {
-    return firstImageUrl(imageHash);
+  function gatewayImageUrl(imageHash: string | undefined, storedOn?: string): string | undefined {
+    return firstImageUrl(imageHash, undefined, storedOn);
   }
 
   // ── SEO (#55) ────────────────────────────────────────────────────────────────
@@ -184,7 +184,7 @@
       .map((ev, i) => {
         const item = buildEventJsonLd(ev, {
           url: `${base}#/events/${ev.eventId}`,
-          imageUrl: gatewayImageUrl(ev.imageHash),
+          imageUrl: gatewayImageUrl(ev.imageHash, ev.gatewayUrl),
           organiserName: site.theme?.brandName,
         });
         return item ? { '@type': 'ListItem', position: i + 1, item } : null;
@@ -223,7 +223,7 @@
     {:else}
       <div class="events-grid">
         {#each events as ev (ev.eventId)}
-          {@const imgUrl = gatewayImageUrl(ev.imageHash)}
+          {@const imgUrl = gatewayImageUrl(ev.imageHash, ev.gatewayUrl)}
           <article class="event-card">
             <div class="card-image" class:has-img={!!imgUrl}>
               {#if imgUrl}
@@ -232,7 +232,7 @@
                   alt={ev.title}
                   loading="lazy"
                   data-image-gateway-index="0"
-                  onerror={(e) => useNextImageUrl(e, ev.imageHash)}
+                  onerror={(e) => useNextImageUrl(e, ev.imageHash, undefined, ev.gatewayUrl)}
                 />
               {:else}
                 <div class="card-image-fallback" aria-hidden="true"></div>

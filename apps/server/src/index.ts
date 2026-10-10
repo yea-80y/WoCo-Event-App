@@ -5,22 +5,30 @@ import { serve } from "@hono/node-server";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FEATURES } from "@woco/shared";
+import { FEATURES, FEED_FAMILY_STORES } from "@woco/shared";
 import type { AppEnv } from "./types.js";
 import { buildInfo } from "./config/build-info.js";
 import { requireAuth } from "./middleware/auth.js";
-import { securityHeaders, FRAME_INLINE_SCRIPT, FRAME_CSP } from "./lib/http/security-headers.js";
-import { revokeSession, revokeAllSessions } from "./lib/auth/revocation.js";
+import { securityHeaders, FRAME_CSP } from "./lib/http/security-headers.js";
+import { CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS } from "./lib/http/cors.js";
+import { buildFramePage } from "./lib/embed/frame-page.js";
+import { revokeSession, revokeAllSessions, revocationHealth, RevocationStoreUnavailableError } from "./lib/auth/revocation.js";
+import { deviceGrantHealth } from "./lib/auth/device-grants.js";
 import { kernelDeployedLoadFailed } from "./lib/auth/kernel-deployed.js";
 import { events } from "./routes/events.js";
 import { claims } from "./routes/claims.js";
 import { orders } from "./routes/orders.js";
-import { collection } from "./routes/collection.js";
 import { admin } from "./routes/admin.js";
 import { ops } from "./routes/ops.js";
 import { siteRoute } from "./routes/site.js";
 import { profiles } from "./routes/profiles.js";
 import { recovery } from "./routes/recovery.js";
+import { deviceGrants } from "./routes/device-grants.js";
+import { keyring } from "./routes/keyring.js";
+import { keyRingHealth } from "./lib/keyring/current-ring.js";
+import { upgradeIntent } from "./routes/upgrade-intent.js";
+import { zerodevPolicy, zerodevPolicyHealth } from "./routes/zerodev-policy.js";
+import { pairing } from "./routes/pairing.js";
 import { broadcast } from "./routes/broadcast.js";
 import { broadcastJobs } from "./routes/broadcast-jobs.js";
 import { domains } from "./routes/domains.js";
@@ -29,7 +37,6 @@ import { sitesRouter } from "./routes/sites.js";
 import { shopsRouter } from "./routes/shops.js";
 import { objectsRouter } from "./routes/objects.js";
 import { issuerRouter } from "./routes/issuer.js";
-import { tickets } from "./routes/tickets.js";
 import { reservations } from "./routes/reservations.js";
 import { checkin, checkinOrganiser } from "./routes/checkin.js";
 import { ticketPage } from "./routes/ticket-page.js";
@@ -38,12 +45,14 @@ import { resendWebhook } from "./routes/resend-webhook.js";
 import { sesWebhook } from "./routes/ses-webhook.js";
 import { marketing } from "./routes/marketing.js";
 import { ethernaRoutes } from "./routes/etherna.js";
+import { ethernaFetchBaseNotice } from "./lib/etherna/gateway.js";
+import { ethernaReadsHealth } from "./lib/swarm/soc-read.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { ensGatewayRoutes, ensGatewayStatus } from "./routes/ens-gateway.js";
 import { subEnsApexHealth } from "./lib/chain/sub-ens-apex.js";
+import { sponsorKeysConflict } from "./lib/chain/sub-ens-contract.js";
 import { profileNamesHealth } from "./lib/profile/name-ledger.js";
 import { attendeeGate } from "./routes/attendee-gate.js";
-import { likesRoutes } from "./routes/likes.js";
 import { socialRoutes } from "./routes/social.js";
 import { campaignRoutes } from "./routes/campaign.js";
 import { agentRouter } from "./routes/agent.js";
@@ -53,16 +62,41 @@ import { apiBodyLimit } from "./lib/http/body-limit.js";
 import { agentCard, agentOpenApi, agentBaseUrl } from "./agent/discovery.js";
 import { startDomainPoller } from "./lib/domains/poller.js";
 import { listEvents } from "./lib/event/service.js";
+import { onchainRegistryHealth } from "./lib/event/onchain-registry.js";
+import { issuerBindingHealth } from "./lib/issuer/binding.js";
 import { startSnapshotMaintenance } from "./lib/event/directory-snapshot.js";
 import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-release.js";
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
+import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
+import { ticketSalesHealth } from "./lib/stripe/ticket-sales.js";
+import { onStripeVerified } from "./lib/stripe/accounts.js";
+import { cancellationsStoreHealth } from "./lib/event/cancellations.js";
+import { cancellationJobHealth, startCancellationRefundJob } from "./lib/stripe/cancellation-refunds.js";
+import { liveCancellationRefundDeps } from "./lib/stripe/cancellation-refunds-live.js";
+import { eventCancel } from "./routes/event-cancel.js";
+import { saleRefundEventsHealth } from "./lib/stripe/sale-refunds.js";
+import { alarmGate } from "./lib/health/alarm-gate.js";
+import { feedSignerRecordHealth } from "./lib/event/feed-signer-record.js";
+import { nameTargetsHealth } from "./lib/sub-ens/name-targets.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
+import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
+import { confirmArmedReferral } from "./lib/campaign/referral-arm.js";
+import {
+  startHealthProbes,
+  paymasterHealth,
+  postageHealth,
+  subEnsParentHealth,
+  subEnsMintingHealth,
+  ticketMintingHealth,
+} from "./lib/health/probes.js";
 import { persistHealth } from "./lib/marketing/persist.js";
 import { activeEmailProvider, checkEmailProviderConfig } from "./lib/email/send.js";
 import { checkMarketingSenderConfig, marketingSenderHealth } from "./lib/email/client.js";
 import { failureHealth, bounceLedgerHealth } from "./lib/email/failure-ledger.js";
 import { reconcileOnBoot, recordShutdown } from "./lib/email/broadcast-jobs.js";
+import { flushPacing } from "./lib/sender-pacing/index.js";
+import { senderPacingHealth } from "./lib/email/broadcast-pacing.js";
 import {
   drainWorkerHealth,
   settleReservation,
@@ -72,6 +106,11 @@ import {
 import { logSponsorReadiness } from "./lib/chain/sponsor-wallet.js";
 import { assertEventContractConfig } from "./lib/chain/event-contract.js";
 import { customDomainProxy } from "./middleware/custom-domain.js";
+import { attendeeBatchHealth } from "./lib/attendee-batch/health.js";
+import { refreshAttendeeBatch } from "./lib/attendee-batch/admin.js";
+import { heldOrdersHealth, sweepExpired as sweepHeldOrders } from "./lib/attendee-batch/held-orders.js";
+import { sweepExpiredConsents } from "./lib/marketing/consent-store.js";
+import { retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -104,6 +143,21 @@ if (!process.env.ALLOWED_HOSTS) {
   console.warn(
     "[startup] ALLOWED_HOSTS not set — using dev default (localhost:5173,localhost:3001)",
   );
+}
+{
+  // Not fatal: pointing the server's own Etherna calls elsewhere is legitimate.
+  // Said at boot because routing will NOT follow it (#657).
+  const notice = ethernaFetchBaseNotice();
+  if (notice) console.warn(`[startup] ${notice}`);
+  // Not fatal - a server can run without Etherna - but loud: /api/health
+  // `ethernaReads` is red for as long as this holds.
+  const reads = ethernaReadsHealth();
+  if (!reads.ok) {
+    console.error(
+      `[startup] Families ${JSON.stringify(reads.families)} are stamped on Etherna, but ETHERNA_ENABLED/ETHERNA_API_KEY ` +
+      `are not set: every read of them will be "unavailable", never an answer.`,
+    );
+  }
 }
 
 // A configured proxy with no UPLOAD_SECRET cannot whitelist anything, and an
@@ -174,6 +228,18 @@ if (process.env.NODE_ENV === "production" && process.env.STRIPE_SECRET_KEY) {
   }
 }
 
+// Two sponsor keys, one job each (Fable sponsor-key consult §4): the events key
+// pays for tickets and events, the names key for sub-ENS. The split is what
+// lets one be lost, rotated or drained without the other, and gives each its
+// own nonce queue. The same key under both names defeats it silently.
+{
+  const conflict = sponsorKeysConflict();
+  if (conflict) {
+    console.error(`\n[startup] FATAL: ${conflict}.\n  Generate a separate key for each on the server host.\n`);
+    process.exit(1);
+  }
+}
+
 const app = new Hono<AppEnv>();
 
 // Custom domain proxy — must run before API routes so organiser domains short-circuit
@@ -184,23 +250,9 @@ app.use(
   "*",
   cors({
     origin: (origin) => origin || "*",
-    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowHeaders: [
-      "Content-Type",
-      "X-Session-Address",
-      "X-Session-Delegation",
-      "X-Session-Sig",
-      "X-Session-Nonce",
-      "X-Session-Timestamp",
-      "X-PAYMENT",
-      "X-Client-Key",
-      "X-Door-Pass",
-    ],
-    exposeHeaders: [
-      "PAYMENT-REQUIRED",
-      "X-FACILITATOR-URL",
-      "PAYMENT-RESPONSE",
-    ],
+    allowMethods: CORS_ALLOW_METHODS,
+    allowHeaders: CORS_ALLOW_HEADERS,
+    exposeHeaders: CORS_EXPOSE_HEADERS,
   }),
 );
 // Backstop on request-body size for every API route (#176). Per-route caps
@@ -213,6 +265,10 @@ app.use("/api/*", apiBodyLimit());
 // mistyped content-type into a dead asset. See lib/http/security-headers.ts.
 app.use("/api/*", securityHeaders());
 app.use("/embed/*", securityHeaders());
+// Ticket pages carry a working ticket in their URL, so they must never hand it
+// to another site in a Referer header. Every /t response is our own HTML, PNG or
+// JSON with an explicit content-type, so nosniff is safe here too.
+app.use("/t/*", securityHeaders());
 
 // Health check. Includes payout-sweep liveness (no amounts — this endpoint is
 // public): if `payoutSweep.stale` is ever true, organiser money has stopped moving
@@ -227,8 +283,8 @@ app.use("/embed/*", securityHeaders());
 // `email` reports the live ESP and any send we abandoned. An unresolved
 // TRANSACTIONAL failure means somebody paid and has no ticket, so it is an
 // alarm, not a statistic. Counts and store names only — this endpoint is public.
-app.get("/api/health", (c) =>
-  c.json({
+function healthReport() {
+  return {
     ok: true,
     // Which commit is answering (#125). Before this, "is production running what
     // I think?" could only be inferred — from a log line, a container creation
@@ -246,6 +302,30 @@ app.get("/api/health", (c) =>
     // yet — and until it lands the organiser is still scheduled to be paid for
     // it. Counts only; the ops route has the entries.
     pendingRefunds: pendingRefundsHealth(),
+    // #645: a tampered session (ours, altered after creation) is an alarm, and so
+    // is a sale left unverifiable for 10 minutes (#666, `stuck`); foreign sessions
+    // are an organiser's own sales and are only counted.
+    checkoutProvenance: checkoutProvenanceHealth(),
+    // #645 part C: the sale record refunds and chargebacks void tickets through.
+    // Alarms: a partial refund above our own that no operator has acknowledged
+    // (tickets left valid), a dispute or inquiry waiting for evidence
+    // (`disputesNeedingResponse` — a deadline is running in Stripe), the record
+    // file present but unreadable (voids off),
+    // and `refundEvents.stuck` — a refund on one of our sales that has waited an
+    // hour for its record. After launch `stuck` is also what catches a LOST
+    // record file: a refund on a sale the file no longer knows. Counts only; the
+    // ops route has the sales.
+    ticketSales: { ...ticketSalesHealth(), refundEvents: saleRefundEventsHealth() },
+    // #644: cancelled events and the refund of their sales. Alarms: a refund
+    // abandoned after its retries (a buyer paid and is not refunded), a refund
+    // Stripe holds because the organiser's balance is short (`waitingForFunds`),
+    // the file present but unreadable (every sale refused), and a refund job
+    // that has stopped passing (`job.stale`). Counts only; /api/ops/cancellations
+    // has the rows.
+    eventCancellations: {
+      ...cancellationsStoreHealth(),
+      job: { ok: !cancellationJobHealth().stale, ...cancellationJobHealth() },
+    },
     compliancePersistence: persistHealth(),
     // `false` is an alarm, not a statistic: the Kernel known-deployed record
     // exists on disk but would not load, so the counterfactual fallback is live
@@ -260,11 +340,43 @@ app.get("/api/health", (c) =>
     // bee behind on the postage contract stamps against a dead batch and the
     // uploads still look successful.
     evidencePublisher: evidencePublisherHealth(),
+    // The campaign issuer (#476). `failed` or `indexFailed` climbing is the
+    // alarm: writes are reporting success and not landing, which on this rail
+    // means a merchant is owed a revenue share nothing records. `configured:
+    // false` while the key IS set means the key derives an address clients do
+    // not read — the boot log names both.
+    campaignIssuer: campaignIssuerHealth(),
+    // Where each content-feed family is stamped, as THIS build reads and writes
+    // it (#657) - the shared table the frontend is built from too. It is the gate
+    // for moving a family: deploy the server, see the row here, then deploy the
+    // frontend. A frontend that moves a family first writes where this server
+    // does not yet look.
+    feedRoutes: FEED_FAMILY_STORES,
+    // RED when a family above is on Etherna and this server cannot ask Etherna
+    // (flag or key missing): those reads can never conclude anything. The
+    // breaker (reads paused after Etherna hung) is reported, not alarmed on.
+    ethernaReads: ethernaReadsHealth(),
     // The client-SOC relay's limiter (#301). `globalTrippedAt` non-null is the
     // alarm: the per-process ceiling that legitimate traffic never reaches has
     // refused writes with 503 — either an attack on the postage batch or a
     // client stuck in a write loop. Per-bucket refusal counts are statistics.
     swarmRelay: socRelayHealth(),
+    // Postage (#421). Three batches died or nearly died in five weeks and every
+    // one was found by hand: a dead batch does not fail an upload, it accepts it
+    // and never pays for the chunks. `bee.checks.ttl` false is "top up now";
+    // `bee.checks.utilization` false is "dilute now" — the batch is mutable, so a
+    // full bucket overwrites older chunks silently. `chain` is the confidence
+    // interval on the other two: a bee behind the postage contract answers every
+    // question from stale state. `null` anywhere means the probe could not read,
+    // which is deliberately NOT the same as healthy. Batch ids are truncated.
+    postage: postageHealth(),
+    // The self-funded ZeroDev paymaster's EntryPoint deposit (#522). Empty means
+    // every Kernel userOp — recovery setup, backup changes, name discard, a
+    // guardian's recovery — fails with "temporarily unavailable", and the server
+    // never sees those ops, so this public on-chain read is the only warning
+    // available. Addresses and a balance only; the monthly policy caps are a
+    // SECOND ceiling this cannot see (see `note`).
+    paymaster: paymasterHealth(),
     // The self-hosted CCIP-Read gateway (#419). `signer` must equal
     // L1Resolver.signer() on L1 — if this address changes and the resolver is
     // not updated, every *.woco.eth name stops resolving.
@@ -274,7 +386,82 @@ app.get("/api/health", (c) =>
     // anyone who types it — a silent loss of a feature, which is why it is
     // reported rather than left to a log line. An `apexError` alongside it is
     // worse than unset: someone configured a value and it is being ignored.
-    subEns: subEnsApexHealth(),
+    subEns: {
+      ...subEnsApexHealth(),
+      // `woco.eth`'s own L1 registration (#420). Silent until it isn't: renewal
+      // is one manual transaction a year from the Safe, nothing else on this
+      // server reads mainnet, and the day the registration lapses past its
+      // 90-day grace every *.woco.eth name — the app's own frontend included —
+      // stops resolving at once. WATCH ONLY; nothing here renews anything.
+      parent: subEnsParentHealth(),
+      // Whether new names can be minted at all (#598): the registrar enrolled
+      // in the registry it mints into, the sponsor still authorised on it and
+      // able to pay, and — on registrar v2.2 — the registrar-wide cap's
+      // headroom, which is also the leaked-key detector. All fail silently —
+      // existing names keep resolving. Registry v2.2 drops every registrar at
+      // an admin handover, so a handover batch that forgot
+      // `addRegistrar(WoCoRegistrar)` lands here. Public on-chain data only.
+      minting: subEnsMintingHealth(),
+    },
+    // Wedged on-chain registrations (#434). Since #433 a registration whose
+    // on-chain event is already bound to another series can NEVER complete: the
+    // confirm throws on every retry, the pending marker never clears, and the fix
+    // is an operator restoring `onchain-events.json` and restarting. Refusing is
+    // right — the alternative was silent theft of another organiser's supply — but
+    // the failure was invisible: an organiser saw a button that did not work and
+    // the server logged an exception among thousands. `rebindConflicts` counts
+    // DISTINCT series stuck this way since boot, so a retry loop is one alarm.
+    // `unreadableRecords` counts entries in `onchain-events.json` this build
+    // cannot parse (#563): kept on disk untouched, never served, so each is a
+    // series that cannot sell until an operator repairs it. `fileUnreadable`
+    // is the whole file: nothing sells or registers, and it is never written.
+    onchainRegistry: onchainRegistryHealth(),
+    // Each event's feed signer + verified creator, pinned at create (#670): the
+    // money path's only carrier for an UNLISTED event. `unreadable` true, or
+    // `unreadableRecords` above 0, is an alarm: those events cannot sell, and no
+    // event can be created with a signer, until an operator restores the file.
+    eventFeedSigners: feedSignerRecordHealth(),
+    // What each WoCo-built feed last published (name-targets.json): the only content a
+    // site or event-page name may show (the CCIP gateway's WoCo-built rule). `unreadable`
+    // is an alarm: every such name shows the app, and nothing is recorded, until restored.
+    nameTargets: nameTargetsHealth(),
+    // Added passkeys (#746). `unreadable` is an alarm: every added device is
+    // signed out and no device can be added or removed until the file is restored.
+    deviceGrants: deviceGrantHealth(),
+    // The key-ring anchor (#186): red when no contract answers at its address. Every
+    // organiser-signed event read asks it for the organiser's current keys and refuses
+    // when it cannot tell, so a server running ahead of the contract reads no events.
+    keyRing: keyRingHealth(),
+    // Revoked sessions (#186). `ok: false`: the file is present but unreadable, so
+    // revoked sessions are not refused and nothing can be revoked until it is restored.
+    revocation: revocationHealth(),
+    // Sponsored userOps (#758): ZeroDev asks the policy route before paying. Red
+    // when the secret or project id is unset - every sponsorship is then refused,
+    // so recovery, backups and "make this device the main one" all fail. Counts
+    // since boot; `lastRefusal.reason` names the rule that refused.
+    zerodevPolicy: zerodevPolicyHealth(),
+    // The attendee order batch (#546): red when checkout would refuse sales,
+    // the batch is under the postage TTL floor or its fullest bucket over the
+    // utilization ceiling, or a burn was left unfinished.
+    attendeeBatch: attendeeBatchHealth(),
+    // Orders held until paid (#546). Red when a PAID order has waited over 15
+    // minutes to reach Swarm (the retry worker keeps failing: bee down, bucket
+    // full - activate a fresh batch) or the hold file is unreadable.
+    heldOrders: heldOrdersHealth(),
+    // Whether paid checkouts can mint on the events contract (#662): the ticket
+    // sponsor still authorised, and on the ledger its hourly mint cap's headroom
+    // (`TICKET_MINT_ALLOWANCE_MIN`, default one maximum order). The checkout
+    // refuses a sale the cap cannot mint, so a spent or stopped cap reads from
+    // outside as "not on sale"; this says why. `mintable` falling with no sales
+    // to account for it is the leaked-key signal. Public on-chain data only.
+    ticketMinting: ticketMintingHealth(),
+    // Cross-account issuer claims (#457). One issuing address belongs to one
+    // account, but the server sees only addresses and cannot tell a squatter
+    // from a client deriving the wrong key — so it refuses the second claimant
+    // and reports it here. `crossClaimRefusals` climbing means a real account
+    // may be locked out of its own issuer identity, which from the organiser's
+    // side is indistinguishable from a create that mysteriously stopped working.
+    issuerBindings: issuerBindingHealth(),
     // The profile-name ledger (#464). `loadFailed` means the file on
     // disk would not parse: the ledger is EMPTY, so every rename cooldown has
     // reset and the profile-name refusal at the binding points is off until each
@@ -286,6 +473,13 @@ app.get("/api/health", (c) =>
       provider: activeEmailProvider(),
       undelivered: failureHealth(),
       broadcasts: drainWorkerHealth(),
+      // Sender pacing (#619). `ok: false` means a sender has been STOPPED for
+      // bounces or complaints (an operator must look: /api/ops/sender-pacing),
+      // or the platform's own 7-day rate is over a hold line — the early
+      // warning before SES's review line — or `tagging` is false (no SES
+      // configuration set, so nothing can be counted). Holds alone are
+      // reported, not alarmed: they lift on their own. Counts only; public.
+      senderPacing: senderPacingHealth(),
       // `ok: false` means the PLATFORM marketing lane is refusing sends because
       // no marketing from-address is configured (#96). Organisers with their own
       // verified sending domain are unaffected, and so is transactional email.
@@ -298,8 +492,19 @@ app.get("/api/health", (c) =>
           ? bounceLedgerHealth()
           : { ok: false, unsupported: activeEmailProvider() },
     },
-  }),
-);
+  };
+}
+
+app.get("/api/health", (c) => c.json(healthReport()));
+
+// The same report as ONE status code, for an uptime monitor (#672): 503 when a
+// watched section is red. `/api/health` itself always answers 200, so without
+// this no alarm above reached anyone. `?sections=` picks what to watch.
+app.get("/api/health/alarms", (c) => {
+  const { status, body } = alarmGate(healthReport(), c.req.query("sections"));
+  c.header("Cache-Control", "no-store");
+  return c.json(body, status);
+});
 
 // ETH price proxy — frontend can't call CoinGecko directly (CORS + rate limits)
 app.get("/api/eth-price", async (c) => {
@@ -414,31 +619,13 @@ app.post("/api/payment/quote", async (c) => {
 
 // Serve embed iframe frame page
 app.get("/embed/frame/:eventId", (c) => {
-  const eventId = c.req.param("eventId").replace(/[^a-zA-Z0-9\-]/g, "");
-  const theme = (c.req.query("theme") || "dark").replace(/[^a-z]/g, "");
-  const showImage = c.req.query("show-image") !== "false" ? "true" : "false";
-  const showDesc = c.req.query("show-description") !== "false" ? "true" : "false";
-  const apiUrl = "https://events-api.woco-net.com";
-
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <style>* { margin: 0; padding: 0; box-sizing: border-box; } html, body { background: transparent; }</style>
-</head>
-<body>
-  <script src="${apiUrl}/embed/woco-embed.js?v=8"><\/script>
-  <woco-tickets
-    event-id="${eventId}"
-    api-url="${apiUrl}"
-    theme="${theme}"
-    show-image="${showImage}"
-    show-description="${showDesc}"
-  ></woco-tickets>
-  <script>${FRAME_INLINE_SCRIPT}<\/script>
-</body>
-</html>`;
+  const html = buildFramePage({
+    eventId: c.req.param("eventId"),
+    theme: c.req.query("theme"),
+    showImage: c.req.query("show-image"),
+    showDescription: c.req.query("show-description"),
+    page: c.req.query("page"),
+  });
 
   c.header("Content-Type", "text/html");
   // frame-ancestors * in the CSP is the valid spelling of what the old
@@ -469,6 +656,7 @@ app.post("/api/auth/whoami", requireAuth, (c) => {
     data: {
       parentAddress: c.get("parentAddress"),
       sessionAddress: c.get("sessionAddress"),
+      sessionRank: c.get("sessionRank"),
     },
   });
 });
@@ -489,7 +677,8 @@ app.post("/api/auth/revoke-session", requireAuth, (c) => {
     }
     revokeSession(nonce, expiresAt);
     return c.json({ ok: true, message: "Session revoked" });
-  } catch {
+  } catch (err) {
+    if (err instanceof RevocationStoreUnavailableError) return c.json({ ok: false, error: err.message }, 503);
     return c.json({ ok: false, error: "Invalid delegation header" }, 400);
   }
 });
@@ -497,9 +686,27 @@ app.post("/api/auth/revoke-session", requireAuth, (c) => {
 // Revoke all sessions for the authenticated parent address
 app.post("/api/auth/revoke-all", requireAuth, (c) => {
   const parentAddress = c.get("parentAddress") as string;
-  revokeAllSessions(parentAddress);
+  try {
+    revokeAllSessions(parentAddress);
+  } catch (err) {
+    if (err instanceof RevocationStoreUnavailableError) return c.json({ ok: false, error: err.message }, 503);
+    throw err;
+  }
   return c.json({ ok: true, message: "All sessions revoked" });
 });
+
+// An account's added passkeys (#746). revoke-all above also ends their sessions:
+// each signs out on its next request (SESSION_REVOKED) and, while its grant is
+// live, can sign in again.
+app.route("/api/auth/device-grants", deviceGrants);
+app.route("/api/keyring", keyring);
+// An email account about to upgrade to a passkey (#746): the per-network limit on
+// the one sponsored op a locked account may have.
+app.route("/api/auth/upgrade-intent", upgradeIntent);
+// ZeroDev's custom gas policy asks here before sponsoring a userOp (#758).
+app.route("/api/zerodev/policy", zerodevPolicy);
+// Linking another device (#746 step 4): a sealed mailbox, no session.
+app.route("/api/pairing", pairing);
 
 // Event routes
 app.route("/api/events", events);
@@ -508,12 +715,10 @@ app.route("/api/events", orders);
 app.route("/api/events", broadcast);
 app.route("/api/events", reservations);
 app.route("/api/events", checkinOrganiser);
+app.route("/api/events", eventCancel);
 
 // Door scanner endpoints — authed by X-Door-Pass token, not session delegation
 app.route("/api/checkin", checkin);
-
-// Collection routes (authenticated)
-app.route("/api/collection", collection);
 
 // Admin / setup routes (unauthenticated — no private data exposed)
 app.route("/api/admin", admin);
@@ -551,12 +756,10 @@ app.route("/api/ens-gateway", ensGatewayRoutes);
 // Attendee gate — ticket-purchase-gated account unlock (docs/ATTENDEE_GATE_RESALE_PLAN.md)
 app.route("/api/attendee-gate", attendeeGate);
 
-// EAS likes (#4) — verify-on-chain record + projection reads
-app.route("/api/likes", likesRoutes);
-// Swarm-native social + credits (#172). Separate from /api/likes, which serves
-// the superseded on-chain EAS projection — the two count different things from
-// different sources, so sharing a prefix would make which one answered a
-// question of routing order.
+// Swarm-native social + credits (#172) — likes and follows are statements on the
+// user's own feed, counted by an indexer. The superseded /api/likes EAS projection
+// was deleted with its rail (#475); do not add a second counting surface here, or
+// which one answers a question becomes a matter of routing order.
 app.route("/api/social", socialRoutes);
 
 // Onboarding campaign — referral attribution/relay + cohort badges
@@ -579,9 +782,6 @@ app.route("/api/profile", profiles);
 // Passkey-account recovery escrow (sealed identity-seed bundle) — see
 // docs/PASSKEY_RECOVERY_PLAN.md §11.6.
 app.route("/api/recovery", recovery);
-
-// Ticket actions (send email, etc.)
-app.route("/api/tickets", tickets);
 
 // Resend delivery webhooks (bounce/complaint → global suppression)
 app.route("/api/resend", resendWebhook);
@@ -623,6 +823,30 @@ const port = Number(process.env.PORT) || 3001;
 console.log(`WoCo server listening on :${port}`);
 const server = serve({ fetch: app.fetch, port });
 
+// #546: follow the attendee batch's chain TTL. A top-up extends it and the price
+// oracle moves it; checkout refuses an hour before the recorded expiry.
+const refreshAttendeeTtl = () =>
+  refreshAttendeeBatch().catch((err) => console.warn("[attendee-batch] TTL refresh failed:", (err as Error).message));
+setTimeout(refreshAttendeeTtl, 60_000).unref();
+setInterval(refreshAttendeeTtl, 60 * 60 * 1000).unref();
+// #547: consent evidence is kept six months past the end of its basis, no longer.
+const sweepConsents = () => {
+  try {
+    const n = sweepExpiredConsents();
+    if (n) console.log(`[consent] dropped ${n} records whose basis ended over six months ago`);
+  } catch (err) {
+    console.warn("[consent] sweep failed:", (err as Error).message);
+  }
+};
+setTimeout(sweepConsents, 5 * 60_000).unref();
+setInterval(sweepConsents, 24 * 60 * 60 * 1000).unref();
+// #546: store paid orders whose store failed at fulfilment, and delete unpaid
+// holds past their day.
+setInterval(() => {
+  sweepHeldOrders();
+  retryPaidHeldOrders().catch((err) => console.warn("[attendee-batch] held-order retry failed:", (err as Error).message));
+}, 60_000).unref();
+
 /**
  * Graceful shutdown.
  *
@@ -647,6 +871,7 @@ function shutdown(signal: string): void {
   // being cut off mid-request.
   stopDrainWorker();
   for (const job of recordShutdown()) settleReservation(job);
+  flushPacing();
   server.close(() => process.exit(0));
   // Backstop: never hang past the container's grace period holding open a
   // keep-alive connection. The records above are already on disk by here.
@@ -683,6 +908,12 @@ startSnapshotMaintenance();
 // not a degraded feature. See docs/PAYOUTS.md.
 startPayoutReleaseJob();
 startPendingRefundRetryJob(liveRefundGateway);
+startCancellationRefundJob(liveCancellationRefundDeps);
+// Postage batches and the paymaster deposit both fail SILENTLY and both are
+// readable from here, so they are polled in the background and served from cache
+// — /api/health must stay instant even when the bee or the RPC is the thing that
+// is broken (#421, #522).
+startHealthProbes();
 // Broadcast recipients are encrypted at rest under a key held only in the
 // process that wrote them, so a restart leaves ciphertext nobody can open. Wipe
 // it, mark the jobs that were in flight `died`, and hand back their daily-cap
@@ -695,3 +926,16 @@ startDrainWorker();
 // and the participant registry becomes rebuildable by someone who is not us.
 // Inert without SOCIAL_INDEXER_PRIVATE_KEY; the served tally is unaffected.
 startEvidencePublisher();
+// Referral confirmations and cohort badges are signed Swarm records, not server
+// state (#476) — this only checks that the campaign key derives the address
+// clients read, and refuses to write anywhere else if it does not.
+// Inert without CAMPAIGN_ISSUER_PRIVATE_KEY: confirmations answer 503.
+startCampaignIssuer();
+// A referee's armed referral is confirmed the moment Stripe verifies them.
+onStripeVerified((address) => void confirmArmedReferral(address));
+// Load the name-targets ledger now, not on the first name lookup, so an unreadable
+// file alarms in the boot log and on /api/health from the first second.
+{
+  const names = nameTargetsHealth();
+  console.log(`[startup] name targets: ${names.count} built${names.ok ? "" : " - ALARM, see /api/health nameTargets"}`);
+}

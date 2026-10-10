@@ -2,15 +2,18 @@
  * What an account still has to sign on THIS device, and whether to explain it
  * first.
  *
- * Since #529 an account has exactly two signatures: `AuthorizeSession` (a 30-day
- * device key) and `DeriveAccountKeys` (the one-off seed). Who SEES them differs
+ * Since #529 an account has two setup steps: `AuthorizeSession` (a 30-day device
+ * key) and the one-off seed — a `DeriveAccountKeys` signature for every kind but
+ * passkey, whose seed comes from its PRF output (#642). Who SEES them differs
  * by login kind, and that is the whole reason this decision is a function rather
  * than an `if` at each call site:
  *
- *   passkey / web3auth — the session signature is silent (a raw key already in
- *     memory), and the seed signature comes through our own confirm dialog. One
- *     readable prompt; a pre-flight sheet would be a second screen explaining a
- *     screen.
+ *   web3auth — the session signature is silent (a raw key already in memory),
+ *     and the seed signature comes through our own confirm dialog. One readable
+ *     prompt; a pre-flight sheet would be a second screen explaining a screen.
+ *   passkey — no dialog at all: the session is signed silently and the seed is
+ *     derived from the PRF output (#642). At most a biometric, when the PRF output
+ *     is not already in memory.
  *   web3 / coinbase — both are WALLET popups. Our dialog never renders, so
  *     without a pre-flight sheet the person meets two unannounced popups with no
  *     idea how many are coming or why.

@@ -1,4 +1,4 @@
-import type { SealedBox } from "../crypto/types.js";
+import type { SealedBoxV2 } from "../crypto/sealed-box-shape.js";
 
 /**
  * Marketing audience types.
@@ -116,7 +116,7 @@ export interface MarketingListMeta {
 
 export interface MarketingListResponse {
   meta: MarketingListMeta;
-  sealedList: SealedBox;
+  sealedList: SealedBoxV2;
 }
 
 /** Import-wizard validation result for a batch of candidate emails. */
@@ -132,6 +132,13 @@ export interface MarketingCheckResult {
    * missing entry as `imported` rather than as a refusal.
    */
   consented?: string[];
+  /**
+   * Normalized emails this organiser has already reached through the platform
+   * without a bounce (or who opted in at their checkout). They go straight
+   * away; everyone else on a first send goes in paced batches (#619). Absent
+   * from an older server, which the composer reads as "all new".
+   */
+  proven?: string[];
 }
 
 /**

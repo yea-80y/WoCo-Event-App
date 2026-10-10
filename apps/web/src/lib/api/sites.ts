@@ -1,7 +1,14 @@
-import type { Site, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, EventFeed } from "@woco/shared";
-import { siteConfigTopic, multisiteFeedTopic, beeFeedUpdateIdentifier } from "@woco/shared";
+import type { Site, SiteEventsIndex, SiteEventEntry, SiteDirectoryEntry, EventFeed, SiteDeploySubEns, ApiResponse } from "@woco/shared";
+import {
+  siteConfigTopic,
+  multisiteFeedTopic,
+  eventPageFeedTopic,
+  beeFeedUpdateIdentifier,
+  assertFeedUpdateMatches,
+} from "@woco/shared";
 import { authPost, authDelete, authGet, get } from "./client.js";
 import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
+import { feedRouteFor } from "../swarm/gateways.js";
 import { signAndUploadSoc } from "../swarm/client-soc.js";
 
 export interface SiteEventsFull {
@@ -18,19 +25,21 @@ export interface SiteEventsFull {
  */
 export async function publishSite(
   site: Site,
-  events: SiteEventEntry[] = [],
-  feedSigner?: ContentFeedSigner | null,
+  events: SiteEventEntry[],
+  feedSigner: ContentFeedSigner | null | undefined,
   /** The site's home gateway — routes the config SOC's stamp AND the server's
-   *  pointer/events-index feed writes onto the site's own batch (#48). */
-  gatewayUrl?: string,
+   *  pointer/events-index feed writes onto the site's own batch (#48). Required,
+   *  as `deploySite`'s is: a missing one stamped the config on WoCo while the
+   *  deploy went to Etherna. */
+  gatewayUrl: string,
 ) {
-  const gw = gatewayUrl ? { gatewayUrl } : {};
+  const gw = { gatewayUrl };
   if (feedSigner) {
     await writeContentFeed({
       signerPrivKey: feedSigner.privKey,
       topic: siteConfigTopic(site.siteId),
       data: { ...site, updatedAt: Date.now() },
-      ...gw,
+      route: feedRouteFor(gatewayUrl),
     });
     return authPost<{ siteId: string }>("/api/sites", { site, events, siteFeedSigner: feedSigner.address, ...gw });
   }
@@ -51,17 +60,13 @@ export interface DeploySiteResult {
   /** Present when the pointer feed is client-owned — the update we must sign. */
   multisiteFeed?: { nextIndex: number; rootChunkPayloadB64: string };
   /**
-   * What the deploy did with the site's sub-ENS name, when it has one. The
-   * two CHECKS run synchronously so the response can say this; only the
-   * transaction is fire-and-forget, so `updating` is a start, not a finish.
-   * Before this reached the UI every refusal was silent — a site bound to a
-   * name the organiser had transferred away just stopped updating.
+   * The site's sub-ENS name, when it has one. The deploy writes no name: the
+   * name points at this site's feed manifest and follows every publish, and
+   * `awaiting_signature` means the HOLDER must sign that pointer once.
    */
-  subEns?: {
-    label: string;
-    status: "updating" | "skipped";
-    reason?: "not_owner" | "profile_name" | "unverified";
-  };
+  subEns?: SiteDeploySubEns;
+  /** The server could not record this build for the name: it still shows the previous one. */
+  nameRecorded?: false;
 }
 
 /**
@@ -82,9 +87,8 @@ export async function deploySite(
   );
   if (res.ok && res.data?.multisiteFeed && feedSigner) {
     const { nextIndex, rootChunkPayloadB64 } = res.data.multisiteFeed;
-    const bin = atob(rootChunkPayloadB64);
-    const payload = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) payload[i] = bin.charCodeAt(i);
+    const payload = base64ToBytes(rootChunkPayloadB64);
+    assertFeedUpdateMatches(payload, res.data.contentHash);
     await signAndUploadSoc({
       signerPrivKey: feedSigner.privKey,
       identifier: beeFeedUpdateIdentifier(multisiteFeedTopic(siteId), nextIndex),
@@ -95,6 +99,63 @@ export async function deploySite(
     });
   }
   return res;
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+export interface DeployEventPageResult {
+  contentHash: string;
+  /** The page feed's manifest; empty when this deploy prepared no feed. */
+  feedManifestHash: string;
+  /** Present only when the page feed is the organiser's own (#614). */
+  feedOwner?: "client";
+  pageFeed?: { owner: string; nextIndex: number; rootChunkPayloadB64: string };
+  /** The name's state against the page feed, when a name was sent (#614). */
+  subEns?: SiteDeploySubEns;
+  /** The server could not record this build for the name: it still shows the previous one. */
+  nameRecorded?: false;
+}
+
+/**
+ * Publish an event page (#614). With a feed signer the page's feed is the
+ * organiser's own: the server prepares the update and it is signed HERE, only
+ * when the server prepared it for this very signer and its bytes are the page
+ * that was deployed. `feedSigned` says whether that happened - a name may
+ * follow the feed only then, never on the server's word alone.
+ */
+export async function deployEventPage(
+  eventId: string,
+  opts: { apiUrl: string; gatewayUrl: string; subEnsLabel?: string },
+  feedSigner?: ContentFeedSigner | null,
+): Promise<ApiResponse<DeployEventPageResult> & { feedSigned: boolean }> {
+  const res = await authPost<DeployEventPageResult>("/api/site/deploy", {
+    eventId,
+    apiUrl: opts.apiUrl,
+    gatewayUrl: opts.gatewayUrl,
+    ...(opts.subEnsLabel ? { subEnsLabel: opts.subEnsLabel } : {}),
+    ...(feedSigner ? { clientFeed: true } : {}),
+  });
+  const pageFeed = res.ok ? res.data?.pageFeed : undefined;
+  if (!res.ok || !res.data || !pageFeed || !feedSigner) return { ...res, feedSigned: false };
+
+  if (pageFeed.owner.toLowerCase() !== feedSigner.address.toLowerCase()) {
+    throw new Error("The page feed was prepared for a different key - refusing to sign it");
+  }
+  const payload = base64ToBytes(pageFeed.rootChunkPayloadB64);
+  assertFeedUpdateMatches(payload, res.data.contentHash);
+  await signAndUploadSoc({
+    signerPrivKey: feedSigner.privKey,
+    // Derived here from the event id, never taken from the response.
+    identifier: beeFeedUpdateIdentifier(eventPageFeedTopic(eventId), pageFeed.nextIndex),
+    payload,
+    gatewayUrl: opts.gatewayUrl,
+  });
+  return { ...res, feedSigned: true };
 }
 
 export async function loadSite(siteId: string, apiUrl?: string) {

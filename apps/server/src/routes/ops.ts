@@ -43,8 +43,26 @@ import {
   pendingRefundsHealth,
 } from "../lib/stripe/pending-refunds.js";
 import { liveRefundGateway } from "../lib/stripe/pending-refunds-live.js";
+import { acknowledgePartialRefund, listFlaggedSales, ticketSalesHealth } from "../lib/stripe/ticket-sales.js";
+import { reopenVoid } from "../lib/stripe/payout-ledger.js";
+import { getEvent } from "../lib/event/service.js";
+import { getRecordedFeedSigner } from "../lib/event/feed-signer-record.js";
+import { getStripeAccount } from "../lib/stripe/accounts.js";
+import { cancelEvent } from "../lib/event/cancel-event.js";
+import { liveCancelEventDeps } from "../lib/event/cancel-event-live.js";
+import { cancellationsStoreHealth, listCancellations, resolveRefundRow } from "../lib/event/cancellations.js";
+import { kickCancellationRefunds } from "../lib/stripe/cancellation-refunds.js";
+import { liveCancellationRefundDeps } from "../lib/stripe/cancellation-refunds-live.js";
 import { mergeParticipants, knownSubjects, participantsFor } from "../lib/social/participants.js";
 import { clearTallyCache } from "./social.js";
+import { isValidSenderId, liftSender, listForOps, stopSender } from "../lib/sender-pacing/index.js";
+import { attendeeLedgerStatus, setActiveBatch } from "../lib/attendee-batch/ledger.js";
+import { attendeeCheckoutRefusal, attendeeStamperAddress, isStoreInFlight } from "../lib/attendee-batch/writer.js";
+import { refreshAttendeeBatch, registerAttendeeBatch } from "../lib/attendee-batch/admin.js";
+import { burnOrder } from "../lib/attendee-batch/burn.js";
+import { getOrderRecord, ledgerReadable, ordersForEmailHash, recordErasedBeforeStore } from "../lib/attendee-batch/ledger.js";
+import { hashEmail } from "../lib/event/claim-service.js";
+import { getHeldOrder, heldOrdersHealth, paidUnstored, releaseHeldOrder } from "../lib/attendee-batch/held-orders.js";
 
 const ops = new Hono<AppEnv>();
 
@@ -364,9 +382,318 @@ ops.post("/pending-refunds/:sessionId/resolve", async (c) => {
   return c.json({ ok: true, data: { resolved: true, health: pendingRefundsHealth() } });
 });
 
+/**
+ * GET /api/ops/ticket-sales
+ *
+ * Sales whose tickets a refund has voided, or that carry a partial refund
+ * above our own — the rows behind `ticketSales` on /api/health (#645 part C).
+ * Stripe ids, amounts and slots only; no buyer data lives in this store.
+ */
+ops.get("/ticket-sales", (c) => {
+  const entries = listFlaggedSales();
+  return c.json({ ok: true, data: { health: ticketSalesHealth(), count: entries.length, entries } });
+});
+
+/**
+ * POST /api/ops/ticket-sales/:sessionId/acknowledge-partial-refund
+ *
+ * An operator has looked at a partial refund (the organiser refunded part of an
+ * order, which policy does not provide for) and dealt with it. Clears the alarm
+ * for this amount only; a larger partial refund later alarms again. The tickets
+ * stay valid either way — a partial refund never voids.
+ */
+ops.post("/ticket-sales/:sessionId/acknowledge-partial-refund", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const body = (await c.req.json().catch(() => null)) as { by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  const result = acknowledgePartialRefund(sessionId, by);
+  if (result === "none") return c.json({ ok: false, error: "No partial refund on that sale" }, 404);
+  if (result === "not-persisted") {
+    return c.json({ ok: false, error: "The sale record could not be written - see compliancePersistence on /api/health" }, 503);
+  }
+  console.log(`[ops] partial refund on ${sessionId} acknowledged by ${by}`);
+  return c.json({ ok: true, data: { acknowledged: true, health: ticketSalesHealth() } });
+});
+
+/**
+ * POST /api/ops/payouts/:sessionId/reopen   { by }
+ *
+ * Put a voided payout entry back under the release sweep (#781). Before #781 a
+ * sale that a refund took below zero was voided, and the fees Stripe kept on it
+ * dropped out of the arithmetic, so every later payout on that account was
+ * short and deferred for ever. Reopened, the next sweep re-reads the sale from
+ * Stripe and nets what it is really worth into the account's next payout. Only
+ * a void can be reopened; this moves no money itself.
+ */
+ops.post("/payouts/:sessionId/reopen", async (c) => {
+  const sessionId = c.req.param("sessionId");
+  const body = (await c.req.json().catch(() => null)) as { by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  const entry = reopenVoid(sessionId);
+  if (!entry) return c.json({ ok: false, error: "No voided payout entry for that session" }, 404);
+  console.log(`[ops] payout entry ${sessionId} (${entry.stripeAccountId}) reopened by ${by}`);
+  return c.json({ ok: true, data: { reopened: true, stripeAccountId: entry.stripeAccountId, status: entry.status } });
+});
+
+/**
+ * POST /api/ops/events/:id/cancel   { by }
+ *
+ * The platform cancels an event and refunds every buyer (#644) — for an
+ * organiser who has vanished. Same core as the organiser's button; the charges
+ * are direct charges on the organiser's account, which the platform can refund.
+ */
+ops.post("/events/:id/cancel", async (c) => {
+  const eventId = c.req.param("id");
+  const body = (await c.req.json().catch(() => null)) as { by?: string; force?: boolean } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  // "The organiser vanished" is exactly when their feed may be unreadable, so the
+  // feed is only used to find the organiser; the pinned creator (#670) is the
+  // fallback, and `force` cancels an id neither knows (refunds still come from
+  // the sale records, never from the feed). With no creator there is no account
+  // to expire open checkouts on: a buyer who pays after this is refunded at
+  // fulfilment instead.
+  const event = await getEvent(eventId).catch(() => null);
+  const creator = event?.creatorAddress ?? getRecordedFeedSigner(eventId)?.creatorAddress;
+  if (!creator && body?.force !== true) {
+    return c.json({ ok: false, error: "Event not found - pass force: true to cancel it anyway" }, 404);
+  }
+  const result = cancelEvent(
+    {
+      eventId,
+      by: `ops:${by}`,
+      organiserAccount: creator ? getStripeAccount(creator.toLowerCase())?.stripeAccountId : undefined,
+      ...(event?.title ? { title: event.title } : {}),
+    },
+    liveCancelEventDeps,
+  );
+  if (!result.ok) return c.json({ ok: false, error: "The cancellation could not be saved" }, 503);
+  console.warn(`[ops] event ${eventId} cancelled by ${by}`);
+  return c.json({ ok: true, data: { created: result.created, cancellation: result.cancellation } });
+});
+
+/** GET /api/ops/cancellations — every cancelled event and its refund rows (Stripe ids and amounts only). */
+ops.get("/cancellations", (c) => {
+  return c.json({ ok: true, data: { health: cancellationsStoreHealth(), cancellations: listCancellations() } });
+});
+
+/** POST /api/ops/cancellations/run — one refund pass now, instead of waiting for the timer. */
+ops.post("/cancellations/run", async (c) => {
+  const outcome = await kickCancellationRefunds(liveCancellationRefundDeps);
+  return c.json({ ok: true, data: { outcome, health: cancellationsStoreHealth() } });
+});
+
+/**
+ * POST /api/ops/cancellations/:eventId/:sessionId/resolve   { by }
+ *
+ * The buyer was made whole another way (a bank transfer, a dispute that went
+ * their way). Clears that row's alarm and lets the event's payouts settle.
+ */
+ops.post("/cancellations/:eventId/:sessionId/resolve", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  const result = resolveRefundRow(c.req.param("eventId"), c.req.param("sessionId"), by);
+  if (result === "none") return c.json({ ok: false, error: "No such refund row" }, 404);
+  if (result === "not-persisted") {
+    return c.json({ ok: false, error: "The cancellation record could not be written - see eventCancellations on /api/health" }, 503);
+  }
+  return c.json({ ok: true, data: { resolved: true, health: cancellationsStoreHealth() } });
+});
+
 /** Tests only — clears the failed-attempt window between cases. */
 export function _resetOpsLockoutForTest(): void {
   failedAttempts = [];
 }
+
+// ---------------------------------------------------------------------------
+// Sender pacing (#619)
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/ops/sender-pacing — every sender's state, rung, 7-day counts and
+ * bounce subtypes. Hash-free. The subtypes are what an operator reads before a
+ * lift: a stop made of `OnAccountSuppressionList` bounces cost the account
+ * nothing (SES does not count them) and is usually safe to lift.
+ */
+ops.get("/sender-pacing", (c) => c.json({ ok: true, data: { senders: listForOps() } }));
+
+/**
+ * POST /api/ops/sender-pacing/:sender/lift and /stop — body `{ by, reason }`.
+ * Both required and both logged: a stop lifted by nobody in particular is a
+ * decision nobody owns. A lift also resets the evidence window, so the batch
+ * that caused the stop cannot re-cause it.
+ */
+for (const action of ["lift", "stop"] as const) {
+  ops.post(`/sender-pacing/:sender/${action}`, async (c) => {
+    const sender = c.req.param("sender").toLowerCase();
+    if (!isValidSenderId(sender)) return c.json({ ok: false, error: "Not a sender id" }, 400);
+    const body = (await c.req.json().catch(() => null)) as { by?: string; reason?: string } | null;
+    const by = (body?.by || "").trim().slice(0, 100);
+    const reason = (body?.reason || "").trim().slice(0, 500);
+    if (!by || !reason) {
+      return c.json({ ok: false, error: "`by` and `reason` are required — who decided this, and why?" }, 400);
+    }
+    const state = action === "lift" ? liftSender(sender, by, reason) : stopSender(sender, by, reason);
+    console.log(`[ops] Sender ${sender} ${action === "lift" ? "lifted" : "stopped"} by ${by}: ${reason}`);
+    return c.json({ ok: true, data: { sender, state } });
+  });
+}
+
+/**
+ * GET /api/ops/attendee-batch — the attendee batch ledger (#546): which batch
+ * takes new orders, how full its fullest bucket is, orders by state, and why
+ * checkout would refuse right now (null = it would not).
+ */
+ops.get("/attendee-batch", (c) => {
+  let stamper: string | null = null;
+  try {
+    stamper = attendeeStamperAddress();
+  } catch {
+    // Reported through checkoutRefusal below.
+  }
+  return c.json({
+    ok: true,
+    data: { stamper, checkoutRefusal: attendeeCheckoutRefusal(), ledger: attendeeLedgerStatus() },
+  });
+});
+
+/**
+ * POST /api/ops/attendee-batch/register — body `{ batchId, fresh: true, by }`.
+ * `fresh` asserts nothing was ever stamped into this batch under a ledger we no
+ * longer hold. A batch whose ledger was lost must never be registered again:
+ * its used slots cannot be told apart from free ones, and reusing one evicts a
+ * live order. Buy a new batch instead.
+ */
+ops.post("/attendee-batch/register", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { batchId?: string; fresh?: boolean; by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by || typeof body?.batchId !== "string") return c.json({ ok: false, error: "`batchId` and `by` are required" }, 400);
+  if (body.fresh !== true) return c.json({ ok: false, error: "`fresh: true` is required - see the route comment" }, 400);
+  try {
+    const result = await registerAttendeeBatch(body.batchId, true);
+    console.log(`[ops] attendee batch ${body.batchId} registered by ${by} (depth ${result.chain.depth}, immutable ${result.chain.immutable})`);
+    return c.json({ ok: true, data: result });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 400);
+  }
+});
+
+/** POST /api/ops/attendee-batch/activate — body `{ batchId, by }`. New orders go there. */
+ops.post("/attendee-batch/activate", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { batchId?: string; by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by || typeof body?.batchId !== "string") return c.json({ ok: false, error: "`batchId` and `by` are required" }, 400);
+  try {
+    setActiveBatch(body.batchId);
+    console.log(`[ops] attendee batch ${body.batchId} activated by ${by}`);
+    return c.json({ ok: true, data: { checkoutRefusal: attendeeCheckoutRefusal(), ledger: attendeeLedgerStatus() } });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 400);
+  }
+});
+
+/**
+ * POST /api/ops/attendee-batch/refresh — body `{ by, batchId? }` (default: the
+ * active batch). Re-reads the batch's TTL from chain. Run it after a top-up:
+ * checkout refuses an hour before the recorded expiry, and the hourly refresh
+ * would otherwise take up to an hour to notice.
+ */
+ops.post("/attendee-batch/refresh", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { batchId?: string; by?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required" }, 400);
+  try {
+    const result = await refreshAttendeeBatch(typeof body?.batchId === "string" ? body.batchId : undefined);
+    if (!result) return c.json({ ok: false, error: "No active attendee batch" }, 404);
+    console.log(`[ops] attendee batch ${result.batchId} TTL refreshed by ${by}: expires ${result.expiresAt}`);
+    return c.json({ ok: true, data: { ...result, checkoutRefusal: attendeeCheckoutRefusal() } });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 502);
+  }
+});
+
+/**
+ * POST /api/ops/attendee-batch/orders/:root/burn — body `{ by, reason }`.
+ * Erases one order from Swarm (every chunk's slot overwritten). Irreversible.
+ * Resumable: calling it again finishes an interrupted burn.
+ */
+ops.post("/attendee-batch/orders/:root/burn", async (c) => {
+  const root = c.req.param("root").toLowerCase().replace(/^0x/, "");
+  if (!/^[0-9a-f]{64}$/.test(root)) return c.json({ ok: false, error: "Not an order reference" }, 400);
+  const body = (await c.req.json().catch(() => null)) as { by?: string; reason?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  const reason = (body?.reason || "").trim().slice(0, 500);
+  if (!by || !reason) return c.json({ ok: false, error: "`by` and `reason` are required - who decided this, and why?" }, 400);
+  if (isStoreInFlight(root)) {
+    return c.json({ ok: false, error: "This order is being stored right now - retry in a minute and it will be burned" }, 409);
+  }
+  try {
+    // A box still held (not yet on Swarm) is simply deleted: real deletion.
+    // Synchronous from here to the tombstone, so no store can start between.
+    const heldBefore = getHeldOrder(root);
+    const wasHeld = heldBefore !== null;
+    if (wasHeld && !releaseHeldOrder(root)) {
+      return c.json({ ok: false, error: "The held order could not be deleted - see compliancePersistence on /api/health" }, 503);
+    }
+    if (!getOrderRecord(root)) {
+      if (!wasHeld) return c.json({ ok: false, error: "No attendee order with that reference" }, 404);
+      const eventId = heldBefore!.eventId;
+      recordErasedBeforeStore(root, {
+        ...(eventId ? { eventId } : {}),
+        ...(heldBefore!.seriesId ? { seriesId: heldBefore!.seriesId } : {}),
+        ...(heldBefore!.emailHash ? { emailHash: heldBefore!.emailHash } : {}),
+        ...(eventId && getRecordedFeedSigner(eventId) ? { organiser: getRecordedFeedSigner(eventId)!.creatorAddress } : {}),
+      });
+      console.log(`[ops] attendee order ${root} (held, never stored) deleted by ${by} (${reason})`);
+      return c.json({ ok: true, data: { root, state: "deleted-before-store", burnedAt: null } });
+    }
+    const record = await burnOrder(root);
+    console.log(`[ops] attendee order ${root} burn by ${by} (${reason}): ${record.state}`);
+    return c.json({ ok: true, data: { root, state: record.state, burnedAt: record.burnedAt ?? null } });
+  } catch (err) {
+    console.error(`[ops] attendee order ${root} burn by ${by} failed:`, (err as Error).message);
+    return c.json({ ok: false, error: (err as Error).message }, 502);
+  }
+});
+
+/**
+ * POST /api/ops/attendee-batch/lookup — body `{ email }` or `{ emailHash }`.
+ * One person's attendee orders, for an access or erasure request (#546): every
+ * ledger record under their email hash, any state, plus paid orders still held
+ * for storage. POST so an address never sits in a URL or an access log; only
+ * the hash comes back. Feed each `root` to `.../orders/:root/burn` to erase.
+ */
+ops.post("/attendee-batch/lookup", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { email?: unknown; emailHash?: unknown } | null;
+  const emailHash =
+    typeof body?.emailHash === "string"
+      ? body.emailHash.trim().toLowerCase()
+      : typeof body?.email === "string" && body.email.trim()
+        ? hashEmail(body.email)
+        : "";
+  if (!/^[0-9a-f]{64}$/.test(emailHash)) {
+    return c.json({ ok: false, error: "Give `email`, or `emailHash` as 64 hex characters" }, 400);
+  }
+  // "No orders" from a store we cannot read would be a false answer to a data subject.
+  if (!ledgerReadable() || heldOrdersHealth().unreadable) {
+    return c.json({ ok: false, error: "The attendee ledger or held orders are unreadable - see /api/health; no answer until restored" }, 503);
+  }
+  const orders = ordersForEmailHash(emailHash).map(({ root, record }) => ({
+    root,
+    state: record.state,
+    kind: record.kind,
+    eventId: record.eventId ?? null,
+    organiser: record.organiser ?? null,
+    createdAt: record.createdAt,
+    burnedAt: record.burnedAt ?? null,
+  }));
+  const held = paidUnstored()
+    .filter((o) => o.emailHash === emailHash)
+    .map((o) => ({ root: o.root, eventId: o.eventId ?? null, paidAt: o.paidAt ?? null }));
+  return c.json({ ok: true, data: { emailHash, orders, held } });
+});
 
 export { ops };

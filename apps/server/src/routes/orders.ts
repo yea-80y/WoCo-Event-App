@@ -1,11 +1,17 @@
 import { Hono } from "hono";
-import type { OrderEntry, SealedBox } from "@woco/shared";
+import type { OrderEntry } from "@woco/shared";
+import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEventForOwner } from "../lib/event/service.js";
 import { getBindingsForEvent, toAttendeeKeyRows } from "../lib/gate/store.js";
 import { downloadFromBytes } from "../lib/swarm/bytes.js";
-import { getOnChainEvent, getSlotData, getActiveChainId } from "../lib/chain/event-contract.js";
+import { isOrderErased } from "../lib/attendee-batch/ledger.js";
+import { getHeldOrder } from "../lib/attendee-batch/held-orders.js";
+import { getOnChainEventAt, getSlotDataAt } from "../lib/chain/event-contract.js";
+import { registrationContractFor } from "../lib/event/onchain-registry.js";
+import { contractKey } from "../lib/chain/event-contract.js";
+import { slotRefundStates } from "../lib/stripe/ticket-sales.js";
 import { mapWithConcurrency, SLOT_READ_CONCURRENCY } from "../lib/util/concurrency.js";
 
 /** Maximum concurrent Swarm downloads when fetching v2 order blobs */
@@ -47,7 +53,6 @@ orders.get("/:id/orders", requireAuth, async (c) => {
 
     // 2. Collect encrypted orders — v2 series read from chain, v1 from Swarm claimers feed
     const orderEntries: OrderEntry[] = [];
-    const chainId = getActiveChainId();
 
     for (const series of event.series) {
       // The contract is the only order ledger. A series that never finished
@@ -56,10 +61,14 @@ orders.get("/:id/orders", requireAuth, async (c) => {
       if (!series.swarmManifestRef || !series.onChainEventId) continue;
 
       {
-        const onChainData = await getOnChainEvent(series.onChainEventId, chainId);
+        // On the contract the registration lives on (#563).
+        const contract = registrationContractFor(eventId, series.seriesId);
+        if (!contract) continue;
+        const onChainData = await getOnChainEventAt(contract, series.onChainEventId);
         if (!onChainData || onChainData.nextSlot === 0n) continue;
 
         const slotCount = Number(onChainData.nextSlot);
+        const refunds = slotRefundStates(series.onChainEventId, contractKey(contract));
 
         // Slot reads are public view calls, but they are still one RPC round trip
         // EACH, and `slotCount` is however many tickets this series has sold. An
@@ -70,36 +79,52 @@ orders.get("/:id/orders", requireAuth, async (c) => {
           Array.from({ length: slotCount }, (_, slot) => slot),
           SLOT_READ_CONCURRENCY,
           (slot) =>
-            getSlotData(series.onChainEventId!, slot, chainId).catch((err) => {
+            getSlotDataAt(contract, series.onChainEventId!, slot).catch((err) => {
               console.warn(`[orders/v2] getSlotData failed for slot ${slot}:`, err);
               return null;
             }),
         );
 
         // Download encrypted order blobs from Swarm with bounded concurrency.
-        // Each blob is a NaCl SealedBox — only the organiser can decrypt it.
-        // We fetch the ciphertext server-side and return it; decryption happens
-        // exclusively in the client where the X25519 private key lives.
+        // Each blob is a v2 sealed box (X-Wing, #642) — only the organiser can
+        // open it. We fetch the ciphertext server-side and return it; opening
+        // happens exclusively in the client, which holds the key and binds the
+        // box to this event and the SLOT's series.
         const downloadSlot = async (slot: number): Promise<OrderEntry | null> => {
           const slotData = slotResults[slot];
           if (!slotData) return null;
 
           const swarmHex = orderRefToSwarmHex(slotData.orderRef);
-          let encryptedOrder: SealedBox | undefined;
+          let encryptedOrder: SealedBoxV2 | undefined;
+          // Erased on request (#546): never fetched, even though our own bee may
+          // still hold it in its cache.
+          const erased = swarmHex ? isOrderErased(swarmHex) : false;
 
-          if (swarmHex) {
+          // A paid order whose store is still pending is served from its hold
+          // (#546): the same ciphertext, before it reaches Swarm.
+          const held = swarmHex && !erased ? getHeldOrder(swarmHex) : null;
+          if (held) {
+            try {
+              encryptedOrder = JSON.parse(held.json) as SealedBoxV2;
+            } catch (err) {
+              console.warn(`[orders/v2] Held order for slot ${slot} is not JSON:`, err);
+            }
+          } else if (swarmHex && !erased) {
             try {
               const json = await downloadFromBytes(swarmHex);
-              encryptedOrder = JSON.parse(json) as SealedBox;
+              encryptedOrder = JSON.parse(json) as SealedBoxV2;
             } catch (err) {
               console.warn(`[orders/v2] Failed to download orderRef for slot ${slot}:`, err);
             }
           }
 
+          const refund = refunds.get(slot);
           return {
             seriesId: series.seriesId,
             seriesName: series.name,
             edition: slot + 1,
+            ...(refund ? { refund } : {}),
+            ...(erased ? { erased: true as const } : {}),
             // Burner address — unique per ticket, proves on-chain slot ownership.
             // The actual claimer identity is inside the encrypted order blob.
             claimerAddress: slotData.owner,

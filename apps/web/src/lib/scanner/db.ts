@@ -115,6 +115,30 @@ export async function checkAndMark(record: CheckinRecord): Promise<CheckinRecord
   });
 }
 
+// ── in-flight claims (#641) ─────────────────────────────────────────────────
+// A claim whose answer never arrived may still have been recorded. Re-scanning
+// that ticket must retry the SAME attempt (same claimId) so the server says
+// "admitted" to it rather than "already in" - otherwise a lost response would
+// turn away the person it had just let in.
+
+type PendingClaims = Record<string, string>;
+
+export async function getPendingClaimId(seriesId: string, edition: number): Promise<string | undefined> {
+  return ((await kvGet<PendingClaims>("pendingClaims")) ?? {})[ticketKey(seriesId, edition)];
+}
+
+export async function setPendingClaimId(seriesId: string, edition: number, claimId: string): Promise<void> {
+  const all = (await kvGet<PendingClaims>("pendingClaims")) ?? {};
+  all[ticketKey(seriesId, edition)] = claimId;
+  await kvSet("pendingClaims", all);
+}
+
+export async function clearPendingClaimId(seriesId: string, edition: number): Promise<void> {
+  const all = (await kvGet<PendingClaims>("pendingClaims")) ?? {};
+  delete all[ticketKey(seriesId, edition)];
+  await kvSet("pendingClaims", all);
+}
+
 /** Fold the server's merged set in (server records win only where we have none). */
 export async function absorbServerCheckins(records: CheckinRecord[], ackedPendingKeys: string[]): Promise<void> {
   const db = await openDb();
@@ -143,7 +167,7 @@ export async function resetDevice(): Promise<void> {
     t.objectStore("checkins").clear();
     t.objectStore("pending").clear();
     const kv = t.objectStore("kv");
-    for (const key of ["pass", "pack", "roster", "conflicts"]) kv.delete(key);
+    for (const key of ["pass", "pack", "roster", "conflicts", "pendingClaims"]) kv.delete(key);
     t.oncomplete = () => resolve();
     t.onerror = () => reject(t.error);
   });

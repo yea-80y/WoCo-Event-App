@@ -36,6 +36,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeJsonAtomic } from "../marketing/persist.js";
+import { SEALED_BOX_VERSION } from "@woco/shared/crypto/sealed-box-shape";
 
 const STORE_FILE = join(process.cwd(), ".data", "social-participants.json");
 
@@ -86,9 +87,16 @@ function notify(format: string, subject: string): void {
  *
  * So the sealed shape is recognised and rejected on its own terms, before any
  * format check, and this stays true whatever fields the envelope later grows.
+ * BOTH shapes: the retired X25519 box (still what the quarantined credits rail
+ * writes) and the v2 X-Wing box (#642). Deliberately LENIENT — it asks whether the
+ * box's fields are present, never whether they are the only ones — the opposite of
+ * `isSealedBoxV2`, which a store uses to refuse extras.
  */
 function looksSealed(o: Record<string, unknown>): boolean {
-  return typeof o.ephemeralPublicKey === "string" && typeof o.ciphertext === "string" && typeof o.iv === "string";
+  const legacy =
+    typeof o.ephemeralPublicKey === "string" && typeof o.ciphertext === "string" && typeof o.iv === "string";
+  const v2 = o.v === SEALED_BOX_VERSION && typeof o.enc === "string" && typeof o.ct === "string";
+  return legacy || v2;
 }
 
 const SUBJECT_RE = /^0x[0-9a-f]{64}$/;

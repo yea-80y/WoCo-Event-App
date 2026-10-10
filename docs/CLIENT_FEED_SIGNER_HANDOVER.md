@@ -1,5 +1,16 @@
 # Client-Side Feed Signer + Cross-Device Recovery — Build Handover
 
+> **Status (2026-10-05).** Handover record; Phase A and the Phase B steps below are built. Still
+> holds: the client signs, the server only stamps (`POST /api/swarm/soc`); carrier-based discovery;
+> never pass a client signer into `getEvent` (use `getEventForDisplay`). Superseded: the feed signer
+> is neither an escrowed secret nor sign-to-derive - it is HKDF of the identity seed
+> (`packages/shared/src/crypto/feed-signer.ts`, 2026-09-10), and the escrow carries only the seed.
+> Fixed-identifier overwrite never worked; content feeds are versioned
+> ([CONTENT_FEED_VERSIONING_HANDOVER_2026-07-04.md](./CONTENT_FEED_VERSIONING_HANDOVER_2026-07-04.md)).
+> Profile, social, manifest and recovery feeds moved to Etherna (#689). The portability privacy fix
+> and a per-account relay limit (#301) shipped; X25519 became X-Wing (#642). "POD" = identity seed
+> (formerly called POD; renamed object, 2026-09-10). Current: [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md).
+
 > SEQUENCING: see `docs/LAUNCH_PLAN.md` for the merged, ordered launch to-do. The
 > "Security review gate" 🟡 privacy fix is step 0 (do first). Phase B Task 2 (below) is
 > step 2 and MUST run AFTER email-Kernelize (`docs/EMAIL_KERNELIZE_PLAN.md`) — the

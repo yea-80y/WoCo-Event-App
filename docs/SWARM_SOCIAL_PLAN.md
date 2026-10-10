@@ -1,9 +1,63 @@
 # Swarm-Native Social: Likes, Follows, Forums — Plan
 
-STATUS (2026-08-04): AUTHORITATIVE for all social features. Supersedes the on-chain EAS
-likes design (`docs/EAS_LIKES_HANDOVER.md`) for launch — EAS likes are built but will NOT
-launch; no chain dependency for social. The EAS doc remains useful for its abuse model
-and UI notes only.
+AUTHORITATIVE for likes and follows. No chain dependency for social.
+
+## Current state (2026-10-05)
+
+What is live, and where the truth is:
+
+- **Formats.** `woco.like.v1` and `woco.follow.v1`, frozen 2026-08-14:
+  `packages/shared/src/social/types.ts`. Shared rules for every statement type:
+  `packages/shared/src/statement/discipline.ts`.
+- **Who writes.** Each statement goes to the user's OWN feed, signed by their content-feed
+  signer (HKDF of the identity seed, `packages/shared/src/crypto/feed-signer.ts`). The feed
+  owner is the author, so there is no holder, holderSig or seq in the payload.
+- **What the UI writes.** The event heart is "Interested" (#594) and writes a like. A follow
+  targets an account, never an event. `kindForVariant` in
+  `apps/web/src/lib/social/social-core.ts`.
+- **Subjects.** A profile is its account address, left-padded to bytes32. An event is its
+  onchain event id. `packages/shared/src/social/subject.ts` (owner decision 2026-09-03:
+  an address, not a name namehash, because a name can be moved by others).
+- **Retraction** is `value: false`. Latest SOC version wins. Nothing is deleted.
+- **Bands.** Statement feeds are pinned to band 0 - never band-walk them. The subject index is
+  banded and found by walking band openers (`likeSubjectIndexTopic(band)`,
+  `apps/web/src/lib/social/subject-index.ts`).
+- **Write path.** The client signs the SOC and posts it to the relay, `POST /api/swarm/soc`
+  (`apps/server/src/routes/swarm.ts`). The server checks the signature, stamps and uploads. It
+  never authors. Social feeds are stamped on Etherna's batch - the user's own Etherna batch when
+  they have a live one (#689, #718; `social: "etherna"` in
+  `packages/shared/src/swarm/feed-routes.ts`).
+- **Write gate (#753).** The relay refuses a like or follow statement, or its index, with
+  `ticket_required` unless the account is unlocked: a ticket, Stripe verification, published
+  events or a confirmed invite (`apps/server/src/lib/gate/check.ts`). `toggleSocial`
+  (`apps/web/src/lib/api/social.ts`) turns the refusal into the unlock popup. Statement-shaped
+  payloads also have a tighter rate bucket (#301, `apps/server/src/lib/swarm/soc-relay-limits.ts`).
+- **Counting** is an indexer's job. Ours reads the public feeds of the participants the relay
+  has seen (`apps/server/src/lib/social/{indexer,participants}.ts`) and serves
+  `GET /api/social/count` and `/api/social/manifest`, unauthenticated, 30 s cache
+  (`apps/server/src/routes/social.ts`). When its key is configured it publishes evidence reports,
+  `woco.evidence-report.v1` (#312, `packages/shared/src/statement/evidence-report.ts`).
+- **Not built.** The in-app "am I in the count?" check (P1.5); user-owned batches with
+  client-side stamping (P2); the server leaving the write path (P3); forums (P4).
+- **EAS is gone.** Likes rail deleted (#475); referrals and cohort badges became Swarm-native
+  signed records (#476, `packages/shared/src/campaign/records.ts`).
+  `packages/shared/test/no-eas.test.ts` fails CI on any EAS symbol. The Stylus aggregator is
+  superseded (`contracts-stylus/` remains in the tree, unused).
+- **Gate B** is the certificate rail, `woco.cert.v1` (`packages/shared/src/cert/`), issuer
+  signature now secp256k1 (#443). Out of launch scope: the platform holds no holder identity
+  since #518, so nobody can be certified yet, and badge creation is off
+  (`badgesAllowed = false`, #664).
+
+Everything below is the design and its build history, dated. It was written when the product
+noun was POD (renamed object, 2026-09-10 - `ObjectKind`, `ObjectGate`,
+`woco/object/*`). WoCo never used 0xPARC's POD format. Where history and the list above
+disagree, the list wins.
+
+## Status history
+
+STATUS (2026-08-04): AUTHORITATIVE for all social features. Superseded the onchain EAS
+likes design (`docs/EAS_LIKES_HANDOVER.md`, no longer in the repo) for launch. EAS has since
+been deleted (see above).
 
 2026-08-19: the CHAIN BOUNDARY RULE is settled — social carries no chain dependency, and the
 three-test rule below governs what ever may. The subject index is banded (topic derivation only,
@@ -33,8 +87,9 @@ moderation-as-labels), arrived at independently from Swarm primitives.
 
 Violating any of these forfeits portability/self-sovereignty later. All are cheap now.
 
-1. **The user's derived feed key signs every statement** (sign-to-derive, the settled
-   client-feed mechanism). NEVER the platform `FEED_PRIVATE_KEY`, NEVER the 30-day
+1. **The user's derived feed key signs every statement** (the content-feed signer, HKDF of
+   the identity seed since 2026-09-10; it was sign-to-derive before). NEVER the platform
+   `FEED_PRIVATE_KEY`, NEVER the 30-day
    session key. The server may relay/stamp/upload — it must never author.
 2. **Subjects and users are keyed by their own addresses/identities** — never by
    WoCo-internal IDs. The graph must exist between sovereign identities so an organiser
@@ -93,6 +148,9 @@ silently become a rights registry and must re-justify itself under the three tes
   `SUBENS_IDENTITY.md` still describes the passkey path only and is narrower than intent).
   Sponsored actions stop FEELING like chain writes. Sponsorship changes who pays, not the
   classification: a sponsored per-like attestation still fails test 3.
+  (2026-10-05: ZeroDev now sponsors only WoCo's own userOp shapes, decided by our server's
+  policy webhook, #758 - recovery and passkey co-owner changes. Names are minted by a sponsor
+  wallet, #501. Likes never touch a chain.)
 - **Sybil despair** — "just make statements cost gas". Fails test 3 by construction and
   re-imports the slot-model scaling this design escaped. The committed answers are cost
   friction at identity/batch level, and tiered counts.
@@ -113,7 +171,8 @@ must not be conflated — conflating them is what makes a straddled design messy
 **Gate A — admission to platform-funded actions.** Purpose: protect the PLATFORM's budget
 (sponsored gas, platform postage) from automated signups. Enforced server-side at the relay,
 with rate limiting. This is admission policy, NOT part of the portable data plane, and it is
-the correct home for "you must hold a ticket to like this event".
+the correct home for "you must hold a ticket to like this event". (Built 2026-10-01, #753, as an
+ACCOUNT-level unlock rather than a per-event one - see "Write gate" under Anti-abuse.)
 
 The consequence, stated plainly because it is the design working rather than breaking: **a
 third-party indexer will tally statements our relay would have refused.** Commitment 6
@@ -128,12 +187,31 @@ not the gate, at the cost of: a `woco.like.v2` bump the freeze already priced fo
 case ("if likes ever feed a gate, that is a NEW format"); a permanent per-like link between
 someone's social activity and their attendance identity, on a platform serving children; and a
 forced public bridge between the ed25519 ticket key and the secp256k1 feed key, which the
-credits design deliberately confines to publish and badge-claim moments. Where a VERIFIABLE
+credits design deliberately confines to publish and badge-claim moments. (That ed25519 key
+no longer exists, #518; the first two reasons stand on their own.) Where a VERIFIABLE
 ticket signal is genuinely needed, the portable answer already exists in this plan: tiered
 counts (raw vs ticket-verified attendee), computed at the view layer from disclosures a user
 chooses to make. Deferred until a consumer for that tier exists.
 
 **Gate B — entitlement to exclusive content** (club POD certificates, member forums, "gold" tiers).
+
+> **Gate B now (2026-10-05).** Everything from here to "Gate C" is the 2026-08-19..21 design
+> and build record, written under the old names. Current names: `woco.pod-cert.v1` is
+> `woco.cert.v1`, the challenge is `woco.cert-challenge.v1`, the log is `woco.cert-log.v1`,
+> topics are `woco/cert/v1/…`, `PodGate` is `ObjectGate` (`ChainObjectGate | CertObjectGate`,
+> `holdingSource: "cert"`), `PodKind` is `ObjectKind`, `podCertHoldingFromManifest` is
+> `certHoldingFromManifest`. Code: `packages/shared/src/cert/`,
+> `packages/shared/src/object/{types,gate}.ts`, `apps/server/src/lib/object/cert-holdings.ts`,
+> `apps/web/src/lib/cert/`. Two changes since the record:
+> - **Issuer curve.** The issuer now signs with the secp256k1 issuing key (EIP-191
+>   personal_sign over the same discipline digest) and is identified by its address from a
+>   `woco.manifest.v2` (#443). The `woco.pod-cert.v1` rail is deleted and dispatch-refused.
+> - **No holder identity.** The holder is still an ed25519 key and the challenge still
+>   ed25519-signed, but the platform holds no ed25519 key since #518.
+>   `GET /api/events/:id/attendee-keys` serves none, so the issuance surface shows every
+>   attendee as un-certifiable until the cert rail moves to secp256k1. With
+>   `badgesAllowed = false` (#664) the rail is out of launch scope.
+
 Purpose: product access. This one MUST be client-verifiable and work with no server long-run.
 Its trust root is an ISSUER's signature over a POD, not our relay. Constraint already settled
 in `COASTER_CREDITS_PLAN.md`: **credits must never satisfy a `PodGateRule`** — a self-signed
@@ -792,7 +870,9 @@ same forward walk credits had.
 Scoped honestly before prescribing: `readMySubjects` currently has ZERO call sites, and
 displayed counts come from the indexer's tally, not from walking this. The only live path is
 `addToSubjectIndex` itself, on each NEW-subject like — so a cold device pays one full walk on
-its first new-subject like. Imperceptible at tens of likes, ~10s at a few hundred,
+its first new-subject like. (2026-10-05: the follow index is now also read by the Contacts
+screen, via `readMyFollowsIfReady` in `apps/web/src/lib/social/social.ts`. The banding below
+is BUILT - reads go through `readBandedContentFeed`.) Imperceptible at tens of likes, ~10s at a few hundred,
 structurally unbounded. Misses stay O(1) throughout: a hit-RTT problem, milder than credits,
 same shape.
 
@@ -817,11 +897,14 @@ exceeds ~64 pages. Until then snapshots win on simplicity.
 
 ## Phases
 
-- **P1 (build now, pre-launch target): likes + follows on current infra.**
+- **P1 (BUILT): likes + follows on current infra.**
   Client signs the statement with the derived feed key → sends via existing authed API →
   server verifies sig, writes the user's social feed (relay + platform stamp), updates the
   index projection → UI reads counts from the index. Zero new transport, zero new node
   requirements. Runs entirely on bee + Hono as deployed today.
+  As built: the client signs the whole SOC and the relay only stamps it, on Etherna's batch
+  since #718. The relay records the author as a participant; the tally is computed on read
+  (`GET /api/social/count`). See "Current state" at the top.
 - **P1.5: verifiability.** Publish the index to Swarm as evidence manifest (commitment 4);
   clients auto-check their own inclusion ("am I in the count?") — turns "omission is
   detectable" into "omission is detected". Organiser audience export.
@@ -895,12 +978,20 @@ exceeds ~64 pages. Until then snapshots win on simplicity.
 
 ## Anti-abuse (P1 scope)
 
-Forgery impossible (signatures). Dedupe at index (commitment 3). Ingest behind existing
-rate-limit patterns (cf. claims 3/15min). Sybils: unsolved everywhere — cost friction
-(identity now, batch later) + tiered counts: raw vs **ticket-verified attendee** (POD
-ticket holders — a WoCo-unique, near-Sybil-proof signal) vs (future) personhood proofs
+Forgery impossible (signatures). Dedupe at index (commitment 3). Ingest behind the relay's
+rate limits (#301 - a tighter per-account bucket for statement-shaped payloads,
+`apps/server/src/lib/swarm/soc-relay-limits.ts`). Sybils: unsolved everywhere — cost friction
+(identity now, batch later) + tiered counts: raw vs **ticket-verified attendee** (ticket
+holders — a WoCo-unique, near-Sybil-proof signal; not built) vs (future) personhood proofs
 (zkPassport-class) as an additive attestation. Counts are reputational, not financial —
 launch-level protection is sufficient.
+
+**Write gate (owner decision 2026-10-01).** Every like/follow write stamps platform storage, so
+writing one needs the same unlock as a name: a ticket in the account, Stripe verification, or a
+confirmed invite (`apps/server/src/lib/gate/check.ts`). The relay (`routes/swarm.ts`) refuses a
+SOC whose payload names a like/follow statement or index format with `ticket_required`; the
+client's `toggleSocial` opens the unlock popup on it. A writer that hides the format writes
+something readers never count, bounded by the general relay limits like any other chunk.
 
 ## Verified facts this plan rests on (all read in source, 2026-07-30..08-01)
 

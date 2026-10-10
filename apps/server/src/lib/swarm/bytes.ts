@@ -5,8 +5,9 @@ import { registerEthernaOffer } from "../etherna/upload.js";
 import type { BatchSelection } from "../etherna/batch-router.js";
 import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.js";
 import type { Hex64 } from "@woco/shared";
+import { ETHERNA_FETCH_BASE } from "../etherna/gateway.js";
 
-const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
+const ETHERNA_GW = ETHERNA_FETCH_BASE;
 
 /** Error that carries an HTTP status so isTransientSwarmError can classify a raw
  *  (non-bee-js) fetch failure — bee-js surfaces status on the error, raw fetch
@@ -73,7 +74,7 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * the same batch (event create stamps image + N edition pages + manifest at once).
  * It clears once the contending write releases — retry after backoff, same as 429.
  */
-function isTransientSwarmError(err: unknown): boolean {
+export function isTransientSwarmError(err: unknown): boolean {
   const e = err as any;
   const status: number | undefined = e?.status ?? e?.response?.status;
   if (status === 429 || status === 423) return true;

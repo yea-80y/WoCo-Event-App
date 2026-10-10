@@ -1,17 +1,18 @@
 <script lang="ts">
-  import type { OrderField, SealedBox, PaymentConfig } from "@woco/shared";
-  import { sealJson, CURRENCY_SYMBOLS, calculateBuyerFees } from "@woco/shared";
+  import type { OrderField, PaymentConfig } from "@woco/shared";
+  import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
+  import { CURRENCY_SYMBOLS, calculateBuyerFees } from "@woco/shared";
+  import { loadOrderKey } from "./claim/order-key.js";
+  import type { PreparedOrder } from "../../api/stripe.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { getClaimStatus } from "../../api/events.js";
-  import { createCheckoutSession } from "../../api/stripe.js";
+  import { createCheckoutSession, OrderKeyStaleError } from "../../api/stripe.js";
   import type { SeriesClaimStatus } from "@woco/shared";
+  import { orderFieldRequired, orderFormCollectsEmail, orderFormShown, resolveBuyerEmail } from "@woco/shared";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
-  import {
-    getEmailFromForm as getEmailFromFormPure,
-    buildOrderSnapshot as buildOrderSnapshotPure,
-  } from "./claim/helpers.js";
+  import { buildOrderSnapshot as buildOrderSnapshotPure } from "./claim/helpers.js";
   import StripeSuccessCard from "./claim/StripeSuccessCard.svelte";
   import ReservationPill from "./claim/ReservationPill.svelte";
   import StripePayPanel from "./claim/StripePayPanel.svelte";
@@ -28,8 +29,9 @@
   interface Props {
     eventId: string;
     seriesId: string;
-    /** Organizer's X25519 public key — present when event collects info */
-    encryptionKey?: string;
+    /** Content address of the organiser's X-Wing order key (#642). The key is
+     *  fetched and VERIFIED here; nothing is sealed to an unverified key. */
+    encryptionKeyRef?: string;
     /** Order form fields — present when event collects info */
     orderFields?: OrderField[];
     /** Override API base URL — used when event is hosted on an organiser's own server */
@@ -50,10 +52,58 @@
     /** Organiser display name, shown in the checkout privacy notice so the buyer
      *  is told who actually receives their details. Falls back to generic wording. */
     organiserName?: string;
+    /** #644: the server says the event is cancelled, whatever the page's feed says. */
+    oncancelled?: () => void;
   }
 
-  let { eventId, seriesId, encryptionKey, orderFields, apiUrl, payment, quantity = 1, eager = false, organiserName }: Props = $props();
+  let { eventId, seriesId, encryptionKeyRef, orderFields, apiUrl, payment, quantity = 1, eager = false, organiserName, oncancelled }: Props = $props();
 
+  /**
+   * The organiser's order key, verified against `encryptionKeyRef`. The form only
+   * renders with it in hand (`orderFormShown` takes the bytes, not the ref), and
+   * a checkout WITH an order form is refused until it is — taking an order whose
+   * answers could not be sealed would drop what the organiser marked required.
+   */
+  let orderKey = $state<Uint8Array | undefined>(undefined);
+  let orderKeyState = $state<"none" | "loading" | "ready" | "failed">("none");
+  // The ref `orderKey`'s bytes were verified against - what a box declares it was
+  // sealed to (#186), never a ref whose key is still loading.
+  let orderKeyFor = $state<string | undefined>(undefined);
+  // The key the server named after refusing a box sealed to an older one (#186).
+  let keyRefOverride = $state<string | null>(null);
+  const orderKeyRef = $derived(keyRefOverride ?? encryptionKeyRef);
+  let staleRetried = false;
+
+  function loadKey(): void {
+    const ref = orderKeyRef;
+    if (!ref) {
+      orderKeyState = "none";
+      return;
+    }
+    orderKeyState = "loading";
+    loadOrderKey(ref).then(
+      (key) => {
+        if (orderKeyRef !== ref) return;
+        orderKey = key;
+        orderKeyFor = ref;
+        orderKeyState = "ready";
+      },
+      (err) => {
+        if (orderKeyRef !== ref) return;
+        console.warn("[ClaimButton] order key unavailable:", err);
+        orderKeyState = "failed";
+      },
+    );
+  }
+  $effect(loadKey);
+
+  /**
+   * Link the purchase to the signed-in account only when that costs no prompt:
+   * a session key already on this device. Otherwise the buyer checks out as a
+   * guest by email — paying by card must never open a wallet. Read once per
+   * Pay click, so the email field shown and the request sent always agree.
+   */
+  const linked = $derived(auth.isAuthenticated);
   const isPaid = $derived(!!payment && parseFloat(payment.price) > 0);
   const hasStripe = $derived(!!payment?.stripeEnabled);
   let stripeLoading = $state(false);
@@ -98,11 +148,11 @@
   const claimMarketingConsent = $derived(
     showOrderForm ? marketingConsent === true : undefined
   );
-  /** Whether the order form already includes an email-type field */
-  const hasEmailField = $derived(
-    !!orderFields?.some((f) => f.type === "email" || f.id === "__email")
-  );
-  const hasOrderForm = $derived(!!orderFields?.length && !!encryptionKey);
+  /** Whether the SHOWN order form collects the ticket address - the shared
+   *  rule (#597), so the inline box is hidden only when there is a field on
+   *  screen to type into. */
+  const hasEmailField = $derived(orderFormCollectsEmail(orderFields, orderKey));
+  const hasOrderForm = $derived(orderFormShown(orderFields, orderKey));
 
   /** True while we refresh availability when the form opens. */
   let prefetching = $state(false);
@@ -116,16 +166,20 @@
 
   const formValid = $derived(() => {
     if (!orderFields?.length) return true;
-    return orderFields.every((f) =>
-      !f.required || (formData[f.id] ?? "").trim().length > 0
+    const fieldsFilled = orderFields.every((f) =>
+      !orderFieldRequired(f, { canUseAccount: linked }) || (formData[f.id] ?? "").trim().length > 0
     );
+    // With no email field in the form and no account, OrderForm shows its own
+    // email box - the ticket's only address, so it gates Pay as well (#639).
+    return fieldsFilled && (hasEmailField || linked || stripeEmail.trim().length > 0);
   });
 
   const getEmailFromForm = (): string | null =>
-    getEmailFromFormPure(formData, orderFields, "");
+    resolveBuyerEmail(formData, orderFields, orderKey, "");
 
   function applyStatus(s: SeriesClaimStatus) {
     status = s;
+    if (s.cancelled) oncancelled?.();
   }
 
   function refreshStatus(): void {
@@ -190,21 +244,24 @@
   // ──────────────────────────────────────────────────────────────
   // Pre-upload + reservation hooks
   // ──────────────────────────────────────────────────────────────
-  const buildOrderSnapshot = (): string => buildOrderSnapshotPure(
+  // The key is part of the snapshot: a box sealed to a key since replaced is stale (#186).
+  const buildOrderSnapshot = (link: boolean = linked): string => buildOrderSnapshotPure(
     formData,
     getEmailFromForm() ?? stripeEmail.trim(),
-    auth.parent?.toLowerCase() ?? "",
-  );
+    link ? auth.parent?.toLowerCase() ?? "" : "",
+  ) + `|${orderKeyFor ?? ""}`;
 
   // svelte-ignore state_referenced_locally
   const orderPrefetch = useOrderPrefetch({
+    eventId,
     seriesId,
-    encryptionKey,
-    getShouldPrefetch: () => showOrderForm && !!encryptionKey && formValid(),
+    getKey: () => orderKey,
+    getKeyRef: () => orderKeyFor,
+    getShouldPrefetch: () => showOrderForm && !!orderKey && formValid(),
     getSnapshot: () => buildOrderSnapshot(),
     getFormData: () => formData,
     getEmail: () => getEmailFromForm() ?? stripeEmail.trim(),
-    getAddress: () => auth.parent?.toLowerCase() ?? "",
+    getAddress: () => (linked ? auth.parent?.toLowerCase() ?? "" : ""),
     getQuantity: () => quantity,
     getPayHoverTick: () => payHoverTick,
   });
@@ -243,6 +300,15 @@
 
   async function handleStripeCheckout() {
     intentToCheckout = true;
+    // An order form the organiser asked for, whose key we could not verify: no
+    // form can render and nothing could be sealed, so do not take the order (#642).
+    if (orderFields?.length && orderKeyRef && !orderKey) {
+      error = orderKeyState === "loading"
+        ? "Loading the order form securely - try again in a moment."
+        : "We couldn't load this event's order form securely. Check your connection and try again.";
+      if (orderKeyState === "failed") loadKey();
+      return;
+    }
     // If there's an order form and it hasn't been shown yet, show it first
     if (hasOrderForm && !showOrderForm) {
       showOrderForm = true;
@@ -251,14 +317,15 @@
 
     stripeLoading = true;
     error = null;
+    const linkAccount = linked;
     try {
       const email = getEmailFromForm() || stripeEmail.trim() || undefined;
-      const address = auth.parent?.toLowerCase() || undefined;
+      const address = linkAccount ? auth.parent?.toLowerCase() || undefined : undefined;
       if (!email && !address) {
         // Deployed builder sites mount no login modal, so "sign in" names an
-        // action that surface does not offer (#194). Ask only for what is
-        // actually reachable from here.
-        error = loginRequest.available
+        // action that surface does not offer (#194), and a buyer already signed
+        // in is not asked to sign here. Ask only for what is reachable.
+        error = loginRequest.available && !auth.isConnected
           ? "Please enter an email address or sign in with a wallet."
           : "Please enter an email address to continue.";
         return;
@@ -271,16 +338,16 @@
       // the raw encryptedOrder to /create-checkout, which uploads it in
       // parallel with the Stripe session creation so latency is hidden behind
       // the Stripe API call we'd be doing anyway.
-      let preparedOrderRef: string | undefined;
-      let inlineEncryptedOrder: SealedBox | undefined;
-      if (encryptionKey) {
+      let preparedOrder: PreparedOrder | undefined;
+      let inlineEncryptedOrder: SealedBoxV2 | undefined;
+      if (orderKey) {
         // Only reuse the pre-uploaded ref if it still matches the live form
         // snapshot. Otherwise the user kept typing after the upload finished
-        // and the ref now points at a stale SealedBox — fall back to inline
+        // and the ref now points at a stale box — fall back to inline
         // upload, which seals the current formData.
-        const liveSnapshot = buildOrderSnapshot();
+        const liveSnapshot = buildOrderSnapshot(linkAccount);
         if (orderPrefetch.ref && orderPrefetch.refSnapshot === liveSnapshot) {
-          preparedOrderRef = orderPrefetch.ref;
+          preparedOrder = orderPrefetch.ref;
         } else if (orderPrefetch.inflight) {
           // A pre-upload is in flight — await it instead of starting a duplicate
           // inline upload. Bound the wait so a stuck Swarm upload can't hang
@@ -293,20 +360,25 @@
               ),
             ]);
             if (result.ref && result.snapshot === liveSnapshot) {
-              preparedOrderRef = result.ref;
+              preparedOrder = result.ref;
             }
           } catch {
             // Awaiting the pre-upload threw — drop through to inline upload below.
           }
         }
-        if (!preparedOrderRef) {
+        if (!preparedOrder) {
           try {
-            inlineEncryptedOrder = await sealJson(encryptionKey, {
-              fields: formData,
-              seriesId,
-              ...(address ? { claimerAddress: address } : {}),
-              ...(email ? { claimerEmail: email } : {}),
-            });
+            const { sealBoxJson, orderSealContext } = await import("@woco/shared/crypto/sealed-box");
+            inlineEncryptedOrder = await sealBoxJson(
+              orderKey,
+              {
+                fields: formData,
+                seriesId,
+                ...(address ? { claimerAddress: address } : {}),
+                ...(email ? { claimerEmail: email } : {}),
+              },
+              orderSealContext(eventId, seriesId),
+            );
           } catch (err) {
             console.warn("[ClaimButton] seal failed, /create-checkout will run without order ref:", err);
           }
@@ -315,9 +387,12 @@
 
       // Persist email + quantity so the success card can render after the
       // Stripe redirect even before the webhook has confirmed the claim.
+      // `linked` tells the return screen whether the ticket goes into the
+      // passport by itself, or from the email.
       sessionStorage.setItem(STRIPE_FORM_KEY, JSON.stringify({
         claimerEmail: email,
         quantity,
+        linked: linkAccount,
       }));
 
       const { url } = await createCheckoutSession({
@@ -325,13 +400,15 @@
         seriesId,
         claimerEmail: email,
         quantity: quantity > 1 ? quantity : undefined,
-        orderRef: preparedOrderRef,
-        encryptedOrder: !preparedOrderRef ? inlineEncryptedOrder : undefined,
+        preparedOrder,
+        encryptedOrder: !preparedOrder ? inlineEncryptedOrder : undefined,
+        encryptionKeyRef: orderKeyFor,
         reservationId: reservationHook.reservation?.reservationId,
         // The form is still displayed at this point (handleStripeCheckout returns
         // early to show it and is re-entered), so the opt-out WAS offered and an
         // untouched box records as a refusal.
         marketingConsent: claimMarketingConsent,
+        linkAccount,
       });
       // Server has stamped reservationId into Stripe metadata; webhook
       // consumes it. Clear local state (incl. sessionStorage) so back-nav
@@ -345,6 +422,26 @@
       // event page, Back goes to the events list, not into a stale Stripe session.
       window.location.replace(url);
     } catch (err) {
+      // Sealed to a key the organiser has since replaced (#186): take the key the
+      // server names - verified against its ref - re-seal, and try ONCE more.
+      if (err instanceof OrderKeyStaleError && err.current && err.current !== orderKeyFor && !staleRetried) {
+        staleRetried = true;
+        try {
+          keyRefOverride = err.current;
+          const key = await loadOrderKey(err.current);
+          orderKey = key;
+          orderKeyFor = err.current;
+          orderKeyState = "ready";
+          stripeLoading = false;
+          await handleStripeCheckout();
+          return;
+        } catch (retryErr) {
+          error = retryErr instanceof Error ? retryErr.message : "Failed to start checkout";
+        } finally {
+          staleRetried = false;
+        }
+        return;
+      }
       error = err instanceof Error ? err.message : "Failed to start checkout";
     } finally {
       stripeLoading = false;
@@ -371,13 +468,17 @@
       <span class="own-chip-hint">Buy another below</span>
     </div>
   {/if}
-  {#if showOrderForm}
+  {#if status?.cancelled}
+    <!-- #644: the server's word, from claim-status — covers a page whose feed
+         was not re-signed after the cancellation. -->
+    <button class="claim-btn" disabled>Event cancelled</button>
+  {:else if showOrderForm}
     <OrderForm
       {status}
       {quantity}
       {orderFields}
       {hasEmailField}
-      authConnected={auth.isConnected}
+      authConnected={linked}
       {stripeLoading}
       {buyerFees}
       {priceLabel}
@@ -398,7 +499,7 @@
       {stripeLoading}
       soldOut={status?.available === 0}
       {stripeEmail}
-      showEmailInput={!auth.isConnected && !hasEmailField}
+      showEmailInput={!linked && !hasEmailField}
       onCheckout={handleStripeCheckout}
       onStripeEmailChange={(v) => { stripeEmail = v; }}
     />

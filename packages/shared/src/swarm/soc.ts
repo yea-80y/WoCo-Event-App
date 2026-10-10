@@ -104,6 +104,27 @@ export function calculateCacAddress(span: Uint8Array, payload: Uint8Array): Uint
 }
 
 /**
+ * Refuse to sign a feed update whose wrapped chunk is not the reported content.
+ *
+ * A feed resolves to the ADDRESS of the chunk its update wraps, and the update's
+ * signature commits to `span || payload` with the span taken from the payload
+ * length. So the signer must know that address equals the collection the server
+ * said it deployed - otherwise it endorses content it was never shown (#614). It
+ * also refuses a root chunk whose real span exceeds its data length, which
+ * would otherwise be signed and resolve to nothing.
+ */
+export function assertFeedUpdateMatches(payload: Uint8Array, contentHash: string): void {
+  const expected = contentHash.replace(/^0x/i, "").toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(expected)) throw new Error("contentHash is not a 64-hex Swarm reference");
+  const actual = Array.from(calculateCacAddress(encodeSpan(payload.length), payload), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
+  if (actual !== expected) {
+    throw new Error("Feed update does not match the deployed content - refusing to sign it");
+  }
+}
+
+/**
  * The SOC's own Swarm address (where it is stored/read): `keccak256(identifier || owner)`.
  * `owner` is the 20-byte Ethereum address; `identifier` is 32 bytes.
  */
@@ -130,12 +151,8 @@ export function socSignDigest(identifier: Uint8Array, cacAddress: Uint8Array): U
  */
 export const PORTABILITY_SOC_IDENTIFIER_INPUT = "woco/recovery/portability/v1";
 
-/**
- * Domain-separation tags for the two keys derived from the passkey PRF secret.
- * Distinct domains so neither derived key reveals the other (handover step 3).
- */
-export const PORTABILITY_SOC_OWNER_DOMAIN = "woco/recovery/portability/soc-owner/v1";
-export const PORTABILITY_HPKE_DOMAIN = "woco/recovery/portability/hpke/v1";
+// The two keys that own and open this envelope derive from the passkey's PRF
+// output under their own HKDF labels — see crypto/passkey-prf.ts (#642).
 
 /**
  * Current portability-envelope payload version.
@@ -405,7 +422,19 @@ export type VersionedFeedRead =
       scanClean: boolean;
     }
   | { status: "absent" }
-  | { status: "unavailable"; reason?: string };
+  | {
+      status: "unavailable";
+      reason?: string;
+      /**
+       * Set ONLY when this version exists and can never be used by this reader —
+       * a definitive verdict about ONE version, not about the feed. It is the
+       * difference between "come back later" and "this will never read", which
+       * a caller holding a read-modify-write on it cannot otherwise tell: both
+       * arrive as `unavailable`, and one of them means the feed is frozen until
+       * something repairs it.
+       */
+      unusableAt?: number;
+    };
 
 export interface SocVersionResolution {
   /** Highest version confirmed PRESENT, or null if none was found. */
@@ -472,23 +501,37 @@ export async function resolveLatestSocVersion(
   const hintGiven = hint > 0;
   let start = hintGiven ? Math.min(hint, maxVersion) : 0;
   let hintValidated = false;
-  if (start > 0) {
-    hintValidated = await exists(start);
-    if (!hintValidated) start = 0; // hint unreliable → full scan
-  }
 
+  // The first window starts AT the hint, so the hint is checked in the same
+  // round trip as the version after it: an accurate hint costs one hit and the
+  // one miss that ends the scan, with nothing asked twice (#689 - a client may
+  // re-ask the server about a hinted version, so a second probe of it was a
+  // second server round trip, and probing the hint on its own first put a
+  // second miss or a second round trip on the common case). An invalid hint
+  // costs the miss after it as well - the rare case, and the alarm.
   let latest = -1;
-  for (let cursor = start; cursor <= maxVersion; cursor += VERSION_PROBE_WINDOW) {
-    const width = Math.min(VERSION_PROBE_WINDOW, maxVersion - cursor + 1);
+  let cursor = start;
+  while (cursor <= maxVersion) {
+    const from = cursor;
+    const width = Math.min(VERSION_PROBE_WINDOW, maxVersion - from + 1);
     const flags = await Promise.all(
-      Array.from({ length: width }, (_, i) => exists(cursor + i)),
+      Array.from({ length: width }, (_, i) => exists(from + i)),
     );
+    if (from === start && start > 0 && !hintValidated) {
+      if (!flags[0]) {
+        start = 0; // hint unreliable → full scan
+        cursor = 0;
+        continue;
+      }
+      hintValidated = true;
+    }
     let ended = false;
     for (let i = 0; i < width; i++) {
-      if (flags[i]) latest = cursor + i;
+      if (flags[i]) latest = from + i;
       else { ended = true; break; }
     }
     if (ended) break;
+    cursor = from + width;
   }
   return { latest: latest >= 0 ? latest : null, clean, hintGiven, hintValidated, scannedFrom: start };
 }
@@ -742,11 +785,33 @@ export async function resolveBandedHead(
  * Assembling that yields the OLD bytes under the NEW manifest. `len` is the one
  * field that disagrees, so it is the only thing that can catch it.
  */
+export type AssembledContentFeed =
+  | { status: "found"; bytes: Uint8Array }
+  | { status: "absent" }
+  | {
+      status: "unavailable";
+      reason?: string;
+      /**
+       * The bytes at this identifier are real and will never assemble, however
+       * many times they are re-read — so a caller may stop retrying and repair
+       * instead. NEVER set for a page the network merely could not answer for:
+       * that page may be perfectly fine on the next attempt.
+       */
+      unusable?: true;
+    };
+
 export async function assembleContentFeed(
   read: SocChunkProbe,
   baseId: Uint8Array,
   pageIdFor: (page: number) => Uint8Array,
-): Promise<SocReadOutcome> {
+  /**
+   * The probe for PAGES, when it should differ from `read`. A found manifest
+   * proves its pages exist - the writer uploads them first - so a caller whose
+   * `read` trusts a cheap "absent" can pass a probe that asks harder here, and
+   * a page still settling is not mistaken for a torn write (#689).
+   */
+  readPage: SocChunkProbe = read,
+): Promise<AssembledContentFeed> {
   const base = await read(baseId);
   if (base.status !== "found") return base;
   const raw = base.bytes;
@@ -759,14 +824,21 @@ export async function assembleContentFeed(
   }
   if (!isContentFeedManifest(head)) return base; // single-chunk feed
   if (head.pages < 1 || head.pages > 256) {
-    return { status: "unavailable", reason: `manifest page count out of range: ${head.pages}` };
+    return { status: "unavailable", reason: `manifest page count out of range: ${head.pages}`, unusable: true };
   }
 
   const parts: Uint8Array[] = [];
   for (let i = 1; i <= head.pages; i++) {
-    const page = await read(pageIdFor(i));
+    const page = await readPage(pageIdFor(i));
     if (page.status !== "found") {
-      return { status: "unavailable", reason: `multi-chunk page ${i}/${head.pages} ${page.status}` };
+      const reason = `multi-chunk page ${i}/${head.pages} ${page.status}`;
+      // An ABSENT page under an existing manifest is the torn write described
+      // above: immutable chunks, so that page can never appear. A page nobody
+      // could ANSWER for is the ordinary network fault — retrying is the right
+      // answer there, and calling it unusable would offer repair over a hiccup.
+      return page.status === "absent"
+        ? { status: "unavailable", reason, unusable: true }
+        : { status: "unavailable", reason };
     }
     parts.push(page.bytes);
   }
@@ -777,6 +849,7 @@ export async function assembleContentFeed(
     return {
       status: "unavailable",
       reason: `multi-chunk length mismatch: assembled ${full.length} B, manifest declares ${head.len} B`,
+      unusable: true,
     };
   }
   return { status: "found", bytes: full };
@@ -811,6 +884,8 @@ export interface VersionedReadOptions {
   /** Ceiling for the version scan — `LAST_VERSION_IN_BAND` for a banded topic.
    *  See {@link resolveLatestSocVersion}. Omit for unbanded feeds. */
   maxVersion?: number;
+  /** The probe for a paged version's pages - see {@link assembleContentFeed}. */
+  readPage?: SocChunkProbe;
   /** Receives the scan diagnostics, so a caller can count what actually happened. */
   onScan?: (d: Pick<SocVersionResolution, "hintGiven" | "hintValidated" | "scannedFrom">) => void;
 }
@@ -832,14 +907,26 @@ export async function readVersionedContentFeed(
       read,
       baseIdFor(latest),
       (page) => versionedPageIdentifier(base, latest, page),
+      opts.readPage,
     );
     if (asm.status === "found") return { status: "found", bytes: asm.bytes, version: latest, scanClean: clean };
     // The probe just confirmed this version PRESENT, so an absent re-read is a
     // contradiction (a vanished chunk / a reader disagreeing with itself), never
     // evidence that the feed does not exist.
-    return asm.status === "absent"
-      ? { status: "unavailable", reason: `version ${latest} vanished between probe and read` }
-      : asm;
+    if (asm.status === "absent") {
+      return { status: "unavailable", reason: `version ${latest} vanished between probe and read` };
+    }
+    // Only the assembler's DEFINITIVE verdicts name a version. A scan or page
+    // probe that could not answer is still just "ask again later", and naming a
+    // version there would invite a repair that overwrites live data.
+    //
+    // And only under a CLEAN scan (#689): a dirty one stopped at the newest
+    // version it could reach, so `latest` may not be the head. Naming it would
+    // offer a repair seeded from below it, and the rewrite - landing past the
+    // real head - would erase every good version in between.
+    return asm.unusable && clean
+      ? { status: "unavailable", reason: asm.reason, unusableAt: latest }
+      : { status: "unavailable", reason: asm.reason };
   }
 
   // A dirty scan found nothing — but it never asked every question, so "nothing
@@ -854,8 +941,13 @@ export async function readVersionedContentFeed(
     read,
     base,
     (page) => contentFeedSocIdentifier(contentFeedPageTopic(topic, page)),
+    opts.readPage,
   );
-  return legacy.status === "found"
-    ? { status: "found", bytes: legacy.bytes, version: LEGACY_CONTENT_FEED_VERSION, scanClean: clean }
-    : legacy;
+  if (legacy.status === "found") {
+    return { status: "found", bytes: legacy.bytes, version: LEGACY_CONTENT_FEED_VERSION, scanClean: clean };
+  }
+  if (legacy.status === "absent") return { status: "absent" };
+  return legacy.unusable
+    ? { status: "unavailable", reason: legacy.reason, unusableAt: LEGACY_CONTENT_FEED_VERSION }
+    : { status: "unavailable", reason: legacy.reason };
 }

@@ -1,47 +1,51 @@
-import { Hono } from "hono";
-import type { AppEnv } from "../types.js";
-import type { SitePalette } from "@woco/shared";
+import type { SitePalette, TicketDisplay } from "@woco/shared";
+import { buildTicketLink, TICKET_IMAGE_GATEWAYS } from "@woco/shared";
 import { getFromAddress } from "../lib/email/client.js";
-import { sendEmail } from "../lib/email/send.js";
-import { renderTicketCardPng } from "../lib/ticket/render-card.js";
+import { sendEmail, type OutboundAttachment } from "../lib/email/send.js";
+import { renderHeroPng, renderTicketCardPng } from "../lib/ticket/render-card.js";
+import { fetchEventPhoto } from "../lib/ticket/event-photo.js";
+import { directionsUrl, eventIcs, googleCalendarUrl } from "../lib/ticket/calendar.js";
+import { safeCssColour, splitLocation, ticketWhen } from "@woco/shared/ticket/card";
 import { mintGateToken } from "../lib/gate/token.js";
 import { hashEmail } from "../lib/event/claim-service.js";
+import { companyFooterHtml, companyFooterText } from "../lib/email/company-footer.js";
+import { SUPPORT_EMAIL } from "@woco/shared";
 
-const tickets = new Hono<AppEnv>();
-
-/** Rate limiter: email → timestamps */
-const emailRateMap = new Map<string, number[]>();
-const RATE_LIMIT = 3;
-const RATE_WINDOW = 300_000; // 5 min
-
-/** Public base URL the server is reachable on (e.g. https://events-api.woco-net.com).
- *  Required for ticket links + composite PNG OG image URLs. Falls back to a
- *  relative path so dev/test still works without the env. */
-const PUBLIC_API_BASE = (process.env.PUBLIC_API_BASE || "").replace(/\/$/, "");
+/*
+ * The ticket email: built and sent by Stripe fulfilment only, to the verified
+ * purchase address. There is deliberately no HTTP route here. A public
+ * `POST /api/tickets/send-email` (v1 claim rail) sent this email to any
+ * address with caller-chosen event text and QR content, unauthenticated; it
+ * had no callers after #207 and was removed on 2026-10-02.
+ */
 
 export interface TicketEmailOpts {
   to: string;
+  /** The event's id: the calendar entry's stable UID. */
+  eventId?: string;
   eventTitle: string;
   eventDate?: string;
+  /** ISO end, for the times and the calendar entry. */
+  eventEndDate?: string;
   eventLocation?: string;
   seriesName?: string;
   /** All tickets in the order. Single ticket = array of one element. */
   tickets: Array<{ edition: number | null; qrContent: string }>;
   totalSupply?: number;
-  /** Optional buyer name (from Stripe customer details). Baked into the
-   *  composite PNG and shown on the standalone ticket page. */
+  /** Buyer name from Stripe. Not drawn on the ticket: tickets get forwarded to friends. */
   buyerName?: string;
   /** Organiser site palette — when present, email + PNG card match their brand.
    *  Falls back to WoCo Concrete & Acid defaults when absent. */
   palette?: SitePalette;
-  /** Organiser site ID — appended to ticket page URLs so the standalone page
-   *  can look up the site palette and render in the organiser's brand colours. */
-  siteId?: string;
-  /** Add the "Create your WoCo profile" CTA (Route A gate token). Set ONLY on
-   *  paths where `to` is the VERIFIED purchase email (Stripe webhook). The
-   *  public /send-email route must never set it: its recipient is arbitrary,
-   *  and a gate token minted for an arbitrary inbox would let anyone holding
-   *  a leaked /t link bind the ticket without knowing the purchase email. */
+  /** Swarm reference of the event image, shown on the static ticket page. */
+  imageHash?: string;
+  /** The gateway the event recorded its storage on (`EventFeed.gatewayUrl`); the
+   *  ticket page tries it first for the image. */
+  imageGateway?: string;
+  /** Add the "Add to WoCo" button (Route A gate token). Set ONLY on
+   *  paths where `to` is the VERIFIED purchase email (Stripe webhook): a gate
+   *  token minted for an arbitrary inbox would let anyone holding a leaked /t
+   *  link bind the ticket without knowing the purchase email. */
   profileCta?: boolean;
   /** Organiser contact address for the Reply-To header. Only affects where
    *  replies land — the From domain stays platform-owned so a bad organiser
@@ -86,72 +90,89 @@ function parseQrContent(qr: string): { eventId: string; seriesId: string; editio
   return { eventId: m[1], seriesId: m[2], edition, sig: m[4] };
 }
 
-/** Build the public URL for a ticket — both the HTML page and the composite
- *  PNG share the same base; the .png suffix toggles between them. */
-function ticketUrl(qrContent: string, buyerName?: string, png = false, siteId?: string): string | null {
+/** The emailed "Open ticket page" link: the static page on the app origin, with
+ *  the ticket and its display details in the URL fragment, so no server - ours
+ *  or anyone's - receives the signature (packages/shared/src/ticket/link.ts).
+ *  Never carries the buyer's name: the page cannot tell a real one from an edit. */
+export function ticketUrl(qrContent: string, display: TicketDisplay = {}): string | null {
   const p = parseQrContent(qrContent);
   if (!p) return null;
-  const params = new URLSearchParams();
-  if (buyerName) params.set("n", buyerName);
-  if (siteId) params.set("s", siteId);
-  const q = params.toString();
-  const path = `/t/${p.eventId}/${p.seriesId}/${p.edition}/${p.sig}${png ? ".png" : ""}`;
-  return `${PUBLIC_API_BASE}${path}${q ? `?${q}` : ""}`;
+  return buildTicketLink(APP_BASE, { eventId: p.eventId, seriesId: p.seriesId, edition: p.edition, sig: p.sig }, display);
+}
+
+/** Which of the page's known image gateways the event's storage gateway is. */
+function imageGatewayIndex(url: string | undefined): number {
+  const clean = (url ?? "").trim().replace(/\/$/, "");
+  const i = (TICKET_IMAGE_GATEWAYS as readonly string[]).indexOf(clean);
+  return i === -1 ? 0 : i;
 }
 
 function escHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-function buildTicketHtml(opts: TicketEmailOpts): string {
-  const { to, eventTitle, eventDate, eventLocation, seriesName, tickets: tix, totalSupply, buyerName, palette: p, siteId } = opts;
-  // Resolved palette — organiser brand when available, WoCo Concrete & Acid otherwise
-  const c = {
-    bg:      p?.bg      ?? '#0B0B09',
-    cardBg:  p?.cardBg  ?? '#14140F',
-    headerBg: p?.cardBg  ?? '#1B1A14',
-    text:    p?.text    ?? '#F2EBE0',
-    muted:   p?.muted   ?? '#8A8478',
-    accent:  p?.accent  ?? '#C7F23A',
-    border:  p?.border  ?? '#2B2A23',
+export function buildTicketHtml(opts: TicketEmailOpts, media: { hero?: boolean } = {}): string {
+  const { to, eventTitle, eventDate, eventEndDate, eventLocation, seriesName, tickets: tix, palette: p, imageHash, imageGateway } = opts;
+  const display: TicketDisplay = {
+    title: eventTitle,
+    date: eventDate,
+    location: eventLocation,
+    series: seriesName,
+    image: imageHash,
+    gateway: imageGatewayIndex(imageGateway),
   };
-  const dateStr = eventDate
-    ? new Date(eventDate).toLocaleDateString(undefined, {
-        weekday: "long", year: "numeric", month: "long", day: "numeric",
-      })
-    : null;
-
+  // Resolved palette — organiser brand when available, WoCo Concrete & Acid otherwise.
+  // Every value goes through safeCssColour: these land inside <style>, where an
+  // organiser's free text could otherwise end the block.
+  const c = {
+    bg:        safeCssColour(p?.bg)     ?? '#0B0B09',
+    cardBg:    safeCssColour(p?.cardBg) ?? '#14140F',
+    text:      safeCssColour(p?.text)   ?? '#F2EBE0',
+    secondary: safeCssColour(p?.muted)  ?? '#B5AC9D',
+    muted:     safeCssColour(p?.muted)  ?? '#8A8478',
+    accent:    safeCssColour(p?.accent) ?? '#C7F23A',
+    border:    safeCssColour(p?.border) ?? '#2B2A23',
+  };
+  const when = ticketWhen(eventDate, eventEndDate, "long");
+  const where = splitLocation(eventLocation);
+  const calendar = googleCalendarUrl({ eventId: opts.eventId ?? "", title: eventTitle, startIso: eventDate, endIso: eventEndDate, location: eventLocation });
+  const directions = directionsUrl(eventLocation);
   const multiTicket = tix.length > 1;
-  const ticketBlocks = tix.map(({ edition, qrContent }, i) => {
-    const editionStr = edition != null ? String(edition).padStart(3, "0") : null;
-    // Standalone HTML page: fast server-rendered, no SPA load.
-    const pageUrl = ticketUrl(qrContent, buyerName, false, siteId);
-    const cid = `woco-card-${i}`;
+
+  // Buyers never see the edition (its sequence leaks how many have sold); a
+  // group order numbers its own tickets so the buyer can hand them out.
+  const ticketRows = tix.map(({ qrContent }, i) => {
+    const label = multiTicket ? `Ticket ${i + 1} of ${tix.length}` : "Your ticket";
+    const pageUrl = ticketUrl(qrContent, display);
     // Group buys: each ticket carries its own one-shot signup link — forward a
     // ticket to a friend and their click binds THAT edition, not the buyer's.
     const perTicketCta = opts.profileCta && multiTicket ? gateCtaUrl(qrContent, to) : null;
     return `
-      <div class="qr-section">
-        ${editionStr ? `<div class="qr-label">Ticket #${editionStr}</div>` : `<div class="qr-label">Show at the door</div>`}
-        <img src="cid:${cid}" alt="Ticket — show at the door" class="qr-image" width="320" height="440" />
-        ${pageUrl ? `<a href="${escHtml(pageUrl)}" class="qr-link">Open ticket page${editionStr ? ` #${editionStr}` : ""} →</a>` : ""}
-        ${perTicketCta ? `<div class="cta-mini"><a href="${escHtml(perTicketCta)}">Create a WoCo profile with this ticket →</a></div>` : ""}
-      </div>`;
-  }).join("\n");
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" class="row"><tr>
+              <td class="row-l">
+                <div class="row-title">${escHtml(label)}</div>
+                ${seriesName ? `<div class="row-sub">${escHtml(seriesName)}</div>` : ""}
+                ${perTicketCta ? `<a href="${escHtml(perTicketCta)}" class="row-add">Add this ticket to WoCo</a>` : ""}
+              </td>
+              <td class="row-r">${pageUrl ? `<a href="${escHtml(pageUrl)}" class="btn">Open ticket</a>` : ""}</td>
+            </tr></table>`;
+  }).join("");
 
   const mainCtaUrl = opts.profileCta ? gateCtaUrl(tix[0].qrContent, to) : null;
   const ctaBlock = mainCtaUrl ? `
-        <div class="cta-section">
-          <div class="cta-title">Save your ticket to a WoCo account</div>
-          <p class="cta-copy">Create your free profile to keep your ticket${multiTicket ? "s" : ""} linked to you, follow the events you love, and check in faster at the door.</p>
-          <a href="${escHtml(mainCtaUrl)}" class="cta-btn">Create your WoCo profile →</a>
-          ${multiTicket ? `<p class="cta-note">Each ticket unlocks one profile — forward a ticket to your friends and they can create their own.</p>` : ""}
-        </div>` : "";
+          <div class="panel">
+            <div class="panel-title">${multiTicket ? "Add a ticket to WoCo" : "Keep your ticket in WoCo"}</div>
+            <p class="panel-copy">Keep it in your WoCo passport and claim your own name on WoCo. It's free.</p>
+            <a href="${escHtml(mainCtaUrl)}" class="btn-outline">Add to WoCo</a>
+            ${multiTicket ? `<p class="note">The button adds your first ticket. Each ticket goes into one account, so friends can add theirs with the link under each ticket.</p>` : ""}
+          </div>` : "";
 
-  const countLabel = tix.length > 1 ? `${tix.length} Tickets` : "Your Ticket";
-  const subjectEdition = tix.length === 1 && tix[0].edition != null
-    ? ` #${String(tix[0].edition).padStart(3, "0")}`
-    : tix.length > 1 ? ` (×${tix.length})` : "";
+  const detail = (label: string, main?: string, sub?: string) => main ? `
+                <td class="cell" valign="top">
+                  <div class="label">${label}</div>
+                  <div class="value">${escHtml(main)}</div>
+                  ${sub ? `<div class="value-sub">${escHtml(sub)}</div>` : ""}
+                </td>` : "";
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -159,104 +180,220 @@ function buildTicketHtml(opts: TicketEmailOpts): string {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: ${c.bg}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: ${c.text}; }
-    .wrap { max-width: 560px; margin: 0 auto; padding: 32px 16px; }
-    .card { background: ${c.cardBg}; border: 1px solid ${c.border}; border-radius: 8px; overflow: hidden; }
-    .header { background: ${c.headerBg}; border-bottom: 1px solid ${c.border}; padding: 32px 32px 24px; }
-    .badge { display: inline-block; background: ${c.accent}1a; border: 1px solid ${c.accent}38; color: ${c.accent}; font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; padding: 3px 10px; border-radius: 2px; margin-bottom: 14px; }
-    h1 { font-size: 22px; font-weight: 800; color: ${c.text}; line-height: 1.2; letter-spacing: -0.02em; }
-    .meta { margin-top: 12px; display: flex; flex-direction: column; gap: 5px; }
-    .meta-row { font-size: 12px; color: ${c.muted}; }
-    .body { padding: 28px 32px; }
-    .qr-section { background: ${c.border}22; border: 1px solid ${c.border}; border-radius: 4px; padding: 24px 16px; text-align: center; margin-bottom: 16px; }
-    .qr-label { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: ${c.muted}; margin-bottom: 14px; }
-    .qr-image { display: block; margin: 0 auto 16px; max-width: 100%; height: auto; border-radius: 4px; }
-    .qr-link { display: inline-block; background: ${c.accent}14; border: 1px solid ${c.accent}33; color: ${c.accent}; font-size: 12px; font-weight: 600; text-decoration: none; padding: 10px 20px; border-radius: 4px; }
-    .cta-mini { margin-top: 12px; }
-    .cta-mini a { color: ${c.muted}; font-size: 11px; text-decoration: underline; }
-    .cta-section { border: 1px solid ${c.accent}38; background: ${c.accent}0d; border-radius: 4px; padding: 22px 20px; text-align: center; margin-top: 20px; }
-    .cta-title { font-size: 14px; font-weight: 700; color: ${c.text}; margin-bottom: 8px; }
-    .cta-copy { font-size: 12px; color: ${c.muted}; line-height: 1.6; margin-bottom: 16px; }
-    .cta-btn { display: inline-block; background: ${c.accent}; color: ${c.bg}; font-size: 13px; font-weight: 700; text-decoration: none; padding: 12px 24px; border-radius: 4px; }
-    .cta-note { font-size: 11px; color: ${c.muted}; margin-top: 12px; }
-    .instructions { font-size: 13px; color: ${c.muted}; line-height: 1.65; margin-top: 8px; }
-    .footer { border-top: 1px solid ${c.border}; padding: 20px 32px; font-size: 11px; color: ${c.muted}; }
+    body { margin: 0; padding: 0; background: ${c.bg}; color: ${c.text}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .wrap { max-width: 600px; margin: 0 auto; }
+    .top { padding: 20px 28px; font-family: Menlo, Consolas, monospace; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; }
+    .brand { font-weight: 700; color: ${c.text}; }
+    .top-r { color: ${c.muted}; text-align: right; }
+    .hero { display: block; width: 100%; max-width: 600px; height: auto; border: 0; }
+    .panel-title { font-size: 17px; font-weight: 700; color: ${c.text}; margin: 0 0 6px; }
+    .main { padding: 28px; }
+    .kicker { font-family: Menlo, Consolas, monospace; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: ${c.accent}; margin: 0 0 10px; }
+    h1 { margin: 0 0 22px; font-size: 32px; line-height: 1.1; font-weight: 800; color: ${c.text}; }
+    .panel { background: ${c.cardBg}; border: 1px solid ${c.border}; border-radius: 12px; padding: 20px; margin: 0 0 24px; }
+    .cell { padding: 0 8px 14px 0; width: 50%; }
+    .label { font-family: Menlo, Consolas, monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: ${c.muted}; margin-bottom: 4px; }
+    .value { font-size: 16px; font-weight: 600; color: ${c.text}; }
+    .value-sub { font-size: 14px; color: ${c.secondary}; margin-top: 2px; }
+    .btn-ghost { display: block; text-align: center; padding: 12px 0; border: 1px solid ${c.border}; border-radius: 8px; color: ${c.text}; text-decoration: none; font-size: 14px; font-weight: 600; }
+    h2 { margin: 0 0 12px; font-size: 20px; font-weight: 700; color: ${c.text}; }
+    .row { background: ${c.cardBg}; border: 1px solid ${c.border}; border-radius: 10px; margin: 0 0 10px; }
+    .row-l { padding: 14px 16px; }
+    .row-r { padding: 14px 16px; text-align: right; white-space: nowrap; }
+    .row-title { font-size: 15px; font-weight: 600; color: ${c.text}; }
+    .row-sub { font-family: Menlo, Consolas, monospace; font-size: 12px; color: ${c.muted}; margin-top: 2px; }
+    .row-add { display: inline-block; margin-top: 6px; font-size: 12px; color: ${c.secondary}; }
+    .btn { display: inline-block; padding: 10px 16px; background: ${c.accent}; color: ${c.bg}; border-radius: 8px; text-decoration: none; font-size: 14px; font-weight: 700; }
+    .btn-outline { display: inline-block; padding: 12px 20px; border: 1px solid ${c.accent}; color: ${c.accent}; border-radius: 8px; text-decoration: none; font-size: 14px; font-weight: 700; }
+    .tip { border: 1px dashed ${c.border}; border-radius: 10px; padding: 16px; margin: 6px 0 12px; }
+    .tip-title { font-size: 15px; font-weight: 700; color: ${c.text}; margin-bottom: 6px; }
+    .tip-copy, .panel-copy { font-size: 14px; line-height: 1.5; color: ${c.secondary}; margin: 0 0 14px; }
+    .tip-copy { margin: 0; }
+    .small { font-size: 13px; color: ${c.muted}; margin: 0 0 24px; }
+    .note { font-size: 12px; color: ${c.muted}; margin: 12px 0 0; }
+    .help { font-size: 14px; line-height: 1.5; color: ${c.secondary}; }
+    .help a { color: ${c.accent}; }
+    .footer { border-top: 1px solid ${c.border}; padding: 22px 28px 28px; font-size: 11px; line-height: 1.5; color: ${c.muted}; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="card">
-      <div class="header">
-        <div class="badge">${escHtml(countLabel)}${subjectEdition}</div>
-        <h1>${escHtml(eventTitle)}</h1>
-        <div class="meta">
-          ${dateStr ? `<div class="meta-row">📅 ${escHtml(dateStr)}</div>` : ""}
-          ${eventLocation ? `<div class="meta-row">📍 ${escHtml(eventLocation)}</div>` : ""}
-          ${seriesName ? `<div class="meta-row">🎫 ${escHtml(seriesName)}${totalSupply ? ` · ${totalSupply} total` : ""}</div>` : ""}
-        </div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" class="top"><tr>
+      <td class="brand">WoCo</td>
+      <td class="top-r" align="right">${multiTicket ? "Your tickets" : "Your ticket"}</td>
+    </tr></table>
+    ${media.hero ? `<img src="cid:${HERO_CID}" alt="${escHtml(eventTitle)}" class="hero" width="600" height="300" />` : ""}
+    <div class="main">
+      <div class="kicker">You're going</div>
+      <h1>${escHtml(eventTitle)}</h1>
+      ${when.day || where.venue || calendar || directions ? `
+      <div class="panel">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+          ${detail("When", when.day, when.time)}
+          ${detail("Where", where.venue, where.rest)}
+        </tr></table>
+        ${calendar || directions ? `
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+          ${calendar ? `<td style="padding-right:${directions ? 5 : 0}px;width:50%"><a href="${escHtml(calendar)}" class="btn-ghost">Add to calendar</a></td>` : ""}
+          ${directions ? `<td style="padding-left:${calendar ? 5 : 0}px;width:50%"><a href="${escHtml(directions)}" class="btn-ghost">Get directions</a></td>` : ""}
+        </tr></table>` : ""}
+      </div>` : ""}
+      <h2>${multiTicket ? "Your tickets" : "Your ticket"}</h2>${ticketRows}
+      ${multiTicket ? `
+      <div class="tip">
+        <div class="tip-title">Going with friends?</div>
+        <p class="tip-copy">Send each person their own ticket: open it, then share or save it. Every ticket lets one person in and the first scan wins, so send each one to one person only.</p>
+      </div>` : ""}
+      <p class="small">${multiTicket ? "Your tickets are" : "Your ticket is"} also attached to this email as ${multiTicket ? "images" : "an image"}${calendar ? ", with a calendar file" : ""}. ${multiTicket ? "They work" : "It works"} offline, on screen or printed.</p>
+      ${ctaBlock}
+      <div class="help">
+        ${opts.replyTo ? `<div>Questions about the event? Reply to this email to reach the organiser.</div>` : ""}
+        <div>Problem with your ticket? Email <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a>.</div>
       </div>
-      <div class="body">
-        ${ticketBlocks}
-        <p class="instructions">
-          Present this email or open a link above to display your ticket QR code at the venue entrance.
-          Your ticket${tix.length > 1 ? "s are" : " is"} cryptographically signed and can be verified offline.
-        </p>
-        ${ctaBlock}
-      </div>
-      <div class="footer">
-        Powered by WoCo · Decentralised event ticketing on Ethereum Swarm
-      </div>
+    </div>
+    <div class="footer">
+      Powered by WoCo · Decentralised event ticketing on Ethereum Swarm
+      ${companyFooterHtml(c.muted)}
     </div>
   </div>
 </body>
 </html>`;
 }
 
+/** The plain-text part: the same facts and links, for text-only clients and spam filters. */
+export function buildTicketText(opts: TicketEmailOpts): string {
+  const { eventTitle, eventDate, eventEndDate, eventLocation, seriesName, tickets: tix } = opts;
+  const display: TicketDisplay = {
+    title: eventTitle, date: eventDate, location: eventLocation, series: seriesName,
+    image: opts.imageHash, gateway: imageGatewayIndex(opts.imageGateway),
+  };
+  const when = ticketWhen(eventDate, eventEndDate, "long");
+  const multi = tix.length > 1;
+  const lines = [`You're going: ${eventTitle}`];
+  if (when.day) lines.push(`When: ${when.day}${when.time ? `, ${when.time}` : ""}`);
+  if (eventLocation) lines.push(`Where: ${eventLocation}`);
+  lines.push("");
+  tix.forEach(({ qrContent }, i) => {
+    const label = multi ? `Ticket ${i + 1} of ${tix.length}` : "Your ticket";
+    const url = ticketUrl(qrContent, display);
+    lines.push(`${label}${seriesName ? ` (${seriesName})` : ""}${url ? `: ${url}` : ""}`);
+  });
+  if (multi) lines.push("", "Going with friends? Send each person their own ticket. Every ticket lets one person in and the first scan wins.");
+  lines.push("", `Your ticket${multi ? "s are" : " is"} also attached to this email.`);
+  if (opts.replyTo) lines.push("Questions about the event? Reply to this email to reach the organiser.");
+  lines.push(`Problem with your ticket? Email ${SUPPORT_EMAIL}.`);
+  return lines.join("\n") + "\n" + companyFooterText();
+}
+
+/** Inline id of the event photo at the top of the email. */
+export const HERO_CID = "woco-hero";
+/** Ticket images above this, all together, are re-drawn without the photo. */
+export const CARD_BUDGET_BYTES = 6 * 1024 * 1024;
+
+export interface TicketAttachmentDeps {
+  fetchPhoto: typeof fetchEventPhoto;
+  renderCard: typeof renderTicketCardPng;
+  renderHero: typeof renderHeroPng;
+}
+
+/** Everything the ticket email attaches, and whether the photo made it in.
+ *  Never throws: each part that fails is left out, and the email still goes. */
+export async function buildTicketAttachments(
+  opts: TicketEmailOpts,
+  deps: TicketAttachmentDeps = { fetchPhoto: fetchEventPhoto, renderCard: renderTicketCardPng, renderHero: renderHeroPng },
+): Promise<{ attachments: OutboundAttachment[]; hero: boolean }> {
+  const { eventTitle, eventDate, eventEndDate, eventLocation, seriesName, tickets: tix, palette } = opts;
+  const photo = await deps.fetchPhoto(opts.imageHash, imageGatewayIndex(opts.imageGateway)).catch(() => null);
+  // One at a time on purpose: each render decodes the photo, and ten at once
+  // would hold ten decoded copies in memory.
+  const renderCards = async (withPhoto: boolean): Promise<Buffer[]> => {
+    const out: Buffer[] = [];
+    for (const [i, { qrContent }] of tix.entries()) {
+      out.push(
+        await deps.renderCard({
+          eventTitle,
+          eventDate,
+          eventEndDate,
+          eventLocation,
+          seriesName,
+          position: tix.length > 1 ? { n: i + 1, of: tix.length } : null,
+          qrContent,
+          palette,
+          photo: withPhoto ? photo : null,
+        }),
+      );
+    }
+    return out;
+  };
+  let cards: Buffer[] = [];
+  try {
+    cards = await renderCards(!!photo);
+    if (photo && cards.reduce((n, b) => n + b.length, 0) > CARD_BUDGET_BYTES) cards = await renderCards(false);
+  } catch (err) {
+    // The ticket pages carry every ticket; an email without images still delivers them.
+    console.error("[tickets] ticket images failed - sending without them:", err);
+    cards = [];
+  }
+
+  let hero: Buffer | null = null;
+  if (photo) {
+    try {
+      hero = await deps.renderHero(photo);
+    } catch (err) {
+      console.error("[tickets] email banner failed - sending without it:", err);
+    }
+  }
+
+  let ics: string | null = null;
+  try {
+    ics = eventIcs({ eventId: opts.eventId ?? "", title: eventTitle, startIso: eventDate, endIso: eventEndDate, location: eventLocation });
+  } catch {
+    ics = null;
+  }
+
+  return {
+    hero: !!hero,
+    attachments: [
+      ...(hero ? [{ filename: "event.png", content: hero, contentId: HERO_CID, contentType: "image/png" }] : []),
+      ...cards.map((png, i) => ({
+        filename: tix.length > 1 ? `ticket-${i + 1}-of-${tix.length}.png` : "ticket.png",
+        content: png,
+        contentType: "image/png",
+      })),
+      ...(ics ? [{ filename: "event.ics", content: Buffer.from(ics, "utf-8"), contentType: "text/calendar; charset=utf-8; method=PUBLISH" }] : []),
+    ],
+  };
+}
+
 /** Send ticket confirmation email(s). Exported for use by the Stripe webhook handler.
  *
- * Each ticket is shipped as a composite PNG (event metadata + buyer email
- * + QR all baked into one image) referenced inline via `cid:` URIs. CIDs
- * are the most reliable cross-client way to embed images — Gmail, Apple
- * Mail, Outlook all render them without going through image proxies that
- * strip QRs. The QR payload inside the PNG is the same
- * `woco://t/{eventId}/{seriesId}/{edition}/{sig}` URI as the in-app
- * passport QR, so any WoCo scanner at the door reads the same ticket.
+ * Each ticket is attached as a portrait image (event photo, details and QR -
+ * see lib/ticket/render-card.ts) the buyer can save or forward; the email body
+ * links each ticket's page. The event photo is embedded once (`cid:`) for the
+ * top of the email. Every decoration is optional: if the photo, an image or
+ * the calendar file fails, the ticket still goes out - someone paid for it.
  */
-export async function sendTicketEmail(opts: TicketEmailOpts): Promise<void> {
+export interface SendTicketDeps {
+  send: typeof sendEmail;
+  build: (opts: TicketEmailOpts) => ReturnType<typeof buildTicketAttachments>;
+}
+
+export async function sendTicketEmail(
+  opts: TicketEmailOpts,
+  deps: SendTicketDeps = { send: sendEmail, build: (o) => buildTicketAttachments(o) },
+): Promise<void> {
   const fromAddress = getFromAddress();
-  const { to, eventTitle, eventDate, eventLocation, tickets: tix, buyerName, palette } = opts;
-  const subjectEdition = tix.length === 1 && tix[0].edition != null
-    ? ` #${String(tix[0].edition).padStart(3, "0")}`
-    : tix.length > 1 ? ` (×${tix.length})` : "";
+  const { to, eventTitle, tickets: tix } = opts;
+  const subject = tix.length > 1 ? `Your ${tix.length} tickets - ${eventTitle}` : `Your ticket - ${eventTitle}`;
+  const { attachments, hero } = await deps.build(opts);
 
-  const attachments = await Promise.all(
-    tix.map(async ({ edition, qrContent }, i) => {
-      const png = await renderTicketCardPng({
-        eventTitle,
-        eventDate,
-        eventLocation,
-        edition,
-        buyerName,
-        qrContent,
-        palette,
-      });
-      const editionStr = edition != null ? String(edition).padStart(3, "0") : String(i + 1);
-      return {
-        filename: `ticket-${editionStr}.png`,
-        content: png,
-        contentId: `woco-card-${i}`,
-        contentType: "image/png",
-      };
-    }),
-  );
-
-  await sendEmail(
+  await deps.send(
     {
       from: `"${eventTitle.slice(0, 40)}" <${fromAddress}>`,
       to: [to],
-      subject: `Your ticket${subjectEdition} — ${eventTitle}`,
-      html: buildTicketHtml(opts),
+      subject,
+      html: buildTicketHtml(opts, { hero }),
+      text: buildTicketText(opts),
       attachments,
       // Attendees reply to ticket email expecting the organiser, not a void.
       ...(opts.replyTo ? { replyTo: [opts.replyTo] } : {}),
@@ -267,58 +404,3 @@ export async function sendTicketEmail(opts: TicketEmailOpts): Promise<void> {
     },
   );
 }
-
-tickets.post("/send-email", async (c) => {
-  const body = await c.req.json().catch(() => null) as {
-    to?: string;
-    eventTitle?: string;
-    eventDate?: string;
-    eventLocation?: string;
-    seriesName?: string;
-    edition?: number | null;
-    totalSupply?: number;
-    qrContent?: string;
-    buyerName?: string;
-    /** Multi-ticket: overrides single edition+qrContent when present */
-    tickets?: Array<{ edition: number | null; qrContent: string }>;
-  } | null;
-
-  if (!body?.to || !body.to.includes("@")) {
-    return c.json({ ok: false, error: "Valid email address required" }, 400);
-  }
-  if (!body.eventTitle || (!body.qrContent && !body.tickets?.length)) {
-    return c.json({ ok: false, error: "Missing required fields" }, 400);
-  }
-
-  // Rate limit per recipient
-  const now = Date.now();
-  const history = (emailRateMap.get(body.to) ?? []).filter((t) => now - t < RATE_WINDOW);
-  if (history.length >= RATE_LIMIT) {
-    return c.json({ ok: false, error: "Too many emails to this address — try again shortly" }, 429);
-  }
-  emailRateMap.set(body.to, [...history, now]);
-
-  const ticketsList = body.tickets?.length
-    ? body.tickets
-    : [{ edition: body.edition ?? null, qrContent: body.qrContent! }];
-
-  try {
-    await sendTicketEmail({
-      to: body.to,
-      eventTitle: body.eventTitle,
-      eventDate: body.eventDate,
-      eventLocation: body.eventLocation,
-      seriesName: body.seriesName,
-      totalSupply: body.totalSupply,
-      tickets: ticketsList,
-      buyerName: body.buyerName,
-    });
-    return c.json({ ok: true });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Email send failed";
-    console.error("[tickets/send-email] error:", err);
-    return c.json({ ok: false, error: msg }, 500);
-  }
-});
-
-export { tickets };

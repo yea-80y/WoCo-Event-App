@@ -4,6 +4,10 @@ Moved out of `CLAUDE.md` (2026-07-27) to keep the always-loaded context small.
 Established 2026-07-18. Organiser marketing lists (CSV import from Skiddle/Fatsoma/RA)
 + broadcasts.
 
+**Status (2026-10-05):** Amazon SES is the live provider (Resend stays as the
+`EMAIL_PROVIDER` rollback lever); paced first send to new contacts is live (#619, #623); lists
+are sealed with X-Wing (#729); organiser sending domains are off (`organiserSendingDomains`).
+
 **GDPR posture: organiser = data controller, WoCo = processor.**
 
 Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives in
@@ -21,7 +25,8 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   send path: suppression + RFC 8058 `List-Unsubscribe` / `List-Unsubscribe-Post` headers +
   footer (provenance + unsub link + postal address) + a `text/plain` alternative part are
   unconditional. **Ticket emails are transactional — NO unsubscribe on them, ever.**
-  `/api/marketing/broadcast` also hash-checks every recipient against the stored list (the
+  Marketing broadcasts (`/api/broadcasts/jobs`, `kind: "marketing"`; the old
+  `/api/marketing/broadcast` now answers 410) also hash-check every recipient against the stored list (the
   import wizard's consent warranty is the only path to a sendable address); footer insertion
   only honours a document-final `</body>` (a mid-doc `</body>` can't hide it).
 - **FAILS CLOSED on misconfiguration**: refuses to send if `PUBLIC_API_BASE` (unsub links) or
@@ -43,18 +48,20 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   Token `mu1.*` = HMAC(`EMAIL_HASH_SECRET`-derived key) over `{emailHash, org}`; **NO expiry**
   (an expired unsub link = spam complaint). Rotating `EMAIL_HASH_SECRET` invalidates all
   outstanding unsub links AND changes every emailHash.
-- Contact list: sealed CLIENT-SIDE to the organiser's X25519 (same as orders), blob on Swarm
+- Contact list: sealed CLIENT-SIDE to the organiser's X-Wing key (HPKE sealed box,
+  `packages/shared/src/crypto/sealed-box.ts`, bound to the owner by `listSealContext`; same
+  box as orders, #729/#730), blob on Swarm
   via `uploadToBytes` `RedundancyLevel.STRONG` (first erasure-coding use), pointer feed
   `woco/marketing/list/{addr}`. Server keeps only emailHashes. Plaintext emails transit
   import/check/broadcast bodies transiently (the client can't compute the server-secret HMAC)
   — hashed-and-discarded.
-- **THE SEALED LIST IS GZIPPED BEFORE SEALING** (`sealJsonCompressed` / `openJsonAuto`,
-  measured 2026-07-27). Uncompressed, a 20k-contact list is ~4MB of JSON → ~8MB of hex
+- **THE SEALED LIST IS GZIPPED BEFORE SEALING** (`sealBoxJsonCompressed` / `openBoxJson`,
+  formerly `sealJsonCompressed` / `openJsonAuto`; measured 2026-07-27). Uncompressed, a 20k-contact list is ~4MB of JSON → ~8MB of hex
   ciphertext, which **exceeds `MAX_SEALED_JSON` (6MB) — i.e. a max-size list was
-  unstorable**. Gzip puts it near 1MB even with every optional field set. `openJsonAuto`
+  unstorable**. Gzip puts it near 1MB even with every optional field set. `openBoxJson`
   sniffs the gzip magic number rather than a version field (framing must be decided before
-  the payload parses; JSON can never start with `0x1f8b`), so pre-compression blobs still
-  open — do not replace that sniff with a version check. Columnar encoding was measured and
+  the payload parses; JSON can never start with `0x1f8b`), so a box sealed uncompressed (no
+  `CompressionStream`) still opens — do not replace that sniff with a version check. Columnar encoding was measured and
   rejected: it buys ~6% once gzip has already collapsed the repeated keys.
 - The whole list is re-sealed and re-uploaded on EVERY change (`commitList`). That is fine
   at the 20k cap — one ~1MB atomic write, single writer, single reader — and is deliberately
@@ -84,17 +91,24 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   step remains the legal basis. `consent` is the one field exempt from the shared decoy
   regex (a consent column is supposed to look like a flag) and carries its own guard so a
   consent DATE is not mistaken for the flag.
-- Organiser sending domains: Resend Domains API, verify-on-demand (no poller);
+- Organiser sending domains (OFF: `organiserSendingDomains = false`, routes answer 403
+  `FEATURE_OFF`): Resend Domains API, verify-on-demand (no poller);
   `resolveMarketingFrom`: verified org domain → `EMAIL_FROM_MARKETING` → **null** (refuse).
   Only the event-broadcast lane falls back to `EMAIL_FROM`, spelled out at its call site in
   `routes/broadcast-jobs.ts`: those recipients consented by buying a ticket, and "the event
   is cancelled" must be sendable whatever state the platform's email config is in.
   From-domain never bypasses suppression/headers.
-- Resend webhook `/api/resend/webhook`: bounce/complaint → GLOBAL suppression; SDK-bundled
+- SES webhook `/api/ses/webhook` (SNS, the live path): SNS signature verify UNCONDITIONAL
+  (`lib/email/sns-verify.ts`). `Permanent` bounce and complaint → GLOBAL suppression;
+  `Transient`/`Undetermined` never suppress. A `not-spam` feedback report is the opposite of
+  a complaint and never suppresses (#621, #628). Also feeds the undelivered-ticket ledger and
+  pacing counts.
+- Resend webhook `/api/resend/webhook` (rollback provider): bounce/complaint → GLOBAL suppression; SDK-bundled
   svix verify UNCONDITIONAL (no `NODE_ENV` gate — a forged bounce = targeted email denial);
   secret unset → acknowledge-and-drop; `svix-id` dedupe.
-- **ESP SEAM**: all Resend calls live in `lib/email/` — a future SES migration touches only
-  that directory.
+- **ESP SEAM**: sending lives in `lib/email/` (`send.ts` chokepoint; `ses-provider.ts` and
+  the Resend client behind `EMAIL_PROVIDER`). Exception: the switched-off sending-domain routes
+  call the Resend Domains API from `routes/marketing.ts`.
 - **RESEND APPROVED THE MODEL IN WRITING** (email, 2026-07-29): *"As long as you're
   properly adding Unsubscribe headers, and sending emails that are opted into via the
   email API, this is okay on the transactional plan."* Marketing over `POST /emails` with
@@ -104,11 +118,33 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   Note their tiers: Free = **1 sending domain** (verified 2026-07-29 — the "10 on Free"
   figure previously in PRICING_AND_EMAIL §2 was wrong; 10 is Pro), so the marketing
   subdomain split requires the $20/mo Pro plan when an imported list makes it mandatory.
-- Marketing caps: 2 broadcasts/hr + `MARKETING_DAILY_CAP` (rolling 24h, default 2000) per
-  organiser; explicit 429, never a silent trim.
-- ABUSE GATE (#59): `/broadcast` + `/domain(create)` require `isVerifiedOrganiser`
-  (Stripe `charges_enabled`, same as paid events / free hosting) → 403
-  `STRIPE_VERIFICATION_REQUIRED`. Import/read/suppress stay open; **event broadcasts are
+- Marketing caps: 2 broadcasts/hr + `MARKETING_DAILY_CAP` (rolling 24h, default 2000, floored
+  at the organiser's stored list size) per organiser; explicit 429, never a silent trim.
+- **PACED FIRST SEND (#619)** — `lib/sender-pacing/` (sender-agnostic: a sender, a batch, a hash)
+  + numbers in `packages/shared/src/marketing/pacing.ts`. Contacts the organiser has never reached
+  through WoCo (no delivery without a hard bounce, no checkout opt-in to them) go in hourly
+  batches on Resend's existing-domain warm-up table, per sender: 100/h and 1,000/day on the first
+  sending day up to 2,000/h and 10,000/day, last row forever. Proven contacts go at once. The
+  server HOLDS the unsent recipients (per-job in-memory key, ≤7 days) so the organiser presses
+  Send once. Checks over the last 7 days, on all sends AND on new contacts alone (so proven
+  volume cannot dilute a dead import): HOLD at Resend's 4% bounce / 0.08% complaint (floors 4 /
+  2), lifts itself; STOP at SES's 10% / 0.5% (floors 10 / 5), sticky until
+  `POST /api/ops/sender-pacing/:sender/lift` (`{by, reason}`), which resets the evidence
+  baseline. A bounce hold pauses new contacts only; an all-sends complaint hold pauses
+  everything. Counted from tagged SES events only (`woco_ctx_job` + `woco_ctx_batch`); complaints
+  with a `complaintSubType` (never sent) and `not-spam` never count. Attendee (event) broadcasts
+  are never paced. Alarm: `/api/health` `email.senderPacing.ok` (also false when `tagging` is
+  false — SES active with no `SES_CONFIGURATION_SET`, so nothing can be counted). A
+  new-contacts hold cannot be diluted (no new contacts go while it stands), so it lasts until the
+  bad batch leaves the 7-day window; the same operator `lift` clears a HOLD too, and is the remedy
+  when a week is too long. Known consequences, deliberately not built yet: proof never expires
+  except by re-import, and sending days never decay, so a sender who ramped a year ago starts at
+  the top rung.
+- ABUSE GATE (#59): marketing broadcast jobs, `/broadcast/test` and `/domain` (create) require
+  `isVerifiedOrganiser` (Stripe `charges_enabled`, same as paid events / free hosting) → 403
+  `STRIPE_VERIFICATION_REQUIRED`. Adding contacts (`POST /list`, unless the save only removes)
+  needs it too since 2026-10-02 (#757): every save stores the list on platform storage.
+  Removing, reading, `/check` and suppress stay open; **event broadcasts are
   deliberately ungated** (attendee-relationship mail must not depend on Stripe). UI
   pre-checks via `StripeVerifyGate` in `AudienceScreen`.
 - **EVENT BROADCASTS ARE ATTENDEE-ONLY** (2026-07-27; membership source replaced 2026-08-24, #387):
@@ -168,9 +204,10 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   constant so the stored evidence matches what was shown. Unticked by default (Planet49, C-673/17).
   Tri-state: grant → `recordConsent` (`.data/marketing-consent.json`); refusal → `suppressOrg`,
   so "no" needs no new enforcement path; ABSENT means the order form was never shown, i.e. never
-  asked, and records nothing. Free/wallet claims record in `routes/claims.ts`; Stripe rides in
-  session metadata (`"1"`/`"0"`) and records in the WEBHOOK, after the claim lands — an abandoned
-  checkout must not leave a permission behind.
+  asked, and records nothing. Card checkout is the only path (the free/wallet claim rail was
+  deleted, #207): the answer rides in session metadata (`"1"`/`"0"`) and is recorded at
+  fulfilment (`lib/stripe/fulfilment.ts` → `lib/marketing/consent-capture.ts`), only once a
+  ticket has landed — an abandoned checkout must not leave a permission behind.
 - THREE CONSENT STATES, not two: `contactConsentState` in `packages/shared/src/marketing/types.ts`
   (`opted-in` | `imported` | `unsubscribed`), suppression outranking any earlier grant.
   `imported` is the one that matters — mailable only on the strength of the import warranty, with
@@ -184,10 +221,12 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
 ```
 apps/server/src/lib/email/marketing-send.ts   # THE non-transactional send path
 apps/server/src/lib/email/marketing-footer.ts # pure compliance block + text/plain part
-apps/server/src/lib/marketing/{suppression-store,consent-store,unsub-token,list-store,send-cap,
-                               sending-domain-store,consumed-webhook-events}.ts
+apps/server/src/lib/email/ses-provider.ts     # live provider
+apps/server/src/lib/marketing/{suppression-store,consent-store,consent-capture,unsub-token,
+                               list-store,send-cap,sending-domain-store,consumed-webhook-events}.ts
+apps/server/src/lib/sender-pacing/            # paced first send (#619)
 apps/server/src/lib/event/attendee-emails.ts  # who may receive an EVENT broadcast
-apps/server/src/routes/{marketing,broadcast,unsubscribe,resend-webhook}.ts
+apps/server/src/routes/{marketing,broadcast,broadcast-jobs,unsubscribe,ses-webhook,resend-webhook}.ts
 apps/web/src/lib/creator/audience/{AudienceScreen,CsvImportWizard,ColumnMapper,ConsentLedger,
                                    ContactSearch,ContactDetail,MarketingComposer,
                                    SendingDomainPanel}.svelte
@@ -202,7 +241,7 @@ packages/shared/src/crypto/compress.ts        # gzip over CompressionStream (no 
 ## Gotchas
 
 **The production `RESEND_API_KEY` is send-only** (`restricted_api_key`, verified against the
-live API 2026-07-27). `/api/marketing/domain` create/verify calls `domains.create` and will
+live API 2026-07-27). Moot while `organiserSendingDomains` is off. `/api/marketing/domain` create/verify calls `domains.create` and will
 401 → the route returns 502 and `SendingDomainPanel` is dead in production. Either issue a
 full-access key or keep organiser sending domains switched off until SES (which
 `docs/PRICING_AND_EMAIL.md` §6 says is the plan anyway — do not onboard organiser domains on
@@ -217,7 +256,9 @@ These `.data` stores MUST survive server restarts:
 - `.data/marketing-lists.json`
 - `.data/marketing-domains.json`
 - `.data/marketing-send-log.json`
+- `.data/sender-pacing/` — **losing it forgets a stop and resets every sender's ramp**
 - `.data/consumed-resend-events.json`
+- `.data/consumed-sns-events.json`
 
 ---
 

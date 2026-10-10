@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type Stripe from "stripe";
-import { buildConnectedAccountParams, isPlatformLiable } from "../src/lib/stripe/account-params.js";
+import { buildConnectedAccountParams, isPlatformLiable, isLegacyShape } from "../src/lib/stripe/account-params.js";
 
 const ORG = "0xabcd000000000000000000000000000000000001";
 
@@ -21,7 +21,7 @@ test("creates accounts with the Managed Risk controller block, never type", () =
 
   assert.equal("type" in params, false, "`type` is incompatible with Managed Risk");
   assert.deepEqual(params.controller, {
-    stripe_dashboard: { type: "none" },
+    stripe_dashboard: { type: "full" },
     fees: { payer: "account" },
     losses: { payments: "stripe" },
     requirement_collection: "stripe",
@@ -55,4 +55,15 @@ test("isPlatformLiable flags legacy and absent controller shapes, not Managed Ri
   assert.equal(isPlatformLiable(legacy), true);
   // Fail toward "liable": an unreadable controller must never pass as safe.
   assert.equal(isPlatformLiable(noController), true);
+});
+
+test("isLegacyShape flags every account we would not create today", () => {
+  const current = { controller: { losses: { payments: "stripe" }, stripe_dashboard: { type: "full" } } } as Stripe.Account;
+  const noDashboard = { controller: { losses: { payments: "stripe" }, stripe_dashboard: { type: "none" } } } as Stripe.Account;
+  const liable = { controller: { losses: { payments: "application" }, stripe_dashboard: { type: "full" } } } as Stripe.Account;
+
+  assert.equal(isLegacyShape(current), false);
+  assert.equal(isLegacyShape(noDashboard), true, "a none account is retired (#645)");
+  assert.equal(isLegacyShape(liable), true);
+  assert.equal(isLegacyShape({} as Stripe.Account), true);
 });

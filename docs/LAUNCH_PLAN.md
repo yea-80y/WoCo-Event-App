@@ -1,7 +1,8 @@
-> **SUPERSEDED — June 2026.** The living launch plan is GitHub issue #353, which is re-ordered
-> as work lands. Read it there rather than trusting a snapshot.
-
 # WoCo Launch Plan — single source of truth (sequenced)
+
+> **Historical record (status 2026-10-05).** A June 2026 sequencing of the email-login Kernel flip, client-owned content feeds and the Web3Auth go-live; the first two have landed,
+> the feed signer now derives from the identity seed rather than its own domain (2026-09-10), and the living launch plan is GitHub issue #353.
+> Current: [ARCHITECTURE.md](./ARCHITECTURE.md), [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md).
 
 Created 2026-06-21 by merging two in-flight handovers:
 - `docs/CLIENT_FEED_SIGNER_HANDOVER.md` (Phase A done; Phase B + launch hardening)

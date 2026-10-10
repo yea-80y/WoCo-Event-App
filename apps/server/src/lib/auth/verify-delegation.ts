@@ -4,14 +4,17 @@ import {
   SESSION_TYPES,
   AuthErrorCode,
   FEATURES,
+  SESSION_EXPIRY_MS,
   type SessionDelegation,
   type VerifyDelegationResult,
+  type SessionRank,
 } from "@woco/shared";
 import { isSessionRevoked } from "./revocation.js";
 import { verifySmartWalletTypedData } from "./smart-wallet-client.js";
-import { isKernelOwner, readKernelOwner, type OwnerReadOptions } from "./kernel-owner.js";
-import { isKernelKnownDeployedOnAnyChain } from "./kernel-deployed.js";
+import { accountSignerKind, cachedSignerIs, readKernelOwner, type OwnerReadOptions } from "./kernel-owner.js";
+import { coOwnerRemovedBlock, getKernelWeightedRecord, isKernelKnownDeployedOnAnyChain } from "./kernel-deployed.js";
 import { decideSmartWalletPath } from "./smart-wallet-gate.js";
+import { lookupDeviceGrant, type DeviceGrantState } from "./device-grants.js";
 
 /**
  * Seam for the two authorities the smart-wallet gate consults (#209).
@@ -38,12 +41,23 @@ export interface DelegationVerifyDeps {
    * Absent = unrestricted. See owner-read-budget.ts.
    */
   chainReadAllowed?: () => boolean;
+  /**
+   * Where device grants are read from (#746). The server registry today; an
+   * onchain registry would answer the same question, which is why it is a seam.
+   */
+  lookupDeviceGrant: (
+    parent: string,
+    grantee: string,
+  ) => DeviceGrantState | undefined | Promise<DeviceGrantState | undefined>;
 }
+
+const SESSION_LIFETIME_SLACK_MS = 60_000;
 
 const DEFAULT_DEPS: DelegationVerifyDeps = {
   isKernelKnownDeployedOnAnyChain,
   readKernelOwner,
   verifySmartWalletTypedData,
+  lookupDeviceGrant,
 };
 
 /**
@@ -52,7 +66,8 @@ const DEFAULT_DEPS: DelegationVerifyDeps = {
  * Checks:
  * 1. Message and signature are present
  * 2. Not expired
- * 3. Not future-dated (1 min clock skew allowed)
+ * 3. Not future-dated (1 min clock skew allowed), and no longer-lived than a
+ *    session our client mints
  * 4. Host matches allowed list (if provided)
  * 5. Claimed session address matches delegation
  * 6. EIP-712 signature is valid for the claimed parent — one of:
@@ -61,8 +76,13 @@ const DEFAULT_DEPS: DelegationVerifyDeps = {
  *       deterministic counterfactual match, or live on-chain owner for rotated
  *       /recovered accounts; see kernel-owner.ts). This is the passkey/web3auth
  *       path since the 2026-07 split-brain fix: the raw owner key signs,
- *       message.parent stays the Kernel identity;
- *    c. ERC-1271 (deployed smart account) or ERC-6492 (counterfactual smart
+ *       message.parent stays the Kernel identity. For an account whose passkeys
+ *       are co-owners (#746), recovered is on its weighted list, and a device
+ *       record that was removed refuses it at once (DEVICE_REMOVED);
+ *    c. Granted device (#746): recovered is a key the Kernel's CURRENT owner
+ *       granted (device-grants.ts), the grant not removed, and the delegation
+ *       newer than the device's last removal. Session rank "device";
+ *    d. ERC-1271 (deployed smart account) or ERC-6492 (counterfactual smart
  *       account) via RPC — smart wallets (CSW) and pre-fix Kernel-signed
  *       delegations. Feature-flagged with FEATURES.coinbaseLoginAllowed
  *       (#173): while CSW login is off, this path is not offered at all.
@@ -110,6 +130,14 @@ export async function verifyDelegation(
       };
     }
 
+    // Lifetime cap (#186). Our client mints exactly SESSION_EXPIRY_MS, so a longer
+    // delegation was not made by it, and with no cap one phished signature would
+    // outlive every rotation. The slack covers the client's two clock reads.
+    // SESSION_INVALID (the default), so a refused client simply mints a new one.
+    if (expiresAt - issuedAt > SESSION_EXPIRY_MS + SESSION_LIFETIME_SLACK_MS) {
+      return { valid: false, error: "Delegation lifetime is longer than a session may be" };
+    }
+
     // Host check
     if (allowedHosts?.length && !allowedHosts.includes(message.host)) {
       return { valid: false, error: `Invalid host: ${message.host}` };
@@ -134,6 +162,10 @@ export async function verifyDelegation(
     //      ERC-1271 (deployed smart account) / ERC-6492 (counterfactual),
     //      eth_call via RPC — CSW and pre-fix Kernel-signed delegations.
     let validSig = false;
+    let rank: SessionRank = "owner";
+    // Set by the branch that proved the signature; a success path that forgets to
+    // classify leaves it unset, and every gate on it then refuses (Fable sign-off).
+    let parentKind: VerifyDelegationResult["parentKind"];
     if (parentSig.length === 132) {
       let recovered: string | null = null;
       try {
@@ -146,10 +178,90 @@ export async function verifyDelegation(
       } catch {
         recovered = null; // not ecrecover-able — fall through to (2)
       }
-      if (recovered) {
-        validSig =
-          recovered === message.parent.toLowerCase() ||
-          (await isKernelOwner(recovered, message.parent, readOpts));
+      const parent = message.parent.toLowerCase();
+      if (recovered === parent) {
+        // A wallet login: the parent EOA signed its own delegation. Off for launch
+        // (#186) - the authoritative half of the flag, since a published event page
+        // keeps the bundle, and the wallet sign-in, it was published with.
+        if (!FEATURES.walletLoginAllowed) {
+          console.warn(`[auth] wallet delegation refused for ${message.parent}: walletLoginAllowed is off (#186)`);
+          return { valid: false, error: "Wallet sign-in is not available", code: AuthErrorCode.SESSION_INVALID };
+        }
+        validSig = true;
+        parentKind = "eoa";
+      } else if (recovered) {
+        // Whichever check runs first must be a cached CONFIRMATION: a cached
+        // denial is re-read from the chain (#273), so asking "does this device
+        // own the Kernel?" first would cost every device request an RPC call, and
+        // asking about the grant first would cost the same to a device made the
+        // main one while its old grant stands. So: the signer path when the cache
+        // already names this key, else the grant. The owner check records the
+        // account with the owner as the presenting key either way (#200/#210).
+        // Device clock against server time, as revokeAllBefore (revocation.ts)
+        // compares. A slow device re-added within its skew of a removal is
+        // refused until wall time passes notBefore + skew; a fast one keeps at
+        // most the 60 s the future-date bound above allows.
+        const afterRemoval = (g: DeviceGrantState) => issuedAt > (g.notBefore ?? -Infinity);
+        const viaGrant = async (g: DeviceGrantState | undefined) =>
+          g?.active && afterRemoval(g) && (await accountSignerKind(g.signer, parent, readOpts)) ? "granted" : null;
+        let grant: DeviceGrantState | undefined;
+        let signer: "granted" | "owner" | "co-owner" | null;
+        if (getKernelWeightedRecord(parent)) {
+          // A co-owned account: every passkey signs as itself, so its rank never
+          // depends on which cache is warm (Fable sign-off MUST-1) - and ONLY the list
+          // admits. A grant no longer does: a key taken off the list whose record
+          // removal never arrived would otherwise keep signing in through it
+          // (background commit review). "Removed" is said only on EVIDENCE - a removed
+          // record, or a removal on record - because the client forgets the device on it:
+          // a list it could not read (an outage, a spent read budget) or a replica behind
+          // a fresh add is refused WITHOUT the code, and nothing is forgotten (re-check MUST).
+          signer = await accountSignerKind(recovered, parent, readOpts);
+          if (!signer) {
+            grant = await deps.lookupDeviceGrant(parent, recovered);
+            if (grant && (!grant.active || !afterRemoval(grant) || coOwnerRemovedBlock(parent, recovered) !== undefined)) {
+              return {
+                valid: false,
+                error: "This device was removed from the account",
+                code: AuthErrorCode.DEVICE_REMOVED,
+              };
+            }
+          }
+        } else {
+          grant = cachedSignerIs(parent, recovered) ? undefined : await deps.lookupDeviceGrant(parent, recovered);
+          signer = (await viaGrant(grant)) ?? (await accountSignerKind(recovered, parent, readOpts));
+        }
+        if (signer === "granted") {
+          validSig = true;
+          rank = "device";
+          parentKind = "kernel";
+        } else if (signer === "co-owner") {
+          // Removing a passkey takes it off the list onchain AND removes its device
+          // record. The chain answer can be a minute old (kernel-owner.ts); the
+          // record is what makes the removal immediate (#746).
+          const record = grant ?? (await deps.lookupDeviceGrant(parent, recovered));
+          if (record && (!record.active || !afterRemoval(record))) {
+            return {
+              valid: false,
+              error: "This device was removed from the account",
+              code: AuthErrorCode.DEVICE_REMOVED,
+            };
+          }
+          validSig = true;
+          parentKind = "kernel";
+        } else if (signer === "owner") {
+          // A device made the main one still has its old grant: it is the owner now.
+          validSig = true;
+          parentKind = "kernel";
+        } else if (grant && !grant.active) {
+          // Only an explicit removal earns this code. A grant whose signer failed
+          // the owner check may be an RPC outage, and telling a device it was
+          // removed during one is a wrong diagnosis it cannot recover from.
+          return {
+            valid: false,
+            error: "This device was removed from the account",
+            code: AuthErrorCode.DEVICE_REMOVED,
+          };
+        }
       }
     }
     if (!validSig) {
@@ -181,6 +293,7 @@ export async function verifyDelegation(
         );
         return { valid: false, error: "Invalid signature", code: AuthErrorCode.SESSION_INVALID };
       }
+      parentKind = "smart-wallet";
       try {
         validSig = await deps.verifySmartWalletTypedData({
           address: message.parent as `0x${string}`,
@@ -220,13 +333,15 @@ export async function verifyDelegation(
     // so we use it as the authoritative parent address (no separate recovered
     // value — that pattern only existed for the EOA-only ethers flow).
     if (isSessionRevoked(message.nonce, message.parent, message.issuedAt)) {
-      return { valid: false, error: "Session has been revoked" };
+      return { valid: false, error: "Session has been revoked", code: AuthErrorCode.SESSION_REVOKED };
     }
 
     return {
       valid: true,
       parentAddress: getAddress(message.parent),
       sessionAddress: getAddress(message.session),
+      rank,
+      parentKind,
     };
   } catch {
     return { valid: false, error: "Verification failed" };

@@ -3,8 +3,9 @@
 // *type* that is NOT wrapped in an event.
 //
 // It is the ticket-creation pipeline (createEventV2 + register-on-chain) minus
-// the event/series feed: validate the client-signed manifest, upload the object
-// bodies + SeriesManifestBlob to Swarm, sponsor-register the manifest on-chain
+// the event/series feed: validate the client-signed manifest, upload the
+// SeriesManifestBlob to Swarm (edition bodies are not uploaded - see
+// bodiesToUpload), sponsor-register the manifest on-chain
 // (so the object gets an on-chain eventId + slot space → holdable + gateable), and
 // upsert the creator's object directory entry.
 //
@@ -27,7 +28,6 @@ import { registerEventOnChain } from "../chain/sponsor-wallet.js";
 import { getActiveChainId, getEventContractVersion } from "../chain/event-contract.js";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-const BATCH = 40;
 /** Manifest never expires for a standalone object — far-future so the V2 contract's
  *  `eventEndTs > block.timestamp` guard passes and the (price-0, dormant) escrow
  *  release window never matters. */
@@ -70,6 +70,65 @@ export interface IssueObjectOpts {
 }
 
 /**
+ * The client-input checks, separated from minting so the ROUTE can run them
+ * before it charges anything (#263): a client bug that sends a mismatched
+ * manifest is the caller's mistake to fix, not five of their five daily mints.
+ * issueObjectType runs the same function, so there is one copy of the rules.
+ *
+ * The two rails count bodies differently, and deliberately. On the chain rail a
+ * body is an EDITION - one per claimable slot. A certificate names its holder
+ * instead, so no edition is ever claimed and pre-signing one per unit of supply
+ * would cost N signatures to commit to bytes no reader reads. The certificate
+ * rail commits to exactly ONE real template body carrying the badge's display
+ * metadata: a genuine leaf of a genuine (degenerate) tree under the locked
+ * scheme, so `metadataRoot` is an honest commitment to bytes that exist, and
+ * `verifyManifestV2` needs no special case. (It also dispatch-refuses
+ * `woco.manifest.v1` whole - the v1 cutoff on this rail.)
+ */
+export function validateObjectIssuance(input: {
+  supply: number;
+  signedManifest: SignedManifestV2;
+  editionBodies: EditionV1Body[];
+  certSourced: boolean;
+}): { ok: true } | { ok: false; error: string } {
+  const { supply, signedManifest, editionBodies, certSourced } = input;
+  const expectedBodies = certSourced ? 1 : supply;
+  if (editionBodies.length !== expectedBodies) {
+    return {
+      ok: false,
+      error: certSourced
+        ? `A certificate badge commits to exactly 1 template edition body, got ${editionBodies.length}`
+        : `Expected ${supply} edition bodies, got ${editionBodies.length}`,
+    };
+  }
+  if (!verifyManifestV2(signedManifest)) return { ok: false, error: "Manifest signature invalid" };
+  const { root } = buildEditionTree(editionBodies);
+  if (root.toLowerCase() !== signedManifest.body.metadataRoot.toLowerCase()) {
+    return { ok: false, error: "Merkle root mismatch — object bodies don't match manifest" };
+  }
+  if (signedManifest.body.totalSupply !== supply) {
+    return { ok: false, error: "Manifest totalSupply does not match supply" };
+  }
+  return { ok: true };
+}
+
+/**
+ * Which edition bodies get their own Swarm upload (#263).
+ *
+ * The CHAIN rail uploads none, exactly as createEventV2 stopped doing in
+ * 896b29b3: no reader fetches `objectRefs` (holdings, gates and the directory
+ * read the signed manifest and the on-chain digest), and the Merkle root
+ * validated in issueObjectType already commits to every body. Uploading them
+ * cost one Swarm write per edition - 10,000 for a maximum-supply badge.
+ *
+ * The CERTIFICATE rail keeps its ONE template upload: that body is meant to
+ * exist and be fetchable (see the body-count comment in issueObjectType).
+ */
+export function bodiesToUpload(certSourced: boolean, editionBodies: EditionV1Body[]): EditionV1Body[] {
+  return certSourced ? editionBodies.slice(0, 1) : [];
+}
+
+/**
  * Mint a standalone object type. Throws on any failure BEFORE the directory write
  * so a half-created object never appears in the manager; once on-chain
  * registration succeeds the directory upsert is awaited (it is the primary
@@ -93,37 +152,8 @@ export async function issueObjectType(opts: IssueObjectOpts): Promise<ObjectDire
     throw new Error("a certificate badge needs certLogOwner, or its log can never be found");
   }
 
-  // ── Validate the client-signed manifest against the object bodies (same checks
-  //    createEventV2 runs before touching Swarm).
-  //
-  //    The two rails count bodies differently, and deliberately. On the chain
-  //    rail a body is an EDITION — one per claimable slot. A certificate names
-  //    its holder instead, so no edition is ever claimed and pre-signing one per
-  //    unit of supply would cost N signatures and N uploads to commit to bytes
-  //    no reader reads. The certificate rail commits to exactly ONE real
-  //    template body carrying the badge's display metadata: a genuine leaf of a
-  //    genuine (degenerate) tree under the locked scheme, so `metadataRoot` is
-  //    an honest commitment to bytes that exist and are fetchable, and
-  //    `verifyManifestV2` needs no special case. (It also dispatch-refuses
-  //    `woco.manifest.v1` whole — the v1 cutoff on this rail.) ──────────────
-  const expectedBodies = certSourced ? 1 : supply;
-  if (editionBodies.length !== expectedBodies) {
-    throw new Error(
-      certSourced
-        ? `A certificate badge commits to exactly 1 template edition body, got ${editionBodies.length}`
-        : `Expected ${supply} edition bodies, got ${editionBodies.length}`,
-    );
-  }
-  if (!verifyManifestV2(signedManifest)) {
-    throw new Error("Manifest signature invalid");
-  }
-  const { root } = buildEditionTree(editionBodies);
-  if (root.toLowerCase() !== signedManifest.body.metadataRoot.toLowerCase()) {
-    throw new Error("Merkle root mismatch — object bodies don't match manifest");
-  }
-  if (signedManifest.body.totalSupply !== supply) {
-    throw new Error("Manifest totalSupply does not match supply");
-  }
+  const valid = validateObjectIssuance({ supply, signedManifest, editionBodies, certSourced });
+  if (!valid.ok) throw new Error(valid.error);
 
   // ── Whitelist artwork so ObjectCard can render it via the gateway proxy (the
   //    upload-image route doesn't whitelist, so issuance is the authority).
@@ -134,13 +164,11 @@ export async function issueObjectType(opts: IssueObjectOpts): Promise<ObjectDire
     );
   }
 
-  // ── Upload object bodies + the SeriesManifestBlob to Swarm. ──────────────────
-  const objectRefs: Hex64[] = [];
-  for (let i = 0; i < editionBodies.length; i += BATCH) {
-    const batch = editionBodies.slice(i, i + BATCH);
-    const batchRefs = await Promise.all(batch.map((p) => uploadToBytes(JSON.stringify(p))));
-    objectRefs.push(...batchRefs);
-  }
+  // ── Upload the SeriesManifestBlob (+ the certificate rail's one template
+  //    body - see bodiesToUpload). ──────────────────────────────────────────
+  const objectRefs: Hex64[] = await Promise.all(
+    bodiesToUpload(certSourced, editionBodies).map((p) => uploadToBytes(JSON.stringify(p))),
+  );
 
   const manifestRef = bytesToHex0x(manifestV2Digest(signedManifest.body)); // 0x-prefixed bytes32
   const blob: SeriesManifestBlob = { v: 2, signedManifest, objectRefs, manifestDigestHex: manifestRef };

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { OrderField, ClaimMode, PaymentConfig, EventGeo, EventTag } from "@woco/shared";
-  import { FEATURES } from "@woco/shared";
+  import { FEATURES, ORDER_EMAIL_FIELD_ID } from "@woco/shared";
   import ImageUpload from "./ImageUpload.svelte";
   import TicketSeriesEditor from "./TicketSeriesEditor.svelte";
   import OrderFieldsEditor from "./OrderFieldsEditor.svelte";
@@ -58,7 +58,7 @@
     tags = $bindable([]),
   }: Props = $props();
 
-  const EMAIL_FIELD_ID = "__email";
+  const EMAIL_FIELD_ID = ORDER_EMAIL_FIELD_ID;
 
   // Lower bounds for the date pickers — start can't be before "now", end can't
   // be before start. `min` is a soft guard (manual typing can bypass it); the

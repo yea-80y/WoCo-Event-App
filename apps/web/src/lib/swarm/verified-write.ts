@@ -34,7 +34,8 @@ import {
   versionedPageIdentifier,
   type SocChunkProbe,
 } from "@woco/shared";
-import { writeContentFeed } from "./content-feed.js";
+import { writeContentFeed, type SocTransport } from "./content-feed.js";
+import type { FeedRoute } from "./gateways.js";
 
 export type VerifiedWriteResult =
   /** Our bytes are what this version of the feed holds. */
@@ -91,7 +92,8 @@ export async function writeContentFeedVerified(args: {
   ownerAddress: string;
   topic: string;
   data: unknown;
-  gatewayUrl?: string;
+  /** Where the feed is stamped; the read-back asks the same node. See {@link FeedRoute}. */
+  route: FeedRoute;
   /**
    * FORWARDED to `writeContentFeed` — see its doc for when this is safe. As on
    * {@link writeContentFeedSettling}, it is safer through this entry point than
@@ -103,6 +105,8 @@ export async function writeContentFeedVerified(args: {
    * error, no warning, and a write that quietly goes on probing.
    */
   knownVersion?: number;
+  /** Test seam — production always posts to our server. */
+  transport?: SocTransport;
 }): Promise<VerifiedWriteResult> {
   return serialise(args.ownerAddress, args.topic, () => writeAndVerify(args));
 }
@@ -112,15 +116,17 @@ async function writeAndVerify(args: {
   ownerAddress: string;
   topic: string;
   data: unknown;
-  gatewayUrl?: string;
+  route: FeedRoute;
   knownVersion?: number;
+  transport?: SocTransport;
 }): Promise<VerifiedWriteResult> {
   const version = await writeContentFeed({
     signerPrivKey: args.signerPrivKey,
     topic: args.topic,
     data: args.data,
-    ...(args.gatewayUrl ? { gatewayUrl: args.gatewayUrl } : {}),
+    route: args.route,
     ...(args.knownVersion !== undefined ? { knownVersion: args.knownVersion } : {}),
+    transport: args.transport,
   });
   return verifyLanded(args, version);
 }
@@ -134,7 +140,7 @@ async function writeAndVerify(args: {
  * routine — a gateway having a bad minute.
  */
 async function verifyLanded(
-  args: { ownerAddress: string; topic: string; data: unknown },
+  args: { ownerAddress: string; topic: string; data: unknown; route: FeedRoute },
   version: number,
 ): Promise<VerifiedWriteResult> {
  try {
@@ -144,9 +150,13 @@ async function verifyLanded(
   const intended = JSON.stringify(args.data);
   const base = contentFeedSocIdentifier(args.topic);
   // `thorough` so a chunk still settling on the public net is not read as
-  // missing — the same reason the write path's own probe uses it.
-  const { probeSoc } = await import("./client-soc.js");
-  const read: SocChunkProbe = (id) => probeSoc(args.ownerAddress, id, { thorough: true });
+  // missing — the same reason the write path's own probe uses it. And the SAME
+  // gateway the write used: for an Etherna-stamped feed our bee cannot see the
+  // chunk for minutes, so without it a same-version collision - the one thing
+  // this read-back exists to catch - reads as a routine `unconfirmed` and the
+  // caller never replays.
+  const { probeSoc } = await import("./probe-soc.js");
+  const read: SocChunkProbe = (id) => probeSoc(args.ownerAddress, id, { thorough: true, gatewayUrl: args.route.gatewayUrl });
 
   let lastReason = "read-back did not resolve";
 
@@ -168,10 +178,10 @@ async function verifyLanded(
         : { status: "superseded", version };
     }
 
-    // Freshly relayed chunks are gateway-whitelisted asynchronously
-    // (soc-upload.ts), so an immediate read can miss bytes that are genuinely
-    // there. Absent is as inconclusive as unavailable at this instant — the one
-    // moment in this codebase where `absent` may NOT be cached.
+    // An immediate read can miss bytes that are genuinely there: a transient
+    // fault, or an Etherna-stamped chunk our bee has not received yet. Absent is
+    // as inconclusive as unavailable at this instant — the one moment in this
+    // codebase where `absent` may NOT be cached.
     lastReason = asm.status === "absent" ? "written chunk not yet readable" : (asm.reason ?? "feed unavailable");
   }
 
@@ -216,7 +226,8 @@ export function writeContentFeedSettling(args: {
   ownerAddress: string;
   topic: string;
   data: unknown;
-  gatewayUrl?: string;
+  /** Where the feed is stamped; the read-back asks the same node. See {@link FeedRoute}. */
+  route: FeedRoute;
   /**
    * FORWARDED to `writeContentFeed` — see its doc for when this is safe. It is
    * safe through THIS entry point in a way it is not through a bare write: the
@@ -228,6 +239,8 @@ export function writeContentFeedSettling(args: {
    * dropped silently and every write went on probing.
    */
   knownVersion?: number;
+  /** Test seam — production always posts to our server. */
+  transport?: SocTransport;
 }): Promise<SettlingWrite> {
   let accept!: (w: SettlingWrite) => void;
   let refuse!: (e: unknown) => void;
@@ -240,8 +253,9 @@ export function writeContentFeedSettling(args: {
         signerPrivKey: args.signerPrivKey,
         topic: args.topic,
         data: args.data,
-        ...(args.gatewayUrl ? { gatewayUrl: args.gatewayUrl } : {}),
+        route: args.route,
         ...(args.knownVersion !== undefined ? { knownVersion: args.knownVersion } : {}),
+        transport: args.transport,
       });
     } catch (e) {
       // The upload itself failed — there is nothing to settle, and the caller

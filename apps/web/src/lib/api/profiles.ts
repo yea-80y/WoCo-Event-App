@@ -1,10 +1,17 @@
-import type { UserProfile, UpdateProfileRequest } from "@woco/shared";
-import { profileDataContentTopic, profileAvatarContentTopic } from "@woco/shared";
+import type { PointerRequest, UserProfile, UpdateProfileRequest } from "@woco/shared";
+import { profileBindOutcome, type ProfileBindOutcome, type ProfileBindWarning } from "../sub-ens/pointer-policy.js";
+import { profileDataContentTopic, profileAvatarContentTopic, mergeProfileText } from "@woco/shared";
 import { authPost, authGet, get } from "./client.js";
 import { apiError } from "./errors.js";
 import { auth } from "../auth/auth-store.svelte.js";
-import { writeContentFeed, readContentFeed, readContentFeedResult } from "../swarm/content-feed.js";
-import { ETHERNA_GATEWAY_URL } from "../swarm/gateways.js";
+import {
+  writeContentFeed,
+  readContentFeed,
+  readContentFeedResult,
+  type ContentFeedResult,
+} from "../swarm/content-feed.js";
+import { FEED_ROUTES } from "../swarm/gateways.js";
+import { profileSaveBase } from "./profile-save.js";
 import { logFeedToManifest } from "../manifest/feed-log.js";
 import { cacheGet, cacheSet, cacheDel, cacheKey, TTL } from "../cache/cache.js";
 import type { ProfileNameStatus } from "../sub-ens/rename.js";
@@ -73,8 +80,9 @@ interface ProfileMiss {
 async function readClientProfile(address: string, signer: string): Promise<UserProfile | null> {
   const addr = address.toLowerCase() as UserProfile["address"];
   const [data, avatar] = await Promise.all([
-    readContentFeed<UserProfile>(signer, profileDataContentTopic(addr)).catch(() => null),
-    readContentFeed<{ v: 1; avatarRef: string }>(signer, profileAvatarContentTopic(addr)).catch(() => null),
+    readContentFeed<UserProfile>(signer, profileDataContentTopic(addr), { route: FEED_ROUTES.profile }).catch(() => null),
+    readContentFeed<{ v: 1; avatarRef: string }>(signer, profileAvatarContentTopic(addr), { route: FEED_ROUTES.profile })
+      .catch(() => null),
   ]);
 
   let profile: UserProfile | null = data ?? null;
@@ -179,9 +187,11 @@ export async function getProfileNameStatus(): Promise<ProfileNameStatus | null> 
 /**
  * A bind that SUCCEEDED but is worth saying out loud. `points_at_site` means
  * the name already resolves to a site of the holder's and keeps doing so — not
- * a failure, so it must not render as one.
+ * a failure, so it must not render as one. `pointer` is an ask for the HOLDER
+ * to sign: the name is empty and should open the app (registrar v2.2 — the
+ * server never writes a pointer itself).
  */
-export type ProfileBindWarning = "points_at_site";
+export type { ProfileBindWarning, ProfileBindOutcome } from "../sub-ens/pointer-policy.js";
 
 /**
  * Update the authenticated user's profile.
@@ -195,7 +205,7 @@ export type ProfileBindWarning = "points_at_site";
  */
 export async function updateProfile(
   updates: UpdateProfileRequest,
-  onBindWarning?: (warning: ProfileBindWarning) => void,
+  onBind?: (outcome: ProfileBindOutcome) => void,
 ): Promise<UserProfile | null> {
   const signer = await auth.getContentFeedSigner();
   const parent = auth.parent?.toLowerCase();
@@ -203,11 +213,11 @@ export async function updateProfile(
   if (!signer || !parent) {
     const resp = await authPost<UserProfile>("/api/profile", updates as Record<string, unknown>);
     if (resp.ok && resp.data) {
-      // This route puts `warning` at the TOP LEVEL of the envelope; the Phase B
-      // route below nests it under `data`. Both reach us — `safeJson` spreads
-      // the whole body — so read it where each one actually sends it.
-      const warning = (resp as { warning?: string }).warning;
-      if (warning === "points_at_site") onBindWarning?.("points_at_site");
+      // This route puts `warning` / `pointer` at the TOP LEVEL of the envelope;
+      // the Phase B route below nests them under `data`. Both reach us —
+      // `safeJson` spreads the whole body — so read them where each is sent.
+      const outcome = profileBindOutcome(resp as { warning?: unknown; pointer?: unknown });
+      if (outcome) onBind?.(outcome);
       cacheStore(resp.data.address, resp.data);
       return resp.data;
     }
@@ -228,12 +238,14 @@ export async function updateProfile(
   }
   let verifiedLabel: string | undefined;
   if (updates.subEnsLabel !== undefined && updates.subEnsLabel !== null && updates.subEnsLabel !== "") {
-    const res = await authPost<{ label: string; warning?: ProfileBindWarning }>("/api/profile/verify-label", {
-      subEnsLabel: updates.subEnsLabel,
-    });
+    const res = await authPost<{ label: string; warning?: ProfileBindWarning; pointer?: PointerRequest }>(
+      "/api/profile/verify-label",
+      { subEnsLabel: updates.subEnsLabel },
+    );
     if (!res.ok || !res.data) throw apiError(res, "You do not own that name");
     verifiedLabel = res.data.label;
-    if (res.data.warning === "points_at_site") onBindWarning?.("points_at_site");
+    const outcome = profileBindOutcome(res.data);
+    if (outcome) onBind?.(outcome);
   }
 
   // Self-read the existing data feed to carry forward unedited fields.
@@ -255,23 +267,20 @@ export async function updateProfile(
     // again, reached through the gateway gate rather than through a lenient
     // read, and the `unavailable` guard below cannot catch it because a gate
     // refusal reads as ABSENT, not as unavailable.
-    { thorough: true },
-  ).catch((e: unknown) => ({ status: "unavailable" as const, reason: String(e) }));
-  if (existingRead.status === "unavailable") {
-    throw new Error(
-      "Couldn't load your current profile to update it — check your connection and try again. Nothing was changed.",
-    );
-  }
-  const existing = existingRead.status === "found" ? existingRead.value : null;
+    //
+    // ROUTED to Etherna, where the write below lands: our bee sees an Etherna
+    // write minutes later, so a second save inside that window would otherwise
+    // merge onto the version BEFORE the first save and revert it (#651).
+    { thorough: true, route: FEED_ROUTES.profile },
+  ).catch((e: unknown): ContentFeedResult<UserProfile> => ({ status: "unavailable", reason: String(e) }));
+  const base = profileSaveBase(existingRead);
+  if (!base.ok) throw new Error(base.error);
+  const existing = base.base;
 
   const profile: UserProfile = {
     v: 1,
     address: addr,
-    displayName: updates.displayName ?? existing?.displayName,
-    bio: updates.bio ?? existing?.bio,
-    website: updates.website ?? existing?.website,
-    twitterHandle: updates.twitterHandle ?? existing?.twitterHandle,
-    farcasterHandle: updates.farcasterHandle ?? existing?.farcasterHandle,
+    ...mergeProfileText(updates, existing),
     // Carry forward the bound name unless this call set a freshly-verified one
     // — or explicitly removed it, which `??` alone cannot express.
     subEnsLabel: unbinding ? undefined : (verifiedLabel ?? existing?.subEnsLabel),
@@ -285,7 +294,7 @@ export async function updateProfile(
     signerPrivKey: signer.privKey,
     topic: profileDataContentTopic(addr),
     data: profile,
-    gatewayUrl: ETHERNA_GATEWAY_URL,
+    route: FEED_ROUTES.profile,
   });
 
   void logFeedToManifest({ kind: "profile", topic: profileDataContentTopic(addr) });
@@ -319,7 +328,7 @@ export async function uploadAvatar(imageDataUrl: string): Promise<string> {
     signerPrivKey: signer.privKey,
     topic: profileAvatarContentTopic(parent),
     data: { v: 1, avatarRef },
-    gatewayUrl: ETHERNA_GATEWAY_URL,
+    route: FEED_ROUTES.profile,
   });
 
   // Log the NEW image ref as the entry's only ref — the manifest merge moves a

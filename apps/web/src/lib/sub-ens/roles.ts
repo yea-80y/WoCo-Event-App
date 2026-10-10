@@ -52,3 +52,8 @@ export function roleLabel(role: SubEnsNameRole | undefined): string | undefined 
     default:        return undefined;
   }
 }
+
+/** The account's PROFILE name among `names`, or null when it has none. */
+export function profileLabel(names: readonly (RoledName & { label: string })[]): string | null {
+  return names.find((n) => n.role === "profile")?.label ?? null;
+}

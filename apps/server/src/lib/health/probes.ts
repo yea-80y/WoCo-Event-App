@@ -1,0 +1,1143 @@
+/**
+ * The probes behind the `/api/health` postage, paymaster, ENS-parent, sub-ENS
+ * minting and ticket minting sections (#421, #522, #420, #598, #662).
+ *
+ * WHY A TIMER AND NOT A READ-THROUGH. `/api/health` is polled by uptime checks
+ * and read by hand during an incident; it must answer instantly and must never
+ * be the thing that makes an RPC or a bee slow. So the readings are refreshed
+ * on a background interval and the handler serves whatever was last read,
+ * stamped with WHEN — and `stale` when the refresher itself has stopped. A
+ * check that cannot check has to be visible, not silently frozen at its last
+ * happy answer.
+ *
+ * All verdict logic lives in ./alarms.ts, which has no network and no clock.
+ * This module is the plumbing: read, park the reading, log transitions.
+ */
+
+import { refreshKeyRingAnchor } from "../keyring/current-ring.js";
+import { JsonRpcProvider, Contract, formatEther, id, isError, keccak256, parseEther } from "ethers";
+import {
+  FEATURES,
+  ENS_BASE_REGISTRAR_MAINNET,
+  ENTRY_POINT_V07_ADDRESS,
+  KERNEL_CHAIN_ID,
+  SELF_FUNDED_PAYMASTER_ADDRESS,
+  SUB_ENS_PARENT,
+  SUB_ENS_PARENT_LABEL,
+} from "@woco/shared";
+import {
+  getActiveChainId,
+  getChainRpcUrl,
+  EventContractConfigError,
+  type EventContractVersion,
+} from "../chain/event-contract.js";
+import {
+  readTicketMintPolicy,
+  readTicketSponsorBalance,
+  SponsorKeyUnconfigured,
+  type TicketMintPolicy,
+} from "../chain/sponsor-wallet.js";
+import {
+  getRegistrarAddress,
+  getRegistryAddress,
+  getSubEnsChainId,
+  getSubEnsSponsorAddress,
+  sponsorKeysConflict,
+} from "../chain/sub-ens-contract.js";
+import { BEE_URL, POSTAGE_BATCH_ID } from "../../config/swarm.js";
+import { readEthernaStamp } from "../etherna/batches.js";
+import {
+  type Check,
+  type StampReading,
+  type StampVerdicts,
+  type Verdict,
+  combine,
+  evaluateChainLag,
+  evaluateEnsExpiry,
+  evaluatePaymaster,
+  evaluateCswFactory,
+  evaluateGlobalMint,
+  evaluateRegistrarEnrolled,
+  evaluateSponsorAuthorised,
+  evaluateSponsorBalance,
+  evaluateTicketMintAllowance,
+  evaluateTicketMintRamp,
+  evaluateTicketSponsorAuthorised,
+  evaluateTicketSponsorBalance,
+  type GlobalMintReading,
+  type TicketMintReading,
+  evaluateStamp,
+  isStale,
+  readThresholdsFromEnv,
+} from "./alarms.js";
+import { errorClass } from "../http/error-class.js";
+
+export const PROBE_INTERVAL_MS = 60_000;
+/** Etherna is an external OAuth service — probed a fifth as often, on purpose. */
+export const ETHERNA_PROBE_INTERVAL_MS = 5 * 60_000;
+/**
+ * Six hours. NOT an env var, deliberately: the thing being watched moves once a
+ * year, the answer only ever gets one day older per day, and a knob here would
+ * only ever be turned down — which is how a mainnet read that costs nothing
+ * becomes a mainnet read on every health poll.
+ */
+export const ENS_EXPIRY_PROBE_INTERVAL_MS = 6 * 60 * 60_000;
+const TIMEOUT_MS = 5_000;
+
+/** The ZeroDev ceiling the server CANNOT see, named so nobody infers it can. */
+const PAYMASTER_NOTE =
+  "EntryPoint deposit only. The ZeroDev monthly policy caps (sponsored gas and userOps per month) are dashboard-only and are NOT visible here.";
+
+interface Reading<T> {
+  at: number | null;
+  /** The reading, or null when the probe could not read. */
+  value: T | null;
+  /** Operator-safe CLASS of failure — this is what the public section shows. */
+  error: string | null;
+  /** The library's own message. Server log only, on transitions only. */
+  detail: string | null;
+  /** The node positively said the batch does not exist — an alarm, not an unknown. */
+  gone?: boolean;
+}
+
+const empty = <T>(): Reading<T> => ({ at: null, value: null, error: null, detail: null });
+const failed = <T>(err: unknown): Reading<T> => ({ at: Date.now(), value: null, error: publicReason(err), detail: msg(err), gone: false });
+/**
+ * WHY 404 IS NOT "UNKNOWN". A node answers 404 for a stamp it does not hold, and
+ * for a batch id WE configured that is a positive statement: expired and
+ * evicted (the 2026-07-27 and 2026-07-19 deaths both read exactly this way), or
+ * never synced — either way every write stamped with it is unpaid. Reporting
+ * that as "could not read" would be the unknown nobody watches.
+ */
+const gone = <T>(err: unknown): Reading<T> => ({ at: Date.now(), value: null, error: "HTTP 404 — batch not found on the node: expired and evicted, or never synced", detail: msg(err), gone: true });
+const isNotFound = (err: unknown): boolean => typeof (err as { status?: unknown } | null)?.status === "number" && (err as { status: number }).status === 404;
+const unparsed = <T>(): Reading<T> => ({ at: Date.now(), value: null, error: "stamp response was missing fields", detail: null });
+
+let paymasterReading = empty<bigint>();
+let beeReading = empty<StampReading & { immutable: boolean | null }>();
+let chainstateReading = empty<{ block: number; chainTip: number }>();
+let ethernaReading = empty<StampReading & { immutable: boolean | null }>();
+/**
+ * The last POSITIVE Etherna reading (a parsed stamp or a 404), for the router's
+ * liveness guard (#610). Kept apart from `ethernaReading` because a failed read
+ * must never ERASE a verdict: one stamps-read timeout after a confirmed 404 would
+ * otherwise read as "unknown" and reopen writes onto the dead batch. It still
+ * ages out under the same stale rule the health section uses.
+ */
+let ethernaVerdict: EthernaPlatformBatchSnapshot | null = null;
+let ensExpiryReading = empty<bigint>();
+/**
+ * WHY A SECOND TIMESTAMP. `Reading.at` is when the probe last RAN; this is when
+ * it last KNEW. A six-hourly read stamps `at` on a failure too, so a probe that
+ * has been unable to reach mainnet for a day would still look fresh — and a
+ * watch that cannot watch must never read as silence. `stale` and `lastReadAt`
+ * are both taken from this one.
+ */
+let ensExpiryOkAt: number | null = null;
+
+/** Where the registrar mints, and whether that registry lists it. */
+interface Enrolment {
+  registry: string;
+  enrolled: boolean;
+}
+let enrolmentReading = empty<Enrolment>();
+let sponsorReading = empty<bigint>();
+
+/** What the registrar says about the key this server mints with, and about
+ *  everyone's minting right now. */
+interface RegistrarPolicy {
+  sponsorAuthorised: boolean;
+  globalMint: GlobalMintReading | "unsupported";
+}
+let policyReading = empty<RegistrarPolicy>();
+let cswFactoryReading = empty<string>();
+
+let ticketMintReading = empty<TicketMintPolicy>();
+let ticketSponsorReading = empty<bigint>();
+
+/**
+ * The busiest mint windows of the last week (#672), keyed by window end, so a
+ * rising trend is visible to someone who was not online in the busy hour. Only
+ * OPEN windows are recorded: with none open the ledger reports the whole cap as
+ * mintable and a window end that moves with the clock, which is not a window.
+ * In memory like every other reading — a restart forgets it. Cleared when the
+ * contract changes, so a flip never mixes two ledgers' hours.
+ */
+const MINT_PEAK_WINDOW_MS = 7 * 24 * 60 * 60_000;
+let mintPeaks: { contract: string | null; windows: Map<number, { used: number; perHour: number }> } = {
+  contract: null,
+  windows: new Map(),
+};
+
+function recordMintWindow(policy: TicketMintPolicy, now: number): void {
+  const a = policy.allowance;
+  if (a === "no-cap" || a.perHour === 0 || a.perHour === 0xffff_ffff) return;
+  const used = Math.max(0, a.perHour - a.mintable);
+  if (used === 0) return;
+  const contract = policy.contract.address.toLowerCase();
+  if (mintPeaks.contract !== contract) mintPeaks = { contract, windows: new Map() };
+  const prev = mintPeaks.windows.get(a.windowResetsAt);
+  if (!prev || used > prev.used) mintPeaks.windows.set(a.windowResetsAt, { used, perHour: a.perHour });
+  for (const end of mintPeaks.windows.keys()) {
+    if (end * 1000 < now - MINT_PEAK_WINDOW_MS) mintPeaks.windows.delete(end);
+  }
+}
+
+function mintPeak7d(now: number): TicketMintingSection["peak7d"] {
+  let best: { end: number; used: number; perHour: number } | null = null;
+  for (const [end, w] of mintPeaks.windows) {
+    if (end * 1000 < now - MINT_PEAK_WINDOW_MS) continue;
+    if (!best || w.used * best.perHour > best.used * w.perHour) best = { end, ...w };
+  }
+  if (!best) return null;
+  return {
+    used: best.used,
+    perHour: best.perHour,
+    pct: Math.floor((best.used * 100) / best.perHour),
+    windowEndedAt: new Date(best.end * 1000).toISOString(),
+  };
+}
+
+/**
+ * Coinbase Smart Wallet factory v1: canonical address and its runtime
+ * codehash, the same on Arbitrum One, Arbitrum Sepolia, Base and Base Sepolia
+ * (read 2026-09-19).
+ */
+export const CSW_FACTORY = "0x0BA5ED0c6AA8c49038F819E587E2633c4A9F428a";
+export const CSW_FACTORY_CODEHASH = "0xc4900c000fd23885462a115b872741ad2b1e7ff2d7889aee18bc4d4bef3728f6";
+
+// ---------------------------------------------------------------------------
+// Live readers — injectable so every rule above can be tested without a network
+// ---------------------------------------------------------------------------
+
+export interface HealthReaders {
+  deposit(): Promise<bigint>;
+  beeStamp(batchId: string): Promise<Record<string, unknown>>;
+  chainstate(): Promise<Record<string, unknown>>;
+  ethernaStamp(batchId: string): Promise<Record<string, unknown>>;
+  ensNameExpires(): Promise<bigint>;
+  /** The registry WoCoRegistrar mints into, and whether it lists the registrar. */
+  registrarEnrolment(): Promise<Enrolment>;
+  /** The sponsor wallet's ETH on the sub-ENS chain. Throws when no key is set. */
+  sponsorBalance(): Promise<bigint>;
+  /** `authorisedSponsors(sponsor)` and `globalMintAllowance()` on the registrar. */
+  registrarPolicy(): Promise<RegistrarPolicy>;
+  /** keccak256 of the code at `CSW_FACTORY` on the sub-ENS chain. */
+  cswFactoryCodehash(): Promise<string>;
+  /** `authorisedSponsors` and, on the ledger, `sponsorMintAllowance` for the ticket sponsor. */
+  ticketMintPolicy(): Promise<TicketMintPolicy>;
+  /** The ticket sponsor's ETH on the active events chain. Throws when no key is set. */
+  ticketSponsorBalance(): Promise<bigint>;
+}
+
+const ENTRY_POINT_ABI = ["function balanceOf(address account) view returns (uint256)"];
+const BASE_REGISTRAR_ABI = ["function nameExpires(uint256 id) view returns (uint256)"];
+const WOCO_REGISTRAR_ABI = [
+  "function registry() view returns (address)",
+  "function authorisedSponsors(address sponsor) view returns (bool)",
+  "function globalMintAllowance() view returns (uint32 remaining, uint64 windowResetsAt)",
+];
+const L2_REGISTRY_ABI = ["function registrars(address registrar) view returns (bool)"];
+
+/** The sponsor key is not configured — minting cannot happen at all. */
+class SponsorUnconfigured extends Error {}
+
+/**
+ * The public endpoint the watch reads unless told otherwise. A keyed URL may be
+ * set here later, which is exactly why no error text from this provider is ever
+ * allowed onto the section (see `publicReason`).
+ */
+export const DEFAULT_ENS_MAINNET_RPC_URL = "https://ethereum-rpc.publicnode.com";
+const ENS_MAINNET_CHAIN_ID = 1;
+
+let provider: JsonRpcProvider | null = null;
+function entryPoint(): Contract {
+  if (!provider) provider = new JsonRpcProvider(getChainRpcUrl(KERNEL_CHAIN_ID), KERNEL_CHAIN_ID);
+  return new Contract(ENTRY_POINT_V07_ADDRESS, ENTRY_POINT_ABI, provider);
+}
+
+/**
+ * Pinned to chain 1 on purpose: an `ENS_MAINNET_RPC_URL` pointing anywhere else
+ * then throws a network mismatch, rather than reading a BaseRegistrar that does
+ * not exist there and answering 0 — which this module would report as "not
+ * registered", a loud alarm about a configuration mistake rather than a quiet
+ * wrong answer about the name.
+ */
+let ensProvider: JsonRpcProvider | null = null;
+function baseRegistrar(): Contract {
+  if (!ensProvider) {
+    const url = (process.env.ENS_MAINNET_RPC_URL ?? "").trim() || DEFAULT_ENS_MAINNET_RPC_URL;
+    ensProvider = new JsonRpcProvider(url, ENS_MAINNET_CHAIN_ID);
+  }
+  return new Contract(ENS_BASE_REGISTRAR_MAINNET, BASE_REGISTRAR_ABI, ensProvider);
+}
+
+let subEnsProvider: JsonRpcProvider | null = null;
+function subEnsChain(): JsonRpcProvider {
+  if (!subEnsProvider) {
+    const chainId = getSubEnsChainId();
+    subEnsProvider = new JsonRpcProvider(getChainRpcUrl(chainId), chainId);
+  }
+  return subEnsProvider;
+}
+
+function withTimeout<T>(p: Promise<T>, what: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) => {
+      const t = setTimeout(() => reject(new Error(`${what} timed out after ${TIMEOUT_MS}ms`)), TIMEOUT_MS);
+      t.unref?.();
+    }),
+  ]);
+}
+
+/** A non-2xx from bee. Carries the status; the path stays out of the text. */
+class HttpStatusError extends Error {
+  constructor(readonly status: number, what: string) {
+    super(`${what} → HTTP ${status}`);
+    this.name = "HttpStatusError";
+  }
+}
+
+async function beeGet(path: string, what: string): Promise<Record<string, unknown>> {
+  const res = await fetch(`${BEE_URL}${path}`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+  if (!res.ok) throw new HttpStatusError(res.status, what);
+  // The stamps API is not exposed on every endpoint BEE_URL can point at, and a
+  // gateway answering HTML with a 200 must read as "could not tell", not as data.
+  if (!(res.headers.get("content-type") ?? "").includes("application/json")) {
+    throw new Error(NOT_JSON);
+  }
+  return (await res.json()) as Record<string, unknown>;
+}
+const NOT_JSON = "not JSON (stamps API not exposed here?)";
+
+/**
+ * A call that reverted with NO data: what a registrar from before the cap
+ * answers for `globalMintAllowance()`, having no such function. A timeout, an
+ * RPC fault or a revert that carries data is not evidence of that, and must
+ * stay a failed read rather than read as "no cap here".
+ */
+export function revertedWithoutData(err: unknown): boolean {
+  return isError(err, "CALL_EXCEPTION") && (err.data === null || err.data === undefined || err.data === "0x");
+}
+
+export const liveReaders: HealthReaders = {
+  deposit: async () => {
+    const wei = await withTimeout(
+      entryPoint().balanceOf(SELF_FUNDED_PAYMASTER_ADDRESS) as Promise<bigint>,
+      "EntryPoint balanceOf",
+    );
+    return wei;
+  },
+  beeStamp: (batchId) => beeGet(`/stamps/${batchId}`, "bee stamp"),
+  chainstate: () => beeGet("/chainstate", "bee chainstate"),
+  ethernaStamp: (batchId) => readEthernaStamp(batchId, TIMEOUT_MS) as Promise<Record<string, unknown>>,
+  // labelhash = keccak256 of the LABEL alone ("woco"), never the namehash of
+  // "woco.eth" — BaseRegistrar is keyed by the former and would answer 0, the
+  // "not registered" alarm, for the latter.
+  ensNameExpires: () =>
+    withTimeout(
+      baseRegistrar().nameExpires(BigInt(id(SUB_ENS_PARENT_LABEL))) as Promise<bigint>,
+      "ENS nameExpires",
+    ),
+  // Asked of the registry the REGISTRAR mints into, not the one the server's
+  // own reads use: if an override ever points them apart, ownership checks and
+  // mints are on different registries, which is the silence this watch is for.
+  registrarEnrolment: async () => {
+    const registrar = getRegistrarAddress(getSubEnsChainId());
+    const registry = (await withTimeout(
+      new Contract(registrar, WOCO_REGISTRAR_ABI, subEnsChain()).registry() as Promise<string>,
+      "WoCoRegistrar registry",
+    )).toLowerCase();
+    const enrolled = await withTimeout(
+      new Contract(registry, L2_REGISTRY_ABI, subEnsChain()).registrars(registrar) as Promise<boolean>,
+      "L2Registry registrars",
+    );
+    return { registry, enrolled };
+  },
+  sponsorBalance: async () => {
+    let sponsor: string;
+    try {
+      sponsor = getSubEnsSponsorAddress();
+    } catch {
+      throw new SponsorUnconfigured("SUB_ENS_SPONSOR_PRIVATE_KEY is not set");
+    }
+    return withTimeout(subEnsChain().getBalance(sponsor), "sponsor getBalance");
+  },
+  registrarPolicy: async () => {
+    const registrar = new Contract(getRegistrarAddress(getSubEnsChainId()), WOCO_REGISTRAR_ABI, subEnsChain());
+    let sponsor: string | null = null;
+    try {
+      sponsor = getSubEnsSponsorAddress();
+    } catch {
+      sponsor = null; // no key: nothing is authorised, and the balance check says why
+    }
+    const sponsorAuthorised =
+      sponsor !== null &&
+      (await withTimeout(registrar.authorisedSponsors(sponsor) as Promise<boolean>, "WoCoRegistrar authorisedSponsors"));
+    let globalMint: GlobalMintReading | "unsupported";
+    try {
+      const [remaining, windowResetsAt] = (await withTimeout(
+        registrar.globalMintAllowance() as Promise<[bigint, bigint]>,
+        "WoCoRegistrar globalMintAllowance",
+      ));
+      globalMint = { remaining: Number(remaining), windowResetsAt: Number(windowResetsAt) };
+    } catch (err) {
+      if (!revertedWithoutData(err)) throw err;
+      globalMint = "unsupported";
+    }
+    return { sponsorAuthorised, globalMint };
+  },
+  cswFactoryCodehash: async () =>
+    keccak256(await withTimeout(subEnsChain().getCode(CSW_FACTORY), "CSW factory getCode")),
+  // The events key's reads live in sponsor-wallet.ts, not here: this module
+  // must never name that key's accessor (the sub-ENS watch reads the NAMES
+  // key, and subens-minting-health.test.ts holds the line).
+  ticketMintPolicy: () => withTimeout(readTicketMintPolicy(), "events contract ticket mint policy"),
+  ticketSponsorBalance: () => withTimeout(readTicketSponsorBalance(), "ticket sponsor getBalance"),
+};
+
+// ---------------------------------------------------------------------------
+// Parsing
+// ---------------------------------------------------------------------------
+
+function num(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+/**
+ * A stamp is only a reading when EVERY field a verdict depends on is there.
+ *
+ * A partial answer parsed leniently is the worst outcome available: it looks
+ * like data, so it produces a verdict, and the verdict is about fields the node
+ * never sent.
+ */
+function parseStamp(raw: Record<string, unknown>): (StampReading & { immutable: boolean | null }) | null {
+  const depth = num(raw.depth);
+  const bucketDepth = num(raw.bucketDepth);
+  const utilization = num(raw.utilization);
+  const batchTTL = num(raw.batchTTL);
+  if (depth === null || bucketDepth === null || utilization === null || batchTTL === null) return null;
+  if (typeof raw.usable !== "boolean") return null;
+  return {
+    depth,
+    bucketDepth,
+    utilization,
+    batchTTL,
+    usable: raw.usable,
+    immutable: typeof raw.immutableFlag === "boolean" ? raw.immutableFlag : null,
+  };
+}
+
+const msg = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/**
+ * WHY NOT `err.message` ON THE SECTION: see `lib/http/error-class.ts`. This
+ * endpoint is public, so it gets the class of failure; the one addition here is
+ * the stamps API's not-JSON answer, which is ours and safe to name.
+ */
+export function publicReason(err: unknown): string {
+  const e = err as { message?: unknown } | null;
+  if (e && typeof e === "object" && e.message === NOT_JSON) return NOT_JSON;
+  return errorClass(err);
+}
+
+/** Enough to identify a batch in a log, never enough to be the batch. */
+function batchLabel(batchId: string): string {
+  return `${batchId.slice(0, 12)}…`;
+}
+
+// ---------------------------------------------------------------------------
+// Transition-only logging
+// ---------------------------------------------------------------------------
+
+export type Logger = (line: string) => void;
+
+const lastVerdict = new Map<string, Verdict>();
+
+/**
+ * One line at boot, one per crossing, and nothing at all in between.
+ *
+ * A warning on every tick is a warning nobody reads by the second day, which is
+ * the same as no alarm — and the point of this whole change is that the three
+ * postage near-misses were all found by hand.
+ */
+function noteVerdict(name: string, check: Check, log: Logger, detail: string | null = null): void {
+  if (lastVerdict.has(name) && lastVerdict.get(name) === check.ok) return;
+  lastVerdict.set(name, check.ok);
+  const word = check.ok === true ? "ok" : check.ok === false ? "ALARM" : "unknown";
+  // The raw library text is useful exactly once — when the verdict changes — and
+  // only here, where the reader is the operator's log and not the public.
+  const raw = detail ? ` (detail: ${detail.slice(0, 300)})` : "";
+  log(`[health] ${name}: ${word}${check.reason ? ` — ${check.reason}` : ""}${raw}`);
+}
+
+// ---------------------------------------------------------------------------
+// Refresh
+// ---------------------------------------------------------------------------
+
+export async function refreshPaymaster(readers: HealthReaders = liveReaders, log: Logger = console.warn): Promise<void> {
+  try {
+    paymasterReading = { at: Date.now(), value: await readers.deposit(), error: null, detail: null };
+  } catch (err) {
+    paymasterReading = failed(err);
+  }
+  noteVerdict("paymaster", paymasterHealth(), log, paymasterReading.detail);
+}
+
+export async function refreshPostage(
+  readers: HealthReaders = liveReaders,
+  log: Logger = console.warn,
+  includeEtherna = true,
+): Promise<void> {
+  if (POSTAGE_BATCH_ID) {
+    try {
+      const parsed = parseStamp(await readers.beeStamp(POSTAGE_BATCH_ID));
+      beeReading = parsed ? { at: Date.now(), value: parsed, error: null, detail: null } : unparsed();
+    } catch (err) {
+      beeReading = isNotFound(err) ? gone(err) : failed(err);
+    }
+    try {
+      const raw = await readers.chainstate();
+      const block = num(raw.block);
+      const chainTip = num(raw.chainTip);
+      chainstateReading =
+        block !== null && chainTip !== null
+          ? { at: Date.now(), value: { block, chainTip }, error: null, detail: null }
+          : { at: Date.now(), value: null, error: "chainstate response was missing fields", detail: null };
+    } catch (err) {
+      chainstateReading = failed(err);
+    }
+  }
+
+  const ethernaBatch = process.env.ETHERNA_PLATFORM_BATCH ?? "";
+  if (includeEtherna && ethernaBatch && process.env.ETHERNA_API_KEY) {
+    try {
+      const parsed = parseStamp(await readers.ethernaStamp(ethernaBatch));
+      ethernaReading = parsed ? { at: Date.now(), value: parsed, error: null, detail: null } : unparsed();
+    } catch (err) {
+      ethernaReading = isNotFound(err) ? gone(err) : failed(err);
+    }
+    if (ethernaReading.value || ethernaReading.gone) {
+      ethernaVerdict = {
+        batchId: ethernaBatch,
+        at: ethernaReading.at,
+        gone: ethernaReading.gone === true,
+        stamp: ethernaReading.value,
+      };
+    }
+  }
+
+  const section = postageHealth();
+  noteVerdict("postage.bee.ttl", section.bee.checks.ttl, log, beeReading.detail);
+  noteVerdict("postage.bee.utilization", section.bee.checks.utilization, log, beeReading.detail);
+  noteVerdict("postage.bee.usable", section.bee.checks.usable, log, beeReading.detail);
+  noteVerdict("postage.chain", section.chain, log, chainstateReading.detail);
+  if (section.etherna.configured) noteVerdict("postage.etherna", section.etherna, log, ethernaReading.detail);
+}
+
+/**
+ * `woco.eth`'s own registration, read from L1 (#420).
+ *
+ * WATCH ONLY — there is no auto-renew here and there is not meant to be. The
+ * owner's decision (2026-09-11) is that renewal stays one manual transaction a
+ * year from the Safe, so the server's entire job is to make sure nobody has to
+ * remember the date.
+ */
+export async function refreshEnsExpiry(
+  readers: HealthReaders = liveReaders,
+  log: Logger = console.warn,
+): Promise<void> {
+  try {
+    ensExpiryReading = { at: Date.now(), value: await readers.ensNameExpires(), error: null, detail: null };
+    ensExpiryOkAt = ensExpiryReading.at;
+  } catch (err) {
+    ensExpiryReading = failed(err);
+  }
+  const section = subEnsParentHealth();
+  noteVerdict(
+    "subEns.parent.expiry",
+    { ok: section.ok, ...(section.reason ? { reason: section.reason } : {}) },
+    log,
+    ensExpiryReading.detail,
+  );
+}
+
+/**
+ * Whether sub-ENS names can still be minted (#598): the registrar is enrolled
+ * in the registry it mints into, and the sponsor that pays can pay. Both fail
+ * SILENTLY otherwise — existing names keep resolving, so nothing looks wrong
+ * from outside. Registry v2.2 makes the first one reachable by an ordinary
+ * governance action: `acceptAdmin` drops every registrar, and a handover batch
+ * that forgot `addRegistrar(WoCoRegistrar)` stops minting until it lands.
+ */
+export async function refreshSubEnsMinting(
+  readers: HealthReaders = liveReaders,
+  log: Logger = console.warn,
+): Promise<void> {
+  try {
+    enrolmentReading = { at: Date.now(), value: await readers.registrarEnrolment(), error: null, detail: null };
+  } catch (err) {
+    enrolmentReading = failed(err);
+  }
+  try {
+    sponsorReading = { at: Date.now(), value: await readers.sponsorBalance(), error: null, detail: null };
+  } catch (err) {
+    sponsorReading =
+      err instanceof SponsorUnconfigured
+        ? { at: Date.now(), value: null, error: SPONSOR_UNCONFIGURED, detail: null }
+        : failed(err);
+  }
+  try {
+    policyReading = { at: Date.now(), value: await readers.registrarPolicy(), error: null, detail: null };
+  } catch (err) {
+    policyReading = failed(err);
+  }
+  // Read only while it can matter: one fewer call per tick otherwise.
+  if (FEATURES.coinbaseLoginAllowed) {
+    try {
+      cswFactoryReading = { at: Date.now(), value: await readers.cswFactoryCodehash(), error: null, detail: null };
+    } catch (err) {
+      cswFactoryReading = failed(err);
+    }
+  }
+  const section = subEnsMintingHealth();
+  noteVerdict("subEns.minting.registrar", section.checks.registrarEnrolled, log, enrolmentReading.detail);
+  noteVerdict("subEns.minting.sponsor", section.checks.sponsorBalance, log, sponsorReading.detail);
+  noteVerdict("subEns.minting.sponsorAuthorised", section.checks.sponsorAuthorised, log, policyReading.detail);
+  noteVerdict("subEns.minting.globalMint", section.checks.globalMint, log, policyReading.detail);
+  noteVerdict("subEns.minting.cswFactory", section.checks.cswFactory, log, cswFactoryReading.detail);
+}
+const SPONSOR_UNCONFIGURED = "no names sponsor wallet configured (SUB_ENS_SPONSOR_PRIVATE_KEY)";
+
+/**
+ * Whether paid checkouts can mint (#662): the ticket sponsor is authorised on
+ * the events contract, can pay the gas (#706), and — on the ledger — its hourly
+ * mint cap has headroom.
+ * The checkout gate refuses a sale the cap cannot mint, so a spent or stopped
+ * cap shows up as "tickets not on sale"; this is where an operator sees why,
+ * and sees it coming.
+ */
+export async function refreshTicketMinting(
+  readers: HealthReaders = liveReaders,
+  log: Logger = console.warn,
+): Promise<void> {
+  try {
+    ticketMintReading = { at: Date.now(), value: await readers.ticketMintPolicy(), error: null, detail: null };
+    recordMintWindow(ticketMintReading.value!, ticketMintReading.at!);
+  } catch (err) {
+    ticketMintReading =
+      err instanceof SponsorKeyUnconfigured
+        ? { at: Date.now(), value: null, error: TICKET_SPONSOR_UNCONFIGURED, detail: null }
+        : err instanceof EventContractConfigError
+          ? { at: Date.now(), value: null, error: TICKET_CONTRACT_MISCONFIGURED, detail: err.message }
+          : failed(err);
+  }
+  try {
+    ticketSponsorReading = { at: Date.now(), value: await readers.ticketSponsorBalance(), error: null, detail: null };
+  } catch (err) {
+    ticketSponsorReading =
+      err instanceof SponsorKeyUnconfigured
+        ? { at: Date.now(), value: null, error: TICKET_SPONSOR_UNCONFIGURED, detail: null }
+        : err instanceof EventContractConfigError
+          ? { at: Date.now(), value: null, error: TICKET_CONTRACT_MISCONFIGURED, detail: err.message }
+          : failed(err);
+  }
+  const section = ticketMintingHealth();
+  noteVerdict("ticketMinting.sponsorAuthorised", section.checks.sponsorAuthorised, log, ticketMintReading.detail);
+  noteVerdict("ticketMinting.sponsorBalance", section.checks.sponsorBalance, log, ticketSponsorReading.detail);
+  noteVerdict("ticketMinting.mintAllowance", section.checks.mintAllowance, log, ticketMintReading.detail);
+  noteVerdict("ticketMinting.mintRamp", section.checks.mintRamp, log, ticketMintReading.detail);
+}
+const TICKET_SPONSOR_UNCONFIGURED = "no ticket sponsor wallet configured (WOCO_SPONSOR_PRIVATE_KEY)";
+const TICKET_CONTRACT_MISCONFIGURED =
+  "the events contract is misconfigured: no address, or it does not answer the events-contract ABI " +
+  "(authorisedSponsors / sponsorMintAllowance)";
+
+// ---------------------------------------------------------------------------
+// Sections
+// ---------------------------------------------------------------------------
+
+export interface PaymasterSection extends Check {
+  stale: boolean;
+  checkedAt: string | null;
+  chainId: number;
+  address: string;
+  entryPoint: string;
+  depositEth: string | null;
+  minEth: string;
+  configError?: string;
+  error?: string;
+  note: string;
+}
+
+export function paymasterHealth(now: number = Date.now()): PaymasterSection {
+  const { paymaster: cfg } = readThresholdsFromEnv(process.env);
+  const verdict = evaluatePaymaster({
+    depositWei: paymasterReading.value,
+    minWei: parseEther(cfg.minEth),
+    reason: paymasterReading.error,
+  });
+  return {
+    ...verdict,
+    stale: isStale(paymasterReading.at, now, PROBE_INTERVAL_MS),
+    checkedAt: paymasterReading.at === null ? null : new Date(paymasterReading.at).toISOString(),
+    chainId: KERNEL_CHAIN_ID,
+    address: SELF_FUNDED_PAYMASTER_ADDRESS,
+    entryPoint: ENTRY_POINT_V07_ADDRESS,
+    depositEth: paymasterReading.value === null ? null : formatEther(paymasterReading.value),
+    minEth: cfg.minEth,
+    ...(cfg.configError ? { configError: cfg.configError } : {}),
+    ...(paymasterReading.error ? { error: paymasterReading.error } : {}),
+    note: PAYMASTER_NOTE,
+  };
+}
+
+interface StampSection {
+  batch: string | null;
+  depth: number | null;
+  bucketDepth: number | null;
+  utilization: number | null;
+  bucketCap: number | null;
+  batchTTL: number | null;
+  batchTTLDays: number | null;
+  usable: boolean | null;
+  immutable: boolean | null;
+  checks: Pick<StampVerdicts, "ttl" | "utilization" | "usable">;
+  ok: Verdict;
+  reason?: string;
+  error?: string;
+}
+
+export interface PostageSection {
+  ok: Verdict;
+  stale: boolean;
+  checkedAt: string | null;
+  thresholds: { ttlMinSeconds: number; utilizationMaxPct: number; chainLagMaxBlocks: number };
+  bee: StampSection;
+  chain: Check & { block: number | null; chainTip: number | null; lag: number | null };
+  etherna: StampSection & { configured: boolean; checkedAt: string | null; stale: boolean };
+  configError?: string;
+}
+
+const unread = (reason: string): Pick<StampVerdicts, "ttl" | "utilization" | "usable"> => ({
+  ttl: { ok: null, reason },
+  utilization: { ok: null, reason },
+  usable: { ok: null, reason },
+});
+
+function stampSection(reading: Reading<StampReading & { immutable: boolean | null }>, batchId: string, t: {
+  ttlMinSeconds: number;
+  utilizationMaxPct: number;
+  chainLagMaxBlocks: number;
+}): StampSection {
+  if (!batchId) {
+    const reason = "batch id not configured";
+    return {
+      batch: null, depth: null, bucketDepth: null, utilization: null, bucketCap: null,
+      batchTTL: null, batchTTLDays: null, usable: null, immutable: null,
+      checks: unread(reason), ok: null, reason,
+    };
+  }
+  if (reading.value === null) {
+    const reason = reading.error ?? "not read yet";
+    const verdict: Verdict = reading.gone ? false : null;
+    const check: Check = { ok: verdict, reason };
+    return {
+      batch: batchLabel(batchId), depth: null, bucketDepth: null, utilization: null, bucketCap: null,
+      batchTTL: null, batchTTLDays: null, usable: null, immutable: null,
+      checks: { ttl: check, utilization: check, usable: check }, ok: verdict, reason,
+      ...(reading.error ? { error: reading.error } : {}),
+    };
+  }
+  const v = evaluateStamp(reading.value, t);
+  return {
+    batch: batchLabel(batchId),
+    depth: reading.value.depth,
+    bucketDepth: reading.value.bucketDepth,
+    utilization: reading.value.utilization,
+    bucketCap: v.bucketCap,
+    batchTTL: reading.value.batchTTL,
+    batchTTLDays: v.batchTTLDays,
+    usable: reading.value.usable,
+    immutable: reading.value.immutable,
+    checks: { ttl: v.ttl, utilization: v.utilization, usable: v.usable },
+    ok: v.ok,
+  };
+}
+
+export function postageHealth(now: number = Date.now()): PostageSection {
+  const { postage: cfg } = readThresholdsFromEnv(process.env);
+  const thresholds = {
+    ttlMinSeconds: cfg.ttlMinSeconds,
+    utilizationMaxPct: cfg.utilizationMaxPct,
+    chainLagMaxBlocks: cfg.chainLagMaxBlocks,
+  };
+
+  const bee = stampSection(beeReading, POSTAGE_BATCH_ID, thresholds);
+  const block = chainstateReading.value?.block ?? null;
+  const chainTip = chainstateReading.value?.chainTip ?? null;
+  const chain = {
+    ...evaluateChainLag(
+      {
+        block,
+        chainTip,
+        reason: chainstateReading.error ?? (POSTAGE_BATCH_ID ? null : "chainstate probe idle: no batch configured"),
+      },
+      cfg.chainLagMaxBlocks,
+    ),
+    block,
+    chainTip,
+  };
+
+  const ethernaBatch = process.env.ETHERNA_PLATFORM_BATCH ?? "";
+  const configured = Boolean(ethernaBatch) && Boolean(process.env.ETHERNA_API_KEY);
+  const etherna = {
+    ...(configured
+      ? stampSection(ethernaReading, ethernaBatch, thresholds)
+      : {
+          ...stampSection(ethernaReading, "", thresholds),
+          reason: "ETHERNA_PLATFORM_BATCH or ETHERNA_API_KEY not set",
+        }),
+    configured,
+    checkedAt: ethernaReading.at === null ? null : new Date(ethernaReading.at).toISOString(),
+    stale: configured && isStale(ethernaReading.at, now, ETHERNA_PROBE_INTERVAL_MS),
+  };
+
+  // An UNCONFIGURED Etherna batch is deliberately left out of the roll-up. It is
+  // "not applicable", not "could not be read", and folding it in would pin
+  // `postage.ok` to null forever on a bee-only deployment — an alarm that is
+  // permanently unknown is an alarm nobody watches.
+  const checks: Array<{ ok: Verdict }> = [bee, chain, ...(configured ? [etherna] : [])];
+
+  return {
+    ok: combine(checks),
+    stale: isStale(beeReading.at, now, PROBE_INTERVAL_MS),
+    checkedAt: beeReading.at === null ? null : new Date(beeReading.at).toISOString(),
+    thresholds,
+    bee,
+    chain,
+    etherna,
+    ...(cfg.configError ? { configError: cfg.configError } : {}),
+  };
+}
+
+/**
+ * `/api/health` -> `subEns.parent`. Silent until it isn't: nothing else on this
+ * server reads mainnet, and nothing else would notice the year go by.
+ */
+export interface SubEnsParentSection {
+  name: string;
+  ok: Verdict;
+  expiresAt: string | null;
+  daysRemaining: number | null;
+  graceEndsAt: string | null;
+  minDays: number;
+  reason?: string;
+  stale: boolean;
+  /** When the expiry was last actually READ, not when the probe last ran. */
+  lastReadAt: string | null;
+  configError?: string;
+}
+
+export function subEnsParentHealth(now: number = Date.now()): SubEnsParentSection {
+  const { ensParent: cfg } = readThresholdsFromEnv(process.env);
+  const verdict = evaluateEnsExpiry({
+    expiresAtSec: ensExpiryReading.value,
+    minDays: cfg.minDays,
+    now,
+    reason: ensExpiryReading.error,
+  });
+  return {
+    name: SUB_ENS_PARENT,
+    ok: verdict.ok,
+    expiresAt: verdict.expiresAt,
+    daysRemaining: verdict.daysRemaining,
+    graceEndsAt: verdict.graceEndsAt,
+    minDays: cfg.minDays,
+    ...(verdict.reason ? { reason: verdict.reason } : {}),
+    stale: isStale(ensExpiryOkAt, now, ENS_EXPIRY_PROBE_INTERVAL_MS),
+    lastReadAt: ensExpiryOkAt === null ? null : new Date(ensExpiryOkAt).toISOString(),
+    ...(cfg.configError ? { configError: cfg.configError } : {}),
+  };
+}
+
+/**
+ * `/api/health` -> `subEns.minting` (#598). Addresses and a balance only, all
+ * public on chain.
+ */
+export interface SubEnsMintingSection {
+  ok: Verdict;
+  chainId: number;
+  registrar: string;
+  /** The registry the registrar mints into, as it answered — null until read. */
+  registry: string | null;
+  /** The registry this server reads ownership from. Must equal `registry`. */
+  serverRegistry: string;
+  sponsor: string | null;
+  sponsorBalanceEth: string | null;
+  sponsorMinEth: string;
+  /** Registrar-wide mint window: headroom shrinking is visible before it hits zero.
+   *  `"unsupported"` on a registrar from before the cap; null until read. */
+  globalMint: GlobalMintReading | "unsupported" | null;
+  checks: {
+    registrarEnrolled: Check;
+    sponsorBalance: Check;
+    sponsorAuthorised: Check;
+    globalMint: Check;
+    cswFactory: Check;
+  };
+  stale: boolean;
+  checkedAt: string | null;
+  configError?: string;
+}
+
+export function subEnsMintingHealth(now: number = Date.now()): SubEnsMintingSection {
+  const { subEnsMinting: cfg } = readThresholdsFromEnv(process.env);
+  // Boot already refuses equal sponsor keys; this is for a process started
+  // with that check bypassed (Fable sponsor-key consult §6).
+  const configError = [cfg.configError, sponsorKeysConflict() ?? undefined].filter(Boolean).join("; ") || undefined;
+  const chainId = getSubEnsChainId();
+  const serverRegistry = getRegistryAddress(chainId).toLowerCase();
+  const enrolment = enrolmentReading.value;
+
+  let registrarEnrolled = evaluateRegistrarEnrolled({
+    enrolled: enrolment?.enrolled ?? null,
+    reason: enrolmentReading.error,
+  });
+  if (enrolment && enrolment.registry !== serverRegistry) {
+    registrarEnrolled = {
+      ok: false,
+      reason: "the registrar mints into a different registry than this server reads ownership from",
+    };
+  }
+  const sponsorBalance =
+    sponsorReading.error === SPONSOR_UNCONFIGURED
+      ? { ok: false as const, reason: SPONSOR_UNCONFIGURED }
+      : evaluateSponsorBalance({
+          balanceWei: sponsorReading.value,
+          minWei: parseEther(cfg.sponsorMinEth),
+          reason: sponsorReading.error,
+        });
+
+  const policy = policyReading.value;
+  const sponsorAuthorised = evaluateSponsorAuthorised({
+    authorised: policy?.sponsorAuthorised ?? null,
+    reason: policyReading.error,
+  });
+  const globalMint = evaluateGlobalMint({ reading: policy?.globalMint ?? null, reason: policyReading.error });
+  const cswFactory = evaluateCswFactory({
+    codehash: cswFactoryReading.value,
+    expected: CSW_FACTORY_CODEHASH,
+    required: FEATURES.coinbaseLoginAllowed,
+    reason: cswFactoryReading.error,
+  });
+
+  let sponsor: string | null = null;
+  try {
+    sponsor = getSubEnsSponsorAddress();
+  } catch {
+    sponsor = null;
+  }
+  const reads = [enrolmentReading.at, sponsorReading.at, policyReading.at];
+  if (FEATURES.coinbaseLoginAllowed) reads.push(cswFactoryReading.at);
+  const oldest = reads.some((at) => at === null) ? null : Math.min(...(reads as number[]));
+  return {
+    ok: combine([registrarEnrolled, sponsorBalance, sponsorAuthorised, globalMint, cswFactory]),
+    chainId,
+    registrar: getRegistrarAddress(chainId),
+    registry: enrolment?.registry ?? null,
+    serverRegistry,
+    sponsor,
+    sponsorBalanceEth: sponsorReading.value === null ? null : formatEther(sponsorReading.value),
+    sponsorMinEth: cfg.sponsorMinEth,
+    globalMint: policy?.globalMint ?? null,
+    checks: { registrarEnrolled, sponsorBalance, sponsorAuthorised, globalMint, cswFactory },
+    stale: isStale(oldest, now, PROBE_INTERVAL_MS),
+    checkedAt: oldest === null ? null : new Date(oldest).toISOString(),
+    ...(configError ? { configError } : {}),
+  };
+}
+
+/**
+ * `/api/health` -> `ticketMinting` (#662). Addresses and the cap's numbers only,
+ * all public on chain.
+ */
+export interface TicketMintingSection {
+  ok: Verdict;
+  chainId: number | null;
+  contract: string | null;
+  version: EventContractVersion | null;
+  sponsor: string | null;
+  sponsorBalanceEth: string | null;
+  sponsorMinEth: string;
+  /** `"no-cap"` on V1/V2; null until read. `unlimited` = the ledger's UNLIMITED_MINTS. */
+  allowance: (TicketMintReading & { unlimited: boolean }) | "no-cap" | null;
+  minMintable: number;
+  /** Minted-this-hour share of the cap that turns the section red (#672). */
+  alarmPct: number;
+  /** The busiest open window of the last 7 days on this contract; null if none. */
+  peak7d: { used: number; perHour: number; pct: number; windowEndedAt: string } | null;
+  checks: { sponsorAuthorised: Check; sponsorBalance: Check; mintAllowance: Check; mintRamp: Check };
+  stale: boolean;
+  checkedAt: string | null;
+  configError?: string;
+}
+
+/** Boot refuses an unset chain (#607); health must still answer if that was bypassed. */
+function activeChainIdOrNull(): number | null {
+  try {
+    return getActiveChainId();
+  } catch {
+    return null;
+  }
+}
+
+export function ticketMintingHealth(now: number = Date.now()): TicketMintingSection {
+  const { ticketMinting: cfg } = readThresholdsFromEnv(process.env);
+  const policy = ticketMintReading.value;
+  const unconfigured = ticketMintReading.error === TICKET_SPONSOR_UNCONFIGURED
+    || ticketMintReading.error === TICKET_CONTRACT_MISCONFIGURED;
+  const sponsorAuthorised = unconfigured
+    ? { ok: false as const, reason: ticketMintReading.error! }
+    : evaluateTicketSponsorAuthorised({ authorised: policy?.sponsorAuthorised ?? null, reason: ticketMintReading.error });
+  const mintAllowance = unconfigured
+    ? { ok: false as const, reason: ticketMintReading.error! }
+    : evaluateTicketMintAllowance({ reading: policy?.allowance ?? null, min: cfg.minMintable, reason: ticketMintReading.error });
+  const mintRamp = unconfigured
+    ? { ok: false as const, reason: ticketMintReading.error! }
+    : evaluateTicketMintRamp({ reading: policy?.allowance ?? null, alarmPct: cfg.alarmPct, reason: ticketMintReading.error });
+  const sponsorBalance =
+    ticketSponsorReading.error === TICKET_SPONSOR_UNCONFIGURED
+      || ticketSponsorReading.error === TICKET_CONTRACT_MISCONFIGURED
+      ? { ok: false as const, reason: ticketSponsorReading.error }
+      : evaluateTicketSponsorBalance({
+          balanceWei: ticketSponsorReading.value,
+          minWei: parseEther(cfg.sponsorMinEth),
+          reason: ticketSponsorReading.error,
+        });
+  const allowance = policy?.allowance ?? null;
+  const reads = [ticketMintReading.at, ticketSponsorReading.at];
+  const oldest = reads.some((at) => at === null) ? null : Math.min(...(reads as number[]));
+  return {
+    ok: combine([sponsorAuthorised, sponsorBalance, mintAllowance, mintRamp]),
+    chainId: policy?.contract.chainId ?? activeChainIdOrNull(),
+    contract: policy?.contract.address ?? null,
+    version: policy?.contract.version ?? null,
+    sponsor: policy?.sponsor ?? null,
+    sponsorBalanceEth: ticketSponsorReading.value === null ? null : formatEther(ticketSponsorReading.value),
+    sponsorMinEth: cfg.sponsorMinEth,
+    allowance:
+      allowance === null || allowance === "no-cap"
+        ? allowance
+        : { ...allowance, unlimited: allowance.perHour === 0xffff_ffff },
+    minMintable: cfg.minMintable,
+    alarmPct: cfg.alarmPct,
+    peak7d: mintPeak7d(now),
+    checks: { sponsorAuthorised, sponsorBalance, mintAllowance, mintRamp },
+    stale: isStale(oldest, now, PROBE_INTERVAL_MS),
+    checkedAt: oldest === null ? null : new Date(oldest).toISOString(),
+    ...(cfg.configError ? { configError: cfg.configError } : {}),
+  };
+}
+
+/**
+ * Bee batch state for the evidence publisher (#312), served from THIS module's
+ * cache.
+ *
+ * The publisher used to run its own five-minute stamp fetch. Two probes reading
+ * the same batch on two clocks can disagree about whether it is alive, and the
+ * one that answers "fine" is the one that holds off nothing — so there is one
+ * read and one cache. Refreshes on demand only if the timer is not running.
+ */
+export async function beeBatchState(): Promise<{ usable: boolean | null; ttl: number | null }> {
+  if (beeReading.at === null || Date.now() - beeReading.at > ETHERNA_PROBE_INTERVAL_MS) {
+    await refreshPostage(liveReaders, console.warn, false);
+  }
+  return { usable: beeReading.value?.usable ?? null, ttl: beeReading.value?.batchTTL ?? null };
+}
+
+export interface EthernaPlatformBatchSnapshot {
+  /** The batch this reading is for ("" before the first positive read). */
+  batchId: string;
+  /** When that reading was taken, or null if there has been none. */
+  at: number | null;
+  /** Etherna positively said the batch does not exist. */
+  gone: boolean;
+  /** The parsed stamp; null exactly when `gone`. */
+  stamp: StampReading | null;
+}
+
+/**
+ * The last POSITIVE Etherna platform-batch reading, for the batch router's
+ * liveness guard (#610). Failed and incomplete reads never replace it. Synchronous
+ * and cache-only on purpose: the router is called on every write path and awaits
+ * nothing, and one probe on one clock is the only answer to "is it alive" (see
+ * `beeBatchState` for why there must never be two).
+ */
+export function ethernaPlatformBatchSnapshot(): EthernaPlatformBatchSnapshot {
+  return ethernaVerdict ?? { batchId: "", at: null, gone: false, stamp: null };
+}
+
+// ---------------------------------------------------------------------------
+// Timer
+// ---------------------------------------------------------------------------
+
+let timer: NodeJS.Timeout | null = null;
+let ethernaDueAt = 0;
+let ensExpiryDueAt = 0;
+
+export function startHealthProbes(): void {
+  if (timer) return;
+  if (process.env.ETHERNA_PLATFORM_BATCH && !process.env.ETHERNA_API_KEY) {
+    console.warn(
+      "[health] ETHERNA_PLATFORM_BATCH is set but ETHERNA_API_KEY is not: the platform batch is never read, so the router cannot refuse writes onto a dead one (#610)",
+    );
+  }
+  const tick = () => {
+    const etherna = Date.now() >= ethernaDueAt;
+    if (etherna) ethernaDueAt = Date.now() + ETHERNA_PROBE_INTERVAL_MS;
+    const ens = Date.now() >= ensExpiryDueAt;
+    if (ens) ensExpiryDueAt = Date.now() + ENS_EXPIRY_PROBE_INTERVAL_MS;
+    void refreshPaymaster().catch((err) => console.warn("[health] paymaster probe threw:", err));
+    void refreshSubEnsMinting().catch((err) => console.warn("[health] sub-ENS minting probe threw:", err));
+    void refreshTicketMinting().catch((err) => console.warn("[health] ticket minting probe threw:", err));
+    void refreshKeyRingAnchor().catch((err) => console.warn("[health] key-ring anchor probe threw:", err));
+    void refreshPostage(liveReaders, console.warn, etherna).catch((err) =>
+      console.warn("[health] postage probe threw:", err),
+    );
+    if (ens) {
+      void refreshEnsExpiry().catch((err) => console.warn("[health] ENS expiry probe threw:", err));
+    }
+  };
+  tick();
+  timer = setInterval(tick, PROBE_INTERVAL_MS);
+  timer.unref?.();
+  console.log("[health] postage + paymaster + ENS parent + sub-ENS minting + ticket minting probes started");
+}
+
+/** Tests only. */
+export function __resetHealthProbes(): void {
+  if (timer) clearInterval(timer);
+  timer = null;
+  ethernaDueAt = 0;
+  ensExpiryDueAt = 0;
+  paymasterReading = empty<bigint>();
+  beeReading = empty<StampReading & { immutable: boolean | null }>();
+  chainstateReading = empty<{ block: number; chainTip: number }>();
+  ethernaReading = empty<StampReading & { immutable: boolean | null }>();
+  ethernaVerdict = null;
+  ensExpiryReading = empty<bigint>();
+  ensExpiryOkAt = null;
+  enrolmentReading = empty<Enrolment>();
+  sponsorReading = empty<bigint>();
+  policyReading = empty<RegistrarPolicy>();
+  cswFactoryReading = empty<string>();
+  ticketMintReading = empty<TicketMintPolicy>();
+  ticketSponsorReading = empty<bigint>();
+  mintPeaks = { contract: null, windows: new Map() };
+  lastVerdict.clear();
+  provider = null;
+  ensProvider = null;
+  subEnsProvider = null;
+}

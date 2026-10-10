@@ -2,6 +2,7 @@
   import type { OrderField, ClaimMode, PaymentConfig, EventGeo, EventTag } from "@woco/shared";
   import EventEditor from "./EventEditor.svelte";
   import PublishButton from "./PublishButton.svelte";
+  import { ETHERNA_GATEWAY_URL } from "../../swarm/gateways.js";
   import StripeVerifyGate from "./StripeVerifyGate.svelte";
   import SubENSPicker from "../builder/SubENSPicker.svelte";
   import ImportUrlPanel, { type ImportPreview, type ImportTier } from "./ImportUrlPanel.svelte";
@@ -112,6 +113,7 @@
   <SubENSPicker />
 
   <PublishButton
+    gatewayUrl={ETHERNA_GATEWAY_URL}
     {title}
     {tagline}
     {description}

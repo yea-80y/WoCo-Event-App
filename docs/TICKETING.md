@@ -7,7 +7,7 @@ Stripe mechanics live in [PAYMENTS_INTEGRATION.md](./PAYMENTS_INTEGRATION.md); f
 **only** in [PRICING_AND_EMAIL.md](./PRICING_AND_EMAIL.md) §7 / §15–§17; payout policy **only**
 in [PAYOUTS.md](./PAYOUTS.md). This document is the lifecycle and the cryptography.
 
-**Verified against `main` on 2026-09-08.**
+**Verified against `main` (94364b56) on 2026-10-05.**
 
 ---
 
@@ -19,12 +19,12 @@ in [PAYOUTS.md](./PAYOUTS.md). This document is the lifecycle and the cryptograp
 | **Series** | A ticket type within an event — supply, price, metadata, image. |
 | **Edition** | One individual ticket: `woco.edition.v1`. 1-indexed, `1..totalSupply`. |
 | **Manifest** | `woco.manifest.v2` — one signed object per series, committing to a Merkle root over every edition. |
-| **Slot** | The on-chain record of one sold ticket: `slotOwner[eventId][edition-1]`. |
+| **Slot** | The on-chain record of one sold ticket: `slotOwner(eventId, edition-1)` on the ledger contract. |
 | **Burner** | A single-use keypair generated at fulfilment. Its address becomes the slot owner. |
 
 The naming is deliberately narrower than it used to be: "edition" replaced the older nouns as the
 body noun, because **one shape now serves both** the ticket rail and standalone badge or
-collectible issuance.
+collectible issuance (the latter off for launch, `badgesAllowed = false`).
 
 ---
 
@@ -90,29 +90,52 @@ the chain's `manifestRef`.
 
 ## 3. Sale and mint
 
-Card is the only live rail (`cryptoPaymentsAllowed = false`, `freeEventsAllowed = false`).
+Card is the only live rail (`cryptoPaymentsAllowed = false`, `freeEventsAllowed = false`). A
+ticket costs at least `MIN_TICKET_PRICE` (one unit of its currency, `features.ts`, #694), checked
+in the editor, at publish and by the server.
 
 ```
  1. RESERVE   POST /api/events/:id/series/:sid/reserve
-              An atomic hold. `available` is physical remaining; /reserve
-              subtracts held seats when it allocates.
+              An atomic 10-minute hold. `available` is physical remaining;
+              /reserve subtracts held seats when it allocates.
 
- 2. CHECKOUT  Stripe Checkout — a DIRECT charge on the organiser's connected
-              account. The server stamps eventId, seriesId and the VALIDATED
-              on-chain event id into the session metadata. The organiser cannot
-              write session metadata (dashboard type "none"), so that metadata
-              is as trustworthy as the decision it records.
+ 1b. SEAL     While the buyer fills in the form, their browser seals it to the
+              organiser's X-Wing key and sends the box to
+              POST /api/stripe/prepare-order. The server HOLDS it (not on
+              Swarm) and returns its ref plus a token (#546, #661). The box
+              declares the key it was sealed to; one sealed to a key the
+              organiser has since replaced (a passkey removal, #186) is
+              refused ORDER_KEY_STALE naming the current key, and the page
+              re-seals once - here and again at checkout.
 
- 3. WEBHOOK   Stripe → fulfilment (apps/server/src/lib/stripe/fulfilment.ts):
-              a. seal the order data to the organiser's X25519 key, upload to
-                 Swarm, keep the 32-byte ref
+ 2. CHECKOUT  POST /api/stripe/create-checkout → Stripe Checkout, a DIRECT
+              charge on the organiser's connected account. The server stamps
+              eventId, seriesId and the VALIDATED on-chain event id into the
+              session metadata, and an HMAC over everything fulfilment acts on
+              into `client_reference_id`. Refused for a cancelled event, or
+              when the sponsor's hourly mint cap cannot cover the order.
+
+ 3. WEBHOOK   Stripe → fulfilment (apps/server/src/lib/stripe/fulfilment.ts),
+              only for a session whose provenance (OUR application fee) and
+              integrity tag verify (lib/stripe/checkout-provenance.ts):
+              a. mark the held box paid. With none, the server seals a minimal
+                 order itself (ticket type, buyer email and address)
               b. one ephemeral BURNER keypair per ticket
               c. batchClaimFor(onChainEventId, burnerAddresses, orderRef)
                  as the platform sponsor, chunked
               d. each burner signs its own ticket message — then the key is
                  DISCARDED. It never touches disk or any store.
-              e. email the ticket: a composite PNG plus a /t/… link
+              e. store the paid box on the attendee batch (a retry worker
+                 finishes it if this step fails)
+              f. email the ticket: a composite PNG plus a /ticket.html#… link
 ```
+
+**Why the metadata can be trusted.** Organisers now have their own Stripe Dashboard
+(`stripe_dashboard.type = full`, #645), so they can create sessions and edit metadata. The webhook
+therefore trusts a session only when it carries an application fee this platform can read (proof
+we created it) and its `client_reference_id` tag verifies (proof nothing changed since). A foreign
+session is ignored and never refunded; a tampered one is refunded and alarmed. When the dashboard
+type was `none`, the organiser simply could not write metadata - that reasoning is superseded.
 
 **Which on-chain event to mint against comes from server state only, never from the event feed.**
 That used to be re-read from the feed at mint time — and for a client-signed event, that feed is
@@ -123,6 +146,14 @@ own registration record — and **if both exist and disagree, the sale is refund
 minted against either.** The validated id is a registration the server no longer stands behind;
 the record may have moved under an in-flight session and could drain the wrong event's supply.
 Refund is the only outcome that does neither (`fulfilment.ts`, the #426 tripwire).
+
+**Which signer an event's feed is read under comes from server state only, never from a request.**
+The money path (`getEvent`) asks, in order: the record pinned at create
+(`.data/event-feed-signers.json`, #670), then the public directory, then the platform feed for
+legacy events. The record is what lets an UNLISTED event sell at all; before it, such an event
+sold only for the 10 minutes its create primed the cache. A recorded event whose feed names a
+different `creatorAddress` than the one recorded reads as not found, because that field decides
+which Stripe account is paid.
 
 Two more properties of that path:
 
@@ -136,6 +167,23 @@ Two more properties of that path:
 from the manifest — so registering the same series twice creates two events. That is why
 `register-once.ts` and `.data/onchain-events.json` exist, and why losing that file stops sales.
 
+**Which contract** (#563, #665) is part of the same record: each registration names the chain,
+address and version it was made on, and the mint, every pre-charge read, the door pack and
+delete-safety follow it (`registrationContractFor`). A successor contract therefore runs beside
+the old one — only new registrations go to the env-selected contract. A charge, though, mints
+only on the ACTIVE chain (`saleContractFor`): after a `WOCO_EVENT_CHAIN_ID` flip a record on the
+old chain still verifies at the door, but create-checkout refuses it and fulfilment refunds a
+session paid across the flip. Records from before #563 carry no contract and resolve to
+today's env contract, or to the chain's V2 once env selects the ledger (`legacyEventContract`).
+
+**The ledger's hourly mint cap** (#662, #665): create-checkout refuses a sale the sponsor's
+`sponsorMintAllowance` cannot mint (read uncached), and names a retry time only when waiting
+helps — never for cap 0 (the Safe's stop), never for an order bigger than the whole cap.
+`/api/health` `ticketMinting` alarms below `TICKET_MINT_ALLOWANCE_MIN`, and when a busy hour uses
+more than `TICKET_MINT_ALARM_PCT` of the cap (#672). The gate is a read, not a
+reservation: it does not net out open holds or concurrent checkouts, so several passing against
+the same headroom can all be charged and the ones the cap then refuses are refunded.
+
 ### Why a burner, and not the buyer's address
 
 Because most buyers do not have one. A card buyer who never touches a wallet still needs an
@@ -146,7 +194,10 @@ The consequences are worth being explicit about. The **on-chain slot owner is th
 — it is the thing a verifier compares against, and it is public. The burner key is not custody:
 it signs once and is gone, so there is nothing to steal and nothing to lose. Transferability and
 resale are therefore *not* a property of the burner; they belong to the attendee-gate binding
-layer ([ATTENDEE_GATE_RESALE_PLAN.md](./ATTENDEE_GATE_RESALE_PLAN.md)).
+layer ([ATTENDEE_GATE_RESALE_PLAN.md](./ATTENDEE_GATE_RESALE_PLAN.md)). `WoCoTicketLedger` does
+have owner-authorised `transferSlot` and `transferSlotWithSignature` (gasless, EIP-712), but only
+the current owner's key can call or sign them, a burner's key no longer exists, and no app flow
+uses them today.
 
 ---
 
@@ -167,17 +218,21 @@ personal-sign prefix — not raw keccak256. Verification is one comparison:
 
 > `ecrecover(ticketSig, canonicalMessage) == slotOwner[onChainEventId][edition - 1]`
 
-`GET /t/:eventId/:seriesId/:edition/:sig` renders the ticket page, and appending `.json` returns
-a downloadable artifact carrying the QR payload, the signature and an explicit verdict:
+The emailed link opens a **static page on the app origin**, not a server route:
 
-- `valid` — recovered to the on-chain slot owner;
-- `unverified` — the chain was unreachable. **Distinct from invalid**, deliberately: "couldn't
-  ask" is not "no".
-- an invalid signature is a 403 and never renders.
+> `https://woco.eth.limo/ticket.html#{eventId}/{seriesId}/{edition}/{sig}?t=…&d=…&l=…&n=…&i=…&g=…`
 
-The download format keeps `claimed` and `original` as `null`. On-chain tickets have no
-intermediate credential objects — the contract *is* the ledger — and the fields stay so the shape
-is stable.
+Everything after `#` is the URL fragment, which a browser never sends in a request, so the
+signature reaches no server, CDN log or mail link scanner. The page draws the QR on the phone
+and can save it as an image (canvas, `blob:` download), so it works with no signal. Its CSP pins
+its one inline script by hash and sets `connect-src 'none'`; the only fetch is the event image,
+from one of two content gateways (`g` indexes `TICKET_IMAGE_GATEWAYS`, so the link names no
+host). One format, three users: `packages/shared/src/ticket/link.ts` (built by
+the email, read by the page and by the scanner's `parseTicketQr`).
+
+The page does **not** verify the ticket - the door does. The display fields after `?` are not
+authenticated: anyone holding the link can edit them, as they could a screenshot. The retired
+`/t/…/{sig}` route answers 410 and echoes nothing; it put the signature in the request path.
 
 There was once a `woco-claimed-owner-v2` owner-binding attestation. It was **deleted**: an audit
 found it was produced by nothing and verified by nothing, and an unverified signature field
@@ -190,7 +245,7 @@ checked it. Ownership that is actually enforced lives on chain and in the gate b
 
 The scanner is a standalone PWA (`dist-scanner/`, built from the same `apps/web` source) with no
 auth stack, no external fonts and no Swarm reads. It is provisioned entirely by a **door-pass
-URL** and works fully offline once provisioned.
+URL**. Whether it can admit offline depends on the pass's door mode (below).
 
 ```
 Organiser (session-authed):
@@ -199,17 +254,62 @@ Organiser (session-authed):
                                        is never sent to the server
   GET  /api/events/:id/checkin-status  live counts for the dashboard
 
-Scanner (X-Door-Pass header):
-  GET  /api/checkin/:eventId/pack      offline verification pack
+Scanner (X-Door-Pass + X-Scanner-Device headers):
+  GET  /api/checkin/:eventId/pack      verification pack (binds a "single" pass)
+  POST /api/checkin/:eventId/claim     admit ONE ticket - first claim anywhere wins
   POST /api/checkin/:eventId/sync      merge this device's check-ins, get all
 ```
 
-The pack holds only public or derivable data — on-chain slot owners, claim-ledger hashes — plus
-the roster ciphertext. The roster **key lives in the pass URL fragment**, so it never reaches the
-server: a leaked pass token exposes no attendee plaintext.
+The pack holds only public or derivable data — on-chain slot owners, voided slots, the merged
+check-in set, the door mode — plus the roster ciphertext. The roster **key lives in the pass URL fragment**, so it never reaches the
+server: a leaked pass token exposes no attendee plaintext. It is derived, never stored (#186):
+HKDF(account secret, `woco/door-pass/roster/v1:{eventId}:{jti}`), so the pass is issued first and any of
+the organiser's passkeys can show it or re-push the roster. A passkey removal moves the account to a
+new secret, and the server revokes passes from the older generation.
 
-Check-ins are **merged**, not overwritten, so several scanner devices can work the same door
-offline and reconcile on sync.
+**A ticket is admitted once, across every scanner (#641).** Check-in is a capacity control, so a
+second admission is a crowd-safety defect, never a statistic to reconcile afterwards. The organiser
+picks a door mode when issuing the pass, and a pass without one is `several`:
+
+- `single` - the server binds the pass to the first device that loads the pack
+  (`bindSinglePassDevice`) and refuses every other with `409 wrong-device`. That device is the only
+  door, so it admits from its own set and works with no signal; it syncs when it can.
+  Regenerating the pass is how it moves phones, and a device that learns its pass is dead stops
+  admitting. It learns that only from a server answer: a bound phone that is OFFLINE when the
+  organiser regenerates keeps admitting until it next has signal, and the new pass's phone does
+  not know those tickets. The dashboard tells the organiser to bring the old phone online and
+  let it sync first; nothing can enforce it for a phone that cannot be reached.
+- `several` - every admission is `POST /claim`: `claimCheckin` is synchronous, persists before it
+  answers, and returns `admitted` to the first claim and `already-in` (with the holder's record)
+  to every other. `/pack` refuses a scanner that sends no `X-Scanner-Device` in every mode: a
+  bundle from before #641 ignores the door mode and would admit offline on a shared door. The scanner shows green ONLY on a confirmed `admitted` for that exact ticket.
+  No signal, a timeout (4s), a 5xx or a malformed answer is a grey **couldn't confirm** - not
+  admitted. A scan attempt carries a `claimId` kept until an answer arrives, so a retry after a
+  lost response is the same attempt and reads `admitted`, not its own duplicate. The retry must
+  come from the same device: claimIds reach every scanner on the pass, so one alone is replayable.
+
+A check-in set that exists but cannot be read fails closed (every claim refused), because reading
+it as empty would admit everyone again. `/sync` still merges records, and a conflict (one ticket
+recorded by two devices) is now a defect to investigate, not an expected outcome.
+
+**Refunded tickets (#645).** A refunded or charged-back sale still verifies on chain (the contract
+has no per-slot void), so the pack carries `voidSlots` per series from `.data/ticket-sales.json`,
+keyed by (on-chain event, contract, slot) — never the orderRef. A refund in FULL voids once the
+money is on its way back (`pending` or `succeeded`; a failed one lifts the void); a partial refund
+voids nothing and raises an alarm, since which ticket it was for is unknowable. A chargeback, even
+on part of an order, voids every slot of its sale and a won dispute lifts it; an inquiry voids
+nothing (#696, #699, #700). The scanner checks it only AFTER the owner
+and signature pass: a forged QR for a refunded slot still reads `invalid`, and a genuine one reads
+`refunded`, consumes no check-in, and is refused on the roster too. A device learns of a refund on
+its next pack refresh. The ticket page cannot say "refunded" — it makes no requests by design; the
+organiser's orders view shows `Refunded` / `Part refunded`.
+
+**Cancelling an event (#644; #703, #704).** The organiser types the event's name to confirm
+(`POST /api/events/:id/cancel`); it is one-way. From then on checkout, holds and fulfilment refuse
+the event (`.data/event-cancellations.json`, fail closed if unreadable), and a worker refunds every
+sale in full from Stripe's current state. Each landed refund voids its tickets through the path
+above, so the door does not wait for a webhook. Payouts for the event stay held until its refunds
+settle ([PAYOUTS.md](./PAYOUTS.md)).
 
 ---
 
@@ -238,17 +338,24 @@ its supervised end-to-end sequence has not been run against a real holder.
 
 ---
 
-## 7. The attendee gate
+## 7. The attendee gate (the account unlock)
 
-Creating a profile, claiming a sub-ENS name or acting socially requires passing a gate. Either
-condition passes (`apps/server/src/lib/gate/check.ts`):
+Anything that costs the platform storage or sponsored gas needs an unlocked account: claiming a
+sub-ENS name, saving a profile or photo, writing a like or follow, raw uploads, issuer
+statements, an account's first device record, and every sponsored userOp the ZeroDev policy
+webhook pays for (#753, #757, #758). Any one condition passes
+(`apps/server/src/lib/gate/check.ts`, owner decision 2026-09-14, #575):
 
-1. a **ticket binding** exists — the parent proved rightful possession of a purchased ticket; or
-2. the parent is an **organiser** — has a creator events directory. Brands claim names and
-   publish profiles without buying tickets.
+1. a **ticket binding** exists — the parent proved rightful possession of a purchased ticket;
+2. the parent has **published events** — brands claim names without buying tickets (every
+   publishable event already needs Stripe, so this is 3 by another route);
+3. the parent completed **Stripe verification** — the stored flag, written only from Stripe's own
+   answer; or
+4. a **confirmed referral** — someone this account invited verified with Stripe.
 
-`ATTENDEE_GATE_DISABLED=1` is a rollout kill-switch; status is still reported so the UI can be
-exercised with the gate off.
+A read that cannot answer refuses, never allows. A refusal is `403 ticket_required`, which the
+client turns into the unlock popup. `ATTENDEE_GATE_DISABLED=1` is a rollout kill-switch; status is
+still reported so the UI can be exercised with the gate off.
 
 ---
 
@@ -256,17 +363,29 @@ exercised with the gate off.
 
 | Gone | Why |
 |---|---|
-| **The v1 claim rail** | `POST /claim` allocated an edition by scanning a Swarm editions feed. The editions feed was retired first, so the route could not mint for anything created afterwards. Deleted; `WoCoEventV2` is the only ticket ledger. `claims.ts` now holds only `claim-status`. |
+| **The v1 claim rail** | `POST /claim` allocated an edition by scanning a Swarm editions feed. The editions feed was retired first, so the route could not mint for anything created afterwards. Deleted; the events contract is the only ticket ledger. `claims.ts` now holds only `claim-status`. |
 | **The organiser approval flow** | Routes, flags and UI all deleted with the v1 rail. Tracked for return on the v2 contract rail (#202). |
 | **Any free-ticket path** | An accepted consequence of the above: there is no v2 mint path for a free ticket yet. `freeEventsAllowed = false`, so nothing live changes. |
 | **`woco.manifest.v1` / `woco.ticket.v2` / the v1 cert format** | Deleted and dispatch-refused by every verifier. |
+| **The server-rendered ticket page `/t/…`** | Put the signature in the request path. Replaced by the static `/ticket.html` page (#690); `/t` answers 410 and echoes nothing. |
 
-> **Which contract you are on is env-selected.** Production sets `WOCO_EVENT_CHAIN_ID=421614`
-> and `WOCO_EVENT_VERSION_421614=v2`. Unset, the server defaults to chain `84532` (Base Sepolia)
-> and version `v1` — a different contract entirely. Neither variable is in `.env.example`.
+## 9. Which contract
 
-`WoCoTicketLedger` — a successor contract that stamps the **real organiser** as owner of record
-rather than `msg.sender` — is written, reviewed and merged in the contracts repo, and is **not
-deployed**. `DEPLOYED_LEDGER` is an empty map on purpose: setting
-`WOCO_EVENT_VERSION_{chainId}=ledger` before it is deployed makes every caller throw
-"No WoCoEvent contract deployed", which is the correct loud failure.
+> **Which contract you are on is env-selected.** Production selects `WoCoTicketLedger` on
+> Arbitrum Sepolia through `WOCO_EVENT_CHAIN_ID`, `WOCO_EVENT_VERSION_{chainId}` and - because
+> `DEPLOYED_LEDGER` in `apps/server/src/lib/chain/event-contract.ts` is still an empty map -
+> `WOCO_EVENT_ADDRESS_LEDGER_{chainId}`. Unset, the server defaults to chain `84532` (Base Sepolia)
+> and version `v1` — a different contract entirely. None of these variables is in `.env.example`.
+> `/api/health` `ticketMinting` reports the chain, contract and version actually in use.
+
+`WoCoTicketLedger` replaced `WoCoEventV2` for new registrations. It stamps the **real organiser**
+as owner of record (V2 stamped `msg.sender`, the sponsor), holds no funds, caps each sponsor's
+mints per hour, and has owner-authorised slot transfers (§3). The same source is deployed on
+Arbitrum One (2026-09-25); the server is not switched to it yet. Registrations made on V2 keep
+verifying through their own recorded contract (#563). Addresses: [DEPLOYMENTS.md](./DEPLOYMENTS.md)
+and the contracts repository's `deployments/*.json`.
+
+> **Superseded (kept for the record).** Until 2026-09-24 the ledger was "written, reviewed and
+> merged, and not deployed", and `DEPLOYED_LEDGER` was empty so that selecting it early failed
+> loudly with "No WoCoEvent contract deployed". The map is still empty in code; production now
+> supplies the address by env.

@@ -1,6 +1,13 @@
 # Event-Creation Anti-Abuse Gate — Design / Build Plan
 
-**Status:** design, not started. Build in a fresh chat from this doc.
+**Status (2026-10-05):** design, not started. Verified against `main` (94364b56). The hole this
+doc set out to close (ungated crypto-only events) is shut for now by flags, not by this gate:
+crypto and free events are off, so **every publishable event needs Stripe verification**, and
+organising needs a **passkey account** (#768). The EAS substrate the recommendation reuses is
+deleted (#475, #476): likes and follows are Swarm-native and need the same unlock as a name
+(a ticket, Stripe verification or a confirmed invite, #753). The design below still holds as the
+answer for when crypto-only or free events return. Read §5 and §10 with that in mind.
+
 **Context (2026-06-17):** we briefly used "Stripe verified" as a universal gate on event
 creation, then relaxed it — Stripe is the wrong tool for abuse prevention. This doc specs the
 *right* gate for production.
@@ -20,12 +27,18 @@ Using Stripe for the second question is wrong: it forces crypto-native organiser
 (against the point of a crypto-only event) and is a weak sybil gate anyway (test accounts are
 free). So Stripe stays scoped to card payments; abuse prevention gets its own gate.
 
-## 2. Current state (interim, shipped)
+## 2. Current state (2026-10-05)
 
+- **Every event is a card event.** `cryptoPaymentsAllowed` and `freeEventsAllowed` are false
+  (`packages/shared/src/features.ts`), so the server refuses a series without a price of at
+  least `MIN_TICKET_PRICE` and a payment rail, and refuses crypto outright (`routes/events.ts`).
 - **Card event** → Stripe verification required (up-front `StripeVerifyGate` prompt + Publish
   gate; server live-checks `charges_enabled` in `events.ts` `hasStripeSeries`).
-- **Crypto-only event** → **ungated**. Acceptable now (testnet, small known team). This is the
-  hole this doc closes before production.
+- **Organiser account** → passkey only (#768): the organiser area opens only for a passkey
+  account, and Stripe connect refuses anything but a smart account.
+- **Crypto-only event** → impossible while the flag is off. Before that it was **ungated**; that
+  hole returns with the crypto rail unless this gate ships first.
+- Stripe is still a card gate, not an abuse gate - the conflation in §1 stands.
 
 ## 3. Goals & non-goals
 
@@ -35,7 +48,8 @@ free). So Stripe stays scoped to card payments; abuse prevention gets its own ga
 - Crypto-native and on-theme for Arbitrum; privacy-preserving where possible.
 - Reusable: the same "verified human" signal should also feed the **gasless-sponsorship
   eligibility gate** for EAS likes (an existing unbuilt TODO — see [[project_eas_likes]]),
-  so we build the primitive once.
+  so we build the primitive once. *(Superseded: EAS likes are deleted; likes and follows are
+  Swarm-native, chain-free, and gated by the attendee unlock - docs/SWARM_SOCIAL_PLAN.md.)*
 
 **Non-goals**
 - Not KYC. We don't want or store identity PII (privacy + liability). PoH must be ZK.
@@ -69,6 +83,12 @@ creation (and gasless-like sponsorship). **Stake as a secondary/booster** path: 
 /won't do PoH, or who want higher limits, post a stake instead. Plus per-identity rate limits.
 
 ## 5. Recommendation
+
+> Superseded in part (2026-10-05): EAS is gone from the tree (#476; `no-eas.test.ts` fails CI on
+> any EAS symbol) and social subjects key by account address, not name namehash. A
+> `verified-human` record would be a Swarm-native signed record like the campaign records
+> (`packages/shared/src/campaign/records.ts`), not an attestation. The PoH-primary reasoning
+> stands.
 
 Lean **PoH-primary, recorded as an EAS attestation**, with stake as a fallback/booster:
 
@@ -128,7 +148,13 @@ the nullifier-dedup + server enforcement carefully.
 - Should `verified-human` be a profile-bound attestation (sub-ENS namehash) or address-bound?
 - Migration: existing organisers — grandfather, or require verification on next create?
 
-## 10. Integration points (current code)
+## 10. Integration points (as of 2026-06; partly stale)
+
+Still valid: `routes/events.ts`, `EventForm.svelte` / `SiteBuilder.svelte` (`SiteBuilder.svelte`
+now lives at `apps/web/src/lib/creator/SiteBuilder.svelte`), `features.ts`. Gone: the
+`likes/*` paths (deleted with the EAS rail, #475). `[[...]]` links are private notes, not
+repo files.
+
 - `apps/server/src/routes/events.ts` — publish gate (add the human/stake check alongside the
   existing Stripe `hasStripeSeries` check; keep them independent).
 - `apps/web/src/lib/creator/events/{EventForm,SiteBuilder}.svelte` — create-flow hosts (add the

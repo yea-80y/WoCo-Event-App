@@ -1,5 +1,6 @@
 import type { Hex64, Hex0x } from "../types.js";
-import type { OrderField, SealedBox } from "../crypto/types.js";
+import type { OrderField } from "../crypto/types.js";
+import type { SealedBoxV2 } from "../crypto/sealed-box-shape.js";
 import type { ObjectGate, ObjectGateGroup } from "../object/types.js";
 import type { SignedManifestV2, EditionV1Body } from "../edition/types.js";
 import type { IssuerBindingV1 } from "../crypto/issuing.js";
@@ -171,6 +172,15 @@ export interface PaymentQuote {
 /** Platform fee in basis points — must match WoCoEscrow.sol FEE_BASIS_POINTS */
 export const PLATFORM_FEE_BP = 150; // 1.5%
 
+/**
+ * Whether our application fee goes back to the organiser when they cancel an
+ * event and every buyer is refunded (#644). OFF: we keep it, as ORGANISER_TERMS
+ * §6 says (owner decision 2026-09-25, option A). A future USP may turn it on —
+ * change the terms in the same PR. Each cancellation captures the value at the
+ * moment it is made, so flipping this never changes one already under way.
+ */
+export const CANCELLATION_RETURNS_PLATFORM_FEE = false;
+
 /** USDC contract addresses by chain (native Circle-issued USDC) */
 export const USDC_ADDRESSES: Partial<Record<PaymentChainId, Hex0x>> = {
   1: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Hex0x,
@@ -260,8 +270,10 @@ export interface EventFeed {
    *  discovery-filter home for location (the free-text `location` above stays as
    *  the display line). Copied + normalised into each snapshot card. */
   geo?: EventGeo;
-  /** Organizer's X25519 public key for order encryption (hex, no 0x prefix) */
-  encryptionKey?: string;
+  /** Content address of the organiser's X-Wing ORDER key chunk (64 hex, no 0x;
+   *  `event/order-key.ts`, #642). Buyers fetch the 1216-byte key by this ref and
+   *  verify it before sealing their order data to it. */
+  encryptionKeyRef?: string;
   /** Order form fields — present when organizer collects customer info */
   orderFields?: OrderField[];
   /** How attendees can claim tickets (default: "wallet") */
@@ -285,6 +297,14 @@ export interface EventFeed {
    *  treats it as not-found. Only settable when zero tickets exist. */
   deleted?: boolean;
   deletedAt?: string;
+  /**
+   * The organiser cancelled the event and every buyer is being refunded (#644).
+   * DISPLAY ONLY: for a Phase B event the organiser signs this feed and could
+   * re-sign it without the field. Sales are refused, and refunds run, from the
+   * server's own record (`.data/event-cancellations.json`), which the API also
+   * overlays onto every feed it returns.
+   */
+  cancelledAt?: string;
 }
 
 /** Ticket series summary (stored within event feed) */
@@ -330,7 +350,9 @@ export interface SeriesSummary {
 export interface SeriesManifestBlob {
   v: 2;
   signedManifest: SignedManifestV2;
-  /** Swarm refs to individual edition body JSON blobs, indexed by edition-1 (0-based). */
+  /** Swarm refs to individual edition body JSON blobs, indexed by edition-1 (0-based).
+   *  EMPTY on both writers since #263 (events already did this in 896b29b3): the
+   *  manifest's Merkle root commits to every body, and no reader fetches them. */
   objectRefs: Hex64[];
   /** keccak256(dagCbor(manifestBody)), 0x-prefixed bytes32 — matches on-chain manifestRef. */
   manifestDigestHex: string;
@@ -389,7 +411,9 @@ export interface CreateEventV3Request {
   /** Proof of possession binding the issuing key to the (server-verified)
    *  parent — see {@link IssuerBindingV1} for what the server must check. */
   issuerBinding: IssuerBindingV1;
-  encryptionKey?: string;
+  /** The organiser's X-Wing public key (1216 bytes, hex), which the server
+   *  publishes as its own chunk and names in the feed as `encryptionKeyRef`. */
+  encryptionPublicKey?: string;
   orderFields?: OrderField[];
   claimMode?: ClaimMode;
   skipAutoList?: boolean;
@@ -419,6 +443,8 @@ export interface EventDirectoryEntry {
    *  entry can resolve the event SOC with no global registry. Absent for legacy
    *  platform-signed events. */
   creatorFeedSigner?: Hex0x;
+  /** #644: the event was cancelled — overlaid by the server on the organiser's lists. */
+  cancelledAt?: string;
 }
 
 /** Body of POST /api/events/:id/update-meta — edits event-LEVEL metadata only.
@@ -542,6 +568,8 @@ export interface SeriesClaimStatus {
   available: number;
   /** Seats currently held by active reservations (informational). */
   held?: number;
+  /** The event was cancelled (#644): `available` reads 0 and nothing is on sale. */
+  cancelled?: boolean;
 }
 
 /** Payment method used to obtain a ticket. */
@@ -558,7 +586,17 @@ export interface OrderEntry {
   edition: number;
   claimerAddress: string;
   claimedAt: string;
-  encryptedOrder?: SealedBox;
+  encryptedOrder?: SealedBoxV2;
   /** How this claim was paid for. Absent on legacy entries. */
   via?: ClaimVia;
+  /**
+   * #645: the sale was refunded in full, or the buyer's bank took the payment
+   * back (a chargeback, open or lost) — either way the ticket no longer admits.
+   * `partial` = part of the order was refunded (tickets still admit; the
+   * organiser should check Stripe). Absent = none of these, or before this was
+   * recorded.
+   */
+  refund?: "refunded" | "disputed" | "partial";
+  /** #546: the attendee's record was erased on request. No order data is sent. */
+  erased?: true;
 }

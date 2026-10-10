@@ -3,8 +3,9 @@
  */
 
 import { authPost, authGet, authDelete, apiBase } from "./client.js";
+import { sendCheckout } from "./checkout-request.js";
 import { auth } from "../auth/auth-store.svelte.js";
-import type { SealedBox } from "@woco/shared";
+import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 
 export interface RequirementCategory {
   label: string;
@@ -75,36 +76,98 @@ export async function removeStripeAccount(): Promise<void> {
  * save-order race that was leaving multi-ticket purchases without attendee
  * data on the dashboard.
  */
-export async function prepareStripeOrder(encryptedOrder: SealedBox): Promise<string> {
+/** A stored order box: its ref plus the server's token for it. Checkout accepts a
+ *  pre-uploaded ref only with its token (#661), so the two travel together. */
+export interface PreparedOrder {
+  orderRef: string;
+  orderRefToken: string;
+}
+
+/**
+ * The order was sealed to a key the organiser has moved on from (#186): `current` is
+ * the key the server says to re-seal to (its bytes are checked against it before use).
+ */
+export class OrderKeyStaleError extends Error {
+  constructor(
+    message: string,
+    readonly current: string | null,
+  ) {
+    super(message);
+    this.name = "OrderKeyStaleError";
+  }
+}
+
+function staleRefusal(data: { code?: unknown; error?: unknown; encryptionKeyRef?: unknown }): OrderKeyStaleError | null {
+  if (data.code !== "ORDER_KEY_STALE") return null;
+  const ref = typeof data.encryptionKeyRef === "string" && /^[0-9a-f]{64}$/.test(data.encryptionKeyRef) ? data.encryptionKeyRef : null;
+  return new OrderKeyStaleError(typeof data.error === "string" ? data.error : "This page is out of date - reload it and try again.", ref);
+}
+
+/** `sealedTo`: the event and the order key the box was sealed to, checked by the server (#186). */
+export async function prepareStripeOrder(
+  encryptedOrder: SealedBoxV2,
+  sealedTo?: { eventId: string; encryptionKeyRef?: string },
+): Promise<PreparedOrder> {
   const resp = await fetch(`${apiBase}/api/stripe/prepare-order`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ encryptedOrder }),
+    body: JSON.stringify({
+      encryptedOrder,
+      ...(sealedTo ? { eventId: sealedTo.eventId } : {}),
+      ...(sealedTo?.encryptionKeyRef ? { encryptionKeyRef: sealedTo.encryptionKeyRef } : {}),
+    }),
   });
-  const data = await resp.json() as { ok: boolean; orderRef?: string; error?: string };
-  if (!data.ok || !data.orderRef) throw new Error(data.error || "Failed to prepare order");
-  return data.orderRef;
+  const data = await resp.json() as { ok: boolean; orderRef?: string; orderRefToken?: string; error?: string; code?: string; encryptionKeyRef?: string };
+  const stale = staleRefusal(data);
+  if (stale) throw stale;
+  if (!data.ok || !data.orderRef || !data.orderRefToken) throw new Error(data.error || "Failed to prepare order");
+  return { orderRef: data.orderRef, orderRefToken: data.orderRefToken };
+}
+
+/** What the server confirms about a returning buyer's checkout (#567) — never the full email. */
+export interface CheckoutStatus {
+  /** `cancelled` (#644): the event was cancelled — any payment is refunded, no ticket follows. */
+  status: "paid" | "open" | "expired" | "cancelled";
+  quantity: number;
+  seriesId: string;
+  emailMasked: string | null;
+}
+
+/** Null when the order cannot be checked; callers keep whatever they already show. */
+export async function getCheckoutStatus(eventId: string, sessionId: string): Promise<CheckoutStatus | null> {
+  try {
+    const params = new URLSearchParams({ eventId, session_id: sessionId });
+    const resp = await fetch(`${apiBase}/api/stripe/checkout-status?${params}`);
+    const data = await resp.json() as { ok: boolean; data?: CheckoutStatus };
+    return data.ok && data.data ? data.data : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Create a Stripe Checkout Session for an attendee to pay for a ticket.
  *
- * When the user is logged in (any auth kind), the request is signed so the
- * server can bind the claim to the VERIFIED parent wallet — this is what lets
- * us record both wallet + email on Stripe claims. The body never carries the
- * claimer address; the server reads it from the session.
+ * `linkAccount` (the caller decides, once per click): the request is signed so
+ * the server binds the claim to the VERIFIED parent wallet and records both
+ * wallet and email. The body never carries the claimer address; the server
+ * reads it from the session. Only ever true when a session key is already on
+ * the device — paying by card must not open a wallet (checkout-request.ts).
  *
- * Anonymous (no session) flow: email-only. Requires `claimerEmail`.
+ * Otherwise the guest flow: email only, `claimerEmail` required.
  */
 export async function createCheckoutSession(params: {
   eventId: string;
   seriesId: string;
   claimerEmail?: string;
   quantity?: number;
-  orderRef?: string;
+  /** A pre-uploaded order box — used only with its token. */
+  preparedOrder?: PreparedOrder;
   /** Raw encrypted order — server uploads in parallel with Stripe session
    *  creation when no pre-uploaded ref is available. */
-  encryptedOrder?: SealedBox;
+  encryptedOrder?: SealedBoxV2;
+  /** The order key `encryptedOrder` was sealed to (#186) - checked by the server. */
+  encryptionKeyRef?: string;
   /** Slot reservation id from POST /reserve. Server validates + stamps into
    *  Stripe session metadata; webhook consumes on successful claim. */
   reservationId?: string;
@@ -112,6 +175,8 @@ export async function createCheckoutSession(params: {
    *  shown — "not asked" is not the same as "declined", and only the two
    *  explicit answers are recorded. */
   marketingConsent?: boolean;
+  /** Sign the request and bind the purchase to the account. */
+  linkAccount: boolean;
 }): Promise<{ url: string }> {
   // Browsers strip the Referer path cross-origin (strict-origin-when-cross-origin),
   // so the server can't derive our full base. Pass it explicitly; server validates
@@ -136,8 +201,11 @@ export async function createCheckoutSession(params: {
     seriesId: params.seriesId,
     ...(params.claimerEmail ? { claimerEmail: params.claimerEmail } : {}),
     ...(params.quantity && params.quantity > 1 ? { quantity: params.quantity } : {}),
-    ...(params.orderRef ? { orderRef: params.orderRef } : {}),
+    ...(params.preparedOrder
+      ? { orderRef: params.preparedOrder.orderRef, orderRefToken: params.preparedOrder.orderRefToken }
+      : {}),
     ...(params.encryptedOrder ? { encryptedOrder: params.encryptedOrder } : {}),
+    ...(params.encryptedOrder && params.encryptionKeyRef ? { encryptionKeyRef: params.encryptionKeyRef } : {}),
     ...(params.reservationId ? { reservationId: params.reservationId } : {}),
     // Tri-state — `false` is a real answer, so this cannot be a truthiness spread.
     ...(params.marketingConsent !== undefined
@@ -148,19 +216,13 @@ export async function createCheckoutSession(params: {
     ...(cancelUrl ? { cancelUrl } : {}),
   };
 
-  if (auth.isConnected) {
-    const resp = await authPost<{ url: string }>("/api/stripe/create-checkout", body);
-    const data = resp as { ok: boolean; url?: string; error?: string; gated?: boolean };
-    if (!data.ok || !data.url) throw new CheckoutError(data.error || "Failed to create checkout session", !!data.gated);
-    return { url: data.url };
-  }
-
-  const resp = await fetch(`${apiBase}/api/stripe/create-checkout`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+  const data = await sendCheckout("/api/stripe/create-checkout", body, params.linkAccount, {
+    authPost: (path, b) => authPost<{ url: string }>(path, b),
+    fetch: (input, init) => fetch(input, init),
+    apiBase,
   });
-  const data = await resp.json() as { ok: boolean; url?: string; error?: string; gated?: boolean };
+  const stale = data.ok ? null : staleRefusal(data);
+  if (stale) throw stale;
   if (!data.ok || !data.url) throw new CheckoutError(data.error || "Failed to create checkout session", !!data.gated);
   return { url: data.url };
 }

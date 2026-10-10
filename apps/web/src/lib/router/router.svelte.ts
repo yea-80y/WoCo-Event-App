@@ -6,11 +6,15 @@
  *   NEUTRAL surface
  *     /                            splitter (landing — funnels to organiser vs attendee)
  *     /legal, /legal/:doc          legal (privacy, terms, organiser-terms, dpa, cookies)
+ *     /about                       about (how WoCo works — the technical companion)
+ *     /ref/:token                  invite (an invite link: stores the invite, shows who sent it)
  *
  *   ATTENDEE surface
+ *     /home                        member-home (a signed-in member's home)
+ *     /contacts                    contacts (who a member invited and follows)
  *     /discover                    discover (events feed — was at /)
  *     /event/:id                   event
- *     /tickets   (and /my-tickets) my-tickets
+ *     /tickets   (and /my-tickets) profile, passport tab
  *     /verify                      verify
  *     /signup                      signup (email-CTA landing; ?gt= gate token)
  *     /profile, /profile/:addr     profile
@@ -19,7 +23,7 @@
  *     /coaster/:subject            coaster (log a lap — reached by QR/link, not nav)
  *
  *   CREATOR surface
- *     /creator                          creator-home  (studio dashboard)
+ *     /creator                          creator-home  (organiser dashboard)
  *     /creator/events                   dashboard-index
  *     /creator/events/new   (and /create) create
  *     /creator/events/:id               dashboard
@@ -36,6 +40,9 @@
  *     /site-builder                     site-builder (legacy single-event builder)
  *     /stripe/return, /stripe/refresh   stripe-return / stripe-refresh
  */
+
+import { FEATURES } from "@woco/shared";
+import { restoreEscapedRoute } from "../browser/in-app-route.js";
 
 export type Surface = "neutral" | "attendee" | "creator";
 
@@ -62,6 +69,19 @@ function matchRoute(pathWithQuery: string): Match {
   // ── Neutral splitter (root landing) ──────────────────────────────────────
   if (path === "/" || path === "") return { route: "splitter", params: {}, surface: "neutral" };
 
+  // ── Invite link — a screen of its own. `update()` has already stored the
+  //    invite; the page reads the token back from the link for display ───────
+  const refRoute = path.match(/^\/ref\/([^/?#]+)$/);
+  if (refRoute) {
+    let token = "";
+    try {
+      token = decodeURIComponent(refRoute[1]);
+    } catch {
+      // A malformed escape is a broken link: the page renders without an inviter.
+    }
+    return { route: "invite", params: { token }, surface: "neutral" };
+  }
+
   // ── Legal documents (neutral: reachable pre-login, from emails, and from a
   //    checkout the buyer has not signed into) ──────────────────────────────
   const legalMatch = path.match(/^\/legal(?:\/([a-z-]+))?$/);
@@ -69,12 +89,13 @@ function matchRoute(pathWithQuery: string): Match {
     return { route: "legal", params: { doc: legalMatch[1] ?? "index" }, surface: "neutral" };
   }
 
+  if (path === "/about") return { route: "about", params: {}, surface: "neutral" };
+
   // ── Creator surface (explicit /creator/* prefix) ─────────────────────────
   if (path === "/creator") return { route: "creator-home", params: {}, surface: "creator" };
   if (path === "/creator/events") return { route: "dashboard-index", params: {}, surface: "creator" };
   if (path === "/creator/events/new") return { route: "create", params: {}, surface: "creator" };
   if (path === "/creator/sites") return { route: "build", params: {}, surface: "creator" };
-  if (path === "/creator/shops") return { route: "my-shops", params: {}, surface: "creator" };
   if (path === "/creator/objects") return { route: "creator-objects", params: {}, surface: "creator" };
   if (path === "/creator/payouts") return { route: "payouts", params: {}, surface: "creator" };
   if (path === "/creator/audience") {
@@ -85,11 +106,20 @@ function matchRoute(pathWithQuery: string): Match {
   }
   if (path === "/creator/profile") return { route: "profile", params: {}, surface: "creator" };
 
-  const shopPosMatch = path.match(/^\/creator\/shops\/([^/]+)\/pos$/);
-  if (shopPosMatch) return { route: "shop-pos", params: { shopId: shopPosMatch[1] }, surface: "creator" };
+  // Shop rail is flagged off for launch (#124). Unresolved rather than
+  // redirected: falling through to the splitter fallback below is what an
+  // unknown path already does, so a bookmarked shop URL behaves like any other
+  // dead link. `/creator/shops` moved down here to sit with the other two — no
+  // route between its old position and this one matches that exact string.
+  if (FEATURES.shopAllowed) {
+    if (path === "/creator/shops") return { route: "my-shops", params: {}, surface: "creator" };
 
-  const shopEditorMatch = path.match(/^\/creator\/shops\/([^/]+)$/);
-  if (shopEditorMatch) return { route: "shop-editor", params: { shopId: shopEditorMatch[1] }, surface: "creator" };
+    const shopPosMatch = path.match(/^\/creator\/shops\/([^/]+)\/pos$/);
+    if (shopPosMatch) return { route: "shop-pos", params: { shopId: shopPosMatch[1] }, surface: "creator" };
+
+    const shopEditorMatch = path.match(/^\/creator\/shops\/([^/]+)$/);
+    if (shopEditorMatch) return { route: "shop-editor", params: { shopId: shopEditorMatch[1] }, surface: "creator" };
+  }
 
   const creatorSiteEventsMatch = path.match(/^\/creator\/sites\/([^/]+)\/events$/);
   if (creatorSiteEventsMatch) return { route: "site-events", params: { siteId: creatorSiteEventsMatch[1] }, surface: "creator" };
@@ -104,14 +134,19 @@ function matchRoute(pathWithQuery: string): Match {
   if (creatorProfileMatch) return { route: "profile", params: { address: creatorProfileMatch[1] }, surface: "creator" };
 
   // ── Attendee surface ────────────────────────────────────────────────────
+  if (path === "/home") return { route: "member-home", params: {}, surface: "attendee" };
+  if (path === "/contacts") return { route: "contacts", params: {}, surface: "attendee" };
   if (path === "/discover") return { route: "discover", params: {}, surface: "attendee" };
-  if (path === "/tickets" || path === "/my-tickets") return { route: "my-tickets", params: {}, surface: "attendee" };
+  // Tickets live in the Profile passport; these paths open it on that tab.
+  if (path === "/tickets" || path === "/my-tickets") return { route: "profile", params: { tab: "passport" }, surface: "attendee" };
   if (path === "/verify") return { route: "verify", params: {}, surface: "attendee" };
   if (path === "/signup") {
     const gt = new URLSearchParams(query).get("gt");
     return { route: "signup", params: gt ? { gt } : {}, surface: "attendee" };
   }
   if (path === "/protect") return { route: "protect", params: {}, surface: "attendee" };
+  if (path === "/passkeys") return { route: "passkeys", params: {}, surface: "attendee" };
+  if (path === "/link") return { route: "link", params: {}, surface: "attendee" };
   if (path === "/recover") return { route: "recover", params: {}, surface: "attendee" };
   if (path === "/profile") return { route: "profile", params: {}, surface: "attendee" };
   const soonMatch = path.match(/^\/soon\/(.+)$/);
@@ -127,11 +162,14 @@ function matchRoute(pathWithQuery: string): Match {
     return { route: "coaster", params: { subject: coasterMatch[1].toLowerCase() }, surface: "attendee" };
   }
 
-  const shopTapMatch = path.match(/^\/shops\/([^/]+)\/tap$/);
-  if (shopTapMatch) return { route: "shop-tap", params: { shopId: shopTapMatch[1] }, surface: "attendee" };
+  // Attendee half of the shop rail — same flag, same fall-through (#124).
+  if (FEATURES.shopAllowed) {
+    const shopTapMatch = path.match(/^\/shops\/([^/]+)\/tap$/);
+    if (shopTapMatch) return { route: "shop-tap", params: { shopId: shopTapMatch[1] }, surface: "attendee" };
 
-  const shopOrderMatch = path.match(/^\/shop\/([^/]+)\/order\/([^/]+)$/);
-  if (shopOrderMatch) return { route: "shop-order", params: { shopId: shopOrderMatch[1], code: shopOrderMatch[2] }, surface: "attendee" };
+    const shopOrderMatch = path.match(/^\/shop\/([^/]+)\/order\/([^/]+)$/);
+    if (shopOrderMatch) return { route: "shop-order", params: { shopId: shopOrderMatch[1], code: shopOrderMatch[2] }, surface: "attendee" };
+  }
 
   const profileMatch = path.match(/^\/profile\/(0x[a-fA-F0-9]{40})$/);
   if (profileMatch) return { route: "profile", params: { address: profileMatch[1] }, surface: "attendee" };
@@ -165,9 +203,10 @@ function matchRoute(pathWithQuery: string): Match {
 }
 
 function update() {
-  // Referral capture: #/ref/{referrer} isn't a screen — persist the referrer
-  // and land on discover. The referrer is an address OR a WoCo sub-ENS name, so
-  // an organiser can share `#/ref/theirvenue` instead of forty hex characters.
+  // Referral capture: #/ref/{referrer} persists the referrer, then renders the
+  // invite page (see matchRoute). The referrer is an address OR a WoCo sub-ENS
+  // name, so an organiser can share `#/ref/theirvenue` instead of forty hex
+  // characters.
   //
   // The lazy import points at the dependency-free capture module rather than
   // the API client, so an address link costs a few lines instead of the client
@@ -198,8 +237,6 @@ function update() {
         m.clearCapturedRef();
       }
     });
-    window.location.replace(`${window.location.pathname}#/discover`);
-    return;
   }
   const matched = matchRoute(parseHash());
   _route = matched.route;
@@ -208,12 +245,24 @@ function update() {
 }
 
 if (typeof window !== "undefined") {
+  // A page reopened from a social app's browser on Android carries its route in
+  // the query (an intent URL cannot hold a fragment) - put it back first (#812).
+  restoreEscapedRoute(window.location, (url) =>
+    window.history.replaceState(window.history.state, "", new URL(url, window.location.href).href),
+  );
   window.addEventListener("hashchange", update);
   update();
 }
 
 export function navigate(path: string) {
   window.location.hash = path;
+}
+
+/** An in-app link on THIS page's host. A bare `href="#/…"` resolves against the
+ *  deploy's `<base href>` and walks the user onto the gateway, where a passkey is
+ *  a different account (#605). */
+export function routeHref(path: string): string {
+  return new URL(`#${path}`, window.location.href).href;
 }
 
 export const router = {

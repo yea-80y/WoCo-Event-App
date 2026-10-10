@@ -32,3 +32,13 @@ export function subEnsName(label: string): string {
 export function subEnsWebUrl(label: string): string {
   return `https://${label}.${SUB_ENS_WEB_SUFFIX}`;
 }
+
+/**
+ * The registrable label of the parent — the `woco` of `woco.eth`.
+ *
+ * DERIVED, never retyped. The renewal watch (#420) hashes this to read
+ * `BaseRegistrar.nameExpires`, and a second hand-written copy could silently
+ * watch a name that is not the one every subname hangs off — an alarm that is
+ * green about the wrong registration is worse than no alarm.
+ */
+export const SUB_ENS_PARENT_LABEL = SUB_ENS_PARENT.split(".")[0]!;

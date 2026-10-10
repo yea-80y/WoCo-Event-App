@@ -16,22 +16,31 @@ import {
   upsertGuardianAccount,
   type GuardianAccountIndex,
 } from "@woco/shared";
-import { readContentFeedResult, writeContentFeed, type ContentFeedResult } from "./content-feed.js";
+import { readContentFeedResult, writeContentFeed, type ContentFeedResult, type SocTransport } from "./content-feed.js";
+import { FEED_ROUTES } from "./gateways.js";
 
 /**
  * Read the index a guardian SOC signer owns. Tri-state; bytes that are not an
  * index (a foreign payload at our topic) are `unavailable`, never "no accounts".
- * `thorough` is for the write path; the portal's discovery read leaves it off.
+ *
+ * ALWAYS thorough - both callers act on what it misses (#689). The upsert
+ * rewrites the index from it, so a version it cannot see is an account dropped
+ * for good. The portal's auto-find shows a locked-out user their account from
+ * it, and a miss sends them to manual entry, which needs a name or an address
+ * they may not know. An index version uploaded through Etherna sits on Etherna's
+ * node before it has spread through Swarm to our bee, and a read that trusts our
+ * gateway's 404 misses it. The extra cost is one round at the end of the scan,
+ * paid once per recovery or protect.
  */
 export async function readGuardianAccountIndex(
   socOwnerAddress: string,
-  opts: { thorough?: boolean } = {},
 ): Promise<ContentFeedResult<GuardianAccountIndex>> {
   // The index postdates content-feed versioning, so there is no legacy chunk to
   // probe for — one fewer missing-chunk search per recovery.
   const res = await readContentFeedResult<unknown>(socOwnerAddress, GUARDIAN_ACCOUNT_INDEX_TOPIC, {
+    route: FEED_ROUTES.guardianIndex,
     skipLegacy: true,
-    thorough: opts.thorough,
+    thorough: true,
   });
   if (res.status !== "found") return res;
   if (!isGuardianAccountIndex(res.value)) {
@@ -56,8 +65,10 @@ export async function upsertGuardianAccountIndex(args: {
   socSignerPrivKey: string;
   socOwnerAddress: string;
   entry: { kernelAddress: string; label?: string; addedAt: number };
+  /** Test seam — production posts through our relay. */
+  transport?: SocTransport;
 }): Promise<GuardianIndexUpsertOutcome> {
-  const current = await readGuardianAccountIndex(args.socOwnerAddress, { thorough: true });
+  const current = await readGuardianAccountIndex(args.socOwnerAddress);
   if (current.status === "unavailable") {
     return { status: "skipped", reason: `index unreadable: ${current.reason ?? "unknown"}` };
   }
@@ -73,6 +84,8 @@ export async function upsertGuardianAccountIndex(args: {
     signerPrivKey: args.socSignerPrivKey,
     topic: GUARDIAN_ACCOUNT_INDEX_TOPIC,
     data: next.index,
+    route: FEED_ROUTES.guardianIndex,
+    transport: args.transport,
   });
   return { status: "written", version };
 }

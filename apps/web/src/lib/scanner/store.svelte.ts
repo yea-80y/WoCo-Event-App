@@ -1,12 +1,20 @@
 /**
  * Scanner state machine (Svelte 5 runes). Owns provisioning, the offline
- * pack, the nullifier set, and opportunistic sync. All actions work offline
- * except provisioning/sync, which need the API.
+ * pack, the nullifier set, and sync.
+ *
+ * Admission depends on the pass's door mode (#641):
+ * - "single": this is the only device that can use the pass (the server binds it
+ *   at provisioning), so it admits from its own set and works fully offline.
+ * - "several": every admission is claimed at the server first - first scan
+ *   anywhere wins - and a scan that cannot be confirmed does not admit.
+ * A ticket is never admitted twice; "couldn't confirm" is the price of that.
  */
 
 import {
   decodeDoorPassToken,
   parseDoorPassFragment,
+  SCANNER_DEVICE_HEADER,
+  type DoorMode,
   type CheckinConflict,
   type CheckinPack,
   type CheckinRecord,
@@ -16,6 +24,8 @@ import {
 import * as db from "./db.js";
 import { decryptRoster } from "./roster-crypto.js";
 import { verifyTicket, type VerifyVerdict } from "./verify.js";
+import { claimAdmission, newClaimId, type ClaimAnswer } from "./claim.js";
+import { admit, doorModeOf, type Admission } from "./admission.js";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 const SYNC_INTERVAL_MS = 30_000;
@@ -23,9 +33,20 @@ const SYNC_INTERVAL_MS = 30_000;
 export type ScanOutcome =
   | { kind: "checked-in"; strength: "onchain"; seriesName: string; edition: number; attendee?: RosterEntry }
   | { kind: "duplicate"; record: CheckinRecord; seriesName?: string; edition: number; attendee?: RosterEntry }
+  /** Genuine ticket whose sale was refunded (#645). Not admitted; no check-in recorded. */
+  | { kind: "refunded"; seriesName: string; edition: number; attendee?: RosterEntry }
   | { kind: "rejected"; reason: string }
+  /** Genuine ticket, but the server could not be asked or did not answer in
+   *  time (#641). NOT admitted - with several scanners, another may hold it. */
+  | { kind: "cant-confirm"; message: string; seriesName?: string; edition?: number; attendee?: RosterEntry }
   | { kind: "wrong-event" }
   | { kind: "unreadable" };
+
+export type ManualCheckinResult =
+  | { kind: "checked-in" }
+  | { kind: "duplicate"; record: CheckinRecord }
+  | { kind: "refunded" }
+  | { kind: "cant-confirm"; message: string };
 
 class ScannerStore {
   phase = $state<"loading" | "unprovisioned" | "provisioning" | "ready">("loading");
@@ -44,11 +65,14 @@ class ScannerStore {
   pendingCount = $state(0);
   /** Set when the server said the pass was revoked/expired — device must re-provision. */
   passDead = $state<string | null>(null);
+  /** A server claim is in flight - the scan screen shows "checking" and pauses the camera. */
+  claiming = $state(false);
 
   private syncTimer: ReturnType<typeof setInterval> | null = null;
   private deviceId = "";
 
   totalCapacity = $derived(this.pack?.series.reduce((n, s) => n + s.totalSupply, 0) ?? 0);
+  doorMode = $derived<DoorMode>(doorModeOf(this.pack));
   checkedInCount = $derived(this.checkins.size);
 
   async init(): Promise<void> {
@@ -65,7 +89,7 @@ class ScannerStore {
     if (fragment) {
       await this.provision(fragment.token, fragment.keyB64url);
       // Scrub the secret-bearing fragment from the address bar + history.
-      history.replaceState(null, "", location.pathname + location.search);
+      history.replaceState(null, "", new URL(location.pathname + location.search, location.href).href);
       return;
     }
 
@@ -106,6 +130,9 @@ class ScannerStore {
         exp: decoded.payload.exp,
       };
       await db.setStoredPass(pass);
+      // A pass for another event starts from an empty in-memory set;
+      // `reloadCheckins` only ever adds to it.
+      if (this.pass?.eventId !== pass.eventId) this.checkins = new Map();
       this.pass = pass;
       this.passDead = null;
       await this.absorbPack(pack);
@@ -128,19 +155,45 @@ class ScannerStore {
     if (verdict.status === "unreadable") return { kind: "unreadable" };
     if (verdict.status === "wrong-event") return { kind: "wrong-event" };
     if (verdict.status === "invalid") return { kind: "rejected", reason: verdict.reason };
+    if (verdict.status === "refunded") {
+      // Before `mark`: a refunded ticket consumes no nullifier, so if the refund
+      // was a mistake and is reversed, the ticket still works at the door.
+      const { ticket } = verdict;
+      return {
+        kind: "refunded",
+        seriesName: verdict.seriesName,
+        edition: ticket.edition,
+        attendee: this.findAttendee(ticket.seriesId, ticket.edition),
+      };
+    }
 
     const { ticket } = verdict;
-    const duplicate = await this.mark(ticket.seriesId, ticket.edition, "scan");
     const attendee = this.findAttendee(ticket.seriesId, ticket.edition);
-    if (duplicate) {
-      return { kind: "duplicate", record: duplicate, seriesName: verdict.seriesName, edition: ticket.edition, attendee };
-    }
-    return { kind: "checked-in", strength: verdict.strength, seriesName: verdict.seriesName, edition: ticket.edition, attendee };
+    const base = { seriesName: verdict.seriesName, edition: ticket.edition, attendee };
+
+    const answer = await this.admitTicket(ticket.seriesId, ticket.edition, "scan");
+    if (answer.kind === "admitted") return { kind: "checked-in", strength: verdict.strength, ...base };
+    if (answer.kind === "already-in") return { kind: "duplicate", record: answer.record, ...base };
+    return { kind: "cant-confirm", message: answer.message, ...base };
   }
 
-  /** Roster-list check-in — no QR involved, so no signature to verify. */
-  async manualCheckin(seriesId: string, edition: number): Promise<CheckinRecord | null> {
-    return this.mark(seriesId, edition, "manual");
+  /**
+   * Roster-list check-in — no QR involved, so no signature to verify. A
+   * refunded ticket is refused here as at the camera (the roster can predate
+   * the refund); the roster offers no button for one, this is the backstop.
+   */
+  async manualCheckin(seriesId: string, edition: number): Promise<ManualCheckinResult> {
+    if (this.isRefunded(seriesId, edition)) return { kind: "refunded" };
+    const answer = await this.admitTicket(seriesId, edition, "manual");
+    if (answer.kind === "admitted") return { kind: "checked-in" };
+    if (answer.kind === "already-in") return { kind: "duplicate", record: answer.record };
+    return answer;
+  }
+
+  /** Whether the pack lists this ticket's sale as refunded (#645). */
+  isRefunded(seriesId: string, edition: number): boolean {
+    const series = this.pack?.series.find((s) => s.seriesId === seriesId);
+    return series?.voidSlots?.includes(edition - 1) ?? false;
   }
 
   isCheckedIn(seriesId: string, edition: number): CheckinRecord | undefined {
@@ -158,10 +211,15 @@ class ScannerStore {
       const pending = await db.getPending();
       const resp = await fetch(`${API_BASE}/api/checkin/${encodeURIComponent(this.pass.eventId)}/sync`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Door-Pass": this.pass.token },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Door-Pass": this.pass.token,
+          [SCANNER_DEVICE_HEADER]: this.deviceId,
+        },
         body: JSON.stringify({ deviceId: this.deviceId, checkins: pending }),
       });
-      if (resp.status === 401 || resp.status === 403) {
+      // 409: a single-scanner pass that is bound to another phone - same remedy.
+      if (resp.status === 401 || resp.status === 403 || resp.status === 409) {
         const body = (await resp.json().catch(() => null)) as { error?: string } | null;
         this.passDead = body?.error ?? "Door pass no longer valid";
         return;
@@ -213,6 +271,71 @@ class ScannerStore {
 
   // ── internals ─────────────────────────────────────────────────────────────
 
+  /** The door's decision for a genuine, unrefunded ticket - rules in `admission.ts`. */
+  private admitTicket(seriesId: string, edition: number, method: "scan" | "manual"): Promise<Admission> {
+    // Built and handed over with no await in between, so `claimInFlight` is
+    // still true-to-now when `claimAtServer` raises the flag.
+    return admit({
+      mode: this.doorMode,
+      passDead: this.passDead,
+      online: this.online,
+      claimInFlight: this.claiming,
+      known: this.isCheckedIn(seriesId, edition),
+      markLocally: () => this.mark(seriesId, edition, method),
+      claimAtServer: () => this.claimAtServer(seriesId, edition, method),
+    });
+  }
+
+  /**
+   * Ask the server to admit a ticket ("several" passes). The claimId is kept
+   * until an answer arrives, so a re-scan after a lost response retries the SAME
+   * attempt and is admitted, not turned away as "already in" by its own claim.
+   *
+   * `claiming` stays up until the answer is recorded here: while it is down, the
+   * next scan of this ticket must find it in `checkins` or find no pending
+   * claimId - never neither, or it would replay this claim and show green twice.
+   */
+  private async claimAtServer(seriesId: string, edition: number, method: "scan" | "manual"): Promise<ClaimAnswer> {
+    this.claiming = true;
+    try {
+      if (!this.pass) return { kind: "cant-confirm", message: "Scanner not provisioned" };
+      const claimId = (await db.getPendingClaimId(seriesId, edition)) ?? newClaimId();
+      await db.setPendingClaimId(seriesId, edition, claimId);
+      const answer = await claimAdmission({
+        fetchFn: (input, init) => fetch(input, init),
+        apiBase: API_BASE,
+        eventId: this.pass.eventId,
+        token: this.pass.token,
+        deviceId: this.deviceId,
+        claim: { seriesId, edition, method, claimId, at: new Date().toISOString() },
+      });
+
+      if (answer.kind === "pass-dead") {
+        this.passDead = answer.message;
+        return answer;
+      }
+      if (answer.kind === "cant-confirm") return answer;
+
+      // Final either way. Into memory first, before anything can yield; then the
+      // pending claimId goes BEFORE the record is written, because a stale claimId
+      // is the only thing that could replay this admission.
+      const next = new Map(this.checkins);
+      next.set(db.ticketKey(seriesId, edition), answer.record);
+      this.checkins = next;
+      try {
+        await db.clearPendingClaimId(seriesId, edition);
+        await db.absorbServerCheckins([answer.record], []);
+      } catch (err) {
+        // The server holds the record and the next sync brings it back; the
+        // answer stands.
+        console.warn("[scanner] could not store a confirmed check-in locally", err);
+      }
+      return answer;
+    } finally {
+      this.claiming = false;
+    }
+  }
+
   private async mark(seriesId: string, edition: number, method: "scan" | "manual"): Promise<CheckinRecord | null> {
     const record: CheckinRecord = {
       seriesId,
@@ -234,7 +357,7 @@ class ScannerStore {
 
   private async fetchPack(eventId: string, token: string): Promise<CheckinPack> {
     const resp = await fetch(`${API_BASE}/api/checkin/${encodeURIComponent(eventId)}/pack`, {
-      headers: { "X-Door-Pass": token },
+      headers: { "X-Door-Pass": token, [SCANNER_DEVICE_HEADER]: this.deviceId },
     });
     const body = (await resp.json().catch(() => null)) as { ok: boolean; data?: CheckinPack; error?: string } | null;
     if (!resp.ok || !body?.ok || !body.data) {
@@ -264,6 +387,10 @@ class ScannerStore {
     const all = await db.getAllCheckins();
     const map = new Map<string, CheckinRecord>();
     for (const r of all) map.set(db.ticketKey(r.seriesId, r.edition), r);
+    // A union, never a replacement: the set only grows. A snapshot read before a
+    // confirmed check-in reached storage must not drop it from memory, or a
+    // re-scan could replay that claim (#641). `reset()` clears explicitly.
+    for (const [k, v] of this.checkins) if (!map.has(k)) map.set(k, v);
     this.checkins = map;
     this.pendingCount = (await db.getPending()).length;
   }

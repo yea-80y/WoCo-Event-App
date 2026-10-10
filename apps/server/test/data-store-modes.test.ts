@@ -27,10 +27,8 @@ import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SubjectType } from "@woco/shared";
 
 const OWNER = "0x1111111111111111111111111111111111111111";
-const ADDR2 = "0x2222222222222222222222222222222222222222";
 const BYTES32 = `0x${"ab".repeat(32)}`;
 
 let dir: string;
@@ -72,12 +70,22 @@ function looseModes(root: string): string[] {
 }
 
 /**
- * `campaign/badges.ts` and `shop/spend-permission.ts` are absent: their only
- * write paths go through an on-chain attestation and a verified USDC transfer
- * respectively, so driving them here would mean mocking a chain. The ratchet
- * below is what covers them.
+ * `campaign/badges.ts` and `shop/spend-permission.ts` are absent, for different
+ * reasons. Badges write no `.data` file at all — they are signed Swarm records
+ * (`campaign/issuer.ts`), so there is no mode to check. `shop/spend-permission`
+ * writes one, but only behind a verified USDC transfer, so driving it here would
+ * mean mocking a chain. The ratchet below is what covers that one.
  */
 const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> = [
+  {
+    store: "sender-pacing",
+    drive: async () => {
+      const m = await import("../src/lib/sender-pacing/index.js");
+      m.admit(OWNER, "job:u1", 100);
+      m.recordPlatformAccepted(1);
+      m.flushPacing();
+    },
+  },
   {
     store: "auth/revocation",
     drive: async () => {
@@ -86,10 +94,26 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     },
   },
   {
-    store: "campaign/referral-store",
+    store: "auth/device-grants",
     drive: async () => {
-      const m = await import("../src/lib/campaign/referral-store.js");
-      m.setPendingReferral(OWNER, ADDR2);
+      const m = await import("../src/lib/auth/device-grants.js");
+      const sh = await import("@woco/shared");
+      const { Wallet } = await import("ethers");
+      const owner = Wallet.createRandom();
+      const grant = {
+        parent: OWNER,
+        grantee: Wallet.createRandom().address.toLowerCase(),
+        credentialTag: BYTES32,
+        issuedAt: Math.floor(Date.now() / 1000),
+        nonce: BYTES32,
+      };
+      const grantSig = await owner.signTypedData(
+        sh.DEVICE_GRANT_DOMAIN,
+        sh.DEVICE_GRANT_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
+        grant,
+      );
+      const r = await m.submitDeviceGrant(OWNER, { grant, grantSig }, async () => true);
+      if (!r.ok) throw new Error(`device grant not written: ${r.refusal}`);
     },
   },
   {
@@ -100,6 +124,13 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
       const { privateKey, address } = sh.deriveIssuingKey(BYTES32, 0);
       const sig = sh.signPersonalMessage(sh.buildIssuerBindingMessage(OWNER, 0), privateKey);
       m.verifyAndPinIssuerBinding(OWNER, { issuer: address, gen: 0, sig }, [address], "event-create");
+    },
+  },
+  {
+    store: "event/feed-signer-record",
+    drive: async () => {
+      const m = await import("../src/lib/event/feed-signer-record.js");
+      m.recordEventFeedSigner("store-modes-event", OWNER, OWNER);
     },
   },
   {
@@ -197,13 +228,6 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     },
   },
   {
-    store: "likes/index-store",
-    drive: async () => {
-      const m = await import("../src/lib/likes/index-store.js");
-      await m.recordLike({ subject: BYTES32, subjectType: SubjectType.Profile, attester: OWNER, uid: BYTES32 });
-    },
-  },
-  {
     store: "marketing/consumed-webhook-events",
     drive: async () => {
       const m = await import("../src/lib/marketing/consumed-webhook-events.js");
@@ -262,6 +286,13 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     },
   },
   {
+    store: "campaign/referral-arm",
+    drive: async () => {
+      const m = await import("../src/lib/campaign/referral-arm.js");
+      m.armReferral(OWNER, "0x2222222222222222222222222222222222222222", OWNER);
+    },
+  },
+  {
     store: "stripe/payout-intents",
     drive: async () => {
       const m = await import("../src/lib/stripe/payout-intents.js");
@@ -286,6 +317,27 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
         reason: "test",
         metadata: {},
         error: "stripe down",
+      });
+    },
+  },
+  {
+    store: "event/cancellations",
+    drive: async () => {
+      const m = await import("../src/lib/event/cancellations.js");
+      m.recordCancellation({ eventId: "ev_1", by: "ops:test", feeReturned: false });
+    },
+  },
+  {
+    store: "stripe/ticket-sales",
+    drive: async () => {
+      const m = await import("../src/lib/stripe/ticket-sales.js");
+      m.recordSaleStub({
+        sessionId: "cs_1",
+        paymentIntentId: "pi_1",
+        connectedAccountId: "acct_1",
+        quantity: 1,
+        amountTotal: 1000,
+        currency: "gbp",
       });
     },
   },

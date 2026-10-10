@@ -1,15 +1,10 @@
 import { AuthErrorCode, type ApiResponse, type SessionDelegation } from "@woco/shared";
 import { auth } from "../auth/auth-store.svelte.js";
 import { sessionHealth } from "./session-health.svelte.js";
+import { BASE, safeJson } from "./http.js";
 
-/** API base URL — runtime config wins, then build-time env var, then empty (dev proxy) */
-const BASE =
-  (typeof window !== "undefined" && window.SITE_CONFIG?.apiUrl) ||
-  import.meta.env.VITE_API_URL ||
-  "";
-
-/** Exported for direct fetch calls in events.ts */
-export const apiBase = BASE;
+// The unauthenticated half lives in http.ts, free of the auth store (#658).
+export { apiBase, get, post } from "./http.js";
 
 /**
  * The siteId of the deployed organiser site this app is running inside, or
@@ -22,29 +17,6 @@ export const apiBase = BASE;
 export function currentSiteId(): string | undefined {
   if (typeof window === "undefined") return undefined;
   return window.SITE_CONFIG?.site?.siteId;
-}
-
-/**
- * Read a response body as JSON, falling back to a typed `{ ok: false, error }`
- * envelope when the server returns a non-JSON body (e.g. Hono's plain-text
- * "404 Not Found" or an upstream HTML error page). Without this, callers
- * `await resp.json()` throws SyntaxError unhandled — UI state machines that
- * sit outside try/catch end up frozen instead of surfacing the error.
- */
-async function safeJson<T>(resp: Response): Promise<ApiResponse<T>> {
-  const text = await resp.text();
-  try {
-    // `status` is stamped on every response, not just the non-JSON fallback.
-    // Without it a 403 auth rejection and a 400 business-rule failure both
-    // arrive as `{ ok: false, error }` and no caller can tell them apart.
-    return { ...(JSON.parse(text) as ApiResponse<T>), status: resp.status };
-  } catch {
-    return {
-      ok: false,
-      error: `HTTP ${resp.status}${text ? `: ${text.slice(0, 200)}` : ""}`,
-      status: resp.status,
-    } as ApiResponse<T>;
-  }
 }
 
 /**
@@ -167,12 +139,24 @@ async function authFetch<T>(
   };
 
   const generation = _recoveryGeneration;
+  const sessionAtSend = auth.sessionAddress;
   const result = await send();
 
   if (result.ok) {
     // Any authenticated success proves the session works — the banner must
     // never outlive the condition it reports.
     sessionHealth.clear();
+    return result;
+  }
+  if (result.code === AuthErrorCode.DEVICE_REMOVED) {
+    // This added passkey was removed from the account (#746): no re-sign can fix
+    // it. The store forgets what this device held and signs out, once.
+    void auth.onDeviceRemoved();
+    return result;
+  }
+  if (result.code === AuthErrorCode.SESSION_REVOKED) {
+    // Re-signing would silently undo "Sign out everywhere" (#186): sign out.
+    if (stillSessionAtSend(sessionAtSend)) void auth.onSessionRevoked();
     return result;
   }
   if (result.code !== AuthErrorCode.SESSION_INVALID) {
@@ -216,6 +200,8 @@ async function authFetch<T>(
       // means "proven", never "a request failed".
       _recoverySuppressedUntil = Date.now() + RECOVERY_SUPPRESSION_MS;
       sessionHealth.markEnded();
+      // An email account upgraded to a passkey elsewhere looks exactly like this (#746).
+      auth.onSessionRejected();
       console.warn(
         "[api] a freshly-minted session was rejected too — pausing recovery; " +
           "check ALLOWED_HOSTS and the account's on-chain owner",
@@ -279,6 +265,15 @@ export async function authDelete<T>(path: string, baseUrl?: string): Promise<Api
 }
 
 /**
+ * A late SESSION_REVOKED for a session the user has since replaced must not sign
+ * out the new one. No session before the send means the request minted its own,
+ * so the answer is about the current one.
+ */
+function stillSessionAtSend(sessionAtSend: string | null): boolean {
+  return sessionAtSend === null || auth.sessionAddress === sessionAtSend;
+}
+
+/**
  * Authenticated request whose RESPONSE BODY the caller reads itself — the
  * streaming case, where `authFetch` cannot help because it consumes the body as
  * JSON.
@@ -317,6 +312,7 @@ export async function authStream(
   };
 
   const generation = _recoveryGeneration;
+  const sessionAtSend = auth.sessionAddress;
   const resp = await send();
   if (resp.ok) {
     sessionHealth.clear();
@@ -329,6 +325,14 @@ export async function authStream(
     .clone()
     .json()
     .catch(() => null) as { code?: string } | null;
+  if (body?.code === AuthErrorCode.DEVICE_REMOVED) {
+    void auth.onDeviceRemoved();
+    return resp;
+  }
+  if (body?.code === AuthErrorCode.SESSION_REVOKED) {
+    if (stillSessionAtSend(sessionAtSend)) void auth.onSessionRevoked();
+    return resp;
+  }
   if (body?.code !== AuthErrorCode.SESSION_INVALID) return resp;
 
   await recoverSession(generation);
@@ -347,6 +351,7 @@ export async function authStream(
     // same way is not curable by minting another.
     _recoverySuppressedUntil = Date.now() + RECOVERY_SUPPRESSION_MS;
     sessionHealth.markEnded();
+    auth.onSessionRejected();
     console.warn(
       "[api] a freshly-minted session was rejected too — pausing recovery; " +
         "check ALLOWED_HOSTS and the account's on-chain owner",
@@ -355,18 +360,3 @@ export async function authStream(
   return retried;
 }
 
-/** Unauthenticated GET request. */
-export async function get<T>(path: string, baseUrl?: string): Promise<ApiResponse<T>> {
-  const resp = await fetch(`${baseUrl ?? BASE}${path}`);
-  return safeJson<T>(resp);
-}
-
-/** Unauthenticated POST request. */
-export async function post<T>(path: string, body: unknown, baseUrl?: string): Promise<ApiResponse<T>> {
-  const resp = await fetch(`${baseUrl ?? BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return safeJson<T>(resp);
-}

@@ -13,12 +13,9 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  sealJsonCompressed,
-  openJsonAuto,
-  deriveEncryptionKeypairFromSeed,
-  MARKETING_MAX_LIST_EMAILS,
-} from "@woco/shared";
+import { MARKETING_MAX_LIST_EMAILS } from "@woco/shared";
+import { deriveXWingKeypairFromSeed } from "@woco/shared/crypto/xwing";
+import { sealBoxJsonCompressed, openBoxJson, listSealContext } from "@woco/shared/crypto/sealed-box";
 import {
   autoMapColumns,
   buildImportReport,
@@ -111,19 +108,22 @@ for (const n of [1_000, 5_000, MARKETING_MAX_LIST_EMAILS]) {
     assert.ok(report.invalidRows > 0, "the invalid rows must be caught");
     assert.ok(report.dupesVsList > 0, "the stored-list dedupe must fire");
 
-    // Seal exactly what AudienceScreen.commitList seals, with the same key derivation.
-    const keys = deriveEncryptionKeypairFromSeed("11".repeat(32));
-    const sealed = await sealJsonCompressed(keys.publicKey, {
-      version: 1,
-      contacts: report.candidates,
-    });
+    // Seal exactly what AudienceScreen.commitList seals, with the same key
+    // derivation and context (X-Wing v2 box, #642).
+    const keys = deriveXWingKeypairFromSeed("11".repeat(32));
+    const ctx = listSealContext("0x" + "ab".repeat(20));
+    const sealed = await sealBoxJsonCompressed(
+      keys.publicKey,
+      { version: 1, contacts: report.candidates },
+      ctx,
+    );
     const sealedBytes = JSON.stringify(sealed).length;
     assert.ok(
       sealedBytes < MAX_SEALED_JSON,
       `sealed blob ${(sealedBytes / 1e6).toFixed(2)}MB must fit the ${MAX_SEALED_JSON / 1e6}MB cap`,
     );
 
-    const reopened = await openJsonAuto<{ contacts: unknown[] }>(keys.privateKey, sealed);
+    const reopened = await openBoxJson<{ contacts: unknown[] }>(keys.secretKey, sealed, ctx);
     assert.equal(reopened.contacts.length, report.candidates.length, "round-trip must be lossless");
     // Unset optional fields are dropped by JSON, not carried as `undefined` keys —
     // that is the intended shape (it is what keeps the blob small), so compare

@@ -7,6 +7,11 @@ future session writing SEO help text should start here so the product speaks wit
 Strategy, decisions and current-state audit live in `docs/SEO_PLAN.md`. This file is only
 "what do we say to the user".
 
+**Status (2026-10-05, checked against `main` 94364b56):** copy only - the guidance panel (#72) is
+not built, and none of the panel or Domain-tab strings below are in the app yet. What is live:
+the site-wide description field in the Brand tab (`siteDescription`), and event / events-list
+structured data, which is set client-side at runtime, not at deploy (SEO_PLAN.md).
+
 ## The framework — three things on a post-it
 
 Everything below is one of these three. If a proposed feature isn't, it's probably not SEO.
@@ -25,8 +30,8 @@ cannot decide it.
 
 | Surface | How | Organiser sees |
 |---|---|---|
-| Event page | **Fully automatic** — derived from title, tagline, dates, geocoded location, genre tags, image, price (#55) | Nothing. No SEO UI, ever. |
-| Events list on a website | **Automatic** — `ItemList` of Events | Nothing |
+| Event page | **Fully automatic** — derived from title, tagline, dates, geocoded location, genre tags, image, price (#55; runtime only today) | Nothing. No SEO UI, ever. |
+| Events list on a website | **Automatic** — `ItemList` of Events (`EventsGridSection.svelte`, runtime only today) | Nothing |
 | Website pages | **Guided** — titles/descriptions are editorial judgement | The panel below (#72) |
 | Site-wide description | Guided | One field in Brand tab |
 
@@ -116,6 +121,11 @@ Shown once, at page level, when a page carries more than ~4 sections of differen
 > A domain costs about £10 a year. It's the single highest-value thing you can do here.
 
 Shown in the Domain tab, above the CNAME instructions. Never nags more than once per session.
+
+> **Review before wiring (2026-10-05).** This block rests on the "authority builds on a shared
+> address" argument that SEO_PLAN.md D3 marks **unproven**, and its heading uses the word "SEO",
+> which the tone rules below forbid. Since 2026-08-09 the builder also offers a `woco.eth` name as
+> the default address (SEO_PLAN.md D1), which this copy does not mention.
 
 ## Tone rules
 

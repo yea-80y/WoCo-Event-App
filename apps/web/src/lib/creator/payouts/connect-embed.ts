@@ -1,11 +1,11 @@
 /**
  * Loading Stripe's Connect embedded components.
  *
- * These components ARE the organiser's account UI now — under Managed Risk with
- * `stripe_dashboard.type = "none"` there is no Express Dashboard to fall back
- * to, so a failure here is not a degraded view, it is an organiser who cannot
- * reach their own bank details. Everything below exists to make that failure
- * legible rather than silent.
+ * These components are the organiser's account UI inside WoCo. Express login
+ * links do not work on our accounts, and the organiser's own Stripe Dashboard
+ * (#645) is a separate sign-in they may never have used, so a failure here
+ * leaves them without the one place we point them to for bank details.
+ * Everything below exists to make that failure legible rather than silent.
  *
  * connect.js is loaded from Stripe's CDN rather than bundled: it is ~880KB and
  * Stripe versions it themselves. No npm dependency — the CDN script exposes
@@ -18,6 +18,14 @@
  */
 
 const CONNECT_JS_URL = "https://connect-js.stripe.com/v1.0/connect.js";
+
+/**
+ * The organiser's own Stripe Dashboard. Accounts are `full` (#645), so this is
+ * where refunds and disputes are handled - nothing in WoCo does either. A plain
+ * link, no API call: the organiser signs in to Stripe themselves, and Stripe
+ * lands a signed-in user on their own account.
+ */
+export const STRIPE_DASHBOARD_URL = "https://dashboard.stripe.com/";
 
 /** Ad blockers sometimes stall a request rather than failing it outright. */
 const LOAD_TIMEOUT_MS = 15_000;

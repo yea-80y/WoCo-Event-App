@@ -2,47 +2,57 @@
   ReferralCaptureBanner (#34) — tells a visitor who followed an invite link that
   the invite registered.
 
-  Capture is silent by design: `#/ref/{address}` stores the referrer, replaces
-  the URL with #/discover, and posts nothing until the visitor's first
-  authenticated moment, so landing on a link never triggers a signing prompt.
-  The cost was that nobody could tell it had worked — not the visitor, and not
-  anyone testing the flow, which is how #34 was written up as "verify by
-  checking localStorage".
+  Capture is silent by design: `#/ref/{address}` stores the referrer and posts
+  nothing until the visitor's first authenticated moment, so landing on a link
+  never triggers a signing prompt. The cost was that nobody could tell it had
+  worked — not the visitor, and not anyone testing the flow, which is how #34
+  was written up as "verify by checking localStorage".
 
   Zero-fetch on purpose. When the sharer has a WoCo name their link carries it
-  (`#/ref/theirvenue`), so the name is already in hand and shows as
-  `theirvenue.woco.eth`; otherwise the shortened address does, which is at least
-  verifiably the thing in the link they clicked. Either way this component does
-  no lookup of its own — a name that is wrong or missing would be worse than
-  hex, and the landing path is the wrong place to spend a network read.
+  (`#/ref/theirvenue`), so the name is already in hand. Without one the banner
+  names nobody: account addresses stay off screen (owner decision, 2026-09-14),
+  and this component does no lookup of its own — the landing path is the wrong
+  place to spend a network read.
 -->
 <script lang="ts">
   import { onMount } from "svelte";
-  import { referralNoticeFor, dismissReferralNotice } from "../../campaign/referral-capture.js";
+  import {
+    referralNoticeFor,
+    dismissReferralNotice,
+    capturedRefName,
+  } from "../../campaign/referral-capture.js";
 
   // Read once on mount rather than reactively: the value lives in localStorage,
   // and the only writers are the capture path (which lands here) and the post
   // path (which is followed by a reload-free navigation this banner should not
   // outlive — hence the re-read below when auth completes is not needed).
-  let referrer = $state<string | null>(null);
+  let invited = $state(false);
+  let inviterName = $state<string | null>(null);
 
   onMount(() => {
-    referrer = referralNoticeFor()?.display ?? null;
+    invited = referralNoticeFor() !== null;
+    const name = capturedRefName();
+    inviterName = name ? `${name}.woco.eth` : null;
   });
 
   function dismiss() {
     dismissReferralNotice();
-    referrer = null;
+    invited = false;
   }
 </script>
 
-{#if referrer}
+{#if invited}
   <aside class="ref-capture" role="status">
     <div class="inner">
       <span class="kicker mono">INVITED</span>
       <span class="text">
-        You were invited by <span class="mono addr">{referrer}</span>. Sign in when
-        you're ready and they'll get the credit.
+        {#if inviterName}
+          You were invited by <span class="mono addr">{inviterName}</span>. Sign in
+          when you're ready and they'll get the credit.
+        {:else}
+          You were invited to WoCo. Sign in when you're ready and whoever invited
+          you gets the credit.
+        {/if}
       </span>
       <button class="dismiss" onclick={dismiss} aria-label="Dismiss invite notice">Got it</button>
     </div>

@@ -2,7 +2,239 @@
 
 Running history of completed work and roadmap. Stable architecture and conventions live in `CLAUDE.md`.
 
+Entries before 2026-09-10 use the retired noun "POD" for what is now called "object".
+
 ---
+
+## 2026-10-09 - Removing a passkey moves the account to new keys (#186)
+
+- A removed passkey kept the identity seed: it could open new orders and sign as the account. Now each removal makes a random account secret the removed passkey never sees; the content-feed signer, order key and door-pass roster key come from it. Design consult with Fable before building; the owner chose an onchain anchor over the server pointer it proposed.
+- Key ring: the secret sealed to each remaining passkey's box key; earlier secrets under the current one. Anchor: `WoCoKeyRing` on Arbitrum One, set by the Kernel in the same op as the co-owner change.
+- Removal copies events, sites and profile to the new signer, flips list + anchor in one op, then redeploys sites and event pages, re-points their WoCo names, re-seals the contact list and re-makes likes and follows. Resumes after a closed tab.
+- Server: reads events under the ring's signer, sells under its order key, refuses a box sealed to a replaced key (`ORDER_KEY_STALE`, the page re-seals once), pauses sales when keys can't be read, revokes older door passes. Events with no create-time record are not sold (publish again).
+- A passkey a removal left without keys gets them back by code. Door-pass roster keys are derived, never stored. Detail: `docs/IDENTITY_AND_KEYS.md`.
+
+---
+
+## Catch-up: merged work, 2026-09-25 to 2026-10-04
+
+Written after the fact from the merged PRs, grouped by theme. Detail lives in each PR.
+
+### Ticketing and money path
+
+- Stripe creates the application fee after `checkout.session.completed`, so every sale read as `foreign` and was dropped. The fee is now waited for; one requested but not yet created is retried, never foreign (#669, #666).
+- Unlisted events sell: each event's feed signer and verified creator are pinned at create in a write-once store, and a feed naming a different creator is refused (#676, #670).
+- Event pages: the page feed is owned by the organiser's signer, and only the event's creator may publish it (#682, #614, #679).
+- Ticket links: no buyer name in the URL (#688); the emailed link opens a static ticket page on Swarm with the ticket in the URL fragment, and `/t` answers 410 (#690); the v1 public ticket-email route is removed (#754).
+- Minimum ticket price of one unit of its currency (#694).
+- Refunds and disputes (#645 part C): one sale record per paid session; a refund or chargeback voids the tickets it paid for, the door answers `refunded`, the orders view flags it, and an open dispute or unsettled refund holds the payout (#696, #699, #700, #702). Single refunds point to the organiser's own Stripe Dashboard (#683).
+- Cancel an event and refund everyone (#644): server record and refund job, an Edit-tab button confirmed by the typed event name, "Cancelled" on the event page (#703, #704, #717); terms cover the platform fee on cancellations and refunds (#695).
+- Door check-in admits a ticket once: one-scanner mode binds the pass to one phone; several-scanner mode claims each admission atomically on the server (#710, #641).
+- Card checkout never opens a wallet - a purchase links to the account only when a session key is already on the device (#712). A single-event page's checkout returns to that page (#747, #567).
+- `/api/health`: a mint-ramp alarm as card mints approach the ledger's hourly cap, and `/api/health/alarms` answers 503 on a red watched section (#673, #672).
+
+### Passkey accounts (#746)
+
+- Sign-in: Samsung Pass sign-up, a wrong-account guard keyed by credential id, tagged backup passkeys (#748); each device remembers which password manager holds its passkey (#756).
+- The seed at rest is locked under a PRF-derived key; organiser actions confirm once, then stay open for 2 hours; everyday posts sign with a cached content-feed signer (#755, #760).
+- More than one passkey per account: signed device grants (#751), "Your passkeys" (#759), linking another device through a code-sealed pairing mailbox (#761, #762, #763); the first added passkey needs the name unlock (#764, #765).
+- Passkey accounts back up by linking a device, not by email or wallet escrow (#767). Organising needs a passkey account; the server's Stripe Connect routes refuse any parent that is not a smart account (#768).
+- Every passkey a co-owner: the Kernel root moves to ZeroDev's WeightedECDSAValidator when a second passkey is added, any passkey can add or remove others, make-main is gone (#770, #771).
+- Sponsorship: a ZeroDev custom gas policy asks our server before paying, bounding which calls, which accounts and how much (#766, #769; part of #758).
+
+### X-Wing sealing (#642)
+
+- The passkey identity seed is an HKDF of the PRF output, set up at login (#724, #725).
+- X-Wing KEM (ML-KEM-768 + X25519), an HPKE adapter and the v2 sealed box (#726).
+- Moved onto it: the recovery escrow and portability envelope, with passkey guardians rooted on their PRF (#728); organiser contact lists (#729); orders - the organiser's X-Wing public key is published as its own chunk and checkout seals to it (#730).
+
+### Attendee order erasure (#546)
+
+- Attendee order chunks are stamped with our own stamper on a dedicated batch, with a write-ahead slot ledger, so a single order can be erased by overwriting its slots (#743).
+- Only paid orders reach Swarm: held from checkout, stored at fulfilment; checkout refuses before charging when an order could not be stored (#744). The batch grows by dilution and the ledger follows it (#745).
+
+### Etherna storage (#689)
+
+- Family by family, reads and writes move together onto Etherna's batch: the manifest (#715), likes, follows and Interested (#718), the referee's referral statement (#723), and recovery data - portability envelope, escrow, guardian index (#740, #741, #742).
+- Server feed reads use the client's per-family store table, so a store that cannot answer reads as unavailable, never absent (#721, #657). A dead Etherna platform batch refuses writes (#678, #610; entry below).
+
+### Names and the name unlock
+
+- The sub-ENS certificate warm-up waits out eth.limo's issuance instead of hanging up at 10 s (#713, #707).
+- The event name plate stops calling the name this event's permanent address - a name belongs to the brand and is repointed (#714, #708).
+- Likes and follows need the same unlock as a name (#753). Four more storage doors close to unverified accounts: site save and deploy need a Stripe-verified organiser or the owner's own Etherna batch, growing a contact list needs a verified organiser, and raw uploads and issuer statements need the name unlock (#757).
+
+### Organiser UX
+
+- One tab bar for WoCo and organiser mode, "Studio" renamed "Organiser" (#750); the dashboard opens on the one next step (#752).
+- Sign-in leads with passkey and email; wallets get their own screen (#686).
+- Home page fee declaration and a How it works page (#687); links between legal documents land on the right document (#685).
+
+### Also
+
+- Builds carry only the env settings their code reads (#684, #660). The Swarm read path leaves the auth-bound client, so the real readers run in tests (#681, #658).
+
+---
+
+## A dead Etherna platform batch refuses writes instead of swallowing them (#610, 2026-09-25)
+
+The router handed out `ETHERNA_PLATFORM_BATCH` with no liveness check (user batches had one).
+A write onto a dead batch answers 200 and Etherna serves it from its own storage for a while,
+so it looked saved and was lost. `batchForDeploy` now reads the health probe's last Etherna
+reading and refuses with 503 `STORAGE_UNAVAILABLE` when the batch is gone (404), spent
+(`batchTTL <= 0`, except bee's `-1` "price unknown" sentinel), unusable, or has a full bucket
+(mutable: the next chunk would overwrite stored content). Owner's rule: a batch that is merely
+running low is the `postage.etherna` alarm's job, never a refusal, since a top-up before it dies
+saves everything on it. The probe keeps its last POSITIVE reading apart, so a failed read after a
+404 cannot reopen writes; an unknown or stale (15 min) reading writes. Feed-page helpers and
+`batchForUserContent` pass the refusal through rather than detour to WoCo (nothing would move
+it back, and a detoured feed page can fork the feed index). Detour + move-back stays post-launch
+(Fable report `FABLE_610_FALLBACK_CONSULT_REPORT.md`).
+
+---
+
+## L1Resolver v2: one resolver for woco.eth and other owners' names, meant to last (2026-09-25)
+
+Audit 964 passed the two #23 changes (renounce always reverts, two-step ownership) but
+re-raised findings in code v2 had not touched. Other owners' names will point here (a venue's
+`venue.eth` -> WoCo-served `sub.venue.eth`), and every redeploy would cost each of them a
+`setResolver`, so the findings were fixed in the contract rather than worked around (Fable
+design consult + diff sign-off). Names are read label by label and the DEEPEST configured
+ancestor routes; settings are stored per (node, owner), so a buyer starts clean; the signed
+hash binds the chain id (our deployer had already produced `0x1720...` on two chains); a
+per-name answer module plus an owner-set default lets resolution move off the gateway key
+(to proofs) with one Safe transaction, no redeploy. The NameWrapper is a constructor argument
+(the mainnet wrapper has no admin and no upgrade path). Audit 969: 0 C/H/M, 3 Low taken.
+
+Live: `0xD9357945E2fc3bA586Cbc1Cdc2f79f0E512cFfD7` (WoCo-Contracts #32, #33). The gateway
+(#667) signs per resolver: `ENS_GATEWAY_RESOLVER_ADDRESSES=0xD935…:1,0x1720…`. v1 stays
+listed and untouched, so rollback is one `NameWrapper.setResolver`. Remaining gap: the gateway
+key still vouches for every subname answer until a proof module exists.
+
+---
+
+## Lap times: a private, timed log of every lap, that survives no signal (2026-09-19)
+
+Built for Rita 100 (21 Sep). `woco.credit.v1` is closed and carries no times on purpose, so a
+lap's time goes in the sidecar the plan reserved: `woco.lap-diary.v1`
+(`packages/shared/src/credit/lap-diary.ts`), one write-once entry per statement `seq`, sealed
+to the rider's own X25519 key under its own topic salt. Rejected: one list per day rewritten on
+each tap - a read-modify-write snapshot, a 130-version unbanded feed on a record day, and the
+whole day re-uploaded on every late tap.
+
+The tap no longer waits for the network. `collect()` reads the clock in its first line and
+writes the lap to a journal on the phone (`lib/credits/lap-journal.ts`, pure);
+`lap-sender.ts` drains it. The rule that matters: taps are bound to ONE exact write that is
+saved before upload and re-sent unchanged on any retry, because an upload can land while its
+reply is lost and a rebuilt statement would count those laps twice, permanently. `attemptRide`
+split into `buildRide` (read, sign, seal) and `sendRide` for this. Waiting taps go up as one
+statement per UTC date, dated by the TAPS; the diary entry carries one time per lap. Laps whose
+date is behind a newer head (a second device) are HELD rather than signed: folding signs a false
+date, and writing the true date signs a false count, since the carry rule resets
+`session.count` whenever the date differs. The count on screen is always one somebody wrote,
+with waiting laps beside it. Sign-out asks first when it would destroy unsent laps or unsealed
+times. Also fixed: a failed read used to blank the card to "Not collected yet". Rita's
+double-tap guard is 1 minute (was 2).
+
+Not built: publishing times (design only - allowlisted holders with a pinned feed owner, not a
+general toggle), an offline app shell, the backwards-date writer.
+
+---
+
+## Add to WoCo is offered whenever the automatic add did not land (#582, 2026-09-15)
+
+A signed-in buyer's first ticket is added to their account at fulfilment, and the ticket
+email left the Add to WoCo button out for a signed-in single-ticket order on the assumption
+that it had. The add is an accessory that may throw or be refused, and the email button is
+its only fallback, so `mintV2` now reports whether the binding landed and the email offers
+the button exactly when something is left to add: every ticket of an anonymous order, the
+other tickets of a group order, and the first ticket when the add failed. A ticket that was
+added still goes without it. Chosen over "always show the button" so the email never sends
+a buyer to a page that says the ticket is already there.
+
+---
+
+## Name unlock: a ticket, your own Stripe verification, or a confirmed invite (#575, 2026-09-15)
+
+Owner decision 2026-09-14: every name is backed by a real payment or a real identity check, and
+a member's name IS their sub-name, so profile save and photo upload sit behind the same gate.
+`checkAttendeeGate` (`lib/gate/check.ts`) now passes on any of: a ticket binding, published
+events, the STORED Stripe flag (written only from Stripe's own answer - the flag the referral
+confirm already pays a revenue share on), or a confirmed referral, read from the issuer's
+referrer index at `CAMPAIGN_ISSUER_ADDRESS` (`lib/gate/referral-unlock.ts`). That index is
+append-only, so "confirmed" is memoised for the process and only "none" / "unavailable" expire
+(30s); the issuer primes the memo at confirm time. A read that cannot answer refuses, never
+allows. New `via` values `stripe` and `referral`; the client turns `stripe` into the Studio
+link as it does `organiser`. Every screen says the rule with one sentence
+(`attendee/gate/unlock-copy.ts`).
+
+---
+
+## The member route: one WoCo app for every account, Studio as a workspace (#577–#580, #584–#586, 2026-09-15)
+
+Members join mostly to share an invite, so the signed-in app was rebuilt around that: a bottom bar
+(Home · Events · Invite · Contacts · Profile); an Invite sheet with a scannable code; invite links
+(`#/ref/:token`) that open their own page on the canonical host, never a gateway URL; Contacts with
+verified invites and follows; Home with the next ticket, the invite and the name; and a Passport tab
+in Profile that lists linked tickets and never opens on a signing prompt. The old My Tickets screen
+read a feed nothing has written since #268, and is deleted.
+
+Adding a ticket has one name end to end: the email button and its page say "Add to WoCo", the ticket
+lands in the passport, and it unlocks the name, photo and bio. A buyer signed in at checkout already
+gets their first ticket added at fulfilment. Expired or broken links no longer point at the deleted
+ticket-proof form, or promise an organiser resend that does not exist.
+
+Navigation (owner decision): WoCo is the same app for every account, organisers included, and Studio
+is a workspace an organiser steps into. WoCo shows an organiser a Studio link on any device (device
+flag, organiser unlock, or the public by-creator event list, which never prompts), and Studio's back
+button returns to WoCo Home. Rejected: drawing shared pages in the Studio layout for organisers.
+
+Open: #575 (unlock on Stripe verification or a confirmed invite), #582, #583, #581, #576; organiser
+sites still show the old purchase confirmation and return buyers to the app (#567).
+
+---
+
+## /api/health learns to watch postage and the paymaster (#421 + #522, 2026-09-11) Gate (Fable): sections publish a failure CLASS (`rpc SERVER_ERROR`, `HTTP 404`, `timed out`), never library text — ethers 6 embeds the keyed RPC URL in a SERVER_ERROR message; the raw text goes to the server log on transitions only.
+
+Three postage batches died or nearly died in five weeks and every one was found by hand: a
+dead batch does not fail an upload, bee accepts it and never pays for the chunks. The
+paymaster is the same shape — its EntryPoint deposit runs dry and every Kernel userOp fails
+on the client, where the server never sees one. Both are readable from the server, so both
+are now background-probed (60s; Etherna every 5min) and served from cache with `checkedAt`
+and `stale`. Verdicts are `true | false | null`, and `null` — the probe could not read — is
+its own answer: collapsing it into "fine" is the 2026-08-10 incident exactly. Utilization
+alarms one slot from the per-bucket cap `2^(depth-bucketDepth)` as well as on a percentage,
+because 7 of 8 slots is 87.5% and one chunk from silent overwrite. Top-level `ok` stays
+liveness-only. The evidence publisher's own stamp probe was absorbed — one read, one cache.
+
+---
+
+## No route read older than the change this device has seen (#510, 2026-09-11)
+
+The residual #505 left open. "Add a backup" picks between two writes with opposite
+semantics — a route install SETS the guardian hook's set to exactly the new guardian,
+`addGuardian` APPENDS — off a chain read at "latest" through a load-balanced RPC. A replica
+that has not yet seen backup A's install answers `absent`, honestly from where it is
+standing, and `absent` maps to `install`: A is dropped while the user is told it worked.
+#505 refuses a pre-write read that RETRACTS what the panel listed, so it covers the case
+where the panel saw the truth; it cannot cover the case where the panel's own mount-time
+read came from the lagging replica, and since "Backup added" is a terminal screen, a second
+add always remounts the panel. Every recovery write already knows the block its userOp
+landed in and pins its read-back to it; `recovery-landing-block.ts` now makes that block
+durable (monotonic, per-account, storage-throws-safe, with an in-memory mirror for browsers
+that refuse storage, and deliberately NOT swept on sign-out), and `readRecoveryRouteNoOlderThan`
+pins every later read — route and guardian set at ONE block, so they cannot describe two
+chain states — to a head at or after it. A replica behind the bound is never asked at all:
+the answer is `unknown`, which `decideAddPath` refuses, and never `absent`. The block is
+recorded inside the four write helpers after their read-back proves the change, so no caller
+can forget it, and the recovery rotation records one too (it goes through the route, and its
+device becomes the account's own). Separately, an `absent` CONTRADICTED by the platform's
+presence hint now reads as "couldn't tell": it cannot be "protected" either — that would
+mint a false safety certificate from a forgeable hint against a chain read — but a device
+with no bound still has a lagging `absent` to worry about, and the hint is the one
+independent signal that it might be one. **The honest limit:** a device that has never seen
+this account's route change has no bound to demand, so there the #505 guard remains the only
+protection, exactly as before.
 
 ## Account setup explains itself, and the call sites stop counting (2026-09-10)
 

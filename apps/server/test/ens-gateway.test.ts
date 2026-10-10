@@ -36,7 +36,7 @@ import {
 import { loadEnsGatewayConfig } from "../src/lib/ens-gateway/config.js";
 import { createL2Reader, redactRpcUrl } from "../src/lib/ens-gateway/l2-reader.js";
 import { ResponseMemo, memoTtlMsFor } from "../src/lib/ens-gateway/memo.js";
-import { createEnsGatewayRoutes, ENS_GATEWAY_RATE_WINDOWS } from "../src/routes/ens-gateway.js";
+import { createEnsGatewayRoutes, ensGatewayStatusOf, ENS_GATEWAY_RATE_WINDOWS } from "../src/routes/ens-gateway.js";
 import { SlidingWindowLimiter } from "../src/lib/http/rate-limit.js";
 import { getSubEnsChainId } from "../src/lib/chain/sub-ens-contract.js";
 
@@ -56,13 +56,19 @@ const CHAIN_ID = 421614;
 /** What the loader itself will compute, so the env-var name in config tests matches. */
 const DEFAULT_CHAIN = getSubEnsChainId();
 const TTL = 600;
+/**
+ * The WoCo-built rule's inputs for the tests that are not about it: no app
+ * configured, nothing deployed, so a `contenthash` read signs empty. The rule's own
+ * tests are in sub-ens-woco-built-rule.test.ts.
+ */
+const NO_APEX = { apexHash: () => null, lookupBuilt: () => null };
 const NOW = 1_800_000_000;
 
 const CONFIG: CcipHandlerConfig = {
   signerPrivateKey: SIGNER_PK,
   allowedSenders: [RESOLVER.toLowerCase()],
   chainId: CHAIN_ID,
-  registryAddress: REGISTRY,
+  registryAddresses: [REGISTRY.toLowerCase()],
   parentName: "woco.eth",
   ttlSeconds: TTL,
 };
@@ -116,7 +122,7 @@ function stuff(opts: StuffOpts = {}): string {
 function handler(overrides: Partial<CcipHandlerConfig> = {}, readL2?: () => Promise<string>) {
   return createCcipHandler(
     { ...CONFIG, ...overrides },
-    { readL2: readL2 ?? (async () => L2_RESULT), now: () => NOW },
+    { contenthash: NO_APEX, readL2: readL2 ?? (async () => L2_RESULT), now: () => NOW },
   );
 }
 
@@ -178,6 +184,84 @@ test("makeSignatureHash matches an independently computed cast vector", () => {
       "0xc0ffee",
     ),
     expected,
+  );
+});
+
+test("makeSignatureHash with a chain id matches an independently computed cast vector (v2)", () => {
+  // Same inputs as above, chain 1 as a uint256 right after the target:
+  //   cast keccak "$(cast abi-encode --packed \
+  //     'f(bytes2,address,uint256,uint64,bytes32,bytes32)' 0x1900 $TARGET 1 $EXPIRES $REQ $RES)"
+  //   → 0xd5b539dce2a7ba6519adefbd367b7766052e9cf3d6630965e0c1c52277ca900c
+  assert.equal(
+    makeSignatureHash(
+      "0x1111111111111111111111111111111111111111",
+      1_893_456_000n,
+      getBytes("0xdeadbeef"),
+      "0xc0ffee",
+      1n,
+    ),
+    "0xd5b539dce2a7ba6519adefbd367b7766052e9cf3d6630965e0c1c52277ca900c",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// (b2) Per-resolver signed format (audit 964 M-2)
+// ---------------------------------------------------------------------------
+
+test("a chain-bound sender is signed in the v2 format, a legacy sender in the v1 format", async () => {
+  const config = {
+    ...CONFIG,
+    allowedSenders: [RESOLVER.toLowerCase(), OTHER_RESOLVER.toLowerCase()],
+    senderChainIds: { [OTHER_RESOLVER.toLowerCase()]: 1 },
+  };
+  const calldata = stuff();
+
+  const v1 = decodeResponse(((await handler(config)(RESOLVER, calldata)).body as { data: string }).data);
+  const legacyHash = keccak256(
+    concat(["0x1900", RESOLVER, toBeHex(v1.expires, 8), keccak256(getBytes(calldata)), keccak256(v1.result)]),
+  );
+  assert.equal(recoverAddress(legacyHash, v1.sig), SIGNER_ADDRESS, "v1 must get the legacy preimage");
+
+  const v2 = decodeResponse(((await handler(config)(OTHER_RESOLVER, calldata)).body as { data: string }).data);
+  const boundHash = keccak256(
+    concat([
+      "0x1900",
+      OTHER_RESOLVER,
+      toBeHex(1, 32),
+      toBeHex(v2.expires, 8),
+      keccak256(getBytes(calldata)),
+      keccak256(v2.result),
+    ]),
+  );
+  assert.equal(recoverAddress(boundHash, v2.sig), SIGNER_ADDRESS, "v2 must get the chain-bound preimage");
+});
+
+/**
+ * Shared with the contracts repo (`test/L1ResolverSignedPath.t.sol`,
+ * `test_Signed_TheGatewaysOwnVectorVerifies`), which checks that L1Resolver v2
+ * accepts exactly these bytes on chain 1 and refuses them elsewhere. Both repos
+ * carry the bytes by hand and only this test sees a gateway change, so when it
+ * fails: regenerate, re-pin BOTH, and re-run the contract test.
+ */
+test("golden vector: the v2 response L1Resolver v2 is pinned to accept", async () => {
+  const V2 = "0x1111111111111111111111111111111111111111";
+  const V22_REGISTRY = "0x4c2265470e0134c0a2df6902ebcb5397a40102a8";
+  const request = stuff({ name: "nabil.woco.eth", chainId: 42161, registry: V22_REGISTRY });
+  const result = AbiCoder.defaultAbiCoder().encode(["address"], ["0xea1478b3818f3a06b83ceb7ec6f710a51115d879"]);
+  const out = await createCcipHandler(
+    {
+      ...CONFIG,
+      allowedSenders: [V2],
+      senderChainIds: { [V2]: 1 },
+      chainId: 42161,
+      registryAddresses: [V22_REGISTRY],
+    },
+    { contenthash: NO_APEX, readL2: async () => result, now: () => 1_800_000_000 },
+  )(V2, request);
+  assert.equal(out.status, 200);
+  assert.equal(
+    (out.body as { data: string }).data,
+    "0x0000000000000000000000000000000000000000000000000000000000000060000000000000000000000000000000000000000000000000000000006b49d45800000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000ea1478b3818f3a06b83ceb7ec6f710a51115d87900000000000000000000000000000000000000000000000000000000000000414c8548db5c48a5063537b3a02b86075ec75986bc945c64d236305bdcbdb4fab62bdbec2c48eaedebf07003b0265061a8ab2ce0141b748ac0727c4f8daaaa44981b00000000000000000000000000000000000000000000000000000000000000",
   );
 });
 
@@ -408,15 +492,28 @@ test("config: a valid env loads", () => {
   assert.equal(loaded.ttlSeconds, 600);
 });
 
-test("config: the gateway key must not be the sponsor wallet", () => {
+test("config: the gateway key must not be the events sponsor wallet", () => {
   const loaded = loadEnsGatewayConfig({ ...BASE_ENV, WOCO_SPONSOR_PRIVATE_KEY: SIGNER_PK });
   assert.ok("disabled" in loaded);
-  assert.match(loaded.disabled, /must not be the sponsor wallet/);
+  assert.match(loaded.disabled, /must not be a sponsor wallet/);
 });
 
-test("config: a DIFFERENT sponsor key is fine", () => {
-  const other = Wallet.createRandom().privateKey;
-  const loaded = loadEnsGatewayConfig({ ...BASE_ENV, WOCO_SPONSOR_PRIVATE_KEY: other });
+test("config: the gateway key must not be the NAMES sponsor wallet either", () => {
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    WOCO_SPONSOR_PRIVATE_KEY: Wallet.createRandom().privateKey,
+    SUB_ENS_SPONSOR_PRIVATE_KEY: SIGNER_PK,
+  });
+  assert.ok("disabled" in loaded);
+  assert.match(loaded.disabled, /must not be a sponsor wallet/);
+});
+
+test("config: DIFFERENT sponsor keys are fine", () => {
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    WOCO_SPONSOR_PRIVATE_KEY: Wallet.createRandom().privateKey,
+    SUB_ENS_SPONSOR_PRIVATE_KEY: Wallet.createRandom().privateKey,
+  });
   assert.ok(!("disabled" in loaded));
 });
 
@@ -439,6 +536,45 @@ test("config: a non-address in the resolver list disables", () => {
   });
   assert.ok("disabled" in loaded);
   assert.match(loaded.disabled, /non-address/);
+});
+
+test("config: a resolver entry may carry the chain its signed hash binds", () => {
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    ENS_GATEWAY_RESOLVER_ADDRESSES: `${RESOLVER}, ${OTHER_RESOLVER}:1`,
+  });
+  assert.ok(!("disabled" in loaded), JSON.stringify(loaded));
+  assert.deepEqual(loaded.allowedSenders, [RESOLVER.toLowerCase(), OTHER_RESOLVER.toLowerCase()]);
+  assert.deepEqual(loaded.senderChainIds, { [OTHER_RESOLVER.toLowerCase()]: 1 });
+  const status = ensGatewayStatusOf(loaded, 0);
+  assert.deepEqual(status.resolvers, [
+    { address: RESOLVER.toLowerCase(), boundChainId: null },
+    { address: OTHER_RESOLVER.toLowerCase(), boundChainId: 1 },
+  ]);
+});
+
+for (const bad of [`${RESOLVER}:0`, `${RESOLVER}:-1`, `${RESOLVER}:1.5`, `${RESOLVER}:x`, `${RESOLVER}:`]) {
+  test(`config: a bad chain id disables (${bad.slice(42)})`, () => {
+    const loaded = loadEnsGatewayConfig({ ...BASE_ENV, ENS_GATEWAY_RESOLVER_ADDRESSES: bad });
+    assert.ok("disabled" in loaded, `expected ${bad} to be refused`);
+    assert.match(loaded.disabled, /bad chain id/);
+  });
+}
+
+test("config: an entry with two chain ids is not an address", () => {
+  const loaded = loadEnsGatewayConfig({ ...BASE_ENV, ENS_GATEWAY_RESOLVER_ADDRESSES: `${RESOLVER}:1:2` });
+  assert.ok("disabled" in loaded);
+  assert.match(loaded.disabled, /non-address/);
+});
+
+/** Which format a resolver verifies is fixed by its bytecode, so both at once is a mistake. */
+test("config: the same resolver listed twice disables", () => {
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    ENS_GATEWAY_RESOLVER_ADDRESSES: `${RESOLVER},${RESOLVER.toUpperCase().replace("0X", "0x")}:1`,
+  });
+  assert.ok("disabled" in loaded);
+  assert.match(loaded.disabled, /more than once/);
 });
 
 for (const ttl of ["59", "3601", "0", "abc", "600.5"]) {
@@ -642,7 +778,7 @@ function memoHandler(opts: { memo?: ResponseMemo<{ data: string }>; now?: () => 
   const state = { reads: 0 };
   const memo = opts.memo ?? new ResponseMemo<{ data: string }>(30_000);
   const handler = createCcipHandler(CONFIG, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       state.reads += 1;
       return L2_RESULT;
     },
@@ -687,7 +823,7 @@ test("memo: SENDER case cannot be varied to miss the memo", async () => {
   const handler = createCcipHandler(
     { ...CONFIG, allowedSenders: [mixed.toLowerCase()] },
     {
-      readL2: async () => {
+      contenthash: NO_APEX, readL2: async () => {
         reads += 1;
         return L2_RESULT;
       },
@@ -713,7 +849,7 @@ test("a pinned sender in NON-EIP-55 mixed case is answered, not thrown", async (
   assert.throws(() => getAddress(mixed), /checksum/, "fixture must be a BAD checksum");
   const out = await createCcipHandler(
     { ...CONFIG, allowedSenders: [mixed.toLowerCase()] },
-    { readL2: async () => L2_RESULT, now: () => NOW },
+    { contenthash: NO_APEX, readL2: async () => L2_RESULT, now: () => NOW },
   )(mixed, stuff());
   assert.equal(out.status, 200);
 });
@@ -740,7 +876,7 @@ test("memo: the SENDER is part of the key — one resolver's answer is never ser
   const config = { ...CONFIG, allowedSenders: [RESOLVER.toLowerCase(), OTHER_RESOLVER.toLowerCase()] };
   let reads = 0;
   const handler = createCcipHandler(config, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       reads += 1;
       return L2_RESULT;
     },
@@ -763,7 +899,7 @@ test("memo: the SENDER is part of the key — one resolver's answer is never ser
 test("memo: a REFUSAL is never stored — a transient RPC failure is not pinned", async () => {
   let reads = 0;
   const handler = createCcipHandler(CONFIG, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       reads += 1;
       if (reads === 1) throw new Error("transient");
       return L2_RESULT;
@@ -783,7 +919,7 @@ test("memo: an entry stops being served once it goes stale", async () => {
   let clock = NOW;
   let reads = 0;
   const handler = createCcipHandler(CONFIG, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       reads += 1;
       return L2_RESULT;
     },
@@ -809,7 +945,7 @@ test("memo: freshness is judged on the handler's clock, not the wall clock", asy
   const handler = createCcipHandler(
     { ...CONFIG, ttlSeconds: 60 },
     {
-      readL2: async () => {
+      contenthash: NO_APEX, readL2: async () => {
         reads += 1;
         return L2_RESULT;
       },
@@ -854,7 +990,7 @@ test("memo: the TTL is clamped to half the signature's life", () => {
 test("memo: a handler with NO memo behaves exactly as before", async () => {
   let reads = 0;
   const handler = createCcipHandler(CONFIG, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       reads += 1;
       return L2_RESULT;
     },
@@ -914,7 +1050,7 @@ test("rate limit: applies to the DISABLED gateway too", async () => {
 test("rate limit: the limiter runs BEFORE the handler, so a refused request costs no L2 read", async () => {
   let reads = 0;
   const counting = createCcipHandler(CONFIG, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       reads += 1;
       return L2_RESULT;
     },
@@ -949,7 +1085,7 @@ test("rate limit: the shipped windows allow a real page load and cap a sustained
 test("an L2 failure logs through the injected logger and not to the console", async () => {
   const logged: string[] = [];
   const out = await createCcipHandler(CONFIG, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       throw new Error("RPC exploded");
     },
     now: () => NOW,
@@ -963,7 +1099,7 @@ test("an L2 failure logs through the injected logger and not to the console", as
 
 test("the 502 body never carries the read failure's detail", async () => {
   const out = await createCcipHandler(CONFIG, {
-    readL2: async () => {
+    contenthash: NO_APEX, readL2: async () => {
       throw new Error("disagree: https://rpc-a.example => 0xaaa | https://rpc-b.example => 0xbbb");
     },
     now: () => NOW,
@@ -971,4 +1107,188 @@ test("the 502 body never carries the read failure's detail", async () => {
   })(RESOLVER, stuff());
   assert.equal(out.status, 502);
   assert.equal(JSON.stringify(out.body).includes("rpc-a.example"), false);
+});
+
+// ---------------------------------------------------------------------------
+// (q) WoCo-Contracts #21 — the registry cutover window
+//
+// Outside a cutover the gateway pins ONE registry, and every test above runs in
+// that posture. During one it serves the outgoing and incoming pair, so the L1
+// flip and the server redeploy need not land at the same instant.
+// ---------------------------------------------------------------------------
+
+const INCOMING_REGISTRY = "0x5555555555555555555555555555555555555555";
+const UNSERVED_REGISTRY = "0x6666666666666666666666666666666666666666";
+const CUTOVER_CONFIG: CcipHandlerConfig = {
+  ...CONFIG,
+  registryAddresses: [REGISTRY.toLowerCase(), INCOMING_REGISTRY],
+};
+
+test("cutover: each registry in the pair is served, read from the registry the request names", async () => {
+  const reads: string[] = [];
+  const h = createCcipHandler(CUTOVER_CONFIG, {
+    contenthash: NO_APEX, readL2: async (registry) => {
+      reads.push(registry.toLowerCase());
+      return L2_RESULT;
+    },
+    now: () => NOW,
+  });
+
+  for (const registry of [REGISTRY, INCOMING_REGISTRY]) {
+    const calldata = stuff({ registry });
+    const out = await h(RESOLVER, calldata);
+    assert.equal(out.status, 200, registry);
+    const { result, expires, sig } = decodeResponse((out.body as { data: string }).data);
+    assert.equal(
+      recoverAddress(makeSignatureHash(RESOLVER, expires, getBytes(calldata), result), sig),
+      SIGNER_ADDRESS,
+    );
+  }
+  assert.deepEqual(reads, [REGISTRY.toLowerCase(), INCOMING_REGISTRY]);
+});
+
+test("cutover: an answer about one registry does not verify as an answer about the other", async () => {
+  const h = createCcipHandler(CUTOVER_CONFIG, { contenthash: NO_APEX, readL2: async () => L2_RESULT, now: () => NOW });
+  const outgoing = stuff({ registry: REGISTRY });
+  const incoming = stuff({ registry: INCOMING_REGISTRY });
+  const out = await h(RESOLVER, outgoing);
+  assert.equal(out.status, 200);
+  const { result, expires, sig } = decodeResponse((out.body as { data: string }).data);
+  // Same result, same deadline — checked against the request naming the OTHER registry.
+  assert.notEqual(
+    recoverAddress(makeSignatureHash(RESOLVER, expires, getBytes(incoming), result), sig),
+    SIGNER_ADDRESS,
+  );
+});
+
+test("cutover: a registry outside the pair is refused before any read", async () => {
+  let read = false;
+  const h = createCcipHandler(CUTOVER_CONFIG, {
+    contenthash: NO_APEX, readL2: async () => {
+      read = true;
+      return L2_RESULT;
+    },
+    now: () => NOW,
+  });
+  const out = await h(RESOLVER, stuff({ registry: UNSERVED_REGISTRY }));
+  assert.equal(out.status, 403);
+  assert.ok(!("data" in out.body));
+  assert.match((out.body as { message: string }).message, /registry not served/);
+  assert.equal(read, false, "an unserved registry was read");
+});
+
+test("cutover: the memo keeps the two registries' answers apart", async () => {
+  let reads = 0;
+  const h = createCcipHandler(CUTOVER_CONFIG, {
+    contenthash: NO_APEX, readL2: async () => {
+      reads += 1;
+      return L2_RESULT;
+    },
+    now: () => NOW,
+    memo: new ResponseMemo<{ data: string }>(30_000),
+  });
+  const a = await h(RESOLVER, stuff({ registry: REGISTRY }));
+  const b = await h(RESOLVER, stuff({ registry: INCOMING_REGISTRY }));
+  assert.equal(a.status, 200);
+  assert.equal(b.status, 200);
+  assert.equal(reads, 2, "an answer about one registry was served for the other");
+  assert.notDeepEqual(a.body, b.body);
+});
+
+/** The minting registry the loader resolves with no cutover variable set. */
+function mintingRegistry(): string {
+  const loaded = loadEnsGatewayConfig({ ...BASE_ENV });
+  assert.ok(!("disabled" in loaded), JSON.stringify(loaded));
+  return loaded.registryAddresses[0]!;
+}
+
+test("config: with no cutover variable exactly one registry is served", () => {
+  const loaded = loadEnsGatewayConfig({ ...BASE_ENV });
+  assert.ok(!("disabled" in loaded), JSON.stringify(loaded));
+  assert.equal(loaded.registryAddresses.length, 1);
+  assert.match(loaded.registryAddresses[0]!, /^0x[0-9a-f]{40}$/);
+});
+
+test("config: the cutover pair is served, the minting registry first", () => {
+  const minting = mintingRegistry();
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    ENS_GATEWAY_REGISTRY_ADDRESSES: ` ${getAddress(INCOMING_REGISTRY)} , ${getAddress(minting)} `,
+  });
+  assert.ok(!("disabled" in loaded), JSON.stringify(loaded));
+  assert.deepEqual(loaded.registryAddresses, [minting, INCOMING_REGISTRY]);
+});
+
+test("config: naming the minting registry twice is still one registry", () => {
+  const minting = mintingRegistry();
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    ENS_GATEWAY_REGISTRY_ADDRESSES: `${minting},${getAddress(minting)}`,
+  });
+  assert.ok(!("disabled" in loaded), JSON.stringify(loaded));
+  assert.deepEqual(loaded.registryAddresses, [minting]);
+});
+
+test("config: a cutover pair without the minting registry disables — it may add a registry, never swap one out", () => {
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    ENS_GATEWAY_REGISTRY_ADDRESSES: `${INCOMING_REGISTRY},${UNSERVED_REGISTRY}`,
+  });
+  assert.ok("disabled" in loaded);
+  assert.match(loaded.disabled, /must include SUB_ENS_REGISTRY_ADDRESS/);
+});
+
+test("config: more than two registries disables", () => {
+  const minting = mintingRegistry();
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    ENS_GATEWAY_REGISTRY_ADDRESSES: `${minting},${INCOMING_REGISTRY},${UNSERVED_REGISTRY}`,
+  });
+  assert.ok("disabled" in loaded);
+  assert.match(loaded.disabled, /more than two/);
+});
+
+test("config: a non-address in the cutover pair disables", () => {
+  const minting = mintingRegistry();
+  const loaded = loadEnsGatewayConfig({ ...BASE_ENV, ENS_GATEWAY_REGISTRY_ADDRESSES: `${minting},lolno` });
+  assert.ok("disabled" in loaded);
+  assert.match(loaded.disabled, /non-address: lolno/);
+});
+
+for (const empty of ["", " ", " , "]) {
+  test(`config: a set-but-empty cutover variable disables (${JSON.stringify(empty)})`, () => {
+    const loaded = loadEnsGatewayConfig({ ...BASE_ENV, ENS_GATEWAY_REGISTRY_ADDRESSES: empty });
+    assert.ok("disabled" in loaded);
+    assert.match(loaded.disabled, /set but empty/);
+  });
+}
+
+test("config: the incoming registry named twice, in two spellings, is still a pair", () => {
+  const minting = mintingRegistry();
+  const incoming = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+  assert.notEqual(getAddress(incoming), incoming, "fixture must have a second spelling");
+  const loaded = loadEnsGatewayConfig({
+    ...BASE_ENV,
+    ENS_GATEWAY_REGISTRY_ADDRESSES: `${minting},${incoming},${getAddress(incoming)}`,
+  });
+  assert.ok(!("disabled" in loaded), JSON.stringify(loaded));
+  assert.deepEqual(loaded.registryAddresses, [minting, incoming]);
+});
+
+test("health: the status names every served registry and says when a cutover window is open", () => {
+  const minting = mintingRegistry();
+  const pair = loadEnsGatewayConfig({ ...BASE_ENV, ENS_GATEWAY_REGISTRY_ADDRESSES: `${minting},${INCOMING_REGISTRY}` });
+  assert.ok(!("disabled" in pair), JSON.stringify(pair));
+  const open = ensGatewayStatusOf(pair, 0);
+  assert.equal(open.registry, minting);
+  assert.deepEqual(open.registries, [minting, INCOMING_REGISTRY]);
+  assert.equal(open.cutoverWindowOpen, true);
+
+  const closed = ensGatewayStatusOf(loadEnsGatewayConfig({ ...BASE_ENV }), 0);
+  assert.deepEqual(closed.registries, [minting]);
+  assert.equal(closed.cutoverWindowOpen, false);
+
+  const disabled = ensGatewayStatusOf(loadEnsGatewayConfig({}), 0);
+  assert.equal(disabled.configured, false);
+  assert.equal(disabled.cutoverWindowOpen, false);
 });

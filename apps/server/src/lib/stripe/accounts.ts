@@ -58,9 +58,45 @@ function persist(): void {
   writeJsonAtomic(ACCOUNTS_FILE, store, "stripe-accounts", { pretty: true });
 }
 
+/**
+ * Told after every write that leaves an account verified - the referral
+ * campaign confirms on it (`lib/campaign/referral-arm.ts`) without this store
+ * importing the campaign. Every verified write, not only the flip: the webhook
+ * repeats while verified, and that repeat is the retry for a confirm that could
+ * not answer the first time.
+ */
+const verifiedListeners: Array<(organiserAddress: string) => void> = [];
+
+export function onStripeVerified(listener: (organiserAddress: string) => void): void {
+  verifiedListeners.push(listener);
+}
+
+function announceIfVerified(key: string): void {
+  if (store[key]?.onboardingComplete !== true) return;
+  for (const listener of verifiedListeners) {
+    // A listener's fault must never surface as a failed Stripe write.
+    try {
+      listener(key);
+    } catch (err) {
+      console.error("[stripe-accounts] verified listener threw:", err);
+    }
+  }
+}
+
 export function getStripeAccount(organiserAddress: string): StripeAccountRecord | undefined {
   ensureLoaded();
   return store[organiserAddress.toLowerCase()];
+}
+
+/**
+ * Stripe's verdict on this account as last heard from Stripe: charges AND
+ * payouts enabled. Written only from Stripe's own answer (routes/stripe.ts, the
+ * account.updated webhook, the live checks that sync it), so the referral
+ * confirm (routes/campaign.ts) and the attendee gate (lib/gate/check.ts) read
+ * one flag and mean the same thing by "verified".
+ */
+export function stripeVerificationComplete(address: string): boolean {
+  return getStripeAccount(address)?.onboardingComplete === true;
 }
 
 export function setStripeAccount(
@@ -86,6 +122,24 @@ export function setStripeAccount(
       : {}),
   };
   persist();
+  announceIfVerified(key);
+}
+
+/**
+ * Sync the cached verdict from an account just retrieved from Stripe: charges
+ * AND payouts, whatever the caller itself gates on. The flag fires the referral
+ * confirm (`onStripeVerified`), a write-once record, so a charges-only read must
+ * never set it (Fable sign-off, #837).
+ */
+export function syncStripeVerdict(
+  organiserAddress: string,
+  stripeAccountId: string,
+  account: { charges_enabled?: boolean | null; payouts_enabled?: boolean | null },
+): void {
+  const complete = !!(account.charges_enabled && account.payouts_enabled);
+  if (complete !== getStripeAccount(organiserAddress)?.onboardingComplete) {
+    setStripeAccount(organiserAddress, stripeAccountId, complete);
+  }
 }
 
 /** Record the account's default currency without touching onboarding state. */
@@ -114,6 +168,7 @@ export function updateOnboardingStatus(
         updatedAt: new Date().toISOString(),
       };
       persist();
+      announceIfVerified(key);
       return;
     }
   }

@@ -39,7 +39,11 @@ export async function requestSessionDelegation(
    * authorizes by owner-of-Kernel (verify-delegation.ts / kernel-owner.ts).
    */
   expectedSigner?: string,
-): Promise<{ sessionAddress: string; delegation: SessionDelegation }> {
+  /** `persist: false` signs and returns the session WITHOUT storing it, for a
+   *  sign-in that must hear the server's verdict before it commits anything (an
+   *  added passkey, #746): the caller stores it with `storeSession` on success. */
+  opts: { persist?: boolean } = {},
+): Promise<{ sessionAddress: string; delegation: SessionDelegation; sessionPrivateKey: string }> {
   const { Wallet, ZeroHash, verifyTypedData } = await import("ethers");
 
   // 1. Random session key
@@ -98,7 +102,17 @@ export async function requestSessionDelegation(
 
   const delegation: SessionDelegation = { message, parentSig };
 
-  // 5. Encrypt and store
+  if (opts.persist !== false) await storeSession(parentAddress, sessionWallet.privateKey, sessionAddress, delegation);
+  return { sessionAddress, delegation, sessionPrivateKey: sessionWallet.privateKey };
+}
+
+/** 5. Encrypt and store a session minted by `requestSessionDelegation`. */
+export async function storeSession(
+  parentAddress: string,
+  sessionPrivateKey: string,
+  sessionAddress: string,
+  delegation: SessionDelegation,
+): Promise<void> {
   const deviceKey = await ensureDeviceKey();
 
   // AAD binds both blobs to the parent address. A stale session left in
@@ -106,15 +120,13 @@ export async function requestSessionDelegation(
   // identity on the same browser even if clear-on-switch is missed — the
   // AES-GCM auth tag fails. See encryption.ts.
   const encSessionKey = await encrypt(deviceKey, AAD.SESSION_KEY(parentAddress), {
-    privateKey: sessionWallet.privateKey,
+    privateKey: sessionPrivateKey,
     address: sessionAddress,
   });
   await putKV(StorageKeys.SESSION_KEY, encSessionKey);
 
   const encDelegation = await encrypt(deviceKey, AAD.SESSION_DELEGATION(parentAddress), delegation);
   await putKV(StorageKeys.SESSION_DELEGATION, encDelegation);
-
-  return { sessionAddress, delegation };
 }
 
 /**
@@ -126,8 +138,12 @@ export async function requestSessionDelegation(
  * blob cannot be decrypted. A delegation signed by one wallet can never be
  * re-attached to a different active identity: the AES-GCM auth tag fails
  * before the plaintext-level guard below ever runs (defence in depth).
+ *
+ * `expectedSigner`, when given, is the key that must have signed the delegation.
+ * Two passkeys of ONE account share the parent, so the AAD cannot keep one's
+ * session from the other (#746): a delegation signed by another key is dropped.
  */
-export async function restoreSession(expectedParent: string): Promise<{
+export async function restoreSession(expectedParent: string, expectedSigner?: string): Promise<{
   sessionWallet: Wallet;
   delegation: SessionDelegation;
 } | null> {
@@ -177,11 +193,29 @@ export async function restoreSession(expectedParent: string): Promise<{
     return null;
   }
 
-  const { Wallet } = await import("ethers");
+  const { Wallet, verifyTypedData } = await import("ethers");
   const sessionWallet = new Wallet(privateKey);
   if (sessionWallet.address !== address) {
     await clearSession();
     return null;
+  }
+
+  if (expectedSigner) {
+    let signer: string | null = null;
+    try {
+      signer = verifyTypedData(
+        SESSION_DOMAIN,
+        SESSION_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
+        delegation.message,
+        delegation.parentSig,
+      );
+    } catch {
+      signer = null;
+    }
+    if (signer?.toLowerCase() !== expectedSigner.toLowerCase()) {
+      await clearSession();
+      return null;
+    }
   }
 
   return { sessionWallet, delegation };

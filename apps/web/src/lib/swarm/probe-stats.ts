@@ -20,6 +20,8 @@
  * code path that changes behaviour — it counts and it prints.
  */
 
+import { buildEnv } from "../build-env.js";
+
 /**
  * What actually happened to a feed read's version hint — THREE states, not two.
  *
@@ -104,6 +106,20 @@ export function hintCounts(): HintCounts {
   return { ...hints };
 }
 
+/**
+ * Probes re-asked of the server because our gateway said "not found" about a
+ * chunk this device knows exists (content-feed.ts `knownChunkProbe`, #689). One
+ * per read while an Etherna-stamped version has not reached our bee; a count
+ * that keeps climbing on the same feeds means hints that name nothing.
+ */
+let escalated = 0;
+export function countEscalation(): void {
+  escalated += 1;
+}
+export function escalationCount(): number {
+  return escalated;
+}
+
 export function countProbe(kind: keyof ProbeCounts): void {
   counts[kind] += 1;
 }
@@ -131,6 +147,7 @@ export function resetProbeCounts(): void {
   counts = zero();
   hints = zeroHints();
   missStatuses = zeroStatuses();
+  escalated = 0;
 }
 
 /** Total probes, and the subset that cost a network search. */
@@ -149,11 +166,12 @@ export function probeTotals(c: ProbeCounts): { probes: number; misses: number } 
  * none.
  */
 export async function measured<T>(label: string, action: () => Promise<T>): Promise<T> {
-  if (!import.meta.env?.DEV) return action();
+  if (!buildEnv(() => import.meta.env.DEV)) return action();
 
   const before = probeCounts();
   const hintsBefore = hintCounts();
   const statusBefore = gatewayMissStatuses();
+  const escalatedBefore = escalationCount();
   const started = performance.now();
   try {
     return await action();
@@ -181,7 +199,8 @@ export async function measured<T>(label: string, action: () => Promise<T>): Prom
       `[probes] ${label}: ${ms}ms · ${probes} probes (${misses} miss) ` +
         `· gw ${delta.gatewayHit}/${delta.gatewayMiss} · api ${delta.serverHit}/${delta.serverMiss} ` +
         `· gwmiss 403:${s403} 404:${s404} 5xx:${s5xx} ?:${sOther} ` +
-        `· hints ${used} used / ${cold} cold / ${bad} INVALIDATED`,
+        `· hints ${used} used / ${cold} cold / ${bad} INVALIDATED ` +
+        `· re-asked ${escalationCount() - escalatedBefore}`,
     );
   }
 }

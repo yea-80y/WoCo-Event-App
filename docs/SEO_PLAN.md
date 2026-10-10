@@ -3,6 +3,20 @@
 Decisions taken 2026-07-26. Supersedes ad-hoc SEO notes in NEXT.md "Deferred".
 Issue #55 (schema.org/Event ld+json) predates this doc and is folded in below.
 
+**Verified against `main` (94364b56) on 2026-10-05.** Since the 2026-07-27 audit:
+
+- **Nothing in the work order has shipped server-side.** Deploys still inject no `<title>`, no
+  canonical, no JSON-LD, no robots.txt or sitemap. #67, #68, #69, #70, #71, #72, #73 are open.
+  #55 is **closed**, but JSON-LD is still set only client-side at runtime (`lib/seo/head.ts`
+  callers) - the deploy-time half folds into #70.
+- **Sub-ENS is live in the website builder** (Domain tab, `SubENSPicker`), and was never removed
+  from the code (it has been there since 2026-05-30). D3's condition - "return together with
+  canonical injection, not before" - is therefore not met: the duplicate-URL problem D3 named
+  exists today. See the D1 note.
+- Sites and event pages are stored on Etherna (#617); a sub-ENS name follows the site's feed
+  manifest, so the name's URL is stable across republishes. eth.limo holds wildcard
+  certificates for `*.woco.eth.limo`, so a new name opens with no certificate wait.
+
 ## Why this exists
 
 Three-part SEO model we're building the product around (external course, "non-wanky SEO"):
@@ -20,8 +34,8 @@ assumption in the plumbing, so organiser copy quality is not the binding constra
 > 2026-07-26 list were wrong and are corrected inline below (marked ⚠️). Everything else
 > was re-checked and holds. Line numbers drift — treat them as hints, not addresses.
 
-- Deployed sites ship `<title>Site</title>` — `apps/web/multi-site.html:6` (verified 2026-07-27). Deploy-time
-  injection (`apps/server/src/routes/sites.ts:715-737`) writes `og:*`, `twitter:*` and
+- Deployed sites ship `<title>Site</title>` — `apps/web/multi-site.html:6` (re-verified 2026-10-05). Deploy-time
+  injection (`apps/server/src/routes/sites.ts`, the `headLines` block in the deploy route) writes `og:*`, `twitter:*` and
   `meta description` but **never `<title>`**. Real title is set only by JS at runtime
   (`MultiSiteApp.svelte`, `document.title = site.theme.brandName`).
 - **Hash routing** — `#/about`, `#/contact` (`MultiSiteApp.svelte` `parseHash()`). Crawlers discard
@@ -29,7 +43,7 @@ assumption in the plumbing, so organiser copy quality is not the binding constra
 - `Page.metaDescription` is defined (`packages/shared/src/site/types.ts:254`) and read at
   runtime (`MultiSiteApp.svelte:219`) but **has no editor field anywhere in the builder**.
 - H1s are accidental: `HeroSection.svelte:25` emits one, and (⚠️ omitted originally)
-  `components/site/EventPage.svelte:618` emits `<h1 class="event-title">`. A page without a hero has no
+  `components/site/EventPage.svelte` emits `<h1 class="event-title">` (line 398 on 2026-10-05). A page without a hero has no
   H1; `RichTextSection.svelte:14` turns a user's `# ` into a second H1. No warnings.
 - ⚠️ **CORRECTED 2026-07-27.** The original claim "no canonical, no JSON-LD anywhere" was
   **false**. `apps/web/src/lib/seo/head.ts` (93 lines) implements `setJsonLd`,
@@ -42,9 +56,13 @@ assumption in the plumbing, so organiser copy quality is not the binding constra
   it from scratch. Still genuinely absent: **robots.txt** and **sitemap.xml**.
 - The bzz contentHash **changes on every republish** → the URL changes → indexing resets.
   A stable hostname in front is a precondition for any SEO at all.
-- `packages/edge-proxy/` **does not exist**. `docs/CUSTOM_DOMAINS_PLAN.md` describes it; it
-  was never built. Server half IS built: registry, `GET /api/domains/resolve/:hostname`
+- `packages/edge-proxy/` **does not exist**. `CUSTOM_DOMAINS_PLAN.md` described it (no longer in
+  the public repo); it was never built. Server half IS built: registry, `GET /api/domains/resolve/:hostname`
   (public), CNAME verification poller, `DomainLinker` UI, contentHash auto-update on deploy.
+  Also in the code (2026-05-23, "replace Cloudflare Worker with Caddy on-demand TLS proxy"):
+  a host-header proxy middleware (`apps/server/src/middleware/custom-domain.ts`) that serves a
+  linked domain's latest `contentHash` through the gateway, and `GET /api/domains/can-issue-cert`
+  for an on-demand-TLS front. No TLS front appears in the tracked compose files; #67 is open.
 - eth.limo IS crawlable, and ⚠️ **more permissive than originally recorded.** The claim that
   `robots.txt` "disallows only `/wiki/` paths" was **false**. Fetched 2026-07-27,
   `https://eth.limo/robots.txt` is in full:
@@ -69,7 +87,7 @@ assumption in the plumbing, so organiser copy quality is not the binding constra
 |---|---|
 | Organiser's own DNS domain | **Recommended path.** Only tier where authority accrues to them. |
 | Organiser's own ENS name | Supported. Their asset, their choice. |
-| WoCo-issued sub-ENS (`{label}.woco.eth`) | **Returning to the website builder** (owner, 2026-08-09) — Shopify-parity default address. Ships WITH canonical injection (#70), not before. See D3. Already live on profiles and event pages. |
+| WoCo-issued sub-ENS (`{label}.woco.eth`) | **In the website builder** (owner, 2026-08-09) - Shopify-parity default address. Planned to ship WITH canonical injection (#70); in fact the picker is live and #70 is not (2026-10-05). See D3. Also live on profiles and event pages. |
 | WoCo-issued free subdomain on `woco-net.com` | **Rejected, and still rejected** — see D2. Not the same question as the row above: `woco-net.com` is the registrable domain that also carries `events-api.` and `gateway.`. |
 
 ### D2 — No WoCo-issued free subdomain tier
@@ -174,11 +192,14 @@ The measured argument for a conventional domain is the **~3.3s TTFB floor** in
 
 **Kept elsewhere — do not remove:**
 
-- **Profiles** (`ProfilePage.svelte:724`) — the name IS the identity primitive. EAS likes key
-  off its namehash (`packages/shared/src/likes/subject.ts`). Removing breaks likes/following.
-- **Event pages** (`EventForm.svelte:93`, `EventDomainPicker.svelte`) — deliberate USP: a
-  personalised share URL beats a Skiddle/Fatsoma URL, and many organisers will have an event
-  page and no website. See D4.
+- **Profiles** (`ProfilePage.svelte`) — the name is the display and routing primitive.
+  ~~EAS likes key off its namehash (`packages/shared/src/likes/subject.ts`).~~ Superseded:
+  the EAS rail is deleted (#475) and social subjects key by account **address**
+  (`packages/shared/src/social/subject.ts`), so a name changing hands moves no audience.
+- **Event pages** (`EventForm.svelte` `SubENSPicker`; `EventDomainPicker.svelte` in the
+  single-event page builder, `SiteBuilder.svelte`) — deliberate USP: a personalised share URL
+  beats a Skiddle/Fatsoma URL, and many organisers will have an event page and no website. The
+  name follows a feed the organiser owns (#614/#682). See D4.
 
 Accepted consequence: a website whose organiser has neither a DNS domain nor an ENS name has
 no shareable address (only the deploy-mutable bzz URL). This is a deliberate quality bar.
@@ -218,6 +239,8 @@ Do not charge organisers for domain linking.
 
 ## Standing engineering rules
 
+Rules for new work. Existing deploys do not meet them yet (#70, #55, #73).
+
 - **SEO tags are injected into HTML at deploy time, never at runtime.** Sites are
   client-rendered SPAs; Google renders JS on a slower second pass and social scrapers and
   non-Google crawlers do not render at all. Covers `<title>`, description, canonical, JSON-LD.
@@ -256,7 +279,7 @@ town name appears in body copy at all, link text in {"click here", "read more", 
 | 2 | One CNAME path — drop trial/migration funnel (D6) | #68 |
 | 3 | ~~Drop sub-ENS from website builder (D3)~~ → **REVERSED 2026-08-09.** Keep sub-ENS; bring the picker back as the Shopify-parity default address. Sequenced AFTER item 4 (#70), because canonical injection is the condition | #69 (reopened in place) |
 | 4 | Deploy-time `<title>` + canonical injection | #70 |
-| 5 | schema.org/Event JSON-LD, deploy-time injected | #55 |
+| 5 | schema.org/Event JSON-LD, deploy-time injected | #55 (closed; client-side only shipped - deploy-time still to do) |
 | 6 | Real per-page URLs — static pre-render per page | #71 |
 | 7 | SEO guidance panel in builder | #72 |
 | 8 | sitemap.xml + robots.txt at deploy | #73 |

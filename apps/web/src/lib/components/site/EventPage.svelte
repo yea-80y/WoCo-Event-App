@@ -97,7 +97,7 @@
       "event",
       buildEventJsonLd(ev, {
         url: window.location.href,
-        imageUrl: ev.imageHash ? firstImageUrl(ev.imageHash, BEE_GATEWAY) : undefined,
+        imageUrl: ev.imageHash ? firstImageUrl(ev.imageHash, BEE_GATEWAY, ev.gatewayUrl) : undefined,
         organiserName: siteName ?? undefined,
       }),
     );
@@ -122,7 +122,8 @@
         .replace(/[?&]stripe=success/, "")
         .replace(/[?&]session_id=[^&]*/, "")
         .replace(/^\?$/, "");
-      window.history.replaceState(null, "", window.location.pathname + newSearch + newHash);
+      // Absolute: relative resolves against the <base href> gateway and throws (#605).
+      window.history.replaceState(null, "", new URL(window.location.pathname + newSearch + newHash, window.location.href).href);
     } catch { /* ignore */ }
   }
 
@@ -192,6 +193,11 @@
 
   // True once the event itself has ended — locks down qty selection + Get Tickets.
   const eventIsPast = $derived(event ? isPastEvent(event) : false);
+  // #644: cancelled, from the (re-signed) feed or from the server via
+  // claim-status. Display only: the server refuses the sale regardless.
+  const eventIsCancelled = $derived(
+    !!event?.cancelledAt || (event?.series ?? []).some((s) => getSeriesStatus(s)?.cancelled === true),
+  );
 
   // ── Ticket quantity + Get Tickets ─────────────────────────────────────────
   function handleQtyChange(s: SeriesSummary, qty: number) {
@@ -278,7 +284,7 @@
         try {
           const newHash = window.location.hash.replace(/[?&]stripe=cancelled/, "");
           const newSearch = window.location.search.replace(/[?&]stripe=cancelled/, "").replace(/^\?$/, "");
-          window.history.replaceState(null, "", window.location.pathname + newSearch + newHash);
+          window.history.replaceState(null, "", new URL(window.location.pathname + newSearch + newHash, window.location.href).href);
         } catch { /* ignore */ }
 
         // Stripe Checkout's cancel-back redirects via location.href, which
@@ -289,15 +295,16 @@
         // the site home (#/) — replacing the current entry so forward nav
         // doesn't loop them back here.
         try {
-          const cleanUrl = window.location.pathname + window.location.search + window.location.hash;
-          history.pushState({ wocoCancelGuard: true }, "", cleanUrl);
+          // Absolute, as above: relative threw here in the app, so the guard never installed.
+          history.pushState({ wocoCancelGuard: true }, "", new URL(window.location.pathname + window.location.search + window.location.hash, window.location.href).href);
           const onPop = (ev: PopStateEvent) => {
             // Ignore pops that land back ON the guard (user went forward
             // somewhere then came back). Only intercept pops that land
             // BEHIND the guard — i.e. the buyer's first back from this page.
             if ((ev.state as { wocoCancelGuard?: boolean } | null)?.wocoCancelGuard) return;
             window.removeEventListener("popstate", onPop);
-            window.location.replace("#/");
+            // Against the page's own URL, never the <base href> gateway (#605).
+            window.location.replace(new URL("#/", window.location.href).href);
           };
           window.addEventListener("popstate", onPop);
         } catch { /* ignore */ }
@@ -368,18 +375,18 @@
     {#if event.imageHash}
       <div class="hero-wrap">
         <img
-          src={firstImageUrl(event.imageHash, BEE_GATEWAY)}
+          src={firstImageUrl(event.imageHash, BEE_GATEWAY, event.gatewayUrl)}
           alt={event.title}
           class="hero-img"
           data-image-gateway-index="0"
-          onerror={(e) => useNextImageUrl(e, event?.imageHash, BEE_GATEWAY)}
+          onerror={(e) => useNextImageUrl(e, event?.imageHash, BEE_GATEWAY, event?.gatewayUrl)}
         />
         <div class="hero-fade"></div>
       </div>
     {/if}
 
     <!-- Organizer creator bar -->
-    {#if auth.parent?.toLowerCase() === event.creatorAddress.toLowerCase()}
+    {#if ondashboard && auth.parent?.toLowerCase() === event.creatorAddress.toLowerCase()}
       <div class="creator-bar">
         <span class="creator-bar-label">You are the organizer</span>
         <button class="creator-bar-btn" onclick={ondashboard}>Dashboard →</button>
@@ -454,7 +461,7 @@
           {@const ss = getSeriesStatus(s)}
           {@const physRemaining = ss?.available ?? s.totalSupply}
           {@const soldOut = ss != null && ss.available === 0}
-          {@const isUnavailable = eventIsPast || sale !== "active" || soldOut}
+          {@const isUnavailable = eventIsCancelled || eventIsPast || sale !== "active" || soldOut}
           {@const isPaid = s.payment && parseFloat(s.payment.price) > 0}
           {@const qty = ticketQty[s.seriesId] ?? 0}
           {@const maxQty = isUnavailable ? 0 : Math.min(physRemaining, 10)}
@@ -477,7 +484,9 @@
 
             <!-- Middle: status + price -->
             <div class="ticket-row-mid">
-              {#if eventIsPast}
+              {#if eventIsCancelled}
+                <span class="ticket-status">Cancelled</span>
+              {:else if eventIsPast}
                 <span class="ticket-status">Event ended</span>
               {:else if sale === "future"}
                 <span class="ticket-status">Opens {formatShortDate(s.saleStart!)}</span>
@@ -524,13 +533,17 @@
       <div class="tickets-footer">
         <button
           class="get-tickets-btn"
-          class:get-tickets-btn--active={anySelected && !eventIsPast}
-          disabled={!anySelected || eventIsPast}
+          class:get-tickets-btn--active={anySelected && !eventIsPast && !eventIsCancelled}
+          disabled={!anySelected || eventIsPast || eventIsCancelled}
           onclick={handleGetTickets}
         >
-          {eventIsPast ? "Event ended" : "Get Tickets"}
+          {eventIsCancelled ? "Event cancelled" : eventIsPast ? "Event ended" : "Get Tickets"}
         </button>
-        {#if eventIsPast}
+        {#if eventIsCancelled}
+          <p class="nothing-selected">
+            This event has been cancelled. Everyone who bought a ticket is being refunded in full, to the card they paid with.
+          </p>
+        {:else if eventIsPast}
           <p class="nothing-selected">Ticket sales are closed for past events</p>
         {:else if !anySelected}
           <p class="nothing-selected">Nothing selected yet</p>
@@ -559,7 +572,7 @@
           <ClaimButton
             eventId={eventId}
             seriesId={selectedSeries.seriesId}
-            encryptionKey={event.encryptionKey}
+            encryptionKeyRef={event.encryptionKeyRef}
             orderFields={event.orderFields}
             apiUrl={apiUrl}
             payment={selectedSeries.payment}

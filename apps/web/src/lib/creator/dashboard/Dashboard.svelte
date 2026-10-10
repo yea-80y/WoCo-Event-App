@@ -1,7 +1,7 @@
 <script lang="ts">
-  import type { EventFeed, OrderEntry, SealedBox, OrderField } from "@woco/shared";
-  import { deriveEncryptionKeypairFromSeed, openJson } from "@woco/shared";
-  import { getEvent } from "../../api/events.js";
+  import type { EventFeed, OrderEntry, OrderField } from "@woco/shared";
+  import { cancelEvent, getEvent } from "../../api/events.js";
+  import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { getEventOrders, webhookRelay, type EventOrdersResponse } from "../../api/events.js";
   import { startBroadcast, pollBroadcast, type BroadcastJobStatus } from "../../api/broadcasts.js";
   import BroadcastProgress from "../audience/BroadcastProgress.svelte";
@@ -14,13 +14,15 @@
     type ServiceNoticeType,
   } from "@woco/shared";
   import { getEventSWR, getEventOrdersSWR } from "../../api/creator-cache.js";
-  import { restoreIdentitySeed } from "../../auth/identity-seed.js";
+  import UnlockPanel from "../../components/auth/UnlockPanel.svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
   import { onMount } from "svelte";
   import StripeConnect from "./StripeConnect.svelte";
   import CheckinPanel from "./CheckinPanel.svelte";
   import EditEventPanel from "../events/EditEventPanel.svelte";
+  import CancellationStatus from "./CancellationStatus.svelte";
+  import { cancellationNoticeTemplate } from "./cancellation-notice.js";
   import { cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
 
   interface Props {
@@ -37,6 +39,9 @@
   let decrypting = $state(false);
   let error = $state<string | null>(null);
   let decryptError = $state<string | null>(null);
+  // The account keys are locked on this device (#746 fix 1): sales still show, and
+  // the attendee details wait for one tap rather than asking on page open.
+  let ordersLocked = $state(false);
 
   let activeTab = $state<"orders" | "broadcast" | "payments" | "door" | "edit">("orders");
 
@@ -60,6 +65,7 @@
   let webhookFormAuthName = $state("Authorization");
   let webhookFormAuthValue = $state("");
   let bulkSending = $state<string | null>(null); // seriesId currently bulk-sending
+  let relayError = $state<string | null>(null);
 
   // Broadcast state
   let broadcastSubject = $state("");
@@ -80,6 +86,47 @@
    * the guard.
    */
   let broadcastServiceType = $state<ServiceNoticeType | "">("");
+
+  /** #644: cancelled, but the organiser's own page feed could not be re-signed from here. */
+  let cancelPageNotUpdated = $state(false);
+
+  /**
+   * Re-sign the organiser's page feed with the cancellation. Pressing cancel on
+   * an already-cancelled event is the server's repair path: it changes nothing
+   * and hands back the feed with `cancelledAt` to sign. The organiser asked for
+   * this, so a signing prompt here is expected.
+   */
+  async function updateCancelledPage(): Promise<void> {
+    if (!event?.cancelledAt) return;
+    await auth.ensureOrganiserUnlock();
+    let feedSigner: ContentFeedSigner | null = null;
+    if (event.creatorFeedSigner) {
+      let signer: ContentFeedSigner | null;
+      try {
+        signer = await auth.getContentFeedSigner();
+      } catch {
+        throw new Error("The page was not signed, so it has not been updated.");
+      }
+      if (!signer || signer.address.toLowerCase() !== event.creatorFeedSigner.toLowerCase()) {
+        throw new Error("This account can't sign this event's page. Sign in with the account that created the event.");
+      }
+      feedSigner = signer;
+    }
+    const result = await cancelEvent(eventId, event.title, { feedSigner });
+    cancelPageNotUpdated = !result.feedUpdated;
+    if (result.eventFeed) {
+      event = result.eventFeed;
+      cacheSet(cacheKey.event(eventId), result.eventFeed, TTL.EVENT);
+    }
+    if (!result.feedUpdated) throw new Error("The event page could not be updated. Try again shortly.");
+  }
+
+  function openCancellationNotice(): void {
+    if (!event) return;
+    activeTab = "broadcast";
+    broadcastServiceType = "cancelled";
+    if (!broadcastBody.trim()) broadcastBody = cancellationNoticeTemplate(event);
+  }
   let showPreview = $state(false);
   let showRecipientList = $state(false);
 
@@ -154,16 +201,25 @@
   }
 
   function downloadCSV(seriesName: string, seriesOrders: OrderEntry[], fields: OrderField[]) {
-    const headers = ["Edition", "Claimer", "Email", "Paid via", "Claimed At", ...fields.map((f) => f.label)];
+    const headers = ["Edition", "Claimer", "Email", "Paid via", "Refund", "Claimed At", ...fields.map((f) => f.label)];
     const rows = seriesOrders.map((order) => {
       const dec = decryptedOrders.get(ordersResponse!.orders.indexOf(order));
       return [
         String(order.edition),
-        order.claimerAddress.startsWith("email:") || order.claimerAddress.startsWith("wallet:")
-          ? dec?.claimerAddress ?? ""
-          : order.claimerAddress,
+        order.erased
+          ? "Erased on request"
+          : order.claimerAddress.startsWith("email:") || order.claimerAddress.startsWith("wallet:")
+            ? dec?.claimerAddress ?? ""
+            : order.claimerAddress,
         dec?.claimerEmail ?? "",
         order.via ?? "",
+        order.refund === "refunded"
+          ? "Refunded"
+          : order.refund === "disputed"
+            ? "Disputed"
+            : order.refund === "partial"
+              ? "Part refunded"
+              : "",
         order.claimedAt ? new Date(order.claimedAt).toLocaleString() : "",
         ...fields.map((f) => dec?.fields?.[f.id] ?? ""),
       ];
@@ -219,6 +275,13 @@
     const key = orderKey(order);
     const dec = decryptedOrders.get(globalIdx);
     if (!dec) return;
+    relayError = null;
+    try {
+      await auth.ensureOrganiserUnlock();
+    } catch (e) {
+      relayError = e instanceof Error ? e.message : "Couldn't confirm it's you.";
+      return;
+    }
 
     sending = new Set([...sending, key]);
     try {
@@ -261,6 +324,14 @@
   }
 
   async function sendAllUnsent(seriesId: string, seriesOrders: OrderEntry[]) {
+    // Once for the whole run: a decline must stop it, not ask again per order.
+    relayError = null;
+    try {
+      await auth.ensureOrganiserUnlock();
+    } catch (e) {
+      relayError = e instanceof Error ? e.message : "Couldn't confirm it's you.";
+      return;
+    }
     bulkSending = seriesId;
     for (const order of seriesOrders) {
       const key = orderKey(order);
@@ -294,6 +365,12 @@
   async function handleSendBroadcast(resumeOf?: string) {
     if (!event || broadcastSending) return;
     broadcastError = null;
+    try {
+      await auth.ensureOrganiserUnlock();
+    } catch (e) {
+      broadcastError = e instanceof Error ? e.message : "Couldn't confirm it's you.";
+      return;
+    }
 
     const recipients = getEmailRecipients(broadcastSeriesFilter);
     if (recipients.length === 0) {
@@ -374,8 +451,11 @@
    * Decrypt the currently-loaded orders with the organiser's seed-derived key.
    * Replaces the displayed map wholesale. Safe to call multiple times (e.g.
    * once for cached data, again when fresh arrives).
+   *
+   * `prompt` only from a tap: on page open a locked seed shows the unlock panel
+   * instead of a passkey or wallet sheet nobody asked for (#746 fix 1).
    */
-  async function decryptCurrent(): Promise<void> {
+  async function decryptCurrent(prompt = false): Promise<void> {
     if (!ordersResponse) return;
     const hasEncryptedOrders = ordersResponse.orders.some((o) => !!o.encryptedOrder);
     if (!hasEncryptedOrders) return;
@@ -387,31 +467,49 @@
       decrypting = false;
       return;
     }
-    // identity seed is keyed by the PRF-EOA address for passkey (invariant #1), the
-    // parent for everyone else — auth.seedAddress resolves the right one.
-    let identitySeed = await restoreIdentitySeed(auth.seedAddress);
-    if (!identitySeed) {
-      const pk = await auth.ensureIdentitySeed();
-      if (!pk) {
-        decryptError = "You cancelled the signature, so your orders stay locked.";
+    let secrets = await auth.getAccountSecrets();
+    if (!secrets && prompt) {
+      if (!(await auth.ensureAccountSetup({ identity: true }))) {
+        decryptError = auth.seedUnavailable
+          ? "Your account keys aren't on this device. Sign in again to fetch them."
+          : "Attendee details stay locked until you confirm it's you.";
         decrypting = false;
         return;
       }
-      identitySeed = await restoreIdentitySeed(auth.seedAddress);
+      secrets = await auth.getAccountSecrets();
+      if (!secrets) {
+        decryptError = "No signing key on this device. Restore from recovery to read order details.";
+        decrypting = false;
+        return;
+      }
     }
-    if (!identitySeed) {
-      decryptError = "No signing key on this device. Restore from recovery to read order details.";
+    if (!secrets) {
+      ordersLocked = true;
       decrypting = false;
       return;
     }
+    ordersLocked = false;
 
-    const { privateKey } = deriveEncryptionKeypairFromSeed(identitySeed);
+    // Every generation's order key this device holds (#642, #186): an order is sealed
+    // to whichever was current when it was bought. Loaded on first use.
+    const [{ orderKeysOf, openJsonWithAnyKey }, { orderSealContext }] = await Promise.all([
+      import("../../keyring/order-keys.js"),
+      import("@woco/shared/crypto/sealed-box"),
+    ]);
+    const { secretKeys } = await orderKeysOf(secrets);
 
     if (hasEncryptedOrders) {
       const results = await Promise.allSettled(
         ordersResponse.orders.map(async (order, idx) => {
           if (!order.encryptedOrder) return { idx, data: {} as DecryptedOrder };
-          const decrypted = await openJson<DecryptedOrder>(privateKey, order.encryptedOrder);
+          // Bound to THIS event and the SLOT's series (the server sets
+          // `order.seriesId` from the slot) — never the payload's own seriesId, so
+          // an order lifted from another series fails to open instead of showing.
+          const decrypted = await openJsonWithAnyKey<DecryptedOrder>(
+            secretKeys,
+            order.encryptedOrder,
+            orderSealContext(eventId, order.seriesId),
+          );
           return { idx, data: decrypted };
         }),
       );
@@ -427,6 +525,19 @@
 
     decrypting = false;
   }
+
+  // Unlocked - by the panel's tap or elsewhere this app open: show the details.
+  // Locked again (the page sat hidden past the relock): hide them, and show the
+  // panel, so a phone found unlocked does not keep attendee details on screen.
+  $effect(() => {
+    if (auth.hasIdentitySeed && ordersLocked && !decrypting) void decryptCurrent();
+  });
+  $effect(() => {
+    if (auth.kind === "passkey" && !auth.hasIdentitySeed && decryptedOrders.size > 0) {
+      decryptedOrders = new Map();
+      ordersLocked = true;
+    }
+  });
 
   onMount(async () => {
     // Load webhook config from localStorage
@@ -536,6 +647,16 @@
     <h1>Orders Dashboard</h1>
     <p class="subtitle">{event.title}</p>
 
+    {#if event.cancelledAt}
+      <CancellationStatus
+        {eventId}
+        cancelledAt={event.cancelledAt}
+        pageNotUpdated={cancelPageNotUpdated}
+        onupdatepage={updateCancelledPage}
+        onnotify={openCancellationNotice}
+      />
+    {/if}
+
     <!-- Tab bar -->
     <div class="tab-bar">
       <button
@@ -590,6 +711,12 @@
           cacheDel(cacheKey.event(eventId));
           navigate("/creator/events");
         }}
+        oncancelled={(feed, feedUpdated) => {
+          event = feed;
+          cancelPageNotUpdated = !feedUpdated;
+          cacheSet(cacheKey.event(eventId), feed, TTL.EVENT);
+          openCancellationNotice();
+        }}
       />
     {:else if activeTab === "payments"}
       <!-- Payments tab — Stripe Connect onboarding + status -->
@@ -604,7 +731,7 @@
         orders={ordersResponse.orders}
         {decryptedOrders}
         {decrypting}
-        onEnsureDecrypted={decryptCurrent}
+        onEnsureDecrypted={() => decryptCurrent(true)}
       />
     {:else if activeTab === "broadcast"}
       <!-- Broadcast tab -->
@@ -917,6 +1044,10 @@
         <p class="warning">{decryptError}</p>
       {/if}
 
+      {#if ordersLocked}
+        <UnlockPanel subject="Attendee details" action="Show attendees" />
+      {/if}
+
       {@const grouped = groupBySeries(ordersResponse.orders)}
       {#each event.series as series}
         {@const seriesOrders = grouped.get(series.seriesId) ?? []}
@@ -947,8 +1078,15 @@
                     {bulkSending === series.seriesId ? "Sending..." : `Send ${unsent} unsent`}
                   </button>
                 {/if}
+                {#if relayError}<p class="broadcast-error">{relayError}</p>{/if}
               {/if}
             </div>
+            {#if event.orderFields && decryptedOrders.size > 0}
+              <p class="csv-note">
+                An exported guest list holds your attendees' details. Keep it secure, delete it when
+                you no longer need it, and remove anyone we tell you has been erased.
+              </p>
+            {/if}
 
             <div class="table-wrap">
               <table>
@@ -975,8 +1113,12 @@
                     {@const isSending = sending.has(key)}
                     <tr>
                       <td>#{order.edition}</td>
-                      <td class="address" title={order.claimerAddress}>
-                        {#if order.claimerAddress.startsWith("email:")}
+                      <td class="address" title={order.erased ? "" : order.claimerAddress}>
+                        {#if order.erased}
+                          <!-- #546: the record is gone; the address left is only the
+                               ticket's single-use key, meaningless to the organiser. -->
+                          <span class="claim-type">Erased on request</span>
+                        {:else if order.claimerAddress.startsWith("email:")}
                           {#if dec?.claimerEmail}
                             <span class="claim-email">{dec.claimerEmail}</span>
                           {:else}
@@ -1005,6 +1147,13 @@
                           <span class="via-badge via-badge--free">Free</span>
                         {:else}
                           <span class="via-badge via-badge--unknown">—</span>
+                        {/if}
+                        {#if order.refund === "refunded"}
+                          <span class="refund-badge" title="Refunded in full. This ticket no longer gets in at the door.">Refunded</span>
+                        {:else if order.refund === "disputed"}
+                          <span class="refund-badge" title="The buyer's bank took this payment back. This ticket no longer gets in at the door. Check the dispute in Stripe.">Disputed</span>
+                        {:else if order.refund === "partial"}
+                          <span class="refund-badge refund-badge--partial" title="Part of this order was refunded. The tickets still get in - check the payment in Stripe.">Part refunded</span>
                         {/if}
                       </td>
                       <td>{order.claimedAt ? new Date(order.claimedAt).toLocaleString() : "—"}</td>
@@ -1304,6 +1453,13 @@
     color: var(--accent-text);
   }
 
+  .csv-note {
+    margin: -0.25rem 0 0.75rem;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    line-height: 1.5;
+  }
+
   .bulk-send-btn {
     padding: 0.375rem 0.75rem;
     font-size: 0.8125rem;
@@ -1411,6 +1567,22 @@
   .via-badge--crypto { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
   .via-badge--free   { color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 8%, transparent); }
   .via-badge--unknown { color: var(--text-muted); border-color: transparent; }
+
+  .refund-badge {
+    display: inline-block;
+    margin-left: 0.375rem;
+    padding: 0.125rem 0.4375rem;
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    font-weight: 600;
+    border-radius: var(--radius-sm);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border: 1px solid currentColor;
+    color: var(--error);
+    background: var(--error-subtle);
+  }
+  .refund-badge--partial { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
 
   .badge-sent {
     background: color-mix(in srgb, var(--success) 15%, transparent);

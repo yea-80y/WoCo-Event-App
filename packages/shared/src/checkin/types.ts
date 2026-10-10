@@ -1,3 +1,4 @@
+import { parseTicketFragment, TICKET_PAGE_PATH } from "../ticket/link.js";
 import type { Hex0x } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -9,6 +10,14 @@ import type { Hex0x } from "../types.js";
 //   `onChainEventId` is rejected — there is no owner to recover against.
 // - The roster is AES-GCM ciphertext end-to-end: the key travels only in the
 //   door-pass URL fragment and is never sent to the server.
+// - A ticket whose sale was refunded in full (#645) still verifies — the chain
+//   has no per-slot void — so `voidSlots` is checked AFTER the signature: a
+//   forgery still reads invalid, and only a genuine ticket can read refunded.
+// - A ticket is admitted ONCE, across every scanner (#641). Check-in is a
+//   capacity control, so a second admission is a defect, never a statistic. With
+//   several scanners, admission is an atomic server claim (first scan anywhere
+//   wins); a scanner that cannot reach the server refuses. Only a pass bound to
+//   exactly one device may admit offline.
 // ---------------------------------------------------------------------------
 
 export const DOOR_PASS_VERSION = "v1" as const;
@@ -23,6 +32,20 @@ export interface DoorPassPayload {
   exp: number;
 }
 
+/**
+ * How many scanners a door pass serves, chosen by the organiser when issuing it.
+ * - "single": the pass binds to the first device that loads it and no other can
+ *   use it, so that one device may admit offline from its own set.
+ * - "several": every admission is claimed at the server first; no connection
+ *   means no admission.
+ * A pack or pass that names no mode is treated as "several" - the mode that
+ * cannot admit twice.
+ */
+export type DoorMode = "single" | "several";
+
+/** Header every scanner request carries: the device's stable random id. */
+export const SCANNER_DEVICE_HEADER = "X-Scanner-Device";
+
 /** One check-in — the nullifier unit. Identity is (seriesId, edition). */
 export interface CheckinRecord {
   seriesId: string;
@@ -32,9 +55,13 @@ export interface CheckinRecord {
   /** Random per-device id — lets sync attribute duplicate offline scans. */
   deviceId: string;
   method: "scan" | "manual";
+  /** Random id of the scan attempt that claimed it (#641): a device retrying the
+   *  same attempt is told "admitted", never mistaken for a second admission. */
+  claimId?: string;
 }
 
-/** Same ticket accepted independently on two offline devices. */
+/** Same ticket recorded by two devices. Since #641 this is a defect to
+ *  investigate, not an expected outcome of offline scanning. */
 export interface CheckinConflict {
   seriesId: string;
   edition: number;
@@ -52,6 +79,10 @@ export interface CheckinSeries {
   /** Lowercase owner address per slot (index = edition - 1); zero-address
    *  slots are unclaimed. */
   slotOwners?: string[];
+  /** Slots (edition - 1) whose sale was refunded in full or charged back
+   *  (#645): the ticket is genuine but paid for no longer, so the door must not
+   *  admit it. Absent from packs built before this shipped, which read as "none". */
+  voidSlots?: number[];
 }
 
 /** Everything a scanner device needs to operate offline. */
@@ -66,6 +97,8 @@ export interface CheckinPack {
   roster?: EncryptedRoster;
   /** Server's merged check-in set at pack time. */
   checkins: CheckinRecord[];
+  /** The pass's door mode (#641). Absent reads as "several". */
+  doorMode?: DoorMode;
   generatedAt: string;
 }
 
@@ -96,6 +129,25 @@ export interface CheckinSyncResponse {
   conflicts: CheckinConflict[];
 }
 
+/** POST /api/checkin/:eventId/claim - one scan attempt asking to admit a ticket. */
+export interface CheckinClaimRequest {
+  seriesId: string;
+  edition: number;
+  method: "scan" | "manual";
+  /** Random per scan attempt; a retry of the same attempt reuses it. */
+  claimId: string;
+  /** Device clock at the scan, ISO. Recorded, never trusted for ordering. */
+  at: string;
+}
+
+export interface CheckinClaimResponse {
+  /** "admitted": this attempt holds the ticket. "already-in": another attempt does. */
+  status: "admitted" | "already-in";
+  /** The record that holds the ticket - this attempt's, or the earlier one. */
+  record: CheckinRecord;
+  serverTime: string;
+}
+
 // ---------------------------------------------------------------------------
 // Parse helpers
 // ---------------------------------------------------------------------------
@@ -109,35 +161,40 @@ export interface TicketQr {
 }
 
 /**
- * Accepts the canonical `woco://t/...` URI and the `https://.../t/...` page
- * URL form (with optional query params / `.png` suffix), so scanning either
- * the emailed PNG QR or a ticket-page link both work at the door.
+ * Accepts the `woco://t/...` URI the QR codes carry and the emailed ticket link
+ * (`…/ticket.html#{eventId}/{seriesId}/{edition}/{sig}`, see ticket/link.ts), so
+ * the camera and a pasted link both work at the door. The old
+ * `https://…/t/{eventId}/{seriesId}/{edition}/{sig}` form is not accepted: it
+ * put the signature in the request path, and nothing produces it any more.
  */
 export function parseTicketQr(raw: string): TicketQr | null {
   const trimmed = raw.trim();
-  let path: string | null = null;
 
   const wocoMatch = trimmed.match(/^woco:\/\/t\/(.+)$/i);
   if (wocoMatch) {
-    path = wocoMatch[1];
-  } else if (/^https?:\/\//i.test(trimmed)) {
+    const parts = wocoMatch[1].split("/");
+    if (parts.length !== 4) return null;
+    const [eventId, seriesId, editionStr, sig] = parts;
+    const edition = Number(editionStr);
+    if (!eventId || !seriesId || !sig) return null;
+    if (!Number.isInteger(edition) || edition < 1) return null;
+    try {
+      return { eventId, seriesId: decodeURIComponent(seriesId), edition, sig };
+    } catch {
+      return null; // a malformed escape is an unreadable ticket, not a crash at the door
+    }
+  }
+
+  if (/^https?:\/\//i.test(trimmed)) {
     try {
       const url = new URL(trimmed);
-      const m = url.pathname.match(/\/t\/(.+)$/);
-      if (m) path = m[1];
+      if (!url.pathname.endsWith(TICKET_PAGE_PATH)) return null;
+      return parseTicketFragment(url.hash)?.ticket ?? null;
     } catch {
       return null;
     }
   }
-  if (!path) return null;
-
-  const parts = path.replace(/\.png$/i, "").split("/");
-  if (parts.length !== 4) return null;
-  const [eventId, seriesId, editionStr, sig] = parts;
-  const edition = Number(editionStr);
-  if (!eventId || !seriesId || !sig) return null;
-  if (!Number.isInteger(edition) || edition < 1) return null;
-  return { eventId, seriesId: decodeURIComponent(seriesId), edition, sig };
+  return null;
 }
 
 /** Door-pass URL: `{scannerOrigin}/#/p/{token}/{keyB64url}`. */

@@ -3,9 +3,10 @@
  * with publish actions (profile save, avatar upload, event publish, site
  * deploy). One narrow seam over `inventory.upsertFeedEntry` so every publish
  * surface logs identically, and the store/prompt plumbing stays out of the API
- * modules: the feed signer resolves PROMPT-FREE post-login (device store /
- * escrow) or not at all — accounts without a client feed signer have nothing
- * client-owned to log, and the hook is a silent no-op.
+ * modules: the feed signer resolves PROMPT-FREE or not at all — accounts without
+ * a client feed signer have nothing client-owned to log, and the hook is a silent
+ * no-op. It runs right after a publish, which already unlocked the seed (#746 fix 1);
+ * the prompting getter would have asked again if a relock fell in between.
  *
  * ALWAYS best-effort: the manifest is a comfort layer (the batch-migration
  * keep-list), never a gate on the publish that triggered it.
@@ -18,7 +19,7 @@ import { upsertFeedEntry, trashFeedEntryOnManifest } from "./inventory.js";
 /** Log (upsert) an active client-owned feed. Silent no-op without a feed signer. */
 export async function logFeedToManifest(entry: Omit<ManifestFeedEntry, "updatedAt">): Promise<void> {
   try {
-    const signer = await auth.getContentFeedSigner();
+    const signer = await auth.getContentFeedSignerIfPresent();
     const parent = auth.parent?.toLowerCase();
     if (!signer || !parent) return;
     await upsertFeedEntry({
@@ -34,7 +35,7 @@ export async function logFeedToManifest(entry: Omit<ManifestFeedEntry, "updatedA
 /** Move a feed's manifest entry to trash (deletion-by-omission bookkeeping). */
 export async function trashFeedOnManifest(kind: ManifestFeedKind, topic: string): Promise<void> {
   try {
-    const signer = await auth.getContentFeedSigner();
+    const signer = await auth.getContentFeedSignerIfPresent();
     const parent = auth.parent?.toLowerCase();
     if (!signer || !parent) return;
     await trashFeedEntryOnManifest({

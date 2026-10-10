@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { nodePolyfills } from 'vite-plugin-node-polyfills'
+import { noEnvObject } from './vite-plugins/no-env-object'
 
 /**
  * Vite config for the multi-page site renderer.
@@ -21,6 +22,7 @@ export default defineConfig({
   plugins: [
     nodePolyfills({ globals: { Buffer: true, process: true } }),
     svelte(),
+    noEnvObject(),
   ],
   server: {
     port: 5174,

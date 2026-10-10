@@ -1,11 +1,7 @@
 # Organiser Terms
 
-**Last updated:** [DATE OF PUBLICATION]
+**Last updated:** 6 October 2026
 **Version:** 1.0
-
-> **⚠️ PRE-LAUNCH DRAFT — NOT YET IN FORCE.** Complete `[PLACEHOLDERS]` and have a UK solicitor
-> review. Section 6 (chargeback liability) is the commercially critical clause — see
-> `docs/legal/DATA_INVENTORY.md` §5.1 for why.
 
 These terms apply if you use WoCo to **sell tickets, run events, publish a site, or contact an
 audience**. They are in addition to the [Terms of Service](./TERMS_OF_SERVICE.md).
@@ -67,16 +63,44 @@ attendees submit.
 
 1. **Have a privacy policy** and make it available to your attendees. If you do not have one, you are
    in breach of UK GDPR from the moment you collect your first attendee's details.
-2. **Only ask for what you need.** Every field you add to an order form is data you are responsible
+2. **Decide whether you owe the ICO data protection fee.** Every UK controller owes it unless all of
+   their processing falls inside a narrow set of exemptions. Using WoCo does not settle this for you:
+   you are the controller, we are only your processor.
+
+   **The exemptions cover you if all of these are true:**
+
+   - You sell tickets only to your own events
+   - You market only your own events, to people whose details you hold for that purpose
+   - You hold only what the sale needs — name, contact details, payment record
+   - You do not operate CCTV
+
+   **You must pay if any of these are true:**
+
+   - **You operate CCTV for crime prevention.** There is no exemption. A venue running its own
+     cameras owes the fee whatever else it does.
+   - **You market someone else's events.** The exemption covers promoting your own goods and
+     services only. A promoter advertising another promoter's night, or a venue advertising events
+     run by third parties, is marketing for others and owes the fee.
+   - **You collect more than the sale needs.** Extensive order-form data takes you outside the
+     "accounts and records" exemption, which is limited to what the transaction actually requires.
+
+   Confirm your position with the ICO's own fee checker at
+   [ico.org.uk/fee-checker](https://ico.org.uk/fee-checker). It takes a few minutes, and the answer
+   comes from them rather than from us.
+3. **Only ask for what you need.** Every field you add to an order form is data you are responsible
    for. Do not collect special category data (health, religion, ethnicity, sexuality) unless you have
    a lawful basis and have thought carefully about it.
-3. **Honour data subject rights.** Your attendees' access, correction and erasure requests come to
+4. **Honour data subject rights.** Your attendees' access, correction and erasure requests come to
    you. You must respond within one month.
-4. **Only send marketing where you are permitted to.** See section 5.
-5. **Keep your decryption credentials safe.** If you lose them, the attendee data sealed to you is
+5. **Only send marketing where you are permitted to.** See section 5.
+6. **Keep your decryption credentials safe.** If you lose them, the attendee data sealed to you is
    permanently unrecoverable. We cannot recover it — that is the point of the design.
-6. **Tell us within 24 hours** if you become aware of a personal data breach affecting attendee data,
+7. **Tell us within 24 hours** if you become aware of a personal data breach affecting attendee data,
    so we can meet our own notification duties.
+8. **Look after the copies you download.** A guest list you export (for example as a CSV) and the
+   list on your door scanner are your own copies, and we cannot reach them. Keep them secure, keep
+   them only as long as you need them, and when we tell you an attendee's details have been erased,
+   delete that attendee from your copies and refresh your door list.
 
 ### What we do
 
@@ -84,8 +108,8 @@ We process attendee data only on your instructions, as set out in our
 [Data Processing Addendum](./DATA_PROCESSING_ADDENDUM.md), which forms part of these terms.
 
 **Understand the storage model before you collect anything.** Attendee records are stored on a public
-decentralised network. Records cannot be individually deleted; erasure works by removing the record
-from the platform immediately and then letting its storage on the network expire. The full mechanism and its limits are in the
+decentralised network. Erasure works by removing the record from the platform immediately and then
+overwriting it where it is stored on the network; each ticket's onchain record cannot be erased. The full mechanism and its limits are in the
 [Privacy Policy](./PRIVACY_POLICY.md) section 8. **You are responsible for telling your attendees
 this** where you collect data outside our checkout — for example on your own website.
 
@@ -143,7 +167,14 @@ you receive **£21.17**. With the booking fee switched off, the buyer pays £20.
 **£19.20**. Processing rates vary by card type — the example uses the provider's standard UK
 consumer-card rate at the time of writing.
 
-We will give reasonable notice before changing this structure.
+**Our platform fee will never go above 1.5%.** This is a cap, not today's price. We will not
+raise the platform fee above 1.5% of your ticket price, and we will not introduce any other
+charge on your ticket sales in its place. If we lower it, the lower rate becomes the cap and we
+cannot put it back up. **Section 10 does not let us change this**: no update to these terms may
+raise the cap or add a ticket-sale charge alongside it. Services we may offer separately, and
+price openly, are not charges on your ticket sales and are not covered by this cap.
+
+We will give reasonable notice before changing the rest of this structure.
 
 ### When you get paid
 
@@ -171,6 +202,10 @@ We will tell you the applicable schedule before you sell.
 **You are responsible for refunds.** If you cancel, reschedule or fail to deliver an event, you must
 refund your attendees.
 
+**Our platform fee is not returned if you cancel an event or refund a buyer.** If an event is
+cancelled, we may at our discretion return some or all of it. The one case where we always return
+it is set out next.
+
 **If we cannot issue a ticket after a buyer has paid** — because of a failure on our side, not
 yours — we refund the buyer automatically for the tickets we could not issue, and we return our
 platform fee on the refunded amount to you at the same time. The payment provider may retain its
@@ -197,8 +232,9 @@ If you have any doubt about your ability to deliver an event, do not sell ticket
 
 Publishing events, sites and images consumes decentralised storage that we pay for.
 
-- Free hosting is offered subject to a **[QUOTA]** limit and to eligibility checks, and is a
-  time-limited launch offer we may withdraw.
+- **Website hosting is free for at least 12 months from the day you first publish your site**, up to
+  **100 MB** per organiser, once your Stripe account is verified. After that we may change or end
+  the offer, and we will give you reasonable notice first. Event pages are always free.
 - Storage is paid for in fixed periods and must be renewed. **If storage expires, published content
   can become permanently unavailable.** We will give reasonable notice before expiry, but keeping
   your content live is ultimately your responsibility.
@@ -237,9 +273,10 @@ Subject to that, and because you are contracting with us as a business rather th
 ## 10. Changes, law, and contact
 
 We may update these terms on reasonable notice. Material changes will be notified before they take
-effect.
+effect. **One exception: the 1.5% platform fee cap in section 6 cannot be raised by an update to
+these terms.**
 
 Governed by the law of **England and Wales**; the courts of England and Wales have exclusive
 jurisdiction.
 
-[COMPANY LEGAL NAME] · [REGISTERED OFFICE ADDRESS] · [SUPPORT EMAIL]
+WoCo Network Ltd · company number 17370809 · 128 City Road, London EC1V 2NX, United Kingdom · support@woco-net.com

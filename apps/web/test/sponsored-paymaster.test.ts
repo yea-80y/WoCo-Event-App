@@ -88,10 +88,11 @@ test("every kernel client is built on the two-hook sponsorship, none on the sing
   const src = readFileSync(new URL("../src/lib/auth/kernel-account.ts", import.meta.url), "utf8");
   const clients = src.split("createKernelAccountClient(").length - 1;
   const wired = src.split("sponsoredPaymasterHooks(").length - 1; // the import line has no "("
-  // 3 since #501 deleted the sub-ENS session-key client: the sudo client, the
-  // EAS session-key client and the guardian recovery client. The EQUALITY below
-  // is the real guard — this floor only catches a client silently disappearing.
-  assert.ok(clients >= 3, `expected the three kernel clients (sudo, EAS session key, guardian), found ${clients}`);
+  // 2 since #476 deleted the EAS session-key client (as #501 had deleted the
+  // sub-ENS one before it): the sudo client and the guardian recovery client.
+  // The EQUALITY below is the real guard — this floor only catches a client
+  // silently disappearing.
+  assert.ok(clients >= 2, `expected the two kernel clients (sudo, guardian), found ${clients}`);
   assert.equal(wired, clients, "every createKernelAccountClient must be sponsored through sponsoredPaymasterHooks");
   assert.doesNotMatch(src, /getPaymasterData\s*:/, "an inline getPaymasterData is the single-hook #517 defect — only the module may define the hooks");
 });

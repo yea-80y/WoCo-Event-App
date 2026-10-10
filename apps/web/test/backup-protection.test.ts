@@ -27,11 +27,36 @@ test("chain is believed in both directions", () => {
   });
 });
 
-test("the chain wins even when the hint disagrees", () => {
-  // A stale `configured:true` hint after a removal must not resurrect the claim.
-  assert.equal(decideProtection("absent", { configured: true }).isProtected, false);
+test("a stale hint must not resurrect a protection the chain says is gone", () => {
+  // It may add DOUBT (below), never bring the claim back: a user whose backups
+  // really are gone must not be shown a safety certificate sourced from a hint.
+  assert.notEqual(decideProtection("absent", { configured: true }).isProtected, true);
   // And a missing hint must not weaken a route we can actually see.
   assert.equal(decideProtection("installed", null).isProtected, true);
+  assert.equal(decideProtection("installed", { configured: false }).isProtected, true);
+});
+
+test("`absent` CONTRADICTED by a presence hint is UNKNOWN, not 'not protected' (#510)", () => {
+  // The chain read is pinned, but a device that has never seen this account change
+  // has no lower bound to pin to — so `absent` can still be a lagging replica, and
+  // the hint (only ever written by a completed setup) is the one independent signal
+  // that it might be. Exactly one of the two is wrong and nothing here can say
+  // which, so NEITHER confident answer may be minted.
+  const r = decideProtection("absent", { configured: true });
+  assert.equal(r.isProtected, null, "'not protected' is the #138/#169 lie, from ONE replica");
+  assert.equal(r.source, "none", "a contradiction is not a source of truth");
+  assert.equal(r.routeState, "unknown", "callers must branch as if the route did not read");
+});
+
+test("an uncontradicted `absent` is still a definite 'not protected'", () => {
+  // The common case — an account that never set a backup up has no hint document —
+  // must keep working, or nobody can ever add a FIRST backup.
+  for (const hint of [null, "unreadable" as const, { configured: false }]) {
+    const r = decideProtection("absent", hint);
+    assert.equal(r.isProtected, false, `hint ${JSON.stringify(hint)} must not cloud a real absence`);
+    assert.equal(r.source, "chain");
+    assert.equal(r.routeState, "absent");
+  }
 });
 
 test("an unreadable chain + no hint document is UNKNOWN, never 'not protected'", () => {

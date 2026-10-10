@@ -3,6 +3,21 @@
 > Fresh-chat handover, 2026-06-24. Read `docs/CLIENT_FEED_SIGNER_HANDOVER.md`
 > (Phase B) and the AUTH + SWARM sections of `CLAUDE.md` first.
 
+> **Status (2026-10-05, checked against `main` 94364b56):** a handover record; the work shipped.
+> Still holds: site events are client-signed, the server-written `SiteEventsIndex` is a trusted
+> carrier (`stampEventSigners` in `routes/sites.ts`, server-trusted sources only), and checkout
+> resolves a site event's signer from it (`resolveSiteEventSigner`, `routes/stripe.ts`).
+> Superseded:
+> - The OPEN QUESTION below: since #670 every event's signer is pinned server-side at create
+>   (`.data/event-feed-signers.json`), so an unlisted event sells before it is on any site.
+> - "Direct-claim (free/email)" and the `claims.ts` claim paths: the v1 claim rail is deleted
+>   (#207); card checkout is the only way to buy.
+> - "Etherna batch is ONLY for site deploys": sites, event pages, events and most user content
+>   families are on Etherna now (#617, #689; [ETHERNA_INTEGRATION.md](./ETHERNA_INTEGRATION.md)).
+> - The passkey owner-rotation note and "EAS attester": EAS is deleted (#476); passkey accounts
+>   now use the co-owner model (#746, [IDENTITY_AND_KEYS.md](./IDENTITY_AND_KEYS.md)).
+
+
 ## STATUS 2026-06-24 — Path A CODE-COMPLETE (committed, NOT pushed, NOT deployed)
 
 Owner confirmed the model: a client-signed event is claimable once it's on the

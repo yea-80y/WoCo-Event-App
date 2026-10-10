@@ -57,7 +57,7 @@ unsubscribe.get("/:token", (c) => {
       "Unsubscribe from marketing emails",
       `<p>Stop marketing emails from this organiser to this email address. Ticket confirmations for events you book are not affected.</p>
 <form method="post">
-<label><input type="checkbox" name="all" value="1" /> Also block <strong>all</strong> marketing email sent via WoCo, from any organiser</label>
+<label><input type="checkbox" name="all" value="1" /><span>Also block <strong>all</strong> marketing email sent via WoCo, from any organiser</span></label>
 <button type="submit">Unsubscribe</button>
 </form>
 <small>This applies to this email address only. Ticket confirmations for events you book are not affected.</small>`,

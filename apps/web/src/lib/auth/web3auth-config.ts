@@ -13,7 +13,19 @@
  * either way; only the exposure path changes.
  */
 
+import { resolveWeb3AuthNetwork } from "./web3auth-network.js";
+import { buildEnv } from "../build-env.js";
+
 type Web3AuthModule = typeof import("@web3auth/modal");
+
+/**
+ * How long a Web3Auth sign-in lasts: 30 days, the SDK's maximum, matching the
+ * WoCo session it unlocks. Unset, the project dashboard's value applies - 1 day
+ * for ours (read from the project config 2026-10-07) - and the first reload
+ * after it ran out signed the person out of a WoCo session still valid for weeks
+ * (#803). Not a key input: only clientId and network change keys.
+ */
+export const WEB3AUTH_SESSION_SECONDS = 30 * 86400;
 
 /**
  * Constructor options for a Web3Auth instance that yields the raw recovery key.
@@ -24,9 +36,15 @@ type Web3AuthModule = typeof import("@web3auth/modal");
  */
 export function buildWeb3AuthOptions(mod: Web3AuthModule, clientId: string) {
   const { WEB3AUTH_NETWORK, CHAIN_NAMESPACES } = mod;
-  const networkEnv = (import.meta.env.VITE_WEB3AUTH_NETWORK as string | undefined) ?? "sapphire_devnet";
+  // THROWS on anything that is not one of the two exact names — there is no
+  // default, because the wrong network is a wrong key, not a wrong feature flag
+  // (#244). Under plain Node (the unit test) the setting reads as absent and the
+  // validator refuses `undefined` — the same verdict, reached the same way.
+  const networkEnv = buildEnv(() => import.meta.env.VITE_WEB3AUTH_NETWORK as string | undefined);
   const web3AuthNetwork =
-    networkEnv === "sapphire_mainnet" ? WEB3AUTH_NETWORK.SAPPHIRE_MAINNET : WEB3AUTH_NETWORK.SAPPHIRE_DEVNET;
+    resolveWeb3AuthNetwork(networkEnv) === "sapphire_mainnet"
+      ? WEB3AUTH_NETWORK.SAPPHIRE_MAINNET
+      : WEB3AUTH_NETWORK.SAPPHIRE_DEVNET;
 
   // OTHER namespace = key-only, no chain calls. But modal init still validates the
   // provider config and rejects an empty rpcTarget ("Please provide rpcTarget inside
@@ -54,6 +72,7 @@ export function buildWeb3AuthOptions(mod: Web3AuthModule, clientId: string) {
     disableAnalytics: true,
     chains: [chain],
     defaultChainId: chain.chainId,
+    sessionTime: WEB3AUTH_SESSION_SECONDS,
   };
 }
 

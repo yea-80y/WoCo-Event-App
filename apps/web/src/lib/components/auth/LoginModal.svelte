@@ -10,7 +10,11 @@
   // From its own module: importing this key from envelope-reprobe.ts would hoist
   // that deliberately-lazy module into the entry chunk.
   import { AUTH_NOTICE_KEY } from "../../auth/auth-notice.js";
-  import { canonicalUrl, hostLabel } from "../../sub-ens/host-label.js";
+  import { navigate } from "../../router/router.svelte.js";
+  import { canonicalUrl } from "../../sub-ens/host-label.js";
+  import { mustSignInElsewhere } from "../../auth/sign-in-host.js";
+  import type { InAppBrowser } from "../../browser/in-app-browser.js";
+  import { ESCAPE_FAILED_PARAM } from "../../browser/in-app-route.js";
   import { onMount } from "svelte";
 
   type Method = "passkey" | "email" | "wallet" | "coinbase";
@@ -23,19 +27,47 @@
   let { open = $bindable(false), onclose }: Props = $props();
 
   // Declare that this bundle can carry a login to a conclusion (#194).
-  onMount(() => loginRequest.register());
+  onMount(() => {
+    loginRequest.register();
+    // The Android escape's fallback: Chrome was not there, so the social app
+    // reloaded this page itself - with the sheet closed. Reopen it once, so the
+    // "Chrome didn't open" line and the next way out are in front of them (#812).
+    if (new URL(window.location.href).searchParams.get(ESCAPE_FAILED_PARAM) === "1") void loginRequest.request();
+  });
 
   // Modal is visible if either prop-driven or store-driven
   const visible = $derived(open || loginRequest.pending);
 
   // THE choke point for every sign-in CTA in this app: they all end at
-  // loginRequest.request(), which only this modal can answer. On a WoCo name
-  // host the server will refuse the session — `ALLOWED_HOSTS` excludes
-  // `*.woco.eth.<tld>` on purpose, because a SITE name serves holder-chosen
-  // content under that same suffix — so offer the canonical host instead of a
-  // picker that is guaranteed to fail. Read once: the hostname cannot change
-  // without a page load.
-  const nameHostLabel = typeof window !== "undefined" ? hostLabel(window.location.hostname) : null;
+  // loginRequest.request(), which only this modal can answer. Off the canonical
+  // host a sign-in either fails (a name host: `ALLOWED_HOSTS` excludes
+  // `*.woco.eth.<tld>` on purpose) or lands in the wrong account, so offer
+  // woco.eth.limo instead of a picker (sign-in-host.ts). Read once: the hostname
+  // cannot change without a page load.
+  const offCanonicalHost =
+    typeof window !== "undefined" && mustSignInElsewhere(window.location.hostname, import.meta.env.DEV);
+
+  // A social app's built-in browser can sign no one in - no passkeys, and Google
+  // refuses it (#812). Checked once, when the sheet first opens, so detection
+  // stays out of the first load; the browser cannot change without a page load.
+  // Inside one, the sheet LEADS with the way out (owner decision 2026-10-10): no
+  // passkey buttons at all (an embedded web view cannot run the ceremony), and the
+  // Google / email sign-in only as a second choice that may not complete there.
+  // `undefined` until the check has run, so an in-app browser never flashes the
+  // passkey buttons it is about to hide.
+  let inAppBrowser = $state<InAppBrowser | null | undefined>(undefined);
+  let inAppChecked = false;
+  $effect(() => {
+    if (!visible || inAppChecked || typeof window === "undefined") return;
+    inAppChecked = true;
+    void import("../../browser/in-app-browser.js").then((m) => {
+      inAppBrowser = m.detectInAppBrowser(navigator.userAgent, {
+        telegramProxy: "TelegramWebviewProxy" in window,
+        publicKeyCredential: "PublicKeyCredential" in window,
+        touchMac: navigator.maxTouchPoints > 1,
+      });
+    });
+  });
 
   // Recomputed on each open rather than once: this instance outlives its
   // openings, and the hash it should carry across is the route the user is on
@@ -46,6 +78,17 @@
   // The picker stays MOUNTED (hidden) underneath so children keep their state
   // (CoinbaseLogin's two-step progress, per-method error text) across the scene.
   let authing = $state<Method | null>(null);
+
+  // Wallets get their own screen. Shown beside passkey and email they read as
+  // a requirement to someone who has never held one, so the first screen only
+  // offers what works for everybody. Mounted on demand: nothing a wallet needs
+  // is fetched unless someone asks for it.
+  let view = $state<"main" | "wallet">("main");
+
+  // Keyboard users land on the way back, not on the page behind the modal.
+  function focusOnMount(node: HTMLElement) {
+    node.focus();
+  }
 
   const sceneCopy: Record<Method, { name: string; waiting: string; finalizing: string }> = {
     passkey: {
@@ -94,8 +137,11 @@
 
   // "waiting" until the credential step is done, then "finalizing". Wallet
   // flows that connect before auth.login runs (WalletConnect QR) read null —
-  // treat that as still waiting.
+  // treat that as still waiting. "stalled" is a Web3Auth wait whose spinner's
+  // time is up: the picker comes back, where the email button shows the message,
+  // Try again and the way out, while the attempt goes on listening underneath.
   const stage = $derived(auth.loginStage ?? "waiting");
+  const sceneShown = $derived(authing !== null && stage !== "stalled");
 
   function start(method: Method) {
     authing = method;
@@ -109,8 +155,12 @@
   }
 
   function close() {
+    // Closing over an attempt still waiting on the Web3Auth pop-up must also close
+    // the SDK's own loader, which has no close of its own while connecting.
+    if (authing) auth.cancelLogin();
     open = false;
     authing = null;
+    view = "main";
     // The modal instance outlives its openings, so drop the notice here or it
     // re-renders on every later open — sessionStorage was already cleared.
     notice = null;
@@ -121,6 +171,7 @@
   function handleComplete() {
     open = false;
     authing = null;
+    view = "main";
     notice = null;
     loginRequest.resolve(true);
     onclose?.();
@@ -144,9 +195,21 @@
       <header>
         <div class="modal-heading">
           <span class="kicker kicker--plain">WoCo</span>
-          <h2>{authing ? "Signing in" : "Sign in"}</h2>
-          {#if !authing && loginRequest.context === "attendee"}
-            <p class="attendee-sub">WoCo accounts are for organisers right now — attendee accounts coming soon.</p>
+          <h2>
+            {authing ? "Signing in"
+              : view === "wallet" ? "Connect a wallet"
+              : loginRequest.context === "invite" ? "Create your account"
+              : loginRequest.context === "ticket" ? "Add your ticket"
+              : "Sign in"}
+          </h2>
+          {#if authing || view === "wallet"}
+            <!-- The context line describes the first screen's choices, not this one. -->
+          {:else if loginRequest.context === "invite"}
+            <p class="context-sub">
+              Organisers sign in with a passkey. Takes a minute. Then you verify with Stripe so you can get paid.
+            </p>
+          {:else if loginRequest.context === "ticket"}
+            <p class="context-sub">Sign in, or create a free account. Your ticket goes straight into it.</p>
           {/if}
         </div>
         <button class="close-btn" onclick={close} aria-label="Close">
@@ -154,7 +217,7 @@
         </button>
       </header>
 
-      {#if nameHostLabel}
+      {#if offCanonicalHost}
         <p class="notice" role="status">
           Accounts live on WoCo's main address — sign in there and this page opens with you.
         </p>
@@ -165,7 +228,7 @@
         <p class="notice" role="status">{notice}</p>
       {/if}
 
-      {#if authing}
+      {#if authing && sceneShown}
         {@const c = sceneCopy[authing]}
         <div class="scene" role="status" aria-live="polite">
           <div class="stamp" aria-hidden="true">
@@ -200,26 +263,78 @@
         </div>
       {/if}
 
-      <!-- Not rendered on a name host: every method here ends at a session the
-           server will refuse from this origin, so the redirect above is the
-           only sign-in this page can honestly offer. -->
-      {#if !nameHostLabel}
-      <div class="options" class:offstage={authing !== null}>
-        <PasskeyLogin oncomplete={handleComplete} onstart={() => start("passkey")} onsettle={settle} />
+      <!-- Not rendered off the canonical host: on a name host every method ends
+           at a session the server refuses, and anywhere else it ends at the wrong
+           account, so the redirect above is the only honest sign-in. -->
+      {#if !offCanonicalHost}
+      <div class="options" class:offstage={sceneShown}>
+        <!-- Hidden rather than unmounted on the wallet screen, so a passkey
+             error or the create-account offer is still there on the way back. -->
+        <div class="methods" class:offstage={view !== "main"}>
+          {#if inAppBrowser === undefined}
+            <!-- The in-app check has not answered yet: nothing to flash. -->
+          {:else if inAppBrowser}
+            <!-- An app's built-in browser: the way out comes first and alone.
+                 Passkeys are not offered - the ceremony is refused before any
+                 sheet there (#841) - and the Google / email sign-in is a second
+                 choice whose wait is bounded (web3auth-signin-wait.ts). -->
+            {#await import("./InAppBrowserNotice.svelte") then { default: InAppBrowserNotice }}
+              <InAppBrowserNotice found={inAppBrowser} />
+            {/await}
+            {#if loginRequest.context !== "invite"}
+              <div class="group-label"><span>Or try here anyway</span></div>
+              <Web3AuthLogin
+                oncomplete={handleComplete}
+                onstart={() => start("email")}
+                onsettle={settle}
+                inApp={inAppBrowser}
+              />
+            {:else}
+              <p class="in-app-invite">Organiser accounts use a passkey, which this browser can't create. Open WoCo in your browser to continue.</p>
+            {/if}
+          {:else}
+          <PasskeyLogin
+            oncomplete={handleComplete}
+            onstart={() => start("passkey")}
+            onsettle={settle}
+            onlink={() => { close(); navigate("/link"); }}
+          />
 
-        <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} />
+          <!-- Organising needs a passkey account (#746 step 5): "Start hosting" offers no other way in. -->
+          {#if loginRequest.context !== "invite"}
+            <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} inApp={null} />
 
-        <div class="group-label"><span>Wallets</span></div>
+            {#if FEATURES.walletLoginAllowed}
+              <div class="wallet-door">
+                <span>Already use a crypto wallet?</span>
+                <button type="button" class="text-btn" onclick={() => (view = "wallet")}>
+                  Connect it <span aria-hidden="true">→</span>
+                </button>
+              </div>
+            {/if}
+          {/if}
+          {/if}
+        </div>
 
-        <WalletLogin oncomplete={handleComplete} onstart={() => start("wallet")} onsettle={settle} />
+        {#if view === "wallet"}
+          <div class="methods">
+            <button type="button" class="text-btn back-btn" onclick={() => (view = "main")} use:focusOnMount>
+              <span aria-hidden="true">←</span> All sign-in options
+            </button>
 
-        {#if FEATURES.coinbaseLoginAllowed}
-          <CoinbaseLogin oncomplete={handleComplete} onstart={() => start("coinbase")} onsettle={settle} />
+            {#if FEATURES.walletLoginAllowed}
+              <WalletLogin oncomplete={handleComplete} onstart={() => start("wallet")} onsettle={settle} />
+            {/if}
+
+            {#if FEATURES.coinbaseLoginAllowed}
+              <CoinbaseLogin oncomplete={handleComplete} onstart={() => start("coinbase")} onsettle={settle} />
+            {/if}
+
+            <div class="group-label"><span>Coming soon</span></div>
+
+            <ZupassLogin />
+          </div>
         {/if}
-
-        <div class="group-label"><span>Coming soon</span></div>
-
-        <ZupassLogin />
       </div>
       {/if}
     </div>
@@ -286,7 +401,7 @@
     letter-spacing: -0.025em;
   }
 
-  .attendee-sub {
+  .context-sub {
     margin: 0.25rem 0 0;
     font-size: 0.75rem;
     color: var(--text-muted);
@@ -451,8 +566,58 @@
 
   /* Children stay mounted while the scene plays so their state (Coinbase's
      two-step progress, error text) survives the round-trip. */
-  .options.offstage {
+  .options.offstage,
+  .methods.offstage {
     display: none;
+  }
+
+  .methods {
+    display: flex;
+    flex-direction: column;
+    gap: 0.875rem;
+  }
+
+  .text-btn {
+    font-family: var(--font-body);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: none;
+    border: none;
+    padding: 0.25rem 0;
+    cursor: pointer;
+    transition: color var(--transition);
+  }
+
+  .text-btn:hover {
+    color: var(--accent-text);
+  }
+
+  /* The way in to wallets: present for anyone who looks for it, quiet enough
+     that nobody else reads it as a step they are missing. */
+  .wallet-door {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: center;
+    gap: 0.25rem 0.5rem;
+    margin-top: 0.25rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+  }
+
+  .back-btn {
+    align-self: flex-start;
+    margin-top: -0.5rem;
+  }
+
+  .in-app-invite {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    text-align: center;
   }
 
   .group-label {

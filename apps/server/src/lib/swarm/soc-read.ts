@@ -30,16 +30,27 @@
  * head may sit in Etherna's store. WoCo-stamped feeds never pay that price.
  * Adding an operator's gateway, or a user's own bee, is one more entry in
  * `sourcesFor`, not a new branch.
+ *
+ * ONE READER FOR BOTH (#657). The server's own feed scans (soc-upload.ts) read
+ * through here too, routed by the caller's FAMILY from the shared table instead
+ * of by a request's gateway. They used to read through a bee-js reader with an
+ * Etherna fallback that ran for every feed and returned "absent" whenever
+ * Etherna could not answer - so a scan of an Etherna-stamped feed during an
+ * Etherna blip stopped at the previous version and called it clean.
  */
 
 import { Signature } from "@ethersphere/bee-js";
 import {
+  FEED_FAMILIES,
+  FEED_FAMILY_STORES,
   calculateCacAddress,
   calculateSocAddress,
   encodeSpan,
   socSignDigest,
   splitStoredSoc,
   SOC_IDENTIFIER_SIZE,
+  type FeedFamily,
+  type FeedStore,
 } from "@woco/shared";
 import { BEE_URL } from "../../config/swarm.js";
 import { BEE_CALL_TIMEOUT_MS } from "./upload-queue.js";
@@ -47,8 +58,9 @@ import { whitelistHashes } from "./whitelist.js";
 import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
 import { registerEthernaOffer } from "../etherna/upload.js";
 import { isEthernaGateway } from "../etherna/batch-router.js";
+import { ETHERNA_FETCH_BASE } from "../etherna/gateway.js";
 
-const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
+const ETHERNA_GW = ETHERNA_FETCH_BASE;
 const ETHERNA_READ_TIMEOUT_MS = 8_000;
 
 export type RawSocRead =
@@ -178,6 +190,75 @@ export const wocoBeeSource: SocSource = {
 };
 
 /**
+ * A short circuit breaker on Etherna (#657). Every Etherna-family scan ends with
+ * a question to Etherna, the event money path's included, so an Etherna that
+ * HANGS would cost every such read the full timeout (the token request and the
+ * chunk read, up to 18 s). After a SLOW failure - no answer, or an unhappy one,
+ * that took `ETHERNA_SLOW_MS` or more (a timeout, a proxy's 504 after its own
+ * wait, a hung sign-in) - Etherna is not asked again for `ETHERNA_BREAKER_MS`;
+ * reads say `unavailable` at once, which is what they would have said anyway.
+ *
+ * A FAST failure does not trip it: a quick 503 costs no latency, and pausing on
+ * one would turn a single blip into 30 s of refused writes for every Etherna
+ * family, the client's included (they probe through here).
+ */
+export const ETHERNA_BREAKER_MS = 30_000;
+export const ETHERNA_SLOW_MS = 3_000;
+const breaker = {
+  openUntil: 0,
+  reason: null as string | null,
+  trips: 0,
+  now: () => Date.now(),
+  slowMs: ETHERNA_SLOW_MS,
+};
+
+function tripBreaker(reason: string): void {
+  if (breaker.now() >= breaker.openUntil) {
+    breaker.trips++;
+    console.warn(`[swarm] Etherna reads paused for ${ETHERNA_BREAKER_MS / 1000}s: ${reason}`);
+  }
+  breaker.openUntil = breaker.now() + ETHERNA_BREAKER_MS;
+  breaker.reason = reason;
+}
+
+/** Test seam: close the breaker, and optionally pin its clock and what counts as slow. */
+export function __resetEthernaBreaker(opts: { now?: () => number; slowMs?: number } = {}): void {
+  breaker.openUntil = 0;
+  breaker.reason = null;
+  breaker.trips = 0;
+  breaker.now = opts.now ?? (() => Date.now());
+  breaker.slowMs = opts.slowMs ?? ETHERNA_SLOW_MS;
+}
+
+/** Can this server ask Etherna at all? Without the flag and a key, no. */
+export function ethernaReadConfigured(): boolean {
+  return process.env.ETHERNA_ENABLED === "true" && !!process.env.ETHERNA_API_KEY;
+}
+
+/**
+ * `/api/health` `ethernaReads`. RED when a family is routed to Etherna and this
+ * server cannot ask it: every read of those families then ends `unavailable` -
+ * owner edits refused, every event read an uncached scan, the indexer all gaps -
+ * and nothing else says why. The breaker is reported, not alarmed on: an Etherna
+ * outage is Etherna's, and the postage section watches its batch.
+ */
+export function ethernaReadsHealth(): Record<string, unknown> {
+  const families = FEED_FAMILIES.filter((f) => FEED_FAMILY_STORES[f] === "etherna");
+  const configured = ethernaReadConfigured();
+  const open = breaker.now() < breaker.openUntil;
+  return {
+    ok: families.length === 0 || configured,
+    configured,
+    families,
+    breaker: {
+      open,
+      ...(open ? { reopensAt: new Date(breaker.openUntil).toISOString(), reason: breaker.reason } : {}),
+      trips: breaker.trips,
+    },
+  };
+}
+
+/**
  * Etherna's gateway, bearer-authenticated (bypasses the anonymous offer gate). A
  * full node too, so its 404 is a verdict about the network as it sees it; but it
  * is only ASKED for Etherna-stamped feeds (see `sourcesFor`).
@@ -186,10 +267,19 @@ export const ethernaSource: SocSource = {
   name: "etherna",
   negativeAuthority: "verdict",
   read: async (address) => {
+    if (breaker.now() < breaker.openUntil) {
+      return { status: "unavailable", reason: `etherna paused after: ${breaker.reason}` };
+    }
+    // Real elapsed time, whatever clock the breaker is on.
+    const started = performance.now();
+    const failed = (reason: string): RawSocRead => {
+      if (performance.now() - started >= breaker.slowMs) tripBreaker(reason);
+      return { status: "unavailable", reason };
+    };
     try {
       await ensureEthernaToken();
     } catch (e) {
-      return { status: "unavailable", reason: `etherna token: ${(e as Error)?.message ?? String(e)}` };
+      return failed(`etherna token: ${(e as Error)?.message ?? String(e)}`);
     }
     const token = getCachedEthernaToken();
     if (!token) return { status: "unavailable", reason: "etherna token unavailable" };
@@ -197,9 +287,9 @@ export const ethernaSource: SocSource = {
       const r = await fetchRaw(`${ETHERNA_GW}/chunks/${address}`, { headers: { Authorization: `Bearer ${token}` } }, ETHERNA_READ_TIMEOUT_MS);
       if (r.status === 200) return { status: "found", raw: r.body };
       if (r.status === 404) return { status: "absent" };
-      return { status: "unavailable", reason: `etherna HTTP ${r.status}` };
+      return failed(`etherna HTTP ${r.status}`);
     } catch (e) {
-      return { status: "unavailable", reason: `etherna unreachable: ${(e as Error)?.message ?? String(e)}` };
+      return failed(`etherna unreachable: ${(e as Error)?.message ?? String(e)}`);
     }
   },
 };
@@ -212,9 +302,17 @@ export const ethernaSource: SocSource = {
  * here.
  */
 export function sourcesFor(gatewayUrl?: string): SocSource[] {
-  const sources: SocSource[] = [wocoBeeSource];
-  if (gatewayUrl && isEthernaGateway(gatewayUrl)) sources.push(ethernaSource);
-  return sources;
+  return sourcesForStore(gatewayUrl && isEthernaGateway(gatewayUrl) ? "etherna" : "woco");
+}
+
+/** The sources for a store: our bee always, Etherna too for an Etherna store. */
+export function sourcesForStore(store: FeedStore): SocSource[] {
+  return store === "etherna" ? [wocoBeeSource, ethernaSource] : [wocoBeeSource];
+}
+
+/** The sources for a family, from the shared table - the server's own scans. */
+export function sourcesForFamily(family: FeedFamily): SocSource[] {
+  return sourcesForStore(FEED_FAMILY_STORES[family]);
 }
 
 /**
@@ -225,10 +323,16 @@ export function sourcesFor(gatewayUrl?: string): SocSource[] {
 const healed = new Set<string>();
 function healOnFound(source: string, address: string): void {
   if (healed.has(`${source}:${address}`)) return;
-  healed.add(`${source}:${address}`);
-  if (healed.size > 10_000) healed.clear();
+  markHealed(source, address);
   if (source === "wocoBee") whitelistHashes([address]).catch(() => undefined);
   if (source === "etherna") registerEthernaOffer(address).catch(() => undefined);
+}
+
+/** The upload path whitelisted (or offered) this chunk itself, so a read of it
+ *  need not repeat the call. */
+export function markHealed(source: string, address: string): void {
+  healed.add(`${source}:${address}`);
+  if (healed.size > 10_000) healed.clear();
 }
 
 /**
@@ -239,7 +343,12 @@ function healOnFound(source: string, address: string): void {
 export async function readVerifiedSoc(
   ownerHex: string,
   identifierHex: string,
-  opts: { gatewayUrl?: string; sources?: SocSource[] } = {},
+  /** Which sources to ask: explicit `sources` (tests), else the caller's `family`
+   *  (server scans), else the request's `gatewayUrl` (the client fallback).
+   *  `heal: false` skips the whitelist/offer bookkeeping on a hit: the feed
+   *  layer's own index checks would otherwise add every platform feed update
+   *  to the gateway whitelist, one file rewrite each. */
+  opts: { gatewayUrl?: string; family?: FeedFamily; sources?: SocSource[]; heal?: boolean } = {},
 ): Promise<VerifiedSocRead> {
   let owner: string, identifier: string;
   try {
@@ -251,7 +360,7 @@ export async function readVerifiedSoc(
     throw err;
   }
   const address = bytesToHex(calculateSocAddress(hexToBytes(identifier), hexToBytes(owner)));
-  const sources = opts.sources ?? sourcesFor(opts.gatewayUrl);
+  const sources = opts.sources ?? (opts.family ? sourcesForFamily(opts.family) : sourcesFor(opts.gatewayUrl));
 
   // Sequential, in order: the first source is the cheap, authoritative one, and
   // a found there spares the others a request.
@@ -274,7 +383,7 @@ export async function readVerifiedSoc(
   const agg = aggregateSocReads(answers);
   if (agg.status !== "found") return agg;
   const parts = splitStoredSoc(agg.raw)!;
-  healOnFound(agg.from, address);
+  if (opts.heal !== false) healOnFound(agg.from, address);
   return {
     status: "found",
     soc: {

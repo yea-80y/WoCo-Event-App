@@ -6,16 +6,15 @@ import type {
   UpdateEventMetaRequest,
   CreateEventResponse,
   SeriesClaimStatus,
-  UserCollection,
-  ClaimedTicket,
-  SealedBox,
   OrderEntry,
 } from "@woco/shared";
 export type { OrderEntry };
 import { authPost, authGet, get, apiBase, authStream, currentSiteId } from "./client.js";
 import { auth } from "../auth/auth-store.svelte.js";
-import { eventContentTopic } from "@woco/shared";
+import { eventContentTopic, orderKeyRef } from "@woco/shared";
+import { assertAssembledFeedMatches, assertFeedIsOurs } from "./assembled-feed.js";
 import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
+import { feedRouteFor } from "../swarm/gateways.js";
 import { trashFeedOnManifest } from "../manifest/feed-log.js";
 
 export interface PublishProgress {
@@ -40,7 +39,17 @@ export async function signEventFeedSoc(
   feed: EventFeed,
   signer: ContentFeedSigner,
   knownVersion?: number,
+  /** A passkey removal moving the feed to the NEXT generation's signer (#186) names
+   *  that generation's order key: the account's current one is still the old. */
+  nextGenerationOrderKeyRef?: string,
 ): Promise<number> {
+  // The one guard every event-feed signature passes (#642) — see assertFeedIsOurs.
+  assertFeedIsOurs(feed, {
+    feedSigner: signer.address,
+    parent: auth.parent ?? "",
+    orderKeyRef:
+      feed.encryptionKeyRef !== undefined ? (nextGenerationOrderKeyRef ?? (await ownOrderKeyRef(signer.address))) : undefined,
+  });
   return writeContentFeed({
     signerPrivKey: signer.privKey,
     topic: eventContentTopic(feed.eventId),
@@ -49,8 +58,29 @@ export async function signEventFeedSoc(
     // Route the stamp to the batch the event content lives on. The feed carries its
     // own storage gateway (Etherna user batch vs WoCo); without this, an Etherna
     // event's detail SOC would be stamped on the WoCo batch on every edit/restamp.
-    ...(feed.gatewayUrl ? { gatewayUrl: feed.gatewayUrl } : {}),
+    route: feedRouteFor(feed.gatewayUrl),
   });
+}
+
+/**
+ * This organiser's order-key ref: the content address of the X-Wing key derived
+ * from THEIR current account secret (#642, #186). Memoised per feed signer — the
+ * signer is a KDF of the same secret, so neither another account nor another
+ * generation can hit another's entry. The lattice
+ * code loads here, on the first sign that needs it.
+ */
+const _ownOrderKeyRef = new Map<string, string>();
+async function ownOrderKeyRef(feedSignerAddress: string): Promise<string> {
+  const key = feedSignerAddress.toLowerCase();
+  const hit = _ownOrderKeyRef.get(key);
+  if (hit) return hit;
+  // The CURRENT generation's key (#186), the one the feed signer comes from too.
+  const secrets = await auth.getAccountSecrets({ toSeal: true });
+  if (!secrets) throw new Error("Your account keys are locked, so the event can't be checked before signing - confirm it's you and try again.");
+  const { deriveXWingKeypairFromSeed } = await import("@woco/shared/crypto/xwing");
+  const ref = orderKeyRef(deriveXWingKeypairFromSeed(secrets.current).publicKey);
+  _ownOrderKeyRef.set(key, ref);
+  return ref;
 }
 
 /**
@@ -138,6 +168,11 @@ export async function createEventStreaming(
   // version 0 is exact and the latest-version probe (missing-chunk searches) is
   // skipped. A retried publish gets a NEW eventId, so 0 can never collide.
   if (result.ok && feedSigner && pendingFeed) {
+    try {
+      assertAssembledFeedMatches(req, pendingFeed, { feedSigner: feedSigner.address, parent: auth.parent ?? "" });
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
     if (opts.deferFeedSign) {
       // Caller signs after registration (see @param deferFeedSign).
       result = { ...result, eventFeed: pendingFeed };
@@ -221,6 +256,73 @@ export async function deleteEvent(
   // Manifest bookkeeping (best-effort): the feed is deletion-by-omission on the
   // next batch migration once its entry sits in trash.
   void trashFeedOnManifest("event", eventContentTopic(eventId));
+}
+
+/** Refund progress of a cancelled event (#644): counts and totals only, no buyer data. */
+export interface CancellationProgress {
+  cancelled: boolean;
+  cancelledAt?: string;
+  /** Whether our platform fee goes back to the organiser with each refund. */
+  feeReturned?: boolean;
+  sales?: number;
+  done?: number;
+  inProgress?: number;
+  /** Refunds Stripe is holding until the organiser's Stripe balance can cover them. */
+  waitingForFunds?: number;
+  waitingForBuyer?: number;
+  disputed?: number;
+  needsAttention?: number;
+  settled?: boolean;
+  /** Minor units per currency. */
+  totals?: Record<string, { charged: number; refunded: number }>;
+  /** Buyers WoCo itself emailed about the cancellation and their refund (#798), and those it could not reach. */
+  notified?: number;
+  unreachable?: number;
+}
+
+/**
+ * Cancel an event and refund every buyer (#644). One-way. The server refuses
+ * unless `confirmTitle` is the event's exact name, stops sales at once and
+ * refunds in the background. For a Phase B event the returned feed carries
+ * `cancelledAt` and is re-signed here so the organiser's own page shows the
+ * banner; a re-sign that fails does NOT undo anything (`feedUpdated: false`) —
+ * sales are already stopped server-side and every API read shows it.
+ */
+export async function cancelEvent(
+  eventId: string,
+  confirmTitle: string,
+  opts: { feedSigner?: ContentFeedSigner | null } = {},
+): Promise<{ progress: CancellationProgress | null; eventFeed: EventFeed | null; feedUpdated: boolean }> {
+  const resp = await authPost<{ progress?: CancellationProgress; eventFeed?: EventFeed }>(
+    `/api/events/${eventId}/cancel`,
+    { confirmTitle },
+  );
+  if (!resp.ok) throw new Error(resp.error || "Could not cancel the event");
+
+  const feed = resp.data?.eventFeed ?? null;
+  const progress = resp.data?.progress ? { ...resp.data.progress, cancelled: true } : null;
+  if (!feed) return { progress, eventFeed: null, feedUpdated: false };
+  // A platform-owned feed has nothing for the organiser to sign: the server's
+  // overlay is what readers see.
+  if (!feed.creatorFeedSigner) return { progress, eventFeed: feed, feedUpdated: true };
+  // Sign only a feed that names THIS event and this signer.
+  if (!opts.feedSigner || feed.eventId !== eventId
+      || feed.creatorFeedSigner.toLowerCase() !== opts.feedSigner.address.toLowerCase()) {
+    return { progress, eventFeed: feed, feedUpdated: false };
+  }
+  try {
+    await signEventFeedSoc(feed, opts.feedSigner);
+  } catch (err) {
+    console.warn("[cancel] the event is cancelled but its page feed could not be re-signed:", err);
+    return { progress, eventFeed: feed, feedUpdated: false };
+  }
+  return { progress, eventFeed: feed, feedUpdated: true };
+}
+
+/** Refund progress for the organiser's cancelled event, or `{ cancelled: false }`. */
+export async function getCancellation(eventId: string): Promise<CancellationProgress | null> {
+  const resp = await authGet<CancellationProgress>(`/api/events/${eventId}/cancellation`);
+  return resp.ok ? (resp.data ?? null) : null;
 }
 
 /** Fetch the organiser's current nonce on the active chain (used to predict on-chain eventId). */
@@ -324,21 +426,6 @@ export async function getClaimStatus(
     `/api/events/${eventId}/series/${seriesId}/claim-status${query}`,
     apiUrl,
   );
-  return resp.data ?? null;
-}
-
-// ---------------------------------------------------------------------------
-// Collection (Passport)
-// ---------------------------------------------------------------------------
-
-export async function getMyCollection(): Promise<UserCollection> {
-  const resp = await authGet<UserCollection>("/api/collection/me");
-  if (!resp.ok) throw new Error(resp.error || "Failed to load collection");
-  return resp.data ?? { v: 1, entries: [], updatedAt: "" };
-}
-
-export async function getTicketDetail(ref: string): Promise<ClaimedTicket | null> {
-  const resp = await authGet<ClaimedTicket>(`/api/collection/me/ticket/${ref}`);
   return resp.data ?? null;
 }
 

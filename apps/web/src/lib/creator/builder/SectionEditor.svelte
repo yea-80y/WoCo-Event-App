@@ -15,6 +15,7 @@
     ShopDirectoryEntry,
     ProductCategory,
   } from "@woco/shared";
+  import { FEATURES, safeHref } from "@woco/shared";
   import {
     resolveEmbed,
     supportedProviderNames,
@@ -31,7 +32,7 @@
 
   let { section, onpatch, gatewayUrl }: Props = $props();
 
-  const WOCO_GATEWAY = (import.meta as { env?: Record<string, string> }).env?.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com';
+  const WOCO_GATEWAY = import.meta.env.VITE_GATEWAY_URL ?? 'https://gateway.woco-net.com';
   // Use selected deploy gateway so images uploaded to Etherna preview correctly.
   const GATEWAY_URL = $derived(gatewayUrl || WOCO_GATEWAY);
 
@@ -42,8 +43,12 @@
   let loadedCategoriesFor = $state('');
 
   // Load the merchant's shops once, the first time a productGrid section is edited.
+  // New productGrid sections cannot be added while the rail is off (#124), but a
+  // site saved earlier may still hold one — and /api/shops/* answers 403, so the
+  // request could only ever populate an empty picker. Skip it; the section's own
+  // saved shopId is left exactly as it is.
   $effect(() => {
-    if (section.type === 'productGrid' && !shopsLoaded) {
+    if (FEATURES.shopAllowed && section.type === 'productGrid' && !shopsLoaded) {
       shopsLoaded = true;
       getMyShops().then((s) => { myShops = s; }).catch(() => {});
     }
@@ -51,7 +56,7 @@
 
   // Load the selected shop's categories when its id changes (drives the filter).
   $effect(() => {
-    if (section.type !== 'productGrid') return;
+    if (!FEATURES.shopAllowed || section.type !== 'productGrid') return;
     const sid = (section as ProductGridSection).shopId;
     if (!sid || sid === loadedCategoriesFor) return;
     loadedCategoriesFor = sid;
@@ -201,6 +206,9 @@
       <input class="input" type="text" value={s.ctaHref ?? ''} placeholder="#/whats-on or https://…"
         oninput={(e) => onpatch({ ctaHref: (e.currentTarget as HTMLInputElement).value })} />
     </label>
+    {#if s.ctaHref && !safeHref(s.ctaHref)}
+      <p class="hint warn">This link won't show. Start it with https://, mailto:, tel: or #/ for a page on your site.</p>
+    {/if}
 
   {:else if section.type === 'richText'}
     {@const s = section as RichTextSection}

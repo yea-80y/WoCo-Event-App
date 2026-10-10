@@ -1,10 +1,10 @@
 <script lang="ts">
+  import { feedRouteFor } from "../../swarm/gateways.js";
   import type { OrderField, ClaimMode, EventFeed, EventGeo, EventTag } from "@woco/shared";
-  import { buildIssuerBindingMessage, deriveEncryptionKeypairFromSeed, FEATURES, signPersonalMessage } from "@woco/shared";
+  import { buildIssuerBindingMessage, FEATURES, signPersonalMessage, ticketPriceMeetsMinimum } from "@woco/shared";
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { restoreIdentitySeed } from "../../auth/identity-seed.js";
   import { ensureIssuingKey } from "../../auth/issuing-key.js";
   import { buildEventManifests } from "../../object/event-builder.js";
   import { createEventStreaming, registerSeriesOnChain, signEventFeedSoc, type PublishProgress } from "../../api/events.js";
@@ -99,8 +99,8 @@
     imageDataUrl &&
     series.length > 0 &&
     series.every((s) => s.name.trim() && s.totalSupply > 0) &&
-    // When free events are disabled, every series must carry a price > 0.
-    (FEATURES.freeEventsAllowed || series.every((s) => s.payment && parseFloat(s.payment.price) > 0))
+    // When free events are disabled, every series must carry at least the minimum price.
+    (FEATURES.freeEventsAllowed || series.every((s) => s.payment && ticketPriceMeetsMinimum(s.payment.price)))
   );
 
   const hasPaidSeries = $derived(series.some((s) => s.payment));
@@ -144,11 +144,18 @@
       }
       progress = 4;
 
-      // Derive encryption keypair (no extra popup)
-      let encryptionKey: string | undefined;
-      const identitySeed = auth.seedAddress ? await restoreIdentitySeed(auth.seedAddress) : null;
-      if (identitySeed) {
-        encryptionKey = deriveEncryptionKeypairFromSeed(identitySeed).publicKeyHex;
+      // The organiser's X-Wing order key (#642), derived from the seed with no
+      // extra popup. The server publishes it as its own chunk and names it in the
+      // feed; `createEventStreaming` refuses to sign a feed naming any other.
+      let encryptionPublicKey: string | undefined;
+      // The account's CURRENT generation (#186): after a passkey removal, never the seed's.
+      const secrets = await auth.getAccountSecrets({ toSeal: true });
+      if (secrets) {
+        const [{ deriveXWingKeypairFromSeed }, { bytesToHex }] = await Promise.all([
+          import("@woco/shared/crypto/xwing"),
+          import("@noble/hashes/utils.js"),
+        ]);
+        encryptionPublicKey = bytesToHex(deriveXWingKeypairFromSeed(secrets.current).publicKey);
       }
 
       // The derived secp256k1 issuing key — signs every manifest below AND the
@@ -233,7 +240,7 @@
               issuing.privateKey,
             ),
           },
-          encryptionKey,
+          encryptionPublicKey,
           orderFields: orderFields?.length ? orderFields : undefined,
           claimMode: claimMode && claimMode !== "wallet" ? claimMode : undefined,
           ...(skipAutoList ? { skipAutoList: true } : {}),
@@ -382,7 +389,7 @@
       kind: "event",
       topic: eventContentTopic(eventId),
       label: title,
-      target: gatewayUrl && !gatewayUrl.includes("woco-net.com") ? "etherna" : "woco",
+      target: feedRouteFor(gatewayUrl).target,
     });
     onpublished?.(eventId);
   }

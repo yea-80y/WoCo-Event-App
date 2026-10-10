@@ -1,90 +1,166 @@
 <!--
-  ReferralConfirmBanner — the countersign moment. Shown on the creator home
-  only when the server says readyToAttest (pending attribution + Stripe
-  onboarding complete). The layout draws the exact graph edge the merchant is
-  about to write on-chain: referrer → this studio. One acid action; the
-  confirmed state swaps the rail for the stamp.
+  ReferralConfirmBanner — the countersign moment.
 
-  Self-contained lifecycle: hidden until status resolves, disappears for good
-  once confirmed (next load: status.confirmed → never readyToAttest again).
+  Three reads decide whether it shows, and each answers a question the others
+  cannot: the referee's OWN feed says who they claim referred them, the server
+  says whether Stripe onboarding is complete (the precondition the campaign
+  pays on, and the one fact no chunk carries), and the issuer's confirmation —
+  reported by that same call — says whether the credit has already been made.
+
+  When those reads say a confirmation is due, it is sent without a click
+  (`lib/campaign/referral-confirm.ts` says why the press guarded nothing), and
+  usually the server has already sent it the moment Stripe verified the account
+  (`referral-arm.ts`). The ask - referrer -> this organiser, one acid action -
+  shows only when that attempt failed, as its retry.
+
+  Self-contained lifecycle: hidden until the reads resolve, and hidden for good
+  once confirmed, because a confirmation is written once and never moves.
 -->
 <script lang="ts">
-  import type { Hex0x, ReferralStatus } from "@woco/shared";
+  import type { Hex0x, ReferralConfirmationV1 } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { getReferralStatus } from "../../api/campaign.js";
+  import {
+    confirmReferral,
+    getReferralStatus,
+    type ReferralStatusResponse,
+  } from "../../api/campaign.js";
+  import { readMyReferralStatement, type MyReferralStatement } from "../../campaign/records.js";
+  import { requireAccountForAction } from "../../auth/ensure-action.js";
+  import { autoConfirmReferral, confirmDue } from "../../campaign/referral-confirm.js";
   import CohortStamp from "./CohortStamp.svelte";
 
-  let status = $state<ReferralStatus | null>(null);
-  let phase = $state<"idle" | "signing" | "confirmed">("idle");
+  /** Bumped by the host after anything that may have changed the Stripe state. */
+  let { recheck = 0 }: { recheck?: number } = $props();
+
+  /** The caller's content-feed owner — prompt-free, and null on a device with
+   *  no seed, which is also a device whose statement cannot be read. */
+  let myFeed = $state<string | null>(null);
+  let statement = $state<MyReferralStatement | null>(null);
+  let status = $state<ReferralStatusResponse | null>(null);
+  let confirmed = $state<ReferralConfirmationV1 | null>(null);
+  /** `auto` hides the card: an ask must not flash while the confirm it offers is already on its way. */
+  let phase = $state<"idle" | "auto" | "confirming" | "confirmed">("idle");
   let errorMsg = $state<string | null>(null);
+  let loading = false;
 
   const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 
-  // Only fetch once a session already exists — a home-screen mount must never
-  // trigger a signing prompt just to check referral state.
+  // Only once a session already exists — a home-screen mount must never trigger
+  // a ceremony just to work out what to render.
+  //
+  // `hasIdentitySeed` is a dependency, not a condition: the statement lives on a
+  // feed whose owner derives from the seed, so the read re-runs when the seed
+  // arrives or unlocks. Not a condition, because a passkey account's seed is locked
+  // after every reload (#746 fix 1) while its feed address is still known.
   $effect(() => {
-    if (!auth.isAuthenticated) return;
-    getReferralStatus().then((resp) => {
-      if (resp.ok && resp.data) status = resp.data;
-    }).catch(() => {});
+    void recheck;
+    void auth.hasIdentitySeed;
+    if (!auth.isAuthenticated || loading) return;
+    loading = true;
+    void load().finally(() => { loading = false; });
   });
 
-  const visible = $derived(
-    (status?.readyToAttest && phase !== "confirmed") || phase === "confirmed",
-  );
+  async function load() {
+    const parent = auth.parent?.toLowerCase() ?? null;
+    // The ADDRESS getter, not the signer: this path only reads, and the read
+    // must cost the user nothing. Null means no seed on this device yet, so
+    // there is no feed to read and nothing to show.
+    const feed = await auth.getContentFeedSignerAddress().catch(() => null);
+    if (!feed) return;
+    myFeed = feed;
 
-  async function countersign() {
-    if (!status?.pending || phase === "signing") return;
-    phase = "signing";
+    const [claim, resp] = await Promise.all([
+      readMyReferralStatement(feed).catch(() => null),
+      getReferralStatus().catch(() => null),
+    ]);
+    statement = claim;
+    if (resp?.ok && resp.data) {
+      status = resp.data;
+      confirmed = resp.data.confirmed;
+    }
+
+    const facts = { statement, status };
+    if (!confirmDue(facts) || phase === "confirming") return;
+    phase = "auto";
+    errorMsg = null;
+    const outcome = await autoConfirmReferral({
+      facts,
+      feed: feed as Hex0x,
+      stillSameAccount: () => parent !== null && auth.parent?.toLowerCase() === parent,
+      confirm: confirmReferral,
+    });
+    if (outcome.kind === "confirmed") {
+      confirmed = outcome.record;
+      phase = "confirmed";
+      return;
+    }
+    phase = "idle";
+    if (outcome.kind === "failed") errorMsg = outcome.error;
+  }
+
+  const done = $derived(phase === "confirmed" || confirmed !== null);
+  // `readOk` is load-bearing: an inconclusive confirmation read must show
+  // NOTHING, never the ask. Offering to confirm a referral that may already be
+  // recorded invites a second attempt the issuer will refuse as a conflict.
+  const ask = $derived(!done && confirmDue({ statement, status }));
+
+  async function confirm() {
+    if (!statement || !myFeed || phase === "confirming") return;
+    phase = "confirming";
     errorMsg = null;
     try {
-      // Wallet/kernel attest machinery loads only when the button is pressed.
-      const { confirmReferral } = await import("../../eas/attest-referral.js");
-      status = await confirmReferral(status.pending.referrer as Hex0x);
+      // The ONE ceremony in this flow, and the user pressed the button that
+      // asks for it. No `onChain` — nothing here touches a chain.
+      const ready = await requireAccountForAction({ context: "creator" });
+      if (!ready) { phase = "idle"; return; }
+
+      const resp = await confirmReferral(statement.referrer, myFeed as Hex0x);
+      if (!resp.ok || !resp.data) throw new Error(resp.error ?? "Could not confirm the referral.");
+      confirmed = resp.data.confirmed;
       phase = "confirmed";
     } catch (err) {
       phase = "idle";
-      errorMsg = err instanceof Error ? err.message : "Signing failed — try again.";
+      errorMsg = err instanceof Error ? err.message : "Could not confirm the referral - try again.";
     }
   }
 </script>
 
-{#if visible}
+{#if (done || ask) && phase !== "auto"}
   <section class="countersign card" aria-live="polite">
-    {#if phase === "confirmed" && status?.confirmed}
+    {#if done && confirmed}
       <div class="done">
         <CohortStamp epoch={0} size={64} />
         <div class="done-copy">
           <span class="kicker mono">REFERRAL // RECORDED</span>
-          <h2>Countersigned on-chain</h2>
+          <h2>Referral confirmed</h2>
           <p>
-            <span class="mono addr">{short(status.confirmed.referrer)}</span> now earns from your
-            sales — the record is public, permanent, and theirs.
+            <span class="mono addr">{short(confirmed.referrer)}</span> now earns from your
+            sales - the record is signed, public and permanent.
           </p>
         </div>
       </div>
-    {:else if status?.pending}
+    {:else if ask && statement}
       <div class="ask">
         <div class="ask-copy">
-          <span class="kicker mono">REFERRAL // ONE SIGNATURE NEEDED</span>
-          <h2><span class="mono addr">{short(status.pending.referrer)}</span> vouched for this studio</h2>
+          <span class="kicker mono">REFERRAL // ONE CONFIRMATION NEEDED</span>
+          <h2><span class="mono addr">{short(statement.referrer)}</span> vouched for you</h2>
           <p>
-            Countersign to credit them on-chain. They earn a share of the platform fee on your
-            sales — it costs you nothing, now or later.
+            Confirm to credit them. They earn a share of the platform fee on your sales - it
+            costs you nothing, now or later.
           </p>
         </div>
 
         <div class="rail" aria-hidden="true">
-          <span class="chip mono">{short(status.pending.referrer)}</span>
+          <span class="chip mono">{short(statement.referrer)}</span>
           <span class="edge"><svg viewBox="0 0 60 10" preserveAspectRatio="none"><line x1="0" y1="5" x2="52" y2="5" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 3"/><path d="M52 1 L59 5 L52 9 Z" fill="currentColor"/></svg></span>
           <span class="chip chip--you mono">{auth.parent ? short(auth.parent) : "you"}</span>
         </div>
 
         <div class="act">
-          <button class="sign-btn" onclick={countersign} disabled={phase === "signing"} aria-busy={phase === "signing"}>
-            {phase === "signing" ? "Signing…" : "Countersign on-chain"}
+          <button class="sign-btn" onclick={confirm} disabled={phase === "confirming"} aria-busy={phase === "confirming"}>
+            {phase === "confirming" ? "Confirming…" : "Confirm the referral"}
           </button>
-          <span class="free mono">FREE — NO GAS, NO FEES</span>
+          <span class="free mono">FREE - NO GAS, NO FEES</span>
         </div>
 
         {#if errorMsg}

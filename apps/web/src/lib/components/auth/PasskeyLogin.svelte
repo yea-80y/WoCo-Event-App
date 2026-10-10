@@ -1,7 +1,10 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { isPasskeySupported } from "../../auth/passkey-account.js";
+  import { isPasskeySupported, PasskeyBrowserRefusedError } from "../../auth/passkey-account.js";
+  import { passkeyRefusalAdvice } from "../../auth/passkey-refusal-copy.js";
   import { onMount } from "svelte";
+  import { loginRequest } from "../../auth/login-request.svelte.js";
+  import { PASSKEY_ONLY_RECOVERY_NOTE } from "../../auth/organiser-account.js";
 
   interface Props {
     oncomplete?: () => void;
@@ -9,13 +12,21 @@
     onstart?: () => void;
     /** Attempt settled (either way) — the modal returns to the picker. */
     onsettle?: () => void;
+    /** "Link this device" (#746 step 4) was chosen: the modal closes for its screen. */
+    onlink?: () => void;
   }
 
-  let { oncomplete, onstart, onsettle }: Props = $props();
+  let { oncomplete, onstart, onsettle, onlink }: Props = $props();
   let error = $state<string | null>(null);
   let supported = $state(false);
   /** Emphasises the create button after a sign-in found nothing — never auto-clicks it. */
   let offerCreate = $state(false);
+  /** A sign-in from another device that could not be confirmed (#746): points at "Add this device". */
+  let otherDevice = $state(false);
+  /** "Can't find your passkey on this device?" (#746), opened by its link or after a sign-in found nothing. */
+  let showHelp = $state(false);
+  /** After a new account: its passkey stays on this kind of device (Samsung Pass, Windows Hello). */
+  let stays = $state<{ name: string; worksOn: string } | null>(null);
 
   onMount(() => {
     supported = isPasskeySupported();
@@ -32,19 +43,37 @@
    */
   async function run(mode: "signin" | "create") {
     error = null;
+    otherDevice = false;
     onstart?.();
     try {
       const res = await auth.loginPasskeyResult(mode);
       if (res.ok) {
+        if (mode === "create") {
+          // Say once, while it is fresh, that this passkey will not reach a laptop (#746).
+          const { stayingPasskeyNote } = await import("../../auth/passkey-reach.js");
+          stays = await stayingPasskeyNote().catch(() => null);
+          if (stays) return;
+        }
         oncomplete?.();
         return;
       }
-      if (res.orphaned) {
-        // The modal's one-shot notice explains this refusal (#255) — a red
-        // line here would say the same thing twice.
+      if (res.orphaned || res.removed) {
+        // The modal's one-shot notice explains this refusal (#255, and an added
+        // passkey removed from its account, #746) - a red line here would say
+        // the same thing twice.
+      } else if (res.otherDevice && onlink) {
+        otherDevice = true;
+        error = res.error?.message ?? null;
+      } else if (res.noSheet) {
+        // No prompt opened, so nothing was cancelled and nothing was found: the
+        // create offer would be a guess. The message says what to do instead.
+        error = res.error?.message ?? null;
       } else if (res.noAssertion && mode === "signin") {
         offerCreate = true;
+        showHelp = true;
         error = "No passkey was used. If you cancelled, try again — otherwise you can create a new account below.";
+      } else if (res.error instanceof PasskeyBrowserRefusedError) {
+        error = passkeyRefusalAdvice(res.error.host, loginRequest.context === "invite");
       } else {
         error = res.error?.message ?? "Passkey authentication failed. Try again or use another method.";
       }
@@ -54,7 +83,16 @@
   }
 </script>
 
-{#if supported}
+{#if supported && stays}
+  <div class="passkey-login stays" role="status">
+    <p class="stays-title">Your passkey is in {stays.name}</p>
+    <p class="stays-body">
+      {stays.worksOn}. To use WoCo on a laptop too, add another password manager - like Google Password Manager - from
+      Your passkeys, once you have a ticket or an invite.
+    </p>
+    <button class="passkey-btn" onclick={() => { stays = null; oncomplete?.(); }}>Got it</button>
+  </div>
+{:else if supported}
   <div class="passkey-login">
     <button
       class="passkey-btn"
@@ -84,6 +122,29 @@
     >
       New to WoCo? Create a passkey account
     </button>
+    {#if loginRequest.context === "invite"}
+      <!-- An organiser's account has no email or wallet backup (#746 step 5): said before it exists. -->
+      <p class="recovery-note">{PASSKEY_ONLY_RECOVERY_NOTE} Link a second device once you're in.</p>
+    {/if}
+
+    {#if onlink}
+      {#if otherDevice && error}
+        <p class="error" role="alert">{error}</p>
+      {/if}
+      <button class="create-btn" class:emphasised={otherDevice} onclick={onlink} disabled={auth.busy}>
+        Already use WoCo on your phone? Add this device
+      </button>
+    {/if}
+
+    {#if !showHelp}
+      <button class="help-link" onclick={() => (showHelp = true)} disabled={auth.busy}>
+        Can't find your passkey on this device?
+      </button>
+    {:else}
+      {#await import("./PasskeyHelp.svelte") then { default: PasskeyHelp }}
+        <PasskeyHelp busy={auth.busy} onretry={() => run("signin")} {onlink} />
+      {/await}
+    {/if}
 
     <div class="providers">
       <span class="provider-label">Secured by</span>
@@ -119,7 +180,7 @@
       one makes a separate account — it will not restore an existing one.
     </p>
 
-    {#if error}
+    {#if error && !otherDevice}
       <p class="error">{error}</p>
     {/if}
   </div>
@@ -155,6 +216,34 @@
 
   .passkey-btn:active:not(:disabled) {
     background: var(--accent-press);
+  }
+
+  .help-link {
+    padding: 0.5rem 0;
+    border: 0;
+    background: none;
+    color: var(--accent-text);
+    font: inherit;
+    font-size: 0.8125rem;
+    cursor: pointer;
+  }
+
+  .stays p {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+  }
+
+  .stays .stays-title {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .recovery-note {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    text-align: center;
   }
 
   .create-btn {

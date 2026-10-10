@@ -6,11 +6,14 @@
  * narrow and total: the filter removes exactly the profile role and nothing
  * else — including names with no role at all, which is what a response cached
  * from an older server looks like.
+ *
+ * Which name an invite carries is no longer decided here: see
+ * `profile-name.test.ts`.
  */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bindableNames, hidesProfileName, roleLabel } from "../src/lib/sub-ens/roles.js";
+import { bindableNames, hidesProfileName, profileLabel, roleLabel } from "../src/lib/sub-ens/roles.js";
 
 const NAMES = [
   { label: "nabil", role: "profile" as const },
@@ -55,4 +58,11 @@ test("each role reads as a person would say it", () => {
 
 test("an absent role has no label, so the caller keeps its old text", () => {
   assert.equal(roleLabel(undefined), undefined);
+});
+
+test("profileLabel picks the profile name and nothing else", () => {
+  assert.equal(profileLabel(NAMES), "nabil");
+  // Other roles and role-less names are never mistaken for the profile name.
+  assert.equal(profileLabel([{ label: "punkpub", role: "url" as const }, { label: "old" }]), null);
+  assert.equal(profileLabel([]), null);
 });

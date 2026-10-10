@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { Site, SiteEventEntry, TemplateId } from "@woco/shared";
-  import { newSiteFromTemplate, siteConfigTopic, subEnsName } from "@woco/shared";
+  import type { Site, SiteDeploySubEns, SiteEventEntry, TemplateId } from "@woco/shared";
+  import { newSiteFromTemplate, siteConfigTopic, subEnsName, FEATURES } from "@woco/shared";
   import { logFeedToManifest } from "../../manifest/feed-log.js";
   import { onMount } from 'svelte';
   import { publishSite, deploySite, loadSite, getSiteEvents, uploadSiteImage, type DeploySiteResult } from "../../api/sites.js";
@@ -17,14 +17,16 @@
   import NavTab from "./tabs/NavTab.svelte";
   import EventsTab from "./tabs/EventsTab.svelte";
   import ShopTab from "./tabs/ShopTab.svelte";
-  import GatewayPicker from "./GatewayPicker.svelte";
-  import { GATEWAYS } from "./gateways.js";
+  import { ETHERNA_GATEWAY_URL, feedRouteFor } from "../../swarm/gateways.js";
   import PurchaseBatchModal from "./PurchaseBatchModal.svelte";
   import DomainLinker from "./DomainLinker.svelte";
   import DomainTab from "./DomainTab.svelte";
   import SubENSPicker from "./SubENSPicker.svelte";
+  import { NAME_SHOWS_PUBLISH_AFTER } from "./sub-ens-link-state.js";
+  import NamePointerPrompt from "../../components/sub-ens/NamePointerPrompt.svelte";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import { getStripeAccountStatus } from "../../api/stripe.js";
+  import { getOwnedSubEns } from "../../api/sub-ens.js";
   import { describeSubEnsError, subEnsErrorDetail } from "../../sub-ens/errors.js";
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -38,11 +40,8 @@
   const LAST_SITE_KEY = 'woco:last-site-id';
   const FEED_HASH_KEY = 'woco:site-feed-hash';
 
-  const API_URL     = (import.meta as { env?: Record<string, string> }).env?.VITE_API_URL ?? 'http://localhost:3001';
-  const DEFAULT_GATEWAY = GATEWAYS.find((g) => g.default)?.url ?? GATEWAYS[0].url;
-  const WOCO_APP_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_APP_URL ?? 'https://woco.eth.limo';
-
-  const ETHERNA_URL = 'https://gateway.etherna.io';
+  const API_URL     = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
+  const WOCO_APP_URL = import.meta.env.VITE_APP_URL ?? 'https://woco.eth.limo';
 
   function loadDraft(): Site {
     if (typeof window === 'undefined') {
@@ -103,6 +102,8 @@
   // known (the auth effect below). Reading at module init time would risk
   // showing whichever address last wrote to localStorage on a shared device.
   let mySites    = $state<MySiteRecord[]>([]);
+  /** Swarm hash -> the WoCo name pointed at it, so a My Sites card shows its address (#576). */
+  let siteNames  = $state<Record<string, string>>({});
   let screen     = $state<'my-sites' | 'builder'>('my-sites');
   let tab        = $state<'template' | 'brand' | 'pages' | 'nav' | 'events' | 'shop' | 'domain'>('brand');
 
@@ -113,6 +114,8 @@
    *  fire-and-forget on the server, so a skip used to leave no trace anywhere
    *  the organiser could see it (#484). */
   let subEnsNotice = $state<{ tone: 'info' | 'warn'; text: string } | null>(null);
+  /** The site's name is not on this site's feed yet: the holder signs once. */
+  let subEnsPointer = $state<Extract<SiteDeploySubEns, { status: 'awaiting_signature' }> | null>(null);
   let deployedUrl       = $state('');
   let deployedHash      = $state(
     typeof window !== 'undefined'
@@ -121,7 +124,8 @@
   );
   let feedHash          = $state(typeof window !== 'undefined' ? (localStorage.getItem(FEED_HASH_KEY) ?? '') : '');
 
-  let gatewayUrl        = $state(DEFAULT_GATEWAY);
+  // Sites are always stored on and served by Etherna (owner decision 2026-09-22).
+  const gatewayUrl      = ETHERNA_GATEWAY_URL;
   let purchaseOpen      = $state(false);
   let pendingLogoBase64 = $state<string | null>(null);
 
@@ -163,6 +167,7 @@
     const addr = auth.isConnected && auth.parent ? auth.parent.toLowerCase() : null;
     if (addr === _prevAddr) return;
     _prevAddr = addr;
+    siteNames = {};
 
     if (!addr) {
       mySites = [];
@@ -179,6 +184,15 @@
         const ok = await auth.ensureSession();
         if (!ok || _prevAddr !== addr) return;
       }
+
+      getOwnedSubEns().then((res) => {
+        if (_prevAddr !== addr || !res.ok || !res.data) return;
+        siteNames = Object.fromEntries(
+          res.data.names
+            .filter((n) => n.contentHash && n.role !== 'profile')
+            .map((n) => [n.contentHash!.toLowerCase(), n.label]),
+        );
+      }).catch(() => {});
 
       const swr = getMySitesSWR(addr);
       mySites = swr.cached ? [...swr.cached] : [];
@@ -303,16 +317,19 @@
     pendingPurchaseResolve = null;
   }
 
-  /** Say what happened to the site's name, in the site's own words. */
+  /** Say what happened to the site's name, in the site's own words. A name
+   *  already on this site follows the publish with nothing to sign, but not at
+   *  once, and "Published" next to an unchanged page reads as a lost publish. */
   function describeDeploySubEns(
     s: DeploySiteResult['subEns'],
   ): { tone: 'info' | 'warn'; text: string } | null {
-    if (!s) return null;
-    const name = subEnsName(s.label);
-    if (s.status === 'updating') return { tone: 'info', text: `Updating ${name} to this version…` };
+    if (s?.status === 'ok') {
+      return { tone: 'info', text: `${subEnsName(s.label)} shows this version in ${NAME_SHOWS_PUBLISH_AFTER}.` };
+    }
+    if (!s || s.status !== 'skipped') return null;
     const d = describeSubEnsError({ error: s.reason });
     const detail = subEnsErrorDetail(d);
-    return { tone: 'warn', text: `${name}: ${d.title}${detail ? ` ${detail}` : ''}` };
+    return { tone: 'warn', text: `${subEnsName(s.label)}: ${d.title}${detail ? ` ${detail}` : ''}` };
   }
 
   async function handlePublish() {
@@ -330,12 +347,14 @@
     publishState = 'publishing';
     publishError = '';
     subEnsNotice = null;
+    subEnsPointer = null;
     deployedUrl = '';
 
     /** Logo upload → publish config/feeds → deploy. Throws the sentinel errors
      * above when the server raises a gate, so the outer flow can react (open
      * the right modal) and retry. */
     const publishSequence = async () => {
+      await auth.ensureOrganiserUnlock();
       if (pendingLogoBase64) {
         const imgRes = await uploadSiteImage(pendingLogoBase64, gatewayUrl);
         if (!imgRes.ok) {
@@ -351,6 +370,7 @@
       // CLIENT-OWNED SOC (null → legacy platform-written path).
       const feedSigner = await auth.getContentFeedSigner();
       const feedRes = await publishSite($state.snapshot(site), $state.snapshot(siteEvents), feedSigner, gatewayUrl);
+      if (feedRes.code === 'STRIPE_VERIFICATION_REQUIRED') throw new StripeVerificationNeeded(feedRes.error);
       if (!feedRes.ok) throw new Error(feedRes.error ?? 'Publish failed');
 
       const deployRes = await deploySite(site.siteId, { apiUrl: API_URL, gatewayUrl, wocoAppUrl: WOCO_APP_URL, site: $state.snapshot(site) }, feedSigner);
@@ -386,6 +406,7 @@
       }
 
       subEnsNotice = describeDeploySubEns(deployed.subEns);
+      subEnsPointer = deployed.subEns?.status === 'awaiting_signature' ? deployed.subEns : null;
       deployedUrl  = deployed.siteUrl;
       deployedHash = deployed.contentHash;
       localStorage.setItem(`woco:site-content-hash:${site.siteId}`, deployedHash);
@@ -420,7 +441,7 @@
           contentHash: deployed.contentHash,
           ...(deployed.feedManifestHash ? { feedManifestHash: deployed.feedManifestHash } : {}),
         },
-        target: gatewayUrl.includes("woco-net.com") ? "woco" : "etherna",
+        target: feedRouteFor(gatewayUrl).target,
       });
 
       publishState = 'done';
@@ -614,7 +635,11 @@
     { id: 'pages',    label: 'Pages' },
     { id: 'nav',      label: 'Navigation' },
     { id: 'events',   label: 'Events' },
-    { id: 'shop',     label: 'Shop' },
+    // Shop rail flagged off for launch (#124): the tab is not OFFERED, and that
+    // is the whole intervention. A site that already carries shop data keeps it
+    // — nothing is read, written or cleared here, so flipping the flag back
+    // brings the tab and its existing data straight back.
+    ...(FEATURES.shopAllowed ? [{ id: 'shop' as TabId, label: 'Shop' }] : []),
     { id: 'domain',   label: 'Domain' },
   ];
 
@@ -636,6 +661,7 @@
   {:else if screen === 'my-sites'}
     <MySitesScreen
       sites={mySites}
+      {siteNames}
       gatewayUrl={gatewayUrl}
       onopen={handleOpenSite}
       onnew={handleNewSite}
@@ -714,31 +740,20 @@
 
     <div class="editor-split">
     <div class="editor-rail">
-    <div class="gateway-row">
-      <label class="gateway-label" for="ms-gw-picker">Deploy gateway</label>
-      <div class="gateway-input"><GatewayPicker bind:value={gatewayUrl} /></div>
-      <span class="gateway-hint">
-        {gatewayUrl === ETHERNA_URL
-          ? 'Etherna serves your site — uses your batch'
-          : 'Testing only — uses platform WoCo batch'}
-      </span>
-    </div>
 
-    {#if feedHash || deployedUrl}
+    <!-- No gateway link here: a site is shown at its WoCo name (#576). -->
+    {#if feedHash}
       <div class="deploy-banner">
-        {#if feedHash}
-          <div class="deploy-row deploy-row--primary">
-            <span class="deploy-label feed-label">Feed hash</span>
-            <span class="deploy-siteid">{feedHash}</span>
-            <button class="deploy-copy" onclick={() => navigator.clipboard.writeText(feedHash)} title="Copy feed hash">Copy</button>
-            <span class="feed-hint">← stable · use this for ENS</span>
-          </div>
-        {/if}
-        {#if deployedUrl}
+        <div class="deploy-row deploy-row--primary">
+          <span class="deploy-label feed-label">Feed hash</span>
+          <span class="deploy-siteid">{feedHash}</span>
+          <button class="deploy-copy" onclick={() => navigator.clipboard.writeText(feedHash)} title="Copy feed hash">Copy</button>
+          <span class="feed-hint">← stable · use this for ENS</span>
+        </div>
+        {#if publishState === 'done' && !site.subEnsLabel}
           <div class="deploy-row">
-            <span class="deploy-label">Preview</span>
-            <a href={deployedUrl} target="_blank" rel="noopener" class="deploy-url">{deployedUrl}</a>
-            <button class="deploy-copy" onclick={() => navigator.clipboard.writeText(deployedUrl)} title="Copy URL">Copy</button>
+            <span class="deploy-label">Share</span>
+            <button class="deploy-copy" onclick={() => { tab = 'domain'; }}>Get a free .woco.eth address</button>
           </div>
         {/if}
       </div>
@@ -754,6 +769,15 @@
       <div class="subens-notice" class:subens-notice--warn={subEnsNotice.tone === 'warn'}>
         <span>{subEnsNotice.text}</span>
       </div>
+    {/if}
+    {#if subEnsPointer}
+      <NamePointerPrompt
+        label={subEnsPointer.label}
+        target={subEnsPointer.target}
+        targetIsFeed={true}
+        feedOwner={subEnsPointer.feedOwner}
+        purpose="site"
+      />
     {/if}
 
     <!-- Tab content -->
@@ -776,7 +800,7 @@
           published={!!feedHash || publishState === 'done'}
           onsiteeventschange={(ev) => siteEvents = ev}
         />
-      {:else if tab === 'shop'}
+      {:else if FEATURES.shopAllowed && tab === 'shop'}
         <ShopTab
           siteId={site.siteId}
           shopId={siteShopId}
@@ -785,7 +809,7 @@
       {:else if tab === 'domain'}
         <SubENSPicker
           bind:claimedLabel={site.subEnsLabel}
-          deployedHash={deployedHash}
+          targetHash={feedHash}
           onclaim={(label) => { site.subEnsLabel = label; }}
           onunlink={() => { site.subEnsLabel = undefined; }}
           stripeConnected={stripeConnected}
@@ -1088,25 +1112,6 @@
   }
 
   /* ── Gateway row ── */
-  .gateway-row {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem 1.5rem;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg);
-    flex-wrap: wrap;
-  }
-  .gateway-label {
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--text-muted);
-    white-space: nowrap;
-  }
-  .gateway-input { min-width: 16rem; flex: 0 1 18rem; }
-  .gateway-hint { font-size: 0.75rem; color: var(--text-muted); }
 
   /* ── Deploy banner ── */
   .deploy-banner {
@@ -1145,14 +1150,6 @@
     font-size: 0.75rem;
     color: color-mix(in srgb, #22c55e 70%, var(--text-muted));
     white-space: nowrap;
-  }
-
-  .deploy-url {
-    font-size: 0.8125rem;
-    color: var(--text);
-    font-family: monospace;
-    word-break: break-all;
-    flex: 1;
   }
 
   .deploy-siteid {

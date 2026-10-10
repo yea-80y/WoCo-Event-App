@@ -20,6 +20,20 @@ export const FEATURES = {
   // That rail is now DELETED — settleAgentTicketPurchase refuses outright (see
   // lib/agent/spend-authority.ts). Turn on with a v2 on-chain mint path, not before.
   agentCommerceAllowed: false,
+  // The shop rail: catalog, POS, tap-to-pay, shop Stripe checkout, and the USDC
+  // draw the server performs as the spender against a permission the customer
+  // signed on-chain (lib/shop/spend-permission.ts, SHOP_SPENDER_SECRET). Launch
+  // ships events, not shops, and a live money path needs a kill switch that is
+  // not a code change — so this gates the client routes AND the whole
+  // /api/shops router in lockstep, and an old client cannot reach the rail.
+  //
+  // ONE ASYMMETRY, decided rather than overlooked: a deployed organiser site
+  // bakes this constant into its multisite bundle at publish time, so flipping
+  // it does NOT reach an already-published site until that site is re-published.
+  // For those sites the SERVER gate is the authoritative one — their order
+  // screen calls /api/shops/*, which refuses. Flip to true with the shop launch
+  // plus a server deploy, not before.
+  shopAllowed: false,
   // Coinbase Smart Wallet login. OFF for launch (#173, owner decision
   // 2026-08-04): CSW is a smart account, so its ERC-1271/6492 signatures are
   // not byte-reproducible (6492-wrapped before deployment, bare 1271 after —
@@ -34,6 +48,33 @@ export const FEATURES = {
   // and restored per device), after #164. Never sign-to-derive for smart
   // accounts.
   coinbaseLoginAllowed: false,
+  // Browser-wallet login (MetaMask, WalletConnect - AuthKind "web3"). OFF for
+  // launch (owner decision 2026-10-08, #186). A wallet account's identity seed
+  // is keccak256 of ONE fixed EIP-712 signature, and a wallet signs whatever a
+  // site asks: any page that gets the same signature holds that account's keys,
+  // for good (the message is frozen, so nothing rotates). No change to the
+  // message fixes that - only keys that do not come from a wallet signature do.
+  // Also offers wallets as a recovery backup, which derives its escrow key the
+  // same way. Gates in lockstep: the login and backup choices + loginWeb3 +
+  // session restore (client), and the server refuses a delegation signed by its
+  // own parent EOA - the authoritative half, since a published event page keeps
+  // the bundle it was published with. Turn on only with wallet keys rooted
+  // somewhere a site cannot ask for them (e.g. a passkey).
+  walletLoginAllowed: false,
+  // Recovery backups for email (Web3Auth) accounts - the Protect screen: a
+  // recovery passkey, another email, or a wallet as guardian. OFF for launch
+  // (owner decision 2026-10-08, #186): recovery has not been tested end to end,
+  // and a backup restores the account, never a ticket (the account lists
+  // tickets, but the signature the door checks exists only in the ticket email).
+  // Its wallet option had the phishing weakness above and stays off either way.
+  // An email user who wants a stronger account upgrades it to a passkey (#816).
+  // Passkey accounts are unaffected: they back up by adding passkeys. Gates in
+  // lockstep: the Protect screen, its prompts and nudges (client), and the
+  // sponsorship policy refuses install-route and guardians - every op that adds
+  // a backup, and also revoking a single one (unreachable while the screen is
+  // off). Removing ALL backups (the route uninstall) stays paid: the upgrade to
+  // a passkey does that first.
+  accountBackupsAllowed: false,
   // Organiser custom sending domains. OFF for launch, for two independent
   // reasons: the production Resend key is send-only, so the Domains API 401s and
   // the panel could only ever show an error; and PRICING_AND_EMAIL.md §6 forbids
@@ -41,7 +82,32 @@ export const FEATURES = {
   // cap of 10, and migrating to SES later would make every organiser redo their
   // DNS. Turn on with the SES provider work (§14 E10), not before.
   organiserSendingDomains: false,
+  // Standalone badges and drops, and ticket sales gated on holding one. OFF for
+  // launch (owner decision 2026-09-13, re-confirmed 2026-09-24): a chain badge is
+  // a sponsor-paid registration on the events contract, which is for events only,
+  // and the certificate rail meant to carry badges cannot be presented yet
+  // (gate-build.ts "cert-not-live"). The Objects page STAYS: it lists the tickets
+  // of every published event. Gates the create entry points and the ticket
+  // editor's gate panel AND, in lockstep, POST /api/objects and gated series at
+  // event create. Checkout still ENFORCES a gate an existing series carries -
+  // turning the flag off must never open a gated sale to everyone.
+  badgesAllowed: false,
 } as const;
+
+/**
+ * The lowest ticket price, in major units of the ticket's currency (£1, $1, €1 -
+ * the only currencies offered). Below it Stripe's own per-card fee eats most of
+ * the price, and below 34p our 1.5% fee rounds to nothing, which checkout refuses
+ * (#645, MIN_APPLICATION_FEE_MINOR). Checked at publish, in the editor and on the
+ * server, so an organiser never publishes a ticket nobody can buy.
+ */
+export const MIN_TICKET_PRICE = 1;
+
+/** True when a price string is a number at or above MIN_TICKET_PRICE. */
+export function ticketPriceMeetsMinimum(price: string | undefined): boolean {
+  const n = parseFloat((price ?? "").trim());
+  return Number.isFinite(n) && n >= MIN_TICKET_PRICE;
+}
 
 /** Minimum buyer-pays fee % (3% Stripe + 1.5% WoCo). UI snaps below this back up. */
 export const BUYER_FEE_FLOOR_PCT = 4.5;

@@ -1,5 +1,7 @@
 # Events Directory — how it works (#37)
 
+**Verified against `main` (94364b56) on 2026-10-05.**
+
 The public events directory is a **three-layer split**. Each layer has one job and
 one owner. (Schema + invariants: `packages/shared/src/event/snapshot.ts`; builder:
 `apps/server/src/lib/event/directory-snapshot.ts`.)
@@ -8,8 +10,8 @@ one owner. (Schema + invariants: `packages/shared/src/event/snapshot.ts`; builde
 
 | Layer | Where | What | Who signs |
 |---|---|---|---|
-| 1. TRUTH | On-chain (`WoCoEventV2`, Arbitrum) | `Registered` log, one entry per ticket series: `onChainEventId`, supply, manifest **digest** | Platform sponsor wallet (gas-sponsored on behalf of the organiser) |
-| 2. CONTENT | Swarm | Event feed (SOC) + series manifests + images | **Creator** (client-owned feed signer) — the organiser's content, portable, listable anywhere |
+| 1. TRUTH | Onchain (`WoCoTicketLedger` on Arbitrum Sepolia today; `WoCoEventV2` before it) | `Registered` log, one entry per ticket series: `onChainEventId`, organiser, supply, manifest **digest** | Platform sponsor wallet (gas-sponsored on behalf of the organiser) |
+| 2. CONTENT | Swarm (new events stamped on Etherna, #617) | Event feed (SOC) + series manifests + images | **Creator** (client-owned feed signer) — the organiser's content, portable, listable anywhere |
 | 3. SPEED | Swarm | ONE immutable snapshot blob + a pointer feed at `woco/event/directory/snapshot` | **Platform signer** (the only centralised piece) |
 
 - A directory paint = 1 pointer-feed read + 1 blob fetch, regardless of event count.
@@ -26,9 +28,11 @@ one owner. (Schema + invariants: `packages/shared/src/event/snapshot.ts`; builde
 
 ## What is on-chain vs not
 
-On-chain (costs gas, paid by the platform sponsor — never the organiser):
-- Series registration only: event id, supply, manifest digest, organiser,
-  payout recipient, end timestamp. Registered once per series at publish.
+Onchain (costs gas, paid by the platform sponsor — never the organiser):
+- Series registration only. On `WoCoTicketLedger`: event id, organiser, registrant (the
+  sponsor), supply, manifest digest, end timestamp. The ledger holds no money, so no payout
+  recipient is recorded (`WoCoEventV2` recorded one). Registered once per series at publish.
+  Each registration records which contract it is on (`.data/onchain-events.json`, #563).
 
 NOT on-chain (Swarm only — free to change, no gas ever):
 - Title, tagline, description, dates, location, image
@@ -46,7 +50,10 @@ and chain-anchored, never editable this way.
 ## Lifecycle
 
 1. **Create** (`POST /api/events`) — content to Swarm, creator signs the feed SOC;
-   listing row auto-seeded (listed, not `explicitlyListed`).
+   listing row auto-seeded (listed, not `explicitlyListed`) unless `skipAutoList` (an event
+   meant only for the organiser's own pages). The creator's signer is pinned server-side at
+   create (`.data/event-feed-signers.json`, #670) - the money path's only carrier for an
+   unlisted event.
 2. **Register** (`POST /:id/register-on-chain`) — sponsor wallet sends
    `registerEvent` per series, exactly-once guarded; on success the event enters
    the snapshot's resolution table and a rebuild is scheduled.
@@ -90,6 +97,6 @@ it is deliberately the SPEED layer only:
 - `.data/event-listing-state.json` must survive restarts. If lost, the builder
   self-heals by reseeding the overlay from the last snapshot (only recovers
   events already in a snapshot — see CLAUDE.md gotcha).
-- Cutover behaviour on first deploy: the directory starts EMPTY; each event
-  returns via one organiser `/list`. This is what filters legacy test events out
+- Cutover behaviour on first deploy (#37, history): the directory started EMPTY; each
+  event returned via one organiser `/list`. That is what filtered legacy test events out
   of the new directory.

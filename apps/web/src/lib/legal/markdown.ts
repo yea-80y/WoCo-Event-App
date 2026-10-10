@@ -10,6 +10,12 @@
  *
  * Input is our own committed markdown, never user content — so this is not a
  * sanitiser and must not be pointed at anything a user can write.
+ *
+ * Document-to-document links are resolved by the CALLER (`resolveDoc`), because
+ * only it knows the route a document is served at and how to build a URL that
+ * survives the deploy's `<base href>` (#605). A link the caller cannot resolve
+ * renders as plain text: a dead link into the legal index is worse than none,
+ * since the reader is told the document exists and then shown a chooser.
  */
 
 function escapeHtml(s: string): string {
@@ -19,8 +25,11 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;");
 }
 
+/** Resolves a relative markdown link to a URL, or null when nothing serves it. */
+export type ResolveDoc = (file: string) => string | null;
+
 /** Inline spans, applied after block structure is resolved. */
-function inline(s: string): string {
+function inline(s: string, resolveDoc?: ResolveDoc): string {
   return escapeHtml(s)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
@@ -29,30 +38,28 @@ function inline(s: string): string {
     .replace(
       /\[([^\]]+)\]\(([^)]+)\)/g,
       (_m, label: string, href: string) => {
-        const external = /^https?:\/\//.test(href);
-        // Relative .md links point at sibling documents — map them onto the
-        // hash routes the app actually serves.
-        const to = external
-          ? href
-          : `#/legal/${href.replace(/^\.\//, "").replace(/\.md$/, "").toLowerCase().replace(/_/g, "-")}`;
-        const attrs = external ? ' target="_blank" rel="noopener noreferrer"' : "";
-        return `<a href="${to}"${attrs}>${label}</a>`;
+        if (/^https?:\/\//.test(href)) {
+          return `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+        }
+        // A sibling document: only the caller knows where it is served.
+        const to = resolveDoc?.(href) ?? null;
+        return to ? `<a href="${to}">${label}</a>` : label;
       },
     );
 }
 
-function renderTable(rows: string[]): string {
+function renderTable(rows: string[], resolveDoc?: ResolveDoc): string {
   const cells = (line: string) =>
     line.replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
   const [head, , ...body] = rows;
-  const th = cells(head).map((c) => `<th>${inline(c)}</th>`).join("");
+  const th = cells(head).map((c) => `<th>${inline(c, resolveDoc)}</th>`).join("");
   const trs = body
-    .map((r) => `<tr>${cells(r).map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`)
+    .map((r) => `<tr>${cells(r).map((c) => `<td>${inline(c, resolveDoc)}</td>`).join("")}</tr>`)
     .join("");
   return `<div class="table-wrap"><table><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table></div>`;
 }
 
-export function renderLegalMarkdown(md: string): string {
+export function renderLegalMarkdown(md: string, resolveDoc?: ResolveDoc): string {
   const lines = md.replace(/\r\n/g, "\n").split("\n");
   const out: string[] = [];
   let i = 0;
@@ -69,7 +76,7 @@ export function renderLegalMarkdown(md: string): string {
     const h = line.match(/^(#{1,6})\s+(.*)$/);
     if (h) {
       const level = h[1].length;
-      out.push(`<h${level}>${inline(h[2])}</h${level}>`);
+      out.push(`<h${level}>${inline(h[2], resolveDoc)}</h${level}>`);
       i++;
       continue;
     }
@@ -78,7 +85,7 @@ export function renderLegalMarkdown(md: string): string {
     if (line.trim().startsWith("|") && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1] ?? "")) {
       const rows: string[] = [];
       while (i < lines.length && lines[i].trim().startsWith("|")) rows.push(lines[i++].trim());
-      out.push(renderTable(rows));
+      out.push(renderTable(rows, resolveDoc));
       continue;
     }
 
@@ -89,7 +96,7 @@ export function renderLegalMarkdown(md: string): string {
         buf.push(lines[i].replace(/^\s*>\s?/, ""));
         i++;
       }
-      out.push(`<blockquote>${inline(buf.join(" ")).replace(/\n/g, "<br />")}</blockquote>`);
+      out.push(`<blockquote>${inline(buf.join(" "), resolveDoc).replace(/\n/g, "<br />")}</blockquote>`);
       continue;
     }
 
@@ -108,7 +115,7 @@ export function renderLegalMarkdown(md: string): string {
           item += " " + lines[i].trim();
           i++;
         }
-        items.push(`<li>${inline(item)}</li>`);
+        items.push(`<li>${inline(item, resolveDoc)}</li>`);
       }
       out.push(`<${ordered ? "ol" : "ul"}>${items.join("")}</${ordered ? "ol" : "ul"}>`);
       continue;
@@ -126,7 +133,7 @@ export function renderLegalMarkdown(md: string): string {
       para.push(lines[i].trim());
       i++;
     }
-    if (para.length) out.push(`<p>${inline(para.join(" "))}</p>`);
+    if (para.length) out.push(`<p>${inline(para.join(" "), resolveDoc)}</p>`);
   }
 
   return out.join("\n");

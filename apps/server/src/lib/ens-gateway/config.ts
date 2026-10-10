@@ -47,28 +47,53 @@ export function loadEnsGatewayConfig(env: Env = process.env): EnsGatewayLoad {
   const signer = addressOf(signerPrivateKey);
   if (!signer) return { disabled: "ENS_GATEWAY_SIGNER_PRIVATE_KEY is not a valid private key" };
 
-  // OWNER RULE: the gateway signer is a NEW hot key, never the sponsor wallet.
-  // The sponsor holds funds and mints names; this key sits behind a public
-  // unauthenticated GET. Sharing them would mean one gateway compromise also
-  // drains the sponsor and takes over minting.
-  const sponsorPk = env.WOCO_SPONSOR_PRIVATE_KEY?.trim();
-  if (sponsorPk && addressOf(sponsorPk) === signer) {
-    return { disabled: "gateway signer must not be the sponsor wallet" };
+  // OWNER RULE: the gateway signer is a NEW hot key, never a sponsor wallet —
+  // neither the events key nor the names key. Sponsors hold funds and send
+  // transactions; this key sits behind a public unauthenticated GET. Sharing
+  // one would mean a gateway compromise also drains it and takes over what it
+  // sends.
+  for (const sponsorPk of [env.WOCO_SPONSOR_PRIVATE_KEY, env.SUB_ENS_SPONSOR_PRIVATE_KEY]) {
+    const pk = sponsorPk?.trim();
+    if (pk && addressOf(pk) === signer) {
+      return { disabled: "gateway signer must not be a sponsor wallet" };
+    }
   }
 
   // Pinning the L1Resolver addresses is what stops this gateway from signing a
   // resolution that some OTHER resolver — one whose `signer()` also points here,
   // or one an attacker deployed and pointed at this URL — would accept.
+  //
+  // Each entry is `0xADDRESS` (the v1 resolver: legacy signed format) or
+  // `0xADDRESS:CHAINID` (L1Resolver v2, whose signed hash binds the chain it
+  // lives on - `:1` on mainnet). During the v1 -> v2 swap both are listed.
   const raw = env.ENS_GATEWAY_RESOLVER_ADDRESSES?.trim();
   if (!raw) return { disabled: "ENS_GATEWAY_RESOLVER_ADDRESSES is not set" };
-  const allowedSenders = raw
+  const entries = raw
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
     .map((s) => s.toLowerCase());
-  if (allowedSenders.length === 0) return { disabled: "ENS_GATEWAY_RESOLVER_ADDRESSES is empty" };
-  const bad = allowedSenders.find((s) => !ADDRESS_RE.test(s));
-  if (bad) return { disabled: `ENS_GATEWAY_RESOLVER_ADDRESSES contains a non-address: ${bad}` };
+  if (entries.length === 0) return { disabled: "ENS_GATEWAY_RESOLVER_ADDRESSES is empty" };
+  const allowedSenders: string[] = [];
+  const senderChainIds: Record<string, number> = {};
+  for (const entry of entries) {
+    const [address, chain, ...rest] = entry.split(":");
+    if (!ADDRESS_RE.test(address!) || rest.length > 0) {
+      return { disabled: `ENS_GATEWAY_RESOLVER_ADDRESSES contains a non-address: ${entry}` };
+    }
+    // A sender listed twice could be listed in both formats; which one it
+    // verifies is a property of its bytecode, so that is a misconfiguration.
+    if (allowedSenders.includes(address!)) {
+      return { disabled: `ENS_GATEWAY_RESOLVER_ADDRESSES lists ${address} more than once` };
+    }
+    if (chain !== undefined) {
+      if (!/^[1-9][0-9]{0,15}$/.test(chain)) {
+        return { disabled: `ENS_GATEWAY_RESOLVER_ADDRESSES has a bad chain id for ${address}: ${chain}` };
+      }
+      senderChainIds[address!] = Number(chain);
+    }
+    allowedSenders.push(address!);
+  }
 
   const parentName = (env.ENS_GATEWAY_PARENT_NAME?.trim() || DEFAULT_PARENT_NAME).toLowerCase();
   if (!parentName.includes(".")) {
@@ -96,6 +121,46 @@ export function loadEnsGatewayConfig(env: Env = process.env): EnsGatewayLoad {
   if (!Number.isInteger(chainId)) return { disabled: "SUB_ENS_CHAIN_ID is not an integer" };
   if (!ADDRESS_RE.test(registryAddress)) {
     return { disabled: `SUB_ENS_REGISTRY_ADDRESS is not an address: ${registryAddress}` };
+  }
+
+  // REGISTRY CUTOVER (WoCo-Contracts #21). Every lookup names ONE registry —
+  // whatever the L1 resolver's `l2Registry[node]` holds at that moment — and
+  // moving it is a single Safe transaction this process cannot observe. With a
+  // single registry pinned, whichever of the L1 flip and the server redeploy
+  // lands first blacks out every subname until the other does. So for that
+  // window only, a second registry may be served: set this to the outgoing and
+  // incoming pair, flip L1, then unset it.
+  //
+  // The minting registry must be in the set, so the variable can only ADD a
+  // registry, never swap the platform's own out; and it names at most two,
+  // because a cutover has exactly two sides. Set-but-empty is refused like the
+  // SUB_ENS_* overrides: an empty value reaches the process from a bare
+  // `KEY=` line and is a misconfiguration, not "unset".
+  const registryAddresses = [registryAddress.toLowerCase()];
+  const cutoverRaw = env.ENS_GATEWAY_REGISTRY_ADDRESSES;
+  if (cutoverRaw !== undefined) {
+    const listed = [
+      ...new Set(
+        cutoverRaw
+          .split(",")
+          .map((s) => s.trim().toLowerCase())
+          .filter((s) => s.length > 0),
+      ),
+    ];
+    if (listed.length === 0) {
+      return { disabled: "ENS_GATEWAY_REGISTRY_ADDRESSES is set but empty — unset it outside a registry cutover" };
+    }
+    const badRegistry = listed.find((s) => !ADDRESS_RE.test(s));
+    if (badRegistry) {
+      return { disabled: `ENS_GATEWAY_REGISTRY_ADDRESSES contains a non-address: ${badRegistry}` };
+    }
+    if (!listed.includes(registryAddresses[0]!)) {
+      return { disabled: "ENS_GATEWAY_REGISTRY_ADDRESSES must include SUB_ENS_REGISTRY_ADDRESS" };
+    }
+    if (listed.length > 2) {
+      return { disabled: "ENS_GATEWAY_REGISTRY_ADDRESSES names more than two registries — a cutover has two sides" };
+    }
+    registryAddresses.push(...listed.filter((s) => s !== registryAddresses[0]));
   }
 
   // The second endpoint is OPTIONAL: without it the gateway keeps its pre-#465
@@ -137,8 +202,9 @@ export function loadEnsGatewayConfig(env: Env = process.env): EnsGatewayLoad {
   return {
     signerPrivateKey,
     allowedSenders,
+    senderChainIds,
     chainId,
-    registryAddress,
+    registryAddresses,
     parentName,
     ttlSeconds,
     rpcUrls,

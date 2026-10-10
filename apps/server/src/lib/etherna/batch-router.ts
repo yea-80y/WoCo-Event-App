@@ -15,10 +15,25 @@
  * the chunks never survive on the public net. Every deploy by that user is then a
  * silent no-op discoverable only by reading from an unrelated bee. Fail over (events)
  * or fail loudly (websites) instead.
+ *
+ * PLATFORM BATCH LIVENESS (#610): the shared Etherna platform batch has no registry
+ * expiry, so it is checked against the health probe's last reading instead, and a
+ * write it cannot take is REFUSED (503) rather than stamped into a void. "Cannot
+ * take" is deliberately narrow — gone, expired, unusable, or a full bucket. A batch
+ * that is merely running low is the alarm's job (`/api/health` postage.etherna),
+ * never a refusal: everything on it lives exactly as long as it does, so a top-up
+ * before it dies saves what was written today.
  */
 
+import { ETHERNA_GATEWAY_URL, isEthernaGatewayUrl, isWocoGatewayUrl } from "@woco/shared";
 import { POSTAGE_BATCH_ID } from "../../config/swarm.js";
 import { getUserBatch } from "./batches.js";
+import { bucketCapacity, isStale } from "../health/alarms.js";
+import {
+  ETHERNA_PROBE_INTERVAL_MS,
+  ethernaPlatformBatchSnapshot,
+  type EthernaPlatformBatchSnapshot,
+} from "../health/probes.js";
 
 export type DeployType = "event" | "website";
 export type UploadTarget = "wocoBee" | "etherna";
@@ -31,8 +46,9 @@ export interface BatchSelection {
   freeHosted?: boolean;
 }
 
-const ETHERNA_URL = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
-const WOCO_URL = "https://gateway.woco-net.com";
+/** The canonical Etherna gateway - what feeds record and clients send. Never the
+ *  server's own fetch base (`ETHERNA_FETCH_BASE`, lib/etherna/gateway.ts). */
+export const ETHERNA_URL = ETHERNA_GATEWAY_URL;
 
 export class BatchPurchaseRequired extends Error {
   constructor() {
@@ -48,12 +64,82 @@ export class StripeVerificationRequired extends Error {
   }
 }
 
-export function isEthernaGateway(url: string): boolean {
-  try {
-    return new URL(url).host.endsWith(new URL(ETHERNA_URL).host);
-  } catch {
-    return url === ETHERNA_URL;
+/**
+ * The shared Etherna platform batch cannot take a write right now. Nothing was
+ * stamped. `status`/`code` are what every route answers with (#610).
+ */
+export class PlatformBatchUnavailable extends Error {
+  readonly status = 503;
+  readonly code = "STORAGE_UNAVAILABLE";
+  constructor(readonly reason: string) {
+    super("Storage is temporarily unavailable - nothing was saved. Please try again in a few minutes.");
+    this.name = "PlatformBatchUnavailable";
   }
+}
+
+/**
+ * Why the platform batch cannot take a write, or null when it can — or when we
+ * do not know. Pure; exported for tests.
+ *
+ * WHY AN UNKNOWN READING WRITES. A failed or stale probe is almost always Etherna
+ * itself being unreachable, which fails the upload on its own; refusing on it
+ * would turn every OAuth hiccup into a publishing outage. Only a POSITIVE reading
+ * refuses. Stale uses the same rule `/api/health` uses to mark the section stale,
+ * so the router never trusts a reading the health endpoint has stopped trusting.
+ *
+ * WHY ONLY A SPENT TTL. A TTL near zero is "top up" — the alarm's job (owner,
+ * 2026-09-25). A TTL at or below zero is the node saying the balance is spent: dead,
+ * in the short window before eviction turns it into a 404. The one exception is
+ * exactly -1, bee's own sentinel for "price unknown" / "never expires" (bee
+ * `pkg/api/postage.go` `estimateBatchTTL` returns -1 when `CurrentPrice` is 0), so
+ * it is not evidence of death. The value arrives raw — `readEthernaStamp` is a plain
+ * fetch, with no bee-js normalisation. Both readings are a bee ASSUMPTION for
+ * Etherna: its gateway answers in bee's shape, but whether it proxies a node or
+ * derives the TTL itself is not visible from here.
+ *
+ * WHY A FULL BUCKET REFUSES. The platform batch is mutable: once a bucket holds
+ * `bucketCap` chunks the next chunk into it overwrites an older one with a 200 —
+ * someone else's saved content, lost with no error. The alarm fires one slot
+ * earlier (`evaluateStamp`, `>= cap - 1`), which is the "nearly full" warning.
+ */
+/** bee's `batchTTL` when the node has no current price: "never expires", not dead. */
+const BEE_TTL_PRICE_UNKNOWN = -1;
+
+export function platformBatchRefusal(
+  batchId: string,
+  snapshot: EthernaPlatformBatchSnapshot,
+  now: number,
+): string | null {
+  if (snapshot.batchId !== batchId) return null;
+  if (isStale(snapshot.at, now, ETHERNA_PROBE_INTERVAL_MS)) return null;
+  if (snapshot.gone) return "batch not found on Etherna (expired and evicted, or never synced)";
+  const stamp = snapshot.stamp;
+  if (!stamp) return null;
+  if (!stamp.usable) return "Etherna reports the batch unusable";
+  if (stamp.batchTTL <= 0 && stamp.batchTTL !== BEE_TTL_PRICE_UNKNOWN) return "batch has expired (balance spent)";
+  const cap = bucketCapacity(stamp.depth, stamp.bucketDepth);
+  if (stamp.utilization >= cap) {
+    return `a bucket is full (${stamp.utilization}/${cap}); the next write could overwrite stored content`;
+  }
+  return null;
+}
+
+/** Transition-only, like the health log: one line when refusing starts or stops. */
+let lastRefusal: string | null = null;
+function noteRefusal(batchId: string, refusal: string | null): void {
+  if (refusal === lastRefusal) return;
+  lastRefusal = refusal;
+  if (refusal) {
+    console.error(`[batch-router] REFUSING writes to etherna PLATFORM batch ${batchId.slice(0, 12)}…: ${refusal}`);
+  } else {
+    console.warn(`[batch-router] etherna PLATFORM batch ${batchId.slice(0, 12)}… accepting writes again`);
+  }
+}
+
+/** The shared host rule (#657): the canonical host or a subdomain of it, with a
+ *  dot boundary, identical on the client. */
+export function isEthernaGateway(url: string): boolean {
+  return isEthernaGatewayUrl(url);
 }
 
 /**
@@ -83,12 +169,15 @@ function isLive(batch: { expiresAt: string }): boolean {
   return expiresAt - Date.now() > MIN_BATCH_REMAINING_MS;
 }
 
-function isWocoGateway(url: string): boolean {
-  try {
-    return new URL(url).host.endsWith(new URL(WOCO_URL).host);
-  } catch {
-    return url === WOCO_URL;
-  }
+/** The owner has their own Etherna batch with usable life left: they pay for
+ *  what they store, so the shared-storage gates do not apply to them. */
+export function hasLiveUserBatch(ownerAddress: string): boolean {
+  const user = getUserBatch(ownerAddress);
+  return !!user && isLive(user);
+}
+
+export function isWocoGateway(url: string): boolean {
+  return isWocoGatewayUrl(url);
 }
 
 interface RouterInput {
@@ -138,11 +227,29 @@ export function batchForDeploy(input: RouterInput): BatchSelection {
     if (!platform) {
       throw new Error("ETHERNA_PLATFORM_BATCH not configured — cannot fall back for " + deployType + " deploy");
     }
+    const refusal = platformBatchRefusal(platform, ethernaPlatformBatchSnapshot(), Date.now());
+    noteRefusal(platform, refusal);
+    if (refusal) throw new PlatformBatchUnavailable(refusal);
     console.log(`[batch-router] ${deployType} deploy → etherna PLATFORM batch ${platform.slice(0, 12)}…${deployType === "website" ? " (FREE_HOSTING)" : ""} (no live user batch for ${ownerAddress.slice(0, 10)}…)`);
     return { batchId: platform, target: "etherna", ...(deployType === "website" ? { freeHosted: true } : {}) };
   }
 
   throw new BatchPurchaseRequired();
+}
+
+/**
+ * Where a SERVER-OWNED feed in an Etherna family is stamped (#657): the shared
+ * platform batch, refused when it cannot take a write (#610). No WoCo fallback,
+ * unlike user content below: the family table says Etherna, and a family's
+ * writes follow its row or its reads and writes split.
+ */
+export function platformEthernaBatch(): BatchSelection {
+  const platform = process.env.ETHERNA_PLATFORM_BATCH;
+  if (!platform) throw new Error("ETHERNA_PLATFORM_BATCH not configured — cannot stamp a server feed on Etherna");
+  const refusal = platformBatchRefusal(platform, ethernaPlatformBatchSnapshot(), Date.now());
+  noteRefusal(platform, refusal);
+  if (refusal) throw new PlatformBatchUnavailable(refusal);
+  return { batchId: platform, target: "etherna" };
 }
 
 /**
@@ -152,12 +259,18 @@ export function batchForDeploy(input: RouterInput): BatchSelection {
  * platform batch. Never gated — these kinds are free by policy (see
  * docs/PLATFORM_SIGNER_AUDIT.md § batch routing). Falls back to the WoCo batch
  * when Etherna is off/unconfigured so the write path never depends on it.
+ *
+ * A DEAD platform batch is not "unconfigured": it refuses here as everywhere
+ * else (#610). Landing the bytes on WoCo instead would leave them there for good —
+ * nothing lists them to move back — and the profile save they belong to is
+ * refused by the same guard anyway.
  */
 export function batchForUserContent(ownerAddress: string): BatchSelection {
   if (process.env.ETHERNA_ENABLED === "true") {
     try {
       return batchForDeploy({ ownerAddress, gatewayUrl: ETHERNA_URL, deployType: "event" });
     } catch (err) {
+      if (err instanceof PlatformBatchUnavailable) throw err;
       console.warn("[batch-router] user-content routing unavailable — WoCo fallback:", (err as Error).message);
     }
   }

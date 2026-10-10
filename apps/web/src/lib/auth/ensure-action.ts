@@ -1,7 +1,7 @@
 /**
  * Sign-in-to-act gate. Composes the inline pattern repeated across the app
- * (loginRequest.request() → ensureSession() [→ ensureEasSessionKey()]) into a
- * single awaitable guard a component can call before a privileged action.
+ * (loginRequest.request() → ensureSession()) into a single awaitable guard a
+ * component can call before a privileged action.
  *
  * ADDITIVE only — this moves no component state and changes no existing call
  * sites (feedback_claimbutton_refactor_safety). LikeButton is the first
@@ -18,20 +18,13 @@ import { loginRequest } from "./login-request.svelte.js";
 export interface RequireAccountOptions {
   /** Subtitle context for the login modal. */
   context?: "attendee" | "creator";
-  /**
-   * Also ensure the scoped EAS session key (the gasless Kernel rail) is minted
-   * up front — for deliberate on-chain actions like an EAS like, so the passkey
-   * ceremony happens at the click, not mid-attest. No-op for non-passkey kinds
-   * (web3 signs on-chain with the parent EOA directly).
-   *
-   * It used to pre-mint the sub-ENS `registerWithPermit` key, which is not the
-   * key an attestation is signed with — so the ceremony happened at the click
-   * for a key nothing then used, and the EAS key was still minted mid-attest.
-   * That key is gone with the permit rail (#501); this now names the one the
-   * attest actually needs.
-   */
-  onChain?: boolean;
 }
+
+// An `onChain` option used to pre-mint a scoped Kernel session key here, so the
+// passkey ceremony landed at the click rather than mid-write. Both keys it ever
+// named are gone — the sub-ENS mint key with the permit rail (#501), the
+// referral campaign's with the EAS rail (#476) — and every write the gate now
+// guards is a signed Swarm record, which needs no on-chain key at all.
 
 export async function requireAccountForAction(
   opts: RequireAccountOptions = {},
@@ -42,20 +35,11 @@ export async function requireAccountForAction(
     if (!ok) return false;
   }
 
-  // 2. HTTP session (canonical-request signing) — needed for authenticated
-  //    server calls such as POST /api/likes/record.
+  // 2. HTTP session (canonical-request signing) — every authenticated server
+  //    endpoint verifies the session delegation.
   if (!auth.hasSession) {
     const ok = await auth.ensureSession();
     if (!ok) return false;
-  }
-
-  // 3. Passkey-only: pre-mint the scoped EAS session key for gasless ops.
-  if (opts.onChain && auth.kind === "passkey") {
-    try {
-      await auth.ensureEasSessionKey();
-    } catch {
-      return false;
-    }
   }
 
   return true;

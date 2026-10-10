@@ -1,11 +1,8 @@
-> **SUPERSEDED — likes and follows are no longer on chain.**
-> They are chain-free Swarm statements (`woco.like.v1` / `woco.follow.v1`). This document
-> describes the EAS design that preceded them; its abuse model is still the reference, which is
-> why it is kept. Current: [SWARM_SOCIAL_PLAN.md](./SWARM_SOCIAL_PLAN.md) and
-> [ARCHITECTURE.md § Social](./ARCHITECTURE.md#social).
-> The EAS code still exists and two profile read surfaces still call it — issues #475 and #476.
-
 # EAS Social Graph — Likes & Follows
+
+> **Historical record (status 2026-10-05).** The EAS-attestation design for likes and follows, kept for its abuse model; likes and follows are now chain-free Swarm
+> statements (`woco.like.v1` / `woco.follow.v1`) and the EAS code is deleted (#475, #476).
+> Current: [SWARM_SOCIAL_PLAN.md](./SWARM_SOCIAL_PLAN.md), [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 A user-owned social graph for events and brands, built as **EAS attestations** on **Arbitrum Sepolia
 (`421614`)**. Companion to [`BUILDATHON_SUBMISSION.md`](./BUILDATHON_SUBMISSION.md); ranking is the

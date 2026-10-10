@@ -1,5 +1,18 @@
 # User Content → Etherna Batch Routing (handover, 2026-07-14)
 
+> **Status (2026-10-05, checked against `main` 94364b56):** a handover record - done, and
+> extended. Still holds: the policy (user content on Etherna, platform feeds on WoCo, reads
+> multi-source), LANDMINE 1's retraction (Etherna reaches the public net), and LANDMINE 2 (a
+> version probe that misses a store silently loses writes). Superseded: the per-call
+> `gatewayUrl` plumbing below. Since #657 one table, `FEED_FAMILY_STORES` in
+> `packages/shared/src/swarm/feed-routes.ts`, routes every family for client and server alike:
+> profile (#617, #651), manifest, social, referral and the recovery families (#689) are on
+> Etherna; credits, cert, evidence and campaign-issuer records stay on WoCo. Avatar image bytes
+> route through `batchForUserContent()`. Still open: `/api/swarm/soc` stamps on the WoCo batch
+> when a caller omits `gatewayUrl` (last bullet). Current routing:
+> [ETHERNA_INTEGRATION.md](./ETHERNA_INTEGRATION.md). `file:line` citations below are from
+> 2026-07 and have drifted.
+
 Facts below verified by reading source (cited `file:line`). Written by Fable for an
 implementation pass; the two LANDMINES are correctness bugs waiting to happen — read
 them before writing any code.
@@ -64,6 +77,8 @@ whitelisted — those sites load, and that historical 403 was fixed separately.
 Still true and worth keeping: the server's `readSocFromEtherna` fallback. Not as a
 routing workaround, but as a backstop for the retrieval window — Etherna's gateway
 holds the chunk locally and answers while a just-pushed chunk is still settling.
+(#657, 2026-09-27: replaced. Server scans ask Etherna only for Etherna families, through
+`soc-read.ts`, and an Etherna failure there is `unavailable`, never absent.)
 
 ## LANDMINE 2 — versioned-sequence split-brain = silently lost writes
 

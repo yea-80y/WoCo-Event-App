@@ -1,28 +1,35 @@
 import { Hono } from "hono";
 import { streamText } from "hono/streaming";
 import type { Hex0x, CreateEventV3Request, UpdateEventMetaRequest, EventDirectoryEntry } from "@woco/shared";
-import { FEATURES, BUYER_FEE_FLOOR_PCT, geoWithinSizeLimit } from "@woco/shared";
+import { isValidXWingPublicKey } from "@woco/shared/crypto/xwing";
+import { FEATURES, BUYER_FEE_FLOOR_PCT, MIN_TICKET_PRICE, ticketPriceMeetsMinimum, geoWithinSizeLimit } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
+import { cancellationGate, withCancellation } from "../lib/event/cancellations.js";
 import { createEventV2, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, type EventMetaUpdates } from "../lib/event/service.js";
 import { DeleteBlockedError } from "../lib/event/delete-safety.js";
+import { AccountKeysChangedError, AccountKeysUnavailableError } from "../lib/keyring/event-keys.js";
 import { setListed } from "../lib/event/listing-state.js";
+import { feedSignerRecordHealth, getRecordedFeedSigner, isFeedSignerStoreError } from "../lib/event/feed-signer-record.js";
 import { cardFromFeed, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
 import { getOrganiserNonce, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
 import { registerSeriesExactlyOnce } from "../lib/event/register-once.js";
+import { RegistrationRebindError, RegistryUnreadableError } from "../lib/event/onchain-registry.js";
 import { downloadFromBytes, uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
-import { batchForDeploy } from "../lib/etherna/batch-router.js";
+import { batchForDeploy, PlatformBatchUnavailable } from "../lib/etherna/batch-router.js";
 import type { SeriesManifestBlob } from "@woco/shared";
 import { manifestV2Digest, validateSignedManifestV2, bytesToHex0x } from "@woco/shared";
 import { verifyAndPinIssuerBinding } from "../lib/issuer/binding.js";
-import { deleteStripeAccount, getStripeAccount, setStripeAccount } from "../lib/stripe/accounts.js";
+import { deleteStripeAccount, getStripeAccount, syncStripeVerdict } from "../lib/stripe/accounts.js";
 import { currencyAllowedFor } from "../lib/stripe/currency-policy.js";
 import { getStripe } from "../lib/stripe/client.js";
 import { sanitisePublicApiUrl } from "../lib/url/public-api-url.js";
 import { isValidSeriesId } from "../lib/swarm/topics.js";
 import { issueJoinedBadge } from "../lib/campaign/badges.js";
 import { clientIp } from "../lib/http/client-ip.js";
+import { failureSentence } from "../lib/http/error-class.js";
+import { orderFieldsRefusal } from "../lib/event/order-fields.js";
 const events = new Hono<AppEnv>();
 
 // ---------------------------------------------------------------------------
@@ -104,7 +111,7 @@ events.get("/mine", requireAuth, async (c) => {
     const now = Date.now();
     const data = filter === "all" ? merged : merged.filter((e) => isPastEntry(e, now) === (filter === "past"));
 
-    return c.json({ ok: true, data });
+    return c.json({ ok: true, data: data.map(withCancellation) });
   } catch (err) {
     console.error("[api] getCreatorEvents error:", err);
     return c.json({ ok: false, error: "Failed to list events" }, 500);
@@ -126,7 +133,7 @@ events.get("/by-creator/:address", async (c) => {
     const filter = c.req.query("filter") ?? "all";
     const now = Date.now();
     const data = filter === "all" ? merged : merged.filter((e) => isPastEntry(e, now) === (filter === "past"));
-    return c.json({ ok: true, data });
+    return c.json({ ok: true, data: data.map(withCancellation) });
   } catch (err) {
     console.error("[api] getCreatorEvents (public) error:", err);
     return c.json({ ok: false, error: "Failed to list events" }, 500);
@@ -147,7 +154,8 @@ events.get("/:id", async (c) => {
     // money-path cache). Trusted resolution (directory) still takes precedence.
     const event = await getEventForDisplay(eventId, validHint);
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
-    return c.json({ ok: true, data: event });
+    // #644: the server's record of a cancellation wins over the feed's field.
+    return c.json({ ok: true, data: withCancellation(event) });
   } catch (err) {
     console.error("[api] getEvent error:", err);
     return c.json({ ok: false, error: "Failed to get event" }, 500);
@@ -166,7 +174,7 @@ events.get("/:id/owned", requireAuth, async (c) => {
   try {
     const event = await getEventForOwner(eventId, parentAddress);
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
-    return c.json({ ok: true, data: event });
+    return c.json({ ok: true, data: withCancellation(event) });
   } catch (err) {
     console.error("[api] getOwnedEvent error:", err);
     return c.json({ ok: false, error: "Failed to get event" }, 500);
@@ -179,11 +187,22 @@ events.post("/", requireAuth, async (c) => {
   const body = c.get("body") as unknown as CreateEventV3Request;
   const parentAddress = c.get("parentAddress") as string;
 
-  const { event: ev, series, image, encryptionKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl } = body;
+  const { event: ev, series, image, encryptionPublicKey, orderFields, claimMode, skipAutoList, creatorFeedSigner, gatewayUrl } = body;
+
+  // The organiser's X-Wing order key (#642): exactly 1216 bytes of hex. The
+  // server publishes it as its own chunk; it never trusts a ref from the client.
+  if (encryptionPublicKey !== undefined
+      && (typeof encryptionPublicKey !== "string" || !/^[0-9a-f]{2432}$/.test(encryptionPublicKey)
+        || !isValidXWingPublicKey(new Uint8Array(Buffer.from(encryptionPublicKey, "hex"))))) {
+    // A key buyers cannot seal to would make every sale of this event refund.
+    return c.json({ ok: false, error: "encryptionPublicKey must be a valid 1216-byte X-Wing key in lowercase hex" }, 400);
+  }
 
   if (!ev?.title || !ev?.startDate || !ev?.endDate) {
     return c.json({ ok: false, error: "Missing event title or dates" }, 400);
   }
+  const fieldsRefusal = orderFieldsRefusal(orderFields);
+  if (fieldsRefusal) return c.json({ ok: false, error: fieldsRefusal }, 400);
   if (!series?.length) {
     return c.json({ ok: false, error: "At least one ticket series required" }, 400);
   }
@@ -251,6 +270,9 @@ events.post("/", requireAuth, async (c) => {
       if (!s.payment || !s.payment.price || parseFloat(s.payment.price) <= 0) {
         return c.json({ ok: false, error: `Series ${s.seriesId}: free events are not allowed — set a price` }, 400);
       }
+      if (!ticketPriceMeetsMinimum(s.payment.price)) {
+        return c.json({ ok: false, error: `Series ${s.seriesId}: the minimum ticket price is ${MIN_TICKET_PRICE}.00` }, 400);
+      }
       if (!s.payment.stripeEnabled && !s.payment.cryptoEnabled) {
         return c.json({ ok: false, error: `Series ${s.seriesId}: enable a payment method (card or crypto)` }, 400);
       }
@@ -311,19 +333,12 @@ events.post("/", requireAuth, async (c) => {
     try {
       const s = getStripe();
       const account = await s.accounts.retrieve(stripeRecord.stripeAccountId);
+      syncStripeVerdict(parentAddress.toLowerCase(), stripeRecord.stripeAccountId, account);
       if (!account.charges_enabled) {
-        // Keep local cache in sync
-        if (stripeRecord.onboardingComplete) {
-          setStripeAccount(parentAddress.toLowerCase(), stripeRecord.stripeAccountId, false);
-        }
         return c.json({
           ok: false,
           error: "Your Stripe account is not yet verified. Complete identity verification in Dashboard → Payments.",
         }, 403);
-      }
-      // Sync cache if it was behind
-      if (!stripeRecord.onboardingComplete) {
-        setStripeAccount(parentAddress.toLowerCase(), stripeRecord.stripeAccountId, true);
       }
     } catch (err: any) {
       if (err?.statusCode === 404 || err?.code === "resource_missing") {
@@ -387,7 +402,7 @@ events.post("/", requireAuth, async (c) => {
         issuer: body.issuerBinding.issuer,
         imageData,
         series,
-        encryptionKey,
+        encryptionPublicKey,
         orderFields,
         claimMode,
         skipAutoList: !!skipAutoList,
@@ -408,8 +423,16 @@ events.post("/", requireAuth, async (c) => {
       void issueJoinedBadge(parentAddress);
     } catch (err) {
       console.error("[api] createEventV2 error:", err);
-      const message = err instanceof Error ? err.message : "Failed to create event";
-      stream.writeln(JSON.stringify({ type: "error", ok: false, error: message }));
+      // The feed-signer store names a `.data` file in its errors: that is for the
+      // log (and /api/health), not the organiser.
+      const message = isFeedSignerStoreError(err)
+        ? "Publishing is paused while the server is repaired. Nothing was created - please try again later."
+        : err instanceof Error ? err.message : "Failed to create event";
+      const code =
+        err instanceof PlatformBatchUnavailable || err instanceof AccountKeysChangedError || err instanceof AccountKeysUnavailableError
+          ? { code: err.code }
+          : {};
+      stream.writeln(JSON.stringify({ type: "error", ok: false, error: message, ...code }));
     }
   });
 });
@@ -474,6 +497,7 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
         console.warn("[event] edit-image whitelist failed (non-critical):", err));
       updates.imageHash = imageHash;
     } catch (err) {
+      if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
       console.error("[api] update-meta image upload failed:", err);
       return c.json({ ok: false, error: "Image upload failed" }, 502);
     }
@@ -523,15 +547,20 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
     const updated = await updateEventMetadata({ eventId, parentAddress, updates, signerHint });
     // Merged feed goes back on every path: Phase B owners re-sign their SOC with
     // it; legacy callers need it for the fresh imageHash (already platform-written).
-    return c.json({ ok: true, data: { eventId, eventFeed: updated } });
+    // #644: carried into the feed the owner re-signs, so an ordinary edit after
+    // a cancellation cannot drop the Cancelled banner.
+    return c.json({ ok: true, data: { eventId, eventFeed: withCancellation(updated) } });
   } catch (err) {
+    // A legacy (platform-written) event's feed restamp goes through the router.
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     const msg = err instanceof Error ? err.message : "Failed to update event";
     const status =
       msg === "Event not found" ? 404 :
       msg === "Not the event creator" ? 403 :
       msg === "Invalid event dates" || msg === "endDate is before startDate" ? 400 :
       msg.startsWith("endDate cannot extend past the on-chain sales end") ? 400 :
-      msg.startsWith("Could not verify the on-chain sales end") ? 503 : 500;
+      // The on-chain sales end, or the event's own latest version (#657).
+      msg.startsWith("Could not verify") ? 503 : 500;
     if (status === 500) console.error("[api] update-meta failed:", err);
     return c.json({ ok: false, error: status === 500 ? "Failed to update event" : msg }, status);
   }
@@ -558,6 +587,7 @@ events.post("/:id/delete", requireAuth, async (c) => {
     if (err instanceof DeleteBlockedError) {
       return c.json({ ok: false, error: err.message, blockers: err.blockers }, 409);
     }
+    if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     const msg = err instanceof Error ? err.message : "Failed to delete event";
     const status =
       msg === "Event not found" ? 404 :
@@ -579,7 +609,10 @@ events.post("/discover", requireAuth, async (c) => {
   const rawUrl = (body.sourceApiUrl ?? "").trim().replace(/\/$/, "");
   if (!rawUrl) return c.json({ ok: false, error: "sourceApiUrl is required" }, 400);
 
-  const apiBase = rawUrl.startsWith("http") ? rawUrl : "https://" + rawUrl;
+  // A public https source only, and no redirects: a caller's URL must not point
+  // this server at its own network (#186). Anything else discovers from here.
+  const apiBase = sanitisePublicApiUrl(rawUrl.startsWith("http") ? rawUrl : "https://" + rawUrl);
+  if (!apiBase) return c.json({ ok: false, error: "sourceApiUrl must be a public https address" }, 400);
 
   // Cross-server delegation forwarding is no longer supported (auth v2 signs each
   // request against a specific method+path+body, so an incoming sig can't be
@@ -590,7 +623,7 @@ events.post("/discover", requireAuth, async (c) => {
 
   if (!usedMine) {
     try {
-      const resp = await fetch(`${apiBase}/api/events`, { signal: AbortSignal.timeout(15000) });
+      const resp = await fetch(`${apiBase}/api/events`, { redirect: "error", signal: AbortSignal.timeout(15000) });
       if (!resp.ok) return c.json({ ok: false, error: `Source server returned HTTP ${resp.status}` }, 400);
       const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventDirectoryEntry[]; error?: string };
       if (!json.ok) return c.json({ ok: false, error: json.error || "Failed to list events from source" }, 400);
@@ -619,13 +652,36 @@ events.post("/discover", requireAuth, async (c) => {
   return c.json({ ok: true, data });
 });
 
+/**
+ * An event created here has its creator on record (#670): only that creator may
+ * list or unlist it, and no remote server is asked to vouch otherwise (#186).
+ * An unreadable record file refuses rather than fall back to a remote vouch.
+ */
+function recordedCreatorRefusal(eventId: string, parentAddress: string): { status: 403 | 503; error: string } | null {
+  if (feedSignerRecordHealth().unreadable) {
+    return { status: 503, error: "Event records are unavailable - try again later" };
+  }
+  const recorded = getRecordedFeedSigner(eventId);
+  if (recorded && recorded.creatorAddress !== parentAddress) {
+    return { status: 403, error: "You are not the creator of this event" };
+  }
+  return null;
+}
+
 // POST /api/events/:id/list — authenticated
 // Fetches the event from sourceApiUrl (or WoCo's own server), verifies creator,
 // and adds to WoCo directory. No-op if already listed.
 events.post("/:id/list", requireAuth, async (c) => {
   const eventId = c.req.param("id");
+  // #644: a cancelled event stays out of every listing.
+  if (cancellationGate(eventId) !== "open") {
+    return c.json({ ok: false, error: "This event has been cancelled" }, 409);
+  }
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const body = c.get("body") as { sourceApiUrl?: string; signer?: string };
+
+  const refused = recordedCreatorRefusal(eventId, parentAddress);
+  if (refused) return c.json({ ok: false, error: refused.error }, refused.status);
 
   // SECURITY: the creatorAddress==parent gate below is only meaningful when the
   // feed comes from a source the caller cannot author. A client-supplied `signer`
@@ -647,10 +703,14 @@ events.post("/:id/list", requireAuth, async (c) => {
   eventFeed = await resolveOwnEventLocally(eventId, parentAddress);
   if (eventFeed) localBasis = true;
 
-  if (!eventFeed && body.sourceApiUrl) {
-    const apiBase = body.sourceApiUrl.trim().replace(/\/$/, "");
+  // Same rule as /discover: a public https source only, no redirects (#186).
+  const apiBase = sanitisePublicApiUrl(body.sourceApiUrl);
+  if (!eventFeed && body.sourceApiUrl && apiBase) {
     try {
-      const resp = await fetch(`${apiBase}/api/events/${eventId}`, { signal: AbortSignal.timeout(15000) });
+      const resp = await fetch(`${apiBase}/api/events/${encodeURIComponent(eventId)}`, {
+        redirect: "error",
+        signal: AbortSignal.timeout(15000),
+      });
       if (!resp.ok) return c.json({ ok: false, error: `Source server returned HTTP ${resp.status}` }, 400);
       const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventFeed; error?: string };
       if (!json.ok || !json.data) return c.json({ ok: false, error: json.error || "Event not found on source server" }, 404);
@@ -704,6 +764,9 @@ events.post("/:id/unlist", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const body = c.get("body") as { sourceApiUrl?: string };
 
+  const refused = recordedCreatorRefusal(eventId, parentAddress);
+  if (refused) return c.json({ ok: false, error: refused.error }, refused.status);
+
   // Verify creator — check directory first, then optional sourceApiUrl
   const wocoEntries = await listEvents();
   const dirEntry = wocoEntries.find((e) => e.eventId === eventId);
@@ -713,10 +776,15 @@ events.post("/:id/unlist", requireAuth, async (c) => {
       return c.json({ ok: false, error: "You are not the creator of this event" }, 403);
     }
   } else if (body.sourceApiUrl) {
-    // Event may not be in directory yet — verify via source
-    const apiBase = body.sourceApiUrl.trim().replace(/\/$/, "");
+    // Event may not be in directory yet — verify via source. Same rule as /list:
+    // a public https source only, no redirects (#186).
+    const apiBase = sanitisePublicApiUrl(body.sourceApiUrl);
+    if (!apiBase) return c.json({ ok: false, error: "Could not verify event creator" }, 400);
     try {
-      const resp = await fetch(`${apiBase}/api/events/${eventId}`, { signal: AbortSignal.timeout(15000) });
+      const resp = await fetch(`${apiBase}/api/events/${encodeURIComponent(eventId)}`, {
+        redirect: "error",
+        signal: AbortSignal.timeout(15000),
+      });
       const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventFeed };
       if (!json.ok || !json.data) return c.json({ ok: false, error: "Event not found" }, 404);
       if (json.data.creatorAddress.toLowerCase() !== parentAddress) {
@@ -743,12 +811,73 @@ events.post("/:id/unlist", requireAuth, async (c) => {
   return c.json({ ok: true, eventId });
 });
 
+/**
+ * How `register-on-chain` answers a failed registration.
+ *
+ * A `RegistrationRebindError` is not a transport failure and never succeeds on
+ * retry (#434): this series' on-chain event is already bound to another series,
+ * so the confirm throws on every attempt, the pending marker never clears, and
+ * the fix is an operator's, not the organiser's. It used to come back as the
+ * generic 500 below, which reads as "try again" — exactly the loop nobody
+ * escalates. It is now a definitive 409 carrying a code the client can branch on,
+ * the same shape as the in-flight 409 the handler already returns.
+ *
+ * A `RegistryUnreadableError` is the same kind of failure from the other side:
+ * `onchain-events.json` exists and could not be loaded, so no registration can
+ * be recorded until an operator repairs or restores it and restarts. A 503 with
+ * a code, never the retry-shaped 500.
+ *
+ * The message is deliberately plain and carries no internal detail. The operator
+ * signal is `/api/health` `onchainRegistry` plus the error logged at the call
+ * site.
+ *
+ * Exported because the refusal is worth a test and the handler around it is not
+ * reachable in one: getting there needs a session delegation, a Swarm feed read
+ * and a chain broadcast.
+ */
+export function registerOnChainErrorResponse(err: unknown): {
+  status: 409 | 500 | 503;
+  body: { ok: false; error: string; message?: string };
+} {
+  if (err instanceof RegistryUnreadableError) {
+    return {
+      status: 503,
+      body: {
+        ok: false,
+        error: "registry_unavailable",
+        message: "Event registration is temporarily unavailable - please contact support.",
+      },
+    };
+  }
+  if (err instanceof RegistrationRebindError) {
+    return {
+      status: 409,
+      body: {
+        ok: false,
+        error: "registration_conflict",
+        message:
+          "This series' on-chain registration conflicts with an existing binding - please contact support.",
+      },
+    };
+  }
+  // The class, never the text: this path talks to the chain through a keyed
+  // RPC URL, and ethers puts that URL in its error messages (#540).
+  return {
+    status: 500,
+    body: { ok: false, error: failureSentence("Registration failed", err) },
+  };
+}
+
 // POST /api/events/:id/register-on-chain — authenticated, organiser-only
 // Calls registerEvent via the sponsor wallet (no EOA needed for the organiser).
 // Verifies ownership, sends the tx, then writes onChainEventId back to the Swarm feed.
 events.post("/:id/register-on-chain", requireAuth, async (c) => {
   const tStart = Date.now();
   const eventId = c.req.param("id");
+  // #644: nothing new goes on sale for a cancelled event.
+  if (cancellationGate(eventId) !== "open") {
+    return c.json({ ok: false, error: "This event has been cancelled" }, 409);
+  }
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const body = c.get("body") as { seriesId: string; signer?: string };
   const { seriesId } = body;
@@ -848,8 +977,8 @@ events.post("/:id/register-on-chain", requireAuth, async (c) => {
     });
   } catch (err) {
     console.error("[api] register-on-chain error:", err);
-    const message = err instanceof Error ? err.message : "registerEvent tx failed";
-    return c.json({ ok: false, error: message }, 500);
+    const refusal = registerOnChainErrorResponse(err);
+    return c.json(refusal.body, refusal.status);
   }
 
   if (result.status === "pending") {

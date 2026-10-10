@@ -16,6 +16,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { relayIssuerStatement, getIssuerRegistry } from "../lib/issuer/registry.js";
+import { checkAttendeeGate } from "../lib/gate/check.js";
 
 export const issuerRouter = new Hono<AppEnv>();
 
@@ -28,6 +29,12 @@ issuerRouter.post("/statement", requireAuth, async (c) => {
   } catch {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
+
+  // Each accepted statement stamps a page of the platform feed. Every real
+  // issuer published an event (so passes on that alone); nothing else needs
+  // this before the unlock (owner decision 2026-10-02).
+  const unlock = await checkAttendeeGate(parentAddress.toLowerCase());
+  if (!unlock.gated) return c.json({ ok: false, error: "ticket_required" }, 403);
 
   const statement = (body as { statement?: unknown })?.statement ?? body;
   const result = await relayIssuerStatement(parentAddress, statement);

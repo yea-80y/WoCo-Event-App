@@ -1,8 +1,10 @@
+import { currentRing } from "../keyring/current-ring.js";
 import { Topic } from "@ethersphere/bee-js";
 import { siteCreatorDirectoryTopic, siteConfigTopic, sitePagesTopicFn, siteEventsIndexTopic, isSitePointer } from "@woco/shared";
 import type { SiteDirectoryEntry, SiteDirectory, Site, SitePalette, SiteEventsIndex, Page, Hex0x, VersionedFeedRead } from "@woco/shared";
 import { readFeedPage, readFeedPageStrict, writeFeedPage, encodeJsonFeed, decodeJsonFeed, type FeedReadStrictResult } from "../swarm/feeds.js";
 import { readContentFeedJsonResult } from "../swarm/soc-upload.js";
+import { freshWrittenEventsIndex } from "./events-index.js";
 
 const DIR_PAGE_LIMIT = 4096;
 
@@ -26,8 +28,11 @@ export interface ResolvedSite {
  * THREE ANSWERS, NOT TWO — and the third is the point (#181).
  *
  *   found        the site's config, with its ownership provenance.
- *   absent       the feed provably holds no site. A caller MAY treat the siteId
- *                as unclaimed.
+ *   absent       the network found no site. Not a proof: a bee 404 is a failed
+ *                search, and a page written moments ago can still 404 while it
+ *                propagates. No read can do better, so a caller MAY treat the
+ *                siteId as unclaimed. Nothing serialises two publishes of the same
+ *                absent siteId: both pass, and the last write wins (#217).
  *   unavailable  neither could be established: a network fault, bytes that will
  *                not decode, a payload naming a different site, or a config with
  *                no address to compare a caller against. Nothing may be
@@ -59,12 +64,23 @@ export interface SiteConfigReaders {
   readConfigPage: (topic: Topic) => Promise<FeedReadStrictResult>;
   readPointerTarget: (ownerHex: string, baseTopic: string) => Promise<VersionedFeedRead>;
   readPagesPage: (topic: Topic) => Promise<Uint8Array | null>;
+  /**
+   * The owner's current content-feed signer per their key ring (#186): null = no ring,
+   * `unavailable` = the ring could not be read. Absent (a test's readers) = no ring.
+   */
+  ownerRingSigner?: (owner: string) => Promise<string | null | "unavailable">;
 }
 
 const DEFAULT_READERS: SiteConfigReaders = {
   readConfigPage: readFeedPageStrict,
-  readPointerTarget: readContentFeedJsonResult,
+  // A discovery read (#657): new sites are stamped on Etherna and older ones on
+  // WoCo, and nothing outside the payload says which, so it asks both.
+  readPointerTarget: (ownerHex, baseTopic) => readContentFeedJsonResult(ownerHex, baseTopic, "site"),
   readPagesPage: readFeedPage,
+  ownerRingSigner: async (owner) => {
+    const r = await currentRing(owner);
+    return r.status === "ring" ? r.ring.feedSigner : r.status === "none" ? null : "unavailable";
+  },
 };
 
 /**
@@ -106,8 +122,13 @@ export async function resolveSiteConfig(
   if (!head) return { status: "unavailable", reason: "config feed payload did not decode" };
 
   if (isSitePointer(head)) {
+    // The owner's CURRENT signer (#186): once their account has a key ring, the config
+    // lives under it, and the signer the pointer names may be one a removed passkey holds
+    // (it carries the ticket-email Reply-To). Unreadable keys: nothing is read.
+    const ringSigner = readers.ownerRingSigner ? await readers.ownerRingSigner(head.ownerAddress.toLowerCase()) : null;
+    if (ringSigner === "unavailable") return { status: "unavailable", reason: "site owner's keys unreadable" };
     const payload = await readers
-      .readPointerTarget(head.siteFeedSigner.replace(/^0x/, ""), siteConfigTopic(siteId))
+      .readPointerTarget((ringSigner ?? head.siteFeedSigner).replace(/^0x/, ""), siteConfigTopic(siteId))
       .catch((e: unknown) => ({ status: "unavailable" as const, reason: String(e) }));
 
     if (payload.status === "unavailable") {
@@ -136,7 +157,7 @@ export async function resolveSiteConfig(
     if (!ownerIsEstablishable(site)) {
       return { status: "unavailable", reason: "pointer carries no usable ownerAddress" };
     }
-    return { status: "found", site, siteFeedSigner: head.siteFeedSigner };
+    return { status: "found", site, siteFeedSigner: (ringSigner ?? head.siteFeedSigner) as Hex0x };
   }
 
   // Legacy platform-written site. The payload decoded and is not a pointer, but
@@ -251,9 +272,14 @@ export async function resolveSiteEventSigner(
   // checkout (stripe.ts) — ULID-ish, conservative charset + length.
   if (!/^[0-9a-zA-Z_-]{8,64}$/.test(siteId)) return null;
   try {
-    const page = await readFeedPage(Topic.fromString(siteEventsIndexTopic(siteId)));
-    if (!page) return null;
-    const index = decodeJsonFeed<SiteEventsIndex>(page);
+    // What this server just wrote beats a bee read that may not have it yet, so a
+    // sale right after an organiser adds the event finds its signer (events-index.ts).
+    let index = freshWrittenEventsIndex(siteId);
+    if (!index) {
+      const page = await readFeedPage(Topic.fromString(siteEventsIndexTopic(siteId)));
+      if (!page) return null;
+      index = decodeJsonFeed<SiteEventsIndex>(page);
+    }
     const entry = index?.events.find((e) => e.eventId === eventId);
     return entry?.creatorFeedSigner ?? null;
   } catch {

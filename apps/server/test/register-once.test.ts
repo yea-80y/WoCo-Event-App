@@ -17,6 +17,9 @@ import {
   type RegisterParams,
 } from "../src/lib/event/register-once.js";
 
+// The events chain is required since #607; these tests do not depend on which one.
+process.env.WOCO_EVENT_CHAIN_ID ??= "421614";
+
 const PARAMS: RegisterParams = {
   eventId: "evt-1",
   seriesId: "ser-1",
@@ -58,7 +61,7 @@ function harness(over: Partial<RegisterDeps> = {}) {
     confirmSeriesOnChain: (async (e, s, id) => {
       calls.confirms++;
       registry.set(`${e}|${s}`, id); // mirrors recordOnChainEventId running first
-      return FEED;
+      return { feed: FEED, resignable: true };
     }) as RegisterDeps["confirmSeriesOnChain"],
     ...over,
   };
@@ -206,4 +209,54 @@ test("in-flight entry is released after failure, so a later retry can proceed", 
   fail = false;
   const r = await registerSeriesExactlyOnce(PARAMS, h.deps);
   assert.equal(r.status, "registered");
+});
+
+// ── #563: the registration is recorded on the contract it was made on ────────
+
+const LEDGER = { chainId: 421614, address: "0x" + "1e".repeat(20), version: "ledger" as const };
+
+test("a fresh registration hands confirm the contract the tx went to", async () => {
+  const seen: unknown[] = [];
+  const h = harness({
+    registerEventOnChain: (async (_s, _r, _v, onTxSent, onTxReserved) => {
+      onTxReserved?.({ nonce: 7, chainId: 421614 });
+      onTxSent?.({ txHash: "0xtx1", nonce: 7, chainId: 421614 });
+      return { onChainEventId: "0xonchain1", txHash: "0xtx1", contract: LEDGER };
+    }) as RegisterDeps["registerEventOnChain"],
+    confirmSeriesOnChain: (async (_e, _s, _id, _hint, contract) => {
+      seen.push(contract);
+      return { feed: FEED, resignable: true };
+    }) as RegisterDeps["confirmSeriesOnChain"],
+  });
+  await registerSeriesExactlyOnce({ ...PARAMS, seriesId: "ser-563a" }, h.deps);
+  assert.deepEqual(seen, [LEDGER]);
+});
+
+test("healing an already-recorded registration names NO contract — the record keeps its own", async () => {
+  // After a flip, today's env contract is not where this series lives; handing
+  // it to confirm would be a contract rebind, and refuse the heal forever.
+  const seen: unknown[] = [];
+  const h = harness({
+    confirmSeriesOnChain: (async (_e, _s, _id, _hint, contract) => {
+      seen.push(contract);
+      return { feed: FEED, resignable: true };
+    }) as RegisterDeps["confirmSeriesOnChain"],
+  });
+  h.registry.set("evt-1|ser-563b", "0xalready");
+  const r = await registerSeriesExactlyOnce({ ...PARAMS, seriesId: "ser-563b" }, h.deps);
+  assert.equal(r.status, "already");
+  assert.deepEqual(seen, [undefined]);
+  assert.equal(h.calls.broadcasts, 0);
+});
+
+test("a feed confirm built on an inconclusive read is not handed back for re-signing (#657)", async () => {
+  const h = harness({
+    confirmSeriesOnChain: (async (e, s, id) => {
+      h.registry.set(`${e}|${s}`, id);
+      return { feed: FEED, resignable: false };
+    }) as RegisterDeps["confirmSeriesOnChain"],
+  });
+  const r = await registerSeriesExactlyOnce({ ...PARAMS, seriesId: "ser-657" }, h.deps);
+  assert.equal(r.status, "registered", "the registration itself stands");
+  assert.equal((r as { feed?: unknown }).feed, undefined, "the client merges the id into the feed it holds instead");
 });

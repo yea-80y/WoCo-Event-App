@@ -1,18 +1,3 @@
-/**
- * ECIES sealed box — the output of encrypting data to a recipient's X25519 public key.
- * Uses ephemeral ECDH + HKDF-SHA256 + AES-256-GCM.
- *
- * Only the holder of the corresponding X25519 private key can decrypt.
- */
-export interface SealedBox {
-  /** Ephemeral X25519 public key used for ECDH (hex, no 0x prefix) */
-  ephemeralPublicKey: string;
-  /** AES-256-GCM initialisation vector (hex, 24 chars = 12 bytes) */
-  iv: string;
-  /** Encrypted payload with GCM auth tag appended (hex) */
-  ciphertext: string;
-}
-
 // ---------------------------------------------------------------------------
 // Order form schema
 // ---------------------------------------------------------------------------

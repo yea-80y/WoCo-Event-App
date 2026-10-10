@@ -6,7 +6,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { computeCardFees } from "../src/lib/stripe/checkout-fees.js";
+import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../src/lib/stripe/checkout-fees.js";
+import { readFileSync } from "node:fs";
 import { BUYER_FEE_FLOOR_PCT } from "@woco/shared";
 
 describe("computeCardFees", () => {
@@ -53,5 +54,28 @@ describe("computeCardFees", () => {
     const f = computeCardFees({ feePassedToCustomer: true, buyerFeePercent: 10 }, 0.55, 2);
     assert.equal(f.chargeAmount, 55 + Math.round(5.5)); // 61p per unit
     assert.equal(f.totalApplicationFee, Math.round((110 * 150) / 10_000)); // 2p
+  });
+});
+
+// #645: the webhook proves a sale is ours by the platform fee on it, so a sale
+// whose fee rounds to 0 would be charged and never fulfilled.
+describe("the fee floor", () => {
+  it("a 30p ticket rounds to no fee, so it sits below the floor", () => {
+    assert.equal(computeCardFees({}, 0.3, 1).totalApplicationFee, 0);
+    assert.ok(computeCardFees({}, 0.3, 1).totalApplicationFee < MIN_APPLICATION_FEE_MINOR);
+    assert.ok(computeCardFees({}, 0.34, 1).totalApplicationFee >= MIN_APPLICATION_FEE_MINOR);
+  });
+
+  it("both card checkouts refuse a sale below the floor before creating a session", () => {
+    const cases: Array<[string, string, string]> = [
+      ["../src/routes/stripe.ts", "totalApplicationFee < MIN_APPLICATION_FEE_MINOR", "checkout.sessions.create("],
+      ["../src/routes/shops.ts", "applicationFee < MIN_APPLICATION_FEE_MINOR", "checkout.sessions.create("],
+    ];
+    for (const [rel, guard, create] of cases) {
+      const src = readFileSync(new URL(rel, import.meta.url), "utf-8");
+      const g = src.indexOf(guard);
+      assert.ok(g >= 0, `${rel} must refuse a fee below the floor`);
+      assert.ok(g < src.indexOf(create), `${rel}: the refusal comes before the session`);
+    }
   });
 });

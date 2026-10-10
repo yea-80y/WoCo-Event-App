@@ -4,7 +4,7 @@
  * The lenient history read this replaces collapsed "the manifest definitively
  * records no backups" and "we could not read the manifest" into one empty
  * array. Every consumer then ACTED on that ambiguity: the nudge told a
- * protected user to add a backup, the studio panel showed "No backup yet" over
+ * protected user to add a backup, the dashboard panel showed "No backup yet" over
  * a transient gateway fault, and — the one that guides an irreversible action —
  * the setup screen silently omitted the "adding a backup resurrects the ones
  * you removed" warning. A security surface may render uncertainty; it may not
@@ -25,10 +25,30 @@ import type { BackupInventoryEntry } from "@woco/shared";
 import { readUserManifestResult, type ManifestSigner, type ManifestReadResult } from "./inventory.js";
 
 export type BackupHistoryRead =
-  /** Definitive: the manifest was read (or provably does not exist). */
-  | { status: "known"; backups: BackupInventoryEntry[] }
+  /** The manifest was read (or provably does not exist). */
+  | {
+      status: "known";
+      backups: BackupInventoryEntry[];
+      /**
+       * Whether the read could confirm this is the NEWEST manifest. False = the
+       * newest copy it could reach while Etherna could not be asked: worth
+       * showing, never worth remembering.
+       */
+      settled: boolean;
+    }
   /** No answer — render uncertainty, never "no backups". */
-  | { status: "unavailable"; reason?: string };
+  | {
+      status: "unavailable";
+      reason?: string;
+      /**
+       * Set = the manifest is FROZEN at this version and no retry will change
+       * that, so the surface owes the user a repair path rather than "try again"
+       * (#190). Unset = a fault that may clear on its own.
+       */
+      unusableAt?: number;
+      /** Saved by a newer app, not damaged — reload, never repair. */
+      newerFormat?: boolean;
+    };
 
 /**
  * Every backup entry the account has ever recorded, retired ones included —
@@ -41,10 +61,21 @@ export async function readBackupHistoryResult(args: {
   /** Test seam — production always takes the real manifest read. */
   readManifest?: (args: { signer: ManifestSigner; parentAddress: string }) => Promise<ManifestReadResult>;
 }): Promise<BackupHistoryRead> {
+  // Thorough, though this is a display read (every manifest read is): our bee
+  // sees an Etherna write minutes later, and a read that trusted our gateway
+  // would show the list from BEFORE the backup just added or removed.
   const read = await (args.readManifest ?? readUserManifestResult)({
     signer: args.signer,
     parentAddress: args.parentAddress,
   });
-  if (read.status === "unavailable") return { status: "unavailable", reason: read.reason };
-  return { status: "known", backups: read.status === "found" ? read.manifest.backups : [] };
+  if (read.status === "unavailable") {
+    return {
+      status: "unavailable",
+      reason: read.reason,
+      unusableAt: read.unusableAt,
+      newerFormat: read.newerFormat,
+    };
+  }
+  if (read.status === "absent") return { status: "known", backups: [], settled: true };
+  return { status: "known", backups: read.manifest.backups, settled: read.scanClean };
 }

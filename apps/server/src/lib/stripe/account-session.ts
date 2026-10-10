@@ -1,10 +1,11 @@
 /**
  * Account Sessions — the organiser's only door to their own Stripe account.
  *
- * Under Managed Risk with `controller.stripe_dashboard.type = "none"` there is
- * no Express Dashboard and `accounts.createLoginLink` hard-fails ("does not
- * have access to the Express Dashboard", verified against a live sandbox
- * account 2026-07-31). Connect embedded components ARE the replacement, and an
+ * `accounts.createLoginLink` hard-fails for our controller-created accounts
+ * ("does not have access to the Express Dashboard" - verified on `none`
+ * 2026-07-31 and on `full` 2026-09-23). Organisers on `full` (#645) also have
+ * their own Stripe Dashboard, but inside WoCo these components are the door:
+ * Connect embedded components ARE the replacement, and an
  * Account Session is what authorises them: the server mints a short-lived
  * client secret for ONE connected account, and connect.js exchanges it for the
  * component iframes.

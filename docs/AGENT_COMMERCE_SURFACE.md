@@ -1,6 +1,14 @@
 # WoCo Agent Commerce Surface — Bounded, Non-Custodial Agent Wallet
 
-Status: **built + E2E demo verified on-chain; MCP server ready** (2026-06-12).
+Status (2026-10-05): **OFF - `FEATURES.agentCommerceAllowed = false`** (`packages/shared/src/features.ts`).
+The money endpoints (`/grant-params`, `/quote`, `/buy`) return 403; discovery stays open
+(`apps/server/src/routes/agent.ts:45-56`). Settlement minted through the v1 claim rail's
+`claimTicket()`, which is deleted (#207): `settleAgentTicketPurchase` now refuses with 409 before
+verifying or consuming anything (`apps/server/src/lib/agent/spend-authority.ts:122-142`). Still
+built: bounds, purchase intent, x402 402 step, object-gate check, discovery, MCP server, agent-side
+draw. Turning it on needs a v2 onchain mint path keyed by the paying Kernel that re-implements the
+verification invariants below - not before. Everything below is the 2026-06-12 build and its
+verified run, kept as the record and the requirements.
 Chain: **Arbitrum Sepolia (421614)**. Part of the Arbitrum buildathon (Tier-2 agent surface).
 
 ## The one-line pitch
@@ -26,7 +34,8 @@ ERC-4337 (ZeroDev Kernel) smart account:
   outside those bounds. Revocation is immediate (uninstall the validator / let it expire).
 
 This is a concrete safety model for agentic commerce, built entirely on Arbitrum-native
-primitives WoCo already ships (ZeroDev Kernel #1b, EAS #4, Stylus #5), not off-the-shelf glue.
+primitives WoCo already ships (ZeroDev Kernel #1b), not off-the-shelf glue. (EAS, cited here
+originally, has since been deleted - #475/#476; the Stylus aggregator was superseded.)
 
 ## ZeroDev vs Alchemy vs Coinbase — what we used and why
 
@@ -35,7 +44,8 @@ primitives WoCo already ships (ZeroDev Kernel #1b, EAS #4, Stylus #5), not off-t
   bring in Alchemy's agent-wallet stack — it would mean a second, parallel account-abstraction /
   custody stack for zero new capability (the exact key-custody fork to avoid). The primitives we
   already run (session keys with call + spend policies) *are* the agent wallet.
-- **Coinbase Smart Wallet (CSW)** is a supported *user login* (Base), not the agent-budget rail.
+- **Coinbase Smart Wallet (CSW)** was a *user login* (Base), never the agent-budget rail. CSW login
+  is now off too (`coinbaseLoginAllowed = false`).
   CSW's own native Spend Permissions on Base are a clean post-buildathon cross-chain extension.
 
 ## Architecture
@@ -54,7 +64,8 @@ AGENT (its OWN secp256k1 key; an MCP-driven LLM, or the demo script)
    ▼
 WoCo SERVER (never holds the agent key or funds — read-only verify + mint)
    verify USDC Transfer LOG (from=userKernel, to=organiser, exact amount, confirmations)
-   + POD gate + purchase-intent freshness + one-shot → claimTicket() mints to userKernel
+   + object gate + purchase-intent freshness + one-shot → claimTicket() mints to userKernel
+   (2026-10: verify + claimTicket() deleted; settle refuses - see Status)
 ```
 
 Key invariant: settlement verifies the **USDC `Transfer` log** (`from = userKernel`), **not**
@@ -67,9 +78,10 @@ is invalid for a 4337 payment); the log proof is the stronger guarantee.
 A security review of the new surface raised two server-side authorization gaps versus WoCo's
 established claim/shop patterns. Both were fixed before ship:
 
-1. **POD gate enforcement.** `/api/agent/buy` now runs the same `checkPodGate(userKernel)` /
-   phase logic as the events claim route *before* minting (fail closed) — a gated series cannot
-   be claimed via the agent rail by a Kernel that doesn't hold the gating POD.
+1. **Object gate enforcement.** `/api/agent/buy` runs the same object-gate / phase logic as
+   checkout *before* settling (fail closed; `gateRejection` in `routes/agent.ts`, backed by
+   `lib/object/gate-check.ts`) - a gated series cannot be bought via the agent rail by a Kernel that
+   doesn't hold the gating object. Still runs today, ahead of the refusal.
 2. **Payment ↔ purchase binding.** A bare USDC transfer carries no memo, so without binding any
    first-seen matching transfer could be replayed to mint a ticket. We issue a one-time,
    short-TTL **purchase intent** at `/quote` (and the `/buy` 402 step); settlement requires the
@@ -117,7 +129,7 @@ the ticket mints to the user → **a deliberately wrong-recipient draw is reject
 bounds bite). Prints every tx (Arbiscan links) + remaining budget.
 
 ### Runtime prerequisites
-- `ZERODEV_RPC` set (already required for the POS rail).
+- `ZERODEV_RPC` set (shared with the POS rail, also off).
 - A published event with a **USDC / direct-transfer** series (no escrow) on chain 421614.
 - A test user Kernel funded with Arb Sepolia test USDC.
 - Demo env per the agent section of `apps/server/.env.example` (a funded test user key + the demo
@@ -157,24 +169,25 @@ insufficient here (verified: 800k OOMs, 3M succeeds). Three fixes, all in `scrip
    on-chain policy does time-bucket math); set to the permission's remaining lifetime so `count` is an
    effective lifetime cap of `maxDraws`.
 
-> ✅ **Ported to the shop POS rail** (`lib/shop/spend-permission.ts` + browser `grantShopSpendPermission`):
+> ✅ **Ported to the shop POS rail** (shop rail now off, `shopAllowed = false`) (`lib/shop/spend-permission.ts` + browser `grantShopSpendPermission`):
 > it shared the *same* heavy ABI call policy + rate-limit + no-key enable-mode draw, so the same
 > `800k`-too-low OOM and `interval=0` footgun applied. Fixes 1 + 3 were ported there in commit
 > `11ee3ba` (`SHOP_DRAW_GAS_OVERRIDES`, verificationGasLimit 3M, applied on the draw). The shop crypto
 > rail still needs a live on-chain E2E settle to confirm end-to-end (the agent rail is the verified one).
 
-The demo's series must have a seeded **editions feed** for the legacy `claimTicket` path to mint — see
-`scripts/agent/seed-demo-editions.ts` (run once after `setup-demo-event.ts`). Real organiser publishes
-build signed editions client-side; the seeder mirrors that with a throwaway POD key.
+The demo's series needed a seeded **editions feed** for the legacy `claimTicket` path to mint -
+`scripts/agent/seed-demo-editions.ts` (run once after `setup-demo-event.ts`), signing with a
+throwaway ed25519 key as the v1 format did. That path is deleted, so the demo cannot mint today.
 
 ## File map
 
 - `apps/server/src/routes/agent.ts` — the `/api/agent/*` surface (discovery, grant-params, quote, buy).
-- `apps/server/src/lib/agent/spend-authority.ts` — bounds + log verification + freshness + mint.
+- `apps/server/src/lib/agent/spend-authority.ts` - bounds; settlement refuses (verification + mint deleted).
 - `apps/server/src/lib/agent/purchase-intent.ts` — one-time purchase-intent binding.
 - `apps/server/src/agent/discovery.ts` — `.well-known/agent.json` + OpenAPI generators.
 - `apps/server/scripts/agent/zerodev.ts` — Node ZeroDev helpers (user grant + agent draw).
 - `apps/server/scripts/agent/demo.ts` — E2E demo.
 - `apps/server/scripts/agent/mcp.ts` — stdio MCP server.
-- Reuses: `lib/event/claim-service.ts` (`claimTicket`), `lib/pod/gate-check.ts`,
-  `lib/payment/tx-registry.ts`, `lib/payment/constants.ts`, `lib/shop/spend-permission.ts` (template).
+- Reuses: `lib/object/gate-check.ts`, `lib/payment/constants.ts`, `lib/shop/spend-permission.ts`
+  (template). Formerly also `lib/event/claim-service.ts` (`claimTicket`, deleted) and
+  `lib/payment/tx-registry.ts` (one-shot, no longer called from settlement).

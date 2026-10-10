@@ -29,39 +29,56 @@ export interface SubEnsDeployment {
   registry: Hex0x;
   /** WoCoRegistrar — the mint door the sponsor and the permit rail both go through. */
   registrar: Hex0x;
+  /**
+   * Block of the registry's deploy transaction: no registry log predates it,
+   * so a log scan starts here, not at genesis (#782). Read from the deploy
+   * receipt, not the deployment record alone.
+   */
+  deployBlock: number;
 }
 
 /**
- * Arbitrum One (42161) — LIVE since 2026-09-05, and therefore where every real
- * name lives: woco.eth's L1 resolver answers from this registry. Deployed from
- * OUR L2Registry implementation (`0x172031e6a8428617b05f2002e0e278bb8fb3ed8a`)
- * under baseNode
- * `0x616c19dee44e200629c0e4918ca0fe2f6e85100ea0b354c4f888e11c07a9006f`, with the
- * registry and registrar admin roles held by the #420 Safe rather than an EOA —
- * so a compromised deployer key cannot move names here.
+ * Arbitrum One (42161) — registry v2.2, LIVE since 2026-09-21: woco.eth's L1
+ * resolver (v2 `0xD935…FfD7` since 2026-09-25; v1 `0x1720…Ed8A` before) names
+ * this registry, so every real name lives here.
+ * An EIP-1167 clone of OUR implementation
+ * (`0x44F3CE28DFb86d6827637D6b3E55D4111cA55367`) under baseNode
+ * `0x616c19dee44e200629c0e4918ca0fe2f6e85100ea0b354c4f888e11c07a9006f`, with
+ * the admin seat — and so the registrar's owner, read live — on the #420 Safe
+ * rather than an EOA, so a compromised deployer key cannot move names here.
+ *
+ * The client signs against these addresses directly: the registrar is the
+ * `verifyingContract` of every holder-signed `SetContenthash`, and the
+ * registry of every `Release`. A stale row here is a signature for a contract
+ * that will refuse it — the server alone is saved by its env override.
+ * `apps/web/test/sub-ens-mainnet-deployment.test.ts` pins both rows to digests
+ * read from the live contracts.
+ *
+ * The v1 pair it replaced (`0x8630…A2B6` / `0xACfe…a2`) holds no name the
+ * platform answers for: the L1 resolver no longer points at it, and names were
+ * not carried across (owner decision 2026-09-21: start fresh).
  *
  * Deployment record: `contracts/deployments/42161-subens.json` in the
  * WoCo-Contracts repo.
  *
- * Arbitrum Sepolia (421614) — redeployed 2026-09-03 from OUR L2Registry
- * implementation (`0xc12aA209…2c7a`), so the registry carries #422
- * `adminTransfer` and #464 `release` + `releaseWithSignature`. The 2026-09-02
- * pair (`0x6a52…9b22` / `0xD33C…7816`, zero user names) and the NameStone
- * factory clones before it (`0x41Fb…4807` / `0x206e…BEd3` / `0x7c0D…aAf1`, 23
- * test names) are abandoned — names do not carry across a registry, so every
- * label is claimable from scratch here.
+ * Arbitrum Sepolia (421614) — the v2.2 rehearsal pair (2026-09-19), the same
+ * source as mainnet, so a testnet run exercises the contracts production
+ * runs. Earlier Sepolia pairs are abandoned; names do not carry across a
+ * registry.
  *
  * Deployment record: `contracts/deployments/421614-subens.json` in the
  * WoCo-Contracts repo.
  */
 export const SUB_ENS_DEPLOYMENTS = {
   42161: {
-    registry: "0x8630000177d44ec12e4752Ae0C8b26390d30A2B6",
-    registrar: "0xACfe7c02909a5c1eB64aE5aA10D18618323403a2",
+    registry: "0x4c2265470e0134C0a2df6902ebcb5397a40102a8",
+    registrar: "0x5974bd7bb11C5a33B3d35996d4D95660F315fFaB",
+    deployBlock: 507_277_293,
   },
   421614: {
-    registry: "0xC38e08CB5a21B083F63149ea7597Ea8D05017cf8",
-    registrar: "0x42c6464d65e79C4735A0b346d1c1b4690586d6F9",
+    registry: "0xAf3124EE7360c7B9FD06311102f635392da44886",
+    registrar: "0x4E28BEB33BB5E4B952F749BfAc4985bb3b97F7BB",
+    deployBlock: 310_421_296,
   },
 } as const satisfies Record<number, SubEnsDeployment>;
 
@@ -94,3 +111,25 @@ export function getSubEnsDeployment(chainId: number): SubEnsDeployment {
   if (!deployment) throw new Error(`No sub-ENS deployment for chain ${chainId}`);
   return deployment;
 }
+
+/**
+ * ENS BaseRegistrarImplementation on ETHEREUM MAINNET — the L1 contract that
+ * holds the registration of `woco.eth` itself, and the only place its expiry
+ * exists.
+ *
+ * This is the ONE mainnet address in a sub-ENS world that is otherwise entirely
+ * on Arbitrum, and it is here rather than in the server because the name it
+ * answers for is the parent of every L2 name in {@link SUB_ENS_DEPLOYMENTS}.
+ * `nameExpires(labelhash(SUB_ENS_PARENT_LABEL))` is what the #420 renewal watch
+ * reads: renewal is one manual transaction a year from the Safe, so the only
+ * thing between a missed year and every `*.woco.eth` name going dark is
+ * somebody being told.
+ *
+ * Verified on mainnet 2026-09-11: `nameExpires` = 1799929835
+ * (2027-01-14T12:30:35Z), followed by a 90-day owner-only grace during which
+ * records keep resolving, then release.
+ */
+export const ENS_BASE_REGISTRAR_MAINNET: Hex0x = "0x57f1887a8BF19b14fC0dF6Fd9B2acc9Af147eA85";
+
+/** Days after expiry during which only the owner may renew and records still resolve. */
+export const ENS_GRACE_PERIOD_DAYS = 90;

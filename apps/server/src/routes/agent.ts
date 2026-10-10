@@ -24,7 +24,9 @@ import { parseUnits } from "ethers";
 import type { AppEnv } from "../types.js";
 import type { Context, Next } from "hono";
 import { USDC_ADDRESSES, FEATURES } from "@woco/shared";
-import type { Hex0x, PaymentChainId, SealedBox } from "@woco/shared";
+import type { Hex0x, PaymentChainId } from "@woco/shared";
+import { isSealedBoxV2, type SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
+import { cancellationGate } from "../lib/event/cancellations.js";
 import { getEvent, listEvents } from "../lib/event/service.js";
 import { getOnChainEvent, getActiveChainId } from "../lib/chain/event-contract.js";
 import { fiatToUSD } from "../lib/payment/eth-price.js";
@@ -90,7 +92,7 @@ interface ResolvedPayment {
 
 type Resolved =
   | { ok: true; data: ResolvedPayment }
-  | { ok: false; error: string; code: 400 | 404 };
+  | { ok: false; error: string; code: 400 | 404 | 409 };
 
 /**
  * Resolve and PRICE a series for an agent purchase on the locked Arb Sepolia
@@ -100,6 +102,9 @@ type Resolved =
  * must match (recomputed identically at settle time, never trusted from a quote).
  */
 async function resolveSeriesPayment(eventId: string, seriesId: string): Promise<Resolved> {
+  // #644: gated now, while the rail is flagged off, so turning it on cannot
+  // reopen sales for a cancelled event.
+  if (cancellationGate(eventId) !== "open") return { ok: false, error: "This event has been cancelled", code: 409 };
   const event = await getEvent(eventId);
   if (!event) return { ok: false, error: "Event not found", code: 404 };
   const series = event.series.find((s) => s.seriesId === seriesId);
@@ -366,11 +371,15 @@ agentRouter.post("/buy", async (c) => {
       userKernel?: string;
       settlementTxHash?: string;
       intentId?: string;
-      encryptedOrder?: SealedBox;
+      encryptedOrder?: SealedBoxV2;
     };
     const { eventId, seriesId, userKernel, settlementTxHash, intentId, encryptedOrder } = body;
     if (!eventId || !seriesId) {
       return c.json({ ok: false, error: "eventId and seriesId are required" }, 400);
+    }
+    // The same rule as the card rail's order upload (#642): exactly a v2 box.
+    if (encryptedOrder !== undefined && !isSealedBoxV2(encryptedOrder)) {
+      return c.json({ ok: false, error: "encryptedOrder must be a v2 sealed box" }, 400);
     }
 
     const resolved = await resolveSeriesPayment(eventId, seriesId);

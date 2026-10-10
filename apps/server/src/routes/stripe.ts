@@ -11,9 +11,12 @@
  * See docs/legal/DATA_INVENTORY.md §5.1 and docs/PAYOUTS.md §4/§6.
  */
 
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth, tryVerifyAuth } from "../middleware/auth.js";
+import { cancellationGate, reopenRefundRow } from "../lib/event/cancellations.js";
+import { kickCancellationRefunds } from "../lib/stripe/cancellation-refunds.js";
+import { liveCancellationRefundDeps } from "../lib/stripe/cancellation-refunds-live.js";
 import { getStripe } from "../lib/stripe/client.js";
 import {
   getStripeAccount,
@@ -24,25 +27,43 @@ import {
   deleteStripeAccount,
 } from "../lib/stripe/accounts.js";
 import { getEvent } from "../lib/event/service.js";
+import type { EventFeed } from "@woco/shared";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
 import { checkoutExpiresAt } from "../lib/event/checkout-expiry.js";
-import { chainEventEndMs } from "../lib/event/end-date-guard.js";
+import { chainEventEndMsAt } from "../lib/event/end-date-guard.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { checkObjectGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
-import { computeCardFees } from "../lib/stripe/checkout-fees.js";
-import type { SealedBox, PayoutsResponse } from "@woco/shared";
-import { isSponsorReady } from "../lib/chain/sponsor-wallet.js";
-import { getActiveChainId, getOnChainEvent, EventContractConfigError } from "../lib/chain/event-contract.js";
+import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../lib/stripe/checkout-fees.js";
+import { claimerEmailRefusal } from "../lib/stripe/claimer-email.js";
+import type { PayoutsResponse } from "@woco/shared";
+import { canonicalOrderBox, issueOrderRefToken, acceptedClientOrderRef } from "../lib/stripe/order-ref.js";
+import { checkSponsorCanMint, type SponsorMintVerdict } from "../lib/chain/sponsor-wallet.js";
+import { sponsorGateRefusal } from "../lib/stripe/sponsor-gate.js";
+import {
+  contractKey,
+  getOnChainEventAt,
+  EventContractConfigError,
+} from "../lib/chain/event-contract.js";
 import { checkSeriesOnChainBinding, resolveManifestDigest } from "../lib/event/onchain-binding.js";
-import { lookupOnChainEventId } from "../lib/event/onchain-registry.js";
-import { uploadToBytes } from "../lib/swarm/bytes.js";
+import { lookupOnChainEventId, saleContractFor } from "../lib/event/onchain-registry.js";
+import { attendeeCheckoutRefusal, orderRefOf } from "../lib/attendee-batch/writer.js";
+import { getOrderRecord, isOrderErased } from "../lib/attendee-batch/ledger.js";
+import { commitHold, getHeldOrder, holdPrepared } from "../lib/attendee-batch/held-orders.js";
+import { authoritativeOrderKeyRef, eventKeys, isStaleOrderKey, type EventKeys } from "../lib/keyring/event-keys.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
+import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../lib/stripe/checkout-provenance.js";
+import { liveProvenanceReads, refundTamperedSession } from "../lib/stripe/checkout-provenance-live.js";
 import { fulfilPaidSession } from "../lib/stripe/fulfilment.js";
+import { getSale, recordSaleStub, orderRefInOtherSale } from "../lib/stripe/ticket-sales.js";
+import { alreadyApplied, noteApplied, reconcileChargeEvent } from "../lib/stripe/sale-refunds.js";
+import { liveSaleRefundReads } from "../lib/stripe/sale-refunds-live.js";
 import { liveFulfilmentDeps } from "../lib/stripe/fulfilment-live.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
 import { getReservation } from "../lib/event/reservation-store.js";
-import { validateReturnUrl, getFrontendUrl, canonicalSuccessUrl } from "../lib/stripe/return-url.js";
+import { validateReturnUrl, getFrontendUrl } from "../lib/stripe/return-url.js";
+import { checkoutRedirectUrls } from "../lib/stripe/checkout-urls.js";
+import { checkoutStatusView, isCheckoutSessionId } from "../lib/stripe/checkout-status.js";
 import { updateOrder as updateShopOrder, getOrder as getShopOrder, getShop } from "../lib/shop/service.js";
 import { sendShopOrderEmail } from "../lib/email/shop-receipt.js";
 import { ensureManualPayoutSchedule } from "../lib/stripe/payout-schedule.js";
@@ -65,15 +86,75 @@ import {
 } from "../lib/stripe/payout-ledger.js";
 import { buildPayoutsResponse } from "../lib/stripe/payout-view.js";
 import { RateWindow } from "../lib/marketing/rate-window.js";
+import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
+import { clientIp } from "../lib/http/client-ip.js";
 
 const stripe = new Hono<AppEnv>();
+
+/**
+ * The bound on `/create-checkout` (#463).
+ *
+ * The route is unauthenticated and CORS-open, and every call that gets past
+ * validation spends: a Swarm event read, chain reads (registration, sales
+ * window, availability) and a Checkout Session created on the ORGANISER'S
+ * connected account. `/reserve` is limited, but a reservation is optional — a
+ * caller that never asks for one reaches all of that with no limit in front of
+ * it at all.
+ *
+ * Keyed on the client IP ALONE, deliberately not on (IP, eventId). What is being
+ * protected is our Stripe quota and the Swarm/chain reads, and those cost the
+ * same whichever event is named — so a per-event key would let one caller
+ * multiply its own budget by naming more events, while still punishing the
+ * shared-connection case (a venue's wi-fi, a coach party at the door) that this
+ * single key is sized for.
+ */
+const createCheckoutLimiter = new SlidingWindowLimiter([
+  { limit: 30, windowMs: 60_000 },
+  { limit: 300, windowMs: 3_600_000 },
+]);
+
+/**
+ * `prepare-order` is unauthenticated and stamps onto the platform batch, so it gets
+ * the checkout limiter's budget (it precedes every checkout) and a size cap. A real
+ * order box is ~4.5 KB (X-Wing's 1120-byte `enc` plus a form under 1 KB); 16 KB of
+ * JSON is generous and bounds what one call can stamp (#642).
+ */
+const prepareOrderLimiter = new SlidingWindowLimiter([
+  { limit: 30, windowMs: 60_000 },
+  { limit: 300, windowMs: 3_600_000 },
+]);
+
+/** Refusal while order data has nowhere erasable to go (#546). Details go to the log, not the buyer. */
+const SALES_PAUSED = "Ticket sales are paused for a moment. Please try again shortly.";
+
+/** Refusal for an order box that another completed sale already carries (#661). */
+const ORDER_ALREADY_USED =
+  "These order details were already used for another purchase. Refresh the page and fill in the form again.";
 
 // ---------------------------------------------------------------------------
 // 1. Organiser onboarding — create Connected Account + Account Link
 // ---------------------------------------------------------------------------
 
+const ORGANISER_PASSKEY_ONLY =
+  "Organising uses a passkey account. Create one to host events - this account keeps your tickets.";
+
+/**
+ * Organising needs a passkey account (#746 step 5): attendee data is sealed to the
+ * organiser's seed, and only a passkey roots it outside any email or wallet key. A
+ * wallet account is provably not one; passkey and email logins share the smart
+ * account shape, so the app turns email accounts away before this. On every route
+ * that starts or finishes Stripe onboarding (Fable sign-off: a pre-existing record
+ * must not finish it either). Unset kind is refused, never assumed.
+ */
+const requireSmartAccountOrganiser: MiddlewareHandler<AppEnv> = async (c, next) => {
+  if (c.get("parentKind") !== "kernel") {
+    return c.json({ ok: false, error: ORGANISER_PASSKEY_ONLY, code: "PASSKEY_ACCOUNT_REQUIRED" }, 403);
+  }
+  await next();
+};
+
 /** POST /api/stripe/connect — create a Connected Account for the authenticated organiser */
-stripe.post("/connect", requireAuth, async (c) => {
+stripe.post("/connect", requireAuth, requireSmartAccountOrganiser, async (c) => {
   const organiserAddress = c.get("parentAddress").toLowerCase();
 
   // Check if organiser already has a Stripe account
@@ -105,7 +186,7 @@ stripe.post("/connect", requireAuth, async (c) => {
 });
 
 /** POST /api/stripe/onboarding-link — generate a hosted onboarding URL */
-stripe.post("/onboarding-link", requireAuth, async (c) => {
+stripe.post("/onboarding-link", requireAuth, requireSmartAccountOrganiser, async (c) => {
   const organiserAddress = c.get("parentAddress").toLowerCase();
   const record = getStripeAccount(organiserAddress);
   if (!record) {
@@ -276,10 +357,10 @@ stripe.get("/payouts", requireAuth, async (c) => {
  * POST /api/stripe/account-session — a client secret for Connect embedded components.
  *
  * The organiser's only route to their own bank details and account status.
- * This REPLACED `POST /dashboard-link`: under Managed Risk with
- * `stripe_dashboard.type = "none"` there is no Express Dashboard, and
- * `accounts.createLoginLink` returns "does not have access to the Express
- * Dashboard" — so the login-link door is not deprecated, it is closed.
+ * This REPLACED `POST /dashboard-link`: `accounts.createLoginLink` returns
+ * "does not have access to the Express Dashboard" for our controller-created
+ * accounts, `none` and `full` alike - so the login-link door is not
+ * deprecated, it is closed.
  *
  * The client secret is single-use and expires in minutes, and connect.js calls
  * this again whenever it needs a fresh one. So it is minted per request and
@@ -295,7 +376,7 @@ stripe.get("/payouts", requireAuth, async (c) => {
 // schedule (secret expiry, component remount) rather than only on a click.
 const accountSessionRate = new RateWindow(30, 5 * 60 * 1000);
 
-stripe.post("/account-session", requireAuth, async (c) => {
+stripe.post("/account-session", requireAuth, requireSmartAccountOrganiser, async (c) => {
   const organiserAddress = c.get("parentAddress").toLowerCase();
   if (accountSessionRate.isLimited(organiserAddress)) {
     return c.json({ ok: false, error: "Too many attempts — try again in a few minutes." }, 429);
@@ -341,8 +422,9 @@ stripe.post("/account-session", requireAuth, async (c) => {
 /**
  * POST /api/stripe/prepare-order
  *
- * Body: { encryptedOrder: SealedBox }
- * Returns: { ok: true, orderRef: Hex64 }
+ * Body: { encryptedOrder: SealedBoxV2 } — exactly a v2 box, ≤ 16 KB of JSON
+ * Returns: { ok: true, orderRef: Hex64, orderRefToken } — the token is what lets
+ * /create-checkout accept this ref (lib/stripe/order-ref.ts, #661)
  *
  * Called by the client immediately before /create-checkout. The returned
  * orderRef is passed to /create-checkout, stored in the Stripe session
@@ -352,6 +434,22 @@ stripe.post("/account-session", requireAuth, async (c) => {
  * fires, the full form data is already on Swarm, so every claim in a multi-
  * ticket batch gets the same orderRef with zero coordination.
  */
+const ORDER_KEY_STALE =
+  "This page is out of date - the organiser's details changed. Reload the page and try again; you have not been charged.";
+const ORDER_KEY_REF_RE = /^[0-9a-f]{64}$/;
+
+/**
+ * The refusal for a box sealed to a key the event no longer sells under, or null. It
+ * names the current key, so the page re-seals once without a refetch that a cache
+ * could answer stale - the same server-served value the page sealed to in the first
+ * place, and the key's bytes are checked against it before use.
+ */
+function orderKeyRefusal(keys: EventKeys, declared: string | undefined): Record<string, unknown> | null {
+  if (!isStaleOrderKey(keys, declared)) return null;
+  const current = authoritativeOrderKeyRef(keys);
+  return { ok: false, error: ORDER_KEY_STALE, code: "ORDER_KEY_STALE", ...(current ? { encryptionKeyRef: current } : {}) };
+}
+
 stripe.post("/prepare-order", async (c) => {
   let body: Record<string, unknown>;
   try {
@@ -360,18 +458,48 @@ stripe.post("/prepare-order", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const encryptedOrder = body.encryptedOrder as SealedBox | undefined;
-  if (!encryptedOrder || typeof encryptedOrder !== "object") {
-    return c.json({ ok: false, error: "encryptedOrder is required" }, 400);
+  const orderJson = canonicalOrderBox(body.encryptedOrder);
+  if (!orderJson) {
+    return c.json({ ok: false, error: "encryptedOrder must be a v2 sealed box of at most 16 KB" }, 400);
+  }
+  // Order data is only ever stored where it can be erased (#546). The client
+  // falls back to the inline upload at Pay, which create-checkout refuses too.
+  const storeRefusal = attendeeCheckoutRefusal();
+  if (storeRefusal) {
+    console.error(`[stripe/prepare-order] refused: ${storeRefusal}`);
+    return c.json({ ok: false, error: SALES_PAUSED }, 503);
+  }
+  // Validated first, so a refusal does not spend the caller's budget.
+  const ip = clientIp(c);
+  if (!prepareOrderLimiter.peek(ip)) {
+    c.header("Retry-After", "60");
+    return c.json({ ok: false, error: "Too many requests from your connection. Wait a minute and try again." }, 429);
+  }
+  prepareOrderLimiter.record(ip);
+
+  // The key it was sealed to (#186), when the client says - checked again at checkout.
+  const declaredKey = typeof body.encryptionKeyRef === "string" && ORDER_KEY_REF_RE.test(body.encryptionKeyRef)
+    ? body.encryptionKeyRef
+    : undefined;
+  if (typeof body.eventId === "string" && body.eventId) {
+    const keys = await eventKeys(body.eventId);
+    if (keys.kind === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
+    const refusal = orderKeyRefusal(keys, declaredKey);
+    if (refusal) return c.json(refusal, 409);
   }
 
   try {
-    const orderRef = await uploadToBytes(JSON.stringify(encryptedOrder));
-    return c.json({ ok: true, orderRef });
+    // Paid-only storage (#546): nothing goes to Swarm here. The box is held in
+    // memory under the root it WILL have, and stored once its sale is paid.
+    const orderRef = await orderRefOf(orderJson);
+    // A copy of a box another sale already carries lands on that sale's ref
+    // (canonical bytes) — refuse to issue it.
+    if (orderRefInOtherSale(orderRef, null)) return c.json({ ok: false, error: ORDER_ALREADY_USED }, 409);
+    holdPrepared(orderRef, orderJson, Date.now(), declaredKey ? { orderKeyRef: declaredKey } : {});
+    return c.json({ ok: true, orderRef, orderRefToken: issueOrderRefToken(orderRef) });
   } catch (err) {
-    console.error("[stripe/prepare-order] Upload failed:", err);
-    const msg = err instanceof Error ? err.message : "Failed to upload order";
-    return c.json({ ok: false, error: msg }, 500);
+    console.error("[stripe/prepare-order] Hold failed:", err);
+    return c.json({ ok: false, error: "Could not save your order details. Please try again." }, 500);
   }
 });
 
@@ -387,9 +515,11 @@ stripe.post("/prepare-order", async (c) => {
  * Creates a Checkout Session as a direct charge on the organiser's
  * connected account. Two auth flows:
  *
- *   1. Wallet / passkey / local / para user — sends session delegation
- *      headers. Server verifies, sets metadata.claimerAddress from the
- *      VERIFIED parentAddress (body claimerAddress is ignored).
+ *   1. A buyer whose device already holds a session key — sends session
+ *      delegation headers. Server verifies, sets metadata.claimerAddress from
+ *      the VERIFIED parentAddress (body claimerAddress is ignored). The client
+ *      never mints a session to pay by card, so a signed-in buyer without one
+ *      arrives here as case 2.
  *   2. Anonymous email-only user — no auth headers. Requires claimerEmail
  *      in the body. metadata.claimerAddress is empty.
  *
@@ -412,7 +542,7 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, quantity: rawQty, orderRef, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId, marketingConsent: rawMarketingConsent } = body as {
+  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, pageUrl, quantity: rawQty, orderRef, orderRefToken, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId, marketingConsent: rawMarketingConsent } = body as {
     eventId: string;
     seriesId: string;
     claimerEmail?: string;
@@ -421,9 +551,14 @@ stripe.post("/create-checkout", async (c) => {
      *  Accepted as-is (any HTTPS URL) — it's just a back-navigation, not a
      *  security gate. Separate from returnUrl so success and cancel can differ. */
     cancelUrl?: string;
+    /** The organiser page hosting the embed widget (#567). Success and cancel
+     *  both return there; lib/stripe/checkout-urls.ts says what is accepted. */
+    pageUrl?: string;
     quantity?: number;
     orderRef?: string;
-    encryptedOrder?: SealedBox;
+    /** The token prepare-order issued with `orderRef` (#661). */
+    orderRefToken?: string;
+    encryptedOrder?: unknown;
     reservationId?: string;
     /** Deployed site id — passed when checkout originates from an organiser's
      *  site-builder page so the webhook can theme the ticket email + PNG. */
@@ -437,6 +572,14 @@ stripe.post("/create-checkout", async (c) => {
   const marketingConsent =
     typeof rawMarketingConsent === "boolean" ? rawMarketingConsent : undefined;
   const quantity = Math.max(1, Math.min(10, Number.isInteger(rawQty) ? rawQty as number : 1));
+
+  // #644: a cancelled event sells nothing, before any other work is done for it.
+  // "unknown" = the cancellations file is unreadable: refuse, never guess.
+  if (typeof eventId === "string" && eventId) {
+    const gate = cancellationGate(eventId);
+    if (gate === "cancelled") return c.json({ ok: false, error: "This event has been cancelled" }, 409);
+    if (gate === "unknown") return c.json({ ok: false, error: "Ticket sales are temporarily unavailable" }, 503);
+  }
 
   // Validate reservation if one was supplied. The reservation is expected to
   // match this event + series + quantity; mismatches mean a stale/wrong client
@@ -476,18 +619,19 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "eventId and seriesId are required" }, 400);
   }
 
-  // Validate pre-uploaded order ref — must be a 64-char hex string (Swarm ref).
-  // Anything else is silently ignored; never echoed to Stripe metadata as-is.
-  const preUploadedRef =
-    typeof orderRef === "string" && /^[0-9a-f]{64}$/i.test(orderRef)
-      ? orderRef.toLowerCase()
-      : undefined;
+  // A pre-uploaded order ref is taken only with the token prepare-order issued for
+  // it, so every ref that reaches a mint is one this server stored (#661). Anything
+  // else is silently ignored; never echoed to Stripe metadata as-is.
+  // ...and only if its box is held here or already on the attendee batch (#546):
+  // a token issued before paid-only storage names a blob that can never be erased.
+  const tokenRef = acceptedClientOrderRef(orderRef, orderRefToken);
+  const preparedRef =
+    tokenRef && (getHeldOrder(tokenRef) || (getOrderRecord(tokenRef) && !isOrderErased(tokenRef))) ? tokenRef : null;
 
-  // Inline encrypted order (fallback path when client didn't pre-upload).
-  // We'll upload in parallel with the event/status reads so Swarm latency
-  // hides behind the reads.
-  const shouldUploadInline =
-    !preUploadedRef && encryptedOrder && typeof encryptedOrder === "object";
+  // Inline encrypted order (when the client did not prepare one, or its hold is
+  // gone). Same acceptance rule as prepare-order; anything else is ignored
+  // exactly as a malformed orderRef is, and the webhook seals the minimal order.
+  const inlineOrderJson = canonicalOrderBox(encryptedOrder);
 
   // Soft auth: if session headers are present, verify them. Malformed auth
   // headers are rejected — never silently fall through to anonymous path.
@@ -500,9 +644,36 @@ stripe.post("/create-checkout", async (c) => {
     verifiedAddress = authResult.parentAddress.toLowerCase();
   }
 
+  const emailRefusal = claimerEmailRefusal(claimerEmail);
+  if (emailRefusal) return c.json({ ok: false, error: emailRefusal }, 400);
   if (!claimerEmail && !verifiedAddress) {
     return c.json({ ok: false, error: "claimerEmail or authenticated wallet session required" }, 400);
   }
+
+  // Every order write goes to the attendee batch, the fulfilment fallback seal
+  // included, and never to the platform batch (#546). If that storage is not
+  // available, a paid sale would end in "no orderRef" and a refund, so refuse
+  // before the card is charged - the same rule as the keyless check below.
+  const storeRefusal = attendeeCheckoutRefusal();
+  if (storeRefusal) {
+    console.error(`[stripe/create-checkout] refused: ${storeRefusal}`);
+    return c.json({ ok: false, error: SALES_PAUSED }, 503);
+  }
+
+  // Validation first: everything above this line is a field check, a local
+  // reservation lookup or a signature check on bytes already in hand, and is
+  // answered without spending anything — so it must not spend the caller's
+  // budget either. Everything below it does spend (#463). Peek-then-record so a
+  // refusal is not itself charged.
+  const ip = clientIp(c);
+  if (!createCheckoutLimiter.peek(ip)) {
+    c.header("Retry-After", "60");
+    return c.json(
+      { ok: false, error: "Too many checkout attempts from your connection. Wait a minute and try again." },
+      429,
+    );
+  }
+  createCheckoutLimiter.record(ip);
 
   // Load event + (optionally) upload encrypted order in parallel. Swarm upload
   // is the slowest link (~3–10s cold); running it alongside the event read
@@ -518,27 +689,83 @@ stripe.post("/create-checkout", async (c) => {
   // the Stripe destination (creatorAddress→Connect) + amount. siteId is only a
   // pointer; trust is the server-written index, never the request.
   const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
-  const [event, inlineUploadedRef] = await Promise.all([
-    getEvent(eventId, siteSigner ?? undefined),
-    shouldUploadInline
-      ? uploadToBytes(JSON.stringify(encryptedOrder)).catch((err) => {
-          // Inline upload failure is non-fatal — webhook falls back to the
-          // minimal server-built seal so attendee still gets a ticket.
-          console.warn("[stripe/create-checkout] Inline order upload failed (continuing):", err);
-          return null as string | null;
-        })
-      : Promise.resolve(null as string | null),
-  ]);
-  const swarmMs = performance.now() - tSwarm;
-
-  // Final ref we'll stamp into Stripe session metadata. Prefer client pre-upload
-  // (fast path — client already did the work before clicking Pay).
-  const finalOrderRef = preUploadedRef ?? (inlineUploadedRef ?? undefined);
-
+  // The organiser's keys first (#186): they decide WHICH feed may be sold.
+  const keys = await eventKeys(eventId);
+  if (keys.kind === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
+  if (keys.kind === "legacy") {
+    // No record of who signs this event (made before #670, or platform-written for a
+    // login with no feed signer, none of which can organise now): nothing ties its feed
+    // to its organiser, so a removed passkey could rewrite what is sold - and fulfilment
+    // would read that copy. Not sold (owner 10-09, Fable sign-off S5; no compat paths
+    // pre-launch). Publishing it again gives it a record.
+    if (!(await getEvent(eventId, siteSigner ?? undefined))) return c.json({ ok: false, error: "Event not found" }, 404);
+    return c.json(
+      { ok: false, error: "This event can't take orders. The organiser needs to publish it again.", code: "EVENT_NEEDS_REPUBLISH" },
+      409,
+    );
+  }
+  const event: EventFeed | null = await getEvent(eventId, siteSigner ?? undefined);
   if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
 
   const series = event.series.find((s) => s.seriesId === seriesId);
   if (!series) return c.json({ ok: false, error: "Series not found" }, 404);
+
+  // The box must be sealed to the key this event sells under NOW (#186): a rotation
+  // between prepare-order and here is caught too. Keys that cannot be read stop the
+  // sale rather than guess. Only a box the buyer sent is checked: none means the
+  // fulfilment fallback seals one to the event's key, which is the current one.
+  if (preparedRef || inlineOrderJson) {
+    const bodyKey = typeof (body as { encryptionKeyRef?: unknown }).encryptionKeyRef === "string"
+      ? (body as { encryptionKeyRef: string }).encryptionKeyRef
+      : undefined;
+    const declared = (preparedRef ? getHeldOrder(preparedRef)?.orderKeyRef : undefined) ?? (bodyKey && ORDER_KEY_REF_RE.test(bodyKey) ? bodyKey : undefined);
+    const refusal = orderKeyRefusal(keys, declared);
+    if (refusal) return c.json(refusal, 409);
+  }
+
+  // Paid-only storage (#546): the buyer is on the way to pay, so the box is
+  // HELD on disk (surviving a restart before the webhook) and stored on the
+  // attendee batch by fulfilment once paid. Done only once the event and series
+  // are real. A hold that cannot be made is non-fatal: the webhook seals the
+  // minimal server-built order so the attendee still gets a ticket.
+  let finalOrderRef: string | undefined;
+  if (preparedRef) {
+    if (getOrderRecord(preparedRef)) {
+      finalOrderRef = preparedRef; // already on the attendee batch
+    } else {
+      try {
+        commitHold(preparedRef, null, { eventId, seriesId });
+        finalOrderRef = preparedRef;
+      } catch (err) {
+        console.warn("[stripe/create-checkout] Could not hold the prepared order (continuing):", err);
+      }
+    }
+  }
+  if (!finalOrderRef && inlineOrderJson) {
+    try {
+      const inlineRef = await orderRefOf(inlineOrderJson);
+      commitHold(inlineRef, inlineOrderJson, { eventId, seriesId });
+      finalOrderRef = inlineRef;
+    } catch (err) {
+      console.warn("[stripe/create-checkout] Could not hold the inline order (continuing):", err);
+    }
+  }
+  const swarmMs = performance.now() - tSwarm;
+  // One sale per order ref (#661): before anything is charged, refuse a box that
+  // another completed sale already carries. Fulfilment re-checks as a backstop.
+  if (finalOrderRef && orderRefInOtherSale(finalOrderRef, null)) {
+    return c.json({ ok: false, error: ORDER_ALREADY_USED }, 409);
+  }
+
+  // No order box from the buyer AND no organiser key to seal one with: fulfilment
+  // would reach "no orderRef" and refund. Refuse before the card is charged
+  // (#642 sign-off F3) — only events published without an order key get here.
+  if (!finalOrderRef && !event.encryptionKeyRef) {
+    return c.json(
+      { ok: false, error: "This event isn't set up to take orders yet. Please contact the organiser." },
+      409,
+    );
+  }
 
   if (!series.payment?.stripeEnabled) {
     return c.json({ ok: false, error: "Series does not have Stripe payments enabled" }, 400);
@@ -569,6 +796,30 @@ stripe.post("/create-checkout", async (c) => {
       409,
     );
   }
+
+  // WHICH CONTRACT (#563). Every chain read below and the mint the webhook makes
+  // go to the contract this series was registered on, from the server's own
+  // record — never the feed, which the organiser signs (#424/#426). A successor
+  // contract runs beside the old one, and today's env contract is where NEW
+  // registrations go, not where this one necessarily lives. Fails CLOSED when
+  // no contract can be named (a mint target is not something to guess) and
+  // when the record is on another chain than the active one (a live charge
+  // mints only on the active chain) — before any read of that other chain.
+  const sale = saleContractFor(eventId, seriesId);
+  if (!sale.ok) {
+    console.error(
+      `[stripe/create-checkout] BLOCKED — ` +
+      (sale.reason === "other-chain"
+        ? `registration is on ${contractKey(sale.contract)}, the active chain is ${sale.activeChainId}`
+        : `no events contract resolvable for this registration`) +
+      `; refusing to charge (eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)})`,
+    );
+    return c.json(
+      { ok: false, error: "Tickets for this event are not currently on sale. Please contact the organiser." },
+      409,
+    );
+  }
+  const mintTarget = sale.contract;
 
   // Past-event gate (#241). The "This event has ended" banner is client-side
   // only — a stale tab, deep link, or direct API call otherwise reaches a
@@ -608,7 +859,7 @@ stripe.post("/create-checkout", async (c) => {
   // contract itself is the final refusal, exactly like the availability read.
   let chainEndMs: number | null = null;
   try {
-    chainEndMs = await chainEventEndMs(series.onChainEventId);
+    chainEndMs = await chainEventEndMsAt(mintTarget, series.onChainEventId);
   } catch (err) {
     console.warn("[stripe/create-checkout] chain-end read failed (continuing):", err);
   }
@@ -626,9 +877,9 @@ stripe.post("/create-checkout", async (c) => {
   // supply at mint and the webhook auto-refund is the backstop); the tier
   // count stays undefined on failure, which computeGatePhase fail-safes to
   // holders-only — never a definite 0 that could hold a window open.
-  let onChain: Awaited<ReturnType<typeof getOnChainEvent>> = null;
+  let onChain: Awaited<ReturnType<typeof getOnChainEventAt>> = null;
   try {
-    onChain = await getOnChainEvent(series.onChainEventId, getActiveChainId());
+    onChain = await getOnChainEventAt(mintTarget, series.onChainEventId);
   } catch (err) {
     console.warn("[stripe/create-checkout] availability chain read failed (continuing):", err);
   }
@@ -739,6 +990,9 @@ stripe.post("/create-checkout", async (c) => {
   const stripeCurrency = series.payment.currency.toLowerCase(); // "usd", "gbp", "eur"
 
   const { chargeAmount, totalApplicationFee } = computeCardFees(series.payment, priceFloat, quantity);
+  if (totalApplicationFee < MIN_APPLICATION_FEE_MINOR) {
+    return c.json({ ok: false, error: "This ticket's price is too low to sell by card" }, 400);
+  }
 
   // Find the organiser's connected account
   const organiserRecord = getStripeAccount(event.creatorAddress.toLowerCase());
@@ -748,14 +1002,19 @@ stripe.post("/create-checkout", async (c) => {
 
   // Sponsor-readiness gate. The webhook mints via the sponsor wallet's
   // `batchClaimFor`, which reverts `NotAuthorised` if the sponsor isn't on the
-  // contract allow-list — that would charge the buyer then auto-refund. Refuse
-  // the checkout up front instead. Fail-OPEN on an RPC error (transient) since
-  // the webhook's auto-refund remains the backstop; only a definitive "not
-  // authorised" blocks the sale.
+  // contract allow-list, and — on the ledger — `MintCapExceeded` once the
+  // sponsor's hourly cap is spent (#662). Either would charge the buyer then
+  // auto-refund. Refuse the checkout up front instead. Fail-OPEN on an RPC
+  // error (transient) since the webhook's auto-refund remains the backstop;
+  // only a definitive answer blocks the sale.
+  //
+  // The cap read is UNCACHED (authorisation is cached): it moves with every
+  // mint on every event, and the owner's stop lever, cap 0, has to bite on the
+  // very next checkout.
   {
-    let sponsorReady = true;
+    let verdict: SponsorMintVerdict | "config-error" = { ok: true };
     try {
-      sponsorReady = await isSponsorReady(getActiveChainId());
+      verdict = await checkSponsorCanMint(mintTarget, quantity);
     } catch (err) {
       // Transient RPC failures fail OPEN — a flaky node must not stop sales,
       // and the webhook auto-refund is the backstop. A CONFIG error is the
@@ -763,49 +1022,32 @@ stripe.post("/create-checkout", async (c) => {
       // continuing here charges all of them for tickets that can never mint.
       if (err instanceof EventContractConfigError) {
         console.error("[stripe/create-checkout] BLOCKED — event contract misconfigured:", err.message);
-        sponsorReady = false;
+        verdict = "config-error";
       } else {
         console.warn("[stripe/create-checkout] sponsor readiness check errored (continuing):", err);
       }
     }
-    if (!sponsorReady) {
+    const refusal = sponsorGateRefusal(verdict, quantity, Date.now());
+    if (refusal) {
       console.error(
-        `[stripe/create-checkout] BLOCKED — sponsor not authorised on chain ${getActiveChainId()}; ` +
+        `[stripe/create-checkout] BLOCKED — ${refusal.log} on ${contractKey(mintTarget)}; ` +
         `refusing to charge (eventId=${eventId.slice(0, 8)} series=${seriesId.slice(0, 8)})`,
       );
-      return c.json(
-        { ok: false, error: "Ticketing is temporarily unavailable — please try again shortly." },
-        503,
-      );
+      if (refusal.retryAfterSeconds !== undefined) c.header("Retry-After", String(refusal.retryAfterSeconds));
+      return c.json({ ok: false, error: refusal.error }, refusal.status);
     }
   }
 
-  const resolvedFrontendUrl = validateReturnUrl(returnUrl) ?? getFrontendUrl(c);
-  // Platform purchases use the dedicated WoCo success page. Site-originated
-  // purchases must return to the organiser site so the site runtime can show
-  // its own Stripe success banner and keep the buyer in the branded UI.
-  const frontendUrl = siteId ? resolvedFrontendUrl : canonicalSuccessUrl(resolvedFrontendUrl);
-
-  // Cancel URL: use the client-supplied full page URL (including hash fragment)
-  // so the buyer is returned to exactly where they came from, even on standalone
-  // ENS event sites whose host isn't in ALLOWED_HOSTS. Validated only as a
-  // well-formed HTTPS URL — no host restriction needed for a back-navigation.
-  function buildCancelUrl(marker: string): string {
-    if (cancelUrl) {
-      try {
-        const u = new URL(cancelUrl);
-        if (u.protocol === "https:" || u.hostname === "localhost") {
-          const sep = cancelUrl.includes("?") ? "&" : "?";
-          return `${cancelUrl}${sep}${marker}`;
-        }
-      } catch { /* fall through */ }
-    }
-    return `${frontendUrl}/#/event/${eventId}?${marker}`;
-  }
-  const stripeCancelUrl = buildCancelUrl("stripe=cancelled");
-  const stripeSuccessUrl = siteId
-    ? `${frontendUrl}/#/events/${eventId}?stripe=success&session_id={CHECKOUT_SESSION_ID}`
-    : `${frontendUrl}/#/event/${eventId}/purchased?stripe=success&session_id={CHECKOUT_SESSION_ID}`;
+  // Embed buyers return to the organiser page, site buyers to their site's event
+  // route, platform buyers to the purchased page (#567, lib/stripe/checkout-urls.ts).
+  const { successUrl: stripeSuccessUrl, cancelUrl: stripeCancelUrl } = checkoutRedirectUrls({
+    eventId,
+    siteId,
+    returnUrl,
+    cancelUrl,
+    pageUrl,
+    frontendUrl: () => validateReturnUrl(returnUrl) ?? getFrontendUrl(c),
+  });
 
   // #300: the session must not outlive the event it sells for. Undefined keeps
   // Stripe's 24 h default (event end is 24 h+ away, so the default is tighter).
@@ -817,6 +1059,75 @@ stripe.post("/create-checkout", async (c) => {
     // Direct charge on the connected account: Stripe Checkout shows the
     // organiser's business name (set during Express onboarding) rather than
     // the platform name. The platform still collects application_fee_amount.
+    const sessionMetadata: Record<string, string> = {
+      eventId,
+      seriesId,
+      claimerEmail: claimerEmail || "",
+      // Server-vouched: only set from a verified session, never from the body.
+      // The webhook trusts this field because we wrote it.
+      claimerAddress: verifiedAddress || "",
+      quantity: String(quantity),
+      // The on-chain event this sale was VALIDATED against, carried to
+      // fulfilment (#426).
+      //
+      // Fulfilment used to re-read `onChainEventId` from the event feed at
+      // mint time, so everything the checks above establish held at CHARGE
+      // time and not at mint: for a Phase B event the feed is the creator's
+      // own client-signed SOC, and re-signing it between the two re-pointed
+      // the mint. Carrying the decision forward is what makes the guarantee
+      // end to end.
+      //
+      // Session metadata is a sound carrier because fulfilment only acts on
+      // a session whose integrity tag (client_reference_id, below) verifies and
+      // whose application fee is ours (#645, lib/stripe/checkout-provenance.ts).
+      // That holds whatever the organiser can do in their own Stripe account.
+      //
+      // Empty string when this server has no record. `create-checkout`
+      // refuses those sales outright, so it should be unreachable. Stripe may
+      // drop an empty value, and fulfilment treats absent and "" alike (both
+      // fall back to the record), as does the integrity tag.
+      onChainEventId: validatedOnChainEventId ?? "",
+      // The contract the checks above read, carried the same way (#563): if the
+      // record's contract ever differs at mint time, fulfilment refunds rather
+      // than mint into a contract nobody validated this sale against.
+      onChainContract: contractKey(mintTarget),
+      // Stored so the webhook can issue refunds through the connected account.
+      connectedAccountId: organiserRecord.stripeAccountId,
+      // Pre-uploaded encrypted-order ref (Swarm /bytes). Either:
+      //  - client pre-uploaded during form typing and passed `orderRef`, or
+      //  - we just uploaded it inline (above) in parallel with the other reads.
+      // Either way, the webhook attaches this ref to every ticket in the batch,
+      // so multi-ticket orders never end up with empty attendee data.
+      ...(finalOrderRef ? { orderRef: finalOrderRef } : {}),
+      // Slot reservation id, consumed by the webhook on successful claim.
+      // Optional: legacy / expired-reservation flows fall back to the
+      // existing availability check at claim time.
+      ...(reservationId ? { reservationId } : {}),
+      // Site id — present when checkout comes from a deployed organiser site.
+      // Webhook uses it to fetch the site theme for branded email + ticket PNG.
+      ...(siteId ? { siteId } : {}),
+      // The buyer's answer to the marketing opt-in, carried to the webhook —
+      // it is the webhook, not this request, that knows the claim succeeded,
+      // and a consent record for a sale that never completed is worthless.
+      // Tri-state: "1" granted, "0" declined, absent means never asked.
+      ...(marketingConsent !== undefined
+        ? { marketingConsent: marketingConsent ? "1" : "0" }
+        : {}),
+    };
+    // #645: fulfilment acts on this metadata, and under a full Stripe Dashboard
+    // the organiser can create sessions and edit metadata on their own account.
+    // The tag commits to everything fulfilment acts on; it lives in
+    // client_reference_id, which a session update cannot change, and the webhook
+    // checks it together with our application fee (lib/stripe/checkout-provenance.ts).
+    const sessionAmount = chargeAmount * quantity;
+    const clientReferenceId = signCheckoutTag({
+      account: organiserRecord.stripeAccountId,
+      currency: stripeCurrency,
+      amountSubtotal: sessionAmount,
+      amountTotal: sessionAmount,
+      applicationFee: totalApplicationFee,
+      metadata: sessionMetadata,
+    });
     const session = await s.checkout.sessions.create(
       {
         mode: "payment",
@@ -837,60 +1148,13 @@ stripe.post("/create-checkout", async (c) => {
         payment_intent_data: {
           application_fee_amount: totalApplicationFee,
           // No transfer_data — direct charge settles on the connected account.
+          // #644: lets a charge be matched to its event from Stripe's side alone
+          // (an audit of a cancellation's refunds). Not trusted for anything:
+          // the session metadata under the integrity tag is.
+          metadata: { woco_event: eventId, woco_series: seriesId },
         },
-        metadata: {
-          eventId,
-          seriesId,
-          claimerEmail: claimerEmail || "",
-          // Server-vouched: only set from a verified session, never from the body.
-          // The webhook trusts this field because we wrote it.
-          claimerAddress: verifiedAddress || "",
-          quantity: String(quantity),
-          // The on-chain event this sale was VALIDATED against, carried to
-          // fulfilment (#426).
-          //
-          // Fulfilment used to re-read `onChainEventId` from the event feed at
-          // mint time, so everything the checks above establish held at CHARGE
-          // time and not at mint: for a Phase B event the feed is the creator's
-          // own client-signed SOC, and re-signing it between the two re-pointed
-          // the mint. Carrying the decision forward is what makes the guarantee
-          // end to end.
-          //
-          // Session metadata is a sound carrier because the ORGANISER cannot
-          // write it. Connected accounts are created with
-          // `controller.stripe_dashboard.type = "none"`
-          // (lib/stripe/account-params.ts), so an organiser holds no dashboard
-          // and no API credentials for the account this session lives on —
-          // only the platform can update it.
-          //
-          // Empty string when this server has no record. `create-checkout`
-          // refuses those sales outright, so it should be unreachable; it is
-          // written rather than omitted so fulfilment can tell "old session,
-          // created before this shipped" from "recorded as nothing".
-          onChainEventId: validatedOnChainEventId ?? "",
-          // Stored so the webhook can issue refunds through the connected account.
-          connectedAccountId: organiserRecord.stripeAccountId,
-          // Pre-uploaded encrypted-order ref (Swarm /bytes). Either:
-          //  - client pre-uploaded during form typing and passed `orderRef`, or
-          //  - we just uploaded it inline (above) in parallel with the other reads.
-          // Either way, the webhook attaches this ref to every ticket in the batch,
-          // so multi-ticket orders never end up with empty attendee data.
-          ...(finalOrderRef ? { orderRef: finalOrderRef } : {}),
-          // Slot reservation id, consumed by the webhook on successful claim.
-          // Optional: legacy / expired-reservation flows fall back to the
-          // existing availability check at claim time.
-          ...(reservationId ? { reservationId } : {}),
-          // Site id — present when checkout comes from a deployed organiser site.
-          // Webhook uses it to fetch the site theme for branded email + ticket PNG.
-          ...(siteId ? { siteId } : {}),
-          // The buyer's answer to the marketing opt-in, carried to the webhook —
-          // it is the webhook, not this request, that knows the claim succeeded,
-          // and a consent record for a sale that never completed is worthless.
-          // Tri-state: "1" granted, "0" declined, absent means never asked.
-          ...(marketingConsent !== undefined
-            ? { marketingConsent: marketingConsent ? "1" : "0" }
-            : {}),
-        },
+        metadata: sessionMetadata,
+        client_reference_id: clientReferenceId,
         success_url: stripeSuccessUrl,
         cancel_url: stripeCancelUrl,
         // Prefills the email field at checkout. Side effect: on a direct charge
@@ -915,9 +1179,70 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: true, url: session.url });
   } catch (err) {
     console.error("[stripe] Failed to create checkout session:", err);
-    const msg = err instanceof Error ? err.message : "Failed to create checkout";
-    return c.json({ ok: false, error: msg }, 500);
+    // A fixed string: this catch also sees configuration and Stripe errors,
+    // whose text is not the buyer's to read (#540).
+    return c.json({ ok: false, error: "Failed to create checkout" }, 500);
   }
+});
+
+/**
+ * The bound on `/checkout-status` (#567). Unauthenticated like create-checkout,
+ * and every call past validation spends a Swarm event read and a Stripe API read
+ * on the organiser's connected account, so it is sized the same way.
+ */
+const checkoutStatusLimiter = new SlidingWindowLimiter([
+  { limit: 30, windowMs: 60_000 },
+  { limit: 300, windowMs: 3_600_000 },
+]);
+
+/**
+ * GET /api/stripe/checkout-status?eventId=&session_id=
+ *
+ * What a buyer returning from Stripe is shown (#567). The embed widget on an
+ * organiser page and the platform purchased page both render from this, because
+ * the pre-redirect sessionStorage stash does not cross origins. The answer is
+ * deliberately narrow — see lib/stripe/checkout-status.ts.
+ */
+stripe.get("/checkout-status", async (c) => {
+  const eventId = c.req.query("eventId") ?? "";
+  const sessionId = c.req.query("session_id");
+  if (!eventId || !isCheckoutSessionId(sessionId)) {
+    return c.json({ ok: false, error: "eventId and a checkout session_id are required" }, 400);
+  }
+
+  // Peek-then-record after validation, as create-checkout does, so a malformed
+  // request is refused without spending the caller's budget.
+  const ip = clientIp(c);
+  if (!checkoutStatusLimiter.peek(ip)) {
+    c.header("Retry-After", "60");
+    return c.json({ ok: false, error: "Too many requests from your connection. Wait a minute and try again." }, 429);
+  }
+  checkoutStatusLimiter.record(ip);
+
+  // No site hint: getEvent already does directory-carrier discovery, so this
+  // resolves the same event the checkout did. An optional `siteId` was removed
+  // here as unreachable — no caller sends one, and nothing pinned it — rather
+  // than leave a parameter that decides which account a session is read on.
+  // Reintroduce it only alongside a caller and a test.
+  const event = await getEvent(eventId).catch(() => null);
+  const account = event ? getStripeAccount(event.creatorAddress.toLowerCase()) : null;
+  if (!account) return c.json({ ok: false, error: "Not found" }, 404);
+
+  let session;
+  try {
+    session = await getStripe().checkout.sessions.retrieve(sessionId, {}, { stripeAccount: account.stripeAccountId });
+  } catch (err) {
+    if ((err as { statusCode?: number }).statusCode === 404) {
+      return c.json({ ok: false, error: "Not found" }, 404);
+    }
+    // The error class only: Stripe's message text is not for a public route.
+    console.error("[stripe/checkout-status] session read failed:", (err as { type?: string }).type ?? "unknown");
+    return c.json({ ok: false, error: "Could not check this payment right now" }, 502);
+  }
+
+  const view = checkoutStatusView(session, eventId, { cancelled: cancellationGate(eventId) === "cancelled" });
+  if (!view) return c.json({ ok: false, error: "Not found" }, 404);
+  return c.json({ ok: true, data: view });
 });
 
 // ---------------------------------------------------------------------------
@@ -985,12 +1310,83 @@ stripe.post("/webhook", async (c) => {
     case "checkout.session.completed": {
       const session = event.data.object as import("stripe").Stripe.Checkout.Session;
       if (session.payment_status === "paid") {
+        // #645: is this a session we created, unaltered? Decided BEFORE the
+        // session is consumed, so a failure to ask Stripe leaves it retryable.
+        // This endpoint delivers every session on every connected account, and
+        // an organiser with their own Stripe Dashboard can create sessions and
+        // edit metadata there (lib/stripe/checkout-provenance.ts).
+        const verdict = await classifyPaidSession(session, event.account, liveProvenanceReads);
+        noteProvenanceVerdict(session.id, verdict);
+        if (verdict.kind === "unverifiable") {
+          console.error(
+            `[stripe-webhook] Session ${session.id}: provenance could not be checked (${verdict.reason}) — asking Stripe to retry`,
+          );
+          return c.text("Provenance check unavailable", 500);
+        }
+        if (verdict.kind === "foreign") {
+          // The organiser's own sale, not ours: never fulfilled, never refunded.
+          console.warn(
+            `[stripe-webhook] Session ${session.id} on ${event.account ?? "no account"} was not created by WoCo (${verdict.reason}) — ignored`,
+          );
+          break;
+        }
+
         // Deduplicate before doing any work. Both the platform and connected-accounts
         // webhooks can deliver the same event; Stripe also retries on any non-2xx.
         // Consuming the session ID here (synchronously, before returning 200) ensures
         // we process each confirmed payment exactly once.
         if (!checkAndConsumeSession(session.id)) {
           console.log(`[stripe-webhook] Session ${session.id} already processed — skipping duplicate delivery`);
+          break;
+        }
+
+        const paymentIntentId =
+          typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id;
+
+        // #645 part C: the sale record, written the moment the session is ours
+        // to act on, so a refund or dispute on it can find its tickets. Before
+        // the tampered refund and before fulfilment, both of which record into
+        // it. Fenced: the session is consumed now, so a throw here would turn
+        // into a 500 whose redelivery the registry then skips.
+        // Every sale of ours gets one, shop orders included, so a refund on it is
+        // recognised as ours rather than retried as "our fee, no record". A
+        // tampered session's metadata is exactly what failed its check, so it
+        // records none.
+        const md = verdict.kind === "ours" ? (session.metadata ?? {}) : {};
+        if (paymentIntentId && event.account) {
+          try {
+            recordSaleStub({
+              sessionId: session.id,
+              paymentIntentId,
+              connectedAccountId: event.account,
+              eventId: md.eventId,
+              seriesId: md.seriesId,
+              // Parsed as fulfilment parses it; a tampered session's is unknown.
+              quantity: verdict.kind === "ours" ? Math.max(1, Math.min(10, parseInt(md.quantity ?? "1", 10) || 1)) : 0,
+              amountTotal: session.amount_total ?? 0,
+              currency: session.currency ?? "",
+              ...(verdict.kind === "tampered" ? { tampered: true, autoRefunded: session.amount_total ?? 0 } : {}),
+            });
+          } catch (err) {
+            console.error(`[stripe-webhook] Session ${session.id}: sale record not written — refunds will not void its tickets:`, err);
+          }
+        }
+
+        if (verdict.kind === "tampered") {
+          // Ours, but altered after creation: the buyer paid for something we
+          // will not issue. Refund through the account the event came from.
+          console.error(
+            `[stripe-webhook] Session ${session.id} on ${event.account} was ALTERED after creation (${verdict.reason}) — refunding, not fulfilling`,
+          );
+          if (paymentIntentId && event.account) {
+            void refundTamperedSession({
+              sessionId: session.id,
+              paymentIntentId,
+              account: event.account,
+              reason: verdict.reason,
+              metadata: session.metadata ?? {},
+            });
+          }
           break;
         }
 
@@ -1006,7 +1402,8 @@ stripe.post("/webhook", async (c) => {
         }
 
         // Return 200 to Stripe immediately — Stripe best practice.
-        // Stripe's delivery timeout is 30 s; the mint + email take longer.
+        // Stripe publishes no delivery timeout, and the buyer's redirect to
+        // success_url waits on this 2xx (up to 10 s); the mint + email take longer.
         // The payment is already confirmed (payment_status === "paid") — the
         // mint is the result of that confirmation, not a prerequisite.
         // Fulfilment never rejects: every failure is a refund reason, a
@@ -1025,6 +1422,61 @@ stripe.post("/webhook", async (c) => {
             // Cannot happen by contract; if it ever does, the log is the only trace.
             console.error("[stripe-webhook] fulfilPaidSession rejected — INVARIANT BROKEN:", err);
           });
+      }
+      break;
+    }
+
+    case "charge.refunded":
+    case "refund.updated":
+    case "refund.failed":
+    case "charge.dispute.created":
+    case "charge.dispute.updated":
+    case "charge.dispute.closed":
+    case "charge.dispute.funds_withdrawn":
+    case "charge.dispute.funds_reinstated": {
+      // #645 part C: a refund we did not make (the organiser's own Dashboard, a
+      // cancellation) voids the sale's tickets; a refund that FAILED or was
+      // CANCELLED lifts that void again, and one that moves from requires_action
+      // to succeeded lands it (`refund.updated` is the only event carrying those
+      // two). A chargeback voids the same way and a won dispute lifts it; an
+      // inquiry voids nothing. All are applied from Stripe's current state,
+      // never from this event's body (lib/stripe/sale-refunds.ts). Only a direct
+      // charge on a connected account can be one of our sales.
+      if (!event.account || alreadyApplied(event.id)) break;
+      const obj = event.data.object as { payment_intent?: string | { id: string } | null };
+      const piId = typeof obj.payment_intent === "string" ? obj.payment_intent : obj.payment_intent?.id;
+      if (!piId) break;
+      const outcome = await reconcileChargeEvent(
+        { paymentIntentId: piId, account: event.account, dispute: event.type.startsWith("charge.dispute.") },
+        liveSaleRefundReads,
+      );
+      if (outcome.kind === "retry") {
+        console.warn(`[stripe-webhook] ${event.type} ${event.id} for ${piId}: ${outcome.reason} — asking Stripe to retry`);
+        return c.text("Refund could not be applied yet", 500);
+      }
+      noteApplied(event.id);
+      // #644: anything moving on a cancelled event's sale (a refund that failed,
+      // a dispute) sends it back to the cancellation's refund job at once,
+      // rather than waiting for its daily re-check.
+      if (outcome.kind === "applied") {
+        const saleEventId = getSale(outcome.sessionId)?.eventId;
+        if (saleEventId && reopenRefundRow(saleEventId, outcome.sessionId)) {
+          void kickCancellationRefunds(liveCancellationRefundDeps).catch(() => undefined);
+        }
+      }
+      if (outcome.kind === "applied") {
+        const { change, dispute } = outcome;
+        if (change.voided || change.unvoided || change.partialAlarm || dispute?.change.voided || dispute?.change.unvoided || dispute?.reading.needsResponse) {
+          console.warn(
+            `[stripe-webhook] ${event.type} on sale ${outcome.sessionId}: refunded ${outcome.refunded}/${outcome.charged}` +
+              (change.voided ? (outcome.slots > 0 ? " — tickets VOIDED" : " — refunded in full (no tickets)") : "") +
+              (change.unvoided ? " — refund failed, tickets valid again" : "") +
+              (change.partialAlarm ? " — PARTIAL refund above our own, tickets left valid (alarm)" : "") +
+              (dispute?.change.voided ? " — CHARGEBACK, tickets VOIDED" : "") +
+              (dispute?.change.unvoided ? " — dispute won, tickets valid again" : "") +
+              (dispute?.reading.needsResponse ? " — dispute needs a response in Stripe (alarm)" : ""),
+          );
+        }
       }
       break;
     }

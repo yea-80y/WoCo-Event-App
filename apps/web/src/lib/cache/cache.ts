@@ -182,6 +182,20 @@ export function cacheClearByPrefix(prefixes: string[]): void {
   } catch {}
 }
 
+/** Inner keys (without the storage namespace) that start with `prefix`. */
+export function cacheKeysByPrefix(prefix: string): string[] {
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k?.startsWith(PREFIX + prefix)) keys.push(k.slice(PREFIX.length));
+    }
+    return keys;
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Prefixes that hold user-specific data and must be cleared on sign-out.
  * Immutable per-event/per-ticket caches are intentionally retained.

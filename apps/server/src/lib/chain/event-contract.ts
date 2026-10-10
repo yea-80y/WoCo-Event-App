@@ -85,9 +85,24 @@ const DEPLOYED_V2: Record<number, string> = {
  */
 const DEPLOYED_LEDGER: Record<number, string> = {};
 
-/** Chain the server currently uses for event registration. Override via WOCO_EVENT_CHAIN_ID. */
+/**
+ * Chain the server uses for event registration: `WOCO_EVENT_CHAIN_ID`, REQUIRED.
+ *
+ * It used to default to Base Sepolia (84532), a chain nothing watches any more,
+ * so a dropped env line registered events where nobody would look, on another
+ * contract with another sponsor balance and no alarm (#607). The version policy
+ * below allows a default for an absent value; the chain cannot have one, since
+ * every other events setting is read per chain. `assertEventContractConfig`
+ * calls this at boot, so the process refuses to start without it.
+ */
 export function getActiveChainId(): number {
-  return parseInt(process.env.WOCO_EVENT_CHAIN_ID ?? "84532");
+  const raw = (process.env.WOCO_EVENT_CHAIN_ID ?? "").trim();
+  if (raw === "") throw new EventContractConfigError("WOCO_EVENT_CHAIN_ID is not set - the events chain has no default");
+  const id = Number(raw);
+  if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(id)) {
+    throw new EventContractConfigError(`WOCO_EVENT_CHAIN_ID="${raw}" is not a chain id`);
+  }
+  return id;
 }
 
 /**
@@ -134,6 +149,55 @@ export function getDeployedContract(chainId: number): DeployedContract | undefin
   const address = getWoCoEventAddress(chainId);
   if (!address) return undefined;
   return { address, version };
+}
+
+/**
+ * One events contract, fully named: its chain, its address and the ABI that
+ * speaks to it (#563).
+ *
+ * WHY THE VERSION TRAVELS WITH THE ADDRESS. Env picks the version for a chain,
+ * and env moves at a cutover. A registration made on V2 must still be read and
+ * minted through V2's ABI after `WOCO_EVENT_VERSION_*` says "ledger", so the
+ * version is a property of where the registration LIVES, not of today's config.
+ */
+export interface EventContractTarget {
+  chainId: number;
+  /** Lowercased. */
+  address: string;
+  version: EventContractVersion;
+}
+
+/** Stable identity for a target — memo keys, cache keys, session metadata. */
+export function contractKey(t: EventContractTarget): string {
+  return `${t.chainId}:${t.address.toLowerCase()}`;
+}
+
+/** The env-selected contract: where NEW registrations go. */
+export function getDefaultEventContract(chainId: number = getActiveChainId()): EventContractTarget | undefined {
+  const c = getDeployedContract(chainId);
+  return c ? { chainId, address: c.address.toLowerCase(), version: c.version } : undefined;
+}
+
+/**
+ * Where a registration recorded before #563 lives — its record carries no
+ * contract, so this rule has to answer for it.
+ *
+ * Today's env contract, EXCEPT when env selects the ledger. No ledger has ever
+ * had an address in this codebase (DEPLOYED_LEDGER is empty), and every
+ * registration from #563 on is recorded with its contract, so an unrecorded
+ * one cannot be a ledger registration. Under a ledger env it is therefore a
+ * registration on the chain's V2 contract. Following env instead would read
+ * every pre-cutover ticket on the ledger, where its id does not exist: the door
+ * would reject it, delete-safety would count it as zero, and each sale would
+ * charge and then refund.
+ *
+ * Undefined when there is no such contract (the ledger on a chain V2 never
+ * ran on) — callers refuse rather than guess.
+ */
+export function legacyEventContract(chainId: number = getActiveChainId()): EventContractTarget | undefined {
+  if (getEventContractVersion(chainId) !== "ledger") return getDefaultEventContract(chainId);
+  const address = process.env[`WOCO_EVENT_ADDRESS_V2_${chainId}`] ?? DEPLOYED_V2[chainId];
+  return address ? { chainId, address: address.toLowerCase(), version: "v2" } : undefined;
 }
 
 const _providers = new Map<number, JsonRpcProvider>();
@@ -195,24 +259,37 @@ export async function getOrganiserNonce(address: string, chainId: number): Promi
   }
 }
 
+function defaultTargetOrThrow(chainId: number): EventContractTarget {
+  const t = getDefaultEventContract(chainId);
+  if (!t) throw new Error(`No WoCoEvent contract deployed on chain ${chainId}`);
+  return t;
+}
+
+/** `getSlotDataAt` on the env-selected contract. */
 export async function getSlotData(
   onChainEventId: string,
   slot: number,
   chainId: number,
 ): Promise<SlotData> {
-  const c = getDeployedContract(chainId);
-  if (!c) throw new Error(`No WoCoEvent contract deployed on chain ${chainId}`);
+  return getSlotDataAt(defaultTargetOrThrow(chainId), onChainEventId, slot);
+}
+
+export async function getSlotDataAt(
+  c: EventContractTarget,
+  onChainEventId: string,
+  slot: number,
+): Promise<SlotData> {
   switch (c.version) {
     case "ledger": {
       const { getSlotDataLedger } = await import("./event-contract-ledger.js");
-      return getSlotDataLedger(onChainEventId, slot, c.address, chainId);
+      return getSlotDataLedger(onChainEventId, slot, c.address, c.chainId);
     }
     case "v2": {
       const { getSlotDataV2 } = await import("./event-contract-v2.js");
-      return getSlotDataV2(onChainEventId, slot, c.address, chainId);
+      return getSlotDataV2(onChainEventId, slot, c.address, c.chainId);
     }
     case "v1": {
-      const result = await getV1Contract(chainId, c.address).getSlotData(onChainEventId, slot);
+      const result = await getV1Contract(c.chainId, c.address).getSlotData(onChainEventId, slot);
       return {
         owner: (result.owner as string).toLowerCase(),
         orderRef: result.orderRef as string,
@@ -234,16 +311,21 @@ export async function getOnChainEventEnd(
   onChainEventId: string,
   chainId: number,
 ): Promise<number | null> {
-  const c = getDeployedContract(chainId);
-  if (!c) throw new Error(`No WoCoEvent contract deployed on chain ${chainId}`);
+  return getOnChainEventEndAt(defaultTargetOrThrow(chainId), onChainEventId);
+}
+
+export async function getOnChainEventEndAt(
+  c: EventContractTarget,
+  onChainEventId: string,
+): Promise<number | null> {
   switch (c.version) {
     case "ledger": {
       const { getOnChainEventEndLedger } = await import("./event-contract-ledger.js");
-      return getOnChainEventEndLedger(onChainEventId, c.address, chainId);
+      return getOnChainEventEndLedger(onChainEventId, c.address, c.chainId);
     }
     case "v2": {
       const { getOnChainEventEndV2 } = await import("./event-contract-v2.js");
-      return getOnChainEventEndV2(onChainEventId, c.address, chainId);
+      return getOnChainEventEndV2(onChainEventId, c.address, c.chainId);
     }
     case "v1":
       // V1 predates `eventEndTs` entirely — "no on-chain end", not a fabricated one.
@@ -253,23 +335,29 @@ export async function getOnChainEventEnd(
   }
 }
 
+/** `getOnChainEventAt` on the env-selected contract. */
 export async function getOnChainEvent(
   onChainEventId: string,
   chainId: number,
 ): Promise<OnChainEvent | null> {
-  const c = getDeployedContract(chainId);
-  if (!c) throw new Error(`No WoCoEvent contract deployed on chain ${chainId}`);
+  return getOnChainEventAt(defaultTargetOrThrow(chainId), onChainEventId);
+}
+
+export async function getOnChainEventAt(
+  c: EventContractTarget,
+  onChainEventId: string,
+): Promise<OnChainEvent | null> {
   switch (c.version) {
     case "ledger": {
       const { getOnChainEventLedger } = await import("./event-contract-ledger.js");
-      return getOnChainEventLedger(onChainEventId, c.address, chainId);
+      return getOnChainEventLedger(onChainEventId, c.address, c.chainId);
     }
     case "v2": {
       const { getOnChainEventV2 } = await import("./event-contract-v2.js");
-      return getOnChainEventV2(onChainEventId, c.address, chainId);
+      return getOnChainEventV2(onChainEventId, c.address, c.chainId);
     }
     case "v1": {
-      const result = await getV1Contract(chainId, c.address).events(onChainEventId);
+      const result = await getV1Contract(c.chainId, c.address).events(onChainEventId);
       if (result.totalSupply === 0n) return null;
       return {
         totalSupply: result.totalSupply,

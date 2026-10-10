@@ -20,8 +20,13 @@
  *               the login path, and treated as an AA kind here for exactly the
  *               reason passkey is.
  *   passkey   → a ZeroDev Kernel.
- *   coinbase  → a Coinbase Smart Wallet (ERC-1271/6492, per its own module
- *               header). Not a Kernel, but a contract account all the same.
+ *   coinbase  → a Coinbase Smart Wallet. It signs for BASE whatever the
+ *               typed-data domain says (its `replaySafeHash` carries the
+ *               verifying chain's id), so no signature of its can verify on the
+ *               names' chain and the relay can never work for it. Its holder
+ *               acts by its OWN transaction (`release(node)` through
+ *               `wallet_sendCalls` + an ERC-7677 paymaster — Fable sponsor-key
+ *               consult §11.1), which is not built yet: unavailable until then.
  *
  * A contract holder needs ERC-1271, which needs the account to EXIST on the
  * name's chain. The names live on Arbitrum One while the Kernel still runs on
@@ -48,6 +53,10 @@ export interface ReleaseRailPlan {
   reason?: string;
 }
 
+/** Shown to a Coinbase Smart Wallet holder until its own-transaction rail exists. */
+const COINBASE_PENDING =
+  "Discarding a name from a Coinbase Smart Wallet arrives with its own transaction rail — the name stays yours.";
+
 /** Shown when the holder is a smart account that does not exist on the name's chain. */
 const AA_PENDING =
   "Discarding a name from this account arrives with the Arbitrum One account move — the name stays yours.";
@@ -63,11 +72,15 @@ export function releaseRails(
       return { available: true, rails: ["relay", "wallet"] };
 
     case "passkey":
-    case "coinbase":
     case "web3auth":
       return kernelChainId === nameChainId
         ? { available: true, rails: ["relay", "kernel"] }
         : { available: false, rails: [], reason: AA_PENDING };
+
+    // Never the relay: see the header. Its own-transaction rail comes with the
+    // Coinbase login itself (`coinbaseLoginAllowed`).
+    case "coinbase":
+      return { available: false, rails: [], reason: COINBASE_PENDING };
 
     case "none":
       return { available: false, rails: [], reason: "Sign in to manage your names." };

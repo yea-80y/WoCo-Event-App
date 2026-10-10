@@ -13,8 +13,9 @@ import { Bee, type Topic, type PrivateKey, FeedIndex } from "@ethersphere/bee-js
 import { Binary } from "cafe-utility";
 import { calculateSocAddress, calculateCacAddress, encodeSpan } from "@woco/shared";
 import { ensureEthernaToken, getCachedEthernaToken } from "./auth.js";
+import { ETHERNA_FETCH_BASE } from "./gateway.js";
 
-const ETHERNA_GW = process.env.ETHERNA_GATEWAY_URL || "https://gateway.etherna.io";
+const ETHERNA_GW = ETHERNA_FETCH_BASE;
 
 let _ethernaBee: Bee | null = null;
 
@@ -56,6 +57,13 @@ export async function uploadCollectionToEtherna(opts: BzzUploadOpts): Promise<st
     "Swarm-Index-Document": opts.indexDocument,
     "Swarm-Error-Document": opts.errorDocument ?? opts.indexDocument,
     "Swarm-Collection": "true",
+    // Bee defaults an upload to DEFERRED: it returns once the node holds the
+    // chunks and pushes them to the network in the background, so every reader
+    // but Etherna waits. Measured 2026-09-21 on 5 MB collections, time until the
+    // page opened from our bee: 326 s deferred vs 171 s with this (#613). Free -
+    // nothing is stored twice. Etherna still returns before the push completes,
+    // so it halves the wait rather than removing it.
+    "Swarm-Deferred-Upload": "false",
     Authorization: `Bearer ${token}`,
   };
 
@@ -152,12 +160,19 @@ export async function prepareEthernaFeedUpdate(opts: {
   }
   const { reference: feedManifestHash } = await manifestRes.json() as { reference: string };
 
-  // Fresh feed (indexRes 404) → write at index 0; existing feed → use next index.
-  let nextIndex = 0n;
+  // The lookup is where to START, then forward to the first free index
+  // (`feed-index.ts`, #186). Only a 404 starts at 0: any other answer used to
+  // mean 0 as well, and a write at a taken 0 keeps the old pointer, silently.
+  let start = 0n;
   if (indexRes.ok) {
     const h = indexRes.headers.get("swarm-feed-index-next");
-    if (h) nextIndex = new FeedIndex(h).toBigInt();
+    if (h) start = new FeedIndex(h).toBigInt();
+  } else if (indexRes.status !== 404) {
+    throw new Error(`Etherna feed lookup ${indexRes.status} for ${topicHex.slice(0, 16)}`);
   }
+  // Dynamic: soc-read imports this module.
+  const { feedSources, firstFreeIndex } = await import("../swarm/feed-index.js");
+  const nextIndex = await firstFreeIndex(ownerHex, topic, start, feedSources("etherna"));
 
   // 3. Download root chunk (span+data of the content CAC) — POSTed as SOC body.
   const chunkRes = await fetch(`${ETHERNA_GW}/chunks/${contentHash}`, {
