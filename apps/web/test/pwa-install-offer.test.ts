@@ -82,9 +82,11 @@ test("never inside a social app's built-in browser - the open-in-browser notice 
   assert.equal(decideInstallOffer(inputs({ hasPrompt: true, inAppBrowser: true })), null);
 });
 
-test("only on the home screens, never during sign-in, signing or checkout", () => {
+test("only on the landing page and the home screens, never during sign-in, signing or checkout", () => {
+  for (const route of ["splitter", "home", "discover", "member-home"]) assert.ok(INSTALL_ROUTES.has(route), route);
+  assert.equal(decideInstallOffer(inputs({ userAgent: IPHONE_SAFARI, route: "splitter" })), "ios", "the landing page at / is where most people arrive");
   for (const route of INSTALL_ROUTES) assert.equal(decideInstallOffer(inputs({ hasPrompt: true, route })), "prompt", route);
-  for (const route of ["event", "event-purchased", "signup", "profile", "protect", "passkeys", "link", "recover", "splitter"]) {
+  for (const route of ["event", "event-purchased", "signup", "profile", "protect", "passkeys", "link", "recover", "legal", "about", "invite"]) {
     assert.equal(decideInstallOffer(inputs({ hasPrompt: true, route })), null, route);
   }
   assert.equal(decideInstallOffer(inputs({ hasPrompt: true, busy: true })), null);
@@ -128,11 +130,18 @@ test("the memory survives storage that is missing, throws or holds junk", () => 
 test("the prompt is captured at boot; the banner itself stays out of the first load", () => {
   const mainTs = readFileSync(new URL("../src/main.ts", import.meta.url), "utf-8");
   const capture = readFileSync(new URL("../src/lib/pwa/install-capture.ts", import.meta.url), "utf-8");
-  const attendeeApp = readFileSync(new URL("../src/AttendeeApp.svelte", import.meta.url), "utf-8");
+  const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf-8");
+  const slot = read("../src/lib/pwa/InstallSlot.svelte");
   assert.match(mainTs, /import '\.\/lib\/pwa\/install-capture'/, "beforeinstallprompt fires once, early: it must be heard at boot");
   assert.ok(!/^\s*import\s/m.test(capture), "install-capture.ts imports nothing, so it adds nothing to boot");
-  assert.ok(!/import\s+InstallBanner\s+from/.test(attendeeApp), "the banner component is loaded lazily, never statically");
-  assert.match(attendeeApp, /import\("\.\/lib\/pwa\/InstallBanner\.svelte"\)/);
+  // Every placement goes through the one slot, which fetches the banner lazily and only where an install is possible.
+  assert.match(slot, /\{#if installable && INSTALL_ROUTES\.has\(router\.route\)\}\s*\{#await import\("\.\/InstallBanner\.svelte"\)/);
+  for (const host of ["../src/AttendeeApp.svelte", "../src/lib/landing/Splitter.svelte", "../src/lib/pwa/InstallSlot.svelte"]) {
+    const src = read(host);
+    assert.ok(!/import\s+InstallBanner\s+from/.test(src), `${host}: the banner component is loaded lazily, never statically`);
+  }
+  assert.match(read("../src/AttendeeApp.svelte"), /<InstallSlot \/>/);
+  assert.match(read("../src/lib/landing/Splitter.svelte"), /<InstallSlot \/>/, "the landing page at / offers the install too");
 });
 
 test("the boot capture holds the prompt once, hides the browser's own bar, and knows the installed app", async () => {
