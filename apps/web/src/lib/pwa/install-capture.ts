@@ -48,6 +48,27 @@ export function onInstallStateChange(fn: () => void): () => void {
   return () => listeners.delete(fn);
 }
 
+/** iPhone/iPad (iPadOS reports a desktop Mac; `touchMac` says it has a touch screen). */
+export function isIosUserAgent(ua: string, touchMac: boolean): boolean {
+  return /iP(?:hone|ad|od)/.test(ua) || (/Macintosh/.test(ua) && touchMac);
+}
+
+/** Firefox on Android: installable from its menu, but no install API. */
+export function isFirefoxAndroidUserAgent(ua: string): boolean {
+  return /Android/i.test(ua) && /Firefox\//.test(ua);
+}
+
+/**
+ * Cheap, chunk-free pre-check: could this browser install at all right now? The
+ * banner chunk is fetched only when it says yes, so desktop Firefox/Safari, and
+ * Chromium before its prompt arrives, never download it.
+ */
+export function installPathExists(): boolean {
+  if (typeof navigator === "undefined" || isStandalone()) return false;
+  const ua = navigator.userAgent;
+  return deferred !== null || isIosUserAgent(ua, navigator.maxTouchPoints > 1) || isFirefoxAndroidUserAgent(ua);
+}
+
 /** Running as the installed app: Chromium/Firefox display mode, or iOS home-screen Safari. */
 export function isStandalone(): boolean {
   if (typeof window === "undefined") return false;

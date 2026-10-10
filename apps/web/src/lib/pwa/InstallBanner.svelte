@@ -73,8 +73,10 @@
   }
 
   async function install(): Promise<void> {
-    const p = consumeInstallPrompt();
-    if (!p) return;
+    // Read, not consumed, until the person has answered: consuming first would
+    // drop `hasPrompt` and unmount the banner before the dialog is even up.
+    const p = deferredInstallPrompt();
+    if (!p || working) return;
     working = true;
     try {
       await p.prompt();
@@ -84,6 +86,7 @@
     } catch {
       // The prompt could not be shown; nothing to retry until the browser offers again.
     } finally {
+      consumeInstallPrompt();
       working = false;
     }
   }

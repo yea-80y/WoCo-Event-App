@@ -11,6 +11,8 @@
  * notice comes first there, and an install from a web view is not possible anyway.
  */
 
+import { isFirefoxAndroidUserAgent, isIosUserAgent } from "./install-capture.js";
+
 export type InstallOffer = "prompt" | "ios" | "firefox-android";
 
 /** Routes the offer may appear on: the home screens. Never sign-in, an event page or checkout. */
@@ -45,18 +47,14 @@ export interface InstallInputs {
   now: number;
 }
 
-function isIos(ua: string, touchMac: boolean): boolean {
-  return /iP(?:hone|ad|od)/.test(ua) || (/Macintosh/.test(ua) && touchMac);
-}
-
 export function decideInstallOffer(i: InstallInputs): InstallOffer | null {
   if (i.standalone || i.memory.installed) return null;
   if (i.inAppBrowser) return null;
   if (i.busy || !INSTALL_ROUTES.has(i.route)) return null;
   if (i.memory.dismissedAt !== undefined && i.now - i.memory.dismissedAt < DISMISS_GAP_MS) return null;
   if (i.hasPrompt) return "prompt";
-  if (isIos(i.userAgent, i.touchMac)) return "ios";
-  if (/Android/i.test(i.userAgent) && /Firefox\//.test(i.userAgent)) return "firefox-android";
+  if (isIosUserAgent(i.userAgent, i.touchMac)) return "ios";
+  if (isFirefoxAndroidUserAgent(i.userAgent)) return "firefox-android";
   return null;
 }
 

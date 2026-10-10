@@ -6,7 +6,7 @@
   import Home from "./lib/attendee/home/Home.svelte";
   import ComingSoon from "./lib/attendee/coming-soon/ComingSoon.svelte";
   import { getExternalEventApi } from "./lib/api/event-api-registry.js";
-  import { isStandalone } from "./lib/pwa/install-capture.js";
+  import { installPathExists, onInstallStateChange } from "./lib/pwa/install-capture.js";
   import { INSTALL_ROUTES } from "./lib/pwa/install-offer.js";
 
   // Route-level code splitting: only Home ships in the boot chunk (Swarm
@@ -29,6 +29,11 @@
   const loadMemberHome = () => import("./lib/attendee/home/MemberHome.svelte");
   const loadContacts = () => import("./lib/attendee/contacts/ContactsScreen.svelte");
 
+  // The install banner's chunk is fetched only where an install is possible (a
+  // captured Chromium prompt, iOS, Firefox Android) - re-checked when the prompt arrives.
+  let installable = $state(installPathExists());
+  onMount(() => onInstallStateChange(() => (installable = installPathExists())));
+
   // Warm the chunks behind the bottom-nav destinations once the landing
   // screen is idle, so first navigation doesn't pay a cold Swarm fetch.
   onMount(() => {
@@ -45,7 +50,7 @@
 </script>
 
 <AttendeeShell>
-  {#if INSTALL_ROUTES.has(router.route) && !isStandalone()}
+  {#if installable && INSTALL_ROUTES.has(router.route)}
     {#await import("./lib/pwa/InstallBanner.svelte") then { default: InstallBanner }}
       <InstallBanner />
     {/await}

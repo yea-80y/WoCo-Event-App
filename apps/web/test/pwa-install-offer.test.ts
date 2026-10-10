@@ -29,6 +29,8 @@ const IPAD_DESKTOP_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15";
 const GOOGLE_APP_IOS =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) GSA/359.0.812345678 Mobile/15E148 Safari/604.1";
+const IOS_CHROME =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/128.0.6613.98 Mobile/15E148 Safari/604.1";
 const FIREFOX_ANDROID = "Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/131.0";
 const FIREFOX_DESKTOP = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0";
 const DESKTOP_CHROME =
@@ -57,6 +59,7 @@ test("each browser gets its own offer", () => {
   assert.equal(decideInstallOffer(inputs({ userAgent: DESKTOP_CHROME, hasPrompt: true })), "prompt");
   assert.equal(decideInstallOffer(inputs({ userAgent: IPHONE_SAFARI })), "ios");
   assert.equal(decideInstallOffer(inputs({ userAgent: IPAD_DESKTOP_UA, touchMac: true })), "ios");
+  assert.equal(decideInstallOffer(inputs({ userAgent: IOS_CHROME })), "ios", "iOS Chrome adds to the home screen from its share sheet too");
   assert.equal(decideInstallOffer(inputs({ userAgent: FIREFOX_ANDROID })), "firefox-android");
 });
 
@@ -130,4 +133,54 @@ test("the prompt is captured at boot; the banner itself stays out of the first l
   assert.ok(!/^\s*import\s/m.test(capture), "install-capture.ts imports nothing, so it adds nothing to boot");
   assert.ok(!/import\s+InstallBanner\s+from/.test(attendeeApp), "the banner component is loaded lazily, never statically");
   assert.match(attendeeApp, /import\("\.\/lib\/pwa\/InstallBanner\.svelte"\)/);
+});
+
+test("the boot capture holds the prompt once, hides the browser's own bar, and knows the installed app", async () => {
+  const handlers = new Map<string, (e: unknown) => void>();
+  let standalone = false;
+  const g = globalThis as Record<string, unknown>;
+  const saved = { window: g.window, navigator: Object.getOwnPropertyDescriptor(globalThis, "navigator") };
+  g.window = {
+    addEventListener: (type: string, fn: (e: unknown) => void) => handlers.set(type, fn),
+    matchMedia: (q: string) => ({ matches: standalone && q === "(display-mode: standalone)" }),
+  };
+  Object.defineProperty(globalThis, "navigator", {
+    value: { userAgent: DESKTOP_CHROME, maxTouchPoints: 0 },
+    configurable: true,
+  });
+  try {
+    // A fresh instance, so its top level runs with the stubbed window above.
+    const cap = await import(`../src/lib/pwa/install-capture.ts?boot=${Date.now()}`);
+    assert.ok(handlers.has("beforeinstallprompt") && handlers.has("appinstalled"));
+    assert.equal(cap.installPathExists(), false, "desktop Chrome before its prompt: the banner chunk is not fetched");
+
+    let changes = 0;
+    cap.onInstallStateChange(() => changes++);
+    let prevented = false;
+    const event = { preventDefault: () => (prevented = true), prompt: async () => {}, userChoice: Promise.resolve({ outcome: "accepted" }) };
+    handlers.get("beforeinstallprompt")!(event);
+    assert.ok(prevented, "the browser's own install bar would otherwise show anywhere, checkout included");
+    assert.equal(cap.deferredInstallPrompt(), event);
+    assert.equal(cap.installPathExists(), true);
+    assert.equal(changes, 1);
+
+    assert.equal(cap.consumeInstallPrompt(), event);
+    assert.equal(cap.consumeInstallPrompt(), null, "a prompt can be used once");
+    assert.equal(cap.installPathExists(), false);
+
+    handlers.get("appinstalled")!({});
+    assert.equal(cap.installedThisSession(), true);
+
+    standalone = true;
+    assert.equal(cap.isStandalone(), true);
+    handlers.get("beforeinstallprompt")!(event);
+    assert.equal(cap.installPathExists(), false, "never offered inside the installed app");
+
+    standalone = false;
+    Object.defineProperty(globalThis, "navigator", { value: { userAgent: IPHONE_SAFARI, standalone: true, maxTouchPoints: 5 }, configurable: true });
+    assert.equal(cap.isStandalone(), true, "iOS home-screen Safari reports navigator.standalone");
+  } finally {
+    g.window = saved.window;
+    if (saved.navigator) Object.defineProperty(globalThis, "navigator", saved.navigator);
+  }
 });
