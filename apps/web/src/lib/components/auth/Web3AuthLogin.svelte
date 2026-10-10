@@ -23,6 +23,9 @@
   let error = $state<string | null>(null);
   /** A failure with no words of its own carries a short code to screenshot (signin-failure.ts). */
   let errorCode = $state<string | null>(null);
+  /** Web3Auth's own reason, redacted on this device; shown only when tapped for. */
+  let errorDetail = $state<string | null>(null);
+  let showDetail = $state(false);
   /** The attempt under way, so Try again can wait for the cancelled one to settle. */
   let attempt: Promise<unknown> | null = null;
 
@@ -51,6 +54,8 @@
   async function login() {
     error = null;
     errorCode = null;
+    errorDetail = null;
+    showDetail = false;
     onstart?.();
     const run = auth.loginWeb3Auth();
     attempt = run;
@@ -70,7 +75,10 @@
         error = null;
       } else if (!isOrphanedCredentialError(e)) {
         error = e instanceof Error ? e.message.slice(0, 160) : SIGN_IN_FAILED_MESSAGE;
-        if (isSignInFailedError(e)) errorCode = e.code;
+        if (isSignInFailedError(e)) {
+          errorCode = e.code;
+          errorDetail = e.detail;
+        }
       }
     } finally {
       onsettle?.();
@@ -110,6 +118,12 @@
       <p class="error">{error}</p>
       {#if errorCode}
         <p class="error-code">Code: <code>{errorCode}</code></p>
+        {#if errorDetail && !showDetail}
+          <button type="button" class="detail-btn" onclick={() => (showDetail = true)}>Show details</button>
+        {:else if errorDetail}
+          <p class="error-code">Details: <code>{errorDetail}</code></p>
+          <p class="detail-note">Links, email addresses and long codes are hidden. Check it before you share it.</p>
+        {/if}
       {/if}
       {#if escape}
         <a class="open-btn" href={escape.href}>{escapeLabel}</a>
@@ -214,6 +228,24 @@
   .error-code code {
     user-select: all;
     -webkit-user-select: all;
+  }
+
+  .detail-btn {
+    align-self: center;
+    padding: 0.25rem 0.5rem;
+    border: 0;
+    background: none;
+    color: var(--accent-text);
+    font: inherit;
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+
+  .detail-note {
+    margin: 0;
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    text-align: center;
   }
 
   .spinner {

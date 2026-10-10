@@ -42,6 +42,8 @@ export type SignInStep =
 export class SignInFailedError extends Error {
   /** Short, copyable, safe to screenshot: see the header. */
   readonly code: string;
+  /** Web3Auth's own reason, redacted (`signInFailureDetail`): shown only when the person taps for it. */
+  readonly detail: string | null;
   /** The raw error, for the console only. NEVER render or report it: an SDK's
    *  message can carry the login hint, a viem error's the RPC URL. */
   readonly cause?: unknown;
@@ -49,6 +51,7 @@ export class SignInFailedError extends Error {
     super(SIGN_IN_FAILED_MESSAGE);
     this.name = SIGN_IN_FAILED_ERROR_NAME;
     this.code = code;
+    this.detail = signInFailureDetail(cause);
     this.cause = cause;
   }
 }
@@ -152,13 +155,20 @@ const WEB3AUTH_ERROR_NAMES = new Set([
   "InitializationError",
 ]);
 
-function web3AuthExtra(name: string, e: object): string | null {
+/** The raw text after a Web3Auth error's fixed prefix - never shown as it is:
+ *  the code describes it, the details redact it. */
+function web3AuthExtraText(name: string, e: object): string | null {
   if (!WEB3AUTH_ERROR_NAMES.has(name)) return null;
   const message = (e as { message?: unknown }).message;
   if (typeof message !== "string") return null;
   const cut = message.search(/[.,] /);
   if (cut < 0) return null;
   const extra = message.slice(cut + 2).trim();
+  return extra || null;
+}
+
+function web3AuthExtra(name: string, e: object): string | null {
+  const extra = web3AuthExtraText(name, e);
   return extra ? describeRejectionString(extra) : null;
 }
 
@@ -211,4 +221,48 @@ export function signInFailureCode(e: unknown, ctx: SignInFailureContext): string
   ];
   const seconds = Math.max(0, Math.round(ctx.elapsedMs / 1000));
   return ["W3A", mark?.step ?? ctx.step, describeSignInError(e), `t${seconds}`, ...flags].join("-");
+}
+
+/** The longest reason the details show; past it, cut with an ellipsis. */
+export const SIGN_IN_DETAIL_MAX = 200;
+
+/**
+ * A reason's text with anything that could identify the person or a secret
+ * replaced, on the device, before it is ever shown: links, email addresses, long
+ * runs that could be a token, key, address or session id, hex runs and long
+ * numbers. What is left is the sentence the remote code wrote.
+ */
+export function redactReason(text: string): string {
+  const out = text
+    .replace(/\b(?:https?|wss?):\/\/\S+|\bwww\.\S+/gi, "[link]")
+    .replace(/[^\s@<>()"',;:]+@[^\s@<>()"',;:]+/g, "[email]")
+    .replace(/\b0x[0-9a-f]+\b/gi, "[hex]")
+    .replace(/[A-Za-z0-9_\-+/=.]{16,}/g, "[id]")
+    .replace(/\b[0-9a-f]{8,}\b/gi, "[hex]")
+    .replace(/\d{5,}/g, "[number]")
+    .replace(/\s+/g, " ")
+    .trim();
+  return out.length > SIGN_IN_DETAIL_MAX ? `${out.slice(0, SIGN_IN_DETAIL_MAX - 1)}…` : out;
+}
+
+/**
+ * The details a person can choose to see under the code (an iPhone, 2026-10-10:
+ * the code said only that Web3Auth's sign-in frame gave a 111-character reason,
+ * and the reason itself is what decides the fix). ONLY the text Web3Auth's own
+ * code produced - the extra part of its error classes, or a rejection string -
+ * redacted; any other error's message is never offered. Null when there is none.
+ */
+export function signInFailureDetail(e: unknown): string | null {
+  let at: unknown = e;
+  for (let depth = 0; depth < 3; depth++) {
+    if (typeof at === "string") return at.trim() ? redactReason(at) : null;
+    if (typeof at !== "object" || at === null) return null;
+    const name = (at as { name?: unknown }).name;
+    const extra = typeof name === "string" ? web3AuthExtraText(name, at) : null;
+    // A fixed SDK phrase ("Failed to login with auth") is a wrapper: the reason is beneath it.
+    if (extra && !KNOWN_REJECTIONS[extra.toLowerCase()]) return redactReason(extra);
+    if (!("cause" in at)) return null;
+    at = (at as { cause?: unknown }).cause;
+  }
+  return null;
 }
