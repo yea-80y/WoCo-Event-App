@@ -9,7 +9,8 @@
  *    console. The cause cannot be read from here, so the line now carries a short
  *    code: where it failed and what kind of error, never what the error said.
  *
- * MUTATIONS (each went red, then restored): an unknown rejection string copied
+ * MUTATIONS (each went red, then restored): the extra part read for any error
+ * name, or copied instead of described (the pop-up-path tests); an unknown rejection string copied
  * instead of reduced to its length and topic words (the leak test); `describeSignInError` reading `.message` (6 tests); the store's
  * catch back to `return false` (the wiring test); the PasskeyLogin iOS branch
  * disabled (the order test); no iPad touch check; the invite branch dropped; a
@@ -54,7 +55,29 @@ test("the auth iframe's failure, as Web3Auth wraps it, reads as step + SDK error
   const sdk = walletLoginError(5111, "Failed to connect with wallet. Failed to login with auth", "Login failed, reason: unknown");
   const marked = markSignInStep(sdk, "connect", ["st.ready"]);
   const code = signInFailureCode(marked, { step: "sdk", elapsedMs: 41_400 });
-  assert.equal(code, "W3A-connect-WalletLoginError.5111~login-failed-unknown-t41-st.ready");
+  assert.equal(code, "W3A-connect-WalletLoginError.5111(auth-login-failed)~login-failed-unknown-t41-st.ready");
+});
+
+test("the pop-up path (her iPhone, 2026-10-10): the iframe's reason survives only in the SDK message's extra part", () => {
+  // authConnector.connectWithSocialLogin: connectionError(error.message ?? error), NO cause.
+  // Her code before this read: W3A-connect-WalletLoginError.5111-t60-st.errored
+  const sdk = walletLoginError(5111, "Failed to connect with wallet. Login failed, reason: unknown");
+  assert.equal(
+    signInFailureCode(markSignInStep(sdk, "connect", ["st.errored"]), { step: "sdk", elapsedMs: 60_000 }),
+    "W3A-connect-WalletLoginError.5111(login-failed-unknown)-t60-st.errored",
+  );
+  const reason = `Third party cookies are blocked for ${EMAIL}`;
+  const withEmail = walletLoginError(5111, `Failed to connect with wallet. ${reason}`);
+  assert.equal(describeSignInError(withEmail), `WalletLoginError.5111(str${reason.length}:cookie+blocked)`);
+  assert.ok(!describeSignInError(withEmail).includes("example"));
+  const nothingExtra = walletLoginError(5113, "Wallet is not connected. ");
+  assert.equal(describeSignInError(nothingExtra), "WalletLoginError.5113");
+});
+
+test("only Web3Auth's own error classes have their extra part read", () => {
+  const viemish = new Error(`HTTP request failed. URL: https://rpc.example/v3/secret, ${EMAIL}`);
+  Object.defineProperty(viemish, "name", { value: "HttpRequestError" });
+  assert.equal(describeSignInError(viemish), "HttpRequestError");
 });
 
 test("never a message: an Error's text is not read at any depth", () => {

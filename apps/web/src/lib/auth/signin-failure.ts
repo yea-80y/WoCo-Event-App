@@ -11,7 +11,9 @@
  * few page flags. A rejection that is not an Error (Web3Auth's auth iframe rejects
  * with whatever string its remote code sent, `AuthProvider` LOGIN_FAILED) is never
  * copied: a string the SDK is known to send maps to a fixed word, and any other
- * becomes its length plus which of a fixed list of topic words it mentions.
+ * becomes its length plus which of a fixed list of topic words it mentions. The
+ * same rule reads the "extra" text of Web3Auth's own error classes, where the
+ * pop-up path leaves the iframe's reason (`web3AuthExtra`).
  *
  * Dependency-free and matched by name, never `instanceof`: the button reads it
  * without loading the sign-in chunk (as web3auth-signin-error.ts).
@@ -84,6 +86,7 @@ const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
 const KNOWN_REJECTIONS: Readonly<Record<string, string>> = {
   "login failed, reason: unknown": "login-failed-unknown", // AuthProvider LOGIN_FAILED, no reason given
   "failed to login with social": "social-login-failed",
+  "failed to login with auth": "auth-login-failed",
   "popup window is blocked": "popup-blocked",
   "user closed popup": "popup-closed",
   "iframe not initialized": "iframe-not-initialized",
@@ -131,17 +134,46 @@ function numberField(e: object, key: "code" | "status"): string | null {
   return typeof v === "number" && Number.isInteger(v) && Math.abs(v) < 1e6 ? String(v) : null;
 }
 
-/** One error, as `Name.code` - or, for a non-Error value, a safe token or its type and length. */
+/**
+ * Web3Auth's own error classes. Their message is the SDK's fixed text for the code,
+ * then ". " (", " for LoginError), then an "extra" part - and on the pop-up path
+ * that extra part is the ONLY place the auth iframe's reason survives:
+ * `authConnector.connectWithSocialLogin` rejects with
+ * `connectionError(error.message ?? error)` and no cause (an iPhone, 2026-10-10:
+ * `WalletLoginError.5111` and nothing else). So for these alone the part after
+ * the fixed text is described - through `describeRejectionString`, which never
+ * copies it.
+ */
+const WEB3AUTH_ERROR_NAMES = new Set([
+  "WalletLoginError",
+  "WalletInitializationError",
+  "WalletOperationsError",
+  "LoginError",
+  "InitializationError",
+]);
+
+function web3AuthExtra(name: string, e: object): string | null {
+  if (!WEB3AUTH_ERROR_NAMES.has(name)) return null;
+  const message = (e as { message?: unknown }).message;
+  if (typeof message !== "string") return null;
+  const cut = message.search(/[.,] /);
+  if (cut < 0) return null;
+  const extra = message.slice(cut + 2).trim();
+  return extra ? describeRejectionString(extra) : null;
+}
+
+/** One error, as `Name.code[(extra)]` - or, for a non-Error value, a fixed word or its length and topics. */
 function describeOne(e: unknown): string {
   if (typeof e === "string") return describeRejectionString(e);
   if (typeof e !== "object" || e === null) return typeof e;
   const name = (e as { name?: unknown }).name;
   const head = typeof name === "string" && IDENTIFIER.test(name) ? name : "obj";
   const code = numberField(e, "code") ?? numberField(e, "status");
-  return code ? `${head}.${code}` : head;
+  const extra = web3AuthExtra(head, e);
+  return `${head}${code ? `.${code}` : ""}${extra ? `(${extra})` : ""}`;
 }
 
-/** The error and up to two causes beneath it, `~`-separated. Never a message. */
+/** The error and up to two causes beneath it, `~`-separated. Never a message copied (see `web3AuthExtra`). */
 export function describeSignInError(e: unknown): string {
   const parts: string[] = [];
   let at: unknown = e;
