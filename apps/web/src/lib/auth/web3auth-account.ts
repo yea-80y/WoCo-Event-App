@@ -191,6 +191,19 @@ const PREVIOUS_SESSION_NOT_CLEARED_MESSAGE =
   "A previous sign-in on this device couldn't be cleared - check your connection and try again.";
 
 /**
+ * The person closed OUR sign-in sheet while a sign-in was still waiting on the
+ * SDK's pop-up (an iPhone, 2026-10-09: the pop-up's result never came back, and
+ * the SDK's "connecting" loader stayed on screen). That loader has no way out of
+ * its own while connecting - its close acts only once connected (modal `Widget`,
+ * `onCloseLoader`) - so without this the spinner outlives the sheet behind it.
+ * Closing the SDK's modal makes connect() settle: rejected as a cancel while
+ * nothing is connected, resolved as a sign-in if the pop-up had just finished.
+ */
+export function cancelWeb3AuthSignIn(): void {
+  if (_instance) _closeModal(_instance);
+}
+
+/**
  * Close the SDK's modal once our sign-in stops listening to it. It does not
  * close itself after a sign-in (it sits on a success screen over ours), and it
  * STAYS OPEN after an error such as a closed or blocked popup - by then connect()

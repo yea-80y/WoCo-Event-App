@@ -27,9 +27,8 @@ const memory = new Map<string, string>();
   removeItem: (k) => void memory.delete(k),
 };
 
-const { loginWithWeb3Auth, restoreWeb3AuthSession, logoutWeb3Auth, setWeb3AuthFactoryForTests } = await import(
-  "../src/lib/auth/web3auth-account.js"
-);
+const { loginWithWeb3Auth, restoreWeb3AuthSession, logoutWeb3Auth, cancelWeb3AuthSignIn, setWeb3AuthFactoryForTests } =
+  await import("../src/lib/auth/web3auth-account.js");
 const { SURVIVOR_STILL_LOADING_MESSAGE, SURVIVOR_INTERFERED_MESSAGE } = await import(
   "../src/lib/auth/web3auth-survivor.js"
 );
@@ -61,7 +60,18 @@ class FakeSdk extends EventEmitter {
   connectCalls = 0;
   logouts: Array<{ cleanup?: boolean } | undefined> = [];
   modalClosed = 0;
-  loginModal = { closeModal: () => void this.modalClosed++ };
+  /** A connect() waiting on its pop-up; the modal's close settles it as a cancel
+   *  (modalManager.connect's MODAL_VISIBILITY handler) unless it had connected. */
+  pendingConnect: { reject: (e: Error) => void } | null = null;
+  loginModal = {
+    closeModal: () => {
+      this.modalClosed++;
+      if (this.pendingConnect && !LIVE_STATUSES.includes(this.status)) {
+        this.pendingConnect.reject(new Error("User closed the modal"));
+        this.pendingConnect = null;
+      }
+    },
+  };
 
   constructor(
     private world: World,
@@ -91,6 +101,12 @@ class FakeSdk extends EventEmitter {
   async connect() {
     this.connectCalls++;
     if (this.spent) throw new Error("connect() on a spent instance - the real SDK never settles here (#803)");
+    if (this.world.popupNeverAnswers) {
+      // The pop-up's result never reaches this page: connect() waits forever.
+      await new Promise<never>((_, reject) => {
+        this.pendingConnect = { reject };
+      });
+    }
     const fail = this.world.connectFails;
     if (fail) {
       if (fail === "survivor-mid-modal") this.hydrate(KEY_A);
@@ -135,6 +151,8 @@ class World {
   logoutGate: Promise<void> | null = null;
   /** logout() resolves having ended nothing - the session stays named and stored. */
   logoutNoop = false;
+  /** The sign-in pop-up completes (or not) somewhere this page never hears about. */
+  popupNeverAnswers = false;
 
   install(): void {
     setWeb3AuthFactoryForTests(async () => {
@@ -182,6 +200,32 @@ for (const how of ["popup-closed", "modal-closed"] as const) {
     assert.equal(world.built.length, 1, "a cancel leaves a usable instance");
   });
 }
+
+test("a pop-up whose result never comes back can be cancelled from our sheet: the SDK's modal is closed and the wait settles as a cancel", async () => {
+  world.popupNeverAnswers = true;
+  const attempt = loginWithWeb3Auth();
+  const outcome = assert.rejects(attempt, (e: unknown) => {
+    assert.ok(isWeb3AuthSignInError(e) && e.cancelled, "a quiet cancel, nothing to show");
+    return true;
+  });
+  await settle();
+  const sdk = world.built[0];
+  assert.equal(sdk.connectCalls, 1);
+  assert.ok(sdk.pendingConnect, "still waiting on the pop-up");
+  cancelWeb3AuthSignIn();
+  await outcome;
+  // Once from the cancel (which is what settled it), once from the settled sign-in.
+  assert.equal(sdk.modalClosed, 2);
+  world.popupNeverAnswers = false;
+  const r = await loginWithWeb3Auth();
+  assert.equal(r.address, addressOf(KEY_B), "the instance is still usable afterwards");
+  assert.equal(world.built.length, 1);
+});
+
+test("cancelling with no sign-in under way does nothing", async () => {
+  cancelWeb3AuthSignIn();
+  assert.equal(world.built.length, 0, "never builds the SDK");
+});
 
 test("any other sign-in failure is passed on as itself, modal closed", async () => {
   world.connectFails = "other";

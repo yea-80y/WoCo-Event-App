@@ -131,6 +131,9 @@ let _passkeyPrfSecret: string | null = null;
 let _web3authPrivateKey: string | null = null;
 /** The background key retry after a slow reload is still running (#803). */
 let _web3authKeyRetrying = false;
+/** Set while a Web3Auth sign-in waits on the SDK's pop-up: closes the SDK's modal
+ *  so that wait settles (its own loader cannot be closed while connecting). */
+let _cancelLogin: (() => void) | null = null;
 // A passkey account's UNLOCKED seed (#746). At rest it is locked under the passkey;
 // an unlock opens it until `expiresAt` (`SEED_UNLOCK_POLICY`; null = until the tab
 // closes). Stamped with the account it belongs to and read only through
@@ -2200,8 +2203,10 @@ async function loginWeb3Auth(): Promise<boolean> {
   _loginStage = "waiting";
 
   try {
-    const { loginWithWeb3Auth } = await import("./web3auth-account.js");
+    const { loginWithWeb3Auth, cancelWeb3AuthSignIn } = await import("./web3auth-account.js");
+    _cancelLogin = cancelWeb3AuthSignIn;
     const { address, privateKey } = await loginWithWeb3Auth();
+    _cancelLogin = null;
     _loginStage = "finalizing";
 
     // Upgraded to a passkey on this device (#746): the email key opens nothing now.
@@ -2334,9 +2339,19 @@ async function loginWeb3Auth(): Promise<boolean> {
     console.error("[auth] web3auth login failed:", e);
     return false;
   } finally {
+    _cancelLogin = null;
     _busy = false;
     _loginStage = null;
   }
+}
+
+/**
+ * The sign-in sheet was closed mid-attempt. Only a Web3Auth sign-in has anything
+ * to cancel (its pop-up wait); a passkey ceremony is the browser's own sheet and
+ * settles by itself. Never clears `busy`: the attempt clears it when it settles.
+ */
+function cancelLogin(): void {
+  _cancelLogin?.();
 }
 
 /**
@@ -3160,6 +3175,7 @@ async function loginPasskeyResult(
   ok: boolean;
   error?: Error;
   noAssertion?: boolean;
+  noSheet?: boolean;
   orphaned?: boolean;
   removed?: boolean;
   otherDevice?: boolean;
@@ -3477,6 +3493,8 @@ async function loginPasskeyResult(
       ok: false,
       error: err,
       noAssertion: err.name === "PasskeyAssertionUnavailableError",
+      // The browser refused before any sheet: nothing was chosen, so no create offer.
+      noSheet: (err as { noSheet?: boolean }).noSheet === true,
       // The modal's one-shot notice already explains this refusal — the flag
       // lets the button suppress a duplicate error line, not restyle it.
       orphaned: isOrphanedCredentialError(err),
@@ -5280,6 +5298,7 @@ export const auth = {
   loginPasskey,
   loginPasskeyResult,
   loginWeb3Auth,
+  cancelLogin,
   loginCoinbase,
   prefetchCoinbaseSdk,
   prefetchPasskeySdk,
