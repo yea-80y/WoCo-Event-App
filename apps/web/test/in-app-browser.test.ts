@@ -35,6 +35,9 @@ const UAS: Array<[string, string, string, string]> = [
   ["LINE iOS", `${IOS} Safari Line/14.11.0`, "line", "ios"],
   ["WeChat Android", `${ANDROID_WV} MicroMessenger/8.0.49.2600(0x28003133) WeChat/arm64`, "wechat", "android"],
   ["X iOS web view", `${IOS} Twitter for iPhone/10.50`, "x", "ios"],
+  // The Google app's own browser (a search result tapped in it; an iPhone, 2026-10-09).
+  // It copies Safari's trailing tokens, so only the GSA token tells it apart.
+  ["Google app iOS", `${IOS} GSA/359.0.812345678 Mobile/15E148 Safari/604.1`, "google", "ios"],
   ["any other Android app's web view", ANDROID_WV, "webview", "android"],
 ];
 
@@ -117,6 +120,12 @@ test("iOS: Safari with the whole URL, fragment included", () => {
     kind: "safari",
     href: "x-safari-https://woco.eth.limo/?ref=fb#/event/abc123",
   });
+});
+
+test("the Google app on iOS gets the Safari hand-off and a name a person recognises", async () => {
+  assert.equal(escapeLink({ app: "google", os: "ios" }, PAGE)?.kind, "safari");
+  const { IN_APP_NAMES } = await import("../src/lib/browser/in-app-escape.js");
+  assert.equal(IN_APP_NAMES.google, "The Google app");
 });
 
 test("Instagram on iOS uses its own hand-off to the default browser", () => {

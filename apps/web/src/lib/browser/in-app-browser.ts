@@ -29,6 +29,8 @@ export type InAppApp =
   | "line"
   | "wechat"
   | "x"
+  /** The Google app's own tabbed browser (user agent token `GSA/`; an iPhone, 2026-10-09). */
+  | "google"
   | "webview";
 
 export type InAppBrowser = { app: InAppApp; os: "android" | "ios" | "other" };
@@ -45,6 +47,10 @@ const MARKERS: ReadonlyArray<[InAppApp, RegExp]> = [
   ["line", /\bLine\/\d/],
   ["wechat", /MicroMessenger/],
   ["x", /\bTwitter\b/],
+  // A search result tapped in the Google app opens in its built-in browser, not
+  // Safari. Passkeys there were refused outright and the Google sign-in pop-up never
+  // handed its result back to the page that opened it.
+  ["google", /\bGSA\//],
 ];
 
 export function detectInAppBrowser(

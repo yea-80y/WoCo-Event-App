@@ -147,6 +147,9 @@
   }
 
   function close() {
+    // Closing over an attempt still waiting on the Web3Auth pop-up must also close
+    // the SDK's own loader, which has no close of its own while connecting.
+    if (authing) auth.cancelLogin();
     open = false;
     authing = null;
     view = "main";

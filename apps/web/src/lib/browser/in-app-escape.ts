@@ -18,6 +18,7 @@ export const IN_APP_NAMES: Record<InAppApp, string | null> = {
   line: "LINE",
   wechat: "WeChat",
   x: "X",
+  google: "The Google app",
   webview: null,
 };
 

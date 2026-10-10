@@ -64,6 +64,10 @@
       } else if (res.otherDevice && onlink) {
         otherDevice = true;
         error = res.error?.message ?? null;
+      } else if (res.noSheet) {
+        // No prompt opened, so nothing was cancelled and nothing was found: the
+        // create offer would be a guess. The message says what to do instead.
+        error = res.error?.message ?? null;
       } else if (res.noAssertion && mode === "signin") {
         offerCreate = true;
         showHelp = true;
