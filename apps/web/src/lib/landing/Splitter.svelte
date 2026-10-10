@@ -229,9 +229,12 @@
   </section>
 
   <!-- ── Built differently — what the architecture buys an organiser ────
-       Three claims, each checked against the code: verify.ts (offline check
+       Three claims, each checked against the code: woco.edition.v1 (an open,
+       signed format, minted onchain - TICKETING.md), verify.ts (offline check
        against pre-downloaded slot owners), DATA_INVENTORY.md §4 (the server
-       seals and has no code path to open). Nothing here may say more. -->
+       seals and has no code path to open). The opt-in insight is NOT built and
+       is said as where this goes, never as a feature. Nothing here may say
+       more. A ticket is emailed, not "on their phone": no wallet holds it. -->
   <section class="built">
     <div class="built-inner">
       <div class="built-head">
@@ -244,16 +247,39 @@
       </div>
 
       <div class="built-grid">
+        <!-- Leads, full width: the claim incumbents cannot make. -->
+        <article class="built-item built-item--lead">
+          <span class="built-label mono">Open</span>
+          <h3>More than a QR code.</h3>
+          <div class="lead-body">
+          <p>
+            Most tickets are a barcode in an email - once it's scanned, it's
+            spent. A WoCo ticket is a signed record in an open format, recorded
+            onchain, so any app can read it and check it's real without asking
+            us.
+          </p>
+          <p>
+            That gives it a life after the door. The tickets someone holds
+            become a record of the events they go to - and with their say-so,
+            that's how you'll see who keeps coming back.
+          </p>
+          <p>
+            Other platforms keep that picture to themselves. Here it belongs to
+            the person it's about, and is shared only where they choose. We're
+            building the opt-in tools for this next.
+          </p>
+          </div>
+          <span class="built-spec mono">Open format · signed · onchain</span>
+        </article>
+
         <article class="built-item">
           <span class="built-label mono">Signed</span>
           <h3>Scans with no signal.</h3>
           <p>
-            Every ticket is signed when it's issued and recorded onchain. The
-            door phone checks that signature itself, against a list it
-            downloaded before doors - so a basement with no bars scans as fast
-            as anywhere.
+            The door phone checks each ticket's signature itself, against a list
+            it downloaded before doors - so a basement with no bars scans as
+            fast as anywhere.
           </p>
-          <p>Anyone can check a WoCo ticket is real, without asking us.</p>
           <span class="built-spec mono">Signed at issue · checked offline</span>
         </article>
 
@@ -267,18 +293,6 @@
           </p>
           <p>Your mailing list is stored the same way.</p>
           <span class="built-spec mono">X25519 + AES-256-GCM</span>
-        </article>
-
-        <article class="built-item">
-          <span class="built-label mono">Kept</span>
-          <h3>A ticket they keep.</h3>
-          <p>
-            The ticket doesn't die at the door. It stays on their phone as proof
-            they were there, and you can build on that: open the presale to
-            everyone who came last time, or put a fiver off the third visit.
-          </p>
-          <p>No email address needed. The ticket is the proof.</p>
-          <span class="built-spec mono">One ticket · one holder</span>
         </article>
       </div>
 
@@ -377,8 +391,8 @@
         <span class="mono-kicker">// THE WORLD COMPUTER</span>
         <h3>Events are where the World Computer starts.</h3>
         <p>
-          Every ticket here is a signed object, held by the person it was issued
-          to and recorded on open networks instead of in our database. That isn't
+          Every ticket here is a signed object in an open format, recorded on
+          open networks instead of in our database. That isn't
           a ticketing feature - it's a foundation. The same rails can carry any
           marketplace where a platform sits in the middle today, owning the
           buyers, the sellers and the data.
@@ -707,6 +721,9 @@
   .headline-tag {
     color: var(--accent);
     font-weight: 400;
+    /* Bungee's square capitals run heavier than the round ones "scene" had, so
+       the tag sits a step under the line to keep the balance (owner 2026-10-10). */
+    font-size: 0.85em;
     /* Bungee already runs heavy; let it carry the weight */
     letter-spacing: 0.01em;
     margin: 0 0.05em;
@@ -952,8 +969,15 @@
     grid-template-columns: 1fr;
     gap: 1rem;
   }
-  @media (min-width: 960px) {
-    .built-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  /* The lead card takes the full row; the two below share the next. */
+  @media (min-width: 880px) {
+    .built-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .built-item--lead { grid-column: 1 / -1; }
+    .lead-body {
+      columns: 2;
+      column-gap: 2.5rem;
+    }
+    .lead-body p { break-inside: avoid; }
   }
 
   .built-item {
@@ -987,6 +1011,8 @@
   }
   .built-item p + p { margin-top: 0.625rem; }
   .built-item p:last-of-type { margin-bottom: 1.25rem; }
+  .lead-body { margin-bottom: 1.25rem; }
+  .lead-body p:last-of-type { margin-bottom: 0; }
   /* Pinned to the bottom so the three spec lines sit on one baseline however
      long each paragraph runs. */
   .built-spec {

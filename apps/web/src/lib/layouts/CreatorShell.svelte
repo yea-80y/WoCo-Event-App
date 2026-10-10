@@ -81,18 +81,12 @@
       <WocoWordmark height={20} variant="default" />
     </button>
 
+    <!-- Both portals, signed in or not. No Sign in here: the dashboard leads
+         with its own, and it asks for an organiser's (passkey only). -->
     <div class="top-right">
-      {#if !auth.ready}
-        <span class="loading">Loading...</span>
-      {:else if auth.isConnected && auth.parent}
-        <PortalSwitch current="organiser" />
+      <PortalSwitch current="organiser" />
+      {#if auth.ready && auth.isConnected && auth.parent}
         <SessionStatus compact />
-      {:else}
-        <PortalSwitch current="organiser" />
-        <!-- An organiser sign-in: passkey only (isOrganiserSignIn). -->
-        <button class="sign-in-btn" onclick={() => loginRequest.request({ context: "creator" })}>
-          Sign in
-        </button>
       {/if}
     </div>
   </header>
@@ -174,25 +168,12 @@
     flex-shrink: 1;
   }
 
-  .sign-in-btn {
-    padding: 0.4375rem 0.875rem;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text);
-    transition: all var(--transition);
-    white-space: nowrap;
-  }
-  .sign-in-btn:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 
-  /* Logo, both portals and Sign in on one row down to a 360px phone. */
+  /* Logo, both portals and Sign out on one row down to a 360px phone. */
   @media (max-width: 400px) {
     .top-right { gap: 0.625rem; }
-    .sign-in-btn { padding: 0.375rem 0.625rem; }
   }
 
-  .loading { color: var(--text-muted); font-size: 0.8125rem; }
   .content { padding: 0.25rem 0 2rem; }
 
   /* ── Build menu ── */

@@ -56,7 +56,7 @@ test("an organiser sign-in offers a passkey only, and says what losing every pas
   assert.match(passkey, /\{:else if checked && organiser\}[\s\S]*?can't use passkeys, and organising needs one/);
 });
 
-test("the organiser portal's own Sign in asks for an organiser sign-in", () => {
+test("the organiser portal's Profile tab asks for an organiser sign-in", () => {
   const shell = read("../src/lib/layouts/CreatorShell.svelte");
-  assert.match(shell, /class="sign-in-btn" onclick=\{\(\) => loginRequest\.request\(\{ context: "creator" \}\)\}/);
+  assert.match(shell, /loginRequest\.request\(\{ context: "creator" \}\)/);
 });

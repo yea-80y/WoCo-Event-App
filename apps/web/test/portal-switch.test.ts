@@ -27,7 +27,7 @@ const ORGANISER = read("../src/lib/layouts/CreatorShell.svelte");
 
 test("the two portals keep their names and doors", () => {
   assert.equal(ORGANISER_PORTAL_LABEL, "Organisers");
-  assert.equal(ATTENDEE_PORTAL_LABEL, "Fans");
+  assert.equal(ATTENDEE_PORTAL_LABEL, "Attendees");
   assert.equal(ORGANISER_PORTAL_PATH, "/creator");
   assert.equal(ATTENDEE_PORTAL_PATH, "/home");
 });
@@ -37,13 +37,17 @@ test("the home page shows both portals with no sign-in of its own", () => {
   assert.doesNotMatch(HOME, /loginRequest|My tickets<\/button>\s*\{:else/);
 });
 
-test("each portal's bar shows both portals whether signed in or not, with its own lit", () => {
+test("each portal's bar shows both portals whether signed in or not, with its own lit, and no Sign in", () => {
   for (const [name, src, current] of [
     ["AttendeeShell", ATTENDEE, "attendee"],
     ["CreatorShell", ORGANISER, "organiser"],
   ] as const) {
-    const switches = src.match(new RegExp(`<PortalSwitch current="${current}" />`, "g")) ?? [];
-    assert.equal(switches.length, 2, `${name}: one switch in the signed-in branch and one in the signed-out branch`);
+    const bar = src.slice(src.indexOf('<div class="top-right">'), src.indexOf("</header>"));
+    const at = bar.indexOf(`<PortalSwitch current="${current}" />`);
+    assert.ok(at > 0, `${name}: the switch is in the bar`);
+    // Before any {#if}: shown in every state, never only signed in or signed out.
+    assert.ok(!bar.slice(0, at).includes("{#if"), `${name}: the switch sits inside a condition`);
+    assert.doesNotMatch(bar, /loginRequest|>\s*Sign in\s*</, `${name}: the bar has its own Sign in again`);
   }
 });
 

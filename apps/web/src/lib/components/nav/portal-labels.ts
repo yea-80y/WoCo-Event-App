@@ -3,7 +3,7 @@
  * organiser mode) shows both, so a rename here is a rename everywhere.
  */
 export const ORGANISER_PORTAL_LABEL = "Organisers";
-export const ATTENDEE_PORTAL_LABEL = "Fans";
+export const ATTENDEE_PORTAL_LABEL = "Attendees";
 
 /** Where each portal opens. Signed out, each one shows its own sign-in. */
 export const ORGANISER_PORTAL_PATH = "/creator";

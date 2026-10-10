@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { auth } from "../auth/auth-store.svelte.js";
-  import { loginRequest } from "../auth/login-request.svelte.js";
   import { router, navigate } from "../router/router.svelte.js";
   import { organiserRole } from "../auth/organiser-role.svelte.js";
   import { inviteSheet } from "../campaign/invite-sheet.svelte.js";
@@ -79,17 +78,12 @@
       <WocoWordmark height={20} variant="default" />
     </button>
 
+    <!-- Both portals, signed in or not. No Sign in here: each portal's home
+         leads with its own, and the switch is the one way in to either. -->
     <div class="top-right">
-      {#if !auth.ready}
-        <span class="loading">Loading...</span>
-      {:else if signedIn}
-        <PortalSwitch current="attendee" />
+      <PortalSwitch current="attendee" />
+      {#if signedIn}
         <SessionStatus compact />
-      {:else}
-        <PortalSwitch current="attendee" />
-        <button class="top-link" onclick={() => loginRequest.request({ context: "attendee" })}>
-          Sign in
-        </button>
       {/if}
     </div>
   </header>
@@ -149,20 +143,10 @@
     flex-shrink: 1;
   }
 
-  .top-link {
-    padding: 0.3125rem 0;
-    font-size: 0.8125rem;
-    font-weight: 600;
-    color: var(--text-muted);
-    white-space: nowrap;
-    transition: color var(--transition);
-  }
-  .top-link:hover { color: var(--text); }
   @media (max-width: 400px) {
     .top-right { gap: 0.625rem; }
   }
 
-  .loading { color: var(--text-muted); font-size: 0.8125rem; }
   .content { padding: 0.25rem 0 2rem; }
 
 </style>
