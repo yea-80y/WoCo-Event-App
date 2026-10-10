@@ -14,14 +14,21 @@ export const WEB3AUTH_KEY_GONE_MESSAGE =
 export const WEB3AUTH_KEY_LOADING_MESSAGE =
   "Your Google or email sign-in is still loading - please try again in a moment.";
 
+/** The pop-up's result never reached this page, even after the stalled wait's grace. */
+export const WEB3AUTH_TIMED_OUT_MESSAGE =
+  "Your Google or email sign-in didn't come back to this page. Tap Try again - or, inside an app's built-in browser, open WoCo in your real browser first.";
+
 export class Web3AuthSignInError extends Error {
   /** They closed the modal or the popup: nothing went wrong, so say nothing. */
   readonly cancelled: boolean;
+  /** The wait ran out with no result (web3auth-signin-wait.ts): offer a retry and the way out. */
+  readonly timedOut: boolean;
 
-  constructor(message: string, cancelled = false) {
+  constructor(message: string, cancelled = false, timedOut = false) {
     super(message);
     this.name = WEB3AUTH_SIGNIN_ERROR_NAME;
     this.cancelled = cancelled;
+    this.timedOut = timedOut;
   }
 }
 

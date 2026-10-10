@@ -198,7 +198,7 @@ test("closing the sign-in sheet mid-attempt cancels the Web3Auth pop-up wait, an
   const start = store.indexOf("async function loginWeb3Auth(");
   const fn = store.slice(start, store.indexOf("\nfunction cancelLogin()", start));
   const armed = fn.indexOf("_cancelLogin = cancelWeb3AuthSignIn;");
-  const awaited = fn.indexOf("await loginWithWeb3Auth();", armed);
+  const awaited = fn.indexOf("await loginWithWeb3Auth(", armed);
   const disarmed = fn.indexOf("_cancelLogin = null;", awaited);
   assert.ok(armed > 0 && awaited > armed && disarmed > awaited, "armed for the pop-up wait only");
   assert.ok(fn.slice(fn.indexOf("} finally {")).includes("_cancelLogin = null;"), "cleared however the attempt ends");

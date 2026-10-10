@@ -50,7 +50,12 @@
   // A social app's built-in browser can sign no one in - no passkeys, and Google
   // refuses it (#812). Checked once, when the sheet first opens, so detection
   // stays out of the first load; the browser cannot change without a page load.
-  let inAppBrowser = $state<InAppBrowser | null>(null);
+  // Inside one, the sheet LEADS with the way out (owner decision 2026-10-10): no
+  // passkey buttons at all (an embedded web view cannot run the ceremony), and the
+  // Google / email sign-in only as a second choice that may not complete there.
+  // `undefined` until the check has run, so an in-app browser never flashes the
+  // passkey buttons it is about to hide.
+  let inAppBrowser = $state<InAppBrowser | null | undefined>(undefined);
   let inAppChecked = false;
   $effect(() => {
     if (!visible || inAppChecked || typeof window === "undefined") return;
@@ -132,8 +137,11 @@
 
   // "waiting" until the credential step is done, then "finalizing". Wallet
   // flows that connect before auth.login runs (WalletConnect QR) read null —
-  // treat that as still waiting.
+  // treat that as still waiting. "stalled" is a Web3Auth wait whose spinner's
+  // time is up: the picker comes back, where the email button shows the message,
+  // Try again and the way out, while the attempt goes on listening underneath.
   const stage = $derived(auth.loginStage ?? "waiting");
+  const sceneShown = $derived(authing !== null && stage !== "stalled");
 
   function start(method: Method) {
     authing = method;
@@ -220,7 +228,7 @@
         <p class="notice" role="status">{notice}</p>
       {/if}
 
-      {#if authing}
+      {#if authing && sceneShown}
         {@const c = sceneCopy[authing]}
         <div class="scene" role="status" aria-live="polite">
           <div class="stamp" aria-hidden="true">
@@ -259,16 +267,32 @@
            at a session the server refuses, and anywhere else it ends at the wrong
            account, so the redirect above is the only honest sign-in. -->
       {#if !offCanonicalHost}
-      <div class="options" class:offstage={authing !== null}>
+      <div class="options" class:offstage={sceneShown}>
         <!-- Hidden rather than unmounted on the wallet screen, so a passkey
              error or the create-account offer is still there on the way back. -->
         <div class="methods" class:offstage={view !== "main"}>
-          {#if inAppBrowser}
+          {#if inAppBrowser === undefined}
+            <!-- The in-app check has not answered yet: nothing to flash. -->
+          {:else if inAppBrowser}
+            <!-- An app's built-in browser: the way out comes first and alone.
+                 Passkeys are not offered - the ceremony is refused before any
+                 sheet there (#841) - and the Google / email sign-in is a second
+                 choice whose wait is bounded (web3auth-signin-wait.ts). -->
             {#await import("./InAppBrowserNotice.svelte") then { default: InAppBrowserNotice }}
               <InAppBrowserNotice found={inAppBrowser} />
             {/await}
-          {/if}
-
+            {#if loginRequest.context !== "invite"}
+              <div class="group-label"><span>Or try here anyway</span></div>
+              <Web3AuthLogin
+                oncomplete={handleComplete}
+                onstart={() => start("email")}
+                onsettle={settle}
+                inApp={inAppBrowser}
+              />
+            {:else}
+              <p class="in-app-invite">Organiser accounts use a passkey, which this browser can't create. Open WoCo in your browser to continue.</p>
+            {/if}
+          {:else}
           <PasskeyLogin
             oncomplete={handleComplete}
             onstart={() => start("passkey")}
@@ -278,7 +302,7 @@
 
           <!-- Organising needs a passkey account (#746 step 5): "Start hosting" offers no other way in. -->
           {#if loginRequest.context !== "invite"}
-            <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} />
+            <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} inApp={null} />
 
             {#if FEATURES.walletLoginAllowed}
               <div class="wallet-door">
@@ -288,6 +312,7 @@
                 </button>
               </div>
             {/if}
+          {/if}
           {/if}
         </div>
 
@@ -586,6 +611,13 @@
   .back-btn {
     align-self: flex-start;
     margin-top: -0.5rem;
+  }
+
+  .in-app-invite {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    text-align: center;
   }
 
   .group-label {
