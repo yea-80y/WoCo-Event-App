@@ -12,6 +12,7 @@
   import WocoWordmark from "../components/brand/WocoWordmark.svelte";
   import PortalSwitch from "../components/nav/PortalSwitch.svelte";
   import InstallSlot from "../pwa/InstallSlot.svelte";
+  import InstallCardSlot from "../pwa/InstallCardSlot.svelte";
   import ArrowRight from "lucide-svelte/icons/arrow-right";
   // Two photographs, two jobs. `crowd` is screen-blended so its pure-black
   // pixels resolve to exactly --bg and the frame dissolves — it is a light
@@ -439,6 +440,11 @@
       </div>
     </div>
   </section>
+
+  <!-- Permanent "Get the app" card once the top offer has been closed (lazy, see InstallCardSlot). -->
+  <div class="install-slot">
+    <InstallCardSlot />
+  </div>
 
   <!-- ── Footer ──────────────────────────────────────────────────────── -->
   <footer class="footer">

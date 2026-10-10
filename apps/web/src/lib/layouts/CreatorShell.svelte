@@ -13,6 +13,7 @@
   import PortalSwitch from "../components/nav/PortalSwitch.svelte";
   import SessionEndedBanner from "../components/auth/SessionEndedBanner.svelte";
   import InstallSlot from "../pwa/InstallSlot.svelte";
+  import InstallCardSlot from "../pwa/InstallCardSlot.svelte";
 
   interface Props {
     children: Snippet;
@@ -98,6 +99,8 @@
     {#if auth.ready}
       {@render children()}
     {/if}
+    <!-- And a permanent card at the bottom once that offer is closed. -->
+    <InstallCardSlot />
   </section>
 
   <TabBar label="Organiser" items={tabs} />
