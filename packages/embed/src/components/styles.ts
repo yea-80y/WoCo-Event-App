@@ -304,16 +304,6 @@ export function getStyles(theme: "dark" | "light"): string {
       height: 5px;
       border-radius: 50%;
       background: ${vars.success};
-      animation: hold-pulse 1.6s ease-in-out infinite;
-    }
-
-    @keyframes hold-pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.45; }
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-      .hold-dot { animation: none; }
     }
 
     .hold-banner {

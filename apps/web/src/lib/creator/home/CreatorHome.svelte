@@ -921,12 +921,6 @@
   .armed-dot {
     width: 0.3rem; height: 0.3rem; border-radius: 50%;
     background: var(--accent);
-    box-shadow: 0 0 5px var(--accent);
-    animation: armed-pulse 1.8s ease-in-out infinite;
-  }
-  @keyframes armed-pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.45; transform: scale(0.7); }
   }
 
   .row.row--static {
@@ -954,7 +948,7 @@
     to { opacity: 1; transform: none; }
   }
   @media (prefers-reduced-motion: reduce) {
-    .backup-row-enter, .armed-dot { animation: none; }
+    .backup-row-enter { animation: none; }
   }
 
   .backup-add-another { padding: 0.5rem; }
