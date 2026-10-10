@@ -234,16 +234,18 @@ const WRONG_DEVICE =
   "To use more phones, ask the organiser to regenerate it for several scanners.";
 
 /**
- * For a "single" pass, refuse any device but the bound one. `bind` is true only
- * on /pack, the one request a device must make before it can scan: that is where
- * the first device claims the pass.
+ * For a "single" pass, refuse any device but the bound one. `bindTo` names the
+ * event only on /pack, the one request a device must make before it can scan:
+ * that is where the first device claims the pass.
  */
-function checkDevice(c: Context<AppEnv>, auth: AuthorisedPass, device: string | null, bind: boolean): Response | null {
+function checkDevice(c: Context<AppEnv>, auth: AuthorisedPass, device: string | null, bindTo: string | null): Response | null {
   if (auth.mode !== "single") return null;
   if (!device) {
     return c.json({ ok: false, error: "This scanner needs updating - reload the page and try again" }, 400);
   }
-  const allowed = bind ? bindSinglePassDevice(c.req.param("eventId"), device) : auth.device === device;
+  // The event comes from the caller: a helper typed on a bare Context cannot read
+  // the route's `:eventId` (hono 4.13 types it `string | undefined` there).
+  const allowed = bindTo !== null ? bindSinglePassDevice(bindTo, device) : auth.device === device;
   return allowed ? null : c.json({ ok: false, error: WRONG_DEVICE, reason: "wrong-device" }, 409);
 }
 
@@ -261,7 +263,7 @@ checkin.get("/:eventId/pack", async (c) => {
   }
   let refused: Response | null;
   try {
-    refused = checkDevice(c, auth, device, true);
+    refused = checkDevice(c, auth, device, eventId);
   } catch (err) {
     console.error("[checkin] single-scanner binding could not be saved:", err);
     return c.json({ ok: false, error: "Could not register this scanner - try again" }, 503);
@@ -351,7 +353,7 @@ checkin.post("/:eventId/sync", async (c) => {
   if (body.checkins.length > MAX_SYNC_RECORDS) {
     return c.json({ ok: false, error: "Too many records in one sync" }, 413);
   }
-  const refused = checkDevice(c, auth, deviceFrom(c, body.deviceId), false);
+  const refused = checkDevice(c, auth, deviceFrom(c, body.deviceId), null);
   if (refused) return refused;
   const outdated = await outdatedPass(c, c.req.param("eventId"), auth, "allow");
   if (outdated) return outdated;
@@ -377,7 +379,7 @@ checkin.post("/:eventId/claim", async (c) => {
 
   const device = deviceFrom(c);
   if (!device) return c.json({ ok: false, error: "This scanner needs updating - reload the page and try again" }, 400);
-  const refused = checkDevice(c, auth, device, false);
+  const refused = checkDevice(c, auth, device, null);
   if (refused) return refused;
   const outdated = await outdatedPass(c, c.req.param("eventId"), auth, "allow");
   if (outdated) return outdated;

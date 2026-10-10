@@ -1,4 +1,5 @@
-import type { Context, Next } from "hono";
+import type { Context } from "hono";
+import { createMiddleware } from "hono/factory";
 import { verifyMessage } from "ethers";
 import { createHash } from "node:crypto";
 import { AuthErrorCode } from "@woco/shared";
@@ -151,7 +152,13 @@ function rejectAuth(
   return c.json({ ok: false, error: reason, ...(code ? { code } : {}) }, status);
 }
 
-export async function requireAuth(c: Context<AppEnv>, next: Next) {
+/**
+ * Declared through hono's factory, not as a plain `(c, next)` function: a plain
+ * middleware argument erases the route's path type, and from hono 4.13 every
+ * `c.req.param()` behind it reads `string | undefined`. The factory keeps the
+ * handler's `/:id` typed. Same function at runtime.
+ */
+export const requireAuth = createMiddleware<AppEnv>(async (c, next) => {
   const method = c.req.method.toUpperCase();
   const path = new URL(c.req.url).pathname + new URL(c.req.url).search;
 
@@ -274,7 +281,7 @@ export async function requireAuth(c: Context<AppEnv>, next: Next) {
   c.set("body", body);
 
   await next();
-}
+});
 
 /** SHA-256 hex digest of a UTF-8 string. */
 function sha256Hex(text: string): string {
