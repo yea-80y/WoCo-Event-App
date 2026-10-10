@@ -267,6 +267,19 @@ test("redaction hides links, emails, keys, ids, hex and long numbers - and keeps
   for (const leak of ["friend", "example", "web3auth.io", "eyJ", "abab", "deadbeef", "123456"]) assert.ok(!r.includes(leak), leak);
 });
 
+test("redaction also hides URL-encoded emails, IP addresses, phone numbers and split token pieces", () => {
+  const cases: Array<[string, string]> = [
+    ["login_hint nabil.abbas1986%40gmail.com not found", "login_hint [email] not found"],
+    ["from 192.168.1.1 and 2001:db8::ff00:42:8329 refused", "from [ip] and [ip] refused"],
+    ["call +44 7911 123456 now", "call [number] now"],
+    ["link-local fe80::1 down", "link-local [ip] down"],
+    ["Error: bad request, reason: unknown", "Error: bad request, reason: unknown"],
+    ["token eyJhbGciOi.JIUzI1 NiIsInR5cCI6Ik", "token [id] [id]"],
+    ["blob amtsbW5v cHFycw== end", "blob [id] [id] end"],
+  ];
+  for (const [raw, want] of cases) assert.equal(redactReason(raw), want, raw);
+});
+
 test("a long reason is capped", () => {
   const r = redactReason("word ".repeat(80));
   assert.equal(r.length, SIGN_IN_DETAIL_MAX);
@@ -284,6 +297,8 @@ test("details come only from Web3Auth's own text: its error's extra part, or a r
   Object.defineProperty(viemish, "name", { value: "HttpRequestError" });
   assert.equal(signInFailureDetail(viemish), null, "any other error's message is never offered");
   assert.equal(signInFailureDetail(new TypeError("Load failed")), null);
+  const stringCause = Object.assign(new TypeError("fetch failed"), { cause: `no route to ${EMAIL}` });
+  assert.equal(signInFailureDetail(stringCause), null, "a string cause another library hung on its error is never offered");
 });
 
 test("the coded error carries the details, and the button shows them only after a tap", () => {

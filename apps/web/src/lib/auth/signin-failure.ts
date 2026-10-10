@@ -229,16 +229,23 @@ export const SIGN_IN_DETAIL_MAX = 200;
 /**
  * A reason's text with anything that could identify the person or a secret
  * replaced, on the device, before it is ever shown: links, email addresses, long
- * runs that could be a token, key, address or session id, hex runs and long
- * numbers. What is left is the sentence the remote code wrote.
+ * runs (or mixed-case pieces) that could be a token, key, address or session id,
+ * IP addresses, hex runs, phone and other long numbers. What is left is the
+ * sentence the remote code wrote - a short name or user id can survive, which the
+ * note beside the details says.
  */
 export function redactReason(text: string): string {
   const out = text
     .replace(/\b(?:https?|wss?):\/\/\S+|\bwww\.\S+/gi, "[link]")
-    .replace(/[^\s@<>()"',;:]+@[^\s@<>()"',;:]+/g, "[email]")
+    .replace(/[^\s@<>()"',;:]+(?:@|%40)[^\s@<>()"',;:]+/gi, "[email]")
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[ip]")
+    .replace(/(?<![\w:])(?:[0-9a-f]{1,4})?(?::{1,2}[0-9a-f]{1,4}){2,7}:?(?![\w:])|\b[0-9a-f]{1,4}::[0-9a-f]{1,4}\b/gi, "[ip]")
     .replace(/\b0x[0-9a-f]+\b/gi, "[hex]")
     .replace(/[A-Za-z0-9_\-+/=.]{16,}/g, "[id]")
+    // Shorter pieces of a split token: mixed case AND a digit or base64 sign.
+    .replace(/\b(?=\S*[0-9+/=])(?=\S*[a-z])(?=\S*[A-Z])[A-Za-z0-9_\-+/=.]{8,}(?![A-Za-z0-9_\-+/=.])/g, "[id]")
     .replace(/\b[0-9a-f]{8,}\b/gi, "[hex]")
+    .replace(/\+?\d[\d\s().-]{6,}\d/g, "[number]")
     .replace(/\d{5,}/g, "[number]")
     .replace(/\s+/g, " ")
     .trim();
@@ -254,14 +261,18 @@ export function redactReason(text: string): string {
  */
 export function signInFailureDetail(e: unknown): string | null {
   let at: unknown = e;
+  // A string counts only at the top or beneath Web3Auth's own wrapping: never a
+  // string cause another library hung on its error.
+  let fromWeb3Auth = true;
   for (let depth = 0; depth < 3; depth++) {
-    if (typeof at === "string") return at.trim() ? redactReason(at) : null;
+    if (typeof at === "string") return fromWeb3Auth && at.trim() ? redactReason(at) : null;
     if (typeof at !== "object" || at === null) return null;
     const name = (at as { name?: unknown }).name;
     const extra = typeof name === "string" ? web3AuthExtraText(name, at) : null;
     // A fixed SDK phrase ("Failed to login with auth") is a wrapper: the reason is beneath it.
     if (extra && !KNOWN_REJECTIONS[extra.toLowerCase()]) return redactReason(extra);
     if (!("cause" in at)) return null;
+    fromWeb3Auth = typeof name === "string" && (WEB3AUTH_ERROR_NAMES.has(name) || name === "Rejected");
     at = (at as { cause?: unknown }).cause;
   }
   return null;

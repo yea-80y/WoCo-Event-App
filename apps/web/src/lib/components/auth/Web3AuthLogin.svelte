@@ -122,7 +122,7 @@
           <button type="button" class="detail-btn" onclick={() => (showDetail = true)}>Show details</button>
         {:else if errorDetail}
           <p class="error-code">Details: <code>{errorDetail}</code></p>
-          <p class="detail-note">Links, email addresses and long codes are hidden. Check it before you share it.</p>
+          <p class="detail-note">Links, email addresses and long codes are hidden; a name or user id may not be. Check it before you share it.</p>
         {/if}
       {/if}
       {#if escape}
