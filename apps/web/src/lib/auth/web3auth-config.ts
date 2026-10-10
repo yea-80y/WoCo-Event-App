@@ -35,7 +35,7 @@ export const WEB3AUTH_SESSION_SECONDS = 30 * 86400;
  * for production; never repoint a live deployment.
  */
 export function buildWeb3AuthOptions(mod: Web3AuthModule, clientId: string) {
-  const { WEB3AUTH_NETWORK, CHAIN_NAMESPACES } = mod;
+  const { WEB3AUTH_NETWORK, CHAIN_NAMESPACES, CONNECTOR_INITIAL_AUTHENTICATION_MODE } = mod;
   // THROWS on anything that is not one of the two exact names — there is no
   // default, because the wrong network is a wrong key, not a wrong feature flag
   // (#244). Under plain Node (the unit test) the setting reads as absent and the
@@ -73,6 +73,11 @@ export function buildWeb3AuthOptions(mod: Web3AuthModule, clientId: string) {
     chains: [chain],
     defaultChainId: chain.chainId,
     sessionTime: WEB3AUTH_SESSION_SECONDS,
+    // v11 defaults to CONNECT_AND_SIGN, where connect() settles only on AUTHORIZED -
+    // and under CHAIN_NAMESPACES.OTHER nothing ever emits it (the auth connector
+    // fetches the auth token, the only AUTHORIZED source, for EIP155/Solana only).
+    // CONNECT_ONLY settles on CONNECTED, as v10 did.
+    initialAuthenticationMode: CONNECTOR_INITIAL_AUTHENTICATION_MODE.CONNECT_ONLY,
   };
 }
 

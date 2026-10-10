@@ -4,7 +4,11 @@
  * resolves with a connection; the key still comes from the auth connector's own
  * provider (`CommonPrivateKeyProvider`, `private_key`, under CHAIN_NAMESPACES.OTHER).
  *
- * MUTATIONS (each went red, then restored): `provider` read from the connection
+ * v11 also defaults to CONNECT_AND_SIGN, where connect() waits for AUTHORIZED - which
+ * the OTHER namespace never emits - so the options pin CONNECT_ONLY.
+ *
+ * MUTATIONS (each went red, then restored): the CONNECT_ONLY option removed (the
+ * options test); `provider` read from the connection
  * instead of the auth connector (the provider test); `connect()` returning the
  * connection itself (the connect test); a non-provider passed through (the guard
  * test); a build site constructing the SDK without the adapter (the wiring test).
@@ -116,4 +120,23 @@ test("both places that build the SDK go through the adapter", () => {
   assert.ok(backup.includes("adaptWeb3AuthSdk(new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId))"));
   assert.equal(account.match(/new mod\.Web3Auth\(/g)?.length, 1);
   assert.equal(backup.match(/new mod\.Web3Auth\(/g)?.length, 1);
+});
+
+test("connect() settles on CONNECTED: the options pin CONNECT_ONLY over v11's CONNECT_AND_SIGN default", async () => {
+  const { CONNECTOR_INITIAL_AUTHENTICATION_MODE } = await import("@web3auth/modal");
+  assert.equal(CONNECTOR_INITIAL_AUTHENTICATION_MODE.CONNECT_ONLY, "connect-only");
+  const config = readFileSync(new URL("../src/lib/auth/web3auth-config.ts", import.meta.url), "utf8");
+  const options = config.slice(config.indexOf("export function buildWeb3AuthOptions("));
+  assert.ok(
+    options.includes("initialAuthenticationMode: CONNECTOR_INITIAL_AUTHENTICATION_MODE.CONNECT_ONLY,"),
+    "without it connect() never settles under CHAIN_NAMESPACES.OTHER",
+  );
+  // The SDK's own default, which the option overrides - if v11 ever changes it, re-check.
+  const noModal = readFileSync(new URL("../node_modules/@web3auth/no-modal/dist/lib.esm/noModal.js", import.meta.url), "utf8");
+  assert.ok(noModal.includes("options.initialAuthenticationMode = CONNECTOR_INITIAL_AUTHENTICATION_MODE.CONNECT_AND_SIGN"));
+});
+
+test("the email backup's login label reads v11's authConnection (typeOfLogin was v10's)", () => {
+  const backup = readFileSync(new URL("../src/lib/wallet/backup-signer.ts", import.meta.url), "utf8");
+  assert.ok(backup.includes("providerLabel = info?.authConnection || info?.typeOfLogin || undefined;"));
 });
