@@ -48,6 +48,7 @@
   const appleDevice = () => appleTouchDevice(navigator.userAgent, navigator.maxTouchPoints ?? 0);
 
   async function run(mode: "signin" | "create") {
+    let apple: ReturnType<typeof appleDevice> = null;
     error = null;
     otherDevice = false;
     onstart?.();
@@ -78,10 +79,10 @@
         offerCreate = true;
         showHelp = true;
         error = "No passkey was used. If you cancelled, try again — otherwise you can create a new account below.";
-      } else if (mode === "create" && res.error?.name === "PasskeyCeremonyCancelledError" && appleDevice()) {
+      } else if (mode === "create" && res.error?.name === "PasskeyCeremonyCancelledError" && (apple = appleDevice())) {
         // After a sheet (a quick refusal is noSheet, above): on an iPhone or iPad this
         // is also what "no password manager set up for passkeys" ends in.
-        error = passkeyCreateRefusedAdvice(appleDevice()!, loginRequest.context === "invite");
+        error = passkeyCreateRefusedAdvice(apple, loginRequest.context === "invite");
       } else if (res.error instanceof PasskeyBrowserRefusedError) {
         error = passkeyRefusalAdvice(res.error.host, loginRequest.context === "invite");
       } else {
@@ -191,7 +192,7 @@
     </p>
 
     {#if error && !otherDevice}
-      <p class="error">{error}</p>
+      <p class="error" role="alert">{error}</p>
     {/if}
   </div>
 {/if}

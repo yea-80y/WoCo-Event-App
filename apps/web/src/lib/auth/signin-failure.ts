@@ -9,9 +9,9 @@
  * the step, an error's `name` when it is a plain identifier, a numeric `code` or
  * `status`, the same for its `cause`, the seconds since the attempt began and a
  * few page flags. A rejection that is not an Error (Web3Auth's auth iframe rejects
- * with whatever string it was sent, `AuthProvider` LOGIN_FAILED) contributes a
- * short word-only token that cannot be an address, a key or a token, or else only
- * its type and length.
+ * with whatever string its remote code sent, `AuthProvider` LOGIN_FAILED) is never
+ * copied: a string the SDK is known to send maps to a fixed word, and any other
+ * becomes its length plus which of a fixed list of topic words it mentions.
  *
  * Dependency-free and matched by name, never `instanceof`: the button reads it
  * without loading the sign-in chunk (as web3auth-signin-error.ts).
@@ -40,6 +40,8 @@ export type SignInStep =
 export class SignInFailedError extends Error {
   /** Short, copyable, safe to screenshot: see the header. */
   readonly code: string;
+  /** The raw error, for the console only. NEVER render or report it: an SDK's
+   *  message can carry the login hint, a viem error's the RPC URL. */
   readonly cause?: unknown;
   constructor(code: string, cause?: unknown) {
     super(SIGN_IN_FAILED_MESSAGE);
@@ -60,7 +62,7 @@ const marks = new WeakMap<object, StepMark>();
  * Remember which step `e` came from (the first mark wins) and hand back something
  * throwable. A rejection that is not an object cannot carry a mark, so it is
  * wrapped - its value kept as the cause, which is what `describeSignInError` reads.
- * `notes` are SDK facts at the time (its status, whether the wait had stalled);
+ * `notes` are SDK facts at the time (its status, `st.ready`);
  * each passes the same token filter as everything else.
  */
 export function markSignInStep(e: unknown, step: SignInStep, notes: readonly string[] = []): unknown {
@@ -78,18 +80,51 @@ export function signInStepOf(e: unknown): StepMark | null {
 
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
 
-/**
- * A string fit to show: words only. No "@" (an email), no long run of hex or
- * digits (a key, an address, a session id, a code), no slashes (a URL), short.
- * Spaces become "_" so the code stays one token.
- */
-export function safeToken(s: string): string | null {
-  const t = s.trim();
-  if (!t || t.length > 60) return null;
-  if (!/^[A-Za-z0-9 ,.:_()'-]+$/.test(t)) return null;
-  if (/[0-9a-fA-F]{8,}/.test(t) || /\d{5,}/.test(t)) return null;
-  return t.replace(/\s+/g, "_");
+/** Strings the Web3Auth SDK itself is known to reject with, as fixed words. */
+const KNOWN_REJECTIONS: Readonly<Record<string, string>> = {
+  "login failed, reason: unknown": "login-failed-unknown", // AuthProvider LOGIN_FAILED, no reason given
+  "failed to login with social": "social-login-failed",
+  "popup window is blocked": "popup-blocked",
+  "user closed popup": "popup-closed",
+  "iframe not initialized": "iframe-not-initialized",
+  aborted: "aborted",
+};
+
+/** Topic words an unknown rejection may mention: a fixed list, so nothing of the string itself leaves. */
+const TOPICS = [
+  "cookie",
+  "storage",
+  "session",
+  "popup",
+  "iframe",
+  "network",
+  "fetch",
+  "timeout",
+  "nonce",
+  "token",
+  "jwt",
+  "verifier",
+  "share",
+  "origin",
+  "blocked",
+  "denied",
+  "expired",
+  "invalid",
+  "mfa",
+] as const;
+
+/** A string as something fit to show: a known rejection's fixed word, else
+ *  `str<length>` and the topic words it contains (`str37:cookie+session`). */
+export function describeRejectionString(s: string): string {
+  const known = KNOWN_REJECTIONS[s.trim().toLowerCase()];
+  if (known) return known;
+  const lower = s.toLowerCase();
+  const topics = TOPICS.filter((t) => lower.includes(t));
+  return topics.length ? `str${s.length}:${topics.join("+")}` : `str${s.length}`;
 }
+
+/** A note about the SDK's state (`st.ready`, `no-client-id`): an identifier-like word or nothing. */
+const NOTE = /^[a-z][a-z0-9._-]{0,31}$/;
 
 function numberField(e: object, key: "code" | "status"): string | null {
   const v = (e as Record<string, unknown>)[key];
@@ -98,7 +133,7 @@ function numberField(e: object, key: "code" | "status"): string | null {
 
 /** One error, as `Name.code` - or, for a non-Error value, a safe token or its type and length. */
 function describeOne(e: unknown): string {
-  if (typeof e === "string") return safeToken(e) ?? `str${e.length}`;
+  if (typeof e === "string") return describeRejectionString(e);
   if (typeof e !== "object" || e === null) return typeof e;
   const name = (e as { name?: unknown }).name;
   const head = typeof name === "string" && IDENTIFIER.test(name) ? name : "obj";
@@ -131,11 +166,11 @@ export type SignInFailureContext = {
 
 /**
  * `W3A-<step>-<error>-t<seconds>[-<flags>]`, e.g.
- * `W3A-connect-WalletLoginError.5111~Login_failed,_reason:_unknown-t41-st.ready`.
+ * `W3A-connect-WalletLoginError.5111~login-failed-unknown-t41-st.ready`.
  */
 export function signInFailureCode(e: unknown, ctx: SignInFailureContext): string {
   const mark = signInStepOf(e);
-  const notes = (mark?.notes ?? []).map(safeToken).filter((n): n is string => !!n);
+  const notes = (mark?.notes ?? []).filter((n) => NOTE.test(n));
   const flags = [
     ...(ctx.fast ? ["fast"] : []),
     ...(ctx.hidden ? ["hidden"] : []),

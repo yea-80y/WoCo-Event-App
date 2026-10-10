@@ -149,7 +149,7 @@ export async function loginWithWeb3Auth(
   } catch (e) {
     throw markSignInStep(e, "sdk");
   }
-  if (!w) throw new Error(NOT_CONFIGURED);
+  if (!w) throw markSignInStep(new Error(NOT_CONFIGURED), "sdk", ["no-client-id"]);
 
   // Throws are surfaced, not swallowed: a survivor we could not end must
   // never be adopted, and proceeding to connect() would adopt it. Shared with
@@ -179,7 +179,6 @@ export async function loginWithWeb3Auth(
 
   let provider: MinimalProvider | null;
   const instance = w;
-  let stalled = false;
   const wait = awaitWeb3AuthSignIn<MinimalProvider>(
     instance,
     instance.connect(),
@@ -188,7 +187,6 @@ export async function loginWithWeb3Auth(
         // The SDK's loader has no close of its own while connecting (#841); its
         // modal closing is what lets the sheet show the message instead. The
         // connector goes on waiting for the pop-up underneath, and so do we.
-        stalled = true;
         _closeModal(instance);
         opts.onStall?.();
       },
@@ -212,7 +210,7 @@ export async function loginWithWeb3Auth(
       if (w.connected) await _endInterferingSession(w);
       // A non-Error rejection (the auth iframe's LOGIN_FAILED string) is wrapped
       // with its value kept as the cause - that value is the clue the code carries.
-      throw markSignInStep(e, "connect", [`st.${w.status}`, ...(stalled ? ["stalled"] : [])]);
+      throw markSignInStep(e, "connect", [`st.${w.status}`]);
     }
     if (outcome.kind === "cancelled") {
       // The same hydrated-survivor read as a failure: a cancel over a session

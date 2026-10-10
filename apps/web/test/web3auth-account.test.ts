@@ -379,7 +379,7 @@ test("a rejection that is not an Error keeps its value as the clue, instead of a
   await assert.rejects(loginWithWeb3Auth(), (e: unknown) => {
     assert.ok(e instanceof Error && !isWeb3AuthSignInError(e));
     assert.equal(signInStepOf(e)?.step, "connect");
-    assert.equal(describeSignInError(e), "Rejected~Login_failed,_reason:_unknown");
+    assert.equal(describeSignInError(e), "Rejected~login-failed-unknown");
     return true;
   });
   world.connectFails = null;

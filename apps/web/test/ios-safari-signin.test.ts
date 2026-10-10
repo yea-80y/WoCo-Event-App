@@ -9,8 +9,8 @@
  *    console. The cause cannot be read from here, so the line now carries a short
  *    code: where it failed and what kind of error, never what the error said.
  *
- * MUTATIONS (each went red, then restored): `safeToken` without its hex/digit rule
- * (the leak test); `describeSignInError` reading `.message` (6 tests); the store's
+ * MUTATIONS (each went red, then restored): an unknown rejection string copied
+ * instead of reduced to its length and topic words (the leak test); `describeSignInError` reading `.message` (6 tests); the store's
  * catch back to `return false` (the wiring test); the PasskeyLogin iOS branch
  * disabled (the order test); no iPad touch check; the invite branch dropped; a
  * non-Error rejection replaced instead of kept, or the connect step unmarked
@@ -25,7 +25,7 @@ import {
   describeSignInError,
   isSignInFailedError,
   markSignInStep,
-  safeToken,
+  describeRejectionString,
   signInFailureCode,
   signInStepOf,
   SIGN_IN_FAILED_MESSAGE,
@@ -54,7 +54,7 @@ test("the auth iframe's failure, as Web3Auth wraps it, reads as step + SDK error
   const sdk = walletLoginError(5111, "Failed to connect with wallet. Failed to login with auth", "Login failed, reason: unknown");
   const marked = markSignInStep(sdk, "connect", ["st.ready"]);
   const code = signInFailureCode(marked, { step: "sdk", elapsedMs: 41_400 });
-  assert.equal(code, "W3A-connect-WalletLoginError.5111~Login_failed,_reason:_unknown-t41-st.ready");
+  assert.equal(code, "W3A-connect-WalletLoginError.5111~login-failed-unknown-t41-st.ready");
 });
 
 test("never a message: an Error's text is not read at any depth", () => {
@@ -65,14 +65,20 @@ test("never a message: an Error's text is not read at any depth", () => {
   for (const leak of [EMAIL, "example", "secret", "rpc", KEY.slice(2, 20)]) assert.ok(!d.includes(leak), leak);
 });
 
-test("a string that could be an email, a key, a URL or a code is reduced to its length", () => {
-  assert.equal(describeSignInError(`Invalid login hint ${EMAIL}`), `str${`Invalid login hint ${EMAIL}`.length}`);
-  assert.equal(safeToken(KEY), null);
-  assert.equal(safeToken("deadbeefcafe"), null, "a hex run");
-  assert.equal(safeToken("code 123456 expired"), null, "a digit run");
-  assert.equal(safeToken("see https://x.io/a"), null, "a URL");
-  assert.equal(safeToken("x".repeat(61)), null, "too long to be a reason");
-  assert.equal(safeToken("popup window is blocked"), "popup_window_is_blocked");
+test("an unknown string is never copied: only its length and which fixed topic words it mentions", () => {
+  const hint = `Invalid login hint ${EMAIL} for verifier woco-prod`;
+  assert.equal(describeSignInError(hint), `str${hint.length}:verifier+invalid`);
+  assert.equal(describeRejectionString(`jane at example dot com ${KEY}`), `str${`jane at example dot com ${KEY}`.length}`);
+  assert.equal(describeRejectionString("Third-party cookies blocked: session storage denied"), "str51:cookie+storage+session+blocked+denied");
+  for (const leak of ["jane", "example", "woco-prod", KEY.slice(2, 12)]) {
+    assert.ok(!describeSignInError(hint).includes(leak) && !describeRejectionString(`jane ${KEY}`).includes(leak), leak);
+  }
+});
+
+test("strings the SDK itself is known to send map to fixed words", () => {
+  assert.equal(describeRejectionString("Login failed, reason: unknown"), "login-failed-unknown");
+  assert.equal(describeRejectionString("popup window is blocked"), "popup-blocked");
+  assert.equal(describeRejectionString(" Failed to login with social "), "social-login-failed");
 });
 
 test("names that are not plain identifiers, and codes that are not small integers, are dropped", () => {
@@ -88,7 +94,7 @@ test("a non-object rejection is wrapped, marked, and keeps its value as the clue
   const thrown = markSignInStep("Login failed, reason: unknown", "connect");
   assert.ok(thrown instanceof Error);
   assert.equal(signInStepOf(thrown)?.step, "connect");
-  assert.equal(describeSignInError(thrown), "Rejected~Login_failed,_reason:_unknown");
+  assert.equal(describeSignInError(thrown), "Rejected~login-failed-unknown");
 });
 
 test("the first mark wins, the store's step is the fallback, and flags are named", () => {
@@ -104,9 +110,9 @@ test("the first mark wins, the store's step is the fallback, and flags are named
   assert.equal(signInFailureCode(unmarked, { step: "feed", elapsedMs: 0, fast: true }), "W3A-feed-TypeError-t0-fast");
 });
 
-test("notes from the SDK pass the same filter", () => {
-  const e = markSignInStep(new Error("x"), "connect", [`st.${EMAIL}`, "stalled"]);
-  assert.equal(signInFailureCode(e, { step: "sdk", elapsedMs: 0 }), "W3A-connect-Error-t0-stalled");
+test("notes from the SDK must be identifier-like words", () => {
+  const e = markSignInStep(new Error("x"), "connect", [`st.${EMAIL}`, "no-client-id"]);
+  assert.equal(signInFailureCode(e, { step: "sdk", elapsedMs: 0 }), "W3A-connect-Error-t0-no-client-id");
 });
 
 test("the coded error is recognised by name, with the owner's copy (spaced hyphen)", () => {
@@ -151,6 +157,8 @@ test("every await after the key is reached with its step set", () => {
     ['step = "signer";', "await readKernelSignerFor(kernel.address, address)"],
     ['step = "switch";', "await _clearStaleAuthForSwitch(kernel.address)"],
     ['step = "store";', "await putKV(StorageKeys.AUTH_KIND"],
+    ['step = "restore";', "await _restoreCachedAuth()"],
+    ['step = "feed";', "await _establishFeedSignerEagerly()"],
   ];
   for (const [set, call] of pairs) {
     const at = fn.indexOf(call);
@@ -162,8 +170,9 @@ test("every await after the key is reached with its step set", () => {
 
 test("inside the Web3Auth chunk, each raw failure is marked with its step and passed on unchanged", () => {
   assert.ok(account.includes('throw markSignInStep(e, "sdk");'));
-  assert.ok(account.includes('throw markSignInStep(e, "connect", [`st.${w.status}`, ...(stalled ? ["stalled"] : [])]);'));
+  assert.ok(account.includes('throw markSignInStep(e, "connect", [`st.${w.status}`]);'));
   assert.ok(account.includes('throw markSignInStep(e, "key");'));
+  assert.ok(account.includes('throw markSignInStep(new Error(NOT_CONFIGURED), "sdk", ["no-client-id"]);'));
   assert.ok(!account.includes('new Error("Email sign-in failed - please try again.")'), "the rejection's value is kept, not replaced");
 });
 
@@ -193,7 +202,7 @@ test("the advice names the sheet, the exact Settings path and the way past More 
   const s = passkeyCreateRefusedAdvice("iPhone", false);
   assert.match(s, /your iPhone said "Choose how to manage your passkeys"/);
   assert.match(s, /Settings › General › AutoFill & Passwords, turn on Passwords/);
-  assert.match(s, /not More Options/);
+  assert.match(s, /not More Options - that puts the passkey on another device or a security key/);
   assert.match(s, /If you closed the prompt yourself, just tap Create again\./);
   assert.match(s, /Continue with Email below/);
   assert.ok(!s.includes("—"), "owner copy: spaced hyphen, never an em dash");
@@ -208,10 +217,10 @@ test("an organiser invite offers no email, so the words never point at it", () =
 test("PasskeyLogin: the iOS advice is for a creation refused after a sheet, after noSheet and before the generic line", () => {
   const noSheet = passkeyButton.indexOf("} else if (res.noSheet) {");
   const ios = passkeyButton.indexOf(
-    '} else if (mode === "create" && res.error?.name === "PasskeyCeremonyCancelledError" && appleDevice()) {',
+    '} else if (mode === "create" && res.error?.name === "PasskeyCeremonyCancelledError" && (apple = appleDevice())) {',
   );
   const generic = passkeyButton.indexOf("Passkey authentication failed. Try again or use another method.");
   assert.ok(noSheet > 0 && ios > noSheet && generic > ios);
-  assert.ok(passkeyButton.includes('passkeyCreateRefusedAdvice(appleDevice()!, loginRequest.context === "invite")'));
+  assert.ok(passkeyButton.includes('passkeyCreateRefusedAdvice(apple, loginRequest.context === "invite")'));
   assert.ok(passkeyButton.includes("appleTouchDevice(navigator.userAgent, navigator.maxTouchPoints ?? 0)"));
 });

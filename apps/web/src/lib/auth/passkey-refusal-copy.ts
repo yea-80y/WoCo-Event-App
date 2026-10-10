@@ -29,11 +29,13 @@ export function appleTouchDevice(userAgent: string, maxTouchPoints: number): "iP
  *
  * More Options offers a QR code or a security key: a passkey made there lives on
  * the other device or key, not on this one, so the words point at Passwords.
+ * (A primary creation does not refuse such an answer today, unlike "Add a
+ * passkey" - flagged for the owner, not changed here.)
  */
 export function passkeyCreateRefusedAdvice(device: "iPhone" | "iPad", invite: boolean): string {
   const steps =
     `If your ${device} said "Choose how to manage your passkeys", it has no password manager set up for passkeys: ` +
     `open Settings › General › AutoFill & Passwords, turn on Passwords, then tap Create again ` +
-    `(not More Options - that makes the passkey on another device). If you closed the prompt yourself, just tap Create again.`;
+    `(not More Options - that puts the passkey on another device or a security key). If you closed the prompt yourself, just tap Create again.`;
   return invite ? `No passkey was saved. ${steps}` : `No passkey was saved. ${steps} Just buying tickets? Continue with Email below.`;
 }
