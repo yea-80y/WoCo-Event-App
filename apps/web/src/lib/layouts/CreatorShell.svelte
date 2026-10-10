@@ -12,6 +12,7 @@
   import Layers from "lucide-svelte/icons/layers";
   import PortalSwitch from "../components/nav/PortalSwitch.svelte";
   import SessionEndedBanner from "../components/auth/SessionEndedBanner.svelte";
+  import InstallSlot from "../pwa/InstallSlot.svelte";
 
   interface Props {
     children: Snippet;
@@ -92,6 +93,8 @@
   </header>
 
   <section class="content">
+    <!-- The install offer on the dashboard too (lazy, see InstallSlot). -->
+    <InstallSlot />
     {#if auth.ready}
       {@render children()}
     {/if}

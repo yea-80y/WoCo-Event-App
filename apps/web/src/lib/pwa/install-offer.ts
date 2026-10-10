@@ -17,9 +17,10 @@ export type InstallOffer = "prompt" | "ios" | "firefox-android";
 
 /**
  * Routes the offer may appear on: the landing page at / (`splitter`, where most
- * people arrive) and the attendee home screens. Never sign-in, an event page or checkout.
+ * people arrive), the attendee home screens and the organiser dashboard. Never
+ * sign-in, an event page or checkout.
  */
-export const INSTALL_ROUTES: ReadonlySet<string> = new Set(["splitter", "home", "discover", "member-home"]);
+export const INSTALL_ROUTES: ReadonlySet<string> = new Set(["splitter", "home", "discover", "member-home", "creator-home"]);
 
 /** A dismissal holds this long before the offer may come back once. */
 export const DISMISS_GAP_MS = 120 * 24 * 60 * 60 * 1000;
@@ -50,15 +51,26 @@ export interface InstallInputs {
   now: number;
 }
 
-export function decideInstallOffer(i: InstallInputs): InstallOffer | null {
-  if (i.standalone || i.memory.installed) return null;
-  if (i.inAppBrowser) return null;
-  if (i.busy || !INSTALL_ROUTES.has(i.route)) return null;
-  if (i.memory.dismissedAt !== undefined && i.now - i.memory.dismissedAt < DISMISS_GAP_MS) return null;
+/**
+ * How this browser can install, ignoring where and when to offer it: what the
+ * permanent "Install the app" row in Profile shows. Null when already installed,
+ * inside a social app's browser, or with no install path (desktop Safari/Firefox).
+ */
+export function installMethod(
+  i: Pick<InstallInputs, "userAgent" | "touchMac" | "standalone" | "hasPrompt" | "inAppBrowser"> & { installed?: boolean },
+): InstallOffer | null {
+  if (i.standalone || i.installed || i.inAppBrowser) return null;
   if (i.hasPrompt) return "prompt";
   if (isIosUserAgent(i.userAgent, i.touchMac)) return "ios";
   if (isFirefoxAndroidUserAgent(i.userAgent)) return "firefox-android";
   return null;
+}
+
+/** The banner: an install path, on an offer route, not busy, not recently dismissed. */
+export function decideInstallOffer(i: InstallInputs): InstallOffer | null {
+  if (i.busy || !INSTALL_ROUTES.has(i.route)) return null;
+  if (i.memory.dismissedAt !== undefined && i.now - i.memory.dismissedAt < DISMISS_GAP_MS) return null;
+  return installMethod({ ...i, installed: i.memory.installed });
 }
 
 /** Storage can be absent or throw (private mode, blocked site data): treat that as "nothing remembered". */

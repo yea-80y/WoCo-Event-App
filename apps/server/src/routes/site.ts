@@ -3,6 +3,7 @@ import { Topic } from "@ethersphere/bee-js";
 import { eventPageFeedTopic, validateLabel } from "@woco/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { eventPageDeployGate } from "../lib/event/page-deploy-gate.js";
+import { getEvent } from "../lib/event/service.js";
 import {
   batchForDeploy,
   BatchPurchaseRequired,
@@ -18,6 +19,7 @@ import { recordNameTarget } from "../lib/sub-ens/name-targets.js";
 import {
   injectBeforeHeadClose,
   isSafeIdParam,
+  withEventPageHead,
   siteConfigScript,
   resolveDeployApiUrl,
 } from "../lib/site/deploy-config.js";
@@ -152,7 +154,14 @@ site.post("/deploy", requireAuth, async (c) => {
       eventSigner,
     };
     const configScript = siteConfigScript(config);
-    const injectedHtml = injectBeforeHeadClose(siteHtml, `  ${configScript}`);
+    // The event's image as the page's icon and share image. A failed read only
+    // costs that: the page falls back to WoCo's logo, never fails to publish.
+    const event = await getEvent(eventId, eventSigner).catch(() => null);
+    const injectedHtml = withEventPageHead(
+      injectBeforeHeadClose(siteHtml, `  ${configScript}`),
+      event,
+      config.contentGatewayUrl,
+    );
 
     // 2) Copy dist-site to a temp dir, write modified site.html
     const ts = Date.now();

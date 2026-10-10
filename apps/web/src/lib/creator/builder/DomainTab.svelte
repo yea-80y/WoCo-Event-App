@@ -97,13 +97,11 @@
   .cursor {
     color: #C7F23A;
     margin-left: 1px;
-    animation: blink 1.1s step-end infinite;
   }
 
   .arrow-wrap { padding: 0.35rem 0; }
   .arrow-wrap svg { animation: bounce-down 2s ease-in-out infinite; }
 
-  @keyframes blink        { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
   @keyframes bounce-down  { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(3px); } }
 
   .empty-copy       { display: flex; flex-direction: column; gap: 0.375rem; }

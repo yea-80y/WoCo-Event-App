@@ -170,16 +170,6 @@
     flex-shrink: 0;
   }
 
-  @media (prefers-reduced-motion: no-preference) {
-    .live-dot {
-      animation: live-pulse 2.4s ease-in-out infinite;
-    }
-    @keyframes live-pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.35; }
-    }
-  }
-
   .pane-controls {
     display: flex;
     align-items: center;

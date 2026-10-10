@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isStandalone } from "../../pwa/install-capture.js";
   import NamePointerPrompt from "../sub-ens/NamePointerPrompt.svelte";
   import type { UserProfile, EventDirectoryEntry } from "@woco/shared";
   import { socialProfileSubject, FEATURES } from "@woco/shared";
@@ -904,6 +905,13 @@
             </button>
           </div>
 
+          <!-- Permanent install entry for organisers and attendees alike (lazy chunk). -->
+          {#if !isStandalone()}
+            {#await import("../../pwa/InstallAppRow.svelte") then { default: InstallAppRow }}
+              <InstallAppRow />
+            {/await}
+          {/if}
+
           {#if profile?.updatedAt}
             <div class="info-row">
               <span class="info-label">Last updated</span>
@@ -1602,13 +1610,6 @@
     height: 7px;
     border-radius: 50%;
     background: var(--success);
-    box-shadow: 0 0 6px var(--success);
-    animation: pulse-dot 2s ease-in-out infinite;
-  }
-
-  @keyframes pulse-dot {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
   }
 
   .revoke-btn {

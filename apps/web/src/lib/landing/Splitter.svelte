@@ -61,7 +61,6 @@
 
     <div class="hero-inner">
       <div class="hero-kicker">
-        <span class="live-dot" aria-hidden="true"></span>
         <span class="mono-kicker">// TICKETING AND WEBSITES FOR EVENT ORGANISERS</span>
       </div>
 
