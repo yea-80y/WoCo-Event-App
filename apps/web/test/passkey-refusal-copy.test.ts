@@ -35,7 +35,7 @@ test("PasskeyLogin shows that advice for the refusal, before its generic fallbac
   const src = readFileSync(new URL("../src/lib/components/auth/PasskeyLogin.svelte", import.meta.url), "utf8");
   const branch = src.indexOf("res.error instanceof PasskeyBrowserRefusedError");
   assert.ok(branch > 0, "the refusal has its own branch");
-  assert.ok(src.includes('passkeyRefusalAdvice(res.error.host, loginRequest.context === "invite")'));
+  assert.ok(src.includes('passkeyRefusalAdvice(res.error.host, organiser)'));
   const fallback = src.indexOf('Passkey authentication failed. Try again or use another method.');
   assert.ok(fallback > branch, "the refusal is matched before the generic message");
 });
