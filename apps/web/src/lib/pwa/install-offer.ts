@@ -22,8 +22,8 @@ export type InstallOffer = "prompt" | "ios" | "firefox-android";
  */
 export const INSTALL_ROUTES: ReadonlySet<string> = new Set(["splitter", "home", "discover", "member-home", "creator-home"]);
 
-/** A dismissal holds this long before the offer may come back once. */
-export const DISMISS_GAP_MS = 120 * 24 * 60 * 60 * 1000;
+/** A dismissal holds this long before the banner comes back (the bottom card stays meanwhile). */
+export const DISMISS_GAP_MS = 14 * 24 * 60 * 60 * 1000;
 
 export const INSTALL_MEMORY_KEY = "woco:pwa:install-offer";
 
@@ -64,6 +64,18 @@ export function installMethod(
   if (isIosUserAgent(i.userAgent, i.touchMac)) return "ios";
   if (isFirefoxAndroidUserAgent(i.userAgent)) return "firefox-android";
   return null;
+}
+
+/**
+ * The slim "Get the app" card at the bottom of the home screens: there whenever
+ * an install is possible, except while the top banner is still asking (one ask
+ * per screen). So it takes over once the banner has been closed.
+ */
+export function showInstallCard(
+  i: Parameters<typeof installMethod>[0] & { memory: InstallMemory; now: number },
+): boolean {
+  if (installMethod({ ...i, installed: i.installed || i.memory.installed }) === null) return false;
+  return i.memory.dismissedAt !== undefined && i.now - i.memory.dismissedAt < DISMISS_GAP_MS;
 }
 
 /** The banner: an install path, on an offer route, not busy, not recently dismissed. */

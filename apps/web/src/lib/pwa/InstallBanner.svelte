@@ -7,6 +7,7 @@
   import { gate } from "../attendee/gate/gate.svelte.js";
   import { detectInAppBrowser } from "../browser/in-app-browser.js";
   import {
+    announceInstallChange,
     consumeInstallPrompt,
     deferredInstallPrompt,
     installedThisSession,
@@ -45,7 +46,8 @@
   onMount(() =>
     onInstallStateChange(() => {
       hasPrompt = deferredInstallPrompt() !== null;
-      if (installedThisSession()) remember({ ...memory, installed: true });
+      // Guarded: remember() announces a change, which calls back in here.
+      if (installedThisSession() && !memory.installed) remember({ ...memory, installed: true });
     }),
   );
 
@@ -66,6 +68,7 @@
   function remember(next: InstallMemory): void {
     memory = next;
     writeInstallMemory(storage(), next);
+    announceInstallChange();
   }
 
   function dismiss(): void {

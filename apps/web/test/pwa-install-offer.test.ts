@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import {
   decideInstallOffer,
   installMethod,
+  showInstallCard,
   readInstallMemory,
   writeInstallMemory,
   DISMISS_GAP_MS,
@@ -98,7 +99,7 @@ test("a dismissal holds for the long gap, then the offer may come back", () => {
   const justNow = { dismissedAt: NOW - 1000 };
   const almost = { dismissedAt: NOW - DISMISS_GAP_MS + 1 };
   const past = { dismissedAt: NOW - DISMISS_GAP_MS };
-  assert.ok(DISMISS_GAP_MS >= 60 * 24 * 60 * 60 * 1000, "the gap is long - months, not days");
+  assert.equal(DISMISS_GAP_MS, 14 * 24 * 60 * 60 * 1000, "a closed banner asks once more after two weeks; the bottom card covers the gap");
   assert.equal(decideInstallOffer(inputs({ hasPrompt: true, memory: justNow })), null);
   assert.equal(decideInstallOffer(inputs({ userAgent: IPHONE_SAFARI, memory: almost })), null);
   assert.equal(decideInstallOffer(inputs({ hasPrompt: true, memory: past })), "prompt");
@@ -150,6 +151,11 @@ test("the prompt is captured at boot; the banner itself stays out of the first l
   assert.match(read("../src/AttendeeApp.svelte"), /<InstallSlot \/>/);
   assert.match(read("../src/lib/landing/Splitter.svelte"), /<InstallSlot \/>/, "the landing page at / offers the install too");
   assert.match(read("../src/lib/layouts/CreatorShell.svelte"), /<InstallSlot \/>/, "the organiser dashboard offers it too");
+  // The bottom card on the landing page, attendee home and organiser dashboard, lazily loaded.
+  assert.match(read("../src/lib/pwa/InstallCardSlot.svelte"), /\{#if installable && INSTALL_ROUTES\.has\(router\.route\)\}\s*\{#await import\("\.\/InstallAppRow\.svelte"\)/);
+  for (const host of ["../src/AttendeeApp.svelte", "../src/lib/layouts/CreatorShell.svelte", "../src/lib/landing/Splitter.svelte"]) {
+    assert.match(read(host), /<InstallCardSlot \/>/, host);
+  }
   // The permanent entry: Profile's Account card, shared by both portals, lazily loaded.
   assert.match(read("../src/lib/components/profile/ProfilePage.svelte"), /\{#await import\("\.\.\/\.\.\/pwa\/InstallAppRow\.svelte"\)/);
 });
@@ -215,4 +221,14 @@ test("the permanent Profile row ignores route and dismissal, never the installed
   assert.equal(installMethod({ ...base, userAgent: FIREFOX_DESKTOP }), null, "no install path: no row");
   // A banner dismissal does not hide the permanent row.
   assert.equal(decideInstallOffer(inputs({ userAgent: IPHONE_SAFARI, memory: { dismissedAt: NOW } })), null);
+});
+
+test("the bottom card waits while the banner asks, then stays until installed", () => {
+  const base = { userAgent: IPHONE_SAFARI, touchMac: false, standalone: false, hasPrompt: false, inAppBrowser: false, now: NOW };
+  assert.equal(showInstallCard({ ...base, memory: {} }), false, "the banner is asking: one ask per screen");
+  assert.equal(showInstallCard({ ...base, memory: { dismissedAt: NOW - 1 } }), true, "banner closed: the card takes over");
+  assert.equal(showInstallCard({ ...base, memory: { dismissedAt: NOW - DISMISS_GAP_MS } }), false, "the banner is back, so the card steps aside");
+  assert.equal(showInstallCard({ ...base, memory: { dismissedAt: NOW - 1, installed: true } }), false);
+  assert.equal(showInstallCard({ ...base, standalone: true, memory: { dismissedAt: NOW - 1 } }), false);
+  assert.equal(showInstallCard({ ...base, userAgent: FIREFOX_DESKTOP, memory: { dismissedAt: NOW - 1 } }), false);
 });

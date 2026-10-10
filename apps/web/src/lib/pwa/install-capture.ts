@@ -42,6 +42,11 @@ export function consumeInstallPrompt(): DeferredInstallPrompt | null {
   return p;
 }
 
+/** The banner was closed or answered: lets the bottom card re-read what is remembered. */
+export function announceInstallChange(): void {
+  changed();
+}
+
 /** Called whenever the captured prompt or the installed state changes. Returns an unsubscribe. */
 export function onInstallStateChange(fn: () => void): () => void {
   listeners.add(fn);
