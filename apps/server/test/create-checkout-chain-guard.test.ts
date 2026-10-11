@@ -119,6 +119,8 @@ before(async () => {
   recordEventFeedSigner(EVENT_ID, ("0x" + "22".repeat(20)) as `0x${string}`, platformFeed.creatorAddress as `0x${string}`);
   const { noRings } = await import("./helpers/key-ring.js");
   noRings();
+  const { confirmedNotices } = await import("./helpers/notice.js");
+  confirmedNotices(); // the privacy-notice gate is pinned in privacy-notice-gate.test.ts
   service.primeEventCache(EVENT_ID, platformFeed);
 });
 
