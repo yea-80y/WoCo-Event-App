@@ -12,6 +12,7 @@ import {
   isAddedUserHandle,
   aaguidFromAuthenticatorData,
   passkeyProviderFromAaguid,
+  PASSKEY_PROVIDERS,
   type PasskeyProviderId,
 } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
@@ -171,14 +172,26 @@ async function deriveGuardianKey(prfOutput: ArrayBuffer): Promise<PasskeyGuardia
 
 /**
  * The passkey answered without the secret WoCo derives the account from. Said in
- * terms of what to do, never "PRF".
+ * terms of what to do, never "PRF". A CREATION knows which manager saved the passkey
+ * (`created.provider`, from its AAGUID): named, because that manager now holds a
+ * useless passkey and the advice must not send the person back to it - the old
+ * copy recommended Google Password Manager whichever manager had failed.
  */
 export class PasskeyPrfUnsupportedError extends Error {
-  constructor() {
+  readonly provider?: PasskeyProviderId;
+  /** `label`: the name the passkey was saved under ("WoCo Account" unless a backup). */
+  constructor(created?: { provider: PasskeyProviderId; label?: string }) {
+    const name = created && created.provider in PASSKEY_PROVIDERS
+      ? PASSKEY_PROVIDERS[created.provider as keyof typeof PASSKEY_PROVIDERS].name
+      : null;
     super(
-      "This password manager can't hold a WoCo passkey yet. Try Google Password Manager, iCloud Keychain or 1Password.",
+      created
+        ? `${name ?? "This password manager"} saved the passkey but can't give WoCo the secret your account is made from, so it can't be used. ` +
+            `Delete the "${created.label ?? "WoCo Account"}" passkey${name ? ` from ${name}` : ""} and create it again in a different password manager.`
+        : "This password manager can't hold a WoCo passkey. Use a different one - Apple Passwords on an iPhone, iPad or Mac, or Google Password Manager on Android or in Chrome.",
     );
     this.name = "PasskeyPrfUnsupportedError";
+    if (created) this.provider = created.provider;
   }
 }
 
@@ -230,15 +243,24 @@ export class PasskeyCreatedWithoutSecretError extends Error {
  * per Corbado's August 2026 measurements) report nothing at all at creation and
  * answer only when the credential is used. The PRF extension makes evaluation at
  * creation optional, so the authoritative probe is one assertion against this exact
- * credential - tried whenever creation gave no value, whatever `enabled` said.
+ * credential - tried whenever creation gave no value and did not say no.
+ *
+ * `enabled: false` IS a no: WebAuthn L3 sets it true if and only if the new
+ * credential supports PRF, so the probe could only fail - and on an iPhone it fails
+ * as a refused second prompt, which reads "sign in to finish" for a passkey that
+ * never can. Refused at once instead, naming the manager (`provider`).
  */
 async function prfAfterCreate(
   credential: PublicKeyCredential,
   rpId: string,
   salt: Uint8Array<ArrayBuffer>,
+  provider: PasskeyProviderId,
+  label?: string,
 ): Promise<ArrayBuffer> {
-  const created = credential.getClientExtensionResults().prf?.results?.first;
+  const prf = credential.getClientExtensionResults().prf;
+  const created = prf?.results?.first;
   if (created) return toArrayBuffer(created);
+  if (prf?.enabled === false) throw new PasskeyPrfUnsupportedError({ provider, label });
   let getResult: PublicKeyCredential | null;
   try {
     getResult = (await credentialsGet({
@@ -259,7 +281,9 @@ async function prfAfterCreate(
     throw e;
   }
   if (!getResult) throw new Error("Passkey authentication was cancelled.");
-  return extractPrfResult(getResult.getClientExtensionResults());
+  const first = getResult.getClientExtensionResults().prf?.results?.first;
+  if (!first) throw new PasskeyPrfUnsupportedError({ provider, label });
+  return toArrayBuffer(first);
 }
 
 /**
@@ -645,12 +669,13 @@ async function _mintPasskeyAccountImpl(): Promise<
     throw new Error("Passkey creation was cancelled.");
   }
 
-  const prfOutput = await prfAfterCreate(credential, rpId, salt);
+  const provider = providerOf(credential);
+  const prfOutput = await prfAfterCreate(credential, rpId, salt, provider);
 
   const meta: PasskeyCredentialMeta = {
     credentialId: toBase64url(credential.rawId),
     rpId,
-    provider: providerOf(credential),
+    provider,
   };
 
   return { ...(await deriveKey(prfOutput)), credential: meta, attachment: attachmentOf(credential) };
@@ -726,11 +751,12 @@ async function _createAddedPasskeyImpl(opts: {
   }
   if (attachmentOf(credential) === "cross-platform") throw new PasskeyNotOnThisDeviceError();
 
-  const prfOutput = await prfAfterCreate(credential, rpId, salt);
+  const provider = providerOf(credential);
+  const prfOutput = await prfAfterCreate(credential, rpId, salt, provider);
   return {
     ...(await deriveKey(prfOutput)),
     credentialId: toBase64url(credential.rawId),
-    provider: providerOf(credential),
+    provider,
   };
 }
 
@@ -793,7 +819,7 @@ async function _createPasskeyBackupKeyImpl(): Promise<PasskeyGuardianMaterial> {
     throw new Error("Passkey creation was cancelled.");
   }
 
-  const prfOutput = await prfAfterCreate(credential, rpId, salt);
+  const prfOutput = await prfAfterCreate(credential, rpId, salt, providerOf(credential), "WoCo Backup");
   return deriveGuardianKey(prfOutput);
 }
 
