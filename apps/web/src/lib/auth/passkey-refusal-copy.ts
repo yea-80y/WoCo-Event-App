@@ -85,12 +85,27 @@ export function passkeyNoPrfNotice(invite: boolean): string {
  * could land in the same manager - so: delete it, and save the next one in Apple's
  * Passwords.
  */
-export function passkeyNoSecretAdvice(device: "iPhone" | "iPad", providerName: string | null, invite: boolean): string {
+export function passkeyNoSecretAdvice(
+  device: "iPhone" | "iPad",
+  provider: { id: string; name: string } | null,
+  invite: boolean,
+): string {
+  const tail = invite ? "" : " Just buying tickets? Continue with Email below.";
+  if (provider?.id === "apple-passwords") {
+    // Apple's own manager gives the secret from iOS 18; before that, "save it in
+    // Passwords" would send the person round in a circle.
+    return (
+      `Apple Passwords saved the passkey but this version of iOS can't give WoCo the secret your account is made from, so no account was made. ` +
+      `Update to iOS 18 or later (Settings › General › Software Update), delete the "WoCo Account" passkey from Passwords, then tap Create again.` +
+      tail
+    );
+  }
+  const providerName = provider?.name ?? null;
   const who = providerName ?? "That password manager";
   const from = providerName ? ` from ${providerName}` : "";
   const s =
     `${who} saved the passkey but can't give WoCo the secret your account is made from, so no account was made. ` +
     `Delete the "WoCo Account" passkey${from}, then tap Create again and save it in Passwords (Apple's). ` +
     `If your ${device} doesn't offer Passwords: ${passkeySetupSteps(device)}`;
-  return invite ? s : `${s} Just buying tickets? Continue with Email below.`;
+  return s + tail;
 }

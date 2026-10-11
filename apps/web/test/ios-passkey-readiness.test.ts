@@ -12,7 +12,8 @@
  * MUTATIONS (each red, then restored): drop the `enabled === false` refusal in
  * `prfAfterCreate` (1 fail); count a MISSING `extension:prf` as false (3); let
  * Chrome on iOS through the provider check (1); drop step 1's app hint (2); drop the
- * PasskeyLogin branch (1); stop carrying the manager into the probe's refusal (1).
+ * PasskeyLogin branch (1); stop carrying the manager into the probe's refusal (1);
+ * drop the added passkey's label (1); drop the Apple-Passwords branch (1).
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -95,7 +96,10 @@ Object.defineProperty(globalThis, "navigator", {
 (globalThis as { window?: unknown }).window = { location: { hostname: "localhost" } };
 installFakeIndexedDB();
 
-const { createPasskeyAccount, PasskeyPrfUnsupportedError } = await import("../src/lib/auth/passkey-account.ts");
+const { createPasskeyAccount, createAddedPasskey, createPasskeyBackupKey, PasskeyPrfUnsupportedError } = await import(
+  "../src/lib/auth/passkey-account.ts"
+);
+const GPM = { id: "google-password-manager", name: "Google Password Manager" };
 const { passkeyReadinessFrom } = await import("../src/lib/auth/passkey-readiness.ts");
 const copy = await import("../src/lib/auth/passkey-refusal-copy.ts");
 
@@ -185,7 +189,7 @@ test("the setup steps come in order and name the deleted-app case", () => {
   assert.ok(at("3) Settings › Face ID & Passcode") > at("2)"));
   assert.ok(at("4) A work or school profile, or Screen Time") > at("3)"));
   assert.match(s, /install Apple's Passwords app from the App Store/);
-  for (const t of [s, copy.passkeyNotReadyNotice("iPad", false), copy.passkeyNoSecretAdvice("iPhone", "Google Password Manager", false)]) {
+  for (const t of [s, copy.passkeyNotReadyNotice("iPad", false), copy.passkeyNoSecretAdvice("iPhone", GPM, false)]) {
     assert.ok(!t.includes("—"), "owner copy: spaced hyphen, never an em dash");
   }
 });
@@ -196,6 +200,7 @@ test("every iPhone message carries the steps; organisers are never pointed at em
       copy.passkeyCreateRefusedAdvice("iPhone", invite),
       copy.passkeyNotReadyNotice("iPhone", invite),
       copy.passkeyNoSecretAdvice("iPhone", null, invite),
+      copy.passkeyNoSecretAdvice("iPhone", GPM, invite),
     ];
     for (const m of msgs) {
       assert.match(m, /install Apple's Passwords app/);
@@ -203,7 +208,30 @@ test("every iPhone message carries the steps; organisers are never pointed at em
     }
     assert.equal(/email/i.test(copy.passkeyNoPrfNotice(invite)), !invite);
   }
-  assert.match(copy.passkeyNoSecretAdvice("iPhone", "Google Password Manager", false), /Delete the "WoCo Account" passkey from Google Password Manager/);
+  assert.match(copy.passkeyNoSecretAdvice("iPhone", GPM, false), /Delete the "WoCo Account" passkey from Google Password Manager/);
+});
+
+test("Apple Passwords without the secret is sent to a software update, never back to Passwords", () => {
+  for (const invite of [false, true]) {
+    const s = copy.passkeyNoSecretAdvice("iPhone", { id: "apple-passwords", name: "Apple Passwords" }, invite);
+    assert.match(s, /Update to iOS 18 or later \(Settings › General › Software Update\)/);
+    assert.doesNotMatch(s, /save it in Passwords/);
+    assert.equal(/email/i.test(s), !invite);
+  }
+});
+
+test("an ADDED passkey's refusal names its own label, never the main passkey's", async () => {
+  createExt = { prf: { enabled: false } };
+  aaguid = GPM_AAGUID;
+  const e = await createAddedPasskey({ exclude: [], createdOn: "11 Oct" }).then(
+    () => assert.fail("must refuse"),
+    (err: unknown) => err as Error,
+  );
+  assert.ok(e instanceof PasskeyPrfUnsupportedError);
+  assert.match(e.message, /Delete the "WoCo Account - added 11 Oct" passkey/);
+  createExt = { prf: { enabled: false } };
+  const b = await createPasskeyBackupKey().then(() => assert.fail("must refuse"), (err: unknown) => err as Error);
+  assert.match(b.message, /Delete the "WoCo Backup" passkey/);
 });
 
 // --- wiring
@@ -213,7 +241,7 @@ test("PasskeyLogin: the named-manager advice is for a creation on an iPhone/iPad
   const branch = src.indexOf('} else if (mode === "create" && res.error instanceof PasskeyPrfUnsupportedError && (apple = appleDevice())) {');
   const generic = src.indexOf("Passkey authentication failed. Try again or use another method.");
   assert.ok(branch > 0 && generic > branch);
-  assert.ok(src.includes("passkeyNoSecretAdvice(apple, name, organiser)"));
+  assert.ok(src.includes("passkeyNoSecretAdvice(apple, known, organiser)"));
   assert.ok(src.includes("<PasskeyReadyNotice invite={organiser} />"));
 });
 

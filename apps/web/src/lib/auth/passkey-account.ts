@@ -752,7 +752,8 @@ async function _createAddedPasskeyImpl(opts: {
   if (attachmentOf(credential) === "cross-platform") throw new PasskeyNotOnThisDeviceError();
 
   const provider = providerOf(credential);
-  const prfOutput = await prfAfterCreate(credential, rpId, salt, provider);
+  // Its own label: "WoCo Account" here would name the MAIN passkey for deletion.
+  const prfOutput = await prfAfterCreate(credential, rpId, salt, provider, name);
   return {
     ...(await deriveKey(prfOutput)),
     credentialId: toBase64url(credential.rawId),

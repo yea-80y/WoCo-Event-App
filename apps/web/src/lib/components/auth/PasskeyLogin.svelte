@@ -98,8 +98,8 @@
         // Face ID done, the passkey SAVED, in a manager that can't give the secret:
         // name it, and steer the retry to Apple's Passwords.
         const id = res.error.provider;
-        const name = id && id in PASSKEY_PROVIDERS ? PASSKEY_PROVIDERS[id as keyof typeof PASSKEY_PROVIDERS].name : null;
-        error = passkeyNoSecretAdvice(apple, name, organiser);
+        const known = id && id in PASSKEY_PROVIDERS ? { id, name: PASSKEY_PROVIDERS[id as keyof typeof PASSKEY_PROVIDERS].name } : null;
+        error = passkeyNoSecretAdvice(apple, known, organiser);
       } else if (res.error instanceof PasskeyBrowserRefusedError) {
         error = passkeyRefusalAdvice(res.error.host, organiser);
       } else {
