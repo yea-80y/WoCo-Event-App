@@ -23,6 +23,7 @@
   import { onboarding } from "./onboarding.svelte.js";
   import { organiserRole } from "../../auth/organiser-role.svelte.js";
   import { canProtectAccount } from "../../auth/backup-prompt.js";
+  import { ownNoticeStatus } from "../../legal/own-notice-status.js";
   import NextStepCard from "./NextStepCard.svelte";
   import {
     nextStep,
@@ -89,6 +90,7 @@
   let stripe = $state<Read<StripeFacts>>(LOADING);
   /** The status read was refused for a dead session (#256): retry = sign in. */
   let stripeSessionDead = $state(false);
+  let noticeConfirmed = $state<Read<boolean>>(LOADING);
   let hasProfileName = $state<Read<boolean>>(LOADING);
   let nameUnlocked = $state<Read<boolean>>(LOADING);
   let audienceCount = $state<Read<number>>(LOADING);
@@ -123,6 +125,7 @@
   );
   const step = $derived(nextStep({
     stripe,
+    noticeConfirmed,
     hasProfileName,
     nameUnlocked,
     eventCount,
@@ -146,6 +149,7 @@
     loadingBackups = false;
     stripe = LOADING;
     stripeSessionDead = false;
+    noticeConfirmed = LOADING;
     hasProfileName = LOADING;
     nameUnlocked = LOADING;
     audienceCount = LOADING;
@@ -161,6 +165,7 @@
     loadingBackups = true;
     stripe = LOADING;
     stripeSessionDead = false;
+    noticeConfirmed = LOADING;
     hasProfileName = LOADING;
     nameUnlocked = LOADING;
     audienceCount = LOADING;
@@ -238,6 +243,9 @@
       }
     }).catch(() => { if (token === loadToken) stripe = UNAVAILABLE; });
 
+    // The privacy notice: nothing sells until it is confirmed. Prompt-free.
+    readNoticeStatus(token);
+
     // Owned .woco.eth names (authoritative on-chain read) — independent of the
     // events/sites panels so it paints as soon as it resolves.
     getOwnedSubEns().then(res => {
@@ -264,6 +272,19 @@
       loadingBackups = false;
     }
   }
+
+  function readNoticeStatus(token: number): void {
+    ownNoticeStatus().then((st) => {
+      if (token !== loadToken) return;
+      noticeConfirmed = st === "unknown" ? UNAVAILABLE : known(st === "confirmed");
+    });
+  }
+
+  // A device whose keys were not ready could not say; ask again once they are.
+  $effect(() => {
+    if (!auth.hasIdentitySeed || noticeConfirmed.status !== "unavailable") return;
+    readNoticeStatus(loadToken);
+  });
 
   // A passkey account's backup list opens only once its keys unlock (#746 fix 1):
   // read it again then, if the first read could not say.
@@ -407,6 +428,7 @@
       onstripe={() => { stripeModalOpen = true; }}
       onstripedetails={() => navigate("/creator/payouts")}
       onretry={reload}
+      onnotice={() => navigate("/creator/privacy-notice")}
       onname={openProfile}
       onimport={() => navigate("/creator/audience")}
       onskipimport={() => onboarding.skipImport()}

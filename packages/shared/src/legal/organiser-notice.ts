@@ -197,9 +197,10 @@ export interface OrganiserNoticeInput {
   /** Where WoCo's own Privacy Policy is served (always the canonical host). */
   wocoPolicyUrl: string;
   /**
-   * The organiser's stored notice exists but could not be read just now. The
-   * page then shows the pre-filled notice, and must not claim the organiser
-   * never reviewed it.
+   * The organiser's stored notice exists but could not be read just now, so a
+   * pre-filled document must not claim the organiser never reviewed it. Public
+   * pages no longer render an unconfirmed document at all (2026-10-11); this
+   * stays for any preview built from one.
    */
   storedUnavailable?: boolean;
 }

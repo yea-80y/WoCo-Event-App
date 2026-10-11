@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { uploadSignedSoc, type SignedSocInput } from "../lib/swarm/soc-upload.js";
+import { invalidateContentFeedVersion, uploadSignedSoc, type SignedSocInput } from "../lib/swarm/soc-upload.js";
+import { organiserNoticeContentTopic } from "@woco/shared";
+import { noticeWritten } from "../lib/legal/notice-gate.js";
 import { readVerifiedSoc } from "../lib/swarm/soc-read.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
@@ -92,6 +94,14 @@ swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, a
       span: b.span,
       payload: b.payload,
     }, selection);
+    // The organiser just wrote their notice: their next sale and notice page read
+    // it now, not after the cache lapses (lib/legal/notice-gate.ts). Only the
+    // writer's own account - a notice validates only under its own topic.
+    if (isPrivacyNoticePayload(b.payload)) {
+      const parent = (c.get("parentAddress") as string).toLowerCase();
+      noticeWritten(parent);
+      invalidateContentFeedVersion(b.owner.toLowerCase().replace(/^0x/, ""), organiserNoticeContentTopic(parent));
+    }
     return c.json({ ok: true, data: ref });
   } catch (err) {
     if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);

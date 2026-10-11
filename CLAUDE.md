@@ -286,6 +286,10 @@ write queue) went with #207 and are NOT in the tree. `routes/claims.ts` serves o
 - Email addresses are HMAC-SHA256 (`hashEmail`); `EMAIL_HASH_SECRET` is MANDATORY and the
   legacy unsalted path is deleted. Still used by marketing + bounce suppression
 - No free-ticket path exists (no v2 mint path for one) — `freeEventsAllowed = false`
+- No sale without the organiser's CONFIRMED privacy notice (owner 2026-10-11): reserve, create-checkout and
+  the agent rail refuse `PRIVACY_NOTICE_REQUIRED` (409) / `_UNAVAILABLE` (503, fail closed), read under
+  `eventKeys` through `lib/legal/notice-gate.ts`. Public pages never show the pre-filled draft.
+  `docs/legal/ORGANISER_PRIVACY_NOTICE.md`
 - Full lifecycle: `docs/TICKETING.md`
 
 APPROVAL FLOW — REMOVED with the v1 claim-rail retirement (#207): routes, flags and

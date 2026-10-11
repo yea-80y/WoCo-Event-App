@@ -1,8 +1,10 @@
 /**
  * The one thing an organiser should do next, for the card at the top of the
- * dashboard. Setup runs in order — verify with Stripe, claim a name, bring an
- * attendee list across (or skip), put the first event on sale — and once it is
- * done the card only appears when something needs them.
+ * dashboard. Setup runs in order — verify with Stripe, confirm the privacy
+ * notice, claim a name, bring an attendee list across (or skip), put the first
+ * event on sale — and once it is done the card only appears when something
+ * needs them. An unconfirmed notice always needs them: nothing sells until it
+ * is confirmed (docs/legal/ORGANISER_PRIVACY_NOTICE.md).
  *
  * Pure, so the suite can pin the rules that make it trustworthy:
  *   - A step counts as done only on an answer that says so. Every input is a
@@ -105,6 +107,8 @@ export interface TodayEvent {
 
 export interface NextStepInputs {
   stripe: Read<StripeFacts>;
+  /** The organiser has confirmed their privacy notice: their own feed, read prompt-free. */
+  noticeConfirmed: Read<boolean>;
   /** A profile name is held: from the owned-names read. */
   hasProfileName: Read<boolean>;
   /** The server's name-unlock answer (ticket, Stripe or a confirmed invite). */
@@ -119,7 +123,7 @@ export interface NextStepInputs {
   today: TodayEvent | null;
 }
 
-export type CheckName = "stripe" | "name" | "audience" | "events";
+export type CheckName = "stripe" | "notice" | "name" | "audience" | "events";
 
 export type NextStep =
   /** A check this step depends on has not answered: show nothing yet. */
@@ -128,6 +132,7 @@ export type NextStep =
   | { kind: "stripe-start" }
   | { kind: "stripe-review" }
   | { kind: "stripe-more" }
+  | { kind: "privacy-notice" }
   | { kind: "name" }
   | { kind: "import" }
   | { kind: "first-event" }
@@ -135,7 +140,7 @@ export type NextStep =
   | { kind: "none" };
 
 /** The setup steps in order, for the "2 of 4" on the card. */
-export const SETUP_STEPS = ["stripe", "name", "import", "first-event"] as const;
+export const SETUP_STEPS = ["stripe", "privacy-notice", "name", "import", "first-event"] as const;
 
 export function nextStep(i: NextStepInputs): NextStep {
   // 1. Stripe. First at every stage: "Stripe wants more" outranks everything.
@@ -146,7 +151,13 @@ export function nextStep(i: NextStepInputs): NextStep {
   if (stripe === "review") return { kind: "stripe-review" };
   if (stripe === "more") return { kind: "stripe-more" };
 
-  // 2. Name. A held profile name settles it; otherwise the unlock must say yes.
+  // 2. Privacy notice. Second at every stage too: until it is confirmed the
+  //    server refuses every sale, set up or not.
+  if (i.noticeConfirmed.status === "loading") return { kind: "wait" };
+  if (i.noticeConfirmed.status === "unavailable") return { kind: "unavailable", check: "notice" };
+  if (!i.noticeConfirmed.value) return { kind: "privacy-notice" };
+
+  // 3. Name. A held profile name settles it; otherwise the unlock must say yes.
   //    Stripe is verified by now, so a "locked" answer is out of step with
   //    Stripe (the stored flag lagging the live one) and is shown as a check
   //    to retry, never as a step the server would refuse.
@@ -160,7 +171,7 @@ export function nextStep(i: NextStepInputs): NextStep {
     return { kind: "name" };
   }
 
-  // 3 + 4 belong to setup, which ends with the first event.
+  // 4 + 5 belong to setup, which ends with the first event.
   if (i.eventCount.status === "loading") return { kind: "wait" };
   if (i.eventCount.status === "unavailable") return { kind: "unavailable", check: "events" };
   if (i.eventCount.value === 0) {

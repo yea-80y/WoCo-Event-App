@@ -6,7 +6,10 @@
  * the components declare `$state`, which Node cannot load).
  *
  * MUTATION: let `acceptNoticeData` keep a notice when `trusted` is false and
- * "only a server-vouched notice is shown" goes red; drop CheckoutNoticeLinks from
+ * "only a server-vouched notice is shown" goes red; let `publicNoticeView` build
+ * a document with no confirmed notice and "only a CONFIRMED notice is shown"
+ * goes red; drop the publish check from PublishButton or the site builder and
+ * "a paid event publish and a site deploy ask" goes red; drop CheckoutNoticeLinks from
  * StripePayPanel and "both checkout panels link the organiser's notice" goes red;
  * point the embed back at WoCo's policy alone and "the embed links the organiser's
  * notice first" goes red; remove the router's /privacy-notice match and "every
@@ -19,7 +22,7 @@ import { ORGANISER_NOTICE_FORMAT, noticePlainText } from "@woco/shared";
 import {
   acceptNoticeData,
   organiserNoticeUrl,
-  publicNoticeDoc,
+  publicNoticeView,
   stripEmpty,
   WOCO_POLICY_URL,
   type PublicNoticeData,
@@ -56,22 +59,50 @@ test("only a server-vouched notice is shown", () => {
   assert.equal(acceptNoticeData(null), null);
 });
 
-test("never blank: no data at all still renders the pre-filled notice under the page's name", () => {
-  const doc = publicNoticeDoc(null, { name: "Punk Pub" });
-  assert.equal(doc.confirmed, false);
-  assert.match(noticePlainText(doc), /This notice is from Punk Pub/);
-  const confirmed = publicNoticeDoc(acceptNoticeData(data()), { name: "Somebody Else" });
-  assert.equal(confirmed.confirmed, true);
-  assert.match(noticePlainText(confirmed), /This notice is from Punk Pub Ltd/, "the organiser's confirmed name wins");
+test("only a CONFIRMED notice is shown to the public - never WoCo's pre-filled draft", () => {
+  const confirmed = publicNoticeView(acceptNoticeData(data()), { name: "Somebody Else" });
+  assert.equal(confirmed.kind, "notice");
+  if (confirmed.kind === "notice") {
+    assert.equal(confirmed.doc.confirmed, true);
+    assert.match(noticePlainText(confirmed.doc), /This notice is from Punk Pub Ltd/, "the organiser's confirmed name wins");
+  }
+  const none = publicNoticeView(acceptNoticeData(data({ notice: null, noticeStatus: "absent" })), { name: "Punk Pub" });
+  assert.deepEqual(none, { kind: "not-confirmed", name: "Punk Pub", legacy: false, site: false });
+  const site = publicNoticeView(
+    acceptNoticeData(data({ notice: null, noticeStatus: "absent", site: { brandName: "Punk Pub", contactEmail: "hi@punkpub.example", postalAddress: null, contactForm: true } })),
+  );
+  assert.equal(site.kind, "not-confirmed");
+  assert.equal(site.kind === "not-confirmed" && site.site, true);
 });
 
-test("a site's contact details pre-fill an unconfirmed site notice", () => {
-  const doc = publicNoticeDoc(
-    acceptNoticeData(data({ notice: null, site: { brandName: "Punk Pub", contactEmail: "hi@punkpub.example", postalAddress: null, contactForm: true } })),
-  );
-  const text = noticePlainText(doc);
-  assert.match(text, /Privacy contact: hi@punkpub\.example/);
-  assert.match(text, /contact form on this site/);
+test("a legacy event says it needs publishing again, never 'on sale once they confirm'", () => {
+  const v = publicNoticeView(acceptNoticeData(data({ trusted: false, notice: null, noticeStatus: "absent" })));
+  assert.equal(v.kind === "not-confirmed" && v.legacy, true);
+  const page = code(read("lib/legal/OrganiserNotice.svelte"));
+  assert.match(page, /view\.legacy[\s\S]*publish it again/);
+});
+
+test("loading, unreachable and unreadable are their own states, never a notice", () => {
+  assert.equal(publicNoticeView(undefined).kind, "loading");
+  assert.equal(publicNoticeView(null).kind, "unavailable");
+  assert.equal(publicNoticeView(acceptNoticeData(data({ notice: null, noticeStatus: "unavailable" }))).kind, "unavailable");
+});
+
+test("the public renderer refuses an unconfirmed document as a backstop", () => {
+  const view = code(read("lib/legal/OrganiserNoticeView.svelte"));
+  assert.match(view, /\{#if mode === "editor" \|\| doc\.confirmed\}/);
+  assert.doesNotMatch(code(read("lib/legal/OrganiserNotice.svelte")), /buildOrganiserNotice|fallback:/);
+});
+
+test("a paid event publish and a site deploy ask for the notice first", () => {
+  const publish = code(read("lib/creator/events/PublishButton.svelte"));
+  assert.match(publish, /if \(!\(await noticeLetsPublish\(\)\)\) return;/);
+  assert.ok(publish.indexOf("noticeLetsPublish()") < publish.indexOf("createEventStreaming("), "before anything is written");
+  assert.match(publish, /if \(!hasPaidSeries \|\| publishBeforeNotice\) return true;/);
+  const site = code(read("lib/creator/builder/MultiSiteBuilder.svelte"));
+  assert.match(site, /if \(!\(await noticeLetsPublish\(\)\)\) return;/);
+  assert.ok(site.indexOf("await noticeLetsPublish()") < site.indexOf("publishSite("));
+  assert.match(site, /siteEvents\.length === 0/);
 });
 
 test("links are on the canonical host, and the event id is encoded", () => {
@@ -159,4 +190,15 @@ test("a key-ring rotation moves the notice, and stops rather than dropping it on
   assert.match(copy, /readContentFeedResult<unknown>\(h\.oldSigner\.address, noticeTopic, \{[^}]*thorough: true/);
   assert.match(copy, /notice\.status === "unavailable"\) throw/);
   assert.match(copy, /route: noticeRoute/);
+});
+
+test("the new notice-gate copy keeps the register: spaced hyphen, never an em or en dash", () => {
+  for (const f of [
+    "lib/legal/OrganiserNotice.svelte",
+    "lib/creator/privacy/NoticeConfirmPrompt.svelte",
+    "lib/creator/home/NextStepCard.svelte",
+    "lib/creator/privacy/PrivacyNoticeEditor.svelte",
+  ]) {
+    assert.doesNotMatch(code(read(f)), /[–—]/, f);
+  }
 });

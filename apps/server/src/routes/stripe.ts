@@ -52,6 +52,7 @@ import { attendeeCheckoutRefusal, orderRefOf } from "../lib/attendee-batch/write
 import { getOrderRecord, isOrderErased } from "../lib/attendee-batch/ledger.js";
 import { commitHold, getHeldOrder, holdPrepared } from "../lib/attendee-batch/held-orders.js";
 import { authoritativeOrderKeyRef, eventKeys, isStaleOrderKey, type EventKeys } from "../lib/keyring/event-keys.js";
+import { noticeRefusal, organiserNoticeVerdict } from "../lib/legal/notice-gate.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../lib/stripe/checkout-provenance.js";
 import { liveProvenanceReads, refundTamperedSession } from "../lib/stripe/checkout-provenance-live.js";
@@ -709,11 +710,19 @@ stripe.post("/create-checkout", async (c) => {
       409,
     );
   }
+  // No sale until the organiser has confirmed their privacy notice (2026-10-11), read
+  // under the same keys as the notice page shows. Usually a memory hit; started
+  // beside the event read so a cold one costs no extra round trip.
+  const noticeVerdict = organiserNoticeVerdict(keys.creator, keys.feedSigner);
   const event: EventFeed | null = await getEvent(eventId, siteSigner ?? undefined);
   if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
 
   const series = event.series.find((s) => s.seriesId === seriesId);
   if (!series) return c.json({ ok: false, error: "Series not found" }, 404);
+
+  // Before anything is held or charged; an unreadable notice refuses too.
+  const noticeBlock = noticeRefusal(await noticeVerdict);
+  if (noticeBlock) return c.json(noticeBlock.body, noticeBlock.status);
 
   // The box must be sealed to the key this event sells under NOW (#186): a rotation
   // between prepare-order and here is caught too. Keys that cannot be read stop the

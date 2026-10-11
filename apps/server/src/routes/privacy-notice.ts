@@ -1,14 +1,14 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import type { Site } from "@woco/shared";
-import { readContentFeedJsonResult } from "../lib/swarm/soc-upload.js";
 import { eventKeys } from "../lib/keyring/event-keys.js";
 import { getEvent } from "../lib/event/service.js";
 import { resolveSiteConfig } from "../lib/site/service.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { clientIp } from "../lib/http/client-ip.js";
 import { isSafeIdParam } from "../lib/site/deploy-config.js";
-import { carrierFromEventKeys, readOrganiserNotice, type NoticeRead } from "../lib/legal/organiser-notice.js";
+import { carrierFromEventKeys, type NoticeRead } from "../lib/legal/organiser-notice.js";
+import { organiserNoticeRead } from "../lib/legal/notice-gate.js";
 
 /**
  * Public reads of an organiser's privacy notice - see lib/legal/organiser-notice.ts
@@ -25,8 +25,8 @@ export const privacyNotice = new Hono<AppEnv>();
 // load or two a second from one venue NAT.
 const READS = new SlidingWindowLimiter([{ limit: 120, windowMs: 60_000 }]);
 
-const readFeed = (ownerHex: string, topic: string) =>
-  readContentFeedJsonResult(ownerHex, topic, "privacyNotice", { skipLegacy: true });
+// Reads go through the sale gate's cache, so this page and the checkout it links
+// from always agree on the organiser's notice (lib/legal/notice-gate.ts).
 
 function noticeBody(read: NoticeRead) {
   return read.status === "found"
@@ -51,7 +51,7 @@ privacyNotice.get("/event/:eventId", async (c) => {
     carrier === "unavailable"
       ? { status: "unavailable", reason: "organiser keys unreadable" }
       : carrier
-        ? await readOrganiserNotice(carrier.creator, carrier.signer, readFeed)
+        ? await organiserNoticeRead(carrier.creator, carrier.signer)
         : { status: "absent" };
 
   return c.json({
@@ -80,7 +80,7 @@ privacyNotice.get("/site/:siteId", async (c) => {
   const { site } = resolved;
   const creator = site.ownerAddress.toLowerCase();
   const signer = resolved.siteFeedSigner;
-  const read: NoticeRead = signer ? await readOrganiserNotice(creator, signer, readFeed) : { status: "absent" };
+  const read: NoticeRead = signer ? await organiserNoticeRead(creator, signer) : { status: "absent" };
 
   return c.json({
     ok: true,

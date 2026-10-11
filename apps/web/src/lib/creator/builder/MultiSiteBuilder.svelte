@@ -1,4 +1,6 @@
 <script lang="ts">
+  import NoticeConfirmPrompt from '../privacy/NoticeConfirmPrompt.svelte';
+  import { ownNoticeStatus, type OwnNoticeStatus } from '../../legal/own-notice-status.js';
   import type { Site, SiteDeploySubEns, SiteEventEntry, TemplateId } from "@woco/shared";
   import { newSiteFromTemplate, siteConfigTopic, subEnsName, FEATURES } from "@woco/shared";
   import { logFeedToManifest } from "../../manifest/feed-log.js";
@@ -332,6 +334,25 @@
     return { tone: 'warn', text: `${subEnsName(s.label)}: ${d.title}${detail ? ` ${detail}` : ''}` };
   }
 
+  // A site with events sells tickets, and nothing sells until the organiser has
+  // confirmed their privacy notice (the server refuses every hold and checkout).
+  // Asked before deploying such a site, with a way through: publishing is allowed.
+  let noticePrompt = $state<Exclude<OwnNoticeStatus, 'confirmed'> | null>(null);
+  let noticeChecking = $state(false);
+  let publishBeforeNotice = false;
+
+  async function noticeLetsPublish(): Promise<boolean> {
+    if (siteEvents.length === 0 || publishBeforeNotice) return true;
+    noticeChecking = true;
+    try {
+      const status = await ownNoticeStatus();
+      noticePrompt = status === 'confirmed' ? null : status;
+      return status === 'confirmed';
+    } finally {
+      noticeChecking = false;
+    }
+  }
+
   async function handlePublish() {
     if (publishState === 'publishing') return;
 
@@ -343,6 +364,7 @@
       const ok = await auth.ensureSession();
       if (!ok) return;
     }
+    if (!(await noticeLetsPublish())) return;
 
     publishState = 'publishing';
     publishError = '';
@@ -757,6 +779,16 @@
           </div>
         {/if}
       </div>
+    {/if}
+
+    {#if noticePrompt && publishState !== 'publishing'}
+      <NoticeConfirmPrompt
+        status={noticePrompt}
+        what="site"
+        checking={noticeChecking}
+        onrecheck={() => void handlePublish()}
+        onpublishanyway={() => { publishBeforeNotice = true; noticePrompt = null; void handlePublish(); }}
+      />
     {/if}
 
     {#if publishState === 'error' && publishError}

@@ -101,7 +101,7 @@ function matchRoute(pathWithQuery: string): Match {
     try {
       id = decodeURIComponent(noticeMatch[1]);
     } catch {
-      // A malformed escape is a broken link: the page shows the pre-filled notice.
+      // A malformed escape is a broken link: the page says no confirmed notice was found.
     }
     return { route: "privacy-notice", params: { id }, surface: "neutral" };
   }

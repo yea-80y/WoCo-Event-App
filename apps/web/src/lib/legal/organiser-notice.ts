@@ -67,26 +67,43 @@ export async function fetchSiteNotice(siteId: string, apiUrl?: string): Promise<
 }
 
 /**
- * The document a public page renders. Never blank: with no data at all (the
- * server unreachable) it is still the pre-filled notice under whatever name the
- * page already shows.
+ * What a public page shows. Only a notice the organiser CONFIRMED is ever shown as
+ * theirs (owner decision 2026-10-11): the pre-filled draft is the editor's, never
+ * the public's. Until they confirm, the page says so - and the server refuses
+ * every sale for their events, so nobody is asked for details under a notice the
+ * organiser has not seen (apps/server/src/lib/legal/notice-gate.ts).
  */
-export function publicNoticeDoc(
-  data: PublicNoticeData | null,
-  pageKnows: { name?: string; contactEmail?: string; postalAddress?: string; contactForm?: boolean; event?: { title: string; orderFields?: OrderField[] } } = {},
-): OrganiserNoticeDoc {
-  return buildOrganiserNotice({
-    notice: data?.notice ?? null,
-    fallback: {
-      name: pageKnows.name ?? data?.site?.brandName ?? undefined,
-      contactEmail: pageKnows.contactEmail ?? data?.site?.contactEmail ?? undefined,
-      postalAddress: pageKnows.postalAddress ?? data?.site?.postalAddress ?? undefined,
-    },
-    event: data?.event ?? pageKnows.event,
-    contactForm: pageKnows.contactForm ?? data?.site?.contactForm ?? false,
-    wocoPolicyUrl: WOCO_POLICY_URL,
-    storedUnavailable: data?.noticeStatus === "unavailable",
-  });
+export type PublicNoticeView =
+  | { kind: "loading" }
+  | { kind: "notice"; doc: OrganiserNoticeDoc }
+  /** The server could not be reached, or could not read the stored notice. */
+  | { kind: "unavailable" }
+  /**
+   * No confirmed notice. `legacy`: an event with no record of who made it - no
+   * notice can be shown for it, and it cannot sell until it is published again.
+   */
+  | { kind: "not-confirmed"; name: string | null; legacy: boolean; site: boolean };
+
+export function publicNoticeView(
+  /** `undefined` while the read is in flight; `null` when it failed. */
+  data: PublicNoticeData | null | undefined,
+  pageKnows: { name?: string; contactForm?: boolean } = {},
+): PublicNoticeView {
+  if (data === undefined) return { kind: "loading" };
+  if (data === null || data.noticeStatus === "unavailable") return { kind: "unavailable" };
+  if (data.notice) {
+    return {
+      kind: "notice",
+      doc: buildOrganiserNotice({
+        notice: data.notice,
+        event: data.event ?? undefined,
+        contactForm: pageKnows.contactForm ?? data.site?.contactForm ?? false,
+        wocoPolicyUrl: WOCO_POLICY_URL,
+      }),
+    };
+  }
+  const name = (pageKnows.name ?? data.site?.brandName ?? "").trim() || null;
+  return { kind: "not-confirmed", name, legacy: !data.trusted && !data.site, site: !!data.site };
 }
 
 // ---------------------------------------------------------------------------

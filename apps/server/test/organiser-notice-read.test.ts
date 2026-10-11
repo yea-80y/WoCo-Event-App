@@ -74,8 +74,9 @@ test("the ring's signer wins; a record stands without one; a legacy event names 
 test("the route chooses the notice from eventKeys, never from the event feed's own fields", () => {
   const src = readFileSync(new URL("../src/routes/privacy-notice.ts", import.meta.url), "utf-8");
   assert.match(src, /carrierFromEventKeys\(keys\)/);
-  assert.match(src, /readOrganiserNotice\(carrier\.creator, carrier\.signer/);
-  assert.doesNotMatch(src, /readOrganiserNotice\([^)]*feed\./);
+  // Through the sale gate's cache (lib/legal/notice-gate.ts), so page and checkout agree.
+  assert.match(src, /organiserNoticeRead\(carrier\.creator, carrier\.signer\)/);
+  assert.doesNotMatch(src, /(readOrganiserNotice|organiserNoticeRead)\([^)]*feed\./);
   assert.doesNotMatch(src, /creatorFeedSigner/);
 });
 

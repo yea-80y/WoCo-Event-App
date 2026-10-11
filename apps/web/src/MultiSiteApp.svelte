@@ -404,8 +404,6 @@
           siteId={route.eventId ? undefined : site.siteId}
           {apiUrl}
           name={site.theme.brandName}
-          contactEmail={site.contact.email}
-          postalAddress={site.contact.address}
           contactForm={siteHasContactForm}
         />
       </main>
