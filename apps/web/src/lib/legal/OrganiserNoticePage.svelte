@@ -30,8 +30,10 @@
   <p class="notice-page-links">
     <!-- A button, not a fragment href: under the deploy's <base href> a bare
          fragment resolves onto the gateway (#605). -->
-    <button class="link-btn" onclick={() => navigate(`/event/${encodeURIComponent(eventId)}`)}>Back to the event</button>
-    <span aria-hidden="true">·</span>
+    {#if eventId}
+      <button class="link-btn" onclick={() => navigate(`/event/${encodeURIComponent(eventId)}`)}>Back to the event</button>
+      <span aria-hidden="true">·</span>
+    {/if}
     <a href={WOCO_POLICY_URL} target="_blank" rel="noopener noreferrer">WoCo Privacy Policy</a>
   </p>
 </main>

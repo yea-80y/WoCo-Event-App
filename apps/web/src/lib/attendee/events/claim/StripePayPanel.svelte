@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { BuyerFees } from "@woco/shared";
-  import { CHECKOUT_PRIVACY_SUMMARY } from "@woco/shared";
+  import { PAY_PANEL_PRIVACY_SUMMARY } from "@woco/shared";
   import CheckoutNoticeLinks from "./CheckoutNoticeLinks.svelte";
 
   interface Props {
@@ -74,9 +74,9 @@
   <p class="pay-privacy">
     {#if organiserName}
       Your details go to <strong>{organiserName}</strong>, who is responsible for them.
-      {CHECKOUT_PRIVACY_SUMMARY.slice(CHECKOUT_PRIVACY_SUMMARY.indexOf("Anything you enter"))}
+      {PAY_PANEL_PRIVACY_SUMMARY.slice(PAY_PANEL_PRIVACY_SUMMARY.indexOf("WoCo uses"))}
     {:else}
-      {CHECKOUT_PRIVACY_SUMMARY}
+      {PAY_PANEL_PRIVACY_SUMMARY}
     {/if}
     <CheckoutNoticeLinks {eventId} {organiserName} />
   </p>

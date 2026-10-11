@@ -91,10 +91,14 @@ test("both checkout panels link the organiser's notice and WoCo's policy", () =>
   assert.match(links, /href=\{organiserNoticeUrl\(eventId\)\}/);
   assert.match(links, /href=\{WOCO_POLICY_URL\}/);
   for (const f of ["lib/attendee/events/claim/OrderForm.svelte", "lib/attendee/events/claim/StripePayPanel.svelte"]) {
-    const src = code(read(f));
-    assert.match(src, /<CheckoutNoticeLinks \{eventId\} \{organiserName\} \/>/, f);
-    assert.match(src, /CHECKOUT_PRIVACY_SUMMARY/, `${f}: the responsibility line`);
+    assert.match(code(read(f)), /<CheckoutNoticeLinks \{eventId\} \{organiserName\} \/>/, f);
   }
+  assert.match(code(read("lib/attendee/events/claim/OrderForm.svelte")), /CHECKOUT_PRIVACY_SUMMARY/);
+  // The pay panel collects only an email, which is NOT client-sealed (DATA_INVENTORY §4):
+  // it must never borrow the "encrypted in your browser" line.
+  const pay = code(read("lib/attendee/events/claim/StripePayPanel.svelte"));
+  assert.match(pay, /PAY_PANEL_PRIVACY_SUMMARY/);
+  assert.doesNotMatch(pay, /CHECKOUT_PRIVACY_SUMMARY/);
   const claim = code(read("lib/attendee/events/ClaimButton.svelte"));
   assert.equal((claim.match(/\{eventId\}/g) ?? []).length >= 2, true, "ClaimButton passes the event to both panels");
 });
@@ -147,4 +151,12 @@ test("only the notice rail touches the notice's feed route", () => {
   assert.doesNotMatch(lib, /FEED_ROUTES\.profile/);
   // Public reads go through the server, which resolves the trusted signer.
   assert.doesNotMatch(lib, /creatorFeedSigner/);
+});
+
+test("a key-ring rotation moves the notice, and stops rather than dropping it on a failed read", () => {
+  const src = code(read("lib/keyring/rotate-live.ts"));
+  const copy = src.slice(src.indexOf("organiserNoticeContentTopic(parent)"));
+  assert.match(copy, /readContentFeedResult<unknown>\(h\.oldSigner\.address, noticeTopic, \{[^}]*thorough: true/);
+  assert.match(copy, /notice\.status === "unavailable"\) throw/);
+  assert.match(copy, /route: noticeRoute/);
 });

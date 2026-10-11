@@ -73,7 +73,7 @@ export interface OrganiserNoticeV1 {
   automatedDecisions?: string;
   /**
    * The organiser also emails past buyers about similar events under the PECR
-   * "soft opt-in" (ORGANISER_TERMS §5, PRIVACY_POLICY §5). Absent = checkout
+   * "soft opt-in" (ORGANISER_TERMS §5, PRIVACY_POLICY §5 legal-basis table). Absent = checkout
    * opt-in only, which is all the platform itself collects.
    */
   marketingSoftOptIn?: boolean;
@@ -86,7 +86,9 @@ export function organiserNoticeContentTopic(address: string): string {
   return `woco/legal/privacy-notice/${address.toLowerCase()}`;
 }
 
-const EMAIL_RE = /^[^\s@<>()[\]\\,;:"]+@[^\s@<>()[\]\\,;:"]+\.[^\s@<>()[\]\\,;:"]+$/;
+// Narrower than RFC 5322 on purpose: no `?`, `#`, `&` or `/`, so a `mailto:` built
+// from it can never carry extra headers (`?cc=`, `&body=`) or a path.
+const EMAIL_RE = /^[^\s@<>()[\]\\,;:"?#&/]+@[^\s@<>()[\]\\,;:"?#&/]+\.[^\s@<>()[\]\\,;:"?#&/]+$/;
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
 // C0 controls except tab/newline, DEL, C1 controls, and the bidi overrides that
 // can make a rendered line read differently from its bytes.
@@ -194,6 +196,12 @@ export interface OrganiserNoticeInput {
   contactForm?: boolean;
   /** Where WoCo's own Privacy Policy is served (always the canonical host). */
   wocoPolicyUrl: string;
+  /**
+   * The organiser's stored notice exists but could not be read just now. The
+   * page then shows the pre-filled notice, and must not claim the organiser
+   * never reviewed it.
+   */
+  storedUnavailable?: boolean;
 }
 
 /** Shown publicly in place of a `todo` with no fallback. */
@@ -316,6 +324,15 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
     },
   ];
   if (orderPurpose) why.push(orderPurpose);
+  if (input.contactForm) {
+    why.push({
+      kind: "p",
+      content: [
+        "If you use the contact form on this site: to reply to your message. Our basis is our legitimate " +
+          "interest in answering you. Messages are sent to our inbox.",
+      ],
+    });
+  }
   why.push({
     kind: "p",
     content: [
@@ -338,7 +355,7 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
             "runs check-in, on our instructions. Your order-form answers are encrypted in your browser to a key " +
             "only we hold, so WoCo cannot read them.",
         ],
-        ["Amazon Web Services (Amazon SES, London) sends ticket and event emails for WoCo."],
+        ["Amazon Web Services (Amazon SES, UK) sends ticket and event emails for WoCo."],
         [
           "Hetzner (Germany) hosts WoCo's servers, Cloudflare delivers its pages, and Etherna (Italy) is a " +
             "storage gateway for the network described below.",
@@ -370,9 +387,10 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
     {
       kind: "p",
       content: [
-        "Your order details are encrypted in your browser and, once your payment is confirmed, stored on Swarm - " +
-          "a public decentralised storage network run by independent computers around the world. What reaches " +
-          "the network cannot be read without our key.",
+        "Your order-form answers are encrypted in your browser and, once your payment is confirmed, stored on " +
+          "Swarm - a public decentralised storage network run by independent computers around the world. What " +
+          "reaches the network cannot be read without our key. Your email address is handled separately: WoCo " +
+          "uses it to send your ticket, and Stripe receives it with your payment.",
       ],
     },
     {
@@ -424,7 +442,7 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
         ...(retentionItem.length ? [retentionItem] : []),
         ["A record of your marketing consent: while we can still email you on that basis, plus 6 months."],
         ["If your ticket email cannot be delivered, WoCo keeps your address until it is put right, or 90 days at most."],
-        ["Payment records: 6 years, as tax and company law require."],
+        ["Payment records: kept by Stripe and by us for 6 years, as tax and company law require."],
         ["WoCo's record that you unsubscribed: kept for good, so it can keep honouring your choice."],
         ["The onchain record of your ticket: permanent."],
       ],
@@ -436,7 +454,8 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
       field: "retention",
       lead: "Your order details: ",
       prompt:
-        "How long you keep attendee details, including guest lists you download or put on a door scanner.",
+        "How long you keep attendee details, including guest lists you download or put on a door scanner" +
+        (input.contactForm ? ", and messages from your contact form." : "."),
       fallback: [
         "Your order details: for as long as we need them to run the event. They are erased when we ask WoCo, " +
           "when we stop using WoCo, or when you ask.",
@@ -516,7 +535,9 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
 
   const footer = confirmed
     ? [`Last confirmed by ${name} on ${noticeDate(n!.confirmedAt)}.`, "Prepared with WoCo's privacy notice tool."]
-    : [
+    : input.storedUnavailable
+      ? ["The organiser's confirmed notice couldn't be loaded just now, so this is the version WoCo pre-fills. Reload to try again."]
+      : [
         `Pre-filled by WoCo from the details it holds. ${name === "the event organiser" ? "The organiser" : name} ` +
           "has not reviewed it yet.",
       ];

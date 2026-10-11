@@ -68,13 +68,16 @@ export function carrierFromEventKeys(
  * organiser edits them before anything is published.
  */
 export function businessProfileForNotice(account: {
+  business_type?: string | null;
   business_profile?: { name?: string | null; support_email?: string | null; support_address?: { line1?: string | null; line2?: string | null; city?: string | null; state?: string | null; postal_code?: string | null; country?: string | null } | null } | null;
   company?: { name?: string | null } | null;
   settings?: { dashboard?: { display_name?: string | null } | null } | null;
 }): { name?: string; supportEmail?: string; supportAddress?: string } {
   const bp = account.business_profile ?? undefined;
   const name = bp?.name || account.company?.name || account.settings?.dashboard?.display_name || undefined;
-  const a = bp?.support_address ?? undefined;
+  // A sole trader's support address is very often their home, and the notice is
+  // published permanently: pre-fill an address only for a company.
+  const a = account.business_type === "company" ? (bp?.support_address ?? undefined) : undefined;
   const supportAddress = a
     ? [a.line1, a.line2, a.city, a.state, a.postal_code, a.country].filter((x): x is string => !!x).join(", ")
     : "";

@@ -236,7 +236,7 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
     },
 
     copyProfile: async (keys) => {
-      const [{ readContentFeed, writeContentFeed }, { FEED_ROUTES }, { profileDataContentTopic, profileAvatarContentTopic, organiserNoticeContentTopic }] = await Promise.all([
+      const [{ readContentFeed, readContentFeedResult, writeContentFeed }, { FEED_ROUTES }, { profileDataContentTopic, profileAvatarContentTopic, organiserNoticeContentTopic }] = await Promise.all([
         import("../swarm/content-feed.js"),
         import("../swarm/gateways.js"),
         import("@woco/shared"),
@@ -251,8 +251,17 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
       // "not confirmed" (and the removed passkey could still rewrite that copy).
       const noticeRoute = FEED_ROUTES.privacyNotice;
       const noticeTopic = organiserNoticeContentTopic(parent);
-      const notice = await readContentFeed<unknown>(h.oldSigner.address, noticeTopic, { route: noticeRoute });
-      if (notice) await writeContentFeed({ signerPrivKey: keys.feedSigner.privKey, topic: noticeTopic, data: notice, route: noticeRoute });
+      // THOROUGH, and "couldn't tell" stops the rotation: a lenient null here would
+      // drop a confirmed notice, leaving the only copy with the removed passkey.
+      const notice = await readContentFeedResult<unknown>(h.oldSigner.address, noticeTopic, {
+        route: noticeRoute,
+        thorough: true,
+        skipLegacy: true,
+      });
+      if (notice.status === "unavailable") throw new Error("Couldn't read your privacy notice to move it - try again.");
+      if (notice.status === "found") {
+        await writeContentFeed({ signerPrivKey: keys.feedSigner.privKey, topic: noticeTopic, data: notice.value, route: noticeRoute });
+      }
     },
 
     storeRing: async ({ gen, secret, prevRing, members }) => {

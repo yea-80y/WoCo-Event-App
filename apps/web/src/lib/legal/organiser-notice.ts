@@ -85,6 +85,7 @@ export function publicNoticeDoc(
     event: data?.event ?? pageKnows.event,
     contactForm: pageKnows.contactForm ?? data?.site?.contactForm ?? false,
     wocoPolicyUrl: WOCO_POLICY_URL,
+    storedUnavailable: data?.noticeStatus === "unavailable",
   });
 }
 

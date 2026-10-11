@@ -114,7 +114,7 @@ test("never blank: with nothing stored it still names the organiser, the process
   assert.match(text, /Information Commissioner's Office/);
   assert.match(text, /0303 123 1113/);
   assert.match(text, /Stripe/);
-  assert.match(text, /Amazon SES, London/);
+  assert.match(text, /Amazon SES, UK/);
   assert.match(text, /has not reviewed it yet/);
 });
 
@@ -236,4 +236,28 @@ test("copy register: no em or en dashes, no 'Studio', no quantum, no calling ema
 test("the confirm date reads in UTC with no locale", () => {
   assert.equal(noticeDate("2026-10-11T23:30:00.000Z"), "11 October 2026");
   assert.equal(noticeDate("nonsense"), "");
+});
+
+test("a stored notice that could not be read is never described as unreviewed", () => {
+  const doc = buildOrganiserNotice({ notice: null, fallback: { name: "Punk Pub" }, storedUnavailable: true, wocoPolicyUrl: POLICY });
+  assert.doesNotMatch(doc.footer.join(" "), /has not reviewed/);
+  assert.match(doc.footer.join(" "), /couldn't be loaded/);
+});
+
+test("order-form answers, not the email, are what the browser encrypts", () => {
+  const text = noticePlainText(buildOrganiserNotice({ notice: null, wocoPolicyUrl: POLICY }));
+  assert.match(text, /Your order-form answers are encrypted in your browser/);
+  assert.doesNotMatch(text, /Your order details are encrypted/);
+  assert.match(text, /Your email address is handled separately/);
+});
+
+test("a contact form brings a purpose and a basis, not only a line in what we collect", () => {
+  const text = noticePlainText(buildOrganiserNotice({ notice: null, contactForm: true, wocoPolicyUrl: POLICY }));
+  assert.match(text, /to reply to your message\. Our basis is our legitimate interest/);
+});
+
+test("a mailto can never carry extra headers", () => {
+  assert.equal(isSafeNoticeHref("mailto:x?cc=evil@y.z"), false);
+  assert.equal(isSafeNoticeHref("mailto:a&b@y.z"), false);
+  assert.equal(validateOrganiserNotice(notice({ contactEmail: "a?b@c.d" }), ADDR), null);
 });

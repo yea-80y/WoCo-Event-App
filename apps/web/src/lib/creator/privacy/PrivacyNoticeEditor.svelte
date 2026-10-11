@@ -12,7 +12,7 @@
   retrievable from the network, so the screen says so before the button.
 -->
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { untrack } from "svelte";
   import {
     buildOrganiserNotice,
     cleanNoticeText,
@@ -26,6 +26,7 @@
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import { getProfile } from "../../api/profiles.js";
+  import { isTicketRequired } from "../../api/attendee-gate.js";
   import OrganiserNoticeView from "../../legal/OrganiserNoticeView.svelte";
   import { publishOwnNotice, readOwnNotice, stripEmpty, WOCO_POLICY_URL } from "../../legal/organiser-notice.js";
 
@@ -77,13 +78,25 @@
   });
   const todos = $derived(noticeTodos(previewDoc));
 
-  onMount(() => {
-    void load();
+  // Re-load whenever the signed-in account changes (sign-in from this screen
+  // included): the form must always start from THIS account's stored notice, or a
+  // publish would overwrite a confirmed notice with a blank or pre-filled one.
+  let loadedFor = $state<string | null>(null);
+  $effect(() => {
+    const parent = auth.parent?.toLowerCase() ?? null;
+    if (parent === untrack(() => loadedFor)) return;
+    loadedFor = parent;
+    untrack(() => void load());
   });
 
   async function load() {
     loading = true;
     loadError = null;
+    saved = null;
+    prefilledFrom = [];
+    for (const f of Object.keys(ORGANISER_NOTICE_LIMITS) as OrganiserNoticeField[]) draft[f] = "";
+    draft.marketingSoftOptIn = false;
+    checked = false;
     const parent = auth.parent?.toLowerCase();
     if (!parent) {
       loading = false;
@@ -91,7 +104,13 @@
     }
     try {
       const signerAddress = await auth.getContentFeedSignerAddress();
-      const own = signerAddress ? await readOwnNotice(parent, signerAddress) : ({ status: "absent" } as const);
+      // No confirmed signer is "can't tell", never "nothing saved": treating it as
+      // absent would offer a fresh form over a notice that exists.
+      if (!signerAddress) {
+        loadError = "Couldn't confirm your account keys on this device yet. Try again in a moment.";
+        return;
+      }
+      const own = await readOwnNotice(parent, signerAddress);
       if (own.status === "unavailable") {
         loadError = own.error;
         return;
@@ -131,11 +150,16 @@
       const signer = await auth.getContentFeedSigner();
       if (!signer) throw new Error("This account can't publish content yet. Sign in with your passkey and try again.");
       const { organiserName, marketingSoftOptIn, ...rest } = draft;
+      // The account may have changed while this was open: never publish a form
+      // loaded for someone else.
+      if (loadedFor !== parent || loading || loadError) throw new Error("Your account changed - reload this page and check the form again.");
       saved = await publishOwnNotice(parent, signer, { organiserName, marketingSoftOptIn, ...rest });
       justPublished = true;
       checked = false;
     } catch (e) {
-      publishError = e instanceof Error ? e.message : "Couldn't publish your notice. Nothing was changed.";
+      publishError = isTicketRequired(e)
+        ? "Publishing needs your account unlocked first - connect Stripe or publish an event, then come back."
+        : e instanceof Error ? e.message : "Couldn't publish your notice. Nothing was changed.";
     } finally {
       publishing = false;
     }

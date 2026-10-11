@@ -81,6 +81,7 @@ test("the route chooses the notice from eventKeys, never from the event feed's o
 
 test("prefill reads public business fields only - never KYC data", () => {
   const out = businessProfileForNotice({
+    business_type: "company",
     business_profile: {
       name: "Punk Pub",
       support_email: "hello@punkpub.example",
@@ -92,6 +93,11 @@ test("prefill reads public business fields only - never KYC data", () => {
   assert.deepEqual(out, { name: "Punk Pub", supportEmail: "hello@punkpub.example", supportAddress: "1 High St, London, E1 1AA, GB" });
   assert.deepEqual(businessProfileForNotice({ company: { name: "Punk Pub Ltd" } }), { name: "Punk Pub Ltd" });
   assert.deepEqual(businessProfileForNotice({}), {});
+  // A sole trader's support address is often their home: never pre-filled.
+  assert.deepEqual(
+    businessProfileForNotice({ business_type: "individual", business_profile: { support_address: { line1: "Home" } } }),
+    {},
+  );
 });
 
 test("the relay gates notice writes like a profile save", () => {
