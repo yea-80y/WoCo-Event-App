@@ -49,6 +49,17 @@ export const TRANSACTIONAL_EMAIL_NOTICE =
  * per-record key even in principle. Stating a capability we do not have, at the
  * point of collection, is the worst place to get this wrong.
  */
+/**
+ * The pay panel shown when an event has NO order form. The only thing a buyer
+ * gives there is an email, and that email is NOT client-sealed: it reaches WoCo
+ * in plaintext to send the ticket and Stripe as `customer_email`, and the server
+ * seals the minimal record itself (DATA_INVENTORY §4 carve-outs 1-3). So this
+ * panel must not borrow CHECKOUT_PRIVACY_SUMMARY's "encrypted in your browser".
+ */
+export const PAY_PANEL_PRIVACY_SUMMARY =
+  "Your details go to the event organiser, who is responsible for them. WoCo uses your email to send your " +
+  "ticket, and Stripe receives it with your payment. Your ticket's onchain record is public and permanent.";
+
 export const CHECKOUT_PRIVACY_SUMMARY =
   "Your details go to the event organiser, who is responsible for them. Anything you enter here is " +
   "encrypted in your browser to a key only they hold - WoCo cannot read it. Your order details are " +

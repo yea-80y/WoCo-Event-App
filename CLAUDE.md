@@ -238,6 +238,7 @@ FEED TOPICS:
   woco/issuer/{parentAddress}             # Issuer-registry statement log (parent-signed)
   woco/profile/data/{ethAddress}          # User profile
   woco/profile/avatar/{ethAddress}        # Avatar ref (separate feed → independent updates)
+  woco/legal/privacy-notice/{ethAddress}  # Organiser's privacy notice (client-signed; served via /api/privacy-notice)
   woco/marketing/list/{ethAddress}        # Sealed contact-list pointer
   woco/site/config/{siteId}               # Site JSON (config + theme + pages)
   woco/site/{siteId}/events               # SiteEventsIndex

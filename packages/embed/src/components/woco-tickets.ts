@@ -10,6 +10,8 @@ import {
   MARKETING_CONSENT_NOTICE,
   TRANSACTIONAL_EMAIL_NOTICE,
   CHECKOUT_PRIVACY_SUMMARY,
+  ORGANISER_NOTICE_LINK_LABEL,
+  WOCO_POLICY_LINK_LABEL,
   type OrderField,
   type PaymentConfig,
 } from "@woco/shared";
@@ -206,6 +208,16 @@ export class WocoTickets extends HTMLElement {
   private get theme() { return (this.getAttribute("theme") || "dark") as "dark" | "light"; }
   private get showImage() { return this.getAttribute("show-image") !== "false"; }
   private get showDescription() { return this.getAttribute("show-description") !== "false"; }
+
+  /**
+   * The ORGANISER's privacy notice for this event, hosted on the app (the widget
+   * runs on the organiser's domain, which has no notice route of its own). The
+   * organiser is the controller for what the buyer types here, so their notice is
+   * linked before WoCo's. `appUrl` is scheme-checked; the id is URI-encoded.
+   */
+  private get organiserNoticeUrl(): string {
+    return `${this.appUrl}/#/privacy-notice/${encodeURIComponent(this.eventId)}`;
+  }
 
   /** The organiser page the buyer is on; see resolvePageUrl. Comparing `window.top` is allowed cross-origin. */
   private get pageUrl(): string | undefined {
@@ -591,7 +603,9 @@ export class WocoTickets extends HTMLElement {
         </label>
         <div class="privacy-note">
           ${this.esc(CHECKOUT_PRIVACY_SUMMARY)}
-          <a href="${this.esc(this.appUrl)}/#/legal/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+          <a href="${this.esc(this.organiserNoticeUrl)}" target="_blank" rel="noopener noreferrer">${this.esc(ORGANISER_NOTICE_LINK_LABEL)}</a>
+          ·
+          <a href="${this.esc(this.appUrl)}/#/legal/privacy" target="_blank" rel="noopener noreferrer">${this.esc(WOCO_POLICY_LINK_LABEL)}</a>
         </div>
       </div>
     `;

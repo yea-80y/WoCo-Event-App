@@ -7,6 +7,7 @@
  *     /                            splitter (landing — funnels to organiser vs attendee)
  *     /legal, /legal/:doc          legal (privacy, terms, organiser-terms, dpa, cookies)
  *     /about                       about (how WoCo works — the technical companion)
+ *     /privacy-notice/:eventId     privacy-notice (the ORGANISER's notice for an event - every checkout links here)
  *     /ref/:token                  invite (an invite link: stores the invite, shows who sent it)
  *
  *   ATTENDEE surface
@@ -33,6 +34,7 @@
  *     /creator/shops/:shopId            shop-editor
  *     /creator/shops/:shopId/pos        shop-pos
  *     /creator/payouts                  payouts
+ *     /creator/privacy-notice           privacy-notice-editor
  *     /creator/profile/:addr            profile (creator surface)
  *     /dashboard, /dashboard/:id        dashboard-index / dashboard (legacy)
  *     /event/:id/dashboard              dashboard (legacy)
@@ -91,6 +93,19 @@ function matchRoute(pathWithQuery: string): Match {
 
   if (path === "/about") return { route: "about", params: {}, surface: "neutral" };
 
+  // ── The organiser's privacy notice for an event (neutral: opened in a new tab
+  //    from a checkout the buyer has not signed into, the embed's included) ────
+  const noticeMatch = path.match(/^\/privacy-notice\/([^/?#]+)$/);
+  if (noticeMatch) {
+    let id = "";
+    try {
+      id = decodeURIComponent(noticeMatch[1]);
+    } catch {
+      // A malformed escape is a broken link: the page shows the pre-filled notice.
+    }
+    return { route: "privacy-notice", params: { id }, surface: "neutral" };
+  }
+
   // ── Creator surface (explicit /creator/* prefix) ─────────────────────────
   if (path === "/creator") return { route: "creator-home", params: {}, surface: "creator" };
   if (path === "/creator/events") return { route: "dashboard-index", params: {}, surface: "creator" };
@@ -98,6 +113,7 @@ function matchRoute(pathWithQuery: string): Match {
   if (path === "/creator/sites") return { route: "build", params: {}, surface: "creator" };
   if (path === "/creator/objects") return { route: "creator-objects", params: {}, surface: "creator" };
   if (path === "/creator/payouts") return { route: "payouts", params: {}, surface: "creator" };
+  if (path === "/creator/privacy-notice") return { route: "privacy-notice-editor", params: {}, surface: "creator" };
   if (path === "/creator/audience") {
     // ?announce={eventId} — the post-publish prompt lands here with the
     // composer open and that event preselected.

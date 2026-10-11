@@ -37,6 +37,7 @@ import {
   LIKE_SUBJECT_INDEX_FORMAT,
   FOLLOW_SUBJECT_INDEX_FORMAT,
   CREDIT_SUBJECT_INDEX_FORMAT,
+  ORGANISER_NOTICE_FORMAT,
 } from "@woco/shared";
 import { SlidingWindowLimiter, type RateWindow } from "../http/rate-limit.js";
 
@@ -92,6 +93,15 @@ export function payloadFormat(payloadHex: string): string | null {
 export function isSocialPayload(payloadHex: string): boolean {
   const format = payloadFormat(payloadHex);
   return format !== null && SOCIAL_FORMATS.has(format);
+}
+
+/**
+ * An organiser privacy-notice write. Gated like a profile save (routes/profiles.ts):
+ * it is the same kind of public organiser content on platform storage. Hiding the
+ * format buys nothing - readers refuse a notice without it.
+ */
+export function isPrivacyNoticePayload(payloadHex: string): boolean {
+  return payloadFormat(payloadHex) === ORGANISER_NOTICE_FORMAT;
 }
 
 /**

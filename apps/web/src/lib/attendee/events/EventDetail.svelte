@@ -4,6 +4,7 @@
   import { rememberLabel } from "../../profile/label-cache.js";
   import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
   import { getEvent } from "../../api/events.js";
+  import CheckoutNoticeLinks from "./claim/CheckoutNoticeLinks.svelte";
   import ClaimButton from "./ClaimButton.svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
@@ -379,6 +380,7 @@
                 apiUrl={externalApiUrl}
                 payment={s.payment}
                 quantity={ticketQty[s.seriesId] ?? 1}
+                organiserName={creatorProfile?.displayName || undefined}
                 oncancelled={() => (serverSaysCancelled = true)}
               />
             {/if}
@@ -392,11 +394,25 @@
         Embed on your site
       </button>
     </div>
+
+    <!-- The organiser is the controller for what buyers enter here: their notice
+         sits with the event, not only inside the checkout. -->
+    <footer class="event-legal">
+      <CheckoutNoticeLinks eventId={event.eventId} organiserName={creatorProfile?.displayName || undefined} />
+    </footer>
   {/if}
   {/if}
 </div>
 
 <style>
+  .event-legal {
+    margin-top: 2rem;
+    padding-top: 0.875rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+  }
+
   .event-detail {
     max-width: 640px;
     margin: 0 auto;
