@@ -156,6 +156,13 @@
       : null
   );
 
+  // The organiser's notice: lazy, like the legal pages - only a buyer who opens it pays for it.
+  const noticePagePromise = $derived(
+    router.route === "privacy-notice"
+      ? import("./lib/legal/OrganiserNoticePage.svelte").then((m) => m.default)
+      : null
+  );
+
   const aboutPagePromise = $derived(
     router.route === "about"
       ? import("./lib/landing/AboutPage.svelte").then((m) => m.default)
@@ -176,6 +183,16 @@
   {:then Comp}
     {#if Comp}
       <Comp doc={router.params.doc ?? "index"} />
+    {/if}
+  {:catch}
+    <div class="surface-loading surface-error">Failed to load. Please refresh.</div>
+  {/await}
+{:else if router.route === "privacy-notice"}
+  {#await noticePagePromise}
+    <div class="surface-loading">Loading…</div>
+  {:then Comp}
+    {#if Comp}
+      <Comp eventId={router.params.id ?? ""} />
     {/if}
   {:catch}
     <div class="surface-loading surface-error">Failed to load. Please refresh.</div>

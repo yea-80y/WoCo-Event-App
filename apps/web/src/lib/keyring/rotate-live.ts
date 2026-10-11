@@ -236,7 +236,7 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
     },
 
     copyProfile: async (keys) => {
-      const [{ readContentFeed, writeContentFeed }, { FEED_ROUTES }, { profileDataContentTopic, profileAvatarContentTopic }] = await Promise.all([
+      const [{ readContentFeed, writeContentFeed }, { FEED_ROUTES }, { profileDataContentTopic, profileAvatarContentTopic, organiserNoticeContentTopic }] = await Promise.all([
         import("../swarm/content-feed.js"),
         import("../swarm/gateways.js"),
         import("@woco/shared"),
@@ -246,6 +246,13 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
         const data = await readContentFeed<unknown>(h.oldSigner.address, topic, { route });
         if (data) await writeContentFeed({ signerPrivKey: keys.feedSigner.privKey, topic, data, route });
       }
+      // The organiser's privacy notice moves with them: the server reads it under the
+      // ring's signer from here on, and a notice left under the old one would read as
+      // "not confirmed" (and the removed passkey could still rewrite that copy).
+      const noticeRoute = FEED_ROUTES.privacyNotice;
+      const noticeTopic = organiserNoticeContentTopic(parent);
+      const notice = await readContentFeed<unknown>(h.oldSigner.address, noticeTopic, { route: noticeRoute });
+      if (notice) await writeContentFeed({ signerPrivKey: keys.feedSigner.privKey, topic: noticeTopic, data: notice, route: noticeRoute });
     },
 
     storeRing: async ({ gen, secret, prevRing, members }) => {

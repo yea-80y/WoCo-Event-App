@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { BuyerFees } from "@woco/shared";
+  import { CHECKOUT_PRIVACY_SUMMARY } from "@woco/shared";
+  import CheckoutNoticeLinks from "./CheckoutNoticeLinks.svelte";
 
   interface Props {
     buyerFees: BuyerFees | null;
@@ -10,6 +12,9 @@
     showEmailInput: boolean;
     onCheckout: () => void;
     onStripeEmailChange: (v: string) => void;
+    /** The event and organiser, for the point-of-collection privacy line. */
+    eventId: string;
+    organiserName?: string;
     /** When set, renders the "or — Pay with crypto" footer link. */
     cryptoFooter?: {
       label: string;
@@ -26,6 +31,8 @@
     showEmailInput,
     onCheckout,
     onStripeEmailChange,
+    eventId,
+    organiserName,
     cryptoFooter = null,
   }: Props = $props();
 </script>
@@ -63,6 +70,16 @@
       oninput={(e) => onStripeEmailChange((e.target as HTMLInputElement).value)}
     />
   {/if}
+  <!-- Point of collection: the email (here or on Stripe's page) goes to the organiser. -->
+  <p class="pay-privacy">
+    {#if organiserName}
+      Your details go to <strong>{organiserName}</strong>, who is responsible for them.
+      {CHECKOUT_PRIVACY_SUMMARY.slice(CHECKOUT_PRIVACY_SUMMARY.indexOf("Anything you enter"))}
+    {:else}
+      {CHECKOUT_PRIVACY_SUMMARY}
+    {/if}
+    <CheckoutNoticeLinks {eventId} {organiserName} />
+  </p>
 
   {#if cryptoFooter}
     <div class="pay-divider">
@@ -77,6 +94,13 @@
 </div>
 
 <style>
+  .pay-privacy {
+    font-size: 0.6875rem;
+    line-height: 1.5;
+    color: var(--text-muted);
+    margin: 0;
+  }
+
   .pay-sheet {
     display: flex;
     flex-direction: column;

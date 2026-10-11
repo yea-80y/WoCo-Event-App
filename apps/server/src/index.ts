@@ -22,6 +22,7 @@ import { admin } from "./routes/admin.js";
 import { ops } from "./routes/ops.js";
 import { siteRoute } from "./routes/site.js";
 import { profiles } from "./routes/profiles.js";
+import { privacyNotice } from "./routes/privacy-notice.js";
 import { recovery } from "./routes/recovery.js";
 import { deviceGrants } from "./routes/device-grants.js";
 import { keyring } from "./routes/keyring.js";
@@ -778,6 +779,9 @@ app.get("/api/agent/openapi.json", (c) => c.json(agentOpenApi(agentBaseUrl())));
 
 // Profile routes
 app.route("/api/profile", profiles);
+
+// The organiser's privacy notice, read for the public pages (unauthenticated)
+app.route("/api/privacy-notice", privacyNotice);
 
 // Passkey-account recovery escrow (sealed identity-seed bundle) — see
 // docs/PASSKEY_RECOVERY_PLAN.md §11.6.

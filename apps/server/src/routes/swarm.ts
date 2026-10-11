@@ -13,6 +13,7 @@ import {
   bytesRelayGate,
   classifyRelayPayload,
   isSocialPayload,
+  isPrivacyNoticePayload,
   SOC_RELAY_MAX_BODY_BYTES,
   BYTES_RELAY_MAX_BODY_BYTES,
 } from "../lib/swarm/soc-relay-limits.js";
@@ -67,11 +68,11 @@ swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, a
   });
   if (!gate.allowed) return c.json({ ok: false, error: gate.reason }, gate.status);
 
-  // Likes and follows need the same unlock as a name or a profile (ticket,
+  // Likes, follows and an organiser's privacy notice need the same unlock as a name or a profile (ticket,
   // Stripe, or a confirmed invite). Same refusal as routes/profiles.ts, which
   // the client matches to open its unlock flow. After the rate gate, so a flood
   // is refused before it costs a gate lookup.
-  if (isSocialPayload(b.payload)) {
+  if (isSocialPayload(b.payload) || isPrivacyNoticePayload(b.payload)) {
     const unlock = await checkAttendeeGate((c.get("parentAddress") as string).toLowerCase());
     if (!unlock.gated) return c.json({ ok: false, error: "ticket_required" }, 403);
   }

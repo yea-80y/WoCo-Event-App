@@ -40,8 +40,8 @@ test("each family is stamped where the table says - a move is a deliberate diff 
   // referral statement and the three recovery rows moved in #689.
   // Everything else has not moved yet.
   assert.deepEqual(onEtherna, [
-    "event", "guardianIndex", "manifest", "profile", "recoveryEnvelope", "recoveryPortability", "referral", "site",
-    "social",
+    "event", "guardianIndex", "manifest", "privacyNotice", "profile", "recoveryEnvelope", "recoveryPortability",
+    "referral", "site", "social",
   ]);
   for (const [family, route] of Object.entries(FEED_ROUTES)) {
     const store = route.target === "etherna" ? ETHERNA_ROUTE : WOCO_ROUTE;
@@ -92,6 +92,7 @@ test("a feed's recorded gateway maps to its route by the server's own rule", () 
 
 const RAILS: Record<string, string[]> = {
   "lib/api/profiles.ts": ["profile"],
+  "lib/legal/organiser-notice.ts": ["privacyNotice"],
   "lib/attendee/events/EventDetail.svelte": ["event"],
   "lib/manifest/inventory.ts": ["manifest"],
   "lib/social/social-core.ts": ["social"],

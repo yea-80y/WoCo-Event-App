@@ -12,6 +12,7 @@
  */
 
 import { Hono, type MiddlewareHandler } from "hono";
+import { businessProfileForNotice } from "../lib/legal/organiser-notice.js";
 import type { AppEnv } from "../types.js";
 import { requireAuth, tryVerifyAuth } from "../middleware/auth.js";
 import { cancellationGate, reopenRefundRow } from "../lib/event/cancellations.js";
@@ -293,6 +294,10 @@ stripe.get("/account-status", requireAuth, async (c) => {
       // Drives the pricing-currency picker (#84). Absent while Stripe has not
       // assigned one yet — the client must then offer every currency, not none.
       defaultCurrency,
+      // Pre-fills the organiser's privacy notice with the business details they
+      // already gave Stripe. The organiser's own data, back to them, stored nowhere.
+      // Public-facing business fields ONLY - never `individual.*` (KYC data).
+      businessProfile: businessProfileForNotice(account),
       requirements: {
         currentlyDue,
         eventuallyDue,
