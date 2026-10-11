@@ -282,6 +282,12 @@ test("the organiser's own write marks a confirmed notice stale - served at once,
   assert.equal(await gate.organiserNoticeVerdict(CREATOR, SIGNER), "confirmed", "never waits on a cold read");
   await new Promise((r) => setImmediate(r));
   assert.equal(reads, 2);
+  // Straight after a write, "missing" may be a feed cache that has not caught up.
+  assert.equal(await gate.organiserNoticeVerdict(CREATOR, SIGNER), "confirmed");
+  await new Promise((r) => setImmediate(r));
+  now += 10_001; // past the settle window, a withdrawn notice lands
+  await gate.organiserNoticeVerdict(CREATOR, SIGNER);
+  await new Promise((r) => setImmediate(r));
   assert.equal(await gate.organiserNoticeVerdict(CREATOR, SIGNER), "missing");
 });
 
@@ -303,6 +309,27 @@ test("the public notice route reads the same cached notice as the sale gate", as
   const src = readFileSync(new URL("../src/routes/privacy-notice.ts", import.meta.url), "utf-8");
   assert.equal(src.split("organiserNoticeRead(").length - 1, 2, "event and site reads");
   assert.doesNotMatch(src, /readOrganiserNotice\(/);
+});
+
+test("a read in flight when the organiser confirms never re-caches 'missing'", async () => {
+  let release!: (r: VersionedFeedRead) => void;
+  answer = () => new Promise((r) => { release = r; });
+  const pending = gate.organiserNoticeVerdict(CREATOR, SIGNER);
+  await new Promise((r) => setImmediate(r));
+  gate.noticeWritten(CREATOR); // the confirm lands while the old read is out
+  release({ status: "absent" });
+  assert.equal(await pending, "missing", "that read answers what it saw");
+  answer = async () => confirmedNotice;
+  assert.equal(await gate.organiserNoticeVerdict(CREATOR, SIGNER), "confirmed", "but it was not kept");
+});
+
+test("just after a write, a 'missing' (a feed cache not caught up) is answered but not kept", async () => {
+  gate.noticeWritten(CREATOR);
+  now += 1;
+  answer = async () => ({ status: "absent" });
+  assert.equal(await gate.organiserNoticeVerdict(CREATOR, SIGNER), "missing");
+  answer = async () => confirmedNotice;
+  assert.equal(await gate.organiserNoticeVerdict(CREATOR, SIGNER), "confirmed");
 });
 
 test("keyed by signer: after a key-ring rotation the new signer's feed is read", async () => {

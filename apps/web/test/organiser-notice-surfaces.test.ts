@@ -202,3 +202,20 @@ test("the new notice-gate copy keeps the register: spaced hyphen, never an em or
     assert.doesNotMatch(code(read(f)), /[–—]/, f);
   }
 });
+
+test("a refusal that means 'not on sale at all' closes the main app's form", async () => {
+  const { isSaleClosedCode } = await import("@woco/shared");
+  assert.ok(isSaleClosedCode("PRIVACY_NOTICE_REQUIRED") && isSaleClosedCode("EVENT_NEEDS_REPUBLISH"));
+  assert.ok(!isSaleClosedCode("PRIVACY_NOTICE_UNAVAILABLE"), "a fault is not a closure");
+  const hook = code(read("lib/attendee/events/claim/useReservation.svelte.ts"));
+  assert.match(hook, /if \(isSaleClosedCode\(res\.code\)\) closed = res\.error;/);
+  const claim = code(read("lib/attendee/events/ClaimButton.svelte"));
+  assert.match(claim, /if \(reservationHook\.closed\) \{\s*showOrderForm = false;\s*intentToCheckout = false;/);
+  assert.ok(claim.indexOf("{:else if reservationHook.closed}") < claim.indexOf("{:else if showOrderForm}"));
+});
+
+test("a site page never claims what is on sale - its events sell under their own organisers' keys", () => {
+  const v = publicNoticeView(acceptNoticeData(data({ trusted: false, notice: null, noticeStatus: "absent", site: { brandName: "Pub", contactEmail: null, postalAddress: null, contactForm: false } })));
+  assert.equal(v.kind === "not-confirmed" && !v.legacy && v.site, true);
+  assert.match(code(read("lib/legal/OrganiserNotice.svelte")), /view\.site \? "" : ", so tickets for this event aren't on sale"/);
+});

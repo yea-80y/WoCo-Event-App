@@ -6,7 +6,7 @@
   (keeping this form), check again, or publish and sell once they confirm.
 -->
 <script lang="ts">
-  import { NOTICE_EDITOR_URL, type OwnNoticeStatus } from "../../legal/own-notice-status.js";
+  import { noticeEditorUrl, type OwnNoticeStatus } from "../../legal/own-notice-status.js";
 
   interface Props {
     status: Exclude<OwnNoticeStatus, "confirmed">;
@@ -34,7 +34,7 @@
     </p>
   {/if}
   <div class="actions">
-    <a class="primary" href={NOTICE_EDITOR_URL} target="_blank" rel="noopener noreferrer">Review my notice</a>
+    <a class="primary" href={noticeEditorUrl()} target="_blank" rel="noopener noreferrer">Review my notice</a>
     <button class="secondary" onclick={onrecheck} disabled={checking}>
       {checking ? "Checking…" : "I've confirmed it - continue"}
     </button>

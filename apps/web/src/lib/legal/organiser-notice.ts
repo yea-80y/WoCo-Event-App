@@ -103,6 +103,8 @@ export function publicNoticeView(
     };
   }
   const name = (pageKnows.name ?? data.site?.brandName ?? "").trim() || null;
+  // `legacy` is an EVENT with no record of who made it. A site's own events sell
+  // under their own organisers' keys, so a site page never claims what is on sale.
   return { kind: "not-confirmed", name, legacy: !data.trusted && !data.site, site: !!data.site };
 }
 

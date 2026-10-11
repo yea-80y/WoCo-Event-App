@@ -5,7 +5,7 @@ import { getEvent } from "../lib/event/service.js";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
-import { eventKeys } from "../lib/keyring/event-keys.js";
+import { eventKeys, type EventKeys } from "../lib/keyring/event-keys.js";
 import { noticeRefusal, organiserNoticeVerdict } from "../lib/legal/notice-gate.js";
 import { getOnChainEventAt } from "../lib/chain/event-contract.js";
 import { saleContractFor } from "../lib/event/onchain-registry.js";
@@ -110,7 +110,8 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
   const siteId = typeof body.siteId === "string" ? body.siteId : undefined;
   const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
   const [keys, event] = await Promise.all([
-    eventKeys(eventId),
+    // A throw is "could not read the keys": refused below, never a 500 or a sale.
+    eventKeys(eventId).catch((err): EventKeys => ({ kind: "unavailable", creator: "", feedSigner: "", reason: String(err) })),
     getEvent(eventId, siteSigner ?? undefined).catch(() => null),
   ]);
   if (!event) return c.json({ ok: false, error: "Event not found" }, 404);

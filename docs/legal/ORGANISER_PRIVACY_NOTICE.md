@@ -24,6 +24,7 @@ pre-filled draft is never shown to the public as the organiser's notice.
 | `POST /api/events/:id/series/:sid/reserve` | 409 `PRIVACY_NOTICE_REQUIRED` - no seat is held |
 | `POST /api/stripe/create-checkout` | 409 `PRIVACY_NOTICE_REQUIRED` - refused before any order is held or card charged |
 | `POST /api/agent/quote` and `/buy` (flag off) | same refusal, so turning the rail on cannot sell past it |
+| Buyer's form (main app and embed) | closes on `PRIVACY_NOTICE_REQUIRED` or `EVENT_NEEDS_REPUBLISH` and shows the server's reason, so nobody keeps typing details for a sale that cannot happen |
 | Notice unreadable (Swarm fault) | 503 `PRIVACY_NOTICE_UNAVAILABLE` on every sale path - fails closed |
 | Public notice page (`#/privacy-notice/...`, site footers) | shows only a confirmed notice; otherwise says it isn't confirmed and nothing is on sale. Browsing is never blocked |
 | Organiser Home | "Confirm your privacy notice" is setup step 2, right after Stripe, and stays up until done |
@@ -37,7 +38,8 @@ How the server reads it (`apps/server/src/lib/legal/notice-gate.ts`):
 - Cached in memory. A confirmed notice is a memory hit for 10 min, then served while it is re-read
   in the background (one read per organiser, however many buyers). A re-read that cannot answer
   keeps the last confirmed notice for at most 1 h after it was read; past that, sales refuse until
-  it can be read. "Not confirmed" is kept 30 s. The organiser's own confirm clears it at once.
+  it can be read. "Not confirmed" is kept 30 s. The organiser's own confirm clears it at once, and
+  for 10 s after it a "not confirmed" read (a feed cache not yet caught up) is answered but never kept.
 - No new server state, nothing to back up.
 
 Not gated, on purpose: `prepare-order` (no charge, the box is held in memory and unreadable to WoCo)

@@ -150,6 +150,7 @@
     stripe = LOADING;
     stripeSessionDead = false;
     noticeConfirmed = LOADING;
+    noticeRetried = false;
     hasProfileName = LOADING;
     nameUnlocked = LOADING;
     audienceCount = LOADING;
@@ -166,6 +167,7 @@
     stripe = LOADING;
     stripeSessionDead = false;
     noticeConfirmed = LOADING;
+    noticeRetried = false;
     hasProfileName = LOADING;
     nameUnlocked = LOADING;
     audienceCount = LOADING;
@@ -280,9 +282,13 @@
     });
   }
 
-  // A device whose keys were not ready could not say; ask again once they are.
+  // A device whose keys were not ready could not say; ask again ONCE they are.
+  // Guarded: every "couldn't say" is a fresh state value, so an unguarded retry
+  // would re-run itself back to back while the read keeps failing.
+  let noticeRetried = false;
   $effect(() => {
-    if (!auth.hasIdentitySeed || noticeConfirmed.status !== "unavailable") return;
+    if (noticeRetried || !auth.hasIdentitySeed || noticeConfirmed.status !== "unavailable") return;
+    noticeRetried = true;
     readNoticeStatus(loadToken);
   });
 

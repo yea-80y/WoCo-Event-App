@@ -32,7 +32,7 @@
  */
 
 import { readContentFeedJsonResult } from "../swarm/soc-upload.js";
-import type { OrganiserNoticeV1 } from "@woco/shared";
+import { PRIVACY_NOTICE_REQUIRED, type OrganiserNoticeV1 } from "@woco/shared";
 import { readOrganiserNotice, type NoticeFeedReader, type NoticeRead } from "./organiser-notice.js";
 
 export type NoticeVerdict = "confirmed" | "missing" | "unavailable";
@@ -46,6 +46,11 @@ const MAX_ENTRIES = 10_000;
 type Entry = { notice: OrganiserNoticeV1 | null; at: number };
 
 const cache = new Map<string, Entry>();
+/** creator -> when they last wrote their notice (the relay). Bounded below. */
+const lastWrite = new Map<string, number>();
+/** How long after a write a "missing" read is not kept: the feed cache below us may
+ *  still answer the pre-write state for a few seconds. */
+const WRITE_SETTLE_MS = 10_000;
 const inflight = new Map<string, Promise<NoticeRead>>();
 
 const defaultReader: NoticeFeedReader = (ownerHex, topic) =>
@@ -75,10 +80,17 @@ function remember(key: string, notice: OrganiserNoticeV1 | null): void {
 function readNow(key: string, creator: string, signer: string): Promise<NoticeRead> {
   const running = inflight.get(key);
   if (running) return running;
+  const account = creator.toLowerCase();
+  const startedAt = clock();
   const p = (async (): Promise<NoticeRead> => {
     try {
       const r = await readOrganiserNotice(creator, signer, reader);
-      if (r.status !== "unavailable") remember(key, r.status === "found" ? r.notice : null);
+      // A read that began before the organiser's latest write may describe the
+      // feed before it, and a "missing" just after one may come from a cache
+      // that has not caught up: answer it, but never keep it.
+      const wrote = lastWrite.get(account);
+      const raced = wrote !== undefined && (wrote >= startedAt || (r.status === "absent" && clock() - wrote < WRITE_SETTLE_MS));
+      if (r.status !== "unavailable" && !raced) remember(key, r.status === "found" ? r.notice : null);
       return r;
     } catch (err) {
       return { status: "unavailable", reason: err instanceof Error ? err.message : String(err) };
@@ -127,7 +139,14 @@ export async function organiserNoticeVerdict(creator: string, signer: string): P
  */
 export function noticeWritten(creator: string): void {
   const prefix = `${creator.toLowerCase()}:`;
-  const staleAt = clock() - NOTICE_FRESH_MS;
+  const t = clock();
+  lastWrite.delete(creator.toLowerCase());
+  lastWrite.set(creator.toLowerCase(), t);
+  for (const [k, at] of lastWrite) {
+    if (lastWrite.size <= MAX_ENTRIES && t - at < WRITE_SETTLE_MS) break;
+    lastWrite.delete(k); // oldest first; only ever drops writes past the settle window or over the cap
+  }
+  const staleAt = t - NOTICE_FRESH_MS;
   for (const [k, e] of cache) {
     if (!k.startsWith(prefix)) continue;
     if (!e.notice) cache.delete(k);
@@ -135,7 +154,7 @@ export function noticeWritten(creator: string): void {
   }
 }
 
-export const PRIVACY_NOTICE_REQUIRED = "PRIVACY_NOTICE_REQUIRED";
+export { PRIVACY_NOTICE_REQUIRED };
 export const PRIVACY_NOTICE_UNAVAILABLE = "PRIVACY_NOTICE_UNAVAILABLE";
 
 /** The refusal a sale path returns for a verdict, or null when it may sell. */
@@ -164,4 +183,5 @@ export function __setNoticeGateForTests(opts: { reader?: NoticeFeedReader; now?:
   clock = opts.now ?? Date.now;
   cache.clear();
   inflight.clear();
+  lastWrite.clear();
 }

@@ -54,8 +54,7 @@
       <p>There's no confirmed privacy notice for this event, and it isn't on sale. The organiser needs to publish it again.</p>
     {:else}
       <p>
-        {view.name ?? "The organiser"} hasn't confirmed their privacy notice yet, so
-        {view.site ? "nothing on this site is on sale" : "tickets for this event aren't on sale"}.
+        {view.name ?? "The organiser"} hasn't confirmed their privacy notice yet{view.site ? "" : ", so tickets for this event aren't on sale"}.
         Once they confirm it, it appears here.
       </p>
     {/if}

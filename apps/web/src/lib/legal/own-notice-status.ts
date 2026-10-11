@@ -16,8 +16,16 @@ import { readOwnNotice, type OwnNoticeRead } from "./organiser-notice.js";
 
 export type OwnNoticeStatus = "confirmed" | "missing" | "unknown";
 
-/** The editor, on the canonical host, for opening in a new tab from a builder. */
-export const NOTICE_EDITOR_URL = canonicalUrl("#/creator/privacy-notice");
+/**
+ * The editor, for a new tab from a builder. On THIS app's own host when there is
+ * one, so the new tab shares the organiser's session (a different host would open
+ * signed out); built from origin + path, never a bare fragment, which the deploy's
+ * <base href> would resolve onto the gateway (#605).
+ */
+export function noticeEditorUrl(): string {
+  if (typeof location === "undefined" || !/^https?:$/.test(location.protocol)) return canonicalUrl("#/creator/privacy-notice");
+  return `${location.origin}${location.pathname}#/creator/privacy-notice`;
+}
 
 export function ownNoticeStatusOf(read: OwnNoticeRead | null): OwnNoticeStatus {
   if (!read) return "unknown";

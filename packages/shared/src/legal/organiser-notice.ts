@@ -31,6 +31,18 @@ export const STRIPE_PRIVACY_URL = "https://stripe.com/privacy";
 export const ICO_COMPLAINT_URL = "https://ico.org.uk/make-a-complaint/";
 export const ICO_PHONE = "0303 123 1113";
 
+/**
+ * Refusal codes a sale path returns when the event is not on sale at all (not a
+ * passing condition like sold out): no confirmed privacy notice, or a legacy event
+ * that must be published again. A buyer's form closes on these rather than let
+ * them keep typing details for a sale that cannot happen.
+ */
+export const PRIVACY_NOTICE_REQUIRED = "PRIVACY_NOTICE_REQUIRED" as const;
+export const EVENT_NEEDS_REPUBLISH = "EVENT_NEEDS_REPUBLISH" as const;
+export function isSaleClosedCode(code: unknown): boolean {
+  return code === PRIVACY_NOTICE_REQUIRED || code === EVENT_NEEDS_REPUBLISH;
+}
+
 /** Link labels shared by every checkout, so the surfaces cannot drift apart. */
 export const ORGANISER_NOTICE_LINK_LABEL = "Organiser's privacy notice";
 export const WOCO_POLICY_LINK_LABEL = "WoCo Privacy Policy";
