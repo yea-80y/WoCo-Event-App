@@ -9,7 +9,12 @@
  *    console. The cause cannot be read from here, so the line now carries a short
  *    code: where it failed and what kind of error, never what the error said.
  *
- * MUTATIONS (each went red, then restored): the extra part read for any error
+ * Details (the third iPhone code, `WalletLoginError.5111(str111)`): Web3Auth's own
+ * reason, redacted on the device, shown only on a tap.
+ *
+ * MUTATIONS (each went red, then restored): a redaction rule removed (the
+ * redaction test); details offered for any error's message; details shown without
+ * the tap (the wiring test); the extra part read for any error
  * name, or copied instead of described (the pop-up-path tests); an unknown rejection string copied
  * instead of reduced to its length and topic words (the leak test); `describeSignInError` reading `.message` (6 tests); the store's
  * catch back to `return false` (the wiring test); the PasskeyLogin iOS branch
@@ -27,6 +32,9 @@ import {
   isSignInFailedError,
   markSignInStep,
   describeRejectionString,
+  redactReason,
+  signInFailureDetail,
+  SIGN_IN_DETAIL_MAX,
   signInFailureCode,
   signInStepOf,
   SIGN_IN_FAILED_MESSAGE,
@@ -200,7 +208,7 @@ test("inside the Web3Auth chunk, each raw failure is marked with its step and pa
 });
 
 test("the email button shows the code, selectable, under the error - no em dash in the new lines", () => {
-  assert.ok(button.includes("if (isSignInFailedError(e)) errorCode = e.code;"));
+  assert.ok(button.includes("if (isSignInFailedError(e)) {") && button.includes("errorCode = e.code;"));
   assert.ok(button.includes('<p class="error-code">Code: <code>{errorCode}</code></p>'));
   assert.ok(button.includes("user-select: all;"));
   assert.ok(!button.includes("Sign-in failed —"), "the old em-dash line is gone");
@@ -246,4 +254,60 @@ test("PasskeyLogin: the iOS advice is for a creation refused after a sheet, afte
   assert.ok(noSheet > 0 && ios > noSheet && generic > ios);
   assert.ok(passkeyButton.includes('passkeyCreateRefusedAdvice(apple, organiser)'));
   assert.ok(passkeyButton.includes("appleTouchDevice(navigator.userAgent, navigator.maxTouchPoints ?? 0)"));
+});
+
+// --- details: the reason itself, redacted, on a tap ------------------------------
+
+const JWT = "eyJhbGciOiJFUzI1NiJ9.eyJlbWFpbCI6ImFAYi5jIn0.c2lnbmF0dXJlLWJ5dGVz";
+
+test("redaction hides links, emails, keys, ids, hex and long numbers - and keeps the sentence", () => {
+  const raw = `Could not verify ${EMAIL} at https://auth.web3auth.io/v10/frame?x=1 with ${JWT} key ${KEY} hex deadbeef01 code 123456 ok`;
+  const r = redactReason(raw);
+  assert.equal(r, "Could not verify [email] at [link] with [id] key [hex] hex [hex] code [number] ok");
+  for (const leak of ["friend", "example", "web3auth.io", "eyJ", "abab", "deadbeef", "123456"]) assert.ok(!r.includes(leak), leak);
+});
+
+test("redaction also hides URL-encoded emails, IP addresses, phone numbers and split token pieces", () => {
+  const cases: Array<[string, string]> = [
+    ["login_hint nabil.abbas1986%40gmail.com not found", "login_hint [email] not found"],
+    ["from 192.168.1.1 and 2001:db8::ff00:42:8329 refused", "from [ip] and [ip] refused"],
+    ["call +44 7911 123456 now", "call [number] now"],
+    ["link-local fe80::1 down", "link-local [ip] down"],
+    ["Error: bad request, reason: unknown", "Error: bad request, reason: unknown"],
+    ["token eyJhbGciOi.JIUzI1 NiIsInR5cCI6Ik", "token [id] [id]"],
+    ["blob amtsbW5v cHFycw== end", "blob [id] [id] end"],
+  ];
+  for (const [raw, want] of cases) assert.equal(redactReason(raw), want, raw);
+});
+
+test("a long reason is capped", () => {
+  const r = redactReason("word ".repeat(80));
+  assert.equal(r.length, SIGN_IN_DETAIL_MAX);
+  assert.ok(r.endsWith("…"));
+});
+
+test("details come only from Web3Auth's own text: its error's extra part, or a rejection string", () => {
+  const sdk = walletLoginError(5111, `Failed to connect with wallet. The login for ${EMAIL} could not complete because the frame lost its state`);
+  assert.equal(signInFailureDetail(sdk), "The login for [email] could not complete because the frame lost its state");
+  assert.equal(signInFailureDetail(markSignInStep("Login failed, reason: unknown", "connect")), "Login failed, reason: unknown");
+  // A fixed SDK wrapper phrase is not the reason: the cause beneath it is.
+  const wrapped = walletLoginError(5111, "Failed to connect with wallet. Failed to login with auth", "frame said no");
+  assert.equal(signInFailureDetail(wrapped), "frame said no");
+  const viemish = new Error(`HTTP request failed. URL: https://rpc.example/v3/secret, ${EMAIL}`);
+  Object.defineProperty(viemish, "name", { value: "HttpRequestError" });
+  assert.equal(signInFailureDetail(viemish), null, "any other error's message is never offered");
+  assert.equal(signInFailureDetail(new TypeError("Load failed")), null);
+  const stringCause = Object.assign(new TypeError("fetch failed"), { cause: `no route to ${EMAIL}` });
+  assert.equal(signInFailureDetail(stringCause), null, "a string cause another library hung on its error is never offered");
+});
+
+test("the coded error carries the details, and the button shows them only after a tap", () => {
+  const e = new SignInFailedError("W3A-connect-WalletLoginError.5111(str45)-t32-st.errored", walletLoginError(5111, "Failed to connect with wallet. something went wrong in the frame"));
+  assert.equal(e.detail, "something went wrong in the frame");
+  assert.ok(button.includes("errorDetail = e.detail;"));
+  const tap = button.indexOf("{#if errorDetail && !showDetail}");
+  const shown = button.indexOf('<p class="error-code">Details: <code>{errorDetail}</code></p>');
+  assert.ok(tap > 0 && shown > tap, "the details sit behind the Show details tap");
+  assert.ok(button.includes('onclick={() => (showDetail = true)}>Show details</button>'));
+  assert.ok(button.includes("showDetail = false;"), "a new attempt hides them again");
 });
