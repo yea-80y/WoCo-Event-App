@@ -7,7 +7,7 @@
     CHECKOUT_PRIVACY_SUMMARY,
   } from "@woco/shared";
   import type { BuyerFees } from "@woco/shared";
-  import { canonicalUrl } from "../../../sub-ens/host-label.js";
+  import CheckoutNoticeLinks from "./CheckoutNoticeLinks.svelte";
 
   // Stripe-only: the form collects the organiser's order fields (+ a buyer
   // email when needed) ahead of the checkout redirect. The direct wallet/email
@@ -29,6 +29,8 @@
     stripeEmail: string;
     /** Organiser display name — the consent must name who is being consented to. */
     organiserName?: string;
+    /** The event, so the privacy line can link the organiser's notice for it. */
+    eventId: string;
     /** Tri-state, bound upward: null = never asked. Starts unticked; a pre-ticked
      *  box is not valid consent (UK GDPR Recital 32). */
     marketingConsent: boolean | null;
@@ -51,6 +53,7 @@
     formData = $bindable(),
     stripeEmail = $bindable(),
     organiserName,
+    eventId,
     marketingConsent = $bindable(),
     onStripeCheckout,
     onPayHover,
@@ -147,9 +150,9 @@
       {:else}
         {CHECKOUT_PRIVACY_SUMMARY}
       {/if}
-      <!-- Canonical host: a new tab must not open the gateway (#605), and on an
-           organiser's site there is no legal route to open. -->
-      <a href={canonicalUrl("#/legal/privacy")} target="_blank" rel="noopener">Privacy Policy</a>
+      <!-- The organiser is responsible for what is entered here: their notice
+           first, then WoCo's own policy. -->
+      <CheckoutNoticeLinks {eventId} {organiserName} />
     </p>
   </div>
 
@@ -296,11 +299,6 @@
     margin: 0;
     padding-top: 0.375rem;
     border-top: 1px solid var(--border);
-  }
-
-  .privacy-note a {
-    color: var(--accent-text);
-    text-decoration: underline;
   }
 
   .stripe-btn {

@@ -25,7 +25,7 @@
     "@noble/ed25519": "^3.2.0",
     "@noble/hashes": "^2.4.0",
     "@walletconnect/ethereum-provider": "^2.25.0",
-    "@web3auth/modal": "^10.15.0",
+    "@web3auth/modal": "^11.4.2",
     "@woco/shared": "*",
     "@zerodev/ecdsa-validator": "^5.4.9",
     "@zerodev/permissions": "^5.6.3",

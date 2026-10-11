@@ -213,9 +213,13 @@ export async function connectWeb3AuthBackup(): Promise<BackupWallet> {
   // shared with the primary login via buildWeb3AuthOptions — keep it single-source.
   const mod = await import("@web3auth/modal");
   type Survivor = import("../auth/web3auth-survivor.js").Web3AuthSessionInstance;
-  type Instance = InstanceType<typeof mod.Web3Auth>;
+  const { adaptWeb3AuthSdk } = await import("../auth/web3auth-sdk-adapter.js");
+  type Instance = import("../auth/web3auth-sdk-adapter.js").Web3AuthInstance;
+  type V11 = import("../auth/web3auth-sdk-adapter.js").Web3AuthV11Like;
+  // v11 is presented in the v10 shape (web3auth-sdk-adapter.ts): connect() resolves
+  // with the auth connector's key provider, as the primary login reads it.
   const build = async (): Promise<Instance> => {
-    const fresh = new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId));
+    const fresh = adaptWeb3AuthSdk(new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId)) as unknown as V11);
     await fresh.init();
     return fresh;
   };
@@ -297,12 +301,13 @@ export async function connectWeb3AuthBackup(): Promise<BackupWallet> {
     const raw = await extractRawPrivateKey(provider);
     const wallet = await backupWalletFromPrivateKey(raw);
     // Capture the provider CATEGORY (not PII) while the session is live, for the
-    // backup-inventory memory-jog. typeOfLogin is "google" | "email_passwordless"
-    // | … — a category, never the email address. Best-effort.
+    // backup-inventory memory-jog. "google" | "email_passwordless" | … — a
+    // category, never the email address (v11 names it authConnection, v10
+    // typeOfLogin). Best-effort.
     let providerLabel: string | undefined;
     try {
-      const info = (await web3auth.getUserInfo()) as { typeOfLogin?: string };
-      providerLabel = info?.typeOfLogin || undefined;
+      const info = (await web3auth.getUserInfo()) as { authConnection?: string; typeOfLogin?: string };
+      providerLabel = info?.authConnection || info?.typeOfLogin || undefined;
     } catch {
       /* label is a nicety — never block the backup on it */
     }

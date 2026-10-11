@@ -10,6 +10,7 @@
   import { navigate } from "../../router/router.svelte.js";
   import { ORGANISER_PASSKEY_MESSAGE } from "../../auth/organiser-account.js";
   import UpgradeToPasskey from "./UpgradeToPasskey.svelte";
+  import PasskeyReadyNotice from "../../components/auth/PasskeyReadyNotice.svelte";
 
   let busy = $state(false);
   let error = $state<string | null>(null);
@@ -36,6 +37,8 @@
 
 <section class="needs-passkey">
   <h1>Organising uses a passkey account</h1>
+  <!-- What this phone needs before the passkey step, said here rather than after a failed sheet. -->
+  <PasskeyReadyNotice invite />
   {#if auth.kind === "web3auth"}
     <p class="muted">Your attendees' details are protected by your passkey, so only you can open them.</p>
     {#if error}<p class="error" role="alert">{error}</p>{/if}

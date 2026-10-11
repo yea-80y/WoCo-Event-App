@@ -16,7 +16,11 @@ const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.met
 const ACCOUNT = read("../src/lib/auth/passkey-account.ts");
 
 test("a new passkey's record carries the manager that made it", () => {
-  assert.match(ACCOUNT, /rpId,\s*provider: providerOf\(credential\),\s*\};/);
+  // Read once, before the PRF step, so a refusal can name the same manager.
+  assert.match(
+    ACCOUNT,
+    /const provider = providerOf\(credential\);\s*const prfOutput = await prfAfterCreate\(credential, rpId, salt, provider\);\s*const meta: PasskeyCredentialMeta = \{\s*credentialId: toBase64url\(credential\.rawId\),\s*rpId,\s*provider,\s*\};/,
+  );
 });
 
 test("a sign-in keeps the label recorded for the same passkey instead of erasing it", () => {

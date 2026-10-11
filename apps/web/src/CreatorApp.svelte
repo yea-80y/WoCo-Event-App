@@ -114,6 +114,8 @@
     <ObjectManager />
   {:else if router.route === "audience"}
     <AudienceScreen />
+  {:else if router.route === "privacy-notice-editor"}
+    <LazyRoute loader={() => import("./lib/creator/privacy/PrivacyNoticeEditor.svelte")} />
   {:else if router.route === "payouts"}
     <PayoutsScreen />
   {:else if router.route === "profile"}

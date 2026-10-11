@@ -31,6 +31,8 @@ export interface StripeAccountStatus {
    * onboarding, in which case every currency stays offered.
    */
   defaultCurrency?: string;
+  /** Business details the organiser gave Stripe - pre-fills their privacy notice only. */
+  businessProfile?: { name?: string; supportEmail?: string; supportAddress?: string };
   requirements?: {
     currentlyDue: string[];
     eventuallyDue: string[];

@@ -5,6 +5,7 @@
   import SectionRenderer from './lib/components/site/sections/SectionRenderer.svelte';
   import EventPage from './lib/components/site/EventPage.svelte';
   import ShopOrderScreen from './lib/attendee/shop/ShopOrderScreen.svelte';
+  import OrganiserNotice from './lib/legal/OrganiserNotice.svelte';
   // True when config arrives via the builder preview channel (localStorage
   // handoff or postMessage) rather than the baked-at-deploy SITE_CONFIG. Only
   // preview contexts keep listening for config messages — a deployed site must
@@ -47,6 +48,7 @@
   type Route =
     | { type: 'page'; slug: string }
     | { type: 'event'; eventId: string }
+    | { type: 'privacy'; eventId?: string }
     | { type: 'shop-order'; shopId: string; code: string };
 
   let route      = $state<Route>({ type: 'page', slug: '/' });
@@ -60,10 +62,21 @@
     const h = raw.split('?')[0];
     const eventM = h.match(/^\/events\/([^/]+)$/);
     if (eventM) return { type: 'event', eventId: eventM[1] };
+    // The organiser's privacy notice: site-wide, or for one event (its footer link).
+    if (h === '/privacy-notice') return { type: 'privacy' };
+    const noticeM = h.match(/^\/privacy-notice\/([^/]+)$/);
+    if (noticeM) {
+      try { return { type: 'privacy', eventId: decodeURIComponent(noticeM[1]) }; }
+      catch { return { type: 'privacy' }; }
+    }
     const orderM = h.match(/^\/shop\/([^/]+)\/order\/([^/]+)$/);
     if (orderM) return { type: 'shop-order', shopId: orderM[1], code: orderM[2] };
     return { type: 'page', slug: h || '/' };
   }
+
+  const siteHasContactForm = $derived(
+    (site?.pages ?? []).some((p) => p.sections.some((s) => s.type === 'contactForm'))
+  );
 
   function currentPage(slug: string) {
     return site?.pages.find(p => p.slug === slug) ?? site?.pages.find(p => p.slug === '/');
@@ -382,6 +395,21 @@
         <p class="shop-off">Shop orders are not available on this site yet.</p>
       {/if}
     </main>
+  {:else if route.type === 'privacy'}
+    <!-- The organiser's own notice, on their own site (DATA_INVENTORY §8 item 8). -->
+    {#key route.eventId ?? ''}
+      <main class="notice-main">
+        <OrganiserNotice
+          eventId={route.eventId}
+          siteId={route.eventId ? undefined : site.siteId}
+          {apiUrl}
+          name={site.theme.brandName}
+          contactEmail={site.contact.email}
+          postalAddress={site.contact.address}
+          contactForm={siteHasContactForm}
+        />
+      </main>
+    {/key}
   {:else if route.type === 'event'}
     <!-- Keyed for the same reason the page branch below is: EventPage reads its
          feed in onMount and captures its cache key at instance init, so moving
@@ -419,7 +447,8 @@
       {#if site.contact.email}
         <a class="footer-link" href="mailto:{site.contact.email}">{site.contact.email}</a>
       {/if}
-      <a class="footer-link" href="{wocoAppUrl}/#/legal/privacy" target="_blank" rel="noopener noreferrer">Privacy</a>
+      <a class="footer-link" href="#/privacy-notice">Privacy notice</a>
+      <a class="footer-link" href="{wocoAppUrl}/#/legal/privacy" target="_blank" rel="noopener noreferrer">WoCo Privacy Policy</a>
       <a class="footer-link" href="{wocoAppUrl}/#/legal/terms" target="_blank" rel="noopener noreferrer">Terms</a>
       <span class="footer-powered">Powered by <a href={wocoAppUrl} target="_blank" rel="noopener">WoCo</a></span>
     </div>
@@ -837,6 +866,12 @@
   }
 
   /* ── Footer ───────────────────────────────────────────────────────── */
+  .notice-main {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 2rem 1.25rem 3rem;
+  }
+
   .site-footer {
     border-top: 1px solid var(--border);
     padding: 2rem 1.5rem;

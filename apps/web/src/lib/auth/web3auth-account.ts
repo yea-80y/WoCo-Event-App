@@ -28,22 +28,14 @@ import { Web3AuthSignInError, WEB3AUTH_TIMED_OUT_MESSAGE, isWeb3AuthCancel } fro
 import { awaitWeb3AuthSignIn, browserSignInWaitDeps, type SignInWaitDeps } from "./web3auth-signin-wait.js";
 import { markSignInStep } from "./signin-failure.js";
 
-type MinimalProvider = { request: (args: { method: string }) => Promise<unknown> };
+import { adaptWeb3AuthSdk, type KeyProvider, type Web3AuthInstance, type Web3AuthV11Like } from "./web3auth-sdk-adapter.js";
 
-// The bits of the Web3Auth instance we touch. It extends SafeEventEmitter, so the
-// listener methods are present; `cachedConnector` tells us whether a stored session
-// is (asynchronously) rehydrating after init().
-type Web3AuthInstance = {
-  connected: boolean;
-  status: string;
-  provider: MinimalProvider | null;
-  cachedConnector: string | null;
-  init(): Promise<void>;
-  connect(): Promise<MinimalProvider | null>;
-  logout(options?: { cleanup?: boolean }): Promise<void>;
-  on(event: string, fn: (...args: unknown[]) => void): void;
-  removeListener(event: string, fn: (...args: unknown[]) => void): void;
-};
+type MinimalProvider = KeyProvider;
+
+// The bits of the Web3Auth instance we touch, in the shape the sign-in rules were
+// built on (v10's); v11 is presented in it by web3auth-sdk-adapter.ts.
+// `cachedConnector` tells us whether a stored session is (asynchronously)
+// rehydrating after init().
 
 type Web3AuthFactory = () => Promise<Web3AuthInstance | null>;
 
@@ -52,9 +44,9 @@ const buildSdkInstance: Web3AuthFactory = async () => {
   const clientId = buildEnv(() => import.meta.env.VITE_WEB3AUTH_CLIENT_ID as string | undefined);
   if (!clientId) return null;
   const mod = await import("@web3auth/modal");
-  const w = new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId));
+  const w = adaptWeb3AuthSdk(new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId)) as unknown as Web3AuthV11Like);
   await w.init();
-  return w as unknown as Web3AuthInstance;
+  return w;
 };
 
 let _factory: Web3AuthFactory = buildSdkInstance;

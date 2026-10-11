@@ -232,7 +232,7 @@ test("an iPhone, an iPad posing as a Mac, a real Mac and Android", () => {
 test("the advice names the sheet, the exact Settings path and the way past More Options", () => {
   const s = passkeyCreateRefusedAdvice("iPhone", false);
   assert.match(s, /your iPhone said "Choose how to manage your passkeys"/);
-  assert.match(s, /Settings › General › AutoFill & Passwords, turn on Passwords/);
+  assert.match(s, /Check, in this order: 1\) Settings › General › AutoFill & Passwords: turn on AutoFill Passwords and Passkeys and tick Passwords/);
   assert.match(s, /not More Options - that puts the passkey on another device or a security key/);
   assert.match(s, /If you closed the prompt yourself, just tap Create again\./);
   assert.match(s, /Continue with Email below/);

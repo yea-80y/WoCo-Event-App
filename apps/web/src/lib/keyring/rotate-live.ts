@@ -236,7 +236,7 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
     },
 
     copyProfile: async (keys) => {
-      const [{ readContentFeed, writeContentFeed }, { FEED_ROUTES }, { profileDataContentTopic, profileAvatarContentTopic }] = await Promise.all([
+      const [{ readContentFeed, readContentFeedResult, writeContentFeed }, { FEED_ROUTES }, { profileDataContentTopic, profileAvatarContentTopic, organiserNoticeContentTopic }] = await Promise.all([
         import("../swarm/content-feed.js"),
         import("../swarm/gateways.js"),
         import("@woco/shared"),
@@ -245,6 +245,22 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
       for (const topic of [profileDataContentTopic(parent), profileAvatarContentTopic(parent)]) {
         const data = await readContentFeed<unknown>(h.oldSigner.address, topic, { route });
         if (data) await writeContentFeed({ signerPrivKey: keys.feedSigner.privKey, topic, data, route });
+      }
+      // The organiser's privacy notice moves with them: the server reads it under the
+      // ring's signer from here on, and a notice left under the old one would read as
+      // "not confirmed" (and the removed passkey could still rewrite that copy).
+      const noticeRoute = FEED_ROUTES.privacyNotice;
+      const noticeTopic = organiserNoticeContentTopic(parent);
+      // THOROUGH, and "couldn't tell" stops the rotation: a lenient null here would
+      // drop a confirmed notice, leaving the only copy with the removed passkey.
+      const notice = await readContentFeedResult<unknown>(h.oldSigner.address, noticeTopic, {
+        route: noticeRoute,
+        thorough: true,
+        skipLegacy: true,
+      });
+      if (notice.status === "unavailable") throw new Error("Couldn't read your privacy notice to move it - try again.");
+      if (notice.status === "found") {
+        await writeContentFeed({ signerPrivKey: keys.feedSigner.privKey, topic: noticeTopic, data: notice.value, route: noticeRoute });
       }
     },
 

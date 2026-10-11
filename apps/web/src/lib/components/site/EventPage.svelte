@@ -8,6 +8,8 @@
   import { buildEventJsonLd, eventMetaDescription } from "@woco/shared";
   import { setJsonLd, setMetaDescription, setTitle } from "../../seo/head.js";
   import ClaimButton from "../../attendee/events/ClaimButton.svelte";
+  import { WOCO_POLICY_URL } from "../../legal/organiser-notice.js";
+  import { WOCO_POLICY_LINK_LABEL } from "@woco/shared";
   import { firstImageUrl, useNextImageUrl } from "./image-fallback.js";
 
   interface Props {
@@ -81,6 +83,10 @@
 
   // Sourced from the deployed-site runtime config injected by the deploy step.
   const siteName = (typeof window !== "undefined" && window.SITE_CONFIG?.site?.theme?.brandName) || null;
+
+  function openNotice() {
+    window.location.hash = `#/privacy-notice/${encodeURIComponent(eventId)}`;
+  }
 
   // ── SEO (#55) ────────────────────────────────────────────────────────────────
   // Organiser sites are the strongest SEO surface we have — a real venue domain
@@ -577,6 +583,7 @@
             apiUrl={apiUrl}
             payment={selectedSeries.payment}
             quantity={ticketQty[selectedSeries.seriesId] ?? 1}
+            organiserName={siteName ?? undefined}
             eager
           />
 
@@ -617,6 +624,18 @@
       </div>
     {/if}
 
+    <!-- The organiser is the controller for what buyers enter on this page, so
+         their notice is a page of this site: `#/privacy-notice/{eventId}` is routed by
+         SiteApp, MultiSiteApp and the main app alike. Assigning the hash keeps the
+         visitor on this host. -->
+    <footer class="event-legal">
+      <button type="button" class="legal-link" onclick={openNotice}>
+        Privacy notice
+      </button>
+      <span aria-hidden="true">·</span>
+      <a class="legal-link" href={WOCO_POLICY_URL} target="_blank" rel="noopener noreferrer">{WOCO_POLICY_LINK_LABEL}</a>
+    </footer>
+
   {/if}
 </div>
 
@@ -655,6 +674,23 @@
 {/if}
 
 <style>
+  .event-legal {
+    margin: 2rem 1rem 0;
+    padding-top: 0.875rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+  }
+  .legal-link {
+    color: var(--accent);
+    text-decoration: underline;
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    cursor: pointer;
+  }
+
   /* ── Page shell ───────────────────────────────────────────────────────────── */
   .event-page {
     max-width: 640px;

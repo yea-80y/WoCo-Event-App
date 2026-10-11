@@ -488,6 +488,7 @@
       bind:stripeEmail
       bind:marketingConsent
       {organiserName}
+      {eventId}
       onStripeCheckout={handleStripeCheckout}
       onPayHover={() => { payHoverTick++; }}
       onCancel={() => { showOrderForm = false; }}
@@ -502,6 +503,8 @@
       showEmailInput={!linked && !hasEmailField}
       onCheckout={handleStripeCheckout}
       onStripeEmailChange={(v) => { stripeEmail = v; }}
+      {eventId}
+      {organiserName}
     />
   {:else}
     <!-- No live purchase rail for this series (free events and the crypto

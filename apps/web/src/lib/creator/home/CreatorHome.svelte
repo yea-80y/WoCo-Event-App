@@ -48,9 +48,9 @@
   import Webhook from "lucide-svelte/icons/webhook";
   import Wallet from "lucide-svelte/icons/wallet";
   import Banknote from "lucide-svelte/icons/banknote";
+  import ShieldCheck from "lucide-svelte/icons/shield-check";
   import Layers from "lucide-svelte/icons/layers";
   import Plus from "lucide-svelte/icons/plus";
-  import ShieldCheck from "lucide-svelte/icons/shield-check";
   import KeyRound from "lucide-svelte/icons/key-round";
   import Mail from "lucide-svelte/icons/mail";
 
@@ -719,6 +719,14 @@
         <div>
           <span class="tool-label">Payouts</span>
           <span class="tool-desc">What you've earned, and when it lands.</span>
+        </div>
+      </button>
+
+      <button class="tool" onclick={() => navigate("/creator/privacy-notice")}>
+        <ShieldCheck size={20} strokeWidth={2.25} />
+        <div>
+          <span class="tool-label">Privacy notice</span>
+          <span class="tool-desc">What attendees see about how you use their details.</span>
         </div>
       </button>
 
