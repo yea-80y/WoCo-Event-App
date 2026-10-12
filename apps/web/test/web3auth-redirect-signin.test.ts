@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { privateKeyToAccount } from "viem/accounts";
 
-await import("@web3auth/modal");
+const sdkModule = await import("@web3auth/modal");
 
 const memory = new Map<string, string>();
 const lsStore = {
@@ -106,12 +106,25 @@ class FakeSdk extends EventEmitter {
   private async start(): Promise<void> {
     this.status = "ready";
     if (this.mode !== "redirect") return;
+    if (this.world.neverReads) return; // the connector started without reading the URL
     // Auth.init: read the URL, then the replaceUrlOnRedirect clean-up mangles the fragment.
     const page = this.world.page;
     this.sawSearch = page.url.search;
     this.sawHash = page.url.hash;
     const b64 = new URLSearchParams(page.url.hash.slice(1)).get("b64Params") ?? page.url.searchParams.get("b64Params");
     page.deps().replaceUrl(`${page.url.pathname}#${encodeURIComponent(page.url.hash.slice(1))}=`);
+    if (this.world.silentFailure !== null) {
+      // The real modal: Auth.init threw inside the connector's start-up, the modal
+      // caught it and only LOGGED it (initInAppAndCachedConnectors), then set READY.
+      // No event. (An iPhone, 2026-10-12: W3A-connect-Error-t3-redirect-r.b64-r.nonce-st.ready.)
+      const saved = console.error;
+      console.error = () => {};
+      sdkModule.log.setLevel("error"); // as the modal's constructor does
+      sdkModule.log.error(this.world.silentFailure, "error while initializing connector ", "auth");
+      console.error = saved;
+      this.status = "ready";
+      return;
+    }
     if (this.world.lateFailure) {
       // The modal sets its status, awaits a cache clear, THEN re-emits the reason.
       this.status = "errored";
@@ -169,6 +182,10 @@ class World {
   slowStart = false;
   /** The connector fails, its status set before its reason is emitted. */
   lateFailure = false;
+  /** Auth.init throws inside the connector's start-up: the modal only logs it. */
+  silentFailure: unknown = null;
+  /** The SDK never reads the result in the bar. */
+  neverReads = false;
   navigatedWith: Map<string, string> | null = null;
   install(): void {
     setWeb3AuthFactoryForTests(
@@ -195,13 +212,19 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r));
 }
 
+/** Until the sign-in has reached connect() (the page is about to leave). */
+async function untilConnecting(): Promise<void> {
+  for (let i = 0; i < 2_000 && !world.built[0]?.connectCalls; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(world.built[0]?.connectCalls, 1, "the sign-in reached connect()");
+}
+
 const pending = (params: Record<string, string>, notes: string[] = []): Pending => ({ params, notes, route: "#/event/abc" });
 
 // --- leaving ----------------------------------------------------------------------
 
 test("the click: a redirect-mode instance, the marker written BEFORE connect(), and the route put back after the SDK mangled it", async () => {
   void loginWithWeb3Auth().catch(() => {});
-  await settle();
+  await untilConnecting();
   const sdk = world.built[0];
   assert.equal(sdk.mode, "redirect");
   assert.equal(world.page.replaced[0], "/", "built at the bare path: nothing of ours for the SDK to read");
@@ -214,7 +237,7 @@ test("the click: a redirect-mode instance, the marker written BEFORE connect(), 
 
 test("closing the sheet before choosing: a quiet cancel, and the marker is spent", async () => {
   const attempt = loginWithWeb3Auth();
-  await settle();
+  await untilConnecting();
   cancelWeb3AuthSignIn();
   await assert.rejects(attempt, (e: unknown) => isWeb3AuthSignInError(e) && e.cancelled);
   assert.equal(world.page.tab.has(REDIRECT_MARKER_KEY), false);
@@ -310,4 +333,40 @@ test("a start-up that fails with its status set BEFORE the reason is emitted sti
   await finishWeb3AuthRedirectSignIn(pending({ nonce: "n1", loginParams: "{}" }, ["r.nonce"])).catch((e) => (caught = e));
   assert.match(signInFailureCode(caught, { step: "sdk", elapsedMs: 0 }), /^W3A-connect-WalletLoginError\.5111-.*-redirect-r\.nonce-st\.errored$/);
   assert.equal(world.page.path, "/#/event/abc");
+});
+
+for (const [what, thrown, expected] of [
+  ["the frame's LOGIN_FAILED string", "Some reason Web3Auth's frame gives", /^W3A-connect-Rejected~str\d+[^-]*-t\d+-redirect-r\.nonce-r\.lp-st\.ready$/],
+  ["a missing loginParams (JSON.parse of undefined)", new SyntaxError('"undefined" is not valid JSON'), /^W3A-connect-SyntaxError-t\d+-redirect-r\.nonce-st\.ready$/],
+  ["a session that will not authorise", Object.assign(new Error("User not logged in."), { name: "LoginError", code: 5003 }), /^W3A-connect-LoginError\.5003-t\d+-redirect-r\.nonce-r\.lp-st\.ready$/],
+] as const) {
+  test(`the iPhone's silent failure (${what}): the code carries the SDK's own reason, never a bare Error`, async () => {
+    world.slowStart = true;
+    world.silentFailure = thrown;
+    const notes = ["r.nonce", ...(what.includes("missing") ? [] : ["r.lp"])];
+    let caught: unknown;
+    await finishWeb3AuthRedirectSignIn(pending({ nonce: "n1", ...(what.includes("missing") ? {} : { loginParams: "{}" }) }, notes)).catch(
+      (e) => (caught = e),
+    );
+    const code = signInFailureCode(caught, { step: "sdk", elapsedMs: 0 });
+    assert.match(code, expected);
+    assert.ok(!/-Error-/.test(code), "never the reason-less code the iPhone showed");
+    assert.equal(world.page.path, "/#/event/abc");
+  });
+}
+
+test("a result the SDK never READ is named as such (r.unread): the bar still held it when the connector had started", async () => {
+  world.neverReads = true;
+  let caught: unknown;
+  await finishWeb3AuthRedirectSignIn(pending({ nonce: "n1", loginParams: "{}" }, ["r.nonce", "r.lp"])).catch((e) => (caught = e));
+  assert.match(signInFailureCode(caught, { step: "sdk", elapsedMs: 0 }), /-redirect-r\.nonce-r\.lp-r\.unread-st\.ready$/);
+  assert.equal(world.page.path, "/#/event/abc", "and the bar is still put back");
+});
+
+test("a failure the modal logs while init() is still running (before the instance is handed back) is kept too", async () => {
+  world.slowStart = false;
+  world.silentFailure = Object.assign(new Error("Login failed"), { name: "LoginError", code: 5102 });
+  let caught: unknown;
+  await finishWeb3AuthRedirectSignIn(pending({ nonce: "n1", loginParams: "{}" }, ["r.nonce", "r.lp"])).catch((e) => (caught = e));
+  assert.match(signInFailureCode(caught, { step: "sdk", elapsedMs: 0 }), /^W3A-connect-LoginError\.5102-/);
 });
