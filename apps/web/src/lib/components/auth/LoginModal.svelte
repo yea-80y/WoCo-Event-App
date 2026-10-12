@@ -17,6 +17,8 @@
   import type { InAppBrowser } from "../../browser/in-app-browser.js";
   import { ESCAPE_FAILED_PARAM } from "../../browser/in-app-route.js";
   import { takeStrayWeb3AuthRedirect } from "../../auth/web3auth-redirect.js";
+  import { takeSignInFailure, type SignInFailureView } from "../../auth/signin-failure-notice.js";
+  import SignInFailureDetails from "./SignInFailureDetails.svelte";
   import { onMount } from "svelte";
 
   type Method = "passkey" | "email" | "wallet" | "coinbase";
@@ -148,8 +150,13 @@
   // mid-attempt, so it must be re-read when the scene settles back to the
   // picker, not only when the modal opens.
   let notice = $state<string | null>(null);
+  // A coded sign-in failure posted for this sheet (a redirect sign-in that failed
+  // on the page it came back to): shown with its code and "Show details".
+  let failure = $state<SignInFailureView | null>(null);
   $effect(() => {
     if (!visible || authing) return;
+    const posted = takeSignInFailure(globalThis.sessionStorage);
+    if (posted) failure = posted;
     try {
       const pending = globalThis.sessionStorage?.getItem(AUTH_NOTICE_KEY);
       if (pending) {
@@ -190,6 +197,7 @@
     // The modal instance outlives its openings, so drop the notice here or it
     // re-renders on every later open — sessionStorage was already cleared.
     notice = null;
+    failure = null;
     loginRequest.resolve(false);
     onclose?.();
   }
@@ -199,6 +207,7 @@
     authing = null;
     view = "main";
     notice = null;
+    failure = null;
     loginRequest.resolve(true);
     onclose?.();
   }
@@ -255,6 +264,14 @@
 
       {#if notice && !authing}
         <p class="notice" role="status">{notice}</p>
+      {/if}
+
+      {#if failure && !authing}
+        <div class="notice notice--failure" role="alert">
+          {#key failure}
+            <SignInFailureDetails {failure} />
+          {/key}
+        </div>
       {/if}
 
       {#if authing && sceneShown}
@@ -449,6 +466,12 @@
     font-size: 0.8125rem;
     line-height: 1.45;
     color: var(--text-secondary);
+  }
+
+  .notice--failure {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
   }
 
   /* Layout only — .btn/.btn--primary carry the appearance, from app.css. */

@@ -34,14 +34,9 @@ import {
   WEB3AUTH_KEY_GONE_MESSAGE,
   WEB3AUTH_KEY_LOADING_MESSAGE,
 } from "./web3auth-signin-error.js";
-import {
-  SIGN_IN_FAILED_MESSAGE,
-  SignInFailedError,
-  isSignInFailedError,
-  signInFailureCode,
-  type SignInStep,
-} from "./signin-failure.js";
+import { SignInFailedError, signInFailureCode, type SignInStep } from "./signin-failure.js";
 import { takePendingWeb3AuthRedirect, type PendingRedirect } from "./web3auth-redirect.js";
+import { postSignInFailure, signInFailureView } from "./signin-failure-notice.js";
 import { guardianConfigForBackup } from "./guardian-config.js";
 import {
   requestSessionDelegation,
@@ -2242,8 +2237,9 @@ async function _finishWeb3AuthRedirect(pending: PendingRedirect): Promise<void> 
   } catch (e) {
     // An orphaned-credential refusal posted its own notice (#255); a cancel says nothing.
     if (isOrphanedCredentialError(e) || (isWeb3AuthSignInError(e) && e.cancelled)) return;
-    const message = e instanceof Error ? e.message.slice(0, 160) : SIGN_IN_FAILED_MESSAGE;
-    _postAuthNotice(isSignInFailedError(e) ? `${message} Code: ${e.code}` : message);
+    // Posted whole - line, code and redacted details - so the sheet's banner can
+    // offer "Show details" just as the email button does (signin-failure-notice.ts).
+    postSignInFailure(globalThis.sessionStorage, signInFailureView(e));
   } finally {
     _redirectSignIn = null;
   }

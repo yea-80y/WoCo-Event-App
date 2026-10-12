@@ -208,9 +208,11 @@ test("inside the Web3Auth chunk, each raw failure is marked with its step and pa
 });
 
 test("the email button shows the code, selectable, under the error - no em dash in the new lines", () => {
-  assert.ok(button.includes("if (isSignInFailedError(e)) {") && button.includes("errorCode = e.code;"));
-  assert.ok(button.includes('<p class="error-code">Code: <code>{errorCode}</code></p>'));
-  assert.ok(button.includes("user-select: all;"));
+  // The failure is rendered by the one shared component (signin-failure-details.test.ts).
+  const details = read("../src/lib/components/auth/SignInFailureDetails.svelte");
+  assert.ok(button.includes("failure = signInFailureView(e);") && button.includes("<SignInFailureDetails {failure} />"));
+  assert.ok(details.includes('<p class="error-code">Code: <code>{failure.code}</code></p>'));
+  assert.ok(details.includes("user-select: all;"));
   assert.ok(!button.includes("Sign-in failed —"), "the old em-dash line is gone");
 });
 
@@ -304,10 +306,11 @@ test("details come only from Web3Auth's own text: its error's extra part, or a r
 test("the coded error carries the details, and the button shows them only after a tap", () => {
   const e = new SignInFailedError("W3A-connect-WalletLoginError.5111(str45)-t32-st.errored", walletLoginError(5111, "Failed to connect with wallet. something went wrong in the frame"));
   assert.equal(e.detail, "something went wrong in the frame");
-  assert.ok(button.includes("errorDetail = e.detail;"));
-  const tap = button.indexOf("{#if errorDetail && !showDetail}");
-  const shown = button.indexOf('<p class="error-code">Details: <code>{errorDetail}</code></p>');
+  const details = read("../src/lib/components/auth/SignInFailureDetails.svelte");
+  const tap = details.indexOf("{#if failure.detail && !showDetail}");
+  const shown = details.indexOf('<p class="error-code">Details: <code>{failure.detail}</code></p>');
   assert.ok(tap > 0 && shown > tap, "the details sit behind the Show details tap");
-  assert.ok(button.includes('onclick={() => (showDetail = true)}>Show details</button>'));
-  assert.ok(button.includes("showDetail = false;"), "a new attempt hides them again");
+  assert.ok(details.includes('onclick={() => (showDetail = true)}>Show details</button>'));
+  // A new attempt is a new failure object, and {#key} remounts the component.
+  assert.match(button, /\{#key failure\}\s*<SignInFailureDetails \{failure\} \/>/);
 });
