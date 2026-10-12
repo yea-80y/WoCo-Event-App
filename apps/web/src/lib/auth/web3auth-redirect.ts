@@ -271,7 +271,7 @@ export const STRAY_REDIRECT_NOTICE =
  * for `auth.init()` (`takePendingWeb3AuthRedirect`), strips anything else.
  */
 export function installWeb3AuthRedirectCapture(
-  win: { location: Pick<Location, "pathname" | "search" | "hash">; history: Pick<History, "replaceState" | "state">; sessionStorage?: Storage },
+  win: { location: Pick<Location, "href" | "pathname" | "search" | "hash">; history: Pick<History, "replaceState" | "state">; sessionStorage?: Storage },
   now: number = Date.now(),
 ): CaptureOutcome {
   let storage: Pick<Storage, "getItem" | "removeItem" | "setItem">;
@@ -282,7 +282,8 @@ export function installWeb3AuthRedirectCapture(
   }
   const outcome = captureRedirectReturn(win.location, storage, now);
   if (outcome.kind === "none") return outcome;
-  win.history.replaceState(win.history.state, "", outcome.url);
+  // Resolved against the page's own URL, never the deploy's <base href> (#604).
+  win.history.replaceState(win.history.state, "", new URL(outcome.url, win.location.href).href);
   if (outcome.kind === "finish") _pending = outcome.pending;
   else {
     _stray = true;

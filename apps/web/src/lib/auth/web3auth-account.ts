@@ -91,7 +91,8 @@ const browserRedirectPage = (): RedirectPageDeps => ({
     }
   },
   location: () => window.location,
-  replaceUrl: (url) => window.history.replaceState(window.history.state, "", url),
+  // Resolved against the page's own URL, never the deploy's <base href> (#604).
+  replaceUrl: (url) => window.history.replaceState(window.history.state, "", new URL(url, window.location.href).href),
   now: () => Date.now(),
   settleTimeoutMs: REDIRECT_SETTLE_WAIT_MS,
 });

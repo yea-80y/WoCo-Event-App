@@ -176,12 +176,12 @@ test("install: replaces the URL once, hands the return to auth.init once, and a 
   writeRedirectMarker(s, "#/creator", NOW);
   const urls: string[] = [];
   const win = (hash: string, storage: ReturnType<typeof tab>) => ({
-    location: { pathname: "/", search: "", hash },
+    location: { href: `https://gateway.woco-net.com/${hash}`, pathname: "/", search: "", hash },
     history: { state: null, replaceState: (_s: unknown, _t: string, u?: string | URL | null) => void urls.push(String(u)) },
     sessionStorage: storage as unknown as Storage,
   });
   installWeb3AuthRedirectCapture(win(`#b64Params=${b64url({ sessionId: "cc" })}`, s), NOW);
-  assert.deepEqual(urls, ["/#/creator"]);
+  assert.deepEqual(urls, ["https://gateway.woco-net.com/#/creator"], "absolute, from the page's own URL (#604)");
   assert.equal(takePendingWeb3AuthRedirect()?.route, "#/creator");
   assert.equal(takePendingWeb3AuthRedirect(), null, "once");
   assert.equal(takeStrayWeb3AuthRedirect(), false);
