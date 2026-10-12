@@ -16,6 +16,7 @@
   import { mustSignInElsewhere } from "../../auth/sign-in-host.js";
   import type { InAppBrowser } from "../../browser/in-app-browser.js";
   import { ESCAPE_FAILED_PARAM } from "../../browser/in-app-route.js";
+  import { takeStrayWeb3AuthRedirect } from "../../auth/web3auth-redirect.js";
   import { onMount } from "svelte";
 
   type Method = "passkey" | "email" | "wallet" | "coinbase";
@@ -34,6 +35,9 @@
     // reloaded this page itself - with the sheet closed. Reopen it once, so the
     // "Chrome didn't open" line and the next way out are in front of them (#812).
     if (new URL(window.location.href).searchParams.get(ESCAPE_FAILED_PARAM) === "1") void loginRequest.request();
+    // A Web3Auth redirect result that was not this tab's to finish (stripped at
+    // boot, web3auth-redirect.ts): open on the notice that says so.
+    if (takeStrayWeb3AuthRedirect()) void loginRequest.request();
   });
 
   // Modal is visible if either prop-driven or store-driven
@@ -75,6 +79,22 @@
     });
   });
 
+  // A redirect sign-in coming back (iPhone/iPad): the sheet opens on the email
+  // scene while the store finishes it, and closes on success. A failure returns
+  // to the picker, where the notice carries its code.
+  let finishingRedirect = false;
+  $effect(() => {
+    if (auth.redirectSignIn === "finishing") {
+      finishingRedirect = true;
+      if (!visible) void loginRequest.request();
+      authing = "email";
+    } else if (finishingRedirect) {
+      finishingRedirect = false;
+      if (auth.isAuthenticated) handleComplete();
+      else settle();
+    }
+  });
+
   // Recomputed on each open rather than once: this instance outlives its
   // openings, and the hash it should carry across is the route the user is on
   // NOW, not the one they were on the first time the modal mounted.
@@ -104,7 +124,7 @@
     },
     email: {
       name: "Email",
-      waiting: "Finish signing in via the secure pop-up.",
+      waiting: "Finish signing in on the secure sign-in page.",
       finalizing: "Setting up your account…",
     },
     wallet: {

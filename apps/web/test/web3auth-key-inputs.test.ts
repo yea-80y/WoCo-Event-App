@@ -63,6 +63,31 @@ test("the options, whole: mainnet and devnet map to their exact network names, n
   assert.equal(mod.CHAIN_NAMESPACES.OTHER, "other");
 });
 
+test("iPhone/iPad redirect options: the SAME options, plus uxMode and nothing else - no key input moves (owner 2026-10-12)", () => {
+  for (const network of ["sapphire_mainnet", "sapphire_devnet"] as const) {
+    const popup = web3AuthOptionsFor(mod, CLIENT, network);
+    const redirect = web3AuthOptionsFor(mod, CLIENT, network, "redirect");
+    assert.deepEqual(redirect, { ...expected(network), uiConfig: { consentRequired: false, uxMode: "redirect" } });
+    assert.deepEqual(web3AuthOptionsFor(mod, CLIENT, network, "popup"), popup, "the pop-up options stay byte-identical");
+    const { uiConfig: _r, ...redirectKeyInputs } = redirect;
+    const { uiConfig: _p, ...popupKeyInputs } = popup;
+    assert.deepEqual(redirectKeyInputs, popupKeyInputs, "clientId, network, chain, session: all identical");
+    assert.ok(!("useSFAKey" in redirect) && !("privateKeyProvider" in redirect) && !("modalConfig" in redirect));
+  }
+  assert.equal(mod.UX_MODE.REDIRECT, "redirect");
+});
+
+test("SDK: uxMode is transport - the Auth constructor's key inputs are the same object in both modes", () => {
+  // The connector adds only replaceUrlOnRedirect + useCoreKitKey (= useSFAKey, never set) to its
+  // auth options, then builds Auth from clientId + network + IFRAME + the non-default connections
+  // whatever the mode; the default email login's ids come from the same Login.js branch.
+  const c = flat(connector);
+  assert.match(c, /this\.authOptions = _objectSpread\(_objectSpread\(\{\}, this\.authOptions\), \{\}, \{ replaceUrlOnRedirect: isRedirectResult, useCoreKitKey: this\.coreOptions\.useSFAKey \}\);/);
+  // The redirect leaves from connectWithSocialLogin AFTER the same loginParams/ids are built.
+  const social = c.slice(c.indexOf("async connectWithSocialLogin(params) {"), c.indexOf("async accessTokenProvider("));
+  assert.ok(social.indexOf("authConnectionId: providerConfig.authConnectionId") < social.indexOf("verifierWindow.redirect("));
+});
+
 const src = (rel: string) => readFileSync(new URL(`../node_modules/${rel}`, import.meta.url), "utf8");
 const connector = src("@web3auth/no-modal/dist/lib.esm/connectors/auth-connector/authConnector.js");
 const flat = (s: string) => s.replace(/\s+/g, " ");
