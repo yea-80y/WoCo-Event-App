@@ -5,7 +5,8 @@
  * facts the design rests on are pinned from the installed source, so an upgrade
  * that moves one fails here first.
  *
- * MUTATIONS (each went red, then restored): standalone check dropped; iPad touch
+ * MUTATIONS (each went red, then restored): the iOS switch defaulting on;
+ * standalone check dropped; iPad touch
  * check dropped; marker TTL check dropped; marker not consumed; a stray result
  * kept in the URL; result keys left in the query; hash-route guard dropped (an
  * app route read as a result); b64Params re-encoded as plain base64; the finish
@@ -17,6 +18,7 @@ import { readFileSync } from "node:fs";
 
 const {
   web3AuthUxModeFor,
+  IOS_REDIRECT_SIGN_IN,
   writeRedirectMarker,
   captureRedirectReturn,
   readRedirectResult,
@@ -40,9 +42,18 @@ const MAC_SAFARI =
 const ANDROID_CHROME =
   "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Mobile Safari/537.36";
 
-test("mode: redirect on iPhone (any iOS browser) and iPad-as-Mac; pop-up on desktop, Android and home-screen apps", () => {
+test("mode: the pop-up everywhere while the iOS redirect switch is off (owner 2026-10-12) - iPhones included", () => {
+  assert.equal(IOS_REDIRECT_SIGN_IN, false, "the switch is off");
   const m = (userAgent: string, maxTouchPoints = 0, standalone = false) =>
     web3AuthUxModeFor({ userAgent, maxTouchPoints, standalone });
+  for (const [ua, touch] of [[IPHONE_SAFARI, 5], [IPHONE_CHROME, 5], [MAC_SAFARI, 5], [MAC_SAFARI, 0], [ANDROID_CHROME, 5]] as const) {
+    assert.equal(m(ua, touch), "popup", ua);
+  }
+});
+
+test("mode with the switch ON: redirect on iPhone (any iOS browser) and iPad-as-Mac; pop-up on desktop, Android and home-screen apps", () => {
+  const m = (userAgent: string, maxTouchPoints = 0, standalone = false) =>
+    web3AuthUxModeFor({ userAgent, maxTouchPoints, standalone }, true);
   assert.equal(m(IPHONE_SAFARI, 5), "redirect");
   assert.equal(m(IPHONE_CHROME, 5), "redirect", "every iOS browser is WebKit");
   assert.equal(m(MAC_SAFARI, 5), "redirect", "iPadOS Safari reports a Mac; touch says iPad");

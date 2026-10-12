@@ -35,14 +35,31 @@ export type UxModeEnv = {
 };
 
 /**
- * Redirect on an iPhone or iPad (iPadOS Safari reports a desktop Mac, so a
- * Mac user agent with a touch screen is an iPad). Every iOS browser is WebKit, so
- * Chrome or Firefox there gets it too. NOT in a home-screen app: a cross-origin
- * navigation from one opens iOS's in-app sheet and the return can land outside
- * the app, with no marker - the pop-up stays there (reviewer MUST, 2026-10-12).
+ * THE switch for redirect sign-in on iPhone/iPad. OFF (owner decision
+ * 2026-10-12): redirect was built for the "iOS suspends the pop-up's opener tab"
+ * hypothesis, and the iPhone email failure turned out to be something else
+ * entirely - the keyboard capitalising the address (web3auth-sdk-adapter.ts
+ * `normalizeEmailLoginParams`). The pop-up works on iPhone once the address is
+ * normalised, and redirect would navigate away in the middle of an email account
+ * recovery (`recoverAndRekey`). The redirect path stays built and tested; turning
+ * this on is the whole of bringing it back.
+ *
+ * With it off, the boot capture still strips any Web3Auth result that reaches a
+ * tab without that tab's marker (a crafted link), and a tab that started a
+ * redirect on the old build still finishes it.
  */
-export function web3AuthUxModeFor(env: UxModeEnv): Web3AuthUxMode {
-  if (env.standalone) return "popup";
+export const IOS_REDIRECT_SIGN_IN = false;
+
+/**
+ * Redirect on an iPhone or iPad when `iosRedirect` is on (iPadOS Safari reports
+ * a desktop Mac, so a Mac user agent with a touch screen is an iPad). Every iOS
+ * browser is WebKit, so Chrome or Firefox there gets it too. NOT in a home-screen
+ * app: a cross-origin navigation from one opens iOS's in-app sheet and the return
+ * can land outside the app, with no marker - the pop-up stays there (reviewer
+ * MUST, 2026-10-12). Everything else: the pop-up.
+ */
+export function web3AuthUxModeFor(env: UxModeEnv, iosRedirect: boolean = IOS_REDIRECT_SIGN_IN): Web3AuthUxMode {
+  if (!iosRedirect || env.standalone) return "popup";
   const ua = env.userAgent;
   // Every other iOS device's user agent says "CPU iPhone OS".
   const ios = /iPhone|iPad/.test(ua) || (/Macintosh/.test(ua) && env.maxTouchPoints > 1);
