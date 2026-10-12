@@ -68,7 +68,8 @@ const button = read("../src/lib/components/auth/Web3AuthLogin.svelte");
 const gate = read("../src/lib/creator/gate/OrganiserNeedsPasskey.svelte");
 
 test("the store passes Web3Auth's own outcomes through instead of a bare false", () => {
-  const start = store.indexOf("async function loginWeb3Auth(");
+  // Both ways a key arrives (pop-up, redirect return) share this one path.
+  const start = store.indexOf("async function _runWeb3AuthSignIn(");
   const fn = store.slice(start, store.indexOf("\nasync function ", start + 10));
   assert.ok(fn.includes("if (isOrphanedCredentialError(e) || isWeb3AuthSignInError(e)) throw e;"));
 });

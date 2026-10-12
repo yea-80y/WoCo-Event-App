@@ -30,7 +30,7 @@ function body(src: string, signature: string): string {
 }
 
 test("an email sign-in checks this device's upgrade tombstone before any path", () => {
-  const b = body(STORE, "async function loginWeb3Auth(");
+  const b = body(STORE, "async function _runWeb3AuthSignIn(");
   const tombstone = b.indexOf('readOrphanTombstone("web3auth", address)');
   const fastPath = b.indexOf('readCachedKernelAddress("web3auth", address)');
   assert.ok(tombstone > 0 && fastPath > tombstone, "tombstone first");
@@ -38,7 +38,7 @@ test("an email sign-in checks this device's upgrade tombstone before any path", 
 });
 
 test("the slow path refuses an email key that is off the list before anything is written", () => {
-  const b = body(STORE, "async function loginWeb3Auth(");
+  const b = body(STORE, "async function _runWeb3AuthSignIn(");
   const slow = b.slice(b.indexOf("const kernel = await buildKernelFromPrivateKey("));
   const check = slow.indexOf("=== NOT_ON_LIST");
   const firstWrite = slow.indexOf("_clearStaleAuthForSwitch(");
@@ -66,7 +66,7 @@ test("the intent is asked for over the signed session; its refusal shows the ser
 });
 
 test("the fast path makes no chain read, so the background check follows it", () => {
-  const b = body(STORE, "async function loginWeb3Auth(");
+  const b = body(STORE, "async function _runWeb3AuthSignIn(");
   const fast = b.slice(b.indexOf("if (cachedKernel) {"), b.indexOf("// Kernelize"));
   assert.match(fast, /_verifyEmailKeyInBackground\(cachedKernel, address\)/);
 });

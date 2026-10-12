@@ -34,7 +34,14 @@ import {
   WEB3AUTH_KEY_GONE_MESSAGE,
   WEB3AUTH_KEY_LOADING_MESSAGE,
 } from "./web3auth-signin-error.js";
-import { SignInFailedError, signInFailureCode, type SignInStep } from "./signin-failure.js";
+import {
+  SIGN_IN_FAILED_MESSAGE,
+  SignInFailedError,
+  isSignInFailedError,
+  signInFailureCode,
+  type SignInStep,
+} from "./signin-failure.js";
+import { takePendingWeb3AuthRedirect, type PendingRedirect } from "./web3auth-redirect.js";
 import { guardianConfigForBackup } from "./guardian-config.js";
 import {
   requestSessionDelegation,
@@ -1672,6 +1679,14 @@ async function init(): Promise<void> {
   if (typeof document !== "undefined") document.addEventListener("visibilitychange", _onVisibilityChange);
 
   try {
+    // A Web3Auth redirect sign-in this tab started has come back (iPhone/iPad):
+    // finished instead of any stored-session restore, never alongside one.
+    const redirect = takePendingWeb3AuthRedirect();
+    if (redirect) {
+      void _finishWeb3AuthRedirect(redirect);
+      return;
+    }
+
     const kind = await getKV<AuthKind>(StorageKeys.AUTH_KIND);
 
     if (kind === "web3") {
@@ -2201,22 +2216,59 @@ async function loginWeb3(): Promise<boolean> {
  * restore on page reload.
  */
 async function loginWeb3Auth(): Promise<boolean> {
+  return _runWeb3AuthSignIn("waiting", async (m) => {
+    _cancelLogin = m.cancelWeb3AuthSignIn;
+    return m.loginWithWeb3Auth({
+      onStall: () => {
+        _loginStage = "stalled";
+      },
+    });
+  });
+}
+
+/**
+ * A redirect sign-in (iPhone/iPad, web3auth-redirect.ts) coming back: the boot
+ * runs it INSTEAD of the stored-session restore, so a rehydrated session is never
+ * read as a sign-in. The key comes from the result in the URL; everything after
+ * it is the pop-up sign-in's own path (`_runWeb3AuthSignIn`), not a copy. A
+ * failure is posted for the login sheet, which opens on it.
+ */
+let _redirectSignIn = $state<"finishing" | null>(null);
+
+async function _finishWeb3AuthRedirect(pending: PendingRedirect): Promise<void> {
+  _redirectSignIn = "finishing";
+  try {
+    await _runWeb3AuthSignIn("finalizing", (m) => m.finishWeb3AuthRedirectSignIn(pending));
+  } catch (e) {
+    // An orphaned-credential refusal posted its own notice (#255); a cancel says nothing.
+    if (isOrphanedCredentialError(e) || (isWeb3AuthSignInError(e) && e.cancelled)) return;
+    const message = e instanceof Error ? e.message.slice(0, 160) : SIGN_IN_FAILED_MESSAGE;
+    _postAuthNotice(isSignInFailedError(e) ? `${message} Code: ${e.code}` : message);
+  } finally {
+    _redirectSignIn = null;
+  }
+}
+
+/**
+ * Every Web3Auth sign-in, whichever way its key arrived: `acquire` produces the
+ * key (the pop-up, or a redirect's return), and this does the rest - the
+ * upgraded-account refusal, the account lookup or build, storing the sign-in -
+ * and turns an unexplained failure into the copyable code.
+ */
+async function _runWeb3AuthSignIn(
+  firstStage: "waiting" | "finalizing",
+  acquire: (m: typeof import("./web3auth-account.js")) => Promise<{ address: string; privateKey: `0x${string}` }>,
+): Promise<boolean> {
   if (_busy) return false;
   _busy = true;
-  _loginStage = "waiting";
+  _loginStage = firstStage;
   // Where this attempt is, for the code a failure shows (signin-failure.ts).
   const t0 = performance.now();
   let step: SignInStep = "sdk";
   let fast = false;
 
   try {
-    const { loginWithWeb3Auth, cancelWeb3AuthSignIn } = await import("./web3auth-account.js");
-    _cancelLogin = cancelWeb3AuthSignIn;
-    const { address, privateKey } = await loginWithWeb3Auth({
-      onStall: () => {
-        _loginStage = "stalled";
-      },
-    });
+    const { address, privateKey } = await acquire(await import("./web3auth-account.js"));
     _cancelLogin = null;
     _loginStage = "finalizing";
 
@@ -5276,6 +5328,8 @@ export const auth = {
   get busy() { return _busy; },
   // Display-only login progress for the modal's authenticating scene.
   get loginStage() { return _loginStage; },
+  /** A redirect sign-in's return is being finished (the login sheet shows it). */
+  get redirectSignIn() { return _redirectSignIn; },
   get hasSession() { return hasSession; },
   get hasIdentitySeed() { return hasIdentitySeed; },
   /** "recovered-no-copy": the keys cannot be unlocked on this device (not declined). */
