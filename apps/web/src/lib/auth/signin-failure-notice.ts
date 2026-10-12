@@ -16,7 +16,7 @@
  * the sheet reading it, then removed.
  */
 
-import { isSignInFailedError, SIGN_IN_FAILED_MESSAGE, SIGN_IN_DETAIL_MAX } from "./signin-failure.js";
+import { isSignInFailedError, redactReason, SIGN_IN_FAILED_MESSAGE, SIGN_IN_DETAIL_MAX } from "./signin-failure.js";
 
 export const SIGN_IN_FAILURE_KEY = "woco:auth-failure";
 
@@ -65,7 +65,9 @@ export function takeSignInFailure(storage: Pick<Storage, "getItem" | "removeItem
     const message = capped(v.message, MESSAGE_MAX);
     if (!message) return null;
     // A detail longer than the redaction ever produces was not written by it.
-    const detail = capped(v.detail, SIGN_IN_DETAIL_MAX);
+    // Redacted again on the way out: whatever wrote this entry, nothing unredacted is shown.
+    const stored = capped(v.detail, SIGN_IN_DETAIL_MAX);
+    const detail = stored === null ? null : redactReason(stored);
     return { message, code: capped(v.code, CODE_MAX), detail };
   } catch {
     return null;

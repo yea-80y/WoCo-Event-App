@@ -178,6 +178,8 @@
 
   function start(method: Method) {
     authing = method;
+    // A new attempt: an earlier attempt's failure no longer describes anything.
+    failure = null;
   }
 
   // A settled attempt (success or failure) always returns to the picker; on

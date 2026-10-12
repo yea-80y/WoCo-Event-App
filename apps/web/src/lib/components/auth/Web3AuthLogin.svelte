@@ -194,11 +194,6 @@
     text-align: center;
   }
 
-
-
-
-
-
   .spinner {
     width: 0.85rem;
     height: 0.85rem;

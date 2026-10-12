@@ -11,7 +11,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { join, relative } from "node:path";
 
@@ -60,8 +60,10 @@ test("post/take: whole, once, and nothing malformed or over-long gets through", 
   }
   s.setItem(SIGN_IN_FAILURE_KEY, JSON.stringify({ message: "x", code: "C", detail: "d".repeat(500), extra: "<script>" }));
   const t = takeSignInFailure(s)!;
-  assert.equal(t.detail!.length, 200, "never longer than the redaction writes");
+  assert.ok(t.detail!.length <= 200, "never longer than the redaction writes");
   assert.deepEqual(Object.keys(t).sort(), ["code", "detail", "message"]);
+  s.setItem(SIGN_IN_FAILURE_KEY, JSON.stringify({ message: "x", code: "C", detail: "refused for a@b.co at https://x.io/p" }));
+  assert.equal(takeSignInFailure(s)!.detail, "refused for [email] at [link]", "redacted again on the way out");
   const broken = { getItem: () => { throw new Error("blocked"); }, removeItem: () => {} };
   assert.equal(takeSignInFailure(broken), null);
 });
@@ -72,10 +74,11 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 const componentPath = join(here, "../src/lib/components/auth/SignInFailureDetails.svelte");
 const { compile } = await import("svelte/compiler");
 const { render } = await import("svelte/server");
-const out = join(here, "../node_modules/.cache/signin-failure-render");
-mkdirSync(out, { recursive: true });
+// Inside the package, so the compiled module resolves `svelte/internal/server`; removed after.
+const out = mkdtempSync(join(here, "../node_modules/.signin-failure-render-"));
+test.after(() => rmSync(out, { recursive: true, force: true }));
 const compiled = compile(readFileSync(componentPath, "utf8"), { generate: "server", filename: "SignInFailureDetails.svelte" });
-const file = join(out, `SignInFailureDetails.${process.pid}.js`);
+const file = join(out, "SignInFailureDetails.js");
 writeFileSync(file, compiled.js.code);
 const Component = (await import(pathToFileURL(file).href)).default;
 /** The rendered body, with Svelte's scoped class names and hydration markers left out. */
@@ -126,7 +129,9 @@ test("the email button and the sheet's banner (where a redirect's failure lands)
   const modal = read("lib/components/auth/LoginModal.svelte");
   assert.match(modal, /const posted = takeSignInFailure\(globalThis\.sessionStorage\);/);
   assert.match(modal, /\{#if failure && !authing\}\s*<div class="notice notice--failure" role="alert">\s*\{#key failure\}\s*<SignInFailureDetails \{failure\} \/>/);
-  assert.equal(modal.split("failure = null;").length - 1, 2, "cleared on close and on success");
+  assert.equal(modal.split("failure = null;").length - 1, 3, "cleared on close, on success and when a new attempt starts");
+  const start = modal.slice(modal.indexOf("function start(method: Method) {"), modal.indexOf("function settle()"));
+  assert.ok(start.includes("failure = null;"), "a new attempt never sits under an old failure");
 });
 
 test("the redirect finish posts the failure whole - never flattened into a line without its details", () => {
