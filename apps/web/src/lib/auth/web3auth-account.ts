@@ -185,6 +185,9 @@ function _keepUrlForBuild(): () => void {
   return () => page.replaceUrl(kept);
 }
 
+/** How long a settled, sessionless start waits for its failure event. */
+const FAILURE_REASON_GRACE_MS = 250;
+
 /** Statuses the SDK passes through while its connector is still starting. */
 const STARTING_STATUSES: ReadonlySet<string> = new Set(["not_ready", "connecting", "authorizing"]);
 
@@ -201,8 +204,19 @@ async function _awaitConnectorStarted(w: Web3AuthInstance, timeoutMs: number): P
     let done = false;
     const events = [CONNECTOR_EVENTS.READY, CONNECTOR_EVENTS.CONNECTED, CONNECTOR_EVENTS.AUTHORIZED];
     const failures = [CONNECTOR_EVENTS.ERRORED, CONNECTOR_EVENTS.REHYDRATION_ERROR];
+    // A failure sets the modal's status BEFORE an awaited cache clear and only
+    // then re-emits the error, so a settled status that is not a session waits a
+    // moment for the reason to arrive rather than lose it.
+    let deferred = false;
     const check = () => {
-      if (!done && !STARTING_STATUSES.has(w.status)) finish(true);
+      if (done || STARTING_STATUSES.has(w.status)) return;
+      if (isWeb3AuthSessionLive(w) || _startErrors.has(w)) return finish(true);
+      if (!deferred) {
+        deferred = true;
+        setTimeout(() => {
+          if (!done) finish(true);
+        }, FAILURE_REASON_GRACE_MS);
+      }
     };
     const failed = (e: unknown) => {
       _startErrors.set(w, e);
@@ -458,6 +472,9 @@ export async function finishWeb3AuthRedirectSignIn(
   }
   if (!w) throw markSignInStep(new Error("Email login isn't configured yet."), "sdk", [...notes, "no-client-id"]);
 
+  // A failed finish leaves this page load signed out (the boot skipped the
+  // stored-session restore for it); a reload restores whatever account the
+  // device still holds, and the sheet shows the code to try again.
   if (!(isWeb3AuthSessionLive(w) && w.provider)) {
     const reason = _startErrors.get(w) ?? new Error("the sign-in result did not open a session");
     if (w.connected) await _endInterferingSession(w);

@@ -7,7 +7,8 @@
  * MUTATIONS (each went red, then restored): marker written after connect(); the
  * click-time build's URL not put back; the cancel not clearing the marker; the
  * session-id comparison dropped (survivor adopted); `error` built instead of
- * refused; the finish's URL not restored on failure; the finish built in pop-up mode.
+ * refused; the finish's URL not restored on failure; the finish built in pop-up mode;
+ * the start-up wait not waiting (slow start); the late failure reason not waited for.
  */
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -78,6 +79,7 @@ class FakeSdk extends EventEmitter {
   connectCalls = 0;
   logouts = 0;
   sawSearch = "";
+  sawHash = "";
   pendingConnect: { reject: (e: Error) => void } | null = null;
   loginModal = {
     closeModal: () => {
@@ -92,14 +94,30 @@ class FakeSdk extends EventEmitter {
     super();
   }
   async init(): Promise<void> {
-    this.status = "ready";
     this.provider = { request: async () => { throw new Error("no session"); } };
+    if (this.mode !== "redirect" || !this.world.slowStart) return this.start();
+    // The real modal: init() resolves while its connectors are still starting, in a
+    // handler it does not await; the URL is read, and the session made, later.
+    setImmediate(() => {
+      this.status = "connecting";
+      setImmediate(() => void this.start());
+    });
+  }
+  private async start(): Promise<void> {
+    this.status = "ready";
     if (this.mode !== "redirect") return;
     // Auth.init: read the URL, then the replaceUrlOnRedirect clean-up mangles the fragment.
     const page = this.world.page;
     this.sawSearch = page.url.search;
-    const b64 = page.url.searchParams.get("b64Params");
+    this.sawHash = page.url.hash;
+    const b64 = new URLSearchParams(page.url.hash.slice(1)).get("b64Params") ?? page.url.searchParams.get("b64Params");
     page.deps().replaceUrl(`${page.url.pathname}#${encodeURIComponent(page.url.hash.slice(1))}=`);
+    if (this.world.lateFailure) {
+      // The modal sets its status, awaits a cache clear, THEN re-emits the reason.
+      this.status = "errored";
+      setTimeout(() => this.emit("errored", Object.assign(new Error("Failed to login with auth"), { name: "WalletLoginError", code: 5111 })), 180); // after the start-up wait's first status poll (100 ms)
+      return;
+    }
     let result: Record<string, string> = {};
     if (b64) result = JSON.parse(Buffer.from(b64, "base64url").toString("utf8"));
     const stored = memory.get(SESSION_KEY);
@@ -147,6 +165,10 @@ class World {
   built: FakeSdk[] = [];
   oldSessionId: string | null = null;
   noSession = false;
+  /** init() resolves before the connector has started (the real modal's shape). */
+  slowStart = false;
+  /** The connector fails, its status set before its reason is emitted. */
+  lateFailure = false;
   navigatedWith: Map<string, string> | null = null;
   install(): void {
     setWeb3AuthFactoryForTests(
@@ -216,7 +238,8 @@ test("the return: built in redirect mode at ?b64Params=, the NEW session's key, 
   assert.equal(r.address, addressOf(KEY_NEW));
   const sdk = world.built[0];
   assert.equal(sdk.mode, "redirect");
-  assert.match(sdk.sawSearch, /^\?b64Params=/, "the SDK read the result from the query");
+  assert.match(sdk.sawHash, /^#b64Params=[A-Za-z0-9_-]+$/, "the SDK read the result from the fragment");
+  assert.equal(sdk.sawSearch, "", "never from the query, which rides out as Referer");
   assert.equal(world.page.path, "/#/event/abc", "no result and no mangled fragment left behind");
   assert.equal(memory.get("woco:web3auth-session-established"), "1");
 });
@@ -269,5 +292,22 @@ test("unreadable SDK storage fails closed before anything is built", async () =>
     () => ({ ...world.page.deps(), sdkStorage: () => null }),
   );
   await assert.rejects(finishWeb3AuthRedirectSignIn(pending({ sessionId: "0xnew" })));
+  assert.equal(world.page.path, "/#/event/abc");
+});
+
+test("the real start-up shape: init() resolves before the connector has read the URL - the route goes back only after it did", async () => {
+  world.slowStart = true;
+  const r = await finishWeb3AuthRedirectSignIn(pending({ sessionId: "0xnew" }));
+  assert.equal(r.address, addressOf(KEY_NEW));
+  assert.match(world.built[0].sawHash, /^#b64Params=/, "the result was still in the URL when the connector read it");
+  assert.equal(world.page.path, "/#/event/abc", "and the route came back after, over the SDK's mangling");
+});
+
+test("a start-up that fails with its status set BEFORE the reason is emitted still carries the SDK's reason", async () => {
+  world.slowStart = true;
+  world.lateFailure = true;
+  let caught: unknown;
+  await finishWeb3AuthRedirectSignIn(pending({ nonce: "n1", loginParams: "{}" }, ["r.nonce"])).catch((e) => (caught = e));
+  assert.match(signInFailureCode(caught, { step: "sdk", elapsedMs: 0 }), /^W3A-connect-WalletLoginError\.5111-.*-redirect-r\.nonce-st\.errored$/);
   assert.equal(world.page.path, "/#/event/abc");
 });

@@ -64,8 +64,10 @@ export function browserWeb3AuthUxMode(): Web3AuthUxMode {
 // --- the per-tab marker ---------------------------------------------------------
 
 export const REDIRECT_MARKER_KEY = "woco:w3a-redirect";
-/** As long as the SDK keeps a login's result for (`SecurePubSub` timeout, 600 s). */
-export const REDIRECT_MARKER_TTL_MS = 10 * 60_000;
+/** Clocked from the click, before the email is even typed: the same ceiling as a
+ *  pop-up sign-in's wait (web3auth-signin-wait.ts, 15 min). The SDK keeps a
+ *  result for 600 s from the moment Web3Auth publishes it. */
+export const REDIRECT_MARKER_TTL_MS = 15 * 60_000;
 
 type Marker = { v: 1; at: number; route: string };
 
@@ -241,12 +243,14 @@ export function captureRedirectReturn(
 
 /**
  * The URL the finishing SDK instance is built at: the result re-encoded as ONE
- * `?b64Params=` (which the SDK deletes after reading it), the route kept.
+ * `#b64Params=` (which the SDK deletes after reading it). In the FRAGMENT, where
+ * Web3Auth itself delivers it: a fragment is never sent anywhere, while a query
+ * rides out as the `Referer` of every request the build makes (the SDK chunk's
+ * own download included) - and this one holds the session tokens and the email
+ * (`loginParams.login_hint`). The route is put back right after the build.
  */
 export function urlForFinish(pathname: string, search: string, pending: PendingRedirect): string {
-  const p = new URLSearchParams(searchWithoutResult(search));
-  p.set("b64Params", utf8ToBase64Url(JSON.stringify(pending.params)));
-  return `${pathname}?${p.toString()}${pending.route}`;
+  return `${pathname}${searchWithoutResult(search)}#b64Params=${utf8ToBase64Url(JSON.stringify(pending.params))}`;
 }
 
 /** The clean URL after a finish, success or not: no result, the route. */

@@ -8,7 +8,8 @@
  * MUTATIONS (each went red, then restored): standalone check dropped; iPad touch
  * check dropped; marker TTL check dropped; marker not consumed; a stray result
  * kept in the URL; result keys left in the query; hash-route guard dropped (an
- * app route read as a result); b64Params re-encoded as plain base64.
+ * app route read as a result); b64Params re-encoded as plain base64; the finish
+ * result put back in the query.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -147,7 +148,9 @@ test("the finish URL is read by the SDK's OWN parser as the result, and its clea
     route: "#/event/abc",
   };
   const url = urlForFinish("/bzz/feed/", "?woco-escape=1", pending);
-  const encoded = new URL(url, "https://x").searchParams.get("b64Params")!;
+  const parsed = new URL(url, "https://x");
+  assert.equal(parsed.search, "?woco-escape=1", "the result is never in the query (a query rides out as Referer)");
+  const encoded = new URLSearchParams(parsed.hash.slice(1)).get("b64Params")!;
   assert.ok(Buffer.from(JSON.stringify(pending.params)).toString("base64").match(/[+/]/), "the data does exercise + and /");
   assert.match(encoded, /^[A-Za-z0-9_-]+$/, "base64url: nothing a query would rewrite");
   let replaced = "";
@@ -160,7 +163,7 @@ test("the finish URL is read by the SDK's OWN parser as the result, and its clea
     const params = getHashQueryParams(true);
     for (const [k, v] of Object.entries(pending.params)) assert.equal(params[k], v, k);
     const cleaned = new URL(replaced);
-    assert.equal(cleaned.searchParams.has("b64Params"), false, "the SDK deletes what it read");
+    assert.equal(cleaned.hash, "", "the SDK deletes what it read");
     assert.equal(cleaned.searchParams.get("woco-escape"), "1");
   } finally {
     delete (globalThis as Record<string, unknown>).window;
