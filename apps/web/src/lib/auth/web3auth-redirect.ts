@@ -131,8 +131,10 @@ const RESULT_KEYS = new Set<string>([
 ]);
 
 export type RedirectResult = {
-  /** Plain keys and the decoded `b64Params`, merged the way `getHashQueryParams` merges them. */
-  params: Record<string, string>;
+  /** Plain keys and the decoded `b64Params`, merged the way `getHashQueryParams`
+   *  merges them - every value as decoded, so the SDK is handed exactly what it
+   *  would have read itself (web3auth-redirect-replay.test.ts). */
+  params: Record<string, unknown>;
   /** Key NAMES only, for the failure code (`r.sid`, `r.nonce`, ...): never a value. */
   notes: string[];
 };
@@ -152,7 +154,7 @@ function utf8ToBase64Url(s: string): string {
 /** Read the result from one part of the URL; `null` when it has none. */
 function resultIn(part: URLSearchParams): RedirectResult | null {
   if (!MARKING_KEYS.some((k) => part.has(k))) return null;
-  const params: Record<string, string> = {};
+  const params: Record<string, unknown> = {};
   const notes: string[] = [];
   part.forEach((value, key) => {
     if (RESULT_KEYS.has(key) && key !== "b64Params") params[key] = value;
@@ -163,15 +165,17 @@ function resultIn(part: URLSearchParams): RedirectResult | null {
     try {
       const decoded = JSON.parse(base64UrlToUtf8(b64)) as unknown;
       if (typeof decoded !== "object" || decoded === null) throw new Error("not an object");
-      for (const [k, v] of Object.entries(decoded)) {
-        if (typeof v === "string") params[k] = v;
-      }
+      for (const [k, v] of Object.entries(decoded)) params[k] = v;
     } catch {
       notes.push("r.bad");
     }
   }
   if ("sessionId" in params) notes.push("r.sid");
   if ("nonce" in params) notes.push("r.nonce");
+  // A nonce result is finished with JSON.parse(loginParams): say whether it came,
+  // and as what (a type name only - its value holds the email).
+  if (typeof params.loginParams === "string") notes.push("r.lp");
+  else if ("loginParams" in params) notes.push(`r.lp-${params.loginParams === null ? "null" : typeof params.loginParams}`);
   if ("sessionNamespace" in params && params.sessionNamespace) notes.push("r.ns");
   if ("error" in params) notes.push("r.err");
   return { params, notes };

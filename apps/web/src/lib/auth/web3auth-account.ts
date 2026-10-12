@@ -29,6 +29,7 @@ import { awaitWeb3AuthSignIn, browserSignInWaitDeps, type SignInWaitDeps } from 
 import { markSignInStep } from "./signin-failure.js";
 
 import { adaptWeb3AuthSdk, type KeyProvider, type Web3AuthInstance, type Web3AuthV11Like } from "./web3auth-sdk-adapter.js";
+import type { TappableLog } from "./web3auth-start-errors.js";
 import {
   browserWeb3AuthUxMode,
   clearRedirectMarker,
@@ -168,13 +169,39 @@ async function _getInstance(mode?: Web3AuthUxMode, prepare?: () => () => void): 
  */
 async function _buildInMode(mode: Web3AuthUxMode, prepare?: () => () => void): Promise<Web3AuthInstance | null> {
   if (mode === "popup") return _factory(mode);
+  // The connector's start-up is where a redirect result is finished, and the
+  // modal only LOGS its failure (web3auth-start-errors.ts): listen for it from
+  // before the SDK is built until it has started.
+  const seen: { built: Web3AuthInstance | null; early: { e: unknown } | null } = { built: null, early: null };
+  const untap = await _tapStartErrors((e) => {
+    if (seen.built) {
+      if (!_startErrors.has(seen.built)) _startErrors.set(seen.built, e);
+    } else seen.early ??= { e };
+  });
   const restore = (prepare ?? _keepUrlForBuild)();
   try {
     const w = await _factory(mode);
+    seen.built = w;
+    if (w && seen.early) _startErrors.set(w, seen.early.e);
     if (w) await _awaitConnectorStarted(w, _page().settleTimeoutMs);
     return w;
   } finally {
+    untap();
     restore();
+  }
+}
+
+/** Tap the SDK's own logger for the auth connector's start-up failure. Never
+ *  fails a build: without the logger, the code is only less specific. */
+async function _tapStartErrors(onError: (e: unknown) => void): Promise<() => void> {
+  try {
+    const [{ log }, { tapConnectorStartErrors }] = await Promise.all([
+      import("@web3auth/modal"),
+      import("./web3auth-start-errors.js"),
+    ]);
+    return tapConnectorStartErrors(log as unknown as TappableLog, onError);
+  } catch {
+    return () => {};
   }
 }
 

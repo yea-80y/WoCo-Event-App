@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { privateKeyToAccount } from "viem/accounts";
 
-await import("@web3auth/modal");
+const sdkModule = await import("@web3auth/modal");
 
 const memory = new Map<string, string>();
 const lsStore = {
@@ -112,6 +112,18 @@ class FakeSdk extends EventEmitter {
     this.sawHash = page.url.hash;
     const b64 = new URLSearchParams(page.url.hash.slice(1)).get("b64Params") ?? page.url.searchParams.get("b64Params");
     page.deps().replaceUrl(`${page.url.pathname}#${encodeURIComponent(page.url.hash.slice(1))}=`);
+    if (this.world.silentFailure !== null) {
+      // The real modal: Auth.init threw inside the connector's start-up, the modal
+      // caught it and only LOGGED it (initInAppAndCachedConnectors), then set READY.
+      // No event. (An iPhone, 2026-10-12: W3A-connect-Error-t3-redirect-r.b64-r.nonce-st.ready.)
+      const saved = console.error;
+      console.error = () => {};
+      (sdkModule.log as unknown as { rebuild(): void }).rebuild();
+      sdkModule.log.error(this.world.silentFailure, "error while initializing connector ", "auth");
+      console.error = saved;
+      this.status = "ready";
+      return;
+    }
     if (this.world.lateFailure) {
       // The modal sets its status, awaits a cache clear, THEN re-emits the reason.
       this.status = "errored";
@@ -169,6 +181,8 @@ class World {
   slowStart = false;
   /** The connector fails, its status set before its reason is emitted. */
   lateFailure = false;
+  /** Auth.init throws inside the connector's start-up: the modal only logs it. */
+  silentFailure: unknown = null;
   navigatedWith: Map<string, string> | null = null;
   install(): void {
     setWeb3AuthFactoryForTests(
@@ -311,3 +325,23 @@ test("a start-up that fails with its status set BEFORE the reason is emitted sti
   assert.match(signInFailureCode(caught, { step: "sdk", elapsedMs: 0 }), /^W3A-connect-WalletLoginError\.5111-.*-redirect-r\.nonce-st\.errored$/);
   assert.equal(world.page.path, "/#/event/abc");
 });
+
+for (const [what, thrown, expected] of [
+  ["the frame's LOGIN_FAILED string", "Some reason Web3Auth's frame gives", /^W3A-connect-Rejected~str\d+[^-]*-t\d+-redirect-r\.nonce-r\.lp-st\.ready$/],
+  ["a missing loginParams (JSON.parse of undefined)", new SyntaxError('"undefined" is not valid JSON'), /^W3A-connect-SyntaxError-t\d+-redirect-r\.nonce-st\.ready$/],
+  ["a session that will not authorise", Object.assign(new Error("User not logged in."), { name: "LoginError", code: 5003 }), /^W3A-connect-LoginError\.5003-t\d+-redirect-r\.nonce-r\.lp-st\.ready$/],
+] as const) {
+  test(`the iPhone's silent failure (${what}): the code carries the SDK's own reason, never a bare Error`, async () => {
+    world.slowStart = true;
+    world.silentFailure = thrown;
+    const notes = ["r.nonce", ...(what.includes("missing") ? [] : ["r.lp"])];
+    let caught: unknown;
+    await finishWeb3AuthRedirectSignIn(pending({ nonce: "n1", ...(what.includes("missing") ? {} : { loginParams: "{}" }) }, notes)).catch(
+      (e) => (caught = e),
+    );
+    const code = signInFailureCode(caught, { step: "sdk", elapsedMs: 0 });
+    assert.match(code, expected);
+    assert.ok(!/-Error-/.test(code), "never the reason-less code the iPhone showed");
+    assert.equal(world.page.path, "/#/event/abc");
+  });
+}

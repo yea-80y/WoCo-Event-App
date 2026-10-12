@@ -108,7 +108,7 @@ test("capture: plain result keys in the query are all removed, the app's own que
   assert.equal(out.kind, "finish");
   if (out.kind !== "finish") return;
   assert.equal(out.url, "/?woco-escape=1#/tickets", "the email (login_hint) and the token never stay in the URL");
-  assert.deepEqual(out.pending.notes, ["r.nonce"]);
+  assert.deepEqual(out.pending.notes, ["r.nonce", "r.lp"], "loginParams present, as a string - its value never in a note");
 });
 
 test("capture: no marker, a stale one, or another shape = stray - stripped, never finished", () => {
@@ -133,6 +133,13 @@ test("capture: an app route is never read as a result, whatever its own query sa
   }
   assert.ok(s.map.has(REDIRECT_MARKER_KEY), "an ordinary load leaves a pending sign-in's marker alone");
   assert.equal(readRedirectResult("?woco-open=%23%2Ftickets", ""), null);
+});
+
+test("capture: loginParams that came as something other than a string is named by its type only", () => {
+  const b = (o: unknown) => `#b64Params=${Buffer.from(JSON.stringify(o)).toString("base64url")}`;
+  assert.deepEqual(readRedirectResult("", b({ nonce: "n", loginParams: { login_hint: "a@b.c" } }))?.notes, ["r.b64", "r.nonce", "r.lp-object"]);
+  assert.deepEqual(readRedirectResult("", b({ nonce: "n", loginParams: null }))?.notes, ["r.b64", "r.nonce", "r.lp-null"]);
+  assert.deepEqual(readRedirectResult("", b({ nonce: "n" }))?.notes, ["r.b64", "r.nonce"]);
 });
 
 test("capture: an error result and an unreadable b64Params are carried as notes", () => {
