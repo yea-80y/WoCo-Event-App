@@ -50,7 +50,7 @@ export function tapConnectorStartErrors(log: TappableLog, onError: (e: unknown) 
           /* a diagnostic never breaks the SDK's logging */
         }
       }
-      return raw(...args);
+      return raw?.(...args);
     };
   };
   log.methodFactory = ours;

@@ -29,7 +29,7 @@ import { awaitWeb3AuthSignIn, browserSignInWaitDeps, type SignInWaitDeps } from 
 import { markSignInStep } from "./signin-failure.js";
 
 import { adaptWeb3AuthSdk, type KeyProvider, type Web3AuthInstance, type Web3AuthV11Like } from "./web3auth-sdk-adapter.js";
-import type { TappableLog } from "./web3auth-start-errors.js";
+import { tapConnectorStartErrors, type TappableLog } from "./web3auth-start-errors.js";
 import {
   browserWeb3AuthUxMode,
   clearRedirectMarker,
@@ -195,10 +195,7 @@ async function _buildInMode(mode: Web3AuthUxMode, prepare?: () => () => void): P
  *  fails a build: without the logger, the code is only less specific. */
 async function _tapStartErrors(onError: (e: unknown) => void): Promise<() => void> {
   try {
-    const [{ log }, { tapConnectorStartErrors }] = await Promise.all([
-      import("@web3auth/modal"),
-      import("./web3auth-start-errors.js"),
-    ]);
+    const { log } = await import("@web3auth/modal");
     return tapConnectorStartErrors(log as unknown as TappableLog, onError);
   } catch {
     return () => {};
@@ -488,11 +485,18 @@ export async function finishWeb3AuthRedirectSignIn(
 
   // Whatever instance this page holds was built before the result was in reach.
   _resetInstance();
+  // The SDK's own clean-up always takes `b64Params` out of the bar when it reads
+  // it (`getHashQueryParams`): still there once the connector has started means
+  // the SDK never read this result - which no frame or session reason explains.
+  const read = { unread: false };
   let w: Web3AuthInstance | null;
   try {
     w = await _getInstance("redirect", () => {
       page.replaceUrl(urlForFinish(loc.pathname, loc.search, pending));
-      return () => page.replaceUrl(cleanUrl);
+      return () => {
+        read.unread = /(?:^#|&)b64Params=/.test(page.location().hash);
+        page.replaceUrl(cleanUrl);
+      };
     });
   } catch (e) {
     _resetInstance();
@@ -506,7 +510,7 @@ export async function finishWeb3AuthRedirectSignIn(
   if (!(isWeb3AuthSessionLive(w) && w.provider)) {
     const reason = _startErrors.get(w) ?? new Error("the sign-in result did not open a session");
     if (w.connected) await _endInterferingSession(w);
-    throw markSignInStep(reason, "connect", [...notes, `st.${w.status}`]);
+    throw markSignInStep(reason, "connect", [...notes, ...(read.unread ? ["r.unread"] : []), `st.${w.status}`]);
   }
 
   let after: Set<string>;
