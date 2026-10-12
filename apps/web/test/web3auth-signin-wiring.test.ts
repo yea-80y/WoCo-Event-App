@@ -107,7 +107,7 @@ test("the sign-in button stays quiet on a cancel and shows every other outcome",
   const quiet = button.indexOf("if (isWeb3AuthSignInError(e) && e.cancelled) {");
   const shown = button.indexOf("} else if (!isOrphanedCredentialError(e)) {", quiet);
   assert.ok(quiet > 0 && shown > quiet);
-  assert.ok(button.slice(quiet, shown).includes("error = null;"));
+  assert.ok(button.slice(quiet, shown).includes("failure = null;"));
 });
 
 test("the organiser gate shows a sign-out refusal instead of silently resetting", () => {
