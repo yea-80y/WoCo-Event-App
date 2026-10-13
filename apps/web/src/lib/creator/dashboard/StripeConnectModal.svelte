@@ -260,7 +260,7 @@
           <div class="modal-state">
             <p class="state-title">Continue on Stripe</p>
             <p class="state-desc">
-              Stripe opens in a new tab. When you are done, come back to this tab - everything here stays as you left it.
+              Stripe opens in a new tab. When you are done, come back to this tab.
             </p>
             <button class="modal-cta" onclick={() => readyUrl && openStripeTab(readyUrl, true)}>
               Open Stripe

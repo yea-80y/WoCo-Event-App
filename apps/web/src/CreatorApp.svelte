@@ -94,7 +94,11 @@
       stripeRefreshStarted = false;
       return;
     }
-    if (!auth.ready || !auth.isConnected || !canOrganise(auth.kind)) return;
+    if (!auth.ready || !auth.isConnected) return;
+    if (!canOrganise(auth.kind)) {
+      stripeRefreshFailed = true;
+      return;
+    }
     if (stripeRefreshStarted) return;
     stripeRefreshStarted = true;
     const now = Date.now();
