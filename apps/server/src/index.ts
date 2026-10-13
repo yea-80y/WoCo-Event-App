@@ -110,7 +110,8 @@ import { customDomainProxy } from "./middleware/custom-domain.js";
 import { attendeeBatchHealth } from "./lib/attendee-batch/health.js";
 import { refreshAttendeeBatch } from "./lib/attendee-batch/admin.js";
 import { heldOrdersHealth, sweepExpired as sweepHeldOrders } from "./lib/attendee-batch/held-orders.js";
-import { sweepExpiredConsents } from "./lib/marketing/consent-store.js";
+import { consentStoreHealth, sweepExpiredConsents } from "./lib/marketing/consent-store.js";
+import { suppressionStoreHealth } from "./lib/marketing/suppression-store.js";
 import { retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -328,6 +329,11 @@ function healthReport() {
       job: { ok: !cancellationJobHealth().stale, ...cancellationJobHealth() },
     },
     compliancePersistence: persistHealth(),
+    // #882: each file present but unreadable. Never written over; while the
+    // suppression list is unreadable every marketing send is refused, and while
+    // the consent file is, a missing record means unknown, not absent.
+    marketingSuppression: suppressionStoreHealth(),
+    marketingConsent: consentStoreHealth(),
     // `false` is an alarm, not a statistic: the Kernel known-deployed record
     // exists on disk but would not load, so the counterfactual fallback is live
     // again for every account (#200). It fails open deliberately — refusing every

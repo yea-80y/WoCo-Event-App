@@ -16,11 +16,16 @@
  *
  * MUST survive server restarts — losing this loses the lawful basis for every
  * soft opt-in send that depends on it.
+ *
+ * PRESENT BUT UNREADABLE (#882): never written over, which would destroy every
+ * other record's evidence; reads answer from an empty store, so "no record" then
+ * means UNKNOWN, never absent (`consentStoreReadable`), and `/api/health`
+ * `marketingConsent` alarms until an operator restores it and restarts.
  */
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { writeJsonAtomic } from "./persist.js";
+import { recordRefusedWrite, writeJsonAtomic } from "./persist.js";
 import { suppressedSince } from "./suppression-store.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
@@ -51,22 +56,58 @@ type Store = Record<string, Record<string, ConsentRecord>>;
 
 const consents: Store = {};
 let loaded = false;
+let fileUnreadable: string | null = null;
+
+function refuseFile(why: string): void {
+  fileUnreadable = why;
+  console.error(
+    `[consent] ALARM: marketing-consent.json ${why} - consent records read as unknown, and the file ` +
+      "will NOT be written until it is restored and the server restarted (/api/health marketingConsent)",
+  );
+}
+
+const isObject = (v: unknown): boolean => typeof v === "object" && v !== null && !Array.isArray(v);
 
 function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
+  let raw: string;
   try {
-    const raw = readFileSync(STORE_FILE, "utf-8");
-    Object.assign(consents, JSON.parse(raw) as Store);
+    raw = readFileSync(STORE_FILE, "utf-8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code === "ENOENT") return; // first boot
+    return refuseFile(`exists but could not be read (${code ?? "unknown error"})`);
+  }
+  try {
+    const obj = JSON.parse(raw) as unknown;
+    // A wrong shape must refuse here, not throw on every read later.
+    const orgs = isObject(obj) ? Object.values(obj as Store) : null;
+    if (!orgs || !orgs.every((byHash) => isObject(byHash) && Object.values(byHash).every(isObject))) {
+      throw new Error("unexpected shape");
+    }
+    Object.assign(consents, obj as Store);
     const n = Object.values(consents).reduce((a, o) => a + Object.keys(o).length, 0);
     console.log(`[consent] Loaded ${n} consent records from disk`);
   } catch {
-    // File doesn't exist yet — that's fine
+    refuseFile("could not be parsed");
   }
 }
 
 function persistToDisk(): boolean {
+  // Writing now would replace the operator's only copy.
+  if (fileUnreadable) return recordRefusedWrite(STORE_FILE, "consent");
   return writeJsonAtomic(STORE_FILE, consents, "consent");
+}
+
+/**
+ * False while the file is present but unreadable. Every read then answers from
+ * an empty store, so a caller that would ERASE or REPORT on "no record" must ask
+ * this first: unknown is not absent.
+ */
+export function consentStoreReadable(): boolean {
+  ensureLoaded();
+  return fileUnreadable === null;
 }
 
 export function recordConsent(
@@ -185,4 +226,18 @@ export function forgetEmailHashForOrg(emailHash: string, organiserAddress: strin
   delete byHash[emailHash];
   persistToDisk();
   return true;
+}
+
+/** `/api/health` → `marketingConsent`. `ok: false` = present but unreadable (see the header). */
+export function consentStoreHealth(): { ok: boolean; unreadable: boolean } {
+  ensureLoaded();
+  return { ok: fileUnreadable === null, unreadable: fileUnreadable !== null };
+}
+
+/** Tests only: forget memory so the next call reloads from disk. */
+export function __resetConsentStoreForTest(): void {
+  for (const org of Object.keys(consents)) delete consents[org];
+  fileUnreadable = null;
+  sweepUnpersisted = false;
+  loaded = false;
 }
