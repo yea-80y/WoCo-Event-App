@@ -68,6 +68,7 @@ import { eraseOrder } from "../lib/attendee-batch/erase.js";
 import { ledgerReadable, ordersForEmailHash } from "../lib/attendee-batch/ledger.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { heldOrdersHealth, paidUnstored } from "../lib/attendee-batch/held-orders.js";
+import { MAX_LIMIT as RETENTION_MAX_LIMIT, previewOrderRetention, runOrderRetention } from "../lib/attendee-batch/retention.js";
 
 const ops = new Hono<AppEnv>();
 
@@ -683,6 +684,64 @@ ops.post("/attendee-batch/orders/:root/burn", async (c) => {
     return c.json({ ok: false, error: (err as Error).message }, 502);
   }
 });
+
+/**
+ * GET /api/ops/attendee-batch/retention/preview?limit=N - what the order-answer
+ * retention sweep (#547) would do now, erasing nothing: every order not yet
+ * erased with its onchain end, period, due date and the action or the reason it
+ * is kept, plus totals and the SOC uploads a run would make. Read this before
+ * raising the limit or switching ORDER_RETENTION_SWEEP to live.
+ */
+ops.get("/attendee-batch/retention/preview", async (c) => {
+  const limit = retentionLimit(c.req.query("limit"));
+  if (limit === null) return c.json({ ok: false, error: `\`limit\` must be an integer from 1 to ${RETENTION_MAX_LIMIT}` }, 400);
+  const run = await previewOrderRetention(limit === undefined ? {} : { limit });
+  if (run.refused !== null) return c.json({ ok: false, error: run.refused }, 503);
+  const totals = { erase: 0, wait: 0, skip: 0, byReason: {} as Record<string, number> };
+  for (const it of run.items) {
+    totals[it.action]++;
+    if (it.reason) totals.byReason[it.reason] = (totals.byReason[it.reason] ?? 0) + 1;
+  }
+  const { mode, limit: runLimit, socUploads, paceMs } = run.summary;
+  return c.json({
+    ok: true,
+    data: {
+      mode,
+      limit: runLimit,
+      totals,
+      socUploads,
+      paceMs,
+      estimatedSeconds: Math.round((Math.max(0, totals.erase - 1) * paceMs) / 1000),
+      items: run.items,
+    },
+  });
+});
+
+/**
+ * POST /api/ops/attendee-batch/retention/run - body `{ by, limit? }`. A run now
+ * in the configured mode: dry-run decides and erases nothing; live erases up to
+ * `limit` due orders (default ORDER_RETENTION_LIMIT), oldest first, through the
+ * same erase as a request. First live run: limit 1, on an order the preview
+ * shows first, then check it reads erased before raising the limit.
+ */
+ops.post("/attendee-batch/retention/run", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { by?: string; limit?: unknown } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required" }, 400);
+  const limit = retentionLimit(body?.limit === undefined ? undefined : String(body.limit));
+  if (limit === null) return c.json({ ok: false, error: `\`limit\` must be an integer from 1 to ${RETENTION_MAX_LIMIT}` }, 400);
+  console.log(`[ops] order retention run by ${by} (limit ${limit ?? "default"})`);
+  const run = await runOrderRetention(limit === undefined ? {} : { limit });
+  if (run.refused !== null) return c.json({ ok: false, error: run.refused }, run.why === "stores" ? 503 : 409);
+  return c.json({ ok: true, data: { summary: run.summary, due: run.items.filter((it) => it.daysOverdue !== null) } });
+});
+
+/** undefined = use the configured limit; null = not a valid limit. */
+function retentionLimit(raw: string | undefined): number | undefined | null {
+  if (raw === undefined || raw === "") return undefined;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 && n <= RETENTION_MAX_LIMIT ? n : null;
+}
 
 /**
  * POST /api/ops/attendee-batch/lookup — body `{ email }` or `{ emailHash }`.

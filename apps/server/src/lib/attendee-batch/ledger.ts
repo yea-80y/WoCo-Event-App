@@ -612,6 +612,12 @@ export function ledgerReadable(): boolean {
   return unreadable === null;
 }
 
+/** Every order recorded, any state, as copies: the retention sweep's worklist (#547). */
+export function listOrders(): Array<{ root: string; record: OrderRecord }> {
+  ensureLoaded();
+  return Object.entries(store.orders).map(([root, o]) => ({ root, record: structuredClone(o) }));
+}
+
 /** Every order recorded against this email hash, any state: an access or erasure request (#546). */
 export function ordersForEmailHash(emailHash: string): Array<{ root: string; record: OrderRecord }> {
   ensureLoaded();
