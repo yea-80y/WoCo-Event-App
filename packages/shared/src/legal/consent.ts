@@ -120,6 +120,16 @@ export function parseMarketingChoice(raw: unknown): MarketingChoice | null | und
   return { mode, ticked: o.ticked, version: o.version, surface: o.surface as MarketingSurface };
 }
 
+/**
+ * The control a checkout shows, from its claim-status. The value is API JSON, so
+ * anything but the one known value reads as consent mode (also what an older
+ * server or an unreadable notice gives) - the server refuses the checkout if that
+ * is not the organiser's mode, and the page re-reads and shows the right one.
+ */
+export function shownMarketingMode(status: { marketingMode?: unknown } | null | undefined): MarketingMode {
+  return status?.marketingMode === "own-events" ? "own-events" : "consent";
+}
+
 /** create-checkout's refusal when the page showed another mode than the organiser's notice now sets. */
 export const MARKETING_MODE_CHANGED = "MARKETING_MODE_CHANGED" as const;
 

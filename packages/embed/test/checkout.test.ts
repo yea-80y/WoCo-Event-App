@@ -6,8 +6,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { OrderField, PaymentConfig } from "@woco/shared";
+import { readFileSync } from "node:fs";
+import { marketingChoice, shownMarketingMode, type OrderField, type PaymentConfig } from "@woco/shared";
 import {
+  isMarketingModeChanged,
   seriesPayable,
   validateBuyPanel,
   maxSelectableQty,
@@ -58,7 +60,7 @@ const baseInputs = {
   seriesId: "s1",
   claimerEmail: "a@b.co",
   quantity: 1,
-  marketingConsent: false,
+  marketing: marketingChoice("consent", false, "embed"),
   pageUrl: "https://venue.example/tickets",
 };
 
@@ -67,9 +69,51 @@ test("quantity 1 is omitted from the body (server default), >1 is sent", () => {
   assert.equal(buildCheckoutBody({ ...baseInputs, quantity: 3 }).quantity, 3);
 });
 
-test("marketingConsent is always an explicit boolean — an untouched box is a refusal, never 'not asked'", () => {
-  assert.equal(buildCheckoutBody(baseInputs).marketingConsent, false);
-  assert.equal(buildCheckoutBody({ ...baseInputs, marketingConsent: true }).marketingConsent, true);
+test("the marketing choice is always sent - mode, box, version and surface - so an untouched box is never 'not asked'", () => {
+  assert.deepEqual(buildCheckoutBody(baseInputs).marketing, { mode: "consent", ticked: false, version: 1, surface: "embed" });
+  const own = marketingChoice("own-events", false, "embed");
+  assert.deepEqual(buildCheckoutBody({ ...baseInputs, marketing: own }).marketing, { mode: "own-events", ticked: false, version: 1, surface: "embed" });
+  assert.equal("marketingConsent" in buildCheckoutBody(baseInputs), false, "the pre-2026-10-14 field is gone");
+});
+
+test("the mode comes from claim-status; anything but own-events reads as consent mode", () => {
+  assert.equal(shownMarketingMode({ marketingMode: "own-events" }), "own-events");
+  for (const st of [null, undefined, {}, { marketingMode: "consent" }, { marketingMode: "OWN-EVENTS" }, { marketingMode: 1 }]) {
+    assert.equal(shownMarketingMode(st as { marketingMode?: unknown } | null), "consent");
+  }
+  assert.equal(isMarketingModeChanged({ ok: false, code: "MARKETING_MODE_CHANGED" }), true);
+  assert.equal(isMarketingModeChanged({ ok: false, code: "ORDER_KEY_STALE" }), false);
+});
+
+const widget = readFileSync(new URL("../src/components/woco-tickets.ts", import.meta.url), "utf-8");
+
+test("the embed renders the control in the claim-status mode: own-events sentence + 'Don't email me', or consent's box", () => {
+  const render = widget.slice(widget.indexOf("private renderConsent("), widget.indexOf("private get hasOrderForm"));
+  assert.match(render, /const mode = shownMarketingMode\(st\.status\);/);
+  assert.match(render, /marketingWording\(mode, MARKETING_CURRENT_VERSION\[mode\], name\)/);
+  assert.match(render, /\$\{w\.sentence \? `<div class="marketing-sentence">\$\{this\.esc\(w\.sentence\)\}<\/div>` : ""\}/);
+  assert.match(render, /<span>\$\{this\.esc\(w\.box\)\}<\/span>/);
+  // Never pre-ticked: checked only from what the buyer did, reset when the mode changes.
+  assert.match(render, /if \(st\.marketing\.mode !== mode\) st\.marketing = \{ mode, ticked: false \};/);
+  assert.match(render, /\$\{st\.marketing\.ticked \? "checked" : ""\}/);
+  // And it is in every buy panel, above the pay button.
+  const panel = widget.slice(widget.indexOf("private renderBuyPanel("), widget.indexOf("private renderSeries("));
+  assert.ok(panel.indexOf("this.renderConsent(") > 0);
+  assert.ok(panel.indexOf("this.renderConsent(") < panel.indexOf("Continue to payment"));
+  assert.equal(widget.match(/freshSeriesState[\s\S]*?marketing: \{ mode: "consent", ticked: false \}/)?.length, 1);
+});
+
+test("the embed sends the mode it RENDERED, never one re-derived from a status that arrived later", () => {
+  assert.match(widget, /marketing: marketingChoice\(st\.marketing\.mode, st\.marketing\.ticked, "embed"\)/);
+  assert.match(widget, /if \(st\) st\.marketing\.ticked = el\.checked;/);
+});
+
+test("the embed: MARKETING_MODE_CHANGED re-reads claim-status and re-renders - it never retries the charge", () => {
+  const branch = widget.slice(widget.indexOf("isMarketingModeChanged(resp"));
+  const body = branch.slice(0, branch.indexOf("return;"));
+  assert.match(body, /await this\.refreshStatus\(seriesId\)/);
+  assert.match(body, /this\.updateSeries\(seriesId\)/);
+  assert.doesNotMatch(body, /handleCheckout|create-checkout/);
 });
 
 test("the page goes as pageUrl, and no returnUrl or cancelUrl is sent - the server derives both redirects from it (#567)", () => {

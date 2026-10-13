@@ -12,6 +12,8 @@ import {
   orderFormShown,
   resolveBuyerEmail,
   ORDER_EMAIL_FIELD_ID,
+  MARKETING_MODE_CHANGED,
+  type MarketingChoice,
   type OrderField,
   type PaymentConfig,
 } from "@woco/shared";
@@ -86,9 +88,10 @@ export interface CheckoutBodyInputs {
   seriesId: string;
   claimerEmail: string;
   quantity: number;
-  /** The consent box was rendered, so the opt-out WAS offered — an untouched
-   *  box is an explicit refusal (recorded as a suppression), not "never asked". */
-  marketingConsent: boolean;
+  /** The marketing control as the panel showed it and the buyer left it. Always
+   *  sent: the panel always shows a control, so the choice WAS offered, and the
+   *  server checks the mode against the organiser's notice before charging. */
+  marketing: MarketingChoice;
   /** The organiser page the buyer is on (see resolvePageUrl), when it is known. */
   pageUrl?: string;
   encryptedOrder?: SealedBoxV2;
@@ -108,7 +111,7 @@ export function buildCheckoutBody(i: CheckoutBodyInputs): Record<string, unknown
     eventId: i.eventId,
     seriesId: i.seriesId,
     claimerEmail: i.claimerEmail,
-    marketingConsent: i.marketingConsent,
+    marketing: i.marketing,
   };
   if (i.pageUrl) body.pageUrl = i.pageUrl;
   if (i.quantity > 1) body.quantity = i.quantity;
@@ -241,4 +244,9 @@ export function returnView(resp: { ok: boolean; data?: unknown } | null): Return
     quantity: d.quantity as number,
     emailMasked: typeof d.emailMasked === "string" ? d.emailMasked : null,
   };
+}
+
+/** create-checkout said the panel showed a mode the organiser's notice no longer sets. */
+export function isMarketingModeChanged(resp: Record<string, unknown>): boolean {
+  return resp.code === MARKETING_MODE_CHANGED;
 }
