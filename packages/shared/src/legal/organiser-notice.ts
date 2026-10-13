@@ -89,9 +89,11 @@ export const NOTICE_SHARING_TEXT: Record<NoticeSharing, string> = {
 /**
  * Months after the event when a buyer's order-form answers are deleted, unless
  * they are on the organiser's mailing list and the list is tailored. Pick-only,
- * never free text: the retention sweep carries it out (#547).
+ * never free text: the retention sweep carries it out (#547). No shorter option
+ * (owner 2026-10-13): a card dispute can arrive ~120 days after a sale, and the
+ * organiser may need the attendee's details to answer it.
  */
-export const NOTICE_RETENTION_MONTHS = [3, 6, 12] as const;
+export const NOTICE_RETENTION_MONTHS = [6, 12] as const;
 export type NoticeRetentionMonths = (typeof NOTICE_RETENTION_MONTHS)[number];
 
 /** What a new notice starts with - the answer nearly every organiser gives. */

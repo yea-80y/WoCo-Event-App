@@ -143,7 +143,7 @@ test("no contact, no invented one: a todo, and attendees are pointed at WoCo's a
 
 test("a confirmed notice reads the organiser's choices and leaves nothing to fill", () => {
   const doc = buildOrganiserNotice({
-    notice: notice({ sharing: ["team", "door"], extraSharing: "Our photographer.", extraOrderFormUse: "planning the running order;", orderRetentionMonths: 3 }),
+    notice: notice({ sharing: ["team", "door"], extraSharing: "Our photographer.", extraOrderFormUse: "planning the running order;", orderRetentionMonths: 12 }),
     event: { title: "Gig", orderFields: fields },
     wocoPolicyUrl: POLICY,
   });
@@ -153,8 +153,8 @@ test("a confirmed notice reads the organiser's choices and leaves nothing to fil
   assert.match(text, /only as far as they need them to run the event:\n- Our own team, staff and volunteers\n- Door and security staff\n- Our photographer\.\n/);
   assert.doesNotMatch(text, /The venue/);
   assert.match(text, /Our basis is our contract with you\. We also use them for: planning the running order\./);
-  assert.match(text, /Your order-form answers: deleted 3 months after the event\.\n/);
-  assert.match(text, /Guest lists we download or put on a door scanner: deleted within 3 months of the event/);
+  assert.match(text, /Your order-form answers: deleted 12 months after the event\.\n/);
+  assert.match(text, /Guest lists we download or put on a door scanner: deleted within 12 months of the event/);
   assert.match(text, /email us at privacy@punkpub\.example/);
   assert.match(doc.footer[0], /Last confirmed by Punk Pub Ltd on 11 October 2026/);
 });
@@ -175,6 +175,8 @@ test("a choice outside the list, a repeated one or a missing one refuses the not
   const { sharing: _s, ...noSharing } = notice();
   assert.equal(validateOrganiserNotice(noSharing, ADDR), null);
   assert.equal(validateOrganiserNotice({ ...notice(), orderRetentionMonths: 4 }, ADDR), null);
+  // Shorter than a card dispute can arrive: never offered, never accepted.
+  assert.equal(validateOrganiserNotice({ ...notice(), orderRetentionMonths: 3 }, ADDR), null);
   assert.equal(validateOrganiserNotice({ ...notice(), orderRetentionMonths: "6" }, ADDR), null);
   const { orderRetentionMonths: _m, ...noMonths } = notice();
   assert.equal(validateOrganiserNotice(noMonths, ADDR), null);

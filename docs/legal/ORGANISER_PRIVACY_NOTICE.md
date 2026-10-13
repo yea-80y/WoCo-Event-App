@@ -154,7 +154,7 @@ every organiser gives, already picked, and they change it if it is not theirs:
 |---|---|
 | Why you ask your order-form questions | Stated: "to run the event you booked, for example for seating, catering or access" on our contract with them. Optional "anything else" box ends our sentence |
 | Who else you share with | Categories (Art. 13(1)(e) allows them), all ticked: own team/staff/volunteers, venue, door and security, co-promoters and partners. Optional "anyone else". Always adds "we never sell your details, and no one we share them with may use them for their own marketing" |
-| How long you keep details | 3, 6 (default) or 12 months after the event. Pick-only, because the retention sweep carries it out (#547) |
+| How long you keep details | 6 (default) or 12 months after the event. Pick-only, because the retention sweep carries it out (#547). No 3: a card dispute can arrive ~120 days after a sale |
 | Automated decisions | Stated for everyone: neither the organiser nor WoCo decides about attendees purely by computer with a legal or similar effect; Stripe screens payments under its own policy |
 | Soft opt-in declaration | Removed (see 5a). A switch to an opt-out checkout is a separate decision |
 | (new) Tailored mailing list | Default on: mailing-list members' booking answers (their area, say) choose which events they hear about, and are kept until they unsubscribe |
