@@ -8,7 +8,10 @@
  * script" goes red; render a todo's prompt in public mode and "the public never sees
  * the organiser's checklist" goes red; drop the duplicate or unknown-category check
  * and "a choice outside the list" goes red; drop the months check and the same test
- * goes red; ignore `tailoredMarketing` and "a tailored mailing list" goes red.
+ * goes red; ignore `tailoredMarketing` and "a tailored mailing list" goes red;
+ * accept any `marketingBasis` and "the basis is one stored value" goes red; read a
+ * confirmed notice through the draft default and "a new draft starts on own-events"
+ * goes red.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -21,6 +24,7 @@ import {
   noticeDate,
   orderFieldLabels,
   organiserNoticeContentTopic,
+  noticeMarketingMode,
   ORGANISER_NOTICE_FORMAT,
   NOTICE_NOT_ADDED,
   NOTICE_DEFAULTS,
@@ -218,14 +222,53 @@ test("the public never sees the organiser's checklist; the editor does", () => {
   assert.match(pub, new RegExp(NOTICE_NOT_ADDED.replace(".", "\\.")));
   assert.match(ed, /\[To complete: An email address attendees can write to/);
 });
-test("marketing is the unticked checkout opt-in only - never a soft opt-in the checkout cannot support", () => {
-  for (const n of [null, notice(), notice({ tailoredMarketing: true })]) {
+test("a confirmed notice without a basis is consent mode: the unticked opt-in, never the soft opt-in", () => {
+  // Absent = consent (owner 2026-10-14): code never moves a published notice onto
+  // the soft opt-in - only the organiser's own answer in the editor does.
+  for (const n of [notice(), notice({ tailoredMarketing: true })]) {
+    assert.equal(noticeMarketingMode(n), "consent");
     const text = noticePlainText(buildOrganiserNotice({ notice: n, wocoPolicyUrl: POLICY }));
-    assert.match(text, /if you tick the box at checkout/);
+    assert.match(text, /To email you about our future events, if you tick the box at checkout\. Our basis is your consent\./);
     assert.match(text, /never ticked for you/);
     assert.match(text, /one-click unsubscribe/);
-    assert.doesNotMatch(text, /soft opt-in/);
+    assert.match(text, /that you agreed, when, and the exact wording you were shown/);
+    assert.match(text, /A record of your marketing consent: while we can still email you on that basis, plus 6 months\./);
+    assert.doesNotMatch(text, /soft opt-in|Don't email me|legitimate interest in telling customers/);
   }
+});
+
+test("own-events mode says the soft opt-in, its basis and the right to object, word for word", () => {
+  const n = notice({ marketingBasis: "own-events" });
+  assert.equal(noticeMarketingMode(n), "own-events");
+  const text = noticePlainText(buildOrganiserNotice({ notice: n, wocoPolicyUrl: POLICY }));
+  assert.ok(text.includes(
+    "To email you about our similar events, unless you tick 'Don't email me' at checkout. This is the " +
+      "'soft opt-in' in the UK's electronic marketing rules: you bought from us, you could say no when you " +
+      "did, and every email has a one-click unsubscribe. Our basis for using your details this way is our " +
+      "legitimate interest in telling customers about similar events. You can object at any time and we will stop.",
+  ));
+  assert.match(text, /Your choice at checkout about hearing from us about similar events, when you made it, and the exact wording/);
+  assert.match(text, /A record of your marketing choice at checkout: while we can still email you on that basis, plus 6 months\./);
+  // Neither half of the consent sentence survives into this mode.
+  assert.doesNotMatch(text, /Our basis is your consent\. The box is never ticked/);
+  assert.doesNotMatch(text, /that you agreed, when/);
+});
+
+test("the basis is one stored value: own-events, or absent", () => {
+  assert.equal(validateOrganiserNotice({ ...notice(), marketingBasis: "own-events" }, ADDR)?.marketingBasis, "own-events");
+  assert.equal(validateOrganiserNotice(notice(), ADDR)?.marketingBasis, undefined);
+  // Consent mode is the field's absence: a stored "consent" (or anything else) refuses the notice.
+  for (const bad of ["consent", "own_events", true, 1, null]) {
+    assert.equal(validateOrganiserNotice({ ...notice(), marketingBasis: bad }, ADDR), null, String(bad));
+  }
+});
+
+test("a new draft starts on own-events; the default never reaches a confirmed notice", () => {
+  assert.equal(NOTICE_DEFAULTS.marketing, "own-events");
+  const draft = noticePlainText(buildOrganiserNotice({ notice: null, wocoPolicyUrl: POLICY }));
+  assert.match(draft, /unless you tick 'Don't email me' at checkout/);
+  const confirmed = noticePlainText(buildOrganiserNotice({ notice: notice(), wocoPolicyUrl: POLICY }));
+  assert.match(confirmed, /if you tick the box at checkout/);
 });
 
 test("a tailored mailing list uses what is kept on it; order answers are never kept for marketing", () => {
@@ -307,6 +350,7 @@ test("copy register: no em or en dashes, no 'Studio', no quantum, no calling ema
   for (const doc of [
     buildOrganiserNotice({ notice: null, wocoPolicyUrl: POLICY }),
     buildOrganiserNotice({ notice: notice({ extraSharing: "x", extraOrderFormUse: "z", tailoredMarketing: true }), event: { title: "Gig", orderFields: fields }, contactForm: true, wocoPolicyUrl: POLICY }),
+    buildOrganiserNotice({ notice: notice({ marketingBasis: "own-events" }), event: { title: "Gig", orderFields: fields }, wocoPolicyUrl: POLICY }),
   ]) {
     for (const mode of ["public", "editor"] as const) {
       const text = noticePlainText(doc, mode);
