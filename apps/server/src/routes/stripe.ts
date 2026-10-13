@@ -36,6 +36,7 @@ import { chainEventEndMsAt } from "../lib/event/end-date-guard.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { checkObjectGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
 import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../lib/stripe/checkout-fees.js";
+import { CHECKOUT_PAYMENT_METHOD_TYPES } from "../lib/stripe/checkout-payment-methods.js";
 import { claimerEmailRefusal } from "../lib/stripe/claimer-email.js";
 import type { PayoutsResponse } from "@woco/shared";
 import { canonicalOrderBox, issueOrderRefToken, acceptedClientOrderRef } from "../lib/stripe/order-ref.js";
@@ -1145,6 +1146,7 @@ stripe.post("/create-checkout", async (c) => {
     const session = await s.checkout.sessions.create(
       {
         mode: "payment",
+        payment_method_types: CHECKOUT_PAYMENT_METHOD_TYPES,
         ...(expiresAt !== undefined ? { expires_at: expiresAt } : {}),
         line_items: [
           {
