@@ -32,7 +32,7 @@
  */
 
 import { readContentFeedJsonResult } from "../swarm/soc-upload.js";
-import { PRIVACY_NOTICE_REQUIRED, type OrganiserNoticeV1 } from "@woco/shared";
+import { PRIVACY_NOTICE_REQUIRED, type OrganiserNotice } from "@woco/shared";
 import { readOrganiserNotice, type NoticeFeedReader, type NoticeRead } from "./organiser-notice.js";
 
 export type NoticeVerdict = "confirmed" | "missing" | "unavailable";
@@ -43,7 +43,7 @@ export const NOTICE_MISSING_TTL_MS = 30_000;
 const MAX_ENTRIES = 10_000;
 
 /** A definitive read: the confirmed notice, or none. `at` = when it was read. */
-type Entry = { notice: OrganiserNoticeV1 | null; at: number };
+type Entry = { notice: OrganiserNotice | null; at: number };
 
 const cache = new Map<string, Entry>();
 /** creator -> when they last wrote their notice (the relay). Bounded below. */
@@ -61,7 +61,7 @@ let clock: () => number = Date.now;
 
 const keyOf = (creator: string, signer: string) => `${creator.toLowerCase()}:${signer.toLowerCase()}`;
 
-function remember(key: string, notice: OrganiserNoticeV1 | null): void {
+function remember(key: string, notice: OrganiserNotice | null): void {
   const before = cache.get(key);
   if (before?.notice && !notice) {
     // A notice that was there is gone or no longer validates: that organiser's

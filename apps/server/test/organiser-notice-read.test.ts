@@ -30,6 +30,8 @@ const good = {
   format: ORGANISER_NOTICE_FORMAT,
   address: CREATOR,
   organiserName: "Punk Pub Ltd",
+  sharing: ["venue"],
+  orderRetentionMonths: 6,
   confirmedAt: "2026-10-11T09:00:00.000Z",
 };
 

@@ -121,8 +121,9 @@ surfaces. We provide the tools; using them is your responsibility.
 
 **Your privacy notice.** You must review and confirm your privacy notice in your dashboard
 before you can sell tickets. We pre-fill it from what we know about how the platform works and
-from your account. It describes our platform accurately; it cannot know how you handle attendee
-details outside it, so the parts only you can answer are marked. Until you confirm it, your
+from your account. It describes our platform accurately. For the choices only you can make (who
+else sees attendee details, how long you keep order-form answers, how you use your mailing list)
+it offers the usual answer already selected - change any that do not describe how you work. Until you confirm it, your
 tickets are not on sale and we do not show the pre-filled version to anyone. Once you confirm
 it, we show it in your name next to every checkout and in the footer of your event pages and
 sites. It is not legal advice - confirming it is your statement, and keeping it true is your

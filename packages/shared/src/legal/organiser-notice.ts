@@ -9,12 +9,18 @@
  * the organiser's notice and cannot stand in for one (ORGANISER_TERMS §4 item 1).
  *
  * Two halves, both pure so client, embed and tests read the same thing:
- *   - the STORED part: what only the organiser can say (who they are, how to
- *     reach them, who else they share with, how long they keep downloads). It is
- *     their own public content, written to their own client-signed feed
+ *   - the STORED part: what only the organiser can say - who they are and how to
+ *     reach them, plus their CHOICES (who they share with, how long they keep
+ *     order answers, whether their mailing list is tailored). Choices are picked
+ *     from the options below, each a sentence written here, so 99% of organisers
+ *     never write legal prose; the "anything else" boxes end a sentence we start.
+ *     It is their own public content, written to their own client-signed feed
  *     (`organiserNoticeContentTopic`), validated here on every read.
  *   - the GENERATED part: every fact WoCo already knows, taken from docs/legal.
- *     A fact the docs do not settle is a `todo` block, never invented.
+ *
+ * The choices are the organiser's instructions to WoCo as their processor, never
+ * WoCo's decision: each has a default they can change (owner 2026-10-13). A locked
+ * answer on purposes or retention would make WoCo decide them.
  *
  * If you change a fact here, the docs/legal sentence it came from must say the
  * same thing - the notice is a promise made in the organiser's name.
@@ -23,7 +29,8 @@
 import type { OrderField } from "../crypto/types.js";
 import { ORDER_EMAIL_FIELD_ID } from "../event/order-email.js";
 
-export const ORGANISER_NOTICE_FORMAT = "woco.privacy-notice.v1" as const;
+/** v2 (2026-10-13): pick-list choices replaced v1's free-text answers. v1 notices are refused - re-confirm. */
+export const ORGANISER_NOTICE_FORMAT = "woco.privacy-notice.v2" as const;
 
 /** WoCo's privacy contact, as PRIVACY_POLICY §2 names it. */
 export const WOCO_PRIVACY_EMAIL = "privacy@woco-net.com";
@@ -47,30 +54,58 @@ export function isSaleClosedCode(code: unknown): boolean {
 export const ORGANISER_NOTICE_LINK_LABEL = "Organiser's privacy notice";
 export const WOCO_POLICY_LINK_LABEL = "WoCo Privacy Policy";
 
-/** The organiser-written fields, and the longest each may be. */
+/** The organiser-written text fields, and the longest each may be. */
 export const ORGANISER_NOTICE_LIMITS = {
   organiserName: 120,
   contactEmail: 254,
   postalAddress: 300,
   icoRegistration: 20,
-  orderFormPurpose: 1000,
-  sharing: 1000,
-  retention: 1000,
-  automatedDecisions: 1000,
+  /** Ends "We also use them for: ..." - one line, so it stays a clause in our sentence. */
+  extraOrderFormUse: 300,
+  /** Ends "We also share them with: ..." - one line, as above. */
+  extraSharing: 300,
 } as const;
 
 export type OrganiserNoticeField = keyof typeof ORGANISER_NOTICE_LIMITS;
 
 /** Fields that may hold line breaks; every other field is a single line. */
-const MULTILINE: ReadonlySet<OrganiserNoticeField> = new Set([
-  "postalAddress", "orderFormPurpose", "sharing", "retention", "automatedDecisions",
-]);
+const MULTILINE: ReadonlySet<OrganiserNoticeField> = new Set(["postalAddress"]);
+
+/**
+ * Who else may receive attendee details to run the event. Art. 13(1)(e) lets a
+ * notice name CATEGORIES of recipient, so these cover nearly every organiser.
+ * Never add a category that uses the details for its own purposes (a sponsor's
+ * marketing): that needs the buyer's consent, not a line in a notice.
+ */
+export const NOTICE_SHARING = ["team", "venue", "door", "partners"] as const;
+export type NoticeSharing = (typeof NOTICE_SHARING)[number];
+export const NOTICE_SHARING_TEXT: Record<NoticeSharing, string> = {
+  team: "Our own team, staff and volunteers",
+  venue: "The venue",
+  door: "Door and security staff",
+  partners: "Co-promoters and partners running the event with us",
+};
+
+/**
+ * Months after the event when a buyer's order-form answers are deleted, unless
+ * they are on the organiser's mailing list and the list is tailored. Pick-only,
+ * never free text: the retention sweep carries it out (#547).
+ */
+export const NOTICE_RETENTION_MONTHS = [3, 6, 12] as const;
+export type NoticeRetentionMonths = (typeof NOTICE_RETENTION_MONTHS)[number];
+
+/** What a new notice starts with - the answer nearly every organiser gives. */
+export const NOTICE_DEFAULTS: { sharing: NoticeSharing[]; orderRetentionMonths: NoticeRetentionMonths; tailoredMarketing: boolean } = {
+  sharing: [...NOTICE_SHARING],
+  orderRetentionMonths: 6,
+  tailoredMarketing: true,
+};
 
 /**
  * What the organiser confirmed. Written ONLY by an explicit confirm, so a stored
  * notice is a confirmed one and `confirmedAt` is when they did it.
  */
-export interface OrganiserNoticeV1 {
+export interface OrganiserNotice {
   format: typeof ORGANISER_NOTICE_FORMAT;
   /** The organiser's account address (0x, lowercase) - must match the account the feed is read for. */
   address: string;
@@ -78,17 +113,16 @@ export interface OrganiserNoticeV1 {
   contactEmail?: string;
   postalAddress?: string;
   icoRegistration?: string;
-  orderFormPurpose?: string;
-  sharing?: string;
-  retention?: string;
-  /** Whether the organiser makes purely automated decisions with legal or similar effects (Art. 13(2)(f)). */
-  automatedDecisions?: string;
+  /** Categories of recipient, in `NOTICE_SHARING` order. Empty = no one beyond WoCo and its suppliers. */
+  sharing: NoticeSharing[];
+  extraSharing?: string;
+  extraOrderFormUse?: string;
+  orderRetentionMonths: NoticeRetentionMonths;
   /**
-   * The organiser also emails past buyers about similar events under the PECR
-   * "soft opt-in" (ORGANISER_TERMS §5, PRIVACY_POLICY §5 legal-basis table). Absent = checkout
-   * opt-in only, which is all the platform itself collects.
+   * Mailing-list members' order answers (their area, say) choose which events
+   * they hear about, and are kept while they stay on the list. Absent = never.
    */
-  marketingSoftOptIn?: boolean;
+  tailoredMarketing?: true;
   /** ISO timestamp of the confirm. */
   confirmedAt: string;
 }
@@ -124,20 +158,18 @@ export function cleanNoticeText(field: OrganiserNoticeField, raw: unknown): stri
 }
 
 const KNOWN_KEYS = new Set<string>([
-  "format", "address", "confirmedAt", "marketingSoftOptIn", ...Object.keys(ORGANISER_NOTICE_LIMITS),
+  "format", "address", "confirmedAt", "sharing", "orderRetentionMonths", "tailoredMarketing",
+  ...Object.keys(ORGANISER_NOTICE_LIMITS),
 ]);
-const OPTIONAL_FIELDS = [
-  "contactEmail", "postalAddress", "icoRegistration", "orderFormPurpose", "sharing", "retention", "automatedDecisions",
-] as const;
+const OPTIONAL_FIELDS = ["contactEmail", "postalAddress", "icoRegistration", "extraSharing", "extraOrderFormUse"] as const;
 
 /**
  * The notice a feed holds, or null. Closed schema: an unknown key, a wrong type,
- * an over-long or control-character field, a bad email or a different account's
- * address all refuse the WHOLE payload, and the reader falls back to the
- * pre-filled notice. A half-trusted notice would put words in the organiser's
- * mouth that they did not sign.
+ * an over-long or control-character field, a bad email, an unknown choice or a
+ * different account's address all refuse the WHOLE payload. A half-trusted notice
+ * would put words in the organiser's mouth that they did not sign.
  */
-export function validateOrganiserNotice(raw: unknown, expectedAddress: string): OrganiserNoticeV1 | null {
+export function validateOrganiserNotice(raw: unknown, expectedAddress: string): OrganiserNotice | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
   for (const k of Object.keys(o)) if (!KNOWN_KEYS.has(k)) return null;
@@ -147,10 +179,16 @@ export function validateOrganiserNotice(raw: unknown, expectedAddress: string): 
   if (typeof o.confirmedAt !== "string" || !Number.isFinite(Date.parse(o.confirmedAt))) return null;
   const name = cleanNoticeText("organiserName", o.organiserName);
   if (!name) return null;
-  const out: OrganiserNoticeV1 = {
+  if (!Array.isArray(o.sharing)) return null;
+  const picked = new Set<unknown>(o.sharing);
+  if (picked.size !== o.sharing.length || o.sharing.some((x) => !(NOTICE_SHARING as readonly unknown[]).includes(x))) return null;
+  if (!(NOTICE_RETENTION_MONTHS as readonly unknown[]).includes(o.orderRetentionMonths)) return null;
+  const out: OrganiserNotice = {
     format: ORGANISER_NOTICE_FORMAT,
     address: o.address,
     organiserName: name,
+    sharing: NOTICE_SHARING.filter((c) => picked.has(c)),
+    orderRetentionMonths: o.orderRetentionMonths as NoticeRetentionMonths,
     confirmedAt: o.confirmedAt,
   };
   for (const f of OPTIONAL_FIELDS) {
@@ -158,9 +196,9 @@ export function validateOrganiserNotice(raw: unknown, expectedAddress: string): 
     if (v === null) return null;
     if (v !== undefined) out[f] = v;
   }
-  if (o.marketingSoftOptIn !== undefined) {
-    if (typeof o.marketingSoftOptIn !== "boolean") return null;
-    if (o.marketingSoftOptIn) out.marketingSoftOptIn = true;
+  if (o.tailoredMarketing !== undefined) {
+    if (typeof o.tailoredMarketing !== "boolean") return null;
+    if (o.tailoredMarketing) out.tailoredMarketing = true;
   }
   return out;
 }
@@ -199,7 +237,7 @@ export interface OrganiserNoticeDoc {
 
 export interface OrganiserNoticeInput {
   /** The confirmed notice, already validated; null when there is none. */
-  notice: OrganiserNoticeV1 | null;
+  notice: OrganiserNotice | null;
   /** What the page already knows about the organiser - used only when `notice` is null. */
   fallback?: { name?: string; contactEmail?: string; postalAddress?: string };
   /** The event this notice is shown for. Absent = an organiser-wide notice (a site). */
@@ -249,6 +287,11 @@ function single(raw: string | undefined, field: OrganiserNoticeField): string | 
   return v ?? undefined;
 }
 
+/** An organiser's "anything else" answer as the end of our sentence: one full stop, whatever they typed. */
+function clause(v: string): string {
+  return v.replace(/[\s.,;:]+$/, "") + ".";
+}
+
 export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoticeDoc {
   const n = input.notice;
   const confirmed = n !== null;
@@ -259,6 +302,11 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
   const wocoMail: NoticeInline = { text: WOCO_PRIVACY_EMAIL, href: `mailto:${WOCO_PRIVACY_EMAIL}` };
   const ev = input.event;
   const labels = orderFieldLabels(ev?.orderFields);
+  // An unconfirmed draft reads with the defaults a new notice starts from.
+  const sharing = n ? n.sharing : NOTICE_DEFAULTS.sharing;
+  const months = n ? n.orderRetentionMonths : NOTICE_DEFAULTS.orderRetentionMonths;
+  const tailored = n ? n.tailoredMarketing === true : NOTICE_DEFAULTS.tailoredMarketing;
+  const asksQuestions = !ev || labels.length > 0;
 
   const where = ev ? `when you book for ${ev.title}` : "when you book with us";
   const intro: NoticeBlock = {
@@ -301,21 +349,6 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
   ]);
 
   // ── Why, and the legal basis ─────────────────────────────────────────────
-  const orderPurpose: NoticeBlock | null =
-    n?.orderFormPurpose
-      ? { kind: "p", content: [`Your order-form answers: ${n.orderFormPurpose}`] }
-      : ev && labels.length === 0
-        ? null
-        : {
-            kind: "todo",
-            field: "orderFormPurpose",
-            lead: "Your order-form answers: ",
-            prompt:
-              "Why you ask each order-form question, and your legal basis for it. Questions about health, " +
-              "such as dietary or access needs, are special category data and need extra care.",
-            fallback: ["Your order-form answers: to run the event you booked. Our basis is usually our contract with you."],
-          };
-
   const why: NoticeBlock[] = [
     {
       kind: "list",
@@ -326,17 +359,25 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
             "The box is never ticked for you, saying no does not affect your ticket, and every email has a " +
             "one-click unsubscribe.",
         ],
-        ...(n?.marketingSoftOptIn
+        ...(tailored
           ? [[
-              "We may also email people who have bought tickets from us before about similar events, where they " +
-                "were given a clear chance to say no and in every email since (the \"soft opt-in\" in the UK's " +
-                "electronic marketing rules). You can unsubscribe at any time.",
+              "If you join our mailing list, we also use what you told us when you booked, such as your area, " +
+                "to choose which events to tell you about. This stops when you unsubscribe.",
             ]]
           : []),
       ],
     },
   ];
-  if (orderPurpose) why.push(orderPurpose);
+  if (asksQuestions) {
+    why.push({
+      kind: "p",
+      content: [
+        "Your order-form answers: to run the event you booked, for example for seating, catering or access. " +
+          "Our basis is our contract with you." +
+          (n?.extraOrderFormUse ? ` We also use them for: ${clause(n.extraOrderFormUse)}` : ""),
+      ],
+    });
+  }
   if (input.contactForm) {
     why.push({
       kind: "p",
@@ -384,16 +425,18 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
       ],
     },
   ];
+  const shareWith: NoticeInline[][] = sharing.map((c) => [NOTICE_SHARING_TEXT[c]]);
+  if (n?.extraSharing) shareWith.push([clause(n.extraSharing)]);
   handlers.push(
-    n?.sharing
-      ? { kind: "p", content: [`We also share your details with: ${n.sharing}`] }
-      : {
-          kind: "todo",
-          field: "sharing",
-          lead: "We also share your details with: ",
-          prompt: "Anyone else you share attendee details with, such as the venue, door staff or a co-promoter - or \"no one else\".",
-        },
+    shareWith.length
+      ? { kind: "p", content: ["We also share your details with these people, only as far as they need them to run the event:"] }
+      : { kind: "p", content: ["We don't share your details with anyone else."] },
   );
+  if (shareWith.length) handlers.push({ kind: "list", items: shareWith });
+  handlers.push({
+    kind: "p",
+    content: ["We never sell your details, and no one we share them with may use them for their own marketing."],
+  });
 
   // ── Storage ──────────────────────────────────────────────────────────────
   const storage: NoticeBlock[] = [
@@ -444,15 +487,18 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
   ];
 
   // ── Retention ────────────────────────────────────────────────────────────
-  const retentionItem: NoticeInline[] = n?.retention
-    ? [`Your order details: ${n.retention}`]
-    : [];
   const retention: NoticeBlock[] = [
     {
       kind: "list",
       items: [
         ["Your ticket and attendance record: until you ask for it to be erased. It is your record of having been there."],
-        ...(retentionItem.length ? [retentionItem] : []),
+        ...(asksQuestions
+          ? [[
+              `Your order-form answers: deleted ${months} months after the event.` +
+                (tailored ? " If you join our mailing list, we keep them for as long as you stay on it." : ""),
+            ]]
+          : []),
+        [`Guest lists we download or put on a door scanner: deleted within ${months} months of the event.`],
         ["A record of your marketing consent: while we can still email you on that basis, plus 6 months."],
         ["If your ticket email cannot be delivered, WoCo keeps your address until it is put right, or 90 days at most."],
         ["Payment records: kept by Stripe and by us for 6 years, as tax and company law require."],
@@ -461,20 +507,6 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
       ],
     },
   ];
-  if (!n?.retention) {
-    retention.push({
-      kind: "todo",
-      field: "retention",
-      lead: "Your order details: ",
-      prompt:
-        "How long you keep attendee details, including guest lists you download or put on a door scanner" +
-        (input.contactForm ? ", and messages from your contact form." : "."),
-      fallback: [
-        "Your order details: for as long as we need them to run the event. They are erased when we ask WoCo, " +
-          "when we stop using WoCo, or when you ask.",
-      ],
-    });
-  }
 
   // ── Rights ───────────────────────────────────────────────────────────────
   const contactLine: NoticeInline[] = email
@@ -524,16 +556,19 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
     },
   ];
 
-  // ── Automated decisions (Art. 13(2)(f)) - the docs do not settle this ────
-  const automated: NoticeBlock = n?.automatedDecisions
-    ? { kind: "p", content: [n.automatedDecisions] }
-    : {
-        kind: "todo",
-        field: "automatedDecisions",
-        prompt:
-          "Whether you make decisions about attendees by purely automated means that have legal or similarly " +
-          "significant effects on them. Say so either way.",
-      };
+  // ── Automated decisions (Art. 13(2)(f)) ─────────────────────────────────
+  // Stated, not asked: no event organiser decides about attendees purely by
+  // computer with a legal or similar effect, and neither does WoCo (seat holds and
+  // rate limits decide nothing about a person). Fraud screening is Stripe's own.
+  const automated: NoticeBlock = {
+    kind: "p",
+    content: [
+      "Neither we nor WoCo make decisions about you purely by computer that have a legal or similarly " +
+        "significant effect on you. Stripe screens card payments for fraud under ",
+      { text: "its own privacy policy", href: STRIPE_PRIVACY_URL },
+      ".",
+    ],
+  };
 
   // ── Required? ────────────────────────────────────────────────────────────
   const required: NoticeBlock[] = [
