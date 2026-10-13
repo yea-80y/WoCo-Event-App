@@ -123,10 +123,13 @@ export async function organiserNoticeRead(creator: string, signer: string): Prom
   return readNow(key, creator, signer);
 }
 
+export function noticeVerdictOf(r: NoticeRead): NoticeVerdict {
+  return r.status === "found" ? "confirmed" : r.status === "absent" ? "missing" : "unavailable";
+}
+
 /** Whether `creator`'s notice, read under `signer`, is confirmed. Never throws. */
 export async function organiserNoticeVerdict(creator: string, signer: string): Promise<NoticeVerdict> {
-  const r = await organiserNoticeRead(creator, signer);
-  return r.status === "found" ? "confirmed" : r.status === "absent" ? "missing" : "unavailable";
+  return noticeVerdictOf(await organiserNoticeRead(creator, signer));
 }
 
 /**

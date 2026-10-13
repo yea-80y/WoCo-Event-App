@@ -51,7 +51,7 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   },
   getOrganiserByStripeAccount,
   storeOrderBlob: (data, meta) => storeAttendeePayload(data, { kind: "fallback", ...meta }),
-  claimHeldOrder: (ref, sessionId, emailHash) => markHeldPaid(ref, sessionId, Date.now(), { emailHash }),
+  claimHeldOrder: (ref, sessionId, emailHash, retainMonths) => markHeldPaid(ref, sessionId, Date.now(), { emailHash, retainMonths }),
   storeHeldOrder: (ref) => storeHeldOrder(ref),
   releaseHeldOrder: (ref) => releaseHeldOrder(ref),
   isOrderStored: (ref) => !!getOrderRecord(ref) && !isOrderErased(ref),

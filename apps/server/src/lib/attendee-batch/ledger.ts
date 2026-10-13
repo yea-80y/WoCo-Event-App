@@ -65,6 +65,9 @@ export interface OrderRecord {
   /** HMAC of the buyer's email (`hashEmail`): finds a person's orders for an
    *  access or erasure request. Never the address itself. */
   emailHash?: string;
+  /** Months after the event's onchain end that the answers are kept: the
+   *  organiser's notice at the time of sale (#547). Absent = never swept. */
+  retainMonths?: number;
   createdAt: string;
   /** `allocated` = slots reserved, upload not confirmed (a crash, or still in flight).
    *  Treat it as possibly on the network: burnable, never reissued. */
@@ -287,7 +290,7 @@ export interface AllocatedOrder {
 export function allocateOrder(
   root: Uint8Array,
   chunkAddresses: Uint8Array[],
-  meta: { kind: OrderKind; eventId?: string; seriesId?: string; organiser?: string; emailHash?: string },
+  meta: { kind: OrderKind; eventId?: string; seriesId?: string; organiser?: string; emailHash?: string; retainMonths?: number },
   nowMs: number = Date.now(),
 ): AllocatedOrder {
   ensureLoaded();
@@ -340,6 +343,7 @@ export function allocateOrder(
     ...(meta.seriesId ? { seriesId: meta.seriesId } : {}),
     ...(meta.organiser ? { organiser: meta.organiser.toLowerCase() } : {}),
     ...(meta.emailHash ? { emailHash: meta.emailHash } : {}),
+    ...(meta.retainMonths !== undefined ? { retainMonths: meta.retainMonths } : {}),
     createdAt: new Date(nowMs).toISOString(),
     state: "allocated",
     chunks,

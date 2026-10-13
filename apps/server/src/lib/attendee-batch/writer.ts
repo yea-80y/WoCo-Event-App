@@ -112,7 +112,7 @@ const liveDeps: StoreAttendeeDeps = { stamper: getAttendeeStamper, upload: liveC
  */
 export async function storeAttendeePayload(
   data: string | Uint8Array,
-  meta: { kind: OrderKind; eventId?: string; seriesId?: string; emailHash?: string },
+  meta: { kind: OrderKind; eventId?: string; seriesId?: string; emailHash?: string; retainMonths?: number },
   deps: StoreAttendeeDeps = liveDeps,
 ): Promise<Hex64> {
   const payload = typeof data === "string" ? new TextEncoder().encode(data) : data;
@@ -185,6 +185,7 @@ export async function storeHeldOrder(root: string, deps: StoreAttendeeDeps = liv
         ...(held.eventId ? { eventId: held.eventId } : {}),
         ...(held.seriesId ? { seriesId: held.seriesId } : {}),
         ...(held.emailHash ? { emailHash: held.emailHash } : {}),
+        ...(held.retainMonths !== undefined ? { retainMonths: held.retainMonths } : {}),
       },
       deps,
     );
