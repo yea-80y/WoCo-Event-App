@@ -6,7 +6,9 @@
   checkout is the organiser's. It is pre-filled from what WoCo already knows -
   Stripe business details, the profile name - and every fact WoCo can vouch for
   is generated from docs/legal. What only the organiser can say stays a marked gap
-  until they fill it. Until they confirm, attendees see the pre-filled notice.
+  until they fill it. Nothing they sell goes on sale until they confirm (the
+  server refuses every hold and checkout - apps/server/src/lib/legal/notice-gate.ts),
+  and the public notice page says it isn't confirmed rather than show this draft.
 
   Publishing writes the organiser's own public feed: earlier versions stay
   retrievable from the network, so the screen says so before the button.
@@ -206,7 +208,7 @@
       {#if saved}
         Confirmed on {noticeDate(saved.confirmedAt)}. Attendees see this notice. Edit and publish again to change it.
       {:else}
-        Not confirmed yet - attendees currently see the pre-filled version.
+        Not confirmed yet - your tickets can't go on sale until you confirm it. Attendees don't see this draft.
         {#if prefilledFrom.length}We've filled in what we could from {prefilledFrom.join(" and ")}.{/if}
       {/if}
     </p>
@@ -247,7 +249,7 @@
             <span>I've read this notice and it describes how I handle my attendees' details.</span>
           </label>
           {#if publishError}<p class="error" role="alert">{publishError}</p>{/if}
-          {#if justPublished}<p class="ok" role="status">Published. Attendees now see your confirmed notice.</p>{/if}
+          {#if justPublished}<p class="ok" role="status">Published. Attendees now see your confirmed notice, and your tickets can go on sale.</p>{/if}
           <button class="primary" type="submit" disabled={!valid || !checked || publishing}>
             {publishing ? "Publishing…" : saved ? "Confirm and publish changes" : "Confirm and publish"}
           </button>

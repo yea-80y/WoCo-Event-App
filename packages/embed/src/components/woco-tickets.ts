@@ -88,6 +88,8 @@ interface SeriesState {
   holdError: string | null;
   /** The hold ran out with the panel still open; waits for "try again" or a quantity change. */
   holdExpired: boolean;
+  /** The server's reason this series is not on sale at all; the panel stays closed. */
+  closed: string | null;
 }
 
 export class WocoTickets extends HTMLElement {
@@ -243,6 +245,7 @@ export class WocoTickets extends HTMLElement {
       hold: null,
       holdError: null,
       holdExpired: false,
+      closed: null,
     };
   }
 
@@ -739,7 +742,7 @@ export class WocoTickets extends HTMLElement {
     // refuses the sale either way; this is what the buyer reads.
     const cancelled = !!this.event?.cancelledAt || st?.status?.cancelled === true;
 
-    if (st?.buyOpen && this.isPayable(s) && avail !== 0 && !cancelled) {
+    if (st?.buyOpen && this.isPayable(s) && avail !== 0 && !cancelled && !st.closed) {
       return `
         <div class="series-card series-card--expanded" data-series="${this.esc(s.seriesId)}">
           ${header}
@@ -751,6 +754,8 @@ export class WocoTickets extends HTMLElement {
     let actionHtml: string;
     if (cancelled) {
       actionHtml = `<button class="claim-btn" disabled>Event cancelled</button>`;
+    } else if (st?.closed) {
+      actionHtml = `<button class="claim-btn" disabled>Not on sale yet</button><p class="error-msg">${this.esc(st.closed)}</p>`;
     } else if (!this.isPayable(s)) {
       // No live payment rail for this series (crypto-only, free, or a stale
       // cache entry from before prices were in the payload). Nothing can be
@@ -831,6 +836,13 @@ export class WocoTickets extends HTMLElement {
       // A refused replace has already released the old hold server-side.
       cur.hold = null;
       cur.holdError = result.message;
+    } else if (result.kind === "closed") {
+      // Not on sale at all: close the panel so nobody keeps typing details.
+      cur.hold = null;
+      cur.buyOpen = false;
+      cur.closed = result.message;
+      this.updateSeries(seriesId);
+      return;
     }
     this.refreshHold(seriesId);
   }

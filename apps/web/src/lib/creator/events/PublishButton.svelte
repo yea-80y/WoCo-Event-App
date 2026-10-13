@@ -11,6 +11,8 @@
   import { eventContentTopic } from "@woco/shared";
   import { logFeedToManifest } from "../../manifest/feed-log.js";
   import { navigate } from "../../router/router.svelte.js";
+  import { ownNoticeStatus, type OwnNoticeStatus } from "../../legal/own-notice-status.js";
+  import NoticeConfirmPrompt from "../privacy/NoticeConfirmPrompt.svelte";
 
   interface SeriesDraft {
     seriesId: string;
@@ -105,6 +107,25 @@
 
   const hasPaidSeries = $derived(series.some((s) => s.payment));
 
+  // Tickets only sell once the organiser has confirmed their privacy notice - the
+  // server refuses every hold and checkout until then. Asked before a paid publish,
+  // with a way through: publishing anyway is allowed, selling is not.
+  let noticePrompt = $state<Exclude<OwnNoticeStatus, "confirmed"> | null>(null);
+  let noticeChecking = $state(false);
+  let publishBeforeNotice = false;
+
+  async function noticeLetsPublish(): Promise<boolean> {
+    if (!hasPaidSeries || publishBeforeNotice) return true;
+    noticeChecking = true;
+    try {
+      const status = await ownNoticeStatus();
+      noticePrompt = status === "confirmed" ? null : status;
+      return status === "confirmed";
+    } finally {
+      noticeChecking = false;
+    }
+  }
+
   function handleProgress(p: PublishProgress) {
     step = p.message;
     phase = "uploading";
@@ -142,6 +163,8 @@
         error = "Account setup cancelled";
         return;
       }
+      step = "Checking your privacy notice…";
+      if (!(await noticeLetsPublish())) return;
       progress = 4;
 
       // The organiser's X-Wing order key (#642), derived from the seed with no
@@ -455,6 +478,16 @@
         Done!
       {/if}
     </p>
+  {/if}
+
+  {#if noticePrompt && !publishing && !pendingEventId}
+    <NoticeConfirmPrompt
+      status={noticePrompt}
+      what="event"
+      checking={noticeChecking}
+      onrecheck={() => void handlePublish()}
+      onpublishanyway={() => { publishBeforeNotice = true; noticePrompt = null; void handlePublish(); }}
+    />
   {/if}
 
   {#if disabled && disabledReason && !publishing}

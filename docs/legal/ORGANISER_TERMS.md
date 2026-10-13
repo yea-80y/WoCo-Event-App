@@ -119,13 +119,15 @@ Sites you publish through WoCo, and the embed widget on your own domain, collect
 **under your control, on your behalf**. You must ensure a privacy notice is available on those
 surfaces. We provide the tools; using them is your responsibility.
 
-**Your privacy notice.** We show a privacy notice in your name next to every checkout and in the
-footer of your event pages and sites. Until you review and confirm it in your dashboard, it is
-pre-filled from what we know about how the platform works and from your account, and you instruct
-us to show that version. It describes our platform accurately; it cannot know how you handle
-attendee details outside it, so the parts only you can answer are marked. It is not legal advice -
-confirming it is your statement, and keeping it true is your responsibility. Your confirmed notice
-is published publicly, and earlier versions stay retrievable after you change it.
+**Your privacy notice.** You must review and confirm your privacy notice in your dashboard
+before you can sell tickets. We pre-fill it from what we know about how the platform works and
+from your account. It describes our platform accurately; it cannot know how you handle attendee
+details outside it, so the parts only you can answer are marked. Until you confirm it, your
+tickets are not on sale and we do not show the pre-filled version to anyone. Once you confirm
+it, we show it in your name next to every checkout and in the footer of your event pages and
+sites. It is not legal advice - confirming it is your statement, and keeping it true is your
+responsibility. Your confirmed notice is published publicly, and earlier versions stay
+retrievable after you change it.
 
 ---
 

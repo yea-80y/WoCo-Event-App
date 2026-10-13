@@ -8,7 +8,8 @@ import { FEATURES } from "@woco/shared";
  * stand-in for "a verified account", and the server refuses those delegations while
  * wallet login is off (#186). The refusal itself is pinned in wallet-login-gate.test.ts.
  * `accountBackupsAllowed`: the sponsorship tests of the backup ops.
+ * `agentCommerceAllowed`: the privacy-notice sale gate on the (flag-off) agent rail.
  */
-export function enableFeature(name: "walletLoginAllowed" | "accountBackupsAllowed", on = true): void {
+export function enableFeature(name: "walletLoginAllowed" | "accountBackupsAllowed" | "agentCommerceAllowed", on = true): void {
   (FEATURES as Record<string, boolean>)[name] = on;
 }

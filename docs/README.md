@@ -47,7 +47,7 @@ linking.
 | [PAYOUTS.md](./PAYOUTS.md) | Payout policy. Manual, released after the event. |
 | [PRICING_AND_EMAIL.md](./PRICING_AND_EMAIL.md) | **All** fee arithmetic (§7, §15–§17). Never restate a rate elsewhere. |
 | [MARKETING_COMPLIANCE.md](./MARKETING_COMPLIANCE.md) | Marketing lists, consent, suppression, RFC 8058, the abuse gate. |
-| [legal/](./legal/) | `DATA_INVENTORY`, `PRIVACY_POLICY`, `TERMS_OF_SERVICE`, `ORGANISER_TERMS`, `DATA_PROCESSING_ADDENDUM`, `COOKIE_NOTICE`. Imported by the web build at compile time, which is why they are tracked. |
+| [legal/](./legal/) | `DATA_INVENTORY`, `PRIVACY_POLICY`, `TERMS_OF_SERVICE`, `ORGANISER_TERMS`, `DATA_PROCESSING_ADDENDUM`, `COOKIE_NOTICE`, `ORGANISER_PRIVACY_NOTICE` (no sale without a confirmed organiser notice; platform comparison; draft answers awaiting owner approval). Imported by the web build at compile time, which is why they are tracked. |
 
 ---
 

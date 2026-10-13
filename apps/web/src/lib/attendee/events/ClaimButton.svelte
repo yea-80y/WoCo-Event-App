@@ -288,6 +288,16 @@
     },
   });
 
+  // Not on sale at all (no confirmed privacy notice, or an event that must be
+  // published again): close the form so nobody keeps typing details - or has an
+  // order box prepared - for a sale the server will refuse.
+  $effect(() => {
+    if (reservationHook.closed) {
+      showOrderForm = false;
+      intentToCheckout = false;
+    }
+  });
+
   // Note: we deliberately do NOT release the reservation on pagehide or
   // component unmount. The 10-min TTL is the buyer's window; closing the
   // tab and reopening should resume the SAME hold with the SAME deadline.
@@ -472,6 +482,8 @@
     <!-- #644: the server's word, from claim-status — covers a page whose feed
          was not re-signed after the cancellation. -->
     <button class="claim-btn" disabled>Event cancelled</button>
+  {:else if reservationHook.closed}
+    <button class="claim-btn" disabled>Not on sale yet</button>
   {:else if showOrderForm}
     <OrderForm
       {status}

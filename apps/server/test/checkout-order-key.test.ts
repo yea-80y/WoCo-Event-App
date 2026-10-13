@@ -26,6 +26,8 @@ const { readyAttendeeStore, acceptingUploadChunk } = await import("./helpers/att
 const { installRing, noRings } = await import("./helpers/key-ring.js");
 const record = await import("../src/lib/event/feed-signer-record.js");
 const service = await import("../src/lib/event/service.js");
+const { confirmedNotices } = await import("./helpers/notice.js");
+confirmedNotices(); // the privacy-notice gate is pinned in privacy-notice-gate.test.ts
 
 __setBeeForTests({
   makeFeedReader() {
