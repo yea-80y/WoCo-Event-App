@@ -4,6 +4,7 @@ import type { SealedBoxV2 } from "../crypto/sealed-box-shape.js";
 import type { ObjectGate, ObjectGateGroup } from "../object/types.js";
 import type { SignedManifestV2, EditionV1Body } from "../edition/types.js";
 import type { IssuerBindingV1 } from "../crypto/issuing.js";
+import type { MarketingMode } from "../legal/consent.js";
 
 /** How attendees can claim tickets for an event */
 export type ClaimMode = "wallet" | "email" | "both";
@@ -570,6 +571,15 @@ export interface SeriesClaimStatus {
   held?: number;
   /** The event was cancelled (#644): `available` reads 0 and nothing is on sale. */
   cancelled?: boolean;
+  /**
+   * The marketing control the checkout shows, from the organiser's CONFIRMED
+   * notice (2026-10-14). The page renders it and echoes it to create-checkout,
+   * which refuses a mismatch. Absent when there is no confirmed notice to read
+   * (nothing sells then) or from an older server; the page shows consent mode.
+   */
+  marketingMode?: MarketingMode;
+  /** The organiser's name as their notice gives it - the own-events sentence names them. */
+  marketingOrganiser?: string;
 }
 
 /** Payment method used to obtain a ticket. */

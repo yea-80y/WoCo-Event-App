@@ -16,10 +16,16 @@
  *
  * MUST survive server restarts — losing this loses the lawful basis for every
  * soft opt-in send that depends on it.
+ *
+ * One store for both bases (2026-10-14): a CONSENT record (ticked "Email me")
+ * and a SOFT-OPT-IN record (bought a ticket, shown "Don't email me", left it
+ * unticked). The basis is fixed when the choice is made and never re-read from
+ * the organiser's current mode, so switching modes needs no re-permissioning.
  */
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { MarketingBasis, MarketingSurface } from "@woco/shared";
 import { writeJsonAtomic } from "./persist.js";
 import { suppressedSince } from "./suppression-store.js";
 
@@ -35,10 +41,18 @@ export interface ConsentRecord {
   /** Event the person was buying when asked — scopes what they agreed to. */
   eventId?: string;
   /** Verbatim wording shown at the point of collection. Art. 7(1) evidence:
-   *  a hash or paraphrase would not prove what was actually agreed to. */
+   *  a hash or paraphrase would not prove what was actually agreed to. For a
+   *  soft opt-in, the sentence above the box; the box's own label is `control`. */
   notice: string;
+  /** The checkbox label, when it is not `notice` itself (soft opt-in: "Don't email me..."). */
+  control?: string;
+  /** Absent on records written before the soft opt-in existed, which were all consent. */
+  basis?: MarketingBasis;
+  /** Which checkout showed the control. */
+  surface?: MarketingSurface;
   /**
-   * `MARKETING_CONSENT_VERSION` at capture time. The verbatim `notice` is the
+   * The wording version for the record's mode at capture time (consent:
+   * `MARKETING_CONSENT_VERSION`; soft opt-in: `MARKETING_OWN_EVENTS_VERSION`). The verbatim `notice` is the
    * evidence; this is the cheap index for "which wording did this cohort agree
    * to" once the text has changed more than once. Optional because records
    * written before this field existed do not carry it.
@@ -85,20 +99,32 @@ export function getConsent(emailHash: string, organiserAddress: string): Consent
   return consents[organiserAddress.toLowerCase()]?.[emailHash] ?? null;
 }
 
+/** A record's basis. Records from before the soft opt-in carry none and were all consent. */
+export function consentBasis(record: Pick<ConsentRecord, "basis">): MarketingBasis {
+  return record.basis === "soft-opt-in" ? "soft-opt-in" : "consent";
+}
+
+/** The basis this organiser holds for one address, or null when there is no record. */
+export function basisFor(emailHash: string, organiserAddress: string): MarketingBasis | null {
+  const r = getConsent(emailHash, organiserAddress);
+  return r ? consentBasis(r) : null;
+}
+
 /**
- * Which of `hashes` hold a consent record for this organiser.
+ * Which of `hashes` hold a record for this organiser - of `basis` only, when given.
  *
- * Mirrors `suppressedSubset`. The two together give the audience UI its three
- * states — a contact with a record opted in and the evidence exists; one with
- * neither is on the list under the organiser's own import warranty; one in
- * suppression is never mailed. Those are very different legal positions and the
- * organiser cannot see which they are holding unless the UI tells them.
+ * Mirrors `suppressedSubset`. Together they give the audience UI its four
+ * states — opted in (consent, the evidence exists); bought a ticket and did not
+ * opt out (soft opt-in, the evidence exists); neither, on the list under the
+ * organiser's own import warranty; in suppression, never mailed. Those are very
+ * different legal positions and the organiser cannot see which they are holding
+ * unless the UI tells them.
  */
-export function consentedSubset(organiserAddress: string, hashes: string[]): string[] {
+export function consentedSubset(organiserAddress: string, hashes: string[], basis?: MarketingBasis): string[] {
   ensureLoaded();
   const byHash = consents[organiserAddress.toLowerCase()];
   if (!byHash) return [];
-  return hashes.filter((h) => byHash[h]);
+  return hashes.filter((h) => byHash[h] && (!basis || consentBasis(byHash[h]) === basis));
 }
 
 /** Subject-access support: every organiser this address consented to. */

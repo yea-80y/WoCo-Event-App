@@ -38,6 +38,7 @@ import { eventReleaseAfter } from "./payout-policy.js";
 import type { PayoutLedgerEntry } from "./payout-ledger.js";
 import type { GateBinding } from "../gate/store.js";
 import type { CaptureConsentInput } from "../marketing/consent-capture.js";
+import { marketingFromMetadata } from "../marketing/checkout-choice.js";
 import type { TicketEmailOpts } from "../../routes/tickets.js";
 import { contractKey, type EventContractTarget } from "../chain/event-contract.js";
 import type { SaleContract } from "../event/onchain-registry.js";
@@ -325,7 +326,6 @@ export async function fulfilPaidSession(
     orderRef: metaOrderRef,
     reservationId: metaReservationId,
     siteId: metaSiteId,
-    marketingConsent: metaConsent,
     connectedAccountId: metaConnectedAccountId,
     onChainEventId: metaOnChainEventId,
     onChainContract: metaOnChainContract,
@@ -352,10 +352,9 @@ export async function fulfilPaidSession(
     return skipped("missing eventId/seriesId");
   }
 
-  // Tri-state, and the absent case is NOT a decline: it means the order form was
-  // never shown, so the buyer was never asked and nothing should be recorded.
-  const metaMarketingConsent =
-    metaConsent === "1" ? true : metaConsent === "0" ? false : undefined;
+  // What the buyer was shown and did. Absent is NOT a decline: no control was
+  // shown, so nothing is recorded, in either mode.
+  const marketing = marketingFromMetadata(session.metadata);
 
   const claimedAt = new Date(webhookEventCreated * 1000).toISOString();
 
@@ -943,9 +942,9 @@ export async function fulfilPaidSession(
   // Record the checkout marketing decision — only now that a ticket actually
   // landed. An abandoned or refunded-in-full purchase must not leave a marketing
   // permission behind, which is why this lives in the webhook rather than at
-  // session creation. A GRANT goes to the consent store as Art. 7(1) evidence,
-  // a REFUSAL goes to suppression so it is enforced by the existing send-time
-  // check and survives a CSV re-upload.
+  // session creation. A GRANT (or a soft opt-in) goes to the consent store as
+  // evidence, a REFUSAL goes to suppression so it is enforced by the existing
+  // send-time check and survives a CSV re-upload.
   // The attendee index (#387) is written for EVERY email buyer, whatever they
   // chose about marketing, and independently of whether a consent decision was
   // even offered — it records that this person bought a ticket, not that they
@@ -961,12 +960,13 @@ export async function fulfilPaidSession(
     }
   }
 
-  if (metaMarketingConsent !== undefined && claimedResults.length > 0 && eventCreatorAddress && emailHash) {
+  if (marketing && claimedResults.length > 0 && eventCreatorAddress && emailHash) {
     try {
       deps.captureCheckoutConsent({
         emailHash,
         organiserAddress: eventCreatorAddress,
-        granted: metaMarketingConsent,
+        choice: marketing.choice,
+        ...(marketing.organiserName ? { organiserName: marketing.organiserName } : {}),
         ts: claimedAt,
         eventId,
       });
