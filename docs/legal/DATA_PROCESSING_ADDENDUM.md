@@ -1,6 +1,6 @@
 # Data Processing Addendum
 
-**Last updated:** 6 October 2026
+**Last updated:** 14 October 2026
 **Version:** 1.0
 
 This Addendum forms part of the [Organiser Terms](./ORGANISER_TERMS.md) between
@@ -26,7 +26,7 @@ Addendum does not apply to those.
 
 **Subject matter:** provision of ticketing, event hosting, attendee communication and audience tools.
 
-**Duration:** for as long as you use the services, plus the retention periods in section 8.
+**Duration:** for as long as you use the services, plus the retention periods in section 8 and Annex 3.
 
 **Nature and purpose:** collecting attendee orders; issuing and delivering tickets; storing encrypted
 attendee data for your retrieval; check-in; sending transactional and (where permitted) marketing
@@ -228,3 +228,26 @@ Current as at 6 October 2026. This annex is the live list: we change it here, wi
 ## Annex 2 — Technical and organisational measures
 
 As set out in section 6 above.
+
+---
+
+## Annex 3 - Standing instruction: how long order answers are kept
+
+Your privacy notice tells attendees how long their order-form answers are kept: 6 or 12 months after
+the event. The notice editor starts at 6 months - our proposal - and the period becomes yours when you
+confirm and publish the notice. It is your standing instruction to us, carried out as follows:
+
+1. **Period.** Each order is kept for the period your published notice gave when that ticket was sold.
+   A later change to your notice applies to later sales, not earlier ones.
+2. **Clock.** The period runs from the event's end as registered onchain when its tickets went on
+   sale, which cannot be changed afterwards - never from a date later edited on the event page. A
+   cancelled event runs on the same clock.
+3. **Erasure.** When the period is up we erase the order as section 5(3) describes. An order paid for
+   but not yet stored is deleted outright. The order reference recorded onchain is permanent
+   (section 5(9)).
+4. **Unpaid checkouts.** Answers from a checkout that is never paid are deleted after 24 hours.
+5. **Door lists.** A guest list you load onto a door scanner through us is deleted 30 days after the
+   event.
+6. **When we cannot tell.** If we cannot establish an order's period or the event's onchain end, we
+   keep the order rather than erase it early, and look into why.
+7. **Sooner.** You can ask us to erase any order before then, and attendees can ask under section 3(5).
