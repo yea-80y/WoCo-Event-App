@@ -62,12 +62,12 @@ import { mergeParticipants, knownSubjects, participantsFor } from "../lib/social
 import { clearTallyCache } from "./social.js";
 import { isValidSenderId, liftSender, listForOps, stopSender } from "../lib/sender-pacing/index.js";
 import { attendeeLedgerStatus, setActiveBatch } from "../lib/attendee-batch/ledger.js";
-import { attendeeCheckoutRefusal, attendeeStamperAddress, isStoreInFlight } from "../lib/attendee-batch/writer.js";
+import { attendeeCheckoutRefusal, attendeeStamperAddress } from "../lib/attendee-batch/writer.js";
 import { refreshAttendeeBatch, registerAttendeeBatch } from "../lib/attendee-batch/admin.js";
-import { burnOrder } from "../lib/attendee-batch/burn.js";
-import { getOrderRecord, ledgerReadable, ordersForEmailHash, recordErasedBeforeStore } from "../lib/attendee-batch/ledger.js";
+import { eraseOrder } from "../lib/attendee-batch/erase.js";
+import { ledgerReadable, ordersForEmailHash } from "../lib/attendee-batch/ledger.js";
 import { hashEmail } from "../lib/event/claim-service.js";
-import { getHeldOrder, heldOrdersHealth, paidUnstored, releaseHeldOrder } from "../lib/attendee-batch/held-orders.js";
+import { heldOrdersHealth, paidUnstored } from "../lib/attendee-batch/held-orders.js";
 
 const ops = new Hono<AppEnv>();
 
@@ -662,32 +662,22 @@ ops.post("/attendee-batch/orders/:root/burn", async (c) => {
   const by = (body?.by || "").trim().slice(0, 100);
   const reason = (body?.reason || "").trim().slice(0, 500);
   if (!by || !reason) return c.json({ ok: false, error: "`by` and `reason` are required - who decided this, and why?" }, 400);
-  if (isStoreInFlight(root)) {
-    return c.json({ ok: false, error: "This order is being stored right now - retry in a minute and it will be burned" }, 409);
-  }
   try {
-    // A box still held (not yet on Swarm) is simply deleted: real deletion.
-    // Synchronous from here to the tombstone, so no store can start between.
-    const heldBefore = getHeldOrder(root);
-    const wasHeld = heldBefore !== null;
-    if (wasHeld && !releaseHeldOrder(root)) {
-      return c.json({ ok: false, error: "The held order could not be deleted - see compliancePersistence on /api/health" }, 503);
+    const out = await eraseOrder(root, { by: "request" });
+    switch (out.kind) {
+      case "in-flight":
+        return c.json({ ok: false, error: "This order is being stored right now - retry in a minute and it will be burned" }, 409);
+      case "hold-not-deleted":
+        return c.json({ ok: false, error: "The held order could not be deleted - see compliancePersistence on /api/health" }, 503);
+      case "not-found":
+        return c.json({ ok: false, error: "No attendee order with that reference" }, 404);
+      case "deleted-before-store":
+        console.log(`[ops] attendee order ${root} (held, never stored) deleted by ${by} (${reason})`);
+        return c.json({ ok: true, data: { root, state: "deleted-before-store", burnedAt: null } });
+      case "burned":
+        console.log(`[ops] attendee order ${root} burn by ${by} (${reason}): ${out.record.state}`);
+        return c.json({ ok: true, data: { root, state: out.record.state, burnedAt: out.record.burnedAt ?? null } });
     }
-    if (!getOrderRecord(root)) {
-      if (!wasHeld) return c.json({ ok: false, error: "No attendee order with that reference" }, 404);
-      const eventId = heldBefore!.eventId;
-      recordErasedBeforeStore(root, {
-        ...(eventId ? { eventId } : {}),
-        ...(heldBefore!.seriesId ? { seriesId: heldBefore!.seriesId } : {}),
-        ...(heldBefore!.emailHash ? { emailHash: heldBefore!.emailHash } : {}),
-        ...(eventId && getRecordedFeedSigner(eventId) ? { organiser: getRecordedFeedSigner(eventId)!.creatorAddress } : {}),
-      });
-      console.log(`[ops] attendee order ${root} (held, never stored) deleted by ${by} (${reason})`);
-      return c.json({ ok: true, data: { root, state: "deleted-before-store", burnedAt: null } });
-    }
-    const record = await burnOrder(root);
-    console.log(`[ops] attendee order ${root} burn by ${by} (${reason}): ${record.state}`);
-    return c.json({ ok: true, data: { root, state: record.state, burnedAt: record.burnedAt ?? null } });
   } catch (err) {
     console.error(`[ops] attendee order ${root} burn by ${by} failed:`, (err as Error).message);
     return c.json({ ok: false, error: (err as Error).message }, 502);
