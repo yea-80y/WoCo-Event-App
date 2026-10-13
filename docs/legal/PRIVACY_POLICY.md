@@ -87,7 +87,7 @@ See [Stripe's privacy policy](https://stripe.com/privacy).
 | Identity | Wallet address, passkey identifier, sub-ENS name | Created when you sign in or create an account |
 | Ticket | Ticket ID, edition number, event, timestamp, check-in status | Generated when you claim |
 | Technical | IP address, browser type, request timestamps | Automatically, when you use the service |
-| Marketing preference | Whether you opted in, when, and the exact wording shown | You, at checkout |
+| Marketing preference | Your choice at checkout (opted in, or did not opt out), when, and the exact wording shown | You, at checkout |
 | Social | Likes and follows | You, when you use those features |
 | Organiser (if you run events) | Business details, Stripe account link, payout records, sites published | You and Stripe |
 
@@ -107,7 +107,8 @@ if you believe we have.
 | Deliver your ticket and event updates | Contract — you asked us to |
 | Tell you if your event is cancelled and your refund is on its way | Legitimate interests - you need to know what is happening to your money. We read the email you paid with from Stripe when we send it, and keep no copy. It is a service message, not marketing, so it is sent even if you have unsubscribed or asked us to erase your details |
 | Store your encrypted order answers for the organiser | Processing on the organiser's behalf; their basis, usually contract |
-| Send you marketing about an organiser's future events | Consent, or the PECR "soft opt-in" where you bought a ticket and were offered a clear opt-out |
+| Send you marketing about an organiser's future events, if you ticked "Email me" at checkout | Consent |
+| Send you marketing about an organiser's own similar events, if you bought a ticket and did not tick "Don't email me" | The organiser's legitimate interests, under the PECR "soft opt-in". You can object at any time and they must stop |
 | Keep our unsubscribe and suppression records | Legal obligation (PECR) and legitimate interests — we cannot honour your opt-out without remembering it |
 | Prevent fraud, abuse and spam | Legitimate interests — protecting the platform and its users |
 | Operate and improve the service | Legitimate interests — running a functioning platform |
@@ -120,8 +121,16 @@ rights. You can object at any time — see section 9.
 
 ## 6. Marketing, and why we keep the unsubscribe list ourselves
 
-If you opt in at checkout, the organiser can email you about their future events. **The opt-in box is
-never pre-ticked**, and you can decline without affecting your ticket.
+Each organiser's privacy notice sets one of two checkouts:
+
+- **Opt in.** Tick "Email me" if you want the organiser's emails about their future events. **The box
+  is never pre-ticked.**
+- **Soft opt-in**, for organisers who only email about their own events. The checkout says they will
+  email you about similar events, next to a "Don't email me" box. **That box is never pre-ticked
+  either** - tick it and you get no marketing.
+
+Either way, saying no does not affect your ticket, and your choice is recorded with the basis it was
+made under.
 
 Every marketing email carries a one-click unsubscribe link and the standard one-click headers your
 email client can act on directly.
@@ -260,7 +269,7 @@ We would rather you came to us first, but it is your right either way.
 | The organiser's copy of your order details | Encrypted in your browser, so only the organiser can read it, and stored on Swarm. Kept for as long as the organiser needs it. We erase it when the organiser asks, when they stop using WoCo, or when you ask us to (section 9) |
 | Account data | While your account is open. If you ask us to delete your account, we do so within 90 days of your request |
 | Suppression records | Indefinitely — required to honour your opt-out. This is the one record we keep *because* you asked us to stop: deleting it would let the next contact upload put you back |
-| Marketing consent records | While the organiser can still mail you on that basis, plus 6 months. A hashed record of the wording you agreed to and when — it is how we can show your consent was real |
+| Marketing consent and soft opt-in records | While the organiser can still mail you on that basis, plus 6 months. A hashed record of the wording you were shown and when - it is how we can show your choice was real |
 | Your place on an organiser's contact list | Until the organiser removes you, or you unsubscribe. We hold only a hashed form of your address; the list itself is encrypted to the organiser. While an organiser's email to you is being sent, we also hold your address, encrypted under a key that exists only in the running system, until your message goes out and for at most 7 days |
 | Failed ticket-delivery records | Until put right, or 90 days at most. If every attempt to email your ticket fails, we keep your address on a restricted ledger — the one case where we hold an email in plaintext — so a human can still get you the ticket you paid for |
 | Transaction records | 6 years (Companies Act 2006, HMRC) |

@@ -120,7 +120,8 @@ Verify the address by email link once SES lands (DATA_INVENTORY §8 item 9). App
 follow-up.
 
 **5a. The soft opt-in wording.** SUPERSEDED 2026-10-13 (§5): the declaration box is gone, because the
-checkout offers an opt-in only and a soft opt-in needs an opt-out at the point of sale.
+checkout offers an opt-in only and a soft opt-in needs an opt-out at the point of sale. BUILT
+2026-10-14 (§6): the checkout now offers that opt-out, and the notice states it.
 Draft answer: keep the meaning, tighten to PECR reg. 22(3): "We may also email you about our
 similar events if you bought a ticket from us, were given a simple way to say no when you did, and
 have not said no since. Every email lets you unsubscribe." Code change after approval.
@@ -156,7 +157,7 @@ every organiser gives, already picked, and they change it if it is not theirs:
 | Who else you share with | Categories (Art. 13(1)(e) allows them), all ticked: own team/staff/volunteers, venue, door and security, co-promoters and partners. Optional "anyone else". Always adds "we never sell your details, and no one we share them with may use them for their own marketing" |
 | How long you keep details | 6 (default) or 12 months after the event. Pick-only, because the retention sweep carries it out (#547). No 3: a card dispute can arrive ~120 days after a sale |
 | Automated decisions | Stated for everyone: neither the organiser nor WoCo decides about attendees purely by computer with a legal or similar effect; Stripe screens payments under its own policy |
-| Soft opt-in declaration | Removed (see 5a). A switch to an opt-out checkout is a separate decision |
+| Soft opt-in declaration | Removed (see 5a). Replaced 2026-10-14 by one question, "Do you only email people about your own events?" (§6) |
 | (new) Tailored mailing list | Default on: what is kept on the mailing list (their area, say) chooses which events members hear about. The booking's own answers are deleted on schedule for everyone |
 | (new) Per question: "Keep on mailing list" | Pre-ticked from the label for names, area, postcode and town; copied onto the contact at import; the notice names each kept question |
 | (new) Per question: health | Pre-set from the label (allergies, dietary, access needs...): always optional, a consent line at the question, never kept on a list; the notice adds a purpose + Art. 9 basis sentence |
@@ -168,3 +169,28 @@ purposes or retention, which is a controller's call. The editor drops the "not l
 **Depends on the retention sweep.** The notice says order-form answers are deleted N months after the
 event. Nothing deletes them until the sweep ships, so this notice must not reach production before it.
 
+---
+
+## 6. Soft opt-in checkout (owner, 2026-10-14)
+
+PECR reg. 22(3) lets an organiser email buyers about their own similar events if the buyer was given
+a simple way to say no at the sale. The editor asks one plain question, "Do you only email people
+about your own events?":
+
+- **Yes** (a new draft's default) stores `marketingBasis: "own-events"`. The checkout shows "We'll
+  email you about similar events from {organiser}. You can unsubscribe from any email." and an
+  unticked "Don't email me about similar events". The notice says: "To email you about our similar
+  events, unless you tick 'Don't email me' at checkout. This is the 'soft opt-in' in the UK's
+  electronic marketing rules: you bought from us, you could say no when you did, and every email has a
+  one-click unsubscribe. Our basis for using your details this way is our legitimate interest in
+  telling customers about similar events. You can object at any time and we will stop."
+- **No** (venues and promoters who market other people's events) stores nothing: absent = consent
+  mode, today's unticked "Email me" and today's sentence. Code never moves a confirmed notice between
+  modes.
+
+The server reads the mode from the CONFIRMED notice; the page echoes it and create-checkout refuses a
+mismatch (an untouched box means yes in one mode and no in the other). Each record keeps the basis it
+was made under (`consent` or `soft-opt-in`), so a change of answer needs no re-permissioning. A soft
+opt-in never lifts a decline or an unsubscribe and never replaces a consent record. Retention (#547)
+is the same for both. Follow-ups, not built: a legitimate-interests assessment template for
+organisers; the charity soft opt-in (reg. 22(3A)), which "similar events" does not fit.
