@@ -3,7 +3,9 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { isOrphanedCredentialError } from "../../auth/orphaned-credential.js";
   import { isWeb3AuthSignInError } from "../../auth/web3auth-signin-error.js";
-  import { isSignInFailedError, SIGN_IN_FAILED_MESSAGE } from "../../auth/signin-failure.js";
+  import { SIGN_IN_FAILED_MESSAGE } from "../../auth/signin-failure.js";
+  import { signInFailureView, type SignInFailureView } from "../../auth/signin-failure-notice.js";
+  import SignInFailureDetails from "./SignInFailureDetails.svelte";
   import type { InAppBrowser } from "../../browser/in-app-browser.js";
   import type { EscapeLink } from "../../browser/in-app-escape.js";
 
@@ -20,9 +22,9 @@
 
   let { oncomplete, onstart, onsettle, inApp }: Props = $props();
 
-  let error = $state<string | null>(null);
-  /** A failure with no words of its own carries a short code to screenshot (signin-failure.ts). */
-  let errorCode = $state<string | null>(null);
+  /** The last attempt's failure: its line, and (with no words of its own) a code
+   *  to screenshot and Web3Auth's redacted reason behind a tap (SignInFailureDetails). */
+  let failure = $state<SignInFailureView | null>(null);
   /** The attempt under way, so Try again can wait for the cancelled one to settle. */
   let attempt: Promise<unknown> | null = null;
 
@@ -39,7 +41,7 @@
   // The link out of an in-app browser, built only when there is one to show.
   let escape = $state<EscapeLink | null>(null);
   $effect(() => {
-    if (!inApp || !(stalled || error)) return;
+    if (!inApp || !(stalled || failure)) return;
     void import("../../browser/in-app-escape.js").then(({ escapeLink }) => {
       escape = escapeLink(inApp, new URL(window.location.href));
     });
@@ -49,8 +51,7 @@
   );
 
   async function login() {
-    error = null;
-    errorCode = null;
+    failure = null;
     onstart?.();
     const run = auth.loginWeb3Auth();
     attempt = run;
@@ -59,18 +60,16 @@
       if (ok) oncomplete?.();
       else {
         // Only when another sign-in was already under way (the store's busy guard).
-        error = SIGN_IN_FAILED_MESSAGE;
-        errorCode = "W3A-busy";
+        failure = { message: SIGN_IN_FAILED_MESSAGE, code: "W3A-busy", detail: null };
       }
     } catch (e: unknown) {
       // An orphaned-credential refusal (#255) is explained by the modal's
       // one-shot notice — don't repeat it here. Closing Web3Auth's own window
       // is a choice, not a failure: say nothing (#803).
       if (isWeb3AuthSignInError(e) && e.cancelled) {
-        error = null;
+        failure = null;
       } else if (!isOrphanedCredentialError(e)) {
-        error = e instanceof Error ? e.message.slice(0, 160) : SIGN_IN_FAILED_MESSAGE;
-        if (isSignInFailedError(e)) errorCode = e.code;
+        failure = signInFailureView(e);
       }
     } finally {
       onsettle?.();
@@ -106,11 +105,10 @@
         Continue with Email
       {/if}
     </button>
-    {#if error}
-      <p class="error">{error}</p>
-      {#if errorCode}
-        <p class="error-code">Code: <code>{errorCode}</code></p>
-      {/if}
+    {#if failure}
+      {#key failure}
+        <SignInFailureDetails {failure} />
+      {/key}
       {#if escape}
         <a class="open-btn" href={escape.href}>{escapeLabel}</a>
       {/if}
@@ -194,26 +192,6 @@
     color: var(--text-muted);
     margin: 0;
     text-align: center;
-  }
-
-  .error {
-    color: var(--error);
-    font-size: 0.875rem;
-    margin: 0;
-    text-align: center;
-  }
-
-  .error-code {
-    margin: 0;
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    text-align: center;
-    overflow-wrap: anywhere;
-  }
-
-  .error-code code {
-    user-select: all;
-    -webkit-user-select: all;
   }
 
   .spinner {

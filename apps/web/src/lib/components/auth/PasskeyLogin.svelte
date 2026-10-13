@@ -1,11 +1,18 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { isPasskeySupported, PasskeyBrowserRefusedError } from "../../auth/passkey-account.js";
+  import {
+    isPasskeySupported,
+    PasskeyBrowserRefusedError,
+    PasskeyPrfUnsupportedError,
+  } from "../../auth/passkey-account.js";
   import {
     appleTouchDevice,
     passkeyCreateRefusedAdvice,
+    passkeyNoSecretAdvice,
     passkeyRefusalAdvice,
   } from "../../auth/passkey-refusal-copy.js";
+  import { PASSKEY_PROVIDERS } from "@woco/shared";
+  import PasskeyReadyNotice from "./PasskeyReadyNotice.svelte";
   import { onMount } from "svelte";
   import { PASSKEY_ONLY_RECOVERY_NOTE } from "../../auth/organiser-account.js";
 
@@ -87,6 +94,12 @@
         // After a sheet (a quick refusal is noSheet, above): on an iPhone or iPad this
         // is also what "no password manager set up for passkeys" ends in.
         error = passkeyCreateRefusedAdvice(apple, organiser);
+      } else if (mode === "create" && res.error instanceof PasskeyPrfUnsupportedError && (apple = appleDevice())) {
+        // Face ID done, the passkey SAVED, in a manager that can't give the secret:
+        // name it, and steer the retry to Apple's Passwords.
+        const id = res.error.provider;
+        const known = id && id in PASSKEY_PROVIDERS ? { id, name: PASSKEY_PROVIDERS[id as keyof typeof PASSKEY_PROVIDERS].name } : null;
+        error = passkeyNoSecretAdvice(apple, known, organiser);
       } else if (res.error instanceof PasskeyBrowserRefusedError) {
         error = passkeyRefusalAdvice(res.error.host, organiser);
       } else {
@@ -124,6 +137,8 @@
         Sign in with Passkey
       {/if}
     </button>
+
+    <PasskeyReadyNotice invite={organiser} />
 
     <!-- Always present, always secondary. `hasStoredPasskeyCredential` only
          knows about THIS device, so it cannot tell a brand-new user from a

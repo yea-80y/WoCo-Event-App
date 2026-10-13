@@ -116,7 +116,7 @@ test("both places that build the SDK go through the adapter", () => {
   const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
   const account = read("../src/lib/auth/web3auth-account.ts");
   const backup = read("../src/lib/wallet/backup-signer.ts");
-  assert.ok(account.includes("adaptWeb3AuthSdk(new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId))"));
+  assert.ok(account.includes("adaptWeb3AuthSdk(new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId, uxMode))"));
   assert.ok(backup.includes("adaptWeb3AuthSdk(new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId))"));
   assert.equal(account.match(/new mod\.Web3Auth\(/g)?.length, 1);
   assert.equal(backup.match(/new mod\.Web3Auth\(/g)?.length, 1);

@@ -45,6 +45,7 @@
 
 import { FEATURES } from "@woco/shared";
 import { restoreEscapedRoute } from "../browser/in-app-route.js";
+import { installWeb3AuthRedirectCapture } from "../auth/web3auth-redirect.js";
 
 export type Surface = "neutral" | "attendee" | "creator";
 
@@ -261,6 +262,9 @@ function update() {
 }
 
 if (typeof window !== "undefined") {
+  // A Web3Auth redirect sign-in coming back (iPhone/iPad): its result leaves the
+  // URL before anything reads it, and the route it started from takes its place.
+  installWeb3AuthRedirectCapture(window);
   // A page reopened from a social app's browser on Android carries its route in
   // the query (an intent URL cannot hold a fragment) - put it back first (#812).
   restoreEscapedRoute(window.location, (url) =>
