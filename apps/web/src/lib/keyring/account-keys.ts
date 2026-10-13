@@ -250,9 +250,15 @@ export type RingChange = { prev: string | null; next: string; chain: AccountChai
  * includes THIS passkey (a device that changes the account must be able to open its
  * keys), never re-seals to a key that is off the list, and is built only from the
  * CONFIRMED current generation: a device behind refuses rather than fork the ring.
- * `add`: members of passkeys being added whose keys are on this device.
+ * `add`: members of passkeys being added whose keys are on this device. `coOwnerAdded`:
+ * a passkey is joining whose member is NOT here (a linked device) - this one still goes
+ * in, or the newcomer's own enrolment would make a ring without it and lock it out.
  */
-export async function ringForChange(h: AccountKeysHost, add: KeyRingMember[]): Promise<RingChange | null> {
+export async function ringForChange(
+  h: AccountKeysHost,
+  add: KeyRingMember[],
+  opts: { coOwnerAdded?: boolean } = {},
+): Promise<RingChange | null> {
   if (!h.isPasskey()) return null;
   await h.requireCurrentKeys({ prompt: true });
   const u = h.unlocked();
@@ -275,7 +281,7 @@ export async function ringForChange(h: AccountKeysHost, add: KeyRingMember[]): P
   const listed = root === "weighted" ? await kernel.readCoOwners(u.parent) : [self];
   if (listed === "error" || listed === null) throw new Error(keysVerdictMessage("unknown"));
   // One passkey and nothing added: no ring is needed until the account has a second.
-  if (add.length === 0 && root !== "weighted") return null;
+  if (add.length === 0 && root !== "weighted" && !opts.coOwnerAdded) return null;
   const inRing = new Set(current?.ring.entries.map((e) => e.statement.coOwner) ?? []);
   const selfMember = inRing.has(self) ? [] : [await members.memberOf(u.parent, { address: self, privateKey: ownerKey, prfSecret: prf })];
   if (add.length === 0 && selfMember.length === 0) return null;
@@ -309,7 +315,15 @@ export async function adoptOwnRing(h: AccountKeysHost, chain: AccountChain): Pro
  * a failure is retried at the next unlock. Without an entry, the next removal would leave
  * this device without the account's new keys.
  */
-export async function enrolSelfInKeyRing(h: AccountKeysHost): Promise<void> {
+export function enrolSelfInKeyRing(h: AccountKeysHost): Promise<void> {
+  // A link's sign-in starts this twice at once (the link and the unlock): the second
+  // would store another ring and spend a sponsored op only to fail the anchor's swap.
+  return (enrolling ??= enrolSelf(h).finally(() => (enrolling = null)));
+}
+
+let enrolling: Promise<void> | null = null;
+
+async function enrolSelf(h: AccountKeysHost): Promise<void> {
   try {
     if (!h.isPasskey() || h.deviceRole() || !(await h.currentKeysConfirmed())) return;
     const ring = await ringForChange(h, []);
@@ -513,15 +527,17 @@ async function notePendingRemoval(h: AccountKeysHost, seedAddr: string, parent: 
 /**
  * The account's passkeys with no entry in its key ring - the ones a removal now would
  * leave without the new keys (they would need setting up again). Best effort: a hint
- * for the confirm screen, never a gate; [] when anything is unreadable.
+ * for the confirm screen, never a gate; [] when anything is unreadable. `withRing`: only
+ * once the account has a ring - before one, every passkey holds the seed and none is
+ * missing anything yet.
  */
-export async function passkeysWithoutKeys(h: AccountKeysHost): Promise<string[]> {
+export async function passkeysWithoutKeys(h: AccountKeysHost, opts: { withRing?: boolean } = {}): Promise<string[]> {
   try {
     const parent = h.parent()?.toLowerCase();
     const self = h.self();
     if (!h.isPasskey() || !parent || !self) return [];
     const ref = await readAnchor(h, parent);
-    if (ref === "error") return [];
+    if (ref === "error" || (ref === null && opts.withRing)) return [];
     const [{ fetchKeyRing }, { readCoOwners }] = await Promise.all([import("./ring-read.js"), import("../auth/kernel-account.js")]);
     const list = await readCoOwners(parent);
     if (list === "error" || list === null) return [];

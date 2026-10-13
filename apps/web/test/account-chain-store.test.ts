@@ -72,7 +72,9 @@ test("signing and sealing demand the confirmed generation; silent paths sign not
 test("a device behind catches up only with the passkey, and enrols itself only on a confirmed verdict", () => {
   assert.match(body("async function _requireCurrentKeys"), /if \(_keysVerdict === "behind" && opts\.prompt\) await \(await _keys\(\)\)\.catchUp\(_keysHost\(\)\);/);
   assert.match(kbody("export async function catchUp"), /await h\.ensurePasskeyKey\(\);[\s\S]*if \(verdict === "ok"\) h\.commitSigner\(\);/);
-  assert.match(kbody("export async function enrolSelfInKeyRing"), /if \(!h\.isPasskey\(\) \|\| h\.deviceRole\(\) \|\| !\(await h\.currentKeysConfirmed\(\)\)\) return;/);
+  assert.match(kbody("async function enrolSelf("), /if \(!h\.isPasskey\(\) \|\| h\.deviceRole\(\) \|\| !\(await h\.currentKeysConfirmed\(\)\)\) return;/);
+  // A link's sign-in starts it twice at once: one ring, one sponsored op.
+  assert.match(kbody("export function enrolSelfInKeyRing"), /return \(enrolling \?\?= enrolSelf\(h\)\.finally\(\(\) => \(enrolling = null\)\)\);/);
   assert.match(kbody("export async function rotateOnRemovalFor"), /^[^\n]*\n\s*await h\.requireCurrentKeys\(\{ prompt: true \}\);/);
 });
 
@@ -109,6 +111,9 @@ test("adding or linking: the ring includes this device, is built from the CONFIR
   assert.match(r, /if \(ref !== held\) throw new Error\(keysVerdictMessage\("behind"\)\);/);
   assert.match(r, /onChain: \[\.\.\.listed, \.\.\.add\.map\(\(m\) => m\.statement\.coOwner\)\]/);
   assert.match(r, /const selfMember = inRing\.has\(self\) \? \[\] : \[await members\.memberOf\(/);
+  // A first link: the linked device's member is not here, but this device still goes in -
+  // else the newcomer's own enrolment makes a ring without it.
+  assert.match(r, /if \(add\.length === 0 && root !== "weighted" && !opts\.coOwnerAdded\) return null;/);
 });
 
 test("a linked device stores the handed-over secrets BEFORE it signs in, then adds itself", () => {
