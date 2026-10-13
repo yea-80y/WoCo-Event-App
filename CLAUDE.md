@@ -533,7 +533,7 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     surplus. Losing it costs one full rescan of our fees and re-opens operator resolutions; never pays)
   pending-refunds.json (#367 — auto-refunds Stripe refused to create; losing it = a buyer
     charged with no ticket and no refund, and no alarm; `/api/health` `pendingRefunds`)
-  marketing-consent.json (Art. 7(1) evidence for checkout opt-ins)
+  marketing-consent.json (Art. 7(1) evidence for checkout opt-ins; unreadable = never overwritten, `/api/health` `marketingConsent` alarm, #882)
   profile-names.json (#464 — which sub-ENS name is an account's PROFILE name, and
     its rename clock. The role is unknowable from chain: a registry says who HOLDS
     a name, never what it is FOR, and the profile feed is client-signed. Losing it
@@ -546,7 +546,7 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     the ONLY server-visible proof a broadcast recipient holds a ticket. Losing it means no
     organiser can tell attendees their event is cancelled, and it CANNOT be rebuilt: the
     plaintext address is never stored anywhere we could re-derive it from)
-  marketing-suppression.json (losing it = emailing unsubscribers, a legal breach)
+  marketing-suppression.json (losing it = emailing unsubscribers, a legal breach; unreadable = never overwritten, sends refuse, `/api/health` `marketingSuppression` alarm, #882)
   sender-pacing/ (#619 — each sender's ramp, 7-day bounce/complaint counts, stops and the
     proven set. Losing it FORGETS A STOP and lets a stopped organiser mail again)
   marketing-lists.json · marketing-domains.json · marketing-send-log.json

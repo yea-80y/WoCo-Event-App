@@ -86,9 +86,11 @@ for (const [label, contents] of [
     assert.throws(() => suppression.marksFor(H2), Unavailable);
 
     const before = persist.persistFailureCount();
-    suppression.suppressOrg(H2, ORG, "unsub");
-    suppression.suppressGlobal(H2, "bounce");
+    assert.equal(suppression.suppressOrg(H2, ORG, "unsub"), false);
+    assert.equal(suppression.suppressGlobal(H2, "bounce"), false);
     assert.equal(persist.persistFailureCount(), before + 2, "each refused write counts as a failed one");
+    assert.equal(suppression.suppressOrg(H2, ORG, "unsub"), false, "the mark left in memory is not reported kept");
+    assert.equal(suppression.suppressGlobal(H2, "bounce"), false);
     assert.ok(persist.persistHealth().failing.some((f) => f.store === "suppression"));
     assert.equal(readFileSync(SUPPRESSION, "utf-8"), contents, "the operator's copy is untouched");
   });
@@ -105,8 +107,12 @@ test("suppression: a missing file is an empty store that takes writes", () => {
   assert.deepEqual(suppression.suppressionStoreHealth(), { ok: true, unreadable: false });
   assert.equal(suppression.isSuppressed(H, ORG), false);
   assert.deepEqual(suppression.suppressionSources(H, ORG), []);
-  suppression.suppressOrg(H, ORG, "unsub");
-  assert.equal(JSON.parse(readFileSync(SUPPRESSION, "utf-8"))[H].orgs[ORG].source, "unsub");
+  assert.equal(suppression.suppressOrg(H, ORG, "unsub"), true);
+  assert.equal(suppression.suppressOrg(H, ORG, "unsub"), true, "an existing mark on disk is reported kept");
+  assert.equal(suppression.suppressGlobal(H, "unsub_all"), true);
+  const onDisk = JSON.parse(readFileSync(SUPPRESSION, "utf-8"));
+  assert.equal(onDisk[H].orgs[ORG].source, "unsub");
+  assert.equal(onDisk[H].global.source, "unsub_all");
 });
 
 test("suppression: a valid file loads", () => {
@@ -203,6 +209,8 @@ for (const [label, contents] of [
     assert.equal(consent.consentStoreReadable(), false);
     assert.deepEqual(consent.consentStoreHealth(), { ok: false, unreadable: true });
 
+    assert.throws(() => consent.consentsForEmailHash(H), consent.ConsentStoreUnavailableError);
+
     const before = persist.persistFailureCount();
     consent.recordConsent(H2, ORG, RECORD);
     assert.equal(persist.persistFailureCount(), before + 1, "a refused write counts as a failed one");
@@ -235,6 +243,26 @@ test("consent unreadable: an erasure still records the mark first, and is not re
   assert.equal(result.persisted, false);
   assert.equal(JSON.parse(readFileSync(SUPPRESSION, "utf-8"))[H].orgs[ORG].source, "manual");
   assert.equal(readFileSync(CONSENT, "utf-8"), "{ truncated");
+});
+
+// ── Art. 15 access report ─────────────────────────────────────────────────
+
+test("an access report refuses rather than say 'none' from an unreadable store", () => {
+  writeFileSync(CONSENT, "{ truncated");
+  assert.throws(() => sr.reportSubject(H), consent.ConsentStoreUnavailableError);
+  assert.throws(() => sr.reportSubject(H, ORG), consent.ConsentStoreUnavailableError);
+
+  reset();
+  writeFileSync(SUPPRESSION, "{ truncated");
+  assert.throws(() => sr.reportSubject(H), Unavailable);
+});
+
+test("an access report from readable stores is unchanged", () => {
+  writeFileSync(CONSENT, JSON.stringify({ [ORG]: { [H]: RECORD } }));
+  writeFileSync(SUPPRESSION, JSON.stringify({ [H]: { orgs: { [ORG]: MARK } } }));
+  const report = sr.reportSubject(H);
+  assert.deepEqual(report.consents, [{ org: ORG, record: RECORD }]);
+  assert.deepEqual(report.marks, { orgs: { [ORG]: MARK } });
 });
 
 // ── /api/health ───────────────────────────────────────────────────────────

@@ -19,8 +19,9 @@
  *
  * PRESENT BUT UNREADABLE (#882): never written over, which would destroy every
  * other record's evidence; reads answer from an empty store, so "no record" then
- * means UNKNOWN, never absent (`consentStoreReadable`), and `/api/health`
- * `marketingConsent` alarms until an operator restores it and restarts.
+ * means UNKNOWN, never absent (`consentStoreReadable`), the subject-access read
+ * throws, and `/api/health` `marketingConsent` alarms until an operator restores
+ * it and restarts.
  */
 
 import { readFileSync } from "node:fs";
@@ -64,6 +65,14 @@ function refuseFile(why: string): void {
     `[consent] ALARM: marketing-consent.json ${why} - consent records read as unknown, and the file ` +
       "will NOT be written until it is restored and the server restarted (/api/health marketingConsent)",
   );
+}
+
+/** Thrown by the subject-access read: an Art. 15 answer of "none" from an unreadable file would be false. */
+export class ConsentStoreUnavailableError extends Error {
+  constructor() {
+    super("The marketing consent records cannot be read right now - restore marketing-consent.json first");
+    this.name = "ConsentStoreUnavailableError";
+  }
 }
 
 const isObject = (v: unknown): boolean => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -145,6 +154,7 @@ export function consentedSubset(organiserAddress: string, hashes: string[]): str
 /** Subject-access support: every organiser this address consented to. */
 export function consentsForEmailHash(emailHash: string): Array<{ org: string; record: ConsentRecord }> {
   ensureLoaded();
+  if (fileUnreadable) throw new ConsentStoreUnavailableError();
   const out: Array<{ org: string; record: ConsentRecord }> = [];
   for (const [org, byHash] of Object.entries(consents)) {
     const record = byHash[emailHash];

@@ -99,10 +99,16 @@ function ensureLoaded(): void {
   }
 }
 
+/** Memory is ahead of disk: the last write failed or was refused. A success writes the whole map. */
+let unpersisted = false;
+
 function persistToDisk(): boolean {
   // Writing now would replace the operator's only copy.
-  if (fileUnreadable) return recordRefusedWrite(STORE_FILE, "suppression");
-  return writeJsonAtomic(STORE_FILE, Object.fromEntries(entries), "suppression");
+  const ok = fileUnreadable
+    ? recordRefusedWrite(STORE_FILE, "suppression")
+    : writeJsonAtomic(STORE_FILE, Object.fromEntries(entries), "suppression");
+  unpersisted = !ok;
+  return ok;
 }
 
 function getOrCreate(emailHash: string): SuppressionEntry {
@@ -122,13 +128,16 @@ function getOrCreate(emailHash: string): SuppressionEntry {
  *   later consent: stamping the write time instead of the decision time would
  *   make a card sale (recorded in the Stripe webhook, minutes later) look newer
  *   than it is and silently swallow a genuine opt-in.
+ * @returns false when the mark is not on disk (the write failed, or an unreadable
+ *   file refused it, #882): it would not survive a restart, so a caller must not
+ *   tell anyone they are unsubscribed.
  */
 export function suppressOrg(
   emailHash: string,
   organiserAddress: string,
   source: SuppressSource,
   ts: string = new Date().toISOString(),
-): void {
+): boolean {
   ensureLoaded();
   const entry = getOrCreate(emailHash);
   const org = organiserAddress.toLowerCase();
@@ -138,18 +147,26 @@ export function suppressOrg(
   // must be able to suppress again, or the person is stuck opted-in.
   if (!suppresses(entry.orgs[org])) {
     entry.orgs[org] = { ts, source };
-    persistToDisk();
+  } else if (!unpersisted) {
+    return true;
   }
+  // An existing mark is retried rather than reported: it may be the one a failed write left in memory.
+  return persistToDisk();
 }
 
-/** Suppress this address for ALL marketing via the platform (opt-all, bounce, complaint). */
-export function suppressGlobal(emailHash: string, source: SuppressSource): void {
+/**
+ * Suppress this address for ALL marketing via the platform (opt-all, bounce, complaint).
+ * @returns false when the mark is not on disk, as `suppressOrg`.
+ */
+export function suppressGlobal(emailHash: string, source: SuppressSource): boolean {
   ensureLoaded();
   const entry = getOrCreate(emailHash);
   if (!suppresses(entry.global)) {
     entry.global = { ts: new Date().toISOString(), source };
-    persistToDisk();
+  } else if (!unpersisted) {
+    return true;
   }
+  return persistToDisk();
 }
 
 /**
@@ -290,5 +307,6 @@ export function suppressionStoreHealth(): { ok: boolean; unreadable: boolean } {
 export function __resetSuppressionStoreForTest(): void {
   entries.clear();
   fileUnreadable = null;
+  unpersisted = false;
   loaded = false;
 }
