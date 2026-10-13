@@ -145,14 +145,22 @@ export async function uploadToBytes(
           );
         }
         const result = await withTimeout(
-          getBee().uploadData(batchId, bytes, {
-            deferred: true,
-            // Erasure coding (marketing lists use STRONG). Etherna path ignores
-            // the option — those callers never pass it.
-            ...(options?.redundancyLevel !== undefined
-              ? { redundancyLevel: options.redundancyLevel }
-              : {}),
-          }),
+          getBee().uploadData(
+            batchId,
+            bytes,
+            {
+              deferred: true,
+              // Erasure coding (marketing lists use STRONG). Etherna path ignores
+              // the option — those callers never pass it.
+              ...(options?.redundancyLevel !== undefined
+                ? { redundancyLevel: options.redundancyLevel }
+                : {}),
+            },
+            // bee-js drops a falsy level, so OFF never reaches bee on its own - and bee
+            // 2.8 erasure-codes a multi-chunk upload that names no level, which gives a
+            // different reference than the plain tree a caller computed (#186 key ring).
+            options?.redundancyLevel === 0 ? { headers: { "swarm-redundancy-level": "0" } } : undefined,
+          ),
           BEE_CALL_TIMEOUT_MS,
           "bytes upload",
         );

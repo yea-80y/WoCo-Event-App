@@ -15,6 +15,7 @@ import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { currentRing, MAX_KEY_RING_BYTES } from "../lib/keyring/current-ring.js";
 import { jsonBodyLimit } from "../lib/http/body-limit.js";
 import { checkAttendeeGate } from "../lib/gate/check.js";
+import { RedundancyLevel } from "@ethersphere/bee-js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { encodeKeyRing, parseKeyRing } from "@woco/shared/keyring/ring";
@@ -93,14 +94,17 @@ keyring.post("/ring", jsonBodyLimit(MAX_KEY_RING_BYTES * 2), requireAuth, async 
   try {
     const chunks = bytesTreeChunks(bytes);
     const expected = chunks.at(-1)!.address;
-    const ref = (await uploadToBytes(bytes)).toLowerCase().replace(/^0x/, "");
+    // The plain tree, never erasure-coded: every reader verifies the ring against it.
+    const ref = (await uploadToBytes(bytes, undefined, { redundancyLevel: RedundancyLevel.OFF })).toLowerCase().replace(/^0x/, "");
     if (ref !== expected) {
       console.error(`[keyring] ring upload for ${account} returned ${ref}, expected ${expected}`);
-      return c.json({ ok: false, error: "The ring could not be stored - try again." }, 502);
+      // 503, never 502: Cloudflare replaces an origin 502 with its own page, which has no
+      // CORS headers, so the browser would see only "Failed to fetch".
+      return c.json({ ok: false, error: "The ring could not be stored - try again." }, 503);
     }
     const whitelist = chunks.map((ch) => ch.address);
     if (orderKey) {
-      const keyRef = (await uploadToBytes(orderKey)).toLowerCase().replace(/^0x/, "");
+      const keyRef = (await uploadToBytes(orderKey, undefined, { redundancyLevel: RedundancyLevel.OFF })).toLowerCase().replace(/^0x/, "");
       if (keyRef !== ringOrderKeyRef) throw new Error(`order key upload returned ${keyRef}`);
       whitelist.push(keyRef);
     }
@@ -108,7 +112,7 @@ keyring.post("/ring", jsonBodyLimit(MAX_KEY_RING_BYTES * 2), requireAuth, async 
     return c.json({ ok: true, data: { ref } });
   } catch (err) {
     console.error("[keyring] ring store failed:", (err as Error)?.message ?? err);
-    return c.json({ ok: false, error: "The ring could not be stored - try again." }, 502);
+    return c.json({ ok: false, error: "The ring could not be stored - try again." }, 503);
   }
 });
 
