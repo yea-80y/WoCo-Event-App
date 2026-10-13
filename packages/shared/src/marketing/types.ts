@@ -133,12 +133,19 @@ export interface MarketingCheckResult {
   /** Normalized emails already present in the stored list */
   alreadyInList: string[];
   /**
-   * Normalized emails holding a consent record for this organiser — they ticked
+   * Normalized emails holding a CONSENT record for this organiser — they ticked
    * the opt-in themselves and the Art. 7(1) evidence exists server-side. Absent
    * from an older server, which is why {@link contactConsentState} treats a
    * missing entry as `imported` rather than as a refusal.
    */
   consented?: string[];
+  /**
+   * Normalized emails holding a SOFT OPT-IN record for this organiser — they
+   * bought a ticket, were shown "Don't email me" and left it unticked. The
+   * wording and date are recorded; mail them only about the organiser's own
+   * similar events. Disjoint from `consented`.
+   */
+  softOptIn?: string[];
   /**
    * Normalized emails this organiser has already reached through the platform
    * without a bounce (or who opted in at their checkout). They go straight
@@ -151,23 +158,31 @@ export interface MarketingCheckResult {
 /**
  * How strong the permission behind one contact is.
  *
- * Three states, not two. `imported` is the one that matters and the one a binary
+ * Four states, not two. `imported` is the one that matters and the one a binary
  * subscribed/unsubscribed model hides: those contacts are mailable, but only on
  * the strength of the warranty the organiser gave at import — there is no
  * per-person evidence. Klaviyo shows the same middle state and tells the sender
  * to exercise caution; the organiser cannot exercise anything they cannot see.
+ * `soft-opt-in` (2026-10-14) is a buyer who was offered "Don't email me" at
+ * checkout and left it alone: evidence exists, but it covers the organiser's own
+ * similar events only, not "opted in".
  */
-export type ContactConsentState = "opted-in" | "imported" | "unsubscribed";
+export type ContactConsentState = "opted-in" | "soft-opt-in" | "imported" | "unsubscribed";
 
-/** Suppression wins over everything: an unsubscribe outranks any earlier grant. */
+/**
+ * Suppression wins over everything: an unsubscribe outranks any earlier grant.
+ * Then the stronger basis: consent over soft opt-in.
+ */
 export function contactConsentState(
   email: string,
   suppressed: ReadonlySet<string>,
   consented: ReadonlySet<string>,
+  softOptIn: ReadonlySet<string>,
 ): ContactConsentState {
   const key = email.trim().toLowerCase();
   if (suppressed.has(key)) return "unsubscribed";
-  return consented.has(key) ? "opted-in" : "imported";
+  if (consented.has(key)) return "opted-in";
+  return softOptIn.has(key) ? "soft-opt-in" : "imported";
 }
 
 export interface MarketingBroadcastResult {

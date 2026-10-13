@@ -29,12 +29,15 @@
     suppressedEmails: Set<string>;
     /** Contacts already reached through WoCo — they skip paced sending (#619). */
     provenEmails?: Set<string>;
+    /** Buyers who left "Don't email me" unticked at checkout - the soft opt-in.
+     *  It covers the organiser's own similar events only. */
+    softOptInEmails?: Set<string>;
     /** Preselects the event picker once events load — the post-publish
      *  "Announce to your audience" deep-link (?announce=eventId). */
     initialEventId?: string;
   }
 
-  let { contacts, suppressedEmails, provenEmails = new Set(), initialEventId }: Props = $props();
+  let { contacts, suppressedEmails, provenEmails = new Set(), softOptInEmails = new Set(), initialEventId }: Props = $props();
 
   let fromName = $state("");
   let subject = $state("");
@@ -152,6 +155,11 @@
     recipients.filter((r) => provenEmails.has(r.email.trim().toLowerCase())).length,
   );
   const newCount = $derived(recipients.length - provenCount);
+  /** Recipients on the soft opt-in: the organiser warranted (Organiser Terms §5)
+   *  that they email them only about their own similar events, so say so here. */
+  const softOptInCount = $derived(
+    recipients.filter((r) => softOptInEmails.has(r.email.trim().toLowerCase())).length,
+  );
 
   const HOUR = 60 * 60_000;
   const paceLine = $derived.by(() => {
@@ -376,6 +384,14 @@
     </p>
   {/if}
 
+  {#if softOptInCount > 0}
+    <p class="pace own-events-only">
+      <strong>Only about your own events:</strong>
+      {softOptInCount.toLocaleString()} {softOptInCount === 1 ? "person" : "people"} here bought a ticket and didn't opt
+      out, rather than opting in - email them about your own similar events and nothing else.
+    </p>
+  {/if}
+
   {#if blockedReason}
     <p class="blocked">{blockedReason}</p>
   {/if}
@@ -414,9 +430,9 @@
   </label>
 
   <p class="footer-note">
-    Every email automatically carries a "you opted in to updates from {fromName.trim() || "your brand"}"
-    line, an unsubscribe link, and our postal address — the three things the law requires.
-    You don't need to add any of them.
+    Every email automatically carries a line saying why the person is getting it (they opted in to updates
+    from {fromName.trim() || "your brand"}, or bought a ticket and didn't opt out), an unsubscribe link, and
+    our postal address - the three things the law requires. You don't need to add any of them.
   </p>
 
   {#if showPreview}

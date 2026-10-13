@@ -2,10 +2,11 @@
  * Turning ticket buyers into marketing contacts — pure, so the merge rule can
  * be tested without a browser.
  *
- * Only buyers who ticked the opt-in themselves get here. The caller decrypts
- * claim data in the organiser's browser (the server holds no plaintext) and
- * asks `/api/marketing/check` which of those addresses carry a consent record;
- * this module does the shaping and the merge.
+ * Only buyers who said yes at checkout get here: they ticked the opt-in, or
+ * (in own-events mode) were shown "Don't email me" and left it alone - the soft
+ * opt-in. The caller decrypts claim data in the organiser's browser (the server
+ * holds no plaintext) and asks `/api/marketing/check` which of those addresses
+ * carry a record of either basis; this module does the shaping and the merge.
  */
 
 import { isKeptOnList, orderFieldKind, type MarketingContact, type OrderField } from "@woco/shared";
@@ -41,25 +42,25 @@ export interface DrainOptions {
   eventTitle: string;
   eventDate?: string;
   addedAt: string;
-  /** Lowercased addresses holding a consent record for this organiser. */
-  consented: ReadonlySet<string>;
+  /** Lowercased addresses holding a checkout record for this organiser: consent or soft opt-in. */
+  recorded: ReadonlySet<string>;
 }
 
 /**
- * Build contacts from decrypted claims, keeping only those who opted in.
+ * Build contacts from decrypted claims, keeping only those with a record.
  *
  * De-duplicated on the lowercased address: one person buying four tickets to
  * the same event is one contact, not four.
  */
 export function buildAttendeeContacts(
   claims: readonly DecryptedClaim[],
-  { orderFields, eventTitle, eventDate, addedAt, consented }: DrainOptions,
+  { orderFields, eventTitle, eventDate, addedAt, recorded }: DrainOptions,
 ): MarketingContact[] {
   const byEmail = new Map<string, MarketingContact>();
 
   for (const claim of claims) {
     const email = claim.claimerEmail?.trim().toLowerCase();
-    if (!email || !consented.has(email) || byEmail.has(email)) continue;
+    if (!email || !recorded.has(email) || byEmail.has(email)) continue;
 
     const kept = keptAnswers(claim.fields, orderFields);
     byEmail.set(email, {
@@ -148,7 +149,7 @@ export interface DrainReport {
   updated: number;
 }
 
-/** Fold opted-in attendees into the stored list. */
+/** Fold attendees with a checkout record into the stored list. */
 export function applyDrain(
   existing: readonly MarketingContact[],
   incoming: readonly MarketingContact[],

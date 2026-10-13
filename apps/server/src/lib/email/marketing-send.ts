@@ -17,6 +17,8 @@ import { hashEmail } from "../event/claim-service.js";
 import { suppressionSources } from "../marketing/suppression-store.js";
 import { mayCrossSuppression } from "./service-notice-crossing.js";
 import { mintUnsubToken } from "../marketing/unsub-token.js";
+import { basisFor } from "../marketing/consent-store.js";
+import type { MarketingBasis } from "@woco/shared";
 
 /**
  * In-flight concurrency, NOT a rate limit. The account-wide messages/second cap
@@ -134,6 +136,8 @@ export interface MarketingSendOptions {
  */
 export interface MarketingSendDeps {
   send: (msg: OutboundEmail, opts?: SendEmailOptions) => Promise<void>;
+  /** The basis held for a recipient, so the footer says why they get it. Defaults to the consent store. */
+  basisOf?: (emailHash: string, organiserAddress: string) => MarketingBasis | null;
 }
 
 export async function sendMarketingBatch(
@@ -178,7 +182,9 @@ export async function sendMarketingBatch(
     email: string;
     emailHash: string;
     unsubUrl: string;
+    basis: MarketingBasis | null;
   }
+  const basisOf = deps.basisOf ?? basisFor;
   const prepared: Prepared[] = [];
   const seen = new Set<string>();
 
@@ -200,7 +206,7 @@ export async function sendMarketingBatch(
       result.crossed++;
     }
     const token = mintUnsubToken({ emailHash, organiserAddress });
-    prepared.push({ email: r.email, emailHash, unsubUrl: `${apiBase}/u/${token}` });
+    prepared.push({ email: r.email, emailHash, unsubUrl: `${apiBase}/u/${token}`, basis: basisOf(emailHash, organiserAddress) });
   }
 
   // Rendered once — the organiser's body is identical for every recipient;
@@ -212,7 +218,7 @@ export async function sendMarketingBatch(
     const chunk = prepared.slice(i, i + SEND_CHUNK);
     const settled = await Promise.allSettled(
       chunk.map(async (p) => {
-        const ctx = { displayName, unsubUrl: p.unsubUrl, postalAddress };
+        const ctx = { displayName, unsubUrl: p.unsubUrl, postalAddress, basis: p.basis };
         await deps.send(
           {
             from,

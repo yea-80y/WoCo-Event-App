@@ -5,12 +5,14 @@
    * The whole thing runs in the organiser's browser because it has to: the
    * server holds attendee emails only as ciphertext it cannot open, and consent
    * only as hashes. So the browser decrypts the claim data it already has the
-   * key for, asks which of those addresses carry a consent record, and merges
-   * the answer into the sealed list. Nothing new crosses the trust boundary.
+   * key for, asks which of those addresses carry a record, and merges the answer
+   * into the sealed list. Nothing new crosses the trust boundary.
    *
-   * Only buyers who ticked the opt-in are ever offered. Someone who bought a
-   * ticket and left the box alone is an attendee, not a marketing contact, and
-   * this screen must never be the thing that quietly promotes them.
+   * Only buyers with a record are ever offered: those who ticked the opt-in, and
+   * those who were shown "Don't email me" and left it alone (the soft opt-in,
+   * 2026-10-14). A buyer who left consent mode's box alone, or ticked "Don't
+   * email me", is an attendee, not a marketing contact, and this screen must
+   * never be the thing that quietly promotes them.
    */
   import type { MarketingContact, EventDirectoryEntry } from "@woco/shared";
   import { getEvent, getEventsByCreator, getEventOrders } from "../../api/events.js";
@@ -94,21 +96,21 @@
         return;
       }
 
-      const { consented = [] } = await checkMarketingEmails(emails);
-      const consentedSet = new Set(consented);
+      const { consented = [], softOptIn = [] } = await checkMarketingEmails(emails);
+      const recorded = new Set([...consented, ...softOptIn]);
 
       const incoming = buildAttendeeContacts(claims, {
         orderFields: event.orderFields ?? [],
         eventTitle: ev.title,
         eventDate: ev.startDate,
         addedAt: new Date().toISOString(),
-        consented: consentedSet,
+        recorded,
       });
 
       report = {
         ...applyDrain(contacts, incoming),
         eventTitle: ev.title,
-        skipped: emails.length - consentedSet.size,
+        skipped: emails.length - recorded.size,
       };
     } catch (err) {
       error = err instanceof Error ? err.message : "Could not read attendees.";
@@ -129,10 +131,11 @@
   }
 </script>
 
-<section class="drain" aria-label="Add attendees who opted in">
+<section class="drain" aria-label="Add attendees who said yes at checkout">
   <p class="lede">
-    Buyers who ticked the marketing box at checkout can join your audience. Everyone else
-    stays out — buying a ticket is not permission to market to someone.
+    Buyers who said yes to your emails at checkout can join your audience: those who ticked
+    "Email me", and, if you only email about your own events, those who didn't tick
+    "Don't email me". Everyone who said no stays out.
   </p>
 
   {#if loading}
@@ -166,9 +169,9 @@
         <p class="muted">
           {#if report.skipped > 0}
             {report.skipped}
-            {report.skipped === 1 ? "buyer" : "buyers"} did not opt in, so they stay out of your audience.
+            {report.skipped === 1 ? "buyer" : "buyers"} said no to your emails, so they stay out of your audience.
           {:else}
-            Everyone who opted in is already on your list.
+            Everyone who said yes is already on your list.
           {/if}
         </p>
       {:else}
@@ -179,7 +182,7 @@
         </p>
         {#if report.skipped > 0}
           <p class="muted">
-            {report.skipped} {report.skipped === 1 ? "buyer" : "buyers"} did not opt in and stay out.
+            {report.skipped} {report.skipped === 1 ? "buyer" : "buyers"} said no to your emails and stay out.
           </p>
         {/if}
         <div class="row">
