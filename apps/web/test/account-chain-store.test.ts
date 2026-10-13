@@ -76,6 +76,15 @@ test("a device behind catches up only with the passkey, and enrols itself only o
   // A link's sign-in starts it twice at once: one ring, one sponsored op.
   assert.match(kbody("export function enrolSelfInKeyRing"), /return \(enrolling \?\?= enrolSelf\(h\)\.finally\(\(\) => \(enrolling = null\)\)\);/);
   assert.match(kbody("export async function rotateOnRemovalFor"), /^[^\n]*\n\s*await h\.requireCurrentKeys\(\{ prompt: true \}\);/);
+  // The confirm's own unlock may start an enrolment from the same anchor: it lands first,
+  // and the removal then reads the chain it left (Fable sign-off, PR #881).
+  const rot = kbody("export async function rotateOnRemovalFor");
+  const wait = rot.indexOf("if (enrolling) await enrolling.catch(() => {});");
+  assert.ok(wait > rot.indexOf("await h.requireCurrentKeys(") && wait < rot.indexOf("const u = h.unlocked();"));
+  // An enrolment never names its ring on another account's Kernel.
+  const en = kbody("async function enrolSelf(");
+  const guard = en.indexOf("if (!kernel || !parent || gen !== h.lockGen() || h.unlocked()?.parent !== parent) return;");
+  assert.ok(en.indexOf("const gen = h.lockGen();") >= 0 && guard > en.indexOf("await h.ensureKernel();") && guard < en.indexOf("setKeyRingAlone("));
 });
 
 test("a cached signer signs only for the ring it was committed under", () => {

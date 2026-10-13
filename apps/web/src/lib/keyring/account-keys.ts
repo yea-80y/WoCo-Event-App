@@ -324,13 +324,17 @@ export function enrolSelfInKeyRing(h: AccountKeysHost): Promise<void> {
 let enrolling: Promise<void> | null = null;
 
 async function enrolSelf(h: AccountKeysHost): Promise<void> {
+  // A sign-out or another account signing in meanwhile: the Kernel built below would be
+  // THAT account's, and naming this account's ring on it leaves it unreadable.
+  const gen = h.lockGen();
+  const parent = h.unlocked()?.parent;
   try {
     if (!h.isPasskey() || h.deviceRole() || !(await h.currentKeysConfirmed())) return;
     const ring = await ringForChange(h, []);
     if (!ring) return;
     await h.ensureKernel();
     const kernel = h.kernel();
-    if (!kernel) return;
+    if (!kernel || !parent || gen !== h.lockGen() || h.unlocked()?.parent !== parent) return;
     const { setKeyRingAlone } = await import("../auth/kernel-account.js");
     const res = await setKeyRingAlone(kernel, { prev: ring.prev, next: ring.next });
     if (res.confirmed) await adoptOwnRing(h, ring.chain);
@@ -469,6 +473,9 @@ async function removalLeftHere(h: AccountKeysHost, seedAddr: string): Promise<vo
  */
 export async function rotateOnRemovalFor(h: AccountKeysHost, going: string[], opts: { resume?: boolean } = {}): Promise<RotationResult> {
   await h.requireCurrentKeys({ prompt: true });
+  // The confirm before this re-unlocks, which may start this passkey's enrolment: both
+  // move the anchor from the same ring, so the slower would revert. Let it land first.
+  if (enrolling) await enrolling.catch(() => {});
   const u = h.unlocked();
   const prf = h.prf();
   const ownerKey = h.ownerKey();
