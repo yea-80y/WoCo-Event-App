@@ -145,6 +145,7 @@ export const APP_POLICY: Policy = {
   ],
   "frame-src": [
     "'self'", // builder live preview iframes ./multi-site.html
+    ASSET_ORIGIN, // …which resolve here on woco.eth.limo, like every other asset
     "https://auth.web3auth.io", // the login ceremony iframe/popup
     "https://verify.walletconnect.org", // hidden attestation iframe
     "https://connect-js.stripe.com", // embedded component iframes

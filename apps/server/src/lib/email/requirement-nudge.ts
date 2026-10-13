@@ -10,6 +10,7 @@
 
 import { getFromAddress } from "./client.js";
 import { sendEmail } from "./send.js";
+import { companyFooterHtml, companyFooterText } from "./company-footer.js";
 
 /**
  * Plain-English names for the requirements organisers actually hit.
@@ -103,6 +104,7 @@ export function buildRequirementNudge(nudge: RequirementNudge): { subject: strin
     <p style="max-width:480px;margin:16px auto 0;color:#6a6a64;font-size:12px;line-height:1.5;text-align:center;">
       Your money is safe. It stays with Stripe until this is resolved.
     </p>
+    <div style="max-width:480px;margin:0 auto;text-align:center;">${companyFooterHtml("#6a6a64")}</div>
   </td></tr></table>
 </body>
 </html>`;
@@ -114,7 +116,7 @@ ${textList}Add it from your payouts page — Stripe will ask you to sign in firs
 ${nudge.payoutsUrl}
 
 Your money is safe. It stays with Stripe until this is resolved.
-`;
+${companyFooterText()}`;
 
   return { subject, html, text };
 }

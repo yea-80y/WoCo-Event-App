@@ -1,6 +1,7 @@
+import { AccountKeysChangedError, AccountKeysUnavailableError, assertCurrentKeys } from "../lib/keyring/event-keys.js";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { Topic, Reference } from "@ethersphere/bee-js";
+import { FeedIndex, Topic, Reference } from "@ethersphere/bee-js";
 import { promises as fs } from "node:fs";
 import { existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
@@ -23,6 +24,7 @@ import {
   writeFeedPage,
   encodeJsonFeed,
   decodeJsonFeed,
+  resolveFeedNextIndex,
 } from "../lib/swarm/feeds.js";
 import {
   getBee,
@@ -52,8 +54,12 @@ import { sendEmail } from "../lib/email/send.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { checkSiteSubEns, type SiteDeploySubEns } from "../lib/sub-ens/site-pointer.js";
+import { recordNameTarget } from "../lib/sub-ens/name-targets.js";
 import { BEE_CALL_TIMEOUT_MS, BEE_COLLECTION_TIMEOUT_MS, withTimeout } from "../lib/swarm/upload-queue.js";
 import { clientIp } from "../lib/http/client-ip.js";
+import { companyFooterHtml } from "../lib/email/company-footer.js";
+import { freshWrittenEventsIndex, readEventsIndexForWrite, rememberWrittenEventsIndex, withEventsIndexLock } from "../lib/site/events-index.js";
+import { CONTROL_JSON_MAX_BYTES, SWARM_CHUNK_MAX_BYTES, errorSnippet, readCapped, readCappedJson } from "../lib/http/read-capped.js";
 
 const sitesRouter = new Hono();
 
@@ -67,11 +73,61 @@ const DIST_MULTISITE_PATH = resolve(__dirname, "../../../../apps/web/dist-multis
 /**
  * Config read for DISPLAY routes — follows the client-owned pointer (see
  * service.ts). Collapses "absent" and "unavailable" into null, which is right for
- * a page that renders nothing and wrong for anything deciding ownership. The two
- * ownership gates in this file call `resolveSiteConfig` directly for that reason.
+ * a page that renders nothing and wrong for anything deciding ownership. Every
+ * ownership decision in this file (publish, deploy, event add and remove) reads
+ * `resolveSiteConfig` directly for that reason.
  */
 async function readSiteConfig(siteId: string): Promise<Site | null> {
   return (await resolveSiteConfigOrNull(siteId))?.site ?? null;
+}
+
+/** An edit is refused rather than built on an index we could not read (events-index.ts). */
+const EVENTS_INDEX_UNREADABLE = "Could not read this site's events right now - please try again";
+
+/**
+ * Event add/remove: only the owner of an EXISTING site may change its index. A
+ * read that cannot decide is a retryable 503, not "Site not found" (#217).
+ */
+async function eventIndexOwnerRefusal(
+  siteId: string,
+  parentAddress: string,
+): Promise<{ status: 403 | 404 | 503; error: string } | null> {
+  const read = await resolveSiteConfig(siteId);
+  if (read.status === "unavailable") {
+    console.warn(`[sites/events] ownership undecidable for ${siteId}: ${read.reason}`);
+    return { status: 503, error: "Could not verify site ownership right now — please try again" };
+  }
+  if (read.status === "absent") return { status: 404, error: "Site not found" };
+  if (read.site.ownerAddress.toLowerCase() !== parentAddress) return { status: 403, error: "Not the site owner" };
+  return null;
+}
+
+/** The SEO + PWA head tags baked into a deployed site. Every interpolation is escaped. */
+export function deployHeadLines(site: Site, gatewayUrl: string): string {
+  const desc = site.theme.siteDescription?.trim() ?? '';
+  const brandNameEsc = escHtml(site.theme.brandName?.trim() || 'WoCo Site');
+  const descEsc = escHtml(desc);
+  const logoRef = site.theme.logoSwarmRef;
+  // Organiser logo when set; WoCo brand image (always bundled in the collection) otherwise.
+  const thumbnailUrl = escHtml(
+    logoRef && !/^0+$/.test(logoRef) ? `${gatewayUrl}/bytes/${logoRef}` : './logo.png',
+  );
+  const themeColorEsc = escHtml(site.theme.palette.accent ?? '');
+
+  return [
+    `  <link rel="manifest" href="./manifest.json">`,
+    thumbnailUrl ? `  <link rel="icon" href="${thumbnailUrl}">` : '',
+    `  <meta name="theme-color" content="${themeColorEsc}">`,
+    desc ? `  <meta name="description" content="${descEsc}">` : '',
+    `  <meta property="og:type" content="website">`,
+    `  <meta property="og:title" content="${brandNameEsc}">`,
+    desc ? `  <meta property="og:description" content="${descEsc}">` : '',
+    thumbnailUrl ? `  <meta property="og:image" content="${thumbnailUrl}">` : '',
+    `  <meta name="twitter:card" content="${thumbnailUrl ? 'summary_large_image' : 'summary'}">`,
+    `  <meta name="twitter:title" content="${brandNameEsc}">`,
+    desc ? `  <meta name="twitter:description" content="${descEsc}">` : '',
+    thumbnailUrl ? `  <meta name="twitter:image" content="${thumbnailUrl}">` : '',
+  ].filter(Boolean).join('\n');
 }
 
 /**
@@ -183,7 +239,7 @@ function spawnPromise(cmd: string, args: string[]): Promise<void> {
   });
 }
 
-function buildContactHtml(name: string, email: string, message: string, siteName: string): string {
+export function buildContactHtml(name: string, email: string, message: string, siteName: string): string {
   return `<!DOCTYPE html><html><body style="font-family:system-ui,sans-serif;max-width:600px;margin:40px auto;padding:0 20px;color:#111">
 <h2 style="margin:0 0 1.5rem">New enquiry — ${escHtml(siteName)}</h2>
 <table style="border-collapse:collapse;width:100%">
@@ -192,6 +248,7 @@ function buildContactHtml(name: string, email: string, message: string, siteName
 <tr><td style="padding:8px 0;color:#666;vertical-align:top">Message</td><td style="padding:8px 0;white-space:pre-wrap">${escHtml(message)}</td></tr>
 </table>
 <p style="color:#999;font-size:0.8rem;margin:2rem 0 0">Sent via WoCo contact form</p>
+${companyFooterHtml("#999")}
 </body></html>`;
 }
 
@@ -325,11 +382,23 @@ sitesRouter.post("/", requireAuth, async (c) => {
     if (siteFeedSigner && !/^0x[0-9a-f]{40}$/.test(siteFeedSigner)) {
       return c.json({ ok: false, error: "Invalid siteFeedSigner" }, 400);
     }
+    // The account's CURRENT signer only (#186): a device that has not taken the keys of
+    // a removal yet would point the site at a signer readers no longer follow.
+    if (siteFeedSigner) {
+      try {
+        await assertCurrentKeys(parentAddress, siteFeedSigner, undefined);
+      } catch (e) {
+        if (e instanceof AccountKeysChangedError) return c.json({ ok: false, error: e.message, code: e.code }, 409);
+        if (e instanceof AccountKeysUnavailableError) return c.json({ ok: false, error: e.message, code: e.code }, 503);
+        throw e;
+      }
+    }
 
     // If an existing site is published, only the owner may overwrite it.
     //
     // Three answers, and only ONE of them permits the write (#181). "absent" means
-    // the siteId is genuinely unclaimed. "unavailable" means we could not find out
+    // the network found no site (the best answer a read can give: see service.ts).
+    // "unavailable" means we could not find out
     // — and proceeding on that is what let a caller be stamped owner of somebody
     // else's site by retrying until a Swarm read failed.
     const existing = await resolveSiteConfig(site.siteId);
@@ -352,52 +421,59 @@ sitesRouter.post("/", requireAuth, async (c) => {
 
     // Prior server-written signers (trusted) — carried forward if a source read
     // transiently fails so a re-publish never wipes a known carrier.
-    const priorPage = await readFeedPage(eventsTopic).catch(() => null);
-    const priorIndex = priorPage ? decodeJsonFeed<SiteEventsIndex>(priorPage) : null;
-    const priorSigners = new Map<string, Hex0x>();
-    for (const e of priorIndex?.events ?? []) if (e.creatorFeedSigner) priorSigners.set(e.eventId, e.creatorFeedSigner);
+    // Under the site's events lock (Fable on #824): an add that started before
+    // this publish recorded its index would otherwise build on the older copy
+    // and silently drop the published list.
+    await withEventsIndexLock(site.siteId, async () => {
+      // What this server just wrote beats a bee read that may not have it yet (events-index.ts).
+      const priorIndex = freshWrittenEventsIndex(site.siteId)
+        ?? await readFeedPage(eventsTopic).then((p) => (p ? decodeJsonFeed<SiteEventsIndex>(p) : null)).catch(() => null);
+      const priorSigners = new Map<string, Hex0x>();
+      for (const e of priorIndex?.events ?? []) if (e.creatorFeedSigner) priorSigners.set(e.eventId, e.creatorFeedSigner);
 
-    // The events index STAYS platform-signed regardless of config ownership: it
-    // carries per-event creatorFeedSigner values consumed on the claim/payment
-    // path, so it must remain a server-written trust carrier (93ea980 class).
-    const eventsIndex: SiteEventsIndex = {
-      siteId: site.siteId,
-      schemaVersion: SITE_SCHEMA_VERSION,
-      events: await stampEventSigners(events, parentAddress, priorSigners),
-      updatedAt: now,
-    };
-
-    if (siteFeedSigner) {
-      const pointer: SitePointer = {
-        _woco_site_ptr: 1,
-        ownerAddress: parentAddress,
-        siteFeedSigner: siteFeedSigner as Hex0x,
+      // The events index STAYS platform-signed regardless of config ownership: it
+      // carries per-event creatorFeedSigner values consumed on the claim/payment
+      // path, so it must remain a server-written trust carrier (93ea980 class).
+      const eventsIndex: SiteEventsIndex = {
+        siteId: site.siteId,
+        schemaVersion: SITE_SCHEMA_VERSION,
+        events: await stampEventSigners(events, parentAddress, priorSigners),
         updatedAt: now,
       };
-      await Promise.all([
-        writeFeedPage(configTopic, encodeJsonFeed(pointer), { dest: feedDest }),
-        writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex), { dest: feedDest }),
-      ]);
-    } else {
-      // Legacy platform-written path (client without a feed signer). Config
-      // (without pages) + pages split across two feeds to stay under 4096 bytes.
-      const siteToWrite: Site = {
-        ...site,
-        ownerAddress: parentAddress,
-        createdAt: existing.status === "found" ? existing.site.createdAt : now,
-        updatedAt: now,
-      };
-      const { pages, ...siteShell } = siteToWrite;
-      await Promise.all([
-        writeFeedPage(configTopic, encodeJsonFeed(siteShell), { dest: feedDest }),
-        writeFeedPage(pagesTopic,  encodeJsonFeed({ pages }), { dest: feedDest }),
-        writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex), { dest: feedDest }),
-      ]);
-    }
 
-    // Publish rewrote the events index — drop the events-full memo (declared
-    // below; the closure resolves it at request time) so it doesn't serve stale.
-    _siteEventsFull.delete(site.siteId);
+      if (siteFeedSigner) {
+        const pointer: SitePointer = {
+          _woco_site_ptr: 1,
+          ownerAddress: parentAddress,
+          siteFeedSigner: siteFeedSigner as Hex0x,
+          updatedAt: now,
+        };
+        await Promise.all([
+          writeFeedPage(configTopic, encodeJsonFeed(pointer), { dest: feedDest }),
+          writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex), { dest: feedDest }),
+        ]);
+      } else {
+        // Legacy platform-written path (client without a feed signer). Config
+        // (without pages) + pages split across two feeds to stay under 4096 bytes.
+        const siteToWrite: Site = {
+          ...site,
+          ownerAddress: parentAddress,
+          createdAt: existing.status === "found" ? existing.site.createdAt : now,
+          updatedAt: now,
+        };
+        const { pages, ...siteShell } = siteToWrite;
+        await Promise.all([
+          writeFeedPage(configTopic, encodeJsonFeed(siteShell), { dest: feedDest }),
+          writeFeedPage(pagesTopic,  encodeJsonFeed({ pages }), { dest: feedDest }),
+          writeFeedPage(eventsTopic, encodeJsonFeed(eventsIndex), { dest: feedDest }),
+        ]);
+      }
+
+      // Publish rewrote the events index — drop the events-full memo (declared
+      // below; the closure resolves it at request time) so it doesn't serve stale.
+      rememberWrittenEventsIndex(site.siteId, eventsIndex);
+      _siteEventsFull.delete(site.siteId);
+    });
 
     // Upsert into creator's site directory (fire-and-forget — non-fatal).
     upsertCreatorSite(parentAddress, {
@@ -478,6 +554,9 @@ sitesRouter.get("/:id/events", async (c) => {
   const siteId = c.req.param("id");
   if (!isSafeIdParam(siteId)) return malformedId(c, "siteId");
   try {
+    const fresh = freshWrittenEventsIndex(siteId);
+    if (fresh) return c.json({ ok: true, data: withoutCancelled({ index: fresh, events: [] }).index });
+
     const topic = Topic.fromString(siteEventsIndexTopic(siteId));
     const page = await readFeedPage(topic);
 
@@ -502,6 +581,9 @@ sitesRouter.get("/:id/events", async (c) => {
 // TTL 5 min: fast for repeat visitors, stale-within-acceptable-window for organiser updates.
 const _siteEventsFull = new Map<string, { data: { index: SiteEventsIndex; events: EventFeed[] }; expiresAt: number }>();
 const SITE_EVENTS_FULL_TTL_MS = 5 * 60_000;
+/** Visitors' browsers. Short, so an organiser's add shows on a reload within a
+ *  minute as the builder promises; the memo above still shields Swarm. */
+const SITE_EVENTS_FULL_CACHE_CONTROL = "public, max-age=30, stale-while-revalidate=60";
 
 /**
  * A cancelled event leaves every site's listing (#644). Applied on each
@@ -528,21 +610,20 @@ sitesRouter.get("/:id/events-full", async (c) => {
     const now = Date.now();
     const cached = _siteEventsFull.get(siteId);
     if (cached && cached.expiresAt > now) {
-      c.header("Cache-Control", "public, max-age=300, stale-while-revalidate=86400");
+      c.header("Cache-Control", SITE_EVENTS_FULL_CACHE_CONTROL);
       return c.json({ ok: true, data: withoutCancelled(cached.data) });
     }
 
-    const topic = Topic.fromString(siteEventsIndexTopic(siteId));
-    const page = await readFeedPage(topic);
-
-    const emptyIndex: SiteEventsIndex = { siteId, events: [], updatedAt: 0, schemaVersion: SITE_SCHEMA_VERSION };
-
-    if (!page) {
-      return c.json({ ok: true, data: { index: emptyIndex, events: [] } });
+    let index = freshWrittenEventsIndex(siteId);
+    if (!index) {
+      const page = await readFeedPage(Topic.fromString(siteEventsIndexTopic(siteId)));
+      if (!page) {
+        const emptyIndex: SiteEventsIndex = { siteId, events: [], updatedAt: 0, schemaVersion: SITE_SCHEMA_VERSION };
+        return c.json({ ok: true, data: { index: emptyIndex, events: [] } });
+      }
+      index = decodeJsonFeed<SiteEventsIndex>(page);
+      if (!index) return c.json({ ok: false, error: "Corrupt events index" }, 500);
     }
-
-    const index = decodeJsonFeed<SiteEventsIndex>(page);
-    if (!index) return c.json({ ok: false, error: "Corrupt events index" }, 500);
 
     // Phase B: pass the carried content-feed signer so a CLIENT-OWNED event
     // resolves even when it's no longer in the global directory (e.g. unlisted).
@@ -557,7 +638,7 @@ sitesRouter.get("/:id/events-full", async (c) => {
 
     const data = { index, events };
     _siteEventsFull.set(siteId, { data, expiresAt: now + SITE_EVENTS_FULL_TTL_MS });
-    c.header("Cache-Control", "public, max-age=300, stale-while-revalidate=86400");
+    c.header("Cache-Control", SITE_EVENTS_FULL_CACHE_CONTROL);
     return c.json({ ok: true, data: withoutCancelled(data) });
   } catch {
     return c.json({ ok: false, error: "Failed to read site events" }, 500);
@@ -574,11 +655,8 @@ sitesRouter.post("/:id/events", requireAuth, async (c) => {
   if (!isSafeIdParam(siteId)) return malformedId(c, "siteId");
 
   try {
-    const site = await readSiteConfig(siteId);
-    if (!site) return c.json({ ok: false, error: "Site not found" }, 404);
-    if (site.ownerAddress.toLowerCase() !== parentAddress) {
-      return c.json({ ok: false, error: "Not the site owner" }, 403);
-    }
+    const refused = await eventIndexOwnerRefusal(siteId, parentAddress);
+    if (refused) return c.json({ ok: false, error: refused.error }, refused.status);
 
     const body = await c.req.json() as { eventId?: string; featured?: boolean };
     if (!body.eventId) return c.json({ ok: false, error: "eventId required" }, 400);
@@ -586,36 +664,42 @@ sitesRouter.post("/:id/events", requireAuth, async (c) => {
       return c.json({ ok: false, error: "This event has been cancelled" }, 409);
     }
 
-    const topic = Topic.fromString(siteEventsIndexTopic(siteId));
-    const page = await readFeedPage(topic);
-    const index: SiteEventsIndex = page
-      ? (decodeJsonFeed<SiteEventsIndex>(page) ?? { siteId, schemaVersion: SITE_SCHEMA_VERSION, events: [], updatedAt: 0 })
-      : { siteId, schemaVersion: SITE_SCHEMA_VERSION, events: [], updatedAt: 0 };
+    // One edit at a time per site, each on the latest index (events-index.ts).
+    const written = await withEventsIndexLock(siteId, async () => {
+      const read = await readEventsIndexForWrite(siteId);
+      if (read.status === "unavailable") {
+        console.warn(`[sites/events] index unreadable for ${siteId}: ${read.reason}`);
+        return null;
+      }
+      const index = read.index;
+      const existingEntry = index.events.find((e) => e.eventId === body.eventId);
+      if (!existingEntry) {
+        const priorSigners = new Map<string, Hex0x>();
+        for (const e of index.events) if (e.creatorFeedSigner) priorSigners.set(e.eventId, e.creatorFeedSigner);
+        const [entry] = await stampEventSigners([{
+          eventId: body.eventId!,
+          featured: body.featured ?? false,
+          addedAt: Date.now(),
+        }], parentAddress, priorSigners);
+        index.events.push(entry);
+      } else if (body.featured !== undefined && existingEntry.featured !== body.featured) {
+        // The idempotent add doubles as a featured-flag update for an event already
+        // on the site — lets the builder persist a ★ toggle without a full republish.
+        existingEntry.featured = body.featured;
+      }
+      index.updatedAt = Date.now();
 
-    const existingEntry = index.events.find((e) => e.eventId === body.eventId);
-    if (!existingEntry) {
-      const priorSigners = new Map<string, Hex0x>();
-      for (const e of index.events) if (e.creatorFeedSigner) priorSigners.set(e.eventId, e.creatorFeedSigner);
-      const [entry] = await stampEventSigners([{
-        eventId: body.eventId!,
-        featured: body.featured ?? false,
-        addedAt: Date.now(),
-      }], parentAddress, priorSigners);
-      index.events.push(entry);
-    } else if (body.featured !== undefined && existingEntry.featured !== body.featured) {
-      // The idempotent add doubles as a featured-flag update for an event already
-      // on the site — lets the builder persist a ★ toggle without a full republish.
-      existingEntry.featured = body.featured;
-    }
-    index.updatedAt = Date.now();
-
-    await writeFeedPage(topic, encodeJsonFeed(index), {
-      dest: await siteFeedDestFromDirectory(parentAddress, siteId),
+      await writeFeedPage(Topic.fromString(siteEventsIndexTopic(siteId)), encodeJsonFeed(index), {
+        dest: await siteFeedDestFromDirectory(parentAddress, siteId),
+      });
+      rememberWrittenEventsIndex(siteId, index);
+      // A write just changed the index; drop the events-full memo so the next
+      // deployed-site visitor reads the new list instead of the 5-min-stale copy.
+      _siteEventsFull.delete(siteId);
+      return index;
     });
-    // A write just changed the index; drop the events-full memo so the next
-    // deployed-site visitor reads the new list instead of the 5-min-stale copy.
-    _siteEventsFull.delete(siteId);
-    return c.json({ ok: true, data: index });
+    if (!written) return c.json({ ok: false, error: EVENTS_INDEX_UNREADABLE }, 503);
+    return c.json({ ok: true, data: written });
   } catch (err) {
     if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     return c.json({ ok: false, error: err instanceof Error ? err.message : "Failed to add event" }, 500);
@@ -634,27 +718,30 @@ sitesRouter.delete("/:id/events/:eventId", requireAuth, async (c) => {
   if (!isSafeIdParam(eventId)) return malformedId(c, "eventId");
 
   try {
-    const site = await readSiteConfig(siteId);
-    if (!site) return c.json({ ok: false, error: "Site not found" }, 404);
-    if (site.ownerAddress.toLowerCase() !== parentAddress) {
-      return c.json({ ok: false, error: "Not the site owner" }, 403);
-    }
+    const refused = await eventIndexOwnerRefusal(siteId, parentAddress);
+    if (refused) return c.json({ ok: false, error: refused.error }, refused.status);
 
-    const topic = Topic.fromString(siteEventsIndexTopic(siteId));
-    const page = await readFeedPage(topic);
-    if (!page) return c.json({ ok: true });
+    const written = await withEventsIndexLock(siteId, async () => {
+      const read = await readEventsIndexForWrite(siteId);
+      if (read.status === "unavailable") {
+        console.warn(`[sites/events] index unreadable for ${siteId}: ${read.reason}`);
+        return null;
+      }
+      const index = read.index;
+      if (!index.events.some((e) => e.eventId === eventId)) return index; // nothing to remove
 
-    const index = decodeJsonFeed<SiteEventsIndex>(page);
-    if (!index) return c.json({ ok: false, error: "Corrupt events index" }, 500);
+      index.events = index.events.filter((e) => e.eventId !== eventId);
+      index.updatedAt = Date.now();
 
-    index.events = index.events.filter((e) => e.eventId !== eventId);
-    index.updatedAt = Date.now();
-
-    await writeFeedPage(topic, encodeJsonFeed(index), {
-      dest: await siteFeedDestFromDirectory(parentAddress, siteId),
+      await writeFeedPage(Topic.fromString(siteEventsIndexTopic(siteId)), encodeJsonFeed(index), {
+        dest: await siteFeedDestFromDirectory(parentAddress, siteId),
+      });
+      rememberWrittenEventsIndex(siteId, index);
+      _siteEventsFull.delete(siteId); // see add-event handler — keep visitors fresh
+      return index;
     });
-    _siteEventsFull.delete(siteId); // see add-event handler — keep visitors fresh
-    return c.json({ ok: true, data: index });
+    if (!written) return c.json({ ok: false, error: EVENTS_INDEX_UNREADABLE }, 503);
+    return c.json({ ok: true, data: written });
   } catch (err) {
     if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);
     return c.json({ ok: false, error: err instanceof Error ? err.message : "Failed to remove event" }, 500);
@@ -747,13 +834,6 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     if (!resolvedUrls.ok) return c.json({ ok: false, error: resolvedUrls.error }, 400);
     const { apiUrl, gatewayUrl, wocoAppUrl } = resolvedUrls.urls;
 
-    if (!existsSync(DIST_MULTISITE_PATH)) {
-      return c.json({
-        ok: false,
-        error: "Site template not on server. Run `npm run build:web` then rsync apps/web/dist-multisite/ to server.",
-      }, 503);
-    }
-
     // Prefer the site config sent by the client — avoids a Swarm re-read immediately
     // after publishSite (deferred writes can have a brief propagation window).
     // Fall back to Swarm read for direct API calls. Always stamp ownerAddress server-side.
@@ -775,6 +855,14 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     if (published.status === "found" && published.site.ownerAddress.toLowerCase() !== parentAddress) {
       return c.json({ ok: false, error: "Not the site owner" }, 403);
     }
+
+    if (!existsSync(DIST_MULTISITE_PATH)) {
+      return c.json({
+        ok: false,
+        error: "Site template not on server. Run `npm run build:web` then rsync apps/web/dist-multisite/ to server.",
+      }, 503);
+    }
+
     let site: Site;
     if (body.site && body.site.siteId === siteId) {
       site = { ...body.site, ownerAddress: parentAddress };
@@ -837,33 +925,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       ],
     };
 
-    // Build SEO + PWA head tags
-    const desc = site.theme.siteDescription?.trim() ?? '';
-    const brandNameEsc = escHtml(site.theme.brandName?.trim() || 'WoCo Site');
-    const descEsc = escHtml(desc);
-    const logoRef = site.theme.logoSwarmRef;
-    // Organiser logo when set; WoCo brand image (always bundled in the collection) otherwise.
-    const thumbnailUrl = escHtml(
-      logoRef && !/^0+$/.test(logoRef) ? `${gatewayUrl}/bytes/${logoRef}` : './logo.png',
-    );
-    const themeColorEsc = escHtml(site.theme.palette.accent ?? '');
-
-    const headLines = [
-      `  <link rel="manifest" href="./manifest.json">`,
-      thumbnailUrl ? `  <link rel="icon" href="${thumbnailUrl}">` : '',
-      `  <meta name="theme-color" content="${themeColorEsc}">`,
-      desc ? `  <meta name="description" content="${descEsc}">` : '',
-      `  <meta property="og:type" content="website">`,
-      `  <meta property="og:title" content="${brandNameEsc}">`,
-      desc ? `  <meta property="og:description" content="${descEsc}">` : '',
-      thumbnailUrl ? `  <meta property="og:image" content="${thumbnailUrl}">` : '',
-      `  <meta name="twitter:card" content="${thumbnailUrl ? 'summary_large_image' : 'summary'}">`,
-      `  <meta name="twitter:title" content="${brandNameEsc}">`,
-      desc ? `  <meta name="twitter:description" content="${descEsc}">` : '',
-      thumbnailUrl ? `  <meta name="twitter:image" content="${thumbnailUrl}">` : '',
-    ].filter(Boolean).join('\n');
-
-    const injectedWithPwa = injectBeforeHeadClose(injectedHtml, headLines);
+    const injectedWithPwa = injectBeforeHeadClose(injectedHtml, deployHeadLines(site, gatewayUrl));
 
     await fs.cp(DIST_MULTISITE_PATH, tmpDir, { recursive: true });
     await fs.writeFile(join(tmpDir, "multi-site.html"), injectedWithPwa, "utf-8");
@@ -918,11 +980,10 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       });
 
       if (!uploadResp.ok) {
-        const text = await uploadResp.text().catch(() => "");
-        throw new Error(`Swarm upload failed ${uploadResp.status}: ${text.slice(0, 300)}`);
+        throw new Error(`Swarm upload failed ${uploadResp.status}: ${await errorSnippet(uploadResp, 300)}`);
       }
 
-      ({ reference: contentHash } = await uploadResp.json() as { reference: string });
+      ({ reference: contentHash } = await readCappedJson<{ reference: string }>(uploadResp, CONTROL_JSON_MAX_BYTES, "bzz upload"));
     }
 
     // Every deploy lands in the storage ledger regardless of batch: it is both
@@ -986,18 +1047,11 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         signal: AbortSignal.timeout(BEE_CALL_TIMEOUT_MS),
       });
       if (chunkRes.ok) {
-        const chunkBytes = new Uint8Array(await chunkRes.arrayBuffer());
-        let nextIndex = 0;
-        try {
-          const latest = await withTimeout(
-            bee.makeFeedReader(topic, feedOwnerSigner).download(),
-            BEE_CALL_TIMEOUT_MS,
-            "multisite feed index",
-          );
-          if (latest.feedIndexNext) nextIndex = Number(BigInt(`0x${latest.feedIndexNext.toHex()}`));
-        } catch {
-          // No update yet (fresh feed) — index 0.
-        }
+        const chunkBytes = await readCapped(chunkRes, SWARM_CHUNK_MAX_BYTES, "root chunk");
+        // Forward from the lookup to the first free index (#186). Any failed
+        // lookup used to read as a fresh feed, and an update signed for a taken
+        // index 0 keeps the old pointer, silently. Now it fails the deploy.
+        const nextIndex = Number(await resolveFeedNextIndex(topic, feedOwnerSigner, "woco"));
         multisiteFeed = {
           nextIndex,
           rootChunkPayloadB64: Buffer.from(chunkBytes.subarray(8)).toString("base64"),
@@ -1029,6 +1083,10 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       } catch {
         // Non-fatal
       }
+      // An explicit index on every upload (#186): without one bee-js discovers
+      // it, which reads behind (or answers 0 on any bee error), and an update
+      // at a taken index keeps the OLD pointer while the deploy reports success.
+      const index = { index: FeedIndex.fromBigInt(await resolveFeedNextIndex(topic, owner.toHex(), "woco")) };
       const writer = bee.makeFeedWriter(topic, signer);
       try {
         await whitelistHashes([contentHash]).catch(() => {});
@@ -1036,18 +1094,18 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
           signal: AbortSignal.timeout(BEE_CALL_TIMEOUT_MS),
         });
         if (!chunkRes.ok) throw new Error(`fetch root chunk ${chunkRes.status}`);
-        const chunkBytes = new Uint8Array(await chunkRes.arrayBuffer());
+        const chunkBytes = await readCapped(chunkRes, SWARM_CHUNK_MAX_BYTES, "root chunk");
         const payload = chunkBytes.subarray(8);
         if (payload.length > 4096) {
           console.warn(`[sites/deploy] root chunk ${payload.length}B > 4096 — falling back to legacy SOC write`);
           await withTimeout(
-            writer.uploadReference(batchId, new Reference(contentHash)),
+            writer.uploadReference(batchId, new Reference(contentHash), index),
             BEE_CALL_TIMEOUT_MS,
             "multisite feed write (legacy)",
           );
         } else {
           await withTimeout(
-            writer.uploadPayload(batchId, payload),
+            writer.uploadPayload(batchId, payload, index),
             BEE_CALL_TIMEOUT_MS,
             "multisite feed write (inline)",
           );
@@ -1055,11 +1113,19 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
       } catch (err) {
         console.warn(`[sites/deploy] inline SOC write failed (${(err as Error).message}) — falling back to legacy`);
         await withTimeout(
-          writer.uploadReference(batchId, new Reference(contentHash)),
+          writer.uploadReference(batchId, new Reference(contentHash), index),
           BEE_CALL_TIMEOUT_MS,
           "multisite feed write (legacy fallback)",
         );
       }
+    }
+
+    // The site's name shows THIS build, whatever its feed later says: the CCIP
+    // gateway signs the ledger's latest ref, never the holder's feed (name-targets.ts).
+    // Not recorded = the name still shows the previous build, so the response says so.
+    let nameRecorded = true;
+    if (feedManifestHash) {
+      nameRecorded = recordNameTarget(feedManifestHash, { kind: "site", id: siteId, owner: parentAddress, latestRef: contentHash });
     }
 
     // Etherna gates anonymous reads behind an OFFER. The content chunk is offered at
@@ -1141,6 +1207,7 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
         ...(multisiteFeed ? { multisiteFeed } : {}),
         // What happened to the site's sub-ENS name, when it has one.
         ...(subEns ? { subEns } : {}),
+        ...(nameRecorded ? {} : { nameRecorded: false as const }),
       },
     });
 

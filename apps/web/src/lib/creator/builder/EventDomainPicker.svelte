@@ -10,32 +10,40 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { checkSubEnsLabel, getOwnedSubEns, type OwnedSubEnsName } from "../../api/sub-ens.js";
-  import { getStripeAccountStatus } from "../../api/stripe.js";
+  import { gate } from "../../attendee/gate/gate.svelte.js";
+  import { nameLockFrom } from "../../attendee/gate/name-lock.js";
+  import { unlocksWhen } from "../../attendee/gate/unlock-copy.js";
+  import { canOrganise } from "../../auth/organiser-account.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import OwnedNamesList from "./OwnedNamesList.svelte";
   import { bindableNames, hidesProfileName } from "../../sub-ens/roles.js";
 
   interface Props {
     intent?: EventDomainIntent;
-    /** Parent can pre-fetch and pass; if undefined, picker self-checks. */
+    /** A parent's live Stripe answer: a flip to true re-reads the unlock verdict (see SubENSPicker). */
     stripeConnected?: boolean;
     onstripesetup?: () => void;
   }
 
   let { intent = $bindable<EventDomainIntent>({ mode: "none" }), stripeConnected, onstripesetup }: Props = $props();
 
-  // ── Stripe gate (mirrors SubENSPicker) ───────────────────────────────────────
-  let stripeStatus = $state<boolean | null>(null);
+  // ── Unlock gate (mirrors SubENSPicker: one rule, the server's lib/gate/check.ts) ──
+  let gateSettled = $state(false);
   let stripeModalOpen = $state(false);
 
   $effect(() => {
-    if (stripeConnected !== undefined) { stripeStatus = stripeConnected; return; }
-    if (!auth.isConnected) { stripeStatus = false; return; }
-    stripeStatus = null;
-    getStripeAccountStatus()
-      .then((s) => { stripeStatus = !!(s.ok && s.onboardingComplete); })
-      .catch(() => { stripeStatus = false; });
+    void stripeConnected;
+    gateSettled = false;
+    if (!auth.isConnected || !auth.hasSession) { gateSettled = true; return; }
+    void gate.refresh().finally(() => { gateSettled = true; });
   });
+
+  const lock = $derived(nameLockFrom({
+    connected: auth.isConnected,
+    organiserKind: canOrganise(auth.kind),
+    gate: gate.status,
+    gateLoading: !gateSettled,
+  }));
 
   function openStripeSetup() {
     if (onstripesetup) { onstripesetup(); return; }
@@ -45,7 +53,7 @@
     }
     stripeModalOpen = true;
   }
-  function onStripeConnected() { stripeStatus = true; stripeModalOpen = false; }
+  function onStripeConnected() { stripeModalOpen = false; void gate.refresh(); }
 
   // ── Mode selection ────────────────────────────────────────────────────────────
   type Mode = "none" | "new" | "existing";
@@ -129,10 +137,10 @@
   });
 </script>
 
-{#if stripeStatus !== true}
-  <!-- ── Stripe gate ─────────────────────────────────────────────────────── -->
+{#if lock !== "open"}
+  <!-- ── Unlock gate (verdict: server lib/gate/check.ts) ─────────────────── -->
   <div class="dp dp--locked">
-    {#if stripeStatus === null}
+    {#if lock === "checking"}
       <div class="lock-loading">
         <span class="spinner" aria-label="Checking…"></span>
         <span class="muted-sm">Checking your account…</span>
@@ -149,12 +157,12 @@
         <div class="lock-text">
           <p class="dp-title">Give this event a <code class="inline-code">.woco.eth</code> address</p>
           <p class="muted-sm">
-            {#if !auth.isConnected}Connect your wallet to get started.
-            {:else}Verify your business via Stripe to unlock — takes 2 minutes.{/if}
+            {#if lock === "signed-out"}Connect your wallet to get started.
+            {:else}{unlocksWhen("This name")} Stripe takes about 2 minutes.{/if}
           </p>
         </div>
         <button class="setup-btn" onclick={openStripeSetup}>
-          {#if !auth.isConnected}Connect wallet →{:else}Set up Stripe →{/if}
+          {#if lock === "signed-out"}Connect wallet →{:else}Set up Stripe →{/if}
         </button>
       </div>
     {/if}

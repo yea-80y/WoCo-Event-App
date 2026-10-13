@@ -4,6 +4,7 @@ import {
   ACCOUNT_KEYS_NONCE,
   ACCOUNT_KEYS_PURPOSE,
   StorageKeys,
+  canonicalSignatureBytes,
   passkeyIdentitySeed,
   passkeySeedKek,
   type EncryptedBlob,
@@ -23,6 +24,10 @@ import { getKV, putKV, delKV } from "./storage/indexeddb.js";
  */
 function identitySeedKey(address: string): string {
   return `${StorageKeys.IDENTITY_SEED}:${address.toLowerCase()}`;
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((x, i) => x === b[i]);
 }
 
 /**
@@ -77,12 +82,13 @@ export async function requestIdentitySeed(
       ACCOUNT_KEYS_TYPES as unknown as Record<string, Array<{ name: string; type: string }>>,
       message as unknown as Record<string, unknown>,
     );
-  const signature = await sign();
+  // Canonical form (#186): the same signature in another valid encoding is the same seed.
+  const signature = canonicalSignatureBytes(await sign());
   if (opts.verifyDeterminism) {
     // Compared on the SIGNATURE bytes, before anything is derived or stored: a
     // wallet that disagrees with itself must not leave a seed behind for the next
     // session to find and treat as established.
-    if ((await sign()) !== signature) {
+    if (!sameBytes(canonicalSignatureBytes(await sign()), signature)) {
       throw new Error(
         "Your wallet's signature isn't reproducible, so we can't set up your account keys with it. Try a different wallet.",
       );
@@ -91,14 +97,12 @@ export async function requestIdentitySeed(
 
   // Deterministic: same wallet → same signature → same seed.
   // ethers imported lazily — this module is in auth-store's boot graph.
-  // Use getBytes(signature) to hash the canonical signature bytes (65 bytes),
-  // not toUtf8Bytes(signature) which hashes the hex string representation
-  // (132 bytes of ASCII). The byte form is the standard way to compress an
-  // ECDSA signature into a uniform-distribution seed and is what every other
-  // library in the ecosystem does. FROZEN: every key the account owns hangs off
+  // Hash the 65 signature bytes, not the hex string (132 bytes of ASCII). The
+  // byte form is the standard way to compress an ECDSA signature into a
+  // uniform-distribution seed. FROZEN: every key the account owns hangs off
   // these exact bytes.
-  const { keccak256, getBytes } = await import("ethers");
-  const seed = keccak256(getBytes(signature));
+  const { keccak256 } = await import("ethers");
+  const seed = keccak256(signature);
 
   // Encrypt and store seed — AAD binds the blob to the parent address so a
   // stale identity seed left in IndexedDB cannot be decrypted by a different
@@ -151,7 +155,8 @@ function publicKeysKey(seedAddress: string): string {
   return `${StorageKeys.PUBLIC_KEYS}:${seedAddress.toLowerCase()}`;
 }
 
-async function importSeedKek(prfSecret: string): Promise<CryptoKey> {
+/** The passkey's seed-lock key; the account-secret chain is locked under it too (#186). */
+export async function importSeedKek(prfSecret: string): Promise<CryptoKey> {
   const derived = passkeySeedKek(prfSecret);
   // A plain ArrayBuffer copy, as encryption.ts does: WebCrypto's types refuse a
   // view that might sit on a SharedArrayBuffer.
@@ -312,10 +317,13 @@ export async function storeFeedSignerCache(
   parent: string,
   signer: { privKey: string; address: string },
   stillCurrent: () => boolean = () => true,
+  /** The key ring this signer is the current generation of (#186); null = no ring. */
+  ringRef: string | null = null,
 ): Promise<void> {
   const blob = await encrypt(await ensureDeviceKey(), AAD.FEED_SIGNER_CACHE(seedAddress, parent), {
     privKey: signer.privKey,
     address: signer.address.toLowerCase(),
+    ringRef,
   });
   if (!stillCurrent()) return;
   await putKV(feedSignerCacheKey(seedAddress), blob);
@@ -326,18 +334,20 @@ export async function storeFeedSignerCache(
 export async function readFeedSignerCache(
   seedAddress: string,
   parent: string,
-): Promise<{ privKey: string; address: string } | null> {
+): Promise<{ privKey: string; address: string; ringRef: string | null } | null> {
   const blob = await getKV<EncryptedBlob>(feedSignerCacheKey(seedAddress));
   if (!blob) return null;
   try {
-    const { privKey, address } = await decrypt<{ privKey?: unknown; address?: unknown }>(
+    const { privKey, address, ringRef } = await decrypt<{ privKey?: unknown; address?: unknown; ringRef?: unknown }>(
       await ensureDeviceKey(),
       AAD.FEED_SIGNER_CACHE(seedAddress, parent),
       blob,
     );
     if (typeof privKey !== "string" || !/^0x[0-9a-f]{64}$/i.test(privKey)) return null;
     if (typeof address !== "string" || !/^0x[0-9a-f]{40}$/.test(address)) return null;
-    return { privKey, address };
+    // A copy from before key rings (#186) belongs to no ring: good only while there is none.
+    if (ringRef !== undefined && ringRef !== null && (typeof ringRef !== "string" || !/^[0-9a-f]{64}$/.test(ringRef))) return null;
+    return { privKey, address, ringRef: typeof ringRef === "string" ? ringRef : null };
   } catch {
     return null;
   }

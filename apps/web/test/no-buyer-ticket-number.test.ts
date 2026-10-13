@@ -17,6 +17,9 @@ const BUYER_VIEWS = [
   "../src/lib/attendee/gate/SignupLanding.svelte",
   "../../server/src/routes/tickets.ts",
   "../../server/src/lib/ticket/render-card.ts",
+  "../../server/src/lib/ticket/card-svg.ts",
+  "../src/lib/ticket-card/draw.ts",
+  "../../../packages/shared/src/ticket/card.ts",
 ];
 
 test("no buyer-facing view formats or prints the edition number", () => {

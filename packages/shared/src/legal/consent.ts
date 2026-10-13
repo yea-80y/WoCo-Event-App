@@ -34,9 +34,11 @@ export const TRANSACTIONAL_EMAIL_NOTICE =
  * things a buyer cannot infer from a generic policy link:
  *   1. the organiser — not WoCo — is the one who receives their details;
  *   2. answers are encrypted in-browser to a key only the organiser holds;
- *   3. records already written to a public decentralised network stay there
- *      until their storage expires.
+ *   3. order details on a public decentralised network are erased on request
+ *      (within 90 days, #546), but the ticket's onchain record is permanent.
  * (3) in particular must be disclosed BEFORE submission, not buried in a policy.
+ * Not stored with consent records (only MARKETING_CONSENT_NOTICE is Art. 7(1)
+ * evidence), so a wording change here needs no version bump.
  *
  * DO NOT reintroduce any claim that WoCo destroys a decryption key on request.
  * It was here until 2026-08-01 and was false three ways: WoCo never holds that
@@ -47,8 +49,19 @@ export const TRANSACTIONAL_EMAIL_NOTICE =
  * per-record key even in principle. Stating a capability we do not have, at the
  * point of collection, is the worst place to get this wrong.
  */
+/**
+ * The pay panel shown when an event has NO order form. The only thing a buyer
+ * gives there is an email, and that email is NOT client-sealed: it reaches WoCo
+ * in plaintext to send the ticket and Stripe as `customer_email`, and the server
+ * seals the minimal record itself (DATA_INVENTORY §4 carve-outs 1-3). So this
+ * panel must not borrow CHECKOUT_PRIVACY_SUMMARY's "encrypted in your browser".
+ */
+export const PAY_PANEL_PRIVACY_SUMMARY =
+  "Your details go to the event organiser, who is responsible for them. WoCo uses your email to send your " +
+  "ticket, and Stripe receives it with your payment. Your ticket's onchain record is public and permanent.";
+
 export const CHECKOUT_PRIVACY_SUMMARY =
   "Your details go to the event organiser, who is responsible for them. Anything you enter here is " +
-  "encrypted in your browser to a key only they hold — WoCo cannot read it. Your ticket record is " +
-  "kept on a public decentralised storage network: on request we remove it from WoCo and stop " +
-  "renewing its storage, but records already written to the network remain until that storage expires.";
+  "encrypted in your browser to a key only they hold - WoCo cannot read it. Your order details are " +
+  "stored on a public decentralised network: on request we remove them from WoCo straight away and " +
+  "erase them from the network within 90 days. Your ticket's onchain record is public and permanent.";

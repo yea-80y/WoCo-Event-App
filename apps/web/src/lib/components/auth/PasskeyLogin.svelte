@@ -1,8 +1,19 @@
 <script lang="ts">
   import { auth } from "../../auth/auth-store.svelte.js";
-  import { isPasskeySupported } from "../../auth/passkey-account.js";
+  import {
+    isPasskeySupported,
+    PasskeyBrowserRefusedError,
+    PasskeyPrfUnsupportedError,
+  } from "../../auth/passkey-account.js";
+  import {
+    appleTouchDevice,
+    passkeyCreateRefusedAdvice,
+    passkeyNoSecretAdvice,
+    passkeyRefusalAdvice,
+  } from "../../auth/passkey-refusal-copy.js";
+  import { PASSKEY_PROVIDERS } from "@woco/shared";
+  import PasskeyReadyNotice from "./PasskeyReadyNotice.svelte";
   import { onMount } from "svelte";
-  import { loginRequest } from "../../auth/login-request.svelte.js";
   import { PASSKEY_ONLY_RECOVERY_NOTE } from "../../auth/organiser-account.js";
 
   interface Props {
@@ -13,11 +24,15 @@
     onsettle?: () => void;
     /** "Link this device" (#746 step 4) was chosen: the modal closes for its screen. */
     onlink?: () => void;
+    /** An organiser sign-in (`isOrganiserSignIn`): a passkey is the only way in, so say so where it can't work. */
+    organiser?: boolean;
   }
 
-  let { oncomplete, onstart, onsettle, onlink }: Props = $props();
+  let { oncomplete, onstart, onsettle, onlink, organiser = false }: Props = $props();
   let error = $state<string | null>(null);
   let supported = $state(false);
+  /** Set with `supported` on mount, so the no-passkey line never flashes before the check. */
+  let checked = $state(false);
   /** Emphasises the create button after a sign-in found nothing — never auto-clicks it. */
   let offerCreate = $state(false);
   /** A sign-in from another device that could not be confirmed (#746): points at "Add this device". */
@@ -29,6 +44,7 @@
 
   onMount(() => {
     supported = isPasskeySupported();
+    checked = true;
     // Warm the chunks the post-biometric path needs (ethers; viem/zerodev on
     // first-device logins) so the click never stalls on a download.
     if (supported) void auth.prefetchPasskeySdk();
@@ -40,7 +56,10 @@
    * cancelled", so making a new one is offered, never assumed. Choosing wrong
    * strands the user's tickets and funds on the account they meant to reach.
    */
+  const appleDevice = () => appleTouchDevice(navigator.userAgent, navigator.maxTouchPoints ?? 0);
+
   async function run(mode: "signin" | "create") {
+    let apple: ReturnType<typeof appleDevice> = null;
     error = null;
     otherDevice = false;
     onstart?.();
@@ -63,10 +82,26 @@
       } else if (res.otherDevice && onlink) {
         otherDevice = true;
         error = res.error?.message ?? null;
+      } else if (res.noSheet) {
+        // No prompt opened, so nothing was cancelled and nothing was found: the
+        // create offer would be a guess. The message says what to do instead.
+        error = res.error?.message ?? null;
       } else if (res.noAssertion && mode === "signin") {
         offerCreate = true;
         showHelp = true;
         error = "No passkey was used. If you cancelled, try again — otherwise you can create a new account below.";
+      } else if (mode === "create" && res.error?.name === "PasskeyCeremonyCancelledError" && (apple = appleDevice())) {
+        // After a sheet (a quick refusal is noSheet, above): on an iPhone or iPad this
+        // is also what "no password manager set up for passkeys" ends in.
+        error = passkeyCreateRefusedAdvice(apple, organiser);
+      } else if (mode === "create" && res.error instanceof PasskeyPrfUnsupportedError && (apple = appleDevice())) {
+        // Face ID done, the passkey SAVED, in a manager that can't give the secret:
+        // name it, and steer the retry to Apple's Passwords.
+        const id = res.error.provider;
+        const known = id && id in PASSKEY_PROVIDERS ? { id, name: PASSKEY_PROVIDERS[id as keyof typeof PASSKEY_PROVIDERS].name } : null;
+        error = passkeyNoSecretAdvice(apple, known, organiser);
+      } else if (res.error instanceof PasskeyBrowserRefusedError) {
+        error = passkeyRefusalAdvice(res.error.host, organiser);
       } else {
         error = res.error?.message ?? "Passkey authentication failed. Try again or use another method.";
       }
@@ -103,6 +138,8 @@
       {/if}
     </button>
 
+    <PasskeyReadyNotice invite={organiser} />
+
     <!-- Always present, always secondary. `hasStoredPasskeyCredential` only
          knows about THIS device, so it cannot tell a brand-new user from a
          returning one on a new device — promoting create on its say-so is how a
@@ -115,7 +152,7 @@
     >
       New to WoCo? Create a passkey account
     </button>
-    {#if loginRequest.context === "invite"}
+    {#if organiser}
       <!-- An organiser's account has no email or wallet backup (#746 step 5): said before it exists. -->
       <p class="recovery-note">{PASSKEY_ONLY_RECOVERY_NOTE} Link a second device once you're in.</p>
     {/if}
@@ -174,9 +211,14 @@
     </p>
 
     {#if error && !otherDevice}
-      <p class="error">{error}</p>
+      <p class="error" role="alert">{error}</p>
     {/if}
   </div>
+{:else if checked && organiser}
+  <!-- Nothing else is offered to an organiser, so an empty sheet here would be a dead end. -->
+  <p class="error" role="alert">
+    This browser can't use passkeys, and organising needs one - open WoCo in Chrome, Brave, Edge or Safari to continue.
+  </p>
 {/if}
 
 <style>

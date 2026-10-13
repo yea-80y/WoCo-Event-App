@@ -3,6 +3,7 @@ import { Topic } from "@ethersphere/bee-js";
 import { eventPageFeedTopic, validateLabel } from "@woco/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { eventPageDeployGate } from "../lib/event/page-deploy-gate.js";
+import { getEvent } from "../lib/event/service.js";
 import {
   batchForDeploy,
   BatchPurchaseRequired,
@@ -14,9 +15,11 @@ import { recordUpload } from "../lib/swarm/storage-ledger.js";
 import { whitelistHashes } from "../lib/swarm/whitelist.js";
 import { uploadCollectionToEtherna, registerEthernaOffer, prepareEthernaFeedUpdate } from "../lib/etherna/upload.js";
 import { checkSiteSubEns, type SiteDeploySubEns } from "../lib/sub-ens/site-pointer.js";
+import { recordNameTarget } from "../lib/sub-ens/name-targets.js";
 import {
   injectBeforeHeadClose,
   isSafeIdParam,
+  withEventPageHead,
   siteConfigScript,
   resolveDeployApiUrl,
 } from "../lib/site/deploy-config.js";
@@ -151,7 +154,14 @@ site.post("/deploy", requireAuth, async (c) => {
       eventSigner,
     };
     const configScript = siteConfigScript(config);
-    const injectedHtml = injectBeforeHeadClose(siteHtml, `  ${configScript}`);
+    // The event's image as the page's icon and share image. A failed read only
+    // costs that: the page falls back to WoCo's logo, never fails to publish.
+    const event = await getEvent(eventId, eventSigner).catch(() => null);
+    const injectedHtml = withEventPageHead(
+      injectBeforeHeadClose(siteHtml, `  ${configScript}`),
+      event,
+      config.contentGatewayUrl,
+    );
 
     // 2) Copy dist-site to a temp dir, write modified site.html
     const ts = Date.now();
@@ -194,6 +204,7 @@ site.post("/deploy", requireAuth, async (c) => {
     // client-owned site (sites.ts), on the content's batch (#48).
     let feedManifestHash = "";
     let pageFeed: { owner: string; nextIndex: number; rootChunkPayloadB64: string } | undefined;
+    let nameRecorded = true;
     if (body.clientFeed === true) {
       const prep = await prepareEthernaFeedUpdate({
         topic: Topic.fromString(eventPageFeedTopic(eventId)),
@@ -212,6 +223,9 @@ site.post("/deploy", requireAuth, async (c) => {
       // Etherna answers 402 to an anonymous /bzz/{manifest}/ without an offer.
       void registerEthernaOffer(feedManifestHash).catch((e) =>
         console.warn("[site/deploy] etherna feed-manifest offer failed (non-fatal):", e));
+      // The page's name shows THIS build, whatever the feed later says (name-targets.ts).
+      // Not recorded = the name still shows the previous build, so the response says so.
+      nameRecorded = recordNameTarget(feedManifestHash, { kind: "event", id: eventId, owner: parentAddress, latestRef: contentHash });
     }
 
     // Does the name already follow this feed? Read-only chain state, so the
@@ -237,6 +251,7 @@ site.post("/deploy", requireAuth, async (c) => {
         feedManifestHash,
         ...(pageFeed ? { feedOwner: "client" as const, pageFeed } : {}),
         ...(subEns ? { subEns } : {}),
+        ...(nameRecorded ? {} : { nameRecorded: false as const }),
       },
     });
 

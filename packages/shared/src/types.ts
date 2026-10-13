@@ -41,12 +41,17 @@ export interface ApiResponse<T = unknown> {
  *                      Sent ONLY for an explicit revoke - a grant whose signer
  *                      fails an owner read may be an RPC outage, so that stays
  *                      SESSION_INVALID.
+ *  - SESSION_REVOKED   the session was revoked ("Sign out everywhere", or this
+ *                      one session). Not SESSION_INVALID: a client that can sign
+ *                      silently (passkey, email) would mint a fresh session and
+ *                      undo the revoke, so the client signs out instead (#186).
  */
 export const AuthErrorCode = {
   SESSION_INVALID: "SESSION_INVALID",
   SESSION_CLOCK_SKEW: "SESSION_CLOCK_SKEW",
   SESSION_REPLAY: "SESSION_REPLAY",
   DEVICE_REMOVED: "DEVICE_REMOVED",
+  SESSION_REVOKED: "SESSION_REVOKED",
 } as const;
 
 export type AuthErrorCode = (typeof AuthErrorCode)[keyof typeof AuthErrorCode];

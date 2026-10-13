@@ -9,42 +9,280 @@
  */
 
 import { buildWeb3AuthOptions, extractRawPrivateKey } from "./web3auth-config";
+import { buildEnv } from "../build-env.js";
 import {
   markWeb3AuthSessionEstablished,
   clearWeb3AuthSessionFlag,
   hasWeb3AuthSessionFlag,
 } from "./web3auth-session-flag.js";
-import { awaitWeb3AuthRehydration, endSurvivingWeb3AuthSession } from "./web3auth-survivor.js";
+import {
+  awaitWeb3AuthRehydration,
+  instanceForExplicitSignIn,
+  isWeb3AuthSessionLive,
+  restoreVerdict,
+  EXPLICIT_REHYDRATION_WAIT_MS,
+  SURVIVOR_INTERFERED_MESSAGE,
+  SURVIVOR_STILL_LOADING_MESSAGE,
+} from "./web3auth-survivor.js";
+import { Web3AuthSignInError, WEB3AUTH_TIMED_OUT_MESSAGE, isWeb3AuthCancel } from "./web3auth-signin-error.js";
+import { awaitWeb3AuthSignIn, browserSignInWaitDeps, type SignInWaitDeps } from "./web3auth-signin-wait.js";
+import { markSignInStep } from "./signin-failure.js";
 
-type MinimalProvider = { request: (args: { method: string }) => Promise<unknown> };
+import { adaptWeb3AuthSdk, type KeyProvider, type Web3AuthInstance, type Web3AuthV11Like } from "./web3auth-sdk-adapter.js";
+import { tapConnectorStartErrors, type TappableLog } from "./web3auth-start-errors.js";
+import {
+  browserWeb3AuthUxMode,
+  clearRedirectMarker,
+  urlAfterFinish,
+  urlForFinish,
+  writeRedirectMarker,
+  type PendingRedirect,
+  type Web3AuthUxMode,
+} from "./web3auth-redirect.js";
 
-// The bits of the Web3Auth instance we touch. It extends SafeEventEmitter, so the
-// listener methods are present; `cachedConnector` tells us whether a stored session
-// is (asynchronously) rehydrating after init().
-type Web3AuthInstance = {
-  connected: boolean;
-  provider: MinimalProvider | null;
-  cachedConnector: string | null;
-  init(): Promise<void>;
-  connect(): Promise<MinimalProvider | null>;
-  logout(options?: { cleanup?: boolean }): Promise<void>;
-  on(event: string, fn: (...args: unknown[]) => void): void;
-  removeListener(event: string, fn: (...args: unknown[]) => void): void;
+type MinimalProvider = KeyProvider;
+
+// The bits of the Web3Auth instance we touch, in the shape the sign-in rules were
+// built on (v10's); v11 is presented in it by web3auth-sdk-adapter.ts.
+// `cachedConnector` tells us whether a stored session is (asynchronously)
+// rehydrating after init().
+
+type Web3AuthFactory = (uxMode: Web3AuthUxMode) => Promise<Web3AuthInstance | null>;
+
+/** Builds and initialises one SDK instance; null = no clientId in this build. */
+const buildSdkInstance: Web3AuthFactory = async (uxMode) => {
+  const clientId = buildEnv(() => import.meta.env.VITE_WEB3AUTH_CLIENT_ID as string | undefined);
+  if (!clientId) return null;
+  const mod = await import("@web3auth/modal");
+  const w = adaptWeb3AuthSdk(new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId, uxMode)) as unknown as Web3AuthV11Like);
+  await w.init();
+  return w;
 };
 
+/**
+ * The page a redirect-mode sign-in reads and writes (web3auth-redirect.ts): which
+ * mode this device uses, the tab's marker storage, the SDK's own session storage
+ * (read-only), the address bar, and the bounds of its waits.
+ */
+export type RedirectPageDeps = {
+  uxMode(): Web3AuthUxMode;
+  tabStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
+  sdkStorage(): Pick<Storage, "length" | "key" | "getItem"> | null;
+  location(): { pathname: string; search: string; hash: string };
+  replaceUrl(url: string): void;
+  now(): number;
+  /** How long a redirect-mode instance may take to read the URL and settle. */
+  settleTimeoutMs: number;
+};
+
+const browserRedirectPage = (): RedirectPageDeps => ({
+  uxMode: browserWeb3AuthUxMode,
+  tabStorage: () => {
+    try {
+      return globalThis.sessionStorage ?? null;
+    } catch {
+      return null;
+    }
+  },
+  sdkStorage: () => {
+    try {
+      return globalThis.localStorage ?? null;
+    } catch {
+      return null;
+    }
+  },
+  location: () => window.location,
+  // Resolved against the page's own URL, never the deploy's <base href> (#604).
+  replaceUrl: (url) => window.history.replaceState(window.history.state, "", new URL(url, window.location.href).href),
+  now: () => Date.now(),
+  settleTimeoutMs: REDIRECT_SETTLE_WAIT_MS,
+});
+
+/** A redirect-mode build reads its URL inside a connector start-up `init()` does
+ *  not await; this long, at most, before the address bar is put back regardless. */
+export const REDIRECT_SETTLE_WAIT_MS = 60_000;
+
+let _factory: Web3AuthFactory = buildSdkInstance;
+let _waitDeps: () => SignInWaitDeps = browserSignInWaitDeps;
+let _page: () => RedirectPageDeps = browserRedirectPage;
 let _instance: Web3AuthInstance | null = null;
+/** The mode `_instance` (and `_building`) was built in. */
+let _instanceMode: Web3AuthUxMode = "popup";
+let _buildingMode: Web3AuthUxMode = "popup";
+let _building: Promise<Web3AuthInstance | null> | null = null;
+/** What a redirect-mode instance's connector reported while it started (the finish reads it). */
+const _startErrors = new WeakMap<Web3AuthInstance, unknown>();
+/** Ends the sign-in wait that is open (the sheet was closed over it); null = none. */
+let _abortWait: (() => void) | null = null;
+/** Bumped by every reset, so a build that started before one never installs itself after it. */
+let _generation = 0;
+/** Instances a sign-out has logged out. Marked BEFORE the logout, because the
+ *  sign-out resets the singleton only once it finishes - a sign-in arriving in
+ *  between would otherwise read the spent instance as fresh (#803). */
+const _loggedOut = new WeakSet<Web3AuthInstance>();
 
-async function _getInstance() {
-  const clientId = import.meta.env.VITE_WEB3AUTH_CLIENT_ID as string | undefined;
-  if (!clientId) return null;
+/**
+ * The page's one instance, built once. Single-flight: a background restore
+ * retry and a sign-in click arriving together must not build two - the second
+ * modal removes the first one's container, leaving that instance's modal
+ * detached.
+ *
+ * `mode` is asked for by the explicit sign-in and the redirect finish only: an
+ * instance (or a build) in the other mode is dropped and ours is built, so a
+ * background restore's pop-up build is never handed to a redirect sign-in. With
+ * no mode (restore, sign-out) whatever is there serves: reading or ending a
+ * session works the same in both. `prepare` sets the address bar for a
+ * redirect-mode build and returns how to put it back.
+ */
+async function _getInstance(mode?: Web3AuthUxMode, prepare?: () => () => void): Promise<Web3AuthInstance | null> {
+  if (_instance && (!mode || _instanceMode === mode)) return _instance;
+  if (_building && (!mode || _buildingMode === mode)) return _building;
+  if (_instance || _building) _resetInstance();
+  const gen = _generation;
+  const want = mode ?? "popup";
+  const build = _buildInMode(want, prepare).then((w) => {
+    if (gen === _generation) {
+      _instance = w;
+      _instanceMode = want;
+    }
+    return w;
+  });
+  _building = build;
+  _buildingMode = want;
+  void build
+    .finally(() => {
+      if (_building === build) _building = null;
+    })
+    .catch(() => {});
+  return build;
+}
 
-  if (_instance) return _instance;
+/**
+ * A redirect-mode instance REWRITES the address bar when it starts: the SDK reads
+ * a result from it and, with `replaceUrlOnRedirect` (forced on in that mode),
+ * re-serialises the fragment through URLSearchParams - `#/event/x` becomes
+ * `#%2Fevent%2Fx=`. So the bar is set for the build (`prepare`, by default the
+ * page's own path with nothing the SDK could read) and put back once the
+ * connector has started, which is AFTER `init()` resolves (the modal starts its
+ * connectors in a handler it does not await). `replaceState` fires no
+ * `hashchange`, so the router's route is never disturbed.
+ */
+async function _buildInMode(mode: Web3AuthUxMode, prepare?: () => () => void): Promise<Web3AuthInstance | null> {
+  if (mode === "popup") return _factory(mode);
+  // The connector's start-up is where a redirect result is finished, and the
+  // modal only LOGS its failure (web3auth-start-errors.ts): listen for it from
+  // before the SDK is built until it has started.
+  const seen: { built: Web3AuthInstance | null; early: { e: unknown } | null } = { built: null, early: null };
+  const untap = await _tapStartErrors((e) => {
+    if (seen.built) {
+      if (!_startErrors.has(seen.built)) _startErrors.set(seen.built, e);
+    } else seen.early ??= { e };
+  });
+  const restore = (prepare ?? _keepUrlForBuild)();
+  try {
+    const w = await _factory(mode);
+    seen.built = w;
+    if (w && seen.early) _startErrors.set(w, seen.early.e);
+    if (w) await _awaitConnectorStarted(w, _page().settleTimeoutMs);
+    return w;
+  } finally {
+    untap();
+    restore();
+  }
+}
 
-  const mod = await import("@web3auth/modal");
-  const w = new mod.Web3Auth(buildWeb3AuthOptions(mod, clientId));
-  await w.init();
-  _instance = w as unknown as Web3AuthInstance;
-  return _instance;
+/** Tap the SDK's own logger for the auth connector's start-up failure. Never
+ *  fails a build: without the logger, the code is only less specific. */
+async function _tapStartErrors(onError: (e: unknown) => void): Promise<() => void> {
+  try {
+    const { log } = await import("@web3auth/modal");
+    return tapConnectorStartErrors(log as unknown as TappableLog, onError);
+  } catch {
+    return () => {};
+  }
+}
+
+function _keepUrlForBuild(): () => void {
+  const page = _page();
+  const loc = page.location();
+  const kept = `${loc.pathname}${loc.search}${loc.hash}`;
+  page.replaceUrl(loc.pathname);
+  return () => page.replaceUrl(kept);
+}
+
+/** How long a settled, sessionless start waits for its failure event. */
+const FAILURE_REASON_GRACE_MS = 250;
+
+/** Statuses the SDK passes through while its connector is still starting. */
+const STARTING_STATUSES: ReadonlySet<string> = new Set(["not_ready", "connecting", "authorizing"]);
+
+/**
+ * Until the auth connector has started (and, on a redirect return, connected or
+ * failed): the modal sets its own status only then. Its failures are kept for the
+ * finish, which has no other way to learn them - a URL `error` that `Auth.init`
+ * throws is only logged by the modal, and reaches nothing.
+ */
+async function _awaitConnectorStarted(w: Web3AuthInstance, timeoutMs: number): Promise<boolean> {
+  if (!STARTING_STATUSES.has(w.status)) return true;
+  const { CONNECTOR_EVENTS } = await import("@web3auth/modal");
+  return new Promise<boolean>((resolve) => {
+    let done = false;
+    const events = [CONNECTOR_EVENTS.READY, CONNECTOR_EVENTS.CONNECTED, CONNECTOR_EVENTS.AUTHORIZED];
+    const failures = [CONNECTOR_EVENTS.ERRORED, CONNECTOR_EVENTS.REHYDRATION_ERROR];
+    // A failure sets the modal's status BEFORE an awaited cache clear and only
+    // then re-emits the error, so a settled status that is not a session waits a
+    // moment for the reason to arrive rather than lose it.
+    let deferred = false;
+    const check = () => {
+      if (done || STARTING_STATUSES.has(w.status)) return;
+      if (isWeb3AuthSessionLive(w) || _startErrors.has(w)) return finish(true);
+      if (!deferred) {
+        deferred = true;
+        setTimeout(() => {
+          if (!done) finish(true);
+        }, FAILURE_REASON_GRACE_MS);
+      }
+    };
+    const failed = (e: unknown) => {
+      _startErrors.set(w, e);
+      check();
+    };
+    const finish = (started: boolean) => {
+      done = true;
+      clearTimeout(timer);
+      clearInterval(poll);
+      for (const ev of events) w.removeListener(ev, check);
+      for (const ev of failures) w.removeListener(ev, failed);
+      resolve(started);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    // The modal's own status changes after the events it re-emits; a short poll
+    // catches the change those events precede.
+    const poll = setInterval(check, 100);
+    for (const ev of events) w.on(ev, check);
+    for (const ev of failures) w.on(ev, failed);
+    check();
+  });
+}
+
+/** Drop the instance (spent, unknown, or signed out): the next call builds afresh. */
+function _resetInstance(): void {
+  _generation++;
+  _instance = null;
+  _building = null;
+}
+
+/** Test seam: swap the SDK for a fake (null restores the real one), the page the
+ *  sign-in wait watches and the page a redirect reads (null restores the browser's). */
+export function setWeb3AuthFactoryForTests(
+  factory: Web3AuthFactory | null,
+  waitDeps?: () => SignInWaitDeps,
+  redirectPage?: () => RedirectPageDeps,
+): void {
+  _factory = factory ?? buildSdkInstance;
+  _waitDeps = waitDeps ?? browserSignInWaitDeps;
+  _page = redirectPage ?? browserRedirectPage;
+  _resetInstance();
 }
 
 async function _extractKeyAndAddress(provider: MinimalProvider): Promise<{ address: string; privateKey: `0x${string}` }> {
@@ -68,40 +306,277 @@ async function _extractKeyAndAddress(provider: MinimalProvider): Promise<{ addre
  * is therefore ENDED before the modal opens. The one legitimate silent
  * adoption — same person, page reload — is `restoreWeb3AuthSession`, the
  * boot path, which runs before any click.
+ *
+ * The wait for the pop-up's result is `awaitWeb3AuthSignIn` (a page the browser
+ * suspended can be handed the result long after the person is back; owner
+ * decision 2026-10-10): `onStall` fires when the spinner's time is up, the SDK's
+ * loader is closed, and a result that lands in the grace after that still signs
+ * the person in.
  */
-export async function loginWithWeb3Auth(): Promise<{ address: string; privateKey: `0x${string}` }> {
-  const w = await _getInstance();
-  if (!w) throw new Error("Email login isn't configured yet (missing VITE_WEB3AUTH_CLIENT_ID).");
+export async function loginWithWeb3Auth(
+  opts: { onStall?: () => void } = {},
+): Promise<{ address: string; privateKey: `0x${string}` }> {
+  const NOT_CONFIGURED = "Email login isn't configured yet (missing VITE_WEB3AUTH_CLIENT_ID).";
+  // Pop-up, or (iPhone/iPad) a redirect of this tab that `finishWeb3AuthRedirectSignIn`
+  // completes when it comes back (web3auth-redirect.ts).
+  const mode = _page().uxMode();
+  // Each raw failure below is marked with its step, for the code the sign-in
+  // button shows (signin-failure.ts); the error itself is passed on unchanged.
+  let w: Web3AuthInstance | null;
+  try {
+    w = await _getInstance(mode);
+  } catch (e) {
+    throw markSignInStep(e, "sdk");
+  }
+  if (!w) throw markSignInStep(new Error(NOT_CONFIGURED), "sdk", ["no-client-id"]);
 
   // Throws are surfaced, not swallowed: a survivor we could not end must
   // never be adopted, and proceeding to connect() would adopt it. Shared with
   // the guardian connector (#307), which has the same hole with higher stakes.
-  await endSurvivingWeb3AuthSession(w);
-
+  // An instance that ended a survivor is swapped for a fresh one (#803).
   try {
-    const provider = await w.connect();
-    if (provider) {
-      markWeb3AuthSessionEstablished();
-      return _extractKeyAndAddress(provider);
-    }
+    w = await instanceForExplicitSignIn(w, async () => {
+      _resetInstance();
+      const fresh = await _getInstance(mode);
+      if (!fresh) throw new Error(NOT_CONFIGURED);
+      return fresh;
+    });
   } catch (e) {
-    // A stored session hydrating LATE (past the rehydration wait's 5s window)
-    // can close the modal and reject with "User closed the modal". The old
-    // recovery here ADOPTED the freshly-hydrated session — the #182 bug
-    // through a race window. End it instead and ask for one retry, which
-    // will find it already hydrated and take the logout-then-modal path.
-    if (w.connected) {
-      try {
-        await w.logout({ cleanup: true });
-      } catch {
-        /* the retry's pre-modal logout gets another attempt */
-      }
-      _instance = null;
-      throw new Error("A previous email session interfered with sign-in — please try again.");
-    }
-    throw e instanceof Error ? e : new Error("Email sign-in was cancelled.");
+    // Whatever instance this touched is spent or unknown: the next attempt builds anew.
+    _resetInstance();
+    const said = e instanceof Error ? e.message : "";
+    const shown = [SURVIVOR_STILL_LOADING_MESSAGE, SURVIVOR_INTERFERED_MESSAGE, NOT_CONFIGURED].includes(said);
+    throw new Web3AuthSignInError(shown ? said : PREVIOUS_SESSION_NOT_CLEARED_MESSAGE);
   }
-  throw new Error("Email sign-in was cancelled.");
+
+  // A sign-out running alongside may have just logged this very instance out:
+  // never connect on it (#803).
+  if (_loggedOut.has(w) || w !== _instance) {
+    _resetInstance();
+    throw new Web3AuthSignInError(SURVIVOR_INTERFERED_MESSAGE);
+  }
+
+  let provider: MinimalProvider | null;
+  const instance = w;
+  // Redirect mode: the SDK leaves this page for Web3Auth's from inside connect(),
+  // and the boot finishes what comes back - only for this tab, only with this
+  // marker, written after the survivor rule above and before anything can navigate.
+  const tab = mode === "redirect" ? _page().tabStorage() : null;
+  if (mode === "redirect") {
+    if (!tab) throw markSignInStep(new Error("no tab storage for a redirect sign-in"), "sdk", ["redirect", "no-tab-storage"]);
+    writeRedirectMarker(tab, _page().location().hash, _page().now());
+  }
+  const wait = awaitWeb3AuthSignIn<MinimalProvider>(
+    instance,
+    instance.connect(),
+    {
+      onStall: () => {
+        // The SDK's loader has no close of its own while connecting (#841); its
+        // modal closing is what lets the sheet show the message instead. The
+        // connector goes on waiting for the pop-up underneath, and so do we.
+        _closeModal(instance);
+        opts.onStall?.();
+      },
+      isCancel: isWeb3AuthCancel,
+    },
+    _waitDeps(),
+  );
+  _abortWait = wait.abort;
+  try {
+    const outcome = await wait.outcome;
+    // This page is staying: the marker is spent. (While the SDK navigates away,
+    // connect() never settles, so this line never runs then.)
+    if (tab) clearRedirectMarker(tab);
+    if (outcome.kind === "failed") {
+      const e = outcome.error;
+      // Defence in depth: the modal never opens over a session still loading
+      // (that refuses above), but if one hydrates mid-modal anyway it can close
+      // the modal and reject with "User closed the modal". The old recovery here
+      // ADOPTED it — the #182 bug through a race window. End it instead and ask
+      // for one retry, which builds a fresh instance from the cleared storage.
+      // `connected` (the stored name) is deliberately the wider read here, not
+      // `isWeb3AuthSessionLive`: anything the SDK still names is ended or refused,
+      // and a logout it cannot run is swallowed.
+      if (w.connected) await _endInterferingSession(w);
+      // A non-Error rejection (the auth iframe's LOGIN_FAILED string) is wrapped
+      // with its value kept as the cause - that value is the clue the code carries.
+      throw markSignInStep(e, "connect", [`st.${w.status}`]);
+    }
+    if (outcome.kind === "cancelled") {
+      // The same hydrated-survivor read as a failure: a cancel over a session
+      // the SDK names is never a clean cancel (the "survivor-mid-modal" case).
+      if (w.connected) await _endInterferingSession(w);
+      throw new Web3AuthSignInError(SIGN_IN_CANCELLED_MESSAGE, true);
+    }
+    if (outcome.kind === "timed-out") throw new Web3AuthSignInError(WEB3AUTH_TIMED_OUT_MESSAGE, false, true);
+    if (outcome.recovered) console.debug("[web3auth] sign-in result picked up by the re-check, not the SDK's promise");
+    provider = outcome.provider;
+  } finally {
+    _abortWait = null;
+    _closeModal(w);
+  }
+  if (!provider) throw new Web3AuthSignInError(SIGN_IN_CANCELLED_MESSAGE, true);
+  markWeb3AuthSessionEstablished();
+  try {
+    return await _extractKeyAndAddress(provider);
+  } catch (e) {
+    throw markSignInStep(e, "key");
+  }
+}
+
+/**
+ * The SDK's stored session ids, read straight from its storage: the auth
+ * session manager's `${prefix}:session_id`, prefix `auth_store` or
+ * `auth_store_<namespace>` (`@web3auth/auth` `Auth.init`, session-manager
+ * `AuthSessionManager`; pinned in web3auth-redirect.test.ts). Unreadable storage
+ * THROWS: the finish then fails closed.
+ */
+function _storedSessionIds(storage: Pick<Storage, "length" | "key" | "getItem"> | null): Set<string> {
+  if (!storage) throw new Error("the sign-in service's storage is unreadable");
+  const ids = new Set<string>();
+  for (let i = 0; i < storage.length; i++) {
+    const k = storage.key(i);
+    if (k && /^auth_store(?:_[^:]*)?:session_id$/.test(k)) {
+      const v = storage.getItem(k);
+      if (v) ids.add(v);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Finish a redirect sign-in this tab started (the boot hands over what
+ * `installWeb3AuthRedirectCapture` held: the result and the route). Returns the
+ * key exactly as a pop-up sign-in does; the store then runs the SAME account
+ * set-up for both (auth-store `_runWeb3AuthSignIn`).
+ *
+ * Never a rehydration read as a sign-in (#182): the session must be one this
+ * return MADE. The explicit sign-in ended every survivor before it left, so the
+ * session ids stored now are compared with those stored before the build - only
+ * a NEW id is this result's. (A result that comes back as a `nonce` is finished
+ * through the auth frame, which the SDK skips when a session is already stored;
+ * the stored one would then connect in its place, with an id seen before.)
+ * Anything else is ended and refused, and the address bar is always put back.
+ */
+export async function finishWeb3AuthRedirectSignIn(
+  pending: PendingRedirect,
+): Promise<{ address: string; privateKey: `0x${string}` }> {
+  const notes = ["redirect", ...pending.notes];
+  const page = _page();
+  const loc = page.location();
+  const cleanUrl = urlAfterFinish(loc.pathname, loc.search, pending.route);
+  // Web3Auth said no (cancelled, refused): nothing to build.
+  if ("error" in pending.params) {
+    page.replaceUrl(cleanUrl);
+    throw markSignInStep(pending.params.error, "connect", notes);
+  }
+  if (notes.includes("r.bad")) {
+    page.replaceUrl(cleanUrl);
+    throw markSignInStep(new Error("unreadable sign-in result"), "connect", notes);
+  }
+
+  let before: Set<string>;
+  try {
+    before = _storedSessionIds(page.sdkStorage());
+  } catch (e) {
+    page.replaceUrl(cleanUrl);
+    throw markSignInStep(e, "connect", [...notes, "no-sdk-storage"]);
+  }
+
+  // Whatever instance this page holds was built before the result was in reach.
+  _resetInstance();
+  // The SDK's own clean-up always takes `b64Params` out of the bar when it reads
+  // it (`getHashQueryParams`): still there once the connector has started means
+  // the SDK never read this result - which no frame or session reason explains.
+  const read = { unread: false };
+  let w: Web3AuthInstance | null;
+  try {
+    w = await _getInstance("redirect", () => {
+      page.replaceUrl(urlForFinish(loc.pathname, loc.search, pending));
+      return () => {
+        read.unread = /(?:^#|&)b64Params=/.test(page.location().hash);
+        page.replaceUrl(cleanUrl);
+      };
+    });
+  } catch (e) {
+    _resetInstance();
+    throw markSignInStep(e, "sdk", notes);
+  }
+  if (!w) throw markSignInStep(new Error("Email login isn't configured yet."), "sdk", [...notes, "no-client-id"]);
+
+  // A failed finish leaves this page load signed out (the boot skipped the
+  // stored-session restore for it); a reload restores whatever account the
+  // device still holds, and the sheet shows the code to try again.
+  if (!(isWeb3AuthSessionLive(w) && w.provider)) {
+    const reason = _startErrors.get(w) ?? new Error("the sign-in result did not open a session");
+    if (w.connected) await _endInterferingSession(w);
+    throw markSignInStep(reason, "connect", [...notes, ...(read.unread ? ["r.unread"] : []), `st.${w.status}`]);
+  }
+
+  let after: Set<string>;
+  try {
+    after = _storedSessionIds(page.sdkStorage());
+  } catch {
+    after = new Set();
+  }
+  if (![...after].some((id) => !before.has(id))) {
+    console.warn("[web3auth] a redirect return connected a session it did not make - ended, not adopted (#182)");
+    await _endInterferingSession(w);
+  }
+
+  markWeb3AuthSessionEstablished();
+  try {
+    return await _extractKeyAndAddress(w.provider);
+  } catch (e) {
+    throw markSignInStep(e, "key", notes);
+  }
+}
+
+/** A session the SDK names where the sign-in did not make one: ended, never adopted (#182). */
+async function _endInterferingSession(w: Web3AuthInstance): Promise<never> {
+  try {
+    await w.logout({ cleanup: true });
+  } catch {
+    /* the retry's pre-modal logout gets another attempt */
+  }
+  _resetInstance();
+  throw new Web3AuthSignInError(SURVIVOR_INTERFERED_MESSAGE);
+}
+
+const SIGN_IN_CANCELLED_MESSAGE = "Sign-in was cancelled.";
+const PREVIOUS_SESSION_NOT_CLEARED_MESSAGE =
+  "A previous sign-in on this device couldn't be cleared - check your connection and try again.";
+
+/**
+ * The person closed OUR sign-in sheet while a sign-in was still waiting on the
+ * SDK's pop-up (an iPhone, 2026-10-09: the pop-up's result never came back, and
+ * the SDK's "connecting" loader stayed on screen). That loader has no way out of
+ * its own while connecting - its close acts only once connected (modal `Widget`,
+ * `onCloseLoader`) - so without this the spinner outlives the sheet behind it.
+ * Closing the SDK's modal makes connect() settle: rejected as a cancel while
+ * nothing is connected, resolved as a sign-in if the pop-up had just finished.
+ * After a stall the modal is already closed and the wait is listening on its
+ * own, so the wait is ended too (web3auth-signin-wait.ts).
+ */
+export function cancelWeb3AuthSignIn(): void {
+  if (_instance) _closeModal(_instance);
+  _abortWait?.();
+}
+
+/**
+ * Close the SDK's modal once our sign-in stops listening to it. It does not
+ * close itself after a sign-in (it sits on a success screen over ours), and it
+ * STAYS OPEN after an error such as a closed or blocked popup - by then connect()
+ * has already rejected, so a second tap there completes a sign-in nothing
+ * receives and the person has to start again (#803). Internal field, guarded: a
+ * future SDK shape change only loses the close, which is cosmetic.
+ */
+function _closeModal(w: Web3AuthInstance): void {
+  try {
+    (w as unknown as { loginModal?: { closeModal?: () => void } }).loginModal?.closeModal?.();
+  } catch {
+    /* best effort */
+  }
 }
 
 /**
@@ -141,12 +616,20 @@ export async function restoreWeb3AuthSession(): Promise<Web3AuthRestore> {
   try {
     // Give a cached session time to finish rehydrating before deciding it's gone —
     // otherwise every refresh reads connected=false and logs the user out.
-    const rehydrated = await awaitWeb3AuthRehydration(w);
+    const rehydration = await awaitWeb3AuthRehydration(w);
     console.debug(
       "[web3auth] restore:",
-      { cachedConnector: w.cachedConnector, rehydrated, connected: w.connected, hasProvider: !!w.provider },
+      { cachedConnector: w.cachedConnector, rehydration, status: w.status, hasProvider: !!w.provider },
     );
-    if (!w.connected || !w.provider) {
+    const verdict = restoreVerdict(rehydration, isWeb3AuthSessionLive(w) && !!w.provider);
+    if (verdict === "unavailable") {
+      // Still loading when the wait ran out: no answer yet, so NOT a logout
+      // (#803). Reading it as `expired` signed a valid session out on a slow
+      // reload and left it behind for the next sign-in to trip over. The caller
+      // keeps the WoCo session and retries the key in the background.
+      return { status: "unavailable" };
+    }
+    if (verdict === "expired" || !w.provider) {
       // Definitive: the SDK initialised and reports no session — keep the
       // sign-out flag honest so future logouts stay cheap (#182).
       clearWeb3AuthSessionFlag();
@@ -185,7 +668,7 @@ export async function logoutWeb3Auth(): Promise<void> {
   try {
     w = await _getInstance();
   } catch (e) {
-    _instance = null;
+    _resetInstance();
     console.warn("[web3auth] logout: could not build the SDK to end the session:", e);
     throw new Error(
       "Couldn't reach the sign-in service to end your email session — check your connection and try signing out again.",
@@ -196,10 +679,11 @@ export async function logoutWeb3Auth(): Promise<void> {
   if (!w) return;
 
   try {
-    await awaitWeb3AuthRehydration(w);
-    if (w.connected) {
+    const rehydration = await awaitWeb3AuthRehydration(w, EXPLICIT_REHYDRATION_WAIT_MS);
+    if (rehydration === "connected") {
+      _loggedOut.add(w);
       await w.logout({ cleanup: true });
-    } else if (w.cachedConnector) {
+    } else if (rehydration === "pending") {
       // A stored session exists but would not hydrate; logout() needs a
       // connected instance, so the stored session would survive it.
       throw new Error("stored session did not rehydrate");
@@ -213,6 +697,6 @@ export async function logoutWeb3Auth(): Promise<void> {
   } finally {
     // Next call rebuilds from storage: after success that's a clean slate;
     // after failure it gives rehydration a fresh attempt.
-    _instance = null;
+    _resetInstance();
   }
 }

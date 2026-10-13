@@ -78,7 +78,7 @@ export interface BackupInventoryEntry {
  * are reserved for the attendee rollout (profile + ticket collection) so the
  * schema doesn't move when that lands.
  */
-export type ManifestFeedKind = "profile" | "avatar" | "event" | "site" | "collection" | "ticket";
+export type ManifestFeedKind = "profile" | "avatar" | "event" | "site" | "collection" | "ticket" | "privacy-notice";
 
 /**
  * One ACTIVE client-owned feed in the user's content log (Phase 4 of the

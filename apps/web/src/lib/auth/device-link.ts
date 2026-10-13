@@ -57,6 +57,17 @@ export interface LinkAnswer {
   sealed: unknown;
 }
 
+/**
+ * A passkey already on the account asking for its keys (#186): left out of the key ring
+ * by a removal, it sends its member - public and self-authenticating - for the other
+ * device to add. Nothing secret travels: the ring is the answer.
+ */
+export interface KeysOffer {
+  v: 1;
+  kind: "keys";
+  member: { statement: unknown; boxKey: string };
+}
+
 function isObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
@@ -70,10 +81,17 @@ export function parseLinkOffer(v: unknown): LinkOffer | null {
   return { v: 1, kind: "link", grantee, credentialTag, recipientPk };
 }
 
-export type PairingOffer = LinkOffer;
+export function parseKeysOffer(v: unknown): KeysOffer | null {
+  if (!isObject(v) || v.v !== 1 || v.kind !== "keys" || !isObject(v.member)) return null;
+  const { statement, boxKey } = v.member;
+  if (!isObject(statement) || typeof boxKey !== "string") return null;
+  return { v: 1, kind: "keys", member: { statement, boxKey } };
+}
+
+export type PairingOffer = LinkOffer | KeysOffer;
 
 export function parsePairingOffer(v: unknown): PairingOffer | null {
-  return parseLinkOffer(v);
+  return parseLinkOffer(v) ?? parseKeysOffer(v);
 }
 
 export function parseLinkAnswer(v: unknown): LinkAnswer | null {
@@ -229,6 +247,43 @@ async function settleLinkedPasskey(account: LinkingPasskey, secret: LinkSecret, 
   }).catch((e) => console.warn("[auth] linked passkey's label not kept (non-fatal):", e));
 }
 
+/**
+ * A keyless passkey asks for the account's keys (#186): shows a code carrying its
+ * member, and returns once another passkey has put it in the key ring. The caller then
+ * takes the ring as at any unlock.
+ */
+export async function runGetKeys(
+  opts: { onCode: (code: { typed: string; qr: string }) => void; signal?: AbortSignal },
+  deps: { apiBase: string; member: KeysOffer["member"]; transport?: PairingTransport },
+): Promise<void> {
+  const ch = await import("./pairing-channel.js");
+  const code = ch.newPairingCode();
+  const channel = ch.pairingChannel(code);
+  const transport = deps.transport ?? ch.httpPairingTransport(deps.apiBase);
+  await transport.post(channel.id, "offer", await channel.seal("offer", { v: 1, kind: "keys", member: deps.member }));
+  opts.onCode({ typed: ch.formatPairingCode(code), qr: ch.pairingQrPayload(code) });
+  const box = await ch.waitForSlot(transport, channel.id, "answer", { signal: opts.signal });
+  const answer = await channel.open("answer", box).catch(() => null);
+  if (!isObject(answer) || answer.v !== 1 || answer.kind !== "keys") throw new Error(LINK_CODE_UNKNOWN);
+}
+
+/** The other side: `give` puts the member in the ring; then the answer says so. */
+export async function runGiveKeys(
+  code: Uint8Array,
+  offer: KeysOffer,
+  ctx: { apiBase: string; give: (member: KeysOffer["member"]) => Promise<void>; transport?: PairingTransport },
+): Promise<void> {
+  await ctx.give(offer.member);
+  const ch = await import("./pairing-channel.js");
+  const channel = ch.pairingChannel(code);
+  try {
+    await (ctx.transport ?? ch.httpPairingTransport(ctx.apiBase)).post(channel.id, "answer", await channel.seal("answer", { v: 1, kind: "keys" }));
+  } catch {
+    // The keys are in the ring either way: the other device takes them at its next sign-in.
+    throw new Error("The keys are saved, but the other device didn't hear back. Close and reopen WoCo there.");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The main device
 // ---------------------------------------------------------------------------
@@ -255,6 +310,8 @@ export interface ApproveDeviceLinkContext {
   /** This passkey's own address: a code from this device is refused. */
   self: string;
   seed: string;
+  /** The account's later secrets (#186), read as the answer is sealed - after the grant. */
+  chain?: () => import("./account-chain.js").AccountChain | null;
   /** Owner-signed grant for the new passkey, registered with the server. */
   grant: (grantee: string, credentialTag: string) => Promise<unknown>;
   /** Take that grant back when the answer certainly never reached the other device. */
@@ -276,7 +333,7 @@ export async function runApproveDeviceLink(
   const channel = ch.pairingChannel(code);
   const sealed = await ch.sealLinkSecret(
     offer.recipientPk,
-    { parent: ctx.parent, seed: ctx.seed },
+    { parent: ctx.parent, seed: ctx.seed, chain: ctx.chain?.() ?? null },
     { id: channel.id, grantee: offer.grantee },
   );
   try {

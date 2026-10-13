@@ -24,12 +24,13 @@ import type { Plugin } from "vite";
 const DEPENDENCY_ENV_READS: { file: RegExp; occurrences: number; why: string }[] = [
   {
     // Web3Auth. `getEnvVariable(name)` falls back to process.env when the env
-    // has no such key, and its one caller asks for VITE_APP_INFURA_PROJECT_KEY,
-    // which no build of ours sets - so this changes no value it can return.
+    // has no such key. Since the v11 upgrade nothing calls it (v10's one caller
+    // asked for VITE_APP_INFURA_PROJECT_KEY, which no build of ours sets), so this
+    // changes no value anything can read; test/build-env-660.test.ts pins "no caller".
     file: /[\\/]@toruslabs[\\/]base-controllers[\\/]dist[\\/]lib\.esm[\\/]utils[\\/]utils\.js$/,
     // Two reads and the comment above them.
     occurrences: 3,
-    why: "getEnvVariable - its one caller reads VITE_APP_INFURA_PROJECT_KEY, which we never set",
+    why: "getEnvVariable - no caller since the v11 upgrade (v10's read VITE_APP_INFURA_PROJECT_KEY, never set)",
   },
 ];
 

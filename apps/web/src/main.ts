@@ -1,6 +1,19 @@
+// First, and imports nothing: the install manifest link is in place before any
+// other boot code runs (see the module for why it is not static HTML).
+import './lib/pwa/manifest-link'
+// Also imports nothing: Chromium fires `beforeinstallprompt` once, early, before
+// the lazily loaded install banner exists to hear it.
+import './lib/pwa/install-capture'
 import { mount } from 'svelte'
 import './app.css'
 import App from './App.svelte'
+import { auth } from './lib/auth/auth-store.svelte.js'
+
+// The email -> passkey upgrade (#746) is loaded from here, not by the store: the
+// deployed-site builds share the store, and their files are baked into every site.
+auth.registerUpgradeFlow(() =>
+  Promise.all([import('./lib/auth/upgrade-to-passkey.js'), import('./lib/auth/upgrade-to-passkey-live.js')]),
+)
 
 const app = mount(App, {
   target: document.getElementById('app')!,

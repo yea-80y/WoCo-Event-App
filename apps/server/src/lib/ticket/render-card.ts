@@ -1,210 +1,105 @@
 /**
- * Composite ticket-card image renderer.
+ * The ticket image the email attaches: the shared portrait layout
+ * (`@woco/shared/ticket/card`, the same steps the browser draws for the ticket
+ * page's Save and the in-app download) as SVG, rasterised by resvg.
  *
- * Builds a self-contained ticket image (event title, date, place in the order,
- * buyer email, embedded QR) so a buyer can save / forward / screenshot a
- * single PNG that has everything needed at the door.
+ * Buyers never see the ticket's edition (its sequence tells them how many have
+ * sold): a group order numbers its own tickets ("Ticket 2 of 4"), a single one
+ * says "Your ticket". The edition stays inside the QR payload for the door.
  *
- * Rendered server-side via SVG → PNG (resvg-js). No Cairo or native build
- * deps; the WASM ships in the npm package.
+ * FONTS SHIP WITH THE CODE (assets/fonts, DejaVu, free licence): the server
+ * image (node:24-alpine) has no fonts, and resvg draws no text without one -
+ * the ticket name, date and venue would be missing. The browser draws with the
+ * app's fonts; layout, colours and text are identical either way.
  *
- * The QR is generated via the `qrcode` library as SVG, parsed for its inner
- * <path> shapes, and embedded directly into the layout SVG. We deliberately
- * avoid `image href=""` so resvg doesn't need to resolve external resources.
+ * Rendering is async and one image at a time: resvg's sync render blocks the
+ * event loop, and concurrent decodes would multiply memory.
  */
 
-import { Resvg } from "@resvg/resvg-js";
-import QRCode from "qrcode";
+import { fileURLToPath } from "node:url";
+import { renderAsync, type ResvgRenderOptions } from "@resvg/resvg-js";
 import type { SitePalette } from "@woco/shared";
+import {
+  TICKET_CARD_HEIGHT,
+  TICKET_CARD_WIDTH,
+  ticketCardColours,
+  ticketCardOps,
+} from "@woco/shared/ticket/card";
+import { ticketCardSvg } from "./card-svg.js";
+import type { EventPhoto } from "./event-photo.js";
 
 export interface TicketCardData {
-  /** Full event title, e.g. "Devcon Brussels 2026" */
   eventTitle: string;
-  /** ISO datetime — formatted into a friendly date string */
+  /** ISO start. */
   eventDate?: string;
-  /** Optional venue / address line */
+  /** ISO end. */
+  eventEndDate?: string;
+  /** One line, as the organiser typed it. */
   eventLocation?: string;
-  /** Place in a group order ("2 of 4"), or null for a single ticket. Never the
-   *  edition: its sequence leaks how many tickets have sold. */
-  position: string | null;
-  /** Buyer email — shown on the card so door staff can match ID */
-  /** Optional buyer name (from Stripe customer details, when present) */
-  buyerName?: string;
-  /** Full QR payload — `woco://t/{eventId}/{seriesId}/{edition}/{sig}` */
+  /** The ticket type. */
+  seriesName?: string;
+  /** Position in this order; null for a single ticket. */
+  position: { n: number; of: number } | null;
+  /** `woco://t/{eventId}/{seriesId}/{edition}/{sig}` - the door reads this. */
   qrContent: string;
-  /** Organiser site palette — when present the card matches their brand.
-   *  Falls back to WoCo Concrete & Acid defaults when absent. */
+  /** Organiser site palette; WoCo's own look when absent. */
   palette?: SitePalette;
+  /** The event photo, when it could be read. */
+  photo?: EventPhoto | null;
 }
 
-const WIDTH = 800;
-const HEIGHT = 1100;
-const QR_BOX = 460;          // outer white square
-const QR_PADDING = 28;       // padding inside the white square
-const QR_INNER = QR_BOX - QR_PADDING * 2;
+/** Sharp on a phone, small enough to attach a group order's worth. */
+export const TICKET_PNG_WIDTH = 720;
 
-function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+const FONT_DIR = fileURLToPath(new URL("../../assets/fonts/", import.meta.url));
+export const TICKET_FONT_FILES = [
+  "DejaVuSans.ttf",
+  "DejaVuSans-Bold.ttf",
+  "DejaVuSansMono.ttf",
+  "DejaVuSansMono-Bold.ttf",
+].map((f) => FONT_DIR + f);
+
+const FONTS: ResvgRenderOptions["font"] = {
+  fontFiles: TICKET_FONT_FILES,
+  loadSystemFonts: false,
+  defaultFontFamily: "DejaVu Sans",
+  sansSerifFamily: "DejaVu Sans",
+  monospaceFamily: "DejaVu Sans Mono",
+};
+
+/** The email's banner: the photo cropped to 2:1 here, because email clients
+ *  cannot be trusted to crop (Outlook ignores object-fit). */
+export const HERO_WIDTH = 1200;
+export const HERO_HEIGHT = 600;
+
+export async function renderHeroPng(photo: EventPhoto): Promise<Buffer> {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${HERO_WIDTH}" height="${HERO_HEIGHT}" viewBox="0 0 ${HERO_WIDTH} ${HERO_HEIGHT}"><image x="0" y="0" width="${HERO_WIDTH}" height="${HERO_HEIGHT}" preserveAspectRatio="xMidYMid slice" href="data:${photo.mime};base64,${photo.bytes.toString("base64")}"/></svg>`;
+  const image = await renderAsync(svg, { fitTo: { mode: "width", value: HERO_WIDTH }, font: { loadSystemFonts: false } });
+  return Buffer.from(image.asPng());
 }
 
-function formatDate(iso?: string): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return null;
-  const date = d.toLocaleDateString("en-GB", {
-    weekday: "short",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  });
-  const time = d.toLocaleTimeString("en-GB", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  return `${date} · ${time}`;
-}
-
-/**
- * Truncate `s` to `max` chars, adding ellipsis if truncated.
- * Used to keep long event titles inside their bounding box at the chosen
- * font size — full word-wrap is overkill for the 1-line title slot.
- */
-function clip(s: string, max: number): string {
-  return s.length > max ? s.slice(0, max - 1).trimEnd() + "…" : s;
-}
-
-/** Render the QR matrix as an inline SVG <g> of black squares.
- *  We bypass qrcode's SVG output (which uses a single complex path) and
- *  walk the matrix ourselves — this gives us pixel-aligned squares that
- *  resvg renders crisply at any size. */
-async function renderQrMatrix(content: string): Promise<{ size: number; modules: string }> {
-  const qr = QRCode.create(content, { errorCorrectionLevel: "M" });
-  const size = qr.modules.size;
-  const cell = QR_INNER / size;
-  let rects = "";
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      if (qr.modules.get(x, y)) {
-        rects += `<rect x="${(x * cell).toFixed(3)}" y="${(y * cell).toFixed(3)}" width="${cell.toFixed(3)}" height="${cell.toFixed(3)}"/>`;
-      }
-    }
-  }
-  return { size, modules: rects };
-}
-
-/** Build the SVG markup for the ticket card. Pure string concat — no DOM. */
-async function buildSvg(data: TicketCardData): Promise<string> {
-  const { eventTitle, eventDate, eventLocation, position, buyerName, qrContent, palette: p } = data;
-  // Resolved palette — organiser brand when available, WoCo Concrete & Acid otherwise
-  const col = {
-    bg:     p?.bg     ?? '#0B0B09',
-    cardBg: p?.cardBg ?? '#14140F',
-    border: p?.border ?? '#2B2A23',
-    accent: p?.accent ?? '#C7F23A',
-    text:   p?.text   ?? '#F2EBE0',
-    muted:  p?.muted  ?? '#B5AC9D',
-    dim:    p?.muted  ?? '#8A8478',
-  };
-  const dateStr = formatDate(eventDate);
-  const positionStr = position ? escapeXml(position.toUpperCase()) : null;
-
-  const qr = await renderQrMatrix(qrContent);
-
-  // ── Layout coordinates ─────────────────────────────────────────────
-  const qrX = (WIDTH - QR_BOX) / 2;
-  const qrY = 320;
-  const qrInnerX = qrX + QR_PADDING;
-  const qrInnerY = qrY + QR_PADDING;
-
-  // ── Header band ────────────────────────────────────────────────────
-  // Title clipped to ~26 chars at 36px so it stays on one line.
-  const titleClipped = escapeXml(clip(eventTitle, 32));
-  const dateLine = dateStr ? escapeXml(dateStr) : "";
-  const locationLine = eventLocation ? escapeXml(clip(eventLocation, 42)) : "";
-
-  // ── Buyer footer ───────────────────────────────────────────────────
-  const nameLine = buyerName ? escapeXml(clip(buyerName, 32)) : "";
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}" font-family="'DejaVu Sans', 'Liberation Sans', Helvetica, Arial, sans-serif">
-  <!-- Background -->
-  <rect width="${WIDTH}" height="${HEIGHT}" fill="${col.bg}"/>
-  <!-- Inner card surface -->
-  <rect x="20" y="20" width="${WIDTH - 40}" height="${HEIGHT - 40}" rx="6" fill="${col.cardBg}" stroke="${col.border}" stroke-width="1"/>
-
-  <!-- Brand row -->
-  <text x="${WIDTH / 2}" y="92" text-anchor="middle" font-size="14" font-weight="700"
-        letter-spacing="6" fill="${col.accent}">WOCO TICKET</text>
-
-  ${positionStr ? `
-  <!-- Place in the order -->
-  <g>
-    <rect x="${(WIDTH - 130) / 2}" y="116" width="130" height="30" rx="2" fill="${col.cardBg}" stroke="${col.border}"/>
-    <text x="${WIDTH / 2}" y="136" text-anchor="middle" font-size="13" font-weight="600"
-          letter-spacing="3" fill="${col.accent}">${positionStr}</text>
-  </g>` : ""}
-
-  <!-- Event title -->
-  <text x="${WIDTH / 2}" y="200" text-anchor="middle" font-size="36" font-weight="700"
-        fill="${col.text}">${titleClipped}</text>
-
-  ${dateLine ? `
-  <text x="${WIDTH / 2}" y="240" text-anchor="middle" font-size="16"
-        fill="${col.muted}">${dateLine}</text>` : ""}
-
-  ${locationLine ? `
-  <text x="${WIDTH / 2}" y="${dateLine ? 268 : 240}" text-anchor="middle" font-size="14"
-        fill="${col.dim}">${locationLine}</text>` : ""}
-
-  <!-- QR card (white surface for max scanner contrast) -->
-  <rect x="${qrX}" y="${qrY}" width="${QR_BOX}" height="${QR_BOX}" rx="4" fill="#ffffff"/>
-  <g transform="translate(${qrInnerX} ${qrInnerY})" fill="#111111" shape-rendering="crispEdges">
-    ${qr.modules}
-  </g>
-
-  <!-- Caption under QR -->
-  <text x="${WIDTH / 2}" y="${qrY + QR_BOX + 44}" text-anchor="middle" font-size="13"
-        letter-spacing="2" fill="${col.dim}" font-weight="600">SHOW AT THE DOOR</text>
-
-  ${nameLine ? `
-  <!-- Buyer block -->
-  <g transform="translate(${WIDTH / 2} ${qrY + QR_BOX + 90})">
-    <text text-anchor="middle" font-size="11" letter-spacing="3" font-weight="600"
-          fill="${col.dim}">ISSUED TO</text>
-    <text y="28" text-anchor="middle" font-size="20" font-weight="600"
-          fill="${col.text}">${nameLine}</text>
-  </g>` : ""}
-
-  <!-- Footer note -->
-  <text x="${WIDTH / 2}" y="${HEIGHT - 50}" text-anchor="middle" font-size="11"
-        fill="${col.dim}">Cryptographically signed · Verifies offline</text>
-</svg>`;
-}
-
-/** Render the ticket card to PNG bytes. 800×1100 by default.
- *
- * resvg needs explicit access to fonts to render <text>. We enable system
- * fonts (DejaVu/Liberation/Helvetica are present on every common server
- * distro) and pin the SVG's font-family list so whichever family resolves
- * first wins. `defaultFontFamily` is the final fallback if none of the
- * named families are installed.
- */
 export async function renderTicketCardPng(data: TicketCardData): Promise<Buffer> {
-  const svg = await buildSvg(data);
-  const resvg = new Resvg(svg, {
-    fitTo: { mode: "width", value: WIDTH },
-    background: data.palette?.bg ?? "#0B0B09",
-    font: {
-      loadSystemFonts: true,
-      defaultFontFamily: "DejaVu Sans",
-      sansSerifFamily: "DejaVu Sans",
-      monospaceFamily: "DejaVu Sans Mono",
-    },
+  const colours = ticketCardColours(data.palette);
+  const ops = ticketCardOps({
+    title: data.eventTitle,
+    startIso: data.eventDate,
+    endIso: data.eventEndDate,
+    location: data.eventLocation,
+    series: data.seriesName,
+    position: data.position ?? undefined,
+    hasPhoto: !!data.photo,
+    colours,
   });
-  return Buffer.from(resvg.render().asPng());
+  const svg = ticketCardSvg(ops, {
+    width: TICKET_CARD_WIDTH,
+    height: TICKET_CARD_HEIGHT,
+    qrContent: data.qrContent,
+    photo: data.photo ?? null,
+  });
+  const image = await renderAsync(svg, {
+    fitTo: { mode: "width", value: TICKET_PNG_WIDTH },
+    background: colours.bg,
+    font: FONTS,
+  });
+  return Buffer.from(image.asPng());
 }

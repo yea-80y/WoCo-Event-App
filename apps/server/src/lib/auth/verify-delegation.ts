@@ -4,6 +4,7 @@ import {
   SESSION_TYPES,
   AuthErrorCode,
   FEATURES,
+  SESSION_EXPIRY_MS,
   type SessionDelegation,
   type VerifyDelegationResult,
   type SessionRank,
@@ -50,6 +51,8 @@ export interface DelegationVerifyDeps {
   ) => DeviceGrantState | undefined | Promise<DeviceGrantState | undefined>;
 }
 
+const SESSION_LIFETIME_SLACK_MS = 60_000;
+
 const DEFAULT_DEPS: DelegationVerifyDeps = {
   isKernelKnownDeployedOnAnyChain,
   readKernelOwner,
@@ -63,7 +66,8 @@ const DEFAULT_DEPS: DelegationVerifyDeps = {
  * Checks:
  * 1. Message and signature are present
  * 2. Not expired
- * 3. Not future-dated (1 min clock skew allowed)
+ * 3. Not future-dated (1 min clock skew allowed), and no longer-lived than a
+ *    session our client mints
  * 4. Host matches allowed list (if provided)
  * 5. Claimed session address matches delegation
  * 6. EIP-712 signature is valid for the claimed parent — one of:
@@ -126,6 +130,14 @@ export async function verifyDelegation(
       };
     }
 
+    // Lifetime cap (#186). Our client mints exactly SESSION_EXPIRY_MS, so a longer
+    // delegation was not made by it, and with no cap one phished signature would
+    // outlive every rotation. The slack covers the client's two clock reads.
+    // SESSION_INVALID (the default), so a refused client simply mints a new one.
+    if (expiresAt - issuedAt > SESSION_EXPIRY_MS + SESSION_LIFETIME_SLACK_MS) {
+      return { valid: false, error: "Delegation lifetime is longer than a session may be" };
+    }
+
     // Host check
     if (allowedHosts?.length && !allowedHosts.includes(message.host)) {
       return { valid: false, error: `Invalid host: ${message.host}` };
@@ -168,6 +180,13 @@ export async function verifyDelegation(
       }
       const parent = message.parent.toLowerCase();
       if (recovered === parent) {
+        // A wallet login: the parent EOA signed its own delegation. Off for launch
+        // (#186) - the authoritative half of the flag, since a published event page
+        // keeps the bundle, and the wallet sign-in, it was published with.
+        if (!FEATURES.walletLoginAllowed) {
+          console.warn(`[auth] wallet delegation refused for ${message.parent}: walletLoginAllowed is off (#186)`);
+          return { valid: false, error: "Wallet sign-in is not available", code: AuthErrorCode.SESSION_INVALID };
+        }
         validSig = true;
         parentKind = "eoa";
       } else if (recovered) {
@@ -314,7 +333,7 @@ export async function verifyDelegation(
     // so we use it as the authoritative parent address (no separate recovered
     // value — that pattern only existed for the EOA-only ethers flow).
     if (isSessionRevoked(message.nonce, message.parent, message.issuedAt)) {
-      return { valid: false, error: "Session has been revoked" };
+      return { valid: false, error: "Session has been revoked", code: AuthErrorCode.SESSION_REVOKED };
     }
 
     return {

@@ -12,27 +12,9 @@ import { id as keccakUtf8 } from "ethers";
 import type { OwnedSubEnsName } from "../api/sub-ens.js";
 import { WOCO_GATEWAY_URL } from "../swarm/gateways.js";
 
-/** The JSON a bee feed manifest carries on its root fork. */
-const FEED_METADATA = /\{[^{}]*"swarm-feed-owner"[^{}]*\}/;
-
-/**
- * The feed a manifest root chunk follows, or null when it is not a feed
- * manifest or its bytes are obfuscated. Both come back lowercase, no `0x`.
- */
-export function feedOfManifestChunk(chunk: Uint8Array): { owner: string; topic: string } | null {
-  const match = new TextDecoder("latin1").decode(chunk).match(FEED_METADATA);
-  if (!match) return null;
-  try {
-    const meta = JSON.parse(match[0]) as Record<string, unknown>;
-    const owner = String(meta["swarm-feed-owner"] ?? "").toLowerCase();
-    const topic = String(meta["swarm-feed-topic"] ?? "").toLowerCase();
-    // Every WoCo page feed is a sequence feed; another type resolves a different feed.
-    if (meta["swarm-feed-type"] !== "Sequence") return null;
-    return /^[0-9a-f]{40}$/.test(owner) && /^[0-9a-f]{64}$/.test(topic) ? { owner, topic } : null;
-  } catch {
-    return null;
-  }
-}
+// Read strictly, as bee reads it (#186): one parser for every feed manifest.
+import { feedOfManifestChunk } from "../swarm/feed-manifest.js";
+export { feedOfManifestChunk };
 
 export interface EventNameDeps {
   ownedNames(): Promise<OwnedSubEnsName[]>;

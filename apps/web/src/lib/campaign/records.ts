@@ -247,6 +247,38 @@ export async function readMyReferralStatement(
   return null;
 }
 
+/**
+ * The referrer the caller's live statement names - for a caller that WRITES from
+ * the answer (the passkey upgrade re-signs it under the new feed signer, #746).
+ * The display read above takes "could not read" as "none"; here that would leave
+ * an unconfirmed referral that never confirms, so every read is thorough and any
+ * inconclusive one is "unavailable".
+ */
+export async function readLiveReferrer(
+  ownerAddress: string,
+  deps: CampaignRecordDeps = liveDeps,
+): Promise<Hex0x | null | "unavailable"> {
+  const index = await deps.readBandedFeed(ownerAddress, REFERRAL_INDEX.indexTopic, {
+    route: REFERRAL_INDEX.route,
+    thorough: true,
+  });
+  if (index.status === "absent") return null;
+  if (index.status !== "found" || !index.bandClean || !validateReferralSubjectIndexV1(index.value)) return "unavailable";
+  for (const subject of (index.value as ReferralSubjectIndexV1).subjects) {
+    const referrer = addressFromProfileSubject(subject);
+    if (!referrer) continue;
+    const res = await deps.readFeed(ownerAddress, referralStatementTopic(subject), {
+      route: REFERRAL_INDEX.route,
+      skipLegacy: true,
+      thorough: true,
+    });
+    if (res.status === "unavailable" || (res.status === "found" && !res.scanClean)) return "unavailable";
+    if (res.status !== "found" || !validateReferralStatementV1(res.value)) continue;
+    if ((res.value as ReferralStatementV1).value === true) return referrer;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Issuer-published records
 // ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@
   import { onboarding } from "./onboarding.svelte.js";
   import { organiserRole } from "../../auth/organiser-role.svelte.js";
   import { canProtectAccount } from "../../auth/backup-prompt.js";
+  import { ownNoticeStatus } from "../../legal/own-notice-status.js";
   import NextStepCard from "./NextStepCard.svelte";
   import {
     nextStep,
@@ -48,9 +49,9 @@
   import Webhook from "lucide-svelte/icons/webhook";
   import Wallet from "lucide-svelte/icons/wallet";
   import Banknote from "lucide-svelte/icons/banknote";
+  import ShieldCheck from "lucide-svelte/icons/shield-check";
   import Layers from "lucide-svelte/icons/layers";
   import Plus from "lucide-svelte/icons/plus";
-  import ShieldCheck from "lucide-svelte/icons/shield-check";
   import KeyRound from "lucide-svelte/icons/key-round";
   import Mail from "lucide-svelte/icons/mail";
 
@@ -89,11 +90,14 @@
   let stripe = $state<Read<StripeFacts>>(LOADING);
   /** The status read was refused for a dead session (#256): retry = sign in. */
   let stripeSessionDead = $state(false);
+  let noticeConfirmed = $state<Read<boolean>>(LOADING);
   let hasProfileName = $state<Read<boolean>>(LOADING);
   let nameUnlocked = $state<Read<boolean>>(LOADING);
   let audienceCount = $state<Read<number>>(LOADING);
   let audienceAsked = false;
   let stripeModalOpen = $state(false);
+  /** Re-reads the referral box after a reload, which is what follows Stripe onboarding. */
+  let referralRecheck = $state(0);
 
   // Kernel-backed kinds can install guardian recovery (see AccountRecoverySetup.svelte
   // for the full rationale). Self-custody kinds (web3/local/coinbase) recover from
@@ -121,6 +125,7 @@
   );
   const step = $derived(nextStep({
     stripe,
+    noticeConfirmed,
     hasProfileName,
     nameUnlocked,
     eventCount,
@@ -144,6 +149,8 @@
     loadingBackups = false;
     stripe = LOADING;
     stripeSessionDead = false;
+    noticeConfirmed = LOADING;
+    noticeRetried = false;
     hasProfileName = LOADING;
     nameUnlocked = LOADING;
     audienceCount = LOADING;
@@ -159,6 +166,8 @@
     loadingBackups = true;
     stripe = LOADING;
     stripeSessionDead = false;
+    noticeConfirmed = LOADING;
+    noticeRetried = false;
     hasProfileName = LOADING;
     nameUnlocked = LOADING;
     audienceCount = LOADING;
@@ -236,6 +245,9 @@
       }
     }).catch(() => { if (token === loadToken) stripe = UNAVAILABLE; });
 
+    // The privacy notice: nothing sells until it is confirmed. Prompt-free.
+    readNoticeStatus(token);
+
     // Owned .woco.eth names (authoritative on-chain read) — independent of the
     // events/sites panels so it paints as soon as it resolves.
     getOwnedSubEns().then(res => {
@@ -262,6 +274,23 @@
       loadingBackups = false;
     }
   }
+
+  function readNoticeStatus(token: number): void {
+    ownNoticeStatus().then((st) => {
+      if (token !== loadToken) return;
+      noticeConfirmed = st === "unknown" ? UNAVAILABLE : known(st === "confirmed");
+    });
+  }
+
+  // A device whose keys were not ready could not say; ask again ONCE they are.
+  // Guarded: every "couldn't say" is a fresh state value, so an unguarded retry
+  // would re-run itself back to back while the read keeps failing.
+  let noticeRetried = false;
+  $effect(() => {
+    if (noticeRetried || !auth.hasIdentitySeed || noticeConfirmed.status !== "unavailable") return;
+    noticeRetried = true;
+    readNoticeStatus(loadToken);
+  });
 
   // A passkey account's backup list opens only once its keys unlock (#746 fix 1):
   // read it again then, if the first read could not say.
@@ -315,6 +344,7 @@
 
   function reload(): void {
     if (!auth.parent) return;
+    referralRecheck++;
     if (stripeSessionDead) {
       void loginRequest.request().then((ok) => { if (ok && auth.parent) loadFor(auth.parent.toLowerCase()); });
       return;
@@ -388,13 +418,13 @@
     <h1>{greeting}{#if profileName}, <span class="who">{profileName}</span>{/if}.</h1>
   </header>
 
-  <ReferralConfirmBanner />
+  <ReferralConfirmBanner recheck={referralRecheck} />
 
   {#if !auth.isConnected}
     <section class="signin-callout card">
       <div>
         <h2>Sign in to see your dashboard</h2>
-        <p>Use your passkey, email or wallet to create events and sell tickets.</p>
+        <p>Organisers sign in with a passkey. New here? Create one in a minute and start selling tickets.</p>
       </div>
       <button class="btn btn--primary" onclick={() => loginRequest.request()}>Sign in</button>
     </section>
@@ -404,6 +434,7 @@
       onstripe={() => { stripeModalOpen = true; }}
       onstripedetails={() => navigate("/creator/payouts")}
       onretry={reload}
+      onnotice={() => navigate("/creator/privacy-notice")}
       onname={openProfile}
       onimport={() => navigate("/creator/audience")}
       onskipimport={() => onboarding.skipImport()}
@@ -719,6 +750,14 @@
         </div>
       </button>
 
+      <button class="tool" onclick={() => navigate("/creator/privacy-notice")}>
+        <ShieldCheck size={20} strokeWidth={2.25} />
+        <div>
+          <span class="tool-label">Privacy notice</span>
+          <span class="tool-desc">What attendees see about how you use their details.</span>
+        </div>
+      </button>
+
       <button class="tool" onclick={openProfile}>
         <Wallet size={20} strokeWidth={2.25} />
         <div>
@@ -918,12 +957,6 @@
   .armed-dot {
     width: 0.3rem; height: 0.3rem; border-radius: 50%;
     background: var(--accent);
-    box-shadow: 0 0 5px var(--accent);
-    animation: armed-pulse 1.8s ease-in-out infinite;
-  }
-  @keyframes armed-pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.45; transform: scale(0.7); }
   }
 
   .row.row--static {
@@ -951,7 +984,7 @@
     to { opacity: 1; transform: none; }
   }
   @media (prefers-reduced-motion: reduce) {
-    .backup-row-enter, .armed-dot { animation: none; }
+    .backup-row-enter { animation: none; }
   }
 
   .backup-add-another { padding: 0.5rem; }

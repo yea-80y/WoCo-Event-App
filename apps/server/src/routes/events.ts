@@ -8,8 +8,9 @@ import { requireAuth } from "../middleware/auth.js";
 import { cancellationGate, withCancellation } from "../lib/event/cancellations.js";
 import { createEventV2, getEvent, getEventForDisplay, getEventForOwner, resolveOwnEventLocally, listEvents, getCreatorEvents, isOrganiserTrusted, updateEventMetadata, deleteEventIfNoOrders, type EventMetaUpdates } from "../lib/event/service.js";
 import { DeleteBlockedError } from "../lib/event/delete-safety.js";
+import { AccountKeysChangedError, AccountKeysUnavailableError } from "../lib/keyring/event-keys.js";
 import { setListed } from "../lib/event/listing-state.js";
-import { isFeedSignerStoreError } from "../lib/event/feed-signer-record.js";
+import { feedSignerRecordHealth, getRecordedFeedSigner, isFeedSignerStoreError } from "../lib/event/feed-signer-record.js";
 import { cardFromFeed, scheduleSnapshotRebuild } from "../lib/event/directory-snapshot.js";
 import { getOrganiserNonce, getActiveChainId, getWoCoEventAddress } from "../lib/chain/event-contract.js";
 import { registerSeriesExactlyOnce } from "../lib/event/register-once.js";
@@ -20,13 +21,14 @@ import { batchForDeploy, PlatformBatchUnavailable } from "../lib/etherna/batch-r
 import type { SeriesManifestBlob } from "@woco/shared";
 import { manifestV2Digest, validateSignedManifestV2, bytesToHex0x } from "@woco/shared";
 import { verifyAndPinIssuerBinding } from "../lib/issuer/binding.js";
-import { deleteStripeAccount, getStripeAccount, setStripeAccount } from "../lib/stripe/accounts.js";
+import { deleteStripeAccount, getStripeAccount, syncStripeVerdict } from "../lib/stripe/accounts.js";
 import { currencyAllowedFor } from "../lib/stripe/currency-policy.js";
 import { getStripe } from "../lib/stripe/client.js";
 import { sanitisePublicApiUrl } from "../lib/url/public-api-url.js";
 import { isValidSeriesId } from "../lib/swarm/topics.js";
 import { issueJoinedBadge } from "../lib/campaign/badges.js";
 import { clientIp } from "../lib/http/client-ip.js";
+import { SWARM_READ_MAX_BYTES, readCappedJson, readPrefix } from "../lib/http/read-capped.js";
 import { failureSentence } from "../lib/http/error-class.js";
 import { orderFieldsRefusal } from "../lib/event/order-fields.js";
 const events = new Hono<AppEnv>();
@@ -332,19 +334,12 @@ events.post("/", requireAuth, async (c) => {
     try {
       const s = getStripe();
       const account = await s.accounts.retrieve(stripeRecord.stripeAccountId);
+      syncStripeVerdict(parentAddress.toLowerCase(), stripeRecord.stripeAccountId, account);
       if (!account.charges_enabled) {
-        // Keep local cache in sync
-        if (stripeRecord.onboardingComplete) {
-          setStripeAccount(parentAddress.toLowerCase(), stripeRecord.stripeAccountId, false);
-        }
         return c.json({
           ok: false,
           error: "Your Stripe account is not yet verified. Complete identity verification in Dashboard → Payments.",
         }, 403);
-      }
-      // Sync cache if it was behind
-      if (!stripeRecord.onboardingComplete) {
-        setStripeAccount(parentAddress.toLowerCase(), stripeRecord.stripeAccountId, true);
       }
     } catch (err: any) {
       if (err?.statusCode === 404 || err?.code === "resource_missing") {
@@ -434,7 +429,10 @@ events.post("/", requireAuth, async (c) => {
       const message = isFeedSignerStoreError(err)
         ? "Publishing is paused while the server is repaired. Nothing was created - please try again later."
         : err instanceof Error ? err.message : "Failed to create event";
-      const code = err instanceof PlatformBatchUnavailable ? { code: err.code } : {};
+      const code =
+        err instanceof PlatformBatchUnavailable || err instanceof AccountKeysChangedError || err instanceof AccountKeysUnavailableError
+          ? { code: err.code }
+          : {};
       stream.writeln(JSON.stringify({ type: "error", ok: false, error: message, ...code }));
     }
   });
@@ -612,7 +610,10 @@ events.post("/discover", requireAuth, async (c) => {
   const rawUrl = (body.sourceApiUrl ?? "").trim().replace(/\/$/, "");
   if (!rawUrl) return c.json({ ok: false, error: "sourceApiUrl is required" }, 400);
 
-  const apiBase = rawUrl.startsWith("http") ? rawUrl : "https://" + rawUrl;
+  // A public https source only, and no redirects: a caller's URL must not point
+  // this server at its own network (#186). Anything else discovers from here.
+  const apiBase = sanitisePublicApiUrl(rawUrl.startsWith("http") ? rawUrl : "https://" + rawUrl);
+  if (!apiBase) return c.json({ ok: false, error: "sourceApiUrl must be a public https address" }, 400);
 
   // Cross-server delegation forwarding is no longer supported (auth v2 signs each
   // request against a specific method+path+body, so an incoming sig can't be
@@ -623,9 +624,12 @@ events.post("/discover", requireAuth, async (c) => {
 
   if (!usedMine) {
     try {
-      const resp = await fetch(`${apiBase}/api/events`, { signal: AbortSignal.timeout(15000) });
+      const resp = await fetch(`${apiBase}/api/events`, { redirect: "error", signal: AbortSignal.timeout(15000) });
       if (!resp.ok) return c.json({ ok: false, error: `Source server returned HTTP ${resp.status}` }, 400);
-      const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventDirectoryEntry[]; error?: string };
+      // The host is the organiser's choice: read a bounded body, like any Swarm read.
+      const json = await readCappedJson<{ ok: boolean; data?: import("@woco/shared").EventDirectoryEntry[]; error?: string }>(
+        resp, SWARM_READ_MAX_BYTES, "source event list",
+      );
       if (!json.ok) return c.json({ ok: false, error: json.error || "Failed to list events from source" }, 400);
       remoteEntries = json.data ?? [];
     } catch (err) {
@@ -652,6 +656,22 @@ events.post("/discover", requireAuth, async (c) => {
   return c.json({ ok: true, data });
 });
 
+/**
+ * An event created here has its creator on record (#670): only that creator may
+ * list or unlist it, and no remote server is asked to vouch otherwise (#186).
+ * An unreadable record file refuses rather than fall back to a remote vouch.
+ */
+function recordedCreatorRefusal(eventId: string, parentAddress: string): { status: 403 | 503; error: string } | null {
+  if (feedSignerRecordHealth().unreadable) {
+    return { status: 503, error: "Event records are unavailable - try again later" };
+  }
+  const recorded = getRecordedFeedSigner(eventId);
+  if (recorded && recorded.creatorAddress !== parentAddress) {
+    return { status: 403, error: "You are not the creator of this event" };
+  }
+  return null;
+}
+
 // POST /api/events/:id/list — authenticated
 // Fetches the event from sourceApiUrl (or WoCo's own server), verifies creator,
 // and adds to WoCo directory. No-op if already listed.
@@ -663,6 +683,9 @@ events.post("/:id/list", requireAuth, async (c) => {
   }
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const body = c.get("body") as { sourceApiUrl?: string; signer?: string };
+
+  const refused = recordedCreatorRefusal(eventId, parentAddress);
+  if (refused) return c.json({ ok: false, error: refused.error }, refused.status);
 
   // SECURITY: the creatorAddress==parent gate below is only meaningful when the
   // feed comes from a source the caller cannot author. A client-supplied `signer`
@@ -684,12 +707,18 @@ events.post("/:id/list", requireAuth, async (c) => {
   eventFeed = await resolveOwnEventLocally(eventId, parentAddress);
   if (eventFeed) localBasis = true;
 
-  if (!eventFeed && body.sourceApiUrl) {
-    const apiBase = body.sourceApiUrl.trim().replace(/\/$/, "");
+  // Same rule as /discover: a public https source only, no redirects (#186).
+  const apiBase = sanitisePublicApiUrl(body.sourceApiUrl);
+  if (!eventFeed && body.sourceApiUrl && apiBase) {
     try {
-      const resp = await fetch(`${apiBase}/api/events/${eventId}`, { signal: AbortSignal.timeout(15000) });
+      const resp = await fetch(`${apiBase}/api/events/${encodeURIComponent(eventId)}`, {
+        redirect: "error",
+        signal: AbortSignal.timeout(15000),
+      });
       if (!resp.ok) return c.json({ ok: false, error: `Source server returned HTTP ${resp.status}` }, 400);
-      const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventFeed; error?: string };
+      const json = await readCappedJson<{ ok: boolean; data?: import("@woco/shared").EventFeed; error?: string }>(
+        resp, SWARM_READ_MAX_BYTES, "source event",
+      );
       if (!json.ok || !json.data) return c.json({ ok: false, error: json.error || "Event not found on source server" }, 404);
       eventFeed = json.data;
     } catch (err) {
@@ -741,6 +770,9 @@ events.post("/:id/unlist", requireAuth, async (c) => {
   const parentAddress = (c.get("parentAddress") as string).toLowerCase();
   const body = c.get("body") as { sourceApiUrl?: string };
 
+  const refused = recordedCreatorRefusal(eventId, parentAddress);
+  if (refused) return c.json({ ok: false, error: refused.error }, refused.status);
+
   // Verify creator — check directory first, then optional sourceApiUrl
   const wocoEntries = await listEvents();
   const dirEntry = wocoEntries.find((e) => e.eventId === eventId);
@@ -750,11 +782,18 @@ events.post("/:id/unlist", requireAuth, async (c) => {
       return c.json({ ok: false, error: "You are not the creator of this event" }, 403);
     }
   } else if (body.sourceApiUrl) {
-    // Event may not be in directory yet — verify via source
-    const apiBase = body.sourceApiUrl.trim().replace(/\/$/, "");
+    // Event may not be in directory yet — verify via source. Same rule as /list:
+    // a public https source only, no redirects (#186).
+    const apiBase = sanitisePublicApiUrl(body.sourceApiUrl);
+    if (!apiBase) return c.json({ ok: false, error: "Could not verify event creator" }, 400);
     try {
-      const resp = await fetch(`${apiBase}/api/events/${eventId}`, { signal: AbortSignal.timeout(15000) });
-      const json = await resp.json() as { ok: boolean; data?: import("@woco/shared").EventFeed };
+      const resp = await fetch(`${apiBase}/api/events/${encodeURIComponent(eventId)}`, {
+        redirect: "error",
+        signal: AbortSignal.timeout(15000),
+      });
+      const json = await readCappedJson<{ ok: boolean; data?: import("@woco/shared").EventFeed }>(
+        resp, SWARM_READ_MAX_BYTES, "source event",
+      );
       if (!json.ok || !json.data) return c.json({ ok: false, error: "Event not found" }, 404);
       if (json.data.creatorAddress.toLowerCase() !== parentAddress) {
         return c.json({ ok: false, error: "You are not the creator of this event" }, 403);
@@ -1118,19 +1157,16 @@ events.post("/import-url", requireAuth, async (c) => {
         "Accept-Language": "en-GB,en;q=0.9",
       },
     });
-    clearTimeout(timeout);
+    // The timer stays armed through the body read below: a slow body is a
+    // timeout too. On an early return it fires later and aborts the unread body.
     if (!resp.ok) return c.json({ ok: false, error: `Fetch failed: ${resp.status}` }, 422);
     const ct = resp.headers.get("content-type") ?? "";
     if (!ct.includes("text/html") && !ct.includes("text/plain")) {
       return c.json({ ok: false, error: "URL does not appear to be an HTML page" }, 422);
     }
-    // Limit to 512 KB to avoid huge pages
-    const buf = await resp.arrayBuffer();
-    if (buf.byteLength > 512 * 1024) {
-      html = new TextDecoder().decode(buf.slice(0, 512 * 1024));
-    } else {
-      html = new TextDecoder().decode(buf);
-    }
+    // The first 512 KB only; the rest of a huge page is never downloaded.
+    html = new TextDecoder().decode(await readPrefix(resp, 512 * 1024));
+    clearTimeout(timeout);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("abort") || msg.includes("Abort")) {

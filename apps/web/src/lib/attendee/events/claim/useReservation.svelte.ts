@@ -4,6 +4,7 @@ import {
   secondsUntil,
   type ReservationData,
 } from "../../../api/reservations.js";
+import { isSaleClosedCode } from "@woco/shared";
 
 interface UseReservationOpts {
   eventId: string;
@@ -70,6 +71,7 @@ export function useReservation(opts: UseReservationOpts) {
     initial ? secondsUntil(initial.expiresAt) : null,
   );
   let error = $state<string | null>(null);
+  let closed = $state<string | null>(null);
   let expired = $state(false);
 
   // Plain booleans (not $state) — prevent circular reactivity.
@@ -153,6 +155,9 @@ export function useReservation(opts: UseReservationOpts) {
           }
         } else {
           error = res.error;
+          // Not on sale at all (no confirmed privacy notice, or a legacy event):
+          // the caller closes the form rather than let the buyer keep typing.
+          if (isSaleClosedCode(res.code)) closed = res.error;
         }
       }
     }).catch(() => {
@@ -183,6 +188,8 @@ export function useReservation(opts: UseReservationOpts) {
     get reservation() { return reservation; },
     get secsLeft() { return secsLeft; },
     get error() { return error; },
+    /** The server's reason the event is not on sale at all, or null. Never cleared by a release. */
+    get closed() { return closed; },
     get expired() { return expired; },
     /**
      * Called from the Stripe handler after the server has stamped

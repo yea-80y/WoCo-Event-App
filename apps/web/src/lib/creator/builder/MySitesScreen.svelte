@@ -472,13 +472,8 @@
     height: 6px;
     border-radius: 50%;
     background: #4ade80;
-    animation: pulse 2s ease-in-out infinite;
   }
 
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50%       { opacity: 0.4; }
-  }
 
   .card-meta {
     font-size: 0.8125rem;

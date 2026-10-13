@@ -19,6 +19,7 @@
 
 import { mayDeliverRefundNotice } from "../email/service-notice-crossing.js";
 import { redactAddresses } from "../email/failure-ledger.js";
+import { companyFooterHtml, companyFooterText } from "../email/company-footer.js";
 import type { SuppressSource } from "../marketing/suppression-store.js";
 import type { CancelNotice, CancelRefundRow } from "../event/cancellations.js";
 
@@ -126,10 +127,11 @@ export function buildCancellationNotice(input: {
         ${lines.map((l, i) => `<p style="margin:0 0 ${i === lines.length - 1 ? 0 : 16}px;color:${i === lines.length - 1 ? "#9a9a94" : "#e8e8e4"};font-size:${i === lines.length - 1 ? 13 : 15}px;line-height:1.6;">${escHtml(l)}</p>`).join("\n        ")}
       </td></tr>
     </table>
+    <div style="max-width:480px;margin:0 auto;text-align:center;">${companyFooterHtml("#6a6a64")}</div>
   </td></tr></table>
 </body>
 </html>`;
-  return { subject, html, text: lines.join("\n\n") + "\n" };
+  return { subject, html, text: lines.join("\n\n") + "\n" + companyFooterText() };
 }
 
 export interface CancellationNoticeDeps {

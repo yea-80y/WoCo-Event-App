@@ -2,6 +2,7 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import StripeConnect from "../../creator/dashboard/StripeConnect.svelte";
   import { navigate } from "../../router/router.svelte.js";
+  import { canOrganise } from "../../auth/organiser-account.js";
 </script>
 
 <div class="wallet-tab">
@@ -27,8 +28,14 @@
     {/if}
   </section>
 
-  <!-- Stripe — shown to all auth'd users; StripeConnect handles not-yet-connected gracefully -->
-  {#if auth.isConnected}
+  <!-- Stripe is for organisers, and organising needs a passkey (#746); StripeConnect
+       says so to any other account. -->
+  {#if auth.isConnected && !canOrganise(auth.kind)}
+    <section class="stripe-section">
+      <h3 class="section-title">Hosting events</h3>
+      <StripeConnect />
+    </section>
+  {:else if auth.isConnected}
     <section class="stripe-section">
       <h3 class="section-title">Card Payments</h3>
       <p class="section-hint">

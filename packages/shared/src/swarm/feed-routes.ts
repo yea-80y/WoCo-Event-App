@@ -28,6 +28,9 @@ export type FeedStore = "etherna" | "woco";
 export const FEED_FAMILY_STORES = {
   /** Profile data + avatar pointer (#617, #651). Client-written. */
   profile: "etherna",
+  /** The organiser's privacy notice (`legal/organiser-notice.ts`). Client-written; the
+   *  server reads it for the public notice pages under the organiser's current signer. */
+  privacyNotice: "etherna",
   /**
    * Reading event detail feeds - a DISCOVERY row. New events are stamped on
    * Etherna and older ones on WoCo, and which one is recorded INSIDE the feed,

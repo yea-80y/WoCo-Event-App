@@ -57,6 +57,7 @@ import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
 import { registerEthernaOffer } from "../etherna/upload.js";
 import { observeStatementBytes } from "../social/participants.js";
 import { ETHERNA_FETCH_BASE } from "../etherna/gateway.js";
+import { errorSnippet } from "../http/read-capped.js";
 
 const ETHERNA_GW = ETHERNA_FETCH_BASE;
 
@@ -273,8 +274,7 @@ export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDes
         release();
       }
       if (!resp.ok) {
-        const text = await resp.text().catch(() => "");
-        const e = new Error(`Bee SOC upload ${resp.status}: ${text.slice(0, 200)}`) as Error & { status?: number };
+        const e = new Error(`Bee SOC upload ${resp.status}: ${await errorSnippet(resp, 200)}`) as Error & { status?: number };
         // 429 / 5xx are transient; surface other 4xx immediately as a 502.
         if (!(resp.status === 429 || resp.status >= 500)) e.status = 502;
         throw e;

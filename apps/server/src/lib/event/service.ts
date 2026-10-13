@@ -21,6 +21,7 @@ import {
 } from "./onchain-registry.js";
 import { setListed, setTombstoned } from "./listing-state.js";
 import { acceptEventFeed, getRecordedFeedSigner, recordEventFeedSigner } from "./feed-signer-record.js";
+import { assertCurrentKeys, eventKeys, feedSignerFor, withAuthoritativeOrderKey } from "../keyring/event-keys.js";
 import { cardFromFeed, getEventsSnapshot, scheduleSnapshotRebuild } from "./directory-snapshot.js";
 import {
   readFeedPage,
@@ -182,6 +183,12 @@ export async function createEventV2(opts: {
   const createdAt = new Date().toISOString();
   const totalObjects = series.reduce((n, s) => n + s.totalSupply, 0);
 
+  // The account's CURRENT keys (#186): after a passkey is removed the account signs
+  // and seals under a new generation, and an event made under the old one would be
+  // read from a signer nobody follows. Before anything is written.
+  const requestedOrderKeyRef = encryptionPublicKey ? orderKeyRef(hexBytes(encryptionPublicKey)) : undefined;
+  if (creatorFeedSigner) await assertCurrentKeys(creatorAddress, creatorFeedSigner, requestedOrderKeyRef);
+
   // ── Validate all manifests before touching Swarm ─────────────────────
   for (const s of series) {
     validateSeriesManifest(s);
@@ -303,7 +310,7 @@ export async function createEventV2(opts: {
   // The money path's signer for this event from now on, listed or not (#670).
   // Before the cache and the `done` stream: a record that cannot be written fails
   // the create while the organiser has signed nothing.
-  if (creatorFeedSigner) recordEventFeedSigner(eventId, creatorFeedSigner, creatorAddress);
+  if (creatorFeedSigner) recordEventFeedSigner(eventId, creatorFeedSigner, creatorAddress, encryptionKeyRef);
   // Seed the money-path cache with the just-built feed so an immediate reserve/claim
   // resolves it before the fire-and-forget directory carrier below has propagated
   // (Phase B events have no platform feed to fall back to). See primeEventCache.
@@ -342,9 +349,14 @@ export async function createEventV2(opts: {
  * to find no order form. Whitelisted synchronously: an unwhitelisted chunk reads
  * as ABSENT to clients, and for this chunk absent means "no form".
  */
-async function publishOrderKey(keyHex: string, selection: BatchSelection): Promise<string> {
+function hexBytes(keyHex: string): Uint8Array {
   const bytes = new Uint8Array(keyHex.length / 2);
   for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(keyHex.slice(i * 2, i * 2 + 2), 16);
+  return bytes;
+}
+
+async function publishOrderKey(keyHex: string, selection: BatchSelection): Promise<string> {
+  const bytes = hexBytes(keyHex);
   const expected = orderKeyRef(bytes);
   const refs = await Promise.all([
     uploadToBytes(bytes, selection),
@@ -843,7 +855,9 @@ async function removeEventFromCreatorDirectory(
 // bursty buy traffic.
 /** `authored`: the server built this feed (create, chain-confirm) and handed it
  *  to the organiser to sign, rather than read it back from Swarm. */
-const _eventCache = new Map<string, { feed: EventFeed; expiresAt: number; authored: boolean }>();
+/** `signer`: the feed signer the entry was read under, so a key-ring change (#186)
+ *  turns it into a miss instead of serving the old generation's feed for the TTL. */
+const _eventCache = new Map<string, { feed: EventFeed; expiresAt: number; authored: boolean; signer?: string }>();
 const EVENT_CACHE_TTL_MS = 10 * 60_000;
 
 /**
@@ -918,9 +932,15 @@ export async function readEventFeedSocResult(
   /** `fresh`: the result becomes a base someone signs - see readContentFeedJsonResult. */
   opts: { fresh?: boolean } = {},
 ): Promise<EventFeedSocRead> {
+  // The organiser's CURRENT keys (#186) override any signer a caller brings: once the
+  // account has a key ring, the feed lives under the ring's signer, and the signer
+  // recorded at create is one a removed passkey may still hold. Keys that cannot be
+  // read mean no read at all: falling back to the old signer is exactly that hole.
+  const keys = await eventKeys(eventId);
+  if (keys.kind === "unavailable") return { status: "unavailable", reason: `organiser keys unreadable: ${keys.reason}` };
   let res: Awaited<ReturnType<typeof readContentFeedJsonResult>>;
   try {
-    res = await readContentFeedJsonResult(signer.replace(/^0x/, ""), eventContentTopic(eventId), "event", {
+    res = await readContentFeedJsonResult(feedSignerFor(keys, signer).replace(/^0x/, ""), eventContentTopic(eventId), "event", {
       fresh: opts.fresh,
     });
   } catch (err) {
@@ -929,7 +949,9 @@ export async function readEventFeedSocResult(
   if (res.status === "absent") return res;
   if (res.status === "unavailable") return { status: "unavailable", reason: res.reason ?? "unavailable" };
   const feed = decodeEventFeed(res.bytes, eventId);
-  return feed ? { status: "found", feed, scanClean: res.scanClean } : { status: "absent" };
+  if (!feed) return { status: "absent" };
+  // Keys that could not be read: served, never cached or built on.
+  return { status: "found", feed: withAuthoritativeOrderKey(eventId, feed, keys), scanClean: res.scanClean };
 }
 
 /**
@@ -1012,11 +1034,19 @@ async function getEventRead(
 ): Promise<{ feed: EventFeed | null; cacheable: boolean }> {
   const now = Date.now();
   const cached = _eventCache.get(eventId);
+  const keys = await eventKeys(eventId);
+  // An entry read under a signer the organiser's account has moved on from is a miss.
+  const sameKeys = !cached || keys.kind !== "ring" || cached.signer === keys.feedSigner;
   // applyOnChainEventIds fills a series' onChainEventId from the server's chain
   // receipt when the signed feed lacks it (client SOC not re-signed). Applied on the
   // cache hit too so a feed cached BEFORE registration still flips to v2.
-  if (cached && cached.expiresAt > now && (!opts.fresh || cached.authored)) {
-    return { feed: await applyOnChainEventIds(cached.feed), cacheable: true };
+  if (cached && sameKeys && cached.expiresAt > now && (!opts.fresh || cached.authored)) {
+    return { feed: await applyOnChainEventIds(withAuthoritativeOrderKey(eventId, cached.feed, keys)), cacheable: true };
+  }
+  // Not the platform feed either: a Phase B event has none, and its keys are unknown.
+  if (keys.kind === "unavailable") {
+    console.warn(`[event] ${eventId}: organiser keys unreadable (${keys.reason}) - not served`);
+    return { feed: null, cacheable: false };
   }
 
   // Phase B: if the event has a known content-feed signer (hint or directory
@@ -1047,7 +1077,14 @@ async function getEventRead(
   // Tombstoned (deleted) events read as not-found on every path — money included.
   if (feed?.deleted) return { feed: null, cacheable };
   if (feed) {
-    if (cacheable) _eventCache.set(eventId, { feed, expiresAt: now + EVENT_CACHE_TTL_MS, authored: false });
+    if (cacheable) {
+      _eventCache.set(eventId, {
+        feed,
+        expiresAt: now + EVENT_CACHE_TTL_MS,
+        authored: false,
+        ...(signer ? { signer: feedSignerFor(keys, signer).toLowerCase() } : {}),
+      });
+    }
     else console.warn(`[event] ${eventId}: served from an inconclusive version scan - not cached`);
     await applyOnChainEventIds(feed);
     for (const s of feed.series) {
@@ -1162,7 +1199,7 @@ async function resolveOwnEventLocallyRead(
   parentAddress: string,
   opts: { fresh?: boolean } = {},
 ): Promise<{ feed: EventFeed; resignable: boolean } | null> {
-  const cached = peekEventCache(eventId, { authoredOnly: opts.fresh });
+  const cached = await cachedUnderCurrentKeys(eventId, { authoredOnly: opts.fresh });
   if (cached) return { feed: await applyOnChainEventIds(cached), resignable: true };
 
   const own = (await getCreatorEvents(parentAddress)).find((e) => e.eventId === eventId);
@@ -1203,6 +1240,20 @@ export function invalidateEventCache(eventId: string): void {
  * cover the just-published window without getEvent's slow missing-feed retry
  * ladder when the event doesn't exist locally.
  */
+/**
+ * {@link peekEventCache} with the money path's key rule (#186): an entry read under a
+ * signer the organiser's account has left is not served, and the feed carries the
+ * current order key. For callers that can afford one cached ring lookup.
+ */
+async function cachedUnderCurrentKeys(eventId: string, opts: { authoredOnly?: boolean } = {}): Promise<EventFeed | null> {
+  const feed = peekEventCache(eventId, opts);
+  if (!feed) return null;
+  const keys = await eventKeys(eventId);
+  if (keys.kind === "unavailable") return feed;
+  if (keys.kind === "ring" && _eventCache.get(eventId)?.signer !== keys.feedSigner) return null;
+  return withAuthoritativeOrderKey(eventId, feed, keys);
+}
+
 export function peekEventCache(eventId: string, opts: { authoredOnly?: boolean } = {}): EventFeed | null {
   const cached = _eventCache.get(eventId);
   if (!cached || cached.expiresAt <= Date.now()) return null;
@@ -1220,7 +1271,12 @@ export function peekEventCache(eventId: string, opts: { authoredOnly?: boolean }
  * cache lets that first read succeed; the carrier is authoritative again after TTL.
  */
 export function primeEventCache(eventId: string, feed: EventFeed): void {
-  _eventCache.set(eventId, { feed, expiresAt: Date.now() + EVENT_CACHE_TTL_MS, authored: true });
+  _eventCache.set(eventId, {
+    feed,
+    expiresAt: Date.now() + EVENT_CACHE_TTL_MS,
+    authored: true,
+    ...(feed.creatorFeedSigner ? { signer: feed.creatorFeedSigner.toLowerCase() } : {}),
+  });
 }
 
 interface EventDirectory {

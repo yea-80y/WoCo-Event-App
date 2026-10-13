@@ -11,6 +11,8 @@
  *   HKDF(prf, "", PASSKEY_SEED_INFO, 32)          → the account's identity SEED
  *   HKDF(prf, "", PORTABILITY_SOC_OWNER_INFO, 48) → the portability envelope's SOC owner
  *   HKDF(prf, "", PORTABILITY_HPKE_INFO, 32)      → the portability envelope's HPKE key
+ *   HKDF(prf, "", PASSKEY_BOX_INFO, 32)           → this passkey's BOX KEY (X-Wing), which
+ *                                                   the account's key ring seals to (#186)
  *
  * A BACKUP passkey (a recovery guardian, never a login) has one more:
  *
@@ -71,6 +73,14 @@ export const PASSKEY_GUARDIAN_ESCROW_INFO = "woco/recovery/guardian-passkey/v1";
  * never from the owner key, whose public half every session signature reveals.
  */
 export const PASSKEY_SEED_KEK_INFO = "woco/device/seed-kek/v1";
+
+/**
+ * HKDF info for a passkey's BOX KEY (#186): the X-Wing key other passkeys of the account
+ * seal the current account secret to when one is removed (`keyring/ring.ts`). FROZEN:
+ * change it and no ring entry sealed so far opens. Its own label - the envelope's KEM
+ * key (`PORTABILITY_HPKE_INFO`) is a different key with a different job.
+ */
+export const PASSKEY_BOX_INFO = "woco/passkey/box/v1";
 
 /** The only PRF output length any derivation accepts. */
 export const PASSKEY_PRF_OUTPUT_BYTES = 32;
@@ -146,4 +156,9 @@ export function passkeyGuardianEscrowMaster(prfSecret: string | Uint8Array): Uin
     utf8ToBytes(PASSKEY_GUARDIAN_ESCROW_INFO),
     32,
   );
+}
+
+/** The 32-byte seed of this passkey's box key (X-Wing's own `sk`). The caller zeroes it. */
+export function passkeyBoxSeed(prfSecret: string | Uint8Array): Uint8Array {
+  return hkdf(sha256, passkeyPrfBytes(prfSecret), new Uint8Array(0), utf8ToBytes(PASSKEY_BOX_INFO), 32);
 }

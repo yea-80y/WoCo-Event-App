@@ -30,7 +30,9 @@ Addendum does not apply to those.
 
 **Nature and purpose:** collecting attendee orders; issuing and delivering tickets; storing encrypted
 attendee data for your retrieval; check-in; sending transactional and (where permitted) marketing
-email on your instruction; hosting sites you publish.
+email on your instruction; hosting sites you publish; displaying the privacy notice you have
+confirmed at the point of collection. Until you confirm one, we do not sell tickets for you and
+do not show a notice in your name.
 
 **Types of personal data:**
 

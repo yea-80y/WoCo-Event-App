@@ -2,6 +2,7 @@
   import type { Site, FontFamilyId, RadiusScale, SitePalette, NavStyleId, LogoSize } from "@woco/shared";
   import { compressImage, imgPreset } from "../../../utils.js";
   import ColorField from "../ColorField.svelte";
+  import { routeHref } from "../../../router/router.svelte.js";
 
   interface Props {
     site: Site;
@@ -114,6 +115,17 @@
       placeholder="Your Venue"
       oninput={(e) => { site.theme.brandName = (e.currentTarget as HTMLInputElement).value; }}
     />
+  </section>
+
+  <!-- Privacy notice - the organiser's own, linked from this site's footer -->
+  <section class="section">
+    <h3 class="section-title">Privacy notice</h3>
+    <p class="section-desc">
+      Your site links your privacy notice in its footer and next to every form. Review and confirm it once and it
+      covers all your events and sites.
+    </p>
+    <!-- A new tab: the builder's unsaved edits stay where they are. -->
+    <a class="notice-link" href={routeHref("/creator/privacy-notice")} target="_blank" rel="noopener">Review your privacy notice →</a>
   </section>
 
   <!-- Site description (SEO) -->
@@ -369,6 +381,16 @@
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
+  }
+
+  .notice-link {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: var(--accent);
+    cursor: pointer;
+    text-align: left;
   }
 
   .section-title {

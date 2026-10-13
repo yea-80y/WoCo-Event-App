@@ -25,6 +25,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { TypedDataEncoder, Wallet } from "ethers";
+import { enableFeature } from "./helpers/features.js";
+
+enableFeature("walletLoginAllowed");
 
 const HOST = "test.woco.local";
 process.env.ALLOWED_HOSTS = HOST;

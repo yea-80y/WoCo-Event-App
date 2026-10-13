@@ -1,4 +1,4 @@
-import { getProvider, requireProvider } from "./provider.js";
+import { getProvider, getWalletConnectProvider, requireProvider } from "./provider.js";
 
 /**
  * Request wallet connection (triggers MetaMask popup).
@@ -60,7 +60,17 @@ export function onAccountsChanged(
     handler(args[0] as string[]);
 
   provider.on("accountsChanged", wrapped);
-  return () => provider.removeListener?.("accountsChanged", wrapped);
+  // A WalletConnect session that ends says "disconnect" and never empties the
+  // accounts list, so the app stayed signed in to a wallet that was gone (#186).
+  // WalletConnect only: on an injected wallet EIP-1193 "disconnect" means the
+  // RPC dropped, not that the user left.
+  const isWalletConnect = provider === getWalletConnectProvider();
+  const gone = () => handler([]);
+  if (isWalletConnect) provider.on("disconnect", gone);
+  return () => {
+    provider.removeListener?.("accountsChanged", wrapped);
+    if (isWalletConnect) provider.removeListener?.("disconnect", gone);
+  };
 }
 
 /**

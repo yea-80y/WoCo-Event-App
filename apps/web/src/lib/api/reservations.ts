@@ -59,7 +59,7 @@ export async function reserveSlots(
   replaceReservationId?: string,
 ): Promise<
   | { ok: true; data: ReservationData }
-  | { ok: false; error: string; available?: number; physicalAvailable?: number }
+  | { ok: false; error: string; code?: string; available?: number; physicalAvailable?: number }
 > {
   const clientKey = getClientKey();
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -79,7 +79,7 @@ export async function reserveSlots(
   );
   const json = await resp.json() as
     | { ok: true; data: ReservationData }
-    | { ok: false; error: string; available?: number; physicalAvailable?: number };
+    | { ok: false; error: string; code?: string; available?: number; physicalAvailable?: number };
   return json;
 }
 

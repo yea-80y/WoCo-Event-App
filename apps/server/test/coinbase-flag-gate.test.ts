@@ -19,6 +19,9 @@ import { Wallet } from "ethers";
 import { randomUUID } from "node:crypto";
 import { AuthErrorCode, FEATURES, SESSION_PURPOSE, SESSION_EXPIRY_MS } from "@woco/shared";
 import { verifyDelegation } from "../src/lib/auth/verify-delegation.js";
+import { enableFeature } from "./helpers/features.js";
+
+enableFeature("walletLoginAllowed");
 
 const HOST = "localhost:5173";
 

@@ -14,6 +14,11 @@
  *           recovered: the sender is the GUARDIAN's own Kernel, which is never
  *           unlocked. The guardian must also be on that account's list onchain,
  *           else an op that validates and then reverts still spends our gas.
+ *           ONE exception (owner 10-07): a locked email account may upgrade to a
+ *           passkey - the `upgrade` shape, one op per intent its own session asked
+ *           for (per-IP limited, lib/zerodev/upgrade-intents.ts) - so an account
+ *           holding only a pending referral can organise. Bad-actor limits only, no
+ *           platform-wide cap: the ZeroDev plan is raised with demand (owner 10-08).
  *   HOW MUCH - a ceiling on what ONE op may cost (its gas limits x max fee, which
  *           is what the EntryPoint can charge the paymaster - the sender picks those
  *           numbers and the bundler keeps the surplus), and a per-account count,
@@ -34,7 +39,14 @@
  *   co-owners      `execute` batch of exactly [self.changeRootValidator(weighted, no hook, list),
  *                  self.uninstallValidation(ECDSA)] - the second passkey makes every passkey a
  *                  co-owner (#746, @woco/shared/kernel/co-owners)
+ *   upgrade        the co-owners batch with a list of ONE key: an email account handing itself
+ *                  to its new passkey (#746). A passkey account's switch always lists two.
  *   renew          `execute` single `weighted.renew(list)` - add or remove a co-owner
+ *   ring           `execute` single `anchor.setRing(prev, ring)` - the account's key ring moves
+ *                  without a list change (a passkey given the keys, #186)
+ * The co-owners and renew shapes may END with that same `setRing` call: a removal is
+ * [renew(list without it), setRing(prev, next)], so the keys it lost and its place on the
+ * list change in one op or not at all. A ring is never zero, and rides on no other shape.
  * Both co-owner shapes carry a list only when it is 1..10 distinct keys, every weight 1,
  * threshold 1, no delay: the validator accepts an empty list or an unreachable threshold
  * and the account is then locked for good (WoCo-Contracts WeightedRootKernel.t.sol F5).
@@ -76,10 +88,22 @@ import {
   WEIGHTED_RENEW_FN,
   WEIGHTED_ROOT_ID,
 } from "@woco/shared/kernel/co-owners";
+import { FEATURES } from "@woco/shared";
+import { KEY_RING_ANCHOR_ABI, KEY_RING_ANCHOR_ADDRESS } from "@woco/shared/keyring/anchor";
 import type { GateStatus } from "../gate/check.js";
 import { SlidingWindowLimiter } from "../http/rate-limit.js";
+import { RollingDayCount } from "./upgrade-intents.js";
 
-export type SponsorShape = "install-route" | "guardians" | "remove-route" | "rotate" | "recover" | "co-owners" | "renew";
+export type SponsorShape =
+  | "install-route"
+  | "guardians"
+  | "remove-route"
+  | "rotate"
+  | "recover"
+  | "co-owners"
+  | "upgrade"
+  | "renew"
+  | "ring";
 
 export type Classified =
   | { ok: true; shape: SponsorShape; subject: string; guardian?: string }
@@ -127,6 +151,8 @@ const MAX_CALLS = 4;
 const WEIGHTED = lc(WEIGHTED_ECDSA_VALIDATOR_V3_1);
 const CO_OWNER_ABI = parseAbi([WEIGHTED_RENEW_FN, CHANGE_ROOT_VALIDATOR_FN, UNINSTALL_VALIDATION_FN]);
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const RING_ANCHOR = lc(KEY_RING_ANCHOR_ADDRESS);
+const RING_ABI = parseAbi(KEY_RING_ANCHOR_ABI);
 
 function uint(v: unknown): bigint | null {
   if (v === undefined || v === null || v === "" || v === "0x") return 0n;
@@ -283,23 +309,38 @@ function isRenew(call: InnerCall): boolean {
   }
 }
 
-/** [changeRootValidator(weighted, no hook, list, 0x), uninstallValidation(ECDSA, 0x, 0x)], both on the sender. */
-function isCoOwnerSwitch(calls: InnerCall[], sender: string): boolean {
-  if (calls.length !== 2 || calls[0].to !== sender || calls[1].to !== sender) return false;
+/** [changeRootValidator(weighted, no hook, list, 0x), uninstallValidation(ECDSA, 0x, 0x)], both on the sender:
+ *  the number of keys on the list, or 0 when it is not exactly that. */
+function coOwnerSwitchSize(calls: InnerCall[], sender: string): number {
+  if (calls.length !== 2 || calls[0].to !== sender || calls[1].to !== sender) return 0;
   try {
     const change = decodeFunctionData({ abi: CO_OWNER_ABI, data: calls[0].data });
-    if (change.functionName !== "changeRootValidator") return false;
+    if (change.functionName !== "changeRootValidator") return 0;
     const [root, hook, enable, hookData] = change.args as [Hex, string, Hex, Hex];
-    if (lc(root) !== WEIGHTED_ROOT_ID || lc(hook) !== ZERO_ADDRESS || hookData !== "0x") return false;
+    if (lc(root) !== WEIGHTED_ROOT_ID || lc(hook) !== ZERO_ADDRESS || hookData !== "0x") return 0;
     const [signers, weights, threshold, delay] = decodeAbiParameters(
       parseAbiParameters("address[], uint24[], uint24, uint48"),
       enable,
     ) as unknown as [readonly string[], readonly number[], number, number];
-    if (!validCoOwnerConfig(signers, weights, threshold, delay)) return false;
+    if (!validCoOwnerConfig(signers, weights, threshold, delay)) return 0;
     const drop = decodeFunctionData({ abi: CO_OWNER_ABI, data: calls[1].data });
-    if (drop.functionName !== "uninstallValidation") return false;
+    if (drop.functionName !== "uninstallValidation") return 0;
     const [vId, deinit, hookDeinit] = drop.args as [Hex, Hex, Hex];
-    return lc(vId) === ECDSA_ROOT_ID && deinit === "0x" && hookDeinit === "0x";
+    return lc(vId) === ECDSA_ROOT_ID && deinit === "0x" && hookDeinit === "0x" ? signers.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** `anchor.setRing(prev, ring)` with a non-zero ring - the contract refuses zero, and a
+ *  call it would revert is gas we pay for nothing. */
+function isSetRing(call: InnerCall): boolean {
+  if (call.to !== RING_ANCHOR) return false;
+  try {
+    const d = decodeFunctionData({ abi: RING_ABI, data: call.data });
+    if (d.functionName !== "setRing") return false;
+    const [, ring] = d.args as [Hex, Hex];
+    return BigInt(ring) !== 0n;
   } catch {
     return false;
   }
@@ -341,36 +382,51 @@ export function classifyUserOp(op: PolicyUserOp): Classified {
   if (calls.length > MAX_CALLS) return { ok: false, reason: "calls" };
   if (calls.some((c) => c.value !== 0n)) return { ok: false, reason: "value" };
 
+  // The key ring (#186): last, after a co-owner change, or alone. Anywhere else, never.
+  const ringLast = isSetRing(calls[calls.length - 1]!);
+  if (calls.some((c, i) => c.to === RING_ANCHOR && !(ringLast && i === calls.length - 1))) {
+    return { ok: false, reason: "ring" };
+  }
+  if (!ringLast) return classifyCalls(calls, op.sender);
+  if (calls.length === 1) return { ok: true, shape: "ring", subject: op.sender };
+  const inner = classifyCalls(calls.slice(0, -1), op.sender);
+  return inner.ok && (inner.shape === "renew" || inner.shape === "co-owners") ? inner : { ok: false, reason: "ring" };
+}
+
+/** The `execute` calls of every shape but the ring's, classified. */
+function classifyCalls(calls: InnerCall[], sender: string): Classified {
   if (calls.length === 1 && calls[0].to === WEIGHTED) {
-    return isRenew(calls[0]) ? { ok: true, shape: "renew", subject: op.sender } : { ok: false, reason: "co-owners" };
+    return isRenew(calls[0]) ? { ok: true, shape: "renew", subject: sender } : { ok: false, reason: "co-owners" };
   }
-  if (calls.length === 2 && calls[0].to === op.sender && calls[1].to === op.sender && !isRouteUninstall(calls[0], op.sender)) {
-    return isCoOwnerSwitch(calls, op.sender)
-      ? { ok: true, shape: "co-owners", subject: op.sender }
-      : { ok: false, reason: "co-owners" };
+  if (calls.length === 2 && calls[0].to === sender && calls[1].to === sender && !isRouteUninstall(calls[0], sender)) {
+    const size = coOwnerSwitchSize(calls, sender);
+    if (size === 0) return { ok: false, reason: "co-owners" };
+    return { ok: true, shape: size === 1 ? "upgrade" : "co-owners", subject: sender };
   }
-  if (calls.length === 1 && calls[0].to !== op.sender && calls[0].to !== HOOK) {
+  if (calls.length === 1 && calls[0].to !== sender && calls[0].to !== HOOK) {
     const target = recoveryTarget(calls[0]);
-    return target ? { ok: true, shape: "recover", subject: target, guardian: op.sender } : { ok: false, reason: "call" };
+    return target ? { ok: true, shape: "recover", subject: target, guardian: sender } : { ok: false, reason: "call" };
   }
   if (calls.length === 2 && validatorCall(calls[0], "onUninstall") === "0x") {
     const owner = validatorCall(calls[1], "onInstall");
     return owner !== null && owner.length === 42
-      ? { ok: true, shape: "rotate", subject: op.sender }
+      ? { ok: true, shape: "rotate", subject: sender }
       : { ok: false, reason: "call" };
   }
   let uninstalls = 0;
   for (const c of calls) {
-    if (isRouteUninstall(c, op.sender)) uninstalls++;
+    if (isRouteUninstall(c, sender)) uninstalls++;
     else if (!isHookMutator(c)) return { ok: false, reason: "call" };
   }
-  return { ok: true, shape: uninstalls > 0 ? "remove-route" : "guardians", subject: op.sender };
+  return { ok: true, shape: uninstalls > 0 ? "remove-route" : "guardians", subject: sender };
 }
 
 export interface PolicyDeps {
   gate(account: string): Promise<GateStatus>;
   /** Is `guardian` on `account`'s recovery list right now? null = could not read. */
   isGuardian(account: string, guardian: string): Promise<boolean | null>;
+  /** Spend the intent the locked account's own session asked for: true when it held one. */
+  upgradeIntent: { spend(account: string): boolean };
 }
 
 export type Decision =
@@ -396,9 +452,11 @@ export const SPONSOR_WINDOWS = [
 /** userOps already counted, so the stub, the final request and a retry count once. */
 const SEEN_MAX = 10_000;
 
+
 export class SponsorPolicy {
   private readonly limiter = new SlidingWindowLimiter(SPONSOR_WINDOWS);
   private readonly seen = new Map<string, true>();
+  private readonly lockedUpgradesPaid = new RollingDayCount();
 
   constructor(
     private readonly deps: PolicyDeps,
@@ -409,6 +467,11 @@ export class SponsorPolicy {
     const shape = classifyUserOp(op);
     if (!shape.ok) return { proceed: false, reason: shape.reason };
     const { subject } = shape;
+    // Email accounts' backups are off for launch (#186): no op that ADDS one is paid.
+    // Removing them stays paid - an upgrade to a passkey removes them first.
+    if (!FEATURES.accountBackupsAllowed && (shape.shape === "install-route" || shape.shape === "guardians")) {
+      return { proceed: false, reason: "backups-off", shape: shape.shape, subject };
+    }
     // Every request, the counted ones too: the stub carries no limits, the final
     // carries the real ones.
     if (op.maxCostWei > this.maxOpCostWei) return { proceed: false, reason: "gas", shape: shape.shape, subject };
@@ -420,7 +483,14 @@ export class SponsorPolicy {
     // retries nothing, and the user retries the action.
     const gate = await this.deps.gate(subject).catch((): GateStatus => ({ gated: false }));
     // The gate's rollout kill-switch opens screens, never the platform's gas.
-    if (!gate.gated || gate.via === "disabled") return { proceed: false, reason: "locked", shape: shape.shape, subject };
+    const locked = !gate.gated || gate.via === "disabled";
+    // A NEW op of a locked account must be an upgrade its own session asked for; the
+    // stub, final and a same-nonce retry of one already counted ride on it.
+    if (locked) {
+      if (shape.shape !== "upgrade") return { proceed: false, reason: "locked", shape: shape.shape, subject };
+      // Spent here: nothing after this refuses an upgrade op (it has no guardian read).
+      if (!counted && !this.deps.upgradeIntent.spend(subject)) return { proceed: false, reason: "no-intent", shape: shape.shape, subject };
+    }
     if (shape.guardian) {
       const listed = await this.deps.isGuardian(subject, shape.guardian).catch(() => null);
       if (listed !== true) {
@@ -432,8 +502,16 @@ export class SponsorPolicy {
       this.limiter.record(subject);
       this.seen.set(opKey, true);
       while (this.seen.size > SEEN_MAX) this.seen.delete(this.seen.keys().next().value as string);
+      if (locked) this.lockedUpgradesPaid.record();
     }
+    if (locked) return { proceed: true, shape: shape.shape, subject, via: "locked-upgrade" };
     return { proceed: true, shape: shape.shape, subject, via: gate.via };
+  }
+
+  /** Locked accounts' upgrade ops paid in the last 24 h - each counted once, not per request.
+   *  No threshold: the number to watch so the ZeroDev plan is raised in time (owner 10-08). */
+  lockedUpgradesPaid24h(): number {
+    return this.lockedUpgradesPaid.count();
   }
 }
 

@@ -7,7 +7,9 @@
   import AccountSetupSheet from "./lib/components/auth/AccountSetupSheet.svelte";
   import SessionStatus from "./lib/components/auth/SessionStatus.svelte";
   import EventPage from "./lib/components/site/EventPage.svelte";
+  import OrganiserNotice from "./lib/legal/OrganiserNotice.svelte";
   import Dashboard from "./lib/creator/dashboard/Dashboard.svelte";
+  import { FEATURES } from "@woco/shared";
 
   // Runtime config (injected by deploy endpoint) takes priority over build-time env vars
   const EVENT_ID =
@@ -17,9 +19,17 @@
 
   let route = $state(parseRoute());
 
+  // An event page is checkout only for launch (owner, 2026-10-08): its one way in
+  // was a wallet, and wallet login is off (#186). Signing in here to check out with
+  // an account is later work; the dashboard route returns with it.
+  const signInHere = FEATURES.walletLoginAllowed;
+
   function parseRoute(): string {
     const hash = window.location.hash.replace(/^#/, "") || "/";
-    if (hash === "/dashboard") return "dashboard";
+    if (hash === "/dashboard" && signInHere) return "dashboard";
+    // The organiser's privacy notice, a page of this event page (#/privacy-notice/{id}
+    // from its footer; whatever the id, this page shows its own event's notice).
+    if (hash === "/privacy-notice" || hash.startsWith("/privacy-notice/")) return "privacy";
     return "event";
   }
 
@@ -59,8 +69,13 @@
       <p class="config-error">
         Event not configured. Set <code>VITE_EVENT_ID</code> in your <code>.env.site</code> file.
       </p>
+    {:else if route === "privacy"}
+      <div class="notice-wrap">
+        <button class="logo-back" onclick={() => { window.location.hash = "#/"; }}>← Event</button>
+        <OrganiserNotice eventId={EVENT_ID} />
+      </div>
     {:else if route === "event"}
-      <EventPage eventId={EVENT_ID} ondashboard={() => { window.location.hash = "#/dashboard"; }} />
+      <EventPage eventId={EVENT_ID} ondashboard={signInHere ? () => { window.location.hash = "#/dashboard"; } : undefined} />
     {:else if route === "dashboard"}
       {#if !auth.ready}
         <div class="state-center">
@@ -78,7 +93,9 @@
   </section>
 </main>
 
-<SiteLoginModal />
+{#if signInHere}
+  <SiteLoginModal />
+{/if}
 <SigningConfirmDialog />
 <AccountSetupSheet />
 
@@ -87,6 +104,14 @@
     max-width: 840px;
     margin: 0 auto;
     padding: 0 1.25rem 3rem;
+  }
+
+  .notice-wrap {
+    padding: 1.5rem 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    align-items: flex-start;
   }
 
   /* ── Dashboard header ────────────────────────────────────────────────────── */

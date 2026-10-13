@@ -286,6 +286,13 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     },
   },
   {
+    store: "campaign/referral-arm",
+    drive: async () => {
+      const m = await import("../src/lib/campaign/referral-arm.js");
+      m.armReferral(OWNER, "0x2222222222222222222222222222222222222222", OWNER);
+    },
+  },
+  {
     store: "stripe/payout-intents",
     drive: async () => {
       const m = await import("../src/lib/stripe/payout-intents.js");

@@ -2,6 +2,8 @@
   import type { EventFeed, SeriesSummary, ClaimedTicket } from "@woco/shared";
   import { onMount, onDestroy } from "svelte";
   import { firstImageUrl, useNextImageUrl, imageUrlCandidates } from "../../components/site/image-fallback.js";
+  import { WOCO_TICKET_COLOURS } from "@woco/shared/ticket/card";
+  import { downloadCanvas, drawTicketCard, loadCorsImage } from "../../ticket-card/draw.js";
 
   interface Props {
     event: EventFeed;
@@ -90,216 +92,45 @@
     if ((e.target as HTMLElement).classList.contains("ts-overlay")) onclose();
   }
 
-  function loadImage(src: string): Promise<HTMLImageElement> {
-    return new Promise((res, rej) => {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => res(img);
-      img.onerror = rej;
-      img.src = src;
-    });
-  }
-
-  // Try each gateway candidate in turn. WoCo first and no storage hint, on purpose:
-  // a canvas read needs CORS, and Etherna sends no Access-Control-Allow-Origin
-  // (verified 2026-09-22), so an Etherna candidate can never succeed here - an
-  // Etherna-stamped image loads through the WoCo gateway once it has spread.
-  async function loadImageFromCandidates(imageHash: string): Promise<HTMLImageElement> {
+  // The photo on a downloaded ticket, loaded once. WoCo's gateway first and no
+  // storage hint, on purpose: a canvas read needs CORS, and Etherna sends no
+  // Access-Control-Allow-Origin (verified 2026-09-22), so an Etherna candidate can
+  // never succeed here - an Etherna-stamped image loads through the WoCo gateway
+  // once it has spread. No photo is a ticket without one, never a failed download.
+  let photoLoad: Promise<HTMLImageElement | null> | null = null;
+  function ticketPhoto(): Promise<HTMLImageElement | null> {
+    const imageHash = event.imageHash;
+    if (!imageHash || /^0+$/.test(imageHash)) return Promise.resolve(null);
     const candidates = imageUrlCandidates(imageHash, BEE_GATEWAY);
-    let lastErr: unknown;
-    for (const url of candidates) {
-      try { return await loadImage(url); } catch (e) { lastErr = e; }
-    }
-    throw lastErr ?? new Error("no image candidates");
+    photoLoad ??= loadCorsImage(candidates);
+    return photoLoad;
   }
 
-  function wrapText(ctx: CanvasRenderingContext2D, text: string, maxW: number): string[] {
-    const words = text.split(" ");
-    const lines: string[] = [];
-    let cur = "";
-    for (const w of words) {
-      const test = cur ? cur + " " + w : w;
-      if (ctx.measureText(test).width > maxW && cur) {
-        lines.push(cur);
-        cur = w;
-      } else { cur = test; }
-    }
-    if (cur) lines.push(cur);
-    return lines;
+  /** One ticket as the shared portrait image - the same design the email attaches. */
+  async function renderTicket(i: number): Promise<HTMLCanvasElement> {
+    const item = allEditions[i] ?? { edition, ticket };
+    return drawTicketCard(
+      {
+        title: event.title,
+        startIso: event.startDate,
+        endIso: event.endDate,
+        location: event.location,
+        series: series.name,
+        position: isMulti ? { n: i + 1, of: allEditions.length } : undefined,
+        colours: WOCO_TICKET_COLOURS,
+      },
+      qrContentFor(item.edition, item.ticket),
+      await ticketPhoto(),
+    );
   }
 
-  function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + w - r, y);
-    ctx.arcTo(x + w, y, x + w, y + r, r);
-    ctx.lineTo(x + w, y + h - r);
-    ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
-    ctx.lineTo(x + r, y + h);
-    ctx.arcTo(x, y + h, x, y + h - r, r);
-    ctx.lineTo(x, y + r);
-    ctx.arcTo(x, y, x + r, y, r);
-    ctx.closePath();
-  }
-
-  async function renderTicketCanvas(ed: number | null, tk: ClaimedTicket | undefined, svg: string | null, position: string | null = null): Promise<HTMLCanvasElement> {
-    const SCALE = 2;
-    const W = 820;
-    const H = 390;
-    const canvas = document.createElement("canvas");
-    canvas.width = W * SCALE;
-    canvas.height = H * SCALE;
-    const ctx = canvas.getContext("2d")!;
-    ctx.scale(SCALE, SCALE);
-    const edStr = position;
-
-    // ── Background ──
-    const bg = ctx.createLinearGradient(0, 0, W, H);
-    bg.addColorStop(0, "#100c07");
-    bg.addColorStop(1, "#0c0907");
-    ctx.fillStyle = bg;
-    roundRect(ctx, 0, 0, W, H, 16);
-    ctx.fill();
-
-    // ── Event image ──
-    const IMG_W = 220;
-    const MARGIN = 22;
-    if (event.imageHash) {
-      try {
-        const img = await loadImageFromCandidates(event.imageHash);
-        ctx.save();
-        roundRect(ctx, MARGIN, MARGIN, IMG_W, H - MARGIN * 2, 10);
-        ctx.clip();
-        const ar = img.naturalWidth / img.naturalHeight;
-        const tAr = IMG_W / (H - MARGIN * 2);
-        let sx = 0, sy = 0, sw = img.naturalWidth, sh = img.naturalHeight;
-        if (ar > tAr) { sw = sh * tAr; sx = (img.naturalWidth - sw) / 2; }
-        else { sh = sw / tAr; sy = (img.naturalHeight - sh) / 2; }
-        ctx.drawImage(img, sx, sy, sw, sh, MARGIN, MARGIN, IMG_W, H - MARGIN * 2);
-        const fade = ctx.createLinearGradient(MARGIN, 0, MARGIN + IMG_W, 0);
-        fade.addColorStop(0.55, "rgba(12,9,7,0)");
-        fade.addColorStop(1, "rgba(12,9,7,0.96)");
-        ctx.fillStyle = fade;
-        ctx.fillRect(MARGIN, MARGIN, IMG_W, H - MARGIN * 2);
-        ctx.restore();
-      } catch { /* skip */ }
-    } else {
-      const grad = ctx.createLinearGradient(MARGIN, MARGIN, IMG_W + MARGIN, H - MARGIN);
-      grad.addColorStop(0, "#2a1c0d");
-      grad.addColorStop(1, "#1a1009");
-      ctx.fillStyle = grad;
-      roundRect(ctx, MARGIN, MARGIN, IMG_W, H - MARGIN * 2, 10);
-      ctx.fill();
-    }
-
-    // ── Text area ──
-    const TX = IMG_W + MARGIN + 30;
-    const CONTENT_W = W - TX - 215;
-
-    ctx.fillStyle = "rgba(245,200,100,0.55)";
-    ctx.font = `700 9px 'Courier New', monospace`;
-    ctx.fillText("TICKET", TX, 58);
-
-    if (edStr) {
-      ctx.fillStyle = "rgba(245,200,100,0.9)";
-      ctx.font = `700 16px 'Courier New', monospace`;
-      ctx.fillText(edStr.toUpperCase(), TX + 56, 58);
-    }
-
-    ctx.strokeStyle = "rgba(255,255,255,0.06)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(TX, 68);
-    ctx.lineTo(TX + CONTENT_W + 30, 68);
-    ctx.stroke();
-
-    ctx.fillStyle = "#f5f0ea";
-    ctx.font = `800 24px system-ui, -apple-system, sans-serif`;
-    const titleLines = wrapText(ctx, event.title, CONTENT_W);
-    let ty = 98;
-    for (const line of titleLines.slice(0, 2)) {
-      ctx.fillText(line, TX, ty);
-      ty += 31;
-    }
-
-    ctx.fillStyle = "rgba(245,240,234,0.42)";
-    ctx.font = `400 11.5px system-ui, -apple-system, sans-serif`;
-    ty += 6;
-    ctx.fillText(formatEventDate(event.startDate), TX, ty);
-    ty += 21;
-    if (event.location) {
-      ctx.fillText(`\u{1F4CD} ${event.location}`, TX, ty);
-      ty += 21;
-    }
-    ty += 10;
-    ctx.fillStyle = "rgba(245,240,234,0.2)";
-    ctx.font = `600 8.5px 'Courier New', monospace`;
-    ctx.fillText(series.name.toUpperCase().slice(0, 22), TX, ty);
-
-    // ── Perforated divider ──
-    const PERF_X = W - 208;
-    ctx.strokeStyle = "rgba(255,255,255,0.08)";
-    ctx.setLineDash([5, 5]);
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(PERF_X, MARGIN);
-    ctx.lineTo(PERF_X, H - MARGIN);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = "#0c0907";
-    ctx.beginPath(); ctx.arc(PERF_X, MARGIN, 9, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(PERF_X, H - MARGIN, 9, 0, Math.PI * 2); ctx.fill();
-
-    // ── QR code in stub ──
-    if (svg) {
-      const qrImg = await new Promise<HTMLImageElement | null>((resolve) => {
-        const blob = new Blob([svg], { type: "image/svg+xml" });
-        const url = URL.createObjectURL(blob);
-        const img = new Image();
-        img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
-        img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
-        img.src = url;
-      });
-      if (qrImg) {
-        const QR = 158;
-        const QX = PERF_X + 17;
-        const QY = (H - QR) / 2 - 6;
-        ctx.fillStyle = "#1a1409";
-        roundRect(ctx, QX - 4, QY - 4, QR + 8, QR + 8, 6);
-        ctx.fill();
-        ctx.drawImage(qrImg, QX, QY, QR, QR);
-      }
-    }
-
-    ctx.fillStyle = "rgba(255,255,255,0.05)";
-    ctx.font = `400 8px system-ui`;
-    ctx.textAlign = "right";
-    ctx.fillText("woco.eth  ·  verifiable on Swarm", W - 18, H - 14);
-    ctx.textAlign = "left";
-
-    return canvas;
-  }
-
-  function triggerDownload(canvas: HTMLCanvasElement, filename: string) {
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, "image/png");
-  }
+  const ticketFilename = (i: number) => (isMulti ? `woco-ticket-${i + 1}-of-${allEditions.length}.png` : "woco-ticket.png");
 
   async function downloadTicket() {
     if (downloading) return;
     downloading = true;
     try {
-      const canvas = await renderTicketCanvas(activeEdition, activeTicket, qrSvg, positionStr || null);
-      triggerDownload(canvas, isMulti ? `woco-ticket-${carouselIdx + 1}-of-${allEditions.length}.png` : "woco-ticket.png");
+      await downloadCanvas(await renderTicket(carouselIdx), ticketFilename(carouselIdx));
     } catch (e) {
       console.error("[TicketSuccess] download failed:", e);
     } finally {
@@ -312,9 +143,7 @@
     downloading = true;
     try {
       for (let i = 0; i < allEditions.length; i++) {
-        const item = allEditions[i];
-        const canvas = await renderTicketCanvas(item.edition, item.ticket, qrSvgs[i] ?? null, `${i + 1} of ${allEditions.length}`);
-        triggerDownload(canvas, `woco-ticket-${i + 1}-of-${allEditions.length}.png`);
+        await downloadCanvas(await renderTicket(i), ticketFilename(i));
         // Small delay between downloads so browser doesn't block them
         if (i < allEditions.length - 1) await new Promise((r) => setTimeout(r, 300));
       }

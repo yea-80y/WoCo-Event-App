@@ -21,6 +21,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { TypedDataEncoder, Wallet } from "ethers";
+import { enableFeature } from "./helpers/features.js";
+
+enableFeature("walletLoginAllowed");
 
 // Every network host is a closed local port, so the gate's Swarm reads (an
 // organiser's events, the referral index) fail fast and answer "not unlocked".

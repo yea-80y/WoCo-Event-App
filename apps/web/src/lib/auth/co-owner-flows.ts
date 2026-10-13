@@ -9,7 +9,14 @@ import type { BuiltKernel } from "./kernel-account.js";
 export interface CoOwnerChain {
   readKernelRoot(kernel: string): Promise<"ecdsa" | "weighted" | "none" | "error">;
   readCoOwners(kernel: string): Promise<string[] | null | "error">;
-  setCoOwners(kernel: BuiltKernel, root: "ecdsa" | "weighted" | "none", signers: readonly string[]): Promise<unknown>;
+  setCoOwners(
+    kernel: BuiltKernel,
+    root: "ecdsa" | "weighted" | "none",
+    signers: readonly string[],
+    ring?: { prev: string | null; next: string },
+  ): Promise<unknown>;
+  setKeyRingAlone(kernel: BuiltKernel, ring: { prev: string | null; next: string }): Promise<{ confirmed: boolean }>;
+  readRingAnchor(account: string): Promise<string | null | "error">;
 }
 
 export interface CoOwnerHost {
@@ -50,12 +57,16 @@ async function currentCoOwners(h: CoOwnerHost): Promise<{ root: "ecdsa" | "weigh
  * device's key; the Kernel is rebuilt afterwards because its root may have changed.
  * True when this call added it; false when it was on the list already.
  */
-export async function addCoOwner(h: CoOwnerHost, key: string): Promise<boolean> {
+export async function addCoOwner(
+  h: CoOwnerHost,
+  key: string,
+  ring?: { prev: string | null; next: string },
+): Promise<boolean> {
   await h.ensureKernel();
   const { root, list } = await currentCoOwners(h);
   if (list.includes(key.toLowerCase())) return false;
   const [{ listWith }, { setCoOwners }] = await Promise.all([import("./co-owner-calls.js"), chainOf(h)]);
-  await setCoOwners(h.kernel()!, root, listWith(list, key));
+  await setCoOwners(h.kernel()!, root, listWith(list, key), ring);
   h.dropKernel();
   return true;
 }
@@ -66,7 +77,11 @@ export async function removeCoOwner(h: CoOwnerHost, key: string): Promise<void> 
 }
 
 /** Take several keys off in ONE list change. Keys not on the list are ignored; the last passkey never goes. */
-export async function removeCoOwners(h: CoOwnerHost, keys: readonly string[]): Promise<void> {
+export async function removeCoOwners(
+  h: CoOwnerHost,
+  keys: readonly string[],
+  ring?: { prev: string | null; next: string },
+): Promise<void> {
   await h.ensureKernel();
   const { root, list } = await currentCoOwners(h);
   if (root !== "weighted") return;
@@ -74,8 +89,38 @@ export async function removeCoOwners(h: CoOwnerHost, keys: readonly string[]): P
   if (going.length === 0) return;
   const [{ listWithout }, { setCoOwners }] = await Promise.all([import("./co-owner-calls.js"), chainOf(h)]);
   const next = going.reduce<string[]>((acc, k) => listWithout(acc, k), list);
-  await setCoOwners(h.kernel()!, "weighted", next);
+  await setCoOwners(h.kernel()!, "weighted", next, ring);
   h.dropKernel();
+}
+
+/**
+ * A removal's FLIP (#186): the passkeys off the list and the account's key ring onto
+ * `ring` in ONE op. If another device already took them off, the ring still moves (a
+ * ring-only op) - the new keys must land whatever the list says. The anchor is read
+ * back: the flip is done only when it names the new ring.
+ */
+export async function removeCoOwnersWithRing(
+  h: CoOwnerHost,
+  keys: readonly string[],
+  ring: { prev: string | null; next: string },
+): Promise<void> {
+  await h.ensureKernel();
+  const { root, list } = await currentCoOwners(h);
+  if (root !== "weighted") throw new Error("This account has only one passkey - nothing to remove.");
+  const going = keys.map((k) => k.toLowerCase()).filter((k) => list.includes(k));
+  const chain = await chainOf(h);
+  if (going.length === 0) {
+    await chain.setKeyRingAlone(h.kernel()!, ring);
+  } else {
+    const { listWithout } = await import("./co-owner-calls.js");
+    const next = going.reduce<string[]>((acc, k) => listWithout(acc, k), list);
+    await chain.setCoOwners(h.kernel()!, "weighted", next, ring);
+  }
+  h.dropKernel();
+  const parent = h.parent();
+  if (parent && (await chain.readRingAnchor(parent)) !== ring.next) {
+    throw new Error("Your account's new keys didn't land - nothing else was changed. Try again.");
+  }
 }
 
 /**
@@ -86,8 +131,14 @@ export async function removeCoOwners(h: CoOwnerHost, keys: readonly string[]): P
  * account's, record or not - and a failed undo is never silent. The caller's later
  * failures (an undelivered link answer) remove it through `revoke`.
  */
-export async function addCoOwnerWithRecord<T>(h: CoOwnerHost, key: string, record: () => Promise<T>): Promise<T> {
-  const added = await addCoOwner(h, key);
+export async function addCoOwnerWithRecord<T>(
+  h: CoOwnerHost,
+  key: string,
+  record: () => Promise<T>,
+  /** The account's key ring moving in the same op (#186). */
+  ring?: { prev: string | null; next: string },
+): Promise<T> {
+  const added = await addCoOwner(h, key, ring);
   try {
     const result = await record();
     // This device added it: its own new-passkey alert must not ask about it.

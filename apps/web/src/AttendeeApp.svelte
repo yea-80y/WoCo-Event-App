@@ -6,6 +6,8 @@
   import Home from "./lib/attendee/home/Home.svelte";
   import ComingSoon from "./lib/attendee/coming-soon/ComingSoon.svelte";
   import { getExternalEventApi } from "./lib/api/event-api-registry.js";
+  import InstallSlot from "./lib/pwa/InstallSlot.svelte";
+  import InstallCardSlot from "./lib/pwa/InstallCardSlot.svelte";
 
   // Route-level code splitting: only Home ships in the boot chunk (Swarm
   // round-trips are slow, so the eager graph must stay minimal). Every other
@@ -43,6 +45,7 @@
 </script>
 
 <AttendeeShell>
+  <InstallSlot />
   {#if router.route === "home" || router.route === "discover"}
     <Home />
   {:else if router.route === "member-home"}
@@ -106,4 +109,5 @@
   {:else if router.route === "recover"}
     <LazyRoute loader={loadRecoverPortal} />
   {/if}
+  <InstallCardSlot />
 </AttendeeShell>

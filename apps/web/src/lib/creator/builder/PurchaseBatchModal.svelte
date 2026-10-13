@@ -208,13 +208,8 @@
     width: 6px; height: 6px;
     border-radius: 50%;
     background: var(--accent, #C7F23A);
-    animation: dot-pulse 2.4s ease-in-out infinite;
   }
 
-  @keyframes dot-pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50%       { opacity: 0.45; transform: scale(0.8); }
-  }
 
   .header { display: flex; flex-direction: column; gap: 0.375rem; }
 

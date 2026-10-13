@@ -10,6 +10,8 @@ import {
   MARKETING_CONSENT_NOTICE,
   TRANSACTIONAL_EMAIL_NOTICE,
   CHECKOUT_PRIVACY_SUMMARY,
+  ORGANISER_NOTICE_LINK_LABEL,
+  WOCO_POLICY_LINK_LABEL,
   type OrderField,
   type PaymentConfig,
 } from "@woco/shared";
@@ -22,6 +24,7 @@ import {
   maxSelectableQty,
   buildOrderPayload,
   buildCheckoutBody,
+  staleOrderKeyRef,
   reserveOutcome,
   parseReturn,
   resolvePageUrl,
@@ -85,6 +88,8 @@ interface SeriesState {
   holdError: string | null;
   /** The hold ran out with the panel still open; waits for "try again" or a quantity change. */
   holdExpired: boolean;
+  /** The server's reason this series is not on sale at all; the panel stays closed. */
+  closed: string | null;
 }
 
 export class WocoTickets extends HTMLElement {
@@ -206,6 +211,16 @@ export class WocoTickets extends HTMLElement {
   private get showImage() { return this.getAttribute("show-image") !== "false"; }
   private get showDescription() { return this.getAttribute("show-description") !== "false"; }
 
+  /**
+   * The ORGANISER's privacy notice for this event, hosted on the app (the widget
+   * runs on the organiser's domain, which has no notice route of its own). The
+   * organiser is the controller for what the buyer types here, so their notice is
+   * linked before WoCo's. `appUrl` is scheme-checked; the id is URI-encoded.
+   */
+  private get organiserNoticeUrl(): string {
+    return `${this.appUrl}/#/privacy-notice/${encodeURIComponent(this.eventId)}`;
+  }
+
   /** The organiser page the buyer is on; see resolvePageUrl. Comparing `window.top` is allowed cross-origin. */
   private get pageUrl(): string | undefined {
     let framed: boolean;
@@ -230,6 +245,7 @@ export class WocoTickets extends HTMLElement {
       hold: null,
       holdError: null,
       holdExpired: false,
+      closed: null,
     };
   }
 
@@ -590,7 +606,9 @@ export class WocoTickets extends HTMLElement {
         </label>
         <div class="privacy-note">
           ${this.esc(CHECKOUT_PRIVACY_SUMMARY)}
-          <a href="${this.esc(this.appUrl)}/#/legal/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+          <a href="${this.esc(this.organiserNoticeUrl)}" target="_blank" rel="noopener noreferrer">${this.esc(ORGANISER_NOTICE_LINK_LABEL)}</a>
+          ·
+          <a href="${this.esc(this.appUrl)}/#/legal/privacy" target="_blank" rel="noopener noreferrer">${this.esc(WOCO_POLICY_LINK_LABEL)}</a>
         </div>
       </div>
     `;
@@ -724,7 +742,7 @@ export class WocoTickets extends HTMLElement {
     // refuses the sale either way; this is what the buyer reads.
     const cancelled = !!this.event?.cancelledAt || st?.status?.cancelled === true;
 
-    if (st?.buyOpen && this.isPayable(s) && avail !== 0 && !cancelled) {
+    if (st?.buyOpen && this.isPayable(s) && avail !== 0 && !cancelled && !st.closed) {
       return `
         <div class="series-card series-card--expanded" data-series="${this.esc(s.seriesId)}">
           ${header}
@@ -736,6 +754,8 @@ export class WocoTickets extends HTMLElement {
     let actionHtml: string;
     if (cancelled) {
       actionHtml = `<button class="claim-btn" disabled>Event cancelled</button>`;
+    } else if (st?.closed) {
+      actionHtml = `<button class="claim-btn" disabled>Not on sale yet</button><p class="error-msg">${this.esc(st.closed)}</p>`;
     } else if (!this.isPayable(s)) {
       // No live payment rail for this series (crypto-only, free, or a stale
       // cache entry from before prices were in the payload). Nothing can be
@@ -816,6 +836,13 @@ export class WocoTickets extends HTMLElement {
       // A refused replace has already released the old hold server-side.
       cur.hold = null;
       cur.holdError = result.message;
+    } else if (result.kind === "closed") {
+      // Not on sale at all: close the panel so nobody keeps typing details.
+      cur.hold = null;
+      cur.buyOpen = false;
+      cur.closed = result.message;
+      this.updateSeries(seriesId);
+      return;
     }
     this.refreshHold(seriesId);
   }
@@ -925,7 +952,7 @@ export class WocoTickets extends HTMLElement {
    * minted by the webhook at payment and delivered by email — nothing is
    * claimed in-page, so there is no signing ceremony and no account here.
    */
-  private async handleCheckout(seriesId: string) {
+  private async handleCheckout(seriesId: string, staleRetry = false) {
     const st = this.seriesStates.get(seriesId);
     if (!st || st.busy || !this.api) return;
 
@@ -960,6 +987,8 @@ export class WocoTickets extends HTMLElement {
     }
     const email = verdict.email;
 
+    // The ref of the key the box is sealed to - declared with it (#186).
+    const sealedTo = this.orderKey ? this.orderKeyFor : null;
     const encryptedOrder = await this.encryptOrderData(seriesId, st, email);
 
     st.busy = true;
@@ -1002,11 +1031,23 @@ export class WocoTickets extends HTMLElement {
         marketingConsent: st.consent,
         pageUrl: this.pageUrl,
         encryptedOrder,
+        ...(encryptedOrder && sealedTo ? { encryptionKeyRef: sealedTo } : {}),
         reservationId,
       });
 
       const resp = await this.api.post<never>("/api/stripe/create-checkout", body);
       const url = (resp as Record<string, unknown>).url;
+      // Sealed to a key the organiser has since replaced (#186): take the key the server
+      // names - verified against its ref before use - re-seal, and try ONCE more.
+      const fresh = !resp.ok && !staleRetry && this.event ? staleOrderKeyRef(resp as Record<string, unknown>, sealedTo) : null;
+      if (fresh && this.event) {
+        this.event.encryptionKeyRef = fresh;
+        st.busy = false;
+        if (await this.ensureOrderKey()) {
+          await this.handleCheckout(seriesId, true);
+          return;
+        }
+      }
       if (!resp.ok || typeof url !== "string") {
         st.error = (resp.error as string) || "Failed to start checkout";
         st.busy = false;

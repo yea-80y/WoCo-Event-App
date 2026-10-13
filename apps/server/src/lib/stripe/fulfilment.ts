@@ -1006,8 +1006,10 @@ export async function fulfilPaidSession(
     try {
       await deps.sendTicketEmail({
         to: claimerEmail,
+        eventId,
         eventTitle: title,
         eventDate,
+        eventEndDate: eventEndDate || undefined,
         eventLocation,
         seriesName,
         totalSupply,

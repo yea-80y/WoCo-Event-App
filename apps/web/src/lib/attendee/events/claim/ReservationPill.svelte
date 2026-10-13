@@ -68,12 +68,6 @@
   }
   .avail-pill--reserved .avail-pill-dot {
     background: #10b981;
-    box-shadow: 0 0 6px rgba(16, 185, 129, 0.55);
-    animation: avail-pill-pulse 1.6s ease-in-out infinite;
-  }
-  @keyframes avail-pill-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.45; }
   }
 
   .avail-banner {

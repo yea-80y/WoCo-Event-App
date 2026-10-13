@@ -6,6 +6,8 @@
 // Reference: github.com/Etherna/etherna-authentication
 // (src/EthernaAuthentication.Native/PasswordFlow/EthernaApiKeySignInService.cs)
 
+import { CONTROL_JSON_MAX_BYTES, errorSnippet, readCappedJson } from "../http/read-capped.js";
+
 const REFRESH_MARGIN_MS = 30_000;
 
 interface TokenCache {
@@ -51,11 +53,10 @@ async function fetchToken(): Promise<TokenCache> {
   });
 
   if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`Etherna token request failed: ${res.status} ${detail}`);
+    throw new Error(`Etherna token request failed: ${res.status} ${await errorSnippet(res)}`);
   }
 
-  const json = (await res.json()) as { access_token: string; expires_in: number };
+  const json = await readCappedJson<{ access_token: string; expires_in: number }>(res, CONTROL_JSON_MAX_BYTES, "etherna token");
   return {
     token: json.access_token,
     expiresAt: Date.now() + json.expires_in * 1000,

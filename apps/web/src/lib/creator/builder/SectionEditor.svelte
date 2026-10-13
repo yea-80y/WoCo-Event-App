@@ -15,7 +15,7 @@
     ShopDirectoryEntry,
     ProductCategory,
   } from "@woco/shared";
-  import { FEATURES } from "@woco/shared";
+  import { FEATURES, safeHref } from "@woco/shared";
   import {
     resolveEmbed,
     supportedProviderNames,
@@ -206,6 +206,9 @@
       <input class="input" type="text" value={s.ctaHref ?? ''} placeholder="#/whats-on or https://…"
         oninput={(e) => onpatch({ ctaHref: (e.currentTarget as HTMLInputElement).value })} />
     </label>
+    {#if s.ctaHref && !safeHref(s.ctaHref)}
+      <p class="hint warn">This link won't show. Start it with https://, mailto:, tel: or #/ for a page on your site.</p>
+    {/if}
 
   {:else if section.type === 'richText'}
     {@const s = section as RichTextSection}

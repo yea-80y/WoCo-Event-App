@@ -10,8 +10,15 @@
   // From its own module: importing this key from envelope-reprobe.ts would hoist
   // that deliberately-lazy module into the entry chunk.
   import { AUTH_NOTICE_KEY } from "../../auth/auth-notice.js";
-  import { navigate } from "../../router/router.svelte.js";
-  import { canonicalUrl, hostLabel } from "../../sub-ens/host-label.js";
+  import { router, navigate } from "../../router/router.svelte.js";
+  import { isOrganiserSignIn } from "../../auth/organiser-account.js";
+  import { canonicalUrl } from "../../sub-ens/host-label.js";
+  import { mustSignInElsewhere } from "../../auth/sign-in-host.js";
+  import type { InAppBrowser } from "../../browser/in-app-browser.js";
+  import { ESCAPE_FAILED_PARAM } from "../../browser/in-app-route.js";
+  import { takeStrayWeb3AuthRedirect } from "../../auth/web3auth-redirect.js";
+  import { takeSignInFailure, type SignInFailureView } from "../../auth/signin-failure-notice.js";
+  import SignInFailureDetails from "./SignInFailureDetails.svelte";
   import { onMount } from "svelte";
 
   type Method = "passkey" | "email" | "wallet" | "coinbase";
@@ -24,19 +31,71 @@
   let { open = $bindable(false), onclose }: Props = $props();
 
   // Declare that this bundle can carry a login to a conclusion (#194).
-  onMount(() => loginRequest.register());
+  onMount(() => {
+    loginRequest.register();
+    // The Android escape's fallback: Chrome was not there, so the social app
+    // reloaded this page itself - with the sheet closed. Reopen it once, so the
+    // "Chrome didn't open" line and the next way out are in front of them (#812).
+    if (new URL(window.location.href).searchParams.get(ESCAPE_FAILED_PARAM) === "1") void loginRequest.request();
+    // A Web3Auth redirect result that was not this tab's to finish (stripped at
+    // boot, web3auth-redirect.ts): open on the notice that says so.
+    if (takeStrayWeb3AuthRedirect()) void loginRequest.request();
+  });
 
   // Modal is visible if either prop-driven or store-driven
   const visible = $derived(open || loginRequest.pending);
 
+  // Organisers sign in with a passkey only (#746): Start hosting, the organiser
+  // portal's Sign in, and every organiser screen's own button. Attendees keep
+  // email as well. Gated by where the request came from - one modal, not two.
+  const organiserSignIn = $derived(isOrganiserSignIn(loginRequest.context, router.surface));
+
   // THE choke point for every sign-in CTA in this app: they all end at
-  // loginRequest.request(), which only this modal can answer. On a WoCo name
-  // host the server will refuse the session — `ALLOWED_HOSTS` excludes
-  // `*.woco.eth.<tld>` on purpose, because a SITE name serves holder-chosen
-  // content under that same suffix — so offer the canonical host instead of a
-  // picker that is guaranteed to fail. Read once: the hostname cannot change
-  // without a page load.
-  const nameHostLabel = typeof window !== "undefined" ? hostLabel(window.location.hostname) : null;
+  // loginRequest.request(), which only this modal can answer. Off the canonical
+  // host a sign-in either fails (a name host: `ALLOWED_HOSTS` excludes
+  // `*.woco.eth.<tld>` on purpose) or lands in the wrong account, so offer
+  // woco.eth.limo instead of a picker (sign-in-host.ts). Read once: the hostname
+  // cannot change without a page load.
+  const offCanonicalHost =
+    typeof window !== "undefined" && mustSignInElsewhere(window.location.hostname, import.meta.env.DEV);
+
+  // A social app's built-in browser can sign no one in - no passkeys, and Google
+  // refuses it (#812). Checked once, when the sheet first opens, so detection
+  // stays out of the first load; the browser cannot change without a page load.
+  // Inside one, the sheet LEADS with the way out (owner decision 2026-10-10): no
+  // passkey buttons at all (an embedded web view cannot run the ceremony), and the
+  // Google / email sign-in only as a second choice that may not complete there.
+  // `undefined` until the check has run, so an in-app browser never flashes the
+  // passkey buttons it is about to hide.
+  let inAppBrowser = $state<InAppBrowser | null | undefined>(undefined);
+  let inAppChecked = false;
+  $effect(() => {
+    if (!visible || inAppChecked || typeof window === "undefined") return;
+    inAppChecked = true;
+    void import("../../browser/in-app-browser.js").then((m) => {
+      inAppBrowser = m.detectInAppBrowser(navigator.userAgent, {
+        telegramProxy: "TelegramWebviewProxy" in window,
+        publicKeyCredential: "PublicKeyCredential" in window,
+        touchMac: navigator.maxTouchPoints > 1,
+      });
+    });
+  });
+
+  // A redirect sign-in coming back (iPhone/iPad): the sheet opens on the email
+  // scene while the store finishes it, and closes on success. A failure returns
+  // to the picker, where the notice carries its code.
+  let finishingRedirect = false;
+  $effect(() => {
+    if (auth.redirectSignIn === "finishing") {
+      finishingRedirect = true;
+      if (!visible) void loginRequest.request();
+      authing = "email";
+    } else if (finishingRedirect) {
+      finishingRedirect = false;
+      if (auth.isAuthenticated) handleComplete();
+      else settle();
+    }
+  });
 
   // Recomputed on each open rather than once: this instance outlives its
   // openings, and the hash it should carry across is the route the user is on
@@ -67,7 +126,7 @@
     },
     email: {
       name: "Email",
-      waiting: "Finish signing in via the secure pop-up.",
+      waiting: "Finish signing in on the secure sign-in page.",
       finalizing: "Setting up your account…",
     },
     wallet: {
@@ -91,8 +150,13 @@
   // mid-attempt, so it must be re-read when the scene settles back to the
   // picker, not only when the modal opens.
   let notice = $state<string | null>(null);
+  // A coded sign-in failure posted for this sheet (a redirect sign-in that failed
+  // on the page it came back to): shown with its code and "Show details".
+  let failure = $state<SignInFailureView | null>(null);
   $effect(() => {
     if (!visible || authing) return;
+    const posted = takeSignInFailure(globalThis.sessionStorage);
+    if (posted) failure = posted;
     try {
       const pending = globalThis.sessionStorage?.getItem(AUTH_NOTICE_KEY);
       if (pending) {
@@ -106,11 +170,16 @@
 
   // "waiting" until the credential step is done, then "finalizing". Wallet
   // flows that connect before auth.login runs (WalletConnect QR) read null —
-  // treat that as still waiting.
+  // treat that as still waiting. "stalled" is a Web3Auth wait whose spinner's
+  // time is up: the picker comes back, where the email button shows the message,
+  // Try again and the way out, while the attempt goes on listening underneath.
   const stage = $derived(auth.loginStage ?? "waiting");
+  const sceneShown = $derived(authing !== null && stage !== "stalled");
 
   function start(method: Method) {
     authing = method;
+    // A new attempt: an earlier attempt's failure no longer describes anything.
+    failure = null;
   }
 
   // A settled attempt (success or failure) always returns to the picker; on
@@ -121,12 +190,16 @@
   }
 
   function close() {
+    // Closing over an attempt still waiting on the Web3Auth pop-up must also close
+    // the SDK's own loader, which has no close of its own while connecting.
+    if (authing) auth.cancelLogin();
     open = false;
     authing = null;
     view = "main";
     // The modal instance outlives its openings, so drop the notice here or it
     // re-renders on every later open — sessionStorage was already cleared.
     notice = null;
+    failure = null;
     loginRequest.resolve(false);
     onclose?.();
   }
@@ -136,6 +209,7 @@
     authing = null;
     view = "main";
     notice = null;
+    failure = null;
     loginRequest.resolve(true);
     onclose?.();
   }
@@ -163,6 +237,7 @@
               : view === "wallet" ? "Connect a wallet"
               : loginRequest.context === "invite" ? "Create your account"
               : loginRequest.context === "ticket" ? "Add your ticket"
+              : organiserSignIn ? "Organiser sign in"
               : "Sign in"}
           </h2>
           {#if authing || view === "wallet"}
@@ -173,6 +248,8 @@
             </p>
           {:else if loginRequest.context === "ticket"}
             <p class="context-sub">Sign in, or create a free account. Your ticket goes straight into it.</p>
+          {:else if organiserSignIn}
+            <p class="context-sub">Organisers sign in with a passkey. New here? Creating one takes a minute.</p>
           {/if}
         </div>
         <button class="close-btn" onclick={close} aria-label="Close">
@@ -180,7 +257,7 @@
         </button>
       </header>
 
-      {#if nameHostLabel}
+      {#if offCanonicalHost}
         <p class="notice" role="status">
           Accounts live on WoCo's main address — sign in there and this page opens with you.
         </p>
@@ -191,7 +268,15 @@
         <p class="notice" role="status">{notice}</p>
       {/if}
 
-      {#if authing}
+      {#if failure && !authing}
+        <div class="notice notice--failure" role="alert">
+          {#key failure}
+            <SignInFailureDetails {failure} />
+          {/key}
+        </div>
+      {/if}
+
+      {#if authing && sceneShown}
         {@const c = sceneCopy[authing]}
         <div class="scene" role="status" aria-live="polite">
           <div class="stamp" aria-hidden="true">
@@ -226,31 +311,57 @@
         </div>
       {/if}
 
-      <!-- Not rendered on a name host: every method here ends at a session the
-           server will refuse from this origin, so the redirect above is the
-           only sign-in this page can honestly offer. -->
-      {#if !nameHostLabel}
-      <div class="options" class:offstage={authing !== null}>
+      <!-- Not rendered off the canonical host: on a name host every method ends
+           at a session the server refuses, and anywhere else it ends at the wrong
+           account, so the redirect above is the only honest sign-in. -->
+      {#if !offCanonicalHost}
+      <div class="options" class:offstage={sceneShown}>
         <!-- Hidden rather than unmounted on the wallet screen, so a passkey
              error or the create-account offer is still there on the way back. -->
         <div class="methods" class:offstage={view !== "main"}>
+          {#if inAppBrowser === undefined}
+            <!-- The in-app check has not answered yet: nothing to flash. -->
+          {:else if inAppBrowser}
+            <!-- An app's built-in browser: the way out comes first and alone.
+                 Passkeys are not offered - the ceremony is refused before any
+                 sheet there (#841) - and the Google / email sign-in is a second
+                 choice whose wait is bounded (web3auth-signin-wait.ts). -->
+            {#await import("./InAppBrowserNotice.svelte") then { default: InAppBrowserNotice }}
+              <InAppBrowserNotice found={inAppBrowser} />
+            {/await}
+            {#if !organiserSignIn}
+              <div class="group-label"><span>Or try here anyway</span></div>
+              <Web3AuthLogin
+                oncomplete={handleComplete}
+                onstart={() => start("email")}
+                onsettle={settle}
+                inApp={inAppBrowser}
+              />
+            {:else}
+              <p class="in-app-invite">Organiser accounts use a passkey, which this browser can't create. Open WoCo in your browser to continue.</p>
+            {/if}
+          {:else}
           <PasskeyLogin
+            organiser={organiserSignIn}
             oncomplete={handleComplete}
             onstart={() => start("passkey")}
             onsettle={settle}
             onlink={() => { close(); navigate("/link"); }}
           />
 
-          <!-- Organising needs a passkey account (#746 step 5): "Start hosting" offers no other way in. -->
-          {#if loginRequest.context !== "invite"}
-            <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} />
+          <!-- Organising needs a passkey account (#746 step 5): an organiser sign-in offers no other way in. -->
+          {#if !organiserSignIn}
+            <Web3AuthLogin oncomplete={handleComplete} onstart={() => start("email")} onsettle={settle} inApp={null} />
 
-            <div class="wallet-door">
-              <span>Already use a crypto wallet?</span>
-              <button type="button" class="text-btn" onclick={() => (view = "wallet")}>
-                Connect it <span aria-hidden="true">→</span>
-              </button>
-            </div>
+            {#if FEATURES.walletLoginAllowed}
+              <div class="wallet-door">
+                <span>Already use a crypto wallet?</span>
+                <button type="button" class="text-btn" onclick={() => (view = "wallet")}>
+                  Connect it <span aria-hidden="true">→</span>
+                </button>
+              </div>
+            {/if}
+          {/if}
           {/if}
         </div>
 
@@ -260,7 +371,9 @@
               <span aria-hidden="true">←</span> All sign-in options
             </button>
 
-            <WalletLogin oncomplete={handleComplete} onstart={() => start("wallet")} onsettle={settle} />
+            {#if FEATURES.walletLoginAllowed}
+              <WalletLogin oncomplete={handleComplete} onstart={() => start("wallet")} onsettle={settle} />
+            {/if}
 
             {#if FEATURES.coinbaseLoginAllowed}
               <CoinbaseLogin oncomplete={handleComplete} onstart={() => start("coinbase")} onsettle={settle} />
@@ -355,6 +468,12 @@
     font-size: 0.8125rem;
     line-height: 1.45;
     color: var(--text-secondary);
+  }
+
+  .notice--failure {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
   }
 
   /* Layout only — .btn/.btn--primary carry the appearance, from app.css. */
@@ -547,6 +666,13 @@
   .back-btn {
     align-self: flex-start;
     margin-top: -0.5rem;
+  }
+
+  .in-app-invite {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    text-align: center;
   }
 
   .group-label {
