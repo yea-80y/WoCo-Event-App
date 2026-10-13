@@ -7,8 +7,11 @@
   pays on, and the one fact no chunk carries), and the issuer's confirmation —
   reported by that same call — says whether the credit has already been made.
 
-  The layout draws the edge being recorded: referrer -> this organiser. One acid
-  action; the confirmed state swaps the rail for the stamp.
+  When those reads say a confirmation is due, it is sent without a click
+  (`lib/campaign/referral-confirm.ts` says why the press guarded nothing), and
+  usually the server has already sent it the moment Stripe verified the account
+  (`referral-arm.ts`). The ask - referrer -> this organiser, one acid action -
+  shows only when that attempt failed, as its retry.
 
   Self-contained lifecycle: hidden until the reads resolve, and hidden for good
   once confirmed, because a confirmation is written once and never moves.
@@ -23,7 +26,11 @@
   } from "../../api/campaign.js";
   import { readMyReferralStatement, type MyReferralStatement } from "../../campaign/records.js";
   import { requireAccountForAction } from "../../auth/ensure-action.js";
+  import { autoConfirmReferral, confirmDue } from "../../campaign/referral-confirm.js";
   import CohortStamp from "./CohortStamp.svelte";
+
+  /** Bumped by the host after anything that may have changed the Stripe state. */
+  let { recheck = 0 }: { recheck?: number } = $props();
 
   /** The caller's content-feed owner — prompt-free, and null on a device with
    *  no seed, which is also a device whose statement cannot be read. */
@@ -31,7 +38,8 @@
   let statement = $state<MyReferralStatement | null>(null);
   let status = $state<ReferralStatusResponse | null>(null);
   let confirmed = $state<ReferralConfirmationV1 | null>(null);
-  let phase = $state<"idle" | "confirming" | "confirmed">("idle");
+  /** `auto` hides the card: an ask must not flash while the confirm it offers is already on its way. */
+  let phase = $state<"idle" | "auto" | "confirming" | "confirmed">("idle");
   let errorMsg = $state<string | null>(null);
   let loading = false;
 
@@ -45,6 +53,7 @@
   // arrives or unlocks. Not a condition, because a passkey account's seed is locked
   // after every reload (#746 fix 1) while its feed address is still known.
   $effect(() => {
+    void recheck;
     void auth.hasIdentitySeed;
     if (!auth.isAuthenticated || loading) return;
     loading = true;
@@ -52,6 +61,7 @@
   });
 
   async function load() {
+    const parent = auth.parent?.toLowerCase() ?? null;
     // The ADDRESS getter, not the signer: this path only reads, and the read
     // must cost the user nothing. Null means no seed on this device yet, so
     // there is no feed to read and nothing to show.
@@ -68,15 +78,31 @@
       status = resp.data;
       confirmed = resp.data.confirmed;
     }
+
+    const facts = { statement, status };
+    if (!confirmDue(facts) || phase === "confirming") return;
+    phase = "auto";
+    errorMsg = null;
+    const outcome = await autoConfirmReferral({
+      facts,
+      feed: feed as Hex0x,
+      stillSameAccount: () => parent !== null && auth.parent?.toLowerCase() === parent,
+      confirm: confirmReferral,
+    });
+    if (outcome.kind === "confirmed") {
+      confirmed = outcome.record;
+      phase = "confirmed";
+      return;
+    }
+    phase = "idle";
+    if (outcome.kind === "failed") errorMsg = outcome.error;
   }
 
   const done = $derived(phase === "confirmed" || confirmed !== null);
   // `readOk` is load-bearing: an inconclusive confirmation read must show
   // NOTHING, never the ask. Offering to confirm a referral that may already be
   // recorded invites a second attempt the issuer will refuse as a conflict.
-  const ask = $derived(
-    !done && statement !== null && status !== null && status.stripeComplete && status.readOk,
-  );
+  const ask = $derived(!done && confirmDue({ statement, status }));
 
   async function confirm() {
     if (!statement || !myFeed || phase === "confirming") return;
@@ -99,7 +125,7 @@
   }
 </script>
 
-{#if done || ask}
+{#if (done || ask) && phase !== "auto"}
   <section class="countersign card" aria-live="polite">
     {#if done && confirmed}
       <div class="done">

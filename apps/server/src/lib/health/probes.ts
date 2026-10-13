@@ -14,6 +14,7 @@
  * This module is the plumbing: read, park the reading, log transitions.
  */
 
+import { refreshKeyRingAnchor } from "../keyring/current-ring.js";
 import { JsonRpcProvider, Contract, formatEther, id, isError, keccak256, parseEther } from "ethers";
 import {
   FEATURES,
@@ -1101,6 +1102,7 @@ export function startHealthProbes(): void {
     void refreshPaymaster().catch((err) => console.warn("[health] paymaster probe threw:", err));
     void refreshSubEnsMinting().catch((err) => console.warn("[health] sub-ENS minting probe threw:", err));
     void refreshTicketMinting().catch((err) => console.warn("[health] ticket minting probe threw:", err));
+    void refreshKeyRingAnchor().catch((err) => console.warn("[health] key-ring anchor probe threw:", err));
     void refreshPostage(liveReaders, console.warn, etherna).catch((err) =>
       console.warn("[health] postage probe threw:", err),
     );

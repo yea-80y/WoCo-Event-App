@@ -266,8 +266,7 @@
   .catalog { background: var(--bg); padding: 1rem 1.25rem 2rem; overflow-y: auto; }
   .cat-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; }
   .live { font-size: 0.625rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.1em; display: inline-flex; align-items: center; gap: 0.4375rem; }
-  .live .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0 var(--accent); animation: pulse 2s infinite; }
-  @keyframes pulse { 0% { box-shadow: 0 0 0 0 var(--accent-subtle); } 70% { box-shadow: 0 0 0 6px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+  .live .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 
   .group { margin-bottom: 1.5rem; }
   .group h2 { margin: 0 0 0.625rem; }

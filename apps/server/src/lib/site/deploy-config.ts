@@ -169,6 +169,39 @@ export function injectBeforeHeadClose(html: string, snippet: string): string {
   return html.replace("</head>", () => `${snippet}\n  </head>`);
 }
 
+/**
+ * The icon + share tags baked into a single-event page. The event's own image
+ * when it has one, WoCo's logo (bundled in dist-site) otherwise - the same rule
+ * `deployHeadLines` (routes/sites.ts) applies to a site's logo. Any icon link the
+ * template carries is dropped first, so the event's is the only one a browser
+ * or the iOS home screen can pick.
+ */
+export function withEventPageHead(
+  html: string,
+  event: { title?: string; imageHash?: string } | null,
+  contentGatewayUrl: string,
+): string {
+  const ref = event?.imageHash ?? "";
+  const image = escapeHtmlAttribute(
+    /^[0-9a-f]{64}$/i.test(ref) && !/^0+$/.test(ref) ? `${stripTrailingSlash(contentGatewayUrl)}/bytes/${ref}` : "./logo.png",
+  );
+  // Chat crawlers ignore relative URLs, so the share fallback is the app's own copy.
+  const share = image === "./logo.png" ? `${DEFAULT_APP_URL}/logo.png` : image;
+  const title = escapeHtmlAttribute(event?.title?.trim() ?? "");
+  const lines = [
+    `  <link rel="icon" href="${image}">`,
+    `  <link rel="apple-touch-icon" href="${image}">`,
+    `  <meta property="og:type" content="website">`,
+    title ? `  <meta property="og:title" content="${title}">` : "",
+    `  <meta property="og:image" content="${share}">`,
+    `  <meta name="twitter:card" content="summary_large_image">`,
+    title ? `  <meta name="twitter:title" content="${title}">` : "",
+    `  <meta name="twitter:image" content="${share}">`,
+  ].filter(Boolean).join("\n");
+  const stripped = html.replace(/\s*<link\b[^>]*\brel=["']?(?:shortcut )?icon["']?[^>]*>/gi, "");
+  return injectBeforeHeadClose(stripped, lines);
+}
+
 function stripTrailingSlash(raw: string): string {
   return raw.trim().replace(/\/+$/, "");
 }

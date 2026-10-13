@@ -12,6 +12,13 @@
  * passes, the server would reject the delegation anyway (expiry check in
  * verify-delegation.ts), so the revocation entry is dead weight. We prune
  * on load and periodically in-memory so the file doesn't grow unbounded.
+ *
+ * PRESENT BUT UNREADABLE (#186): it is never written over, which would erase
+ * every revocation in it, and no new revocation is accepted until an operator
+ * restores it. Verification meanwhile reads it as empty — fail OPEN, on
+ * purpose: failing closed would refuse every session as SESSION_INVALID, which
+ * the client answers by minting another, so every user would sign in a loop.
+ * The `/api/health` `revocation` alarm is what makes the open window short.
  */
 
 import { readFileSync } from "node:fs";
@@ -49,6 +56,25 @@ let state: RevocationState = { version: 1, nonces: [], revokeAllBefore: {} };
 let nonceIndex = new Set<string>();
 let loaded = false;
 let gcTimer: NodeJS.Timeout | null = null;
+let fileUnreadable: string | null = null;
+
+export class RevocationStoreUnavailableError extends Error {
+  constructor() {
+    super("Session revocation is unavailable right now");
+    this.name = "RevocationStoreUnavailableError";
+  }
+}
+
+function refuseFile(why: string): void {
+  fileUnreadable = why;
+  state = { version: 1, nonces: [], revokeAllBefore: {} };
+  rebuildIndex();
+  console.error(
+    `[revocation] ALARM: revoked-sessions.json ${why} - it will not be overwritten, revoked sessions are ` +
+      "not being refused, and nothing can be revoked until it is restored and the server restarted " +
+      "(/api/health revocation)",
+  );
+}
 
 function rebuildIndex(): void {
   nonceIndex = new Set(state.nonces.map((n) => n.nonce));
@@ -71,11 +97,44 @@ function pruneExpired(): number {
 function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
+  loadFile();
+
+  // Kick off periodic GC (no-op if timers unavailable in the environment).
+  if (!gcTimer && typeof setInterval === "function") {
+    gcTimer = setInterval(() => {
+      const pruned = pruneExpired();
+      if (pruned > 0) {
+        console.log(`[revocation] GC pruned ${pruned} expired nonces`);
+        persist();
+      }
+    }, GC_INTERVAL_MS);
+    // Don't keep the event loop alive for GC alone.
+    if (typeof gcTimer.unref === "function") gcTimer.unref();
+  }
+}
+
+function loadFile(): void {
+  let raw: string;
   try {
-    const raw = readFileSync(REVOCATION_FILE, "utf-8");
+    raw = readFileSync(REVOCATION_FILE, "utf-8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code === "ENOENT") return; // First run: fresh state.
+    return refuseFile(`exists but could not be read (${code ?? "unknown error"})`);
+  }
+  try {
     const parsed = JSON.parse(raw) as RevocationState | LegacyRevocationState;
 
     if ("version" in parsed && parsed.version === 1) {
+      // A wrong shape must refuse here, not throw on every request later.
+      if (
+        !Array.isArray(parsed.nonces) ||
+        parsed.nonces.some((n) => typeof n?.nonce !== "string" || typeof n?.expiresAt !== "string") ||
+        !parsed.revokeAllBefore ||
+        typeof parsed.revokeAllBefore !== "object"
+      ) {
+        throw new Error("unexpected shape");
+      }
       state = parsed;
     } else {
       // Legacy migration: we don't know the original session expiry,
@@ -102,24 +161,12 @@ function ensureLoaded(): void {
     );
     if (pruned > 0) persist();
   } catch {
-    // File doesn't exist yet — fresh state.
-  }
-
-  // Kick off periodic GC (no-op if timers unavailable in the environment).
-  if (!gcTimer && typeof setInterval === "function") {
-    gcTimer = setInterval(() => {
-      const pruned = pruneExpired();
-      if (pruned > 0) {
-        console.log(`[revocation] GC pruned ${pruned} expired nonces`);
-        persist();
-      }
-    }, GC_INTERVAL_MS);
-    // Don't keep the event loop alive for GC alone.
-    if (typeof gcTimer.unref === "function") gcTimer.unref();
+    refuseFile("could not be parsed");
   }
 }
 
 function persist(): void {
+  if (fileUnreadable) return; // Writing now would replace the operator's only copy.
   writeJsonAtomic(REVOCATION_FILE, state, "revocation");
 }
 
@@ -148,6 +195,7 @@ export function isSessionRevoked(nonce: string, parentAddress: string, issuedAt:
  */
 export function revokeSession(nonce: string, expiresAt: string): void {
   ensureLoaded();
+  if (fileUnreadable) throw new RevocationStoreUnavailableError();
   if (nonceIndex.has(nonce)) return;
   state.nonces.push({ nonce, expiresAt });
   nonceIndex.add(nonce);
@@ -158,7 +206,22 @@ export function revokeSession(nonce: string, expiresAt: string): void {
 /** Revoke all sessions for a parent address issued before now */
 export function revokeAllSessions(parentAddress: string): void {
   ensureLoaded();
+  if (fileUnreadable) throw new RevocationStoreUnavailableError();
   state.revokeAllBefore[parentAddress.toLowerCase()] = new Date().toISOString();
   persist();
   console.log(`[revocation] All sessions revoked for ${parentAddress}`);
+}
+
+/** `/api/health` → `revocation`. `ok: false` = the file is present but unreadable (see the header). */
+export function revocationHealth(): { ok: boolean } {
+  ensureLoaded();
+  return { ok: fileUnreadable === null };
+}
+
+/** Tests only: forget memory so the next call reloads from disk. */
+export function __resetRevocationForTest(): void {
+  state = { version: 1, nonces: [], revokeAllBefore: {} };
+  nonceIndex = new Set();
+  fileUnreadable = null;
+  loaded = false;
 }

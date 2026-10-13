@@ -13,6 +13,7 @@ import {
   maxSelectableQty,
   buildOrderPayload,
   buildCheckoutBody,
+  staleOrderKeyRef,
   reserveOutcome,
   MAX_QTY,
 } from "../src/checkout.js";
@@ -187,4 +188,21 @@ test("a guest's email field never becomes the ticket address", () => {
 test("a form that cannot be shown (no organiser key) falls back to the widget's box, never a dead-end", () => {
   const noKey = validateBuyPanel({ fields: [EMAIL], verifiedKey: undefined, formData: {}, inlineEmail: "me@example.com" });
   assert.deepEqual(noKey, { ok: true, email: "me@example.com" });
+});
+
+test("the sealed key is declared only with a box (#186)", () => {
+  const box = { v: 2, enc: "ab", ct: "cd" } as unknown as NonNullable<Parameters<typeof buildCheckoutBody>[0]["encryptedOrder"]>;
+  const k = "0a".repeat(32);
+  assert.equal(buildCheckoutBody({ ...baseInputs, encryptedOrder: box, encryptionKeyRef: k }).encryptionKeyRef, k);
+  assert.equal("encryptionKeyRef" in buildCheckoutBody({ ...baseInputs, encryptionKeyRef: k }), false);
+});
+
+test("a stale-key refusal names a key to re-seal to - only a well-formed, different one", () => {
+  const k0 = "0a".repeat(32);
+  const k1 = "1b".repeat(32);
+  assert.equal(staleOrderKeyRef({ ok: false, code: "ORDER_KEY_STALE", encryptionKeyRef: k1 }, k0), k1);
+  assert.equal(staleOrderKeyRef({ ok: false, code: "ORDER_KEY_STALE", encryptionKeyRef: k0 }, k0), null, "the same key again changes nothing");
+  assert.equal(staleOrderKeyRef({ ok: false, code: "ORDER_KEY_STALE", encryptionKeyRef: "XYZ" }, k0), null);
+  assert.equal(staleOrderKeyRef({ ok: false, code: "OTHER", encryptionKeyRef: k1 }, k0), null);
+  assert.equal(staleOrderKeyRef({ ok: false, code: "ORDER_KEY_STALE" }, k0), null);
 });

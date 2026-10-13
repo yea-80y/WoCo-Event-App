@@ -53,11 +53,11 @@ should be stated plainly — but only for order-form data, never as a blanket cl
 Personal data enters WoCo through **four** distinct front ends. Each needs its own point-of-collection
 notice; a policy link in the main app does not cover the other three.
 
-| # | Surface | Code | Collects | Notice status (2026-10-05) |
+| # | Surface | Code | Collects | Notice status (2026-10-05; organiser notice added 2026-10-11) |
 |---|---|---|---|---|
-| 1 | Main app checkout | `apps/web/src/lib/attendee/events/claim/OrderForm.svelte` | email, order-form fields | **Compliant** (since `8ed69ec`) — the `consent-block` above the action buttons carries `TRANSACTIONAL_EMAIL_NOTICE`, an unticked `MARKETING_CONSENT_NOTICE` opt-in, `CHECKOUT_PRIVACY_SUMMARY` and a Privacy Policy link. Wording is shared with the server via `packages/shared/src/legal/consent.ts` so the stored Art. 7(1) evidence cannot drift from what was shown |
-| 2 | Embed widget on organiser's own domain | `packages/embed/src/components/woco-tickets.ts` | email | **Compliant** - `renderConsent` shows the same shared `TRANSACTIONAL_EMAIL_NOTICE`, unticked `MARKETING_CONSENT_NOTICE` opt-in, `CHECKOUT_PRIVACY_SUMMARY` and a Privacy Policy link |
-| 3 | Organiser site deployed via WoCo | `apps/web/src/MultiSiteApp.svelte`, `contactForm` section (`packages/shared/src/site/types.ts:192`) | name, email, message | The contact form carries a notice naming the organiser as responsible and linking WoCo's Privacy Policy (`ContactFormSection.svelte`); the site footer links it too. The generated site still has no organiser privacy policy page of its own |
+| 1 | Main app checkout | `apps/web/src/lib/attendee/events/claim/OrderForm.svelte` | email, order-form fields | **Compliant** (since `8ed69ec`) — the `consent-block` above the action buttons carries `TRANSACTIONAL_EMAIL_NOTICE`, an unticked `MARKETING_CONSENT_NOTICE` opt-in, `CHECKOUT_PRIVACY_SUMMARY` and a Privacy Policy link. Wording is shared with the server via `packages/shared/src/legal/consent.ts` so the stored Art. 7(1) evidence cannot drift from what was shown. Since 2026-10-11 the line also links the ORGANISER's privacy notice (`CheckoutNoticeLinks.svelte`), and the no-order-form pay panel (`StripePayPanel.svelte`), which collects an email and had no notice at all, now carries `PAY_PANEL_PRIVACY_SUMMARY` and both links - deliberately NOT the "encrypted in your browser" summary, since that email is not client-sealed (§4) |
+| 2 | Embed widget on organiser's own domain | `packages/embed/src/components/woco-tickets.ts` | email | **Compliant** - `renderConsent` shows the same shared `TRANSACTIONAL_EMAIL_NOTICE`, unticked `MARKETING_CONSENT_NOTICE` opt-in, `CHECKOUT_PRIVACY_SUMMARY` and a Privacy Policy link, and since 2026-10-11 the organiser's notice (`#/privacy-notice/{eventId}` on the app) ahead of it |
+| 3 | Organiser site deployed via WoCo | `apps/web/src/MultiSiteApp.svelte`, `contactForm` section (`packages/shared/src/site/types.ts:192`) | name, email, message | The contact form carries a notice naming the organiser as responsible and linking WoCo's Privacy Policy (`ContactFormSection.svelte`); the site footer links it too. Since 2026-10-11 the site has the organiser's own notice as a page (`#/privacy-notice`, site-wide; `#/privacy-notice/{eventId}` per event), linked from the footer, the contact form and every event page |
 | 4 | Direct event page link | routes into surface 1 | as surface 1 | as surface 1 |
 
 Surface 3 is the sharpest risk: WoCo generates a website that collects personal data and ships it
@@ -91,7 +91,7 @@ Enumerated from source, not assumed:
 | `event-cancellations.json` | **Yes** (pseudonymous) | Cancelled events and one refund row per sale, keyed by Stripe session - `lib/event/cancellations.ts` |
 | `pending-refunds.json` | **Yes** (pseudonymous) | Automatic refunds Stripe refused to create, by Stripe session and payment intent, kept until retried. No email - `lib/stripe/pending-refunds.ts` |
 | `held-orders/{root}.json` | **Yes** (encrypted) | One file per order sealed in the buyer's browser, held as ciphertext from checkout until paid and stored on Swarm (unpaid: deleted after 24 h) - `lib/attendee-batch/held-orders.ts` |
-| `attendee-slots.json` | Indirect | Which storage slot of the attendee batch holds each chunk of each order, and its erasure state - what makes one order erasable (§6) - `lib/attendee-batch/ledger.ts` |
+| `attendee-slots.json` | **Yes** (pseudonymous) | Which storage slot of the attendee batch holds each chunk of each order, and its erasure state - what makes one order erasable (§6). Since #797 each record also holds the buyer's HMAC-SHA256 email hash and the organiser, so an access or erasure request can find that person's orders (`ordersForEmailHash`). Rotating `EMAIL_HASH_SECRET` blinds this lookup. No plaintext - `lib/attendee-batch/ledger.ts` |
 | `door-passes.json`, `checkins/`, `checkin-rosters/` | **Yes** (pseudonymous / encrypted) | Active door pass per event; check-in records (ticket number, time, random device id); the door guest list as ciphertext the server cannot open - `lib/checkin/store.ts` |
 | `event-feed-signers.json` | **Yes** | Event id → the organiser's content-feed signer and verified creator address, pinned at create - `lib/event/feed-signer-record.ts` |
 | `device-grants.json` | Indirect | An account's added passkeys (#746): each one's key address and a hash of its credential id, the account owner's signed grant and any signed removal, and every nonce used. No names, no device or password-manager details. Must survive restarts (losing it signs added passkeys out) |
@@ -159,8 +159,8 @@ Read for rate limiting and abuse prevention in `reservations.ts`, `campaign.ts`,
 helper in `lib/http/client-ip.ts`, reading `cf-connecting-ip` only). Held in in-memory counters,
 not persisted to `.data/` - except the source IP on a seat hold (`reservations.json`, swept about an
 hour after the hold ends).
-Also present in Cloudflare and Docker/host logs — **retention there is currently undefined and needs
-a stated policy** (see §8).
+Also present in host and container logs, kept 30 days (journald, #547; see §8 item 3), and in
+Cloudflare's logs under Cloudflare's own retention as our sub-processor.
 
 ---
 
@@ -325,6 +325,7 @@ independent nodes worldwide:
 | Order blob | X-Wing sealed box of the order answers, on the attendee batch, paid orders only (§6 below). Its Swarm reference is also recorded onchain as the slot's `orderRef`, which is public and permanent | **Yes**, encrypted |
 | Like / follow statements | Public signed statements on the user's own feed (`packages/shared/src/social/`); a retraction is a new version, not a deletion | **Yes**, and intentionally public |
 | Profile feeds | display name, avatar, bio — organiser-published | **Yes**, and intentionally public |
+| Organiser privacy notice (`woco/legal/privacy-notice/{account}`, `woco.privacy-notice.v1`) | The organiser's name, privacy contact email, optional postal address and ICO number, and their own statements (purposes, sharing, retention), signed by their content-feed signer and published when they press "Confirm and publish". The public notice pages read it through `GET /api/privacy-notice/*`, which picks the account and signer from server records only (`routes/privacy-notice.ts`); the server stores none of it. Earlier versions stay retrievable after an edit - the editor says so before publishing and asks for business, not personal, details | **Yes** (the organiser's own details), and intentionally public |
 | Marketing contact list blob | X-Wing sealed box, sealed to organiser | **Yes**, encrypted |
 
 **Pseudonymised ≠ anonymous.** HMAC email hashes and wallet addresses are personal data under UK
@@ -407,6 +408,14 @@ anything, so a crash between the two steps over-suppresses rather than under-pro
 2. **Order blobs on Swarm** - the script does not erase them; the operator burn route does
    (`routes/ops.ts`, see above). The order reference recorded onchain stays public.
 3. **Stripe** holds its own payment records under its own retention obligations.
+4. **Copies the organiser downloaded** - exported CSVs and the guest list on a door device (#798).
+   Tell the organiser of each affected event, naming the order, so they delete it from their copies
+   and re-push the door list (PRIVACY_POLICY §8 promises this; ORGANISER_TERMS §4 item 8 and DPA §3
+   item 5 oblige them). The organiser's contact is the email on their Stripe connected account.
+
+**An erasure confirmation must not promise "no further contact".** If an erased buyer's event is
+later cancelled, WoCo emails them that their refund is on its way, at the address they paid with,
+read from Stripe at send time and stored nowhere (#798, PR #801). PRIVACY_POLICY §5 and §9 say so.
 
 ### International transfers
 
@@ -414,8 +423,8 @@ Swarm nodes are worldwide with no controllable location. This is a restricted tr
 Chapter V with **no adequacy decision and no possibility of Standard Contractual Clauses** — there is
 no counterparty to contract with. The mitigating argument is that all sensitive payload is encrypted
 client-side to a key held only in the EU/UK-based organiser's browser, so what leaves the jurisdiction
-is ciphertext plus pseudonymous identifiers. **This position needs solicitor sign-off — it is the
-single most novel legal question in the platform.**
+is ciphertext plus pseudonymous identifiers. The transfer is stated plainly to data subjects in
+PRIVACY_POLICY §8. We revisit the position as guidance on decentralised storage develops.
 
 ---
 
@@ -496,10 +505,11 @@ organiser's and Stripe's obligation, not something WoCo needs to hold separately
 |---|---|---|
 | 1 | ~~Correct `CLAUDE.md` + `stripe.ts:5` — charges are **direct**, not destination~~ **Done 2026-08-01** — both now say direct charges | Claude |
 | 2 | Confirm whether legacy destination-charge orders exist in production | user |
-| 3 | **Configure** log rotation to match the 30-day period now STATED in PRIVACY_POLICY §10. Stating a period does not create one: Docker's `json-file` driver rotates on nothing unless `max-size`/`max-file` are set in compose, and Cloudflare's retention depends on the plan — check it rather than assume. A policy claiming 30 days over infrastructure that keeps logs forever is worse than the placeholder was | user |
+| 3 | ~~Configure log retention to match the 30 days stated in PRIVACY_POLICY §10~~ **Done 2026-10-06 (#547)** - journald MaxRetentionSec=30day; system logs rotate daily, keep 30; woco-server and bee-proxy container logs in journald. The bee-node container stays on json-file until its next restart (owner to OK) | user |
 | 4 | ~~Decide + implement the separate attendee postage batch and manifest-driven erasure~~ **Done 2026-09-27 (#546)** - separate attendee batch; erasure is a per-order slot overwrite rather than manifest omission (§6) | Fable |
-| 5 | Solicitor sign-off on the Swarm international-transfer position (§6) | user |
-| 6 | ICO registration (data protection fee) before processing begins | user |
+| 5 | ~~Settle the Swarm international-transfer position (§6)~~ **Done 2026-10-06** - stated plainly in PRIVACY_POLICY §8; sensitive payload encrypted client-side | user |
+| 6 | ~~ICO registration (data protection fee) before processing begins~~ **Done 2026-10-06** - WoCo Network Ltd, registration number ZC266841, fee by direct debit; stated in PRIVACY_POLICY §2 | user |
 | 7 | ~~Point-of-collection notices on all four surfaces (§2)~~ **Done** - all four carry one (§2); the generated-site policy page is item 8 | Claude |
-| 8 | Generated organiser sites need a privacy policy page | Claude |
-| 9 | **Organiser privacy contact.** `privacy@woco-net.com` is WoCo's contact *as controller* and stays WoCo's — it is not an organiser-facing setting. But §3 tells the attendee their order-form rights are exercised against the ORGANISER, and today the only identification of that organiser is their display name at checkout. They need a reachable contact of their own. Deliberately not built yet: it wants a verified address, which is the same problem SES domain verification solves (PRICING_AND_EMAIL §6 forbids onboarding organiser domains on Resend). Slot it in as an organiser-profile field once SES lands — the point-of-collection notice and the generated-site policy page (item 8) both read it | Claude, after SES |
+| 8 | ~~Generated organiser sites need a privacy policy page~~ **Done 2026-10-11** - the organiser's privacy notice (`packages/shared/src/legal/organiser-notice.ts`), pre-filled from these documents and confirmed by the organiser, is a page of every site and single-event page, and linked from every checkout and the embed | Claude |
+| 9 | **Organiser privacy contact.** `privacy@woco-net.com` is WoCo's contact *as controller* and stays WoCo's — it is not an organiser-facing setting. But §3 tells the attendee their order-form rights are exercised against the ORGANISER, and today the only identification of that organiser is their display name at checkout. They need a reachable contact of their own. Deliberately not built yet: it wants a verified address, which is the same problem SES domain verification solves (PRICING_AND_EMAIL §6 forbids onboarding organiser domains on Resend). Slot it in as an organiser-profile field once SES lands — the point-of-collection notice and the generated-site policy page (item 8) both read it. **Partly done 2026-10-11**: the organiser's notice carries a contact email they enter (pre-filled from their Stripe support email). It is NOT verified; until it is, the notice also tells attendees they can write to privacy@woco-net.com to be passed on, and an organiser with no contact shows only that | Claude, after SES |
+| 10 | ~~Retention periods stated in PRIVACY_POLICY §10 that nothing enforced~~ **Done 2026-10-07** - the organiser's copy of order details is kept at the organiser's direction and erased on request (the row now says so; it never auto-expired); account data is deleted within 90 days of a request; marketing consent records expire as stated once #794 deploys (#547); logs are item 3 | Claude |

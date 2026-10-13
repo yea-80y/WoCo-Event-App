@@ -9,6 +9,8 @@
   } from "../../api/stripe.js";
   import { isSessionInvalid } from "../../api/errors.js";
   import { auth } from "../../auth/auth-store.svelte.js";
+  import { canOrganise, ORGANISER_PASSKEY_MESSAGE } from "../../auth/organiser-account.js";
+  import { navigate } from "../../router/router.svelte.js";
 
   let status = $state<StripeAccountStatus | null>(null);
   let loading = $state(true);
@@ -32,7 +34,12 @@
     }
   });
 
+  // Stripe is an organiser's step, and organising needs a passkey (#746). The server
+  // cannot tell a passkey account from an email one, so this refusal is the check.
+  const organiser = $derived(!auth.isConnected || canOrganise(auth.kind));
+
   async function handleConnect() {
+    if (!organiser) return;
     actionLoading = true;
     error = null;
     try {
@@ -53,6 +60,7 @@
   }
 
   async function handleContinueOnboarding() {
+    if (!organiser) return;
     actionLoading = true;
     error = null;
     try {
@@ -78,6 +86,12 @@
   );
 </script>
 
+{#if !organiser}
+  <div class="organiser-note">
+    <p>{ORGANISER_PASSKEY_MESSAGE}</p>
+    <button type="button" class="organiser-note-link" onclick={() => navigate("/creator")}>Start hosting →</button>
+  </div>
+{:else}
 <div class="stripe-panel" class:stripe-panel--mounted={mounted}>
 
   <!-- Header strip -->
@@ -274,8 +288,27 @@
 
   </div>
 </div>
+{/if}
 
 <style>
+  .organiser-note {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 1rem 1.25rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+  }
+
+  .organiser-note-link {
+    align-self: flex-start;
+    font-size: 0.8125rem;
+    color: var(--accent-text);
+  }
+
   .stripe-panel {
     background: var(--bg-surface);
     border: 1px solid var(--border);

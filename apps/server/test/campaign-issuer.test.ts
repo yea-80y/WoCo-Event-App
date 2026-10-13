@@ -136,6 +136,9 @@ beforeEach(() => {
 // The confirmation slot
 // ---------------------------------------------------------------------------
 
+/** Lets the fire-and-forget badge writes land before a test looks. */
+const settle = () => new Promise((r) => setImmediate(r));
+
 test("a confirmation already at version 0 ends the attempt, even for another referrer", async () => {
   const { deps, writes } = recorder({
     readVersion0: async () => ({ status: "found", bytes: confirmation(OTHER) }),
@@ -145,8 +148,137 @@ test("a confirmation already at version 0 ends the attempt, even for another ref
 
   assert.equal(res.status, "already");
   assert.equal(res.status === "already" && res.record.referrer, OTHER);
-  assert.equal(writes.length, 0, "the slot is spent — nothing may be written");
+  assert.equal(confirmWrites(writes).length, 0, "the slot is spent — it may never be written again");
   assert.equal(issuer.campaignIssuerHealth().alreadyConfirmed, 1);
+});
+
+test("a standing confirmation is FINISHED on a repeat - for the referrer it names, not the one asked about", async () => {
+  // The shape a timed-out read-back leaves: the chunk landed, the index and the
+  // badges never ran, and the referee's next attempt reads `already`.
+  const { deps, writes } = recorder({
+    readVersion0: async () => ({ status: "found", bytes: confirmation(OTHER) }),
+  });
+
+  await issuer.confirmReferral(ARGS, deps);
+  await settle();
+
+  const S_O = campaignAccountSubject(OTHER);
+  const index = writes.find((w) => w.topic === referrerIndexTopic(S_O, 0));
+  assert.ok(index, "the named referrer's index is appended");
+  assert.deepEqual(dec(index!.bytes), { format: REFERRER_INDEX_FORMAT, subjects: [S_E] });
+  assert.equal(writes.some((w) => w.topic === referrerIndexTopic(S_R, 0)), false, "never the asked-about referrer's");
+  assert.ok(writes.some((w) => w.topic === BADGE_TOPIC), "the referee's badge");
+  assert.ok(writes.some((w) => w.topic === badgeTopic(S_O, "joined")), "the referrer's badge");
+});
+
+test("repairConfirmation finishes a standing confirmation once per process, and not at all when switched off", async () => {
+  const record = JSON.parse(new TextDecoder().decode(confirmation(REFERRER)));
+  const first = recorder();
+  await issuer.repairConfirmation(record, first.deps);
+  await settle();
+  assert.ok(first.writes.some((w) => w.topic === referrerIndexTopic(S_R, 0)));
+
+  const again = recorder();
+  await issuer.repairConfirmation(record, again.deps);
+  await settle();
+  assert.equal(again.writes.length, 0, "a second status read costs nothing");
+
+  issuer.__resetIssuer({ configured: false });
+  const off = recorder();
+  await issuer.repairConfirmation(record, off.deps);
+  await settle();
+  assert.equal(off.writes.length, 0);
+});
+
+test("a standing confirmation whose index write throws still answers `already`", async () => {
+  // The upload reaches bee over the network. Before #838 the `already` path
+  // never touched the index; now it does, and a fault there must stay a
+  // recorded index failure, not a 500 for a referral that IS confirmed.
+  const S_O = campaignAccountSubject(OTHER);
+  const { deps, writes } = recorder({
+    readVersion0: async () => ({ status: "found", bytes: confirmation(OTHER) }),
+    writeFeed: async (topic, bytes) => {
+      if (topic === referrerIndexTopic(S_O, 0)) throw new Error("bee unreachable: http://user:secret@bee");
+      writes.push({ topic, bytes });
+      return { ok: true, version: 0, unchanged: false };
+    },
+  });
+
+  const res = await issuer.confirmReferral(ARGS, deps);
+  await settle();
+
+  assert.equal(res.status, "already");
+  assert.equal(issuer.campaignIssuerHealth().indexFailed, 1);
+  assert.equal(issuer.campaignIssuerHealth().lastIndexError, "write threw");
+  assert.ok(writes.some((w) => w.topic === BADGE_TOPIC), "the badges still fire");
+});
+
+test("a repair whose index append did not land is retried after the window, and remembered once it lands", async () => {
+  const record = JSON.parse(new TextDecoder().decode(confirmation(REFERRER)));
+  let now = NOW;
+  const clock = { now: () => now };
+
+  // A bee hiccup: the banded read cannot answer, so nothing is written.
+  const down = recorder({ ...clock, readBanded: async () => ({ status: "unavailable", reason: "probe", band: 0 }) });
+  await issuer.repairConfirmation(record, down.deps);
+  await settle();
+  assert.equal(down.writes.some((w) => w.topic === referrerIndexTopic(S_R, 0)), false);
+  assert.equal(issuer.campaignIssuerHealth().indexFailed, 1);
+
+  // Inside the window the next status read costs nothing...
+  now += issuer.REPAIR_RETRY_MS - 1;
+  const soon = recorder(clock);
+  await issuer.repairConfirmation(record, soon.deps);
+  await settle();
+  assert.equal(soon.writes.length, 0, "a failed repair is not retried on every Home open");
+
+  // ...and after it the append is tried again, and lands.
+  now += 1;
+  const up = recorder(clock);
+  await issuer.repairConfirmation(record, up.deps);
+  await settle();
+  assert.ok(up.writes.some((w) => w.topic === referrerIndexTopic(S_R, 0)), "retried once the window passed");
+
+  // Landed: never again this process, however much time passes.
+  now += 365 * 86_400_000;
+  const later = recorder(clock);
+  await issuer.repairConfirmation(record, later.deps);
+  await settle();
+  assert.equal(later.writes.length, 0);
+});
+
+test("a repair honours the postage floor: nothing is written over an unusable batch", async () => {
+  // The status-read repair is the one index write with no confirm in front of
+  // it, so the floor has to be checked at the write itself.
+  const record = JSON.parse(new TextDecoder().decode(confirmation(REFERRER)));
+  const { deps, writes } = recorder({ batchState: async () => ({ usable: true, ttl: 60 }) });
+
+  await issuer.repairConfirmation(record, deps);
+  await settle();
+
+  assert.equal(writes.length, 0, "an expiring batch accepts uploads it will never pay for");
+  assert.equal(issuer.campaignIssuerHealth().indexFailed, 1);
+  assert.equal(issuer.campaignIssuerHealth().lastIndexError, "postage batch unusable or expiring");
+});
+
+test("two status reads in flight at once repair a referee once", async () => {
+  const record = JSON.parse(new TextDecoder().decode(confirmation(REFERRER)));
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const { deps, writes } = recorder({
+    readBanded: async () => {
+      await gate;
+      return { status: "absent", band: 0 };
+    },
+  });
+
+  const first = issuer.repairConfirmation(record, deps);
+  const second = issuer.repairConfirmation(record, deps);
+  release();
+  await Promise.all([first, second]);
+  await settle();
+
+  assert.equal(writes.filter((w) => w.topic === referrerIndexTopic(S_R, 0)).length, 1, "one append, not a race");
 });
 
 test("foreign bytes at version 0 refuse, permanently and loudly", async () => {

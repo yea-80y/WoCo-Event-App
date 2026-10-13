@@ -271,19 +271,14 @@ textarea { resize: vertical; }
 }
 .card:hover { border-color: var(--border-hover); }
 
-/* ── LIVE pulse — chartreuse dot for live indicators ─────────────────── */
+/* ── LIVE dot — chartreuse dot for live indicators (steady, never blinking) ── */
 
-@keyframes woco-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%      { opacity: 0.4; transform: scale(0.85); }
-}
 .live-dot {
   display: inline-block;
   width: 0.5rem;
   height: 0.5rem;
   background: var(--accent);
   border-radius: 50%;
-  animation: woco-pulse 1.6s ease-in-out infinite;
 }
 
 /* ── Scanline overlay (use only on hero / featured surfaces) ─────────── */

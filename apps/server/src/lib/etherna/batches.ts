@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { writeJsonAtomic } from "../marketing/persist.js";
 import { ensureEthernaToken } from "./auth.js";
 import { ETHERNA_FETCH_BASE } from "./gateway.js";
+import { CONTROL_JSON_MAX_BYTES, errorSnippet, readCappedJson } from "../http/read-capped.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const BATCHES_FILE = join(DATA_DIR, "etherna-batches.json");
@@ -103,8 +104,8 @@ async function fetchToken(): Promise<string> {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
   });
-  if (!r.ok) throw new EthernaHttpError(r.status, `Etherna token request failed: ${r.status} ${await r.text().catch(() => "")}`);
-  const json = (await r.json()) as { access_token: string; expires_in?: number };
+  if (!r.ok) throw new EthernaHttpError(r.status, `Etherna token request failed: ${r.status} ${await errorSnippet(r)}`);
+  const json = await readCappedJson<{ access_token: string; expires_in?: number }>(r, CONTROL_JSON_MAX_BYTES, "etherna token");
   tokenCache = { token: json.access_token, expiresAt: Date.now() + (json.expires_in ?? 300) * 1000 };
   return json.access_token;
 }
@@ -118,8 +119,8 @@ async function bearerToken(force = false): Promise<string> {
 
 async function authGet(token: string, path: string, signal?: AbortSignal): Promise<unknown> {
   const r = await fetch(`${ETHERNA_GW}${path}`, { headers: { Authorization: `Bearer ${token}` }, signal });
-  if (!r.ok) throw new EthernaHttpError(r.status, `GET ${path} → ${r.status}: ${await r.text().catch(() => "")}`);
-  return r.json();
+  if (!r.ok) throw new EthernaHttpError(r.status, `GET ${path} → ${r.status}: ${await errorSnippet(r)}`);
+  return readCappedJson<unknown>(r, CONTROL_JSON_MAX_BYTES, `etherna GET ${path}`);
 }
 
 /** A bee-shaped stamp as Etherna's gateway returns it. Fields are unvalidated. */
@@ -149,8 +150,8 @@ async function authPost(token: string, path: string): Promise<unknown> {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!r.ok) throw new Error(`POST ${path} → ${r.status}: ${await r.text().catch(() => "")}`);
-  return r.json();
+  if (!r.ok) throw new Error(`POST ${path} → ${r.status}: ${await errorSnippet(r)}`);
+  return readCappedJson<unknown>(r, CONTROL_JSON_MAX_BYTES, `etherna POST ${path}`);
 }
 
 function readCreditWei(c: unknown): bigint {
@@ -241,7 +242,7 @@ async function waitForBatchUsable(token: string, batchId: string): Promise<void>
         headers: { Authorization: `Bearer ${token}` },
       });
       if (r.ok) {
-        const data = await r.json() as { usable?: boolean };
+        const data = await readCappedJson<{ usable?: boolean }>(r, CONTROL_JSON_MAX_BYTES, "etherna stamp poll");
         if (data.usable === true) return;
       } else {
         lastErr = `${r.status}`;

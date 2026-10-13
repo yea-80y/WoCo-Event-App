@@ -35,7 +35,9 @@ test("the CSP's asset origin is the one the upload script actually injects", () 
 });
 
 test("every directive that fetches our own bundle allows the asset origin", () => {
-  for (const directive of ["base-uri", "script-src", "style-src"] as const) {
+  // frame-src: the builder's live preview frames ./multi-site.html, which the
+  // <base> sends to the asset origin too - blocked there, it showed a blank pane.
+  for (const directive of ["base-uri", "script-src", "style-src", "frame-src"] as const) {
     assert.ok(
       APP_POLICY[directive]?.includes(ASSET_ORIGIN),
       `${directive} omits ${ASSET_ORIGIN} — on woco.eth.limo this blocks the app's own assets`,

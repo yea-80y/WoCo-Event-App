@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>WoCo sign-in window test</title>
+<!--
+  Test of the "sign in through a window" design, on the real hosts: this page is
+  served on woco.eth.limo and opens https://app.woco.eth.limo/passkey-window-test.html,
+  where the passkey lives. It measures every stage so the owner can judge the UX on
+  real devices, and offers today's in-page sign-in for comparison.
+  Nothing secret crosses: the window sends back timings and yes/no checks only.
+-->
+<style>
+  :root { --bg:#fff; --text:#16161a; --muted:#5b5b66; --border:#dcdce3; --accent:#2f4ee0; --good:#0f7b3f; --bad:#b42318; --warn:#8a5a00; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111114; --text:#ececf1; --muted:#a3a3ad; --border:#2c2c33; --accent:#7d93ff; --good:#4cc27f; --bad:#ff7a6e; --warn:#f0b74a; } }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  main { max-width:34rem; margin:0 auto; padding:1.5rem 1rem 3rem; }
+  h1 { font-size:1.35rem; margin:0 0 .25rem; } h2 { font-size:1rem; margin:1.5rem 0 .5rem; }
+  p { margin:.25rem 0 .75rem; } .muted { color:var(--muted); font-size:.9rem; }
+  button { font:inherit; padding:.8rem 1rem; border-radius:.6rem; border:1px solid var(--border); background:var(--accent); color:#fff; width:100%; margin:.35rem 0; cursor:pointer; }
+  button.secondary { background:transparent; color:var(--text); }
+  .result { border:1px solid var(--border); border-radius:.6rem; padding:.75rem; margin:.75rem 0; }
+  .result b { display:block; margin-bottom:.25rem; } .good { color:var(--good); } .bad { color:var(--bad); } .warn { color:var(--warn); }
+  pre { white-space:pre-wrap; word-break:break-word; font-size:.8rem; color:var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sign-in window test</h1>
+  <p class="muted" id="where"></p>
+
+  <h2>1. The new way: a sign-in window</h2>
+  <p class="muted">First time on this device: create the test passkey. After that: sign in with it. Try sign-in twice to see if the second window opens faster.</p>
+  <button id="create" type="button">Create the test passkey (first time)</button>
+  <button id="signin" type="button">Sign in with the test passkey</button>
+
+  <h2>2. Today's way, for comparison</h2>
+  <p class="muted">Signs in inside this page, as WoCo does now. Uses your real WoCo passkey if you have one - cancel the sheet if you prefer.</p>
+  <button class="secondary" id="inpage" type="button">Sign in in the page (today)</button>
+
+  <div id="results"></div>
+</main>
+<script>
+// PROTOCOL-START
+var WINDOW_ORIGIN = "https://app.woco.eth.limo";
+var WINDOW_PATH = "/passkey-window-test.html";
+var OPENER_HOST = "woco.eth.limo";
+// PROTOCOL-END
+
+var $ = function (id) { return document.getElementById(id); };
+var onOpenerHost = location.hostname === OPENER_HOST;
+$("where").textContent = onOpenerHost
+  ? "Open on " + location.hostname + " - the window will open on app.woco.eth.limo."
+  : "This test only works on https://woco.eth.limo/popup-test.html";
+
+function secs(ms) { return (ms / 1000).toFixed(1) + " s"; }
+
+function report(title, tone, lines) {
+  var box = document.createElement("div");
+  box.className = "result";
+  var b = document.createElement("b");
+  b.className = tone; b.textContent = title;
+  var pre = document.createElement("pre");
+  pre.textContent = lines.join("\n");
+  box.appendChild(b); box.appendChild(pre);
+  $("results").insertBefore(box, $("results").firstChild);
+}
+
+var deviceLine = function () { return "browser: " + navigator.userAgent; };
+
+function openWindow(action) {
+  if (!onOpenerHost) return;
+  var t0 = performance.now();
+  var w = 440, h = 620;
+  var left = Math.max(0, (window.screenX || 0) + ((window.outerWidth || w) - w) / 2);
+  var top = Math.max(0, (window.screenY || 0) + ((window.outerHeight || h) - h) / 3);
+  // Synchronous, first thing in the click: anything awaited before this is a blocked popup.
+  var win = window.open(WINDOW_ORIGIN + WINDOW_PATH, "woco-passkey-test",
+    "popup,width=" + w + ",height=" + h + ",left=" + Math.round(left) + ",top=" + Math.round(top));
+  if (!win) { report("Window blocked", "bad", ["The browser blocked the window.", deviceLine()]); return; }
+  var nonce = Array.from(crypto.getRandomValues(new Uint8Array(12)), function (x) { return x.toString(16).padStart(2, "0"); }).join("");
+  var tReady = null, done = false;
+  function finish() { done = true; window.removeEventListener("message", onMsg); clearInterval(poll); }
+  function onMsg(ev) {
+    if (ev.origin !== WINDOW_ORIGIN || ev.source !== win) return;
+    var m = ev.data || {};
+    if (m.type === "ready" && tReady === null) {
+      tReady = performance.now() - t0;
+      win.postMessage({ type: "request", nonce: nonce, action: action }, WINDOW_ORIGIN);
+    } else if (m.type === "result" && m.nonce === nonce) {
+      finish();
+      var total = performance.now() - t0;
+      var r = m.result || {};
+      report(r.ok ? (action === "create" ? "Passkey created through the window" : "Signed in through the window") : "Window step failed",
+        r.ok ? "good" : "bad", [
+          "window open + ready: " + secs(tReady) + "  (page load inside the window " + secs(r.loadMs || 0) + ", from cache: " + (r.fromCache ? "yes" : "no") + ")",
+          "your tap on Continue: " + secs(r.tapMs || 0),
+          "passkey step (fingerprint / Face ID): " + secs(r.ceremonyMs || 0),
+          "total, click to signed in: " + secs(total),
+          "passkey secret available (PRF): " + (r.prfOk ? "yes" : "no") + (r.attachment ? "  via " + r.attachment : ""),
+          r.ok ? "" : "error: " + r.errorName + ": " + r.errorMessage,
+          deviceLine(),
+        ].filter(Boolean));
+    }
+  }
+  window.addEventListener("message", onMsg);
+  var poll = setInterval(function () {
+    if (!done && win.closed) { finish(); report("Window closed without finishing", "warn", ["Cancelled, or the window could not report back.", "ready after: " + (tReady === null ? "never" : secs(tReady)), deviceLine()]); }
+  }, 500);
+}
+
+$("create").addEventListener("click", function () { openWindow("create"); });
+$("signin").addEventListener("click", function () { openWindow("get"); });
+
+$("inpage").addEventListener("click", function () {
+  var t0 = performance.now();
+  navigator.credentials.get({ publicKey: { challenge: crypto.getRandomValues(new Uint8Array(32)), rpId: OPENER_HOST, userVerification: "required" } })
+    .then(function () {
+      report("Signed in in the page (today)", "good", ["total, click to signed in: " + secs(performance.now() - t0), deviceLine()]);
+    }, function (e) {
+      report("In-page sign-in did not complete", "warn", ["after " + secs(performance.now() - t0) + ": " + e.name + ": " + e.message, "(Firefox refuses this address - expected there.)", deviceLine()]);
+    });
+});
+</script>
+</body>
+</html>

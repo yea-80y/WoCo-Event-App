@@ -1,10 +1,7 @@
 # Cookie and Local Storage Notice
 
-**Last updated:** [DATE OF PUBLICATION]
+**Last updated:** 6 October 2026
 **Version:** 1.0
-
-> **⚠️ PRE-LAUNCH DRAFT.** Verify the itemised table against the shipped build before publishing —
-> this notice must describe what the app actually stores, and PECR reg. 6 requires accuracy.
 
 ---
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isStandalone } from "../../pwa/install-capture.js";
   import NamePointerPrompt from "../sub-ens/NamePointerPrompt.svelte";
   import type { UserProfile, EventDirectoryEntry } from "@woco/shared";
   import { socialProfileSubject, FEATURES } from "@woco/shared";
@@ -111,6 +112,7 @@
   let addressCopied = $state(false);
   let revokingAll = $state(false);
   let revokeSuccess = $state(false);
+  let revokeFailed = $state(false);
 
   // Edit form
   let editName = $state("");
@@ -390,15 +392,23 @@
   async function revokeAllSessions() {
     if (revokingAll) return;
     revokingAll = true;
+    let revoked = false;
     try {
-      await authPost("/api/auth/revoke-all", {});
+      // authPost resolves on a refusal too, so "Done" must wait for ok.
+      const res = await authPost("/api/auth/revoke-all", {});
+      if (!res.ok) throw new Error(res.error ?? "Revoke failed");
+      revoked = true;
       revokeSuccess = true;
-      setTimeout(() => { revokeSuccess = false; }, 3000);
     } catch (err) {
       console.error("Revoke sessions failed:", err);
+      revokeFailed = true;
+      setTimeout(() => { revokeFailed = false; }, 4000);
     } finally {
       revokingAll = false;
     }
+    // "Every device" includes this one (#186). Outside the try: the server has
+    // already revoked, so a local sign-out hiccup must not read as "failed".
+    if (revoked) await auth.onSessionRevoked();
   }
 
   async function loadProfile() {
@@ -895,6 +905,13 @@
             </button>
           </div>
 
+          <!-- Permanent install entry for organisers and attendees alike (lazy chunk). -->
+          {#if !isStandalone()}
+            {#await import("../../pwa/InstallAppRow.svelte") then { default: InstallAppRow }}
+              <InstallAppRow />
+            {/await}
+          {/if}
+
           {#if profile?.updatedAt}
             <div class="info-row">
               <span class="info-label">Last updated</span>
@@ -909,8 +926,8 @@
         <section class="settings-card settings-card--danger">
           <h2 class="card-title">Session security</h2>
           <p class="card-hint">
-            Sign out all active sessions across every device and browser.
-            You'll need to reconnect your wallet next time.
+            Sign out all active sessions on every device and browser, this one included.
+            You'll need to sign in again on each.
           </p>
           <div class="danger-row">
             <div class="session-status">
@@ -927,6 +944,8 @@
               {:else if revokeSuccess}
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
                 Done
+              {:else if revokeFailed}
+                Didn't work - try again
               {:else}
                 Sign out everywhere
               {/if}
@@ -1591,13 +1610,6 @@
     height: 7px;
     border-radius: 50%;
     background: var(--success);
-    box-shadow: 0 0 6px var(--success);
-    animation: pulse-dot 2s ease-in-out infinite;
-  }
-
-  @keyframes pulse-dot {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
   }
 
   .revoke-btn {

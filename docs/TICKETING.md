@@ -102,7 +102,11 @@ in the editor, at publish and by the server.
  1b. SEAL     While the buyer fills in the form, their browser seals it to the
               organiser's X-Wing key and sends the box to
               POST /api/stripe/prepare-order. The server HOLDS it (not on
-              Swarm) and returns its ref plus a token (#546, #661).
+              Swarm) and returns its ref plus a token (#546, #661). The box
+              declares the key it was sealed to; one sealed to a key the
+              organiser has since replaced (a passkey removal, #186) is
+              refused ORDER_KEY_STALE naming the current key, and the page
+              re-seals once - here and again at checkout.
 
  2. CHECKOUT  POST /api/stripe/create-checkout → Stripe Checkout, a DIRECT
               charge on the organiser's connected account. The server stamps
@@ -258,7 +262,10 @@ Scanner (X-Door-Pass + X-Scanner-Device headers):
 
 The pack holds only public or derivable data — on-chain slot owners, voided slots, the merged
 check-in set, the door mode — plus the roster ciphertext. The roster **key lives in the pass URL fragment**, so it never reaches the
-server: a leaked pass token exposes no attendee plaintext.
+server: a leaked pass token exposes no attendee plaintext. It is derived, never stored (#186):
+HKDF(account secret, `woco/door-pass/roster/v1:{eventId}:{jti}`), so the pass is issued first and any of
+the organiser's passkeys can show it or re-push the roster. A passkey removal moves the account to a
+new secret, and the server revokes passes from the older generation.
 
 **A ticket is admitted once, across every scanner (#641).** Check-in is a capacity control, so a
 second admission is a crowd-safety defect, never a statistic to reconcile afterwards. The organiser

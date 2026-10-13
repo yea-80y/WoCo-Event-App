@@ -1,6 +1,7 @@
 import type { Order, FiatCurrency } from "@woco/shared";
 import { getFromAddress } from "./client.js";
 import { sendEmail } from "./send.js";
+import { companyFooterHtml } from "./company-footer.js";
 
 const SYMBOLS: Record<string, string> = { GBP: "£", USD: "$", EUR: "€" };
 
@@ -14,7 +15,7 @@ function escHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-function buildReceiptHtml(
+export function buildReceiptHtml(
   shopName: string,
   order: Order,
   buyerEmail: string,
@@ -64,6 +65,7 @@ function buildReceiptHtml(
         <p style="margin:20px 0 0;font-size:11px;color:#9a9a94;line-height:1.5;">
           A Stripe receipt was also sent to ${escHtml(buyerEmail)}. If you need help, reply to this email or contact the shop directly.
         </p>
+        ${companyFooterHtml("#9a9a94")}
       </td></tr>
     </table>
   </td></tr></table>

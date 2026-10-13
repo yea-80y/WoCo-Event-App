@@ -22,9 +22,21 @@ import {
   isOrphanedCredentialError,
   refuseOrphanedCredential,
   postOrphanedCredentialNotice,
+  OrphanedCredentialError,
   MOVED_OR_RECOVERED_MESSAGE,
+  UPGRADED_TO_PASSKEY_MESSAGE,
+  UPGRADE_UNFINISHED_MESSAGE,
 } from "./orphaned-credential.js";
+import { parseUpgradeMarker, upgradeMarkerKey } from "./upgrade-marker.js";
 import { readOrphanTombstone, writeOrphanTombstone } from "./orphan-tombstone.js";
+import {
+  isWeb3AuthSignInError,
+  WEB3AUTH_KEY_GONE_MESSAGE,
+  WEB3AUTH_KEY_LOADING_MESSAGE,
+} from "./web3auth-signin-error.js";
+import { SignInFailedError, signInFailureCode, type SignInStep } from "./signin-failure.js";
+import { takePendingWeb3AuthRedirect, type PendingRedirect } from "./web3auth-redirect.js";
+import { postSignInFailure, signInFailureView } from "./signin-failure-notice.js";
 import { guardianConfigForBackup } from "./guardian-config.js";
 import {
   requestSessionDelegation,
@@ -55,6 +67,8 @@ import {
   clearPublicKeys,
 } from "./identity-seed.js";
 import { SEED_UNLOCK_POLICY, unlockExpiry } from "./seed-unlock-policy.js";
+import { allSecretsOf, clearChainWindow, clearLockedChain, currentSecretOf, storeLockedChain, type AccountChain } from "./account-chain.js";
+import type { AccountKeysHost, KeysVerdict } from "../keyring/account-keys.js";
 import { linkedEnvelopePendingKey } from "./make-main-key.js";
 import { requestChallenge, sha256Hex } from "./request-challenge.js";
 import { apiBase } from "../api/http.js";
@@ -109,7 +123,9 @@ let _busy = $state(false);
 // Login progress for the modal's authenticating scene — display-only, never
 // gates logic. "waiting" = the user-facing credential step (WebAuthn prompt,
 // wallet popup, Web3Auth modal); "finalizing" = post-credential account setup.
-let _loginStage = $state<"waiting" | "finalizing" | null>(null);
+/** "stalled": a Web3Auth wait whose spinner's time is up - the sheet shows a message
+ *  and a way out while the wait goes on listening (web3auth-signin-wait.ts). */
+let _loginStage = $state<"waiting" | "stalled" | "finalizing" | null>(null);
 
 // In-memory only — never exposed reactively
 let _passkeyPrivateKey: string | null = null;
@@ -118,15 +134,36 @@ let _passkeyPrivateKey: string | null = null;
 // out of one ceremony and neither is derivable from the other.
 let _passkeyPrfSecret: string | null = null;
 let _web3authPrivateKey: string | null = null;
+/** The background key retry after a slow reload is still running (#803). */
+let _web3authKeyRetrying = false;
+/** Set while a Web3Auth sign-in waits on the SDK's pop-up: closes the SDK's modal
+ *  so that wait settles (its own loader cannot be closed while connecting). */
+let _cancelLogin: (() => void) | null = null;
 // A passkey account's UNLOCKED seed (#746). At rest it is locked under the passkey;
 // an unlock opens it until `expiresAt` (`SEED_UNLOCK_POLICY`; null = until the tab
 // closes). Stamped with the account it belongs to and read only through
 // `_unlockedSeed()`, so an account switch can never hand one account's seed to another.
-let _unlocked: { seedAddress: string; parent: string; seed: string; expiresAt: number | null } | null = null;
+let _unlocked: { seedAddress: string; parent: string; seed: string; expiresAt: number | null; chain: AccountChain | null } | null = null;
+// The account's later secrets (#186) load right after the seed unlocks and are checked
+// against the chain; the getters that sign or seal wait for that verdict.
+let _chainLoad: Promise<void> | null = null;
+// Whether this unlock's generation is CONFIRMED current (#186). Only "ok" signs or
+// seals; "behind" = the chain names a newer ring (an unlock takes it); "keyless" = this
+// passkey was left out of it; "unknown" = the chain could not be read.
+let _keysVerdict: KeysVerdict = "pending";
+let _anchorMemo: { account: string; ref: string | null; at: number } | null = null;
+// What the last ring check found worth saying (#186): this passkey was left out of the
+// account's keys, or the keys moved on from another passkey. Null = nothing to say.
+let _keyRingNotice = $state<null | "keyless" | "changed">(null);
+// A removal this device began and did not finish before its flip (#186): it waits for
+// the person to press "Finish removing". One past the flip finishes by itself.
+let _pendingRemoval = $state<null | { going: string[] }>(null);
+// The last removal that finished here, for its done screen (#186).
+let _removalDone = $state<import("../keyring/account-keys.js").RemovalDone | null>(null);
 // The content-feed signer a passkey account posts with while its seed is locked
 // (#746), memoised from its cached copy. Survives a relock - that is the point - but
 // never an account switch, a heal or a sign-out.
-let _feedSignerCache: { seedAddress: string; parent: string; signer: ContentFeedSigner } | null = null;
+let _feedSignerCache: { seedAddress: string; parent: string; signer: ContentFeedSigner; ringRef: string | null } | null = null;
 // Closes the unlock window on time in an open tab; `_expireUnlockIfDue` at every
 // entry point covers a timer the browser throttled.
 let _unlockTimer: ReturnType<typeof setTimeout> | null = null;
@@ -206,7 +243,7 @@ async function _getSigner(): Promise<EIP712Signer> {
   if (_kind === "web3auth") {
     // web3auth parent is the Kernel too; AuthorizeSession is signed by the raw
     // Web3Auth EOA key (same owner-of-Kernel server authorization as passkey).
-    if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable for signer");
+    if (!_web3authPrivateKey) throw _web3authKeyMissing();
     return createLocalSigner(_web3authPrivateKey, async () => true);
   }
   if (_kind === "coinbase" && _parent) {
@@ -234,7 +271,7 @@ async function _getSeedSigner(): Promise<EIP712Signer> {
     // INVARIANT #1: object derives from the raw Web3Auth secp256k1 key (ethers
     // Wallet → RFC-6979 deterministic), NOT the Kernel (`_getSigner` returns the
     // non-deterministic 1271 signer, which would corrupt the identity seed).
-    if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable for identity derivation");
+    if (!_web3authPrivateKey) throw _web3authKeyMissing();
     return createLocalSigner(_web3authPrivateKey, (info) => signingRequest.request(info));
   }
   return _getSigner();
@@ -281,6 +318,7 @@ export class DeviceRemovedError extends Error {
 
 const DEVICE_REMOVED_MESSAGE =
   "This device was removed from your account. To use it again, add it from one of your other passkeys.";
+const SESSION_REVOKED_MESSAGE = "You were signed out on every device. Sign in again to carry on.";
 const NOT_LINKED_MESSAGE =
   "Couldn't confirm this passkey is on your account. Try again - if it keeps happening, add it again from one of your other passkeys.";
 const NOT_SET_UP_MESSAGE = "This passkey wasn't fully set up. Add it again from one of your other passkeys.";
@@ -339,26 +377,158 @@ function _setUnlockedSeed(
   // A silent restore is not an unlock: re-stamping here would keep the window open
   // for as long as the app is reloaded inside it.
   const expiresAt = opts.restoredUntil ?? unlockExpiry(SEED_UNLOCK_POLICY);
-  _unlocked = { seedAddress: seedAddr, parent: account, seed, expiresAt };
+  // A re-stamp of the same account keeps its later secrets; anything else starts with
+  // none until `_loadAccountChain` finds them.
+  const prior = _unlocked;
+  const chain = prior && prior.seedAddress === seedAddr && prior.parent === account && prior.seed === seed ? prior.chain : null;
+  _unlocked = { seedAddress: seedAddr, parent: account, seed, expiresAt, chain };
   _identitySeedPresent = true;
   _seedUnavailable = null;
   _scheduleUnlockExpiry(expiresAt);
-  const signer = deriveFeedSignerKey(seed);
-  _feedSignerAddressMemo = { parent: account, address: signer.address };
-  _feedSignerCache = { seedAddress: seedAddr, parent: account, signer };
-  // These land after this returns; a sign-out in between must win.
+  // Nothing signs, seals or is cached as this account's signer until the chain says
+  // which generation is current (#186): `_loadAccountChain` sets the verdict and only
+  // an "ok" commits the signer.
+  _keysVerdict = "pending";
   const gen = _lockGen;
+  if (opts.restoredUntil !== undefined) {
+    _chainLoad = _loadAccountChain(seedAddr, account, gen, "window");
+    return;
+  }
   const current = () => gen === _lockGen;
-  void writePublicKeys(seedAddr, { parent: account, feedSignerAddress: signer.address }).catch((e) =>
-    console.warn("[auth] could not record the public keys (non-fatal):", e),
-  );
-  void storeFeedSignerCache(seedAddr, account, signer, current).catch((e) =>
-    console.warn("[auth] could not keep the feed signer (non-fatal):", e),
-  );
-  if (opts.restoredUntil !== undefined) return;
   void writeUnlockWindow(seedAddr, account, seed, expiresAt, current).catch((e) =>
     console.warn("[auth] could not keep the unlock window (non-fatal):", e),
   );
+  _chainLoad = _loadAccountChain(seedAddr, account, gen, "unlock");
+}
+
+// The key-ring flows (#186) load lazily: the store keeps the state and the gates that
+// read it, and lends both through `_keysHost()` - every page load stays as light as before.
+const _keys = () => import("../keyring/account-keys.js");
+
+function _keysHost(): AccountKeysHost {
+  return {
+    isPasskey: () => _kind === "passkey",
+    deviceRole: () => !!_deviceRole,
+    unlocked: () => _unlocked,
+    setChain: (chain) => {
+      if (_unlocked) _unlocked = { ..._unlocked, chain };
+    },
+    lockGen: () => _lockGen,
+    prf: () => _passkeyPrfSecret,
+    ownerKey: () => _passkeyPrivateKey,
+    self: () => _seedAddress?.toLowerCase() ?? null,
+    relock: () => _relockPasskey(),
+    setVerdict: (v) => {
+      _keysVerdict = v;
+    },
+    setNotice: (n) => {
+      _keyRingNotice = n;
+    },
+    commitSigner: () => _commitSigner(),
+    requireCurrentKeys: (o) => _requireCurrentKeys(o),
+    currentKeysConfirmed: () => _currentKeysConfirmed(),
+    anchorMemo: () => _anchorMemo,
+    setAnchorMemo: (m) => {
+      _anchorMemo = m;
+    },
+    ensurePasskeyKey: () => _ensurePasskeyKey(),
+    ensureKernel: () => _ensureKernel(),
+    kernel: () => _kernel,
+    coOwnerHost: () => _coOwnerHost(),
+    removeRecordAfterList: (parent, key) => _removeRecordAfterList(parent, key),
+    signTypedDataAsHolder: (typed) => signTypedDataAsHolder(typed as Parameters<typeof signTypedDataAsHolder>[0]),
+    setRemovalProgress: (p) => {
+      _removalProgress = p;
+    },
+    setPendingRemoval: (p) => {
+      _pendingRemoval = p;
+    },
+    setRemovalDone: (d) => {
+      _removalDone = d;
+    },
+    parent: () => _parent,
+    seedLockedMessage: () => _seedLockedMessage(),
+  };
+}
+
+/**
+ * The account's later secrets, right after its seed unlocked (`account-keys.ts`). ANY
+ * failure - the module not loading included - leaves the verdict short of "ok": nothing
+ * then signs or seals (fail closed).
+ */
+async function _loadAccountChain(seedAddr: string, parent: string, gen: number, mode: "window" | "unlock"): Promise<void> {
+  try {
+    await (await _keys()).loadAccountChain(_keysHost(), seedAddr, parent, gen, mode);
+  } catch (e) {
+    console.warn("[auth] account keys could not be checked:", e);
+    if (gen === _lockGen) _keysVerdict = "unknown";
+  }
+}
+
+/**
+ * The current generation's signer, now that the chain confirmed it: in memory, as the
+ * cached copy everyday posts sign with while the seed is locked (stamped with the ring
+ * it belongs to, so a later move is noticed), and as the public address self-reads use.
+ */
+function _commitSigner(): void {
+  const u = _unlocked;
+  if (!u) return;
+  const signer = deriveFeedSignerKey(currentSecretOf(u.seed, u.chain));
+  _feedSignerAddressMemo = { parent: u.parent, address: signer.address };
+  _feedSignerCache = { seedAddress: u.seedAddress, parent: u.parent, signer, ringRef: u.chain?.ringRef ?? null };
+  const gen = _lockGen;
+  const current = () => gen === _lockGen;
+  void writePublicKeys(u.seedAddress, { parent: u.parent, feedSignerAddress: signer.address }).catch((e) =>
+    console.warn("[auth] could not record the public keys (non-fatal):", e),
+  );
+  void storeFeedSignerCache(u.seedAddress, u.parent, signer, current, u.chain?.ringRef ?? null).catch((e) =>
+    console.warn("[auth] could not keep the feed signer (non-fatal):", e),
+  );
+}
+
+/** The anchor, cached briefly for the silent paths that ask it often. */
+async function _readAnchor(account: string, opts: { fresh?: boolean } = {}): Promise<string | null | "error"> {
+  return (await _keys()).readAnchor(_keysHost(), account, opts);
+}
+
+/**
+ * The verdict for this unlock, waiting for it. With `prompt`, a device that is merely
+ * BEHIND asks for the passkey once and takes the newer ring. Anything short of "ok"
+ * throws: signing or sealing under a generation the account has left is exactly what
+ * removing a passkey must stop.
+ */
+async function _requireCurrentKeys(opts: { prompt?: boolean } = {}): Promise<void> {
+  if (_kind !== "passkey") return;
+  if (_chainLoad) await _chainLoad;
+  if (_keysVerdict === "behind" && opts.prompt) await (await _keys()).catchUp(_keysHost());
+  if (_keysVerdict !== "ok") throw new Error((await _keys()).keysVerdictMessage(_keysVerdict));
+}
+
+/** As `_requireCurrentKeys`, for silent paths: true only when the current generation is confirmed. */
+async function _currentKeysConfirmed(): Promise<boolean> {
+  if (_kind !== "passkey") return true;
+  if (_chainLoad) await _chainLoad.catch(() => {});
+  return _keysVerdict === "ok";
+}
+
+/** The secret everything this account signs or seals NOW is derived from. */
+function _currentSecretFor(seed: string): string {
+  return _kind === "passkey" && _unlocked?.seed === seed ? currentSecretOf(seed, _unlocked.chain) : seed;
+}
+
+/**
+ * Every secret this device holds for the account, generation 0 first, and the current
+ * one. `toSeal`: the caller will sign or seal with `current`, so the generation must be
+ * CONFIRMED current (prompting once when this device is only behind); opening old boxes
+ * needs no such check.
+ */
+async function _accountSecretsIfPresent(opts: { toSeal?: boolean } = {}): Promise<{ current: string; all: string[]; gen: number } | null> {
+  const seed = await _seedIfPresent();
+  if (!seed) return null;
+  if (opts.toSeal) await _requireCurrentKeys({ prompt: true });
+  else if (_chainLoad) await _chainLoad.catch(() => {});
+  const chain = _kind === "passkey" && _unlocked?.seed === seed ? _unlocked.chain : null;
+  return { current: currentSecretOf(seed, chain), all: allSecretsOf(seed, chain), gen: chain?.gen ?? 0 };
 }
 
 /**
@@ -370,6 +540,8 @@ function _relockPasskey(): void {
   if (_kind !== "passkey" || _passkeyKeyInFlight || _seedInFlight) return;
   _lockGen++;
   _unlocked = null;
+  _chainLoad = null;
+  _keysVerdict = "pending";
   _identitySeedPresent = false;
   _passkeyPrivateKey = null;
   _passkeyPrfSecret = null;
@@ -480,8 +652,9 @@ async function _getContentFeedSignerInner(
   }
   const seed = await _seedIfPresent();
   if (!seed) throw new Error(_seedLockedMessage());
+  await _requireCurrentKeys({ prompt: !opts.silent });
 
-  const signer = deriveFeedSignerKey(seed);
+  const signer = deriveFeedSignerKey(_currentSecretFor(seed));
   _feedSignerAddressMemo = { parent: parent.toLowerCase(), address: signer.address };
   return signer;
 }
@@ -493,20 +666,31 @@ async function _getContentFeedSignerInner(
  */
 async function _feedSignerIfPresent(): Promise<ContentFeedSigner | null> {
   const seed = await _seedIfPresent();
-  if (seed) return deriveFeedSignerKey(seed);
+  if (seed) {
+    if (!(await _currentKeysConfirmed())) return null;
+    return deriveFeedSignerKey(_currentSecretFor(seed));
+  }
   if (_kind !== "passkey" || !_parent) return null;
   const seedAddr = _getSeedAddress()?.toLowerCase();
   const parent = _parent.toLowerCase();
   if (!seedAddr) return null;
-  if (_feedSignerCache?.seedAddress === seedAddr && _feedSignerCache.parent === parent) {
-    return _feedSignerCache.signer;
+  let cached: { signer: ContentFeedSigner; ringRef: string | null } | null =
+    _feedSignerCache?.seedAddress === seedAddr && _feedSignerCache.parent === parent
+      ? { signer: _feedSignerCache.signer, ringRef: _feedSignerCache.ringRef }
+      : null;
+  if (!cached) {
+    const read = await readFeedSignerCache(seedAddr, parent);
+    // The account may have changed while the device key was busy.
+    if (!read || _kind !== "passkey" || _parent?.toLowerCase() !== parent) return null;
+    if (_getSeedAddress()?.toLowerCase() !== seedAddr) return null;
+    cached = { signer: { privKey: read.privKey, address: read.address } as ContentFeedSigner, ringRef: read.ringRef };
+    _feedSignerCache = { seedAddress: seedAddr, parent, ...cached };
   }
-  const cached = await readFeedSignerCache(seedAddr, parent);
-  // The account may have changed while the device key was busy.
-  if (!cached || _kind !== "passkey" || _parent?.toLowerCase() !== parent) return null;
-  if (_getSeedAddress()?.toLowerCase() !== seedAddr) return null;
-  _feedSignerCache = { seedAddress: seedAddr, parent, signer: cached };
-  return cached;
+  // A cached signer is good only for the ring it was committed under (#186): if the
+  // account's keys moved on since, it signs nothing until the next unlock takes them.
+  const anchor = await _readAnchor(parent);
+  if (anchor === "error" || (anchor !== null && anchor !== cached.ringRef)) return null;
+  return cached.signer;
 }
 
 /**
@@ -585,7 +769,8 @@ async function _getContentFeedSignerAddress(): Promise<string | null> {
 
   const seed = await _seedIfPresent();
   if (seed) {
-    const address = deriveFeedSignerKey(seed).address;
+    if (!(await _currentKeysConfirmed())) return null;
+    const address = deriveFeedSignerKey(_currentSecretFor(seed)).address;
     _feedSignerAddressMemo = { parent, address };
     return address;
   }
@@ -806,6 +991,7 @@ async function _restoreCachedAuth(): Promise<void> {
     if (_deviceRole && _parent) void _upgradeIfCoOwner(seedAddr, _parent);
     void _retryLinkedEnvelope(seedAddr);
     void _retryPendingRemovals().catch(() => {});
+    void _resumeUpgrade();
     // Locked at rest (#746 fix 1): present only when this tab already unlocked it,
     // or when SEED_UNLOCK_POLICY keeps a copy that opens without the passkey. A
     // legacy device-key copy counts as LOCKED from this build's first load; it is
@@ -875,9 +1061,16 @@ async function _clearStaleAuthForSwitch(address: string): Promise<void> {
     _feedSignerAddressMemo = null;
     _feedSignerCache = null;
     _unlocked = null;
+    _anchorMemo = null;
+    _keyRingNotice = null;
+    _pendingRemoval = null;
+    _removalDone = null;
     // What opens the outgoing account without its passkey goes with it, as at
     // sign-out (#746); its locked copy stays.
-    if (priorSeedAddr) await clearDeviceUnlock(priorSeedAddr).catch(() => {});
+    if (priorSeedAddr) {
+      await clearDeviceUnlock(priorSeedAddr).catch(() => {});
+      await clearChainWindow(priorSeedAddr).catch(() => {});
+    }
   }
 }
 
@@ -1187,19 +1380,28 @@ function _setPendingPasskeyRecord(pending: { credentialId: string; parent: strin
   }
 }
 
+/** The pending slot's raw text; null when there is none or storage is unavailable. */
+function _pendingPasskeyRecordRaw(): string | null {
+  try {
+    return globalThis.localStorage?.getItem(PENDING_PASSKEY_RECORD_KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function _maybeWritePasskeyRecord(): Promise<void> {
   try {
-    const raw = globalThis.localStorage?.getItem(PENDING_PASSKEY_RECORD_KEY);
+    const raw = _pendingPasskeyRecordRaw();
     if (!raw) return;
-    const pending = JSON.parse(raw) as { credentialId?: unknown; parent?: unknown };
-    if (typeof pending.credentialId !== "string" || typeof pending.parent !== "string") {
+    const { ensurePasskeyRecord, parsePendingPasskeyRecord } = await import("./passkey-record.js");
+    const pending = parsePendingPasskeyRecord(raw);
+    if (!pending) {
       globalThis.localStorage?.removeItem(PENDING_PASSKEY_RECORD_KEY);
       return;
     }
     if (_kind !== "passkey" || _parent?.toLowerCase() !== pending.parent.toLowerCase()) return;
     // Never mint a session for this: a write that waits costs nothing, a prompt does.
     if (!_sessionAddress) return;
-    const { ensurePasskeyRecord } = await import("./passkey-record.js");
     const outcome = await ensurePasskeyRecord({ credentialId: pending.credentialId, parent: pending.parent });
     if (outcome === "unavailable") return; // the next session retries
     if (outcome === "conflict") {
@@ -1283,9 +1485,27 @@ async function _clearSeedEverywhere(eoa: string): Promise<void> {
     _unlocked = null;
     if (_kind === "passkey") _identitySeedPresent = false;
   }
+  if (_seedAddress?.toLowerCase() === eoa.toLowerCase()) {
+    // What was decided about the keys being cleared goes with them (#186): no verdict,
+    // ring or signer address outlives the seed it was worked out from.
+    _keysVerdict = "pending";
+    _chainLoad = null;
+    _anchorMemo = null;
+    _feedSignerAddressMemo = null;
+  }
   if (_feedSignerCache?.seedAddress === eoa.toLowerCase()) _feedSignerCache = null;
   await clearIdentitySeed(eoa);
   await clearLockedSeed(eoa);
+  // The account's later secrets go with the seed (#186): a passkey leaving the account
+  // takes nothing it could open them with, and they are no use without it.
+  await clearLockedChain(eoa);
+  await clearChainWindow(eoa);
+  await (await import("../keyring/pending-rotation.js")).clearPendingRotation(eoa);
+  try {
+    globalThis.localStorage?.removeItem(`woco:keyring:enrolled:${eoa.toLowerCase()}`);
+  } catch {
+    /* nothing kept */
+  }
 }
 
 /** The one accessor bundle both backfill preambles read through (#260). */
@@ -1365,7 +1585,7 @@ async function _ensureKernel(): Promise<void> {
  */
 async function _ensureKernelForWeb3Auth(): Promise<void> {
   if (_kernel) return;
-  if (!_web3authPrivateKey) throw new Error("Web3Auth key unavailable — cannot build Kernel");
+  if (!_web3authPrivateKey) throw _web3authKeyMissing();
   const { buildKernelFromPrivateKey } = await import("./kernel-account.js");
   const override = await _recoveryKernelFor(_getSeedAddress());
   const kernel = await buildKernelFromPrivateKey(
@@ -1396,9 +1616,16 @@ async function _ensureKernelForKind(): Promise<void> {
  * re-login. Backs off 2s → 4s → 8s → 16s (capped), giving up after a few tries.
  */
 function _retryWeb3AuthKeyInBackground(attempt = 0): void {
-  if (_web3authPrivateKey || _kind !== "web3auth") return;
+  if (_web3authPrivateKey || _kind !== "web3auth") {
+    _web3authKeyRetrying = false;
+    return;
+  }
+  _web3authKeyRetrying = true;
   setTimeout(async () => {
-    if (_web3authPrivateKey || _kind !== "web3auth") return;
+    if (_web3authPrivateKey || _kind !== "web3auth") {
+      _web3authKeyRetrying = false;
+      return;
+    }
     try {
       const { restoreWeb3AuthSession } = await import("./web3auth-account.js");
       const { decideWeb3AuthKeyRetry } = await import("./web3auth-restore-guard.js");
@@ -1409,17 +1636,33 @@ function _retryWeb3AuthKeyInBackground(attempt = 0): void {
       const d = decideWeb3AuthKeyRetry({ restore: r, adoptedSeedAddr: _web3authSeedAddress });
       if (d.action === "adopt") {
         _web3authPrivateKey = d.privateKey as `0x${string}`;
+        _web3authKeyRetrying = false;
         return;
       }
-      if (d.action === "stop") return; // genuinely logged out — leave cache as-is
+      if (d.action === "stop") {
+        _web3authKeyRetrying = false;
+        return; // genuinely logged out — leave cache as-is
+      }
       if (d.action === "clear") {
+        _web3authKeyRetrying = false;
         console.warn("[auth] live Web3Auth session is not the stored identity — clearing (#183)");
         await clearAllAuth();
         return;
       }
     } catch { /* keep trying */ }
     if (attempt < 4) _retryWeb3AuthKeyInBackground(attempt + 1);
+    else _web3authKeyRetrying = false;
   }, Math.min(2000 * 2 ** attempt, 16000));
+}
+
+/**
+ * The error for an action that needs the Web3Auth key while it is not in
+ * memory. While the background retry may still bring it back, saying the
+ * sign-in "has ended" would be false - and the advice (sign out) would throw
+ * away a session about to work (#803).
+ */
+function _web3authKeyMissing(): Error {
+  return new Error(_web3authKeyRetrying ? WEB3AUTH_KEY_LOADING_MESSAGE : WEB3AUTH_KEY_GONE_MESSAGE);
 }
 
 // ---------------------------------------------------------------------------
@@ -1431,9 +1674,23 @@ async function init(): Promise<void> {
   if (typeof document !== "undefined") document.addEventListener("visibilitychange", _onVisibilityChange);
 
   try {
+    // A Web3Auth redirect sign-in this tab started has come back (iPhone/iPad):
+    // finished instead of any stored-session restore, never alongside one.
+    const redirect = takePendingWeb3AuthRedirect();
+    if (redirect) {
+      void _finishWeb3AuthRedirect(redirect);
+      return;
+    }
+
     const kind = await getKV<AuthKind>(StorageKeys.AUTH_KIND);
 
     if (kind === "web3") {
+      // A stored wallet session from before the flag flip must not outlive it.
+      if (!FEATURES.walletLoginAllowed) {
+        console.warn("[auth] stored wallet session not restored: walletLoginAllowed is off (#186)");
+        await clearAllAuth();
+        return;
+      }
       // getConnectedAddress() can hang if window.ethereum is injected but broken
       // (e.g. MetaMask inpage.js present but extension unavailable) — cap at 3 s.
       let walletAddr = await Promise.race([
@@ -1476,6 +1733,7 @@ async function init(): Promise<void> {
         setTimeout(async () => {
           if (_kind !== "none") return; // already reconnected elsewhere
           const addr = await getConnectedAddress();
+          if (_kind !== "none") return; // signed in some other way while we waited
           if (addr && addr.toLowerCase() === storedParent.toLowerCase()) {
             _kind = "web3";
             _parent = storedParent;
@@ -1906,6 +2164,11 @@ function hasAnyCachedKernelAddress(): boolean {
 // ---------------------------------------------------------------------------
 
 async function loginWeb3(): Promise<boolean> {
+  // Holds even if a path other than the (gated) login choices reaches this.
+  if (!FEATURES.walletLoginAllowed) {
+    console.warn("[auth] wallet login refused: walletLoginAllowed is off (#186)");
+    return false;
+  }
   if (_busy) return false;
   _busy = true;
   _loginStage = "waiting";
@@ -1948,25 +2211,82 @@ async function loginWeb3(): Promise<boolean> {
  * restore on page reload.
  */
 async function loginWeb3Auth(): Promise<boolean> {
+  return _runWeb3AuthSignIn("waiting", async (m) => {
+    _cancelLogin = m.cancelWeb3AuthSignIn;
+    return m.loginWithWeb3Auth({
+      onStall: () => {
+        _loginStage = "stalled";
+      },
+    });
+  });
+}
+
+/**
+ * A redirect sign-in (iPhone/iPad, web3auth-redirect.ts) coming back: the boot
+ * runs it INSTEAD of the stored-session restore, so a rehydrated session is never
+ * read as a sign-in. The key comes from the result in the URL; everything after
+ * it is the pop-up sign-in's own path (`_runWeb3AuthSignIn`), not a copy. A
+ * failure is posted for the login sheet, which opens on it.
+ */
+let _redirectSignIn = $state<"finishing" | null>(null);
+
+async function _finishWeb3AuthRedirect(pending: PendingRedirect): Promise<void> {
+  _redirectSignIn = "finishing";
+  try {
+    await _runWeb3AuthSignIn("finalizing", (m) => m.finishWeb3AuthRedirectSignIn(pending));
+  } catch (e) {
+    // An orphaned-credential refusal posted its own notice (#255); a cancel says nothing.
+    if (isOrphanedCredentialError(e) || (isWeb3AuthSignInError(e) && e.cancelled)) return;
+    // Posted whole - line, code and redacted details - so the sheet's banner can
+    // offer "Show details" just as the email button does (signin-failure-notice.ts).
+    postSignInFailure(globalThis.sessionStorage, signInFailureView(e));
+  } finally {
+    _redirectSignIn = null;
+  }
+}
+
+/**
+ * Every Web3Auth sign-in, whichever way its key arrived: `acquire` produces the
+ * key (the pop-up, or a redirect's return), and this does the rest - the
+ * upgraded-account refusal, the account lookup or build, storing the sign-in -
+ * and turns an unexplained failure into the copyable code.
+ */
+async function _runWeb3AuthSignIn(
+  firstStage: "waiting" | "finalizing",
+  acquire: (m: typeof import("./web3auth-account.js")) => Promise<{ address: string; privateKey: `0x${string}` }>,
+): Promise<boolean> {
   if (_busy) return false;
   _busy = true;
-  _loginStage = "waiting";
+  _loginStage = firstStage;
+  // Where this attempt is, for the code a failure shows (signin-failure.ts).
+  const t0 = performance.now();
+  let step: SignInStep = "sdk";
+  let fast = false;
 
   try {
-    const { loginWithWeb3Auth } = await import("./web3auth-account.js");
-    const { address, privateKey } = await loginWithWeb3Auth();
+    const { address, privateKey } = await acquire(await import("./web3auth-account.js"));
+    _cancelLogin = null;
     _loginStage = "finalizing";
+
+    step = "tombstone";
+    // Upgraded to a passkey on this device (#746): the email key opens nothing now.
+    const upgraded = readOrphanTombstone("web3auth", address);
+    if (upgraded) throw await _refuseUpgradedEmailLogin(address, upgraded.kernel, upgraded.owner);
 
     // FAST PATH (returning device): Kernel address already resolved for this
     // EOA on a previous non-recovered login — skip the build (viem/zerodev
     // chunk + ZeroDev RPC); `_ensureKernelForWeb3Auth` rebuilds + asserts
     // lazily, exactly like the reload-restore path. Binding checked first so a
     // recovered account always resolves through its preserved address.
+    step = "lookup";
     const fastOverride = await _recoveryKernelFor(address);
     if (!fastOverride) {
       const cachedKernel = readCachedKernelAddress("web3auth", address);
       if (cachedKernel) {
+        fast = true;
+        step = "switch";
         await _clearStaleAuthForSwitch(cachedKernel);
+        step = "store";
         await putKV(StorageKeys.AUTH_KIND, "web3auth" as AuthKind);
         await putKV(StorageKeys.PARENT_ADDRESS, cachedKernel);
         await putKV(StorageKeys.SEED_ADDRESS, address);
@@ -1977,9 +2297,14 @@ async function loginWeb3Auth(): Promise<boolean> {
         _kernel = null;
         _passkeyPrivateKey = null;
         _passkeyPrfSecret = null;
+        step = "restore";
         await _restoreCachedAuth();
+        step = "feed";
         await _establishFeedSignerEagerly();
         _scheduleKernelPrebuild();
+        // The cache makes no chain read: an account upgraded to a passkey from
+        // another device is found here instead (#746).
+        _verifyEmailKeyInBackground(cachedKernel, address);
         _cleanupAccountListener?.();
         _cleanupAccountListener = null;
         return true;
@@ -1997,7 +2322,10 @@ async function loginWeb3Auth(): Promise<boolean> {
     // account, not a fresh counterfactual one. (No portability-envelope path here:
     // that channel is PRF-sealed and passkey-only; a web3auth account re-opened on a
     // NEW device recovers by re-running the portal.)
-    const { buildKernelFromPrivateKey, readKernelEcdsaOwner } = await import("./kernel-account.js");
+    step = "kernel";
+    const { buildKernelFromPrivateKey, readKernelEcdsaOwner, readKernelSignerFor, NOT_ON_LIST } = await import(
+      "./kernel-account.js"
+    );
     const override = fastOverride;
     if (override) {
       // Stale-binding guard (mirror loginPasskey): only trust the local binding
@@ -2007,6 +2335,7 @@ async function loginWeb3Auth(): Promise<boolean> {
       // falling through to a fresh counterfactual account. Binding and seed
       // stay (nothing signs in, so the #233 foreign-seed landmine has no
       // trigger, and the kept binding is what keeps that path unreachable).
+      step = "owner";
       const foreignOwner = provenOrphanOwner(await readKernelEcdsaOwner(override), address);
       if (foreignOwner) {
         clearVerifiedBinding("web3auth", address);
@@ -2026,13 +2355,22 @@ async function loginWeb3Auth(): Promise<boolean> {
         throw refusal;
       }
     }
+    step = "kernel";
     const kernel = await buildKernelFromPrivateKey(
       privateKey,
       override ? { address: override } : undefined,
     );
+    step = "signer";
+    // Upgraded to a passkey (#746): the email key is off the list, so every session it
+    // signed would be refused - say so instead of entering an account that fails.
+    if ((await readKernelSignerFor(kernel.address, address)) === NOT_ON_LIST) {
+      throw await _refuseUpgradedEmailLogin(address, kernel.address, null);
+    }
 
+    step = "switch";
     await _clearStaleAuthForSwitch(kernel.address);
 
+    step = "store";
     await putKV(StorageKeys.AUTH_KIND, "web3auth" as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, kernel.address);
     // Web3Auth EOA persisted as the seed address so the seed restores on reload with
@@ -2046,8 +2384,10 @@ async function loginWeb3Auth(): Promise<boolean> {
     _passkeyPrivateKey = null;
     _passkeyPrfSecret = null;
 
+    step = "restore";
     await _restoreCachedAuth();
 
+    step = "feed";
     // Establish the client feed signer now (silent, deterministic) so profile +
     // other client feeds resolve immediately — logout wipes the on-device blob, so
     // without this a re-login would read the empty legacy feed until the next write.
@@ -2064,16 +2404,37 @@ async function loginWeb3Auth(): Promise<boolean> {
 
     return true;
   } catch (e) {
-    // The honest refusal must reach the caller as itself — a `false` here
-    // renders as "Sign-in failed — please try again", which is exactly the
-    // advice an orphaned credential must not get.
-    if (isOrphanedCredentialError(e)) throw e;
-    console.error("[auth] web3auth login failed:", e);
-    return false;
+    // The honest refusal must reach the caller as itself — the generic
+    // "Sign-in failed - please try again" below is exactly the advice an
+    // orphaned credential must not get. Web3Auth's own outcomes
+    // (cancelled, a previous session still loading) carry copy for the person
+    // too (#803).
+    if (isOrphanedCredentialError(e) || isWeb3AuthSignInError(e)) throw e;
+    // Anything else has no words for the person, so it gets a code they can
+    // screenshot: where it failed and what kind of error, never what it said.
+    const code = signInFailureCode(e, {
+      step,
+      elapsedMs: performance.now() - t0,
+      fast,
+      hidden: globalThis.document?.visibilityState === "hidden",
+      offline: globalThis.navigator?.onLine === false,
+    });
+    console.error(`[auth] web3auth login failed (${code}):`, e);
+    throw new SignInFailedError(code, e);
   } finally {
+    _cancelLogin = null;
     _busy = false;
     _loginStage = null;
   }
+}
+
+/**
+ * The sign-in sheet was closed mid-attempt. Only a Web3Auth sign-in has anything
+ * to cancel (its pop-up wait); a passkey ceremony is the browser's own sheet and
+ * settles by itself. Never clears `busy`: the attempt clears it when it settles.
+ */
+function cancelLogin(): void {
+  _cancelLogin?.();
 }
 
 /**
@@ -2216,6 +2577,38 @@ function _postAuthNotice(message: string): void {
   }
 }
 
+/**
+ * The passkey-record check (#746) every passkey sign-in runs before it commits to
+ * `parent`; refuses by throwing. From another device (a phone by QR code, or a
+ * security key) only a confirmed record - or this device's own unwritten one for
+ * the same passkey and account - lets the sign-in commit.
+ */
+async function _guardPasskeyRecord(account: PasskeyLogin, parent: string): Promise<void> {
+  const { guardPasskeyRecord, parsePendingPasskeyRecord } = await import("./passkey-record.js");
+  await guardPasskeyRecord(account.credentialId, parent, account.attachment, {
+    pending: parsePendingPasskeyRecord(_pendingPasskeyRecordRaw()),
+  });
+}
+
+/** Refusals the record check makes - each before the sign-in commits anything. */
+const RECORD_REFUSALS: ReadonlySet<string> = new Set([
+  "PasskeyFromAnotherDeviceError",
+  "PasskeyRecordUnreadableError",
+  "PasskeyRecordMismatchError",
+  "PasskeyIsBackupError",
+]);
+
+/** Put back the pin a refused sign-in's ceremony overwrote. Best-effort: a stale pin
+ *  costs a wrong passkey sheet at the next unlock, never a wrong account. */
+async function _restoreReplacedPin(pin: PasskeyLogin["replacedPin"]): Promise<void> {
+  try {
+    if (pin) await putKV(StorageKeys.PASSKEY_CREDENTIAL, pin);
+    else await delKV(StorageKeys.PASSKEY_CREDENTIAL);
+  } catch (e) {
+    console.warn("[auth] could not restore this device's passkey after a refused sign-in:", e);
+  }
+}
+
 /** Forget an added passkey on this device: its binding and every copy of the seed
  *  it held. Its locked copy would otherwise reopen for an account it left. */
 async function _forgetAddedPasskey(seedAddress: string): Promise<void> {
@@ -2254,8 +2647,7 @@ async function _loginAddedPasskey(
     }
   }
 
-  const { guardPasskeyRecord } = await import("./passkey-record.js");
-  await guardPasskeyRecord(account.credentialId, parent);
+  await _guardPasskeyRecord(account, parent);
 
   const minted = await requestSessionDelegation(
     parent,
@@ -2385,8 +2777,31 @@ function _coOwnerHost(): import("./co-owner-flows.js").CoOwnerHost {
 }
 
 /** A new passkey on the list, then its device record - or off the list again (#746). */
-async function _addCoOwnerWithRecord<T>(key: string, record: () => Promise<T>): Promise<T> {
-  return (await import("./co-owner-flows.js")).addCoOwnerWithRecord(_coOwnerHost(), key, record);
+async function _addCoOwnerWithRecord<T>(
+  key: string,
+  record: () => Promise<T>,
+  ring?: { prev: string | null; next: string },
+): Promise<T> {
+  return (await import("./co-owner-flows.js")).addCoOwnerWithRecord(_coOwnerHost(), key, record, ring);
+}
+
+/** The account's key ring for a co-owner change made from this device (`account-keys.ts`). */
+async function _ringForChange(add: import("@woco/shared/keyring/ring").KeyRingMember[]) {
+  return (await _keys()).ringForChange(_keysHost(), add);
+}
+
+/** The ring this device just named onchain is the account's now: hold it as current. */
+async function _adoptOwnRing(chain: AccountChain): Promise<void> {
+  return (await _keys()).adoptOwnRing(_keysHost(), chain);
+}
+
+/** Put THIS passkey into the account's key ring when it has no entry yet; once, retried at unlock. */
+async function _enrolSelfInKeyRing(): Promise<void> {
+  try {
+    await (await _keys()).enrolSelfInKeyRing(_keysHost());
+  } catch (e) {
+    console.warn("[auth] could not add this passkey to the account's keys yet (retried at the next unlock):", e);
+  }
 }
 
 /** Take `key` off the account's co-owner list, if it is on it. The last one never. */
@@ -2485,9 +2900,16 @@ async function addPasskeyOnThisDevice(
   onStep?.("linking");
   const { credentialIdBytes, writePasskeyRecord } = await import("./passkey-record.js");
   const credentialId = credentialIdBytes(added.credentialId);
-  const grant = await _addCoOwnerWithRecord(added.address, () =>
-    _grantDevice(ownerKey, parent, added.address, credentialTagOf(credentialId)),
+  // Both passkeys are on this device: the new one goes into the account's key ring in
+  // the same op that puts it on the list (#186).
+  const { memberOf } = await import("../keyring/members.js");
+  const ring = await _ringForChange([await memberOf(parent, added)]);
+  const grant = await _addCoOwnerWithRecord(
+    added.address,
+    () => _grantDevice(ownerKey, parent, added.address, credentialTagOf(credentialId)),
+    ring ?? undefined,
   );
+  if (ring) await _adoptOwnRing(ring.chain).catch((e) => console.warn("[auth] own ring not recorded (non-fatal):", e));
 
   // Best-effort past this point: the passkey already works. Without its record
   // the sign-in guard simply has nothing to check; without the label the list
@@ -2552,11 +2974,10 @@ async function _removePasskeyConfirmed(grantee: string): Promise<void> {
     }
     return;
   } else {
-    // A co-owner removes any OTHER passkey: OFF THE LIST FIRST. The device record goes
-    // only after the change lands, or a device that can still sign onchain would be
-    // signed out while able to put itself back (#746, Fable sign-off).
-    await _removeCoOwner(target);
-    await _removeRecordAfterList(parent, target);
+    // A co-owner removes any OTHER passkey (#186): the account moves to new keys the
+    // removed one never sees, in the same op that takes it OFF THE LIST FIRST; its
+    // device record goes after the flip lands (#746, Fable sign-off).
+    await _rotateOnRemoval([target]);
   }
   if (target === self) await _forgetThisPasskey(self);
 }
@@ -2572,18 +2993,26 @@ async function removePasskeys(grantees: string[]): Promise<void> {
   const targets = [...new Set(grantees.map((g) => g.toLowerCase()))];
   if (targets.length === 0) return;
   await _freshMainPasskey();
-  await (await import("./co-owner-flows.js")).removeCoOwners(_coOwnerHost(), targets);
-  // Every record is tried; a failed one is kept pending by _removeRecordAfterList.
-  let firstError: unknown = null;
-  for (const t of targets) {
-    try {
-      await _removeRecordAfterList(parent, t);
-    } catch (e) {
-      firstError ??= e;
-    }
+  // The others leave with a move to new keys (#186) - one flip for all of them, their
+  // records after it. This device's own passkey leaving needs none: it holds them anyway.
+  const others = targets.filter((t) => t !== self);
+  if (others.length > 0) await _rotateOnRemoval(others);
+  if (targets.includes(self)) {
+    await (await import("./co-owner-flows.js")).removeCoOwners(_coOwnerHost(), [self]);
+    await _removeRecordAfterList(parent, self).catch((e) => console.warn("[auth] own record not removed:", e));
+    await _forgetThisPasskey(self);
   }
-  if (targets.includes(self)) await _forgetThisPasskey(self);
-  if (firstError) throw firstError;
+}
+
+/** The step of a removal under way, for its progress sheet (#186). Null = none. */
+let _removalProgress = $state<import("../keyring/rotate.js").RotationProgress | null>(null);
+
+/** Remove passkeys and move the account to new keys (#186), or finish one (`resume`). */
+async function _rotateOnRemoval(
+  going: string[],
+  opts: { resume?: boolean } = {},
+): Promise<import("../keyring/rotate.js").RotationResult> {
+  return (await _keys()).rotateOnRemovalFor(_keysHost(), going, opts);
 }
 
 /** This device's own passkey left the account: forget it here and sign out. */
@@ -2689,6 +3118,21 @@ async function onDeviceRemoved(): Promise<void> {
   }
 }
 
+/** The server revoked this session ("Sign out everywhere"). A silent re-sign
+ *  would undo it, so sign out fully - which also ends an email login's
+ *  Web3Auth session on this device - once, however many requests saw it. */
+let _signingOutRevoked = false;
+async function onSessionRevoked(): Promise<void> {
+  if (_signingOutRevoked || _kind === "none") return;
+  _signingOutRevoked = true;
+  try {
+    _postAuthNotice(SESSION_REVOKED_MESSAGE);
+    await logout({ force: true });
+  } finally {
+    _signingOutRevoked = false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Linking another device (#746 step 4, Fable consult 7). The flows live in the
 // lazily loaded `device-link.ts`; only what needs this store's state is here.
@@ -2705,10 +3149,16 @@ async function linkThisDevice(opts: import("./device-link.js").LinkThisDeviceOpt
     signIn: async (account, secret) => {
       _busy = true;
       try {
+        // The account's later secrets first (#186), locked under this passkey, so the
+        // unlock the sign-in makes opens the current generation, not generation 0.
+        if (secret.chain) {
+          await storeLockedChain(account.address.toLowerCase(), secret.parent, secret.chain, account.prfSecret);
+        }
         await _loginAddedPasskey(account, { parent: secret.parent, seed: secret.seed });
       } finally {
         _busy = false;
       }
+      void _enrolSelfInKeyRing();
     },
   });
 }
@@ -2750,12 +3200,25 @@ async function approveDeviceLink(code: Uint8Array, offer: import("./device-link.
   const seed = _unlockedSeed();
   if (!parent || !ownerKey || !seedAddr || !seed) throw new Error(_seedLockedMessage());
   const { runApproveDeviceLink } = await import("./device-link.js");
+  // The new device cannot sign its ring entry before it knows the account (#186): this
+  // device makes sure the ring exists with itself in it, hands the account's later
+  // secrets over in the sealed answer, and the new device adds itself once signed in.
+  const ring = await _ringForChange([]);
   await runApproveDeviceLink(code, offer, {
     apiBase,
     parent,
     self: seedAddr,
     seed,
-    grant: (grantee, credentialTag) => _addCoOwnerWithRecord(grantee, () => _grantDevice(ownerKey, parent, grantee, credentialTag)),
+    chain: () => _unlocked?.chain ?? null,
+    grant: async (grantee, credentialTag) => {
+      const grant = await _addCoOwnerWithRecord(
+        grantee,
+        () => _grantDevice(ownerKey, parent, grantee, credentialTag),
+        ring ?? undefined,
+      );
+      if (ring) await _adoptOwnRing(ring.chain).catch((e) => console.warn("[auth] own ring not recorded (non-fatal):", e));
+      return grant;
+    },
     revoke: (grantee) => _removePasskeyConfirmed(grantee),
   });
 }
@@ -2791,7 +3254,15 @@ async function _retryLinkedEnvelope(seedAddr: string): Promise<void> {
 
 async function loginPasskeyResult(
   mode: "signin" | "create" = "signin",
-): Promise<{ ok: boolean; error?: Error; noAssertion?: boolean; orphaned?: boolean; removed?: boolean }> {
+): Promise<{
+  ok: boolean;
+  error?: Error;
+  noAssertion?: boolean;
+  noSheet?: boolean;
+  orphaned?: boolean;
+  removed?: boolean;
+  otherDevice?: boolean;
+}> {
   // Not a ceremony failure — no prompt ran. Say so, rather than letting the UI
   // render "authentication failed" for a collision with an in-flight login.
   if (_busy) return { ok: false, error: new Error("A sign-in is already in progress.") };
@@ -2800,9 +3271,13 @@ async function loginPasskeyResult(
 
   const t0 = performance.now();
   let tCeremony = t0;
+  // The ceremony pins whatever answered before any check can refuse it; a refusal
+  // puts the previous pin back (undefined = nothing to restore).
+  let replacedPin: PasskeyLogin["replacedPin"];
   try {
     const account =
       mode === "create" ? await createPasskeyAccount() : await authenticatePasskey();
+    replacedPin = account.replacedPin;
     tCeremony = performance.now();
     _loginStage = "finalizing";
 
@@ -2842,6 +3317,10 @@ async function loginPasskeyResult(
       const cachedKernel =
         account.handleKind === "added" ? null : readCachedKernelAddress("passkey", account.address);
       if (cachedKernel) {
+        // From another device the record must confirm even a cached account (#746):
+        // a QR-code answer before this check could have cached an empty one.
+        // Platform answers stay read-free here.
+        if (account.attachment === "cross-platform") await _guardPasskeyRecord(account, cachedKernel);
         await _clearStaleAuthForSwitch(cachedKernel);
         await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
         await putKV(StorageKeys.PARENT_ADDRESS, cachedKernel);
@@ -2877,6 +3356,7 @@ async function loginPasskeyResult(
       const seed = await openLockedSeed(account.address, override.toLowerCase(), account.prfSecret);
       if (seed) {
         const parent = override.toLowerCase();
+        if (account.attachment === "cross-platform") await _guardPasskeyRecord(account, parent);
         await _clearStaleAuthForSwitch(parent);
         await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
         await putKV(StorageKeys.PARENT_ADDRESS, parent);
@@ -2928,6 +3408,13 @@ async function loginPasskeyResult(
       const answered = ownerRead !== "error" ? ownerRead : null;
       const foreignOwner = provenOrphanOwner(answered, account.address);
       if (foreignOwner) {
+        // Made by an upgrade on this device whose switch has not landed (#746): the
+        // email key still owns the account. Say so - nothing was recovered away.
+        if (_upgradeUnfinishedFor(account.address, override, foreignOwner)) {
+          console.warn("[auth] this passkey's upgrade has not landed - the email key still owns", override);
+          postOrphanedCredentialNotice("passkey", undefined, UPGRADE_UNFINISHED_MESSAGE);
+          throw new OrphanedCredentialError("passkey", foreignOwner, UPGRADE_UNFINISHED_MESSAGE);
+        }
         clearVerifiedBinding("passkey", account.address);
         // Recovered away (#255) - or this passkey made another device the main one
         // and is a linked device now (#746 step 4). The server's verdict says which;
@@ -3006,10 +3493,7 @@ async function loginPasskeyResult(
     // #746: refuse a passkey whose record names another account - Apple's
     // QR-code PRF bug, or a backup picked here - BEFORE this login commits
     // anything, instead of opening an empty account. A new passkey has no record.
-    if (mode === "signin") {
-      const { guardPasskeyRecord } = await import("./passkey-record.js");
-      await guardPasskeyRecord(account.credentialId, kernel.address);
-    }
+    if (mode === "signin") await _guardPasskeyRecord(account, kernel.address);
 
     await _clearStaleAuthForSwitch(kernel.address);
 
@@ -3087,14 +3571,20 @@ async function loginPasskeyResult(
     // old copy collapsed every cause into one unactionable sentence.
     const err = e instanceof Error ? e : new Error(String(e));
     console.error(`[auth] passkey login failed (${mode}): ${err.name}: ${err.message}`, e);
+    if (replacedPin !== undefined && RECORD_REFUSALS.has(err.name)) await _restoreReplacedPin(replacedPin);
     return {
       ok: false,
       error: err,
       noAssertion: err.name === "PasskeyAssertionUnavailableError",
+      // The browser refused before any sheet: nothing was chosen, so no create offer.
+      noSheet: (err as { noSheet?: boolean }).noSheet === true,
       // The modal's one-shot notice already explains this refusal — the flag
       // lets the button suppress a duplicate error line, not restyle it.
       orphaned: isOrphanedCredentialError(err),
       removed: err.name === "DeviceRemovedError",
+      // Answered from another device without a confirmed account: the screen
+      // points at "Add this device" (#746).
+      otherDevice: err.name === "PasskeyFromAnotherDeviceError",
     };
   } finally {
     _busy = false;
@@ -3171,6 +3661,7 @@ async function ensureSession(): Promise<boolean> {
       if (_kind === "passkey") {
         void _maybeBackfillPortabilityEnvelope();
         void _maybeWritePasskeyRecord();
+        void _resumeUpgrade();
       }
       return true;
     } catch (e) {
@@ -4316,6 +4807,9 @@ async function recoverAndRekey(args: {
     // are already down. A death before this line is healed by the next sign-in,
     // which is discoverable and rewrites the pin itself.
     if (pendingCredential) await pinPasskeyCredential(pendingCredential);
+    // Its record (#746), written once a session exists: without one, a sign-in with
+    // this new passkey from another device - a security key always is - is refused.
+    if (pendingCredential) _setPendingPasskeyRecord({ credentialId: pendingCredential.credentialId, parent: target });
     await putKV(StorageKeys.AUTH_KIND, newOwnerKind as AuthKind);
     await putKV(StorageKeys.PARENT_ADDRESS, target);
     await putKV(StorageKeys.SEED_ADDRESS, newSeedAddress);
@@ -4366,6 +4860,210 @@ async function recoverAndRekey(args: {
   } finally {
     _busy = false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Upgrading an email account to a passkey (#746). The flow lives in the lazily
+// loaded upgrade-to-passkey.ts; only what needs this store's state is here.
+// ---------------------------------------------------------------------------
+
+/** This device prepared an upgrade to `passkey` for `parent`, and the account's owner is still
+ *  the email key that upgrade started from - not another device's passkey, not a recovery (#746). */
+function _upgradeUnfinishedFor(passkey: string, parent: string, owner: string): boolean {
+  try {
+    const m = parseUpgradeMarker(globalThis.localStorage?.getItem(upgradeMarkerKey(parent)));
+    return !!m && m.stage === "prepared" && m.passkey === passkey.toLowerCase() && owner.toLowerCase() === m.emailKey;
+  } catch {
+    return false;
+  }
+}
+
+/** End an email sign-in whose account opens with a passkey now (#746). */
+async function _refuseUpgradedEmailLogin(eoa: string, kernel: string, passkey: string | null): Promise<Error> {
+  clearCachedKernelAddress("web3auth", eoa);
+  clearVerifiedBinding("web3auth", eoa);
+  // Drop the Web3Auth session, or the next tap re-adopts it without asking.
+  try {
+    const { logoutWeb3Auth } = await import("./web3auth-account.js");
+    await logoutWeb3Auth();
+  } catch (e) {
+    console.warn("[auth] could not clear the Web3Auth session after an upgraded-account refusal:", e);
+  }
+  console.warn("[auth] this email key is off the account's list - it opens with a passkey now:", kernel);
+  postOrphanedCredentialNotice("web3auth", undefined, UPGRADED_TO_PASSKEY_MESSAGE);
+  return new OrphanedCredentialError("web3auth", passkey ?? kernel, UPGRADED_TO_PASSKEY_MESSAGE);
+}
+
+/**
+ * An email key whose account was upgraded to a passkey elsewhere (#746) signs sessions
+ * the server refuses. One read decides: an email key is never put on a co-owner list,
+ * so "not on it" cannot be a replica behind an add. Ends this session with the words.
+ */
+function _verifyEmailKeyInBackground(kernel: string, eoa: string): void {
+  void (async () => {
+    try {
+      const { readKernelSignerFor, NOT_ON_LIST } = await import("./kernel-account.js");
+      if ((await readKernelSignerFor(kernel, eoa)) !== NOT_ON_LIST) return;
+      clearCachedKernelAddress("web3auth", eoa);
+      clearVerifiedBinding("web3auth", eoa);
+      const still =
+        _kind === "web3auth" &&
+        _web3authSeedAddress?.toLowerCase() === eoa.toLowerCase() &&
+        _parent?.toLowerCase() === kernel.toLowerCase();
+      if (!still) return;
+      _postAuthNotice(UPGRADED_TO_PASSKEY_MESSAGE);
+      await logout({ force: true });
+    } catch {
+      /* transient - the next sign-in, or the next refused session, checks again */
+    }
+  })();
+}
+
+/** A freshly signed session was refused too (api/client.ts): for an email account
+ *  that may mean it was upgraded to a passkey on another device (#746). */
+function onSessionRejected(): void {
+  if (_kind === "web3auth" && _parent && _web3authSeedAddress) _verifyEmailKeyInBackground(_parent, _web3authSeedAddress);
+}
+
+/**
+ * What the upgrade flow (upgrade-to-passkey.ts) borrows from this store: its state,
+ * and the steps that write its private fields. Everything else is in the flow.
+ */
+function _upgradeHost(): import("./upgrade-to-passkey.js").UpgradeStoreHost {
+  return {
+    emailAccount: () =>
+      _kind === "web3auth" && _parent && _web3authSeedAddress
+        ? { parent: _parent.toLowerCase(), emailKey: _web3authSeedAddress.toLowerCase(), keyReady: !!_web3authPrivateKey }
+        : null,
+    passkeyAccount: () =>
+      _kind === "passkey" && _parent && _seedAddress
+        ? { parent: _parent.toLowerCase(), passkey: _seedAddress.toLowerCase(), hasSession: !!_sessionAddress }
+        : null,
+    keyMissing: _web3authKeyMissing,
+    ensureSession,
+    oldSeed: async () => (_kind === "web3auth" && (await _ensureIdentitySeed({ silent: true })) ? _seedIfPresent() : null),
+    removeBackups: async () => {
+      await removeAccountBackups();
+    },
+    putBinding: _putRecoveryBinding,
+    clearBinding: _clearRecoveryBinding,
+    readSignerFor: async (kernel, eoa) => (await import("./kernel-account.js")).readKernelSignerFor(kernel, eoa),
+    emailKernel: async () => {
+      await _ensureKernelForWeb3Auth();
+      const kernel = _kernel;
+      if (!kernel) throw new Error(WEB3AUTH_KEY_GONE_MESSAGE);
+      const k = await import("./kernel-account.js");
+      return {
+        readKernelRoot: (at) => k.readKernelRoot(at),
+        readKernelSignerFor: (at, eoa) => k.readKernelSignerFor(at, eoa),
+        setCoOwners: (root, signers) => k.setCoOwners(kernel, root, signers),
+      };
+    },
+    adoptPasskey: async (marker, live, confirmed) => {
+      const { parent, passkey } = marker;
+      await _putRecoveryBinding(passkey, parent);
+      // An Undo in another tab may have dropped it; this tab still holds it (Fable sign-off).
+      if (live) await storeLockedSeed(passkey, parent, live.seed, live.prfSecret);
+      await pinPasskeyCredential(marker.credential);
+      await putKV(StorageKeys.AUTH_KIND, "passkey" as AuthKind);
+      await putKV(StorageKeys.PARENT_ADDRESS, parent);
+      await putKV(StorageKeys.SEED_ADDRESS, passkey);
+      _kind = "passkey";
+      _parent = parent;
+      _seedAddress = passkey;
+      _deviceRole = false;
+      _passkeyPrivateKey = live?.privateKey ?? null;
+      _passkeyPrfSecret = live?.prfSecret ?? null;
+      _web3authPrivateKey = null;
+      _web3authSeedAddress = null;
+      _web3authKeyRetrying = false;
+      _kernel = null;
+      _unlocked = null;
+      _feedSignerCache = null;
+      _feedSignerAddressMemo = null;
+      if (live) _setUnlockedSeed(passkey, parent, live.seed);
+      if (confirmed) writeVerifiedBinding("passkey", passkey, parent);
+    },
+    finalizeDeps: () => ({
+      tombstoneEmailKey: (emailKey, parent, passkey) => writeOrphanTombstone("web3auth", emailKey, { kernel: parent, owner: passkey }),
+      wipeOldSeed: (emailKey) => clearIdentitySeed(emailKey),
+      forgetEmailLogin: async (emailKey) => {
+        clearCachedKernelAddress("web3auth", emailKey);
+        clearVerifiedBinding("web3auth", emailKey);
+        await _clearRecoveryBinding(emailKey);
+      },
+      queuePasskeyRecord: (credentialId, parent) => _setPendingPasskeyRecord({ credentialId, parent }),
+    }),
+    endEmailSession: async () => {
+      try {
+        const { logoutWeb3Auth } = await import("./web3auth-account.js");
+        await logoutWeb3Auth();
+      } catch (e) {
+        // The tombstone refuses that session here anyway; the chain refuses it everywhere.
+        console.warn("[auth] could not end the Web3Auth session after the upgrade:", e);
+      }
+      await _restoreAuthAfterRotation();
+    },
+    feedKeyIfPresent: () => _getContentFeedSignerIfPresent(),
+    resumeLater: () => void ensureSession().then((ok) => (ok ? _resumeUpgrade() : undefined)),
+  };
+}
+
+/** The flow's two modules, registered by the main app (main.ts) - never imported here,
+ *  so the deployed-site builds that share this store do not carry them. */
+type UpgradeModules = [typeof import("./upgrade-to-passkey.js"), typeof import("./upgrade-to-passkey-live.js")];
+let _upgradeModules: (() => Promise<UpgradeModules>) | null = null;
+function registerUpgradeFlow(load: () => Promise<UpgradeModules>): void {
+  _upgradeModules = load;
+}
+
+async function _upgradeFlow() {
+  if (!_upgradeModules) throw new Error("Upgrading to a passkey isn't available here - open WoCo to do it.");
+  const [flow, live] = await _upgradeModules();
+  const host = _upgradeHost();
+  return { flow, host, io: live.liveUpgradeIO(host) };
+}
+
+/**
+ * Upgrade this email or Google account to a passkey, in place (#746): starts one, or
+ * picks up the one this device prepared. Resolves once the account opens with the
+ * passkey; throws the words to show. Irreversible once the op lands - callers confirm.
+ */
+let _upgradeInFlight: Promise<void> | null = null;
+function upgradeToPasskey(opts: { onProgress?: (msg: string) => void } = {}): Promise<void> {
+  if (!_upgradeInFlight) {
+    _upgradeInFlight = _upgradeFlow()
+      .then(({ flow, host, io }) => flow.runUpgrade(host, io, opts.onProgress))
+      .finally(() => {
+        _upgradeInFlight = null;
+      });
+  }
+  return _upgradeInFlight;
+}
+
+/** Undo the upgrade this device prepared, while its switch has not landed (#746). */
+async function cancelPasskeyUpgrade(): Promise<void> {
+  const { flow, host, io } = await _upgradeFlow();
+  await flow.runCancel(host, io);
+}
+
+/** A passkey account with an upgrade marker on this device: finish what is left (#746).
+ *  One storage read for everyone else - nothing is loaded without a marker. */
+let _resumeUpgradeInFlight: Promise<void> | null = null;
+function _resumeUpgrade(): Promise<void> {
+  if (_resumeUpgradeInFlight || !_upgradeModules || _kind !== "passkey" || !_parent) return _resumeUpgradeInFlight ?? Promise.resolve();
+  try {
+    if (!globalThis.localStorage?.getItem(upgradeMarkerKey(_parent))) return Promise.resolve();
+  } catch {
+    return Promise.resolve();
+  }
+  _resumeUpgradeInFlight = _upgradeFlow()
+    .then(({ flow, host, io }) => flow.runResume(host, io))
+    .catch((e) => console.warn("[auth] upgrade follow-up not finished (retried next session):", e))
+    .finally(() => {
+      _resumeUpgradeInFlight = null;
+    });
+  return _resumeUpgradeInFlight;
 }
 
 // ---------------------------------------------------------------------------
@@ -4524,6 +5222,7 @@ async function clearAllAuth(): Promise<void> {
     console.warn("[auth] sign-out kept a recovered account's only seed copy until its next sign-in locks it");
     await step("public-keys", () => clearPublicKeys(seedAddr!));
     await step("device-unlock", () => clearDeviceUnlock(seedAddr!));
+    await step("account-chain-window", () => clearChainWindow(seedAddr!));
   } else {
     await step("identity-seed", () => clearIdentitySeed(seedAddr));
   }
@@ -4547,12 +5246,23 @@ async function clearAllAuth(): Promise<void> {
   await step("aa-sessions", () => delKV(StorageKeys.WOCO_AA_SESSION));
   // Shared-device safety: drop all user-scoped caches (creator lists, orders, collection, claim status).
   await step("user-caches", () => cacheClearByPrefix(USER_SCOPED_PREFIXES));
+  // A pending empty-accounts logout must not fire into the NEXT sign-in (#186).
+  if (_emptyAccountsTimer) {
+    clearTimeout(_emptyAccountsTimer);
+    _emptyAccountsTimer = null;
+  }
   _kind = "none";
   _parent = null;
   _sessionAddress = null;
   _identitySeedPresent = false;
   _unlocked = null;
   _feedSignerCache = null;
+  _chainLoad = null;
+  _keysVerdict = "pending";
+  _anchorMemo = null;
+  _keyRingNotice = null;
+  _pendingRemoval = null;
+  _removalDone = null;
   _scheduleUnlockExpiry(null);
   _seedUnavailable = null;
   _deviceRole = false;
@@ -4560,6 +5270,7 @@ async function clearAllAuth(): Promise<void> {
   _passkeyPrivateKey = null;
   _passkeyPrfSecret = null;
   _web3authPrivateKey = null;
+  _web3authKeyRetrying = false;
   _seedAddress = null;
   _web3authSeedAddress = null;
   _kernel = null;
@@ -4613,6 +5324,8 @@ export const auth = {
   get busy() { return _busy; },
   // Display-only login progress for the modal's authenticating scene.
   get loginStage() { return _loginStage; },
+  /** A redirect sign-in's return is being finished (the login sheet shows it). */
+  get redirectSignIn() { return _redirectSignIn; },
   get hasSession() { return hasSession; },
   get hasIdentitySeed() { return hasIdentitySeed; },
   /** "recovered-no-copy": the keys cannot be unlocked on this device (not declined). */
@@ -4621,11 +5334,46 @@ export const auth = {
    *  do what only its owner can (names, backups, adding or removing passkeys). */
   get isAccountOwner() { return !(_kind === "passkey" && _deviceRole); },
   onDeviceRemoved,
+  onSessionRevoked,
+  onSessionRejected,
+  registerUpgradeFlow,
+  upgradeToPasskey,
+  cancelPasskeyUpgrade,
   addPasskeyOnThisDevice,
   linkThisDevice,
   approveDeviceLink,
   removePasskey,
   removePasskeys,
+  // A removal under way (#186): its step for the progress sheet, and finishing one this
+  // device started (a closed tab, a step that failed after the flip).
+  get removalProgress() {
+    return _removalProgress;
+  },
+  get pendingRemoval() {
+    return _pendingRemoval;
+  },
+  get removalDone() {
+    return _removalDone;
+  },
+  dismissRemovalDone: () => {
+    _removalDone = null;
+  },
+  finishRemoval: async () => {
+    await _freshMainPasskey();
+    return _rotateOnRemoval([], { resume: true });
+  },
+  // Passkeys a removal now would leave without the new keys - a hint for its confirm.
+  passkeysWithoutKeys: async () => (await _keys()).passkeysWithoutKeys(_keysHost()),
+  // A passkey left out of the account's keys (#186): this one asks with a code...
+  requestKeys: async (opts: { onCode: (code: { typed: string; qr: string }) => void; signal?: AbortSignal }) =>
+    (await _keys()).requestKeys(_keysHost(), opts),
+  // ...and another, on the account, gives them - one confirm, one op.
+  giveKeys: async (code: Uint8Array, offer: import("./device-link.js").KeysOffer) => {
+    if (_deviceRole) throw new MainPasskeyRequiredError();
+    await _freshMainPasskey();
+    const [{ runGiveKeys }, { apiBase: base }] = await Promise.all([import("./device-link.js"), import("../api/http.js")]);
+    await runGiveKeys(code, offer, { apiBase: base, give: async (member) => (await _keys()).giveKeysTo(_keysHost(), member) });
+  },
   get isConnected() { return isConnected; },
   get isAuthenticated() { return isAuthenticated; },
 
@@ -4635,6 +5383,7 @@ export const auth = {
   loginPasskey,
   loginPasskeyResult,
   loginWeb3Auth,
+  cancelLogin,
   loginCoinbase,
   prefetchCoinbaseSdk,
   prefetchPasskeySdk,
@@ -4676,6 +5425,21 @@ export const auth = {
   // passkey account whose seed is locked (#746): call
   // `ensureOrganiserUnlock()` first where the action needs it.
   getIdentitySeed: () => _seedIfPresent(),
+  // The account's CURRENT secret and every secret this device holds (#186). Everything
+  // that signs content or seals to the organiser derives from `current`; opening orders
+  // tries `all` (sealed under whichever generation was current then). Generation 0 is
+  // the identity seed, so for an account that never removed a passkey both are the seed.
+  // The issuing key, escrow and portability stay on `getIdentitySeed`.
+  getAccountSecrets: (opts: { toSeal?: boolean } = {}) => _accountSecretsIfPresent(opts),
+  // Why the account's keys need attention here, if they do (#186): "keyless" = this
+  // passkey was left out of the account's latest keys; "changed" = another passkey moved
+  // them on (a removal). Null = nothing to say.
+  get keyRingNotice() {
+    return _keyRingNotice;
+  },
+  dismissKeyRingNotice: () => {
+    _keyRingNotice = null;
+  },
   // Content-feed signer (Phase B) — the key the user signs their own content
   // feeds with. null = this kind/state can't own feeds (fall back to platform).
   getContentFeedSigner: () => _getContentFeedSigner(),

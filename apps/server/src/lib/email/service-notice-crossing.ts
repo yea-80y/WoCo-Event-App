@@ -52,3 +52,24 @@ const CROSSABLE: ReadonlySet<SuppressSource> = new Set<SuppressSource>(["unsub",
 export function mayCrossSuppression(sources: readonly SuppressSource[]): boolean {
   return sources.length > 0 && sources.every((s) => CROSSABLE.has(s));
 }
+
+/**
+ * The platform's OWN notice to a buyer that their event was cancelled and their
+ * refund is on its way (#798) - not an organiser broadcast. It also crosses
+ * `manual`: that label is what an Art. 17 erasure writes, and an erased buyer is
+ * still owed word of their own refund (owner decision, 2026-10-07). The only
+ * organiser-written text in it is the event title, reduced to plain words with
+ * no link, domain or address (`plainTitle`), so the message cannot be turned
+ * into a promotion. Refused only by a deliverability fact; an unknown source is
+ * refused until classified, as above.
+ */
+const REFUND_NOTICE_CROSSABLE: ReadonlySet<SuppressSource> = new Set<SuppressSource>([
+  "unsub",
+  "unsub_all",
+  "declined",
+  "manual",
+]);
+
+export function mayDeliverRefundNotice(sources: readonly SuppressSource[]): boolean {
+  return sources.every((s) => REFUND_NOTICE_CROSSABLE.has(s));
+}

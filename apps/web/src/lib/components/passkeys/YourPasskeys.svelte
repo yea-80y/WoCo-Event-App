@@ -29,6 +29,13 @@
   let confirming = $state<string | null>(null);
   let removing = $state<string | null>(null);
   let removeError = $state<string | null>(null);
+  // For the confirm (#186): passkeys a removal would leave without the new keys, and
+  // whether this device holds a door pass the new keys would stop.
+  let withoutKeys = $state<string[]>([]);
+  let doorPassHere = $state(false);
+  // Passkeys on the account a removal left without its keys: give them keys, or remove them.
+  let needsKeys = $state<string[]>([]);
+  let linkMode = $state<"link" | "keys">("link");
 
   const loadLinkAnotherDevice = () => import("./LinkAnotherDevice.svelte");
 
@@ -60,6 +67,7 @@
       coOwned = res.coOwned;
       canAdd = res.canAdd;
       loaded = true;
+      if (coOwned) void auth.passkeysWithoutKeys().then((k) => (needsKeys = k));
     } catch (e) {
       loadError = e instanceof Error ? e.message : "Couldn't read your passkeys - try again.";
     } finally {
@@ -100,6 +108,34 @@
       adding = "explain";
     }
   }
+
+  function openConfirm(key: string): void {
+    confirming = key;
+    removeError = null;
+    withoutKeys = [];
+    doorPassHere = hasDoorPass();
+    const self = auth.seedAddress?.toLowerCase();
+    if (key !== self) void auth.passkeysWithoutKeys().then((k) => { if (confirming === key) withoutKeys = k.filter((a) => a !== key); });
+  }
+
+  function hasDoorPass(): boolean {
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k?.startsWith("woco:doorpass:")) continue;
+        const exp = (JSON.parse(localStorage.getItem(k) ?? "null") as { exp?: number } | null)?.exp;
+        if (typeof exp === "number" && exp * 1000 > Date.now()) return true;
+      }
+    } catch {
+      /* a hint only */
+    }
+    return false;
+  }
+
+  const nameOf = (key: string) => {
+    const r = rows.find((x) => x.key === key);
+    return r ? title(r) : "Another of your passkeys";
+  };
 
   async function remove(r: PasskeyRow): Promise<void> {
     removing = r.key;
@@ -173,25 +209,49 @@
               {#if (linkedOnly ? r.signedInWith : rows.length > 1) && confirming !== r.key}
                 <button
                   class="remove"
-                  onclick={() => { confirming = r.key; removeError = null; }}
+                  onclick={() => openConfirm(r.key)}
                   disabled={busy}
                   aria-label={`Remove ${title(r)}`}
                 >Remove</button>
               {/if}
             </div>
+            {#if needsKeys.includes(r.key) && !linkedOnly && confirming !== r.key}
+              <div class="confirm">
+                <p>{title(r)} needs your account's keys.</p>
+                <div class="pair">
+                  <button class="btn btn--ghost" onclick={() => { linkMode = "keys"; linking = true; }} disabled={busy}>Give it keys</button>
+                  <button class="btn btn--ghost" onclick={() => openConfirm(r.key)} disabled={busy}>Remove it</button>
+                </div>
+              </div>
+            {/if}
             {#if confirming === r.key}
               <div class="confirm">
-                <p>
-                  {r.signedInWith
-                    ? "Remove the passkey you're signed in with? It stops opening your account and you'll be signed out here."
-                    : `Remove ${title(r)}? It stops opening your account straight away. Anything already on that device stays on it.`}
-                </p>
-                <div class="pair">
-                  <button class="btn btn--danger" onclick={() => remove(r)} disabled={removing !== null}>
-                    {removing === r.key ? "Removing…" : "Remove"}
-                  </button>
-                  <button class="btn btn--ghost" onclick={() => (confirming = null)} disabled={removing !== null}>Keep it</button>
-                </div>
+                {#if r.signedInWith}
+                  <p>Remove the passkey you're signed in with? It stops opening your account and you'll be signed out here.</p>
+                  <div class="pair">
+                    <button class="btn btn--danger" onclick={() => remove(r)} disabled={removing !== null}>
+                      {removing === r.key ? "Removing…" : "Remove"}
+                    </button>
+                    <button class="btn btn--ghost" onclick={() => (confirming = null)} disabled={removing !== null}>Keep it</button>
+                  </div>
+                {:else}
+                  <p class="confirm-title">Remove this passkey?</p>
+                  <p>
+                    It stops working right away. To keep your future orders safe, WoCo gives your account new keys and moves
+                    your events, websites and profile over to them. This takes a minute or two - keep this page open.
+                  </p>
+                  <p class="hint">Anything that passkey already downloaded stays on it.</p>
+                  {#if doorPassHere}<p class="hint">Door scanners will need a new door pass afterwards.</p>{/if}
+                  {#each withoutKeys as k (k)}
+                    <p class="hint">{nameOf(k)} needs setting up again on its own device afterwards.</p>
+                  {/each}
+                  <div class="pair">
+                    <button class="btn btn--danger" onclick={() => remove(r)} disabled={removing !== null}>
+                      {removing === r.key ? "Removing…" : "Remove passkey"}
+                    </button>
+                    <button class="btn btn--ghost" onclick={() => (confirming = null)} disabled={removing !== null}>Cancel</button>
+                  </div>
+                {/if}
                 <p class="hint">Your device will ask you to confirm it's you.</p>
               </div>
             {/if}
@@ -202,7 +262,7 @@
 
       {#if linking}
         {#await loadLinkAnotherDevice() then { default: LinkAnotherDevice }}
-          <LinkAnotherDevice onlinked={() => { loaded = false; void load(); }} onclose={() => (linking = false)} />
+          <LinkAnotherDevice mode={linkMode} onlinked={() => { loaded = false; void load(); }} onclose={() => { linking = false; linkMode = "link"; }} />
         {:catch}
           <p class="err">Couldn't open this - check your connection and try again.</p>
         {/await}
@@ -216,7 +276,7 @@
           <div class="pair">
             <button class="btn btn--primary" onclick={() => (adding = "closed")}>Keep both</button>
             {#if current}
-              <button class="btn btn--ghost" onclick={() => { confirming = current.key; adding = "closed"; }}>
+              <button class="btn btn--ghost" onclick={() => { openConfirm(current.key); adding = "closed"; }}>
                 Remove {title(current)}
               </button>
             {/if}
@@ -247,7 +307,7 @@
         {:else}
           <div class="actions">
             <div class="action">
-              <button class="btn btn--primary" onclick={() => (linking = true)} disabled={busy}>Add another device</button>
+              <button class="btn btn--primary" onclick={() => { linkMode = "link"; linking = true; }} disabled={busy}>Add another device</button>
               <p class="hint">A laptop or another phone that can't use these passkeys.</p>
             </div>
             <div class="action">
@@ -376,6 +436,10 @@
   .confirm p:first-child,
   .panel p {
     color: var(--text-secondary);
+  }
+  .confirm p.confirm-title {
+    font-weight: 600;
+    color: var(--text);
   }
   .panel {
     padding: 1rem;

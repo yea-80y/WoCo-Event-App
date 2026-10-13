@@ -14,6 +14,10 @@
   const wocoAppUrl =
     (typeof window !== 'undefined' && window.SITE_CONFIG?.wocoAppUrl) || 'https://woco.eth.limo';
 
+  // The organiser's notice is a page of this same site (MultiSiteApp routes it).
+  const noticeHref =
+    typeof window !== 'undefined' ? new URL('#/privacy-notice', window.location.href).href : '#/privacy-notice';
+
   let name = $state('');
   let email = $state('');
   let message = $state('');
@@ -66,7 +70,11 @@
              the organiser is the controller for whatever is submitted here. -->
         <p class="privacy-note">
           Your message is sent to {site.theme.brandName}, who is responsible for it and will use it
-          only to reply to you. Delivered via WoCo — see the
+          only to reply to you. Delivered via WoCo. See
+          <!-- A new tab, so a half-written message is not lost; built from this
+               page's own URL so it stays on the organiser's host. -->
+          <a href={noticeHref} target="_blank" rel="noopener noreferrer">{site.theme.brandName}'s privacy notice</a>
+          and the
           <a href="{wocoAppUrl}/#/legal/privacy" target="_blank" rel="noopener noreferrer">WoCo Privacy Policy</a>.
         </p>
         <button type="submit" disabled={status === 'sending'}>

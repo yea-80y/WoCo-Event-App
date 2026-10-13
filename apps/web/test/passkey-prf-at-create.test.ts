@@ -10,7 +10,9 @@
  *
  * MUTATION: restore the `else if (extensions.prf?.enabled)` gate inside
  * `prfAfterCreate` and "Samsung Pass" goes red; drop the user-handle check in
- * `_authenticatePasskeyImpl` and the backup sign-in test goes red.
+ * `_authenticatePasskeyImpl` and the backup sign-in test goes red; swap the
+ * other-device and unsupported errors, or move the other-device check into
+ * `extractPrfResult` (shared with the unlock), and the QR-code tests go red.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -97,10 +99,12 @@ const {
   createPasskeyAccount,
   createPasskeyBackupKey,
   authenticatePasskey,
+  restorePasskeyAccount,
   PasskeyPrfUnsupportedError,
   PasskeyIsBackupError,
+  PasskeyFromAnotherDeviceError,
 } = await import("../src/lib/auth/passkey-account.ts");
-const { getKV, delKV } = await import("../src/lib/auth/storage/indexeddb.ts");
+const { getKV, putKV, delKV } = await import("../src/lib/auth/storage/indexeddb.ts");
 
 function reset(over: { createExt?: Record<string, unknown>; getExt?: Record<string, unknown>; userHandle?: ArrayBuffer | null; attachment?: string | undefined } = {}) {
   createExt = over.createExt ?? {};
@@ -181,4 +185,40 @@ test("a backup passkey picked at sign-in is refused before anything is pinned", 
   reset({ userHandle: newBackupUserHandle().buffer as ArrayBuffer });
   await assert.rejects(authenticatePasskey(), PasskeyIsBackupError);
   assert.equal(await getKV(StorageKeys.PASSKEY_CREDENTIAL), null, "a refused backup must never become this device's login");
+});
+
+test("a sign-in from another device without the secret is steered to pairing, and pins nothing", async () => {
+  await delKV(StorageKeys.PASSKEY_CREDENTIAL);
+  reset({ getExt: {}, attachment: "cross-platform" });
+  await assert.rejects(authenticatePasskey(), PasskeyFromAnotherDeviceError);
+  assert.equal(await getKV(StorageKeys.PASSKEY_CREDENTIAL), null);
+});
+
+test("on this device, or when the browser does not say, a missing secret blames the password manager", async () => {
+  for (const attachment of ["platform", undefined]) {
+    reset({ getExt: {}, attachment });
+    await assert.rejects(authenticatePasskey(), PasskeyPrfUnsupportedError);
+  }
+});
+
+test("a backup passkey from another device is refused as a backup first", async () => {
+  reset({ getExt: {}, attachment: "cross-platform", userHandle: newBackupUserHandle().buffer as ArrayBuffer });
+  await assert.rejects(authenticatePasskey(), PasskeyIsBackupError);
+});
+
+test("the unlock keeps its own refusal: the other-device check is the sign-in's only", async () => {
+  await putKV(StorageKeys.PASSKEY_CREDENTIAL, { credentialId: RAW_ID_B64URL, rpId: "localhost" });
+  reset({ getExt: {}, attachment: "cross-platform" });
+  await assert.rejects(restorePasskeyAccount({ retryDiscoverable: false }), PasskeyPrfUnsupportedError);
+});
+
+test("sign-in hands back the pin it replaced, so a refused sign-in can put it back", async () => {
+  await delKV(StorageKeys.PASSKEY_CREDENTIAL);
+  reset();
+  assert.equal((await authenticatePasskey()).replacedPin, null, "nothing was pinned before");
+  const before = { credentialId: "AAAA", rpId: "localhost" };
+  await putKV(StorageKeys.PASSKEY_CREDENTIAL, before);
+  reset();
+  assert.deepEqual((await authenticatePasskey()).replacedPin, before);
+  assert.equal((await createPasskeyAccount()).replacedPin, undefined, "a creation has nothing to put back");
 });

@@ -467,8 +467,8 @@
       decrypting = false;
       return;
     }
-    let identitySeed = await auth.getIdentitySeed();
-    if (!identitySeed && prompt) {
+    let secrets = await auth.getAccountSecrets();
+    if (!secrets && prompt) {
       if (!(await auth.ensureAccountSetup({ identity: true }))) {
         decryptError = auth.seedUnavailable
           ? "Your account keys aren't on this device. Sign in again to fetch them."
@@ -476,26 +476,27 @@
         decrypting = false;
         return;
       }
-      identitySeed = await auth.getIdentitySeed();
-      if (!identitySeed) {
+      secrets = await auth.getAccountSecrets();
+      if (!secrets) {
         decryptError = "No signing key on this device. Restore from recovery to read order details.";
         decrypting = false;
         return;
       }
     }
-    if (!identitySeed) {
+    if (!secrets) {
       ordersLocked = true;
       decrypting = false;
       return;
     }
     ordersLocked = false;
 
-    // The X-Wing order key (#642) and the box opener, loaded on first use.
-    const [{ deriveXWingKeypairFromSeed }, { openBoxJson, orderSealContext }] = await Promise.all([
-      import("@woco/shared/crypto/xwing"),
+    // Every generation's order key this device holds (#642, #186): an order is sealed
+    // to whichever was current when it was bought. Loaded on first use.
+    const [{ orderKeysOf, openJsonWithAnyKey }, { orderSealContext }] = await Promise.all([
+      import("../../keyring/order-keys.js"),
       import("@woco/shared/crypto/sealed-box"),
     ]);
-    const { secretKey } = deriveXWingKeypairFromSeed(identitySeed);
+    const { secretKeys } = await orderKeysOf(secrets);
 
     if (hasEncryptedOrders) {
       const results = await Promise.allSettled(
@@ -504,8 +505,8 @@
           // Bound to THIS event and the SLOT's series (the server sets
           // `order.seriesId` from the slot) — never the payload's own seriesId, so
           // an order lifted from another series fails to open instead of showing.
-          const decrypted = await openBoxJson<DecryptedOrder>(
-            secretKey,
+          const decrypted = await openJsonWithAnyKey<DecryptedOrder>(
+            secretKeys,
             order.encryptedOrder,
             orderSealContext(eventId, order.seriesId),
           );
@@ -1080,6 +1081,12 @@
                 {#if relayError}<p class="broadcast-error">{relayError}</p>{/if}
               {/if}
             </div>
+            {#if event.orderFields && decryptedOrders.size > 0}
+              <p class="csv-note">
+                An exported guest list holds your attendees' details. Keep it secure, delete it when
+                you no longer need it, and remove anyone we tell you has been erased.
+              </p>
+            {/if}
 
             <div class="table-wrap">
               <table>
@@ -1444,6 +1451,13 @@
   .csv-btn:hover {
     border-color: var(--accent);
     color: var(--accent-text);
+  }
+
+  .csv-note {
+    margin: -0.25rem 0 0.75rem;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    line-height: 1.5;
   }
 
   .bulk-send-btn {

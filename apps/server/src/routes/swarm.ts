@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { uploadSignedSoc, type SignedSocInput } from "../lib/swarm/soc-upload.js";
+import { invalidateContentFeedVersion, uploadSignedSoc, type SignedSocInput } from "../lib/swarm/soc-upload.js";
+import { organiserNoticeContentTopic } from "@woco/shared";
+import { noticeWritten } from "../lib/legal/notice-gate.js";
 import { readVerifiedSoc } from "../lib/swarm/soc-read.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { uploadToBytes } from "../lib/swarm/bytes.js";
@@ -13,6 +15,7 @@ import {
   bytesRelayGate,
   classifyRelayPayload,
   isSocialPayload,
+  isPrivacyNoticePayload,
   SOC_RELAY_MAX_BODY_BYTES,
   BYTES_RELAY_MAX_BODY_BYTES,
 } from "../lib/swarm/soc-relay-limits.js";
@@ -67,11 +70,11 @@ swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, a
   });
   if (!gate.allowed) return c.json({ ok: false, error: gate.reason }, gate.status);
 
-  // Likes and follows need the same unlock as a name or a profile (ticket,
+  // Likes, follows and an organiser's privacy notice need the same unlock as a name or a profile (ticket,
   // Stripe, or a confirmed invite). Same refusal as routes/profiles.ts, which
   // the client matches to open its unlock flow. After the rate gate, so a flood
   // is refused before it costs a gate lookup.
-  if (isSocialPayload(b.payload)) {
+  if (isSocialPayload(b.payload) || isPrivacyNoticePayload(b.payload)) {
     const unlock = await checkAttendeeGate((c.get("parentAddress") as string).toLowerCase());
     if (!unlock.gated) return c.json({ ok: false, error: "ticket_required" }, 403);
   }
@@ -91,6 +94,14 @@ swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, a
       span: b.span,
       payload: b.payload,
     }, selection);
+    // The organiser just wrote their notice: their next sale and notice page read
+    // it now, not after the cache lapses (lib/legal/notice-gate.ts). Only the
+    // writer's own account - a notice validates only under its own topic.
+    if (isPrivacyNoticePayload(b.payload)) {
+      const parent = (c.get("parentAddress") as string).toLowerCase();
+      noticeWritten(parent);
+      invalidateContentFeedVersion(b.owner.toLowerCase().replace(/^0x/, ""), organiserNoticeContentTopic(parent));
+    }
     return c.json({ ok: true, data: ref });
   } catch (err) {
     if (err instanceof PlatformBatchUnavailable) return c.json({ ok: false, error: err.message, code: err.code }, 503);

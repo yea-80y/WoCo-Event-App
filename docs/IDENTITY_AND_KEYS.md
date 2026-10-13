@@ -81,7 +81,7 @@ which is exactly why it is switched off.
 
 ```
 signature = wallet.signTypedData(DOMAIN, TYPES, { purpose, address, nonce: FIXED })
-seed      = keccak256(getBytes(signature))         // the 65 raw signature bytes
+seed      = keccak256(canonicalSignatureBytes(signature))   // 65 bytes: low s, v 27/28
 ```
 
 Two properties make this work. **Determinism**: the nonce is fixed, so the same wallet always
@@ -160,6 +160,11 @@ Two details that took real defects to learn:
 - **Hash the signature *bytes*, not the hex string.** `keccak256(getBytes(sig))` hashes 65
   bytes; `keccak256(toUtf8Bytes(sig))` would hash 132 ASCII characters. The byte form is the
   ecosystem standard. Changing which one you hash changes every user's identity.
+- **Hash one encoding of the signature.** v as 0/1 or 27/28, s low or high, 65 bytes or the
+  64-byte compact form all recover the same address, so a wallet may return any of them.
+  `canonicalSignatureBytes` (`packages/shared/src/auth/canonical-signature.ts`) maps them all to
+  low s, v 27/28 before hashing, and refuses anything else (#186). Canonical input passes through
+  unchanged. The wallet backup's escrow master (`deriveGuardianKeys`) is hashed the same way.
 - **External wallets get signed twice.** We control the nonce generation of our own signers
   (ethers → RFC-6979, deterministic). We do not control MetaMask's. So for external-wallet kinds
   the account-keys derivation signs twice and **throws on mismatch** — an irreproducible wallet
@@ -454,10 +459,19 @@ The authoritative list is the `AuthKind` union in `packages/shared/src/auth/type
 | Shown as | Kind | Parent account | State |
 |---|---|---|---|
 | Passkey | `passkey` | ZeroDev Kernel on Arbitrum One. Root validator: ECDSA over a secp256k1 key derived from the passkey's PRF output, moved to WeightedECDSA (every passkey a co-owner) when a second passkey is added (§9) | Live. The only kind that can organise (#768) |
-| Email | `web3auth` | Also a Kernel | Live, on a Web3Auth **devnet** project |
-| Wallets | `web3` | MetaMask / WalletConnect EOA | Live |
+| Email | `web3auth` | Also a Kernel | Live, on a Web3Auth **devnet** project. Can upgrade in place to a passkey (§9) |
+| Wallets | `web3` | MetaMask / WalletConnect EOA | Built, `walletLoginAllowed = false` (#186) |
 | Coinbase | `coinbase` | Coinbase Smart Wallet | Built, `coinbaseLoginAllowed = false` |
 | Zupass | `zupass` | — | In the union, **not implemented** |
+
+**Why wallet login is off for launch.** A wallet account's seed is keccak256 of one fixed
+EIP-712 signature, and a wallet signs whatever a site asks: any page that obtains the same
+signature holds that account's keys for good, and the frozen message cannot rotate. No change
+to the message fixes it - only keys that a site cannot ask a wallet for (a passkey). The server
+refuses a delegation signed by its own parent EOA while the flag is off, which also covers a
+published event page that still carries the old wallet sign-in. Wallet backups for email
+accounts derive their escrow key the same way, so they are off too, with email-account backups
+as a whole (`accountBackupsAllowed = false`).
 
 **Why Coinbase Smart Wallet is off** is worth understanding, because it is the clearest
 illustration of what sign-to-derive costs. A smart account's signatures are not
@@ -500,9 +514,12 @@ AuthorizeSession {
 }
 ```
 
-`host` is in the signed payload, which is why **`ALLOWED_HOSTS` is the host security guard** —
-`SESSION_DOMAIN` deliberately carries no chainId, so the host is what scopes a delegation to an
-origin. A frontend host missing from `ALLOWED_HOSTS` gets a 403 on every authenticated call.
+`host` is in the signed payload and the server refuses any host not in **`ALLOWED_HOSTS`**
+(`SESSION_DOMAIN` deliberately carries no chainId). That bounds which hosts a delegation can name,
+but `host` is the client's own claim: it does not prove which origin asked for the signature, so a
+wallet user tricked into signing on another site yields a valid delegation. The other fields
+(`purpose`, `statement`, `clientCodeHash`) are not checked. A frontend host missing from
+`ALLOWED_HOSTS` gets a 403 on every authenticated call.
 
 ### The per-request signature (EIP-191, every call)
 
@@ -536,6 +553,11 @@ error that looks like a key problem and is not.
 Revocation: `POST /api/auth/revoke-session` (one nonce) or `/api/auth/revoke-all` (every session
 for a parent issued before now). State lives in `.data/revoked-sessions.json` — losing that file
 un-revokes.
+
+**Known limit: `issuedAt` is the device's clock.** The server accepts a delegation dated up to 60 s
+ahead of its own time, so one minted just before a revoke-all on a fast clock outlives it by up
+to that minute. Left as is: minting a delegation takes the parent key, and whoever holds that can
+mint a fresh one after the revoke anyway. Removing the passkey is what ends that (#186).
 
 ### More than one passkey: every passkey a co-owner (#746)
 
@@ -584,10 +606,7 @@ lives only in the new device's memory for this pairing. Transport: a 10-minute i
 "Add a password manager here" does the same on one device: a fresh confirm, a passkey in the other
 manager, on the list, its record.
 
-**A removed device keeps what it already holds.** Removal stops a passkey signing in and acting
-onchain, but the account's keys all come from one seed that never changes: a removed device can still
-open attendee details it can reach and publish as the account. Hence "only your own devices - never
-someone else's, staff included". A new attendee key on removal is deferred work.
+**Removing a passkey moves the account to new keys (#186).** See the next section.
 
 **New-passkey alert.** Each device remembers the chain's list as last seen; a key added since then
 is named on the next open ("Yes, it was me / No - remove it"). `new-passkey-alert.ts`.
@@ -625,7 +644,101 @@ Server side: `apps/server/src/middleware/auth.ts` and
 `apps/server/src/lib/auth/verify-delegation.ts`. Client side:
 `apps/web/src/lib/api/client.ts` (`authPost` / `authGet` / `buildAuthHeaders`).
 
+### Removing a passkey: the account moves to new keys (#186)
+
+A removed passkey keeps the identity seed, so what the account signs or seals AFTER a removal comes
+from a random **account secret** it never sees: generation 0 is the seed, each removal makes
+S_{g+1}. Off the current secret: the content-feed signer (`woco/feed-signer/v1`), the X-Wing order
+key (`woco/encryption/xwing/v1`) and the door-pass roster key (`woco/door-pass/roster/v1:{eventId}:
+{jti}`) - `@woco/shared/keyring/account-secret`. The issuing key and portability envelopes stay on the
+seed: safe only while nothing verifies issuing signatures out of band (a cert rail going live must
+move it to S_g).
+
+**Key ring** (`@woco/shared/keyring/ring`, v1, canonical `/bytes`, at most 64 KB): S_g sealed (X-Wing,
+`woco/keyring/entry/v1`) to each passkey's **box key** - X-Wing keygen of HKDF(PRF,
+`woco/passkey/box/v1`), named by a `BoxKey` statement the passkey's own key signs (EIP-712 "WoCo Box
+Key", `box-key.ts`) - and S_0..S_{g-1} in one AES-GCM blob under HKDF(S_g, `woco/keyring/back/v1`).
+It also names the generation's feed signer and order-key ref, so a device checks what it opened. The
+first added passkey makes the first ring.
+
+**Anchor.** The current ring is onchain: `WoCoKeyRing` (ownerless CREATE2 singleton, Arbitrum One,
+`ringOf(account)`, `setRing(expectedPrev, ring)` compare-and-swap - `@woco/shared/keyring/anchor`),
+called by the account's Kernel in the SAME op as the co-owner change, so the list and the keys never
+disagree. Devices and the server read it; nothing about it depends on WoCo's server. `/api/health`
+`keyRing` is red while the anchor has no code on the chain. Audited (LeftClaw job #983, 2026-10-09:
+0 critical/high/medium): only the account writes its entry, and any ONE co-owner can (1-of-N, as with
+the list itself). A rollback to an older ring is refused by readers - the server pauses below the
+generation it has seen, devices never step back - and a ring's address never repeats, since every
+build is randomised.
+
+**A device** keeps its chain `{ringRef, gen, secrets}` locked under the passkey like the seed
+(`account-chain.ts`) and signs or seals only on a CONFIRMED current generation: each unlock reads the
+anchor - `ok`; `behind` takes the newer ring with the passkey; `keyless` (left out), `foreign` and
+`unknown` refuse (`keyring/account-keys.ts`, lazy). A passkey with no ring entry adds itself once; one
+a removal left out gets keys from another by code ("Give it keys" - the code carries only its signed
+box key, and only a passkey already on the list is given them).
+
+**Removal** (`keyring/rotate.ts` + `rotate-live.ts`): S' kept as a pending rotation (a closed tab
+resumes with the same one) -> events, site configs and profile copied to the new signer, read thorough
+and clean from Swarm -> ring stored -> ONE op: passkeys off the list AND the anchor on the new ring ->
+this device adopts -> server told, sites and event pages redeployed and their WoCo names re-pointed
+(only on values this device signed), contact list re-sealed, device records removed, likes and follows
+re-made. A failure before the flip changes nothing; after it, the rest resumes at the next unlock.
+This device's own passkey leaving needs no new keys.
+
+**The server follows the anchor** (`lib/keyring/current-ring.ts`, `event-keys.ts`): events are read
+from the ring's signer and sold under its order key whatever a feed says; a box declares the key it
+was sealed to and a stale one is refused `ORDER_KEY_STALE`, naming the current key (the page re-seals
+once). Unreadable keys pause sales, never guess. Door passes record their generation; older ones are
+revoked. An event with no create-time record of its signer is not sold - publishing it again gives it one. A chain read below
+the highest generation the server has seen pauses that organiser's sales until it catches up
+(`.data/keyring-high-water.json`) - never the remembered ring, since rings are unsigned.
+
+**Still true after a removal:** what the passkey already downloaded stays on it, and an external domain
+or raw feed link pointing at an old feed is the organiser's to update.
+
 ---
+
+### An email account upgraded to a passkey, in place (#746)
+
+Organising needs a passkey account, and an email or Google account would otherwise lose its
+tickets to a fresh one. Instead it can hand itself to a new passkey: same Kernel address, so
+tickets, names, the unlock and followers stay (all keyed by the account). Flow:
+`apps/web/src/lib/auth/upgrade-to-passkey.ts` (pure, tested), its I/O in `upgrade-to-passkey-live.ts`,
+the screen in `creator/gate/UpgradeToPasskey.svelte`.
+
+- **Who.** Email/Google accounts, locked ones included. Not wallet accounts (no Kernel to switch),
+  and not an account that hosts events or websites - its feed signer is pinned where the money path
+  reads it (`event-feed-signers.json` is write-once; a site's events index carries it). Not a locked
+  account that is already deployed either: its backup removal is an op only an unlocked account is
+  paid for.
+- **The op.** ONE sponsored userOp, signed by the email key: the co-owner switch with a list of ONE
+  key, the passkey's, and the ECDSA validation uninstalled. A counterfactual account deploys in it.
+  The email key is never kept as a co-owner (any co-owner holds full control). The server pays it
+  as the `upgrade` shape (`lib/zerodev/sponsor-policy.ts`); for a locked account only against an
+  intent its own session asked for just before (`POST /api/auth/upgrade-intent`, 10 a day per
+  network - the webhook never sees the person's IP). No platform-wide cap: limits stop bad actors,
+  the ZeroDev plan grows with demand. Any recovery route (email or wallet backups) is removed first,
+  by its own op. Fork-tested: WoCo-Contracts `test/WeightedRootUpgradeFork.t.sol`.
+- **The seed.** The new seed is the passkey's PRF seed (`passkeyIdentitySeed`) - never derived from,
+  signed by or passed through the email key - sealed to the passkey only: its locked copy and its
+  portability envelope, which is read back before the op. The old seed leaves the device once the
+  op lands. Residual against a fresh account: a future break of the email key's curve links the
+  email to the account address (who, not what) - the data keys never depended on it.
+- **What moves to the new feed signer.** Anything a reader looks for under the CURRENT signer: the
+  profile and an unconfirmed referral statement are copied before the op; likes and follows are
+  retracted under the old signer before the op (`value: false`) and re-posted under the new one after,
+  each only once the old signer reads it not-true again - a like pressed while the op was refused
+  already counts, there - so the account never counts twice. The one residual: another device still
+  signed in with the email key can write under the old signer until its session dies (at most the
+  server's 5-minute owner cache; usually seconds). A visitor reading by the OLD signer (a confirmed referral's
+  `refereeFeed`) sees the old copy, which stays.
+- **Order and resume.** A device marker (`upgrade-marker.ts`, no secrets) records each stage. A
+  refused op changes nothing past the prepared state: the same passkey retries it, or "Undo" puts
+  the likes back. A tab closed after the op lands finishes at the next passkey sign-in.
+- **The email login afterwards** is refused with "This account now opens with your passkey": at once
+  on the upgrading device (tombstone), off the chain elsewhere - in the slow sign-in before anything
+  is written, after the fast path in the background, and when a fresh session is refused.
 
 ## 10. Signing roles, in one table
 

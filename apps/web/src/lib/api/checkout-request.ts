@@ -14,6 +14,10 @@ export interface CheckoutResponse {
   url?: string;
   error?: string;
   gated?: boolean;
+  /** "ORDER_KEY_STALE" (#186): the box was sealed to a key the organiser moved on from. */
+  code?: string;
+  /** With ORDER_KEY_STALE: the key to re-seal to. */
+  encryptionKeyRef?: string;
 }
 
 export interface CheckoutIo {

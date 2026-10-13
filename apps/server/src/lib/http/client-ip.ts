@@ -25,10 +25,14 @@
  *
  * `cf-connecting-ip` is set by the edge and overwrites anything the client sends.
  * That is what makes it usable — but note the property is NETWORK-level, not a
- * property of the header: it holds because the origin binds loopback and is
- * reachable only through the tunnel. If the origin ever gains a second ingress,
- * this header becomes caller-supplied like any other and this file's premise
- * fails. That is the thing to re-check, not the header choice.
+ * property of the header: it holds only on paths where something we run sets it.
+ * There are TWO ingresses. The tunnel, where the edge sets it; and Caddy, which
+ * serves organiser custom domains on the host's public ports and forwards any
+ * host and path here. From May to 2026-10-08 Caddy passed a caller's own value
+ * straight through, so every limiter was forgeable from that path (#817). Its
+ * config (on the server, not in this repo) now overwrites the header with the
+ * real peer on both site blocks. Any further ingress must do the same, or this
+ * file's premise fails. That is the thing to re-check, not the header choice.
  */
 
 import { isIPv4, isIPv6 } from "node:net";
@@ -40,14 +44,15 @@ import { isIPv4, isIPv6 } from "node:net";
  * ops runbook mirrors to /opt/woco. Its `server` service binds
  * `127.0.0.1:3001:3001` and declares no healthcheck, and `apps/server/Dockerfile`
  * has no HEALTHCHECK either, so nothing reaches the origin except through the
- * tunnel. This bucket should therefore be empty on every route, not merely on the
- * limited ones, and {@link clientIp} logs when it is not.
+ * tunnel or Caddy, and both set the header. This bucket should therefore be empty
+ * on every route, not merely on the limited ones, and {@link clientIp} logs when
+ * it is not. (Before #817 it was not: Caddy forwarded header-less requests.)
  *
  * NOT `docker-compose.yml` at the repo root — an earlier version of this comment
  * cited it, and it is the wrong artefact twice over: it is not deployed, and it
  * publishes `3001:3001` on ALL interfaces, which would make the loopback premise
- * below false rather than support it. If that file ever becomes a deployment, or
- * a second ingress is added, the premise this module rests on is what breaks —
+ * above false rather than support it. If that file ever becomes a deployment, or
+ * another ingress is added, the premise this module rests on is what breaks —
  * re-check it there, not in the header handling.
  *
  * Kept as a shared bucket rather than a refusal for now: refusing would change

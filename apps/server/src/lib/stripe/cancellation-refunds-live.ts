@@ -10,6 +10,12 @@ import { reconcileChargeEvent } from "./sale-refunds.js";
 import { listSalesForEvent } from "./ticket-sales.js";
 import { listEntriesForEvent } from "./payout-ledger.js";
 import type { CancellationRefundDeps } from "./cancellation-refunds.js";
+import { setRefundNotice } from "../event/cancellations.js";
+import { hashEmail } from "../event/claim-service.js";
+import { getRecordedFeedSigner } from "../event/feed-signer-record.js";
+import { suppressionSources } from "../marketing/suppression-store.js";
+import { getFromAddress } from "../email/client.js";
+import { sendEmail } from "../email/send.js";
 
 export const liveCancellationRefundDeps: CancellationRefundDeps = {
   saleSessionsFor(eventId) {
@@ -67,5 +73,28 @@ export const liveCancellationRefundDeps: CancellationRefundDeps = {
 
   async reconcile(paymentIntentId, account) {
     await reconcileChargeEvent({ paymentIntentId, account }, liveSaleRefundReads);
+  },
+
+  notice: {
+    // The address the buyer paid with, read from Stripe each time and never
+    // kept (#798). Never `metadata.claimerEmail`: that is the unverified body
+    // value, and #749 removes it.
+    async buyerEmail(sessionId, account) {
+      const session = await getStripe().checkout.sessions.retrieve(sessionId, {}, { stripeAccount: account });
+      return session.customer_details?.email || session.customer_email || null;
+    },
+    hashEmail,
+    suppressionSources,
+    organiserOf: (eventId) => getRecordedFeedSigner(eventId)?.creatorAddress.toLowerCase() ?? "",
+    async send(to, message, context) {
+      await sendEmail(
+        { from: getFromAddress(), to: [to], ...message },
+        { priority: "transactional", addressFree: true, context },
+      );
+    },
+    setNotice: (eventId, sessionId, notice) => {
+      setRefundNotice(eventId, sessionId, notice);
+    },
+    now: () => new Date(),
   },
 };

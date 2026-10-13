@@ -60,6 +60,8 @@ FEATURE FLAGS — READ BEFORE ASSUMING A RAIL IS LIVE
   freeEventsAllowed     = false
   badgesAllowed         = false   # badge/drop creation + gated ticket sales (#664); Objects page stays (dashboard link)
   shopAllowed           = false   # shops, POS, spend-permission draws (#124)
+  walletLoginAllowed    = false   # MetaMask/WalletConnect login: phishable sign-to-derive seed (#186)
+  accountBackupsAllowed = false   # email accounts' Protect backups; passkey accounts add passkeys (#186)
   (also off: agentCommerceAllowed, coinbaseLoginAllowed, organiserSendingDomains)
 
 Flags gate UI AND server validation in lockstep — an old client cannot reach a disabled
@@ -159,6 +161,13 @@ Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
    fork the feeds because it cannot change the seed. Never falls back to platform signing.
    Coinbase Smart Wallet stays parked (non-deterministic 1271 ⇒ no reproducible seed).
 
+ACCOUNT SECRET GENERATIONS (#186): a passkey removal makes a RANDOM account secret S_{g+1} (S_0 =
+the seed); keys 5, the X-Wing order key and the door-pass roster key derive from the CURRENT one
+(the issuing key stays on S_0). The current generation is a key ring named onchain by `WoCoKeyRing`
+(`@woco/shared/keyring/*`), set in the same Kernel op as the co-owner change. Clients sign/seal only
+on a CONFIRMED-current verdict (`apps/web/src/lib/keyring/account-keys.ts`, lazy); the server reads
+events under the ring's signer and refuses boxes sealed to a replaced key. `docs/IDENTITY_AND_KEYS.md`.
+
 NAMING (owner decision, extended 2026-09-10): the retired noun is gone from every code
 name, file name and wire literal, so a real 0xPARC POD integration would arrive into an
 empty namespace. The product noun is **object** (never a bare `object`/`Object`
@@ -229,6 +238,7 @@ FEED TOPICS:
   woco/issuer/{parentAddress}             # Issuer-registry statement log (parent-signed)
   woco/profile/data/{ethAddress}          # User profile
   woco/profile/avatar/{ethAddress}        # Avatar ref (separate feed → independent updates)
+  woco/legal/privacy-notice/{ethAddress}  # Organiser's privacy notice (client-signed; served via /api/privacy-notice)
   woco/marketing/list/{ethAddress}        # Sealed contact-list pointer
   woco/site/config/{siteId}               # Site JSON (config + theme + pages)
   woco/site/{siteId}/events               # SiteEventsIndex
@@ -276,6 +286,10 @@ write queue) went with #207 and are NOT in the tree. `routes/claims.ts` serves o
 - Email addresses are HMAC-SHA256 (`hashEmail`); `EMAIL_HASH_SECRET` is MANDATORY and the
   legacy unsalted path is deleted. Still used by marketing + bounce suppression
 - No free-ticket path exists (no v2 mint path for one) — `freeEventsAllowed = false`
+- No sale without the organiser's CONFIRMED privacy notice (owner 2026-10-11): reserve, create-checkout and
+  the agent rail refuse `PRIVACY_NOTICE_REQUIRED` (409) / `_UNAVAILABLE` (503, fail closed), read under
+  `eventKeys` through `lib/legal/notice-gate.ts`. Public pages never show the pre-filled draft.
+  `docs/legal/ORGANISER_PRIVACY_NOTICE.md`
 - Full lifecycle: `docs/TICKETING.md`
 
 APPROVAL FLOW — REMOVED with the v1 claim-rail retirement (#207): routes, flags and
@@ -384,6 +398,8 @@ AUTH (server):
   apps/server/src/lib/auth/device-grants.ts          # added passkeys (#746): signed grant registry
   apps/web/src/lib/auth/device-verdict.ts            # added passkey sign-in: the server's verdict before any commit
   apps/web/src/lib/auth/pairing-channel.ts           # linking another device (#746 step 4): code + sealed mailbox
+  apps/web/src/lib/keyring/{account-keys,rotate,rotate-live,adopt,members}.ts  # #186 key ring: verdict, removal, repair
+  apps/server/src/lib/keyring/{current-ring,event-keys}.ts  # #186 server reads the anchor; ORDER_KEY_STALE
 
 CLAIMS / EVENTS:
   apps/server/src/routes/claims.ts                   # claim-status ONLY (v1 claim rail deleted, #207)
@@ -513,6 +529,8 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
   stripe-accounts.json · stripe-payout-ledger.json · stripe-payout-intents.json
   stripe-payout-surplus.json (#781 part 2 — surplus clocks. Losing it only restarts the 7-day
     wait before money the ledger cannot explain is paid out; it never pays early)
+  stripe-unledgered-charges.json (#805 — WoCo charges with no ledger row; each holds its account's
+    surplus. Losing it costs one full rescan of our fees and re-opens operator resolutions; never pays)
   pending-refunds.json (#367 — auto-refunds Stripe refused to create; losing it = a buyer
     charged with no ticket and no refund, and no alarm; `/api/health` `pendingRefunds`)
   marketing-consent.json (Art. 7(1) evidence for checkout opt-ins)
@@ -565,6 +583,16 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     to the directory. The server cannot rebuild it (creators are not enumerable); an operator can
     restore one organiser's records, best effort, from their creator index
     `woco/event/creator/{address}`. Unreadable = `/api/health` `eventFeedSigners` alarm)
+  keyring-high-water.json (#186 — per account, the highest key-ring generation this server has seen.
+    A chain read below it PAUSES that organiser's sales (never serves the remembered ring: rings are
+    unsigned), so a lagging replica after a restart cannot hand back an older generation's keys.
+    Losing it only reopens that window; present-but-unreadable is never overwritten; `/api/health`
+    `keyRing` alarms, also when an account stays below its mark for 10 min - remove its entry with
+    the server stopped if the recorded generation is wrong)
+  name-targets.json (feed manifest -> the collection a deploy last baked there: the ONLY thing a site or
+    event-page name may show - the CCIP gateway's WoCo-built rule never signs the holder's pointer. Losing it
+    fails SAFE: every such name shows the app until republished. Unreadable = never overwritten, every such
+    name shows the app, `/api/health` `nameTargets` alarm)
   device-grants.json (#746 — each account's added passkeys: owner-signed grants, signed removals
     and every nonce used. Losing it signs every added device out (re-add from the main passkey);
     nothing leaks or is granted. Losing the NONCES lets an old removal or grant be replayed.

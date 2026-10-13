@@ -36,9 +36,11 @@
  * the issuing key and the encryption keys are all KDFs of that seed.
  *
  * Confidentiality of the escrow equals the recovery-threshold strength, NOT
- * device-bound secrecy — inherent to all recovery (§11.4). A timelock guards
- * funds rotation, NOT this at-rest copy: once an attacker meets the unwrap
- * threshold the plaintext is theirs with no "cancel". Escrow the MINIMUM.
+ * device-bound secrecy — inherent to all recovery (§11.4). Nothing slows the
+ * account side either: there is NO timelock and NO notification on recovery,
+ * so whoever meets the threshold rotates the owner at once, with no cancel
+ * window (#160). And this at-rest copy could never be guarded by one: once the
+ * unwrap threshold is met the plaintext is theirs. Escrow the MINIMUM.
  */
 
 import { keccak256, getBytes, Wallet } from "ethers";
@@ -54,6 +56,7 @@ import {
   RECOVERY_ENC_TYPES,
   RECOVERY_ENC_NONCE,
   RECOVERY_ENVELOPE_VERSION,
+  canonicalSignatureBytes,
   type EIP712Signer,
   type RecoveryEnvelope,
 } from "@woco/shared";
@@ -119,7 +122,7 @@ const HKDF_INFO_SOC = new TextEncoder().encode("woco/recovery/soc/v1");
  * guardian EOA (§13) — the route for wallet and email guardians. Same EOA → same
  * signature → same keys, on any device, with nothing stored. `guardianAddress` is
  * bound into the message so the same wallet signing for a different role yields
- * distinct keys. The master is keccak of the canonical 65-byte signature (getBytes,
+ * distinct keys. The master is keccak of the canonical 65-byte signature (bytes,
  * not the hex string — the same compression the identity seed uses) and is zeroed
  * after use.
  */
@@ -136,7 +139,8 @@ export async function deriveGuardianKeys(
       nonce: RECOVERY_ENC_NONCE,
     },
   );
-  const master = getBytes(keccak256(getBytes(signature)));
+  // Canonical form (#186): a backup wallet that re-encodes its signature must still open its escrow.
+  const master = getBytes(keccak256(canonicalSignatureBytes(signature)));
   try {
     return await guardianKeysFromMaster(master);
   } finally {

@@ -119,9 +119,6 @@
     );
   });
 
-  const editionStr = $derived(
-    info ? String(info.edition).padStart(3, "0") : "",
-  );
   const dateStr = $derived(
     info?.eventDate
       ? new Date(info.eventDate).toLocaleDateString("en-GB", {
@@ -162,7 +159,6 @@
     {#if info}
       <div class="ticket-card">
         <div class="tc-row">
-          <span class="tc-pill">#{editionStr}</span>
           <div class="tc-meta">
             <span class="tc-title">{info.eventTitle ?? "Event ticket"}</span>
             {#if dateStr}<span class="tc-line">{dateStr}</span>{/if}
@@ -196,7 +192,7 @@
     </div>
     <h1 class="headline">It's in your <span class="hl-accent">passport</span>.</h1>
     <p class="sub">
-      {#if info}Ticket #{editionStr} is in your account{:else}Your ticket is in your account{/if},
+      Your ticket is in your account,
       and your name, photo and bio are unlocked.
     </p>
     <div class="actions">
@@ -300,17 +296,6 @@
     padding: 1rem 1.125rem;
   }
   .tc-row { display: flex; align-items: flex-start; gap: 0.875rem; }
-  .tc-pill {
-    flex-shrink: 0;
-    font-family: var(--font-mono);
-    font-size: 0.8125rem;
-    font-weight: 700;
-    color: var(--accent);
-    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
-    background: color-mix(in srgb, var(--accent) 8%, transparent);
-    border-radius: 999px;
-    padding: 0.25rem 0.625rem;
-  }
   .tc-meta { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
   .tc-title { font-size: 0.9375rem; font-weight: 700; color: var(--text); }
   .tc-line { font-size: 0.75rem; color: var(--text-secondary); }

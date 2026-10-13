@@ -1,11 +1,7 @@
 # Terms of Service
 
-**Last updated:** [DATE OF PUBLICATION]
+**Last updated:** 6 October 2026
 **Version:** 1.0
-
-> **⚠️ PRE-LAUNCH DRAFT — NOT YET IN FORCE.** Complete the `[PLACEHOLDERS]` and have a UK solicitor
-> review before publication. Consumer terms are subject to the Consumer Rights Act 2015 fairness
-> test; an unfair term is unenforceable, so the wording here matters commercially, not just legally.
 
 These terms cover **using WoCo as an attendee** — browsing events, buying tickets, holding tickets.
 If you run events, the [Organiser Terms](./ORGANISER_TERMS.md) also apply.
@@ -14,8 +10,8 @@ If you run events, the [Organiser Terms](./ORGANISER_TERMS.md) also apply.
 
 ## 1. Who you are contracting with
 
-WoCo is operated by [COMPANY LEGAL NAME], registered in England and Wales, company number [NUMBER],
-registered office [ADDRESS] ("WoCo", "we", "us").
+WoCo is operated by WoCo Network Ltd, trading as WoCo and World Computer, registered in England and
+Wales, company number 17370809, registered office 128 City Road, London EC1V 2NX, United Kingdom ("WoCo", "we", "us").
 
 **Important — we do not sell you the ticket.** When you buy a ticket, your contract for the event is
 with the **event organiser**, not with us. We provide the platform they use to sell it, and we act as
@@ -40,7 +36,7 @@ permission; use bots or automation to obtain tickets; interfere with the platfor
 availability; attempt to access data belonging to others; or use WoCo to send spam or harass anyone.
 
 We may suspend or close an account that breaches these terms. Where we do, we will tell you why
-unless we are legally prevented from doing so, and you can appeal to [SUPPORT EMAIL].
+unless we are legally prevented from doing so, and you can appeal to support@woco-net.com.
 
 ### Your account and your keys
 
@@ -128,14 +124,16 @@ for fraud, or for anything else that cannot lawfully be limited.
 
 Subject to that:
 
-- We are **not liable for the event itself** — its cancellation, quality, safety or conduct. That is
-  the organiser's responsibility.
+- We are **not liable for the event itself** - whether it goes ahead, is postponed or changed, and
+  its quality, safety or conduct. That is the organiser's responsibility.
+- We are **not liable for arrangements you make around an event**, such as travel, accommodation,
+  time off work or childcare.
 - We are **not liable for losses caused by you losing your own keys**, where you control them.
 - We are **not liable for failures of public decentralised networks** outside our control.
 - We are not liable for indirect or consequential loss, or loss of profit, revenue or opportunity.
 
-**Where we are at fault**, our total liability to you is limited to the greater of the fees we
-received in connection with the affected transaction, or £[LIABILITY CAP].
+**Where we are at fault**, we are responsible for loss or damage that is a foreseeable result of us
+breaking these terms or not using reasonable care and skill in the services we provide.
 
 If you are a consumer, this section does not affect your statutory rights, and you may bring claims
 against the organiser directly.
@@ -199,12 +197,12 @@ have jurisdiction.
 If you live elsewhere in the UK, you may bring proceedings in your local courts. If you are a
 consumer in the EU, mandatory protections of your home country still apply.
 
-**Please contact us first** at [SUPPORT EMAIL] — most things are resolved quickly that way.
+**Please contact us first** at support@woco-net.com — most things are resolved quickly that way.
 
 ---
 
 ## 11. Contact
 
-[COMPANY LEGAL NAME]
-[REGISTERED OFFICE ADDRESS]
-[SUPPORT EMAIL]
+WoCo Network Ltd
+128 City Road, London EC1V 2NX, United Kingdom
+support@woco-net.com

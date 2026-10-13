@@ -12,9 +12,12 @@ import {
   isAddedUserHandle,
   aaguidFromAuthenticatorData,
   passkeyProviderFromAaguid,
+  PASSKEY_PROVIDERS,
   type PasskeyProviderId,
 } from "@woco/shared";
 import { getKV, putKV, delKV } from "./storage/indexeddb.js";
+import { mustSignInElsewhere } from "./sign-in-host.js";
+import { buildEnv } from "../build-env.js";
 
 /** Credential metadata stored in IndexedDB (not secret) */
 interface PasskeyCredentialMeta {
@@ -38,6 +41,18 @@ export type PasskeyCredentialHandle = PasskeyCredentialMeta;
 // and the embed resolves it too, so a local copy is how #175 shipped.
 function getPasskeyRpId(): string {
   return resolvePasskeyRpId(window.location.hostname);
+}
+
+/** The RP ID for a ceremony - refused off the canonical host (#186, Fable on
+ *  #822): a passkey made or used there is scoped to that hostname, a second
+ *  account. Sign-in already redirects; this also covers the upgrade, add-device
+ *  and backup flows reachable from a session restored on another host. Only
+ *  ceremonies throw: getPasskeyRpId stays safe for restore-time reads. */
+function ceremonyRpId(): string {
+  if (mustSignInElsewhere(window.location.hostname, buildEnv(() => import.meta.env.DEV) === true)) {
+    throw new Error("Passkeys work on woco.eth.limo only - open WoCo there to continue.");
+  }
+  return getPasskeyRpId();
 }
 
 // ---------------------------------------------------------------------------
@@ -93,9 +108,9 @@ export interface PasskeyKeyMaterial {
 /**
  * How a passkey answered: on this device ("platform") or from another device or a
  * security key ("cross-platform", which includes the QR-code flow). Null when the
- * browser does not say. The passkey record (#746) is written only from "platform":
- * a QR-code answer can carry the wrong PRF output, and a record written from one
- * would pin the passkey to the wrong account.
+ * browser does not say. A QR-code answer can carry the wrong PRF output, so a
+ * "cross-platform" sign-in commits only when the passkey's record (#746) confirms
+ * the account it derived (passkey-record.ts).
  */
 export type PasskeyAttachment = "platform" | "cross-platform" | null;
 
@@ -106,6 +121,9 @@ export interface PasskeyLogin extends PasskeyKeyMaterial {
   /** "added": the credential was made by "Add a passkey" (#746) - it signs in as a
    *  device of an account, never as an account of its own. */
   handleKind: "added" | null;
+  /** Sign-in only: the pin this ceremony overwrote (null = none), so a sign-in
+   *  refused after the ceremony can put it back. */
+  replacedPin?: PasskeyCredentialHandle | null;
 }
 
 function attachmentOf(credential: PublicKeyCredential): PasskeyAttachment {
@@ -154,14 +172,40 @@ async function deriveGuardianKey(prfOutput: ArrayBuffer): Promise<PasskeyGuardia
 
 /**
  * The passkey answered without the secret WoCo derives the account from. Said in
- * terms of what to do, never "PRF".
+ * terms of what to do, never "PRF". A CREATION knows which manager saved the passkey
+ * (`created.provider`, from its AAGUID): named, because that manager now holds a
+ * useless passkey and the advice must not send the person back to it - the old
+ * copy recommended Google Password Manager whichever manager had failed.
  */
 export class PasskeyPrfUnsupportedError extends Error {
-  constructor() {
+  readonly provider?: PasskeyProviderId;
+  /** `label`: the name the passkey was saved under ("WoCo Account" unless a backup). */
+  constructor(created?: { provider: PasskeyProviderId; label?: string }) {
+    const name = created && created.provider in PASSKEY_PROVIDERS
+      ? PASSKEY_PROVIDERS[created.provider as keyof typeof PASSKEY_PROVIDERS].name
+      : null;
     super(
-      "This password manager can't hold a WoCo passkey yet. Try Google Password Manager, iCloud Keychain or 1Password.",
+      created
+        ? `${name ?? "This password manager"} saved the passkey but can't give WoCo the secret your account is made from, so it can't be used. ` +
+            `Delete the "${created.label ?? "WoCo Account"}" passkey${name ? ` from ${name}` : ""} and create it again in a different password manager.`
+        : "This password manager can't hold a WoCo passkey. Use a different one - Apple Passwords on an iPhone, iPad or Mac, or Google Password Manager on Android or in Chrome.",
     );
     this.name = "PasskeyPrfUnsupportedError";
+    if (created) this.provider = created.provider;
+  }
+}
+
+/**
+ * A sign-in answered from another device - a phone by QR code, or a security key -
+ * either without the secret WoCo derives the account from, or with one this
+ * passkey's record does not confirm. Over QR code that secret can differ from the
+ * phone's own, and a different secret is a different, empty account; pairing gives
+ * this device its own passkey instead.
+ */
+export class PasskeyFromAnotherDeviceError extends Error {
+  constructor() {
+    super("That passkey answered from another device - add this one from your phone instead.");
+    this.name = "PasskeyFromAnotherDeviceError";
   }
 }
 
@@ -175,33 +219,71 @@ function extractPrfResult(
 }
 
 /**
+ * The passkey EXISTS, but the assertion that was to hand over its secret (the
+ * `prfAfterCreate` fallback) was refused. The browser says NotAllowedError for a
+ * cancelled sheet and for a ceremony it would not start - this second one runs well
+ * after the tap that started the creation, so a browser that wants a fresh gesture
+ * refuses it before any sheet. Either way the credential is in the password manager
+ * and a sign-in with it (one tap, one ceremony) finishes the account.
+ */
+export class PasskeyCreatedWithoutSecretError extends Error {
+  readonly cause?: unknown;
+  constructor(cause?: unknown) {
+    super(
+      "Your passkey was created, but the follow-up confirmation that gives WoCo its secret didn't complete. Tap Sign in with Passkey and choose it to finish.",
+    );
+    this.name = "PasskeyCreatedWithoutSecretError";
+    this.cause = cause;
+  }
+}
+
+/**
  * The PRF output of a credential that was just CREATED. Many authenticators return
  * it at creation; some report `prf.enabled` without a value, and some (Samsung Pass,
  * per Corbado's August 2026 measurements) report nothing at all at creation and
  * answer only when the credential is used. The PRF extension makes evaluation at
  * creation optional, so the authoritative probe is one assertion against this exact
- * credential - tried whenever creation gave no value, whatever `enabled` said.
+ * credential - tried whenever creation gave no value and did not say no.
+ *
+ * `enabled: false` IS a no: WebAuthn L3 sets it true if and only if the new
+ * credential supports PRF, so the probe could only fail - and on an iPhone it fails
+ * as a refused second prompt, which reads "sign in to finish" for a passkey that
+ * never can. Refused at once instead, naming the manager (`provider`).
  */
 async function prfAfterCreate(
   credential: PublicKeyCredential,
   rpId: string,
   salt: Uint8Array<ArrayBuffer>,
+  provider: PasskeyProviderId,
+  label?: string,
 ): Promise<ArrayBuffer> {
-  const created = credential.getClientExtensionResults().prf?.results?.first;
+  const prf = credential.getClientExtensionResults().prf;
+  const created = prf?.results?.first;
   if (created) return toArrayBuffer(created);
-  const getResult = (await navigator.credentials.get({
-    publicKey: {
-      challenge: crypto.getRandomValues(new Uint8Array(32)),
-      rpId,
-      allowCredentials: [{ id: new Uint8Array(credential.rawId), type: "public-key" }],
-      userVerification: "required",
-      extensions: {
-        prf: { eval: { first: salt } },
+  if (prf?.enabled === false) throw new PasskeyPrfUnsupportedError({ provider, label });
+  let getResult: PublicKeyCredential | null;
+  try {
+    getResult = (await credentialsGet({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        rpId,
+        allowCredentials: [{ id: new Uint8Array(credential.rawId), type: "public-key" }],
+        userVerification: "required",
+        extensions: {
+          prf: { eval: { first: salt } },
+        },
       },
-    },
-  })) as PublicKeyCredential | null;
+    })) as PublicKeyCredential | null;
+  } catch (e) {
+    // Not "creation was cancelled": the creation succeeded. Said as what it is, so
+    // the person signs in with the passkey they now have instead of making another.
+    if (e instanceof DOMException && e.name === "NotAllowedError") throw new PasskeyCreatedWithoutSecretError(e);
+    throw e;
+  }
   if (!getResult) throw new Error("Passkey authentication was cancelled.");
-  return extractPrfResult(getResult.getClientExtensionResults());
+  const first = getResult.getClientExtensionResults().prf?.results?.first;
+  if (!first) throw new PasskeyPrfUnsupportedError({ provider, label });
+  return toArrayBuffer(first);
 }
 
 /**
@@ -260,14 +342,40 @@ function withCeremonyLock<T>(fn: () => Promise<T>): Promise<T> {
  */
 export class PasskeyAssertionUnavailableError extends Error {
   readonly cause?: unknown;
+  /** The browser refused before any sheet could open (see `isQuickRefusal`): the
+   *  person chose nothing, so "you may have cancelled" and the create offer are wrong. */
+  readonly noSheet: boolean;
   constructor(cause?: unknown) {
+    const noSheet = isQuickRefusal(cause);
     super(
-      "No passkey was used. You may have cancelled, or there may be no WoCo passkey on this device.",
+      noSheet
+        ? PROMPT_DID_NOT_OPEN_MESSAGE
+        : "No passkey was used. You may have cancelled, or there may be no WoCo passkey on this device.",
     );
     this.name = "PasskeyAssertionUnavailableError";
     this.cause = cause;
+    this.noSheet = noSheet;
   }
 }
+
+/**
+ * A NotAllowedError that came back faster than a sheet can be shown and dismissed
+ * (iOS: a Face ID or passkey sheet takes longer than this to appear and be
+ * cancelled). WebKit refuses like that before any prompt when it will not run the
+ * ceremony at all: no user gesture it accepts, another ceremony still pending, or an
+ * embedded web view (an app's built-in browser) whose host app is not associated
+ * with this domain. Copy only - never a decision: a slow refusal keeps the wording
+ * it always had, and a quick one gets told the prompt never opened.
+ */
+const QUICK_REFUSAL_MS = 500;
+const quickRefusals = new WeakSet<object>();
+
+export function isQuickRefusal(e: unknown): boolean {
+  return typeof e === "object" && e !== null && quickRefusals.has(e);
+}
+
+export const PROMPT_DID_NOT_OPEN_MESSAGE =
+  "The passkey prompt didn't open. Tap the button again - if it still doesn't open, this browser can't use passkeys here, so open WoCo in Safari or Chrome.";
 
 /**
  * A ceremony was cancelled or refused by the platform. Browsers reject a
@@ -295,12 +403,61 @@ export class PasskeyNotOnThisDeviceError extends Error {
   }
 }
 
+/**
+ * The browser refused passkeys for this address before any prompt. Firefox refuses
+ * an RP ID that is itself on the Public Suffix List, even when it equals the page's
+ * host, and `*.eth.limo` joined that list on 2026-09-01 - so woco.eth.limo is one.
+ * Chromium and WebKit accept the exact match. Nothing WoCo sends can change it.
+ */
+export class PasskeyBrowserRefusedError extends Error {
+  readonly cause?: unknown;
+  readonly host: string;
+  constructor(host: string, cause?: unknown) {
+    super(`This browser can't use passkeys on ${host}. Open WoCo in Chrome, Brave, Edge or Safari to continue.`);
+    this.name = "PasskeyBrowserRefusedError";
+    this.host = host;
+    this.cause = cause;
+  }
+}
+
+/** Only when the RP ID IS the page's host: a SecurityError there cannot be a mismatch
+ *  of ours. (Storage faults surface from IndexedDB, outside these wrappers.) */
+function namedRefusal(e: unknown, rpId: string | undefined): unknown {
+  return e instanceof DOMException && e.name === "SecurityError" && rpId === window.location.hostname
+    ? new PasskeyBrowserRefusedError(rpId, e)
+    : e;
+}
+
+/** Every ceremony calls the browser through these two, so none shows the raw refusal,
+ *  and a refusal quicker than any sheet is remembered as one (`isQuickRefusal`). */
+function browserCeremony<T>(run: () => Promise<T>, rpId: string | undefined): Promise<T> {
+  const t0 = performance.now();
+  return run().catch((e: unknown) => {
+    if (e instanceof DOMException && e.name === "NotAllowedError" && performance.now() - t0 < QUICK_REFUSAL_MS) {
+      quickRefusals.add(e);
+    }
+    throw namedRefusal(e, rpId);
+  });
+}
+
+function credentialsGet(options: CredentialRequestOptions): Promise<Credential | null> {
+  return browserCeremony(() => navigator.credentials.get(options), options.publicKey?.rpId);
+}
+
+function credentialsCreate(options: CredentialCreationOptions): Promise<Credential | null> {
+  return browserCeremony(() => navigator.credentials.create(options), options.publicKey?.rp.id);
+}
+
 export class PasskeyCeremonyCancelledError extends Error {
   readonly cause?: unknown;
+  /** No sheet was shown: the browser refused to start the ceremony (`isQuickRefusal`). */
+  readonly noSheet: boolean;
   constructor(action: "creation" | "authentication", cause?: unknown) {
-    super(`Passkey ${action} was cancelled or not permitted by your device.`);
+    const noSheet = isQuickRefusal(cause);
+    super(noSheet ? PROMPT_DID_NOT_OPEN_MESSAGE : `Passkey ${action} was cancelled or not permitted by your device.`);
     this.name = "PasskeyCeremonyCancelledError";
     this.cause = cause;
+    this.noSheet = noSheet;
   }
 }
 
@@ -358,12 +515,12 @@ export async function authenticatePasskey(): Promise<PasskeyLogin> {
 
 async function _authenticatePasskeyImpl(): Promise<PasskeyLogin> {
   const salt = await getPrfSalt();
-  const rpId = getPasskeyRpId();
+  const rpId = ceremonyRpId();
 
   let credential: PublicKeyCredential | null;
   try {
     // Discoverable mode (no allowCredentials) → user picks from all passkeys for this RP
-    credential = (await navigator.credentials.get({
+    credential = (await credentialsGet({
       publicKey: {
         challenge: crypto.getRandomValues(new Uint8Array(32)),
         rpId,
@@ -389,7 +546,12 @@ async function _authenticatePasskeyImpl(): Promise<PasskeyLogin> {
   const userHandle = (credential.response as AuthenticatorAssertionResponse).userHandle;
   if (userHandle && isBackupUserHandle(new Uint8Array(userHandle))) throw new PasskeyIsBackupError();
 
-  const prfOutput = extractPrfResult(credential.getClientExtensionResults());
+  // Here, not inside extractPrfResult, which creation and the unlock share: only a
+  // sign-in from another device is steered to pairing.
+  const attachment = attachmentOf(credential);
+  const extensions = credential.getClientExtensionResults();
+  if (attachment === "cross-platform" && !extensions.prf?.results?.first) throw new PasskeyFromAnotherDeviceError();
+  const prfOutput = extractPrfResult(extensions);
 
   // Update stored credential metadata so init() can restore kind on reload. A sign-in
   // cannot read the provider (#746: creation only), so keep the one recorded for
@@ -406,8 +568,9 @@ async function _authenticatePasskeyImpl(): Promise<PasskeyLogin> {
   return {
     ...(await deriveKey(prfOutput)),
     credentialId: meta.credentialId,
-    attachment: attachmentOf(credential),
+    attachment,
     handleKind: userHandle && isAddedUserHandle(new Uint8Array(userHandle)) ? "added" : null,
+    replacedPin: prev ?? null,
   };
 }
 
@@ -477,9 +640,9 @@ async function _mintPasskeyAccountImpl(): Promise<
   PasskeyKeyMaterial & { credential: PasskeyCredentialMeta; attachment: PasskeyAttachment }
 > {
   const salt = await getPrfSalt();
-  const rpId = getPasskeyRpId();
+  const rpId = ceremonyRpId();
 
-  const credential = (await navigator.credentials.create({
+  const credential = (await credentialsCreate({
     publicKey: {
       rp: { name: "WoCo", id: rpId },
       user: {
@@ -506,12 +669,13 @@ async function _mintPasskeyAccountImpl(): Promise<
     throw new Error("Passkey creation was cancelled.");
   }
 
-  const prfOutput = await prfAfterCreate(credential, rpId, salt);
+  const provider = providerOf(credential);
+  const prfOutput = await prfAfterCreate(credential, rpId, salt, provider);
 
   const meta: PasskeyCredentialMeta = {
     credentialId: toBase64url(credential.rawId),
     rpId,
-    provider: providerOf(credential),
+    provider,
   };
 
   return { ...(await deriveKey(prfOutput)), credential: meta, attachment: attachmentOf(credential) };
@@ -552,12 +716,12 @@ async function _createAddedPasskeyImpl(opts: {
   createdOn: string;
 }): Promise<AddedPasskey> {
   const salt = await getPrfSalt();
-  const rpId = getPasskeyRpId();
+  const rpId = ceremonyRpId();
   const name = `WoCo Account - added ${opts.createdOn}`;
 
   let credential: PublicKeyCredential | null;
   try {
-    credential = (await navigator.credentials.create({
+    credential = (await credentialsCreate({
       publicKey: {
         rp: { name: "WoCo", id: rpId },
         user: { id: newAddedUserHandle(), name, displayName: name },
@@ -587,11 +751,13 @@ async function _createAddedPasskeyImpl(opts: {
   }
   if (attachmentOf(credential) === "cross-platform") throw new PasskeyNotOnThisDeviceError();
 
-  const prfOutput = await prfAfterCreate(credential, rpId, salt);
+  const provider = providerOf(credential);
+  // Its own label: "WoCo Account" here would name the MAIN passkey for deletion.
+  const prfOutput = await prfAfterCreate(credential, rpId, salt, provider, name);
   return {
     ...(await deriveKey(prfOutput)),
     credentialId: toBase64url(credential.rawId),
-    provider: providerOf(credential),
+    provider,
   };
 }
 
@@ -623,9 +789,9 @@ export async function createPasskeyBackupKey(): Promise<PasskeyGuardianMaterial>
 
 async function _createPasskeyBackupKeyImpl(): Promise<PasskeyGuardianMaterial> {
   const salt = await getPrfSalt();
-  const rpId = getPasskeyRpId();
+  const rpId = ceremonyRpId();
 
-  const credential = (await navigator.credentials.create({
+  const credential = (await credentialsCreate({
     publicKey: {
       rp: { name: "WoCo", id: rpId },
       user: {
@@ -654,7 +820,7 @@ async function _createPasskeyBackupKeyImpl(): Promise<PasskeyGuardianMaterial> {
     throw new Error("Passkey creation was cancelled.");
   }
 
-  const prfOutput = await prfAfterCreate(credential, rpId, salt);
+  const prfOutput = await prfAfterCreate(credential, rpId, salt, providerOf(credential), "WoCo Backup");
   return deriveGuardianKey(prfOutput);
 }
 
@@ -670,9 +836,9 @@ export async function getPasskeyBackupKey(): Promise<PasskeyGuardianMaterial> {
 
 async function _getPasskeyBackupKeyImpl(): Promise<PasskeyGuardianMaterial> {
   const salt = await getPrfSalt();
-  const rpId = getPasskeyRpId();
+  const rpId = ceremonyRpId();
 
-  const credential = (await navigator.credentials.get({
+  const credential = (await credentialsGet({
     publicKey: {
       challenge: crypto.getRandomValues(new Uint8Array(32)),
       rpId,
@@ -732,7 +898,7 @@ async function _restorePasskeyAccountImpl(
   const credentialId = fromBase64url(meta.credentialId);
 
   try {
-    const credential = (await navigator.credentials.get({
+    const credential = (await credentialsGet({
       publicKey: {
         challenge: crypto.getRandomValues(new Uint8Array(32)),
         rpId: meta.rpId,

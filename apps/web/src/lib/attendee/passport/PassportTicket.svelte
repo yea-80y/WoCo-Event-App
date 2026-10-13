@@ -44,7 +44,7 @@
     {/if}
   </span>
   <span class="main">
-    <span class="title">{event?.title ?? `Ticket #${ticket.edition}`}</span>
+    <span class="title">{event?.title ?? "Ticket"}</span>
     <span class="meta">
       {#if start}
         <span class="sr-only">{start.toLocaleDateString(undefined, { day: "numeric", month: "long" })},</span>
@@ -57,7 +57,8 @@
     </span>
     {#if when}<span class="when">{when}</span>{/if}
   </span>
-  <span class="edition"><span class="sr-only">Ticket </span>#{ticket.edition}</span>
+  <!-- The stub, without the edition: its sequence would tell the buyer how many have sold. -->
+  <span class="stub" aria-hidden="true"></span>
 {/snippet}
 
 {#if event}
@@ -138,7 +139,7 @@
   .meta { font-size: 0.8125rem; color: var(--text-muted); }
   .when { margin-top: 0.125rem; font-size: 0.75rem; font-weight: 600; color: var(--accent); }
 
-  .edition {
+  .stub {
     display: flex;
     align-items: center;
     justify-content: center;

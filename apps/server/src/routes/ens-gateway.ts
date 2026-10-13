@@ -10,7 +10,9 @@
 import { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { AppEnv } from "../types.js";
-import { createCcipHandler, type CcipHandler } from "../lib/ens-gateway/ccip.js";
+import { createCcipHandler, type CcipHandler, type ContenthashAnswer } from "../lib/ens-gateway/ccip.js";
+import { getApexContenthash } from "../lib/chain/sub-ens-apex.js";
+import { lookupNameTarget } from "../lib/sub-ens/name-targets.js";
 import { loadEnsGatewayConfig, ensGatewaySignerAddress } from "../lib/ens-gateway/config.js";
 import { createL2Reader, redactRpcUrl } from "../lib/ens-gateway/l2-reader.js";
 import { ResponseMemo, memoTtlMsFor } from "../lib/ens-gateway/memo.js";
@@ -119,12 +121,20 @@ if ("disabled" in loaded) {
   }
 }
 
+/** Since boot. `foreign` is a name whose pointer the WoCo-built rule replaced with the app. */
+const contenthashAnswers: Record<ContenthashAnswer, number> = { depth: 0, empty: 0, apex: 0, built: 0, foreign: 0 };
+
 export const ensGatewayRoutes = createEnsGatewayRoutes(
   "disabled" in loaded
     ? loaded
     : createCcipHandler(loaded, {
         readL2: createL2Reader(loaded.chainId, loaded.rpcUrls),
         memo: memo ?? undefined,
+        contenthash: {
+          apexHash: getApexContenthash,
+          lookupBuilt: lookupNameTarget,
+          onAnswer: (a) => { contenthashAnswers[a]++; },
+        },
       }),
 );
 
@@ -146,7 +156,7 @@ export const ensGatewayRoutes = createEnsGatewayRoutes(
  * length.
  */
 export function ensGatewayStatus(): EnsGatewayStatus {
-  return ensGatewayStatusOf(loaded, memo?.size() ?? 0);
+  return ensGatewayStatusOf(loaded, memo?.size() ?? 0, contenthashAnswers);
 }
 
 /**
@@ -176,6 +186,8 @@ export interface EnsGatewayStatus {
   parent: string | null;
   crossCheck: boolean;
   memoEntries: number;
+  /** `contenthash` answers by branch since boot (WoCo-built rule). Counts only. */
+  contenthashAnswers: Record<ContenthashAnswer, number>;
   reason?: string;
 }
 
@@ -187,7 +199,9 @@ export interface EnsGatewayStatus {
 export function ensGatewayStatusOf(
   config: ReturnType<typeof loadEnsGatewayConfig>,
   memoEntries: number,
+  answers: Record<ContenthashAnswer, number> = { depth: 0, empty: 0, apex: 0, built: 0, foreign: 0 },
 ): EnsGatewayStatus {
+  const contenthashAnswers = { ...answers };
   if ("disabled" in config) {
     return {
       configured: false,
@@ -200,6 +214,7 @@ export function ensGatewayStatusOf(
       parent: null,
       crossCheck: false,
       memoEntries: 0,
+      contenthashAnswers,
       reason: config.disabled,
     };
   }
@@ -214,5 +229,6 @@ export function ensGatewayStatusOf(
     parent: config.parentName,
     crossCheck: config.rpcUrls.length > 1,
     memoEntries,
+    contenthashAnswers,
   };
 }

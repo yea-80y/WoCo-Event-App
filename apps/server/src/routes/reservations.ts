@@ -5,6 +5,8 @@ import { getEvent } from "../lib/event/service.js";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
 import { resolveSiteEventSigner } from "../lib/site/service.js";
+import { eventKeys, type EventKeys } from "../lib/keyring/event-keys.js";
+import { noticeRefusal, organiserNoticeVerdict } from "../lib/legal/notice-gate.js";
 import { getOnChainEventAt } from "../lib/chain/event-contract.js";
 import { saleContractFor } from "../lib/event/onchain-registry.js";
 import {
@@ -107,10 +109,29 @@ reservations.post("/:eventId/series/:seriesId/reserve", async (c) => {
   // claims.ts) resolves a client-signed, not-WoCo-listed event's authentic SOC.
   const siteId = typeof body.siteId === "string" ? body.siteId : undefined;
   const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
-  const event = await getEvent(eventId, siteSigner ?? undefined).catch(() => null);
+  const [keys, event] = await Promise.all([
+    // A throw is "could not read the keys": refused below, never a 500 or a sale.
+    eventKeys(eventId).catch((err): EventKeys => ({ kind: "unavailable", creator: "", feedSigner: "", reason: String(err) })),
+    getEvent(eventId, siteSigner ?? undefined).catch(() => null),
+  ]);
   if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
   const series = event.series.find((s) => s.seriesId === seriesId);
   if (!series) return c.json({ ok: false, error: "Series not found" }, 404);
+
+  // The organiser's keys and privacy notice: the same refusals create-checkout
+  // gives, so no seat is held for a sale it would refuse. A legacy event (no
+  // record of who signs it) is never sold; an unreadable ring or notice refuses.
+  if (keys.kind === "unavailable") {
+    return c.json({ ok: false, error: "Ticket sales are temporarily unavailable" }, 503);
+  }
+  if (keys.kind === "legacy") {
+    return c.json(
+      { ok: false, error: "This event can't take orders. The organiser needs to publish it again.", code: "EVENT_NEEDS_REPUBLISH" },
+      409,
+    );
+  }
+  const noticeBlock = noticeRefusal(await organiserNoticeVerdict(keys.creator, keys.feedSigner));
+  if (noticeBlock) return c.json(noticeBlock.body, noticeBlock.status);
   const onChainEventId = series.onChainEventId;
   if (!onChainEventId) {
     // Registration never completed — nothing can be minted, so a seat hold

@@ -195,10 +195,13 @@ test("the warm-up runs only after the contenthash receipt", () => {
   assert.ok(waitIdx > 0, "the receipt must still be awaited");
   assert.ok(warmIdx > 0, "the contenthash update must warm the name's certificate");
   assert.ok(warmIdx > waitIdx, "the warm-up must come after the receipt, never before");
-  // Gated on what the public gateway serves, and on the contenthash just written.
+  // Gated on what the public gateway serves - which, under the WoCo-built rule, is
+  // what that rule makes of the pointer just written, never the raw pointer.
+  assert.match(body, /const served = servedContenthashFor\(swarmHash\);/);
+  assert.ok(body.indexOf("servedContenthashFor(swarmHash)") > waitIdx, "computed after the receipt");
   assert.match(
     body.slice(warmIdx),
-    /^warmSubEnsWebCertWhenResolvable\(\s*label,\s*\{\s*contenthash:\s*hexlify\(contenthash\),\s*swarmHash\s*\},\s*publicContenthashQueryUrl\(/,
+    /^warmSubEnsWebCertWhenResolvable\(\s*label,\s*served,\s*publicContenthashQueryUrl\(/,
   );
   // The ungated knock is what bought eth.limo's negative on 2026-09-21 (#557).
   assert.ok(!/warmSubEnsWebCert\(label\)/.test(body), "the relay must not knock ungated");
@@ -480,7 +483,12 @@ test("round trip: the real gateway handler's answer to that query is what releas
       parentName: "woco.eth",
       ttlSeconds: 600,
     },
-    { readL2: async () => ABI.encode(["bytes"], [NEW.contenthash]), now: () => 1_800_000_000 },
+    {
+      readL2: async () => ABI.encode(["bytes"], [NEW.contenthash]),
+      now: () => 1_800_000_000,
+      // A profile name pointing at the app: the WoCo-built rule serves it unchanged.
+      contenthash: { apexHash: () => NEW.swarmHash, lookupBuilt: () => null },
+    },
   );
 
   const calls: string[] = [];

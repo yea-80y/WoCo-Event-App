@@ -1,0 +1,17 @@
+{
+  "id": "woco-app",
+  "name": "WoCo",
+  "short_name": "WoCo",
+  "description": "Events on the World Computer - tickets, sites and your passport.",
+  "lang": "en",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "theme_color": "#0B0B09",
+  "background_color": "#0B0B09",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

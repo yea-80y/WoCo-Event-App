@@ -36,6 +36,9 @@ import {
   SESSION_PURPOSE,
   SESSION_EXPIRY_MS,
 } from "@woco/shared";
+import { enableFeature } from "./helpers/features.js";
+
+enableFeature("walletLoginAllowed");
 
 const HOST = "test.woco.local";
 process.env.ALLOWED_HOSTS = HOST;

@@ -31,6 +31,7 @@
 
 import {
   addRefundRow,
+  getCancellation,
   isRowDue,
   listCancellations,
   updateRefundRow,
@@ -38,6 +39,7 @@ import {
   type CancelRefundStatus,
 } from "../event/cancellations.js";
 import { CHARGEBACK_STATUSES } from "./dispute-status.js";
+import { notifyRow, type CancellationNoticeDeps } from "./cancellation-notice.js";
 
 export interface CancellationCharge {
   id: string;
@@ -66,6 +68,8 @@ export interface CancellationRefundDeps {
   ): Promise<{ id: string; status: string | null; pendingReason?: string | null }>;
   /** Void the sale's tickets from Stripe's current state. Best effort: never relied on. */
   reconcile(paymentIntentId: string, account: string): Promise<void>;
+  /** WoCo's own cancellation email to each buyer (#798). Absent = none sent. */
+  notice?: CancellationNoticeDeps;
 }
 
 /** Create errors on one sale before it is abandoned (and alarmed). */
@@ -231,6 +235,18 @@ export async function runCancellationPass(
       const status = await processRow(cancellation.eventId, cancellation.feeReturned, row, deps, now);
       outcome.processed++;
       outcome.byStatus[status] = (outcome.byStatus[status] ?? 0) + 1;
+    }
+    // Every row, not only the due ones: an `abandoned` row is never processed
+    // again, and its buyer is still owed word of it (#798).
+    if (deps.notice) {
+      const fresh = getCancellation(cancellation.eventId);
+      for (const row of Object.values(fresh?.refunds ?? {})) {
+        try {
+          await notifyRow(cancellation.eventId, fresh?.title, row, deps.notice);
+        } catch (err) {
+          console.error(`[cancel-refunds] notice for ${row.sessionId} (${cancellation.eventId}) failed:`, errMessage(err));
+        }
+      }
     }
   }
   return outcome;

@@ -185,3 +185,40 @@ test("route: a scanner that sends no device id gets no pack, whatever the mode",
   const res = await app.request("/api/checkin/evt-route-pack/pack", { headers: { "X-Door-Pass": token } });
   assert.equal(res.status, 400);
 });
+
+// ---------------------------------------------------------------------------
+// Key generations (#186): a pass made before the organiser's keys moved is revoked
+// ---------------------------------------------------------------------------
+
+test("route: a pass issued before a passkey was removed is revoked; one issued after works", async () => {
+  const { installRing, noRings } = await import("./helpers/key-ring.js");
+  const record = await import("../src/lib/event/feed-signer-record.js");
+  const EVT = "e0000000-0000-4000-8000-0000000000d1";
+  const CREATOR = "0x" + "aa".repeat(20);
+  record.recordEventFeedSigner(EVT, "0x" + "f0".repeat(20), CREATOR, "0a".repeat(32));
+  noRings();
+  const old = store.issueDoorPass(EVT, Math.floor(Date.now() / 1000) + 3600); // gen 0
+  assert.equal((await claim(EVT, old, DEV_A, body({ claimId: "g-0" }))).status, 200);
+
+  await installRing(CREATOR, 1);
+  const refused = await claim(EVT, old, DEV_A, body({ claimId: "g-1", edition: 4 }));
+  assert.equal(refused.status, 401);
+  assert.equal((await refused.json()).reason, "revoked");
+  const pack = await app.request(`/api/checkin/${EVT}/pack`, { headers: { "X-Door-Pass": old, "X-Scanner-Device": DEV_A } });
+  assert.equal(pack.status, 401, "no roster for a pass from before the removal");
+
+  const fresh = store.issueDoorPass(EVT, Math.floor(Date.now() / 1000) + 3600, undefined, "several", 1);
+  assert.equal((await claim(EVT, fresh, DEV_A, body({ claimId: "g-2", edition: 5 }))).status, 200);
+});
+
+test("route: keys that cannot be read refuse the pack (the roster), never a claim at the door", async () => {
+  const { noRings } = await import("./helpers/key-ring.js");
+  const record = await import("../src/lib/event/feed-signer-record.js");
+  const EVT = "e0000000-0000-4000-8000-0000000000d2";
+  record.recordEventFeedSigner(EVT, "0x" + "f0".repeat(20), "0x" + "ab".repeat(20), "0a".repeat(32));
+  const token = store.issueDoorPass(EVT, Math.floor(Date.now() / 1000) + 3600);
+  noRings({ down: true });
+  const pack = await app.request(`/api/checkin/${EVT}/pack`, { headers: { "X-Door-Pass": token, "X-Scanner-Device": DEV_A } });
+  assert.equal(pack.status, 503);
+  assert.equal((await claim(EVT, token, DEV_A, body({ claimId: "d-1" }))).status, 200);
+});

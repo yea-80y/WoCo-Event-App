@@ -29,13 +29,14 @@ export type CancelEventResult =
   | { ok: false; reason: "not-persisted" };
 
 export function cancelEvent(
-  input: { eventId: string; by: string; organiserAccount?: string },
+  input: { eventId: string; by: string; organiserAccount?: string; title?: string },
   deps: CancelEventDeps,
 ): CancelEventResult {
   const recorded = recordCancellation({
     eventId: input.eventId,
     by: input.by,
     feeReturned: CANCELLATION_RETURNS_PLATFORM_FEE,
+    ...(input.title ? { title: input.title } : {}),
   });
   if (!recorded) return { ok: false, reason: "not-persisted" };
 

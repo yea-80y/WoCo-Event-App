@@ -32,6 +32,7 @@ const GOOD: StripeFacts = {
 /** Fully set up, nothing on today: the card has nothing to say. */
 const DONE: NextStepInputs = {
   stripe: known(GOOD),
+  noticeConfirmed: known(true),
   hasProfileName: known(true),
   nameUnlocked: known(true),
   eventCount: known(2),
@@ -83,9 +84,10 @@ test("the status route's cached fallback is not a live answer", () => {
 
 // ── The walk ───────────────────────────────────────────────────────────────
 
-test("setup runs Stripe, then name, then import, then first event", () => {
+test("setup runs Stripe, then the privacy notice, then name, then import, then first event", () => {
   const fresh: NextStepInputs = {
     stripe: known({ ...GOOD, connected: false }),
+    noticeConfirmed: known(false),
     hasProfileName: known(false),
     nameUnlocked: known(false),
     eventCount: known(0),
@@ -94,7 +96,9 @@ test("setup runs Stripe, then name, then import, then first event", () => {
     today: null,
   };
   assert.equal(nextStep(fresh).kind, "stripe-start");
-  const verified = { ...fresh, stripe: known(GOOD), nameUnlocked: known(true) };
+  const stripeDone = { ...fresh, stripe: known(GOOD), nameUnlocked: known(true) };
+  assert.equal(nextStep(stripeDone).kind, "privacy-notice");
+  const verified = { ...stripeDone, noticeConfirmed: known(true) };
   assert.equal(nextStep(verified).kind, "name");
   const named = { ...verified, hasProfileName: known(true) };
   assert.equal(nextStep(named).kind, "import");
@@ -178,4 +182,22 @@ test("today means started today on this device's calendar and not yet over", () 
     todayEvent([ev("late", "2026-10-03T20:00:00"), ev("early", "2026-10-03T15:00:00")], now)?.eventId,
     "early",
   );
+});
+
+// ── The privacy notice: nothing sells until it is confirmed ────────────────
+
+test("an unconfirmed notice is the step after Stripe, in setup and after it", () => {
+  assert.equal(kind({ noticeConfirmed: known(false) }), "privacy-notice", "set up, still needed");
+  assert.equal(kind({ noticeConfirmed: known(false), hasProfileName: known(false), eventCount: known(0) }), "privacy-notice");
+  assert.equal(kind({ noticeConfirmed: known(false), stripe: known({ ...GOOD, connected: false }) }), "stripe-start", "Stripe first");
+});
+
+test("a notice read that has not answered is never read as done or not done", () => {
+  assert.equal(kind({ noticeConfirmed: LOADING }), "wait");
+  assert.deepEqual(nextStep({ ...DONE, noticeConfirmed: UNAVAILABLE }), { kind: "unavailable", check: "notice" });
+});
+
+test("the notice is a numbered setup step, second", async () => {
+  const { SETUP_STEPS } = await import("../src/lib/creator/home/next-step.js");
+  assert.equal(SETUP_STEPS.indexOf("privacy-notice"), 1);
 });

@@ -18,3 +18,19 @@ export const PASSKEY_ONLY_RECOVERY_NOTE = "If every passkey is lost, the account
 export function canOrganise(kind: string | null | undefined): boolean {
   return kind === "passkey";
 }
+
+/**
+ * Whether a sign-in is an ORGANISER's, and so offers a passkey only. Decided by
+ * where it was asked from, never by forking the modal: an explicit organiser
+ * context ("invite" from Start hosting, "creator" from the organiser portal), or
+ * a request with no context made anywhere in the organiser portal - every
+ * organiser screen's own Sign in button. An explicit attendee or ticket context
+ * keeps email, wherever it was asked from.
+ */
+export function isOrganiserSignIn(
+  context: string | null | undefined,
+  surface: string | null | undefined,
+): boolean {
+  if (context === "invite" || context === "creator") return true;
+  return context == null && surface === "creator";
+}

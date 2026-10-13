@@ -31,6 +31,7 @@ import {
   jsonForInlineScript,
   resolveDeployApiUrl,
   resolveDeployUrls,
+  withEventPageHead,
 } from "../src/lib/site/deploy-config.js";
 
 const LINE_SEPARATOR = String.fromCharCode(0x2028);
@@ -416,3 +417,23 @@ test("both deploy routes bake the canonical origin, not the submitted form", () 
     assert.equal(canonicalOrigin("https://gateway.woco-net.com:443"), "https://gateway.woco-net.com");
     assert.equal(canonicalOrigin("not a url"), null);
   }));
+
+test("an event page wears the event's image as its icon, WoCo's logo otherwise", () => {
+  const html = `<html><head>\n    <link rel="icon" type="image/png" href="./logo.png" />\n    <title>Event</title>\n  </head></html>`;
+  const ref = "ab".repeat(32);
+  const out = withEventPageHead(html, { title: `Gig "night" <b>`, imageHash: ref }, "https://gateway.woco-net.com/");
+  assert.ok(!out.includes(`href="./logo.png"`), "the template's WoCo icon is dropped, so the event's is the only one");
+  assert.equal(out.match(/rel="icon"/g)?.length, 1);
+  assert.match(out, new RegExp(`<link rel="apple-touch-icon" href="https://gateway.woco-net.com/bytes/${ref}">`));
+  assert.match(out, new RegExp(`<meta property="og:image" content="https://gateway.woco-net.com/bytes/${ref}">`));
+  assert.match(out, /og:title" content="Gig &quot;night&quot; &lt;b&gt;"/);
+  assert.ok(out.indexOf("apple-touch-icon") < out.indexOf("</head>"));
+
+  for (const event of [null, { title: "x", imageHash: "0".repeat(64) }, { imageHash: `"><script>` }]) {
+    const fallback = withEventPageHead(html, event, "https://gateway.woco-net.com");
+    assert.match(fallback, /<link rel="icon" href="\.\/logo\.png">/);
+    assert.match(fallback, /<link rel="apple-touch-icon" href="\.\/logo\.png">/);
+    assert.match(fallback, /og:image" content="https:\/\/woco\.eth\.limo\/logo\.png"/, "chat crawlers need an absolute share image");
+    assert.ok(!fallback.includes("<script>"));
+  }
+});

@@ -48,6 +48,13 @@ export const TAG_KIND = "woco_kind";
  */
 export const TAG_CONTEXT_PREFIX = "woco_ctx_";
 
+/**
+ * Set on a message whose sender keeps no copy of the address (`addressFree`,
+ * #798). A later async bounce or complaint for it is then recorded hash-only,
+ * as the send itself was.
+ */
+export const TAG_NO_ADDRESS = "woco_noaddr";
+
 /** Kept well under any provider ceiling; the tail of a context bag is noise. */
 export const MAX_MESSAGE_TAGS = 10;
 
@@ -86,8 +93,9 @@ function isRecipientIdentifying(value: string): boolean {
 export function buildMessageTags(
   kind: MessageKind,
   context?: Record<string, string>,
+  opts: { addressFree?: boolean } = {},
 ): Record<string, string> {
-  const tags: Record<string, string> = { [TAG_KIND]: kind };
+  const tags: Record<string, string> = { [TAG_KIND]: kind, ...(opts.addressFree ? { [TAG_NO_ADDRESS]: "1" } : {}) };
 
   for (const [key, value] of Object.entries(context ?? {})) {
     if (Object.keys(tags).length >= MAX_MESSAGE_TAGS) {
@@ -110,6 +118,8 @@ export interface DecodedMessageTags {
   kind: MessageKind | null;
   /** Caller breadcrumbs, `woco_ctx_` stripped. */
   context: Record<string, string>;
+  /** The sender kept no address (`TAG_NO_ADDRESS`): record failures hash-only. */
+  addressFree: boolean;
 }
 
 /**
@@ -122,7 +132,7 @@ export interface DecodedMessageTags {
  * be guessed into one that stores plaintext.
  */
 export function readMessageTags(raw: unknown): DecodedMessageTags {
-  const out: DecodedMessageTags = { kind: null, context: {} };
+  const out: DecodedMessageTags = { kind: null, context: {}, addressFree: false };
   if (!raw || typeof raw !== "object") return out;
 
   for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
@@ -131,6 +141,10 @@ export function readMessageTags(raw: unknown): DecodedMessageTags {
 
     if (name === TAG_KIND) {
       if (first === "transactional" || first === "marketing") out.kind = first;
+      continue;
+    }
+    if (name === TAG_NO_ADDRESS) {
+      out.addressFree = first === "1";
       continue;
     }
     if (name.startsWith(TAG_CONTEXT_PREFIX)) {

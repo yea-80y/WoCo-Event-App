@@ -6,6 +6,8 @@
  * same way checkout.ts is.
  */
 
+import { isSaleClosedCode } from "@woco/shared";
+
 export interface Hold {
   reservationId: string;
   /** ISO timestamp at which the server drops the hold. */
@@ -28,11 +30,14 @@ export function formatCountdown(secs: number): string {
 export type HoldResult =
   | { kind: "held"; hold: Hold }
   | { kind: "refused"; message: string }
+  /** Not on sale at all (no confirmed privacy notice, or a legacy event): the panel closes. */
+  | { kind: "closed"; message: string }
   | { kind: "unavailable" };
 
 type ReserveResponse = {
   ok: boolean;
   error?: string;
+  code?: unknown;
   data?: { reservationId?: unknown; expiresAt?: unknown; quantity?: unknown };
   available?: unknown;
   physicalAvailable?: unknown;
@@ -66,6 +71,7 @@ export function holdResult(resp: ReserveResponse): HoldResult {
     return { kind: "unavailable" };
   }
   if (typeof resp.error !== "string" || !resp.error) return { kind: "unavailable" };
+  if (isSaleClosedCode(resp.code)) return { kind: "closed", message: resp.error };
   if (resp.error === "Insufficient seats") {
     const available = typeof resp.available === "number" ? resp.available : null;
     const physical = typeof resp.physicalAvailable === "number" ? resp.physicalAvailable : null;

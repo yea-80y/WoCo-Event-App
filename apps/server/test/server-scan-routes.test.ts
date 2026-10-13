@@ -159,6 +159,9 @@ before(async () => {
   events = await import("../src/lib/event/service.js");
   signerRecord = await import("../src/lib/event/feed-signer-record.js");
   issuer = await import("../src/lib/campaign/issuer.js");
+  // No organiser here has a key ring (#186); the anchor is chain, not this fake network.
+  const ring = await import("../src/lib/keyring/current-ring.js");
+  ring._setCurrentRingDepsForTests({ readAnchor: async () => `0x${"0".repeat(64)}` });
 });
 
 after(() => {

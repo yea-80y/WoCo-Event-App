@@ -57,6 +57,9 @@ export interface HeldOrder {
   /** The buyer's email HMAC, set with `paidAt`, so the stored order carries it
    *  even when the retry worker stores it later (#546). */
   emailHash?: string;
+  /** The order key the buyer's client says it sealed to (#186): prepare-order only,
+   *  checked against the organiser's current key at checkout. */
+  orderKeyRef?: string;
 }
 
 const committed = new Map<string, HeldOrder>();
@@ -114,10 +117,15 @@ function deleteHold(k: string): boolean {
 }
 
 /** Remember a prepare-order box, in memory only. Never throws. */
-export function holdPrepared(root: string, json: string, nowMs: number = Date.now()): void {
+export function holdPrepared(
+  root: string,
+  json: string,
+  nowMs: number = Date.now(),
+  meta: { orderKeyRef?: string } = {},
+): void {
   const k = key(root);
   prepared.delete(k);
-  prepared.set(k, { json, heldAt: new Date(nowMs).toISOString() });
+  prepared.set(k, { json, heldAt: new Date(nowMs).toISOString(), ...(meta.orderKeyRef ? { orderKeyRef: meta.orderKeyRef } : {}) });
   for (const [k2, o] of prepared) {
     if (prepared.size <= MAX_PREPARED_HOLDS && nowMs - Date.parse(o.heldAt) <= HOLD_TTL_MS) break;
     prepared.delete(k2);

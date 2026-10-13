@@ -65,8 +65,9 @@ export interface SocialSigner {
 
 /** Per-kind wiring, so the two statement types share one code path without the
  *  call sites ever passing a topic string around (a mistyped topic writes a
- *  perfectly valid statement nobody will ever look for). */
-const KINDS = {
+ *  perfectly valid statement nobody will ever look for). Exported for the readers
+ *  that live in their own lazily loaded files (live-subjects.ts). */
+export const KINDS = {
   like: {
     format: LIKE_STATEMENT_FORMAT,
     indexFormat: LIKE_SUBJECT_INDEX_FORMAT,

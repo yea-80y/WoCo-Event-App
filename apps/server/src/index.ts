@@ -12,7 +12,7 @@ import { requireAuth } from "./middleware/auth.js";
 import { securityHeaders, FRAME_CSP } from "./lib/http/security-headers.js";
 import { CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS } from "./lib/http/cors.js";
 import { buildFramePage } from "./lib/embed/frame-page.js";
-import { revokeSession, revokeAllSessions } from "./lib/auth/revocation.js";
+import { revokeSession, revokeAllSessions, revocationHealth, RevocationStoreUnavailableError } from "./lib/auth/revocation.js";
 import { deviceGrantHealth } from "./lib/auth/device-grants.js";
 import { kernelDeployedLoadFailed } from "./lib/auth/kernel-deployed.js";
 import { events } from "./routes/events.js";
@@ -22,8 +22,12 @@ import { admin } from "./routes/admin.js";
 import { ops } from "./routes/ops.js";
 import { siteRoute } from "./routes/site.js";
 import { profiles } from "./routes/profiles.js";
+import { privacyNotice } from "./routes/privacy-notice.js";
 import { recovery } from "./routes/recovery.js";
 import { deviceGrants } from "./routes/device-grants.js";
+import { keyring } from "./routes/keyring.js";
+import { keyRingHealth } from "./lib/keyring/current-ring.js";
+import { upgradeIntent } from "./routes/upgrade-intent.js";
 import { zerodevPolicy, zerodevPolicyHealth } from "./routes/zerodev-policy.js";
 import { pairing } from "./routes/pairing.js";
 import { broadcast } from "./routes/broadcast.js";
@@ -66,6 +70,7 @@ import { startPayoutReleaseJob, payoutSweepHealth } from "./lib/stripe/payout-re
 import { startPendingRefundRetryJob, pendingRefundsHealth } from "./lib/stripe/pending-refunds.js";
 import { checkoutProvenanceHealth } from "./lib/stripe/checkout-provenance.js";
 import { ticketSalesHealth } from "./lib/stripe/ticket-sales.js";
+import { onStripeVerified } from "./lib/stripe/accounts.js";
 import { cancellationsStoreHealth } from "./lib/event/cancellations.js";
 import { cancellationJobHealth, startCancellationRefundJob } from "./lib/stripe/cancellation-refunds.js";
 import { liveCancellationRefundDeps } from "./lib/stripe/cancellation-refunds-live.js";
@@ -73,9 +78,11 @@ import { eventCancel } from "./routes/event-cancel.js";
 import { saleRefundEventsHealth } from "./lib/stripe/sale-refunds.js";
 import { alarmGate } from "./lib/health/alarm-gate.js";
 import { feedSignerRecordHealth } from "./lib/event/feed-signer-record.js";
+import { nameTargetsHealth } from "./lib/sub-ens/name-targets.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
+import { confirmArmedReferral } from "./lib/campaign/referral-arm.js";
 import {
   startHealthProbes,
   paymasterHealth,
@@ -415,9 +422,20 @@ function healthReport() {
     // `unreadableRecords` above 0, is an alarm: those events cannot sell, and no
     // event can be created with a signer, until an operator restores the file.
     eventFeedSigners: feedSignerRecordHealth(),
+    // What each WoCo-built feed last published (name-targets.json): the only content a
+    // site or event-page name may show (the CCIP gateway's WoCo-built rule). `unreadable`
+    // is an alarm: every such name shows the app, and nothing is recorded, until restored.
+    nameTargets: nameTargetsHealth(),
     // Added passkeys (#746). `unreadable` is an alarm: every added device is
     // signed out and no device can be added or removed until the file is restored.
     deviceGrants: deviceGrantHealth(),
+    // The key-ring anchor (#186): red when no contract answers at its address. Every
+    // organiser-signed event read asks it for the organiser's current keys and refuses
+    // when it cannot tell, so a server running ahead of the contract reads no events.
+    keyRing: keyRingHealth(),
+    // Revoked sessions (#186). `ok: false`: the file is present but unreadable, so
+    // revoked sessions are not refused and nothing can be revoked until it is restored.
+    revocation: revocationHealth(),
     // Sponsored userOps (#758): ZeroDev asks the policy route before paying. Red
     // when the secret or project id is unset - every sponsorship is then refused,
     // so recovery, backups and "make this device the main one" all fail. Counts
@@ -660,7 +678,8 @@ app.post("/api/auth/revoke-session", requireAuth, (c) => {
     }
     revokeSession(nonce, expiresAt);
     return c.json({ ok: true, message: "Session revoked" });
-  } catch {
+  } catch (err) {
+    if (err instanceof RevocationStoreUnavailableError) return c.json({ ok: false, error: err.message }, 503);
     return c.json({ ok: false, error: "Invalid delegation header" }, 400);
   }
 });
@@ -668,13 +687,23 @@ app.post("/api/auth/revoke-session", requireAuth, (c) => {
 // Revoke all sessions for the authenticated parent address
 app.post("/api/auth/revoke-all", requireAuth, (c) => {
   const parentAddress = c.get("parentAddress") as string;
-  revokeAllSessions(parentAddress);
+  try {
+    revokeAllSessions(parentAddress);
+  } catch (err) {
+    if (err instanceof RevocationStoreUnavailableError) return c.json({ ok: false, error: err.message }, 503);
+    throw err;
+  }
   return c.json({ ok: true, message: "All sessions revoked" });
 });
 
-// An account's added passkeys (#746). revoke-all above also ends their sessions;
-// a device whose grant is still live signs a new one on its next request.
+// An account's added passkeys (#746). revoke-all above also ends their sessions:
+// each signs out on its next request (SESSION_REVOKED) and, while its grant is
+// live, can sign in again.
 app.route("/api/auth/device-grants", deviceGrants);
+app.route("/api/keyring", keyring);
+// An email account about to upgrade to a passkey (#746): the per-network limit on
+// the one sponsored op a locked account may have.
+app.route("/api/auth/upgrade-intent", upgradeIntent);
 // ZeroDev's custom gas policy asks here before sponsoring a userOp (#758).
 app.route("/api/zerodev/policy", zerodevPolicy);
 // Linking another device (#746 step 4): a sealed mailbox, no session.
@@ -750,6 +779,9 @@ app.get("/api/agent/openapi.json", (c) => c.json(agentOpenApi(agentBaseUrl())));
 
 // Profile routes
 app.route("/api/profile", profiles);
+
+// The organiser's privacy notice, read for the public pages (unauthenticated)
+app.route("/api/privacy-notice", privacyNotice);
 
 // Passkey-account recovery escrow (sealed identity-seed bundle) — see
 // docs/PASSKEY_RECOVERY_PLAN.md §11.6.
@@ -903,3 +935,11 @@ startEvidencePublisher();
 // clients read, and refuses to write anywhere else if it does not.
 // Inert without CAMPAIGN_ISSUER_PRIVATE_KEY: confirmations answer 503.
 startCampaignIssuer();
+// A referee's armed referral is confirmed the moment Stripe verifies them.
+onStripeVerified((address) => void confirmArmedReferral(address));
+// Load the name-targets ledger now, not on the first name lookup, so an unreadable
+// file alarms in the boot log and on /api/health from the first second.
+{
+  const names = nameTargetsHealth();
+  console.log(`[startup] name targets: ${names.count} built${names.ok ? "" : " - ALARM, see /api/health nameTargets"}`);
+}
