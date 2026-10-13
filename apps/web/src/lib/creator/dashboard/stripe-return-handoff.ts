@@ -113,3 +113,36 @@ export type StripeReturnVariant = "close" | "dashboard";
 export function stripeReturnVariant(opener: unknown): StripeReturnVariant {
   return opener ? "close" : "dashboard";
 }
+
+/**
+ * What a status read does to the waiting modal. Only a read that says complete
+ * ends the wait on its own (a nudge or a refocus must not pull the user off the
+ * spinner while they are still mid-form on Stripe). The "I've finished setup"
+ * button is different: it is the user saying they are back, so a successful read
+ * shows them where the account stands - the checklist and "Complete verification" -
+ * instead of a spinner that never moves. That was the Android report of
+ * 2026-10-13: back out of Stripe early, press the button, nothing changes.
+ */
+export type StripeWaitOutcome = "connected" | "show-status" | "keep-waiting";
+export function stripeWaitOutcome(
+  status: { ok: boolean; onboardingComplete?: boolean } | null | undefined,
+  manual: boolean,
+): StripeWaitOutcome {
+  if (shouldStopWaiting(status)) return "connected";
+  if (manual && status?.ok === true) return "show-status";
+  return "keep-waiting";
+}
+
+/**
+ * Stripe sends the user to `refresh_url` when the Account Link was already used or
+ * has expired, and its docs say that page should mint a new link and redirect to
+ * it. A same-tab redirect needs no tap, so it works on iOS too. This guard stops a
+ * link Stripe rejects at once from bouncing the tab forever: one automatic retry
+ * per window, then the page shows its button instead.
+ */
+export const STRIPE_REFRESH_GUARD_KEY = "woco:stripe-refresh-at";
+export const STRIPE_REFRESH_MIN_GAP_MS = 30_000;
+export function mayAutoRefreshLink(lastAt: number | null, now: number): boolean {
+  if (lastAt === null || !Number.isFinite(lastAt) || now < lastAt) return true;
+  return now - lastAt >= STRIPE_REFRESH_MIN_GAP_MS;
+}

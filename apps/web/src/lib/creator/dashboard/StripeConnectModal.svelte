@@ -9,7 +9,7 @@
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { canOrganise, ORGANISER_PASSKEY_MESSAGE } from "../../auth/organiser-account.js";
   import { navigate } from "../../router/router.svelte.js";
-  import { shouldStopWaiting, subscribeStripeReturn } from "./stripe-return-handoff.js";
+  import { stripeWaitOutcome, subscribeStripeReturn } from "./stripe-return-handoff.js";
 
   interface Props {
     open?: boolean;
@@ -28,6 +28,9 @@
   let needsLogin = $state(false);
   /** True after we open Stripe in a new tab — shows "waiting" UI */
   let waitingForStripe = $state(false);
+  /** A fresh, unvisited Account Link whose new tab the browser refused to open
+   *  without a tap of its own (iPhone). Shows the "Open Stripe" button. */
+  let readyUrl = $state<string | null>(null);
 
   const doneCount = $derived(
     status?.requirements?.categories?.filter((c) => c.status === "done").length ?? 0
@@ -41,6 +44,7 @@
       error = null;
       needsLogin = false;
       waitingForStripe = false;
+      readyUrl = null;
 
       if (!auth.isConnected) {
         needsLogin = true;
@@ -92,6 +96,37 @@
     navigate("/creator");
   }
 
+  // Safari and every iPhone browser open a new tab only straight from a tap. By the
+  // time the unlock and the API calls below resolve, that tap is spent and
+  // `window.open` returns null: the tab never opens, yet the modal used to show
+  // "We've opened Stripe in a new tab" anyway (2026-10-13). A blocked open now keeps
+  // the link - single-use, but not used until a page loads it - for a button whose
+  // own tap opens it. A new tab, never this one, so the form behind the modal
+  // survives (#508).
+  //
+  // DELIBERATELY WITHOUT `noopener` (#508): the return tab needs `window.opener`
+  // to know it was script-opened, and a tab opened with noopener cannot close
+  // itself after Stripe's redirects. The destination is Stripe's own onboarding
+  // link, so the opener reference is not a risk worth a broken exit. Do not
+  // "harden" this.
+  function openStripeTab(url: string, fromTap: boolean) {
+    const tab = window.open(url, "_blank");
+    if (tab) {
+      readyUrl = null;
+      waitingForStripe = true;
+      return;
+    }
+    if (fromTap) {
+      // Even a direct tap was refused (pop-ups blocked outright, or an in-app
+      // browser). Going in this tab loses the form behind the modal, but it is the
+      // only way left to reach Stripe; the return page brings them back.
+      window.location.assign(url);
+      return;
+    }
+    waitingForStripe = false;
+    readyUrl = url;
+  }
+
   async function handleConnect() {
     if (!organiser) return;
     actionLoading = true;
@@ -108,17 +143,7 @@
         }
         return;
       }
-      if (link.url) {
-        // Open in new tab so the event creation form is preserved.
-        // DELIBERATELY WITHOUT `noopener` (#508): the return tab needs
-        // `window.opener` to know it was script-opened, and a tab opened with
-        // noopener cannot close itself after Stripe's redirects — the "Close
-        // this tab" button would silently do nothing. The destination is
-        // Stripe's own onboarding link, so the opener reference is not a risk
-        // worth a broken exit. Do not "harden" this.
-        window.open(link.url, "_blank");
-        waitingForStripe = true;
-      }
+      if (link.url) openStripeTab(link.url, false);
     } catch (err) {
       error = err instanceof Error ? err.message : "Failed to connect Stripe";
     } finally {
@@ -140,11 +165,7 @@
         }
         return;
       }
-      if (link.url) {
-        // No `noopener` here either — same reason as handleConnect above (#508).
-        window.open(link.url, "_blank");
-        waitingForStripe = true;
-      }
+      if (link.url) openStripeTab(link.url, false);
     } catch (err) {
       error = err instanceof Error ? err.message : "Failed to get onboarding link";
     } finally {
@@ -152,18 +173,17 @@
     }
   }
 
-  async function handleRefreshStatus() {
+  /** `manual` = the "I've finished setup" button; otherwise a nudge or a refocus. */
+  async function handleRefreshStatus(manual: boolean) {
     refreshing = true;
     error = null;
     try {
       const resp = await getStripeAccountStatus();
-      if (resp.ok) {
-        status = resp;
-        if (shouldStopWaiting(resp)) {
-          waitingForStripe = false;
-          onconnected?.();
-        }
-      }
+      if (resp.ok) status = resp;
+      const outcome = stripeWaitOutcome(resp, manual);
+      if (outcome !== "keep-waiting") waitingForStripe = false;
+      if (outcome === "connected") onconnected?.();
+      if (!resp.ok && manual) error = resp.error || "Could not check your Stripe account. Please try again.";
     } catch (err) {
       error = err instanceof Error ? err.message : "Failed to check status";
     } finally {
@@ -177,9 +197,9 @@
   // only a nudge to look. Cleanup runs on close and on destroy.
   $effect(() => {
     if (!open || !waitingForStripe) return;
-    const unsubscribe = subscribeStripeReturn(() => void handleRefreshStatus());
+    const unsubscribe = subscribeStripeReturn(() => void handleRefreshStatus(false));
     const onVisible = () => {
-      if (document.visibilityState === "visible") void handleRefreshStatus();
+      if (document.visibilityState === "visible") void handleRefreshStatus(false);
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
@@ -235,6 +255,18 @@
             </button>
           </div>
 
+        {:else if readyUrl}
+          <!-- The browser wanted its own tap before opening a tab (iPhone) -->
+          <div class="modal-state">
+            <p class="state-title">Continue on Stripe</p>
+            <p class="state-desc">
+              Stripe opens in a new tab. When you are done, come back to this tab - everything here stays as you left it.
+            </p>
+            <button class="modal-cta" onclick={() => readyUrl && openStripeTab(readyUrl, true)}>
+              Open Stripe
+            </button>
+          </div>
+
         {:else if waitingForStripe}
           <!-- Stripe opened in new tab — waiting for user to come back -->
           <div class="modal-state">
@@ -248,7 +280,7 @@
             <p class="state-desc">
               We've opened Stripe in a new tab. Complete your account setup there, then come back here.
             </p>
-            <button class="modal-cta" onclick={handleRefreshStatus} disabled={refreshing}>
+            <button class="modal-cta" onclick={() => handleRefreshStatus(true)} disabled={refreshing}>
               {#if refreshing}
                 <span class="cta-spinner"></span>
                 Checking...
@@ -257,7 +289,7 @@
               {/if}
             </button>
             <p class="waiting-hint">
-              Didn't see the tab? <button class="link-btn" onclick={handleConnect} disabled={actionLoading}>Open Stripe again</button>
+              Didn't see the tab? <button class="link-btn" onclick={handleContinue} disabled={actionLoading}>Open Stripe again</button>
             </p>
           </div>
 
