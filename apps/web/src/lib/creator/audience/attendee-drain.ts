@@ -8,7 +8,7 @@
  * this module does the shaping and the merge.
  */
 
-import type { MarketingContact } from "@woco/shared";
+import { isKeptOnList, orderFieldKind, type MarketingContact, type OrderField } from "@woco/shared";
 
 /** The subset of a decrypted claim blob this needs. */
 export interface DecryptedClaim {
@@ -31,27 +31,13 @@ export function provenanceRank(source: string | undefined): number {
   return 0; // csv: import, or unrecorded
 }
 
-/**
- * Common order-form field ids that hold a name. Order forms are organiser-
- * defined, so this is a guess over their ids — and a guess that only ever
- * ADDS a name to a contact that has none, never overwrites one.
- */
-const FIRST_KEYS = ["firstname", "first_name", "first", "givenname", "forename"];
-const LAST_KEYS = ["lastname", "last_name", "last", "surname", "familyname"];
-const FULL_KEYS = ["name", "fullname", "full_name", "attendeename", "yourname"];
-
-function pick(fields: Record<string, string> | undefined, keys: string[]): string | undefined {
-  if (!fields) return undefined;
-  for (const [k, v] of Object.entries(fields)) {
-    const norm = k.toLowerCase().replace(/[\s_-]/g, "");
-    if (keys.some((want) => norm === want.replace(/[\s_-]/g, "")) && v?.trim()) {
-      return v.trim();
-    }
-  }
-  return undefined;
-}
-
 export interface DrainOptions {
+  /**
+   * The event's questions. Only answers to those the organiser ticked "Keep on
+   * mailing list" are copied (owner 2026-10-13): everything else stays with the
+   * booking and is deleted with it, and a health answer never moves.
+   */
+  orderFields: readonly OrderField[];
   eventTitle: string;
   eventDate?: string;
   addedAt: string;
@@ -67,7 +53,7 @@ export interface DrainOptions {
  */
 export function buildAttendeeContacts(
   claims: readonly DecryptedClaim[],
-  { eventTitle, eventDate, addedAt, consented }: DrainOptions,
+  { orderFields, eventTitle, eventDate, addedAt, consented }: DrainOptions,
 ): MarketingContact[] {
   const byEmail = new Map<string, MarketingContact>();
 
@@ -75,20 +61,10 @@ export function buildAttendeeContacts(
     const email = claim.claimerEmail?.trim().toLowerCase();
     if (!email || !consented.has(email) || byEmail.has(email)) continue;
 
-    let firstName = pick(claim.fields, FIRST_KEYS);
-    let lastName = pick(claim.fields, LAST_KEYS);
-    if (!firstName && !lastName) {
-      const full = pick(claim.fields, FULL_KEYS);
-      // No splitting here — a single name field goes to firstName whole, for
-      // the same reason splitFullName exists but is not reached for: this is a
-      // greeting line, and an invented surname reads worse than a full name.
-      if (full) firstName = full;
-    }
-
+    const kept = keptAnswers(claim.fields, orderFields);
     byEmail.set(email, {
       email,
-      ...(firstName ? { firstName } : {}),
-      ...(lastName ? { lastName } : {}),
+      ...kept,
       lastEventName: eventTitle,
       ...(eventDate ? { lastEventDate: eventDate } : {}),
       source: `event:${eventTitle}`,
@@ -97,6 +73,33 @@ export function buildAttendeeContacts(
   }
 
   return [...byEmail.values()];
+}
+
+type KeptFields = Pick<MarketingContact, "firstName" | "lastName" | "postcode" | "city" | "phone" | "answers">;
+
+/**
+ * A buyer's kept answers, placed by what each question asks: names, postcode,
+ * town and phone into the contact's own fields (so the list can be searched by
+ * area), anything else under its label. Answers are keyed by question id, so
+ * the label is read from the event's own form.
+ */
+function keptAnswers(fields: Record<string, string> | undefined, orderFields: readonly OrderField[]): KeptFields {
+  const out: KeptFields = {};
+  const answers: Record<string, string> = {};
+  for (const field of orderFields) {
+    if (!isKeptOnList(field)) continue;
+    const value = fields?.[field.id]?.trim();
+    const label = field.label.trim();
+    if (!value || !label) continue;
+    const slot = orderFieldKind(label).slot;
+    // A single name field goes to firstName whole: this is a greeting line, and
+    // an invented surname reads worse than a full name.
+    if (slot === "fullName") out.firstName ??= value;
+    else if (slot) out[slot] ??= value;
+    else answers[label] ??= value;
+  }
+  if (Object.keys(answers).length) out.answers = answers;
+  return out;
 }
 
 /**
@@ -116,9 +119,18 @@ export function mergeContact(existing: MarketingContact, incoming: MarketingCont
   const merged: MarketingContact = { ...existing };
 
   for (const [key, value] of Object.entries(incoming) as Array<[keyof MarketingContact, string]>) {
-    if (key === "email" || key === "addedAt" || key === "source") continue;
+    if (key === "email" || key === "addedAt" || key === "source" || key === "answers") continue;
     if (!value) continue;
     if (!merged[key] || incomingWins) (merged[key] as string) = value;
+  }
+
+  // Kept answers merge question by question under the same two rules.
+  if (incoming.answers) {
+    const answers = { ...existing.answers };
+    for (const [label, value] of Object.entries(incoming.answers)) {
+      if (value && (!answers[label] || incomingWins)) answers[label] = value;
+    }
+    merged.answers = answers;
   }
 
   // `addedAt` records when this person entered the audience, so the EARLIER one

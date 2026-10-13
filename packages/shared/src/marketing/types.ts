@@ -73,6 +73,13 @@ export interface MarketingContact {
   lastEventDate?: string;
   ticketsBought?: string;
   totalSpend?: string;
+  /**
+   * Order-form answers the organiser chose to keep on their list ("Keep on
+   * mailing list" in the question builder), by the question's label. Names,
+   * postcode, town and phone go to their own fields above instead; a health
+   * question never reaches here.
+   */
+  answers?: Record<string, string>;
   /** Provenance, e.g. "csv:contacts.csv" */
   source?: string;
   /** ISO timestamp when added to the list */

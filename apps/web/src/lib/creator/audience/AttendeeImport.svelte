@@ -13,7 +13,7 @@
    * this screen must never be the thing that quietly promotes them.
    */
   import type { MarketingContact, EventDirectoryEntry } from "@woco/shared";
-  import { getEventsByCreator, getEventOrders } from "../../api/events.js";
+  import { getEvent, getEventsByCreator, getEventOrders } from "../../api/events.js";
   import { checkMarketingEmails } from "../../api/marketing.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import {
@@ -61,7 +61,10 @@
       const keys = await getKeys();
       if (!keys) throw new Error("Unlock your identity to read attendee data.");
 
-      const { orders } = await getEventOrders(ev.eventId);
+      // The questions say which answers the organiser keeps on their list; without
+      // them nothing beyond the email could be placed, so stop rather than import less.
+      const [{ orders }, event] = await Promise.all([getEventOrders(ev.eventId), getEvent(ev.eventId, undefined, ev.creatorFeedSigner)]);
+      if (!event) throw new Error("Could not read this event's questions. Try again in a moment.");
       const [{ orderSealContext }, { openJsonWithAnyKey }] = await Promise.all([
         import("@woco/shared/crypto/sealed-box"),
         import("../../keyring/order-keys.js"),
@@ -95,6 +98,7 @@
       const consentedSet = new Set(consented);
 
       const incoming = buildAttendeeContacts(claims, {
+        orderFields: event.orderFields ?? [],
         eventTitle: ev.title,
         eventDate: ev.startDate,
         addedAt: new Date().toISOString(),

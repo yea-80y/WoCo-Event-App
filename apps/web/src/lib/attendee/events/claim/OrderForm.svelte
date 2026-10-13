@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { OrderField, SeriesClaimStatus } from "@woco/shared";
-  import { orderFieldRequired } from "@woco/shared";
+  import { HEALTH_FIELD_NOTE, isHealthField, orderFieldRequired } from "@woco/shared";
   import {
     MARKETING_CONSENT_NOTICE,
     TRANSACTIONAL_EMAIL_NOTICE,
@@ -113,6 +113,7 @@
             maxlength={field.maxLength}
           />
         {/if}
+        {#if isHealthField(field)}<span class="field-note">{HEALTH_FIELD_NOTE}</span>{/if}
       </label>
     {/each}
   {/if}
@@ -205,6 +206,12 @@
 
   .required {
     color: var(--error);
+  }
+
+  .field-note {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    line-height: 1.35;
   }
 
   .order-form input,

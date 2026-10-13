@@ -157,7 +157,9 @@ every organiser gives, already picked, and they change it if it is not theirs:
 | How long you keep details | 6 (default) or 12 months after the event. Pick-only, because the retention sweep carries it out (#547). No 3: a card dispute can arrive ~120 days after a sale |
 | Automated decisions | Stated for everyone: neither the organiser nor WoCo decides about attendees purely by computer with a legal or similar effect; Stripe screens payments under its own policy |
 | Soft opt-in declaration | Removed (see 5a). A switch to an opt-out checkout is a separate decision |
-| (new) Tailored mailing list | Default on: mailing-list members' booking answers (their area, say) choose which events they hear about, and are kept until they unsubscribe |
+| (new) Tailored mailing list | Default on: what is kept on the mailing list (their area, say) chooses which events members hear about. The booking's own answers are deleted on schedule for everyone |
+| (new) Per question: "Keep on mailing list" | Pre-ticked from the label for names, area, postcode and town; copied onto the contact at import; the notice names each kept question |
+| (new) Per question: health | Pre-set from the label (allergies, dietary, access needs...): always optional, a consent line at the question, never kept on a list; the notice adds a purpose + Art. 9 basis sentence |
 
 Every choice is the organiser's instruction to WoCo as processor. Locking one would make WoCo decide
 purposes or retention, which is a controller's call. The editor drops the "not legal advice" and

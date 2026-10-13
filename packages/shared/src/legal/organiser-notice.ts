@@ -28,6 +28,7 @@
 
 import type { OrderField } from "../crypto/types.js";
 import { ORDER_EMAIL_FIELD_ID } from "../event/order-email.js";
+import { isHealthField, isKeptOnList } from "../event/order-field-kinds.js";
 
 /** v2 (2026-10-13): pick-list choices replaced v1's free-text answers. v1 notices are refused - re-confirm. */
 export const ORGANISER_NOTICE_FORMAT = "woco.privacy-notice.v2" as const;
@@ -309,6 +310,10 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
   const months = n ? n.orderRetentionMonths : NOTICE_DEFAULTS.orderRetentionMonths;
   const tailored = n ? n.tailoredMarketing === true : NOTICE_DEFAULTS.tailoredMarketing;
   const asksQuestions = !ev || labels.length > 0;
+  const fieldLabel = (f: OrderField) => String(f.label || f.placeholder || "").replace(/\s+/g, " ").trim().slice(0, 80);
+  const keptLabels = ev ? (ev.orderFields ?? []).filter(isKeptOnList).map(fieldLabel).filter(Boolean) : [];
+  // A site's notice covers every event, so it says what happens IF a form asks.
+  const asksHealth = ev ? (ev.orderFields ?? []).some(isHealthField) : true;
 
   const where = ev ? `when you book for ${ev.title}` : "when you book with us";
   const intro: NoticeBlock = {
@@ -363,8 +368,8 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
         ],
         ...(tailored
           ? [[
-              "If you join our mailing list, we also use what you told us when you booked, such as your area, " +
-                "to choose which events to tell you about. This stops when you unsubscribe.",
+              "If you join our mailing list, we also use the answers kept on it, such as your area, to choose " +
+                "which events to tell you about. This stops when you unsubscribe.",
             ]]
           : []),
       ],
@@ -377,6 +382,16 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
         "Your order-form answers: to run the event you booked, for example for seating, catering or access. " +
           "Our basis is our contract with you." +
           (n?.extraOrderFormUse ? ` We also use them for: ${clause(n.extraOrderFormUse)}` : ""),
+      ],
+    });
+  }
+  if (asksHealth) {
+    why.push({
+      kind: "p",
+      content: [
+        (ev ? "Your answers about allergies, dietary or access needs: " : "If our form asks about allergies, dietary or access needs: ") +
+          "answering is optional, and we use your answer only to look after you at the event, never for " +
+          "marketing. Our basis is your explicit consent, which you give by answering.",
       ],
     });
   }
@@ -496,10 +511,17 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
         ["Your ticket and attendance record: until you ask for it to be erased. It is your record of having been there."],
         ...(asksQuestions
           ? [[
-              `Your order-form answers: deleted ${months} months after the event.` +
-                (tailored ? " If you join our mailing list, we keep them for as long as you stay on it." : ""),
+              "Your order-form answers: kept while we need them to run the event and deal with any refunds, " +
+                `disputes or questions, then deleted ${months} months after the event.`,
             ]]
           : []),
+        [
+          "If you join our mailing list: your email address" +
+            (ev
+              ? keptLabels.length ? ` and your answers to ${keptLabels.join(", ")}` : ""
+              : " and any answers an event's form says it keeps") +
+            ", until you unsubscribe.",
+        ],
         [`Guest lists we download or put on a door scanner: deleted within ${months} months of the event.`],
         ["A record of your marketing consent: while we can still email you on that basis, plus 6 months."],
         ["If your ticket email cannot be delivered, WoCo keeps your address until it is put right, or 90 days at most."],

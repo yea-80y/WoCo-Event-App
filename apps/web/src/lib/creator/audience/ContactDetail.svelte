@@ -143,6 +143,18 @@
       </div>
     {/if}
 
+    {#if contact.answers && Object.keys(contact.answers).length}
+      <div class="facts">
+        <h4>From their bookings</h4>
+        <dl>
+          {#each Object.entries(contact.answers) as [label, value] (label)}
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          {/each}
+        </dl>
+      </div>
+    {/if}
+
     <div class="facts">
       <h4>Where this came from</h4>
       <dl>

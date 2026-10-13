@@ -67,6 +67,15 @@ test("no form, an empty form and the editor's own fields pass", () => {
   );
 });
 
+test("a health question is optional and never kept on a mailing list; both flags are booleans", () => {
+  assert.equal(orderFieldsRefusal([field({ label: "Allergies", health: true, required: false })]), null);
+  assert.equal(orderFieldsRefusal([field({ label: "Area", keepOnList: true })]), null);
+  assert.match(orderFieldsRefusal([field({ health: true, required: true })]) ?? "", /health, so it can't be required/);
+  assert.match(orderFieldsRefusal([field({ health: true, keepOnList: true })]) ?? "", /health, so it can't be kept on a mailing list/);
+  assert.match(orderFieldsRefusal([field({ health: "yes" })]) ?? "", /health flag must be true or false/);
+  assert.match(orderFieldsRefusal([field({ keepOnList: 1 })]) ?? "", /mailing-list flag must be true or false/);
+});
+
 test("the field count is bounded", () => {
   const many = (n: number) => Array.from({ length: n }, (_, i) => field({ id: `f${i}` }));
   assert.equal(orderFieldsRefusal(many(MAX_ORDER_FIELDS)), null);

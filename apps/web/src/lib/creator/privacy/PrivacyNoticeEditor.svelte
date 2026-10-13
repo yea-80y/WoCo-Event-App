@@ -286,8 +286,8 @@
           <label class="check">
             <input type="checkbox" bind:checked={draft.tailoredMarketing} />
             <span>
-              Use what people tell you when they book, such as their area, to choose which events you email them about.
-              Their answers are then kept until they unsubscribe.
+              Use what's kept on your mailing list, such as people's area, to choose which events you email them about.
+              You pick which answers are kept when you add questions to an event.
             </span>
           </label>
         </fieldset>

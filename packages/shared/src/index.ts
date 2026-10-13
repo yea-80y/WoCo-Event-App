@@ -17,6 +17,7 @@ export * from "./event/snapshot.js";
 export * from "./event/jsonld.js";
 export * from "./event/fees.js";
 export * from "./event/order-email.js";
+export * from "./event/order-field-kinds.js";
 export * from "./event/order-key.js";
 export * from "./event/cancel-window.js";
 export * from "./crypto/index.js";

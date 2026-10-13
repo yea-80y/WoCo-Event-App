@@ -153,7 +153,7 @@ test("a confirmed notice reads the organiser's choices and leaves nothing to fil
   assert.match(text, /only as far as they need them to run the event:\n- Our own team, staff and volunteers\n- Door and security staff\n- Our photographer\.\n/);
   assert.doesNotMatch(text, /The venue/);
   assert.match(text, /Our basis is our contract with you\. We also use them for: planning the running order\./);
-  assert.match(text, /Your order-form answers: deleted 12 months after the event\.\n/);
+  assert.match(text, /Your order-form answers: kept while we need them to run the event and deal with any refunds, disputes or questions, then deleted 12 months after the event\.\n/);
   assert.match(text, /Guest lists we download or put on a door scanner: deleted within 12 months of the event/);
   assert.match(text, /email us at privacy@punkpub\.example/);
   assert.match(doc.footer[0], /Last confirmed by Punk Pub Ltd on 11 October 2026/);
@@ -228,18 +228,48 @@ test("marketing is the unticked checkout opt-in only - never a soft opt-in the c
   }
 });
 
-test("a tailored mailing list uses booking answers and keeps them while you stay on it", () => {
+test("a tailored mailing list uses what is kept on it; order answers are never kept for marketing", () => {
   const plain = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: fields }, wocoPolicyUrl: POLICY }));
   assert.doesNotMatch(plain, /choose which events to tell you about/);
-  assert.doesNotMatch(plain, /for as long as you stay on it/);
   const tailored = noticePlainText(buildOrganiserNotice({ notice: notice({ tailoredMarketing: true }), event: { title: "Gig", orderFields: fields }, wocoPolicyUrl: POLICY }));
-  assert.match(tailored, /such as your area, to choose which events to tell you about\. This stops when you unsubscribe\./);
-  assert.match(tailored, /deleted 6 months after the event\. If you join our mailing list, we keep them for as long as you stay on it\./);
+  assert.match(tailored, /the answers kept on it, such as your area, to choose which events to tell you about\. This stops when you unsubscribe\./);
+  // Fable 2026-10-13: the booking's answers are deleted on schedule for everyone;
+  // only the mailing list keeps anything after that.
+  assert.doesNotMatch(tailored, /for as long as you stay on it/);
   assert.equal(validateOrganiserNotice({ ...notice(), tailoredMarketing: "yes" }, ADDR), null);
   // false is stored as absent, so a stored notice never carries a meaningless false.
   assert.equal(validateOrganiserNotice({ ...notice(), tailoredMarketing: false }, ADDR)?.tailoredMarketing, undefined);
 });
 
+test("the mailing-list line names the questions kept on it - never a health one", () => {
+  const kept: OrderField[] = [
+    { id: ORDER_EMAIL_FIELD_ID, type: "email", label: "Email", required: true },
+    { id: "name", type: "text", label: "Full name", required: true, keepOnList: true },
+    { id: "area", type: "text", label: "Area", required: false, keepOnList: true },
+    { id: "size", type: "text", label: "T-shirt size", required: false },
+    { id: "allergy", type: "text", label: "Allergies", required: false, health: true, keepOnList: true },
+  ];
+  const text = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: kept }, wocoPolicyUrl: POLICY }));
+  assert.match(text, /If you join our mailing list: your email address and your answers to Full name, Area, until you unsubscribe\./);
+  const none = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: fields }, wocoPolicyUrl: POLICY }));
+  assert.match(none, /If you join our mailing list: your email address, until you unsubscribe\./);
+  const site = noticePlainText(buildOrganiserNotice({ notice: notice(), wocoPolicyUrl: POLICY }));
+  assert.match(site, /your email address and any answers an event's form says it keeps, until you unsubscribe/);
+});
+
+test("a health question brings its own purpose and basis; a form without one says nothing about health", () => {
+  const withHealth: OrderField[] = [{ id: "allergy", type: "text", label: "Allergies", required: false, health: true }];
+  const text = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: withHealth }, wocoPolicyUrl: POLICY }));
+  assert.match(text, /Your answers about allergies, dietary or access needs: answering is optional, and we use your answer only to look after you at the event, never for marketing\. Our basis is your explicit consent/);
+  const without = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: fields }, wocoPolicyUrl: POLICY }));
+  assert.doesNotMatch(without, /allergies/);
+  // A site covers every event, so it says what happens if a form asks.
+  const site = noticePlainText(buildOrganiserNotice({ notice: notice(), wocoPolicyUrl: POLICY }));
+  assert.match(site, /If our form asks about allergies, dietary or access needs: answering is optional/);
+  // Only a literal true counts: an organiser-signed form cannot half-set it.
+  const odd = [{ id: "x", type: "text", label: "Allergies", required: false, health: "yes" }] as unknown as OrderField[];
+  assert.doesNotMatch(noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: odd }, wocoPolicyUrl: POLICY })), /explicit consent/);
+});
 test("an event with no questions promises nothing about order-form answers", () => {
   const text = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: [] }, wocoPolicyUrl: POLICY }));
   assert.doesNotMatch(text, /order-form answers:/);

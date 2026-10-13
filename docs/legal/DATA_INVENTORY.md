@@ -326,7 +326,7 @@ independent nodes worldwide:
 | Like / follow statements | Public signed statements on the user's own feed (`packages/shared/src/social/`); a retraction is a new version, not a deletion | **Yes**, and intentionally public |
 | Profile feeds | display name, avatar, bio — organiser-published | **Yes**, and intentionally public |
 | Organiser privacy notice (`woco/legal/privacy-notice/{account}`, `woco.privacy-notice.v2`) | The organiser's name, privacy contact email, optional postal address and ICO number, and their choices (who else sees attendee details, months order-form answers are kept, whether their mailing list is tailored, plus optional "anything else" lines), signed by their content-feed signer and published when they press "Confirm and publish". The public notice pages read it through `GET /api/privacy-notice/*`, which picks the account and signer from server records only (`routes/privacy-notice.ts`); the server stores none of it. Earlier versions stay retrievable after an edit - Organiser Terms §4 says so, and the editor asks for business, not personal, details | **Yes** (the organiser's own details), and intentionally public |
-| Marketing contact list blob | X-Wing sealed box, sealed to organiser | **Yes**, encrypted |
+| Marketing contact list blob (email, name, area, and any order-form answer the organiser ticked "Keep on mailing list" - never a health answer) | X-Wing sealed box, sealed to organiser | **Yes**, encrypted |
 
 **Pseudonymised ≠ anonymous.** HMAC email hashes and wallet addresses are personal data under UK
 GDPR because WoCo holds the key / can re-link them. The policy must treat them as personal data.

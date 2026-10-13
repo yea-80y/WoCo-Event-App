@@ -31,4 +31,11 @@ export interface OrderField {
   options?: string[];
   /** Maximum character length — for "text" and "textarea" */
   maxLength?: number;
+  /**
+   * Asks about health - allergies, dietary or access needs. Always optional and
+   * never copied to a mailing list (`event/order-field-kinds.ts`).
+   */
+  health?: boolean;
+  /** Copied onto the buyer's mailing-list entry when the organiser imports opted-in buyers. */
+  keepOnList?: boolean;
 }

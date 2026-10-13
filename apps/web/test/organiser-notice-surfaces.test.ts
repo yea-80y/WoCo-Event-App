@@ -216,6 +216,26 @@ test("the editor offers choices and reassures: no disclaimer, no network warning
   assert.match(ed, /bind:checked=\{draft\.tailoredMarketing\}/);
 });
 
+test("the question builder pre-sets health and mailing-list flags, and a health question cannot be required", () => {
+  const ed = code(read("lib/creator/events/OrderFieldsEditor.svelte"));
+  assert.match(ed, /oninput=\{\(\) => guessFlags\(i\)\}/);
+  assert.match(ed, /orderFieldKind\(f\.label\)/);
+  // A manual choice sticks while the organiser keeps typing.
+  assert.match(ed, /if \(!f \|\| manual\[f\.id\]\) return;/);
+  assert.match(ed, /kind\.health \? \{ required: false \}/);
+  // The Required and keep ticks only exist outside the health branch.
+  const healthBranch = ed.slice(ed.indexOf("{#if field.health}"), ed.indexOf("{:else}", ed.indexOf("{#if field.health}")));
+  assert.match(healthBranch, /never added to your mailing list/);
+  assert.doesNotMatch(healthBranch, /field\.required|keepOnList/);
+});
+
+test("both checkouts show the health note under a health question", () => {
+  const form = code(read("lib/attendee/events/claim/OrderForm.svelte"));
+  assert.match(form, /\{#if isHealthField\(field\)\}<span class="field-note">\{HEALTH_FIELD_NOTE\}<\/span>\{\/if\}/);
+  const embed = readFileSync(new URL("../../../packages/embed/src/components/woco-tickets.ts", import.meta.url), "utf-8");
+  assert.match(embed, /isHealthField\(f\) \? `<span class="field-note">\$\{this\.esc\(HEALTH_FIELD_NOTE\)\}<\/span>`/);
+});
+
 test("the new notice-gate copy keeps the register: spaced hyphen, never an em or en dash", () => {
   for (const f of [
     "lib/legal/OrganiserNotice.svelte",
