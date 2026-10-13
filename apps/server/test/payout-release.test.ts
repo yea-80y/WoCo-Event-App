@@ -1561,3 +1561,54 @@ test("a crashed SURPLUS payout: recovery writes its row and spends the surplus c
   assert.equal(recon?.payoutId, payouts[0]!.id);
   assert.equal(surplus.listSurplusClocks().length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Unledgered WoCo sales hold the surplus (#805)
+// ---------------------------------------------------------------------------
+
+/** A due sale of 100 and a 50 surplus that has already lasted its week. */
+function dueSaleAndSettledSurplus() {
+  surplus.observeSurplus(ACCT, "gbp", 50, at("2026-02-01T00:00:00.000Z"));
+  held("cs_due", { grossAmount: 100 });
+  return fakeGateway({ nets: { cs_due: 100 }, available: 150, pending: 0 });
+}
+
+test("an unledgered WoCo sale holds its account's surplus; the due sale still pays", async () => {
+  const { gateway, payouts } = dueSaleAndSettledSurplus();
+  gateway.unledgeredSales = async () => new Map([[ACCT, 1]]);
+  const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-10T00:00:00.000Z"));
+  assert.equal(payouts.length, 1);
+  assert.equal(payouts[0]!.amount, 100, "the sale, not the 50 the ledger cannot explain");
+  assert.match(outcome!.error!, /surplus held: 1 WoCo sale/);
+  assert.equal(surplus.listSurplusClocks()[0]?.min, 50, "the clock keeps running");
+  assertPayoutsMatchRows(payouts);
+});
+
+test("with no unledgered sale the same surplus is paid", async () => {
+  const { gateway, payouts } = dueSaleAndSettledSurplus();
+  gateway.unledgeredSales = async () => new Map([["acct_someone_else", 2]]);
+  await release.runReleaseSweep(gateway, at("2026-02-10T00:00:00.000Z"));
+  assert.equal(payouts[0]!.amount, 150);
+});
+
+test("a scan that cannot be read holds every surplus (fail closed), whether it returns null or throws", async () => {
+  for (const unledgeredSales of [async () => null, async () => Promise.reject(new Error("boom"))]) {
+    resetLedger();
+    const { gateway, payouts } = dueSaleAndSettledSurplus();
+    gateway.unledgeredSales = unledgeredSales;
+    const [outcome] = await release.runReleaseSweep(gateway, at("2026-02-10T00:00:00.000Z"));
+    assert.equal(payouts[0]!.amount, 100);
+    assert.match(outcome!.error!, /scan failed/);
+  }
+});
+
+test("the scan runs even when the ledger is empty: a platform whose every sale was missed", async () => {
+  const { gateway } = fakeGateway();
+  let scans = 0;
+  gateway.unledgeredSales = async () => {
+    scans++;
+    return new Map([[ACCT, 3]]);
+  };
+  assert.deepEqual(await release.runReleaseSweep(gateway, at("2026-02-10T00:00:00.000Z")), []);
+  assert.equal(scans, 1);
+});

@@ -45,6 +45,11 @@ import {
 import { liveRefundGateway } from "../lib/stripe/pending-refunds-live.js";
 import { acknowledgePartialRefund, listFlaggedSales, ticketSalesHealth } from "../lib/stripe/ticket-sales.js";
 import { reopenVoid } from "../lib/stripe/payout-ledger.js";
+import {
+  listOpenUnledgeredSales,
+  resolveUnledgeredSale,
+  unledgeredSalesHealth,
+} from "../lib/stripe/unledgered-sales.js";
 import { getEvent } from "../lib/event/service.js";
 import { getRecordedFeedSigner } from "../lib/event/feed-signer-record.js";
 import { getStripeAccount } from "../lib/stripe/accounts.js";
@@ -435,6 +440,36 @@ ops.post("/payouts/:sessionId/reopen", async (c) => {
   if (!entry) return c.json({ ok: false, error: "No voided payout entry for that session" }, 404);
   console.log(`[ops] payout entry ${sessionId} (${entry.stripeAccountId}) reopened by ${by}`);
   return c.json({ ok: true, data: { reopened: true, stripeAccountId: entry.stripeAccountId, status: entry.status } });
+});
+
+/**
+ * GET /api/ops/payouts/unledgered
+ *
+ * Charges carrying our fee with no payout-ledger row (#805): the buyer may have
+ * no ticket, and the account's surplus is held. Each clears itself once the sale
+ * is ledgered or refunded in full; refund the buyer in Stripe, or resolve below.
+ */
+ops.get("/payouts/unledgered", (c) => {
+  return c.json({ ok: true, data: { open: listOpenUnledgeredSales(), health: unledgeredSalesHealth() } });
+});
+
+/**
+ * POST /api/ops/payouts/unledgered/:chargeId/resolve   { by, reason }
+ *
+ * The buyer was made whole another way (a chargeback the bank decided, a partial
+ * refund by hand), so the sale no longer holds its account's surplus. Moves no money.
+ */
+ops.post("/payouts/unledgered/:chargeId/resolve", async (c) => {
+  const chargeId = c.req.param("chargeId");
+  const body = (await c.req.json().catch(() => null)) as { by?: string; reason?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  const reason = (body?.reason || "").trim().slice(0, 300);
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  if (!reason) return c.json({ ok: false, error: "`reason` is required — how was the buyer made whole?" }, 400);
+  const sale = resolveUnledgeredSale(chargeId, by, reason);
+  if (!sale) return c.json({ ok: false, error: "No open unledgered sale for that charge" }, 404);
+  console.log(`[ops] unledgered sale ${chargeId} (${sale.account}) resolved by ${by}: ${reason}`);
+  return c.json({ ok: true, data: { resolved: true, account: sale.account, health: unledgeredSalesHealth() } });
 });
 
 /**
