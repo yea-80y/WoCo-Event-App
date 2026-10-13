@@ -67,7 +67,7 @@
       coOwned = res.coOwned;
       canAdd = res.canAdd;
       loaded = true;
-      if (coOwned) void auth.passkeysWithoutKeys().then((k) => (needsKeys = k));
+      if (coOwned) void auth.passkeysWithoutKeys({ withRing: true }).then((k) => (needsKeys = k));
     } catch (e) {
       loadError = e instanceof Error ? e.message : "Couldn't read your passkeys - try again.";
     } finally {

@@ -2786,8 +2786,8 @@ async function _addCoOwnerWithRecord<T>(
 }
 
 /** The account's key ring for a co-owner change made from this device (`account-keys.ts`). */
-async function _ringForChange(add: import("@woco/shared/keyring/ring").KeyRingMember[]) {
-  return (await _keys()).ringForChange(_keysHost(), add);
+async function _ringForChange(add: import("@woco/shared/keyring/ring").KeyRingMember[], opts: { coOwnerAdded?: boolean } = {}) {
+  return (await _keys()).ringForChange(_keysHost(), add, opts);
 }
 
 /** The ring this device just named onchain is the account's now: hold it as current. */
@@ -3203,7 +3203,7 @@ async function approveDeviceLink(code: Uint8Array, offer: import("./device-link.
   // The new device cannot sign its ring entry before it knows the account (#186): this
   // device makes sure the ring exists with itself in it, hands the account's later
   // secrets over in the sealed answer, and the new device adds itself once signed in.
-  const ring = await _ringForChange([]);
+  const ring = await _ringForChange([], { coOwnerAdded: true });
   await runApproveDeviceLink(code, offer, {
     apiBase,
     parent,
@@ -5363,7 +5363,7 @@ export const auth = {
     return _rotateOnRemoval([], { resume: true });
   },
   // Passkeys a removal now would leave without the new keys - a hint for its confirm.
-  passkeysWithoutKeys: async () => (await _keys()).passkeysWithoutKeys(_keysHost()),
+  passkeysWithoutKeys: async (opts?: { withRing?: boolean }) => (await _keys()).passkeysWithoutKeys(_keysHost(), opts),
   // A passkey left out of the account's keys (#186): this one asks with a code...
   requestKeys: async (opts: { onCode: (code: { typed: string; qr: string }) => void; signal?: AbortSignal }) =>
     (await _keys()).requestKeys(_keysHost(), opts),
