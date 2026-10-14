@@ -35,6 +35,46 @@ function orderRefToSwarmHex(bytes32: string): string | null {
 
 const orders = new Hono<AppEnv>();
 
+type OwnedEvent = NonNullable<Awaited<ReturnType<typeof getEventForOwner>>>;
+
+/**
+ * How many slots one series has sold, and on which contract - null when it never
+ * finished registering (no slots, so no orders). The contract is the only order
+ * ledger. Shared by `/orders` and `/orders/count`, so the count is exactly the
+ * number of slots `/orders` reads.
+ */
+async function soldSlots(eventId: string, series: OwnedEvent["series"][number]) {
+  if (!series.swarmManifestRef || !series.onChainEventId) return null;
+  // On the contract the registration lives on (#563).
+  const contract = registrationContractFor(eventId, series.seriesId);
+  if (!contract) return null;
+  const onChainData = await getOnChainEventAt(contract, series.onChainEventId);
+  if (!onChainData || onChainData.nextSlot === 0n) return null;
+  return { contract, onChainEventId: series.onChainEventId, slotCount: Number(onChainData.nextSlot) };
+}
+
+// GET /api/events/:id/orders/count — authenticated, organiser-only. The number of
+// sold slots across the event's series: one ledger read per series, no slot reads,
+// no Swarm downloads. The audience sync asks this first and reads `/orders` only
+// when the count moved (Fable sign-off 2026-10-14).
+orders.get("/:id/orders/count", requireAuth, async (c) => {
+  const eventId = c.req.param("id");
+  const parentAddress = c.get("parentAddress");
+  try {
+    const event = await getEventForOwner(eventId, parentAddress);
+    if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
+    if (event.creatorAddress.toLowerCase() !== parentAddress.toLowerCase()) {
+      return c.json({ ok: false, error: "Only the event organizer can view orders" }, 403);
+    }
+    let count = 0;
+    for (const series of event.series) count += (await soldSlots(eventId, series))?.slotCount ?? 0;
+    return c.json({ ok: true, data: { eventId, count } });
+  } catch (err) {
+    console.error("[api] getOrderCount error:", err);
+    return c.json({ ok: false, error: "Failed to count orders" }, 500);
+  }
+});
+
 // GET /api/events/:id/orders — authenticated, organizer-only
 orders.get("/:id/orders", requireAuth, async (c) => {
   const eventId = c.req.param("id");
@@ -55,20 +95,14 @@ orders.get("/:id/orders", requireAuth, async (c) => {
     const orderEntries: OrderEntry[] = [];
 
     for (const series of event.series) {
-      // The contract is the only order ledger. A series that never finished
-      // registering has no slots and therefore no orders — skip rather than
-      // reaching for a Swarm feed that is no longer written.
-      if (!series.swarmManifestRef || !series.onChainEventId) continue;
+      // A series that never finished registering has no slots and therefore no
+      // orders — skip rather than reaching for a Swarm feed that is no longer written.
+      const sold = await soldSlots(eventId, series);
+      if (!sold) continue;
 
       {
-        // On the contract the registration lives on (#563).
-        const contract = registrationContractFor(eventId, series.seriesId);
-        if (!contract) continue;
-        const onChainData = await getOnChainEventAt(contract, series.onChainEventId);
-        if (!onChainData || onChainData.nextSlot === 0n) continue;
-
-        const slotCount = Number(onChainData.nextSlot);
-        const refunds = slotRefundStates(series.onChainEventId, contractKey(contract));
+        const { contract, onChainEventId, slotCount } = sold;
+        const refunds = slotRefundStates(onChainEventId, contractKey(contract));
 
         // Slot reads are public view calls, but they are still one RPC round trip
         // EACH, and `slotCount` is however many tickets this series has sold. An
@@ -79,7 +113,7 @@ orders.get("/:id/orders", requireAuth, async (c) => {
           Array.from({ length: slotCount }, (_, slot) => slot),
           SLOT_READ_CONCURRENCY,
           (slot) =>
-            getSlotDataAt(contract, series.onChainEventId!, slot).catch((err) => {
+            getSlotDataAt(contract, onChainEventId, slot).catch((err) => {
               console.warn(`[orders/v2] getSlotData failed for slot ${slot}:`, err);
               return null;
             }),

@@ -116,7 +116,7 @@ function keptAnswers(fields: Record<string, string> | undefined, orderFields: re
  * consent stores, where a refusal already survives any re-upload.
  */
 export function mergeContact(existing: MarketingContact, incoming: MarketingContact): MarketingContact {
-  const incomingWins = provenanceRank(incoming.source) >= provenanceRank(existing.source);
+  const incomingWins = outranks(incoming, existing);
   const merged: MarketingContact = { ...existing };
 
   for (const [key, value] of Object.entries(incoming) as Array<[keyof MarketingContact, string]>) {
@@ -140,6 +140,19 @@ export function mergeContact(existing: MarketingContact, incoming: MarketingCont
   if (incomingWins && incoming.source) merged.source = incoming.source;
 
   return merged;
+}
+
+/**
+ * Equal rank falls to the incoming record, the newer of the two - except between two
+ * checkouts, where the later EVENT is the fresher record whichever was read last. The
+ * automatic sync re-reads an older event whenever its orders change, and must not turn
+ * a contact's last event back to it. An unparseable date never decides (NaN < x is false).
+ */
+function outranks(incoming: MarketingContact, existing: MarketingContact): boolean {
+  const rank = provenanceRank(incoming.source);
+  if (rank !== provenanceRank(existing.source)) return rank > provenanceRank(existing.source);
+  const older = Date.parse(incoming.lastEventDate ?? "") < Date.parse(existing.lastEventDate ?? "");
+  return !(rank === 2 && older);
 }
 
 export interface DrainReport {

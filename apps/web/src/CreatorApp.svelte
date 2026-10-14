@@ -17,6 +17,8 @@
   import AudienceScreen from "./lib/creator/audience/AudienceScreen.svelte";
   import PayoutsScreen from "./lib/creator/payouts/PayoutsScreen.svelte";
   import type { StripeAccountStatus } from "./lib/api/stripe.js";
+  import { syncAudience } from "./lib/creator/audience/audience-sync.svelte.js";
+  import { untrack } from "svelte";
   import {
     STRIPE_REFRESH_GUARD_KEY,
     mayAutoRefreshLink,
@@ -36,6 +38,20 @@
     if (router.route === "create" && !import.meta.env.VITE_ENABLE_INAPP_CREATOR) {
       navigate("/site-builder");
     }
+  });
+
+  // Opted-in ticket buyers join the organiser's list while they use WoCo
+  // (audience-sync.ts) - here on the organiser home and event pages, and only on an
+  // account already unlocked on this device: never a prompt. syncAudience runs at most
+  // once an hour on this device; the Audience screen runs it itself.
+  // These routes already make authenticated reads of their own on open (events, orders,
+  // Stripe status), so the sync adds no new prompt trigger (Fable sign-off 2026-10-14).
+  const AUDIENCE_SYNC_ROUTES = new Set(["creator-home", "dashboard-index", "dashboard"]);
+  $effect(() => {
+    if (!AUDIENCE_SYNC_ROUTES.has(router.route)) return;
+    if (!auth.ready || !auth.isConnected || !auth.parent || !canOrganise(auth.kind)) return;
+    if (!auth.hasSession || !auth.hasIdentitySeed) return;
+    untrack(() => void syncAudience());
   });
 
   let stripeStatus = $state<StripeAccountStatus | null>(null);

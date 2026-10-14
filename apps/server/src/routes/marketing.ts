@@ -23,7 +23,7 @@ import { hashEmail } from "../lib/event/claim-service.js";
 import { getList, putList, withOrgLock } from "../lib/marketing/list-store.js";
 import { normalizeEmails } from "../lib/marketing/emails.js";
 import { suppressedSubset, suppressOrg } from "../lib/marketing/suppression-store.js";
-import { consentedSubset } from "../lib/marketing/consent-store.js";
+import { consentedSubset, getConsent } from "../lib/marketing/consent-store.js";
 import { pruneProven } from "../lib/sender-pacing/index.js";
 import { reachedBefore } from "../lib/email/broadcast-pacing.js";
 import { sendMarketingBatch } from "../lib/email/marketing-send.js";
@@ -90,6 +90,22 @@ function badShape(max: number): string {
   return `emails must be an array of at most ${max.toLocaleString()} addresses`;
 }
 
+/**
+ * Optional compare-and-swap on a list write: `ifUpdatedAt` is the `updatedAt` of
+ * the list the caller merged onto (null = it saw none). The automatic buyer add
+ * sends it, so its write can never replace a list saved since - a delete in
+ * another tab, another device, or a key-ring re-seal - with a copy that never saw
+ * it. Absent = last write wins, as before. Undefined = not asked; "bad" = malformed.
+ */
+function expectedListStamp(body: Record<string, unknown>): string | null | undefined | "bad" {
+  if (!("ifUpdatedAt" in body)) return undefined;
+  const v = body.ifUpdatedAt;
+  return v === null || typeof v === "string" ? v : "bad";
+}
+
+const LIST_CHANGED = "Your list changed while this was saving, so nothing was overwritten. Try again.";
+const listMoved = (org: string, expected: string | null) => (getList(org)?.updatedAt ?? null) !== expected;
+
 /** Replace the organiser's stored list (sealed blob + hashes). */
 marketing.post("/list", requireAuth, async (c) => {
   const org = c.get("parentAddress").toLowerCase();
@@ -117,6 +133,9 @@ marketing.post("/list", requireAuth, async (c) => {
     }
     const { emails, unmailable, unmailableCount } = normalized;
 
+    const expected = expectedListStamp(body);
+    if (expected === "bad") return c.json({ ok: false, error: "ifUpdatedAt must be a string or null" }, 400);
+
     // Adding anyone needs a verified organiser (owner decision 2026-10-02): every
     // save stores the whole list on platform storage. Removing never does, so an
     // organiser can always erase a contact, verified or not. "Only removes" = a
@@ -133,6 +152,8 @@ marketing.post("/list", requireAuth, async (c) => {
     }
 
     const data = await withOrgLock(org, async () => {
+      // Inside the organiser's lock, so no other write can land between this check and the one below.
+      if (expected !== undefined && listMoved(org, expected)) return null;
       const emailHashes = [...new Set(emails.map(hashEmail))];
       const swarmRef = await uploadToBytes(JSON.stringify(sealedList), undefined, {
         redundancyLevel: RedundancyLevel.STRONG,
@@ -149,6 +170,7 @@ marketing.post("/list", requireAuth, async (c) => {
       pruneProven(org, new Set(emailHashes));
       return { swarmRef, count, updatedAt };
     });
+    if (!data) return c.json({ ok: false, error: LIST_CHANGED, code: "LIST_CHANGED" }, 409);
 
     // Reported, never dropped. Excluding an unmailable row from the index would
     // desync it from the sealed blob the organiser can still see on screen, and
@@ -235,18 +257,26 @@ marketing.post("/check", requireAuth, async (c) => {
   const suppressed: string[] = [];
   const alreadyInList: string[] = [];
   const consented: string[] = [];
+  // When each consent was recorded - scoped exactly like `consented`. The buyer sync
+  // re-adds a contact the organiser deleted only on an "Email me" ticked after the
+  // deletion (Fable sign-off 2026-10-14 recommendation).
+  const consentedAt: Record<string, string> = {};
   const softOptIn: string[] = [];
   const proven: string[] = [];
   for (const [h, e] of hashToEmail) {
     if (suppressedHashes.has(h)) suppressed.push(e);
     if (storedHashes.has(h)) alreadyInList.push(e);
-    if (consentedHashes.has(h)) consented.push(e);
+    if (consentedHashes.has(h)) {
+      consented.push(e);
+      const ts = getConsent(h, org)?.ts;
+      if (ts) consentedAt[e] = ts;
+    }
     if (softOptInHashes.has(h)) softOptIn.push(e);
     // The same rule the send path classifies by.
     if (reachedBefore(org, h)) proven.push(e);
   }
 
-  return c.json({ ok: true, data: { suppressed, alreadyInList, consented, softOptIn, proven } });
+  return c.json({ ok: true, data: { suppressed, alreadyInList, consented, consentedAt, softOptIn, proven } });
 });
 
 /** Manual per-organiser suppression (contact delete + "also unsubscribe"). */

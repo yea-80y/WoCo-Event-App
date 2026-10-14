@@ -445,6 +445,13 @@ export async function getEventOrders(eventId: string): Promise<EventOrdersRespon
   return resp.data;
 }
 
+/** Sold slots across the event's series - one ledger read per series, no order downloads. */
+export async function getEventOrderCount(eventId: string): Promise<number> {
+  const resp = await authGet<{ eventId: string; count: number }>(`/api/events/${eventId}/orders/count`);
+  if (!resp.data || typeof resp.data.count !== "number") throw new Error(resp.error || "Failed to count orders");
+  return resp.data.count;
+}
+
 export interface WebhookRelayResponse {
   status: number;
   body: string;

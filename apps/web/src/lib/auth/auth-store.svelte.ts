@@ -520,15 +520,30 @@ function _currentSecretFor(seed: string): string {
  * Every secret this device holds for the account, generation 0 first, and the current
  * one. `toSeal`: the caller will sign or seal with `current`, so the generation must be
  * CONFIRMED current (prompting once when this device is only behind); opening old boxes
- * needs no such check.
+ * needs no such check. `silent`: a seal nobody asked for at this moment (the audience
+ * sync) - never the catch-up prompt; an unconfirmed generation throws instead.
  */
-async function _accountSecretsIfPresent(opts: { toSeal?: boolean } = {}): Promise<{ current: string; all: string[]; gen: number } | null> {
+async function _accountSecretsIfPresent(opts: { toSeal?: boolean; silent?: boolean } = {}): Promise<{ current: string; all: string[]; gen: number } | null> {
   const seed = await _seedIfPresent();
   if (!seed) return null;
-  if (opts.toSeal) await _requireCurrentKeys({ prompt: true });
+  if (opts.toSeal) await _requireCurrentKeys({ prompt: !opts.silent });
   else if (_chainLoad) await _chainLoad.catch(() => {});
   const chain = _kind === "passkey" && _unlocked?.seed === seed ? _unlocked.chain : null;
   return { current: currentSecretOf(seed, chain), all: allSecretsOf(seed, chain), gen: chain?.gen ?? 0 };
+}
+
+/**
+ * A FRESH read of the account's key-ring anchor (one RPC, never a prompt) equals the
+ * ring this device seals under. Asked right before an upload sealed in the background
+ * (the audience sync), so a ring replaced since this device last looked (#186) means
+ * no write - the in-memory verdict alone could be stale.
+ */
+async function _keyRingStillCurrent(): Promise<boolean> {
+  if (_kind !== "passkey") return true;
+  const u = _unlocked;
+  if (!u) return false;
+  const ref = await (await _keys()).readAnchor(_keysHost(), u.parent, { fresh: true });
+  return ref !== "error" && ref === (u.chain?.ringRef ?? null) && _unlocked === u;
 }
 
 /**
@@ -5430,7 +5445,9 @@ export const auth = {
   // tries `all` (sealed under whichever generation was current then). Generation 0 is
   // the identity seed, so for an account that never removed a passkey both are the seed.
   // The issuing key, escrow and portability stay on `getIdentitySeed`.
-  getAccountSecrets: (opts: { toSeal?: boolean } = {}) => _accountSecretsIfPresent(opts),
+  getAccountSecrets: (opts: { toSeal?: boolean; silent?: boolean } = {}) => _accountSecretsIfPresent(opts),
+  // Fresh anchor read, no prompt: is the ring this device seals under still the account's?
+  keyRingStillCurrent: () => _keyRingStillCurrent(),
   // Why the account's keys need attention here, if they do (#186): "keyless" = this
   // passkey was left out of the account's latest keys; "changed" = another passkey moved
   // them on (a removal). Null = nothing to say.

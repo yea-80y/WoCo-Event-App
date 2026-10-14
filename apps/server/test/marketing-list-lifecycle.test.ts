@@ -253,8 +253,21 @@ test("/check returns the basis per address: consent, soft opt-in, or neither - a
   assert.deepEqual(data.softOptIn, ["soft@example.com"]);
 
   const theirs = await postAs(other, "/api/marketing/check", { emails: ["yes@example.com", "soft@example.com"] });
-  const td = theirs.json.data as { consented: string[]; softOptIn: string[] };
+  const td = theirs.json.data as { consented: string[]; softOptIn: string[]; consentedAt: Record<string, string> };
   assert.deepEqual([td.consented, td.softOptIn], [[], []], "never another organiser's records");
+  assert.deepEqual(td.consentedAt, {}, "nor when anyone agreed to them");
+});
+
+test("/check dates each consent, for consented addresses only (Fable sign-off 2026-10-14)", async () => {
+  // The buyer sync re-adds a deleted contact only on an "Email me" ticked after the delete.
+  const d = await mintDelegation();
+  const org = d.parent.address.toLowerCase();
+  const consent = await import("../src/lib/marketing/consent-store.js");
+  consent.recordConsent(hashEmail("yes@example.com"), org, { ts: "2026-10-01T10:00:00.000Z", source: "checkout", notice: "x", basis: "consent" });
+  consent.recordConsent(hashEmail("soft@example.com"), org, { ts: "2026-10-02T10:00:00.000Z", source: "checkout", notice: "x", basis: "soft-opt-in" });
+  const { json } = await postAs(d, "/api/marketing/check", { emails: ["Yes@Example.com", "soft@example.com", "none@example.com"] });
+  const data = json.data as { consentedAt: Record<string, string> };
+  assert.deepEqual(data.consentedAt, { "yes@example.com": "2026-10-01T10:00:00.000Z" });
 });
 
 test("/check still refuses a body that is not an array", async () => {
@@ -304,4 +317,28 @@ test("/list refuses a v2 box with anything riding beside it", async () => {
     const { status } = await postAs(d, "/api/marketing/list", { sealedList, emails: [] });
     assert.equal(status, 400);
   }
+});
+
+// ── Compare-and-swap for the automatic buyer add ────────────────────────────
+
+test("/list with ifUpdatedAt refuses to replace a list saved since, and leaves it untouched", async () => {
+  // The buyer sync merges onto the list it re-read. A delete saved in another tab
+  // after that read must not be undone by the sync's write. (Remove-only bodies, so
+  // the request reaches the check without a Stripe-verified organiser or Swarm.)
+  const d = await mintDelegation();
+  const org = d.parent.address.toLowerCase();
+  const entry = { swarmRef: "22".repeat(32), count: 1, updatedAt: "2026-10-14T12:00:01.000Z", emailHashes: [hashEmail("a@example.com")] };
+  putList(org, entry);
+  const box = { v: 2, enc: "ab".repeat(1120), ct: "cd".repeat(48) };
+
+  for (const ifUpdatedAt of ["2026-10-14T12:00:00.000Z", null]) {
+    const { status, json } = await postAs(d, "/api/marketing/list", { sealedList: box, emails: ["a@example.com"], ifUpdatedAt });
+    assert.equal(status, 409, String(ifUpdatedAt));
+    assert.equal(json.code, "LIST_CHANGED");
+  }
+  const meta = await getAs(d, "/api/marketing/list/meta");
+  assert.deepEqual(meta.json, { ok: true, data: { count: 1, updatedAt: entry.updatedAt } });
+
+  const bad = await postAs(d, "/api/marketing/list", { sealedList: box, emails: [], ifUpdatedAt: 7 });
+  assert.equal(bad.status, 400);
 });

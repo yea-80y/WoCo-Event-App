@@ -27,7 +27,8 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   unconditional. **Ticket emails are transactional — NO unsubscribe on them, ever.**
   Marketing broadcasts (`/api/broadcasts/jobs`, `kind: "marketing"`; the old
   `/api/marketing/broadcast` now answers 410) also hash-check every recipient against the stored list (the
-  import wizard's consent warranty is the only path to a sendable address); footer insertion
+  import wizard's consent warranty, or the buyer's own checkout record, is the only path to a
+  sendable address); footer insertion
   only honours a document-final `</body>` (a mid-doc `</body>` can't hide it).
 - **FAILS CLOSED on misconfiguration**: refuses to send if `PUBLIC_API_BASE` (unsub links) or
   `MARKETING_POSTAL_ADDRESS` (CAN-SPAM §7704(a)(5)) is unset. Sending non-compliant mail is
@@ -63,10 +64,47 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   the payload parses; JSON can never start with `0x1f8b`), so a box sealed uncompressed (no
   `CompressionStream`) still opens — do not replace that sniff with a version check. Columnar encoding was measured and
   rejected: it buys ~6% once gzip has already collapsed the repeated keys.
-- The whole list is re-sealed and re-uploaded on EVERY change (`commitList`). That is fine
-  at the 20k cap — one ~1MB atomic write, single writer, single reader — and is deliberately
-  NOT the paged/append-only shape the public events directory needs. Different problem:
-  one private blob rewritten by its owner vs. a many-writer public index.
+- The whole list is re-sealed and re-uploaded on EVERY change (`commitList`, and the buyer
+  sync below). That is fine at the 20k cap - one ~1MB atomic write, one owner, two writers in
+  their browser - and is deliberately NOT the paged/append-only shape the public events
+  directory needs. Different problem: one private blob rewritten by its owner vs. a
+  many-writer public index. The two writers share a tab lock, and the sync merges onto a
+  fresh re-read (below).
+- **OPTED-IN BUYERS JOIN THE LIST AUTOMATICALLY** (2026-10-14, replaced the manual "Add from
+  your events"). In the organiser's browser - the buyer's email exists only in their sealed
+  order, which the retention sweep deletes months after the event (#547), so it runs whenever
+  the organiser uses WoCo: on the Audience screen (open + "Check now") and in the background on
+  organiser home and event pages, at most once an hour per device (the last start is kept in
+  localStorage), only on an account already unlocked with a session - a background run never
+  prompts; a "Check now" tap may ask the organiser to confirm it's them. `audience-sync.ts`
+  (rules, pure + tested) / `audience-sync.svelte.ts` (wiring).
+  - **Cost** (Fable sign-off 2026-10-14): events that ended more than 13 months ago (longest
+    retention + 1) are skipped with no request; each other event costs one call to
+    `/api/events/:id/orders/count` (a ledger read per series), and `/orders` is read only when
+    that count moved. An order that will not open on the device is remembered in the
+    per-organiser watermark, not retried every run.
+  - Only buyers with a checkout record (consent or soft opt-in), and **never an address in
+    `/check`'s `suppressed`** (unsubscribed, declined, bounced, complained, manual), even one
+    that also holds a record. Kept answers only, never a health answer (`attendee-drain.ts`).
+  - **Deleted contacts stay deleted**: every delete, with or without "also unsubscribe", adds a
+    tombstone to the sealed payload's `removed` - `{ h, at }`, `h` = SHA-256 over the organiser's
+    address and the lowercased email (not a plain email hash; the address itself is not kept),
+    `at` = when it was deleted. The sync re-adds a deleted contact only on an "Email me" consent
+    recorded AFTER the deletion (`/check`'s `consentedAt`), which clears the tombstone; a soft
+    opt-in after it does not (Fable sign-off 2026-10-14 recommendation). A CSV import clears it
+    for the addresses it adds back. No automatic pruning. Sealed with the list, never sent to the
+    server. Absent on older lists = none.
+  - **Read-merge-write**: the list is re-read and opened just before the write and merged onto
+    that; no re-read, no write. Who said yes is asked again after the re-read, and only an address
+    both answers clear is added. The write carries the re-read list's `updatedAt` and the server
+    refuses it if the list moved since (`ifUpdatedAt`, 409 `LIST_CHANGED`), so a delete in another
+    tab or device is never undone; refused once, it retries once from a fresh re-read. The seal
+    key is taken at write time and, before the upload, re-confirmed against a fresh read of the
+    key-ring anchor (#186). Nothing changed, nothing written.
+  - **The Audience screen's own saves** use the same compare-and-swap: each edit (add, change,
+    delete) is applied to the list as re-read inside the lock, never to the tab's own copy, so a
+    stale tab cannot bring back a deleted contact or wipe a tombstone; refused, the screen reloads
+    and says so.
 - CSV IMPORT: no source platform (Skiddle/Fatsoma/RA/Eventbrite) publishes an export column
   schema — RA's is promoter-selected per export, so there is no fixed shape at all. Header
   auto-mapping in `csv-import.ts` is therefore a scored GUESS and the wizard always lets a
@@ -237,6 +275,8 @@ apps/web/src/lib/creator/audience/{AudienceScreen,CsvImportWizard,ColumnMapper,C
 packages/shared/src/legal/consent.ts          # the wording, versioned — single source of truth
 apps/web/src/lib/creator/audience/csv-import.ts # PURE: header scoring, name split, consent,
                                                 # manifest. All import logic lives here.
+apps/web/src/lib/creator/audience/audience-sync.ts # PURE: the automatic buyer add's rules
+apps/web/src/lib/creator/audience/audience-sync.svelte.ts # its wiring: syncAudience(), the tab lock
 apps/web/src/lib/api/marketing.ts             # client wrappers
 packages/shared/src/marketing/types.ts        # MarketingContact, list payload, domain types
 packages/shared/src/crypto/compress.ts        # gzip over CompressionStream (no deps)

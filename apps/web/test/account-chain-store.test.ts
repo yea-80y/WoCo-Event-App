@@ -65,8 +65,19 @@ test("signing and sealing demand the confirmed generation; silent paths sign not
     const gate = b.indexOf("if (!(await _currentKeysConfirmed())) return null;");
     assert.ok(gate > 0 && gate < b.indexOf("deriveFeedSignerKey("), `${sig}: gate before derive`);
   }
-  assert.match(body("async function _accountSecretsIfPresent"), /if \(opts\.toSeal\) await _requireCurrentKeys\(\{ prompt: true \}\);/);
+  // Sealing prompts the catch-up only for a caller that may ask; the audience sync seals in the
+  // background (`silent`) and gets a refusal instead, never a sheet.
+  assert.match(body("async function _accountSecretsIfPresent"), /if \(opts\.toSeal\) await _requireCurrentKeys\(\{ prompt: !opts\.silent \}\);/);
   assert.match(body("async function _requireCurrentKeys"), /if \(_keysVerdict !== "ok"\) throw new Error/);
+});
+
+test("the background seal's last check reads the key-ring anchor fresh, never a prompt (Fable sign-off 2026-10-14)", () => {
+  const b = body("async function _keyRingStillCurrent");
+  assert.match(b, /const ref = await \(await _keys\(\)\)\.readAnchor\(_keysHost\(\), u\.parent, \{ fresh: true \}\);/);
+  assert.match(b, /return ref !== "error" && ref === \(u\.chain\?\.ringRef \?\? null\) && _unlocked === u;/);
+  assert.match(b, /if \(!u\) return false;/);
+  assert.doesNotMatch(b, /catchUp|ensurePasskeyKey|ensureAccountSetup|_requireCurrentKeys/);
+  assert.match(kbody("export async function readAnchor"), /if \(!opts\.fresh && memo/);
 });
 
 test("a device behind catches up only with the passkey, and enrols itself only on a confirmed verdict", () => {

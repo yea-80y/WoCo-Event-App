@@ -14,15 +14,24 @@ import type {
   SendingDomainInfo,
 } from "@woco/shared";
 
+/**
+ * `ifUpdatedAt`: the `updatedAt` of the list this one was merged onto (null = there
+ * was none). The server refuses the write (409 LIST_CHANGED) if the list has been
+ * saved since - the automatic buyer add uses it so it never undoes an edit it did
+ * not see. Omitted = last write wins.
+ */
 export async function uploadMarketingList(
   sealedList: SealedBoxV2,
   emails: string[],
+  opts: { ifUpdatedAt?: string | null } = {},
 ): Promise<MarketingListMeta> {
   const resp = await authPost<MarketingListMeta>("/api/marketing/list", {
     sealedList: sealedList as unknown as Record<string, unknown>,
     emails,
+    ...("ifUpdatedAt" in opts ? { ifUpdatedAt: opts.ifUpdatedAt ?? null } : {}),
   });
-  if (!resp.data) throw new Error(resp.error || "List upload failed");
+  // An ApiError, so a caller can tell LIST_CHANGED (someone saved first) from a failure.
+  if (!resp.data) throw apiError(resp, "List upload failed");
   return resp.data;
 }
 
@@ -53,6 +62,7 @@ export async function checkMarketingEmails(emails: string[]): Promise<MarketingC
   const suppressed: string[] = [];
   const alreadyInList: string[] = [];
   const consented: string[] = [];
+  const consentedAt: Record<string, string> = {};
   const softOptIn: string[] = [];
   const proven: string[] = [];
 
@@ -63,11 +73,12 @@ export async function checkMarketingEmails(emails: string[]): Promise<MarketingC
     suppressed.push(...resp.data.suppressed);
     alreadyInList.push(...resp.data.alreadyInList);
     consented.push(...(resp.data.consented ?? []));
+    Object.assign(consentedAt, resp.data.consentedAt ?? {});
     softOptIn.push(...(resp.data.softOptIn ?? []));
     proven.push(...(resp.data.proven ?? []));
   }
 
-  return { suppressed, alreadyInList, consented, softOptIn, proven };
+  return { suppressed, alreadyInList, consented, consentedAt, softOptIn, proven };
 }
 
 export async function suppressContacts(emails: string[]): Promise<void> {
