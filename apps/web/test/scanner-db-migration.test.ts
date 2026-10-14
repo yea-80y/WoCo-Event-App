@@ -103,6 +103,7 @@ const LEGACY = {
     pass: PASS,
     pack: PACK,
     roster: [{ seriesId: "ser-now", edition: 1, name: "Ada" }],
+    conflicts: [],
     deviceId: "legacydevice0001",
     pendingClaims: { "ser-now 1": "claim-1", "ser-old 2": "claim-2" },
   },
@@ -126,7 +127,7 @@ test("a legacy database is copied in under its event, its pass and attendee data
   assert.equal(await db.getDeviceId(), "legacydevice0001", "the same device id, so a single-scanner pass still knows this phone");
 
   const legacy = await readLegacyAs(f);
-  assert.deepEqual(legacy.kv, { deviceId: "legacydevice0001" }, "pass, pack, roster, conflicts and claims are scrubbed");
+  assert.deepEqual(legacy.kv, { deviceId: "legacydevice0001", pendingClaims: LEGACY.kv.pendingClaims }, "pass, pack, roster and conflicts are scrubbed; the old tab's claim ids stay");
   assert.deepEqual(legacy.checkins, ["ser-now 1", "ser-old 2"], "its check-ins stay, every one");
   assert.deepEqual(legacy.pending, ["ser-now 1", "ser-old 2"], "and its unsynced queue");
   assert.ok((await names(f)).includes("woco-scanner"));
@@ -140,7 +141,7 @@ test("an open legacy connection in another tab holds up neither the boot nor the
   db.useIndexedDbForTests(f);
 
   assert.deepEqual(await within(db.getAllCheckins(EVENT), 1_000, "boot with a legacy tab open"), [rec("ser-now", 1)]);
-  assert.deepEqual((await readLegacyAs(f)).kv, { deviceId: "legacydevice0001" });
+  assert.deepEqual((await readLegacyAs(f)).kv, { deviceId: "legacydevice0001", pendingClaims: LEGACY.kv.pendingClaims });
   db.useIndexedDbForTests(f); // and every boot after it
   assert.deepEqual(await within(db.getAllCheckins(EVENT), 1_000, "a later boot with a legacy tab open"), [rec("ser-now", 1)]);
 });
@@ -263,11 +264,11 @@ test("the scrub waits for the copy: a copy that fails leaves the legacy pass for
 
   db.useIndexedDbForTests(f);
   await assert.rejects(db.getAllCheckins(EVENT));
-  assert.deepEqual(Object.keys((await readLegacyAs(real)).kv).sort(), ["deviceId", "pack", "pass", "pendingClaims", "roster"], "nothing scrubbed");
+  assert.deepEqual(Object.keys((await readLegacyAs(real)).kv).sort(), ["conflicts", "deviceId", "pack", "pass", "pendingClaims", "roster"], "nothing scrubbed");
   copyFails = false;
   assert.deepEqual(await db.getAllCheckins(EVENT), [rec("ser-now", 1)], "the retry copies");
   assert.deepEqual(await db.getPass(EVENT), PASS);
-  assert.deepEqual((await readLegacyAs(real)).kv, { deviceId: "legacydevice0001" }, "and only then scrubs");
+  assert.deepEqual((await readLegacyAs(real)).kv, { deviceId: "legacydevice0001", pendingClaims: LEGACY.kv.pendingClaims }, "and only then scrubs");
 });
 
 test("a legacy read that stalls holds up the first copy only", { timeout: 15_000 }, async (t) => {

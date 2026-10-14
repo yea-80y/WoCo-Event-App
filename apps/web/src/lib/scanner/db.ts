@@ -34,8 +34,13 @@ const MIGRATED = "migratedFromLegacy";
 const LEGACY_MERGED = "legacyMerged";
 /** The last legacy pack's event and ticket types: places what an old tab writes after its pack is scrubbed. */
 const LEGACY_PLACEMENT = "legacyPlacement";
-/** Legacy kv entries holding the pass, the attendee data and claims; scrubbed once the copy is in. */
-const LEGACY_SECRETS = ["pass", "pack", "roster", "conflicts", "pendingClaims"] as const;
+/**
+ * Legacy kv entries holding the pass and the attendee data; scrubbed once the
+ * copy is in. Not `pendingClaims`: claim ids only, and an old tab re-reads them
+ * on every claim - without its id, a re-scan after a lost answer would turn away
+ * the person that claim had just let in.
+ */
+const LEGACY_SECRETS = ["pass", "pack", "roster", "conflicts"] as const;
 /**
  * After the first copy, how long a boot waits to read the legacy database. With
  * no delete or upgrade of it ever queued, a version-less open has nothing to
@@ -225,7 +230,7 @@ async function readLegacy(): Promise<LegacyData | null> {
 }
 
 /**
- * Remove the pass, attendee data and claims from the legacy database - only
+ * Remove the pass and attendee data from the legacy database - only
  * after the copy has committed, or a copy that failed would have nothing left to
  * retry from. Its check-ins and unsynced queue stay: an old tab may still be
  * writing them, and every boot merges what is new.
