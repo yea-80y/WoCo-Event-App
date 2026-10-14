@@ -9,7 +9,9 @@
  *
  *   content-feed signer   HKDF(S_g, "woco/feed-signer/v1")        crypto/feed-signer.ts
  *   order key (X-Wing)    HKDF(S_g, "woco/encryption/xwing/v1")   crypto/xwing.ts
- *   door-pass roster key  HKDF(S_g, "", "woco/door-pass/roster/v1:{eventId}:{passId}")
+ *   door pass secret P    HKDF(S_g, "", "woco/door-pass/v2:{eventId}:{passId}")
+ *     roster key            HKDF(P, "", "woco/door-pass/v2/roster-aead")   checkin/door-keys.ts
+ *     door entries key      HKDF(P, "", "woco/door-pass/v2/entries-kem")   checkin/door-entries-key.ts
  *
  * So at generation 0 nothing moves. What stays on the identity seed whatever the
  * generation: the issuing key (every use of it sits behind a session the removed
@@ -32,9 +34,9 @@ import type { Hex0x } from "../types.js";
 
 export const ACCOUNT_SECRET_BYTES = 32;
 
-/** HKDF info prefix for a door pass's roster key. FROZEN: change it and every door
- *  device holding a pass reads its roster as garbage until the pass is made again. */
-export const DOOR_PASS_ROSTER_INFO = "woco/door-pass/roster/v1";
+/** HKDF info prefix for a door pass's secret. FROZEN: change it and every door device
+ *  holding a pass reads its roster and new sales as garbage until the pass is made again. */
+export const DOOR_PASS_SECRET_INFO = "woco/door-pass/v2";
 
 const ID_RE = /^[0-9A-Za-z_-]{1,128}$/;
 
@@ -65,21 +67,23 @@ export function accountKeysOf(secret: Uint8Array): AccountKeys {
 }
 
 /**
- * A door pass's roster key: any device of the account at this generation derives it,
- * so nothing is stored in the clear. `passId` is the server's id for the pass, so a
- * new pass is a new key even for the same event. FROZEN: the label, the empty salt and
- * the id charset `[0-9A-Za-z_-]{1,128}` - which keeps the string unambiguous, and so
- * makes the event id's charset part of the format.
+ * A door pass's secret P, the one value its link carries: any device of the account at
+ * this generation derives it, so nothing is stored in the clear. `passId` is the pass's
+ * id, so a new pass is a new secret even for the same event. P is never a key itself:
+ * the roster key and the door entries key are both HKDF children of it (`checkin/`), so
+ * no bytes serve two primitives. FROZEN: the label, the empty salt and the id charset
+ * `[0-9A-Za-z_-]{1,128}` - which keeps the string unambiguous, and so makes the event
+ * id's charset part of the format.
  */
-export function doorPassRosterKey(secret: Uint8Array, eventId: string, passId: string): Uint8Array {
+export function doorPassSecret(secret: Uint8Array, eventId: string, passId: string): Uint8Array {
   if (!ID_RE.test(eventId) || !ID_RE.test(passId)) {
-    throw new Error("door pass roster key: event and pass ids must be [0-9A-Za-z_-]");
+    throw new Error("door pass secret: event and pass ids must be [0-9A-Za-z_-]");
   }
   return hkdf(
     sha256,
     assertAccountSecret(secret),
     new Uint8Array(0),
-    utf8ToBytes(`${DOOR_PASS_ROSTER_INFO}:${eventId}:${passId}`),
+    utf8ToBytes(`${DOOR_PASS_SECRET_INFO}:${eventId}:${passId}`),
     32,
   );
 }

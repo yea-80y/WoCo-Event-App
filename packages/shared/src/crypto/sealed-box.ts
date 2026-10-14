@@ -87,6 +87,21 @@ export function listSealContext(ownerAddress: string): SealContext {
   return { info: LIST_SEAL_INFO, aad: `${LIST_SEAL_INFO}:${owner}` };
 }
 
+/** HPKE info for a sealed DOOR ENTRY (one sale's email and card name, for the door). FROZEN. */
+export const DOOR_ENTRY_SEAL_INFO = "woco/door-entry/v1";
+
+/**
+ * A door entry is bound to its event, its pass and its ticket: lifted to another
+ * ticket or pass it fails its tag, so a scanner can trust which ticket a name is for.
+ * Same id rule as orders, plus the pass id's own (`DOOR_PASS_ID_RE`).
+ */
+export function doorEntrySealContext(eventId: string, passId: string, seriesId: string, edition: number): SealContext {
+  if (!ID_RE.test(eventId) || !ID_RE.test(seriesId) || !/^[0-9a-f]{32}$/.test(passId) || !Number.isInteger(edition) || edition < 1) {
+    throw new Error("door entry seal context: malformed event, pass, series or edition");
+  }
+  return { info: DOOR_ENTRY_SEAL_INFO, aad: `${DOOR_ENTRY_SEAL_INFO}:${eventId}:${passId}:${seriesId}:${edition}` };
+}
+
 const suite = new CipherSuite({ kem: new XWingKem(), kdf: new HkdfSha256(), aead: new Aes256Gcm() });
 
 function toBytes(key: Uint8Array | string): Uint8Array {
