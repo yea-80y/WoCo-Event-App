@@ -8,11 +8,16 @@
  * WoCo", bounces and spam complaints.
  *
  * MUST survive server restarts — same rule as consumed-tx-hashes.json.
+ *
+ * PRESENT BUT UNREADABLE (#882): never written over, which would replace every
+ * unsubscribe in it, and every send FAILS CLOSED until an operator restores it
+ * and restarts: the yes/no reads answer "suppressed", the reads that say what is
+ * held throw, and `/api/health` `marketingSuppression` alarms.
  */
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { writeJsonAtomic } from "./persist.js";
+import { recordRefusedWrite, writeJsonAtomic } from "./persist.js";
 
 const DATA_DIR = join(process.cwd(), ".data");
 const STORE_FILE = join(DATA_DIR, "marketing-suppression.json");
@@ -47,22 +52,63 @@ interface SuppressionEntry {
 
 const entries = new Map<string, SuppressionEntry>();
 let loaded = false;
+let fileUnreadable: string | null = null;
+
+/**
+ * Thrown by the reads that report WHAT is held. An unreadable store has no
+ * truthful answer to them, and "nothing" is the one answer that mails people.
+ */
+export class SuppressionStoreUnavailableError extends Error {
+  constructor() {
+    super("The unsubscribe list cannot be read right now, so no marketing email is sent until it is restored");
+    this.name = "SuppressionStoreUnavailableError";
+  }
+}
+
+function refuseFile(why: string): void {
+  fileUnreadable = why;
+  console.error(
+    `[suppression] ALARM: marketing-suppression.json ${why} - every marketing send is refused, and the file ` +
+      "will NOT be written until it is restored and the server restarted (/api/health marketingSuppression)",
+  );
+}
 
 function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
+  let raw: string;
   try {
-    const raw = readFileSync(STORE_FILE, "utf-8");
-    const obj = JSON.parse(raw) as Record<string, SuppressionEntry>;
-    for (const [hash, entry] of Object.entries(obj)) entries.set(hash, entry);
+    raw = readFileSync(STORE_FILE, "utf-8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code === "ENOENT") return; // first boot
+    return refuseFile(`exists but could not be read (${code ?? "unknown error"})`);
+  }
+  try {
+    const obj = JSON.parse(raw) as unknown;
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) throw new Error("not a JSON object");
+    const all = Object.entries(obj as Record<string, SuppressionEntry>);
+    // A wrong shape must refuse here, not throw (or read as unsuppressed) on every send later.
+    if (all.some(([, e]) => !e || typeof e !== "object" || !e.orgs || typeof e.orgs !== "object")) {
+      throw new Error("unexpected entry shape");
+    }
+    for (const [hash, entry] of all) entries.set(hash, entry);
     console.log(`[suppression] Loaded ${entries.size} suppressed addresses from disk`);
   } catch {
-    // File doesn't exist yet — that's fine
+    refuseFile("could not be parsed");
   }
 }
 
+/** Memory is ahead of disk: the last write failed or was refused. A success writes the whole map. */
+let unpersisted = false;
+
 function persistToDisk(): boolean {
-  return writeJsonAtomic(STORE_FILE, Object.fromEntries(entries), "suppression");
+  // Writing now would replace the operator's only copy.
+  const ok = fileUnreadable
+    ? recordRefusedWrite(STORE_FILE, "suppression")
+    : writeJsonAtomic(STORE_FILE, Object.fromEntries(entries), "suppression");
+  unpersisted = !ok;
+  return ok;
 }
 
 function getOrCreate(emailHash: string): SuppressionEntry {
@@ -82,13 +128,16 @@ function getOrCreate(emailHash: string): SuppressionEntry {
  *   later consent: stamping the write time instead of the decision time would
  *   make a card sale (recorded in the Stripe webhook, minutes later) look newer
  *   than it is and silently swallow a genuine opt-in.
+ * @returns false when the mark is not on disk (the write failed, or an unreadable
+ *   file refused it, #882): it would not survive a restart, so a caller must not
+ *   tell anyone they are unsubscribed.
  */
 export function suppressOrg(
   emailHash: string,
   organiserAddress: string,
   source: SuppressSource,
   ts: string = new Date().toISOString(),
-): void {
+): boolean {
   ensureLoaded();
   const entry = getOrCreate(emailHash);
   const org = organiserAddress.toLowerCase();
@@ -98,18 +147,26 @@ export function suppressOrg(
   // must be able to suppress again, or the person is stuck opted-in.
   if (!suppresses(entry.orgs[org])) {
     entry.orgs[org] = { ts, source };
-    persistToDisk();
+  } else if (!unpersisted) {
+    return true;
   }
+  // An existing mark is retried rather than reported: it may be the one a failed write left in memory.
+  return persistToDisk();
 }
 
-/** Suppress this address for ALL marketing via the platform (opt-all, bounce, complaint). */
-export function suppressGlobal(emailHash: string, source: SuppressSource): void {
+/**
+ * Suppress this address for ALL marketing via the platform (opt-all, bounce, complaint).
+ * @returns false when the mark is not on disk, as `suppressOrg`.
+ */
+export function suppressGlobal(emailHash: string, source: SuppressSource): boolean {
   ensureLoaded();
   const entry = getOrCreate(emailHash);
   if (!suppresses(entry.global)) {
     entry.global = { ts: new Date().toISOString(), source };
-    persistToDisk();
+  } else if (!unpersisted) {
+    return true;
   }
+  return persistToDisk();
 }
 
 /**
@@ -162,6 +219,7 @@ export function marksFor(
   emailHash: string,
 ): { global?: SuppressionMark; orgs: Record<string, SuppressionMark> } | null {
   ensureLoaded();
+  if (fileUnreadable) throw new SuppressionStoreUnavailableError();
   const entry = entries.get(emailHash);
   return entry ? { ...(entry.global ? { global: entry.global } : {}), orgs: { ...entry.orgs } } : null;
 }
@@ -181,6 +239,7 @@ export function marksFor(
  */
 export function suppressionSources(emailHash: string, organiserAddress: string): SuppressSource[] {
   ensureLoaded();
+  if (fileUnreadable) throw new SuppressionStoreUnavailableError();
   const entry = entries.get(emailHash);
   if (!entry) return [];
   const out: SuppressSource[] = [];
@@ -197,6 +256,8 @@ export function suppressionSources(emailHash: string, organiserAddress: string):
  */
 export function suppressedSince(emailHash: string, organiserAddress: string): string | null {
   ensureLoaded();
+  // Not null, which reads as "never unmailable". The consent sweep stops on the throw.
+  if (fileUnreadable) throw new SuppressionStoreUnavailableError();
   const entry = entries.get(emailHash);
   if (!entry) return null;
   const active = [entry.global, entry.orgs[organiserAddress.toLowerCase()]].filter(suppresses);
@@ -207,6 +268,7 @@ export function suppressedSince(emailHash: string, organiserAddress: string): st
 /** Is this address suppressed for this organiser (globally or per-org)? */
 export function isSuppressed(emailHash: string, organiserAddress: string): boolean {
   ensureLoaded();
+  if (fileUnreadable) return true;
   const entry = entries.get(emailHash);
   if (!entry) return false;
   return suppresses(entry.global) || suppresses(entry.orgs[organiserAddress.toLowerCase()]);
@@ -220,15 +282,31 @@ export function isSuppressed(emailHash: string, organiserAddress: string): boole
  */
 export function isGloballySuppressed(emailHash: string): boolean {
   ensureLoaded();
+  if (fileUnreadable) return true;
   return suppresses(entries.get(emailHash)?.global);
 }
 
 /** Subset of the given hashes that are suppressed for this organiser. */
 export function suppressedSubset(organiserAddress: string, emailHashes: string[]): string[] {
   ensureLoaded();
+  if (fileUnreadable) return [...emailHashes];
   const org = organiserAddress.toLowerCase();
   return emailHashes.filter((h) => {
     const entry = entries.get(h);
     return Boolean(entry) && (suppresses(entry!.global) || suppresses(entry!.orgs[org]));
   });
+}
+
+/** `/api/health` → `marketingSuppression`. `ok: false` = present but unreadable (see the header). */
+export function suppressionStoreHealth(): { ok: boolean; unreadable: boolean } {
+  ensureLoaded();
+  return { ok: fileUnreadable === null, unreadable: fileUnreadable !== null };
+}
+
+/** Tests only: forget memory so the next call reloads from disk. */
+export function __resetSuppressionStoreForTest(): void {
+  entries.clear();
+  fileUnreadable = null;
+  unpersisted = false;
+  loaded = false;
 }
