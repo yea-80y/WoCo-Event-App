@@ -14,7 +14,7 @@
  */
 
 import type { CheckinPack, CheckinRecord, CheckinConflict, RosterEntry } from "@woco/shared";
-import { eventKeyBounds, scopeV1Claims, scopeV1Records, storeKey } from "./scope.js";
+import { eventKeyBounds, placementOf, scopeV1Claims, scopeV1Records, storeKey } from "./scope.js";
 
 /**
  * A NEW database, not a version bump of the old one. Upgrading "woco-scanner" in
@@ -27,13 +27,20 @@ import { eventKeyBounds, scopeV1Claims, scopeV1Records, storeKey } from "./scope
  */
 const DB_NAME = "woco-scanner-v2";
 const DB_VERSION = 1;
-/** Per-ticket keys with no event (scope.ts). Copied in, merged on every boot while it exists, then deleted. */
+/** Per-ticket keys with no event (scope.ts). Never deleted - see `migrateLegacy`. */
 const LEGACY_DB_NAME = "woco-scanner";
 const MIGRATED = "migratedFromLegacy";
+/** Storage keys of the legacy check-ins already merged in, so none is merged twice. */
+const LEGACY_MERGED = "legacyMerged";
+/** The last legacy pack's event and ticket types: places what an old tab writes after its pack is scrubbed. */
+const LEGACY_PLACEMENT = "legacyPlacement";
+/** Legacy kv entries holding the pass, the attendee data and claims; scrubbed once the copy is in. */
+const LEGACY_SECRETS = ["pass", "pack", "roster", "conflicts", "pendingClaims"] as const;
 /**
- * After the first copy, how long a boot waits to read the legacy database. An
- * earlier boot's delete that an old tab still blocks queues every later open
- * behind it, and that open would wait as long as the old tab stays open.
+ * After the first copy, how long a boot waits to read the legacy database. With
+ * no delete or upgrade of it ever queued, a version-less open has nothing to
+ * wait behind; this only keeps a browser that stalls the read from stalling the
+ * boot with it.
  */
 const LEGACY_MERGE_WAIT_MS = 1_500;
 
@@ -97,15 +104,19 @@ export interface LegacyData {
 const LEGACY_KV = ["pass", "pack", "roster", "conflicts", "pendingClaims", "deviceId"] as const;
 
 /**
- * Copy the legacy database in, then delete it - in that order, in one boot.
+ * Copy the legacy database in, merge its check-ins, then scrub its secrets.
  *
  * The pass, pack, roster, conflicts and claims are copied once: one transaction
  * checks the marker, clears the stores, copies and sets the marker, so an
  * interrupted copy leaves nothing, a re-run starts clean, and a second tab that
  * finished first is left alone. Check-ins and the unsynced queue are merged on
- * EVERY boot while the legacy database exists: an old tab still running the
- * previous scanner keeps writing to it after the copy, and a delete it no longer
- * blocks would take those records with it.
+ * EVERY boot: an old tab still running the previous scanner keeps writing them
+ * after the copy.
+ *
+ * It is never deleted. A delete that an old tab's connection blocks cannot be
+ * withdrawn, and runs the moment that tab closes or reloads - before its reload
+ * boots here to merge what it wrote - so it would take those check-ins with it.
+ * The secrets go instead, in a plain readwrite transaction no tab can block.
  */
 async function migrateLegacy(db: IDBDatabase): Promise<void> {
   const reading = readLegacy();
@@ -117,9 +128,8 @@ async function migrateLegacy(db: IDBDatabase): Promise<void> {
         legacy = read;
         break;
       }
-      // Only a delete issued after a committed copy can hold this read up: that
-      // delete is already coming, and another would only queue behind it. With
-      // no copy yet the read is just slow, and the boot must not go on without it.
+      // After the copy, the next boot merges instead. Before it, the boot must
+      // not go on without the legacy check-ins.
       if (await readKey(db, MIGRATED)) return;
     }
   } catch (err) {
@@ -129,7 +139,12 @@ async function migrateLegacy(db: IDBDatabase): Promise<void> {
     return;
   }
   await copyIn(db, legacy);
-  dropLegacy();
+  if (!legacy || !LEGACY_SECRETS.some((key) => legacy.kv[key] !== undefined)) return;
+  try {
+    await scrubLegacy();
+  } catch (err) {
+    console.warn("[scanner] the old scanner's stored pass could not be removed", err);
+  }
 }
 
 const WAITED_OUT = Symbol("waited out");
@@ -159,11 +174,11 @@ function readKey(db: IDBDatabase, key: string): Promise<unknown> {
 }
 
 /**
- * Opened WITHOUT a version: that never upgrades an existing database, so no
- * other tab's connection can hold it up (a delete queued ahead of it can, which
- * `migrateLegacy` bounds). If it does not exist, the creation is aborted - null.
+ * Opened WITHOUT a version: that never upgrades an existing database, and
+ * nothing deletes this one, so no other tab's connection can hold it up. If it
+ * does not exist, the creation is aborted - null.
  */
-function readLegacy(): Promise<LegacyData | null> {
+function openLegacy(): Promise<IDBDatabase | null> {
   return new Promise((resolve, reject) => {
     const req = factory().open(LEGACY_DB_NAME);
     req.onupgradeneeded = () => req.transaction?.abort();
@@ -175,11 +190,18 @@ function readLegacy(): Promise<LegacyData | null> {
     req.onsuccess = () => {
       const legacy = req.result;
       legacy.onversionchange = () => legacy.close();
-      const names = ["kv", "checkins", "pending"].filter((n) => legacy.objectStoreNames.contains(n));
-      if (names.length === 0) {
-        legacy.close();
-        return resolve(null);
-      }
+      resolve(legacy);
+    };
+  });
+}
+
+async function readLegacy(): Promise<LegacyData | null> {
+  const legacy = await openLegacy();
+  if (!legacy) return null;
+  try {
+    const names = ["kv", "checkins", "pending"].filter((n) => legacy.objectStoreNames.contains(n));
+    if (names.length === 0) return null;
+    return await new Promise<LegacyData>((resolve, reject) => {
       const data: LegacyData = { kv: {}, checkins: [], pending: [] };
       const t = legacy.transaction(names, "readonly");
       if (names.includes("kv")) {
@@ -193,16 +215,36 @@ function readLegacy(): Promise<LegacyData | null> {
         const r = t.objectStore(name).getAll();
         r.onsuccess = () => (data[name] = r.result);
       }
-      t.oncomplete = () => {
-        legacy.close();
-        resolve(data);
-      };
-      t.onerror = () => {
-        legacy.close();
-        reject(t.error);
-      };
-    };
-  });
+      t.oncomplete = () => resolve(data);
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error ?? new Error("reading the old scanner's storage was aborted"));
+    });
+  } finally {
+    legacy.close();
+  }
+}
+
+/**
+ * Remove the pass, attendee data and claims from the legacy database - only
+ * after the copy has committed, or a copy that failed would have nothing left to
+ * retry from. Its check-ins and unsynced queue stay: an old tab may still be
+ * writing them, and every boot merges what is new.
+ */
+async function scrubLegacy(): Promise<void> {
+  const legacy = await openLegacy();
+  if (!legacy) return;
+  try {
+    if (!legacy.objectStoreNames.contains("kv")) return;
+    await new Promise<void>((resolve, reject) => {
+      const t = legacy.transaction("kv", "readwrite");
+      for (const key of LEGACY_SECRETS) t.objectStore("kv").delete(key);
+      t.oncomplete = () => resolve();
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error ?? new Error("scrubbing the old scanner's storage was aborted"));
+    });
+  } finally {
+    legacy.close();
+  }
 }
 
 /** Tests only: the copy step on its own, as a second tab racing the first would run it. */
@@ -219,8 +261,12 @@ function copyIn(db: IDBDatabase, legacy: LegacyData | null): Promise<void> {
     const t = db.transaction([...STORES], "readwrite");
     const kv = t.objectStore("kv");
     const marker = kv.get(MIGRATED);
-    marker.onsuccess = () => {
-      if (!marker.result) {
+    const merged = kv.get(LEGACY_MERGED);
+    const placement = kv.get(LEGACY_PLACEMENT);
+    // Requests in one transaction complete in order: all three are in.
+    placement.onsuccess = () => {
+      const copied = Boolean(marker.result);
+      if (!copied) {
         for (const name of STORES) t.objectStore(name).clear();
         if (legacy) {
           const { pass, pack, roster, conflicts, deviceId, pendingClaims } = legacy.kv;
@@ -240,7 +286,7 @@ function copyIn(db: IDBDatabase, legacy: LegacyData | null): Promise<void> {
         }
         kv.put(new Date().toISOString(), MIGRATED);
       }
-      if (legacy) mergeCheckins(t, legacy);
+      if (legacy) mergeCheckins(t, legacy, copied ? merged.result : undefined, copied ? placement.result : undefined);
     };
     t.oncomplete = () => resolve();
     t.onerror = () => reject(t.error);
@@ -252,12 +298,27 @@ function copyIn(db: IDBDatabase, legacy: LegacyData | null): Promise<void> {
  * A union, added only where this database has no record for the ticket: the set
  * only grows, so a record already here - this scanner's own, or the server's -
  * is never replaced by the legacy copy of it.
+ *
+ * Each legacy record is merged once. The legacy queue is never emptied (an old
+ * tab owns it), so re-adding a record after it synced, or after a reset removed
+ * its event, would put it back in the unsynced queue on every boot.
  */
-function mergeCheckins(t: IDBTransaction, legacy: LegacyData): void {
+function mergeCheckins(t: IDBTransaction, legacy: LegacyData, mergedBefore: unknown, placedBefore: unknown): void {
+  const placement = placementOf(legacy.kv.pack) ?? placementOf(placedBefore);
+  if (!placement) return;
+  const merged = new Set(Array.isArray(mergedBefore) ? mergedBefore.filter((k): k is string => typeof k === "string") : []);
+  const added: string[] = [];
   for (const name of ["checkins", "pending"] as const) {
     const store = t.objectStore(name);
-    for (const { key, record } of scopeV1Records(legacy.kv.pack, legacy[name])) putSkippingBad(store, record, key, "add");
+    for (const { key, record } of scopeV1Records(placement, legacy[name])) {
+      if (merged.has(key)) continue;
+      putSkippingBad(store, record, key, "add");
+      added.push(key);
+    }
   }
+  const kv = t.objectStore("kv");
+  kv.put(placement, LEGACY_PLACEMENT);
+  if (added.length > 0) kv.put([...merged, ...new Set(added)], LEGACY_MERGED);
 }
 
 /** A value IndexedDB refuses is left behind; it never aborts the copy. An `add` refuses a key already stored. */
@@ -270,20 +331,6 @@ function putSkippingBad(store: IDBObjectStore, value: unknown, key: string, how:
     };
   } catch (err) {
     console.warn("[scanner] a stored value could not be carried over", err);
-  }
-}
-
-/**
- * Remove the legacy database, plaintext roster and all. Issued only after this
- * boot's read and merge, never before: a read queued behind a delete an old tab
- * blocks would wait with it. Never awaited: while an old tab holds the database
- * the delete just waits, and nothing here waits on it.
- */
-function dropLegacy(): void {
-  try {
-    factory().deleteDatabase(LEGACY_DB_NAME);
-  } catch {
-    // Next boot tries again.
   }
 }
 

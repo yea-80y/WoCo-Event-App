@@ -5,9 +5,13 @@
  * before it holds one open in every tab it runs in - on an iPhone, each QR
  * scanned with the Camera app opens another Safari tab - so the page would sit
  * on "Loading…" forever. The legacy database is read WITHOUT a version (never an
- * upgrade, never blocked), copied in once, and deleted when the old tabs let go.
- * An old tab keeps writing check-ins to it after the copy, so every boot merges
- * those in (never over a record already here) before it asks for the delete.
+ * upgrade, never blocked) and copied in once.
+ *
+ * It is never deleted (coordinator decision, 2026-10-15): a delete that an old
+ * tab blocks cannot be withdrawn and runs the moment that tab closes, taking
+ * whatever it wrote after the copy. Instead its pass and attendee data are
+ * scrubbed after the copy, and its check-ins - which an old tab may still be
+ * writing - are merged on every boot, each once, never over a record already here.
  */
 import "fake-indexeddb/auto";
 import { IDBFactory } from "fake-indexeddb";
@@ -51,13 +55,44 @@ async function seedLegacy(f: IDBFactory, data: {
 
 const names = async (f: IDBFactory) => (await f.databases()).map((d) => d.name).sort();
 
-async function eventually(check: () => Promise<boolean>, what: string): Promise<void> {
-  for (let i = 0; i < 100; i++) {
-    if (await check()) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  assert.fail(`never happened: ${what}`);
+/** Counts every delete the scanner asks for. There must never be one. */
+function spyOnDeletes(f: IDBFactory): () => number {
+  let deletes = 0;
+  const real = f.deleteDatabase.bind(f);
+  f.deleteDatabase = (name: string) => {
+    deletes += 1;
+    return real(name);
+  };
+  return () => deletes;
 }
+
+/** The legacy database as an old tab would read it now. */
+async function readLegacyAs(f: IDBFactory): Promise<{ kv: Record<string, unknown>; checkins: IDBValidKey[]; pending: IDBValidKey[] }> {
+  const legacy = await request(f.open("woco-scanner"));
+  const t = legacy.transaction(["kv", "checkins", "pending"], "readonly");
+  const kv: Record<string, unknown> = {};
+  for (const key of ["pass", "pack", "roster", "conflicts", "pendingClaims", "deviceId"]) {
+    const r = t.objectStore("kv").get(key);
+    r.onsuccess = () => {
+      if (r.result !== undefined) kv[key] = r.result;
+    };
+  }
+  const checkins = request(t.objectStore("checkins").getAllKeys());
+  const pending = request(t.objectStore("pending").getAllKeys());
+  await new Promise((resolve) => (t.oncomplete = resolve));
+  legacy.close();
+  return { kv, checkins: await checkins, pending: await pending };
+}
+
+/** What the deployed scanner's checkAndMark writes: the nullifier and the unsynced queue, together. */
+async function oldTabAdmits(oldTab: IDBDatabase, r: CheckinRecord): Promise<void> {
+  const t = oldTab.transaction(["checkins", "pending"], "readwrite");
+  t.objectStore("checkins").put(r, `${r.seriesId} ${r.edition}`);
+  t.objectStore("pending").put(r, `${r.seriesId} ${r.edition}`);
+  await new Promise((resolve) => (t.oncomplete = resolve));
+}
+
+const editions = (records: CheckinRecord[]) => records.map((r) => r.edition);
 
 function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   return Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`blocked: ${what}`)), ms))]);
@@ -75,8 +110,9 @@ const LEGACY = {
   pending: [["ser-now 1", rec("ser-now", 1)], ["ser-old 2", rec("ser-old", 2)]] as [string, unknown][],
 };
 
-test("a legacy database is copied in under its event, and then deleted", async () => {
+test("a legacy database is copied in under its event, its pass and attendee data scrubbed, and never deleted", async () => {
   const f = new IDBFactory();
+  const deletes = spyOnDeletes(f);
   (await seedLegacy(f, LEGACY)).close();
   db.useIndexedDbForTests(f);
 
@@ -88,18 +124,25 @@ test("a legacy database is copied in under its event, and then deleted", async (
   assert.equal((await db.getPack(EVENT))?.eventTitle, "Now");
   assert.deepEqual(await db.getRoster(EVENT), [{ seriesId: "ser-now", edition: 1, name: "Ada" }]);
   assert.equal(await db.getDeviceId(), "legacydevice0001", "the same device id, so a single-scanner pass still knows this phone");
-  await eventually(async () => !(await names(f)).includes("woco-scanner"), "legacy database deleted");
+
+  const legacy = await readLegacyAs(f);
+  assert.deepEqual(legacy.kv, { deviceId: "legacydevice0001" }, "pass, pack, roster, conflicts and claims are scrubbed");
+  assert.deepEqual(legacy.checkins, ["ser-now 1", "ser-old 2"], "its check-ins stay, every one");
+  assert.deepEqual(legacy.pending, ["ser-now 1", "ser-old 2"], "and its unsynced queue");
+  assert.ok((await names(f)).includes("woco-scanner"));
+  assert.equal(deletes(), 0, "no delete is ever asked for");
 });
 
-test("an open legacy connection in another tab does not hold the boot up", { timeout: 5_000 }, async () => {
+test("an open legacy connection in another tab holds up neither the boot nor the scrub", { timeout: 5_000 }, async (t) => {
   const f = new IDBFactory();
   const otherTab = await seedLegacy(f, LEGACY); // stays open; the deployed scanner sets no versionchange handler
+  t.after(() => otherTab.close());
   db.useIndexedDbForTests(f);
 
-  assert.deepEqual(await within(db.getAllCheckins(EVENT), 2_000, "boot with a legacy tab open"), [rec("ser-now", 1)]);
-  assert.ok((await names(f)).includes("woco-scanner"), "the delete waits for that tab...");
-  otherTab.close();
-  await eventually(async () => !(await names(f)).includes("woco-scanner"), "...and runs once it lets go");
+  assert.deepEqual(await within(db.getAllCheckins(EVENT), 1_000, "boot with a legacy tab open"), [rec("ser-now", 1)]);
+  assert.deepEqual((await readLegacyAs(f)).kv, { deviceId: "legacydevice0001" });
+  db.useIndexedDbForTests(f); // and every boot after it
+  assert.deepEqual(await within(db.getAllCheckins(EVENT), 1_000, "a later boot with a legacy tab open"), [rec("ser-now", 1)]);
 });
 
 test("a copy that never committed is redone from scratch; one that did is not, but later legacy check-ins are merged", async () => {
@@ -139,54 +182,141 @@ test("a copy that never committed is redone from scratch; one that did is not, b
   assert.equal((await db.getRoster(EVENT))?.length, 1);
 });
 
-test("an old tab's check-in after the copy survives the next boot's delete", { timeout: 5_000 }, async (t) => {
+test("an old tab's check-ins after the copy survive any number of later boots, with no delete ever asked for", { timeout: 10_000 }, async (t) => {
+  const f = new IDBFactory();
+  const deletes = spyOnDeletes(f);
+  const oldTab = await seedLegacy(f, LEGACY); // open throughout, as a tab still on the previous scanner
+  t.after(() => oldTab.close());
+  db.useIndexedDbForTests(f);
+  assert.deepEqual(editions(await db.getAllCheckins(EVENT)), [1]);
+
+  // It admits a ticket offline after the copy - after its pack was scrubbed, too.
+  await oldTabAdmits(oldTab, rec("ser-now", 4));
+  db.useIndexedDbForTests(f);
+  assert.deepEqual(editions(await db.getAllCheckins(EVENT)), [1, 4], "merged on the next boot");
+  await oldTabAdmits(oldTab, rec("ser-now", 5));
+  for (let boot = 0; boot < 4; boot++) {
+    db.useIndexedDbForTests(f);
+    assert.deepEqual(editions(await db.getAllCheckins(EVENT)), [1, 4, 5], `boot ${boot + 3}`);
+    assert.deepEqual(editions(await db.getPending(EVENT)), [1, 4, 5]);
+  }
+  oldTab.close(); // it reloads into this version
+  db.useIndexedDbForTests(f);
+  assert.deepEqual(editions(await db.getAllCheckins(EVENT)), [1, 4, 5]);
+  assert.deepEqual((await readLegacyAs(f)).checkins, ["ser-now 1", "ser-now 4", "ser-now 5", "ser-old 2"], "the legacy check-ins are all still there");
+  assert.equal(deletes(), 0);
+});
+
+test("a legacy record is merged once: after it synced, or its event was reset, it does not come back", async () => {
   const f = new IDBFactory();
   (await seedLegacy(f, LEGACY)).close();
   db.useIndexedDbForTests(f);
-  await db.getAllCheckins(EVENT); // the copy; nothing holds the legacy database, so its delete runs
-  await eventually(async () => !(await names(f)).includes("woco-scanner"), "first delete");
-  // A tab still on the previous scanner opens it again, admits a ticket offline and stays open.
-  const oldTab = await seedLegacy(f, { kv: { pack: PACK }, checkins: [["ser-now 4", rec("ser-now", 4)]], pending: [["ser-now 4", rec("ser-now", 4)]] });
-  t.after(() => oldTab.close()); // a failed assertion must not leave the delete waiting and the run open
-  db.useIndexedDbForTests(f); // the next boot merges, then asks for the delete, which waits for that tab
-  assert.deepEqual((await within(db.getAllCheckins(EVENT), 2_000, "boot")).map((r) => r.edition), [1, 4]);
-  assert.ok((await names(f)).includes("woco-scanner"), "the delete waits for the old tab...");
-  oldTab.close(); // it reloads into this version
-  await eventually(async () => !(await names(f)).includes("woco-scanner"), "...and runs once it lets go");
+  assert.deepEqual(editions(await db.getPending(EVENT)), [1]);
+
+  await db.absorbServerCheckins(EVENT, [], ["ser-now 1"]); // the server acknowledged it
   db.useIndexedDbForTests(f);
-  assert.deepEqual((await db.getAllCheckins(EVENT)).map((r) => r.edition), [1, 4], "its check-in outlived the delete");
-  assert.deepEqual((await db.getPending(EVENT)).map((r) => r.edition), [1, 4]);
+  assert.deepEqual(await db.getPending(EVENT), [], "not queued again from the legacy queue, which still holds it");
+  assert.deepEqual(editions(await db.getAllCheckins(EVENT)), [1]);
+
+  await db.clearEvent(EVENT); // "Reset"
+  db.useIndexedDbForTests(f);
+  assert.deepEqual(await db.getAllCheckins(EVENT), []);
+  assert.deepEqual(await db.getAllPendingKeys(), [], "a reset event's records stay gone");
 });
 
-test("a later boot is not held up by an earlier boot's delete that an old tab still blocks", { timeout: 8_000 }, async (t) => {
-  const f = new IDBFactory();
-  const oldTab = await seedLegacy(f, LEGACY);
-  t.after(() => oldTab.close());
+test("the scrub waits for the copy: a copy that fails leaves the legacy pass for the retry", async () => {
+  const real = new IDBFactory();
+  (await seedLegacy(real, LEGACY)).close();
+  let copyFails = true;
+  const failingCopy = (target: IDBDatabase): IDBDatabase =>
+    new Proxy(target, {
+      get(d, prop) {
+        if (prop === "transaction") {
+          return (stores: string | string[], mode?: IDBTransactionMode) => {
+            if (copyFails && Array.isArray(stores) && stores.length === 8 && mode === "readwrite") {
+              throw new DOMException("storage full", "QuotaExceededError");
+            }
+            return d.transaction(stores, mode);
+          };
+        }
+        const value = Reflect.get(d, prop, d);
+        return typeof value === "function" ? value.bind(d) : value;
+      },
+      set: (d, prop, value) => Reflect.set(d, prop, value, d),
+    });
+  const f = new Proxy(real, {
+    get(target, prop) {
+      if (prop === "open") {
+        return (...args: Parameters<IDBFactory["open"]>) => {
+          const req = target.open(...args);
+          if (args[0] !== "woco-scanner-v2") return req;
+          return new Proxy(req, {
+            get: (r, p) => (p === "result" ? failingCopy(r.result) : Reflect.get(r, p, r)),
+            set: (r, p, value) => Reflect.set(r, p, value, r),
+          });
+        };
+      }
+      const value = Reflect.get(target, prop);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+
   db.useIndexedDbForTests(f);
-  await db.getAllCheckins(EVENT); // copied; its delete waits for the old tab
-  db.useIndexedDbForTests(f); // another tab, or this one reloaded: a read of the legacy database queues behind that delete
-  assert.deepEqual(await within(db.getAllCheckins(EVENT), 4_000, "a boot behind a waiting delete"), [rec("ser-now", 1)]);
-  oldTab.close();
-  await eventually(async () => !(await names(f)).includes("woco-scanner"), "the delete runs once the old tab lets go");
+  await assert.rejects(db.getAllCheckins(EVENT));
+  assert.deepEqual(Object.keys((await readLegacyAs(real)).kv).sort(), ["deviceId", "pack", "pass", "pendingClaims", "roster"], "nothing scrubbed");
+  copyFails = false;
+  assert.deepEqual(await db.getAllCheckins(EVENT), [rec("ser-now", 1)], "the retry copies");
+  assert.deepEqual(await db.getPass(EVENT), PASS);
+  assert.deepEqual((await readLegacyAs(real)).kv, { deviceId: "legacydevice0001" }, "and only then scrubs");
 });
 
-test("a boot that waited out a queued delete asks for no second one", { timeout: 8_000 }, async (t) => {
-  const f = new IDBFactory();
-  const oldTab = await seedLegacy(f, LEGACY);
-  t.after(() => oldTab.close());
-  db.useIndexedDbForTests(f);
-  await db.getAllCheckins(EVENT); // copied; its delete waits for the old tab
-  db.useIndexedDbForTests(f);
-  const waiting = db.getAllCheckins(EVENT); // its read queues behind that delete
-  await new Promise((r) => setTimeout(r, 50));
-  // Another tab on the previous scanner opens the legacy database meanwhile: queued after that read.
-  const another = seedLegacy(f, { kv: { pack: PACK }, checkins: [["ser-now 7", rec("ser-now", 7)]] });
-  await waiting;
-  oldTab.close(); // the first delete runs, then that tab recreates the database and admits a ticket
-  const anotherTab = await another;
-  anotherTab.close(); // a second delete, queued behind it, would now take that check-in
-  db.useIndexedDbForTests(f);
-  assert.deepEqual((await db.getAllCheckins(EVENT)).map((r) => r.edition), [1, 7]);
+test("a legacy read that stalls holds up the first copy only", { timeout: 15_000 }, async (t) => {
+  const stalled: { onerror?: (e: Event) => void; error: DOMException | null }[] = [];
+  const release = () => {
+    for (const req of stalled.splice(0)) {
+      req.error = new DOMException("stalled", "UnknownError");
+      req.onerror?.({ preventDefault() {} } as Event);
+    }
+  };
+  t.after(release);
+  const stalling = (real: IDBFactory, on: () => boolean) =>
+    new Proxy(real, {
+      get(target, prop) {
+        if (prop === "open") {
+          return (...args: Parameters<IDBFactory["open"]>) => {
+            if (args[0] !== "woco-scanner" || !on()) return target.open(...args);
+            const req = { error: null, result: undefined, transaction: null };
+            stalled.push(req);
+            return req;
+          };
+        }
+        const value = Reflect.get(target, prop);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+  // After the copy: the boot goes on without this boot's merge.
+  const copied = new IDBFactory();
+  (await seedLegacy(copied, LEGACY)).close();
+  let stall = false;
+  db.useIndexedDbForTests(stalling(copied, () => stall));
+  await db.getAllCheckins(EVENT);
+  stall = true;
+  db.useIndexedDbForTests(stalling(copied, () => stall));
+  assert.deepEqual(await within(db.getAllCheckins(EVENT), 4_000, "a boot after the copy"), [rec("ser-now", 1)]);
+  release();
+
+  // Before it: the boot waits, rather than run without the legacy check-ins.
+  const fresh = new IDBFactory();
+  (await seedLegacy(fresh, LEGACY)).close();
+  db.useIndexedDbForTests(stalling(fresh, () => true));
+  const booting = db.getAllCheckins(EVENT);
+  let settled = false;
+  booting.then(() => (settled = true), () => (settled = true));
+  await new Promise((r) => setTimeout(r, 3_500));
+  assert.equal(settled, false, "still waiting after two read caps");
+  release();
+  await assert.rejects(booting, "a read that fails before the copy fails the boot, for its retry");
 });
 
 test("a legacy database that will not open fails the first copy, but never a boot after it", async () => {
@@ -209,12 +339,9 @@ test("a legacy database that will not open fails the first copy, but never a boo
   await assert.rejects(db.getAllCheckins(EVENT), "no copy yet: the boot must not go on without the legacy check-ins");
   legacyBroken = false;
   assert.deepEqual(await db.getAllCheckins(EVENT), [rec("ser-now", 1)], "the retry copies");
-  await eventually(async () => !(await names(real)).includes("woco-scanner"), "first delete");
-  (await seedLegacy(real, { kv: { pack: PACK }, checkins: [["ser-now 6", rec("ser-now", 6)]] })).close();
   legacyBroken = true;
   db.useIndexedDbForTests(f);
   assert.deepEqual(await db.getAllCheckins(EVENT), [rec("ser-now", 1)], "after the copy the boot goes on");
-  assert.ok((await names(real)).includes("woco-scanner"), "and the unread legacy database is not deleted");
 });
 
 test("a record that cannot be read is skipped; the rest still move", async () => {

@@ -45,6 +45,16 @@ function packSeries(pack: unknown): { eventId: string; series: Set<string> } | n
   return { eventId: p.eventId, series: new Set(p.series.map((s) => s?.seriesId).filter((id): id is string => typeof id === "string")) };
 }
 
+/**
+ * What `scopeV1Records` needs from a pack and nothing more - no owners, no
+ * roster - kept so records written after the legacy pack is scrubbed can still
+ * be placed.
+ */
+export function placementOf(pack: unknown): PackSeries | null {
+  const placed = packSeries(pack);
+  return placed && { eventId: placed.eventId, series: [...placed.series].map((seriesId) => ({ seriesId })) };
+}
+
 function isTicketRecord(r: unknown): r is { seriesId: string; edition: number } {
   const rec = r as { seriesId?: unknown; edition?: unknown } | null;
   return !!rec && typeof rec === "object" && typeof rec.seriesId === "string" && Number.isInteger(rec.edition) && (rec.edition as number) >= 1;
