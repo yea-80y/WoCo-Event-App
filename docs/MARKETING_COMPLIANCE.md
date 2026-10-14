@@ -85,7 +85,11 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
     CSV import clears it for the addresses it adds back. Sealed with the list, never sent to the
     server. Absent on older lists = none.
   - **Read-merge-write**: the list is re-read and opened just before the write and merged onto
-    that; no re-read, no write. Nothing changed, nothing written.
+    that; no re-read, no write. Who said yes is asked again after the re-read, and only an address
+    both answers clear is added. The write carries the re-read list's `updatedAt` and the server
+    refuses it if the list moved since (`ifUpdatedAt`, 409 `LIST_CHANGED`), so a delete in another
+    tab or device is never undone. The seal key is taken at write time and confirmed unchanged
+    before the upload (#186). Nothing changed, nothing written.
 - CSV IMPORT: no source platform (Skiddle/Fatsoma/RA/Eventbrite) publishes an export column
   schema — RA's is promoter-selected per export, so there is no fixed shape at all. Header
   auto-mapping in `csv-import.ts` is therefore a scored GUESS and the wizard always lets a
