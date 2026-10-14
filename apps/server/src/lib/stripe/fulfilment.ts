@@ -761,10 +761,12 @@ export async function fulfilPaidSession(
 
   // ── 3c. No order key on record (issue 896) ──
   // A readable record with no order key: the order box, if any, was sealed to the
-  // key the event feed named, which the server cannot vouch for. Refunded, and the
-  // held box dropped unstored (4b). Only this definitive case: `legacy` is also what
-  // an unreadable record store reads as, and unreadable keys are a blip - neither may
-  // turn a paid sale into a refund. create-checkout refuses all of them up front.
+  // key the event feed named, which the server cannot vouch for. Refunded, and a held
+  // box dropped unstored (4b; an already-stored one stays). Only this definitive case:
+  // `legacy` is also what an unreadable record store reads as, and unreadable keys are
+  // a blip - neither refunds over the keys alone while a buyer's box was held. With no
+  // held box there is nothing to seal to (never the feed's key), so the mint stops on
+  // the missing orderRef and refunds. create-checkout refuses all of them up front.
   if (!stoppedReason && orderKeys?.kind === "record" && !orderKeys.orderKeyRef) {
     console.warn(`[fulfilment] ${session.id}: event ${eventId.slice(0, 8)} has no order key on record — not minting`);
     stoppedReason = "Event has no order key on record — not sold";
