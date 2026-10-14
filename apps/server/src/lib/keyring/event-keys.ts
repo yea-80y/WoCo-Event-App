@@ -64,6 +64,9 @@ const warned = new Set<string>();
  * The feed with the order key it must be sold under. A feed naming another key is
  * either stale (signed before a rotation) or written by a key the account lost; either
  * way buyers seal to the authoritative one, and it is logged once per event and key.
+ * With no authoritative key the feed's own is left in place, deliberately: this is
+ * also the base an organiser's edit re-signs, and the key becomes authoritative once
+ * the account has a ring. Nothing sells or seals under it (`sale-keys.ts`, issue 896).
  */
 export function withAuthoritativeOrderKey(eventId: string, feed: EventFeed, keys: EventKeys): EventFeed {
   const ref = authoritativeOrderKeyRef(keys);
