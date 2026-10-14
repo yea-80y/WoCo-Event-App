@@ -74,22 +74,37 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   your events"). In the organiser's browser - the buyer's email exists only in their sealed
   order, which the retention sweep deletes months after the event (#547), so it runs whenever
   the organiser uses WoCo: on the Audience screen (open + "Check now") and in the background on
-  organiser home and event pages, at most every 10 minutes per tab, only on an account already
-  unlocked with a session - never a prompt. `audience-sync.ts` (rules, pure + tested) /
-  `audience-sync.svelte.ts` (wiring).
+  organiser home and event pages, at most once an hour per device (the last start is kept in
+  localStorage), only on an account already unlocked with a session - a background run never
+  prompts; a "Check now" tap may ask the organiser to confirm it's them. `audience-sync.ts`
+  (rules, pure + tested) / `audience-sync.svelte.ts` (wiring).
+  - **Cost** (Fable sign-off 2026-10-14): events that ended more than 13 months ago (longest
+    retention + 1) are skipped with no request; each other event costs one call to
+    `/api/events/:id/orders/count` (a ledger read per series), and `/orders` is read only when
+    that count moved. An order that will not open on the device is remembered in the
+    per-organiser watermark, not retried every run.
   - Only buyers with a checkout record (consent or soft opt-in), and **never an address in
     `/check`'s `suppressed`** (unsubscribed, declined, bounced, complained, manual), even one
     that also holds a record. Kept answers only, never a health answer (`attendee-drain.ts`).
-  - **Deleted contacts stay deleted**: the sealed payload's `removed` (lowercased addresses) is
-    written by every delete, with or without "also unsubscribe"; the sync never re-adds one; a
-    CSV import clears it for the addresses it adds back. Sealed with the list, never sent to the
+  - **Deleted contacts stay deleted**: every delete, with or without "also unsubscribe", adds a
+    tombstone to the sealed payload's `removed` - `{ h, at }`, `h` = SHA-256 over the organiser's
+    address and the lowercased email (not a plain email hash; the address itself is not kept),
+    `at` = when it was deleted. The sync re-adds a deleted contact only on an "Email me" consent
+    recorded AFTER the deletion (`/check`'s `consentedAt`), which clears the tombstone; a soft
+    opt-in after it does not (Fable sign-off 2026-10-14 recommendation). A CSV import clears it
+    for the addresses it adds back. No automatic pruning. Sealed with the list, never sent to the
     server. Absent on older lists = none.
   - **Read-merge-write**: the list is re-read and opened just before the write and merged onto
     that; no re-read, no write. Who said yes is asked again after the re-read, and only an address
     both answers clear is added. The write carries the re-read list's `updatedAt` and the server
     refuses it if the list moved since (`ifUpdatedAt`, 409 `LIST_CHANGED`), so a delete in another
-    tab or device is never undone. The seal key is taken at write time and confirmed unchanged
-    before the upload (#186). Nothing changed, nothing written.
+    tab or device is never undone; refused once, it retries once from a fresh re-read. The seal
+    key is taken at write time and, before the upload, re-confirmed against a fresh read of the
+    key-ring anchor (#186). Nothing changed, nothing written.
+  - **The Audience screen's own saves** use the same compare-and-swap: each edit (add, change,
+    delete) is applied to the list as re-read inside the lock, never to the tab's own copy, so a
+    stale tab cannot bring back a deleted contact or wipe a tombstone; refused, the screen reloads
+    and says so.
 - CSV IMPORT: no source platform (Skiddle/Fatsoma/RA/Eventbrite) publishes an export column
   schema — RA's is promoter-selected per export, so there is no fixed shape at all. Header
   auto-mapping in `csv-import.ts` is therefore a scored GUESS and the wizard always lets a

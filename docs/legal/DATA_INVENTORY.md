@@ -76,7 +76,7 @@ Enumerated from source, not assumed:
 |---|---|---|
 | `marketing-suppression.json` | **Yes** (pseudonymous) | HMAC-SHA256 email hashes + timestamp + source. Never plaintext — `suppression-store.ts` |
 | `marketing-lists.json` | **Yes** (pseudonymous) | `emailHashes: string[]` only — `list-store.ts:17` |
-| `marketing-consent.json` | **Yes** (pseudonymous) | Art. 7(1) evidence: email hash → `{ts, source, eventId, notice, control?, basis, version, surface}`, where `notice` (and, for a soft opt-in, `control`, the box label) is the VERBATIM wording shown at collection, looked up server-side by mode and version. `basis` is `consent` or `soft-opt-in` (2026-10-14; absent on older records = consent), fixed when the choice is made. No plaintext — `consent-store.ts`. Losing it loses the lawful basis for every opt-in and soft opt-in it records |
+| `marketing-consent.json` | **Yes** (pseudonymous) | Art. 7(1) evidence: email hash → `{ts, source, eventId, notice, control?, basis, version, surface}`, where `notice` (and, for a soft opt-in, `control`, the box label) is the VERBATIM wording shown at collection, looked up server-side by mode and version. `basis` is `consent` or `soft-opt-in` (2026-10-14; absent on older records = consent), fixed when the choice is made. `/api/marketing/check` returns a consent's `ts` to the organiser who holds it, for addresses they sent, so a contact they deleted is re-added only on a later "Email me". No plaintext — `consent-store.ts`. Losing it loses the lawful basis for every opt-in and soft opt-in it records |
 | `event-attendees.json` | **Yes** (pseudonymous) | Event id → HMAC-SHA256 email hashes of ticket-holders — `attendee-index.ts`. Written at Stripe fulfilment from the verified purchase email, for every buyer who supplied one, INDEPENDENTLY of any marketing choice: it records the contract relationship (this person bought a ticket), not a consent. Lawful basis Art. 6(1)(b) — it is what proves a broadcast recipient is an attendee, so without it an organiser cannot tell ticket-holders their event was cancelled. Never plaintext. Not erasable via the marketing path: erasure here is governed by the ticket record, not the marketing consent record |
 | `marketing-domains.json`, `marketing-send-log.json` | Indirect | Organiser sending domains; send counts for rate caps |
 | `stripe-accounts.json` | **Yes** | Organiser wallet address ↔ Stripe account id |
@@ -174,8 +174,9 @@ Cloudflare's logs under Cloudflare's own retention as our sub-processor.
 - `apps/server` imports **`sealBoxJson` only** (`lib/stripe/fulfilment.ts`, the fallback below). It
   never imports `openBox` or `openBoxJson`. Grep-verified.
 - The only callers of the open functions on orders and lists are in the organiser's browser:
-  `Dashboard.svelte` (orders), `AudienceScreen.svelte` (contact list) and `audience-sync.svelte.ts`
-  (orders and list, for the automatic add of opted-in buyers), all `openBoxJson`.
+  `Dashboard.svelte` (orders), `AudienceScreen.svelte` (contact list), `audience-sync.svelte.ts`
+  (orders and list, for the automatic add of opted-in buyers) and `keyring/rotate-live.ts` (the
+  list, to re-seal it to the new key after a passkey removal, #186), all `openBoxJson`.
 - The decryption key is derived in the organiser's browser from their account seed
   (`deriveXWingKeypairFromSeed`, `packages/shared/src/crypto/xwing.ts`). For a passkey account the
   seed comes from the passkey and is kept on the device locked under it: it opens once the
@@ -326,7 +327,7 @@ independent nodes worldwide:
 | Like / follow statements | Public signed statements on the user's own feed (`packages/shared/src/social/`); a retraction is a new version, not a deletion | **Yes**, and intentionally public |
 | Profile feeds | display name, avatar, bio — organiser-published | **Yes**, and intentionally public |
 | Organiser privacy notice (`woco/legal/privacy-notice/{account}`, `woco.privacy-notice.v2`) | The organiser's name, privacy contact email, optional postal address and ICO number, and their choices (who else sees attendee details, months order-form answers are kept, whether their mailing list is tailored, plus optional "anything else" lines), signed by their content-feed signer and published when they press "Publish". The public notice pages read it through `GET /api/privacy-notice/*`, which picks the account and signer from server records only (`routes/privacy-notice.ts`); the server stores none of it. Earlier versions stay retrievable after an edit - Organiser Terms §4 says so, and the editor asks for business, not personal, details | **Yes** (the organiser's own details), and intentionally public |
-| Marketing contact list blob (email, name, area, and any order-form answer the organiser ticked "Keep on mailing list" - never a health answer; plus the addresses the organiser deleted, kept so they are never added back). Buyers with a checkout record (opt-in or soft opt-in) are added automatically, in the organiser's browser, whenever they use WoCo; an unsubscribed, declined, bounced or suppressed address never is (2026-10-14) | X-Wing sealed box, sealed to organiser | **Yes**, encrypted |
+| Marketing contact list blob (email, name, area, and any order-form answer the organiser ticked "Keep on mailing list" - never a health answer; plus one tombstone per contact the organiser deleted: a hash of the organiser's address and the email, and the date of the deletion - not the address). Buyers with a checkout record (opt-in or soft opt-in) are added automatically, in the organiser's browser, whenever they use WoCo; an unsubscribed, declined, bounced or suppressed address never is, and a deleted one only on an "Email me" ticked after the deletion (2026-10-14) | X-Wing sealed box, sealed to organiser | **Yes**, encrypted |
 
 **Pseudonymised ≠ anonymous.** HMAC email hashes and wallet addresses are personal data under UK
 GDPR because WoCo holds the key / can re-link them. The policy must treat them as personal data.
@@ -403,8 +404,8 @@ anything, so a crash between the two steps over-suppresses rather than under-pro
 
 1. The organiser's **sealed contact blob** on Swarm is encrypted to them; only they can rewrite it.
    They are the controller for their own list — forward the request. Deleting the contact there
-   keeps the address in the list's sealed deleted-contacts record, so the automatic buyer add never
-   restores it - the same reason suppression marks are kept. Removing the member from
+   leaves a sealed tombstone (a hash of the organiser's address and the email, and the date), so
+   the automatic buyer add does not restore it - the same reason suppression marks are kept. Removing the member from
    WoCo's list index makes them unsendable immediately (`/api/marketing/broadcast` rejects any
    recipient not in the index), and the suppression mark holds even if the organiser re-uploads.
 2. **Order blobs on Swarm** - the script does not erase them; the operator burn route does
