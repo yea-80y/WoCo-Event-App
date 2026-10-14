@@ -25,7 +25,7 @@ import { calculateCacAddress, calculateSocAddress, encodeSpan, personalSignKecca
 import { getBytes, keccak256 } from "ethers";
 import { BEE_URL } from "../../config/swarm.js";
 import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "../swarm/upload-queue.js";
-import { getBatchRecord, getOrderRecord, markChunkBurned, planChunkBurn, type OrderRecord } from "./ledger.js";
+import { getBatchRecord, getOrderRecord, markChunkBurned, noteErasure, planChunkBurn, type Erasure, type OrderRecord } from "./ledger.js";
 import { bucketOf, decodeTimestampNs, signStamp, type StamperKey } from "./stamp.js";
 import { getAttendeeStamper } from "./writer.js";
 import { CONTROL_JSON_MAX_BYTES, errorSnippet, readCappedJson } from "../http/read-capped.js";
@@ -117,7 +117,7 @@ const liveDeps: BurnDeps = { stamper: getAttendeeStamper, upload: liveBurnerUplo
  * and a chunk whose burn was planned but not confirmed is re-sent with the SAME
  * timestamp, so a retry never produces a stamp older than one that landed.
  */
-export async function burnOrder(root: string, deps: BurnDeps = liveDeps): Promise<OrderRecord> {
+export async function burnOrder(root: string, deps: BurnDeps = liveDeps, erasure?: Erasure): Promise<OrderRecord> {
   const key = deps.stamper();
   if (!key) throw new Error("no stamper key configured");
   const record = getOrderRecord(root);
@@ -126,6 +126,7 @@ export async function burnOrder(root: string, deps: BurnDeps = liveDeps): Promis
   const batch = getBatchRecord(record.batchId);
   if (!batch) throw new Error(`order ${root} names an unregistered batch`);
   if (batch.owner !== key.addressHex) throw new Error("the stamper key does not own this order's batch");
+  if (erasure) noteErasure(root, erasure);
 
   const batchId = new BatchId(record.batchId);
   let latest = record;

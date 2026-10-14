@@ -90,8 +90,8 @@ Enumerated from source, not assumed:
 | `ticket-sales.json` | **Yes** (pseudonymous) | Stripe session ↔ payment intent, minted ticket slots, order reference, refund and dispute state - what voids a refunded ticket at the door. No email - `lib/stripe/ticket-sales.ts` |
 | `event-cancellations.json` | **Yes** (pseudonymous) | Cancelled events and one refund row per sale, keyed by Stripe session - `lib/event/cancellations.ts` |
 | `pending-refunds.json` | **Yes** (pseudonymous) | Automatic refunds Stripe refused to create, by Stripe session and payment intent, kept until retried. No email - `lib/stripe/pending-refunds.ts` |
-| `held-orders/{root}.json` | **Yes** (encrypted) | One file per order sealed in the buyer's browser, held as ciphertext from checkout until paid and stored on Swarm (unpaid: deleted after 24 h) - `lib/attendee-batch/held-orders.ts` |
-| `attendee-slots.json` | **Yes** (pseudonymous) | Which storage slot of the attendee batch holds each chunk of each order, and its erasure state - what makes one order erasable (§6). Since #797 each record also holds the buyer's HMAC-SHA256 email hash and the organiser, so an access or erasure request can find that person's orders (`ordersForEmailHash`). Rotating `EMAIL_HASH_SECRET` blinds this lookup. No plaintext - `lib/attendee-batch/ledger.ts` |
+| `held-orders/{root}.json` | **Yes** (encrypted) | One file per order sealed in the buyer's browser, held as ciphertext from checkout until paid and stored on Swarm (unpaid: deleted after 24 h; paid but never stored: erased by the retention sweep like a stored order, #547) - `lib/attendee-batch/held-orders.ts` |
+| `attendee-slots.json` | **Yes** (pseudonymous) | Which storage slot of the attendee batch holds each chunk of each order, and its erasure state - what makes one order erasable (§6). Since #797 each record also holds the buyer's HMAC-SHA256 email hash and the organiser, so an access or erasure request can find that person's orders (`ordersForEmailHash`). Rotating `EMAIL_HASH_SECRET` blinds this lookup. Since #547 each record also holds `retainMonths` (the period in the organiser's notice at the time of sale) and, once erased, who erased it (`request` or `retention`) and the rule the sweep carried out. Retention: the order is erased 6 or 12 months after the event's onchain end, the period in the organiser's notice at the time of sale (`lib/attendee-batch/retention.ts`); the record stays as evidence of the erasure. No plaintext - `lib/attendee-batch/ledger.ts` |
 | `door-passes.json`, `checkins/`, `checkin-rosters/` | **Yes** (pseudonymous / encrypted) | Active door pass per event; check-in records (ticket number, time, random device id); the door guest list as ciphertext the server cannot open, deleted 30 days after the event's onchain end (kept while no onchain end is known) - `lib/checkin/store.ts`, `roster-retention.ts` |
 | `event-feed-signers.json` | **Yes** | Event id → the organiser's content-feed signer and verified creator address, pinned at create - `lib/event/feed-signer-record.ts` |
 | `device-grants.json` | Indirect | An account's added passkeys (#746): each one's key address and a hash of its credential id, the account owner's signed grant and any signed removal, and every nonce used. No names, no device or password-manager details. Must survive restarts (losing it signs added passkeys out) |
@@ -339,8 +339,8 @@ Swarm chunks are **immutable and cannot be individually deleted**, with the one 
 > order blob is stamped on its own attendee batch by a key WoCo holds, and the slot of each chunk is
 > recorded (`.data/attendee-slots.json`). Erasure overwrites those slots with newer stamps, which
 > evicts the chunks from every storer that receives the overwrite (`lib/attendee-batch/burn.ts`), and
-> WoCo stops serving the order. It runs on request through an operator route (`routes/ops.ts`), not
-> automatically. Not reached: copies someone else stored under their own stamp, and retrieval
+> WoCo stops serving the order. It runs on request through an operator route (`routes/ops.ts`), and
+> on schedule through the daily retention sweep (#547, below). Not reached: copies someone else stored under their own stamp, and retrieval
 > caches. Blobs written before the change, and every other data type here, are unchanged.
 >
 > **Only PAID orders reach Swarm.** Until the Stripe payment confirms, the sealed box is held on the
@@ -430,8 +430,14 @@ PRIVACY_POLICY §8. We revisit the position as guidance on decentralised storage
 
 ## 7. Retention — proposal requiring a decision
 
-Nothing in the code currently expires attendee data. A stated retention policy is mandatory
-(Art. 13(2)(a)) and cannot be "indefinite".
+> **UPDATED 2026-10-14 (#547) - attendee order answers now expire.** Each order is erased at the
+> event's onchain end plus the period in the organiser's notice at the time of sale (6 or 12 UTC
+> calendar months), by a daily sweep through the same erase as a request
+> (`lib/attendee-batch/retention.ts`; standing instruction in DPA Annex 3). Anything it cannot be
+> sure of is kept and counted on `/api/health` `orderRetention`. `ORDER_RETENTION_SWEEP` ships as
+> `dry-run`; the period is kept only once it is `live`. The proposal below is history.
+
+A stated retention policy is mandatory (Art. 13(2)(a)) and cannot be "indefinite".
 
 ### Recommended: separate postage batch for attendee data
 

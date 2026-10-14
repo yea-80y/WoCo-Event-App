@@ -166,5 +166,17 @@ purposes or retention, which is a controller's call. The editor drops the "not l
 "earlier versions stay retrievable" warnings: both are in ORGANISER_TERMS §4, where they belong.
 
 **Depends on the retention sweep.** The notice says order-form answers are deleted N months after the
-event. Nothing deletes them until the sweep ships, so this notice must not reach production before it.
+event. The sweep is built (#547) but ships as `dry-run`: nothing is deleted until
+`ORDER_RETENTION_SWEEP=live`, so switch it live before this notice reaches production.
+
+First live run:
+1. Set `ORDER_RETENTION_SWEEP=live` and `ORDER_RETENTION_LIMIT=1` together. The ops run endpoint runs
+   in the configured mode, and the boot timer fires about 7 minutes after start - live with the
+   default limit (500) would erase everything due on that first pass.
+2. Check the one erased order: the dashboard shows it erased, its record carries `erasedBy` and the
+   rule, and nothing is left burning.
+3. Remove the limit.
+
+**Deploy order.** The frontend deploy follows the server deploy straight away: the server refuses v1
+notices, so existing organisers cannot sell until they publish a v2 notice from the new editor.
 

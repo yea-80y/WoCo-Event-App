@@ -40,6 +40,23 @@ const STORE_FILE = join(DATA_DIR, "attendee-slots.json");
 
 export type OrderKind = "prepared" | "checkout" | "fallback";
 export type OrderState = "allocated" | "stored" | "burned";
+/** Who started an erasure: a data subject's or organiser's request, or the retention sweep (#547). */
+export type ErasedBy = "request" | "retention";
+
+/** The instruction a retention erasure carried out, kept as the processor's evidence (Art. 28(3)(h)). */
+export interface RetentionRule {
+  retainMonths: number;
+  /** The series' onchain `eventEndTs`, epoch ms. */
+  endMs: number;
+  endSource: "chain";
+  /** ISO: `endMs` + `retainMonths` UTC calendar months. */
+  dueAt: string;
+}
+
+export interface Erasure {
+  by: ErasedBy;
+  rule?: RetentionRule;
+}
 
 export interface ChunkSlot {
   /** Chunk address, hex, no 0x. */
@@ -65,6 +82,9 @@ export interface OrderRecord {
   /** HMAC of the buyer's email (`hashEmail`): finds a person's orders for an
    *  access or erasure request. Never the address itself. */
   emailHash?: string;
+  /** Months after the event's onchain end that the answers are kept: the
+   *  organiser's notice at the time of sale (#547). Absent = never swept. */
+  retainMonths?: number;
   createdAt: string;
   /** `allocated` = slots reserved, upload not confirmed (a crash, or still in flight).
    *  Treat it as possibly on the network: burnable, never reissued. */
@@ -72,6 +92,9 @@ export interface OrderRecord {
   /** Distinct chunk addresses of the order, data chunks first, root last. */
   chunks: ChunkSlot[];
   burnedAt?: string;
+  /** Set when an erasure starts, first writer wins, so a resumed burn keeps its reason. */
+  erasedBy?: ErasedBy;
+  retentionRule?: RetentionRule;
 }
 
 export interface BatchRecord {
@@ -287,7 +310,7 @@ export interface AllocatedOrder {
 export function allocateOrder(
   root: Uint8Array,
   chunkAddresses: Uint8Array[],
-  meta: { kind: OrderKind; eventId?: string; seriesId?: string; organiser?: string; emailHash?: string },
+  meta: { kind: OrderKind; eventId?: string; seriesId?: string; organiser?: string; emailHash?: string; retainMonths?: number },
   nowMs: number = Date.now(),
 ): AllocatedOrder {
   ensureLoaded();
@@ -340,6 +363,7 @@ export function allocateOrder(
     ...(meta.seriesId ? { seriesId: meta.seriesId } : {}),
     ...(meta.organiser ? { organiser: meta.organiser.toLowerCase() } : {}),
     ...(meta.emailHash ? { emailHash: meta.emailHash } : {}),
+    ...(meta.retainMonths !== undefined ? { retainMonths: meta.retainMonths } : {}),
     createdAt: new Date(nowMs).toISOString(),
     state: "allocated",
     chunks,
@@ -372,6 +396,26 @@ export function markOrderStored(root: string): void {
     persistOrThrow();
   } catch (err) {
     record.state = "allocated";
+    throw err;
+  }
+}
+
+/**
+ * Record why an order is being erased, before its first burn is planned. Never
+ * overwrites: an interrupted burn resumed by someone else keeps who started it.
+ */
+export function noteErasure(root: string, erasure: Erasure): void {
+  ensureLoaded();
+  if (unreadable) throw new AttendeeStoreUnavailableError(`ledger unreadable: ${unreadable}`);
+  const record = store.orders[normalizeHex(root)];
+  if (!record || record.state === "burned" || record.erasedBy) return;
+  record.erasedBy = erasure.by;
+  if (erasure.rule) record.retentionRule = { ...erasure.rule };
+  try {
+    persistOrThrow();
+  } catch (err) {
+    delete record.erasedBy;
+    delete record.retentionRule;
     throw err;
   }
 }
@@ -443,8 +487,9 @@ export function markChunkBurned(root: string, address: string, burnTs: string, n
  */
 export function recordErasedBeforeStore(
   root: string,
-  meta: { eventId?: string; seriesId?: string; organiser?: string; emailHash?: string } = {},
+  meta: { eventId?: string; seriesId?: string; organiser?: string; emailHash?: string; retainMonths?: number } = {},
   nowMs: number = Date.now(),
+  erasure?: Erasure,
 ): void {
   ensureLoaded();
   if (unreadable) throw new AttendeeStoreUnavailableError(`ledger unreadable: ${unreadable}`);
@@ -460,10 +505,13 @@ export function recordErasedBeforeStore(
     ...(meta.seriesId ? { seriesId: meta.seriesId } : {}),
     ...(meta.organiser ? { organiser: meta.organiser.toLowerCase() } : {}),
     ...(meta.emailHash ? { emailHash: meta.emailHash } : {}),
+    ...(meta.retainMonths !== undefined ? { retainMonths: meta.retainMonths } : {}),
     createdAt: at,
     state: "burned",
     chunks: [],
     burnedAt: at,
+    ...(erasure ? { erasedBy: erasure.by } : {}),
+    ...(erasure?.rule ? { retentionRule: { ...erasure.rule } } : {}),
   };
   try {
     persistOrThrow();
@@ -562,6 +610,12 @@ export function _resetAttendeeLedgerForTests(): void {
 export function ledgerReadable(): boolean {
   ensureLoaded();
   return unreadable === null;
+}
+
+/** Every order recorded, any state, as copies: the retention sweep's worklist (#547). */
+export function listOrders(): Array<{ root: string; record: OrderRecord }> {
+  ensureLoaded();
+  return Object.entries(store.orders).map(([root, o]) => ({ root, record: structuredClone(o) }));
 }
 
 /** Every order recorded against this email hash, any state: an access or erasure request (#546). */

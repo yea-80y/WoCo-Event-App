@@ -113,6 +113,7 @@ import { heldOrdersHealth, sweepExpired as sweepHeldOrders } from "./lib/attende
 import { consentStoreHealth, sweepExpiredConsents } from "./lib/marketing/consent-store.js";
 import { suppressionStoreHealth } from "./lib/marketing/suppression-store.js";
 import { sweepExpiredRosters, rosterRetentionHealth } from "./lib/checkin/roster-retention.js";
+import { orderRetentionHealth, runOrderRetention } from "./lib/attendee-batch/retention.js";
 import { retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -460,6 +461,13 @@ function healthReport() {
     // the consent sweep: `lastError` says a roster waits for the next pass;
     // `undated` counts rosters with no onchain end to go by, kept until one exists.
     rosterRetention: rosterRetentionHealth(),
+    // Order answers erased N months after the event's onchain end (#547).
+    // Red when the ledger or held orders are unreadable, no run in 48 h, the
+    // mode is not understood, or - live only - an order someone can act on is a
+    // week past due, the `backlog` the per-run limit holds back is two weeks past
+    // due, or bee has not listed a batch of due orders in 3 runs in a row.
+    // `undeterminable` (no onchain end to go by) and a dead batch are counted, never red.
+    orderRetention: orderRetentionHealth(),
     // Whether paid checkouts can mint on the events contract (#662): the ticket
     // sponsor still authorised, and on the ledger its hourly mint cap's headroom
     // (`TICKET_MINT_ALLOWANCE_MIN`, default one maximum order). The checkout
@@ -861,6 +869,13 @@ const sweepRosters = () => {
 };
 setTimeout(sweepRosters, 6 * 60_000).unref();
 setInterval(sweepRosters, 24 * 60 * 60 * 1000).unref();
+// #547: order answers go N months after the event's onchain end. ORDER_RETENTION_SWEEP
+// = off | dry-run (default) | live; a dry run decides and logs, erasing nothing.
+const sweepOrderRetention = () => {
+  runOrderRetention().catch((err) => console.warn("[retention] sweep failed:", (err as Error).message));
+};
+setTimeout(sweepOrderRetention, 7 * 60_000).unref();
+setInterval(sweepOrderRetention, 24 * 60 * 60 * 1000).unref();
 // #546: store paid orders whose store failed at fulfilment, and delete unpaid
 // holds past their day.
 setInterval(() => {

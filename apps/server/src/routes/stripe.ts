@@ -53,7 +53,7 @@ import { attendeeCheckoutRefusal, orderRefOf } from "../lib/attendee-batch/write
 import { getOrderRecord, isOrderErased } from "../lib/attendee-batch/ledger.js";
 import { commitHold, getHeldOrder, holdPrepared } from "../lib/attendee-batch/held-orders.js";
 import { authoritativeOrderKeyRef, eventKeys, isStaleOrderKey, type EventKeys } from "../lib/keyring/event-keys.js";
-import { noticeRefusal, organiserNoticeVerdict } from "../lib/legal/notice-gate.js";
+import { noticeRefusal, noticeVerdictOf, organiserNoticeRead } from "../lib/legal/notice-gate.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../lib/stripe/checkout-provenance.js";
 import { liveProvenanceReads, refundTamperedSession } from "../lib/stripe/checkout-provenance-live.js";
@@ -714,7 +714,8 @@ stripe.post("/create-checkout", async (c) => {
   // No sale until the organiser has confirmed their privacy notice (2026-10-11), read
   // under the same keys as the notice page shows. Usually a memory hit; started
   // beside the event read so a cold one costs no extra round trip.
-  const noticeVerdict = organiserNoticeVerdict(keys.creator, keys.feedSigner);
+  const noticeRead = organiserNoticeRead(keys.creator, keys.feedSigner);
+  const noticeVerdict = noticeRead.then(noticeVerdictOf);
   const event: EventFeed | null = await getEvent(eventId, siteSigner ?? undefined);
   if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
 
@@ -724,6 +725,10 @@ stripe.post("/create-checkout", async (c) => {
   // Before anything is held or charged; an unreadable notice refuses too.
   const noticeBlock = noticeRefusal(await noticeVerdict);
   if (noticeBlock) return c.json(noticeBlock.body, noticeBlock.status);
+  // The period the notice promised THIS buyer, fixed now: the retention sweep
+  // erases by it and reads no notice, so a later edit never reaches past sales (#547).
+  const notice = await noticeRead;
+  const retainMonths = notice.status === "found" ? notice.notice.orderRetentionMonths : undefined;
 
   // The box must be sealed to the key this event sells under NOW (#186): a rotation
   // between prepare-order and here is caught too. Keys that cannot be read stop the
@@ -1128,6 +1133,9 @@ stripe.post("/create-checkout", async (c) => {
       ...(marketingConsent !== undefined
         ? { marketingConsent: marketingConsent ? "1" : "0" }
         : {}),
+      // Months after the event this order's answers are kept (#547), carried
+      // fulfilment -> hold -> ledger. Under the integrity tag like every key here.
+      ...(retainMonths !== undefined ? { retainMonths: String(retainMonths) } : {}),
     };
     // #645: fulfilment acts on this metadata, and under a full Stripe Dashboard
     // the organiser can create sessions and edit metadata on their own account.

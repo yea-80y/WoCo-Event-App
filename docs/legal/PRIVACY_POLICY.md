@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Last updated:** 7 October 2026
+**Last updated:** 14 October 2026
 **Version:** 1.0
 
 ---
@@ -257,7 +257,7 @@ We would rather you came to us first, but it is your right either way.
 | Data | Retention |
 |---|---|
 | Your ticket / attendance record | **Indefinitely** — it is your record of having been there, yours to keep or erase |
-| The organiser's copy of your order details | Encrypted in your browser, so only the organiser can read it, and stored on Swarm. Kept for as long as the organiser needs it. We erase it when the organiser asks, when they stop using WoCo, or when you ask us to (section 9) |
+| The organiser's copy of your order details | Encrypted in your browser, so only the organiser can read it, and stored on Swarm. Kept for the period in the organiser's privacy notice at the time of sale - 6 or 12 months after the event - then erased. Erased sooner when the organiser asks, when they stop using WoCo, or when you ask us to (section 9). If you never pay, deleted after 24 hours |
 | Account data | While your account is open. If you ask us to delete your account, we do so within 90 days of your request |
 | Suppression records | Indefinitely — required to honour your opt-out. This is the one record we keep *because* you asked us to stop: deleting it would let the next contact upload put you back |
 | Marketing consent records | While the organiser can still mail you on that basis, plus 6 months. A hashed record of the wording you agreed to and when — it is how we can show your consent was real |
