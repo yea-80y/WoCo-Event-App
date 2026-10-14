@@ -96,6 +96,13 @@ export interface MarketingContact {
 export interface MarketingListPayload {
   version: 1;
   contacts: MarketingContact[];
+  /**
+   * Lowercased addresses the organiser deleted from the list. The automatic add
+   * of opted-in ticket buyers never brings one back; adding the address again on
+   * purpose (a CSV import) clears it. Sealed with the list and never sent to the
+   * server. Absent - every list saved before 2026-10-14 - means none.
+   */
+  removed?: string[];
 }
 
 export interface MarketingListMeta {
