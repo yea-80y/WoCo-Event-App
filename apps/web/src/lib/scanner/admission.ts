@@ -33,6 +33,7 @@ export interface AdmitInput {
 
 export const OFFLINE_MESSAGE = "No connection - check-in is paused so nobody gets in twice";
 export const IN_FLIGHT_MESSAGE = "Still checking the last ticket - scan again";
+export const EVENT_CHANGED_MESSAGE = "This tab changed event during the scan - scan again";
 
 /** A pack that names no mode (built before #641) is "several": the mode that cannot admit twice. */
 export function doorModeOf(pack: Pick<CheckinPack, "doorMode"> | null | undefined): DoorMode {

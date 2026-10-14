@@ -26,7 +26,7 @@ import * as db from "./db.js";
 import { decryptRoster } from "./roster-crypto.js";
 import { verifyTicket } from "./verify.js";
 import { claimAdmission, newClaimId, type ClaimAnswer } from "./claim.js";
-import { admit, doorModeOf, withConfirmed, type Admission } from "./admission.js";
+import { admit, doorModeOf, EVENT_CHANGED_MESSAGE, withConfirmed, type Admission } from "./admission.js";
 import {
   MISS_RECHECK_MS,
   onPackMiss,
@@ -385,6 +385,10 @@ class ScannerStore {
   }
 
   private async scanTicket(raw: string, pack: CheckinPack): Promise<ScanOutcome> {
+    // The pass this scan began under, with `pack`. Admission reads the tab's
+    // pass, mode and set when it runs, so a switch to another event while this
+    // verified would admit the ticket there.
+    const pass = this.pass;
     let verdict = await verifyTicket(raw, pack);
     const missing = ticketNewerThanPack(verdict);
     if (missing) {
@@ -415,6 +419,10 @@ class ScannerStore {
     }
 
     const { ticket } = verdict;
+    // Checked with no await before `admitTicket` reads the pass, so nothing can switch in between.
+    if (this.pass?.token !== pass?.token) {
+      return { kind: "cant-confirm", message: EVENT_CHANGED_MESSAGE, seriesName: verdict.seriesName, edition: ticket.edition };
+    }
     const attendee = this.findAttendee(ticket.seriesId, ticket.edition);
     const base = { seriesName: verdict.seriesName, edition: ticket.edition, attendee };
 

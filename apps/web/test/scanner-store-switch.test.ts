@@ -14,7 +14,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { join } from "node:path";
-import { parseDoorPassFragment } from "@woco/shared";
+import { buildTicketCanonicalMessage, parseDoorPassFragment } from "@woco/shared";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { EVENT_CHANGED_MESSAGE } from "../src/lib/scanner/admission.js";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const scannerDir = join(here, "../src/lib/scanner");
@@ -147,4 +149,78 @@ test("reset lets a failed pass link go too", async (t) => {
   assert.equal(scanner.pendingPass, null);
   scanner.newVersionReady();
   assert.ok(!hasPassInUrl());
+});
+
+// ── a scan held between verify and admit ────────────────────────────────────
+
+const ONCHAIN = ("0x" + "11".repeat(32)) as `0x${string}`;
+const burner = privateKeyToAccount(generatePrivateKey());
+const seriesOf = (eventId: string, owners: string[] = []) =>
+  [{ seriesId: `ser-${eventId}`, name: "General", totalSupply: 10, onChainEventId: ONCHAIN, slotOwners: owners }];
+
+/** A genuine ticket: edition 1 of event-a, signed by the burner its pack names as the slot's owner. */
+async function ticketForEventA(): Promise<string> {
+  const sig = await burner.signMessage({ message: buildTicketCanonicalMessage({ onChainEventId: ONCHAIN, seriesId: "ser-event-a", edition: 1 }) });
+  return `woco://t/event-a/ser-event-a/1/${sig}`;
+}
+
+type Gated = typeof globalThis & { __scannerVerifyGate?: () => Promise<void> };
+
+/** Holds the next verification until `release`; `reached` resolves once it is held. */
+function holdVerification(t: test.TestContext) {
+  let release!: () => void;
+  let arrive!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  const reached = new Promise<void>((r) => (arrive = r));
+  (globalThis as Gated).__scannerVerifyGate = () => {
+    arrive();
+    return held;
+  };
+  t.after(() => delete (globalThis as Gated).__scannerVerifyGate);
+  return { reached, release };
+}
+
+async function twoSingleScannerEvents() {
+  await storeEvent("event-a", { series: seriesOf("event-a", [burner.address]) });
+  await storeEvent("event-b", { series: seriesOf("event-b") });
+}
+
+async function assertNothingRecorded(scanner: Scanner) {
+  for (const eventId of ["event-a", "event-b"]) {
+    assert.deepEqual(await db.getAllCheckins(eventId), [], `no check-in under ${eventId}`);
+    assert.deepEqual(await db.getPending(eventId), [], `nothing queued to sync under ${eventId}`);
+  }
+  assert.equal(scanner.checkins.size, 0);
+}
+
+test("a held scan with no switch admits under its own event", async (t) => {
+  await twoSingleScannerEvents();
+  const scanner = await openTab(t);
+  await scanner.openEvent("event-a");
+  const gate = holdVerification(t);
+  const scanning = scanner.scan(await ticketForEventA());
+  await gate.reached;
+  gate.release();
+  assert.equal((await scanning).kind, "checked-in");
+  assert.deepEqual((await db.getAllCheckins("event-a")).map((r) => r.edition), [1]);
+});
+
+test("a scan that began under one event never admits under the event the tab switched to", async (t) => {
+  await twoSingleScannerEvents();
+  const scanner = await openTab(t);
+  await scanner.openEvent("event-a");
+  const gate = holdVerification(t);
+  const scanning = scanner.scan(await ticketForEventA());
+  await gate.reached; // verifying against event-a's pack
+  await scanner.switchTo("event-b");
+  assert.equal(scanner.pass?.eventId, "event-b");
+  gate.release();
+
+  const outcome = await scanning;
+  assert.deepEqual(
+    outcome,
+    { kind: "cant-confirm", message: EVENT_CHANGED_MESSAGE, seriesName: "General", edition: 1 },
+    "not admitted: the door it began at is no longer this tab's",
+  );
+  await assertNothingRecorded(scanner);
 });
