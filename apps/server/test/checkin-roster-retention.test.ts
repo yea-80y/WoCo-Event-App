@@ -2,7 +2,8 @@
  * #883 - an event's door roster (attendee emails and order answers, encrypted to
  * the organiser) is deleted 30 days after the event's ONCHAIN end, never the
  * organiser-editable feed `endDate`. No trusted end keeps the roster. The
- * check-in set and door passes are never touched.
+ * check-in set and door passes are never touched. The event's door entries (later
+ * buyers' sealed email and card name) go on the same clock, with or without a roster.
  */
 
 import { test, before, after } from "node:test";
@@ -25,6 +26,7 @@ const id = (n: number) => "0x" + n.toString(16).padStart(64, "0");
 const E = {
   OLD: ev(1), RECENT: ev(2), EDGE: ev(3), UNREG: ev(4), NOEND: ev(5), RPC: ev(6),
   TWO: ev(7), BROKEN: ev(8), BEHIND: ev(9), KEEPS_DOOR: ev(10), CHMOD: ev(11), GATE: ev(12),
+  ENTRIES: ev(14), ENTRIES_ONLY: ev(15), ENTRIES_RECENT: ev(16),
 };
 
 /** onChainEventId → end in seconds, null (no end onchain) or "throw" (RPC down). */
@@ -41,6 +43,9 @@ const ends: Record<string, number | null | "throw"> = {
   [id(11)]: endedDaysAgo(31),
   [id(12)]: endedDaysAgo(31),
   [id(13)]: endedDaysAgo(31),
+  [id(14)]: endedDaysAgo(31),
+  [id(15)]: endedDaysAgo(31),
+  [id(16)]: endedDaysAgo(29),
 };
 const reg = (n: number, chainId = CHAIN) => ({ onChainEventId: id(n), chainId, contract: LEDGER, version: "ledger" });
 const REGISTRY = {
@@ -59,6 +64,9 @@ const REGISTRY = {
   [`${E.KEEPS_DOOR}|s1`]: reg(10),
   [`${E.CHMOD}|s1`]: reg(11),
   [`${E.GATE}|s1`]: reg(12),
+  [`${E.ENTRIES}|s1`]: reg(14),
+  [`${E.ENTRIES_ONLY}|s1`]: reg(15),
+  [`${E.ENTRIES_RECENT}|s1`]: reg(16),
 };
 
 let dir: string;
@@ -66,6 +74,7 @@ let originalCwd: string;
 let store: typeof import("../src/lib/checkin/store.js");
 let retention: typeof import("../src/lib/checkin/roster-retention.js");
 let guard: typeof import("../src/lib/event/end-date-guard.js");
+let doorEntries: typeof import("../src/lib/checkin/door-entries.js");
 
 const reads: string[] = [];
 let gate: Promise<void> | null = null;
@@ -96,6 +105,7 @@ before(async () => {
   store = await import("../src/lib/checkin/store.js");
   retention = await import("../src/lib/checkin/roster-retention.js");
   guard = await import("../src/lib/event/end-date-guard.js");
+  doorEntries = await import("../src/lib/checkin/door-entries.js");
 });
 
 after(() => {
@@ -234,4 +244,20 @@ test("/api/health status: run time, count and error - reported, never an alarm",
   assert.equal(typeof h.lastRunAt, "string");
   assert.equal(h.deleted, 8, "every deletion above, counted once");
   assert.equal("ok" in h, false);
+});
+
+const entriesFile = (eventId: string) =>
+  join(dir, ".data", "checkin-door-entries", `${createHash("sha256").update(eventId).digest("hex")}.json`);
+const putEntries = (eventId: string) => doorEntries.startDoorEntries(eventId, "e".repeat(32), "ab".repeat(1216));
+
+test("door entries go with the roster, and on their own when no roster was pushed", async () => {
+  putRoster(E.ENTRIES);
+  putEntries(E.ENTRIES);
+  putEntries(E.ENTRIES_ONLY);
+  putEntries(E.ENTRIES_RECENT);
+  await sweep();
+  assert.equal(hasRoster(E.ENTRIES), false);
+  assert.equal(existsSync(entriesFile(E.ENTRIES)), false, "with the roster");
+  assert.equal(existsSync(entriesFile(E.ENTRIES_ONLY)), false, "no roster: still on the clock");
+  assert.equal(existsSync(entriesFile(E.ENTRIES_RECENT)), true, "inside the period");
 });

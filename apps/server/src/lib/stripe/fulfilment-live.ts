@@ -28,6 +28,7 @@ import { captureCheckoutConsent } from "../marketing/consent-capture.js";
 import { recordAttendeeEmail } from "../event/attendee-index.js";
 import { getSiteTheme, resolveSiteEventSigner } from "../site/service.js";
 import { sendTicketEmail } from "../../routes/tickets.js";
+import { sealDoorEntries } from "../checkin/door-entries.js";
 import { recordFailure } from "../email/failure-ledger.js";
 import { recordPendingRefund } from "./pending-refunds.js";
 import { recordAutoRefund, recordSaleSlots, orderRefInOtherSale } from "./ticket-sales.js";
@@ -88,6 +89,7 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   recordAttendeeEmail,
   getSiteTheme,
   sendTicketEmail,
+  sealDoorEntries: (eventId, tickets, who) => sealDoorEntries(eventId, tickets, who),
   recordUndeliveredTicket: ({ to, subject, error, context }) => {
     // The mailer never saw this message (render/config failure), so nothing
     // else will write it. `attempts: 0` says exactly that to the ops view, and

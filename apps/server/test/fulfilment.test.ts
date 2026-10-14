@@ -183,6 +183,7 @@ type Step =
   | "getSiteTheme"
   | "sendTicketEmail"
   | "sendTicketEmailLedgered"
+  | "sealDoorEntries"
   | "recordUndeliveredTicket";
 
 interface FakeOpts {
@@ -252,6 +253,8 @@ function fakeDeps(o: FakeOpts = {}) {
   const autoRefunds: Array<{ sessionId: string; amount: number }> = [];
   /** Sales handed to a cancellation's refund job (#644). */
   const cancellationQueue: Array<{ eventId: string; sessionId: string; paymentIntentId: string; account: string }> = [];
+  /** Door entries asked for (the live door attendee list). */
+  const doorEntries: Array<{ eventId: string; tickets: Array<{ seriesId: string; edition: number }>; who: { email?: string; buyerName?: string } }> = [];
   let nextSlot = 0;
   let chunkIdx = 0;
   let burnerSeq = 0;
@@ -418,13 +421,19 @@ function fakeDeps(o: FakeOpts = {}) {
       }
       emails.push(opts);
     },
+    sealDoorEntries: async (eventId, tickets, who) => {
+      // Attempt recorded before the throw: a door list failure must change nothing else.
+      doorEntries.push({ eventId, tickets, who });
+      boom("sealDoorEntries");
+      return tickets.length;
+    },
     recordUndeliveredTicket: (input) => {
       boom("recordUndeliveredTicket");
       ledgerRows.push(input);
     },
   };
 
-  return { deps, calls, uploaded, buyerHashes, retention, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue };
+  return { deps, calls, uploaded, buyerHashes, retention, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue, doorEntries };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -1195,6 +1204,37 @@ describe("every collaborator throws", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Door entries (live door attendee list)
+// ---------------------------------------------------------------------------
+
+test("door entries: one per issued ticket, after the email, with the email and the card name", async () => {
+  const f = fakeDeps();
+  const outcome = await fulfilPaidSession(session(), PAID_AT, f.deps);
+  assertInvariant(outcome, session(), f);
+  assert.equal(f.doorEntries.length, 1);
+  assert.equal(f.doorEntries[0]!.eventId, EVENT_ID);
+  assert.deepEqual(f.doorEntries[0]!.tickets, [{ seriesId: SERIES_ID, edition: 1 }, { seriesId: SERIES_ID, edition: 2 }]);
+  assert.deepEqual(f.doorEntries[0]!.who, { email: "buyer@example.com", buyerName: "Ada Lovelace" });
+  assert.ok(f.calls.indexOf("sendTicketEmail") < f.calls.indexOf("sealDoorEntries"), "never before the email");
+});
+
+test("door entries: nothing when no ticket was issued", async () => {
+  const f = fakeDeps({ revertAtChunk: 0 });
+  const outcome = await fulfilPaidSession(session(), PAID_AT, f.deps);
+  assert.equal(outcome.issued, 0);
+  assert.equal(f.doorEntries.length, 0);
+});
+
+test("door entries: a failure there changes no outcome, and the email still went", async () => {
+  const ok = await fulfilPaidSession(session(), PAID_AT, fakeDeps().deps);
+  const f = fakeDeps({ fail: "sealDoorEntries" });
+  const outcome = await fulfilPaidSession(session(), PAID_AT, f.deps);
+  assertInvariant(outcome, session(), f);
+  assert.deepEqual(outcome, ok);
+  assert.equal(f.emails.length, 1);
+});
+
+// ---------------------------------------------------------------------------
 // Never rejects
 // ---------------------------------------------------------------------------
 
@@ -1205,7 +1245,7 @@ test("never rejects, whichever step throws", async () => {
     "getOrganiserByStripeAccount", "storeOrderBlob", "generateBurner",
     "signMessage", "batchClaimForOnChain", "bindTicket", "consumeReservation", "createRefund",
     "flagPayoutRecheck", "captureCheckoutConsent", "recordAttendeeEmail", "getSiteTheme", "sendTicketEmail",
-    "sendTicketEmailLedgered", "recordUndeliveredTicket",
+    "sendTicketEmailLedgered", "recordUndeliveredTicket", "sealDoorEntries",
   ];
   for (const step of steps) {
     const f = fakeDeps({ fail: step, revertAtChunk: step === "createRefund" || step === "flagPayoutRecheck" ? 0 : undefined });

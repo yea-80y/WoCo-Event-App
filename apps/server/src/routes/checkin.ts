@@ -2,12 +2,13 @@
  * Door check-in API.
  *
  * Organiser-authed (session delegation, mounted under /api/events):
- *   POST /:id/door-pass       issue/rotate the event's door pass
+ *   POST /:id/door-pass       issue/rotate the event's door pass + register its door key
  *   POST /:id/checkin-roster  store AES-GCM roster ciphertext (key never sent)
  *   GET  /:id/checkin-status  live counts for the dashboard
  *
  * Door-pass-authed via X-Door-Pass header (mounted under /api/checkin):
  *   GET  /:eventId/pack       offline verification pack for scanner devices
+ *   GET  /:eventId/entries    later sales' sealed email + card name, after a cursor
  *   POST /:eventId/claim      admit one ticket - first claim anywhere wins (#641)
  *   POST /:eventId/sync       merge a device's check-ins, return full set
  *
@@ -37,7 +38,6 @@ import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEvent, getEventForOwner, getEventBySigner } from "../lib/event/service.js";
 import { eventKeys } from "../lib/keyring/event-keys.js";
-import { currentRing } from "../lib/keyring/current-ring.js";
 import { getOnChainEventAt, getSlotDataAt } from "../lib/chain/event-contract.js";
 import { registrationContractFor } from "../lib/event/onchain-registry.js";
 import { contractKey } from "../lib/chain/event-contract.js";
@@ -51,7 +51,10 @@ import {
   mergeCheckins,
   claimCheckin,
   bindSinglePassDevice,
+  doorPassIdUsed,
 } from "../lib/checkin/store.js";
+import { checkDoorKeyRegistration } from "../lib/checkin/door-key.js";
+import { DoorEntriesUnreadableError, readDoorEntriesPage, startDoorEntries } from "../lib/checkin/door-entries.js";
 import { mapWithConcurrency, SLOT_READ_CONCURRENCY } from "../lib/util/concurrency.js";
 
 const MAX_ROSTER_CIPHERTEXT = 4 * 1024 * 1024;
@@ -105,20 +108,23 @@ checkinOrganiser.post("/:id/door-pass", requireAuth, async (c) => {
 
   // Anything but an explicit "single" is "several": the mode that cannot admit
   // a ticket twice is the default, including for clients that send no mode.
-  const body = c.get("body") as { mode?: unknown } | undefined;
+  const body = c.get("body") as { mode?: unknown; jti?: unknown; doorKey?: unknown; sig?: unknown } | undefined;
   const mode: DoorMode = body?.mode === "single" ? "single" : "several";
+
+  // The door entries key, signed by the account's content-feed signer: a session
+  // alone must not be able to choose who later buyers are sealed to. Its generation
+  // is the pass's (#186): a pass made before a passkey is removed stops working when
+  // the account's keys move on.
+  const reg = checkDoorKeyRegistration(eventId, body, await eventKeys(eventId), (jti) => doorPassIdUsed(eventId, jti));
+  if (!reg.ok) return c.json({ ok: false, error: reg.error }, reg.status);
 
   try {
     // Stamp the content-feed signer into the pass record — the organiser is
     // authenticated here, so this is the last point where an unlisted event's
     // signer can be resolved from trusted state. /pack has no parent address.
-    // The organiser's key generation now (#186): a pass made before a passkey is
-    // removed stops working when the account's keys move on.
-    const ring = await currentRing(c.get("parentAddress"));
-    if (ring.status === "unavailable") {
-      return c.json({ ok: false, error: "Couldn't check your account's keys right now - try again in a minute" }, 503);
-    }
-    const token = issueDoorPass(eventId, exp, event.creatorFeedSigner, mode, ring.status === "ring" ? ring.ring.gen : 0);
+    // The entries log first: a pass whose log could not be started is not issued.
+    startDoorEntries(eventId, reg.jti, reg.doorKey);
+    const token = issueDoorPass(eventId, exp, event.creatorFeedSigner, mode, reg.gen, { jti: reg.jti, doorKeyRef: reg.doorKeyRef });
     return c.json({ ok: true, data: { token, exp, mode } });
   } catch (err) {
     console.error("[checkin] door-pass issue failed:", err);
@@ -169,7 +175,7 @@ checkinOrganiser.get("/:id/checkin-status", requireAuth, async (c) => {
 
 const checkin = new Hono<AppEnv>();
 
-type AuthorisedPass = { ok: true; signer?: string; mode: DoorMode; device?: string; gen: number };
+type AuthorisedPass = { ok: true; jti: string; signer?: string; mode: DoorMode; device?: string; gen: number };
 
 const REVOKED = "Door pass revoked — ask the organiser for a new one";
 
@@ -192,6 +198,7 @@ function authorisePass(c: Context<AppEnv>): AuthorisedPass | { ok: false; resp: 
   }
   return {
     ok: true,
+    jti: verdict.jti,
     mode: verdict.mode,
     gen: verdict.gen,
     ...(verdict.signer ? { signer: verdict.signer } : {}),
@@ -364,6 +371,40 @@ checkin.post("/:eventId/sync", async (c) => {
   } catch (err) {
     console.error("[checkin] sync could not be recorded:", err);
     return c.json({ ok: false, error: "Check-ins could not be recorded" }, 503);
+  }
+});
+
+/**
+ * Later sales' door entries, after the scanner's cursor: each one's email and card name
+ * sealed to this pass's door key at fulfilment (lib/checkin/door-entries.ts). Refused
+ * like the pack - it is attendee data - when the account's keys moved since the pass was
+ * made, or cannot be read.
+ */
+checkin.get("/:eventId/entries", async (c) => {
+  const auth = authorisePass(c);
+  if (!auth.ok) return auth.resp;
+
+  const eventId = c.req.param("eventId");
+  const device = deviceFrom(c);
+  if (!device) {
+    return c.json({ ok: false, error: "This scanner needs updating - reload the page and try again", reason: "outdated-client" }, 400);
+  }
+  const refused = checkDevice(c, auth, device, null);
+  if (refused) return refused;
+  const outdated = await outdatedPass(c, eventId, auth, "refuse");
+  if (outdated) return outdated;
+
+  const rawSince = c.req.query("since") ?? "0";
+  const since = /^\d{1,12}$/.test(rawSince) ? Number(rawSince) : NaN;
+  if (!Number.isSafeInteger(since)) return c.json({ ok: false, error: "Expected ?since=<number>" }, 400);
+  try {
+    return c.json({ ok: true, data: readDoorEntriesPage(eventId, auth.jti, since) });
+  } catch (err) {
+    if (err instanceof DoorEntriesUnreadableError) {
+      return c.json({ ok: false, error: "New buyers can't be listed right now - scanning still works" }, 503);
+    }
+    console.error("[checkin] door entries read failed:", err);
+    return c.json({ ok: false, error: "New buyers can't be listed right now - scanning still works" }, 503);
   }
 });
 
