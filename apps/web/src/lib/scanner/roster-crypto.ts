@@ -1,10 +1,12 @@
 /**
- * Roster encryption — AES-256-GCM under the key carried in the door-pass URL
- * fragment. Encrypt lives here too (used by the organiser dashboard) so both
- * sides share one wire format: { iv: b64, ciphertext: b64 } over UTF-8 JSON.
+ * Roster encryption — AES-256-GCM under the roster key, an HKDF child of the pass
+ * secret P the door-pass URL fragment carries (`doorRosterKey`). Encrypt lives here
+ * too (used by the organiser dashboard) so both sides share one wire format:
+ * { iv: b64, ciphertext: b64 } over UTF-8 JSON.
  */
 
 import { base64UrlDecode, type EncryptedRoster, type RosterEntry } from "@woco/shared";
+import { doorRosterKey } from "@woco/shared/checkin/door-keys";
 
 function b64encode(bytes: Uint8Array): string {
   let bin = "";
@@ -19,25 +21,31 @@ function b64decode(s: string): Uint8Array {
   return out;
 }
 
-async function importKey(keyB64url: string, usage: KeyUsage): Promise<CryptoKey> {
-  const raw = base64UrlDecode(keyB64url);
-  if (raw.length !== 32) throw new Error("Roster key must be 32 bytes");
-  return crypto.subtle.importKey("raw", raw as BufferSource, "AES-GCM", false, [usage]);
+async function importKey(passSecretB64url: string, usage: KeyUsage): Promise<CryptoKey> {
+  const p = base64UrlDecode(passSecretB64url);
+  if (p.length !== 32) throw new Error("Door pass secret must be 32 bytes");
+  const raw = doorRosterKey(p);
+  try {
+    return await crypto.subtle.importKey("raw", raw as BufferSource, "AES-GCM", false, [usage]);
+  } finally {
+    raw.fill(0);
+    p.fill(0);
+  }
 }
 
 export async function encryptRoster(
   entries: RosterEntry[],
-  keyB64url: string,
+  passSecretB64url: string,
 ): Promise<Pick<EncryptedRoster, "iv" | "ciphertext">> {
-  const key = await importKey(keyB64url, "encrypt");
+  const key = await importKey(passSecretB64url, "encrypt");
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const plaintext = new TextEncoder().encode(JSON.stringify(entries));
   const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext);
   return { iv: b64encode(iv), ciphertext: b64encode(new Uint8Array(ciphertext)) };
 }
 
-export async function decryptRoster(roster: EncryptedRoster, keyB64url: string): Promise<RosterEntry[]> {
-  const key = await importKey(keyB64url, "decrypt");
+export async function decryptRoster(roster: EncryptedRoster, passSecretB64url: string): Promise<RosterEntry[]> {
+  const key = await importKey(passSecretB64url, "decrypt");
   const plaintext = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv: b64decode(roster.iv) as BufferSource },
     key,

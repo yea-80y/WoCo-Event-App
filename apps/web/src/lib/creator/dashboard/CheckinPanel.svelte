@@ -1,10 +1,12 @@
 <script lang="ts">
   /**
    * "Door" tab — sets up the scanner for an event and shows live check-in
-   * counts. The roster key is worked out CLIENT-SIDE from the account's current
+   * counts. The pass secret is worked out CLIENT-SIDE from the account's current
    * keys and the pass's id (#186) - never stored, so this device keeps only the
-   * pass token; it encrypts the decrypted order data under it and uploads only
-   * ciphertext, and the key travels solely in the door-pass URL fragment.
+   * pass token; the roster is encrypted under a key derived from it and uploaded as
+   * ciphertext only, and the secret travels solely in the door-pass URL fragment.
+   * Making a pass also registers its door entries key, signed with the account's
+   * keys, so each later sale's email and card name reach the door phones sealed.
    * Regenerating the pass rotates the server jti and revokes every previously
    * provisioned device, and so does a change of the account's keys.
    *
@@ -18,7 +20,7 @@
   import type { EventFeed, OrderEntry } from "@woco/shared";
   import { issueDoorPass, pushCheckinRoster, getCheckinStatus, type CheckinStatus } from "../../api/checkin.js";
   import { encryptRoster } from "../../scanner/roster-crypto.js";
-  import { doorPassRosterKeyB64url } from "../../scanner/door-pass-key.js";
+  import { doorPassRegistration, doorPassSecretB64url, newDoorPassId } from "../../scanner/door-pass-key.js";
   import { auth } from "../../auth/auth-store.svelte.js";
 
   interface DecryptedOrder {
@@ -151,14 +153,14 @@
         passUrl = null;
         return;
       }
-      passUrl = buildDoorPassUrl(SCANNER_ORIGIN, stored.token, doorPassRosterKeyB64url(keys.current, eventId, stored.token));
+      passUrl = buildDoorPassUrl(SCANNER_ORIGIN, stored.token, doorPassSecretB64url(keys.current, eventId, stored.token));
     } catch (err) {
       if (ask) workError = err instanceof Error ? err.message : "Couldn't open the door pass";
     }
   }
 
-  /** First-time setup AND regenerate: new pass + its key (old devices die). The pass
-   *  is issued FIRST - its id is part of the roster key. */
+  /** First-time setup AND regenerate: new pass + its secret (old devices die). The pass
+   *  is issued FIRST, with its door entries key - the roster is encrypted under it. */
   async function generatePass(passMode: DoorMode): Promise<void> {
     working = true;
     workError = null;
@@ -169,13 +171,13 @@
       if (needsDecrypt) await onEnsureDecrypted();
       const keys = await currentKeys();
 
-      const issued = await issueDoorPass(eventId, passMode);
-      const keyB64url = doorPassRosterKeyB64url(keys.current, eventId, issued.token);
-      const roster = await encryptRoster(buildRosterEntries(), keyB64url);
+      const issued = await issueDoorPass(eventId, passMode, doorPassRegistration(keys.current, eventId, newDoorPassId()));
+      const passSecret = doorPassSecretB64url(keys.current, eventId, issued.token);
+      const roster = await encryptRoster(buildRosterEntries(), passSecret);
       await pushCheckinRoster(eventId, roster);
 
       stored = { token: issued.token, exp: issued.exp, mode: issued.mode, gen: keys.gen, rosterPushedAt: new Date().toISOString() };
-      passUrl = buildDoorPassUrl(SCANNER_ORIGIN, issued.token, keyB64url);
+      passUrl = buildDoorPassUrl(SCANNER_ORIGIN, issued.token, passSecret);
       passStale = false;
       localStorage.setItem(storageKey, JSON.stringify(stored));
     } catch (err) {
@@ -199,7 +201,7 @@
         passUrl = null;
         throw new Error(KEYS_CHANGED);
       }
-      const roster = await encryptRoster(buildRosterEntries(), doorPassRosterKeyB64url(keys.current, eventId, stored.token));
+      const roster = await encryptRoster(buildRosterEntries(), doorPassSecretB64url(keys.current, eventId, stored.token));
       await pushCheckinRoster(eventId, roster);
       stored = { ...stored, rosterPushedAt: new Date().toISOString() };
       localStorage.setItem(storageKey, JSON.stringify(stored));
