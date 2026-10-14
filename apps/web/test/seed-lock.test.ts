@@ -372,7 +372,9 @@ test("passive likes, follows and subjects read by ADDRESS - never a prompt on pa
 
 test("Dashboard: attendee details ask for the passkey only from a tap", () => {
   const dash = read("../src/lib/creator/dashboard/Dashboard.svelte");
-  const decrypt = body(dash.replace(/\n  }\n/g, "\n}\n"), "async function decryptCurrent(prompt = false)");
+  // decryptCurrent queues runs (live orders); the prompt rule is in the run itself.
+  assert.match(dash, /function decryptCurrent\(prompt = false\): Promise<void> \{\s*const run = decryptChain\.then\(\(\) => decryptOnce\(prompt\)\);/);
+  const decrypt = body(dash.replace(/\n  }\n/g, "\n}\n"), "async function decryptOnce(prompt: boolean)");
   // The account's secrets (#186) - the seed and any later generations - not the bare seed.
   assert.match(decrypt, /if \(!secrets && prompt\) \{\s*if \(!\(await auth\.ensureAccountSetup\(\{ identity: true \}\)\)\)/);
   // Every call without `true` is a page-open path; the one with it is a button.
@@ -479,7 +481,7 @@ test("Dashboard: the unlock decrypts once, and a relock hides the details again"
   const dash = read("../src/lib/creator/dashboard/Dashboard.svelte");
   assert.match(dash, /if \(auth\.hasIdentitySeed && ordersLocked && !decrypting\) void decryptCurrent\(\);/);
   assert.match(dash, /<UnlockPanel subject="Attendee details" action="Show attendees" \/>/);
-  assert.match(dash, /if \(auth\.kind === "passkey" && !auth\.hasIdentitySeed && decryptedOrders\.size > 0\) \{\s*decryptedOrders = new Map\(\);\s*ordersLocked = true;/);
+  assert.match(dash, /if \(auth\.kind === "passkey" && !auth\.hasIdentitySeed && decryptedOrders\.size > 0\) \{\s*opened\.clear\(\);\s*decryptedOrders = new Map\(\);\s*ordersLocked = true;/);
 });
 
 test("Cancel: the passkey is asked when the form opens, never between the final press and the refunds", () => {

@@ -10,6 +10,7 @@
   import { onMount } from "svelte";
   import type { ImportTier } from "./ImportUrlPanel.svelte";
   import { getStripeAccountStatus, type StripeAccountStatus } from "../../api/stripe.js";
+  import { importedSaleBound, saleWindowError } from "./date.js";
 
   interface WaveItem {
     id: string;
@@ -76,6 +77,8 @@
      * far-future on-sales — see `releasesBeforeEvent` (#87).
      */
     startDate?: string;
+    /** The event's end date (datetime-local string): a sale window must close by it. */
+    endDate?: string;
   }
 
   let {
@@ -83,6 +86,7 @@
     cryptoRecipientMissing = $bindable(false),
     importedTiers = $bindable(null),
     startDate = "",
+    endDate = "",
   }: Props = $props();
 
   /**
@@ -302,8 +306,8 @@
           id: crypto.randomUUID(),
           label: "",
           totalSupply: 50,
-          saleStart: t.saleStart ?? "",
-          saleEnd: t.saleEnd ?? "",
+          saleStart: importedSaleBound(t.saleStart, "start"),
+          saleEnd: importedSaleBound(t.saleEnd, "end"),
           showSaleWindow: Boolean(t.saleStart || t.saleEnd),
         }],
       };
@@ -864,9 +868,12 @@
                   </label>
                   <label class="field">
                     <span class="field-label">Closes</span>
-                    <input type="datetime-local" bind:value={wave.saleEnd} />
+                    <input type="datetime-local" bind:value={wave.saleEnd} max={endDate || undefined} />
                   </label>
                 </div>
+              {/if}
+              {#if saleWindowError(wave, endDate)}
+                <span class="sale-window-error">{saleWindowError(wave, endDate)}</span>
               {/if}
             </div>
           {/each}
@@ -1226,6 +1233,13 @@
     font-size: 0.75rem;
     line-height: 1.45;
     color: var(--text-muted);
+  }
+
+  .sale-window-error {
+    display: block;
+    margin-top: 0.25rem;
+    font-size: 0.75rem;
+    color: var(--warning);
   }
 
   .price-min-hint {

@@ -1,5 +1,6 @@
 import { AuthErrorCode, type ApiResponse, type SessionDelegation } from "@woco/shared";
 import { auth } from "../auth/auth-store.svelte.js";
+import type { RequestSigningOptions } from "../auth/request-session.js";
 import { sessionHealth } from "./session-health.svelte.js";
 import { BASE, safeJson } from "./http.js";
 
@@ -30,8 +31,9 @@ async function buildAuthHeaders(
   method: string,
   path: string,
   body: string,
+  opts: RequestSigningOptions = {},
 ): Promise<Record<string, string>> {
-  const signed = await auth.signRequest(method, path, body);
+  const signed = await auth.signRequest(method, path, body, opts);
   if (!signed) throw new Error("Not authenticated");
 
   // btoa can't handle non-ASCII in the delegation JSON — use UTF-8 safe encoding
@@ -124,9 +126,10 @@ async function authFetch<T>(
   path: string,
   bodyText: string | null,
   baseUrl?: string,
+  opts: RequestSigningOptions = {},
 ): Promise<ApiResponse<T>> {
   const send = async (): Promise<ApiResponse<T>> => {
-    const authHeaders = await buildAuthHeaders(method, path, bodyText ?? "");
+    const authHeaders = await buildAuthHeaders(method, path, bodyText ?? "", opts);
     const resp = await fetch(`${baseUrl ?? BASE}${path}`, {
       method,
       headers:
@@ -173,6 +176,10 @@ async function authFetch<T>(
     }
     return result;
   }
+
+  // A background request never re-mints: recovery resets the session and the
+  // re-send would establish a new one - a sign-in nobody asked for.
+  if (opts.establish === false) return result;
 
   await recoverSession(generation);
 
@@ -232,9 +239,13 @@ export async function authPost<T>(
   return authFetch<T>("POST", path, JSON.stringify(body), baseUrl);
 }
 
-/** Authenticated GET request. */
-export async function authGet<T>(path: string, baseUrl?: string): Promise<ApiResponse<T>> {
-  const json = await authFetch<T>("GET", path, null, baseUrl);
+/** Authenticated GET request. `opts.establish: false` for a background read that must never sign in. */
+export async function authGet<T>(
+  path: string,
+  baseUrl?: string,
+  opts: RequestSigningOptions = {},
+): Promise<ApiResponse<T>> {
+  const json = await authFetch<T>("GET", path, null, baseUrl, opts);
   if (!json.ok) {
     console.warn(`[authGet] ${path} failed:`, json.error);
   }
