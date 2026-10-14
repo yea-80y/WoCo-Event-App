@@ -59,7 +59,11 @@ interface World {
   readFails?: boolean;
   openListFails?: boolean;
   writeFails?: boolean;
+  /** The key ring moved on (a passkey removal) between taking the seal key and the upload. */
+  keyMoved?: boolean;
   current?: boolean;
+  /** Runs when the seal key is taken - "something saved elsewhere" after the re-read. */
+  duringSeal?: (w: World) => void;
   /** Runs right after each check call - "an edit made elsewhere" mid-run. */
   duringCheck?: (w: World) => void;
   log: string[];
@@ -105,8 +109,12 @@ function deps(w: World, extra: Partial<SyncDeps> = {}): SyncDeps {
     },
     async sealKeys() {
       w.log.push("sealKeys");
+      w.duringSeal?.(w);
       if (w.sealLocked) return null;
-      return { sealList: async (payload) => ({ sealed: structuredClone(payload) }) as never };
+      return {
+        sealList: async (payload) => ({ sealed: structuredClone(payload) }) as never,
+        unchanged: async () => !w.keyMoved,
+      };
     },
     async listEvents() {
       w.log.push("listEvents");
@@ -139,9 +147,11 @@ function deps(w: World, extra: Partial<SyncDeps> = {}): SyncDeps {
       if (w.readFails) throw new Error("swarm read failed");
       return w.list ? { sealedList: { sealed: structuredClone(w.list.payload) } as never, updatedAt: w.list.updatedAt } : null;
     },
-    async writeList(sealed, emails) {
-      w.log.push("writeList");
+    async writeList(sealed, emails, ifUpdatedAt) {
+      w.log.push(`writeList:${ifUpdatedAt}`);
       if (w.writeFails) throw new Error("Adding contacts needs a verified Stripe account.");
+      // The server's compare-and-swap: a list saved since the caller's re-read is never replaced.
+      if (ifUpdatedAt !== (w.list?.updatedAt ?? null)) throw new Error("Your list changed while this was saving, so nothing was overwritten.");
       const payload = (sealed as unknown as Box).sealed!;
       w.writes.push({ payload, emails });
       const updatedAt = `stamp-${++stampSeq}`;
@@ -282,6 +292,7 @@ test("a failed re-read writes nothing - and neither does a list that will not op
     const w = world({ list: { payload: { version: 1, contacts: [] }, updatedAt: "s0" }, [flag]: true });
     const r = await sync(w);
     assert.equal(r.status, "failed", flag);
+    assert.ok(!w.log.some((l) => l.startsWith("writeList")), `${flag}: no write is even attempted`);
     assert.equal(w.writes.length, 0, flag);
     assert.equal(w.storage.size, 0, `${flag}: nothing marked as covered, so the next run tries again`);
   }
@@ -312,6 +323,110 @@ test("a run never writes one account's buyers into another's list", async () => 
   assert.equal(r.status, "failed");
   assert.equal(w.writes.length, 0);
   assert.ok(!w.log.includes("readList"));
+});
+
+test("an account switch after the list was read still writes nothing", async () => {
+  const w = world();
+  let calls = 0;
+  const r = await sync(w, { stillCurrent: () => ++calls === 1 });
+  assert.equal(r.status, "failed");
+  assert.equal(w.writes.length, 0);
+  assert.ok(w.log.includes("readList"), "the switch came after the re-read");
+});
+
+// ── Races (review 2026-10-14) ──────────────────────────────────────────────
+
+test("someone who unsubscribes while the orders are being read is not added", async () => {
+  let calls = 0;
+  const w = world({
+    answer: () =>
+      ++calls === 1
+        ? { suppressed: [], alreadyInList: [], consented: ["ada@x.com"], softOptIn: [] }
+        : { suppressed: ["ada@x.com"], alreadyInList: [], consented: ["ada@x.com"], softOptIn: [] },
+  });
+  const r = await sync(w);
+  assert.equal(calls, 2, "asked again after the re-read");
+  assert.ok(w.log.lastIndexOf("readList") < w.log.findLastIndex((l) => l.startsWith("check:")));
+  assert.equal(r.added, 0);
+  assert.equal(w.writes.length, 0);
+});
+
+test("an address is added only when both answers say yes", async () => {
+  // The answer from the scan gates as well as the one just before the write: one
+  // suppressed at the scan, or without a record then, waits for a later run.
+  let calls = 0;
+  const w = world({
+    orders: { e1: ["x@x.com", "y@x.com", "z@x.com"].map((e) => order({ claimerEmail: e })) },
+    answer: () =>
+      ++calls === 1
+        ? { suppressed: ["x@x.com"], alreadyInList: [], consented: ["x@x.com", "z@x.com"], softOptIn: [] }
+        : { suppressed: [], alreadyInList: [], consented: ["x@x.com", "y@x.com", "z@x.com"], softOptIn: [] },
+  });
+  await sync(w);
+  assert.deepEqual(emailsOf(w.writes[0]?.payload), ["z@x.com"]);
+});
+
+test("no answer to the second check, no write", async () => {
+  let calls = 0;
+  const w = world({ answer: () => (++calls === 1 ? { suppressed: [], alreadyInList: [], consented: ["ada@x.com"], softOptIn: [] } : "throw") });
+  const r = await sync(w);
+  assert.equal(r.status, "failed");
+  assert.equal(w.writes.length, 0);
+  assert.equal(w.storage.size, 0);
+});
+
+test("a delete saved in another tab after the re-read is never undone: the write is refused", async () => {
+  const w = world({
+    list: { payload: { version: 1, contacts: [{ email: "zed@x.com", addedAt: "2026-01-01" }] }, updatedAt: "s0" },
+    duringSeal: (x) => {
+      x.list = { payload: { version: 1, contacts: [], removed: ["zed@x.com"] }, updatedAt: "s1" };
+    },
+  });
+  const r = await sync(w);
+  assert.ok(w.log.includes("writeList:s0"), "the write names the list it merged onto");
+  assert.equal(r.status, "failed");
+  assert.equal(w.writes.length, 0);
+  assert.deepEqual(w.list, { payload: { version: 1, contacts: [], removed: ["zed@x.com"] }, updatedAt: "s1" });
+  assert.equal(w.storage.size, 0, "nothing marked: the next run reads it all again");
+});
+
+test("a delete in this tab while a sync is reading orders stands", async () => {
+  const withLock = createLock();
+  let deleted: Promise<void> | undefined;
+  const w = world({
+    list: { payload: { version: 1, contacts: [{ email: "ada@x.com", addedAt: "2026-01-01" }] }, updatedAt: "s0" },
+    // The organiser deletes Ada on the Audience screen mid-run: the screen saves under the tab lock.
+    duringCheck: (x) => {
+      deleted ??= withLock(async () => {
+        await new Promise((r) => setTimeout(r, 20)); // the upload takes a while
+        x.list = { payload: { version: 1, contacts: [], removed: ["ada@x.com"] }, updatedAt: "s1" };
+      });
+    },
+  });
+  const r = await sync(w, { withLock });
+  await deleted;
+  assert.equal(r.added, 0);
+  assert.equal(w.writes.length, 0);
+  assert.deepEqual(w.list!.payload, { version: 1, contacts: [], removed: ["ada@x.com"] });
+});
+
+test("the seal key is taken at write time, after the re-read and the second check", async () => {
+  const w = world();
+  await sync(w);
+  const seal = w.log.indexOf("sealKeys");
+  assert.ok(seal > w.log.indexOf("readList"));
+  assert.ok(seal > w.log.findLastIndex((l) => l.startsWith("check:")));
+  assert.ok(seal < w.log.findIndex((l) => l.startsWith("writeList")));
+});
+
+test("a key ring that moves on before the upload means no write", async () => {
+  // A passkey removal (#186) mid-run: never upload a list sealed to the replaced key.
+  const w = world({ keyMoved: true });
+  const r = await sync(w);
+  assert.equal(r.status, "locked");
+  assert.equal(w.writes.length, 0);
+  assert.ok(!w.log.some((l) => l.startsWith("writeList")));
+  assert.equal(w.storage.size, 0);
 });
 
 // ── Never prompting ────────────────────────────────────────────────────────
@@ -422,6 +537,29 @@ test("an empty, unreadable or blocked watermark means a full scan", async () => 
   assert.notEqual(r.status, "failed", "storage trouble never fails the run");
 });
 
+test("a watermark of the wrong shape is ignored, mark by mark", async () => {
+  const w = world();
+  const key = "woco:audience-sync:0xorg";
+  const settled = { n: 1, seen: 0, scanned: SETTLE_MS };
+  for (const raw of [
+    JSON.stringify({ v: 2, list: null, events: { e1: settled } }),
+    JSON.stringify({ v: 1, list: null, events: "e1" }),
+    JSON.stringify({ v: 1, list: null, events: { e1: { n: "1", seen: 0, scanned: SETTLE_MS } } }),
+  ]) {
+    w.storage.set(key, raw);
+    w.log.length = 0;
+    await sync(w);
+    assert.ok(w.log.includes("fields:e1"), raw);
+    w.list = null;
+    w.writes.length = 0;
+  }
+  // The right shape is trusted - the control that makes the three above mean something.
+  w.storage.set(key, JSON.stringify({ v: 1, list: null, events: { e1: settled } }));
+  w.log.length = 0;
+  await sync(w);
+  assert.ok(!w.log.includes("fields:e1"));
+});
+
 test("a list saved elsewhere since the last run means every event is read again", async () => {
   // A stale copy saved over the list could have dropped buyers this sync added.
   const w = world();
@@ -452,13 +590,19 @@ test("a list stamp that cannot be read trusts no mark", async () => {
 test("one buyer at two events is one addition, and their last event is the later one", async () => {
   const w = world({
     events: [event("late", "2026-12-01"), event("early", "2026-06-01")],
-    orders: { late: [order({ claimerEmail: "ada@x.com" })], early: [order({ claimerEmail: "ada@x.com" })] },
-    fields: { late: [], early: [] },
+    orders: {
+      late: [order({ claimerEmail: "ada@x.com" })],
+      early: [order({ claimerEmail: "ada@x.com", fields: { f1: "Ada" } })],
+    },
+    // Only the earlier event asked her name: it fills that gap, and is still one new contact.
+    fields: { late: [], early: FIELDS },
   });
   const r = await sync(w);
   assert.equal(r.added, 1);
-  assert.equal(r.updated, 0);
-  assert.equal(w.writes[0]!.payload.contacts[0]!.lastEventName, "Event late");
+  assert.equal(r.updated, 0, "a new contact is not also an update");
+  const c = w.writes[0]!.payload.contacts[0]!;
+  assert.equal(c.lastEventName, "Event late");
+  assert.equal(c.firstName, "Ada");
 });
 
 // ── Throttle and lock ──────────────────────────────────────────────────────
@@ -528,10 +672,10 @@ test("a save queued behind a sync write sees the sync's list first", async () =>
   let queued: Promise<void> | undefined;
   await sync(w, {
     withLock,
-    async writeList(sealed, emails) {
+    async writeList(sealed, emails, ifUpdatedAt) {
       // The organiser presses save while the sync is writing.
       queued = withLock(async () => void seen.push(...screen));
-      return deps(w).writeList(sealed, emails);
+      return deps(w).writeList(sealed, emails, ifUpdatedAt);
     },
     published: (payload) => (screen = payload.contacts.map((c) => c.email)),
   });

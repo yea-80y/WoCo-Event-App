@@ -62,8 +62,9 @@ test("the screen opens the tombstones, reads under the lock, starts a sync, and 
 
 test("the runtime never prompts: open keys as held, seal only on a confirmed generation, an existing session only", () => {
   assert.match(RUNTIME, /const secrets = await auth\.getAccountSecrets\(\);/);
-  assert.match(RUNTIME, /await auth\.getAccountSecrets\(\{ toSeal: true, silent: true \}\);/);
-  assert.equal(RUNTIME.match(/getAccountSecrets\(/g)?.length, 2);
+  assert.match(RUNTIME, /const secrets = await auth\.getAccountSecrets\(\{ toSeal: true, silent: true \}\);/);
+  assert.equal(RUNTIME.match(/getAccountSecrets\(/g)?.length, 3);
+  assert.equal(RUNTIME.match(/getAccountSecrets\(\{ toSeal: true, silent: true \}\)/g)?.length, 2, "every seal-side read is silent");
   assert.doesNotMatch(RUNTIME, /ensureAccountSetup|ensureOrganiserUnlock|ensureSession|loginRequest|ensureIdentitySeed/);
   assert.match(fn(RUNTIME, "export function syncAudience"), /if \(!parent \|\| !auth\.isConnected \|\| !auth\.hasSession \|\| !canOrganise\(auth\.kind\)\) return null;/);
 });
@@ -75,6 +76,14 @@ test("a failed background check is logged, and shown only on the Audience screen
   assert.doesNotMatch(RUNTIME, /alert\(|confirm\(|toast/i);
   // The status component is the one place that reads the record.
   assert.match(STATUS, /describeSync\(audienceSync\.record, audienceSync\.running, now\)/);
+});
+
+test("the runtime re-confirms the seal key before the upload, and names the list it merged onto", () => {
+  // A passkey removal (#186) mid-run must not get a list sealed to the replaced key.
+  assert.match(RUNTIME, /async unchanged\(\) \{\s*const again = await auth\.getAccountSecrets\(\{ toSeal: true, silent: true \}\);\s*return again !== null && current\(\) && again\.current === secrets\.current;/);
+  assert.match(RUNTIME, /writeList: \(sealed, emails, ifUpdatedAt\) => uploadMarketingList\(sealed, emails, \{ ifUpdatedAt \}\),/);
+  const api = code(read("lib/api/marketing.ts"));
+  assert.match(api, /\.\.\.\("ifUpdatedAt" in opts \? \{ ifUpdatedAt: opts\.ifUpdatedAt \?\? null \} : \{\}\),/);
 });
 
 test("the runtime guards the account: no write into another account's list", () => {

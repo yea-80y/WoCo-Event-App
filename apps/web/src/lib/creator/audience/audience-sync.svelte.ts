@@ -170,7 +170,14 @@ function liveDeps(parent: string): SyncDeps {
       const secrets = await auth.getAccountSecrets({ toSeal: true, silent: true });
       if (!secrets || !current()) return null;
       const keys = await listKeysOf(secrets, parent);
-      return { sealList: (payload) => keys.box.sealBoxJsonCompressed(keys.publicKey, payload, keys.ctx) };
+      return {
+        sealList: (payload) => keys.box.sealBoxJsonCompressed(keys.publicKey, payload, keys.ctx),
+        // Asked again right before the upload: a key ring that moved on meanwhile (#186) = no write.
+        async unchanged() {
+          const again = await auth.getAccountSecrets({ toSeal: true, silent: true });
+          return again !== null && current() && again.current === secrets.current;
+        },
+      };
     },
     async listEvents() {
       const res = await getMyEventsSWR(parent).refresh();
@@ -193,7 +200,7 @@ function liveDeps(parent: string): SyncDeps {
       const res = await getMarketingList();
       return res ? { sealedList: res.sealedList, updatedAt: res.meta.updatedAt } : null;
     },
-    writeList: (sealed, emails) => uploadMarketingList(sealed, emails),
+    writeList: (sealed, emails, ifUpdatedAt) => uploadMarketingList(sealed, emails, { ifUpdatedAt }),
     stillCurrent: current,
     withLock: withListLock,
     published(payload, meta) {

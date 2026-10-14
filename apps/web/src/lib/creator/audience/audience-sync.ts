@@ -18,7 +18,11 @@
  *     removed by hand) is never added, whatever else it holds;
  *   - an address the organiser deleted (the list's `removed`) is never re-added;
  *   - the write merges onto the list as re-read and opened just before it, so it
- *     never replaces an edit made elsewhere with a stale copy - no re-read, no write;
+ *     never replaces an edit made elsewhere with a stale copy - no re-read, no write -
+ *     and the server refuses it if the list was saved again after that re-read;
+ *   - who said yes is asked again after the re-read, so someone who unsubscribed
+ *     while the orders were being read is not added;
+ *   - the seal key is taken at write time and checked unchanged before the upload;
  *   - one unreadable order, event or check costs only itself;
  *   - nothing is written when nothing changed.
  */
@@ -152,12 +156,14 @@ export interface OpenKeys {
 /** Sealing needs the CONFIRMED current generation (#186). */
 export interface SealKeys {
   sealList(payload: MarketingListPayload): Promise<SealedBoxV2>;
+  /** Still the confirmed current key, asked again: false = the key ring moved on (a passkey removal), so no upload. */
+  unchanged(): Promise<boolean>;
 }
 
 export interface SyncDeps {
   /** Null = locked or not set up on this device: skip, never ask. */
   openKeys(): Promise<OpenKeys | null>;
-  /** Null = the current generation is not confirmed without asking: write nothing. */
+  /** Taken at write time. Null = the current generation is not confirmed without asking: write nothing. */
   sealKeys(): Promise<SealKeys | null>;
   listEvents(): Promise<EventDirectoryEntry[]>;
   /** The stored list's `updatedAt`, null when there is none. Throws when it cannot say. */
@@ -168,7 +174,8 @@ export interface SyncDeps {
   check(emails: string[]): Promise<MarketingCheckResult>;
   /** The stored list right now. Null = none yet; throws when it cannot be read. */
   readList(): Promise<{ sealedList: SealedBoxV2; updatedAt: string } | null>;
-  writeList(sealed: SealedBoxV2, emails: string[]): Promise<MarketingListMeta>;
+  /** `ifUpdatedAt` = the stamp of the list this was merged onto; the server refuses if it moved since. */
+  writeList(sealed: SealedBoxV2, emails: string[], ifUpdatedAt: string | null): Promise<MarketingListMeta>;
   /** Still the same signed-in organiser - never write one account's buyers into another's list. */
   stillCurrent(): boolean;
   /** One writer at a time in this tab: the screen's own saves take the same lock. */
@@ -232,8 +239,6 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
   } catch (err) {
     return result("failed", { error: message(err, "Could not load your events.") });
   }
-  // Oldest first, so within one run a contact's last event is their latest.
-  events = [...events].sort((a, b) => (Date.parse(a.startDate) || 0) - (Date.parse(b.startDate) || 0));
 
   let stamp: string | null | undefined;
   try {
@@ -345,13 +350,28 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
       return fail(message(err, "Could not open your list to add new buyers."));
     }
 
+    const stamp = stored?.updatedAt ?? null;
+    // Deleted by the organiser, per the list as it stands now.
     const removed = new Set(normaliseRemoved(base.removed));
-    const report = applyDrain(
-      base.contacts,
-      candidates.filter((c) => !removed.has(c.email.trim().toLowerCase())),
-    );
-    if (report.added === 0 && report.updated === 0) return done({}, stored?.updatedAt ?? null);
+    const allowed = candidates.filter((c) => !removed.has(c.email.trim().toLowerCase()));
+    if (allowed.length === 0) return done({}, stamp);
 
+    // Asked again, now: anyone who unsubscribed (or was suppressed any other way)
+    // while the orders were being read is not added. No answer, no write.
+    let latest: MarketingCheckResult;
+    try {
+      latest = await deps.check(allowed.map((c) => c.email));
+    } catch (err) {
+      return fail(message(err, "Could not check who said yes."));
+    }
+    const nowSuppressed = new Set(lower(latest.suppressed));
+    const stillYes = new Set(
+      [...lower(latest.consented), ...lower(latest.softOptIn)].filter((e) => !nowSuppressed.has(e)),
+    );
+    const report = applyDrain(base.contacts, allowed.filter((c) => stillYes.has(c.email.trim().toLowerCase())));
+    if (report.added === 0 && report.updated === 0) return done({}, stamp);
+
+    // The seal key is taken now, at write time, never at the start of the run.
     const seal = await deps.sealKeys();
     if (!seal) return result("locked", { failedEvents, unreadableOrders });
     if (!deps.stillCurrent()) return fail("You switched accounts, so nothing was added.");
@@ -359,7 +379,9 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
     const payload = listPayload(report.contacts, base.removed ?? []);
     let meta: MarketingListMeta;
     try {
-      meta = await deps.writeList(await seal.sealList(payload), payload.contacts.map((c) => c.email));
+      const sealed = await seal.sealList(payload);
+      if (!(await seal.unchanged())) return result("locked", { failedEvents, unreadableOrders });
+      meta = await deps.writeList(sealed, payload.contacts.map((c) => c.email), stamp);
     } catch (err) {
       return fail(message(err, "Could not save new buyers to your list."));
     }
