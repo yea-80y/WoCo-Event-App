@@ -26,6 +26,7 @@ export * from "./recovery/guardian-index.js";
 export * from "./manifest/types.js";
 export * from "./swarm/soc.js";
 export * from "./swarm/feed-routes.js";
+export * from "./swarm/feed-walk.js";
 export * from "./object/types.js";
 export * from "./object/topics.js";
 export * from "./object/gate.js";
