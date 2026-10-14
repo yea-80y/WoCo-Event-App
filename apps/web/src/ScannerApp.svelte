@@ -59,7 +59,10 @@
     </header>
 
     {#if scanner.passDead}
-      <div class="banner dead">{scanner.passDead}. This phone has stopped checking people in - ask the organiser for a new door pass.</div>
+      <div class="banner dead">
+        {scanner.passDead}. This phone has stopped checking people in - ask the organiser for a new door pass.
+        <button class="banner-action" onclick={() => scanner.reprovision()}>Scan new door pass</button>
+      </div>
     {:else if !scanner.online && scanner.doorMode === "single"}
       <div class="banner offline">Offline - this is the only scanner on this pass, so it keeps checking people in and syncs when back online.</div>
     {:else if !scanner.online}
@@ -176,6 +179,16 @@
   .banner.conflict {
     background: var(--warning-subtle);
     color: var(--warning);
+  }
+  .banner-action {
+    display: block;
+    margin-top: 0.4rem;
+    background: var(--error);
+    color: var(--bg);
+    border: none;
+    border-radius: var(--radius-md);
+    font-weight: 700;
+    padding: 0.4rem 0.8rem;
   }
   main {
     flex: 1;

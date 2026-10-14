@@ -62,7 +62,14 @@
   </form>
 
   {#if localError || scanner.provisionError}
-    <p class="error">{localError ?? scanner.provisionError}</p>
+    <div class="error-row">
+      <p class="error">{localError ?? scanner.provisionError}</p>
+      {#if !localError && scanner.pendingPass}
+        <button class="retry" type="button" disabled={scanner.phase === "provisioning"} onclick={() => void scanner.retryProvision()}>
+          Try again
+        </button>
+      {/if}
+    </div>
   {/if}
 </div>
 
@@ -135,9 +142,27 @@
     font-weight: 700;
     padding: 0 1.1rem;
   }
+  .error-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
   .error {
+    flex: 1;
     margin: 0;
     color: var(--error);
     font-size: 0.875rem;
+  }
+  .retry {
+    flex-shrink: 0;
+    background: var(--accent);
+    color: var(--accent-ink);
+    border: none;
+    border-radius: var(--radius-md);
+    font-weight: 700;
+    padding: 0.6rem 1rem;
+  }
+  .retry:disabled {
+    opacity: 0.6;
   }
 </style>

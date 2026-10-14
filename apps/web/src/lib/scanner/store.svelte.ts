@@ -26,6 +26,7 @@ import { decryptRoster } from "./roster-crypto.js";
 import { verifyTicket, type VerifyVerdict } from "./verify.js";
 import { claimAdmission, newClaimId, type ClaimAnswer } from "./claim.js";
 import { admit, doorModeOf, type Admission } from "./admission.js";
+import { describePackFailure, NO_CONNECTION_MESSAGE, type PackFailure } from "./pass-gate.js";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 const SYNC_INTERVAL_MS = 30_000;
@@ -42,6 +43,13 @@ export type ScanOutcome =
   | { kind: "wrong-event" }
   | { kind: "unreadable" };
 
+/** A pack request the server refused, or that never reached it. */
+class PackError extends Error {
+  constructor(readonly failure: PackFailure) {
+    super(failure.message);
+  }
+}
+
 export type ManualCheckinResult =
   | { kind: "checked-in" }
   | { kind: "duplicate"; record: CheckinRecord }
@@ -51,6 +59,8 @@ export type ManualCheckinResult =
 class ScannerStore {
   phase = $state<"loading" | "unprovisioned" | "provisioning" | "ready">("loading");
   provisionError = $state<string | null>(null);
+  /** A pass from a link or QR that could not be set up yet: "Try again" retries it, no reload. */
+  pendingPass = $state<{ token: string; keyB64url: string } | null>(null);
 
   pass = $state<db.StoredPass | null>(null);
   pack = $state<CheckinPack | null>(null);
@@ -85,11 +95,11 @@ class ScannerStore {
     window.addEventListener("offline", () => (this.online = false));
 
     // A door-pass fragment in the URL always wins — it (re)provisions the device.
+    // If it fails, the phone stays on the provision screen with this pass ready to
+    // retry: falling back to the stored pass would open whatever event it held before.
     const fragment = parseDoorPassFragment(location.hash);
     if (fragment) {
       await this.provision(fragment.token, fragment.keyB64url);
-      // Scrub the secret-bearing fragment from the address bar + history.
-      history.replaceState(null, "", new URL(location.pathname + location.search, location.href).href);
       return;
     }
 
@@ -117,6 +127,7 @@ class ScannerStore {
     const decoded = decodeDoorPassToken(token);
     if (!decoded) {
       this.provisionError = "That doesn't look like a WoCo door pass.";
+      this.pendingPass = null;
       this.phase = this.pack ? "ready" : "unprovisioned";
       return false;
     }
@@ -135,16 +146,45 @@ class ScannerStore {
       if (this.pass?.eventId !== pass.eventId) this.checkins = new Map();
       this.pass = pass;
       this.passDead = null;
+      this.pendingPass = null;
       await this.absorbPack(pack);
       this.phase = "ready";
+      // Only now: until the pass is stored, the fragment is the only copy of it.
+      if (parseDoorPassFragment(location.hash)) {
+        history.replaceState(null, "", new URL(location.pathname + location.search, location.href).href);
+      }
       this.startSyncLoop();
       void this.sync();
       return true;
     } catch (err) {
-      this.provisionError = err instanceof Error ? err.message : "Could not reach the WoCo server.";
+      this.provisionError = err instanceof Error ? err.message : NO_CONNECTION_MESSAGE;
+      this.pendingPass = { token, keyB64url };
       this.phase = this.pack ? "ready" : "unprovisioned";
       return false;
     }
+  }
+
+  /** Retry the pass that last failed to set up. */
+  async retryProvision(): Promise<boolean> {
+    if (!this.pendingPass) return false;
+    return this.provision(this.pendingPass.token, this.pendingPass.keyB64url);
+  }
+
+  /**
+   * Leave a dead pass for the provision screen, keeping everything stored: a new
+   * pass replaces it, and nothing unsynced is thrown away the way a reset would.
+   */
+  reprovision(): void {
+    if (this.syncTimer) clearInterval(this.syncTimer);
+    this.syncTimer = null;
+    this.pass = null;
+    this.pack = null;
+    this.roster = [];
+    this.checkins = new Map();
+    this.conflicts = [];
+    this.passDead = null;
+    this.provisionError = null;
+    this.phase = "unprovisioned";
   }
 
   /** Verify a scanned QR payload, then atomically consume the nullifier. */
@@ -356,13 +396,16 @@ class ScannerStore {
   }
 
   private async fetchPack(eventId: string, token: string): Promise<CheckinPack> {
-    const resp = await fetch(`${API_BASE}/api/checkin/${encodeURIComponent(eventId)}/pack`, {
-      headers: { "X-Door-Pass": token, [SCANNER_DEVICE_HEADER]: this.deviceId },
-    });
-    const body = (await resp.json().catch(() => null)) as { ok: boolean; data?: CheckinPack; error?: string } | null;
-    if (!resp.ok || !body?.ok || !body.data) {
-      throw new Error(body?.error ?? `Server error (${resp.status})`);
+    let resp: Response;
+    try {
+      resp = await fetch(`${API_BASE}/api/checkin/${encodeURIComponent(eventId)}/pack`, {
+        headers: { "X-Door-Pass": token, [SCANNER_DEVICE_HEADER]: this.deviceId },
+      });
+    } catch {
+      throw new PackError({ kind: "error", message: NO_CONNECTION_MESSAGE });
     }
+    const body = (await resp.json().catch(() => null)) as { ok: boolean; data?: CheckinPack; error?: string } | null;
+    if (!resp.ok || !body?.ok || !body.data) throw new PackError(describePackFailure(resp.status, body));
     return body.data;
   }
 
