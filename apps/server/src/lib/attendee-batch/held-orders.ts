@@ -57,6 +57,8 @@ export interface HeldOrder {
   /** The buyer's email HMAC, set with `paidAt`, so the stored order carries it
    *  even when the retry worker stores it later (#546). */
   emailHash?: string;
+  /** Checkout's snapshot of the notice's period, set with `paidAt`, carried the same way (#547). */
+  retainMonths?: number;
   /** The order key the buyer's client says it sealed to (#186): prepare-order only,
    *  checked against the organiser's current key at checkout. */
   orderKeyRef?: string;
@@ -198,14 +200,20 @@ export function markHeldPaid(
   root: string,
   sessionId: string,
   nowMs: number = Date.now(),
-  buyer: { emailHash?: string } = {},
+  buyer: { emailHash?: string; retainMonths?: number } = {},
 ): boolean {
   ensureLoaded();
   const k = key(root);
   const o = committed.get(k);
   if (!o) return false;
   if (o.paidAt) return o.sessionId === sessionId;
-  const next = { ...o, paidAt: new Date(nowMs).toISOString(), sessionId, ...(buyer.emailHash ? { emailHash: buyer.emailHash } : {}) };
+  const next = {
+    ...o,
+    paidAt: new Date(nowMs).toISOString(),
+    sessionId,
+    ...(buyer.emailHash ? { emailHash: buyer.emailHash } : {}),
+    ...(buyer.retainMonths !== undefined ? { retainMonths: buyer.retainMonths } : {}),
+  };
   if (!writeHold(k, next)) return false;
   committed.set(k, next);
   return true;

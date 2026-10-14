@@ -114,6 +114,8 @@ interface SessionOpts {
    * webhook must ignore it rather than resurrect the field.
    */
   legacyHolderPubKey?: string;
+  /** Checkout's snapshot of the notice's period (#547). Absent by default. */
+  retainMonths?: string;
 }
 
 function session(o: SessionOpts = {}): FulfilmentSession {
@@ -136,6 +138,7 @@ function session(o: SessionOpts = {}): FulfilmentSession {
   if (o.onChainEventId !== null) md.onChainEventId = o.onChainEventId ?? ON_CHAIN_EVENT_ID;
   if (o.onChainContract) md.onChainContract = o.onChainContract;
   if (o.legacyHolderPubKey) md.holderPubKey = o.legacyHolderPubKey;
+  if (o.retainMonths !== undefined) md.retainMonths = o.retainMonths;
   return {
     id: "cs_test_1",
     metadata: md,
@@ -236,6 +239,8 @@ function fakeDeps(o: FakeOpts = {}) {
   const uploaded: string[] = [];
   /** What the held-order claim and the fallback store were told about the buyer (#546 lookup). */
   const buyerHashes: Array<{ via: string; emailHash: string | undefined }> = [];
+  /** What the held-order claim and the fallback store were told to keep the answers for (#547). */
+  const retention: Array<{ via: string; retainMonths: number | undefined }> = [];
   /** The on-chain event each batch was minted against — the #426 assertion. */
   const mintedAgainst: string[] = [];
   /** The contract each batch was minted on — the #563 assertion. */
@@ -296,10 +301,11 @@ function fakeDeps(o: FakeOpts = {}) {
       boom("getOrganiserByStripeAccount");
       return ORGANISER;
     },
-    storeOrderBlob: async (data: string, meta: { emailHash?: string }) => {
+    storeOrderBlob: async (data: string, meta: { emailHash?: string; retainMonths?: number }) => {
       boom("storeOrderBlob");
       uploaded.push(data);
       buyerHashes.push({ via: "storeOrderBlob", emailHash: meta.emailHash });
+      retention.push({ via: "storeOrderBlob", retainMonths: meta.retainMonths });
       return "aa".repeat(32);
     },
     fetchOrderKey: async (ref: string) => {
@@ -308,9 +314,10 @@ function fakeDeps(o: FakeOpts = {}) {
       return ORDER_KEY.publicKey;
     },
     orderRefInOtherSale: (ref: string) => (o.takenRefs ?? []).includes(ref),
-    claimHeldOrder: (_ref: string, _sessionId: string, emailHash?: string) => {
+    claimHeldOrder: (_ref: string, _sessionId: string, emailHash?: string, retainMonths?: number) => {
       boom("claimHeldOrder");
       buyerHashes.push({ via: "claimHeldOrder", emailHash });
+      retention.push({ via: "claimHeldOrder", retainMonths });
       return o.held ?? false;
     },
     storeHeldOrder: async (ref: string) => {
@@ -417,7 +424,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, uploaded, buyerHashes, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue };
+  return { deps, calls, uploaded, buyerHashes, retention, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -732,6 +739,19 @@ describe("happy path", () => {
     assert.deepEqual(heldRun.f.buyerHashes, [{ via: "claimHeldOrder", emailHash: "h(buyer@example.com)" }]);
     const fallbackRun = await run({ orderRef: null }, { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }) });
     assert.deepEqual(fallbackRun.f.buyerHashes, [{ via: "storeOrderBlob", emailHash: "h(buyer@example.com)" }]);
+  });
+
+  test("#547: checkout's retention snapshot reaches the held-order claim and the fallback store; anything else carries none", async () => {
+    const held = await run({ retainMonths: "12" }, { held: true });
+    assert.deepEqual(held.f.retention, [{ via: "claimHeldOrder", retainMonths: 12 }]);
+    const fallback = await run({ orderRef: null, retainMonths: "6" }, { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }) });
+    assert.deepEqual(fallback.f.retention, [{ via: "storeOrderBlob", retainMonths: 6 }]);
+    for (const bad of ["3", "0", "6x", ""]) {
+      const r = await run({ retainMonths: bad }, { held: true });
+      assert.deepEqual(r.f.retention, [{ via: "claimHeldOrder", retainMonths: undefined }], `"${bad}" is no instruction`);
+    }
+    const none = await run({}, { held: true });
+    assert.deepEqual(none.f.retention, [{ via: "claimHeldOrder", retainMonths: undefined }], "a session from before #547");
   });
 
   test("#546: a held order whose store fails still mints under its ref - never a refund over it", async () => {

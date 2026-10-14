@@ -741,6 +741,9 @@ stripe.post("/create-checkout", async (c) => {
       409,
     );
   }
+  // The period the notice promised THIS buyer, fixed now: the retention sweep
+  // erases by it and reads no notice, so a later edit never reaches past sales (#547).
+  const retainMonths = notice.status === "found" ? notice.notice.orderRetentionMonths : undefined;
 
   // The box must be sealed to the key this event sells under NOW (#186): a rotation
   // between prepare-order and here is caught too. Keys that cannot be read stop the
@@ -1143,6 +1146,9 @@ stripe.post("/create-checkout", async (c) => {
       // for a sale that never completed is worthless. Mode, box, wording
       // version and surface; absent means no control was shown.
       ...marketingMetadata(marketing, organiserName),
+      // Months after the event this order's answers are kept (#547), carried
+      // fulfilment -> hold -> ledger. Under the integrity tag like every key here.
+      ...(retainMonths !== undefined ? { retainMonths: String(retainMonths) } : {}),
     };
     // #645: fulfilment acts on this metadata, and under a full Stripe Dashboard
     // the organiser can create sessions and edit metadata on their own account.

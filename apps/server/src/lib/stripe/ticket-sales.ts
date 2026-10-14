@@ -222,6 +222,14 @@ export function orderRefInOtherSale(orderRef: string, sessionId: string | null):
   return false;
 }
 
+/** orderRef -> the sale that carries it. For an operator's view only (#547 retention preview). */
+export function saleSessionsByOrderRef(): Map<string, string> {
+  ensureLoaded();
+  const out = new Map<string, string>();
+  for (const sale of Object.values(store)) if (sale.orderRef) out.set(sale.orderRef, sale.sessionId);
+  return out;
+}
+
 export function recordSaleSlots(
   sessionId: string,
   onChainEventId: string,

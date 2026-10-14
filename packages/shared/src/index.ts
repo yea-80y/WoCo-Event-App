@@ -57,4 +57,5 @@ export * from "./legal/consent.js";
 export * from "./legal/contact.js";
 export * from "./legal/company.js";
 export * from "./legal/organiser-notice.js";
+export * from "./legal/order-retention.js";
 export * from "./payouts/types.js";

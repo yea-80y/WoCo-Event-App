@@ -3,7 +3,8 @@
  *
  * Three stores, all under .data/ (MUST survive restarts):
  *   door-passes.json         { [eventId]: { jti, exp } } — active pass per event
- *   checkin-rosters/{h}.json EncryptedRoster ciphertext (server never sees plaintext)
+ *   checkin-rosters/{h}.json EncryptedRoster ciphertext (server never sees plaintext);
+ *                            a derived copy, deleted after the event (roster-retention.ts)
  *   checkins/{h}.json        CheckinRecord[] — the merged nullifier set
  *
  * A ticket is admitted ONCE across every scanner (#641) - check-in is a
@@ -19,7 +20,7 @@
  */
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { writeJsonAtomic } from "../marketing/persist.js";
 import {
@@ -40,8 +41,12 @@ const ROSTERS_DIR = join(DATA_DIR, "checkin-rosters");
 const CHECKINS_DIR = join(DATA_DIR, "checkins");
 
 /** eventIds aren't filesystem-safe — key files by their sha256. */
+export function eventKey(eventId: string): string {
+  return createHash("sha256").update(eventId).digest("hex");
+}
+
 function eventFile(dir: string, eventId: string): string {
-  return join(dir, `${createHash("sha256").update(eventId).digest("hex")}.json`);
+  return join(dir, `${eventKey(eventId)}.json`);
 }
 
 function readJson<T>(file: string): T | null {
@@ -179,6 +184,32 @@ export function storeRoster(eventId: string, roster: EncryptedRoster): void {
 
 export function readRoster(eventId: string): EncryptedRoster | null {
   return readJson<EncryptedRoster>(eventFile(ROSTERS_DIR, eventId));
+}
+
+/** The `eventKey` of every stored roster. No directory yet = none. */
+export function storedRosterKeys(): string[] {
+  let names: string[];
+  try {
+    names = readdirSync(ROSTERS_DIR);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+  return names.filter((n) => /^[0-9a-f]{64}\.json$/.test(n)).map((n) => n.slice(0, 64));
+}
+
+/**
+ * Delete one roster (#883), with any temp copy a crashed write left beside it.
+ * Already gone is not a failure; anything else throws, so the sweep retries.
+ */
+export function deleteRoster(key: string): void {
+  for (const file of [join(ROSTERS_DIR, `${key}.json`), join(ROSTERS_DIR, `${key}.json.tmp`)]) {
+    try {
+      unlinkSync(file);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

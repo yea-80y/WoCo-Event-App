@@ -29,6 +29,7 @@
 import type { Stripe } from "stripe";
 import {
   buildTicketCanonicalMessage,
+  isNoticeRetentionMonths,
   type EventFeed,
   type SitePalette,
 } from "@woco/shared";
@@ -112,7 +113,7 @@ export interface FulfilmentDeps {
   getOrganiserByStripeAccount(stripeAccountId: string): string | undefined;
 
   /** Store the fallback order seal on the attendee batch (#546). May throw; the caller decides what that means. */
-  storeOrderBlob(data: string, meta: { eventId: string; seriesId: string; emailHash?: string }): Promise<string>;
+  storeOrderBlob(data: string, meta: { eventId: string; seriesId: string; emailHash?: string; retainMonths?: number }): Promise<string>;
 
   /**
    * Paid-only storage (#546). The buyer's box was HELD at checkout, not stored:
@@ -121,7 +122,7 @@ export interface FulfilmentDeps {
    * hold (may throw - the retry worker then stores it); `isOrderStored` says
    * whether the ref is already on the attendee batch (a retried webhook).
    */
-  claimHeldOrder(orderRef: string, sessionId: string, emailHash?: string): boolean;
+  claimHeldOrder(orderRef: string, sessionId: string, emailHash?: string, retainMonths?: number): boolean;
   storeHeldOrder(orderRef: string): Promise<string>;
   /** Drop a claimed hold when the sale issued no ticket: nothing references it. */
   releaseHeldOrder(orderRef: string): boolean;
@@ -329,6 +330,7 @@ export async function fulfilPaidSession(
     connectedAccountId: metaConnectedAccountId,
     onChainEventId: metaOnChainEventId,
     onChainContract: metaOnChainContract,
+    retainMonths: metaRetainMonths,
   } = session.metadata ?? {};
 
   const quantity = Math.max(1, Math.min(10, parseInt(qtyStr ?? "1", 10) || 1));
@@ -355,6 +357,9 @@ export async function fulfilPaidSession(
   // What the buyer was shown and did. Absent is NOT a decline: no control was
   // shown, so nothing is recorded, in either mode.
   const marketing = marketingFromMetadata(session.metadata);
+  // Checkout's snapshot of the notice (#547). Anything but a period an organiser
+  // can pick is no instruction: the order is then never erased by the sweep.
+  const retainMonths = isNoticeRetentionMonths(Number(metaRetainMonths)) ? Number(metaRetainMonths) : undefined;
 
   const claimedAt = new Date(webhookEventCreated * 1000).toISOString();
 
@@ -407,7 +412,7 @@ export async function fulfilPaidSession(
   // data, so this buyer's minimal order is sealed instead.
   let heldOrderRef: string | undefined;
   if (prefetchedOrderRef) {
-    if (deps.claimHeldOrder(prefetchedOrderRef, session.id, emailHash)) {
+    if (deps.claimHeldOrder(prefetchedOrderRef, session.id, emailHash, retainMonths)) {
       heldOrderRef = prefetchedOrderRef;
     } else if (!deps.isOrderStored(prefetchedOrderRef)) {
       console.warn(`[fulfilment] ${session.id}: no held or stored order for ${prefetchedOrderRef.slice(0, 10)}… — sealing the minimal order`);
@@ -755,6 +760,7 @@ export async function fulfilPaidSession(
         prefetchedOrderRef,
         encryptedOrder,
         emailHash,
+        retainMonths,
         accountClaim,
         claimedResults,
         setStopped: (reason) => {
@@ -1088,6 +1094,8 @@ interface MintV2Args {
   encryptedOrder: SealedBoxV2 | undefined;
   /** The buyer's email HMAC, recorded with the fallback order so it can be found (#546). */
   emailHash: string | undefined;
+  /** Checkout's snapshot of the notice's period (#547), recorded with the fallback order. */
+  retainMonths: number | undefined;
   accountClaim: { parentAddress: string } | undefined;
   /** Filled in place: one entry per slot actually minted AND signed. */
   claimedResults: Array<{ edition: number; qrContent: string }>;
@@ -1114,6 +1122,7 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
         eventId,
         seriesId,
         ...(a.emailHash ? { emailHash: a.emailHash } : {}),
+        ...(a.retainMonths !== undefined ? { retainMonths: a.retainMonths } : {}),
       });
       console.log(`[fulfilment/v2] Fallback order uploaded: ${batchOrderRef}`);
     } catch (err) {

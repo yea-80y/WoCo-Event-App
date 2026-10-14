@@ -6,7 +6,13 @@
  * and is not something to re-derive at 2am inside a statutory clock.
  */
 
-import { consentsForEmailHash, forgetEmailHash, forgetEmailHashForOrg, type ConsentRecord } from "./consent-store.js";
+import {
+  consentStoreReadable,
+  consentsForEmailHash,
+  forgetEmailHash,
+  forgetEmailHashForOrg,
+  type ConsentRecord,
+} from "./consent-store.js";
 import { listsContaining, removeFromLists } from "./list-store.js";
 import { persistFailureCount } from "./persist.js";
 import { marksFor, suppressGlobal, suppressOrg } from "./suppression-store.js";
@@ -105,6 +111,17 @@ export function eraseSubject(emailHash: string, organiser?: string, at: string =
   } else {
     suppressGlobal(emailHash, "manual");
   }
+  // A mark that did not reach disk (a failed write, or an unreadable store that
+  // refused it, #882) protects nobody after a restart: erase nothing behind it.
+  if (persistFailureCount() !== failuresBefore) {
+    return {
+      consentsErased: 0,
+      listsRemovedFrom: [],
+      emailFailuresRedacted: 0,
+      suppression: org ? "organiser" : "global",
+      persisted: false,
+    };
+  }
 
   const consentsErased = org
     ? (forgetEmailHashForOrg(emailHash, org) ? 1 : 0)
@@ -128,6 +145,7 @@ export function eraseSubject(emailHash: string, organiser?: string, at: string =
     listsRemovedFrom,
     emailFailuresRedacted,
     suppression: org ? "organiser" : "global",
-    persisted: persistFailureCount() === failuresBefore,
+    // An unreadable consent file erased nothing it holds, so this is not done either.
+    persisted: consentStoreReadable() && persistFailureCount() === failuresBefore,
   };
 }

@@ -488,6 +488,18 @@ export function getAllResolutionEntries(): RegistryResolutionEntry[] {
   return out;
 }
 
+/**
+ * Whether this event may have a registration `getAllResolutionEntries` cannot
+ * show: a record of it unreadable, or the whole file. Its series' ends are then
+ * unknown, so nothing may conclude the event is over (#883).
+ */
+export function hasUnreadableRecordFor(eventId: string): boolean {
+  ensureLoaded();
+  if (fileUnreadable) return true;
+  for (const k of unreadable.keys()) if (k.startsWith(`${eventId}|`)) return true;
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Pending-registration markers
 // ---------------------------------------------------------------------------

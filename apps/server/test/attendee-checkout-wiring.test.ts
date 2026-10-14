@@ -274,3 +274,30 @@ test("#546: an order erased while only held keeps who it was for, so a later req
   assert.deepEqual(data.orders.map((o) => [o.root, o.state]), [[ref, "burned"]]);
   assert.deepEqual(data.held, []);
 });
+
+test("#547: the notice's period rides checkout -> paid hold -> stored order, and a fallback seal keeps it too", async () => {
+  await readyAttendeeStore();
+  const deps = { stamper: writer.getAttendeeStamper, upload: async (_e: unknown, body: Uint8Array) => (await acceptingUploadChunk(_e, body)).reference.toHex() };
+  const json = canonicalOrderBox({ ...BOX, ct: "a7".repeat(73) })!;
+  const ref = await writer.orderRefOf(json);
+  held.commitHold(ref, json, { eventId: "e-ret", seriesId: "s1" });
+  held.markHeldPaid(ref, "cs_ret", Date.now(), { retainMonths: 12 });
+  assert.equal(held.getHeldOrder(ref)?.retainMonths, 12, "it survives on the hold until storage");
+  await writer.storeHeldOrder(ref, deps as never);
+  assert.equal(ledger.getOrderRecord(ref)?.retainMonths, 12);
+
+  const fallback = await writer.storeAttendeePayload("fallback-order", { kind: "fallback", eventId: "e-ret", seriesId: "s1", retainMonths: 6 }, deps as never);
+  assert.equal(ledger.getOrderRecord(fallback)?.retainMonths, 6);
+  const none = await writer.storeAttendeePayload("no-snapshot", { kind: "fallback", eventId: "e-ret", seriesId: "s1" }, deps as never);
+  assert.equal("retainMonths" in ledger.getOrderRecord(none)!, false, "no snapshot, no period: never swept");
+});
+
+test("#547: create-checkout snapshots the confirmed notice's period into the tagged session metadata", () => {
+  const src = readFileSync(new URL("../src/routes/stripe.ts", import.meta.url), "utf8");
+  const gate = src.indexOf("const noticeBlock = noticeRefusal(noticeVerdictOf(notice));");
+  const snap = src.indexOf('const retainMonths = notice.status === "found" ? notice.notice.orderRetentionMonths : undefined;');
+  const meta = src.indexOf("...(retainMonths !== undefined ? { retainMonths: String(retainMonths) } : {}),");
+  const tag = src.indexOf("const clientReferenceId = signCheckoutTag({");
+  assert.ok(gate > 0 && snap > gate, "taken from the read the sale gate confirmed");
+  assert.ok(meta > snap && tag > meta, "inside the metadata the integrity tag commits to");
+});

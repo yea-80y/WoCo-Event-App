@@ -533,7 +533,7 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     surplus. Losing it costs one full rescan of our fees and re-opens operator resolutions; never pays)
   pending-refunds.json (#367 — auto-refunds Stripe refused to create; losing it = a buyer
     charged with no ticket and no refund, and no alarm; `/api/health` `pendingRefunds`)
-  marketing-consent.json (Art. 7(1) evidence for checkout opt-ins)
+  marketing-consent.json (Art. 7(1) evidence for checkout opt-ins; unreadable = never overwritten, `/api/health` `marketingConsent` alarm, #882)
   profile-names.json (#464 — which sub-ENS name is an account's PROFILE name, and
     its rename clock. The role is unknowable from chain: a registry says who HOLDS
     a name, never what it is FOR, and the profile feed is client-signed. Losing it
@@ -546,7 +546,7 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     the ONLY server-visible proof a broadcast recipient holds a ticket. Losing it means no
     organiser can tell attendees their event is cancelled, and it CANNOT be rebuilt: the
     plaintext address is never stored anywhere we could re-derive it from)
-  marketing-suppression.json (losing it = emailing unsubscribers, a legal breach)
+  marketing-suppression.json (losing it = emailing unsubscribers, a legal breach; unreadable = never overwritten, sends refuse, `/api/health` `marketingSuppression` alarm, #882)
   sender-pacing/ (#619 — each sender's ramp, 7-day bounce/complaint counts, stops and the
     proven set. Losing it FORGETS A STOP and lets a stopped organiser mail again)
   marketing-lists.json · marketing-domains.json · marketing-send-log.json
@@ -576,7 +576,8 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     to erase one order. Losing it loses per-record erasure for everything written so far, and that
     batch must NEVER be registered again (buy a new one). Unreadable = checkout refuses until restored.
     Since #797 each record also holds the buyer's email HMAC + organiser: it is the index the ops
-    lookup answers access/erasure requests from, and an EMAIL_HASH_SECRET rotation blinds it)
+    lookup answers access/erasure requests from, and an EMAIL_HASH_SECRET rotation blinds it. Since #547 a
+    record also holds retainMonths, the retention sweep's only source for the period, and erasedBy + rule)
   event-feed-signers.json (#670 — eventId → the organiser's content-feed signer + verified
     creator, pinned at create, write-once. The money path's ONLY carrier for an UNLISTED event.
     Losing it fails CLOSED: unlisted events stop selling until re-created; listed ones fall back

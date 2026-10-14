@@ -167,7 +167,8 @@ purposes or retention, which is a controller's call. The editor drops the "not l
 "earlier versions stay retrievable" warnings: both are in ORGANISER_TERMS §4, where they belong.
 
 **Depends on the retention sweep.** The notice says order-form answers are deleted N months after the
-event. Nothing deletes them until the sweep ships, so this notice must not reach production before it.
+event. The sweep is built (#547) but ships as `dry-run`: nothing is deleted until
+`ORDER_RETENTION_SWEEP=live`, so switch it live before this notice reaches production.
 
 ---
 
