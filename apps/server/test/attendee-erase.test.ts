@@ -13,7 +13,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
@@ -156,4 +156,25 @@ test("an order already erased is a no-op: no upload, nothing rewritten", async (
   assert.equal(out.kind, "burned");
   assert.equal(uploads, before);
   assert.equal(ledger.getOrderRecord(ref)?.erasedBy, "request");
+});
+
+test("an order burned before #547 is never relabelled", async () => {
+  const ref = await stored();
+  await eraseOrder(ref, { by: "request" }, honestBurns as never);
+  const rec = ledger.getOrderRecord(ref)!;
+  assert.equal(rec.state, "burned");
+  // As a pre-#547 burn left it: no reason recorded.
+  const file = join(process.cwd(), ".data", "attendee-slots.json");
+  const raw = JSON.parse(readFileSync(file, "utf8"));
+  delete raw.orders[ref].erasedBy;
+  writeFileSync(file, JSON.stringify(raw));
+  ledger._resetAttendeeLedgerForTests();
+  ledger.noteErasure(ref, { by: "retention", rule: RULE });
+  assert.equal(ledger.getOrderRecord(ref)?.erasedBy, undefined);
+});
+
+test("the live fulfilment wiring hands the period to the hold", () => {
+  const src = readFileSync(new URL("../src/lib/stripe/fulfilment-live.ts", import.meta.url), "utf8");
+  assert.match(src, /claimHeldOrder: \(ref, sessionId, emailHash, retainMonths\) => markHeldPaid\(ref, sessionId, Date\.now\(\), \{ emailHash, retainMonths \}\)/);
+  assert.match(src, /storeOrderBlob: \(data, meta\) => storeAttendeePayload\(data, \{ kind: "fallback", \.\.\.meta \}\)/);
 });

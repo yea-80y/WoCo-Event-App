@@ -201,10 +201,13 @@ test("now is the earlier clock: a chain behind the server keeps the order, a cha
   const { summary } = ok(await live(down.deps));
   assert.equal(ledger.isOrderErased(ref), false);
   assert.equal(summary.undeterminable.chainUnavailable, 1);
+  assert.equal(summary.due, 0, "undeterminable, never overdue");
+  assert.equal(summary.oldestOverdueDays, null);
   // A server clock before due is never overruled by a chain clock after it.
-  const early = fakeDeps({ now: () => DUE6 - DAY, chainNow: async () => NOW });
+  let chainReads = 0;
+  const early = fakeDeps({ now: () => DUE6 - DAY, chainNow: async () => (chainReads++, NOW) });
   ok(await live(early.deps));
-  assert.equal(early.calls.chainNow, 0);
+  assert.equal(chainReads, 0);
   assert.equal(ledger.isOrderErased(ref), false);
 });
 
@@ -297,6 +300,34 @@ test("an order already erased is not touched again", async () => {
   assert.equal(ledger.getOrderRecord(tomb)?.erasedBy, "request");
 });
 
+test("a stored order whose hold was never released is one order, erased once", async () => {
+  await fresh();
+  const ref = await heldOrder({ retainMonths: 6 });
+  await writer.storeAttendeePayload(held.getHeldOrder(ref)!.json, { kind: "checkout", eventId: "ev", seriesId: "s1", retainMonths: 6 }, storeDeps as never);
+  assert.ok(held.getHeldOrder(ref), "the hold outlived the store");
+  const { deps, calls } = fakeDeps();
+  const { summary, items } = ok(await live(deps));
+  assert.deepEqual(calls.erase, [ref]);
+  assert.equal(items.length, 1);
+  assert.equal(summary.erased, 1);
+  assert.equal(held.getHeldOrder(ref), null);
+  assert.equal(ledger.getOrderRecord(ref)?.state, "burned");
+});
+
+test("an order on a batch the ledger does not know is kept", async () => {
+  await fresh();
+  const ref = await stored();
+  const file = join(process.cwd(), ".data", "attendee-slots.json");
+  const raw = JSON.parse(readFileSync(file, "utf8"));
+  raw.orders[ref].batchId = "0d".repeat(32);
+  writeFileSync(file, JSON.stringify(raw));
+  ledger._resetAttendeeLedgerForTests();
+  const { deps, calls } = fakeDeps();
+  const { summary } = ok(await live(deps));
+  assert.deepEqual(calls.erase, []);
+  assert.equal(summary.skipped.batchUnknown, 1);
+});
+
 test("a paid order still held is erased too: hold deleted, tombstone with the rule, period and organiser", async () => {
   await fresh();
   const ref = await heldOrder({ retainMonths: 6 });
@@ -347,8 +378,8 @@ test("one run at a time; off refuses", async () => {
   const gate = new Promise<void>((r) => (release = r));
   const { deps } = fakeDeps({ chainEnd: async () => { await gate; return END; } });
   const first = live(deps);
-  const second = await live(deps);
-  assert.equal(second.refused !== null && second.why, "busy");
+  const second = await Promise.race([live(deps), new Promise<"hung">((r) => setTimeout(() => r("hung"), 2000).unref())]);
+  assert.ok(second !== "hung" && second.refused !== null && second.why === "busy", "a second run is refused, not queued");
   release();
   ok(await first);
   const off = await retention.runOrderRetention({ mode: "off", deps });
