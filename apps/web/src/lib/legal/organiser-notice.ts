@@ -16,11 +16,12 @@
 
 import {
   buildOrganiserNotice,
+  ORGANISER_NOTICE_FORMAT,
   organiserNoticeContentTopic,
   validateOrganiserNotice,
   type OrderField,
   type OrganiserNoticeDoc,
-  type OrganiserNoticeV1,
+  type OrganiserNotice,
 } from "@woco/shared";
 import { get } from "../api/http.js";
 import { FEED_ROUTES } from "../swarm/gateways.js";
@@ -39,7 +40,7 @@ export interface PublicNoticeData {
   feedSigner: string | null;
   /** The server named the organiser from a record it holds, not from the feed. */
   trusted: boolean;
-  notice: OrganiserNoticeV1 | null;
+  notice: OrganiserNotice | null;
   noticeStatus: "found" | "absent" | "unavailable";
   event?: { title: string; orderFields: OrderField[] } | null;
   site?: { brandName: string | null; contactEmail: string | null; postalAddress: string | null; contactForm: boolean };
@@ -113,7 +114,7 @@ export function publicNoticeView(
 // ---------------------------------------------------------------------------
 
 export type OwnNoticeRead =
-  | { status: "found"; notice: OrganiserNoticeV1 }
+  | { status: "found"; notice: OrganiserNotice }
   | { status: "absent" }
   | { status: "unavailable"; error: string };
 
@@ -142,11 +143,11 @@ export async function readOwnNotice(account: string, signerAddress: string): Pro
 export async function publishOwnNotice(
   account: string,
   signer: { address: string; privKey: string },
-  draft: Omit<OrganiserNoticeV1, "format" | "address" | "confirmedAt">,
-): Promise<OrganiserNoticeV1> {
+  draft: Omit<OrganiserNotice, "format" | "address" | "confirmedAt">,
+): Promise<OrganiserNotice> {
   const candidate = {
     ...draft,
-    format: "woco.privacy-notice.v1",
+    format: ORGANISER_NOTICE_FORMAT,
     address: account.toLowerCase(),
     confirmedAt: new Date().toISOString(),
   };

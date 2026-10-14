@@ -17,9 +17,19 @@ import {
   applyDrain,
   provenanceRank,
 } from "../src/lib/creator/audience/attendee-drain.js";
+import type { OrderField } from "@woco/shared";
 
 const NOW = "2026-07-27T00:00:00.000Z";
-const opts = (consented: string[]) => ({
+const FIELDS: OrderField[] = [
+  { id: "field_1", type: "text", label: "First Name", required: true, keepOnList: true },
+  { id: "field_2", type: "text", label: "Surname", required: true, keepOnList: true },
+  { id: "field_3", type: "text", label: "Area", required: false, keepOnList: true },
+  { id: "field_4", type: "text", label: "How did you hear about us?", required: false, keepOnList: true },
+  { id: "field_5", type: "text", label: "T-shirt size", required: false },
+  { id: "field_6", type: "text", label: "Allergies", required: false, health: true, keepOnList: true },
+];
+const opts = (consented: string[], orderFields: OrderField[] = FIELDS) => ({
+  orderFields,
   eventTitle: "Warehouse Project",
   eventDate: "2026-09-01",
   addedAt: NOW,
@@ -49,22 +59,49 @@ test("four tickets is one contact", () => {
   assert.equal(out[0].email, "ada@x.com");
 });
 
-test("names are read out of organiser-defined order fields", () => {
+test("only answers the organiser ticked are kept, each in its place - never a health answer", () => {
   const out = buildAttendeeContacts(
-    [{ claimerEmail: "a@x.com", fields: { "First Name": "Ada", surname: "Lovelace" } }],
+    [{
+      claimerEmail: "a@x.com",
+      fields: { field_1: "Ada", field_2: "Lovelace", field_3: "Leeds", field_4: "Instagram", field_5: "M", field_6: "Peanuts" },
+    }],
     opts(["a@x.com"]),
   );
   assert.equal(out[0].firstName, "Ada");
   assert.equal(out[0].lastName, "Lovelace");
+  // Area goes to the contact's town, so the list can be searched by it.
+  assert.equal(out[0].city, "Leeds");
+  assert.deepEqual(out[0].answers, { "How did you hear about us?": "Instagram" });
+  assert.doesNotMatch(JSON.stringify(out[0]), /Peanuts|"M"/);
+});
+
+test("nothing ticked, nothing kept but the email", () => {
+  const unticked = FIELDS.map((f) => ({ ...f, keepOnList: false }));
+  const out = buildAttendeeContacts([{ claimerEmail: "a@x.com", fields: { field_1: "Ada", field_3: "Leeds" } }], opts(["a@x.com"], unticked));
+  assert.equal(out[0].firstName, undefined);
+  assert.equal(out[0].city, undefined);
+  assert.equal(out[0].answers, undefined);
 });
 
 test("a single name field is kept whole rather than split", () => {
+  const full: OrderField[] = [{ id: "field_9", type: "text", label: "Full name", required: true, keepOnList: true }];
   const out = buildAttendeeContacts(
-    [{ claimerEmail: "a@x.com", fields: { name: "Ada King de Lovelace" } }],
-    opts(["a@x.com"]),
+    [{ claimerEmail: "a@x.com", fields: { field_9: "Ada King de Lovelace" } }],
+    opts(["a@x.com"], full),
   );
   assert.equal(out[0].firstName, "Ada King de Lovelace");
   assert.equal(out[0].lastName, undefined);
+});
+
+test("kept answers merge question by question, never blanking one", () => {
+  const prev = { email: "a@x.com", answers: { "How did you hear about us?": "Instagram", Genre: "Techno" }, source: "event:A", addedAt: NOW };
+  const next = { email: "a@x.com", answers: { Genre: "House" }, source: "event:B", addedAt: NOW };
+  assert.deepEqual(mergeContact(prev, next).answers, { "How did you hear about us?": "Instagram", Genre: "House" });
+  // A lower-trust source fills a gap but never overwrites what the buyer told the organiser.
+  const csv = { email: "a@x.com", answers: { Genre: "Jazz", Venue: "Leeds" }, source: "csv:old.csv", addedAt: NOW };
+  assert.deepEqual(mergeContact(prev, csv).answers, { "How did you hear about us?": "Instagram", Genre: "Techno", Venue: "Leeds" });
+  // An empty answer is absence, not an update.
+  assert.deepEqual(mergeContact(prev, { ...next, answers: { Genre: "" } }).answers, prev.answers);
 });
 
 test("the event is recorded as the provenance", () => {

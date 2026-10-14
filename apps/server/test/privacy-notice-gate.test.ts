@@ -69,6 +69,8 @@ const confirmedNotice: VersionedFeedRead = {
     format: ORGANISER_NOTICE_FORMAT,
     address: CREATOR,
     organiserName: "Punk Pub Ltd",
+    sharing: ["venue"],
+    orderRetentionMonths: 6,
     confirmedAt: "2026-10-11T09:00:00.000Z",
   })),
   version: 0,
@@ -144,7 +146,7 @@ test("reserve refuses 409 PRIVACY_NOTICE_REQUIRED when the organiser has no conf
 });
 
 test("reserve: an invalid notice is no notice", async () => {
-  answer = async () => ({ ...confirmedNotice, bytes: new TextEncoder().encode(JSON.stringify({ format: ORGANISER_NOTICE_FORMAT, address: "0x" + "bb".repeat(20), organiserName: "X", confirmedAt: "2026-10-11T09:00:00.000Z" })) } as VersionedFeedRead);
+  answer = async () => ({ ...confirmedNotice, bytes: new TextEncoder().encode(JSON.stringify({ format: ORGANISER_NOTICE_FORMAT, address: "0x" + "bb".repeat(20), organiserName: "X", sharing: [], orderRetentionMonths: 6, confirmedAt: "2026-10-11T09:00:00.000Z" })) } as VersionedFeedRead);
   assert.equal((await reserve(liveEvent())).json.code, gate.PRIVACY_NOTICE_REQUIRED);
 });
 

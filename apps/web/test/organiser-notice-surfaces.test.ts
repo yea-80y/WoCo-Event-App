@@ -37,6 +37,8 @@ const notice = {
   format: ORGANISER_NOTICE_FORMAT,
   address: CREATOR,
   organiserName: "Punk Pub Ltd",
+  sharing: ["venue"],
+  orderRetentionMonths: 6,
   contactEmail: "privacy@punkpub.example",
   confirmedAt: "2026-10-11T09:00:00.000Z",
 } as const;
@@ -190,6 +192,48 @@ test("a key-ring rotation moves the notice, and stops rather than dropping it on
   assert.match(copy, /readContentFeedResult<unknown>\(h\.oldSigner\.address, noticeTopic, \{[^}]*thorough: true/);
   assert.match(copy, /notice\.status === "unavailable"\) throw/);
   assert.match(copy, /route: noticeRoute/);
+});
+
+test("the notice is written in the shared format - never a hard-coded version string", () => {
+  // A literal here outlived the v2 bump once and would have failed every publish.
+  for (const f of ["lib/legal/organiser-notice.ts", "lib/creator/privacy/PrivacyNoticeEditor.svelte"]) {
+    const src = code(read(f));
+    assert.doesNotMatch(src, /woco\.privacy-notice\.v\d/, f);
+    assert.match(src, /format: ORGANISER_NOTICE_FORMAT/, f);
+  }
+});
+
+test("the editor offers choices and reassures: no disclaimer, no network warning, no soft opt-in", () => {
+  const ed = code(read("lib/creator/privacy/PrivacyNoticeEditor.svelte"));
+  // Owner 2026-10-13: the "not legal advice" line lives in Organiser Terms §4, and
+  // the retrievable-versions disclosure there too - never as a scare on this screen.
+  assert.doesNotMatch(ed, /legal advice|starting point|someone qualified/i);
+  assert.doesNotMatch(ed, /retrievable|the network/i);
+  // The checkout has no opt-out to support it, so the declaration is gone.
+  assert.doesNotMatch(ed, /soft opt-in|without a tick/i);
+  assert.match(ed, /bind:group=\{draft\.sharing\}/);
+  assert.match(ed, /bind:group=\{draft\.orderRetentionMonths\}/);
+  assert.match(ed, /bind:checked=\{draft\.tailoredMarketing\}/);
+});
+
+test("the question builder pre-sets health and mailing-list flags, and a health question cannot be required", () => {
+  const ed = code(read("lib/creator/events/OrderFieldsEditor.svelte"));
+  assert.match(ed, /oninput=\{\(\) => guessFlags\(i\)\}/);
+  assert.match(ed, /orderFieldKind\(f\.label\)/);
+  // A manual choice sticks while the organiser keeps typing.
+  assert.match(ed, /if \(!f \|\| manual\[f\.id\]\) return;/);
+  assert.match(ed, /kind\.health \? \{ required: false \}/);
+  // The Required and keep ticks only exist outside the health branch.
+  const healthBranch = ed.slice(ed.indexOf("{#if field.health}"), ed.indexOf("{:else}", ed.indexOf("{#if field.health}")));
+  assert.match(healthBranch, /never added to your mailing list/);
+  assert.doesNotMatch(healthBranch, /field\.required|keepOnList/);
+});
+
+test("both checkouts show the health note under a health question", () => {
+  const form = code(read("lib/attendee/events/claim/OrderForm.svelte"));
+  assert.match(form, /\{#if isHealthField\(field\)\}<span class="field-note">\{HEALTH_FIELD_NOTE\}<\/span>\{\/if\}/);
+  const embed = readFileSync(new URL("../../../packages/embed/src/components/woco-tickets.ts", import.meta.url), "utf-8");
+  assert.match(embed, /isHealthField\(f\) \? `<span class="field-note">\$\{this\.esc\(HEALTH_FIELD_NOTE\)\}<\/span>`/);
 });
 
 test("the new notice-gate copy keeps the register: spaced hyphen, never an em or en dash", () => {

@@ -14,7 +14,8 @@ the controller for attendee details and WoCo is their processor (DATA_INVENTORY 
 pre-filled draft is never shown to the public as the organiser's notice.
 
 - "Confirmed" = a notice that validates for the organiser's account on their own signed feed
-  `woco/legal/privacy-notice/{account}` (format `woco.privacy-notice.v1`). The editor writes it only
+  `woco/legal/privacy-notice/{account}` (format `woco.privacy-notice.v2` since 2026-10-13; v1 notices are
+  refused, so their organisers publish again). The editor writes it only
   on an explicit confirm.
 - Enforced on the server, in lockstep with the UI, so an old client or a direct API call cannot get
   past it.
@@ -104,7 +105,7 @@ Consent would add nothing and could be withdrawn mid-conversation. Approve as wr
 Open, for the owner: a site whose owner has not confirmed a notice still shows its contact form.
 Recommendation: disable the form's submit until the notice is confirmed (follow-up, small).
 
-**3. Automated decisions (Art. 13(2)(f)).**
+**3. Automated decisions (Art. 13(2)(f)).** SETTLED 2026-10-13 (§5): stated for every organiser, not asked.
 Draft answer: **WoCo states "none" for its own part; the organiser's field stays for theirs.** WoCo
 makes no decision about an attendee by purely automated means with legal or similarly significant
 effect: seat holds and rate limits are temporary and do not decide anything about a person, and
@@ -118,7 +119,8 @@ notice also offers privacy@woco-net.com to be passed on, so an attendee always r
 Verify the address by email link once SES lands (DATA_INVENTORY §8 item 9). Approve with that
 follow-up.
 
-**5a. The soft opt-in wording.**
+**5a. The soft opt-in wording.** SUPERSEDED 2026-10-13 (§5): the declaration box is gone, because the
+checkout offers an opt-in only and a soft opt-in needs an opt-out at the point of sale.
 Draft answer: keep the meaning, tighten to PECR reg. 22(3): "We may also email you about our
 similar events if you bought a ticket from us, were given a simple way to say no when you did, and
 have not said no since. Every email lets you unsubscribe." Code change after approval.
@@ -140,3 +142,29 @@ which the code already enforces (the generator is the single source).
 Draft answer: **Moot.** A legacy event cannot sell at all - create-checkout refuses it with
 `EVENT_NEEDS_REPUBLISH`, and the seat hold now refuses it too. Its notice page says it needs
 publishing again. Nothing to approve.
+
+---
+
+## 5. Choices, not free text (owner, 2026-10-13)
+
+The editor asked organisers to write legal answers in empty boxes. It now offers the answer nearly
+every organiser gives, already picked, and they change it if it is not theirs:
+
+| Was (v1, free text) | Now (v2) |
+|---|---|
+| Why you ask your order-form questions | Stated: "to run the event you booked, for example for seating, catering or access" on our contract with them. Optional "anything else" box ends our sentence |
+| Who else you share with | Categories (Art. 13(1)(e) allows them), all ticked: own team/staff/volunteers, venue, door and security, co-promoters and partners. Optional "anyone else". Always adds "we never sell your details, and no one we share them with may use them for their own marketing" |
+| How long you keep details | 6 (default) or 12 months after the event. Pick-only, because the retention sweep carries it out (#547). No 3: a card dispute can arrive ~120 days after a sale |
+| Automated decisions | Stated for everyone: neither the organiser nor WoCo decides about attendees purely by computer with a legal or similar effect; Stripe screens payments under its own policy |
+| Soft opt-in declaration | Removed (see 5a). A switch to an opt-out checkout is a separate decision |
+| (new) Tailored mailing list | Default on: what is kept on the mailing list (their area, say) chooses which events members hear about. The booking's own answers are deleted on schedule for everyone |
+| (new) Per question: "Keep on mailing list" | Pre-ticked from the label for names, area, postcode and town; copied onto the contact at import; the notice names each kept question |
+| (new) Per question: health | Pre-set from the label (allergies, dietary, access needs...): always optional, a consent line at the question, never kept on a list; the notice adds a purpose + Art. 9 basis sentence |
+
+Every choice is the organiser's instruction to WoCo as processor. Locking one would make WoCo decide
+purposes or retention, which is a controller's call. The editor drops the "not legal advice" and
+"earlier versions stay retrievable" warnings: both are in ORGANISER_TERMS §4, where they belong.
+
+**Depends on the retention sweep.** The notice says order-form answers are deleted N months after the
+event. Nothing deletes them until the sweep ships, so this notice must not reach production before it.
+

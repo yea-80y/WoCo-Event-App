@@ -17,11 +17,11 @@
  * ring's signer, never a recorded one, is read once a ring exists.
  */
 
-import { organiserNoticeContentTopic, validateOrganiserNotice, type OrganiserNoticeV1 } from "@woco/shared";
+import { organiserNoticeContentTopic, validateOrganiserNotice, type OrganiserNotice } from "@woco/shared";
 import type { VersionedFeedRead } from "@woco/shared";
 
 export type NoticeRead =
-  | { status: "found"; notice: OrganiserNoticeV1 }
+  | { status: "found"; notice: OrganiserNotice }
   /** No notice, or one that fails validation: the page shows the pre-filled notice. */
   | { status: "absent" }
   | { status: "unavailable"; reason: string };

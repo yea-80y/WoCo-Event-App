@@ -4,6 +4,8 @@ import {
   calculateBuyerFees,
   fetchOrderKey,
   orderFieldRequired,
+  isHealthField,
+  HEALTH_FIELD_NOTE,
   orderFormShown,
   orderFormCollectsEmail,
   ORDER_EMAIL_FIELD_ID,
@@ -663,6 +665,7 @@ export class WocoTickets extends HTMLElement {
         <label class="form-field">
           <span class="form-label">${this.esc(f.label)}${orderFieldRequired(f, { canUseAccount: false }) ? ' <span class="required">*</span>' : ""}</span>
           ${inputHtml}
+          ${isHealthField(f) ? `<span class="field-note">${this.esc(HEALTH_FIELD_NOTE)}</span>` : ""}
         </label>
       `;
     }

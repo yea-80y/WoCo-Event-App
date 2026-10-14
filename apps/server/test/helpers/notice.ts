@@ -11,7 +11,7 @@ export function confirmedNotices(): void {
   __setNoticeGateForTests({
     reader: async (_owner, topic) => {
       const address = topic.slice(topic.lastIndexOf("/") + 1);
-      const notice = { format: ORGANISER_NOTICE_FORMAT, address, organiserName: "Organiser", confirmedAt: "2026-10-11T09:00:00.000Z" };
+      const notice = { format: ORGANISER_NOTICE_FORMAT, address, organiserName: "Organiser", sharing: [], orderRetentionMonths: 6, confirmedAt: "2026-10-11T09:00:00.000Z" };
       return { status: "found", bytes: new TextEncoder().encode(JSON.stringify(notice)), version: 0, scanClean: true } as VersionedFeedRead;
     },
   });

@@ -44,7 +44,7 @@
   /** Everything a person might type into the box, including the address they
    *  are calling about. Built per contact, not per keystroke-per-field. */
   function haystack(c: MarketingContact): string {
-    return [c.email, c.firstName, c.lastName, c.phone, c.address1, c.address2, c.city, c.postcode]
+    return [c.email, c.firstName, c.lastName, c.phone, c.address1, c.address2, c.city, c.postcode, ...Object.values(c.answers ?? {})]
       .filter(Boolean)
       .join(" ")
       .toLowerCase();
