@@ -60,24 +60,39 @@ export interface FragmentBoot {
 }
 
 /**
- * Set the phone up from a door-pass link. The fragment carries the pass token
- * AND the roster key, so it leaves the address bar and history the moment it is
- * read - before the pack request, whatever that request's outcome. A pass that
- * fails stays in memory for "Try again", which needs no URL.
- *
- * A newer scanner waiting to take over is asked for first, so a stale phone sets
- * the pass up with current code rather than having the server refuse it.
+ * Read the door pass from the URL and take it out of the address bar and history
+ * at once. The fragment carries the pass token AND the roster key, so it goes
+ * the moment it is read - before storage is opened or the pack requested,
+ * whatever their outcome. The pass is then held in memory only.
  */
-export async function bootFromFragment(b: FragmentBoot): Promise<"none" | "reloading" | "provisioned" | "failed"> {
-  const fragment = parseDoorPassFragment(b.location.hash);
-  if (!fragment) return "none";
-  b.history.replaceState(null, "", new URL(b.location.pathname + b.location.search, b.location.href).href);
-  b.arriving?.(fragment);
-  if (b.reload && b.newerVersion && (await b.newerVersion())) {
-    b.reload(fragment);
+export function takePassFromUrl(location: FragmentBoot["location"], history: FragmentBoot["history"]): DoorPass | null {
+  const pass = parseDoorPassFragment(location.hash);
+  if (pass) history.replaceState(null, "", new URL(location.pathname + location.search, location.href).href);
+  return pass;
+}
+
+/**
+ * Set up a pass that has arrived. A newer scanner waiting to take over is asked
+ * for first, so a stale phone sets the pass up with current code rather than
+ * having the server refuse it.
+ */
+export async function setUpArrivedPass(
+  pass: DoorPass,
+  s: Pick<FragmentBoot, "newerVersion" | "reload" | "provision">,
+): Promise<"reloading" | "provisioned" | "failed"> {
+  if (s.reload && s.newerVersion && (await s.newerVersion())) {
+    s.reload(pass);
     return "reloading";
   }
-  return (await b.provision(fragment.token, fragment.keyB64url)) ? "provisioned" : "failed";
+  return (await s.provision(pass.token, pass.keyB64url)) ? "provisioned" : "failed";
+}
+
+/** A pass link, at boot or arriving in an open tab: take it, hold it, set it up. */
+export async function bootFromFragment(b: FragmentBoot): Promise<"none" | "reloading" | "provisioned" | "failed"> {
+  const pass = takePassFromUrl(b.location, b.history);
+  if (!pass) return "none";
+  b.arriving?.(pass);
+  return setUpArrivedPass(pass, b);
 }
 
 /**

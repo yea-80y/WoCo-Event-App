@@ -14,7 +14,7 @@ export const UPDATE_QUIET_MS = 8_000;
 export const UPDATE_RETRY_MS = 2_000;
 
 export interface UpdateMoment {
-  phase: "loading" | "unprovisioned" | "provisioning" | "ready";
+  phase: "loading" | "unprovisioned" | "provisioning" | "ready" | "failed";
   claimInFlight: boolean;
   /** A scan, or a lookup for a ticket newer than the pack, is running. */
   busy: boolean;

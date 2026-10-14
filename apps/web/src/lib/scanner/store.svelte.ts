@@ -39,6 +39,8 @@ import {
 } from "./pack-refresh.js";
 import {
   bootFromFragment,
+  setUpArrivedPass,
+  takePassFromUrl,
   describePackFailure,
   isPassExpired,
   onPassLink,
@@ -82,7 +84,7 @@ export type ManualCheckinResult =
   | { kind: "cant-confirm"; message: string };
 
 class ScannerStore {
-  phase = $state<"loading" | "unprovisioned" | "provisioning" | "ready">("loading");
+  phase = $state<"loading" | "unprovisioned" | "provisioning" | "ready" | "failed">("loading");
   provisionError = $state<string | null>(null);
   /** A pass from a link or QR that could not be set up yet: "Try again" retries it, no reload. */
   pendingPass = $state<{ token: string; keyB64url: string } | null>(null);
@@ -115,6 +117,7 @@ class ScannerStore {
   private rechecked = new Map<string, number>();
   private scanning = false;
   private syncingEarlier = false;
+  private listening = false;
   private lastScanAt = 0;
   /** A newer scanner has taken over this page and a reload into it is due. */
   private updateDue = false;
@@ -125,9 +128,29 @@ class ScannerStore {
   doorMode = $derived<DoorMode>(doorModeOf(this.pack));
   checkedInCount = $derived(this.checkins.size);
 
+  /**
+   * Boot, and the boot screen's "Try again". A failure here - storage that will
+   * not open - shows that screen with a retry, never an endless "Loading…", and
+   * never offers to wipe anything: unsynced check-ins may be in that storage.
+   */
   async init(): Promise<void> {
-    this.deviceId = await db.getDeviceId();
+    this.listen();
+    this.phase = "loading";
+    // The pass leaves the URL before anything else can fail, and is held for the
+    // boot below and its retries (f63e4641).
+    const arrived = takePassFromUrl(location, history);
+    if (arrived) this.pendingPass = arrived;
+    try {
+      await this.boot();
+    } catch (err) {
+      console.error("[scanner] could not start", err);
+      this.phase = "failed";
+    }
+  }
 
+  private listen(): void {
+    if (this.listening) return;
+    this.listening = true;
     window.addEventListener("online", () => {
       this.online = true;
       void this.sync();
@@ -138,13 +161,27 @@ class ScannerStore {
     // interval does not run then, so coming back is when the pack is behind.
     document.addEventListener("visibilitychange", () => this.maybeAutoRefresh(RETURN_REFRESH_MS));
     window.addEventListener("focus", () => this.maybeAutoRefresh(RETURN_REFRESH_MS));
-
-    // A door-pass fragment in the URL always wins — it (re)provisions the device,
-    // at boot or arriving in an open tab. If it fails, the phone stays on the
-    // provision screen with this pass ready to retry: falling back to the stored
-    // pass would open whatever event it held before.
+    // A pass link opened in this already-open tab.
     onPassLink(window, () => void this.passFromUrl());
-    if ((await this.passFromUrl()) !== "none") return;
+  }
+
+  private async boot(): Promise<void> {
+    this.deviceId = await db.getDeviceId();
+
+    // A pass from the URL always wins. If it fails, the phone stays on the
+    // provision screen with it ready to retry: falling back to the stored pass
+    // would open whatever event it held before.
+    const held = this.pendingPass;
+    if (held) {
+      this.reprovision();
+      this.pendingPass = held;
+      await setUpArrivedPass(held, {
+        newerVersion: () => takeoverIfNewer(),
+        reload: () => this.reloadIntoNewVersion(),
+        provision: (t, k) => this.provision(t, k),
+      });
+      return;
+    }
 
     const pass = await db.getStoredPass();
     const pack = await db.getStoredPack();

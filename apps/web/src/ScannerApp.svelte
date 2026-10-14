@@ -8,6 +8,7 @@
   import ScanScreen from "./lib/scanner/ScanScreen.svelte";
   import RosterScreen from "./lib/scanner/RosterScreen.svelte";
   import ProvisionScreen from "./lib/scanner/ProvisionScreen.svelte";
+  import BootFailed from "./lib/scanner/BootFailed.svelte";
 
   let tab = $state<"scan" | "roster">("scan");
   let refreshing = $state(false);
@@ -34,6 +35,8 @@
 
 {#if scanner.phase === "loading"}
   <div class="center-note">Loading…</div>
+{:else if scanner.phase === "failed"}
+  <BootFailed onRetry={() => void scanner.init()} />
 {:else if scanner.phase === "unprovisioned" || (scanner.phase === "provisioning" && !scanner.pack)}
   <ProvisionScreen />
 {:else if scanner.pack}
