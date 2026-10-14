@@ -71,13 +71,22 @@ test("the screen opens the tombstones, reads under the lock, starts a sync, and 
   assert.match(SCREEN, /onListWritten\(\(payload, written\) => \{\s*if \(listLocked\) return;\s*contacts = payload\.contacts;\s*removed = normaliseRemoved\(payload\.removed\);/);
 });
 
-test("the runtime never prompts: open keys as held, seal only on a confirmed generation, an existing session only", () => {
+test("a background run never prompts: open keys as held, seal only on a confirmed generation, an existing session only", () => {
   assert.match(RUNTIME, /const secrets = await auth\.getAccountSecrets\(\);/);
-  assert.match(RUNTIME, /const secrets = await auth\.getAccountSecrets\(\{ toSeal: true, silent: true \}\)\.catch\(\(\) => null\);/);
-  assert.equal(RUNTIME.match(/getAccountSecrets\(/g)?.length, 3);
-  assert.equal(RUNTIME.match(/getAccountSecrets\(\{ toSeal: true, silent: true \}\)/g)?.length, 2, "every seal-side read is silent");
-  assert.doesNotMatch(RUNTIME, /ensureAccountSetup|ensureOrganiserUnlock|ensureSession|loginRequest|ensureIdentitySeed/);
+  assert.match(RUNTIME, /const secrets = manual\s*\? await confirmedSecrets\(\)\s*: await auth\.getAccountSecrets\(\{ toSeal: true, silent: true \}\)\.catch\(\(\) => null\);/);
+  assert.equal(RUNTIME.match(/getAccountSecrets\(\{ toSeal: true, silent: true \}\)/g)?.length, 2, "every background seal-side read is silent");
+  assert.doesNotMatch(RUNTIME, /ensureOrganiserUnlock|ensureSession|loginRequest|ensureIdentitySeed/);
   assert.match(fn(RUNTIME, "export function syncAudience"), /if \(!parent \|\| !auth\.isConnected \|\| !auth\.hasSession \|\| !canOrganise\(auth\.kind\)\) return null;/);
+});
+
+test("only a Check now tap may ask the organiser to confirm it's them (Fable sign-off 2026-10-14)", () => {
+  assert.equal(RUNTIME.match(/ensureAccountSetup\(/g)?.length, 1);
+  assert.match(fn(RUNTIME, "async function confirmedSecrets"), /if \(!\(await auth\.ensureAccountSetup\(\{ identity: true \}\)\)\) return null;/);
+  assert.equal(RUNTIME.match(/await confirmedSecrets\(\)/g)?.length, 1, "called from the manual branch only");
+  assert.match(fn(RUNTIME, "export function syncAudience"), /const manual = opts\.manual === true;/);
+  assert.match(STATUS, /void syncAudience\(\{ force: true, manual: true \}\);/);
+  assert.match(APP, /untrack\(\(\) => void syncAudience\(\)\);/, "the background trigger is never manual");
+  assert.match(fn(SCREEN, "async function load"), /void syncAudience\(\);/, "nor is the screen opening");
 });
 
 test("a failed background check is logged, and shown only on the Audience screen", () => {
@@ -126,8 +135,7 @@ test("the status copy: what happens, who stays out, one button - spaced hyphen, 
   const markup = STATUS.slice(STATUS.indexOf("</script>"));
   assert.match(markup, /Buyers who said yes to your emails at checkout are added automatically - those who ticked\s+"Email me", and, if you only email about your own events, those who didn't tick\s+"Don't email me"\. Anyone who said no, or who you delete, stays off your list\./);
   assert.match(markup, /"Check now"/);
-  assert.match(markup, /syncAudience\(\{ force: true \}\)|onclick=\{checkNow\}/);
-  assert.match(STATUS, /void syncAudience\(\{ force: true \}\);/);
+  assert.match(markup, /onclick=\{checkNow\}/);
   assert.doesNotMatch(markup, /[–—]/);
   assert.doesNotMatch(markup, /consent|lawful|GDPR|PECR/i, "no legal jargon");
 });

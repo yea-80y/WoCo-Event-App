@@ -20,7 +20,8 @@
 
   function checkNow(): void {
     now = Date.now();
-    void syncAudience({ force: true });
+    // A tap: the one run that may ask the organiser to confirm it's them.
+    void syncAudience({ force: true, manual: true });
   }
 </script>
 

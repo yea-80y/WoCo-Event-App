@@ -945,8 +945,14 @@ test("the status line: plain words, the last time, how many, and stale or failed
   assert.equal(failed.warn, true);
   const partial = describeSync(rec({ status: "partial", added: 1, failedEvents: 1, unreadableOrders: 2 }), false, T0);
   assert.equal(partial.text, "Last checked just now - 1 added. 1 event couldn't be read, so we'll try again next time. 2 orders couldn't be opened on this device.");
-  assert.equal(describeSync(rec({ status: "locked" }), false, T0).warn, true);
-  for (const r of [stale, failed, partial, describeSync(rec({ status: "locked" }), false, T0)]) {
+  const waiting = describeSync(rec({ status: "locked" }), false, T0);
+  assert.equal(waiting.text, "New buyers are waiting - press Check now to confirm it's you and add them.");
+  assert.equal(waiting.warn, true);
+  assert.equal(
+    describeSync(rec({ status: "locked", manual: true }), false, T0).text,
+    "Couldn't confirm it's you, so no one was added yet. Press Check now to try again.",
+  );
+  for (const r of [stale, failed, partial, waiting, describeSync(rec({ status: "locked", manual: true }), false, T0)]) {
     assert.doesNotMatch(r.text, /[–—]/, "spaced hyphen, never an em or en dash");
   }
 });

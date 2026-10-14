@@ -3,9 +3,11 @@
  *
  * ONE entry point, `syncAudience()`: the Audience screen calls it when it opens
  * and from "Check now"; organiser pages call it in the background (CreatorApp).
- * It never asks for anything. A request is made only on a session already on
- * this device, keys are taken only if already open, and sealing only on a key
- * generation already confirmed - otherwise the run is skipped.
+ * A background run never asks for anything: a request is made only on a session
+ * already on this device, keys are taken only if already open, and sealing only
+ * on a key generation already confirmed - otherwise the run is skipped. "Check
+ * now" is a tap, so it may ask the organiser to confirm it's them before sealing
+ * (Fable sign-off 2026-10-14).
  */
 import type { MarketingListMeta, MarketingListPayload } from "@woco/shared";
 import { auth } from "../../auth/auth-store.svelte.js";
@@ -135,9 +137,10 @@ const gates = new Map<string, SyncGate<SyncResult>>();
 
 /**
  * Run the sync now if it may: never two at once, at most once an hour on this
- * device unless `force` (the organiser pressed "Check now"). Null = not run.
+ * device unless `force`. `manual` = the organiser pressed "Check now": the one
+ * run that may ask them to confirm it's them. Null = not run.
  */
-export function syncAudience(opts: { force?: boolean } = {}): Promise<SyncResult> | null {
+export function syncAudience(opts: { force?: boolean; manual?: boolean } = {}): Promise<SyncResult> | null {
   const parent = auth.parent?.toLowerCase();
   // An existing session only: a request must never be what asks for a signature.
   if (!parent || !auth.isConnected || !auth.hasSession || !canOrganise(auth.kind)) return null;
@@ -153,13 +156,14 @@ export function syncAudience(opts: { force?: boolean } = {}): Promise<SyncResult
     });
     gates.set(parent, gate);
   }
-  return gate.run(opts.force === true, () => runFor(parent));
+  const manual = opts.manual === true;
+  return gate.run(opts.force === true || manual, () => runFor(parent, manual));
 }
 
-async function runFor(parent: string): Promise<SyncResult> {
+async function runFor(parent: string, manual: boolean): Promise<SyncResult> {
   audienceSync.running = true;
   try {
-    const res = await runAudienceSync(liveDeps(parent));
+    const res = await runAudienceSync(liveDeps(parent, manual));
     // Logged, never shown off the Audience screen: a background check must not put an error on an unrelated page.
     if (res.status === "failed") console.warn("[audience-sync] check did not finish:", res.error);
     if (res.added > 0) markAudienceImported(parent);
@@ -170,6 +174,7 @@ async function runFor(parent: string): Promise<SyncResult> {
       failedEvents: res.failedEvents,
       unreadableOrders: res.unreadableOrders,
       ...(res.error ? { error: res.error } : {}),
+      ...(manual ? { manual } : {}),
     };
     // A locked run is shown, not remembered: it says nothing about the last real check.
     if (res.status !== "locked") writeRecord(parent, rec);
@@ -180,7 +185,22 @@ async function runFor(parent: string): Promise<SyncResult> {
   }
 }
 
-function liveDeps(parent: string): SyncDeps {
+/**
+ * The confirmed current key generation for a "Check now" tap: whatever is held, else
+ * one confirm (the unlock, or the catch-up for a device behind). Null = not confirmed.
+ */
+async function confirmedSecrets(): Promise<{ current: string; all: string[] } | null> {
+  try {
+    const held = await auth.getAccountSecrets({ toSeal: true });
+    if (held) return held;
+    if (!(await auth.ensureAccountSetup({ identity: true }))) return null;
+    return await auth.getAccountSecrets({ toSeal: true });
+  } catch {
+    return null;
+  }
+}
+
+function liveDeps(parent: string, manual: boolean): SyncDeps {
   const current = () => auth.isConnected && auth.parent?.toLowerCase() === parent;
   return {
     organiser: parent,
@@ -197,9 +217,12 @@ function liveDeps(parent: string): SyncDeps {
       };
     },
     async sealKeys() {
-      // Sealing needs the confirmed current generation (#186); `silent` = never the catch-up
-      // prompt - an unconfirmed generation throws, which here just means no write.
-      const secrets = await auth.getAccountSecrets({ toSeal: true, silent: true }).catch(() => null);
+      // Sealing needs the confirmed current generation (#186). In the background `silent` =
+      // never the catch-up prompt (an unconfirmed generation throws: no write); a "Check
+      // now" tap may confirm it's them.
+      const secrets = manual
+        ? await confirmedSecrets()
+        : await auth.getAccountSecrets({ toSeal: true, silent: true }).catch(() => null);
       if (!secrets || !current()) return null;
       const keys = await listKeysOf(secrets, parent);
       return {

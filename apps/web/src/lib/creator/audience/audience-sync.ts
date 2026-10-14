@@ -624,6 +624,8 @@ export interface SyncRecord {
   failedEvents: number;
   unreadableOrders: number;
   error?: string;
+  /** The organiser pressed Check now (and so was asked to confirm it's them). */
+  manual?: boolean;
 }
 
 export function agoText(ms: number): string {
@@ -644,7 +646,10 @@ export function describeSync(rec: SyncRecord | null, running: boolean, now: numb
   if (!rec) return { text: "Not checked on this device yet.", warn: false };
   const ago = agoText(now - rec.at);
   if (rec.status === "locked") {
-    return { text: "Couldn't add new buyers on this device just now - press Check now to try again.", warn: true };
+    // In the background nothing is asked, so the buyers wait for a tap; after a tap, the confirm did not happen.
+    return rec.manual
+      ? { text: "Couldn't confirm it's you, so no one was added yet. Press Check now to try again.", warn: true }
+      : { text: "New buyers are waiting - press Check now to confirm it's you and add them.", warn: true };
   }
   if (rec.status === "failed") {
     const why = rec.error ? ` ${rec.error.trim().replace(/\.?$/, ".")}` : "";
