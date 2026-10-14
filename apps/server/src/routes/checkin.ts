@@ -25,6 +25,7 @@ import { Hono, type Context } from "hono";
 import {
   SCANNER_DEVICE_HEADER,
   SCANNER_OUTDATED_REASON,
+  SCANNER_WRONG_EVENT_REASON,
   type CheckinClaimRequest,
   type CheckinClaimResponse,
   type CheckinPack,
@@ -397,7 +398,7 @@ checkin.post("/:eventId/claim", async (c) => {
   const body = (await c.req.json().catch(() => null)) as Partial<CheckinClaimRequest> | null;
   const series = eventSeries(c.req.param("eventId"));
   if (series && typeof body?.seriesId === "string" && !series.has(body.seriesId)) {
-    return c.json({ ok: false, error: "This ticket is not for this event", reason: "wrong-event" }, 400);
+    return c.json({ ok: false, error: "This ticket is not for this event", reason: SCANNER_WRONG_EVENT_REASON }, 400);
   }
   const record: CheckinRecord = {
     seriesId: body?.seriesId as string,

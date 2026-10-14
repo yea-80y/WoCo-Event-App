@@ -13,10 +13,14 @@
 import {
   SCANNER_DEVICE_HEADER,
   SCANNER_OUTDATED_REASON,
+  SCANNER_WRONG_EVENT_REASON,
   type CheckinClaimRequest,
   type CheckinClaimResponse,
   type CheckinRecord,
 } from "@woco/shared";
+
+/** WoCo's copy of the event has no such ticket type: this scanner's list is older or newer than the server's. */
+export const WRONG_TICKET_TYPE_MESSAGE = "This ticket type isn't part of this event - tap ↻ to refresh, then scan again";
 
 /** Long enough for a slow 4G round trip, short enough that a queue notices. */
 export const CLAIM_TIMEOUT_MS = 4000;
@@ -60,6 +64,9 @@ export async function claimAdmission(call: ClaimCall): Promise<ClaimAnswer> {
 
     if (resp.status === 400 && body?.reason === SCANNER_OUTDATED_REASON) {
       return { kind: "outdated", message: "This scanner is updating - scan again in a moment" };
+    }
+    if (resp.status === 400 && body?.reason === SCANNER_WRONG_EVENT_REASON) {
+      return { kind: "cant-confirm", message: WRONG_TICKET_TYPE_MESSAGE };
     }
 
     if (resp.status === 401 || resp.status === 403) {

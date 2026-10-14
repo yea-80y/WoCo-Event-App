@@ -53,6 +53,9 @@ export const SCANNER_DEVICE_HEADER = "X-Scanner-Device";
  */
 export const SCANNER_OUTDATED_REASON = "outdated-client";
 
+/** `reason` on a claim for a ticket type the event does not have (as of its last pack). */
+export const SCANNER_WRONG_EVENT_REASON = "wrong-event";
+
 /** One check-in — the nullifier unit. Identity is (seriesId, edition). */
 export interface CheckinRecord {
   seriesId: string;
