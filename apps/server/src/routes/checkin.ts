@@ -54,6 +54,7 @@ import {
   bindSinglePassDevice,
 } from "../lib/checkin/store.js";
 import { slotOwners } from "../lib/checkin/slot-owners.js";
+import { eventSeries, ofEventSeries, rememberEventSeries } from "../lib/checkin/event-series.js";
 
 const MAX_ROSTER_CIPHERTEXT = 4 * 1024 * 1024;
 const MAX_SYNC_RECORDS = 5000;
@@ -148,10 +149,13 @@ checkinOrganiser.post("/:id/checkin-roster", requireAuth, async (c) => {
 });
 
 checkinOrganiser.get("/:id/checkin-status", requireAuth, async (c) => {
-  const { eventId, error } = await loadOwnedEvent(c, c.req.param("id"));
+  const { event, eventId, error } = await loadOwnedEvent(c, c.req.param("id"));
   if (error) return error;
 
-  const checkins = readCheckins(eventId);
+  // Records another event's scanner sent here before /sync checked series stay on
+  // disk, but never count: the event's own series are known right here.
+  const own = new Set(event.series.map((s) => s.seriesId));
+  const checkins = readCheckins(eventId).filter((r) => own.has(r.seriesId));
   const uniqueTickets = new Set(checkins.map((r) => `${r.seriesId} ${r.edition}`));
   const bySeries: Record<string, number> = {};
   for (const key of uniqueTickets) {
@@ -283,6 +287,7 @@ checkin.get("/:eventId/pack", async (c) => {
     const event = (auth.signer ? await getEventBySigner(eventId, auth.signer) : null)
       ?? await getEvent(eventId);
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
+    rememberEventSeries(eventId, event.series.map((s) => s.seriesId));
 
     const series: CheckinSeries[] = [];
 
@@ -331,7 +336,7 @@ checkin.get("/:eventId/pack", async (c) => {
       eventDate: event.startDate,
       series,
       roster: readRoster(eventId) ?? undefined,
-      checkins: readCheckins(eventId),
+      checkins: ofEventSeries(eventId, readCheckins(eventId)),
       doorMode: auth.mode,
       generatedAt: new Date().toISOString(),
     };
@@ -359,8 +364,13 @@ checkin.post("/:eventId/sync", async (c) => {
   if (outdated) return outdated;
 
   try {
-    const result = mergeCheckins(c.req.param("eventId"), body.checkins);
-    return c.json({ ok: true, data: result });
+    // Another event's records are dropped, not refused: a scanner from before
+    // per-event storage still gets its own event's records through.
+    const eventId = c.req.param("eventId");
+    const result = mergeCheckins(eventId, ofEventSeries(eventId, body.checkins));
+    const checkins = ofEventSeries(eventId, result.checkins);
+    const conflicts = ofEventSeries(eventId, result.conflicts);
+    return c.json({ ok: true, data: { checkins, conflicts } });
   } catch (err) {
     console.error("[checkin] sync could not be recorded:", err);
     return c.json({ ok: false, error: "Check-ins could not be recorded" }, 503);
@@ -385,6 +395,10 @@ checkin.post("/:eventId/claim", async (c) => {
   if (outdated) return outdated;
 
   const body = (await c.req.json().catch(() => null)) as Partial<CheckinClaimRequest> | null;
+  const series = eventSeries(c.req.param("eventId"));
+  if (series && typeof body?.seriesId === "string" && !series.has(body.seriesId)) {
+    return c.json({ ok: false, error: "This ticket is not for this event", reason: "wrong-event" }, 400);
+  }
   const record: CheckinRecord = {
     seriesId: body?.seriesId as string,
     edition: body?.edition as number,
