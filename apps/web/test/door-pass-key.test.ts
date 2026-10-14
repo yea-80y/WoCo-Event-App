@@ -2,23 +2,24 @@
  * The door pass's secret P (#186, v2): worked out from the account's current secret, the
  * event and the pass id - so it changes with each of them, and is never stored. One P in
  * the link gives the scanner both keys: the roster's, and the door entries key whose
- * public half the dashboard registers, signed by the account's content-feed signer.
+ * public half the dashboard registers - with proof it holds the account's ORDER key.
  *
  * MUTATION: register a key from another pass id and "the registered key is the one the
- * link opens" goes red; sign with anything but the feed signer and "the registration
- * verifies" goes red; encrypt the roster under P itself and "never under P itself" goes red;
- * issue the pass after the roster push and the panel test goes red.
+ * link opens" goes red; answer with anything but the order key and the vector goes red;
+ * skip the nonce-length check and "refuses a nonce that is not 32 bytes" goes red; drop a
+ * zeroing and "zeroes" goes red; encrypt the roster under P itself and "never under P
+ * itself" goes red; push the roster before the pass and the panel test goes red.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { base64UrlDecode, encodeDoorPassToken } from "@woco/shared";
-import { doorKeyRefOf, doorKeyRegistrationMessage, doorRosterKey } from "@woco/shared/checkin/door-keys";
+import { doorKeyRefOf, doorRosterKey } from "@woco/shared/checkin/door-keys";
 import { doorEntriesKeypair } from "@woco/shared/checkin/door-entries-key";
-import { deriveFeedSignerKey } from "@woco/shared/crypto/feed-signer";
-import { recoverPersonalSigner } from "@woco/shared/crypto/issuing";
+import { doorKeyProofSealContext, openBox, sealBox } from "@woco/shared/crypto/sealed-box";
+import { deriveXWingKeypairFromSeed } from "@woco/shared/crypto/xwing";
 import { hexToBytes } from "@noble/hashes/utils.js";
-import { doorPassRegistration, doorPassSecretB64url, newDoorPassId } from "../src/lib/scanner/door-pass-key.ts";
+import { doorPassProof, doorPassRegistration, doorPassSecretB64url, newDoorPassId } from "../src/lib/scanner/door-pass-key.ts";
 import { decryptRoster, encryptRoster } from "../src/lib/scanner/roster-crypto.ts";
 
 const S1 = "0x" + "11".repeat(32);
@@ -45,17 +46,55 @@ test("a new pass id is 16 random bytes, lowercase hex", () => {
   assert.notEqual(a, newDoorPassId());
 });
 
-test("the registration: the key the link opens, signed by the account's feed signer", () => {
+test("the registration: the key the link opens", () => {
   const jti = newDoorPassId();
-  const reg = doorPassRegistration(S1, EVENT, jti, deriveFeedSignerKey(S1).privKey);
+  const reg = doorPassRegistration(S1, EVENT, jti);
   assert.equal(reg.jti, jti);
   // What the scanner derives from the link must be exactly what was registered.
   const p = base64UrlDecode(doorPassSecretB64url(S1, EVENT, token(jti)));
   const scannerKey = doorEntriesKeypair(p).publicKey;
   assert.equal(doorKeyRefOf(hexToBytes(reg.doorKey)), doorKeyRefOf(scannerKey), "the registered key is the one the link opens");
-  const msg = doorKeyRegistrationMessage(EVENT, jti, doorKeyRefOf(scannerKey));
-  assert.equal(recoverPersonalSigner(msg, reg.sig), deriveFeedSignerKey(S1).address, "the registration verifies");
-  assert.notEqual(recoverPersonalSigner(msg, doorPassRegistration(S1, EVENT, jti, deriveFeedSignerKey(S2).privKey).sig), deriveFeedSignerKey(S1).address);
+  assert.equal(reg.doorKeyRef, doorKeyRefOf(scannerKey));
+});
+
+const V = JSON.parse(readFileSync(new URL("../../../packages/shared/test/keyring/keyring-v1-vectors.json", import.meta.url), "utf8"));
+const PV = V.doorPass.proof;
+const proofFields = () => ({ eventId: V.doorPass.eventId, parent: PV.parent, jti: V.doorPass.passId, mode: PV.mode, doorKeyRef: V.doorPass.entriesKeyRef });
+async function vectorChallenge(nonce = hexToBytes(PV.nonce)) {
+  const pk = deriveXWingKeypairFromSeed(V.secret).publicKey;
+  return { challengeId: PV.challengeId, box: await sealBox(pk, nonce, doorKeyProofSealContext(V.doorPass.eventId, PV.parent, PV.challengeId)) };
+}
+
+test("the proof: opens the challenge with the current order key and gives the vector's answer", async () => {
+  assert.equal(await doorPassProof({ current: V.secret }, await vectorChallenge(), proofFields()), PV.proof);
+  await assert.rejects(doorPassProof({ current: "22".repeat(32) }, await vectorChallenge(), proofFields()), undefined, "another account's order key");
+});
+
+test("the proof zeroes the order key and the nonce, whatever happens", async () => {
+  const seen: Uint8Array[] = [];
+  const spy = async (sk: Uint8Array, box: unknown, ctx: { info: string; aad: string }) => {
+    seen.push(sk);
+    const nonce = await openBox(sk, box, ctx);
+    seen.push(nonce);
+    return nonce;
+  };
+  assert.equal(await doorPassProof({ current: V.secret }, await vectorChallenge(), proofFields(), spy), PV.proof);
+  assert.equal(seen.length, 2);
+  for (const b of seen) assert.ok(b.every((x) => x === 0), "zeroed");
+  seen.length = 0;
+  await assert.rejects(doorPassProof({ current: V.secret }, await vectorChallenge(new Uint8Array(31)), proofFields(), spy), /didn't check out/);
+  for (const b of seen) assert.ok(b.every((x) => x === 0), "zeroed on refusal too");
+});
+
+test("the proof refuses a nonce that is not 32 bytes", async () => {
+  for (const len of [0, 31, 33, 64]) {
+    await assert.rejects(doorPassProof({ current: V.secret }, await vectorChallenge(new Uint8Array(len).fill(7)), proofFields()), /didn't check out/, String(len));
+  }
+});
+
+test("the key module carries no feed-signer or personal-sign path", () => {
+  const src = readFileSync(new URL("../src/lib/scanner/door-pass-key.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(src, /feed-signer|deriveFeedSignerKey|FeedSigner|personal|signPersonalMessage|recoverPersonalSigner|crypto\/issuing/);
 });
 
 test("one secret in the link opens the roster the panel encrypted, and no other does", async () => {
@@ -79,14 +118,15 @@ test("the roster is sealed under P's roster-key child, never under P itself", as
   await assert.rejects(open(p));
 });
 
-test("the panel issues the pass with its registration before the roster, stores no secret, and refuses a pass from older keys", () => {
+test("the panel issues the pass with its proof before the roster, stores no secret, and refuses a pass from older keys", () => {
   const panel = readFileSync(new URL("../src/lib/creator/dashboard/CheckinPanel.svelte", import.meta.url), "utf8");
   const gen = panel.slice(panel.indexOf("async function generatePass("), panel.indexOf("async function refreshRoster("));
-  assert.match(gen, /const feedSigner = await auth\.getContentFeedSigner\(\);/, "the signer comes from the auth store");
-  assert.match(gen, /await issueDoorPass\(eventId, passMode, doorPassRegistration\(keys\.current, eventId, newDoorPassId\(\), feedSigner\.privKey\)\)/);
-  assert.ok(gen.indexOf("await issueDoorPass(") < gen.indexOf("await pushCheckinRoster("), "pass first");
+  assert.match(gen, /await issueDoorPassWithProof\(\s*\{ eventId, parent, mode: passMode, secrets: keys \},\s*\{ challenge: requestDoorPassChallenge, issue: issueDoorPass \},\s*\)/);
+  assert.ok(gen.indexOf("await issueDoorPassWithProof(") < gen.indexOf("await pushCheckinRoster("), "pass first");
+  assert.match(gen, /const parent = auth\.parent\?\.toLowerCase\(\);/);
+  assert.doesNotMatch(panel, /getContentFeedSigner|feedSigner/, "no feed-signer path");
   assert.match(gen, /stored = \{ token: issued\.token, exp: issued\.exp, mode: issued\.mode, gen: keys\.gen,/);
-  assert.doesNotMatch(panel, /stored = \{[^}]*(url|passSecret|doorKey|sig)/, "the link, its secret and the registration are never stored");
+  assert.doesNotMatch(panel, /stored = \{[^}]*(url|passSecret|doorKey|proof|nonce)/, "the link, its secret and the proof are never stored");
   assert.doesNotMatch(panel, /generateRosterKeyB64url|getRandomValues/);
   const refresh = panel.slice(panel.indexOf("async function refreshRoster("), panel.indexOf("async function copyLink("));
   assert.match(refresh, /if \(keys\.gen !== stored\.gen\) \{[\s\S]*?throw new Error\(KEYS_CHANGED\);/);

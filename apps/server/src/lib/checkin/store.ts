@@ -118,7 +118,7 @@ function readPasses(): PassRegistry {
  * jti, which immediately invalidates every previously issued token.
  *
  * `door` is the pass id the organiser's device chose and the door entries key it
- * registered (checked by `checkDoorKeyRegistration` first); without it the id is
+ * registered (with the order-key proof, `redeemDoorPassChallenge`, first); without it the id is
  * random and nothing is ever sealed to the pass.
  */
 export function issueDoorPass(

@@ -11,7 +11,8 @@ import type { Hex0x } from "../types.js";
 //   `onChainEventId` is rejected — there is no owner to recover against.
 // - The door-pass URL fragment carries one secret P, never sent to the server.
 //   Two keys hang off it (checkin/door-keys.ts): the roster's AES-GCM key, and an
-//   X-Wing key whose PUBLIC half is registered with the pass, so the server can seal
+//   X-Wing key whose PUBLIC half is registered with the pass (with proof the account's
+//   order key is held, not just a session), so the server can seal
 //   each later sale's email and card name for the door (door entries) and never
 //   read them back.
 // - A ticket whose sale was refunded in full (#645) still verifies — the chain
@@ -155,15 +156,24 @@ export interface DoorEntriesPage {
   log: DoorEntryLogItem[];
 }
 
+/** POST /api/events/:id/door-pass/challenge - a nonce sealed to the account's order key. */
+export interface DoorPassChallenge {
+  challengeId: string;
+  box: SealedBoxV2;
+  /** Unix seconds; one use, and a newer challenge for the same event replaces it. */
+  exp: number;
+}
+
 /** POST /api/events/:id/door-pass - issue a pass and register its door entries key. */
 export interface DoorPassIssueRequest {
-  mode?: DoorMode;
+  mode: DoorMode;
   /** `DOOR_PASS_ID_RE`: chosen by the organiser's device, so P exists before the pass. */
   jti: string;
   /** The door entries X-Wing public key, 1216 bytes as hex. */
   doorKey: string;
-  /** The account's content-feed signer over `doorKeyRegistrationMessage`. */
-  sig: string;
+  challengeId: string;
+  /** `doorKeyProof` under the challenge's nonce: the order key, not a session, asked. */
+  proof: string;
 }
 
 export interface CheckinSyncRequest {

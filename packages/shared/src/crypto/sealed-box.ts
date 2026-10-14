@@ -102,6 +102,20 @@ export function doorEntrySealContext(eventId: string, passId: string, seriesId: 
   return { info: DOOR_ENTRY_SEAL_INFO, aad: `${DOOR_ENTRY_SEAL_INFO}:${eventId}:${passId}:${seriesId}:${edition}` };
 }
 
+/** HPKE info for a door-key proof CHALLENGE (a nonce sealed to the account's order key). FROZEN. */
+export const DOOR_KEY_PROOF_SEAL_INFO = "woco/door-key-proof/v1";
+
+/**
+ * A challenge is bound to its event, its account and itself: opened under any other it
+ * fails its tag, so a nonce cannot be carried to another pass request.
+ */
+export function doorKeyProofSealContext(eventId: string, parent: string, challengeId: string): SealContext {
+  if (!/^[0-9A-Za-z_-]{1,128}$/.test(eventId) || !/^0x[0-9a-f]{40}$/.test(parent) || !/^[0-9A-Za-z_-]{1,128}$/.test(challengeId)) {
+    throw new Error("door key proof seal context: malformed event, account or challenge id");
+  }
+  return { info: DOOR_KEY_PROOF_SEAL_INFO, aad: `${DOOR_KEY_PROOF_SEAL_INFO}:${eventId}:${parent}:${challengeId}` };
+}
+
 const suite = new CipherSuite({ kem: new XWingKem(), kdf: new HkdfSha256(), aead: new Aes256Gcm() });
 
 function toBytes(key: Uint8Array | string): Uint8Array {

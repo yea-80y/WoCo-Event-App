@@ -5,15 +5,14 @@
  * never sees the account's new secret, cannot work out P for a pass made after.
  *
  * The pass id is chosen HERE, so P and its door entries key exist before the server is
- * asked to issue the pass: one request issues it and registers the key, signed by the
- * account's content-feed signer (a login session alone cannot sign that). The signer
- * comes from the auth store, the one place it is derived.
+ * asked to issue the pass. Issuing takes proof that this device holds the account's
+ * current ORDER key (`doorPassProof`): the server seals a nonce to it, and gets back only
+ * an HMAC under that nonce. A login session alone cannot answer.
  */
-import { base64UrlEncode, decodeDoorPassToken } from "@woco/shared";
+import { base64UrlEncode, decodeDoorPassToken, type DoorPassChallenge } from "@woco/shared";
 import { doorPassSecret } from "@woco/shared/keyring/account-secret";
-import { doorKeyRefOf, doorKeyRegistrationMessage } from "@woco/shared/checkin/door-keys";
+import { doorKeyProof, doorKeyRefOf, type DoorKeyProofFields } from "@woco/shared/checkin/door-keys";
 import { doorEntriesKeypair } from "@woco/shared/checkin/door-entries-key";
-import { signPersonalMessage } from "@woco/shared/crypto/issuing";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 /** A fresh pass id: 16 random bytes, lowercase hex (`DOOR_PASS_ID_RE`). */
@@ -35,25 +34,46 @@ export function doorPassSecretB64url(secretHex: string, eventId: string, token: 
   }
 }
 
-/** What a new pass sends to be issued: its id, its door entries public key, and the
- *  content-feed signer's signature over them. Nothing secret leaves the device. */
-export function doorPassRegistration(
-  secretHex: string,
-  eventId: string,
-  passId: string,
-  feedSignerPrivKey: string,
-): { jti: string; doorKey: string; sig: string } {
+/** A new pass's id and door entries public key. Nothing secret leaves the device. */
+export function doorPassRegistration(secretHex: string, eventId: string, passId: string): { jti: string; doorKey: string; doorKeyRef: string } {
   const secret = hexToBytes(secretHex.replace(/^0x/, ""));
   const p = doorPassSecret(secret, eventId, passId);
-  const priv = hexToBytes(feedSignerPrivKey.replace(/^0x/, ""));
   try {
     const kp = doorEntriesKeypair(p);
     kp.secretKey.fill(0);
-    const sig = signPersonalMessage(doorKeyRegistrationMessage(eventId, passId, doorKeyRefOf(kp.publicKey)), priv);
-    return { jti: passId, doorKey: bytesToHex(kp.publicKey), sig };
+    return { jti: passId, doorKey: bytesToHex(kp.publicKey), doorKeyRef: doorKeyRefOf(kp.publicKey) };
   } finally {
     p.fill(0);
     secret.fill(0);
-    priv.fill(0);
+  }
+}
+
+type OpenBox = (secretKey: Uint8Array, box: unknown, ctx: { info: string; aad: string }) => Promise<Uint8Array>;
+
+/**
+ * Answer a door-pass challenge: open its nonce with the account's current order key and
+ * return HMAC-SHA256(nonce, transcript). The nonce and the key are zeroed before this
+ * returns, whatever happens; the nonce is never sent.
+ */
+export async function doorPassProof(
+  secrets: { current: string },
+  challenge: Pick<DoorPassChallenge, "challengeId" | "box">,
+  fields: Omit<DoorKeyProofFields, "challengeId">,
+  open?: OpenBox,
+): Promise<string> {
+  // Lazy, like every X-Wing importer (xwing-lazy-load.test.ts): only making a pass needs it.
+  const [sealed, { deriveXWingKeypairFromSeed }] = await Promise.all([
+    import("@woco/shared/crypto/sealed-box"),
+    import("@woco/shared/crypto/xwing"),
+  ]);
+  const { secretKey } = deriveXWingKeypairFromSeed(secrets.current);
+  let nonce: Uint8Array | null = null;
+  try {
+    nonce = await (open ?? sealed.openBox)(secretKey, challenge.box, sealed.doorKeyProofSealContext(fields.eventId, fields.parent, challenge.challengeId));
+    if (nonce.length !== 32) throw new Error("This door pass request didn't check out - reload the page and try again.");
+    return doorKeyProof(nonce, { ...fields, challengeId: challenge.challengeId });
+  } finally {
+    nonce?.fill(0);
+    secretKey.fill(0);
   }
 }

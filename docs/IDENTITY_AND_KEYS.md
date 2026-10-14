@@ -690,7 +690,8 @@ This device's own passkey leaving needs no new keys.
 from the ring's signer and sold under its order key whatever a feed says; a box declares the key it
 was sealed to and a stale one is refused `ORDER_KEY_STALE`, naming the current key (the page re-seals
 once). Unreadable keys pause sales, never guess. Door passes record their generation; older ones are
-revoked, and a door entries key registers only under the ring's (or the record's) feed signer. An event with no create-time record of its signer is not sold - publishing it again gives it one. A chain read below
+revoked, and a door pass registers its door entries key only with proof of the CURRENT order key
+(a challenge sealed to it, answered by HMAC - TICKETING.md §5), never on a session or the cached feed signer. An event with no create-time record of its signer is not sold - publishing it again gives it one. A chain read below
 the highest generation the server has seen pauses that organiser's sales until it catches up
 (`.data/keyring-high-water.json`) - never the remembered ring, since rings are unsigned.
 

@@ -1,7 +1,7 @@
 /** Organiser-side check-in API — door pass issue, roster push, live status. */
 
 import { authPost, authGet } from "./client.js";
-import type { DoorMode, DoorPassIssueRequest, EncryptedRoster } from "@woco/shared";
+import type { DoorMode, DoorPassChallenge, DoorPassIssueRequest, EncryptedRoster } from "@woco/shared";
 
 export interface DoorPassIssueResult {
   token: string;
@@ -15,15 +15,23 @@ export interface CheckinStatus {
   lastCheckinAt: string | null;
 }
 
-/** Issue a pass and register its door entries key (`doorPassRegistration`) in one request. */
-export async function issueDoorPass(
-  eventId: string,
-  mode: DoorMode,
-  registration: Omit<DoorPassIssueRequest, "mode">,
-): Promise<DoorPassIssueResult> {
-  const body: DoorPassIssueRequest = { mode, ...registration };
-  const resp = await authPost<DoorPassIssueResult>(`/api/events/${eventId}/door-pass`, { ...body });
-  if (!resp.ok || !resp.data) throw new Error(resp.error ?? "Failed to issue door pass");
+/** Step 1 of issuing a pass: a nonce sealed to the account's order key. */
+export async function requestDoorPassChallenge(eventId: string): Promise<DoorPassChallenge> {
+  const resp = await authPost<DoorPassChallenge>(`/api/events/${eventId}/door-pass/challenge`, {});
+  if (!resp.ok || !resp.data) throw new Error(resp.error ?? "Couldn't start the door pass");
+  return resp.data;
+}
+
+/**
+ * Step 2: issue the pass and register its door entries key, with the order-key proof.
+ * A refusal carries the server's `reason` ("challenge-expired": ask for a new challenge).
+ */
+export async function issueDoorPass(eventId: string, request: DoorPassIssueRequest): Promise<DoorPassIssueResult> {
+  const resp = await authPost<DoorPassIssueResult>(`/api/events/${eventId}/door-pass`, { ...request });
+  if (!resp.ok || !resp.data) {
+    const reason = (resp as { reason?: unknown }).reason;
+    throw Object.assign(new Error(resp.error ?? "Failed to issue door pass"), typeof reason === "string" ? { reason } : {});
+  }
   return resp.data;
 }
 

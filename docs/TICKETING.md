@@ -249,8 +249,10 @@ URL**. Whether it can admit offline depends on the pass's door mode (below).
 
 ```
 Organiser (session-authed):
+  POST /api/events/:id/door-pass/challenge  a nonce sealed to the account's order key (120 s,
+                                            one per account + event, 10/min 60/h per account)
   POST /api/events/:id/door-pass       issue or rotate the event's door pass AND register its
-                                       door entries key (feed-signer signed)
+                                       door entries key - needs the order-key proof
   POST /api/events/:id/checkin-roster  store AES-GCM roster CIPHERTEXT — the key
                                        is never sent to the server
   GET  /api/events/:id/checkin-status  live counts for the dashboard
@@ -269,9 +271,14 @@ derived, never stored (#186), so any of the organiser's passkeys can show the pa
 roster. P is no key itself: the roster's AES-GCM key (`woco/door-pass/v2/roster-aead`) and an X-Wing
 **door entries key** (`woco/door-pass/v2/entries-kem`) are both HKDF children (`shared/checkin/`). The
 dashboard picks the jti, so it issues the pass and registers the door entries public key in one
-request, signed by the account's content-feed signer (`lib/checkin/door-key.ts`): a stolen session
-alone cannot choose who later buyers are sealed to, and a jti is never reused. A passkey removal
-moves the account to a new secret, and the server revokes passes from the older generation.
+request - after proving it holds the account's CURRENT order key (`lib/checkin/door-key.ts`): the
+challenge seals 32 random bytes to that key (`woco/door-key-proof/v1`, AAD = event, account,
+challenge id) and the pass request carries HMAC-SHA256(nonce, transcript of event, account,
+challenge, jti, mode, door key ref), checked over the server's own event and account. The challenge
+is single-use and dies with a restart (the page asks once more). Not the content-feed signer: it is
+cached beside the session with no expiry, so it proves no unlock. So a stolen session alone issues
+no pass and cannot choose who later buyers are sealed to, and a jti is never reused. A passkey
+removal moves the account to a new secret, and the server revokes passes from the older generation.
 
 **Door entries - the live attendee list.** After the ticket email, fulfilment seals each issued
 ticket's email and Stripe card name (`woco/door-entry/v1`, AAD = event, jti, series, edition) to the

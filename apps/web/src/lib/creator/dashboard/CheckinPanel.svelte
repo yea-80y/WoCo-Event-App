@@ -5,8 +5,9 @@
    * keys and the pass's id (#186) - never stored, so this device keeps only the
    * pass token; the roster is encrypted under a key derived from it and uploaded as
    * ciphertext only, and the secret travels solely in the door-pass URL fragment.
-   * Making a pass also registers its door entries key, signed with the account's
-   * keys, so each later sale's email and card name reach the door phones sealed.
+   * Making a pass also registers its door entries key, with proof that this device
+   * holds the account's order key (a session alone cannot), so each later sale's
+   * email and card name reach the door phones sealed.
    * Regenerating the pass rotates the server jti and revokes every previously
    * provisioned device, and so does a change of the account's keys.
    *
@@ -18,9 +19,10 @@
   import QRCode from "qrcode";
   import { buildDoorPassUrl, type DoorMode, type RosterEntry } from "@woco/shared";
   import type { EventFeed, OrderEntry } from "@woco/shared";
-  import { issueDoorPass, pushCheckinRoster, getCheckinStatus, type CheckinStatus } from "../../api/checkin.js";
+  import { issueDoorPass, pushCheckinRoster, getCheckinStatus, requestDoorPassChallenge, type CheckinStatus } from "../../api/checkin.js";
+  import { issueDoorPassWithProof } from "./door-pass-issue.js";
   import { encryptRoster } from "../../scanner/roster-crypto.js";
-  import { doorPassRegistration, doorPassSecretB64url, newDoorPassId } from "../../scanner/door-pass-key.js";
+  import { doorPassSecretB64url } from "../../scanner/door-pass-key.js";
   import { auth } from "../../auth/auth-store.svelte.js";
 
   interface DecryptedOrder {
@@ -159,8 +161,9 @@
     }
   }
 
-  /** First-time setup AND regenerate: new pass + its secret (old devices die). The pass
-   *  is issued FIRST, with its door entries key - the roster is encrypted under it. */
+  /** First-time setup AND regenerate: new pass + its secret (old devices die). Challenge,
+   *  then the pass with its door entries key and the order-key proof, then the roster
+   *  encrypted under the pass secret. */
   async function generatePass(passMode: DoorMode): Promise<void> {
     working = true;
     workError = null;
@@ -170,10 +173,13 @@
       await auth.ensureOrganiserUnlock();
       if (needsDecrypt) await onEnsureDecrypted();
       const keys = await currentKeys();
-      const feedSigner = await auth.getContentFeedSigner();
-      if (!feedSigner) throw new Error("This account can't make door passes - sign in with your passkey or email.");
+      const parent = auth.parent?.toLowerCase();
+      if (!parent) throw new Error("Sign in again, then try again.");
 
-      const issued = await issueDoorPass(eventId, passMode, doorPassRegistration(keys.current, eventId, newDoorPassId(), feedSigner.privKey));
+      const issued = await issueDoorPassWithProof(
+        { eventId, parent, mode: passMode, secrets: keys },
+        { challenge: requestDoorPassChallenge, issue: issueDoorPass },
+      );
       const passSecret = doorPassSecretB64url(keys.current, eventId, issued.token);
       const roster = await encryptRoster(buildRosterEntries(), passSecret);
       await pushCheckinRoster(eventId, roster);

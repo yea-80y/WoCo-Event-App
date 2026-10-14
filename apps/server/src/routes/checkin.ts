@@ -2,7 +2,9 @@
  * Door check-in API.
  *
  * Organiser-authed (session delegation, mounted under /api/events):
- *   POST /:id/door-pass       issue/rotate the event's door pass + register its door key
+ *   POST /:id/door-pass/challenge  a nonce sealed to the account's order key (door-key.ts)
+ *   POST /:id/door-pass       issue/rotate the event's door pass + register its door key,
+ *                             with the order-key proof
  *   POST /:id/checkin-roster  store AES-GCM roster ciphertext (key never sent)
  *   GET  /:id/checkin-status  live counts for the dashboard
  *
@@ -53,7 +55,8 @@ import {
   bindSinglePassDevice,
   doorPassIdUsed,
 } from "../lib/checkin/store.js";
-import { checkDoorKeyRegistration } from "../lib/checkin/door-key.js";
+import { createDoorPassChallenge, redeemDoorPassChallenge } from "../lib/checkin/door-key.js";
+import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
 import { DoorEntriesUnreadableError, readDoorEntriesPage, startDoorEntries } from "../lib/checkin/door-entries.js";
 import { mapWithConcurrency, SLOT_READ_CONCURRENCY } from "../lib/util/concurrency.js";
 
@@ -96,6 +99,29 @@ async function loadOwnedEvent(c: Context<AppEnv>, eventId: string) {
   return { event, eventId };
 }
 
+/** Per account: a challenge costs an order-key fetch (cached) and an X-Wing seal. */
+const doorPassChallenges = new SlidingWindowLimiter([
+  { limit: 10, windowMs: 60_000 },
+  { limit: 60, windowMs: 3_600_000 },
+]);
+
+checkinOrganiser.post("/:id/door-pass/challenge", requireAuth, async (c) => {
+  const { eventId, error } = await loadOwnedEvent(c, c.req.param("id"));
+  if (error) return error;
+  const parent = c.get("parentAddress").toLowerCase();
+  if (!doorPassChallenges.allow(parent)) {
+    return c.json({ ok: false, error: "Too many attempts - wait a minute and try again" }, 429);
+  }
+  try {
+    const out = await createDoorPassChallenge(eventId, parent, await eventKeys(eventId));
+    if (!out.ok) return c.json({ ok: false, error: out.error }, out.status);
+    return c.json({ ok: true, data: out.data });
+  } catch (err) {
+    console.error("[checkin] door-pass challenge failed:", err);
+    return c.json({ ok: false, error: "Couldn't start the door pass - try again" }, 500);
+  }
+});
+
 checkinOrganiser.post("/:id/door-pass", requireAuth, async (c) => {
   const { event, eventId, error } = await loadOwnedEvent(c, c.req.param("id"));
   if (error) return error;
@@ -106,17 +132,20 @@ checkinOrganiser.post("/:id/door-pass", requireAuth, async (c) => {
     (Number.isFinite(endMs) ? Math.max(endMs, Date.now()) + 24 * 3600_000 : Date.now() + 7 * 24 * 3600_000) / 1000,
   );
 
-  // Anything but an explicit "single" is "several": the mode that cannot admit
-  // a ticket twice is the default, including for clients that send no mode.
-  const body = c.get("body") as { mode?: unknown; jti?: unknown; doorKey?: unknown; sig?: unknown } | undefined;
-  const mode: DoorMode = body?.mode === "single" ? "single" : "several";
-
-  // The door entries key, signed by the account's content-feed signer: a session
-  // alone must not be able to choose who later buyers are sealed to. Its generation
-  // is the pass's (#186): a pass made before a passkey is removed stops working when
-  // the account's keys move on.
-  const reg = checkDoorKeyRegistration(eventId, body, await eventKeys(eventId), (jti) => doorPassIdUsed(eventId, jti));
-  if (!reg.ok) return c.json({ ok: false, error: reg.error }, reg.status);
+  // The pass registers the door entries key every later buyer is sealed to, so it
+  // needs the order-key proof (lib/checkin/door-key.ts): a session alone issues no
+  // pass. The mode is part of what the proof covers. The pass's generation (#186): a
+  // pass made before a passkey is removed stops working when the account's keys move on.
+  const body = c.get("body") as Record<string, unknown> | undefined;
+  const reg = redeemDoorPassChallenge(
+    eventId,
+    c.get("parentAddress"),
+    body,
+    await eventKeys(eventId),
+    (jti) => doorPassIdUsed(eventId, jti),
+  );
+  if (!reg.ok) return c.json({ ok: false, error: reg.error, ...(reg.reason ? { reason: reg.reason } : {}) }, reg.status);
+  const mode: DoorMode = reg.mode;
 
   try {
     // Stamp the content-feed signer into the pass record — the organiser is

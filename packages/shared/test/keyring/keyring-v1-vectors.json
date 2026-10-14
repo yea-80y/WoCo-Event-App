@@ -8,11 +8,18 @@
     "secret": "243381c2a955a24d07cb5cae3f0f3af6a258ce0b8afa3684fb248fef6b63fcea",
     "rosterKey": "6e11beff850fedef428dbfbb01eef7c6ade021c8a21d29212278b1f59877451d",
     "entriesKeyRef": "d7247323cc9c29bbb7456b71ca15049959730f70621b2696b9fcade50b20cd40",
-    "registration": "woco/door-key/v1\n3f2a9c1e-0000-4000-8000-000000000001\n0123456789abcdef0123456789abcdef\nd7247323cc9c29bbb7456b71ca15049959730f70621b2696b9fcade50b20cd40\n",
-    "registrationSig": "0xff2125ec20b637f638705a14fed3c175c16b9d15d066719579b19f9d4721e53e683b0499e47379516d60f3d46a30a596d800d9bc64c43e9b5ca9a9f5487a4f461c",
     "entrySeriesId": "5d6e7f80-0000-4000-8000-000000000002",
     "entryEdition": 3,
-    "entryAad": "woco/door-entry/v1:3f2a9c1e-0000-4000-8000-000000000001:0123456789abcdef0123456789abcdef:5d6e7f80-0000-4000-8000-000000000002:3"
+    "entryAad": "woco/door-entry/v1:3f2a9c1e-0000-4000-8000-000000000001:0123456789abcdef0123456789abcdef:5d6e7f80-0000-4000-8000-000000000002:3",
+    "proof": {
+      "nonce": "7777777777777777777777777777777777777777777777777777777777777777",
+      "parent": "0xabababababababababababababababababababab",
+      "challengeId": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "mode": "single",
+      "transcript": "woco/door-key-proof/v1\n3f2a9c1e-0000-4000-8000-000000000001\n0xabababababababababababababababababababab\n0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n0123456789abcdef0123456789abcdef\nsingle\nd7247323cc9c29bbb7456b71ca15049959730f70621b2696b9fcade50b20cd40\n",
+      "proof": "63344654bfdcc1bf1c880970b8a378e01d64523368ba1f6cbede620ffad1d904",
+      "challengeAad": "woco/door-key-proof/v1:3f2a9c1e-0000-4000-8000-000000000001:0xabababababababababababababababababababab:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+    }
   },
   "prf": "0x2222222222222222222222222222222222222222222222222222222222222222",
   "boxKeyRef": "0xa3758cbd8e3b521762a5bb2669ba5f0419062e417724a88328fc8c1a45f7453a",
