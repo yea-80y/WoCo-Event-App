@@ -3,7 +3,8 @@
  * order count while the page is in view, reads the full list only when the count
  * moves, and opens only the orders it has not opened yet - never asking for keys.
  *
- * Pure rules from `live-orders.ts`.
+ * Pure rules from `live-orders.ts`; the Svelte wiring by SOURCE SCAN (Node cannot
+ * mount Svelte components).
  *
  * MUTATION: drop the visibility check, the in-flight guard, the count gate, the
  * box comparison or the session gate, or open every order on each poll, and a
@@ -12,6 +13,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import type { OrderEntry } from "@woco/shared";
 import {
   OpenedOrders,
@@ -219,4 +221,47 @@ test("leaving the page stops everything, including a check already under way", {
   assert.equal(state.refreshCalls, 0, "no list shown on a page that is gone");
   assert.equal(state.intervals.size, 0);
   assert.equal(state.listeners.size, 0);
+});
+
+// ── the dashboard wiring (source scan) ──────────────────────────────────────
+
+const DASH = readFileSync(new URL("../src/lib/creator/dashboard/Dashboard.svelte", import.meta.url), "utf-8");
+const fnBody = (name: string) => {
+  const start = DASH.indexOf(name);
+  assert.notEqual(start, -1, `${name} is gone`);
+  return DASH.slice(start, DASH.indexOf("\n  }\n", start));
+};
+
+test("polls the cheap count, gated on a session already here", () => {
+  assert.match(DASH, /count: \(\) => getEventOrderCount\(id\)/);
+  assert.match(DASH, /canRequest: \(\) => auth\.isConnected && auth\.hasSession/);
+});
+
+test("a poll opens orders without ever asking", () => {
+  const body = fnBody("async function refreshOrders");
+  assert.match(body, /void decryptCurrent\(\);/);
+  assert.doesNotMatch(body, /decryptCurrent\(true\)|ensureOrganiserUnlock|ensureAccountSetup/);
+});
+
+test("each run opens only what is not open yet", () => {
+  const body = fnBody("async function decryptOnce");
+  assert.match(body, /opened\.unopened\(ordersResponse\.orders\)/);
+  assert.doesNotMatch(body, /ordersResponse\.orders\.map\(/);
+});
+
+test("the list and its display map change together", () => {
+  const body = fnBody("function showOrders");
+  assert.match(body, /ordersResponse = fresh;\s*decryptedOrders = opened\.remap\(fresh\.orders\);/);
+  assert.doesNotMatch(DASH.replace(body, ""), /ordersResponse = (fresh|freshOrders|ordersSWR\.cached)/);
+});
+
+test("locking again clears what was opened", () => {
+  assert.match(DASH, /opened\.clear\(\);\s*decryptedOrders = new Map\(\);\s*ordersLocked = true;/);
+});
+
+test("polling starts from the server's list, never from the cached paint", () => {
+  assert.match(DASH, /showOrders\(freshOrders\);\s*ordersFromServer = true;/);
+  assert.match(DASH, /const liveReady = \$derived\(ordersFromServer && !error && !!event\)/);
+  const cachedPaint = DASH.slice(DASH.indexOf("showOrders(ordersSWR.cached)"), DASH.indexOf("// ── Step 2"));
+  assert.doesNotMatch(cachedPaint, /ordersFromServer = true/);
 });

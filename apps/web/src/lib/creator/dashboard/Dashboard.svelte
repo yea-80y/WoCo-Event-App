@@ -2,7 +2,7 @@
   import type { EventFeed, OrderEntry, OrderField } from "@woco/shared";
   import { cancelEvent, getEvent } from "../../api/events.js";
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
-  import { getEventOrders, webhookRelay, type EventOrdersResponse } from "../../api/events.js";
+  import { getEventOrderCount, webhookRelay, type EventOrdersResponse } from "../../api/events.js";
   import { startBroadcast, pollBroadcast, type BroadcastJobStatus } from "../../api/broadcasts.js";
   import BroadcastProgress from "../audience/BroadcastProgress.svelte";
   import { buildEventBroadcastHtml } from "./event-broadcast-email.js";
@@ -17,12 +17,13 @@
   import UnlockPanel from "../../components/auth/UnlockPanel.svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { navigate } from "../../router/router.svelte.js";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import StripeConnect from "./StripeConnect.svelte";
   import CheckinPanel from "./CheckinPanel.svelte";
   import EditEventPanel from "../events/EditEventPanel.svelte";
   import CancellationStatus from "./CancellationStatus.svelte";
   import { cancellationNoticeTemplate } from "./cancellation-notice.js";
+  import { OpenedOrders, ORDERS_POLL_MS, createOrdersPoller } from "./live-orders.js";
   import { cacheSet, cacheDel, cacheKey, TTL } from "../../cache/cache.js";
 
   interface Props {
@@ -42,6 +43,8 @@
   // The account keys are locked on this device (#746 fix 1): sales still show, and
   // the attendee details wait for one tap rather than asking on page open.
   let ordersLocked = $state(false);
+  // The server's list is on screen (not just the cached paint): live polling may start.
+  let ordersFromServer = $state(false);
 
   let activeTab = $state<"orders" | "broadcast" | "payments" | "door" | "edit">("orders");
 
@@ -447,15 +450,34 @@
   // Lifecycle
   // ---------------------------------------------------------------------------
 
+  /** What this page has opened, by ticket - so a poll opens only the new orders. */
+  const opened = new OpenedOrders<DecryptedOrder>(() => ({}));
+  let decryptChain: Promise<void> = Promise.resolve();
+
   /**
-   * Decrypt the currently-loaded orders with the organiser's seed-derived key.
-   * Replaces the displayed map wholesale. Safe to call multiple times (e.g.
-   * once for cached data, again when fresh arrives).
+   * Show a freshly read list. The display map is rebuilt in the same step from
+   * what is already open: it is keyed by position, and a sale in an earlier
+   * series shifts every later one.
+   */
+  function showOrders(fresh: EventOrdersResponse): void {
+    ordersResponse = fresh;
+    decryptedOrders = opened.remap(fresh.orders);
+  }
+
+  /**
+   * Open the loaded orders with the organiser's seed-derived key - only those not
+   * already open. Runs one at a time: a poll landing mid-run queues behind it.
    *
    * `prompt` only from a tap: on page open a locked seed shows the unlock panel
    * instead of a passkey or wallet sheet nobody asked for (#746 fix 1).
    */
-  async function decryptCurrent(prompt = false): Promise<void> {
+  function decryptCurrent(prompt = false): Promise<void> {
+    const run = decryptChain.then(() => decryptOnce(prompt));
+    decryptChain = run.catch(() => {});
+    return run;
+  }
+
+  async function decryptOnce(prompt: boolean): Promise<void> {
     if (!ordersResponse) return;
     const hasEncryptedOrders = ordersResponse.orders.some((o) => !!o.encryptedOrder);
     if (!hasEncryptedOrders) return;
@@ -497,31 +519,26 @@
       import("@woco/shared/crypto/sealed-box"),
     ]);
     const { secretKeys } = await orderKeysOf(secrets);
+    opened.markOpened();
 
-    if (hasEncryptedOrders) {
-      const results = await Promise.allSettled(
-        ordersResponse.orders.map(async (order, idx) => {
-          if (!order.encryptedOrder) return { idx, data: {} as DecryptedOrder };
-          // Bound to THIS event and the SLOT's series (the server sets
-          // `order.seriesId` from the slot) — never the payload's own seriesId, so
-          // an order lifted from another series fails to open instead of showing.
-          const decrypted = await openJsonWithAnyKey<DecryptedOrder>(
-            secretKeys,
-            order.encryptedOrder,
-            orderSealContext(eventId, order.seriesId),
-          );
-          return { idx, data: decrypted };
-        }),
-      );
-      const newMap = new Map<number, DecryptedOrder>();
-      let failCount = 0;
-      for (const result of results) {
-        if (result.status === "fulfilled") newMap.set(result.value.idx, result.value.data);
-        else failCount++;
-      }
-      decryptedOrders = newMap;
-      decryptError = failCount > 0 ? `Failed to decrypt ${failCount} order(s)` : null;
-    }
+    const results = await Promise.allSettled(
+      opened.unopened(ordersResponse.orders).map(async ({ order }) => {
+        if (!order.encryptedOrder) return;
+        // Bound to THIS event and the SLOT's series (the server sets
+        // `order.seriesId` from the slot) — never the payload's own seriesId, so
+        // an order lifted from another series fails to open instead of showing.
+        const decrypted = await openJsonWithAnyKey<DecryptedOrder>(
+          secretKeys,
+          order.encryptedOrder,
+          orderSealContext(eventId, order.seriesId),
+        );
+        opened.put(order, decrypted);
+      }),
+    );
+    const failCount = results.filter((r) => r.status === "rejected").length;
+    // The list on screen now - a poll may have replaced it while this ran.
+    if (ordersResponse) decryptedOrders = opened.remap(ordersResponse.orders);
+    decryptError = failCount > 0 ? `Failed to decrypt ${failCount} order(s)` : null;
 
     decrypting = false;
   }
@@ -534,9 +551,47 @@
   });
   $effect(() => {
     if (auth.kind === "passkey" && !auth.hasIdentitySeed && decryptedOrders.size > 0) {
+      opened.clear();
       decryptedOrders = new Map();
       ordersLocked = true;
     }
+  });
+
+  /** A poll found the count moved: read the list, show it, open only the new orders - never asking. */
+  async function refreshOrders(): Promise<boolean> {
+    const fresh = (await getEventOrdersSWR(eventId).refresh()).data;
+    if (!fresh || !event) return false;
+    showOrders(fresh);
+    void decryptCurrent();
+    return true;
+  }
+
+  // New sales appear while the page is open and in view (rules: live-orders.ts).
+  const liveReady = $derived(ordersFromServer && !error && !!event);
+  $effect(() => {
+    if (!liveReady) return;
+    const id = eventId;
+    const poller = createOrdersPoller({
+      intervalMs: ORDERS_POLL_MS,
+      count: () => getEventOrderCount(id),
+      refresh: refreshOrders,
+      // A session already on this device: a poll never starts a sign-in.
+      canRequest: () => auth.isConnected && auth.hasSession,
+      isVisible: () => document.visibilityState === "visible",
+      onVisibilityChange: (cb) => {
+        document.addEventListener("visibilitychange", cb);
+        window.addEventListener("focus", cb);
+        return () => {
+          document.removeEventListener("visibilitychange", cb);
+          window.removeEventListener("focus", cb);
+        };
+      },
+      setInterval: (cb, ms) => setInterval(cb, ms),
+      clearInterval: (handle) => clearInterval(handle as ReturnType<typeof setInterval>),
+      now: () => Date.now(),
+    });
+    poller.start(untrack(() => ordersResponse?.orders.length ?? 0));
+    return () => poller.stop();
   });
 
   onMount(async () => {
@@ -581,7 +636,7 @@
       auth.parent?.toLowerCase() === evSWR.cached.creatorAddress.toLowerCase()
     ) {
       event = evSWR.cached;
-      ordersResponse = ordersSWR.cached;
+      showOrders(ordersSWR.cached);
       loading = false;
       cachedShown = true;
       // Decrypt the cached set in the background while fresh data is loading.
@@ -618,7 +673,10 @@
       const freshOrders = (await ordersSWR.refresh()).data;
 
       event = ev;
-      if (freshOrders) ordersResponse = freshOrders;
+      if (freshOrders) {
+        showOrders(freshOrders);
+        ordersFromServer = true;
+      }
       loading = false;
 
       // Decrypt fresh data (replaces any prior decrypt run).
