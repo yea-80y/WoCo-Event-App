@@ -14,13 +14,21 @@ import type {
   SendingDomainInfo,
 } from "@woco/shared";
 
+/**
+ * `ifUpdatedAt`: the `updatedAt` of the list this one was merged onto (null = there
+ * was none). The server refuses the write (409 LIST_CHANGED) if the list has been
+ * saved since - the automatic buyer add uses it so it never undoes an edit it did
+ * not see. Omitted = last write wins.
+ */
 export async function uploadMarketingList(
   sealedList: SealedBoxV2,
   emails: string[],
+  opts: { ifUpdatedAt?: string | null } = {},
 ): Promise<MarketingListMeta> {
   const resp = await authPost<MarketingListMeta>("/api/marketing/list", {
     sealedList: sealedList as unknown as Record<string, unknown>,
     emails,
+    ...("ifUpdatedAt" in opts ? { ifUpdatedAt: opts.ifUpdatedAt ?? null } : {}),
   });
   if (!resp.data) throw new Error(resp.error || "List upload failed");
   return resp.data;
