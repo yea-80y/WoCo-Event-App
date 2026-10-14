@@ -80,7 +80,8 @@
   }
 </script>
 
-<svelte:window onpointerdown={armAudio} />
+<!-- iOS unlocks audio on the END of a touch, not its start: arm on both. -->
+<svelte:window onpointerdown={armAudio} ontouchend={armAudio} />
 
 <div class="scan-screen">
   <QrCamera onScan={(data) => void handlePayload(data)} />
