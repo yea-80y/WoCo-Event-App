@@ -174,8 +174,8 @@ Cloudflare's logs under Cloudflare's own retention as our sub-processor.
 - `apps/server` imports **`sealBoxJson` only** (`lib/stripe/fulfilment.ts`, the fallback below). It
   never imports `openBox` or `openBoxJson`. Grep-verified.
 - The only callers of the open functions on orders and lists are in the organiser's browser:
-  `Dashboard.svelte` (orders), `AudienceScreen.svelte` (contact list) and `AttendeeImport.svelte`
-  (imported attendee orders), all `openBoxJson`.
+  `Dashboard.svelte` (orders), `AudienceScreen.svelte` (contact list) and `audience-sync.svelte.ts`
+  (orders and list, for the automatic add of opted-in buyers), all `openBoxJson`.
 - The decryption key is derived in the organiser's browser from their account seed
   (`deriveXWingKeypairFromSeed`, `packages/shared/src/crypto/xwing.ts`). For a passkey account the
   seed comes from the passkey and is kept on the device locked under it: it opens once the
@@ -326,7 +326,7 @@ independent nodes worldwide:
 | Like / follow statements | Public signed statements on the user's own feed (`packages/shared/src/social/`); a retraction is a new version, not a deletion | **Yes**, and intentionally public |
 | Profile feeds | display name, avatar, bio — organiser-published | **Yes**, and intentionally public |
 | Organiser privacy notice (`woco/legal/privacy-notice/{account}`, `woco.privacy-notice.v2`) | The organiser's name, privacy contact email, optional postal address and ICO number, and their choices (who else sees attendee details, months order-form answers are kept, whether their mailing list is tailored, plus optional "anything else" lines), signed by their content-feed signer and published when they press "Publish". The public notice pages read it through `GET /api/privacy-notice/*`, which picks the account and signer from server records only (`routes/privacy-notice.ts`); the server stores none of it. Earlier versions stay retrievable after an edit - Organiser Terms §4 says so, and the editor asks for business, not personal, details | **Yes** (the organiser's own details), and intentionally public |
-| Marketing contact list blob (email, name, area, and any order-form answer the organiser ticked "Keep on mailing list" - never a health answer) | X-Wing sealed box, sealed to organiser | **Yes**, encrypted |
+| Marketing contact list blob (email, name, area, and any order-form answer the organiser ticked "Keep on mailing list" - never a health answer; plus the addresses the organiser deleted, kept so they are never added back). Buyers with a checkout record (opt-in or soft opt-in) are added automatically, in the organiser's browser, whenever they use WoCo; an unsubscribed, declined, bounced or suppressed address never is (2026-10-14) | X-Wing sealed box, sealed to organiser | **Yes**, encrypted |
 
 **Pseudonymised ≠ anonymous.** HMAC email hashes and wallet addresses are personal data under UK
 GDPR because WoCo holds the key / can re-link them. The policy must treat them as personal data.
@@ -402,7 +402,9 @@ anything, so a crash between the two steps over-suppresses rather than under-pro
 **Three things the script cannot reach**, and which must be relayed to the subject:
 
 1. The organiser's **sealed contact blob** on Swarm is encrypted to them; only they can rewrite it.
-   They are the controller for their own list — forward the request. Removing the member from
+   They are the controller for their own list — forward the request. Deleting the contact there
+   keeps the address in the list's sealed deleted-contacts record, so the automatic buyer add never
+   restores it - the same reason suppression marks are kept. Removing the member from
    WoCo's list index makes them unsendable immediately (`/api/marketing/broadcast` rejects any
    recipient not in the index), and the suppression mark holds even if the organiser re-uploads.
 2. **Order blobs on Swarm** - the script does not erase them; the operator burn route does

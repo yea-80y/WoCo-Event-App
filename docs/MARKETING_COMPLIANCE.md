@@ -27,7 +27,8 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   unconditional. **Ticket emails are transactional — NO unsubscribe on them, ever.**
   Marketing broadcasts (`/api/broadcasts/jobs`, `kind: "marketing"`; the old
   `/api/marketing/broadcast` now answers 410) also hash-check every recipient against the stored list (the
-  import wizard's consent warranty is the only path to a sendable address); footer insertion
+  import wizard's consent warranty, or the buyer's own checkout record, is the only path to a
+  sendable address); footer insertion
   only honours a document-final `</body>` (a mid-doc `</body>` can't hide it).
 - **FAILS CLOSED on misconfiguration**: refuses to send if `PUBLIC_API_BASE` (unsub links) or
   `MARKETING_POSTAL_ADDRESS` (CAN-SPAM §7704(a)(5)) is unset. Sending non-compliant mail is
@@ -63,10 +64,28 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   the payload parses; JSON can never start with `0x1f8b`), so a box sealed uncompressed (no
   `CompressionStream`) still opens — do not replace that sniff with a version check. Columnar encoding was measured and
   rejected: it buys ~6% once gzip has already collapsed the repeated keys.
-- The whole list is re-sealed and re-uploaded on EVERY change (`commitList`). That is fine
-  at the 20k cap — one ~1MB atomic write, single writer, single reader — and is deliberately
-  NOT the paged/append-only shape the public events directory needs. Different problem:
-  one private blob rewritten by its owner vs. a many-writer public index.
+- The whole list is re-sealed and re-uploaded on EVERY change (`commitList`, and the buyer
+  sync below). That is fine at the 20k cap - one ~1MB atomic write, one owner, two writers in
+  their browser - and is deliberately NOT the paged/append-only shape the public events
+  directory needs. Different problem: one private blob rewritten by its owner vs. a
+  many-writer public index. The two writers share a tab lock, and the sync merges onto a
+  fresh re-read (below).
+- **OPTED-IN BUYERS JOIN THE LIST AUTOMATICALLY** (2026-10-14, replaced the manual "Add from
+  your events"). In the organiser's browser - the buyer's email exists only in their sealed
+  order, which the retention sweep deletes months after the event (#547), so it runs whenever
+  the organiser uses WoCo: on the Audience screen (open + "Check now") and in the background on
+  organiser home and event pages, at most every 10 minutes per tab, only on an account already
+  unlocked with a session - never a prompt. `audience-sync.ts` (rules, pure + tested) /
+  `audience-sync.svelte.ts` (wiring).
+  - Only buyers with a checkout record (consent or soft opt-in), and **never an address in
+    `/check`'s `suppressed`** (unsubscribed, declined, bounced, complained, manual), even one
+    that also holds a record. Kept answers only, never a health answer (`attendee-drain.ts`).
+  - **Deleted contacts stay deleted**: the sealed payload's `removed` (lowercased addresses) is
+    written by every delete, with or without "also unsubscribe"; the sync never re-adds one; a
+    CSV import clears it for the addresses it adds back. Sealed with the list, never sent to the
+    server. Absent on older lists = none.
+  - **Read-merge-write**: the list is re-read and opened just before the write and merged onto
+    that; no re-read, no write. Nothing changed, nothing written.
 - CSV IMPORT: no source platform (Skiddle/Fatsoma/RA/Eventbrite) publishes an export column
   schema — RA's is promoter-selected per export, so there is no fixed shape at all. Header
   auto-mapping in `csv-import.ts` is therefore a scored GUESS and the wizard always lets a
@@ -237,6 +256,8 @@ apps/web/src/lib/creator/audience/{AudienceScreen,CsvImportWizard,ColumnMapper,C
 packages/shared/src/legal/consent.ts          # the wording, versioned — single source of truth
 apps/web/src/lib/creator/audience/csv-import.ts # PURE: header scoring, name split, consent,
                                                 # manifest. All import logic lives here.
+apps/web/src/lib/creator/audience/audience-sync.ts # PURE: the automatic buyer add's rules
+apps/web/src/lib/creator/audience/audience-sync.svelte.ts # its wiring: syncAudience(), the tab lock
 apps/web/src/lib/api/marketing.ts             # client wrappers
 packages/shared/src/marketing/types.ts        # MarketingContact, list payload, domain types
 packages/shared/src/crypto/compress.ts        # gzip over CompressionStream (no deps)
