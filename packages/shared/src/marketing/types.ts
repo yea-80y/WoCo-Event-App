@@ -93,16 +93,27 @@ export interface MarketingContact {
  * which also opens the uncompressed blobs written before compression existed.
  * Uncompressed, a full 20k list overflows the server's sealed-blob cap.
  */
+/**
+ * One contact the organiser deleted. Not the address itself: `h` is SHA-256 over
+ * the organiser's address and the lowercased email, so it is not a plain email
+ * hash that would match across organisers. `at` is when they deleted it (ISO).
+ */
+export interface MarketingListTombstone {
+  h: string;
+  at: string;
+}
+
 export interface MarketingListPayload {
   version: 1;
   contacts: MarketingContact[];
   /**
-   * Lowercased addresses the organiser deleted from the list. The automatic add
-   * of opted-in ticket buyers never brings one back; adding the address again on
-   * purpose (a CSV import) clears it. Sealed with the list and never sent to the
-   * server. Absent - every list saved before 2026-10-14 - means none.
+   * Contacts the organiser deleted. The automatic add of opted-in ticket buyers
+   * never brings one back, except on an "Email me" ticked AFTER the deletion (a
+   * soft opt-in is not enough); adding the address again on purpose (a CSV
+   * import) clears it. Sealed with the list and never sent to the server. Never
+   * pruned automatically. Absent - every list saved before 2026-10-14 - = none.
    */
-  removed?: string[];
+  removed?: MarketingListTombstone[];
 }
 
 export interface MarketingListMeta {

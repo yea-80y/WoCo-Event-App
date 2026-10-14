@@ -36,13 +36,14 @@ test("the manual per-event import is gone; the screen shows the automatic status
 
 test("deleting a contact writes a tombstone, with or without the unsubscribe", () => {
   const del = fn(SCREEN, "async function handleDelete");
-  const write = del.indexOf("removed: addRemoved(list.removed, email)");
+  assert.match(del, /const deletedAt = new Date\(\)\.toISOString\(\);/, "dated, so a later 'Email me' can be told from an earlier one");
+  const write = del.indexOf("removed: addRemoved(list.removed, organiser, email, deletedAt)");
   assert.ok(write > 0, "the tombstone is part of the same save as the delete");
   assert.ok(write < del.indexOf("if (alsoSuppress)"), "before, and independent of, the unsubscribe");
 });
 
 test("a CSV import clears the tombstone of every address it adds back", () => {
-  assert.match(fn(SCREEN, "async function handleWizardCommit"), /removed: clearRemoved\(list\.removed, added\.map\(\(c\) => c\.email\)\)/);
+  assert.match(fn(SCREEN, "async function handleWizardCommit"), /removed: clearRemoved\(list\.removed, organiser, added\.map\(\(c\) => c\.email\)\)/);
 });
 
 test("every save carries the tombstones, inside the list lock, on the list as it stands then", () => {

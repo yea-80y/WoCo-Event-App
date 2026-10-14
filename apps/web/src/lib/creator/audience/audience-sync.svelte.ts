@@ -183,6 +183,7 @@ async function runFor(parent: string): Promise<SyncResult> {
 function liveDeps(parent: string): SyncDeps {
   const current = () => auth.isConnected && auth.parent?.toLowerCase() === parent;
   return {
+    organiser: parent,
     async openKeys() {
       // Opening takes whatever this device already holds - no unlock is ever asked for.
       const secrets = await auth.getAccountSecrets();

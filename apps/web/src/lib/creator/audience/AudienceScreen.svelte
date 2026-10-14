@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { MarketingContact, MarketingListMeta, ContactConsentState } from "@woco/shared";
   import { contactConsentState } from "@woco/shared";
-  import type { MarketingListPayload } from "@woco/shared";
+  import type { MarketingListPayload, MarketingListTombstone } from "@woco/shared";
   import UnlockPanel from "../../components/auth/UnlockPanel.svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
@@ -29,7 +29,7 @@
   /** The sealed list as this screen holds it: the contacts, and the addresses the organiser deleted. */
   interface ListState {
     contacts: MarketingContact[];
-    removed: string[];
+    removed: MarketingListTombstone[];
   }
 
   let loading = $state(true);
@@ -40,7 +40,7 @@
   let meta = $state<MarketingListMeta | null>(null);
   let contacts = $state<MarketingContact[]>([]);
   /** Deleted by the organiser: the automatic add of opted-in buyers never brings these back. */
-  let removed = $state<string[]>([]);
+  let removed = $state<MarketingListTombstone[]>([]);
   let suppressedEmails = $state<Set<string>>(new Set());
   /** Contacts who ticked the opt-in themselves — the server holds the evidence,
    *  keyed by hash, so this is the only way the client can know. */
@@ -191,12 +191,14 @@
   }
 
   async function handleWizardCommit(added: MarketingContact[]): Promise<void> {
+    const organiser = auth.parent;
+    if (!organiser) throw new Error("Sign in to save changes");
     await commitList((list) => {
       const have = new Set(list.contacts.map((c) => c.email));
       return {
         contacts: [...list.contacts, ...added.filter((c) => !have.has(c.email))],
         // Imported on purpose: off the deleted list, so the automatic add may keep them too.
-        removed: clearRemoved(list.removed, added.map((c) => c.email)),
+        removed: clearRemoved(list.removed, organiser, added.map((c) => c.email)),
       };
     });
     wizardOpen = false;
@@ -204,10 +206,13 @@
 
   async function handleDelete(email: string, alsoSuppress: boolean): Promise<void> {
     await auth.ensureOrganiserUnlock();
+    const organiser = auth.parent;
+    if (!organiser) throw new Error("Sign in to save changes");
+    const deletedAt = new Date().toISOString();
     // Remembered as deleted, with or without the unsubscribe: the automatic add never brings them back.
     await commitList((list) => ({
       contacts: list.contacts.filter((c) => c.email !== email),
-      removed: addRemoved(list.removed, email),
+      removed: addRemoved(list.removed, organiser, email, deletedAt),
     }));
     if (alsoSuppress) {
       await suppressContacts([email]);

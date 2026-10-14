@@ -16,7 +16,9 @@
  * Rules, each pinned by `test/audience-sync.test.ts`:
  *   - an address in `suppressed` (unsubscribed, declined, bounced, complained,
  *     removed by hand) is never added, whatever else it holds;
- *   - an address the organiser deleted (the list's `removed`) is never re-added;
+ *   - an address the organiser deleted (the list's `removed`) is not re-added,
+ *     unless it ticked "Email me" AFTER the deletion - a soft opt-in is not enough
+ *     (Fable sign-off 2026-10-14 recommendation);
  *   - the write merges onto the list as re-read and opened just before it, so it
  *     never replaces an edit made elsewhere with a stale copy - no re-read, no write -
  *     and the server refuses it if the list was saved again after that re-read;
@@ -27,6 +29,8 @@
  *   - nothing is written when nothing changed.
  */
 
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { NOTICE_RETENTION_MONTHS, addCalendarMonthsUtc } from "@woco/shared";
 import type {
   EventDirectoryEntry,
@@ -34,6 +38,7 @@ import type {
   MarketingContact,
   MarketingListMeta,
   MarketingListPayload,
+  MarketingListTombstone,
   OrderEntry,
   OrderField,
 } from "@woco/shared";
@@ -72,27 +77,52 @@ export const STALE_MS = 24 * 60 * 60_000;
 
 // ── Tombstones ──────────────────────────────────────────────────────────────
 
-/** The deleted-contact list as stored, cleaned: lowercased, de-duplicated, strings only. */
-export function normaliseRemoved(removed: unknown): string[] {
-  if (!Array.isArray(removed)) return [];
-  const out = new Set<string>();
-  for (const e of removed) if (typeof e === "string" && e.trim()) out.add(e.trim().toLowerCase());
-  return [...out];
+/**
+ * Which contact a tombstone is for: SHA-256 over the organiser's address and the
+ * lowercased email, under its own label - never a plain email hash, so it matches
+ * nothing outside this organiser's own list.
+ */
+export function removedId(organiser: string, email: string): string {
+  const input = `woco/audience-removed/v1\n${organiser.trim().toLowerCase()}\n${email.trim().toLowerCase()}`;
+  return bytesToHex(sha256(utf8ToBytes(input)));
 }
 
-/** The organiser deleted this contact: never add it back automatically. */
-export function addRemoved(removed: readonly string[], email: string): string[] {
-  return normaliseRemoved([...removed, email]);
+/** The deleted-contact list as stored, cleaned: well-formed entries only, one per contact, the latest deletion kept. */
+export function normaliseRemoved(removed: unknown): MarketingListTombstone[] {
+  if (!Array.isArray(removed)) return [];
+  const byId = new Map<string, MarketingListTombstone>();
+  for (const t of removed) {
+    if (!t || typeof t !== "object") continue;
+    const { h, at } = t as Record<string, unknown>;
+    if (typeof h !== "string" || !/^[0-9a-f]{64}$/.test(h) || typeof at !== "string" || !Number.isFinite(Date.parse(at))) continue;
+    const prev = byId.get(h);
+    if (!prev || Date.parse(at) > Date.parse(prev.at)) byId.set(h, { h, at });
+  }
+  return [...byId.values()];
+}
+
+/** The organiser deleted this contact at `at`: not added back automatically. */
+export function addRemoved(
+  removed: readonly MarketingListTombstone[],
+  organiser: string,
+  email: string,
+  at: string,
+): MarketingListTombstone[] {
+  return normaliseRemoved([...removed, { h: removedId(organiser, email), at }]);
 }
 
 /** The organiser added these on purpose (CSV import): the automatic add may keep them again. */
-export function clearRemoved(removed: readonly string[], emails: readonly string[]): string[] {
-  const back = new Set(emails.map((e) => e.trim().toLowerCase()));
-  return normaliseRemoved(removed).filter((e) => !back.has(e));
+export function clearRemoved(
+  removed: readonly MarketingListTombstone[],
+  organiser: string,
+  emails: readonly string[],
+): MarketingListTombstone[] {
+  const back = new Set(emails.map((e) => removedId(organiser, e)));
+  return normaliseRemoved(removed).filter((t) => !back.has(t.h));
 }
 
 /** The one shape every writer seals. `removed` only when there is one, so an empty list stays byte-identical to before. */
-export function listPayload(contacts: MarketingContact[], removed: readonly string[]): MarketingListPayload {
+export function listPayload(contacts: MarketingContact[], removed: readonly MarketingListTombstone[]): MarketingListPayload {
   const clean = normaliseRemoved(removed);
   return { version: 1, contacts, ...(clean.length ? { removed: clean } : {}) };
 }
@@ -184,6 +214,8 @@ export interface SealKeys {
 }
 
 export interface SyncDeps {
+  /** The organiser's address - what the list's tombstones are keyed under. */
+  organiser: string;
   /** Null = locked or not set up on this device: skip, never ask. */
   openKeys(): Promise<OpenKeys | null>;
   /** Taken at write time. Null = the current generation is not confirmed without asking: write nothing. */
@@ -391,24 +423,36 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
     }
 
     const stamp = stored?.updatedAt ?? null;
-    // Deleted by the organiser, per the list as it stands now.
-    const removed = new Set(normaliseRemoved(base.removed));
-    const allowed = candidates.filter((c) => !removed.has(c.email.trim().toLowerCase()));
-    if (allowed.length === 0) return done({}, stamp);
 
     // Asked again, now: anyone who unsubscribed (or was suppressed any other way)
     // while the orders were being read is not added. No answer, no write.
     let latest: MarketingCheckResult;
     try {
-      latest = await deps.check(allowed.map((c) => c.email));
+      latest = await deps.check(candidates.map((c) => c.email));
     } catch (err) {
       return fail(message(err, "Could not check who said yes."));
     }
     const nowSuppressed = new Set(lower(latest.suppressed));
-    const stillYes = new Set(
-      [...lower(latest.consented), ...lower(latest.softOptIn)].filter((e) => !nowSuppressed.has(e)),
-    );
-    const report = applyDrain(base.contacts, allowed.filter((c) => stillYes.has(c.email.trim().toLowerCase())));
+    const consentedNow = new Set(lower(latest.consented).filter((e) => !nowSuppressed.has(e)));
+    const stillYes = new Set([...consentedNow, ...lower(latest.softOptIn).filter((e) => !nowSuppressed.has(e))]);
+    const consentedAt = new Map(Object.entries(latest.consentedAt ?? {}).map(([e, t]) => [e.trim().toLowerCase(), t]));
+
+    // Deleted by the organiser, per the list as it stands now: back only on an
+    // "Email me" ticked after the deletion, which also clears the tombstone. A soft
+    // opt-in after it is not enough.
+    const tombstones = new Map(normaliseRemoved(base.removed).map((t) => [t.h, t]));
+    const cleared = new Set<string>();
+    const allowed = candidates.filter((c) => {
+      const email = c.email.trim().toLowerCase();
+      if (!stillYes.has(email)) return false;
+      const tombstone = tombstones.get(removedId(deps.organiser, email));
+      if (!tombstone) return true;
+      const consented = consentedNow.has(email) ? Date.parse(consentedAt.get(email) ?? "") : NaN;
+      if (!(consented > Date.parse(tombstone.at))) return false;
+      cleared.add(tombstone.h);
+      return true;
+    });
+    const report = applyDrain(base.contacts, allowed);
     if (report.added === 0 && report.updated === 0) return done({}, stamp);
 
     // The seal key is taken now, at write time, never at the start of the run.
@@ -416,7 +460,7 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
     if (!seal) return result("locked", { failedEvents, unreadableOrders });
     if (!deps.stillCurrent()) return fail("You switched accounts, so nothing was added.");
 
-    const payload = listPayload(report.contacts, base.removed ?? []);
+    const payload = listPayload(report.contacts, [...tombstones.values()].filter((t) => !cleared.has(t.h)));
     let meta: MarketingListMeta;
     try {
       const sealed = await seal.sealList(payload);

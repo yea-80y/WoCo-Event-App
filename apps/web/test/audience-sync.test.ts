@@ -18,6 +18,7 @@ import {
   clearRemoved,
   normaliseRemoved,
   listPayload,
+  removedId,
   SETTLE_MS,
   STALE_MS,
   SYNC_INTERVAL_MS,
@@ -42,6 +43,9 @@ const order = (claim: Claim | "bad", seriesId = "s1"): OrderEntry => ({
   claimedAt: "",
   encryptedOrder: (claim === "bad" ? { bad: true } : { claim }) as unknown as OrderEntry["encryptedOrder"],
 });
+
+/** A tombstone as the screen writes it: hashed under the organiser, dated. */
+const tomb = (email: string, at = "2026-10-10T00:00:00.000Z") => ({ h: removedId("0xOrg", email), at });
 
 const event = (eventId: string, startDate = "2026-11-01"): EventDirectoryEntry =>
   ({ eventId, title: `Event ${eventId}`, startDate }) as EventDirectoryEntry;
@@ -94,6 +98,7 @@ function deps(w: World, extra: Partial<SyncDeps> = {}): SyncDeps {
     setItem: (k: string, v: string) => void w.storage.set(k, v),
   };
   return {
+    organiser: "0xOrg",
     async openKeys() {
       w.log.push("openKeys");
       if (w.locked) return null;
@@ -229,41 +234,86 @@ test("a suppressed contact already on the list is not touched either", async () 
 
 // ── Deleted contacts ───────────────────────────────────────────────────────
 
-test("a contact the organiser deleted is never re-added", async () => {
+test("a contact the organiser deleted is not re-added on a consent from before the deletion, or an undated one", async () => {
+  for (const consentedAt of [{ "ada@x.com": "2026-10-09T00:00:00.000Z" }, {}]) {
+    const w = world({
+      orders: { e1: [order({ claimerEmail: "ADA@x.com " })] },
+      answer: { suppressed: [], alreadyInList: [], consented: ["ada@x.com"], consentedAt, softOptIn: [] },
+      list: { payload: { version: 1, contacts: [], removed: [tomb("ada@x.com")] }, updatedAt: "s0" },
+    });
+    const r = await sync(w);
+    assert.equal(r.added, 0, JSON.stringify(consentedAt));
+    assert.equal(w.writes.length, 0, "nothing changed, so nothing is written");
+  }
+});
+
+test("an \"Email me\" ticked after the deletion brings them back and clears the tombstone", async () => {
+  // Fable sign-off 2026-10-14 recommendation: a fresh, explicit yes outranks an old delete.
   const w = world({
-    list: { payload: { version: 1, contacts: [], removed: ["ADA@x.com "] }, updatedAt: "s0" },
+    answer: { suppressed: [], alreadyInList: [], consented: ["ada@x.com"], consentedAt: { "ada@x.com": "2026-10-12T09:00:00.000Z" }, softOptIn: [] },
+    list: { payload: { version: 1, contacts: [], removed: [tomb("ada@x.com"), tomb("zed@x.com")] }, updatedAt: "s0" },
+  });
+  const r = await sync(w);
+  assert.equal(r.added, 1);
+  assert.deepEqual(w.writes[0]!.payload.removed, [tomb("zed@x.com")], "only Ada's tombstone goes");
+});
+
+test("a soft opt-in after the deletion does not bring them back", async () => {
+  const w = world({
+    answer: { suppressed: [], alreadyInList: [], consented: [], softOptIn: ["ada@x.com"] },
+    list: { payload: { version: 1, contacts: [], removed: [tomb("ada@x.com")] }, updatedAt: "s0" },
   });
   const r = await sync(w);
   assert.equal(r.added, 0);
-  assert.equal(w.writes.length, 0, "nothing changed, so nothing is written");
+  assert.equal(w.writes.length, 0);
+});
+
+test("a later consent that is now suppressed does not bring them back either", async () => {
+  const w = world({
+    answer: { suppressed: ["ada@x.com"], alreadyInList: [], consented: ["ada@x.com"], consentedAt: { "ada@x.com": "2026-10-12T09:00:00.000Z" }, softOptIn: [] },
+    list: { payload: { version: 1, contacts: [], removed: [tomb("ada@x.com")] }, updatedAt: "s0" },
+  });
+  await sync(w);
+  assert.equal(w.writes.length, 0);
 });
 
 test("the tombstone survives a write that adds someone else", async () => {
   const w = world({
     orders: { e1: [order({ claimerEmail: "ada@x.com" }), order({ claimerEmail: "bo@x.com" })] },
     answer: { suppressed: [], alreadyInList: [], consented: ["ada@x.com", "bo@x.com"], softOptIn: [] },
-    list: { payload: { version: 1, contacts: [], removed: ["ada@x.com"] }, updatedAt: "s0" },
+    list: { payload: { version: 1, contacts: [], removed: [tomb("ada@x.com")] }, updatedAt: "s0" },
   });
   await sync(w);
   assert.deepEqual(emailsOf(w.writes[0]?.payload), ["bo@x.com"]);
-  assert.deepEqual(w.writes[0]?.payload.removed, ["ada@x.com"]);
+  assert.deepEqual(w.writes[0]?.payload.removed, [tomb("ada@x.com")]);
 });
 
 test("adding an address back on purpose clears its tombstone, and then the sync may keep it", async () => {
-  assert.deepEqual(addRemoved([], " Ada@X.com"), ["ada@x.com"]);
-  assert.deepEqual(addRemoved(["ada@x.com"], "ADA@x.com"), ["ada@x.com"], "no duplicates");
-  const cleared = clearRemoved(["ada@x.com", "bo@x.com"], ["ADA@X.COM"]);
-  assert.deepEqual(cleared, ["bo@x.com"]);
+  const at = "2026-10-10T00:00:00.000Z";
+  assert.deepEqual(addRemoved([], "0xORG", " Ada@X.com", at), [tomb("ada@x.com", at)]);
+  assert.deepEqual(addRemoved([tomb("ada@x.com", at)], "0xorg", "ADA@x.com", "2026-10-11T00:00:00.000Z"), [tomb("ada@x.com", "2026-10-11T00:00:00.000Z")], "one per contact, the latest deletion");
+  const cleared = clearRemoved([tomb("ada@x.com"), tomb("bo@x.com")], "0xOrg", ["ADA@X.COM"]);
+  assert.deepEqual(cleared, [tomb("bo@x.com")]);
   const w = world({ list: { payload: { version: 1, contacts: [], removed: cleared }, updatedAt: "s0" } });
   const r = await sync(w);
   assert.equal(r.added, 1);
 });
 
+test("a tombstone is keyed under the organiser, never a plain email hash", async () => {
+  const { createHash } = await import("node:crypto");
+  const id = removedId("0xOrg", "ada@x.com");
+  assert.match(id, /^[0-9a-f]{64}$/);
+  assert.notEqual(id, createHash("sha256").update("ada@x.com").digest("hex"));
+  assert.notEqual(id, removedId("0xOther", "ada@x.com"), "another organiser's tombstone does not match");
+  assert.equal(id, removedId(" 0XORG", " ADA@x.com"));
+  assert.doesNotMatch(JSON.stringify(listPayload([], [tomb("ada@x.com")])), /ada/, "the address itself is not stored");
+});
+
 test("an older list without the field opens as no tombstones; the payload stays as it was when there are none", () => {
   assert.deepEqual(normaliseRemoved(undefined), []);
-  assert.deepEqual(normaliseRemoved([1, "", " A@b.com", null, "a@b.com"]), ["a@b.com"]);
+  assert.deepEqual(normaliseRemoved([1, "", "a@b.com", null, { h: "zz", at: "2026-01-01" }, { h: "a".repeat(64), at: "nope" }]), []);
   assert.deepEqual(listPayload([], []), { version: 1, contacts: [] });
-  assert.deepEqual(listPayload([], ["B@x.com"]), { version: 1, contacts: [], removed: ["b@x.com"] });
+  assert.deepEqual(listPayload([], [tomb("b@x.com")]), { version: 1, contacts: [], removed: [tomb("b@x.com")] });
 });
 
 // ── Read-merge-write ───────────────────────────────────────────────────────
@@ -274,7 +324,7 @@ test("the write merges onto the list as re-read just before it, never a stale co
     // Another tab saves while this run is reading orders: adds Zed, deletes Ada.
     duringCheck: (x) => {
       x.list = {
-        payload: { version: 1, contacts: [{ email: "old@x.com", addedAt: "2026-01-01" }, { email: "zed@x.com", addedAt: "2026-10-14" }], removed: ["ada@x.com"] },
+        payload: { version: 1, contacts: [{ email: "old@x.com", addedAt: "2026-01-01" }, { email: "zed@x.com", addedAt: "2026-10-14" }], removed: [tomb("ada@x.com")] },
         updatedAt: "s1",
       };
     },
@@ -390,7 +440,7 @@ test("a delete saved in another tab after the re-read is never undone: refused, 
   const w = world({
     list: { payload: { version: 1, contacts: [{ email: "zed@x.com", addedAt: "2026-01-01" }] }, updatedAt: "s0" },
     duringSeal: (x) => {
-      if (++seals === 1) x.list = { payload: { version: 1, contacts: [], removed: ["zed@x.com"] }, updatedAt: "s1" };
+      if (++seals === 1) x.list = { payload: { version: 1, contacts: [], removed: [tomb("zed@x.com")] }, updatedAt: "s1" };
     },
   });
   const r = await sync(w);
@@ -399,7 +449,7 @@ test("a delete saved in another tab after the re-read is never undone: refused, 
   assert.equal(r.status, "ok", "a refusal that then succeeds is not a failure");
   assert.equal(r.error, undefined);
   assert.deepEqual(emailsOf(w.list!.payload), ["ada@x.com"], "Zed stays deleted");
-  assert.deepEqual(w.list!.payload.removed, ["zed@x.com"]);
+  assert.deepEqual(w.list!.payload.removed, [tomb("zed@x.com")]);
 });
 
 test("the retry asks again who said yes, from a fresh re-read", async () => {
@@ -448,7 +498,7 @@ test("a delete in this tab while a sync is reading orders stands", async () => {
     duringCheck: (x) => {
       deleted ??= withLock(async () => {
         await new Promise((r) => setTimeout(r, 20)); // the upload takes a while
-        x.list = { payload: { version: 1, contacts: [], removed: ["ada@x.com"] }, updatedAt: "s1" };
+        x.list = { payload: { version: 1, contacts: [], removed: [tomb("ada@x.com")] }, updatedAt: "s1" };
       });
     },
   });
@@ -456,7 +506,7 @@ test("a delete in this tab while a sync is reading orders stands", async () => {
   await deleted;
   assert.equal(r.added, 0);
   assert.equal(w.writes.length, 0);
-  assert.deepEqual(w.list!.payload, { version: 1, contacts: [], removed: ["ada@x.com"] });
+  assert.deepEqual(w.list!.payload, { version: 1, contacts: [], removed: [tomb("ada@x.com")] });
 });
 
 test("the seal key is taken at write time, after the re-read and the second check", async () => {
