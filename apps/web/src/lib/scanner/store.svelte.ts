@@ -48,6 +48,7 @@ import {
   type PackFailure,
 } from "./pass-gate.js";
 import { canApplyUpdate, UPDATE_RETRY_MS } from "./update-policy.js";
+import { unsyncedElsewhere } from "./scope.js";
 import { takeoverIfNewer } from "./sw-update.js";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -97,6 +98,8 @@ class ScannerStore {
   syncing = $state(false);
   lastSyncAt = $state<string | null>(null);
   pendingCount = $state(0);
+  /** Unsynced check-ins this phone holds for OTHER events; they sync only with their own pass. */
+  otherUnsynced = $state(0);
   /** Set when the server said the pass was revoked/expired — device must re-provision. */
   passDead = $state<string | null>(null);
   /** A server claim is in flight - the scan screen shows "checking" and pauses the camera. */
@@ -111,6 +114,7 @@ class ScannerStore {
   /** ticketKey → when a pack was fetched because that ticket was missing from it. */
   private rechecked = new Map<string, number>();
   private scanning = false;
+  private syncingEarlier = false;
   private lastScanAt = 0;
   /** A newer scanner has taken over this page and a reload into it is due. */
   private updateDue = false;
@@ -145,8 +149,10 @@ class ScannerStore {
     const pass = await db.getStoredPass();
     const pack = await db.getStoredPack();
     if (pass && isPassExpired(pass.exp, Date.now())) {
+      await this.countOtherUnsynced();
       this.provisionError = PASS_EXPIRED_MESSAGE;
       this.phase = "unprovisioned";
+      void this.syncEarlierEvents();
       return;
     }
     if (pass && pack) {
@@ -160,7 +166,9 @@ class ScannerStore {
       void this.sync();
       this.maybeAutoRefresh(0);
     } else {
+      await this.countOtherUnsynced();
       this.phase = "unprovisioned";
+      void this.syncEarlierEvents();
     }
   }
 
@@ -185,6 +193,7 @@ class ScannerStore {
         eventId: decoded.payload.eventId,
         exp: decoded.payload.exp,
       };
+      await this.keepEarlierPass(pass.eventId);
       await db.setStoredPass(pass);
       // A pass for another event starts from an empty in-memory set;
       // `reloadCheckins` only ever adds to it.
@@ -275,6 +284,7 @@ class ScannerStore {
     this.passDead = null;
     this.provisionError = null;
     this.phase = "unprovisioned";
+    void this.countOtherUnsynced();
   }
 
   /** Verify a scanned QR payload, then atomically consume the nullifier. */
@@ -351,47 +361,39 @@ class ScannerStore {
   }
 
   async sync(): Promise<void> {
-    if (!this.pass || this.syncing || !this.online || this.passDead) return;
+    if (!this.online) return;
+    await this.syncCurrentEvent();
+    await this.syncEarlierEvents();
+  }
+
+  private async syncCurrentEvent(): Promise<void> {
+    const pass = this.pass;
+    if (!pass || this.syncing || this.passDead) return;
     this.syncing = true;
     try {
-      const pending = await db.getPending();
-      const resp = await fetch(`${API_BASE}/api/checkin/${encodeURIComponent(this.pass.eventId)}/sync`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Door-Pass": this.pass.token,
-          [SCANNER_DEVICE_HEADER]: this.deviceId,
-        },
-        body: JSON.stringify({ deviceId: this.deviceId, checkins: pending }),
-      });
-      if (resp.status === 400) {
-        const body = (await resp.json().catch(() => null)) as { reason?: string } | null;
-        if (body?.reason === SCANNER_OUTDATED_REASON) void takeoverIfNewer().catch(() => false);
+      const pending = await db.getPending(pass.eventId);
+      const answer = await this.postSync(pass, pending);
+      if (answer.kind === "dead") {
+        if (this.pass?.token === pass.token) this.passDead = answer.message;
         return;
       }
-      // 409: a single-scanner pass that is bound to another phone - same remedy.
-      if (resp.status === 401 || resp.status === 403 || resp.status === 409) {
-        const body = (await resp.json().catch(() => null)) as { error?: string } | null;
-        this.passDead = body?.error ?? "Door pass no longer valid";
-        return;
-      }
-      if (!resp.ok) return;
-      const body = (await resp.json()) as { ok: boolean; data?: CheckinSyncResponse };
-      if (!body.ok || !body.data) return;
+      if (answer.kind !== "ok") return;
 
       await db.absorbServerCheckins(
-        body.data.checkins,
+        pass.eventId,
+        answer.data.checkins,
         pending.map((r) => db.ticketKey(r.seriesId, r.edition)),
       );
-      this.conflicts = body.data.conflicts;
-      await db.setStoredConflicts(body.data.conflicts);
+      if (this.pass?.token !== pass.token) return;
+      this.conflicts = answer.data.conflicts;
+      await db.setStoredConflicts(answer.data.conflicts);
       await this.reloadCheckins();
       this.lastSyncAt = new Date().toISOString();
     } catch {
       // Offline or flaky network — pending queue holds everything for next time.
     } finally {
       this.syncing = false;
-      this.pendingCount = (await db.getPending()).length;
+      if (this.pass) this.pendingCount = (await db.getPending(this.pass.eventId)).length;
     }
   }
 
@@ -416,10 +418,103 @@ class ScannerStore {
     this.checkins = new Map();
     this.conflicts = [];
     this.passDead = null;
+    this.otherUnsynced = 0;
     this.phase = "unprovisioned";
   }
 
   // ── internals ─────────────────────────────────────────────────────────────
+
+  /** One /sync for one event, with that event's own pass. */
+  private async postSync(
+    pass: db.StoredPass,
+    pending: CheckinRecord[],
+  ): Promise<{ kind: "ok"; data: CheckinSyncResponse } | { kind: "dead"; message: string } | { kind: "later" }> {
+    const resp = await fetch(`${API_BASE}/api/checkin/${encodeURIComponent(pass.eventId)}/sync`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Door-Pass": pass.token,
+        [SCANNER_DEVICE_HEADER]: this.deviceId,
+      },
+      body: JSON.stringify({ deviceId: this.deviceId, checkins: pending }),
+    });
+    if (resp.status === 400) {
+      const body = (await resp.json().catch(() => null)) as { reason?: string } | null;
+      if (body?.reason === SCANNER_OUTDATED_REASON) void takeoverIfNewer().catch(() => false);
+      return { kind: "later" };
+    }
+    // 409: a single-scanner pass that is bound to another phone - same remedy.
+    if (resp.status === 401 || resp.status === 403 || resp.status === 409) {
+      const body = (await resp.json().catch(() => null)) as { error?: string } | null;
+      return { kind: "dead", message: body?.error ?? "Door pass no longer valid" };
+    }
+    if (!resp.ok) return { kind: "later" };
+    const body = (await resp.json()) as { ok: boolean; data?: CheckinSyncResponse };
+    return body.ok && body.data ? { kind: "ok", data: body.data } : { kind: "later" };
+  }
+
+  /**
+   * Moving to another event: if the one being left still has unsynced check-ins,
+   * keep its pass so they can reach THAT event later. They are never sent with
+   * the new pass, and never dropped.
+   */
+  private async keepEarlierPass(nextEventId: string): Promise<void> {
+    const previous = await db.getStoredPass();
+    if (!previous || previous.eventId === nextEventId) return;
+    if ((await db.getPending(previous.eventId)).length === 0) return;
+    const earlier = await db.getEarlierPasses();
+    earlier[previous.eventId] = previous;
+    await db.setEarlierPasses(earlier);
+  }
+
+  /**
+   * Sync earlier events' unsynced check-ins, each with its own pass. A pass that
+   * has expired or been refused is let go; its records stay on the phone.
+   */
+  private async syncEarlierEvents(): Promise<void> {
+    if (this.syncingEarlier || !this.online) return;
+    this.syncingEarlier = true;
+    try {
+      await this.syncEachEarlierEvent();
+    } finally {
+      this.syncingEarlier = false;
+    }
+  }
+
+  private async syncEachEarlierEvent(): Promise<void> {
+    const earlier = await db.getEarlierPasses();
+    let changed = false;
+    for (const [eventId, pass] of Object.entries(earlier)) {
+      if (eventId === this.pass?.eventId) continue;
+      const pending = await db.getPending(eventId);
+      if (pending.length === 0 || isPassExpired(pass.exp, Date.now())) {
+        delete earlier[eventId];
+        changed = true;
+        continue;
+      }
+      try {
+        const answer = await this.postSync(pass, pending);
+        if (answer.kind === "dead") {
+          delete earlier[eventId];
+          changed = true;
+        } else if (answer.kind === "ok") {
+          await db.absorbServerCheckins(eventId, answer.data.checkins, pending.map((r) => db.ticketKey(r.seriesId, r.edition)));
+          if ((await db.getPending(eventId)).length === 0) {
+            delete earlier[eventId];
+            changed = true;
+          }
+        }
+      } catch {
+        // Offline: next time.
+      }
+    }
+    if (changed) await db.setEarlierPasses(earlier);
+    await this.countOtherUnsynced();
+  }
+
+  private async countOtherUnsynced(): Promise<void> {
+    this.otherUnsynced = unsyncedElsewhere(await db.getAllPendingKeys(), this.pass?.eventId ?? null);
+  }
 
   private async downloadPack(): Promise<boolean> {
     const pass = this.pass;
@@ -510,14 +605,15 @@ class ScannerStore {
   private async claimAtServer(seriesId: string, edition: number, method: "scan" | "manual"): Promise<ClaimAnswer> {
     this.claiming = true;
     try {
-      if (!this.pass) return { kind: "cant-confirm", message: "Scanner not provisioned" };
-      const claimId = (await db.getPendingClaimId(seriesId, edition)) ?? newClaimId();
-      await db.setPendingClaimId(seriesId, edition, claimId);
+      const pass = this.pass;
+      if (!pass) return { kind: "cant-confirm", message: "Scanner not provisioned" };
+      const claimId = (await db.getPendingClaimId(pass.eventId, seriesId, edition)) ?? newClaimId();
+      await db.setPendingClaimId(pass.eventId, seriesId, edition, claimId);
       const answer = await claimAdmission({
         fetchFn: (input, init) => fetch(input, init),
         apiBase: API_BASE,
-        eventId: this.pass.eventId,
-        token: this.pass.token,
+        eventId: pass.eventId,
+        token: pass.token,
         deviceId: this.deviceId,
         claim: { seriesId, edition, method, claimId, at: new Date().toISOString() },
       });
@@ -539,8 +635,8 @@ class ScannerStore {
       next.set(db.ticketKey(seriesId, edition), answer.record);
       this.checkins = next;
       try {
-        await db.clearPendingClaimId(seriesId, edition);
-        await db.absorbServerCheckins([answer.record], []);
+        await db.clearPendingClaimId(pass.eventId, seriesId, edition);
+        await db.absorbServerCheckins(pass.eventId, [answer.record], []);
       } catch (err) {
         // The server holds the record and the next sync brings it back; the
         // answer stands.
@@ -553,6 +649,7 @@ class ScannerStore {
   }
 
   private async mark(seriesId: string, edition: number, method: "scan" | "manual"): Promise<CheckinRecord | null> {
+    if (!this.pass) return null;
     const record: CheckinRecord = {
       seriesId,
       edition,
@@ -560,7 +657,7 @@ class ScannerStore {
       deviceId: this.deviceId,
       method,
     };
-    const existing = await db.checkAndMark(record);
+    const existing = await db.checkAndMark(this.pass.eventId, record);
     if (!existing) {
       const next = new Map(this.checkins);
       next.set(db.ticketKey(seriesId, edition), record);
@@ -598,12 +695,14 @@ class ScannerStore {
       }
     }
 
-    await db.absorbServerCheckins(pack.checkins, []);
+    await db.absorbServerCheckins(pack.eventId, pack.checkins, []);
     await this.reloadCheckins();
   }
 
   private async reloadCheckins(): Promise<void> {
-    const all = await db.getAllCheckins();
+    if (!this.pass) return;
+    const eventId = this.pass.eventId;
+    const all = await db.getAllCheckins(eventId);
     const map = new Map<string, CheckinRecord>();
     for (const r of all) map.set(db.ticketKey(r.seriesId, r.edition), r);
     // A union, never a replacement: the set only grows. A snapshot read before a
@@ -611,7 +710,8 @@ class ScannerStore {
     // re-scan could replay that claim (#641). `reset()` clears explicitly.
     for (const [k, v] of this.checkins) if (!map.has(k)) map.set(k, v);
     this.checkins = map;
-    this.pendingCount = (await db.getPending()).length;
+    this.pendingCount = (await db.getPending(eventId)).length;
+    await this.countOtherUnsynced();
   }
 
   private startSyncLoop(): void {

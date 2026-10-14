@@ -61,6 +61,14 @@
     <button type="submit">Go</button>
   </form>
 
+  {#if scanner.otherUnsynced > 0}
+    <p class="note">
+      {scanner.otherUnsynced} check-in{scanner.otherUnsynced === 1 ? "" : "s"} from an earlier event
+      {scanner.otherUnsynced === 1 ? "hasn't" : "haven't"} reached WoCo yet. {scanner.otherUnsynced === 1 ? "It stays" : "They stay"} on this phone
+      and sync with that event's door pass while it is still valid.
+    </p>
+  {/if}
+
   {#if localError || scanner.provisionError}
     <div class="error-row">
       <p class="error">{localError ?? scanner.provisionError}</p>
@@ -141,6 +149,12 @@
     border-radius: var(--radius-md);
     font-weight: 700;
     padding: 0 1.1rem;
+  }
+  .note {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    line-height: 1.4;
   }
   .error-row {
     display: flex;
