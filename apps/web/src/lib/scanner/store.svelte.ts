@@ -749,7 +749,8 @@ class ScannerStore {
   }
 
   private async mark(seriesId: string, edition: number, method: "scan" | "manual"): Promise<CheckinRecord | null> {
-    if (!this.pass) return null;
+    const pass = this.pass;
+    if (!pass) return null;
     const record: CheckinRecord = {
       seriesId,
       edition,
@@ -757,12 +758,15 @@ class ScannerStore {
       deviceId: this.deviceId,
       method,
     };
-    const existing = await db.checkAndMark(this.pass.eventId, record);
+    const existing = await db.checkAndMark(pass.eventId, record);
     if (!existing) {
-      const next = new Map(this.checkins);
-      next.set(db.ticketKey(seriesId, edition), record);
-      this.checkins = next;
-      this.pendingCount += 1;
+      // Stored under the event it was admitted at; a tab that switched while it
+      // was written shows another event's set and count, which it is not part of.
+      const next = withConfirmed(this.checkins, db.ticketKey(seriesId, edition), record, pass.token, this.pass?.token);
+      if (next) {
+        this.checkins = next;
+        this.pendingCount += 1;
+      }
       void this.sync();
     }
     return existing;

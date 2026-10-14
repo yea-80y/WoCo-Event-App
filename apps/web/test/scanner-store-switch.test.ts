@@ -3,9 +3,10 @@
  * node against fake IndexedDB, for the cases a source match cannot show: what a
  * tab does when it moves between events (Fable sign-off, 2026-10-14).
  *
- * Only two of its modules are swapped: `sw-update.ts` (it imports the PWA
- * plugin's virtual module) for a stub, and `verify.ts` for the real verifier
- * behind a gate the test opens, so a scan can be held between verify and admit.
+ * Only three of its modules are swapped: `sw-update.ts` (it imports the PWA
+ * plugin's virtual module) for a stub, and `verify.ts` and `db.ts` for the real
+ * ones behind gates the test opens - so a scan can be held between verify and
+ * admit, and a check-in between its write and the store's update of memory.
  */
 import "fake-indexeddb/auto";
 import { IDBFactory } from "fake-indexeddb";
@@ -75,12 +76,25 @@ export async function verifyTicket(raw, pack) {
 `,
 );
 
+writeFileSync(
+  join(out, "db.js"),
+  `import * as real from ${JSON.stringify(moduleUrl("db.ts"))};
+export * from ${JSON.stringify(moduleUrl("db.ts"))};
+export async function checkAndMark(eventId, record) {
+  const existing = await real.checkAndMark(eventId, record);
+  await globalThis.__scannerMarkGate?.();
+  return existing;
+}
+`,
+);
+const SWAPPED = new Set(["sw-update", "verify", "db"]);
+
 const source = readFileSync(join(scannerDir, "store.svelte.ts"), "utf8").replace("import.meta.env.VITE_API_URL", '""');
 const js = (await transform(source, { loader: "ts", format: "esm" })).code;
 const compiled = compileModule(js, { generate: "client", filename: "store.svelte.js" }).js.code.replace(
   /from "\.\/([\w-]+)\.js"/g,
   (_m, name: string) =>
-    `from ${JSON.stringify(name === "sw-update" || name === "verify" ? `./${name}.js` : moduleUrl(`${name}.ts`))}`,
+    `from ${JSON.stringify(SWAPPED.has(name) ? `./${name}.js` : moduleUrl(`${name}.ts`))}`,
 );
 writeFileSync(join(out, "store.js"), compiled);
 const storeUrl = pathToFileURL(join(out, "store.js")).href;
@@ -164,19 +178,20 @@ async function ticketForEventA(): Promise<string> {
   return `woco://t/event-a/ser-event-a/1/${sig}`;
 }
 
-type Gated = typeof globalThis & { __scannerVerifyGate?: () => Promise<void> };
+type Gate = "__scannerVerifyGate" | "__scannerMarkGate";
+type Gated = typeof globalThis & { [G in Gate]?: () => Promise<void> };
 
-/** Holds the next verification until `release`; `reached` resolves once it is held. */
-function holdVerification(t: test.TestContext) {
+/** Holds the store at `gate` until `release`; `reached` resolves once it is held. */
+function hold(t: test.TestContext, gate: Gate) {
   let release!: () => void;
   let arrive!: () => void;
   const held = new Promise<void>((r) => (release = r));
   const reached = new Promise<void>((r) => (arrive = r));
-  (globalThis as Gated).__scannerVerifyGate = () => {
+  (globalThis as Gated)[gate] = () => {
     arrive();
     return held;
   };
-  t.after(() => delete (globalThis as Gated).__scannerVerifyGate);
+  t.after(() => delete (globalThis as Gated)[gate]);
   return { reached, release };
 }
 
@@ -197,7 +212,7 @@ test("a held scan with no switch admits under its own event", async (t) => {
   await twoSingleScannerEvents();
   const scanner = await openTab(t);
   await scanner.openEvent("event-a");
-  const gate = holdVerification(t);
+  const gate = hold(t, "__scannerVerifyGate");
   const scanning = scanner.scan(await ticketForEventA());
   await gate.reached;
   gate.release();
@@ -209,7 +224,7 @@ test("a scan that began under one event never admits under the event the tab swi
   await twoSingleScannerEvents();
   const scanner = await openTab(t);
   await scanner.openEvent("event-a");
-  const gate = holdVerification(t);
+  const gate = hold(t, "__scannerVerifyGate");
   const scanning = scanner.scan(await ticketForEventA());
   await gate.reached; // verifying against event-a's pack
   await scanner.switchTo("event-b");
@@ -223,4 +238,22 @@ test("a scan that began under one event never admits under the event the tab swi
     "not admitted: the door it began at is no longer this tab's",
   );
   await assertNothingRecorded(scanner);
+});
+
+test("a check-in written while the tab switched events stays out of the new event's set and count", async (t) => {
+  await twoSingleScannerEvents();
+  const scanner = await openTab(t);
+  await scanner.openEvent("event-a");
+  const gate = hold(t, "__scannerMarkGate");
+  const checking = scanner.manualCheckin("ser-event-a", 1);
+  await gate.reached; // stored under event-a; the store has not updated memory yet
+  await scanner.switchTo("event-b");
+  gate.release();
+
+  assert.equal((await checking).kind, "checked-in", "admitted at event-a's door before the switch");
+  assert.equal(scanner.checkedInCount, 0, "event-b's count is unchanged");
+  assert.equal(scanner.isCheckedIn("ser-event-a", 1), undefined);
+  assert.equal(scanner.pendingCount, 0);
+  assert.deepEqual((await db.getAllCheckins("event-a")).map((r) => r.edition), [1], "stored under the event it was admitted at");
+  assert.deepEqual(await db.getAllCheckins("event-b"), []);
 });
