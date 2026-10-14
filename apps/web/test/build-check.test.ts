@@ -253,12 +253,21 @@ test("no <base href>: relative URLs resolve against where the page came from", (
 test("handover rules: same feed and same policy goes; another policy reloads; anything else stays put", () => {
   const page = parseBuildPage(BUILT, "https://gw/bzz/siteref/")!;
   const current = { ...page.feed, index: 241 };
-  assert.equal(handoverVerdict(page, current, page.csp), "go");
-  assert.equal(handoverVerdict(page, current, page.csp + " "), "reload");
-  assert.equal(handoverVerdict(page, current, null), "reload");
-  assert.equal(handoverVerdict(null, current, page.csp), "failed");
-  assert.equal(handoverVerdict(page, { ...current, owner: "11".repeat(20) }, page.csp), "failed");
-  assert.equal(handoverVerdict(page, { ...current, topic: "22".repeat(32) }, page.csp), "failed");
+  const elsewhere = "https://gateway.woco-net.com/bzz/" + "ab".repeat(32) + "/";
+  assert.equal(handoverVerdict(page, current, page.csp, elsewhere), "go");
+  assert.equal(handoverVerdict(page, current, page.csp + " ", elsewhere), "reload");
+  assert.equal(handoverVerdict(page, current, null, elsewhere), "reload");
+  assert.equal(handoverVerdict(null, current, page.csp, elsewhere), "failed");
+  assert.equal(handoverVerdict(page, { ...current, owner: "11".repeat(20) }, page.csp, elsewhere), "failed");
+  assert.equal(handoverVerdict(page, { ...current, topic: "22".repeat(32) }, page.csp, elsewhere), "failed");
+});
+
+test("the same code redeployed (same assets base) is started here, never imported again", () => {
+  // Importing an entry URL this page already ran returns the cached module: nothing mounts.
+  const page = parseBuildPage(BUILT, "https://gw/bzz/siteref/")!;
+  const current = { ...page.feed, index: 241 };
+  assert.equal(handoverVerdict(page, current, page.csp, page.base), "same");
+  assert.equal(handoverVerdict(page, current, "different csp", page.base), "same", "even before the policy rule");
 });
 
 // ---- wiring the property depends on ----

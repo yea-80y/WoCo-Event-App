@@ -71,11 +71,17 @@ export function parseBuildPage(html: string, fetchedFrom: string): BuildPage | n
   }
 }
 
-export type SwapResult = "swapped" | "reload" | "failed";
+export type SwapResult = "swapped" | "same" | "reload" | "failed";
 
-/** Whether a fetched page may take over this one. Pure, so the rules are testable. */
-export function handoverVerdict(page: BuildPage | null, current: BuildFeed, ownCsp: string | null): "go" | SwapResult {
+/**
+ * Whether a fetched page may take over this one. Pure, so the rules are testable.
+ * "same": the newer build's assets live under THIS page's base, so it is this code
+ * redeployed - and it has to be run as this page, because importing its entry would
+ * only hand back the module already evaluated here, and nothing would mount.
+ */
+export function handoverVerdict(page: BuildPage | null, current: BuildFeed, ownCsp: string | null, ownBase: string): "go" | SwapResult {
   if (!page || page.feed.owner !== current.owner || page.feed.topic !== current.topic) return "failed";
+  if (page.base === ownBase) return "same";
   return page.csp === ownCsp ? "go" : "reload";
 }
 
@@ -112,9 +118,10 @@ async function fetchPage(bases: string[], ref: string): Promise<BuildPage | null
 }
 
 /**
- * Moves this document onto the build at `point`. "reload" means the build is ours
- * but declares a different security policy, or is still loading after 15 s;
- * "failed" leaves the page as it was so the caller can mount the current build.
+ * Moves this document onto the build at `point`. "same" means it is this page's own
+ * code redeployed; "reload" means the build is ours but declares a different security
+ * policy, or is still loading after 15 s; "same" and "failed" leave the page as it was
+ * so the caller mounts the current build.
  */
 export async function swapToBuild(
   point: FeedPoint,
@@ -124,7 +131,7 @@ export async function swapToBuild(
 ): Promise<SwapResult> {
   const page = await fetchPage(pageBases, point.ref);
   const ownCsp = document.querySelector('meta[http-equiv="Content-Security-Policy" i]')?.getAttribute("content") ?? null;
-  const verdict = handoverVerdict(page, current, ownCsp);
+  const verdict = handoverVerdict(page, current, ownCsp, document.baseURI);
   if (verdict !== "go" || !page) return verdict === "go" ? "failed" : verdict; // "go" implies a page
 
   const head = document.head;
