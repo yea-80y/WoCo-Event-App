@@ -58,3 +58,22 @@ export async function admit(i: AdmitInput): Promise<Admission> {
   if (answer.kind === "already-in") return { kind: "already-in", record: answer.record };
   return { kind: "cant-confirm", message: answer.message };
 }
+
+/**
+ * The in-memory check-in set after a confirmed server answer, or null when this
+ * tab moved to another pass while the claim was in flight (a pass link opened in
+ * the tab): the answer belongs to the pass it was asked under, is stored under
+ * that pass's event, and must never appear in another event's set.
+ */
+export function withConfirmed(
+  checkins: Map<string, CheckinRecord>,
+  key: string,
+  record: CheckinRecord,
+  askedUnder: string,
+  current: string | undefined,
+): Map<string, CheckinRecord> | null {
+  if (askedUnder !== current) return null;
+  const next = new Map(checkins);
+  next.set(key, record);
+  return next;
+}

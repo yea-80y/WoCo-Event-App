@@ -26,7 +26,7 @@ import * as db from "./db.js";
 import { decryptRoster } from "./roster-crypto.js";
 import { verifyTicket } from "./verify.js";
 import { claimAdmission, newClaimId, type ClaimAnswer } from "./claim.js";
-import { admit, doorModeOf, type Admission } from "./admission.js";
+import { admit, doorModeOf, withConfirmed, type Admission } from "./admission.js";
 import {
   MISS_FAILED_MESSAGE,
   MISS_RECHECK_MS,
@@ -668,9 +668,8 @@ class ScannerStore {
       // Final either way. Into memory first, before anything can yield; then the
       // pending claimId goes BEFORE the record is written, because a stale claimId
       // is the only thing that could replay this admission.
-      const next = new Map(this.checkins);
-      next.set(db.ticketKey(seriesId, edition), answer.record);
-      this.checkins = next;
+      const next = withConfirmed(this.checkins, db.ticketKey(seriesId, edition), answer.record, pass.token, this.pass?.token);
+      if (next) this.checkins = next;
       try {
         await db.clearPendingClaimId(pass.eventId, seriesId, edition);
         await db.absorbServerCheckins(pass.eventId, [answer.record], []);
