@@ -46,7 +46,7 @@ test("a new pass id is 16 random bytes, lowercase hex", () => {
 
 test("the registration: the key the link opens, signed by the account's feed signer", () => {
   const jti = newDoorPassId();
-  const reg = doorPassRegistration(S1, EVENT, jti);
+  const reg = doorPassRegistration(S1, EVENT, jti, deriveFeedSignerKey(S1).privKey);
   assert.equal(reg.jti, jti);
   // What the scanner derives from the link must be exactly what was registered.
   const p = base64UrlDecode(doorPassSecretB64url(S1, EVENT, token(jti)));
@@ -54,7 +54,7 @@ test("the registration: the key the link opens, signed by the account's feed sig
   assert.equal(doorKeyRefOf(hexToBytes(reg.doorKey)), doorKeyRefOf(scannerKey), "the registered key is the one the link opens");
   const msg = doorKeyRegistrationMessage(EVENT, jti, doorKeyRefOf(scannerKey));
   assert.equal(recoverPersonalSigner(msg, reg.sig), deriveFeedSignerKey(S1).address, "the registration verifies");
-  assert.notEqual(recoverPersonalSigner(msg, doorPassRegistration(S2, EVENT, jti).sig), deriveFeedSignerKey(S1).address);
+  assert.notEqual(recoverPersonalSigner(msg, doorPassRegistration(S1, EVENT, jti, deriveFeedSignerKey(S2).privKey).sig), deriveFeedSignerKey(S1).address);
 });
 
 test("one secret in the link opens the roster the panel encrypted, and no other does", async () => {
@@ -68,7 +68,8 @@ test("one secret in the link opens the roster the panel encrypted, and no other 
 test("the panel issues the pass with its registration before the roster, stores no secret, and refuses a pass from older keys", () => {
   const panel = readFileSync(new URL("../src/lib/creator/dashboard/CheckinPanel.svelte", import.meta.url), "utf8");
   const gen = panel.slice(panel.indexOf("async function generatePass("), panel.indexOf("async function refreshRoster("));
-  assert.match(gen, /await issueDoorPass\(eventId, passMode, doorPassRegistration\(keys\.current, eventId, newDoorPassId\(\)\)\)/);
+  assert.match(gen, /const feedSigner = await auth\.getContentFeedSigner\(\);/, "the signer comes from the auth store");
+  assert.match(gen, /await issueDoorPass\(eventId, passMode, doorPassRegistration\(keys\.current, eventId, newDoorPassId\(\), feedSigner\.privKey\)\)/);
   assert.ok(gen.indexOf("await issueDoorPass(") < gen.indexOf("await pushCheckinRoster("), "pass first");
   assert.match(gen, /stored = \{ token: issued\.token, exp: issued\.exp, mode: issued\.mode, gen: keys\.gen,/);
   assert.doesNotMatch(panel, /stored = \{[^}]*(url|passSecret|doorKey|sig)/, "the link, its secret and the registration are never stored");

@@ -170,8 +170,10 @@
       await auth.ensureOrganiserUnlock();
       if (needsDecrypt) await onEnsureDecrypted();
       const keys = await currentKeys();
+      const feedSigner = await auth.getContentFeedSigner();
+      if (!feedSigner) throw new Error("This account can't make door passes - sign in with your passkey or email.");
 
-      const issued = await issueDoorPass(eventId, passMode, doorPassRegistration(keys.current, eventId, newDoorPassId()));
+      const issued = await issueDoorPass(eventId, passMode, doorPassRegistration(keys.current, eventId, newDoorPassId(), feedSigner.privKey));
       const passSecret = doorPassSecretB64url(keys.current, eventId, issued.token);
       const roster = await encryptRoster(buildRosterEntries(), passSecret);
       await pushCheckinRoster(eventId, roster);

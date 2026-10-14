@@ -6,13 +6,13 @@
  *
  * The pass id is chosen HERE, so P and its door entries key exist before the server is
  * asked to issue the pass: one request issues it and registers the key, signed by the
- * account's content-feed signer (a login session alone cannot sign that).
+ * account's content-feed signer (a login session alone cannot sign that). The signer
+ * comes from the auth store, the one place it is derived.
  */
 import { base64UrlEncode, decodeDoorPassToken } from "@woco/shared";
 import { doorPassSecret } from "@woco/shared/keyring/account-secret";
 import { doorKeyRefOf, doorKeyRegistrationMessage } from "@woco/shared/checkin/door-keys";
 import { doorEntriesKeypair } from "@woco/shared/checkin/door-entries-key";
-import { deriveFeedSignerKey } from "@woco/shared/crypto/feed-signer";
 import { signPersonalMessage } from "@woco/shared/crypto/issuing";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
@@ -37,11 +37,15 @@ export function doorPassSecretB64url(secretHex: string, eventId: string, token: 
 
 /** What a new pass sends to be issued: its id, its door entries public key, and the
  *  content-feed signer's signature over them. Nothing secret leaves the device. */
-export function doorPassRegistration(secretHex: string, eventId: string, passId: string): { jti: string; doorKey: string; sig: string } {
-  const clean = secretHex.replace(/^0x/, "");
-  const secret = hexToBytes(clean);
+export function doorPassRegistration(
+  secretHex: string,
+  eventId: string,
+  passId: string,
+  feedSignerPrivKey: string,
+): { jti: string; doorKey: string; sig: string } {
+  const secret = hexToBytes(secretHex.replace(/^0x/, ""));
   const p = doorPassSecret(secret, eventId, passId);
-  const priv = hexToBytes(deriveFeedSignerKey(clean).privKey.slice(2));
+  const priv = hexToBytes(feedSignerPrivKey.replace(/^0x/, ""));
   try {
     const kp = doorEntriesKeypair(p);
     kp.secretKey.fill(0);
