@@ -463,8 +463,10 @@ function healthReport() {
     rosterRetention: rosterRetentionHealth(),
     // Order answers erased N months after the event's onchain end (#547).
     // Red when the ledger or held orders are unreadable, no run in 48 h, the
-    // mode is not understood, or - live only - an order is a week past due.
-    // `undeterminable` (no onchain end to go by) is counted, never overdue.
+    // mode is not understood, or - live only - an order someone can act on is a
+    // week past due, the `backlog` the per-run limit holds back is two weeks past
+    // due, or bee has not listed a batch of due orders in 3 runs in a row.
+    // `undeterminable` (no onchain end to go by) and a dead batch are counted, never red.
     orderRetention: orderRetentionHealth(),
     // Whether paid checkouts can mint on the events contract (#662): the ticket
     // sponsor still authorised, and on the ledger its hourly mint cap's headroom

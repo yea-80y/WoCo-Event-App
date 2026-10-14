@@ -234,21 +234,41 @@ test("no stamper, or a batch the stamper does not own: skipped", async () => {
   assert.equal(ledger.isOrderErased(ref), false);
 });
 
-test("a dead batch is read from chain, counted and still overdue - never tombstoned; the ledger's expiry decides nothing (#884)", async () => {
+const deadBatch = (ttl: number) => async () => ({ owner: stamper, depth: 20, bucketDepth: 16, immutable: false, batchTTL: ttl });
+
+test("a batch the chain says is dead, or bee does not list, is counted apart, kept, never tombstoned and never overdue (#884)", async () => {
   await fresh();
   const ref = await stored();
-  for (const verdict of [null, { owner: stamper, depth: 20, bucketDepth: 16, immutable: false, batchTTL: 0 }]) {
-    const { deps, calls } = fakeDeps({ batch: async () => verdict });
-    const { summary } = ok(await live(deps));
-    assert.equal(summary.skipped.batchDead, 1);
+  const cases = [
+    { batch: async () => null, reason: "batchUnlisted" as const },
+    { batch: deadBatch(0), reason: "batchDead" as const },
+    { batch: deadBatch(-1), reason: "batchDead" as const },
+  ];
+  for (const { batch, reason } of cases) {
+    const { deps, calls } = fakeDeps({ batch });
+    const { summary, items } = ok(await live(deps));
+    assert.equal(summary.skipped[reason], 1, reason);
+    assert.equal(summary.skipped[reason === "batchDead" ? "batchUnlisted" : "batchDead"], 0, reason);
     assert.deepEqual(calls.erase, []);
-    assert.ok(summary.oldestOverdueDays! > 70, "kept counting");
+    assert.equal(summary.due, 1, "still due");
+    assert.equal(items[0]!.reason, reason);
+    assert.equal(summary.oldestOverdueDays, null, `${reason} is not overdue`);
     const rec = ledger.getOrderRecord(ref)!;
     assert.equal(rec.state, "stored");
     assert.equal(rec.erasedBy, undefined);
   }
-  const unknown = fakeDeps({ batch: async () => { throw new Error("bee down"); } });
-  assert.equal(ok(await live(unknown.deps)).summary.skipped.batchUnknown, 1);
+  // A lookup that throws cannot say: unknown, and that one stays overdue.
+  const unknown = ok(await live(fakeDeps({ batch: async () => { throw new Error("bee down"); } }).deps)).summary;
+  assert.equal(unknown.skipped.batchUnknown, 1);
+  assert.equal(unknown.skipped.batchUnlisted + unknown.skipped.batchDead, 0);
+  assert.ok(unknown.oldestOverdueDays! > 70);
+  // A TTL that is not a number is a reading we cannot trust, never a quiet "dead".
+  for (const ttl of [Number.NaN, "0" as unknown as number, undefined as unknown as number]) {
+    const odd = ok(await live(fakeDeps({ batch: deadBatch(ttl) }).deps)).summary;
+    assert.equal(odd.skipped.batchUnknown, 1, String(ttl));
+    assert.equal(odd.skipped.batchDead, 0, String(ttl));
+    assert.ok(odd.oldestOverdueDays! > 70, String(ttl));
+  }
   // The ledger says expired; the chain says alive: the chain decides.
   ledger.setBatchExpiry(batchId, new Date(NOW - 30 * DAY).toISOString());
   ok(await live(fakeDeps().deps));
@@ -283,7 +303,23 @@ test("the per-run limit holds, oldest due first, paced between erasures", async 
   assert.deepEqual(calls.sleeps, [7], "one pause, between the two");
   assert.equal(summary.skipped.overLimit, 1);
   assert.equal(ledger.isOrderErased(a), false);
-  assert.equal(summary.oldestOverdueDays, Math.round(((NOW - (DUE6 + 2 * DAY)) / DAY) * 10) / 10);
+  assert.equal(summary.backlog, 1);
+  assert.equal(summary.oldestBacklogDays, Math.round(((NOW - (DUE6 + 2 * DAY)) / DAY) * 10) / 10);
+  assert.equal(summary.oldestOverdueDays, null, "held back by the limit is backlog, not overdue");
+});
+
+test("backlog and overdue are told apart in one run", async () => {
+  await fresh();
+  await stored({ seriesId: "a" });
+  await stored({ seriesId: "b" });
+  await stored({ seriesId: "c" });
+  // b is the oldest and blocked (in flight), a is erased, c is held back by the limit.
+  const { deps } = fakeDeps({ ends: { a: END + DAY, b: END, c: END + 3 * DAY } });
+  let n = 0;
+  const { summary } = ok(await live({ ...deps, inFlight: () => n++ === 0 }, 1));
+  assert.deepEqual([summary.erased, summary.skipped.inFlight, summary.backlog], [1, 1, 1]);
+  assert.equal(summary.oldestOverdueDays, Math.round(((NOW - DUE6) / DAY) * 10) / 10);
+  assert.equal(summary.oldestBacklogDays, Math.round(((NOW - (DUE6 + 3 * DAY)) / DAY) * 10) / 10);
 });
 
 test("an order already erased is not touched again", async () => {
@@ -326,6 +362,7 @@ test("an order on a batch the ledger does not know is kept", async () => {
   const { summary } = ok(await live(deps));
   assert.deepEqual(calls.erase, []);
   assert.equal(summary.skipped.batchUnknown, 1);
+  assert.ok(summary.oldestOverdueDays! > 70, "unknown, not unlisted: still overdue");
 });
 
 test("a paid order still held is erased too: hold deleted, tombstone with the rule, period and organiser", async () => {
@@ -403,14 +440,14 @@ test("an erase that fails is counted, stays overdue, and the run carries on", as
 
 // ── Config and health ──────────────────────────────────────────────────────
 
-test("mode: unset or unrecognised is a dry run; only an explicit live erases", () => {
-  assert.deepEqual(retention.retentionConfig({}), { mode: "dry-run", limit: 25, configError: false });
+test("mode: unset or unrecognised is a dry run; only an explicit live erases; the default limit is 500", () => {
+  assert.deepEqual(retention.retentionConfig({}), { mode: "dry-run", limit: 500, configError: false });
   assert.equal(retention.retentionConfig({ ORDER_RETENTION_SWEEP: " LIVE " }).mode, "live");
   assert.equal(retention.retentionConfig({ ORDER_RETENTION_SWEEP: "off" }).mode, "off");
-  assert.deepEqual(retention.retentionConfig({ ORDER_RETENTION_SWEEP: "yes" }), { mode: "dry-run", limit: 25, configError: true });
+  assert.deepEqual(retention.retentionConfig({ ORDER_RETENTION_SWEEP: "yes" }), { mode: "dry-run", limit: 500, configError: true });
   assert.equal(retention.retentionConfig({ ORDER_RETENTION_LIMIT: "1" }).limit, 1);
   for (const bad of ["0", "-1", "1.5", "501", "x"]) {
-    assert.deepEqual(retention.retentionConfig({ ORDER_RETENTION_LIMIT: bad }), { mode: "dry-run", limit: 25, configError: true }, bad);
+    assert.deepEqual(retention.retentionConfig({ ORDER_RETENTION_LIMIT: bad }), { mode: "dry-run", limit: 500, configError: true }, bad);
   }
 });
 
@@ -438,11 +475,11 @@ async function withModeAsync(mode: string, f: () => Promise<void>): Promise<void
 test("health: red when live and an order is over a week past due; a dry run reports it without alarming", async () => {
   await fresh();
   await stored();
-  ok(await live(fakeDeps({ batch: async () => null }).deps));
+  ok(await live(fakeDeps({ inFlight: () => true }).deps));
   const liveHealth = withMode("live", () => retention.orderRetentionHealth(NOW));
   assert.equal(liveHealth.ok, false);
   assert.equal(liveHealth.checks.overdue.ok, false);
-  assert.equal(liveHealth.skipped?.batchDead, 1);
+  assert.equal(liveHealth.skipped?.inFlight, 1);
   const dry = withMode(undefined, () => retention.orderRetentionHealth(NOW));
   assert.equal(dry.checks.overdue.ok, true);
   assert.ok(dry.oldestOverdueDays! > 7);
@@ -451,8 +488,64 @@ test("health: red when live and an order is over a week past due; a dry run repo
 test("health: a week or less past due is not red", async () => {
   await fresh();
   await stored();
-  ok(await live(fakeDeps({ batch: async () => null, now: () => DUE6 + 7 * DAY, chainNow: async () => DUE6 + 7 * DAY }).deps));
+  ok(await live(fakeDeps({ inFlight: () => true, now: () => DUE6 + 7 * DAY, chainNow: async () => DUE6 + 7 * DAY }).deps));
   assert.equal(withMode("live", () => retention.orderRetentionHealth(NOW)).checks.overdue.ok, true);
+});
+
+test("health: a backlog the limit holds back is red only when live and over 14 days past due", async () => {
+  for (const [daysPast, red] of [[14, false], [15, true]] as const) {
+    await fresh();
+    await stored({ seriesId: "a" });
+    await stored({ seriesId: "b" });
+    const at = DUE6 + daysPast * DAY;
+    ok(await live(fakeDeps({ now: () => at, chainNow: async () => at }).deps, 1));
+    const h = withMode("live", () => retention.orderRetentionHealth(at));
+    assert.equal(h.backlog, 1);
+    assert.equal(h.oldestBacklogDays, daysPast);
+    assert.equal(h.oldestOverdueDays, null);
+    assert.equal(h.checks.overdue.ok, true, "a backlog is never overdue");
+    assert.equal(h.checks.backlog.ok, !red, `${daysPast} days`);
+    assert.equal(h.ok, !red);
+    assert.equal(withMode(undefined, () => retention.orderRetentionHealth(at)).checks.backlog.ok, true, "a dry run never alarms");
+  }
+});
+
+test("health: a batch bee does not list is red at the third run in a row, live only; a run without one resets it", async () => {
+  await fresh();
+  await stored();
+  const unlisted = fakeDeps({ batch: async () => null }).deps;
+  const health = (mode?: string) => withMode(mode, () => retention.orderRetentionHealth(NOW));
+  for (const n of [1, 2]) {
+    ok(await live(unlisted));
+    assert.equal(health("live").unlistedStreak, n);
+    assert.equal(health("live").checks.batchUnlisted.ok, true, `run ${n}`);
+    assert.equal(health("live").ok, true, "not overdue either");
+  }
+  ok(await live(unlisted));
+  assert.equal(health("live").unlistedStreak, 3);
+  assert.equal(health("live").checks.batchUnlisted.ok, false);
+  assert.equal(health("live").ok, false);
+  assert.equal(health(undefined).checks.batchUnlisted.ok, true, "a dry run never alarms");
+  // A run that meets no unlisted batch (here, the store is in flight) resets the streak.
+  ok(await live(fakeDeps({ inFlight: () => true }).deps));
+  assert.equal(health("live").unlistedStreak, 0);
+  assert.equal(health("live").checks.batchUnlisted.ok, true);
+  ok(await live(unlisted));
+  assert.equal(health("live").unlistedStreak, 1, "counts again from one");
+  assert.equal(health("live").checks.batchUnlisted.ok, true);
+});
+
+test("health: a dead batch never alarms, however many runs meet it", async () => {
+  await fresh();
+  const ref = await stored();
+  for (let i = 0; i < 4; i++) ok(await live(fakeDeps({ batch: deadBatch(0) }).deps));
+  const h = withMode("live", () => retention.orderRetentionHealth(NOW));
+  assert.equal(h.skipped?.batchDead, 1);
+  assert.equal(h.oldestOverdueDays, null);
+  assert.equal(h.unlistedStreak, 0);
+  assert.ok(Object.values(h.checks).every((c) => c.ok), JSON.stringify(h.checks));
+  assert.equal(h.ok, true);
+  assert.equal(ledger.isOrderErased(ref), false);
 });
 
 test("health: undeterminable orders are counted, never overdue", async () => {
