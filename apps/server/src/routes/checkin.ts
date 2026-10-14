@@ -52,7 +52,7 @@ import {
   claimCheckin,
   bindSinglePassDevice,
 } from "../lib/checkin/store.js";
-import { mapWithConcurrency, SLOT_READ_CONCURRENCY } from "../lib/util/concurrency.js";
+import { slotOwners } from "../lib/checkin/slot-owners.js";
 
 const MAX_ROSTER_CIPHERTEXT = 4 * 1024 * 1024;
 const MAX_SYNC_RECORDS = 5000;
@@ -303,16 +303,12 @@ checkin.get("/:eventId/pack", async (c) => {
           ? await getOnChainEventAt(contract, onChainEventId).catch(() => null)
           : null;
         const slotCount = contract && onChain ? Number(onChain.nextSlot) : 0;
-        const owners = await mapWithConcurrency(
-          Array.from({ length: slotCount }, (_, slot) => slot),
-          SLOT_READ_CONCURRENCY,
-          async (slot) => {
-            if (!contract) return "";
-            const data = await getSlotDataAt(contract, onChainEventId, slot).catch(() => null);
-            return data?.owner?.toLowerCase() ?? "";
-          },
-        );
-        entry.slotOwners = owners;
+        entry.slotOwners = contract
+          ? await slotOwners(`${contractKey(contract)}|${onChainEventId}`, slotCount, async (slot) => {
+              const data = await getSlotDataAt(contract, onChainEventId, slot);
+              return data.owner ? data.owner.toLowerCase() : null;
+            })
+          : [];
         // Refunded sales (#645): keyed by the same (event, slot) the owners are,
         // on the same contract. The scanner checks these only after the
         // signature verifies, so listing a slot here never makes a forgery pass.
