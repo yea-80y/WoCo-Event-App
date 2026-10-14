@@ -27,9 +27,15 @@ import { eventKeyBounds, scopeV1Claims, scopeV1Records, storeKey } from "./scope
  */
 const DB_NAME = "woco-scanner-v2";
 const DB_VERSION = 1;
-/** Per-ticket keys with no event (scope.ts). Read once, copied in, then deleted. */
+/** Per-ticket keys with no event (scope.ts). Copied in, merged on every boot while it exists, then deleted. */
 const LEGACY_DB_NAME = "woco-scanner";
 const MIGRATED = "migratedFromLegacy";
+/**
+ * After the first copy, how long a boot waits to read the legacy database. An
+ * earlier boot's delete that an old tab still blocks queues every later open
+ * behind it, and that open would wait as long as the old tab stays open.
+ */
+const LEGACY_MERGE_WAIT_MS = 1_500;
 
 /** kv: device-wide (device id, copy marker). Every other store is per event: keyed by eventId, or by `storeKey`. */
 const STORES = ["kv", "passes", "packs", "rosters", "conflicts", "checkins", "pending", "claims"] as const;
@@ -91,14 +97,57 @@ export interface LegacyData {
 const LEGACY_KV = ["pass", "pack", "roster", "conflicts", "pendingClaims", "deviceId"] as const;
 
 /**
- * Copy the legacy database in once. The copy is one transaction that checks the
- * marker, clears the stores, copies and sets the marker: an interrupted copy
- * leaves nothing, a re-run starts clean, and a second tab that finished first is
- * left alone.
+ * Copy the legacy database in, then delete it - in that order, in one boot.
+ *
+ * The pass, pack, roster, conflicts and claims are copied once: one transaction
+ * checks the marker, clears the stores, copies and sets the marker, so an
+ * interrupted copy leaves nothing, a re-run starts clean, and a second tab that
+ * finished first is left alone. Check-ins and the unsynced queue are merged on
+ * EVERY boot while the legacy database exists: an old tab still running the
+ * previous scanner keeps writing to it after the copy, and a delete it no longer
+ * blocks would take those records with it.
  */
 async function migrateLegacy(db: IDBDatabase): Promise<void> {
-  if (!(await readKey(db, MIGRATED))) await copyIn(db, await readLegacy());
+  const reading = readLegacy();
+  let legacy: LegacyData | null;
+  try {
+    for (;;) {
+      const read = await within(reading, LEGACY_MERGE_WAIT_MS);
+      if (read !== WAITED_OUT) {
+        legacy = read;
+        break;
+      }
+      // Only a delete issued after a committed copy can hold this read up: that
+      // delete is already coming, and another would only queue behind it. With
+      // no copy yet the read is just slow, and the boot must not go on without it.
+      if (await readKey(db, MIGRATED)) return;
+    }
+  } catch (err) {
+    if (!(await readKey(db, MIGRATED))) throw err;
+    // The copy is in; a legacy database that will not open is left for the next boot to merge.
+    console.warn("[scanner] the old scanner's storage could not be read", err);
+    return;
+  }
+  await copyIn(db, legacy);
   dropLegacy();
+}
+
+const WAITED_OUT = Symbol("waited out");
+
+function within<T>(p: Promise<T>, ms: number): Promise<T | typeof WAITED_OUT> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(WAITED_OUT), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
 }
 
 function readKey(db: IDBDatabase, key: string): Promise<unknown> {
@@ -110,8 +159,9 @@ function readKey(db: IDBDatabase, key: string): Promise<unknown> {
 }
 
 /**
- * Opened WITHOUT a version: that never upgrades an existing database, so it can
- * never wait on another tab. If it does not exist, the creation is aborted - null.
+ * Opened WITHOUT a version: that never upgrades an existing database, so no
+ * other tab's connection can hold it up (a delete queued ahead of it can, which
+ * `migrateLegacy` bounds). If it does not exist, the creation is aborted - null.
  */
 function readLegacy(): Promise<LegacyData | null> {
   return new Promise((resolve, reject) => {
@@ -160,36 +210,37 @@ export async function copyLegacyInForTests(legacy: LegacyData | null): Promise<v
   await copyIn(await openDb(), legacy);
 }
 
-/** `scopeV1Records` decides what moves, and skips any record it cannot read. */
+/**
+ * `scopeV1Records` decides what moves, and skips any record it cannot read. The
+ * marker gates the one-time copy only; the check-in merge runs every time.
+ */
 function copyIn(db: IDBDatabase, legacy: LegacyData | null): Promise<void> {
   return new Promise((resolve, reject) => {
     const t = db.transaction([...STORES], "readwrite");
     const kv = t.objectStore("kv");
     const marker = kv.get(MIGRATED);
     marker.onsuccess = () => {
-      if (marker.result) return;
-      for (const name of STORES) t.objectStore(name).clear();
-      if (legacy) {
-        const { pass, pack, roster, conflicts, deviceId, pendingClaims } = legacy.kv;
-        const eventOf = (v: unknown) => {
-          const id = (v as { eventId?: unknown } | null)?.eventId;
-          return typeof id === "string" && id ? id : null;
-        };
-        const eventId = eventOf(pack) ?? eventOf(pass);
-        if (eventOf(pass)) putSkippingBad(t.objectStore("passes"), pass, eventOf(pass)!);
-        if (eventOf(pack)) putSkippingBad(t.objectStore("packs"), pack, eventOf(pack)!);
-        if (eventId && roster !== undefined) putSkippingBad(t.objectStore("rosters"), roster, eventId);
-        if (eventId && conflicts !== undefined) putSkippingBad(t.objectStore("conflicts"), conflicts, eventId);
-        if (typeof deviceId === "string") putSkippingBad(kv, deviceId, "deviceId");
-        for (const [key, claimId] of Object.entries(scopeV1Claims(pack, pendingClaims))) {
-          putSkippingBad(t.objectStore("claims"), claimId, key);
+      if (!marker.result) {
+        for (const name of STORES) t.objectStore(name).clear();
+        if (legacy) {
+          const { pass, pack, roster, conflicts, deviceId, pendingClaims } = legacy.kv;
+          const eventOf = (v: unknown) => {
+            const id = (v as { eventId?: unknown } | null)?.eventId;
+            return typeof id === "string" && id ? id : null;
+          };
+          const eventId = eventOf(pack) ?? eventOf(pass);
+          if (eventOf(pass)) putSkippingBad(t.objectStore("passes"), pass, eventOf(pass)!);
+          if (eventOf(pack)) putSkippingBad(t.objectStore("packs"), pack, eventOf(pack)!);
+          if (eventId && roster !== undefined) putSkippingBad(t.objectStore("rosters"), roster, eventId);
+          if (eventId && conflicts !== undefined) putSkippingBad(t.objectStore("conflicts"), conflicts, eventId);
+          if (typeof deviceId === "string") putSkippingBad(kv, deviceId, "deviceId");
+          for (const [key, claimId] of Object.entries(scopeV1Claims(pack, pendingClaims))) {
+            putSkippingBad(t.objectStore("claims"), claimId, key);
+          }
         }
-        for (const name of ["checkins", "pending"] as const) {
-          const store = t.objectStore(name);
-          for (const { key, record } of scopeV1Records(pack, legacy[name])) putSkippingBad(store, record, key);
-        }
+        kv.put(new Date().toISOString(), MIGRATED);
       }
-      kv.put(new Date().toISOString(), MIGRATED);
+      if (legacy) mergeCheckins(t, legacy);
     };
     t.oncomplete = () => resolve();
     t.onerror = () => reject(t.error);
@@ -197,10 +248,22 @@ function copyIn(db: IDBDatabase, legacy: LegacyData | null): Promise<void> {
   });
 }
 
-/** A value IndexedDB refuses is left behind; it never aborts the copy. */
-function putSkippingBad(store: IDBObjectStore, value: unknown, key: string): void {
+/**
+ * A union, added only where this database has no record for the ticket: the set
+ * only grows, so a record already here - this scanner's own, or the server's -
+ * is never replaced by the legacy copy of it.
+ */
+function mergeCheckins(t: IDBTransaction, legacy: LegacyData): void {
+  for (const name of ["checkins", "pending"] as const) {
+    const store = t.objectStore(name);
+    for (const { key, record } of scopeV1Records(legacy.kv.pack, legacy[name])) putSkippingBad(store, record, key, "add");
+  }
+}
+
+/** A value IndexedDB refuses is left behind; it never aborts the copy. An `add` refuses a key already stored. */
+function putSkippingBad(store: IDBObjectStore, value: unknown, key: string, how: "put" | "add" = "put"): void {
   try {
-    const req = store.put(value, key);
+    const req = how === "add" ? store.add(value, key) : store.put(value, key);
     req.onerror = (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -211,8 +274,10 @@ function putSkippingBad(store: IDBObjectStore, value: unknown, key: string): voi
 }
 
 /**
- * Remove the legacy database, plaintext roster and all. Never awaited: while an
- * old tab holds it the delete just waits, and nothing here waits on it.
+ * Remove the legacy database, plaintext roster and all. Issued only after this
+ * boot's read and merge, never before: a read queued behind a delete an old tab
+ * blocks would wait with it. Never awaited: while an old tab holds the database
+ * the delete just waits, and nothing here waits on it.
  */
 function dropLegacy(): void {
   try {
