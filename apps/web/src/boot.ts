@@ -42,6 +42,7 @@ async function start(): Promise<unknown> {
       }
       const result = await swapToBuild(decision.point, feed, where.pageBases, { patient: reloaded })
       if (result === 'swapped') return
+      if (result === 'same') console.info(`[boot] build ${decision.point.index} is this code redeployed; starting it here`)
       if (result === 'reload' && !reloaded) {
         try {
           sessionStorage.setItem(RELOAD_GUARD, target)
