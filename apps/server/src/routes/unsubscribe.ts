@@ -73,9 +73,24 @@ unsubscribe.post("/:token", async (c) => {
   // (List-Unsubscribe=One-Click), and empty bodies from strict clients.
   const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>);
 
-  suppressOrg(verdict.payload.h, verdict.payload.o, "unsub");
+  const recorded = suppressOrg(verdict.payload.h, verdict.payload.o, "unsub");
   const blockedAll = body["all"] === "1" || body["all"] === "on";
-  if (blockedAll) suppressGlobal(verdict.payload.h, "unsub_all");
+  const recordedAll = blockedAll ? suppressGlobal(verdict.payload.h, "unsub_all") : true;
+
+  // A mark that is not on disk is gone after a restart, so saying "unsubscribed"
+  // would be untrue (#882). Non-2xx also tells a one-click client it did not land.
+  if (!recorded || !recordedAll) {
+    c.header("Retry-After", "300");
+    return c.html(
+      page(
+        "Please try again",
+        "Please try again",
+        `<p>We couldn't record that just now - please try again in a few minutes.</p>
+<form method="post">${blockedAll ? `<input type="hidden" name="all" value="1" />` : ""}<button type="submit">Try again</button></form>`,
+      ),
+      503,
+    );
+  }
 
   return c.html(
     page(

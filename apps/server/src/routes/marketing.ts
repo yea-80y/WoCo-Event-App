@@ -262,7 +262,11 @@ marketing.post("/suppress", requireAuth, async (c) => {
   if (emails.length === 0) {
     return c.json({ ok: false, error: "At least one address is required" }, 400);
   }
-  for (const e of emails) suppressOrg(hashEmail(e), org, "manual");
+  // Every address is attempted; one mark not on disk fails the request (#882).
+  const notRecorded = emails.filter((e) => !suppressOrg(hashEmail(e), org, "manual")).length;
+  if (notRecorded > 0) {
+    return c.json({ ok: false, error: "We couldn't record that just now - please try again in a few minutes." }, 503);
+  }
   return c.json({ ok: true, data: { suppressed: emails.length } });
 });
 
