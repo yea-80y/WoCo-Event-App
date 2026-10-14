@@ -24,6 +24,7 @@
 import { Hono, type Context } from "hono";
 import {
   SCANNER_DEVICE_HEADER,
+  SCANNER_OUTDATED_REASON,
   type CheckinClaimRequest,
   type CheckinClaimResponse,
   type CheckinPack,
@@ -224,6 +225,9 @@ async function outdatedPass(
 
 const DEVICE_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
+/** Shown as-is by scanners that predate SCANNER_OUTDATED_REASON; newer ones update themselves. */
+const OUTDATED = "This scanner needs updating - reload the page and try again";
+
 function deviceFrom(c: Context<AppEnv>, fallback?: unknown): string | null {
   const raw = c.req.header(SCANNER_DEVICE_HEADER) ?? (typeof fallback === "string" ? fallback : undefined);
   return raw && DEVICE_ID_RE.test(raw) ? raw : null;
@@ -241,7 +245,7 @@ const WRONG_DEVICE =
 function checkDevice(c: Context<AppEnv>, auth: AuthorisedPass, device: string | null, bindTo: string | null): Response | null {
   if (auth.mode !== "single") return null;
   if (!device) {
-    return c.json({ ok: false, error: "This scanner needs updating - reload the page and try again" }, 400);
+    return c.json({ ok: false, error: OUTDATED, reason: SCANNER_OUTDATED_REASON }, 400);
   }
   // The event comes from the caller: a helper typed on a bare Context cannot read
   // the route's `:eventId` (hono 4.13 types it `string | undefined` there).
@@ -259,7 +263,7 @@ checkin.get("/:eventId/pack", async (c) => {
   // set. Refusing it a pack is what keeps it from provisioning onto a shared door.
   const device = deviceFrom(c);
   if (!device) {
-    return c.json({ ok: false, error: "This scanner needs updating - reload the page and try again" }, 400);
+    return c.json({ ok: false, error: OUTDATED, reason: SCANNER_OUTDATED_REASON }, 400);
   }
   let refused: Response | null;
   try {
@@ -374,7 +378,7 @@ checkin.post("/:eventId/claim", async (c) => {
   if (!auth.ok) return auth.resp;
 
   const device = deviceFrom(c);
-  if (!device) return c.json({ ok: false, error: "This scanner needs updating - reload the page and try again" }, 400);
+  if (!device) return c.json({ ok: false, error: OUTDATED, reason: SCANNER_OUTDATED_REASON }, 400);
   const refused = checkDevice(c, auth, device, null);
   if (refused) return refused;
   const outdated = await outdatedPass(c, c.req.param("eventId"), auth, "allow");

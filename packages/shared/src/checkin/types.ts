@@ -46,6 +46,13 @@ export type DoorMode = "single" | "several";
 /** Header every scanner request carries: the device's stable random id. */
 export const SCANNER_DEVICE_HEADER = "X-Scanner-Device";
 
+/**
+ * `reason` on a scanner request refused because the scanner's code is older than
+ * the server needs. A scanner that reads it updates itself; the human-readable
+ * error is kept for scanners from before this existed, which only show it.
+ */
+export const SCANNER_OUTDATED_REASON = "outdated-client";
+
 /** One check-in — the nullifier unit. Identity is (seriesId, edition). */
 export interface CheckinRecord {
   seriesId: string;
