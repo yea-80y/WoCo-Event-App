@@ -253,8 +253,21 @@ test("/check returns the basis per address: consent, soft opt-in, or neither - a
   assert.deepEqual(data.softOptIn, ["soft@example.com"]);
 
   const theirs = await postAs(other, "/api/marketing/check", { emails: ["yes@example.com", "soft@example.com"] });
-  const td = theirs.json.data as { consented: string[]; softOptIn: string[] };
+  const td = theirs.json.data as { consented: string[]; softOptIn: string[]; consentedAt: Record<string, string> };
   assert.deepEqual([td.consented, td.softOptIn], [[], []], "never another organiser's records");
+  assert.deepEqual(td.consentedAt, {}, "nor when anyone agreed to them");
+});
+
+test("/check dates each consent, for consented addresses only (Fable sign-off 2026-10-14)", async () => {
+  // The buyer sync re-adds a deleted contact only on an "Email me" ticked after the delete.
+  const d = await mintDelegation();
+  const org = d.parent.address.toLowerCase();
+  const consent = await import("../src/lib/marketing/consent-store.js");
+  consent.recordConsent(hashEmail("yes@example.com"), org, { ts: "2026-10-01T10:00:00.000Z", source: "checkout", notice: "x", basis: "consent" });
+  consent.recordConsent(hashEmail("soft@example.com"), org, { ts: "2026-10-02T10:00:00.000Z", source: "checkout", notice: "x", basis: "soft-opt-in" });
+  const { json } = await postAs(d, "/api/marketing/check", { emails: ["Yes@Example.com", "soft@example.com", "none@example.com"] });
+  const data = json.data as { consentedAt: Record<string, string> };
+  assert.deepEqual(data.consentedAt, { "yes@example.com": "2026-10-01T10:00:00.000Z" });
 });
 
 test("/check still refuses a body that is not an array", async () => {

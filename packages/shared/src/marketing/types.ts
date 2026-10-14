@@ -147,6 +147,12 @@ export interface MarketingCheckResult {
    */
   consented?: string[];
   /**
+   * When each address in `consented` ticked the opt-in (the record's ISO
+   * timestamp), and only those. A contact the organiser deleted is added back
+   * automatically only on a consent recorded after the deletion.
+   */
+  consentedAt?: Record<string, string>;
+  /**
    * Normalized emails holding a SOFT OPT-IN record for this organiser — they
    * bought a ticket, were shown "Don't email me" and left it unticked. The
    * wording and date are recorded; mail them only about the organiser's own

@@ -23,7 +23,7 @@ import { hashEmail } from "../lib/event/claim-service.js";
 import { getList, putList, withOrgLock } from "../lib/marketing/list-store.js";
 import { normalizeEmails } from "../lib/marketing/emails.js";
 import { suppressedSubset, suppressOrg } from "../lib/marketing/suppression-store.js";
-import { consentedSubset } from "../lib/marketing/consent-store.js";
+import { consentedSubset, getConsent } from "../lib/marketing/consent-store.js";
 import { pruneProven } from "../lib/sender-pacing/index.js";
 import { reachedBefore } from "../lib/email/broadcast-pacing.js";
 import { sendMarketingBatch } from "../lib/email/marketing-send.js";
@@ -257,18 +257,26 @@ marketing.post("/check", requireAuth, async (c) => {
   const suppressed: string[] = [];
   const alreadyInList: string[] = [];
   const consented: string[] = [];
+  // When each consent was recorded - scoped exactly like `consented`. The buyer sync
+  // re-adds a contact the organiser deleted only on an "Email me" ticked after the
+  // deletion (Fable sign-off 2026-10-14 recommendation).
+  const consentedAt: Record<string, string> = {};
   const softOptIn: string[] = [];
   const proven: string[] = [];
   for (const [h, e] of hashToEmail) {
     if (suppressedHashes.has(h)) suppressed.push(e);
     if (storedHashes.has(h)) alreadyInList.push(e);
-    if (consentedHashes.has(h)) consented.push(e);
+    if (consentedHashes.has(h)) {
+      consented.push(e);
+      const ts = getConsent(h, org)?.ts;
+      if (ts) consentedAt[e] = ts;
+    }
     if (softOptInHashes.has(h)) softOptIn.push(e);
     // The same rule the send path classifies by.
     if (reachedBefore(org, h)) proven.push(e);
   }
 
-  return c.json({ ok: true, data: { suppressed, alreadyInList, consented, softOptIn, proven } });
+  return c.json({ ok: true, data: { suppressed, alreadyInList, consented, consentedAt, softOptIn, proven } });
 });
 
 /** Manual per-organiser suppression (contact delete + "also unsubscribe"). */
