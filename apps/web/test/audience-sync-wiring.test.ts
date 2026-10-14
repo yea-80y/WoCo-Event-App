@@ -86,6 +86,14 @@ test("the runtime re-confirms the seal key before the upload, and names the list
   assert.match(api, /\.\.\.\("ifUpdatedAt" in opts \? \{ ifUpdatedAt: opts\.ifUpdatedAt \?\? null \} : \{\}\),/);
 });
 
+test("cost: the cheap count first, and the last start kept per organiser so a reload honours the hour", () => {
+  assert.match(RUNTIME, /orderCount: \(eventId\) => getEventOrderCount\(eventId\),/);
+  assert.match(fn(RUNTIME, "export function syncAudience"), /stamp: startStamp\(parent\),/);
+  assert.match(RUNTIME, /write: \(t\) => writeBlob\(parent, \{ startedAt: t \?\? undefined \}\),/);
+  // The note beside the background routes: they already read with the session, so no new prompt trigger.
+  assert.match(read("CreatorApp.svelte"), /so the sync adds no new prompt trigger/);
+});
+
 test("the runtime guards the account: no write into another account's list", () => {
   assert.match(RUNTIME, /const current = \(\) => auth\.isConnected && auth\.parent\?\.toLowerCase\(\) === parent;/);
   assert.match(RUNTIME, /stillCurrent: current,/);

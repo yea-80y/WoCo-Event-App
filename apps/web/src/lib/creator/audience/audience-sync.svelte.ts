@@ -11,7 +11,7 @@ import type { MarketingListMeta, MarketingListPayload } from "@woco/shared";
 import { auth } from "../../auth/auth-store.svelte.js";
 import { canOrganise } from "../../auth/organiser-account.js";
 import { getEventSWR, getMyEventsSWR } from "../../api/creator-cache.js";
-import { getEventOrders } from "../../api/events.js";
+import { getEventOrderCount, getEventOrders } from "../../api/events.js";
 import {
   checkMarketingEmails,
   getMarketingList,
@@ -26,6 +26,7 @@ import {
   runAudienceSync,
   watermarkStore,
   SYNC_INTERVAL_MS,
+  type StartStamp,
   type SyncDeps,
   type SyncGate,
   type SyncRecord,
@@ -56,13 +57,45 @@ function storage(): Storage | undefined {
   }
 }
 
+/**
+ * Per organiser, in localStorage: `last` = the last run as the Audience screen
+ * shows it, `startedAt` = when the last run began, so a reload honours the hour.
+ * Unreadable = empty, which only means a run may start.
+ */
 const recordKey = (parent: string) => `woco:audience-sync-status:${parent}`;
+
+function readBlob(parent: string): Record<string, unknown> {
+  try {
+    const raw = storage()?.getItem(recordKey(parent));
+    const v: unknown = raw ? JSON.parse(raw) : {};
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeBlob(parent: string, patch: Record<string, unknown>): void {
+  try {
+    storage()?.setItem(recordKey(parent), JSON.stringify({ ...readBlob(parent), ...patch }));
+  } catch {
+    /* best effort */
+  }
+}
+
+function startStamp(parent: string): StartStamp {
+  return {
+    read: () => {
+      const t = readBlob(parent).startedAt;
+      return typeof t === "number" ? t : null;
+    },
+    write: (t) => writeBlob(parent, { startedAt: t ?? undefined }),
+  };
+}
 
 function readRecord(parent: string): SyncRecord | null {
   try {
-    const raw = storage()?.getItem(recordKey(parent));
-    if (!raw) return null;
-    const r = JSON.parse(raw) as Partial<SyncRecord>;
+    const r = readBlob(parent).last as Partial<SyncRecord> | undefined;
+    if (!r || typeof r !== "object") return null;
     const nums = [r.at, r.added, r.failedEvents, r.unreadableOrders];
     if (!nums.every((v) => typeof v === "number" && Number.isFinite(v))) return null;
     if (r.status !== "ok" && r.status !== "partial" && r.status !== "failed") return null;
@@ -80,11 +113,7 @@ function readRecord(parent: string): SyncRecord | null {
 }
 
 function writeRecord(parent: string, rec: SyncRecord): void {
-  try {
-    storage()?.setItem(recordKey(parent), JSON.stringify(rec));
-  } catch {
-    /* best effort - the screen still shows this tab's run */
-  }
+  writeBlob(parent, { last: rec });
 }
 
 class AudienceSyncState {
@@ -105,8 +134,8 @@ export const audienceSync = new AudienceSyncState();
 const gates = new Map<string, SyncGate<SyncResult>>();
 
 /**
- * Run the sync now if it may: never two at once, at most once per 10 minutes in
- * this tab unless `force` (the organiser pressed "Check now"). Null = not run.
+ * Run the sync now if it may: never two at once, at most once an hour on this
+ * device unless `force` (the organiser pressed "Check now"). Null = not run.
  */
 export function syncAudience(opts: { force?: boolean } = {}): Promise<SyncResult> | null {
   const parent = auth.parent?.toLowerCase();
@@ -120,6 +149,7 @@ export function syncAudience(opts: { force?: boolean } = {}): Promise<SyncResult
       now: Date.now,
       // A locked run read nothing; unlocking should not have to wait out the window.
       counts: (r) => r.status !== "locked",
+      stamp: startStamp(parent),
     });
     gates.set(parent, gate);
   }
@@ -188,6 +218,7 @@ function liveDeps(parent: string): SyncDeps {
     async listStamp() {
       return (await getMarketingListSummary())?.updatedAt ?? null;
     },
+    orderCount: (eventId) => getEventOrderCount(eventId),
     async getOrders(eventId) {
       return (await getEventOrders(eventId)).orders;
     },

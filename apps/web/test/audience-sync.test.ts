@@ -50,6 +50,8 @@ interface World {
   now: number;
   events: EventDirectoryEntry[];
   orders: Record<string, OrderEntry[] | "throw">;
+  /** What the cheap count call says, when it differs from the order list (a slot the server could not read). */
+  counts?: Record<string, number>;
   fields: Record<string, OrderField[] | "throw">;
   answer: MarketingCheckResult | ((emails: string[]) => MarketingCheckResult | "throw");
   list: { payload: MarketingListPayload; updatedAt: string } | null;
@@ -122,6 +124,12 @@ function deps(w: World, extra: Partial<SyncDeps> = {}): SyncDeps {
     },
     async listStamp() {
       return w.list?.updatedAt ?? null;
+    },
+    async orderCount(id) {
+      w.log.push(`count:${id}`);
+      const o = w.orders[id];
+      if (o === "throw" || !o) throw new Error("count unavailable");
+      return w.counts?.[id] ?? o.length;
     },
     async getOrders(id) {
       w.log.push(`orders:${id}`);
@@ -470,7 +478,8 @@ test("an unreadable event, order or check stops only itself", async () => {
   assert.equal(r.unreadableOrders, 1);
   assert.deepEqual(emailsOf(w.writes[0]?.payload), ["c@x.com", "e@x.com"]);
   const marks = JSON.parse(w.storage.get("woco:audience-sync:0xorg")!).events;
-  assert.deepEqual(Object.keys(marks), ["E"], "only fully read events are marked; the rest are read again next run");
+  assert.deepEqual(Object.keys(marks), ["C", "E"], "events that could not be read are read again next run");
+  assert.equal(marks.C.unopened, 1, "an order that will not open is remembered, not retried every run");
 });
 
 test("a list of events that will not load fails the run, writing nothing", async () => {
@@ -492,8 +501,9 @@ test("an event is skipped once read with the same order count a settle period ap
   w.now += SYNC_INTERVAL_MS;
   w.log.length = 0;
   await sync(w);
-  assert.ok(w.log.includes("orders:e1"), "the count is still read");
-  assert.ok(!w.log.includes("fields:e1"), "but the event is not opened again");
+  assert.ok(w.log.includes("count:e1"), "the count is still asked");
+  assert.ok(!w.log.includes("orders:e1"), "but an unchanged event costs that one call");
+  assert.ok(!w.log.includes("fields:e1"));
   assert.ok(!w.log.some((l) => l.startsWith("check:")));
 
   (w.orders.e1 as OrderEntry[]).push(order({ claimerEmail: "bo@x.com" }));
@@ -583,6 +593,86 @@ test("a list stamp that cannot be read trusts no mark", async () => {
   w.log.length = 0;
   await sync(w, { listStamp: async () => { throw new Error("meta down"); } });
   assert.ok(w.log.includes("fields:e1"));
+});
+
+// ── Cost (Fable sign-off 2026-10-14) ───────────────────────────────────────
+
+test("an event past the longest order retention is skipped without a single request", async () => {
+  const w = world({
+    events: [
+      event("old", "2025-08-01"), // ended 14 months ago: 12-month retention + 1 has passed
+      { ...event("long", "2025-07-01"), endDate: "2025-10-01" } as EventDirectoryEntry, // ends 12.5 months ago
+      event("recent", "2025-11-01"),
+    ],
+    orders: { old: [order({ claimerEmail: "old@x.com" })], long: [order({ claimerEmail: "long@x.com" })], recent: [order({ claimerEmail: "new@x.com" })] },
+    fields: { old: [], long: [], recent: [] },
+    answer: { suppressed: [], alreadyInList: [], consented: ["old@x.com", "long@x.com", "new@x.com"], softOptIn: [] },
+  });
+  await sync(w);
+  assert.ok(!w.log.some((l) => l.endsWith(":old")), "no call at all for an event whose answers are all deleted");
+  assert.ok(w.log.includes("count:long"), "the end date decides, not the start");
+  assert.deepEqual(emailsOf(w.writes[0]?.payload), ["long@x.com", "new@x.com"]);
+});
+
+test("an order that will never open does not make its event be read every run", async () => {
+  const w = world({ orders: { e1: [order("bad"), order({ claimerEmail: "ada@x.com" })] } });
+  const first = await sync(w);
+  assert.equal(first.unreadableOrders, 1);
+  w.now += SYNC_INTERVAL_MS;
+  await sync(w); // settles
+  w.now += SYNC_INTERVAL_MS;
+  w.log.length = 0;
+  const third = await sync(w);
+  assert.ok(!w.log.includes("orders:e1"), "not re-read while the count stands");
+  assert.equal(third.unreadableOrders, 1, "and still reported");
+  (w.orders.e1 as OrderEntry[]).push(order({ claimerEmail: "bo@x.com" }));
+  w.now += SYNC_INTERVAL_MS;
+  w.log.length = 0;
+  await sync(w);
+  assert.ok(w.log.includes("orders:e1"), "a new sale reads it again");
+});
+
+test("a slot the server could not read, or an order it could not download, is read again next run", async () => {
+  for (const over of [
+    { counts: { e1: 2 } }, // the ledger says two, the order list came back with one
+    { orders: { e1: [order({ claimerEmail: "ada@x.com" }), { ...order({}), encryptedOrder: undefined }] } },
+  ] as Partial<World>[]) {
+    const w = world(over);
+    await sync(w);
+    const marks = JSON.parse(w.storage.get("woco:audience-sync:0xorg")!).events;
+    assert.equal(marks.e1, undefined, JSON.stringify(over));
+  }
+  // An order erased on request is gone for good, not missing.
+  const w = world({ orders: { e1: [order({ claimerEmail: "ada@x.com" }), { ...order({}), encryptedOrder: undefined, erased: true }] } });
+  await sync(w);
+  assert.ok(JSON.parse(w.storage.get("woco:audience-sync:0xorg")!).events.e1);
+});
+
+test("the interval is an hour, kept across reloads; unreadable or future stamps mean run", async () => {
+  assert.equal(SYNC_INTERVAL_MS, 60 * 60_000);
+  let now = 0;
+  const box = new Map<string, number | null>();
+  const stamp = { read: () => box.get("t") ?? null, write: (t: number | null) => void box.set("t", t) };
+  const ok = async (): Promise<SyncResult> => ({ status: "ok", added: 0, updated: 0, failedEvents: 0, unreadableOrders: 0 });
+  const gate = () => createSyncGate<SyncResult>({ minIntervalMs: SYNC_INTERVAL_MS, now: () => now, counts: (r) => r.status !== "locked", stamp });
+  await gate().run(false, ok);
+  now += SYNC_INTERVAL_MS - 1;
+  assert.equal(gate().run(false, ok), null, "a reload (a new gate) honours the last start");
+  assert.ok(gate().run(true, ok), "Check now ignores it");
+  await new Promise((r) => setTimeout(r, 0));
+  now += SYNC_INTERVAL_MS;
+  const locked = async (): Promise<SyncResult> => ({ status: "locked", added: 0, updated: 0, failedEvents: 0, unreadableOrders: 0 });
+  const before = box.get("t");
+  await gate().run(false, locked);
+  assert.equal(box.get("t"), before, "a locked run gives the stored start back");
+  box.set("t", now + 24 * 3_600_000);
+  assert.ok(gate().run(false, ok), "a start in the future (a bad clock) is ignored");
+  await new Promise((r) => setTimeout(r, 0));
+  const broken = { read: () => { throw new Error("SecurityError"); }, write: () => { throw new Error("SecurityError"); } };
+  const g = createSyncGate<SyncResult>({ minIntervalMs: SYNC_INTERVAL_MS, now: () => now, counts: () => true, stamp: broken });
+  assert.ok(g.run(false, ok), "storage that throws never blocks a run");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(g.run(false, ok), null, "and this tab still remembers it");
 });
 
 // ── Merging across events ──────────────────────────────────────────────────

@@ -27,6 +27,7 @@
  *   - nothing is written when nothing changed.
  */
 
+import { NOTICE_RETENTION_MONTHS, addCalendarMonthsUtc } from "@woco/shared";
 import type {
   EventDirectoryEntry,
   MarketingCheckResult,
@@ -39,8 +40,24 @@ import type {
 import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import { applyDrain, buildAttendeeContacts, type DecryptedClaim } from "./attendee-drain.js";
 
-/** At most one run per tab in this window, unless the organiser presses "Check now". */
-export const SYNC_INTERVAL_MS = 10 * 60_000;
+/**
+ * At most one run per organiser per hour on this device - the last start is kept
+ * in localStorage, so a reload does not start another - unless the organiser
+ * presses "Check now". Each run asks the server about every recent event.
+ */
+export const SYNC_INTERVAL_MS = 60 * 60_000;
+
+/**
+ * An event that ended longer ago than the longest order retention an organiser
+ * can pick, plus a month, has no order answers left to add from (#547): skipped
+ * without a single request.
+ */
+export const RETENTION_HORIZON_MONTHS = Math.max(...NOTICE_RETENTION_MONTHS) + 1;
+
+export function pastRetention(ev: Pick<EventDirectoryEntry, "startDate" | "endDate">, now: number): boolean {
+  const end = Date.parse(ev.endDate || ev.startDate);
+  return Number.isFinite(end) && addCalendarMonthsUtc(end, RETENTION_HORIZON_MONTHS) < now;
+}
 
 /**
  * An event is skipped only once it has been read with the same order count at
@@ -82,11 +99,16 @@ export function listPayload(contacts: MarketingContact[], removed: readonly stri
 
 // ── Watermark ───────────────────────────────────────────────────────────────
 
-/** Per event: order count, when that count was first seen, when it was last read in full. */
+/**
+ * Per event: sold-slot count, when that count was first seen, when it was last
+ * read in full, and how many of its orders would not open on this device - kept
+ * so a permanently unreadable order does not make the event be read every run.
+ */
 export interface EventMark {
   n: number;
   seen: number;
   scanned: number;
+  unopened?: number;
 }
 
 /**
@@ -111,8 +133,9 @@ const watermarkKey = (parent: string) => `woco:audience-sync:${parent.toLowerCas
 
 function isMark(m: unknown): m is EventMark {
   if (!m || typeof m !== "object") return false;
-  const { n, seen, scanned } = m as Record<string, unknown>;
-  return [n, seen, scanned].every((v) => typeof v === "number" && Number.isFinite(v));
+  const { n, seen, scanned, unopened } = m as Record<string, unknown>;
+  const finite = (v: unknown) => typeof v === "number" && Number.isFinite(v);
+  return [n, seen, scanned].every(finite) && (unopened === undefined || finite(unopened));
 }
 
 /**
@@ -168,6 +191,8 @@ export interface SyncDeps {
   listEvents(): Promise<EventDirectoryEntry[]>;
   /** The stored list's `updatedAt`, null when there is none. Throws when it cannot say. */
   listStamp(): Promise<string | null>;
+  /** Sold slots for the event - the cheap call. Throws when it cannot say. */
+  orderCount(eventId: string): Promise<number>;
   getOrders(eventId: string): Promise<OrderEntry[]>;
   /** The event's questions. Throws when unreadable. */
   getOrderFields(ev: EventDirectoryEntry): Promise<readonly OrderField[]>;
@@ -196,7 +221,7 @@ export interface SyncResult {
   updated: number;
   /** Events that could not be read this time. They are read again next run. */
   failedEvents: number;
-  /** Orders that would not open on this device. Their event is read again next run. */
+  /** Orders that would not open on this device. Their event is read again only once it sells again. */
   unreadableOrders: number;
   /** The list as this run wrote it. */
   written?: { payload: MarketingListPayload; meta: MarketingListMeta };
@@ -257,6 +282,32 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
   let unreadableOrders = 0;
 
   for (const ev of events) {
+    if (pastRetention(ev, now)) continue;
+
+    let n: number;
+    try {
+      n = await deps.orderCount(ev.eventId);
+    } catch {
+      failedEvents++;
+      continue;
+    }
+    const was = prior.events[ev.eventId];
+    if (trusted && was && was.n === n && was.scanned - was.seen >= SETTLE_MS) {
+      marks[ev.eventId] = was;
+      unreadableOrders += was.unopened ?? 0;
+      continue;
+    }
+    const mark = (unopened: number): EventMark => ({
+      n,
+      seen: was?.n === n ? was.seen : now,
+      scanned: now,
+      ...(unopened > 0 ? { unopened } : {}),
+    });
+    if (n === 0) {
+      marks[ev.eventId] = mark(0);
+      continue;
+    }
+
     let orders: OrderEntry[];
     try {
       orders = await deps.getOrders(ev.eventId);
@@ -264,19 +315,10 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
       failedEvents++;
       continue;
     }
+    // A slot the server could not read, or an order it could not download, is read
+    // again next run. One that downloads but will not open here is not (`unopened`).
+    const incomplete = orders.length < n || orders.some((o) => !o.encryptedOrder && !o.erased);
     const sealed = orders.filter((o) => o.encryptedOrder);
-    const n = sealed.length;
-    const was = prior.events[ev.eventId];
-    const mark: EventMark = { n, seen: was?.n === n ? was.seen : now, scanned: now };
-
-    if (trusted && was && was.n === n && was.scanned - was.seen >= SETTLE_MS) {
-      marks[ev.eventId] = was;
-      continue;
-    }
-    if (n === 0) {
-      marks[ev.eventId] = mark;
-      continue;
-    }
 
     let orderFields: readonly OrderField[];
     try {
@@ -323,8 +365,7 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
         }),
       );
     }
-    // An order that would not open keeps the event unread: the next run tries again.
-    if (unopened === 0) marks[ev.eventId] = mark;
+    if (!incomplete) marks[ev.eventId] = mark(unopened);
   }
 
   const partial = failedEvents > 0 || unreadableOrders > 0;
@@ -398,22 +439,57 @@ export interface SyncGate<T> {
   readonly running: boolean;
 }
 
+/** Where the last run's start is kept so a reload honours the interval. Reads null when it cannot say. */
+export interface StartStamp {
+  read(): number | null;
+  write(t: number | null): void;
+}
+
 /**
  * Never two runs at once, and at most one per `minIntervalMs` unless forced. A
  * run that `counts` returns false for (the account was locked, so nothing was
- * read) does not use up the window: unlocking should not wait ten minutes.
+ * read) does not use up the window: unlocking should not wait an hour. The last
+ * start is also kept in `stamp`, so a reload or another tab honours it; a stamp
+ * that cannot be read, or lies in the future, is ignored - absent means run.
  */
-export function createSyncGate<T>(opts: { minIntervalMs: number; now: () => number; counts: (r: T) => boolean }): SyncGate<T> {
+export function createSyncGate<T>(opts: {
+  minIntervalMs: number;
+  now: () => number;
+  counts: (r: T) => boolean;
+  stamp?: StartStamp;
+}): SyncGate<T> {
   let inFlight: Promise<T> | null = null;
   let lastStart: number | null = null;
+  const stored = (): number | null => {
+    let t: number | null = null;
+    try {
+      t = opts.stamp?.read() ?? null;
+    } catch {
+      return null;
+    }
+    return t !== null && Number.isFinite(t) && t <= opts.now() + 60_000 ? t : null;
+  };
+  const keep = (t: number | null) => {
+    try {
+      opts.stamp?.write(t);
+    } catch {
+      /* this tab still remembers it */
+    }
+  };
   return {
     run(force: boolean, fn: () => Promise<T>): Promise<T> | null {
       if (inFlight) return inFlight;
-      if (!force && lastStart !== null && opts.now() - lastStart < opts.minIntervalMs) return null;
+      const persisted = stored();
+      const last = Math.max(lastStart ?? -Infinity, persisted ?? -Infinity);
+      if (!force && last > -Infinity && opts.now() - last < opts.minIntervalMs) return null;
       const previous = lastStart;
       lastStart = opts.now();
+      keep(lastStart);
       const p = fn().then((r) => {
-        if (!opts.counts(r)) lastStart = previous;
+        if (!opts.counts(r)) {
+          lastStart = previous;
+          keep(persisted);
+        }
         return r;
       });
       inFlight = p.finally(() => {

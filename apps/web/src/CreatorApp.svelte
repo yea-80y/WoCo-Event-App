@@ -42,8 +42,10 @@
 
   // Opted-in ticket buyers join the organiser's list while they use WoCo
   // (audience-sync.ts) - here on the organiser home and event pages, and only on an
-  // account already unlocked on this device: never a prompt. syncAudience throttles
-  // to once per 10 minutes per tab; the Audience screen runs it itself.
+  // account already unlocked on this device: never a prompt. syncAudience runs at most
+  // once an hour on this device; the Audience screen runs it itself.
+  // These routes already make authenticated reads of their own on open (events, orders,
+  // Stripe status), so the sync adds no new prompt trigger (Fable sign-off 2026-10-14).
   const AUDIENCE_SYNC_ROUTES = new Set(["creator-home", "dashboard-index", "dashboard"]);
   $effect(() => {
     if (!AUDIENCE_SYNC_ROUTES.has(router.route)) return;
