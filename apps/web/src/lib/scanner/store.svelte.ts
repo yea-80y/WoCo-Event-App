@@ -22,13 +22,25 @@ import {
 } from "@woco/shared";
 import * as db from "./db.js";
 import { decryptRoster } from "./roster-crypto.js";
-import { verifyTicket, type VerifyVerdict } from "./verify.js";
+import { verifyTicket } from "./verify.js";
 import { claimAdmission, newClaimId, type ClaimAnswer } from "./claim.js";
 import { admit, doorModeOf, type Admission } from "./admission.js";
+import {
+  MISS_FAILED_MESSAGE,
+  MISS_RECHECK_MS,
+  onPackMiss,
+  PACK_REFRESH_MS,
+  RETURN_REFRESH_MS,
+  shouldAutoRefresh,
+  ticketNewerThanPack,
+  type MissStep,
+} from "./pack-refresh.js";
 import { bootFromFragment, describePackFailure, isPassExpired, NO_CONNECTION_MESSAGE, PASS_EXPIRED_MESSAGE, type PackFailure } from "./pass-gate.js";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 const SYNC_INTERVAL_MS = 30_000;
+/** How often the background refresh considers running; PACK_REFRESH_MS decides whether it does. */
+const REFRESH_TICK_MS = 15_000;
 
 export type ScanOutcome =
   | { kind: "checked-in"; strength: "onchain"; seriesName: string; edition: number; attendee?: RosterEntry }
@@ -76,8 +88,16 @@ class ScannerStore {
   passDead = $state<string | null>(null);
   /** A server claim is in flight - the scan screen shows "checking" and pauses the camera. */
   claiming = $state(false);
+  /** A scanned ticket is waiting for a newer pack - the scan screen shows "checking". */
+  lookingUp = $state(false);
 
   private syncTimer: ReturnType<typeof setInterval> | null = null;
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
+  private refreshing: Promise<boolean> | null = null;
+  private lastRefreshAt = 0;
+  /** ticketKey → when a pack was fetched because that ticket was missing from it. */
+  private rechecked = new Map<string, number>();
+  private scanning = false;
   private deviceId = "";
 
   totalCapacity = $derived(this.pack?.series.reduce((n, s) => n + s.totalSupply, 0) ?? 0);
@@ -90,8 +110,13 @@ class ScannerStore {
     window.addEventListener("online", () => {
       this.online = true;
       void this.sync();
+      this.maybeAutoRefresh(RETURN_REFRESH_MS);
     });
     window.addEventListener("offline", () => (this.online = false));
+    // A phone at the door spends most of its time with the screen off: the
+    // interval does not run then, so coming back is when the pack is behind.
+    document.addEventListener("visibilitychange", () => this.maybeAutoRefresh(RETURN_REFRESH_MS));
+    window.addEventListener("focus", () => this.maybeAutoRefresh(RETURN_REFRESH_MS));
 
     // A door-pass fragment in the URL always wins — it (re)provisions the device.
     // If it fails, the phone stays on the provision screen with this pass ready to
@@ -115,6 +140,7 @@ class ScannerStore {
       this.phase = "ready";
       this.startSyncLoop();
       void this.sync();
+      this.maybeAutoRefresh(0);
     } else {
       this.phase = "unprovisioned";
     }
@@ -149,6 +175,8 @@ class ScannerStore {
       this.passDead = null;
       this.pendingPass = null;
       await this.absorbPack(pack);
+      this.lastRefreshAt = Date.now();
+      this.rechecked.clear();
       this.phase = "ready";
       this.startSyncLoop();
       void this.sync();
@@ -172,8 +200,7 @@ class ScannerStore {
    * pass replaces it, and nothing unsynced is thrown away the way a reset would.
    */
   reprovision(): void {
-    if (this.syncTimer) clearInterval(this.syncTimer);
-    this.syncTimer = null;
+    this.stopLoops();
     this.pass = null;
     this.pack = null;
     this.roster = [];
@@ -187,8 +214,22 @@ class ScannerStore {
   /** Verify a scanned QR payload, then atomically consume the nullifier. */
   async scan(raw: string): Promise<ScanOutcome> {
     if (!this.pack) return { kind: "rejected", reason: "Scanner not provisioned" };
+    this.scanning = true;
+    try {
+      return await this.scanTicket(raw, this.pack);
+    } finally {
+      this.scanning = false;
+    }
+  }
 
-    const verdict: VerifyVerdict = await verifyTicket(raw, this.pack);
+  private async scanTicket(raw: string, pack: CheckinPack): Promise<ScanOutcome> {
+    let verdict = await verifyTicket(raw, pack);
+    const missing = ticketNewerThanPack(verdict);
+    if (missing) {
+      const step = await this.recheckMissing(missing.seriesId, missing.edition);
+      if (step.kind === "cant-confirm") return { kind: "cant-confirm", message: step.message, edition: missing.edition };
+      if (step.kind === "refresh" && this.pack) verdict = await verifyTicket(raw, this.pack);
+    }
     if (verdict.status === "unreadable") return { kind: "unreadable" };
     if (verdict.status === "wrong-event") return { kind: "wrong-event" };
     if (verdict.status === "invalid") return { kind: "rejected", reason: verdict.reason };
@@ -281,21 +322,20 @@ class ScannerStore {
     }
   }
 
-  /** Re-download the pack (new sales, refreshed roster). */
+  /** Re-download the pack (new sales, refunds, refreshed roster). One download at a time. */
   async refreshPack(): Promise<boolean> {
-    if (!this.pass || !this.online) return false;
+    if (this.refreshing) return this.refreshing;
+    const job = this.downloadPack();
+    this.refreshing = job;
     try {
-      const pack = await this.fetchPack(this.pass.eventId, this.pass.token);
-      await this.absorbPack(pack);
-      return true;
-    } catch {
-      return false;
+      return await job;
+    } finally {
+      if (this.refreshing === job) this.refreshing = null;
     }
   }
 
   async reset(): Promise<void> {
-    if (this.syncTimer) clearInterval(this.syncTimer);
-    this.syncTimer = null;
+    this.stopLoops();
     await db.resetDevice();
     this.pass = null;
     this.pack = null;
@@ -307,6 +347,67 @@ class ScannerStore {
   }
 
   // ── internals ─────────────────────────────────────────────────────────────
+
+  private async downloadPack(): Promise<boolean> {
+    const pass = this.pass;
+    if (!pass || !this.online || this.passDead) return false;
+    try {
+      const pack = await this.fetchPack(pass.eventId, pass.token);
+      // Provisioned onto another pass while this was in flight: the pack is the old one's.
+      if (this.pass?.token !== pass.token) return false;
+      await this.absorbPack(pack);
+      this.lastRefreshAt = Date.now();
+      return true;
+    } catch (err) {
+      if (err instanceof PackError && err.failure.kind === "dead" && this.pass?.token === pass.token) {
+        this.passDead = err.failure.message;
+      }
+      return false;
+    }
+  }
+
+  private maybeAutoRefresh(minGapMs: number): void {
+    const due = shouldAutoRefresh({
+      ready: this.phase === "ready",
+      online: this.online,
+      passDead: this.passDead !== null,
+      claimInFlight: this.claiming,
+      busy: this.scanning || this.refreshing !== null,
+      visible: document.visibilityState === "visible",
+      sinceLastMs: Date.now() - this.lastRefreshAt,
+      minGapMs,
+    });
+    if (due) void this.refreshPack();
+  }
+
+  /**
+   * A ticket the pack does not know: fetch a pack made after this scan and look
+   * again. A download that was already running may predate the sale, so it is
+   * waited out and a new one started.
+   */
+  private async recheckMissing(seriesId: string, edition: number): Promise<MissStep> {
+    const key = db.ticketKey(seriesId, edition);
+    const now = Date.now();
+    const step = onPackMiss({
+      online: this.online,
+      passDead: this.passDead,
+      claimInFlight: this.claiming,
+      lastRecheckAt: this.rechecked.get(key),
+      now,
+    });
+    if (step.kind !== "refresh") return step;
+
+    this.lookingUp = true;
+    try {
+      while (this.refreshing) await this.refreshing;
+      if (!(await this.refreshPack())) return { kind: "cant-confirm", message: this.passDead ?? MISS_FAILED_MESSAGE };
+      for (const [k, at] of this.rechecked) if (now - at >= MISS_RECHECK_MS) this.rechecked.delete(k);
+      this.rechecked.set(key, Date.now());
+      return step;
+    } finally {
+      this.lookingUp = false;
+    }
+  }
 
   /** The door's decision for a genuine, unrefunded ticket - rules in `admission.ts`. */
   private admitTicket(seriesId: string, edition: number, method: "scan" | "manual"): Promise<Admission> {
@@ -436,8 +537,15 @@ class ScannerStore {
   }
 
   private startSyncLoop(): void {
-    if (this.syncTimer) return;
-    this.syncTimer = setInterval(() => void this.sync(), SYNC_INTERVAL_MS);
+    if (!this.syncTimer) this.syncTimer = setInterval(() => void this.sync(), SYNC_INTERVAL_MS);
+    if (!this.refreshTimer) this.refreshTimer = setInterval(() => this.maybeAutoRefresh(PACK_REFRESH_MS), REFRESH_TICK_MS);
+  }
+
+  private stopLoops(): void {
+    if (this.syncTimer) clearInterval(this.syncTimer);
+    if (this.refreshTimer) clearInterval(this.refreshTimer);
+    this.syncTimer = null;
+    this.refreshTimer = null;
   }
 }
 

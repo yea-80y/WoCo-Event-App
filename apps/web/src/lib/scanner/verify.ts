@@ -29,16 +29,20 @@ export type VerifyVerdict =
   | { status: "valid"; strength: "onchain"; ticket: TicketQr; seriesName: string }
   /** Genuine, but its sale was refunded in full or charged back (#645): not admitted, and no check-in is recorded. */
   | { status: "refunded"; ticket: TicketQr; seriesName: string }
-  | { status: "invalid"; reason: string; ticket?: TicketQr }
+  /** `code` is set only where a newer pack could change the answer: the ticket may
+   *  have been sold, or its ticket type added or enlarged, since this pack was made. */
+  | { status: "invalid"; reason: string; ticket?: TicketQr; code?: PackMissCode }
   | { status: "wrong-event"; ticket: TicketQr }
   | { status: "unreadable" };
+
+export type PackMissCode = "no-owner" | "unknown-series" | "out-of-range";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 async function verifyV2(series: CheckinSeries, ticket: TicketQr): Promise<VerifyVerdict> {
   const owner = series.slotOwners?.[ticket.edition - 1];
   if (!owner || owner === ZERO_ADDRESS) {
-    return { status: "invalid", reason: "No ticket issued for this edition", ticket };
+    return { status: "invalid", reason: "No ticket issued for this edition", ticket, code: "no-owner" };
   }
   if (!/^0x[0-9a-f]{130}$/i.test(ticket.sig)) {
     return { status: "invalid", reason: "Malformed signature", ticket };
@@ -72,9 +76,9 @@ export async function verifyTicket(raw: string, pack: CheckinPack): Promise<Veri
   if (ticket.eventId !== pack.eventId) return { status: "wrong-event", ticket };
 
   const series = pack.series.find((s) => s.seriesId === ticket.seriesId);
-  if (!series) return { status: "invalid", reason: "Unknown ticket type for this event", ticket };
+  if (!series) return { status: "invalid", reason: "Unknown ticket type for this event", ticket, code: "unknown-series" };
   if (ticket.edition > series.totalSupply) {
-    return { status: "invalid", reason: "Edition number out of range", ticket };
+    return { status: "invalid", reason: "Edition number out of range", ticket, code: "out-of-range" };
   }
   // Fail closed: without an on-chain event there is no trustworthy owner to
   // recover against, so there is nothing to verify a signature with.

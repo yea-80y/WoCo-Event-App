@@ -90,6 +90,11 @@
       <span class="verdict-title">CHECKING…</span>
       <span class="verdict-detail">Hold on - asking WoCo whether this ticket is already in</span>
     </div>
+  {:else if scanner.lookingUp}
+    <div class="verdict checking" aria-live="polite">
+      <span class="verdict-title">CHECKING…</span>
+      <span class="verdict-detail">Looking for tickets sold since this scanner last updated</span>
+    </div>
   {:else if outcome}
     {@const kind = outcome.kind}
     <button
