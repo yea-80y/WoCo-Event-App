@@ -6,7 +6,10 @@
  * per order, so the dashboard polls the cheap count instead (one ledger read per
  * series, `GET /orders/count`) and reads the full list only when the count moves
  * - the same gate the audience sync uses. Polling runs only while the page is
- * visible: a hidden tab costs nothing, and coming back checks at once.
+ * visible: a hidden tab costs nothing, and coming back checks at once. Failed
+ * checks back off (doubling to five minutes), so an RPC outage is not hammered
+ * from every open tab. A poll never signs in: with no stored session it stops,
+ * and its requests are sent with `establish: false` (Fable sign-off 2026-10-14).
  *
  * New orders are opened as they arrive when the account's keys are already open,
  * and only the new ones: an order already opened is reused for as long as its
@@ -16,6 +19,14 @@ import type { OrderEntry } from "@woco/shared";
 
 /** Visible-tab cadence. A sale shows within this; each check is one ledger read per series. */
 export const ORDERS_POLL_MS = 30_000;
+
+/** The longest wait between checks after repeated failures. */
+export const ORDERS_POLL_MAX_MS = 5 * 60_000;
+
+/** The wait before the next check: the cadence, doubled per failure in a row, capped. */
+export function pollDelay(intervalMs: number, failures: number): number {
+  return Math.min(intervalMs * 2 ** Math.min(failures, 16), ORDERS_POLL_MAX_MS);
+}
 
 /** A focus event right after a visibility change (or a tick) is the same return: one check. */
 export const RECHECK_GAP_MS = 5_000;
@@ -94,12 +105,18 @@ export interface OrdersPollerDeps {
   count(): Promise<number>;
   /** Read the full list and show it. False = nothing was shown (failed read). */
   refresh(): Promise<boolean>;
-  /** A request is allowed now: a session is already on this device, so nothing asks. */
+  /** A session is in memory - the cheap, synchronous check. */
   canRequest(): boolean;
+  /**
+   * The stored session is still on this device (read, never signed). Gone = signed
+   * out elsewhere or cleared: the poller STOPS, since only a real sign-in can bring
+   * it back, and a request now would start one.
+   */
+  sessionStored(): Promise<boolean>;
   isVisible(): boolean;
   onVisibilityChange(cb: () => void): () => void;
-  setInterval(cb: () => void, ms: number): unknown;
-  clearInterval(handle: unknown): void;
+  setTimeout(cb: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
   now(): number;
 }
 
@@ -111,6 +128,8 @@ export interface OrdersPoller {
   tick(): Promise<void>;
   /** The page came back into view or got focus. */
   resume(): void;
+  /** Checks that failed in a row - the backoff. */
+  readonly failures: number;
 }
 
 export function createOrdersPoller(deps: OrdersPollerDeps): OrdersPoller {
@@ -118,30 +137,62 @@ export function createOrdersPoller(deps: OrdersPollerDeps): OrdersPoller {
   let timer: unknown = null;
   let running = false;
   let inFlight = false;
+  let failures = 0;
   let lastTickAt = -Infinity;
   let unsubscribe: (() => void) | null = null;
 
   const stopTimer = () => {
-    if (timer !== null) deps.clearInterval(timer);
+    if (timer !== null) deps.clearTimeout(timer);
     timer = null;
   };
-  const startTimer = () => {
-    if (timer === null) timer = deps.setInterval(() => void tick(), deps.intervalMs);
+  /** The next check, while running and in view. Hidden: the visibility handler resumes. */
+  const schedule = () => {
+    stopTimer();
+    if (!running || !deps.isVisible()) return;
+    timer = deps.setTimeout(() => {
+      timer = null;
+      void tick();
+    }, pollDelay(deps.intervalMs, failures));
   };
 
+  function stop(): void {
+    running = false;
+    stopTimer();
+    unsubscribe?.();
+    unsubscribe = null;
+  }
+
   async function tick(): Promise<void> {
-    if (!running || inFlight || !deps.isVisible() || !deps.canRequest()) return;
+    if (!running || inFlight || !deps.isVisible()) return;
+    if (!deps.canRequest()) {
+      schedule();
+      return;
+    }
     inFlight = true;
     lastTickAt = deps.now();
     try {
+      if (!(await deps.sessionStored())) {
+        stop();
+        return;
+      }
+      if (!running) return;
       const count = await deps.count();
-      if (!running || count === known) return;
-      // Only a list actually shown moves the mark: a failed read is retried next tick.
-      if (await deps.refresh()) known = count;
+      if (!running) return;
+      if (count !== known) {
+        // Only a list actually shown moves the mark: a failed read is retried.
+        if (!(await deps.refresh())) {
+          failures++;
+          return;
+        }
+        known = count;
+      }
+      failures = 0;
     } catch {
-      // Offline or a failed read: the next tick tries again.
+      // Offline or a failed read: back off, then try again.
+      failures++;
     } finally {
       inFlight = false;
+      schedule();
     }
   }
 
@@ -151,8 +202,8 @@ export function createOrdersPoller(deps: OrdersPollerDeps): OrdersPoller {
       stopTimer();
       return;
     }
-    startTimer();
     if (deps.now() - lastTickAt >= RECHECK_GAP_MS) void tick();
+    else if (!inFlight) schedule();
   }
 
   return {
@@ -161,15 +212,13 @@ export function createOrdersPoller(deps: OrdersPollerDeps): OrdersPoller {
       running = true;
       known = initial;
       unsubscribe = deps.onVisibilityChange(onVisibility);
-      if (deps.isVisible()) startTimer();
+      schedule();
     },
-    stop() {
-      running = false;
-      stopTimer();
-      unsubscribe?.();
-      unsubscribe = null;
-    },
+    stop,
     tick,
     resume: onVisibility,
+    get failures() {
+      return failures;
+    },
   };
 }

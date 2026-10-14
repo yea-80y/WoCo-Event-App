@@ -16,6 +16,7 @@
   import { getEventSWR, getEventOrdersSWR } from "../../api/creator-cache.js";
   import UnlockPanel from "../../components/auth/UnlockPanel.svelte";
   import { auth } from "../../auth/auth-store.svelte.js";
+  import { getSessionDelegation } from "../../auth/session-delegation.js";
   import { navigate } from "../../router/router.svelte.js";
   import { onMount, untrack } from "svelte";
   import StripeConnect from "./StripeConnect.svelte";
@@ -559,7 +560,7 @@
 
   /** A poll found the count moved: read the list, show it, open only the new orders - never asking. */
   async function refreshOrders(): Promise<boolean> {
-    const fresh = (await getEventOrdersSWR(eventId).refresh()).data;
+    const fresh = (await getEventOrdersSWR(eventId).refresh({ establish: false })).data;
     if (!fresh || !event) return false;
     showOrders(fresh);
     void decryptCurrent();
@@ -573,10 +574,15 @@
     const id = eventId;
     const poller = createOrdersPoller({
       intervalMs: ORDERS_POLL_MS,
-      count: () => getEventOrderCount(id),
+      count: () => getEventOrderCount(id, { establish: false }),
       refresh: refreshOrders,
       // A session already on this device: a poll never starts a sign-in.
       canRequest: () => auth.isConnected && auth.hasSession,
+      // The in-memory flag outlives a sign-out in another tab; the stored delegation does not.
+      sessionStored: async () => {
+        const parent = auth.parent;
+        return !!parent && !!(await getSessionDelegation(parent));
+      },
       isVisible: () => document.visibilityState === "visible",
       onVisibilityChange: (cb) => {
         document.addEventListener("visibilitychange", cb);
@@ -586,8 +592,8 @@
           window.removeEventListener("focus", cb);
         };
       },
-      setInterval: (cb, ms) => setInterval(cb, ms),
-      clearInterval: (handle) => clearInterval(handle as ReturnType<typeof setInterval>),
+      setTimeout: (cb, ms) => setTimeout(cb, ms),
+      clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
       now: () => Date.now(),
     });
     poller.start(untrack(() => ordersResponse?.orders.length ?? 0));
