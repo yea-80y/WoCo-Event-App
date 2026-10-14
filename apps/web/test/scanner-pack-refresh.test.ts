@@ -6,17 +6,23 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { CheckinPack, TicketQr } from "@woco/shared";
+import { buildTicketCanonicalMessage, type CheckinPack, type TicketQr } from "@woco/shared";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
   MISS_OFFLINE_MESSAGE,
   MISS_RECHECK_MS,
+  MISS_FAILED_MESSAGE,
+  NOT_FOUND_BOUND_MS,
+  NOT_FOUND_LAG_MS,
   NOT_FOUND_YET_MESSAGE,
-  notFoundYet,
   onPackMiss,
+  resolveMiss,
   shouldAutoRefresh,
   ticketNewerThanPack,
   type AutoRefreshInput,
   type MissInput,
+  type MissOutcome,
+  type RecheckResult,
 } from "../src/lib/scanner/pack-refresh.js";
 import { IN_FLIGHT_MESSAGE } from "../src/lib/scanner/admission.js";
 import { verifyTicket } from "../src/lib/scanner/verify.js";
@@ -91,61 +97,133 @@ test("a pack fetched for this very ticket moments ago is not fetched again; afte
   assert.ok(MISS_RECHECK_MS <= 5_000, "a guest who has just bought scans again within seconds, not half a minute");
 });
 
-test("no ticket for the slot even in a fresh pack is grey, never red: the mint may be seconds behind the sale", async () => {
-  const p = pack(["0x" + "aa".repeat(20)]);
-  assert.equal(notFoundYet(await verifyTicket(qr({ seriesId: "ser-1", edition: 2 }), p)), NOT_FOUND_YET_MESSAGE);
-  assert.match(NOT_FOUND_YET_MESSAGE, /scan again/);
-});
+// ---------------------------------------------------------------------------
+// A slot with no owner: grey once, then red (resolveMiss)
+// ---------------------------------------------------------------------------
 
-test("a ticket type or edition the event does not have, or a forged code, still reads red", async () => {
-  const p = pack(["0x" + "aa".repeat(20)]);
-  for (const raw of [
-    qr({ seriesId: "ser-2", edition: 1 }),
-    qr({ seriesId: "ser-1", edition: 11 }),
-    qr({ seriesId: "ser-1", edition: 1 }),
-    qr({ seriesId: "ser-1", edition: 1, sig: "0x12" }),
-  ]) {
-    const v = await verifyTicket(raw, p);
-    assert.equal(v.status, "invalid", raw);
-    assert.equal(notFoundYet(v), null, raw);
-  }
-});
+const burner = privateKeyToAccount(generatePrivateKey());
+const signed = async (edition: number) =>
+  `woco://t/${EVENT}/ser-1/${edition}/${await burner.signMessage({ message: buildTicketCanonicalMessage({ onChainEventId: ONCHAIN, seriesId: "ser-1", edition }) })}`;
 
-function auto(over: Partial<AutoRefreshInput> = {}): AutoRefreshInput {
+/** A scanner's view of one ticket over time: a clock, the packs it gets, and what each scan shows. */
+function door(opts: { recheck: (t: number) => RecheckResult; packOwners: (t: number) => string[] }) {
+  let t = 1_000_000;
+  let packAsOf = 0;
+  const firstSeen = new Map<string, number>();
   return {
-    ready: true,
-    online: true,
-    passDead: false,
-    claimInFlight: false,
-    busy: false,
-    visible: true,
-    sinceLastMs: 60_000,
-    minGapMs: 60_000,
-    ...over,
+    at: (ms: number) => (t = ms),
+    get t() {
+      return t;
+    },
+    scan: async (raw: string): Promise<MissOutcome> => {
+      const before = await verifyTicket(raw, pack(opts.packOwners(packAsOf)));
+      return resolveMiss(before, {
+        key: "ser-1 2",
+        firstSeen,
+        now: () => t,
+        recheck: async () => {
+          const r = opts.recheck(t);
+          if (r.kind === "refreshed") packAsOf = t;
+          return r;
+        },
+        reverify: () => verifyTicket(raw, pack(opts.packOwners(packAsOf))),
+        packAsOf: () => packAsOf,
+      });
+    },
   };
 }
 
-test("the background refresh runs once the gap has passed, on a ready, online, visible scanner", () => {
-  assert.equal(shouldAutoRefresh(auto()), true);
-  assert.equal(shouldAutoRefresh(auto({ sinceLastMs: 59_999 })), false);
+const red = (o: MissOutcome) => o.kind === "verdict" && o.verdict.status === "invalid" && o.verdict.reason === "No ticket issued for this edition";
+const grey = (o: MissOutcome) => o.kind === "cant-confirm" && o.message === NOT_FOUND_YET_MESSAGE;
+const OWNER_1 = "0x" + "aa".repeat(20);
+
+test("the first miss for a ticket is grey 'not found yet', even straight after a fresh pack", async () => {
+  const d = door({ recheck: () => ({ kind: "refreshed" }), packOwners: () => [OWNER_1] });
+  assert.ok(grey(await d.scan(await signed(2))));
 });
 
-test("the background refresh never runs during a claim, a scan, or offline", () => {
-  for (const [over, why] of [
-    [{ claimInFlight: true }, "a claim is in flight"],
-    [{ busy: true }, "a scan or another refresh is running"],
-    [{ online: false }, "offline"],
-    [{ passDead: true }, "the pass is dead"],
-    [{ ready: false }, "not set up"],
-    [{ visible: false }, "screen off: nobody is scanning"],
-  ] as const) {
-    assert.equal(shouldAutoRefresh(auto(over)), false, why);
+test("a re-scan answered by a pack requested 5 s after the first miss, still without it, is red", async () => {
+  const d = door({ recheck: () => ({ kind: "refreshed" }), packOwners: () => [OWNER_1] });
+  const raw = await signed(2);
+  assert.ok(grey(await d.scan(raw)));
+  d.at(d.t + 3_000);
+  assert.ok(grey(await d.scan(raw)), "3 s on, the replica may still be behind");
+  d.at(d.t + 2_000); // 5 s after the first miss, well inside the 20 s bound
+  assert.ok(red(await d.scan(raw)), "the original wording, 'No ticket issued for this edition'");
+  assert.ok(NOT_FOUND_LAG_MS <= 5_000);
+});
+
+test("past 20 s it is red whatever the fetches did", async () => {
+  for (const failing of [{ kind: "settled" }, { kind: "failed" }] as RecheckResult[]) {
+    const d = door({ recheck: (t) => (t === 1_000_000 ? { kind: "refreshed" } : failing), packOwners: () => [OWNER_1] });
+    const raw = await signed(2);
+    assert.ok(grey(await d.scan(raw)));
+    d.at(d.t + NOT_FOUND_BOUND_MS);
+    assert.ok(!red(await d.scan(raw)), `${failing.kind}: at exactly 20 s, not yet`);
+    d.at(d.t + 1);
+    assert.ok(red(await d.scan(raw)), `${failing.kind}: past 20 s, red`);
   }
 });
 
-test("the scan path turns a still-missing slot grey after the re-check, before any red verdict", async () => {
+test("a genuine ticket whose slot appears on the re-check reads valid", async () => {
+  let minted = false;
+  const d = door({ recheck: () => ({ kind: "refreshed" }), packOwners: () => (minted ? [OWNER_1, burner.address.toLowerCase()] : [OWNER_1]) });
+  const raw = await signed(2);
+  assert.ok(grey(await d.scan(raw)));
+  minted = true; // the replica caught up
+  d.at(d.t + 3_000);
+  const o = await d.scan(raw);
+  assert.ok(o.kind === "verdict" && o.verdict.status === "valid");
+});
+
+test("a never-sold edition can never stay grey past the bound, however it is re-scanned", async () => {
+  for (const pattern of [
+    () => ({ kind: "refreshed" }) as RecheckResult,
+    () => ({ kind: "settled" }) as RecheckResult,
+    () => ({ kind: "failed" }) as RecheckResult,
+    (t: number) => ({ kind: (t / 1000) % 2 ? "settled" : "refreshed" }) as RecheckResult,
+  ]) {
+    const d = door({ recheck: pattern, packOwners: () => [OWNER_1] });
+    const raw = await signed(2);
+    const start = d.t;
+    let last: MissOutcome = await d.scan(raw);
+    for (let step = 1; step <= 10; step++) {
+      d.at(start + step * 3_000);
+      last = await d.scan(raw);
+      if (d.t - start > NOT_FOUND_BOUND_MS) assert.ok(red(last), `still not red ${d.t - start} ms after the first miss`);
+    }
+    assert.ok(red(last));
+  }
+});
+
+test("offline, a dead pass and a claim in flight stay 'couldn't confirm', even past the bound - never green", async () => {
+  const d = door({ recheck: (t) => (t === 1_000_000 ? { kind: "refreshed" } : { kind: "cant-confirm", message: MISS_OFFLINE_MESSAGE }), packOwners: () => [OWNER_1] });
+  const raw = await signed(2);
+  await d.scan(raw);
+  d.at(d.t + 60_000);
+  assert.deepEqual(await d.scan(raw), { kind: "cant-confirm", message: MISS_OFFLINE_MESSAGE });
+});
+
+test("a ticket type or edition the event does not have, or a forged code, reads red once re-checked", async () => {
+  const d = door({ recheck: () => ({ kind: "refreshed" }), packOwners: () => [OWNER_1] });
+  for (const raw of [qr({ seriesId: "ser-2", edition: 1 }), qr({ seriesId: "ser-1", edition: 11 }), qr({ seriesId: "ser-1", edition: 1 })]) {
+    const o = await d.scan(raw);
+    assert.ok(o.kind === "verdict" && o.verdict.status === "invalid", raw);
+  }
+  const nothing = door({ recheck: () => ({ kind: "failed" }), packOwners: () => [OWNER_1] });
+  assert.deepEqual(await nothing.scan(qr({ seriesId: "ser-2", edition: 1 })), { kind: "cant-confirm", message: MISS_FAILED_MESSAGE },
+    "a ticket type the pack may simply be behind on, with no newer pack to ask: not a verdict");
+});
+
+test("the scan path settles every pack miss through resolveMiss, before any verdict is shown", async () => {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../src/lib/scanner/store.svelte.ts", import.meta.url), "utf8");
   const scan = src.slice(src.indexOf("private async scanTicket("), src.indexOf('if (verdict.status === "invalid") return { kind: "rejected"'));
-  assert.match(scan, /verdict = await verifyTicket\(raw, this\.pack\);\s*const notYet = notFoundYet\(verdict\);\s*if \(notYet\) return \{ kind: "cant-confirm"/);
+  assert.match(scan, /const outcome = await resolveMiss\(verdict, \{/);
+  assert.match(scan, /if \(outcome\.kind === "cant-confirm"\) return \{ kind: "cant-confirm"[^\n]*\n\s*verdict = outcome\.verdict;/);
+  assert.match(scan, /firstSeen: this\.notFoundSince,/);
+  assert.match(scan, /packAsOf: \(\) => this\.packAsOf,/);
+  // When the pack was REQUESTED, not when it arrived: a slow answer is no fresher than its question.
+  assert.equal((src.match(/const requestedAt = Date\.now\(\);\s*const pack = await this\.fetchPack\(/g) ?? []).length, 2);
+  assert.equal((src.match(/this\.packAsOf = requestedAt;/g) ?? []).length, 2);
 });

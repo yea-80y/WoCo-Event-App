@@ -28,15 +28,14 @@ import { verifyTicket } from "./verify.js";
 import { claimAdmission, newClaimId, type ClaimAnswer } from "./claim.js";
 import { admit, doorModeOf, withConfirmed, type Admission } from "./admission.js";
 import {
-  MISS_FAILED_MESSAGE,
   MISS_RECHECK_MS,
-  notFoundYet,
   onPackMiss,
+  resolveMiss,
   PACK_REFRESH_MS,
   RETURN_REFRESH_MS,
   shouldAutoRefresh,
   ticketNewerThanPack,
-  type MissStep,
+  type RecheckResult,
 } from "./pack-refresh.js";
 import {
   bootFromFragment,
@@ -114,6 +113,10 @@ class ScannerStore {
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private refreshing: Promise<boolean> | null = null;
   private lastRefreshAt = 0;
+  /** When the pack now held was requested: how fresh its "no owner" answers are. 0 = unknown. */
+  private packAsOf = 0;
+  /** ticketKey → when this ticket was first found with no owner (resolveMiss). */
+  private notFoundSince = new Map<string, number>();
   /** ticketKey → when a pack was fetched because that ticket was missing from it. */
   private rechecked = new Map<string, number>();
   private scanning = false;
@@ -224,6 +227,7 @@ class ScannerStore {
     }
 
     try {
+      const requestedAt = Date.now();
       const pack = await this.fetchPack(decoded.payload.eventId, token);
       const pass: db.StoredPass = {
         token,
@@ -241,7 +245,9 @@ class ScannerStore {
       this.pendingPass = null;
       await this.absorbPack(pack);
       this.lastRefreshAt = Date.now();
+      this.packAsOf = requestedAt;
       this.rechecked.clear();
+      this.notFoundSince.clear();
       this.phase = "ready";
       this.startSyncLoop();
       void this.sync();
@@ -341,11 +347,16 @@ class ScannerStore {
     let verdict = await verifyTicket(raw, pack);
     const missing = ticketNewerThanPack(verdict);
     if (missing) {
-      const step = await this.recheckMissing(missing.seriesId, missing.edition);
-      if (step.kind === "cant-confirm") return { kind: "cant-confirm", message: step.message, edition: missing.edition };
-      if (step.kind === "refresh" && this.pack) verdict = await verifyTicket(raw, this.pack);
-      const notYet = notFoundYet(verdict);
-      if (notYet) return { kind: "cant-confirm", message: notYet, edition: missing.edition };
+      const outcome = await resolveMiss(verdict, {
+        key: db.ticketKey(missing.seriesId, missing.edition),
+        firstSeen: this.notFoundSince,
+        now: Date.now,
+        recheck: () => this.recheckMissing(missing.seriesId, missing.edition),
+        reverify: () => verifyTicket(raw, this.pack ?? pack),
+        packAsOf: () => this.packAsOf,
+      });
+      if (outcome.kind === "cant-confirm") return { kind: "cant-confirm", message: outcome.message, edition: missing.edition };
+      verdict = outcome.verdict;
     }
     if (verdict.status === "unreadable") return { kind: "unreadable" };
     if (verdict.status === "wrong-event") return { kind: "wrong-event" };
@@ -560,11 +571,13 @@ class ScannerStore {
     const pass = this.pass;
     if (!pass || !this.online || this.passDead) return false;
     try {
+      const requestedAt = Date.now();
       const pack = await this.fetchPack(pass.eventId, pass.token);
       // Provisioned onto another pass while this was in flight: the pack is the old one's.
       if (this.pass?.token !== pass.token) return false;
       await this.absorbPack(pack);
       this.lastRefreshAt = Date.now();
+      this.packAsOf = requestedAt;
       return true;
     } catch (err) {
       if (err instanceof PackError && err.failure.kind === "dead" && this.pass?.token === pass.token) {
@@ -594,7 +607,7 @@ class ScannerStore {
    * again. A download that was already running may predate the sale, so it is
    * waited out and a new one started.
    */
-  private async recheckMissing(seriesId: string, edition: number): Promise<MissStep> {
+  private async recheckMissing(seriesId: string, edition: number): Promise<RecheckResult> {
     const key = db.ticketKey(seriesId, edition);
     const now = Date.now();
     const step = onPackMiss({
@@ -609,10 +622,10 @@ class ScannerStore {
     this.lookingUp = true;
     try {
       while (this.refreshing) await this.refreshing;
-      if (!(await this.refreshPack())) return { kind: "cant-confirm", message: this.passDead ?? MISS_FAILED_MESSAGE };
+      if (!(await this.refreshPack())) return this.passDead ? { kind: "cant-confirm", message: this.passDead } : { kind: "failed" };
       for (const [k, at] of this.rechecked) if (now - at >= MISS_RECHECK_MS) this.rechecked.delete(k);
       this.rechecked.set(key, Date.now());
-      return step;
+      return { kind: "refreshed" };
     } finally {
       this.lookingUp = false;
     }
