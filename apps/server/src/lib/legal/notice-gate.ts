@@ -123,6 +123,7 @@ export async function organiserNoticeRead(creator: string, signer: string): Prom
   return readNow(key, creator, signer);
 }
 
+/** The verdict a read gives. */
 export function noticeVerdictOf(r: NoticeRead): NoticeVerdict {
   return r.status === "found" ? "confirmed" : r.status === "absent" ? "missing" : "unavailable";
 }

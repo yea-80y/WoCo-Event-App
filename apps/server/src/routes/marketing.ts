@@ -224,25 +224,29 @@ marketing.post("/check", requireAuth, async (c) => {
   const suppressedHashes = new Set(suppressedSubset(org, hashes));
   const storedHashes = new Set(getList(org)?.emailHashes ?? []);
   // Returned so the audience UI can tell a contact who ticked the box at
-  // checkout (evidence exists) from one imported under the organiser's own
-  // warranty. Only the caller's OWN organiser scope is consulted, and only for
+  // checkout (consent), or bought and left "Don't email me" alone (soft opt-in),
+  // from one imported under the organiser's own warranty - the basis per
+  // address. Only the caller's OWN organiser scope is consulted, and only for
   // addresses they already hold — this cannot be used to probe whether someone
   // consented to a different organiser.
-  const consentedHashes = new Set(consentedSubset(org, hashes));
+  const consentedHashes = new Set(consentedSubset(org, hashes, "consent"));
+  const softOptInHashes = new Set(consentedSubset(org, hashes, "soft-opt-in"));
 
   const suppressed: string[] = [];
   const alreadyInList: string[] = [];
   const consented: string[] = [];
+  const softOptIn: string[] = [];
   const proven: string[] = [];
   for (const [h, e] of hashToEmail) {
     if (suppressedHashes.has(h)) suppressed.push(e);
     if (storedHashes.has(h)) alreadyInList.push(e);
     if (consentedHashes.has(h)) consented.push(e);
+    if (softOptInHashes.has(h)) softOptIn.push(e);
     // The same rule the send path classifies by.
     if (reachedBefore(org, h)) proven.push(e);
   }
 
-  return c.json({ ok: true, data: { suppressed, alreadyInList, consented, proven } });
+  return c.json({ ok: true, data: { suppressed, alreadyInList, consented, softOptIn, proven } });
 });
 
 /** Manual per-organiser suppression (contact delete + "also unsubscribe"). */

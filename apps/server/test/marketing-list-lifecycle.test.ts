@@ -234,6 +234,29 @@ test("/check answers for the whole batch when one address is unmailable", async 
   assert.deepEqual(data.suppressed, ["gone@example.com"]);
 });
 
+test("/check returns the basis per address: consent, soft opt-in, or neither - and only the caller's own", async () => {
+  const d = await mintDelegation();
+  const other = await mintDelegation();
+  const org = d.parent.address.toLowerCase();
+  const consent = await import("../src/lib/marketing/consent-store.js");
+  const ts = new Date().toISOString();
+  consent.recordConsent(hashEmail("yes@example.com"), org, { ts, source: "checkout", notice: "x", basis: "consent" });
+  consent.recordConsent(hashEmail("old@example.com"), org, { ts, source: "checkout", notice: "x" }); // pre-basis = consent
+  consent.recordConsent(hashEmail("soft@example.com"), org, { ts, source: "checkout", notice: "x", basis: "soft-opt-in" });
+
+  const { status, json } = await postAs(d, "/api/marketing/check", {
+    emails: ["yes@example.com", "old@example.com", "soft@example.com", "none@example.com"],
+  });
+  assert.equal(status, 200);
+  const data = json.data as { consented: string[]; softOptIn: string[] };
+  assert.deepEqual(data.consented.sort(), ["old@example.com", "yes@example.com"]);
+  assert.deepEqual(data.softOptIn, ["soft@example.com"]);
+
+  const theirs = await postAs(other, "/api/marketing/check", { emails: ["yes@example.com", "soft@example.com"] });
+  const td = theirs.json.data as { consented: string[]; softOptIn: string[] };
+  assert.deepEqual([td.consented, td.softOptIn], [[], []], "never another organiser's records");
+});
+
 test("/check still refuses a body that is not an array", async () => {
   const d = await mintDelegation();
   const { status, json } = await postAs(d, "/api/marketing/check", { emails: "a@b.com" });

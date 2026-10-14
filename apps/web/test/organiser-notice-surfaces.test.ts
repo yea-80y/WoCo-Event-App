@@ -203,17 +203,33 @@ test("the notice is written in the shared format - never a hard-coded version st
   }
 });
 
-test("the editor offers choices and reassures: no disclaimer, no network warning, no soft opt-in", () => {
+test("the editor offers choices and reassures: no disclaimer, no network warning, one plain marketing question", () => {
   const ed = code(read("lib/creator/privacy/PrivacyNoticeEditor.svelte"));
   // Owner 2026-10-13: the "not legal advice" line lives in Organiser Terms §4, and
   // the retrievable-versions disclosure there too - never as a scare on this screen.
   assert.doesNotMatch(ed, /legal advice|starting point|someone qualified/i);
   assert.doesNotMatch(ed, /retrievable|the network/i);
-  // The checkout has no opt-out to support it, so the declaration is gone.
-  assert.doesNotMatch(ed, /soft opt-in|without a tick/i);
+  // The checkout now supports the soft opt-in (2026-10-14), but the organiser is
+  // asked a plain question about what they email, never for legal vocabulary.
+  assert.doesNotMatch(ed, /soft opt-in|without a tick|PECR/i);
+  assert.match(ed, /Do you only email people about your own events\?/);
+  assert.match(ed, /value="own-events" bind:group=\{draft\.marketingBasis\}/);
+  assert.match(ed, /value="consent" bind:group=\{draft\.marketingBasis\}/);
   assert.match(ed, /bind:group=\{draft\.sharing\}/);
   assert.match(ed, /bind:group=\{draft\.orderRetentionMonths\}/);
   assert.match(ed, /bind:checked=\{draft\.tailoredMarketing\}/);
+});
+
+test("own-events is a new draft's answer only; a published notice keeps its own, and consent is stored as absent", () => {
+  const ed = code(read("lib/creator/privacy/PrivacyNoticeEditor.svelte"));
+  const fresh = ed.slice(ed.indexOf("function freshDraft"), ed.indexOf("let draft ="));
+  assert.match(fresh, /marketingBasis: NOTICE_DEFAULTS\.marketing/);
+  // Loading a published notice reads its basis (absent = consent), never the default.
+  const found = ed.slice(ed.indexOf('own.status === "found"'), ed.indexOf("getStripeAccountStatus().catch"));
+  assert.match(found, /draft\.marketingBasis = noticeMarketingMode\(n\)/);
+  assert.doesNotMatch(found, /NOTICE_DEFAULTS/);
+  const pay = ed.slice(ed.indexOf("function payload"), ed.indexOf("const previewDoc"));
+  assert.match(pay, /draft\.marketingBasis === "own-events" \? \{ marketingBasis: "own-events" as const \} : \{\}/);
 });
 
 test("the question builder pre-sets health and mailing-list flags, and a health question cannot be required", () => {

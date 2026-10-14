@@ -22,12 +22,14 @@
     cleanNoticeText,
     noticeTodos,
     noticeDate,
+    noticeMarketingMode,
     NOTICE_DEFAULTS,
     NOTICE_RETENTION_MONTHS,
     NOTICE_SHARING,
     NOTICE_SHARING_TEXT,
     ORGANISER_NOTICE_FORMAT,
     ORGANISER_NOTICE_LIMITS,
+    type MarketingMode,
     type NoticeRetentionMonths,
     type NoticeSharing,
     type OrganiserNoticeField,
@@ -45,6 +47,7 @@
     sharing: NoticeSharing[];
     orderRetentionMonths: NoticeRetentionMonths;
     tailoredMarketing: boolean;
+    marketingBasis: MarketingMode;
   };
 
   const TEXT_FIELDS = Object.keys(ORGANISER_NOTICE_LIMITS) as OrganiserNoticeField[];
@@ -60,6 +63,8 @@
       sharing: [...NOTICE_DEFAULTS.sharing],
       orderRetentionMonths: NOTICE_DEFAULTS.orderRetentionMonths,
       tailoredMarketing: NOTICE_DEFAULTS.tailoredMarketing,
+      // A new draft only: a published notice loads its own answer below.
+      marketingBasis: NOTICE_DEFAULTS.marketing,
     };
   }
 
@@ -95,6 +100,7 @@
       sharing: NOTICE_SHARING.filter((c) => draft.sharing.includes(c)),
       orderRetentionMonths: draft.orderRetentionMonths,
       ...(draft.tailoredMarketing ? { tailoredMarketing: true as const } : {}),
+      ...(draft.marketingBasis === "own-events" ? { marketingBasis: "own-events" as const } : {}),
     };
   }
 
@@ -153,6 +159,7 @@
         draft.sharing = [...n.sharing];
         draft.orderRetentionMonths = n.orderRetentionMonths;
         draft.tailoredMarketing = n.tailoredMarketing === true;
+        draft.marketingBasis = noticeMarketingMode(n);
         return;
       }
       // Nothing published yet: pre-fill from what WoCo already has.
@@ -283,6 +290,15 @@
 
         <fieldset>
           <legend>Your mailing list</legend>
+          <span class="field-label">Do you only email people about your own events?</span>
+          <label class="check">
+            <input type="radio" name="marketing-basis" value="own-events" bind:group={draft.marketingBasis} />
+            <span>Yes. Buyers are told you'll email them about your similar events, with a box to say no.</span>
+          </label>
+          <label class="check">
+            <input type="radio" name="marketing-basis" value="consent" bind:group={draft.marketingBasis} />
+            <span>No, I also email about other people's events. Buyers tick a box if they want your emails - venues and promoters usually need this.</span>
+          </label>
           <label class="check">
             <input type="checkbox" bind:checked={draft.tailoredMarketing} />
             <span>

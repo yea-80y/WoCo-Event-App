@@ -264,3 +264,31 @@ test("a mark a service notice may NOT cross is suppressed and never counted as c
   assert.equal(result.crossed, 0);
   assert.equal(r.sent.length, 0);
 });
+
+test("each recipient's footer says the basis their record rests on - soft opt-in is never 'opted in'", async () => {
+  const soft = addr();
+  const consented = addr();
+  const imported = addr();
+  const bases = new Map<string, "consent" | "soft-opt-in">([[hashEmail(soft), "soft-opt-in"], [hashEmail(consented), "consent"]]);
+  const r = recorder();
+  await send.sendMarketingBatch(
+    batch({ recipients: [{ email: soft }, { email: consented }, { email: imported }] }),
+    { ...r.deps, basisOf: (h, org) => (org === ORG.toLowerCase() ? bases.get(h) ?? null : null) },
+  );
+  const to = (e: string) => r.sent.find((m) => m.to[0] === e)!;
+  for (const part of [to(soft).html ?? "", to(soft).text ?? ""]) {
+    assert.match(part, /bought a ticket from The Fox (&amp;|&) Hound and didn't opt out/);
+    assert.doesNotMatch(part, /opted in/);
+  }
+  assert.match(to(consented).html ?? "", /opted in to updates from/);
+  assert.match(to(imported).html ?? "", /opted in to updates from/);
+});
+
+test("by default the basis comes from the consent store", async () => {
+  const consent = await import("../src/lib/marketing/consent-store.js");
+  const soft = addr();
+  consent.recordConsent(hashEmail(soft), ORG, { ts: new Date().toISOString(), source: "checkout", notice: "x", basis: "soft-opt-in" });
+  const r = recorder();
+  await send.sendMarketingBatch(batch({ recipients: [{ email: soft }] }), r.deps);
+  assert.match(r.sent[0].text ?? "", /bought a ticket from The Fox & Hound and didn't opt out/);
+});

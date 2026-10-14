@@ -135,8 +135,15 @@ retrievable after you change it.
 ## 5. Marketing your events
 
 You may only send marketing to people who have **consented**, or who fall within the PECR "soft
-opt-in" — they bought a ticket from you, you offered them an opt-out at that point, and you are
+opt-in" - they bought a ticket from you, you offered them an opt-out at that point, and you are
 promoting similar events.
+
+Your privacy notice sets which choice your buyers see at checkout. If you answer that you only
+email people about your own events, buyers are told you will email them about similar events, next
+to an unticked "Don't email me" box. **By choosing that answer, you warrant that you will email those
+buyers only about your own similar events.** If you also promote other people's events, choose the
+other answer: buyers then tick a box if they want your emails. Each buyer's choice keeps the basis it
+was made under if you change your answer later.
 
 **When you upload a contact list, you warrant that you have a lawful basis for every address on it.**
 We take that warranty at face value; if it is wrong, the liability is yours.

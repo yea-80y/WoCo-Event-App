@@ -2,12 +2,12 @@
   import type { OrderField, SeriesClaimStatus } from "@woco/shared";
   import { HEALTH_FIELD_NOTE, isHealthField, orderFieldRequired } from "@woco/shared";
   import {
-    MARKETING_CONSENT_NOTICE,
     TRANSACTIONAL_EMAIL_NOTICE,
     CHECKOUT_PRIVACY_SUMMARY,
   } from "@woco/shared";
-  import type { BuyerFees } from "@woco/shared";
+  import type { BuyerFees, MarketingMode } from "@woco/shared";
   import CheckoutNoticeLinks from "./CheckoutNoticeLinks.svelte";
+  import MarketingControl from "./MarketingControl.svelte";
 
   // Stripe-only: the form collects the organiser's order fields (+ a buyer
   // email when needed) ahead of the checkout redirect. The direct wallet/email
@@ -31,9 +31,13 @@
     organiserName?: string;
     /** The event, so the privacy line can link the organiser's notice for it. */
     eventId: string;
-    /** Tri-state, bound upward: null = never asked. Starts unticked; a pre-ticked
+    /** The marketing control the organiser's notice sets, and the organiser it names. */
+    marketingMode: MarketingMode;
+    marketingOrganiser?: string;
+    /** The box as the buyer left it. Starts unticked in both modes: a pre-ticked
      *  box is not valid consent (UK GDPR Recital 32). */
-    marketingConsent: boolean | null;
+    marketingTicked: boolean;
+    onMarketingChange: (ticked: boolean) => void;
     onStripeCheckout: () => void;
     onPayHover: () => void;
     onCancel: () => void;
@@ -54,7 +58,10 @@
     stripeEmail = $bindable(),
     organiserName,
     eventId,
-    marketingConsent = $bindable(),
+    marketingMode,
+    marketingOrganiser,
+    marketingTicked,
+    onMarketingChange,
     onStripeCheckout,
     onPayHover,
     onCancel,
@@ -135,14 +142,12 @@
   <div class="consent-block">
     <p class="transactional-note">{TRANSACTIONAL_EMAIL_NOTICE}</p>
 
-    <label class="consent-row">
-      <input
-        type="checkbox"
-        checked={marketingConsent === true}
-        onchange={(e) => (marketingConsent = (e.target as HTMLInputElement).checked)}
-      />
-      <span>{MARKETING_CONSENT_NOTICE}</span>
-    </label>
+    <MarketingControl
+      mode={marketingMode}
+      organiser={marketingOrganiser}
+      ticked={marketingTicked}
+      onTickedChange={onMarketingChange}
+    />
 
     <p class="privacy-note">
       {#if organiserName}
@@ -279,24 +284,6 @@
     font-size: 0.6875rem;
     color: var(--text-secondary);
     margin: 0;
-  }
-
-  .consent-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.5rem;
-    cursor: pointer;
-    font-size: 0.75rem;
-    line-height: 1.45;
-    color: var(--text);
-  }
-
-  .consent-row input[type="checkbox"] {
-    width: 0.875rem;
-    height: 0.875rem;
-    margin-top: 0.125rem;
-    flex-shrink: 0;
-    accent-color: var(--accent);
   }
 
   .privacy-note {

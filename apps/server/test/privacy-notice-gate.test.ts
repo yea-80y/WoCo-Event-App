@@ -223,7 +223,8 @@ test("the only Stripe session creates are create-checkout (gated) and the flag-o
   const stripe = readFileSync(new URL("../src/routes/stripe.ts", import.meta.url), "utf-8");
   const shops = readFileSync(new URL("../src/routes/shops.ts", import.meta.url), "utf-8");
   assert.equal(stripe.split("checkout.sessions.create(").length - 1, 1);
-  assert.ok(stripe.indexOf("noticeRefusal(await noticeVerdict)") < stripe.indexOf("checkout.sessions.create("));
+  assert.ok(stripe.indexOf("noticeRefusal(noticeVerdictOf(notice))") > 0);
+  assert.ok(stripe.indexOf("noticeRefusal(noticeVerdictOf(notice))") < stripe.indexOf("checkout.sessions.create("));
   assert.match(shops, /shopAllowed/);
 });
 

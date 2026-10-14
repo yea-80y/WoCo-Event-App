@@ -11,7 +11,8 @@
  * Two halves, both pure so client, embed and tests read the same thing:
  *   - the STORED part: what only the organiser can say - who they are and how to
  *     reach them, plus their CHOICES (who they share with, how long they keep
- *     order answers, whether their mailing list is tailored). Choices are picked
+ *     order answers, whether their mailing list is tailored, whether they email only
+ *     about their own events). Choices are picked
  *     from the options below, each a sentence written here, so 99% of organisers
  *     never write legal prose; the "anything else" boxes end a sentence we start.
  *     It is their own public content, written to their own client-signed feed
@@ -29,6 +30,7 @@
 import type { OrderField } from "../crypto/types.js";
 import { ORDER_EMAIL_FIELD_ID } from "../event/order-email.js";
 import { isHealthField, isKeptOnList } from "../event/order-field-kinds.js";
+import type { MarketingMode } from "./consent.js";
 
 /** v2 (2026-10-13): pick-list choices replaced v1's free-text answers. v1 notices are refused - re-confirm. */
 export const ORGANISER_NOTICE_FORMAT = "woco.privacy-notice.v2" as const;
@@ -97,11 +99,22 @@ export const NOTICE_SHARING_TEXT: Record<NoticeSharing, string> = {
 export const NOTICE_RETENTION_MONTHS = [6, 12] as const;
 export type NoticeRetentionMonths = (typeof NOTICE_RETENTION_MONTHS)[number];
 
-/** What a new notice starts with - the answer nearly every organiser gives. */
-export const NOTICE_DEFAULTS: { sharing: NoticeSharing[]; orderRetentionMonths: NoticeRetentionMonths; tailoredMarketing: boolean } = {
+/**
+ * What a new notice starts with - the answer nearly every organiser gives. Only a
+ * DRAFT reads these: a confirmed notice says what the organiser published, and
+ * nothing here ever changes it (a confirmed notice without `marketingBasis` is in
+ * consent mode, whatever the default).
+ */
+export const NOTICE_DEFAULTS: {
+  sharing: NoticeSharing[];
+  orderRetentionMonths: NoticeRetentionMonths;
+  tailoredMarketing: boolean;
+  marketing: MarketingMode;
+} = {
   sharing: [...NOTICE_SHARING],
   orderRetentionMonths: 6,
   tailoredMarketing: true,
+  marketing: "own-events",
 };
 
 /**
@@ -126,6 +139,13 @@ export interface OrganiserNotice {
    * they hear about, and are kept while they stay on the list. Absent = never.
    */
   tailoredMarketing?: true;
+  /**
+   * The organiser emails buyers only about their OWN similar events, so the
+   * checkout offers the PECR soft opt-in ("Don't email me") instead of asking for
+   * consent. Absent = consent mode: venues and promoters who market other
+   * people's events cannot use the soft opt-in.
+   */
+  marketingBasis?: "own-events";
   /** ISO timestamp of the confirm. */
   confirmedAt: string;
 }
@@ -133,6 +153,11 @@ export interface OrganiserNotice {
 /** The organiser's topic: keyed by the ACCOUNT address, owned by their content-feed signer. */
 export function organiserNoticeContentTopic(address: string): string {
   return `woco/legal/privacy-notice/${address.toLowerCase()}`;
+}
+
+/** The checkout control a confirmed notice sets. Absent field = consent. */
+export function noticeMarketingMode(notice: Pick<OrganiserNotice, "marketingBasis">): MarketingMode {
+  return notice.marketingBasis === "own-events" ? "own-events" : "consent";
 }
 
 // Narrower than RFC 5322 on purpose: no `?`, `#`, `&` or `/`, so a `mailto:` built
@@ -161,7 +186,7 @@ export function cleanNoticeText(field: OrganiserNoticeField, raw: unknown): stri
 }
 
 const KNOWN_KEYS = new Set<string>([
-  "format", "address", "confirmedAt", "sharing", "orderRetentionMonths", "tailoredMarketing",
+  "format", "address", "confirmedAt", "sharing", "orderRetentionMonths", "tailoredMarketing", "marketingBasis",
   ...Object.keys(ORGANISER_NOTICE_LIMITS),
 ]);
 const OPTIONAL_FIELDS = ["contactEmail", "postalAddress", "icoRegistration", "extraSharing", "extraOrderFormUse"] as const;
@@ -202,6 +227,11 @@ export function validateOrganiserNotice(raw: unknown, expectedAddress: string): 
   if (o.tailoredMarketing !== undefined) {
     if (typeof o.tailoredMarketing !== "boolean") return null;
     if (o.tailoredMarketing) out.tailoredMarketing = true;
+  }
+  // Only the one value: consent mode is the field's absence, never a stored "consent".
+  if (o.marketingBasis !== undefined) {
+    if (o.marketingBasis !== "own-events") return null;
+    out.marketingBasis = "own-events";
   }
   return out;
 }
@@ -309,6 +339,7 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
   const sharing = n ? n.sharing : NOTICE_DEFAULTS.sharing;
   const months = n ? n.orderRetentionMonths : NOTICE_DEFAULTS.orderRetentionMonths;
   const tailored = n ? n.tailoredMarketing === true : NOTICE_DEFAULTS.tailoredMarketing;
+  const ownEvents = (n ? noticeMarketingMode(n) : NOTICE_DEFAULTS.marketing) === "own-events";
   const asksQuestions = !ev || labels.length > 0;
   const fieldLabel = (f: OrderField) => String(f.label || f.placeholder || "").replace(/\s+/g, " ").trim().slice(0, 80);
   const keptLabels = ev ? (ev.orderFields ?? []).filter(isKeptOnList).map(fieldLabel).filter(Boolean) : [];
@@ -352,7 +383,9 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
   collect.push(["Your ticket, and whether it was checked in at the door."]);
   if (input.contactForm) collect.push(["Your name, email address and message, if you use the contact form on this site."]);
   collect.push([
-    "If you choose to hear about future events: that you agreed, when, and the exact wording you were shown.",
+    ownEvents
+      ? "Your choice at checkout about hearing from us about similar events and when you made it; if you didn't opt out, also the exact wording you were shown."
+      : "If you choose to hear about future events: that you agreed, when, and the exact wording you were shown.",
   ]);
 
   // ── Why, and the legal basis ─────────────────────────────────────────────
@@ -362,9 +395,15 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
       items: [
         ["To sell you your ticket, send it to you and run the event. Our basis is our contract with you."],
         [
-          "To email you about our future events, if you tick the box at checkout. Our basis is your consent. " +
-            "The box is never ticked for you, saying no does not affect your ticket, and every email has a " +
-            "one-click unsubscribe.",
+          ownEvents
+            ? "To email you about our similar events, unless you tick 'Don't email me' at checkout. This is the " +
+              "'soft opt-in' in the UK's electronic marketing rules: you bought from us, you could say no when you " +
+              "did, and every email has a one-click unsubscribe. Our basis for using your details this way is our " +
+              "legitimate interest in telling customers about similar events. You can object at any time and we " +
+              "will stop."
+            : "To email you about our future events, if you tick the box at checkout. Our basis is your consent. " +
+              "The box is never ticked for you, saying no does not affect your ticket, and every email has a " +
+              "one-click unsubscribe.",
         ],
         ...(tailored
           ? [[
@@ -523,7 +562,11 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
             ", until you unsubscribe.",
         ],
         [`Guest lists we download or put on a door scanner: deleted within ${months} months of the event.`],
-        ["A record of your marketing consent: while we can still email you on that basis, plus 6 months."],
+        [
+          ownEvents
+            ? "A record of your marketing choice at checkout: while we can still email you on that basis, plus 6 months."
+            : "A record of your marketing consent: while we can still email you on that basis, plus 6 months.",
+        ],
         ["If your ticket email cannot be delivered, WoCo keeps your address until it is put right, or 90 days at most."],
         ["Payment records: kept by Stripe and by us for 6 years, as tax and company law require."],
         ["WoCo's record that you unsubscribed: kept for good, so it can keep honouring your choice."],

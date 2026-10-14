@@ -142,7 +142,7 @@ export function getStyles(theme: "dark" | "light"): string {
       margin: 0.375rem 0 0;
     }
 
-    /* Point-of-collection notice + PECR opt-in. The widget runs on the
+    /* Point-of-collection notice + marketing control. The widget runs on the
        organiser's own site, so this is the buyer's ONLY disclosure. */
     .consent-block {
       margin-top: 0.625rem;
@@ -156,6 +156,13 @@ export function getStyles(theme: "dark" | "light"): string {
       font-size: 0.6875rem;
       color: ${vars.textSecondary};
       margin-bottom: 0.375rem;
+    }
+
+    .consent-block .marketing-sentence {
+      font-size: 0.71875rem;
+      line-height: 1.45;
+      color: ${vars.text};
+      margin-bottom: 0.3125rem;
     }
 
     .consent-block .consent-row {

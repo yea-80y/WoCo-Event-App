@@ -88,7 +88,10 @@ interface SessionOpts {
   orderRef?: string | null;
   reservationId?: string | null;
   siteId?: string | null;
+  /** Consent mode's box as create-checkout stamps it: "1" ticked, "0" not, null = no control shown. */
   consent?: "1" | "0" | null;
+  /** Marketing keys stamped verbatim, in place of `consent` (own-events mode, malformed keys). */
+  marketing?: Record<string, string>;
   connectedAccountId?: string | null;
   paymentIntent?: string | null;
   amountTotal?: number;
@@ -127,7 +130,10 @@ function session(o: SessionOpts = {}): FulfilmentSession {
   if (o.orderRef !== null) md.orderRef = o.orderRef ?? ORDER_REF;
   if (o.reservationId !== null) md.reservationId = o.reservationId ?? "res-1";
   if (o.siteId !== null) md.siteId = o.siteId ?? "site-1";
-  if (o.consent !== null) md.marketingConsent = o.consent ?? "1";
+  if (o.marketing) Object.assign(md, o.marketing);
+  else if (o.consent !== null) {
+    Object.assign(md, { marketingMode: "consent", marketingTicked: o.consent ?? "1", marketingVersion: "1", marketingSurface: "order-form" });
+  }
   if (o.connectedAccountId !== null) md.connectedAccountId = o.connectedAccountId ?? ACCT;
   if (o.onChainEventId !== null) md.onChainEventId = o.onChainEventId ?? ON_CHAIN_EVENT_ID;
   if (o.onChainContract) md.onChainContract = o.onChainContract;
@@ -571,7 +577,7 @@ describe("happy path", () => {
 
     // Consent: opt-in recorded against the organiser, keyed on the email hash.
     assert.equal(f.consents.length, 1);
-    assert.equal(f.consents[0].granted, true);
+    assert.deepEqual(f.consents[0].choice, { mode: "consent", ticked: true, version: 1, surface: "order-form" });
     assert.equal(f.consents[0].emailHash, "h(buyer@example.com)");
     assert.equal(f.consents[0].organiserAddress, ORGANISER);
 
@@ -661,9 +667,32 @@ describe("happy path", () => {
   test("consent: '0' suppresses, absent records nothing", async () => {
     const { f: a } = await run({ consent: "0" });
     assert.equal(a.consents.length, 1);
-    assert.equal(a.consents[0].granted, false);
+    assert.deepEqual(a.consents[0].choice, { mode: "consent", ticked: false, version: 1, surface: "order-form" });
     const { f: b } = await run({ consent: null });
     assert.equal(b.consents.length, 0);
+  });
+
+  test("own-events: the mode, box, version, surface and organiser travel to capture as stamped", async () => {
+    const { f } = await run({
+      marketing: { marketingMode: "own-events", marketingTicked: "0", marketingVersion: "1", marketingSurface: "embed", marketingOrganiser: "Punk Pub Ltd" },
+    });
+    assert.equal(f.consents.length, 1);
+    assert.deepEqual(f.consents[0].choice, { mode: "own-events", ticked: false, version: 1, surface: "embed" });
+    assert.equal(f.consents[0].organiserName, "Punk Pub Ltd");
+    assert.equal(f.consents[0].organiserAddress, ORGANISER);
+  });
+
+  test("marketing keys that do not parse record nothing, in either mode - never a guess", async () => {
+    for (const marketing of [
+      { marketingMode: "own-events", marketingVersion: "1", marketingSurface: "embed" }, // no box state
+      { marketingMode: "own-events", marketingTicked: "0", marketingVersion: "7", marketingSurface: "embed" },
+      { marketingMode: "consent", marketingTicked: "yes", marketingVersion: "1", marketingSurface: "order-form" },
+      { marketingMode: "soft", marketingTicked: "0", marketingVersion: "1", marketingSurface: "order-form" },
+      { marketingConsent: "1" }, // the pre-2026-10-14 key alone
+    ]) {
+      const { f } = await run({ marketing });
+      assert.equal(f.consents.length, 0, JSON.stringify(marketing));
+    }
   });
 
   test("no prefetched orderRef: the fallback seal is uploaded and used", async () => {

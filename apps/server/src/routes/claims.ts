@@ -6,6 +6,9 @@ import { resolveSiteEventSigner } from "../lib/site/service.js";
 import { getOnChainEventAt } from "../lib/chain/event-contract.js";
 import { registrationContractFor } from "../lib/event/onchain-registry.js";
 import { heldFor } from "../lib/event/reservation-store.js";
+import { eventKeys } from "../lib/keyring/event-keys.js";
+import { organiserNoticeRead } from "../lib/legal/notice-gate.js";
+import { noticeMarketingMode, type MarketingMode } from "@woco/shared";
 
 // The v1 claim rail lived here: POST /claim allocated an edition by scanning
 // the Swarm editions feed and writing the claims feed. Deleted 2026-08-08 —
@@ -17,6 +20,24 @@ import { heldFor } from "../lib/event/reservation-store.js";
 
 const claims = new Hono<AppEnv>();
 
+/**
+ * The marketing control this event's checkout shows (2026-10-14): the mode the
+ * organiser's CONFIRMED notice sets, read under the same keys and cache as the
+ * sale gate. Omitted when there is no confirmed notice to read - nothing sells
+ * then - and never fails the availability answer. create-checkout re-checks it.
+ */
+async function marketingFor(eventId: string): Promise<{ marketingMode: MarketingMode; marketingOrganiser: string } | null> {
+  try {
+    const keys = await eventKeys(eventId);
+    if (keys.kind !== "ring" && keys.kind !== "record") return null;
+    const r = await organiserNoticeRead(keys.creator, keys.feedSigner);
+    if (r.status !== "found") return null;
+    return { marketingMode: noticeMarketingMode(r.notice), marketingOrganiser: r.notice.organiserName };
+  } catch {
+    return null;
+  }
+}
+
 // GET /api/events/:eventId/series/:seriesId/claim-status - check availability
 claims.get("/:eventId/series/:seriesId/claim-status", async (c) => {
   const eventId = c.req.param("eventId");
@@ -25,6 +46,8 @@ claims.get("/:eventId/series/:seriesId/claim-status", async (c) => {
   // UI can read its availability. siteId is only a pointer; trust comes from
   // the server-written site index, never from this request value.
   const siteId = c.req.query("siteId");
+  // Beside the event and chain reads, so a cold notice read costs no extra round trip.
+  const marketing = marketingFor(eventId);
 
   try {
     const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
@@ -60,6 +83,7 @@ claims.get("/:eventId/series/:seriesId/claim-status", async (c) => {
         available: cancelled ? 0 : physicalAvailable,
         held,
         ...(cancelled ? { cancelled: true } : {}),
+        ...((await marketing) ?? {}),
       },
     });
   } catch (err) {

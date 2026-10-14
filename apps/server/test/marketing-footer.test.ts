@@ -37,6 +37,21 @@ test("text footer carries the same three obligations", () => {
   assert.ok(text.includes("71-75 Shelton Street"));
 });
 
+test("a soft-opt-in contact is told the truth: they bought a ticket and didn't opt out - never 'opted in'", () => {
+  const ctx = { ...CTX, basis: "soft-opt-in" as const };
+  for (const out of [footerHtml(ctx), footerText(ctx)]) {
+    assert.match(out, /because you bought a ticket from The Fox (&amp;|&) Hound and didn't opt out\. Sent via WoCo\./);
+    assert.doesNotMatch(out, /opted in/);
+    assert.ok(out.includes(CTX.unsubUrl));
+    assert.ok(out.includes("71-75 Shelton Street"));
+  }
+  // Consent, no record (an import), and an absent basis keep the opt-in line.
+  for (const basis of ["consent", null, undefined] as const) {
+    assert.match(footerHtml({ ...CTX, basis }), /because you opted in to updates from The Fox &amp; Hound\./);
+    assert.match(footerText({ ...CTX, basis }), /because you opted in to updates from The Fox & Hound\./);
+  }
+});
+
 test("display name is HTML-escaped so it cannot hide the unsubscribe link", () => {
   // 24 chars, no quotes needed — this is what an unescaped name would smuggle
   // in to swallow everything after it, unsubscribe link included.

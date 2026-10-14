@@ -294,7 +294,7 @@ test("#547: the notice's period rides checkout -> paid hold -> stored order, and
 
 test("#547: create-checkout snapshots the confirmed notice's period into the tagged session metadata", () => {
   const src = readFileSync(new URL("../src/routes/stripe.ts", import.meta.url), "utf8");
-  const gate = src.indexOf("const noticeBlock = noticeRefusal(await noticeVerdict);");
+  const gate = src.indexOf("const noticeBlock = noticeRefusal(noticeVerdictOf(notice));");
   const snap = src.indexOf('const retainMonths = notice.status === "found" ? notice.notice.orderRetentionMonths : undefined;');
   const meta = src.indexOf("...(retainMonths !== undefined ? { retainMonths: String(retainMonths) } : {}),");
   const tag = src.indexOf("const clientReferenceId = signCheckoutTag({");

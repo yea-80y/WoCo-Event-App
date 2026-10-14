@@ -2,8 +2,9 @@
  * Ticket buyer → marketing contact.
  *
  * Two guarantees under test, both of which a naive "newest wins" merge breaks:
- *   1. Only people who ticked the opt-in themselves are ever built into a
- *      contact. Everything else about this feature is downstream of that.
+ *   1. Only people with a checkout record - they ticked the opt-in, or left
+ *      own-events mode's "Don't email me" alone (the soft opt-in) - are ever
+ *      built into a contact. Everything else is downstream of that.
  *   2. A later, less trustworthy record never degrades a better one — not by
  *      overwriting a self-reported name with a CSV one, and not by blanking a
  *      field it simply does not carry.
@@ -28,17 +29,17 @@ const FIELDS: OrderField[] = [
   { id: "field_5", type: "text", label: "T-shirt size", required: false },
   { id: "field_6", type: "text", label: "Allergies", required: false, health: true, keepOnList: true },
 ];
-const opts = (consented: string[], orderFields: OrderField[] = FIELDS) => ({
+const opts = (recorded: string[], orderFields: OrderField[] = FIELDS) => ({
   orderFields,
   eventTitle: "Warehouse Project",
   eventDate: "2026-09-01",
   addedAt: NOW,
-  consented: new Set(consented),
+  recorded: new Set(recorded),
 });
 
 // ── Who gets built ─────────────────────────────────────────────────────────
 
-test("only opted-in buyers become contacts", () => {
+test("only buyers with a record (consent or soft opt-in) become contacts", () => {
   const out = buildAttendeeContacts(
     [{ claimerEmail: "yes@x.com" }, { claimerEmail: "no@x.com" }],
     opts(["yes@x.com"]),

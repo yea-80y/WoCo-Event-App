@@ -34,6 +34,7 @@ const suppression = await import("../src/lib/marketing/suppression-store.js");
 const consent = await import("../src/lib/marketing/consent-store.js");
 const persist = await import("../src/lib/marketing/persist.js");
 const sr = await import("../src/lib/marketing/subject-request.js");
+const capture = await import("../src/lib/marketing/consent-capture.js");
 const { sendMarketingBatch } = await import("../src/lib/email/marketing-send.js");
 const { notifyRow } = await import("../src/lib/stripe/cancellation-notice.js");
 const { alarmGate } = await import("../src/lib/health/alarm-gate.js");
@@ -235,6 +236,33 @@ test("consent: a valid file loads", () => {
   writeFileSync(CONSENT, JSON.stringify({ [ORG]: { [H]: RECORD } }));
   assert.equal(consent.consentStoreReadable(), true);
   assert.deepEqual(consent.getConsent(H, ORG), RECORD);
+});
+
+test("consent unreadable: a checkout opt-in keeps an earlier decline - no lift without evidence on disk", () => {
+  writeFileSync(CONSENT, "{not json");
+  suppression.suppressOrg(H, ORG, "declined", "2026-05-01T00:00:00.000Z");
+  const alarms = alarmsDuring(() =>
+    capture.captureCheckoutConsent({
+      emailHash: H,
+      organiserAddress: ORG,
+      choice: { mode: "consent", ticked: true, version: 1, surface: "order-form" },
+      ts: "2026-06-01T00:00:00.000Z",
+    }),
+  );
+  assert.equal(suppression.isSuppressed(H, ORG), true, "the decline must stand");
+  assert.match(alarms, /earlier decline kept/);
+  assert.equal(readFileSync(CONSENT, "utf8"), "{not json", "never overwritten");
+});
+
+test("consent readable: the same opt-in lifts the decline", () => {
+  suppression.suppressOrg(H, ORG, "declined", "2026-05-01T00:00:00.000Z");
+  capture.captureCheckoutConsent({
+    emailHash: H,
+    organiserAddress: ORG,
+    choice: { mode: "consent", ticked: true, version: 1, surface: "order-form" },
+    ts: "2026-06-01T00:00:00.000Z",
+  });
+  assert.equal(suppression.isSuppressed(H, ORG), false);
 });
 
 test("consent unreadable: an erasure still records the mark first, and is not reported done", () => {

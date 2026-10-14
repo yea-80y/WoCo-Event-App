@@ -6,6 +6,7 @@ import { authPost, authGet, authDelete, apiBase } from "./client.js";
 import { sendCheckout } from "./checkout-request.js";
 import { auth } from "../auth/auth-store.svelte.js";
 import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
+import type { MarketingChoice } from "@woco/shared";
 
 export interface RequirementCategory {
   label: string;
@@ -173,10 +174,10 @@ export async function createCheckoutSession(params: {
   /** Slot reservation id from POST /reserve. Server validates + stamps into
    *  Stripe session metadata; webhook consumes on successful claim. */
   reservationId?: string;
-  /** The checkout opt-in control. Left undefined when the order form was never
-   *  shown — "not asked" is not the same as "declined", and only the two
-   *  explicit answers are recorded. */
-  marketingConsent?: boolean;
+  /** The marketing control as shown and as the buyer left it: mode, box, wording
+   *  version, surface. Undefined only when no control was shown, and then
+   *  nothing is recorded. */
+  marketing?: MarketingChoice;
   /** Sign the request and bind the purchase to the account. */
   linkAccount: boolean;
 }): Promise<{ url: string }> {
@@ -209,10 +210,7 @@ export async function createCheckoutSession(params: {
     ...(params.encryptedOrder ? { encryptedOrder: params.encryptedOrder } : {}),
     ...(params.encryptedOrder && params.encryptionKeyRef ? { encryptionKeyRef: params.encryptionKeyRef } : {}),
     ...(params.reservationId ? { reservationId: params.reservationId } : {}),
-    // Tri-state — `false` is a real answer, so this cannot be a truthiness spread.
-    ...(params.marketingConsent !== undefined
-      ? { marketingConsent: params.marketingConsent }
-      : {}),
+    ...(params.marketing ? { marketing: params.marketing } : {}),
     ...(siteId ? { siteId } : {}),
     ...(returnUrl ? { returnUrl } : {}),
     ...(cancelUrl ? { cancelUrl } : {}),
@@ -225,7 +223,7 @@ export async function createCheckoutSession(params: {
   });
   const stale = data.ok ? null : staleRefusal(data);
   if (stale) throw stale;
-  if (!data.ok || !data.url) throw new CheckoutError(data.error || "Failed to create checkout session", !!data.gated);
+  if (!data.ok || !data.url) throw new CheckoutError(data.error || "Failed to create checkout session", !!data.gated, data.code);
   return { url: data.url };
 }
 
@@ -237,10 +235,13 @@ export async function createCheckoutSession(params: {
  */
 export class CheckoutError extends Error {
   gated: boolean;
-  constructor(message: string, gated: boolean) {
+  /** The server's refusal code, e.g. MARKETING_MODE_CHANGED. */
+  code?: string;
+  constructor(message: string, gated: boolean, code?: string) {
     super(message);
     this.name = "CheckoutError";
     this.gated = gated;
+    if (code) this.code = code;
   }
 }
 

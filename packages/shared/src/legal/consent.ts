@@ -9,7 +9,9 @@
  * void the evidence.
  *
  * Bump MARKETING_CONSENT_VERSION whenever the wording changes materially —
- * old records keep the text they were captured under.
+ * old records keep the text they were captured under. Since the soft opt-in
+ * (below) the server looks the stored text up in MARKETING_WORDING by the mode
+ * and version the page sent, so a bump is a new entry there, never an edit.
  */
 
 export const MARKETING_CONSENT_VERSION = 1;
@@ -20,6 +22,116 @@ export const MARKETING_CONSENT_VERSION = 1;
  */
 export const MARKETING_CONSENT_NOTICE =
   "Email me about future events from this organiser. You can unsubscribe at any time.";
+
+// ---------------------------------------------------------------------------
+// Two checkout controls (PECR reg. 22(3) soft opt-in, owner 2026-10-14)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which marketing control a buyer sees. The organiser's CONFIRMED privacy notice
+ * decides it (`marketingBasis`, absent = consent), read by the server - never
+ * by the page:
+ *   - consent:    an unticked "Email me..." box. Ticked = consent, untouched = no.
+ *   - own-events: a sentence saying we'll email about the organiser's similar
+ *                 events, and an unticked "Don't email me" box. Untouched = the
+ *                 soft opt-in, ticked = no.
+ * An untouched box means YES in one mode and NO in the other, which is why the
+ * page echoes the mode it rendered and create-checkout refuses a mismatch.
+ */
+export const MARKETING_MODES = ["consent", "own-events"] as const;
+export type MarketingMode = (typeof MARKETING_MODES)[number];
+
+/** Where the control was shown - recorded with the choice. */
+export const MARKETING_SURFACES = ["order-form", "pay-panel", "embed"] as const;
+export type MarketingSurface = (typeof MARKETING_SURFACES)[number];
+
+/** The basis a stored record rests on. Attached when the choice is made, never re-read from the organiser's mode. */
+export type MarketingBasis = "consent" | "soft-opt-in";
+
+export const MARKETING_OWN_EVENTS_VERSION = 1;
+/** `{organiser}` is the organiser's name from their confirmed notice. */
+export const MARKETING_OWN_EVENTS_SENTENCE =
+  "We'll email you about similar events from {organiser}. You can unsubscribe from any email.";
+/** Stands alone as a refusal, so the box reads correctly on its own. */
+export const MARKETING_OWN_EVENTS_BOX = "Don't email me about similar events";
+
+/** What a control shows: an optional sentence above it, and the box's label. */
+export interface MarketingWording {
+  sentence?: string;
+  box: string;
+}
+
+/**
+ * Every wording a checkout has ever shown, by mode then version. The server
+ * stores the entry for the mode and version the page sent, so a record always
+ * holds what that buyer saw. Never edit or remove an entry - add a version.
+ */
+export const MARKETING_WORDING: Readonly<Record<MarketingMode, Readonly<Record<number, MarketingWording>>>> = {
+  consent: { 1: { box: MARKETING_CONSENT_NOTICE } },
+  "own-events": { 1: { sentence: MARKETING_OWN_EVENTS_SENTENCE, box: MARKETING_OWN_EVENTS_BOX } },
+};
+
+/** The version each mode renders today. */
+export const MARKETING_CURRENT_VERSION: Readonly<Record<MarketingMode, number>> = {
+  consent: MARKETING_CONSENT_VERSION,
+  "own-events": MARKETING_OWN_EVENTS_VERSION,
+};
+
+/** The wording for a mode and version with the organiser's name in it; null for one never shown. */
+export function marketingWording(mode: MarketingMode, version: number, organiser: string | undefined): MarketingWording | null {
+  const w = MARKETING_WORDING[mode]?.[version];
+  if (!w) return null;
+  const name = organiser?.trim() || "this organiser";
+  return w.sentence ? { sentence: w.sentence.replace("{organiser}", name), box: w.box } : { box: w.box };
+}
+
+/** What the buyer's box means in the mode they were shown. */
+export function marketingDecision(mode: MarketingMode, ticked: boolean): MarketingBasis | "declined" {
+  if (mode === "own-events") return ticked ? "declined" : "soft-opt-in";
+  return ticked ? "consent" : "declined";
+}
+
+/** The control as the page reports it to create-checkout: what it showed, and what the buyer did. */
+export interface MarketingChoice {
+  mode: MarketingMode;
+  ticked: boolean;
+  version: number;
+  surface: MarketingSurface;
+}
+
+/** The choice for the control as rendered now. */
+export function marketingChoice(mode: MarketingMode, ticked: boolean, surface: MarketingSurface): MarketingChoice {
+  return { mode, ticked, version: MARKETING_CURRENT_VERSION[mode], surface };
+}
+
+/**
+ * A choice from a request body. `undefined` = none sent (no control shown, so
+ * nothing is recorded); `null` = sent but malformed, or a wording never shown.
+ */
+export function parseMarketingChoice(raw: unknown): MarketingChoice | null | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  if (!(MARKETING_MODES as readonly unknown[]).includes(o.mode)) return null;
+  if (typeof o.ticked !== "boolean") return null;
+  if (!(MARKETING_SURFACES as readonly unknown[]).includes(o.surface)) return null;
+  const mode = o.mode as MarketingMode;
+  if (typeof o.version !== "number" || !MARKETING_WORDING[mode][o.version]) return null;
+  return { mode, ticked: o.ticked, version: o.version, surface: o.surface as MarketingSurface };
+}
+
+/**
+ * The control a checkout shows, from its claim-status. The value is API JSON, so
+ * anything but the one known value reads as consent mode (also what an older
+ * server or an unreadable notice gives) - the server refuses the checkout if that
+ * is not the organiser's mode, and the page re-reads and shows the right one.
+ */
+export function shownMarketingMode(status: { marketingMode?: unknown } | null | undefined): MarketingMode {
+  return status?.marketingMode === "own-events" ? "own-events" : "consent";
+}
+
+/** create-checkout's refusal when the page showed another mode than the organiser's notice now sets. */
+export const MARKETING_MODE_CHANGED = "MARKETING_MODE_CHANGED" as const;
 
 /**
  * Always shown, regardless of the opt-in state. This is the transactional

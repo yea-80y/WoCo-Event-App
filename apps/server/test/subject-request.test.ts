@@ -42,7 +42,7 @@ before(async () => {
 
 /** Put one subject into all three stores for `org`. */
 function seed(h: string, org: string, others: string[] = []): void {
-  capture.captureCheckoutConsent({ emailHash: h, organiserAddress: org, granted: true, ts: TS, eventId: "evt-1" });
+  capture.captureCheckoutConsent({ emailHash: h, organiserAddress: org, choice: { mode: "consent", ticked: true, version: 1, surface: "order-form" }, ts: TS, eventId: "evt-1" });
   lists.putList(org, { swarmRef: "ref", count: others.length + 1, updatedAt: TS, emailHashes: [h, ...others] });
 }
 

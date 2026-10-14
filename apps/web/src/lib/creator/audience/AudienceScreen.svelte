@@ -33,8 +33,11 @@
   /** Contacts who ticked the opt-in themselves — the server holds the evidence,
    *  keyed by hash, so this is the only way the client can know. */
   let consentedEmails = $state<Set<string>>(new Set());
+  /** Buyers who were offered "Don't email me" at checkout and left it alone - the
+   *  soft opt-in. Evidence exists, for the organiser's own similar events only. */
+  let softOptInEmails = $state<Set<string>>(new Set());
   /** Contacts this organiser has already reached through WoCo without a bounce
-   *  (or who opted in at their checkout) — they skip paced sending (#619). */
+   *  (or who said yes at their checkout, either basis) — they skip paced sending (#619). */
   let provenEmails = $state<Set<string>>(new Set());
   /** The consent/suppression read failed, so the labels and counts below are
    *  not evidence of anything — distinct from everyone being 'imported'. */
@@ -89,6 +92,7 @@
     if (list.length === 0) {
       suppressedEmails = new Set();
       consentedEmails = new Set();
+      softOptInEmails = new Set();
       provenEmails = new Set();
       return;
     }
@@ -96,6 +100,7 @@
       const res = await checkMarketingEmails(list.map((c) => c.email));
       suppressedEmails = new Set(res.suppressed);
       consentedEmails = new Set(res.consented ?? []);
+      softOptInEmails = new Set(res.softOptIn ?? []);
       provenEmails = new Set(res.proven ?? []);
       consentUnknown = false;
     } catch {
@@ -191,10 +196,11 @@
   const counts = $derived.by(() => {
     const out: Record<ContactConsentState, number> = {
       "opted-in": 0,
+      "soft-opt-in": 0,
       imported: 0,
       unsubscribed: 0,
     };
-    for (const c of contacts) out[contactConsentState(c.email, suppressedEmails, consentedEmails)]++;
+    for (const c of contacts) out[contactConsentState(c.email, suppressedEmails, consentedEmails, softOptInEmails)]++;
     return out;
   });
 
@@ -253,7 +259,7 @@
         <h3>Bring your people with you</h3>
         <p class="muted">
           Import the customer lists you've exported from Skiddle, Fatsoma, RA or any other
-          platform, or pull in the ticket buyers who opted in at checkout. Contacts are
+          platform, or pull in the ticket buyers who said yes at checkout. Contacts are
           encrypted before they're stored — and anyone who unsubscribes stays unsubscribed,
           even if you re-import the same file.
         </p>
@@ -325,7 +331,7 @@
 
     {#if panel === "contacts" && contacts.length > 0 && consentUnknown}
       <p class="consent-unknown">
-        Couldn't check who has opted in or unsubscribed, so the labels below may be wrong.
+        Couldn't check who said yes at checkout or unsubscribed, so the labels below may be wrong.
         Sending is unaffected — unsubscribes are always honoured when a broadcast goes out.
       </p>
     {/if}
@@ -335,6 +341,7 @@
         {contacts}
         {suppressedEmails}
         {consentedEmails}
+        {softOptInEmails}
         filter={consentFilter}
         busy={saving}
         onSave={handleSave}
@@ -353,7 +360,7 @@
         sub="Marketing email sends on WoCo's shared reputation, so broadcasting needs a connected, verified Stripe account — it's free and verifies who you are. Adding contacts to your list needs the same verification; removing them never does."
       />
       {#if stripeVerified}
-        <MarketingComposer {contacts} {suppressedEmails} {provenEmails} initialEventId={announceEventId} />
+        <MarketingComposer {contacts} {suppressedEmails} {provenEmails} {softOptInEmails} initialEventId={announceEventId} />
       {/if}
     {/if}
 
