@@ -12,7 +12,6 @@
 
 import {
   decodeDoorPassToken,
-  parseDoorPassFragment,
   SCANNER_DEVICE_HEADER,
   type DoorMode,
   type CheckinConflict,
@@ -26,7 +25,7 @@ import { decryptRoster } from "./roster-crypto.js";
 import { verifyTicket, type VerifyVerdict } from "./verify.js";
 import { claimAdmission, newClaimId, type ClaimAnswer } from "./claim.js";
 import { admit, doorModeOf, type Admission } from "./admission.js";
-import { describePackFailure, isPassExpired, NO_CONNECTION_MESSAGE, PASS_EXPIRED_MESSAGE, type PackFailure } from "./pass-gate.js";
+import { bootFromFragment, describePackFailure, isPassExpired, NO_CONNECTION_MESSAGE, PASS_EXPIRED_MESSAGE, type PackFailure } from "./pass-gate.js";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 const SYNC_INTERVAL_MS = 30_000;
@@ -97,11 +96,8 @@ class ScannerStore {
     // A door-pass fragment in the URL always wins — it (re)provisions the device.
     // If it fails, the phone stays on the provision screen with this pass ready to
     // retry: falling back to the stored pass would open whatever event it held before.
-    const fragment = parseDoorPassFragment(location.hash);
-    if (fragment) {
-      await this.provision(fragment.token, fragment.keyB64url);
-      return;
-    }
+    const booted = await bootFromFragment({ location, history, provision: (t, k) => this.provision(t, k) });
+    if (booted !== "none") return;
 
     const pass = await db.getStoredPass();
     const pack = await db.getStoredPack();
@@ -154,10 +150,6 @@ class ScannerStore {
       this.pendingPass = null;
       await this.absorbPack(pack);
       this.phase = "ready";
-      // Only now: until the pass is stored, the fragment is the only copy of it.
-      if (parseDoorPassFragment(location.hash)) {
-        history.replaceState(null, "", new URL(location.pathname + location.search, location.href).href);
-      }
       this.startSyncLoop();
       void this.sync();
       return true;

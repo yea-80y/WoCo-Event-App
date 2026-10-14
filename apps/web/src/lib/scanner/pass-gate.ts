@@ -8,6 +8,8 @@
  * expired one) with nothing on screen saying so.
  */
 
+import { parseDoorPassFragment } from "@woco/shared";
+
 export type PackFailure =
   /** Revoked, expired, for another event, or bound to another phone: only a new pass helps. */
   | { kind: "dead"; message: string }
@@ -32,4 +34,23 @@ export const PASS_EXPIRED_MESSAGE =
  */
 export function isPassExpired(exp: number, nowMs: number): boolean {
   return !Number.isFinite(exp) || exp * 1000 <= nowMs;
+}
+
+export interface FragmentBoot {
+  location: { hash: string; pathname: string; search: string; href: string };
+  history: Pick<History, "replaceState">;
+  provision: (token: string, keyB64url: string) => Promise<boolean>;
+}
+
+/**
+ * Set the phone up from a door-pass link. The fragment carries the pass token
+ * AND the roster key, so it leaves the address bar and history the moment it is
+ * read - before the pack request, whatever that request's outcome. A pass that
+ * fails stays in memory for "Try again", which needs no URL.
+ */
+export async function bootFromFragment(b: FragmentBoot): Promise<"none" | "provisioned" | "failed"> {
+  const fragment = parseDoorPassFragment(b.location.hash);
+  if (!fragment) return "none";
+  b.history.replaceState(null, "", new URL(b.location.pathname + b.location.search, b.location.href).href);
+  return (await b.provision(fragment.token, fragment.keyB64url)) ? "provisioned" : "failed";
 }
