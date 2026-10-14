@@ -43,7 +43,21 @@
   <div class="shell">
     <header>
       <div class="title">
-        <span class="event">{scanner.pack.eventTitle}</span>
+        {#if scanner.events.length > 1}
+          <!-- This tab only: other tabs keep the event they show. -->
+          <select
+            class="event event-switch"
+            aria-label="Event"
+            value={scanner.pass?.eventId}
+            onchange={(e) => void scanner.switchTo(e.currentTarget.value)}
+          >
+            {#each scanner.events as ev (ev.eventId)}
+              <option value={ev.eventId}>{ev.title}</option>
+            {/each}
+          </select>
+        {:else}
+          <span class="event">{scanner.pack.eventTitle}</span>
+        {/if}
         <span class="stats">
           <strong>{scanner.checkedInCount}</strong> / {scanner.totalCapacity} in
           {#if scanner.pendingCount > 0}· {scanner.pendingCount} unsynced{/if}
@@ -55,7 +69,7 @@
         <button class="icon-btn" onclick={() => void refresh()} disabled={refreshing || !scanner.online} title="Refresh event data">
           {refreshing ? "…" : "↻"}
         </button>
-        <button class="icon-btn danger" onclick={resetTap} title="Reset this device">
+        <button class="icon-btn danger" onclick={resetTap} title="Remove this event from this phone">
           {confirmReset ? "Sure?" : "⏏"}
         </button>
       </div>
@@ -165,6 +179,16 @@
   }
   .icon-btn.danger {
     color: var(--error);
+  }
+  .event-switch {
+    max-width: 100%;
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.15rem 0.35rem;
+    font: inherit;
+    font-weight: 700;
   }
   .banner {
     padding: 0.5rem 0.85rem;

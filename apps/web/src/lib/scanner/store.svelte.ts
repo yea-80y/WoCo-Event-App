@@ -42,7 +42,6 @@ import {
   setUpArrivedPass,
   takePassFromUrl,
   describePackFailure,
-  isPassExpired,
   onPassLink,
   NO_CONNECTION_MESSAGE,
   PASS_EXPIRED_MESSAGE,
@@ -51,6 +50,7 @@ import {
 } from "./pass-gate.js";
 import { canApplyUpdate, UPDATE_RETRY_MS } from "./update-policy.js";
 import { unsyncedElsewhere } from "./scope.js";
+import { chooseEvent, endedEventCleanup, eventMarker, isLive, liveEvents, parseEventMarker } from "./events.js";
 import { takeoverIfNewer } from "./sw-update.js";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
@@ -102,6 +102,8 @@ class ScannerStore {
   pendingCount = $state(0);
   /** Unsynced check-ins this phone holds for OTHER events; they sync only with their own pass. */
   otherUnsynced = $state(0);
+  /** Events this phone can show (live passes), most recently used first: the switcher. */
+  events = $state<{ eventId: string; title: string }[]>([]);
   /** Set when the server said the pass was revoked/expired — device must re-provision. */
   passDead = $state<string | null>(null);
   /** A server claim is in flight - the scan screen shows "checking" and pauses the camera. */
@@ -120,7 +122,7 @@ class ScannerStore {
   /** ticketKey → when a pack was fetched because that ticket was missing from it. */
   private rechecked = new Map<string, number>();
   private scanning = false;
-  private syncingEarlier = false;
+  private syncingOthers = false;
   private listening = false;
   private lastScanAt = 0;
   /** A newer scanner has taken over this page and a reload into it is due. */
@@ -187,30 +189,61 @@ class ScannerStore {
       return;
     }
 
-    const pass = await db.getStoredPass();
-    const pack = await db.getStoredPack();
-    if (pass && isPassExpired(pass.exp, Date.now())) {
-      await this.countOtherUnsynced();
-      this.provisionError = PASS_EXPIRED_MESSAGE;
-      this.phase = "unprovisioned";
-      void this.syncEarlierEvents();
-      return;
+    // This tab's own event (its URL marker), or on a fresh open the most recently
+    // used live one. A tab never quietly becomes another event's door.
+    const choice = chooseEvent(parseEventMarker(location.hash), await db.getAllPasses(), Date.now());
+    await this.cleanUpEndedEvents();
+    if (choice.kind === "open" && (await this.openEvent(choice.eventId))) return;
+    if (choice.kind === "ended") {
+      this.provisionError = choice.reason === "dead"
+        ? `${choice.message}. Scan a new door pass from the organiser's dashboard.`
+        : PASS_EXPIRED_MESSAGE;
     }
-    if (pass && pack) {
-      this.pass = pass;
-      this.pack = pack;
-      this.roster = (await db.getStoredRoster()) ?? [];
-      this.conflicts = (await db.getStoredConflicts()) ?? [];
-      await this.reloadCheckins();
-      this.phase = "ready";
-      this.startSyncLoop();
-      void this.sync();
-      this.maybeAutoRefresh(0);
-    } else {
-      await this.countOtherUnsynced();
-      this.phase = "unprovisioned";
-      void this.syncEarlierEvents();
+    await this.listEvents();
+    await this.countOtherUnsynced();
+    this.phase = "unprovisioned";
+    void this.syncOtherEvents();
+  }
+
+  /**
+   * Show one stored event in this tab: the switcher, and boot. False when it can
+   * no longer be opened (removed, expired or refused); nothing changes then.
+   */
+  async openEvent(eventId: string): Promise<boolean> {
+    const pass = await db.getPass(eventId);
+    const pack = await db.getPack(eventId);
+    const now = Date.now();
+    if (!pass || !pack || !isLive(pass, now)) {
+      await this.listEvents();
+      return false;
     }
+    this.stopLoops();
+    await db.touchPass(eventId, now);
+    this.pass = { ...pass, lastUsedAt: now };
+    this.pack = pack;
+    this.roster = (await db.getRoster(eventId)) ?? [];
+    this.conflicts = (await db.getConflicts(eventId)) ?? [];
+    this.checkins = new Map();
+    this.passDead = null;
+    this.provisionError = null;
+    this.lastRefreshAt = 0;
+    this.packAsOf = 0;
+    this.rechecked.clear();
+    this.notFoundSince.clear();
+    this.showEventInUrl(eventId);
+    await this.reloadCheckins();
+    this.phase = "ready";
+    this.startSyncLoop();
+    void this.sync();
+    this.maybeAutoRefresh(0);
+    await this.listEvents();
+    return true;
+  }
+
+  /** The switcher. Changes this tab only. */
+  async switchTo(eventId: string): Promise<void> {
+    if (eventId === this.pass?.eventId) return;
+    await this.openEvent(eventId);
   }
 
   /** Accept a door pass (from URL fragment, scanned QR, or pasted link). */
@@ -234,9 +267,11 @@ class ScannerStore {
         keyB64url,
         eventId: decoded.payload.eventId,
         exp: decoded.payload.exp,
+        lastUsedAt: Date.now(),
       };
-      await this.keepEarlierPass(pass.eventId);
-      await db.setStoredPass(pass);
+      // Replaces only this event's pass (and clears a dead mark): every other
+      // event on the phone, and the tabs showing them, are untouched.
+      await db.putPass(pass);
       // A pass for another event starts from an empty in-memory set;
       // `reloadCheckins` only ever adds to it.
       if (this.pass?.eventId !== pass.eventId) this.checkins = new Map();
@@ -248,9 +283,11 @@ class ScannerStore {
       this.packAsOf = requestedAt;
       this.rechecked.clear();
       this.notFoundSince.clear();
+      this.showEventInUrl(pass.eventId);
       this.phase = "ready";
       this.startSyncLoop();
       void this.sync();
+      await this.listEvents();
       return true;
     } catch (err) {
       this.pendingPass = { token, keyB64url };
@@ -320,6 +357,7 @@ class ScannerStore {
    */
   reprovision(): void {
     this.stopLoops();
+    this.forgetEventInUrl();
     this.pass = null;
     this.pack = null;
     this.roster = [];
@@ -414,7 +452,7 @@ class ScannerStore {
   async sync(): Promise<void> {
     if (!this.online) return;
     await this.syncCurrentEvent();
-    await this.syncEarlierEvents();
+    await this.syncOtherEvents();
   }
 
   private async syncCurrentEvent(): Promise<void> {
@@ -425,6 +463,7 @@ class ScannerStore {
       const pending = await db.getPending(pass.eventId);
       const answer = await this.postSync(pass, pending);
       if (answer.kind === "dead") {
+        await db.markPassDead(pass.eventId, answer.message);
         if (this.pass?.token === pass.token) this.passDead = answer.message;
         return;
       }
@@ -437,7 +476,7 @@ class ScannerStore {
       );
       if (this.pass?.token !== pass.token) return;
       this.conflicts = answer.data.conflicts;
-      await db.setStoredConflicts(answer.data.conflicts);
+      await db.putConflicts(pass.eventId, answer.data.conflicts);
       await this.reloadCheckins();
       this.lastSyncAt = new Date().toISOString();
     } catch {
@@ -460,17 +499,17 @@ class ScannerStore {
     }
   }
 
+  /**
+   * "Reset" in the header: remove THIS event from this phone, its unsynced
+   * check-ins included (the button asks first). Other events, and the tabs
+   * showing them, are untouched.
+   */
   async reset(): Promise<void> {
-    this.stopLoops();
-    await db.resetDevice();
-    this.pass = null;
-    this.pack = null;
-    this.roster = [];
-    this.checkins = new Map();
-    this.conflicts = [];
-    this.passDead = null;
-    this.otherUnsynced = 0;
-    this.phase = "unprovisioned";
+    const eventId = this.pass?.eventId;
+    this.reprovision();
+    if (eventId) await db.clearEvent(eventId);
+    await this.listEvents();
+    await this.countOtherUnsynced();
   }
 
   // ── internals ─────────────────────────────────────────────────────────────
@@ -505,62 +544,57 @@ class ScannerStore {
   }
 
   /**
-   * Moving to another event: if the one being left still has unsynced check-ins,
-   * keep its pass so they can reach THAT event later. They are never sent with
-   * the new pass, and never dropped.
+   * Sync the other events' unsynced check-ins, each with its own pass, never
+   * this tab's. A pass that has expired or been refused syncs nothing; its
+   * records stay on the phone.
    */
-  private async keepEarlierPass(nextEventId: string): Promise<void> {
-    const previous = await db.getStoredPass();
-    if (!previous || previous.eventId === nextEventId) return;
-    if ((await db.getPending(previous.eventId)).length === 0) return;
-    const earlier = await db.getEarlierPasses();
-    earlier[previous.eventId] = previous;
-    await db.setEarlierPasses(earlier);
-  }
-
-  /**
-   * Sync earlier events' unsynced check-ins, each with its own pass. A pass that
-   * has expired or been refused is let go; its records stay on the phone.
-   */
-  private async syncEarlierEvents(): Promise<void> {
-    if (this.syncingEarlier || !this.online) return;
-    this.syncingEarlier = true;
+  private async syncOtherEvents(): Promise<void> {
+    if (this.syncingOthers || !this.online) return;
+    this.syncingOthers = true;
     try {
-      await this.syncEachEarlierEvent();
+      for (const pass of await db.getAllPasses()) {
+        if (pass.eventId === this.pass?.eventId || !isLive(pass, Date.now())) continue;
+        const pending = await db.getPending(pass.eventId);
+        if (pending.length === 0) continue;
+        try {
+          const answer = await this.postSync(pass, pending);
+          if (answer.kind === "dead") await db.markPassDead(pass.eventId, answer.message);
+          else if (answer.kind === "ok") {
+            await db.absorbServerCheckins(pass.eventId, answer.data.checkins, pending.map((r) => db.ticketKey(r.seriesId, r.edition)));
+          }
+        } catch {
+          // Offline: next time.
+        }
+      }
     } finally {
-      this.syncingEarlier = false;
+      this.syncingOthers = false;
     }
+    await this.countOtherUnsynced();
   }
 
-  private async syncEachEarlierEvent(): Promise<void> {
-    const earlier = await db.getEarlierPasses();
-    let changed = false;
-    for (const [eventId, pass] of Object.entries(earlier)) {
-      if (eventId === this.pass?.eventId) continue;
-      const pending = await db.getPending(eventId);
-      if (pending.length === 0 || isPassExpired(pass.exp, Date.now())) {
-        delete earlier[eventId];
-        changed = true;
-        continue;
-      }
-      try {
-        const answer = await this.postSync(pass, pending);
-        if (answer.kind === "dead") {
-          delete earlier[eventId];
-          changed = true;
-        } else if (answer.kind === "ok") {
-          await db.absorbServerCheckins(eventId, answer.data.checkins, pending.map((r) => db.ticketKey(r.seriesId, r.edition)));
-          if ((await db.getPending(eventId)).length === 0) {
-            delete earlier[eventId];
-            changed = true;
-          }
-        }
-      } catch {
-        // Offline: next time.
-      }
+  /** An ended event's attendee data goes at once; the rest once nothing is waiting to sync. */
+  private async cleanUpEndedEvents(): Promise<void> {
+    const plan = endedEventCleanup(await db.getAllPasses(), await db.getAllPendingKeys(), Date.now());
+    for (const eventId of plan.clear) await db.clearEvent(eventId);
+    for (const eventId of plan.dropAttendeeData) await db.dropAttendeeData(eventId);
+  }
+
+  private async listEvents(): Promise<void> {
+    const live = liveEvents(await db.getAllPasses(), Date.now());
+    this.events = await Promise.all(
+      live.map(async (p) => ({ eventId: p.eventId, title: (await db.getPack(p.eventId))?.eventTitle ?? "Event" })),
+    );
+  }
+
+  /** This tab's event, in the URL so a reload reopens it. The id only - never the pass. */
+  private showEventInUrl(eventId: string): void {
+    history.replaceState(null, "", new URL(eventMarker(eventId), location.href).href);
+  }
+
+  private forgetEventInUrl(): void {
+    if (parseEventMarker(location.hash) !== null) {
+      history.replaceState(null, "", new URL(location.pathname + location.search, location.href).href);
     }
-    if (changed) await db.setEarlierPasses(earlier);
-    await this.countOtherUnsynced();
   }
 
   private async countOtherUnsynced(): Promise<void> {
@@ -580,8 +614,9 @@ class ScannerStore {
       this.packAsOf = requestedAt;
       return true;
     } catch (err) {
-      if (err instanceof PackError && err.failure.kind === "dead" && this.pass?.token === pass.token) {
-        this.passDead = err.failure.message;
+      if (err instanceof PackError && err.failure.kind === "dead") {
+        await db.markPassDead(pass.eventId, err.failure.message).catch(() => undefined);
+        if (this.pass?.token === pass.token) this.passDead = err.failure.message;
       }
       if (err instanceof PackError && err.failure.kind === "outdated") void takeoverIfNewer().catch(() => false);
       return false;
@@ -672,7 +707,8 @@ class ScannerStore {
       });
 
       if (answer.kind === "pass-dead") {
-        this.passDead = answer.message;
+        await db.markPassDead(pass.eventId, answer.message).catch(() => undefined);
+        if (this.pass?.token === pass.token) this.passDead = answer.message;
         return answer;
       }
       if (answer.kind === "outdated") {
@@ -735,13 +771,13 @@ class ScannerStore {
   }
 
   private async absorbPack(pack: CheckinPack): Promise<void> {
-    await db.setStoredPack(pack);
+    await db.putPack(pack);
     this.pack = pack;
 
     if (pack.roster && this.pass) {
       try {
         this.roster = await decryptRoster(pack.roster, this.pass.keyB64url);
-        await db.setStoredRoster(this.roster);
+        await db.putRoster(pack.eventId, this.roster);
       } catch (err) {
         console.warn("[scanner] roster decrypt failed — pass key mismatch?", err);
       }

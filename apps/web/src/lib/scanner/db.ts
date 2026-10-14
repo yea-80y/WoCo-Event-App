@@ -7,6 +7,10 @@
  * Plaintext roster on disk is intentional: the device already holds the
  * roster key (from the pass URL fragment) in the same store, so encrypting
  * at rest here would add no security — provisioning a device IS trusting it.
+ *
+ * One phone can hold several events at once (two doors, two tabs): passes,
+ * packs, rosters, conflicts, check-ins, the unsynced queue and in-flight claims
+ * are all kept per event, so setting one up never touches another.
  */
 
 import type { CheckinPack, CheckinRecord, CheckinConflict, RosterEntry } from "@woco/shared";
@@ -26,6 +30,13 @@ const DB_VERSION = 1;
 /** Per-ticket keys with no event (scope.ts). Read once, copied in, then deleted. */
 const LEGACY_DB_NAME = "woco-scanner";
 const MIGRATED = "migratedFromLegacy";
+
+/** kv: device-wide (device id, copy marker). Every other store is per event: keyed by eventId, or by `storeKey`. */
+const STORES = ["kv", "passes", "packs", "rosters", "conflicts", "checkins", "pending", "claims"] as const;
+/** Keyed by eventId. */
+const EVENT_STORES = ["passes", "packs", "rosters", "conflicts"] as const;
+/** Keyed by `storeKey`: one key range per event. */
+const TICKET_STORES = ["checkins", "pending", "claims"] as const;
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 let factory: () => IDBFactory = () => indexedDB;
@@ -60,9 +71,7 @@ function openCurrent(): Promise<IDBDatabase> {
     const req = factory().open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
-      db.createObjectStore("kv");
-      db.createObjectStore("checkins");
-      db.createObjectStore("pending");
+      for (const name of STORES) db.createObjectStore(name);
     };
     req.onsuccess = () => {
       const db = req.result;
@@ -154,17 +163,26 @@ export async function copyLegacyInForTests(legacy: LegacyData | null): Promise<v
 /** `scopeV1Records` decides what moves, and skips any record it cannot read. */
 function copyIn(db: IDBDatabase, legacy: LegacyData | null): Promise<void> {
   return new Promise((resolve, reject) => {
-    const t = db.transaction(["kv", "checkins", "pending"], "readwrite");
+    const t = db.transaction([...STORES], "readwrite");
     const kv = t.objectStore("kv");
     const marker = kv.get(MIGRATED);
     marker.onsuccess = () => {
       if (marker.result) return;
-      for (const name of ["kv", "checkins", "pending"]) t.objectStore(name).clear();
+      for (const name of STORES) t.objectStore(name).clear();
       if (legacy) {
-        const pack = legacy.kv.pack as CheckinPack | undefined;
-        for (const key of LEGACY_KV) {
-          const value = key === "pendingClaims" ? scopeV1Claims(pack, legacy.kv.pendingClaims) : legacy.kv[key];
-          if (value !== undefined) putSkippingBad(kv, value, key);
+        const { pass, pack, roster, conflicts, deviceId, pendingClaims } = legacy.kv;
+        const eventOf = (v: unknown) => {
+          const id = (v as { eventId?: unknown } | null)?.eventId;
+          return typeof id === "string" && id ? id : null;
+        };
+        const eventId = eventOf(pack) ?? eventOf(pass);
+        if (eventOf(pass)) putSkippingBad(t.objectStore("passes"), pass, eventOf(pass)!);
+        if (eventOf(pack)) putSkippingBad(t.objectStore("packs"), pack, eventOf(pack)!);
+        if (eventId && roster !== undefined) putSkippingBad(t.objectStore("rosters"), roster, eventId);
+        if (eventId && conflicts !== undefined) putSkippingBad(t.objectStore("conflicts"), conflicts, eventId);
+        if (typeof deviceId === "string") putSkippingBad(kv, deviceId, "deviceId");
+        for (const [key, claimId] of Object.entries(scopeV1Claims(pack, pendingClaims))) {
+          putSkippingBad(t.objectStore("claims"), claimId, key);
         }
         for (const name of ["checkins", "pending"] as const) {
           const store = t.objectStore(name);
@@ -221,33 +239,78 @@ function tx<T>(store: string, mode: IDBTransactionMode, run: (s: IDBObjectStore)
   );
 }
 
-// ── kv slots ────────────────────────────────────────────────────────────────
+// ── per-event state ─────────────────────────────────────────────────────────
 
 export interface StoredPass {
   token: string;
   keyB64url: string;
   eventId: string;
   exp: number;
+  /** When a tab last opened this event: a fresh open goes to the most recent live one. */
+  lastUsedAt?: number;
+  /** Set when the server refused the pass (revoked, bound to another phone): it opens nothing again. */
+  dead?: string;
 }
 
 const kvGet = <T>(key: string) => tx<T | undefined>("kv", "readonly", (s) => s.get(key) as IDBRequest<T | undefined>);
 const kvSet = (key: string, value: unknown) => tx("kv", "readwrite", (s) => s.put(value, key));
+const get = <T>(store: string, key: string) => tx<T | undefined>(store, "readonly", (s) => s.get(key) as IDBRequest<T | undefined>);
+const put = (store: string, value: unknown, key: string) => tx(store, "readwrite", (s) => s.put(value, key));
 
-export const getStoredPass = () => kvGet<StoredPass>("pass");
-export const setStoredPass = (p: StoredPass) => kvSet("pass", p);
+export const getPass = (eventId: string) => get<StoredPass>("passes", eventId);
+export const putPass = (p: StoredPass) => put("passes", p, p.eventId);
+export const getAllPasses = () => tx<StoredPass[]>("passes", "readonly", (s) => s.getAll() as IDBRequest<StoredPass[]>);
+export const getPack = (eventId: string) => get<CheckinPack>("packs", eventId);
+export const putPack = (p: CheckinPack) => put("packs", p, p.eventId);
+export const getRoster = (eventId: string) => get<RosterEntry[]>("rosters", eventId);
+export const putRoster = (eventId: string, r: RosterEntry[]) => put("rosters", r, eventId);
+export const getConflicts = (eventId: string) => get<CheckinConflict[]>("conflicts", eventId);
+export const putConflicts = (eventId: string, c: CheckinConflict[]) => put("conflicts", c, eventId);
+
+/** Read-modify-write in one transaction, so one tab's change cannot undo another's. */
+async function updatePass(eventId: string, change: Partial<StoredPass>): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction("passes", "readwrite");
+    const store = t.objectStore("passes");
+    const req = store.get(eventId) as IDBRequest<StoredPass | undefined>;
+    req.onsuccess = () => {
+      if (req.result) store.put({ ...req.result, ...change }, eventId);
+    };
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+}
+
+export const markPassDead = (eventId: string, message: string) => updatePass(eventId, { dead: message });
+export const touchPass = (eventId: string, at: number) => updatePass(eventId, { lastUsedAt: at });
 
 /**
- * Passes of earlier events that still have unsynced check-ins on this phone, by
- * event: their records sync with their own pass only, never the current one's.
+ * Remove one event from this phone - "Reset" in that event's tab. Every other
+ * event, and every other tab, is untouched.
  */
-export const getEarlierPasses = async () => (await kvGet<Record<string, StoredPass>>("earlierPasses")) ?? {};
-export const setEarlierPasses = (p: Record<string, StoredPass>) => kvSet("earlierPasses", p);
-export const getStoredPack = () => kvGet<CheckinPack>("pack");
-export const setStoredPack = (p: CheckinPack) => kvSet("pack", p);
-export const getStoredRoster = () => kvGet<RosterEntry[]>("roster");
-export const setStoredRoster = (r: RosterEntry[]) => kvSet("roster", r);
-export const getStoredConflicts = () => kvGet<CheckinConflict[]>("conflicts");
-export const setStoredConflicts = (c: CheckinConflict[]) => kvSet("conflicts", c);
+export async function clearEvent(eventId: string): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction([...EVENT_STORES, ...TICKET_STORES], "readwrite");
+    for (const name of EVENT_STORES) t.objectStore(name).delete(eventId);
+    for (const name of TICKET_STORES) t.objectStore(name).delete(inEvent(eventId));
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+}
+
+/** An ended event's attendee data (roster) and pack go; its check-ins stay while any are unsynced. */
+export async function dropAttendeeData(eventId: string): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(["packs", "rosters"], "readwrite");
+    t.objectStore("packs").delete(eventId);
+    t.objectStore("rosters").delete(eventId);
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+}
 
 /** Stable random device id — lets the server attribute offline duplicates. */
 export async function getDeviceId(): Promise<string> {
@@ -307,23 +370,14 @@ export async function checkAndMark(eventId: string, record: CheckinRecord): Prom
 // "admitted" to it rather than "already in" - otherwise a lost response would
 // turn away the person it had just let in.
 
-type PendingClaims = Record<string, string>;
+export const getPendingClaimId = (eventId: string, seriesId: string, edition: number) =>
+  get<string>("claims", storeKey(eventId, seriesId, edition));
 
-export async function getPendingClaimId(eventId: string, seriesId: string, edition: number): Promise<string | undefined> {
-  return ((await kvGet<PendingClaims>("pendingClaims")) ?? {})[storeKey(eventId, seriesId, edition)];
-}
+export const setPendingClaimId = (eventId: string, seriesId: string, edition: number, claimId: string) =>
+  put("claims", claimId, storeKey(eventId, seriesId, edition)).then(() => undefined);
 
-export async function setPendingClaimId(eventId: string, seriesId: string, edition: number, claimId: string): Promise<void> {
-  const all = (await kvGet<PendingClaims>("pendingClaims")) ?? {};
-  all[storeKey(eventId, seriesId, edition)] = claimId;
-  await kvSet("pendingClaims", all);
-}
-
-export async function clearPendingClaimId(eventId: string, seriesId: string, edition: number): Promise<void> {
-  const all = (await kvGet<PendingClaims>("pendingClaims")) ?? {};
-  delete all[storeKey(eventId, seriesId, edition)];
-  await kvSet("pendingClaims", all);
-}
+export const clearPendingClaimId = (eventId: string, seriesId: string, edition: number) =>
+  tx("claims", "readwrite", (s) => s.delete(storeKey(eventId, seriesId, edition))).then(() => undefined);
 
 /**
  * Fold an event's server set in (server records win only where we have none),
@@ -351,16 +405,3 @@ export async function absorbServerCheckins(eventId: string, records: CheckinReco
   });
 }
 
-/** Wipe the device (hand it back): every event's records, unsynced ones included. */
-export async function resetDevice(): Promise<void> {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const t = db.transaction(["kv", "checkins", "pending"], "readwrite");
-    t.objectStore("checkins").clear();
-    t.objectStore("pending").clear();
-    const kv = t.objectStore("kv");
-    for (const key of ["pass", "pack", "roster", "conflicts", "pendingClaims", "earlierPasses"]) kv.delete(key);
-    t.oncomplete = () => resolve();
-    t.onerror = () => reject(t.error);
-  });
-}

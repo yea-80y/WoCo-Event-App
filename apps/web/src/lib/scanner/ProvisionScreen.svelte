@@ -61,6 +61,15 @@
     <button type="submit">Go</button>
   </form>
 
+  {#if scanner.events.length > 0}
+    <div class="on-phone">
+      <span class="note">Or open an event already on this phone:</span>
+      {#each scanner.events as ev (ev.eventId)}
+        <button type="button" class="event-btn" onclick={() => void scanner.switchTo(ev.eventId)}>{ev.title}</button>
+      {/each}
+    </div>
+  {/if}
+
   {#if scanner.otherUnsynced > 0}
     <p class="note">
       {scanner.otherUnsynced} check-in{scanner.otherUnsynced === 1 ? "" : "s"} from an earlier event
@@ -149,6 +158,20 @@
     border-radius: var(--radius-md);
     font-weight: 700;
     padding: 0 1.1rem;
+  }
+  .on-phone {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .event-btn {
+    background: var(--bg-surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    font-weight: 600;
+    padding: 0.5rem 0.8rem;
   }
   .note {
     margin: 0;

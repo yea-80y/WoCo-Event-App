@@ -62,7 +62,13 @@ function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 }
 
 const LEGACY = {
-  kv: { pass: PASS, pack: PACK, deviceId: "legacydevice0001", pendingClaims: { "ser-now 1": "claim-1", "ser-old 2": "claim-2" } },
+  kv: {
+    pass: PASS,
+    pack: PACK,
+    roster: [{ seriesId: "ser-now", edition: 1, name: "Ada" }],
+    deviceId: "legacydevice0001",
+    pendingClaims: { "ser-now 1": "claim-1", "ser-old 2": "claim-2" },
+  },
   checkins: [["ser-now 1", rec("ser-now", 1)], ["ser-old 2", rec("ser-old", 2)]] as [string, unknown][],
   pending: [["ser-now 1", rec("ser-now", 1)], ["ser-old 2", rec("ser-old", 2)]] as [string, unknown][],
 };
@@ -76,7 +82,9 @@ test("a legacy database is copied in under its event, and then deleted", async (
   assert.deepEqual(await db.getPending(EVENT), [rec("ser-now", 1)]);
   assert.deepEqual(await db.getAllPendingKeys(), [storeKey(EVENT, "ser-now", 1)], "another event's record is not put under this one");
   assert.equal(await db.getPendingClaimId(EVENT, "ser-now", 1), "claim-1");
-  assert.deepEqual(await db.getStoredPass(), PASS);
+  assert.deepEqual(await db.getPass(EVENT), PASS, "the pass, pack and roster move under their event");
+  assert.equal((await db.getPack(EVENT))?.eventTitle, "Now");
+  assert.deepEqual(await db.getRoster(EVENT), [{ seriesId: "ser-now", edition: 1, name: "Ada" }]);
   assert.equal(await db.getDeviceId(), "legacydevice0001", "the same device id, so a single-scanner pass still knows this phone");
   await eventually(async () => !(await names(f)).includes("woco-scanner"), "legacy database deleted");
 });
@@ -97,7 +105,7 @@ test("a copy that never committed is redone from scratch; one that did is never 
   // What an interrupted earlier attempt could have left: the stores, a stray record, no marker.
   const pre = f.open("woco-scanner-v2", 1);
   pre.onupgradeneeded = () => {
-    for (const name of ["kv", "checkins", "pending"]) pre.result.createObjectStore(name);
+    for (const name of ["kv", "passes", "packs", "rosters", "conflicts", "checkins", "pending", "claims"]) pre.result.createObjectStore(name);
   };
   const stale = await request(pre);
   const t = stale.transaction("checkins", "readwrite");
