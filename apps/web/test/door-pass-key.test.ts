@@ -6,13 +6,14 @@
  *
  * MUTATION: register a key from another pass id and "the registered key is the one the
  * link opens" goes red; sign with anything but the feed signer and "the registration
- * verifies" goes red; issue the pass after the roster push and the panel test goes red.
+ * verifies" goes red; encrypt the roster under P itself and "never under P itself" goes red;
+ * issue the pass after the roster push and the panel test goes red.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { base64UrlDecode, encodeDoorPassToken } from "@woco/shared";
-import { doorKeyRefOf, doorKeyRegistrationMessage } from "@woco/shared/checkin/door-keys";
+import { doorKeyRefOf, doorKeyRegistrationMessage, doorRosterKey } from "@woco/shared/checkin/door-keys";
 import { doorEntriesKeypair } from "@woco/shared/checkin/door-entries-key";
 import { deriveFeedSignerKey } from "@woco/shared/crypto/feed-signer";
 import { recoverPersonalSigner } from "@woco/shared/crypto/issuing";
@@ -63,6 +64,19 @@ test("one secret in the link opens the roster the panel encrypted, and no other 
   const roster = { ...(await encryptRoster(entries, p1)), updatedAt: "2026-10-14T00:00:00Z" };
   assert.deepEqual(await decryptRoster(roster, p1), entries);
   await assert.rejects(decryptRoster(roster, doorPassSecretB64url(S1, EVENT, token("b".repeat(32)))));
+});
+
+test("the roster is sealed under P's roster-key child, never under P itself", async () => {
+  const pB64 = doorPassSecretB64url(S1, EVENT, token("c".repeat(32)));
+  const enc = await encryptRoster([{ seriesId: "s1", seriesName: "GA", edition: 1 }], pB64);
+  const b64 = (x: string) => Uint8Array.from(atob(x), (ch) => ch.charCodeAt(0));
+  const open = async (raw: Uint8Array) => {
+    const key = await crypto.subtle.importKey("raw", raw as BufferSource, "AES-GCM", false, ["decrypt"]);
+    return crypto.subtle.decrypt({ name: "AES-GCM", iv: b64(enc.iv) as BufferSource }, key, b64(enc.ciphertext) as BufferSource);
+  };
+  const p = base64UrlDecode(pB64);
+  await assert.doesNotReject(open(doorRosterKey(p)));
+  await assert.rejects(open(p));
 });
 
 test("the panel issues the pass with its registration before the roster, stores no secret, and refuses a pass from older keys", () => {

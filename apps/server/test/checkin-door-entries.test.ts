@@ -7,7 +7,7 @@
  * "a session alone cannot register" goes red; drop the used-id check and "an old
  * statement cannot bring back an old pass" goes red; drop the exp check and "an
  * expired pass gets nothing" goes red; let a seal skip the re-read and "two sales at
- * once" goes red; give a removal `seq` from the log instead of `last` and "a cursor
+ * once" goes red; drop the second duplicate check and "sealed twice at once" goes red; give a removal `seq` from the log instead of `last` and "a cursor
  * sees a removal of the last line" goes red; let a sale overwrite an unreadable file and
  * "unreadable is never overwritten" goes red; drop the issue route's registration check
  * and the route-order guard goes red.
@@ -203,6 +203,14 @@ test("two sales at once both land", async () => {
   const page = entries.readDoorEntriesPage(ev, pass.jti, 0);
   assert.deepEqual(page.log.map((l) => l.edition).sort(), [1, 2]);
   assert.deepEqual(page.log.map((l) => l.seq).sort(), [1, 2]);
+});
+
+test("the same ticket sealed twice at once (a replayed webhook) lands once", async () => {
+  const ev = newEvent();
+  const pass = issue(ev);
+  const t = [{ seriesId: SERIES, edition: 1 }];
+  await Promise.all([entries.sealDoorEntries(ev, t, { email: "a@example.com" }), entries.sealDoorEntries(ev, t, { email: "a@example.com" })]);
+  assert.equal(entries.readDoorEntriesPage(ev, pass.jti, 0).log.length, 1);
 });
 
 test("regenerating the pass drops the last pass's entries", async () => {
