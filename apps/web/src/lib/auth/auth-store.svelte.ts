@@ -96,6 +96,7 @@ import type { PasskeyLogin } from "./passkey-account.js";
 import type { ContentFeedSigner } from "../swarm/content-feed.js";
 import { signingRequest } from "./signing-request.svelte.js";
 import { accountSetupRequest } from "./account-setup-request.svelte.js";
+import { sessionForRequest, signWithStoredSession, type RequestSigningOptions } from "./request-session.js";
 import {
   planAccountSetup,
   hasExplainedAccountSetup,
@@ -5101,6 +5102,7 @@ async function signRequest(
   method: string,
   path: string,
   body: string,
+  opts: RequestSigningOptions = {},
 ): Promise<{
   signature: string;
   nonce: string;
@@ -5108,11 +5110,8 @@ async function signRequest(
   sessionAddress: string;
   delegation: SessionDelegation;
 } | null> {
-  // Lazy session establishment
-  if (!hasSession) {
-    const ok = await ensureSession();
-    if (!ok) return null;
-  }
+  // Lazy session establishment - never for a background request (`establish: false`).
+  if (!(await sessionForRequest({ hasSession: () => hasSession, ensureSession }, opts))) return null;
   if (!_parent) return null;
 
   const nonce = crypto.randomUUID();
@@ -5125,14 +5124,15 @@ async function signRequest(
   // case, which the caller would see as a missing auth header. Detect and
   // re-establish — and bind to the active `_parent` so a stale delegation
   // belonging to a previous identity can never be sent.
-  let result = await signWithSession(challenge, _parent);
-  if (!result) {
-    _sessionAddress = null;
-    const ok = await ensureSession();
-    if (!ok) return null;
-    result = await signWithSession(challenge, _parent);
-    if (!result) return null;
-  }
+  const result = await signWithStoredSession(
+    {
+      sign: () => (_parent ? signWithSession(challenge, _parent) : Promise.resolve(null)),
+      forget: () => { _sessionAddress = null; },
+      ensureSession,
+    },
+    opts,
+  );
+  if (!result) return null;
 
   const delegation = await getSessionDelegation(_parent);
   if (!delegation) return null;
