@@ -30,6 +30,7 @@ import { admit, doorModeOf, withConfirmed, type Admission } from "./admission.js
 import {
   MISS_FAILED_MESSAGE,
   MISS_RECHECK_MS,
+  notFoundYet,
   onPackMiss,
   PACK_REFRESH_MS,
   RETURN_REFRESH_MS,
@@ -343,6 +344,8 @@ class ScannerStore {
       const step = await this.recheckMissing(missing.seriesId, missing.edition);
       if (step.kind === "cant-confirm") return { kind: "cant-confirm", message: step.message, edition: missing.edition };
       if (step.kind === "refresh" && this.pack) verdict = await verifyTicket(raw, this.pack);
+      const notYet = notFoundYet(verdict);
+      if (notYet) return { kind: "cant-confirm", message: notYet, edition: missing.edition };
     }
     if (verdict.status === "unreadable") return { kind: "unreadable" };
     if (verdict.status === "wrong-event") return { kind: "wrong-event" };

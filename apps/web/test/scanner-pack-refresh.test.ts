@@ -10,6 +10,8 @@ import type { CheckinPack, TicketQr } from "@woco/shared";
 import {
   MISS_OFFLINE_MESSAGE,
   MISS_RECHECK_MS,
+  NOT_FOUND_YET_MESSAGE,
+  notFoundYet,
   onPackMiss,
   shouldAutoRefresh,
   ticketNewerThanPack,
@@ -79,13 +81,34 @@ test("a dead pass or a claim in flight is 'couldn't confirm' with its reason", (
   assert.deepEqual(onPackMiss(miss({ claimInFlight: true })), { kind: "cant-confirm", message: IN_FLIGHT_MESSAGE });
 });
 
-test("red once a pack fetched for this very ticket still lacks it, and not before", () => {
+test("a pack fetched for this very ticket moments ago is not fetched again; after a few seconds it is", () => {
   const now = 1_000_000;
-  assert.deepEqual(onPackMiss(miss({ lastRecheckAt: now - 1_000, now })), { kind: "reject" });
-  assert.deepEqual(onPackMiss(miss({ lastRecheckAt: now - 1_000, now, online: false })), { kind: "reject" },
+  assert.deepEqual(onPackMiss(miss({ lastRecheckAt: now - 1_000, now })), { kind: "settled" });
+  assert.deepEqual(onPackMiss(miss({ lastRecheckAt: now - 1_000, now, online: false })), { kind: "settled" },
     "the answer from a fresh pack stands even if the signal has since dropped");
   assert.deepEqual(onPackMiss(miss({ lastRecheckAt: now - MISS_RECHECK_MS, now })), { kind: "refresh" },
-    "after the window it may have been sold since: look again");
+    "after the window it may have been minted since: look again");
+  assert.ok(MISS_RECHECK_MS <= 5_000, "a guest who has just bought scans again within seconds, not half a minute");
+});
+
+test("no ticket for the slot even in a fresh pack is grey, never red: the mint may be seconds behind the sale", async () => {
+  const p = pack(["0x" + "aa".repeat(20)]);
+  assert.equal(notFoundYet(await verifyTicket(qr({ seriesId: "ser-1", edition: 2 }), p)), NOT_FOUND_YET_MESSAGE);
+  assert.match(NOT_FOUND_YET_MESSAGE, /scan again/);
+});
+
+test("a ticket type or edition the event does not have, or a forged code, still reads red", async () => {
+  const p = pack(["0x" + "aa".repeat(20)]);
+  for (const raw of [
+    qr({ seriesId: "ser-2", edition: 1 }),
+    qr({ seriesId: "ser-1", edition: 11 }),
+    qr({ seriesId: "ser-1", edition: 1 }),
+    qr({ seriesId: "ser-1", edition: 1, sig: "0x12" }),
+  ]) {
+    const v = await verifyTicket(raw, p);
+    assert.equal(v.status, "invalid", raw);
+    assert.equal(notFoundYet(v), null, raw);
+  }
 });
 
 function auto(over: Partial<AutoRefreshInput> = {}): AutoRefreshInput {
@@ -118,4 +141,11 @@ test("the background refresh never runs during a claim, a scan, or offline", () 
   ] as const) {
     assert.equal(shouldAutoRefresh(auto(over)), false, why);
   }
+});
+
+test("the scan path turns a still-missing slot grey after the re-check, before any red verdict", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/lib/scanner/store.svelte.ts", import.meta.url), "utf8");
+  const scan = src.slice(src.indexOf("private async scanTicket("), src.indexOf('if (verdict.status === "invalid") return { kind: "rejected"'));
+  assert.match(scan, /verdict = await verifyTicket\(raw, this\.pack\);\s*const notYet = notFoundYet\(verdict\);\s*if \(notYet\) return \{ kind: "cant-confirm"/);
 });
