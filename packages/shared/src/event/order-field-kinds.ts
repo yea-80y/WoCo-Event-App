@@ -63,8 +63,9 @@ export function isKeptOnList(field: Pick<OrderField, "health" | "keepOnList">): 
 }
 
 /**
- * Shown under a health question at checkout. Answering an optional question
- * that says exactly this is the explicit consent Art. 9(2)(a) asks for.
+ * Shown under a health question at checkout. The note is itself the express
+ * statement Art. 9(2)(a) asks for, so answering the optional question is the
+ * buyer's explicit consent to exactly this use.
  */
 export const HEALTH_FIELD_NOTE =
-  "Optional - used only to look after you at the event, never for marketing, and deleted with the rest of your booking.";
+  "Optional - by answering, you agree we use this only to look after you at the event. Never used for marketing, and deleted with the rest of your booking.";
