@@ -66,6 +66,11 @@ test("signing and sealing demand the confirmed generation; silent paths sign not
     assert.ok(gate > 0 && gate < b.indexOf("deriveFeedSignerKey("), `${sig}: gate before derive`);
   }
   assert.match(body("async function _accountSecretsIfPresent"), /if \(opts\.toSeal\) await _requireCurrentKeys\(\{ prompt: true \}\);/);
+  // The audience sync seals in the background: confirmed already, or nothing - never the catch-up sheet.
+  assert.match(
+    body("async function _accountSecretsIfPresent"),
+    /if \(opts\.toSeal && opts\.silent\) \{\s*if \(!\(await _currentKeysConfirmed\(\)\)\) return null;\s*\} else if \(opts\.toSeal\) await _requireCurrentKeys\(\{ prompt: true \}\);/,
+  );
   assert.match(body("async function _requireCurrentKeys"), /if \(_keysVerdict !== "ok"\) throw new Error/);
 });
 
