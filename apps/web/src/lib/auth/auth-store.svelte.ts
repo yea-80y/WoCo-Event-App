@@ -533,6 +533,20 @@ async function _accountSecretsIfPresent(opts: { toSeal?: boolean; silent?: boole
 }
 
 /**
+ * A FRESH read of the account's key-ring anchor (one RPC, never a prompt) equals the
+ * ring this device seals under. Asked right before an upload sealed in the background
+ * (the audience sync), so a ring replaced since this device last looked (#186) means
+ * no write - the in-memory verdict alone could be stale.
+ */
+async function _keyRingStillCurrent(): Promise<boolean> {
+  if (_kind !== "passkey") return true;
+  const u = _unlocked;
+  if (!u) return false;
+  const ref = await (await _keys()).readAnchor(_keysHost(), u.parent, { fresh: true });
+  return ref !== "error" && ref === (u.chain?.ringRef ?? null) && _unlocked === u;
+}
+
+/**
  * Lock a passkey account's keys again: the seed, the owner key, the PRF output and
  * the Kernel built from it go together, so the next signing action asks the passkey
  * once. Never mid-ceremony - a key arriving after the relock would undo it.
@@ -5432,6 +5446,8 @@ export const auth = {
   // the identity seed, so for an account that never removed a passkey both are the seed.
   // The issuing key, escrow and portability stay on `getIdentitySeed`.
   getAccountSecrets: (opts: { toSeal?: boolean; silent?: boolean } = {}) => _accountSecretsIfPresent(opts),
+  // Fresh anchor read, no prompt: is the ring this device seals under still the account's?
+  keyRingStillCurrent: () => _keyRingStillCurrent(),
   // Why the account's keys need attention here, if they do (#186): "keyless" = this
   // passkey was left out of the account's latest keys; "changed" = another passkey moved
   // them on (a removal). Null = nothing to say.

@@ -91,7 +91,7 @@ test("a failed background check is logged, and shown only on the Audience screen
 
 test("the runtime re-confirms the seal key before the upload, and names the list it merged onto", () => {
   // A passkey removal (#186) mid-run must not get a list sealed to the replaced key.
-  assert.match(RUNTIME, /async unchanged\(\) \{\s*const again = await auth\.getAccountSecrets\(\{ toSeal: true, silent: true \}\)\.catch\(\(\) => null\);\s*return again !== null && current\(\) && again\.current === secrets\.current;/);
+  assert.match(RUNTIME, /async unchanged\(\) \{\s*const again = await auth\.getAccountSecrets\(\{ toSeal: true, silent: true \}\)\.catch\(\(\) => null\);\s*if \(again === null \|\| !current\(\) \|\| again\.current !== secrets\.current\) return false;\s*return auth\.keyRingStillCurrent\(\)\.catch\(\(\) => false\);/);
   assert.match(RUNTIME, /writeList: \(sealed, emails, ifUpdatedAt\) => uploadMarketingList\(sealed, emails, \{ ifUpdatedAt \}\),/);
   const api = code(read("lib/api/marketing.ts"));
   assert.match(api, /\.\.\.\("ifUpdatedAt" in opts \? \{ ifUpdatedAt: opts\.ifUpdatedAt \?\? null \} : \{\}\),/);

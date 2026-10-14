@@ -71,6 +71,15 @@ test("signing and sealing demand the confirmed generation; silent paths sign not
   assert.match(body("async function _requireCurrentKeys"), /if \(_keysVerdict !== "ok"\) throw new Error/);
 });
 
+test("the background seal's last check reads the key-ring anchor fresh, never a prompt (Fable sign-off 2026-10-14)", () => {
+  const b = body("async function _keyRingStillCurrent");
+  assert.match(b, /const ref = await \(await _keys\(\)\)\.readAnchor\(_keysHost\(\), u\.parent, \{ fresh: true \}\);/);
+  assert.match(b, /return ref !== "error" && ref === \(u\.chain\?\.ringRef \?\? null\) && _unlocked === u;/);
+  assert.match(b, /if \(!u\) return false;/);
+  assert.doesNotMatch(b, /catchUp|ensurePasskeyKey|ensureAccountSetup|_requireCurrentKeys/);
+  assert.match(kbody("export async function readAnchor"), /if \(!opts\.fresh && memo/);
+});
+
 test("a device behind catches up only with the passkey, and enrols itself only on a confirmed verdict", () => {
   assert.match(body("async function _requireCurrentKeys"), /if \(_keysVerdict === "behind" && opts\.prompt\) await \(await _keys\(\)\)\.catchUp\(_keysHost\(\)\);/);
   assert.match(kbody("export async function catchUp"), /await h\.ensurePasskeyKey\(\);[\s\S]*if \(verdict === "ok"\) h\.commitSigner\(\);/);

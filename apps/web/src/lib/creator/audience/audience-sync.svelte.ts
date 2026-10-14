@@ -204,10 +204,12 @@ function liveDeps(parent: string): SyncDeps {
       const keys = await listKeysOf(secrets, parent);
       return {
         sealList: (payload) => keys.box.sealBoxJsonCompressed(keys.publicKey, payload, keys.ctx),
-        // Asked again right before the upload: a key ring that moved on meanwhile (#186) = no write.
+        // Asked again right before the upload: a key ring that moved on meanwhile (#186) = no
+        // write. Then one fresh read of the ring's anchor (no prompt), never the in-memory verdict alone.
         async unchanged() {
           const again = await auth.getAccountSecrets({ toSeal: true, silent: true }).catch(() => null);
-          return again !== null && current() && again.current === secrets.current;
+          if (again === null || !current() || again.current !== secrets.current) return false;
+          return auth.keyRingStillCurrent().catch(() => false);
         },
       };
     },
