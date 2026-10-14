@@ -262,6 +262,13 @@ test("a batch the chain says is dead, or bee does not list, is counted apart, ke
   assert.equal(unknown.skipped.batchUnknown, 1);
   assert.equal(unknown.skipped.batchUnlisted + unknown.skipped.batchDead, 0);
   assert.ok(unknown.oldestOverdueDays! > 70);
+  // A TTL that is not a number is a reading we cannot trust, never a quiet "dead".
+  for (const ttl of [Number.NaN, "0" as unknown as number, undefined as unknown as number]) {
+    const odd = ok(await live(fakeDeps({ batch: deadBatch(ttl) }).deps)).summary;
+    assert.equal(odd.skipped.batchUnknown, 1, String(ttl));
+    assert.equal(odd.skipped.batchDead, 0, String(ttl));
+    assert.ok(odd.oldestOverdueDays! > 70, String(ttl));
+  }
   // The ledger says expired; the chain says alive: the chain decides.
   ledger.setBatchExpiry(batchId, new Date(NOW - 30 * DAY).toISOString());
   ok(await live(fakeDeps().deps));

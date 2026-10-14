@@ -299,7 +299,9 @@ async function blocked(w: Work, deps: RetentionDeps, batches: Map<string, Promis
     return "batchUnknown";
   }
   if (!found) return "batchUnlisted";
-  if (!(found.batchTTL > 0)) return "batchDead";
+  // Only a real TTL can say "dead", which never alarms; one we cannot read stays overdue.
+  if (typeof found.batchTTL !== "number" || Number.isNaN(found.batchTTL)) return "batchUnknown";
+  if (found.batchTTL <= 0) return "batchDead";
   if (found.owner !== stamper || ledgerBatch.owner !== stamper) return "stamperNotOwner";
   return null;
 }
