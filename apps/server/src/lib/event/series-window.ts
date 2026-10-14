@@ -48,3 +48,29 @@ export function seriesSaleMessage(reason: "not-yet" | "closed" | "unparseable"):
   if (reason === "closed") return "Sales for this ticket have closed.";
   return "Tickets for this event are not currently on sale. Please contact the organiser.";
 }
+
+/**
+ * Whether a sale bound names one instant everywhere: an ISO date-time with `Z` or
+ * a `±hh:mm` offset. A bare wall-clock value ("2026-10-20T20:30") is read in the
+ * reader's own zone - this server's is UTC - so a UK organiser's 20:30 close would
+ * sell until 21:30 BST, and a buyer's browser would read it in theirs. Create
+ * refuses one rather than guess whose clock it meant.
+ */
+export function isAbsoluteInstant(value: string): boolean {
+  return (
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
+    !Number.isNaN(Date.parse(value))
+  );
+}
+
+/** Why a create request's sale bounds are refused, or null. Absent or empty = no bound. */
+export function saleBoundsRefusal(series: { saleStart?: unknown; saleEnd?: unknown }): string | null {
+  for (const field of ["saleStart", "saleEnd"] as const) {
+    const v = series[field];
+    if (v === undefined || v === "") continue;
+    if (typeof v !== "string" || !isAbsoluteInstant(v)) {
+      return `${field} must be a date and time with a timezone, e.g. 2026-10-20T19:30:00Z`;
+    }
+  }
+  return null;
+}
