@@ -127,6 +127,45 @@ export function listPayload(contacts: MarketingContact[], removed: readonly Mark
   return { version: 1, contacts, ...(clean.length ? { removed: clean } : {}) };
 }
 
+// ── The Audience screen's own saves ─────────────────────────────────────────
+
+/** The sealed list as an editor sees it: the contacts, and who was deleted. */
+export interface ListState {
+  contacts: MarketingContact[];
+  removed: MarketingListTombstone[];
+}
+
+export interface ListSaveDeps {
+  /** The stored list right now. Null = none yet; throws when it cannot be read. */
+  readList(): Promise<{ sealedList: SealedBoxV2; updatedAt: string } | null>;
+  openList(box: SealedBoxV2): Promise<MarketingListPayload>;
+  sealList(payload: MarketingListPayload): Promise<SealedBoxV2>;
+  writeList(sealed: SealedBoxV2, emails: string[], ifUpdatedAt: string | null): Promise<MarketingListMeta>;
+}
+
+/**
+ * One edit (add, change, delete) applied to the list as it is stored NOW, not to
+ * whatever copy the screen opened earlier, and written only if nothing else saved
+ * in between (`ifUpdatedAt`). So a stale tab can never bring back a contact deleted
+ * elsewhere, or wipe its tombstone (Fable sign-off 2026-10-14). Throws the
+ * server's LIST_CHANGED when it lost that race; the caller reloads and says so.
+ */
+export async function saveListChange(
+  deps: ListSaveDeps,
+  change: (list: ListState) => ListState,
+): Promise<{ payload: MarketingListPayload; meta: MarketingListMeta }> {
+  const stored = await deps.readList();
+  const base = stored ? await deps.openList(stored.sealedList) : { version: 1 as const, contacts: [] };
+  const next = change({ contacts: base.contacts, removed: normaliseRemoved(base.removed) });
+  const payload = listPayload(next.contacts, next.removed);
+  const meta = await deps.writeList(
+    await deps.sealList(payload),
+    payload.contacts.map((c) => c.email),
+    stored?.updatedAt ?? null,
+  );
+  return { payload, meta };
+}
+
 // ── Watermark ───────────────────────────────────────────────────────────────
 
 /**

@@ -19,6 +19,9 @@ import {
   normaliseRemoved,
   listPayload,
   removedId,
+  saveListChange,
+  isListChanged,
+  type ListSaveDeps,
   SETTLE_MS,
   STALE_MS,
   SYNC_INTERVAL_MS,
@@ -526,6 +529,66 @@ test("a key ring that moves on before the upload means no write", async () => {
   assert.equal(w.writes.length, 0);
   assert.ok(!w.log.some((l) => l.startsWith("writeList")));
   assert.equal(w.storage.size, 0);
+});
+
+// ── The Audience screen's own saves (Fable sign-off 2026-10-14) ────────────
+
+function screenSave(w: World): ListSaveDeps {
+  const d = deps(w);
+  return {
+    readList: d.readList,
+    openList: async (box) => structuredClone((box as unknown as Box).sealed!),
+    sealList: async (payload) => ({ sealed: structuredClone(payload) }) as never,
+    writeList: d.writeList,
+  };
+}
+
+test("a stale tab's edit lands on the list as stored now: a contact deleted elsewhere stays deleted", async () => {
+  // This tab opened the list with Zed on it; another tab has since deleted Zed.
+  const w = world({ list: { payload: { version: 1, contacts: [{ email: "ada@x.com", addedAt: "2026-01-01" }], removed: [tomb("zed@x.com")] }, updatedAt: "s1" } });
+  const edited = { email: "zed@x.com", firstName: "Zed", addedAt: "2026-01-01" };
+  await saveListChange(screenSave(w), (list) => ({ ...list, contacts: list.contacts.map((c) => (c.email === edited.email ? edited : c)) }));
+  assert.deepEqual(emailsOf(w.list!.payload), ["ada@x.com"], "editing a contact deleted elsewhere does not bring it back");
+  assert.deepEqual(w.list!.payload.removed, [tomb("zed@x.com")], "and its tombstone survives");
+  assert.ok(w.log.includes("writeList:s1"), "written only if nothing saved since this re-read");
+});
+
+test("a delete from a stale tab keeps what others added, and every tombstone", async () => {
+  const w = world({
+    list: { payload: { version: 1, contacts: [{ email: "ada@x.com", addedAt: "2026-01-01" }, { email: "bo@x.com", addedAt: "2026-10-14" }], removed: [tomb("zed@x.com")] }, updatedAt: "s1" },
+  });
+  await saveListChange(screenSave(w), (list) => ({
+    contacts: list.contacts.filter((c) => c.email !== "ada@x.com"),
+    removed: addRemoved(list.removed, "0xOrg", "ada@x.com", "2026-10-14T12:00:00.000Z"),
+  }));
+  assert.deepEqual(emailsOf(w.list!.payload), ["bo@x.com"]);
+  assert.deepEqual(w.list!.payload.removed, [tomb("zed@x.com"), tomb("ada@x.com", "2026-10-14T12:00:00.000Z")]);
+});
+
+test("a screen save that loses the race is refused, not written over the newer list", async () => {
+  const w = world({
+    list: { payload: { version: 1, contacts: [], removed: [tomb("zed@x.com")] }, updatedAt: "s1" },
+  });
+  const d = screenSave(w);
+  const racing: ListSaveDeps = {
+    ...d,
+    async sealList(payload) {
+      w.list = { payload: { version: 1, contacts: [{ email: "new@x.com", addedAt: "2026-10-14" }], removed: [tomb("zed@x.com")] }, updatedAt: "s2" };
+      return d.sealList(payload);
+    },
+  };
+  await assert.rejects(saveListChange(racing, (list) => list), (err: unknown) => isListChanged(err));
+  assert.equal(w.list!.updatedAt, "s2", "the other save stands");
+  assert.equal(w.writes.length, 0);
+});
+
+test("a screen save with no list yet says so, and an unreadable list writes nothing", async () => {
+  const w = world();
+  await saveListChange(screenSave(w), (list) => ({ ...list, contacts: [{ email: "a@x.com", addedAt: "2026-10-14" }] }));
+  assert.ok(w.log.includes("writeList:null"));
+  const broken = world({ list: { payload: { version: 1, contacts: [] }, updatedAt: "s0" }, readFails: true });
+  await assert.rejects(saveListChange(screenSave(broken), (list) => list));
+  assert.equal(broken.writes.length, 0);
 });
 
 // ── Never prompting ────────────────────────────────────────────────────────

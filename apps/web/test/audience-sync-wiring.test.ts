@@ -46,12 +46,22 @@ test("a CSV import clears the tombstone of every address it adds back", () => {
   assert.match(fn(SCREEN, "async function handleWizardCommit"), /removed: clearRemoved\(list\.removed, organiser, added\.map\(\(c\) => c\.email\)\)/);
 });
 
-test("every save carries the tombstones, inside the list lock, on the list as it stands then", () => {
+test("every save is an operation on the list as stored now, inside the list lock, with the compare-and-swap", () => {
   const commit = fn(SCREEN, "async function commitList");
-  assert.match(commit, /await withListLock\(async \(\) => \{\s*const next = change\(\{ contacts, removed \}\);/);
-  assert.match(commit, /listPayload\(next\.contacts, next\.removed\)/);
-  assert.match(commit, /removed = normaliseRemoved\(next\.removed\);/);
+  assert.match(commit, /await withListLock\(async \(\) => \{[\s\S]*?const saved = await saveListChange\(/);
+  assert.match(commit, /const resp = await getMarketingList\(\);/, "re-read inside the lock");
+  assert.match(commit, /writeList: \(sealed, emails, ifUpdatedAt\) => uploadMarketingList\(sealed, emails, \{ ifUpdatedAt \}\),/);
+  assert.match(commit, /\s+change,\s+\);/, "the screen's edit is passed as an operation");
+  assert.doesNotMatch(commit, /change\(\{ contacts, removed \}\)/, "never applied to this tab's own copy");
   assert.match(fn(SCREEN, "async function handleSave"), /commitList\(\(list\) => \(\{ \.\.\.list, contacts:/);
+});
+
+test("a save that lost the race reloads the screen and says so plainly", () => {
+  const commit = fn(SCREEN, "async function commitList");
+  assert.match(commit, /if \(!isListChanged\(err\)\) throw err;\s*changedElsewhere = true;/);
+  assert.match(commit, /if \(changedElsewhere\) \{\s*await load\(\);\s*listNotice = LIST_CHANGED_NOTICE;/);
+  assert.match(SCREEN, /"Your list was changed in another tab or on another device, so nothing was saved\. We've loaded the latest version - please make your change again\."/);
+  assert.match(SCREEN, /\{#if listNotice\}\s*<p class="list-notice" role="status">\{listNotice\}<\/p>/);
 });
 
 test("the screen opens the tombstones, reads under the lock, starts a sync, and shows each sync write", () => {

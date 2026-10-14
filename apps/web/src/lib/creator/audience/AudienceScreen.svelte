@@ -23,14 +23,19 @@
   import StripeVerifyGate from "../events/StripeVerifyGate.svelte";
   import { onMount } from "svelte";
   import { listKeysOf } from "./list-keys.js";
-  import { addRemoved, clearRemoved, listPayload, normaliseRemoved } from "./audience-sync.js";
+  import {
+    addRemoved,
+    clearRemoved,
+    isListChanged,
+    normaliseRemoved,
+    saveListChange,
+    type ListState,
+  } from "./audience-sync.js";
   import { onListWritten, syncAudience, withListLock } from "./audience-sync.svelte.js";
 
-  /** The sealed list as this screen holds it: the contacts, and the addresses the organiser deleted. */
-  interface ListState {
-    contacts: MarketingContact[];
-    removed: MarketingListTombstone[];
-  }
+  /** Said once a save lost the race to another tab or device and the screen reloaded. */
+  const LIST_CHANGED_NOTICE =
+    "Your list was changed in another tab or on another device, so nothing was saved. We've loaded the latest version - please make your change again.";
 
   let loading = $state(true);
   let loadError = $state<string | null>(null);
@@ -41,6 +46,8 @@
   let contacts = $state<MarketingContact[]>([]);
   /** Deleted by the organiser: the automatic add of opted-in buyers never brings these back. */
   let removed = $state<MarketingListTombstone[]>([]);
+  /** A save that lost the race to another tab or device: shown above the list until the next save. */
+  let listNotice = $state<string | null>(null);
   let suppressedEmails = $state<Set<string>>(new Set());
   /** Contacts who ticked the opt-in themselves — the server holds the evidence,
    *  keyed by hash, so this is the only way the client can know. */
@@ -168,21 +175,46 @@
 
   /**
    * Re-seal + upload the full list — the single write path for every change.
-   * `change` runs inside the list lock, on the list as it stands then, so a sync
-   * write that landed while this waited is kept rather than saved over.
+   * `change` is the edit as an operation, applied inside the list lock to the list
+   * as it is stored NOW (re-read and opened), and written only if nothing saved in
+   * between - so a stale tab can never bring back a deleted contact or wipe a
+   * tombstone. Lost that race: the screen reloads and says so plainly.
    */
   async function commitList(change: (list: ListState) => ListState): Promise<void> {
     const keys = await getKeys(true, true);
     if (!keys) throw new Error("Identity locked — sign in to save changes");
     saving = true;
+    let changedElsewhere = false;
     try {
       await withListLock(async () => {
-        const next = change({ contacts, removed });
-        const sealed = await keys.box.sealBoxJsonCompressed(keys.publicKey, listPayload(next.contacts, next.removed), keys.ctx);
-        meta = await uploadMarketingList(sealed, next.contacts.map((c) => c.email));
-        contacts = next.contacts;
-        removed = normaliseRemoved(next.removed);
+        const { openJsonWithAnyKey } = await import("../../keyring/order-keys.js");
+        try {
+          const saved = await saveListChange(
+            {
+              async readList() {
+                const resp = await getMarketingList();
+                return resp ? { sealedList: resp.sealedList, updatedAt: resp.meta.updatedAt } : null;
+              },
+              openList: (box) => openJsonWithAnyKey<MarketingListPayload>(keys.secretKeys, box, keys.ctx),
+              sealList: (payload) => keys.box.sealBoxJsonCompressed(keys.publicKey, payload, keys.ctx),
+              writeList: (sealed, emails, ifUpdatedAt) => uploadMarketingList(sealed, emails, { ifUpdatedAt }),
+            },
+            change,
+          );
+          contacts = saved.payload.contacts;
+          removed = normaliseRemoved(saved.payload.removed);
+          meta = saved.meta;
+          listNotice = null;
+        } catch (err) {
+          if (!isListChanged(err)) throw err;
+          changedElsewhere = true;
+        }
       });
+      if (changedElsewhere) {
+        await load();
+        listNotice = LIST_CHANGED_NOTICE;
+        throw new Error(LIST_CHANGED_NOTICE);
+      }
       if (contacts.length > 0 && auth.parent) markAudienceImported(auth.parent);
       await refreshConsentStates(contacts);
     } finally {
@@ -298,6 +330,9 @@
   {:else if listLocked}
     <UnlockPanel subject="Contact details" action="Show contacts" />
   {:else}
+    {#if listNotice}
+      <p class="list-notice" role="status">{listNotice}</p>
+    {/if}
     {#if contacts.length === 0 && !wizardOpen}
       <div class="empty invite">
         <span class="mark" aria-hidden="true"></span>
@@ -463,6 +498,16 @@
   }
 
   .muted { color: var(--text-muted); font-size: 0.875rem; }
+  .list-notice {
+    margin: 0;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--warning);
+    border-radius: var(--radius-md);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    color: var(--text);
+  }
   .consent-unknown {
     margin: 0 0 0.75rem;
     font-size: 0.8125rem;
