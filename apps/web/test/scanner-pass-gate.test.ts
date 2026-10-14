@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { describePackFailure } from "../src/lib/scanner/pass-gate.js";
+import { describePackFailure, isPassExpired, PASS_EXPIRED_MESSAGE } from "../src/lib/scanner/pass-gate.js";
 
 test("a revoked, expired, other-event or other-phone pass is dead: only a new pass helps", () => {
   for (const status of [401, 403, 409]) {
@@ -29,4 +29,23 @@ test("a refusal with no readable reason still says what to do, and never to relo
   assert.match(f.message, /try again/);
   assert.doesNotMatch(f.message, /reload/i);
   assert.equal(describePackFailure(500, { error: 42 }).message, f.message.replace("502", "500"));
+});
+
+test("a stored pass at or past its exp is expired; one before it is not", () => {
+  const exp = 1_800_000_000;
+  assert.equal(isPassExpired(exp, exp * 1000 - 1), false);
+  assert.equal(isPassExpired(exp, exp * 1000), true);
+  assert.equal(isPassExpired(exp, exp * 1000 + 86_400_000), true);
+});
+
+test("a stored pass with no usable exp is expired, never opened", () => {
+  for (const exp of [Number.NaN, undefined as unknown as number, Number.POSITIVE_INFINITY]) {
+    assert.equal(isPassExpired(exp, Date.now()), true, String(exp));
+  }
+});
+
+test("the expired message sends staff to the dashboard for a new pass", () => {
+  assert.match(PASS_EXPIRED_MESSAGE, /expired/);
+  assert.match(PASS_EXPIRED_MESSAGE, /organiser's dashboard/);
+  assert.doesNotMatch(PASS_EXPIRED_MESSAGE, /reload/i);
 });

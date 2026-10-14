@@ -21,3 +21,15 @@ export function describePackFailure(status: number, body: { error?: unknown } | 
   if (status === 401 || status === 403 || status === 409) return { kind: "dead", message };
   return { kind: "error", message };
 }
+
+export const PASS_EXPIRED_MESSAGE =
+  "The door pass on this phone has expired. Scan the new one from the organiser's dashboard.";
+
+/**
+ * A stored pass past its `exp` (unix seconds) opens nothing: every request on it
+ * is refused, so opening its event would only show stale data for an event that
+ * is over - or, on a phone reused for a new event, the wrong one.
+ */
+export function isPassExpired(exp: number, nowMs: number): boolean {
+  return !Number.isFinite(exp) || exp * 1000 <= nowMs;
+}

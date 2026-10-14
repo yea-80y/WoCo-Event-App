@@ -26,7 +26,7 @@ import { decryptRoster } from "./roster-crypto.js";
 import { verifyTicket, type VerifyVerdict } from "./verify.js";
 import { claimAdmission, newClaimId, type ClaimAnswer } from "./claim.js";
 import { admit, doorModeOf, type Admission } from "./admission.js";
-import { describePackFailure, NO_CONNECTION_MESSAGE, type PackFailure } from "./pass-gate.js";
+import { describePackFailure, isPassExpired, NO_CONNECTION_MESSAGE, PASS_EXPIRED_MESSAGE, type PackFailure } from "./pass-gate.js";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 const SYNC_INTERVAL_MS = 30_000;
@@ -105,6 +105,11 @@ class ScannerStore {
 
     const pass = await db.getStoredPass();
     const pack = await db.getStoredPack();
+    if (pass && isPassExpired(pass.exp, Date.now())) {
+      this.provisionError = PASS_EXPIRED_MESSAGE;
+      this.phase = "unprovisioned";
+      return;
+    }
     if (pass && pack) {
       this.pass = pass;
       this.pack = pack;
