@@ -135,6 +135,7 @@ function deps(w: World, extra: Partial<SyncDeps> = {}): SyncDeps {
     },
     async orderCount(id) {
       w.log.push(`count:${id}`);
+      if (w.counts?.[id] !== undefined) return w.counts[id]!;
       const o = w.orders[id];
       if (o === "throw" || !o) throw new Error("count unavailable");
       return w.counts?.[id] ?? o.length;
@@ -636,6 +637,19 @@ test("an unreadable event, order or check stops only itself", async () => {
   assert.equal(marks.C.unopened, 1, "an order that will not open is remembered, not retried every run");
 });
 
+test("an order list that will not load, after the count did, costs only its event", async () => {
+  const w = world({
+    events: [event("A"), event("B")],
+    counts: { A: 1 },
+    orders: { A: "throw", B: [order({ claimerEmail: "ada@x.com" })] },
+    fields: { A: [], B: [] },
+  });
+  const r = await sync(w);
+  assert.equal(r.failedEvents, 1);
+  assert.equal(r.status, "partial");
+  assert.deepEqual(emailsOf(w.writes[0]?.payload), ["ada@x.com"]);
+});
+
 test("a list of events that will not load fails the run, writing nothing", async () => {
   const w = world();
   const r = await sync(w, { listEvents: async () => { throw new Error("offline"); } });
@@ -709,6 +723,7 @@ test("a watermark of the wrong shape is ignored, mark by mark", async () => {
     JSON.stringify({ v: 2, list: null, events: { e1: settled } }),
     JSON.stringify({ v: 1, list: null, events: "e1" }),
     JSON.stringify({ v: 1, list: null, events: { e1: { n: "1", seen: 0, scanned: SETTLE_MS } } }),
+    JSON.stringify({ v: 1, list: null, events: { e1: { ...settled, unopened: "x" } } }),
   ]) {
     w.storage.set(key, raw);
     w.log.length = 0;

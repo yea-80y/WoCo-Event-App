@@ -104,6 +104,8 @@ test("the runtime re-confirms the seal key before the upload, and names the list
   assert.match(RUNTIME, /writeList: \(sealed, emails, ifUpdatedAt\) => uploadMarketingList\(sealed, emails, \{ ifUpdatedAt \}\),/);
   const api = code(read("lib/api/marketing.ts"));
   assert.match(api, /\.\.\.\("ifUpdatedAt" in opts \? \{ ifUpdatedAt: opts\.ifUpdatedAt \?\? null \} : \{\}\),/);
+  // An ApiError carries the server's code, so a refusal (LIST_CHANGED) can be told from a failure.
+  assert.match(api, /if \(!resp\.data\) throw apiError\(resp, "List upload failed"\);/);
 });
 
 test("cost: the cheap count first, and the last start kept per organiser so a reload honours the hour", () => {
