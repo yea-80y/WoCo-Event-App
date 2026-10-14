@@ -16,17 +16,23 @@
  *   - "now" is the earlier of our clock and the chain's, so a fast server
  *     clock cannot erase early;
  *   - a store in flight, no stamper, a batch the stamper does not own, or a
- *     batch the chain says is dead or cannot say: kept. Dead is read from chain
- *     at sweep time, never from the ledger's `expiresAt` (#884), and is never
- *     recorded as an erasure: nothing was erased;
+ *     batch the chain says is dead, does not list, or cannot say: kept. Dead is
+ *     read from chain at sweep time, never from the ledger's `expiresAt` (#884),
+ *     and is never recorded as an erasure: nothing was erased;
  *   - the attendee ledger or any held order unreadable: the whole run refuses.
  *     An unreadable ledger loads empty, and an unreadable hold is an order we
  *     cannot see.
  *
  * `ORDER_RETENTION_SWEEP` = off | dry-run (default) | live. Sequential and
- * paced, at most `ORDER_RETENTION_LIMIT` erasures a run (default 25): each
- * burn is one synchronous SOC push per chunk through the upload queue that
- * checkout uses too.
+ * paced, at most `ORDER_RETENTION_LIMIT` erasures a run (default 500, about 17
+ * minutes at the 2 s pace): each burn is one synchronous SOC push per chunk
+ * through the upload queue that checkout uses too.
+ *
+ * Overdue (red after a week, live only) counts only orders someone can act on.
+ * Not overdue: an order held back by the limit is `backlog` (red only past two
+ * weeks: the sweep is not keeping up), a dead batch can never be erased (counted,
+ * never red), and a batch bee does not list may be a transient miss (#884; red
+ * after three runs in a row).
  */
 
 import { addCalendarMonthsUtc, isNoticeRetentionMonths } from "@woco/shared";
@@ -43,10 +49,13 @@ import { attendeeStamperAddress, isStoreInFlight } from "./writer.js";
 export type RetentionMode = "off" | "dry-run" | "live";
 
 const DAY_MS = 86_400_000;
-const DEFAULT_LIMIT = 25;
+const DEFAULT_LIMIT = 500;
 export const MAX_LIMIT = 500;
 const OVERDUE_ALARM_DAYS = 7;
+const BACKLOG_ALARM_DAYS = 14;
+const UNLISTED_ALARM_RUNS = 3;
 const NO_RUN_ALARM_MS = 48 * 60 * 60 * 1000;
+const days = (ms: number | null) => (ms === null ? null : Math.round((ms / DAY_MS) * 10) / 10);
 
 export function retentionConfig(env: NodeJS.ProcessEnv = process.env): { mode: RetentionMode; limit: number; configError: boolean } {
   const rawMode = (env.ORDER_RETENTION_SWEEP ?? "").trim().toLowerCase();
@@ -71,12 +80,13 @@ export type Skip =
   | "noStamper"
   | "stamperNotOwner"
   | "batchDead"
+  | "batchUnlisted"
   | "batchUnknown"
   | "overLimit"
   | "eraseFailed";
 
 const UNDETERMINED: Undetermined[] = ["noEventSeries", "noRegistration", "chainUnavailable", "noChainEnd"];
-const SKIPS: Skip[] = ["noRetainMonths", "inFlight", "noStamper", "stamperNotOwner", "batchDead", "batchUnknown", "overLimit", "eraseFailed"];
+const SKIPS: Skip[] = ["noRetainMonths", "inFlight", "noStamper", "stamperNotOwner", "batchDead", "batchUnlisted", "batchUnknown", "overLimit", "eraseFailed"];
 
 export interface RetentionItem {
   rootPrefix: string;
@@ -108,8 +118,11 @@ export interface RetentionSummary {
   notDue: number;
   skipped: Record<Skip, number>;
   undeterminable: Record<Undetermined, number> & { total: number };
-  /** Of the due orders still on record after the run. */
+  /** Of the due orders still on record that someone can act on: not backlog, not a dead or unlisted batch. */
   oldestOverdueDays: number | null;
+  /** Due orders held back only by the per-run limit, and the oldest of them. */
+  backlog: number;
+  oldestBacklogDays: number | null;
   /** SOC pushes the erasures make (one per chunk) and the pause between orders. */
   socUploads: number;
   paceMs: number;
@@ -265,7 +278,7 @@ async function classify(work: Work[], deps: RetentionDeps): Promise<void> {
       continue;
     }
     w.overdueMs = now - dueMs;
-    it.daysOverdue = Math.round((w.overdueMs / DAY_MS) * 10) / 10;
+    it.daysOverdue = days(w.overdueMs);
   }
 }
 
@@ -285,7 +298,8 @@ async function blocked(w: Work, deps: RetentionDeps, batches: Map<string, Promis
   } catch {
     return "batchUnknown";
   }
-  if (!found || !(found.batchTTL > 0)) return "batchDead";
+  if (!found) return "batchUnlisted";
+  if (!(found.batchTTL > 0)) return "batchDead";
   if (found.owner !== stamper || ledgerBatch.owner !== stamper) return "stamperNotOwner";
   return null;
 }
@@ -302,6 +316,8 @@ function emptySummary(at: number, mode: RetentionMode, limit: number, paceMs: nu
     skipped: Object.fromEntries(SKIPS.map((k) => [k, 0])) as Record<Skip, number>,
     undeterminable: { ...(Object.fromEntries(UNDETERMINED.map((k) => [k, 0])) as Record<Undetermined, number>), total: 0 },
     oldestOverdueDays: null,
+    backlog: 0,
+    oldestBacklogDays: null,
     socUploads: 0,
     paceMs,
   };
@@ -354,13 +370,17 @@ async function sweep(mode: RetentionMode, erase: boolean, limit: number, deps: R
   }
 
   let oldest: number | null = null;
+  let oldestBacklog: number | null = null;
   for (const w of work) {
     const r = w.item.reason;
     if (w.item.action === "wait") summary.notDue++;
     if (w.overdueMs !== undefined) {
       summary.due++;
       if (r === "erased") summary.erased++;
-      else oldest = Math.max(oldest ?? 0, w.overdueMs);
+      else if (r === "overLimit") {
+        summary.backlog++;
+        oldestBacklog = Math.max(oldestBacklog ?? 0, w.overdueMs);
+      } else if (r !== "batchDead" && r !== "batchUnlisted") oldest = Math.max(oldest ?? 0, w.overdueMs);
       if (w.item.action === "erase" && r !== "erased") summary.wouldErase++;
     }
     if (r && (UNDETERMINED as string[]).includes(r)) {
@@ -370,7 +390,8 @@ async function sweep(mode: RetentionMode, erase: boolean, limit: number, deps: R
       summary.skipped[r as Skip]++;
     }
   }
-  summary.oldestOverdueDays = oldest === null ? null : Math.round((oldest / DAY_MS) * 10) / 10;
+  summary.oldestOverdueDays = days(oldest);
+  summary.oldestBacklogDays = days(oldestBacklog);
   return { refused: null, summary, items: work.map((w) => w.item) };
 }
 
@@ -379,6 +400,8 @@ let running = false;
 let lastRun: RetentionSummary | null = null;
 let lastRefusal: { at: string; reason: string } | null = null;
 let bootAt = Date.now();
+/** Completed runs in a row that met a batch bee does not list. A refused run leaves it; a restart resets it. */
+let unlistedStreak = 0;
 
 /**
  * A run in the configured mode: the daily timer and `POST .../retention/run`.
@@ -401,9 +424,10 @@ export async function runOrderRetention(
     } else {
       lastRun = run.summary;
       const s = run.summary;
+      unlistedStreak = s.skipped.batchUnlisted > 0 ? unlistedStreak + 1 : 0;
       console.log(
         `[retention] ${mode} run: due ${s.due}, erased ${s.erased}, would erase ${s.wouldErase}, not due ${s.notDue}, ` +
-          `undeterminable ${s.undeterminable.total}, oldest overdue ${s.oldestOverdueDays ?? "-"} d`,
+          `backlog ${s.backlog}, undeterminable ${s.undeterminable.total}, oldest overdue ${s.oldestOverdueDays ?? "-"} d`,
       );
     }
     return run;
@@ -423,18 +447,29 @@ export async function previewOrderRetention(
 /**
  * `/api/health` `orderRetention`. Counts only: the endpoint is public. Red when
  * a store is unreadable, no run has completed in 48 h (unless off), the config
- * is not understood, or - live only - an order is over 7 days past its due date.
- * Undeterminable orders are reported, never overdue.
+ * is not understood, or - live only - an order someone can act on is over 7 days
+ * past its due date, the backlog the limit holds back is over 14 days past due,
+ * or a batch holding due orders was unlisted in 3 runs in a row. Undeterminable
+ * orders and dead batches are reported, never red.
  */
 export function orderRetentionHealth(nowMs: number = Date.now()) {
   const { mode, limit, configError } = retentionConfig();
   const refusal = storesRefusal();
   const sinceRun = nowMs - (lastRun ? Date.parse(lastRun.at) : bootAt);
   const overdue = lastRun?.oldestOverdueDays ?? 0;
+  const backlogDays = lastRun?.oldestBacklogDays ?? 0;
   const checks = {
     stores: refusal === null ? { ok: true } : { ok: false, reason: refusal },
     ran: mode === "off" || sinceRun < NO_RUN_ALARM_MS ? { ok: true } : { ok: false, reason: lastRun ? "no run in 48 h" : "no run since boot, 48 h ago" },
     overdue: mode !== "live" || overdue <= OVERDUE_ALARM_DAYS ? { ok: true } : { ok: false, reason: `an order is ${overdue} days past its due date` },
+    backlog:
+      mode !== "live" || backlogDays <= BACKLOG_ALARM_DAYS
+        ? { ok: true }
+        : { ok: false, reason: `the per-run limit has held an order back ${backlogDays} days past its due date` },
+    batchUnlisted:
+      mode !== "live" || unlistedStreak < UNLISTED_ALARM_RUNS
+        ? { ok: true }
+        : { ok: false, reason: `a batch holding due orders was not listed by bee in ${unlistedStreak} runs in a row` },
     config: configError ? { ok: false, reason: "ORDER_RETENTION_SWEEP or ORDER_RETENTION_LIMIT not recognised" } : { ok: true },
   };
   return {
@@ -450,6 +485,9 @@ export function orderRetentionHealth(nowMs: number = Date.now()) {
     skipped: lastRun?.skipped ?? null,
     undeterminable: lastRun?.undeterminable ?? null,
     oldestOverdueDays: lastRun?.oldestOverdueDays ?? null,
+    backlog: lastRun?.backlog ?? null,
+    oldestBacklogDays: lastRun?.oldestBacklogDays ?? null,
+    unlistedStreak,
     checks,
   };
 }
@@ -461,4 +499,5 @@ export function _resetOrderRetentionForTests(nowMs: number = Date.now(), deps: R
   lastRun = null;
   lastRefusal = null;
   bootAt = nowMs;
+  unlistedStreak = 0;
 }
