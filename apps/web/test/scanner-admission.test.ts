@@ -91,3 +91,10 @@ test("a dead pass admits nothing, in either mode", async () => {
     assert.equal(i.calls.mark + i.calls.claim, 0, `${mode}: nothing consumed or claimed`);
   }
 });
+
+test("several: a scanner the server calls outdated admits nobody", async () => {
+  const i = input({ claimAtServer: async () => ({ kind: "outdated", message: "This scanner is updating - scan again in a moment" }) });
+  const a = await admit(i);
+  assert.deepEqual(a, { kind: "cant-confirm", message: "This scanner is updating - scan again in a moment" });
+  assert.equal(i.calls.mark, 0);
+});

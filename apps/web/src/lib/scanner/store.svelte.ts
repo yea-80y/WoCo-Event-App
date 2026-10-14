@@ -12,7 +12,9 @@
 
 import {
   decodeDoorPassToken,
+  doorPassFragment,
   SCANNER_DEVICE_HEADER,
+  SCANNER_OUTDATED_REASON,
   type DoorMode,
   type CheckinConflict,
   type CheckinPack,
@@ -35,7 +37,18 @@ import {
   ticketNewerThanPack,
   type MissStep,
 } from "./pack-refresh.js";
-import { bootFromFragment, describePackFailure, isPassExpired, onPassLink, NO_CONNECTION_MESSAGE, PASS_EXPIRED_MESSAGE, type PackFailure } from "./pass-gate.js";
+import {
+  bootFromFragment,
+  describePackFailure,
+  isPassExpired,
+  onPassLink,
+  NO_CONNECTION_MESSAGE,
+  PASS_EXPIRED_MESSAGE,
+  type DoorPass,
+  type PackFailure,
+} from "./pass-gate.js";
+import { canApplyUpdate, UPDATE_RETRY_MS } from "./update-policy.js";
+import { takeoverIfNewer } from "./sw-update.js";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 const SYNC_INTERVAL_MS = 30_000;
@@ -98,6 +111,10 @@ class ScannerStore {
   /** ticketKey → when a pack was fetched because that ticket was missing from it. */
   private rechecked = new Map<string, number>();
   private scanning = false;
+  private lastScanAt = 0;
+  /** A newer scanner has taken over this page and a reload into it is due. */
+  private updateDue = false;
+  private reloading = false;
   private deviceId = "";
 
   totalCapacity = $derived(this.pack?.series.reduce((n, s) => n + s.totalSupply, 0) ?? 0);
@@ -183,20 +200,59 @@ class ScannerStore {
       void this.sync();
       return true;
     } catch (err) {
-      this.provisionError = err instanceof Error ? err.message : NO_CONNECTION_MESSAGE;
       this.pendingPass = { token, keyB64url };
+      if (err instanceof PackError && err.failure.kind === "outdated" && (await takeoverIfNewer())) {
+        this.reloadIntoNewVersion();
+        return false;
+      }
+      this.provisionError = err instanceof Error ? err.message : NO_CONNECTION_MESSAGE;
       this.phase = this.pack ? "ready" : "unprovisioned";
       return false;
     }
   }
 
-  private passFromUrl(): Promise<"none" | "provisioned" | "failed"> {
+  private passFromUrl(): Promise<"none" | "reloading" | "provisioned" | "failed"> {
     return bootFromFragment({
       location,
       history,
-      leaveCurrent: () => this.reprovision(),
+      arriving: (pass) => {
+        this.reprovision();
+        // Held before anything can reload the page, so whichever path reloads carries it.
+        this.pendingPass = pass;
+      },
+      newerVersion: () => takeoverIfNewer(),
+      reload: () => this.reloadIntoNewVersion(),
       provision: (t, k) => this.provision(t, k),
     });
+  }
+
+  /** A newer scanner has taken over this page: reload into it once the door is quiet. */
+  newVersionReady(): void {
+    if (this.updateDue) return;
+    this.updateDue = true;
+    this.reloadWhenIdle();
+  }
+
+  private reloadWhenIdle(): void {
+    const quiet = canApplyUpdate({
+      phase: this.phase,
+      claimInFlight: this.claiming,
+      busy: this.scanning || this.lookingUp,
+      sinceLastScanMs: Date.now() - this.lastScanAt,
+    });
+    if (quiet) this.reloadIntoNewVersion();
+    else setTimeout(() => this.reloadWhenIdle(), UPDATE_RETRY_MS);
+  }
+
+  /**
+   * The only place a door pass is put back in the URL: a pass held but not yet
+   * stored would otherwise be lost to the reload. The next boot scrubs it again.
+   */
+  private reloadIntoNewVersion(pass: DoorPass | null = this.pendingPass): void {
+    if (this.reloading) return;
+    this.reloading = true;
+    if (pass) history.replaceState(null, "", new URL(doorPassFragment(pass.token, pass.keyB64url), location.href).href);
+    location.reload();
   }
 
   /** Retry the pass that last failed to set up. */
@@ -229,6 +285,7 @@ class ScannerStore {
       return await this.scanTicket(raw, this.pack);
     } finally {
       this.scanning = false;
+      this.lastScanAt = Date.now();
     }
   }
 
@@ -272,6 +329,7 @@ class ScannerStore {
    */
   async manualCheckin(seriesId: string, edition: number): Promise<ManualCheckinResult> {
     if (this.isRefunded(seriesId, edition)) return { kind: "refunded" };
+    this.lastScanAt = Date.now();
     const answer = await this.admitTicket(seriesId, edition, "manual");
     if (answer.kind === "admitted") return { kind: "checked-in" };
     if (answer.kind === "already-in") return { kind: "duplicate", record: answer.record };
@@ -306,6 +364,11 @@ class ScannerStore {
         },
         body: JSON.stringify({ deviceId: this.deviceId, checkins: pending }),
       });
+      if (resp.status === 400) {
+        const body = (await resp.json().catch(() => null)) as { reason?: string } | null;
+        if (body?.reason === SCANNER_OUTDATED_REASON) void takeoverIfNewer().catch(() => false);
+        return;
+      }
       // 409: a single-scanner pass that is bound to another phone - same remedy.
       if (resp.status === 401 || resp.status === 403 || resp.status === 409) {
         const body = (await resp.json().catch(() => null)) as { error?: string } | null;
@@ -372,6 +435,7 @@ class ScannerStore {
       if (err instanceof PackError && err.failure.kind === "dead" && this.pass?.token === pass.token) {
         this.passDead = err.failure.message;
       }
+      if (err instanceof PackError && err.failure.kind === "outdated") void takeoverIfNewer().catch(() => false);
       return false;
     }
   }
@@ -460,6 +524,10 @@ class ScannerStore {
 
       if (answer.kind === "pass-dead") {
         this.passDead = answer.message;
+        return answer;
+      }
+      if (answer.kind === "outdated") {
+        void takeoverIfNewer().catch(() => false);
         return answer;
       }
       if (answer.kind === "cant-confirm") return answer;

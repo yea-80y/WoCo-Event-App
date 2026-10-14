@@ -12,6 +12,7 @@
  */
 import {
   SCANNER_DEVICE_HEADER,
+  SCANNER_OUTDATED_REASON,
   type CheckinClaimRequest,
   type CheckinClaimResponse,
   type CheckinRecord,
@@ -25,6 +26,8 @@ export type ClaimAnswer =
   | { kind: "already-in"; record: CheckinRecord }
   /** The pass was revoked or expired - no scan on this device can succeed. */
   | { kind: "pass-dead"; message: string }
+  /** The server needs newer scanner code. Not admitted; the scanner updates itself. */
+  | { kind: "outdated"; message: string }
   | { kind: "cant-confirm"; message: string };
 
 export interface ClaimCall {
@@ -52,8 +55,12 @@ export async function claimAdmission(call: ClaimCall): Promise<ClaimAnswer> {
       signal: ctl.signal,
     });
     const body = (await resp.json().catch(() => null)) as
-      | { ok?: boolean; data?: CheckinClaimResponse; error?: string }
+      | { ok?: boolean; data?: CheckinClaimResponse; error?: string; reason?: string }
       | null;
+
+    if (resp.status === 400 && body?.reason === SCANNER_OUTDATED_REASON) {
+      return { kind: "outdated", message: "This scanner is updating - scan again in a moment" };
+    }
 
     if (resp.status === 401 || resp.status === 403) {
       return { kind: "pass-dead", message: body?.error ?? "Door pass no longer valid" };

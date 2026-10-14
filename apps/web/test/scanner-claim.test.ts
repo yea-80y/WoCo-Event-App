@@ -81,3 +81,11 @@ test("the claim carries the door pass and this device's id", async () => {
   assert.equal(seen!.get("X-Door-Pass"), "tok");
   assert.equal(seen!.get("X-Scanner-Device"), "thisdevice01");
 });
+
+test("a server asking for newer scanner code is 'outdated' - never admitted, and not a dead pass", async () => {
+  const a = await claimAdmission(call(reply(400, { ok: false, error: "This scanner needs updating - reload the page and try again", reason: "outdated-client" })));
+  assert.equal(a.kind, "outdated");
+  assert.doesNotMatch(a.kind === "outdated" ? a.message : "", /reload/i);
+  assert.equal((await claimAdmission(call(reply(400, { ok: false, error: "Malformed check-in claim" })))).kind, "cant-confirm",
+    "any other 400 is still 'couldn't confirm'");
+});

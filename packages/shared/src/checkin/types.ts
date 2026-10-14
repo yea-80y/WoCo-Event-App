@@ -206,7 +206,12 @@ export function parseTicketQr(raw: string): TicketQr | null {
 
 /** Door-pass URL: `{scannerOrigin}/#/p/{token}/{keyB64url}`. */
 export function buildDoorPassUrl(scannerOrigin: string, token: string, keyB64url: string): string {
-  return `${scannerOrigin.replace(/\/$/, "")}/#/p/${token}/${keyB64url}`;
+  return `${scannerOrigin.replace(/\/$/, "")}/${doorPassFragment(token, keyB64url)}`;
+}
+
+/** The secret-bearing part of a door-pass URL, `#/p/{token}/{keyB64url}`. */
+export function doorPassFragment(token: string, keyB64url: string): string {
+  return `#/p/${token}/${keyB64url}`;
 }
 
 export function parseDoorPassFragment(hash: string): { token: string; keyB64url: string } | null {

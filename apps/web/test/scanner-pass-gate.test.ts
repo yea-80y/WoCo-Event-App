@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bootFromFragment, describePackFailure, isPassExpired, onPassLink, PASS_EXPIRED_MESSAGE } from "../src/lib/scanner/pass-gate.js";
+import { bootFromFragment, describePackFailure, isPassExpired, onPassLink, OUTDATED_MESSAGE, PASS_EXPIRED_MESSAGE } from "../src/lib/scanner/pass-gate.js";
 
 test("a revoked, expired, other-event or other-phone pass is dead: only a new pass helps", () => {
   for (const status of [401, 403, 409]) {
@@ -119,7 +119,7 @@ test("a pass link opened in a scanner tab that is already open sets it up, like 
     settled = bootFromFragment({
       location: page.location,
       history: page.history,
-      leaveCurrent: () => steps.push("left the event it was showing"),
+      arriving: () => steps.push("left the event it was showing"),
       provision: async (token) => {
         steps.push(`provision ${token === TOKEN ? "the new pass" : "something else"} with hash "${page.location.hash}"`);
         return false;
@@ -144,7 +144,7 @@ test("a hash change that is not a pass leaves the running scanner alone", async 
     settled = bootFromFragment({
       location: page.location,
       history: page.history,
-      leaveCurrent: () => (left = true),
+      arriving: () => (left = true),
       provision: async () => true,
     });
   });
@@ -152,4 +152,53 @@ test("a hash change that is not a pass leaves the running scanner alone", async 
   window.dispatchEvent(new Event("hashchange"));
   assert.equal(await settled, "none");
   assert.equal(left, false);
+});
+
+// ---------------------------------------------------------------------------
+// A newer scanner version
+// ---------------------------------------------------------------------------
+
+test("a server asking for newer scanner code is 'outdated', and the fallback copy never says reload", () => {
+  const f = describePackFailure(400, { error: "This scanner needs updating - reload the page and try again", reason: "outdated-client" });
+  assert.equal(f.kind, "outdated");
+  assert.equal(f.message, OUTDATED_MESSAGE);
+  assert.doesNotMatch(OUTDATED_MESSAGE, /reload/i);
+  assert.equal(describePackFailure(400, { error: "Expected { iv, ciphertext }" }).kind, "error", "a 400 without the reason is not");
+});
+
+test("a newer version waiting at boot: the pass goes to it in a reload, and is not set up by old code", async () => {
+  const page = fakePage(`#/p/${TOKEN}/${KEY}`);
+  const steps: string[] = [];
+  const result = await bootFromFragment({
+    location: page.location,
+    history: page.history,
+    arriving: (pass) => steps.push(`hold ${pass.token === TOKEN && pass.keyB64url === KEY ? "the pass" : "?"} (hash "${page.location.hash}")`),
+    newerVersion: async () => {
+      steps.push("asked for a newer version");
+      return true;
+    },
+    reload: (pass) => steps.push(`reload carrying ${pass.token === TOKEN ? "the pass" : "?"}`),
+    provision: async () => {
+      steps.push("provisioned with old code");
+      return true;
+    },
+  });
+  assert.equal(result, "reloading");
+  assert.deepEqual(steps, ['hold the pass (hash "")', "asked for a newer version", "reload carrying the pass"],
+    "held before anything can reload, and out of the URL while asking");
+});
+
+test("no newer version: the pass is set up now, and stays out of the URL", async () => {
+  const page = fakePage(`#/p/${TOKEN}/${KEY}`);
+  let reloaded = false;
+  const result = await bootFromFragment({
+    location: page.location,
+    history: page.history,
+    newerVersion: async () => false,
+    reload: () => (reloaded = true),
+    provision: async () => false,
+  });
+  assert.equal(result, "failed");
+  assert.equal(reloaded, false);
+  assert.equal(page.location.hash, "");
 });
