@@ -12,49 +12,196 @@
 import type { CheckinPack, CheckinRecord, CheckinConflict, RosterEntry } from "@woco/shared";
 import { eventKeyBounds, scopeV1Claims, scopeV1Records, storeKey } from "./scope.js";
 
-const DB_NAME = "woco-scanner";
-/** v2: check-ins, the unsynced queue and in-flight claims are keyed per event (scope.ts). */
-const DB_VERSION = 2;
+/**
+ * A NEW database, not a version bump of the old one. Upgrading "woco-scanner" in
+ * place would wait for every other connection to it to close, and the scanner
+ * deployed before per-event storage holds it open in any tab it runs in - on an
+ * iPhone, every QR scanned with the Camera app opens another Safari tab - so the
+ * upgrade, and the page, would wait forever. Nothing else ever holds this name
+ * open, and every connection closes itself on a versionchange, so no future
+ * version is blocked either.
+ */
+const DB_NAME = "woco-scanner-v2";
+const DB_VERSION = 1;
+/** Per-ticket keys with no event (scope.ts). Read once, copied in, then deleted. */
+const LEGACY_DB_NAME = "woco-scanner";
+const MIGRATED = "migratedFromLegacy";
 
 let dbPromise: Promise<IDBDatabase> | null = null;
+let factory: () => IDBFactory = () => indexedDB;
+
+/** Tests only: point the module at a fresh fake IndexedDB. */
+export function useIndexedDbForTests(f: IDBFactory): void {
+  factory = () => f;
+  dbPromise = null;
+}
 
 function openDb(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = (e) => {
+  const opening = openCurrent().then(async (db) => {
+    try {
+      await migrateLegacy(db);
+      return db;
+    } catch (err) {
+      db.close();
+      throw err;
+    }
+  });
+  dbPromise = opening;
+  // A failed open is not remembered: the boot screen's retry opens again.
+  opening.catch(() => {
+    if (dbPromise === opening) dbPromise = null;
+  });
+  return opening;
+}
+
+function openCurrent(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = factory().open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
       const db = req.result;
-      if (e.oldVersion < 1) {
-        db.createObjectStore("kv");
-        db.createObjectStore("checkins");
-        db.createObjectStore("pending");
-      } else if (e.oldVersion < 2) {
-        migrateV1(req.transaction!);
-      }
+      db.createObjectStore("kv");
+      db.createObjectStore("checkins");
+      db.createObjectStore("pending");
     };
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export interface LegacyData {
+  kv: Record<string, unknown>;
+  checkins: unknown[];
+  pending: unknown[];
+}
+
+const LEGACY_KV = ["pass", "pack", "roster", "conflicts", "pendingClaims", "deviceId"] as const;
+
+/**
+ * Copy the legacy database in once. The copy is one transaction that checks the
+ * marker, clears the stores, copies and sets the marker: an interrupted copy
+ * leaves nothing, a re-run starts clean, and a second tab that finished first is
+ * left alone.
+ */
+async function migrateLegacy(db: IDBDatabase): Promise<void> {
+  if (!(await readKey(db, MIGRATED))) await copyIn(db, await readLegacy());
+  dropLegacy();
+}
+
+function readKey(db: IDBDatabase, key: string): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const req = db.transaction("kv", "readonly").objectStore("kv").get(key);
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
-  return dbPromise;
 }
 
-/** Re-key v1 records under the stored pack's event; see `scopeV1Records` for what is dropped and why. */
-function migrateV1(t: IDBTransaction): void {
-  const kv = t.objectStore("kv");
-  const packReq = kv.get("pack") as IDBRequest<CheckinPack | undefined>;
-  packReq.onsuccess = () => {
-    const pack = packReq.result;
-    for (const name of ["checkins", "pending"]) {
-      const store = t.objectStore(name);
-      const all = store.getAll() as IDBRequest<CheckinRecord[]>;
-      all.onsuccess = () => {
-        store.clear();
-        for (const { key, record } of scopeV1Records(pack, all.result)) store.put(record, key);
+/**
+ * Opened WITHOUT a version: that never upgrades an existing database, so it can
+ * never wait on another tab. If it does not exist, the creation is aborted - null.
+ */
+function readLegacy(): Promise<LegacyData | null> {
+  return new Promise((resolve, reject) => {
+    const req = factory().open(LEGACY_DB_NAME);
+    req.onupgradeneeded = () => req.transaction?.abort();
+    req.onerror = (e) => {
+      if (req.error?.name !== "AbortError") return reject(req.error);
+      e.preventDefault();
+      resolve(null);
+    };
+    req.onsuccess = () => {
+      const legacy = req.result;
+      legacy.onversionchange = () => legacy.close();
+      const names = ["kv", "checkins", "pending"].filter((n) => legacy.objectStoreNames.contains(n));
+      if (names.length === 0) {
+        legacy.close();
+        return resolve(null);
+      }
+      const data: LegacyData = { kv: {}, checkins: [], pending: [] };
+      const t = legacy.transaction(names, "readonly");
+      if (names.includes("kv")) {
+        for (const key of LEGACY_KV) {
+          const r = t.objectStore("kv").get(key);
+          r.onsuccess = () => (data.kv[key] = r.result);
+        }
+      }
+      for (const name of ["checkins", "pending"] as const) {
+        if (!names.includes(name)) continue;
+        const r = t.objectStore(name).getAll();
+        r.onsuccess = () => (data[name] = r.result);
+      }
+      t.oncomplete = () => {
+        legacy.close();
+        resolve(data);
       };
-    }
-    const claimsReq = kv.get("pendingClaims") as IDBRequest<Record<string, string> | undefined>;
-    claimsReq.onsuccess = () => kv.put(scopeV1Claims(pack, claimsReq.result ?? {}), "pendingClaims");
-  };
+      t.onerror = () => {
+        legacy.close();
+        reject(t.error);
+      };
+    };
+  });
+}
+
+/** Tests only: the copy step on its own, as a second tab racing the first would run it. */
+export async function copyLegacyInForTests(legacy: LegacyData | null): Promise<void> {
+  await copyIn(await openDb(), legacy);
+}
+
+/** `scopeV1Records` decides what moves, and skips any record it cannot read. */
+function copyIn(db: IDBDatabase, legacy: LegacyData | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(["kv", "checkins", "pending"], "readwrite");
+    const kv = t.objectStore("kv");
+    const marker = kv.get(MIGRATED);
+    marker.onsuccess = () => {
+      if (marker.result) return;
+      for (const name of ["kv", "checkins", "pending"]) t.objectStore(name).clear();
+      if (legacy) {
+        const pack = legacy.kv.pack as CheckinPack | undefined;
+        for (const key of LEGACY_KV) {
+          const value = key === "pendingClaims" ? scopeV1Claims(pack, legacy.kv.pendingClaims) : legacy.kv[key];
+          if (value !== undefined) putSkippingBad(kv, value, key);
+        }
+        for (const name of ["checkins", "pending"] as const) {
+          const store = t.objectStore(name);
+          for (const { key, record } of scopeV1Records(pack, legacy[name])) putSkippingBad(store, record, key);
+        }
+      }
+      kv.put(new Date().toISOString(), MIGRATED);
+    };
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error ?? new Error("scanner storage copy was aborted"));
+  });
+}
+
+/** A value IndexedDB refuses is left behind; it never aborts the copy. */
+function putSkippingBad(store: IDBObjectStore, value: unknown, key: string): void {
+  try {
+    const req = store.put(value, key);
+    req.onerror = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+  } catch (err) {
+    console.warn("[scanner] a stored value could not be carried over", err);
+  }
+}
+
+/**
+ * Remove the legacy database, plaintext roster and all. Never awaited: while an
+ * old tab holds it the delete just waits, and nothing here waits on it.
+ */
+function dropLegacy(): void {
+  try {
+    factory().deleteDatabase(LEGACY_DB_NAME);
+  } catch {
+    // Next boot tries again.
+  }
 }
 
 function inEvent(eventId: string): IDBKeyRange {
