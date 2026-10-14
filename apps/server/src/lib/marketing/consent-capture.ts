@@ -88,7 +88,13 @@ export function captureCheckoutConsent(input: CaptureConsentInput): void {
     return;
   }
 
-  recordConsent(emailHash, organiserAddress, record);
+  if (!recordConsent(emailHash, organiserAddress, record)) {
+    // The evidence did not reach disk (#882: file unreadable, or the write
+    // failed), so the decline stays. Lifting it would outlive a restart the
+    // record does not, leaving a mailable address with no Art. 7(1) evidence.
+    console.error(`[consent] opt-in for ${emailHash.slice(0, 8)}… not on disk - earlier decline kept`);
+    return;
+  }
   if (liftDeclineOnConsent(emailHash, organiserAddress, ts)) {
     console.log(
       `[consent] lifted an earlier decline for ${emailHash.slice(0, 8)}… ` +

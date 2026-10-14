@@ -133,15 +133,16 @@ export function consentStoreReadable(): boolean {
   return fileUnreadable === null;
 }
 
+/** @returns whether the record reached disk - false while the file is unreadable or the write failed. */
 export function recordConsent(
   emailHash: string,
   organiserAddress: string,
   record: ConsentRecord,
-): void {
+): boolean {
   ensureLoaded();
   const org = organiserAddress.toLowerCase();
   (consents[org] ??= {})[emailHash] = record;
-  persistToDisk();
+  return persistToDisk();
 }
 
 export function getConsent(emailHash: string, organiserAddress: string): ConsentRecord | null {
