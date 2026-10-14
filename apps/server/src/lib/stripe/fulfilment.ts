@@ -34,6 +34,8 @@ import {
   type SitePalette,
 } from "@woco/shared";
 import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
+import type { EventKeys } from "../keyring/event-keys.js";
+import { sellableKeys } from "../keyring/sale-keys.js";
 import { checkSalesWindow } from "../event/sales-window.js";
 import { eventReleaseAfter } from "./payout-policy.js";
 import type { PayoutLedgerEntry } from "./payout-ledger.js";
@@ -82,6 +84,9 @@ export interface FulfilmentDeps {
   /** Trusted content-feed signer for an event carried by a site (Phase B). */
   resolveSiteEventSigner(siteId: string, eventId: string): Promise<string | null>;
   getEvent(eventId: string, signerHint?: string): Promise<EventFeed | null>;
+  /** The organiser's keys for the event (#186): the only source of the order key a
+   *  fallback seal may use (issue 896). May throw; fenced at the call. */
+  eventKeys(eventId: string): Promise<EventKeys>;
 
   /**
    * The registered sales end on `contract`. `null` = "could not determine"
@@ -443,6 +448,16 @@ export async function fulfilPaidSession(
   /** The feed's own copy — used ONLY to notice a disagreement, never to mint. */
   let feedOnChainEventId = "";
 
+  // The organiser's keys (issue 896): the fallback seal goes to the order key on
+  // record and nowhere else - an event feed is client-signed and can name any key.
+  // Null = could not be read: no fallback seal, and no refund over that alone (3c).
+  let orderKeys: EventKeys | null = null;
+  try {
+    orderKeys = await deps.eventKeys(eventId);
+  } catch (err) {
+    console.warn("[fulfilment] organiser keys unreadable (non-fatal):", err);
+  }
+
   try {
     // Phase B: thread the site carrier (from checkout metadata) so the issued
     // ticket's title/date + v2 manifest come from the authentic client-signed SOC.
@@ -463,12 +478,14 @@ export async function fulfilPaidSession(
         totalSupply = ser.totalSupply;
         feedOnChainEventId = ser.onChainEventId ?? "";
       }
-      if (!prefetchedOrderRef && ev.encryptionKeyRef) {
-        // Fallback minimal seal — only when no pre-uploaded ref is available. The key
-        // names who can READ the order, never what is minted or charged, so reading
-        // it from the event feed here is not the #426 hazard: an organiser who
-        // re-signs their feed to another key only locks themselves out.
-        const key = await deps.fetchOrderKey(ev.encryptionKeyRef);
+      const keyVerdict = orderKeys ? sellableKeys(orderKeys) : null;
+      if (!prefetchedOrderRef && keyVerdict?.ok) {
+        // Fallback minimal seal — only when no pre-uploaded ref is available, and
+        // only to the organiser's AUTHORITATIVE order key, never the one the event
+        // feed names: the feed is client-signed, and the device-cached content signer
+        // can re-sign it to any key (issue 896). No authoritative key = no seal, and
+        // the mint below stops for want of an order ref - a loud refund.
+        const key = await deps.fetchOrderKey(keyVerdict.keys.orderKeyRef);
         const { sealBoxJson, orderSealContext } = await import("@woco/shared/crypto/sealed-box");
         encryptedOrder = await sealBoxJson(
           key,
@@ -740,6 +757,19 @@ export async function fulfilPaidSession(
       }
       console.warn(`[fulfilment] ${session.id}: event ${eventId.slice(0, 8)} is cancelled — not minting`);
     }
+  }
+
+  // ── 3c. No order key on record (issue 896) ──
+  // A readable record with no order key: the order box, if any, was sealed to the
+  // key the event feed named, which the server cannot vouch for. Refunded, and a held
+  // box dropped unstored (4b; an already-stored one stays). Only this definitive case:
+  // `legacy` is also what an unreadable record store reads as, and unreadable keys are
+  // a blip - neither refunds over the keys alone while a buyer's box was held. With no
+  // held box there is nothing to seal to (never the feed's key), so the mint stops on
+  // the missing orderRef and refunds. create-checkout refuses all of them up front.
+  if (!stoppedReason && orderKeys?.kind === "record" && !orderKeys.orderKeyRef) {
+    console.warn(`[fulfilment] ${session.id}: event ${eventId.slice(0, 8)} has no order key on record — not minting`);
+    stoppedReason = "Event has no order key on record — not sold";
   }
 
   // ── 4. Mint (the whole block is fenced: an unexpected throw becomes a
