@@ -73,6 +73,12 @@ export function parseBuildPage(html: string, fetchedFrom: string): BuildPage | n
 
 export type SwapResult = "swapped" | "reload" | "failed";
 
+/** Whether a fetched page may take over this one. Pure, so the rules are testable. */
+export function handoverVerdict(page: BuildPage | null, current: BuildFeed, ownCsp: string | null): "go" | SwapResult {
+  if (!page || page.feed.owner !== current.owner || page.feed.topic !== current.topic) return "failed";
+  return page.csp === ownCsp ? "go" : "reload";
+}
+
 interface BootWindow {
   __wocoBoot?: { handedOver: true; index: number };
 }
@@ -101,10 +107,9 @@ async function fetchPage(bases: string[], ref: string): Promise<BuildPage | null
  */
 export async function swapToBuild(point: FeedPoint, current: BuildFeed, pageBases: string[]): Promise<SwapResult> {
   const page = await fetchPage(pageBases, point.ref);
-  if (!page || page.feed.owner !== current.owner || page.feed.topic !== current.topic) return "failed";
-
   const ownCsp = document.querySelector('meta[http-equiv="Content-Security-Policy" i]')?.getAttribute("content") ?? null;
-  if (page.csp !== ownCsp) return "reload";
+  const verdict = handoverVerdict(page, current, ownCsp);
+  if (verdict !== "go" || !page) return verdict === "go" ? "failed" : verdict; // "go" implies a page
 
   const head = document.head;
   const oldBase = document.baseURI;

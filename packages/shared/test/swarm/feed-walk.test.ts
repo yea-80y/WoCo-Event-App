@@ -88,12 +88,12 @@ function refFor(index: number): string {
 }
 
 /** A v1 update exactly as Bee stores it, signed personal-sign style like bee-js. */
-function signUpdate(index: number, key = KEY): Uint8Array {
+function signUpdate(index: number, key = KEY, shape: { payload?: Uint8Array; spanLength?: number } = {}): Uint8Array {
   const identifier = feedUpdateIdentifier(TOPIC, index);
   const ts = new Uint8Array(8);
   new DataView(ts.buffer).setBigUint64(0, BigInt(1_700_000_000 + index));
-  const payload = concatBytes(ts, hexToBytes(refFor(index)));
-  const span = encodeSpan(payload.length);
+  const payload = shape.payload ?? concatBytes(ts, hexToBytes(refFor(index)));
+  const span = encodeSpan(shape.spanLength ?? payload.length);
   const inner = keccak_256(concatBytes(identifier, calculateCacAddress(span, payload)));
   const digest = keccak_256(concatBytes(utf8ToBytes("\x19Ethereum Signed Message:\n32"), inner));
   const rec = secp256k1.sign(digest, key, { prehash: false, format: "recovered" });
@@ -126,6 +126,15 @@ const walk = (fromIndex: number, sources: ChunkSource[], probeTimeoutMs = 200) =
 
 test("synthetic updates verify (same scheme as the live vectors)", () => {
   assert.equal(verifyFeedUpdate(signUpdate(7), { owner: OWNER, topic: TOPIC, index: 7 })?.ref, refFor(7));
+});
+
+test("owner-signed but not a single-chunk v1 update: refused", () => {
+  const at = { owner: OWNER, topic: TOPIC, index: 7 };
+  // A span larger than the payload makes it a tree root, not the update itself.
+  assert.equal(verifyFeedUpdate(signUpdate(7, KEY, { spanLength: 4096 }), at), null);
+  // 72 bytes is a v1 payload with an encrypted reference; 32 is a bare v2-style ref.
+  assert.equal(verifyFeedUpdate(signUpdate(7, KEY, { payload: new Uint8Array(72).fill(1) }), at), null);
+  assert.equal(verifyFeedUpdate(signUpdate(7, KEY, { payload: new Uint8Array(32).fill(1) }), at), null);
 });
 
 test("walks forward to the newest update", async () => {
@@ -164,18 +173,20 @@ test("a timeout is not a hit and does not hang the walk", async () => {
   assert.ok(Date.now() - started < 1_000, "bounded by the probe timeout");
 });
 
-test("a slow source and a fast one: the fast hit wins and the slow one is cancelled", async () => {
-  let aborted = 0;
-  const slow: ChunkSource = (_a, signal) =>
+test("a slow source and a fast one: the fast hit wins and the slow request is cancelled at once", async () => {
+  const won = feedUpdateAddress(OWNER, TOPIC, 6);
+  const t0 = Date.now();
+  let cancelledAfterMs = -1;
+  const slow: ChunkSource = (address, signal) =>
     new Promise((resolve) => {
       signal.addEventListener("abort", () => {
-        aborted++;
+        if (address === won) cancelledAfterMs = Date.now() - t0;
         resolve({ kind: "unknown", reason: "timeout" });
       });
     });
   const best = await walk(5, [slow, feedSource([6])], 2_000);
   assert.equal(best?.index, 6);
-  assert.ok(aborted > 0, "the losing source's requests are aborted");
+  assert.ok(cancelledAfterMs >= 0 && cancelledAfterMs < 500, `cancelled after ${cancelledAfterMs} ms, not at the 2 s timeout`);
 });
 
 test("onAdvance reports each step forward, in order", async () => {

@@ -8,8 +8,11 @@
  * `<meta name="woco-feed">` (baked by scripts/upload-to-swarm-feed.cjs), so the page
  * walks forward from there instead of trusting the lookup that served it.
  *
- * The device remembers the newest verified update it has seen, so a stale entry
- * page is corrected on the next visit even when the walk was too slow this time.
+ * The device remembers the INDEX of the newest verified update it has seen, so a
+ * stale entry page is corrected on the next visit even when the walk was too slow
+ * this time. Only the index: storage is writable by anything that runs on this
+ * origin (and on a gateway origin, that is every site it serves), so the build to
+ * load always comes from an update re-verified now, never from storage.
  */
 
 import { httpChunkSource, walkFeedForward, WOCO_GATEWAY_URL, type ChunkSource, type FeedPoint } from "@woco/shared";
@@ -33,25 +36,23 @@ export function formatBuildFeed(feed: BuildFeed): string {
 
 const highWaterKey = (feed: BuildFeed) => `woco:feed-hw:${feed.owner}:${feed.topic}`;
 
-/** The newest update this device has verified for this feed, if any. */
-export function readHighWater(storage: Storage | null, feed: BuildFeed): FeedPoint | null {
+/** The highest index this device has verified for this feed - a hint, never a build. */
+export function readHighWater(storage: Storage | null, feed: BuildFeed): number | null {
   try {
     const raw = storage?.getItem(highWaterKey(feed));
-    if (!raw) return null;
-    const p = JSON.parse(raw) as Partial<FeedPoint>;
-    if (!Number.isSafeInteger(p.index) || typeof p.ref !== "string" || !/^[0-9a-f]{64}$/.test(p.ref)) return null;
-    return { index: p.index!, ref: p.ref, timestamp: Number(p.timestamp) || 0 };
+    if (!raw || !/^\d{1,15}$/.test(raw)) return null;
+    return Number(raw);
   } catch {
     return null;
   }
 }
 
-/** Records a VERIFIED update; never lowers what is stored. */
-export function writeHighWater(storage: Storage | null, feed: BuildFeed, point: FeedPoint): void {
+/** Records the index of a VERIFIED update; never lowers what is stored. */
+export function writeHighWater(storage: Storage | null, feed: BuildFeed, index: number): void {
   try {
     const current = readHighWater(storage, feed);
-    if (current && current.index >= point.index) return;
-    storage?.setItem(highWaterKey(feed), JSON.stringify(point));
+    if (current !== null && current >= index) return;
+    storage?.setItem(highWaterKey(feed), String(index));
   } catch {
     // Private mode or full storage: the walk still ran, only the memory is lost.
   }
@@ -103,27 +104,34 @@ const sleep = (ms: number) => new Promise<"timer">((r) => setTimeout(() => r("ti
  */
 export async function checkBuild(opts: CheckOptions): Promise<BuildDecision> {
   const { feed, storage } = opts;
-  const remembered = readHighWater(storage, feed);
-  let best: FeedPoint | null = remembered && remembered.index > feed.index ? remembered : null;
-
+  let best: FeedPoint | null = null;
   let firstHit!: () => void;
   const hit = new Promise<"hit">((r) => (firstHit = () => r("hit")));
-  if (best) firstHit();
 
-  const walk = walkFeedForward({
-    owner: feed.owner,
-    topic: feed.topic,
-    fromIndex: best?.index ?? feed.index,
-    sources: opts.sources,
-    probeTimeoutMs: opts.probeTimeoutMs,
-    onAdvance: (p) => {
-      best = p;
-      writeHighWater(storage, feed, p);
-      firstHit();
-    },
-  })
-    .catch(() => null)
-    .then(() => "walked" as const);
+  const walkFrom = (fromIndex: number) =>
+    walkFeedForward({
+      owner: feed.owner,
+      topic: feed.topic,
+      fromIndex,
+      sources: opts.sources,
+      probeTimeoutMs: opts.probeTimeoutMs,
+      onAdvance: (p) => {
+        // Never sideways or back. Unreachable while every walk starts at or above this
+        // build (a mutation test shows it), and kept as the rule itself.
+        if (p.index <= feed.index || (best && best.index >= p.index)) return;
+        best = p;
+        writeHighWater(storage, feed, p.index);
+        firstHit();
+      },
+    }).catch(() => null);
+
+  // From this build, and - when the device has seen newer - from just below that
+  // index, so its update is re-verified in the first round. Both, because a hint
+  // that cannot be verified (or was planted) must not stop the ordinary walk.
+  const hint = readHighWater(storage, feed);
+  const walks = [walkFrom(feed.index)];
+  if (hint !== null && hint > feed.index) walks.push(walkFrom(hint - 1));
+  const walk = Promise.all(walks).then(() => "walked" as const);
 
   const first = await Promise.race([walk, hit, sleep(opts.graceMs)]);
   if (first === "hit") await Promise.race([walk, sleep(opts.holdAfterHitMs)]);

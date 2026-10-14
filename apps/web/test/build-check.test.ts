@@ -21,7 +21,7 @@ import {
   writeHighWater,
   type BuildFeed,
 } from "../src/lib/boot/build-check.ts";
-import { parseBuildPage } from "../src/lib/boot/build-swap.ts";
+import { handoverVerdict, parseBuildPage } from "../src/lib/boot/build-swap.ts";
 
 const KEY = hexToBytes("0303030303030303030303030303030303030303030303030303030303030303");
 const OWNER = bytesToHex(keccak_256(secp256k1.getPublicKey(KEY, false).subarray(1)).subarray(12));
@@ -115,22 +115,25 @@ test("a page served by someone's own Bee asks that node first, then our gateway"
 
 // ---- the device's memory ----
 
-test("high-water: stores verified points, never lowers, ignores junk and broken storage", () => {
+test("high-water: an index only, never lowered, junk and broken storage ignored", () => {
   const st = memoryStorage();
   const f = feedAt(1);
-  writeHighWater(st, f, { index: 9, ref: ref(9), timestamp: 1 });
-  writeHighWater(st, f, { index: 5, ref: ref(5), timestamp: 1 });
-  assert.equal(readHighWater(st, f)?.index, 9);
-  st.setItem(`woco:feed-hw:${OWNER}:${TOPIC}`, "{not json");
-  assert.equal(readHighWater(st, f), null);
+  writeHighWater(st, f, 9);
+  writeHighWater(st, f, 5);
+  assert.equal(readHighWater(st, f), 9);
+  assert.equal(st.getItem(`woco:feed-hw:${OWNER}:${TOPIC}`), "9", "no reference is stored");
+  for (const junk of ["{not json", "-3", "1e5", JSON.stringify({ index: 9, ref: ref(9) })]) {
+    st.setItem(`woco:feed-hw:${OWNER}:${TOPIC}`, junk);
+    assert.equal(readHighWater(st, f), null, junk);
+  }
   const throwing = { getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("blocked"); } } as unknown as Storage;
   assert.equal(readHighWater(throwing, f), null);
-  writeHighWater(throwing, f, { index: 3, ref: ref(3), timestamp: 1 });
+  writeHighWater(throwing, f, 3);
 });
 
 test("high-water is per feed: a new feed starts clean", () => {
   const st = memoryStorage();
-  writeHighWater(st, feedAt(0), { index: 50, ref: ref(50), timestamp: 1 });
+  writeHighWater(st, feedAt(0), 50);
   assert.equal(readHighWater(st, { ...feedAt(0), topic: "ab".repeat(32) }), null);
 });
 
@@ -149,27 +152,63 @@ test("stale page: the newest verified build is chosen and remembered", async () 
   assert.equal(d.kind, "newer");
   assert.equal(d.kind === "newer" && d.point.index, 243);
   assert.equal(d.kind === "newer" && d.point.ref, ref(243));
-  assert.equal(readHighWater(st, feedAt(224))?.index, 243);
+  assert.equal(readHighWater(st, feedAt(224)), 243);
 });
 
 test("slow sources: the page starts on time, and the NEXT visit is corrected from memory", async () => {
   const st = memoryStorage();
-  const slow = source([11, 12], 400);
   const t0 = Date.now();
-  const first = await checkBuild(opts(feedAt(10), [slow], st, { graceMs: 100, probeTimeoutMs: 1_000 }));
+  const first = await checkBuild(opts(feedAt(10), [source([11, 12], 400)], st, { graceMs: 100, probeTimeoutMs: 1_000 }));
   assert.deepEqual(first, { kind: "current" });
   assert.ok(Date.now() - t0 < 350, "held only for the grace period");
   await new Promise((r) => setTimeout(r, 1_500));
-  assert.equal(readHighWater(st, feedAt(10))?.index, 12, "the walk finished in the background");
-  const unreachable: ChunkSource = async () => ({ kind: "unknown", reason: "offline" });
-  const next = await checkBuild(opts(feedAt(10), [unreachable], st, { graceMs: 100 }));
+  assert.equal(readHighWater(st, feedAt(10)), 12, "the walk finished in the background");
+  // Next visit, same stale page: the remembered index is re-verified straight away.
+  const next = await checkBuild(opts(feedAt(10), [source([12])], st, { graceMs: 300 }));
   assert.equal(next.kind === "newer" && next.point.index, 12);
+  assert.equal(next.kind === "newer" && next.point.ref, ref(12));
+});
+
+test("a remembered index is a hint: it never loads anything that is not verified now", async () => {
+  const st = memoryStorage();
+  writeHighWater(st, feedAt(0), 12);
+  const unreachable: ChunkSource = async () => ({ kind: "unknown", reason: "offline" });
+  assert.deepEqual(await checkBuild(opts(feedAt(10), [unreachable], st)), { kind: "current" });
+});
+
+test("a planted, too-high index cannot stop the ordinary walk", async () => {
+  const st = memoryStorage();
+  writeHighWater(st, feedAt(0), 999_999);
+  const d = await checkBuild(opts(feedAt(10), [source([10, 11])], st));
+  assert.equal(d.kind === "newer" && d.point.index, 11);
+});
+
+test("a remembered index far ahead of a stale page is re-verified and used", async () => {
+  const st = memoryStorage();
+  writeHighWater(st, feedAt(0), 300);
+  const d = await checkBuild(opts(feedAt(10), [source([10, 300])], st));
+  assert.equal(d.kind === "newer" && d.point.index, 300, "out of the ordinary walk's reach, so only the hint finds it");
+  assert.equal(d.kind === "newer" && d.point.ref, ref(300));
+});
+
+test("never asks for an update at or below its own build", async () => {
+  const asked: number[] = [];
+  const byAddress = new Map(Array.from({ length: 2_000 }, (_, i) => [feedUpdateAddress(OWNER, TOPIC, i), i]));
+  const counting: ChunkSource = async (address) => {
+    asked.push(byAddress.get(address) ?? -1);
+    return { kind: "absent" };
+  };
+  const st = memoryStorage();
+  writeHighWater(st, feedAt(0), 5);
+  await checkBuild(opts(feedAt(10), [counting], st));
+  assert.ok(asked.length > 0);
+  assert.ok(asked.every((i) => i > 10), `asked for ${asked.filter((i) => i <= 10)}`);
 });
 
 test("memory older than this build is ignored", async () => {
   const st = memoryStorage();
-  writeHighWater(st, feedAt(0), { index: 5, ref: ref(5), timestamp: 1 });
-  assert.deepEqual(await checkBuild(opts(feedAt(10), [source([10])], st)), { kind: "current" });
+  writeHighWater(st, feedAt(0), 5);
+  assert.deepEqual(await checkBuild(opts(feedAt(10), [source([5, 6, 7, 8, 9, 10])], st)), { kind: "current" });
 });
 
 test("no storage at all: still checks, still decides", async () => {
@@ -207,6 +246,17 @@ test("a page that is not one of our builds is refused", () => {
 test("no <base href>: relative URLs resolve against where the page came from", () => {
   const page = parseBuildPage(BUILT.replace(/<base [^>]*>/, ""), "http://localhost:1633/bzz/siteref/");
   assert.equal(page?.entry, "http://localhost:1633/bzz/siteref/assets/boot-AbCd1234.js");
+});
+
+test("handover rules: same feed and same policy goes; another policy reloads; anything else stays put", () => {
+  const page = parseBuildPage(BUILT, "https://gw/bzz/siteref/")!;
+  const current = { ...page.feed, index: 241 };
+  assert.equal(handoverVerdict(page, current, page.csp), "go");
+  assert.equal(handoverVerdict(page, current, page.csp + " "), "reload");
+  assert.equal(handoverVerdict(page, current, null), "reload");
+  assert.equal(handoverVerdict(null, current, page.csp), "failed");
+  assert.equal(handoverVerdict(page, { ...current, owner: "11".repeat(20) }, page.csp), "failed");
+  assert.equal(handoverVerdict(page, { ...current, topic: "22".repeat(32) }, page.csp), "failed");
 });
 
 // ---- wiring the property depends on ----
