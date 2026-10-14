@@ -13,6 +13,7 @@
   import { navigate } from "../../router/router.svelte.js";
   import { ownNoticeStatus, type OwnNoticeStatus } from "../../legal/own-notice-status.js";
   import NoticeConfirmPrompt from "../privacy/NoticeConfirmPrompt.svelte";
+  import { localInputToIso, saleWindowError } from "./date.js";
 
   interface SeriesDraft {
     seriesId: string;
@@ -90,6 +91,10 @@
     if (!Number.isFinite(s) || !Number.isFinite(e)) return "Enter valid start and end dates.";
     if (e <= s) return "End date must be after the start date.";
     if (e <= Date.now()) return "End date must be in the future.";
+    for (const s of series) {
+      const problem = saleWindowError(s, endDate);
+      if (problem) return `${s.name.trim() || "A ticket type"}: ${problem}`;
+    }
     return null;
   });
 
@@ -195,6 +200,13 @@
       // canPublish already guaranteed both dates are valid + in the future.
       const startDateIso = new Date(startDate).toISOString();
       const endDateIso = new Date(endDate).toISOString();
+      // Sale windows likewise - the server refuses a bound with no timezone, which
+      // it would otherwise read in its own zone. dateError has checked each one.
+      const saleBound = (value: string): string => {
+        const iso = localInputToIso(value);
+        if (!iso) throw new Error("Enter a valid sale window for each ticket type.");
+        return iso;
+      };
 
       // ── Build manifests ───────────────────────────────────────────────
       phase = "building";
@@ -244,8 +256,8 @@
             signedManifest: manifests[i]!.signedManifest,
             editionBodies: manifests[i]!.editionBodies,
             ...(s.wave ? { wave: s.wave } : {}),
-            ...(s.saleStart ? { saleStart: s.saleStart } : {}),
-            ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
+            ...(s.saleStart ? { saleStart: saleBound(s.saleStart) } : {}),
+            ...(s.saleEnd ? { saleEnd: saleBound(s.saleEnd) } : {}),
             ...(s.payment ? { payment: s.payment } : {}),
             ...(s.gate ? { gate: s.gate } : {}),
           })),

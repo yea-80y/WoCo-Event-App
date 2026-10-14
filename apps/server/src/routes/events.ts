@@ -31,6 +31,7 @@ import { clientIp } from "../lib/http/client-ip.js";
 import { SWARM_READ_MAX_BYTES, readCappedJson, readPrefix } from "../lib/http/read-capped.js";
 import { failureSentence } from "../lib/http/error-class.js";
 import { orderFieldsRefusal } from "../lib/event/order-fields.js";
+import { saleBoundsRefusal } from "../lib/event/series-window.js";
 const events = new Hono<AppEnv>();
 
 // ---------------------------------------------------------------------------
@@ -241,6 +242,10 @@ events.post("/", requireAuth, async (c) => {
       return c.json({ ok: false, error: `Duplicate seriesId in this event: ${s.seriesId}` }, 400);
     }
     seenSeriesIds.add(s.seriesId);
+    const boundsRefusal = saleBoundsRefusal(s);
+    if (boundsRefusal) {
+      return c.json({ ok: false, error: `Series ${s.seriesId}: ${boundsRefusal}` }, 400);
+    }
   }
 
   for (const s of series) {
