@@ -247,7 +247,7 @@ test("own-events mode says the soft opt-in, its basis and the right to object, w
       "did, and every email has a one-click unsubscribe. Our basis for using your details this way is our " +
       "legitimate interest in telling customers about similar events. You can object at any time and we will stop.",
   ));
-  assert.match(text, /Your choice at checkout about hearing from us about similar events, when you made it, and the exact wording/);
+  assert.match(text, /Your choice at checkout about hearing from us about similar events and when you made it; if you didn't opt out, also the exact wording you were shown\./);
   assert.match(text, /A record of your marketing choice at checkout: while we can still email you on that basis, plus 6 months\./);
   // Neither half of the consent sentence survives into this mode.
   assert.doesNotMatch(text, /Our basis is your consent\. The box is never ticked/);

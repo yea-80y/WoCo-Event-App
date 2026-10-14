@@ -384,7 +384,7 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
   if (input.contactForm) collect.push(["Your name, email address and message, if you use the contact form on this site."]);
   collect.push([
     ownEvents
-      ? "Your choice at checkout about hearing from us about similar events, when you made it, and the exact wording you were shown."
+      ? "Your choice at checkout about hearing from us about similar events and when you made it; if you didn't opt out, also the exact wording you were shown."
       : "If you choose to hear about future events: that you agreed, when, and the exact wording you were shown.",
   ]);
 
