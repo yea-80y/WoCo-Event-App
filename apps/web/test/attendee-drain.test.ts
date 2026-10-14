@@ -182,3 +182,27 @@ test("matching an existing contact is case-insensitive", () => {
   assert.equal(report.added, 0, "must not create a second record for the same person");
   assert.equal(report.contacts.length, 1);
 });
+
+test("between two checkouts the later EVENT wins, whichever was read last", () => {
+  // The automatic sync re-reads an older event whenever its orders change: that
+  // must not turn the contact's last event (or their latest answers) back to it.
+  const later = { email: "a@x.com", firstName: "Ada", lastEventName: "Autumn", lastEventDate: "2026-10-01", source: "event:Autumn", addedAt: NOW };
+  const earlier = { email: "a@x.com", firstName: "A.", city: "Leeds", lastEventName: "Spring", lastEventDate: "2026-04-01", source: "event:Spring", addedAt: NOW };
+  const out = mergeContact(later, earlier);
+  assert.equal(out.lastEventName, "Autumn");
+  assert.equal(out.lastEventDate, "2026-10-01");
+  assert.equal(out.firstName, "Ada");
+  assert.equal(out.source, "event:Autumn");
+  assert.equal(out.city, "Leeds", "the older checkout still fills a gap");
+  // And the other way round the later one takes over, as before.
+  assert.equal(mergeContact(earlier, later).lastEventName, "Autumn");
+  // Re-reading the older event changes nothing, so it is not counted as an update.
+  assert.equal(applyDrain([out], [earlier]).updated, 0);
+});
+
+test("an unreadable event date never decides: equal rank falls to the incoming record", () => {
+  const a = { email: "a@x.com", firstName: "Ada", lastEventDate: "not a date", source: "event:A", addedAt: NOW };
+  const b = { email: "a@x.com", firstName: "Bo", lastEventDate: "2026-01-01", source: "event:B", addedAt: NOW };
+  assert.equal(mergeContact(b, a).firstName, "Ada");
+  assert.equal(mergeContact(a, b).firstName, "Bo");
+});
