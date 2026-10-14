@@ -378,8 +378,7 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
   const candidates = applyDrain([], incoming).contacts;
   if (candidates.length === 0) return done({}, stamp);
 
-  return deps.withLock(async () => {
-    const fail = (error: string) => result("failed", { failedEvents, unreadableOrders, error });
+  const mergeAndWrite = async (fail: (error: string) => SyncResult): Promise<SyncResult | typeof LIST_CHANGED> => {
     if (!deps.stillCurrent()) return fail("You switched accounts, so nothing was added.");
 
     let stored: { sealedList: SealedBoxV2; updatedAt: string } | null;
@@ -424,11 +423,30 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
       if (!(await seal.unchanged())) return result("locked", { failedEvents, unreadableOrders });
       meta = await deps.writeList(sealed, payload.contacts.map((c) => c.email), stamp);
     } catch (err) {
+      if (isListChanged(err)) return LIST_CHANGED;
       return fail(message(err, "Could not save new buyers to your list."));
     }
     deps.published?.(payload, meta);
     return done({ added: report.added, updated: report.updated, written: { payload, meta } }, meta.updatedAt);
+  };
+
+  return deps.withLock(async () => {
+    const fail = (error: string) => result("failed", { failedEvents, unreadableOrders, error });
+    // Someone saved the list between the re-read and the write (the server refused
+    // it): once more from a fresh re-read - merge, second check and seal again.
+    for (let attempt = 1; ; attempt++) {
+      const out = await mergeAndWrite(fail);
+      if (out !== LIST_CHANGED) return out;
+      if (attempt === 2) return fail("Your list kept changing while new buyers were being added.");
+    }
   });
+}
+
+/** The server's answer when the list was saved after the caller's re-read (409). */
+export const LIST_CHANGED = "LIST_CHANGED";
+
+export function isListChanged(err: unknown): boolean {
+  return !!err && typeof err === "object" && (err as { code?: unknown }).code === LIST_CHANGED;
 }
 
 // ── Throttle and lock ───────────────────────────────────────────────────────
@@ -547,7 +565,9 @@ export function describeSync(rec: SyncRecord | null, running: boolean, now: numb
   }
   if (rec.status === "failed") {
     const why = rec.error ? ` ${rec.error.trim().replace(/\.?$/, ".")}` : "";
-    return { text: `Couldn't finish checking ${ago}.${why} Press Check now to try again.`, warn: true };
+    // One piece of advice: an error that already says what to do next is not followed by a second.
+    const advice = /try again/i.test(why) ? "" : " Press Check now to try again.";
+    return { text: `Couldn't finish checking ${ago}.${why}${advice}`, warn: true };
   }
   const parts = [`Last checked ${ago} - ${rec.added > 0 ? `${rec.added.toLocaleString()} added` : "no one new"}.`];
   if (rec.failedEvents > 0) {

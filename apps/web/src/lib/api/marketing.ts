@@ -30,7 +30,8 @@ export async function uploadMarketingList(
     emails,
     ...("ifUpdatedAt" in opts ? { ifUpdatedAt: opts.ifUpdatedAt ?? null } : {}),
   });
-  if (!resp.data) throw new Error(resp.error || "List upload failed");
+  // An ApiError, so a caller can tell LIST_CHANGED (someone saved first) from a failure.
+  if (!resp.data) throw apiError(resp, "List upload failed");
   return resp.data;
 }
 

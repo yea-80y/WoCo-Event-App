@@ -159,7 +159,9 @@ function deps(w: World, extra: Partial<SyncDeps> = {}): SyncDeps {
       w.log.push(`writeList:${ifUpdatedAt}`);
       if (w.writeFails) throw new Error("Adding contacts needs a verified Stripe account.");
       // The server's compare-and-swap: a list saved since the caller's re-read is never replaced.
-      if (ifUpdatedAt !== (w.list?.updatedAt ?? null)) throw new Error("Your list changed while this was saving, so nothing was overwritten.");
+      if (ifUpdatedAt !== (w.list?.updatedAt ?? null)) {
+        throw Object.assign(new Error("Your list changed while this was saving, so nothing was overwritten. Try again."), { code: "LIST_CHANGED" });
+      }
       const payload = (sealed as unknown as Box).sealed!;
       w.writes.push({ payload, emails });
       const updatedAt = `stamp-${++stampSeq}`;
@@ -383,19 +385,58 @@ test("no answer to the second check, no write", async () => {
   assert.equal(w.storage.size, 0);
 });
 
-test("a delete saved in another tab after the re-read is never undone: the write is refused", async () => {
+test("a delete saved in another tab after the re-read is never undone: refused, then merged onto the newer list", async () => {
+  let seals = 0;
   const w = world({
     list: { payload: { version: 1, contacts: [{ email: "zed@x.com", addedAt: "2026-01-01" }] }, updatedAt: "s0" },
     duringSeal: (x) => {
-      x.list = { payload: { version: 1, contacts: [], removed: ["zed@x.com"] }, updatedAt: "s1" };
+      if (++seals === 1) x.list = { payload: { version: 1, contacts: [], removed: ["zed@x.com"] }, updatedAt: "s1" };
     },
   });
   const r = await sync(w);
-  assert.ok(w.log.includes("writeList:s0"), "the write names the list it merged onto");
-  assert.equal(r.status, "failed");
+  assert.ok(w.log.includes("writeList:s0"), "the first write names the list it merged onto, and is refused");
+  assert.ok(w.log.includes("writeList:s1"), "the retry merges onto the newer one");
+  assert.equal(r.status, "ok", "a refusal that then succeeds is not a failure");
+  assert.equal(r.error, undefined);
+  assert.deepEqual(emailsOf(w.list!.payload), ["ada@x.com"], "Zed stays deleted");
+  assert.deepEqual(w.list!.payload.removed, ["zed@x.com"]);
+});
+
+test("the retry asks again who said yes, from a fresh re-read", async () => {
+  let seals = 0;
+  let checks = 0;
+  const w = world({
+    list: { payload: { version: 1, contacts: [] }, updatedAt: "s0" },
+    duringSeal: (x) => {
+      if (++seals === 1) x.list = { payload: { version: 1, contacts: [] }, updatedAt: "s1" };
+    },
+    // Ada unsubscribes between the first write attempt and the retry.
+    answer: () =>
+      ++checks <= 2
+        ? { suppressed: [], alreadyInList: [], consented: ["ada@x.com"], softOptIn: [] }
+        : { suppressed: ["ada@x.com"], alreadyInList: [], consented: ["ada@x.com"], softOptIn: [] },
+  });
+  const r = await sync(w);
+  assert.equal(w.log.filter((l) => l === "readList").length, 2);
+  assert.equal(checks, 3);
+  assert.equal(r.added, 0);
   assert.equal(w.writes.length, 0);
-  assert.deepEqual(w.list, { payload: { version: 1, contacts: [], removed: ["zed@x.com"] }, updatedAt: "s1" });
-  assert.equal(w.storage.size, 0, "nothing marked: the next run reads it all again");
+});
+
+test("refused twice: reported once, plainly, nothing written, nothing marked", async () => {
+  let n = 0;
+  const w = world({
+    list: { payload: { version: 1, contacts: [] }, updatedAt: "s0" },
+    duringSeal: (x) => {
+      x.list = { payload: { version: 1, contacts: [] }, updatedAt: `moved-${++n}` };
+    },
+  });
+  const r = await sync(w);
+  assert.equal(r.status, "failed");
+  assert.equal(r.error, "Your list kept changing while new buyers were being added.");
+  assert.equal(w.writes.length, 0);
+  assert.equal(w.storage.size, 0);
+  assert.equal(w.log.filter((l) => l.startsWith("writeList")).length, 2, "one retry, not a loop");
 });
 
 test("a delete in this tab while a sync is reading orders stands", async () => {
@@ -784,6 +825,8 @@ test("the status line: plain words, the last time, how many, and stale or failed
   const stale = describeSync(rec(), false, T0 + STALE_MS + 1);
   assert.equal(stale.text, "Last checked yesterday - no one new. Press Check now to look for new buyers.");
   assert.equal(stale.warn, true);
+  const twice = describeSync(rec({ status: "failed", error: "Adding contacts needs a verified Stripe account. Verify in Payments, then try again." }), false, T0);
+  assert.equal(twice.text, "Couldn't finish checking just now. Adding contacts needs a verified Stripe account. Verify in Payments, then try again.", "one piece of advice, not two");
   const failed = describeSync(rec({ status: "failed", error: "Adding contacts needs a verified Stripe account" }), false, T0 + 2 * 3_600_000);
   assert.equal(failed.text, "Couldn't finish checking 2 hours ago. Adding contacts needs a verified Stripe account. Press Check now to try again.");
   assert.equal(failed.warn, true);
