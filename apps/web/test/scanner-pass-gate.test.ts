@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bootFromFragment, describePackFailure, isPassExpired, PASS_EXPIRED_MESSAGE } from "../src/lib/scanner/pass-gate.js";
+import { bootFromFragment, describePackFailure, isPassExpired, onPassLink, PASS_EXPIRED_MESSAGE } from "../src/lib/scanner/pass-gate.js";
 
 test("a revoked, expired, other-event or other-phone pass is dead: only a new pass helps", () => {
   for (const status of [401, 403, 409]) {
@@ -107,4 +107,49 @@ test("no pass in the URL: nothing is touched and nothing is provisioned", async 
   assert.equal(result, "none");
   assert.equal(provisioned, false);
   assert.deepEqual(page.urls, []);
+});
+
+test("a pass link opened in a scanner tab that is already open sets it up, like a fresh load", async () => {
+  // Samsung Internet reuses the open tab and changes only the fragment: no reload, no boot.
+  const page = fakePage("");
+  const window = new EventTarget();
+  const steps: string[] = [];
+  let settled!: Promise<unknown>;
+  onPassLink(window, () => {
+    settled = bootFromFragment({
+      location: page.location,
+      history: page.history,
+      leaveCurrent: () => steps.push("left the event it was showing"),
+      provision: async (token) => {
+        steps.push(`provision ${token === TOKEN ? "the new pass" : "something else"} with hash "${page.location.hash}"`);
+        return false;
+      },
+    });
+  });
+
+  page.location.hash = `#/p/${TOKEN}/${KEY}`;
+  window.dispatchEvent(new Event("hashchange"));
+  assert.equal(await settled, "failed");
+  assert.deepEqual(steps, ["left the event it was showing", 'provision the new pass with hash ""'],
+    "the old event goes first, and the pass is out of the URL before it is used");
+  assert.equal(page.location.hash, "");
+});
+
+test("a hash change that is not a pass leaves the running scanner alone", async () => {
+  const page = fakePage("");
+  const window = new EventTarget();
+  let left = false;
+  let settled!: Promise<unknown>;
+  onPassLink(window, () => {
+    settled = bootFromFragment({
+      location: page.location,
+      history: page.history,
+      leaveCurrent: () => (left = true),
+      provision: async () => true,
+    });
+  });
+  page.location.hash = "#/roster";
+  window.dispatchEvent(new Event("hashchange"));
+  assert.equal(await settled, "none");
+  assert.equal(left, false);
 });

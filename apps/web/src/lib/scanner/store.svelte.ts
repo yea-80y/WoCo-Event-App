@@ -35,7 +35,7 @@ import {
   ticketNewerThanPack,
   type MissStep,
 } from "./pack-refresh.js";
-import { bootFromFragment, describePackFailure, isPassExpired, NO_CONNECTION_MESSAGE, PASS_EXPIRED_MESSAGE, type PackFailure } from "./pass-gate.js";
+import { bootFromFragment, describePackFailure, isPassExpired, onPassLink, NO_CONNECTION_MESSAGE, PASS_EXPIRED_MESSAGE, type PackFailure } from "./pass-gate.js";
 
 const API_BASE = import.meta.env.VITE_API_URL || "";
 const SYNC_INTERVAL_MS = 30_000;
@@ -118,11 +118,12 @@ class ScannerStore {
     document.addEventListener("visibilitychange", () => this.maybeAutoRefresh(RETURN_REFRESH_MS));
     window.addEventListener("focus", () => this.maybeAutoRefresh(RETURN_REFRESH_MS));
 
-    // A door-pass fragment in the URL always wins — it (re)provisions the device.
-    // If it fails, the phone stays on the provision screen with this pass ready to
-    // retry: falling back to the stored pass would open whatever event it held before.
-    const booted = await bootFromFragment({ location, history, provision: (t, k) => this.provision(t, k) });
-    if (booted !== "none") return;
+    // A door-pass fragment in the URL always wins — it (re)provisions the device,
+    // at boot or arriving in an open tab. If it fails, the phone stays on the
+    // provision screen with this pass ready to retry: falling back to the stored
+    // pass would open whatever event it held before.
+    onPassLink(window, () => void this.passFromUrl());
+    if ((await this.passFromUrl()) !== "none") return;
 
     const pass = await db.getStoredPass();
     const pack = await db.getStoredPack();
@@ -187,6 +188,15 @@ class ScannerStore {
       this.phase = this.pack ? "ready" : "unprovisioned";
       return false;
     }
+  }
+
+  private passFromUrl(): Promise<"none" | "provisioned" | "failed"> {
+    return bootFromFragment({
+      location,
+      history,
+      leaveCurrent: () => this.reprovision(),
+      provision: (t, k) => this.provision(t, k),
+    });
   }
 
   /** Retry the pass that last failed to set up. */

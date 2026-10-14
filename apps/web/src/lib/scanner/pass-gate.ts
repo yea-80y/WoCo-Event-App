@@ -39,6 +39,8 @@ export function isPassExpired(exp: number, nowMs: number): boolean {
 export interface FragmentBoot {
   location: { hash: string; pathname: string; search: string; href: string };
   history: Pick<History, "replaceState">;
+  /** Runs only when a pass is in the URL, before it is set up: whatever the phone showed before goes. */
+  leaveCurrent?: () => void;
   provision: (token: string, keyB64url: string) => Promise<boolean>;
 }
 
@@ -52,5 +54,16 @@ export async function bootFromFragment(b: FragmentBoot): Promise<"none" | "provi
   const fragment = parseDoorPassFragment(b.location.hash);
   if (!fragment) return "none";
   b.history.replaceState(null, "", new URL(b.location.pathname + b.location.search, b.location.href).href);
+  b.leaveCurrent?.();
   return (await b.provision(fragment.token, fragment.keyB64url)) ? "provisioned" : "failed";
+}
+
+/**
+ * A pass link opened while the scanner is already open. Some phone browsers
+ * (Samsung Internet, 2026-10-14) reuse the open tab and change only the
+ * fragment, so the page never reloads and boot never sees the new pass.
+ * `replaceState` fires no hashchange, so scrubbing cannot re-trigger this.
+ */
+export function onPassLink(target: Pick<EventTarget, "addEventListener">, take: () => void): void {
+  target.addEventListener("hashchange", () => take());
 }
