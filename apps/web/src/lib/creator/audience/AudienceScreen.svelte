@@ -16,11 +16,21 @@
   import CsvImportWizard from "./CsvImportWizard.svelte";
   import ConsentLedger from "./ConsentLedger.svelte";
   import ContactSearch from "./ContactSearch.svelte";
-  import AttendeeImport from "./AttendeeImport.svelte";
+  import AudienceSyncStatus from "./AudienceSyncStatus.svelte";
   import MarketingComposer from "./MarketingComposer.svelte";
   import SendingDomainPanel from "./SendingDomainPanel.svelte";
   import { FEATURES } from "@woco/shared";
   import StripeVerifyGate from "../events/StripeVerifyGate.svelte";
+  import { onMount } from "svelte";
+  import { listKeysOf } from "./list-keys.js";
+  import { addRemoved, clearRemoved, listPayload, normaliseRemoved } from "./audience-sync.js";
+  import { onListWritten, syncAudience, withListLock } from "./audience-sync.svelte.js";
+
+  /** The sealed list as this screen holds it: the contacts, and the addresses the organiser deleted. */
+  interface ListState {
+    contacts: MarketingContact[];
+    removed: string[];
+  }
 
   let loading = $state(true);
   let loadError = $state<string | null>(null);
@@ -29,6 +39,8 @@
   let listLocked = $state(false);
   let meta = $state<MarketingListMeta | null>(null);
   let contacts = $state<MarketingContact[]>([]);
+  /** Deleted by the organiser: the automatic add of opted-in buyers never brings these back. */
+  let removed = $state<string[]>([]);
   let suppressedEmails = $state<Set<string>>(new Set());
   /** Contacts who ticked the opt-in themselves — the server holds the evidence,
    *  keyed by hash, so this is the only way the client can know. */
@@ -44,7 +56,7 @@
   let consentUnknown = $state(false);
   let saving = $state(false);
   let wizardOpen = $state(false);
-  let panel = $state<"contacts" | "compose" | "attendees" | null>(null);
+  let panel = $state<"contacts" | "compose" | null>(null);
 
   /** ?announce={eventId} — the post-publish prompt: open the composer with
    *  that event preselected. It opens with an empty audience too: the composer
@@ -66,13 +78,7 @@
   async function getKeys(prompt = false, toSeal = false) {
     const secrets = await getAccountSecrets(prompt, toSeal);
     if (!secrets || !auth.parent) return null;
-    const [{ orderKeysOf }, box] = await Promise.all([
-      import("../../keyring/order-keys.js"),
-      import("@woco/shared/crypto/sealed-box"),
-    ]);
-    // New lists seal to the CURRENT generation; an older one opens with its own (#186).
-    const { publicKey, secretKeys } = await orderKeysOf(secrets);
-    return { secretKeys, publicKey, ctx: box.listSealContext(auth.parent), box };
+    return listKeysOf(secrets, auth.parent);
   }
 
   /** The account's secrets, unlocking first - only when `prompt`, which only a tap
@@ -119,24 +125,33 @@
     loadError = null;
     listLocked = false;
     try {
-      const resp = await getMarketingList();
-      if (!resp) {
-        meta = null;
-        contacts = [];
-        return;
-      }
-      meta = resp.meta;
-      const keys = await getKeys();
-      if (!keys) {
+      // Read under the list lock: a sync write landing mid-read would otherwise be
+      // painted over by the older copy this read fetched.
+      const locked = await withListLock(async () => {
+        const resp = await getMarketingList();
+        if (!resp) {
+          meta = null;
+          contacts = [];
+          removed = [];
+          return false;
+        }
+        meta = resp.meta;
+        const keys = await getKeys();
+        if (!keys) return true;
+        const { openJsonWithAnyKey } = await import("../../keyring/order-keys.js");
+        const payload = await openJsonWithAnyKey<MarketingListPayload>(keys.secretKeys, resp.sealedList, keys.ctx);
+        contacts = payload.contacts;
+        removed = normaliseRemoved(payload.removed);
+        return false;
+      });
+      if (locked) {
         if (auth.parent) listLocked = true;
         else loadError = "Sign in and unlock your identity to open your audience.";
         return;
       }
-      listLocked = false;
-      const { openJsonWithAnyKey } = await import("../../keyring/order-keys.js");
-      const payload = await openJsonWithAnyKey<MarketingListPayload>(keys.secretKeys, resp.sealedList, keys.ctx);
-      contacts = payload.contacts;
       await refreshConsentStates(contacts);
+      // Opted-in buyers since the last check join now; the screen takes the result through onListWritten.
+      void syncAudience();
     } catch (err) {
       // A list saved before #642 was sealed with the retired X25519 format. Say so
       // plainly: the fix is to import it again, not to retry.
@@ -151,36 +166,49 @@
     }
   }
 
-  /** Re-seal + upload the full list — the single write path for every change. */
-  async function commitList(next: MarketingContact[]): Promise<void> {
+  /**
+   * Re-seal + upload the full list — the single write path for every change.
+   * `change` runs inside the list lock, on the list as it stands then, so a sync
+   * write that landed while this waited is kept rather than saved over.
+   */
+  async function commitList(change: (list: ListState) => ListState): Promise<void> {
     const keys = await getKeys(true, true);
     if (!keys) throw new Error("Identity locked — sign in to save changes");
     saving = true;
     try {
-      const sealed = await keys.box.sealBoxJsonCompressed(
-        keys.publicKey,
-        { version: 1, contacts: next } satisfies MarketingListPayload,
-        keys.ctx,
-      );
-      meta = await uploadMarketingList(sealed, next.map((c) => c.email));
-      contacts = next;
-      if (next.length > 0 && auth.parent) markAudienceImported(auth.parent);
-      await refreshConsentStates(next);
+      await withListLock(async () => {
+        const next = change({ contacts, removed });
+        const sealed = await keys.box.sealBoxJsonCompressed(keys.publicKey, listPayload(next.contacts, next.removed), keys.ctx);
+        meta = await uploadMarketingList(sealed, next.contacts.map((c) => c.email));
+        contacts = next.contacts;
+        removed = normaliseRemoved(next.removed);
+      });
+      if (contacts.length > 0 && auth.parent) markAudienceImported(auth.parent);
+      await refreshConsentStates(contacts);
     } finally {
       saving = false;
     }
   }
 
   async function handleWizardCommit(added: MarketingContact[]): Promise<void> {
-    const have = new Set(contacts.map((c) => c.email));
-    const merged = [...contacts, ...added.filter((c) => !have.has(c.email))];
-    await commitList(merged);
+    await commitList((list) => {
+      const have = new Set(list.contacts.map((c) => c.email));
+      return {
+        contacts: [...list.contacts, ...added.filter((c) => !have.has(c.email))],
+        // Imported on purpose: off the deleted list, so the automatic add may keep them too.
+        removed: clearRemoved(list.removed, added.map((c) => c.email)),
+      };
+    });
     wizardOpen = false;
   }
 
   async function handleDelete(email: string, alsoSuppress: boolean): Promise<void> {
     await auth.ensureOrganiserUnlock();
-    await commitList(contacts.filter((c) => c.email !== email));
+    // Remembered as deleted, with or without the unsubscribe: the automatic add never brings them back.
+    await commitList((list) => ({
+      contacts: list.contacts.filter((c) => c.email !== email),
+      removed: addRemoved(list.removed, email),
+    }));
     if (alsoSuppress) {
       await suppressContacts([email]);
       await refreshConsentStates(contacts);
@@ -190,8 +218,20 @@
   /** Save one edited contact back into the list, keyed on the email (which the
    *  detail panel never lets you change, for exactly this reason). */
   async function handleSave(email: string, next: MarketingContact): Promise<void> {
-    await commitList(contacts.map((c) => (c.email === email ? next : c)));
+    await commitList((list) => ({ ...list, contacts: list.contacts.map((c) => (c.email === email ? next : c)) }));
   }
+
+  // A sync write (this screen's own, or one started on another organiser page) is
+  // the newest list there is: show it. Never over a locked list.
+  onMount(() =>
+    onListWritten((payload, written) => {
+      if (listLocked) return;
+      contacts = payload.contacts;
+      removed = normaliseRemoved(payload.removed);
+      meta = written;
+      void refreshConsentStates(payload.contacts);
+    }),
+  );
 
   const counts = $derived.by(() => {
     const out: Record<ContactConsentState, number> = {
@@ -259,13 +299,12 @@
         <h3>Bring your people with you</h3>
         <p class="muted">
           Import the customer lists you've exported from Skiddle, Fatsoma, RA or any other
-          platform, or pull in the ticket buyers who said yes at checkout. Contacts are
-          encrypted before they're stored — and anyone who unsubscribes stays unsubscribed,
+          platform. Ticket buyers who said yes at checkout are added for you. Contacts are
+          encrypted before they're stored - and anyone who unsubscribes stays unsubscribed,
           even if you re-import the same file.
         </p>
         <div class="actions center">
           <button class="btn-primary" onclick={() => (wizardOpen = true)}>Import contacts</button>
-          <button class="btn-ghost" onclick={() => (panel = "attendees")}>Add from your events</button>
           <!-- Deliberately offered BEFORE there is an audience. The test send
                takes one address the organiser types and skips the membership
                check entirely, so seeing the email is the step that should come
@@ -295,11 +334,6 @@
         </button>
         <button
           class="btn-ghost"
-          class:active={panel === "attendees"}
-          onclick={() => (panel = panel === "attendees" ? null : "attendees")}
-        >Add from your events</button>
-        <button
-          class="btn-ghost"
           class:active={panel === "compose"}
           onclick={() => (panel = panel === "compose" ? null : "compose")}
         >Compose broadcast</button>
@@ -316,6 +350,8 @@
       </div>
     {/if}
 
+    <AudienceSyncStatus />
+
     {#if wizardOpen}
       <CsvImportWizard
         existingEmails={new Set(contacts.map((c) => c.email))}
@@ -323,10 +359,6 @@
         onCommit={handleWizardCommit}
         onCancel={() => (wizardOpen = false)}
       />
-    {/if}
-
-    {#if panel === "attendees"}
-      <AttendeeImport {contacts} busy={saving} {getKeys} onCommit={commitList} />
     {/if}
 
     {#if panel === "contacts" && contacts.length > 0 && consentUnknown}

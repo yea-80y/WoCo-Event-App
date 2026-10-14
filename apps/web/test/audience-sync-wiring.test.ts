@@ -1,0 +1,105 @@
+/**
+ * The automatic buyer add, wired: the screens and the runtime do what the pure
+ * rules in `audience-sync.ts` assume. By SOURCE SCAN - the components and the
+ * auth store declare `$state`, which Node cannot load.
+ */
+import test from "node:test";
+import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+
+const SRC = new URL("../src/", import.meta.url).pathname;
+const read = (p: string) => readFileSync(SRC + p, "utf-8");
+const code = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/<!--[\s\S]*?-->/g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+
+/** From `signature` to the close of its body: `\n  }` in a component script, `\n}` in a module. */
+function fn(src: string, signature: string): string {
+  const start = src.indexOf(signature);
+  assert.ok(start >= 0, `${signature} must exist - a rename would make this pass vacuously`);
+  const indent = src.lastIndexOf("\n", start);
+  const close = "\n" + " ".repeat(start - indent - 1) + "}";
+  const end = src.indexOf(close, start);
+  assert.ok(end > start, `${signature} must close`);
+  return src.slice(start, end + close.length);
+}
+
+const SCREEN = code(read("lib/creator/audience/AudienceScreen.svelte"));
+const RUNTIME = code(read("lib/creator/audience/audience-sync.svelte.ts"));
+const STATUS = read("lib/creator/audience/AudienceSyncStatus.svelte");
+const APP = code(read("CreatorApp.svelte"));
+
+test("the manual per-event import is gone; the screen shows the automatic status instead", () => {
+  assert.ok(!existsSync(SRC + "lib/creator/audience/AttendeeImport.svelte"));
+  assert.doesNotMatch(SCREEN, /AttendeeImport|Add from your events|"attendees"/);
+  assert.match(SCREEN, /<AudienceSyncStatus \/>/);
+  assert.match(SCREEN, /Ticket buyers who said yes at checkout are added for you\./);
+});
+
+test("deleting a contact writes a tombstone, with or without the unsubscribe", () => {
+  const del = fn(SCREEN, "async function handleDelete");
+  const write = del.indexOf("removed: addRemoved(list.removed, email)");
+  assert.ok(write > 0, "the tombstone is part of the same save as the delete");
+  assert.ok(write < del.indexOf("if (alsoSuppress)"), "before, and independent of, the unsubscribe");
+});
+
+test("a CSV import clears the tombstone of every address it adds back", () => {
+  assert.match(fn(SCREEN, "async function handleWizardCommit"), /removed: clearRemoved\(list\.removed, added\.map\(\(c\) => c\.email\)\)/);
+});
+
+test("every save carries the tombstones, inside the list lock, on the list as it stands then", () => {
+  const commit = fn(SCREEN, "async function commitList");
+  assert.match(commit, /await withListLock\(async \(\) => \{\s*const next = change\(\{ contacts, removed \}\);/);
+  assert.match(commit, /listPayload\(next\.contacts, next\.removed\)/);
+  assert.match(commit, /removed = normaliseRemoved\(next\.removed\);/);
+  assert.match(fn(SCREEN, "async function handleSave"), /commitList\(\(list\) => \(\{ \.\.\.list, contacts:/);
+});
+
+test("the screen opens the tombstones, reads under the lock, starts a sync, and shows each sync write", () => {
+  const load = fn(SCREEN, "async function load");
+  assert.match(load, /await withListLock\(async \(\) => \{[\s\S]*?removed = normaliseRemoved\(payload\.removed\);/);
+  assert.match(load, /void syncAudience\(\);/);
+  assert.match(SCREEN, /onListWritten\(\(payload, written\) => \{\s*if \(listLocked\) return;\s*contacts = payload\.contacts;\s*removed = normaliseRemoved\(payload\.removed\);/);
+});
+
+test("the runtime never prompts: open keys as held, seal only on a confirmed generation, an existing session only", () => {
+  assert.match(RUNTIME, /const secrets = await auth\.getAccountSecrets\(\);/);
+  assert.match(RUNTIME, /await auth\.getAccountSecrets\(\{ toSeal: true, silent: true \}\);/);
+  assert.equal(RUNTIME.match(/getAccountSecrets\(/g)?.length, 2);
+  assert.doesNotMatch(RUNTIME, /ensureAccountSetup|ensureOrganiserUnlock|ensureSession|loginRequest|ensureIdentitySeed/);
+  assert.match(fn(RUNTIME, "export function syncAudience"), /if \(!parent \|\| !auth\.isConnected \|\| !auth\.hasSession \|\| !canOrganise\(auth\.kind\)\) return null;/);
+});
+
+test("a failed background check is logged, and shown only on the Audience screen", () => {
+  const run = fn(RUNTIME, "async function runFor");
+  assert.match(run, /if \(res\.status === "failed"\) console\.warn\(/);
+  assert.match(run, /if \(res\.added > 0\) markAudienceImported\(parent\);/);
+  assert.doesNotMatch(RUNTIME, /alert\(|confirm\(|toast/i);
+  // The status component is the one place that reads the record.
+  assert.match(STATUS, /describeSync\(audienceSync\.record, audienceSync\.running, now\)/);
+});
+
+test("the runtime guards the account: no write into another account's list", () => {
+  assert.match(RUNTIME, /const current = \(\) => auth\.isConnected && auth\.parent\?\.toLowerCase\(\) === parent;/);
+  assert.match(RUNTIME, /stillCurrent: current,/);
+  assert.match(RUNTIME, /withLock: withListLock,/);
+});
+
+test("background trigger: organiser home and event pages, only an unlocked account with a session, never forced", () => {
+  const start = APP.indexOf("const AUDIENCE_SYNC_ROUTES");
+  assert.ok(start > 0);
+  const block = APP.slice(start, APP.indexOf("});", start));
+  assert.match(block, /new Set\(\["creator-home", "dashboard-index", "dashboard"\]\)/);
+  assert.match(block, /if \(!auth\.hasSession \|\| !auth\.hasIdentitySeed\) return;/);
+  assert.match(block, /canOrganise\(auth\.kind\)/);
+  assert.match(block, /untrack\(\(\) => void syncAudience\(\)\);/);
+  assert.equal(APP.match(/syncAudience\(/g)?.length, 1, "one call site in the shell");
+});
+
+test("the status copy: what happens, who stays out, one button - spaced hyphen, no em dash", () => {
+  const markup = STATUS.slice(STATUS.indexOf("</script>"));
+  assert.match(markup, /Buyers who said yes to your emails at checkout are added automatically - those who ticked\s+"Email me", and, if you only email about your own events, those who didn't tick\s+"Don't email me"\. Anyone who said no, or who you delete, stays off your list\./);
+  assert.match(markup, /"Check now"/);
+  assert.match(markup, /syncAudience\(\{ force: true \}\)|onclick=\{checkNow\}/);
+  assert.match(STATUS, /void syncAudience\(\{ force: true \}\);/);
+  assert.doesNotMatch(markup, /[–—]/);
+  assert.doesNotMatch(markup, /consent|lawful|GDPR|PECR/i, "no legal jargon");
+});
