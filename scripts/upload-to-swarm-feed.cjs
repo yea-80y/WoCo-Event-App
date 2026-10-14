@@ -33,6 +33,8 @@ const axios = require('axios');
 //   BEE_URL=https://gateway.woco-net.com  (optional, defaults to gateway.woco-net.com)
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 const BEE_URL = process.env.BEE_URL || 'https://gateway.woco-net.com';
+// What running pages read from; may differ from BEE_URL, the upload route.
+const PUBLIC_GATEWAY = 'https://gateway.woco-net.com';
 const POSTAGE_BATCH_ID = process.env.POSTAGE_BATCH_ID || '';
 const FEED_PRIVATE_KEY = process.env.FEED_PRIVATE_KEY || '';
 const UPLOAD_SECRET = process.env.UPLOAD_SECRET || '';
@@ -168,6 +170,53 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
       return ref;
     }
 
+    // The index is read BEFORE the upload because each build carries it: the page
+    // checks forward from it for newer builds (apps/web/src/lib/boot/build-check.ts).
+    console.log('Reading next feed index from bee...');
+    let nextIdx;
+    const idxProbe = await axios.get(
+      `${BEE_URL}/feeds/${ownerHex}/${topic.toString()}`,
+      {
+        maxRedirects: 0,
+        validateStatus: () => true,
+        responseType: 'arraybuffer',
+        timeout: 15000,
+      },
+    );
+    if (idxProbe.status === 200) {
+      const nextHex = idxProbe.headers['swarm-feed-index-next'];
+      if (!nextHex || !/^[0-9a-fA-F]+$/.test(nextHex)) {
+        throw new Error(`bee returned 200 but no valid swarm-feed-index-next header: ${nextHex}`);
+      }
+      nextIdx = Number(BigInt('0x' + nextHex));
+    } else if (idxProbe.status === 404) {
+      // Fresh feed (manifest exists but no updates yet)
+      nextIdx = 0;
+    } else {
+      throw new Error(`bee returned status ${idxProbe.status} when probing feed for next index`);
+    }
+    // bee's lookup can land short (#5251), and a short next index is a taken one. The
+    // gateway's high-water mark only ever rises and comes from verified updates, so
+    // never write below it. An older gateway (no `index` in the reply) just adds nothing.
+    const knownManifest = (await readJsonIfExists(MANIFEST_STATE))?.manifestRef;
+    if (knownManifest) {
+      try {
+        const mark = await axios.post(`${BEE_URL}/admin/feeds/${knownManifest}/refresh`, {}, {
+          headers: { ...uploadHeaders, 'Content-Type': 'application/json' },
+          timeout: 60000,
+          validateStatus: () => true,
+        });
+        const held = mark.data?.index;
+        if (mark.status === 200 && Number.isSafeInteger(held) && held + 1 > nextIdx) {
+          console.log(`bee said next index ${nextIdx}, but the gateway already holds ${held}: using ${held + 1}`);
+          nextIdx = held + 1;
+        }
+      } catch (e) {
+        console.log(`Could not read the gateway's feed mark (${e.message}); using bee's next index.`);
+      }
+    }
+    console.log(`Next index: ${nextIdx}`);
+
     let siteRef;
     try {
       // Pass 1: assets live under this ref
@@ -175,12 +224,13 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
 
       // Patch index.html with absolute <base href> → fast gateway
       const baseTag = `<base href="https://gateway.woco-net.com/bzz/${assetsRef}/">`;
-      const patched = indexOriginal.replace(/<head>/i, `<head>\n    ${baseTag}`);
+      const feedMeta = `<meta name="woco-feed" content="v1 ${ownerHex.toLowerCase()} ${topic.toString()} ${nextIdx}">`;
+      const patched = indexOriginal.replace(/<head>/i, `<head>\n    ${baseTag}\n    ${feedMeta}`);
       if (patched === indexOriginal) {
         throw new Error('Could not inject <base href> — no <head> tag found in dist/index.html');
       }
       fs.writeFileSync(indexPath, patched);
-      console.log(`Injected <base href="https://gateway.woco-net.com/bzz/${assetsRef}/"> into index.html`);
+      console.log(`Injected <base href="https://gateway.woco-net.com/bzz/${assetsRef}/"> and feed index ${nextIdx} into index.html`);
 
       // Pass 2: this ref is what the feed points to. Browser loads its index.html,
       // then base-href redirects every relative asset fetch to assetsRef on our gateway.
@@ -228,30 +278,28 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     //   - upload(stamp, ref) — wrong v1 payload format
     //   - uploadPayload()    — writes v2-format, v1 manifests can't resolve
     //   - uploadReference()  — writes v1 timestamp+ref, USE THIS
-    console.log('Reading next feed index from bee...');
-    let nextIdx;
-    const idxProbe = await axios.get(
-      `${BEE_URL}/feeds/${ownerHex}/${topic.toString()}`,
-      {
-        maxRedirects: 0,
-        validateStatus: () => true,
-        responseType: 'arraybuffer',
-        timeout: 15000,
-      },
+
+    // Whitelist the update's address BEFORE writing it. Pages read updates from our
+    // public gateway, which serves only whitelisted chunks, and their check cannot see
+    // past an update it cannot read. Whitelisting first means a failure can never leave
+    // a written-but-invisible update; a failed write leaves only an unused entry.
+    const Binary = require(require.resolve('cafe-utility', {
+      paths: [path.dirname(require.resolve('@ethersphere/bee-js'))],
+    })).Binary;
+    const updateId = Binary.keccak256(
+      Binary.concatBytes(topic.toUint8Array(), Binary.numberToUint64(BigInt(nextIdx), 'BE')),
     );
-    if (idxProbe.status === 200) {
-      const nextHex = idxProbe.headers['swarm-feed-index-next'];
-      if (!nextHex || !/^[0-9a-fA-F]+$/.test(nextHex)) {
-        throw new Error(`bee returned 200 but no valid swarm-feed-index-next header: ${nextHex}`);
-      }
-      nextIdx = Number(BigInt('0x' + nextHex));
-    } else if (idxProbe.status === 404) {
-      // Fresh feed (manifest exists but no updates yet)
-      nextIdx = 0;
-    } else {
-      throw new Error(`bee returned status ${idxProbe.status} when probing feed for next index`);
+    const updateAddress = Binary.uint8ArrayToHex(
+      Binary.keccak256(Binary.concatBytes(updateId, Binary.hexToUint8Array(ownerHex.toLowerCase()))),
+    );
+    const wl = await axios.post(`${BEE_URL}/admin/whitelist`, { hash: updateAddress }, {
+      headers: { ...uploadHeaders, 'Content-Type': 'application/json' },
+      timeout: 15000,
+      validateStatus: () => true,
+    });
+    if (wl.status !== 200) {
+      throw new Error(`Could not whitelist feed update ${nextIdx} (${updateAddress}) on the gateway: HTTP ${wl.status}`);
     }
-    console.log(`Next index: ${nextIdx}`);
 
     console.log('Updating feed (uploadReference / v1)...');
     const writer = bee.makeFeedWriter(topic, signer);
@@ -301,6 +349,54 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
         `confirm: curl -I ${BEE_URL}/feeds/${ownerHex}/${topic.toString()})`,
       );
     }
+
+    // 4b) Prove the update is visible to the page's build check (whitelisted before
+    // the write, above): readable, signed, and cross-origin through the public gateway.
+    const reader = new Bee(PUBLIC_GATEWAY).makeFeedReader(topic, ownerHex);
+    let publicRef = null;
+    let corsOk = false;
+    for (let attempt = 0; attempt < 10 && !(publicRef && corsOk); attempt++) {
+      if (attempt) await new Promise(r => setTimeout(r, 1500));
+      try {
+        // downloadReference({ index }) verifies the signature against the owner.
+        publicRef = (await reader.downloadReference({ index: nextIdx })).reference.toHex();
+        const cors = await axios.get(`${PUBLIC_GATEWAY}/chunks/${updateAddress}`, {
+          headers: { Origin: 'https://woco.eth.limo' },
+          responseType: 'arraybuffer',
+          timeout: 10000,
+          validateStatus: () => true,
+        });
+        const allow = cors.headers['access-control-allow-origin'];
+        corsOk = cors.status === 200 && (allow === '*' || allow === 'https://woco.eth.limo');
+      } catch { /* keep trying */ }
+    }
+    if (publicRef !== siteRef) {
+      throw new Error(
+        publicRef
+          ? `Feed index ${nextIdx} holds ${publicRef}, not this build ${siteRef}: the index was taken (another deploy?). Nothing new is live - re-run.`
+          : `Feed update ${nextIdx} is not readable through ${PUBLIC_GATEWAY}: pages cannot see this build.`,
+      );
+    }
+    if (!corsOk) throw new Error(`${PUBLIC_GATEWAY}/chunks is not readable cross-origin: pages cannot check for this build.`);
+    console.log(`Build check ready: update ${nextIdx} verified through ${PUBLIC_GATEWAY}.`);
+
+    // 4c) Point the gateway's cache at exactly this update. It never steps back to a
+    // lower index, and is told the index rather than asked to look it up.
+    const refresh = await axios.post(`${BEE_URL}/admin/feeds/${manifestRef}/refresh`, { index: nextIdx }, {
+      headers: { ...uploadHeaders, 'Content-Type': 'application/json' },
+      timeout: 60000,
+      validateStatus: () => true,
+    });
+    const r = refresh.data || {};
+    if (refresh.status !== 200 || r.contentRef !== siteRef || (r.index != null && r.index < nextIdx)) {
+      // The build IS published (feed index written and verified above). Do not re-run:
+      // that would write the same build again at the next index. Retry the refresh.
+      throw new Error(
+        `Build published at feed index ${nextIdx}, but the gateway refresh did not land on it: HTTP ${refresh.status} ${JSON.stringify(r)}. ` +
+        `Do NOT re-run the deploy. Retry: POST ${BEE_URL}/admin/feeds/${manifestRef}/refresh with body {"index":${nextIdx}} and the x-upload-secret header.`,
+      );
+    }
+    console.log(`Gateway serving this build (feed index ${r.index ?? nextIdx}).`);
 
     // 5) Save state
     const info = {

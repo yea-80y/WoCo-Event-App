@@ -3,6 +3,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { nodePolyfills } from 'vite-plugin-node-polyfills'
 import { cspInject } from './vite-plugins/csp'
 import { noEnvObject } from './vite-plugins/no-env-object'
+import { preloadApp } from './vite-plugins/preload-app'
 import { resolveWeb3AuthNetwork, WEB3AUTH_NETWORK_ENV_VAR } from './src/lib/auth/web3auth-network'
 
 export default defineConfig(({ command, mode }) => {
@@ -40,6 +41,7 @@ export default defineConfig(({ command, mode }) => {
       svelte(),
       cspInject(),
       noEnvObject(),
+      preloadApp(),
     ],
     optimizeDeps: {
       // @web3auth/modal dynamically loads its sibling packages (no-modal, auth,
