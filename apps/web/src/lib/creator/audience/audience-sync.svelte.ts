@@ -166,15 +166,16 @@ function liveDeps(parent: string): SyncDeps {
       };
     },
     async sealKeys() {
-      // Sealing needs the confirmed current generation (#186); `silent` = never the catch-up prompt.
-      const secrets = await auth.getAccountSecrets({ toSeal: true, silent: true });
+      // Sealing needs the confirmed current generation (#186); `silent` = never the catch-up
+      // prompt - an unconfirmed generation throws, which here just means no write.
+      const secrets = await auth.getAccountSecrets({ toSeal: true, silent: true }).catch(() => null);
       if (!secrets || !current()) return null;
       const keys = await listKeysOf(secrets, parent);
       return {
         sealList: (payload) => keys.box.sealBoxJsonCompressed(keys.publicKey, payload, keys.ctx),
         // Asked again right before the upload: a key ring that moved on meanwhile (#186) = no write.
         async unchanged() {
-          const again = await auth.getAccountSecrets({ toSeal: true, silent: true });
+          const again = await auth.getAccountSecrets({ toSeal: true, silent: true }).catch(() => null);
           return again !== null && current() && again.current === secrets.current;
         },
       };

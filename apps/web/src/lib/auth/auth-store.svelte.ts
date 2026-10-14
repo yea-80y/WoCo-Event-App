@@ -521,14 +521,12 @@ function _currentSecretFor(seed: string): string {
  * one. `toSeal`: the caller will sign or seal with `current`, so the generation must be
  * CONFIRMED current (prompting once when this device is only behind); opening old boxes
  * needs no such check. `silent`: a seal nobody asked for at this moment (the audience
- * sync) - never the catch-up prompt; null unless the generation is already confirmed.
+ * sync) - never the catch-up prompt; an unconfirmed generation throws instead.
  */
 async function _accountSecretsIfPresent(opts: { toSeal?: boolean; silent?: boolean } = {}): Promise<{ current: string; all: string[]; gen: number } | null> {
   const seed = await _seedIfPresent();
   if (!seed) return null;
-  if (opts.toSeal && opts.silent) {
-    if (!(await _currentKeysConfirmed())) return null;
-  } else if (opts.toSeal) await _requireCurrentKeys({ prompt: true });
+  if (opts.toSeal) await _requireCurrentKeys({ prompt: !opts.silent });
   else if (_chainLoad) await _chainLoad.catch(() => {});
   const chain = _kind === "passkey" && _unlocked?.seed === seed ? _unlocked.chain : null;
   return { current: currentSecretOf(seed, chain), all: allSecretsOf(seed, chain), gen: chain?.gen ?? 0 };
