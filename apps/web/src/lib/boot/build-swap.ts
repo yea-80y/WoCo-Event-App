@@ -20,7 +20,7 @@ export interface BuildPage {
   /** The page's module entry, absolute. */
   entry: string;
   /** stylesheet / modulepreload / preload links, absolute, in document order. */
-  links: Array<{ rel: string; href: string; as?: string }>;
+  links: Array<{ rel: string; href: string; as?: string; cors: boolean }>;
 }
 
 const TAG = /<(meta|base|link|script)\b([^>]*)>/gi;
@@ -44,7 +44,7 @@ export function parseBuildPage(html: string, fetchedFrom: string): BuildPage | n
   let baseHref: string | null = null;
   let csp: string | null = null;
   let entry: string | null = null;
-  const links: Array<{ rel: string; href: string; as?: string }> = [];
+  const links: Array<{ rel: string; href: string; as?: string; cors: boolean }> = [];
   for (const m of html.matchAll(TAG)) {
     const tag = m[1]!.toLowerCase();
     const a = attrs(m[2]!);
@@ -53,7 +53,7 @@ export function parseBuildPage(html: string, fetchedFrom: string): BuildPage | n
     else if (tag === "base" && a.href && baseHref === null) baseHref = a.href;
     else if (tag === "script" && a.type === "module" && a.src && entry === null) entry = a.src;
     else if (tag === "link" && a.href && /^(stylesheet|modulepreload|preload)$/.test(a.rel ?? "")) {
-      links.push({ rel: a.rel!, href: a.href, ...(a.as ? { as: a.as } : {}) });
+      links.push({ rel: a.rel!, href: a.href, ...(a.as ? { as: a.as } : {}), cors: /\scrossorigin\b/i.test(` ${m[2]}`) });
     }
   }
   if (!feed || !entry) return null;
@@ -79,9 +79,20 @@ export function handoverVerdict(page: BuildPage | null, current: BuildFeed, ownC
   return page.csp === ownCsp ? "go" : "reload";
 }
 
-interface BootWindow {
-  __wocoBoot?: { handedOver: true; index: number };
+/** Set on `window` by an older page handing over; read by the newer build's boot.ts. */
+export interface Handover {
+  handedOver: true;
+  index: number;
+  /** The newer build's app import, set by its boot.ts when it starts. */
+  ready?: Promise<unknown>;
 }
+
+export interface BootWindow {
+  __wocoBoot?: Handover;
+}
+
+/** A handover still loading after this long is reloaded rather than abandoned. */
+const HANDOVER_TIMEOUT_MS = 15_000;
 
 async function fetchPage(bases: string[], ref: string): Promise<BuildPage | null> {
   for (const b of bases) {
@@ -102,10 +113,15 @@ async function fetchPage(bases: string[], ref: string): Promise<BuildPage | null
 
 /**
  * Moves this document onto the build at `point`. "reload" means the build is ours
- * but declares a different security policy; "failed" leaves the page as it was so
- * the caller can mount the current build.
+ * but declares a different security policy, or is still loading after 15 s;
+ * "failed" leaves the page as it was so the caller can mount the current build.
  */
-export async function swapToBuild(point: FeedPoint, current: BuildFeed, pageBases: string[]): Promise<SwapResult> {
+export async function swapToBuild(
+  point: FeedPoint,
+  current: BuildFeed,
+  pageBases: string[],
+  opts: { patient?: boolean } = {},
+): Promise<SwapResult> {
   const page = await fetchPage(pageBases, point.ref);
   const ownCsp = document.querySelector('meta[http-equiv="Content-Security-Policy" i]')?.getAttribute("content") ?? null;
   const verdict = handoverVerdict(page, current, ownCsp);
@@ -139,14 +155,25 @@ export async function swapToBuild(point: FeedPoint, current: BuildFeed, pageBase
       const el = document.createElement("link");
       el.rel = l.rel;
       if (l.as) el.as = l.as;
-      // Match how the entry will fetch: module scripts are CORS, stylesheets are not.
-      if (l.rel === "modulepreload") el.crossOrigin = "";
+      // Match how the entry will fetch, or the browser downloads the file twice.
+      if (l.cors || l.rel === "modulepreload") el.crossOrigin = "";
       el.href = l.href;
       head.appendChild(el);
       added.push(el);
     }
-    (window as BootWindow).__wocoBoot = { handedOver: true, index: point.index };
-    await import(/* @vite-ignore */ page.entry);
+    const handover: Handover = { handedOver: true, index: point.index };
+    (window as BootWindow).__wocoBoot = handover;
+    const loaded = import(/* @vite-ignore */ page.entry).then(() => handover.ready);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // No timer at all when patient: setTimeout(…, Infinity) fires at once in browsers.
+    const late = opts.patient
+      ? new Promise<never>(() => {})
+      : new Promise<"late">((r) => (timer = setTimeout(() => r("late"), HANDOVER_TIMEOUT_MS)));
+    const outcome = await Promise.race([loaded.then(() => "loaded" as const), late]).finally(() => clearTimeout(timer));
+    // Still loading: falling back here could mount this build beside the newer one
+    // when its download finally lands, so a reload is the only clean way out. After
+    // one reload (`patient`) the handover is waited for instead.
+    if (outcome === "late") return "reload";
     console.info(`[boot] handed over to build ${point.index} (this page was ${current.index})`);
     return "swapped";
   } catch (e) {

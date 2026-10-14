@@ -230,11 +230,13 @@ test("parses a built entry page: base, policy, entry and links, all absolute", (
   assert.ok(page);
   assert.deepEqual(page.feed, { owner: "f8af4904c6e4f08ce5f7deab7f01221280b23a80", topic: "aef7b3bb8b50eff1516536370de7ab15de8e24592a35d2abd9977d00ebb650b2", index: 242 });
   assert.equal(page.base, "https://gateway.woco-net.com/bzz/82a4682f0a90fdfb4b88514e36555acea390e0856dbb2a01eb9ca0a8de803a27/");
-  assert.equal(page.entry, `${page.base}assets/boot-AbCd1234.js`);
+  assert.match(page.entry, new RegExp(`^${page.base}assets/main-[\\w-]+\\.js$`));
   assert.ok(page.csp?.startsWith("default-src 'self'; base-uri 'self' https://gateway.woco-net.com;"), "entities decoded");
-  assert.ok(page.links.some((l) => l.rel === "modulepreload" && l.href === `${page.base}assets/main-e0aAJonJ.js`));
-  assert.ok(page.links.some((l) => l.rel === "preload" && l.as === "style"));
-  assert.ok(page.links.some((l) => l.href.startsWith("https://fonts.googleapis.com/")), "absolute links kept as they are");
+  const preloads = page.links.filter((l) => l.rel === "modulepreload");
+  assert.ok(preloads.length >= 3 && preloads.every((l) => l.href.startsWith(`${page.base}assets/`) && l.cors));
+  const styles = page.links.filter((l) => l.rel === "preload" && l.as === "style");
+  assert.ok(styles.length >= 1 && styles.every((l) => l.cors), "style preloads carry crossorigin, matching Vite's stylesheet");
+  assert.ok(page.links.some((l) => l.href.startsWith("https://fonts.googleapis.com/") && !l.cors), "absolute links kept as they are");
 });
 
 test("a page that is not one of our builds is refused", () => {
@@ -245,7 +247,7 @@ test("a page that is not one of our builds is refused", () => {
 
 test("no <base href>: relative URLs resolve against where the page came from", () => {
   const page = parseBuildPage(BUILT.replace(/<base [^>]*>/, ""), "http://localhost:1633/bzz/siteref/");
-  assert.equal(page?.entry, "http://localhost:1633/bzz/siteref/assets/boot-AbCd1234.js");
+  assert.match(page?.entry ?? "", /^http:\/\/localhost:1633\/bzz\/siteref\/assets\/main-[\w-]+\.js$/);
 });
 
 test("handover rules: same feed and same policy goes; another policy reloads; anything else stays put", () => {
@@ -279,4 +281,15 @@ test("boot.ts reaches the app only through dynamic import - a handover must run 
 
 test("the build preloads the app's chunks, or the check would cost a round trip", () => {
   assert.match(read("../vite.config.ts"), /preloadApp\(\)/);
+  assert.match(read("../vite-plugins/preload-app.ts"), /rel: "preload", as: "style", crossorigin: true/);
+});
+
+test("a slow handover reloads once, then waits - it never falls back beside a loading build", () => {
+  const swap = read("../src/lib/boot/build-swap.ts");
+  assert.match(swap, /if \(outcome === "late"\) return "reload";/);
+  assert.match(swap, /opts\.patient\s*\?\s*new Promise<never>\(\(\) => \{\}\)/, "patient = no timer (setTimeout(Infinity) fires at once)");
+  assert.doesNotMatch(swap.replace(/\/\/.*$/gm, ""), /setTimeout\([^)]*Infinity/, "code, not the comment that explains why");
+  const boot = read("../src/boot.ts");
+  assert.match(boot, /\{ patient: reloaded \}/);
+  assert.match(boot, /if \(handover\) return \(handover\.ready = import\('\.\/main'\)\)/);
 });

@@ -7,7 +7,9 @@ import type { OutputChunk } from "rollup";
  * without this the app's chunks would start downloading only after the check -
  * one round trip later than before boot.ts existed. These hints fetch them in
  * parallel without evaluating them, which is the point: a page that hands over to
- * a newer build must never run this build's app modules.
+ * a newer build must never run this build's app modules. The style preload is
+ * crossorigin because Vite's preload helper inserts the stylesheet that way; a
+ * mismatch makes the browser fetch the CSS twice.
  */
 export function preloadApp(): Plugin {
   return {
@@ -37,7 +39,7 @@ export function preloadApp(): Plugin {
         // Vite already hints boot.ts's own imports; do not list those twice.
         const hinted = (f: string) => html.includes(`"./${f}"`);
         return [
-          ...[...css].filter((f) => !hinted(f)).map((f) => ({ tag: "link", attrs: { rel: "preload", as: "style", href: `./${f}` }, injectTo: "head" as const })),
+          ...[...css].filter((f) => !hinted(f)).map((f) => ({ tag: "link", attrs: { rel: "preload", as: "style", crossorigin: true, href: `./${f}` }, injectTo: "head" as const })),
           ...[...js].filter((f) => !hinted(f)).map((f) => ({ tag: "link", attrs: { rel: "modulepreload", crossorigin: true, href: `./${f}` }, injectTo: "head" as const })),
         ];
       },

@@ -195,6 +195,26 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     } else {
       throw new Error(`bee returned status ${idxProbe.status} when probing feed for next index`);
     }
+    // bee's lookup can land short (#5251), and a short next index is a taken one. The
+    // gateway's high-water mark only ever rises and comes from verified updates, so
+    // never write below it. An older gateway (no `index` in the reply) just adds nothing.
+    const knownManifest = (await readJsonIfExists(MANIFEST_STATE))?.manifestRef;
+    if (knownManifest) {
+      try {
+        const mark = await axios.post(`${BEE_URL}/admin/feeds/${knownManifest}/refresh`, {}, {
+          headers: { ...uploadHeaders, 'Content-Type': 'application/json' },
+          timeout: 60000,
+          validateStatus: () => true,
+        });
+        const held = mark.data?.index;
+        if (mark.status === 200 && Number.isSafeInteger(held) && held + 1 > nextIdx) {
+          console.log(`bee said next index ${nextIdx}, but the gateway already holds ${held}: using ${held + 1}`);
+          nextIdx = held + 1;
+        }
+      } catch (e) {
+        console.log(`Could not read the gateway's feed mark (${e.message}); using bee's next index.`);
+      }
+    }
     console.log(`Next index: ${nextIdx}`);
 
     let siteRef;
@@ -259,6 +279,28 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     //   - uploadPayload()    — writes v2-format, v1 manifests can't resolve
     //   - uploadReference()  — writes v1 timestamp+ref, USE THIS
 
+    // Whitelist the update's address BEFORE writing it. Pages read updates from our
+    // public gateway, which serves only whitelisted chunks, and their check cannot see
+    // past an update it cannot read. Whitelisting first means a failure can never leave
+    // a written-but-invisible update; a failed write leaves only an unused entry.
+    const Binary = require(require.resolve('cafe-utility', {
+      paths: [path.dirname(require.resolve('@ethersphere/bee-js'))],
+    })).Binary;
+    const updateId = Binary.keccak256(
+      Binary.concatBytes(topic.toUint8Array(), Binary.numberToUint64(BigInt(nextIdx), 'BE')),
+    );
+    const updateAddress = Binary.uint8ArrayToHex(
+      Binary.keccak256(Binary.concatBytes(updateId, Binary.hexToUint8Array(ownerHex.toLowerCase()))),
+    );
+    const wl = await axios.post(`${BEE_URL}/admin/whitelist`, { hash: updateAddress }, {
+      headers: { ...uploadHeaders, 'Content-Type': 'application/json' },
+      timeout: 15000,
+      validateStatus: () => true,
+    });
+    if (wl.status !== 200) {
+      throw new Error(`Could not whitelist feed update ${nextIdx} (${updateAddress}) on the gateway: HTTP ${wl.status}`);
+    }
+
     console.log('Updating feed (uploadReference / v1)...');
     const writer = bee.makeFeedWriter(topic, signer);
     await writer.uploadReference(
@@ -308,26 +350,8 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
       );
     }
 
-    // 4b) Make the update visible to the page's build check, then prove it is. Pages
-    // read feed updates from our public gateway, which serves only whitelisted chunks,
-    // so an update that is not whitelisted is one no running page can see.
-    const Binary = require(require.resolve('cafe-utility', {
-      paths: [path.dirname(require.resolve('@ethersphere/bee-js'))],
-    })).Binary;
-    const updateId = Binary.keccak256(
-      Binary.concatBytes(topic.toUint8Array(), Binary.numberToUint64(BigInt(nextIdx), 'BE')),
-    );
-    const updateAddress = Binary.uint8ArrayToHex(
-      Binary.keccak256(Binary.concatBytes(updateId, Binary.hexToUint8Array(ownerHex.toLowerCase()))),
-    );
-    const wl = await axios.post(`${BEE_URL}/admin/whitelist`, { hash: updateAddress }, {
-      headers: { ...uploadHeaders, 'Content-Type': 'application/json' },
-      timeout: 15000,
-      validateStatus: () => true,
-    });
-    if (wl.status !== 200) {
-      throw new Error(`Could not whitelist feed update ${nextIdx} (${updateAddress}) on the gateway: HTTP ${wl.status}`);
-    }
+    // 4b) Prove the update is visible to the page's build check (whitelisted before
+    // the write, above): readable, signed, and cross-origin through the public gateway.
     const reader = new Bee(PUBLIC_GATEWAY).makeFeedReader(topic, ownerHex);
     let publicRef = null;
     let corsOk = false;
@@ -365,7 +389,12 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     });
     const r = refresh.data || {};
     if (refresh.status !== 200 || r.contentRef !== siteRef || (r.index != null && r.index < nextIdx)) {
-      throw new Error(`Gateway refresh did not land on this build: HTTP ${refresh.status} ${JSON.stringify(r)}`);
+      // The build IS published (feed index written and verified above). Do not re-run:
+      // that would write the same build again at the next index. Retry the refresh.
+      throw new Error(
+        `Build published at feed index ${nextIdx}, but the gateway refresh did not land on it: HTTP ${refresh.status} ${JSON.stringify(r)}. ` +
+        `Do NOT re-run the deploy. Retry: POST ${BEE_URL}/admin/feeds/${manifestRef}/refresh with body {"index":${nextIdx}} and the x-upload-secret header.`,
+      );
     }
     console.log(`Gateway serving this build (feed index ${r.index ?? nextIdx}).`);
 
