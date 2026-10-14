@@ -356,6 +356,19 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     if (!corsOk) throw new Error(`${PUBLIC_GATEWAY}/chunks is not readable cross-origin: pages cannot check for this build.`);
     console.log(`Build check ready: update ${nextIdx} verified through ${PUBLIC_GATEWAY}.`);
 
+    // 4c) Point the gateway's cache at exactly this update. It never steps back to a
+    // lower index, and is told the index rather than asked to look it up.
+    const refresh = await axios.post(`${BEE_URL}/admin/feeds/${manifestRef}/refresh`, { index: nextIdx }, {
+      headers: { ...uploadHeaders, 'Content-Type': 'application/json' },
+      timeout: 60000,
+      validateStatus: () => true,
+    });
+    const r = refresh.data || {};
+    if (refresh.status !== 200 || r.contentRef !== siteRef || (r.index != null && r.index < nextIdx)) {
+      throw new Error(`Gateway refresh did not land on this build: HTTP ${refresh.status} ${JSON.stringify(r)}`);
+    }
+    console.log(`Gateway serving this build (feed index ${r.index ?? nextIdx}).`);
+
     // 5) Save state
     const info = {
       timestamp: new Date().toISOString(),
