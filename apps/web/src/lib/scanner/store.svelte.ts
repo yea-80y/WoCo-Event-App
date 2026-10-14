@@ -226,6 +226,9 @@ class ScannerStore {
     this.checkins = new Map();
     this.passDead = null;
     this.provisionError = null;
+    // A failed link held for "Try again" would ride the next update's reload back
+    // into the URL, where boot sets it up over this event.
+    this.pendingPass = null;
     this.lastRefreshAt = 0;
     this.packAsOf = 0;
     this.rechecked.clear();
@@ -507,6 +510,7 @@ class ScannerStore {
   async reset(): Promise<void> {
     const eventId = this.pass?.eventId;
     this.reprovision();
+    this.pendingPass = null;
     if (eventId) await db.clearEvent(eventId);
     await this.listEvents();
     await this.countOtherUnsynced();
