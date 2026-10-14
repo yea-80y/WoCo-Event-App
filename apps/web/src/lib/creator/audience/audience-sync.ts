@@ -1,0 +1,464 @@
+/**
+ * Adding opted-in ticket buyers to the organiser's list automatically (owner
+ * decision 2026-10-14) - the decisions, kept pure so every rule can be tested
+ * with fakes. The live wiring is `audience-sync.svelte.ts`.
+ *
+ * It runs in the organiser's browser because it has to: the server holds buyer
+ * emails only inside order boxes sealed to the organiser, and consent only as
+ * hashes. So the browser opens the orders it already has the key for, asks
+ * `/api/marketing/check` which of those addresses carry a checkout record, and
+ * merges the answer into the sealed list. Nothing new crosses the trust boundary.
+ *
+ * A buyer's email lives only in their order, and order answers are deleted some
+ * months after the event (#547) - so this runs whenever the organiser uses WoCo,
+ * and never asks for anything: a locked account is simply skipped.
+ *
+ * Rules, each pinned by `test/audience-sync.test.ts`:
+ *   - an address in `suppressed` (unsubscribed, declined, bounced, complained,
+ *     removed by hand) is never added, whatever else it holds;
+ *   - an address the organiser deleted (the list's `removed`) is never re-added;
+ *   - the write merges onto the list as re-read and opened just before it, so it
+ *     never replaces an edit made elsewhere with a stale copy - no re-read, no write;
+ *   - one unreadable order, event or check costs only itself;
+ *   - nothing is written when nothing changed.
+ */
+
+import type {
+  EventDirectoryEntry,
+  MarketingCheckResult,
+  MarketingContact,
+  MarketingListMeta,
+  MarketingListPayload,
+  OrderEntry,
+  OrderField,
+} from "@woco/shared";
+import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
+import { applyDrain, buildAttendeeContacts, type DecryptedClaim } from "./attendee-drain.js";
+
+/** At most one run per tab in this window, unless the organiser presses "Check now". */
+export const SYNC_INTERVAL_MS = 10 * 60_000;
+
+/**
+ * An event is skipped only once it has been read with the same order count at
+ * least this long after that count first appeared. A sale shows on the ledger a
+ * moment before its marketing choice is recorded, so the first read of a new
+ * count can miss a buyer who said yes; the second read, a run later, cannot.
+ */
+export const SETTLE_MS = 5 * 60_000;
+
+/** "Last checked" older than this reads as a while ago. */
+export const STALE_MS = 24 * 60 * 60_000;
+
+// ── Tombstones ──────────────────────────────────────────────────────────────
+
+/** The deleted-contact list as stored, cleaned: lowercased, de-duplicated, strings only. */
+export function normaliseRemoved(removed: unknown): string[] {
+  if (!Array.isArray(removed)) return [];
+  const out = new Set<string>();
+  for (const e of removed) if (typeof e === "string" && e.trim()) out.add(e.trim().toLowerCase());
+  return [...out];
+}
+
+/** The organiser deleted this contact: never add it back automatically. */
+export function addRemoved(removed: readonly string[], email: string): string[] {
+  return normaliseRemoved([...removed, email]);
+}
+
+/** The organiser added these on purpose (CSV import): the automatic add may keep them again. */
+export function clearRemoved(removed: readonly string[], emails: readonly string[]): string[] {
+  const back = new Set(emails.map((e) => e.trim().toLowerCase()));
+  return normaliseRemoved(removed).filter((e) => !back.has(e));
+}
+
+/** The one shape every writer seals. `removed` only when there is one, so an empty list stays byte-identical to before. */
+export function listPayload(contacts: MarketingContact[], removed: readonly string[]): MarketingListPayload {
+  const clean = normaliseRemoved(removed);
+  return { version: 1, contacts, ...(clean.length ? { removed: clean } : {}) };
+}
+
+// ── Watermark ───────────────────────────────────────────────────────────────
+
+/** Per event: order count, when that count was first seen, when it was last read in full. */
+export interface EventMark {
+  n: number;
+  seen: number;
+  scanned: number;
+}
+
+/**
+ * What the last run already covered. `list` is the stored list's `updatedAt`
+ * after that run: if the list has changed since (another tab, another device, a
+ * stale copy saved over it), the event marks are not trusted and every event is
+ * read again - so additions lost to someone else's save come back.
+ */
+export interface Watermark {
+  list?: string | null;
+  events: Record<string, EventMark>;
+}
+
+export interface WatermarkStore {
+  read(): Watermark;
+  write(w: Watermark): void;
+}
+
+type KeyValue = Pick<Storage, "getItem" | "setItem">;
+
+const watermarkKey = (parent: string) => `woco:audience-sync:${parent.toLowerCase()}`;
+
+function isMark(m: unknown): m is EventMark {
+  if (!m || typeof m !== "object") return false;
+  const { n, seen, scanned } = m as Record<string, unknown>;
+  return [n, seen, scanned].every((v) => typeof v === "number" && Number.isFinite(v));
+}
+
+/**
+ * Per organiser, in localStorage. An optimisation only: empty, unreadable or
+ * blocked storage reads as "nothing covered yet", which is a full scan.
+ */
+export function watermarkStore(storage: KeyValue | undefined, parent: string): WatermarkStore {
+  return {
+    read() {
+      try {
+        const raw = storage?.getItem(watermarkKey(parent));
+        if (!raw) return { events: {} };
+        const parsed = JSON.parse(raw) as { v?: unknown; list?: unknown; events?: unknown };
+        if (parsed.v !== 1 || !parsed.events || typeof parsed.events !== "object") return { events: {} };
+        const events: Record<string, EventMark> = {};
+        for (const [id, m] of Object.entries(parsed.events as Record<string, unknown>)) if (isMark(m)) events[id] = m;
+        const list = typeof parsed.list === "string" || parsed.list === null ? parsed.list : undefined;
+        return { ...(list !== undefined ? { list } : {}), events };
+      } catch {
+        return { events: {} };
+      }
+    },
+    write(w) {
+      try {
+        storage?.setItem(watermarkKey(parent), JSON.stringify({ v: 1, ...w }));
+      } catch {
+        /* best effort - the next run reads everything again */
+      }
+    },
+  };
+}
+
+// ── The run ─────────────────────────────────────────────────────────────────
+
+/** Opening needs any key this device holds for the account. */
+export interface OpenKeys {
+  openOrder(box: SealedBoxV2, eventId: string, seriesId: string): Promise<DecryptedClaim>;
+  openList(box: SealedBoxV2): Promise<MarketingListPayload>;
+}
+
+/** Sealing needs the CONFIRMED current generation (#186). */
+export interface SealKeys {
+  sealList(payload: MarketingListPayload): Promise<SealedBoxV2>;
+}
+
+export interface SyncDeps {
+  /** Null = locked or not set up on this device: skip, never ask. */
+  openKeys(): Promise<OpenKeys | null>;
+  /** Null = the current generation is not confirmed without asking: write nothing. */
+  sealKeys(): Promise<SealKeys | null>;
+  listEvents(): Promise<EventDirectoryEntry[]>;
+  /** The stored list's `updatedAt`, null when there is none. Throws when it cannot say. */
+  listStamp(): Promise<string | null>;
+  getOrders(eventId: string): Promise<OrderEntry[]>;
+  /** The event's questions. Throws when unreadable. */
+  getOrderFields(ev: EventDirectoryEntry): Promise<readonly OrderField[]>;
+  check(emails: string[]): Promise<MarketingCheckResult>;
+  /** The stored list right now. Null = none yet; throws when it cannot be read. */
+  readList(): Promise<{ sealedList: SealedBoxV2; updatedAt: string } | null>;
+  writeList(sealed: SealedBoxV2, emails: string[]): Promise<MarketingListMeta>;
+  /** Still the same signed-in organiser - never write one account's buyers into another's list. */
+  stillCurrent(): boolean;
+  /** One writer at a time in this tab: the screen's own saves take the same lock. */
+  withLock<T>(fn: () => Promise<T>): Promise<T>;
+  /** Called inside the lock right after a write, so a screen showing the list takes it before anything else saves. */
+  published?(payload: MarketingListPayload, meta: MarketingListMeta): void;
+  watermark: WatermarkStore;
+  now(): number;
+  /** Give the page a frame between batches of order opening. */
+  pause?(): Promise<void>;
+}
+
+export type SyncStatus = "ok" | "partial" | "failed" | "locked";
+
+export interface SyncResult {
+  status: SyncStatus;
+  added: number;
+  updated: number;
+  /** Events that could not be read this time. They are read again next run. */
+  failedEvents: number;
+  /** Orders that would not open on this device. Their event is read again next run. */
+  unreadableOrders: number;
+  /** The list as this run wrote it. */
+  written?: { payload: MarketingListPayload; meta: MarketingListMeta };
+  error?: string;
+}
+
+const result = (status: SyncStatus, rest: Partial<SyncResult> = {}): SyncResult => ({
+  status,
+  added: 0,
+  updated: 0,
+  failedEvents: 0,
+  unreadableOrders: 0,
+  ...rest,
+});
+
+const message = (err: unknown, fallback: string) => (err instanceof Error && err.message ? err.message : fallback);
+
+const lower = (xs: readonly string[] | undefined) => (xs ?? []).map((e) => e.trim().toLowerCase());
+
+/**
+ * One full pass. Never throws: every failure comes back as a status, and a
+ * failed or locked run writes neither the list nor the watermark, so the next
+ * run starts from where this one did.
+ */
+export async function runAudienceSync(deps: SyncDeps): Promise<SyncResult> {
+  try {
+    return await run(deps);
+  } catch (err) {
+    return result("failed", { error: message(err, "Could not check your events.") });
+  }
+}
+
+async function run(deps: SyncDeps): Promise<SyncResult> {
+  const keys = await deps.openKeys();
+  if (!keys) return result("locked");
+
+  let events: EventDirectoryEntry[];
+  try {
+    events = await deps.listEvents();
+  } catch (err) {
+    return result("failed", { error: message(err, "Could not load your events.") });
+  }
+  // Oldest first, so within one run a contact's last event is their latest.
+  events = [...events].sort((a, b) => (Date.parse(a.startDate) || 0) - (Date.parse(b.startDate) || 0));
+
+  let stamp: string | null | undefined;
+  try {
+    stamp = await deps.listStamp();
+  } catch {
+    stamp = undefined; // cannot say whether the list moved: trust no mark
+  }
+  const prior = deps.watermark.read();
+  const trusted = stamp !== undefined && prior.list !== undefined && prior.list === stamp;
+
+  const now = deps.now();
+  const addedAt = new Date(now).toISOString();
+  const marks: Record<string, EventMark> = {};
+  const incoming: MarketingContact[] = [];
+  let failedEvents = 0;
+  let unreadableOrders = 0;
+
+  for (const ev of events) {
+    let orders: OrderEntry[];
+    try {
+      orders = await deps.getOrders(ev.eventId);
+    } catch {
+      failedEvents++;
+      continue;
+    }
+    const sealed = orders.filter((o) => o.encryptedOrder);
+    const n = sealed.length;
+    const was = prior.events[ev.eventId];
+    const mark: EventMark = { n, seen: was?.n === n ? was.seen : now, scanned: now };
+
+    if (trusted && was && was.n === n && was.scanned - was.seen >= SETTLE_MS) {
+      marks[ev.eventId] = was;
+      continue;
+    }
+    if (n === 0) {
+      marks[ev.eventId] = mark;
+      continue;
+    }
+
+    let orderFields: readonly OrderField[];
+    try {
+      orderFields = await deps.getOrderFields(ev);
+    } catch {
+      // Without the questions nothing beyond the email could be placed: read it next time rather than add less.
+      failedEvents++;
+      continue;
+    }
+
+    const claims: DecryptedClaim[] = [];
+    let unopened = 0;
+    for (const [i, order] of sealed.entries()) {
+      try {
+        claims.push(await keys.openOrder(order.encryptedOrder!, ev.eventId, order.seriesId));
+      } catch {
+        unopened++; // sealed to a key this device lacks, or damaged - never the whole event
+      }
+      if (i % 16 === 15) await deps.pause?.();
+    }
+    unreadableOrders += unopened;
+
+    const emails = [...new Set(lower(claims.map((c) => c.claimerEmail ?? "")).filter(Boolean))];
+    if (emails.length > 0) {
+      let answer: MarketingCheckResult;
+      try {
+        answer = await deps.check(emails);
+      } catch {
+        failedEvents++;
+        continue;
+      }
+      // A record of either basis, and never anyone suppressed - a later "no" outranks an earlier yes.
+      const suppressed = new Set(lower(answer.suppressed));
+      const recorded = new Set(
+        [...lower(answer.consented), ...lower(answer.softOptIn)].filter((e) => !suppressed.has(e)),
+      );
+      incoming.push(
+        ...buildAttendeeContacts(claims, {
+          orderFields,
+          eventTitle: ev.title,
+          eventDate: ev.startDate,
+          addedAt,
+          recorded,
+        }),
+      );
+    }
+    // An order that would not open keeps the event unread: the next run tries again.
+    if (unopened === 0) marks[ev.eventId] = mark;
+  }
+
+  const partial = failedEvents > 0 || unreadableOrders > 0;
+  const done = (rest: Partial<SyncResult>, list: string | null | undefined): SyncResult => {
+    deps.watermark.write({ ...(list !== undefined ? { list } : {}), events: marks });
+    return result(partial ? "partial" : "ok", { failedEvents, unreadableOrders, ...rest });
+  };
+
+  // One person across several events is one candidate, merged by the same rule as the list.
+  const candidates = applyDrain([], incoming).contacts;
+  if (candidates.length === 0) return done({}, stamp);
+
+  return deps.withLock(async () => {
+    const fail = (error: string) => result("failed", { failedEvents, unreadableOrders, error });
+    if (!deps.stillCurrent()) return fail("You switched accounts, so nothing was added.");
+
+    let stored: { sealedList: SealedBoxV2; updatedAt: string } | null;
+    let base: MarketingListPayload;
+    try {
+      stored = await deps.readList();
+      base = stored ? await keys.openList(stored.sealedList) : { version: 1, contacts: [] };
+    } catch (err) {
+      return fail(message(err, "Could not open your list to add new buyers."));
+    }
+
+    const removed = new Set(normaliseRemoved(base.removed));
+    const report = applyDrain(
+      base.contacts,
+      candidates.filter((c) => !removed.has(c.email.trim().toLowerCase())),
+    );
+    if (report.added === 0 && report.updated === 0) return done({}, stored?.updatedAt ?? null);
+
+    const seal = await deps.sealKeys();
+    if (!seal) return result("locked", { failedEvents, unreadableOrders });
+    if (!deps.stillCurrent()) return fail("You switched accounts, so nothing was added.");
+
+    const payload = listPayload(report.contacts, base.removed ?? []);
+    let meta: MarketingListMeta;
+    try {
+      meta = await deps.writeList(await seal.sealList(payload), payload.contacts.map((c) => c.email));
+    } catch (err) {
+      return fail(message(err, "Could not save new buyers to your list."));
+    }
+    deps.published?.(payload, meta);
+    return done({ added: report.added, updated: report.updated, written: { payload, meta } }, meta.updatedAt);
+  });
+}
+
+// ── Throttle and lock ───────────────────────────────────────────────────────
+
+export interface SyncGate<T> {
+  /** The run in flight if there is one, else a new run if allowed, else null. */
+  run(force: boolean, fn: () => Promise<T>): Promise<T> | null;
+  readonly running: boolean;
+}
+
+/**
+ * Never two runs at once, and at most one per `minIntervalMs` unless forced. A
+ * run that `counts` returns false for (the account was locked, so nothing was
+ * read) does not use up the window: unlocking should not wait ten minutes.
+ */
+export function createSyncGate<T>(opts: { minIntervalMs: number; now: () => number; counts: (r: T) => boolean }): SyncGate<T> {
+  let inFlight: Promise<T> | null = null;
+  let lastStart: number | null = null;
+  return {
+    run(force: boolean, fn: () => Promise<T>): Promise<T> | null {
+      if (inFlight) return inFlight;
+      if (!force && lastStart !== null && opts.now() - lastStart < opts.minIntervalMs) return null;
+      const previous = lastStart;
+      lastStart = opts.now();
+      const p = fn().then((r) => {
+        if (!opts.counts(r)) lastStart = previous;
+        return r;
+      });
+      inFlight = p.finally(() => {
+        inFlight = null;
+      });
+      return inFlight;
+    },
+    get running() {
+      return inFlight !== null;
+    },
+  };
+}
+
+/** A tab-wide mutex: each `fn` starts after the previous one settles, whatever it did. */
+export function createLock() {
+  let tail: Promise<unknown> = Promise.resolve();
+  return function withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const next = tail.then(fn, fn);
+    tail = next.catch(() => {});
+    return next;
+  };
+}
+
+// ── What the Audience screen says ───────────────────────────────────────────
+
+/** The last run, as the Audience screen shows it. */
+export interface SyncRecord {
+  at: number;
+  status: SyncStatus;
+  added: number;
+  failedEvents: number;
+  unreadableOrders: number;
+  error?: string;
+}
+
+export function agoText(ms: number): string {
+  const min = Math.floor(ms / 60_000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min} ${min === 1 ? "minute" : "minutes"} ago`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h} ${h === 1 ? "hour" : "hours"} ago`;
+  const d = Math.floor(h / 24);
+  return d === 1 ? "yesterday" : `${d} days ago`;
+}
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** One plain line, and whether it needs the organiser's attention. */
+export function describeSync(rec: SyncRecord | null, running: boolean, now: number): { text: string; warn: boolean } {
+  if (running) return { text: "Checking your events for new buyers…", warn: false };
+  if (!rec) return { text: "Not checked on this device yet.", warn: false };
+  const ago = agoText(now - rec.at);
+  if (rec.status === "locked") {
+    return { text: "Couldn't add new buyers on this device just now - press Check now to try again.", warn: true };
+  }
+  if (rec.status === "failed") {
+    const why = rec.error ? ` ${rec.error.trim().replace(/\.?$/, ".")}` : "";
+    return { text: `Couldn't finish checking ${ago}.${why} Press Check now to try again.`, warn: true };
+  }
+  const parts = [`Last checked ${ago} - ${rec.added > 0 ? `${rec.added.toLocaleString()} added` : "no one new"}.`];
+  if (rec.failedEvents > 0) {
+    parts.push(`${plural(rec.failedEvents, "event", "events")} couldn't be read, so we'll try again next time.`);
+  }
+  if (rec.unreadableOrders > 0) {
+    parts.push(`${plural(rec.unreadableOrders, "order", "orders")} couldn't be opened on this device.`);
+  }
+  const stale = now - rec.at >= STALE_MS;
+  if (stale) parts.push("Press Check now to look for new buyers.");
+  return { text: parts.join(" "), warn: stale || rec.status === "partial" };
+}
