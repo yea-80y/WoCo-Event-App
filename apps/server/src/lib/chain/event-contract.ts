@@ -335,6 +335,17 @@ export async function getOnChainEventEndAt(
   }
 }
 
+/**
+ * The chain's clock, epoch ms: its latest block's timestamp, which is what
+ * `eventEndTs` is compared with onchain. Arbitrum's can run a day behind the
+ * wall clock or an hour ahead of it. Throws when the RPC cannot answer.
+ */
+export async function chainTimeMs(chainId: number): Promise<number> {
+  const block = await getProvider(chainId).getBlock("latest");
+  if (!block) throw new Error("no latest block from the events RPC");
+  return block.timestamp * 1000;
+}
+
 /** `getOnChainEventAt` on the env-selected contract. */
 export async function getOnChainEvent(
   onChainEventId: string,

@@ -333,8 +333,8 @@ async function drainOneChunk(job: BroadcastJob): Promise<void> {
     );
   } catch (err) {
     // sendMarketingBatch only throws when it CANNOT be compliant (no public API
-    // base, no postal address). Retrying that per chunk would mail nobody and
-    // never stop, so end the job and say why.
+    // base, no postal address, an unreadable suppression list). Retrying that
+    // per chunk would mail nobody and never stop, so end the job and say why.
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[drain-worker] job ${job.id} cannot send compliantly: ${msg}`);
     settle(job, "died", `Sending is misconfigured and the broadcast was stopped: ${msg}`);

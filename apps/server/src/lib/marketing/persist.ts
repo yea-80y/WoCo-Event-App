@@ -130,18 +130,30 @@ export function writeJsonAtomic(
     }
     try { unlinkSync(tmp); } catch { /* nothing to clean up */ }
 
-    const n = (failures.get(tag) ?? 0) + 1;
-    const msg = err instanceof Error ? err.message : String(err);
-    failures.set(tag, n);
-    totalFailures++;
-    lastError.set(tag, msg);
-    console.error(
-      `[${tag}] CRITICAL: could not persist to ${file} (consecutive failures: ${n}). ` +
-        `In-memory state is now ahead of disk and WILL be lost on restart:`,
-      msg,
-    );
-    return false;
+    return countFailure(file, tag, err instanceof Error ? err.message : String(err));
   }
+}
+
+function countFailure(file: string, tag: string, msg: string): false {
+  const n = (failures.get(tag) ?? 0) + 1;
+  failures.set(tag, n);
+  totalFailures++;
+  lastError.set(tag, msg);
+  console.error(
+    `[${tag}] CRITICAL: could not persist to ${file} (consecutive failures: ${n}). ` +
+      `In-memory state is now ahead of disk and WILL be lost on restart:`,
+    msg,
+  );
+  return false;
+}
+
+/**
+ * A write the store refused because its file is present but unreadable (#882).
+ * Counted exactly like a failed write, so `persistFailureCount` brackets and
+ * `persistHealth` see it: the decision exists only in memory either way.
+ */
+export function recordRefusedWrite(file: string, tag: string): false {
+  return countFailure(file, tag, "refused: the file on disk is present but unreadable");
 }
 
 export interface PersistHealth {

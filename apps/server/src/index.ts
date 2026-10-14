@@ -110,7 +110,9 @@ import { customDomainProxy } from "./middleware/custom-domain.js";
 import { attendeeBatchHealth } from "./lib/attendee-batch/health.js";
 import { refreshAttendeeBatch } from "./lib/attendee-batch/admin.js";
 import { heldOrdersHealth, sweepExpired as sweepHeldOrders } from "./lib/attendee-batch/held-orders.js";
-import { sweepExpiredConsents } from "./lib/marketing/consent-store.js";
+import { consentStoreHealth, sweepExpiredConsents } from "./lib/marketing/consent-store.js";
+import { suppressionStoreHealth } from "./lib/marketing/suppression-store.js";
+import { sweepExpiredRosters, rosterRetentionHealth } from "./lib/checkin/roster-retention.js";
 import { retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -328,6 +330,11 @@ function healthReport() {
       job: { ok: !cancellationJobHealth().stale, ...cancellationJobHealth() },
     },
     compliancePersistence: persistHealth(),
+    // #882: each file present but unreadable. Never written over; while the
+    // suppression list is unreadable every marketing send is refused, and while
+    // the consent file is, a missing record means unknown, not absent.
+    marketingSuppression: suppressionStoreHealth(),
+    marketingConsent: consentStoreHealth(),
     // `false` is an alarm, not a statistic: the Kernel known-deployed record
     // exists on disk but would not load, so the counterfactual fallback is live
     // again for every account (#200). It fails open deliberately — refusing every
@@ -449,6 +456,10 @@ function healthReport() {
     // minutes to reach Swarm (the retry worker keeps failing: bee down, bucket
     // full - activate a fresh batch) or the hold file is unreadable.
     heldOrders: heldOrdersHealth(),
+    // Door rosters deleted after their event (#883). Reported, not alarmed, like
+    // the consent sweep: `lastError` says a roster waits for the next pass;
+    // `undated` counts rosters with no onchain end to go by, kept until one exists.
+    rosterRetention: rosterRetentionHealth(),
     // Whether paid checkouts can mint on the events contract (#662): the ticket
     // sponsor still authorised, and on the ledger its hourly mint cap's headroom
     // (`TICKET_MINT_ALLOWANCE_MIN`, default one maximum order). The checkout
@@ -844,6 +855,12 @@ const sweepConsents = () => {
 };
 setTimeout(sweepConsents, 5 * 60_000).unref();
 setInterval(sweepConsents, 24 * 60 * 60 * 1000).unref();
+// #883: each event's door roster (attendee emails and order answers) goes 30 days after its onchain end.
+const sweepRosters = () => {
+  sweepExpiredRosters().catch((err) => console.warn("[checkin] roster sweep failed:", (err as Error).message));
+};
+setTimeout(sweepRosters, 6 * 60_000).unref();
+setInterval(sweepRosters, 24 * 60 * 60 * 1000).unref();
 // #546: store paid orders whose store failed at fulfilment, and delete unpaid
 // holds past their day.
 setInterval(() => {
