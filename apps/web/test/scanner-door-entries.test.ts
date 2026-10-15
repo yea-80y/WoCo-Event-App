@@ -17,10 +17,8 @@ import { doorEntrySealContext, sealBoxJson } from "@woco/shared/crypto/sealed-bo
 import type { DoorEntriesPage, DoorEntryLogItem, DoorEntryPlaintext, RosterEntry } from "@woco/shared";
 import {
   applyDoorEntriesPage,
-  doorKeyMatches,
   emptyDoorEntries,
   fetchDoorEntriesPage,
-  hasEntriesToOpen,
   mergeDoorRoster,
   restoreDoorEntries,
   shouldFetchMore,
@@ -113,11 +111,6 @@ test("the door's list: tombstone hides, the organiser's roster wins, a sale fill
   ]);
 });
 
-test("the server's door key is compared with the one the link derives", async () => {
-  assert.equal(await doorKeyMatches(P, doorKeyRefOf(pk)), true);
-  assert.equal(await doorKeyMatches(P, "00".repeat(32)), false);
-  assert.equal(await doorKeyMatches(P, null), null);
-});
 
 // ── what a reload starts from, and what the server's answers mean ───────────
 
@@ -162,15 +155,12 @@ test("the server's answers: a page, a refused pass (expired or not), an outdated
   assert.deepEqual(offline, { kind: "later" });
 });
 
-test("more pages: asked for at once only while the cursor moves; a page of removals opens nothing", async () => {
+test("more pages: asked for at once only while the cursor moves", async () => {
   const pg = page([await add(1)], { next: 7, more: true });
   assert.equal(shouldFetchMore(pg, 3), true);
   assert.equal(shouldFetchMore({ ...pg, more: false }, 3), false);
   assert.equal(shouldFetchMore(pg, 7), false, "a server that says more without moving waits for the next tick");
   assert.equal(shouldFetchMore({ ...pg, next: 0, reset: true }, 9), true, "a log that started again is read from its start");
-  assert.equal(hasEntriesToOpen(pg), true);
-  assert.equal(hasEntriesToOpen(page([remove(4)])), false);
-  assert.equal(hasEntriesToOpen(page([])), false);
 });
 
 test("the door entries key is derived once per page, never per line, and zeroed after", async () => {

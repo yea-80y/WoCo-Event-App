@@ -85,12 +85,6 @@
     {:else if !scanner.online}
       <div class="banner dead">Offline - check-in is paused. This door is shared, so nobody is let in until WoCo confirms their ticket is not already in.</div>
     {/if}
-    {#if scanner.doorKeyMismatch}
-      <div class="banner conflict">
-        ⚠ New buyers' names can't be shown on this phone: this door pass doesn't match the one WoCo has. Scanning
-        still works - ask the organiser to make a new door pass.
-      </div>
-    {/if}
     {#if scanner.conflicts.length > 0}
       <div class="banner conflict">
         ⚠ {scanner.conflicts.length} ticket{scanner.conflicts.length === 1 ? " was" : "s were"} recorded by two scanners - check with the door team.

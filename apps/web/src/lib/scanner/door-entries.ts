@@ -25,7 +25,6 @@ import {
   type DoorEntryPlaintext,
   type RosterEntry,
 } from "@woco/shared";
-import { doorKeyRefOf } from "@woco/shared/checkin/door-keys";
 import { isExpiredRefusal } from "./pass-gate.js";
 
 export const doorTicketKey = (t: { seriesId: string; edition: number }) => `${t.seriesId} ${t.edition}`;
@@ -123,14 +122,6 @@ export async function applyDoorEntriesPage(
   return { state: { jti: page.jti, next: page.next, entries, tombstones }, failed };
 }
 
-/**
- * Whether a page has a box to open. The key check and the opening are what load the
- * lattice code, so a page of removals (or none) never loads it.
- */
-export function hasEntriesToOpen(page: DoorEntriesPage): boolean {
-  return page.log.some((l) => l.kind === "add");
-}
-
 /** Ask again at once: the server says more wait, and the cursor moved (or the log started again). */
 export function shouldFetchMore(page: DoorEntriesPage, since: number): boolean {
   return page.more && (page.next > since || page.reset);
@@ -142,19 +133,6 @@ export function mergeDoorRoster(roster: RosterEntry[], state: DoorEntriesState):
   const have = new Set(out.map(doorTicketKey));
   for (const [key, entry] of state.entries) if (!have.has(key)) out.push(entry);
   return out;
-}
-
-/**
- * Whether the key the server says it seals to is the one this link derives. Not a
- * safeguard - a key that is not ours is never on this phone - but it turns "nothing
- * opens" into a plain warning. Null: the server has no key for this pass.
- */
-export async function doorKeyMatches(passSecret: Uint8Array, doorKeyRef: string | null): Promise<boolean | null> {
-  if (!doorKeyRef) return null;
-  const { doorEntriesKeypair } = await import("@woco/shared/checkin/door-entries-key");
-  const kp = doorEntriesKeypair(passSecret);
-  kp.secretKey.fill(0);
-  return doorKeyRefOf(kp.publicKey) === doorKeyRef;
 }
 
 // ── storage and transport ───────────────────────────────────────────────────

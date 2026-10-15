@@ -8,8 +8,8 @@
  * in-memory reset in `provision` and "a new pass starts again" goes red; drop the
  * `putUnderPass` token check and "storage never takes a reply for a replaced pass"
  * goes red; let `findAttendee` read the roster alone and the tombstone case goes red;
- * treat a 503 as dead and "503 keeps the list" goes red; never (or always) set the
- * warning and the key check goes red; stop after one page and the cursor test goes
+ * treat a 503 as dead and "503 keeps the list" goes red; warn per page and the
+ * "one console warning" test goes red; stop after one page and the cursor test goes
  * red; restore nothing on open and "survives a reload" goes red. The jti check in
  * `restoreDoorEntries` is held by `scanner-door-entries.test.ts`.
  */
@@ -257,39 +257,20 @@ test("a refused pass (401) is marked dead as sync does; a 503 or no signal keeps
   assert.equal(entriesRequests().length, asked, "a dead pass asks for nothing more");
 });
 
-test("the key check: a server sealing to another key shows the warning; the right key shows none", async (t) => {
+test("a door key that is not this link's: nothing opens, door staff see nothing about it, one console warning per pass", async (t) => {
   const pass = makePass(A, JTI_A);
   await storeEvent(pass);
   const other = doorEntriesKeypair(crypto.getRandomValues(new Uint8Array(32))).publicKey;
-  const wrong = await new EntriesLog(pass, other).add(1);
-  server.handlers.set("/entries", wrong.handler());
+  const wrong = await (await new EntriesLog(pass, other).add(1)).add(2);
+  server.handlers.set("/entries", wrong.handler(1));
+  const warnings: unknown[][] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => void warnings.push(args));
   const scanner = await openTab(t);
   await scanner.openEvent(A);
-  await scanner.refreshDoorEntries();
-  assert.equal(scanner.doorKeyMismatch, true);
-  assert.equal(scanner.attendees.length, 0, "and nothing sealed to that key opens");
-
-  const right = makePass(B, JTI_B);
-  await storeEvent(right);
-  server.handlers.set("/entries", (await new EntriesLog(right).add(1)).handler());
-  await scanner.switchTo(B);
-  assert.equal(scanner.doorKeyMismatch, false, "switching clears it");
-  await scanner.refreshDoorEntries();
-  assert.equal(scanner.doorKeyMismatch, false);
-  assert.equal(scanner.attendees.length, 1);
-});
-
-test("a page with nothing to open runs no key check, so it never loads the lattice code", async (t) => {
-  const pass = makePass(A, JTI_A);
-  await storeEvent(pass);
-  const other = doorEntriesKeypair(crypto.getRandomValues(new Uint8Array(32))).publicKey;
-  const onlyRemovals = new EntriesLog(pass, other).remove(1);
-  server.handlers.set("/entries", onlyRemovals.handler());
-  const scanner = await openTab(t);
-  await scanner.openEvent(A);
-  await scanner.refreshDoorEntries();
-  assert.equal(scanner.doorKeyMismatch, false, "the wrong key went unchecked: nothing needed it");
-  assert.ok(scanner.doorEntries.tombstones.has(key(A, 1)));
+  await scanner.refreshDoorEntries(); // two pages, a line each, neither opens
+  assert.equal(scanner.attendees.length, 0);
+  assert.equal(warnings.filter((w) => String(w[0]).includes("did not open")).length, 1, "once for the pass, not per page");
+  assert.equal("doorKeyMismatch" in scanner, false, "no flag for the screen to show");
 });
 
 test("two events on one phone keep separate lists", async (t) => {

@@ -56,10 +56,8 @@ import { chooseEvent, eventMarker, hasExpired, isLive, liveEvents, parseEventMar
 import { takeoverIfNewer } from "./sw-update.js";
 import {
   applyDoorEntriesPage,
-  doorKeyMatches,
   emptyDoorEntries,
   fetchDoorEntriesPage,
-  hasEntriesToOpen,
   mergeDoorRoster,
   restoreDoorEntries,
   shouldFetchMore,
@@ -113,8 +111,6 @@ class ScannerStore {
    * card name (door-entries.ts). Display only - no door decision reads them.
    */
   doorEntries = $state.raw<DoorEntriesState>(emptyDoorEntries());
-  /** The server seals new buyers to a key this pass link does not give: their names cannot show here. */
-  doorKeyMismatch = $state(false);
   /** ticketKey → record; mirrors the IndexedDB nullifier set for the UI. */
   checkins = $state<Map<string, CheckinRecord>>(new Map());
   conflicts = $state<CheckinConflict[]>([]);
@@ -153,8 +149,8 @@ class ScannerStore {
   private reloading = false;
   private deviceId = "";
   private entriesPolling: Promise<void> | null = null;
-  /** `token|doorKeyRef` the key check last ran for: once per pass and key. */
-  private doorKeyChecked: string | null = null;
+  /** The pass a "did not open" warning was last logged for: once per pass. */
+  private warnedUnopened: string | null = null;
   private cleaning: Promise<void> | null = null;
   private cleanAgain: Promise<void> | null = null;
 
@@ -254,8 +250,6 @@ class ScannerStore {
     // Only the door's keys, even from a roster stored before it was cut down to them.
     this.roster = pickRosterEntries(await db.getRoster(eventId));
     this.doorEntries = restoreDoorEntries(await db.getDoorEntries(eventId), passJti(pass));
-    this.doorKeyMismatch = false;
-    this.doorKeyChecked = null;
     this.conflicts = (await db.getConflicts(eventId)) ?? [];
     this.checkins = new Map();
     this.passDead = null;
@@ -313,11 +307,7 @@ class ScannerStore {
       // A pass for another event starts from an empty in-memory set;
       // `reloadCheckins` only ever adds to it.
       if (this.pass?.eventId !== pass.eventId) this.checkins = new Map();
-      if (this.pass?.token !== pass.token) {
-        this.doorEntries = emptyDoorEntries();
-        this.doorKeyMismatch = false;
-        this.doorKeyChecked = null;
-      }
+      if (this.pass?.token !== pass.token) this.doorEntries = emptyDoorEntries();
       this.pass = pass;
       this.passDead = null;
       this.pendingPass = null;
@@ -406,8 +396,6 @@ class ScannerStore {
     this.pack = null;
     this.roster = [];
     this.doorEntries = emptyDoorEntries();
-    this.doorKeyMismatch = false;
-    this.doorKeyChecked = null;
     this.checkins = new Map();
     this.conflicts = [];
     this.passDead = null;
@@ -808,8 +796,12 @@ class ScannerStore {
         if (answer.kind === "later") return;
 
         const { page } = answer;
-        const applied = (await applyDoorEntriesPage(state, page, ctx)).state;
-        if (hasEntriesToOpen(page)) await this.checkDoorKey(pass, passSecret, page.doorKeyRef);
+        const { state: applied, failed } = await applyDoorEntriesPage(state, page, ctx);
+        // For whoever debugs a phone that shows no new buyers; door staff never see it.
+        if (failed > 0 && this.warnedUnopened !== pass.token) {
+          this.warnedUnopened = pass.token;
+          console.warn(`[scanner] ${failed} door entries did not open with this door pass - it may not be the event's current one`);
+        }
         // Checked after the last await: the tab may have moved during the request or the opening.
         if (this.pass?.token !== pass.token) return;
         state = applied;
@@ -826,13 +818,6 @@ class ScannerStore {
     }
   }
 
-  private async checkDoorKey(pass: db.StoredPass, passSecret: Uint8Array, doorKeyRef: string | null): Promise<void> {
-    const checked = `${pass.token}|${doorKeyRef}`;
-    if (this.doorKeyChecked === checked) return;
-    this.doorKeyChecked = checked;
-    const matches = await doorKeyMatches(passSecret, doorKeyRef);
-    if (this.pass?.token === pass.token) this.doorKeyMismatch = matches === false;
-  }
 
   /**
    * A ticket the pack does not know: fetch a pack made after this scan and look
