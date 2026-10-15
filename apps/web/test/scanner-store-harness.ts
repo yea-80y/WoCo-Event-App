@@ -143,6 +143,15 @@ export function resetWorld(): void {
   fakeDocument.visibilityState = "hidden";
 }
 
+/** Wait for background work the store started without awaiting, up to `ms` (a loaded test run is slow). */
+export async function waitFor(cond: () => boolean | Promise<boolean>, ms = 10_000): Promise<void> {
+  const until = performance.now() + ms;
+  while (!(await cond())) {
+    if (performance.now() > until) throw new Error("waitFor: timed out");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
 /** Settle background work the store started without awaiting (`void this.sync()`, ...). */
 export async function settle(rounds = 20): Promise<void> {
   for (let i = 0; i < rounds; i++) await new Promise((r) => setImmediate(r));

@@ -37,6 +37,7 @@ import {
   settle,
   storeEvent,
   tick,
+  waitFor,
   type TestPass,
 } from "./scanner-store-harness.ts";
 
@@ -134,7 +135,7 @@ test("the refresh tick: an open event whose pass expires leaves memory and stora
 
   clock.offsetMs = HOUR + 1000; // past A's exp, not B's
   tick(REFRESH_TICK_MS);
-  await settle(60);
+  await waitFor(async () => scanner.phase === "unprovisioned" && (await db.getPass(A))?.token === "" && scanner.otherUnsynced === 3);
   assert.equal(scanner.phase, "unprovisioned");
   assert.equal(scanner.pass, null);
   assert.equal(scanner.attendees.length, 0, "the decrypted roster and door entries left memory");
@@ -155,7 +156,8 @@ test("the tab coming back runs the clean-up", async (t) => {
   clock.offsetMs = HOUR + 1000;
   fakeDocument.visibilityState = "visible";
   fire("visibilitychange");
-  await settle(60);
+  await waitFor(async () => scanner.phase === "unprovisioned" && (await db.getPass(A))?.token === "");
+  await settle();
   assert.equal(scanner.phase, "unprovisioned");
   await assertAttendeeDataGone(A);
   assert.equal((await db.getPending(A)).length, 1);

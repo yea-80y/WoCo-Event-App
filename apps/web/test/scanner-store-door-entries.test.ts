@@ -30,8 +30,8 @@ import {
   resetWorld,
   server,
   seriesId,
-  settle,
   storeEvent,
+  waitFor,
   type Handler,
 } from "./scanner-store-harness.ts";
 
@@ -103,7 +103,7 @@ test("on the pack refresh tick, door entries are fetched after the pack", async 
 
   const scanner = await openTab(t);
   await scanner.openEvent(A); // opening runs the refresh at once
-  await settle(200);
+  await waitFor(() => scanner.attendees.length > 0);
   const at = server.requests.findIndex((r) => r.url.pathname.endsWith("/entries"));
   assert.ok(packAt > 0 && at >= packAt, "entries asked for once the pack came back");
   assert.equal(scanner.attendees.length, 1);
