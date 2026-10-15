@@ -9,11 +9,12 @@
  *
  * Every ~10 min the feed is re-read (latest-build.ts) and the build's critical
  * files are fetched in full from our own bee: `index.html`, `sw.js`, the workbox
- * runtime and the QR worker that `sw.js` names, and the entry script
- * `index.html` names. A missing manifest path is answered by bee with the error
- * document (`index.html`) and a 200, so a file only counts as served when its
- * content type is the one its extension needs - which a browser enforces on
- * `sw.js` anyway.
+ * runtime `sw.js` loads, and EVERY script, stylesheet and page `sw.js`
+ * precaches. Workbox installs all or nothing, so one lost lazy chunk strands
+ * every phone on its old worker exactly as a lost entry script would. A missing
+ * manifest path is answered by bee with the error document (`index.html`) and a
+ * 200, so a file only counts as served when its content type is the one its
+ * extension needs - which a browser enforces on `sw.js` anyway.
  *
  * Red when the feed cannot be read or any critical file is not served.
  */
@@ -45,23 +46,35 @@ export interface ScannerReading {
   namingError: string | null;
 }
 
+/** A precache url this probe will fetch: relative, no `..`, no scheme or query. */
+const PLAIN_PATH = /^(?!.*\.\.)\w[\w./-]*$/;
+const CHECKED = /\.(js|css|html)$/;
+
 /**
- * The files `index.html` and `sw.js` name that a door phone cannot run without,
- * or why they cannot be named. Pure.
+ * The files a door phone cannot run without, beyond `index.html` and `sw.js`:
+ * the workbox runtime `sw.js` loads and every script, stylesheet and page it
+ * precaches - or why they cannot be named. Pure.
  */
 export function criticalScannerFiles(indexHtml: string, swJs: string): { files: string[] } | { error: string } {
   const entry = /<script\b[^>]*\bsrc="\.?\/?(assets\/scanner-[\w-]+\.js)"/.exec(indexHtml)?.[1];
   if (!entry) return { error: "index.html names no assets/scanner-*.js entry" };
   const workbox = /define\(\["\.\/(workbox-[\w-]+)"\]/.exec(swJs)?.[1];
   if (!workbox) return { error: "sw.js names no workbox runtime" };
-  const qrWorker = /url:"(assets\/qr-scanner-worker\.min-[\w-]+\.js)"/.exec(swJs)?.[1];
-  if (!qrWorker) return { error: "sw.js precaches no assets/qr-scanner-worker.min-*.js" };
-  return { files: [`${workbox}.js`, entry, qrWorker] };
+  const precached = [...swJs.matchAll(/url:"([^"]*)"/g)].map((m) => m[1]!);
+  if (precached.some((u) => !PLAIN_PATH.test(u))) return { error: "sw.js precaches a url that is not a plain relative path" };
+  if (!precached.includes(entry)) return { error: `sw.js does not precache the entry script ${entry}` };
+  if (!precached.some((u) => /^assets\/qr-scanner-worker\.min-[\w-]+\.js$/.test(u))) {
+    return { error: "sw.js precaches no assets/qr-scanner-worker.min-*.js" };
+  }
+  const files = new Set([`${workbox}.js`]);
+  for (const u of precached) if (CHECKED.test(u) && u !== "index.html" && u !== "sw.js") files.add(u);
+  return { files: [...files] };
 }
 
 /** The content type a path must be served with, or null when any will do. */
 function expectedType(path: string): RegExp | null {
   if (path.endsWith(".js")) return /javascript/i;
+  if (path.endsWith(".css")) return /text\/css/i;
   if (path.endsWith(".html")) return /html/i;
   return null;
 }

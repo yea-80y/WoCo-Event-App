@@ -12,6 +12,7 @@
  *  - walk backwards / trust the lookup over the head -> "never goes backwards";
  *  - accept any payload as a build -> "an update that is not a scanner build";
  *  - drop the content-type check -> "bee's error document is not the file";
+ *  - check only named files, not every precache entry -> "one lost lazy chunk is red";
  *  - drop a critical file -> "a missing critical file is red";
  *  - drop the scanner section or its probe from index.ts -> wiring tests;
  *  - in the upload script, accept an unreadable or taken index, skip the
@@ -344,16 +345,30 @@ const INDEX_HTML = `<!doctype html><html><head>
     <script type="module" crossorigin src="./assets/scanner-t7rIg_L-.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/scanner-V-3hAdeZ.css">
   <link rel="manifest" href="./manifest.webmanifest"></head><body><div id="app"></div></body></html>`;
-const SW_JS =
+/** Shaped like a real dist-scanner/sw.js (2026-10-15 build). */
+const PRECACHE = [
+  "logo.png",
+  "index.html",
+  "assets/xwing-BfkzvsSh.js",
+  "assets/workbox-window.prod.es5-BBnX5xw4.js",
+  "assets/secp256k1-DTskgwZV.js",
+  "assets/sealed-box-BQM-Aun_.js",
+  "assets/scanner-V-3hAdeZ.css",
+  "assets/scanner-t7rIg_L-.js",
+  "assets/qr-scanner-worker.min-D85Z9gVD.js",
+  "assets/door-entries-key-B5pAZrRF.js",
+  "assets/__vite-browser-external-BIHI7g3E.js",
+  "manifest.webmanifest",
+];
+const swWith = (urls: string[]) =>
   'if(!self.define){}define(["./workbox-0bb07689"],function(e){"use strict";self.skipWaiting(),e.clientsClaim(),' +
-  'e.precacheAndRoute([{url:"index.html",revision:"a17b"},{url:"assets/scanner-t7rIg_L-.js",revision:null},' +
-  '{url:"assets/qr-scanner-worker.min-D85Z9gVD.js",revision:null}],{}),e.cleanupOutdatedCaches()});';
+  `e.precacheAndRoute([${urls.map((u) => `{url:"${u}",revision:null}`).join(",")}],{}),e.cleanupOutdatedCaches()});`;
+const SW_JS = swWith(PRECACHE);
 const CRITICAL = [
   "index.html",
   "sw.js",
   "workbox-0bb07689.js",
-  "assets/scanner-t7rIg_L-.js",
-  "assets/qr-scanner-worker.min-D85Z9gVD.js",
+  ...PRECACHE.filter((u) => /\.(js|css)$/.test(u)),
 ];
 
 function bzz(overrides: Record<string, BuildFileRead> = {}) {
@@ -364,6 +379,7 @@ function bzz(overrides: Record<string, BuildFileRead> = {}) {
     if (path === "index.html") return { ok: true, body: toUtf8Bytes(INDEX_HTML), contentType: "text/html; charset=utf-8" };
     if (path === "sw.js") return { ok: true, body: toUtf8Bytes(SW_JS), contentType: "text/javascript; charset=utf-8" };
     if (path.endsWith(".js")) return { ok: true, body: new Uint8Array(10), contentType: "text/javascript; charset=utf-8" };
+    if (path.endsWith(".css")) return { ok: true, body: new Uint8Array(10), contentType: "text/css; charset=utf-8" };
     return { ok: false, reason: "HTTP 404" };
   };
   return { fetchFile, asked };
@@ -371,13 +387,33 @@ function bzz(overrides: Record<string, BuildFileRead> = {}) {
 
 const sourceWith = (refs: string[], opts: Parameters<typeof feed>[1] = {}) => new ScannerBuildSource(feed(refs, opts).reader, quiet);
 
-test("the critical files are named by the build itself", () => {
-  assert.deepEqual(criticalScannerFiles(INDEX_HTML, SW_JS), {
-    files: ["workbox-0bb07689.js", "assets/scanner-t7rIg_L-.js", "assets/qr-scanner-worker.min-D85Z9gVD.js"],
-  });
-  assert.ok("error" in criticalScannerFiles("<html></html>", SW_JS));
-  assert.ok("error" in criticalScannerFiles(INDEX_HTML, SW_JS.replace('define(["./workbox-0bb07689"]', "define([]")));
-  assert.ok("error" in criticalScannerFiles(INDEX_HTML, SW_JS.replace("qr-scanner-worker", "qr")));
+test("the critical files are the workbox runtime and every script, stylesheet and page sw.js precaches", () => {
+  assert.deepEqual(criticalScannerFiles(INDEX_HTML, SW_JS), { files: CRITICAL.slice(2) });
+  // A precached page other than index.html is checked too; images and the manifest are not.
+  const withPage = criticalScannerFiles(INDEX_HTML, swWith([...PRECACHE, "offline.html"]));
+  assert.ok("files" in withPage && withPage.files.includes("offline.html"));
+  assert.ok("files" in withPage && !withPage.files.some((f) => f.endsWith(".png") || f.endsWith(".webmanifest")));
+});
+
+test("a build that cannot name its critical files is an error, not a pass", () => {
+  const cases: Array<[string, string, RegExp]> = [
+    ["<html></html>", SW_JS, /names no assets\/scanner-\*\.js entry/],
+    [INDEX_HTML, SW_JS.replace('define(["./workbox-0bb07689"]', "define([]"), /no workbox runtime/],
+    [INDEX_HTML, swWith(PRECACHE.filter((u) => !u.startsWith("assets/qr-scanner-worker"))), /no assets\/qr-scanner-worker/],
+    [INDEX_HTML, swWith(PRECACHE.filter((u) => u !== "assets/scanner-t7rIg_L-.js")), /does not precache the entry script/],
+    [INDEX_HTML, swWith([...PRECACHE, "../etc/passwd.js"]), /not a plain relative path/],
+    [INDEX_HTML, swWith([...PRECACHE, "https://evil.example/x.js"]), /not a plain relative path/],
+  ];
+  for (const [html, sw, why] of cases) {
+    const r = criticalScannerFiles(html, sw);
+    assert.ok("error" in r && why.test(r.error), JSON.stringify(r));
+  }
+});
+
+test("one lost lazy chunk is red: workbox installs all or nothing", async () => {
+  const r = await probeScanner(sourceWith([SCANNER]), bzz({ "assets/sealed-box-BQM-Aun_.js": { ok: false, reason: "HTTP 404" } }).fetchFile);
+  assert.equal(evaluateScanner(r).ok, false);
+  assert.deepEqual(r.missing, [{ path: "assets/sealed-box-BQM-Aun_.js", reason: "HTTP 404" }]);
 });
 
 test("a build that serves every critical file is green, and each was fetched from that build", async () => {
@@ -401,7 +437,7 @@ for (const path of CRITICAL) {
 test("bee's error document is not the file: a script served as HTML is missing", async () => {
   // A path absent from the manifest gets index.html with a 200 (Swarm-Error-Document).
   const asHtml: BuildFileRead = { ok: true, body: toUtf8Bytes(INDEX_HTML), contentType: "text/html; charset=utf-8" };
-  for (const path of ["sw.js", "workbox-0bb07689.js", "assets/qr-scanner-worker.min-D85Z9gVD.js"]) {
+  for (const path of ["sw.js", "workbox-0bb07689.js", "assets/qr-scanner-worker.min-D85Z9gVD.js", "assets/scanner-V-3hAdeZ.css"]) {
     const r = await probeScanner(sourceWith([SCANNER]), bzz({ [path]: asHtml }).fetchFile);
     assert.equal(evaluateScanner(r).ok, false, path);
   }
