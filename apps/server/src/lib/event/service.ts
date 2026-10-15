@@ -666,11 +666,8 @@ export async function updateEventMetadata(opts: {
     if (updates.tags.length) updated.tags = updates.tags;
     else delete updated.tags;
   }
-  if (updates.geo !== undefined) {
-    // An empty/unusable geo clears it; otherwise store raw (snapshot normalises).
-    if (updates.geo && Object.keys(updates.geo).length) updated.geo = updates.geo;
-    else delete updated.geo;
-  }
+  // The route has checked it is a place; stored raw (the snapshot normalises).
+  if (updates.geo !== undefined) updated.geo = updates.geo;
   if (updates.subEnsLabel !== undefined) {
     // Typed `null`-only, so this branch cannot set. See EventMetaUpdates.
     delete updated.subEnsLabel;

@@ -7,8 +7,9 @@
  *     update-meta refuse a missing place before any Swarm or chain work. A create
  *     WITH a place is proved to get past the gate by landing on the next
  *     validation's own 400 (a malformed seriesId).
- *  2. STRUCTURAL, where running the path means a Swarm read: the edit merge and
- *     the event-page deploy name the same rule.
+ *  2. STRUCTURAL, where running the path means a Swarm read: the edit merge.
+ *     The event-page deploy is NOT gated: its only callers are a create that
+ *     already passed, and key-ring rotation, which must redeploy every named page.
  */
 
 import { test, before } from "node:test";
@@ -145,13 +146,12 @@ test("update-meta: a geo that is not a place is refused before the event is read
 });
 
 // ---------------------------------------------------------------------------
-// The edit merge and the page deploy
+// The edit merge
 // ---------------------------------------------------------------------------
 
 const code = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 const SERVICE = code(readFileSync(new URL("../src/lib/event/service.ts", import.meta.url), "utf-8"));
 const ROUTE = code(readFileSync(new URL("../src/routes/events.ts", import.meta.url), "utf-8"));
-const SITE = code(readFileSync(new URL("../src/routes/site.ts", import.meta.url), "utf-8"));
 
 test("an edit is checked on the MERGED feed, before anything is written", () => {
   const start = SERVICE.indexOf("export async function updateEventMetadata");
@@ -165,10 +165,10 @@ test("an edit is checked on the MERGED feed, before anything is written", () => 
   assert.match(ROUTE, /msg === EVENT_PLACE_REQUIRED \? 400/, "the merge's refusal is the organiser's to fix, not a 500");
 });
 
-test("the event-page deploy refuses a feed it read with no place, before building the page", () => {
-  const read = SITE.indexOf("const event = await getEvent(eventId, eventSigner).catch(() => null);");
-  const check = SITE.indexOf("if (event && !eventHasPlace(event.geo)) return c.json({ ok: false, error: EVENT_PLACE_REQUIRED }, 400);");
-  const build = SITE.indexOf("await fs.cp(DIST_SITE_PATH, tmpDir");
-  assert.ok(read > 0, "the deploy must read the event - a rename would make this pass vacuously");
-  assert.ok(check > read && build > check);
+test("the event-page deploy does not refuse a placeless event", () => {
+  // Key-ring rotation (lib/keyring/rotate-live.ts) redeploys every named event's
+  // page and stops at the first refusal, so a gate here strands the rest of the
+  // names on pages baked with the retired signer (Fable sign-off on #902).
+  const site = code(readFileSync(new URL("../src/routes/site.ts", import.meta.url), "utf-8"));
+  assert.doesNotMatch(site, /eventHasPlace|EVENT_PLACE_REQUIRED/);
 });

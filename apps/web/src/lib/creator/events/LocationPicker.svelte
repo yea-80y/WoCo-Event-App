@@ -170,7 +170,7 @@
           {#if place.address}<span class="resolved-sub">{place.address}</span>{/if}
           <span class="resolved-coords">{place.lat.toFixed(4)}, {place.lng.toFixed(4)}</span>
         </div>
-        <button type="button" class="resolved-change" onclick={() => { place = null; placeLine = ""; }}>Change</button>
+        <button type="button" class="resolved-change" onclick={() => { seed = place?.venue ?? placeLine; place = null; placeLine = ""; }}>Change</button>
       </div>
     {:else}
       <PlaceSearch

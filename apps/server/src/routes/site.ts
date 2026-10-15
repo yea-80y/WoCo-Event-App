@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { Topic } from "@ethersphere/bee-js";
-import { eventPageFeedTopic, validateLabel, eventHasPlace, EVENT_PLACE_REQUIRED } from "@woco/shared";
+import { eventPageFeedTopic, validateLabel } from "@woco/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { eventPageDeployGate } from "../lib/event/page-deploy-gate.js";
 import { getEvent } from "../lib/event/service.js";
@@ -157,9 +157,6 @@ site.post("/deploy", requireAuth, async (c) => {
     // The event's image as the page's icon and share image. A failed read only
     // costs that: the page falls back to WoCo's logo, never fails to publish.
     const event = await getEvent(eventId, eventSigner).catch(() => null);
-    // Only a feed we READ and found placeless is refused: a failed read keeps the
-    // page publishable, and create and edit already require the place.
-    if (event && !eventHasPlace(event.geo)) return c.json({ ok: false, error: EVENT_PLACE_REQUIRED }, 400);
     const injectedHtml = withEventPageHead(
       injectBeforeHeadClose(siteHtml, `  ${configScript}`),
       event,

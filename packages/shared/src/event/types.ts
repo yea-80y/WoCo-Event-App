@@ -468,8 +468,9 @@ export interface UpdateEventMetaRequest {
   /** Replacement discovery tags. Present (even empty) ⇒ overwrite the event's tags;
    *  absent ⇒ leave unchanged. Re-signs the SOC (gas-free) + triggers a snapshot rebuild. */
   tags?: EventTag[];
-  /** Replacement structured location. Present ⇒ overwrite (empty object clears);
-   *  absent ⇒ leave unchanged. Re-signs the SOC + triggers a snapshot rebuild. */
+  /** Replacement structured location. Present ⇒ overwrite, and it must still be a
+   *  place (`eventHasPlace`) - an event's place cannot be cleared. Absent ⇒ leave
+   *  unchanged. Re-signs the SOC + triggers a snapshot rebuild. */
   geo?: EventGeo;
   /** Remove the event's sub-ENS name. `null` clears it; a string is REFUSED —
    *  setting one goes through POST /api/sub-ens/stamp-event, which proves
