@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { BuyerFees, MarketingMode } from "@woco/shared";
+  import type { BuyerFees, MarketingWording } from "@woco/shared";
   import { PAY_PANEL_PRIVACY_SUMMARY, TRANSACTIONAL_EMAIL_NOTICE } from "@woco/shared";
   import CheckoutNoticeLinks from "./CheckoutNoticeLinks.svelte";
   import MarketingControl from "./MarketingControl.svelte";
@@ -16,10 +16,9 @@
     /** The event and organiser, for the point-of-collection privacy line. */
     eventId: string;
     organiserName?: string;
-    /** The marketing control the organiser's notice sets. Shown here too: with no
-     *  order form this panel is the only checkout, and it must offer the choice. */
-    marketingMode: MarketingMode;
-    marketingOrganiser?: string;
+    /** The marketing control's wording, as sent to create-checkout. Shown here too:
+     *  with no order form this panel is the only checkout, and it must offer the choice. */
+    marketingWording: MarketingWording;
     marketingTicked: boolean;
     onMarketingChange: (ticked: boolean) => void;
     /** When set, renders the "or — Pay with crypto" footer link. */
@@ -40,8 +39,7 @@
     onStripeEmailChange,
     eventId,
     organiserName,
-    marketingMode,
-    marketingOrganiser,
+    marketingWording,
     marketingTicked,
     onMarketingChange,
     cryptoFooter = null,
@@ -63,8 +61,7 @@
   <div class="pay-marketing">
     <p class="pay-transactional">{TRANSACTIONAL_EMAIL_NOTICE}</p>
     <MarketingControl
-      mode={marketingMode}
-      organiser={marketingOrganiser}
+      wording={marketingWording}
       ticked={marketingTicked}
       onTickedChange={onMarketingChange}
     />

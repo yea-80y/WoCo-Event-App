@@ -175,7 +175,7 @@ export async function createCheckoutSession(params: {
    *  Stripe session metadata; webhook consumes on successful claim. */
   reservationId?: string;
   /** The marketing control as shown and as the buyer left it: mode, box, wording
-   *  version, surface. Undefined only when no control was shown, and then
+   *  version and text, surface. Undefined only when no control was shown, and then
    *  nothing is recorded. */
   marketing?: MarketingChoice;
   /** Sign the request and bind the purchase to the account. */

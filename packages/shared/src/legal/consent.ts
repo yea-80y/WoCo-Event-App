@@ -2,26 +2,28 @@
  * Point-of-collection consent wording — single source of truth.
  *
  * UK GDPR Art. 7(1) evidence is only worth anything if the stored record
- * matches what the person was actually shown. Client and server therefore read
- * the SAME constant: the checkout renders `MARKETING_CONSENT_NOTICE`, the
- * server stores that identical string against the consent record. Duplicating
- * the wording in a Svelte template would let the two drift silently and quietly
- * void the evidence.
+ * matches what the person was actually shown. Client and server therefore build
+ * it with the SAME pure function, `marketingWording`: the checkout renders what
+ * it returns, and create-checkout rebuilds it from the event's own questions and
+ * refuses a page whose text differs. Duplicating the wording in a Svelte
+ * template would let the two drift silently and quietly void the evidence.
  *
- * Bump MARKETING_CONSENT_VERSION whenever the wording changes materially —
- * old records keep the text they were captured under. Since the soft opt-in
- * (below) the server looks the stored text up in MARKETING_WORDING by the mode
- * and version the page sent, so a bump is a new entry there, never an edit.
+ * Bump the version whenever the wording changes materially - old records keep
+ * the text they were captured under. The server stores the entry in
+ * MARKETING_WORDING for the mode and version the page sent, so a bump is a new
+ * entry there, never an edit.
  */
 
-export const MARKETING_CONSENT_VERSION = 1;
+/** v2 (2026-10-15): the wording names what the mailing list keeps. */
+export const MARKETING_CONSENT_VERSION = 2;
 
 /**
  * Shown next to an UNCHECKED opt-in control. Must stay unticked by default:
  * pre-ticked boxes are not valid consent (UK GDPR Recital 32; Planet49, C-673/17).
+ * `{keeps}` names what the list keeps besides the email (`marketingWording`).
  */
 export const MARKETING_CONSENT_NOTICE =
-  "Email me about future events from this organiser. You can unsubscribe at any time.";
+  "Email me about future events from this organiser. We'll keep your email{keeps} for this. You can unsubscribe at any time.";
 
 // ---------------------------------------------------------------------------
 // Two checkout controls (PECR reg. 22(3) soft opt-in, owner 2026-10-14)
@@ -48,10 +50,10 @@ export type MarketingSurface = (typeof MARKETING_SURFACES)[number];
 /** The basis a stored record rests on. Attached when the choice is made, never re-read from the organiser's mode. */
 export type MarketingBasis = "consent" | "soft-opt-in";
 
-export const MARKETING_OWN_EVENTS_VERSION = 1;
-/** `{organiser}` is the organiser's name from their confirmed notice. */
+export const MARKETING_OWN_EVENTS_VERSION = 2;
+/** `{organiser}` is the organiser's name from their confirmed notice; `{keeps}` as for consent. */
 export const MARKETING_OWN_EVENTS_SENTENCE =
-  "We'll email you about similar events from {organiser}. You can unsubscribe from any email.";
+  "We'll email you about similar events from {organiser}, and keep your email{keeps} for this. You can unsubscribe from any email.";
 /** Stands alone as a refusal, so the box reads correctly on its own. */
 export const MARKETING_OWN_EVENTS_BOX = "Don't email me about similar events";
 
@@ -67,8 +69,14 @@ export interface MarketingWording {
  * holds what that buyer saw. Never edit or remove an entry - add a version.
  */
 export const MARKETING_WORDING: Readonly<Record<MarketingMode, Readonly<Record<number, MarketingWording>>>> = {
-  consent: { 1: { box: MARKETING_CONSENT_NOTICE } },
-  "own-events": { 1: { sentence: MARKETING_OWN_EVENTS_SENTENCE, box: MARKETING_OWN_EVENTS_BOX } },
+  consent: {
+    1: { box: "Email me about future events from this organiser. You can unsubscribe at any time." },
+    2: { box: MARKETING_CONSENT_NOTICE },
+  },
+  "own-events": {
+    1: { sentence: "We'll email you about similar events from {organiser}. You can unsubscribe from any email.", box: MARKETING_OWN_EVENTS_BOX },
+    2: { sentence: MARKETING_OWN_EVENTS_SENTENCE, box: MARKETING_OWN_EVENTS_BOX },
+  },
 };
 
 /** The version each mode renders today. */
@@ -77,12 +85,32 @@ export const MARKETING_CURRENT_VERSION: Readonly<Record<MarketingMode, number>> 
   "own-events": MARKETING_OWN_EVENTS_VERSION,
 };
 
-/** The wording for a mode and version with the organiser's name in it; null for one never shown. */
-export function marketingWording(mode: MarketingMode, version: number, organiser: string | undefined): MarketingWording | null {
+/**
+ * The wording for a mode and version, with the organiser's name and what the
+ * list keeps filled in; null for one never shown. `keeps` is `listKeeps` of the
+ * event's questions (`event/order-field-kinds.ts`) - taken as plain data so the
+ * page, the embed and the server share this one function and nothing else.
+ */
+export function marketingWording(
+  mode: MarketingMode,
+  version: number,
+  organiser: string | undefined,
+  keeps: { name: boolean; answers: readonly string[] },
+): MarketingWording | null {
   const w = MARKETING_WORDING[mode]?.[version];
   if (!w) return null;
-  const name = organiser?.trim() || "this organiser";
-  return w.sentence ? { sentence: w.sentence.replace("{organiser}", name), box: w.box } : { box: w.box };
+  const values: Record<string, string> = {
+    organiser: organiser?.trim() || "this organiser",
+    keeps: (keeps.name ? ", name" : "") + (keeps.answers.length ? ` and your answers to: ${keeps.answers.join(", ")}` : ""),
+  };
+  // One pass, so a name or label that itself reads "{keeps}" is never filled again.
+  const fill = (t: string) => t.replace(/\{(organiser|keeps)\}/g, (_, k: string) => values[k]!);
+  return w.sentence ? { sentence: fill(w.sentence), box: fill(w.box) } : { box: fill(w.box) };
+}
+
+/** Did the page show exactly this wording? */
+export function sameMarketingWording(a: MarketingWording, b: MarketingWording): boolean {
+  return a.box === b.box && (a.sentence ?? null) === (b.sentence ?? null);
 }
 
 /** What the buyer's box means in the mode they were shown. */
@@ -97,12 +125,27 @@ export interface MarketingChoice {
   ticked: boolean;
   version: number;
   surface: MarketingSurface;
+  /**
+   * The exact text the page rendered. create-checkout compares it with the text
+   * it rebuilds and refuses a difference; absent from a paid session's metadata,
+   * which carries a hash of the server's own text instead.
+   */
+  wording?: MarketingWording;
 }
 
-/** The choice for the control as rendered now. */
-export function marketingChoice(mode: MarketingMode, ticked: boolean, surface: MarketingSurface): MarketingChoice {
-  return { mode, ticked, version: MARKETING_CURRENT_VERSION[mode], surface };
+/** The choice for the control as rendered now, with the wording it rendered. */
+export function marketingChoice(
+  mode: MarketingMode,
+  ticked: boolean,
+  surface: MarketingSurface,
+  wording: MarketingWording | undefined,
+): MarketingChoice {
+  return { mode, ticked, version: MARKETING_CURRENT_VERSION[mode], surface, ...(wording ? { wording } : {}) };
 }
+
+/** Longer than any form create-checkout accepts can produce (20 questions of 200 characters). */
+const MAX_WORDING_TEXT = 16_000;
+const isWordingText = (v: unknown): v is string => typeof v === "string" && v.length <= MAX_WORDING_TEXT;
 
 /**
  * A choice from a request body. `undefined` = none sent (no control shown, so
@@ -117,7 +160,12 @@ export function parseMarketingChoice(raw: unknown): MarketingChoice | null | und
   if (!(MARKETING_SURFACES as readonly unknown[]).includes(o.surface)) return null;
   const mode = o.mode as MarketingMode;
   if (typeof o.version !== "number" || !MARKETING_WORDING[mode][o.version]) return null;
-  return { mode, ticked: o.ticked, version: o.version, surface: o.surface as MarketingSurface };
+  const choice: MarketingChoice = { mode, ticked: o.ticked, version: o.version, surface: o.surface as MarketingSurface };
+  if (o.wording === undefined) return choice;
+  const w = o.wording as Record<string, unknown> | null;
+  if (!w || typeof w !== "object" || Array.isArray(w) || !isWordingText(w.box)) return null;
+  if (w.sentence !== undefined && !isWordingText(w.sentence)) return null;
+  return { ...choice, wording: w.sentence === undefined ? { box: w.box } : { sentence: w.sentence, box: w.box } };
 }
 
 /**
@@ -132,6 +180,17 @@ export function shownMarketingMode(status: { marketingMode?: unknown } | null | 
 
 /** create-checkout's refusal when the page showed another mode than the organiser's notice now sets. */
 export const MARKETING_MODE_CHANGED = "MARKETING_MODE_CHANGED" as const;
+/**
+ * create-checkout's refusal when the page's wording is not the one it rebuilds:
+ * the event's questions or the organiser's name changed since the page loaded,
+ * or the page predates the current version.
+ */
+export const MARKETING_WORDING_CHANGED = "MARKETING_WORDING_CHANGED" as const;
+
+/** Either refusal: nothing was charged, and the page shows the control again. */
+export function isMarketingChanged(code: unknown): boolean {
+  return code === MARKETING_MODE_CHANGED || code === MARKETING_WORDING_CHANGED;
+}
 
 /**
  * Always shown, regardless of the opt-in state. This is the transactional
@@ -149,7 +208,7 @@ export const TRANSACTIONAL_EMAIL_NOTICE =
  *   3. order details on a public decentralised network are erased on request
  *      (within 90 days, #546), but the ticket's onchain record is permanent.
  * (3) in particular must be disclosed BEFORE submission, not buried in a policy.
- * Not stored with consent records (only MARKETING_CONSENT_NOTICE is Art. 7(1)
+ * Not stored with consent records (only the marketing wording is Art. 7(1)
  * evidence), so a wording change here needs no version bump.
  *
  * DO NOT reintroduce any claim that WoCo destroys a decryption key on request.

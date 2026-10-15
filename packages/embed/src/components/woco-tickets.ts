@@ -10,6 +10,7 @@ import {
   orderFormCollectsEmail,
   ORDER_EMAIL_FIELD_ID,
   MARKETING_CURRENT_VERSION,
+  listKeeps,
   marketingChoice,
   marketingWording,
   shownMarketingMode,
@@ -18,6 +19,7 @@ import {
   ORGANISER_NOTICE_LINK_LABEL,
   WOCO_POLICY_LINK_LABEL,
   type MarketingMode,
+  type MarketingWording,
   type OrderField,
   type PaymentConfig,
 } from "@woco/shared";
@@ -31,7 +33,7 @@ import {
   buildOrderPayload,
   buildCheckoutBody,
   staleOrderKeyRef,
-  isMarketingModeChanged,
+  isMarketingRefusal,
   reserveOutcome,
   parseReturn,
   resolvePageUrl,
@@ -94,7 +96,7 @@ interface SeriesState {
   /** The marketing control as last RENDERED, and its box. Checkout sends this,
    *  never a mode re-derived from a status that arrived after the render: what
    *  is sent must be what the buyer saw. */
-  marketing: { mode: MarketingMode; ticked: boolean };
+  marketing: { mode: MarketingMode; ticked: boolean; wording?: MarketingWording };
   orderFormData: Record<string, string>;
   /** Seat hold placed when the buy panel opened (#568). */
   hold: Hold | null;
@@ -623,8 +625,9 @@ export class WocoTickets extends HTMLElement {
    * WoCo page — so the disclosure and the PECR opt-out have to travel with the
    * form. The control is the one the organiser's notice sets, from claim-status:
    * consent mode's unticked "Email me", or own-events mode's sentence and
-   * unticked "Don't email me". Wording comes from the shared constants the
-   * server records by mode and version, so the surfaces cannot drift.
+   * unticked "Don't email me". Wording comes from the shared function the
+   * server rebuilds it with, naming what the list keeps from this event's
+   * questions, so the surfaces cannot drift.
    */
   private renderConsent(seriesId: string, st: SeriesState): string {
     const mode = shownMarketingMode(st.status);
@@ -632,7 +635,8 @@ export class WocoTickets extends HTMLElement {
     // box ticked under one mode means the opposite in the other, so it starts unticked.
     if (st.marketing.mode !== mode) st.marketing = { mode, ticked: false };
     const name = typeof st.status?.marketingOrganiser === "string" ? st.status.marketingOrganiser : undefined;
-    const w = marketingWording(mode, MARKETING_CURRENT_VERSION[mode], name)!;
+    const w = marketingWording(mode, MARKETING_CURRENT_VERSION[mode], name, listKeeps(this.event?.orderFields))!;
+    st.marketing.wording = w;
     return `
       <div class="consent-block">
         <div class="transactional-note">${this.esc(TRANSACTIONAL_EMAIL_NOTICE)}</div>
@@ -1066,7 +1070,7 @@ export class WocoTickets extends HTMLElement {
         seriesId,
         claimerEmail: email,
         quantity: st.quantity,
-        marketing: marketingChoice(st.marketing.mode, st.marketing.ticked, "embed"),
+        marketing: marketingChoice(st.marketing.mode, st.marketing.ticked, "embed", st.marketing.wording),
         pageUrl: this.pageUrl,
         encryptedOrder,
         ...(encryptedOrder && sealedTo ? { encryptionKeyRef: sealedTo } : {}),
@@ -1086,9 +1090,10 @@ export class WocoTickets extends HTMLElement {
           return;
         }
       }
-      if (!resp.ok && isMarketingModeChanged(resp as Record<string, unknown>)) {
-        // The organiser's notice now sets the other control. Nothing was charged:
-        // show the current one and let the buyer choose again.
+      if (!resp.ok && isMarketingRefusal(resp as Record<string, unknown>)) {
+        // The organiser's notice now sets the other control, or the control's
+        // words changed. Nothing was charged: show the current one and let the
+        // buyer choose again.
         await this.refreshStatus(seriesId);
         st.error = (resp.error as string) || "The organiser's email options have changed. Check them below and continue.";
         st.busy = false;

@@ -35,6 +35,10 @@ const consent = await import("../src/lib/marketing/consent-store.js");
 const persist = await import("../src/lib/marketing/persist.js");
 const sr = await import("../src/lib/marketing/subject-request.js");
 const capture = await import("../src/lib/marketing/consent-capture.js");
+const { marketingWordingHash } = await import("../src/lib/marketing/checkout-choice.js");
+const { marketingWording } = await import("@woco/shared");
+/** The hash create-checkout stamps for consent v2 with no questions. */
+const YES_HASH = marketingWordingHash(marketingWording("consent", 2, undefined, { name: false, answers: [] })!);
 const { sendMarketingBatch } = await import("../src/lib/email/marketing-send.js");
 const { notifyRow } = await import("../src/lib/stripe/cancellation-notice.js");
 const { alarmGate } = await import("../src/lib/health/alarm-gate.js");
@@ -245,7 +249,8 @@ test("consent unreadable: a checkout opt-in keeps an earlier decline - no lift w
     capture.captureCheckoutConsent({
       emailHash: H,
       organiserAddress: ORG,
-      choice: { mode: "consent", ticked: true, version: 1, surface: "order-form" },
+      choice: { mode: "consent", ticked: true, version: 2, surface: "order-form" },
+      wordingHash: YES_HASH,
       ts: "2026-06-01T00:00:00.000Z",
     }),
   );
@@ -259,7 +264,8 @@ test("consent readable: the same opt-in lifts the decline", () => {
   capture.captureCheckoutConsent({
     emailHash: H,
     organiserAddress: ORG,
-    choice: { mode: "consent", ticked: true, version: 1, surface: "order-form" },
+    choice: { mode: "consent", ticked: true, version: 2, surface: "order-form" },
+    wordingHash: YES_HASH,
     ts: "2026-06-01T00:00:00.000Z",
   });
   assert.equal(suppression.isSuppressed(H, ORG), false);

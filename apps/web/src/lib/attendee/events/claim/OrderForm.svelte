@@ -5,7 +5,7 @@
     TRANSACTIONAL_EMAIL_NOTICE,
     CHECKOUT_PRIVACY_SUMMARY,
   } from "@woco/shared";
-  import type { BuyerFees, MarketingMode } from "@woco/shared";
+  import type { BuyerFees, MarketingWording } from "@woco/shared";
   import CheckoutNoticeLinks from "./CheckoutNoticeLinks.svelte";
   import MarketingControl from "./MarketingControl.svelte";
 
@@ -31,9 +31,8 @@
     organiserName?: string;
     /** The event, so the privacy line can link the organiser's notice for it. */
     eventId: string;
-    /** The marketing control the organiser's notice sets, and the organiser it names. */
-    marketingMode: MarketingMode;
-    marketingOrganiser?: string;
+    /** The marketing control's wording, in the mode the organiser's notice sets - as sent to create-checkout. */
+    marketingWording: MarketingWording;
     /** The box as the buyer left it. Starts unticked in both modes: a pre-ticked
      *  box is not valid consent (UK GDPR Recital 32). */
     marketingTicked: boolean;
@@ -58,8 +57,7 @@
     stripeEmail = $bindable(),
     organiserName,
     eventId,
-    marketingMode,
-    marketingOrganiser,
+    marketingWording,
     marketingTicked,
     onMarketingChange,
     onStripeCheckout,
@@ -143,8 +141,7 @@
     <p class="transactional-note">{TRANSACTIONAL_EMAIL_NOTICE}</p>
 
     <MarketingControl
-      mode={marketingMode}
-      organiser={marketingOrganiser}
+      wording={marketingWording}
       ticked={marketingTicked}
       onTickedChange={onMarketingChange}
     />

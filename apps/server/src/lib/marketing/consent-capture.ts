@@ -17,7 +17,8 @@
  * organiser's notice before charging.
  */
 
-import { marketingDecision, marketingWording, type MarketingChoice } from "@woco/shared";
+import { listKeeps, marketingDecision, marketingWording, type MarketingChoice, type OrderField } from "@woco/shared";
+import { marketingWordingHash } from "./checkout-choice.js";
 import { consentBasis, getConsent, recordConsent, type ConsentRecord, type ConsentSource } from "./consent-store.js";
 import { liftDeclineOnConsent, suppressOrg } from "./suppression-store.js";
 
@@ -28,6 +29,10 @@ export interface CaptureConsentInput {
   choice: MarketingChoice;
   /** The organiser's name as the own-events sentence showed it. */
   organiserName?: string;
+  /** The event's questions as fulfilment read them: the wording names what the list keeps. */
+  orderFields?: readonly OrderField[];
+  /** create-checkout's hash of the wording it matched to the page's. */
+  wordingHash?: string;
   /** ISO timestamp of the decision — also the ordering evidence for a lift. */
   ts: string;
   eventId?: string;
@@ -51,11 +56,13 @@ export interface CaptureConsentInput {
  * stored as a consent record: "no" needs no new enforcement path, and routing it
  * through suppression makes it survive the organiser re-uploading the same CSV.
  *
- * The wording stored is looked up here by mode and version - never taken from
- * the page - so the record holds what that control said.
+ * The wording stored is rebuilt here from the mode, version, organiser name and
+ * the event's questions - never taken from the page - and recorded only if it
+ * hashes to what create-checkout matched to the page's text, so the record holds
+ * what that control said.
  */
 export function captureCheckoutConsent(input: CaptureConsentInput): void {
-  const { emailHash, organiserAddress, choice, organiserName, ts, eventId, source = "checkout" } = input;
+  const { emailHash, organiserAddress, choice, organiserName, orderFields, wordingHash, ts, eventId, source = "checkout" } = input;
   const decision = marketingDecision(choice.mode, choice.ticked);
 
   if (decision === "declined") {
@@ -63,11 +70,12 @@ export function captureCheckoutConsent(input: CaptureConsentInput): void {
     return;
   }
 
-  const wording = marketingWording(choice.mode, choice.version, organiserName);
-  if (!wording) {
-    // create-checkout refuses a version it does not know, so this is unreachable;
-    // a record without the wording shown would be no evidence at all.
-    console.error(`[consent] no wording for ${choice.mode} v${choice.version} - nothing recorded`);
+  const wording = marketingWording(choice.mode, choice.version, organiserName, listKeeps(orderFields));
+  if (!wording || !wordingHash || marketingWordingHash(wording) !== wordingHash) {
+    // A record without the wording shown would be no evidence at all. The hash
+    // misses only if the event's questions changed between checkout and payment;
+    // no record means the buyer is not mailed - the safe way to be wrong.
+    console.error(`[consent] ${choice.mode} v${choice.version}: wording not the one checkout showed - nothing recorded`);
     return;
   }
   const record: ConsentRecord = {
