@@ -240,6 +240,16 @@ export interface FulfilmentDeps {
    * AND unrecorded.
    */
   sendTicketEmail(opts: TicketEmailOpts): Promise<void>;
+  /**
+   * Seal each issued ticket's email and card name for the event's door phones (the
+   * live door attendee list). Local state only, after the email so it can delay
+   * nothing. Must not throw; fenced anyway.
+   */
+  sealDoorEntries(
+    eventId: string,
+    tickets: Array<{ seriesId: string; edition: number }>,
+    who: { email?: string; buyerName?: string },
+  ): Promise<unknown>;
   recordUndeliveredTicket(input: {
     to: string;
     subject: string;
@@ -1020,6 +1030,11 @@ export async function fulfilPaidSession(
     }
   }
 
+  // Stripe gives us the buyer's name from `customer_details` (filled by the
+  // user at checkout when card billing is collected). Baked into the ticket-card
+  // PNG and shown on the page, and sealed for the door below.
+  const buyerName = session.customer_details?.name?.trim() || undefined;
+
   // ── 8. Deliver ──
   let email: EmailOutcome;
   if (claimedResults.length === 0) {
@@ -1027,10 +1042,6 @@ export async function fulfilPaidSession(
   } else if (!claimerEmail) {
     email = "no-address";
   } else {
-    // Stripe gives us the buyer's name from `customer_details` (filled by the
-    // user at checkout when card billing is collected). Pass it through so it
-    // can be baked into the composite ticket-card PNG and shown on the page.
-    const buyerName = session.customer_details?.name?.trim() || undefined;
     let siteTheme: { palette: SitePalette; contactEmail?: string } | null = null;
     if (metaSiteId) {
       try {
@@ -1100,6 +1111,20 @@ export async function fulfilPaidSession(
           console.error("[fulfilment] could not record the undelivered ticket either:", ledgerErr);
         }
       }
+    }
+  }
+
+  // ── 9. Door entries (fenced: the door list is a convenience, never the sale) ──
+  // After the email, so a slow seal delays nothing a buyer waits for.
+  if (claimedResults.length > 0) {
+    try {
+      await deps.sealDoorEntries(
+        eventId,
+        claimedResults.map((r) => ({ seriesId, edition: r.edition })),
+        { ...(claimerEmail ? { email: claimerEmail } : {}), ...(buyerName ? { buyerName } : {}) },
+      );
+    } catch (err) {
+      console.error("[fulfilment] door entries threw (continuing):", err);
     }
   }
 

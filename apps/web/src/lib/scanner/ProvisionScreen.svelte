@@ -71,11 +71,7 @@
   {/if}
 
   {#if scanner.otherUnsynced > 0}
-    <p class="note">
-      {scanner.otherUnsynced} check-in{scanner.otherUnsynced === 1 ? "" : "s"} from an earlier event
-      {scanner.otherUnsynced === 1 ? "hasn't" : "haven't"} reached WoCo yet. {scanner.otherUnsynced === 1 ? "It stays" : "They stay"} on this phone
-      and sync with that event's door pass while it is still valid.
-    </p>
+    <p class="note">{scanner.otherUnsynced} check-in{scanner.otherUnsynced === 1 ? "" : "s"} waiting to upload</p>
   {/if}
 
   {#if localError || scanner.provisionError}

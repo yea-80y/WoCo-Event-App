@@ -33,7 +33,8 @@ function files(dir: string, out: string[] = []): string[] {
 }
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
-const STATIC = /^\s*import\s+(?!type\b)[^;]*from\s+["']@woco\/shared\/crypto\/(xwing|xwing-hpke|sealed-box)["']/m;
+// door-entries-key imports xwing statically, so it counts as the lattice code too.
+const STATIC = /^\s*import\s+(?!type\b)[^;]*from\s+["']@woco\/shared\/(crypto\/(xwing|xwing-hpke|sealed-box)|checkin\/door-entries-key)["']/m;
 
 test("only allowlisted modules statically import the X-Wing / sealed-box code", () => {
   const offenders = files(SRC)

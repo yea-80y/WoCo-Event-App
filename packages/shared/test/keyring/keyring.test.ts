@@ -18,9 +18,9 @@ import { deriveXWingKeypairFromSeed } from "../../src/crypto/xwing.js";
 import { orderKeyRef } from "../../src/event/order-key.js";
 import { PASSKEY_BOX_INFO } from "../../src/crypto/passkey-prf.js";
 import {
-  DOOR_PASS_ROSTER_INFO,
+  DOOR_PASS_SECRET_INFO,
   accountKeysOf,
-  doorPassRosterKey,
+  doorPassSecret,
   newAccountSecret,
   passkeyBoxKeypair,
 } from "../../src/keyring/account-secret.js";
@@ -63,7 +63,7 @@ test("FROZEN: labels, domain and type, byte for byte", () => {
   assert.equal(PASSKEY_BOX_INFO, "woco/passkey/box/v1");
   assert.equal(KEY_RING_ENTRY_INFO, "woco/keyring/entry/v1");
   assert.equal(KEY_RING_BACK_INFO, "woco/keyring/back/v1");
-  assert.equal(DOOR_PASS_ROSTER_INFO, "woco/door-pass/roster/v1");
+  assert.equal(DOOR_PASS_SECRET_INFO, "woco/door-pass/v2");
   assert.deepEqual(BOX_KEY_DOMAIN, {
     name: "WoCo Box Key",
     version: "1",
@@ -79,12 +79,12 @@ test("FROZEN: labels, domain and type, byte for byte", () => {
   assert.equal(NO_RING, `0x${"0".repeat(64)}`);
 });
 
-test("FROZEN: a generation's keys, a roster key, a box key and the contexts, by output", () => {
+test("FROZEN: a generation's keys, a door pass secret, a box key and the contexts, by output", () => {
   const secret = hexToBytes(V.secret);
   const k = accountKeysOf(secret);
   assert.equal(k.feedSigner.address, V.feedSigner);
   assert.equal(k.orderKeyRef, V.orderKeyRef);
-  assert.equal(bytesToHex(doorPassRosterKey(secret, V.rosterKey.eventId, V.rosterKey.passId)), V.rosterKey.key);
+  assert.equal(bytesToHex(doorPassSecret(secret, V.doorPass.eventId, V.doorPass.passId)), V.doorPass.secret);
   assert.equal(boxKeyRefOf(passkeyBoxKeypair(V.prf).publicKey), V.boxKeyRef);
   assert.equal(keyRingEntryContext(V.parent, 3, V.coOwner, V.boxKeyRef).aad, V.entryAad);
   assert.equal(keyRingBackAad(V.parent, 3), V.backAad);
@@ -98,13 +98,13 @@ test("generation 0 changes nothing: the seed's keys are exactly today's", () => 
   assert.equal(k.orderKeyRef, orderKeyRef(deriveXWingKeypairFromSeed(hex).publicKey));
 });
 
-test("a roster key differs per event and per pass, and refuses ids that could collide", () => {
+test("a door pass secret differs per event and per pass, and refuses ids that could collide", () => {
   const s = newAccountSecret();
-  const a = bytesToHex(doorPassRosterKey(s, "ev-1", "p1"));
-  assert.notEqual(a, bytesToHex(doorPassRosterKey(s, "ev-1", "p2")));
-  assert.notEqual(a, bytesToHex(doorPassRosterKey(s, "ev-2", "p1")));
-  assert.throws(() => doorPassRosterKey(s, "ev:1", "p1"), /ids/);
-  assert.throws(() => doorPassRosterKey(s, "ev-1", ""), /ids/);
+  const a = bytesToHex(doorPassSecret(s, "ev-1", "p1"));
+  assert.notEqual(a, bytesToHex(doorPassSecret(s, "ev-1", "p2")));
+  assert.notEqual(a, bytesToHex(doorPassSecret(s, "ev-2", "p1")));
+  assert.throws(() => doorPassSecret(s, "ev:1", "p1"), /ids/);
+  assert.throws(() => doorPassSecret(s, "ev-1", ""), /ids/);
 });
 
 test("the box key is not the seed's or the envelope's key", () => {

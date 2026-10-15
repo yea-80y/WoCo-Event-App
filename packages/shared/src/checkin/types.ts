@@ -1,4 +1,5 @@
 import { parseTicketFragment, TICKET_PAGE_PATH } from "../ticket/link.js";
+import type { SealedBoxV2 } from "../crypto/sealed-box-shape.js";
 import type { Hex0x } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -8,8 +9,12 @@ import type { Hex0x } from "../types.js";
 // - The QR sig must recover to the on-chain slotOwner. The scanner verifies
 //   this offline against `slotOwners` from the CheckinPack. A series with no
 //   `onChainEventId` is rejected — there is no owner to recover against.
-// - The roster is AES-GCM ciphertext end-to-end: the key travels only in the
-//   door-pass URL fragment and is never sent to the server.
+// - The door-pass URL fragment carries one secret P, never sent to the server.
+//   Two keys hang off it (checkin/door-keys.ts): the roster's AES-GCM key, and an
+//   X-Wing key whose PUBLIC half is registered with the pass (with proof the account's
+//   order key is held, not just a session), so the server can seal
+//   each later sale's email and card name for the door (door entries) and never
+//   read them back.
 // - A ticket whose sale was refunded in full (#645) still verifies — the chain
 //   has no per-slot void — so `voidSlots` is checked AFTER the signature: a
 //   forgery still reads invalid, and only a genuine ticket can read refunded.
@@ -118,15 +123,69 @@ export interface EncryptedRoster {
   updatedAt: string;
 }
 
-/** Decrypted roster entry — one per issued ticket with order data. */
+/**
+ * One ticket on the door's list. Only what the door needs: the ticket, a name and an
+ * email - never the other order-form answers (owner, 2026-10-15: data minimisation).
+ * There is deliberately no field for them, so they cannot come back by accident.
+ */
 export interface RosterEntry {
   seriesId: string;
   seriesName: string;
   edition: number;
   name?: string;
   email?: string;
-  /** Remaining decrypted order-form fields, verbatim. */
-  fields?: Record<string, string>;
+  /** "sale": from a door entry, so `name` is the name on the card, not an order answer. */
+  source?: "sale";
+}
+
+/** A door entry once opened: what one sale tells the door, sealed at fulfilment. */
+export interface DoorEntryPlaintext {
+  v: 1;
+  seriesId: string;
+  edition: number;
+  email?: string;
+  /** The name Stripe holds for the card - the payer's, not necessarily the attendee's. */
+  buyerName?: string;
+}
+
+/** One line of an event's door entries log. A removal (an erased order) is final. */
+export type DoorEntryLogItem =
+  | { seq: number; kind: "add"; seriesId: string; edition: number; box: SealedBoxV2; at: string }
+  | { seq: number; kind: "remove"; seriesId: string; edition: number; at: string };
+
+/** GET /api/checkin/:eventId/entries?since=N - the log after the scanner's cursor. */
+export interface DoorEntriesPage {
+  /** The pass these entries are sealed under. */
+  jti: string;
+  /** sha256 of the registered door key; the scanner compares it with its own. */
+  doorKeyRef: string | null;
+  /** Cursor for the next call: the last `seq` in `log`, or the one sent when nothing is new. */
+  next: number;
+  /** Drop every entry held from earlier pages before applying this one. */
+  reset: boolean;
+  /** More entries wait past `next`: ask again now. */
+  more: boolean;
+  log: DoorEntryLogItem[];
+}
+
+/** POST /api/events/:id/door-pass/challenge - a nonce sealed to the account's order key. */
+export interface DoorPassChallenge {
+  challengeId: string;
+  box: SealedBoxV2;
+  /** Unix seconds; one use, and a newer challenge for the same event replaces it. */
+  exp: number;
+}
+
+/** POST /api/events/:id/door-pass - issue a pass and register its door entries key. */
+export interface DoorPassIssueRequest {
+  mode: DoorMode;
+  /** `DOOR_PASS_ID_RE`: chosen by the organiser's device, so P exists before the pass. */
+  jti: string;
+  /** The door entries X-Wing public key, 1216 bytes as hex. */
+  doorKey: string;
+  challengeId: string;
+  /** `doorKeyProof` under the challenge's nonce: the order key, not a session, asked. */
+  proof: string;
 }
 
 export interface CheckinSyncRequest {
@@ -137,6 +196,21 @@ export interface CheckinSyncRequest {
 export interface CheckinSyncResponse {
   checkins: CheckinRecord[];
   conflicts: CheckinConflict[];
+}
+
+/**
+ * How long after its `exp` a door pass may still upload its phones' check-ins
+ * (owner, 2026-10-15). One value for both ends: the server's window and how long a
+ * phone keeps the pass token and the unsynced records to use it.
+ */
+export const EXPIRED_PASS_UPLOAD_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * POST /sync's answer to a pass past its `exp` but inside the upload window: the
+ * records were taken, and nothing comes back - no check-in set, no conflicts.
+ */
+export interface CheckinUploadAck {
+  acknowledged: number;
 }
 
 /** POST /api/checkin/:eventId/claim - one scan attempt asking to admit a ticket. */
@@ -207,16 +281,17 @@ export function parseTicketQr(raw: string): TicketQr | null {
   return null;
 }
 
-/** Door-pass URL: `{scannerOrigin}/#/p/{token}/{keyB64url}`. */
-export function buildDoorPassUrl(scannerOrigin: string, token: string, keyB64url: string): string {
-  return `${scannerOrigin.replace(/\/$/, "")}/${doorPassFragment(token, keyB64url)}`;
+/** Door-pass URL: `{scannerOrigin}/#/p/{token}/{passSecretB64url}` - the pass secret P. */
+export function buildDoorPassUrl(scannerOrigin: string, token: string, passSecretB64url: string): string {
+  return `${scannerOrigin.replace(/\/$/, "")}/${doorPassFragment(token, passSecretB64url)}`;
 }
 
-/** The secret-bearing part of a door-pass URL, `#/p/{token}/{keyB64url}`. */
-export function doorPassFragment(token: string, keyB64url: string): string {
-  return `#/p/${token}/${keyB64url}`;
+/** The secret-bearing part of a door-pass URL, `#/p/{token}/{passSecretB64url}`. */
+export function doorPassFragment(token: string, passSecretB64url: string): string {
+  return `#/p/${token}/${passSecretB64url}`;
 }
 
+/** `keyB64url` is the pass secret P (the name predates P: the scanner stores it under it). */
 export function parseDoorPassFragment(hash: string): { token: string; keyB64url: string } | null {
   const m = hash.replace(/^#\/?/, "").match(/^p\/([^/]+)\/([^/]+)$/);
   if (!m) return null;

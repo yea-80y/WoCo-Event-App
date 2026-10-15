@@ -11,6 +11,11 @@
  *     request is answered "erased" and nothing can store it again.
  *   - On Swarm: every chunk's slot is burned (`burnOrder`), resumable.
  *
+ * Either way the order's tickets leave the door: their sealed door entries are deleted
+ * and a removal reaches every online scanner (`removeDoorEntries`). The sale record is
+ * how an order root finds its tickets; none (a sale never recorded) leaves the door copy
+ * to the roster sweep, 2 days after the event.
+ *
  * Synchronous from the in-flight check to the tombstone, so no store can start
  * between. Throws on anything else; the caller reports it.
  */
@@ -20,6 +25,8 @@ import { burnOrder, type BurnDeps } from "./burn.js";
 import { getHeldOrder, releaseHeldOrder } from "./held-orders.js";
 import { getOrderRecord, recordErasedBeforeStore, type Erasure, type OrderRecord } from "./ledger.js";
 import { isStoreInFlight } from "./writer.js";
+import { getSale, saleSessionsByOrderRef } from "../stripe/ticket-sales.js";
+import { removeDoorEntries } from "../checkin/door-entries.js";
 
 export type EraseOutcome =
   | { kind: "in-flight" }
@@ -49,7 +56,26 @@ export async function eraseOrder(rawRoot: string, erasure: Erasure, burnDeps?: B
       Date.now(),
       erasure,
     );
+    forgetAtTheDoor(root);
     return { kind: "deleted-before-store" };
   }
-  return { kind: "burned", record: await burnOrder(root, burnDeps, erasure) };
+  const record = await burnOrder(root, burnDeps, erasure);
+  forgetAtTheDoor(root);
+  return { kind: "burned", record };
+}
+
+/** The order's tickets, by the sale that carries its root. Never throws. */
+function forgetAtTheDoor(root: string): void {
+  try {
+    const sessionId = saleSessionsByOrderRef().get(root);
+    const sale = sessionId ? getSale(sessionId) : undefined;
+    if (!sale?.eventId || !sale.seriesId || sale.slots.length === 0) {
+      if (!sale) console.warn(`[erase] no sale record for ${root.slice(0, 10)}… - its door copy goes with the roster sweep`);
+      return;
+    }
+    const seriesId = sale.seriesId;
+    removeDoorEntries(sale.eventId, sale.slots.map((slot) => ({ seriesId, edition: slot + 1 })));
+  } catch (err) {
+    console.error("[erase] door entries could not be told:", err);
+  }
 }

@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { writeJsonAtomic } from "../marketing/persist.js";
 import {
   DOOR_PASS_VERSION,
+  EXPIRED_PASS_UPLOAD_MS,
   doorPassSigningInput,
   encodeDoorPassToken,
   decodeDoorPassToken,
@@ -102,6 +103,11 @@ type PassRegistry = Record<string, {
   /** The organiser's key generation when the pass was issued (#186). A newer one means
    *  a passkey was removed since, and this pass may be in its hands. Absent = 0. */
   gen?: number;
+  /** sha256 of the door entries key registered with this pass: what sales are sealed to. */
+  doorKeyRef?: string;
+  /** Every pass id this event has used. A registration is refused for any of them, so a
+   *  captured old statement cannot bring back an old pass (and an old link's key). */
+  usedJtis?: string[];
 }>;
 
 function readPasses(): PassRegistry {
@@ -111,28 +117,68 @@ function readPasses(): PassRegistry {
 /**
  * Issue (or rotate) the door pass for an event. Rotation replaces the stored
  * jti, which immediately invalidates every previously issued token.
+ *
+ * `door` is the pass id the organiser's device chose and the door entries key it
+ * registered (with the order-key proof, `redeemDoorPassChallenge`, first); without it the id is
+ * random and nothing is ever sealed to the pass.
  */
-export function issueDoorPass(eventId: string, exp: number, signer?: string, mode: DoorMode = "several", gen = 0): string {
+export function issueDoorPass(
+  eventId: string,
+  exp: number,
+  signer?: string,
+  mode: DoorMode = "several",
+  gen = 0,
+  door?: { jti: string; doorKeyRef: string },
+): string {
   const payload: DoorPassPayload = {
     v: DOOR_PASS_VERSION,
     eventId,
-    jti: randomBytes(16).toString("hex"),
+    jti: door?.jti ?? randomBytes(16).toString("hex"),
     exp,
   };
+  // Signed before anything is written: a server that cannot sign revokes nothing.
+  const token = encodeDoorPassToken(payload, passTag(payload));
   const passes = readPasses();
+  const prev = passes[eventId];
+  const usedJtis = [...new Set([...(prev?.usedJtis ?? []), ...(prev ? [prev.jti] : []), payload.jti])];
   // A new jti starts with no bound device: regenerating is how an organiser
   // moves a single-scanner pass to another phone.
-  passes[eventId] = { jti: payload.jti, exp, mode, ...(signer ? { signer } : {}), ...(gen > 0 ? { gen } : {}) };
+  passes[eventId] = {
+    jti: payload.jti,
+    exp,
+    mode,
+    usedJtis,
+    ...(signer ? { signer } : {}),
+    ...(gen > 0 ? { gen } : {}),
+    ...(door ? { doorKeyRef: door.doorKeyRef } : {}),
+  };
   writeJson(PASSES_FILE, "checkin-passes", passes);
-  return encodeDoorPassToken(payload, passTag(payload));
+  return token;
+}
+
+/** The event's current pass as recorded: id, expiry, key generation, registered door key. */
+export function activeDoorPass(eventId: string): { jti: string; exp: number; gen: number; doorKeyRef?: string } | null {
+  const p = readPasses()[eventId];
+  return p ? { jti: p.jti, exp: p.exp, gen: p.gen ?? 0, ...(p.doorKeyRef ? { doorKeyRef: p.doorKeyRef } : {}) } : null;
+}
+
+/** Whether `jti` was ever this event's pass id. */
+export function doorPassIdUsed(eventId: string, jti: string): boolean {
+  const p = readPasses()[eventId];
+  return !!p && (p.jti === jti || (p.usedJtis ?? []).includes(jti));
 }
 
 export type PassVerdict =
-  | { ok: true; eventId: string; signer?: string; mode: DoorMode; device?: string; gen: number }
+  | { ok: true; eventId: string; jti: string; signer?: string; mode: DoorMode; device?: string; gen: number; expired?: true }
   | { ok: false; reason: "malformed" | "bad-sig" | "expired" | "revoked" };
 
-/** Verify a door-pass token: HMAC tag, expiry, and active-jti (revocation). */
-export function verifyDoorPass(token: string): PassVerdict {
+/**
+ * Verify a door-pass token: HMAC tag, expiry, and active-jti (revocation). With
+ * `uploadAfterExpiry`, a pass whose only fault is expiry, within EXPIRED_PASS_UPLOAD_MS,
+ * still verifies - marked `expired` - so long as it is the event's active pass. Only
+ * /sync asks for that, and answers such a pass with an acknowledgement and nothing else.
+ */
+export function verifyDoorPass(token: string, opts: { uploadAfterExpiry?: boolean } = {}): PassVerdict {
   const decoded = decodeDoorPassToken(token);
   if (!decoded) return { ok: false, reason: "malformed" };
   const { payload, tagHex } = decoded;
@@ -142,7 +188,9 @@ export function verifyDoorPass(token: string): PassVerdict {
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
     return { ok: false, reason: "bad-sig" };
   }
-  if (payload.exp * 1000 < Date.now()) return { ok: false, reason: "expired" };
+  const now = Date.now();
+  const expired = payload.exp * 1000 < now;
+  if (expired && !(opts.uploadAfterExpiry && now - payload.exp * 1000 <= EXPIRED_PASS_UPLOAD_MS)) return { ok: false, reason: "expired" };
 
   const active = readPasses()[payload.eventId];
   if (!active || active.jti !== payload.jti) return { ok: false, reason: "revoked" };
@@ -151,10 +199,12 @@ export function verifyDoorPass(token: string): PassVerdict {
   return {
     ok: true,
     eventId: payload.eventId,
+    jti: payload.jti,
     mode: active.mode ?? "several",
     gen: active.gen ?? 0,
     ...(active.signer ? { signer: active.signer } : {}),
     ...(active.device ? { device: active.device } : {}),
+    ...(expired ? { expired: true as const } : {}),
   };
 }
 

@@ -101,7 +101,7 @@ attendees submit.
 8. **Look after the copies you download.** A guest list you export (for example as a CSV) and the
    list on your door scanner are your own copies, and we cannot reach them. Keep them secure, keep
    them only as long as you need them, and when we tell you an attendee's details have been erased,
-   delete that attendee from your copies and refresh your door list.
+   delete that attendee from any copies you've exported. Door scanners remove them automatically.
 
 ### What we do
 

@@ -4,7 +4,9 @@
  * A roster carries every attendee's email and order-form answers, encrypted to
  * the organiser's door key. It is a derived copy - the dashboard builds it from
  * the orders and can upload it again - so it is deleted a fixed time after the
- * event ends and nothing unrecoverable goes with it. The check-in set and the
+ * event ends and nothing unrecoverable goes with it. The event's door entries
+ * (later buyers' sealed email and card name, `door-entries.ts`) go with it, on the
+ * same clock, whether or not a roster was ever pushed. The check-in set and the
  * door pass are left alone: they hold no answers.
  *
  * The end is the onchain `eventEndTs` of the event's registrations, never the
@@ -24,9 +26,10 @@ import {
 } from "../event/onchain-registry.js";
 import { errorClass } from "../http/error-class.js";
 import { deleteRoster, eventKey, storedRosterKeys } from "./store.js";
+import { deleteDoorEntries, storedDoorEntryKeys } from "./door-entries.js";
 
 /** Days a roster outlives its event's onchain end. Stated in DATA_INVENTORY §3.1. */
-export const ROSTER_KEPT_AFTER_END_DAYS = 30;
+export const ROSTER_KEPT_AFTER_END_DAYS = 2;
 const KEPT_MS = ROSTER_KEPT_AFTER_END_DAYS * 24 * 60 * 60 * 1000;
 
 export interface RosterSweepOptions {
@@ -76,7 +79,7 @@ export async function sweepExpiredRosters(opts: RosterSweepOptions = {}): Promis
 }
 
 async function sweep({ now = Date.now(), readEnd, chainNow = chainTimeMs }: RosterSweepOptions): Promise<number> {
-  const stored = new Set(storedRosterKeys());
+  const stored = new Set([...storedRosterKeys(), ...storedDoorEntryKeys()]);
   const regsByEvent = new Map<string, Array<{ seriesId: string; onChainEventId: string }>>();
   for (const r of getAllResolutionEntries()) {
     if (!stored.has(eventKey(r.wocoEventId))) continue;
@@ -124,6 +127,7 @@ async function sweep({ now = Date.now(), readEnd, chainNow = chainTimeMs }: Rost
     if (v !== "due") continue;
     try {
       deleteRoster(key);
+      deleteDoorEntries(key);
     } catch (err) {
       failures.add(`delete failed (${fsCode(err)})`);
       continue;
