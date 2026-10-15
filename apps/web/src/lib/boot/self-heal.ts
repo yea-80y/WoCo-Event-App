@@ -68,7 +68,8 @@ export interface HealEnv {
   /** Fetch past the HTTP cache, replacing its entry; true when the file came back. */
   refetch(url: string): Promise<boolean>;
   storage(): Storage | null;
-  typed(): boolean;
+  /** A reload could lose something: the user typed, or a sign-in/payment return is in flight. */
+  holdReload(): boolean;
   reload(): void;
   now(): number;
 }
@@ -80,13 +81,13 @@ export async function heal(err: unknown, env: HealEnv): Promise<HealOutcome> {
   if (targets.length === 0) return "not-ours";
   const back = await Promise.all(targets.map((u) => env.refetch(u).catch(() => false)));
   if (!back.some(Boolean)) return "still-missing";
-  if (env.typed()) return "repaired";
+  if (env.holdReload()) return "repaired";
   if (!takeReload(env.storage(), env.now())) return "limit";
   env.reload();
   return "reloaded";
 }
 
-type HealWindow = Window & { __wocoSelfHeal?: true };
+type HealWindow = Window & typeof globalThis & { __wocoSelfHeal?: true };
 
 /** Once per page: a newer build handed over to runs this again, and must not double up. */
 export function installSelfHeal(): void {
@@ -96,14 +97,27 @@ export function installSelfHeal(): void {
 
   let typed = false;
   w.addEventListener("input", () => (typed = true), { capture: true });
+  // This runs before the app, so the URL is still as navigated. A Web3Auth or Stripe
+  // result is stripped from it at capture and held in memory until consumed; a reload
+  // in between would drop the sign-in. Repair only - the app's refresh prompt then works.
+  const returned = /[#?&](?:b64Params|sessionId|stripe|session_id)=/.test(w.location.href);
+
+  // An observer, not getEntriesByType: the resource buffer stops at 250 entries (API
+  // calls count), and a dashboard opened late in a session is exactly when it is full.
+  const failed = new Set<string>();
+  try {
+    new w.PerformanceObserver((list) => {
+      for (const e of list.getEntries() as PerformanceResourceTiming[]) {
+        if ((e.responseStatus ?? 0) >= 400) failed.add(e.name);
+      }
+    }).observe({ type: "resource", buffered: true });
+  } catch {
+    // no observer: the error's own URL is all there is
+  }
 
   const env: HealEnv = {
     base: () => w.document.baseURI,
-    failedResources: () =>
-      w.performance
-        .getEntriesByType("resource")
-        .filter((e) => ((e as PerformanceResourceTiming).responseStatus ?? 0) >= 400)
-        .map((e) => e.name),
+    failedResources: () => [...failed],
     refetch: async (url) => (await w.fetch(url, { cache: "reload" })).ok,
     storage: () => {
       try {
@@ -112,7 +126,7 @@ export function installSelfHeal(): void {
         return null;
       }
     },
-    typed: () => typed,
+    holdReload: () => typed || returned,
     reload: () => w.location.reload(),
     now: () => Date.now(),
   };
@@ -122,8 +136,11 @@ export function installSelfHeal(): void {
     if (pending) return;
     pending = true;
     const err = (event as Event & { payload?: unknown }).payload;
+    // Now, not after the settle: a failed handover restores the old build's <base>
+    // meanwhile, and the file to repair belongs to the new one.
+    const base = w.document.baseURI;
     w.setTimeout(() => {
-      void heal(err, env)
+      void heal(err, { ...env, base: () => base })
         .then((outcome) => console.warn(`[boot] a module failed to load; self-heal: ${outcome}`))
         .catch(() => {})
         .finally(() => (pending = false));

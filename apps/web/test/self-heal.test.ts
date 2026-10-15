@@ -88,7 +88,7 @@ function env(over: Partial<HealEnv> & { back?: Set<string> } = {}) {
       return over.back ? over.back.has(u) : true;
     },
     storage: () => s,
-    typed: () => false,
+    holdReload: () => false,
     reload: () => void calls.reloads++,
     now: () => 10_000,
     ...over,
@@ -125,8 +125,8 @@ test("heal: one file back is enough to reload", async () => {
   assert.equal(calls.reloads, 1);
 });
 
-test("heal: after typing, repair only - the app's own refresh prompt then works", async () => {
-  const { e, calls } = env({ typed: () => true });
+test("heal: when a reload could lose something, repair only - the app's own refresh prompt then works", async () => {
+  const { e, calls } = env({ holdReload: () => true });
   assert.equal(await heal(new TypeError(`Failed to fetch dynamically imported module: ${A}`), e), "repaired");
   assert.deepEqual(calls.refetched, [A]);
   assert.equal(calls.reloads, 0);
@@ -142,23 +142,29 @@ test("heal: the reload budget stops a loop", async () => {
 
 // --- installSelfHeal, driven through a fake window ---------------------------------
 
-function fakeWindow(opts: { resources?: string[]; ok?: boolean } = {}) {
+function fakeWindow(opts: { resources?: string[]; ok?: boolean; href?: string; noObserver?: boolean } = {}) {
   const t = new EventTarget();
   const log = { fetched: [] as Array<{ url: string; cache?: string }>, reloads: 0 };
+  class FakeObserver {
+    constructor(private cb: (list: { getEntries(): unknown[] }) => void) {}
+    observe(o: { type: string; buffered?: boolean }) {
+      if (o.type !== "resource" || !o.buffered) return; // only a buffered observer sees what already failed
+      const entries = [
+        { name: `${BASE}assets/ok.js`, responseStatus: 200 },
+        ...(opts.resources ?? []).map((name) => ({ name, responseStatus: 404 })),
+      ];
+      this.cb({ getEntries: () => entries });
+    }
+  }
   const w = Object.assign(t, {
     document: { baseURI: BASE },
-    performance: {
-      getEntriesByType: (type: string) =>
-        type === "resource"
-          ? (opts.resources ?? []).map((name) => ({ name, responseStatus: 404 }))
-          : [],
-    },
+    PerformanceObserver: opts.noObserver ? undefined : FakeObserver,
     fetch: async (url: string, init?: RequestInit) => {
       log.fetched.push({ url, cache: init?.cache });
       return { ok: opts.ok ?? true } as Response;
     },
     sessionStorage: store(),
-    location: { reload: () => void log.reloads++ },
+    location: { href: opts.href ?? `${BASE}#/creator`, reload: () => void log.reloads++ },
     setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
   });
   return { w, log };
@@ -219,6 +225,50 @@ test("install: a later failure is healed again after the first one finished", as
   });
   assert.deepEqual(log.fetched.map((f) => f.url), [A, B]);
   assert.equal(log.reloads, 0, "neither came back");
+});
+
+test("install: opened on a Web3Auth or Stripe return, it repairs but never reloads", async () => {
+  for (const href of [
+    // one marker each, so dropping any one from the rule fails here
+    `https://woco.eth.limo/#/creator?b64Params=eyJ4IjoxfQ`,
+    `https://woco.eth.limo/#sessionId=abc`,
+    `https://woco.eth.limo/#/event/1?stripe=success`,
+    `https://woco.eth.limo/#/event/1?x=1&session_id=cs_test_1`,
+  ]) {
+    const { w, log } = fakeWindow({ href });
+    await withWindow(w, async () => {
+      installSelfHeal();
+      preloadError(w, A);
+      await settle();
+    });
+    assert.deepEqual(log.fetched, [{ url: A, cache: "reload" }], href);
+    assert.equal(log.reloads, 0, href);
+  }
+});
+
+test("install: the base is read when the load fails, not after the settle", async () => {
+  const NEW = "https://gateway.woco-net.com/bzz/1111111111111111111111111111111111111111111111111111111111111111/";
+  const { w, log } = fakeWindow();
+  w.document.baseURI = NEW; // a handover pointed the page at the new build
+  await withWindow(w, async () => {
+    installSelfHeal();
+    preloadError(w, `${NEW}assets/main-new.js`);
+    w.document.baseURI = BASE; // ...and restored the old base when it failed
+    await settle();
+  });
+  assert.deepEqual(log.fetched.map((f) => f.url), [`${NEW}assets/main-new.js`]);
+  assert.equal(log.reloads, 1);
+});
+
+test("install: with no PerformanceObserver it still heals the file the error names", async () => {
+  const { w, log } = fakeWindow({ noObserver: true, resources: [B] });
+  await withWindow(w, async () => {
+    installSelfHeal();
+    preloadError(w, A);
+    await settle();
+  });
+  assert.deepEqual(log.fetched.map((f) => f.url), [A]);
+  assert.equal(log.reloads, 1);
 });
 
 test("boot.ts installs it before the build check starts", () => {
