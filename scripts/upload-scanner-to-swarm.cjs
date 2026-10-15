@@ -210,6 +210,13 @@ if (require.main === module) (async () => {
     const signer = new PrivateKey(FEED_PRIVATE_KEY);
     const ownerObj = signer.publicKey().address();
     const ownerHex = ownerObj.toHex();
+    // The server pins who may sign the scanner feed (scan.woco.eth answers only its
+    // updates). A different key here would publish where the server never looks.
+    const pinned = fs.readFileSync(path.resolve(__dirname, '../apps/server/src/lib/scanner/latest-build.ts'), 'utf8')
+      .match(/SCANNER_FEED_OWNER = "([0-9a-f]{40})"/);
+    if (!pinned || pinned[1] !== ownerHex.replace(/^0x/, '').toLowerCase()) {
+      throw new Error(`this key (${ownerHex}) is not the scanner feed owner the server pins (${pinned ? pinned[1] : 'not found'}) - update SCANNER_FEED_OWNER in apps/server/src/lib/scanner/latest-build.ts and deploy the server first`);
+    }
     const topic = Topic.fromString(FEED_TOPIC);
 
     console.log(`Bee: ${BEE_URL}`);

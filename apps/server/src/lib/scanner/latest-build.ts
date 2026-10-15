@@ -4,9 +4,10 @@
  *
  * READ FROM THE FEED, NOT FROM A RECORD WRITTEN AT DEPLOY. The scanner is
  * published to its own feed (`woco-scanner-v1`, scripts/upload-scanner-to-swarm.cjs)
- * under the PLATFORM key, through our own bee. Every update is a SOC whose
- * signature is checked here to recover to the platform owner, and only the
- * deploy holds that key, so the feed already is a record this server can trust.
+ * under the frontend deploy key (SCANNER_FEED_OWNER below), through our own bee.
+ * Every update is a SOC whose signature is checked here to recover to that
+ * address, and only the deploy holds that key, so the feed already is a record
+ * this server can trust.
  * A ledger written at deploy would restate the same fact at the price of a new
  * authenticated route for the laptop script to call, a new `.data` file that
  * must survive restarts, and two sources that can disagree.
@@ -26,7 +27,7 @@
  * and a bee that cannot be read then is refused, never answered with a guess.
  */
 import { Topic } from "@ethersphere/bee-js";
-import { BEE_URL, getPlatformOwner } from "../../config/swarm.js";
+import { BEE_URL } from "../../config/swarm.js";
 import { MAX_FORWARD_WALK, readFeedUpdate } from "../swarm/feed-index.js";
 import { wocoBeeSource, type VerifiedSocRead } from "../swarm/soc-read.js";
 
@@ -167,26 +168,27 @@ export class ScannerBuildSource {
   }
 }
 
-function platformOwnerHex(): string {
-  try {
-    return getPlatformOwner().toHex().replace(/^0x/, "").toLowerCase();
-  } catch (err) {
-    throw new ReadFailure("the platform feed key is not configured", (err as Error).message);
-  }
-}
+/**
+ * Who signs the scanner feed: the key `npm run deploy:scanner` uploads with
+ * (`scripts/.env` FEED_PRIVATE_KEY, the same key that owns the app frontend feed).
+ * It is NOT the server's own platform key (`getPlatformOwner()`), which owns the
+ * server-written feeds; reading under that one finds no update at all. Every update
+ * is still checked to be signed by this address, so pinning it trusts nothing new.
+ */
+export const SCANNER_FEED_OWNER = "f8af4904c6e4f08ce5f7deab7f01221280b23a80";
 
 /** Our own bee: the one the scanner deploy writes through. */
 export const liveScannerFeedReader: ScannerFeedReader = {
   lookup: async () => {
     const topic = Topic.fromString(SCANNER_FEED_TOPIC);
-    const r = await fetch(`${BEE_URL}/feeds/${platformOwnerHex()}/${topic.toHex()}`, {
+    const r = await fetch(`${BEE_URL}/feeds/${SCANNER_FEED_OWNER}/${topic.toHex()}`, {
       signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
     });
     await r.body?.cancel().catch(() => {});
     const h = r.headers.get("swarm-feed-index");
     return r.status === 200 && h && /^[0-9a-f]{1,16}$/i.test(h) ? BigInt(`0x${h}`) : null;
   },
-  readAt: (index) => readFeedUpdate(platformOwnerHex(), Topic.fromString(SCANNER_FEED_TOPIC), index, [wocoBeeSource]),
+  readAt: (index) => readFeedUpdate(SCANNER_FEED_OWNER, Topic.fromString(SCANNER_FEED_TOPIC), index, [wocoBeeSource]),
 };
 
 export const scannerBuild = new ScannerBuildSource(liveScannerFeedReader);

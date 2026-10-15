@@ -619,3 +619,22 @@ test("the scanner upload whitelists every index it can read before writing, then
   // The window reaches the last index the walk can return, and the one after it that confirm reads.
   assert.ok(upload.FORWARD_WALK >= 2);
 });
+
+test("the scanner feed is read under its deploy key, never the server's own platform key", () => {
+  const src = readFileSync(new URL("../src/lib/scanner/latest-build.ts", import.meta.url), "utf8");
+  const pinned = src.match(/export const SCANNER_FEED_OWNER = "([0-9a-f]{40})";/);
+  assert.ok(pinned, "SCANNER_FEED_OWNER is a pinned 40-hex lowercase address");
+  assert.doesNotMatch(src, /import[^;]*getPlatformOwner/);
+  assert.doesNotMatch(src, /getPlatformOwner\(\)\./);
+  // The live reader looks up and reads under the pinned owner, in both places.
+  assert.match(src, /\/feeds\/\$\{SCANNER_FEED_OWNER\}\//);
+  assert.match(src, /readFeedUpdate\(SCANNER_FEED_OWNER,/);
+});
+
+test("the scanner upload refuses a key that is not the pinned scanner feed owner", () => {
+  const script = readFileSync(new URL("../../../scripts/upload-scanner-to-swarm.cjs", import.meta.url), "utf8");
+  assert.match(script, /SCANNER_FEED_OWNER = "\(\[0-9a-f\]\{40\}\)"/);
+  assert.match(script, /is not the scanner feed owner the server pins/);
+  // The check runs before anything is uploaded.
+  assert.ok(script.indexOf("is not the scanner feed owner") < script.indexOf("Creating tar from"));
+});
