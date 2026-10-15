@@ -124,8 +124,8 @@ export class ScannerBuildSource {
       failure = err;
     }
     // Every update `found` names was verified, so it moves the head even when the
-    // walk then stopped on a failure.
-    if (found && (!this.build || found.index > this.build.index)) {
+    // walk then stopped on a failure. The walk starts past the head, so it is newer.
+    if (found) {
       const was = this.build ? ` (was ${this.build.index})` : "";
       this.log(`[scanner] build ${found.ref} at feed index ${found.index}${was}`);
       this.build = found;

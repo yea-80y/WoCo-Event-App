@@ -236,8 +236,9 @@ const quiet = { log: () => {} };
 test("an update's collection is the 32 bytes after its timestamp; anything else is not a build", () => {
   assert.equal(scannerRefFromUpdate(update(SCANNER)), SCANNER);
   assert.equal(scannerRefFromUpdate(update(h("0"))), null, "a zero reference");
-  assert.equal(scannerRefFromUpdate(new Uint8Array(32)), null, "a bare reference");
-  assert.equal(scannerRefFromUpdate(new Uint8Array(4096)), null, "a data page");
+  assert.equal(scannerRefFromUpdate(new Uint8Array(32).fill(0x11)), null, "a bare reference");
+  assert.equal(scannerRefFromUpdate(new Uint8Array(4096).fill(0x11)), null, "a data page");
+  assert.equal(scannerRefFromUpdate(new Uint8Array(41).fill(0x11)), null, "a trailing byte");
 });
 
 test("the head is found by chunk reads from bee's lookup, which is only a lower bound", async () => {
@@ -288,7 +289,7 @@ test("a newer update is picked up on the next read", async () => {
 });
 
 test("an update that is not a scanner build is an error, and the last good build stays", async () => {
-  const faults = new Map<bigint, VerifiedSocRead>([[2n, found(new Uint8Array(4096))]]);
+  const faults = new Map<bigint, VerifiedSocRead>([[2n, found(new Uint8Array(4096).fill(0x11))]]);
   const f = feed([h("1"), SCANNER], { faults });
   const src = new ScannerBuildSource(f.reader, quiet);
   const state = await src.refresh();
