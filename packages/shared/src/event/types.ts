@@ -69,6 +69,10 @@ export interface EventGeo {
   /** RESERVED: future link to a WoCo venue profile. Empty at launch; reserving
    *  it now means the venue-profile graph needs no schema migration. */
   venueRef?: string;
+  /** An online event: it has no place, so nothing else here applies and no
+   *  distance filter can match it. The joining link is never stored here - this
+   *  feed is public, and the link is for ticket holders. */
+  online?: true;
 }
 
 // ---------------------------------------------------------------------------

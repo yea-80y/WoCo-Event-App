@@ -6,7 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normaliseGeo, isValidCountryCode, countryName, geoWithinSizeLimit, GEO_MAX_JSON_BYTES } from "../../src/event/geo.js";
+import { normaliseGeo, eventHasPlace, isValidCountryCode, countryName, geoWithinSizeLimit, GEO_MAX_JSON_BYTES } from "../../src/event/geo.js";
 import type { EventGeo } from "../../src/event/types.js";
 
 test("validates + uppercases a known ISO country", () => {
@@ -62,4 +62,23 @@ test("helpers: isValidCountryCode + countryName", () => {
   assert.equal(isValidCountryCode("ZZ"), false);
   assert.equal(countryName("de"), "Germany");
   assert.equal(countryName("ZZ"), null);
+});
+
+test("online: kept as the whole geo, every other field dropped", () => {
+  assert.deepEqual(normaliseGeo({ online: true }), { online: true });
+  assert.deepEqual(normaliseGeo({ online: true, country: "GB", lat: 52.2, lng: -0.9, venue: "Pub" }), { online: true });
+  // Only the literal `true` - a feed is organiser-written JSON.
+  assert.equal(normaliseGeo({ online: "yes" } as unknown as EventGeo), undefined);
+});
+
+test("eventHasPlace: online, or a valid coordinate pair - nothing else", () => {
+  assert.equal(eventHasPlace({ online: true }), true);
+  assert.equal(eventHasPlace({ country: "GB", city: "Northampton", lat: 52.2457874, lng: -0.8705699 }), true);
+  assert.equal(eventHasPlace({ lat: 0, lng: 0 }), true, "zero is a coordinate");
+  assert.equal(eventHasPlace(undefined), false);
+  assert.equal(eventHasPlace({}), false);
+  assert.equal(eventHasPlace({ country: "GB", city: "Northampton", venue: "The Abington" }), false, "a name is not a place to measure from");
+  assert.equal(eventHasPlace({ lat: 52.2 } as EventGeo), false);
+  assert.equal(eventHasPlace({ lat: 120, lng: 0 }), false);
+  assert.equal(eventHasPlace({ online: false } as unknown as EventGeo), false);
 });

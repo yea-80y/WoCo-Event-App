@@ -3,7 +3,7 @@ import type {
   OrderField, ClaimMode, SeriesManifestBlob,
   SignedManifestV2, EditionV1Body,
 } from "@woco/shared";
-import { verifyManifestV2, buildEditionTree, manifestV2Digest, bytesToHex0x, eventContentTopic, FEATURES, orderKeyRef } from "@woco/shared";
+import { verifyManifestV2, buildEditionTree, manifestV2Digest, bytesToHex0x, eventContentTopic, FEATURES, orderKeyRef, eventHasPlace, EVENT_PLACE_REQUIRED } from "@woco/shared";
 import { uploadToBytes } from "../swarm/bytes.js";
 import { batchForDeploy, ETHERNA_URL, isEthernaGateway, isWocoGateway, PlatformBatchUnavailable, type BatchSelection } from "../etherna/batch-router.js";
 import { readContentFeedJsonResult, invalidateContentFeedVersion } from "../swarm/soc-upload.js";
@@ -675,6 +675,10 @@ export async function updateEventMetadata(opts: {
     // Typed `null`-only, so this branch cannot set. See EventMetaUpdates.
     delete updated.subEnsLabel;
   }
+
+  // The MERGED feed, so an event made before places were required gains one on its
+  // next edit rather than being re-signed without one.
+  if (!eventHasPlace(updated.geo)) throw new Error(EVENT_PLACE_REQUIRED);
 
   // Validate the MERGED dates — a single-field update must not invert the range.
   const start = new Date(updated.startDate).getTime();
