@@ -40,14 +40,17 @@ do not show a notice in your name.
 - attendee name and any other fields **you choose to include** in your order form
 - ticket, attendance and check-in records
 - wallet addresses or pseudonymous identifiers
-- contact lists you upload
+- contact lists you upload, and the email, name and order-form answers (except a sensitive one or one
+  about another person) of attendees who join your mailing list at checkout - by ticking "Email me",
+  or by leaving "Don't email me" unticked - which we add to it
 - messages submitted through contact forms on sites you publish
 
 **Categories of data subject:** your attendees, ticket buyers, contacts and site visitors.
 
-**Special category data:** not processed, unless you choose to collect it through a custom order-form
-field. If you do, you are responsible for identifying an Article 9 condition. We would advise against
-it.
+**Special category and criminal offence data:** not processed, unless you choose to collect it
+through a custom order-form field. If you do, you are responsible for identifying an Article 9 (or
+Article 10) condition. We keep such a question optional and never add its answers to your mailing
+list. We would advise against it.
 
 ---
 

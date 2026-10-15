@@ -9,7 +9,7 @@
  * carry a record of either basis; this module does the shaping and the merge.
  */
 
-import { isKeptOnList, orderFieldKind, type MarketingContact, type OrderField } from "@woco/shared";
+import { listPlacement, type MarketingContact, type OrderField } from "@woco/shared";
 
 /** The subset of a decrypted claim blob this needs. */
 export interface DecryptedClaim {
@@ -33,17 +33,20 @@ export function provenanceRank(source: string | undefined): number {
 }
 
 export interface DrainOptions {
-  /**
-   * The event's questions. Only answers to those the organiser ticked "Keep on
-   * mailing list" are copied (owner 2026-10-13): everything else stays with the
-   * booking and is deleted with it, and a health answer never moves.
-   */
+  /** The event's questions: where each kept answer lands, under the label it has now. */
   orderFields: readonly OrderField[];
   eventTitle: string;
   eventDate?: string;
   addedAt: string;
   /** Lowercased addresses holding a checkout record for this organiser: consent or soft opt-in. */
   recorded: ReadonlySet<string>;
+  /**
+   * Per recorded address, the ids of THIS event's questions its record keeps -
+   * fixed when the buyer said yes, from the words they read (owner 2026-10-15).
+   * Only those answers are copied, so a question added since never widens it.
+   * No entry = the email alone.
+   */
+  kept: ReadonlyMap<string, readonly string[]>;
 }
 
 /**
@@ -54,7 +57,7 @@ export interface DrainOptions {
  */
 export function buildAttendeeContacts(
   claims: readonly DecryptedClaim[],
-  { orderFields, eventTitle, eventDate, addedAt, recorded }: DrainOptions,
+  { orderFields, eventTitle, eventDate, addedAt, recorded, kept: keptIds }: DrainOptions,
 ): MarketingContact[] {
   const byEmail = new Map<string, MarketingContact>();
 
@@ -62,7 +65,7 @@ export function buildAttendeeContacts(
     const email = claim.claimerEmail?.trim().toLowerCase();
     if (!email || !recorded.has(email) || byEmail.has(email)) continue;
 
-    const kept = keptAnswers(claim.fields, orderFields);
+    const kept = keptAnswers(claim.fields, orderFields, new Set(keptIds.get(email) ?? []));
     byEmail.set(email, {
       email,
       ...kept,
@@ -82,17 +85,23 @@ type KeptFields = Pick<MarketingContact, "firstName" | "lastName" | "postcode" |
  * A buyer's kept answers, placed by what each question asks: names, postcode,
  * town and phone into the contact's own fields (so the list can be searched by
  * area), anything else under its label. Answers are keyed by question id, so
- * the label is read from the event's own form.
+ * the label is read from the event's own form. A question must be both on the
+ * buyer's record and kept by today's rule: a question since marked sensitive
+ * is not copied either.
  */
-function keptAnswers(fields: Record<string, string> | undefined, orderFields: readonly OrderField[]): KeptFields {
+function keptAnswers(
+  fields: Record<string, string> | undefined,
+  orderFields: readonly OrderField[],
+  agreed: ReadonlySet<string>,
+): KeptFields {
   const out: KeptFields = {};
   const answers: Record<string, string> = {};
   for (const field of orderFields) {
-    if (!isKeptOnList(field)) continue;
-    const value = fields?.[field.id]?.trim();
-    const label = field.label.trim();
-    if (!value || !label) continue;
-    const slot = orderFieldKind(label).slot;
+    const at = field && typeof field === "object" && agreed.has(field.id) ? listPlacement(field) : null;
+    const raw = at ? fields?.[field.id] : undefined;
+    const value = typeof raw === "string" ? raw.trim() : "";
+    if (!at || !value) continue;
+    const { slot, label } = at;
     // A single name field goes to firstName whole: this is a greeting line, and
     // an invented surname reads worse than a full name.
     if (slot === "fullName") out.firstName ??= value;

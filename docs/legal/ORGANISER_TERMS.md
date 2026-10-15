@@ -89,7 +89,8 @@ attendees submit.
    comes from them rather than from us.
 3. **Only ask for what you need.** Every field you add to an order form is data you are responsible
    for. Do not collect special category data (health, religion, ethnicity, sexuality) unless you have
-   a lawful basis and have thought carefully about it.
+   a lawful basis and have thought carefully about it. We keep such a question optional and never add
+   its answers to your mailing list.
 4. **Honour data subject rights.** Your attendees' access, correction and erasure requests come to
    you. You must respond within one month.
 5. **Only send marketing where you are permitted to.** See section 5.
@@ -144,6 +145,11 @@ to an unticked "Don't email me" box. **By choosing that answer, you warrant that
 buyers only about your own similar events.** If you also promote other people's events, choose the
 other answer: buyers then tick a box if they want your emails. Each buyer's choice keeps the basis it
 was made under if you change your answer later.
+
+**Your mailing list.** When an attendee joins your mailing list (by ticking "Email me", or by
+leaving "Don't email me" unticked), their email, name and the answers they gave (except sensitive
+ones, or ones about someone else) are added to it. You decide what to ask, and you're responsible for
+how you use your list.
 
 **When you upload a contact list, you warrant that you have a lawful basis for every address on it.**
 We take that warranty at face value; if it is wrong, the liability is yours.

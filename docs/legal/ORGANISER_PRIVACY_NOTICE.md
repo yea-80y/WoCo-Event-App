@@ -158,9 +158,8 @@ every organiser gives, already picked, and they change it if it is not theirs:
 | How long you keep details | 6 (default) or 12 months after the event. Pick-only, because the retention sweep carries it out (#547). No 3: a card dispute can arrive ~120 days after a sale |
 | Automated decisions | Stated for everyone: neither the organiser nor WoCo decides about attendees purely by computer with a legal or similar effect; Stripe screens payments under its own policy |
 | Soft opt-in declaration | Removed (see 5a). Replaced 2026-10-14 by one question, "Do you only email people about your own events?" (§6) |
-| (new) Tailored mailing list | Default on: what is kept on the mailing list (their area, say) chooses which events members hear about. The booking's own answers are deleted on schedule for everyone |
-| (new) Per question: "Keep on mailing list" | Pre-ticked from the label for names, area, postcode and town; copied onto the contact when the buyer joins the list; the notice names each kept question |
-| (new) Per question: health | Pre-set from the label (allergies, dietary, access needs...): always optional, a consent line at the question, never kept on a list; the notice adds a purpose + Art. 9 basis sentence |
+| Mailing list contents (2026-10-15) | No per-question choice, and one rule for both checkout boxes: a buyer who joins the list (a ticked "Email me", or "Don't email me" left unticked) keeps their email, name and every answer except a sensitive one or one about another person. The checkout wording and the notice name what is kept, and the notice always gives kept answers one purpose: "so we can choose which events to tell you about". The consent record stores the kept question ids, which are all the list import copies, for that record's event only. The booking's own answers are deleted on schedule for everyone. (The 2026-10-13 tailored-list choice is gone; a notice that still carries it is read without it) |
+| (new) Per question: sensitive | Pre-set from the label for every Art. 9 category and Art. 10 (health, diet, access, religion, ethnicity, sexuality, politics, union membership, genetic/biometric, criminal convictions); "Not sensitive?" undoes it: always optional, a consent line at the question, never kept on a list; the notice adds a purpose + Art. 9 basis sentence |
 
 Every choice is the organiser's instruction to WoCo as processor. Locking one would make WoCo decide
 purposes or retention, which is a controller's call. The editor drops the "not legal advice" and
@@ -190,14 +189,19 @@ a simple way to say no at the sale. The editor asks one plain question, "Do you 
 about your own events?":
 
 - **Yes** (a new draft's default) stores `marketingBasis: "own-events"`. The checkout shows "We'll
-  email you about similar events from {organiser}. You can unsubscribe from any email." and an
-  unticked "Don't email me about similar events". The notice says: "To email you about our similar
+  email you about similar events from {organiser}, and keep your email{keeps} for this. You can
+  unsubscribe from any email." and an unticked "Don't email me about similar events". `{keeps}` is
+  built from the event's own questions (wording v2, 2026-10-15) so the text names exactly what is
+  kept: "your email", "your email and name", "your email and your answers to: A, B" or "your email,
+  name and your answers to: A, B" - never a sensitive question or one about another person. Both
+  boxes name the same keeps (one rule, owner 2026-10-15). The notice says: "To email you about our similar
   events, unless you tick 'Don't email me' at checkout. This is the 'soft opt-in' in the UK's
   electronic marketing rules: you bought from us, you could say no when you did, and every email has a
   one-click unsubscribe. Our basis for using your details this way is our legitimate interest in
   telling customers about similar events. You can object at any time and we will stop."
 - **No** (venues and promoters who market other people's events) stores nothing: absent = consent
-  mode, today's unticked "Email me" and today's sentence. Code never moves a confirmed notice between
+  mode, an unticked "Email me about future events from this organiser. We'll keep your email{keeps}
+  for this. You can unsubscribe at any time.", `{keeps}` as above. Code never moves a confirmed notice between
   modes.
 
 The server reads the mode from the CONFIRMED notice; the page echoes it and create-checkout refuses a

@@ -11,10 +11,10 @@
  * Two halves, both pure so client, embed and tests read the same thing:
  *   - the STORED part: what only the organiser can say - who they are and how to
  *     reach them, plus their CHOICES (who they share with, how long they keep
- *     order answers, whether their mailing list is tailored, whether they email only
- *     about their own events). Choices are picked
- *     from the options below, each a sentence written here, so 99% of organisers
- *     never write legal prose; the "anything else" boxes end a sentence we start.
+ *     order answers, whether they email only about their own events). Choices
+ *     are picked from the options below, each a sentence written here, so 99% of
+ *     organisers never write legal prose; the "anything else" boxes end a
+ *     sentence we start.
  *     It is their own public content, written to their own client-signed feed
  *     (`organiserNoticeContentTopic`), validated here on every read.
  *   - the GENERATED part: every fact WoCo already knows, taken from docs/legal.
@@ -29,7 +29,7 @@
 
 import type { OrderField } from "../crypto/types.js";
 import { ORDER_EMAIL_FIELD_ID } from "../event/order-email.js";
-import { isHealthField, isKeptOnList } from "../event/order-field-kinds.js";
+import { isHealthField, listPlacement } from "../event/order-field-kinds.js";
 import type { MarketingMode } from "./consent.js";
 
 /** v2 (2026-10-13): pick-list choices replaced v1's free-text answers. v1 notices are refused - re-confirm. */
@@ -90,9 +90,9 @@ export const NOTICE_SHARING_TEXT: Record<NoticeSharing, string> = {
 };
 
 /**
- * Months after the event when a buyer's order-form answers are deleted, unless
- * they are on the organiser's mailing list and the list is tailored. Pick-only,
- * never free text: the retention sweep carries it out (#547). No shorter option
+ * Months after the event when a buyer's order-form answers are deleted (what a
+ * mailing-list entry keeps stays until they unsubscribe). Pick-only, never free
+ * text: the retention sweep carries it out (#547). No shorter option
  * (owner 2026-10-13): a card dispute can arrive ~120 days after a sale, and the
  * organiser may need the attendee's details to answer it.
  */
@@ -108,12 +108,10 @@ export type NoticeRetentionMonths = (typeof NOTICE_RETENTION_MONTHS)[number];
 export const NOTICE_DEFAULTS: {
   sharing: NoticeSharing[];
   orderRetentionMonths: NoticeRetentionMonths;
-  tailoredMarketing: boolean;
   marketing: MarketingMode;
 } = {
   sharing: [...NOTICE_SHARING],
   orderRetentionMonths: 6,
-  tailoredMarketing: true,
   marketing: "own-events",
 };
 
@@ -134,11 +132,6 @@ export interface OrganiserNotice {
   extraSharing?: string;
   extraOrderFormUse?: string;
   orderRetentionMonths: NoticeRetentionMonths;
-  /**
-   * Mailing-list members' order answers (their area, say) choose which events
-   * they hear about, and are kept while they stay on the list. Absent = never.
-   */
-  tailoredMarketing?: true;
   /**
    * The organiser emails buyers only about their OWN similar events, so the
    * checkout offers the PECR soft opt-in ("Don't email me") instead of asking for
@@ -186,9 +179,11 @@ export function cleanNoticeText(field: OrganiserNoticeField, raw: unknown): stri
 }
 
 const KNOWN_KEYS = new Set<string>([
-  "format", "address", "confirmedAt", "sharing", "orderRetentionMonths", "tailoredMarketing", "marketingBasis",
+  "format", "address", "confirmedAt", "sharing", "orderRetentionMonths", "marketingBasis",
   ...Object.keys(ORGANISER_NOTICE_LIMITS),
 ]);
+/** Written before 2026-10-15, when it stopped meaning anything: read past, never refused. */
+const RETIRED_KEYS = new Set<string>(["tailoredMarketing"]);
 const OPTIONAL_FIELDS = ["contactEmail", "postalAddress", "icoRegistration", "extraSharing", "extraOrderFormUse"] as const;
 
 /**
@@ -200,7 +195,7 @@ const OPTIONAL_FIELDS = ["contactEmail", "postalAddress", "icoRegistration", "ex
 export function validateOrganiserNotice(raw: unknown, expectedAddress: string): OrganiserNotice | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
-  for (const k of Object.keys(o)) if (!KNOWN_KEYS.has(k)) return null;
+  for (const k of Object.keys(o)) if (!KNOWN_KEYS.has(k) && !RETIRED_KEYS.has(k)) return null;
   if (o.format !== ORGANISER_NOTICE_FORMAT) return null;
   if (typeof o.address !== "string" || !ADDRESS_RE.test(o.address)) return null;
   if (o.address !== expectedAddress.toLowerCase()) return null;
@@ -223,10 +218,6 @@ export function validateOrganiserNotice(raw: unknown, expectedAddress: string): 
     const v = cleanNoticeText(f, o[f]);
     if (v === null) return null;
     if (v !== undefined) out[f] = v;
-  }
-  if (o.tailoredMarketing !== undefined) {
-    if (typeof o.tailoredMarketing !== "boolean") return null;
-    if (o.tailoredMarketing) out.tailoredMarketing = true;
   }
   // Only the one value: consent mode is the field's absence, never a stored "consent".
   if (o.marketingBasis !== undefined) {
@@ -338,11 +329,15 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
   // An unconfirmed draft reads with the defaults a new notice starts from.
   const sharing = n ? n.sharing : NOTICE_DEFAULTS.sharing;
   const months = n ? n.orderRetentionMonths : NOTICE_DEFAULTS.orderRetentionMonths;
-  const tailored = n ? n.tailoredMarketing === true : NOTICE_DEFAULTS.tailoredMarketing;
   const ownEvents = (n ? noticeMarketingMode(n) : NOTICE_DEFAULTS.marketing) === "own-events";
   const asksQuestions = !ev || labels.length > 0;
-  const fieldLabel = (f: OrderField) => String(f.label || f.placeholder || "").replace(/\s+/g, " ").trim().slice(0, 80);
-  const keptLabels = ev ? (ev.orderFields ?? []).filter(isKeptOnList).map(fieldLabel).filter(Boolean) : [];
+  // Named by `listPlacement`, as the checkout wording and the list import read them:
+  // what this says is kept is what is kept, whichever box the buyer saw.
+  const keptLabels: string[] = [];
+  for (const f of Array.isArray(ev?.orderFields) ? ev.orderFields : []) {
+    const label = f && typeof f === "object" ? listPlacement(f)?.label : undefined;
+    if (label && !keptLabels.includes(label)) keptLabels.push(label);
+  }
   // A site's notice covers every event, so it says what happens IF a form asks.
   const asksHealth = ev ? (ev.orderFields ?? []).some(isHealthField) : true;
 
@@ -405,12 +400,10 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
               "The box is never ticked for you, saying no does not affect your ticket, and every email has a " +
               "one-click unsubscribe.",
         ],
-        ...(tailored
-          ? [[
-              "If you join our mailing list, we also use the answers kept on it, such as your area, to choose " +
-                "which events to tell you about. This stops when you unsubscribe.",
-            ]]
-          : []),
+        [
+          "If you join our mailing list, we also use the answers kept on it, such as your area, so we can " +
+            "choose which events to tell you about. This stops when you unsubscribe.",
+        ],
       ],
     },
   ];
@@ -428,9 +421,9 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
     why.push({
       kind: "p",
       content: [
-        (ev ? "Your answers about allergies, dietary or access needs: " : "If our form asks about allergies, dietary or access needs: ") +
-          "answering is optional, and we use your answer only to look after you at the event, never for " +
-          "marketing. Our basis is your explicit consent, which you give by answering.",
+        (ev ? "Your answers to sensitive questions (such as health, dietary or access needs, or religion): " : "If our form asks a sensitive question (such as health, dietary or access needs, or religion): ") +
+          "answering is optional, and we use your answer only for the event, never for marketing, and it is " +
+          "never added to our mailing list. Our basis is your explicit consent, which you give by answering.",
       ],
     });
   }
@@ -560,7 +553,7 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
           "If you join our mailing list: your email address" +
             (ev
               ? keptLabels.length ? ` and your answers to ${keptLabels.join(", ")}` : ""
-              : " and any answers an event's form says it keeps") +
+              : " and your answers to an event's questions, except sensitive ones or ones about someone else") +
             ", until you unsubscribe.",
         ],
         [`Guest lists we download or put on a door scanner: deleted within ${months} months of the event.`],

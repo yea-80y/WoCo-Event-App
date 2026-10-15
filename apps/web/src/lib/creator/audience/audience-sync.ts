@@ -426,6 +426,11 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
       const recorded = new Set(
         [...lower(answer.consented), ...lower(answer.softOptIn)].filter((e) => !suppressed.has(e)),
       );
+      // A record names the questions of the event it was made at: another event's ids keep nothing here.
+      const kept = new Map<string, readonly string[]>();
+      for (const [email, scope] of Object.entries(answer.keptFields ?? {})) {
+        if (scope && scope.eventId === ev.eventId && Array.isArray(scope.fieldIds)) kept.set(email.trim().toLowerCase(), scope.fieldIds);
+      }
       incoming.push(
         ...buildAttendeeContacts(claims, {
           orderFields,
@@ -433,6 +438,7 @@ async function run(deps: SyncDeps): Promise<SyncResult> {
           eventDate: ev.startDate,
           addedAt,
           recorded,
+          kept,
         }),
       );
     }

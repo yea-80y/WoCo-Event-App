@@ -8,7 +8,10 @@
  * dropped in own-events mode; the pay panel without the control (the pre-2026-10-14
  * gap); the control below the pay button; ClaimButton sending a mode it did not
  * render, or keeping a box ticked across a mode change; the 409 not re-reading
- * claim-status; the api client dropping `marketing` from the body.
+ * claim-status; the api client dropping `marketing` from the body; ClaimButton
+ * building the words from anything but the event's questions, or sending other
+ * words than the panels render; the wording-changed 409 not re-reading;
+ * ClaimButton narrowing the keeps by mode or by anything claim-status sends.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -33,30 +36,37 @@ const file = join(out, "MarketingControl.js");
 writeFileSync(file, compiled.js.code);
 const Control = (await import(pathToFileURL(file).href)).default;
 
+const { marketingWording, listKeeps } = await import("@woco/shared");
+const words = (mode: "consent" | "own-events", organiser?: string, labels: string[] = []) =>
+  marketingWording(mode, 2, organiser, listKeeps(labels.map((label) => ({ id: label, type: "text" as const, label, required: false }))))!;
+
 const html = (props: Record<string, unknown>) =>
   render(Control, { props: { onTickedChange: () => {}, ...props } })
     .body.replace(/ class="svelte-[a-z0-9]+"/g, "")
     .replace(/ svelte-[a-z0-9]+"/g, '"')
     .replace(/<!--[^>]*-->/g, "");
 
-test("own-events: the sentence names the organiser, and the box is an unticked 'Don't email me'", () => {
-  const shown = html({ mode: "own-events", organiser: "Punk Pub Ltd", ticked: false });
-  assert.ok(shown.includes("We'll email you about similar events from Punk Pub Ltd. You can unsubscribe from any email."));
+test("own-events: the sentence names the organiser and what is kept, and the box is an unticked 'Don't email me'", () => {
+  const shown = html({ wording: words("own-events", "Punk Pub Ltd", ["Full name", "Town"]), ticked: false });
+  assert.ok(shown.includes("We'll email you about similar events from Punk Pub Ltd, and keep your email, name and your answers to: Town for this. You can unsubscribe from any email."));
   assert.ok(shown.includes("Don't email me about similar events"));
   assert.doesNotMatch(shown, /checked/);
   assert.doesNotMatch(shown, /Email me about future events/);
+  // One rule for both boxes: the consent box names the same keeps.
+  assert.ok(html({ wording: words("consent", "Punk Pub Ltd", ["Full name", "Town"]), ticked: false })
+    .includes("We'll keep your email, name and your answers to: Town for this."));
 });
 
-test("consent: today's unticked 'Email me' box and no sentence", () => {
-  const shown = html({ mode: "consent", organiser: "Punk Pub Ltd", ticked: false });
-  assert.ok(shown.includes("Email me about future events from this organiser. You can unsubscribe at any time."));
+test("consent: an unticked 'Email me' box naming what is kept, and no sentence", () => {
+  const shown = html({ wording: words("consent", "Punk Pub Ltd"), ticked: false });
+  assert.ok(shown.includes("Email me about future events from this organiser. We'll keep your email for this. You can unsubscribe at any time."));
   assert.doesNotMatch(shown, /checked/);
   assert.doesNotMatch(shown, /similar events|Don't email me/);
 });
 
 test("the box shows what the buyer did, in either mode", () => {
-  assert.match(html({ mode: "consent", ticked: true }), /checked/);
-  assert.match(html({ mode: "own-events", organiser: "P", ticked: true }), /checked/);
+  assert.match(html({ wording: words("consent"), ticked: true }), /checked/);
+  assert.match(html({ wording: words("own-events", "P"), ticked: true }), /checked/);
 });
 
 // --- both main-app panels show it, above the pay button ---------------------
@@ -65,7 +75,7 @@ for (const [file, button] of [
   ["lib/attendee/events/claim/OrderForm.svelte", "Continue to payment"],
   ["lib/attendee/events/claim/StripePayPanel.svelte", "Pay with card"],
 ] as const) {
-  test(`${file.split("/").pop()} renders the control above its pay button, in the mode it is given`, () => {
+  test(`${file.split("/").pop()} renders the control above its pay button, with the words it is given`, () => {
     const src = code(read(file));
     const markup = src.slice(src.indexOf("</script>"));
     const at = markup.indexOf("<MarketingControl");
@@ -74,22 +84,25 @@ for (const [file, button] of [
     // Unconditional: no {#if} hides it on this panel.
     const before = markup.slice(0, at);
     assert.equal((before.match(/\{#if/g) ?? []).length - (before.match(/\{\/if\}/g) ?? []).length, 0);
-    assert.match(markup, /mode=\{marketingMode\}/);
-    assert.match(markup, /organiser=\{marketingOrganiser\}/);
+    assert.match(markup, /wording=\{marketingWording\}/);
     assert.match(markup, /ticked=\{marketingTicked\}/);
-    assert.doesNotMatch(src, /MARKETING_CONSENT_NOTICE/, "the wording comes through the control, by mode");
+    assert.doesNotMatch(src, /MARKETING_CONSENT_NOTICE|marketingWording\(/, "the words come from ClaimButton, never rebuilt here");
   });
 }
 
 // --- ClaimButton: the mode it renders is the mode it sends -------------------
 
-test("ClaimButton takes the mode from claim-status and sends the mode, box and surface it showed", () => {
+test("ClaimButton takes the mode from claim-status and sends the mode, box, surface and words it showed", () => {
   const src = code(read("lib/attendee/events/ClaimButton.svelte"));
   assert.match(src, /const marketingMode = \$derived<MarketingMode>\(shownMarketingMode\(status\)\)/);
-  assert.match(src, /marketing: marketingChoice\(marketingMode, marketingTicked, showOrderForm \? "order-form" : "pay-panel"\)/);
+  // One object, built from the event's own questions, rendered by both panels and sent.
+  // What is kept is the event's questions alone, whichever box is shown (owner 2026-10-15).
+  assert.match(src, /const marketingWording = \$derived\(\s*buildMarketingWording\(marketingMode, MARKETING_CURRENT_VERSION\[marketingMode\], marketingOrganiser, listKeeps\(orderFields\)\)!,\s*\)/);
+  assert.doesNotMatch(src, /tailored/i);
+  assert.match(src, /marketing: marketingChoice\(marketingMode, marketingTicked, showOrderForm \? "order-form" : "pay-panel", marketingWording\)/);
   // Both panels get the same state.
   assert.equal(src.match(/onMarketingChange=\{setMarketingTicked\}/g)?.length, 2);
-  assert.equal(src.match(/\{marketingMode\}/g)?.length, 2);
+  assert.equal(src.match(/\{marketingWording\}/g)?.length, 2);
 });
 
 test("ClaimButton: a box ticked under one mode reads unticked under the other", () => {
@@ -99,9 +112,9 @@ test("ClaimButton: a box ticked under one mode reads unticked under the other", 
   assert.match(src, /\$state<\{ mode: MarketingMode; ticked: boolean \}>\(\{ mode: "consent", ticked: false \}\)/);
 });
 
-test("ClaimButton: MARKETING_MODE_CHANGED re-reads claim-status and asks again - it never retries the charge", () => {
+test("ClaimButton: either marketing refusal re-reads claim-status and asks again - it never retries the charge", () => {
   const src = code(read("lib/attendee/events/ClaimButton.svelte"));
-  const branch = src.slice(src.indexOf("err.code === MARKETING_MODE_CHANGED"));
+  const branch = src.slice(src.indexOf("isMarketingChanged(err.code)"));
   const body = branch.slice(0, branch.indexOf("}") + 1);
   assert.match(body, /await refreshStatusNow\(\)/);
   assert.doesNotMatch(body, /handleStripeCheckout|createCheckoutSession/);

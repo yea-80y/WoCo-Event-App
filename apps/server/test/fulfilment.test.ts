@@ -702,6 +702,27 @@ describe("happy path", () => {
     assert.equal(f.consents[0].organiserAddress, ORGANISER);
   });
 
+  test("the wording hash and the event's questions travel to capture, which rebuilds and checks the words", async () => {
+    const orderFields = [{ id: "t", type: "text" as const, label: "Town", required: false }];
+    const { f } = await run(
+      { marketing: { marketingMode: "consent", marketingTicked: "1", marketingVersion: "2", marketingSurface: "order-form", marketingWordingHash: "ab".repeat(32) } },
+      { event: eventFeed({ orderFields }) },
+    );
+    assert.equal(f.consents.length, 1);
+    assert.equal(f.consents[0].wordingHash, "ab".repeat(32));
+    assert.deepEqual(f.consents[0].orderFields, orderFields);
+    // No hash stamped: capture gets none, and records nothing for a yes.
+    const { f: g } = await run({ consent: "1" });
+    assert.equal(g.consents[0].wordingHash, undefined);
+    // A session stamped with the retired tailoring key: capture rebuilds the words without it.
+    const { f: t } = await run(
+      { marketing: { marketingMode: "own-events", marketingTicked: "0", marketingVersion: "2", marketingSurface: "embed", marketingOrganiser: "P", marketingTailored: "1", marketingWordingHash: "ab".repeat(32) } },
+      { event: eventFeed({ orderFields }) },
+    );
+    assert.equal(t.consents.length, 1);
+    assert.equal("tailored" in t.consents[0], false);
+  });
+
   test("marketing keys that do not parse record nothing, in either mode - never a guess", async () => {
     for (const marketing of [
       { marketingMode: "own-events", marketingVersion: "1", marketingSurface: "embed" }, // no box state
@@ -1086,6 +1107,9 @@ describe("stop reasons", () => {
     assert.equal(outcome.refund.kind, "not-needed");
     assert.deepEqual(f.minted.length, 1, "minted against the record, with no feed in hand");
     assert.equal(f.calls.includes("chainEventEndMs"), true, "the chain end guard still applies");
+    // The buyer's yes still reaches capture, with no organiser, so it is counted rather than lost.
+    assert.equal(f.consents.length, 1);
+    assert.equal(f.consents[0].organiserAddress, "");
   });
 
   test("stopped with no payment intent on the session: outcome says so, nothing else breaks", async () => {

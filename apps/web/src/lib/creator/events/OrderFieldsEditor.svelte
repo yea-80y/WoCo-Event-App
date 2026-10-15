@@ -26,25 +26,24 @@
         label: "",
         required: false,
         health: false,
-        keepOnList: false,
       },
     ];
   }
 
-  // Questions whose flags the organiser set by hand: their label no longer
-  // re-guesses them, so an undo sticks while they keep typing.
+  // Questions whose sensitive flag the organiser set by hand: their label no
+  // longer re-guesses it, so an undo sticks while they keep typing.
   let manual = $state<Record<string, true>>({});
 
   function update(index: number, changes: Partial<OrderField>) {
     orderFields = orderFields.map((f, i) => (i === index ? { ...f, ...changes } : f));
   }
 
-  /** Pre-set the flags from what the label says it asks (owner 2026-10-13: defaults do the work). */
+  /** Pre-set the sensitive flag from what the label says it asks (owner 2026-10-13: defaults do the work). */
   function guessFlags(index: number) {
     const f = orderFields[index];
     if (!f || manual[f.id]) return;
     const kind = orderFieldKind(f.label);
-    update(index, { health: kind.health, keepOnList: kind.keepByDefault, ...(kind.health ? { required: false } : {}) });
+    update(index, { health: kind.health, ...(kind.health ? { required: false } : {}) });
   }
 
   function setFlags(index: number, changes: Partial<OrderField>) {
@@ -125,8 +124,8 @@
 
         {#if field.health}
           <p class="health-note">
-            Health question - kept optional and never added to your mailing list.
-            <button type="button" class="link-btn" onclick={() => setFlags(i, { health: false })}>Not a health question?</button>
+            Sensitive question - kept optional and never added to your mailing list.
+            <button type="button" class="link-btn" onclick={() => setFlags(i, { health: false })}>Not sensitive?</button>
           </p>
         {:else}
           <div class="flag-row">
@@ -134,14 +133,8 @@
               <input type="checkbox" bind:checked={field.required} />
               <span>Required</span>
             </label>
-            <label class="toggle-row compact">
-              <input
-                type="checkbox"
-                checked={field.keepOnList === true}
-                onchange={(e) => setFlags(i, { keepOnList: e.currentTarget.checked })}
-              />
-              <span>Keep on mailing list</span>
-            </label>
+            <!-- The guess can miss: the only way a missed question stays off the mailing list. -->
+            <button type="button" class="link-btn" onclick={() => setFlags(i, { health: true, required: false })}>Sensitive?</button>
           </div>
         {/if}
       </div>
@@ -186,8 +179,13 @@
 
   .flag-row {
     display: flex;
-    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
     gap: 0.25rem 1.25rem;
+  }
+
+  .flag-row .link-btn {
+    font-size: 0.8125rem;
   }
 
   .health-note {

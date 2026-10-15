@@ -17,17 +17,43 @@
  * organiser's notice before charging.
  */
 
-import { marketingDecision, marketingWording, type MarketingChoice } from "@woco/shared";
+import { listKeeps, marketingDecision, marketingWording, type MarketingChoice, type OrderField } from "@woco/shared";
+import { marketingWordingHash } from "./checkout-choice.js";
 import { consentBasis, getConsent, recordConsent, type ConsentRecord, type ConsentSource } from "./consent-store.js";
 import { liftDeclineOnConsent, suppressOrg } from "./suppression-store.js";
 
+/**
+ * Opt-ins fulfilment could not record since boot, for `/api/health`
+ * `marketingOptInsDropped`. Each is a buyer who said yes and will not be mailed:
+ * the safe way to be wrong, but a pattern of them is a fault worth seeing, and a
+ * log line alone reached nobody. Counts only - the endpoint is public.
+ */
+let droppedSinceBoot = 0;
+let lastDroppedAt: string | null = null;
+
+function dropOptIn(why: string): void {
+  droppedSinceBoot += 1;
+  lastDroppedAt = new Date().toISOString();
+  console.error(`[consent] ${why} - nothing recorded`);
+}
+
+/** No `ok`: a report, not an alarm (the cause is usually an organiser's edit mid-checkout). */
+export function droppedOptInsHealth(): { sinceBoot: number; lastAt: string | null } {
+  return { sinceBoot: droppedSinceBoot, lastAt: lastDroppedAt };
+}
+
 export interface CaptureConsentInput {
   emailHash: string;
+  /** Empty when fulfilment could not read the event: there is then no organiser to record for. */
   organiserAddress: string;
   /** What the page showed, and what the buyer did with the box. */
   choice: MarketingChoice;
   /** The organiser's name as the own-events sentence showed it. */
   organiserName?: string;
+  /** The event's questions as fulfilment read them: the wording names what the list keeps. */
+  orderFields?: readonly OrderField[];
+  /** create-checkout's hash of the wording it matched to the page's. */
+  wordingHash?: string;
   /** ISO timestamp of the decision — also the ordering evidence for a lift. */
   ts: string;
   eventId?: string;
@@ -51,23 +77,34 @@ export interface CaptureConsentInput {
  * stored as a consent record: "no" needs no new enforcement path, and routing it
  * through suppression makes it survive the organiser re-uploading the same CSV.
  *
- * The wording stored is looked up here by mode and version - never taken from
- * the page - so the record holds what that control said.
+ * The wording stored is rebuilt here from the mode, version, organiser name and
+ * the event's questions - never taken from the page - and recorded only if it
+ * hashes to what create-checkout matched to the page's text, so the record holds
+ * what that control said. The ids of the questions it named are stored beside
+ * it, so a later edit to the questions never widens what this buyer agreed to.
  */
 export function captureCheckoutConsent(input: CaptureConsentInput): void {
-  const { emailHash, organiserAddress, choice, organiserName, ts, eventId, source = "checkout" } = input;
+  const { emailHash, organiserAddress, choice, organiserName, orderFields, wordingHash, ts, eventId, source = "checkout" } = input;
   const decision = marketingDecision(choice.mode, choice.ticked);
+
+  if (!organiserAddress) {
+    if (decision === "declined") console.error(`[consent] ${choice.mode} v${choice.version}: decline with no organiser (event unreadable) - nothing recorded`);
+    else dropOptIn(`${choice.mode} v${choice.version}: no organiser (event unreadable)`);
+    return;
+  }
 
   if (decision === "declined") {
     suppressOrg(emailHash, organiserAddress, "declined", ts);
     return;
   }
 
-  const wording = marketingWording(choice.mode, choice.version, organiserName);
-  if (!wording) {
-    // create-checkout refuses a version it does not know, so this is unreachable;
-    // a record without the wording shown would be no evidence at all.
-    console.error(`[consent] no wording for ${choice.mode} v${choice.version} - nothing recorded`);
+  const keeps = listKeeps(orderFields);
+  const wording = marketingWording(choice.mode, choice.version, organiserName, keeps);
+  if (!wording || !wordingHash || marketingWordingHash(wording) !== wordingHash) {
+    // A record without the wording shown would be no evidence at all. The hash
+    // misses only if the event's questions changed between checkout and payment;
+    // no record means the buyer is not mailed - the safe way to be wrong.
+    dropOptIn(`${choice.mode} v${choice.version}: wording not the one checkout showed`);
     return;
   }
   const record: ConsentRecord = {
@@ -79,6 +116,8 @@ export function captureCheckoutConsent(input: CaptureConsentInput): void {
     ...(wording.sentence ? { control: wording.box } : {}),
     version: choice.version,
     surface: choice.surface,
+    // From the same rebuild as the words just matched: the list import copies these and no more.
+    keptFields: keeps.fieldIds,
   };
 
   if (decision === "soft-opt-in") {

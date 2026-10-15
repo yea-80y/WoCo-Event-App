@@ -171,6 +171,12 @@ export interface MarketingCheckResult {
    */
   softOptIn?: string[];
   /**
+   * For an address in `consented` or `softOptIn`: the event its record was made
+   * at and the ids of that event's questions it keeps. The buyer sync copies
+   * those answers and no others; an address without an entry keeps only its email.
+   */
+  keptFields?: Record<string, { eventId: string; fieldIds: string[] }>;
+  /**
    * Normalized emails this organiser has already reached through the platform
    * without a bounce (or who opted in at their checkout). They go straight
    * away; everyone else on a first send goes in paced batches (#619). Absent
