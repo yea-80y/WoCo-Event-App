@@ -182,8 +182,8 @@ account** — we cannot export encrypted data for you.
 
 **Copies you hold.** Data you export from your dashboard, or load onto a door-scanning device, is a
 copy held by you as controller and is outside our processing. The email and card name we seal for
-your door devices at each sale are within our processing until a door device opens them; what a door
-device then holds is your copy, and our scanner deletes it automatically after the event. You are
+your door devices at each sale are within our processing while we hold them; what a door device
+opens is your copy, and our scanner deletes it automatically after the event. You are
 responsible for keeping it
 secure, for keeping it no longer than you need it, and for deleting a data subject's data from it
 when we tell you it has been erased.
@@ -251,8 +251,8 @@ confirm and publish the notice. It is your standing instruction to us, carried o
 4. **Unpaid checkouts.** Answers from a checkout that is never paid are deleted after 24 hours.
 5. **Door lists.** A guest list you load onto a door scanner through us, and the email and card name
    we seal for your door devices at each sale, are deleted 2 days after the event, and each ticket's
-   door entry when its order is erased. Our door scanner deletes its copy when the door pass expires,
-   24 hours after the event.
+   door entry when its order is erased. Our door scanner deletes its copy once the door pass has
+   expired (24 hours after the event ends), the next time the scanner is opened.
 6. **When we cannot tell.** If we cannot establish an order's period or the event's onchain end, we
    keep the order rather than erase it early, and look into why.
 7. **Sooner.** You can ask us to erase any order before then, and attendees can ask under section 3(5).
