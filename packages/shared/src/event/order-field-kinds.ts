@@ -36,21 +36,27 @@ const SENSITIVE_RE = new RegExp(
     String.raw`access(ibility)?\s+(needs?|requirements?)|accessibility|pregnan|special\s+(needs?|requirements?)`,
     String.raw`coeliac|celiac|epilep|diabet|asthma|\bmental\b|neurodiverg|autis|\badhd\b|\bdeaf|hearing\s+(loop|impair|aid)`,
     String.raw`\bblind\b|visual(ly)?\s+impair|\bbsl\b|sign\s+language`,
-    // Religion or belief.
+    // A food question is read as dietary, so "Favourite food?" costs a click (owner 2026-10-15).
+    String.raw`vegan|vegetarian|pescatarian|gluten|\bnuts?\b|peanut|dairy|lactose|\bfoods?\b|\bmeals?\b|menu`,
+    String.raw`(additional|support|extra)\s+needs|adjustments|guide\s+dog|assistance\s+dog|\bcarer|companion|blue\s+badge`,
+    String.raw`vaccin|covid|\bhiv\b|injur|dyslex|dyspra|impair|hard\s+of\s+hearing|sighted|seizure|photosensitiv`,
+    String.raw`lift\s+access|step[-\s]?free`,
+    // Religion or belief. "Christian name" is a first name.
     String.raw`religio|\bfaith\b|\bbeliefs?\b|halal|kosher|\bpray|worship|\bchurch|mosque|synagogue|gurdwara`,
-    String.raw`\bjewish\b|\bmuslim\b|\bhindu\b|\bsikh\b|\bbuddhis|\bcatholic\b|\batheis`,
+    String.raw`jewish|muslim|\bislam|hindu|\bsikh|buddhis|\bcatholic|protestant|\batheis|\bchristian(?!\s+names?\b)`,
     // Racial or ethnic origin.
     String.raw`\bethnic|\bracial\b|skin\s+colou?r|\bbame\b|\bbipoc\b`,
     // Sexual orientation or sex life.
     String.raw`sexual|\bsex\s+life\b|\blgbt|\bgay\b|\blesbian\b|\bqueer\b`,
-    // Political opinions.
+    // Political opinions. Voting for a favourite act is a poll, not an opinion.
     String.raw`politic|voting\s+intention|\bwho\s+(did|do|will|would)\s+you\s+vote|\bparty\s+(member|affiliation|support)`,
+    String.raw`\bvot(e[ds]?|ers?|ing)\b(?!\s+for\s+(your|the|a|an|our)\s+(favou?rite|best|top)\b)`,
     // Trade union membership.
     String.raw`trade\s+union|\bunion\s+(member|membership|rep)\b`,
     // Genetic or biometric data.
     String.raw`genetic|\bdna\b|biometric|fingerprint|facial\s+(recognition|scan)|retina|\biris\s+scan`,
     // Criminal convictions and offences (Art. 10).
-    String.raw`criminal|conviction|\boffen[cs]es?\b|\bdbs\b|\bcrb\b|police\s+(record|check)|\bunspent\b`,
+    String.raw`criminal|conviction|\boffen[cs]es?\b|offender|\bcautions?\b|\bdbs\b|\bcrb\b|police\s+(record|check)|\bunspent\b`,
   ].join("|"),
   "i",
 );

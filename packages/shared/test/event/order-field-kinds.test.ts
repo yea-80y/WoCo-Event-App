@@ -2,7 +2,10 @@
  * What an order-form question asks, read from its label (`event/order-field-kinds.ts`).
  *
  * MUTATION (each went red, then restored): drop a category from SENSITIVE_RE and
- * its line of "every UK GDPR Art. 9 category" goes red; let `isHealthField` read
+ * its line of "every UK GDPR Art. 9 category" goes red; drop any line of the
+ * dietary/access/health additions, `offender|caution`, or food|meal|menu and
+ * "everyday ... labels" goes red, and drop the `christian` or `vote` lookahead and
+ * "stay narrow" goes red (2026-10-15 sign-off); let `isHealthField` read
  * only a literal true and "doubt reads as sensitive" goes red; drop
  * `!isHealthField` from `isKeptOnList` and "a sensitive answer never reaches a
  * list" goes red; drop its email exception and "the platform's email field is not
@@ -39,6 +42,23 @@ test("every UK GDPR Art. 9 category and Art. 10 criminal convictions read as sen
   };
   for (const [category, labels] of Object.entries(categories)) {
     for (const label of labels) assert.equal(orderFieldKind(label).health, true, `${category}: ${label}`);
+  }
+});
+
+test("everyday dietary, access, health, belief, political and criminal labels read as sensitive", () => {
+  for (const label of [
+    "Vegetarian?", "Vegan or vegetarian", "Gluten free?", "Meal choice", "Food requirements", "Dairy free",
+    "Additional needs", "Support needs", "Reasonable adjustments", "Guide dog / assistance dog",
+    "Carer or companion ticket needed?", "Blue badge holder?", "Vaccination status", "Covid vaccinated?",
+    "HIV status", "Dyslexia", "Impairment", "Hard of hearing", "Partially sighted", "Seizures / photosensitive",
+    "Lift access", "Christian?", "Which party do you vote for?", "Offender", "Caution",
+    // Owner 2026-10-15: a food question reads as dietary; "Not sensitive?" keeps it.
+    "Favourite food type?",
+  ]) {
+    assert.equal(orderFieldKind(label).health, true, label);
+  }
+  for (const label of ["T-shirt size", "Favourite music genre?", "Town", "Company", "Job title"]) {
+    assert.equal(orderFieldKind(label).health, false, label);
   }
 });
 
