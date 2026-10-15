@@ -8,7 +8,9 @@
  * "stay narrow" goes red (2026-10-15 sign-off); let `isHealthField` read
  * only a literal true and "doubt reads as sensitive" goes red; drop
  * `!isHealthField` from `isKeptOnList` and "a sensitive answer never reaches a
- * list" goes red; drop its email exception and "the platform's email field is not
+ * list" goes red; drop the someone-else test, or `emergency`, `next of kin` or
+ * `guardian|parent` from it, and "someone else's details" goes red (and the drain's
+ * "someone else's number"); drop its email exception and "the platform's email field is not
  * an answer" goes red; let `listKeeps` keep the name question among the answers
  * and "the name is said once" goes red; drop the health early-return in
  * `orderFieldRequired` and "a sensitive question is never required" goes red.
@@ -110,6 +112,21 @@ test("a sensitive answer never reaches a list, whatever else the flags say", () 
   // The retired key cannot bring one back.
   assert.equal(isKeptOnList({ ...f({ label: "Allergies", health: true }), keepOnList: true } as OrderField), false);
   assert.equal(isKeptOnList(f({ label: "Area", health: "true" as unknown as boolean })), false);
+});
+
+test("someone else's details are never kept, nor placed in the buyer's own fields - but are not forced optional", () => {
+  for (const label of ["Emergency contact phone", "Parent/guardian mobile", "Emergency contact name", "Next of kin", "Emergency phone"]) {
+    const field = f({ label, required: true });
+    assert.equal(isHealthField(field), false, `${label}: not sensitive`);
+    assert.equal(orderFieldRequired(field, { canUseAccount: false }), true, `${label}: stays required`);
+    assert.equal(isKeptOnList(field), false, label);
+    assert.equal(listPlacement(field), null, label);
+  }
+  assert.deepEqual(
+    listKeeps([f({ label: "Your phone" }), f({ label: "Emergency contact phone" }), f({ label: "Next of kin" })]),
+    { name: false, answers: ["Your phone"] },
+  );
+  assert.deepEqual(listPlacement(f({ label: "Your phone" })), { slot: "phone", label: "Your phone" });
 });
 
 test("the platform's email field is not an answer: it is the entry's own address", () => {

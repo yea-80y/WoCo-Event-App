@@ -11,9 +11,9 @@
  * Always optional - answering it is the buyer's explicit consent - and its answer
  * never reaches a mailing list.
  *
- * Every other answer does, once the buyer says yes to marketing (owner
- * 2026-10-15): there is no per-question choice, so the checkout can name exactly
- * what is kept (`listKeeps`, worded in `legal/consent.ts`).
+ * Every other answer about the buyer does, once the buyer says yes to marketing
+ * (owner 2026-10-15): there is no per-question choice, so the checkout can name
+ * exactly what is kept (`listKeeps`, worded in `legal/consent.ts`).
  */
 
 import type { OrderField } from "../crypto/types.js";
@@ -95,12 +95,20 @@ export function isHealthField(field: Pick<OrderField, "health" | "label">): bool
 }
 
 /**
+ * Another person's details. The buyer's yes covers the buyer only, and a phone
+ * question like this would otherwise fill the entry's own phone with someone
+ * else's number. Not sensitive, so not forced optional: just never kept.
+ */
+const SOMEONE_ELSE_RE = /emergency|next\s+of\s+kin|guardian|\bparent|\bcarer|\bcontact\s+(name|number|phone|person)/i;
+
+/**
  * Copied onto the buyer's list entry once they say yes to marketing: every
- * answer but a sensitive one, and but the platform's email field, which is the
- * entry's own address.
+ * answer but a sensitive one, one about someone else, and the platform's email
+ * field, which is the entry's own address.
  */
 export function isKeptOnList(field: Pick<OrderField, "id" | "health" | "label">): boolean {
-  return field.id !== ORDER_EMAIL_FIELD_ID && !isHealthField(field);
+  if (field.id === ORDER_EMAIL_FIELD_ID || isHealthField(field)) return false;
+  return !SOMEONE_ELSE_RE.test(typeof field.label === "string" ? field.label : "");
 }
 
 /** Where a kept answer lands, under the label the buyer saw. Null = not kept, or no label to name it by. */

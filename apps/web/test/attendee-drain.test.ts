@@ -61,6 +61,23 @@ test("four tickets is one contact", () => {
   assert.equal(out[0].email, "ada@x.com");
 });
 
+test("someone else's number never fills the buyer's phone, and their details are not kept", () => {
+  const fields: OrderField[] = [
+    { id: "ec_phone", type: "text", label: "Emergency contact phone", required: true },
+    { id: "pg_mobile", type: "text", label: "Parent/guardian mobile", required: false },
+    { id: "ec_name", type: "text", label: "Emergency contact name", required: true },
+    { id: "kin", type: "text", label: "Next of kin", required: false },
+    { id: "own", type: "text", label: "Your phone", required: false },
+  ];
+  const out = buildAttendeeContacts(
+    [{ claimerEmail: "a@x.com", fields: { ec_phone: "0700 111", pg_mobile: "0700 222", ec_name: "Bob", kin: "Carol", own: "0700 333" } }],
+    opts(["a@x.com"], fields),
+  );
+  assert.equal(out[0].phone, "0700 333");
+  assert.equal(out[0].answers, undefined);
+  assert.doesNotMatch(JSON.stringify(out[0]), /0700 111|0700 222|Bob|Carol/);
+});
+
 test("every non-sensitive answer is kept, each in its place - never a sensitive one, never the email field", () => {
   const out = buildAttendeeContacts(
     [{
