@@ -18,7 +18,7 @@
 
   const filtered = $derived.by(() => {
     const q = search.trim().toLowerCase();
-    const entries = [...scanner.roster].sort(
+    const entries = [...scanner.attendees].sort(
       (a, b) => a.seriesId.localeCompare(b.seriesId) || a.edition - b.edition,
     );
     if (!q) return entries;
@@ -91,7 +91,7 @@
     <p class="notice warn" aria-live="polite">{notice}</p>
   {/if}
 
-  {#if scanner.roster.length === 0}
+  {#if scanner.attendees.length === 0}
     <div class="empty">
       <p>No attendee list on this device.</p>
       <p class="hint">
@@ -107,7 +107,10 @@
         {@const record = scanner.isCheckedIn(entry.seriesId, entry.edition)}
         <li>
           <div class="who">
-            <span class="name">{entry.name || entry.email || `Ticket #${entry.edition}`}</span>
+            <span class="name">
+              {entry.name || entry.email || `Ticket #${entry.edition}`}
+              {#if entry.source === "sale" && entry.name}<span class="tag" title="The name on the card that paid - not always the guest's">card name</span>{/if}
+            </span>
             <span class="meta">
               {seriesName(entry.seriesId)} · #{String(entry.edition).padStart(3, "0")}
               {#if entry.name && entry.email}· {entry.email}{/if}
@@ -177,6 +180,16 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .tag {
+    margin-left: 0.35rem;
+    padding: 0.05rem 0.35rem;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    vertical-align: middle;
   }
   .meta {
     color: var(--text-muted);

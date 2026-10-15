@@ -74,7 +74,8 @@
     <p class="note">
       {scanner.otherUnsynced} check-in{scanner.otherUnsynced === 1 ? "" : "s"} from an earlier event
       {scanner.otherUnsynced === 1 ? "hasn't" : "haven't"} reached WoCo yet. {scanner.otherUnsynced === 1 ? "It stays" : "They stay"} on this phone
-      and sync with that event's door pass while it is still valid.
+      and sync with that event's door pass while it is still valid. Check-ins that can no longer sync are deleted 30 days
+      after their door pass expired.
     </p>
   {/if}
 
