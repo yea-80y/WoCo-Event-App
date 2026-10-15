@@ -39,6 +39,4 @@ export interface OrderField {
    * and never copied to a mailing list (`event/order-field-kinds.ts`).
    */
   health?: boolean;
-  /** Copied onto the buyer's mailing-list entry when the organiser imports opted-in buyers. */
-  keepOnList?: boolean;
 }

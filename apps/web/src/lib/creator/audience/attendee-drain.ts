@@ -9,7 +9,7 @@
  * carry a record of either basis; this module does the shaping and the merge.
  */
 
-import { isKeptOnList, orderFieldKind, type MarketingContact, type OrderField } from "@woco/shared";
+import { listPlacement, type MarketingContact, type OrderField } from "@woco/shared";
 
 /** The subset of a decrypted claim blob this needs. */
 export interface DecryptedClaim {
@@ -34,9 +34,8 @@ export function provenanceRank(source: string | undefined): number {
 
 export interface DrainOptions {
   /**
-   * The event's questions. Only answers to those the organiser ticked "Keep on
-   * mailing list" are copied (owner 2026-10-13): everything else stays with the
-   * booking and is deleted with it, and a health answer never moves.
+   * The event's questions. Every answer but a sensitive one is copied (owner
+   * 2026-10-15) - exactly what the checkout told the buyer it would keep.
    */
   orderFields: readonly OrderField[];
   eventTitle: string;
@@ -88,11 +87,11 @@ function keptAnswers(fields: Record<string, string> | undefined, orderFields: re
   const out: KeptFields = {};
   const answers: Record<string, string> = {};
   for (const field of orderFields) {
-    if (!isKeptOnList(field)) continue;
-    const value = fields?.[field.id]?.trim();
-    const label = field.label.trim();
-    if (!value || !label) continue;
-    const slot = orderFieldKind(label).slot;
+    const at = field && typeof field === "object" ? listPlacement(field) : null;
+    const raw = at ? fields?.[field.id] : undefined;
+    const value = typeof raw === "string" ? raw.trim() : "";
+    if (!at || !value) continue;
+    const { slot, label } = at;
     // A single name field goes to firstName whole: this is a greeting line, and
     // an invented surname reads worse than a full name.
     if (slot === "fullName") out.firstName ??= value;

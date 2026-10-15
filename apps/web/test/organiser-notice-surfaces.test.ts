@@ -232,17 +232,29 @@ test("own-events is a new draft's answer only; a published notice keeps its own,
   assert.match(pay, /draft\.marketingBasis === "own-events" \? \{ marketingBasis: "own-events" as const \} : \{\}/);
 });
 
-test("the question builder pre-sets health and mailing-list flags, and a health question cannot be required", () => {
+test("the question builder pre-sets the sensitive flag, and a sensitive question cannot be required", () => {
   const ed = code(read("lib/creator/events/OrderFieldsEditor.svelte"));
   assert.match(ed, /oninput=\{\(\) => guessFlags\(i\)\}/);
   assert.match(ed, /orderFieldKind\(f\.label\)/);
   // A manual choice sticks while the organiser keeps typing.
   assert.match(ed, /if \(!f \|\| manual\[f\.id\]\) return;/);
   assert.match(ed, /kind\.health \? \{ required: false \}/);
-  // The Required and keep ticks only exist outside the health branch.
-  const healthBranch = ed.slice(ed.indexOf("{#if field.health}"), ed.indexOf("{:else}", ed.indexOf("{#if field.health}")));
-  assert.match(healthBranch, /never added to your mailing list/);
-  assert.doesNotMatch(healthBranch, /field\.required|keepOnList/);
+  // The Required tick only exists outside the sensitive branch.
+  const branch = ed.slice(ed.indexOf("{#if field.health}"), ed.indexOf("{:else}", ed.indexOf("{#if field.health}")));
+  assert.match(branch, /Sensitive question - kept optional and never added to your mailing list\./);
+  assert.match(branch, />Not sensitive\?<\/button>/);
+  assert.match(branch, /setFlags\(i, \{ health: false \}\)/);
+  assert.doesNotMatch(branch, /field\.required/);
+});
+
+test("the question builder has no keep-on-mailing-list tick box: every non-sensitive answer is kept (2026-10-15)", () => {
+  const ed = code(read("lib/creator/events/OrderFieldsEditor.svelte"));
+  assert.doesNotMatch(ed, /keepOnList|keepByDefault/);
+  assert.doesNotMatch(ed, /Keep on mailing list/i);
+  // One tick box per question, Required, plus the editor's own "collect" toggle.
+  const card = ed.slice(ed.indexOf("{#each orderFields"), ed.lastIndexOf("{/each}"));
+  assert.equal(card.match(/type="checkbox"/g)?.length, 1);
+  assert.match(card, /bind:checked=\{field\.required\}/);
 });
 
 test("both checkouts show the health note under a health question", () => {

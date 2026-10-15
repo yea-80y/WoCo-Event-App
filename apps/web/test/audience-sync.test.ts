@@ -31,8 +31,8 @@ import {
 
 const T0 = Date.parse("2026-10-14T12:00:00.000Z");
 const FIELDS: OrderField[] = [
-  { id: "f1", type: "text", label: "First Name", required: true, keepOnList: true },
-  { id: "f2", type: "text", label: "Allergies", required: false, health: true, keepOnList: true },
+  { id: "f1", type: "text", label: "First Name", required: true },
+  { id: "f2", type: "text", label: "Allergies", required: false, health: true },
 ];
 
 type Claim = { claimerEmail?: string; fields?: Record<string, string> };

@@ -1,24 +1,25 @@
 /**
  * What an order-form question asks, read from its label (`event/order-field-kinds.ts`).
  *
- * MUTATION: let `isHealthField` accept any truthy value and "only a literal true"
- * goes red; drop `!isHealthField` from `isKeptOnList` and "a health answer never
- * reaches a list" goes red; drop the health early-return in `orderFieldRequired`
- * and "a health question is never required" goes red; drop its email exception and
- * "the platform's email field stays required" goes red.
+ * MUTATION (each went red, then restored): drop a category from SENSITIVE_RE and
+ * its line of "every UK GDPR Art. 9 category" goes red; let `isHealthField` read
+ * only a literal true and "doubt reads as sensitive" goes red; drop
+ * `!isHealthField` from `isKeptOnList` and "a sensitive answer never reaches a
+ * list" goes red; drop its email exception and "the platform's email field is not
+ * an answer" goes red; let `listKeeps` keep the name question among the answers
+ * and "the name is said once" goes red; drop the health early-return in
+ * `orderFieldRequired` and "a sensitive question is never required" goes red.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isHealthField, isKeptOnList, orderFieldKind } from "../../src/event/order-field-kinds.js";
+import { isHealthField, isKeptOnList, listKeeps, listPlacement, orderFieldKind } from "../../src/event/order-field-kinds.js";
 import { ORDER_EMAIL_FIELD_ID, orderFieldRequired } from "../../src/event/order-email.js";
 import type { OrderField } from "../../src/crypto/types.js";
 
 test("health questions are recognised from everyday labels", () => {
   for (const label of ["Allergies", "Any food allergies?", "Dietary requirements", "Diet", "Access needs",
     "Accessibility requirements", "Wheelchair user?", "Medical conditions we should know about", "Special requirements"]) {
-    const k = orderFieldKind(label);
-    assert.equal(k.health, true, label);
-    assert.equal(k.keepByDefault, false, label);
+    assert.equal(orderFieldKind(label).health, true, label);
   }
   for (const label of ["Full name", "Area", "Instagram handle", "How did you hear about us?", "Access code", "T-shirt size"]) {
     assert.equal(orderFieldKind(label).health, false, label);
@@ -49,43 +50,89 @@ test("the categories stay narrow where a word is ambiguous at events", () => {
   }
 });
 
-test("names and where someone lives are kept by default; phone and everything else are not", () => {
-  const cases: [string, string | null, boolean][] = [
-    ["First name", "firstName", true],
-    ["Surname", "lastName", true],
-    ["Full name", "fullName", true],
-    ["Name", "fullName", true],
-    ["Postcode", "postcode", true],
-    ["Town / city", "city", true],
-    ["Area", "city", true],
-    ["Where do you live?", "city", true],
-    ["Mobile number", "phone", false],
-    ["Seating area", null, false],
-    ["Company name", null, false],
-    ["How did you hear about us?", null, false],
+test("names, postcode, town and phone land in the list entry's own fields", () => {
+  const cases: [string, string | null][] = [
+    ["First name", "firstName"],
+    ["Surname", "lastName"],
+    ["Full name", "fullName"],
+    ["Name", "fullName"],
+    ["Postcode", "postcode"],
+    ["Town / city", "city"],
+    ["Area", "city"],
+    ["Where do you live?", "city"],
+    ["Mobile number", "phone"],
+    ["Seating area", null],
+    ["Company name", null],
+    ["How did you hear about us?", null],
   ];
-  for (const [label, slot, kept] of cases) {
-    const k = orderFieldKind(label);
-    assert.equal(k.slot, slot, label);
-    assert.equal(k.keepByDefault, kept, label);
+  for (const [label, slot] of cases) assert.equal(orderFieldKind(label).slot, slot, label);
+});
+
+const f = (over: Partial<OrderField> & { label: string }): OrderField => ({ id: over.label, type: "text", required: false, ...over });
+
+test("the organiser's saved answer decides; a question saved without one is read from its label; doubt reads as sensitive", () => {
+  assert.equal(isHealthField(f({ label: "Allergies", health: true })), true);
+  assert.equal(isHealthField(f({ label: "Area", health: true })), true);
+  assert.equal(isHealthField(f({ label: "Allergies", health: false })), false, "the Not sensitive? override");
+  assert.equal(isHealthField(f({ label: "Religion" })), true, "no saved answer: the label");
+  assert.equal(isHealthField(f({ label: "Area" })), false);
+  for (const doubt of ["yes", "no", 1, 0, null, "false"]) {
+    assert.equal(isHealthField(f({ label: "Area", health: doubt as unknown as boolean })), true, JSON.stringify(doubt));
   }
+  assert.equal(isHealthField({ health: undefined, label: 7 as unknown as string }), false, "a label that is not text never throws");
 });
 
-test("only a literal true marks a health question", () => {
-  assert.equal(isHealthField({ health: true }), true);
-  assert.equal(isHealthField({ health: "yes" as unknown as boolean }), false);
-  assert.equal(isHealthField({}), false);
+test("a sensitive answer never reaches a list, whatever else the flags say", () => {
+  assert.equal(isKeptOnList(f({ label: "Area", health: false })), true);
+  assert.equal(isKeptOnList(f({ label: "Area" })), true);
+  assert.equal(isKeptOnList(f({ label: "Area", health: true })), false);
+  assert.equal(isKeptOnList(f({ label: "Halal meal?" })), false);
+  // The retired key cannot bring one back.
+  assert.equal(isKeptOnList({ ...f({ label: "Allergies", health: true }), keepOnList: true } as OrderField), false);
+  assert.equal(isKeptOnList(f({ label: "Area", health: "true" as unknown as boolean })), false);
 });
 
-test("a health answer never reaches a list, whatever the flags say", () => {
-  assert.equal(isKeptOnList({ keepOnList: true }), true);
-  assert.equal(isKeptOnList({ keepOnList: true, health: true }), false);
-  assert.equal(isKeptOnList({ keepOnList: "yes" as unknown as boolean }), false);
+test("the platform's email field is not an answer: it is the entry's own address", () => {
+  assert.equal(isKeptOnList(f({ id: ORDER_EMAIL_FIELD_ID, label: "Email" })), false);
+  assert.equal(isKeptOnList(f({ id: "guest_email", type: "email", label: "Guest's email" })), true, "an organiser's own email question is an answer");
 });
 
-test("a health question is never required, but the platform's email field stays required", () => {
+test("listKeeps: the name is said once, every other kept answer by label in form order", () => {
+  assert.deepEqual(listKeeps(undefined), { name: false, answers: [] });
+  assert.deepEqual(listKeeps([]), { name: false, answers: [] });
+  assert.deepEqual(listKeeps([f({ label: "Full name" })]), { name: true, answers: [] });
+  assert.deepEqual(
+    listKeeps([
+      f({ id: ORDER_EMAIL_FIELD_ID, type: "email", label: "Email" }),
+      f({ label: "Town" }),
+      f({ label: "First name" }),
+      f({ label: "Allergies", health: true }),
+      f({ label: "Surname" }),
+      f({ label: "How   did you hear about us?" }),
+      f({ label: "Religion" }),
+      f({ label: "Postcode" }),
+      f({ id: "dup", label: "Town" }),
+      f({ label: "   " }),
+    ]),
+    { name: true, answers: ["Town", "How did you hear about us?", "Postcode"] },
+  );
+  // A crafted feed: anything but an array of objects keeps nothing, and never throws.
+  assert.deepEqual(listKeeps({} as unknown as OrderField[]), { name: false, answers: [] });
+  assert.deepEqual(listKeeps([null, 3] as unknown as OrderField[]), { name: false, answers: [] });
+});
+
+test("listPlacement names a kept answer by its tidied label; an unnamed or sensitive one is not placed", () => {
+  assert.deepEqual(listPlacement(f({ label: "  Your   postcode " })), { slot: "postcode", label: "Your postcode" });
+  assert.deepEqual(listPlacement(f({ label: "Allergies", health: false })), { slot: null, label: "Allergies" });
+  assert.equal(listPlacement(f({ label: "" })), null);
+  assert.equal(listPlacement(f({ label: "Allergies" })), null);
+});
+
+test("a sensitive question is never required, but the platform's email field stays required", () => {
   const health: OrderField = { id: "allergy", type: "text", label: "Allergies", required: true, health: true };
   assert.equal(orderFieldRequired(health, { canUseAccount: false }), false);
+  const unflagged: OrderField = { id: "faith", type: "text", label: "Religion", required: true };
+  assert.equal(orderFieldRequired(unflagged, { canUseAccount: false }), false);
   const email: OrderField = { id: ORDER_EMAIL_FIELD_ID, type: "email", label: "Email", required: false, health: true };
   assert.equal(orderFieldRequired(email, { canUseAccount: false }), true);
 });

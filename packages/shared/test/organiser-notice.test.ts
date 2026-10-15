@@ -284,17 +284,19 @@ test("a tailored mailing list uses what is kept on it; order answers are never k
   assert.equal(validateOrganiserNotice({ ...notice(), tailoredMarketing: false }, ADDR)?.tailoredMarketing, undefined);
 });
 
-test("the mailing-list line names the questions kept on it - never a health one", () => {
+test("the mailing-list line names every question kept on it - never a sensitive one, never the email field", () => {
   const kept: OrderField[] = [
     { id: ORDER_EMAIL_FIELD_ID, type: "email", label: "Email", required: true },
-    { id: "name", type: "text", label: "Full name", required: true, keepOnList: true },
-    { id: "area", type: "text", label: "Area", required: false, keepOnList: true },
+    { id: "name", type: "text", label: "Full name", required: true },
+    { id: "area", type: "text", label: "Area", required: false },
     { id: "size", type: "text", label: "T-shirt size", required: false },
-    { id: "allergy", type: "text", label: "Allergies", required: false, health: true, keepOnList: true },
+    { id: "allergy", type: "text", label: "Allergies", required: false, health: true },
+    { id: "faith", type: "text", label: "Religion", required: false },
   ];
   const text = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: kept }, wocoPolicyUrl: POLICY }));
-  assert.match(text, /If you join our mailing list: your email address and your answers to Full name, Area, until you unsubscribe\./);
-  const none = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: fields }, wocoPolicyUrl: POLICY }));
+  assert.match(text, /If you join our mailing list: your email address and your answers to Full name, Area, T-shirt size, until you unsubscribe\./);
+  const onlySensitive: OrderField[] = [kept[0]!, kept[4]!];
+  const none = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: onlySensitive }, wocoPolicyUrl: POLICY }));
   assert.match(none, /If you join our mailing list: your email address, until you unsubscribe\./);
   const site = noticePlainText(buildOrganiserNotice({ notice: notice(), wocoPolicyUrl: POLICY }));
   assert.match(site, /your email address and any answers an event's form says it keeps, until you unsubscribe/);
@@ -304,14 +306,20 @@ test("a health question brings its own purpose and basis; a form without one say
   const withHealth: OrderField[] = [{ id: "allergy", type: "text", label: "Allergies", required: false, health: true }];
   const text = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: withHealth }, wocoPolicyUrl: POLICY }));
   assert.match(text, /Your answers about allergies, dietary or access needs: answering is optional, and we use your answer only to look after you at the event, never for marketing\. Our basis is your explicit consent/);
-  const without = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: fields }, wocoPolicyUrl: POLICY }));
+  const plain: OrderField[] = [fields[0]!, fields[1]!];
+  const without = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: plain }, wocoPolicyUrl: POLICY }));
   assert.doesNotMatch(without, /allergies/);
   // A site covers every event, so it says what happens if a form asks.
   const site = noticePlainText(buildOrganiserNotice({ notice: notice(), wocoPolicyUrl: POLICY }));
   assert.match(site, /If our form asks about allergies, dietary or access needs: answering is optional/);
-  // Only a literal true counts: an organiser-signed form cannot half-set it.
-  const odd = [{ id: "x", type: "text", label: "Allergies", required: false, health: "yes" }] as unknown as OrderField[];
-  assert.doesNotMatch(noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: odd }, wocoPolicyUrl: POLICY })), /explicit consent/);
+  // Doubt in an organiser-signed form reads as sensitive, and a question saved
+  // without the flag is read from its label - either way the basis is stated.
+  const odd = [{ id: "x", type: "text", label: "Area", required: false, health: "yes" }] as unknown as OrderField[];
+  assert.match(noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: odd }, wocoPolicyUrl: POLICY })), /explicit consent/);
+  const unflagged: OrderField[] = [{ id: "d", type: "text", label: "Dietary needs", required: false }];
+  assert.match(noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: unflagged }, wocoPolicyUrl: POLICY })), /explicit consent/);
+  const overridden: OrderField[] = [{ id: "d", type: "text", label: "Dietary needs", required: false, health: false }];
+  assert.doesNotMatch(noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: overridden }, wocoPolicyUrl: POLICY })), /explicit consent/);
 });
 test("an event with no questions promises nothing about order-form answers", () => {
   const text = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: [] }, wocoPolicyUrl: POLICY }));
