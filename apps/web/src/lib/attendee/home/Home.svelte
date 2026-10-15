@@ -5,7 +5,8 @@
   import { navigate } from "../../router/router.svelte.js";
   import { openEvent } from "../events/open-event.js";
   import EventCard from "../events/EventCard.svelte";
-  import DiscoveryFilters from "./DiscoveryFilters.svelte";
+  import NearMeLine from "./NearMeLine.svelte";
+  import GenreRow from "./GenreRow.svelte";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { isPastEvent } from "../../utils/events.js";
   import { haversineKm, type NearMeState } from "../../utils/geo-distance.js";
@@ -114,16 +115,13 @@
   <span class="kicker">Discover</span>
   <h1>Find your scene</h1>
   <p class="hero-sub">Independent events, cryptographic tickets, no corporate middleman.</p>
+  {#if !loading && allEvents.length > 0}
+    <NearMeLine bind:nearMe />
+  {/if}
 </section>
 
 {#if !loading && allEvents.length > 0}
-  <DiscoveryFilters
-    countries={countryOptions}
-    genres={genreOptions}
-    bind:country
-    bind:selectedGenres
-    bind:nearMe
-  />
+  <GenreRow genres={genreOptions} bind:selectedGenres />
 {/if}
 
 <div class="tabs">
@@ -139,6 +137,14 @@
       <span class="tab-count">{past.length}</span>
     {/if}
   </button>
+  {#if countryOptions.length > 0}
+    <select class="country-select" bind:value={country} aria-label="Filter by country">
+      <option value="">Any country</option>
+      {#each countryOptions as c (c.code)}
+        <option value={c.code}>{c.name} · {c.count}</option>
+      {/each}
+    </select>
+  {/if}
 </div>
 
 <section class="events-section">
@@ -184,9 +190,8 @@
 
 <style>
   .hero {
-    padding: 2.5rem 0 2rem;
+    padding: 2.5rem 0 1.75rem;
     border-bottom: 1px solid var(--border);
-    margin-bottom: 1.5rem;
   }
 
   .hero h1 {
@@ -204,11 +209,32 @@
 
   .tabs {
     display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 1rem;
     border-bottom: 1px solid var(--border);
     margin-bottom: 1.5rem;
   }
 
+  .country-select {
+    margin-left: auto;
+    flex: 0 1 11rem;
+    width: 11rem;
+    min-width: 0;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+
+  .country-select:hover {
+    border-color: var(--border-hover);
+    color: var(--text);
+  }
+
   .tab {
+    flex-shrink: 0;
     display: inline-flex;
     align-items: center;
     gap: 0.5rem;
