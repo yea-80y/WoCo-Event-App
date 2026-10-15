@@ -1,194 +1,213 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import type { EventGeo } from "@woco/shared";
-  import { COUNTRY_VOCAB, countryName } from "@woco/shared";
-  import { searchPlaces, locationLineFor, type PlaceResult } from "../../geo/photon.js";
+  import { countryName } from "@woco/shared";
+  import { locationLineFor, rememberPlace, type PlaceResult } from "../../geo/photon.js";
+  import PlaceSearch from "./PlaceSearch.svelte";
 
   interface Props {
     geo: EventGeo | undefined;
-    /** The free-text display line — auto-filled on selection, stays user-editable. */
+    /** The display line, written from the chosen place - there is no separate box for it. */
     location: string;
   }
 
   let { geo = $bindable(undefined), location = $bindable("") }: Props = $props();
 
-  // Rebuilt into a fresh `geo` object literal on every change rather than mutating
-  // the bound object in place — Svelte 5's $state proxy only tracks properties
-  // present at initialisation, so partial in-place writes to an externally-owned
-  // object are an easy way to end up with silently non-reactive fields.
-  let country = $state(geo?.country ?? "");
-  let city = $state(geo?.city ?? "");
-  let venue = $state(geo?.venue ?? "");
-  let address = $state(geo?.address ?? "");
-  let lat = $state<number | undefined>(geo?.lat);
-  let lng = $state<number | undefined>(geo?.lng);
+  interface Place {
+    venue?: string;
+    address?: string;
+    city?: string;
+    country?: string;
+    lat: number;
+    lng: number;
+  }
 
-  $effect(() => {
-    const next: EventGeo = {};
-    if (country) next.country = country;
-    if (city) next.city = city;
-    if (venue) next.venue = venue;
-    if (address) next.address = address;
-    if (lat !== undefined && lng !== undefined) {
-      next.lat = lat;
-      next.lng = lng;
+  // Seeded once from the event being edited; from then on this component owns both
+  // values. `geo` is rebuilt as a fresh object each time - Svelte 5's $state proxy
+  // only tracks properties present at initialisation.
+  // svelte-ignore state_referenced_locally
+  const initial = { geo, location };
+  const initialPlace: Place | null =
+    !initial.geo?.online && initial.geo?.lat !== undefined && initial.geo?.lng !== undefined
+      ? {
+          venue: initial.geo.venue, address: initial.geo.address, city: initial.geo.city,
+          country: initial.geo.country, lat: initial.geo.lat, lng: initial.geo.lng,
+        }
+      : null;
+
+  let mode = $state<"search" | "manual" | "online">(initial.geo?.online ? "online" : "search");
+  let place = $state<Place | null>(initialPlace);
+  // An edited event keeps the line it was saved with until its place changes.
+  let placeLine = $state(initialPlace ? initial.location : "");
+  let manualVenue = $state("");
+  let manualAddress = $state("");
+  let town = $state<Place | null>(null);
+  // An event saved before places were required has only its old text: search for it.
+  let seed = $state(!initialPlace && !initial.geo?.online ? initial.location : "");
+
+  const dedupe = (p: string | undefined, i: number, a: (string | undefined)[]) => !!p && a.indexOf(p) === i;
+
+  const out = $derived.by((): { geo: EventGeo | undefined; line: string } => {
+    if (mode === "online") return { geo: { online: true }, line: "Online" };
+    if (mode === "manual") {
+      const venue = manualVenue.trim();
+      const address = manualAddress.trim();
+      if (!venue || !town) return { geo: undefined, line: "" };
+      return {
+        geo: {
+          venue,
+          ...(address ? { address } : {}),
+          ...(town.city ? { city: town.city } : {}),
+          ...(town.country ? { country: town.country } : {}),
+          lat: town.lat,
+          lng: town.lng,
+        },
+        line: [venue, address, town.city, countryName(town.country ?? "") ?? undefined].filter(dedupe).join(", "),
+      };
     }
-    geo = Object.keys(next).length > 0 ? next : undefined;
+    if (!place) return { geo: undefined, line: "" };
+    const g: EventGeo = { lat: place.lat, lng: place.lng };
+    if (place.country) g.country = place.country;
+    if (place.city) g.city = place.city;
+    if (place.venue) g.venue = place.venue;
+    if (place.address) g.address = place.address;
+    return { geo: g, line: placeLine };
   });
 
-  const resolvedLabel = $derived(
-    [venue, city, countryName(country) ?? undefined].filter((p, i, a) => p && a.indexOf(p) === i).join(" · "),
-  );
-  const hasResolved = $derived(!!venue || !!city || (lat !== undefined && lng !== undefined));
+  // What the parent last heard from us. Anything else in `location` was set from
+  // outside (the URL import): a chosen place wins over it, otherwise it is searched.
+  let written: string | null = null;
+  $effect(() => {
+    written = out.line;
+    geo = out.geo;
+    location = out.line;
+  });
+  $effect(() => {
+    const l = location;
+    untrack(() => {
+      if (written === null || l === written) return;
+      if (out.geo) location = written;
+      else if (mode === "search" && l.trim()) seed = l;
+    });
+  });
 
-  // ── Search-as-you-type against Photon ─────────────────────────────────────
-  let query = $state("");
-  let results = $state<PlaceResult[]>([]);
-  let loading = $state(false);
-  let open = $state(false);
-  let activeIndex = $state(-1);
-  let searchSeq = 0;
-  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function onQueryInput() {
-    if (debounceTimer) clearTimeout(debounceTimer);
-    activeIndex = -1;
-    const q = query.trim();
-    if (q.length < 3) {
-      results = [];
-      open = false;
-      loading = false;
-      return;
-    }
-    loading = true;
-    debounceTimer = setTimeout(() => runSearch(q), 320);
+  function toPlace(r: PlaceResult): Place {
+    return { venue: r.venue, address: r.address, city: r.city, country: r.countryCode, lat: r.lat, lng: r.lng };
   }
 
-  async function runSearch(q: string) {
-    const seq = ++searchSeq;
-    const found = await searchPlaces(q);
-    if (seq !== searchSeq) return; // a newer keystroke superseded this lookup
-    results = found;
-    open = found.length > 0;
-    loading = false;
-  }
-
-  function selectResult(r: PlaceResult) {
-    country = r.countryCode ?? country;
-    city = r.city ?? "";
-    venue = r.venue ?? "";
-    address = r.address ?? "";
-    lat = r.lat;
-    lng = r.lng;
+  function pickPlace(r: PlaceResult) {
+    place = toPlace(r);
     const fallbackCountry = r.secondary.split(",").filter(Boolean).pop()?.trim();
-    location = locationLineFor(r, countryName(r.countryCode ?? "") ?? fallbackCountry);
-    query = "";
-    results = [];
-    open = false;
-    activeIndex = -1;
+    placeLine = locationLineFor(r, countryName(r.countryCode ?? "") ?? fallbackCountry);
+    rememberPlace(r);
   }
 
-  function clearResolved() {
-    city = "";
-    venue = "";
-    address = "";
-    lat = undefined;
-    lng = undefined;
+  function pickTown(r: PlaceResult) {
+    town = { city: r.city ?? r.label, country: r.countryCode, lat: r.lat, lng: r.lng };
+    rememberPlace(r);
   }
 
-  function onKeydown(e: KeyboardEvent) {
-    if (!open || results.length === 0) return;
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      activeIndex = (activeIndex + 1) % results.length;
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      activeIndex = activeIndex <= 0 ? results.length - 1 : activeIndex - 1;
-    } else if (e.key === "Enter") {
-      if (activeIndex >= 0) {
-        e.preventDefault();
-        selectResult(results[activeIndex]!);
-      }
-    } else if (e.key === "Escape") {
-      open = false;
-      activeIndex = -1;
-    }
+  function enterManually(query: string) {
+    mode = "manual";
+    if (!manualVenue.trim()) manualVenue = query;
   }
+
+  function backToSearch() {
+    mode = "search";
+    seed = manualVenue.trim();
+  }
+
+  const placeLabel = $derived(
+    place
+      ? [place.venue, place.city, countryName(place.country ?? "") ?? undefined].filter(dedupe).join(" · ") || "Place set"
+      : "",
+  );
+  const townLabel = $derived(
+    town ? [town.city, countryName(town.country ?? "") ?? undefined].filter(dedupe).join(", ") : "",
+  );
 </script>
 
+{#snippet pin()}
+  <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true" class="pin-icon">
+    <path d="M6.5 1.2c-2 0-3.6 1.6-3.6 3.6 0 2.7 3.6 6.8 3.6 6.8s3.6-4.1 3.6-6.8c0-2-1.6-3.6-3.6-3.6z"
+          fill="currentColor" fill-opacity="0.18" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/>
+    <circle cx="6.5" cy="4.8" r="1.3" fill="currentColor"/>
+  </svg>
+{/snippet}
+
 <div class="location-picker">
-  <label class="field">
-    <span>Country</span>
-    <select bind:value={country}>
-      <option value="">Select country</option>
-      {#each COUNTRY_VOCAB as c (c.code)}
-        <option value={c.code}>{c.name}</option>
-      {/each}
-    </select>
-  </label>
-
-  <div class="field combobox" class:combobox--open={open}>
-    <span>Venue or city</span>
-    <div class="combo-input-wrap">
-      <svg class="search-icon" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-        <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.3"/>
-        <path d="M9.3 9.3L12.5 12.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-      </svg>
-      <input
-        type="text"
-        role="combobox"
-        aria-expanded={open}
-        aria-controls="location-results"
-        aria-autocomplete="list"
-        placeholder="Search for a venue or city…"
-        bind:value={query}
-        oninput={onQueryInput}
-        onkeydown={onKeydown}
-        onfocus={() => { if (results.length > 0) open = true; }}
-        onblur={() => setTimeout(() => (open = false), 150)}
-      />
-      {#if loading}
-        <span class="combo-spinner" aria-hidden="true"></span>
-      {/if}
+  <div class="where-head">
+    <span class="where-label">Where</span>
+    <div class="mode-switch" role="radiogroup" aria-label="Where the event happens">
+      <button
+        type="button"
+        role="radio"
+        aria-checked={mode !== "online"}
+        class:on={mode !== "online"}
+        onclick={() => { if (mode === "online") mode = "search"; }}
+      >In person</button>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={mode === "online"}
+        class:on={mode === "online"}
+        onclick={() => (mode = "online")}
+      >Online</button>
     </div>
-
-    {#if open}
-      <ul class="combo-results" id="location-results" role="listbox">
-        {#each results as r, i (r.label + r.lat)}
-          <li role="option" aria-selected={i === activeIndex}>
-            <button
-              type="button"
-              class="combo-result"
-              class:combo-result--active={i === activeIndex}
-              onmousedown={(e) => { e.preventDefault(); selectResult(r); }}
-              onmouseenter={() => (activeIndex = i)}
-            >
-              <span class="combo-result-label">{r.label}</span>
-              {#if r.secondary}<span class="combo-result-sub">{r.secondary}</span>{/if}
-            </button>
-          </li>
-        {/each}
-      </ul>
-    {/if}
   </div>
 
-  {#if hasResolved}
-    <div class="resolved-chip">
-      <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true" class="pin-icon">
-        <path d="M6.5 1.2c-2 0-3.6 1.6-3.6 3.6 0 2.7 3.6 6.8 3.6 6.8s3.6-4.1 3.6-6.8c0-2-1.6-3.6-3.6-3.6z"
-              fill="#C7F23A" opacity="0.18" stroke="#C7F23A" stroke-width="1.1" stroke-linejoin="round"/>
-        <circle cx="6.5" cy="4.8" r="1.3" fill="#C7F23A"/>
-      </svg>
-      <div class="resolved-text">
-        <span class="resolved-label">{resolvedLabel || "Coordinates set"}</span>
-        {#if lat !== undefined && lng !== undefined}
-          <span class="resolved-coords">{lat.toFixed(4)}, {lng.toFixed(4)}</span>
-        {/if}
+  {#if mode === "online"}
+    <p class="online-note">
+      People filtering by distance won't see it. Send ticket holders the joining link
+      from your event dashboard - it isn't shown on the public page.
+    </p>
+  {:else if mode === "search"}
+    {#if place}
+      <div class="resolved-chip">
+        {@render pin()}
+        <div class="resolved-text">
+          <span class="resolved-label">{placeLabel}</span>
+          {#if place.address}<span class="resolved-sub">{place.address}</span>{/if}
+          <span class="resolved-coords">{place.lat.toFixed(4)}, {place.lng.toFixed(4)}</span>
+        </div>
+        <button type="button" class="resolved-change" onclick={() => { place = null; placeLine = ""; }}>Change</button>
       </div>
-      <button type="button" class="resolved-clear" onclick={clearResolved} aria-label="Clear resolved location">
-        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-          <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-        </svg>
-      </button>
+    {:else}
+      <PlaceSearch
+        kind="place"
+        label="Venue or address"
+        placeholder="Search for the venue or address…"
+        {seed}
+        onpick={pickPlace}
+        onmanual={enterManually}
+      />
+    {/if}
+  {:else}
+    <div class="manual">
+      <label class="field">
+        <span>Venue name</span>
+        <input type="text" bind:value={manualVenue} maxlength="80" placeholder="e.g. Joe's Barn" />
+      </label>
+      <label class="field">
+        <span>Address <span class="hint">optional</span></span>
+        <input type="text" bind:value={manualAddress} maxlength="160" placeholder="Street and number" />
+      </label>
+      {#if town}
+        <div class="field">
+          <span>Town or city</span>
+          <div class="resolved-chip">
+            {@render pin()}
+            <div class="resolved-text">
+              <span class="resolved-label">{townLabel}</span>
+            </div>
+            <button type="button" class="resolved-change" onclick={() => (town = null)}>Change</button>
+          </div>
+        </div>
+      {:else}
+        <PlaceSearch kind="town" label="Town or city" placeholder="Search for the town…" onpick={pickTown} />
+      {/if}
+      <p class="manual-note">Distance is measured from the town.</p>
+      <button type="button" class="back-link" onclick={backToSearch}>Back to search</button>
     </div>
   {/if}
 </div>
@@ -197,7 +216,64 @@
   .location-picker {
     display: flex;
     flex-direction: column;
-    gap: 0.875rem;
+    gap: 0.75rem;
+  }
+
+  .where-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .where-label,
+  .field > span {
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    font-weight: 500;
+  }
+
+  .mode-switch {
+    display: inline-flex;
+    padding: 2px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+  }
+
+  .mode-switch button {
+    padding: 0.3rem 0.75rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background var(--transition), color var(--transition);
+  }
+
+  .mode-switch button:hover:not(.on) {
+    color: var(--text);
+  }
+
+  .mode-switch button.on {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+
+  .online-note,
+  .manual-note {
+    margin: 0;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--text-muted);
+  }
+
+  .manual {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
   }
 
   .field {
@@ -206,93 +282,21 @@
     gap: 0.375rem;
   }
 
-  .field > span {
-    color: var(--text-secondary);
-    font-size: 0.8125rem;
-    font-weight: 500;
-  }
-
-  .combobox {
-    position: relative;
-  }
-
-  .combo-input-wrap {
-    position: relative;
-    display: flex;
-    align-items: center;
-  }
-
-  .search-icon {
-    position: absolute;
-    left: 0.75rem;
+  .hint {
     color: var(--text-muted);
-    pointer-events: none;
+    font-weight: 400;
   }
 
-  .combo-input-wrap input {
-    width: 100%;
-    padding-left: 2.125rem;
-  }
-
-  .combo-spinner {
-    position: absolute;
-    right: 0.75rem;
-    width: 12px;
-    height: 12px;
-    border: 1.5px solid color-mix(in srgb, var(--accent) 30%, var(--border));
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: location-spin 0.55s linear infinite;
-  }
-
-  @keyframes location-spin {
-    to { transform: rotate(360deg); }
-  }
-
-  .combo-results {
-    position: absolute;
-    z-index: 20;
-    top: calc(100% + 0.3rem);
-    left: 0;
-    right: 0;
-    margin: 0;
-    padding: 0.3rem;
-    list-style: none;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-    max-height: 15rem;
-    overflow-y: auto;
-  }
-
-  .combo-result {
-    display: flex;
-    flex-direction: column;
-    gap: 0.0625rem;
-    width: 100%;
-    padding: 0.5rem 0.625rem;
-    text-align: left;
-    background: transparent;
-    border: none;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-  }
-
-  .combo-result--active,
-  .combo-result:hover {
-    background: var(--accent-subtle);
-  }
-
-  .combo-result-label {
-    font-size: 0.875rem;
-    font-weight: 500;
-    color: var(--text);
-  }
-
-  .combo-result-sub {
+  .back-link {
+    align-self: flex-start;
+    padding: 0;
     font-size: 0.75rem;
-    color: var(--text-muted);
+    color: var(--accent-text);
+    background: none;
+    border: none;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
   }
 
   .resolved-chip {
@@ -300,6 +304,7 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.5rem 0.625rem;
+    color: var(--accent);
     background: var(--accent-subtle);
     border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
     border-radius: var(--radius-md);
@@ -324,6 +329,11 @@
     color: var(--text);
   }
 
+  .resolved-sub {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+  }
+
   .resolved-coords {
     font-family: var(--font-mono);
     font-size: 0.6875rem;
@@ -331,23 +341,21 @@
     letter-spacing: 0.01em;
   }
 
-  .resolved-clear {
+  .resolved-change {
     flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.25rem;
-    height: 1.25rem;
-    color: var(--text-muted);
+    padding: 0.2rem 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-secondary);
     background: transparent;
-    border: none;
-    border-radius: 50%;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
     cursor: pointer;
-    transition: background var(--transition), color var(--transition);
+    transition: border-color var(--transition), color var(--transition);
   }
 
-  .resolved-clear:hover {
-    background: color-mix(in srgb, var(--error) 12%, transparent);
-    color: var(--error);
+  .resolved-change:hover {
+    color: var(--text);
+    border-color: var(--border-hover);
   }
 </style>
