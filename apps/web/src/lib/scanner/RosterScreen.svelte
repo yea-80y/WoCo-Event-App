@@ -7,6 +7,7 @@
    */
   import { scanner } from "./store.svelte.js";
   import type { RosterEntry } from "@woco/shared";
+  import { searchAttendees } from "./attendee-search.js";
 
   let search = $state("");
   let confirming = $state<string | null>(null);
@@ -16,20 +17,7 @@
   let notice = $state<string | null>(null);
   let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const filtered = $derived.by(() => {
-    const q = search.trim().toLowerCase();
-    const entries = [...scanner.attendees].sort(
-      (a, b) => a.seriesId.localeCompare(b.seriesId) || a.edition - b.edition,
-    );
-    if (!q) return entries;
-    return entries.filter(
-      (r) =>
-        r.name?.toLowerCase().includes(q) ||
-        r.email?.toLowerCase().includes(q) ||
-        String(r.edition) === q.replace(/^#/, "") ||
-        Object.values(r.fields ?? {}).some((v) => v.toLowerCase().includes(q)),
-    );
-  });
+  const filtered = $derived(searchAttendees(scanner.attendees, search));
 
   function key(r: RosterEntry): string {
     return `${r.seriesId} ${r.edition}`;

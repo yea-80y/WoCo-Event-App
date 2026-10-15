@@ -123,15 +123,17 @@ export interface EncryptedRoster {
   updatedAt: string;
 }
 
-/** Decrypted roster entry — one per issued ticket with order data. */
+/**
+ * One ticket on the door's list. Only what the door needs: the ticket, a name and an
+ * email - never the other order-form answers (owner, 2026-10-15: data minimisation).
+ * There is deliberately no field for them, so they cannot come back by accident.
+ */
 export interface RosterEntry {
   seriesId: string;
   seriesName: string;
   edition: number;
   name?: string;
   email?: string;
-  /** Remaining decrypted order-form fields, verbatim. */
-  fields?: Record<string, string>;
   /** "sale": from a door entry, so `name` is the name on the card, not an order answer. */
   source?: "sale";
 }

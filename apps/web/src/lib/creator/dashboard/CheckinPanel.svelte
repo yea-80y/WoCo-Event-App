@@ -21,6 +21,7 @@
   import type { EventFeed, OrderEntry } from "@woco/shared";
   import { issueDoorPass, pushCheckinRoster, getCheckinStatus, requestDoorPassChallenge, type CheckinStatus } from "../../api/checkin.js";
   import { issueDoorPassWithProof } from "./door-pass-issue.js";
+  import { buildRosterEntries } from "./door-roster.js";
   import { encryptRoster } from "../../scanner/roster-crypto.js";
   import { doorPassSecretB64url } from "../../scanner/door-pass-key.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -114,21 +115,9 @@
     }
   }
 
-  function buildRosterEntries(): RosterEntry[] {
-    const seriesName = new Map(event.series.map((s) => [s.seriesId, s.name]));
-    return orders.map((order, idx) => {
-      const dec = decryptedOrders.get(idx);
-      const fields = dec?.fields ?? undefined;
-      const nameKey = fields ? Object.keys(fields).find((k) => /name/i.test(k)) : undefined;
-      return {
-        seriesId: order.seriesId,
-        seriesName: seriesName.get(order.seriesId) ?? order.seriesName,
-        edition: order.edition,
-        name: nameKey ? fields![nameKey] : undefined,
-        email: dec?.claimerEmail,
-        fields,
-      };
-    });
+  /** Name, email and ticket only (door-roster.ts): the other order answers never reach the door. */
+  function doorRoster(): RosterEntry[] {
+    return buildRosterEntries(orders, decryptedOrders, new Map(event.series.map((s) => [s.seriesId, s.name])));
   }
 
   const KEYS_CHANGED = "This door pass stopped working when your account's keys changed - make a new one.";
@@ -181,7 +170,7 @@
         { challenge: requestDoorPassChallenge, issue: issueDoorPass },
       );
       const passSecret = doorPassSecretB64url(keys.current, eventId, issued.token);
-      const roster = await encryptRoster(buildRosterEntries(), passSecret);
+      const roster = await encryptRoster(doorRoster(), passSecret);
       await pushCheckinRoster(eventId, roster);
 
       stored = { token: issued.token, exp: issued.exp, mode: issued.mode, gen: keys.gen, rosterPushedAt: new Date().toISOString() };
@@ -209,7 +198,7 @@
         passUrl = null;
         throw new Error(KEYS_CHANGED);
       }
-      const roster = await encryptRoster(buildRosterEntries(), doorPassSecretB64url(keys.current, eventId, stored.token));
+      const roster = await encryptRoster(doorRoster(), doorPassSecretB64url(keys.current, eventId, stored.token));
       await pushCheckinRoster(eventId, roster);
       stored = { ...stored, rosterPushedAt: new Date().toISOString() };
       localStorage.setItem(storageKey, JSON.stringify(stored));

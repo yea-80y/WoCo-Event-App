@@ -24,7 +24,7 @@ import {
   type RosterEntry,
 } from "@woco/shared";
 import * as db from "./db.js";
-import { decryptRoster } from "./roster-crypto.js";
+import { decryptRoster, pickRosterEntries } from "./roster-crypto.js";
 import { verifyTicket } from "./verify.js";
 import { claimAdmission, newClaimId, type ClaimAnswer } from "./claim.js";
 import { admit, doorModeOf, EVENT_CHANGED_MESSAGE, withConfirmed, type Admission } from "./admission.js";
@@ -251,7 +251,8 @@ class ScannerStore {
     await db.touchPass(eventId, now);
     this.pass = { ...pass, lastUsedAt: now };
     this.pack = pack;
-    this.roster = (await db.getRoster(eventId)) ?? [];
+    // Only the door's keys, even from a roster stored before it was cut down to them.
+    this.roster = pickRosterEntries(await db.getRoster(eventId));
     this.doorEntries = restoreDoorEntries(await db.getDoorEntries(eventId), passJti(pass));
     this.doorKeyMismatch = false;
     this.doorKeyChecked = null;

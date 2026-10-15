@@ -103,7 +103,7 @@ test("a box whose plaintext names another ticket is refused even when it opens",
 test("the door's list: tombstone hides, the organiser's roster wins, a sale fills the gap", async () => {
   const state = (await applyDoorEntriesPage(emptyDoorEntries(), page([await add(1), await add(2), remove(3)]), ctx)).state;
   const roster: RosterEntry[] = [
-    { seriesId: SERIES, seriesName: "General", edition: 1, name: "Order-form name", fields: { Diet: "veg" } },
+    { seriesId: SERIES, seriesName: "General", edition: 1, name: "Order-form name" },
     { seriesId: SERIES, seriesName: "General", edition: 3, name: "Erased person" },
   ];
   const list = mergeDoorRoster(roster, state);
