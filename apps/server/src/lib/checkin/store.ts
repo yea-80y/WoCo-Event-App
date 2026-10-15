@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { writeJsonAtomic } from "../marketing/persist.js";
 import {
   DOOR_PASS_VERSION,
+  EXPIRED_PASS_UPLOAD_MS,
   doorPassSigningInput,
   encodeDoorPassToken,
   decodeDoorPassToken,
@@ -168,11 +169,16 @@ export function doorPassIdUsed(eventId: string, jti: string): boolean {
 }
 
 export type PassVerdict =
-  | { ok: true; eventId: string; jti: string; signer?: string; mode: DoorMode; device?: string; gen: number }
+  | { ok: true; eventId: string; jti: string; signer?: string; mode: DoorMode; device?: string; gen: number; expired?: true }
   | { ok: false; reason: "malformed" | "bad-sig" | "expired" | "revoked" };
 
-/** Verify a door-pass token: HMAC tag, expiry, and active-jti (revocation). */
-export function verifyDoorPass(token: string): PassVerdict {
+/**
+ * Verify a door-pass token: HMAC tag, expiry, and active-jti (revocation). With
+ * `uploadAfterExpiry`, a pass whose only fault is expiry, within EXPIRED_PASS_UPLOAD_MS,
+ * still verifies - marked `expired` - so long as it is the event's active pass. Only
+ * /sync asks for that, and answers such a pass with an acknowledgement and nothing else.
+ */
+export function verifyDoorPass(token: string, opts: { uploadAfterExpiry?: boolean } = {}): PassVerdict {
   const decoded = decodeDoorPassToken(token);
   if (!decoded) return { ok: false, reason: "malformed" };
   const { payload, tagHex } = decoded;
@@ -182,7 +188,9 @@ export function verifyDoorPass(token: string): PassVerdict {
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
     return { ok: false, reason: "bad-sig" };
   }
-  if (payload.exp * 1000 < Date.now()) return { ok: false, reason: "expired" };
+  const now = Date.now();
+  const expired = payload.exp * 1000 < now;
+  if (expired && !(opts.uploadAfterExpiry && now - payload.exp * 1000 <= EXPIRED_PASS_UPLOAD_MS)) return { ok: false, reason: "expired" };
 
   const active = readPasses()[payload.eventId];
   if (!active || active.jti !== payload.jti) return { ok: false, reason: "revoked" };
@@ -196,6 +204,7 @@ export function verifyDoorPass(token: string): PassVerdict {
     gen: active.gen ?? 0,
     ...(active.signer ? { signer: active.signer } : {}),
     ...(active.device ? { device: active.device } : {}),
+    ...(expired ? { expired: true as const } : {}),
   };
 }
 

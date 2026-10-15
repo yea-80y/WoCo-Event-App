@@ -7,6 +7,7 @@
  * so a reload reopens that tab's event, and setting up another event in another
  * tab never changes it. The pass itself (token + roster key) never goes there.
  */
+import { EXPIRED_PASS_UPLOAD_MS } from "@woco/shared";
 import { keyEvent } from "./scope.js";
 import { isPassExpired } from "./pass-gate.js";
 
@@ -84,10 +85,10 @@ function ended(p: PassSummary): EventChoice {
 
 /**
  * How long an ended pass's unsynced check-ins stay. They hold no names (ticket, time,
- * device id) and can never sync once the pass is over; they stay this long so the phone
- * keeps saying they never reached WoCo, then go.
+ * device id); an expired pass keeps uploading them this long (`canUpload`), as the
+ * server accepts, and then they go, uploaded or not.
  */
-export const ENDED_RECORDS_KEPT_MS = 30 * 24 * 60 * 60 * 1000;
+export const ENDED_RECORDS_KEPT_MS = EXPIRED_PASS_UPLOAD_MS;
 
 /** When the pass ended for good on this phone's clock: its `exp`, or earlier if the server said so. */
 export function endedAtMs(p: PassSummary): number {
@@ -95,14 +96,24 @@ export function endedAtMs(p: PassSummary): number {
   return p.expiredAt === undefined ? exp : Math.min(exp, p.expiredAt);
 }
 
+/**
+ * Whether a pass may still send its unsynced check-ins: live, or expired less than
+ * ENDED_RECORDS_KEPT_MS ago with its token kept - the server takes an expired pass's
+ * upload as long, and sends nothing back. Never a refused pass.
+ */
+export function canUpload(p: PassSummary & { token: string }, now: number): boolean {
+  if (p.dead || !p.token) return false;
+  return isLive(p, now) || now < endedAtMs(p) + ENDED_RECORDS_KEPT_MS;
+}
+
 export type EndedAction = "keep" | "drop-attendee-data" | "clear";
 
 /**
  * What an ended event (pass expired or refused) leaves on the phone. Its attendee
- * data - roster, pack, door entries - and the pass itself (token + pass secret) go at
- * once: nothing can use them any more. Its check-ins stay while any are unsynced, for
- * ENDED_RECORDS_KEPT_MS after the pass ended, then the event goes entirely. A live
- * pass is never touched.
+ * data - roster, pack, door entries - and the pass secret go at once. Its check-ins
+ * stay while any are unsynced, for ENDED_RECORDS_KEPT_MS after the pass ended, and an
+ * expired pass's token with them, to upload them; then the event goes entirely. A
+ * live pass is never touched.
  */
 export function endedEventAction(p: PassSummary | undefined, hasUnsynced: boolean, now: number): EndedAction {
   if (!p || isLive(p, now)) return "keep";

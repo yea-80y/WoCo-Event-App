@@ -261,7 +261,8 @@ Scanner (X-Door-Pass + X-Scanner-Device headers):
   GET  /api/checkin/:eventId/pack      verification pack (binds a "single" pass)
   GET  /api/checkin/:eventId/entries   later sales' sealed email + card name, ?since=<cursor>
   POST /api/checkin/:eventId/claim     admit ONE ticket - first claim anywhere wins
-  POST /api/checkin/:eventId/sync      merge this device's check-ins, get all
+  POST /api/checkin/:eventId/sync      merge this device's check-ins, get all (an expired
+                                       pass: upload only, for 30 days, answered with an ack)
 ```
 
 The pack holds only public or derivable data — on-chain slot owners, voided slots, the merged
@@ -299,13 +300,18 @@ door key the server does not seal to shows a warning instead of silently opening
 
 **After the event the phone deletes it.** When a pass has expired - its `exp` on the phone's clock,
 or a server 401 `expired` (the clock may be wrong) - the phone deletes that event's roster, pack,
-door entries and the pass itself (token + pass secret), at boot, on the refresh tick and when the
-tab comes back; a tab showing it leaves for the provision screen. Check-ins (ticket, time, device id)
-stay while unsynced, still counted, until 30 days after the pass ended, then the event goes. A dead
-pass is cleaned up the same way. Per event, decided again inside one IndexedDB transaction, so a live
-pass - or one another tab has just set up - is never touched (`events.ts` `endedEventAction`,
-`db.ts` `cleanUpEndedEvent`). Attendee data is only ever written while the pass that fetched it is
-still the stored one, so a late reply cannot bring names back.
+door entries and pass secret, at boot, on the refresh tick and when the tab comes back; a tab
+showing it leaves for the provision screen. Check-ins (ticket, time, device id) stay while unsynced,
+still counted, and so does the pass token (no personal data): the other-events sync keeps uploading
+them with it. `/sync` takes an expired pass's upload for 30 days after its `exp`
+(`EXPIRED_PASS_UPLOAD_MS`), only while it is still the event's active pass (same jti, key generation
+not behind), and answers `{ acknowledged }` with no check-in set and no conflicts; `/pack`, `/claim`
+and `/entries` refuse it. The event goes once nothing is unsynced, or 30 days after the pass ended. A
+dead pass loses its token at once and uploads nothing; otherwise it is cleaned up the same way. Per
+event, decided again inside one IndexedDB transaction, so a live pass - or one another tab has just
+set up - is never touched (`events.ts` `endedEventAction`, `db.ts` `cleanUpEndedEvent`). Attendee
+data is only ever written while the pass that fetched it is still the stored one, with its secret,
+so a late reply cannot bring names back.
 
 **A ticket is admitted once, across every scanner (#641).** Check-in is a capacity control, so a
 second admission is a crowd-safety defect, never a statistic to reconcile afterwards. The organiser

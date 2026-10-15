@@ -368,7 +368,10 @@ function tx<T>(store: string, mode: IDBTransactionMode, run: (s: IDBObjectStore)
 // ── per-event state ─────────────────────────────────────────────────────────
 
 export interface StoredPass {
-  /** "" once the pass has ended and been cleaned up (`dropEndedEventDataIn`). */
+  /**
+   * "" once a refused pass has been cleaned up (`dropEndedEventDataIn`). An expired
+   * one keeps it - it is not personal data - while it still has check-ins to upload.
+   */
   token: string;
   /** The pass secret P; "" once the pass has ended and been cleaned up. */
   keyB64url: string;
@@ -417,10 +420,11 @@ export const putConflicts = (eventId: string, c: CheckinConflict[]) => put("conf
 export const getDoorEntries = (eventId: string) => kvGet<StoredDoorEntries>(doorEntriesKey(eventId));
 
 /**
- * Write attendee data for an event only while `token` is still its stored pass, checked
- * in the same transaction. A fetch that outlived its pass - replaced by a newer one, or
- * ended and cleaned up while the request was out - writes nothing, so names never come
- * back after the clean-up. False when nothing was written.
+ * Write attendee data for an event only while `token` is still its stored pass, with
+ * its secret, checked in the same transaction. A fetch that outlived its pass -
+ * replaced by a newer one, or ended and cleaned up while the request was out (the
+ * secret goes then, even where the token stays to upload) - writes nothing, so names
+ * never come back after the clean-up. False when nothing was written.
  */
 async function putUnderPass(eventId: string, token: string, writes: Array<[store: string, value: unknown, key: string]>): Promise<boolean> {
   if (!token) return false;
@@ -430,7 +434,7 @@ async function putUnderPass(eventId: string, token: string, writes: Array<[store
     let wrote = false;
     const pass = t.objectStore("passes").get(eventId) as IDBRequest<StoredPass | undefined>;
     pass.onsuccess = () => {
-      if (pass.result?.token !== token) return;
+      if (pass.result?.token !== token || !pass.result.keyB64url) return;
       for (const [store, value, key] of writes) t.objectStore(store).put(value, key);
       wrote = true;
     };
@@ -490,20 +494,22 @@ function clearEventIn(t: IDBTransaction, eventId: string): void {
 
 /**
  * An ended event's attendee data goes - the roster, the pack (it carries the roster
- * ciphertext), the door entries - and so do the pass token and the pass secret,
- * which nothing can use any more. What is left of the pass says when it ended, so
- * the phone still knows the event is waiting to sync, and it never opens again. Its
- * check-ins stay.
+ * ciphertext), the door entries - and so does the pass secret, which nothing can use
+ * any more. An expired pass keeps its token, which is not personal data, so its
+ * unsynced check-ins can still be uploaded (owner, 2026-10-15); a refused one loses
+ * that too. What is left of the pass says when it ended, and it never opens again.
+ * Its check-ins stay.
  */
 function dropEndedEventDataIn(t: IDBTransaction, pass: StoredPass | undefined, now: number): void {
   if (!pass) return;
   t.objectStore("packs").delete(pass.eventId);
   t.objectStore("rosters").delete(pass.eventId);
   t.objectStore("kv").delete(doorEntriesKey(pass.eventId));
-  if (pass.token || pass.keyB64url || (!pass.dead && pass.expiredAt === undefined)) {
+  const token = pass.dead ? "" : pass.token;
+  if (pass.keyB64url || token !== pass.token || (!pass.dead && pass.expiredAt === undefined)) {
     // An expired pass keeps the moment it ended, so a clock set back later cannot reopen it.
     const expiredAt = pass.dead ? pass.expiredAt : hasExpired(pass, now) ? endedAtMs(pass) : now;
-    t.objectStore("passes").put({ ...pass, token: "", keyB64url: "", ...(expiredAt === undefined ? {} : { expiredAt }) }, pass.eventId);
+    t.objectStore("passes").put({ ...pass, token, keyB64url: "", ...(expiredAt === undefined ? {} : { expiredAt }) }, pass.eventId);
   }
 }
 

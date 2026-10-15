@@ -198,6 +198,21 @@ export interface CheckinSyncResponse {
   conflicts: CheckinConflict[];
 }
 
+/**
+ * How long after its `exp` a door pass may still upload its phones' check-ins
+ * (owner, 2026-10-15). One value for both ends: the server's window and how long a
+ * phone keeps the pass token and the unsynced records to use it.
+ */
+export const EXPIRED_PASS_UPLOAD_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * POST /sync's answer to a pass past its `exp` but inside the upload window: the
+ * records were taken, and nothing comes back - no check-in set, no conflicts.
+ */
+export interface CheckinUploadAck {
+  acknowledged: number;
+}
+
 /** POST /api/checkin/:eventId/claim - one scan attempt asking to admit a ticket. */
 export interface CheckinClaimRequest {
   seriesId: string;

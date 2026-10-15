@@ -21,6 +21,7 @@ import {
   type CheckinPack,
   type CheckinRecord,
   type CheckinSyncResponse,
+  type CheckinUploadAck,
   type RosterEntry,
 } from "@woco/shared";
 import * as db from "./db.js";
@@ -52,7 +53,7 @@ import {
 } from "./pass-gate.js";
 import { canApplyUpdate, UPDATE_RETRY_MS } from "./update-policy.js";
 import { unsyncedElsewhere } from "./scope.js";
-import { chooseEvent, eventMarker, hasExpired, isLive, liveEvents, parseEventMarker } from "./events.js";
+import { canUpload, chooseEvent, eventMarker, hasExpired, isLive, liveEvents, parseEventMarker } from "./events.js";
 import { takeoverIfNewer } from "./sw-update.js";
 import {
   applyDoorEntriesPage,
@@ -509,6 +510,13 @@ class ScannerStore {
         await this.passRefused(pass, answer.message, answer.expired);
         return;
       }
+      if (answer.kind === "acked") {
+        // Only an expired pass is answered this way: the server's clock says so, if
+        // this phone's does not. The records are in; the pass ends here as at expiry.
+        await db.absorbServerCheckins(pass.eventId, [], pending.map((r) => db.ticketKey(r.seriesId, r.edition)));
+        await this.passRefused(pass, "Door pass expired", true);
+        return;
+      }
       if (answer.kind !== "ok") return;
 
       await db.absorbServerCheckins(
@@ -561,7 +569,12 @@ class ScannerStore {
   private async postSync(
     pass: db.StoredPass,
     pending: CheckinRecord[],
-  ): Promise<{ kind: "ok"; data: CheckinSyncResponse } | { kind: "dead"; message: string; expired: boolean } | { kind: "later" }> {
+  ): Promise<
+    | { kind: "ok"; data: CheckinSyncResponse }
+    | { kind: "acked" }
+    | { kind: "dead"; message: string; expired: boolean }
+    | { kind: "later" }
+  > {
     const resp = await fetch(`${API_BASE}/api/checkin/${encodeURIComponent(pass.eventId)}/sync`, {
       method: "POST",
       headers: {
@@ -582,28 +595,47 @@ class ScannerStore {
       return { kind: "dead", message: body?.error ?? "Door pass no longer valid", expired: isExpiredRefusal(resp.status, body) };
     }
     if (!resp.ok) return { kind: "later" };
-    const body = (await resp.json()) as { ok: boolean; data?: CheckinSyncResponse };
-    return body.ok && body.data ? { kind: "ok", data: body.data } : { kind: "later" };
+    const body = (await resp.json()) as { ok: boolean; data?: Partial<CheckinSyncResponse & CheckinUploadAck> };
+    if (!body.ok || !body.data) return { kind: "later" };
+    // An expired pass's upload: taken, and nothing sent back.
+    if (typeof body.data.acknowledged === "number" && !Array.isArray(body.data.checkins)) return { kind: "acked" };
+    return Array.isArray(body.data.checkins) && Array.isArray(body.data.conflicts)
+      ? { kind: "ok", data: body.data as CheckinSyncResponse }
+      : { kind: "later" };
   }
 
   /**
-   * Sync the other events' unsynced check-ins, each with its own pass, never
-   * this tab's. A pass that has expired or been refused syncs nothing; its
-   * records stay on the phone.
+   * Sync the other events' unsynced check-ins, each with its own pass, never this
+   * tab's. An expired pass still uploads for 30 days (`canUpload`) and gets only an
+   * acknowledgement; once its queue is empty the event leaves the phone. A refused
+   * pass sends nothing; its records stay until they go with the event.
    */
   private async syncOtherEvents(): Promise<void> {
     if (this.syncingOthers || !this.online) return;
     this.syncingOthers = true;
+    let ended = false;
     try {
       for (const pass of await db.getAllPasses()) {
-        if (pass.eventId === this.pass?.eventId || !isLive(pass, Date.now())) continue;
+        const now = Date.now();
+        if (pass.eventId === this.pass?.eventId || !canUpload(pass, now)) continue;
         const pending = await db.getPending(pass.eventId);
         if (pending.length === 0) continue;
+        const live = isLive(pass, now);
         try {
           const answer = await this.postSync(pass, pending);
-          if (answer.kind === "dead") await this.passRefused(pass, answer.message, answer.expired);
-          else if (answer.kind === "ok") {
-            await db.absorbServerCheckins(pass.eventId, answer.data.checkins, pending.map((r) => db.ticketKey(r.seriesId, r.edition)));
+          const acked = pending.map((r) => db.ticketKey(r.seriesId, r.edition));
+          if (answer.kind === "dead") {
+            // An expired pass's upload refused (past the server's window, or replaced):
+            // it can never land, so stop trying; the records go with the event.
+            if (live) await this.passRefused(pass, answer.message, answer.expired);
+            else await db.markPassDead(pass.eventId, answer.message, pass.token).catch(() => undefined);
+            ended ||= !live;
+          } else if (answer.kind === "ok") {
+            await db.absorbServerCheckins(pass.eventId, answer.data.checkins, acked);
+          } else if (answer.kind === "acked") {
+            await db.absorbServerCheckins(pass.eventId, [], acked);
+            if (live) await db.markPassExpired(pass.eventId, pass.token, now).catch(() => undefined);
+            ended = true;
           }
         } catch {
           // Offline: next time.
@@ -612,15 +644,18 @@ class ScannerStore {
     } finally {
       this.syncingOthers = false;
     }
+    // An emptied queue, or a refused upload, is the clean-up's cue: the token goes now.
+    if (ended) await this.cleanUpEndedEvents();
     await this.countOtherUnsynced();
   }
 
   /**
-   * Every ended event's attendee data and pass go at once; its check-ins once nothing
-   * is waiting to sync, or 30 days after the pass ended (`endedEventAction`). Runs at
-   * boot, on the refresh tick and when the tab comes back; each event is decided
-   * again inside its own transaction, so a pass set up meanwhile is never touched.
-   * A tab showing an expired event leaves it for the provision screen first.
+   * Every ended event's attendee data and pass secret go at once; its check-ins, and an
+   * expired pass's token, once nothing is waiting to upload, or 30 days after the pass
+   * ended (`endedEventAction`). Runs at boot, on the refresh tick and when the tab
+   * comes back; each event is decided again inside its own transaction, so a pass set
+   * up meanwhile is never touched. A tab showing an expired event leaves it for the
+   * provision screen first.
    */
   cleanUpEndedEvents(): Promise<void> {
     // One run at a time; a call during a run gets one more after it, which sees
@@ -642,11 +677,13 @@ class ScannerStore {
   private async runCleanUp(): Promise<void> {
     const now = Date.now();
     const current = this.pass;
+    let left = false;
     if (current) {
       const stored = await db.getPass(current.eventId);
       const sameStored = stored?.token === current.token ? stored : undefined;
       if ((hasExpired(current, now) || (sameStored && hasExpired(sameStored, now))) && this.pass?.token === current.token) {
         this.leaveExpiredEvent();
+        left = true;
       }
     }
     for (const pass of await db.getAllPasses()) {
@@ -659,6 +696,9 @@ class ScannerStore {
     }
     await this.listEvents();
     await this.countOtherUnsynced();
+    // What the event left unsynced goes up now, with the token it kept: no timer runs
+    // on the provision screen.
+    if (left) void this.syncOtherEvents();
   }
 
   /** This tab's pass has expired: its attendee data leaves memory now, and the tab says why. */
@@ -742,6 +782,7 @@ class ScannerStore {
   /** Coming back to the tab: an expired event is cleaned up first, then the pack may refresh. */
   private onReturn(): void {
     void this.cleanUpEndedEvents();
+    void this.syncOtherEvents();
     this.maybeAutoRefresh(RETURN_REFRESH_MS);
   }
 

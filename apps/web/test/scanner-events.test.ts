@@ -9,8 +9,9 @@ import { IDBFactory } from "fake-indexeddb";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { buildDoorPassUrl, parseDoorPassFragment, type CheckinPack, type CheckinRecord } from "@woco/shared";
+import { buildDoorPassUrl, EXPIRED_PASS_UPLOAD_MS, parseDoorPassFragment, type CheckinPack, type CheckinRecord } from "@woco/shared";
 import {
+  canUpload,
   chooseEvent,
   ENDED_RECORDS_KEPT_MS,
   endedAtMs,
@@ -139,7 +140,7 @@ test("a reset removes the current event only - every other event, and its tabs, 
   assert.equal(await db.getPendingClaimId("event-b", "ser-1", 2), "claim-event-b");
 });
 
-test("dropping an ended event's attendee data keeps its unsynced check-ins, and not its pass secret", async () => {
+test("dropping an ended event's attendee data keeps its unsynced check-ins and its token to upload them, and not its pass secret", async () => {
   db.useIndexedDbForTests(new IDBFactory());
   await provisionInStorage("event-a");
   await db.putDoorEntries("event-a", "tok-event-a", { jti: "j", next: 1, entries: [{ seriesId: "ser-1", edition: 3, email: "b@example.com", source: "sale" }], tombstones: [] });
@@ -150,9 +151,48 @@ test("dropping an ended event's attendee data keeps its unsynced check-ins, and 
   assert.equal((await db.getPending("event-a")).length, 1);
   const pass = await db.getPass("event-a");
   assert.ok(pass, "what is left of its pass stays, so the event is still known to be waiting");
-  assert.equal(pass.token, "");
+  assert.equal(pass.token, "tok-event-a", "the token stays: it is how the check-ins upload");
   assert.equal(pass.keyB64url, "");
   assert.equal(isLive(pass, NOW), false, "and it never opens again");
+});
+
+test("a kept token writes no attendee data: a late pack, roster or door entries reply under it stores nothing", async () => {
+  db.useIndexedDbForTests(new IDBFactory());
+  await provisionInStorage("event-a");
+  await db.dropAttendeeData("event-a", NOW);
+  assert.equal((await db.getPass("event-a"))?.token, "tok-event-a");
+  assert.equal(await db.putPackUnderPass("tok-event-a", pack("event-a")), false, "pack");
+  assert.equal(await db.putRosterUnderPass("event-a", "tok-event-a", [{ seriesId: "ser-1", edition: 1, name: "late" }]), false, "roster");
+  assert.equal(await db.putDoorEntries("event-a", "tok-event-a", { jti: "j", next: 1, entries: [], tombstones: [] }), false, "door entries");
+  assert.equal(await db.getPack("event-a"), undefined);
+  assert.equal(await db.getRoster("event-a"), undefined);
+  assert.equal(await db.getDoorEntries("event-a"), undefined);
+});
+
+test("a refused pass loses its token too: it can upload nothing", async () => {
+  db.useIndexedDbForTests(new IDBFactory());
+  await provisionInStorage("event-a");
+  await db.markPassDead("event-a", "Door pass revoked");
+  await db.dropAttendeeData("event-a", NOW);
+  const pass = await db.getPass("event-a");
+  assert.equal(pass?.token, "");
+  assert.equal(pass?.keyB64url, "");
+  assert.equal((await db.getPending("event-a")).length, 1, "its check-ins stay until the event goes");
+});
+
+test("an expired pass uploads for 30 days from when it ended; a refused or scrubbed one never", () => {
+  const token = "tok";
+  const ended = EXPIRED.exp * 1000;
+  assert.equal(canUpload({ ...A, token }, NOW), true, "live");
+  assert.equal(canUpload({ ...EXPIRED, token }, ended + ENDED_RECORDS_KEPT_MS - 1), true, "expired, inside the window");
+  assert.equal(canUpload({ ...EXPIRED, token }, ended + ENDED_RECORDS_KEPT_MS), false, "the window is over");
+  assert.equal(canUpload({ ...EXPIRED, token: "" }, NOW), false, "no token kept");
+  assert.equal(canUpload({ ...DEAD, token }, NOW), false, "refused, even with its token still stored");
+  assert.equal(canUpload({ ...EXPIRED, dead: "Door pass revoked", token }, NOW), false, "expired, then refused");
+  const told = { ...A, expiredAt: NOW - 1000, token };
+  assert.equal(canUpload(told, NOW - 1000 + ENDED_RECORDS_KEPT_MS - 1), true, "the server's word starts the window");
+  assert.equal(canUpload(told, NOW - 1000 + ENDED_RECORDS_KEPT_MS), false);
+  assert.equal(ENDED_RECORDS_KEPT_MS, EXPIRED_PASS_UPLOAD_MS, "the phone's window is the server's");
 });
 
 test("marking a pass dead and recording its use never undo each other", async () => {

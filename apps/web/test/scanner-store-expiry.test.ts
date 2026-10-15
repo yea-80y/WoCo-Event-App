@@ -2,18 +2,25 @@
  * After the event, the scanner deletes its attendee data on its own (owner,
  * 2026-10-15). When a pass expires - its `exp`, the event end + 24 h, on the phone's
  * clock, or the server's 401 `expired` - that event's decrypted roster, door entries,
- * pack (it carries the roster ciphertext) and the pass itself (token + pass secret)
- * go: at boot, on the refresh tick and when the tab comes back. Its check-ins hold no
- * names; unsynced ones stay, still counted, until 30 days after the pass ended. A live
- * pass, and every other event, is never touched.
+ * pack (it carries the roster ciphertext) and pass secret go: at boot, on the refresh
+ * tick and when the tab comes back. Its check-ins hold no names; unsynced ones stay,
+ * still counted, until 30 days after the pass ended. A live pass, and every other
+ * event, is never touched.
+ *
+ * An expired pass keeps its TOKEN (not P, not personal data) while it has unsynced
+ * check-ins, uploads them through the other-events loop - the server takes an expired
+ * pass's upload for 30 days and answers only an ack - and the event goes once the
+ * queue is empty, or at expiry + 30 days. A refused pass loses its token and uploads
+ * nothing.
  *
  * MUTATION (each goes red here): drop `expiredAt` from `isLive` and "the server's
  * 401 expired" goes red; keep unsynced records forever (no 30-day clear) and "then
- * they go" goes red; keep the token in `dropEndedEventDataIn` and every "pass is
- * gone" assertion goes red; drop the clean-up from the refresh tick, the "came back"
- * handler or boot and its test goes red; leave the tab on an expired event and "the
- * tab leaves" goes red; skip the in-transaction re-check and "a pass set up meanwhile"
- * goes red.
+ * they go" goes red; drop the token in `dropEndedEventDataIn` and every "the token
+ * stays" assertion goes red, keep a refused pass's and "a refused upload stops it"
+ * goes red; leave the queue alone on an ack and "the queue emptied" goes red; drop the
+ * clean-up from the refresh tick, the "came back" handler or boot and its test goes
+ * red; leave the tab on an expired event and "the tab leaves" goes red; skip the
+ * in-transaction re-check and "a pass set up meanwhile" goes red.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -72,13 +79,18 @@ async function eventOnPhone(pass: TestPass, opts: { unsynced?: number; synced?: 
   for (let i = 0; i < (opts.synced ?? 0); i++) await db.absorbServerCheckins(pass.eventId, [rec(pass.eventId, edition++)], []);
 }
 
-async function assertAttendeeDataGone(eventId: string): Promise<void> {
+/**
+ * The names, emails, pack, door entries and pass secret are gone. The token stays only
+ * where the pass expired with check-ins still to upload (`token: "kept"`).
+ */
+async function assertAttendeeDataGone(eventId: string, token: "kept" | "gone" = "gone", tokenValue?: string): Promise<void> {
   assert.equal(await db.getRoster(eventId), undefined, `${eventId}: decrypted roster`);
   assert.equal(await db.getPack(eventId), undefined, `${eventId}: pack (roster ciphertext)`);
   assert.equal(await db.getDoorEntries(eventId), undefined, `${eventId}: door entries`);
   const pass = await db.getPass(eventId);
-  assert.equal(pass?.token ?? "", "", `${eventId}: pass token`);
   assert.equal(pass?.keyB64url ?? "", "", `${eventId}: pass secret`);
+  if (token === "gone") assert.equal(pass?.token ?? "", "", `${eventId}: pass token`);
+  else assert.equal(pass?.token, tokenValue, `${eventId}: the token stays, to upload`);
 }
 
 async function assertUntouched(pass: TestPass, checkins: number): Promise<void> {
@@ -135,14 +147,14 @@ test("the refresh tick: an open event whose pass expires leaves memory and stora
 
   clock.offsetMs = HOUR + 1000; // past A's exp, not B's
   tick(REFRESH_TICK_MS);
-  await waitFor(async () => scanner.phase === "unprovisioned" && (await db.getPass(A))?.token === "" && scanner.otherUnsynced === 3);
+  await waitFor(async () => scanner.phase === "unprovisioned" && (await db.getPass(A))?.keyB64url === "" && scanner.otherUnsynced === 3);
   assert.equal(scanner.phase, "unprovisioned");
   assert.equal(scanner.pass, null);
   assert.equal(scanner.attendees.length, 0, "the decrypted roster and door entries left memory");
   assert.equal(scanner.provisionError, PASS_EXPIRED_MESSAGE);
-  await assertAttendeeDataGone(A);
+  await assertAttendeeDataGone(A, "kept", pass.token);
   assert.equal((await db.getPending(A)).length, 2, "unsynced check-ins (no names) stay");
-  assert.equal(scanner.otherUnsynced, 3, "and are still counted as waiting to sync");
+  assert.equal(scanner.otherUnsynced, 3, "and are still counted as waiting to upload");
   await assertUntouched(other, 1);
 });
 
@@ -156,10 +168,10 @@ test("the tab coming back runs the clean-up", async (t) => {
   clock.offsetMs = HOUR + 1000;
   fakeDocument.visibilityState = "visible";
   fire("visibilitychange");
-  await waitFor(async () => scanner.phase === "unprovisioned" && (await db.getPass(A))?.token === "");
+  await waitFor(async () => scanner.phase === "unprovisioned" && (await db.getPass(A))?.keyB64url === "");
   await settle();
   assert.equal(scanner.phase, "unprovisioned");
-  await assertAttendeeDataGone(A);
+  await assertAttendeeDataGone(A, "kept", pass.token);
   assert.equal((await db.getPending(A)).length, 1);
 });
 
@@ -170,7 +182,7 @@ test("unsynced check-ins of an expired pass stay until 30 days after it expired,
   await eventOnPhone(live, { unsynced: 1 });
   const scanner = await openTab(t);
   await scanner.cleanUpEndedEvents();
-  await assertAttendeeDataGone(A);
+  await assertAttendeeDataGone(A, "kept", pass.token);
   assert.equal((await db.getPending(A)).length, 2);
   assert.equal((await db.getAllCheckins(A)).length, 3);
   assert.equal(scanner.otherUnsynced, 3);
@@ -178,6 +190,7 @@ test("unsynced check-ins of an expired pass stay until 30 days after it expired,
   clock.offsetMs = ENDED_RECORDS_KEPT_MS - 2 * HOUR; // not quite 30 days after exp
   await scanner.cleanUpEndedEvents();
   assert.equal((await db.getPending(A)).length, 2, "inside the 30 days they stay");
+  assert.equal((await db.getPass(A))?.token, pass.token, "and so does the token they upload with");
 
   clock.offsetMs = ENDED_RECORDS_KEPT_MS + 1000;
   await scanner.cleanUpEndedEvents();
@@ -192,18 +205,21 @@ test("unsynced check-ins of an expired pass stay until 30 days after it expired,
 test("a server 401 'expired' cleans up the same way, whatever the phone's clock says", async (t) => {
   const pass = makePass(A, "a".repeat(32)); // a day left by the phone's clock
   await eventOnPhone(pass, { unsynced: 1 });
+  // The server refuses even the upload: past its window by its own clock.
   server.handlers.set("/sync", () => Response.json({ ok: false, error: "Door pass expired", reason: "expired" }, { status: 401 }));
   const scanner = await openTab(t);
   await scanner.openEvent(A);
   await scanner.sync();
-  await settle(60);
+  await waitFor(async () => (await db.getPass(A))?.dead !== undefined);
+  await settle();
 
   assert.equal(scanner.phase, "unprovisioned");
   assert.equal(scanner.provisionError, PASS_EXPIRED_MESSAGE);
-  await assertAttendeeDataGone(A);
+  await assertAttendeeDataGone(A, "gone");
   const stored = await db.getPass(A);
-  assert.ok(stored?.expiredAt !== undefined && stored.dead === undefined, "recorded as expired, not dead");
-  assert.equal((await db.getPending(A)).length, 1, "its unsynced check-in stays, counted");
+  assert.ok(stored?.expiredAt !== undefined, "taken as expired first");
+  assert.ok(stored?.dead, "then, its upload refused too, it stops trying");
+  assert.equal((await db.getPending(A)).length, 1, "its unsynced check-in stays, counted, until the event goes");
   assert.equal(await scanner.openEvent(A), false, "it never opens again");
 });
 
@@ -295,4 +311,115 @@ test("the clean-up runs from boot, the refresh tick and the tab coming back (sou
   assert.match(between("private startSyncLoop()", "private stopLoops()"), /void this\.cleanUpEndedEvents\(\);/);
   assert.match(between("private onReturn()", "refreshDoorEntries()"), /void this\.cleanUpEndedEvents\(\);/);
   assert.match(between("private listen()", "private async boot()"), /addEventListener\("visibilitychange", \(\) => this\.onReturn\(\)\)/);
+});
+
+// ── an expired pass still uploads (owner, 2026-10-15) ───────────────────────
+
+test("an expired pass keeps its token, never P, while it has check-ins to upload; they upload, only an ack comes back, and the event goes", async (t) => {
+  const pass = makePass(A, "a".repeat(32), nowS() - 3600);
+  await eventOnPhone(pass, { unsynced: 2, synced: 1 });
+  let atUpload: { token?: string; key?: string; sent: number; header?: string } | null = null;
+  server.handlers.set("/sync", async (_url, init) => {
+    const stored = await db.getPass(A);
+    const sent = (JSON.parse(String(init?.body)) as { checkins: unknown[] }).checkins.length;
+    atUpload = { token: stored?.token, key: stored?.keyB64url, sent, header: (init?.headers as Record<string, string>)["X-Door-Pass"] };
+    return Response.json({ ok: true, data: { acknowledged: sent } });
+  });
+  const scanner = await openTab(t);
+  await scanner.init(); // boot cleans up, then uploads what other events hold
+  await waitFor(async () => (await db.getPass(A)) === undefined);
+  assert.deepEqual(atUpload, { token: pass.token, key: "", sent: 2, header: pass.token }, "uploaded with the kept token; P was already gone");
+  assert.deepEqual(await db.getPending(A), [], "the queue emptied on the ack");
+  assert.deepEqual(await db.getAllCheckins(A), [], "and with nothing left to upload the event left the phone, token and all");
+  await waitFor(() => scanner.otherUnsynced === 0);
+});
+
+test("a tab whose event expires on the refresh tick uploads what is left at once, with the kept token", async (t) => {
+  const pass = makePass(A, "a".repeat(32), nowS() + HOUR / 1000);
+  await eventOnPhone(pass, { unsynced: 1 });
+  server.handlers.set("/sync", () => Response.json({ ok: false, error: "busy" }, { status: 503 }));
+  const scanner = await openTab(t);
+  assert.equal(await scanner.openEvent(A), true);
+  await scanner.sync();
+  assert.equal((await db.getPending(A)).length, 1, "nothing landed while live");
+
+  server.handlers.set("/sync", () => Response.json({ ok: true, data: { acknowledged: 1 } }));
+  clock.offsetMs = HOUR + 1000;
+  tick(REFRESH_TICK_MS);
+  await waitFor(async () => scanner.phase === "unprovisioned" && (await db.getPass(A)) === undefined);
+  assert.deepEqual(await db.getPending(A), []);
+  const last = server.requests.filter((r) => r.url.pathname.endsWith("/sync")).at(-1);
+  assert.equal(last?.headers["X-Door-Pass"], pass.token);
+});
+
+test("an upload that could not land is tried again when the tab comes back, until it is acknowledged", async (t) => {
+  const pass = makePass(A, "a".repeat(32), nowS() - 3600);
+  await eventOnPhone(pass, { unsynced: 1 });
+  server.handlers.set("/sync", () => Response.json({ ok: false, error: "busy" }, { status: 503 }));
+  const scanner = await openTab(t);
+  await scanner.init();
+  await waitFor(() => server.requests.some((r) => r.url.pathname.endsWith("/sync")));
+  await settle();
+  assert.equal((await db.getPending(A)).length, 1, "not acknowledged: it stays");
+  assert.equal((await db.getPass(A))?.token, pass.token, "and so does the token");
+  assert.equal(scanner.otherUnsynced, 1);
+
+  server.handlers.set("/sync", () => Response.json({ ok: true, data: { acknowledged: 1 } }));
+  fakeDocument.visibilityState = "visible";
+  fire("visibilitychange");
+  await waitFor(async () => (await db.getPass(A)) === undefined);
+  assert.deepEqual(await db.getPending(A), []);
+  await waitFor(() => scanner.otherUnsynced === 0);
+});
+
+test("a refused upload stops it: the pass is marked dead and loses its token; the records stay until the event goes", async (t) => {
+  const pass = makePass(A, "a".repeat(32), nowS() - 3600);
+  await eventOnPhone(pass, { unsynced: 2 });
+  server.handlers.set("/sync", () => Response.json({ ok: false, error: "Door pass revoked", reason: "revoked" }, { status: 401 }));
+  const scanner = await openTab(t);
+  await scanner.init();
+  await waitFor(async () => (await db.getPass(A))?.dead !== undefined && (await db.getPass(A))?.token === "");
+  await assertAttendeeDataGone(A, "gone");
+  assert.equal((await db.getPending(A)).length, 2);
+  const asked = server.requests.filter((r) => r.url.pathname.endsWith("/sync")).length;
+  fire("online");
+  fakeDocument.visibilityState = "visible";
+  fire("visibilitychange");
+  await settle(60);
+  assert.equal(server.requests.filter((r) => r.url.pathname.endsWith("/sync")).length, asked, "a refused pass uploads nothing more");
+  assert.equal(scanner.otherUnsynced, 2, "still counted until they go");
+});
+
+test("past 30 days an expired pass uploads nothing, and the event goes, token and all", async (t) => {
+  const pass = makePass(A, "a".repeat(32), nowS() - 3600);
+  await eventOnPhone(pass, { unsynced: 1 });
+  clock.offsetMs = ENDED_RECORDS_KEPT_MS;
+  server.handlers.set("/sync", () => Response.json({ ok: true, data: { acknowledged: 1 } }));
+  const scanner = await openTab(t);
+  await scanner.init();
+  await settle(60);
+  assert.equal(server.requests.filter((r) => r.url.pathname.endsWith("/sync")).length, 0);
+  assert.equal(await db.getPass(A), undefined);
+  assert.deepEqual(await db.getPending(A), []);
+});
+
+test("a live pass whose upload the server acknowledges as expired (the phone's clock is behind) ends there, its records in", async (t) => {
+  const pass = makePass(A, "a".repeat(32));
+  await eventOnPhone(pass, { unsynced: 1 });
+  server.handlers.set("/sync", () => Response.json({ ok: true, data: { acknowledged: 1 } }));
+  const scanner = await openTab(t);
+  await scanner.openEvent(A);
+  await scanner.sync();
+  await waitFor(async () => scanner.phase === "unprovisioned" && (await db.getPass(A)) === undefined);
+  await settle();
+  assert.equal(scanner.provisionError, PASS_EXPIRED_MESSAGE);
+  assert.deepEqual(await db.getPending(A), []);
+  assert.equal(server.requests.filter((r) => r.url.pathname.endsWith("/sync")).length, 1, "taken on the first ack, never sent again");
+});
+
+test("the provision screen counts what waits to upload, and promises nothing about deletion", async () => {
+  const { readFileSync } = await import("node:fs");
+  const screen = readFileSync(new URL("../src/lib/scanner/ProvisionScreen.svelte", import.meta.url), "utf8");
+  assert.match(screen, /\{scanner\.otherUnsynced\} check-in\{scanner\.otherUnsynced === 1 \? "" : "s"\} waiting to upload/);
+  assert.doesNotMatch(screen, /can no longer sync|deleted 30 days/);
 });

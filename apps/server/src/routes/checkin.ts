@@ -35,6 +35,7 @@ import {
   type CheckinRecord,
   type CheckinSeries,
   type CheckinSyncRequest,
+  type CheckinUploadAck,
   type DoorMode,
   type EncryptedRoster,
 } from "@woco/shared";
@@ -212,17 +213,20 @@ checkinOrganiser.get("/:id/checkin-status", requireAuth, async (c) => {
 
 const checkin = new Hono<AppEnv>();
 
-type AuthorisedPass = { ok: true; jti: string; signer?: string; mode: DoorMode; device?: string; gen: number };
+type AuthorisedPass = { ok: true; jti: string; signer?: string; mode: DoorMode; device?: string; gen: number; expired: boolean };
 
 const REVOKED = "Door pass revoked — ask the organiser for a new one";
 
-/** Verify X-Door-Pass and confirm it was issued for the URL's event. */
-function authorisePass(c: Context<AppEnv>): AuthorisedPass | { ok: false; resp: Response } {
+/**
+ * Verify X-Door-Pass and confirm it was issued for the URL's event. Only /sync passes
+ * `uploadAfterExpiry`: an expired pass may still upload there, and gets nothing back.
+ */
+function authorisePass(c: Context<AppEnv>, opts: { uploadAfterExpiry?: boolean } = {}): AuthorisedPass | { ok: false; resp: Response } {
   const token = c.req.header("X-Door-Pass");
   if (!token) {
     return { ok: false, resp: c.json({ ok: false, error: "Missing door pass" }, 401) };
   }
-  const verdict = verifyDoorPass(token);
+  const verdict = verifyDoorPass(token, opts);
   if (!verdict.ok) {
     const message =
       verdict.reason === "revoked" ? REVOKED
@@ -238,6 +242,7 @@ function authorisePass(c: Context<AppEnv>): AuthorisedPass | { ok: false; resp: 
     jti: verdict.jti,
     mode: verdict.mode,
     gen: verdict.gen,
+    expired: verdict.expired === true,
     ...(verdict.signer ? { signer: verdict.signer } : {}),
     ...(verdict.device ? { device: verdict.device } : {}),
   };
@@ -387,7 +392,9 @@ checkin.get("/:eventId/pack", async (c) => {
 });
 
 checkin.post("/:eventId/sync", async (c) => {
-  const auth = authorisePass(c);
+  // A pass past its exp may still upload what its phones hold, for EXPIRED_PASS_UPLOAD_MS
+  // (owner, 2026-10-15) - as the event's active pass only - and gets only an ack.
+  const auth = authorisePass(c, { uploadAfterExpiry: true });
   if (!auth.ok) return auth.resp;
 
   const body = (await c.req.json().catch(() => null)) as CheckinSyncRequest | null;
@@ -399,14 +406,20 @@ checkin.post("/:eventId/sync", async (c) => {
   }
   const refused = checkDevice(c, auth, deviceFrom(c, body.deviceId), null);
   if (refused) return refused;
-  const outdated = await outdatedPass(c, c.req.param("eventId"), auth, "allow");
+  // An expired pass's keys must be read: "gen not behind" is the condition it uploads on.
+  const outdated = await outdatedPass(c, c.req.param("eventId"), auth, auth.expired ? "refuse" : "allow");
   if (outdated) return outdated;
 
   try {
     // Another event's records are dropped, not refused: a scanner from before
     // per-event storage still gets its own event's records through.
     const eventId = c.req.param("eventId");
-    const result = mergeCheckins(eventId, ofEventSeries(eventId, body.checkins));
+    const own = ofEventSeries(eventId, body.checkins);
+    const result = mergeCheckins(eventId, own);
+    if (auth.expired) {
+      const ack: CheckinUploadAck = { acknowledged: own.length };
+      return c.json({ ok: true, data: ack });
+    }
     const checkins = ofEventSeries(eventId, result.checkins);
     const conflicts = ofEventSeries(eventId, result.conflicts);
     return c.json({ ok: true, data: { checkins, conflicts } });
