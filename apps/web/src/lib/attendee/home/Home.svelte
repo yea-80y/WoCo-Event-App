@@ -1,14 +1,15 @@
 <script lang="ts">
   import type { SnapshotCard } from "@woco/shared";
-  import { COUNTRY_VOCAB, GENRE_VOCAB } from "@woco/shared";
   import { listEvents } from "../../api/events.js";
   import { navigate } from "../../router/router.svelte.js";
   import { openEvent } from "../events/open-event.js";
   import EventCard from "../events/EventCard.svelte";
-  import DiscoveryFilters from "./DiscoveryFilters.svelte";
+  import NearMeLine from "./NearMeLine.svelte";
+  import GenreRow from "./GenreRow.svelte";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { isPastEvent } from "../../utils/events.js";
-  import { haversineKm, type NearMeState } from "../../utils/geo-distance.js";
+  import type { NearMeState } from "../../utils/geo-distance.js";
+  import { passesAll, distanceKm, countryOptions, genreOptions, type DiscoverFilter } from "./discover-filter.js";
   import { onMount, onDestroy } from "svelte";
 
   type Tab = "upcoming" | "past";
@@ -31,57 +32,17 @@
   let nearMe = $state<NearMeState | null>(null);
   const hasActiveFilters = $derived(!!country || selectedGenres.size > 0 || !!nearMe);
 
-  function passesCountry(e: SnapshotCard): boolean {
-    return !country || e.geo?.country === country;
-  }
-  function passesGenre(e: SnapshotCard): boolean {
-    if (selectedGenres.size === 0) return true;
-    const eventGenres = e.tags?.filter((t) => t.type === "genre").map((t) => t.value) ?? [];
-    return eventGenres.some((g) => selectedGenres.has(g));
-  }
-  function passesNearMe(e: SnapshotCard): boolean {
-    if (!nearMe) return true;
-    if (e.geo?.lat === undefined || e.geo?.lng === undefined) return false;
-    return haversineKm(nearMe.lat, nearMe.lng, e.geo.lat, e.geo.lng) <= nearMe.radiusKm;
-  }
-  function distanceFor(e: SnapshotCard): number | undefined {
-    if (!nearMe || e.geo?.lat === undefined || e.geo?.lng === undefined) return undefined;
-    return haversineKm(nearMe.lat, nearMe.lng, e.geo.lat, e.geo.lng);
-  }
+  const filter = $derived<DiscoverFilter>({ country, genres: selectedGenres, nearMe });
+
   function clearFilters() {
     country = "";
     selectedGenres = new Set();
     nearMe = null;
   }
 
-  const filteredEvents = $derived(
-    allEvents.filter((e) => passesCountry(e) && passesGenre(e) && passesNearMe(e)),
-  );
-
-  // Facet option counts exclude their OWN facet (but respect the others) — picking
-  // a country never hides itself from the country list, standard faceted-search UX.
-  const countryOptions = $derived.by(() => {
-    const counts = new Map<string, number>();
-    for (const e of allEvents) {
-      if (!passesGenre(e) || !passesNearMe(e)) continue;
-      if (e.geo?.country) counts.set(e.geo.country, (counts.get(e.geo.country) ?? 0) + 1);
-    }
-    return COUNTRY_VOCAB
-      .filter((c) => counts.has(c.code) || c.code === country)
-      .map((c) => ({ code: c.code, name: c.name, count: counts.get(c.code) ?? 0 }))
-      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-  });
-
-  const genreOptions = $derived.by(() => {
-    const counts = new Map<string, number>();
-    for (const e of allEvents) {
-      if (!passesCountry(e) || !passesNearMe(e)) continue;
-      for (const t of e.tags ?? []) {
-        if (t.type === "genre") counts.set(t.value, (counts.get(t.value) ?? 0) + 1);
-      }
-    }
-    return GENRE_VOCAB.map((value) => ({ value, count: counts.get(value) ?? 0 }));
-  });
+  const filteredEvents = $derived(allEvents.filter((e) => passesAll(e, filter)));
+  const countryChoices = $derived(countryOptions(allEvents, filter));
+  const genreChoices = $derived(genreOptions(allEvents, filter));
 
   // Client-side split — single source of truth, no extra network calls
   const upcoming = $derived(
@@ -114,16 +75,13 @@
   <span class="kicker">Discover</span>
   <h1>Find your scene</h1>
   <p class="hero-sub">Independent events, cryptographic tickets, no corporate middleman.</p>
+  {#if !loading && allEvents.length > 0}
+    <NearMeLine bind:nearMe />
+  {/if}
 </section>
 
 {#if !loading && allEvents.length > 0}
-  <DiscoveryFilters
-    countries={countryOptions}
-    genres={genreOptions}
-    bind:country
-    bind:selectedGenres
-    bind:nearMe
-  />
+  <GenreRow genres={genreChoices} bind:selectedGenres />
 {/if}
 
 <div class="tabs">
@@ -139,6 +97,14 @@
       <span class="tab-count">{past.length}</span>
     {/if}
   </button>
+  {#if countryChoices.length > 0}
+    <select class="country-select" bind:value={country} aria-label="Filter by country or online">
+      <option value="">Any country</option>
+      {#each countryChoices as c (c.code)}
+        <option value={c.code}>{c.name} · {c.count}</option>
+      {/each}
+    </select>
+  {/if}
 </div>
 
 <section class="events-section">
@@ -158,7 +124,7 @@
     {:else}
       <div class="event-grid">
         {#each upcoming as event (event.eventId)}
-          <EventCard {event} distanceKm={distanceFor(event)} onclick={() => openEvent(event)} />
+          <EventCard {event} distanceKm={distanceKm(event, nearMe)} onclick={() => openEvent(event)} />
         {/each}
       </div>
     {/if}
@@ -175,7 +141,7 @@
     {:else}
       <div class="event-grid">
         {#each past as event (event.eventId)}
-          <EventCard {event} distanceKm={distanceFor(event)} onclick={() => openEvent(event)} />
+          <EventCard {event} distanceKm={distanceKm(event, nearMe)} onclick={() => openEvent(event)} />
         {/each}
       </div>
     {/if}
@@ -184,9 +150,8 @@
 
 <style>
   .hero {
-    padding: 2.5rem 0 2rem;
+    padding: 2.5rem 0 1.75rem;
     border-bottom: 1px solid var(--border);
-    margin-bottom: 1.5rem;
   }
 
   .hero h1 {
@@ -204,11 +169,32 @@
 
   .tabs {
     display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 1rem;
     border-bottom: 1px solid var(--border);
     margin-bottom: 1.5rem;
   }
 
+  .country-select {
+    margin-left: auto;
+    flex: 0 1 11rem;
+    width: 11rem;
+    min-width: 0;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+
+  .country-select:hover {
+    border-color: var(--border-hover);
+    color: var(--text);
+  }
+
   .tab {
+    flex-shrink: 0;
     display: inline-flex;
     align-items: center;
     gap: 0.5rem;

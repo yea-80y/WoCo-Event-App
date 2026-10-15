@@ -158,6 +158,7 @@ function createBody(window: { saleStart?: string; saleEnd?: string }) {
       endDate: "2099-01-01T22:00:00.000Z",
       description: "",
       location: "The Venue",
+      geo: { country: "GB", city: "Northampton", lat: 52.24, lng: -0.87 },
     },
     series: [{ seriesId: "sr-000000000001", name: "General", description: "", totalSupply: 10, ...window }],
     image: "data:image/png;base64,AAAA",
