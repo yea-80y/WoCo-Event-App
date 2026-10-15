@@ -286,8 +286,26 @@ current, unexpired pass's door key and appends it to `.data/checkin-door-entries
 door-entries.ts`); scanners poll `/entries` after a cursor. No order answers (the server cannot read
 them). An erased order deletes its sealed lines and logs a final removal that also hides the ticket's
 roster entry on every online scanner; regenerating the pass replaces the log; it goes with the roster
-2 days after the onchain end (an hourly sweep, `lib/checkin/roster-retention.ts`). A leaked link also shows buyers who buy after the leak, until the pass
-is regenerated or expires.
+2 days after the onchain end (an hourly sweep, `lib/checkin/roster-retention.ts`). A leaked link also
+shows buyers who buy after the leak, until the pass is regenerated or expires.
+
+On the scanner (`lib/scanner/door-entries.ts`, `store.svelte.ts`) each tab polls `/entries` on the
+pack refresh tick, after the pack, and once after provisioning, following `more`. The list is kept
+per event in `woco-scanner-v2` (a kv key, so no version bump), restored only under the pass it was
+opened under, and started again by a new pass; a reply that lands after the tab moved to another pass
+is dropped. The Attendees list is the organiser's roster first, then sales (their name tagged as the
+card name); a removal hides both. Display only: no door decision reads door entries. A link whose
+door key the server does not seal to shows a warning instead of silently opening nothing.
+
+**After the event the phone deletes it.** When a pass has expired - its `exp` on the phone's clock,
+or a server 401 `expired` (the clock may be wrong) - the phone deletes that event's roster, pack,
+door entries and the pass itself (token + pass secret), at boot, on the refresh tick and when the
+tab comes back; a tab showing it leaves for the provision screen. Check-ins (ticket, time, device id)
+stay while unsynced, still counted, until 30 days after the pass ended, then the event goes. A dead
+pass is cleaned up the same way. Per event, decided again inside one IndexedDB transaction, so a live
+pass - or one another tab has just set up - is never touched (`events.ts` `endedEventAction`,
+`db.ts` `cleanUpEndedEvent`). Attendee data is only ever written while the pass that fetched it is
+still the stored one, so a late reply cannot bring names back.
 
 **A ticket is admitted once, across every scanner (#641).** Check-in is a capacity control, so a
 second admission is a crowd-safety defect, never a statistic to reconcile afterwards. The organiser
