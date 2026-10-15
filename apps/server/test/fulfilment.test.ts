@@ -43,6 +43,7 @@ const ORDER_REF = "ef".repeat(32);
 const ORDER_KEY = deriveXWingKeypairFromSeed("0x" + "5e".repeat(32));
 const ORDER_KEY_REF = "0b".repeat(32);
 const ORGANISER = "0x" + "11".repeat(20);
+const FEED_SIGNER = "0x" + "f5".repeat(20);
 /** Where the default series' registration lives, as the server's record names it (#563). */
 const RECORDED_CONTRACT = { chainId: 421614, address: "0x" + "c2".repeat(20), version: "v2" as const };
 const RECORDED_CONTRACT_KEY = `421614:${"0x" + "c2".repeat(20)}`;
@@ -157,6 +158,7 @@ type Step =
   | "hashEmail"
   | "resolveSiteEventSigner"
   | "getEvent"
+  | "eventKeys"
   | "chainEventEndMs"
   | "lookupOnChainEventId"
   | "saleContractFor"
@@ -191,6 +193,8 @@ interface FakeOpts {
   fail?: Step;
   /** Event feed returned by getEvent (`null` = not found). Default: registered v2 series. */
   event?: EventFeed | null;
+  /** What eventKeys answers (issue 896). Default: a record whose order key is ORDER_KEY_REF. */
+  keys?: Awaited<ReturnType<FulfilmentDeps["eventKeys"]>>;
   /** Value of chainEventEndMs. Default: far future. */
   chainEndMs?: number | null;
   /**
@@ -237,6 +241,8 @@ function fakeDeps(o: FakeOpts = {}) {
   const attendees: Array<{ eventId: string; emailHash: string; at: string }> = [];
   const consumed: string[] = [];
   const minted: string[][] = [];
+  /** Every order key the fallback seal fetched (issue 896). */
+  const keyReads: string[] = [];
   const uploaded: string[] = [];
   /** What the held-order claim and the fallback store were told about the buyer (#546 lookup). */
   const buyerHashes: Array<{ via: string; emailHash: string | undefined }> = [];
@@ -277,6 +283,10 @@ function fakeDeps(o: FakeOpts = {}) {
       boom("getEvent");
       return o.event === undefined ? eventFeed() : o.event;
     },
+    eventKeys: async () => {
+      boom("eventKeys");
+      return o.keys ?? { kind: "record", creator: ORGANISER, feedSigner: FEED_SIGNER, orderKeyRef: ORDER_KEY_REF };
+    },
     chainEventEndMs: async (_id, contract) => {
       boom("chainEventEndMs");
       endReadOn.push(contract);
@@ -313,6 +323,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
     fetchOrderKey: async (ref: string) => {
       boom("fetchOrderKey");
+      keyReads.push(ref);
       if (ref !== ORDER_KEY_REF) throw new Error(`unknown order key ref ${ref}`);
       return ORDER_KEY.publicKey;
     },
@@ -433,7 +444,7 @@ function fakeDeps(o: FakeOpts = {}) {
     },
   };
 
-  return { deps, calls, uploaded, buyerHashes, retention, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue, doorEntries };
+  return { deps, calls, uploaded, keyReads, buyerHashes, retention, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue, doorEntries };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -801,12 +812,61 @@ describe("happy path", () => {
     assert.equal(f.calls.some((c) => /download/i.test(c)), false);
   });
 
-  test("no orderRef at all (no encryption key to seal with): stops, refunds in full", async () => {
-    const { f, outcome } = await run({ orderRef: null });
+  test("no orderRef at all (no order key on record to seal with): stops, refunds in full", async () => {
+    const { f, outcome } = await run({ orderRef: null }, { keys: { kind: "legacy" } });
     assert.equal(outcome.issued, 0);
     assert.equal(outcome.stoppedReason, "No orderRef available for on-chain claim");
     assert.equal(f.minted.length, 0);
     assert.equal(outcome.refund.kind, "created");
+  });
+
+  // Issue 896: the order key a sale seals to comes from the organiser's keys, never
+  // the event feed, which is client-signed and can be re-signed to name any key.
+  const FEED_NAMED_KEY = "fe".repeat(32);
+
+  test("issue 896: the fallback seal goes to the order key on record, never the one the feed names", async () => {
+    const { f, outcome } = await run({ orderRef: null }, { event: eventFeed({ encryptionKeyRef: FEED_NAMED_KEY }) });
+    assert.equal(outcome.issued, 2);
+    assert.deepEqual(f.keyReads, [ORDER_KEY_REF]);
+    const box = JSON.parse(f.uploaded[0]);
+    const order = await openBoxJson<{ seriesId: string }>(ORDER_KEY.secretKey, box, orderSealContext(EVENT_ID, SERIES_ID));
+    assert.equal(order.seriesId, SERIES_ID);
+  });
+
+  test("issue 896: no authoritative key (legacy, or unreadable keys) - no seal to the feed's key; the sale refunds", async () => {
+    for (const fake of [{ keys: { kind: "legacy" } as const }, { fail: "eventKeys" as const }]) {
+      const { f, outcome } = await run({ orderRef: null }, { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), ...fake });
+      assert.deepEqual(f.keyReads, [], JSON.stringify(fake));
+      assert.equal(outcome.stoppedReason, "No orderRef available for on-chain claim");
+      assert.equal(outcome.refund.kind, "created");
+    }
+  });
+
+  test("issue 896: a record with no order key is not minted - refunded, and its held box dropped unstored", async () => {
+    const keys = { kind: "record", creator: ORGANISER, feedSigner: FEED_SIGNER, orderKeyRef: null } as const;
+    const { f, outcome } = await run({}, { held: true, keys, event: eventFeed({ encryptionKeyRef: FEED_NAMED_KEY }) });
+    assert.equal(outcome.issued, 0);
+    assert.equal(outcome.stoppedReason, "Event has no order key on record — not sold");
+    assert.equal(f.calls.includes("batchClaimForOnChain"), false);
+    assert.equal(f.calls.includes("storeHeldOrder"), false);
+    assert.ok(f.calls.includes("releaseHeldOrder"));
+    assert.equal(outcome.refund.kind, "created");
+    assert.deepEqual(f.keyReads, []);
+  });
+
+  test("issue 896: neither legacy nor unreadable keys refund a sale whose order box was held at checkout", async () => {
+    for (const fake of [{ keys: { kind: "legacy" } as const }, { fail: "eventKeys" as const }]) {
+      const { outcome } = await run({}, { held: true, ...fake });
+      assert.equal(outcome.issued, 2, JSON.stringify(fake));
+      assert.deepEqual(outcome.refund, { kind: "not-needed" });
+    }
+  });
+
+  test("issue 896: a cancelled event with no order key goes to the cancellation's refund, not a second one", async () => {
+    const keys = { kind: "record", creator: ORGANISER, feedSigner: FEED_SIGNER, orderKeyRef: null } as const;
+    const { outcome, f } = await run({}, { keys, cancellation: "cancelled" });
+    assert.equal(outcome.stoppedReason, "Event cancelled — refunded with every other sale");
+    assert.equal(f.cancellationQueue.length, 1);
   });
 });
 
@@ -1050,6 +1110,7 @@ describe("every collaborator throws", () => {
     { step: "hashEmail", issued: 2, refund: "not-needed", email: "sent", note: "consent hash is an accessory" },
     { step: "resolveSiteEventSigner", issued: 2, refund: "not-needed", email: "sent", note: "feed unread, but the mint target is the server's record (#426)" },
     { step: "getEvent", issued: 2, refund: "not-needed", email: "sent", note: "same" },
+    { step: "eventKeys", issued: 2, refund: "not-needed", email: "sent", note: "keys unread: no fallback seal, never a refund over it (issue 896)" },
     { step: "chainEventEndMs", issued: 2, refund: "not-needed", email: "sent", note: "fail OPEN" },
     { step: "recordHeldPayout", issued: 2, refund: "not-needed", email: "sent", note: "bookkeeping never fails a paid claim" },
     { step: "getOrganiserByStripeAccount", issued: 2, refund: "not-needed", email: "sent", note: "inside the ledger fence" },
@@ -1240,7 +1301,7 @@ test("door entries: a failure there changes no outcome, and the email still went
 
 test("never rejects, whichever step throws", async () => {
   const steps: Step[] = [
-    "hashEmail", "resolveSiteEventSigner", "getEvent", "chainEventEndMs", "lookupOnChainEventId",
+    "hashEmail", "resolveSiteEventSigner", "getEvent", "eventKeys", "chainEventEndMs", "lookupOnChainEventId",
     "saleContractFor", "recordHeldPayout",
     "getOrganiserByStripeAccount", "storeOrderBlob", "generateBurner",
     "signMessage", "batchClaimForOnChain", "bindTicket", "consumeReservation", "createRefund",

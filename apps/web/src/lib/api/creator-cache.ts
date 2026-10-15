@@ -34,6 +34,7 @@
 import type { ApiResponse, EventDirectoryEntry, EventFeed, SiteDirectoryEntry, ShopDirectoryEntry } from "@woco/shared";
 import { authGet } from "./client.js";
 import { withoutSealedOrders } from "./orders-cache.js";
+import type { RequestSigningOptions } from "../auth/request-session.js";
 import { cacheGet, cacheSet, cacheKey, TTL } from "../cache/cache.js";
 import {
   getEventOrders,
@@ -145,13 +146,16 @@ export function getEventSWR(eventId: string): SWRResult<EventFeed> {
 // Event admin: orders — /api/events/:id/orders
 // ---------------------------------------------------------------------------
 
-export function getEventOrdersSWR(eventId: string): SWRResult<EventOrdersResponse> {
+/** `refresh({ establish: false })` for a background read that must never sign in. */
+export function getEventOrdersSWR(eventId: string): SWRResult<EventOrdersResponse> & {
+  refresh: (opts?: RequestSigningOptions) => Promise<ApiResponse<EventOrdersResponse>>;
+} {
   const key = cacheKey.eventOrders(eventId);
   const stored = cacheGet<EventOrdersResponse>(key);
   const cached = stored ? withoutSealedOrders(stored) : null;
-  const refresh = async (): Promise<ApiResponse<EventOrdersResponse>> => {
+  const refresh = async (opts?: RequestSigningOptions): Promise<ApiResponse<EventOrdersResponse>> => {
     try {
-      const data = await getEventOrders(eventId);
+      const data = await getEventOrders(eventId, opts);
       cacheSet(key, withoutSealedOrders(data), TTL.EVENT_ORDERS);
       return { ok: true, data };
     } catch (err) {

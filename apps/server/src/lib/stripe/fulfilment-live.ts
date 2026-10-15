@@ -35,12 +35,14 @@ import { recordAutoRefund, recordSaleSlots, orderRefInOtherSale } from "./ticket
 import { addRefundRow, cancellationGate } from "../event/cancellations.js";
 import { kickCancellationRefunds } from "./cancellation-refunds.js";
 import { liveCancellationRefundDeps } from "./cancellation-refunds-live.js";
+import { eventKeys } from "../keyring/event-keys.js";
 import type { FulfilmentDeps } from "./fulfilment.js";
 
 export const liveFulfilmentDeps: FulfilmentDeps = {
   hashEmail,
   resolveSiteEventSigner,
   getEvent,
+  eventKeys,
   chainEventEndMs: (onChainEventId, contract) => chainEventEndMsAt(contract, onChainEventId),
   lookupOnChainEventId,
   saleContractFor,

@@ -54,6 +54,7 @@ import { attendeeCheckoutRefusal, orderRefOf } from "../lib/attendee-batch/write
 import { getOrderRecord, isOrderErased } from "../lib/attendee-batch/ledger.js";
 import { commitHold, getHeldOrder, holdPrepared } from "../lib/attendee-batch/held-orders.js";
 import { authoritativeOrderKeyRef, eventKeys, isStaleOrderKey, type EventKeys } from "../lib/keyring/event-keys.js";
+import { sellableKeys } from "../lib/keyring/sale-keys.js";
 import { noticeRefusal, noticeVerdictOf, organiserNoticeRead } from "../lib/legal/notice-gate.js";
 import { marketingMetadata } from "../lib/marketing/checkout-choice.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
@@ -490,10 +491,11 @@ stripe.post("/prepare-order", async (c) => {
   const declaredKey = typeof body.encryptionKeyRef === "string" && ORDER_KEY_REF_RE.test(body.encryptionKeyRef)
     ? body.encryptionKeyRef
     : undefined;
+  // A client that names no event is checked at create-checkout, before anything is stored.
   if (typeof body.eventId === "string" && body.eventId) {
-    const keys = await eventKeys(body.eventId);
-    if (keys.kind === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
-    const refusal = orderKeyRefusal(keys, declaredKey);
+    const keyVerdict = sellableKeys(await eventKeys(body.eventId));
+    if (!keyVerdict.ok) return c.json(keyVerdict.body, keyVerdict.status);
+    const refusal = orderKeyRefusal(keyVerdict.keys, declaredKey);
     if (refusal) return c.json(refusal, 409);
   }
 
@@ -700,21 +702,19 @@ stripe.post("/create-checkout", async (c) => {
   // the Stripe destination (creatorAddress→Connect) + amount. siteId is only a
   // pointer; trust is the server-written index, never the request.
   const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
-  // The organiser's keys first (#186): they decide WHICH feed may be sold.
-  const keys = await eventKeys(eventId);
-  if (keys.kind === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
-  if (keys.kind === "legacy") {
-    // No record of who signs this event (made before #670, or platform-written for a
-    // login with no feed signer, none of which can organise now): nothing ties its feed
-    // to its organiser, so a removed passkey could rewrite what is sold - and fulfilment
-    // would read that copy. Not sold (owner 10-09, Fable sign-off S5; no compat paths
-    // pre-launch). Publishing it again gives it a record.
-    if (!(await getEvent(eventId, siteSigner ?? undefined))) return c.json({ ok: false, error: "Event not found" }, 404);
-    return c.json(
-      { ok: false, error: "This event can't take orders. The organiser needs to publish it again.", code: "EVENT_NEEDS_REPUBLISH" },
-      409,
-    );
+  // The organiser's keys first (#186): they decide WHICH feed may be sold, and the
+  // order key buyers seal to. An event with no record of who signs it (made before
+  // #670: owner 10-09, Fable sign-off S5) or with no order key on record (issue 896)
+  // has only its own feed to say which key that is, and the feed can be re-signed:
+  // not sold. Publishing it again records both. Unreadable keys pause the sale.
+  const keyVerdict = sellableKeys(await eventKeys(eventId));
+  if (!keyVerdict.ok) {
+    if (keyVerdict.status === 409 && !(await getEvent(eventId, siteSigner ?? undefined))) {
+      return c.json({ ok: false, error: "Event not found" }, 404);
+    }
+    return c.json(keyVerdict.body, keyVerdict.status);
   }
+  const keys = keyVerdict.keys;
   // No sale until the organiser has confirmed their privacy notice (2026-10-11), read
   // under the same keys as the notice page shows. Usually a memory hit; started
   // beside the event read so a cold one costs no extra round trip.

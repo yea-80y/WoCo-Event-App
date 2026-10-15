@@ -11,6 +11,7 @@ import type {
 export type { OrderEntry };
 import { authPost, authGet, get, apiBase, authStream, currentSiteId } from "./client.js";
 import { auth } from "../auth/auth-store.svelte.js";
+import type { RequestSigningOptions } from "../auth/request-session.js";
 import { eventContentTopic, orderKeyRef } from "@woco/shared";
 import { assertAssembledFeedMatches, assertFeedIsOurs } from "./assembled-feed.js";
 import { writeContentFeed, type ContentFeedSigner } from "../swarm/content-feed.js";
@@ -439,15 +440,15 @@ export interface EventOrdersResponse {
   orders: OrderEntry[];
 }
 
-export async function getEventOrders(eventId: string): Promise<EventOrdersResponse> {
-  const resp = await authGet<EventOrdersResponse>(`/api/events/${eventId}/orders`);
+export async function getEventOrders(eventId: string, opts?: RequestSigningOptions): Promise<EventOrdersResponse> {
+  const resp = await authGet<EventOrdersResponse>(`/api/events/${eventId}/orders`, undefined, opts);
   if (!resp.data) throw new Error(resp.error || "Failed to load orders");
   return resp.data;
 }
 
 /** Sold slots across the event's series - one ledger read per series, no order downloads. */
-export async function getEventOrderCount(eventId: string): Promise<number> {
-  const resp = await authGet<{ eventId: string; count: number }>(`/api/events/${eventId}/orders/count`);
+export async function getEventOrderCount(eventId: string, opts?: RequestSigningOptions): Promise<number> {
+  const resp = await authGet<{ eventId: string; count: number }>(`/api/events/${eventId}/orders/count`, undefined, opts);
   if (!resp.data || typeof resp.data.count !== "number") throw new Error(resp.error || "Failed to count orders");
   return resp.data.count;
 }

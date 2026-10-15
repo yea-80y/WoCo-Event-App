@@ -51,6 +51,16 @@ export type DoorMode = "single" | "several";
 /** Header every scanner request carries: the device's stable random id. */
 export const SCANNER_DEVICE_HEADER = "X-Scanner-Device";
 
+/**
+ * `reason` on a scanner request refused because the scanner's code is older than
+ * the server needs. A scanner that reads it updates itself; the human-readable
+ * error is kept for scanners from before this existed, which only show it.
+ */
+export const SCANNER_OUTDATED_REASON = "outdated-client";
+
+/** `reason` on a claim for a ticket type the event does not have (as of its last pack). */
+export const SCANNER_WRONG_EVENT_REASON = "wrong-event";
+
 /** One check-in — the nullifier unit. Identity is (seriesId, edition). */
 export interface CheckinRecord {
   seriesId: string;
@@ -256,7 +266,12 @@ export function parseTicketQr(raw: string): TicketQr | null {
 
 /** Door-pass URL: `{scannerOrigin}/#/p/{token}/{passSecretB64url}` - the pass secret P. */
 export function buildDoorPassUrl(scannerOrigin: string, token: string, passSecretB64url: string): string {
-  return `${scannerOrigin.replace(/\/$/, "")}/#/p/${token}/${passSecretB64url}`;
+  return `${scannerOrigin.replace(/\/$/, "")}/${doorPassFragment(token, passSecretB64url)}`;
+}
+
+/** The secret-bearing part of a door-pass URL, `#/p/{token}/{passSecretB64url}`. */
+export function doorPassFragment(token: string, passSecretB64url: string): string {
+  return `#/p/${token}/${passSecretB64url}`;
 }
 
 /** `keyB64url` is the pass secret P (the name predates P: the scanner stores it under it). */
