@@ -146,10 +146,10 @@ buyers only about your own similar events.** If you also promote other people's 
 other answer: buyers then tick a box if they want your emails. Each buyer's choice keeps the basis it
 was made under if you change your answer later.
 
-**Your mailing list.** When an attendee ticks "Email me", the answers they gave (except sensitive
-ones) are added to your mailing list. An attendee who leaves "Don't email me" unticked adds their
-email and name only, unless your notice says you use your list to choose which events to tell people
-about. You decide what to ask, and you're responsible for how you use your list.
+**Your mailing list.** When an attendee joins your mailing list (by ticking "Email me", or by
+leaving "Don't email me" unticked), their email, name and the answers they gave (except sensitive
+ones, or ones about someone else) are added to it. You decide what to ask, and you're responsible for
+how you use your list.
 
 **When you upload a contact list, you warrant that you have a lawful basis for every address on it.**
 We take that warranty at face value; if it is wrong, the liability is yours.
