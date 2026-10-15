@@ -114,7 +114,13 @@ copy_proxy_data() {
   for attempt in 1 2 3 4 5; do
     rm -rf "$dest"
     before=$(stat -c %i "$PROXY_DATA_DIR/whitelist.json") || return 1
-    rsync -a --exclude='*.bak*' --exclude='*.tmp' "$PROXY_DATA_DIR/" "$dest/" || return 1
+    # A file changing under rsync (the log emptied mid-copy) is the case this loop
+    # exists for, so an rsync error is another attempt, not the end of the night.
+    if ! rsync -a --exclude='*.bak*' --exclude='*.tmp' "$PROXY_DATA_DIR/" "$dest/"; then
+      echo "proxy-data copy $attempt: rsync failed, retrying" >&2
+      sleep 2
+      continue
+    fi
     after=$(stat -c %i "$PROXY_DATA_DIR/whitelist.json") || return 1
     if [[ "$before" == "$after" ]] && python3 -I -c '
 import json, re, sys
