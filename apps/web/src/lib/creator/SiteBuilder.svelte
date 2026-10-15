@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ETHERNA_GATEWAY_URL } from "../swarm/gateways.js";
   import { CANONICAL_APP_ORIGIN } from "../sub-ens/host-label.js";
-  import { subEnsWebUrl, type ClaimMode, type OrderField, type PaymentConfig } from "@woco/shared";
+  import { subEnsWebUrl, type ClaimMode, type EventGeo, type EventTag, type OrderField, type PaymentConfig } from "@woco/shared";
   import { auth } from "../auth/auth-store.svelte.js";
   import { loginRequest } from "../auth/login-request.svelte.js";
   import { authPost } from "../api/client.js";
@@ -44,6 +44,9 @@
   let eventStartDate = $state("");
   let eventEndDate = $state("");
   let eventLocation = $state("");
+  // The place search's coordinates drive the "near me" filter on Discover.
+  let eventGeo = $state<EventGeo | undefined>(undefined);
+  let eventTags = $state<EventTag[]>([]);
   let eventImageDataUrl = $state<string | null>(null);
   let eventSeries = $state<SeriesDraft[]>([]);
   let eventOrderFields = $state<OrderField[]>([]);
@@ -416,6 +419,8 @@
             bind:startDate={eventStartDate}
             bind:endDate={eventEndDate}
             bind:location={eventLocation}
+            bind:geo={eventGeo}
+            bind:tags={eventTags}
             bind:imageDataUrl={eventImageDataUrl}
             bind:series={eventSeries}
             bind:orderFields={eventOrderFields}
@@ -433,6 +438,8 @@
             startDate={eventStartDate}
             endDate={eventEndDate}
             location={eventLocation}
+            geo={eventGeo}
+            tags={eventTags}
             imageDataUrl={eventImageDataUrl}
             series={eventSeries}
             orderFields={collectInfo ? eventOrderFields : undefined}
