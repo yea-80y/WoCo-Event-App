@@ -1,8 +1,5 @@
 <script lang="ts">
-  export interface GenreOption {
-    value: string;
-    count: number;
-  }
+  import { visibleGenres, type GenreOption } from "./discover-filter.js";
 
   interface Props {
     genres: GenreOption[];
@@ -11,9 +8,7 @@
 
   let { genres, selectedGenres = $bindable(new Set()) }: Props = $props();
 
-  // A genre no listed event carries is not an option - a row of greyed-out
-  // pills reads as broken. A selected one stays so it can be turned off.
-  const visible = $derived(genres.filter((g) => g.count > 0 || selectedGenres.has(g.value)));
+  const visible = $derived(visibleGenres(genres, selectedGenres));
 
   function toggle(value: string) {
     const next = new Set(selectedGenres);
