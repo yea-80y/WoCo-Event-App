@@ -13,6 +13,7 @@ import type { AppEnv } from "../types.js";
 import { createCcipHandler, type CcipHandler, type ContenthashAnswer } from "../lib/ens-gateway/ccip.js";
 import { getApexContenthash } from "../lib/chain/sub-ens-apex.js";
 import { lookupNameTarget } from "../lib/sub-ens/name-targets.js";
+import { scannerBuild } from "../lib/scanner/latest-build.js";
 import { loadEnsGatewayConfig, ensGatewaySignerAddress } from "../lib/ens-gateway/config.js";
 import { createL2Reader, redactRpcUrl } from "../lib/ens-gateway/l2-reader.js";
 import { ResponseMemo, memoTtlMsFor } from "../lib/ens-gateway/memo.js";
@@ -121,8 +122,11 @@ if ("disabled" in loaded) {
   }
 }
 
-/** Since boot. `foreign` is a name whose pointer the WoCo-built rule replaced with the app. */
-const contenthashAnswers: Record<ContenthashAnswer, number> = { depth: 0, empty: 0, apex: 0, built: 0, foreign: 0 };
+/**
+ * Since boot. `foreign` is a name whose pointer the WoCo-built rule replaced with
+ * the app; `scan` is the door scanner's own name, answered with its latest build.
+ */
+const contenthashAnswers: Record<ContenthashAnswer, number> = { depth: 0, empty: 0, apex: 0, built: 0, foreign: 0, scan: 0 };
 
 export const ensGatewayRoutes = createEnsGatewayRoutes(
   "disabled" in loaded
@@ -133,6 +137,7 @@ export const ensGatewayRoutes = createEnsGatewayRoutes(
         contenthash: {
           apexHash: getApexContenthash,
           lookupBuilt: lookupNameTarget,
+          scannerBuild: () => scannerBuild.current(),
           onAnswer: (a) => { contenthashAnswers[a]++; },
         },
       }),
@@ -199,7 +204,7 @@ export interface EnsGatewayStatus {
 export function ensGatewayStatusOf(
   config: ReturnType<typeof loadEnsGatewayConfig>,
   memoEntries: number,
-  answers: Record<ContenthashAnswer, number> = { depth: 0, empty: 0, apex: 0, built: 0, foreign: 0 },
+  answers: Record<ContenthashAnswer, number> = { depth: 0, empty: 0, apex: 0, built: 0, foreign: 0, scan: 0 },
 ): EnsGatewayStatus {
   const contenthashAnswers = { ...answers };
   if ("disabled" in config) {

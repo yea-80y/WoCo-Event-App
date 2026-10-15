@@ -10,7 +10,7 @@ import type { AppEnv } from "./types.js";
 import { buildInfo } from "./config/build-info.js";
 import { requireAuth } from "./middleware/auth.js";
 import { securityHeaders, FRAME_CSP } from "./lib/http/security-headers.js";
-import { CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS } from "./lib/http/cors.js";
+import { CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS, corsOrigin } from "./lib/http/cors.js";
 import { buildFramePage } from "./lib/embed/frame-page.js";
 import { revokeSession, revokeAllSessions, revocationHealth, RevocationStoreUnavailableError } from "./lib/auth/revocation.js";
 import { deviceGrantHealth } from "./lib/auth/device-grants.js";
@@ -79,6 +79,7 @@ import { saleRefundEventsHealth } from "./lib/stripe/sale-refunds.js";
 import { alarmGate } from "./lib/health/alarm-gate.js";
 import { feedSignerRecordHealth } from "./lib/event/feed-signer-record.js";
 import { nameTargetsHealth } from "./lib/sub-ens/name-targets.js";
+import { scannerHealth, startScannerProbe } from "./lib/scanner/health.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
@@ -255,7 +256,7 @@ app.use("*", customDomainProxy);
 app.use(
   "*",
   cors({
-    origin: (origin) => origin || "*",
+    origin: corsOrigin,
     allowMethods: CORS_ALLOW_METHODS,
     allowHeaders: CORS_ALLOW_HEADERS,
     exposeHeaders: CORS_EXPOSE_HEADERS,
@@ -440,6 +441,11 @@ function healthReport() {
     // site or event-page name may show (the CCIP gateway's WoCo-built rule). `unreadable`
     // is an alarm: every such name shows the app, and nothing is recorded, until restored.
     nameTargets: nameTargetsHealth(),
+    // The door scanner at scan.<parent>: red when its feed cannot be read
+    // or the build the name is answered with no longer serves index.html, sw.js,
+    // the workbox runtime, the QR worker or the entry script from our bee - the
+    // batch-death failure that once left every door phone unable to update.
+    scanner: scannerHealth(),
     // Added passkeys (#746). `unreadable` is an alarm: every added device is
     // signed out and no device can be added or removed until the file is restored.
     deviceGrants: deviceGrantHealth(),
@@ -963,6 +969,8 @@ startCancellationRefundJob(liveCancellationRefundDeps);
 // — /api/health must stay instant even when the bee or the RPC is the thing that
 // is broken (#421, #522).
 startHealthProbes();
+// Every 10 min, and once now so `scan.<parent>` has a build before eth.limo asks.
+startScannerProbe();
 // Broadcast recipients are encrypted at rest under a key held only in the
 // process that wrote them, so a restart leaves ciphertext nobody can open. Wipe
 // it, mark the jobs that were in flight `died`, and hand back their daily-cap

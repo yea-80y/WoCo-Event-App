@@ -10,9 +10,11 @@
  *
  *   https://gateway.woco-net.com/bzz/{manifestRef}/
  *
- * That URL never changes across deploys — set it as VITE_SCANNER_URL in
- * apps/web/.env.production so dashboard door-pass links point at it, and
- * (later) as the bzz:// content hash on scan.woco.eth.
+ * That URL never changes across deploys. scan.woco.eth needs no record of its
+ * own: the CCIP gateway answers it with this feed's latest collection
+ * (apps/server/src/lib/scanner/latest-build.ts), so FEED_TOPIC is read there too.
+ * `npm run deploy` runs this after every frontend upload, so the scanner is
+ * re-stamped under the current batch each time.
  *
  * USAGE:
  *   npm run build:scanner
@@ -28,7 +30,8 @@ const path = require('path');
 const tar = require('tar');
 const axios = require('axios');
 
-require('dotenv').config({ path: path.resolve(__dirname, '.env') });
+// Only when run: the test suite requires this file for its pure helpers.
+if (require.main === module) require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 const BEE_URL = process.env.BEE_URL || 'https://gateway.woco-net.com';
 const POSTAGE_BATCH_ID = process.env.POSTAGE_BATCH_ID || '';
 const FEED_PRIVATE_KEY = process.env.FEED_PRIVATE_KEY || '';
@@ -44,6 +47,99 @@ const INFO_STATE = path.join(STATE_DIR, 'scanner-feed-info.json');
 async function ensureDir(p) { await fs.promises.mkdir(p, { recursive: true }); }
 async function readJsonIfExists(p) { try { return JSON.parse(await fs.promises.readFile(p, 'utf-8')); } catch { return null; } }
 
+const { Binary } = require(require.resolve('cafe-utility', {
+  paths: [path.dirname(require.resolve('@ethersphere/bee-js'))],
+}));
+
+/** Where feed update `index` is stored: keccak256(keccak256(topic || uint64be(index)) || owner), hex. */
+function feedUpdateAddress(topicHex, index, ownerHex) {
+  const id = Binary.keccak256(
+    Binary.concatBytes(Binary.hexToUint8Array(topicHex.replace(/^0x/, '')), Binary.numberToUint64(BigInt(index), 'BE')),
+  );
+  return Binary.uint8ArrayToHex(Binary.keccak256(Binary.concatBytes(id, Binary.hexToUint8Array(ownerHex.replace(/^0x/, '').toLowerCase()))));
+}
+
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+const why = (e) => e?.message ?? String(e);
+
+/**
+ * Proves the feed now resolves to `expectedRef`: update `index` holds it and
+ * update `index + 1` does not exist. Both are read directly, because bee's lookup
+ * lands short, and a write to an index that is already taken answers 201 and
+ * keeps the old bytes - so without this a lost update reads as a deploy. The
+ * walk below avoids a taken index; this still catches a write that raced one.
+ *
+ * `readAt(i)` resolves to the reference update `i` names, to null when bee says
+ * there is none (404), and throws when it cannot say. Only "cannot say yet" is
+ * retried: another reference at `index` cannot change, so it fails at once.
+ */
+async function confirmFeedHead(index, expectedRef, readAt, { attempts = 10, delayMs = 1500, sleep = sleepMs } = {}) {
+  let held;
+  let lastErr;
+  for (let a = 0; a < attempts; a++) {
+    if (a) await sleep(delayMs);
+    try {
+      held = await readAt(index);
+      lastErr = undefined;
+      if (held !== null) break;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (held === undefined || held === null) {
+    throw new Error(
+      `Scanner feed update ${index} could not be read back after ${attempts} tries ` +
+      `(${lastErr ? why(lastErr) : 'bee says it does not exist'}): this build is NOT confirmed live.`,
+    );
+  }
+  if (held !== expectedRef) {
+    throw new Error(
+      `Scanner feed index ${index} holds ${held}, not this build ${expectedRef}: the index was already taken ` +
+      `(bee's lookup landed short, or another upload). Nothing new is live - re-run.`,
+    );
+  }
+  let next;
+  lastErr = undefined;
+  for (let a = 0; a < attempts && next === undefined; a++) {
+    if (a) await sleep(delayMs);
+    try {
+      next = await readAt(index + 1);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (next === undefined) {
+    throw new Error(`Scanner feed update ${index} holds this build, but update ${index + 1} could not be checked (${why(lastErr)}): NOT confirmed as the latest.`);
+  }
+  if (next !== null) {
+    throw new Error(`Scanner feed update ${index} holds this build, but update ${index + 1} (${next}) is newer: the feed does not resolve to this build - re-run.`);
+  }
+}
+
+/** How far past bee's lookup the walk to a free index goes before refusing. */
+const FORWARD_WALK = 8;
+
+/**
+ * The first index at or after `start` (bee's lookup) with no update, read
+ * directly: the lookup lands short, and writing at a taken index is a lost
+ * update. `readAt` as for confirmFeedHead; when it cannot say, this refuses
+ * rather than guess, before anything is written.
+ */
+async function firstFreeIndex(start, readAt, maxWalk = FORWARD_WALK) {
+  for (let i = start; i < start + maxWalk; i++) {
+    let held;
+    try {
+      held = await readAt(i);
+    } catch (e) {
+      throw new Error(`Cannot tell whether scanner feed index ${i} is taken (${why(e)}). Nothing was written - re-run.`);
+    }
+    if (held === null) return i;
+  }
+  throw new Error(`More than ${maxWalk} scanner feed updates past bee's lookup at ${start}: refusing to guess where to write. Nothing was written.`);
+}
+
+module.exports = { confirmFeedHead, feedUpdateAddress, firstFreeIndex, FORWARD_WALK };
+
 function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
   const files = fs.readdirSync(dir);
   files.forEach(file => {
@@ -58,7 +154,7 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
   return fileList;
 }
 
-(async () => {
+if (require.main === module) (async () => {
   console.log('\nStarting Swarm Feed Upload (WoCo Scanner PWA)...\n');
 
   if (!FEED_PRIVATE_KEY || !/^0x[0-9a-fA-F]{64}$/.test(FEED_PRIVATE_KEY)) {
@@ -168,7 +264,7 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     // (bee-js auto-increment silently falls back to index 0 on transient errors,
     //  and uploadReference() is the only writer compatible with v1 manifests).
     console.log('Reading next feed index from bee...');
-    let nextIdx;
+    let lookupIdx;
     const idxProbe = await axios.get(
       `${BEE_URL}/feeds/${ownerHex}/${topic.toString()}`,
       { maxRedirects: 0, validateStatus: () => true, responseType: 'arraybuffer', timeout: 15000 },
@@ -178,12 +274,41 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
       if (!nextHex || !/^[0-9a-fA-F]+$/.test(nextHex)) {
         throw new Error(`bee returned 200 but no valid swarm-feed-index-next header: ${nextHex}`);
       }
-      nextIdx = Number(BigInt('0x' + nextHex));
+      lookupIdx = Number(BigInt('0x' + nextHex));
     } else if (idxProbe.status === 404) {
-      nextIdx = 0;
+      lookupIdx = 0;
     } else {
       throw new Error(`bee returned status ${idxProbe.status} when probing feed for next index`);
     }
+
+    // The proxy serves /chunks only for whitelisted addresses, and both the walk
+    // to a free index and the read-back after the write read updates there: the
+    // window covers every index the walk can reach and the one after it.
+    // Whitelisted BEFORE the write, as upload-to-swarm-feed.cjs does: a failure
+    // here has written nothing.
+    const reachable = Array.from({ length: FORWARD_WALK + 1 }, (_, k) => lookupIdx + k);
+    const updateAddresses = reachable.map((i) => feedUpdateAddress(topic.toString(), i, ownerHex));
+    const wl = await axios.post(`${BEE_URL}/admin/whitelist`, { hashes: updateAddresses }, {
+      headers: { ...uploadHeaders, 'Content-Type': 'application/json' },
+      timeout: 15000,
+      validateStatus: () => true,
+    });
+    if (wl.status !== 200) {
+      throw new Error(`Could not whitelist feed updates ${lookupIdx}-${lookupIdx + FORWARD_WALK} on the gateway (HTTP ${wl.status}), so the write could not be verified. Nothing was written.`);
+    }
+
+    const reader = bee.makeFeedReader(topic, ownerHex);
+    const readAt = async (i) => {
+      try {
+        // Checks the update is signed by the feed owner; the payload after the timestamp is the reference.
+        return (await reader.download({ index: i })).payload.toHex();
+      } catch (e) {
+        if (e?.status === 404) return null;
+        throw e;
+      }
+    };
+    const nextIdx = await firstFreeIndex(lookupIdx, readAt);
+    if (nextIdx !== lookupIdx) console.log(`bee's lookup said next index ${lookupIdx}, but ${lookupIdx}-${nextIdx - 1} are taken.`);
     console.log(`Next index: ${nextIdx}`);
 
     console.log('Updating feed (uploadReference / v1)...');
@@ -204,35 +329,10 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
       }
     }
 
-    // 5) Verify — poll up to 5s for the feed to resolve to our siteRef
-    let verifiedIndex = null;
-    let verified = false;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      await new Promise(r => setTimeout(r, 1000));
-      try {
-        const probe = await axios.get(
-          `${BEE_URL}/feeds/${ownerHex}/${topic.toString()}`,
-          { maxRedirects: 0, validateStatus: () => true, responseType: 'arraybuffer', timeout: 10000 },
-        );
-        if (probe.status !== 200) continue;
-        const idxHex = probe.headers['swarm-feed-index'];
-        const etag = probe.headers.etag?.replace(/"/g, '');
-        if (idxHex) verifiedIndex = Number(BigInt('0x' + idxHex));
-        if (verifiedIndex != null && verifiedIndex >= nextIdx && etag === siteRef) {
-          verified = true;
-          break;
-        }
-      } catch { /* keep polling */ }
-    }
-
-    if (verified) {
-      console.log(`Feed updated successfully! Index: ${verifiedIndex}`);
-    } else {
-      console.log(
-        `Wrote index ${nextIdx} (verify still cold after 5s — SOC chunk is durable; ` +
-        `confirm: curl -I ${BEE_URL}/feeds/${ownerHex}/${topic.toString()})`,
-      );
-    }
+    // 5) Verify by reading the written index directly from the same bee, never the
+    //    lookup: a lost update must fail the deploy, not report success.
+    await confirmFeedHead(nextIdx, siteRef, readAt);
+    console.log(`Scanner feed resolves to this build (feed index ${nextIdx}, read back directly).`);
 
     // 6) Save state
     const info = {
@@ -253,8 +353,7 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     console.log('======================================================================\n');
     console.log(`Scanner URL (stable):  ${BEE_URL}/bzz/${manifestRef}/`);
     console.log(`Direct content:        ${BEE_URL}/bzz/${siteRef}/`);
-    console.log(`\nFor ENS content hash:  bzz://${manifestRef}`);
-    console.log('Set this on scan.woco.eth if/when the subname is created.');
+    console.log('\nscan.woco.eth follows this feed through the CCIP gateway - no record to set.');
     console.log(`\nVITE_SCANNER_URL:      ${BEE_URL}/bzz/${manifestRef}`);
     console.log('(already expected in apps/web/.env.production — update if the manifest ever changes)\n');
 

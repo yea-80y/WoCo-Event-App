@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { VitePWA } from 'vite-plugin-pwa'
 import { noEnvObject } from './vite-plugins/no-env-object'
+import { scannerPublicFiles } from './vite-plugins/scanner-public'
 import { rename } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -43,11 +44,14 @@ function renameEntryToIndex(): Plugin {
 
 export default defineConfig({
   base: './',
+  // Never public/: it holds passkey test pages (vite-plugins/scanner-public.ts).
+  publicDir: false,
   envDir: '.',
   envPrefix: 'VITE_',
   plugins: [
     svelte(),
     serveScannerAtRoot(),
+    scannerPublicFiles('public'),
     VitePWA({
       // autoUpdate: a new worker takes over as soon as it installs (skipWaiting +
       // clientsClaim), so even a phone whose open page never acts heals on its next
@@ -56,7 +60,6 @@ export default defineConfig({
       // in the middle of admitting someone.
       registerType: 'autoUpdate',
       injectRegister: false,
-      includeAssets: ['logo.png'],
       manifest: {
         name: 'WoCo Scanner',
         short_name: 'WoCo Scan',

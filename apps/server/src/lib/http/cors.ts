@@ -7,6 +7,15 @@
  */
 import { SCANNER_DEVICE_HEADER } from "@woco/shared";
 
+/**
+ * Every origin is reflected. The API authenticates by signed headers (session
+ * delegation, door pass), never by cookies, so an origin gains nothing from being
+ * let in; and the clients are on many origins by design - the app on two gateways,
+ * organiser sites and custom domains, the embed on anyone's page, the scanner at
+ * `scan.woco.eth.limo` and at its gateway URL.
+ */
+export const corsOrigin = (origin: string): string => origin || "*";
+
 export const CORS_ALLOW_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 
 export const CORS_ALLOW_HEADERS = [
