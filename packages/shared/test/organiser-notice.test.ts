@@ -11,7 +11,8 @@
  * goes red; ignore `tailoredMarketing` and "a tailored mailing list" goes red;
  * accept any `marketingBasis` and "the basis is one stored value" goes red; read a
  * confirmed notice through the draft default and "a new draft starts on own-events"
- * goes red.
+ * goes red; name kept questions by `label || placeholder`, or cut them to 80
+ * characters, and "exactly as checkout does" goes red.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -32,6 +33,8 @@ import {
   type OrganiserNoticeDoc,
 } from "../src/legal/organiser-notice.js";
 import { ORDER_EMAIL_FIELD_ID } from "../src/event/order-email.js";
+import { listKeeps } from "../src/event/order-field-kinds.js";
+import { marketingWording } from "../src/legal/consent.js";
 import type { OrderField } from "../src/crypto/types.js";
 
 const ADDR = "0x" + "ab".repeat(20);
@@ -300,6 +303,22 @@ test("the mailing-list line names every question kept on it - never a sensitive 
   assert.match(none, /If you join our mailing list: your email address, until you unsubscribe\./);
   const site = noticePlainText(buildOrganiserNotice({ notice: notice(), wocoPolicyUrl: POLICY }));
   assert.match(site, /your email address and your answers to an event's questions, except sensitive ones, until you unsubscribe/);
+});
+
+test("the mailing-list line names kept questions exactly as checkout does: no placeholder, no cut, someone else's never", () => {
+  const long = "Which of our sister venues across the north of England have you been to before this one, if any?";
+  const form: OrderField[] = [
+    { id: "unnamed", type: "text", label: "", placeholder: "Your town", required: false },
+    { id: "area", type: "text", label: "  Area  ", required: false },
+    { id: "long", type: "text", label: long, required: false },
+    { id: "ec", type: "text", label: "Emergency contact phone", required: false },
+  ];
+  const text = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: form }, wocoPolicyUrl: POLICY }));
+  assert.ok(text.includes(`If you join our mailing list: your email address and your answers to Area, ${long}, until you unsubscribe.`), text);
+  // The checkout names the same questions, and the unnamed one nowhere.
+  const keeps = listKeeps(form);
+  assert.deepEqual(keeps, { name: false, answers: ["Area", long] });
+  assert.doesNotMatch(marketingWording("consent", 2, "Punk Pub Ltd", keeps)!.box, /Your town|Emergency/);
 });
 
 test("a health question brings its own purpose and basis; a form without one says nothing about health", () => {

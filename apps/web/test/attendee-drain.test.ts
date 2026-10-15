@@ -78,6 +78,16 @@ test("someone else's number never fills the buyer's phone, and their details are
   assert.doesNotMatch(JSON.stringify(out[0]), /0700 111|0700 222|Bob|Carol/);
 });
 
+test("a question with no label is not copied: the checkout had no name to tell the buyer it by", () => {
+  const fields: OrderField[] = [
+    { id: "unnamed", type: "text", label: "", placeholder: "Your town", required: false },
+    { id: "area", type: "text", label: "Area", required: false },
+  ];
+  const out = buildAttendeeContacts([{ claimerEmail: "a@x.com", fields: { unnamed: "Hull", area: "Leeds" } }], opts(["a@x.com"], fields));
+  assert.equal(out[0].city, "Leeds");
+  assert.doesNotMatch(JSON.stringify(out[0]), /Hull|Your town/);
+});
+
 test("every non-sensitive answer is kept, each in its place - never a sensitive one, never the email field", () => {
   const out = buildAttendeeContacts(
     [{

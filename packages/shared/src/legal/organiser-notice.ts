@@ -29,7 +29,7 @@
 
 import type { OrderField } from "../crypto/types.js";
 import { ORDER_EMAIL_FIELD_ID } from "../event/order-email.js";
-import { isHealthField, isKeptOnList } from "../event/order-field-kinds.js";
+import { isHealthField, listPlacement } from "../event/order-field-kinds.js";
 import type { MarketingMode } from "./consent.js";
 
 /** v2 (2026-10-13): pick-list choices replaced v1's free-text answers. v1 notices are refused - re-confirm. */
@@ -341,8 +341,13 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
   const tailored = n ? n.tailoredMarketing === true : NOTICE_DEFAULTS.tailoredMarketing;
   const ownEvents = (n ? noticeMarketingMode(n) : NOTICE_DEFAULTS.marketing) === "own-events";
   const asksQuestions = !ev || labels.length > 0;
-  const fieldLabel = (f: OrderField) => String(f.label || f.placeholder || "").replace(/\s+/g, " ").trim().slice(0, 80);
-  const keptLabels = ev ? (ev.orderFields ?? []).filter(isKeptOnList).map(fieldLabel).filter(Boolean) : [];
+  // Named by `listPlacement`, as the checkout wording and the list import read them:
+  // what this says is kept is what is kept.
+  const keptLabels: string[] = [];
+  for (const f of Array.isArray(ev?.orderFields) ? ev.orderFields : []) {
+    const label = f && typeof f === "object" ? listPlacement(f)?.label : undefined;
+    if (label && !keptLabels.includes(label)) keptLabels.push(label);
+  }
   // A site's notice covers every event, so it says what happens IF a form asks.
   const asksHealth = ev ? (ev.orderFields ?? []).some(isHealthField) : true;
 
