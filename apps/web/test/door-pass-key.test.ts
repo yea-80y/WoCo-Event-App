@@ -125,9 +125,9 @@ test("the panel issues the pass with its proof before the roster, stores no secr
   assert.ok(gen.indexOf("await issueDoorPassWithProof(") < gen.indexOf("await pushCheckinRoster("), "pass first");
   assert.match(gen, /const parent = auth\.parent\?\.toLowerCase\(\);/);
   assert.doesNotMatch(panel, /getContentFeedSigner|feedSigner/, "no feed-signer path");
-  assert.match(gen, /stored = \{ token: issued\.token, exp: issued\.exp, mode: issued\.mode, gen: keys\.gen,/);
+  assert.match(gen, /stored = \{ v: DOOR_PASS_FORMAT, token: issued\.token, exp: issued\.exp, mode: issued\.mode, gen: keys\.gen,/);
   assert.doesNotMatch(panel, /stored = \{[^}]*(url|passSecret|doorKey|proof|nonce)/, "the link, its secret and the proof are never stored");
   assert.doesNotMatch(panel, /generateRosterKeyB64url|getRandomValues/);
   const refresh = panel.slice(panel.indexOf("async function refreshRoster("), panel.indexOf("async function copyLink("));
-  assert.match(refresh, /if \(keys\.gen !== stored\.gen\) \{[\s\S]*?throw new Error\(KEYS_CHANGED\);/);
+  assert.match(refresh, /const stale = storedPassStale\(stored, keys\.gen\);\s*if \(stale\) \{[\s\S]*?throw new Error\(stale\);/);
 });

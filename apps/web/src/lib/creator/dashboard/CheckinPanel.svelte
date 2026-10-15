@@ -22,6 +22,7 @@
   import { issueDoorPass, pushCheckinRoster, getCheckinStatus, requestDoorPassChallenge, type CheckinStatus } from "../../api/checkin.js";
   import { issueDoorPassWithProof } from "./door-pass-issue.js";
   import { buildRosterEntries } from "./door-roster.js";
+  import { DOOR_PASS_FORMAT, parseStoredDoorPass, storedPassStale, type StoredDoorPass } from "./door-pass-stored.js";
   import { encryptRoster } from "../../scanner/roster-crypto.js";
   import { doorPassSecretB64url } from "../../scanner/door-pass-key.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -48,21 +49,11 @@
     import.meta.env.VITE_SCANNER_URL ||
     (import.meta.env.DEV ? "http://localhost:5175" : "https://scan.woco.eth.limo");
 
-  interface StoredDoorPass {
-    /** The pass token only - its roster key is worked out again when needed. */
-    token: string;
-    exp: number;
-    mode: DoorMode;
-    /** The account's key generation the pass was made under: a later one revokes it. */
-    gen: number;
-    rosterPushedAt?: string;
-  }
-
   let stored = $state<StoredDoorPass | null>(null);
   // The full pass link (token + key), in memory only - shown once the account's keys are open.
   let passUrl = $state<string | null>(null);
-  // The account's keys changed since this pass was made: it no longer works.
-  let passStale = $state(false);
+  // Why the stored pass no longer works (older keys, or made before P); null while it does.
+  let passStale = $state<string | null>(null);
   let qrDataUrl = $state<string | null>(null);
   let working = $state(false);
   let workError = $state<string | null>(null);
@@ -79,13 +70,9 @@
   onMount(() => {
     try {
       const raw = localStorage.getItem(storageKey);
-      const parsed = raw ? (JSON.parse(raw) as Partial<StoredDoorPass>) : null;
       // A pass stored with its key in clear (before #186) is dropped: make a new one.
-      if (parsed && typeof parsed.token === "string" && typeof parsed.gen === "number" && typeof parsed.exp === "number") {
-        stored = { token: parsed.token, exp: parsed.exp, mode: parsed.mode === "single" ? "single" : "several", gen: parsed.gen, rosterPushedAt: parsed.rosterPushedAt };
-      } else if (raw) {
-        localStorage.removeItem(storageKey);
-      }
+      stored = parseStoredDoorPass(raw);
+      if (!stored && raw) localStorage.removeItem(storageKey);
     } catch {
       stored = null;
     }
@@ -120,7 +107,6 @@
     return buildRosterEntries(orders, decryptedOrders, new Map(event.series.map((s) => [s.seriesId, s.name])));
   }
 
-  const KEYS_CHANGED = "This door pass stopped working when your account's keys changed - make a new one.";
 
   /** The account's current keys, for sealing: asks for the passkey if they're locked. */
   async function currentKeys(): Promise<{ current: string; gen: number }> {
@@ -139,8 +125,9 @@
       if (ask) await auth.ensureOrganiserUnlock();
       const keys = await auth.getAccountSecrets();
       if (!keys) return;
-      if (keys.gen !== stored.gen) {
-        passStale = true;
+      const stale = storedPassStale(stored, keys.gen);
+      if (stale) {
+        passStale = stale;
         passUrl = null;
         return;
       }
@@ -173,9 +160,9 @@
       const roster = await encryptRoster(doorRoster(), passSecret);
       await pushCheckinRoster(eventId, roster);
 
-      stored = { token: issued.token, exp: issued.exp, mode: issued.mode, gen: keys.gen, rosterPushedAt: new Date().toISOString() };
+      stored = { v: DOOR_PASS_FORMAT, token: issued.token, exp: issued.exp, mode: issued.mode, gen: keys.gen, rosterPushedAt: new Date().toISOString() };
       passUrl = buildDoorPassUrl(SCANNER_ORIGIN, issued.token, passSecret);
-      passStale = false;
+      passStale = null;
       localStorage.setItem(storageKey, JSON.stringify(stored));
     } catch (err) {
       workError = err instanceof Error ? err.message : "Setup failed";
@@ -193,10 +180,11 @@
       await auth.ensureOrganiserUnlock();
       if (needsDecrypt) await onEnsureDecrypted();
       const keys = await currentKeys();
-      if (keys.gen !== stored.gen) {
-        passStale = true;
+      const stale = storedPassStale(stored, keys.gen);
+      if (stale) {
+        passStale = stale;
         passUrl = null;
-        throw new Error(KEYS_CHANGED);
+        throw new Error(stale);
       }
       const roster = await encryptRoster(doorRoster(), doorPassSecretB64url(keys.current, eventId, stored.token));
       await pushCheckinRoster(eventId, roster);
@@ -306,7 +294,7 @@
         list - share it only with your door team.
       </p>
       {#if passStale}
-        <p class="error">{KEYS_CHANGED}</p>
+        <p class="error">{passStale}</p>
       {:else if qrDataUrl}
         <img class="pass-qr" src={qrDataUrl} alt="Door pass QR" />
       {:else if !passUrl}
