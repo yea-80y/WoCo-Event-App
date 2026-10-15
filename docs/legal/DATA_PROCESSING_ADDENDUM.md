@@ -40,8 +40,8 @@ do not show a notice in your name.
 - attendee name and any other fields **you choose to include** in your order form
 - ticket, attendance and check-in records
 - wallet addresses or pseudonymous identifiers
-- contact lists you upload, and the email, name and order-form answers (never a sensitive one) of
-  attendees who agree to hear from you, which we add to your mailing list
+- contact lists you upload, and the email, name and the order-form answers the checkout names (never
+  a sensitive one) of attendees who agree to hear from you, which we add to your mailing list
 - messages submitted through contact forms on sites you publish
 
 **Categories of data subject:** your attendees, ticket buyers, contacts and site visitors.

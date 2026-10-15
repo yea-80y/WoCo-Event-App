@@ -585,6 +585,8 @@ export interface SeriesClaimStatus {
   marketingMode?: MarketingMode;
   /** The organiser's name as their notice gives it - the own-events sentence names them. */
   marketingOrganiser?: string;
+  /** The notice's `tailoredMarketing`: a soft opt-in then keeps the named answers too, and its sentence says so. */
+  marketingTailored?: boolean;
 }
 
 /** Payment method used to obtain a ticket. */

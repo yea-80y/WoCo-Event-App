@@ -60,7 +60,7 @@ const baseInputs = {
   seriesId: "s1",
   claimerEmail: "a@b.co",
   quantity: 1,
-  marketing: marketingChoice("consent", false, "embed", marketingWording("consent", 2, undefined, listKeeps([]))!),
+  marketing: marketingChoice("consent", false, "embed", marketingWording("consent", 2, undefined, listKeeps([], { mode: "consent", tailored: false }))!),
   pageUrl: "https://venue.example/tickets",
 };
 
@@ -95,7 +95,8 @@ test("the embed renders the control in the claim-status mode: own-events sentenc
   assert.match(render, /const mode = shownMarketingMode\(st\.status\);/);
   // The words name what the list keeps from this event's own questions, and are
   // written back so checkout sends exactly what was rendered.
-  assert.match(render, /const w = marketingWording\(mode, MARKETING_CURRENT_VERSION\[mode\], name, listKeeps\(this\.event\?\.orderFields\)\)!;\n\s*st\.marketing\.wording = w;/);
+  // What a soft opt-in keeps follows the notice's tailoring, read from claim-status like the mode.
+  assert.match(render, /const keeps = listKeeps\(this\.event\?\.orderFields, \{ mode, tailored: st\.status\?\.marketingTailored === true \}\);\n\s*const w = marketingWording\(mode, MARKETING_CURRENT_VERSION\[mode\], name, keeps\)!;\n\s*st\.marketing\.wording = w;/);
   assert.match(render, /\$\{w\.sentence \? `<div class="marketing-sentence">\$\{this\.esc\(w\.sentence\)\}<\/div>` : ""\}/);
   assert.match(render, /<span>\$\{this\.esc\(w\.box\)\}<\/span>/);
   // Never pre-ticked: checked only from what the buyer did, reset when the mode changes.

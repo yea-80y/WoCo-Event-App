@@ -262,6 +262,9 @@ marketing.post("/check", requireAuth, async (c) => {
   // deletion (Fable sign-off 2026-10-14 recommendation).
   const consentedAt: Record<string, string> = {};
   const softOptIn: string[] = [];
+  // Which of the event's questions each recorded yes keeps (owner 2026-10-15): the
+  // buyer sync copies these answers and no others. Scoped like `consented`.
+  const keptFields: Record<string, { eventId: string; fieldIds: string[] }> = {};
   const proven: string[] = [];
   for (const [h, e] of hashToEmail) {
     if (suppressedHashes.has(h)) suppressed.push(e);
@@ -272,11 +275,17 @@ marketing.post("/check", requireAuth, async (c) => {
       if (ts) consentedAt[e] = ts;
     }
     if (softOptInHashes.has(h)) softOptIn.push(e);
+    if (consentedHashes.has(h) || softOptInHashes.has(h)) {
+      const r = getConsent(h, org);
+      if (typeof r?.eventId === "string" && Array.isArray(r.keptFields)) {
+        keptFields[e] = { eventId: r.eventId, fieldIds: r.keptFields.filter((id): id is string => typeof id === "string") };
+      }
+    }
     // The same rule the send path classifies by.
     if (reachedBefore(org, h)) proven.push(e);
   }
 
-  return c.json({ ok: true, data: { suppressed, alreadyInList, consented, consentedAt, softOptIn, proven } });
+  return c.json({ ok: true, data: { suppressed, alreadyInList, consented, consentedAt, softOptIn, keptFields, proven } });
 });
 
 /** Manual per-organiser suppression (contact delete + "also unsubscribe"). */

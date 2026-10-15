@@ -159,7 +159,7 @@ every organiser gives, already picked, and they change it if it is not theirs:
 | Automated decisions | Stated for everyone: neither the organiser nor WoCo decides about attendees purely by computer with a legal or similar effect; Stripe screens payments under its own policy |
 | Soft opt-in declaration | Removed (see 5a). Replaced 2026-10-14 by one question, "Do you only email people about your own events?" (§6) |
 | (new) Tailored mailing list | Default on: what is kept on the mailing list (their area, say) chooses which events members hear about. The booking's own answers are deleted on schedule for everyone |
-| Mailing list contents (2026-10-15) | No per-question choice: when a buyer joins the list, every answer except a sensitive one is copied onto the contact; the checkout wording and the notice name each kept question |
+| Mailing list contents (2026-10-15) | No per-question choice. A ticked "Email me" keeps every answer except a sensitive one or one about another person; a soft opt-in keeps the email and name only, unless the organiser tailors (then as consent). The checkout wording and the notice name what is kept, and the consent record stores the kept question ids, which are all the list import copies |
 | (new) Per question: sensitive | Pre-set from the label for every Art. 9 category and Art. 10 (health, diet, access, religion, ethnicity, sexuality, politics, union membership, genetic/biometric, criminal convictions); "Not sensitive?" undoes it: always optional, a consent line at the question, never kept on a list; the notice adds a purpose + Art. 9 basis sentence |
 
 Every choice is the organiser's instruction to WoCo as processor. Locking one would make WoCo decide
@@ -194,7 +194,8 @@ about your own events?":
   unsubscribe from any email." and an unticked "Don't email me about similar events". `{keeps}` is
   built from the event's own questions (wording v2, 2026-10-15) so the text names exactly what is
   kept: "your email", "your email and name", "your email and your answers to: A, B" or "your email,
-  name and your answers to: A, B" - never a sensitive question. The notice says: "To email you about our similar
+  name and your answers to: A, B" - never a sensitive question. A soft opt-in names the email and
+  name only unless the notice's tailored-list choice is on (owner 2026-10-15). The notice says: "To email you about our similar
   events, unless you tick 'Don't email me' at checkout. This is the 'soft opt-in' in the UK's
   electronic marketing rules: you bought from us, you could say no when you did, and every email has a
   one-click unsubscribe. Our basis for using your details this way is our legitimate interest in

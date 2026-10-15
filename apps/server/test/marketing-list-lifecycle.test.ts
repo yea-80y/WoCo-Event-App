@@ -270,6 +270,27 @@ test("/check dates each consent, for consented addresses only (Fable sign-off 20
   assert.deepEqual(data.consentedAt, { "yes@example.com": "2026-10-01T10:00:00.000Z" });
 });
 
+test("/check names each record's kept questions with its event, for the caller's own records only (owner 2026-10-15)", async () => {
+  const d = await mintDelegation();
+  const other = await mintDelegation();
+  const org = d.parent.address.toLowerCase();
+  const consent = await import("../src/lib/marketing/consent-store.js");
+  const ts = new Date().toISOString();
+  consent.recordConsent(hashEmail("yes@example.com"), org, { ts, source: "checkout", notice: "x", basis: "consent", eventId: "e1", keptFields: ["n", "t"] });
+  consent.recordConsent(hashEmail("soft@example.com"), org, { ts, source: "checkout", notice: "x", basis: "soft-opt-in", eventId: "e2", keptFields: ["n"] });
+  consent.recordConsent(hashEmail("bare@example.com"), org, { ts, source: "checkout", notice: "x", basis: "consent", eventId: "e1" });
+  consent.recordConsent(hashEmail("odd@example.com"), org, { ts, source: "checkout", notice: "x", basis: "consent", eventId: "e1", keptFields: ["n", 7] as unknown as string[] });
+  const emails = ["Yes@Example.com", "soft@example.com", "bare@example.com", "odd@example.com", "none@example.com"];
+  const { json } = await postAs(d, "/api/marketing/check", { emails });
+  assert.deepEqual((json.data as { keptFields: unknown }).keptFields, {
+    "yes@example.com": { eventId: "e1", fieldIds: ["n", "t"] },
+    "soft@example.com": { eventId: "e2", fieldIds: ["n"] },
+    "odd@example.com": { eventId: "e1", fieldIds: ["n"] },
+  });
+  const theirs = await postAs(other, "/api/marketing/check", { emails });
+  assert.deepEqual((theirs.json.data as { keptFields: unknown }).keptFields, {}, "never another organiser's records");
+});
+
 test("/check still refuses a body that is not an array", async () => {
   const d = await mintDelegation();
   const { status, json } = await postAs(d, "/api/marketing/check", { emails: "a@b.com" });

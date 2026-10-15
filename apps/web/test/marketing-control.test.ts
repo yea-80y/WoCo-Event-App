@@ -10,7 +10,8 @@
  * render, or keeping a box ticked across a mode change; the 409 not re-reading
  * claim-status; the api client dropping `marketing` from the body; ClaimButton
  * building the words from anything but the event's questions, or sending other
- * words than the panels render; the wording-changed 409 not re-reading.
+ * words than the panels render; the wording-changed 409 not re-reading;
+ * ClaimButton building the keeps without the mode or claim-status's tailoring.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -36,8 +37,8 @@ writeFileSync(file, compiled.js.code);
 const Control = (await import(pathToFileURL(file).href)).default;
 
 const { marketingWording, listKeeps } = await import("@woco/shared");
-const words = (mode: "consent" | "own-events", organiser?: string, labels: string[] = []) =>
-  marketingWording(mode, 2, organiser, listKeeps(labels.map((label) => ({ id: label, type: "text" as const, label, required: false }))))!;
+const words = (mode: "consent" | "own-events", organiser?: string, labels: string[] = [], tailored = true) =>
+  marketingWording(mode, 2, organiser, listKeeps(labels.map((label) => ({ id: label, type: "text" as const, label, required: false })), { mode, tailored }))!;
 
 const html = (props: Record<string, unknown>) =>
   render(Control, { props: { onTickedChange: () => {}, ...props } })
@@ -51,6 +52,9 @@ test("own-events: the sentence names the organiser and what is kept, and the box
   assert.ok(shown.includes("Don't email me about similar events"));
   assert.doesNotMatch(shown, /checked/);
   assert.doesNotMatch(shown, /Email me about future events/);
+  // Untailored, a soft opt-in keeps the email and name only, and says so.
+  const plain = html({ wording: words("own-events", "Punk Pub Ltd", ["Full name", "Town"], false), ticked: false });
+  assert.ok(plain.includes("We'll email you about similar events from Punk Pub Ltd, and keep your email and name for this. You can unsubscribe from any email."));
 });
 
 test("consent: an unticked 'Email me' box naming what is kept, and no sentence", () => {
@@ -92,7 +96,8 @@ test("ClaimButton takes the mode from claim-status and sends the mode, box, surf
   const src = code(read("lib/attendee/events/ClaimButton.svelte"));
   assert.match(src, /const marketingMode = \$derived<MarketingMode>\(shownMarketingMode\(status\)\)/);
   // One object, built from the event's own questions, rendered by both panels and sent.
-  assert.match(src, /const marketingWording = \$derived\(\s*buildMarketingWording\(marketingMode, MARKETING_CURRENT_VERSION\[marketingMode\], marketingOrganiser, listKeeps\(orderFields\)\)!,\s*\)/);
+  // What is kept follows the mode and the notice's tailoring, both from claim-status.
+  assert.match(src, /const marketingWording = \$derived\(\s*buildMarketingWording\(\s*marketingMode,\s*MARKETING_CURRENT_VERSION\[marketingMode\],\s*marketingOrganiser,\s*listKeeps\(orderFields, \{ mode: marketingMode, tailored: status\?\.marketingTailored === true \}\),\s*\)!,\s*\)/);
   assert.match(src, /marketing: marketingChoice\(marketingMode, marketingTicked, showOrderForm \? "order-form" : "pay-panel", marketingWording\)/);
   // Both panels get the same state.
   assert.equal(src.match(/onMarketingChange=\{setMarketingTicked\}/g)?.length, 2);

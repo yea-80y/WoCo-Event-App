@@ -64,6 +64,12 @@ export interface ConsentRecord {
    * written before this field existed do not carry it.
    */
   version?: number;
+  /**
+   * The ids of `eventId`'s questions this yes keeps (the name ones too), from the
+   * rebuild whose words the buyer read (owner 2026-10-15). The list import copies
+   * these and nothing else; absent = nothing but the email.
+   */
+  keptFields?: string[];
 }
 
 /** organiserAddress → emailHash → record */

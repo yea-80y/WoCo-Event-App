@@ -303,7 +303,7 @@
             <input type="checkbox" bind:checked={draft.tailoredMarketing} />
             <span>
               Use what's kept on your mailing list, such as people's area, to choose which events you email them about.
-              You pick which answers are kept when you add questions to an event.
+              Without it, buyers who leave "Don't email me" unticked keep only their email and name on your list.
             </span>
           </label>
         </fieldset>

@@ -64,6 +64,7 @@ export async function checkMarketingEmails(emails: string[]): Promise<MarketingC
   const consented: string[] = [];
   const consentedAt: Record<string, string> = {};
   const softOptIn: string[] = [];
+  const keptFields: NonNullable<MarketingCheckResult["keptFields"]> = {};
   const proven: string[] = [];
 
   for (let i = 0; i < emails.length; i += CHECK_BATCH_SIZE) {
@@ -75,10 +76,11 @@ export async function checkMarketingEmails(emails: string[]): Promise<MarketingC
     consented.push(...(resp.data.consented ?? []));
     Object.assign(consentedAt, resp.data.consentedAt ?? {});
     softOptIn.push(...(resp.data.softOptIn ?? []));
+    Object.assign(keptFields, resp.data.keptFields ?? {});
     proven.push(...(resp.data.proven ?? []));
   }
 
-  return { suppressed, alreadyInList, consented, consentedAt, softOptIn, proven };
+  return { suppressed, alreadyInList, consented, consentedAt, softOptIn, keptFields, proven };
 }
 
 export async function suppressContacts(emails: string[]): Promise<void> {

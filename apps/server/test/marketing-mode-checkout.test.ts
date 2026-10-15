@@ -17,7 +17,11 @@
  * comparison and "a page whose words differ" goes red; build the rebuilt words
  * from anything but the event's questions and "older questions" goes red; drop
  * the version check and "an older version" goes red; leave the hash off the
- * metadata and "the metadata carries" goes red.
+ * metadata and "the metadata carries" goes red. Since the soft opt-in rule
+ * (owner 2026-10-15): rebuild without the notice's tailoring and "words that
+ * assumed no tailoring" goes red; leave `marketingTailored` off the metadata and
+ * "the metadata carries" goes red; drop it from claim-status and "claim-status
+ * returns the mode" goes red.
  */
 import test, { beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -159,12 +163,12 @@ const status = async (eventId: string) => {
 };
 
 /** What the page renders for these questions - the same function create-checkout rebuilds with. */
-const words = (mode: MarketingMode, fields: OrderField[] = [], organiser = "Punk Pub Ltd") =>
-  marketingWording(mode, 2, organiser, listKeeps(fields))!;
+const words = (mode: MarketingMode, fields: OrderField[] = [], organiser = "Punk Pub Ltd", tailored = false) =>
+  marketingWording(mode, 2, organiser, listKeeps(fields, { mode, tailored }))!;
 const consentChoice = (ticked = false, fields: OrderField[] = []) =>
   ({ mode: "consent", ticked, version: 2, surface: "order-form", wording: words("consent", fields) });
-const ownChoice = (ticked = false, fields: OrderField[] = [], organiser = "Punk Pub Ltd") =>
-  ({ mode: "own-events", ticked, version: 2, surface: "pay-panel", wording: words("own-events", fields, organiser) });
+const ownChoice = (ticked = false, fields: OrderField[] = [], organiser = "Punk Pub Ltd", tailored = false) =>
+  ({ mode: "own-events", ticked, version: 2, surface: "pay-panel", wording: words("own-events", fields, organiser, tailored) });
 
 // ── claim-status ────────────────────────────────────────────────────────────
 
@@ -174,7 +178,10 @@ test("claim-status returns the mode the confirmed notice sets, and the name the 
   assert.equal(own.status, 200);
   assert.equal(own.json.data?.marketingMode, "own-events");
   assert.equal(own.json.data?.marketingOrganiser, "Punk Pub Ltd");
+  assert.equal(own.json.data?.marketingTailored, false);
   assert.equal(own.json.data?.available, 10, "availability is still answered");
+  setAnswer(async () => noticeRead({ marketingBasis: "own-events", tailoredMarketing: true }));
+  assert.equal((await status(liveEvent({ registered: true }))).json.data?.marketingTailored, true, "the notice's tailoring, which decides what a soft opt-in keeps");
 });
 
 test("claim-status: a notice without a basis is consent mode, never the draft default", async () => {
@@ -233,15 +240,17 @@ const QUESTIONS: OrderField[] = [
 
 test("a page whose words differ from the ones rebuilt here is refused 409 MARKETING_WORDING_CHANGED, with nothing held", async () => {
   await readyAttendeeStore();
-  setAnswer(async () => noticeRead({ marketingBasis: "own-events" }));
+  // Tailored, so a soft opt-in names every kept answer and the questions show in its words.
+  setAnswer(async () => noticeRead({ marketingBasis: "own-events", tailoredMarketing: true }));
   const cases: [string, unknown][] = [
-    ["older questions", ownChoice(false, [QUESTIONS[0]!])],
-    ["no questions named", ownChoice(false, [])],
-    ["an older organiser name", ownChoice(false, QUESTIONS, "Old Pub Ltd")],
+    ["older questions", ownChoice(false, [QUESTIONS[0]!], "Punk Pub Ltd", true)],
+    ["no questions named", ownChoice(false, [], "Punk Pub Ltd", true)],
+    ["an older organiser name", ownChoice(false, QUESTIONS, "Old Pub Ltd", true)],
+    ["words that assumed no tailoring", ownChoice(false, QUESTIONS, "Punk Pub Ltd", false)],
     ["no words at all (a page from before 2026-10-15)", { mode: "own-events", ticked: false, version: 2, surface: "embed" }],
-    ["an older version", { ...ownChoice(false, QUESTIONS), version: 1, wording: { sentence: "We'll email you about similar events from Punk Pub Ltd. You can unsubscribe from any email.", box: "Don't email me about similar events" } }],
-    ["today's words under an older version number", { ...ownChoice(false, QUESTIONS), version: 1 }],
-    ["words edited on the page", { ...ownChoice(false, QUESTIONS), wording: { ...words("own-events", QUESTIONS), sentence: "We'll email you sometimes." } }],
+    ["an older version", { ...ownChoice(false, QUESTIONS, "Punk Pub Ltd", true), version: 1, wording: { sentence: "We'll email you about similar events from Punk Pub Ltd. You can unsubscribe from any email.", box: "Don't email me about similar events" } }],
+    ["today's words under an older version number", { ...ownChoice(false, QUESTIONS, "Punk Pub Ltd", true), version: 1 }],
+    ["words edited on the page", { ...ownChoice(false, QUESTIONS, "Punk Pub Ltd", true), wording: { ...words("own-events", QUESTIONS, "Punk Pub Ltd", true), sentence: "We'll email you sometimes." } }],
   ];
   for (const [why, choice] of cases) {
     const box = freshBox();
@@ -250,6 +259,10 @@ test("a page whose words differ from the ones rebuilt here is refused 409 MARKET
     assert.equal(r.json.code, MARKETING_WORDING_CHANGED, why);
     assert.equal(held.getHeldOrder(await writer.orderRefOf(canonicalOrderBox(box)!)), null, `${why}: nothing held`);
   }
+  // Untailored, a page whose words named the answers assumed tailoring: refused too.
+  setAnswer(async () => noticeRead({ marketingBasis: "own-events" }));
+  const assumed = await checkout(liveEvent({ orderFields: QUESTIONS }), ownChoice(false, QUESTIONS, "Punk Pub Ltd", true));
+  assert.equal(assumed.json.code, MARKETING_WORDING_CHANGED);
   // Consent mode names no organiser, but names the questions all the same.
   setAnswer(async () => noticeRead());
   const stale = await checkout(liveEvent({ orderFields: QUESTIONS }), consentChoice(true, []));
@@ -261,6 +274,14 @@ test("the words rebuilt from the event's own questions pass on to the next check
   setAnswer(async () => noticeRead({ marketingBasis: "own-events" }));
   const own = await checkout(liveEvent({ orderFields: QUESTIONS }), ownChoice(false, QUESTIONS));
   assert.match(String(own.json.error), /not currently on sale/);
+  assert.match(words("own-events", QUESTIONS).sentence!, /and keep your email and name for this\./, "untailored: the name only");
+  setAnswer(async () => noticeRead({ marketingBasis: "own-events", tailoredMarketing: true }));
+  const tailored = await checkout(liveEvent({ orderFields: QUESTIONS }), ownChoice(false, QUESTIONS, "Punk Pub Ltd", true));
+  assert.match(String(tailored.json.error), /not currently on sale/);
+  // Tailoring is a soft opt-in's question: consent mode's words are the same either way.
+  setAnswer(async () => noticeRead({ tailoredMarketing: true }));
+  const consentTailored = await checkout(liveEvent({ orderFields: QUESTIONS }), consentChoice(true, QUESTIONS));
+  assert.match(String(consentTailored.json.error), /not currently on sale/);
   setAnswer(async () => noticeRead());
   const consent = await checkout(liveEvent({ orderFields: QUESTIONS }), consentChoice(true, QUESTIONS));
   assert.match(String(consent.json.error), /not currently on sale/);
@@ -297,8 +318,9 @@ test("the mode check sits after the notice gate and before the hold and the sess
   // The wording check right after it, rebuilt from the event's questions, and its hash carried.
   const words = src.indexOf("MARKETING_WORDING_CHANGED },");
   assert.ok(at < words && words < src.indexOf("commitHold(preparedRef"));
-  assert.match(src, /marketingWording\(marketing\.mode, current, organiserName, listKeeps\(event\.orderFields\)\)/);
-  assert.match(src, /\.\.\.marketingMetadata\(marketing, organiserName, marketingHash\),/);
+  assert.match(src, /const tailored = notice\.status === "found" && notice\.notice\.tailoredMarketing === true;/);
+  assert.match(src, /const keeps = listKeeps\(event\.orderFields, \{ mode: marketing\.mode, tailored \}\);\n\s*const rebuilt = marketingWording\(marketing\.mode, current, organiserName, keeps\);/);
+  assert.match(src, /\.\.\.marketingMetadata\(marketing, organiserName, marketingHash, tailored\),/);
 });
 
 // ── The metadata ────────────────────────────────────────────────────────────
@@ -307,35 +329,46 @@ test("the metadata carries mode, the buyer's box, the wording version, the surfa
   const hash = marketingWordingHash(words("own-events", QUESTIONS));
   assert.match(hash, /^[0-9a-f]{64}$/);
   assert.deepEqual(
-    marketingMetadata({ mode: "own-events", ticked: false, version: 2, surface: "embed", wording: words("own-events", QUESTIONS) }, "Punk Pub Ltd", hash),
+    marketingMetadata({ mode: "own-events", ticked: false, version: 2, surface: "embed", wording: words("own-events", QUESTIONS) }, "Punk Pub Ltd", hash, false),
     { marketingMode: "own-events", marketingTicked: "0", marketingVersion: "2", marketingSurface: "embed", marketingOrganiser: "Punk Pub Ltd", marketingWordingHash: hash },
   );
+  assert.equal(
+    marketingMetadata({ mode: "own-events", ticked: false, version: 2, surface: "embed" }, "Punk Pub Ltd", hash, true).marketingTailored,
+    "1",
+    "a tailored soft opt-in says so: fulfilment rebuilds what it keeps",
+  );
   assert.deepEqual(
-    marketingMetadata({ mode: "consent", ticked: true, version: 2, surface: "order-form" }, "Punk Pub Ltd", undefined),
+    marketingMetadata({ mode: "consent", ticked: true, version: 2, surface: "order-form" }, "Punk Pub Ltd", undefined, true),
     { marketingMode: "consent", marketingTicked: "1", marketingVersion: "2", marketingSurface: "order-form" },
   );
-  assert.deepEqual(marketingMetadata(undefined, "Punk Pub Ltd", hash), {}, "no control shown: no keys");
+  assert.deepEqual(marketingMetadata(undefined, "Punk Pub Ltd", hash, true), {}, "no control shown: no keys");
   for (const choice of [
     { mode: "own-events", ticked: true, version: 2, surface: "pay-panel" },
     { mode: "consent", ticked: false, version: 2, surface: "embed" },
   ] as const) {
-    const back = marketingFromMetadata(marketingMetadata(choice, "P", hash));
+    const back = marketingFromMetadata(marketingMetadata(choice, "P", hash, false));
     assert.deepEqual(back?.choice, choice, "round trip");
     assert.equal(back?.wordingHash, hash);
+    assert.equal(back?.tailored, false);
   }
+  assert.equal(marketingFromMetadata(marketingMetadata({ mode: "own-events", ticked: false, version: 2, surface: "embed" }, "P", hash, true))?.tailored, true);
   // A hash names the exact words: any other question, name or version is another hash.
-  assert.notEqual(marketingWordingHash(words("own-events", [QUESTIONS[0]!])), hash);
+  const tailoredHash = marketingWordingHash(words("own-events", QUESTIONS, "Punk Pub Ltd", true));
+  assert.notEqual(tailoredHash, hash, "tailoring changes what a soft opt-in's words name");
+  assert.notEqual(marketingWordingHash(words("own-events", [QUESTIONS[0]!], "Punk Pub Ltd", true)), tailoredHash);
   assert.notEqual(marketingWordingHash(words("own-events", QUESTIONS, "Other")), hash);
   assert.equal(marketingFromMetadata({}), undefined);
   assert.equal(marketingFromMetadata(null), undefined);
 });
 
 test("the integrity tag commits to the marketing keys: flipping the box after creation reads as tampered", () => {
-  const metadata = { eventId: "e", ...marketingMetadata({ mode: "own-events", ticked: true, version: 2, surface: "embed" }, "P", "cd".repeat(32)) };
+  const metadata = { eventId: "e", ...marketingMetadata({ mode: "own-events", ticked: true, version: 2, surface: "embed" }, "P", "cd".repeat(32), true) };
   const fields = { account: "acct_1", currency: "gbp", amountSubtotal: 1000, amountTotal: 1000, applicationFee: 15, metadata };
   const tag = signCheckoutTag(fields);
   assert.ok(verifyCheckoutTag(tag, fields));
   assert.equal(verifyCheckoutTag(tag, { ...fields, metadata: { ...metadata, marketingTicked: "0" } }), false);
   assert.equal(verifyCheckoutTag(tag, { ...fields, metadata: { ...metadata, marketingMode: "consent" } }), false);
   assert.equal(verifyCheckoutTag(tag, { ...fields, metadata: { ...metadata, marketingWordingHash: "ef".repeat(32) } }), false);
+  const { marketingTailored: _, ...untailored } = metadata;
+  assert.equal(verifyCheckoutTag(tag, { ...fields, metadata: untailored }), false);
 });

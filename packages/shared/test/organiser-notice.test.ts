@@ -12,7 +12,8 @@
  * accept any `marketingBasis` and "the basis is one stored value" goes red; read a
  * confirmed notice through the draft default and "a new draft starts on own-events"
  * goes red; name kept questions by `label || placeholder`, or cut them to 80
- * characters, and "exactly as checkout does" goes red.
+ * characters, and "exactly as checkout does" goes red; name the answers for an
+ * untailored soft opt-in and "an untailored soft opt-in's mailing-list line" goes red.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -316,9 +317,28 @@ test("the mailing-list line names kept questions exactly as checkout does: no pl
   const text = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: form }, wocoPolicyUrl: POLICY }));
   assert.ok(text.includes(`If you join our mailing list: your email address and your answers to Area, ${long}, until you unsubscribe.`), text);
   // The checkout names the same questions, and the unnamed one nowhere.
-  const keeps = listKeeps(form);
-  assert.deepEqual(keeps, { name: false, answers: ["Area", long] });
+  const keeps = listKeeps(form, { mode: "consent", tailored: false });
+  assert.deepEqual(keeps.answers, ["Area", long]);
+  assert.equal(keeps.name, false);
   assert.doesNotMatch(marketingWording("consent", 2, "Punk Pub Ltd", keeps)!.box, /Your town|Emergency/);
+});
+
+test("an untailored soft opt-in's mailing-list line names the email and name only; tailoring names the answers", () => {
+  const form: OrderField[] = [
+    { id: "name", type: "text", label: "Full name", required: true },
+    { id: "area", type: "text", label: "Area", required: false },
+  ];
+  const line = (over: Partial<OrganiserNotice>, orderFields?: OrderField[]) =>
+    noticePlainText(buildOrganiserNotice({ notice: notice(over), ...(orderFields ? { event: { title: "Gig", orderFields } } : {}), wocoPolicyUrl: POLICY }));
+  const own = { marketingBasis: "own-events" } as Partial<OrganiserNotice>;
+  assert.match(line(own, form), /If you join our mailing list: your email address and name, until you unsubscribe\./);
+  assert.match(line(own, [form[1]!]), /If you join our mailing list: your email address, until you unsubscribe\./);
+  assert.match(line(own), /If you join our mailing list: your email address and name, until you unsubscribe\./);
+  const tailored = { ...own, tailoredMarketing: true };
+  assert.match(line(tailored, form), /If you join our mailing list: your email address and your answers to Full name, Area, until you unsubscribe\./);
+  assert.match(line(tailored), /your email address and your answers to an event's questions, except sensitive ones, until you unsubscribe/);
+  // Consent mode keeps the named answers, tailored or not.
+  assert.match(line({}, form), /your email address and your answers to Full name, Area, until you unsubscribe\./);
 });
 
 test("a health question brings its own purpose and basis; a form without one says nothing about health", () => {

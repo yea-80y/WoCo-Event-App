@@ -79,6 +79,8 @@ interface ClaimStatus {
   marketingMode?: MarketingMode;
   /** The organiser's name as their notice gives it - the own-events sentence names them. */
   marketingOrganiser?: string;
+  /** The notice's `tailoredMarketing`: decides what a soft opt-in keeps, so what the sentence names. */
+  marketingTailored?: boolean;
 }
 
 interface SeriesState {
@@ -635,7 +637,8 @@ export class WocoTickets extends HTMLElement {
     // box ticked under one mode means the opposite in the other, so it starts unticked.
     if (st.marketing.mode !== mode) st.marketing = { mode, ticked: false };
     const name = typeof st.status?.marketingOrganiser === "string" ? st.status.marketingOrganiser : undefined;
-    const w = marketingWording(mode, MARKETING_CURRENT_VERSION[mode], name, listKeeps(this.event?.orderFields))!;
+    const keeps = listKeeps(this.event?.orderFields, { mode, tailored: st.status?.marketingTailored === true });
+    const w = marketingWording(mode, MARKETING_CURRENT_VERSION[mode], name, keeps)!;
     st.marketing.wording = w;
     return `
       <div class="consent-block">

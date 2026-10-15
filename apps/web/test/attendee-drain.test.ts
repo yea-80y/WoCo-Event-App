@@ -30,12 +30,14 @@ const FIELDS: OrderField[] = [
   { id: "field_6", type: "text", label: "Allergies", required: false, health: true },
   { id: ORDER_EMAIL_FIELD_ID, type: "email", label: "Email", required: true },
 ];
-const opts = (recorded: string[], orderFields: OrderField[] = FIELDS) => ({
+/** Each recorded buyer's record keeps every question by default, so the placement rule itself is what is tested. */
+const opts = (recorded: string[], orderFields: OrderField[] = FIELDS, kept?: Record<string, string[]>) => ({
   orderFields,
   eventTitle: "Warehouse Project",
   eventDate: "2026-09-01",
   addedAt: NOW,
   recorded: new Set(recorded),
+  kept: new Map(Object.entries(kept ?? Object.fromEntries(recorded.map((e) => [e, orderFields.map((f) => f?.id)])))),
 });
 
 // ── Who gets built ─────────────────────────────────────────────────────────
@@ -59,6 +61,36 @@ test("four tickets is one contact", () => {
   const out = buildAttendeeContacts(claims, opts(["ada@x.com"]));
   assert.equal(out.length, 1);
   assert.equal(out[0].email, "ada@x.com");
+});
+
+test("only the questions on the buyer's record are copied - a question or notice changed since never widens it", () => {
+  const claim = {
+    claimerEmail: "a@x.com",
+    fields: { field_1: "Ada", field_2: "Lovelace", field_3: "Leeds", field_4: "Instagram", field_5: "M" },
+  };
+  // An untailored soft opt-in: the record keeps the name questions only.
+  const soft = buildAttendeeContacts([claim], opts(["a@x.com"], FIELDS, { "a@x.com": ["field_1", "field_2"] }));
+  assert.equal(soft[0].firstName, "Ada");
+  assert.equal(soft[0].lastName, "Lovelace");
+  assert.equal(soft[0].city, undefined);
+  assert.equal(soft[0].answers, undefined);
+  // Asked after the sale: a new question the record never named is not copied.
+  const added: OrderField[] = [...FIELDS, { id: "field_7", type: "text", label: "Postcode", required: false }];
+  const later = buildAttendeeContacts(
+    [{ ...claim, fields: { ...claim.fields, field_7: "LS1" } }],
+    opts(["a@x.com"], added, { "a@x.com": ["field_1", "field_2", "field_3", "field_4", "field_5"] }),
+  );
+  assert.equal(later[0].postcode, undefined);
+  assert.equal(later[0].city, "Leeds");
+  // On the record, but marked sensitive since: today's rule still keeps it off.
+  const flagged = FIELDS.map((f) => (f.id === "field_3" ? { ...f, health: true } : f));
+  const now = buildAttendeeContacts([claim], opts(["a@x.com"], flagged, { "a@x.com": ["field_3"] }));
+  assert.equal(now[0].city, undefined);
+  // A record that names nothing - or no record of what it kept - keeps only the email.
+  for (const kept of [{ "a@x.com": [] }, {}]) {
+    const bare = buildAttendeeContacts([claim], opts(["a@x.com"], FIELDS, kept));
+    assert.deepEqual(Object.keys(bare[0]).sort(), ["addedAt", "email", "lastEventDate", "lastEventName", "source"]);
+  }
 });
 
 test("someone else's number never fills the buyer's phone, and their details are not kept", () => {

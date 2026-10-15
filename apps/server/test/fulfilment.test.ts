@@ -705,6 +705,13 @@ describe("happy path", () => {
     // No hash stamped: capture gets none, and records nothing for a yes.
     const { f: g } = await run({ consent: "1" });
     assert.equal(g.consents[0].wordingHash, undefined);
+    assert.equal(g.consents[0].tailored, false);
+    // The notice's tailoring as create-checkout stamped it: what a soft opt-in keeps is rebuilt from it.
+    const { f: t } = await run(
+      { marketing: { marketingMode: "own-events", marketingTicked: "0", marketingVersion: "2", marketingSurface: "embed", marketingOrganiser: "P", marketingTailored: "1", marketingWordingHash: "ab".repeat(32) } },
+      { event: eventFeed({ orderFields }) },
+    );
+    assert.equal(t.consents[0].tailored, true);
   });
 
   test("marketing keys that do not parse record nothing, in either mode - never a guess", async () => {

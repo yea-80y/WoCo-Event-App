@@ -22,17 +22,24 @@ const claims = new Hono<AppEnv>();
 
 /**
  * The marketing control this event's checkout shows (2026-10-14): the mode the
- * organiser's CONFIRMED notice sets, read under the same keys and cache as the
+ * organiser's CONFIRMED notice sets, and whether it tailors (which decides what a
+ * soft opt-in keeps, so what the sentence names), read under the same keys and cache as the
  * sale gate. Omitted when there is no confirmed notice to read - nothing sells
  * then - and never fails the availability answer. create-checkout re-checks it.
  */
-async function marketingFor(eventId: string): Promise<{ marketingMode: MarketingMode; marketingOrganiser: string } | null> {
+async function marketingFor(
+  eventId: string,
+): Promise<{ marketingMode: MarketingMode; marketingOrganiser: string; marketingTailored: boolean } | null> {
   try {
     const keys = await eventKeys(eventId);
     if (keys.kind !== "ring" && keys.kind !== "record") return null;
     const r = await organiserNoticeRead(keys.creator, keys.feedSigner);
     if (r.status !== "found") return null;
-    return { marketingMode: noticeMarketingMode(r.notice), marketingOrganiser: r.notice.organiserName };
+    return {
+      marketingMode: noticeMarketingMode(r.notice),
+      marketingOrganiser: r.notice.organiserName,
+      marketingTailored: r.notice.tailoredMarketing === true,
+    };
   } catch {
     return null;
   }

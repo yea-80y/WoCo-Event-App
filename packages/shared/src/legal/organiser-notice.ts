@@ -29,7 +29,7 @@
 
 import type { OrderField } from "../crypto/types.js";
 import { ORDER_EMAIL_FIELD_ID } from "../event/order-email.js";
-import { isHealthField, listPlacement } from "../event/order-field-kinds.js";
+import { isHealthField, listKeeps, listPlacement } from "../event/order-field-kinds.js";
 import type { MarketingMode } from "./consent.js";
 
 /** v2 (2026-10-13): pick-list choices replaced v1's free-text answers. v1 notices are refused - re-confirm. */
@@ -341,13 +341,16 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
   const tailored = n ? n.tailoredMarketing === true : NOTICE_DEFAULTS.tailoredMarketing;
   const ownEvents = (n ? noticeMarketingMode(n) : NOTICE_DEFAULTS.marketing) === "own-events";
   const asksQuestions = !ev || labels.length > 0;
-  // Named by `listPlacement`, as the checkout wording and the list import read them:
-  // what this says is kept is what is kept.
+  // An untailored soft opt-in keeps the email and name only (`KeepScope`). Otherwise
+  // each kept question is named by `listPlacement`, as the checkout wording and the
+  // list import read them: what this says is kept is what is kept.
+  const answersKept = !ownEvents || tailored;
   const keptLabels: string[] = [];
-  for (const f of Array.isArray(ev?.orderFields) ? ev.orderFields : []) {
+  for (const f of answersKept && Array.isArray(ev?.orderFields) ? ev.orderFields : []) {
     const label = f && typeof f === "object" ? listPlacement(f)?.label : undefined;
     if (label && !keptLabels.includes(label)) keptLabels.push(label);
   }
+  const keptName = ev ? listKeeps(ev.orderFields, { mode: ownEvents ? "own-events" : "consent", tailored }).name : true;
   // A site's notice covers every event, so it says what happens IF a form asks.
   const asksHealth = ev ? (ev.orderFields ?? []).some(isHealthField) : true;
 
@@ -561,9 +564,11 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
           : []),
         [
           "If you join our mailing list: your email address" +
-            (ev
-              ? keptLabels.length ? ` and your answers to ${keptLabels.join(", ")}` : ""
-              : " and your answers to an event's questions, except sensitive ones") +
+            (!answersKept
+              ? keptName ? " and name" : ""
+              : ev
+                ? keptLabels.length ? ` and your answers to ${keptLabels.join(", ")}` : ""
+                : " and your answers to an event's questions, except sensitive ones") +
             ", until you unsubscribe.",
         ],
         [`Guest lists we download or put on a door scanner: deleted within ${months} months of the event.`],
