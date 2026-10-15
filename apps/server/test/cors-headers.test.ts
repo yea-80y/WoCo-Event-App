@@ -9,12 +9,13 @@ import assert from "node:assert/strict";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { SCANNER_DEVICE_HEADER } from "@woco/shared";
-import { CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS } from "../src/lib/http/cors.js";
+import { readFileSync } from "node:fs";
+import { CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS, corsOrigin } from "../src/lib/http/cors.js";
 
 function appWithProductionCors(): Hono {
   const app = new Hono();
   app.use("*", cors({
-    origin: (origin) => origin || "*",
+    origin: corsOrigin,
     allowMethods: CORS_ALLOW_METHODS,
     allowHeaders: CORS_ALLOW_HEADERS,
     exposeHeaders: CORS_EXPOSE_HEADERS,
@@ -36,4 +37,29 @@ test("a door scanner's preflight is allowed both headers it sends", async () => 
   for (const h of ["content-type", "x-door-pass", SCANNER_DEVICE_HEADER.toLowerCase()]) {
     assert.ok(allowed.includes(h), `${h} missing from Access-Control-Allow-Headers`);
   }
+});
+
+test("the scanner's own name is let in, preflight and request alike", async () => {
+  const origin = "https://scan.woco.eth.limo";
+  const app = appWithProductionCors();
+  const pre = await app.request("/api/checkin/evt/claim", {
+    method: "OPTIONS",
+    headers: {
+      Origin: origin,
+      "Access-Control-Request-Method": "POST",
+      "Access-Control-Request-Headers": `content-type, x-door-pass, ${SCANNER_DEVICE_HEADER.toLowerCase()}`,
+    },
+  });
+  assert.equal(pre.headers.get("Access-Control-Allow-Origin"), origin);
+  const res = await app.request("/api/checkin/evt/claim", { method: "POST", headers: { Origin: origin } });
+  assert.equal(res.headers.get("Access-Control-Allow-Origin"), origin);
+});
+
+test("the server's CORS middleware is this one", () => {
+  // Otherwise the tests above would pass against a copy while index.ts drifted.
+  const index = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  assert.match(
+    index,
+    /cors\(\{\s*origin: corsOrigin,\s*allowMethods: CORS_ALLOW_METHODS,\s*allowHeaders: CORS_ALLOW_HEADERS,\s*exposeHeaders: CORS_EXPOSE_HEADERS,\s*\}\)/,
+  );
 });
