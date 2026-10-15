@@ -25,6 +25,30 @@ test("health questions are recognised from everyday labels", () => {
   }
 });
 
+test("every UK GDPR Art. 9 category and Art. 10 criminal convictions read as sensitive", () => {
+  const categories: Record<string, string[]> = {
+    "health, diet or access": ["Allergies", "Dietary requirements", "Access needs", "Any mental health needs?", "Do you need a hearing loop?", "BSL interpreter needed?"],
+    "religion or belief": ["Religion", "Faith", "Religious beliefs", "Halal meal?", "Kosher option", "Do you need a prayer room?"],
+    "racial or ethnic origin": ["Ethnicity", "Ethnic origin", "Racial background"],
+    "sexual orientation or sex life": ["Sexual orientation", "Sexuality", "Are you LGBTQ+?"],
+    "political opinions": ["Political views", "Which political party do you support?", "Party membership", "Who did you vote for?"],
+    "trade union membership": ["Trade union", "Union membership number", "Are you a union member?"],
+    "genetic or biometric": ["Genetic conditions", "DNA test kit opt-in", "Biometric data", "Fingerprint for entry"],
+    "criminal convictions (Art. 10)": ["Criminal record", "Any unspent convictions?", "DBS check number", "Offences"],
+  };
+  for (const [category, labels] of Object.entries(categories)) {
+    for (const label of labels) assert.equal(orderFieldKind(label).health, true, `${category}: ${label}`);
+  }
+});
+
+test("the categories stay narrow where a word is ambiguous at events", () => {
+  for (const label of ["Which race are you running?", "Race distance", "Rugby union or league?", "Party size",
+    "Hen party name", "Orientation session", "Instrumental or vocal?", "Environmental group", "Christian name",
+    "Union Street entrance", "Vote for your favourite band"]) {
+    assert.equal(orderFieldKind(label).health, false, label);
+  }
+});
+
 test("names and where someone lives are kept by default; phone and everything else are not", () => {
   const cases: [string, string | null, boolean][] = [
     ["First name", "firstName", true],

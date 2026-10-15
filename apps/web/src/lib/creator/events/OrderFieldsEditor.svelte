@@ -125,8 +125,8 @@
 
         {#if field.health}
           <p class="health-note">
-            Health question - kept optional and never added to your mailing list.
-            <button type="button" class="link-btn" onclick={() => setFlags(i, { health: false })}>Not a health question?</button>
+            Sensitive question - kept optional and never added to your mailing list.
+            <button type="button" class="link-btn" onclick={() => setFlags(i, { health: false })}>Not sensitive?</button>
           </p>
         {:else}
           <div class="flag-row">
