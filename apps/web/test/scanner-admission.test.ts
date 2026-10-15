@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { CheckinRecord } from "@woco/shared";
-import { admit, doorModeOf, OFFLINE_MESSAGE, type AdmitInput } from "../src/lib/scanner/admission.js";
+import { admit, doorModeOf, OFFLINE_MESSAGE, withConfirmed, type AdmitInput } from "../src/lib/scanner/admission.js";
 import type { ClaimAnswer } from "../src/lib/scanner/claim.js";
 
 const HOLDER: CheckinRecord = { seriesId: "ser-1", edition: 7, at: "2026-09-26T20:00:00.000Z", deviceId: "otherdevice01", method: "scan" };
@@ -90,4 +90,28 @@ test("a dead pass admits nothing, in either mode", async () => {
     assert.deepEqual(await admit(i), { kind: "cant-confirm", message: "Door pass revoked" });
     assert.equal(i.calls.mark + i.calls.claim, 0, `${mode}: nothing consumed or claimed`);
   }
+});
+
+test("several: a scanner the server calls outdated admits nobody", async () => {
+  const i = input({ claimAtServer: async () => ({ kind: "outdated", message: "This scanner is updating - scan again in a moment" }) });
+  const a = await admit(i);
+  assert.deepEqual(a, { kind: "cant-confirm", message: "This scanner is updating - scan again in a moment" });
+  assert.equal(i.calls.mark, 0);
+});
+
+test("a claim answered after the tab moved to another pass never lands in the new event's set", () => {
+  const before = new Map<string, CheckinRecord>([["ser-new 1", { ...HOLDER, seriesId: "ser-new", edition: 1 }]]);
+  assert.equal(withConfirmed(before, "ser-1 7", HOLDER, "old-pass-token", "new-pass-token"), null);
+  assert.equal(withConfirmed(before, "ser-1 7", HOLDER, "old-pass-token", undefined), null, "nor in a tab with no pass now");
+  const same = withConfirmed(before, "ser-1 7", HOLDER, "pass-token", "pass-token");
+  assert.ok(same && same.get("ser-1 7") === HOLDER && same.size === 2);
+  assert.equal(before.size, 1, "a new set; the old one is never edited in place");
+});
+
+test("the store records a confirmed answer only through that guard", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/lib/scanner/store.svelte.ts", import.meta.url), "utf8");
+  const claim = src.slice(src.indexOf("private async claimAtServer("), src.indexOf("private async mark("));
+  assert.match(claim, /withConfirmed\(this\.checkins, db\.ticketKey\(seriesId, edition\), answer\.record, pass\.token, this\.pass\?\.token\)/);
+  assert.doesNotMatch(claim, /next\.set\(/, "no second, unguarded write to the set");
 });

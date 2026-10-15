@@ -61,8 +61,32 @@
     <button type="submit">Go</button>
   </form>
 
+  {#if scanner.events.length > 0}
+    <div class="on-phone">
+      <span class="note">Or open an event already on this phone:</span>
+      {#each scanner.events as ev (ev.eventId)}
+        <button type="button" class="event-btn" onclick={() => void scanner.switchTo(ev.eventId)}>{ev.title}</button>
+      {/each}
+    </div>
+  {/if}
+
+  {#if scanner.otherUnsynced > 0}
+    <p class="note">
+      {scanner.otherUnsynced} check-in{scanner.otherUnsynced === 1 ? "" : "s"} from an earlier event
+      {scanner.otherUnsynced === 1 ? "hasn't" : "haven't"} reached WoCo yet. {scanner.otherUnsynced === 1 ? "It stays" : "They stay"} on this phone
+      and sync with that event's door pass while it is still valid.
+    </p>
+  {/if}
+
   {#if localError || scanner.provisionError}
-    <p class="error">{localError ?? scanner.provisionError}</p>
+    <div class="error-row">
+      <p class="error">{localError ?? scanner.provisionError}</p>
+      {#if !localError && scanner.pendingPass}
+        <button class="retry" type="button" disabled={scanner.phase === "provisioning"} onclick={() => void scanner.retryProvision()}>
+          Try again
+        </button>
+      {/if}
+    </div>
   {/if}
 </div>
 
@@ -135,9 +159,47 @@
     font-weight: 700;
     padding: 0 1.1rem;
   }
+  .on-phone {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .event-btn {
+    background: var(--bg-surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    font-weight: 600;
+    padding: 0.5rem 0.8rem;
+  }
+  .note {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    line-height: 1.4;
+  }
+  .error-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
   .error {
+    flex: 1;
     margin: 0;
     color: var(--error);
     font-size: 0.875rem;
+  }
+  .retry {
+    flex-shrink: 0;
+    background: var(--accent);
+    color: var(--accent-ink);
+    border: none;
+    border-radius: var(--radius-md);
+    font-weight: 700;
+    padding: 0.6rem 1rem;
+  }
+  .retry:disabled {
+    opacity: 0.6;
   }
 </style>

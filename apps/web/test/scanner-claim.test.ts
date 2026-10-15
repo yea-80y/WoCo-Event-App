@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { claimAdmission, type ClaimCall } from "../src/lib/scanner/claim.js";
+import { claimAdmission, WRONG_TICKET_TYPE_MESSAGE, type ClaimCall } from "../src/lib/scanner/claim.js";
 
 const CLAIM = { seriesId: "ser-1", edition: 7, method: "scan" as const, claimId: "c1", at: "2026-09-26T21:00:00.000Z" };
 const HOLDER = { seriesId: "ser-1", edition: 7, at: "2026-09-26T20:59:00.000Z", deviceId: "otherdevice01", method: "scan" as const };
@@ -80,4 +80,21 @@ test("the claim carries the door pass and this device's id", async () => {
   await claimAdmission(call(spy));
   assert.equal(seen!.get("X-Door-Pass"), "tok");
   assert.equal(seen!.get("X-Scanner-Device"), "thisdevice01");
+});
+
+test("a server asking for newer scanner code is 'outdated' - never admitted, and not a dead pass", async () => {
+  const a = await claimAdmission(call(reply(400, { ok: false, error: "This scanner needs updating - reload the page and try again", reason: "outdated-client" })));
+  assert.equal(a.kind, "outdated");
+  assert.doesNotMatch(a.kind === "outdated" ? a.message : "", /reload/i);
+  assert.equal((await claimAdmission(call(reply(400, { ok: false, error: "Malformed check-in claim" })))).kind, "cant-confirm",
+    "any other 400 is still 'couldn't confirm'");
+});
+
+test("a ticket type WoCo says is not part of this event is 'couldn't confirm', and says to refresh", async () => {
+  const a = await claimAdmission(call(reply(400, { ok: false, error: "This ticket is not for this event", reason: "wrong-event" })));
+  assert.equal(a.kind, "cant-confirm");
+  const message = a.kind === "cant-confirm" ? a.message : "";
+  assert.equal(message, WRONG_TICKET_TYPE_MESSAGE);
+  assert.match(message, /ticket type isn't part of this event/);
+  assert.match(message, /tap ↻/);
 });
