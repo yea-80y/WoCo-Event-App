@@ -77,7 +77,18 @@ export const CONTENTHASH_SELECTOR = new Interface(INNER_ABI).getFunction("conten
 // ---------------------------------------------------------------------------
 
 /** Which branch answered a `contenthash` read. Counted on /api/health. */
-export type ContenthashAnswer = "depth" | "empty" | "apex" | "built" | "foreign";
+export type ContenthashAnswer = "depth" | "empty" | "apex" | "built" | "foreign" | "scan";
+
+/**
+ * The door scanner's name, one label below the parent. WoCo's own app, published
+ * to a feed only the platform key writes, so it is answered with that feed's
+ * latest collection whatever the L2 holds - and never with anything else: it is
+ * under the passkey RP ID like every other name. Answered before the L2 is read,
+ * so it resolves whether or not the label is minted. `door` and `scanner` are
+ * reserved on the registrar only so nobody else can hold them; they get no answer
+ * of their own here.
+ */
+export const SCANNER_LABEL = "scan";
 
 /**
  * The WoCo-built rule. The passkey RP ID is `woco.eth.limo`, and a browser whose
@@ -96,7 +107,8 @@ export type ContenthashAnswer = "depth" | "empty" | "apex" | "built" | "foreign"
  *     is not memoised, so one hostile pointer would put the RPC back in the
  *     firing line on every lookup, and eth.limo negative-caches it.
  *
- * With no apex configured, "the app" is nothing.
+ * With no apex configured, "the app" is nothing. `scan` never reaches this rule:
+ * the handler answers it first (SCANNER_LABEL).
  */
 export function contenthashPolicy(input: {
   depth: number;
@@ -284,6 +296,8 @@ export interface CcipHandlerDeps {
     apexHash: () => string | null;
     /** The collection the server last deployed behind a feed manifest, or null. */
     lookupBuilt: (feedManifestHash: string) => string | null;
+    /** The door scanner's latest collection (64-hex), or null when none is known. */
+    scannerBuild: () => Promise<string | null>;
     onAnswer?: (answer: ContenthashAnswer) => void;
   };
   /** UNIX seconds. Injectable so tests can pin the expiry window. */
@@ -368,8 +382,9 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
     //     a pure function of (sender, data) and process-immutable config. The
     //     one thing that does move is the signature's deadline, and the memo
     //     re-tests that on every read. A `contenthash` answer also depends on the
-    //     deploy ledger, so it can trail a new deploy by at most the memo window
-    //     (MEMO_TTL_MS, 30 s) - never show a pointer the rule refused.
+    //     deploy ledger (or, for `scan`, the scanner feed), so it can trail a new
+    //     deploy by at most the memo window (MEMO_TTL_MS, 30 s) - never show a
+    //     pointer the rule refused.
     //
     //     LOWERCASED, and that is load-bearing rather than tidy: the signature
     //     covers the request BYTES, so `0xAB…` and `0xab…` are the same request
@@ -420,7 +435,8 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
     if (norm === parent) return refuse(403, "apex is not served by this gateway");
     // Leading dot is load-bearing: `xwoco.eth` and `woco.eth.evil.eth` must both fail.
     if (!norm.endsWith(`.${parent}`)) return refuse(403, `only names under ${parent} are served`);
-    const depth = norm.slice(0, norm.length - parent.length - 1).split(".").length;
+    const labels = norm.slice(0, norm.length - parent.length - 1).split(".");
+    const depth = labels.length;
 
     // 6. Which record, and that the node the L2 will read really is this name's.
     //    Without the equality check the name is decorative: the L2 answers about
@@ -447,6 +463,20 @@ export function createCcipHandler(config: CcipHandlerConfig, deps: CcipHandlerDe
       // Answered without the L2: nothing below one label is ever shown.
       result = coder.encode(["bytes"], ["0x"]);
       deps.contenthash.onAnswer?.("depth");
+    } else if (isContenthash && labels[0] === SCANNER_LABEL) {
+      // Unknown is refused, never signed: "0x" would assert the scanner has no
+      // page, and the app would be a page that is not the scanner.
+      let scanner: string;
+      try {
+        const build = await deps.contenthash.scannerBuild();
+        if (!build) return refuse(503, "the scanner's build is not known yet");
+        scanner = hexlify(encodeSwarmContenthash(build));
+      } catch (err) {
+        logError(`[ens-gateway] scanner build unavailable for ${name}:`, err);
+        return refuse(503, "the scanner's build is not known yet");
+      }
+      result = coder.encode(["bytes"], [scanner]);
+      deps.contenthash.onAnswer?.("scan");
     } else {
       try {
         result = await deps.readL2(call.targetRegistryAddress, call.name, call.data);
