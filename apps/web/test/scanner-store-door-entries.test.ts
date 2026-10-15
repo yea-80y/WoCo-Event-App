@@ -279,6 +279,19 @@ test("the key check: a server sealing to another key shows the warning; the righ
   assert.equal(scanner.attendees.length, 1);
 });
 
+test("a page with nothing to open runs no key check, so it never loads the lattice code", async (t) => {
+  const pass = makePass(A, JTI_A);
+  await storeEvent(pass);
+  const other = doorEntriesKeypair(crypto.getRandomValues(new Uint8Array(32))).publicKey;
+  const onlyRemovals = new EntriesLog(pass, other).remove(1);
+  server.handlers.set("/entries", onlyRemovals.handler());
+  const scanner = await openTab(t);
+  await scanner.openEvent(A);
+  await scanner.refreshDoorEntries();
+  assert.equal(scanner.doorKeyMismatch, false, "the wrong key went unchecked: nothing needed it");
+  assert.ok(scanner.doorEntries.tombstones.has(key(A, 1)));
+});
+
 test("two events on one phone keep separate lists", async (t) => {
   const a = makePass(A, JTI_A);
   const b = makePass(B, JTI_B);

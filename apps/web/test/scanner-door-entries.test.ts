@@ -20,8 +20,10 @@ import {
   doorKeyMatches,
   emptyDoorEntries,
   fetchDoorEntriesPage,
+  hasEntriesToOpen,
   mergeDoorRoster,
   restoreDoorEntries,
+  shouldFetchMore,
   toStoredDoorEntries,
   type DoorEntriesContext,
 } from "../src/lib/scanner/door-entries.ts";
@@ -158,4 +160,15 @@ test("the server's answers: a page, a refused pass (expired or not), an outdated
   }
   const offline = await fetchDoorEntriesPage({ fetchFn: async () => { throw new TypeError("offline"); }, apiBase: "", eventId: EVENT, token: "t", deviceId: "d", since: 0 });
   assert.deepEqual(offline, { kind: "later" });
+});
+
+test("more pages: asked for at once only while the cursor moves; a page of removals opens nothing", async () => {
+  const pg = page([await add(1)], { next: 7, more: true });
+  assert.equal(shouldFetchMore(pg, 3), true);
+  assert.equal(shouldFetchMore({ ...pg, more: false }, 3), false);
+  assert.equal(shouldFetchMore(pg, 7), false, "a server that says more without moving waits for the next tick");
+  assert.equal(shouldFetchMore({ ...pg, next: 0, reset: true }, 9), true, "a log that started again is read from its start");
+  assert.equal(hasEntriesToOpen(pg), true);
+  assert.equal(hasEntriesToOpen(page([remove(4)])), false);
+  assert.equal(hasEntriesToOpen(page([])), false);
 });

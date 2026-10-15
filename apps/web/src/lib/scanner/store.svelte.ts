@@ -59,8 +59,10 @@ import {
   doorKeyMatches,
   emptyDoorEntries,
   fetchDoorEntriesPage,
+  hasEntriesToOpen,
   mergeDoorRoster,
   restoreDoorEntries,
+  shouldFetchMore,
   toStoredDoorEntries,
   type DoorEntriesState,
 } from "./door-entries.js";
@@ -806,7 +808,7 @@ class ScannerStore {
 
         const { page } = answer;
         const applied = (await applyDoorEntriesPage(state, page, ctx)).state;
-        await this.checkDoorKey(pass, passSecret, page.doorKeyRef);
+        if (hasEntriesToOpen(page)) await this.checkDoorKey(pass, passSecret, page.doorKeyRef);
         // Checked after the last await: the tab may have moved during the request or the opening.
         if (this.pass?.token !== pass.token) return;
         state = applied;
@@ -814,8 +816,7 @@ class ScannerStore {
         await db.putDoorEntries(pass.eventId, pass.token, toStoredDoorEntries(state)).catch((err) => {
           console.warn("[scanner] door entries could not be stored", err);
         });
-        // No progress means a server that keeps saying `more`: wait for the next tick.
-        if (!page.more || (page.next <= since && !page.reset)) return;
+        if (!shouldFetchMore(page, since)) return;
       }
     } catch (err) {
       console.warn("[scanner] door entries could not be read", err);

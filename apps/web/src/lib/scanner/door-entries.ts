@@ -109,6 +109,19 @@ export async function applyDoorEntriesPage(
   return { state: { jti: page.jti, next: page.next, entries, tombstones }, failed };
 }
 
+/**
+ * Whether a page has a box to open. The key check and the opening are what load the
+ * lattice code, so a page of removals (or none) never loads it.
+ */
+export function hasEntriesToOpen(page: DoorEntriesPage): boolean {
+  return page.log.some((l) => l.kind === "add");
+}
+
+/** Ask again at once: the server says more wait, and the cursor moved (or the log started again). */
+export function shouldFetchMore(page: DoorEntriesPage, since: number): boolean {
+  return page.more && (page.next > since || page.reset);
+}
+
 /** The door's list: tombstones hide a ticket, the organiser's roster wins, a sale fills the gaps. */
 export function mergeDoorRoster(roster: RosterEntry[], state: DoorEntriesState): RosterEntry[] {
   const out = roster.filter((r) => !state.tombstones.has(doorTicketKey(r)));
