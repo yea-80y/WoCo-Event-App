@@ -10,9 +10,11 @@
  *
  *   https://gateway.woco-net.com/bzz/{manifestRef}/
  *
- * That URL never changes across deploys — set it as VITE_SCANNER_URL in
- * apps/web/.env.production so dashboard door-pass links point at it, and
- * (later) as the bzz:// content hash on scan.woco.eth.
+ * That URL never changes across deploys. scan.woco.eth needs no record of its
+ * own: the CCIP gateway answers it with this feed's latest collection
+ * (apps/server/src/lib/scanner/latest-build.ts), so FEED_TOPIC is read there too.
+ * `npm run deploy` runs this after every frontend upload, so the scanner is
+ * re-stamped under the current batch each time.
  *
  * USAGE:
  *   npm run build:scanner
@@ -253,8 +255,7 @@ function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
     console.log('======================================================================\n');
     console.log(`Scanner URL (stable):  ${BEE_URL}/bzz/${manifestRef}/`);
     console.log(`Direct content:        ${BEE_URL}/bzz/${siteRef}/`);
-    console.log(`\nFor ENS content hash:  bzz://${manifestRef}`);
-    console.log('Set this on scan.woco.eth if/when the subname is created.');
+    console.log('\nscan.woco.eth follows this feed through the CCIP gateway - no record to set.');
     console.log(`\nVITE_SCANNER_URL:      ${BEE_URL}/bzz/${manifestRef}`);
     console.log('(already expected in apps/web/.env.production — update if the manifest ever changes)\n');
 

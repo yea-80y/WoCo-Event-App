@@ -451,6 +451,12 @@ test("a red scanner section pages /api/health/alarms, by name or in the default 
   assert.equal(alarmGate({ ok: true, scanner: { ok: null } }, "scanner").status, 200);
 });
 
+test("every frontend deploy re-stamps the scanner after the main upload", () => {
+  const pkg = JSON.parse(source("../../../package.json")) as { scripts: Record<string, string> };
+  assert.equal(pkg.scripts.deploy, "npm run build:deploy && npm run upload:swarm && npm run deploy:scanner");
+  assert.equal(pkg.scripts["deploy:scanner"], "npm run build:scanner && npm run upload:scanner");
+});
+
 test("the server reads the topic the scanner deploy writes", async () => {
   const { SCANNER_FEED_TOPIC } = await import("../src/lib/scanner/latest-build.js");
   assert.match(source("../../../scripts/upload-scanner-to-swarm.cjs"), new RegExp(`const FEED_TOPIC = '${SCANNER_FEED_TOPIC}';`));
