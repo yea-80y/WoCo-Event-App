@@ -13,11 +13,16 @@
  *  - accept any payload as a build -> "an update that is not a scanner build";
  *  - drop the content-type check -> "bee's error document is not the file";
  *  - drop a critical file -> "a missing critical file is red";
- *  - drop the scanner section or its probe from index.ts -> wiring tests.
+ *  - drop the scanner section or its probe from index.ts -> wiring tests;
+ *  - in the upload script, accept an unreadable or taken index, skip the
+ *    `index + 1` check, or retry without bound -> "the scanner upload" tests.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { Topic } from "@ethersphere/bee-js";
+import { feedUpdateAddress as sharedFeedUpdateAddress } from "@woco/shared";
 import { AbiCoder, Interface, Wallet, concat, getBytes, hexlify, namehash, recoverAddress, toUtf8Bytes } from "ethers";
 import {
   createCcipHandler,
@@ -461,4 +466,92 @@ test("every frontend deploy re-stamps the scanner after the main upload", () => 
 test("the server reads the topic the scanner deploy writes", async () => {
   const { SCANNER_FEED_TOPIC } = await import("../src/lib/scanner/latest-build.js");
   assert.match(source("../../../scripts/upload-scanner-to-swarm.cjs"), new RegExp(`const FEED_TOPIC = '${SCANNER_FEED_TOPIC}';`));
+});
+
+// ---------------------------------------------------------------------------
+// The scanner upload: a lost feed update must fail the deploy
+// ---------------------------------------------------------------------------
+
+const upload = createRequire(import.meta.url)("../../../scripts/upload-scanner-to-swarm.cjs") as {
+  confirmFeedHead: (
+    index: number,
+    expectedRef: string,
+    readAt: (i: number) => Promise<string | null>,
+    opts?: { attempts?: number; delayMs?: number; sleep?: (ms: number) => Promise<void> },
+  ) => Promise<void>;
+  feedUpdateAddress: (topicHex: string, index: number, ownerHex: string) => string;
+};
+
+/** A feed as bee reads it: `held[i]` per index, `null`/absent = 404, a function = what that read does. */
+function bee(held: Record<number, string | null | (() => string | null)>) {
+  const reads: number[] = [];
+  const readAt = async (i: number) => {
+    reads.push(i);
+    const v = held[i];
+    return typeof v === "function" ? v() : (v ?? null);
+  };
+  return { readAt, reads };
+}
+const noWait = { attempts: 4, delayMs: 0, sleep: async () => {} };
+const down = () => {
+  throw new Error("bee HTTP 500");
+};
+
+test("the scanner upload: our build at the written index and nothing after it is confirmed", async () => {
+  const b = bee({ 6: h("1"), 7: SCANNER });
+  await upload.confirmFeedHead(7, SCANNER, b.readAt, noWait);
+  assert.deepEqual(b.reads, [7, 8]);
+});
+
+test("the scanner upload: an update still arriving is waited for, within the bound", async () => {
+  let n = 0;
+  const b = bee({ 7: () => (++n < 3 ? null : SCANNER) });
+  await upload.confirmFeedHead(7, SCANNER, b.readAt, noWait);
+  assert.deepEqual(b.reads, [7, 7, 7, 8]);
+});
+
+test("the scanner upload: an index another build holds fails at once - the update was lost", async () => {
+  const b = bee({ 7: h("1") });
+  await assert.rejects(upload.confirmFeedHead(7, SCANNER, b.readAt, noWait), /index 7 holds 1{64}, not this build/);
+  assert.deepEqual(b.reads, [7], "a SOC cannot change, so no retry");
+});
+
+test("the scanner upload: an update that never reads back fails after the bound, absent or unreadable", async () => {
+  for (const held of [{}, { 7: down }]) {
+    const b = bee(held);
+    await assert.rejects(upload.confirmFeedHead(7, SCANNER, b.readAt, noWait), /update 7 could not be read back after 4 tries/);
+    assert.deepEqual(b.reads, [7, 7, 7, 7]);
+  }
+});
+
+test("the scanner upload: a newer update after ours means the feed does not resolve to this build", async () => {
+  const b = bee({ 7: SCANNER, 8: h("1") });
+  await assert.rejects(upload.confirmFeedHead(7, SCANNER, b.readAt, noWait), /update 8 \(1{64}\) is newer/);
+});
+
+test("the scanner upload: an index + 1 that cannot be checked is not confirmed", async () => {
+  const b = bee({ 7: SCANNER, 8: down });
+  await assert.rejects(upload.confirmFeedHead(7, SCANNER, b.readAt, noWait), /update 8 could not be checked/);
+  assert.deepEqual(b.reads, [7, 8, 8, 8, 8]);
+});
+
+test("the scanner upload whitelists and reads the address the update is really stored at", () => {
+  const owner = "f8af4904c6e4f08ce5f7deab7f01221280b23a80";
+  const topic = Topic.fromString("woco-scanner-v1").toHex();
+  for (const i of [0, 7, 1000]) {
+    assert.equal(upload.feedUpdateAddress(topic, i, owner), sharedFeedUpdateAddress(owner, topic, i), `index ${i}`);
+  }
+});
+
+test("the scanner upload whitelists both updates before writing, then confirms - and a failure exits non-zero", () => {
+  const src = source("../../../scripts/upload-scanner-to-swarm.cjs");
+  const whitelist = src.indexOf("const updateAddresses = [nextIdx, nextIdx + 1].map(");
+  const refused = src.indexOf("if (wl.status !== 200) {", whitelist);
+  const write = src.indexOf("await writer.uploadReference(POSTAGE_BATCH_ID, new Reference(siteRef), { index: nextIdx });");
+  const confirm = src.indexOf("await confirmFeedHead(nextIdx, siteRef, async (i) => {");
+  const saved = src.indexOf("await fs.promises.writeFile(INFO_STATE");
+  assert.ok(whitelist > 0 && refused > whitelist && write > refused && confirm > write && saved > confirm, "whitelist -> refuse -> write -> confirm -> save");
+  assert.match(src.slice(confirm, saved), /if \(e\?\.status === 404\) return null;\s*throw e;/, "only a 404 is absent");
+  assert.match(src, /catch \(err\) \{\s*console\.error\('Upload failed:'[^]*?process\.exit\(1\);/);
+  assert.ok(!src.includes("verify still cold"), "the old lookup-based verify that never failed is gone");
 });
