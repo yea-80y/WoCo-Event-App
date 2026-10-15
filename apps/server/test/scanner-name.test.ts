@@ -16,7 +16,8 @@
  *  - drop a critical file -> "a missing critical file is red";
  *  - drop the scanner section or its probe from index.ts -> wiring tests;
  *  - in the upload script, accept an unreadable or taken index, skip the
- *    `index + 1` check, or retry without bound -> "the scanner upload" tests.
+ *    `index + 1` check, retry without bound, write at bee's lookup instead of
+ *    the first free index, or guess past an unreadable one -> "the scanner upload" tests.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -516,6 +517,8 @@ const upload = createRequire(import.meta.url)("../../../scripts/upload-scanner-t
     opts?: { attempts?: number; delayMs?: number; sleep?: (ms: number) => Promise<void> },
   ) => Promise<void>;
   feedUpdateAddress: (topicHex: string, index: number, ownerHex: string) => string;
+  firstFreeIndex: (start: number, readAt: (i: number) => Promise<string | null>, maxWalk?: number) => Promise<number>;
+  FORWARD_WALK: number;
 };
 
 /** A feed as bee reads it: `held[i]` per index, `null`/absent = 404, a function = what that read does. */
@@ -579,15 +582,40 @@ test("the scanner upload whitelists and reads the address the update is really s
   }
 });
 
-test("the scanner upload whitelists both updates before writing, then confirms - and a failure exits non-zero", () => {
+test("the scanner upload writes at the first free index from bee's lookup, not at the lookup", async () => {
+  const free = bee({});
+  assert.equal(await upload.firstFreeIndex(7, free.readAt), 7);
+  assert.deepEqual(free.reads, [7]);
+  // The lookup landed two short; whatever is stored there - even not a build - is taken.
+  const short = bee({ 7: h("1"), 8: "" });
+  assert.equal(await upload.firstFreeIndex(7, short.readAt), 9);
+  assert.deepEqual(short.reads, [7, 8, 9]);
+});
+
+test("the scanner upload refuses to write when it cannot tell, or the head is past the walk", async () => {
+  const b = bee({ 7: h("1"), 8: down });
+  await assert.rejects(upload.firstFreeIndex(7, b.readAt), /Cannot tell whether scanner feed index 8 is taken[^]*Nothing was written/);
+  assert.deepEqual(b.reads, [7, 8]);
+  const full = bee(Object.fromEntries(Array.from({ length: 20 }, (_, k) => [7 + k, h("1")])));
+  await assert.rejects(upload.firstFreeIndex(7, full.readAt, 4), /More than 4 scanner feed updates past bee's lookup at 7/);
+  assert.deepEqual(full.reads, [7, 8, 9, 10]);
+});
+
+test("the scanner upload whitelists every index it can read before writing, then confirms - and a failure exits non-zero", () => {
   const src = source("../../../scripts/upload-scanner-to-swarm.cjs");
-  const whitelist = src.indexOf("const updateAddresses = [nextIdx, nextIdx + 1].map(");
+  const whitelist = src.indexOf("const reachable = Array.from({ length: FORWARD_WALK + 1 }, (_, k) => lookupIdx + k);");
   const refused = src.indexOf("if (wl.status !== 200) {", whitelist);
+  const walk = src.indexOf("const nextIdx = await firstFreeIndex(lookupIdx, readAt);");
   const write = src.indexOf("await writer.uploadReference(POSTAGE_BATCH_ID, new Reference(siteRef), { index: nextIdx });");
-  const confirm = src.indexOf("await confirmFeedHead(nextIdx, siteRef, async (i) => {");
+  const confirm = src.indexOf("await confirmFeedHead(nextIdx, siteRef, readAt);");
   const saved = src.indexOf("await fs.promises.writeFile(INFO_STATE");
-  assert.ok(whitelist > 0 && refused > whitelist && write > refused && confirm > write && saved > confirm, "whitelist -> refuse -> write -> confirm -> save");
-  assert.match(src.slice(confirm, saved), /if \(e\?\.status === 404\) return null;\s*throw e;/, "only a 404 is absent");
+  assert.ok(
+    whitelist > 0 && refused > whitelist && walk > refused && write > walk && confirm > write && saved > confirm,
+    "whitelist -> refuse -> walk -> write -> confirm -> save",
+  );
+  assert.match(src.slice(refused, walk), /if \(e\?\.status === 404\) return null;\s*throw e;/, "only a 404 is absent");
   assert.match(src, /catch \(err\) \{\s*console\.error\('Upload failed:'[^]*?process\.exit\(1\);/);
   assert.ok(!src.includes("verify still cold"), "the old lookup-based verify that never failed is gone");
+  // The window reaches the last index the walk can return, and the one after it that confirm reads.
+  assert.ok(upload.FORWARD_WALK >= 2);
 });

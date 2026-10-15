@@ -66,7 +66,8 @@ const why = (e) => e?.message ?? String(e);
  * Proves the feed now resolves to `expectedRef`: update `index` holds it and
  * update `index + 1` does not exist. Both are read directly, because bee's lookup
  * lands short, and a write to an index that is already taken answers 201 and
- * keeps the old bytes - so without this a lost update reads as a deploy.
+ * keeps the old bytes - so without this a lost update reads as a deploy. The
+ * walk below avoids a taken index; this still catches a write that raced one.
  *
  * `readAt(i)` resolves to the reference update `i` names, to null when bee says
  * there is none (404), and throws when it cannot say. Only "cannot say yet" is
@@ -115,7 +116,29 @@ async function confirmFeedHead(index, expectedRef, readAt, { attempts = 10, dela
   }
 }
 
-module.exports = { confirmFeedHead, feedUpdateAddress };
+/** How far past bee's lookup the walk to a free index goes before refusing. */
+const FORWARD_WALK = 8;
+
+/**
+ * The first index at or after `start` (bee's lookup) with no update, read
+ * directly: the lookup lands short, and writing at a taken index is a lost
+ * update. `readAt` as for confirmFeedHead; when it cannot say, this refuses
+ * rather than guess, before anything is written.
+ */
+async function firstFreeIndex(start, readAt, maxWalk = FORWARD_WALK) {
+  for (let i = start; i < start + maxWalk; i++) {
+    let held;
+    try {
+      held = await readAt(i);
+    } catch (e) {
+      throw new Error(`Cannot tell whether scanner feed index ${i} is taken (${why(e)}). Nothing was written - re-run.`);
+    }
+    if (held === null) return i;
+  }
+  throw new Error(`More than ${maxWalk} scanner feed updates past bee's lookup at ${start}: refusing to guess where to write. Nothing was written.`);
+}
+
+module.exports = { confirmFeedHead, feedUpdateAddress, firstFreeIndex, FORWARD_WALK };
 
 function getAllFilesRecursive(dir, baseDir = dir, fileList = []) {
   const files = fs.readdirSync(dir);
@@ -241,7 +264,7 @@ if (require.main === module) (async () => {
     // (bee-js auto-increment silently falls back to index 0 on transient errors,
     //  and uploadReference() is the only writer compatible with v1 manifests).
     console.log('Reading next feed index from bee...');
-    let nextIdx;
+    let lookupIdx;
     const idxProbe = await axios.get(
       `${BEE_URL}/feeds/${ownerHex}/${topic.toString()}`,
       { maxRedirects: 0, validateStatus: () => true, responseType: 'arraybuffer', timeout: 15000 },
@@ -251,26 +274,42 @@ if (require.main === module) (async () => {
       if (!nextHex || !/^[0-9a-fA-F]+$/.test(nextHex)) {
         throw new Error(`bee returned 200 but no valid swarm-feed-index-next header: ${nextHex}`);
       }
-      nextIdx = Number(BigInt('0x' + nextHex));
+      lookupIdx = Number(BigInt('0x' + nextHex));
     } else if (idxProbe.status === 404) {
-      nextIdx = 0;
+      lookupIdx = 0;
     } else {
       throw new Error(`bee returned status ${idxProbe.status} when probing feed for next index`);
     }
-    console.log(`Next index: ${nextIdx}`);
 
-    // The proxy serves /chunks only for whitelisted addresses, and the read-back
-    // below reads this update and the one after it there. Whitelisted BEFORE the
-    // write, as upload-to-swarm-feed.cjs does: a failure here has written nothing.
-    const updateAddresses = [nextIdx, nextIdx + 1].map((i) => feedUpdateAddress(topic.toString(), i, ownerHex));
+    // The proxy serves /chunks only for whitelisted addresses, and both the walk
+    // to a free index and the read-back after the write read updates there: the
+    // window covers every index the walk can reach and the one after it.
+    // Whitelisted BEFORE the write, as upload-to-swarm-feed.cjs does: a failure
+    // here has written nothing.
+    const reachable = Array.from({ length: FORWARD_WALK + 1 }, (_, k) => lookupIdx + k);
+    const updateAddresses = reachable.map((i) => feedUpdateAddress(topic.toString(), i, ownerHex));
     const wl = await axios.post(`${BEE_URL}/admin/whitelist`, { hashes: updateAddresses }, {
       headers: { ...uploadHeaders, 'Content-Type': 'application/json' },
       timeout: 15000,
       validateStatus: () => true,
     });
     if (wl.status !== 200) {
-      throw new Error(`Could not whitelist feed updates ${nextIdx}-${nextIdx + 1} on the gateway (HTTP ${wl.status}), so the write could not be verified. Nothing was written.`);
+      throw new Error(`Could not whitelist feed updates ${lookupIdx}-${lookupIdx + FORWARD_WALK} on the gateway (HTTP ${wl.status}), so the write could not be verified. Nothing was written.`);
     }
+
+    const reader = bee.makeFeedReader(topic, ownerHex);
+    const readAt = async (i) => {
+      try {
+        // Checks the update is signed by the feed owner; the payload after the timestamp is the reference.
+        return (await reader.download({ index: i })).payload.toHex();
+      } catch (e) {
+        if (e?.status === 404) return null;
+        throw e;
+      }
+    };
+    const nextIdx = await firstFreeIndex(lookupIdx, readAt);
+    if (nextIdx !== lookupIdx) console.log(`bee's lookup said next index ${lookupIdx}, but ${lookupIdx}-${nextIdx - 1} are taken.`);
+    console.log(`Next index: ${nextIdx}`);
 
     console.log('Updating feed (uploadReference / v1)...');
     const writer = bee.makeFeedWriter(topic, signer);
@@ -292,16 +331,7 @@ if (require.main === module) (async () => {
 
     // 5) Verify by reading the written index directly from the same bee, never the
     //    lookup: a lost update must fail the deploy, not report success.
-    const reader = bee.makeFeedReader(topic, ownerHex);
-    await confirmFeedHead(nextIdx, siteRef, async (i) => {
-      try {
-        // Checks the update is signed by the feed owner; the payload after the timestamp is the reference.
-        return (await reader.download({ index: i })).payload.toHex();
-      } catch (e) {
-        if (e?.status === 404) return null;
-        throw e;
-      }
-    });
+    await confirmFeedHead(nextIdx, siteRef, readAt);
     console.log(`Scanner feed resolves to this build (feed index ${nextIdx}, read back directly).`);
 
     // 6) Save state
