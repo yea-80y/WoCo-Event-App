@@ -9,7 +9,7 @@
   import { getClaimStatus } from "../../api/events.js";
   import { CheckoutError, createCheckoutSession, OrderKeyStaleError } from "../../api/stripe.js";
   import type { MarketingMode, SeriesClaimStatus } from "@woco/shared";
-  import { MARKETING_MODE_CHANGED, marketingChoice, shownMarketingMode } from "@woco/shared";
+  import { isMarketingChanged, listKeeps, MARKETING_CURRENT_VERSION, marketingChoice, marketingWording as buildMarketingWording, shownMarketingMode } from "@woco/shared";
   import { orderFieldRequired, orderFormCollectsEmail, orderFormShown, resolveBuyerEmail } from "@woco/shared";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
@@ -149,6 +149,11 @@
    */
   const marketingMode = $derived<MarketingMode>(shownMarketingMode(status));
   const marketingOrganiser = $derived(status?.marketingOrganiser ?? organiserName);
+  /** What the control says, naming what the list keeps from this event's questions.
+   *  Both panels render this object and checkout sends it, so they cannot differ. */
+  const marketingWording = $derived(
+    buildMarketingWording(marketingMode, MARKETING_CURRENT_VERSION[marketingMode], marketingOrganiser, listKeeps(orderFields))!,
+  );
   let marketingBox = $state<{ mode: MarketingMode; ticked: boolean }>({ mode: "consent", ticked: false });
   const marketingTicked = $derived(marketingBox.mode === marketingMode && marketingBox.ticked);
   function setMarketingTicked(ticked: boolean): void {
@@ -427,7 +432,7 @@
         reservationId: reservationHook.reservation?.reservationId,
         // The panel on screen showed this control (the form, when it is open -
         // handleStripeCheckout returns early to show it and is re-entered).
-        marketing: marketingChoice(marketingMode, marketingTicked, showOrderForm ? "order-form" : "pay-panel"),
+        marketing: marketingChoice(marketingMode, marketingTicked, showOrderForm ? "order-form" : "pay-panel", marketingWording),
         linkAccount,
       });
       // Server has stamped reservationId into Stripe metadata; webhook
@@ -462,10 +467,10 @@
         }
         return;
       }
-      // The organiser's notice now sets the other control. Nothing was charged:
-      // show the current one (the box reads unticked under the new mode) and let
-      // the buyer choose again.
-      if (err instanceof CheckoutError && err.code === MARKETING_MODE_CHANGED) {
+      // The organiser's notice now sets the other control, or the control's words
+      // changed. Nothing was charged: show the current one (the box reads unticked
+      // under a new mode) and let the buyer choose again.
+      if (err instanceof CheckoutError && isMarketingChanged(err.code)) {
         error = err.message;
         await refreshStatusNow();
         return;
@@ -516,8 +521,7 @@
       {formValid}
       bind:formData
       bind:stripeEmail
-      {marketingMode}
-      {marketingOrganiser}
+      {marketingWording}
       {marketingTicked}
       onMarketingChange={setMarketingTicked}
       {organiserName}
@@ -538,8 +542,7 @@
       onStripeEmailChange={(v) => { stripeEmail = v; }}
       {eventId}
       {organiserName}
-      {marketingMode}
-      {marketingOrganiser}
+      {marketingWording}
       {marketingTicked}
       onMarketingChange={setMarketingTicked}
     />

@@ -30,7 +30,7 @@ export function orderFieldsRefusal(raw: unknown): string | null {
   for (const [i, f] of raw.entries()) {
     const n = `Order form field ${i + 1}`;
     if (typeof f !== "object" || f === null || Array.isArray(f)) return `${n} is not a field`;
-    const { id, type, label, required, placeholder, options, maxLength, health, keepOnList } = f as Record<string, unknown>;
+    const { id, type, label, required, placeholder, options, maxLength, health } = f as Record<string, unknown>;
     if (typeof id !== "string" || !ID_RE.test(id)) return `${n} has an invalid id`;
     if (ids.has(id)) return `${n} repeats the id "${id}"`;
     ids.add(id);
@@ -49,11 +49,11 @@ export function orderFieldsRefusal(raw: unknown): string | null {
         && (!Number.isInteger(maxLength) || (maxLength as number) < 1 || (maxLength as number) > MAX_ORDER_FIELD_MAXLENGTH)) {
       return `${n}'s maxLength must be a whole number from 1 to ${MAX_ORDER_FIELD_MAXLENGTH}`;
     }
-    if (health !== undefined && typeof health !== "boolean") return `${n}'s health flag must be true or false`;
-    if (keepOnList !== undefined && typeof keepOnList !== "boolean") return `${n}'s mailing-list flag must be true or false`;
-    // A health answer is consent only if it was optional, and it is never marketing data.
-    if (health === true && required === true) return `${n} asks about health, so it can't be required`;
-    if (health === true && keepOnList === true) return `${n} asks about health, so it can't be kept on a mailing list`;
+    // `health` marks any sensitive question (`OrderField.health`). The retired
+    // `keepOnList` key is ignored: nothing reads it, and a stale builder still publishes.
+    if (health !== undefined && typeof health !== "boolean") return `${n}'s sensitive flag must be true or false`;
+    // A sensitive answer is consent only if it was optional.
+    if (health === true && required === true) return `${n} is a sensitive question, so it can't be required`;
   }
   return null;
 }

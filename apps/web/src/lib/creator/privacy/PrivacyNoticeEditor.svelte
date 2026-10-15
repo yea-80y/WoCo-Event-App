@@ -46,7 +46,6 @@
   type Draft = Record<OrganiserNoticeField, string> & {
     sharing: NoticeSharing[];
     orderRetentionMonths: NoticeRetentionMonths;
-    tailoredMarketing: boolean;
     marketingBasis: MarketingMode;
   };
 
@@ -62,7 +61,6 @@
       extraOrderFormUse: "",
       sharing: [...NOTICE_DEFAULTS.sharing],
       orderRetentionMonths: NOTICE_DEFAULTS.orderRetentionMonths,
-      tailoredMarketing: NOTICE_DEFAULTS.tailoredMarketing,
       // A new draft only: a published notice loads its own answer below.
       marketingBasis: NOTICE_DEFAULTS.marketing,
     };
@@ -99,7 +97,6 @@
       ...(stripEmpty(text) as Pick<OrganiserNotice, "organiserName">),
       sharing: NOTICE_SHARING.filter((c) => draft.sharing.includes(c)),
       orderRetentionMonths: draft.orderRetentionMonths,
-      ...(draft.tailoredMarketing ? { tailoredMarketing: true as const } : {}),
       ...(draft.marketingBasis === "own-events" ? { marketingBasis: "own-events" as const } : {}),
     };
   }
@@ -158,7 +155,6 @@
         for (const f of TEXT_FIELDS) draft[f] = n[f] ?? "";
         draft.sharing = [...n.sharing];
         draft.orderRetentionMonths = n.orderRetentionMonths;
-        draft.tailoredMarketing = n.tailoredMarketing === true;
         draft.marketingBasis = noticeMarketingMode(n);
         return;
       }
@@ -298,13 +294,6 @@
           <label class="check">
             <input type="radio" name="marketing-basis" value="consent" bind:group={draft.marketingBasis} />
             <span>No, I also email about other people's events. Buyers tick a box if they want your emails - venues and promoters usually need this.</span>
-          </label>
-          <label class="check">
-            <input type="checkbox" bind:checked={draft.tailoredMarketing} />
-            <span>
-              Use what's kept on your mailing list, such as people's area, to choose which events you email them about.
-              You pick which answers are kept when you add questions to an event.
-            </span>
           </label>
         </fieldset>
 

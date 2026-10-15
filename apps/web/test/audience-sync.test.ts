@@ -31,8 +31,8 @@ import {
 
 const T0 = Date.parse("2026-10-14T12:00:00.000Z");
 const FIELDS: OrderField[] = [
-  { id: "f1", type: "text", label: "First Name", required: true, keepOnList: true },
-  { id: "f2", type: "text", label: "Allergies", required: false, health: true, keepOnList: true },
+  { id: "f1", type: "text", label: "First Name", required: true },
+  { id: "f2", type: "text", label: "Allergies", required: false, health: true },
 ];
 
 type Claim = { claimerEmail?: string; fields?: Record<string, string> };
@@ -85,7 +85,7 @@ function world(over: Partial<World> = {}): World {
     events: [event("e1")],
     orders: { e1: [order({ claimerEmail: "Ada@X.com", fields: { f1: "Ada", f2: "Peanuts" } })] },
     fields: { e1: FIELDS },
-    answer: { suppressed: [], alreadyInList: [], consented: ["ada@x.com"], softOptIn: [] },
+    answer: { suppressed: [], alreadyInList: [], consented: ["ada@x.com"], softOptIn: [], keptFields: { "ada@x.com": { eventId: "e1", fieldIds: ["f1", "f2"] } } },
     list: null,
     storage: new Map(),
     log: [],
@@ -202,6 +202,23 @@ test("a buyer with a checkout record is added, with only their kept answers", as
   assert.doesNotMatch(JSON.stringify(w.writes[0]!.payload), /Peanuts/, "never a health answer");
   assert.deepEqual(w.writes[0]!.emails, ["ada@x.com"]);
   assert.deepEqual(r.written?.payload, w.writes[0]!.payload);
+});
+
+test("a record keeps the questions of the event it was made at: another event's ids keep only the email", async () => {
+  const w = world({
+    events: [event("e1"), event("e2")],
+    // Same question ids at both events (the builder numbers them per form). The record
+    // was made at e2, which she answered without a name; e1's answer was never agreed to.
+    orders: { e1: [order({ claimerEmail: "ada@x.com", fields: { f1: "Ada" } })], e2: [order({ claimerEmail: "ada@x.com" })] },
+    fields: { e1: FIELDS, e2: FIELDS },
+    answer: { suppressed: [], alreadyInList: [], consented: ["ada@x.com"], softOptIn: [], keptFields: { "Ada@X.com": { eventId: "e2", fieldIds: ["f1"] } } },
+  });
+  await sync(w);
+  assert.deepEqual(emailsOf(w.writes[0]?.payload), ["ada@x.com"]);
+  assert.equal(w.writes[0]!.payload.contacts[0]!.firstName, undefined);
+  const none = world({ answer: { suppressed: [], alreadyInList: [], consented: ["ada@x.com"], softOptIn: [] } });
+  await sync(none);
+  assert.equal(none.writes[0]!.payload.contacts[0]!.firstName, undefined, "no record of what was kept: the email alone");
 });
 
 test("soft opt-in buyers are added too; buyers with no record are not", async () => {
@@ -855,6 +872,7 @@ test("one buyer at two events is one addition, and their last event is the later
     },
     // Only the earlier event asked her name: it fills that gap, and is still one new contact.
     fields: { late: [], early: FIELDS },
+    answer: { suppressed: [], alreadyInList: [], consented: ["ada@x.com"], softOptIn: [], keptFields: { "ada@x.com": { eventId: "early", fieldIds: ["f1"] } } },
   });
   const r = await sync(w);
   assert.equal(r.added, 1);

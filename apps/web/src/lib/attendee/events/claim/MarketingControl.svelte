@@ -5,22 +5,19 @@
    *   - consent:    an unticked "Email me..." box. Ticked = consent.
    *   - own-events: a sentence naming the organiser, and an unticked "Don't email
    *                 me" box. Left alone = the PECR soft opt-in; ticked = no.
-   * Never pre-ticked in either mode. The wording is the shared constant the
-   * server records by mode and version, so what is shown is what is kept.
+   * Never pre-ticked in either mode. The wording is given, not built here: the
+   * caller sends create-checkout the same object it passes in, so the text shown
+   * is the text the server compares with its own (2026-10-15).
    */
-  import { MARKETING_CURRENT_VERSION, marketingWording, type MarketingMode } from "@woco/shared";
+  import type { MarketingWording } from "@woco/shared";
 
   interface Props {
-    mode: MarketingMode;
-    /** The organiser's name from their notice, for the own-events sentence. */
-    organiser?: string;
+    wording: MarketingWording;
     ticked: boolean;
     onTickedChange: (ticked: boolean) => void;
   }
 
-  let { mode, organiser, ticked, onTickedChange }: Props = $props();
-
-  const wording = $derived(marketingWording(mode, MARKETING_CURRENT_VERSION[mode], organiser)!);
+  let { wording, ticked, onTickedChange }: Props = $props();
 </script>
 
 {#if wording.sentence}

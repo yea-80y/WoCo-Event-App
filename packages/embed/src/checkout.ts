@@ -12,7 +12,7 @@ import {
   orderFormShown,
   resolveBuyerEmail,
   ORDER_EMAIL_FIELD_ID,
-  MARKETING_MODE_CHANGED,
+  isMarketingChanged,
   type MarketingChoice,
   type OrderField,
   type PaymentConfig,
@@ -90,7 +90,8 @@ export interface CheckoutBodyInputs {
   quantity: number;
   /** The marketing control as the panel showed it and the buyer left it. Always
    *  sent: the panel always shows a control, so the choice WAS offered, and the
-   *  server checks the mode against the organiser's notice before charging. */
+   *  server checks the mode against the organiser's notice, and the words against
+   *  its own, before charging. */
   marketing: MarketingChoice;
   /** The organiser page the buyer is on (see resolvePageUrl), when it is known. */
   pageUrl?: string;
@@ -246,7 +247,7 @@ export function returnView(resp: { ok: boolean; data?: unknown } | null): Return
   };
 }
 
-/** create-checkout said the panel showed a mode the organiser's notice no longer sets. */
-export function isMarketingModeChanged(resp: Record<string, unknown>): boolean {
-  return resp.code === MARKETING_MODE_CHANGED;
+/** create-checkout said the panel showed a mode the organiser's notice no longer sets, or other words than it rebuilds. */
+export function isMarketingRefusal(resp: Record<string, unknown>): boolean {
+  return isMarketingChanged(resp.code);
 }

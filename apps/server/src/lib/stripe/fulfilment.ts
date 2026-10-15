@@ -31,6 +31,7 @@ import {
   buildTicketCanonicalMessage,
   isNoticeRetentionMonths,
   type EventFeed,
+  type OrderField,
   type SitePalette,
 } from "@woco/shared";
 import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
@@ -457,6 +458,8 @@ export async function fulfilPaidSession(
   let totalSupply = 0;
   /** The feed's own copy — used ONLY to notice a disagreement, never to mint. */
   let feedOnChainEventId = "";
+  /** The questions the marketing wording names - recorded only if its hash still matches checkout's. */
+  let eventOrderFields: OrderField[] | undefined;
 
   // The organiser's keys (issue 896): the fallback seal goes to the order key on
   // record and nowhere else - an event feed is client-signed and can name any key.
@@ -482,6 +485,7 @@ export async function fulfilPaidSession(
       eventLocation = ev.location ?? "";
       eventImageHash = ev.imageHash ?? "";
       eventImageGateway = ev.gatewayUrl ?? "";
+      eventOrderFields = ev.orderFields;
       const ser = ev.series.find((s) => s.seriesId === seriesId);
       if (ser) {
         seriesName = ser.name;
@@ -1006,13 +1010,17 @@ export async function fulfilPaidSession(
     }
   }
 
-  if (marketing && claimedResults.length > 0 && eventCreatorAddress && emailHash) {
+  // No organiser (the feed was unreadable) still goes to capture, which counts a
+  // yes it cannot record rather than let it vanish.
+  if (marketing && claimedResults.length > 0 && emailHash) {
     try {
       deps.captureCheckoutConsent({
         emailHash,
         organiserAddress: eventCreatorAddress,
         choice: marketing.choice,
         ...(marketing.organiserName ? { organiserName: marketing.organiserName } : {}),
+        ...(eventOrderFields ? { orderFields: eventOrderFields } : {}),
+        ...(marketing.wordingHash ? { wordingHash: marketing.wordingHash } : {}),
         ts: claimedAt,
         eventId,
       });

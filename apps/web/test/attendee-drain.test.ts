@@ -18,23 +18,26 @@ import {
   applyDrain,
   provenanceRank,
 } from "../src/lib/creator/audience/attendee-drain.js";
-import type { OrderField } from "@woco/shared";
+import { ORDER_EMAIL_FIELD_ID, type OrderField } from "@woco/shared";
 
 const NOW = "2026-07-27T00:00:00.000Z";
 const FIELDS: OrderField[] = [
-  { id: "field_1", type: "text", label: "First Name", required: true, keepOnList: true },
-  { id: "field_2", type: "text", label: "Surname", required: true, keepOnList: true },
-  { id: "field_3", type: "text", label: "Area", required: false, keepOnList: true },
-  { id: "field_4", type: "text", label: "How did you hear about us?", required: false, keepOnList: true },
-  { id: "field_5", type: "text", label: "T-shirt size", required: false },
-  { id: "field_6", type: "text", label: "Allergies", required: false, health: true, keepOnList: true },
+  { id: "field_1", type: "text", label: "First Name", required: true, health: false },
+  { id: "field_2", type: "text", label: "Surname", required: true, health: false },
+  { id: "field_3", type: "text", label: "Area", required: false, health: false },
+  { id: "field_4", type: "text", label: "How did you hear about us?", required: false, health: false },
+  { id: "field_5", type: "text", label: "T-shirt size", required: false, health: false },
+  { id: "field_6", type: "text", label: "Allergies", required: false, health: true },
+  { id: ORDER_EMAIL_FIELD_ID, type: "email", label: "Email", required: true },
 ];
-const opts = (recorded: string[], orderFields: OrderField[] = FIELDS) => ({
+/** Each recorded buyer's record keeps every question by default, so the placement rule itself is what is tested. */
+const opts = (recorded: string[], orderFields: OrderField[] = FIELDS, kept?: Record<string, string[]>) => ({
   orderFields,
   eventTitle: "Warehouse Project",
   eventDate: "2026-09-01",
   addedAt: NOW,
   recorded: new Set(recorded),
+  kept: new Map(Object.entries(kept ?? Object.fromEntries(recorded.map((e) => [e, orderFields.map((f) => f?.id)])))),
 });
 
 // ── Who gets built ─────────────────────────────────────────────────────────
@@ -60,11 +63,71 @@ test("four tickets is one contact", () => {
   assert.equal(out[0].email, "ada@x.com");
 });
 
-test("only answers the organiser ticked are kept, each in its place - never a health answer", () => {
+test("only the questions on the buyer's record are copied - a question changed since never widens it", () => {
+  const claim = {
+    claimerEmail: "a@x.com",
+    fields: { field_1: "Ada", field_2: "Lovelace", field_3: "Leeds", field_4: "Instagram", field_5: "M" },
+  };
+  // A record whose words named the name questions only (the form had no others then).
+  const soft = buildAttendeeContacts([claim], opts(["a@x.com"], FIELDS, { "a@x.com": ["field_1", "field_2"] }));
+  assert.equal(soft[0].firstName, "Ada");
+  assert.equal(soft[0].lastName, "Lovelace");
+  assert.equal(soft[0].city, undefined);
+  assert.equal(soft[0].answers, undefined);
+  // Asked after the sale: a new question the record never named is not copied.
+  const added: OrderField[] = [...FIELDS, { id: "field_7", type: "text", label: "Postcode", required: false }];
+  const later = buildAttendeeContacts(
+    [{ ...claim, fields: { ...claim.fields, field_7: "LS1" } }],
+    opts(["a@x.com"], added, { "a@x.com": ["field_1", "field_2", "field_3", "field_4", "field_5"] }),
+  );
+  assert.equal(later[0].postcode, undefined);
+  assert.equal(later[0].city, "Leeds");
+  // On the record, but marked sensitive since: today's rule still keeps it off.
+  const flagged = FIELDS.map((f) => (f.id === "field_3" ? { ...f, health: true } : f));
+  const now = buildAttendeeContacts([claim], opts(["a@x.com"], flagged, { "a@x.com": ["field_3"] }));
+  assert.equal(now[0].city, undefined);
+  // A record that names nothing - or no record of what it kept - keeps only the email.
+  for (const kept of [{ "a@x.com": [] }, {}]) {
+    const bare = buildAttendeeContacts([claim], opts(["a@x.com"], FIELDS, kept));
+    assert.deepEqual(Object.keys(bare[0]).sort(), ["addedAt", "email", "lastEventDate", "lastEventName", "source"]);
+  }
+});
+
+test("someone else's number never fills the buyer's phone, and their details are not kept", () => {
+  const fields: OrderField[] = [
+    { id: "ec_phone", type: "text", label: "Emergency contact phone", required: true },
+    { id: "pg_mobile", type: "text", label: "Parent/guardian mobile", required: false },
+    { id: "ec_name", type: "text", label: "Emergency contact name", required: true },
+    { id: "kin", type: "text", label: "Next of kin", required: false },
+    { id: "own", type: "text", label: "Your phone", required: false },
+  ];
+  const out = buildAttendeeContacts(
+    [{ claimerEmail: "a@x.com", fields: { ec_phone: "0700 111", pg_mobile: "0700 222", ec_name: "Bob", kin: "Carol", own: "0700 333" } }],
+    opts(["a@x.com"], fields),
+  );
+  assert.equal(out[0].phone, "0700 333");
+  assert.equal(out[0].answers, undefined);
+  assert.doesNotMatch(JSON.stringify(out[0]), /0700 111|0700 222|Bob|Carol/);
+});
+
+test("a question with no label is not copied: the checkout had no name to tell the buyer it by", () => {
+  const fields: OrderField[] = [
+    { id: "unnamed", type: "text", label: "", placeholder: "Your town", required: false },
+    { id: "area", type: "text", label: "Area", required: false },
+  ];
+  const out = buildAttendeeContacts([{ claimerEmail: "a@x.com", fields: { unnamed: "Hull", area: "Leeds" } }], opts(["a@x.com"], fields));
+  assert.equal(out[0].city, "Leeds");
+  assert.doesNotMatch(JSON.stringify(out[0]), /Hull|Your town/);
+});
+
+test("every non-sensitive answer is kept, each in its place - never a sensitive one, never the email field", () => {
   const out = buildAttendeeContacts(
     [{
       claimerEmail: "a@x.com",
-      fields: { field_1: "Ada", field_2: "Lovelace", field_3: "Leeds", field_4: "Instagram", field_5: "M", field_6: "Peanuts" },
+      fields: {
+        field_1: "Ada", field_2: "Lovelace", field_3: "Leeds", field_4: "Instagram", field_5: "M", field_6: "Peanuts",
+        [ORDER_EMAIL_FIELD_ID]: "a@x.com",
+      },
     }],
     opts(["a@x.com"]),
   );
@@ -72,20 +135,48 @@ test("only answers the organiser ticked are kept, each in its place - never a he
   assert.equal(out[0].lastName, "Lovelace");
   // Area goes to the contact's town, so the list can be searched by it.
   assert.equal(out[0].city, "Leeds");
-  assert.deepEqual(out[0].answers, { "How did you hear about us?": "Instagram" });
-  assert.doesNotMatch(JSON.stringify(out[0]), /Peanuts|"M"/);
+  assert.deepEqual(out[0].answers, { "How did you hear about us?": "Instagram", "T-shirt size": "M" });
+  assert.doesNotMatch(JSON.stringify(out[0]), /Peanuts|"Email"/);
 });
 
-test("nothing ticked, nothing kept but the email", () => {
-  const unticked = FIELDS.map((f) => ({ ...f, keepOnList: false }));
-  const out = buildAttendeeContacts([{ claimerEmail: "a@x.com", fields: { field_1: "Ada", field_3: "Leeds" } }], opts(["a@x.com"], unticked));
+test("a sensitive answer never moves, even when its flags arrive mislabelled", () => {
+  const mislabelled = [
+    // No saved flag: the label decides.
+    { id: "a", type: "text", label: "Dietary requirements", required: false },
+    { id: "b", type: "text", label: "Religion", required: false },
+    // Doubt in an organiser-signed feed reads as sensitive.
+    { id: "c", type: "text", label: "Seat preference", required: false, health: "yes" },
+    { id: "d", type: "text", label: "Notes", required: false, health: null },
+    // The retired key cannot bring one back.
+    { id: "e", type: "text", label: "Medical conditions", required: false, health: true, keepOnList: true },
+  ] as unknown as OrderField[];
+  const out = buildAttendeeContacts(
+    [{ claimerEmail: "a@x.com", fields: { a: "Vegan", b: "Sikh", c: "Aisle", d: "Wheelchair", e: "Asthma" } }],
+    opts(["a@x.com"], mislabelled),
+  );
+  assert.equal(out.length, 1, "the buyer is still a contact");
+  assert.equal(out[0].answers, undefined);
+  assert.doesNotMatch(JSON.stringify(out[0]), /Vegan|Sikh|Aisle|Wheelchair|Asthma/);
+});
+
+test("the organiser's Not sensitive? override is honoured, and a crafted form never throws", () => {
+  const overridden: OrderField[] = [{ id: "a", type: "text", label: "Diet Coke or Pepsi?", required: false, health: false }];
+  const out = buildAttendeeContacts([{ claimerEmail: "a@x.com", fields: { a: "Pepsi" } }], opts(["a@x.com"], overridden));
+  assert.deepEqual(out[0].answers, { "Diet Coke or Pepsi?": "Pepsi" });
+  const crafted = [null, 3, { id: "x", type: "text", required: false }] as unknown as OrderField[];
+  const odd = buildAttendeeContacts([{ claimerEmail: "a@x.com", fields: { x: "1" } }], opts(["a@x.com"], crafted));
+  assert.equal(odd[0].answers, undefined);
+});
+
+test("an unanswered question adds nothing", () => {
+  const out = buildAttendeeContacts([{ claimerEmail: "a@x.com", fields: { field_1: "  " } }], opts(["a@x.com"]));
   assert.equal(out[0].firstName, undefined);
   assert.equal(out[0].city, undefined);
   assert.equal(out[0].answers, undefined);
 });
 
 test("a single name field is kept whole rather than split", () => {
-  const full: OrderField[] = [{ id: "field_9", type: "text", label: "Full name", required: true, keepOnList: true }];
+  const full: OrderField[] = [{ id: "field_9", type: "text", label: "Full name", required: true }];
   const out = buildAttendeeContacts(
     [{ claimerEmail: "a@x.com", fields: { field_9: "Ada King de Lovelace" } }],
     opts(["a@x.com"], full),

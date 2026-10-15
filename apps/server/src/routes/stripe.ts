@@ -29,7 +29,16 @@ import {
 } from "../lib/stripe/accounts.js";
 import { getEvent } from "../lib/event/service.js";
 import type { EventFeed } from "@woco/shared";
-import { MARKETING_MODE_CHANGED, noticeMarketingMode, parseMarketingChoice } from "@woco/shared";
+import {
+  listKeeps,
+  MARKETING_CURRENT_VERSION,
+  MARKETING_MODE_CHANGED,
+  MARKETING_WORDING_CHANGED,
+  marketingWording,
+  noticeMarketingMode,
+  parseMarketingChoice,
+  sameMarketingWording,
+} from "@woco/shared";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
 import { checkoutExpiresAt } from "../lib/event/checkout-expiry.js";
@@ -56,7 +65,7 @@ import { commitHold, getHeldOrder, holdPrepared } from "../lib/attendee-batch/he
 import { authoritativeOrderKeyRef, eventKeys, isStaleOrderKey, type EventKeys } from "../lib/keyring/event-keys.js";
 import { sellableKeys } from "../lib/keyring/sale-keys.js";
 import { noticeRefusal, noticeVerdictOf, organiserNoticeRead } from "../lib/legal/notice-gate.js";
-import { marketingMetadata } from "../lib/marketing/checkout-choice.js";
+import { marketingMetadata, marketingWordingHash } from "../lib/marketing/checkout-choice.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../lib/stripe/checkout-provenance.js";
 import { liveProvenanceReads, refundTamperedSession } from "../lib/stripe/checkout-provenance-live.js";
@@ -574,11 +583,11 @@ stripe.post("/create-checkout", async (c) => {
     /** Deployed site id — passed when checkout originates from an organiser's
      *  site-builder page so the webhook can theme the ticket email + PNG. */
     siteId?: string;
-    /** The marketing control as the page showed it: mode, wording version,
-     *  surface, and whether the buyer ticked the box. Absent = no control was
-     *  shown, so nothing is recorded. The mode is checked against the
-     *  organiser's notice below: an untouched box is a yes in one mode and a no
-     *  in the other. */
+    /** The marketing control as the page showed it: mode, wording version and
+     *  exact text, surface, and whether the buyer ticked the box. Absent = no
+     *  control was shown, so nothing is recorded. The mode is checked against the
+     *  organiser's notice below (an untouched box is a yes in one mode and a no
+     *  in the other), and the text against the wording rebuilt here. */
     marketing?: unknown;
   };
   const siteId = typeof rawSiteId === "string" && /^[0-9a-z_-]{10,}$/i.test(rawSiteId) ? rawSiteId : undefined;
@@ -740,6 +749,22 @@ stripe.post("/create-checkout", async (c) => {
       { ok: false, error: "The organiser's email options have changed. Check them below and continue.", code: MARKETING_MODE_CHANGED },
       409,
     );
+  }
+  // ...and the very words it showed, rebuilt here from the event's own questions
+  // (2026-10-15): they name what the mailing list keeps, and the record must hold
+  // what the buyer read. A page with older questions, an older organiser name or
+  // an older version is refused before anything is held or charged.
+  let marketingHash: string | undefined;
+  if (marketing) {
+    const current = MARKETING_CURRENT_VERSION[marketing.mode];
+    const rebuilt = marketingWording(marketing.mode, current, organiserName, listKeeps(event.orderFields));
+    if (!rebuilt || marketing.version !== current || !marketing.wording || !sameMarketingWording(marketing.wording, rebuilt)) {
+      return c.json(
+        { ok: false, error: "This event's details have changed. Reload the page and try again.", code: MARKETING_WORDING_CHANGED },
+        409,
+      );
+    }
+    marketingHash = marketingWordingHash(rebuilt);
   }
   // The period the notice promised THIS buyer, fixed now: the retention sweep
   // erases by it and reads no notice, so a later edit never reaches past sales (#547).
@@ -1144,8 +1169,9 @@ stripe.post("/create-checkout", async (c) => {
       // The buyer's marketing choice, carried to the webhook - it is the
       // webhook, not this request, that knows the claim succeeded, and a record
       // for a sale that never completed is worthless. Mode, box, wording
-      // version and surface; absent means no control was shown.
-      ...marketingMetadata(marketing, organiserName),
+      // version, surface and the hash of the wording matched above; absent
+      // means no control was shown.
+      ...marketingMetadata(marketing, organiserName, marketingHash),
       // Months after the event this order's answers are kept (#547), carried
       // fulfilment -> hold -> ledger. Under the integrity tag like every key here.
       ...(retainMonths !== undefined ? { retainMonths: String(retainMonths) } : {}),

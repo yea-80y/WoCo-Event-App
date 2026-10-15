@@ -13,7 +13,8 @@
  * StripePayPanel and "both checkout panels link the organiser's notice" goes red;
  * point the embed back at WoCo's policy alone and "the embed links the organiser's
  * notice first" goes red; remove the router's /privacy-notice match and "every
- * shell routes the notice" goes red.
+ * shell routes the notice" goes red; put the tailoring switch back in the editor
+ * and "one plain marketing question" goes red.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -217,7 +218,10 @@ test("the editor offers choices and reassures: no disclaimer, no network warning
   assert.match(ed, /value="consent" bind:group=\{draft\.marketingBasis\}/);
   assert.match(ed, /bind:group=\{draft\.sharing\}/);
   assert.match(ed, /bind:group=\{draft\.orderRetentionMonths\}/);
-  assert.match(ed, /bind:checked=\{draft\.tailoredMarketing\}/);
+  // One keep rule for both boxes (owner 2026-10-15): the tailoring switch went, so
+  // a published notice is written without it and its hint is gone.
+  assert.doesNotMatch(ed, /tailored/i);
+  assert.doesNotMatch(ed, /to choose which events you email them about/);
 });
 
 test("own-events is a new draft's answer only; a published notice keeps its own, and consent is stored as absent", () => {
@@ -232,17 +236,42 @@ test("own-events is a new draft's answer only; a published notice keeps its own,
   assert.match(pay, /draft\.marketingBasis === "own-events" \? \{ marketingBasis: "own-events" as const \} : \{\}/);
 });
 
-test("the question builder pre-sets health and mailing-list flags, and a health question cannot be required", () => {
+test("the question builder pre-sets the sensitive flag, and a sensitive question cannot be required", () => {
   const ed = code(read("lib/creator/events/OrderFieldsEditor.svelte"));
   assert.match(ed, /oninput=\{\(\) => guessFlags\(i\)\}/);
   assert.match(ed, /orderFieldKind\(f\.label\)/);
   // A manual choice sticks while the organiser keeps typing.
   assert.match(ed, /if \(!f \|\| manual\[f\.id\]\) return;/);
   assert.match(ed, /kind\.health \? \{ required: false \}/);
-  // The Required and keep ticks only exist outside the health branch.
-  const healthBranch = ed.slice(ed.indexOf("{#if field.health}"), ed.indexOf("{:else}", ed.indexOf("{#if field.health}")));
-  assert.match(healthBranch, /never added to your mailing list/);
-  assert.doesNotMatch(healthBranch, /field\.required|keepOnList/);
+  // The Required tick only exists outside the sensitive branch.
+  const branch = ed.slice(ed.indexOf("{#if field.health}"), ed.indexOf("{:else}", ed.indexOf("{#if field.health}")));
+  assert.match(branch, /Sensitive question - kept optional and never added to your mailing list\./);
+  assert.match(branch, />Not sensitive\?<\/button>/);
+  assert.match(branch, /setFlags\(i, \{ health: false \}\)/);
+  assert.doesNotMatch(branch, /field\.required/);
+});
+
+test("a non-sensitive question offers 'Sensitive?', mirroring 'Not sensitive?': it sets the flag, drops Required and sticks", () => {
+  const ed = code(read("lib/creator/events/OrderFieldsEditor.svelte"));
+  const open = ed.indexOf("{#if field.health}");
+  const other = ed.slice(ed.indexOf("{:else}", open), ed.indexOf("{/if}", ed.indexOf("{:else}", open)));
+  assert.match(other, /<button type="button" class="link-btn" onclick=\{\(\) => setFlags\(i, \{ health: true, required: false \}\)\}>Sensitive\?<\/button>/);
+  // Through setFlags, so the label stops re-guessing it while the organiser types.
+  const set = ed.slice(ed.indexOf("function setFlags"), ed.indexOf("function removeField"));
+  assert.match(set, /manual = \{ \.\.\.manual, \[f\.id\]: true \}/);
+  // And the sensitive branch never offers it.
+  const branch = ed.slice(open, ed.indexOf("{:else}", open));
+  assert.doesNotMatch(branch, />Sensitive\?</);
+});
+
+test("the question builder has no keep-on-mailing-list tick box: every non-sensitive answer is kept (2026-10-15)", () => {
+  const ed = code(read("lib/creator/events/OrderFieldsEditor.svelte"));
+  assert.doesNotMatch(ed, /keepOnList|keepByDefault/);
+  assert.doesNotMatch(ed, /Keep on mailing list/i);
+  // One tick box per question, Required, plus the editor's own "collect" toggle.
+  const card = ed.slice(ed.indexOf("{#each orderFields"), ed.lastIndexOf("{/each}"));
+  assert.equal(card.match(/type="checkbox"/g)?.length, 1);
+  assert.match(card, /bind:checked=\{field\.required\}/);
 });
 
 test("both checkouts show the health note under a health question", () => {
