@@ -45,27 +45,34 @@ export function emptyDoorEntries(): DoorEntriesState {
   return { jti: null, next: 0, entries: new Map(), tombstones: new Set() };
 }
 
+type Keypair = { secretKey: Uint8Array; publicKey: Uint8Array };
+
 export interface DoorEntriesContext {
   eventId: string;
   passSecret: Uint8Array;
   seriesName: (seriesId: string) => string;
+  /** Tests only: stands in for `doorEntriesKeypair`, to count the derivations. */
+  deriveKeypair?: (passSecret: Uint8Array) => Keypair;
 }
 
-/** Opens one line; injectable for tests. Rejects when the box does not open. */
-export type OpenDoorEntry = (line: Extract<DoorEntryLogItem, { kind: "add" }>, jti: string, ctx: DoorEntriesContext) => Promise<DoorEntryPlaintext>;
+/** Opens one line with the page's door entries secret key; injectable for tests. Rejects when the box does not open. */
+export type OpenDoorEntry = (
+  line: Extract<DoorEntryLogItem, { kind: "add" }>,
+  jti: string,
+  ctx: DoorEntriesContext,
+  secretKey: Uint8Array,
+) => Promise<DoorEntryPlaintext>;
 
-const defaultOpen: OpenDoorEntry = async (line, jti, ctx) => {
-  const [{ openBoxJson, doorEntrySealContext }, { doorEntriesKeypair }] = await Promise.all([
-    import("@woco/shared/crypto/sealed-box"),
-    import("@woco/shared/checkin/door-entries-key"),
-  ]);
-  const { secretKey } = doorEntriesKeypair(ctx.passSecret);
-  try {
-    return await openBoxJson<DoorEntryPlaintext>(secretKey, line.box, doorEntrySealContext(ctx.eventId, jti, line.seriesId, line.edition));
-  } finally {
-    secretKey.fill(0);
-  }
+const defaultOpen: OpenDoorEntry = async (line, jti, ctx, secretKey) => {
+  const { openBoxJson, doorEntrySealContext } = await import("@woco/shared/crypto/sealed-box");
+  return openBoxJson<DoorEntryPlaintext>(secretKey, line.box, doorEntrySealContext(ctx.eventId, jti, line.seriesId, line.edition));
 };
+
+/** The ML-KEM keygen is the costly step: once per page, never per line. */
+async function pageSecretKey(ctx: DoorEntriesContext): Promise<Uint8Array> {
+  const derive = ctx.deriveKeypair ?? (await import("@woco/shared/checkin/door-entries-key")).doorEntriesKeypair;
+  return derive(ctx.passSecret).secretKey;
+}
 
 function asRosterEntry(p: DoorEntryPlaintext, line: { seriesId: string; edition: number }, ctx: DoorEntriesContext): RosterEntry | null {
   if (!p || p.v !== 1 || p.seriesId !== line.seriesId || p.edition !== line.edition) return null;
@@ -90,21 +97,28 @@ export async function applyDoorEntriesPage(
   const entries = fresh ? new Map<string, RosterEntry>() : new Map(state.entries);
   const tombstones = fresh ? new Set<string>() : new Set(state.tombstones);
   let failed = 0;
-  for (const line of [...page.log].sort((a, b) => a.seq - b.seq)) {
-    const key = doorTicketKey(line);
-    if (line.kind === "remove") {
-      entries.delete(key);
-      tombstones.add(key);
-      continue;
+  // Derived at the first line that needs it, so a page of removals never derives it.
+  let secretKey: Uint8Array | null = null;
+  try {
+    for (const line of [...page.log].sort((a, b) => a.seq - b.seq)) {
+      const key = doorTicketKey(line);
+      if (line.kind === "remove") {
+        entries.delete(key);
+        tombstones.add(key);
+        continue;
+      }
+      if (tombstones.has(key)) continue;
+      try {
+        secretKey ??= await pageSecretKey(ctx);
+        const entry = asRosterEntry(await open(line, page.jti, ctx, secretKey), line, ctx);
+        if (entry) entries.set(key, entry);
+        else failed++;
+      } catch {
+        failed++;
+      }
     }
-    if (tombstones.has(key)) continue;
-    try {
-      const entry = asRosterEntry(await open(line, page.jti, ctx), line, ctx);
-      if (entry) entries.set(key, entry);
-      else failed++;
-    } catch {
-      failed++;
-    }
+  } finally {
+    secretKey?.fill(0);
   }
   return { state: { jti: page.jti, next: page.next, entries, tombstones }, failed };
 }

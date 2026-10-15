@@ -172,3 +172,30 @@ test("more pages: asked for at once only while the cursor moves; a page of remov
   assert.equal(hasEntriesToOpen(page([remove(4)])), false);
   assert.equal(hasEntriesToOpen(page([])), false);
 });
+
+test("the door entries key is derived once per page, never per line, and zeroed after", async () => {
+  const derived: Uint8Array[] = [];
+  const counting: DoorEntriesContext = {
+    ...ctx,
+    deriveKeypair: (p) => {
+      const kp = doorEntriesKeypair(p);
+      derived.push(kp.secretKey);
+      return kp;
+    },
+  };
+  const lines = [await add(1), await add(2), remove(9), await add(3)];
+  const { state, failed } = await applyDoorEntriesPage(emptyDoorEntries(), page(lines), counting);
+  assert.equal(failed, 0);
+  assert.equal(state.entries.size, 3, "every line opened");
+  assert.equal(derived.length, 1, "one keygen for the whole page");
+  assert.ok(derived[0].every((b) => b === 0), "the secret key is zeroed once the page is done");
+
+  derived.length = 0;
+  await applyDoorEntriesPage(emptyDoorEntries(), page([remove(10), remove(11)]), counting);
+  assert.equal(derived.length, 0, "a page with nothing to open derives nothing");
+
+  derived.length = 0;
+  const throwing = async () => { throw new Error("does not open"); };
+  await applyDoorEntriesPage(emptyDoorEntries(), page([await add(4)]), counting, throwing);
+  assert.ok(derived.length === 1 && derived[0].every((b) => b === 0), "zeroed even when nothing opens");
+});
