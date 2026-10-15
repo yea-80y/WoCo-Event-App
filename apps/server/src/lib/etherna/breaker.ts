@@ -31,7 +31,7 @@ const breaker = {
 
 /** Is Etherna paused after a slow failure? Then nobody waits on it. */
 export function ethernaPaused(): string | null {
-  return breaker.now() < breaker.openUntil ? breaker.reason : null;
+  return breaker.now() < breaker.openUntil ? (breaker.reason ?? "paused") : null;
 }
 
 /**
