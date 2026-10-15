@@ -20,7 +20,7 @@
  */
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -109,8 +109,9 @@ async function issue(eventId: string, pass = organiserPass(eventId), exp = soon(
   const b = await body(eventId, pass, mode);
   const reg = doorKey.redeemDoorPassChallenge(eventId, PARENT, b.body, record(), (j) => store.doorPassIdUsed(eventId, j));
   assert.ok(reg.ok, JSON.stringify(reg));
-  entries.startDoorEntries(eventId, reg.jti, reg.doorKey);
-  const token = store.issueDoorPass(eventId, exp, undefined, reg.mode, reg.gen, { jti: reg.jti, doorKeyRef: reg.doorKeyRef });
+  const token = entries.issueWithNewDoorEntries(eventId, reg.jti, reg.doorKey, () =>
+    store.issueDoorPass(eventId, exp, undefined, reg.mode, reg.gen, { jti: reg.jti, doorKeyRef: reg.doorKeyRef }),
+  );
   return { ...pass, token };
 }
 
@@ -331,6 +332,65 @@ test("regenerating the pass drops the last pass's entries", async () => {
   assert.equal(await entries.sealDoorEntries(ev, [{ seriesId: SERIES, edition: 2 }], { email: "b@example.com" }), 1);
 });
 
+test("a pass that fails to issue leaves the previous pass's log exactly as it was, and that pass working", async () => {
+  const ev = newEvent();
+  const first = await issue(ev);
+  await entries.sealDoorEntries(ev, [{ seriesId: SERIES, edition: 1 }], { email: "a@example.com" });
+  const before = readFileSync(file(ev), "utf8");
+  const next = organiserPass(ev);
+  assert.throws(
+    () => entries.issueWithNewDoorEntries(ev, next.jti, next.doorKey, () => { throw new Error("door-passes.json could not be persisted"); }),
+    /could not be persisted/,
+  );
+  assert.equal(readFileSync(file(ev), "utf8"), before, "the file, byte for byte");
+  assert.equal(existsSync(`${file(ev)}.prev`), false, "nothing left beside it");
+  assert.deepEqual(entries.readDoorEntriesPage(ev, first.jti, 0).log.map((l) => l.edition), [1], "memory serves the old log too");
+  entries._dropDoorEntriesCacheForTests();
+  assert.deepEqual(entries.readDoorEntriesPage(ev, first.jti, 0).log.map((l) => l.edition), [1], "and so does disk");
+  assert.equal(await entries.sealDoorEntries(ev, [{ seriesId: SERIES, edition: 2 }], { email: "b@example.com" }), 1, "the old pass's next sale still lands");
+});
+
+test("a server that cannot sign the pass revokes nothing: the old pass stays active, its log untouched", async () => {
+  const ev = newEvent();
+  const first = await issue(ev);
+  await entries.sealDoorEntries(ev, [{ seriesId: SERIES, edition: 1 }], { email: "a@example.com" });
+  const before = readFileSync(file(ev), "utf8");
+  const secret = process.env.CHECKIN_PASS_SECRET;
+  delete process.env.CHECKIN_PASS_SECRET;
+  try {
+    const next = organiserPass(ev);
+    assert.throws(() =>
+      entries.issueWithNewDoorEntries(ev, next.jti, next.doorKey, () =>
+        store.issueDoorPass(ev, soon(), undefined, "several", 0, { jti: next.jti, doorKeyRef: next.doorKeyRef }),
+      ),
+    /CHECKIN_PASS_SECRET/);
+  } finally {
+    process.env.CHECKIN_PASS_SECRET = secret;
+  }
+  assert.equal(store.activeDoorPass(ev)?.jti, first.jti, "the old pass is still the event's pass");
+  assert.equal(readFileSync(file(ev), "utf8"), before);
+});
+
+test("a failed issue with no previous log leaves none; with an unreadable one, puts it back unreadable", async () => {
+  const ev = newEvent();
+  const p = organiserPass(ev);
+  assert.throws(() => entries.issueWithNewDoorEntries(ev, p.jti, p.doorKey, () => { throw new Error("no"); }));
+  assert.equal(existsSync(file(ev)), false);
+
+  const ev2 = newEvent();
+  const pass = await issue(ev2);
+  writeFileSync(file(ev2), "{not json");
+  entries._dropDoorEntriesCacheForTests();
+  assert.throws(() => entries.readDoorEntriesPage(ev2, pass.jti, 0), entries.DoorEntriesUnreadableError);
+  const q = organiserPass(ev2);
+  assert.throws(() => entries.issueWithNewDoorEntries(ev2, q.jti, q.doorKey, () => { throw new Error("no"); }));
+  assert.equal(readFileSync(file(ev2), "utf8"), "{not json", "the unreadable file is back as it was");
+  assert.throws(() => entries.readDoorEntriesPage(ev2, pass.jti, 0), entries.DoorEntriesUnreadableError, "and still reads as unreadable");
+  assert.equal(entries.doorEntriesHealth().ok, false);
+  await issue(ev2); // only a new pass replaces it
+  assert.equal(entries.doorEntriesHealth().ok, true);
+});
+
 // ---------------------------------------------------------------------------
 // The log and its cursor
 // ---------------------------------------------------------------------------
@@ -460,10 +520,11 @@ test("the issue route checks the proof, starts the log, then issues - in that or
   const route = src.slice(src.indexOf('checkinOrganiser.post("/:id/door-pass", '), src.indexOf('checkinOrganiser.post("/:id/checkin-roster"'));
   const check = route.indexOf("redeemDoorPassChallenge(");
   const refuse = route.indexOf("if (!reg.ok) return c.json(");
-  const start = route.indexOf("startDoorEntries(");
+  const start = route.indexOf("issueWithNewDoorEntries(");
   const iss = route.indexOf("issueDoorPass(");
   assert.ok(check > 0 && check < refuse && refuse < start && start < iss, "proof, refusal, then log, then pass");
-  assert.equal(route.match(/startDoorEntries\(|issueDoorPass\(/g)?.length, 2, "no other path to a pass");
+  assert.equal(route.match(/startDoorEntries\(|issueWithNewDoorEntries\(|issueDoorPass\(/g)?.length, 2, "no other path to a pass");
+  assert.match(route, /issueWithNewDoorEntries\(eventId, reg\.jti, reg\.doorKey, \(\) =>\s*issueDoorPass\(/, "the pass is issued inside the log's undo");
   assert.match(route, /issueDoorPass\(eventId, exp, event\.creatorFeedSigner, mode, reg\.gen, \{ jti: reg\.jti, doorKeyRef: reg\.doorKeyRef \}\)/);
   assert.match(route, /const mode: DoorMode = reg\.mode;/, "the mode issued is the one the proof covers");
   assert.match(route, /c\.get\("parentAddress"\)/, "the account is the session's, never the body's");

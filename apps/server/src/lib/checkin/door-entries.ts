@@ -21,7 +21,7 @@
  * 503, and `/api/health` `doorEntries` is red. Only regenerating replaces it.
  */
 
-import { readdirSync, readFileSync, unlinkSync } from "node:fs";
+import { readdirSync, readFileSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { hexToBytes } from "@noble/hashes/utils.js";
 import { DOOR_PASS_ID_RE, doorKeyRefOf } from "@woco/shared/checkin/door-keys";
@@ -113,6 +113,56 @@ function commit(eventId: string, f: EntriesFile): void {
  */
 export function startDoorEntries(eventId: string, jti: string, doorKey: string): void {
   commit(eventId, { v: 1, jti, doorKey, last: 0, log: [] });
+}
+
+const quietUnlink = (file: string) => {
+  try {
+    unlinkSync(file);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+};
+
+/**
+ * Start a new pass's log, then `issue` the pass. If the log cannot be started nothing
+ * is issued; if issuing throws, the previous pass's log is put back exactly as it was
+ * - its file (readable or not) or no file - so that pass's scanners and sales carry on.
+ * Synchronous, so no seal or removal can touch the file in between. The previous file
+ * waits beside it as `.prev` until the pass is issued.
+ */
+export function issueWithNewDoorEntries<T>(eventId: string, jti: string, doorKey: string, issue: () => T): T {
+  const key = eventKey(eventId);
+  const file = fileOf(key);
+  const aside = `${file}.prev`;
+  let moved = false;
+  try {
+    renameSync(file, aside);
+    moved = true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  const cached = cache.get(key);
+  const wasUnreadable = unreadable.has(key);
+  try {
+    startDoorEntries(eventId, jti, doorKey);
+    const out = issue();
+    if (moved) quietUnlink(aside);
+    return out;
+  } catch (err) {
+    try {
+      quietUnlink(file);
+      if (moved) renameSync(aside, file);
+      if (cached) cache.set(key, cached);
+      else cache.delete(key);
+      if (wasUnreadable) unreadable.add(key);
+      else unreadable.delete(key);
+    } catch (undoErr) {
+      health.failed++;
+      health.lastError = `previous log not restored (${errorClass(undoErr)})`;
+      console.error("[checkin] the previous door entries log could not be put back:", errorClass(undoErr));
+    }
+    throw err;
+  }
 }
 
 /**
@@ -238,15 +288,9 @@ export function storedDoorEntryKeys(): string[] {
   return names.filter((n) => /^[0-9a-f]{64}\.json$/.test(n)).map((n) => n.slice(0, 64));
 }
 
-/** Delete one event's file and any temp copy beside it. Already gone is not a failure. */
+/** Delete one event's file and any copy beside it (a crashed write's, or a crashed issue's). Already gone is not a failure. */
 export function deleteDoorEntries(key: string): void {
-  for (const file of [fileOf(key), `${fileOf(key)}.tmp`]) {
-    try {
-      unlinkSync(file);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    }
-  }
+  for (const file of [fileOf(key), `${fileOf(key)}.tmp`, `${fileOf(key)}.prev`]) quietUnlink(file);
   cache.delete(key);
   unreadable.delete(key);
 }

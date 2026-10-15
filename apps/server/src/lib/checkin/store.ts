@@ -135,6 +135,8 @@ export function issueDoorPass(
     jti: door?.jti ?? randomBytes(16).toString("hex"),
     exp,
   };
+  // Signed before anything is written: a server that cannot sign revokes nothing.
+  const token = encodeDoorPassToken(payload, passTag(payload));
   const passes = readPasses();
   const prev = passes[eventId];
   const usedJtis = [...new Set([...(prev?.usedJtis ?? []), ...(prev ? [prev.jti] : []), payload.jti])];
@@ -150,7 +152,7 @@ export function issueDoorPass(
     ...(door ? { doorKeyRef: door.doorKeyRef } : {}),
   };
   writeJson(PASSES_FILE, "checkin-passes", passes);
-  return encodeDoorPassToken(payload, passTag(payload));
+  return token;
 }
 
 /** The event's current pass as recorded: id, expiry, key generation, registered door key. */

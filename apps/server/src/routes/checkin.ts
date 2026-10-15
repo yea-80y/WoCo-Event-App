@@ -59,7 +59,7 @@ import {
 } from "../lib/checkin/store.js";
 import { createDoorPassChallenge, redeemDoorPassChallenge } from "../lib/checkin/door-key.js";
 import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
-import { DoorEntriesUnreadableError, readDoorEntriesPage, startDoorEntries } from "../lib/checkin/door-entries.js";
+import { DoorEntriesUnreadableError, issueWithNewDoorEntries, readDoorEntriesPage } from "../lib/checkin/door-entries.js";
 import { slotOwners } from "../lib/checkin/slot-owners.js";
 import { eventSeries, ofEventSeries, rememberEventSeries } from "../lib/checkin/event-series.js";
 
@@ -154,9 +154,11 @@ checkinOrganiser.post("/:id/door-pass", requireAuth, async (c) => {
     // Stamp the content-feed signer into the pass record — the organiser is
     // authenticated here, so this is the last point where an unlisted event's
     // signer can be resolved from trusted state. /pack has no parent address.
-    // The entries log first: a pass whose log could not be started is not issued.
-    startDoorEntries(eventId, reg.jti, reg.doorKey);
-    const token = issueDoorPass(eventId, exp, event.creatorFeedSigner, mode, reg.gen, { jti: reg.jti, doorKeyRef: reg.doorKeyRef });
+    // The entries log first: a pass whose log could not be started is not issued, and
+    // a pass that fails to issue leaves the previous pass's log as it was.
+    const token = issueWithNewDoorEntries(eventId, reg.jti, reg.doorKey, () =>
+      issueDoorPass(eventId, exp, event.creatorFeedSigner, mode, reg.gen, { jti: reg.jti, doorKeyRef: reg.doorKeyRef }),
+    );
     return c.json({ ok: true, data: { token, exp, mode } });
   } catch (err) {
     console.error("[checkin] door-pass issue failed:", err);
