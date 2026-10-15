@@ -428,9 +428,9 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
     why.push({
       kind: "p",
       content: [
-        (ev ? "Your answers about allergies, dietary or access needs: " : "If our form asks about allergies, dietary or access needs: ") +
-          "answering is optional, and we use your answer only to look after you at the event, never for " +
-          "marketing. Our basis is your explicit consent, which you give by answering.",
+        (ev ? "Your answers to sensitive questions (such as health, dietary or access needs, or religion): " : "If our form asks a sensitive question (such as health, dietary or access needs, or religion): ") +
+          "answering is optional, and we use your answer only for the event, never for marketing, and it is " +
+          "never added to our mailing list. Our basis is your explicit consent, which you give by answering.",
       ],
     });
   }
@@ -558,7 +558,7 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
           "If you join our mailing list: your email address" +
             (ev
               ? keptLabels.length ? ` and your answers to ${keptLabels.join(", ")}` : ""
-              : " and any answers an event's form says it keeps") +
+              : " and your answers to an event's questions, except sensitive ones") +
             ", until you unsubscribe.",
         ],
         [`Guest lists we download or put on a door scanner: deleted within ${months} months of the event.`],

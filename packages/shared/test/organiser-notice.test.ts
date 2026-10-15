@@ -299,19 +299,19 @@ test("the mailing-list line names every question kept on it - never a sensitive 
   const none = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: onlySensitive }, wocoPolicyUrl: POLICY }));
   assert.match(none, /If you join our mailing list: your email address, until you unsubscribe\./);
   const site = noticePlainText(buildOrganiserNotice({ notice: notice(), wocoPolicyUrl: POLICY }));
-  assert.match(site, /your email address and any answers an event's form says it keeps, until you unsubscribe/);
+  assert.match(site, /your email address and your answers to an event's questions, except sensitive ones, until you unsubscribe/);
 });
 
 test("a health question brings its own purpose and basis; a form without one says nothing about health", () => {
   const withHealth: OrderField[] = [{ id: "allergy", type: "text", label: "Allergies", required: false, health: true }];
   const text = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: withHealth }, wocoPolicyUrl: POLICY }));
-  assert.match(text, /Your answers about allergies, dietary or access needs: answering is optional, and we use your answer only to look after you at the event, never for marketing\. Our basis is your explicit consent/);
+  assert.match(text, /Your answers to sensitive questions \(such as health, dietary or access needs, or religion\): answering is optional, and we use your answer only for the event, never for marketing, and it is never added to our mailing list\. Our basis is your explicit consent/);
   const plain: OrderField[] = [fields[0]!, fields[1]!];
   const without = noticePlainText(buildOrganiserNotice({ notice: notice(), event: { title: "Gig", orderFields: plain }, wocoPolicyUrl: POLICY }));
-  assert.doesNotMatch(without, /allergies/);
+  assert.doesNotMatch(without, /sensitive question/);
   // A site covers every event, so it says what happens if a form asks.
   const site = noticePlainText(buildOrganiserNotice({ notice: notice(), wocoPolicyUrl: POLICY }));
-  assert.match(site, /If our form asks about allergies, dietary or access needs: answering is optional/);
+  assert.match(site, /If our form asks a sensitive question \(such as health, dietary or access needs, or religion\): answering is optional/);
   // Doubt in an organiser-signed form reads as sensitive, and a question saved
   // without the flag is read from its label - either way the basis is stated.
   const odd = [{ id: "x", type: "text", label: "Area", required: false, health: "yes" }] as unknown as OrderField[];

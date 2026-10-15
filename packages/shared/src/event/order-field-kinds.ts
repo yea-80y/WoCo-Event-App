@@ -131,9 +131,9 @@ export function listKeeps(fields: readonly OrderField[] | undefined): ListKeeps 
 }
 
 /**
- * Shown under a health question at checkout. The note is itself the express
+ * Shown under a sensitive question at checkout. The note is itself the express
  * statement Art. 9(2)(a) asks for, so answering the optional question is the
  * buyer's explicit consent to exactly this use.
  */
 export const HEALTH_FIELD_NOTE =
-  "Optional - by answering, you agree we use this only to look after you at the event. Never used for marketing, and deleted with the rest of your booking.";
+  "Optional - by answering, you agree we use this only for the event. Never used for marketing or added to a mailing list, and deleted with the rest of your booking.";
