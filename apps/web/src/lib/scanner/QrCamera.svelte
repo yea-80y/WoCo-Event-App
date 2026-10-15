@@ -13,14 +13,10 @@
   let starting = $state(true);
   let instance: QrScanner | null = null;
 
-  onMount(() => {
-    instance = new QrScanner(videoEl, (result) => onScan(result.data), {
-      returnDetailedScanResult: true,
-      preferredCamera: "environment",
-      maxScansPerSecond: 8,
-      highlightScanRegion: true,
-      highlightCodeOutline: true,
-    });
+  function startCamera(): void {
+    if (!instance) return;
+    starting = true;
+    error = null;
     instance
       .start()
       .then(() => (starting = false))
@@ -31,6 +27,17 @@
             ? "Camera access denied — allow camera for this site, or use manual entry below."
             : "Could not start the camera. Use manual entry below.";
       });
+  }
+
+  onMount(() => {
+    instance = new QrScanner(videoEl, (result) => onScan(result.data), {
+      returnDetailedScanResult: true,
+      preferredCamera: "environment",
+      maxScansPerSecond: 8,
+      highlightScanRegion: true,
+      highlightCodeOutline: true,
+    });
+    startCamera();
     return () => {
       instance?.destroy();
       instance = null;
@@ -46,11 +53,17 @@
 
 <div class="camera">
   <!-- svelte-ignore a11y_media_has_caption -->
-  <video bind:this={videoEl} playsinline></video>
+  <!-- Explicit for iOS Safari, which plays a camera stream inline and without a
+       tap only when the video is muted and inline; qr-scanner also sets them in JS. -->
+  <video bind:this={videoEl} playsinline muted autoplay></video>
   {#if starting}
     <div class="overlay">Starting camera…</div>
   {:else if error}
-    <div class="overlay error">{error}</div>
+    <div class="overlay error">
+      <span>{error}</span>
+      <!-- A start refused for want of a user gesture (or a dismissed prompt) can be retried from a tap. -->
+      <button class="retry" type="button" onclick={startCamera}>Try the camera again</button>
+    </div>
   {/if}
 </div>
 
@@ -80,6 +93,16 @@
     background: rgba(11, 11, 9, 0.85);
   }
   .overlay.error {
+    flex-direction: column;
+    gap: 0.75rem;
     color: var(--warning);
+  }
+  .retry {
+    background: var(--accent);
+    color: var(--accent-ink);
+    border: none;
+    border-radius: var(--radius-md);
+    font-weight: 700;
+    padding: 0.6rem 1rem;
   }
 </style>

@@ -8,6 +8,7 @@
   import ScanScreen from "./lib/scanner/ScanScreen.svelte";
   import RosterScreen from "./lib/scanner/RosterScreen.svelte";
   import ProvisionScreen from "./lib/scanner/ProvisionScreen.svelte";
+  import BootFailed from "./lib/scanner/BootFailed.svelte";
 
   let tab = $state<"scan" | "roster">("scan");
   let refreshing = $state(false);
@@ -34,13 +35,29 @@
 
 {#if scanner.phase === "loading"}
   <div class="center-note">Loading…</div>
+{:else if scanner.phase === "failed"}
+  <BootFailed onRetry={() => void scanner.init()} />
 {:else if scanner.phase === "unprovisioned" || (scanner.phase === "provisioning" && !scanner.pack)}
   <ProvisionScreen />
 {:else if scanner.pack}
   <div class="shell">
     <header>
       <div class="title">
-        <span class="event">{scanner.pack.eventTitle}</span>
+        {#if scanner.events.length > 1}
+          <!-- This tab only: other tabs keep the event they show. -->
+          <select
+            class="event event-switch"
+            aria-label="Event"
+            value={scanner.pass?.eventId}
+            onchange={(e) => void scanner.switchTo(e.currentTarget.value)}
+          >
+            {#each scanner.events as ev (ev.eventId)}
+              <option value={ev.eventId}>{ev.title}</option>
+            {/each}
+          </select>
+        {:else}
+          <span class="event">{scanner.pack.eventTitle}</span>
+        {/if}
         <span class="stats">
           <strong>{scanner.checkedInCount}</strong> / {scanner.totalCapacity} in
           {#if scanner.pendingCount > 0}· {scanner.pendingCount} unsynced{/if}
@@ -52,14 +69,17 @@
         <button class="icon-btn" onclick={() => void refresh()} disabled={refreshing || !scanner.online} title="Refresh event data">
           {refreshing ? "…" : "↻"}
         </button>
-        <button class="icon-btn danger" onclick={resetTap} title="Reset this device">
+        <button class="icon-btn danger" onclick={resetTap} title="Remove this event from this phone">
           {confirmReset ? "Sure?" : "⏏"}
         </button>
       </div>
     </header>
 
     {#if scanner.passDead}
-      <div class="banner dead">{scanner.passDead}. This phone has stopped checking people in - ask the organiser for a new door pass.</div>
+      <div class="banner dead">
+        {scanner.passDead}. This phone has stopped checking people in - ask the organiser for a new door pass.
+        <button class="banner-action" onclick={() => scanner.reprovision()}>Scan new door pass</button>
+      </div>
     {:else if !scanner.online && scanner.doorMode === "single"}
       <div class="banner offline">Offline - this is the only scanner on this pass, so it keeps checking people in and syncs when back online.</div>
     {:else if !scanner.online}
@@ -160,6 +180,16 @@
   .icon-btn.danger {
     color: var(--error);
   }
+  .event-switch {
+    max-width: 100%;
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.15rem 0.35rem;
+    font: inherit;
+    font-weight: 700;
+  }
   .banner {
     padding: 0.5rem 0.85rem;
     font-size: 0.8125rem;
@@ -176,6 +206,16 @@
   .banner.conflict {
     background: var(--warning-subtle);
     color: var(--warning);
+  }
+  .banner-action {
+    display: block;
+    margin-top: 0.4rem;
+    background: var(--error);
+    color: var(--bg);
+    border: none;
+    border-radius: var(--radius-md);
+    font-weight: 700;
+    padding: 0.4rem 0.8rem;
   }
   main {
     flex: 1;

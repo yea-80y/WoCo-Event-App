@@ -49,7 +49,13 @@ export default defineConfig({
     svelte(),
     serveScannerAtRoot(),
     VitePWA({
+      // autoUpdate: a new worker takes over as soon as it installs (skipWaiting +
+      // clientsClaim), so even a phone whose open page never acts heals on its next
+      // load. The page is registered from src/lib/scanner/sw-update.ts, not the
+      // injected script, because only the page knows when a reload is safe - never
+      // in the middle of admitting someone.
       registerType: 'autoUpdate',
+      injectRegister: false,
       includeAssets: ['logo.png'],
       manifest: {
         name: 'WoCo Scanner',
@@ -62,6 +68,11 @@ export default defineConfig({
         icons: [{ src: './logo.png', sizes: '512x512', type: 'image/png', purpose: 'any' }],
       },
       workbox: {
+        // Explicit: the plugin sets these for autoUpdate only when it injects the
+        // register script itself, which injectRegister: false turns off. Without
+        // them a new worker waits behind any open tab - the stuck-phone bug again.
+        skipWaiting: true,
+        clientsClaim: true,
         globPatterns: ['**/*.{js,css,html,png,svg}'],
         // API calls are handled by our own sync layer, never the SW cache.
         navigateFallback: null,

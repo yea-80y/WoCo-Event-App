@@ -80,7 +80,8 @@
   }
 </script>
 
-<svelte:window onpointerdown={armAudio} />
+<!-- iOS unlocks audio on the END of a touch, not its start: arm on both. -->
+<svelte:window onpointerdown={armAudio} ontouchend={armAudio} />
 
 <div class="scan-screen">
   <QrCamera onScan={(data) => void handlePayload(data)} />
@@ -89,6 +90,11 @@
     <div class="verdict checking" aria-live="polite">
       <span class="verdict-title">CHECKING…</span>
       <span class="verdict-detail">Hold on - asking WoCo whether this ticket is already in</span>
+    </div>
+  {:else if scanner.lookingUp}
+    <div class="verdict checking" aria-live="polite">
+      <span class="verdict-title">CHECKING…</span>
+      <span class="verdict-detail">Looking for tickets sold since this scanner last updated</span>
     </div>
   {:else if outcome}
     {@const kind = outcome.kind}
