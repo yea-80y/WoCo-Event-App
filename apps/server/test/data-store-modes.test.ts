@@ -208,6 +208,13 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     },
   },
   {
+    store: "etherna/relay-ledger",
+    drive: async () => {
+      const m = await import("../src/lib/etherna/relay-ledger.js");
+      m.noteFailover("ab".repeat(32), "cd".repeat(20), "ef".repeat(32), OWNER);
+    },
+  },
+  {
     store: "event/listing-state",
     drive: async () => {
       const m = await import("../src/lib/event/listing-state.js");

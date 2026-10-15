@@ -1,7 +1,13 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
-import { invalidateContentFeedVersion, uploadSignedSoc, type SignedSocInput } from "../lib/swarm/soc-upload.js";
+import {
+  invalidateContentFeedVersion,
+  uploadSignedSoc,
+  type SignedSocInput,
+  type SocUploadDestination,
+} from "../lib/swarm/soc-upload.js";
+import { relayPlan } from "../lib/etherna/failover.js";
 import { organiserNoticeContentTopic } from "@woco/shared";
 import { noticeWritten } from "../lib/legal/notice-gate.js";
 import { readVerifiedSoc } from "../lib/swarm/soc-read.js";
@@ -80,20 +86,31 @@ swarmRoutes.post("/soc", jsonBodyLimit(SOC_RELAY_MAX_BODY_BYTES), requireAuth, a
   }
 
   try {
+    const parentAddress = (c.get("parentAddress") as string).toLowerCase();
     // Same routing as /bytes: Etherna user batch when the builder picked the
     // Etherna gateway (platform Etherna batch fallback), WoCo platform otherwise.
-    const selection = batchForDeploy({
-      ownerAddress: (c.get("parentAddress") as string).toLowerCase(),
-      gatewayUrl: typeof b.gatewayUrl === "string" ? b.gatewayUrl : "",
-      deployType: "event",
-    });
+    let selection: SocUploadDestination;
+    let ethernaRefused: string | undefined;
+    try {
+      selection = batchForDeploy({
+        ownerAddress: parentAddress,
+        gatewayUrl: typeof b.gatewayUrl === "string" ? b.gatewayUrl : "",
+        deployType: "event",
+      });
+    } catch (err) {
+      // Etherna's batch cannot take it (#610): with the failover on (#912) the
+      // save goes to WoCo and moves back later, instead of a 503.
+      if (!(err instanceof PlatformBatchUnavailable) || relayPlan(err.reason) !== "woco") throw err;
+      selection = { target: "etherna", batchId: "" };
+      ethernaRefused = err.reason;
+    }
     const ref = await uploadSignedSoc({
       owner: b.owner,
       identifier: b.identifier,
       signature: b.signature,
       span: b.span,
       payload: b.payload,
-    }, selection);
+    }, selection, { failover: { parent: parentAddress, ...(ethernaRefused ? { ethernaRefused } : {}) } });
     // The organiser just wrote their notice: their next sale and notice page read
     // it now, not after the cache lapses (lib/legal/notice-gate.ts). Only the
     // writer's own account - a notice validates only under its own topic.

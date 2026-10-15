@@ -598,6 +598,12 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     and every nonce used. Losing it signs every added device out (re-add from the main passkey);
     nothing leaks or is granted. Losing the NONCES lets an old removal or grant be replayed.
     Unreadable = no device signs in, nothing written, `/api/health` `deviceGrants` alarm)
+  etherna-relay-ledger.json (#912 — every SOC sent to Etherna not yet seen on our bee, and every relayed
+    save stamped on WoCo while Etherna could not take it. The read rule that lets our bee's 404 decide
+    during an Etherna outage trusts it only after an hour of recording. Losing it leaves failover chunks
+    on the WoCo batch for good and restarts that hour. Unreadable = never overwritten, failover and the
+    read rule off, `/api/health` `ethernaFailover` alarms. After a ROLLBACK to a build without it, delete
+    it when rolling forward: that build's Etherna sends are not listed)
   checkin-door-entries/ (live door attendee list — per event, later buyers' email + card name sealed to the
     door pass's key, plus erasure removals. Losing it only empties the door's later-buyer list until the
     pass is regenerated (scanning unaffected); losing it after an erasure can leave a scanner showing that

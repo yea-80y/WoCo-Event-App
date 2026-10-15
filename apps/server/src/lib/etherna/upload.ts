@@ -15,6 +15,9 @@ import { calculateSocAddress, calculateCacAddress, encodeSpan } from "@woco/shar
 import { ensureEthernaToken, getCachedEthernaToken } from "./auth.js";
 import { ETHERNA_FETCH_BASE } from "./gateway.js";
 import { CONTROL_JSON_MAX_BYTES, SWARM_CHUNK_MAX_BYTES, errorSnippet, readCapped, readCappedJson } from "../http/read-capped.js";
+import { BEE_CALL_TIMEOUT_MS } from "../swarm/upload-queue.js";
+import { noteEthernaFailure } from "./breaker.js";
+import { noteEthernaSend } from "./relay-ledger.js";
 
 const ETHERNA_GW = ETHERNA_FETCH_BASE;
 
@@ -99,6 +102,59 @@ export async function registerEthernaOffer(ref: string): Promise<void> {
   if (!r.ok && r.status !== 409) {
     // 409 = already offered; treat as success
     throw new Error(`Etherna offer-register failed ${r.status}: ${await errorSnippet(r, 200)}`);
+  }
+}
+
+/**
+ * POST one signed SOC to Etherna: `/soc/{owner}/{id}?sig=`, body = span || payload.
+ *
+ * THE ONLY WAY THIS SERVER SENDS A SOC THERE (#912). The address is listed in the
+ * relay ledger BEFORE the request leaves, and the read rule that lets our bee's
+ * 404 decide during an Etherna outage is exact only because nothing reaches
+ * Etherna's store unlisted (`test/etherna-failover.test.ts` fails on a second
+ * sender). A slow failure pauses Etherna for reads and the relay alike.
+ *
+ * Throws `Error & { status }` on a non-2xx (the HTTP status), plain on a timeout
+ * or network fault.
+ */
+export async function postSocToEtherna(opts: {
+  ownerHex: string;
+  identifierHex: string;
+  sigHex: string;
+  body: Uint8Array;
+  batchId: string;
+  timeoutMs?: number;
+}): Promise<void> {
+  const owner = opts.ownerHex.toLowerCase().replace(/^0x/, "");
+  const address = Binary.uint8ArrayToHex(
+    calculateSocAddress(Binary.hexToUint8Array(opts.identifierHex), Binary.hexToUint8Array(owner)),
+  );
+  noteEthernaSend(address, owner, opts.identifierHex);
+  const started = performance.now();
+  try {
+    await ensureEthernaToken();
+    const token = getCachedEthernaToken();
+    if (!token) throw new Error("Etherna token unavailable");
+    const res = await fetch(`${ETHERNA_GW}/soc/${owner}/${opts.identifierHex}?sig=${opts.sigHex}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "Swarm-Postage-Batch-Id": opts.batchId,
+        Authorization: `Bearer ${token}`,
+      },
+      // @ts-ignore — Node 18 fetch duplex
+      duplex: "half",
+      body: Buffer.from(opts.body),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? BEE_CALL_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      const err = new Error(`Etherna SOC write ${res.status}: ${await errorSnippet(res, 200)}`) as Error & { status?: number };
+      err.status = res.status;
+      throw err;
+    }
+  } catch (err) {
+    noteEthernaFailure(`etherna write: ${(err as Error)?.message ?? String(err)}`, started);
+    throw err;
   }
 }
 
@@ -207,10 +263,6 @@ export async function writeEthernaFeedPage(opts: {
   signer: PrivateKey;
   ownerHex: string;      // 40-char hex, no 0x, lowercase
 }): Promise<void> {
-  await ensureEthernaToken();
-  const token = getCachedEthernaToken();
-  if (!token) throw new Error("Etherna token unavailable");
-
   const socId = Binary.keccak256(
     Binary.concatBytes(opts.topic.toUint8Array(), FeedIndex.fromBigInt(opts.index).toUint8Array()),
   );
@@ -218,24 +270,13 @@ export async function writeEthernaFeedPage(opts: {
   const cacAddress = calculateCacAddress(span, opts.payload);
   const sig = opts.signer.sign(Binary.concatBytes(socId, cacAddress)) as unknown as { toUint8Array(): Uint8Array };
 
-  const socIdHex = Binary.uint8ArrayToHex(socId);
-  const sigHex = Binary.uint8ArrayToHex(sig.toUint8Array());
-  const postRes = await fetch(`${ETHERNA_GW}/soc/${opts.ownerHex}/${socIdHex}?sig=${sigHex}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/octet-stream",
-      "Swarm-Postage-Batch-Id": opts.batchId,
-      Authorization: `Bearer ${token}`,
-    },
-    // @ts-ignore — Node 18 fetch duplex
-    duplex: "half",
-    body: Buffer.from(Binary.concatBytes(span, opts.payload)),
+  await postSocToEtherna({
+    ownerHex: opts.ownerHex,
+    identifierHex: Binary.uint8ArrayToHex(socId),
+    sigHex: Binary.uint8ArrayToHex(sig.toUint8Array()),
+    body: Binary.concatBytes(span, opts.payload),
+    batchId: opts.batchId,
   });
-  if (!postRes.ok) {
-    const err = new Error(`Etherna feed-page write ${postRes.status}: ${await errorSnippet(postRes, 200)}`) as Error & { status?: number };
-    err.status = postRes.status;
-    throw err;
-  }
 
   // Offer the SOC so Etherna's own gateway serves it anonymously. Our reads come
   // from our bee (the chunk propagates to the public net), so this is fire-and-
@@ -259,8 +300,6 @@ export async function writeEthernaFeedUpdate(opts: {
   const { feedManifestHash, nextIndex, chunkBytes } = await prepareEthernaFeedUpdate({
     topic, contentHash, batchId, ownerHex,
   });
-  const token = getCachedEthernaToken();
-  if (!token) throw new Error("Etherna token unavailable");
 
   // 2. SOC identifier = keccak256(topic_bytes(32) || uint64_BE(index)(8))
   const socId = Binary.keccak256(
@@ -275,21 +314,13 @@ export async function writeEthernaFeedUpdate(opts: {
 
   // 5. POST SOC: /soc/{owner}/{socId}?sig={sigHex}
   //    Body = raw root chunk bytes (span(8) + chunk_data).
-  const socIdHex = Binary.uint8ArrayToHex(socId);
-  const postRes = await fetch(`${ETHERNA_GW}/soc/${ownerHex}/${socIdHex}?sig=${sigHex}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/octet-stream",
-      "Swarm-Postage-Batch-Id": batchId,
-      Authorization: `Bearer ${token}`,
-    },
-    // @ts-ignore — Node 18 fetch duplex
-    duplex: "half",
-    body: Buffer.from(chunkBytes),
+  await postSocToEtherna({
+    ownerHex,
+    identifierHex: Binary.uint8ArrayToHex(socId),
+    sigHex,
+    body: chunkBytes,
+    batchId,
   });
-  if (!postRes.ok) {
-    throw new Error(`Etherna SOC write ${postRes.status}: ${await errorSnippet(postRes, 200)}`);
-  }
 
   // Offer the update SOC's chunk so an anonymous feed dereference over this update
   // resolves without payment (the caller offers the feed manifest + content). The

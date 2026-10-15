@@ -53,13 +53,16 @@ import { BEE_URL, requirePostageBatch } from "../../config/swarm.js";
 import { BEE_CALL_TIMEOUT_MS, beeUploadSem, withTimeout } from "./upload-queue.js";
 import { whitelistHashes } from "./whitelist.js";
 import { markHealed, readVerifiedSoc } from "./soc-read.js";
-import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
-import { registerEthernaOffer } from "../etherna/upload.js";
+import { postSocToEtherna, registerEthernaOffer } from "../etherna/upload.js";
+import { noteFailover } from "../etherna/relay-ledger.js";
+import {
+  FAILOVER_ETHERNA_ATTEMPTS,
+  FAILOVER_ETHERNA_TIMEOUT_MS,
+  noteFailedOver,
+  relayPlan,
+} from "../etherna/failover.js";
 import { observeStatementBytes } from "../social/participants.js";
-import { ETHERNA_FETCH_BASE } from "../etherna/gateway.js";
 import { errorSnippet } from "../http/read-capped.js";
-
-const ETHERNA_GW = ETHERNA_FETCH_BASE;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -112,6 +115,16 @@ export interface SocUploadDestination {
   batchId: string;
 }
 
+/** The relay's Etherna failover (#912). Only `POST /api/swarm/soc` asks for it. */
+export interface SocUploadOptions {
+  failover?: {
+    /** The verified session parent: whose Etherna batch the chunk moves back to. */
+    parent: string;
+    /** The router already refused Etherna's batch (#610): straight to WoCo. */
+    ethernaRefused?: string;
+  };
+}
+
 /**
  * Validate a client-signed SOC and, if sound, stamp + upload it. Destination
  * defaults to our Bee + platform batch; an Etherna destination posts the SAME
@@ -119,6 +132,9 @@ export interface SocUploadDestination {
  * `writeEthernaFeedUpdate`) to the Etherna gateway with a bearer token + the
  * routed (per-user) batch. Validation is destination-independent: the signature
  * gate runs before any postage is spent either way.
+ * With `opts.failover` and the rail on, an Etherna destination that cannot take
+ * the write is stamped on the WoCo batch instead and listed for the move back
+ * (`relayPlan`, lib/etherna/failover.ts).
  * Throws `Error` with a `status` field for client-side (400) validation faults.
  */
 /**
@@ -148,7 +164,11 @@ async function whitelistBeforeUpload(socAddress: string): Promise<void> {
   throw err;
 }
 
-export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDestination): Promise<SocReference> {
+export async function uploadSignedSoc(
+  input: SignedSocInput,
+  dest?: SocUploadDestination,
+  opts: SocUploadOptions = {},
+): Promise<SocReference> {
   let owner: Uint8Array, identifier: Uint8Array, signature: Uint8Array, span: Uint8Array, payload: Uint8Array;
   try {
     owner = hexToBytes(input.owner, 20);
@@ -224,103 +244,136 @@ export async function uploadSignedSoc(input: SignedSocInput, dest?: SocUploadDes
   const body = new Uint8Array(span.length + payload.length);
   body.set(span);
   body.set(payload, span.length);
-  const identifierHex = bytesToHex(identifier);
-  const sigHex = bytesToHex(signature);
-  const etherna = dest?.target === "etherna";
-  const gwBase = etherna ? ETHERNA_GW : BEE_URL;
-  const url = `${gwBase}/soc/${ownerHex}/${identifierHex}?sig=${sigHex}`;
+  const soc: SocWire = { ownerHex, identifierHex: bytesToHex(identifier), sigHex: bytesToHex(signature), body };
 
-  let ethernaToken: string | null = null;
-  if (etherna) {
-    await ensureEthernaToken();
-    ethernaToken = getCachedEthernaToken();
-    if (!ethernaToken) throw new Error("Etherna token unavailable");
+  if (dest?.target === "etherna") {
+    const plan = opts.failover ? relayPlan(opts.failover.ethernaRefused) : "etherna";
+    if (plan !== "woco") {
+      try {
+        await withRetries(
+          (timeoutMs) => postSocToEtherna({ ...soc, batchId: dest.batchId, timeoutMs }),
+          plan === "etherna" ? FULL_BUDGET : { attempts: FAILOVER_ETHERNA_ATTEMPTS, timeoutMs: FAILOVER_ETHERNA_TIMEOUT_MS },
+        );
+        return await accepted(soc, socAddress, payload, true);
+      } catch (err) {
+        if (plan === "etherna") throw err;
+        console.warn(`[swarm] Etherna could not take ${socAddress.slice(0, 12)}…, stamping it on WoCo: ${(err as Error)?.message ?? err}`);
+      }
+    }
+    await withRetries((timeoutMs) => postSocToWocoBee(soc, requirePostageBatch(), timeoutMs), FULL_BUDGET);
+    // Listed once it has landed: a WoCo stamp that failed must not leave a
+    // failover entry for a chunk that is not there.
+    noteFailover(socAddress, ownerHex, soc.identifierHex, opts.failover!.parent);
+    noteFailedOver();
+    return await accepted(soc, socAddress, payload, false);
   }
 
+  await withRetries((timeoutMs) => postSocToWocoBee(soc, dest?.batchId ?? requirePostageBatch(), timeoutMs), FULL_BUDGET);
+  return await accepted(soc, socAddress, payload, false);
+}
+
+interface SocWire {
+  ownerHex: string;
+  identifierHex: string;
+  sigHex: string;
+  body: Uint8Array;
+}
+
+const FULL_BUDGET = { attempts: 5, timeoutMs: BEE_CALL_TIMEOUT_MS };
+
+async function postSocToWocoBee(soc: SocWire, batchId: string, timeoutMs: number): Promise<void> {
+  const resp = await withTimeout(
+    fetch(`${BEE_URL}/soc/${soc.ownerHex}/${soc.identifierHex}?sig=${soc.sigHex}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "Swarm-Postage-Batch-Id": batchId,
+        // Buffer locally + push in the BACKGROUND, returning immediately —
+        // exactly like the legacy feed/bytes writes (bytes.ts, feeds.ts).
+        // Without this, Bee defaults to a SYNCHRONOUS upload that blocks
+        // until the chunk is pushed to the network (~25-30s observed),
+        // which was the entire publish-step-1→2 regression. The chunk is
+        // readable from this node immediately, so server-side reads
+        // (register-on-chain) and the whitelisted gateway read still work.
+        // Etherna manages its own upload pipeline, so it's WoCo-only.
+        "Swarm-Deferred-Upload": "true",
+      },
+      body: Buffer.from(soc.body),
+    }),
+    timeoutMs,
+    "soc upload",
+  );
+  if (!resp.ok) {
+    const e = new Error(`Bee SOC upload ${resp.status}: ${await errorSnippet(resp, 200)}`) as Error & { status?: number };
+    e.status = resp.status;
+    throw e;
+  }
+}
+
+function isTransientUpload(err: unknown): boolean {
+  const e = err as { code?: string; message?: string; status?: number };
+  if (e?.status !== undefined) return e.status === 429 || e.status >= 500;
+  return (
+    e?.code === "ETIMEDOUT" ||
+    /429|socket hang up|network|timeout/i.test(String(e?.message ?? "")) ||
+    ["ECONNRESET", "ECONNABORTED", "EAI_AGAIN"].includes(String(e?.code ?? ""))
+  );
+}
+
+async function withRetries(send: (timeoutMs: number) => Promise<void>, budget: { attempts: number; timeoutMs: number }): Promise<void> {
   let delay = 500;
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; ; attempt++) {
     try {
       // Hold the semaphore only for the HTTP call, never across the back-off
       // sleep below (mirrors bytes.ts so a throttled slot frees immediately).
       const release = await beeUploadSem.acquire();
-      let resp: Response;
       try {
-        resp = await withTimeout(
-          fetch(url, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/octet-stream",
-              "Swarm-Postage-Batch-Id": dest?.batchId ?? requirePostageBatch(),
-              ...(etherna
-                ? { Authorization: `Bearer ${ethernaToken}` }
-                : {
-                    // Buffer locally + push in the BACKGROUND, returning immediately —
-                    // exactly like the legacy feed/bytes writes (bytes.ts, feeds.ts).
-                    // Without this, Bee defaults to a SYNCHRONOUS upload that blocks
-                    // until the chunk is pushed to the network (~25-30s observed),
-                    // which was the entire publish-step-1→2 regression. The chunk is
-                    // readable from this node immediately, so server-side reads
-                    // (register-on-chain) and the whitelisted gateway read still work.
-                    // Etherna manages its own upload pipeline, so it's WoCo-only.
-                    "Swarm-Deferred-Upload": "true",
-                  }),
-            },
-            body,
-          }),
-          BEE_CALL_TIMEOUT_MS,
-          "soc upload",
-        );
+        await send(budget.timeoutMs);
       } finally {
         release();
       }
-      if (!resp.ok) {
-        const e = new Error(`Bee SOC upload ${resp.status}: ${await errorSnippet(resp, 200)}`) as Error & { status?: number };
-        // 429 / 5xx are transient; surface other 4xx immediately as a 502.
-        if (!(resp.status === 429 || resp.status >= 500)) e.status = 502;
-        throw e;
-      }
-      // Already whitelisted above, before the upload. Only the read path's
-      // bookkeeping is updated here, so its self-heal does not re-ask.
-      markHealed("wocoBee", socAddress);
-      if (etherna) {
-        // Etherna gates anonymous reads behind an OFFER (else 402). Register one for
-        // the SOC's chunk address so any device can read it from Etherna's own
-        // gateway. Non-fatal — the chunk is stored regardless; a missing offer only
-        // blocks anonymous reads there, and the next server read of it retries.
-        try {
-          await registerEthernaOffer(socAddress);
-          markHealed("etherna", socAddress);
-        } catch (e) {
-          console.warn("[swarm] Etherna SOC offer failed (non-fatal):", e);
-        }
-      }
-      // Learn who to read later. The identifier is a hash, so the topic cannot
-      // be inverted from it — but a PUBLIC statement's payload names its own
-      // format and subject, which is everything needed to recompute the topic.
-      // Sealed payloads are refused there by an explicit shape check, NOT by
-      // being unreadable: a sealed box is ordinary JSON and parses fine (see
-      // `looksSealed`). Bookkeeping for a view-plane cache — never awaited, and
-      // it must never fail a user's write.
-      observeStatementBytes(ownerHex, payload);
-      return { owner: ownerHex, identifier: identifierHex, address: socAddress };
-    } catch (err: unknown) {
-      const e = err as { code?: string; message?: string; status?: number };
-      const transient =
-        e?.status === undefined &&
-        (e?.code === "ETIMEDOUT" ||
-          /429|socket hang up|network|timeout/i.test(String(e?.message ?? "")) ||
-          ["ECONNRESET", "ECONNABORTED", "EAI_AGAIN"].includes(String(e?.code ?? "")));
-      // 429/5xx errors are thrown without a `status` (only true 4xx get status=502).
-      const beeTransient = /\b(429|5\d\d)\b/.test(String(e?.message ?? "")) && e?.status === undefined;
-      if ((transient || beeTransient) && attempt < 4) {
+      return;
+    } catch (err) {
+      if (isTransientUpload(err) && attempt < budget.attempts - 1) {
         await wait(delay);
         delay = Math.min(delay * 2, 5000);
         continue;
       }
+      // The store refusing is never the client's fault: the route answers 400
+      // only for its own validation above.
+      const e = err as { status?: number };
+      if (e?.status !== undefined && e.status !== 429 && e.status < 500) e.status = 502;
       throw err;
     }
   }
-  throw new Error("SOC upload failed after retries");
+}
+
+/** The bookkeeping after a stamp landed, wherever it landed. */
+async function accepted(soc: SocWire, socAddress: string, payload: Uint8Array, onEtherna: boolean): Promise<SocReference> {
+  // Already whitelisted above, before the upload. Only the read path's
+  // bookkeeping is updated here, so its self-heal does not re-ask.
+  markHealed("wocoBee", socAddress);
+  if (onEtherna) {
+    // Etherna gates anonymous reads behind an OFFER (else 402). Register one for
+    // the SOC's chunk address so any device can read it from Etherna's own
+    // gateway. Non-fatal — the chunk is stored regardless; a missing offer only
+    // blocks anonymous reads there, and the next server read of it retries.
+    try {
+      await registerEthernaOffer(socAddress);
+      markHealed("etherna", socAddress);
+    } catch (e) {
+      console.warn("[swarm] Etherna SOC offer failed (non-fatal):", e);
+    }
+  }
+  // Learn who to read later. The identifier is a hash, so the topic cannot
+  // be inverted from it — but a PUBLIC statement's payload names its own
+  // format and subject, which is everything needed to recompute the topic.
+  // Sealed payloads are refused there by an explicit shape check, NOT by
+  // being unreadable: a sealed box is ordinary JSON and parses fine (see
+  // `looksSealed`). Bookkeeping for a view-plane cache — never awaited, and
+  // it must never fail a user's write.
+  observeStatementBytes(soc.ownerHex, payload);
+  return { owner: soc.ownerHex, identifier: soc.identifierHex, address: socAddress };
 }
 
 /**
