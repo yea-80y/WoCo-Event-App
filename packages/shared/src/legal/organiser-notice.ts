@@ -463,7 +463,9 @@ export function buildOrganiserNotice(input: OrganiserNoticeInput): OrganiserNoti
         [
           "WoCo Network Ltd (UK) runs our checkout, issues and emails your ticket, stores your order details and " +
             "runs check-in, on our instructions. Your order-form answers are encrypted in your browser to a key " +
-            "only we hold, so WoCo cannot read them.",
+            "only we hold, so WoCo cannot read them. For check-in, WoCo also gives our door scanners your ticket " +
+            "number, email and the name on your card, sealed so only our door devices can read them, and deleted " +
+            "after the event.",
         ],
         ["Amazon Web Services (Amazon SES, UK) sends ticket and event emails for WoCo."],
         [

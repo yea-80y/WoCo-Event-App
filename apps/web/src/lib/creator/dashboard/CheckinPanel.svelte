@@ -267,8 +267,10 @@
       <h3>Door scanner</h3>
       <p>
         Generate a <strong>door pass</strong> to turn any phone into a ticket scanner for this event -
-        no login needed on the door device. The pass loads everything the scanner needs to check
-        tickets, including your attendee list (encrypted - the WoCo server never sees names or emails).
+        no login needed on the door device. The pass loads what the scanner needs to check people in:
+        each attendee's name, email and ticket. For each new sale, WoCo adds the buyer's email and the
+        name on their card, sealed so only your door phones can read them. Scanners delete the list
+        automatically after the event.
       </p>
       <fieldset class="modes">
         <legend>How many phones on the door?</legend>
@@ -300,8 +302,8 @@
       {/if}
       <p class="hint">
         On the door {stored.mode === "single" ? "phone" : "phones"}, open <strong>{SCANNER_ORIGIN.replace(/^https?:\/\//, "")}</strong> and scan
-        this QR (or open the link). Anyone with this pass can check people in - share it only with
-        your door team.
+        this QR (or open the link). Anyone with this pass can check people in and see your attendee
+        list - share it only with your door team.
       </p>
       {#if passStale}
         <p class="error">{KEYS_CHANGED}</p>
