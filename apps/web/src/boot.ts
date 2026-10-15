@@ -4,6 +4,7 @@
 // evaluated until this says so, so a page that hands over runs no old app code.
 import { checkBuild, pageSources, parseBuildFeed } from './lib/boot/build-check'
 import { swapToBuild, type BootWindow } from './lib/boot/build-swap'
+import { installSelfHeal } from './lib/boot/self-heal'
 
 const RELOAD_GUARD = 'woco:boot:reloaded-for'
 
@@ -59,4 +60,5 @@ async function start(): Promise<unknown> {
   return import('./main')
 }
 
+installSelfHeal()
 void start()
