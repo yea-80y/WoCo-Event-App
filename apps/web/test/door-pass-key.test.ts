@@ -46,9 +46,9 @@ test("a new pass id is 16 random bytes, lowercase hex", () => {
   assert.notEqual(a, newDoorPassId());
 });
 
-test("the registration: the key the link opens", () => {
+test("the registration: the key the link opens", async () => {
   const jti = newDoorPassId();
-  const reg = doorPassRegistration(S1, EVENT, jti);
+  const reg = await doorPassRegistration(S1, EVENT, jti);
   assert.equal(reg.jti, jti);
   // What the scanner derives from the link must be exactly what was registered.
   const p = base64UrlDecode(doorPassSecretB64url(S1, EVENT, token(jti)));

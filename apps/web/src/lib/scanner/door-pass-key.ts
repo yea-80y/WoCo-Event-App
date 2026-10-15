@@ -12,7 +12,6 @@
 import { base64UrlEncode, decodeDoorPassToken, type DoorPassChallenge } from "@woco/shared";
 import { doorPassSecret } from "@woco/shared/keyring/account-secret";
 import { doorKeyProof, doorKeyRefOf, type DoorKeyProofFields } from "@woco/shared/checkin/door-keys";
-import { doorEntriesKeypair } from "@woco/shared/checkin/door-entries-key";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 /** A fresh pass id: 16 random bytes, lowercase hex (`DOOR_PASS_ID_RE`). */
@@ -35,7 +34,14 @@ export function doorPassSecretB64url(secretHex: string, eventId: string, token: 
 }
 
 /** A new pass's id and door entries public key. Nothing secret leaves the device. */
-export function doorPassRegistration(secretHex: string, eventId: string, passId: string): { jti: string; doorKey: string; doorKeyRef: string } {
+export async function doorPassRegistration(
+  secretHex: string,
+  eventId: string,
+  passId: string,
+): Promise<{ jti: string; doorKey: string; doorKeyRef: string }> {
+  // Lazy, like every X-Wing importer (xwing-lazy-load.test.ts): this module is in the
+  // dashboard's chunk, and only making a pass needs the lattice code.
+  const { doorEntriesKeypair } = await import("@woco/shared/checkin/door-entries-key");
   const secret = hexToBytes(secretHex.replace(/^0x/, ""));
   const p = doorPassSecret(secret, eventId, passId);
   try {

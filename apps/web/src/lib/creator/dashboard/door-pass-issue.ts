@@ -19,7 +19,7 @@ export async function issueDoorPassWithProof(
   api: DoorPassApi,
 ): Promise<{ token: string; exp: number; mode: DoorMode }> {
   const { eventId, parent, mode, secrets } = opts;
-  const reg = doorPassRegistration(secrets.current, eventId, newDoorPassId());
+  const reg = await doorPassRegistration(secrets.current, eventId, newDoorPassId());
   for (let attempt = 0; ; attempt++) {
     const challenge = await api.challenge(eventId);
     const proof = await doorPassProof(secrets, challenge, { eventId, parent, jti: reg.jti, mode, doorKeyRef: reg.doorKeyRef });
