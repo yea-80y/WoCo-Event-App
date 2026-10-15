@@ -1000,7 +1000,9 @@ export async function fulfilPaidSession(
     }
   }
 
-  if (marketing && claimedResults.length > 0 && eventCreatorAddress && emailHash) {
+  // No organiser (the feed was unreadable) still goes to capture, which counts a
+  // yes it cannot record rather than let it vanish.
+  if (marketing && claimedResults.length > 0 && emailHash) {
     try {
       deps.captureCheckoutConsent({
         emailHash,

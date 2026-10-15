@@ -22,8 +22,29 @@ import { marketingWordingHash } from "./checkout-choice.js";
 import { consentBasis, getConsent, recordConsent, type ConsentRecord, type ConsentSource } from "./consent-store.js";
 import { liftDeclineOnConsent, suppressOrg } from "./suppression-store.js";
 
+/**
+ * Opt-ins fulfilment could not record since boot, for `/api/health`
+ * `marketingOptInsDropped`. Each is a buyer who said yes and will not be mailed:
+ * the safe way to be wrong, but a pattern of them is a fault worth seeing, and a
+ * log line alone reached nobody. Counts only - the endpoint is public.
+ */
+let droppedSinceBoot = 0;
+let lastDroppedAt: string | null = null;
+
+function dropOptIn(why: string): void {
+  droppedSinceBoot += 1;
+  lastDroppedAt = new Date().toISOString();
+  console.error(`[consent] ${why} - nothing recorded`);
+}
+
+/** No `ok`: a report, not an alarm (the cause is usually an organiser's edit mid-checkout). */
+export function droppedOptInsHealth(): { sinceBoot: number; lastAt: string | null } {
+  return { sinceBoot: droppedSinceBoot, lastAt: lastDroppedAt };
+}
+
 export interface CaptureConsentInput {
   emailHash: string;
+  /** Empty when fulfilment could not read the event: there is then no organiser to record for. */
   organiserAddress: string;
   /** What the page showed, and what the buyer did with the box. */
   choice: MarketingChoice;
@@ -65,6 +86,12 @@ export function captureCheckoutConsent(input: CaptureConsentInput): void {
   const { emailHash, organiserAddress, choice, organiserName, orderFields, wordingHash, ts, eventId, source = "checkout" } = input;
   const decision = marketingDecision(choice.mode, choice.ticked);
 
+  if (!organiserAddress) {
+    if (decision === "declined") console.error(`[consent] ${choice.mode} v${choice.version}: decline with no organiser (event unreadable) - nothing recorded`);
+    else dropOptIn(`${choice.mode} v${choice.version}: no organiser (event unreadable)`);
+    return;
+  }
+
   if (decision === "declined") {
     suppressOrg(emailHash, organiserAddress, "declined", ts);
     return;
@@ -75,7 +102,7 @@ export function captureCheckoutConsent(input: CaptureConsentInput): void {
     // A record without the wording shown would be no evidence at all. The hash
     // misses only if the event's questions changed between checkout and payment;
     // no record means the buyer is not mailed - the safe way to be wrong.
-    console.error(`[consent] ${choice.mode} v${choice.version}: wording not the one checkout showed - nothing recorded`);
+    dropOptIn(`${choice.mode} v${choice.version}: wording not the one checkout showed`);
     return;
   }
   const record: ConsentRecord = {

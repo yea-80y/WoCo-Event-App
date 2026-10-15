@@ -1091,6 +1091,9 @@ describe("stop reasons", () => {
     assert.equal(outcome.refund.kind, "not-needed");
     assert.deepEqual(f.minted.length, 1, "minted against the record, with no feed in hand");
     assert.equal(f.calls.includes("chainEventEndMs"), true, "the chain end guard still applies");
+    // The buyer's yes still reaches capture, with no organiser, so it is counted rather than lost.
+    assert.equal(f.consents.length, 1);
+    assert.equal(f.consents[0].organiserAddress, "");
   });
 
   test("stopped with no payment intent on the session: outcome says so, nothing else breaks", async () => {

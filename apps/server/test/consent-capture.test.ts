@@ -5,6 +5,11 @@
  * Both stores write .data/ relative to process.cwd(), so this suite chdirs into
  * a temp dir BEFORE dynamically importing them — test writes never touch the
  * real .data.
+ *
+ * MUTATION (2026-10-15, each went red, then restored): log a wording mismatch
+ * without counting it, drop the no-organiser guard, or leave the health line out
+ * of index.ts, and "counted on /api/health" goes red; gate fulfilment's capture
+ * on the organiser address again and fulfilment's "feed unreadable" goes red.
  */
 
 import { test, before } from "node:test";
@@ -294,4 +299,31 @@ test("a yes is recorded only if the rebuilt wording hashes to what checkout matc
   const ok = hash(244);
   cap({ emailHash: ok, organiserAddress: ORG, choice: CONSENT_YES, orderFields: atCheckout, wordingHash: checkoutHash, ts: T1 });
   assert.ok(consent.getConsent(ok, ORG));
+});
+
+test("a yes fulfilment cannot record is counted on /api/health, never silently lost", async () => {
+  const before = capture.droppedOptInsHealth().sinceBoot;
+  const atCheckout = [{ id: "t", type: "text" as const, label: "Town", required: false }];
+  const atPayment = [...atCheckout, { id: "p", type: "text" as const, label: "Postcode", required: false }];
+  const checkoutHash = hashFor({ emailHash: "", organiserAddress: ORG, choice: CONSENT_YES, orderFields: atCheckout, ts: T1 });
+  cap({ emailHash: hash(250), organiserAddress: ORG, choice: CONSENT_YES, orderFields: atPayment, wordingHash: checkoutHash, ts: T1 });
+  const after = capture.droppedOptInsHealth();
+  assert.equal(after.sinceBoot, before + 1, "a wording mismatch counts");
+  assert.ok(after.lastAt && Number.isFinite(Date.parse(after.lastAt)));
+  // The event could not be read at fulfilment: no organiser to record for.
+  cap({ emailHash: hash(251), organiserAddress: "", choice: SOFT_YES, organiserName: "P", ts: T1 });
+  assert.equal(capture.droppedOptInsHealth().sinceBoot, before + 2, "an unreadable event counts");
+  assert.equal(suppression.isSuppressed(hash(251), ""), false);
+  // Neither a recorded yes nor any no counts.
+  cap({ emailHash: hash(252), organiserAddress: ORG, choice: CONSENT_YES, orderFields: atCheckout, wordingHash: checkoutHash, ts: T1 });
+  cap({ emailHash: hash(253), organiserAddress: ORG, choice: CONSENT_NO, ts: T1 });
+  cap({ emailHash: hash(254), organiserAddress: "", choice: CONSENT_NO, ts: T1 });
+  assert.equal(capture.droppedOptInsHealth().sinceBoot, before + 2);
+  assert.equal(suppression.isSuppressed(hash(254), ""), false, "nothing is written under no organiser");
+
+  // Reported beside the consent store, and never pages: no `ok` in it.
+  const index = readFileSync(new URL("../src/index.ts", import.meta.url), "utf-8");
+  assert.match(index, /\n\s*marketingConsent: consentStoreHealth\(\),\n(\s*\/\/.*\n)*\s*marketingOptInsDropped: droppedOptInsHealth\(\),/);
+  const { alarmGate } = await import("../src/lib/health/alarm-gate.js");
+  assert.equal(alarmGate({ marketingOptInsDropped: capture.droppedOptInsHealth() }, undefined).status, 200);
 });

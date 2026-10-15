@@ -111,6 +111,7 @@ import { attendeeBatchHealth } from "./lib/attendee-batch/health.js";
 import { refreshAttendeeBatch } from "./lib/attendee-batch/admin.js";
 import { heldOrdersHealth, sweepExpired as sweepHeldOrders } from "./lib/attendee-batch/held-orders.js";
 import { consentStoreHealth, sweepExpiredConsents } from "./lib/marketing/consent-store.js";
+import { droppedOptInsHealth } from "./lib/marketing/consent-capture.js";
 import { suppressionStoreHealth } from "./lib/marketing/suppression-store.js";
 import { sweepExpiredRosters, rosterRetentionHealth } from "./lib/checkin/roster-retention.js";
 import { orderRetentionHealth, runOrderRetention } from "./lib/attendee-batch/retention.js";
@@ -336,6 +337,10 @@ function healthReport() {
     // the consent file is, a missing record means unknown, not absent.
     marketingSuppression: suppressionStoreHealth(),
     marketingConsent: consentStoreHealth(),
+    // A yes at checkout that fulfilment could not record: the wording it rebuilt
+    // no longer matched what the buyer read, or the event was unreadable. That
+    // buyer is never mailed. Since boot, with the last time; reported, never paged.
+    marketingOptInsDropped: droppedOptInsHealth(),
     // `false` is an alarm, not a statistic: the Kernel known-deployed record
     // exists on disk but would not load, so the counterfactual fallback is live
     // again for every account (#200). It fails open deliberately — refusing every
