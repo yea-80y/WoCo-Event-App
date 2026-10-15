@@ -14,7 +14,7 @@
  * a cursor never sees a number twice even after lines are deleted. A removal (an erased
  * order) deletes that ticket's sealed line and appends a final "remove", which reaches
  * every online scanner. Regenerating the pass replaces the file - everything in it was
- * sealed to a key no new pass can open - and the roster sweep deletes it 30 days after
+ * sealed to a key no new pass can open - and the roster sweep deletes it 2 days after
  * the event's onchain end.
  *
  * Present but unreadable: never overwritten by a sale or a removal, `/entries` answers

@@ -14,7 +14,7 @@
  * Either way the order's tickets leave the door: their sealed door entries are deleted
  * and a removal reaches every online scanner (`removeDoorEntries`). The sale record is
  * how an order root finds its tickets; none (a sale never recorded) leaves the door copy
- * to the roster sweep, 30 days after the event.
+ * to the roster sweep, 2 days after the event.
  *
  * Synchronous from the in-flight check to the tombstone, so no store can start
  * between. Throws on anything else; the caller reports it.
