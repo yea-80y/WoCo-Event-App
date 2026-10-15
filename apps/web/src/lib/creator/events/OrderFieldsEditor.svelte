@@ -128,10 +128,14 @@
             <button type="button" class="link-btn" onclick={() => setFlags(i, { health: false })}>Not sensitive?</button>
           </p>
         {:else}
-          <label class="toggle-row compact">
-            <input type="checkbox" bind:checked={field.required} />
-            <span>Required</span>
-          </label>
+          <div class="flag-row">
+            <label class="toggle-row compact">
+              <input type="checkbox" bind:checked={field.required} />
+              <span>Required</span>
+            </label>
+            <!-- The guess can miss: the only way a missed question stays off the mailing list. -->
+            <button type="button" class="link-btn" onclick={() => setFlags(i, { health: true, required: false })}>Sensitive?</button>
+          </div>
         {/if}
       </div>
     {/each}
@@ -171,6 +175,17 @@
 
   .toggle-row.compact {
     margin-top: -0.25rem;
+  }
+
+  .flag-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.25rem 1.25rem;
+  }
+
+  .flag-row .link-btn {
+    font-size: 0.8125rem;
   }
 
   .health-note {

@@ -99,9 +99,12 @@ export function marketingWording(
 ): MarketingWording | null {
   const w = MARKETING_WORDING[mode]?.[version];
   if (!w) return null;
+  const answers = keeps.answers.length ? `your answers to: ${keeps.answers.join(", ")}` : "";
   const values: Record<string, string> = {
     organiser: organiser?.trim() || "this organiser",
-    keeps: (keeps.name ? ", name" : "") + (keeps.answers.length ? ` and your answers to: ${keeps.answers.join(", ")}` : ""),
+    // "your email", "your email and name", "your email and your answers to: A",
+    // "your email, name and your answers to: A, B".
+    keeps: keeps.name ? (answers ? `, name and ${answers}` : " and name") : answers ? ` and ${answers}` : "",
   };
   // One pass, so a name or label that itself reads "{keeps}" is never filled again.
   const fill = (t: string) => t.replace(/\{(organiser|keeps)\}/g, (_, k: string) => values[k]!);

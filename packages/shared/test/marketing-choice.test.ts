@@ -6,8 +6,9 @@
  * `marketingDecision` and "an untouched box" goes red; let `parseMarketingChoice`
  * accept an unknown version or surface and "a choice the server never showed"
  * goes red; drop the name fill and "the organiser named" goes red; edit a stored
- * wording in place and "never edited" goes red; drop the `, name` part and "name
- * only" goes red; fill by two passes and "a name that reads {keeps}" goes red;
+ * wording in place and "never edited" goes red; drop the name from the keeps
+ * clause and "name only" and "name and others" go red; join a lone name with a
+ * comma and "name only" goes red; fill by two passes and "a name is filled once" goes red;
  * let `sameMarketingWording` ignore the sentence and "same wording" goes red.
  */
 import test from "node:test";
@@ -50,14 +51,21 @@ test("no extra questions: the wording keeps the email only", () => {
   });
 });
 
-test("name only: the name is said, with no answers clause", () => {
+test("name only: 'your email and name', with no answers clause", () => {
   assert.equal(
     shown("consent", [q("Full name")]).box,
-    "Email me about future events from this organiser. We'll keep your email, name for this. You can unsubscribe at any time.",
+    "Email me about future events from this organiser. We'll keep your email and name for this. You can unsubscribe at any time.",
   );
   assert.equal(
     shown("own-events", [q("First name"), q("Surname")]).sentence,
-    "We'll email you about similar events from Punk Pub Ltd, and keep your email, name for this. You can unsubscribe from any email.",
+    "We'll email you about similar events from Punk Pub Ltd, and keep your email and name for this. You can unsubscribe from any email.",
+  );
+});
+
+test("answers without a name: 'your email and your answers to: A'", () => {
+  assert.equal(
+    shown("consent", [q("Town")]).box,
+    "Email me about future events from this organiser. We'll keep your email and your answers to: Town for this. You can unsubscribe at any time.",
   );
 });
 

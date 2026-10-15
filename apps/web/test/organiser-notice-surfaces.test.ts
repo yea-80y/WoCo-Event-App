@@ -247,6 +247,19 @@ test("the question builder pre-sets the sensitive flag, and a sensitive question
   assert.doesNotMatch(branch, /field\.required/);
 });
 
+test("a non-sensitive question offers 'Sensitive?', mirroring 'Not sensitive?': it sets the flag, drops Required and sticks", () => {
+  const ed = code(read("lib/creator/events/OrderFieldsEditor.svelte"));
+  const open = ed.indexOf("{#if field.health}");
+  const other = ed.slice(ed.indexOf("{:else}", open), ed.indexOf("{/if}", ed.indexOf("{:else}", open)));
+  assert.match(other, /<button type="button" class="link-btn" onclick=\{\(\) => setFlags\(i, \{ health: true, required: false \}\)\}>Sensitive\?<\/button>/);
+  // Through setFlags, so the label stops re-guessing it while the organiser types.
+  const set = ed.slice(ed.indexOf("function setFlags"), ed.indexOf("function removeField"));
+  assert.match(set, /manual = \{ \.\.\.manual, \[f\.id\]: true \}/);
+  // And the sensitive branch never offers it.
+  const branch = ed.slice(open, ed.indexOf("{:else}", open));
+  assert.doesNotMatch(branch, />Sensitive\?</);
+});
+
 test("the question builder has no keep-on-mailing-list tick box: every non-sensitive answer is kept (2026-10-15)", () => {
   const ed = code(read("lib/creator/events/OrderFieldsEditor.svelte"));
   assert.doesNotMatch(ed, /keepOnList|keepByDefault/);
