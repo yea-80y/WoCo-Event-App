@@ -1,7 +1,7 @@
 <script lang="ts">
   import { feedRouteFor } from "../../swarm/gateways.js";
   import type { OrderField, ClaimMode, EventFeed, EventGeo, EventTag } from "@woco/shared";
-  import { buildIssuerBindingMessage, FEATURES, signPersonalMessage, ticketPriceMeetsMinimum } from "@woco/shared";
+  import { buildIssuerBindingMessage, eventHasPlace, EVENT_PLACE_REQUIRED, FEATURES, signPersonalMessage, ticketPriceMeetsMinimum } from "@woco/shared";
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
@@ -98,8 +98,11 @@
     return null;
   });
 
+  const hasPlace = $derived(eventHasPlace(geo));
+
   const canPublish = $derived(
     title.trim() &&
+    hasPlace &&
     startDate &&
     endDate &&
     !dateError &&
@@ -506,6 +509,8 @@
     <p class="hint">{disabledReason}</p>
   {:else if dateError && !publishing}
     <p class="hint">{dateError}</p>
+  {:else if !hasPlace && !publishing}
+    <p class="hint">{EVENT_PLACE_REQUIRED}.</p>
   {:else if !canPublish && !publishing}
     <p class="hint">Fill in all required fields to publish</p>
   {/if}
