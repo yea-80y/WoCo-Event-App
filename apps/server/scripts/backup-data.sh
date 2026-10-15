@@ -12,6 +12,14 @@
 #   revoked-sessions.json        losing it un-revokes every revoked session
 #   consumed-*.json              replay guards; losing them re-opens double-spend windows
 #
+# It also carries the gateway's state from PROXY_DATA_DIR (bee-proxy, default
+# /opt/woco/proxy-data): whitelist.json + whitelist.json.log are DATA-PLANE
+# state - the gateway serves only the hashes they list, and a client reads its
+# refusal as "this chunk does not exist" - and feed-marks.json keeps feed
+# answers from stepping back after a restart. Manual *.bak* copies beside them
+# are left out. A failure here never costs the .data backup: it is still
+# published, without proxy-data/, and the script then exits 1.
+#
 # The stores are written atomically (lib/marketing/persist.ts), so a snapshot
 # taken mid-write reads whole files rather than a truncated one. The tar is
 # still taken from a filesystem-level copy first, so a long upload cannot see
@@ -36,10 +44,17 @@
 #   tar -xzf woco-data.tar.gz && (cd snapshot && sha256sum -c ../MANIFEST.sha256)
 # then copy snapshot/ over the data directory with the server STOPPED (the stores
 # are authoritative in memory and would overwrite a restore made under them).
+# The gateway's files, likewise with bee-proxy STOPPED (it folds its log into
+# whitelist.json on stop):
+#   (cd proxy-data && sha256sum -c ../MANIFEST-proxy-data.sha256)
+# then copy proxy-data/ over PROXY_DATA_DIR. Restore BOTH whitelist files: the
+# snapshot alone can be missing everything added since its last compaction.
 
 set -euo pipefail
 
 DATA_DIR="${DATA_DIR:-/opt/woco/woco-data}"
+# Set it to empty to leave the gateway out (a host that runs none).
+PROXY_DATA_DIR="${PROXY_DATA_DIR-/opt/woco/proxy-data}"
 BACKUP_DEST="${BACKUP_DEST:-}"
 BACKUP_GPG_KEY="${BACKUP_GPG_KEY:-}"
 KEEP_DAYS="${KEEP_DAYS:-30}"
@@ -84,7 +99,61 @@ fi
 # back byte for byte rather than only that the tar opened.
 (cd "$WORK/snapshot" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$WORK/MANIFEST.sha256"
 
-tar -czf "$ARCHIVE" -C "$WORK" snapshot MANIFEST.sha256
+# The gateway rewrites whitelist.json by rename at each compaction and only then
+# empties its log, so a copy that straddles a rename can pair the old snapshot
+# with the new, emptied log - losing every add in between. The inode moves on
+# every rename, so an unchanged one means the pair is consistent; otherwise copy
+# again. The JSON check also catches a gateway build that still writes the file
+# in place. Prints the entry count; any failure is reported on stderr.
+copy_proxy_data() {
+  local dest="$WORK/proxy-data" attempt before after
+  if [[ ! -f "$PROXY_DATA_DIR/whitelist.json" ]]; then
+    echo "'$PROXY_DATA_DIR/whitelist.json' does not exist" >&2
+    return 1
+  fi
+  for attempt in 1 2 3 4 5; do
+    rm -rf "$dest"
+    before=$(stat -c %i "$PROXY_DATA_DIR/whitelist.json") || return 1
+    # A file changing under rsync (the log emptied mid-copy) is the case this loop
+    # exists for, so an rsync error is another attempt, not the end of the night.
+    if ! rsync -a --exclude='*.bak*' --exclude='*.tmp' "$PROXY_DATA_DIR/" "$dest/"; then
+      echo "proxy-data copy $attempt: rsync failed, retrying" >&2
+      sleep 2
+      continue
+    fi
+    after=$(stat -c %i "$PROXY_DATA_DIR/whitelist.json") || return 1
+    if [[ "$before" == "$after" ]] && python3 -I -c '
+import json, re, sys
+try:
+    entries = json.load(open(sys.argv[1]))
+except ValueError:
+    sys.exit(1)
+if not isinstance(entries, list) or not entries or not all(isinstance(h, str) and re.fullmatch(r"[0-9a-fA-F]{64}", h) for h in entries):
+    sys.exit(1)
+print(len(entries))
+' "$dest/whitelist.json"; then
+      return 0
+    fi
+    echo "proxy-data copy $attempt was inconsistent or not a non-empty hash list, retrying" >&2
+    sleep 2
+  done
+  echo "no consistent copy of '$PROXY_DATA_DIR' in 5 attempts" >&2
+  return 1
+}
+
+PARTS=(snapshot MANIFEST.sha256)
+PROXY_STATUS="proxy-data FAILED"
+if [[ -z "$PROXY_DATA_DIR" ]]; then
+  PROXY_STATUS="proxy-data skipped (PROXY_DATA_DIR empty)"
+elif WHITELIST_ENTRIES=$(copy_proxy_data); then
+  (cd "$WORK/proxy-data" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$WORK/MANIFEST-proxy-data.sha256"
+  PARTS+=(proxy-data MANIFEST-proxy-data.sha256)
+  PROXY_STATUS="proxy-data ok, whitelist ${WHITELIST_ENTRIES} entries"
+else
+  rm -rf "$WORK/proxy-data"
+fi
+
+tar -czf "$ARCHIVE" -C "$WORK" "${PARTS[@]}"
 
 # The archive must actually read back. A truncated or corrupt tar that is only
 # discovered at restore time is the same as having no backup at all.
@@ -121,4 +190,8 @@ else
   find "$BACKUP_DEST" -name 'woco-data-*.tar.gz*' -type f -mtime "+$KEEP_DAYS" -delete
 fi
 
-echo "woco-backup: ok $STAMP $MODE (${SIZE} bytes, ${FILE_COUNT} files) -> $BACKUP_DEST"
+if [[ "$PROXY_STATUS" == "proxy-data FAILED" ]]; then
+  echo "woco-backup: PARTIAL $STAMP $MODE (${SIZE} bytes, ${FILE_COUNT} files, $PROXY_STATUS - see above) -> $BACKUP_DEST" >&2
+  exit 1
+fi
+echo "woco-backup: ok $STAMP $MODE (${SIZE} bytes, ${FILE_COUNT} files, $PROXY_STATUS) -> $BACKUP_DEST"
