@@ -63,12 +63,12 @@ test("four tickets is one contact", () => {
   assert.equal(out[0].email, "ada@x.com");
 });
 
-test("only the questions on the buyer's record are copied - a question or notice changed since never widens it", () => {
+test("only the questions on the buyer's record are copied - a question changed since never widens it", () => {
   const claim = {
     claimerEmail: "a@x.com",
     fields: { field_1: "Ada", field_2: "Lovelace", field_3: "Leeds", field_4: "Instagram", field_5: "M" },
   };
-  // An untailored soft opt-in: the record keeps the name questions only.
+  // A record whose words named the name questions only (the form had no others then).
   const soft = buildAttendeeContacts([claim], opts(["a@x.com"], FIELDS, { "a@x.com": ["field_1", "field_2"] }));
   assert.equal(soft[0].firstName, "Ada");
   assert.equal(soft[0].lastName, "Lovelace");

@@ -43,8 +43,8 @@ export interface DrainOptions {
   /**
    * Per recorded address, the ids of THIS event's questions its record keeps -
    * fixed when the buyer said yes, from the words they read (owner 2026-10-15).
-   * Only those answers are copied, so a question added or a notice changed since
-   * never widens it. No entry = the email alone.
+   * Only those answers are copied, so a question added since never widens it.
+   * No entry = the email alone.
    */
   kept: ReadonlyMap<string, readonly string[]>;
 }

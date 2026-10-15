@@ -50,8 +50,6 @@ export interface CaptureConsentInput {
   choice: MarketingChoice;
   /** The organiser's name as the own-events sentence showed it. */
   organiserName?: string;
-  /** The notice's `tailoredMarketing` as create-checkout stamped it: decides what a soft opt-in keeps. */
-  tailored?: boolean;
   /** The event's questions as fulfilment read them: the wording names what the list keeps. */
   orderFields?: readonly OrderField[];
   /** create-checkout's hash of the wording it matched to the page's. */
@@ -79,15 +77,14 @@ export interface CaptureConsentInput {
  * stored as a consent record: "no" needs no new enforcement path, and routing it
  * through suppression makes it survive the organiser re-uploading the same CSV.
  *
- * The wording stored is rebuilt here from the mode, version, organiser name,
- * tailoring and the event's questions - never taken from the page - and recorded
- * only if it hashes to what create-checkout matched to the page's text, so the
- * record holds what that control said. The ids of the questions it named are
- * stored beside it, so a later edit to the questions or the notice never widens
- * what this buyer agreed to.
+ * The wording stored is rebuilt here from the mode, version, organiser name and
+ * the event's questions - never taken from the page - and recorded only if it
+ * hashes to what create-checkout matched to the page's text, so the record holds
+ * what that control said. The ids of the questions it named are stored beside
+ * it, so a later edit to the questions never widens what this buyer agreed to.
  */
 export function captureCheckoutConsent(input: CaptureConsentInput): void {
-  const { emailHash, organiserAddress, choice, organiserName, tailored, orderFields, wordingHash, ts, eventId, source = "checkout" } = input;
+  const { emailHash, organiserAddress, choice, organiserName, orderFields, wordingHash, ts, eventId, source = "checkout" } = input;
   const decision = marketingDecision(choice.mode, choice.ticked);
 
   if (!organiserAddress) {
@@ -101,7 +98,7 @@ export function captureCheckoutConsent(input: CaptureConsentInput): void {
     return;
   }
 
-  const keeps = listKeeps(orderFields, { mode: choice.mode, tailored: tailored === true });
+  const keeps = listKeeps(orderFields);
   const wording = marketingWording(choice.mode, choice.version, organiserName, keeps);
   if (!wording || !wordingHash || marketingWordingHash(wording) !== wordingHash) {
     // A record without the wording shown would be no evidence at all. The hash

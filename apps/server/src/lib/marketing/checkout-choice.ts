@@ -20,17 +20,11 @@ export function marketingWordingHash(w: MarketingWording): string {
   return createHash("sha256").update(JSON.stringify([w.sentence ?? null, w.box])).digest("hex");
 }
 
-/**
- * The metadata keys for a choice. The own-events sentence names the organiser,
- * and what a soft opt-in keeps follows the notice's `tailoredMarketing`, so both
- * travel as create-checkout read them from the notice: fulfilment rebuilds the
- * words, and the fields kept, from exactly these.
- */
+/** The metadata keys for a choice. The own-events sentence names the organiser, so their name travels too. */
 export function marketingMetadata(
   choice: MarketingChoice | undefined,
   organiserName: string,
   wordingHash: string | undefined,
-  tailored: boolean,
 ): Record<string, string> {
   if (!choice) return {};
   return {
@@ -39,7 +33,6 @@ export function marketingMetadata(
     marketingVersion: String(choice.version),
     marketingSurface: choice.surface,
     ...(choice.mode === "own-events" && organiserName ? { marketingOrganiser: organiserName } : {}),
-    ...(choice.mode === "own-events" && tailored ? { marketingTailored: "1" } : {}),
     ...(wordingHash ? { marketingWordingHash: wordingHash } : {}),
   };
 }
@@ -47,7 +40,7 @@ export function marketingMetadata(
 /** The choice a paid session carries; undefined when it carries none, or one that does not parse. */
 export function marketingFromMetadata(
   md: Record<string, string> | null | undefined,
-): { choice: MarketingChoice; organiserName?: string; tailored: boolean; wordingHash?: string } | undefined {
+): { choice: MarketingChoice; organiserName?: string; wordingHash?: string } | undefined {
   if (!md?.marketingMode) return undefined;
   const ticked = md.marketingTicked === "1" ? true : md.marketingTicked === "0" ? false : undefined;
   const choice = parseMarketingChoice({
@@ -60,7 +53,6 @@ export function marketingFromMetadata(
   return {
     choice,
     ...(md.marketingOrganiser ? { organiserName: md.marketingOrganiser } : {}),
-    tailored: md.marketingTailored === "1",
     ...(md.marketingWordingHash ? { wordingHash: md.marketingWordingHash } : {}),
   };
 }

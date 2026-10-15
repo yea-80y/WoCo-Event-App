@@ -42,7 +42,7 @@ const { listKeeps, marketingWording } = await import("@woco/shared");
 type CaptureInput = Parameters<typeof capture.captureCheckoutConsent>[0];
 /** The hash create-checkout carries for the wording it matched: the event's questions as given, none by default. */
 function hashFor(i: CaptureInput): string | undefined {
-  const w = marketingWording(i.choice.mode, i.choice.version, i.organiserName, listKeeps(i.orderFields, { mode: i.choice.mode, tailored: i.tailored === true }));
+  const w = marketingWording(i.choice.mode, i.choice.version, i.organiserName, listKeeps(i.orderFields));
   return w ? choiceMod.marketingWordingHash(w) : undefined;
 }
 /** A paid session as create-checkout left it: its hash travels with the choice. */
@@ -261,24 +261,18 @@ test("the stored wording is the server's, rebuilt from the event's questions - n
     "Email me about future events from this organiser. We'll keep your email, name and your answers to: Town for this. You can unsubscribe at any time.",
   );
   const g = hash(231);
-  cap({ emailHash: g, organiserAddress: ORG, choice: SOFT_YES, organiserName: "Punk Pub Ltd", tailored: true, orderFields: fields, ts: T1 });
+  cap({ emailHash: g, organiserAddress: ORG, choice: SOFT_YES, organiserName: "Punk Pub Ltd", orderFields: fields, ts: T1 });
   assert.equal(
     consent.getConsent(g, ORG)?.notice,
     "We'll email you about similar events from Punk Pub Ltd, and keep your email, name and your answers to: Town for this. You can unsubscribe from any email.",
-  );
-  const u = hash(233);
-  cap({ emailHash: u, organiserAddress: ORG, choice: SOFT_YES, organiserName: "Punk Pub Ltd", orderFields: fields, ts: T1 });
-  assert.equal(
-    consent.getConsent(u, ORG)?.notice,
-    "We'll email you about similar events from Punk Pub Ltd, and keep your email and name for this. You can unsubscribe from any email.",
-    "an untailored soft opt-in names the email and name only",
+    "a soft opt-in names what a consent yes names",
   );
 
   const never = hash(232);
   cap({ emailHash: never, organiserAddress: ORG, choice: { ...SOFT_YES, version: 99 } as unknown as typeof SOFT_YES, organiserName: "P", ts: T1 });
   assert.equal(consent.getConsent(never, ORG), null, "a wording never shown records nothing");
   const src = readFileSync(new URL("../src/lib/marketing/consent-capture.ts", import.meta.url), "utf-8");
-  assert.match(src, /const keeps = listKeeps\(orderFields, \{ mode: choice\.mode, tailored: tailored === true \}\);\n\s*const wording = marketingWording\(choice\.mode, choice\.version, organiserName, keeps\);/);
+  assert.match(src, /const keeps = listKeeps\(orderFields\);\n\s*const wording = marketingWording\(choice\.mode, choice\.version, organiserName, keeps\);/);
 });
 
 test("a yes is recorded only if the rebuilt wording hashes to what checkout matched - else nothing, and the buyer is not mailed", () => {
@@ -342,16 +336,17 @@ test("the record stores the ids of the questions its words named, from the same 
     { id: "a", type: "text" as const, label: "Allergies", required: false, health: true },
     { id: "k", type: "text" as const, label: "Next of kin", required: false },
   ];
-  const kept = (choice: CaptureInput["choice"], tailored: boolean, n: number) => {
-    cap({ emailHash: hash(n), organiserAddress: ORG, choice, organiserName: "P", tailored, orderFields: fields, ts: T1, eventId: "evt-k" });
+  const kept = (choice: CaptureInput["choice"], n: number, extra: object = {}) => {
+    cap({ emailHash: hash(n), organiserAddress: ORG, choice, organiserName: "P", orderFields: fields, ts: T1, eventId: "evt-k", ...extra });
     return consent.getConsent(hash(n), ORG)?.keptFields;
   };
-  assert.deepEqual(kept(CONSENT_YES, false, 260), ["n", "t"], "consent: every named answer");
-  assert.deepEqual(kept(CONSENT_YES, true, 261), ["n", "t"]);
-  assert.deepEqual(kept(SOFT_YES, false, 262), ["n"], "untailored soft opt-in: the name only");
-  assert.deepEqual(kept(SOFT_YES, true, 263), ["n", "t"], "tailored soft opt-in: every named answer");
-  // Checkout matched the untailored words; tailoring switched on before payment: nothing recorded.
-  const untailored = hashFor({ emailHash: "", organiserAddress: ORG, choice: SOFT_YES, organiserName: "P", orderFields: fields, ts: T1 });
-  cap({ emailHash: hash(264), organiserAddress: ORG, choice: SOFT_YES, organiserName: "P", tailored: true, orderFields: fields, wordingHash: untailored, ts: T1 });
+  assert.deepEqual(kept(CONSENT_YES, 260), ["n", "t"], "consent: every named answer");
+  assert.deepEqual(kept(SOFT_YES, 261), ["n", "t"], "soft opt-in: the same, one rule for both boxes");
+  // An old session's leftover tailoring narrows and widens nothing.
+  assert.deepEqual(kept(SOFT_YES, 262, { tailored: false }), ["n", "t"]);
+  assert.deepEqual(kept(CONSENT_YES, 263, { tailored: false }), ["n", "t"]);
+  // Checkout matched the words for the name alone; Town was added before payment: nothing recorded.
+  const nameOnly = hashFor({ emailHash: "", organiserAddress: ORG, choice: SOFT_YES, organiserName: "P", orderFields: [fields[0]!], ts: T1 });
+  cap({ emailHash: hash(264), organiserAddress: ORG, choice: SOFT_YES, organiserName: "P", orderFields: fields, wordingHash: nameOnly, ts: T1 });
   assert.equal(consent.getConsent(hash(264), ORG), null);
 });

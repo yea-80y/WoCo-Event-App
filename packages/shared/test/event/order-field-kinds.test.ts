@@ -12,8 +12,8 @@
  * `guardian|parent` from it, and "someone else's details" goes red (and the drain's
  * "someone else's number"); drop its email exception and "the platform's email field is not
  * an answer" goes red; let `listKeeps` keep the name question among the answers
- * and "the name is said once" goes red; ignore its scope, or let a soft opt-in
- * keep a non-name id, and "a soft opt-in keeps the email and name only" goes red; drop the health early-return in
+ * and "the name is said once" goes red; let it narrow on a second argument (the
+ * retired mode or tailoring) and "one rule for both boxes" goes red; drop the health early-return in
  * `orderFieldRequired` and "a sensitive question is never required" goes red.
  */
 import test from "node:test";
@@ -92,7 +92,6 @@ test("names, postcode, town and phone land in the list entry's own fields", () =
 });
 
 const f = (over: Partial<OrderField> & { label: string }): OrderField => ({ id: over.label, type: "text", required: false, ...over });
-const CONSENT = { mode: "consent", tailored: false } as const;
 const FORM: OrderField[] = [
   f({ id: ORDER_EMAIL_FIELD_ID, type: "email", label: "Email" }),
   f({ label: "Town" }),
@@ -137,7 +136,7 @@ test("someone else's details are never kept, nor placed in the buyer's own field
     assert.equal(listPlacement(field), null, label);
   }
   assert.deepEqual(
-    listKeeps([f({ label: "Your phone" }), f({ label: "Emergency contact phone" }), f({ label: "Next of kin" })], CONSENT),
+    listKeeps([f({ label: "Your phone" }), f({ label: "Emergency contact phone" }), f({ label: "Next of kin" })]),
     { name: false, answers: ["Your phone"], fieldIds: ["Your phone"] },
   );
   assert.deepEqual(listPlacement(f({ label: "Your phone" })), { slot: "phone", label: "Your phone" });
@@ -150,33 +149,29 @@ test("the platform's email field is not an answer: it is the entry's own address
 
 test("listKeeps: the name is said once, every other kept answer by label in form order", () => {
   const EMPTY = { name: false, answers: [], fieldIds: [] };
-  assert.deepEqual(listKeeps(undefined, CONSENT), EMPTY);
-  assert.deepEqual(listKeeps([], CONSENT), EMPTY);
-  assert.deepEqual(listKeeps([f({ label: "Full name" })], CONSENT), { name: true, answers: [], fieldIds: ["Full name"] });
-  assert.deepEqual(listKeeps(FORM, CONSENT), {
+  assert.deepEqual(listKeeps(undefined), EMPTY);
+  assert.deepEqual(listKeeps([]), EMPTY);
+  assert.deepEqual(listKeeps([f({ label: "Full name" })]), { name: true, answers: [], fieldIds: ["Full name"] });
+  assert.deepEqual(listKeeps(FORM), {
     name: true,
     answers: ["Town", "How did you hear about us?", "Postcode"],
     fieldIds: ["Town", "First name", "Surname", "How   did you hear about us?", "Postcode", "dup"],
   });
   // A crafted feed: anything but an array of objects with text ids keeps nothing, and never throws.
-  assert.deepEqual(listKeeps({} as unknown as OrderField[], CONSENT), EMPTY);
-  assert.deepEqual(listKeeps([null, 3] as unknown as OrderField[], CONSENT), EMPTY);
-  assert.deepEqual(listKeeps([{ ...f({ label: "Town" }), id: 7 as unknown as string }], CONSENT), EMPTY);
+  assert.deepEqual(listKeeps({} as unknown as OrderField[]), EMPTY);
+  assert.deepEqual(listKeeps([null, 3] as unknown as OrderField[]), EMPTY);
+  assert.deepEqual(listKeeps([{ ...f({ label: "Town" }), id: 7 as unknown as string }]), EMPTY);
 });
 
-test("a soft opt-in keeps the email and name only, unless the organiser's notice says they tailor (owner 2026-10-15)", () => {
-  assert.deepEqual(listKeeps(FORM, { mode: "own-events", tailored: false }), {
-    name: true, answers: [], fieldIds: ["First name", "Surname"],
-  });
-  assert.deepEqual(listKeeps(FORM, { mode: "own-events", tailored: true }), listKeeps(FORM, CONSENT));
-  // Tailoring is the soft opt-in's question only: a consent yes keeps every named answer.
-  assert.deepEqual(listKeeps(FORM, { mode: "consent", tailored: false }), listKeeps(FORM, CONSENT));
-  // Only a literal true widens it.
-  assert.deepEqual(
-    listKeeps(FORM, { mode: "own-events", tailored: "yes" as unknown as boolean }).fieldIds,
-    ["First name", "Surname"],
-  );
-  assert.deepEqual(listKeeps([f({ label: "Town" })], { mode: "own-events", tailored: false }), { name: false, answers: [], fieldIds: [] });
+test("one rule for both boxes: neither the mode nor the retired tailoring changes what is kept (owner 2026-10-15)", () => {
+  // A caller still passing the scope listKeeps used to take gets the same answer.
+  const withScope = listKeeps as (fields: readonly OrderField[], scope: unknown) => ReturnType<typeof listKeeps>;
+  for (const mode of ["consent", "own-events"]) {
+    for (const tailored of [true, false]) {
+      assert.deepEqual(withScope(FORM, { mode, tailored }), listKeeps(FORM), `${mode}, tailored ${tailored}`);
+    }
+  }
+  assert.deepEqual(listKeeps([f({ label: "Town" })]), { name: false, answers: ["Town"], fieldIds: ["Town"] });
 });
 
 test("listPlacement names a kept answer by its tidied label; an unnamed or sensitive one is not placed", () => {

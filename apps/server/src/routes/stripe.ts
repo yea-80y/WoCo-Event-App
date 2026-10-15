@@ -754,14 +754,10 @@ stripe.post("/create-checkout", async (c) => {
   // (2026-10-15): they name what the mailing list keeps, and the record must hold
   // what the buyer read. A page with older questions, an older organiser name or
   // an older version is refused before anything is held or charged.
-  // Whether the organiser tailors decides what a soft opt-in keeps (owner
-  // 2026-10-15), so what its sentence names: read from the notice, never the page.
-  const tailored = notice.status === "found" && notice.notice.tailoredMarketing === true;
   let marketingHash: string | undefined;
   if (marketing) {
     const current = MARKETING_CURRENT_VERSION[marketing.mode];
-    const keeps = listKeeps(event.orderFields, { mode: marketing.mode, tailored });
-    const rebuilt = marketingWording(marketing.mode, current, organiserName, keeps);
+    const rebuilt = marketingWording(marketing.mode, current, organiserName, listKeeps(event.orderFields));
     if (!rebuilt || marketing.version !== current || !marketing.wording || !sameMarketingWording(marketing.wording, rebuilt)) {
       return c.json(
         { ok: false, error: "This event's details have changed. Reload the page and try again.", code: MARKETING_WORDING_CHANGED },
@@ -1175,7 +1171,7 @@ stripe.post("/create-checkout", async (c) => {
       // for a sale that never completed is worthless. Mode, box, wording
       // version, surface and the hash of the wording matched above; absent
       // means no control was shown.
-      ...marketingMetadata(marketing, organiserName, marketingHash, tailored),
+      ...marketingMetadata(marketing, organiserName, marketingHash),
       // Months after the event this order's answers are kept (#547), carried
       // fulfilment -> hold -> ledger. Under the integrity tag like every key here.
       ...(retainMonths !== undefined ? { retainMonths: String(retainMonths) } : {}),

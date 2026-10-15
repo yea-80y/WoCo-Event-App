@@ -13,7 +13,8 @@
  * StripePayPanel and "both checkout panels link the organiser's notice" goes red;
  * point the embed back at WoCo's policy alone and "the embed links the organiser's
  * notice first" goes red; remove the router's /privacy-notice match and "every
- * shell routes the notice" goes red.
+ * shell routes the notice" goes red; put the tailoring switch back in the editor
+ * and "one plain marketing question" goes red.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -217,7 +218,10 @@ test("the editor offers choices and reassures: no disclaimer, no network warning
   assert.match(ed, /value="consent" bind:group=\{draft\.marketingBasis\}/);
   assert.match(ed, /bind:group=\{draft\.sharing\}/);
   assert.match(ed, /bind:group=\{draft\.orderRetentionMonths\}/);
-  assert.match(ed, /bind:checked=\{draft\.tailoredMarketing\}/);
+  // One keep rule for both boxes (owner 2026-10-15): the tailoring switch went, so
+  // a published notice is written without it and its hint is gone.
+  assert.doesNotMatch(ed, /tailored/i);
+  assert.doesNotMatch(ed, /to choose which events you email them about/);
 });
 
 test("own-events is a new draft's answer only; a published notice keeps its own, and consent is stored as absent", () => {

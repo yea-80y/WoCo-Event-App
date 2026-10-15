@@ -152,12 +152,7 @@
   /** What the control says, naming what the list keeps from this event's questions.
    *  Both panels render this object and checkout sends it, so they cannot differ. */
   const marketingWording = $derived(
-    buildMarketingWording(
-      marketingMode,
-      MARKETING_CURRENT_VERSION[marketingMode],
-      marketingOrganiser,
-      listKeeps(orderFields, { mode: marketingMode, tailored: status?.marketingTailored === true }),
-    )!,
+    buildMarketingWording(marketingMode, MARKETING_CURRENT_VERSION[marketingMode], marketingOrganiser, listKeeps(orderFields))!,
   );
   let marketingBox = $state<{ mode: MarketingMode; ticked: boolean }>({ mode: "consent", ticked: false });
   const marketingTicked = $derived(marketingBox.mode === marketingMode && marketingBox.ticked);

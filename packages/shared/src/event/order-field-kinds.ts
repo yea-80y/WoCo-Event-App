@@ -11,15 +11,14 @@
  * Always optional - answering it is the buyer's explicit consent - and its answer
  * never reaches a mailing list.
  *
- * Every other answer about the buyer does, once the buyer says yes to marketing
- * (owner 2026-10-15) - all of them for a consent yes, the name alone for an
- * untailored soft opt-in (`KeepScope`). There is no per-question choice, so the
- * checkout can name exactly what is kept (`listKeeps`, worded in `legal/consent.ts`).
+ * Every other answer about the buyer does, once the buyer joins the mailing list
+ * (owner 2026-10-15) - a ticked "Email me" and an unticked "Don't email me" alike.
+ * There is no per-question choice, so the checkout can name exactly what is kept
+ * (`listKeeps`, worded in `legal/consent.ts`).
  */
 
 import type { OrderField } from "../crypto/types.js";
 import { ORDER_EMAIL_FIELD_ID } from "./order-email-id.js";
-import type { MarketingMode } from "../legal/consent.js";
 
 /** Where a kept answer lands on a mailing-list entry. `null` = kept under its own label. */
 export type ListSlot = "firstName" | "lastName" | "fullName" | "postcode" | "city" | "phone" | null;
@@ -122,19 +121,6 @@ export function listPlacement(field: OrderField): { slot: ListSlot; label: strin
 
 const NAME_SLOTS: ReadonlySet<ListSlot> = new Set(["firstName", "lastName", "fullName"]);
 
-/**
- * Whose yes it is, as the organiser's CONFIRMED notice sets it - read by the
- * server, never taken from a page. A consent yes keeps every named answer; a soft
- * opt-in keeps the email and name only, unless the notice says the organiser uses
- * what the list keeps to choose which events to tell people about (owner
- * 2026-10-15): leaving a box alone is not an agreement to more than that needs.
- */
-export interface KeepScope {
-  mode: MarketingMode;
-  /** The notice's `tailoredMarketing`. */
-  tailored: boolean;
-}
-
 /** What a yes to marketing keeps besides the email. */
 export interface ListKeeps {
   /** A name question is asked. */
@@ -152,8 +138,7 @@ export interface ListKeeps {
  * Read from the event's questions. The checkout names exactly this, so the list
  * import places answers by `listPlacement` too: what is said is what is kept.
  */
-export function listKeeps(fields: readonly OrderField[] | undefined, scope: KeepScope): ListKeeps {
-  const answersToo = scope.mode !== "own-events" || scope.tailored === true;
+export function listKeeps(fields: readonly OrderField[] | undefined): ListKeeps {
   let name = false;
   const answers: string[] = [];
   const fieldIds: string[] = [];
@@ -161,7 +146,6 @@ export function listKeeps(fields: readonly OrderField[] | undefined, scope: Keep
     const at = field && typeof field === "object" && typeof field.id === "string" ? listPlacement(field) : null;
     if (!at) continue;
     if (NAME_SLOTS.has(at.slot)) name = true;
-    else if (!answersToo) continue;
     else if (!answers.includes(at.label)) answers.push(at.label);
     if (!fieldIds.includes(field.id)) fieldIds.push(field.id);
   }

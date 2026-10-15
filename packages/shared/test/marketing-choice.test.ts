@@ -10,8 +10,8 @@
  * clause and "name only" and "name and others" go red; join a lone name with a
  * comma and "name only" goes red; fill by two passes and "a name is filled once" goes red;
  * let `sameMarketingWording` ignore the sentence and "same wording" goes red;
- * ignore the scope in `listKeeps` and "a soft opt-in names the email and name
- * only" goes red.
+ * let `listKeeps` narrow a soft opt-in and "both boxes name the same keeps"
+ * goes red.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -32,9 +32,9 @@ import type { OrderField } from "../src/crypto/types.js";
 
 const NONE = { name: false, answers: [] };
 const q = (label: string, over: Partial<OrderField> = {}): OrderField => ({ id: label, type: "text", label, required: false, ...over });
-/** What the page and create-checkout both build, for an event's questions. Tailored = the notice's default. */
-const shown = (mode: "consent" | "own-events", fields: OrderField[], organiser = "Punk Pub Ltd", tailored = true) =>
-  marketingWording(mode, MARKETING_CURRENT_VERSION[mode], organiser, listKeeps(fields, { mode, tailored }))!;
+/** What the page and create-checkout both build, for an event's questions. */
+const shown = (mode: "consent" | "own-events", fields: OrderField[], organiser = "Punk Pub Ltd") =>
+  marketingWording(mode, MARKETING_CURRENT_VERSION[mode], organiser, listKeeps(fields))!;
 
 test("an untouched box means yes in own-events mode and no in consent mode", () => {
   assert.equal(marketingDecision("consent", false), "declined");
@@ -84,20 +84,24 @@ test("name and others: the name once, then every other answer by label", () => {
   assert.equal(shown("own-events", fields).box, MARKETING_OWN_EVENTS_BOX, "the box stays a refusal on its own");
 });
 
-test("a soft opt-in names the email and name only, unless the organiser tailors; consent mode is unchanged", () => {
-  const fields = [q("First name"), q("Town"), q("Surname"), q("How did you hear about us?")];
+test("both boxes name the same keeps (owner 2026-10-15): one rule, whichever box the notice sets", () => {
+  const forms: OrderField[][] = [
+    [],
+    [q("Full name")],
+    [q("Town")],
+    [q("First name"), q("Town"), q("Surname"), q("How did you hear about us?")],
+    [q("Allergies", { health: true }), q("Postcode"), q("Emergency contact phone")],
+  ];
+  const keepsIn = (text: string) => / keep (your email.*?) for this\./.exec(text)?.[1];
+  for (const fields of forms) {
+    const consent = keepsIn(shown("consent", fields).box);
+    assert.ok(consent, JSON.stringify(fields));
+    assert.equal(keepsIn(shown("own-events", fields).sentence!), consent, JSON.stringify(fields.map((f) => f.label)));
+  }
   assert.equal(
-    shown("own-events", fields, "Punk Pub Ltd", false).sentence,
-    "We'll email you about similar events from Punk Pub Ltd, and keep your email and name for this. You can unsubscribe from any email.",
+    shown("own-events", [q("Town")]).sentence,
+    "We'll email you about similar events from Punk Pub Ltd, and keep your email and your answers to: Town for this. You can unsubscribe from any email.",
   );
-  assert.equal(
-    shown("own-events", [q("Town")], "Punk Pub Ltd", false).sentence,
-    "We'll email you about similar events from Punk Pub Ltd, and keep your email for this. You can unsubscribe from any email.",
-  );
-  assert.match(shown("own-events", fields, "Punk Pub Ltd", true).sentence!, /keep your email, name and your answers to: Town, How did you hear about us\? for this/);
-  // Tailoring is a soft opt-in's question: a consent yes keeps every named answer either way.
-  assert.equal(shown("consent", fields, "P", false).box, shown("consent", fields, "P", true).box);
-  assert.match(shown("consent", fields, "P", false).box, /your email, name and your answers to: Town, How did you hear about us\? for this/);
 });
 
 test("a sensitive question is never named, flagged or read from its label", () => {

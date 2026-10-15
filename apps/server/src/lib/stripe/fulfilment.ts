@@ -1019,7 +1019,6 @@ export async function fulfilPaidSession(
         organiserAddress: eventCreatorAddress,
         choice: marketing.choice,
         ...(marketing.organiserName ? { organiserName: marketing.organiserName } : {}),
-        tailored: marketing.tailored,
         ...(eventOrderFields ? { orderFields: eventOrderFields } : {}),
         ...(marketing.wordingHash ? { wordingHash: marketing.wordingHash } : {}),
         ts: claimedAt,
