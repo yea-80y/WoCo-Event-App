@@ -1,7 +1,8 @@
 /**
  * The door scanner at `scan.<parent>`: the gateway answers that one name with the
  * scanner feed's latest immutable build, and nothing else ever (ens-gateway/ccip.ts
- * SCANNER_LABEL, lib/scanner/latest-build.ts).
+ * SCANNER_LABEL, lib/scanner/latest-build.ts); `/api/health` `scanner` goes red
+ * when that build stops serving the files a door phone needs (lib/scanner/health.ts).
  *
  * MUTATIONS (each turns this file red):
  *  - drop the scan branch in the handler -> "scan is answered with the scanner's build";
@@ -9,7 +10,10 @@
  *  - special-case `door`/`scanner` -> "door and scanner are ordinary names";
  *  - let a feed failure clear the last good build -> "a failed read keeps the last good build";
  *  - walk backwards / trust the lookup over the head -> "never goes backwards";
- *  - accept any payload as a build -> "an update that is not a scanner build".
+ *  - accept any payload as a build -> "an update that is not a scanner build";
+ *  - drop the content-type check -> "bee's error document is not the file";
+ *  - drop a critical file -> "a missing critical file is red";
+ *  - drop the scanner section or its probe from index.ts -> wiring tests.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -28,7 +32,15 @@ import {
   scannerRefFromUpdate,
   type ScannerFeedReader,
 } from "../src/lib/scanner/latest-build.js";
+import {
+  criticalScannerFiles,
+  evaluateScanner,
+  probeScanner,
+  type BuildFileRead,
+  type FetchBuildFile,
+} from "../src/lib/scanner/health.js";
 import type { VerifiedSocRead } from "../src/lib/swarm/soc-read.js";
+import { alarmGate } from "../src/lib/health/alarm-gate.js";
 
 const ABI = AbiCoder.defaultAbiCoder();
 const h = (c: string) => c.repeat(64);
@@ -319,6 +331,102 @@ test("concurrent reads share one walk", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// /api/health scanner
+// ---------------------------------------------------------------------------
+
+const INDEX_HTML = `<!doctype html><html><head>
+    <script type="module" crossorigin src="./assets/scanner-t7rIg_L-.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/scanner-V-3hAdeZ.css">
+  <link rel="manifest" href="./manifest.webmanifest"></head><body><div id="app"></div></body></html>`;
+const SW_JS =
+  'if(!self.define){}define(["./workbox-0bb07689"],function(e){"use strict";self.skipWaiting(),e.clientsClaim(),' +
+  'e.precacheAndRoute([{url:"index.html",revision:"a17b"},{url:"assets/scanner-t7rIg_L-.js",revision:null},' +
+  '{url:"assets/qr-scanner-worker.min-D85Z9gVD.js",revision:null}],{}),e.cleanupOutdatedCaches()});';
+const CRITICAL = [
+  "index.html",
+  "sw.js",
+  "workbox-0bb07689.js",
+  "assets/scanner-t7rIg_L-.js",
+  "assets/qr-scanner-worker.min-D85Z9gVD.js",
+];
+
+function bzz(overrides: Record<string, BuildFileRead> = {}) {
+  const asked: string[] = [];
+  const fetchFile: FetchBuildFile = async (ref, path) => {
+    asked.push(`${ref}/${path}`);
+    if (overrides[path]) return overrides[path];
+    if (path === "index.html") return { ok: true, body: toUtf8Bytes(INDEX_HTML), contentType: "text/html; charset=utf-8" };
+    if (path === "sw.js") return { ok: true, body: toUtf8Bytes(SW_JS), contentType: "text/javascript; charset=utf-8" };
+    if (path.endsWith(".js")) return { ok: true, body: new Uint8Array(10), contentType: "text/javascript; charset=utf-8" };
+    return { ok: false, reason: "HTTP 404" };
+  };
+  return { fetchFile, asked };
+}
+
+const sourceWith = (refs: string[], opts: Parameters<typeof feed>[1] = {}) => new ScannerBuildSource(feed(refs, opts).reader, quiet);
+
+test("the critical files are named by the build itself", () => {
+  assert.deepEqual(criticalScannerFiles(INDEX_HTML, SW_JS), {
+    files: ["workbox-0bb07689.js", "assets/scanner-t7rIg_L-.js", "assets/qr-scanner-worker.min-D85Z9gVD.js"],
+  });
+  assert.ok("error" in criticalScannerFiles("<html></html>", SW_JS));
+  assert.ok("error" in criticalScannerFiles(INDEX_HTML, SW_JS.replace('define(["./workbox-0bb07689"]', "define([]")));
+  assert.ok("error" in criticalScannerFiles(INDEX_HTML, SW_JS.replace("qr-scanner-worker", "qr")));
+});
+
+test("a build that serves every critical file is green, and each was fetched from that build", async () => {
+  const files = bzz();
+  const r = await probeScanner(sourceWith([h("1"), SCANNER]), files.fetchFile);
+  assert.deepEqual(evaluateScanner(r), { ok: true });
+  assert.deepEqual(r.files, CRITICAL);
+  assert.deepEqual(files.asked, CRITICAL.map((p) => `${SCANNER}/${p}`));
+  assert.equal(r.feedIndex, 1n);
+});
+
+for (const path of CRITICAL) {
+  test(`a missing critical file is red: ${path}`, async () => {
+    const r = await probeScanner(sourceWith([SCANNER]), bzz({ [path]: { ok: false, reason: "HTTP 404" } }).fetchFile);
+    const v = evaluateScanner(r);
+    assert.equal(v.ok, false);
+    assert.ok(r.missing.some((m) => m.path === path), JSON.stringify(r.missing));
+  });
+}
+
+test("bee's error document is not the file: a script served as HTML is missing", async () => {
+  // A path absent from the manifest gets index.html with a 200 (Swarm-Error-Document).
+  const asHtml: BuildFileRead = { ok: true, body: toUtf8Bytes(INDEX_HTML), contentType: "text/html; charset=utf-8" };
+  for (const path of ["sw.js", "workbox-0bb07689.js", "assets/qr-scanner-worker.min-D85Z9gVD.js"]) {
+    const r = await probeScanner(sourceWith([SCANNER]), bzz({ [path]: asHtml }).fetchFile);
+    assert.equal(evaluateScanner(r).ok, false, path);
+  }
+});
+
+test("a feed that cannot be read is red - with or without a last good build", async () => {
+  const none = await probeScanner(sourceWith([], { lookup: null }), bzz().fetchFile);
+  assert.equal(evaluateScanner(none).ok, false);
+  assert.equal(none.build, null);
+
+  const faults = new Map<bigint, VerifiedSocRead>();
+  const f = feed([SCANNER], { faults });
+  const src = new ScannerBuildSource(f.reader, quiet);
+  await src.refresh();
+  faults.set(1n, { status: "unavailable", reason: "bee HTTP 503" });
+  const r = await probeScanner(src, bzz().fetchFile);
+  assert.equal(r.build, SCANNER, "still checks the build the name is answered with");
+  assert.equal(evaluateScanner(r).ok, false);
+});
+
+test("a build whose sw.js names no workbox runtime is red", async () => {
+  const sw: BuildFileRead = { ok: true, body: toUtf8Bytes("self.skipWaiting()"), contentType: "text/javascript" };
+  const r = await probeScanner(sourceWith([SCANNER]), bzz({ "sw.js": sw }).fetchFile);
+  assert.equal(evaluateScanner(r).ok, false);
+});
+
+test("before the first probe the section is unknown, which never pages", () => {
+  assert.equal(evaluateScanner(null).ok, null);
+});
+
+// ---------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------
 
@@ -328,6 +436,19 @@ test("the gateway route answers scan from the live scanner build and counts it",
   const route = source("../src/routes/ens-gateway.ts");
   assert.match(route, /scannerBuild: \(\) => scannerBuild\.current\(\),/);
   assert.match(route, /const contenthashAnswers: Record<ContenthashAnswer, number> = \{[^}]*\bscan: 0\b[^}]*\}/);
+});
+
+test("health reports the scanner section, and its probe runs from boot", () => {
+  const index = source("../src/index.ts");
+  assert.match(index, /\n {4}scanner: scannerHealth\(\),\n/);
+  assert.match(index, /\nstartScannerProbe\(\);\n/);
+});
+
+test("a red scanner section pages /api/health/alarms, by name or in the default watch", () => {
+  const report = { ok: true, scanner: { ok: false, reason: "not served from our bee: sw.js" } };
+  assert.equal(alarmGate(report, "scanner").status, 503);
+  assert.equal(alarmGate(report, undefined).status, 503);
+  assert.equal(alarmGate({ ok: true, scanner: { ok: null } }, "scanner").status, 200);
 });
 
 test("the server reads the topic the scanner deploy writes", async () => {
