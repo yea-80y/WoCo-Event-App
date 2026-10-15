@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { EventFeed, EventGeo, EventTag } from "@woco/shared";
+  import { eventHasPlace, EVENT_PLACE_REQUIRED } from "@woco/shared";
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { updateEventMeta, deleteEvent } from "../../api/events.js";
   import { auth } from "../../auth/auth-store.svelte.js";
@@ -65,7 +66,8 @@
     return null;
   });
 
-  const canSave = $derived(!saving && title.trim().length > 0 && !dateError);
+  const hasPlace = $derived(eventHasPlace(geo));
+  const canSave = $derived(!saving && title.trim().length > 0 && !dateError && hasPlace);
 
   function geoEqual(a: EventGeo | undefined, b: EventGeo | undefined): boolean {
     const norm = (g: EventGeo | undefined) => JSON.stringify(g ?? {}, Object.keys(g ?? {}).sort());
@@ -90,7 +92,7 @@
     if (startIso !== new Date(event.startDate).toISOString()) updates.startDate = startIso;
     if (endIso !== new Date(event.endDate).toISOString()) updates.endDate = endIso;
     if (location.trim() !== event.location) updates.location = location.trim();
-    if (!geoEqual(geo, event.geo)) updates.geo = geo ?? {};
+    if (geo && !geoEqual(geo, event.geo)) updates.geo = geo;
     if (!tagsEqual(tags, event.tags ?? [])) updates.tags = tags;
     // Clear-only: the route refuses a string here, because SETTING a name needs
     // the on-chain ownership proof that only stamp-event performs.
@@ -207,11 +209,6 @@
         <input type="datetime-local" bind:value={endDate} />
       </label>
     </div>
-
-    <label>
-      <span>Location</span>
-      <input type="text" bind:value={location} maxlength="300" />
-    </label>
   </div>
 
   <LocationPicker bind:geo bind:location />
@@ -238,6 +235,8 @@
 
   {#if dateError}
     <p class="field-error">{dateError}</p>
+  {:else if !hasPlace}
+    <p class="field-error">{EVENT_PLACE_REQUIRED}.</p>
   {/if}
   {#if error}
     <p class="field-error">{error}</p>

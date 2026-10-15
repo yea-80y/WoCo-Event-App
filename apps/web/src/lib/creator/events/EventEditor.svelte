@@ -113,11 +113,6 @@
       <input type="datetime-local" bind:value={endDate} min={minEnd} />
     </label>
   </div>
-
-  <label>
-    <span>Location</span>
-    <input type="text" bind:value={location} placeholder="Venue or online link" />
-  </label>
 </div>
 
 <LocationPicker bind:geo bind:location />

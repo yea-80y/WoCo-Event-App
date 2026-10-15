@@ -69,6 +69,10 @@ export interface EventGeo {
   /** RESERVED: future link to a WoCo venue profile. Empty at launch; reserving
    *  it now means the venue-profile graph needs no schema migration. */
   venueRef?: string;
+  /** An online event: it has no place, so nothing else here applies and no
+   *  distance filter can match it. The joining link is never stored here - this
+   *  feed is public, and the link is for ticket holders. */
+  online?: true;
 }
 
 // ---------------------------------------------------------------------------
@@ -464,8 +468,9 @@ export interface UpdateEventMetaRequest {
   /** Replacement discovery tags. Present (even empty) ⇒ overwrite the event's tags;
    *  absent ⇒ leave unchanged. Re-signs the SOC (gas-free) + triggers a snapshot rebuild. */
   tags?: EventTag[];
-  /** Replacement structured location. Present ⇒ overwrite (empty object clears);
-   *  absent ⇒ leave unchanged. Re-signs the SOC + triggers a snapshot rebuild. */
+  /** Replacement structured location. Present ⇒ overwrite, and it must still be a
+   *  place (`eventHasPlace`) - an event's place cannot be cleared. Absent ⇒ leave
+   *  unchanged. Re-signs the SOC + triggers a snapshot rebuild. */
   geo?: EventGeo;
   /** Remove the event's sub-ENS name. `null` clears it; a string is REFUSED —
    *  setting one goes through POST /api/sub-ens/stamp-event, which proves
