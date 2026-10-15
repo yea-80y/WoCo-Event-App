@@ -17,6 +17,12 @@
  * extension needs - which a browser enforces on `sw.js` anyway.
  *
  * Red when the feed cannot be read or any critical file is not served.
+ *
+ * WHAT THIS CANNOT SEE. It reads OUR bee, which can keep serving a chunk from
+ * its own store after a dead batch has let the network drop it - so green here
+ * is not proof that a phone elsewhere can load the build. The real guards are
+ * upstream: every frontend deploy re-uploads the scanner under the current batch
+ * (`npm run deploy`), and the `postage` section alarms before a batch dies.
  */
 import { BEE_URL } from "../../config/swarm.js";
 import { errorClass } from "../http/error-class.js";
