@@ -10,7 +10,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { buildDoorPassUrl, parseDoorPassFragment, type CheckinPack, type CheckinRecord } from "@woco/shared";
-import { chooseEvent, endedEventCleanup, eventMarker, liveEvents, parseEventMarker, type PassSummary } from "../src/lib/scanner/events.js";
+import {
+  chooseEvent,
+  ENDED_RECORDS_KEPT_MS,
+  endedAtMs,
+  endedEventCleanup,
+  eventMarker,
+  isLive,
+  liveEvents,
+  parseEventMarker,
+  type PassSummary,
+} from "../src/lib/scanner/events.js";
 import { storeKey } from "../src/lib/scanner/scope.js";
 import * as db from "../src/lib/scanner/db.js";
 
@@ -59,6 +69,25 @@ test("an ended event's attendee data goes at once; the rest once nothing is wait
   const pending = [storeKey("event-old", "ser-1", 1)];
   assert.deepEqual(endedEventCleanup([A, EXPIRED, DEAD], pending, NOW), { clear: ["event-revoked"], dropAttendeeData: ["event-old"] });
   assert.deepEqual(endedEventCleanup([A, B], [], NOW), { clear: [], dropAttendeeData: [] }, "live events are never touched");
+});
+
+test("an ended pass's unsynced check-ins go 30 days after it ended - never a live pass's", () => {
+  const pending = [storeKey("event-old", "ser-1", 1), storeKey("event-a", "ser-1", 1)];
+  const ended = EXPIRED.exp * 1000;
+  const farLive = { ...A, exp: Math.floor(NOW / 1000) + 10 * 365 * 86400 };
+  assert.deepEqual(endedEventCleanup([farLive, EXPIRED], pending, ended + ENDED_RECORDS_KEPT_MS - 1), { clear: [], dropAttendeeData: ["event-old"] });
+  assert.deepEqual(endedEventCleanup([farLive, EXPIRED], pending, ended + ENDED_RECORDS_KEPT_MS), { clear: ["event-old"], dropAttendeeData: [] });
+  assert.deepEqual(endedEventCleanup([farLive], pending, ended + 5 * ENDED_RECORDS_KEPT_MS), { clear: [], dropAttendeeData: [] });
+  assert.equal(ENDED_RECORDS_KEPT_MS, 30 * 24 * 60 * 60 * 1000);
+});
+
+test("the server's 'expired' ends a pass the phone's clock still calls live, and the 30 days run from it", () => {
+  const told = { ...A, expiredAt: NOW - 1000 };
+  assert.equal(isLive(A, NOW), true);
+  assert.equal(isLive(told, NOW), false);
+  assert.equal(endedAtMs(told), NOW - 1000, "the earlier of exp and the server's word");
+  assert.equal(endedAtMs(EXPIRED), EXPIRED.exp * 1000);
+  assert.deepEqual(chooseEvent("event-a", [told], NOW), { kind: "ended", eventId: "event-a", reason: "expired" });
 });
 
 // ---------------------------------------------------------------------------
@@ -110,14 +139,20 @@ test("a reset removes the current event only - every other event, and its tabs, 
   assert.equal(await db.getPendingClaimId("event-b", "ser-1", 2), "claim-event-b");
 });
 
-test("dropping an ended event's attendee data keeps its unsynced check-ins", async () => {
+test("dropping an ended event's attendee data keeps its unsynced check-ins, and not its pass secret", async () => {
   db.useIndexedDbForTests(new IDBFactory());
   await provisionInStorage("event-a");
-  await db.dropAttendeeData("event-a");
+  await db.putDoorEntries("event-a", "tok-event-a", { jti: "j", next: 1, entries: [{ seriesId: "ser-1", edition: 3, email: "b@example.com", source: "sale" }], tombstones: [] });
+  await db.dropAttendeeData("event-a", NOW);
   assert.equal(await db.getRoster("event-a"), undefined);
   assert.equal(await db.getPack("event-a"), undefined);
+  assert.equal(await db.getDoorEntries("event-a"), undefined);
   assert.equal((await db.getPending("event-a")).length, 1);
-  assert.ok(await db.getPass("event-a"), "its pass stays, so the event is still known to be waiting");
+  const pass = await db.getPass("event-a");
+  assert.ok(pass, "what is left of its pass stays, so the event is still known to be waiting");
+  assert.equal(pass.token, "");
+  assert.equal(pass.keyB64url, "");
+  assert.equal(isLive(pass, NOW), false, "and it never opens again");
 });
 
 test("marking a pass dead and recording its use never undo each other", async () => {

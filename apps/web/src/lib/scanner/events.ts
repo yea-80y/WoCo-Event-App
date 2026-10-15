@@ -15,6 +15,12 @@ export interface PassSummary {
   exp: number;
   lastUsedAt?: number;
   dead?: string;
+  /**
+   * When this phone took the pass as expired (its clock, epoch ms): the server said so
+   * before the phone's clock did, or the pass was cleaned up after its `exp`. Once set
+   * the pass never opens again, whatever the clock does next.
+   */
+  expiredAt?: number;
 }
 
 const MARKER = /^#\/e\/([^/]+)$/;
@@ -34,7 +40,12 @@ export function parseEventMarker(hash: string): string | null {
 }
 
 export function isLive(p: PassSummary, now: number): boolean {
-  return !p.dead && !isPassExpired(p.exp, now);
+  return !p.dead && p.expiredAt === undefined && !isPassExpired(p.exp, now);
+}
+
+/** Whether the pass has expired - by its own `exp` on this phone's clock, or by the server's word. */
+export function hasExpired(p: PassSummary, now: number): boolean {
+  return p.expiredAt !== undefined || isPassExpired(p.exp, now);
 }
 
 /** Events a tab may open or switch to: live passes only, most recently used first. */
@@ -72,17 +83,41 @@ function ended(p: PassSummary): EventChoice {
 }
 
 /**
- * What an ended event (pass expired or refused) leaves on the phone. Its roster
- * and pack - attendee data nothing can use any more - go at once. Its check-ins
- * stay while any are unsynced, then the event goes entirely.
+ * How long an ended pass's unsynced check-ins stay. They hold no names (ticket, time,
+ * device id) and can never sync once the pass is over; they stay this long so the phone
+ * keeps saying they never reached WoCo, then go.
  */
+export const ENDED_RECORDS_KEPT_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** When the pass ended for good on this phone's clock: its `exp`, or earlier if the server said so. */
+export function endedAtMs(p: PassSummary): number {
+  const exp = Number.isFinite(p.exp) ? p.exp * 1000 : 0;
+  return p.expiredAt === undefined ? exp : Math.min(exp, p.expiredAt);
+}
+
+export type EndedAction = "keep" | "drop-attendee-data" | "clear";
+
+/**
+ * What an ended event (pass expired or refused) leaves on the phone. Its attendee
+ * data - roster, pack, door entries - and the pass itself (token + pass secret) go at
+ * once: nothing can use them any more. Its check-ins stay while any are unsynced, for
+ * ENDED_RECORDS_KEPT_MS after the pass ended, then the event goes entirely. A live
+ * pass is never touched.
+ */
+export function endedEventAction(p: PassSummary | undefined, hasUnsynced: boolean, now: number): EndedAction {
+  if (!p || isLive(p, now)) return "keep";
+  return hasUnsynced && now < endedAtMs(p) + ENDED_RECORDS_KEPT_MS ? "drop-attendee-data" : "clear";
+}
+
+/** `endedEventAction` for every stored pass. */
 export function endedEventCleanup(passes: PassSummary[], pendingKeys: string[], now: number): { clear: string[]; dropAttendeeData: string[] } {
   const unsynced = new Set(pendingKeys.map(keyEvent));
   const clear: string[] = [];
   const dropAttendeeData: string[] = [];
   for (const p of passes) {
-    if (isLive(p, now)) continue;
-    (unsynced.has(p.eventId) ? dropAttendeeData : clear).push(p.eventId);
+    const action = endedEventAction(p, unsynced.has(p.eventId), now);
+    if (action === "clear") clear.push(p.eventId);
+    else if (action === "drop-attendee-data") dropAttendeeData.push(p.eventId);
   }
   return { clear, dropAttendeeData };
 }

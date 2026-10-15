@@ -19,7 +19,10 @@ import {
   applyDoorEntriesPage,
   doorKeyMatches,
   emptyDoorEntries,
+  fetchDoorEntriesPage,
   mergeDoorRoster,
+  restoreDoorEntries,
+  toStoredDoorEntries,
   type DoorEntriesContext,
 } from "../src/lib/scanner/door-entries.ts";
 
@@ -112,4 +115,47 @@ test("the server's door key is compared with the one the link derives", async ()
   assert.equal(await doorKeyMatches(P, doorKeyRefOf(pk)), true);
   assert.equal(await doorKeyMatches(P, "00".repeat(32)), false);
   assert.equal(await doorKeyMatches(P, null), null);
+});
+
+// ── what a reload starts from, and what the server's answers mean ───────────
+
+test("a stored list restores under its own pass only; another pass's, or one that does not read, starts empty", async () => {
+  const state = (await applyDoorEntriesPage(emptyDoorEntries(), page([await add(1), await add(2), remove(2)]), ctx)).state;
+  const stored = toStoredDoorEntries(state);
+  assert.deepEqual(JSON.parse(JSON.stringify(stored)), stored, "plain data: nothing depends on cloning a Map");
+  const back = restoreDoorEntries(stored, JTI);
+  assert.deepEqual([...back.entries.keys()], [`${SERIES} 1`]);
+  assert.deepEqual([...back.tombstones], [`${SERIES} 2`]);
+  assert.equal(back.next, state.next);
+
+  for (const [what, value, jti] of [
+    ["another pass's", stored, "b".repeat(32)],
+    ["no pass id", stored, null],
+    ["nothing stored", undefined, JTI],
+    ["a bad cursor", { ...stored, next: -1 }, JTI],
+    ["no arrays", { ...stored, entries: "x" }, JTI],
+  ] as const) {
+    const s = restoreDoorEntries(value, jti);
+    assert.equal(s.entries.size + s.tombstones.size + s.next, 0, what);
+    assert.equal(s.jti, null, what);
+  }
+  const hidden = restoreDoorEntries({ ...stored, entries: [...stored.entries, { seriesId: SERIES, edition: 2, email: "x@example.com" }] }, JTI);
+  assert.equal(hidden.entries.has(`${SERIES} 2`), false, "a tombstone still hides a stored entry");
+});
+
+test("the server's answers: a page, a refused pass (expired or not), an outdated scanner, and everything else is 'later'", async () => {
+  const pg = page([await add(1)]);
+  const answer = (status: number, body: unknown) =>
+    fetchDoorEntriesPage({ fetchFn: async () => Response.json(body, { status }), apiBase: "", eventId: EVENT, token: "t", deviceId: "dev00001", since: 0 });
+  assert.deepEqual(await answer(200, { ok: true, data: pg }), { kind: "page", page: pg });
+  assert.deepEqual(await answer(401, { ok: false, error: "Door pass revoked", reason: "revoked" }), { kind: "dead", message: "Door pass revoked", expired: false });
+  assert.deepEqual(await answer(401, { ok: false, error: "Door pass expired", reason: "expired" }), { kind: "dead", message: "Door pass expired", expired: true });
+  assert.equal((await answer(403, { ok: false, error: "Door pass is for a different event" })).kind, "dead");
+  assert.equal((await answer(409, { ok: false, error: "one scanner", reason: "wrong-device" })).kind, "dead");
+  assert.deepEqual(await answer(400, { ok: false, reason: "outdated-client" }), { kind: "outdated" });
+  for (const [status, body] of [[503, { ok: false }], [500, null], [200, { ok: true }], [200, { ok: true, data: { ...pg, log: "x" } }], [400, { ok: false }]] as const) {
+    assert.deepEqual(await answer(status, body), { kind: "later" }, `${status} ${JSON.stringify(body)}`);
+  }
+  const offline = await fetchDoorEntriesPage({ fetchFn: async () => { throw new TypeError("offline"); }, apiBase: "", eventId: EVENT, token: "t", deviceId: "d", since: 0 });
+  assert.deepEqual(offline, { kind: "later" });
 });

@@ -18,6 +18,7 @@ import {
   type CheckinClaimResponse,
   type CheckinRecord,
 } from "@woco/shared";
+import { isExpiredRefusal } from "./pass-gate.js";
 
 /** WoCo's copy of the event has no such ticket type: this scanner's list is older or newer than the server's. */
 export const WRONG_TICKET_TYPE_MESSAGE = "This ticket type isn't part of this event - tap ↻ to refresh, then scan again";
@@ -29,7 +30,7 @@ export type ClaimAnswer =
   | { kind: "admitted"; record: CheckinRecord }
   | { kind: "already-in"; record: CheckinRecord }
   /** The pass was revoked or expired - no scan on this device can succeed. */
-  | { kind: "pass-dead"; message: string }
+  | { kind: "pass-dead"; message: string; expired: boolean }
   /** The server needs newer scanner code. Not admitted; the scanner updates itself. */
   | { kind: "outdated"; message: string }
   | { kind: "cant-confirm"; message: string };
@@ -70,7 +71,7 @@ export async function claimAdmission(call: ClaimCall): Promise<ClaimAnswer> {
     }
 
     if (resp.status === 401 || resp.status === 403) {
-      return { kind: "pass-dead", message: body?.error ?? "Door pass no longer valid" };
+      return { kind: "pass-dead", message: body?.error ?? "Door pass no longer valid", expired: isExpiredRefusal(resp.status, body) };
     }
     if (resp.status === 409) {
       return { kind: "cant-confirm", message: body?.error ?? "This door pass belongs to another scanner" };

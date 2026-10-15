@@ -7,6 +7,8 @@
  * Plaintext roster on disk is intentional: the device already holds the
  * roster key (from the pass URL fragment) in the same store, so encrypting
  * at rest here would add no security — provisioning a device IS trusting it.
+ * None of it outlives the pass: once it has ended, the attendee data and the
+ * pass itself go (`cleanUpEndedEvent`).
  *
  * One phone can hold several events at once (two doors, two tabs): passes,
  * packs, rosters, conflicts, check-ins, the unsynced queue and in-flight claims
@@ -15,6 +17,8 @@
 
 import type { CheckinPack, CheckinRecord, CheckinConflict, RosterEntry } from "@woco/shared";
 import { eventKeyBounds, placementOf, scopeV1Claims, scopeV1Records, storeKey } from "./scope.js";
+import { endedAtMs, endedEventAction, hasExpired, type EndedAction } from "./events.js";
+import type { StoredDoorEntries } from "./door-entries.js";
 
 /**
  * A NEW database, not a version bump of the old one. Upgrading "woco-scanner" in
@@ -49,7 +53,12 @@ const LEGACY_SECRETS = ["pass", "pack", "roster", "conflicts"] as const;
  */
 const LEGACY_MERGE_WAIT_MS = 1_500;
 
-/** kv: device-wide (device id, copy marker). Every other store is per event: keyed by eventId, or by `storeKey`. */
+/**
+ * kv: device-wide (device id, copy marker), plus each event's door entries under
+ * `doorEntriesKey` - a key, not a store, so adding them needed no version bump that a
+ * tab still running the previous scanner would have to close for. Every other store is
+ * per event: keyed by eventId, or by `storeKey`.
+ */
 const STORES = ["kv", "passes", "packs", "rosters", "conflicts", "checkins", "pending", "claims"] as const;
 /** Keyed by eventId. */
 const EVENT_STORES = ["passes", "packs", "rosters", "conflicts"] as const;
@@ -359,7 +368,9 @@ function tx<T>(store: string, mode: IDBTransactionMode, run: (s: IDBObjectStore)
 // ── per-event state ─────────────────────────────────────────────────────────
 
 export interface StoredPass {
+  /** "" once the pass has ended and been cleaned up (`dropEndedEventDataIn`). */
   token: string;
+  /** The pass secret P; "" once the pass has ended and been cleaned up. */
   keyB64url: string;
   eventId: string;
   exp: number;
@@ -367,7 +378,12 @@ export interface StoredPass {
   lastUsedAt?: number;
   /** Set when the server refused the pass (revoked, bound to another phone): it opens nothing again. */
   dead?: string;
+  /** See `PassSummary.expiredAt`. */
+  expiredAt?: number;
 }
+
+/** Never in an event id (scope.ts), so one event's key cannot be read as another's. */
+const doorEntriesKey = (eventId: string) => `doorEntries\u0000${eventId}`;
 
 const kvGet = <T>(key: string) => tx<T | undefined>("kv", "readonly", (s) => s.get(key) as IDBRequest<T | undefined>);
 const kvSet = (key: string, value: unknown) => tx("kv", "readwrite", (s) => s.put(value, key));
@@ -375,7 +391,22 @@ const get = <T>(store: string, key: string) => tx<T | undefined>(store, "readonl
 const put = (store: string, value: unknown, key: string) => tx(store, "readwrite", (s) => s.put(value, key));
 
 export const getPass = (eventId: string) => get<StoredPass>("passes", eventId);
-export const putPass = (p: StoredPass) => put("passes", p, p.eventId);
+
+/** Store an event's pass. A NEW pass also drops the door entries opened under the old one. */
+export async function putPass(p: StoredPass): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(["passes", "kv"], "readwrite");
+    const passes = t.objectStore("passes");
+    const old = passes.get(p.eventId) as IDBRequest<StoredPass | undefined>;
+    old.onsuccess = () => {
+      if (old.result?.token !== p.token) t.objectStore("kv").delete(doorEntriesKey(p.eventId));
+      passes.put(p, p.eventId);
+    };
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+}
 export const getAllPasses = () => tx<StoredPass[]>("passes", "readonly", (s) => s.getAll() as IDBRequest<StoredPass[]>);
 export const getPack = (eventId: string) => get<CheckinPack>("packs", eventId);
 export const putPack = (p: CheckinPack) => put("packs", p, p.eventId);
@@ -383,23 +414,58 @@ export const getRoster = (eventId: string) => get<RosterEntry[]>("rosters", even
 export const putRoster = (eventId: string, r: RosterEntry[]) => put("rosters", r, eventId);
 export const getConflicts = (eventId: string) => get<CheckinConflict[]>("conflicts", eventId);
 export const putConflicts = (eventId: string, c: CheckinConflict[]) => put("conflicts", c, eventId);
+export const getDoorEntries = (eventId: string) => kvGet<StoredDoorEntries>(doorEntriesKey(eventId));
 
-/** Read-modify-write in one transaction, so one tab's change cannot undo another's. */
-async function updatePass(eventId: string, change: Partial<StoredPass>): Promise<void> {
+/**
+ * Write attendee data for an event only while `token` is still its stored pass, checked
+ * in the same transaction. A fetch that outlived its pass - replaced by a newer one, or
+ * ended and cleaned up while the request was out - writes nothing, so names never come
+ * back after the clean-up. False when nothing was written.
+ */
+async function putUnderPass(eventId: string, token: string, writes: Array<[store: string, value: unknown, key: string]>): Promise<boolean> {
+  if (!token) return false;
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(["passes", ...new Set(writes.map(([store]) => store))], "readwrite");
+    let wrote = false;
+    const pass = t.objectStore("passes").get(eventId) as IDBRequest<StoredPass | undefined>;
+    pass.onsuccess = () => {
+      if (pass.result?.token !== token) return;
+      for (const [store, value, key] of writes) t.objectStore(store).put(value, key);
+      wrote = true;
+    };
+    t.oncomplete = () => resolve(wrote);
+    t.onerror = () => reject(t.error);
+  });
+}
+
+export const putPackUnderPass = (token: string, p: CheckinPack) => putUnderPass(p.eventId, token, [["packs", p, p.eventId]]);
+export const putRosterUnderPass = (eventId: string, token: string, r: RosterEntry[]) => putUnderPass(eventId, token, [["rosters", r, eventId]]);
+export const putDoorEntries = (eventId: string, token: string, s: StoredDoorEntries) =>
+  putUnderPass(eventId, token, [["kv", s, doorEntriesKey(eventId)]]);
+
+/**
+ * Read-modify-write in one transaction, so one tab's change cannot undo another's.
+ * With `token`, only that pass changes: an answer about a pass another tab has since
+ * replaced says nothing about the new one.
+ */
+async function updatePass(eventId: string, change: Partial<StoredPass>, token?: string): Promise<void> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const t = db.transaction("passes", "readwrite");
     const store = t.objectStore("passes");
     const req = store.get(eventId) as IDBRequest<StoredPass | undefined>;
     req.onsuccess = () => {
-      if (req.result) store.put({ ...req.result, ...change }, eventId);
+      if (req.result && (token === undefined || req.result.token === token)) store.put({ ...req.result, ...change }, eventId);
     };
     t.oncomplete = () => resolve();
     t.onerror = () => reject(t.error);
   });
 }
 
-export const markPassDead = (eventId: string, message: string) => updatePass(eventId, { dead: message });
+export const markPassDead = (eventId: string, message: string, token?: string) => updatePass(eventId, { dead: message }, token);
+/** The server said this pass is past its `exp`, whatever this phone's clock says. */
+export const markPassExpired = (eventId: string, token: string, at: number) => updatePass(eventId, { expiredAt: at }, token);
 export const touchPass = (eventId: string, at: number) => updatePass(eventId, { lastUsedAt: at });
 
 /**
@@ -409,22 +475,71 @@ export const touchPass = (eventId: string, at: number) => updatePass(eventId, { 
 export async function clearEvent(eventId: string): Promise<void> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const t = db.transaction([...EVENT_STORES, ...TICKET_STORES], "readwrite");
-    for (const name of EVENT_STORES) t.objectStore(name).delete(eventId);
-    for (const name of TICKET_STORES) t.objectStore(name).delete(inEvent(eventId));
+    const t = db.transaction([...EVENT_STORES, ...TICKET_STORES, "kv"], "readwrite");
+    clearEventIn(t, eventId);
     t.oncomplete = () => resolve();
     t.onerror = () => reject(t.error);
   });
 }
 
-/** An ended event's attendee data (roster) and pack go; its check-ins stay while any are unsynced. */
-export async function dropAttendeeData(eventId: string): Promise<void> {
+function clearEventIn(t: IDBTransaction, eventId: string): void {
+  for (const name of EVENT_STORES) t.objectStore(name).delete(eventId);
+  for (const name of TICKET_STORES) t.objectStore(name).delete(inEvent(eventId));
+  t.objectStore("kv").delete(doorEntriesKey(eventId));
+}
+
+/**
+ * An ended event's attendee data goes - the roster, the pack (it carries the roster
+ * ciphertext), the door entries - and so do the pass token and the pass secret,
+ * which nothing can use any more. What is left of the pass says when it ended, so
+ * the phone still knows the event is waiting to sync, and it never opens again. Its
+ * check-ins stay.
+ */
+function dropEndedEventDataIn(t: IDBTransaction, pass: StoredPass | undefined, now: number): void {
+  if (!pass) return;
+  t.objectStore("packs").delete(pass.eventId);
+  t.objectStore("rosters").delete(pass.eventId);
+  t.objectStore("kv").delete(doorEntriesKey(pass.eventId));
+  if (pass.token || pass.keyB64url || (!pass.dead && pass.expiredAt === undefined)) {
+    // An expired pass keeps the moment it ended, so a clock set back later cannot reopen it.
+    const expiredAt = pass.dead ? pass.expiredAt : hasExpired(pass, now) ? endedAtMs(pass) : now;
+    t.objectStore("passes").put({ ...pass, token: "", keyB64url: "", ...(expiredAt === undefined ? {} : { expiredAt }) }, pass.eventId);
+  }
+}
+
+const ENDED_STORES = [...EVENT_STORES, ...TICKET_STORES, "kv"] as const;
+
+/** `dropEndedEventDataIn` on its own, for an event already known to be over. */
+export async function dropAttendeeData(eventId: string, now = Date.now()): Promise<void> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const t = db.transaction(["packs", "rosters"], "readwrite");
-    t.objectStore("packs").delete(eventId);
-    t.objectStore("rosters").delete(eventId);
+    const t = db.transaction(["passes", "packs", "rosters", "kv"], "readwrite");
+    const pass = t.objectStore("passes").get(eventId) as IDBRequest<StoredPass | undefined>;
+    pass.onsuccess = () => dropEndedEventDataIn(t, pass.result, now);
     t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+}
+
+/**
+ * One event's clean-up after its pass ended (`endedEventAction`), decided and done in
+ * ONE transaction against what is stored now: a tab may have just set up a new pass
+ * for the event, and a live pass is never touched.
+ */
+export async function cleanUpEndedEvent(eventId: string, now: number): Promise<EndedAction> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction([...ENDED_STORES], "readwrite");
+    let action: EndedAction = "keep";
+    const pass = t.objectStore("passes").get(eventId) as IDBRequest<StoredPass | undefined>;
+    const unsynced = t.objectStore("pending").count(inEvent(eventId));
+    // Requests in one transaction complete in order: both are in.
+    unsynced.onsuccess = () => {
+      action = endedEventAction(pass.result, unsynced.result > 0, now);
+      if (action === "clear") clearEventIn(t, eventId);
+      else if (action === "drop-attendee-data") dropEndedEventDataIn(t, pass.result, now);
+    };
+    t.oncomplete = () => resolve(action);
     t.onerror = () => reject(t.error);
   });
 }

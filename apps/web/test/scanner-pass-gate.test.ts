@@ -7,14 +7,19 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bootFromFragment, describePackFailure, isPassExpired, onPassLink, OUTDATED_MESSAGE, PASS_EXPIRED_MESSAGE } from "../src/lib/scanner/pass-gate.js";
+import { bootFromFragment, describePackFailure, isExpiredRefusal, isPassExpired, onPassLink, OUTDATED_MESSAGE, PASS_EXPIRED_MESSAGE } from "../src/lib/scanner/pass-gate.js";
 
 test("a revoked, expired, other-event or other-phone pass is dead: only a new pass helps", () => {
   for (const status of [401, 403, 409]) {
     const f = describePackFailure(status, { error: "Door pass expired" });
     assert.equal(f.kind, "dead", `status ${status}`);
     assert.equal(f.message, "Door pass expired");
+    assert.equal(f.kind === "dead" && f.expired, false, "no reason: not taken as expired");
   }
+  const expired = describePackFailure(401, { error: "Door pass expired", reason: "expired" });
+  assert.equal(expired.kind === "dead" && expired.expired, true, "the server's 401 'expired' ends the pass on the phone");
+  assert.equal(isExpiredRefusal(401, { reason: "revoked" }), false);
+  assert.equal(isExpiredRefusal(403, { reason: "expired" }), false);
 });
 
 test("anything else can be retried with the same pass", () => {
