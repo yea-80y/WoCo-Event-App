@@ -1,6 +1,6 @@
 /**
  * #883 - an event's door roster (attendee emails and order answers, encrypted to
- * the organiser) is deleted 30 days after the event's ONCHAIN end, never the
+ * the organiser) is deleted 2 days after the event's ONCHAIN end, never the
  * organiser-editable feed `endDate`. No trusted end keeps the roster. The
  * check-in set and door passes are never touched. The event's door entries (later
  * buyers' sealed email and card name) go on the same clock, with or without a roster.
@@ -31,21 +31,21 @@ const E = {
 
 /** onChainEventId → end in seconds, null (no end onchain) or "throw" (RPC down). */
 const ends: Record<string, number | null | "throw"> = {
-  [id(1)]: endedDaysAgo(31),
-  [id(2)]: endedDaysAgo(29),
-  [id(3)]: endedDaysAgo(30),
+  [id(1)]: endedDaysAgo(3),
+  [id(2)]: endedDaysAgo(1),
+  [id(3)]: endedDaysAgo(2),
   [id(5)]: null,
   [id(6)]: "throw",
   [id(7)]: endedDaysAgo(60),
-  [id(8)]: endedDaysAgo(10),
+  [id(8)]: endedDaysAgo(1),
   [id(9)]: endedDaysAgo(60),
-  [id(10)]: endedDaysAgo(31),
-  [id(11)]: endedDaysAgo(31),
-  [id(12)]: endedDaysAgo(31),
-  [id(13)]: endedDaysAgo(31),
-  [id(14)]: endedDaysAgo(31),
-  [id(15)]: endedDaysAgo(31),
-  [id(16)]: endedDaysAgo(29),
+  [id(10)]: endedDaysAgo(3),
+  [id(11)]: endedDaysAgo(3),
+  [id(12)]: endedDaysAgo(3),
+  [id(13)]: endedDaysAgo(3),
+  [id(14)]: endedDaysAgo(3),
+  [id(15)]: endedDaysAgo(3),
+  [id(16)]: endedDaysAgo(1),
 };
 const reg = (n: number, chainId = CHAIN) => ({ onChainEventId: id(n), chainId, contract: LEDGER, version: "ledger" });
 const REGISTRY = {
@@ -113,7 +113,7 @@ after(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("a roster goes once its event ended over 30 days ago onchain; one inside the period stays", async () => {
+test("a roster goes once its event ended over 2 days ago onchain; one inside the period stays", async () => {
   putRoster(E.OLD);
   putRoster(E.RECENT);
   writeFileSync(`${rosterFile(E.OLD)}.tmp`, "{}"); // a crashed write's copy goes with it
@@ -123,13 +123,13 @@ test("a roster goes once its event ended over 30 days ago onchain; one inside th
   assert.equal(hasRoster(E.RECENT), true);
 });
 
-test("exactly 30 days is kept, by either clock; a moment more is not", async () => {
+test("exactly 2 days is kept, by either clock; a moment more is not", async () => {
   putRoster(E.EDGE);
   try {
     clocks[CHAIN] = NOW + DAY;
-    assert.equal(await sweep(NOW), 0, "the server clock at exactly 30 days");
+    assert.equal(await sweep(NOW), 0, "the server clock at exactly 2 days");
     clocks[CHAIN] = NOW;
-    assert.equal(await sweep(NOW + DAY), 0, "the chain clock at exactly 30 days");
+    assert.equal(await sweep(NOW + DAY), 0, "the chain clock at exactly 2 days");
     assert.equal(hasRoster(E.EDGE), true);
     clocks[CHAIN] = NOW + 1;
     assert.equal(await sweep(NOW + 1), 1);
@@ -156,7 +156,7 @@ test("the LATEST series end counts", async () => {
 
 test("the earlier of the server and chain clocks decides", async () => {
   putRoster(E.BEHIND);
-  clocks[OTHER_CHAIN] = NOW - 2 * DAY; // the chain says 29 days
+  clocks[OTHER_CHAIN] = NOW - 2 * DAY; // the chain says 1 day
   assert.equal(await sweep(), 0);
   assert.equal(hasRoster(E.BEHIND), true);
   clocks[OTHER_CHAIN] = NOW + 365 * DAY;
@@ -240,7 +240,7 @@ test("a pass while one is running does nothing", async () => {
 
 test("/api/health status: run time, count and error - reported, never an alarm", () => {
   const h = retention.rosterRetentionHealth();
-  assert.equal(h.keptAfterEndDays, 30);
+  assert.equal(h.keptAfterEndDays, 2);
   assert.equal(typeof h.lastRunAt, "string");
   assert.equal(h.deleted, 8, "every deletion above, counted once");
   assert.equal("ok" in h, false);

@@ -286,7 +286,7 @@ current, unexpired pass's door key and appends it to `.data/checkin-door-entries
 door-entries.ts`); scanners poll `/entries` after a cursor. No order answers (the server cannot read
 them). An erased order deletes its sealed lines and logs a final removal that also hides the ticket's
 roster entry on every online scanner; regenerating the pass replaces the log; it goes with the roster
-30 days after the onchain end. A leaked link also shows buyers who buy after the leak, until the pass
+2 days after the onchain end (an hourly sweep, `lib/checkin/roster-retention.ts`). A leaked link also shows buyers who buy after the leak, until the pass
 is regenerated or expires.
 
 **A ticket is admitted once, across every scanner (#641).** Check-in is a capacity control, so a

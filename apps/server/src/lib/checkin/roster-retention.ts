@@ -29,7 +29,7 @@ import { deleteRoster, eventKey, storedRosterKeys } from "./store.js";
 import { deleteDoorEntries, storedDoorEntryKeys } from "./door-entries.js";
 
 /** Days a roster outlives its event's onchain end. Stated in DATA_INVENTORY §3.1. */
-export const ROSTER_KEPT_AFTER_END_DAYS = 30;
+export const ROSTER_KEPT_AFTER_END_DAYS = 2;
 const KEPT_MS = ROSTER_KEPT_AFTER_END_DAYS * 24 * 60 * 60 * 1000;
 
 export interface RosterSweepOptions {

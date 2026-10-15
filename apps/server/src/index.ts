@@ -870,12 +870,13 @@ const sweepConsents = () => {
 };
 setTimeout(sweepConsents, 5 * 60_000).unref();
 setInterval(sweepConsents, 24 * 60 * 60 * 1000).unref();
-// #883: each event's door roster (attendee emails and order answers) goes 30 days after its onchain end.
+// #883: each event's door roster and door entries go 2 days after its onchain end.
 const sweepRosters = () => {
   sweepExpiredRosters().catch((err) => console.warn("[checkin] roster sweep failed:", (err as Error).message));
 };
 setTimeout(sweepRosters, 6 * 60_000).unref();
-setInterval(sweepRosters, 24 * 60 * 60 * 1000).unref();
+// Hourly, so a 2-day period is not stretched by up to a day; the ends are memoised.
+setInterval(sweepRosters, 60 * 60 * 1000).unref();
 // #547: order answers go N months after the event's onchain end. ORDER_RETENTION_SWEEP
 // = off | dry-run (default) | live; a dry run decides and logs, erasing nothing.
 const sweepOrderRetention = () => {
