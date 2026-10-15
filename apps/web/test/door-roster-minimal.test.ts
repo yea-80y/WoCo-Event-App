@@ -16,7 +16,7 @@ import { base64UrlEncode, type RosterEntry } from "@woco/shared";
 import { doorRosterKey } from "@woco/shared/checkin/door-keys";
 import { buildRosterEntries } from "../src/lib/creator/dashboard/door-roster.js";
 import { decryptRoster, encryptRoster, pickRosterEntries } from "../src/lib/scanner/roster-crypto.js";
-import { searchAttendees } from "../src/lib/scanner/attendee-search.js";
+import { attendeeName, searchAttendees } from "../src/lib/scanner/attendee-search.js";
 import { db, makePass, openTab, removeCompiledStore, resetWorld, storeEvent } from "./scanner-store-harness.ts";
 
 test.after(removeCompiledStore);
@@ -109,4 +109,16 @@ test("no scanner screen and no door list code reads order answers", () => {
   const types = readFileSync(new URL("../../../packages/shared/src/checkin/types.ts", import.meta.url), "utf8");
   const entry = types.slice(types.indexOf("export interface RosterEntry"), types.indexOf("}", types.indexOf("export interface RosterEntry")));
   assert.doesNotMatch(entry, /fields/, "RosterEntry has no field for answers");
+});
+
+test("a sale's name reads \"Paid by\" on the list and the scan card; the organiser's list shows as is", () => {
+  assert.equal(attendeeName({ edition: 4, name: "Jane Smith", email: "j@example.com", source: "sale" }), "Paid by Jane Smith");
+  assert.equal(attendeeName({ edition: 4, name: "Jane Smith", email: "j@example.com" }), "Jane Smith");
+  assert.equal(attendeeName({ edition: 4, email: "j@example.com", source: "sale" }), "j@example.com", "no card name: the email, as is");
+  assert.equal(attendeeName({ edition: 4 }), "Ticket #4");
+  const roster = readFileSync(new URL("../src/lib/scanner/RosterScreen.svelte", import.meta.url), "utf8");
+  const scan = readFileSync(new URL("../src/lib/scanner/ScanScreen.svelte", import.meta.url), "utf8");
+  assert.match(roster, /<span class="name">\{attendeeName\(entry\)\}<\/span>/);
+  assert.match(scan, /<span class="verdict-who">\{attendeeName\(attendee\)\}<\/span>/);
+  for (const src of [roster, scan]) assert.doesNotMatch(src, /card name|name on the card/i, "the old tags are gone");
 });

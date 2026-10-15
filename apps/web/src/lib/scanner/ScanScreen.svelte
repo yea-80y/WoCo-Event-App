@@ -10,6 +10,7 @@
    */
   import type { RosterEntry } from "@woco/shared";
   import { scanner, type ScanOutcome } from "./store.svelte.js";
+  import { attendeeName } from "./attendee-search.js";
   import { armAudio, feedbackSuccess, feedbackDuplicate, feedbackInvalid, feedbackCantConfirm } from "./feedback.js";
   import QrCamera from "./QrCamera.svelte";
 
@@ -101,8 +102,7 @@
     {@const kind = outcome.kind}
     {#snippet who(attendee: RosterEntry | undefined)}
       {#if attendee?.name || attendee?.email}
-        <span class="verdict-who">{attendee.name ?? attendee.email}</span>
-        {#if attendee.source === "sale" && attendee.name}<span class="verdict-tag">name on the card</span>{/if}
+        <span class="verdict-who">{attendeeName(attendee)}</span>
       {/if}
     {/snippet}
     <button
@@ -236,11 +236,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .verdict-tag {
-    font-size: 0.75rem;
-    font-weight: 600;
-    opacity: 0.8;
   }
   .verdict-detail {
     font-size: 1rem;
