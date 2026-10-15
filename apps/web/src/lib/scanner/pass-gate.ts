@@ -12,7 +12,7 @@ import { parseDoorPassFragment, SCANNER_OUTDATED_REASON } from "@woco/shared";
 
 export type PackFailure =
   /** Revoked, expired, for another event, or bound to another phone: only a new pass helps. */
-  | { kind: "dead"; message: string }
+  | { kind: "dead"; message: string; expired: boolean }
   /** The server needs newer scanner code: update, then try the same pass again. */
   | { kind: "outdated"; message: string }
   | { kind: "error"; message: string };
@@ -26,8 +26,16 @@ export const OUTDATED_MESSAGE =
 export function describePackFailure(status: number, body: { error?: unknown; reason?: unknown } | null): PackFailure {
   if (status === 400 && body?.reason === SCANNER_OUTDATED_REASON) return { kind: "outdated", message: OUTDATED_MESSAGE };
   const message = typeof body?.error === "string" && body.error ? body.error : `WoCo couldn't set up this scanner (${status}) - try again.`;
-  if (status === 401 || status === 403 || status === 409) return { kind: "dead", message };
+  if (status === 401 || status === 403 || status === 409) return { kind: "dead", message, expired: isExpiredRefusal(status, body) };
   return { kind: "error", message };
+}
+
+/**
+ * The server refused the pass as past its `exp`. The phone's clock may disagree (set
+ * wrong), so this alone ends the pass on the phone, as its own clock would.
+ */
+export function isExpiredRefusal(status: number, body: { reason?: unknown } | null): boolean {
+  return status === 401 && body?.reason === "expired";
 }
 
 export const PASS_EXPIRED_MESSAGE =

@@ -113,6 +113,7 @@ import { heldOrdersHealth, sweepExpired as sweepHeldOrders } from "./lib/attende
 import { consentStoreHealth, sweepExpiredConsents } from "./lib/marketing/consent-store.js";
 import { suppressionStoreHealth } from "./lib/marketing/suppression-store.js";
 import { sweepExpiredRosters, rosterRetentionHealth } from "./lib/checkin/roster-retention.js";
+import { doorEntriesHealth } from "./lib/checkin/door-entries.js";
 import { orderRetentionHealth, runOrderRetention } from "./lib/attendee-batch/retention.js";
 import { retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
 
@@ -461,6 +462,12 @@ function healthReport() {
     // the consent sweep: `lastError` says a roster waits for the next pass;
     // `undated` counts rosters with no onchain end to go by, kept until one exists.
     rosterRetention: rosterRetentionHealth(),
+    // Door entries: each sale's email and card name sealed for the event's door phones.
+    // Red while an event's file is present but unreadable - new buyers then stop
+    // reaching the door list (scanning is unaffected), and nothing overwrites the file
+    // until the organiser makes a new door pass. `failed` counts seals and removals
+    // that did not land since boot.
+    doorEntries: doorEntriesHealth(),
     // Order answers erased N months after the event's onchain end (#547).
     // Red when the ledger or held orders are unreadable, no run in 48 h, the
     // mode is not understood, or - live only - an order someone can act on is a
@@ -863,12 +870,13 @@ const sweepConsents = () => {
 };
 setTimeout(sweepConsents, 5 * 60_000).unref();
 setInterval(sweepConsents, 24 * 60 * 60 * 1000).unref();
-// #883: each event's door roster (attendee emails and order answers) goes 30 days after its onchain end.
+// #883: each event's door roster and door entries go 2 days after its onchain end.
 const sweepRosters = () => {
   sweepExpiredRosters().catch((err) => console.warn("[checkin] roster sweep failed:", (err as Error).message));
 };
 setTimeout(sweepRosters, 6 * 60_000).unref();
-setInterval(sweepRosters, 24 * 60 * 60 * 1000).unref();
+// Hourly, so a 2-day period is not stretched by up to a day; the ends are memoised.
+setInterval(sweepRosters, 60 * 60 * 1000).unref();
 // #547: order answers go N months after the event's onchain end. ORDER_RETENTION_SWEEP
 // = off | dry-run (default) | live; a dry run decides and logs, erasing nothing.
 const sweepOrderRetention = () => {

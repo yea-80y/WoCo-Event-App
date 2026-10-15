@@ -65,6 +65,10 @@ test("an answer about a DIFFERENT ticket never admits this one", async () => {
 
 test("a revoked pass and a pass bound to another phone are reported as such", async () => {
   assert.equal((await claimAdmission(call(reply(401, { ok: false, error: "Door pass revoked" })))).kind, "pass-dead");
+  assert.deepEqual(
+    await claimAdmission(call(reply(401, { ok: false, error: "Door pass expired", reason: "expired" }))),
+    { kind: "pass-dead", message: "Door pass expired", expired: true },
+  );
   assert.equal((await claimAdmission(call(reply(403, { ok: false, error: "Door pass is for a different event" })))).kind, "pass-dead");
   const other = await claimAdmission(call(reply(409, { ok: false, error: "This door pass is for one scanner", reason: "wrong-device" })));
   assert.equal(other.kind, "cant-confirm");

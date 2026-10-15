@@ -92,7 +92,7 @@ Enumerated from source, not assumed:
 | `pending-refunds.json` | **Yes** (pseudonymous) | Automatic refunds Stripe refused to create, by Stripe session and payment intent, kept until retried. No email - `lib/stripe/pending-refunds.ts` |
 | `held-orders/{root}.json` | **Yes** (encrypted) | One file per order sealed in the buyer's browser, held as ciphertext from checkout until paid and stored on Swarm (unpaid: deleted after 24 h; paid but never stored: erased by the retention sweep like a stored order, #547) - `lib/attendee-batch/held-orders.ts` |
 | `attendee-slots.json` | **Yes** (pseudonymous) | Which storage slot of the attendee batch holds each chunk of each order, and its erasure state - what makes one order erasable (§6). Since #797 each record also holds the buyer's HMAC-SHA256 email hash and the organiser, so an access or erasure request can find that person's orders (`ordersForEmailHash`). Rotating `EMAIL_HASH_SECRET` blinds this lookup. Since #547 each record also holds `retainMonths` (the period in the organiser's notice at the time of sale) and, once erased, who erased it (`request` or `retention`) and the rule the sweep carried out. Retention: the order is erased 6 or 12 months after the event's onchain end, the period in the organiser's notice at the time of sale (`lib/attendee-batch/retention.ts`); the record stays as evidence of the erasure. No plaintext - `lib/attendee-batch/ledger.ts` |
-| `door-passes.json`, `checkins/`, `checkin-rosters/` | **Yes** (pseudonymous / encrypted) | Active door pass per event; check-in records (ticket number, time, random device id); the door guest list as ciphertext the server cannot open, deleted 30 days after the event's onchain end (kept while no onchain end is known) - `lib/checkin/store.ts`, `roster-retention.ts` |
+| `door-passes.json`, `checkins/`, `checkin-rosters/`, `checkin-door-entries/` | **Yes** (pseudonymous / encrypted) | Active door pass per event; check-in records (ticket number, time, random device id); the door guest list as ciphertext the server cannot open; and, for each ticket sold after the door pass was made, the buyer's email and the name on their card, sealed at the sale so only the organiser's door devices can open them. Both are deleted 2 days after the event's onchain end (kept while no onchain end is known); an entry is also deleted when its order is erased, and all of them when the organiser makes a new door pass. Door devices delete their copy once the pass has expired (24 hours after the event ends), the next time the scanner is opened - `lib/checkin/store.ts`, `door-entries.ts`, `roster-retention.ts` |
 | `event-feed-signers.json` | **Yes** | Event id → the organiser's content-feed signer and verified creator address, pinned at create - `lib/event/feed-signer-record.ts` |
 | `device-grants.json` | Indirect | An account's added passkeys (#746): each one's key address and a hash of its credential id, the account owner's signed grant and any signed removal, and every nonce used. No names, no device or password-manager details. Must survive restarts (losing it signs added passkeys out) |
 | `event-listing-state.json`, `etherna-batches.json`, `onchain-events.json`, `pending-registrations.json`, `domains.json`, `manifest.json`, `shop-*.json` | Mostly not | Operational state; shop stores contain wallet addresses |
@@ -411,10 +411,11 @@ anything, so a crash between the two steps over-suppresses rather than under-pro
 2. **Order blobs on Swarm** - the script does not erase them; the operator burn route does
    (`routes/ops.ts`, see above). The order reference recorded onchain stays public.
 3. **Stripe** holds its own payment records under its own retention obligations.
-4. **Copies the organiser downloaded** - exported CSVs and the guest list on a door device (#798).
-   Tell the organiser of each affected event, naming the order, so they delete it from their copies
-   and re-push the door list (PRIVACY_POLICY §8 promises this; ORGANISER_TERMS §4 item 8 and DPA §3
-   item 5 oblige them). The organiser's contact is the email on their Stripe connected account.
+4. **Copies the organiser downloaded** - exported CSVs (#798). Erasing the order also deletes WoCo's
+   sealed door entry for each of its tickets and removes them from the organiser's door scanners. For
+   exported CSVs, tell the organiser of each affected event, naming the order, so they delete it from
+   their copies (PRIVACY_POLICY §8 promises this; ORGANISER_TERMS §4 item 8 and DPA §3 item 5 oblige
+   them). The organiser's contact is the email on their Stripe connected account.
 
 **An erasure confirmation must not promise "no further contact".** If an erased buyer's event is
 later cancelled, WoCo emails them that their refund is on its way, at the address they paid with,

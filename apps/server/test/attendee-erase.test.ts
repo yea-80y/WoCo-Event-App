@@ -8,6 +8,7 @@
  * hold release and "held only" goes red; drop `noteErasure` from `burnOrder` and
  * "a burn records why" goes red; let `noteErasure` overwrite and "first writer
  * wins" goes red; drop the tombstone's retainMonths or erasure and "held only"
+ * goes red; drop `forgetAtTheDoor` from either branch and its "leaves the door" test
  * goes red.
  */
 
@@ -24,6 +25,7 @@ process.env.BEE_URL = "http://127.0.0.1:1";
 process.env.EMAIL_HASH_SECRET ??= "0".repeat(64);
 process.env.FEED_PRIVATE_KEY ??= "11".repeat(32);
 process.env.OPS_TOKEN = "t".repeat(40);
+process.env.CHECKIN_PASS_SECRET ??= "test-door-pass-secret";
 globalThis.fetch = (async () => {
   throw new Error("bee unreachable");
 }) as unknown as typeof fetch;
@@ -177,4 +179,50 @@ test("the live fulfilment wiring hands the period to the hold", () => {
   const src = readFileSync(new URL("../src/lib/stripe/fulfilment-live.ts", import.meta.url), "utf8");
   assert.match(src, /claimHeldOrder: \(ref, sessionId, emailHash, retainMonths\) => markHeldPaid\(ref, sessionId, Date\.now\(\), \{ emailHash, retainMonths \}\)/);
   assert.match(src, /storeOrderBlob: \(data, meta\) => storeAttendeePayload\(data, \{ kind: "fallback", \.\.\.meta \}\)/);
+});
+
+// ---------------------------------------------------------------------------
+// The door (live door attendee list): an erased order's tickets leave every scanner
+// ---------------------------------------------------------------------------
+
+const checkinStore = await import("../src/lib/checkin/store.js");
+const doorEntries = await import("../src/lib/checkin/door-entries.js");
+const sales = await import("../src/lib/stripe/ticket-sales.js");
+const { doorEntriesKeypair } = await import("@woco/shared/checkin/door-entries-key");
+const { doorKeyRefOf } = await import("@woco/shared/checkin/door-keys");
+
+const DOOR_JTI = "d".repeat(32);
+const doorKey = doorEntriesKeypair(new Uint8Array(32).fill(9)).publicKey;
+doorEntries.startDoorEntries("e-erase", DOOR_JTI, Buffer.from(doorKey).toString("hex"));
+checkinStore.issueDoorPass("e-erase", Math.floor(Date.now() / 1000) + 3600, undefined, "several", 0, { jti: DOOR_JTI, doorKeyRef: doorKeyRefOf(doorKey) });
+
+async function soldAtTheDoor(ref: string, slots: number[]): Promise<void> {
+  const sessionId = `cs_door_${ref.slice(0, 8)}`;
+  sales.recordSaleStub({ sessionId, paymentIntentId: `pi_${ref.slice(0, 8)}`, connectedAccountId: "acct_1", eventId: "e-erase", seriesId: "s1", quantity: slots.length, amountTotal: 1000, currency: "gbp" });
+  sales.recordSaleSlots(sessionId, "0x" + "0e".repeat(32), "c", slots, ref);
+  await doorEntries.sealDoorEntries("e-erase", slots.map((s) => ({ seriesId: "s1", edition: s + 1 })), { email: "door@example.com" });
+}
+
+const doorLines = () => doorEntries.readDoorEntriesPage("e-erase", DOOR_JTI, 0).log;
+
+test("a burned order leaves the door: its sealed lines go and a removal per ticket is logged", async () => {
+  const ref = await stored();
+  await soldAtTheDoor(ref, [10, 11]);
+  assert.equal(doorLines().filter((l) => l.kind === "add" && l.edition >= 11).length, 2);
+  await eraseOrder(ref, { by: "request" }, honestBurns as never);
+  const lines = doorLines().filter((l) => l.edition === 11 || l.edition === 12);
+  assert.deepEqual(lines.map((l) => [l.kind, l.edition]), [["remove", 11], ["remove", 12]]);
+});
+
+test("an order erased before it was stored leaves the door too", async () => {
+  const ref = await heldPaid(6);
+  await soldAtTheDoor(ref, [20]);
+  assert.deepEqual(await eraseOrder(ref, { by: "request" }), { kind: "deleted-before-store" });
+  assert.deepEqual(doorLines().filter((l) => l.edition === 21).map((l) => l.kind), ["remove"]);
+});
+
+test("an unknown order touches nothing at the door", async () => {
+  const before = JSON.stringify(doorLines());
+  assert.deepEqual(await eraseOrder("cd".repeat(32), { by: "request" }), { kind: "not-found" });
+  assert.equal(JSON.stringify(doorLines()), before);
 });

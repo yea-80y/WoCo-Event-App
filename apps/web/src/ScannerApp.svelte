@@ -102,7 +102,7 @@
     <nav>
       <button class:active={tab === "scan"} onclick={() => (tab = "scan")}>Scan</button>
       <button class:active={tab === "roster"} onclick={() => (tab = "roster")}>
-        Attendees{scanner.roster.length ? ` (${scanner.roster.length})` : ""}
+        Attendees{scanner.attendees.length ? ` (${scanner.attendees.length})` : ""}
       </button>
     </nav>
   </div>

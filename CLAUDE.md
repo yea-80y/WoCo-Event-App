@@ -162,7 +162,7 @@ Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
    Coinbase Smart Wallet stays parked (non-deterministic 1271 ⇒ no reproducible seed).
 
 ACCOUNT SECRET GENERATIONS (#186): a passkey removal makes a RANDOM account secret S_{g+1} (S_0 =
-the seed); keys 5, the X-Wing order key and the door-pass roster key derive from the CURRENT one
+the seed); keys 5, the X-Wing order key and the door-pass secret P derive from the CURRENT one
 (the issuing key stays on S_0). The current generation is a key ring named onchain by `WoCoKeyRing`
 (`@woco/shared/keyring/*`), set in the same Kernel op as the co-owner change. Clients sign/seal only
 on a CONFIRMED-current verdict (`apps/web/src/lib/keyring/account-keys.ts`, lazy); the server reads
@@ -598,6 +598,10 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     and every nonce used. Losing it signs every added device out (re-add from the main passkey);
     nothing leaks or is granted. Losing the NONCES lets an old removal or grant be replayed.
     Unreadable = no device signs in, nothing written, `/api/health` `deviceGrants` alarm)
+  checkin-door-entries/ (live door attendee list — per event, later buyers' email + card name sealed to the
+    door pass's key, plus erasure removals. Losing it only empties the door's later-buyer list until the
+    pass is regenerated (scanning unaffected); losing it after an erasure can leave a scanner showing that
+    ticket until regenerated. Unreadable = never overwritten, `/api/health` `doorEntries` alarm)
 
 SVELTE 5 / BEE-JS:
 - Svelte 5 `$state` proxy: properties absent from the initial object literal aren't reactive;

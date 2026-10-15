@@ -212,8 +212,9 @@ confirmed.
 
 - **Erasure does not reach copies outside our storage.** It does not reach a copy someone else
   stored on the network and pays for themselves, or short-lived retrieval caches. Nor does it reach
-  copies the organiser has downloaded, such as an exported guest list or the list on their door
-  scanner. When we erase your details, we tell the organiser, and they must delete their copies too.
+  copies the organiser has exported, such as a downloaded guest list. When we erase your details we
+  also remove them from the organiser's door scanners. We tell the organiser, and they must delete
+  any copies they exported.
 - **We cannot guarantee every copy everywhere is gone.** Someone could have retrieved a copy while
   it was live. This is true of any system — a website, a cloud provider, any other ticketing
   platform — but on a public network we would rather state it than let you assume otherwise.
