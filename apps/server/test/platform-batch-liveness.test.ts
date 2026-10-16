@@ -458,6 +458,28 @@ test("chain: only the chain listing the batch again clears it - and Etherna's ow
   assert.equal(probes.ethernaPlatformBatchSnapshot().source, "etherna");
 });
 
+test("chain: the production state - Etherna /stamps 503 and the batch gone from chain - refuses, and health is red", async () => {
+  const down = async () => {
+    throw Object.assign(new Error("GET /stamps/x → 503"), { status: 503 });
+  };
+  await pass({ etherna: down, chain: { block: 100, chainTip: 100 }, platform: "absent" });
+  await pass({ etherna: down, chain: { block: 100, chainTip: 110 }, platform: "absent" });
+  assertRefused(() => route(), /not on chain/);
+  assert.equal(probes.postageHealth().etherna.ok, false, "red, not unknown");
+});
+
+test("chain: while our bee cannot vouch, Etherna's own 404 keeps a chain verdict from ageing out", async () => {
+  await chainGone();
+  const atChain = probes.ethernaPlatformBatchSnapshot().at!;
+  await new Promise((r) => setTimeout(r, 5));
+  await pass({ etherna: async () => notFound(), chain: null, platform: "listed" });
+  const snap = probes.ethernaPlatformBatchSnapshot();
+  assert.ok(snap.at! > atChain, "refreshed by Etherna's 404");
+  assert.equal(snap.source, "chain");
+  const staleForTheOldReading = atChain + 3 * probes.ETHERNA_PROBE_INTERVAL_MS;
+  assert.match(router.platformBatchRefusal(PLATFORM, snap, staleForTheOldReading) ?? "", /not on chain/);
+});
+
 test("chain: a chain that cannot be read leaves today's rule exactly as it was", async () => {
   await pass({ etherna: async () => notFound(), chain: { block: 100, chainTip: 100 }, platform: "throws" });
   assertRefused(() => route(), /Etherna/);

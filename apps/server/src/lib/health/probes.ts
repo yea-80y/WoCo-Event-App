@@ -621,6 +621,10 @@ export async function refreshPostage(
     if (onChain === "gone") {
       // Overrides a positive Etherna reading: its 2xx is not a statement about the chain.
       ethernaVerdict = { batchId: ethernaBatch, at: Date.now(), gone: true, stamp: null, source: "chain" };
+    } else if (onChain !== "listed" && chainGoneStands && ethernaReading.gone) {
+      // Our bee cannot vouch this pass but Etherna says gone too: the verdict is
+      // still current, so it must not age out into "write". Kept as the chain's.
+      ethernaVerdict = { ...ethernaVerdict!, at: ethernaReading.at };
     } else if (onChain === "listed" || !chainGoneStands) {
       // Only a chain that lists the batch again may clear a chain verdict; an
       // Etherna 200 while the chain cannot be read must not reopen a dead batch.
