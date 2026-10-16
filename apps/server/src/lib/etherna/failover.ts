@@ -28,6 +28,7 @@ import {
   deferEntries,
   resolveEntries,
   retryUnsaved,
+  undeferAll,
 } from "./relay-ledger.js";
 import { ethernaSource, verifyStoredSoc, wocoBeeSource, type RawSocRead } from "../swarm/soc-read.js";
 
@@ -192,7 +193,9 @@ export async function sweepRelayLedger(
     }
     io.offer(e.address).catch(() => undefined);
     done.push(e);
-    migrated++;
+    // The first chunk Etherna takes back after an outage: the ones that backed
+    // off during it are due on the next pass, not hours later.
+    if (migrated++ === 0) undeferAll("failover");
   }
 
   resolveEntries(done);
@@ -227,7 +230,8 @@ export function startRelayLedgerSweep(): void {
 /**
  * `/api/health` `ethernaFailover`. RED when the ledger cannot be trusted (a file
  * unreadable, a write still not on disk - `dirty`), is full (the rail is then
- * off), or the mode is not understood. Waiting
+ * off), or the mode is not understood. During an Etherna outage the breaker reads
+ * open much of the time: each pass's first move-back attempt trips it. Expected. Waiting
  * entries are reported, not alarmed on: they wait on an Etherna outage, which is
  * Etherna's, and `postage.etherna` watches its batch.
  */

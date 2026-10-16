@@ -334,6 +334,36 @@ test("ledger: a repeat send restarts the settle age without rewriting the file; 
   assert.equal(ledger.dueEntries("pending", 10).length, 1);
 });
 
+test("ledger: a full list rewrites its state at most once a minute, and the tick catches up", () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  freshLedger({ maxEntries: 1 });
+  const [a, b, c] = [signedSoc(1), signedSoc(2), signedSoc(3)];
+  ledger.noteEthernaSend(a.address, a.owner, a.identifier);
+  ledger.noteEthernaSend(b.address, b.owner, b.identifier);
+  const first = new Date(now).toISOString();
+  const onDisk = () => JSON.parse(readFileSync(STATE(), "utf-8")).since;
+  assert.equal(onDisk(), first, "the first restart of the warm-up reaches the disk at once");
+  now += 10_000;
+  ledger.noteEthernaSend(c.address, c.owner, c.identifier);
+  assert.equal(onDisk(), first, "not rewritten within the minute");
+  assert.equal(ledger.relayLedgerState().dirty, false, "seconds behind is not a fault");
+  assert.equal(ledger.relayLedgerClearsAbsent(signedSoc(9).address), false);
+  ledger.retryUnsaved();
+  assert.equal(onDisk(), new Date(now).toISOString(), "the tick writes the latest");
+});
+
+test("ledger: an entry filed under an address its owner and identifier do not make refuses the ledger", () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const s = signedSoc(6);
+  const t = new Date(now).toISOString();
+  writeFileSync(
+    join(LEDGER(), `${"ab".repeat(32)}.json`),
+    JSON.stringify({ owner: s.owner, identifier: s.identifier, status: "pending", at: t, updatedAt: t }),
+  );
+  restart();
+  assert.equal(ledger.relayLedgerUsable(), false);
+});
+
 test("ledger: a full list lists nothing more, stops trusting itself, and switches the rail off", () => {
   process.env.ETHERNA_FAILOVER = "auto";
   freshLedger({ maxEntries: 2 });
@@ -765,6 +795,23 @@ test("sweep: a failover entry listed again mid-pass is not turned back to pendin
   };
   await failover.sweepRelayLedger(io);
   assert.equal(ledger.getRelayEntry(s.address)?.status, "failover");
+});
+
+test("sweep: once Etherna takes one back, the rest that waited out the outage are due at once", async () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const [a, b] = [signedSoc(49), signedSoc(50)];
+  ledger.noteFailover(a.address, a.owner, a.identifier, PARENT);
+  ledger.noteFailover(b.address, b.owner, b.identifier, PARENT);
+  now += ledger.SETTLE_MIN_AGE_MS;
+  const io = fakeIo({ [a.address]: found(a.raw), [b.address]: found(b.raw) });
+  io.postFails = true;
+  await failover.sweepRelayLedger(io);
+  io.postFails = false;
+  await failover.sweepRelayLedger(io);
+  assert.ok(ledger.getRelayEntry(a.address), "still waiting out its back-off");
+  assert.equal(ledger.getRelayEntry(b.address), undefined);
+  await failover.sweepRelayLedger(io);
+  assert.equal(ledger.getRelayEntry(a.address), undefined, "due again as soon as Etherna took one");
 });
 
 test("sweep: nothing moves while Etherna is paused", async () => {

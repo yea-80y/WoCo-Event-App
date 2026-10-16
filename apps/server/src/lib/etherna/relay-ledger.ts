@@ -51,6 +51,7 @@
 
 import { readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { calculateSocAddress } from "@woco/shared";
 import { writeJsonAtomic } from "../marketing/persist.js";
 
 /** How long the list must have been recording before an unlisted address is trusted. */
@@ -63,6 +64,12 @@ export const WARMUP_MS = 60 * 60 * 1000;
 export const SETTLE_MIN_AGE_MS = 5 * 60 * 1000;
 /** Past this the rail is off: ~10 days of the relay's per-account hourly limit, a few MB of files. */
 export const MAX_ENTRIES = 10_000;
+/**
+ * A full list restarts the warm-up on every send it cannot take. One state write
+ * a minute is enough: the one before already put a `since` under a minute old on
+ * disk, which a restart would still load as cold.
+ */
+export const STATE_REWRITE_MIN_MS = 60 * 1000;
 
 export type FailoverMode = "off" | "auto" | "force";
 export type RelayStatus = "pending" | "failover";
@@ -92,6 +99,9 @@ let lastRecordFailureAt: string | null = null;
 /** Changes memory has and the disk does not: retried on each sweep tick (`retryUnsaved`). */
 const unsaved = new Set<string>();
 let stateUnsaved = false;
+/** The warm-up restarted since the last state write, inside STATE_REWRITE_MIN_MS of it. */
+let stateBehind = false;
+let stateWrittenAt = 0;
 /** Sweep spacing, in memory: a restart checks everything soon. */
 const backoff = new Map<string, { n: number; nextAt: number }>();
 const BACKOFF_MAX_MS = 24 * 60 * 60 * 1000;
@@ -179,8 +189,11 @@ function ensureLoaded(): void {
       /* refused below */
     }
     // A bad entry cannot be dropped - it may be the only record of a chunk that
-    // is in Etherna alone - so the whole ledger is refused.
+    // is in Etherna alone - so the whole ledger is refused. So is one filed under
+    // an address its own owner and identifier do not make: it would guard the
+    // wrong address, silently, for ever.
     if (!e) return refuse(`holds an unreadable entry (${name.slice(0, 16)})`);
+    if (socAddressHex(e.owner, e.identifier) !== m[1]) return refuse(`holds an entry filed under the wrong address (${name.slice(0, 16)})`);
     // A send cut off by the restart may still be landing in Etherna's store:
     // nothing is judged for SETTLE_MIN_AGE_MS from now. Memory only.
     loadedEntries.set(m[1], { ...e, updatedAt: new Date(now()).toISOString() });
@@ -196,6 +209,10 @@ function recordFailure(): void {
   lastRecordFailureAt = new Date(now()).toISOString();
 }
 
+function socAddressHex(owner: string, identifier: string): string {
+  return Buffer.from(calculateSocAddress(Buffer.from(identifier, "hex"), Buffer.from(owner, "hex"))).toString("hex");
+}
+
 function writeState(): boolean {
   stateUnsaved = !writeJsonAtomic(
     stateFile(),
@@ -203,13 +220,18 @@ function writeState(): boolean {
     "relay-ledger",
   );
   if (stateUnsaved) recordFailure();
+  else {
+    stateWrittenAt = now();
+    stateBehind = false;
+  }
   return !stateUnsaved;
 }
 
 /** A send that could not be listed: the list is not whole, so its warm-up starts again. */
 function lostCompleteness(): void {
   since = now();
-  writeState();
+  if (now() - stateWrittenAt >= STATE_REWRITE_MIN_MS) writeState();
+  else stateBehind = true;
 }
 
 function writeEntry(address: string, e: RelayEntry): void {
@@ -238,7 +260,7 @@ export function retryUnsaved(): void {
     if (!e) unsaved.delete(a);
     else if (writeJsonAtomic(entryFile(a), e, "relay-ledger")) unsaved.delete(a);
   }
-  if (stateUnsaved) writeState();
+  if (stateUnsaved || stateBehind) writeState();
 }
 
 /** At boot, so the warm-up runs from the first process that recorded. */
@@ -357,6 +379,11 @@ export function deferEntries(addresses: string[]): void {
   }
 }
 
+/** Etherna is taking chunks back again: whatever waited out the outage is due now, not hours from now. */
+export function undeferAll(status: RelayStatus): void {
+  for (const [a, e] of entries) if (e.status === status) backoff.delete(a);
+}
+
 /** Up to `limit` entries of one status a sweep may judge now: old enough, and not deferred. */
 export function dueEntries(status: RelayStatus, limit: number): Array<RelayEntry & { address: string }> {
   ensureLoaded();
@@ -450,6 +477,8 @@ export function __resetRelayLedgerForTest(opts: { now?: () => number; maxEntries
   lastRecordFailureAt = null;
   unsaved.clear();
   stateUnsaved = false;
+  stateBehind = false;
+  stateWrittenAt = 0;
   backoff.clear();
   unlisted = 0;
   readsCleared = 0;
