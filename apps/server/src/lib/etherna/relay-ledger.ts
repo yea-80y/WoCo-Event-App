@@ -65,9 +65,10 @@ export const SETTLE_MIN_AGE_MS = 5 * 60 * 1000;
 /** Past this the rail is off: ~10 days of the relay's per-account hourly limit, a few MB of files. */
 export const MAX_ENTRIES = 10_000;
 /**
- * A full list restarts the warm-up on every send it cannot take. One state write
- * a minute is enough: the one before already put a `since` under a minute old on
- * disk, which a restart would still load as cold.
+ * A full list restarts the warm-up on every send it cannot take. While the
+ * `since` ON DISK is under this old, a restart already loads the list as cold,
+ * so the write can wait for the next tick. Judged by what the disk holds, never
+ * by when it was last written: the write at boot puts an old `since` there.
  */
 export const STATE_REWRITE_MIN_MS = 60 * 1000;
 
@@ -99,9 +100,10 @@ let lastRecordFailureAt: string | null = null;
 /** Changes memory has and the disk does not: retried on each sweep tick (`retryUnsaved`). */
 const unsaved = new Set<string>();
 let stateUnsaved = false;
-/** The warm-up restarted since the last state write, inside STATE_REWRITE_MIN_MS of it. */
+/** The warm-up restarted while the disk's `since` was still recent; the tick writes it. */
 let stateBehind = false;
-let stateWrittenAt = 0;
+/** The `since` the state file holds, as last written. */
+let diskSince = 0;
 /** Sweep spacing, in memory: a restart checks everything soon. */
 const backoff = new Map<string, { n: number; nextAt: number }>();
 const BACKOFF_MAX_MS = 24 * 60 * 60 * 1000;
@@ -221,7 +223,7 @@ function writeState(): boolean {
   );
   if (stateUnsaved) recordFailure();
   else {
-    stateWrittenAt = now();
+    diskSince = since;
     stateBehind = false;
   }
   return !stateUnsaved;
@@ -230,7 +232,7 @@ function writeState(): boolean {
 /** A send that could not be listed: the list is not whole, so its warm-up starts again. */
 function lostCompleteness(): void {
   since = now();
-  if (now() - stateWrittenAt >= STATE_REWRITE_MIN_MS) writeState();
+  if (now() - diskSince >= STATE_REWRITE_MIN_MS) writeState();
   else stateBehind = true;
 }
 
@@ -478,7 +480,7 @@ export function __resetRelayLedgerForTest(opts: { now?: () => number; maxEntries
   unsaved.clear();
   stateUnsaved = false;
   stateBehind = false;
-  stateWrittenAt = 0;
+  diskSince = 0;
   backoff.clear();
   unlisted = 0;
   readsCleared = 0;

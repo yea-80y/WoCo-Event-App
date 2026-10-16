@@ -352,6 +352,21 @@ test("ledger: a full list rewrites its state at most once a minute, and the tick
   assert.equal(onDisk(), new Date(now).toISOString(), "the tick writes the latest");
 });
 
+test("ledger: right after a boot that loaded a warm list, a send it cannot take restarts the warm-up ON DISK at once", () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  freshLedger({ maxEntries: 1 });
+  const a = signedSoc(1);
+  ledger.noteEthernaSend(a.address, a.owner, a.identifier);
+  restart(); // loads warm; the boot itself rewrites the old since
+  ledger.__resetRelayLedgerForTest({ now: () => now, maxEntries: 1 });
+  ledger.loadRelayLedger();
+  assert.equal(ledger.relayLedgerState().warm, true);
+  now += 5_000;
+  const b = signedSoc(2);
+  ledger.noteEthernaSend(b.address, b.owner, b.identifier);
+  assert.equal(JSON.parse(readFileSync(STATE(), "utf-8")).since, new Date(now).toISOString(), "a crash now must load it cold");
+});
+
 test("ledger: an entry filed under an address its owner and identifier do not make refuses the ledger", () => {
   process.env.ETHERNA_FAILOVER = "auto";
   const s = signedSoc(6);
