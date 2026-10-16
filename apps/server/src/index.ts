@@ -48,6 +48,7 @@ import { marketing } from "./routes/marketing.js";
 import { ethernaRoutes } from "./routes/etherna.js";
 import { ethernaFetchBaseNotice } from "./lib/etherna/gateway.js";
 import { ethernaReadsHealth } from "./lib/swarm/soc-read.js";
+import { ethernaFailoverHealth, startRelayLedgerSweep } from "./lib/etherna/failover.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { ensGatewayRoutes, ensGatewayStatus } from "./routes/ens-gateway.js";
 import { subEnsApexHealth } from "./lib/chain/sub-ens-apex.js";
@@ -372,6 +373,11 @@ function healthReport() {
     // (flag or key missing): those reads can never conclude anything. The
     // breaker (reads paused after Etherna hung) is reported, not alarmed on.
     ethernaReads: ethernaReadsHealth(),
+    // The Etherna failover (#912). `mode` off|auto|force. RED when its ledger
+    // cannot be trusted (unreadable file, a write that did not land) or the mode is
+    // not understood. `ledger.failover` counts saves stamped on WoCo still to move
+    // back to Etherna; `ledger.pending` counts sends not yet seen on our bee.
+    ethernaFailover: ethernaFailoverHealth(),
     // The client-SOC relay's limiter (#301). `globalTrippedAt` non-null is the
     // alarm: the per-process ceiling that legitimate traffic never reaches has
     // refused writes with 503 — either an attack on the postage batch or a
@@ -995,4 +1001,11 @@ onStripeVerified((address) => void confirmArmedReferral(address));
 {
   const names = nameTargetsHealth();
   console.log(`[startup] name targets: ${names.count} built${names.ok ? "" : " - ALARM, see /api/health nameTargets"}`);
+}
+// The Etherna relay ledger (#912): loaded now so its warm-up runs from boot and an
+// unreadable file alarms at once; the sweep settles and moves entries in every mode.
+startRelayLedgerSweep();
+{
+  const f = ethernaFailoverHealth();
+  console.log(`[startup] etherna failover: ${f.mode}${f.ok ? "" : " - ALARM, see /api/health ethernaFailover"}`);
 }

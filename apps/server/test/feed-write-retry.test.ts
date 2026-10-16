@@ -22,6 +22,9 @@ import { test, describe, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Wallet } from "ethers";
 import { FeedIndex, PrivateKey, Topic } from "@ethersphere/bee-js";
 import { Binary } from "cafe-utility";
@@ -248,7 +251,12 @@ function textAt(owner: string, topic: Topic, index: bigint): string | undefined 
   return p ? (feeds.decodeJsonFeed<{ text: string }>(p)?.text) : undefined;
 }
 
+let originalCwd: string;
 before(async () => {
+  // Every Etherna send is listed in the relay ledger (#912), which lives under
+  // the working directory's `.data`: keep it out of the source tree.
+  originalCwd = process.cwd();
+  process.chdir(mkdtempSync(join(tmpdir(), "woco-feed-write-retry-")));
   await new Promise<void>((r) => bee.listen(0, "127.0.0.1", r));
   await new Promise<void>((r) => etherna.listen(0, "127.0.0.1", r));
   const ethernaUrl = `http://127.0.0.1:${(etherna.address() as AddressInfo).port}`;
@@ -270,6 +278,7 @@ before(async () => {
 after(() => {
   bee.close();
   etherna.close();
+  process.chdir(originalCwd);
 });
 
 beforeEach(() => {
