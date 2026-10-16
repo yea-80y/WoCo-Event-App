@@ -112,7 +112,11 @@ export function platformBatchRefusal(
 ): string | null {
   if (snapshot.batchId !== batchId) return null;
   if (isStale(snapshot.at, now, ETHERNA_PROBE_INTERVAL_MS)) return null;
-  if (snapshot.gone) return "batch not found on Etherna (expired and evicted, or never synced)";
+  if (snapshot.gone) {
+    return snapshot.source === "chain"
+      ? "batch is not on chain (our bee's batch store has none): nothing stamped with it would be kept"
+      : "batch not found on Etherna (expired and evicted, or never synced)";
+  }
   const stamp = snapshot.stamp;
   if (!stamp) return null;
   if (!stamp.usable) return "Etherna reports the batch unusable";

@@ -207,3 +207,26 @@ test("route: a platform batch the router refuses is 503 with the rail off, and a
   assert.equal(posts(BEE).length, 1);
   assert.equal(ledger.getRelayEntry(s.address)?.status, "failover");
 });
+
+test("route, auto: a platform batch the chain no longer has detours to WoCo while Etherna still says it is fine", async () => {
+  process.env.ETHERNA_FAILOVER = "auto";
+  const readers = (tip: number) =>
+    ({
+      deposit: async () => 10n ** 18n,
+      beeStamp: async () => ({ depth: 19, bucketDepth: 16, utilization: 1, batchTTL: 100_000, usable: true, immutableFlag: false }),
+      chainstate: async () => ({ block: 100, chainTip: tip }),
+      ethernaStamp: async () => ({ depth: 19, bucketDepth: 16, utilization: 1, batchTTL: 100_000, usable: true, immutableFlag: false }),
+      beeBatch: async (id: string) => {
+        if (id === PLATFORM) throw Object.assign(new Error("batch not found"), { status: 404 });
+        return { batchID: id, batchTTL: 1_000 };
+      },
+    }) as unknown as Parameters<typeof probes.refreshPostage>[0];
+  await probes.refreshPostage(readers(100), () => {});
+  await probes.refreshPostage(readers(110), () => {});
+  const s = signedSoc();
+  const r = await relay(s.body);
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.equal(posts(ETH).length, 0, "Etherna would have said 2xx: it is never asked");
+  assert.equal(posts(BEE).length, 1);
+  assert.equal(ledger.getRelayEntry(s.address)?.status, "failover");
+});
