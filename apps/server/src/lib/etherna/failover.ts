@@ -21,18 +21,25 @@ import {
   dueEntries,
   failoverMode,
   loadRelayLedger,
+  markPending,
+  relayLedgerHasRoom,
   relayLedgerState,
   relayLedgerUsable,
+  deferEntries,
   resolveEntries,
+  retryUnsaved,
 } from "./relay-ledger.js";
 import { ethernaSource, verifyStoredSoc, wocoBeeSource, type RawSocRead } from "../swarm/soc-read.js";
 
-export const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
-/** Per status per pass: each check of an entry our bee lacks is a network search. */
-export const SWEEP_PER_PASS = 20;
+export const SWEEP_INTERVAL_MS = 60 * 1000;
+/** Per pass. A pending check our bee cannot answer at once is a network search, so fewer. */
+export const SETTLE_PER_PASS = 50;
+export const MIGRATE_PER_PASS = 100;
 /** What a failover-mode relay gives Etherna before stamping on WoCo instead. */
 export const FAILOVER_ETHERNA_ATTEMPTS = 2;
 export const FAILOVER_ETHERNA_TIMEOUT_MS = 10_000;
+/** A move back waits on nobody, so it can give Etherna longer than a save does. */
+export const MIGRATE_ETHERNA_TIMEOUT_MS = 30_000;
 
 export type RelayPlan = "etherna" | "etherna-then-woco" | "woco";
 
@@ -40,12 +47,12 @@ export type RelayPlan = "etherna" | "etherna-then-woco" | "woco";
  * Where a relayed Etherna-routed SOC goes. `ethernaRefused`: the router already
  * knows Etherna's batch cannot take it (#610 - gone, unusable, full).
  *
- * Off, or a ledger that cannot be written, is exactly the old behaviour: a chunk
- * stamped on WoCo unlisted would never move back.
+ * Off, or a ledger that cannot be written or is full, is exactly the old
+ * behaviour: a chunk stamped on WoCo unlisted would never move back.
  */
 export function relayPlan(ethernaRefused?: string): RelayPlan {
   const { mode } = failoverMode();
-  if (mode === "off" || !relayLedgerUsable()) return "etherna";
+  if (mode === "off" || !relayLedgerUsable() || !relayLedgerHasRoom()) return "etherna";
   if (mode === "force" || ethernaRefused !== undefined || ethernaPaused() !== null) return "woco";
   return "etherna-then-woco";
 }
@@ -83,32 +90,86 @@ const liveIo: SweepIo = {
 
 const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
 
-/** One pass. Exported for tests; the timer calls it. */
-export async function sweepRelayLedger(io: SweepIo = liveIo): Promise<{ settled: number; migrated: number }> {
-  const done: string[] = [];
+/**
+ * Etherna cannot take writes right now - a timeout or network fault (no status),
+ * 429, 5xx, or no batch to take them (`route` throws PlatformBatchUnavailable,
+ * #610): every other chunk would meet the same, so the pass stops. A 4xx is about
+ * this chunk or its account's batch, and the pass goes on without it.
+ */
+function ethernaCannotWrite(err: unknown): boolean {
+  const status = (err as { status?: number })?.status;
+  return status === undefined || status === 429 || status >= 500;
+}
 
-  for (const e of dueEntries("pending", SWEEP_PER_PASS)) {
+/**
+ * Both stores said 404 once already, at this exact entry. An Etherna 404 decides
+ * a drop on its status alone, so it must say so twice, at least SETTLE_MIN_AGE_MS
+ * apart - a gateway 404 during their deploy is not a verdict. Keyed by the
+ * entry's `updatedAt`: a new send starts the count again.
+ */
+const absentOnce = new Set<string>();
+function bothAbsent(e: { address: string; updatedAt: string }): boolean {
+  const key = `${e.address}:${e.updatedAt}`;
+  if (absentOnce.delete(key)) return true;
+  absentOnce.add(key);
+  if (absentOnce.size > 50_000) absentOnce.clear();
+  return false;
+}
+/** Any other answer: the two must be in a row. */
+function notAbsent(e: { address: string; updatedAt: string }): void {
+  absentOnce.delete(`${e.address}:${e.updatedAt}`);
+}
+
+/**
+ * One pass. Exported for tests; the timer calls it.
+ *
+ * Entries it checks and keeps wait longer each time (`deferEntries`), so a chunk
+ * that can never settle or move costs one look per round, never the whole pass.
+ */
+export async function sweepRelayLedger(
+  io: SweepIo = liveIo,
+  perPass: { settle: number; migrate: number } = { settle: SETTLE_PER_PASS, migrate: MIGRATE_PER_PASS },
+): Promise<{ settled: number; migrated: number }> {
+  const done: Array<{ address: string; updatedAt: string }> = [];
+  const kept: string[] = [];
+
+  for (const e of dueEntries("pending", perPass.settle)) {
     const bee = await io.readBee(e.address);
-    if (bee.status === "found") {
-      if (verifyStoredSoc(bee.raw, e.owner, e.identifier).ok) done.push(e.address);
+    if (bee.status === "found" && verifyStoredSoc(bee.raw, e.owner, e.identifier).ok) {
+      done.push(e);
       continue;
     }
     // Neither store holds it: nothing can surface later to be written over.
-    if (bee.status === "absent" && (await io.readEtherna(e.address)).status === "absent") done.push(e.address);
+    const gone = bee.status === "absent" && (await io.readEtherna(e.address)).status === "absent";
+    if (gone && bothAbsent(e)) done.push(e);
+    else {
+      if (!gone) notAbsent(e);
+      kept.push(e.address);
+    }
   }
   const settled = done.length;
 
   let migrated = 0;
-  for (const e of dueEntries("failover", SWEEP_PER_PASS)) {
+  for (const e of dueEntries("failover", perPass.migrate)) {
     if (ethernaPaused() !== null) break;
     const bee = await io.readBee(e.address);
     if (bee.status === "absent") {
-      // Our copy is gone. Etherna holding it, or nobody holding it, both end the
-      // entry; only "could not ask" keeps it.
-      if ((await io.readEtherna(e.address)).status !== "unavailable") done.push(e.address);
+      // Our copy is gone. Etherna holding it is "sent, not on the network" - the
+      // state the ledger exists to list - so it goes back to pending. Nobody
+      // holding it ends the entry; "could not ask" keeps it.
+      const eth = await io.readEtherna(e.address);
+      if (eth.status === "absent" && bothAbsent(e)) done.push(e);
+      else {
+        if (eth.status !== "absent") notAbsent(e);
+        if (eth.status === "found") markPending(e);
+        else kept.push(e.address);
+      }
       continue;
     }
-    if (bee.status !== "found" || !verifyStoredSoc(bee.raw, e.owner, e.identifier).ok) continue;
+    if (bee.status !== "found" || !verifyStoredSoc(bee.raw, e.owner, e.identifier).ok) {
+      kept.push(e.address);
+      continue;
+    }
     const parts = splitStoredSoc(bee.raw)!;
     const body = new Uint8Array(parts.span.length + parts.payload.length);
     body.set(parts.span);
@@ -121,20 +182,21 @@ export async function sweepRelayLedger(io: SweepIo = liveIo): Promise<{ settled:
         sigHex: hex(parts.signature),
         body,
         batchId: dest.batchId,
-        timeoutMs: FAILOVER_ETHERNA_TIMEOUT_MS * 3,
+        timeoutMs: MIGRATE_ETHERNA_TIMEOUT_MS,
       });
     } catch (err) {
-      // Etherna cannot take writes yet, or its batch cannot (`route` throws
-      // PlatformBatchUnavailable, #610): the rest wait for the next pass.
       lastMigrationError = { at: new Date().toISOString(), error: ((err as Error)?.message ?? String(err)).slice(0, 200) };
-      break;
+      kept.push(e.address);
+      if (ethernaCannotWrite(err)) break;
+      continue;
     }
     io.offer(e.address).catch(() => undefined);
-    done.push(e.address);
+    done.push(e);
     migrated++;
   }
 
   resolveEntries(done);
+  deferEntries(kept);
   stats.settled += settled;
   stats.migrated += migrated;
   lastSweepAt = new Date().toISOString();
@@ -152,6 +214,7 @@ export function startRelayLedgerSweep(): void {
   timer = setInterval(() => {
     if (running || !relayLedgerUsable()) return;
     running = true;
+    retryUnsaved();
     sweepRelayLedger()
       .catch((err) => console.error("[etherna-failover] sweep failed:", err))
       .finally(() => {
@@ -162,8 +225,9 @@ export function startRelayLedgerSweep(): void {
 }
 
 /**
- * `/api/health` `ethernaFailover`. RED when the ledger cannot be trusted (file
- * unreadable, a write that did not land) or the mode is not understood. Waiting
+ * `/api/health` `ethernaFailover`. RED when the ledger cannot be trusted (a file
+ * unreadable, a write still not on disk - `dirty`), is full (the rail is then
+ * off), or the mode is not understood. Waiting
  * entries are reported, not alarmed on: they wait on an Etherna outage, which is
  * Etherna's, and `postage.etherna` watches its batch.
  */
@@ -171,7 +235,7 @@ export function ethernaFailoverHealth(): Record<string, unknown> {
   const { mode, configError } = failoverMode();
   const ledger = relayLedgerState();
   return {
-    ok: ledger.readable && !configError && ledger.recordFailures === 0,
+    ok: ledger.readable && !ledger.full && !ledger.dirty && !configError,
     mode,
     ...(configError ? { configError } : {}),
     ledger,
@@ -183,6 +247,7 @@ export function ethernaFailoverHealth(): Record<string, unknown> {
 
 /** Tests only. */
 export function __resetFailoverStatsForTest(): void {
+  absentOnce.clear();
   stats.failedOver = 0;
   stats.settled = 0;
   stats.migrated = 0;

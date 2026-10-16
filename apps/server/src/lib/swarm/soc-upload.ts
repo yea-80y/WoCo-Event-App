@@ -55,6 +55,7 @@ import { whitelistHashes } from "./whitelist.js";
 import { markHealed, readVerifiedSoc } from "./soc-read.js";
 import { postSocToEtherna, registerEthernaOffer } from "../etherna/upload.js";
 import { noteFailover } from "../etherna/relay-ledger.js";
+import { PlatformBatchUnavailable } from "../etherna/batch-router.js";
 import {
   FAILOVER_ETHERNA_ATTEMPTS,
   FAILOVER_ETHERNA_TIMEOUT_MS,
@@ -260,10 +261,14 @@ export async function uploadSignedSoc(
         console.warn(`[swarm] Etherna could not take ${socAddress.slice(0, 12)}…, stamping it on WoCo: ${(err as Error)?.message ?? err}`);
       }
     }
+    // Listed BEFORE the stamp: a crash after it must not leave a chunk on WoCo
+    // that nothing moves back. A stamp that then fails leaves an entry the sweep
+    // ends once neither store has the chunk. Not listed, no detour: the save
+    // fails as it would with the rail off.
+    if (!noteFailover(socAddress, ownerHex, soc.identifierHex, opts.failover!.parent)) {
+      throw new PlatformBatchUnavailable("the Etherna failover list is full or unreadable");
+    }
     await withRetries((timeoutMs) => postSocToWocoBee(soc, requirePostageBatch(), timeoutMs), FULL_BUDGET);
-    // Listed once it has landed: a WoCo stamp that failed must not leave a
-    // failover entry for a chunk that is not there.
-    noteFailover(socAddress, ownerHex, soc.identifierHex, opts.failover!.parent);
     noteFailedOver();
     return await accepted(soc, socAddress, payload, false);
   }
