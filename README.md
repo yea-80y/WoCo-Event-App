@@ -156,7 +156,6 @@ packages/shared/       Types, frozen wire formats, crypto, topic derivation.
                        THE source of truth for anything both sides must agree on.
 packages/embed/        Two framework-free IIFE bundles for third-party sites:
                        <woco-tickets> (guest Stripe checkout) and <woco-lap-count>.
-contracts-stylus/      Rust/WASM Stylus like-aggregator. Unused since likes left the chain.
 contracts/             Solidity - a SEPARATE repo, see below.
 docs/                  Design records, plans and handovers. Start at docs/README.md.
 ```
