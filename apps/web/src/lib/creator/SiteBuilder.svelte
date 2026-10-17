@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { PUBLISH_GATEWAY_URL } from "../swarm/gateways.js";
+  import { ETHERNA_GATEWAY_URL } from "../swarm/gateways.js";
   import { CANONICAL_APP_ORIGIN } from "../sub-ens/host-label.js";
   import { subEnsWebUrl, type ClaimMode, type EventGeo, type EventTag, type OrderField, type PaymentConfig } from "@woco/shared";
   import { auth } from "../auth/auth-store.svelte.js";
@@ -77,8 +77,9 @@
   }
 
   // Step 2 — deploy targets
-  // The organiser no longer picks a gateway: see PUBLISH_GATEWAY_URL.
-  const gatewayUrl = PUBLISH_GATEWAY_URL;
+  // Event pages are always stored on and served by Etherna (owner decision
+  // 2026-09-22): the organiser no longer picks a gateway.
+  const gatewayUrl = ETHERNA_GATEWAY_URL;
   let listOnWoco = $state(false);
   let selectedSiteIds = $state<string[]>([]);
   let siteAddErrors = $state<Record<string, string>>({});

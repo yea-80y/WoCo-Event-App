@@ -18,16 +18,6 @@ import {
  */
 export { ETHERNA_GATEWAY_URL, WOCO_GATEWAY_URL };
 
-/**
- * Where NEW events, event pages and sites are stored - Etherna by owner decision
- * (2026-09-22), the WoCo gateway TEMPORARILY (2026-10-16): Etherna cannot sell a
- * batch (`/stamps` 503) and our platform batch there is gone from chain, so the
- * server refuses every Etherna create (#610). Each event and site records its own
- * gateway, so what is made meanwhile keeps working after the switch back, which
- * is this one line.
- */
-export const PUBLISH_GATEWAY_URL: string = WOCO_GATEWAY_URL;
-
 /** Type-only brand: only this module can mint a FeedRoute. */
 declare const feedRouteBrand: unique symbol;
 
