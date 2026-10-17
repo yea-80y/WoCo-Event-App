@@ -19,7 +19,7 @@
   import NavTab from "./tabs/NavTab.svelte";
   import EventsTab from "./tabs/EventsTab.svelte";
   import ShopTab from "./tabs/ShopTab.svelte";
-  import { PUBLISH_GATEWAY_URL, feedRouteFor } from "../../swarm/gateways.js";
+  import { ETHERNA_GATEWAY_URL, feedRouteFor } from "../../swarm/gateways.js";
   import PurchaseBatchModal from "./PurchaseBatchModal.svelte";
   import DomainLinker from "./DomainLinker.svelte";
   import DomainTab from "./DomainTab.svelte";
@@ -126,8 +126,8 @@
   );
   let feedHash          = $state(typeof window !== 'undefined' ? (localStorage.getItem(FEED_HASH_KEY) ?? '') : '');
 
-  // No gateway choice: see PUBLISH_GATEWAY_URL.
-  const gatewayUrl      = PUBLISH_GATEWAY_URL;
+  // Sites are always stored on and served by Etherna (owner decision 2026-09-22).
+  const gatewayUrl      = ETHERNA_GATEWAY_URL;
   let purchaseOpen      = $state(false);
   let pendingLogoBase64 = $state<string | null>(null);
 

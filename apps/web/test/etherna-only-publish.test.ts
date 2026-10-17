@@ -1,15 +1,13 @@
 /**
- * Sites, event pages and events are stored where PUBLISH_GATEWAY_URL says, with no
- * gateway to pick (Etherna by owner decision 2026-09-22; WoCo while Etherna cannot
- * sell a batch), and event images try the gateway that stores them first - Etherna
- * holds a new image at once, other nodes only once it spreads.
+ * Sites, event pages and events are stored on Etherna, with no gateway to pick
+ * (owner decision 2026-09-22), and event images try the gateway that stores them
+ * first - Etherna holds a new image at once, other nodes only once it spreads.
  */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { imageUrlCandidates } from "../src/lib/components/site/image-fallback.js";
-import { PUBLISH_GATEWAY_URL } from "../src/lib/swarm/gateways.js";
 
 const WOCO = "https://gateway.woco-net.com";
 const ETHERNA = "https://gateway.etherna.io";
@@ -36,20 +34,16 @@ function src(rel: string): string {
   return readFileSync(new URL(rel, import.meta.url), "utf-8");
 }
 
-test("the publish gateway is one of ours - the server refuses any other host", () => {
-  assert.ok(PUBLISH_GATEWAY_URL === ETHERNA || PUBLISH_GATEWAY_URL === WOCO, PUBLISH_GATEWAY_URL);
-});
-
-test("neither builder offers a gateway choice; both use the publish gateway", () => {
+test("neither builder offers a gateway choice; both use Etherna", () => {
   for (const f of ["../src/lib/creator/SiteBuilder.svelte", "../src/lib/creator/builder/MultiSiteBuilder.svelte"]) {
     const s = src(f);
     assert.doesNotMatch(s, /GatewayPicker/, f);
-    assert.match(s, /const gatewayUrl\s*=\s*PUBLISH_GATEWAY_URL;/, f);
+    assert.match(s, /const gatewayUrl\s*=\s*ETHERNA_GATEWAY_URL;/, f);
   }
 });
 
-test("the create-event form sends the publish gateway", () => {
-  assert.match(src("../src/lib/creator/events/EventForm.svelte"), /<PublishButton\s+gatewayUrl=\{PUBLISH_GATEWAY_URL\}/);
+test("the create-event form sends Etherna", () => {
+  assert.match(src("../src/lib/creator/events/EventForm.svelte"), /<PublishButton\s+gatewayUrl=\{ETHERNA_GATEWAY_URL\}/);
 });
 
 test("the events list card falls back across gateways, starting where the image is stored", () => {
