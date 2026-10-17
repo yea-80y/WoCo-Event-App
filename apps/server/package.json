@@ -28,7 +28,7 @@
     "hono": "^4.13.13",
     "qrcode": "^1.5.4",
     "resend": "^6.32.1",
-    "stripe": "^22.0.1",
+    "stripe": "^23.0.0",
     "viem": "^2.57.3"
   },
   "devDependencies": {
