@@ -38,7 +38,7 @@ piece that lets WoCo's server drop out of the trending read path entirely.
 
 Aggregates EAS likes (#4) into trustless trending. It replaces the server's projection as the
 **primary** trending read; the server projection is only an RPC-failure fallback. Source:
-`contracts-stylus/like-aggregator/` (unit tests in `src/lib.rs`).
+`contracts-stylus/like-aggregator/` at commit `9c514dd5`, removed from the tree 2026-10-17 (unit tests in `src/lib.rs`).
 
 ## Pull-based, not resolver-push (design rationale)
 
@@ -114,4 +114,4 @@ On-chain E2E (2026-06-11), all `status = success`:
 - **Source verification** — a reproducible Stylus verify is ready to run
   (`cargo stylus verify --deployment-tx 0x1ab35ea3b70d0df495aaac7de7cfb1dec488c102f96d61fc32e0b02939a2e8ec`);
   it needs a Docker host for the reproducible build, which is the only reason it's outstanding. The
-  full Rust source is in this repo at `contracts-stylus/like-aggregator/` regardless.
+  full Rust source is in git history at `9c514dd5` (`contracts-stylus/like-aggregator/`) regardless.

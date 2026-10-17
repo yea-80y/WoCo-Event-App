@@ -120,7 +120,6 @@ const RSYNC = [
   "--exclude=node_modules", "--exclude=.git", "--exclude=dist",
   "--exclude=apps/web/dist-site", "--exclude=apps/web/dist-multisite",
   "--exclude=packages/embed/dist",
-  "--exclude=contracts-stylus/like-aggregator/target",
 ];
 
 // ── 5. Dry run, and read the deletion count ─────────────────────────────────

@@ -42,7 +42,7 @@ What is live, and where the truth is:
 - **EAS is gone.** Likes rail deleted (#475); referrals and cohort badges became Swarm-native
   signed records (#476, `packages/shared/src/campaign/records.ts`).
   `packages/shared/test/no-eas.test.ts` fails CI on any EAS symbol. The Stylus aggregator is
-  superseded (`contracts-stylus/` remains in the tree, unused).
+  superseded (its source left the tree 2026-10-17; git history at `9c514dd5`).
 - **Gate B** is the certificate rail, `woco.cert.v1` (`packages/shared/src/cert/`), issuer
   signature now secp256k1 (#443). Out of launch scope: the platform holds no holder identity
   since #518, so nobody can be certified yet, and badge creation is off
