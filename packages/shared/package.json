@@ -21,7 +21,7 @@
   "dependencies": {
     "@hpke/common": "^1.10.1",
     "@hpke/core": "^1.9.0",
-    "@ipld/dag-cbor": "^9.2.6",
+    "@ipld/dag-cbor": "^10.0.2",
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
     "@noble/post-quantum": "0.7.1",
