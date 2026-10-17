@@ -4,6 +4,7 @@ import type { SealedBoxV2 } from "../crypto/sealed-box-shape.js";
 import type { ObjectGate, ObjectGateGroup } from "../object/types.js";
 import type { SignedManifestV2, EditionV1Body } from "../edition/types.js";
 import type { IssuerBindingV1 } from "../crypto/issuing.js";
+import type { MarketingMode } from "../legal/consent.js";
 
 /** How attendees can claim tickets for an event */
 export type ClaimMode = "wallet" | "email" | "both";
@@ -68,6 +69,10 @@ export interface EventGeo {
   /** RESERVED: future link to a WoCo venue profile. Empty at launch; reserving
    *  it now means the venue-profile graph needs no schema migration. */
   venueRef?: string;
+  /** An online event: it has no place, so nothing else here applies and no
+   *  distance filter can match it. The joining link is never stored here - this
+   *  feed is public, and the link is for ticket holders. */
+  online?: true;
 }
 
 // ---------------------------------------------------------------------------
@@ -463,8 +468,9 @@ export interface UpdateEventMetaRequest {
   /** Replacement discovery tags. Present (even empty) ⇒ overwrite the event's tags;
    *  absent ⇒ leave unchanged. Re-signs the SOC (gas-free) + triggers a snapshot rebuild. */
   tags?: EventTag[];
-  /** Replacement structured location. Present ⇒ overwrite (empty object clears);
-   *  absent ⇒ leave unchanged. Re-signs the SOC + triggers a snapshot rebuild. */
+  /** Replacement structured location. Present ⇒ overwrite, and it must still be a
+   *  place (`eventHasPlace`) - an event's place cannot be cleared. Absent ⇒ leave
+   *  unchanged. Re-signs the SOC + triggers a snapshot rebuild. */
   geo?: EventGeo;
   /** Remove the event's sub-ENS name. `null` clears it; a string is REFUSED —
    *  setting one goes through POST /api/sub-ens/stamp-event, which proves
@@ -570,6 +576,15 @@ export interface SeriesClaimStatus {
   held?: number;
   /** The event was cancelled (#644): `available` reads 0 and nothing is on sale. */
   cancelled?: boolean;
+  /**
+   * The marketing control the checkout shows, from the organiser's CONFIRMED
+   * notice (2026-10-14). The page renders it and echoes it to create-checkout,
+   * which refuses a mismatch. Absent when there is no confirmed notice to read
+   * (nothing sells then) or from an older server; the page shows consent mode.
+   */
+  marketingMode?: MarketingMode;
+  /** The organiser's name as their notice gives it - the own-events sentence names them. */
+  marketingOrganiser?: string;
 }
 
 /** Payment method used to obtain a ticket. */

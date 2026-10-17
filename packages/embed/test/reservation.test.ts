@@ -6,6 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { secondsUntil, formatCountdown, holdResult, usableHold, type Hold } from "../src/reservation.js";
 
 const NOW = Date.parse("2026-09-13T18:00:00.000Z");
@@ -93,4 +94,20 @@ test("an expired hold is not carried", () => {
 
 test("no hold means none is carried", () => {
   assert.equal(usableHold(null, 1, NOW), null);
+});
+
+test("not on sale at all (no confirmed privacy notice, legacy event) closes the panel with the server's words", () => {
+  for (const code of ["PRIVACY_NOTICE_REQUIRED", "EVENT_NEEDS_REPUBLISH"]) {
+    assert.deepEqual(
+      holdResult({ ok: false, error: "Tickets aren't on sale yet - the organiser needs to confirm their privacy notice first.", code }),
+      { kind: "closed", message: "Tickets aren't on sale yet - the organiser needs to confirm their privacy notice first." },
+    );
+  }
+  assert.equal(holdResult({ ok: false, error: "Ticket sales are temporarily unavailable", code: "PRIVACY_NOTICE_UNAVAILABLE" }).kind, "refused", "a fault is not a closure");
+});
+
+test("the buy panel never opens for a closed series", () => {
+  const src = readFileSync(new URL("../src/components/woco-tickets.ts", import.meta.url), "utf-8");
+  assert.match(src, /result\.kind === "closed"\) \{[\s\S]*?cur\.buyOpen = false;/);
+  assert.match(src, /!cancelled && !st\.closed\)/);
 });

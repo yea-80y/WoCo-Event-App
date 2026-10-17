@@ -8,6 +8,8 @@
    *
    * `editor` mode highlights the gaps the organiser still has to fill; `public`
    * mode shows the docs-backed fallback, or that the organiser has not added it.
+   * Public mode renders nothing for an unconfirmed document: WoCo's pre-filled
+   * draft is never shown to attendees as the organiser's notice.
    */
   import { isSafeNoticeHref, NOTICE_NOT_ADDED, type NoticeInline, type OrganiserNoticeDoc } from "@woco/shared";
 
@@ -28,6 +30,7 @@
   {/each}
 {/snippet}
 
+{#if mode === "editor" || doc.confirmed}
 <article class="notice">
   <h1 class="notice-title">{doc.title}</h1>
   {#each doc.sections as section (section.id)}
@@ -55,6 +58,7 @@
     {#each doc.footer as line}<p>{line}</p>{/each}
   </footer>
 </article>
+{/if}
 
 <style>
   .notice {

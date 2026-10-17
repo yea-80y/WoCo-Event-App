@@ -105,3 +105,16 @@ test("exactly six months (183 days) is kept; one day more is dropped", () => {
   assert.equal(consent.sweepExpiredConsents((h: string) => (h === "c-edge" ? ago(183) : null), NOW), 0);
   assert.equal(consent.sweepExpiredConsents((h: string) => (h === "c-edge" ? ago(184) : null), NOW), 1);
 });
+
+test("the same retention for a soft-opt-in record: kept while its basis stands, dropped six months after it ends", () => {
+  // #547 applies unchanged to both bases (soft opt-in, 2026-10-14).
+  const soft = (ts: string) => ({ ...record(ts), basis: "soft-opt-in" as const, control: "Don't email me about similar events" });
+  consent.recordConsent("s-ended-7m", ORG, soft(ago(400)));
+  consent.recordConsent("s-ended-5m", ORG, soft(ago(400)));
+  consent.recordConsent("s-standing", ORG, soft(ago(5 * 365)));
+  const ends: Record<string, string | null> = { "s-ended-7m": ago(213), "s-ended-5m": ago(150), "s-standing": null };
+  assert.equal(consent.sweepExpiredConsents((h: string) => ends[h] ?? null, NOW), 1);
+  assert.equal(consent.getConsent("s-ended-7m", ORG), null);
+  assert.equal(consent.getConsent("s-ended-5m", ORG)?.basis, "soft-opt-in");
+  assert.equal(consent.getConsent("s-standing", ORG)?.basis, "soft-opt-in");
+});

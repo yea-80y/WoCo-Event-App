@@ -29,15 +29,20 @@
 import type { Stripe } from "stripe";
 import {
   buildTicketCanonicalMessage,
+  isNoticeRetentionMonths,
   type EventFeed,
+  type OrderField,
   type SitePalette,
 } from "@woco/shared";
 import type { SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
+import type { EventKeys } from "../keyring/event-keys.js";
+import { sellableKeys } from "../keyring/sale-keys.js";
 import { checkSalesWindow } from "../event/sales-window.js";
 import { eventReleaseAfter } from "./payout-policy.js";
 import type { PayoutLedgerEntry } from "./payout-ledger.js";
 import type { GateBinding } from "../gate/store.js";
 import type { CaptureConsentInput } from "../marketing/consent-capture.js";
+import { marketingFromMetadata } from "../marketing/checkout-choice.js";
 import type { TicketEmailOpts } from "../../routes/tickets.js";
 import { contractKey, type EventContractTarget } from "../chain/event-contract.js";
 import type { SaleContract } from "../event/onchain-registry.js";
@@ -80,6 +85,9 @@ export interface FulfilmentDeps {
   /** Trusted content-feed signer for an event carried by a site (Phase B). */
   resolveSiteEventSigner(siteId: string, eventId: string): Promise<string | null>;
   getEvent(eventId: string, signerHint?: string): Promise<EventFeed | null>;
+  /** The organiser's keys for the event (#186): the only source of the order key a
+   *  fallback seal may use (issue 896). May throw; fenced at the call. */
+  eventKeys(eventId: string): Promise<EventKeys>;
 
   /**
    * The registered sales end on `contract`. `null` = "could not determine"
@@ -111,7 +119,7 @@ export interface FulfilmentDeps {
   getOrganiserByStripeAccount(stripeAccountId: string): string | undefined;
 
   /** Store the fallback order seal on the attendee batch (#546). May throw; the caller decides what that means. */
-  storeOrderBlob(data: string, meta: { eventId: string; seriesId: string; emailHash?: string }): Promise<string>;
+  storeOrderBlob(data: string, meta: { eventId: string; seriesId: string; emailHash?: string; retainMonths?: number }): Promise<string>;
 
   /**
    * Paid-only storage (#546). The buyer's box was HELD at checkout, not stored:
@@ -120,7 +128,7 @@ export interface FulfilmentDeps {
    * hold (may throw - the retry worker then stores it); `isOrderStored` says
    * whether the ref is already on the attendee batch (a retried webhook).
    */
-  claimHeldOrder(orderRef: string, sessionId: string, emailHash?: string): boolean;
+  claimHeldOrder(orderRef: string, sessionId: string, emailHash?: string, retainMonths?: number): boolean;
   storeHeldOrder(orderRef: string): Promise<string>;
   /** Drop a claimed hold when the sale issued no ticket: nothing references it. */
   releaseHeldOrder(orderRef: string): boolean;
@@ -232,6 +240,16 @@ export interface FulfilmentDeps {
    * AND unrecorded.
    */
   sendTicketEmail(opts: TicketEmailOpts): Promise<void>;
+  /**
+   * Seal each issued ticket's email and card name for the event's door phones (the
+   * live door attendee list). Local state only, after the email so it can delay
+   * nothing. Must not throw; fenced anyway.
+   */
+  sealDoorEntries(
+    eventId: string,
+    tickets: Array<{ seriesId: string; edition: number }>,
+    who: { email?: string; buyerName?: string },
+  ): Promise<unknown>;
   recordUndeliveredTicket(input: {
     to: string;
     subject: string;
@@ -325,10 +343,10 @@ export async function fulfilPaidSession(
     orderRef: metaOrderRef,
     reservationId: metaReservationId,
     siteId: metaSiteId,
-    marketingConsent: metaConsent,
     connectedAccountId: metaConnectedAccountId,
     onChainEventId: metaOnChainEventId,
     onChainContract: metaOnChainContract,
+    retainMonths: metaRetainMonths,
   } = session.metadata ?? {};
 
   const quantity = Math.max(1, Math.min(10, parseInt(qtyStr ?? "1", 10) || 1));
@@ -352,10 +370,12 @@ export async function fulfilPaidSession(
     return skipped("missing eventId/seriesId");
   }
 
-  // Tri-state, and the absent case is NOT a decline: it means the order form was
-  // never shown, so the buyer was never asked and nothing should be recorded.
-  const metaMarketingConsent =
-    metaConsent === "1" ? true : metaConsent === "0" ? false : undefined;
+  // What the buyer was shown and did. Absent is NOT a decline: no control was
+  // shown, so nothing is recorded, in either mode.
+  const marketing = marketingFromMetadata(session.metadata);
+  // Checkout's snapshot of the notice (#547). Anything but a period an organiser
+  // can pick is no instruction: the order is then never erased by the sweep.
+  const retainMonths = isNoticeRetentionMonths(Number(metaRetainMonths)) ? Number(metaRetainMonths) : undefined;
 
   const claimedAt = new Date(webhookEventCreated * 1000).toISOString();
 
@@ -408,7 +428,7 @@ export async function fulfilPaidSession(
   // data, so this buyer's minimal order is sealed instead.
   let heldOrderRef: string | undefined;
   if (prefetchedOrderRef) {
-    if (deps.claimHeldOrder(prefetchedOrderRef, session.id, emailHash)) {
+    if (deps.claimHeldOrder(prefetchedOrderRef, session.id, emailHash, retainMonths)) {
       heldOrderRef = prefetchedOrderRef;
     } else if (!deps.isOrderStored(prefetchedOrderRef)) {
       console.warn(`[fulfilment] ${session.id}: no held or stored order for ${prefetchedOrderRef.slice(0, 10)}… — sealing the minimal order`);
@@ -438,6 +458,18 @@ export async function fulfilPaidSession(
   let totalSupply = 0;
   /** The feed's own copy — used ONLY to notice a disagreement, never to mint. */
   let feedOnChainEventId = "";
+  /** The questions the marketing wording names - recorded only if its hash still matches checkout's. */
+  let eventOrderFields: OrderField[] | undefined;
+
+  // The organiser's keys (issue 896): the fallback seal goes to the order key on
+  // record and nowhere else - an event feed is client-signed and can name any key.
+  // Null = could not be read: no fallback seal, and no refund over that alone (3c).
+  let orderKeys: EventKeys | null = null;
+  try {
+    orderKeys = await deps.eventKeys(eventId);
+  } catch (err) {
+    console.warn("[fulfilment] organiser keys unreadable (non-fatal):", err);
+  }
 
   try {
     // Phase B: thread the site carrier (from checkout metadata) so the issued
@@ -453,18 +485,21 @@ export async function fulfilPaidSession(
       eventLocation = ev.location ?? "";
       eventImageHash = ev.imageHash ?? "";
       eventImageGateway = ev.gatewayUrl ?? "";
+      eventOrderFields = ev.orderFields;
       const ser = ev.series.find((s) => s.seriesId === seriesId);
       if (ser) {
         seriesName = ser.name;
         totalSupply = ser.totalSupply;
         feedOnChainEventId = ser.onChainEventId ?? "";
       }
-      if (!prefetchedOrderRef && ev.encryptionKeyRef) {
-        // Fallback minimal seal — only when no pre-uploaded ref is available. The key
-        // names who can READ the order, never what is minted or charged, so reading
-        // it from the event feed here is not the #426 hazard: an organiser who
-        // re-signs their feed to another key only locks themselves out.
-        const key = await deps.fetchOrderKey(ev.encryptionKeyRef);
+      const keyVerdict = orderKeys ? sellableKeys(orderKeys) : null;
+      if (!prefetchedOrderRef && keyVerdict?.ok) {
+        // Fallback minimal seal — only when no pre-uploaded ref is available, and
+        // only to the organiser's AUTHORITATIVE order key, never the one the event
+        // feed names: the feed is client-signed, and the device-cached content signer
+        // can re-sign it to any key (issue 896). No authoritative key = no seal, and
+        // the mint below stops for want of an order ref - a loud refund.
+        const key = await deps.fetchOrderKey(keyVerdict.keys.orderKeyRef);
         const { sealBoxJson, orderSealContext } = await import("@woco/shared/crypto/sealed-box");
         encryptedOrder = await sealBoxJson(
           key,
@@ -738,6 +773,19 @@ export async function fulfilPaidSession(
     }
   }
 
+  // ── 3c. No order key on record (issue 896) ──
+  // A readable record with no order key: the order box, if any, was sealed to the
+  // key the event feed named, which the server cannot vouch for. Refunded, and a held
+  // box dropped unstored (4b; an already-stored one stays). Only this definitive case:
+  // `legacy` is also what an unreadable record store reads as, and unreadable keys are
+  // a blip - neither refunds over the keys alone while a buyer's box was held. With no
+  // held box there is nothing to seal to (never the feed's key), so the mint stops on
+  // the missing orderRef and refunds. create-checkout refuses all of them up front.
+  if (!stoppedReason && orderKeys?.kind === "record" && !orderKeys.orderKeyRef) {
+    console.warn(`[fulfilment] ${session.id}: event ${eventId.slice(0, 8)} has no order key on record — not minting`);
+    stoppedReason = "Event has no order key on record — not sold";
+  }
+
   // ── 4. Mint (the whole block is fenced: an unexpected throw becomes a
   //       stoppedReason, never an escape past the refund) ──
   if (stoppedReason) {
@@ -756,6 +804,7 @@ export async function fulfilPaidSession(
         prefetchedOrderRef,
         encryptedOrder,
         emailHash,
+        retainMonths,
         accountClaim,
         claimedResults,
         setStopped: (reason) => {
@@ -943,9 +992,9 @@ export async function fulfilPaidSession(
   // Record the checkout marketing decision — only now that a ticket actually
   // landed. An abandoned or refunded-in-full purchase must not leave a marketing
   // permission behind, which is why this lives in the webhook rather than at
-  // session creation. A GRANT goes to the consent store as Art. 7(1) evidence,
-  // a REFUSAL goes to suppression so it is enforced by the existing send-time
-  // check and survives a CSV re-upload.
+  // session creation. A GRANT (or a soft opt-in) goes to the consent store as
+  // evidence, a REFUSAL goes to suppression so it is enforced by the existing
+  // send-time check and survives a CSV re-upload.
   // The attendee index (#387) is written for EVERY email buyer, whatever they
   // chose about marketing, and independently of whether a consent decision was
   // even offered — it records that this person bought a ticket, not that they
@@ -961,12 +1010,17 @@ export async function fulfilPaidSession(
     }
   }
 
-  if (metaMarketingConsent !== undefined && claimedResults.length > 0 && eventCreatorAddress && emailHash) {
+  // No organiser (the feed was unreadable) still goes to capture, which counts a
+  // yes it cannot record rather than let it vanish.
+  if (marketing && claimedResults.length > 0 && emailHash) {
     try {
       deps.captureCheckoutConsent({
         emailHash,
         organiserAddress: eventCreatorAddress,
-        granted: metaMarketingConsent,
+        choice: marketing.choice,
+        ...(marketing.organiserName ? { organiserName: marketing.organiserName } : {}),
+        ...(eventOrderFields ? { orderFields: eventOrderFields } : {}),
+        ...(marketing.wordingHash ? { wordingHash: marketing.wordingHash } : {}),
         ts: claimedAt,
         eventId,
       });
@@ -975,6 +1029,11 @@ export async function fulfilPaidSession(
     }
   }
 
+  // Stripe gives us the buyer's name from `customer_details` (filled by the
+  // user at checkout when card billing is collected). Baked into the ticket-card
+  // PNG and shown on the page, and sealed for the door below.
+  const buyerName = session.customer_details?.name?.trim() || undefined;
+
   // ── 8. Deliver ──
   let email: EmailOutcome;
   if (claimedResults.length === 0) {
@@ -982,10 +1041,6 @@ export async function fulfilPaidSession(
   } else if (!claimerEmail) {
     email = "no-address";
   } else {
-    // Stripe gives us the buyer's name from `customer_details` (filled by the
-    // user at checkout when card billing is collected). Pass it through so it
-    // can be baked into the composite ticket-card PNG and shown on the page.
-    const buyerName = session.customer_details?.name?.trim() || undefined;
     let siteTheme: { palette: SitePalette; contactEmail?: string } | null = null;
     if (metaSiteId) {
       try {
@@ -1058,6 +1113,20 @@ export async function fulfilPaidSession(
     }
   }
 
+  // ── 9. Door entries (fenced: the door list is a convenience, never the sale) ──
+  // After the email, so a slow seal delays nothing a buyer waits for.
+  if (claimedResults.length > 0) {
+    try {
+      await deps.sealDoorEntries(
+        eventId,
+        claimedResults.map((r) => ({ seriesId, edition: r.edition })),
+        { ...(claimerEmail ? { email: claimerEmail } : {}), ...(buyerName ? { buyerName } : {}) },
+      );
+    } catch (err) {
+      console.error("[fulfilment] door entries threw (continuing):", err);
+    }
+  }
+
   return {
     sessionId: session.id,
     kind: "processed",
@@ -1088,6 +1157,8 @@ interface MintV2Args {
   encryptedOrder: SealedBoxV2 | undefined;
   /** The buyer's email HMAC, recorded with the fallback order so it can be found (#546). */
   emailHash: string | undefined;
+  /** Checkout's snapshot of the notice's period (#547), recorded with the fallback order. */
+  retainMonths: number | undefined;
   accountClaim: { parentAddress: string } | undefined;
   /** Filled in place: one entry per slot actually minted AND signed. */
   claimedResults: Array<{ edition: number; qrContent: string }>;
@@ -1114,6 +1185,7 @@ async function mintV2(a: MintV2Args): Promise<{ accountClaimBound: boolean }> {
         eventId,
         seriesId,
         ...(a.emailHash ? { emailHash: a.emailHash } : {}),
+        ...(a.retainMonths !== undefined ? { retainMonths: a.retainMonths } : {}),
       });
       console.log(`[fulfilment/v2] Fallback order uploaded: ${batchOrderRef}`);
     } catch (err) {

@@ -114,11 +114,14 @@ before(async () => {
       payment: { stripeEnabled: true, price: "20.00", currency: "GBP" },
     }],
   } as unknown as EventFeed;
-  // Only an event with a record of its signer sells (#186); no key ring for its creator.
+  // Only an event with a record of its signer AND order key sells (#186, issue 896);
+  // no key ring for its creator.
   const { recordEventFeedSigner } = await import("../src/lib/event/feed-signer-record.js");
-  recordEventFeedSigner(EVENT_ID, ("0x" + "22".repeat(20)) as `0x${string}`, platformFeed.creatorAddress as `0x${string}`);
+  recordEventFeedSigner(EVENT_ID, ("0x" + "22".repeat(20)) as `0x${string}`, platformFeed.creatorAddress as `0x${string}`, "0b".repeat(32));
   const { noRings } = await import("./helpers/key-ring.js");
   noRings();
+  const { confirmedNotices } = await import("./helpers/notice.js");
+  confirmedNotices(); // the privacy-notice gate is pinned in privacy-notice-gate.test.ts
   service.primeEventCache(EVENT_ID, platformFeed);
 });
 

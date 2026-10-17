@@ -249,23 +249,69 @@ URL**. Whether it can admit offline depends on the pass's door mode (below).
 
 ```
 Organiser (session-authed):
-  POST /api/events/:id/door-pass       issue or rotate the event's door pass
+  POST /api/events/:id/door-pass/challenge  a nonce sealed to the account's order key (120 s,
+                                            one per account + event, 10/min 60/h per account)
+  POST /api/events/:id/door-pass       issue or rotate the event's door pass AND register its
+                                       door entries key - needs the order-key proof
   POST /api/events/:id/checkin-roster  store AES-GCM roster CIPHERTEXT — the key
                                        is never sent to the server
   GET  /api/events/:id/checkin-status  live counts for the dashboard
 
 Scanner (X-Door-Pass + X-Scanner-Device headers):
   GET  /api/checkin/:eventId/pack      verification pack (binds a "single" pass)
+  GET  /api/checkin/:eventId/entries   later sales' sealed email + card name, ?since=<cursor>
   POST /api/checkin/:eventId/claim     admit ONE ticket - first claim anywhere wins
-  POST /api/checkin/:eventId/sync      merge this device's check-ins, get all
+  POST /api/checkin/:eventId/sync      merge this device's check-ins, get all (an expired
+                                       pass: upload only, for 30 days, answered with an ack)
 ```
 
 The pack holds only public or derivable data — on-chain slot owners, voided slots, the merged
-check-in set, the door mode — plus the roster ciphertext. The roster **key lives in the pass URL fragment**, so it never reaches the
-server: a leaked pass token exposes no attendee plaintext. It is derived, never stored (#186):
-HKDF(account secret, `woco/door-pass/roster/v1:{eventId}:{jti}`), so the pass is issued first and any of
-the organiser's passkeys can show it or re-push the roster. A passkey removal moves the account to a
-new secret, and the server revokes passes from the older generation.
+check-in set, the door mode — plus the roster ciphertext. The pass URL fragment carries one **pass
+secret P** and it never reaches the server: P = HKDF(account secret, `woco/door-pass/v2:{eventId}:{jti}`),
+derived, never stored (#186), so any of the organiser's passkeys can show the pass or re-push the
+roster. P is no key itself: the roster's AES-GCM key (`woco/door-pass/v2/roster-aead`) and an X-Wing
+**door entries key** (`woco/door-pass/v2/entries-kem`) are both HKDF children (`shared/checkin/`). The
+dashboard picks the jti, so it issues the pass and registers the door entries public key in one
+request - after proving it holds the account's CURRENT order key (`lib/checkin/door-key.ts`): the
+challenge seals 32 random bytes to that key (`woco/door-key-proof/v1`, AAD = event, account,
+challenge id) and the pass request carries HMAC-SHA256(nonce, transcript of event, account,
+challenge, jti, mode, door key ref), checked over the server's own event and account. The challenge
+is single-use and dies with a restart (the page asks once more). Not the content-feed signer: it is
+cached beside the session with no expiry, so it proves no unlock. So a stolen session alone issues
+no pass and cannot choose who later buyers are sealed to, and a jti is never reused. A passkey
+removal moves the account to a new secret, and the server revokes passes from the older generation.
+
+**Door entries - the live attendee list.** After the ticket email, fulfilment seals each issued
+ticket's email and Stripe card name (`woco/door-entry/v1`, AAD = event, jti, series, edition) to the
+current, unexpired pass's door key and appends it to `.data/checkin-door-entries/` (`lib/checkin/
+door-entries.ts`); scanners poll `/entries` after a cursor. No order answers (the server cannot read
+them). An erased order deletes its sealed lines and logs a final removal that also hides the ticket's
+roster entry on every online scanner; regenerating the pass replaces the log; it goes with the roster
+2 days after the onchain end (an hourly sweep, `lib/checkin/roster-retention.ts`). A leaked link also
+shows buyers who buy after the leak, until the pass is regenerated or expires.
+
+On the scanner (`lib/scanner/door-entries.ts`, `store.svelte.ts`) each tab polls `/entries` on the
+pack refresh tick, after the pack, and once after provisioning, following `more`. The list is kept
+per event in `woco-scanner-v2` (a kv key, so no version bump), restored only under the pass it was
+opened under, and started again by a new pass; a reply that lands after the tab moved to another pass
+is dropped. The Attendees list is the organiser's roster first, then sales (their name tagged as the
+card name); a removal hides both. Display only: no door decision reads door entries. A link whose
+door key the server does not seal to shows a warning instead of silently opening nothing.
+
+**After the event the phone deletes it.** When a pass has expired - its `exp` on the phone's clock,
+or a server 401 `expired` (the clock may be wrong) - the phone deletes that event's roster, pack,
+door entries and pass secret, at boot, on the refresh tick and when the tab comes back; a tab
+showing it leaves for the provision screen. Check-ins (ticket, time, device id) stay while unsynced,
+still counted, and so does the pass token (no personal data): the other-events sync keeps uploading
+them with it. `/sync` takes an expired pass's upload for 30 days after its `exp`
+(`EXPIRED_PASS_UPLOAD_MS`), only while it is still the event's active pass (same jti, key generation
+not behind), and answers `{ acknowledged }` with no check-in set and no conflicts; `/pack`, `/claim`
+and `/entries` refuse it. The event goes once nothing is unsynced, or 30 days after the pass ended. A
+dead pass loses its token at once and uploads nothing; otherwise it is cleaned up the same way. Per
+event, decided again inside one IndexedDB transaction, so a live pass - or one another tab has just
+set up - is never touched (`events.ts` `endedEventAction`, `db.ts` `cleanUpEndedEvent`). Attendee
+data is only ever written while the pass that fetched it is still the stored one, with its secret,
+so a late reply cannot bring names back.
 
 **A ticket is admitted once, across every scanner (#641).** Check-in is a capacity control, so a
 second admission is a crowd-safety defect, never a statistic to reconcile afterwards. The organiser

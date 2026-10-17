@@ -2,8 +2,9 @@
  * Ticket buyer → marketing contact.
  *
  * Two guarantees under test, both of which a naive "newest wins" merge breaks:
- *   1. Only people who ticked the opt-in themselves are ever built into a
- *      contact. Everything else about this feature is downstream of that.
+ *   1. Only people with a checkout record - they ticked the opt-in, or left
+ *      own-events mode's "Don't email me" alone (the soft opt-in) - are ever
+ *      built into a contact. Everything else is downstream of that.
  *   2. A later, less trustworthy record never degrades a better one — not by
  *      overwriting a self-reported name with a CSV one, and not by blanking a
  *      field it simply does not carry.
@@ -17,18 +18,31 @@ import {
   applyDrain,
   provenanceRank,
 } from "../src/lib/creator/audience/attendee-drain.js";
+import { ORDER_EMAIL_FIELD_ID, type OrderField } from "@woco/shared";
 
 const NOW = "2026-07-27T00:00:00.000Z";
-const opts = (consented: string[]) => ({
+const FIELDS: OrderField[] = [
+  { id: "field_1", type: "text", label: "First Name", required: true, health: false },
+  { id: "field_2", type: "text", label: "Surname", required: true, health: false },
+  { id: "field_3", type: "text", label: "Area", required: false, health: false },
+  { id: "field_4", type: "text", label: "How did you hear about us?", required: false, health: false },
+  { id: "field_5", type: "text", label: "T-shirt size", required: false, health: false },
+  { id: "field_6", type: "text", label: "Allergies", required: false, health: true },
+  { id: ORDER_EMAIL_FIELD_ID, type: "email", label: "Email", required: true },
+];
+/** Each recorded buyer's record keeps every question by default, so the placement rule itself is what is tested. */
+const opts = (recorded: string[], orderFields: OrderField[] = FIELDS, kept?: Record<string, string[]>) => ({
+  orderFields,
   eventTitle: "Warehouse Project",
   eventDate: "2026-09-01",
   addedAt: NOW,
-  consented: new Set(consented),
+  recorded: new Set(recorded),
+  kept: new Map(Object.entries(kept ?? Object.fromEntries(recorded.map((e) => [e, orderFields.map((f) => f?.id)])))),
 });
 
 // ── Who gets built ─────────────────────────────────────────────────────────
 
-test("only opted-in buyers become contacts", () => {
+test("only buyers with a record (consent or soft opt-in) become contacts", () => {
   const out = buildAttendeeContacts(
     [{ claimerEmail: "yes@x.com" }, { claimerEmail: "no@x.com" }],
     opts(["yes@x.com"]),
@@ -49,22 +63,137 @@ test("four tickets is one contact", () => {
   assert.equal(out[0].email, "ada@x.com");
 });
 
-test("names are read out of organiser-defined order fields", () => {
+test("only the questions on the buyer's record are copied - a question changed since never widens it", () => {
+  const claim = {
+    claimerEmail: "a@x.com",
+    fields: { field_1: "Ada", field_2: "Lovelace", field_3: "Leeds", field_4: "Instagram", field_5: "M" },
+  };
+  // A record whose words named the name questions only (the form had no others then).
+  const soft = buildAttendeeContacts([claim], opts(["a@x.com"], FIELDS, { "a@x.com": ["field_1", "field_2"] }));
+  assert.equal(soft[0].firstName, "Ada");
+  assert.equal(soft[0].lastName, "Lovelace");
+  assert.equal(soft[0].city, undefined);
+  assert.equal(soft[0].answers, undefined);
+  // Asked after the sale: a new question the record never named is not copied.
+  const added: OrderField[] = [...FIELDS, { id: "field_7", type: "text", label: "Postcode", required: false }];
+  const later = buildAttendeeContacts(
+    [{ ...claim, fields: { ...claim.fields, field_7: "LS1" } }],
+    opts(["a@x.com"], added, { "a@x.com": ["field_1", "field_2", "field_3", "field_4", "field_5"] }),
+  );
+  assert.equal(later[0].postcode, undefined);
+  assert.equal(later[0].city, "Leeds");
+  // On the record, but marked sensitive since: today's rule still keeps it off.
+  const flagged = FIELDS.map((f) => (f.id === "field_3" ? { ...f, health: true } : f));
+  const now = buildAttendeeContacts([claim], opts(["a@x.com"], flagged, { "a@x.com": ["field_3"] }));
+  assert.equal(now[0].city, undefined);
+  // A record that names nothing - or no record of what it kept - keeps only the email.
+  for (const kept of [{ "a@x.com": [] }, {}]) {
+    const bare = buildAttendeeContacts([claim], opts(["a@x.com"], FIELDS, kept));
+    assert.deepEqual(Object.keys(bare[0]).sort(), ["addedAt", "email", "lastEventDate", "lastEventName", "source"]);
+  }
+});
+
+test("someone else's number never fills the buyer's phone, and their details are not kept", () => {
+  const fields: OrderField[] = [
+    { id: "ec_phone", type: "text", label: "Emergency contact phone", required: true },
+    { id: "pg_mobile", type: "text", label: "Parent/guardian mobile", required: false },
+    { id: "ec_name", type: "text", label: "Emergency contact name", required: true },
+    { id: "kin", type: "text", label: "Next of kin", required: false },
+    { id: "own", type: "text", label: "Your phone", required: false },
+  ];
   const out = buildAttendeeContacts(
-    [{ claimerEmail: "a@x.com", fields: { "First Name": "Ada", surname: "Lovelace" } }],
+    [{ claimerEmail: "a@x.com", fields: { ec_phone: "0700 111", pg_mobile: "0700 222", ec_name: "Bob", kin: "Carol", own: "0700 333" } }],
+    opts(["a@x.com"], fields),
+  );
+  assert.equal(out[0].phone, "0700 333");
+  assert.equal(out[0].answers, undefined);
+  assert.doesNotMatch(JSON.stringify(out[0]), /0700 111|0700 222|Bob|Carol/);
+});
+
+test("a question with no label is not copied: the checkout had no name to tell the buyer it by", () => {
+  const fields: OrderField[] = [
+    { id: "unnamed", type: "text", label: "", placeholder: "Your town", required: false },
+    { id: "area", type: "text", label: "Area", required: false },
+  ];
+  const out = buildAttendeeContacts([{ claimerEmail: "a@x.com", fields: { unnamed: "Hull", area: "Leeds" } }], opts(["a@x.com"], fields));
+  assert.equal(out[0].city, "Leeds");
+  assert.doesNotMatch(JSON.stringify(out[0]), /Hull|Your town/);
+});
+
+test("every non-sensitive answer is kept, each in its place - never a sensitive one, never the email field", () => {
+  const out = buildAttendeeContacts(
+    [{
+      claimerEmail: "a@x.com",
+      fields: {
+        field_1: "Ada", field_2: "Lovelace", field_3: "Leeds", field_4: "Instagram", field_5: "M", field_6: "Peanuts",
+        [ORDER_EMAIL_FIELD_ID]: "a@x.com",
+      },
+    }],
     opts(["a@x.com"]),
   );
   assert.equal(out[0].firstName, "Ada");
   assert.equal(out[0].lastName, "Lovelace");
+  // Area goes to the contact's town, so the list can be searched by it.
+  assert.equal(out[0].city, "Leeds");
+  assert.deepEqual(out[0].answers, { "How did you hear about us?": "Instagram", "T-shirt size": "M" });
+  assert.doesNotMatch(JSON.stringify(out[0]), /Peanuts|"Email"/);
+});
+
+test("a sensitive answer never moves, even when its flags arrive mislabelled", () => {
+  const mislabelled = [
+    // No saved flag: the label decides.
+    { id: "a", type: "text", label: "Dietary requirements", required: false },
+    { id: "b", type: "text", label: "Religion", required: false },
+    // Doubt in an organiser-signed feed reads as sensitive.
+    { id: "c", type: "text", label: "Seat preference", required: false, health: "yes" },
+    { id: "d", type: "text", label: "Notes", required: false, health: null },
+    // The retired key cannot bring one back.
+    { id: "e", type: "text", label: "Medical conditions", required: false, health: true, keepOnList: true },
+  ] as unknown as OrderField[];
+  const out = buildAttendeeContacts(
+    [{ claimerEmail: "a@x.com", fields: { a: "Vegan", b: "Sikh", c: "Aisle", d: "Wheelchair", e: "Asthma" } }],
+    opts(["a@x.com"], mislabelled),
+  );
+  assert.equal(out.length, 1, "the buyer is still a contact");
+  assert.equal(out[0].answers, undefined);
+  assert.doesNotMatch(JSON.stringify(out[0]), /Vegan|Sikh|Aisle|Wheelchair|Asthma/);
+});
+
+test("the organiser's Not sensitive? override is honoured, and a crafted form never throws", () => {
+  const overridden: OrderField[] = [{ id: "a", type: "text", label: "Diet Coke or Pepsi?", required: false, health: false }];
+  const out = buildAttendeeContacts([{ claimerEmail: "a@x.com", fields: { a: "Pepsi" } }], opts(["a@x.com"], overridden));
+  assert.deepEqual(out[0].answers, { "Diet Coke or Pepsi?": "Pepsi" });
+  const crafted = [null, 3, { id: "x", type: "text", required: false }] as unknown as OrderField[];
+  const odd = buildAttendeeContacts([{ claimerEmail: "a@x.com", fields: { x: "1" } }], opts(["a@x.com"], crafted));
+  assert.equal(odd[0].answers, undefined);
+});
+
+test("an unanswered question adds nothing", () => {
+  const out = buildAttendeeContacts([{ claimerEmail: "a@x.com", fields: { field_1: "  " } }], opts(["a@x.com"]));
+  assert.equal(out[0].firstName, undefined);
+  assert.equal(out[0].city, undefined);
+  assert.equal(out[0].answers, undefined);
 });
 
 test("a single name field is kept whole rather than split", () => {
+  const full: OrderField[] = [{ id: "field_9", type: "text", label: "Full name", required: true }];
   const out = buildAttendeeContacts(
-    [{ claimerEmail: "a@x.com", fields: { name: "Ada King de Lovelace" } }],
-    opts(["a@x.com"]),
+    [{ claimerEmail: "a@x.com", fields: { field_9: "Ada King de Lovelace" } }],
+    opts(["a@x.com"], full),
   );
   assert.equal(out[0].firstName, "Ada King de Lovelace");
   assert.equal(out[0].lastName, undefined);
+});
+
+test("kept answers merge question by question, never blanking one", () => {
+  const prev = { email: "a@x.com", answers: { "How did you hear about us?": "Instagram", Genre: "Techno" }, source: "event:A", addedAt: NOW };
+  const next = { email: "a@x.com", answers: { Genre: "House" }, source: "event:B", addedAt: NOW };
+  assert.deepEqual(mergeContact(prev, next).answers, { "How did you hear about us?": "Instagram", Genre: "House" });
+  // A lower-trust source fills a gap but never overwrites what the buyer told the organiser.
+  const csv = { email: "a@x.com", answers: { Genre: "Jazz", Venue: "Leeds" }, source: "csv:old.csv", addedAt: NOW };
+  assert.deepEqual(mergeContact(prev, csv).answers, { "How did you hear about us?": "Instagram", Genre: "Techno", Venue: "Leeds" });
+  // An empty answer is absence, not an update.
+  assert.deepEqual(mergeContact(prev, { ...next, answers: { Genre: "" } }).answers, prev.answers);
 });
 
 test("the event is recorded as the provenance", () => {
@@ -143,4 +272,28 @@ test("matching an existing contact is case-insensitive", () => {
   const report = applyDrain(existing, [{ email: "ada@x.com", source: "event:X", addedAt: NOW }]);
   assert.equal(report.added, 0, "must not create a second record for the same person");
   assert.equal(report.contacts.length, 1);
+});
+
+test("between two checkouts the later EVENT wins, whichever was read last", () => {
+  // The automatic sync re-reads an older event whenever its orders change: that
+  // must not turn the contact's last event (or their latest answers) back to it.
+  const later = { email: "a@x.com", firstName: "Ada", lastEventName: "Autumn", lastEventDate: "2026-10-01", source: "event:Autumn", addedAt: NOW };
+  const earlier = { email: "a@x.com", firstName: "A.", city: "Leeds", lastEventName: "Spring", lastEventDate: "2026-04-01", source: "event:Spring", addedAt: NOW };
+  const out = mergeContact(later, earlier);
+  assert.equal(out.lastEventName, "Autumn");
+  assert.equal(out.lastEventDate, "2026-10-01");
+  assert.equal(out.firstName, "Ada");
+  assert.equal(out.source, "event:Autumn");
+  assert.equal(out.city, "Leeds", "the older checkout still fills a gap");
+  // And the other way round the later one takes over, as before.
+  assert.equal(mergeContact(earlier, later).lastEventName, "Autumn");
+  // Re-reading the older event changes nothing, so it is not counted as an update.
+  assert.equal(applyDrain([out], [earlier]).updated, 0);
+});
+
+test("an unreadable event date never decides: equal rank falls to the incoming record", () => {
+  const a = { email: "a@x.com", firstName: "Ada", lastEventDate: "not a date", source: "event:A", addedAt: NOW };
+  const b = { email: "a@x.com", firstName: "Bo", lastEventDate: "2026-01-01", source: "event:B", addedAt: NOW };
+  assert.equal(mergeContact(b, a).firstName, "Ada");
+  assert.equal(mergeContact(a, b).firstName, "Bo");
 });

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { feedRouteFor } from "../../swarm/gateways.js";
   import type { OrderField, ClaimMode, EventFeed, EventGeo, EventTag } from "@woco/shared";
-  import { buildIssuerBindingMessage, FEATURES, signPersonalMessage, ticketPriceMeetsMinimum } from "@woco/shared";
+  import { buildIssuerBindingMessage, eventHasPlace, EVENT_PLACE_REQUIRED, FEATURES, signPersonalMessage, ticketPriceMeetsMinimum } from "@woco/shared";
   import type { ContentFeedSigner } from "../../swarm/content-feed.js";
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
@@ -11,6 +11,9 @@
   import { eventContentTopic } from "@woco/shared";
   import { logFeedToManifest } from "../../manifest/feed-log.js";
   import { navigate } from "../../router/router.svelte.js";
+  import { ownNoticeStatus, type OwnNoticeStatus } from "../../legal/own-notice-status.js";
+  import NoticeConfirmPrompt from "../privacy/NoticeConfirmPrompt.svelte";
+  import { localInputToIso, saleWindowError } from "./date.js";
 
   interface SeriesDraft {
     seriesId: string;
@@ -88,11 +91,18 @@
     if (!Number.isFinite(s) || !Number.isFinite(e)) return "Enter valid start and end dates.";
     if (e <= s) return "End date must be after the start date.";
     if (e <= Date.now()) return "End date must be in the future.";
+    for (const s of series) {
+      const problem = saleWindowError(s, endDate);
+      if (problem) return `${s.name.trim() || "A ticket type"}: ${problem}`;
+    }
     return null;
   });
 
+  const hasPlace = $derived(eventHasPlace(geo));
+
   const canPublish = $derived(
     title.trim() &&
+    hasPlace &&
     startDate &&
     endDate &&
     !dateError &&
@@ -104,6 +114,25 @@
   );
 
   const hasPaidSeries = $derived(series.some((s) => s.payment));
+
+  // Tickets only sell once the organiser has confirmed their privacy notice - the
+  // server refuses every hold and checkout until then. Asked before a paid publish,
+  // with a way through: publishing anyway is allowed, selling is not.
+  let noticePrompt = $state<Exclude<OwnNoticeStatus, "confirmed"> | null>(null);
+  let noticeChecking = $state(false);
+  let publishBeforeNotice = false;
+
+  async function noticeLetsPublish(): Promise<boolean> {
+    if (!hasPaidSeries || publishBeforeNotice) return true;
+    noticeChecking = true;
+    try {
+      const status = await ownNoticeStatus();
+      noticePrompt = status === "confirmed" ? null : status;
+      return status === "confirmed";
+    } finally {
+      noticeChecking = false;
+    }
+  }
 
   function handleProgress(p: PublishProgress) {
     step = p.message;
@@ -142,6 +171,8 @@
         error = "Account setup cancelled";
         return;
       }
+      step = "Checking your privacy notice…";
+      if (!(await noticeLetsPublish())) return;
       progress = 4;
 
       // The organiser's X-Wing order key (#642), derived from the seed with no
@@ -172,6 +203,13 @@
       // canPublish already guaranteed both dates are valid + in the future.
       const startDateIso = new Date(startDate).toISOString();
       const endDateIso = new Date(endDate).toISOString();
+      // Sale windows likewise - the server refuses a bound with no timezone, which
+      // it would otherwise read in its own zone. dateError has checked each one.
+      const saleBound = (value: string): string => {
+        const iso = localInputToIso(value);
+        if (!iso) throw new Error("Enter a valid sale window for each ticket type.");
+        return iso;
+      };
 
       // ── Build manifests ───────────────────────────────────────────────
       phase = "building";
@@ -221,8 +259,8 @@
             signedManifest: manifests[i]!.signedManifest,
             editionBodies: manifests[i]!.editionBodies,
             ...(s.wave ? { wave: s.wave } : {}),
-            ...(s.saleStart ? { saleStart: s.saleStart } : {}),
-            ...(s.saleEnd ? { saleEnd: s.saleEnd } : {}),
+            ...(s.saleStart ? { saleStart: saleBound(s.saleStart) } : {}),
+            ...(s.saleEnd ? { saleEnd: saleBound(s.saleEnd) } : {}),
             ...(s.payment ? { payment: s.payment } : {}),
             ...(s.gate ? { gate: s.gate } : {}),
           })),
@@ -457,10 +495,22 @@
     </p>
   {/if}
 
+  {#if noticePrompt && !publishing && !pendingEventId}
+    <NoticeConfirmPrompt
+      status={noticePrompt}
+      what="event"
+      checking={noticeChecking}
+      onrecheck={() => void handlePublish()}
+      onpublishanyway={() => { publishBeforeNotice = true; noticePrompt = null; void handlePublish(); }}
+    />
+  {/if}
+
   {#if disabled && disabledReason && !publishing}
     <p class="hint">{disabledReason}</p>
   {:else if dateError && !publishing}
     <p class="hint">{dateError}</p>
+  {:else if !hasPlace && !publishing}
+    <p class="hint">{EVENT_PLACE_REQUIRED}.</p>
   {:else if !canPublish && !publishing}
     <p class="hint">Fill in all required fields to publish</p>
   {/if}

@@ -175,6 +175,15 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
     },
   },
   {
+    // Door entries (live door attendee list): a directory the writer creates itself.
+    store: "checkin/door-entries",
+    drive: async () => {
+      const m = await import("../src/lib/checkin/door-entries.js");
+      m.startDoorEntries("event-1", "e".repeat(32), "ab".repeat(1216));
+      m.removeDoorEntries("event-1", [{ seriesId: "series-1", edition: 1 }]);
+    },
+  },
+  {
     store: "domains/service",
     drive: async () => {
       const m = await import("../src/lib/domains/service.js");
@@ -196,6 +205,13 @@ const CASES: Array<{ store: string; drive: () => Promise<unknown> | unknown }> =
         paidUntil: now,
         gateway: "https://gateway.etherna.io",
       });
+    },
+  },
+  {
+    store: "etherna/relay-ledger",
+    drive: async () => {
+      const m = await import("../src/lib/etherna/relay-ledger.js");
+      m.noteFailover("ab".repeat(32), "cd".repeat(20), "ef".repeat(32), OWNER);
     },
   },
   {

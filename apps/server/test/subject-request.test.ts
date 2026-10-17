@@ -27,6 +27,8 @@ const TS = "2026-06-01T00:00:00.000Z";
 
 let sr: typeof import("../src/lib/marketing/subject-request.js");
 let capture: typeof import("../src/lib/marketing/consent-capture.js");
+/** The hash create-checkout stamps for consent v2 with no questions. */
+let yesHash = "";
 let lists: typeof import("../src/lib/marketing/list-store.js");
 let suppression: typeof import("../src/lib/marketing/suppression-store.js");
 let consent: typeof import("../src/lib/marketing/consent-store.js");
@@ -35,6 +37,9 @@ before(async () => {
   process.chdir(mkdtempSync(join(tmpdir(), "woco-subject-request-test-")));
   sr = await import("../src/lib/marketing/subject-request.js");
   capture = await import("../src/lib/marketing/consent-capture.js");
+  const { marketingWordingHash } = await import("../src/lib/marketing/checkout-choice.js");
+  const { marketingWording } = await import("@woco/shared");
+  yesHash = marketingWordingHash(marketingWording("consent", 2, undefined, { name: false, answers: [] })!);
   lists = await import("../src/lib/marketing/list-store.js");
   suppression = await import("../src/lib/marketing/suppression-store.js");
   consent = await import("../src/lib/marketing/consent-store.js");
@@ -42,7 +47,7 @@ before(async () => {
 
 /** Put one subject into all three stores for `org`. */
 function seed(h: string, org: string, others: string[] = []): void {
-  capture.captureCheckoutConsent({ emailHash: h, organiserAddress: org, granted: true, ts: TS, eventId: "evt-1" });
+  capture.captureCheckoutConsent({ emailHash: h, organiserAddress: org, choice: { mode: "consent", ticked: true, version: 2, surface: "order-form" }, wordingHash: yesHash, ts: TS, eventId: "evt-1" });
   lists.putList(org, { swarmRef: "ref", count: others.length + 1, updatedAt: TS, emailHashes: [h, ...others] });
 }
 

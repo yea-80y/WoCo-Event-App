@@ -96,6 +96,7 @@ import type { PasskeyLogin } from "./passkey-account.js";
 import type { ContentFeedSigner } from "../swarm/content-feed.js";
 import { signingRequest } from "./signing-request.svelte.js";
 import { accountSetupRequest } from "./account-setup-request.svelte.js";
+import { sessionForRequest, signWithStoredSession, type RequestSigningOptions } from "./request-session.js";
 import {
   planAccountSetup,
   hasExplainedAccountSetup,
@@ -520,15 +521,30 @@ function _currentSecretFor(seed: string): string {
  * Every secret this device holds for the account, generation 0 first, and the current
  * one. `toSeal`: the caller will sign or seal with `current`, so the generation must be
  * CONFIRMED current (prompting once when this device is only behind); opening old boxes
- * needs no such check.
+ * needs no such check. `silent`: a seal nobody asked for at this moment (the audience
+ * sync) - never the catch-up prompt; an unconfirmed generation throws instead.
  */
-async function _accountSecretsIfPresent(opts: { toSeal?: boolean } = {}): Promise<{ current: string; all: string[]; gen: number } | null> {
+async function _accountSecretsIfPresent(opts: { toSeal?: boolean; silent?: boolean } = {}): Promise<{ current: string; all: string[]; gen: number } | null> {
   const seed = await _seedIfPresent();
   if (!seed) return null;
-  if (opts.toSeal) await _requireCurrentKeys({ prompt: true });
+  if (opts.toSeal) await _requireCurrentKeys({ prompt: !opts.silent });
   else if (_chainLoad) await _chainLoad.catch(() => {});
   const chain = _kind === "passkey" && _unlocked?.seed === seed ? _unlocked.chain : null;
   return { current: currentSecretOf(seed, chain), all: allSecretsOf(seed, chain), gen: chain?.gen ?? 0 };
+}
+
+/**
+ * A FRESH read of the account's key-ring anchor (one RPC, never a prompt) equals the
+ * ring this device seals under. Asked right before an upload sealed in the background
+ * (the audience sync), so a ring replaced since this device last looked (#186) means
+ * no write - the in-memory verdict alone could be stale.
+ */
+async function _keyRingStillCurrent(): Promise<boolean> {
+  if (_kind !== "passkey") return true;
+  const u = _unlocked;
+  if (!u) return false;
+  const ref = await (await _keys()).readAnchor(_keysHost(), u.parent, { fresh: true });
+  return ref !== "error" && ref === (u.chain?.ringRef ?? null) && _unlocked === u;
 }
 
 /**
@@ -2786,8 +2802,8 @@ async function _addCoOwnerWithRecord<T>(
 }
 
 /** The account's key ring for a co-owner change made from this device (`account-keys.ts`). */
-async function _ringForChange(add: import("@woco/shared/keyring/ring").KeyRingMember[]) {
-  return (await _keys()).ringForChange(_keysHost(), add);
+async function _ringForChange(add: import("@woco/shared/keyring/ring").KeyRingMember[], opts: { coOwnerAdded?: boolean } = {}) {
+  return (await _keys()).ringForChange(_keysHost(), add, opts);
 }
 
 /** The ring this device just named onchain is the account's now: hold it as current. */
@@ -3203,7 +3219,7 @@ async function approveDeviceLink(code: Uint8Array, offer: import("./device-link.
   // The new device cannot sign its ring entry before it knows the account (#186): this
   // device makes sure the ring exists with itself in it, hands the account's later
   // secrets over in the sealed answer, and the new device adds itself once signed in.
-  const ring = await _ringForChange([]);
+  const ring = await _ringForChange([], { coOwnerAdded: true });
   await runApproveDeviceLink(code, offer, {
     apiBase,
     parent,
@@ -5086,6 +5102,7 @@ async function signRequest(
   method: string,
   path: string,
   body: string,
+  opts: RequestSigningOptions = {},
 ): Promise<{
   signature: string;
   nonce: string;
@@ -5093,11 +5110,8 @@ async function signRequest(
   sessionAddress: string;
   delegation: SessionDelegation;
 } | null> {
-  // Lazy session establishment
-  if (!hasSession) {
-    const ok = await ensureSession();
-    if (!ok) return null;
-  }
+  // Lazy session establishment - never for a background request (`establish: false`).
+  if (!(await sessionForRequest({ hasSession: () => hasSession, ensureSession }, opts))) return null;
   if (!_parent) return null;
 
   const nonce = crypto.randomUUID();
@@ -5110,14 +5124,15 @@ async function signRequest(
   // case, which the caller would see as a missing auth header. Detect and
   // re-establish — and bind to the active `_parent` so a stale delegation
   // belonging to a previous identity can never be sent.
-  let result = await signWithSession(challenge, _parent);
-  if (!result) {
-    _sessionAddress = null;
-    const ok = await ensureSession();
-    if (!ok) return null;
-    result = await signWithSession(challenge, _parent);
-    if (!result) return null;
-  }
+  const result = await signWithStoredSession(
+    {
+      sign: () => (_parent ? signWithSession(challenge, _parent) : Promise.resolve(null)),
+      forget: () => { _sessionAddress = null; },
+      ensureSession,
+    },
+    opts,
+  );
+  if (!result) return null;
 
   const delegation = await getSessionDelegation(_parent);
   if (!delegation) return null;
@@ -5363,7 +5378,7 @@ export const auth = {
     return _rotateOnRemoval([], { resume: true });
   },
   // Passkeys a removal now would leave without the new keys - a hint for its confirm.
-  passkeysWithoutKeys: async () => (await _keys()).passkeysWithoutKeys(_keysHost()),
+  passkeysWithoutKeys: async (opts?: { withRing?: boolean }) => (await _keys()).passkeysWithoutKeys(_keysHost(), opts),
   // A passkey left out of the account's keys (#186): this one asks with a code...
   requestKeys: async (opts: { onCode: (code: { typed: string; qr: string }) => void; signal?: AbortSignal }) =>
     (await _keys()).requestKeys(_keysHost(), opts),
@@ -5430,7 +5445,9 @@ export const auth = {
   // tries `all` (sealed under whichever generation was current then). Generation 0 is
   // the identity seed, so for an account that never removed a passkey both are the seed.
   // The issuing key, escrow and portability stay on `getIdentitySeed`.
-  getAccountSecrets: (opts: { toSeal?: boolean } = {}) => _accountSecretsIfPresent(opts),
+  getAccountSecrets: (opts: { toSeal?: boolean; silent?: boolean } = {}) => _accountSecretsIfPresent(opts),
+  // Fresh anchor read, no prompt: is the ring this device seals under still the account's?
+  keyRingStillCurrent: () => _keyRingStillCurrent(),
   // Why the account's keys need attention here, if they do (#186): "keyless" = this
   // passkey was left out of the account's latest keys; "changed" = another passkey moved
   // them on (a removal). Null = nothing to say.

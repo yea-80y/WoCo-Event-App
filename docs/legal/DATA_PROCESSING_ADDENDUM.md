@@ -1,6 +1,6 @@
 # Data Processing Addendum
 
-**Last updated:** 6 October 2026
+**Last updated:** 14 October 2026
 **Version:** 1.0
 
 This Addendum forms part of the [Organiser Terms](./ORGANISER_TERMS.md) between
@@ -26,13 +26,13 @@ Addendum does not apply to those.
 
 **Subject matter:** provision of ticketing, event hosting, attendee communication and audience tools.
 
-**Duration:** for as long as you use the services, plus the retention periods in section 8.
+**Duration:** for as long as you use the services, plus the retention periods in section 8 and Annex 3.
 
 **Nature and purpose:** collecting attendee orders; issuing and delivering tickets; storing encrypted
 attendee data for your retrieval; check-in; sending transactional and (where permitted) marketing
-email on your instruction; hosting sites you publish; displaying your privacy notice at the
-point of collection - the one you confirm, or until you do, the one we pre-fill from your
-configuration and these terms.
+email on your instruction; hosting sites you publish; displaying the privacy notice you have
+confirmed at the point of collection. Until you confirm one, we do not sell tickets for you and
+do not show a notice in your name.
 
 **Types of personal data:**
 
@@ -40,14 +40,17 @@ configuration and these terms.
 - attendee name and any other fields **you choose to include** in your order form
 - ticket, attendance and check-in records
 - wallet addresses or pseudonymous identifiers
-- contact lists you upload
+- contact lists you upload, and the email, name and order-form answers (except a sensitive one or one
+  about another person) of attendees who join your mailing list at checkout - by ticking "Email me",
+  or by leaving "Don't email me" unticked - which we add to it
 - messages submitted through contact forms on sites you publish
 
 **Categories of data subject:** your attendees, ticket buyers, contacts and site visitors.
 
-**Special category data:** not processed, unless you choose to collect it through a custom order-form
-field. If you do, you are responsible for identifying an Article 9 condition. We would advise against
-it.
+**Special category and criminal offence data:** not processed, unless you choose to collect it
+through a custom order-form field. If you do, you are responsible for identifying an Article 9 (or
+Article 10) condition. We keep such a question optional and never add its answers to your mailing
+list. We would advise against it.
 
 ---
 
@@ -181,7 +184,10 @@ You may export your attendee data from your dashboard at any time. **Do this bef
 account** — we cannot export encrypted data for you.
 
 **Copies you hold.** Data you export from your dashboard, or load onto a door-scanning device, is a
-copy held by you as controller and is outside our processing. You are responsible for keeping it
+copy held by you as controller and is outside our processing. The email and card name we seal for
+your door devices at each sale are within our processing while we hold them; what a door device
+opens is your copy, and our scanner deletes it automatically after the event. You are
+responsible for keeping it
 secure, for keeping it no longer than you need it, and for deleting a data subject's data from it
 when we tell you it has been erased.
 
@@ -228,3 +234,28 @@ Current as at 6 October 2026. This annex is the live list: we change it here, wi
 ## Annex 2 — Technical and organisational measures
 
 As set out in section 6 above.
+
+---
+
+## Annex 3 - Standing instruction: how long order answers are kept
+
+Your privacy notice tells attendees how long their order-form answers are kept: 6 or 12 months after
+the event. The notice editor starts at 6 months - our proposal - and the period becomes yours when you
+confirm and publish the notice. It is your standing instruction to us, carried out as follows:
+
+1. **Period.** Each order is kept for the period your published notice gave when that ticket was sold.
+   A later change to your notice applies to later sales, not earlier ones.
+2. **Clock.** The period runs from the event's end as registered onchain when its tickets went on
+   sale, which cannot be changed afterwards - never from a date later edited on the event page. A
+   cancelled event runs on the same clock.
+3. **Erasure.** When the period is up we erase the order as section 5(3) describes. An order paid for
+   but not yet stored is deleted outright. The order reference recorded onchain is permanent
+   (section 5(9)).
+4. **Unpaid checkouts.** Answers from a checkout that is never paid are deleted after 24 hours.
+5. **Door lists.** A guest list you load onto a door scanner through us, and the email and card name
+   we seal for your door devices at each sale, are deleted 2 days after the event, and each ticket's
+   door entry when its order is erased. Our door scanner deletes its copy once the door pass has
+   expired (24 hours after the event ends), the next time the scanner is opened.
+6. **When we cannot tell.** If we cannot establish an order's period or the event's onchain end, we
+   keep the order rather than erase it early, and look into why.
+7. **Sooner.** You can ask us to erase any order before then, and attendees can ask under section 3(5).

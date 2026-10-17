@@ -150,7 +150,7 @@ function gateway(l2: string, onRead?: () => void) {
       return l2;
     },
     now: () => NOW,
-    contenthash: { apexHash: () => APEX, lookupBuilt: built, onAnswer: (a) => answers.push(a) },
+    contenthash: { apexHash: () => APEX, lookupBuilt: built, scannerBuild: async () => null, onAnswer: (a) => answers.push(a) },
   });
   return { handler, answers };
 }

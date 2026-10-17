@@ -1,10 +1,13 @@
 <script lang="ts">
   /**
    * "Door" tab — sets up the scanner for an event and shows live check-in
-   * counts. The roster key is worked out CLIENT-SIDE from the account's current
+   * counts. The pass secret is worked out CLIENT-SIDE from the account's current
    * keys and the pass's id (#186) - never stored, so this device keeps only the
-   * pass token; it encrypts the decrypted order data under it and uploads only
-   * ciphertext, and the key travels solely in the door-pass URL fragment.
+   * pass token; the roster is encrypted under a key derived from it and uploaded as
+   * ciphertext only, and the secret travels solely in the door-pass URL fragment.
+   * Making a pass also registers its door entries key, with proof that this device
+   * holds the account's order key (a session alone cannot), so each later sale's
+   * email and card name reach the door phones sealed.
    * Regenerating the pass rotates the server jti and revokes every previously
    * provisioned device, and so does a change of the account's keys.
    *
@@ -16,9 +19,12 @@
   import QRCode from "qrcode";
   import { buildDoorPassUrl, type DoorMode, type RosterEntry } from "@woco/shared";
   import type { EventFeed, OrderEntry } from "@woco/shared";
-  import { issueDoorPass, pushCheckinRoster, getCheckinStatus, type CheckinStatus } from "../../api/checkin.js";
+  import { issueDoorPass, pushCheckinRoster, getCheckinStatus, requestDoorPassChallenge, type CheckinStatus } from "../../api/checkin.js";
+  import { issueDoorPassWithProof } from "./door-pass-issue.js";
+  import { buildRosterEntries } from "./door-roster.js";
+  import { DOOR_PASS_FORMAT, parseStoredDoorPass, storedPassStale, type StoredDoorPass } from "./door-pass-stored.js";
   import { encryptRoster } from "../../scanner/roster-crypto.js";
-  import { doorPassRosterKeyB64url } from "../../scanner/door-pass-key.js";
+  import { doorPassSecretB64url } from "../../scanner/door-pass-key.js";
   import { auth } from "../../auth/auth-store.svelte.js";
 
   interface DecryptedOrder {
@@ -43,21 +49,11 @@
     import.meta.env.VITE_SCANNER_URL ||
     (import.meta.env.DEV ? "http://localhost:5175" : "https://scan.woco.eth.limo");
 
-  interface StoredDoorPass {
-    /** The pass token only - its roster key is worked out again when needed. */
-    token: string;
-    exp: number;
-    mode: DoorMode;
-    /** The account's key generation the pass was made under: a later one revokes it. */
-    gen: number;
-    rosterPushedAt?: string;
-  }
-
   let stored = $state<StoredDoorPass | null>(null);
   // The full pass link (token + key), in memory only - shown once the account's keys are open.
   let passUrl = $state<string | null>(null);
-  // The account's keys changed since this pass was made: it no longer works.
-  let passStale = $state(false);
+  // Why the stored pass no longer works (older keys, or made before P); null while it does.
+  let passStale = $state<string | null>(null);
   let qrDataUrl = $state<string | null>(null);
   let working = $state(false);
   let workError = $state<string | null>(null);
@@ -74,13 +70,9 @@
   onMount(() => {
     try {
       const raw = localStorage.getItem(storageKey);
-      const parsed = raw ? (JSON.parse(raw) as Partial<StoredDoorPass>) : null;
       // A pass stored with its key in clear (before #186) is dropped: make a new one.
-      if (parsed && typeof parsed.token === "string" && typeof parsed.gen === "number" && typeof parsed.exp === "number") {
-        stored = { token: parsed.token, exp: parsed.exp, mode: parsed.mode === "single" ? "single" : "several", gen: parsed.gen, rosterPushedAt: parsed.rosterPushedAt };
-      } else if (raw) {
-        localStorage.removeItem(storageKey);
-      }
+      stored = parseStoredDoorPass(raw);
+      if (!stored && raw) localStorage.removeItem(storageKey);
     } catch {
       stored = null;
     }
@@ -110,24 +102,11 @@
     }
   }
 
-  function buildRosterEntries(): RosterEntry[] {
-    const seriesName = new Map(event.series.map((s) => [s.seriesId, s.name]));
-    return orders.map((order, idx) => {
-      const dec = decryptedOrders.get(idx);
-      const fields = dec?.fields ?? undefined;
-      const nameKey = fields ? Object.keys(fields).find((k) => /name/i.test(k)) : undefined;
-      return {
-        seriesId: order.seriesId,
-        seriesName: seriesName.get(order.seriesId) ?? order.seriesName,
-        edition: order.edition,
-        name: nameKey ? fields![nameKey] : undefined,
-        email: dec?.claimerEmail,
-        fields,
-      };
-    });
+  /** Name, email and ticket only (door-roster.ts): the other order answers never reach the door. */
+  function doorRoster(): RosterEntry[] {
+    return buildRosterEntries(orders, decryptedOrders, new Map(event.series.map((s) => [s.seriesId, s.name])));
   }
 
-  const KEYS_CHANGED = "This door pass stopped working when your account's keys changed - make a new one.";
 
   /** The account's current keys, for sealing: asks for the passkey if they're locked. */
   async function currentKeys(): Promise<{ current: string; gen: number }> {
@@ -146,19 +125,21 @@
       if (ask) await auth.ensureOrganiserUnlock();
       const keys = await auth.getAccountSecrets();
       if (!keys) return;
-      if (keys.gen !== stored.gen) {
-        passStale = true;
+      const stale = storedPassStale(stored, keys.gen);
+      if (stale) {
+        passStale = stale;
         passUrl = null;
         return;
       }
-      passUrl = buildDoorPassUrl(SCANNER_ORIGIN, stored.token, doorPassRosterKeyB64url(keys.current, eventId, stored.token));
+      passUrl = buildDoorPassUrl(SCANNER_ORIGIN, stored.token, doorPassSecretB64url(keys.current, eventId, stored.token));
     } catch (err) {
       if (ask) workError = err instanceof Error ? err.message : "Couldn't open the door pass";
     }
   }
 
-  /** First-time setup AND regenerate: new pass + its key (old devices die). The pass
-   *  is issued FIRST - its id is part of the roster key. */
+  /** First-time setup AND regenerate: new pass + its secret (old devices die). Challenge,
+   *  then the pass with its door entries key and the order-key proof, then the roster
+   *  encrypted under the pass secret. */
   async function generatePass(passMode: DoorMode): Promise<void> {
     working = true;
     workError = null;
@@ -168,15 +149,20 @@
       await auth.ensureOrganiserUnlock();
       if (needsDecrypt) await onEnsureDecrypted();
       const keys = await currentKeys();
+      const parent = auth.parent?.toLowerCase();
+      if (!parent) throw new Error("Sign in again, then try again.");
 
-      const issued = await issueDoorPass(eventId, passMode);
-      const keyB64url = doorPassRosterKeyB64url(keys.current, eventId, issued.token);
-      const roster = await encryptRoster(buildRosterEntries(), keyB64url);
+      const issued = await issueDoorPassWithProof(
+        { eventId, parent, mode: passMode, secrets: keys },
+        { challenge: requestDoorPassChallenge, issue: issueDoorPass },
+      );
+      const passSecret = doorPassSecretB64url(keys.current, eventId, issued.token);
+      const roster = await encryptRoster(doorRoster(), passSecret);
       await pushCheckinRoster(eventId, roster);
 
-      stored = { token: issued.token, exp: issued.exp, mode: issued.mode, gen: keys.gen, rosterPushedAt: new Date().toISOString() };
-      passUrl = buildDoorPassUrl(SCANNER_ORIGIN, issued.token, keyB64url);
-      passStale = false;
+      stored = { v: DOOR_PASS_FORMAT, token: issued.token, exp: issued.exp, mode: issued.mode, gen: keys.gen, rosterPushedAt: new Date().toISOString() };
+      passUrl = buildDoorPassUrl(SCANNER_ORIGIN, issued.token, passSecret);
+      passStale = null;
       localStorage.setItem(storageKey, JSON.stringify(stored));
     } catch (err) {
       workError = err instanceof Error ? err.message : "Setup failed";
@@ -194,12 +180,13 @@
       await auth.ensureOrganiserUnlock();
       if (needsDecrypt) await onEnsureDecrypted();
       const keys = await currentKeys();
-      if (keys.gen !== stored.gen) {
-        passStale = true;
+      const stale = storedPassStale(stored, keys.gen);
+      if (stale) {
+        passStale = stale;
         passUrl = null;
-        throw new Error(KEYS_CHANGED);
+        throw new Error(stale);
       }
-      const roster = await encryptRoster(buildRosterEntries(), doorPassRosterKeyB64url(keys.current, eventId, stored.token));
+      const roster = await encryptRoster(doorRoster(), doorPassSecretB64url(keys.current, eventId, stored.token));
       await pushCheckinRoster(eventId, roster);
       stored = { ...stored, rosterPushedAt: new Date().toISOString() };
       localStorage.setItem(storageKey, JSON.stringify(stored));
@@ -268,8 +255,10 @@
       <h3>Door scanner</h3>
       <p>
         Generate a <strong>door pass</strong> to turn any phone into a ticket scanner for this event -
-        no login needed on the door device. The pass loads everything the scanner needs to check
-        tickets, including your attendee list (encrypted - the WoCo server never sees names or emails).
+        no login needed on the door device. The pass loads what the scanner needs to check people in:
+        each attendee's name, email and ticket. For each new sale, WoCo adds the buyer's email and the
+        name on their card, sealed so only your door phones can read them. Scanners delete the list
+        automatically after the event.
       </p>
       <fieldset class="modes">
         <legend>How many phones on the door?</legend>
@@ -301,11 +290,11 @@
       {/if}
       <p class="hint">
         On the door {stored.mode === "single" ? "phone" : "phones"}, open <strong>{SCANNER_ORIGIN.replace(/^https?:\/\//, "")}</strong> and scan
-        this QR (or open the link). Anyone with this pass can check people in - share it only with
-        your door team.
+        this QR (or open the link). Anyone with this pass can check people in and see your attendee
+        list - share it only with your door team.
       </p>
       {#if passStale}
-        <p class="error">{KEYS_CHANGED}</p>
+        <p class="error">{passStale}</p>
       {:else if qrDataUrl}
         <img class="pass-qr" src={qrDataUrl} alt="Door pass QR" />
       {:else if !passUrl}

@@ -57,6 +57,7 @@ for (const [name, contents] of [
   test(`${name}: the file is NEVER overwritten, and nothing registers`, async () => {
     const { registry, file } = await registryWith(contents);
     assert.equal(registry.lookupOnChainEventId(E, S), null, "nothing is served from a file not understood");
+    assert.equal(registry.hasUnreadableRecordFor(E), true, "no event's end can be concluded from it (#883)");
     assert.throws(
       () => registry.recordOnChainEventId(E, S, ID, TARGET),
       (err: Error) => err.name === "RegistryUnreadableError",

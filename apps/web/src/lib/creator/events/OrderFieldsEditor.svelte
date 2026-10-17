@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { OrderField, OrderFieldType } from "@woco/shared";
+  import { orderFieldKind, type OrderField, type OrderFieldType } from "@woco/shared";
 
   interface Props {
     orderFields: OrderField[];
@@ -25,8 +25,31 @@
         type: "text",
         label: "",
         required: false,
+        health: false,
       },
     ];
+  }
+
+  // Questions whose sensitive flag the organiser set by hand: their label no
+  // longer re-guesses it, so an undo sticks while they keep typing.
+  let manual = $state<Record<string, true>>({});
+
+  function update(index: number, changes: Partial<OrderField>) {
+    orderFields = orderFields.map((f, i) => (i === index ? { ...f, ...changes } : f));
+  }
+
+  /** Pre-set the sensitive flag from what the label says it asks (owner 2026-10-13: defaults do the work). */
+  function guessFlags(index: number) {
+    const f = orderFields[index];
+    if (!f || manual[f.id]) return;
+    const kind = orderFieldKind(f.label);
+    update(index, { health: kind.health, ...(kind.health ? { required: false } : {}) });
+  }
+
+  function setFlags(index: number, changes: Partial<OrderField>) {
+    const f = orderFields[index];
+    if (f) manual = { ...manual, [f.id]: true };
+    update(index, changes);
   }
 
   function removeField(index: number) {
@@ -72,6 +95,7 @@
             <input
               type="text"
               bind:value={field.label}
+              oninput={() => guessFlags(i)}
               placeholder="e.g. Full Name"
             />
           </label>
@@ -98,10 +122,21 @@
           </label>
         {/if}
 
-        <label class="toggle-row compact">
-          <input type="checkbox" bind:checked={field.required} />
-          <span>Required</span>
-        </label>
+        {#if field.health}
+          <p class="health-note">
+            Sensitive question - kept optional and never added to your mailing list.
+            <button type="button" class="link-btn" onclick={() => setFlags(i, { health: false })}>Not sensitive?</button>
+          </p>
+        {:else}
+          <div class="flag-row">
+            <label class="toggle-row compact">
+              <input type="checkbox" bind:checked={field.required} />
+              <span>Required</span>
+            </label>
+            <!-- The guess can miss: the only way a missed question stays off the mailing list. -->
+            <button type="button" class="link-btn" onclick={() => setFlags(i, { health: true, required: false })}>Sensitive?</button>
+          </div>
+        {/if}
       </div>
     {/each}
 
@@ -140,6 +175,34 @@
 
   .toggle-row.compact {
     margin-top: -0.25rem;
+  }
+
+  .flag-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.25rem 1.25rem;
+  }
+
+  .flag-row .link-btn {
+    font-size: 0.8125rem;
+  }
+
+  .health-note {
+    margin: -0.25rem 0 0;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .link-btn {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: var(--accent);
+    cursor: pointer;
+    text-decoration: underline;
   }
 
   .toggle-row.compact span {

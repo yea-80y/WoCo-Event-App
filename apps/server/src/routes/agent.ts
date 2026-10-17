@@ -27,6 +27,9 @@ import { USDC_ADDRESSES, FEATURES } from "@woco/shared";
 import type { Hex0x, PaymentChainId } from "@woco/shared";
 import { isSealedBoxV2, type SealedBoxV2 } from "@woco/shared/crypto/sealed-box-shape";
 import { cancellationGate } from "../lib/event/cancellations.js";
+import { eventKeys } from "../lib/keyring/event-keys.js";
+import { sellableKeys } from "../lib/keyring/sale-keys.js";
+import { noticeRefusal, organiserNoticeVerdict } from "../lib/legal/notice-gate.js";
 import { getEvent, listEvents } from "../lib/event/service.js";
 import { getOnChainEvent, getActiveChainId } from "../lib/chain/event-contract.js";
 import { fiatToUSD } from "../lib/payment/eth-price.js";
@@ -92,7 +95,7 @@ interface ResolvedPayment {
 
 type Resolved =
   | { ok: true; data: ResolvedPayment }
-  | { ok: false; error: string; code: 400 | 404 | 409 };
+  | { ok: false; error: string; code: 400 | 404 | 409 | 503 };
 
 /**
  * Resolve and PRICE a series for an agent purchase on the locked Arb Sepolia
@@ -105,6 +108,14 @@ async function resolveSeriesPayment(eventId: string, seriesId: string): Promise<
   // #644: gated now, while the rail is flagged off, so turning it on cannot
   // reopen sales for a cancelled event.
   if (cancellationGate(eventId) !== "open") return { ok: false, error: "This event has been cancelled", code: 409 };
+  // No sale until the organiser has confirmed their privacy notice - the card
+  // rail's rule (lib/legal/notice-gate.ts), here too so turning this rail on
+  // cannot sell past it.
+  // The card rail's key rule too (issue 896): no order key on record, no sale.
+  const keyVerdict = sellableKeys(await eventKeys(eventId));
+  if (!keyVerdict.ok) return { ok: false, error: keyVerdict.body.error, code: keyVerdict.status };
+  const notice = noticeRefusal(await organiserNoticeVerdict(keyVerdict.keys.creator, keyVerdict.keys.feedSigner));
+  if (notice) return { ok: false, error: notice.body.error, code: notice.status };
   const event = await getEvent(eventId);
   if (!event) return { ok: false, error: "Event not found", code: 404 };
   const series = event.series.find((s) => s.seriesId === seriesId);

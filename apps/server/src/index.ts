@@ -10,7 +10,7 @@ import type { AppEnv } from "./types.js";
 import { buildInfo } from "./config/build-info.js";
 import { requireAuth } from "./middleware/auth.js";
 import { securityHeaders, FRAME_CSP } from "./lib/http/security-headers.js";
-import { CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS } from "./lib/http/cors.js";
+import { CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS, CORS_EXPOSE_HEADERS, corsOrigin } from "./lib/http/cors.js";
 import { buildFramePage } from "./lib/embed/frame-page.js";
 import { revokeSession, revokeAllSessions, revocationHealth, RevocationStoreUnavailableError } from "./lib/auth/revocation.js";
 import { deviceGrantHealth } from "./lib/auth/device-grants.js";
@@ -48,6 +48,7 @@ import { marketing } from "./routes/marketing.js";
 import { ethernaRoutes } from "./routes/etherna.js";
 import { ethernaFetchBaseNotice } from "./lib/etherna/gateway.js";
 import { ethernaReadsHealth } from "./lib/swarm/soc-read.js";
+import { ethernaFailoverHealth, startRelayLedgerSweep } from "./lib/etherna/failover.js";
 import { subEnsRoutes } from "./routes/sub-ens.js";
 import { ensGatewayRoutes, ensGatewayStatus } from "./routes/ens-gateway.js";
 import { subEnsApexHealth } from "./lib/chain/sub-ens-apex.js";
@@ -79,6 +80,7 @@ import { saleRefundEventsHealth } from "./lib/stripe/sale-refunds.js";
 import { alarmGate } from "./lib/health/alarm-gate.js";
 import { feedSignerRecordHealth } from "./lib/event/feed-signer-record.js";
 import { nameTargetsHealth } from "./lib/sub-ens/name-targets.js";
+import { scannerHealth, startScannerProbe } from "./lib/scanner/health.js";
 import { liveRefundGateway } from "./lib/stripe/pending-refunds-live.js";
 import { startEvidencePublisher, evidencePublisherHealth } from "./lib/social/publisher.js";
 import { startCampaignIssuer, campaignIssuerHealth } from "./lib/campaign/issuer.js";
@@ -110,7 +112,12 @@ import { customDomainProxy } from "./middleware/custom-domain.js";
 import { attendeeBatchHealth } from "./lib/attendee-batch/health.js";
 import { refreshAttendeeBatch } from "./lib/attendee-batch/admin.js";
 import { heldOrdersHealth, sweepExpired as sweepHeldOrders } from "./lib/attendee-batch/held-orders.js";
-import { sweepExpiredConsents } from "./lib/marketing/consent-store.js";
+import { consentStoreHealth, sweepExpiredConsents } from "./lib/marketing/consent-store.js";
+import { droppedOptInsHealth } from "./lib/marketing/consent-capture.js";
+import { suppressionStoreHealth } from "./lib/marketing/suppression-store.js";
+import { sweepExpiredRosters, rosterRetentionHealth } from "./lib/checkin/roster-retention.js";
+import { doorEntriesHealth } from "./lib/checkin/door-entries.js";
+import { orderRetentionHealth, runOrderRetention } from "./lib/attendee-batch/retention.js";
 import { retryPaidHeldOrders } from "./lib/attendee-batch/writer.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -250,7 +257,7 @@ app.use("*", customDomainProxy);
 app.use(
   "*",
   cors({
-    origin: (origin) => origin || "*",
+    origin: corsOrigin,
     allowMethods: CORS_ALLOW_METHODS,
     allowHeaders: CORS_ALLOW_HEADERS,
     exposeHeaders: CORS_EXPOSE_HEADERS,
@@ -328,6 +335,15 @@ function healthReport() {
       job: { ok: !cancellationJobHealth().stale, ...cancellationJobHealth() },
     },
     compliancePersistence: persistHealth(),
+    // #882: each file present but unreadable. Never written over; while the
+    // suppression list is unreadable every marketing send is refused, and while
+    // the consent file is, a missing record means unknown, not absent.
+    marketingSuppression: suppressionStoreHealth(),
+    marketingConsent: consentStoreHealth(),
+    // A yes at checkout that fulfilment could not record: the wording it rebuilt
+    // no longer matched what the buyer read, or the event was unreadable. That
+    // buyer is never mailed. Since boot, with the last time; reported, never paged.
+    marketingOptInsDropped: droppedOptInsHealth(),
     // `false` is an alarm, not a statistic: the Kernel known-deployed record
     // exists on disk but would not load, so the counterfactual fallback is live
     // again for every account (#200). It fails open deliberately — refusing every
@@ -357,6 +373,11 @@ function healthReport() {
     // (flag or key missing): those reads can never conclude anything. The
     // breaker (reads paused after Etherna hung) is reported, not alarmed on.
     ethernaReads: ethernaReadsHealth(),
+    // The Etherna failover (#912). `mode` off|auto|force. RED when its ledger
+    // cannot be trusted (unreadable file, a write that did not land) or the mode is
+    // not understood. `ledger.failover` counts saves stamped on WoCo still to move
+    // back to Etherna; `ledger.pending` counts sends not yet seen on our bee.
+    ethernaFailover: ethernaFailoverHealth(),
     // The client-SOC relay's limiter (#301). `globalTrippedAt` non-null is the
     // alarm: the per-process ceiling that legitimate traffic never reaches has
     // refused writes with 503 — either an attack on the postage batch or a
@@ -426,6 +447,11 @@ function healthReport() {
     // site or event-page name may show (the CCIP gateway's WoCo-built rule). `unreadable`
     // is an alarm: every such name shows the app, and nothing is recorded, until restored.
     nameTargets: nameTargetsHealth(),
+    // The door scanner at scan.<parent>: red when its feed cannot be read
+    // or the build the name is answered with no longer serves index.html, sw.js,
+    // the workbox runtime, the QR worker or the entry script from our bee - the
+    // batch-death failure that once left every door phone unable to update.
+    scanner: scannerHealth(),
     // Added passkeys (#746). `unreadable` is an alarm: every added device is
     // signed out and no device can be added or removed until the file is restored.
     deviceGrants: deviceGrantHealth(),
@@ -449,6 +475,23 @@ function healthReport() {
     // minutes to reach Swarm (the retry worker keeps failing: bee down, bucket
     // full - activate a fresh batch) or the hold file is unreadable.
     heldOrders: heldOrdersHealth(),
+    // Door rosters deleted after their event (#883). Reported, not alarmed, like
+    // the consent sweep: `lastError` says a roster waits for the next pass;
+    // `undated` counts rosters with no onchain end to go by, kept until one exists.
+    rosterRetention: rosterRetentionHealth(),
+    // Door entries: each sale's email and card name sealed for the event's door phones.
+    // Red while an event's file is present but unreadable - new buyers then stop
+    // reaching the door list (scanning is unaffected), and nothing overwrites the file
+    // until the organiser makes a new door pass. `failed` counts seals and removals
+    // that did not land since boot.
+    doorEntries: doorEntriesHealth(),
+    // Order answers erased N months after the event's onchain end (#547).
+    // Red when the ledger or held orders are unreadable, no run in 48 h, the
+    // mode is not understood, or - live only - an order someone can act on is a
+    // week past due, the `backlog` the per-run limit holds back is two weeks past
+    // due, or bee has not listed a batch of due orders in 3 runs in a row.
+    // `undeterminable` (no onchain end to go by) and a dead batch are counted, never red.
+    orderRetention: orderRetentionHealth(),
     // Whether paid checkouts can mint on the events contract (#662): the ticket
     // sponsor still authorised, and on the ledger its hourly mint cap's headroom
     // (`TICKET_MINT_ALLOWANCE_MIN`, default one maximum order). The checkout
@@ -844,6 +887,20 @@ const sweepConsents = () => {
 };
 setTimeout(sweepConsents, 5 * 60_000).unref();
 setInterval(sweepConsents, 24 * 60 * 60 * 1000).unref();
+// #883: each event's door roster and door entries go 2 days after its onchain end.
+const sweepRosters = () => {
+  sweepExpiredRosters().catch((err) => console.warn("[checkin] roster sweep failed:", (err as Error).message));
+};
+setTimeout(sweepRosters, 6 * 60_000).unref();
+// Hourly, so a 2-day period is not stretched by up to a day; the ends are memoised.
+setInterval(sweepRosters, 60 * 60 * 1000).unref();
+// #547: order answers go N months after the event's onchain end. ORDER_RETENTION_SWEEP
+// = off | dry-run (default) | live; a dry run decides and logs, erasing nothing.
+const sweepOrderRetention = () => {
+  runOrderRetention().catch((err) => console.warn("[retention] sweep failed:", (err as Error).message));
+};
+setTimeout(sweepOrderRetention, 7 * 60_000).unref();
+setInterval(sweepOrderRetention, 24 * 60 * 60 * 1000).unref();
 // #546: store paid orders whose store failed at fulfilment, and delete unpaid
 // holds past their day.
 setInterval(() => {
@@ -918,6 +975,8 @@ startCancellationRefundJob(liveCancellationRefundDeps);
 // — /api/health must stay instant even when the bee or the RPC is the thing that
 // is broken (#421, #522).
 startHealthProbes();
+// Every 10 min, and once now so `scan.<parent>` has a build before eth.limo asks.
+startScannerProbe();
 // Broadcast recipients are encrypted at rest under a key held only in the
 // process that wrote them, so a restart leaves ciphertext nobody can open. Wipe
 // it, mark the jobs that were in flight `died`, and hand back their daily-cap
@@ -942,4 +1001,11 @@ onStripeVerified((address) => void confirmArmedReferral(address));
 {
   const names = nameTargetsHealth();
   console.log(`[startup] name targets: ${names.count} built${names.ok ? "" : " - ALARM, see /api/health nameTargets"}`);
+}
+// The Etherna relay ledger (#912): loaded now so its warm-up runs from boot and an
+// unreadable file alarms at once; the sweep settles and moves entries in every mode.
+startRelayLedgerSweep();
+{
+  const f = ethernaFailoverHealth();
+  console.log(`[startup] etherna failover: ${f.mode}${f.ok ? "" : " - ALARM, see /api/health ethernaFailover"}`);
 }

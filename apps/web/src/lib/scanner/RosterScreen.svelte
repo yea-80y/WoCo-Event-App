@@ -7,6 +7,7 @@
    */
   import { scanner } from "./store.svelte.js";
   import type { RosterEntry } from "@woco/shared";
+  import { attendeeName, searchAttendees } from "./attendee-search.js";
 
   let search = $state("");
   let confirming = $state<string | null>(null);
@@ -16,20 +17,7 @@
   let notice = $state<string | null>(null);
   let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const filtered = $derived.by(() => {
-    const q = search.trim().toLowerCase();
-    const entries = [...scanner.roster].sort(
-      (a, b) => a.seriesId.localeCompare(b.seriesId) || a.edition - b.edition,
-    );
-    if (!q) return entries;
-    return entries.filter(
-      (r) =>
-        r.name?.toLowerCase().includes(q) ||
-        r.email?.toLowerCase().includes(q) ||
-        String(r.edition) === q.replace(/^#/, "") ||
-        Object.values(r.fields ?? {}).some((v) => v.toLowerCase().includes(q)),
-    );
-  });
+  const filtered = $derived(searchAttendees(scanner.attendees, search));
 
   function key(r: RosterEntry): string {
     return `${r.seriesId} ${r.edition}`;
@@ -91,7 +79,7 @@
     <p class="notice warn" aria-live="polite">{notice}</p>
   {/if}
 
-  {#if scanner.roster.length === 0}
+  {#if scanner.attendees.length === 0}
     <div class="empty">
       <p>No attendee list on this device.</p>
       <p class="hint">
@@ -107,7 +95,7 @@
         {@const record = scanner.isCheckedIn(entry.seriesId, entry.edition)}
         <li>
           <div class="who">
-            <span class="name">{entry.name || entry.email || `Ticket #${entry.edition}`}</span>
+            <span class="name">{attendeeName(entry)}</span>
             <span class="meta">
               {seriesName(entry.seriesId)} · #{String(entry.edition).padStart(3, "0")}
               {#if entry.name && entry.email}· {entry.email}{/if}

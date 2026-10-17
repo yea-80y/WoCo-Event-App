@@ -55,5 +55,6 @@ test("the order key is derived only from the account's secrets", () => {
     "lib/api/events.ts",
     "lib/creator/events/PublishButton.svelte",
     "lib/keyring/order-keys.ts",
+    "lib/scanner/door-pass-key.ts", // the door-pass proof opens its challenge with the current order key
   ]);
 });

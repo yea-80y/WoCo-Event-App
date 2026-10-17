@@ -31,4 +31,12 @@ export interface OrderField {
   options?: string[];
   /** Maximum character length — for "text" and "textarea" */
   maxLength?: number;
+  /**
+   * A SENSITIVE question: any UK GDPR Art. 9 special category (health, dietary or
+   * access needs, religion or belief, ethnic origin, sexual orientation, politics,
+   * trade union membership, genetic or biometric data) or Art. 10 criminal
+   * convictions. Named `health` from before it covered the rest. Always optional
+   * and never copied to a mailing list (`event/order-field-kinds.ts`).
+   */
+  health?: boolean;
 }

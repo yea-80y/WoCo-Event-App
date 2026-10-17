@@ -28,6 +28,9 @@
  * price of asking is that an Etherna outage makes THIS read unavailable — which
  * on the write path means "refuse to write", the honest answer for a feed whose
  * head may sit in Etherna's store. WoCo-stamped feeds never pay that price.
+ * With the Etherna failover on (#912) an outage costs only the addresses that
+ * really may sit there: this server is Etherna's only writer, so the relay
+ * ledger lists them, and our bee's 404 decides every other address.
  * Adding an operator's gateway, or a user's own bee, is one more entry in
  * `sourcesFor`, not a new branch.
  *
@@ -59,6 +62,8 @@ import { ensureEthernaToken, getCachedEthernaToken } from "../etherna/auth.js";
 import { registerEthernaOffer } from "../etherna/upload.js";
 import { isEthernaGateway } from "../etherna/batch-router.js";
 import { ETHERNA_FETCH_BASE } from "../etherna/gateway.js";
+import { ethernaBreakerHealth, ethernaPaused, noteEthernaFailure } from "../etherna/breaker.js";
+import { relayLedgerClearsAbsent } from "../etherna/relay-ledger.js";
 import { SWARM_CHUNK_MAX_BYTES, readCapped } from "../http/read-capped.js";
 
 const ETHERNA_GW = ETHERNA_FETCH_BASE;
@@ -78,6 +83,13 @@ export interface SocSource {
    * ever contribute a `found`.
    */
   negativeAuthority: "verdict" | "hint";
+  /**
+   * Everything this source may hold that the other verdict sources cannot see
+   * yet was sent to it by this server and is listed in the relay ledger (#912).
+   * When it cannot be asked, an address the ledger does not list is decided by
+   * the others. Etherna only: nothing but this server writes there.
+   */
+  listedInRelayLedger?: boolean;
   read: (socAddressHex: string) => Promise<RawSocRead>;
 }
 
@@ -146,21 +158,24 @@ export function verifyStoredSoc(
  * `verified` must be true only for a `found` whose bytes passed `verifyStoredSoc`;
  * a found that FAILED verification is reported by the caller as that source
  * being `unavailable` (it answered with something that is not this chunk).
+ *
+ * `ledgerClears` (#912): the relay ledger lists nothing at this address, so a
+ * `listedInRelayLedger` source that could not be asked holds nothing the other
+ * verdict sources cannot see - their absent stands. Never enough on its own: at
+ * least one other verdict source must have searched.
  */
 export function aggregateSocReads(
   answers: Array<{ source: SocSource; read: RawSocRead }>,
+  opts: { ledgerClears?: boolean } = {},
 ): { status: "found"; from: string; raw: Uint8Array } | { status: "absent" } | { status: "unavailable"; reason: string } {
   for (const a of answers) if (a.read.status === "found") return { status: "found", from: a.source.name, raw: a.read.raw };
   const unreachable = answers.filter((a) => a.read.status === "unavailable");
-  if (unreachable.length > 0) {
-    return {
-      status: "unavailable",
-      reason: unreachable.map((a) => `${a.source.name}: ${(a.read as { reason: string }).reason}`).join("; "),
-    };
-  }
-  const verdicts = answers.filter((a) => a.source.negativeAuthority === "verdict");
+  const reasons = () => unreachable.map((a) => `${a.source.name}: ${(a.read as { reason: string }).reason}`).join("; ");
+  const excused = opts.ledgerClears === true && unreachable.every((a) => a.source.listedInRelayLedger === true);
+  if (unreachable.length > 0 && !excused) return { status: "unavailable", reason: reasons() };
+  const verdicts = answers.filter((a) => a.source.negativeAuthority === "verdict" && a.read.status !== "unavailable");
   if (verdicts.length > 0 && verdicts.every((a) => a.read.status === "absent")) return { status: "absent" };
-  return { status: "unavailable", reason: "no source with negative authority answered" };
+  return { status: "unavailable", reason: unreachable.length > 0 ? reasons() : "no source with negative authority answered" };
 }
 
 // ---------------------------------------------------------------------------
@@ -197,46 +212,9 @@ export const wocoBeeSource: SocSource = {
   },
 };
 
-/**
- * A short circuit breaker on Etherna (#657). Every Etherna-family scan ends with
- * a question to Etherna, the event money path's included, so an Etherna that
- * HANGS would cost every such read the full timeout (the token request and the
- * chunk read, up to 18 s). After a SLOW failure - no answer, or an unhappy one,
- * that took `ETHERNA_SLOW_MS` or more (a timeout, a proxy's 504 after its own
- * wait, a hung sign-in) - Etherna is not asked again for `ETHERNA_BREAKER_MS`;
- * reads say `unavailable` at once, which is what they would have said anyway.
- *
- * A FAST failure does not trip it: a quick 503 costs no latency, and pausing on
- * one would turn a single blip into 30 s of refused writes for every Etherna
- * family, the client's included (they probe through here).
- */
-export const ETHERNA_BREAKER_MS = 30_000;
-export const ETHERNA_SLOW_MS = 3_000;
-const breaker = {
-  openUntil: 0,
-  reason: null as string | null,
-  trips: 0,
-  now: () => Date.now(),
-  slowMs: ETHERNA_SLOW_MS,
-};
-
-function tripBreaker(reason: string): void {
-  if (breaker.now() >= breaker.openUntil) {
-    breaker.trips++;
-    console.warn(`[swarm] Etherna reads paused for ${ETHERNA_BREAKER_MS / 1000}s: ${reason}`);
-  }
-  breaker.openUntil = breaker.now() + ETHERNA_BREAKER_MS;
-  breaker.reason = reason;
-}
-
-/** Test seam: close the breaker, and optionally pin its clock and what counts as slow. */
-export function __resetEthernaBreaker(opts: { now?: () => number; slowMs?: number } = {}): void {
-  breaker.openUntil = 0;
-  breaker.reason = null;
-  breaker.trips = 0;
-  breaker.now = opts.now ?? (() => Date.now());
-  breaker.slowMs = opts.slowMs ?? ETHERNA_SLOW_MS;
-}
+// The breaker lives in lib/etherna/breaker.ts (#912), shared with the writes;
+// re-exported so its existing importers keep working.
+export { ETHERNA_BREAKER_MS, ETHERNA_SLOW_MS, __resetEthernaBreaker } from "../etherna/breaker.js";
 
 /** Can this server ask Etherna at all? Without the flag and a key, no. */
 export function ethernaReadConfigured(): boolean {
@@ -253,16 +231,11 @@ export function ethernaReadConfigured(): boolean {
 export function ethernaReadsHealth(): Record<string, unknown> {
   const families = FEED_FAMILIES.filter((f) => FEED_FAMILY_STORES[f] === "etherna");
   const configured = ethernaReadConfigured();
-  const open = breaker.now() < breaker.openUntil;
   return {
     ok: families.length === 0 || configured,
     configured,
     families,
-    breaker: {
-      open,
-      ...(open ? { reopensAt: new Date(breaker.openUntil).toISOString(), reason: breaker.reason } : {}),
-      trips: breaker.trips,
-    },
+    breaker: ethernaBreakerHealth(),
   };
 }
 
@@ -274,14 +247,13 @@ export function ethernaReadsHealth(): Record<string, unknown> {
 export const ethernaSource: SocSource = {
   name: "etherna",
   negativeAuthority: "verdict",
+  listedInRelayLedger: true,
   read: async (address) => {
-    if (breaker.now() < breaker.openUntil) {
-      return { status: "unavailable", reason: `etherna paused after: ${breaker.reason}` };
-    }
-    // Real elapsed time, whatever clock the breaker is on.
+    const paused = ethernaPaused();
+    if (paused !== null) return { status: "unavailable", reason: `etherna paused after: ${paused}` };
     const started = performance.now();
     const failed = (reason: string): RawSocRead => {
-      if (performance.now() - started >= breaker.slowMs) tripBreaker(reason);
+      noteEthernaFailure(reason, started);
       return { status: "unavailable", reason };
     };
     try {
@@ -388,7 +360,8 @@ export async function readVerifiedSoc(
     if (read.status === "found") break;
   }
 
-  const agg = aggregateSocReads(answers);
+  const ledgerAsked = answers.some((a) => a.read.status === "unavailable" && a.source.listedInRelayLedger);
+  const agg = aggregateSocReads(answers, { ledgerClears: ledgerAsked && relayLedgerClearsAbsent(address) });
   if (agg.status !== "found") return agg;
   const parts = splitStoredSoc(agg.raw)!;
   if (opts.heal !== false) healOnFound(agg.from, address);

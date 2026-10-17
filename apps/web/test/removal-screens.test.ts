@@ -28,4 +28,6 @@ test("an unfinished removal is finished on the person's press; the confirm names
   assert.match(screen, /\{removing === r\.key \? "Removing…" : "Remove passkey"\}/);
   // A hint only, never a prompt: the confirm reads no passkey.
   assert.match(screen, /void auth\.passkeysWithoutKeys\(\)\.then/);
+  // The row's "needs keys" only once a ring exists: before one, every passkey has the seed.
+  assert.match(screen, /if \(coOwned\) void auth\.passkeysWithoutKeys\(\{ withRing: true \}\)\.then\(\(k\) => \(needsKeys = k\)\);/);
 });

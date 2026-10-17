@@ -7,8 +7,9 @@
   import { auth } from "../../auth/auth-store.svelte.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
   import { getClaimStatus } from "../../api/events.js";
-  import { createCheckoutSession, OrderKeyStaleError } from "../../api/stripe.js";
-  import type { SeriesClaimStatus } from "@woco/shared";
+  import { CheckoutError, createCheckoutSession, OrderKeyStaleError } from "../../api/stripe.js";
+  import type { MarketingMode, SeriesClaimStatus } from "@woco/shared";
+  import { isMarketingChanged, listKeeps, MARKETING_CURRENT_VERSION, marketingChoice, marketingWording as buildMarketingWording, shownMarketingMode } from "@woco/shared";
   import { orderFieldRequired, orderFormCollectsEmail, orderFormShown, resolveBuyerEmail } from "@woco/shared";
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { onMount } from "svelte";
@@ -138,16 +139,26 @@
 
   let showOrderForm = $state(false);
   let formData = $state<Record<string, string>>({});
-  /** PECR opt-in. null until the buyer touches it — an untouched box is still a
-   *  valid "no" for sending, but it is recorded as an explicit false only once
-   *  the form has actually been shown (see claimMarketingConsent below). */
-  let marketingConsent = $state<boolean | null>(null);
-  /** The form was displayed, so the opt-out WAS offered — that is what PECR
-   *  reg. 22 requires. An untouched checkbox therefore records as a refusal,
-   *  not as "never asked". */
-  const claimMarketingConsent = $derived(
-    showOrderForm ? marketingConsent === true : undefined
+  /**
+   * The marketing control, in the mode the organiser's confirmed notice sets
+   * (claim-status; consent until it says otherwise). Both checkout panels show it,
+   * so the choice is always offered and always sent: an untouched box is a NO in
+   * consent mode and the soft opt-in in own-events mode. The box is kept with the
+   * mode it was ticked under - ticked under one mode it means the opposite in
+   * the other, so a mode change reads it as unticked.
+   */
+  const marketingMode = $derived<MarketingMode>(shownMarketingMode(status));
+  const marketingOrganiser = $derived(status?.marketingOrganiser ?? organiserName);
+  /** What the control says, naming what the list keeps from this event's questions.
+   *  Both panels render this object and checkout sends it, so they cannot differ. */
+  const marketingWording = $derived(
+    buildMarketingWording(marketingMode, MARKETING_CURRENT_VERSION[marketingMode], marketingOrganiser, listKeeps(orderFields))!,
   );
+  let marketingBox = $state<{ mode: MarketingMode; ticked: boolean }>({ mode: "consent", ticked: false });
+  const marketingTicked = $derived(marketingBox.mode === marketingMode && marketingBox.ticked);
+  function setMarketingTicked(ticked: boolean): void {
+    marketingBox = { mode: marketingMode, ticked };
+  }
   /** Whether the SHOWN order form collects the ticket address - the shared
    *  rule (#597), so the inline box is hidden only when there is a field on
    *  screen to type into. */
@@ -183,13 +194,18 @@
   }
 
   function refreshStatus(): void {
-    getClaimStatus(eventId, seriesId, undefined, undefined, apiUrl)
-      .then((fresh) => {
-        if (!fresh) return;
-        cacheSet(_statusKey, fresh, TTL.CLAIM_STATUS);
-        applyStatus(fresh);
-      })
-      .catch(() => { /* background fetch — cached data stays shown */ });
+    void refreshStatusNow();
+  }
+
+  async function refreshStatusNow(): Promise<void> {
+    try {
+      const fresh = await getClaimStatus(eventId, seriesId, undefined, undefined, apiUrl);
+      if (!fresh) return;
+      cacheSet(_statusKey, fresh, TTL.CLAIM_STATUS);
+      applyStatus(fresh);
+    } catch {
+      // Background fetch — cached data stays shown.
+    }
   }
 
   // Reset transient checkout state if the page is restored from bfcache after
@@ -286,6 +302,16 @@
         (intentToCheckout && hasStripe)
       );
     },
+  });
+
+  // Not on sale at all (no confirmed privacy notice, or an event that must be
+  // published again): close the form so nobody keeps typing details - or has an
+  // order box prepared - for a sale the server will refuse.
+  $effect(() => {
+    if (reservationHook.closed) {
+      showOrderForm = false;
+      intentToCheckout = false;
+    }
   });
 
   // Note: we deliberately do NOT release the reservation on pagehide or
@@ -404,10 +430,9 @@
         encryptedOrder: !preparedOrder ? inlineEncryptedOrder : undefined,
         encryptionKeyRef: orderKeyFor,
         reservationId: reservationHook.reservation?.reservationId,
-        // The form is still displayed at this point (handleStripeCheckout returns
-        // early to show it and is re-entered), so the opt-out WAS offered and an
-        // untouched box records as a refusal.
-        marketingConsent: claimMarketingConsent,
+        // The panel on screen showed this control (the form, when it is open -
+        // handleStripeCheckout returns early to show it and is re-entered).
+        marketing: marketingChoice(marketingMode, marketingTicked, showOrderForm ? "order-form" : "pay-panel", marketingWording),
         linkAccount,
       });
       // Server has stamped reservationId into Stripe metadata; webhook
@@ -442,6 +467,14 @@
         }
         return;
       }
+      // The organiser's notice now sets the other control, or the control's words
+      // changed. Nothing was charged: show the current one (the box reads unticked
+      // under a new mode) and let the buyer choose again.
+      if (err instanceof CheckoutError && isMarketingChanged(err.code)) {
+        error = err.message;
+        await refreshStatusNow();
+        return;
+      }
       error = err instanceof Error ? err.message : "Failed to start checkout";
     } finally {
       stripeLoading = false;
@@ -472,6 +505,8 @@
     <!-- #644: the server's word, from claim-status — covers a page whose feed
          was not re-signed after the cancellation. -->
     <button class="claim-btn" disabled>Event cancelled</button>
+  {:else if reservationHook.closed}
+    <button class="claim-btn" disabled>Not on sale yet</button>
   {:else if showOrderForm}
     <OrderForm
       {status}
@@ -486,7 +521,9 @@
       {formValid}
       bind:formData
       bind:stripeEmail
-      bind:marketingConsent
+      {marketingWording}
+      {marketingTicked}
+      onMarketingChange={setMarketingTicked}
       {organiserName}
       {eventId}
       onStripeCheckout={handleStripeCheckout}
@@ -505,6 +542,9 @@
       onStripeEmailChange={(v) => { stripeEmail = v; }}
       {eventId}
       {organiserName}
+      {marketingWording}
+      {marketingTicked}
+      onMarketingChange={setMarketingTicked}
     />
   {:else}
     <!-- No live purchase rail for this series (free events and the crypto

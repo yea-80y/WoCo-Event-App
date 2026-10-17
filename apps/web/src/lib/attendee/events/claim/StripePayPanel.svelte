@@ -1,7 +1,8 @@
 <script lang="ts">
-  import type { BuyerFees } from "@woco/shared";
-  import { PAY_PANEL_PRIVACY_SUMMARY } from "@woco/shared";
+  import type { BuyerFees, MarketingWording } from "@woco/shared";
+  import { PAY_PANEL_PRIVACY_SUMMARY, TRANSACTIONAL_EMAIL_NOTICE } from "@woco/shared";
   import CheckoutNoticeLinks from "./CheckoutNoticeLinks.svelte";
+  import MarketingControl from "./MarketingControl.svelte";
 
   interface Props {
     buyerFees: BuyerFees | null;
@@ -15,6 +16,11 @@
     /** The event and organiser, for the point-of-collection privacy line. */
     eventId: string;
     organiserName?: string;
+    /** The marketing control's wording, as sent to create-checkout. Shown here too:
+     *  with no order form this panel is the only checkout, and it must offer the choice. */
+    marketingWording: MarketingWording;
+    marketingTicked: boolean;
+    onMarketingChange: (ticked: boolean) => void;
     /** When set, renders the "or — Pay with crypto" footer link. */
     cryptoFooter?: {
       label: string;
@@ -33,6 +39,9 @@
     onStripeEmailChange,
     eventId,
     organiserName,
+    marketingWording,
+    marketingTicked,
+    onMarketingChange,
     cryptoFooter = null,
   }: Props = $props();
 </script>
@@ -47,6 +56,16 @@
       <div class="pay-receipt-row pay-receipt-total"><span>Total</span><span>{buyerFees.cardTotal ?? priceLabel}</span></div>
     </div>
   {/if}
+
+  <!-- Above the pay button: the choice is offered before the buyer pays. -->
+  <div class="pay-marketing">
+    <p class="pay-transactional">{TRANSACTIONAL_EMAIL_NOTICE}</p>
+    <MarketingControl
+      wording={marketingWording}
+      ticked={marketingTicked}
+      onTickedChange={onMarketingChange}
+    />
+  </div>
 
   <button
     class="stripe-btn stripe-btn--primary"
@@ -99,6 +118,18 @@
     line-height: 1.5;
     color: var(--text-muted);
     margin: 0;
+  }
+
+  .pay-marketing {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4375rem;
+  }
+
+  .pay-transactional {
+    margin: 0;
+    font-size: 0.6875rem;
+    color: var(--text-secondary);
   }
 
   .pay-sheet {

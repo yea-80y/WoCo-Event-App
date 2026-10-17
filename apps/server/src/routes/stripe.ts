@@ -29,6 +29,16 @@ import {
 } from "../lib/stripe/accounts.js";
 import { getEvent } from "../lib/event/service.js";
 import type { EventFeed } from "@woco/shared";
+import {
+  listKeeps,
+  MARKETING_CURRENT_VERSION,
+  MARKETING_MODE_CHANGED,
+  MARKETING_WORDING_CHANGED,
+  marketingWording,
+  noticeMarketingMode,
+  parseMarketingChoice,
+  sameMarketingWording,
+} from "@woco/shared";
 import { checkSalesWindow, salesClosedMessage } from "../lib/event/sales-window.js";
 import { checkSeriesSaleWindow, seriesSaleMessage } from "../lib/event/series-window.js";
 import { checkoutExpiresAt } from "../lib/event/checkout-expiry.js";
@@ -36,6 +46,7 @@ import { chainEventEndMsAt } from "../lib/event/end-date-guard.js";
 import { hashEmail } from "../lib/event/claim-service.js";
 import { checkObjectGate, gatePhase, gateNeedsClaimCount } from "../lib/object/gate-check.js";
 import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../lib/stripe/checkout-fees.js";
+import { CHECKOUT_PAYMENT_METHOD_TYPES } from "../lib/stripe/checkout-payment-methods.js";
 import { claimerEmailRefusal } from "../lib/stripe/claimer-email.js";
 import type { PayoutsResponse } from "@woco/shared";
 import { canonicalOrderBox, issueOrderRefToken, acceptedClientOrderRef } from "../lib/stripe/order-ref.js";
@@ -52,6 +63,9 @@ import { attendeeCheckoutRefusal, orderRefOf } from "../lib/attendee-batch/write
 import { getOrderRecord, isOrderErased } from "../lib/attendee-batch/ledger.js";
 import { commitHold, getHeldOrder, holdPrepared } from "../lib/attendee-batch/held-orders.js";
 import { authoritativeOrderKeyRef, eventKeys, isStaleOrderKey, type EventKeys } from "../lib/keyring/event-keys.js";
+import { sellableKeys } from "../lib/keyring/sale-keys.js";
+import { noticeRefusal, noticeVerdictOf, organiserNoticeRead } from "../lib/legal/notice-gate.js";
+import { marketingMetadata, marketingWordingHash } from "../lib/marketing/checkout-choice.js";
 import { checkAndConsumeSession } from "../lib/stripe/session-registry.js";
 import { signCheckoutTag, classifyPaidSession, noteProvenanceVerdict } from "../lib/stripe/checkout-provenance.js";
 import { liveProvenanceReads, refundTamperedSession } from "../lib/stripe/checkout-provenance-live.js";
@@ -486,10 +500,11 @@ stripe.post("/prepare-order", async (c) => {
   const declaredKey = typeof body.encryptionKeyRef === "string" && ORDER_KEY_REF_RE.test(body.encryptionKeyRef)
     ? body.encryptionKeyRef
     : undefined;
+  // A client that names no event is checked at create-checkout, before anything is stored.
   if (typeof body.eventId === "string" && body.eventId) {
-    const keys = await eventKeys(body.eventId);
-    if (keys.kind === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
-    const refusal = orderKeyRefusal(keys, declaredKey);
+    const keyVerdict = sellableKeys(await eventKeys(body.eventId));
+    if (!keyVerdict.ok) return c.json(keyVerdict.body, keyVerdict.status);
+    const refusal = orderKeyRefusal(keyVerdict.keys, declaredKey);
     if (refusal) return c.json(refusal, 409);
   }
 
@@ -547,7 +562,7 @@ stripe.post("/create-checkout", async (c) => {
     return c.json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, pageUrl, quantity: rawQty, orderRef, orderRefToken, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId, marketingConsent: rawMarketingConsent } = body as {
+  const { eventId, seriesId, claimerEmail, returnUrl, cancelUrl, pageUrl, quantity: rawQty, orderRef, orderRefToken, encryptedOrder, reservationId: rawReservationId, siteId: rawSiteId, marketing: rawMarketing } = body as {
     eventId: string;
     seriesId: string;
     claimerEmail?: string;
@@ -568,14 +583,16 @@ stripe.post("/create-checkout", async (c) => {
     /** Deployed site id — passed when checkout originates from an organiser's
      *  site-builder page so the webhook can theme the ticket email + PNG. */
     siteId?: string;
-    /** The checkout opt-in control. `true` = granted, `false` = explicitly
-     *  declined, absent = never asked (the order form was not shown). All three
-     *  are different: a decline is written to suppression, an absence is not. */
-    marketingConsent?: boolean;
+    /** The marketing control as the page showed it: mode, wording version and
+     *  exact text, surface, and whether the buyer ticked the box. Absent = no
+     *  control was shown, so nothing is recorded. The mode is checked against the
+     *  organiser's notice below (an untouched box is a yes in one mode and a no
+     *  in the other), and the text against the wording rebuilt here. */
+    marketing?: unknown;
   };
   const siteId = typeof rawSiteId === "string" && /^[0-9a-z_-]{10,}$/i.test(rawSiteId) ? rawSiteId : undefined;
-  const marketingConsent =
-    typeof rawMarketingConsent === "boolean" ? rawMarketingConsent : undefined;
+  const marketing = parseMarketingChoice(rawMarketing);
+  if (marketing === null) return c.json({ ok: false, error: "Invalid marketing choice" }, 400);
   const quantity = Math.max(1, Math.min(10, Number.isInteger(rawQty) ? rawQty as number : 1));
 
   // #644: a cancelled event sells nothing, before any other work is done for it.
@@ -694,26 +711,64 @@ stripe.post("/create-checkout", async (c) => {
   // the Stripe destination (creatorAddress→Connect) + amount. siteId is only a
   // pointer; trust is the server-written index, never the request.
   const siteSigner = siteId ? await resolveSiteEventSigner(siteId, eventId) : null;
-  // The organiser's keys first (#186): they decide WHICH feed may be sold.
-  const keys = await eventKeys(eventId);
-  if (keys.kind === "unavailable") return c.json({ ok: false, error: SALES_PAUSED }, 503);
-  if (keys.kind === "legacy") {
-    // No record of who signs this event (made before #670, or platform-written for a
-    // login with no feed signer, none of which can organise now): nothing ties its feed
-    // to its organiser, so a removed passkey could rewrite what is sold - and fulfilment
-    // would read that copy. Not sold (owner 10-09, Fable sign-off S5; no compat paths
-    // pre-launch). Publishing it again gives it a record.
-    if (!(await getEvent(eventId, siteSigner ?? undefined))) return c.json({ ok: false, error: "Event not found" }, 404);
-    return c.json(
-      { ok: false, error: "This event can't take orders. The organiser needs to publish it again.", code: "EVENT_NEEDS_REPUBLISH" },
-      409,
-    );
+  // The organiser's keys first (#186): they decide WHICH feed may be sold, and the
+  // order key buyers seal to. An event with no record of who signs it (made before
+  // #670: owner 10-09, Fable sign-off S5) or with no order key on record (issue 896)
+  // has only its own feed to say which key that is, and the feed can be re-signed:
+  // not sold. Publishing it again records both. Unreadable keys pause the sale.
+  const keyVerdict = sellableKeys(await eventKeys(eventId));
+  if (!keyVerdict.ok) {
+    if (keyVerdict.status === 409 && !(await getEvent(eventId, siteSigner ?? undefined))) {
+      return c.json({ ok: false, error: "Event not found" }, 404);
+    }
+    return c.json(keyVerdict.body, keyVerdict.status);
   }
+  const keys = keyVerdict.keys;
+  // No sale until the organiser has confirmed their privacy notice (2026-10-11), read
+  // under the same keys as the notice page shows. Usually a memory hit; started
+  // beside the event read so a cold one costs no extra round trip.
+  const noticeRead = organiserNoticeRead(keys.creator, keys.feedSigner);
   const event: EventFeed | null = await getEvent(eventId, siteSigner ?? undefined);
   if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
 
   const series = event.series.find((s) => s.seriesId === seriesId);
   if (!series) return c.json({ ok: false, error: "Series not found" }, 404);
+
+  // Before anything is held or charged; an unreadable notice refuses too.
+  const notice = await noticeRead;
+  const noticeBlock = noticeRefusal(noticeVerdictOf(notice));
+  if (noticeBlock) return c.json(noticeBlock.body, noticeBlock.status);
+  // The page must have shown the control the organiser's notice sets NOW. An
+  // untouched box means yes in own-events mode and no in consent mode, so taking
+  // a choice made under the other mode would record the opposite of what the
+  // buyer chose. Refused before anything is held or charged; the page re-reads
+  // claim-status, shows the current control and the buyer continues.
+  const organiserName = notice.status === "found" ? notice.notice.organiserName : "";
+  if (marketing && notice.status === "found" && marketing.mode !== noticeMarketingMode(notice.notice)) {
+    return c.json(
+      { ok: false, error: "The organiser's email options have changed. Check them below and continue.", code: MARKETING_MODE_CHANGED },
+      409,
+    );
+  }
+  // ...and the very words it showed, rebuilt here from the event's own questions
+  // (2026-10-15): they name what the mailing list keeps, and the record must hold
+  // what the buyer read. A page with older questions, an older organiser name or
+  // an older version is refused before anything is held or charged.
+  let marketingHash: string | undefined;
+  if (marketing) {
+    const current = MARKETING_CURRENT_VERSION[marketing.mode];
+    const rebuilt = marketingWording(marketing.mode, current, organiserName, listKeeps(event.orderFields));
+    if (!rebuilt || marketing.version !== current || !marketing.wording || !sameMarketingWording(marketing.wording, rebuilt)) {
+      return c.json(
+        { ok: false, error: "This event's details have changed. Reload the page and try again.", code: MARKETING_WORDING_CHANGED },
+        409,
+      );
+    }
+    marketingHash = marketingWordingHash(rebuilt);
+  }
+  // The period the notice promised THIS buyer, fixed now: the retention sweep
+  // erases by it and reads no notice, so a later edit never reaches past sales (#547).
+  const retainMonths = notice.status === "found" ? notice.notice.orderRetentionMonths : undefined;
 
   // The box must be sealed to the key this event sells under NOW (#186): a rotation
   // between prepare-order and here is caught too. Keys that cannot be read stop the
@@ -1111,13 +1166,15 @@ stripe.post("/create-checkout", async (c) => {
       // Site id — present when checkout comes from a deployed organiser site.
       // Webhook uses it to fetch the site theme for branded email + ticket PNG.
       ...(siteId ? { siteId } : {}),
-      // The buyer's answer to the marketing opt-in, carried to the webhook —
-      // it is the webhook, not this request, that knows the claim succeeded,
-      // and a consent record for a sale that never completed is worthless.
-      // Tri-state: "1" granted, "0" declined, absent means never asked.
-      ...(marketingConsent !== undefined
-        ? { marketingConsent: marketingConsent ? "1" : "0" }
-        : {}),
+      // The buyer's marketing choice, carried to the webhook - it is the
+      // webhook, not this request, that knows the claim succeeded, and a record
+      // for a sale that never completed is worthless. Mode, box, wording
+      // version, surface and the hash of the wording matched above; absent
+      // means no control was shown.
+      ...marketingMetadata(marketing, organiserName, marketingHash),
+      // Months after the event this order's answers are kept (#547), carried
+      // fulfilment -> hold -> ledger. Under the integrity tag like every key here.
+      ...(retainMonths !== undefined ? { retainMonths: String(retainMonths) } : {}),
     };
     // #645: fulfilment acts on this metadata, and under a full Stripe Dashboard
     // the organiser can create sessions and edit metadata on their own account.
@@ -1136,6 +1193,7 @@ stripe.post("/create-checkout", async (c) => {
     const session = await s.checkout.sessions.create(
       {
         mode: "payment",
+        payment_method_types: CHECKOUT_PAYMENT_METHOD_TYPES,
         ...(expiresAt !== undefined ? { expires_at: expiresAt } : {}),
         line_items: [
           {

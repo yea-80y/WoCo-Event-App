@@ -16,11 +16,12 @@
 
 import {
   buildOrganiserNotice,
+  ORGANISER_NOTICE_FORMAT,
   organiserNoticeContentTopic,
   validateOrganiserNotice,
   type OrderField,
   type OrganiserNoticeDoc,
-  type OrganiserNoticeV1,
+  type OrganiserNotice,
 } from "@woco/shared";
 import { get } from "../api/http.js";
 import { FEED_ROUTES } from "../swarm/gateways.js";
@@ -39,7 +40,7 @@ export interface PublicNoticeData {
   feedSigner: string | null;
   /** The server named the organiser from a record it holds, not from the feed. */
   trusted: boolean;
-  notice: OrganiserNoticeV1 | null;
+  notice: OrganiserNotice | null;
   noticeStatus: "found" | "absent" | "unavailable";
   event?: { title: string; orderFields: OrderField[] } | null;
   site?: { brandName: string | null; contactEmail: string | null; postalAddress: string | null; contactForm: boolean };
@@ -67,26 +68,45 @@ export async function fetchSiteNotice(siteId: string, apiUrl?: string): Promise<
 }
 
 /**
- * The document a public page renders. Never blank: with no data at all (the
- * server unreachable) it is still the pre-filled notice under whatever name the
- * page already shows.
+ * What a public page shows. Only a notice the organiser CONFIRMED is ever shown as
+ * theirs (owner decision 2026-10-11): the pre-filled draft is the editor's, never
+ * the public's. Until they confirm, the page says so - and the server refuses
+ * every sale for their events, so nobody is asked for details under a notice the
+ * organiser has not seen (apps/server/src/lib/legal/notice-gate.ts).
  */
-export function publicNoticeDoc(
-  data: PublicNoticeData | null,
-  pageKnows: { name?: string; contactEmail?: string; postalAddress?: string; contactForm?: boolean; event?: { title: string; orderFields?: OrderField[] } } = {},
-): OrganiserNoticeDoc {
-  return buildOrganiserNotice({
-    notice: data?.notice ?? null,
-    fallback: {
-      name: pageKnows.name ?? data?.site?.brandName ?? undefined,
-      contactEmail: pageKnows.contactEmail ?? data?.site?.contactEmail ?? undefined,
-      postalAddress: pageKnows.postalAddress ?? data?.site?.postalAddress ?? undefined,
-    },
-    event: data?.event ?? pageKnows.event,
-    contactForm: pageKnows.contactForm ?? data?.site?.contactForm ?? false,
-    wocoPolicyUrl: WOCO_POLICY_URL,
-    storedUnavailable: data?.noticeStatus === "unavailable",
-  });
+export type PublicNoticeView =
+  | { kind: "loading" }
+  | { kind: "notice"; doc: OrganiserNoticeDoc }
+  /** The server could not be reached, or could not read the stored notice. */
+  | { kind: "unavailable" }
+  /**
+   * No confirmed notice. `legacy`: an event with no record of who made it - no
+   * notice can be shown for it, and it cannot sell until it is published again.
+   */
+  | { kind: "not-confirmed"; name: string | null; legacy: boolean; site: boolean };
+
+export function publicNoticeView(
+  /** `undefined` while the read is in flight; `null` when it failed. */
+  data: PublicNoticeData | null | undefined,
+  pageKnows: { name?: string; contactForm?: boolean } = {},
+): PublicNoticeView {
+  if (data === undefined) return { kind: "loading" };
+  if (data === null || data.noticeStatus === "unavailable") return { kind: "unavailable" };
+  if (data.notice) {
+    return {
+      kind: "notice",
+      doc: buildOrganiserNotice({
+        notice: data.notice,
+        event: data.event ?? undefined,
+        contactForm: pageKnows.contactForm ?? data.site?.contactForm ?? false,
+        wocoPolicyUrl: WOCO_POLICY_URL,
+      }),
+    };
+  }
+  const name = (pageKnows.name ?? data.site?.brandName ?? "").trim() || null;
+  // `legacy` is an EVENT with no record of who made it. A site's own events sell
+  // under their own organisers' keys, so a site page never claims what is on sale.
+  return { kind: "not-confirmed", name, legacy: !data.trusted && !data.site, site: !!data.site };
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +114,7 @@ export function publicNoticeDoc(
 // ---------------------------------------------------------------------------
 
 export type OwnNoticeRead =
-  | { status: "found"; notice: OrganiserNoticeV1 }
+  | { status: "found"; notice: OrganiserNotice }
   | { status: "absent" }
   | { status: "unavailable"; error: string };
 
@@ -123,11 +143,11 @@ export async function readOwnNotice(account: string, signerAddress: string): Pro
 export async function publishOwnNotice(
   account: string,
   signer: { address: string; privKey: string },
-  draft: Omit<OrganiserNoticeV1, "format" | "address" | "confirmedAt">,
-): Promise<OrganiserNoticeV1> {
+  draft: Omit<OrganiserNotice, "format" | "address" | "confirmedAt">,
+): Promise<OrganiserNotice> {
   const candidate = {
     ...draft,
-    format: "woco.privacy-notice.v1",
+    format: ORGANISER_NOTICE_FORMAT,
     address: account.toLowerCase(),
     confirmedAt: new Date().toISOString(),
   };

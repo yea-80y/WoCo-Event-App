@@ -25,7 +25,7 @@
     "dev:registry": "npm run dev -w @woco/registry",
     "upload:swarm": "node scripts/upload-to-swarm-feed.cjs",
     "upload:site": "node scripts/upload-site-to-swarm.cjs",
-    "deploy": "npm run build:deploy && npm run upload:swarm",
+    "deploy": "npm run build:deploy && npm run upload:swarm && npm run deploy:scanner",
     "check": "npm run check --workspaces --if-present",
     "build:scanner": "npm run build:scanner -w @woco/web",
     "upload:scanner": "node scripts/upload-scanner-to-swarm.cjs",
@@ -41,6 +41,15 @@
   "overrides": {
     "@ethersphere/bee-js": {
       "axios": "0.34.0"
+    },
+    "@segment/analytics-next": {
+      "js-cookie": "^3.0.7"
+    },
+    "ethjs-unit": {
+      "bn.js": "^4.12.3"
+    },
+    "number-to-bn": {
+      "bn.js": "^4.12.3"
     }
   }
 }

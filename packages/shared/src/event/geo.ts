@@ -211,6 +211,7 @@ function cleanStr(v: unknown, max: number): string | undefined {
  */
 export function normaliseGeo(geo: EventGeo | undefined): EventGeo | undefined {
   if (!geo || typeof geo !== "object") return undefined;
+  if (geo.online === true) return { online: true };
   const out: EventGeo = {};
 
   if (typeof geo.country === "string") {
@@ -239,4 +240,17 @@ export function normaliseGeo(geo: EventGeo | undefined): EventGeo | undefined {
   // No country, no coords, no label ⇒ nothing to filter or paint by.
   if (!out.country && out.lat === undefined && !out.city && !out.venue) return undefined;
   return out;
+}
+
+/**
+ * Whether an event says where it is: online, or a place with usable coordinates.
+ * Every event needs one (owner decision 2026-10-15) - the coordinates are what the
+ * Discover distance filter matches on. One rule for the editor, the create and
+ * edit routes, and the event-page deploy.
+ */
+export const EVENT_PLACE_REQUIRED = "Add where the event is - search for the venue, or choose Online";
+
+export function eventHasPlace(geo: EventGeo | undefined): boolean {
+  const g = normaliseGeo(geo);
+  return g?.online === true || (g?.lat !== undefined && g.lng !== undefined);
 }

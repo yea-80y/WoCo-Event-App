@@ -1,4 +1,6 @@
 import type { OrderField } from "../crypto/types.js";
+import { ORDER_EMAIL_FIELD_ID } from "./order-email-id.js";
+import { isHealthField } from "./order-field-kinds.js";
 
 /**
  * Which address a ticket goes to - ONE rule for the main app's checkout and the
@@ -11,7 +13,7 @@ import type { OrderField } from "../crypto/types.js";
  * delivery address, Stripe's prefill, the masked confirmation and the address
  * a marketing opt-in is recorded against - so a guess here is never safe.
  */
-export const ORDER_EMAIL_FIELD_ID = "__email";
+export { ORDER_EMAIL_FIELD_ID };
 
 /**
  * Is the order form actually on screen? Its answers are sealed to the
@@ -49,6 +51,10 @@ export function orderFormCollectsEmail(
  * main app has one when the buyer is signed in.
  */
 export function orderFieldRequired(field: OrderField, opts: { canUseAccount: boolean }): boolean {
+  // A health answer is only explicit consent if giving it was optional - whatever
+  // the organiser-signed form says. Never the platform's email field, which is how
+  // the ticket arrives.
+  if (field.id !== ORDER_EMAIL_FIELD_ID && isHealthField(field)) return false;
   return field.required || (field.id === ORDER_EMAIL_FIELD_ID && !opts.canUseAccount);
 }
 

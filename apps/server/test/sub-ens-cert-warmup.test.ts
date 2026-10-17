@@ -487,7 +487,7 @@ test("round trip: the real gateway handler's answer to that query is what releas
       readL2: async () => ABI.encode(["bytes"], [NEW.contenthash]),
       now: () => 1_800_000_000,
       // A profile name pointing at the app: the WoCo-built rule serves it unchanged.
-      contenthash: { apexHash: () => NEW.swarmHash, lookupBuilt: () => null },
+      contenthash: { apexHash: () => NEW.swarmHash, lookupBuilt: () => null, scannerBuild: async () => null },
     },
   );
 

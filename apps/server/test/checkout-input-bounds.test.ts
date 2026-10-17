@@ -67,6 +67,15 @@ test("no form, an empty form and the editor's own fields pass", () => {
   );
 });
 
+test("a sensitive question is optional, its flag a boolean; the retired keepOnList key is ignored", () => {
+  assert.equal(orderFieldsRefusal([field({ label: "Allergies", health: true, required: false })]), null);
+  assert.match(orderFieldsRefusal([field({ health: true, required: true })]) ?? "", /sensitive question, so it can't be required/);
+  assert.match(orderFieldsRefusal([field({ health: "yes" })]) ?? "", /sensitive flag must be true or false/);
+  // Pre-launch, no compatibility path: the old key is neither read nor refused.
+  assert.equal(orderFieldsRefusal([field({ label: "Area", keepOnList: true })]), null);
+  assert.equal(orderFieldsRefusal([field({ health: true, keepOnList: 1 })]), null);
+});
+
 test("the field count is bounded", () => {
   const many = (n: number) => Array.from({ length: n }, (_, i) => field({ id: `f${i}` }));
   assert.equal(orderFieldsRefusal(many(MAX_ORDER_FIELDS)), null);

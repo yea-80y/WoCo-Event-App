@@ -29,7 +29,7 @@ test("linking and adding put the new key on the list BEFORE its device record (a
   const approve = body(STORE, "async function approveDeviceLink(");
   assert.match(approve, /grant: async \(grantee, credentialTag\) => \{\s*const grant = await _addCoOwnerWithRecord\(\s*grantee,\s*\(\) => _grantDevice\(ownerKey, parent, grantee, credentialTag\),\s*ring \?\? undefined,\s*\);/);
   // #186: the key ring is ready BEFORE the grant, so it rides in the same op.
-  assert.ok(approve.indexOf("const ring = await _ringForChange([]);") < approve.indexOf("runApproveDeviceLink("));
+  assert.ok(approve.indexOf("const ring = await _ringForChange([], { coOwnerAdded: true });") < approve.indexOf("runApproveDeviceLink("));
   assert.match(approve, /revoke: \(grantee\) => _removePasskeyConfirmed\(grantee\),/, "the undelivered-answer cleanup does not ask again");
   const add = body(STORE, "async function addPasskeyOnThisDevice(");
   assert.match(add, /await _freshMainPasskey\(\);/, "adding asks fresh");

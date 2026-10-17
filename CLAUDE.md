@@ -162,7 +162,7 @@ Full map + why each exists: `docs/IDENTITY_AND_KEYS.md`.
    Coinbase Smart Wallet stays parked (non-deterministic 1271 ⇒ no reproducible seed).
 
 ACCOUNT SECRET GENERATIONS (#186): a passkey removal makes a RANDOM account secret S_{g+1} (S_0 =
-the seed); keys 5, the X-Wing order key and the door-pass roster key derive from the CURRENT one
+the seed); keys 5, the X-Wing order key and the door-pass secret P derive from the CURRENT one
 (the issuing key stays on S_0). The current generation is a key ring named onchain by `WoCoKeyRing`
 (`@woco/shared/keyring/*`), set in the same Kernel op as the co-owner change. Clients sign/seal only
 on a CONFIRMED-current verdict (`apps/web/src/lib/keyring/account-keys.ts`, lazy); the server reads
@@ -286,6 +286,10 @@ write queue) went with #207 and are NOT in the tree. `routes/claims.ts` serves o
 - Email addresses are HMAC-SHA256 (`hashEmail`); `EMAIL_HASH_SECRET` is MANDATORY and the
   legacy unsalted path is deleted. Still used by marketing + bounce suppression
 - No free-ticket path exists (no v2 mint path for one) — `freeEventsAllowed = false`
+- No sale without the organiser's CONFIRMED privacy notice (owner 2026-10-11): reserve, create-checkout and
+  the agent rail refuse `PRIVACY_NOTICE_REQUIRED` (409) / `_UNAVAILABLE` (503, fail closed), read under
+  `eventKeys` through `lib/legal/notice-gate.ts`. Public pages never show the pre-filled draft.
+  `docs/legal/ORGANISER_PRIVACY_NOTICE.md`
 - Full lifecycle: `docs/TICKETING.md`
 
 APPROVAL FLOW — REMOVED with the v1 claim-rail retirement (#207): routes, flags and
@@ -525,9 +529,11 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
   stripe-accounts.json · stripe-payout-ledger.json · stripe-payout-intents.json
   stripe-payout-surplus.json (#781 part 2 — surplus clocks. Losing it only restarts the 7-day
     wait before money the ledger cannot explain is paid out; it never pays early)
+  stripe-unledgered-charges.json (#805 — WoCo charges with no ledger row; each holds its account's
+    surplus. Losing it costs one full rescan of our fees and re-opens operator resolutions; never pays)
   pending-refunds.json (#367 — auto-refunds Stripe refused to create; losing it = a buyer
     charged with no ticket and no refund, and no alarm; `/api/health` `pendingRefunds`)
-  marketing-consent.json (Art. 7(1) evidence for checkout opt-ins)
+  marketing-consent.json (Art. 7(1) evidence for checkout opt-ins; unreadable = never overwritten, `/api/health` `marketingConsent` alarm, #882)
   profile-names.json (#464 — which sub-ENS name is an account's PROFILE name, and
     its rename clock. The role is unknowable from chain: a registry says who HOLDS
     a name, never what it is FOR, and the profile feed is client-signed. Losing it
@@ -540,7 +546,7 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     the ONLY server-visible proof a broadcast recipient holds a ticket. Losing it means no
     organiser can tell attendees their event is cancelled, and it CANNOT be rebuilt: the
     plaintext address is never stored anywhere we could re-derive it from)
-  marketing-suppression.json (losing it = emailing unsubscribers, a legal breach)
+  marketing-suppression.json (losing it = emailing unsubscribers, a legal breach; unreadable = never overwritten, sends refuse, `/api/health` `marketingSuppression` alarm, #882)
   sender-pacing/ (#619 — each sender's ramp, 7-day bounce/complaint counts, stops and the
     proven set. Losing it FORGETS A STOP and lets a stopped organiser mail again)
   marketing-lists.json · marketing-domains.json · marketing-send-log.json
@@ -570,7 +576,8 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     to erase one order. Losing it loses per-record erasure for everything written so far, and that
     batch must NEVER be registered again (buy a new one). Unreadable = checkout refuses until restored.
     Since #797 each record also holds the buyer's email HMAC + organiser: it is the index the ops
-    lookup answers access/erasure requests from, and an EMAIL_HASH_SECRET rotation blinds it)
+    lookup answers access/erasure requests from, and an EMAIL_HASH_SECRET rotation blinds it. Since #547 a
+    record also holds retainMonths, the retention sweep's only source for the period, and erasedBy + rule)
   event-feed-signers.json (#670 — eventId → the organiser's content-feed signer + verified
     creator, pinned at create, write-once. The money path's ONLY carrier for an UNLISTED event.
     Losing it fails CLOSED: unlisted events stop selling until re-created; listed ones fall back
@@ -591,6 +598,19 @@ deploying then is acceptable (the organiser's resume is one press and exact), ju
     and every nonce used. Losing it signs every added device out (re-add from the main passkey);
     nothing leaks or is granted. Losing the NONCES lets an old removal or grant be replayed.
     Unreadable = no device signs in, nothing written, `/api/health` `deviceGrants` alarm)
+  etherna-relay-ledger/ (#912 — one file per SOC sent to Etherna not yet seen on our bee, and per relayed
+    save stamped on WoCo while Etherna could not take it; `_state.json` holds when recording began. Nothing
+    is recorded while ETHERNA_FAILOVER is off. The read rule that lets our bee's 404 decide during an Etherna
+    outage trusts it only after an hour of recording. Losing it leaves failover chunks on the WoCo batch for
+    good and restarts that hour. A file unreadable = never overwritten, failover and the read rule off,
+    `/api/health` `ethernaFailover` alarms; also red when full (10,000 entries = rail off) or `ledger.dirty`
+    (a write not yet on disk, retried each minute: do not restart until it clears, or delete the directory
+    first). After a ROLLBACK to a build without it, delete the directory when rolling forward: that build's
+    Etherna sends are not listed)
+  checkin-door-entries/ (live door attendee list — per event, later buyers' email + card name sealed to the
+    door pass's key, plus erasure removals. Losing it only empties the door's later-buyer list until the
+    pass is regenerated (scanning unaffected); losing it after an erasure can leave a scanner showing that
+    ticket until regenerated. Unreadable = never overwritten, `/api/health` `doorEntries` alarm)
 
 SVELTE 5 / BEE-JS:
 - Svelte 5 `$state` proxy: properties absent from the initial object literal aren't reactive;

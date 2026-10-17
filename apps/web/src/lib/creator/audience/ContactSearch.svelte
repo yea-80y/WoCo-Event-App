@@ -15,6 +15,7 @@
     contacts: MarketingContact[];
     suppressedEmails: Set<string>;
     consentedEmails: Set<string>;
+    softOptInEmails: Set<string>;
     filter: ContactConsentState | null;
     busy: boolean;
     onSave: (email: string, next: MarketingContact) => Promise<void>;
@@ -25,6 +26,7 @@
     contacts,
     suppressedEmails,
     consentedEmails,
+    softOptInEmails,
     filter,
     busy,
     onSave,
@@ -39,12 +41,12 @@
   const MAX_SHOWN = 100;
 
   const stateOf = (c: MarketingContact): ContactConsentState =>
-    contactConsentState(c.email, suppressedEmails, consentedEmails);
+    contactConsentState(c.email, suppressedEmails, consentedEmails, softOptInEmails);
 
   /** Everything a person might type into the box, including the address they
    *  are calling about. Built per contact, not per keystroke-per-field. */
   function haystack(c: MarketingContact): string {
-    return [c.email, c.firstName, c.lastName, c.phone, c.address1, c.address2, c.city, c.postcode]
+    return [c.email, c.firstName, c.lastName, c.phone, c.address1, c.address2, c.city, c.postcode, ...Object.values(c.answers ?? {})]
       .filter(Boolean)
       .join(" ")
       .toLowerCase();
@@ -100,6 +102,8 @@
               <span class="chip">unsubscribed</span>
             {:else if s === "opted-in"}
               <span class="chip chip--in">opted in</span>
+            {:else if s === "soft-opt-in"}
+              <span class="chip chip--in">didn't opt out</span>
             {/if}
           </button>
         </li>
@@ -185,6 +189,7 @@
      back are visibly the same thing. */
   .dot { width: 6px; height: 6px; border-radius: 1px; flex: none; }
   .dot--opted-in { background: var(--accent); }
+  .dot--soft-opt-in { background: repeating-linear-gradient(90deg, var(--accent) 0 2px, transparent 2px 3px); }
   .dot--imported { background: var(--border-hover); }
   .dot--unsubscribed { background: repeating-linear-gradient(135deg, var(--error) 0 2px, transparent 2px 4px); }
 

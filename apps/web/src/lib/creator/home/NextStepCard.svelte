@@ -15,13 +15,15 @@
     /** Where Stripe shows what it still needs once the account is set up. */
     onstripedetails: () => void;
     onretry: () => void;
+    /** Open the privacy notice editor. */
+    onnotice: () => void;
     onname: () => void;
     onimport: () => void;
     onskipimport: () => void;
     onfirstevent: () => void;
     ondoors: (eventId: string) => void;
   }
-  let { step, onstripe, onstripedetails, onretry, onname, onimport, onskipimport, onfirstevent, ondoors }: Props = $props();
+  let { step, onstripe, onstripedetails, onretry, onnotice, onname, onimport, onskipimport, onfirstevent, ondoors }: Props = $props();
 
   interface View {
     title: string;
@@ -38,6 +40,11 @@
       title: "Couldn't check your Stripe account",
       text: "Stripe didn't answer just now, so you haven't been moved on. Nothing on your account has changed.",
       about: "Stripe",
+    },
+    notice: {
+      title: "Couldn't check your privacy notice",
+      text: "We couldn't load it just now, so you haven't been moved on. Your tickets only sell once it's confirmed.",
+      about: "Privacy",
     },
     name: {
       title: "Couldn't check your name",
@@ -83,6 +90,13 @@
           title: "Stripe needs more details",
           text: "Stripe has asked for more information about you or your business. Send it so your payments and payouts keep going.",
           action: { label: "See what Stripe needs", run: onstripedetails },
+        };
+      case "privacy-notice":
+        return {
+          setup: "privacy-notice",
+          title: "Confirm your privacy notice",
+          text: "Attendees see it whenever they buy from you. We've pre-filled it - check it, fill the gaps and confirm. Your tickets go on sale once you have.",
+          action: { label: "Review my notice", run: onnotice },
         };
       case "name":
         return {

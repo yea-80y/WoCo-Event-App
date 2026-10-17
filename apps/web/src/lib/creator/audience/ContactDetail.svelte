@@ -56,8 +56,18 @@
     { key: "totalSpend", label: "Total spend" },
   ];
 
+  const CONSENT_TAG: Record<ContactConsentState, string> = {
+    "opted-in": "opted in",
+    "soft-opt-in": "didn't opt out",
+    imported: "imported",
+    unsubscribed: "unsubscribed",
+  };
+
   const CONSENT_COPY: Record<ContactConsentState, string> = {
     "opted-in": "Ticked the marketing box at checkout. The wording they agreed to and the date are recorded.",
+    "soft-opt-in":
+      "Bought a ticket and didn't tick \"Don't email me\" at checkout. Email them only about your own similar events. " +
+      "The wording they were shown and the date are recorded.",
     imported: "Added by import. Your import warranty is the basis for mailing them — there is no record of this person agreeing.",
     unsubscribed: "Unsubscribed. They stay unsubscribed through any re-import, and removing them here does not change that.",
   };
@@ -115,7 +125,7 @@
     </header>
 
     <div class="consent consent--{consent}">
-      <span class="consent-tag">{consent.replace("-", " ")}</span>
+      <span class="consent-tag">{CONSENT_TAG[consent]}</span>
       <p>{CONSENT_COPY[consent]}</p>
     </div>
 
@@ -138,6 +148,18 @@
               <dt>{f.label}</dt>
               <dd>{contact[f.key]}</dd>
             {/if}
+          {/each}
+        </dl>
+      </div>
+    {/if}
+
+    {#if contact.answers && Object.keys(contact.answers).length}
+      <div class="facts">
+        <h4>From their bookings</h4>
+        <dl>
+          {#each Object.entries(contact.answers) as [label, value] (label)}
+            <dt>{label}</dt>
+            <dd>{value}</dd>
           {/each}
         </dl>
       </div>
@@ -254,6 +276,7 @@
   .consent p { margin: 0; font-size: 0.75rem; line-height: 1.5; color: var(--text-secondary); }
 
   .consent--opted-in { border-left-color: var(--accent); }
+  .consent--soft-opt-in { border-left-color: var(--accent); border-left-style: dashed; }
   .consent--imported { border-left-color: var(--border-hover); }
   .consent--unsubscribed { border-left-color: var(--error); }
 
@@ -263,7 +286,8 @@
     letter-spacing: 0.08em;
     color: var(--text-muted);
   }
-  .consent--opted-in .consent-tag { color: var(--accent-text); }
+  .consent--opted-in .consent-tag,
+  .consent--soft-opt-in .consent-tag { color: var(--accent-text); }
 
   .grid {
     display: grid;

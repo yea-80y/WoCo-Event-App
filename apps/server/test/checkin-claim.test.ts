@@ -222,3 +222,30 @@ test("route: keys that cannot be read refuse the pack (the roster), never a clai
   assert.equal(pack.status, 503);
   assert.equal((await claim(EVT, token, DEV_A, body({ claimId: "d-1" }))).status, 200);
 });
+
+// ---------------------------------------------------------------------------
+// A scanner too old for this server is told so in a form it can act on
+// ---------------------------------------------------------------------------
+
+test("route: every 'scanner needs updating' refusal names the outdated-client reason", async () => {
+  const { SCANNER_OUTDATED_REASON } = await import("@woco/shared");
+  assert.equal(SCANNER_OUTDATED_REASON, "outdated-client", "the wire value scanners in the field will read");
+
+  const several = store.issueDoorPass("evt-outdated", Math.floor(Date.now() / 1000) + 3600);
+  const pack = await app.request("/api/checkin/evt-outdated/pack", { headers: { "X-Door-Pass": several } });
+  const claimed = await claim("evt-outdated", several, null, body({ claimId: "o-1" }));
+
+  const single = store.issueDoorPass("evt-outdated-single", Math.floor(Date.now() / 1000) + 3600, undefined, "single");
+  const synced = await app.request("/api/checkin/evt-outdated-single/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Door-Pass": single },
+    body: JSON.stringify({ checkins: [] }),
+  });
+
+  for (const [name, res] of [["pack", pack], ["claim", claimed], ["sync", synced]] as const) {
+    assert.equal(res.status, 400, name);
+    const json = await res.json();
+    assert.equal(json.reason, SCANNER_OUTDATED_REASON, name);
+    assert.match(json.error, /needs updating/, `${name}: scanners from before the reason still read the error`);
+  }
+});

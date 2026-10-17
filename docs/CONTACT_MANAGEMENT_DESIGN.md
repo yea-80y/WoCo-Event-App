@@ -31,7 +31,8 @@ Stripe fulfilment (#387); the old per-event endpoint answers 410.
 >   edited (`ConsentLedger`, `ContactDetail`).
 >
 > - The drain and the provenance-ranked merge rule are **BUILT**
->   (`AttendeeImport.svelte`, `attendee-drain.ts`).
+>   (`attendee-drain.ts`). Since 2026-10-14 it runs automatically (`audience-sync.ts`) -
+>   the manual `AttendeeImport.svelte` is gone.
 >
 > Still open: the single Art. 17 deletion path, and the
 > `MARKETING_MAX_LIST_EMAILS` ceiling.
@@ -153,9 +154,9 @@ already decrypts them. *(Now orders, sealed to the organiser's X-Wing key since 
    exact wording and a version tag captured alongside it.
 2. ✅ **BUILT.** The buyer's email is already sealed into the claim payload, and
    the answer travels with the claim on every path.
-3. ✅ **BUILT** (`AttendeeImport.svelte` + `attendee-drain.ts`). The Audience
-   screen decrypts claims (same mechanism as `Dashboard`) and offers "N to add"
-   per event, deduped on lowercased email against the existing list. The shape
+3. ✅ **BUILT** (`attendee-drain.ts`; automatic since 2026-10-14, `audience-sync.ts`).
+   The organiser's browser decrypts claims (same mechanism as `Dashboard`) and
+   adds buyers with a record, deduped on lowercased email against the existing list. The shape
    was forced by the trust model: the consent store holds HASHES, so the server
    can never hand back an address. The organiser's browser decrypts the claim
    data it already has the key for, and `/api/marketing/check` returns

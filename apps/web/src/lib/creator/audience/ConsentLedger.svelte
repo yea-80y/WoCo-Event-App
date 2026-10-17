@@ -11,7 +11,7 @@
    * state per contact; neither shows the shape of the whole list, which is the
    * question an organiser has before they press send.
    *
-   * The three bands are distinguished by TEXTURE as well as hue — a 2% band is
+   * The bands are distinguished by TEXTURE as well as hue — a 2% band is
    * a few pixels wide, where colour alone reads as noise.
    */
   import type { ContactConsentState } from "@woco/shared";
@@ -30,6 +30,11 @@
       state: "opted-in",
       label: "Opted in",
       note: "They ticked the box themselves at checkout. You can show exactly what they agreed to and when.",
+    },
+    {
+      state: "soft-opt-in",
+      label: "Didn't opt out",
+      note: "They bought a ticket and didn't tick \"Don't email me\". Email them only about your own similar events. You can show what they were shown and when.",
     },
     {
       state: "imported",
@@ -119,6 +124,10 @@
   .band.muted { opacity: 0.28; }
 
   .band--opted-in { background: var(--accent); }
+  /* The same hue, striped: their own evidence, but a narrower permission. */
+  .band--soft-opt-in {
+    background: repeating-linear-gradient(90deg, var(--accent) 0 3px, transparent 3px 5px), var(--bg-elevated);
+  }
   .band--imported { background: var(--border-hover); }
   /* Hatched, not just red: reads as struck through, and survives a 2% width
      where a flat hue would just look like a stray pixel. */
@@ -160,6 +169,7 @@
     flex: none;
   }
   .key--opted-in .swatch { background: var(--accent); }
+  .key--soft-opt-in .swatch { background: repeating-linear-gradient(90deg, var(--accent) 0 2px, transparent 2px 3px); }
   .key--imported .swatch { background: var(--border-hover); }
   .key--unsubscribed .swatch {
     background: repeating-linear-gradient(135deg, var(--error) 0 2px, transparent 2px 4px);

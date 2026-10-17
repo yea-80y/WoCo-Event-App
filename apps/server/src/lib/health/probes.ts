@@ -125,6 +125,25 @@ let ethernaReading = empty<StampReading & { immutable: boolean | null }>();
  * ages out under the same stale rule the health section uses.
  */
 let ethernaVerdict: EthernaPlatformBatchSnapshot | null = null;
+/**
+ * WHY OUR OWN BEE ALSO JUDGES THE ETHERNA PLATFORM BATCH. On 2026-10-16 Etherna's
+ * `/stamps` answered 503 for a batch already gone from chain, and its node took
+ * saves stamped with it, answered 2xx, and served them back - chunks no storer
+ * on the network would keep. Every storer checks a stamp against its batch store,
+ * so our bee's chain-wide store answering 404 for the batch IS the positive
+ * reading #610 asks for, whatever Etherna says. Trusted only with a witness that
+ * our bee is in step with the chain: the first 404 records the chain tip; a later
+ * 404 confirms only if our bee has since processed past that tip and the tip has
+ * moved. A bee that is resyncing, or whose chain view has stalled, never confirms.
+ */
+let chainAbsence: { batchId: string; chainTip: number } | null = null;
+let platformBatchOnChain: {
+  at: number | null;
+  listed: boolean | null;
+  confirmed: boolean;
+  batchTTL: number | null;
+  reason: string | null;
+} = { at: null, listed: null, confirmed: false, batchTTL: null, reason: null };
 let ensExpiryReading = empty<bigint>();
 /**
  * WHY A SECOND TIMESTAMP. `Reading.at` is when the probe last RAN; this is when
@@ -215,6 +234,8 @@ export interface HealthReaders {
   beeStamp(batchId: string): Promise<Record<string, unknown>>;
   chainstate(): Promise<Record<string, unknown>>;
   ethernaStamp(batchId: string): Promise<Record<string, unknown>>;
+  /** Our bee's chain-wide batch store entry for any batch, ours or not: 404 when the chain has none. */
+  beeBatch(batchId: string): Promise<Record<string, unknown>>;
   ensNameExpires(): Promise<bigint>;
   /** The registry WoCoRegistrar mints into, and whether it lists the registrar. */
   registrarEnrolment(): Promise<Enrolment>;
@@ -332,6 +353,7 @@ export const liveReaders: HealthReaders = {
   beeStamp: (batchId) => beeGet(`/stamps/${batchId}`, "bee stamp"),
   chainstate: () => beeGet("/chainstate", "bee chainstate"),
   ethernaStamp: (batchId) => readEthernaStamp(batchId, TIMEOUT_MS) as Promise<Record<string, unknown>>,
+  beeBatch: (batchId) => beeGet(`/batches/${batchId}`, "bee batch"),
   // labelhash = keccak256 of the LABEL alone ("woco"), never the namehash of
   // "woco.eth" — BaseRegistrar is keyed by the former and would answer 0, the
   // "not registered" alarm, for the latter.
@@ -485,11 +507,85 @@ export async function refreshPaymaster(readers: HealthReaders = liveReaders, log
   noteVerdict("paymaster", paymasterHealth(), log, paymasterReading.detail);
 }
 
+/**
+ * Is the Etherna platform batch on chain, by our bee's batch store? "gone" only
+ * with the witness above, and only when our OWN live batch is in that store this
+ * pass (a wiped or refilling store answers 404 for everything: that is "cannot
+ * tell", never "gone"). Anything short of an answer leaves `chainAbsence` as it
+ * was - the first 404's tip is kept, never advanced, until a confirmation or a
+ * listing.
+ */
+async function readPlatformBatchOnChain(
+  readers: HealthReaders,
+  batchId: string,
+  chainNow: { block: number; chainTip: number } | null,
+): Promise<"listed" | "gone" | "unknown"> {
+  const note = (listed: boolean | null, confirmed: boolean, reason: string | null, batchTTL: number | null = null) => {
+    platformBatchOnChain = { at: Date.now(), listed, confirmed, batchTTL, reason };
+  };
+  if (!chainNow || !POSTAGE_BATCH_ID) {
+    note(null, false, "no chain position from our bee this pass");
+    return "unknown";
+  }
+  try {
+    await readers.beeBatch(POSTAGE_BATCH_ID);
+  } catch (err) {
+    note(null, false, isNotFound(err) ? "our bee's batch store lacks our own live batch: it cannot tell" : publicReason(err));
+    return "unknown";
+  }
+  if (chainAbsence && chainAbsence.batchId !== batchId) chainAbsence = null;
+  let entry: Record<string, unknown>;
+  try {
+    entry = await readers.beeBatch(batchId);
+  } catch (err) {
+    if (!isNotFound(err)) {
+      note(null, false, publicReason(err));
+      return "unknown";
+    }
+    if (chainAbsence && chainNow.block >= chainAbsence.chainTip && chainNow.chainTip > chainAbsence.chainTip) {
+      note(false, true, "not on chain: our bee's batch store has no such batch");
+      return "gone";
+    }
+    if (!chainAbsence) chainAbsence = { batchId, chainTip: chainNow.chainTip };
+    note(false, false, "not in our bee's batch store yet; waiting for our bee to pass the chain tip it saw");
+    return "unknown";
+  }
+  chainAbsence = null;
+  note(true, false, null, num(entry.batchTTL));
+  return "listed";
+}
+
+export interface ChainCheck {
+  ok: Verdict;
+  /** Our bee's batch store lists the batch; null when it could not be asked. */
+  listed: boolean | null;
+  /** Absence confirmed by the witness: what the router refuses on. */
+  confirmed: boolean;
+  /** The chain's own TTL for the batch, seconds - the only TTL while Etherna `/stamps` is down. */
+  batchTTL: number | null;
+  checkedAt: string | null;
+  reason?: string;
+}
+
+function chainCheck(): ChainCheck {
+  const c = platformBatchOnChain;
+  return {
+    ok: c.confirmed ? false : c.listed === true ? true : null,
+    listed: c.listed,
+    confirmed: c.confirmed,
+    batchTTL: c.batchTTL,
+    checkedAt: c.at === null ? null : new Date(c.at).toISOString(),
+    ...(c.reason ? { reason: c.reason } : {}),
+  };
+}
+
 export async function refreshPostage(
   readers: HealthReaders = liveReaders,
   log: Logger = console.warn,
   includeEtherna = true,
 ): Promise<void> {
+  /** This pass's chain position: the only witness a chain read may lean on. */
+  let chainNow: { block: number; chainTip: number } | null = null;
   if (POSTAGE_BATCH_ID) {
     try {
       const parsed = parseStamp(await readers.beeStamp(POSTAGE_BATCH_ID));
@@ -505,6 +601,7 @@ export async function refreshPostage(
         block !== null && chainTip !== null
           ? { at: Date.now(), value: { block, chainTip }, error: null, detail: null }
           : { at: Date.now(), value: null, error: "chainstate response was missing fields", detail: null };
+      chainNow = chainstateReading.value;
     } catch (err) {
       chainstateReading = failed(err);
     }
@@ -518,13 +615,28 @@ export async function refreshPostage(
     } catch (err) {
       ethernaReading = isNotFound(err) ? gone(err) : failed(err);
     }
-    if (ethernaReading.value || ethernaReading.gone) {
-      ethernaVerdict = {
-        batchId: ethernaBatch,
-        at: ethernaReading.at,
-        gone: ethernaReading.gone === true,
-        stamp: ethernaReading.value,
-      };
+    const onChain = await readPlatformBatchOnChain(readers, ethernaBatch, chainNow);
+    const chainGoneStands =
+      ethernaVerdict?.source === "chain" && ethernaVerdict.batchId === ethernaBatch && ethernaVerdict.gone;
+    if (onChain === "gone") {
+      // Overrides a positive Etherna reading: its 2xx is not a statement about the chain.
+      ethernaVerdict = { batchId: ethernaBatch, at: Date.now(), gone: true, stamp: null, source: "chain" };
+    } else if (onChain !== "listed" && chainGoneStands && ethernaReading.gone) {
+      // Our bee cannot vouch this pass but Etherna says gone too: the verdict is
+      // still current, so it must not age out into "write". Kept as the chain's.
+      ethernaVerdict = { ...ethernaVerdict!, at: ethernaReading.at };
+    } else if (onChain === "listed" || !chainGoneStands) {
+      // Only a chain that lists the batch again may clear a chain verdict; an
+      // Etherna 200 while the chain cannot be read must not reopen a dead batch.
+      if (ethernaReading.value || ethernaReading.gone) {
+        ethernaVerdict = {
+          batchId: ethernaBatch,
+          at: ethernaReading.at,
+          gone: ethernaReading.gone === true,
+          stamp: ethernaReading.value,
+          source: "etherna",
+        };
+      }
     }
   }
 
@@ -533,7 +645,10 @@ export async function refreshPostage(
   noteVerdict("postage.bee.utilization", section.bee.checks.utilization, log, beeReading.detail);
   noteVerdict("postage.bee.usable", section.bee.checks.usable, log, beeReading.detail);
   noteVerdict("postage.chain", section.chain, log, chainstateReading.detail);
-  if (section.etherna.configured) noteVerdict("postage.etherna", section.etherna, log, ethernaReading.detail);
+  if (section.etherna.configured) {
+    noteVerdict("postage.etherna", section.etherna, log, ethernaReading.detail);
+    noteVerdict("postage.etherna.chain", section.etherna.chain, log);
+  }
 }
 
 /**
@@ -716,7 +831,7 @@ export interface PostageSection {
   thresholds: { ttlMinSeconds: number; utilizationMaxPct: number; chainLagMaxBlocks: number };
   bee: StampSection;
   chain: Check & { block: number | null; chainTip: number | null; lag: number | null };
-  etherna: StampSection & { configured: boolean; checkedAt: string | null; stale: boolean };
+  etherna: StampSection & { configured: boolean; checkedAt: string | null; stale: boolean; chain: ChainCheck };
   configError?: string;
 }
 
@@ -802,7 +917,11 @@ export function postageHealth(now: number = Date.now()): PostageSection {
     configured,
     checkedAt: ethernaReading.at === null ? null : new Date(ethernaReading.at).toISOString(),
     stale: configured && isStale(ethernaReading.at, now, ETHERNA_PROBE_INTERVAL_MS),
+    chain: chainCheck(),
   };
+  // A batch the chain no longer has is red here whatever Etherna's own reading
+  // says, so the router never refuses without this section saying why.
+  etherna.ok = combine([etherna, etherna.chain]);
 
   // An UNCONFIGURED Etherna batch is deliberately left out of the roll-up. It is
   // "not applicable", not "could not be read", and folding it in would pin
@@ -1066,6 +1185,8 @@ export interface EthernaPlatformBatchSnapshot {
   gone: boolean;
   /** The parsed stamp; null exactly when `gone`. */
   stamp: StampReading | null;
+  /** Who said so: Etherna's `/stamps`, or our own bee's chain-wide batch store. */
+  source?: "etherna" | "chain";
 }
 
 /**
@@ -1127,6 +1248,8 @@ export function __resetHealthProbes(): void {
   chainstateReading = empty<{ block: number; chainTip: number }>();
   ethernaReading = empty<StampReading & { immutable: boolean | null }>();
   ethernaVerdict = null;
+  chainAbsence = null;
+  platformBatchOnChain = { at: null, listed: null, confirmed: false, batchTTL: null, reason: null };
   ensExpiryReading = empty<bigint>();
   ensExpiryOkAt = null;
   enrolmentReading = empty<Enrolment>();

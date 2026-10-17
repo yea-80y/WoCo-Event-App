@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { VitePWA } from 'vite-plugin-pwa'
 import { noEnvObject } from './vite-plugins/no-env-object'
+import { scannerPublicFiles } from './vite-plugins/scanner-public'
 import { rename } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -43,14 +44,22 @@ function renameEntryToIndex(): Plugin {
 
 export default defineConfig({
   base: './',
+  // Never public/: it holds passkey test pages (vite-plugins/scanner-public.ts).
+  publicDir: false,
   envDir: '.',
   envPrefix: 'VITE_',
   plugins: [
     svelte(),
     serveScannerAtRoot(),
+    scannerPublicFiles('public'),
     VitePWA({
+      // autoUpdate: a new worker takes over as soon as it installs (skipWaiting +
+      // clientsClaim), so even a phone whose open page never acts heals on its next
+      // load. The page is registered from src/lib/scanner/sw-update.ts, not the
+      // injected script, because only the page knows when a reload is safe - never
+      // in the middle of admitting someone.
       registerType: 'autoUpdate',
-      includeAssets: ['logo.png'],
+      injectRegister: false,
       manifest: {
         name: 'WoCo Scanner',
         short_name: 'WoCo Scan',
@@ -62,6 +71,11 @@ export default defineConfig({
         icons: [{ src: './logo.png', sizes: '512x512', type: 'image/png', purpose: 'any' }],
       },
       workbox: {
+        // Explicit: the plugin sets these for autoUpdate only when it injects the
+        // register script itself, which injectRegister: false turns off. Without
+        // them a new worker waits behind any open tab - the stuck-phone bug again.
+        skipWaiting: true,
+        clientsClaim: true,
         globPatterns: ['**/*.{js,css,html,png,svg}'],
         // API calls are handled by our own sync layer, never the SW cache.
         navigateFallback: null,

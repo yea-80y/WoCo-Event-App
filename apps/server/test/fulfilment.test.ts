@@ -43,6 +43,7 @@ const ORDER_REF = "ef".repeat(32);
 const ORDER_KEY = deriveXWingKeypairFromSeed("0x" + "5e".repeat(32));
 const ORDER_KEY_REF = "0b".repeat(32);
 const ORGANISER = "0x" + "11".repeat(20);
+const FEED_SIGNER = "0x" + "f5".repeat(20);
 /** Where the default series' registration lives, as the server's record names it (#563). */
 const RECORDED_CONTRACT = { chainId: 421614, address: "0x" + "c2".repeat(20), version: "v2" as const };
 const RECORDED_CONTRACT_KEY = `421614:${"0x" + "c2".repeat(20)}`;
@@ -88,7 +89,10 @@ interface SessionOpts {
   orderRef?: string | null;
   reservationId?: string | null;
   siteId?: string | null;
+  /** Consent mode's box as create-checkout stamps it: "1" ticked, "0" not, null = no control shown. */
   consent?: "1" | "0" | null;
+  /** Marketing keys stamped verbatim, in place of `consent` (own-events mode, malformed keys). */
+  marketing?: Record<string, string>;
   connectedAccountId?: string | null;
   paymentIntent?: string | null;
   amountTotal?: number;
@@ -111,6 +115,8 @@ interface SessionOpts {
    * webhook must ignore it rather than resurrect the field.
    */
   legacyHolderPubKey?: string;
+  /** Checkout's snapshot of the notice's period (#547). Absent by default. */
+  retainMonths?: string;
 }
 
 function session(o: SessionOpts = {}): FulfilmentSession {
@@ -125,11 +131,15 @@ function session(o: SessionOpts = {}): FulfilmentSession {
   if (o.orderRef !== null) md.orderRef = o.orderRef ?? ORDER_REF;
   if (o.reservationId !== null) md.reservationId = o.reservationId ?? "res-1";
   if (o.siteId !== null) md.siteId = o.siteId ?? "site-1";
-  if (o.consent !== null) md.marketingConsent = o.consent ?? "1";
+  if (o.marketing) Object.assign(md, o.marketing);
+  else if (o.consent !== null) {
+    Object.assign(md, { marketingMode: "consent", marketingTicked: o.consent ?? "1", marketingVersion: "1", marketingSurface: "order-form" });
+  }
   if (o.connectedAccountId !== null) md.connectedAccountId = o.connectedAccountId ?? ACCT;
   if (o.onChainEventId !== null) md.onChainEventId = o.onChainEventId ?? ON_CHAIN_EVENT_ID;
   if (o.onChainContract) md.onChainContract = o.onChainContract;
   if (o.legacyHolderPubKey) md.holderPubKey = o.legacyHolderPubKey;
+  if (o.retainMonths !== undefined) md.retainMonths = o.retainMonths;
   return {
     id: "cs_test_1",
     metadata: md,
@@ -148,6 +158,7 @@ type Step =
   | "hashEmail"
   | "resolveSiteEventSigner"
   | "getEvent"
+  | "eventKeys"
   | "chainEventEndMs"
   | "lookupOnChainEventId"
   | "saleContractFor"
@@ -174,6 +185,7 @@ type Step =
   | "getSiteTheme"
   | "sendTicketEmail"
   | "sendTicketEmailLedgered"
+  | "sealDoorEntries"
   | "recordUndeliveredTicket";
 
 interface FakeOpts {
@@ -181,6 +193,8 @@ interface FakeOpts {
   fail?: Step;
   /** Event feed returned by getEvent (`null` = not found). Default: registered v2 series. */
   event?: EventFeed | null;
+  /** What eventKeys answers (issue 896). Default: a record whose order key is ORDER_KEY_REF. */
+  keys?: Awaited<ReturnType<FulfilmentDeps["eventKeys"]>>;
   /** Value of chainEventEndMs. Default: far future. */
   chainEndMs?: number | null;
   /**
@@ -227,9 +241,13 @@ function fakeDeps(o: FakeOpts = {}) {
   const attendees: Array<{ eventId: string; emailHash: string; at: string }> = [];
   const consumed: string[] = [];
   const minted: string[][] = [];
+  /** Every order key the fallback seal fetched (issue 896). */
+  const keyReads: string[] = [];
   const uploaded: string[] = [];
   /** What the held-order claim and the fallback store were told about the buyer (#546 lookup). */
   const buyerHashes: Array<{ via: string; emailHash: string | undefined }> = [];
+  /** What the held-order claim and the fallback store were told to keep the answers for (#547). */
+  const retention: Array<{ via: string; retainMonths: number | undefined }> = [];
   /** The on-chain event each batch was minted against — the #426 assertion. */
   const mintedAgainst: string[] = [];
   /** The contract each batch was minted on — the #563 assertion. */
@@ -241,6 +259,8 @@ function fakeDeps(o: FakeOpts = {}) {
   const autoRefunds: Array<{ sessionId: string; amount: number }> = [];
   /** Sales handed to a cancellation's refund job (#644). */
   const cancellationQueue: Array<{ eventId: string; sessionId: string; paymentIntentId: string; account: string }> = [];
+  /** Door entries asked for (the live door attendee list). */
+  const doorEntries: Array<{ eventId: string; tickets: Array<{ seriesId: string; edition: number }>; who: { email?: string; buyerName?: string } }> = [];
   let nextSlot = 0;
   let chunkIdx = 0;
   let burnerSeq = 0;
@@ -262,6 +282,10 @@ function fakeDeps(o: FakeOpts = {}) {
     getEvent: async () => {
       boom("getEvent");
       return o.event === undefined ? eventFeed() : o.event;
+    },
+    eventKeys: async () => {
+      boom("eventKeys");
+      return o.keys ?? { kind: "record", creator: ORGANISER, feedSigner: FEED_SIGNER, orderKeyRef: ORDER_KEY_REF };
     },
     chainEventEndMs: async (_id, contract) => {
       boom("chainEventEndMs");
@@ -290,21 +314,24 @@ function fakeDeps(o: FakeOpts = {}) {
       boom("getOrganiserByStripeAccount");
       return ORGANISER;
     },
-    storeOrderBlob: async (data: string, meta: { emailHash?: string }) => {
+    storeOrderBlob: async (data: string, meta: { emailHash?: string; retainMonths?: number }) => {
       boom("storeOrderBlob");
       uploaded.push(data);
       buyerHashes.push({ via: "storeOrderBlob", emailHash: meta.emailHash });
+      retention.push({ via: "storeOrderBlob", retainMonths: meta.retainMonths });
       return "aa".repeat(32);
     },
     fetchOrderKey: async (ref: string) => {
       boom("fetchOrderKey");
+      keyReads.push(ref);
       if (ref !== ORDER_KEY_REF) throw new Error(`unknown order key ref ${ref}`);
       return ORDER_KEY.publicKey;
     },
     orderRefInOtherSale: (ref: string) => (o.takenRefs ?? []).includes(ref),
-    claimHeldOrder: (_ref: string, _sessionId: string, emailHash?: string) => {
+    claimHeldOrder: (_ref: string, _sessionId: string, emailHash?: string, retainMonths?: number) => {
       boom("claimHeldOrder");
       buyerHashes.push({ via: "claimHeldOrder", emailHash });
+      retention.push({ via: "claimHeldOrder", retainMonths });
       return o.held ?? false;
     },
     storeHeldOrder: async (ref: string) => {
@@ -405,13 +432,19 @@ function fakeDeps(o: FakeOpts = {}) {
       }
       emails.push(opts);
     },
+    sealDoorEntries: async (eventId, tickets, who) => {
+      // Attempt recorded before the throw: a door list failure must change nothing else.
+      doorEntries.push({ eventId, tickets, who });
+      boom("sealDoorEntries");
+      return tickets.length;
+    },
     recordUndeliveredTicket: (input) => {
       boom("recordUndeliveredTicket");
       ledgerRows.push(input);
     },
   };
 
-  return { deps, calls, uploaded, buyerHashes, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue };
+  return { deps, calls, uploaded, keyReads, buyerHashes, retention, refunds, pendingRefunds, emails, ledgerRows, mailerLedger, held, rechecked, bindings, consents, attendees, consumed, minted, mintedAgainst, mintedOn, endReadOn, saleSlots, autoRefunds, cancellationQueue, doorEntries };
 }
 
 /** Units the refund covers: `full` = everything; a partial is pro-rata per unit. */
@@ -564,7 +597,7 @@ describe("happy path", () => {
 
     // Consent: opt-in recorded against the organiser, keyed on the email hash.
     assert.equal(f.consents.length, 1);
-    assert.equal(f.consents[0].granted, true);
+    assert.deepEqual(f.consents[0].choice, { mode: "consent", ticked: true, version: 1, surface: "order-form" });
     assert.equal(f.consents[0].emailHash, "h(buyer@example.com)");
     assert.equal(f.consents[0].organiserAddress, ORGANISER);
 
@@ -654,9 +687,53 @@ describe("happy path", () => {
   test("consent: '0' suppresses, absent records nothing", async () => {
     const { f: a } = await run({ consent: "0" });
     assert.equal(a.consents.length, 1);
-    assert.equal(a.consents[0].granted, false);
+    assert.deepEqual(a.consents[0].choice, { mode: "consent", ticked: false, version: 1, surface: "order-form" });
     const { f: b } = await run({ consent: null });
     assert.equal(b.consents.length, 0);
+  });
+
+  test("own-events: the mode, box, version, surface and organiser travel to capture as stamped", async () => {
+    const { f } = await run({
+      marketing: { marketingMode: "own-events", marketingTicked: "0", marketingVersion: "1", marketingSurface: "embed", marketingOrganiser: "Punk Pub Ltd" },
+    });
+    assert.equal(f.consents.length, 1);
+    assert.deepEqual(f.consents[0].choice, { mode: "own-events", ticked: false, version: 1, surface: "embed" });
+    assert.equal(f.consents[0].organiserName, "Punk Pub Ltd");
+    assert.equal(f.consents[0].organiserAddress, ORGANISER);
+  });
+
+  test("the wording hash and the event's questions travel to capture, which rebuilds and checks the words", async () => {
+    const orderFields = [{ id: "t", type: "text" as const, label: "Town", required: false }];
+    const { f } = await run(
+      { marketing: { marketingMode: "consent", marketingTicked: "1", marketingVersion: "2", marketingSurface: "order-form", marketingWordingHash: "ab".repeat(32) } },
+      { event: eventFeed({ orderFields }) },
+    );
+    assert.equal(f.consents.length, 1);
+    assert.equal(f.consents[0].wordingHash, "ab".repeat(32));
+    assert.deepEqual(f.consents[0].orderFields, orderFields);
+    // No hash stamped: capture gets none, and records nothing for a yes.
+    const { f: g } = await run({ consent: "1" });
+    assert.equal(g.consents[0].wordingHash, undefined);
+    // A session stamped with the retired tailoring key: capture rebuilds the words without it.
+    const { f: t } = await run(
+      { marketing: { marketingMode: "own-events", marketingTicked: "0", marketingVersion: "2", marketingSurface: "embed", marketingOrganiser: "P", marketingTailored: "1", marketingWordingHash: "ab".repeat(32) } },
+      { event: eventFeed({ orderFields }) },
+    );
+    assert.equal(t.consents.length, 1);
+    assert.equal("tailored" in t.consents[0], false);
+  });
+
+  test("marketing keys that do not parse record nothing, in either mode - never a guess", async () => {
+    for (const marketing of [
+      { marketingMode: "own-events", marketingVersion: "1", marketingSurface: "embed" }, // no box state
+      { marketingMode: "own-events", marketingTicked: "0", marketingVersion: "7", marketingSurface: "embed" },
+      { marketingMode: "consent", marketingTicked: "yes", marketingVersion: "1", marketingSurface: "order-form" },
+      { marketingMode: "soft", marketingTicked: "0", marketingVersion: "1", marketingSurface: "order-form" },
+      { marketingConsent: "1" }, // the pre-2026-10-14 key alone
+    ]) {
+      const { f } = await run({ marketing });
+      assert.equal(f.consents.length, 0, JSON.stringify(marketing));
+    }
   });
 
   test("no prefetched orderRef: the fallback seal is uploaded and used", async () => {
@@ -705,6 +782,19 @@ describe("happy path", () => {
     assert.deepEqual(fallbackRun.f.buyerHashes, [{ via: "storeOrderBlob", emailHash: "h(buyer@example.com)" }]);
   });
 
+  test("#547: checkout's retention snapshot reaches the held-order claim and the fallback store; anything else carries none", async () => {
+    const held = await run({ retainMonths: "12" }, { held: true });
+    assert.deepEqual(held.f.retention, [{ via: "claimHeldOrder", retainMonths: 12 }]);
+    const fallback = await run({ orderRef: null, retainMonths: "6" }, { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }) });
+    assert.deepEqual(fallback.f.retention, [{ via: "storeOrderBlob", retainMonths: 6 }]);
+    for (const bad of ["3", "0", "6x", ""]) {
+      const r = await run({ retainMonths: bad }, { held: true });
+      assert.deepEqual(r.f.retention, [{ via: "claimHeldOrder", retainMonths: undefined }], `"${bad}" is no instruction`);
+    }
+    const none = await run({}, { held: true });
+    assert.deepEqual(none.f.retention, [{ via: "claimHeldOrder", retainMonths: undefined }], "a session from before #547");
+  });
+
   test("#546: a held order whose store fails still mints under its ref - never a refund over it", async () => {
     const { f, outcome } = await run({}, { held: true, fail: "storeHeldOrder" });
     assert.equal(outcome.issued, 2);
@@ -743,12 +833,61 @@ describe("happy path", () => {
     assert.equal(f.calls.some((c) => /download/i.test(c)), false);
   });
 
-  test("no orderRef at all (no encryption key to seal with): stops, refunds in full", async () => {
-    const { f, outcome } = await run({ orderRef: null });
+  test("no orderRef at all (no order key on record to seal with): stops, refunds in full", async () => {
+    const { f, outcome } = await run({ orderRef: null }, { keys: { kind: "legacy" } });
     assert.equal(outcome.issued, 0);
     assert.equal(outcome.stoppedReason, "No orderRef available for on-chain claim");
     assert.equal(f.minted.length, 0);
     assert.equal(outcome.refund.kind, "created");
+  });
+
+  // Issue 896: the order key a sale seals to comes from the organiser's keys, never
+  // the event feed, which is client-signed and can be re-signed to name any key.
+  const FEED_NAMED_KEY = "fe".repeat(32);
+
+  test("issue 896: the fallback seal goes to the order key on record, never the one the feed names", async () => {
+    const { f, outcome } = await run({ orderRef: null }, { event: eventFeed({ encryptionKeyRef: FEED_NAMED_KEY }) });
+    assert.equal(outcome.issued, 2);
+    assert.deepEqual(f.keyReads, [ORDER_KEY_REF]);
+    const box = JSON.parse(f.uploaded[0]);
+    const order = await openBoxJson<{ seriesId: string }>(ORDER_KEY.secretKey, box, orderSealContext(EVENT_ID, SERIES_ID));
+    assert.equal(order.seriesId, SERIES_ID);
+  });
+
+  test("issue 896: no authoritative key (legacy, or unreadable keys) - no seal to the feed's key; the sale refunds", async () => {
+    for (const fake of [{ keys: { kind: "legacy" } as const }, { fail: "eventKeys" as const }]) {
+      const { f, outcome } = await run({ orderRef: null }, { event: eventFeed({ encryptionKeyRef: ORDER_KEY_REF }), ...fake });
+      assert.deepEqual(f.keyReads, [], JSON.stringify(fake));
+      assert.equal(outcome.stoppedReason, "No orderRef available for on-chain claim");
+      assert.equal(outcome.refund.kind, "created");
+    }
+  });
+
+  test("issue 896: a record with no order key is not minted - refunded, and its held box dropped unstored", async () => {
+    const keys = { kind: "record", creator: ORGANISER, feedSigner: FEED_SIGNER, orderKeyRef: null } as const;
+    const { f, outcome } = await run({}, { held: true, keys, event: eventFeed({ encryptionKeyRef: FEED_NAMED_KEY }) });
+    assert.equal(outcome.issued, 0);
+    assert.equal(outcome.stoppedReason, "Event has no order key on record — not sold");
+    assert.equal(f.calls.includes("batchClaimForOnChain"), false);
+    assert.equal(f.calls.includes("storeHeldOrder"), false);
+    assert.ok(f.calls.includes("releaseHeldOrder"));
+    assert.equal(outcome.refund.kind, "created");
+    assert.deepEqual(f.keyReads, []);
+  });
+
+  test("issue 896: neither legacy nor unreadable keys refund a sale whose order box was held at checkout", async () => {
+    for (const fake of [{ keys: { kind: "legacy" } as const }, { fail: "eventKeys" as const }]) {
+      const { outcome } = await run({}, { held: true, ...fake });
+      assert.equal(outcome.issued, 2, JSON.stringify(fake));
+      assert.deepEqual(outcome.refund, { kind: "not-needed" });
+    }
+  });
+
+  test("issue 896: a cancelled event with no order key goes to the cancellation's refund, not a second one", async () => {
+    const keys = { kind: "record", creator: ORGANISER, feedSigner: FEED_SIGNER, orderKeyRef: null } as const;
+    const { outcome, f } = await run({}, { keys, cancellation: "cancelled" });
+    assert.equal(outcome.stoppedReason, "Event cancelled — refunded with every other sale");
+    assert.equal(f.cancellationQueue.length, 1);
   });
 });
 
@@ -968,6 +1107,9 @@ describe("stop reasons", () => {
     assert.equal(outcome.refund.kind, "not-needed");
     assert.deepEqual(f.minted.length, 1, "minted against the record, with no feed in hand");
     assert.equal(f.calls.includes("chainEventEndMs"), true, "the chain end guard still applies");
+    // The buyer's yes still reaches capture, with no organiser, so it is counted rather than lost.
+    assert.equal(f.consents.length, 1);
+    assert.equal(f.consents[0].organiserAddress, "");
   });
 
   test("stopped with no payment intent on the session: outcome says so, nothing else breaks", async () => {
@@ -992,6 +1134,7 @@ describe("every collaborator throws", () => {
     { step: "hashEmail", issued: 2, refund: "not-needed", email: "sent", note: "consent hash is an accessory" },
     { step: "resolveSiteEventSigner", issued: 2, refund: "not-needed", email: "sent", note: "feed unread, but the mint target is the server's record (#426)" },
     { step: "getEvent", issued: 2, refund: "not-needed", email: "sent", note: "same" },
+    { step: "eventKeys", issued: 2, refund: "not-needed", email: "sent", note: "keys unread: no fallback seal, never a refund over it (issue 896)" },
     { step: "chainEventEndMs", issued: 2, refund: "not-needed", email: "sent", note: "fail OPEN" },
     { step: "recordHeldPayout", issued: 2, refund: "not-needed", email: "sent", note: "bookkeeping never fails a paid claim" },
     { step: "getOrganiserByStripeAccount", issued: 2, refund: "not-needed", email: "sent", note: "inside the ledger fence" },
@@ -1146,17 +1289,48 @@ describe("every collaborator throws", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Door entries (live door attendee list)
+// ---------------------------------------------------------------------------
+
+test("door entries: one per issued ticket, after the email, with the email and the card name", async () => {
+  const f = fakeDeps();
+  const outcome = await fulfilPaidSession(session(), PAID_AT, f.deps);
+  assertInvariant(outcome, session(), f);
+  assert.equal(f.doorEntries.length, 1);
+  assert.equal(f.doorEntries[0]!.eventId, EVENT_ID);
+  assert.deepEqual(f.doorEntries[0]!.tickets, [{ seriesId: SERIES_ID, edition: 1 }, { seriesId: SERIES_ID, edition: 2 }]);
+  assert.deepEqual(f.doorEntries[0]!.who, { email: "buyer@example.com", buyerName: "Ada Lovelace" });
+  assert.ok(f.calls.indexOf("sendTicketEmail") < f.calls.indexOf("sealDoorEntries"), "never before the email");
+});
+
+test("door entries: nothing when no ticket was issued", async () => {
+  const f = fakeDeps({ revertAtChunk: 0 });
+  const outcome = await fulfilPaidSession(session(), PAID_AT, f.deps);
+  assert.equal(outcome.issued, 0);
+  assert.equal(f.doorEntries.length, 0);
+});
+
+test("door entries: a failure there changes no outcome, and the email still went", async () => {
+  const ok = await fulfilPaidSession(session(), PAID_AT, fakeDeps().deps);
+  const f = fakeDeps({ fail: "sealDoorEntries" });
+  const outcome = await fulfilPaidSession(session(), PAID_AT, f.deps);
+  assertInvariant(outcome, session(), f);
+  assert.deepEqual(outcome, ok);
+  assert.equal(f.emails.length, 1);
+});
+
+// ---------------------------------------------------------------------------
 // Never rejects
 // ---------------------------------------------------------------------------
 
 test("never rejects, whichever step throws", async () => {
   const steps: Step[] = [
-    "hashEmail", "resolveSiteEventSigner", "getEvent", "chainEventEndMs", "lookupOnChainEventId",
+    "hashEmail", "resolveSiteEventSigner", "getEvent", "eventKeys", "chainEventEndMs", "lookupOnChainEventId",
     "saleContractFor", "recordHeldPayout",
     "getOrganiserByStripeAccount", "storeOrderBlob", "generateBurner",
     "signMessage", "batchClaimForOnChain", "bindTicket", "consumeReservation", "createRefund",
     "flagPayoutRecheck", "captureCheckoutConsent", "recordAttendeeEmail", "getSiteTheme", "sendTicketEmail",
-    "sendTicketEmailLedgered", "recordUndeliveredTicket",
+    "sendTicketEmailLedgered", "recordUndeliveredTicket", "sealDoorEntries",
   ];
   for (const step of steps) {
     const f = fakeDeps({ fail: step, revertAtChunk: step === "createRefund" || step === "flagPayoutRecheck" ? 0 : undefined });

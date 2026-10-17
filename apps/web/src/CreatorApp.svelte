@@ -17,7 +17,11 @@
   import AudienceScreen from "./lib/creator/audience/AudienceScreen.svelte";
   import PayoutsScreen from "./lib/creator/payouts/PayoutsScreen.svelte";
   import type { StripeAccountStatus } from "./lib/api/stripe.js";
+  import { syncAudience } from "./lib/creator/audience/audience-sync.svelte.js";
+  import { untrack } from "svelte";
   import {
+    STRIPE_REFRESH_GUARD_KEY,
+    mayAutoRefreshLink,
     postStripeReturn,
     stripeReturnVariant,
   } from "./lib/creator/dashboard/stripe-return-handoff.js";
@@ -34,6 +38,20 @@
     if (router.route === "create" && !import.meta.env.VITE_ENABLE_INAPP_CREATOR) {
       navigate("/site-builder");
     }
+  });
+
+  // Opted-in ticket buyers join the organiser's list while they use WoCo
+  // (audience-sync.ts) - here on the organiser home and event pages, and only on an
+  // account already unlocked on this device: never a prompt. syncAudience runs at most
+  // once an hour on this device; the Audience screen runs it itself.
+  // These routes already make authenticated reads of their own on open (events, orders,
+  // Stripe status), so the sync adds no new prompt trigger (Fable sign-off 2026-10-14).
+  const AUDIENCE_SYNC_ROUTES = new Set(["creator-home", "dashboard-index", "dashboard"]);
+  $effect(() => {
+    if (!AUDIENCE_SYNC_ROUTES.has(router.route)) return;
+    if (!auth.ready || !auth.isConnected || !auth.parent || !canOrganise(auth.kind)) return;
+    if (!auth.hasSession || !auth.hasIdentitySeed) return;
+    untrack(() => void syncAudience());
   });
 
   let stripeStatus = $state<StripeAccountStatus | null>(null);
@@ -80,6 +98,58 @@
       stripeStatusLoading = false;
     });
   });
+
+  // Stripe sends an already-used or expired Account Link here, and its docs say to
+  // mint a new link and redirect to it. Same tab, so no tap is needed (iPhone), and
+  // the tab keeps its opener, so the return page can still close it (#508).
+  let stripeRefreshFailed = $state(false);
+  let stripeRefreshStarted = false;
+  $effect(() => {
+    if (router.route !== "stripe-refresh") {
+      stripeRefreshFailed = false;
+      stripeRefreshStarted = false;
+      return;
+    }
+    if (!auth.ready || !auth.isConnected) return;
+    if (!canOrganise(auth.kind)) {
+      stripeRefreshFailed = true;
+      return;
+    }
+    if (stripeRefreshStarted) return;
+    stripeRefreshStarted = true;
+    const now = Date.now();
+    try {
+      const last = sessionStorage.getItem(STRIPE_REFRESH_GUARD_KEY);
+      if (!mayAutoRefreshLink(last === null ? null : Number(last), now)) {
+        stripeRefreshFailed = true;
+        return;
+      }
+      sessionStorage.setItem(STRIPE_REFRESH_GUARD_KEY, String(now));
+    } catch {
+      // No storage = no loop guard, so no automatic redirect: the button still works.
+      stripeRefreshFailed = true;
+      return;
+    }
+    void renewStripeLink();
+  });
+
+  async function renewStripeLink() {
+    stripeRefreshFailed = false;
+    try {
+      const link = await import("./lib/api/stripe.js").then(m => m.getOnboardingLink());
+      if (link.url) {
+        window.location.replace(link.url);
+        return;
+      }
+      if (link.alreadyComplete) {
+        navigate("/stripe/return");
+        return;
+      }
+      stripeRefreshFailed = true;
+    } catch {
+      stripeRefreshFailed = true;
+    }
+  }
 </script>
 
 <CreatorShell>
@@ -143,9 +213,17 @@
     </div>
   {:else if router.route === "stripe-refresh"}
     <div class="stripe-return-page">
-      <h2>Link Expired</h2>
-      <p>Your onboarding link has expired. {returnVariant === "close" ? "Close this tab and start again from where you were." : "Go back to the dashboard to get a new one."}</p>
-      {@render stripeReturnExit()}
+      {#if stripeRefreshFailed || (auth.ready && !auth.isConnected)}
+        <h2>Link Expired</h2>
+        <p>Your Stripe link has expired.</p>
+        {#if auth.isConnected}
+          <button class="stripe-dashboard-link" onclick={() => void renewStripeLink()}>Get a new link</button>
+        {/if}
+        {@render stripeReturnExit()}
+      {:else}
+        <h2>Stripe Setup</h2>
+        <p>Getting you a fresh Stripe link…</p>
+      {/if}
     </div>
   {/if}
 </CreatorShell>

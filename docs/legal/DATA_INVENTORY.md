@@ -55,8 +55,8 @@ notice; a policy link in the main app does not cover the other three.
 
 | # | Surface | Code | Collects | Notice status (2026-10-05; organiser notice added 2026-10-11) |
 |---|---|---|---|---|
-| 1 | Main app checkout | `apps/web/src/lib/attendee/events/claim/OrderForm.svelte` | email, order-form fields | **Compliant** (since `8ed69ec`) — the `consent-block` above the action buttons carries `TRANSACTIONAL_EMAIL_NOTICE`, an unticked `MARKETING_CONSENT_NOTICE` opt-in, `CHECKOUT_PRIVACY_SUMMARY` and a Privacy Policy link. Wording is shared with the server via `packages/shared/src/legal/consent.ts` so the stored Art. 7(1) evidence cannot drift from what was shown. Since 2026-10-11 the line also links the ORGANISER's privacy notice (`CheckoutNoticeLinks.svelte`), and the no-order-form pay panel (`StripePayPanel.svelte`), which collects an email and had no notice at all, now carries `PAY_PANEL_PRIVACY_SUMMARY` and both links - deliberately NOT the "encrypted in your browser" summary, since that email is not client-sealed (§4) |
-| 2 | Embed widget on organiser's own domain | `packages/embed/src/components/woco-tickets.ts` | email | **Compliant** - `renderConsent` shows the same shared `TRANSACTIONAL_EMAIL_NOTICE`, unticked `MARKETING_CONSENT_NOTICE` opt-in, `CHECKOUT_PRIVACY_SUMMARY` and a Privacy Policy link, and since 2026-10-11 the organiser's notice (`#/privacy-notice/{eventId}` on the app) ahead of it |
+| 1 | Main app checkout | `apps/web/src/lib/attendee/events/claim/OrderForm.svelte` | email, order-form fields | **Compliant** (since `8ed69ec`) — the `consent-block` above the action buttons carries `TRANSACTIONAL_EMAIL_NOTICE`, the marketing control (`MarketingControl.svelte`), `CHECKOUT_PRIVACY_SUMMARY` and a Privacy Policy link. Since 2026-10-14 the control is in the mode the organiser's CONFIRMED notice sets (claim-status `marketingMode`): consent mode's unticked opt-in, or own-events mode's sentence and unticked "Don't email me" (PECR soft opt-in); create-checkout refuses a page that showed the other mode (`MARKETING_MODE_CHANGED`). Wording is shared with the server via `packages/shared/src/legal/consent.ts` so the stored Art. 7(1) evidence cannot drift from what was shown. Since 2026-10-11 the line also links the ORGANISER's privacy notice (`CheckoutNoticeLinks.svelte`), and the no-order-form pay panel (`StripePayPanel.svelte`), which collects an email and had no notice at all, now carries `PAY_PANEL_PRIVACY_SUMMARY` and both links - deliberately NOT the "encrypted in your browser" summary, since that email is not client-sealed (§4). Since 2026-10-14 the pay panel also carries the marketing control, so no checkout takes an email without offering the choice |
+| 2 | Embed widget on organiser's own domain | `packages/embed/src/components/woco-tickets.ts` | email | **Compliant** - `renderConsent` shows the same shared `TRANSACTIONAL_EMAIL_NOTICE`, the marketing control in the claim-status mode (as row 1, since 2026-10-14), `CHECKOUT_PRIVACY_SUMMARY` and a Privacy Policy link, and since 2026-10-11 the organiser's notice (`#/privacy-notice/{eventId}` on the app) ahead of it |
 | 3 | Organiser site deployed via WoCo | `apps/web/src/MultiSiteApp.svelte`, `contactForm` section (`packages/shared/src/site/types.ts:192`) | name, email, message | The contact form carries a notice naming the organiser as responsible and linking WoCo's Privacy Policy (`ContactFormSection.svelte`); the site footer links it too. Since 2026-10-11 the site has the organiser's own notice as a page (`#/privacy-notice`, site-wide; `#/privacy-notice/{eventId}` per event), linked from the footer, the contact form and every event page |
 | 4 | Direct event page link | routes into surface 1 | as surface 1 | as surface 1 |
 
@@ -76,7 +76,7 @@ Enumerated from source, not assumed:
 |---|---|---|
 | `marketing-suppression.json` | **Yes** (pseudonymous) | HMAC-SHA256 email hashes + timestamp + source. Never plaintext — `suppression-store.ts` |
 | `marketing-lists.json` | **Yes** (pseudonymous) | `emailHashes: string[]` only — `list-store.ts:17` |
-| `marketing-consent.json` | **Yes** (pseudonymous) | Art. 7(1) evidence: email hash → `{ts, source, eventId, notice}`, where `notice` is the VERBATIM wording shown at collection. No plaintext — `consent-store.ts`. Losing it loses the lawful basis for every opt-in it records |
+| `marketing-consent.json` | **Yes** (pseudonymous) | Art. 7(1) evidence: email hash → `{ts, source, eventId, notice, control?, basis, version, surface, keptFields?}`, where `notice` (and, for a soft opt-in, `control`, the box label) is the VERBATIM wording shown at collection, looked up server-side by mode and version. `basis` is `consent` or `soft-opt-in` (2026-10-14; absent on older records = consent), fixed when the choice is made. `keptFields` (2026-10-15) holds the ids of the questions the checkout named as kept; the list import copies only those, for that record's event. `/api/marketing/check` returns a consent's `ts` to the organiser who holds it, for addresses they sent, so a contact they deleted is re-added only on a later "Email me". No plaintext — `consent-store.ts`. Losing it loses the lawful basis for every opt-in and soft opt-in it records |
 | `event-attendees.json` | **Yes** (pseudonymous) | Event id → HMAC-SHA256 email hashes of ticket-holders — `attendee-index.ts`. Written at Stripe fulfilment from the verified purchase email, for every buyer who supplied one, INDEPENDENTLY of any marketing choice: it records the contract relationship (this person bought a ticket), not a consent. Lawful basis Art. 6(1)(b) — it is what proves a broadcast recipient is an attendee, so without it an organiser cannot tell ticket-holders their event was cancelled. Never plaintext. Not erasable via the marketing path: erasure here is governed by the ticket record, not the marketing consent record |
 | `marketing-domains.json`, `marketing-send-log.json` | Indirect | Organiser sending domains; send counts for rate caps |
 | `stripe-accounts.json` | **Yes** | Organiser wallet address ↔ Stripe account id |
@@ -90,11 +90,12 @@ Enumerated from source, not assumed:
 | `ticket-sales.json` | **Yes** (pseudonymous) | Stripe session ↔ payment intent, minted ticket slots, order reference, refund and dispute state - what voids a refunded ticket at the door. No email - `lib/stripe/ticket-sales.ts` |
 | `event-cancellations.json` | **Yes** (pseudonymous) | Cancelled events and one refund row per sale, keyed by Stripe session - `lib/event/cancellations.ts` |
 | `pending-refunds.json` | **Yes** (pseudonymous) | Automatic refunds Stripe refused to create, by Stripe session and payment intent, kept until retried. No email - `lib/stripe/pending-refunds.ts` |
-| `held-orders/{root}.json` | **Yes** (encrypted) | One file per order sealed in the buyer's browser, held as ciphertext from checkout until paid and stored on Swarm (unpaid: deleted after 24 h) - `lib/attendee-batch/held-orders.ts` |
-| `attendee-slots.json` | **Yes** (pseudonymous) | Which storage slot of the attendee batch holds each chunk of each order, and its erasure state - what makes one order erasable (§6). Since #797 each record also holds the buyer's HMAC-SHA256 email hash and the organiser, so an access or erasure request can find that person's orders (`ordersForEmailHash`). Rotating `EMAIL_HASH_SECRET` blinds this lookup. No plaintext - `lib/attendee-batch/ledger.ts` |
-| `door-passes.json`, `checkins/`, `checkin-rosters/` | **Yes** (pseudonymous / encrypted) | Active door pass per event; check-in records (ticket number, time, random device id); the door guest list as ciphertext the server cannot open - `lib/checkin/store.ts` |
+| `held-orders/{root}.json` | **Yes** (encrypted) | One file per order sealed in the buyer's browser, held as ciphertext from checkout until paid and stored on Swarm (unpaid: deleted after 24 h; paid but never stored: erased by the retention sweep like a stored order, #547) - `lib/attendee-batch/held-orders.ts` |
+| `attendee-slots.json` | **Yes** (pseudonymous) | Which storage slot of the attendee batch holds each chunk of each order, and its erasure state - what makes one order erasable (§6). Since #797 each record also holds the buyer's HMAC-SHA256 email hash and the organiser, so an access or erasure request can find that person's orders (`ordersForEmailHash`). Rotating `EMAIL_HASH_SECRET` blinds this lookup. Since #547 each record also holds `retainMonths` (the period in the organiser's notice at the time of sale) and, once erased, who erased it (`request` or `retention`) and the rule the sweep carried out. Retention: the order is erased 6 or 12 months after the event's onchain end, the period in the organiser's notice at the time of sale (`lib/attendee-batch/retention.ts`); the record stays as evidence of the erasure. No plaintext - `lib/attendee-batch/ledger.ts` |
+| `door-passes.json`, `checkins/`, `checkin-rosters/`, `checkin-door-entries/` | **Yes** (pseudonymous / encrypted) | Active door pass per event; check-in records (ticket number, time, random device id); the door guest list as ciphertext the server cannot open; and, for each ticket sold after the door pass was made, the buyer's email and the name on their card, sealed at the sale so only the organiser's door devices can open them. Both are deleted 2 days after the event's onchain end (kept while no onchain end is known); an entry is also deleted when its order is erased, and all of them when the organiser makes a new door pass. Door devices delete their copy once the pass has expired (24 hours after the event ends), the next time the scanner is opened - `lib/checkin/store.ts`, `door-entries.ts`, `roster-retention.ts` |
 | `event-feed-signers.json` | **Yes** | Event id → the organiser's content-feed signer and verified creator address, pinned at create - `lib/event/feed-signer-record.ts` |
 | `device-grants.json` | Indirect | An account's added passkeys (#746): each one's key address and a hash of its credential id, the account owner's signed grant and any signed removal, and every nonce used. No names, no device or password-manager details. Must survive restarts (losing it signs added passkeys out) |
+| `etherna-relay-ledger/` | **Yes** (pseudonymous) | The Etherna failover (#912), one file per chunk: each chunk this server sent to Etherna and has not yet seen on the network, and each save it stamped on the WoCo batch while Etherna could not take it - the chunk's Swarm address, signing key address and identifier, and the account that saved it. Never the content. Nothing is recorded while the failover is off. An entry goes once the chunk is on the network or back on Etherna, usually within minutes; at most 10,000 - `lib/etherna/relay-ledger.ts` |
 | `event-listing-state.json`, `etherna-batches.json`, `onchain-events.json`, `pending-registrations.json`, `domains.json`, `manifest.json`, `shop-*.json` | Mostly not | Operational state; shop stores contain wallet addresses |
 | `email-failures.json` | **Yes — plaintext, transactional only** | Ledger of email the platform failed to deliver — either after every retry, or because the provider accepted it and then hard-bounced it (`routes/ses-webhook.ts`). `transactional` entries store the buyer's plaintext address: it is the only copy on disk (`event-attendees.json` stores only its hash) and exists solely to deliver the ticket already paid for — Art. 6(1)(b). `marketing` entries store the HMAC hash only. Mode 0600, 90-day retention. A 1,000-entry cap bounds the file, but UNRESOLVED transactional entries are exempt from it and bounded by retention alone — a size cap that discarded evidence of a paid-but-undelivered ticket would defeat the store's purpose. Disclosed under Art. 15 and redacted under Art. 17 by the §6 procedure. The stored provider diagnostic is scrubbed of email-shaped text before it is written or logged, so the address exists in exactly one field per entry — the one erasure knows how to remove — rather than in a second, unreachable copy inside the error string — `failure-ledger.ts` |
 | `broadcast-jobs/{jobId}.json` | **Yes** (pseudonymous) | One file per background broadcast. HMAC `emailHash`es of everyone it delivered to, plus counters, subject and the organiser's own message body. **No plaintext addresses, ever.** Purpose: send-once accounting — it is what lets a broadcast killed by a restart be resumed without mailing anyone twice. Mode 0600. Retention **7 days** from the job's end (the resume window), and at most 20 records per organiser — except a record of a job killed by a restart that nobody has resumed, which is kept the full 7 days regardless of the cap: it is the `/api/health` alarm and the resume path, and evicting it would clear the alarm while the broadcast is still half-sent. Disclosed under Art. 15 (`broadcastsContaining`, surfaced by the §6 procedure). **Deliberately NOT erased under Art. 17**: removing a hash would make a resumed broadcast mail the person who asked to be forgotten. Erasure is effective by the suppression mark instead, which the send path re-checks per recipient — so a request stops a *live* job immediately — and the record itself expires in 7 days. `broadcast-jobs.ts` |
@@ -174,8 +175,9 @@ Cloudflare's logs under Cloudflare's own retention as our sub-processor.
 - `apps/server` imports **`sealBoxJson` only** (`lib/stripe/fulfilment.ts`, the fallback below). It
   never imports `openBox` or `openBoxJson`. Grep-verified.
 - The only callers of the open functions on orders and lists are in the organiser's browser:
-  `Dashboard.svelte` (orders), `AudienceScreen.svelte` (contact list) and `AttendeeImport.svelte`
-  (imported attendee orders), all `openBoxJson`.
+  `Dashboard.svelte` (orders), `AudienceScreen.svelte` (contact list), `audience-sync.svelte.ts`
+  (orders and list, for the automatic add of opted-in buyers) and `keyring/rotate-live.ts` (the
+  list, to re-seal it to the new key after a passkey removal, #186), all `openBoxJson`.
 - The decryption key is derived in the organiser's browser from their account seed
   (`deriveXWingKeypairFromSeed`, `packages/shared/src/crypto/xwing.ts`). For a passkey account the
   seed comes from the passkey and is kept on the device locked under it: it opens once the
@@ -325,8 +327,15 @@ independent nodes worldwide:
 | Order blob | X-Wing sealed box of the order answers, on the attendee batch, paid orders only (§6 below). Its Swarm reference is also recorded onchain as the slot's `orderRef`, which is public and permanent | **Yes**, encrypted |
 | Like / follow statements | Public signed statements on the user's own feed (`packages/shared/src/social/`); a retraction is a new version, not a deletion | **Yes**, and intentionally public |
 | Profile feeds | display name, avatar, bio — organiser-published | **Yes**, and intentionally public |
-| Organiser privacy notice (`woco/legal/privacy-notice/{account}`, `woco.privacy-notice.v1`) | The organiser's name, privacy contact email, optional postal address and ICO number, and their own statements (purposes, sharing, retention), signed by their content-feed signer and published when they press "Confirm and publish". The public notice pages read it through `GET /api/privacy-notice/*`, which picks the account and signer from server records only (`routes/privacy-notice.ts`); the server stores none of it. Earlier versions stay retrievable after an edit - the editor says so before publishing and asks for business, not personal, details | **Yes** (the organiser's own details), and intentionally public |
-| Marketing contact list blob | X-Wing sealed box, sealed to organiser | **Yes**, encrypted |
+| Organiser privacy notice (`woco/legal/privacy-notice/{account}`, `woco.privacy-notice.v2`) | The organiser's name, privacy contact email, optional postal address and ICO number, and their choices (who else sees attendee details, months order-form answers are kept, whether they email only about their own events, plus optional "anything else" lines), signed by their content-feed signer and published when they press "Publish". The public notice pages read it through `GET /api/privacy-notice/*`, which picks the account and signer from server records only (`routes/privacy-notice.ts`); the server stores none of it. Earlier versions stay retrievable after an edit - Organiser Terms §4 says so, and the editor asks for business, not personal, details | **Yes** (the organiser's own details), and intentionally public |
+| Marketing contact list blob (email, name and every other order-form answer except a sensitive one (UK GDPR Art. 9 or Art. 10) or one about another person - the same for a ticked "Email me" and a soft opt-in. The checkout names each one before the buyer agrees, and the buyer's consent record holds the ids of those questions, which are all the import copies, for that record's event only (2026-10-15); plus one tombstone per contact the organiser deleted: a hash of the organiser's address and the email, and the date of the deletion - not the address). Buyers with a checkout record (opt-in or soft opt-in) are added automatically, in the organiser's browser, whenever they use WoCo; an unsubscribed, declined, bounced or suppressed address never is, and a deleted one only on an "Email me" ticked after the deletion (2026-10-14) | X-Wing sealed box, sealed to organiser | **Yes**, encrypted |
+
+**Which batch stamps it.** User content (profiles, privacy notices, likes and follows, event and site
+edits, backups, recovery) is stamped on Etherna (§5). While Etherna cannot take a save and the
+failover is on (`ETHERNA_FAILOVER`, #912), the same signed chunk is stamped on the WoCo batch instead
+and posted to Etherna again once it answers. The WoCo copy is not removed: it lasts while the WoCo
+batch pays for it. Content and readers are unchanged - both are the public Swarm network. Attendee
+order blobs never fail over: they stay on the attendee batch.
 
 **Pseudonymised ≠ anonymous.** HMAC email hashes and wallet addresses are personal data under UK
 GDPR because WoCo holds the key / can re-link them. The policy must treat them as personal data.
@@ -339,8 +348,8 @@ Swarm chunks are **immutable and cannot be individually deleted**, with the one 
 > order blob is stamped on its own attendee batch by a key WoCo holds, and the slot of each chunk is
 > recorded (`.data/attendee-slots.json`). Erasure overwrites those slots with newer stamps, which
 > evicts the chunks from every storer that receives the overwrite (`lib/attendee-batch/burn.ts`), and
-> WoCo stops serving the order. It runs on request through an operator route (`routes/ops.ts`), not
-> automatically. Not reached: copies someone else stored under their own stamp, and retrieval
+> WoCo stops serving the order. It runs on request through an operator route (`routes/ops.ts`), and
+> on schedule through the daily retention sweep (#547, below). Not reached: copies someone else stored under their own stamp, and retrieval
 > caches. Blobs written before the change, and every other data type here, are unchanged.
 >
 > **Only PAID orders reach Swarm.** Until the Stripe payment confirms, the sealed box is held on the
@@ -402,16 +411,19 @@ anything, so a crash between the two steps over-suppresses rather than under-pro
 **Three things the script cannot reach**, and which must be relayed to the subject:
 
 1. The organiser's **sealed contact blob** on Swarm is encrypted to them; only they can rewrite it.
-   They are the controller for their own list — forward the request. Removing the member from
+   They are the controller for their own list — forward the request. Deleting the contact there
+   leaves a sealed tombstone (a hash of the organiser's address and the email, and the date), so
+   the automatic buyer add does not restore it - the same reason suppression marks are kept. Removing the member from
    WoCo's list index makes them unsendable immediately (`/api/marketing/broadcast` rejects any
    recipient not in the index), and the suppression mark holds even if the organiser re-uploads.
 2. **Order blobs on Swarm** - the script does not erase them; the operator burn route does
    (`routes/ops.ts`, see above). The order reference recorded onchain stays public.
 3. **Stripe** holds its own payment records under its own retention obligations.
-4. **Copies the organiser downloaded** - exported CSVs and the guest list on a door device (#798).
-   Tell the organiser of each affected event, naming the order, so they delete it from their copies
-   and re-push the door list (PRIVACY_POLICY §8 promises this; ORGANISER_TERMS §4 item 8 and DPA §3
-   item 5 oblige them). The organiser's contact is the email on their Stripe connected account.
+4. **Copies the organiser downloaded** - exported CSVs (#798). Erasing the order also deletes WoCo's
+   sealed door entry for each of its tickets and removes them from the organiser's door scanners. For
+   exported CSVs, tell the organiser of each affected event, naming the order, so they delete it from
+   their copies (PRIVACY_POLICY §8 promises this; ORGANISER_TERMS §4 item 8 and DPA §3 item 5 oblige
+   them). The organiser's contact is the email on their Stripe connected account.
 
 **An erasure confirmation must not promise "no further contact".** If an erased buyer's event is
 later cancelled, WoCo emails them that their refund is on its way, at the address they paid with,
@@ -430,8 +442,14 @@ PRIVACY_POLICY §8. We revisit the position as guidance on decentralised storage
 
 ## 7. Retention — proposal requiring a decision
 
-Nothing in the code currently expires attendee data. A stated retention policy is mandatory
-(Art. 13(2)(a)) and cannot be "indefinite".
+> **UPDATED 2026-10-14 (#547) - attendee order answers now expire.** Each order is erased at the
+> event's onchain end plus the period in the organiser's notice at the time of sale (6 or 12 UTC
+> calendar months), by a daily sweep through the same erase as a request
+> (`lib/attendee-batch/retention.ts`; standing instruction in DPA Annex 3). Anything it cannot be
+> sure of is kept and counted on `/api/health` `orderRetention`. `ORDER_RETENTION_SWEEP` ships as
+> `dry-run`; the period is kept only once it is `live`. The proposal below is history.
+
+A stated retention policy is mandatory (Art. 13(2)(a)) and cannot be "indefinite".
 
 ### Recommended: separate postage batch for attendee data
 

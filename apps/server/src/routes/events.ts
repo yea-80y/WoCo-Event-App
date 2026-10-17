@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { streamText } from "hono/streaming";
 import type { Hex0x, CreateEventV3Request, UpdateEventMetaRequest, EventDirectoryEntry } from "@woco/shared";
 import { isValidXWingPublicKey } from "@woco/shared/crypto/xwing";
-import { FEATURES, BUYER_FEE_FLOOR_PCT, MIN_TICKET_PRICE, ticketPriceMeetsMinimum, geoWithinSizeLimit } from "@woco/shared";
+import { FEATURES, BUYER_FEE_FLOOR_PCT, MIN_TICKET_PRICE, ticketPriceMeetsMinimum, geoWithinSizeLimit, eventHasPlace, EVENT_PLACE_REQUIRED } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { cancellationGate, withCancellation } from "../lib/event/cancellations.js";
@@ -31,6 +31,7 @@ import { clientIp } from "../lib/http/client-ip.js";
 import { SWARM_READ_MAX_BYTES, readCappedJson, readPrefix } from "../lib/http/read-capped.js";
 import { failureSentence } from "../lib/http/error-class.js";
 import { orderFieldsRefusal } from "../lib/event/order-fields.js";
+import { saleBoundsRefusal } from "../lib/event/series-window.js";
 const events = new Hono<AppEnv>();
 
 // ---------------------------------------------------------------------------
@@ -224,6 +225,7 @@ events.post("/", requireAuth, async (c) => {
       return c.json({ ok: false, error: "geo too large (max 1KB serialised)" }, 400);
     }
   }
+  if (!eventHasPlace(ev.geo)) return c.json({ ok: false, error: EVENT_PLACE_REQUIRED }, 400);
   // Shape-check every series id BEFORE any message interpolates one. The id is
   // browser-invented and lands verbatim in feed topic strings whose last segment
   // is the page suffix, so a "/" in it addresses another series' page (#197).
@@ -241,6 +243,10 @@ events.post("/", requireAuth, async (c) => {
       return c.json({ ok: false, error: `Duplicate seriesId in this event: ${s.seriesId}` }, 400);
     }
     seenSeriesIds.add(s.seriesId);
+    const boundsRefusal = saleBoundsRefusal(s);
+    if (boundsRefusal) {
+      return c.json({ ok: false, error: `Series ${s.seriesId}: ${boundsRefusal}` }, 400);
+    }
   }
 
   for (const s of series) {
@@ -519,7 +525,9 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
     if (!geoWithinSizeLimit(body.geo)) {
       return c.json({ ok: false, error: "geo too large (max 1KB serialised)" }, 400);
     }
-    // Store as-is (empty object clears); the snapshot builder normalises at build time.
+    // An event cannot lose its place, so a geo sent here must still be one. Stored
+    // as-is; the snapshot builder normalises at build time.
+    if (!eventHasPlace(body.geo)) return c.json({ ok: false, error: EVENT_PLACE_REQUIRED }, 400);
     updates.geo = body.geo;
   }
 
@@ -559,6 +567,7 @@ events.post("/:id/update-meta", requireAuth, async (c) => {
       msg === "Event not found" ? 404 :
       msg === "Not the event creator" ? 403 :
       msg === "Invalid event dates" || msg === "endDate is before startDate" ? 400 :
+      msg === EVENT_PLACE_REQUIRED ? 400 :
       msg.startsWith("endDate cannot extend past the on-chain sales end") ? 400 :
       // The on-chain sales end, or the event's own latest version (#657).
       msg.startsWith("Could not verify") ? 503 : 500;

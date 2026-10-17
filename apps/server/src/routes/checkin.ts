@@ -2,12 +2,15 @@
  * Door check-in API.
  *
  * Organiser-authed (session delegation, mounted under /api/events):
- *   POST /:id/door-pass       issue/rotate the event's door pass
+ *   POST /:id/door-pass/challenge  a nonce sealed to the account's order key (door-key.ts)
+ *   POST /:id/door-pass       issue/rotate the event's door pass + register its door key,
+ *                             with the order-key proof
  *   POST /:id/checkin-roster  store AES-GCM roster ciphertext (key never sent)
  *   GET  /:id/checkin-status  live counts for the dashboard
  *
  * Door-pass-authed via X-Door-Pass header (mounted under /api/checkin):
  *   GET  /:eventId/pack       offline verification pack for scanner devices
+ *   GET  /:eventId/entries    later sales' sealed email + card name, after a cursor
  *   POST /:eventId/claim      admit one ticket - first claim anywhere wins (#641)
  *   POST /:eventId/sync       merge a device's check-ins, return full set
  *
@@ -24,12 +27,15 @@
 import { Hono, type Context } from "hono";
 import {
   SCANNER_DEVICE_HEADER,
+  SCANNER_OUTDATED_REASON,
+  SCANNER_WRONG_EVENT_REASON,
   type CheckinClaimRequest,
   type CheckinClaimResponse,
   type CheckinPack,
   type CheckinRecord,
   type CheckinSeries,
   type CheckinSyncRequest,
+  type CheckinUploadAck,
   type DoorMode,
   type EncryptedRoster,
 } from "@woco/shared";
@@ -37,7 +43,6 @@ import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getEvent, getEventForOwner, getEventBySigner } from "../lib/event/service.js";
 import { eventKeys } from "../lib/keyring/event-keys.js";
-import { currentRing } from "../lib/keyring/current-ring.js";
 import { getOnChainEventAt, getSlotDataAt } from "../lib/chain/event-contract.js";
 import { registrationContractFor } from "../lib/event/onchain-registry.js";
 import { contractKey } from "../lib/chain/event-contract.js";
@@ -51,8 +56,13 @@ import {
   mergeCheckins,
   claimCheckin,
   bindSinglePassDevice,
+  doorPassIdUsed,
 } from "../lib/checkin/store.js";
-import { mapWithConcurrency, SLOT_READ_CONCURRENCY } from "../lib/util/concurrency.js";
+import { createDoorPassChallenge, redeemDoorPassChallenge } from "../lib/checkin/door-key.js";
+import { SlidingWindowLimiter } from "../lib/http/rate-limit.js";
+import { DoorEntriesUnreadableError, issueWithNewDoorEntries, readDoorEntriesPage } from "../lib/checkin/door-entries.js";
+import { slotOwners } from "../lib/checkin/slot-owners.js";
+import { eventSeries, ofEventSeries, rememberEventSeries } from "../lib/checkin/event-series.js";
 
 const MAX_ROSTER_CIPHERTEXT = 4 * 1024 * 1024;
 const MAX_SYNC_RECORDS = 5000;
@@ -93,6 +103,29 @@ async function loadOwnedEvent(c: Context<AppEnv>, eventId: string) {
   return { event, eventId };
 }
 
+/** Per account: a challenge costs an order-key fetch (cached) and an X-Wing seal. */
+const doorPassChallenges = new SlidingWindowLimiter([
+  { limit: 10, windowMs: 60_000 },
+  { limit: 60, windowMs: 3_600_000 },
+]);
+
+checkinOrganiser.post("/:id/door-pass/challenge", requireAuth, async (c) => {
+  const { eventId, error } = await loadOwnedEvent(c, c.req.param("id"));
+  if (error) return error;
+  const parent = c.get("parentAddress").toLowerCase();
+  if (!doorPassChallenges.allow(parent)) {
+    return c.json({ ok: false, error: "Too many attempts - wait a minute and try again" }, 429);
+  }
+  try {
+    const out = await createDoorPassChallenge(eventId, parent, await eventKeys(eventId));
+    if (!out.ok) return c.json({ ok: false, error: out.error }, out.status);
+    return c.json({ ok: true, data: out.data });
+  } catch (err) {
+    console.error("[checkin] door-pass challenge failed:", err);
+    return c.json({ ok: false, error: "Couldn't start the door pass - try again" }, 500);
+  }
+});
+
 checkinOrganiser.post("/:id/door-pass", requireAuth, async (c) => {
   const { event, eventId, error } = await loadOwnedEvent(c, c.req.param("id"));
   if (error) return error;
@@ -103,22 +136,30 @@ checkinOrganiser.post("/:id/door-pass", requireAuth, async (c) => {
     (Number.isFinite(endMs) ? Math.max(endMs, Date.now()) + 24 * 3600_000 : Date.now() + 7 * 24 * 3600_000) / 1000,
   );
 
-  // Anything but an explicit "single" is "several": the mode that cannot admit
-  // a ticket twice is the default, including for clients that send no mode.
-  const body = c.get("body") as { mode?: unknown } | undefined;
-  const mode: DoorMode = body?.mode === "single" ? "single" : "several";
+  // The pass registers the door entries key every later buyer is sealed to, so it
+  // needs the order-key proof (lib/checkin/door-key.ts): a session alone issues no
+  // pass. The mode is part of what the proof covers. The pass's generation (#186): a
+  // pass made before a passkey is removed stops working when the account's keys move on.
+  const body = c.get("body") as Record<string, unknown> | undefined;
+  const reg = redeemDoorPassChallenge(
+    eventId,
+    c.get("parentAddress"),
+    body,
+    await eventKeys(eventId),
+    (jti) => doorPassIdUsed(eventId, jti),
+  );
+  if (!reg.ok) return c.json({ ok: false, error: reg.error, ...(reg.reason ? { reason: reg.reason } : {}) }, reg.status);
+  const mode: DoorMode = reg.mode;
 
   try {
     // Stamp the content-feed signer into the pass record — the organiser is
     // authenticated here, so this is the last point where an unlisted event's
     // signer can be resolved from trusted state. /pack has no parent address.
-    // The organiser's key generation now (#186): a pass made before a passkey is
-    // removed stops working when the account's keys move on.
-    const ring = await currentRing(c.get("parentAddress"));
-    if (ring.status === "unavailable") {
-      return c.json({ ok: false, error: "Couldn't check your account's keys right now - try again in a minute" }, 503);
-    }
-    const token = issueDoorPass(eventId, exp, event.creatorFeedSigner, mode, ring.status === "ring" ? ring.ring.gen : 0);
+    // The entries log first: a pass whose log could not be started is not issued, and
+    // a pass that fails to issue leaves the previous pass's log as it was.
+    const token = issueWithNewDoorEntries(eventId, reg.jti, reg.doorKey, () =>
+      issueDoorPass(eventId, exp, event.creatorFeedSigner, mode, reg.gen, { jti: reg.jti, doorKeyRef: reg.doorKeyRef }),
+    );
     return c.json({ ok: true, data: { token, exp, mode } });
   } catch (err) {
     console.error("[checkin] door-pass issue failed:", err);
@@ -147,10 +188,13 @@ checkinOrganiser.post("/:id/checkin-roster", requireAuth, async (c) => {
 });
 
 checkinOrganiser.get("/:id/checkin-status", requireAuth, async (c) => {
-  const { eventId, error } = await loadOwnedEvent(c, c.req.param("id"));
+  const { event, eventId, error } = await loadOwnedEvent(c, c.req.param("id"));
   if (error) return error;
 
-  const checkins = readCheckins(eventId);
+  // Records another event's scanner sent here before /sync checked series stay on
+  // disk, but never count: the event's own series are known right here.
+  const own = new Set(event.series.map((s) => s.seriesId));
+  const checkins = readCheckins(eventId).filter((r) => own.has(r.seriesId));
   const uniqueTickets = new Set(checkins.map((r) => `${r.seriesId} ${r.edition}`));
   const bySeries: Record<string, number> = {};
   for (const key of uniqueTickets) {
@@ -169,17 +213,20 @@ checkinOrganiser.get("/:id/checkin-status", requireAuth, async (c) => {
 
 const checkin = new Hono<AppEnv>();
 
-type AuthorisedPass = { ok: true; signer?: string; mode: DoorMode; device?: string; gen: number };
+type AuthorisedPass = { ok: true; jti: string; signer?: string; mode: DoorMode; device?: string; gen: number; expired: boolean };
 
 const REVOKED = "Door pass revoked — ask the organiser for a new one";
 
-/** Verify X-Door-Pass and confirm it was issued for the URL's event. */
-function authorisePass(c: Context<AppEnv>): AuthorisedPass | { ok: false; resp: Response } {
+/**
+ * Verify X-Door-Pass and confirm it was issued for the URL's event. Only /sync passes
+ * `uploadAfterExpiry`: an expired pass may still upload there, and gets nothing back.
+ */
+function authorisePass(c: Context<AppEnv>, opts: { uploadAfterExpiry?: boolean } = {}): AuthorisedPass | { ok: false; resp: Response } {
   const token = c.req.header("X-Door-Pass");
   if (!token) {
     return { ok: false, resp: c.json({ ok: false, error: "Missing door pass" }, 401) };
   }
-  const verdict = verifyDoorPass(token);
+  const verdict = verifyDoorPass(token, opts);
   if (!verdict.ok) {
     const message =
       verdict.reason === "revoked" ? REVOKED
@@ -192,8 +239,10 @@ function authorisePass(c: Context<AppEnv>): AuthorisedPass | { ok: false; resp: 
   }
   return {
     ok: true,
+    jti: verdict.jti,
     mode: verdict.mode,
     gen: verdict.gen,
+    expired: verdict.expired === true,
     ...(verdict.signer ? { signer: verdict.signer } : {}),
     ...(verdict.device ? { device: verdict.device } : {}),
   };
@@ -224,6 +273,9 @@ async function outdatedPass(
 
 const DEVICE_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
+/** Shown as-is by scanners that predate SCANNER_OUTDATED_REASON; newer ones update themselves. */
+const OUTDATED = "This scanner needs updating - reload the page and try again";
+
 function deviceFrom(c: Context<AppEnv>, fallback?: unknown): string | null {
   const raw = c.req.header(SCANNER_DEVICE_HEADER) ?? (typeof fallback === "string" ? fallback : undefined);
   return raw && DEVICE_ID_RE.test(raw) ? raw : null;
@@ -241,7 +293,7 @@ const WRONG_DEVICE =
 function checkDevice(c: Context<AppEnv>, auth: AuthorisedPass, device: string | null, bindTo: string | null): Response | null {
   if (auth.mode !== "single") return null;
   if (!device) {
-    return c.json({ ok: false, error: "This scanner needs updating - reload the page and try again" }, 400);
+    return c.json({ ok: false, error: OUTDATED, reason: SCANNER_OUTDATED_REASON }, 400);
   }
   // The event comes from the caller: a helper typed on a bare Context cannot read
   // the route's `:eventId` (hono 4.13 types it `string | undefined` there).
@@ -259,7 +311,7 @@ checkin.get("/:eventId/pack", async (c) => {
   // set. Refusing it a pack is what keeps it from provisioning onto a shared door.
   const device = deviceFrom(c);
   if (!device) {
-    return c.json({ ok: false, error: "This scanner needs updating - reload the page and try again" }, 400);
+    return c.json({ ok: false, error: OUTDATED, reason: SCANNER_OUTDATED_REASON }, 400);
   }
   let refused: Response | null;
   try {
@@ -279,6 +331,7 @@ checkin.get("/:eventId/pack", async (c) => {
     const event = (auth.signer ? await getEventBySigner(eventId, auth.signer) : null)
       ?? await getEvent(eventId);
     if (!event) return c.json({ ok: false, error: "Event not found" }, 404);
+    rememberEventSeries(eventId, event.series.map((s) => s.seriesId));
 
     const series: CheckinSeries[] = [];
 
@@ -303,16 +356,12 @@ checkin.get("/:eventId/pack", async (c) => {
           ? await getOnChainEventAt(contract, onChainEventId).catch(() => null)
           : null;
         const slotCount = contract && onChain ? Number(onChain.nextSlot) : 0;
-        const owners = await mapWithConcurrency(
-          Array.from({ length: slotCount }, (_, slot) => slot),
-          SLOT_READ_CONCURRENCY,
-          async (slot) => {
-            if (!contract) return "";
-            const data = await getSlotDataAt(contract, onChainEventId, slot).catch(() => null);
-            return data?.owner?.toLowerCase() ?? "";
-          },
-        );
-        entry.slotOwners = owners;
+        entry.slotOwners = contract
+          ? await slotOwners(`${contractKey(contract)}|${onChainEventId}`, slotCount, async (slot) => {
+              const data = await getSlotDataAt(contract, onChainEventId, slot);
+              return data.owner ? data.owner.toLowerCase() : null;
+            })
+          : [];
         // Refunded sales (#645): keyed by the same (event, slot) the owners are,
         // on the same contract. The scanner checks these only after the
         // signature verifies, so listing a slot here never makes a forgery pass.
@@ -331,7 +380,7 @@ checkin.get("/:eventId/pack", async (c) => {
       eventDate: event.startDate,
       series,
       roster: readRoster(eventId) ?? undefined,
-      checkins: readCheckins(eventId),
+      checkins: ofEventSeries(eventId, readCheckins(eventId)),
       doorMode: auth.mode,
       generatedAt: new Date().toISOString(),
     };
@@ -343,7 +392,9 @@ checkin.get("/:eventId/pack", async (c) => {
 });
 
 checkin.post("/:eventId/sync", async (c) => {
-  const auth = authorisePass(c);
+  // A pass past its exp may still upload what its phones hold, for EXPIRED_PASS_UPLOAD_MS
+  // (owner, 2026-10-15) - as the event's active pass only - and gets only an ack.
+  const auth = authorisePass(c, { uploadAfterExpiry: true });
   if (!auth.ok) return auth.resp;
 
   const body = (await c.req.json().catch(() => null)) as CheckinSyncRequest | null;
@@ -355,15 +406,60 @@ checkin.post("/:eventId/sync", async (c) => {
   }
   const refused = checkDevice(c, auth, deviceFrom(c, body.deviceId), null);
   if (refused) return refused;
-  const outdated = await outdatedPass(c, c.req.param("eventId"), auth, "allow");
+  // An expired pass's keys must be read: "gen not behind" is the condition it uploads on.
+  const outdated = await outdatedPass(c, c.req.param("eventId"), auth, auth.expired ? "refuse" : "allow");
   if (outdated) return outdated;
 
   try {
-    const result = mergeCheckins(c.req.param("eventId"), body.checkins);
-    return c.json({ ok: true, data: result });
+    // Another event's records are dropped, not refused: a scanner from before
+    // per-event storage still gets its own event's records through.
+    const eventId = c.req.param("eventId");
+    const own = ofEventSeries(eventId, body.checkins);
+    const result = mergeCheckins(eventId, own);
+    if (auth.expired) {
+      const ack: CheckinUploadAck = { acknowledged: own.length };
+      return c.json({ ok: true, data: ack });
+    }
+    const checkins = ofEventSeries(eventId, result.checkins);
+    const conflicts = ofEventSeries(eventId, result.conflicts);
+    return c.json({ ok: true, data: { checkins, conflicts } });
   } catch (err) {
     console.error("[checkin] sync could not be recorded:", err);
     return c.json({ ok: false, error: "Check-ins could not be recorded" }, 503);
+  }
+});
+
+/**
+ * Later sales' door entries, after the scanner's cursor: each one's email and card name
+ * sealed to this pass's door key at fulfilment (lib/checkin/door-entries.ts). Refused
+ * like the pack - it is attendee data - when the account's keys moved since the pass was
+ * made, or cannot be read.
+ */
+checkin.get("/:eventId/entries", async (c) => {
+  const auth = authorisePass(c);
+  if (!auth.ok) return auth.resp;
+
+  const eventId = c.req.param("eventId");
+  const device = deviceFrom(c);
+  if (!device) {
+    return c.json({ ok: false, error: OUTDATED, reason: SCANNER_OUTDATED_REASON }, 400);
+  }
+  const refused = checkDevice(c, auth, device, null);
+  if (refused) return refused;
+  const outdated = await outdatedPass(c, eventId, auth, "refuse");
+  if (outdated) return outdated;
+
+  const rawSince = c.req.query("since") ?? "0";
+  const since = /^\d{1,12}$/.test(rawSince) ? Number(rawSince) : NaN;
+  if (!Number.isSafeInteger(since)) return c.json({ ok: false, error: "Expected ?since=<number>" }, 400);
+  try {
+    return c.json({ ok: true, data: readDoorEntriesPage(eventId, auth.jti, since) });
+  } catch (err) {
+    if (err instanceof DoorEntriesUnreadableError) {
+      return c.json({ ok: false, error: "New buyers can't be listed right now - scanning still works" }, 503);
+    }
+    console.error("[checkin] door entries read failed:", err);
+    return c.json({ ok: false, error: "New buyers can't be listed right now - scanning still works" }, 503);
   }
 });
 
@@ -378,13 +474,17 @@ checkin.post("/:eventId/claim", async (c) => {
   if (!auth.ok) return auth.resp;
 
   const device = deviceFrom(c);
-  if (!device) return c.json({ ok: false, error: "This scanner needs updating - reload the page and try again" }, 400);
+  if (!device) return c.json({ ok: false, error: OUTDATED, reason: SCANNER_OUTDATED_REASON }, 400);
   const refused = checkDevice(c, auth, device, null);
   if (refused) return refused;
   const outdated = await outdatedPass(c, c.req.param("eventId"), auth, "allow");
   if (outdated) return outdated;
 
   const body = (await c.req.json().catch(() => null)) as Partial<CheckinClaimRequest> | null;
+  const series = eventSeries(c.req.param("eventId"));
+  if (series && typeof body?.seriesId === "string" && !series.has(body.seriesId)) {
+    return c.json({ ok: false, error: "This ticket is not for this event", reason: SCANNER_WRONG_EVENT_REASON }, 400);
+  }
   const record: CheckinRecord = {
     seriesId: body?.seriesId as string,
     edition: body?.edition as number,

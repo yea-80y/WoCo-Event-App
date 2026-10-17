@@ -89,7 +89,8 @@ attendees submit.
    comes from them rather than from us.
 3. **Only ask for what you need.** Every field you add to an order form is data you are responsible
    for. Do not collect special category data (health, religion, ethnicity, sexuality) unless you have
-   a lawful basis and have thought carefully about it.
+   a lawful basis and have thought carefully about it. We keep such a question optional and never add
+   its answers to your mailing list.
 4. **Honour data subject rights.** Your attendees' access, correction and erasure requests come to
    you. You must respond within one month.
 5. **Only send marketing where you are permitted to.** See section 5.
@@ -100,7 +101,7 @@ attendees submit.
 8. **Look after the copies you download.** A guest list you export (for example as a CSV) and the
    list on your door scanner are your own copies, and we cannot reach them. Keep them secure, keep
    them only as long as you need them, and when we tell you an attendee's details have been erased,
-   delete that attendee from your copies and refresh your door list.
+   delete that attendee from any copies you've exported. Door scanners remove them automatically.
 
 ### What we do
 
@@ -119,21 +120,36 @@ Sites you publish through WoCo, and the embed widget on your own domain, collect
 **under your control, on your behalf**. You must ensure a privacy notice is available on those
 surfaces. We provide the tools; using them is your responsibility.
 
-**Your privacy notice.** We show a privacy notice in your name next to every checkout and in the
-footer of your event pages and sites. Until you review and confirm it in your dashboard, it is
-pre-filled from what we know about how the platform works and from your account, and you instruct
-us to show that version. It describes our platform accurately; it cannot know how you handle
-attendee details outside it, so the parts only you can answer are marked. It is not legal advice -
-confirming it is your statement, and keeping it true is your responsibility. Your confirmed notice
-is published publicly, and earlier versions stay retrievable after you change it.
+**Your privacy notice.** You must review and confirm your privacy notice in your dashboard
+before you can sell tickets. We pre-fill it from what we know about how the platform works and
+from your account. It describes our platform accurately. For the choices only you can make (who
+else sees attendee details, how long you keep order-form answers, how you use your mailing list)
+it offers the usual answer already selected - change any that do not describe how you work. Until you confirm it, your
+tickets are not on sale and we do not show the pre-filled version to anyone. Once you confirm
+it, we show it in your name next to every checkout and in the footer of your event pages and
+sites. It is not legal advice - confirming it is your statement, and keeping it true is your
+responsibility. Your confirmed notice is published publicly, and earlier versions stay
+retrievable after you change it.
 
 ---
 
 ## 5. Marketing your events
 
 You may only send marketing to people who have **consented**, or who fall within the PECR "soft
-opt-in" — they bought a ticket from you, you offered them an opt-out at that point, and you are
+opt-in" - they bought a ticket from you, you offered them an opt-out at that point, and you are
 promoting similar events.
+
+Your privacy notice sets which choice your buyers see at checkout. If you answer that you only
+email people about your own events, buyers are told you will email them about similar events, next
+to an unticked "Don't email me" box. **By choosing that answer, you warrant that you will email those
+buyers only about your own similar events.** If you also promote other people's events, choose the
+other answer: buyers then tick a box if they want your emails. Each buyer's choice keeps the basis it
+was made under if you change your answer later.
+
+**Your mailing list.** When an attendee joins your mailing list (by ticking "Email me", or by
+leaving "Don't email me" unticked), their email, name and the answers they gave (except sensitive
+ones, or ones about someone else) are added to it. You decide what to ask, and you're responsible for
+how you use your list.
 
 **When you upload a contact list, you warrant that you have a lawful basis for every address on it.**
 We take that warranty at face value; if it is wrong, the liability is yours.

@@ -25,8 +25,11 @@ function tone(freq: number, startMs: number, durMs: number, type: OscillatorType
 /** Must be called from a user gesture once (autoplay policy). */
 export function armAudio(): void {
   if (!ctx) {
+    // iOS Safari before 14.5 has only the prefixed constructor.
+    const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctor) return;
     try {
-      ctx = new AudioContext();
+      ctx = new Ctor();
     } catch {
       return;
     }

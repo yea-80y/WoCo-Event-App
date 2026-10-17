@@ -4,14 +4,22 @@ import {
   calculateBuyerFees,
   fetchOrderKey,
   orderFieldRequired,
+  isHealthField,
+  HEALTH_FIELD_NOTE,
   orderFormShown,
   orderFormCollectsEmail,
   ORDER_EMAIL_FIELD_ID,
-  MARKETING_CONSENT_NOTICE,
+  MARKETING_CURRENT_VERSION,
+  listKeeps,
+  marketingChoice,
+  marketingWording,
+  shownMarketingMode,
   TRANSACTIONAL_EMAIL_NOTICE,
   CHECKOUT_PRIVACY_SUMMARY,
   ORGANISER_NOTICE_LINK_LABEL,
   WOCO_POLICY_LINK_LABEL,
+  type MarketingMode,
+  type MarketingWording,
   type OrderField,
   type PaymentConfig,
 } from "@woco/shared";
@@ -25,6 +33,7 @@ import {
   buildOrderPayload,
   buildCheckoutBody,
   staleOrderKeyRef,
+  isMarketingRefusal,
   reserveOutcome,
   parseReturn,
   resolvePageUrl,
@@ -66,6 +75,10 @@ interface ClaimStatus {
   available: number;
   /** #644: the event was cancelled; `available` then reads 0. */
   cancelled?: boolean;
+  /** The marketing control the organiser's confirmed notice sets (soft opt-in, 2026-10-14). */
+  marketingMode?: MarketingMode;
+  /** The organiser's name as their notice gives it - the own-events sentence names them. */
+  marketingOrganiser?: string;
 }
 
 interface SeriesState {
@@ -76,11 +89,14 @@ interface SeriesState {
   /** Buy panel expanded (order form + email + quantity + consent). */
   buyOpen: boolean;
   quantity: number;
-  /** Email + consent live in state, not just the DOM: a quantity change
+  /** Email + marketing box live in state, not just the DOM: a quantity change
    *  re-renders the card to refresh the total, which would otherwise wipe
    *  what the buyer already typed/ticked. */
   email: string;
-  consent: boolean;
+  /** The marketing control as last RENDERED, and its box. Checkout sends this,
+   *  never a mode re-derived from a status that arrived after the render: what
+   *  is sent must be what the buyer saw. */
+  marketing: { mode: MarketingMode; ticked: boolean; wording?: MarketingWording };
   orderFormData: Record<string, string>;
   /** Seat hold placed when the buy panel opened (#568). */
   hold: Hold | null;
@@ -88,6 +104,8 @@ interface SeriesState {
   holdError: string | null;
   /** The hold ran out with the panel still open; waits for "try again" or a quantity change. */
   holdExpired: boolean;
+  /** The server's reason this series is not on sale at all; the panel stays closed. */
+  closed: string | null;
 }
 
 export class WocoTickets extends HTMLElement {
@@ -238,11 +256,12 @@ export class WocoTickets extends HTMLElement {
       buyOpen: false,
       quantity: 1,
       email: "",
-      consent: false,
+      marketing: { mode: "consent", ticked: false },
       orderFormData: {},
       hold: null,
       holdError: null,
       holdExpired: false,
+      closed: null,
     };
   }
 
@@ -318,6 +337,21 @@ export class WocoTickets extends HTMLElement {
     } catch {
       if (!cachedEvent) this.renderError("Failed to load event");
       // Cached data stays shown — background failure is silent
+    }
+  }
+
+  /** Re-read one series' claim-status (availability and the marketing mode). Keeps what is shown on a failure. */
+  private async refreshStatus(seriesId: string): Promise<void> {
+    if (!this.api) return;
+    try {
+      const r = await this.api.get<ClaimStatus>(`/api/events/${this.eventId}/series/${seriesId}/claim-status`);
+      const st = this.seriesStates.get(seriesId);
+      if (r.data && st) {
+        st.status = r.data;
+        cacheSet(embedCacheKey.claimStatus(this.eventId, seriesId), r.data, TTL_7D);
+      }
+    } catch {
+      // The server re-checks the mode at the next attempt anyway.
     }
   }
 
@@ -454,7 +488,7 @@ export class WocoTickets extends HTMLElement {
           st.buyOpen = false;
           st.orderFormData = {};
           st.email = "";
-          st.consent = false;
+          st.marketing = { mode: "consent", ticked: false };
           st.quantity = 1;
           st.error = null;
           this.updateSeries(sid);
@@ -500,10 +534,10 @@ export class WocoTickets extends HTMLElement {
         return;
       }
 
-      const consentAttr = el.getAttribute("data-marketing-consent");
-      if (consentAttr && el instanceof HTMLInputElement) {
-        const st = this.seriesStates.get(consentAttr);
-        if (st) st.consent = el.checked;
+      const marketingAttr = el.getAttribute("data-marketing-box");
+      if (marketingAttr && el instanceof HTMLInputElement) {
+        const st = this.seriesStates.get(marketingAttr);
+        if (st) st.marketing.ticked = el.checked;
         return;
       }
 
@@ -585,21 +619,31 @@ export class WocoTickets extends HTMLElement {
   }
 
   /**
-   * Point-of-collection notice + marketing opt-in.
+   * Point-of-collection notice + marketing control.
    *
    * The widget runs on the ORGANISER'S domain, where the buyer has never seen a
    * WoCo page — so the disclosure and the PECR opt-out have to travel with the
-   * form. Wording is kept byte-identical to the main checkout (shared/legal
-   * consent.ts) because the server stores it as Art. 7(1) evidence — the two
-   * surfaces must not drift, so both read the same shared constants.
+   * form. The control is the one the organiser's notice sets, from claim-status:
+   * consent mode's unticked "Email me", or own-events mode's sentence and
+   * unticked "Don't email me". Wording comes from the shared function the
+   * server rebuilds it with, naming what the list keeps from this event's
+   * questions, so the surfaces cannot drift.
    */
   private renderConsent(seriesId: string, st: SeriesState): string {
+    const mode = shownMarketingMode(st.status);
+    // Written back, as the quantity clamp is: checkout sends what this renders. A
+    // box ticked under one mode means the opposite in the other, so it starts unticked.
+    if (st.marketing.mode !== mode) st.marketing = { mode, ticked: false };
+    const name = typeof st.status?.marketingOrganiser === "string" ? st.status.marketingOrganiser : undefined;
+    const w = marketingWording(mode, MARKETING_CURRENT_VERSION[mode], name, listKeeps(this.event?.orderFields))!;
+    st.marketing.wording = w;
     return `
       <div class="consent-block">
         <div class="transactional-note">${this.esc(TRANSACTIONAL_EMAIL_NOTICE)}</div>
+        ${w.sentence ? `<div class="marketing-sentence">${this.esc(w.sentence)}</div>` : ""}
         <label class="consent-row">
-          <input type="checkbox" data-marketing-consent="${this.esc(seriesId)}" ${st.consent ? "checked" : ""} />
-          <span>${this.esc(MARKETING_CONSENT_NOTICE)}</span>
+          <input type="checkbox" data-marketing-box="${this.esc(seriesId)}" ${st.marketing.ticked ? "checked" : ""} />
+          <span>${this.esc(w.box)}</span>
         </label>
         <div class="privacy-note">
           ${this.esc(CHECKOUT_PRIVACY_SUMMARY)}
@@ -660,6 +704,7 @@ export class WocoTickets extends HTMLElement {
         <label class="form-field">
           <span class="form-label">${this.esc(f.label)}${orderFieldRequired(f, { canUseAccount: false }) ? ' <span class="required">*</span>' : ""}</span>
           ${inputHtml}
+          ${isHealthField(f) ? `<span class="field-note">${this.esc(HEALTH_FIELD_NOTE)}</span>` : ""}
         </label>
       `;
     }
@@ -739,7 +784,7 @@ export class WocoTickets extends HTMLElement {
     // refuses the sale either way; this is what the buyer reads.
     const cancelled = !!this.event?.cancelledAt || st?.status?.cancelled === true;
 
-    if (st?.buyOpen && this.isPayable(s) && avail !== 0 && !cancelled) {
+    if (st?.buyOpen && this.isPayable(s) && avail !== 0 && !cancelled && !st.closed) {
       return `
         <div class="series-card series-card--expanded" data-series="${this.esc(s.seriesId)}">
           ${header}
@@ -751,6 +796,8 @@ export class WocoTickets extends HTMLElement {
     let actionHtml: string;
     if (cancelled) {
       actionHtml = `<button class="claim-btn" disabled>Event cancelled</button>`;
+    } else if (st?.closed) {
+      actionHtml = `<button class="claim-btn" disabled>Not on sale yet</button><p class="error-msg">${this.esc(st.closed)}</p>`;
     } else if (!this.isPayable(s)) {
       // No live payment rail for this series (crypto-only, free, or a stale
       // cache entry from before prices were in the payload). Nothing can be
@@ -831,6 +878,13 @@ export class WocoTickets extends HTMLElement {
       // A refused replace has already released the old hold server-side.
       cur.hold = null;
       cur.holdError = result.message;
+    } else if (result.kind === "closed") {
+      // Not on sale at all: close the panel so nobody keeps typing details.
+      cur.hold = null;
+      cur.buyOpen = false;
+      cur.closed = result.message;
+      this.updateSeries(seriesId);
+      return;
     }
     this.refreshHold(seriesId);
   }
@@ -1016,7 +1070,7 @@ export class WocoTickets extends HTMLElement {
         seriesId,
         claimerEmail: email,
         quantity: st.quantity,
-        marketingConsent: st.consent,
+        marketing: marketingChoice(st.marketing.mode, st.marketing.ticked, "embed", st.marketing.wording),
         pageUrl: this.pageUrl,
         encryptedOrder,
         ...(encryptedOrder && sealedTo ? { encryptionKeyRef: sealedTo } : {}),
@@ -1035,6 +1089,16 @@ export class WocoTickets extends HTMLElement {
           await this.handleCheckout(seriesId, true);
           return;
         }
+      }
+      if (!resp.ok && isMarketingRefusal(resp as Record<string, unknown>)) {
+        // The organiser's notice now sets the other control, or the control's
+        // words changed. Nothing was charged: show the current one and let the
+        // buyer choose again.
+        await this.refreshStatus(seriesId);
+        st.error = (resp.error as string) || "The organiser's email options have changed. Check them below and continue.";
+        st.busy = false;
+        this.updateSeries(seriesId);
+        return;
       }
       if (!resp.ok || typeof url !== "string") {
         st.error = (resp.error as string) || "Failed to start checkout";

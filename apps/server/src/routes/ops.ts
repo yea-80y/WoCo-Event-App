@@ -45,6 +45,11 @@ import {
 import { liveRefundGateway } from "../lib/stripe/pending-refunds-live.js";
 import { acknowledgePartialRefund, listFlaggedSales, ticketSalesHealth } from "../lib/stripe/ticket-sales.js";
 import { reopenVoid } from "../lib/stripe/payout-ledger.js";
+import {
+  listOpenUnledgeredSales,
+  resolveUnledgeredSale,
+  unledgeredSalesHealth,
+} from "../lib/stripe/unledgered-sales.js";
 import { getEvent } from "../lib/event/service.js";
 import { getRecordedFeedSigner } from "../lib/event/feed-signer-record.js";
 import { getStripeAccount } from "../lib/stripe/accounts.js";
@@ -57,12 +62,13 @@ import { mergeParticipants, knownSubjects, participantsFor } from "../lib/social
 import { clearTallyCache } from "./social.js";
 import { isValidSenderId, liftSender, listForOps, stopSender } from "../lib/sender-pacing/index.js";
 import { attendeeLedgerStatus, setActiveBatch } from "../lib/attendee-batch/ledger.js";
-import { attendeeCheckoutRefusal, attendeeStamperAddress, isStoreInFlight } from "../lib/attendee-batch/writer.js";
+import { attendeeCheckoutRefusal, attendeeStamperAddress } from "../lib/attendee-batch/writer.js";
 import { refreshAttendeeBatch, registerAttendeeBatch } from "../lib/attendee-batch/admin.js";
-import { burnOrder } from "../lib/attendee-batch/burn.js";
-import { getOrderRecord, ledgerReadable, ordersForEmailHash, recordErasedBeforeStore } from "../lib/attendee-batch/ledger.js";
+import { eraseOrder } from "../lib/attendee-batch/erase.js";
+import { ledgerReadable, ordersForEmailHash } from "../lib/attendee-batch/ledger.js";
 import { hashEmail } from "../lib/event/claim-service.js";
-import { getHeldOrder, heldOrdersHealth, paidUnstored, releaseHeldOrder } from "../lib/attendee-batch/held-orders.js";
+import { heldOrdersHealth, paidUnstored } from "../lib/attendee-batch/held-orders.js";
+import { MAX_LIMIT as RETENTION_MAX_LIMIT, previewOrderRetention, runOrderRetention } from "../lib/attendee-batch/retention.js";
 
 const ops = new Hono<AppEnv>();
 
@@ -438,6 +444,36 @@ ops.post("/payouts/:sessionId/reopen", async (c) => {
 });
 
 /**
+ * GET /api/ops/payouts/unledgered
+ *
+ * Charges carrying our fee with no payout-ledger row (#805): the buyer may have
+ * no ticket, and the account's surplus is held. Each clears itself once the sale
+ * is ledgered or refunded in full; refund the buyer in Stripe, or resolve below.
+ */
+ops.get("/payouts/unledgered", (c) => {
+  return c.json({ ok: true, data: { open: listOpenUnledgeredSales(), health: unledgeredSalesHealth() } });
+});
+
+/**
+ * POST /api/ops/payouts/unledgered/:chargeId/resolve   { by, reason }
+ *
+ * The buyer was made whole another way (a chargeback the bank decided, a partial
+ * refund by hand), so the sale no longer holds its account's surplus. Moves no money.
+ */
+ops.post("/payouts/unledgered/:chargeId/resolve", async (c) => {
+  const chargeId = c.req.param("chargeId");
+  const body = (await c.req.json().catch(() => null)) as { by?: string; reason?: string } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  const reason = (body?.reason || "").trim().slice(0, 300);
+  if (!by) return c.json({ ok: false, error: "`by` is required — who actioned this?" }, 400);
+  if (!reason) return c.json({ ok: false, error: "`reason` is required — how was the buyer made whole?" }, 400);
+  const sale = resolveUnledgeredSale(chargeId, by, reason);
+  if (!sale) return c.json({ ok: false, error: "No open unledgered sale for that charge" }, 404);
+  console.log(`[ops] unledgered sale ${chargeId} (${sale.account}) resolved by ${by}: ${reason}`);
+  return c.json({ ok: true, data: { resolved: true, account: sale.account, health: unledgeredSalesHealth() } });
+});
+
+/**
  * POST /api/ops/events/:id/cancel   { by }
  *
  * The platform cancels an event and refunds every buyer (#644) — for an
@@ -627,37 +663,85 @@ ops.post("/attendee-batch/orders/:root/burn", async (c) => {
   const by = (body?.by || "").trim().slice(0, 100);
   const reason = (body?.reason || "").trim().slice(0, 500);
   if (!by || !reason) return c.json({ ok: false, error: "`by` and `reason` are required - who decided this, and why?" }, 400);
-  if (isStoreInFlight(root)) {
-    return c.json({ ok: false, error: "This order is being stored right now - retry in a minute and it will be burned" }, 409);
-  }
   try {
-    // A box still held (not yet on Swarm) is simply deleted: real deletion.
-    // Synchronous from here to the tombstone, so no store can start between.
-    const heldBefore = getHeldOrder(root);
-    const wasHeld = heldBefore !== null;
-    if (wasHeld && !releaseHeldOrder(root)) {
-      return c.json({ ok: false, error: "The held order could not be deleted - see compliancePersistence on /api/health" }, 503);
+    const out = await eraseOrder(root, { by: "request" });
+    switch (out.kind) {
+      case "in-flight":
+        return c.json({ ok: false, error: "This order is being stored right now - retry in a minute and it will be burned" }, 409);
+      case "hold-not-deleted":
+        return c.json({ ok: false, error: "The held order could not be deleted - see compliancePersistence on /api/health" }, 503);
+      case "not-found":
+        return c.json({ ok: false, error: "No attendee order with that reference" }, 404);
+      case "deleted-before-store":
+        console.log(`[ops] attendee order ${root} (held, never stored) deleted by ${by} (${reason})`);
+        return c.json({ ok: true, data: { root, state: "deleted-before-store", burnedAt: null } });
+      case "burned":
+        console.log(`[ops] attendee order ${root} burn by ${by} (${reason}): ${out.record.state}`);
+        return c.json({ ok: true, data: { root, state: out.record.state, burnedAt: out.record.burnedAt ?? null } });
     }
-    if (!getOrderRecord(root)) {
-      if (!wasHeld) return c.json({ ok: false, error: "No attendee order with that reference" }, 404);
-      const eventId = heldBefore!.eventId;
-      recordErasedBeforeStore(root, {
-        ...(eventId ? { eventId } : {}),
-        ...(heldBefore!.seriesId ? { seriesId: heldBefore!.seriesId } : {}),
-        ...(heldBefore!.emailHash ? { emailHash: heldBefore!.emailHash } : {}),
-        ...(eventId && getRecordedFeedSigner(eventId) ? { organiser: getRecordedFeedSigner(eventId)!.creatorAddress } : {}),
-      });
-      console.log(`[ops] attendee order ${root} (held, never stored) deleted by ${by} (${reason})`);
-      return c.json({ ok: true, data: { root, state: "deleted-before-store", burnedAt: null } });
-    }
-    const record = await burnOrder(root);
-    console.log(`[ops] attendee order ${root} burn by ${by} (${reason}): ${record.state}`);
-    return c.json({ ok: true, data: { root, state: record.state, burnedAt: record.burnedAt ?? null } });
   } catch (err) {
     console.error(`[ops] attendee order ${root} burn by ${by} failed:`, (err as Error).message);
     return c.json({ ok: false, error: (err as Error).message }, 502);
   }
 });
+
+/**
+ * GET /api/ops/attendee-batch/retention/preview?limit=N - what the order-answer
+ * retention sweep (#547) would do now, erasing nothing: every order not yet
+ * erased with its onchain end, period, due date and the action or the reason it
+ * is kept, plus totals and the SOC uploads a run would make. Read this before
+ * raising the limit or switching ORDER_RETENTION_SWEEP to live.
+ */
+ops.get("/attendee-batch/retention/preview", async (c) => {
+  const limit = retentionLimit(c.req.query("limit"));
+  if (limit === null) return c.json({ ok: false, error: `\`limit\` must be an integer from 1 to ${RETENTION_MAX_LIMIT}` }, 400);
+  const run = await previewOrderRetention(limit === undefined ? {} : { limit });
+  if (run.refused !== null) return c.json({ ok: false, error: run.refused }, 503);
+  const totals = { erase: 0, wait: 0, skip: 0, byReason: {} as Record<string, number> };
+  for (const it of run.items) {
+    totals[it.action]++;
+    if (it.reason) totals.byReason[it.reason] = (totals.byReason[it.reason] ?? 0) + 1;
+  }
+  const { mode, limit: runLimit, socUploads, paceMs } = run.summary;
+  return c.json({
+    ok: true,
+    data: {
+      mode,
+      limit: runLimit,
+      totals,
+      socUploads,
+      paceMs,
+      estimatedSeconds: Math.round((Math.max(0, totals.erase - 1) * paceMs) / 1000),
+      items: run.items,
+    },
+  });
+});
+
+/**
+ * POST /api/ops/attendee-batch/retention/run - body `{ by, limit? }`. A run now
+ * in the configured mode: dry-run decides and erases nothing; live erases up to
+ * `limit` due orders (default ORDER_RETENTION_LIMIT), oldest first, through the
+ * same erase as a request. First live run: limit 1, on an order the preview
+ * shows first, then check it reads erased before raising the limit.
+ */
+ops.post("/attendee-batch/retention/run", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as { by?: string; limit?: unknown } | null;
+  const by = (body?.by || "").trim().slice(0, 100);
+  if (!by) return c.json({ ok: false, error: "`by` is required" }, 400);
+  const limit = retentionLimit(body?.limit === undefined ? undefined : String(body.limit));
+  if (limit === null) return c.json({ ok: false, error: `\`limit\` must be an integer from 1 to ${RETENTION_MAX_LIMIT}` }, 400);
+  console.log(`[ops] order retention run by ${by} (limit ${limit ?? "default"})`);
+  const run = await runOrderRetention(limit === undefined ? {} : { limit });
+  if (run.refused !== null) return c.json({ ok: false, error: run.refused }, run.why === "stores" ? 503 : 409);
+  return c.json({ ok: true, data: { summary: run.summary, due: run.items.filter((it) => it.daysOverdue !== null) } });
+});
+
+/** undefined = use the configured limit; null = not a valid limit. */
+function retentionLimit(raw: string | undefined): number | undefined | null {
+  if (raw === undefined || raw === "") return undefined;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 && n <= RETENTION_MAX_LIMIT ? n : null;
+}
 
 /**
  * POST /api/ops/attendee-batch/lookup — body `{ email }` or `{ emailHash }`.

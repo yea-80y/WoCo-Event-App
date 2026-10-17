@@ -217,8 +217,8 @@ Sepolia; also deployed on Arbitrum One, server not switched yet), `WoCoEventV2` 
 actually deployed where — treat those files as the source of truth for addresses.
 [DEPLOYMENTS.md](./DEPLOYMENTS.md) is the readable summary.
 
-`contracts-stylus/` (Rust/WASM) **is** in this repo, and holds the like-aggregator that was
-superseded along with the EAS social rail.
+The Rust/WASM Stylus like-aggregator, superseded along with the EAS social rail, left the tree on
+2026-10-17; its source is in git history at `9c514dd5` (`contracts-stylus/`).
 
 ---
 

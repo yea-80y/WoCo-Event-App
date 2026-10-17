@@ -27,7 +27,8 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   unconditional. **Ticket emails are transactional — NO unsubscribe on them, ever.**
   Marketing broadcasts (`/api/broadcasts/jobs`, `kind: "marketing"`; the old
   `/api/marketing/broadcast` now answers 410) also hash-check every recipient against the stored list (the
-  import wizard's consent warranty is the only path to a sendable address); footer insertion
+  import wizard's consent warranty, or the buyer's own checkout record, is the only path to a
+  sendable address); footer insertion
   only honours a document-final `</body>` (a mid-doc `</body>` can't hide it).
 - **FAILS CLOSED on misconfiguration**: refuses to send if `PUBLIC_API_BASE` (unsub links) or
   `MARKETING_POSTAL_ADDRESS` (CAN-SPAM §7704(a)(5)) is unset. Sending non-compliant mail is
@@ -63,10 +64,47 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   the payload parses; JSON can never start with `0x1f8b`), so a box sealed uncompressed (no
   `CompressionStream`) still opens — do not replace that sniff with a version check. Columnar encoding was measured and
   rejected: it buys ~6% once gzip has already collapsed the repeated keys.
-- The whole list is re-sealed and re-uploaded on EVERY change (`commitList`). That is fine
-  at the 20k cap — one ~1MB atomic write, single writer, single reader — and is deliberately
-  NOT the paged/append-only shape the public events directory needs. Different problem:
-  one private blob rewritten by its owner vs. a many-writer public index.
+- The whole list is re-sealed and re-uploaded on EVERY change (`commitList`, and the buyer
+  sync below). That is fine at the 20k cap - one ~1MB atomic write, one owner, two writers in
+  their browser - and is deliberately NOT the paged/append-only shape the public events
+  directory needs. Different problem: one private blob rewritten by its owner vs. a
+  many-writer public index. The two writers share a tab lock, and the sync merges onto a
+  fresh re-read (below).
+- **OPTED-IN BUYERS JOIN THE LIST AUTOMATICALLY** (2026-10-14, replaced the manual "Add from
+  your events"). In the organiser's browser - the buyer's email exists only in their sealed
+  order, which the retention sweep deletes months after the event (#547), so it runs whenever
+  the organiser uses WoCo: on the Audience screen (open + "Check now") and in the background on
+  organiser home and event pages, at most once an hour per device (the last start is kept in
+  localStorage), only on an account already unlocked with a session - a background run never
+  prompts; a "Check now" tap may ask the organiser to confirm it's them. `audience-sync.ts`
+  (rules, pure + tested) / `audience-sync.svelte.ts` (wiring).
+  - **Cost** (Fable sign-off 2026-10-14): events that ended more than 13 months ago (longest
+    retention + 1) are skipped with no request; each other event costs one call to
+    `/api/events/:id/orders/count` (a ledger read per series), and `/orders` is read only when
+    that count moved. An order that will not open on the device is remembered in the
+    per-organiser watermark, not retried every run.
+  - Only buyers with a checkout record (consent or soft opt-in), and **never an address in
+    `/check`'s `suppressed`** (unsubscribed, declined, bounced, complained, manual), even one
+    that also holds a record. Kept answers only, never a health answer (`attendee-drain.ts`).
+  - **Deleted contacts stay deleted**: every delete, with or without "also unsubscribe", adds a
+    tombstone to the sealed payload's `removed` - `{ h, at }`, `h` = SHA-256 over the organiser's
+    address and the lowercased email (not a plain email hash; the address itself is not kept),
+    `at` = when it was deleted. The sync re-adds a deleted contact only on an "Email me" consent
+    recorded AFTER the deletion (`/check`'s `consentedAt`), which clears the tombstone; a soft
+    opt-in after it does not (Fable sign-off 2026-10-14 recommendation). A CSV import clears it
+    for the addresses it adds back. No automatic pruning. Sealed with the list, never sent to the
+    server. Absent on older lists = none.
+  - **Read-merge-write**: the list is re-read and opened just before the write and merged onto
+    that; no re-read, no write. Who said yes is asked again after the re-read, and only an address
+    both answers clear is added. The write carries the re-read list's `updatedAt` and the server
+    refuses it if the list moved since (`ifUpdatedAt`, 409 `LIST_CHANGED`), so a delete in another
+    tab or device is never undone; refused once, it retries once from a fresh re-read. The seal
+    key is taken at write time and, before the upload, re-confirmed against a fresh read of the
+    key-ring anchor (#186). Nothing changed, nothing written.
+  - **The Audience screen's own saves** use the same compare-and-swap: each edit (add, change,
+    delete) is applied to the list as re-read inside the lock, never to the tab's own copy, so a
+    stale tab cannot bring back a deleted contact or wipe a tombstone; refused, the screen reloads
+    and says so.
 - CSV IMPORT: no source platform (Skiddle/Fatsoma/RA/Eventbrite) publishes an export column
   schema — RA's is promoter-selected per export, so there is no fixed shape at all. Header
   auto-mapping in `csv-import.ts` is therefore a scored GUESS and the wizard always lets a
@@ -197,22 +235,26 @@ Fee/pricing arithmetic lives in `docs/PRICING_AND_EMAIL.md`. Legal surface lives
   - **Recipients must be proven ticket-holders** (#387). This is load-bearing: with the event lane
     accepting arbitrary addresses, the crossing would be an unsubscribe-bypass rather than a
     service. Do not decouple these two.
-- **CONSENT AT CHECKOUT IS BUILT AND WIRED ON EVERY PATH.** The field is `marketingConsent`, NOT
-  `marketingOptIn` — grepping the latter finds nothing and has already produced one wrong "this
-  does not exist" write-up. Wording + version live in `packages/shared/src/legal/consent.ts`
-  (`MARKETING_CONSENT_NOTICE`, `MARKETING_CONSENT_VERSION`); client and server read the SAME
-  constant so the stored evidence matches what was shown. Unticked by default (Planet49, C-673/17).
-  Tri-state: grant → `recordConsent` (`.data/marketing-consent.json`); refusal → `suppressOrg`,
-  so "no" needs no new enforcement path; ABSENT means the order form was never shown, i.e. never
-  asked, and records nothing. Card checkout is the only path (the free/wallet claim rail was
-  deleted, #207): the answer rides in session metadata (`"1"`/`"0"`) and is recorded at
-  fulfilment (`lib/stripe/fulfilment.ts` → `lib/marketing/consent-capture.ts`), only once a
-  ticket has landed — an abandoned checkout must not leave a permission behind.
-- THREE CONSENT STATES, not two: `contactConsentState` in `packages/shared/src/marketing/types.ts`
-  (`opted-in` | `imported` | `unsubscribed`), suppression outranking any earlier grant.
-  `imported` is the one that matters — mailable only on the strength of the import warranty, with
-  no per-person evidence. `/check` returns `consented` so the UI can draw the distinction; own
-  organiser scope only, so it cannot probe consent given to anyone else.
+- **TWO CHECKOUT MODES, BUILT AND WIRED ON EVERY SURFACE (2026-10-14).** The organiser's CONFIRMED
+  notice sets the mode (`marketingBasis: "own-events"`, absent = consent): consent mode's unticked
+  "Email me", or own-events mode's sentence + unticked "Don't email me" (PECR reg. 22(3) soft
+  opt-in). claim-status returns `marketingMode`; OrderForm, StripePayPanel and the embed render it
+  and send `marketing: { mode, ticked, version, surface }` (the old `marketingConsent` field is
+  gone); create-checkout refuses a mode the notice no longer sets (409 `MARKETING_MODE_CHANGED`),
+  before anything is held or charged. Wording + versions live in
+  `packages/shared/src/legal/consent.ts` (`MARKETING_WORDING`); the server stores the entry for the
+  mode + version the page sent, never page text. Never pre-ticked (Planet49, C-673/17). The choice
+  rides in tagged session metadata (`marketingMode/Ticked/Version/Surface`) and is recorded at
+  fulfilment (`lib/stripe/fulfilment.ts` → `lib/marketing/consent-capture.ts`), only once a ticket
+  has landed. Consent → record + lift a `declined`; soft opt-in → a `soft-opt-in` record that never
+  lifts any suppression and never replaces a consent record; no → `suppressOrg("declined")`; no keys
+  → nothing.
+- FOUR CONSENT STATES: `contactConsentState` in `packages/shared/src/marketing/types.ts`
+  (`opted-in` | `soft-opt-in` | `imported` | `unsubscribed`), suppression outranking everything,
+  consent outranking soft opt-in. `imported` is the one that matters — mailable only on the
+  strength of the import warranty, with no per-person evidence. `/check` returns `consented` and
+  `softOptIn` (the basis per address); own organiser scope only, so it cannot probe anyone else's.
+  A soft-opt-in recipient's footer says they bought a ticket and did not opt out.
 
 ---
 
@@ -233,6 +275,8 @@ apps/web/src/lib/creator/audience/{AudienceScreen,CsvImportWizard,ColumnMapper,C
 packages/shared/src/legal/consent.ts          # the wording, versioned — single source of truth
 apps/web/src/lib/creator/audience/csv-import.ts # PURE: header scoring, name split, consent,
                                                 # manifest. All import logic lives here.
+apps/web/src/lib/creator/audience/audience-sync.ts # PURE: the automatic buyer add's rules
+apps/web/src/lib/creator/audience/audience-sync.svelte.ts # its wiring: syncAudience(), the tab lock
 apps/web/src/lib/api/marketing.ts             # client wrappers
 packages/shared/src/marketing/types.ts        # MarketingContact, list payload, domain types
 packages/shared/src/crypto/compress.ts        # gzip over CompressionStream (no deps)
@@ -251,7 +295,7 @@ These `.data` stores MUST survive server restarts:
 
 - `.data/marketing-suppression.json` — **losing it = emailing people who unsubscribed, a
   legal breach**
-- `.data/marketing-consent.json` — **losing it = no Art. 7(1) evidence for any checkout opt-in.
+- `.data/marketing-consent.json` — **losing it = no evidence for any checkout opt-in or soft opt-in.
   The contacts survive in the organiser's sealed list; the proof they agreed does not**
 - `.data/marketing-lists.json`
 - `.data/marketing-domains.json`

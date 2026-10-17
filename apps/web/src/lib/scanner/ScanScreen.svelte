@@ -8,7 +8,9 @@
    * is a CHECKING state, and a grey COULDN'T CONFIRM card that is deliberately
    * neither green nor red: the ticket may be fine, but it is not admitted yet.
    */
+  import type { RosterEntry } from "@woco/shared";
   import { scanner, type ScanOutcome } from "./store.svelte.js";
+  import { attendeeName } from "./attendee-search.js";
   import { armAudio, feedbackSuccess, feedbackDuplicate, feedbackInvalid, feedbackCantConfirm } from "./feedback.js";
   import QrCamera from "./QrCamera.svelte";
 
@@ -80,7 +82,8 @@
   }
 </script>
 
-<svelte:window onpointerdown={armAudio} />
+<!-- iOS unlocks audio on the END of a touch, not its start: arm on both. -->
+<svelte:window onpointerdown={armAudio} ontouchend={armAudio} />
 
 <div class="scan-screen">
   <QrCamera onScan={(data) => void handlePayload(data)} />
@@ -90,8 +93,18 @@
       <span class="verdict-title">CHECKING…</span>
       <span class="verdict-detail">Hold on - asking WoCo whether this ticket is already in</span>
     </div>
+  {:else if scanner.lookingUp}
+    <div class="verdict checking" aria-live="polite">
+      <span class="verdict-title">CHECKING…</span>
+      <span class="verdict-detail">Looking for tickets sold since this scanner last updated</span>
+    </div>
   {:else if outcome}
     {@const kind = outcome.kind}
+    {#snippet who(attendee: RosterEntry | undefined)}
+      {#if attendee?.name || attendee?.email}
+        <span class="verdict-who">{attendeeName(attendee)}</span>
+      {/if}
+    {/snippet}
     <button
       class="verdict"
       class:ok={kind === "checked-in"}
@@ -102,32 +115,24 @@
     >
       {#if outcome.kind === "checked-in"}
         <span class="verdict-title">CHECKED IN</span>
-        {#if outcome.attendee?.name || outcome.attendee?.email}
-          <span class="verdict-who">{outcome.attendee.name ?? outcome.attendee.email}</span>
-        {/if}
+        {@render who(outcome.attendee)}
         <span class="verdict-detail">{outcome.seriesName} · #{String(outcome.edition).padStart(3, "0")}</span>
         <span class="verdict-badge">✓ on-chain signature verified</span>
       {:else if outcome.kind === "duplicate"}
         <span class="verdict-title">ALREADY IN</span>
-        {#if outcome.attendee?.name || outcome.attendee?.email}
-          <span class="verdict-who">{outcome.attendee.name ?? outcome.attendee.email}</span>
-        {/if}
+        {@render who(outcome.attendee)}
         <span class="verdict-detail">
           #{String(outcome.edition).padStart(3, "0")} · {formatTime(outcome.record.at)}
           {outcome.record.method === "manual" ? " (manual)" : ""}
         </span>
       {:else if outcome.kind === "refunded"}
         <span class="verdict-title">REFUNDED</span>
-        {#if outcome.attendee?.name || outcome.attendee?.email}
-          <span class="verdict-who">{outcome.attendee.name ?? outcome.attendee.email}</span>
-        {/if}
+        {@render who(outcome.attendee)}
         <span class="verdict-detail">{outcome.seriesName} · #{String(outcome.edition).padStart(3, "0")}</span>
         <span class="verdict-detail">The payment for this ticket was refunded or reversed. Not valid for entry.</span>
       {:else if outcome.kind === "cant-confirm"}
         <span class="verdict-title">COULDN'T CONFIRM</span>
-        {#if outcome.attendee?.name || outcome.attendee?.email}
-          <span class="verdict-who">{outcome.attendee.name ?? outcome.attendee.email}</span>
-        {/if}
+        {@render who(outcome.attendee)}
         {#if outcome.edition}
           <span class="verdict-detail">{outcome.seriesName} · #{String(outcome.edition).padStart(3, "0")}</span>
         {/if}

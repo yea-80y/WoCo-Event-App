@@ -336,6 +336,174 @@ test("never refuses without the alarm: every refusing reading is an alarm on /ap
 });
 
 // ---------------------------------------------------------------------------
+// Chain truth: our bee's batch store judges the batch too (2026-10-16)
+// ---------------------------------------------------------------------------
+
+type ChainPass = {
+  etherna?: () => Promise<Record<string, unknown>>;
+  /** This pass's chainstate; null = the chainstate read failed. */
+  chain: { block: number; chainTip: number } | null;
+  platform: "listed" | "absent" | "throws";
+  own?: "listed" | "absent";
+};
+
+/** Etherna's reading with nothing to alarm on, so the chain alone decides the section's colour. */
+const healthy = stamp({ batchTTL: 30 * 86_400, utilization: 1 });
+
+function chainReaders(o: ChainPass) {
+  return {
+    deposit: async () => 10n ** 18n,
+    beeStamp: async () => ({ ...LIVE_STAMP }),
+    chainstate: async () => {
+      if (!o.chain) throw Object.assign(new Error("chainstate 503"), { status: 503 });
+      return o.chain;
+    },
+    ethernaStamp: o.etherna ?? healthy,
+    beeBatch: async (id: string) => {
+      if (id === WOCO_BATCH) {
+        if ((o.own ?? "listed") === "absent") notFound();
+        return { batchID: id, batchTTL: 1_000 };
+      }
+      if (o.platform === "throws") refused();
+      if (o.platform === "absent") notFound();
+      return { batchID: id, batchTTL: 86_400 };
+    },
+  } as unknown as Parameters<typeof probes.refreshPostage>[0];
+}
+
+const pass = (o: ChainPass) => probes.refreshPostage(chainReaders(o), () => {});
+
+/** Two witnessed passes: the second 404 comes after our bee passed the first pass's tip, and the tip moved. */
+async function chainGone(): Promise<void> {
+  await pass({ chain: { block: 100, chainTip: 100 }, platform: "absent" });
+  await pass({ chain: { block: 100, chainTip: 110 }, platform: "absent" });
+}
+
+test("chain: a batch our bee lists, with Etherna healthy, is written to - and its chain TTL shows", async () => {
+  await pass({ chain: { block: 100, chainTip: 100 }, platform: "listed" });
+  assert.equal(route().batchId, PLATFORM);
+  const e = probes.postageHealth().etherna;
+  assert.equal(e.chain.listed, true);
+  assert.equal(e.chain.ok, true);
+  assert.equal(e.chain.batchTTL, 86_400);
+  assert.equal(e.ok, true, "the baseline is green, so the red below is the chain's");
+});
+
+test("chain: one 404 is not enough", async () => {
+  await pass({ chain: { block: 100, chainTip: 100 }, platform: "absent" });
+  assert.equal(route().batchId, PLATFORM);
+  assert.equal(probes.postageHealth().etherna.chain.confirmed, false);
+});
+
+test("chain: two witnessed 404s refuse even while Etherna calls the batch healthy - and health is red", async () => {
+  await chainGone();
+  assertRefused(() => route(), /not on chain/);
+  const e = probes.postageHealth().etherna;
+  assert.equal(e.chain.ok, false);
+  assert.equal(e.ok, false, "never refuses without the alarm");
+  assert.equal(e.chain.confirmed, true);
+  assert.equal(probes.ethernaPlatformBatchSnapshot().source, "chain");
+});
+
+test("chain: a second 404 before our bee has passed the first tip is not a witness", async () => {
+  await pass({ chain: { block: 95, chainTip: 100 }, platform: "absent" });
+  await pass({ chain: { block: 99, chainTip: 110 }, platform: "absent" });
+  assert.equal(route().batchId, PLATFORM);
+});
+
+test("chain: a bee a little behind on every pass still confirms - the first tip is kept, never chased", async () => {
+  await pass({ chain: { block: 95, chainTip: 100 }, platform: "absent" });
+  await pass({ chain: { block: 99, chainTip: 110 }, platform: "absent" });
+  await pass({ chain: { block: 105, chainTip: 120 }, platform: "absent" });
+  assertRefused(() => route(), /not on chain/);
+});
+
+test("chain: a chain tip that has not moved is not a witness (a stalled RPC)", async () => {
+  await pass({ chain: { block: 100, chainTip: 100 }, platform: "absent" });
+  await pass({ chain: { block: 100, chainTip: 100 }, platform: "absent" });
+  assert.equal(route().batchId, PLATFORM);
+});
+
+test("chain: a batch store missing our OWN live batch cannot tell, and counts nothing", async () => {
+  await pass({ chain: { block: 100, chainTip: 100 }, platform: "absent", own: "absent" });
+  await pass({ chain: { block: 100, chainTip: 110 }, platform: "absent", own: "absent" });
+  assert.equal(route().batchId, PLATFORM);
+  assert.equal(probes.postageHealth().etherna.chain.listed, null);
+});
+
+test("chain: the incident - Etherna says usable again while the chain still has no batch: still refused", async () => {
+  await chainGone();
+  await pass({ etherna: healthy, chain: { block: 120, chainTip: 130 }, platform: "absent" });
+  assertRefused(() => route(), /not on chain/);
+});
+
+test("chain: an Etherna 200 while the chain cannot be read does not reopen a chain-dead batch", async () => {
+  await chainGone();
+  await pass({ etherna: healthy, chain: { block: 120, chainTip: 130 }, platform: "throws" });
+  assertRefused(() => route(), /not on chain/);
+  await pass({ etherna: healthy, chain: null, platform: "listed" });
+  assertRefused(() => route(), /not on chain/);
+});
+
+test("chain: only the chain listing the batch again clears it - and Etherna's own 404 still refuses", async () => {
+  await chainGone();
+  await pass({ etherna: healthy, chain: { block: 120, chainTip: 130 }, platform: "listed" });
+  assert.equal(route().batchId, PLATFORM);
+  await pass({ etherna: healthy, chain: { block: 140, chainTip: 150 }, platform: "absent" });
+  assert.equal(route().batchId, PLATFORM, "a listing forgets the old 404: counting starts again");
+  probes.__resetHealthProbes();
+  await chainGone();
+  await pass({ etherna: async () => notFound(), chain: { block: 120, chainTip: 130 }, platform: "listed" });
+  assertRefused(() => route(), /Etherna/);
+  assert.equal(probes.ethernaPlatformBatchSnapshot().source, "etherna");
+});
+
+test("chain: the production state - Etherna /stamps 503 and the batch gone from chain - refuses, and health is red", async () => {
+  const down = async () => {
+    throw Object.assign(new Error("GET /stamps/x → 503"), { status: 503 });
+  };
+  await pass({ etherna: down, chain: { block: 100, chainTip: 100 }, platform: "absent" });
+  await pass({ etherna: down, chain: { block: 100, chainTip: 110 }, platform: "absent" });
+  assertRefused(() => route(), /not on chain/);
+  assert.equal(probes.postageHealth().etherna.ok, false, "red, not unknown");
+});
+
+test("chain: while our bee cannot vouch, Etherna's own 404 keeps a chain verdict from ageing out", async () => {
+  await chainGone();
+  const atChain = probes.ethernaPlatformBatchSnapshot().at!;
+  await new Promise((r) => setTimeout(r, 5));
+  await pass({ etherna: async () => notFound(), chain: null, platform: "listed" });
+  const snap = probes.ethernaPlatformBatchSnapshot();
+  assert.ok(snap.at! > atChain, "refreshed by Etherna's 404");
+  assert.equal(snap.source, "chain");
+  const staleForTheOldReading = atChain + 3 * probes.ETHERNA_PROBE_INTERVAL_MS;
+  assert.match(router.platformBatchRefusal(PLATFORM, snap, staleForTheOldReading) ?? "", /not on chain/);
+});
+
+test("chain: a chain that cannot be read leaves today's rule exactly as it was", async () => {
+  await pass({ etherna: async () => notFound(), chain: { block: 100, chainTip: 100 }, platform: "throws" });
+  assertRefused(() => route(), /Etherna/);
+  probes.__resetHealthProbes();
+  await pass({ etherna: healthy, chain: { block: 100, chainTip: 100 }, platform: "throws" });
+  assert.equal(route().batchId, PLATFORM);
+});
+
+test("chain: a 404 read without this pass's chain position is not counted", async () => {
+  await pass({ chain: null, platform: "absent" });
+  await pass({ chain: { block: 100, chainTip: 110 }, platform: "absent" });
+  assert.equal(route().batchId, PLATFORM, "the first counted 404 is the second pass");
+  await pass({ chain: { block: 110, chainTip: 120 }, platform: "absent" });
+  assertRefused(() => route(), /not on chain/);
+});
+
+test("chain: a different platform batch starts its own count", async () => {
+  await pass({ chain: { block: 100, chainTip: 100 }, platform: "absent" });
+  process.env.ETHERNA_PLATFORM_BATCH = OTHER_PLATFORM;
+  await pass({ chain: { block: 100, chainTip: 110 }, platform: "absent" });
+  assert.equal(route().batchId, OTHER_PLATFORM);
+});
+
+// ---------------------------------------------------------------------------
 // What callers answer
 // ---------------------------------------------------------------------------
 
@@ -477,7 +645,7 @@ test("every module that routes a write also handles PlatformBatchUnavailable", (
  * single one turns this red; adding one means updating the number on purpose.
  */
 const REFUSAL_HANDLERS: Record<string, number> = {
-  "routes/swarm.ts": 2, // /soc, /bytes
+  "routes/swarm.ts": 3, // /soc, its Etherna failover (#912), /bytes
   "routes/events.ts": 4, // update-meta image, create stream error code, legacy update-meta + delete
   "routes/site.ts": 1, // legacy single-site deploy
   "routes/sites.ts": 7, // siteFeedDest, siteFeedDestFromDirectory, upload-image, publish, add-event, remove-event, deploy

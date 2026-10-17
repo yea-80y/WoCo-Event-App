@@ -13,9 +13,9 @@ import { activeEmailProvider } from "./send.js";
 /**
  * Has this organiser already reached this contact through us? Either the
  * pacing ledger holds proof (accepted, and not suppressed an hour later), or
- * the person opted in at one of this organiser's own checkouts — an address
- * they typed to receive a ticket we then sent, which a hard bounce would since
- * have suppressed. Per organiser only: proof for one sender says nothing about
+ * the person said yes at one of this organiser's own checkouts (consent or the
+ * soft opt-in, both `source: "checkout"`) — an address they typed to receive a
+ * ticket we then sent, which a hard bounce would since have suppressed. Per organiser only: proof for one sender says nothing about
  * another's list.
  *
  * One definition, read by both the upload classification and `/check`, so the

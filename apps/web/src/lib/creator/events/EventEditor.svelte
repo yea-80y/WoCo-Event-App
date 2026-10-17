@@ -113,17 +113,12 @@
       <input type="datetime-local" bind:value={endDate} min={minEnd} />
     </label>
   </div>
-
-  <label>
-    <span>Location</span>
-    <input type="text" bind:value={location} placeholder="Venue or online link" />
-  </label>
 </div>
 
 <LocationPicker bind:geo bind:location />
 <GenreTagPicker bind:tags />
 
-<TicketSeriesEditor bind:series bind:cryptoRecipientMissing bind:importedTiers {startDate} />
+<TicketSeriesEditor bind:series bind:cryptoRecipientMissing bind:importedTiers {startDate} {endDate} />
 
 {#if FEATURES.cryptoPaymentsAllowed}
   <fieldset class="claim-mode-section">

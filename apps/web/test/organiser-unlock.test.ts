@@ -42,7 +42,7 @@ const GATED: Array<[file: string, signature: string, action: string]> = [
   ["creator/dashboard/CheckinPanel.svelte", "async function generatePass", "pushCheckinRoster("],
   ["creator/dashboard/CheckinPanel.svelte", "async function refreshRoster", "pushCheckinRoster("],
   // #186: the pass link needs the account's keys - asked for only on "Show door pass".
-  ["creator/dashboard/CheckinPanel.svelte", "async function showPass", "doorPassRosterKeyB64url("],
+  ["creator/dashboard/CheckinPanel.svelte", "async function showPass", "doorPassSecretB64url("],
   ["creator/builder/tabs/EventsTab.svelte", "async function persistToggle", "await write()"],
   ["creator/sites/SiteEventsManager.svelte", "async function toggle", "SiteEvent(siteId"],
   ["creator/builder/DomainLinker.svelte", "async function connect", "registerSiteDomain("],
@@ -74,7 +74,7 @@ test("the gate runs only where a row says - never on page open (onMount, $effect
 
 test("the door pass link is shown on page open only from keys already open", () => {
   const panel = read("../src/lib/creator/dashboard/CheckinPanel.svelte");
-  assert.match(before(panel, "async function showPass", "doorPassRosterKeyB64url("), /if \(ask\) await auth\.ensureOrganiserUnlock\(\);/);
+  assert.match(before(panel, "async function showPass", "doorPassSecretB64url("), /if \(ask\) await auth\.ensureOrganiserUnlock\(\);/);
   assert.match(panel, /if \(stored\) void showPass\(\);/, "page open: no ask");
   assert.match(panel, /onclick=\{\(\) => void showPass\(true\)\}/);
 });

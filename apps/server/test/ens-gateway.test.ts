@@ -61,7 +61,7 @@ const TTL = 600;
  * configured, nothing deployed, so a `contenthash` read signs empty. The rule's own
  * tests are in sub-ens-woco-built-rule.test.ts.
  */
-const NO_APEX = { apexHash: () => null, lookupBuilt: () => null };
+const NO_APEX = { apexHash: () => null, lookupBuilt: () => null, scannerBuild: async () => null };
 const NOW = 1_800_000_000;
 
 const CONFIG: CcipHandlerConfig = {

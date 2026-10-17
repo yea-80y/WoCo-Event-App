@@ -12,7 +12,7 @@
  * Callers cannot opt out of any of it; see marketing-send.ts.
  */
 
-import { WOCO_COMPANY_LINE } from "@woco/shared";
+import { WOCO_COMPANY_LINE, type MarketingBasis } from "@woco/shared";
 
 export interface FooterContext {
   /** Organiser's brand name, as supplied — escaped here, never pre-escaped. */
@@ -20,6 +20,18 @@ export interface FooterContext {
   unsubUrl: string;
   /** Sender's physical postal address, one line. */
   postalAddress: string;
+  /**
+   * The basis this organiser holds for this recipient. A soft-opt-in contact
+   * never opted in, so their footer must not say they did (2026-10-14).
+   */
+  basis?: MarketingBasis | null;
+}
+
+/** Why this person is receiving it - true to the basis their record rests on. */
+function provenance(name: string, basis: MarketingBasis | null | undefined): string {
+  return basis === "soft-opt-in"
+    ? `You're receiving this because you bought a ticket from ${name} and didn't opt out.`
+    : `You're receiving this because you opted in to updates from ${name}.`;
 }
 
 /**
@@ -49,7 +61,7 @@ export function footerHtml(ctx: FooterContext): string {
   return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"><tr><td align="center">
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="max-width:600px;width:100%;"><tr><td style="padding:0 12px 24px;">
 <div style="margin-top:8px;padding-top:16px;border-top:1px solid #33343f;color:#8a8b9a;font-size:12px;line-height:1.6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
-You're receiving this because you opted in to updates from ${name}. Sent via WoCo.<br/>
+${provenance(name, ctx.basis)} Sent via WoCo.<br/>
 <a href="${url}" style="color:#8a8b9a">Unsubscribe</a><br/>
 <span style="color:#6c6d7c">${address}</span><br/>
 <span style="color:#6c6d7c">${escapeHtml(WOCO_COMPANY_LINE)}</span>
@@ -59,7 +71,7 @@ You're receiving this because you opted in to updates from ${name}. Sent via WoC
 
 /** Same three obligations, for the text/plain alternative part. */
 export function footerText(ctx: FooterContext): string {
-  return `\n\n---\nYou're receiving this because you opted in to updates from ${ctx.displayName}. Sent via WoCo.\nUnsubscribe: ${ctx.unsubUrl}\n${ctx.postalAddress}\n${WOCO_COMPANY_LINE}\n`;
+  return `\n\n---\n${provenance(ctx.displayName, ctx.basis)} Sent via WoCo.\nUnsubscribe: ${ctx.unsubUrl}\n${ctx.postalAddress}\n${WOCO_COMPANY_LINE}\n`;
 }
 
 /**

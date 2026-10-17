@@ -2,13 +2,14 @@
  * Turning ticket buyers into marketing contacts — pure, so the merge rule can
  * be tested without a browser.
  *
- * Only buyers who ticked the opt-in themselves get here. The caller decrypts
- * claim data in the organiser's browser (the server holds no plaintext) and
- * asks `/api/marketing/check` which of those addresses carry a consent record;
- * this module does the shaping and the merge.
+ * Only buyers who said yes at checkout get here: they ticked the opt-in, or
+ * (in own-events mode) were shown "Don't email me" and left it alone - the soft
+ * opt-in. The caller decrypts claim data in the organiser's browser (the server
+ * holds no plaintext) and asks `/api/marketing/check` which of those addresses
+ * carry a record of either basis; this module does the shaping and the merge.
  */
 
-import type { MarketingContact } from "@woco/shared";
+import { listPlacement, type MarketingContact, type OrderField } from "@woco/shared";
 
 /** The subset of a decrypted claim blob this needs. */
 export interface DecryptedClaim {
@@ -31,64 +32,43 @@ export function provenanceRank(source: string | undefined): number {
   return 0; // csv: import, or unrecorded
 }
 
-/**
- * Common order-form field ids that hold a name. Order forms are organiser-
- * defined, so this is a guess over their ids — and a guess that only ever
- * ADDS a name to a contact that has none, never overwrites one.
- */
-const FIRST_KEYS = ["firstname", "first_name", "first", "givenname", "forename"];
-const LAST_KEYS = ["lastname", "last_name", "last", "surname", "familyname"];
-const FULL_KEYS = ["name", "fullname", "full_name", "attendeename", "yourname"];
-
-function pick(fields: Record<string, string> | undefined, keys: string[]): string | undefined {
-  if (!fields) return undefined;
-  for (const [k, v] of Object.entries(fields)) {
-    const norm = k.toLowerCase().replace(/[\s_-]/g, "");
-    if (keys.some((want) => norm === want.replace(/[\s_-]/g, "")) && v?.trim()) {
-      return v.trim();
-    }
-  }
-  return undefined;
-}
-
 export interface DrainOptions {
+  /** The event's questions: where each kept answer lands, under the label it has now. */
+  orderFields: readonly OrderField[];
   eventTitle: string;
   eventDate?: string;
   addedAt: string;
-  /** Lowercased addresses holding a consent record for this organiser. */
-  consented: ReadonlySet<string>;
+  /** Lowercased addresses holding a checkout record for this organiser: consent or soft opt-in. */
+  recorded: ReadonlySet<string>;
+  /**
+   * Per recorded address, the ids of THIS event's questions its record keeps -
+   * fixed when the buyer said yes, from the words they read (owner 2026-10-15).
+   * Only those answers are copied, so a question added since never widens it.
+   * No entry = the email alone.
+   */
+  kept: ReadonlyMap<string, readonly string[]>;
 }
 
 /**
- * Build contacts from decrypted claims, keeping only those who opted in.
+ * Build contacts from decrypted claims, keeping only those with a record.
  *
  * De-duplicated on the lowercased address: one person buying four tickets to
  * the same event is one contact, not four.
  */
 export function buildAttendeeContacts(
   claims: readonly DecryptedClaim[],
-  { eventTitle, eventDate, addedAt, consented }: DrainOptions,
+  { orderFields, eventTitle, eventDate, addedAt, recorded, kept: keptIds }: DrainOptions,
 ): MarketingContact[] {
   const byEmail = new Map<string, MarketingContact>();
 
   for (const claim of claims) {
     const email = claim.claimerEmail?.trim().toLowerCase();
-    if (!email || !consented.has(email) || byEmail.has(email)) continue;
+    if (!email || !recorded.has(email) || byEmail.has(email)) continue;
 
-    let firstName = pick(claim.fields, FIRST_KEYS);
-    let lastName = pick(claim.fields, LAST_KEYS);
-    if (!firstName && !lastName) {
-      const full = pick(claim.fields, FULL_KEYS);
-      // No splitting here — a single name field goes to firstName whole, for
-      // the same reason splitFullName exists but is not reached for: this is a
-      // greeting line, and an invented surname reads worse than a full name.
-      if (full) firstName = full;
-    }
-
+    const kept = keptAnswers(claim.fields, orderFields, new Set(keptIds.get(email) ?? []));
     byEmail.set(email, {
       email,
-      ...(firstName ? { firstName } : {}),
-      ...(lastName ? { lastName } : {}),
+      ...kept,
       lastEventName: eventTitle,
       ...(eventDate ? { lastEventDate: eventDate } : {}),
       source: `event:${eventTitle}`,
@@ -97,6 +77,39 @@ export function buildAttendeeContacts(
   }
 
   return [...byEmail.values()];
+}
+
+type KeptFields = Pick<MarketingContact, "firstName" | "lastName" | "postcode" | "city" | "phone" | "answers">;
+
+/**
+ * A buyer's kept answers, placed by what each question asks: names, postcode,
+ * town and phone into the contact's own fields (so the list can be searched by
+ * area), anything else under its label. Answers are keyed by question id, so
+ * the label is read from the event's own form. A question must be both on the
+ * buyer's record and kept by today's rule: a question since marked sensitive
+ * is not copied either.
+ */
+function keptAnswers(
+  fields: Record<string, string> | undefined,
+  orderFields: readonly OrderField[],
+  agreed: ReadonlySet<string>,
+): KeptFields {
+  const out: KeptFields = {};
+  const answers: Record<string, string> = {};
+  for (const field of orderFields) {
+    const at = field && typeof field === "object" && agreed.has(field.id) ? listPlacement(field) : null;
+    const raw = at ? fields?.[field.id] : undefined;
+    const value = typeof raw === "string" ? raw.trim() : "";
+    if (!at || !value) continue;
+    const { slot, label } = at;
+    // A single name field goes to firstName whole: this is a greeting line, and
+    // an invented surname reads worse than a full name.
+    if (slot === "fullName") out.firstName ??= value;
+    else if (slot) out[slot] ??= value;
+    else answers[label] ??= value;
+  }
+  if (Object.keys(answers).length) out.answers = answers;
+  return out;
 }
 
 /**
@@ -112,13 +125,22 @@ export function buildAttendeeContacts(
  * consent stores, where a refusal already survives any re-upload.
  */
 export function mergeContact(existing: MarketingContact, incoming: MarketingContact): MarketingContact {
-  const incomingWins = provenanceRank(incoming.source) >= provenanceRank(existing.source);
+  const incomingWins = outranks(incoming, existing);
   const merged: MarketingContact = { ...existing };
 
   for (const [key, value] of Object.entries(incoming) as Array<[keyof MarketingContact, string]>) {
-    if (key === "email" || key === "addedAt" || key === "source") continue;
+    if (key === "email" || key === "addedAt" || key === "source" || key === "answers") continue;
     if (!value) continue;
     if (!merged[key] || incomingWins) (merged[key] as string) = value;
+  }
+
+  // Kept answers merge question by question under the same two rules.
+  if (incoming.answers) {
+    const answers = { ...existing.answers };
+    for (const [label, value] of Object.entries(incoming.answers)) {
+      if (value && (!answers[label] || incomingWins)) answers[label] = value;
+    }
+    merged.answers = answers;
   }
 
   // `addedAt` records when this person entered the audience, so the EARLIER one
@@ -129,6 +151,19 @@ export function mergeContact(existing: MarketingContact, incoming: MarketingCont
   return merged;
 }
 
+/**
+ * Equal rank falls to the incoming record, the newer of the two - except between two
+ * checkouts, where the later EVENT is the fresher record whichever was read last. The
+ * automatic sync re-reads an older event whenever its orders change, and must not turn
+ * a contact's last event back to it. An unparseable date never decides (NaN < x is false).
+ */
+function outranks(incoming: MarketingContact, existing: MarketingContact): boolean {
+  const rank = provenanceRank(incoming.source);
+  if (rank !== provenanceRank(existing.source)) return rank > provenanceRank(existing.source);
+  const older = Date.parse(incoming.lastEventDate ?? "") < Date.parse(existing.lastEventDate ?? "");
+  return !(rank === 2 && older);
+}
+
 export interface DrainReport {
   /** The list to commit — existing contacts, merged and extended. */
   contacts: MarketingContact[];
@@ -136,7 +171,7 @@ export interface DrainReport {
   updated: number;
 }
 
-/** Fold opted-in attendees into the stored list. */
+/** Fold attendees with a checkout record into the stored list. */
 export function applyDrain(
   existing: readonly MarketingContact[],
   incoming: readonly MarketingContact[],

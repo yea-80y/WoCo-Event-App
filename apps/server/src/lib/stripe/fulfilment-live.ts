@@ -28,18 +28,21 @@ import { captureCheckoutConsent } from "../marketing/consent-capture.js";
 import { recordAttendeeEmail } from "../event/attendee-index.js";
 import { getSiteTheme, resolveSiteEventSigner } from "../site/service.js";
 import { sendTicketEmail } from "../../routes/tickets.js";
+import { sealDoorEntries } from "../checkin/door-entries.js";
 import { recordFailure } from "../email/failure-ledger.js";
 import { recordPendingRefund } from "./pending-refunds.js";
 import { recordAutoRefund, recordSaleSlots, orderRefInOtherSale } from "./ticket-sales.js";
 import { addRefundRow, cancellationGate } from "../event/cancellations.js";
 import { kickCancellationRefunds } from "./cancellation-refunds.js";
 import { liveCancellationRefundDeps } from "./cancellation-refunds-live.js";
+import { eventKeys } from "../keyring/event-keys.js";
 import type { FulfilmentDeps } from "./fulfilment.js";
 
 export const liveFulfilmentDeps: FulfilmentDeps = {
   hashEmail,
   resolveSiteEventSigner,
   getEvent,
+  eventKeys,
   chainEventEndMs: (onChainEventId, contract) => chainEventEndMsAt(contract, onChainEventId),
   lookupOnChainEventId,
   saleContractFor,
@@ -51,7 +54,7 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   },
   getOrganiserByStripeAccount,
   storeOrderBlob: (data, meta) => storeAttendeePayload(data, { kind: "fallback", ...meta }),
-  claimHeldOrder: (ref, sessionId, emailHash) => markHeldPaid(ref, sessionId, Date.now(), { emailHash }),
+  claimHeldOrder: (ref, sessionId, emailHash, retainMonths) => markHeldPaid(ref, sessionId, Date.now(), { emailHash, retainMonths }),
   storeHeldOrder: (ref) => storeHeldOrder(ref),
   releaseHeldOrder: (ref) => releaseHeldOrder(ref),
   isOrderStored: (ref) => !!getOrderRecord(ref) && !isOrderErased(ref),
@@ -88,6 +91,7 @@ export const liveFulfilmentDeps: FulfilmentDeps = {
   recordAttendeeEmail,
   getSiteTheme,
   sendTicketEmail,
+  sealDoorEntries: (eventId, tickets, who) => sealDoorEntries(eventId, tickets, who),
   recordUndeliveredTicket: ({ to, subject, error, context }) => {
     // The mailer never saw this message (render/config failure), so nothing
     // else will write it. `attempts: 0` says exactly that to the ops view, and
