@@ -195,7 +195,14 @@ test("a site's Publish tap asks first, and its name is pointed the same way as a
   assert.equal(msb.match(/signTypedDataAsHolder\(/g)?.length, 1, "the site builder signs in one place");
   assert.match(msb, /feed=\{subEnsPointerFeed \?\? undefined\}/, "the button checks the same feed");
   assert.match(msb, /disabled=\{publishState === 'publishing' \|\| subEnsPointing\}/);
-  assert.match(publish, /if \(publishState === 'publishing' \|\| subEnsPointing\) return;/, "the Domain tab's Publish too");
+  assert.match(publish, /if \(publishState === 'publishing' \|\| subEnsPointing \|\| publishArming\) return;/, "the Domain tab's Publish too");
+  assert.match(publish, /publishArming = true;\s*try \{\s*await auth\.ensureOrganiserUnlock/, "a second tap behind the sheet starts nothing");
+  assert.match(publish, /\} finally \{\s*publishArming = false;/);
+  // A site opened while the name was being pointed keeps its own state.
+  assert.match(point, /const siteId = site\.siteId;/);
+  assert.match(point, /if \(outcome\.kind === 'done'\) setFollowingName\(p\.label, siteId\);\s*if \(site\.siteId !== siteId\) return;/);
+  assert.match(msb, /ondone=\{\(\) => setFollowingName\(pointer\.label\)\}/);
+  assert.match(msb, /auth\.isAccountOwner &&\s*\(auth\.kind === 'passkey' \|\| auth\.kind === 'web3auth'\)/, "a wallet is not told its name follows");
 });
 
 test("the button checks a feed target too, and a refused one offers no retry", () => {

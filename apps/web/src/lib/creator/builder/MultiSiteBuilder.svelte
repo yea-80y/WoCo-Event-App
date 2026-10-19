@@ -138,18 +138,24 @@
       followingName = null;
     }
   });
-  function setFollowingName(label: string | null) {
-    followingName = label;
+  function setFollowingName(label: string | null, siteId = site.siteId) {
+    if (siteId === site.siteId) followingName = label;
     try {
-      if (label) localStorage.setItem(followsKey(site.siteId), label);
-      else localStorage.removeItem(followsKey(site.siteId));
+      if (label) localStorage.setItem(followsKey(siteId), label);
+      else localStorage.removeItem(followsKey(siteId));
     } catch {
       // Storage refused: the next publish asks once more, nothing worse.
     }
   }
-  /** A name this publish will point at the site, asked for at the tap. */
+  /** A name this publish will point at the site, asked for at the tap (a wallet signs
+   *  with the button, as before). */
   const siteNameToPoint = $derived(
-    site.subEnsLabel && site.subEnsLabel !== followingName && auth.isAccountOwner ? site.subEnsLabel : '',
+    site.subEnsLabel &&
+      site.subEnsLabel !== followingName &&
+      auth.isAccountOwner &&
+      (auth.kind === 'passkey' || auth.kind === 'web3auth')
+      ? site.subEnsLabel
+      : '',
   );
   let deployedUrl       = $state('');
   let deployedHash      = $state(
@@ -396,17 +402,24 @@
     }, 5000);
   }
 
+  /** The tap's passkey sheet is open, before `publishState` says publishing: a second
+   *  tap would otherwise start a second publish behind the same sheet. */
+  let publishArming = false;
+
   async function handlePublish() {
-    if (publishState === 'publishing' || subEnsPointing) return;
+    if (publishState === 'publishing' || subEnsPointing || publishArming) return;
     // First, while the tap still lets a passkey sheet open (the notice check below reads
     // the network): the confirm, and the key that signs the name's pointer later. Not
     // signed in yet, the sign-in is that sheet.
     if (auth.isConnected && auth.hasSession) {
+      publishArming = true;
       try {
         await auth.ensureOrganiserUnlock({ holderKey: !!siteNameToPoint });
       } catch (err) {
         showPublishError(err);
         return;
+      } finally {
+        publishArming = false;
       }
     }
 
@@ -541,6 +554,8 @@
    * refused with no button.
    */
   async function pointSiteName(p: Extract<SiteDeploySubEns, { status: 'awaiting_signature' }>) {
+    // The organiser can open another site while this runs: its result is this site's.
+    const siteId = site.siteId;
     const feed = subEnsPointerFeed;
     const kernelKind = auth.kind === 'passkey' || auth.kind === 'web3auth';
     if (!feed || p.feedOwner !== 'client' || !auth.isAccountOwner || !kernelKind) return;
@@ -548,9 +563,10 @@
     try {
       const { autoPointName } = await import('../../sub-ens/auto-pointer.js');
       const outcome = await autoPointName(p.label, p.target, feed, (typed) => auth.signTypedDataAsHolder(typed, { silent: true }));
+      if (outcome.kind === 'done') setFollowingName(p.label, siteId);
+      if (site.siteId !== siteId) return;
       if (outcome.kind === 'done') {
         subEnsPointer = null;
-        setFollowingName(p.label);
         subEnsNotice = { tone: 'info', text: `${subEnsName(p.label)} now points at this site. It follows every publish from here.` };
       } else if (outcome.kind === 'refused') {
         subEnsPointer = null;
@@ -598,6 +614,11 @@
       siteEvents = events;
       localStorage.setItem(EVENTS_KEY, JSON.stringify(events));
     }
+    // Another site: the last one's name state is not this one's.
+    subEnsNotice = null;
+    subEnsPointer = null;
+    subEnsPointerNote = null;
+    subEnsPointerFeed = null;
     screen = 'builder';
     tab = 'brand';
   }
@@ -899,15 +920,16 @@
         <span>Pointing {subEnsName(subEnsPointer.label)} at this site…</span>
       </div>
     {:else if subEnsPointer}
+      {@const pointer = subEnsPointer}
       <NamePointerPrompt
-        label={subEnsPointer.label}
-        target={subEnsPointer.target}
+        label={pointer.label}
+        target={pointer.target}
         targetIsFeed={true}
-        feedOwner={subEnsPointer.feedOwner}
+        feedOwner={pointer.feedOwner}
         feed={subEnsPointerFeed ?? undefined}
         note={subEnsPointerNote}
         purpose="site"
-        ondone={() => setFollowingName(subEnsPointer?.label ?? null)}
+        ondone={() => setFollowingName(pointer.label)}
       />
     {:else if siteNameToPoint && publishState !== 'publishing'}
       <div class="subens-notice">
