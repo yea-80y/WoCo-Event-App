@@ -13,7 +13,7 @@
     "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@aws-sdk/client-sesv2": "^3.1146.0",
+    "@aws-sdk/client-sesv2": "^3.1152.0",
     "@ethersphere/bee-js": "^11.2.0",
     "@hono/node-server": "^1.14.0",
     "@resvg/resvg-js": "^2.6.2",
@@ -27,9 +27,9 @@
     "ethers": "^6.17.0",
     "hono": "^4.13.13",
     "qrcode": "^1.5.4",
-    "resend": "^6.32.1",
+    "resend": "^6.33.0",
     "stripe": "^22.0.1",
-    "viem": "^2.57.3"
+    "viem": "^2.57.7"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
