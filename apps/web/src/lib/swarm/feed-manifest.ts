@@ -16,10 +16,11 @@
  * padded with newlines.
  */
 
-const VERSION_02 = "5768b3b6a7db56d21d1abff40d41cebfc83448fed8d7e9b06ec0d3b073f28f";
-const TYPE_WITH_METADATA = 16;
-const SLASH = 47;
-const ADDRESS_BYTES = 32;
+// The layout's constants, shared with `feed-manifest-address.ts`, which builds the same shape.
+export const VERSION_02 = "5768b3b6a7db56d21d1abff40d41cebfc83448fed8d7e9b06ec0d3b073f28f";
+export const TYPE_WITH_METADATA = 16;
+export const SLASH = 47;
+export const ADDRESS_BYTES = 32;
 
 function hex(b: Uint8Array): string {
   let s = "";
@@ -73,3 +74,4 @@ export function feedOfManifestChunk(chunk: Uint8Array): { owner: string; topic: 
     return null;
   }
 }
+

@@ -131,7 +131,7 @@ test("the holder signer puts a wallet on the domain's chain first, and refuses C
   const kernel = body.slice(body.indexOf('if (_kind === "passkey" || _kind === "web3auth")'));
   const chainCheck = kernel.indexOf("if (typed.domain.chainId !== KERNEL_CHAIN_ID) {");
   assert.ok(chainCheck > 0, "the Kernel branch must check the domain's chain");
-  assert.ok(chainCheck < kernel.indexOf("await _ensureKernelForKind()"), "before any prompt");
+  assert.ok(chainCheck < kernel.indexOf("await _ensureKernelForKind(opts)"), "before any prompt");
   assert.match(kernel.slice(chainCheck, kernel.indexOf("}", chainCheck)), /throw new Error\(/);
   assert.doesNotMatch(body, /_passkeyPrivateKey|_web3authPrivateKey|createLocalSigner/);
   // Coinbase falls through to the refusal: no branch may sign for it.

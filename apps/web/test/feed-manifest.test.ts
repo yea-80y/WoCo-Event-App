@@ -7,7 +7,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { MantarayNode, NULL_ADDRESS } from "@ethersphere/bee-js";
+import { calculateCacAddress } from "@woco/shared/swarm/soc";
+import { eventPageFeedTopic } from "@woco/shared";
+import { keccak256, toUtf8Bytes } from "ethers";
 import { feedOfManifestChunk } from "../src/lib/swarm/feed-manifest.ts";
+import { expectedFeedManifestHash, feedManifestRootChunk } from "../src/lib/swarm/feed-manifest-address.ts";
 
 // hackathon.woco.eth's feed manifest root chunk (2026-10-06), as in event-name-link.test.ts.
 const REAL = Uint8Array.from(Buffer.from(
@@ -82,4 +86,43 @@ test("the bytes bee skips or reads differently are refused too: another bitmap b
   const longerPrefix = REAL.slice();
   longerPrefix[136 + 1] = 2; // "/" then a zero byte: another path to bee
   assert.equal(feedOfManifestChunk(longerPrefix), null);
+});
+
+const addressOf = (chunk: Uint8Array) => Buffer.from(calculateCacAddress(chunk.subarray(0, 8), chunk.subarray(8))).toString("hex");
+
+test("the manifest bee makes is built here byte for byte, and bee-js is not the reference for it", async () => {
+  assert.deepEqual(feedManifestRootChunk(OWNER, TOPIC), REAL);
+  // bee-js drops the "/" child's zero target, so its child address differs (chunk offset 168).
+  const beeJs = await built([["/", feedMeta()]]);
+  assert.notDeepEqual(beeJs.subarray(168, 200), REAL.subarray(168, 200));
+  assert.deepEqual(beeJs.subarray(200), REAL.subarray(200));
+});
+
+test("an event page's name target is worked out from its signer and event id alone", () => {
+  // hackathon.woco.eth -> event 43becb36's page feed (event-name-link.test.ts).
+  const topic = keccak256(toUtf8Bytes(eventPageFeedTopic("43becb36-2b71-4d55-bf23-6c18b6bed32f"))).slice(2);
+  assert.equal(topic, TOPIC);
+  assert.equal(expectedFeedManifestHash(OWNER, topic), "d24237682b360376b613321850e4e5e035823d68b2659392afea95162e7ca0b7");
+  assert.equal(expectedFeedManifestHash(OWNER, TOPIC), addressOf(REAL));
+});
+
+test("any other feed's manifest reads back as that feed, under its own address", () => {
+  const owner = "0123456789abcdef0123456789abcdef01234567";
+  const topic = "ab".repeat(32);
+  const chunk = feedManifestRootChunk(owner, topic);
+  assert.deepEqual(feedOfManifestChunk(chunk), { owner, topic });
+  assert.equal(expectedFeedManifestHash(owner, topic), addressOf(chunk));
+  assert.notEqual(expectedFeedManifestHash(owner, topic), expectedFeedManifestHash(OWNER, TOPIC));
+});
+
+test("only a bare lowercase owner and topic are accepted, so a typo can never name some other feed", () => {
+  for (const [owner, topic] of [
+    [`0x${OWNER}`, TOPIC],
+    [OWNER.toUpperCase(), TOPIC],
+    [OWNER.slice(2), TOPIC],
+    [OWNER, TOPIC.slice(2)],
+    [OWNER, `0x${TOPIC}`],
+  ]) {
+    assert.throws(() => expectedFeedManifestHash(owner!, topic!));
+  }
 });

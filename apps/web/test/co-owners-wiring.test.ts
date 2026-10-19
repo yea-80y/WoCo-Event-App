@@ -19,7 +19,7 @@ function body(src: string, signature: string): string {
 }
 
 test("the Kernel used for signing is opened with the validator the account really has", () => {
-  const b = body(STORE, "async function _ensureKernel()");
+  const b = body(STORE, "async function _ensureKernel(");
   assert.match(b, /if \(_kernel\?\.rootChecked\) return;/, "a sign-in build (ECDSA assumed) is re-checked before the first signature");
   assert.match(b, /const root = at \? await readKernelRoot\(at\) : "none";/);
   assert.match(b, /root: root === "weighted" \? "weighted" : "ecdsa",/);
@@ -91,7 +91,7 @@ test("sign-off fixes: list reads floored, record removal retried, removed passke
   assert.match(STORE, /_scheduleEnvelopeReprobe\(cachedKernel, account\.address, account\.prfSecret\);\s*_verifyCoOwnerInBackground\(cachedKernel, account\.address\);/, "SHOULD-3");
   assert.match(body(STORE, "async function _offListConfirmed("), /setTimeout\(r, 10_000\)/, "confirmed twice, never on one lagging read");
   assert.match(body(STORE, "async function _forgetThisPasskey("), /clearCachedKernelAddress\("passkey", self\);/);
-  assert.match(STORE, /if \(_kind === "passkey" && _kernel\?\.sudo\.kind === "ecdsa"\) _kernel\.rootChecked = false;\s*await _ensureKernelForKind\(\);/, "SHOULD-2");
+  assert.match(STORE, /if \(_kind === "passkey" && _kernel\?\.sudo\.kind === "ecdsa"\) _kernel\.rootChecked = false;\s*await _ensureKernelForKind\(opts\);/, "SHOULD-2");
   const login = body(STORE, "async function _loginAddedPasskey(");
   assert.ok(login.indexOf('if (verdict === "removed")') < login.indexOf("const onList"), "NIT-6: no chain read before a removal");
 });

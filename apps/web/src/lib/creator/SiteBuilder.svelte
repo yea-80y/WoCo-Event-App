@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ETHERNA_GATEWAY_URL } from "../swarm/gateways.js";
   import { CANONICAL_APP_ORIGIN } from "../sub-ens/host-label.js";
-  import { subEnsWebUrl, type ClaimMode, type EventGeo, type EventTag, type OrderField, type PaymentConfig } from "@woco/shared";
+  import { eventPageFeedTopic, subEnsWebUrl, type ClaimMode, type EventGeo, type EventTag, type OrderField, type PaymentConfig } from "@woco/shared";
   import { auth } from "../auth/auth-store.svelte.js";
   import { loginRequest } from "../auth/login-request.svelte.js";
   import { authPost } from "../api/client.js";
@@ -17,7 +17,8 @@
   import { addSiteEvent, deployEventPage, type DeployEventPageResult } from "../api/sites.js";
   import { claimSubEnsLabel, stampEventSubEns } from "../api/sub-ens.js";
   import NamePointerPrompt from "../components/sub-ens/NamePointerPrompt.svelte";
-  import { describeSubEnsError, subEnsErrorDetail } from "../sub-ens/errors.js";
+  import { describeSubEnsError, subEnsErrorDetail, subEnsErrorFrom } from "../sub-ens/errors.js";
+  import { ApiError } from "../api/errors.js";
   import { registerDomain, verifyDomainDns, type DomainEntry } from "../api/domains.js";
 
   const apiUrl = import.meta.env.VITE_API_URL ?? "";
@@ -86,9 +87,18 @@
 
   // Sub-ENS for this event — intent captured here, acted on after deploy (needs contentHash)
   let domainIntent = $state<EventDomainIntent>({ mode: "none" });
-  let subEnsPhase = $state<"idle" | "pending" | "sign" | "done" | "error">("idle");
+  let subEnsPhase = $state<"idle" | "pending" | "pointing" | "sign" | "done" | "error">("idle");
   let subEnsLabel = $state("");
   let subEnsError = $state<string | null>(null);
+  /** Why the name waits for its button after the background attempt, when there is a reason to show. */
+  let pointerNote = $state<string | null>(null);
+  /** An error a Retry cannot fix (the page's address was not this account's). */
+  let subEnsNoRetry = $state(false);
+  /** The feed signer this device signed the page's feed with: the owner a name may follow. */
+  let pageFeedOwner = $state<string | null>(null);
+  /** This page's feed manifest, worked out from the organiser's own feed signer (never
+   *  prompts): a name already pointing at it needs nothing signed on a republish. */
+  let ownPageManifest = $state<string | null>(null);
   /** A name that registered fine but did not make it onto the event feed. */
   let subEnsStampWarning = $state<{ title: string; detail?: string } | null>(null);
 
@@ -171,6 +181,35 @@
     deployResult ? (pointerFollowsFeed ? deployResult.feedManifestHash : deployResult.contentHash) : "",
   );
 
+  $effect(() => {
+    const id = createdEventId;
+    ownPageManifest = null;
+    if (!id) return;
+    let live = true;
+    void (async () => {
+      const owner = await auth.getContentFeedSignerAddress().catch(() => null);
+      if (!owner) return;
+      const { feedManifestFor } = await import("../swarm/feed-manifest-address.js");
+      if (live) ownPageManifest = feedManifestFor(owner, eventPageFeedTopic(id));
+    })();
+    return () => {
+      live = false;
+    };
+  });
+
+  // The name this deploy will point at the page, if any: a new one, or one of the
+  // organiser's own that is not on this page's feed already. Its signature is asked for
+  // at the Deploy tap, so the name follows with no second tap (`pointName`).
+  const nameToPoint = $derived(
+    domainIntent.mode === "new"
+      ? domainIntent.label
+      : domainIntent.mode === "existing" &&
+          domainIntent.label &&
+          !(ownPageManifest && domainIntent.currentTarget === ownPageManifest)
+        ? domainIntent.label
+        : "",
+  );
+
   async function deployToSwarm(): Promise<(DeployEventPageResult & { feedSigned: boolean }) | null> {
     if (!createdEventId) return null;
     try {
@@ -189,6 +228,7 @@
       );
       if (json.ok && json.data) {
         deployResult = { ...json.data, feedSigned: json.feedSigned };
+        pageFeedOwner = json.feedSigned && feedSigner ? feedSigner.address : null;
         return deployResult;
       }
       deployError = json.error || "Deploy failed";
@@ -230,10 +270,11 @@
 
   // Route the chosen sub-ENS at the freshly deployed event page. "new" mints an
   // EMPTY name through the WoCo sponsor wallet — every login kind (#489); then,
-  // in both modes, the HOLDER signs the pointer (registrar v2.2), which needs
-  // their click (`NamePointerPrompt`). The target is the page's FEED when this
-  // deploy's update was signed with the organiser's own key (#614), so later
-  // republishes ask nothing; otherwise the fixed page version.
+  // in both modes, the HOLDER signs the pointer (registrar v2.2): in the background
+  // when it can (`pointName`), else with their click (`NamePointerPrompt`). The
+  // target is the page's FEED when this deploy's update was signed with the
+  // organiser's own key (#614), so later republishes ask nothing; otherwise the
+  // fixed page version.
   async function runSubEnsTask() {
     const intent = domainIntent;
     if (intent.mode === "none") return;
@@ -244,11 +285,13 @@
     }
 
     subEnsError = null;
+    subEnsNoRetry = false;
     subEnsStampWarning = null;
     subEnsLabel = intent.label;
     if (intent.mode === "existing") {
       // Already following this page's feed: nothing to sign (#614).
-      subEnsPhase = pointerFollowsFeed && deployResult?.subEns?.status === "ok" ? "done" : "sign";
+      if (pointerFollowsFeed && deployResult?.subEns?.status === "ok") subEnsPhase = "done";
+      else await pointName();
       return;
     }
     subEnsPhase = "pending";
@@ -261,11 +304,58 @@
         subEnsError = `${d.title}${detail ? ` ${detail}` : ""}`;
         return;
       }
-      subEnsPhase = "sign";
     } catch (e) {
       subEnsPhase = "error";
       subEnsError = e instanceof Error ? e.message : "Sub-ENS update failed";
+      return;
     }
+    await pointName();
+  }
+
+  /**
+   * Point the name with no second tap, when this deploy allows it: the page's feed is
+   * the organiser's own and this device signed its update, and this sign-in can sign as
+   * the holder. The key comes from the Deploy tap's confirm, so nothing here may ask for
+   * a passkey; anything short of done leaves the button, which can.
+   */
+  async function pointName() {
+    pointerNote = null;
+    const eventId = createdEventId;
+    // A wallet asks for every signature itself: straight to the button.
+    const kernelKind = auth.kind === "passkey" || auth.kind === "web3auth";
+    if (!pointerFollowsFeed || !pageFeedOwner || !eventId || !auth.isAccountOwner || !kernelKind) {
+      subEnsPhase = "sign";
+      return;
+    }
+    subEnsPhase = "pointing";
+    try {
+      const { autoPointName } = await import("../sub-ens/auto-pointer.js");
+      const outcome = await autoPointName(
+        subEnsLabel,
+        pointerTarget,
+        { owner: pageFeedOwner, topic: eventPageFeedTopic(eventId) },
+        (typed) => auth.signTypedDataAsHolder(typed, { silent: true }),
+      );
+      if (outcome.kind === "done") return onSubEnsPointed();
+      if (outcome.kind === "refused") {
+        subEnsPhase = "error";
+        subEnsNoRetry = true;
+        subEnsError = outcome.error instanceof Error ? outcome.error.message : "Couldn't point the name";
+        return;
+      }
+      // Only the relay's refusals say something to act on; a name the RPC has not
+      // caught up with yet reads as an alarming digest mismatch, and the button works.
+      if (outcome.error instanceof ApiError) {
+        const d = subEnsErrorFrom(outcome.error, "Couldn't point the name");
+        const detail = subEnsErrorDetail(d);
+        pointerNote = `${d.title}${detail ? ` ${detail}` : ""}`;
+      } else if (outcome.error) {
+        console.warn("[sub-ens] background pointer handed to the button:", outcome.error);
+      }
+    } catch (e) {
+      console.error("[sub-ens] background pointer failed:", e);
+    }
+    subEnsPhase = "sign";
   }
 
   /** The holder signed and the pointer landed: now the event page may show the
@@ -278,9 +368,10 @@
   /**
    * Write the name onto the event feed as a display hint. Two failure shapes
    * to catch, not one: `stampEventSubEns` resolves `{ ok: false }` for a server
-   * refusal and THROWS when the owner's SOC re-signature fails.
+   * refusal and THROWS when the owner's SOC re-signature fails. After a pointer it
+   * runs with no tap, so it never asks for the signer then; its Retry (`ask`) may.
    */
-  async function stampEventLabel(label: string, eventId: string) {
+  async function stampEventLabel(label: string, eventId: string, ask = false) {
     subEnsStampWarning = null;
     const warn = (reason: string | undefined) => {
       const described = describeSubEnsError({ error: reason });
@@ -292,7 +383,8 @@
     try {
       // Pass the content-feed signer so a client-owned event feed can re-sign
       // the SOC with the label (the server can't write the user's feed).
-      const signer = await auth.getContentFeedSigner();
+      const signer = ask ? await auth.getContentFeedSigner() : await auth.getContentFeedSignerIfPresent();
+      if (!signer) return warn(undefined);
       const res = await stampEventSubEns(label, eventId, signer);
       if (!res.ok) warn(res.error);
     } catch (e) {
@@ -301,7 +393,7 @@
   }
 
   function retryStamp() {
-    if (subEnsLabel && createdEventId) void stampEventLabel(subEnsLabel, createdEventId);
+    if (subEnsLabel && createdEventId) void stampEventLabel(subEnsLabel, createdEventId, true);
   }
 
   // Background post-deploy work. The deployed site is live the moment
@@ -338,8 +430,10 @@
     deploying = true;
     deployError = null;
     deployResult = null;
+    pageFeedOwner = null;
     try {
-      await auth.ensureOrganiserUnlock();
+      // A name to point asks here, at the tap, for the key that signs it later.
+      await auth.ensureOrganiserUnlock({ holderKey: !!nameToPoint && auth.isAccountOwner });
       const deployed = await deployToSwarm();
       if (!deployed) return;
 
@@ -512,6 +606,14 @@
         </div>
       {/if}
 
+      {#if nameToPoint && auth.isAccountOwner}
+        <p class="deploy-name-note">
+          {domainIntent.mode === "existing" && domainIntent.currentTarget
+            ? `Publishing also moves ${nameToPoint}.woco.eth to this page - it currently opens another page.`
+            : `Publishing also points ${nameToPoint}.woco.eth at this page.`}
+        </p>
+      {/if}
+
       <div class="nav-row">
         <button class="btn-ghost" onclick={() => step = 1}>&larr; Back</button>
         <button
@@ -618,12 +720,21 @@
               <div class="spinner"></div>
               <span>Registering <code>{subEnsName}</code> on Arbitrum…</span>
             </div>
+          {:else if subEnsPhase === "pointing"}
+            <div class="progress-status">
+              <div class="spinner"></div>
+              <span>Pointing <code>{subEnsName}</code> at this page…</span>
+            </div>
           {:else if subEnsPhase === "sign" && deployResult}
             <NamePointerPrompt
               label={subEnsLabel}
               target={pointerTarget}
               targetIsFeed={pointerFollowsFeed}
               feedOwner={pointerFollowsFeed ? "client" : undefined}
+              feed={pointerFollowsFeed && pageFeedOwner && createdEventId
+                ? { owner: pageFeedOwner, topic: eventPageFeedTopic(createdEventId) }
+                : undefined}
+              note={pointerNote}
               purpose="event-page"
               ondone={onSubEnsPointed}
             />
@@ -638,7 +749,7 @@
             <p class="output-hint">Registered on Arbitrum and live on ENS — view the record on Arbiscan.</p>
           {:else if subEnsPhase === "error"}
             <div class="create-error" style="margin: 0;">{subEnsError}</div>
-            {#if !(domainIntent.mode === "new" && !domainIntent.label)}
+            {#if !subEnsNoRetry && !(domainIntent.mode === "new" && !domainIntent.label)}
               <button class="btn-primary" style="margin-top: 0.75rem;" onclick={retrySubEns}>Retry</button>
             {/if}
           {/if}
@@ -756,7 +867,7 @@
 
       <div class="nav-row" style="margin-top: 1rem;">
         <span></span>
-        <button class="btn-ghost" onclick={() => { step = 2; deployResult = null; }}>
+        <button class="btn-ghost" disabled={subEnsPhase === "pointing"} onclick={() => { step = 2; deployResult = null; pageFeedOwner = null; }}>
           &larr; Change config &amp; redeploy
         </button>
       </div>
@@ -909,6 +1020,7 @@
     font-size: 0.8125rem; font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.05em; color: var(--text-muted);
   }
+  .deploy-name-note { margin: 0 0 0.75rem; font-size: 0.8125rem; color: var(--text-muted); line-height: 1.5; }
   .output-launch-btn { font-size: 0.8125rem; padding: 0.375rem 0.75rem; text-decoration: none; }
   .output-url-row { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
   .output-url {

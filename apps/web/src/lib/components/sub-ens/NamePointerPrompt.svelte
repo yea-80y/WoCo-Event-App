@@ -1,7 +1,8 @@
 <!--
-  "Point punkpub.woco.eth at this site?" — the one place a holder signs a
-  name's pointer (registrar v2.2). WoCo holds no key that can repoint a name,
-  so every bind is the holder's signature, relayed for free.
+  "Point yourname.woco.eth at this site?" — where a holder signs a name's
+  pointer with a tap (registrar v2.2); an event page's name is first tried with
+  no tap, after the Deploy confirm (`sub-ens/auto-pointer.ts`). WoCo holds no key
+  that can repoint a name, so every bind is the holder's signature, relayed for free.
 
   Asked at BIND only. A site or event-page name points at its feed manifest,
   which each publish advances, so publishing again never asks - the feed is
@@ -25,17 +26,27 @@
     targetIsFeed: boolean;
     /** With a feed target: who authors the feed behind it. */
     feedOwner?: SiteFeedOwner;
+    /** With a feed target: the feed it must be the manifest of (this device's own
+     *  signer, the topic string), checked here before anything is signed. */
+    feed?: { owner: string; topic: string };
+    /** Why the name is waiting for this button, when there is one to show. */
+    note?: string | null;
     ondone?: () => void;
   }
 
-  let { label, target, purpose, targetIsFeed, feedOwner, ondone }: Props = $props();
+  let { label, target, purpose, targetIsFeed, feedOwner, feed, note, ondone }: Props = $props();
 
   let phase = $state<"ask" | "working" | "done">("ask");
   let errText = $state("");
 
   const name = $derived(subEnsName(label));
 
-  const blocked = $derived(pointerBlockedReason(auth.kind, purpose, feedOwner, targetIsFeed, name));
+  // An added passkey can't sign as the holder (#746): said up front, with no button.
+  const blocked = $derived(
+    auth.isAccountOwner ? pointerBlockedReason(auth.kind, purpose, feedOwner, targetIsFeed, name) : MAIN_PASSKEY_REQUIRED_MESSAGE,
+  );
+  /** A target that is not this account's feed: no retry can fix it. */
+  let refused = $state(false);
 
   async function point() {
     if (phase === "working" || blocked) return;
@@ -48,11 +59,14 @@
     phase = "working";
     errText = "";
     try {
-      const { pointNameAt } = await import("../../sub-ens/pointer.js");
-      await pointNameAt(label, target, (typed) => auth.signTypedDataAsHolder(typed));
+      const { pointNameAt, pointNameAtFeed } = await import("../../sub-ens/pointer.js");
+      const sign = (typed: Parameters<typeof auth.signTypedDataAsHolder>[0]) => auth.signTypedDataAsHolder(typed);
+      if (targetIsFeed && feed) await pointNameAtFeed(label, target, feed, sign);
+      else await pointNameAt(label, target, sign);
       phase = "done";
       ondone?.();
     } catch (err) {
+      refused = err instanceof Error && err.name === "FeedManifestMismatchError";
       const d = subEnsErrorFrom(err, "Couldn't point the name");
       const detail = subEnsErrorDetail(d);
       errText = `${d.title}${detail ? ` ${detail}` : ""}`;
@@ -81,10 +95,13 @@
           ? `Point ${name} at this event page? You sign it from your account; we cover the fee.`
           : `Point ${name} at your profile, so typing it into a browser opens it?`}
     </span>
-    <button class="btn btn--primary" onclick={point} disabled={phase === "working"}>
-      {phase === "working" ? "Signing…" : "Point it here"}
-    </button>
-    {#if errText}<span class="pointer__error" role="alert">{errText}</span>{/if}
+    {#if !refused}
+      <button class="btn btn--primary" onclick={point} disabled={phase === "working"}>
+        {phase === "working" ? "Signing…" : "Point it here"}
+      </button>
+    {/if}
+    {#if errText}<span class="pointer__error" role="alert">{errText}</span>
+    {:else if note}<span class="pointer__error">{note}</span>{/if}
   {/if}
 </div>
 

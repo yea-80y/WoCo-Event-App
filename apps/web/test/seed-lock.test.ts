@@ -395,7 +395,7 @@ test("store: a relock waits for a ceremony in flight, and invalidates work that 
   const relock = body(STORE, "function _relockPasskey");
   assert.match(relock, /if \(_kind !== "passkey" \|\| _passkeyKeyInFlight \|\| _seedInFlight\) return;/);
   assert.match(relock, /_lockGen\+\+;/);
-  const kernel = body(STORE, "async function _ensureKernel()");
+  const kernel = body(STORE, "async function _ensureKernel(");
   const captured = kernel.indexOf("const gen = _lockGen;");
   const checked = kernel.indexOf("if (gen !== _lockGen) throw");
   const assigned = kernel.indexOf("_kernel = kernel;");

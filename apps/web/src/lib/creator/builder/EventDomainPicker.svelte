@@ -3,7 +3,9 @@
   export type EventDomainIntent =
     | { mode: "none" }
     | { mode: "new"; label: string }
-    | { mode: "existing"; label: string; willOverwrite: boolean };
+    /** `currentTarget`: the Swarm reference the name points at now, if any - the parent
+     *  compares it with this page's feed, so a name already on it asks nothing. */
+    | { mode: "existing"; label: string; currentTarget: string | null };
 </script>
 
 <script lang="ts">
@@ -130,7 +132,8 @@
         ? { mode: "new", label: previewLabel }
         : { mode: "new", label: "" };
     } else if (mode === "existing") {
-      intent = { mode: "existing", label: selectedExisting, willOverwrite: !!selectedExisting };
+      const current = ownedNames.find((n) => n.label === selectedExisting)?.contentHash;
+      intent = { mode: "existing", label: selectedExisting, currentTarget: current ? current.replace(/^0x/, "").toLowerCase() : null };
     } else {
       intent = { mode: "none" };
     }
@@ -264,15 +267,6 @@
                their profile name would otherwise read "you don't own any names". -->
           {#if profileHidden && (ownedState === "ready" || ownedState === "empty")}
             <p class="hidden-hint">Your profile name can't be a site or event address.</p>
-          {/if}
-          {#if selectedExisting}
-            {@const sel = offerNames.find((n) => n.label === selectedExisting)}
-            {#if sel?.previewUrl}
-              <p class="msg msg--warn">
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M6 1v7M2 5l4 3 4-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 10h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-                <code class="inline-code">{selectedExisting}.woco.eth</code> already points at a site — deploying will repoint it to this event.
-              </p>
-            {/if}
           {/if}
         </div>
       {/if}

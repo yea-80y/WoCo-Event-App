@@ -106,3 +106,19 @@ export async function pointNameAt(
   if (!resp.ok || !resp.data) throw apiError(resp, "Couldn't point the name");
   return resp.data.txHash;
 }
+
+/**
+ * Point `label` at a page's FEED manifest, only once this device has worked out that
+ * `manifest` is the manifest of `feed` - its own feed signer and the page's topic string
+ * (`assertOwnFeedManifest`). Every event-page feed pointer goes through this check.
+ */
+export async function pointNameAtFeed(
+  label: string,
+  manifest: string,
+  feed: { owner: string; topic: string },
+  signTypedData: (typed: PointerTypedData) => Promise<string>,
+): Promise<string> {
+  const { assertOwnFeedManifest } = await import("../swarm/feed-manifest-address.js");
+  assertOwnFeedManifest(manifest, feed);
+  return pointNameAt(label, manifest, signTypedData);
+}
