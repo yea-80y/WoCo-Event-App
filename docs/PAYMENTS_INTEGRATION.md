@@ -20,7 +20,7 @@ and win over anything here if they disagree:
   `MIN_TICKET_PRICE` (1, #694) - checked in the editor and on the server (`routes/events.ts`).
 - PaymentConfig (`packages/shared/src/event/types.ts`): `{ price, currency(FiatCurrency),
   recipientAddress, acceptedChains, escrow, cryptoEnabled, stripeEnabled, feePassedToCustomer?,
-  buyerFeePercent?, coverFees? }`. The booking-fee modes (cover the fees / own % / none) are fee
+  buyerFeePercent?, coverFees? }`. The booking-fee modes (Set your own fee / Buyer pays fees / You pay fees) are fee
   arithmetic - see PRICING_AND_EMAIL.md.
 - The price currency must match the organiser's Stripe payout currency, or Stripe converts every
   sale and bills the organiser the FX fee (#84, `lib/stripe/currency-policy.ts`; fails open while
