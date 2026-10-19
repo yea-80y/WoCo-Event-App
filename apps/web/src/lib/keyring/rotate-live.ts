@@ -54,9 +54,10 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
    * tap, so only when every value is pinned to what this device knows (#186): the name is
    * the one in the organiser's OWN signed copy (never the server's reply), the deploy's
    * feed is the organiser's and this device signed its update under the new key, and the
-   * target is a feed manifest - read and hash-checked HERE, not taken from the reply - for
-   * the new signer and the topic this device derives. Anything else is not signed: the
-   * name keeps pointing where it did, and the done screen says to point it again.
+   * target is the feed manifest worked out HERE for the new signer and the topic this
+   * device derives (`pointNameAtFeed`) - not fetched, since a fresh feed's manifest can
+   * take minutes to reach our gateway. Anything else is not signed: the name keeps
+   * pointing where it did, and the done screen says to point it again.
    */
   async function repoint(
     ownLabel: string | undefined,
@@ -74,41 +75,10 @@ export function liveRotationSteps(h: RotationHost): RotationSteps {
       typeof deploy.feedManifestHash === "string" &&
       /^[0-9a-f]{64}$/.test(deploy.feedManifestHash) &&
       p.target === deploy.feedManifestHash &&
-      pointerBlockedReason("passkey", "site", "client", true, ownLabel) === null &&
-      (await manifestFollows(deploy.feedManifestHash, expected));
+      pointerBlockedReason("passkey", "site", "client", true, ownLabel) === null;
     if (!ok) throw new Error(`the name ${ownLabel ?? p.label ?? "(unknown)"} was not re-pointed: the deploy did not match what this device signed`);
-    const { pointNameAt } = await import("../sub-ens/pointer.js");
-    await pointNameAt(ownLabel!, p.target!, (typed) => h.signTypedDataAsHolder(typed));
-  }
-
-  /**
-   * Does the feed manifest at `hash` follow `owner`'s feed at `topic` (the topic string,
-   * hashed here)? The root chunk is fetched and checked against its address on this
-   * device, so the answer does not rest on whoever served it.
-   */
-  async function manifestFollows(hash: string, expected: { owner: string; topic: string }): Promise<boolean> {
-    const [{ WOCO_GATEWAY_URL }, { calculateCacAddress }, { feedOfManifestChunk }, { keccak_256 }, { bytesToHex, utf8ToBytes }] =
-      await Promise.all([
-        import("../swarm/gateways.js"),
-        import("@woco/shared/swarm/soc"),
-        import("../swarm/feed-manifest.js"),
-        import("@noble/hashes/sha3.js"),
-        import("@noble/hashes/utils.js"),
-      ]);
-    try {
-      const res = await fetch(`${WOCO_GATEWAY_URL}/chunks/${hash}`, { signal: AbortSignal.timeout(10_000) });
-      if (!res.ok) return false;
-      const raw = new Uint8Array(await res.arrayBuffer());
-      if (raw.length <= 8 || bytesToHex(calculateCacAddress(raw.subarray(0, 8), raw.subarray(8))) !== hash) return false;
-      const feed = feedOfManifestChunk(raw);
-      return (
-        !!feed &&
-        feed.owner === expected.owner.toLowerCase().replace(/^0x/, "") &&
-        feed.topic === bytesToHex(keccak_256(utf8ToBytes(expected.topic)))
-      );
-    } catch {
-      return false;
-    }
+    const { pointNameAtFeed } = await import("../sub-ens/pointer.js");
+    await pointNameAtFeed(ownLabel!, p.target!, expected, (typed) => h.signTypedDataAsHolder(typed));
   }
 
   /**

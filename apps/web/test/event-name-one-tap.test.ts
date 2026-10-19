@@ -137,7 +137,7 @@ test("the silent signer refuses before any ceremony could start, after the await
   assert.match(body(STORE, "async function _ensureKernelForKind("), /return _ensureKernel\(opts\);/);
 });
 
-test("only the event-page publish signs as the holder silently; a name release never can", () => {
+test("only the event-page publish and a passkey removal sign as the holder silently; a name release never can", () => {
   const silent: string[] = [];
   for (const file of walk(SRC)) {
     const rel = file.slice(SRC.length + 1);
@@ -145,7 +145,8 @@ test("only the event-page publish signs as the holder silently; a name release n
     if (/signTypedDataAsHolder\([^)]*silent/.test(readFileSync(file, "utf8"))) silent.push(rel);
   }
   assert.deepEqual(silent, ["lib/creator/SiteBuilder.svelte"]);
-  assert.match(STORE, /signTypedDataAsHolder: \(typed\) => signTypedDataAsHolder\(typed as Parameters<typeof signTypedDataAsHolder>\[0\]\),/);
+  // The other silent caller: a passkey removal re-pointing names after its own fresh confirm.
+  assert.match(STORE, /signTypedDataAsHolder: \(typed\) => signTypedDataAsHolder\(typed as Parameters<typeof signTypedDataAsHolder>\[0\], \{ silent: true \}\),/);
   assert.match(read("lib/creator/builder/DiscardNameDialog.svelte"), /signTypedData: \(typed: ReleaseTypedData\) => auth\.signTypedDataAsHolder\(typed\)/);
   const builder = read("lib/creator/SiteBuilder.svelte");
   const point = body(builder, "async function pointName(");
