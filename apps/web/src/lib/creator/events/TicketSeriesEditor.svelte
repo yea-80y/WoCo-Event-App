@@ -384,7 +384,10 @@
     series = built;
   });
 
-  const STRIPE_PERCENT = 0.03;   // 3% of ticket price
+  // Stripe's standard UK consumer-card rate on what the buyer pays - the rate
+  // Organiser Terms §6's worked example uses. An estimate: other cards cost more.
+  const STRIPE_PERCENT = 0.015;
+  const STRIPE_FIXED = 0.2;
   const PLATFORM_PERCENT = PLATFORM_FEE_BP / 10_000; // 1.5%
 
   function feeBreakdown(price: string, currency: string, passToCustomer: boolean, hasStripe: boolean, hasCrypto: boolean, buyerFeePct: number) {
@@ -392,12 +395,13 @@
     if (!amount || amount <= 0) return null;
     const sym = CURRENCY_SYMBOLS[currency] ?? "";
     const fmt = (n: number) => `${sym}${n.toFixed(2)}`;
-    const stripeFee = hasStripe ? amount * STRIPE_PERCENT : 0;
     const platformFee = amount * PLATFORM_PERCENT;
 
     if (passToCustomer) {
-      const buyerMarkup = amount * (buyerFeePct / 100);
+      // Per-ticket cents, as the checkout rounds it.
+      const buyerMarkup = Math.round(Math.round(amount * 100) * buyerFeePct / 100) / 100;
       const cardTotal = amount + buyerMarkup;
+      const stripeFee = hasStripe ? cardTotal * STRIPE_PERCENT + STRIPE_FIXED : 0;
       const cryptoTotal = amount + buyerMarkup;
       const payoutCard = hasStripe ? cardTotal - stripeFee - platformFee : 0;
       const payoutCrypto = hasCrypto ? cryptoTotal - platformFee : 0;
@@ -414,6 +418,7 @@
         payoutCrypto: hasCrypto ? fmt(Math.max(0, payoutCrypto)) : null,
       };
     } else {
+      const stripeFee = hasStripe ? amount * STRIPE_PERCENT + STRIPE_FIXED : 0;
       const payoutCard = amount - stripeFee - platformFee;
       const payoutCrypto = amount - platformFee;
       return {
@@ -707,51 +712,41 @@
             </div>
 
             {#if (tier.stripeEnabled || tier.cryptoEnabled) && tier.price && parseFloat(tier.price) > 0}
-              {#if FEATURES.cryptoPaymentsAllowed}
-                <!-- Fee handling toggle — hidden in card-only mode because the server
-                     currently hardcodes the buyer-pays policy for Stripe payments. -->
-                <div class="fee-mode">
-                  <span class="fee-mode-label">Who pays the fees?</span>
-                  <div class="fee-mode-toggle">
-                    <button
-                      type="button"
-                      class="fee-mode-btn"
-                      class:fee-mode-btn--active={tier.feePassedToCustomer}
-                      onclick={() => { tier.feePassedToCustomer = true; }}
-                    >Buyer pays</button>
-                    <button
-                      type="button"
-                      class="fee-mode-btn"
-                      class:fee-mode-btn--active={!tier.feePassedToCustomer}
-                      onclick={() => { tier.feePassedToCustomer = false; }}
-                    >I absorb</button>
-                  </div>
+              <div class="fee-mode">
+                <span class="fee-mode-label">Booking fee</span>
+                <div class="fee-mode-toggle">
+                  <button
+                    type="button"
+                    class="fee-mode-btn"
+                    class:fee-mode-btn--active={tier.feePassedToCustomer}
+                    onclick={() => { tier.feePassedToCustomer = true; }}
+                  >Add a booking fee</button>
+                  <button
+                    type="button"
+                    class="fee-mode-btn"
+                    class:fee-mode-btn--active={!tier.feePassedToCustomer}
+                    onclick={() => { tier.feePassedToCustomer = false; }}
+                  >No booking fee</button>
                 </div>
+              </div>
 
-                {#if tier.feePassedToCustomer}
-                  <label class="field buyer-fee-field">
-                    <span class="field-label">Booking fee % (added to buyer's total)</span>
-                    <div class="buyer-fee-input-wrap">
-                      <input
-                        type="number"
-                        min={BUYER_FEE_FLOOR_PCT}
-                        step="0.5"
-                        bind:value={tier.buyerFeePercent}
-                        onblur={() => clampBuyerFee(tier)}
-                      />
-                      <span class="buyer-fee-suffix">%</span>
-                    </div>
-                    <span class="approval-hint">
-                      Minimum {BUYER_FEE_FLOOR_PCT}% covers card processing (3%) + platform fee (1.5%).
-                      Anything above goes to you.
-                    </span>
-                  </label>
-                {/if}
-              {:else}
-                <p class="booking-fee-note">
-                  A {BUYER_FEE_DEFAULT_PCT}% booking fee is added at checkout and covers
-                  card processing and the platform fee.
-                </p>
+              {#if tier.feePassedToCustomer}
+                <label class="field buyer-fee-field">
+                  <span class="field-label">Booking fee % (included in the price buyers see)</span>
+                  <div class="buyer-fee-input-wrap">
+                    <input
+                      type="number"
+                      min={BUYER_FEE_FLOOR_PCT}
+                      step="0.5"
+                      bind:value={tier.buyerFeePercent}
+                      onblur={() => clampBuyerFee(tier)}
+                    />
+                    <span class="buyer-fee-suffix">%</span>
+                  </div>
+                  <span class="approval-hint">
+                    Minimum {BUYER_FEE_FLOOR_PCT}%. It's yours, less card processing and our 1.5% platform fee.
+                  </span>
+                </label>
               {/if}
 
               {@const fees = feeBreakdown(tier.price, tier.currency, tier.feePassedToCustomer, tier.stripeEnabled, tier.cryptoEnabled, tier.buyerFeePercent)}
@@ -767,7 +762,7 @@
                         <div class="fee-row"><span>Ticket price</span><span>{fees.basePrice}</span></div>
                         <div class="fee-row fee-deduction"><span>Booking fee ({tier.buyerFeePercent}%)</span><span>+{fees.buyerMarkup}</span></div>
                         <div class="fee-row fee-total"><span>Buyer pays</span><span>{fees.cardTotal}</span></div>
-                        <div class="fee-row fee-deduction"><span>Card processing</span><span>−{fees.stripeFee}</span></div>
+                        <div class="fee-row fee-deduction"><span>Card processing (est.)</span><span>−{fees.stripeFee}</span></div>
                         <div class="fee-row fee-deduction"><span>Platform fee</span><span>−{fees.platformFeeCard}</span></div>
                         <div class="fee-row fee-total"><span>You receive</span><span>{fees.payoutCard}</span></div>
                       </div>
@@ -786,7 +781,7 @@
                     <span class="fee-breakdown-title">Your payout (per ticket)</span>
                     <div class="fee-row"><span>Ticket price</span><span>{fees.basePrice}</span></div>
                     {#if tier.stripeEnabled}
-                      <div class="fee-row fee-deduction"><span>Card processing</span><span>−{fees.stripeFee}</span></div>
+                      <div class="fee-row fee-deduction"><span>Card processing (est.)</span><span>−{fees.stripeFee}</span></div>
                       <div class="fee-row fee-deduction"><span>Platform fee</span><span>−{fees.platformFeeCard}</span></div>
                       <div class="fee-row fee-total"><span>You receive (card)</span><span>{fees.payoutCard}</span></div>
                     {/if}
@@ -796,6 +791,11 @@
                     {/if}
                   {/if}
                 </div>
+                {#if tier.stripeEnabled}
+                  <p class="advertise-hint">
+                    Buyers see {fees.cardTotal ?? fees.basePrice} wherever this ticket is listed - quote that price when you advertise it.
+                  </p>
+                {/if}
               {/if}
             {/if}
           </div>
@@ -1515,9 +1515,9 @@
     flex-shrink: 0;
   }
 
-  /* ── Booking-fee note (card-only mode) ── */
-  .booking-fee-note {
-    margin: 0;
+  /* ── Headline-price reminder under the fee breakdown ── */
+  .advertise-hint {
+    margin: 0.5rem 0 0;
     padding: 0.5rem 0.625rem;
     background: var(--bg-elevated);
     border: 1px dashed var(--border);

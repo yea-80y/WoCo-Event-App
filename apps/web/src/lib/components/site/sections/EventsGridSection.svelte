@@ -8,6 +8,7 @@
   import type { SiteEventsFull } from '../../../api/sites.js';
   import { onMount, onDestroy } from 'svelte';
   import { cacheGet, cacheSet, cacheKey, TTL } from '../../../cache/cache.js';
+  import { headlinePriceRange } from '@woco/shared';
   import { firstImageUrl, useNextImageUrl } from '../image-fallback.js';
   import { buildEventJsonLd } from '@woco/shared';
   import { setJsonLd } from '../../../seo/head.js';
@@ -156,11 +157,9 @@
 
   function priceLabel(ev: EventFeed): string {
     if (!ev.series?.length) return '';
-    const s = ev.series[0];
-    if (!s.payment || s.price === 0) return 'Free';
-    const sym: Record<string, string> = { GBP: '£', USD: '$', EUR: '€' };
-    const currency = s.payment.currency;
-    return `${sym[currency] ?? ''}${s.payment.price}`;
+    const range = headlinePriceRange(ev.series);
+    if (!range) return 'Free';
+    return range.min.amount === range.max.amount ? range.min.label : `From ${range.min.label}`;
   }
 
   function gatewayImageUrl(imageHash: string | undefined, storedOn?: string): string | undefined {

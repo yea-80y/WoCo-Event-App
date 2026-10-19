@@ -1,6 +1,7 @@
 import type { EventFeed, EventGeo, EventTag, SeriesSummary } from "./types.js";
 import { normaliseTags } from "./tags.js";
 import { normaliseGeo } from "./geo.js";
+import { headlinePrice } from "./fees.js";
 
 /**
  * schema.org/Event structured data (#55).
@@ -48,7 +49,11 @@ type Json = Record<string, unknown>;
  *  without a currency (legacy `SeriesSummary.price`, which predates PaymentConfig). */
 function offerFor(series: SeriesSummary, url: string): Json | null {
   const payment = series.payment;
-  const price = payment ? payment.price : series.price != null ? String(series.price) : null;
+  // Booking fee included: Google shows this figure as the ticket price.
+  const headline = headlinePrice(payment);
+  const price = payment
+    ? headline ? headline.amount.toFixed(2) : payment.price
+    : series.price != null ? String(series.price) : null;
   if (price == null) return null;
 
   const offer: Json = {

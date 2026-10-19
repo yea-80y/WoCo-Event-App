@@ -235,6 +235,8 @@ If the £2 does apply, add ~$24/yr and the total becomes ~$38/yr — enough to m
 
 **Fee floor (#645):** the platform fee on a card sale is `round(subtotal × 1.5%)` (`checkout-fees.ts`), and it must be at least 1 minor unit (`MIN_APPLICATION_FEE_MINOR`). The webhook proves a session is ours by that fee, so a sale with no fee could never be fulfilled. Below the floor (a subtotal under 34p/34c, e.g. one 30p ticket), checkout refuses: "price too low". Organisers never reach it: the minimum ticket price is £1/$1/€1 (`MIN_TICKET_PRICE`, shared `features.ts`, #694), enforced in the editor, at publish and by the server. The 34p floor stays at checkout as the backstop, and for shop orders (shop rail off, `shopAllowed`).
 
+**Headline price (CMA209):** every listing - app event page, sites, embed button, JSON-LD offers - shows one ticket's price with the booking fee included (`headlinePrice`, shared `event/fees.ts`); the checkout itemises it. A server test pins it to `computeCardFees`, so the advertised price is the charged price. The organiser can set the fee or switch it off per ticket type.
+
 Either way, **price on value not cost** — §7's anchors (Mailchimp $900/yr at 10k contacts, Squarespace £144/yr) set the price, not our margin floor.
 
 ### Payout timing is a RISK CONTROL, not a feature — LAUNCH BLOCKER

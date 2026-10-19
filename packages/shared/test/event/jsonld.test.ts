@@ -86,6 +86,19 @@ test("offers come from PaymentConfig, with sale window as validity", () => {
   assert.equal(offers[0].availability, "https://schema.org/InStock");
 });
 
+test("offer price includes the booking fee - Google shows it as the ticket price", () => {
+  const series = [{
+    seriesId: "s1", name: "GA", description: "", totalSupply: 10, price: 0,
+    payment: {
+      price: "12.50", currency: "GBP", recipientAddress: "0x0", acceptedChains: [],
+      escrow: false, cryptoEnabled: false, stripeEnabled: true,
+      feePassedToCustomer: true, buyerFeePercent: 10,
+    },
+  }] as SeriesSummary[];
+  const offers = buildEventJsonLd(source({ series }), { url: URL_ })!.offers as Record<string, unknown>[];
+  assert.equal(offers[0].price, "13.75");
+});
+
 test("legacy numeric price (no PaymentConfig) still produces an offer", () => {
   const series = [{ seriesId: "s1", name: "GA", description: "", totalSupply: 10, price: 0 }] as SeriesSummary[];
   const offers = buildEventJsonLd(source({ series }), { url: URL_ })!.offers as Record<string, unknown>[];

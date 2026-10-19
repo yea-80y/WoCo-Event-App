@@ -8,7 +8,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { cacheGet, cacheSet, cacheKey, TTL } from '../../../cache/cache.js';
   import { firstImageUrl, useNextImageUrl } from '../image-fallback.js';
-  import { buildEventJsonLd } from '@woco/shared';
+  import { buildEventJsonLd, headlinePriceRange } from '@woco/shared';
   import { setJsonLd } from '../../../seo/head.js';
 
   interface Props {
@@ -94,10 +94,9 @@
 
   function priceLabel(ev: EventFeed): string {
     if (!ev.series?.length) return '';
-    const s = ev.series[0];
-    if (!s.payment || s.price === 0) return 'Free entry';
-    const sym: Record<string, string> = { GBP: '£', USD: '$', EUR: '€' };
-    return `From ${sym[s.payment.currency] ?? ''}${s.payment.price}`;
+    const range = headlinePriceRange(ev.series);
+    if (!range) return 'Free entry';
+    return range.min.amount === range.max.amount ? range.min.label : `From ${range.min.label}`;
   }
 
   function imageUrl(ev: EventFeed): string | undefined {

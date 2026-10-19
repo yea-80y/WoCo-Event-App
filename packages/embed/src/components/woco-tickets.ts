@@ -2,6 +2,7 @@ import { createApiClient, type ApiClient } from "../api/client.js";
 import { getStyles } from "./styles.js";
 import {
   calculateBuyerFees,
+  headlinePrice,
   fetchOrderKey,
   orderFieldRequired,
   isHealthField,
@@ -806,7 +807,8 @@ export class WocoTickets extends HTMLElement {
     } else if (avail === 0) {
       actionHtml = `<button class="claim-btn" disabled>Sold out</button>`;
     } else {
-      const unit = calculateBuyerFees(s.payment, 1)?.unit ?? "";
+      // Booking fee included: the button is the embed's headline price.
+      const unit = headlinePrice(s.payment)?.label ?? "";
       actionHtml = `<button class="claim-btn" data-buy="${this.esc(s.seriesId)}">Buy${unit ? ` — ${this.esc(unit)}` : ""}</button>`;
     }
 

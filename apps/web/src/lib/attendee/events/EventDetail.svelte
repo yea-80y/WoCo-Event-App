@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { EventFeed, Hex0x } from "@woco/shared";
-  import { socialEventSubject, socialProfileSubject, subEnsWebUrl } from "@woco/shared";
+  import { socialEventSubject, socialProfileSubject, subEnsWebUrl, headlinePrice } from "@woco/shared";
   import { rememberLabel } from "../../profile/label-cache.js";
   import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
   import { getEvent } from "../../api/events.js";
@@ -316,10 +316,11 @@
       <div class="past-tickets-block">
         <div class="past-tickets-list">
           {#each event.series as s}
+            {@const headline = headlinePrice(s.payment)}
             <div class="past-series-row">
               <span class="past-series-name">{s.name}</span>
-              {#if s.payment && parseFloat(s.payment.price) > 0}
-                <span class="past-series-price">{s.payment.currency === "USD" ? `$${s.payment.price}` : `${s.payment.price} ${s.payment.currency}`}</span>
+              {#if headline}
+                <span class="past-series-price">{headline.label}</span>
               {:else}
                 <span class="past-series-price past-series-price--free">Free</span>
               {/if}
@@ -335,17 +336,21 @@
         {#each event.series as s}
           {@const isPaid = !!(s.payment && parseFloat(s.payment.price) > 0)}
           {@const sale = seriesSaleStatus(s, now)}
+          {@const headline = headlinePrice(s.payment)}
           <div class="series-card" class:series-card--paid={isPaid}>
             <div class="series-top">
               <div class="series-info">
                 <div class="series-header">
                   <h3>{s.name}</h3>
-                  {#if s.payment && parseFloat(s.payment.price) > 0}
-                    <span class="series-price">{s.payment.currency === "USD" ? `$${s.payment.price}` : `${s.payment.price} ${s.payment.currency}`}</span>
+                  {#if headline}
+                    <span class="series-price">{headline.label}</span>
                   {:else}
                     <span class="series-price series-price--free">Free</span>
                   {/if}
                 </div>
+                {#if headline?.feeLabel}
+                  <p class="series-fee-note">incl. {headline.feeLabel} booking fee</p>
+                {/if}
                 {#if s.description}
                   <p class="series-desc">{s.description}</p>
                 {/if}
@@ -775,6 +780,12 @@
   .series-price--free {
     color: var(--success);
     background: transparent;
+  }
+
+  .series-fee-note {
+    margin: 0.125rem 0 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
   }
 
   .series-desc {

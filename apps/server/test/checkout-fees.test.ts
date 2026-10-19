@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 
 import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../src/lib/stripe/checkout-fees.js";
 import { readFileSync } from "node:fs";
-import { BUYER_FEE_FLOOR_PCT } from "@woco/shared";
+import { BUYER_FEE_FLOOR_PCT, headlinePrice, type PaymentConfig } from "@woco/shared";
 
 describe("computeCardFees", () => {
   it("pass-through: buyer pays ticket × (1 + pct/100), platform takes 1.5% of subtotal", () => {
@@ -76,6 +76,25 @@ describe("the fee floor", () => {
       const g = src.indexOf(guard);
       assert.ok(g >= 0, `${rel} must refuse a fee below the floor`);
       assert.ok(g < src.indexOf(create), `${rel}: the refusal comes before the session`);
+    }
+  });
+});
+
+describe("headline price parity", () => {
+  it("every listing shows exactly what the checkout charges per ticket", () => {
+    // A drift here advertises one price and charges another (CMA209).
+    for (const price of ["1.00", "3.33", "9.99", "12.50", "20.00", "47.85"]) {
+      for (const fee of [
+        { feePassedToCustomer: false },
+        { feePassedToCustomer: true },
+        { feePassedToCustomer: true, buyerFeePercent: 1 },
+        { feePassedToCustomer: true, buyerFeePercent: 4.5 },
+        { feePassedToCustomer: true, buyerFeePercent: 12.5 },
+      ]) {
+        const payment = { price, currency: "GBP", stripeEnabled: true, ...fee } as PaymentConfig;
+        const shown = Math.round(headlinePrice(payment)!.amount * 100);
+        assert.equal(shown, computeCardFees(fee, parseFloat(price), 1).chargeAmount, `${price} ${JSON.stringify(fee)}`);
+      }
     }
   });
 });
