@@ -5,7 +5,7 @@
   import { cacheGet, cacheSet, cacheKey, TTL } from "../../cache/cache.js";
   import { isPastEvent } from "../../utils/events.js";
   import { onMount, onDestroy } from "svelte";
-  import { buildEventJsonLd, eventMetaDescription } from "@woco/shared";
+  import { buildEventJsonLd, eventMetaDescription, headlinePrice, headlinePriceRange } from "@woco/shared";
   import { setJsonLd, setMetaDescription, setTitle } from "../../seo/head.js";
   import ClaimButton from "../../attendee/events/ClaimButton.svelte";
   import { WOCO_POLICY_URL } from "../../legal/organiser-notice.js";
@@ -175,22 +175,12 @@
     });
   }
 
-  function currencySymbol(c: string): string {
-    if (c === "GBP") return "£";
-    if (c === "USD") return "$";
-    if (c === "EUR") return "€";
-    return c + " ";
-  }
-
   function priceRange(series: SeriesSummary[]): string {
-    const prices = series
-      .filter((s) => s.payment && parseFloat(s.payment.price) > 0)
-      .map((s) => parseFloat(s.payment!.price));
-    if (!prices.length) return "Free";
-    const min = Math.min(...prices);
-    const max = Math.max(...prices);
-    const sym = currencySymbol(series.find((s) => s.payment)?.payment?.currency ?? "");
-    return min === max ? `${sym}${min.toFixed(2)}` : `${sym}${min.toFixed(2)} – ${sym}${max.toFixed(2)}`;
+    const range = headlinePriceRange(series);
+    if (!range) return "Free";
+    return range.min.amount === range.max.amount
+      ? range.min.label
+      : `${range.min.label} – ${range.max.label}`;
   }
 
   function mapsUrl(location: string): string {
@@ -503,9 +493,13 @@
               {/if}
 
               {#if isPaid}
+                {@const headline = headlinePrice(s.payment)}
                 <span class="ticket-price" class:ticket-price--dim={isUnavailable}>
-                  {currencySymbol(s.payment!.currency)}{parseFloat(s.payment!.price).toFixed(2)}
+                  {headline?.label}
                 </span>
+                {#if headline?.feeLabel}
+                  <span class="ticket-fee-note">incl. {headline.feeLabel} booking fee</span>
+                {/if}
               {:else}
                 <span class="ticket-price ticket-price--free" class:ticket-price--dim={isUnavailable}>
                   Free
@@ -1084,6 +1078,12 @@
 
   .ticket-price--dim {
     color: var(--text-muted) !important;
+  }
+
+  .ticket-fee-note {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    white-space: nowrap;
   }
 
   /* Qty selector */
