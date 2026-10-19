@@ -52,6 +52,8 @@ const GATED: Array<[file: string, signature: string, action: string]> = [
   ["creator/events/EditEventPanel.svelte", "async function save()", "auth.getContentFeedSigner()"],
   ["creator/events/EditEventPanel.svelte", "async function handleDelete", "auth.getContentFeedSigner()"],
   ["creator/builder/MultiSiteBuilder.svelte", "const publishSequence = async () => {", "uploadSiteImage("],
+  // The tap's own confirm, before the notice check reads the network (one-tap name pointing).
+  ["creator/builder/MultiSiteBuilder.svelte", "async function handlePublish", "noticeLetsPublish()"],
   ["creator/SiteBuilder.svelte", "async function handleDeploy", "deployToSwarm()"],
   ["creator/SiteBuilder.svelte", "async function handleRegisterDomain", "registerDomain("],
 ];

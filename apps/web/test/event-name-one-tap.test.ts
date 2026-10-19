@@ -144,7 +144,7 @@ test("only the event-page publish signs as the holder silently; a name release n
     if (rel === "lib/auth/auth-store.svelte.ts") continue; // the definition; its own wrapper is pinned below
     if (/signTypedDataAsHolder\([^)]*silent/.test(readFileSync(file, "utf8"))) silent.push(rel);
   }
-  assert.deepEqual(silent, ["lib/creator/SiteBuilder.svelte"]);
+  assert.deepEqual(silent.sort(), ["lib/creator/SiteBuilder.svelte", "lib/creator/builder/MultiSiteBuilder.svelte"].sort());
   assert.match(STORE, /signTypedDataAsHolder: \(typed\) => signTypedDataAsHolder\(typed as Parameters<typeof signTypedDataAsHolder>\[0\]\),/);
   assert.match(read("lib/creator/builder/DiscardNameDialog.svelte"), /signTypedData: \(typed: ReleaseTypedData\) => auth\.signTypedDataAsHolder\(typed\)/);
   const builder = read("lib/creator/SiteBuilder.svelte");
@@ -177,6 +177,25 @@ test("the background path reaches the manifest check: no other pointer function 
   assert.match(point, /const kernelKind = auth\.kind === "passkey" \|\| auth\.kind === "web3auth";/, "a wallet goes straight to the button");
   assert.match(point, /\|\| !kernelKind\) \{\s*subEnsPhase = "sign";/);
   assert.match(point, /if \(outcome\.error instanceof ApiError\) \{/, "only a relay refusal is shown under the button");
+});
+
+test("a site's Publish tap asks first, and its name is pointed the same way as an event page's", () => {
+  const msb = read("lib/creator/builder/MultiSiteBuilder.svelte");
+  const publish = body(msb, "async function handlePublish(");
+  const confirm = publish.indexOf("await auth.ensureOrganiserUnlock({ holderKey: !!siteNameToPoint });");
+  assert.ok(confirm > 0);
+  assert.doesNotMatch(publish.slice(0, confirm), /await /, "nothing may await before the tap's passkey sheet");
+  assert.ok(confirm < publish.indexOf("noticeLetsPublish()"), "before the notice check reads the network");
+  assert.match(publish, /signedWith = deployRes\.data\.multisiteFeed && feedSigner \? feedSigner\.address : null;/);
+  assert.match(publish, /subEnsPointerFeed = signedWith \? \{ owner: signedWith, topic: multisiteFeedTopic\(site\.siteId\) \} : null;/);
+  const point = body(msb, "async function pointSiteName(");
+  assert.match(point, /if \(!feed \|\| p\.feedOwner !== 'client' \|\| !auth\.isAccountOwner \|\| !kernelKind\) return;/);
+  assert.match(point, /autoPointName\(p\.label, p\.target, feed, \(typed\) => auth\.signTypedDataAsHolder\(typed, \{ silent: true \}\)\)/);
+  assert.match(point, /outcome\.error instanceof ApiError/);
+  assert.equal(msb.match(/signTypedDataAsHolder\(/g)?.length, 1, "the site builder signs in one place");
+  assert.match(msb, /feed=\{subEnsPointerFeed \?\? undefined\}/, "the button checks the same feed");
+  assert.match(msb, /disabled=\{publishState === 'publishing' \|\| subEnsPointing\}/);
+  assert.match(publish, /if \(publishState === 'publishing' \|\| subEnsPointing\) return;/, "the Domain tab's Publish too");
 });
 
 test("the button checks a feed target too, and a refused one offers no retry", () => {

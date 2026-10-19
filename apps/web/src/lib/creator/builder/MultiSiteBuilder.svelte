@@ -2,7 +2,7 @@
   import NoticeConfirmPrompt from '../privacy/NoticeConfirmPrompt.svelte';
   import { ownNoticeStatus, type OwnNoticeStatus } from '../../legal/own-notice-status.js';
   import type { Site, SiteDeploySubEns, SiteEventEntry, TemplateId } from "@woco/shared";
-  import { newSiteFromTemplate, siteConfigTopic, subEnsName, FEATURES } from "@woco/shared";
+  import { multisiteFeedTopic, newSiteFromTemplate, siteConfigTopic, subEnsName, FEATURES } from "@woco/shared";
   import { logFeedToManifest } from "../../manifest/feed-log.js";
   import { onMount } from 'svelte';
   import { publishSite, deploySite, loadSite, getSiteEvents, uploadSiteImage, type DeploySiteResult } from "../../api/sites.js";
@@ -29,7 +29,8 @@
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import { getStripeAccountStatus } from "../../api/stripe.js";
   import { getOwnedSubEns } from "../../api/sub-ens.js";
-  import { describeSubEnsError, subEnsErrorDetail } from "../../sub-ens/errors.js";
+  import { describeSubEnsError, subEnsErrorDetail, subEnsErrorFrom } from "../../sub-ens/errors.js";
+  import { ApiError } from "../../api/errors.js";
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
   function uid(): string {
@@ -116,8 +117,40 @@
    *  fire-and-forget on the server, so a skip used to leave no trace anywhere
    *  the organiser could see it (#484). */
   let subEnsNotice = $state<{ tone: 'info' | 'warn'; text: string } | null>(null);
-  /** The site's name is not on this site's feed yet: the holder signs once. */
+  /** The site's name is not on this site's feed yet: the holder signs once - in the
+   *  background after the Publish tap's confirm (`pointSiteName`), else with the button. */
   let subEnsPointer = $state<Extract<SiteDeploySubEns, { status: 'awaiting_signature' }> | null>(null);
+  let subEnsPointing = $state(false);
+  let subEnsPointerNote = $state<string | null>(null);
+  /** The feed the name must follow: this device's own signer, the site's topic. */
+  let subEnsPointerFeed = $state<{ owner: string; topic: string } | null>(null);
+
+  // The name this device last saw on this site's feed, so a republish asks nothing at
+  // the tap. A per-device hint only: the deploy's answer is the truth, and a stale hint
+  // costs at most the button.
+  const followsKey = (siteId: string) => `woco:site-name-follows:${siteId}`;
+  let followingName = $state<string | null>(null);
+  $effect(() => {
+    const id = site.siteId;
+    try {
+      followingName = localStorage.getItem(followsKey(id));
+    } catch {
+      followingName = null;
+    }
+  });
+  function setFollowingName(label: string | null) {
+    followingName = label;
+    try {
+      if (label) localStorage.setItem(followsKey(site.siteId), label);
+      else localStorage.removeItem(followsKey(site.siteId));
+    } catch {
+      // Storage refused: the next publish asks once more, nothing worse.
+    }
+  }
+  /** A name this publish will point at the site, asked for at the tap. */
+  const siteNameToPoint = $derived(
+    site.subEnsLabel && site.subEnsLabel !== followingName && auth.isAccountOwner ? site.subEnsLabel : '',
+  );
   let deployedUrl       = $state('');
   let deployedHash      = $state(
     typeof window !== 'undefined'
@@ -353,8 +386,29 @@
     }
   }
 
+  function showPublishError(err: unknown) {
+    publishError = err instanceof Error ? err.message : 'Publish failed';
+    publishState = 'error';
+    setTimeout(() => {
+      // Only auto-clear if still showing this same error — don't clobber
+      // a subsequent publish the user already started.
+      if (publishState === 'error') publishState = 'idle';
+    }, 5000);
+  }
+
   async function handlePublish() {
-    if (publishState === 'publishing') return;
+    if (publishState === 'publishing' || subEnsPointing) return;
+    // First, while the tap still lets a passkey sheet open (the notice check below reads
+    // the network): the confirm, and the key that signs the name's pointer later. Not
+    // signed in yet, the sign-in is that sheet.
+    if (auth.isConnected && auth.hasSession) {
+      try {
+        await auth.ensureOrganiserUnlock({ holderKey: !!siteNameToPoint });
+      } catch (err) {
+        showPublishError(err);
+        return;
+      }
+    }
 
     if (!auth.isConnected) {
       const ok = await loginRequest.request();
@@ -370,7 +424,10 @@
     publishError = '';
     subEnsNotice = null;
     subEnsPointer = null;
+    subEnsPointerNote = null;
+    subEnsPointerFeed = null;
     deployedUrl = '';
+    let signedWith: string | null = null;
 
     /** Logo upload → publish config/feeds → deploy. Throws the sentinel errors
      * above when the server raises a gate, so the outer flow can react (open
@@ -401,6 +458,8 @@
         if (deployRes.code === 'STRIPE_VERIFICATION_REQUIRED') throw new StripeVerificationNeeded(deployRes.error);
         throw new Error(deployRes.ok ? 'Deploy returned no data' : (deployRes.error ?? 'Deploy failed'));
       }
+      // deploySite signed the site feed's update with this key: the feed a name may follow.
+      signedWith = deployRes.data.multisiteFeed && feedSigner ? feedSigner.address : null;
       return deployRes.data;
     };
 
@@ -429,6 +488,9 @@
 
       subEnsNotice = describeDeploySubEns(deployed.subEns);
       subEnsPointer = deployed.subEns?.status === 'awaiting_signature' ? deployed.subEns : null;
+      if (deployed.subEns?.status === 'ok') setFollowingName(deployed.subEns.label);
+      subEnsPointerFeed = signedWith ? { owner: signedWith, topic: multisiteFeedTopic(site.siteId) } : null;
+      if (subEnsPointer) void pointSiteName(subEnsPointer);
       deployedUrl  = deployed.siteUrl;
       deployedHash = deployed.contentHash;
       localStorage.setItem(`woco:site-content-hash:${site.siteId}`, deployedHash);
@@ -468,13 +530,43 @@
 
       publishState = 'done';
     } catch (err) {
-      publishError = err instanceof Error ? err.message : 'Publish failed';
-      publishState = 'error';
-      setTimeout(() => {
-        // Only auto-clear if still showing this same error — don't clobber
-        // a subsequent publish the user already started.
-        if (publishState === 'error') publishState = 'idle';
-      }, 5000);
+      showPublishError(err);
+    }
+  }
+
+  /**
+   * Point the site's name with no second tap: the Publish tap confirmed it's the holder
+   * and put the key in memory, so this signs silently and asks for nothing. Anything
+   * short of done leaves the button; a target that is not this account's feed is
+   * refused with no button.
+   */
+  async function pointSiteName(p: Extract<SiteDeploySubEns, { status: 'awaiting_signature' }>) {
+    const feed = subEnsPointerFeed;
+    const kernelKind = auth.kind === 'passkey' || auth.kind === 'web3auth';
+    if (!feed || p.feedOwner !== 'client' || !auth.isAccountOwner || !kernelKind) return;
+    subEnsPointing = true;
+    try {
+      const { autoPointName } = await import('../../sub-ens/auto-pointer.js');
+      const outcome = await autoPointName(p.label, p.target, feed, (typed) => auth.signTypedDataAsHolder(typed, { silent: true }));
+      if (outcome.kind === 'done') {
+        subEnsPointer = null;
+        setFollowingName(p.label);
+        subEnsNotice = { tone: 'info', text: `${subEnsName(p.label)} now points at this site. It follows every publish from here.` };
+      } else if (outcome.kind === 'refused') {
+        subEnsPointer = null;
+        subEnsNotice = { tone: 'warn', text: outcome.error instanceof Error ? outcome.error.message : "Couldn't point the name" };
+      } else if (outcome.error instanceof ApiError) {
+        // Only the relay's refusals say something to act on (see SiteBuilder).
+        const d = subEnsErrorFrom(outcome.error, "Couldn't point the name");
+        const detail = subEnsErrorDetail(d);
+        subEnsPointerNote = `${d.title}${detail ? ` ${detail}` : ''}`;
+      } else if (outcome.error) {
+        console.warn('[sub-ens] background pointer handed to the button:', outcome.error);
+      }
+    } catch (e) {
+      console.error('[sub-ens] background pointer failed:', e);
+    } finally {
+      subEnsPointing = false;
     }
   }
 
@@ -745,7 +837,7 @@
           class:done={publishState === 'done'}
           class:error={publishState === 'error'}
           onclick={handlePublish}
-          disabled={publishState === 'publishing'}
+          disabled={publishState === 'publishing' || subEnsPointing}
         >
           {#if publishState === 'publishing'}
             <span class="pub-spinner" aria-hidden="true"></span><span class="pub-label">Publishing…</span>
@@ -802,14 +894,25 @@
         <span>{subEnsNotice.text}</span>
       </div>
     {/if}
-    {#if subEnsPointer}
+    {#if subEnsPointer && subEnsPointing}
+      <div class="subens-notice">
+        <span>Pointing {subEnsName(subEnsPointer.label)} at this site…</span>
+      </div>
+    {:else if subEnsPointer}
       <NamePointerPrompt
         label={subEnsPointer.label}
         target={subEnsPointer.target}
         targetIsFeed={true}
         feedOwner={subEnsPointer.feedOwner}
+        feed={subEnsPointerFeed ?? undefined}
+        note={subEnsPointerNote}
         purpose="site"
+        ondone={() => setFollowingName(subEnsPointer?.label ?? null)}
       />
+    {:else if siteNameToPoint && publishState !== 'publishing'}
+      <div class="subens-notice">
+        <span>Publishing also points {subEnsName(siteNameToPoint)} at this site.</span>
+      </div>
     {/if}
 
     <!-- Tab content -->
