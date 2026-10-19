@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 
 import { computeCardFees, MIN_APPLICATION_FEE_MINOR } from "../src/lib/stripe/checkout-fees.js";
 import { readFileSync } from "node:fs";
-import { BUYER_FEE_FLOOR_PCT, headlinePrice, type PaymentConfig } from "@woco/shared";
+import { BUYER_FEE_FLOOR_PCT, COVER_FEE_RATES, headlinePrice, type PaymentConfig } from "@woco/shared";
 
 describe("computeCardFees", () => {
   it("pass-through: buyer pays ticket × (1 + pct/100), platform takes 1.5% of subtotal", () => {
@@ -83,18 +83,48 @@ describe("the fee floor", () => {
 describe("headline price parity", () => {
   it("every listing shows exactly what the checkout charges per ticket", () => {
     // A drift here advertises one price and charges another (CMA209).
-    for (const price of ["1.00", "3.33", "9.99", "12.50", "20.00", "47.85"]) {
+    for (const price of ["1.00", "3.33", "9.99", "12.50", "20.00", "47.85", "59.00", "453.00", "847.00"]) {
       for (const fee of [
         { feePassedToCustomer: false },
         { feePassedToCustomer: true },
         { feePassedToCustomer: true, buyerFeePercent: 1 },
         { feePassedToCustomer: true, buyerFeePercent: 4.5 },
         { feePassedToCustomer: true, buyerFeePercent: 12.5 },
+        { feePassedToCustomer: true, coverFees: { ...COVER_FEE_RATES } },
       ]) {
         const payment = { price, currency: "GBP", stripeEnabled: true, ...fee } as PaymentConfig;
         const shown = Math.round(headlinePrice(payment)!.amount * 100);
-        assert.equal(shown, computeCardFees(fee, parseFloat(price), 1).chargeAmount, `${price} ${JSON.stringify(fee)}`);
+        assert.equal(shown, computeCardFees(fee, parseFloat(price), 1).sessionAmount, `${price} ${JSON.stringify(fee)}`);
       }
     }
+  });
+});
+
+describe("cover the fees", () => {
+  const cover = { feePassedToCustomer: true, coverFees: { ...COVER_FEE_RATES } };
+
+  it("charges the ticket line at face value plus one order-level booking fee", () => {
+    const f = computeCardFees(cover, 20, 3);
+    assert.equal(f.buyerFeePct, 0);
+    assert.equal(f.chargeAmount, 2000);
+    assert.ok(f.orderFeeAmount > 0);
+    assert.equal(f.sessionAmount, 2000 * 3 + f.orderFeeAmount);
+    assert.equal(f.totalApplicationFee, 90); // 1.5% of the tickets, never of the fee
+  });
+
+  it("checkout refuses unaccepted stored rates and sends the fee as its own line", () => {
+    const src = readFileSync(new URL("../src/routes/stripe.ts", import.meta.url), "utf-8");
+    const create = src.indexOf("checkout.sessions.create(");
+    const gate = src.indexOf("!acceptedCoverFeeRates(series.payment.coverFees)");
+    assert.ok(gate >= 0 && gate < create, "rates are checked before a session exists");
+    assert.ok(src.includes('product_data: { name: "Booking fee" }'));
+    // The integrity tag must commit to the real order total, fee line included.
+    assert.ok(src.includes("amountTotal: sessionAmount"));
+  });
+
+  it("publish accepts only today's rates for a cover-the-fees series", () => {
+    const src = readFileSync(new URL("../src/routes/events.ts", import.meta.url), "utf-8");
+    assert.ok(src.includes("r?.stripeBp !== COVER_FEE_RATES.stripeBp"));
+    assert.ok(src.includes("s.payment.buyerFeePercent !== undefined"));
   });
 });

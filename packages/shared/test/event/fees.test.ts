@@ -6,8 +6,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { calculateBuyerFees, CURRENCY_SYMBOLS, headlinePrice, headlinePriceRange } from "../../src/event/fees.js";
-import { BUYER_FEE_FLOOR_PCT, FEATURES } from "../../src/features.js";
+import {
+  calculateBuyerFees, CURRENCY_SYMBOLS, headlinePrice, headlinePriceRange,
+  coverFeeMinor, cardOrderAmounts, acceptedCoverFeeRates, bookingFeeMode, platformFeeMinor,
+} from "../../src/event/fees.js";
+import { BUYER_FEE_FLOOR_PCT, FEATURES, COVER_FEE_RATES, STRIPE_UK_STANDARD_CARD } from "../../src/features.js";
 import type { PaymentConfig } from "../../src/event/types.js";
 
 const payment = (over: Partial<PaymentConfig> = {}): PaymentConfig => ({
@@ -104,4 +107,71 @@ test("price range spans the paid ticket types by headline, not by face value", (
   assert.equal(range.min.label, "£10.50");
   assert.equal(range.max.label, "£11.00");
   assert.equal(headlinePriceRange([{}]), null);
+});
+
+// ── "Cover the fees": per order, priced at the dearest card ─────────────────
+
+const cover = { feePassedToCustomer: true, coverFees: { ...COVER_FEE_RATES } };
+
+/** What the organiser keeps on a card at `bp` + `fixed`, Stripe rounding half up. */
+const organiserNet = (subtotal: number, fee: number, bp: number, fixed: number, radar = 0) => {
+  const total = subtotal + fee;
+  return total - (Math.round((total * bp) / 10_000) + fixed) - radar - platformFeeMinor(subtotal);
+};
+
+test("cover fee leaves the organiser at least the subtotal on the dearest card, and is the smallest that does", () => {
+  const r = COVER_FEE_RATES;
+  for (let subtotal = 100; subtotal <= 100_000; subtotal++) {
+    const fee = coverFeeMinor(subtotal, r);
+    assert.ok(organiserNet(subtotal, fee, r.stripeBp, r.stripeFixedMinor, r.radarMinor) >= subtotal, `short at ${subtotal}`);
+    assert.ok(organiserNet(subtotal, fee - 1, r.stripeBp, r.stripeFixedMinor, r.radarMinor) < subtotal, `not minimal at ${subtotal}`);
+    // A standard UK card is cheaper, so the organiser keeps the difference.
+    const std = STRIPE_UK_STANDARD_CARD;
+    assert.ok(organiserNet(subtotal, fee, std.bp, std.fixedMinor) >= subtotal);
+  }
+});
+
+test("cover fee survives the half-penny boundaries where both roundings go up", () => {
+  // £59 / £453 / £847: a closed form with no search nets 1p short here.
+  for (const subtotal of [5_900, 45_300, 84_700]) {
+    for (const r of [COVER_FEE_RATES, { stripeBp: 150, stripeFixedMinor: 20, radarMinor: 0 }]) {
+      const fee = coverFeeMinor(subtotal, r);
+      assert.ok(organiserNet(subtotal, fee, r.stripeBp, r.stripeFixedMinor) >= subtotal, `${subtotal} ${r.stripeBp}`);
+    }
+  }
+  // Radar's per-payment fee is covered when the rates include it.
+  const withRadar = { ...COVER_FEE_RATES, radarMinor: 8 };
+  assert.ok(organiserNet(2_000, coverFeeMinor(2_000, withRadar), 315, 20, 8) >= 2_000);
+});
+
+test("cover fee is one order-level line, cheaper per ticket for bigger orders", () => {
+  const one = cardOrderAmounts(cover, 2_000, 1);
+  assert.equal(one.mode, "cover");
+  assert.equal(one.unitChargeMinor, 2_000);
+  assert.equal(one.orderFeeMinor, 117);
+  assert.equal(one.totalMinor, 2_117);
+  assert.equal(one.applicationFeeMinor, 30);
+  const four = cardOrderAmounts(cover, 2_000, 4);
+  assert.equal(four.totalMinor, 2_000 * 4 + four.orderFeeMinor);
+  assert.ok(four.orderFeeMinor < 4 * one.orderFeeMinor);
+  assert.equal(four.applicationFeeMinor, 120);
+});
+
+test("cover mode headline and receipt: fee included and labelled without a percent", () => {
+  const p = payment({ price: "20.00", ...cover });
+  const h = headlinePrice(p)!;
+  assert.equal(h.label, "£21.17");
+  assert.equal(h.feeLabel, "£1.17");
+  const r = calculateBuyerFees(p, 1)!;
+  assert.equal(r.feeRowLabel, "Booking fee");
+  assert.equal(r.cardTotal, "£21.17");
+  assert.equal(calculateBuyerFees(payment({ feePassedToCustomer: true, buyerFeePercent: 10 }), 1)!.feeRowLabel, "Booking fee (10%)");
+  assert.equal(calculateBuyerFees(payment(), 1)!.feeRowLabel, null);
+});
+
+test("cover rates only count with the booking fee on, and only accepted sets are accepted", () => {
+  assert.equal(bookingFeeMode({ coverFees: { ...COVER_FEE_RATES } }), "none");
+  assert.ok(acceptedCoverFeeRates({ ...COVER_FEE_RATES }));
+  assert.ok(!acceptedCoverFeeRates({ ...COVER_FEE_RATES, stripeBp: 0 }));
+  assert.ok(!acceptedCoverFeeRates(undefined));
 });

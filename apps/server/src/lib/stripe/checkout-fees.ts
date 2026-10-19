@@ -1,24 +1,28 @@
 /**
- * Card-checkout fee arithmetic — one place, because Organiser Terms §6 states
- * this structure contractually and the buyer receipt (packages/shared
- * event/fees.ts, rendered by the web app and the embed) mirrors it. Change
- * all three together.
+ * Card-checkout fee arithmetic. The numbers come from `cardOrderAmounts` in
+ * packages/shared event/fees.ts, the same function every receipt and listing
+ * shows, so the advertised price is the charged price. Organiser Terms §6
+ * states this structure contractually.
  *
- * The organiser chooses per series: pass a booking fee to the buyer
- * (`feePassedToCustomer`, `buyerFeePercent` ≥ floor, default 10%) and keep the
- * markup, or absorb fees into the ticket price. The platform's application fee
- * is PLATFORM_FEE_BP (1.5%) of the ticket subtotal. Stripe's processing fee is
- * charged to the organiser's connected account separately
- * (fees.payer = "account" — account-params.ts) and never appears here.
+ * The organiser chooses per series: no booking fee (absorb), their own booking
+ * fee % (`buyerFeePercent` ≥ floor, default 10%, folded into the ticket line),
+ * or "cover the fees" (`coverFees`, one order-level Booking fee line). The
+ * platform's application fee is PLATFORM_FEE_BP (1.5%) of the ticket subtotal.
+ * Stripe's processing fee is charged to the organiser's connected account
+ * separately (fees.payer = "account" — account-params.ts) and never appears here.
  */
 
-import { PLATFORM_FEE_BP, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT } from "@woco/shared";
+import { cardOrderAmounts, type PaymentConfig } from "@woco/shared";
 
 export interface CardFees {
-  /** Booking-fee % actually applied (0 when the organiser absorbs fees). */
+  /** Booking-fee % actually applied (percent mode only; 0 otherwise). */
   buyerFeePct: number;
-  /** What the buyer pays per ticket, in minor units. */
+  /** Per-ticket line amount, in minor units. */
   chargeAmount: number;
+  /** Separate order-level "Booking fee" line ("cover the fees"); 0 otherwise. */
+  orderFeeAmount: number;
+  /** What the buyer pays for the whole order, in minor units. */
+  sessionAmount: number;
   /** Platform application fee for the whole session, in minor units. */
   totalApplicationFee: number;
 }
@@ -32,20 +36,16 @@ export interface CardFees {
 export const MIN_APPLICATION_FEE_MINOR = 1;
 
 export function computeCardFees(
-  payment: { feePassedToCustomer?: boolean; buyerFeePercent?: number },
+  payment: Pick<PaymentConfig, "feePassedToCustomer" | "buyerFeePercent" | "coverFees">,
   priceFloat: number,
   quantity: number,
 ): CardFees {
-  const baseAmount = Math.round(priceFloat * 100);
-  // The floor re-clamps here because checkout must hold for series stored
-  // before creation-time validation, not just ones events.ts accepted.
-  const buyerFeePct = payment.feePassedToCustomer === true
-    ? Math.max(BUYER_FEE_FLOOR_PCT, payment.buyerFeePercent ?? BUYER_FEE_DEFAULT_PCT)
-    : 0;
-  const buyerFeeAmount = Math.round((baseAmount * buyerFeePct) / 100); // per unit
+  const a = cardOrderAmounts(payment, Math.round(priceFloat * 100), quantity);
   return {
-    buyerFeePct,
-    chargeAmount: baseAmount + buyerFeeAmount,
-    totalApplicationFee: Math.round((baseAmount * quantity * PLATFORM_FEE_BP) / 10_000),
+    buyerFeePct: a.feePercent,
+    chargeAmount: a.unitChargeMinor,
+    orderFeeAmount: a.orderFeeMinor,
+    sessionAmount: a.totalMinor,
+    totalApplicationFee: a.applicationFeeMinor,
   };
 }

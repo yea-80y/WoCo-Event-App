@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { PaymentConfig, PaymentChainId, Hex0x, ObjectGate, ObjectGateGroup } from "@woco/shared";
   import ObjectGateEditor from "../../components/object/ObjectGateEditor.svelte";
-  import { CHAIN_NAMES, PLATFORM_FEE_BP, FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT, CURRENCY_SYMBOLS, MIN_TICKET_PRICE, ticketPriceMeetsMinimum } from "@woco/shared";
+  import { CHAIN_NAMES, FEATURES, BUYER_FEE_FLOOR_PCT, BUYER_FEE_DEFAULT_PCT, CURRENCY_SYMBOLS, MIN_TICKET_PRICE, ticketPriceMeetsMinimum, COVER_FEE_RATES, STRIPE_UK_STANDARD_CARD, cardOrderAmounts } from "@woco/shared";
   import { auth } from "../../auth/auth-store.svelte.js";
   import StripeConnectModal from "../dashboard/StripeConnectModal.svelte";
   import ConnectWalletModal from "../../components/profile/ConnectWalletModal.svelte";
@@ -42,6 +42,8 @@
     feePassedToCustomer: boolean;
     /** Organiser-set buyer-pays fee % (≥ BUYER_FEE_FLOOR_PCT). Default BUYER_FEE_DEFAULT_PCT. */
     buyerFeePercent: number;
+    /** "Cover the fees" instead of a % (only with feePassedToCustomer). The default. */
+    coverFees: boolean;
     /** Optional object-holdings gate — applies to every wave in this tier. */
     gate?: ObjectGate | ObjectGateGroup;
   }
@@ -250,6 +252,7 @@
       stripeEnabled: true,
       feePassedToCustomer: true,
       buyerFeePercent: BUYER_FEE_DEFAULT_PCT,
+      coverFees: true,
       waves: [{
         id: crypto.randomUUID(),
         label: "",
@@ -302,6 +305,7 @@
         stripeEnabled: isPaid,
         feePassedToCustomer: true,
         buyerFeePercent: BUYER_FEE_DEFAULT_PCT,
+        coverFees: true,
         waves: [{
           id: crypto.randomUUID(),
           label: "",
@@ -374,8 +378,7 @@
             escrow: tier.cryptoEnabled, // escrow for crypto payments
             cryptoEnabled: tier.cryptoEnabled,
             stripeEnabled: tier.stripeEnabled,
-            feePassedToCustomer: tier.feePassedToCustomer,
-            ...(tier.feePassedToCustomer ? { buyerFeePercent: tier.buyerFeePercent } : {}),
+            ...tierFeeSettings(tier),
           };
         }
         return base;
@@ -384,55 +387,41 @@
     series = built;
   });
 
-  // Stripe's standard UK consumer-card rate on what the buyer pays - the rate
-  // Organiser Terms §6's worked example uses. An estimate: other cards cost more.
-  const STRIPE_PERCENT = 0.015;
-  const STRIPE_FIXED = 0.2;
-  const PLATFORM_PERCENT = PLATFORM_FEE_BP / 10_000; // 1.5%
+  /** The tier's booking-fee choice as stored on the series (PaymentConfig). */
+  function tierFeeSettings(tier: TierGroup) {
+    if (!tier.feePassedToCustomer) return { feePassedToCustomer: false };
+    return tier.coverFees
+      ? { feePassedToCustomer: true, coverFees: { ...COVER_FEE_RATES } }
+      : { feePassedToCustomer: true, buyerFeePercent: tier.buyerFeePercent };
+  }
 
-  function feeBreakdown(price: string, currency: string, passToCustomer: boolean, hasStripe: boolean, hasCrypto: boolean, buyerFeePct: number) {
-    const amount = parseFloat(price);
+  // A one-ticket order, from the checkout's own arithmetic. The payout estimate
+  // uses Stripe's standard UK consumer-card rate, as Organiser Terms §6's worked
+  // example does; other cards cost more.
+  function feeBreakdown(tier: TierGroup) {
+    const amount = parseFloat(tier.price);
     if (!amount || amount <= 0) return null;
-    const sym = CURRENCY_SYMBOLS[currency] ?? "";
-    const fmt = (n: number) => `${sym}${n.toFixed(2)}`;
-    const platformFee = amount * PLATFORM_PERCENT;
-
-    if (passToCustomer) {
-      // Per-ticket cents, as the checkout rounds it.
-      const buyerMarkup = Math.round(Math.round(amount * 100) * buyerFeePct / 100) / 100;
-      const cardTotal = amount + buyerMarkup;
-      const stripeFee = hasStripe ? cardTotal * STRIPE_PERCENT + STRIPE_FIXED : 0;
-      const cryptoTotal = amount + buyerMarkup;
-      const payoutCard = hasStripe ? cardTotal - stripeFee - platformFee : 0;
-      const payoutCrypto = hasCrypto ? cryptoTotal - platformFee : 0;
-      return {
-        mode: "pass" as const,
-        basePrice: fmt(amount),
-        buyerMarkup: fmt(buyerMarkup),
-        stripeFee: hasStripe ? fmt(stripeFee) : null,
-        platformFeeCard: hasStripe ? fmt(platformFee) : null,
-        platformFeeCrypto: hasCrypto ? fmt(platformFee) : null,
-        cardTotal: hasStripe ? fmt(cardTotal) : null,
-        cryptoTotal: hasCrypto ? fmt(cryptoTotal) : null,
-        payoutCard: hasStripe ? fmt(Math.max(0, payoutCard)) : null,
-        payoutCrypto: hasCrypto ? fmt(Math.max(0, payoutCrypto)) : null,
-      };
-    } else {
-      const stripeFee = hasStripe ? amount * STRIPE_PERCENT + STRIPE_FIXED : 0;
-      const payoutCard = amount - stripeFee - platformFee;
-      const payoutCrypto = amount - platformFee;
-      return {
-        mode: "absorb" as const,
-        basePrice: fmt(amount),
-        stripeFee: hasStripe ? fmt(stripeFee) : null,
-        platformFeeCard: hasStripe ? fmt(platformFee) : null,
-        platformFeeCrypto: hasCrypto ? fmt(platformFee) : null,
-        cardTotal: null,
-        cryptoTotal: null,
-        payoutCard: hasStripe ? fmt(Math.max(0, payoutCard)) : null,
-        payoutCrypto: hasCrypto ? fmt(Math.max(0, payoutCrypto)) : null,
-      };
-    }
+    const sym = CURRENCY_SYMBOLS[tier.currency] ?? "";
+    const fmt = (minor: number) => `${sym}${(minor / 100).toFixed(2)}`;
+    const unitMinor = Math.round(amount * 100);
+    const a = cardOrderAmounts(tierFeeSettings(tier), unitMinor, 1);
+    const stripeFee = Math.round((a.totalMinor * STRIPE_UK_STANDARD_CARD.bp) / 10_000) + STRIPE_UK_STANDARD_CARD.fixedMinor;
+    const hasStripe = tier.stripeEnabled;
+    const hasCrypto = tier.cryptoEnabled;
+    const passed = a.mode !== "none";
+    return {
+      mode: passed ? "pass" as const : "absorb" as const,
+      feeLabel: a.mode === "percent" ? `Booking fee (${a.feePercent}%)` : "Booking fee",
+      basePrice: fmt(unitMinor),
+      buyerMarkup: fmt(a.bookingFeeMinor),
+      stripeFee: hasStripe ? fmt(stripeFee) : null,
+      platformFeeCard: hasStripe ? fmt(a.applicationFeeMinor) : null,
+      platformFeeCrypto: hasCrypto ? fmt(a.applicationFeeMinor) : null,
+      cardTotal: hasStripe && passed ? fmt(a.totalMinor) : null,
+      cryptoTotal: hasCrypto && passed ? fmt(a.totalMinor) : null,
+      payoutCard: hasStripe ? fmt(Math.max(0, a.totalMinor - stripeFee - a.applicationFeeMinor)) : null,
+      payoutCrypto: hasCrypto ? fmt(Math.max(0, a.totalMinor - a.applicationFeeMinor)) : null,
+    };
   }
 
   function addTier() {
@@ -718,9 +707,15 @@
                   <button
                     type="button"
                     class="fee-mode-btn"
-                    class:fee-mode-btn--active={tier.feePassedToCustomer}
-                    onclick={() => { tier.feePassedToCustomer = true; }}
-                  >Add a booking fee</button>
+                    class:fee-mode-btn--active={tier.feePassedToCustomer && tier.coverFees}
+                    onclick={() => { tier.feePassedToCustomer = true; tier.coverFees = true; }}
+                  >Cover the fees</button>
+                  <button
+                    type="button"
+                    class="fee-mode-btn"
+                    class:fee-mode-btn--active={tier.feePassedToCustomer && !tier.coverFees}
+                    onclick={() => { tier.feePassedToCustomer = true; tier.coverFees = false; }}
+                  >Your own %</button>
                   <button
                     type="button"
                     class="fee-mode-btn"
@@ -730,7 +725,12 @@
                 </div>
               </div>
 
-              {#if tier.feePassedToCustomer}
+              {#if tier.feePassedToCustomer && tier.coverFees}
+                <p class="fee-mode-hint">
+                  The booking fee covers card processing and our 1.5% platform fee, so you receive at
+                  least your ticket price whatever card the buyer pays with.
+                </p>
+              {:else if tier.feePassedToCustomer}
                 <label class="field buyer-fee-field">
                   <span class="field-label">Booking fee % (included in the price buyers see)</span>
                   <div class="buyer-fee-input-wrap">
@@ -749,20 +749,20 @@
                 </label>
               {/if}
 
-              {@const fees = feeBreakdown(tier.price, tier.currency, tier.feePassedToCustomer, tier.stripeEnabled, tier.cryptoEnabled, tier.buyerFeePercent)}
+              {@const fees = feeBreakdown(tier)}
               {#if fees}
                 <div class="fee-breakdown">
                   {#if fees.mode === "pass"}
-                    <span class="fee-breakdown-title">Per ticket</span>
+                    <span class="fee-breakdown-title">One ticket</span>
                     {#if tier.stripeEnabled}
                       <div class="fee-breakdown-col">
                         {#if tier.cryptoEnabled}
                           <span class="fee-col-label">Card</span>
                         {/if}
                         <div class="fee-row"><span>Ticket price</span><span>{fees.basePrice}</span></div>
-                        <div class="fee-row fee-deduction"><span>Booking fee ({tier.buyerFeePercent}%)</span><span>+{fees.buyerMarkup}</span></div>
+                        <div class="fee-row fee-deduction"><span>{fees.feeLabel}</span><span>+{fees.buyerMarkup}</span></div>
                         <div class="fee-row fee-total"><span>Buyer pays</span><span>{fees.cardTotal}</span></div>
-                        <div class="fee-row fee-deduction"><span>Card processing (est.)</span><span>−{fees.stripeFee}</span></div>
+                        <div class="fee-row fee-deduction"><span>Card processing (UK card, est.)</span><span>−{fees.stripeFee}</span></div>
                         <div class="fee-row fee-deduction"><span>Platform fee</span><span>−{fees.platformFeeCard}</span></div>
                         <div class="fee-row fee-total"><span>You receive</span><span>{fees.payoutCard}</span></div>
                       </div>
@@ -771,7 +771,7 @@
                       <div class="fee-breakdown-col">
                         <span class="fee-col-label">Crypto</span>
                         <div class="fee-row"><span>Ticket price</span><span>{fees.basePrice}</span></div>
-                        <div class="fee-row fee-deduction"><span>Booking fee ({tier.buyerFeePercent}%)</span><span>+{fees.buyerMarkup}</span></div>
+                        <div class="fee-row fee-deduction"><span>{fees.feeLabel}</span><span>+{fees.buyerMarkup}</span></div>
                         <div class="fee-row fee-total"><span>Buyer pays</span><span>{fees.cryptoTotal}</span></div>
                         <div class="fee-row fee-deduction"><span>Platform fee (1.5%)</span><span>−{fees.platformFeeCrypto}</span></div>
                         <div class="fee-row fee-total"><span>You receive</span><span>{fees.payoutCrypto}</span></div>
@@ -781,7 +781,7 @@
                     <span class="fee-breakdown-title">Your payout (per ticket)</span>
                     <div class="fee-row"><span>Ticket price</span><span>{fees.basePrice}</span></div>
                     {#if tier.stripeEnabled}
-                      <div class="fee-row fee-deduction"><span>Card processing (est.)</span><span>−{fees.stripeFee}</span></div>
+                      <div class="fee-row fee-deduction"><span>Card processing (UK card, est.)</span><span>−{fees.stripeFee}</span></div>
                       <div class="fee-row fee-deduction"><span>Platform fee</span><span>−{fees.platformFeeCard}</span></div>
                       <div class="fee-row fee-total"><span>You receive (card)</span><span>{fees.payoutCard}</span></div>
                     {/if}
@@ -1309,6 +1309,13 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
+  }
+
+  .fee-mode-hint {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    line-height: 1.4;
   }
 
   .fee-mode-label {

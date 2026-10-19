@@ -30,6 +30,7 @@ import {
 import { getEvent } from "../lib/event/service.js";
 import type { EventFeed } from "@woco/shared";
 import {
+  acceptedCoverFeeRates,
   listKeeps,
   MARKETING_CURRENT_VERSION,
   MARKETING_MODE_CHANGED,
@@ -1049,7 +1050,12 @@ stripe.post("/create-checkout", async (c) => {
 
   const stripeCurrency = series.payment.currency.toLowerCase(); // "usd", "gbp", "eur"
 
-  const { chargeAmount, totalApplicationFee } = computeCardFees(series.payment, priceFloat, quantity);
+  // A "cover the fees" series carries the rates it was published with; charge
+  // only rates we still accept, so the price it advertises is the price charged.
+  if (series.payment.coverFees !== undefined && !acceptedCoverFeeRates(series.payment.coverFees)) {
+    return c.json({ ok: false, error: "This ticket's booking fee is out of date - the organiser needs to republish the event" }, 409);
+  }
+  const { chargeAmount, orderFeeAmount, sessionAmount, totalApplicationFee } = computeCardFees(series.payment, priceFloat, quantity);
   if (totalApplicationFee < MIN_APPLICATION_FEE_MINOR) {
     return c.json({ ok: false, error: "This ticket's price is too low to sell by card" }, 400);
   }
@@ -1181,7 +1187,6 @@ stripe.post("/create-checkout", async (c) => {
     // The tag commits to everything fulfilment acts on; it lives in
     // client_reference_id, which a session update cannot change, and the webhook
     // checks it together with our application fee (lib/stripe/checkout-provenance.ts).
-    const sessionAmount = chargeAmount * quantity;
     const clientReferenceId = signCheckoutTag({
       account: organiserRecord.stripeAccountId,
       currency: stripeCurrency,
@@ -1207,6 +1212,18 @@ stripe.post("/create-checkout", async (c) => {
             },
             quantity,
           },
+          // "Cover the fees" is per order (Stripe's fixed fee is per payment),
+          // so it cannot fold into the per-ticket amount.
+          ...(orderFeeAmount > 0
+            ? [{
+                price_data: {
+                  currency: stripeCurrency,
+                  product_data: { name: "Booking fee" },
+                  unit_amount: orderFeeAmount,
+                },
+                quantity: 1,
+              }]
+            : []),
         ],
         payment_intent_data: {
           application_fee_amount: totalApplicationFee,
