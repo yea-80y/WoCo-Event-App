@@ -107,11 +107,10 @@ export async function pointNameAt(
   return resp.data.txHash;
 }
 
-
 /**
  * Point `label` at a page's FEED manifest, only once this device has worked out that
  * `manifest` is the manifest of `feed` - its own feed signer and the page's topic string
- * (`assertOwnFeedManifest`). Every feed pointer goes through this check.
+ * (`assertOwnFeedManifest`). Every event-page feed pointer goes through this check.
  */
 export async function pointNameAtFeed(
   label: string,

@@ -5,26 +5,11 @@
  */
 
 import { keccak_256 } from "@noble/hashes/sha3.js";
+import { bytesToHex, concatBytes as concat, hexToBytes } from "@noble/hashes/utils.js";
 import { calculateCacAddress, encodeSpan } from "@woco/shared/swarm/soc";
-import { ADDRESS_BYTES, SLASH, TYPE_WITH_METADATA, VERSION_02, hex } from "./feed-manifest.js";
+import { ADDRESS_BYTES, SLASH, TYPE_WITH_METADATA, VERSION_02 } from "./feed-manifest.js";
 
 const TYPE_VALUE = 2;
-
-function unhex(h: string): Uint8Array {
-  const out = new Uint8Array(h.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
-  return out;
-}
-
-function concat(...parts: Uint8Array[]): Uint8Array {
-  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
-  let o = 0;
-  for (const p of parts) {
-    out.set(p, o);
-    o += p.length;
-  }
-  return out;
-}
 
 function cacAddress(payload: Uint8Array): Uint8Array {
   return calculateCacAddress(encodeSpan(payload.length), payload);
@@ -44,7 +29,7 @@ export function feedManifestRootChunk(owner: string, topic: string): Uint8Array 
     throw new Error("A feed manifest needs a lowercase 20-byte owner and 32-byte topic");
   }
   const key = new Uint8Array(32);
-  const version = unhex(VERSION_02);
+  const version = hexToBytes(VERSION_02);
   const zeroTarget = new Uint8Array(ADDRESS_BYTES);
   const child = concat(key, version, Uint8Array.of(ADDRESS_BYTES), zeroTarget, new Uint8Array(32));
 
@@ -81,13 +66,13 @@ export function feedManifestRootChunk(owner: string, topic: string): Uint8Array 
  * feed's manifest can take minutes to reach our gateway.
  */
 export function expectedFeedManifestHash(owner: string, topic: string): string {
-  return hex(cacAddress(feedManifestRootChunk(owner, topic).subarray(8)));
+  return bytesToHex(cacAddress(feedManifestRootChunk(owner, topic).subarray(8)));
 }
 
 /** The same, from an address in any case (with or without `0x`) and a topic STRING,
  *  hashed as bee hashes one - the shape a page's feed is named in. */
 export function feedManifestFor(ownerAddress: string, topic: string): string {
-  return expectedFeedManifestHash(ownerAddress.toLowerCase().replace(/^0x/, ""), hex(keccak_256(new TextEncoder().encode(topic))));
+  return expectedFeedManifestHash(ownerAddress.toLowerCase().replace(/^0x/, ""), bytesToHex(keccak_256(new TextEncoder().encode(topic))));
 }
 
 /** A name target that is not the manifest of the feed this device signs. */
@@ -104,7 +89,11 @@ export class FeedManifestMismatchError extends Error {
  * and the manifest hash otherwise comes from the server's deploy reply.
  */
 export function assertOwnFeedManifest(manifest: string, feed: { owner: string; topic: string }): void {
-  if (manifest.replace(/^0x/, "").toLowerCase() !== feedManifestFor(feed.owner, feed.topic)) {
+  const served = manifest.replace(/^0x/, "").toLowerCase();
+  const expected = feedManifestFor(feed.owner, feed.topic);
+  if (served !== expected) {
+    // What a "please report this" needs: which side moved.
+    console.warn("[sub-ens] feed manifest mismatch", { served, expected, owner: feed.owner, topic: feed.topic });
     throw new FeedManifestMismatchError();
   }
 }

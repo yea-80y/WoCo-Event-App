@@ -18,6 +18,7 @@
   import { claimSubEnsLabel, stampEventSubEns } from "../api/sub-ens.js";
   import NamePointerPrompt from "../components/sub-ens/NamePointerPrompt.svelte";
   import { describeSubEnsError, subEnsErrorDetail, subEnsErrorFrom } from "../sub-ens/errors.js";
+  import { ApiError } from "../api/errors.js";
   import { registerDomain, verifyDomainDns, type DomainEntry } from "../api/domains.js";
 
   const apiUrl = import.meta.env.VITE_API_URL ?? "";
@@ -320,7 +321,9 @@
   async function pointName() {
     pointerNote = null;
     const eventId = createdEventId;
-    if (!pointerFollowsFeed || !pageFeedOwner || !eventId || !auth.isAccountOwner) {
+    // A wallet asks for every signature itself: straight to the button.
+    const kernelKind = auth.kind === "passkey" || auth.kind === "web3auth";
+    if (!pointerFollowsFeed || !pageFeedOwner || !eventId || !auth.isAccountOwner || !kernelKind) {
       subEnsPhase = "sign";
       return;
     }
@@ -340,10 +343,14 @@
         subEnsError = outcome.error instanceof Error ? outcome.error.message : "Couldn't point the name";
         return;
       }
-      if (outcome.error) {
+      // Only the relay's refusals say something to act on; a name the RPC has not
+      // caught up with yet reads as an alarming digest mismatch, and the button works.
+      if (outcome.error instanceof ApiError) {
         const d = subEnsErrorFrom(outcome.error, "Couldn't point the name");
         const detail = subEnsErrorDetail(d);
         pointerNote = `${d.title}${detail ? ` ${detail}` : ""}`;
+      } else if (outcome.error) {
+        console.warn("[sub-ens] background pointer handed to the button:", outcome.error);
       }
     } catch (e) {
       console.error("[sub-ens] background pointer failed:", e);
@@ -361,9 +368,10 @@
   /**
    * Write the name onto the event feed as a display hint. Two failure shapes
    * to catch, not one: `stampEventSubEns` resolves `{ ok: false }` for a server
-   * refusal and THROWS when the owner's SOC re-signature fails.
+   * refusal and THROWS when the owner's SOC re-signature fails. After a pointer it
+   * runs with no tap, so it never asks for the signer then; its Retry (`ask`) may.
    */
-  async function stampEventLabel(label: string, eventId: string) {
+  async function stampEventLabel(label: string, eventId: string, ask = false) {
     subEnsStampWarning = null;
     const warn = (reason: string | undefined) => {
       const described = describeSubEnsError({ error: reason });
@@ -375,7 +383,8 @@
     try {
       // Pass the content-feed signer so a client-owned event feed can re-sign
       // the SOC with the label (the server can't write the user's feed).
-      const signer = await auth.getContentFeedSigner();
+      const signer = ask ? await auth.getContentFeedSigner() : await auth.getContentFeedSignerIfPresent();
+      if (!signer) return warn(undefined);
       const res = await stampEventSubEns(label, eventId, signer);
       if (!res.ok) warn(res.error);
     } catch (e) {
@@ -384,7 +393,7 @@
   }
 
   function retryStamp() {
-    if (subEnsLabel && createdEventId) void stampEventLabel(subEnsLabel, createdEventId);
+    if (subEnsLabel && createdEventId) void stampEventLabel(subEnsLabel, createdEventId, true);
   }
 
   // Background post-deploy work. The deployed site is live the moment
@@ -421,6 +430,7 @@
     deploying = true;
     deployError = null;
     deployResult = null;
+    pageFeedOwner = null;
     try {
       // A name to point asks here, at the tap, for the key that signs it later.
       await auth.ensureOrganiserUnlock({ holderKey: !!nameToPoint && auth.isAccountOwner });
@@ -857,7 +867,7 @@
 
       <div class="nav-row" style="margin-top: 1rem;">
         <span></span>
-        <button class="btn-ghost" onclick={() => { step = 2; deployResult = null; }}>
+        <button class="btn-ghost" disabled={subEnsPhase === "pointing"} onclick={() => { step = 2; deployResult = null; pageFeedOwner = null; }}>
           &larr; Change config &amp; redeploy
         </button>
       </div>

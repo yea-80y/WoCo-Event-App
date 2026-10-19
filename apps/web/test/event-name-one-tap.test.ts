@@ -167,6 +167,18 @@ test("the Deploy tap asks for the key before anything else awaits, so its sheet 
   assert.match(unlock, /await _freshMainPasskey\(\);/, "the fresh confirm, which re-stamps the window");
 });
 
+test("the background path reaches the manifest check: no other pointer function is wired in", () => {
+  assert.match(
+    body(read("lib/sub-ens/pointer.ts"), "export async function pointNameAtFeed("),
+    /assertOwnFeedManifest\(manifest, feed\);\s*return pointNameAt\(label, manifest, signTypedData\);/,
+  );
+  assert.match(read("lib/sub-ens/auto-pointer.ts"), /point: async \(\.\.\.args\) => \(await import\("\.\/pointer\.js"\)\)\.pointNameAtFeed\(\.\.\.args\),/);
+  const point = body(read("lib/creator/SiteBuilder.svelte"), "async function pointName(");
+  assert.match(point, /const kernelKind = auth\.kind === "passkey" \|\| auth\.kind === "web3auth";/, "a wallet goes straight to the button");
+  assert.match(point, /\|\| !kernelKind\) \{\s*subEnsPhase = "sign";/);
+  assert.match(point, /if \(outcome\.error instanceof ApiError\) \{/, "only a relay refusal is shown under the button");
+});
+
 test("the button checks a feed target too, and a refused one offers no retry", () => {
   const prompt = read("lib/components/sub-ens/NamePointerPrompt.svelte");
   assert.match(prompt, /if \(targetIsFeed && feed\) await pointNameAtFeed\(label, target, feed, sign\);/);
