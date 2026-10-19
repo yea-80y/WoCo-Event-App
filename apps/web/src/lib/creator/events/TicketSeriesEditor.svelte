@@ -42,7 +42,7 @@
     feePassedToCustomer: boolean;
     /** Organiser-set buyer-pays fee % (≥ BUYER_FEE_FLOOR_PCT). Default BUYER_FEE_DEFAULT_PCT. */
     buyerFeePercent: number;
-    /** "Cover the fees" instead of a % (only with feePassedToCustomer). The default. */
+    /** "Buyer pays fees": a booking fee that covers the fees, instead of a % (only with feePassedToCustomer). */
     coverFees: boolean;
     /** Optional object-holdings gate — applies to every wave in this tier. */
     gate?: ObjectGate | ObjectGateGroup;
@@ -252,7 +252,7 @@
       stripeEnabled: true,
       feePassedToCustomer: true,
       buyerFeePercent: BUYER_FEE_DEFAULT_PCT,
-      coverFees: true,
+      coverFees: false,
       waves: [{
         id: crypto.randomUUID(),
         label: "",
@@ -305,7 +305,7 @@
         stripeEnabled: isPaid,
         feePassedToCustomer: true,
         buyerFeePercent: BUYER_FEE_DEFAULT_PCT,
-        coverFees: true,
+        coverFees: false,
         waves: [{
           id: crypto.randomUUID(),
           label: "",
@@ -710,26 +710,26 @@
                     class="fee-mode-btn"
                     class:fee-mode-btn--active={tier.feePassedToCustomer && tier.coverFees}
                     onclick={() => { tier.feePassedToCustomer = true; tier.coverFees = true; }}
-                  >Cover the fees</button>
+                  >Buyer pays fees</button>
                   <button
                     type="button"
                     class="fee-mode-btn"
                     class:fee-mode-btn--active={tier.feePassedToCustomer && !tier.coverFees}
                     onclick={() => { tier.feePassedToCustomer = true; tier.coverFees = false; }}
-                  >Your own %</button>
+                  >Set your own fee</button>
                   <button
                     type="button"
                     class="fee-mode-btn"
                     class:fee-mode-btn--active={!tier.feePassedToCustomer}
                     onclick={() => { tier.feePassedToCustomer = false; }}
-                  >No booking fee</button>
+                  >You pay fees</button>
                 </div>
               </div>
 
               {#if tier.feePassedToCustomer && tier.coverFees}
                 <p class="fee-mode-hint">
-                  The booking fee covers card processing and our 1.5% platform fee, so you receive at
-                  least your ticket price whatever card the buyer pays with.
+                  A booking fee covers card processing and our 1.5%, so you receive at least your full
+                  ticket price, whatever card the buyer uses.
                 </p>
               {:else if tier.feePassedToCustomer}
                 <label class="field buyer-fee-field">
@@ -745,9 +745,13 @@
                     <span class="buyer-fee-suffix">%</span>
                   </div>
                   <span class="approval-hint">
-                    Minimum {BUYER_FEE_FLOOR_PCT}%. It's yours, less card processing and our 1.5% platform fee.
+                    Choose a % (minimum {BUYER_FEE_FLOOR_PCT}%). You keep what's left after fees.
                   </span>
                 </label>
+              {:else}
+                <p class="fee-mode-hint">
+                  No booking fee. Card processing and our 1.5% come out of your ticket price.
+                </p>
               {/if}
 
               {@const fees = feeBreakdown(tier)}
@@ -1307,6 +1311,7 @@
   /* ── Fee mode toggle ── */
   .fee-mode {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;

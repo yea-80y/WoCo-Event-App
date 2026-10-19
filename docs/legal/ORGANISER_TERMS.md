@@ -1,7 +1,7 @@
 # Organiser Terms
 
 **Last updated:** 19 October 2026
-**Version:** 1.1
+**Version:** 1.2
 
 These terms apply if you use WoCo to **sell tickets, run events, publish a site, or contact an
 audience**. They are in addition to the [Terms of Service](./TERMS_OF_SERVICE.md).
@@ -175,13 +175,16 @@ suspension.
 **Read this section carefully — it is where your financial exposure sits.**
 
 - **You choose the booking fee for each ticket type.** There are three options:
-  - **Cover the fees** (the default): a booking fee worked out per order so that, after card
-    processing and our platform fee, you receive at least your ticket price whatever card the
-    buyer pays with, at the payment provider's published UK card rates. On most UK cards you
-    receive a little more. It does not cover fees for a paid fraud-screening plan you choose
-    with the payment provider, or refund and dispute costs.
-  - **Your own booking fee:** a percentage you choose, minimum 4.5%, 10% unless you change it.
-  - **No booking fee:** the buyer pays your ticket price alone.
+  - **Set your own fee** (the default): a booking fee of the percentage you choose, minimum
+    4.5%, 10% unless you change it. Whatever remains after card processing and our platform fee
+    is yours.
+  - **Buyer pays fees:** a booking fee worked out per order so that, after card processing and
+    our platform fee, you receive at least your ticket price whatever card the buyer pays with,
+    at the payment provider's published UK card rates. On most UK cards you receive a little
+    more. It does not cover fees for a paid fraud-screening plan you choose with the payment
+    provider, or refund and dispute costs.
+  - **You pay fees:** no booking fee. The buyer pays your ticket price alone, and card
+    processing and our platform fee come out of it.
 
   Whichever you choose, every price we show buyers includes the booking fee.
 - **Our platform fee is 1.5% of your ticket price** (the booking fee is not fee'd), collected
@@ -193,15 +196,15 @@ suspension.
 
 **Worked example** — £20 ticket, one ticket per order, standard UK consumer card (1.5% + 20p):
 
-- **Cover the fees:** the buyer pays £21.17 (£1.17 booking fee); our platform fee is £0.30;
+- **Set your own fee, 10%:** the buyer pays £22.00; our platform fee is £0.30; card processing
+  is £0.53; you receive **£21.17**.
+- **Buyer pays fees:** the buyer pays £21.17 (£1.17 booking fee); our platform fee is £0.30;
   card processing is £0.52; you receive **£20.35**. On the dearest card on the provider's UK
   price list (overseas, 3.15% + 20p) you receive **£20.00**.
-- **10% booking fee:** the buyer pays £22.00; our platform fee is £0.30; card processing is
-  £0.53; you receive **£21.17**.
-- **No booking fee:** the buyer pays £20.00 and you receive **£19.20**.
+- **You pay fees:** the buyer pays £20.00 and you receive **£19.20**.
 
 Processing rates vary by card type; the figures use the provider's published UK rates at the
-time of writing. With "cover the fees", an order of several tickets carries one booking fee, so
+time of writing. With "Buyer pays fees", an order of several tickets carries one booking fee, so
 it costs the buyer less per ticket.
 
 **Our platform fee will never go above 1.5%.** This is a cap, not today's price. We will not
