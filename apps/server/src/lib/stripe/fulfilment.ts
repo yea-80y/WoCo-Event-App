@@ -900,7 +900,9 @@ export async function fulfilPaidSession(
       const connectedAccountId = metaConnectedAccountId || undefined;
       const amountTotal = session.amount_total ?? 0;
       // Pro-rata the total (which already includes any buyer-paid fee) by
-      // unit. Round so we never refund more than was paid.
+      // unit. Round so we never refund more than was paid. A "cover the fees"
+      // booking fee is one order-level line, so each unfilled ticket refunds
+      // an even share of it - approximate by design.
       const refundAmount =
         amountTotal > 0 && quantity > 0
           ? Math.min(amountTotal, Math.round((amountTotal / quantity) * unfilled))

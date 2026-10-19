@@ -9,9 +9,10 @@ import assert from "node:assert/strict";
 import {
   calculateBuyerFees, CURRENCY_SYMBOLS, headlinePrice, headlinePriceRange,
   coverFeeMinor, cardOrderAmounts, acceptedCoverFeeRates, bookingFeeMode, platformFeeMinor,
+  wellFormedCoverFeeRates,
 } from "../../src/event/fees.js";
 import { BUYER_FEE_FLOOR_PCT, FEATURES, COVER_FEE_RATES, STRIPE_UK_STANDARD_CARD } from "../../src/features.js";
-import type { PaymentConfig } from "../../src/event/types.js";
+import type { PaymentConfig, CoverFeeRates } from "../../src/event/types.js";
 
 const payment = (over: Partial<PaymentConfig> = {}): PaymentConfig => ({
   price: "10.00",
@@ -174,4 +175,29 @@ test("cover rates only count with the booking fee on, and only accepted sets are
   assert.ok(acceptedCoverFeeRates({ ...COVER_FEE_RATES }));
   assert.ok(!acceptedCoverFeeRates({ ...COVER_FEE_RATES, stripeBp: 0 }));
   assert.ok(!acceptedCoverFeeRates(undefined));
+});
+
+test("malformed stored rates price as no fee and never hang a page", () => {
+  // An organiser can re-sign their own event feed; every listing prices it.
+  for (const coverFees of [
+    { stripeBp: 10_001, stripeFixedMinor: 20, radarMinor: 0 },
+    { stripeBp: 10_000, stripeFixedMinor: 20, radarMinor: 0 },
+    { stripeBp: "315", stripeFixedMinor: 20, radarMinor: 0 },
+    { stripeBp: 315, stripeFixedMinor: -20, radarMinor: 0 },
+    { stripeBp: 315.5, stripeFixedMinor: 20, radarMinor: 0 },
+  ] as unknown as CoverFeeRates[]) {
+    assert.ok(!wellFormedCoverFeeRates(coverFees), JSON.stringify(coverFees));
+    const h = headlinePrice(payment({ price: "20.00", feePassedToCustomer: true, coverFees }))!;
+    assert.equal(h.label, "£20.00");
+    assert.throws(() => coverFeeMinor(2_000, coverFees), RangeError);
+  }
+});
+
+test("well-formed but unaccepted rates still price from the stored copy", () => {
+  // A page baked before a rate change must price a later series by its own rates.
+  const later = { stripeBp: 315, stripeFixedMinor: 20, radarMinor: 8 };
+  assert.ok(wellFormedCoverFeeRates(later));
+  const a = cardOrderAmounts({ feePassedToCustomer: true, coverFees: later }, 2_000, 1);
+  assert.equal(a.mode, "cover");
+  assert.equal(a.orderFeeMinor, coverFeeMinor(2_000, later));
 });

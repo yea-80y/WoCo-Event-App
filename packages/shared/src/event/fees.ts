@@ -31,7 +31,21 @@ type FeeSettings = Pick<PaymentConfig, "feePassedToCustomer" | "buyerFeePercent"
 
 export function bookingFeeMode(payment: FeeSettings): BookingFeeMode {
   if (payment.feePassedToCustomer !== true) return "none";
-  return payment.coverFees ? "cover" : "percent";
+  if (payment.coverFees === undefined) return "percent";
+  // The series is organiser-signed, so its rates are untrusted input to every
+  // page that prices it. Malformed rates price as no fee here; checkout refuses
+  // them anyway (acceptedCoverFeeRates), so nothing sells at the shown price.
+  return wellFormedCoverFeeRates(payment.coverFees) ? "cover" : "none";
+}
+
+/**
+ * Rates `coverFeeMinor` can price: whole numbers in sane ranges. Deliberately
+ * not the accepted list - a page baked before a rate change must still price a
+ * series published after it from that series' own stored rates.
+ */
+export function wellFormedCoverFeeRates(rates: CoverFeeRates | undefined): boolean {
+  const ok = (n: unknown, max: number) => Number.isSafeInteger(n) && (n as number) >= 0 && (n as number) <= max;
+  return !!rates && ok(rates.stripeBp, 5_000) && ok(rates.stripeFixedMinor, 10_000) && ok(rates.radarMinor, 10_000);
 }
 
 /**
@@ -64,6 +78,9 @@ export function acceptedCoverFeeRates(rates: CoverFeeRates | undefined): boolean
  * the same way, so the closed form can land 1p either side - hence the search.
  */
 export function coverFeeMinor(subtotalMinor: number, rates: CoverFeeRates): number {
+  if (!wellFormedCoverFeeRates(rates) || !Number.isSafeInteger(subtotalMinor) || subtotalMinor < 0) {
+    throw new RangeError("cover-fee inputs out of range");
+  }
   const fixed = rates.stripeFixedMinor + rates.radarMinor;
   const platform = platformFeeMinor(subtotalMinor);
   const net = (fee: number) => {
@@ -72,7 +89,12 @@ export function coverFeeMinor(subtotalMinor: number, rates: CoverFeeRates): numb
   };
   const closed = Math.ceil(((PLATFORM_FEE_BP + rates.stripeBp) * subtotalMinor + 10_000 * fixed) / (10_000 - rates.stripeBp));
   let fee = Math.max(0, closed - 3);
-  while (net(fee) < subtotalMinor) fee++;
+  // The answer is within a few steps of the closed form; bounded so no input
+  // can turn this into a loop that freezes a page.
+  for (let steps = 0; net(fee) < subtotalMinor; steps++) {
+    if (steps > 16) throw new RangeError("cover fee did not converge");
+    fee++;
+  }
   return fee;
 }
 

@@ -418,6 +418,7 @@
       platformFeeCard: hasStripe ? fmt(a.applicationFeeMinor) : null,
       platformFeeCrypto: hasCrypto ? fmt(a.applicationFeeMinor) : null,
       cardTotal: hasStripe && passed ? fmt(a.totalMinor) : null,
+      // Card arithmetic; the crypto column is moot while cryptoPaymentsAllowed is off.
       cryptoTotal: hasCrypto && passed ? fmt(a.totalMinor) : null,
       payoutCard: hasStripe ? fmt(Math.max(0, a.totalMinor - stripeFee - a.applicationFeeMinor)) : null,
       payoutCrypto: hasCrypto ? fmt(Math.max(0, a.totalMinor - a.applicationFeeMinor)) : null,
