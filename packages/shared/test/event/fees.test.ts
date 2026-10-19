@@ -11,7 +11,7 @@ import {
   coverFeeMinor, cardOrderAmounts, acceptedCoverFeeRates, bookingFeeMode, platformFeeMinor,
   wellFormedCoverFeeRates,
 } from "../../src/event/fees.js";
-import { BUYER_FEE_FLOOR_PCT, FEATURES, COVER_FEE_RATES, STRIPE_UK_STANDARD_CARD } from "../../src/features.js";
+import { BUYER_FEE_FLOOR_PCT, FEATURES, COVER_FEE_RATES, ACCEPTED_COVER_FEE_RATES, STRIPE_UK_STANDARD_CARD } from "../../src/features.js";
 import type { PaymentConfig, CoverFeeRates } from "../../src/event/types.js";
 
 const payment = (over: Partial<PaymentConfig> = {}): PaymentConfig => ({
@@ -200,4 +200,10 @@ test("well-formed but unaccepted rates still price from the stored copy", () => 
   const a = cardOrderAmounts({ feePassedToCustomer: true, coverFees: later }, 2_000, 1);
   assert.equal(a.mode, "cover");
   assert.equal(a.orderFeeMinor, coverFeeMinor(2_000, later));
+});
+
+test("every rate set checkout accepts is one every page can price", () => {
+  // Otherwise checkout would charge a cover fee that listings show as none.
+  assert.ok(ACCEPTED_COVER_FEE_RATES.every(wellFormedCoverFeeRates));
+  assert.ok(acceptedCoverFeeRates(COVER_FEE_RATES));
 });
