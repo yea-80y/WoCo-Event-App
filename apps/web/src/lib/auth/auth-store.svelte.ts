@@ -439,8 +439,9 @@ function _keysHost(): AccountKeysHost {
     kernel: () => _kernel,
     coOwnerHost: () => _coOwnerHost(),
     removeRecordAfterList: (parent, key) => _removeRecordAfterList(parent, key),
-    // A removal re-points names after its own fresh confirm, so it never asks again: a
-    // key that lapsed mid-way leaves that step for the next unlock (`HolderKeyLockedError`).
+    // A removal re-points names only with the owner key in hand - after its fresh confirm,
+    // or the unlock that resumes it - so it never asks again: a key that lapsed mid-way
+    // leaves that step for the next unlock (`HolderKeyLockedError`).
     signTypedDataAsHolder: (typed) => signTypedDataAsHolder(typed as Parameters<typeof signTypedDataAsHolder>[0], { silent: true }),
     setRemovalProgress: (p) => {
       _removalProgress = p;

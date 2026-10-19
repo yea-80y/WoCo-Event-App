@@ -244,7 +244,7 @@ test("a SILENT establish never starts a ceremony — web3auth's raw key, or a pa
       // FORBID a ceremony: a silent caller whose keys are behind gets a refusal, never a
       // sheet - as a silent HOLDER signature does, refused with `HolderKeyLockedError`
       // (which also makes asking for one, `signTypedDataAsHolder(..., { silent: true })`, safe).
-      /web3auth|_getContentFeedSigner|_ensureIdentitySeed|_passkeyPrfSecret|_requireCurrentKeys\(\{ prompt: !opts\.silent \}\)|throw new HolderKeyLockedError\(\);$|signTypedDataAsHolder\([^)]*\{ silent: true \}\)/,
+      /web3auth|_getContentFeedSigner|_ensureIdentitySeed|_passkeyPrfSecret|_requireCurrentKeys\(\{ prompt: !opts\.silent \}\)|throw new HolderKeyLockedError\(\);$|^    signTypedDataAsHolder: \(typed\) => signTypedDataAsHolder\(typed as Parameters<typeof signTypedDataAsHolder>\[0\], \{ silent: true \}\),$/,
       `a silent establish escaped its gates: ${line.trim()}`,
     );
   }
