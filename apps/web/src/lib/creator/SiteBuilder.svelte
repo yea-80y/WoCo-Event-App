@@ -545,6 +545,10 @@
           <code class="output-url">{eventSiteUrl}</code>
           <button class="btn-ghost copy-btn" onclick={() => copyText(eventSiteUrl)}>Copy</button>
         </div>
+        <!-- TEMPORARY: remove once Etherna ships the change that makes a new page open straight away. -->
+        <p class="output-hint">
+          New event pages can take around 5 minutes to open after publishing. This is temporary - we're fixing it.
+        </p>
       </div>
 
       <!-- Dashboard URL -->
