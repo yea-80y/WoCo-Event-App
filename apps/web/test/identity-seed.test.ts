@@ -241,8 +241,9 @@ test("a SILENT establish never starts a ceremony — web3auth's raw key, or a pa
     assert.match(
       line,
       // `_requireCurrentKeys({ prompt: !opts.silent })` (#186) uses `silent` only to
-      // FORBID a ceremony: a silent caller whose keys are behind gets a refusal, never a sheet.
-      /web3auth|_getContentFeedSigner|_ensureIdentitySeed|_passkeyPrfSecret|_requireCurrentKeys\(\{ prompt: !opts\.silent \}\)/,
+      // FORBID a ceremony: a silent caller whose keys are behind gets a refusal, never a
+      // sheet - as a silent HOLDER signature does, refused with `HolderKeyLockedError`.
+      /web3auth|_getContentFeedSigner|_ensureIdentitySeed|_passkeyPrfSecret|_requireCurrentKeys\(\{ prompt: !opts\.silent \}\)|throw new HolderKeyLockedError\(\);$/,
       `a silent establish escaped its gates: ${line.trim()}`,
     );
   }

@@ -40,3 +40,21 @@ export function unlockPromise(policy: SeedUnlockPolicy): string {
       : (HOURS[Math.round(minutes / 60)] ?? `${Math.round(minutes / 60)} hours`);
   return `WoCo won't ask again for about ${span}.`;
 }
+
+/**
+ * How much of the window must be left when an organiser action will also sign as the
+ * name's holder once it finishes (an event page's name, pointed after the publish).
+ * Far longer than that work takes, so the window cannot close under it; with less
+ * left, the confirm before the action opens a fresh window instead.
+ */
+export const HOLDER_KEY_MIN_REMAINING_MS = 10 * 60_000;
+
+/** Whether that confirm can be skipped: the owner key a passkey sheet put in memory in
+ *  this tab, an open seed, and enough of the window left. */
+export function holderKeyReady(
+  s: { ownerKeyInMemory: boolean; seedUnlocked: boolean; expiresAt: number | null },
+  now = Date.now(),
+): boolean {
+  if (!s.ownerKeyInMemory || !s.seedUnlocked) return false;
+  return s.expiresAt === null || s.expiresAt - now >= HOLDER_KEY_MIN_REMAINING_MS;
+}

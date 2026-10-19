@@ -59,7 +59,7 @@ test("a removal is forgotten; a credential recovered away from keeps its seed an
 });
 
 test("a device cannot reach the Kernel: the gate is the first thing _ensureKernel does", () => {
-  const b = body(STORE, "async function _ensureKernel()");
+  const b = body(STORE, "async function _ensureKernel(");
   const gate = b.indexOf('?.role === "device") {');
   assert.ok(gate > 0 && gate < b.indexOf("await _ensurePasskeyKey()"), "gate before any ceremony");
   assert.match(b, /throw new MainPasskeyRequiredError\(\)/);
@@ -90,7 +90,7 @@ test("a removal reported on any request signs the passkey device out, once - a c
 
 test("the never-derive rule and the Kernel override hold for either binding", () => {
   assert.match(body(STORE, "async function _unlockPasskeySeed("), /if \(await _boundKernelAddress\(seedAddr\)\)/);
-  assert.match(body(STORE, "async function _ensureKernel()"), /const override = await _boundKernelAddress\(_seedAddress\);/);
+  assert.match(body(STORE, "async function _ensureKernel("), /const override = await _boundKernelAddress\(_seedAddress\);/);
   assert.match(STORE, /recoveryKernelFor: _boundKernelAddress,/);
   const bound = body(STORE, "async function _boundKernelFor(");
   assert.ok(bound.indexOf("_recoveryKernelFor(") < bound.indexOf("_getDeviceBindings()"), "recovered wins");

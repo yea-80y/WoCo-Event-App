@@ -66,7 +66,8 @@ import {
   hasLockedSeed,
   clearPublicKeys,
 } from "./identity-seed.js";
-import { SEED_UNLOCK_POLICY, unlockExpiry } from "./seed-unlock-policy.js";
+import { SEED_UNLOCK_POLICY, holderKeyReady, unlockExpiry } from "./seed-unlock-policy.js";
+import { HolderKeyLockedError } from "./holder-key-locked.js";
 import { allSecretsOf, clearChainWindow, clearLockedChain, currentSecretOf, storeLockedChain, type AccountChain } from "./account-chain.js";
 import type { AccountKeysHost, KeysVerdict } from "../keyring/account-keys.js";
 import { linkedEnvelopePendingKey } from "./make-main-key.js";
@@ -89,6 +90,7 @@ import {
   clearPasskeyCredential,
   createAddedPasskey,
   asCeremonyCancel,
+  PasskeyCeremonyCancelledError,
 } from "./passkey-account.js";
 import { createWeb3Signer, createLocalSigner } from "./signers/index.js";
 import type { BuiltKernel } from "./kernel-account.js";
@@ -1553,13 +1555,17 @@ function _backfillGatherDeps(): import("./recovery-finalize.js").BackfillGatherD
  * the preserved address via the override; the assertion below still holds (the
  * override == the stored parent), so a wrong passkey is still caught.
  */
-async function _ensureKernel(): Promise<void> {
+async function _ensureKernel(opts: { silent?: boolean } = {}): Promise<void> {
   // An added passkey is not the Kernel's owner: every userOp it signed would be
   // refused on chain. The screens gate these actions; this is the backstop, before
   // any prompt (#746 step 3).
   if ((await _boundKernelFor(_seedAddress ?? _getSeedAddress()))?.role === "device") {
     throw new MainPasskeyRequiredError();
   }
+  // A silent build must never START a ceremony, as `_ensureIdentitySeed` (checked after
+  // the await above, which a closing window can outlast).
+  _expireUnlockIfDue();
+  if (opts.silent && !(_passkeyPrivateKey && _passkeyPrfSecret && _seedAddress)) throw new HolderKeyLockedError();
   await _ensurePasskeyKey();
   // A Kernel built at sign-in assumed the ECDSA root; the first signature reads the
   // account's root and opens it with the validator it really has (co-owners, #746).
@@ -1617,8 +1623,8 @@ async function _ensureKernelForWeb3Auth(): Promise<void> {
 }
 
 /** Build the Kernel for whichever Kernel-backed kind is active (passkey/web3auth). */
-async function _ensureKernelForKind(): Promise<void> {
-  if (_kind === "passkey") return _ensureKernel();
+async function _ensureKernelForKind(opts: { silent?: boolean } = {}): Promise<void> {
+  if (_kind === "passkey") return _ensureKernel(opts);
   if (_kind === "web3auth") return _ensureKernelForWeb3Auth();
   throw new Error("No Kernel available for auth kind: " + _kind);
 }
@@ -3939,10 +3945,29 @@ async function ensureContentSigner(): Promise<boolean> {
  *
  * In the browser, so it guards a lost unlocked phone in the app, not the API: a
  * server check for money and broadcast routes is a later step.
+ *
+ * `holderKey`: the action will also sign as the name's holder once it finishes, in the
+ * background (an event page's name, pointed after the publish). A passkey signs that
+ * with the owner key, which only a passkey sheet in THIS tab puts in memory - a reload
+ * reopens the seed but not it - and the tap that started the action is the one moment a
+ * browser lets that sheet open. So it is asked for here: no sheet when this tab already
+ * holds the key with time to spare (`holderKeyReady`), one otherwise. An added device
+ * cannot sign as the holder and gets the plain confirm.
  */
-async function ensureOrganiserUnlock(): Promise<void> {
+async function ensureOrganiserUnlock(opts: { holderKey?: boolean } = {}): Promise<void> {
   if (_kind !== "passkey") return;
   _expireUnlockIfDue();
+  if (opts.holderKey && !_deviceRole) {
+    if (holderKeyReady({ ownerKeyInMemory: !!_passkeyPrivateKey, seedUnlocked: !!_unlockedSeed(), expiresAt: _unlocked?.expiresAt ?? null })) return;
+    try {
+      await _freshMainPasskey();
+      return;
+    } catch (e) {
+      // Declined: an open seed still lets the action run, and the name waits for its button.
+      if (_unlockedSeed()) return;
+      throw e instanceof PasskeyCeremonyCancelledError && !e.noSheet ? new Error(_organiserLockedMessage()) : e;
+    }
+  }
   if (_unlockedSeed()) return;
   if (!(await ensureAccountSetup({ identity: true })) || !_unlockedSeed()) {
     throw new Error(_organiserLockedMessage());
@@ -3966,20 +3991,28 @@ async function ensureOrganiserUnlock(): Promise<void> {
  *                       deploy and accepts it — proven on Arbitrum Sepolia
  *                       2026-09-19, with the account left undeployed. The
  *                       passkey build may ask for the passkey; the click that
- *                       got here is the deliberate gesture.
+ *                       got here is the deliberate gesture. With `silent` it never
+ *                       asks (`HolderKeyLockedError` instead): the caller's
+ *                       gesture was an earlier confirm that put the key in memory
+ *                       (`ensureOrganiserUnlock({ holderKey })`).
  *   coinbase          → refused. A Coinbase Smart Wallet signs for Base whatever
  *                       the domain says, so no signature of its can verify on
  *                       the names' chain; its holder acts by its own
  *                       transaction (Fable sponsor-key consult §11.1), which is
  *                       not built yet.
  */
-async function signTypedDataAsHolder(typed: {
-  domain: { chainId: number } & Record<string, unknown>;
-  types: Record<string, Array<{ name: string; type: string }>>;
-  message: Record<string, unknown>;
-}): Promise<string> {
+async function signTypedDataAsHolder(
+  typed: {
+    domain: { chainId: number } & Record<string, unknown>;
+    types: Record<string, Array<{ name: string; type: string }>>;
+    message: Record<string, unknown>;
+  },
+  opts: { silent?: boolean } = {},
+): Promise<string> {
   const parent = _parent;
   if (!parent) throw new Error("Sign in again first. Nothing was signed.");
+  // A wallet asks for every signature itself, so it can never sign silently.
+  if (opts.silent && _kind === "web3") throw new HolderKeyLockedError();
   if (_kind === "web3") {
     const [{ switchChain }, { getEthersProvider }, { JsonRpcSigner }] = await Promise.all([
       import("../payment/chains.js"),
@@ -4002,7 +4035,7 @@ async function signTypedDataAsHolder(typed: {
     // An ECDSA-built Kernel may predate a switch another device made: its 1271 would
     // name the uninstalled ECDSA validation. Re-read the root first (Fable sign-off SHOULD-2).
     if (_kind === "passkey" && _kernel?.sudo.kind === "ecdsa") _kernel.rootChecked = false;
-    await _ensureKernelForKind();
+    await _ensureKernelForKind(opts);
     if (!_kernel) throw new Error("Account unavailable — please sign in again. Nothing was signed.");
     const { createKernelTypedDataSigner } = await import("./kernel-account.js");
     return createKernelTypedDataSigner(_kernel.account)(typed.domain, typed.types, typed.message);

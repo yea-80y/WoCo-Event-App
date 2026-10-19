@@ -3,7 +3,9 @@
   export type EventDomainIntent =
     | { mode: "none" }
     | { mode: "new"; label: string }
-    | { mode: "existing"; label: string; willOverwrite: boolean };
+    /** `currentTarget`: the Swarm reference the name points at now, if any - the parent
+     *  compares it with this page's feed, so a name already on it asks nothing. */
+    | { mode: "existing"; label: string; currentTarget: string | null };
 </script>
 
 <script lang="ts">
@@ -130,7 +132,8 @@
         ? { mode: "new", label: previewLabel }
         : { mode: "new", label: "" };
     } else if (mode === "existing") {
-      intent = { mode: "existing", label: selectedExisting, willOverwrite: !!selectedExisting };
+      const current = ownedNames.find((n) => n.label === selectedExisting)?.contentHash;
+      intent = { mode: "existing", label: selectedExisting, currentTarget: current ? current.replace(/^0x/, "").toLowerCase() : null };
     } else {
       intent = { mode: "none" };
     }

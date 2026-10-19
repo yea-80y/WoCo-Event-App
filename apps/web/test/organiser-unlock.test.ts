@@ -59,7 +59,7 @@ const GATED: Array<[file: string, signature: string, action: string]> = [
 for (const [file, signature, action] of GATED) {
   test(`${file}: ${signature} confirms before ${action}`, () => {
     const src = read(`../src/lib/${file}`);
-    assert.match(before(src, signature, action), /await auth\.ensureOrganiserUnlock\(\);/);
+    assert.match(before(src, signature, action), /await auth\.ensureOrganiserUnlock\((\{ holderKey: [^;]+ \})?\);/);
   });
 }
 
@@ -67,7 +67,7 @@ test("the gate runs only where a row says - never on page open (onMount, $effect
   const rows = new Map<string, Set<string>>();
   for (const [file, signature] of GATED) rows.set(file, (rows.get(file) ?? new Set()).add(signature));
   for (const [file, signatures] of rows) {
-    const calls = read(`../src/lib/${file}`).match(/auth\.ensureOrganiserUnlock\(\)/g)?.length ?? 0;
+    const calls = read(`../src/lib/${file}`).match(/auth\.ensureOrganiserUnlock\(/g)?.length ?? 0;
     assert.equal(calls, signatures.size, `${file}: every ensureOrganiserUnlock call needs a GATED row`);
   }
 });
