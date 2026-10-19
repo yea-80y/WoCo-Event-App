@@ -728,8 +728,8 @@
 
               {#if tier.feePassedToCustomer && tier.coverFees}
                 <p class="fee-mode-hint">
-                  A booking fee covers card processing and our 1.5%, so you receive at least your full
-                  ticket price, whatever card the buyer uses.
+                  A booking fee covers payment and platform costs, so you receive at least your full
+                  ticket price, however the buyer pays.
                 </p>
               {:else if tier.feePassedToCustomer}
                 <label class="field buyer-fee-field">
@@ -750,7 +750,7 @@
                 </label>
               {:else}
                 <p class="fee-mode-hint">
-                  No booking fee. Card processing and our 1.5% come out of your ticket price.
+                  No booking fee. Payment and platform costs come out of your ticket price.
                 </p>
               {/if}
 

@@ -178,10 +178,9 @@ suspension.
   - **Set your own fee** (the default): a booking fee of the percentage you choose, minimum
     4.5%, 10% unless you change it. Whatever remains after card processing and our platform fee
     is yours.
-  - **Buyer pays fees:** a booking fee worked out per order so that, after card processing and
-    our platform fee, you receive at least your ticket price whatever card the buyer pays with,
-    at the payment provider's published UK card rates. On most UK cards you receive a little
-    more. It does not cover fees for a paid fraud-screening plan you choose with the payment
+  - **Buyer pays fees:** a booking fee worked out per order so that, after payment costs and
+    our platform fee, you receive at least your ticket price however the buyer pays, at the
+    payment provider's published UK rates. Often you receive a little more. It does not cover fees for a paid fraud-screening plan you choose with the payment
     provider, or refund and dispute costs.
   - **You pay fees:** no booking fee. The buyer pays your ticket price alone, and card
     processing and our platform fee come out of it.
