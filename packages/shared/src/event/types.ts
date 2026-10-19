@@ -113,6 +113,24 @@ export interface PaymentConfig {
    * between the markup and the actual Stripe + platform deductions.
    */
   buyerFeePercent?: number;
+  /**
+   * "Cover the fees" booking fee: present = this mode (with `feePassedToCustomer`
+   * true and no `buyerFeePercent`). The rates are the ones in force when the
+   * ticket type was published; checkout recomputes from this stored copy and
+   * refuses a set it does not accept, so a rate change never makes a published
+   * page advertise one price and charge another. See COVER_FEE_RATES.
+   */
+  coverFees?: CoverFeeRates;
+}
+
+/** Inputs to the "cover the fees" booking fee, in basis points and minor units. */
+export interface CoverFeeRates {
+  /** Card processing percentage the fee covers (315 = 3.15%). */
+  stripeBp: number;
+  /** Card processing fixed fee per payment (20 = 20p). */
+  stripeFixedMinor: number;
+  /** Radar fee per screened payment (0 while organisers are on Radar Lite). */
+  radarMinor: number;
 }
 
 /** Payment proof submitted alongside a claim request */

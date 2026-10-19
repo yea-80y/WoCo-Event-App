@@ -114,3 +114,19 @@ export const BUYER_FEE_FLOOR_PCT = 4.5;
 
 /** Default buyer-pays fee % when the toggle is first turned on. */
 export const BUYER_FEE_DEFAULT_PCT = 10;
+
+/**
+ * "Cover the fees" booking fee rates: the dearest card on Stripe's UK price list
+ * (international, 3.15% + 20p, checked 2026-10-19), so the organiser receives at
+ * least the ticket price whatever card the buyer uses - a fee may never vary by
+ * card (UK surcharge ban). Radar 0 while organisers are on Radar Lite. Each
+ * ticket type stores the set it was published with; when these change, keep the
+ * old set in ACCEPTED_COVER_FEE_RATES so published ticket types keep selling.
+ */
+export const COVER_FEE_RATES = { stripeBp: 315, stripeFixedMinor: 20, radarMinor: 0 } as const;
+export const ACCEPTED_COVER_FEE_RATES: readonly { stripeBp: number; stripeFixedMinor: number; radarMinor: number }[] = [
+  COVER_FEE_RATES,
+];
+
+/** Stripe's standard UK consumer-card rate - the organiser-facing payout estimate. */
+export const STRIPE_UK_STANDARD_CARD = { bp: 150, fixedMinor: 20 } as const;

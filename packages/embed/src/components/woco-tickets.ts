@@ -732,7 +732,7 @@ export class WocoTickets extends HTMLElement {
       ? `<div class="total-row">
           <span>Total</span>
           <strong>${this.esc(fees.cardTotal)}</strong>
-          ${fees.feePercent > 0 ? `<span class="fee-note">incl. ${this.esc(fees.fee)} booking fee</span>` : ""}
+          ${fees.feeRowLabel ? `<span class="fee-note">incl. ${this.esc(fees.fee)} booking fee</span>` : ""}
         </div>`
       : "";
 

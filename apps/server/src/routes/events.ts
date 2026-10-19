@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { streamText } from "hono/streaming";
 import type { Hex0x, CreateEventV3Request, UpdateEventMetaRequest, EventDirectoryEntry } from "@woco/shared";
 import { isValidXWingPublicKey } from "@woco/shared/crypto/xwing";
-import { FEATURES, BUYER_FEE_FLOOR_PCT, MIN_TICKET_PRICE, ticketPriceMeetsMinimum, geoWithinSizeLimit, eventHasPlace, EVENT_PLACE_REQUIRED } from "@woco/shared";
+import { FEATURES, BUYER_FEE_FLOOR_PCT, COVER_FEE_RATES, MIN_TICKET_PRICE, ticketPriceMeetsMinimum, geoWithinSizeLimit, eventHasPlace, EVENT_PLACE_REQUIRED } from "@woco/shared";
 import type { AppEnv } from "../types.js";
 import { requireAuth } from "../middleware/auth.js";
 import { cancellationGate, withCancellation } from "../lib/event/cancellations.js";
@@ -290,6 +290,16 @@ events.post("/", requireAuth, async (c) => {
     if (s.payment?.feePassedToCustomer && typeof s.payment.buyerFeePercent === "number"
         && s.payment.buyerFeePercent < BUYER_FEE_FLOOR_PCT) {
       return c.json({ ok: false, error: `Series ${s.seriesId}: buyer fee must be ≥ ${BUYER_FEE_FLOOR_PCT}%` }, 400);
+    }
+    // "Cover the fees" publishes with today's rates and nothing else: checkout
+    // recomputes from the stored copy, so stale or edited rates must not land.
+    if (s.payment?.coverFees !== undefined) {
+      const r = s.payment.coverFees;
+      if (s.payment.feePassedToCustomer !== true || s.payment.buyerFeePercent !== undefined
+          || r?.stripeBp !== COVER_FEE_RATES.stripeBp || r.stripeFixedMinor !== COVER_FEE_RATES.stripeFixedMinor
+          || r.radarMinor !== COVER_FEE_RATES.radarMinor) {
+        return c.json({ ok: false, error: `Series ${s.seriesId}: booking fee settings are out of date - reload the page and publish again` }, 400);
+      }
     }
     // Pricing currency must match the organiser's Stripe payout currency, or
     // Stripe silently converts every sale and bills the organiser the FX fee
