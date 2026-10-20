@@ -4,7 +4,7 @@
   import type { PairingOffer } from "../../auth/device-link.js";
 
   /**
-   * "Add another device" (#746), on any of the account's passkeys: read the code the
+   * "Add a device" (#746), on any of the account's passkeys: read the code the
    * other device shows - with WoCo's own scanner or typed, never a phone's camera app -
    * then confirm with a passkey sheet every time, whatever the unlock window says. The
    * other device's passkey goes on the account's list: a co-owner like this one.
@@ -85,12 +85,15 @@
     <p class="panel-title">Give it keys</p>
     <p>On the other device, open WoCo and tap Show the code. Scan the code it shows.</p>
   {:else if stage === "scan" || stage === "reading"}
-    <p class="panel-title">Add another device</p>
+    <p class="panel-title">Add a device</p>
     <p>
       Same password manager on both - like Google Password Manager on this phone and in Chrome on your laptop? Just sign
       in there. Nothing to add.
     </p>
-    <p>Otherwise, on the other device open woco.eth.limo, tap Sign in, then Add this device. Scan the code it shows.</p>
+    <p>
+      Otherwise, first open woco.eth.limo on the laptop, tap Sign in, then Add this device. It shows a code - scan it
+      here, or type it below.
+    </p>
   {/if}
   {#if stage === "scan" || stage === "reading"}
     {#if camera}

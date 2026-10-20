@@ -19,6 +19,7 @@
  *     /verify                      verify
  *     /signup                      signup (email-CTA landing; ?gt= gate token)
  *     /profile, /profile/:addr     profile
+ *     /account   (and /passkeys)   account (Account & security: sign-in, passkeys, devices, sessions)
  *     /shops/:id/tap               shop-tap (tap-to-pay activation)
  *     /shop/:shopId/order/:code    shop-order (Stripe return — success/cancel)
  *     /coaster/:subject            coaster (log a lap — reached by QR/link, not nav)
@@ -162,7 +163,8 @@ function matchRoute(pathWithQuery: string): Match {
     return { route: "signup", params: gt ? { gt } : {}, surface: "attendee" };
   }
   if (path === "/protect") return { route: "protect", params: {}, surface: "attendee" };
-  if (path === "/passkeys") return { route: "passkeys", params: {}, surface: "attendee" };
+  // /passkeys was "Your passkeys" before Account & security; emails and screens may still link it.
+  if (path === "/account" || path === "/passkeys") return { route: "account", params: {}, surface: "attendee" };
   if (path === "/link") return { route: "link", params: {}, surface: "attendee" };
   if (path === "/recover") return { route: "recover", params: {}, surface: "attendee" };
   if (path === "/profile") return { route: "profile", params: {}, surface: "attendee" };

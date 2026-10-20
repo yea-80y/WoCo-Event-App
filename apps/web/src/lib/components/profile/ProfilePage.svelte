@@ -12,7 +12,8 @@
   import { navigate } from "../../router/router.svelte.js";
   import { openEvent } from "../../attendee/events/open-event.js";
   import { loginRequest } from "../../auth/login-request.svelte.js";
-  import { authPost, authGet } from "../../api/client.js";
+  import { authGet } from "../../api/client.js";
+  import { authKindLabel, authKindColor } from "../../auth/kind-label.js";
   import { rememberLabel } from "../../profile/label-cache.js";
   import { nameIsVerified, verifyName } from "../../sub-ens/verify-name.js";
   import { subEnsErrorFrom, subEnsErrorDetail, formatRetryAt } from "../../sub-ens/errors.js";
@@ -110,9 +111,6 @@
     activeTab = propTab === "passport" ? "passport" : "profile";
   });
   let addressCopied = $state(false);
-  let revokingAll = $state(false);
-  let revokeSuccess = $state(false);
-  let revokeFailed = $state(false);
 
   // Edit form
   let editName = $state("");
@@ -137,20 +135,6 @@
   const shortAddr = $derived(
     viewAddress ? `${viewAddress.slice(0, 6)}...${viewAddress.slice(-4)}` : "",
   );
-
-  const authKindLabel: Record<string, string> = {
-    web3: "Web3 Wallet",
-    passkey: "Passkey",
-    web3auth: "Email / Social Login",
-    coinbase: "Coinbase Smart Wallet",
-  };
-
-  const authKindColor: Record<string, string> = {
-    web3: "#C7F23A",
-    passkey: "#22c55e",
-    web3auth: "#38bdf8",
-    coinbase: "#2563eb",
-  };
 
   function bannerGradient(addr: string): string {
     const hex = addr.replace("0x", "").slice(0, 16);
@@ -387,28 +371,6 @@
     await navigator.clipboard.writeText(viewAddress);
     addressCopied = true;
     setTimeout(() => { addressCopied = false; }, 2000);
-  }
-
-  async function revokeAllSessions() {
-    if (revokingAll) return;
-    revokingAll = true;
-    let revoked = false;
-    try {
-      // authPost resolves on a refusal too, so "Done" must wait for ok.
-      const res = await authPost("/api/auth/revoke-all", {});
-      if (!res.ok) throw new Error(res.error ?? "Revoke failed");
-      revoked = true;
-      revokeSuccess = true;
-    } catch (err) {
-      console.error("Revoke sessions failed:", err);
-      revokeFailed = true;
-      setTimeout(() => { revokeFailed = false; }, 4000);
-    } finally {
-      revokingAll = false;
-    }
-    // "Every device" includes this one (#186). Outside the try: the server has
-    // already revoked, so a local sign-out hiccup must not read as "failed".
-    if (revoked) await auth.onSessionRevoked();
   }
 
   async function loadProfile() {
@@ -867,41 +829,17 @@
           {/if}
         </section>
 
-        <!-- Account info -->
+        <!-- Account controls (sign-in, passkeys, devices, sessions) have their own
+             page: Profile is the person's public page. -->
         <section class="settings-card">
           <h2 class="card-title">Account</h2>
 
-          <div class="info-row">
-            <span class="info-label">Sign-in method</span>
-            <span class="info-value">
-              <span
-                class="kind-dot"
-                style="background:{authKindColor[auth.kind ?? ''] ?? 'var(--text-muted)'}"
-              ></span>
-              {authKindLabel[auth.kind ?? ""] ?? "Unknown"}
-            </span>
-          </div>
-
-          {#if auth.kind === "passkey"}
-            <div class="info-row">
-              <span class="info-label">Passkeys</span>
-              <!-- navigate(), never href="#/...": the gateway <base href> would send it off
-                   this origin, where the passkey opens a different account. -->
-              <button class="info-value link-btn" onclick={() => navigate("/passkeys")}>Your passkeys</button>
-            </div>
-          {/if}
-
-          <div class="info-row">
-            <span class="info-label">Address</span>
-            <button class="addr-copy-btn" onclick={copyAddress} title={viewAddress}>
-              <span class="mono">{shortAddr}</span>
-              {#if addressCopied}
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
-                <span class="copy-label copy-label--done">Copied</span>
-              {:else}
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                <span class="copy-label">Copy</span>
-              {/if}
+          <!-- navigate(), never href="#/...": the gateway <base href> would send it off
+               this origin, where the passkey opens a different account. -->
+          <div class="info-row account-row">
+            <button class="account-link" onclick={() => navigate("/account")}>
+              <span>Account & security</span>
+              <span class="account-link-arrow" aria-hidden="true">→</span>
             </button>
           </div>
 
@@ -920,37 +858,6 @@
               </span>
             </div>
           {/if}
-        </section>
-
-        <!-- Session security -->
-        <section class="settings-card settings-card--danger">
-          <h2 class="card-title">Session security</h2>
-          <p class="card-hint">
-            Sign out all active sessions on every device and browser, this one included.
-            You'll need to sign in again on each.
-          </p>
-          <div class="danger-row">
-            <div class="session-status">
-              <span class="session-dot"></span>
-              Session active
-            </div>
-            <button
-              class="revoke-btn"
-              onclick={revokeAllSessions}
-              disabled={revokingAll}
-            >
-              {#if revokingAll}
-                <span class="spin-xs"></span> Signing out...
-              {:else if revokeSuccess}
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
-                Done
-              {:else if revokeFailed}
-                Didn't work - try again
-              {:else}
-                Sign out everywhere
-              {/if}
-            </button>
-          </div>
         </section>
 
       </div>
@@ -1323,10 +1230,6 @@
     gap: 1rem;
   }
 
-  .settings-card--danger {
-    border-color: color-mix(in srgb, var(--error) 20%, var(--border));
-  }
-
   /* Attendee-gate unlock card */
   .unlock-card {
     border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
@@ -1524,14 +1427,33 @@
     color: var(--text-secondary);
   }
 
-  .info-value.link-btn {
+  .account-row { padding: 0; }
+
+  .account-link {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    min-height: 2.75rem;
+    padding: 0;
     background: none;
     border: none;
-    padding: 0;
+    font: inherit;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text);
+    text-align: left;
     cursor: pointer;
+  }
+
+  .account-link-arrow {
+    color: var(--text-muted);
+    transition: color var(--transition), transform var(--transition);
+  }
+
+  .account-link:hover .account-link-arrow {
     color: var(--accent-text);
-    text-decoration: underline;
-    text-underline-offset: 2px;
+    transform: translateX(2px);
   }
 
   .info-value {
@@ -1543,96 +1465,12 @@
     color: var(--text);
   }
 
-  .kind-dot {
-    display: inline-block;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  .mono {
-    font-family: "SF Mono", "Fira Code", monospace;
-    font-size: 0.75rem;
-  }
-
   .mono-sm {
     font-family: "SF Mono", "Fira Code", monospace;
     font-size: 0.6875rem;
     color: var(--text-secondary);
     font-weight: 400;
   }
-
-  .addr-copy-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3125rem;
-    background: none;
-    border: none;
-    cursor: pointer;
-    color: var(--text-muted);
-    padding: 0;
-    transition: color var(--transition);
-    font-size: 0.75rem;
-    font-family: "SF Mono", "Fira Code", monospace;
-  }
-
-  .addr-copy-btn:hover { color: var(--accent); }
-
-  .copy-label {
-    font-family: inherit;
-    font-size: 0.6875rem;
-    color: var(--text-muted);
-    letter-spacing: 0.02em;
-  }
-
-  .copy-label--done { color: var(--accent); }
-
-  /* Danger card */
-  .danger-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    flex-wrap: wrap;
-  }
-
-  .session-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4375rem;
-    font-size: 0.8125rem;
-    color: var(--text-secondary);
-  }
-
-  .session-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--success);
-  }
-
-  .revoke-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.375rem;
-    padding: 0.4375rem 1rem;
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--error);
-    background: color-mix(in srgb, var(--error) 8%, transparent);
-    border: 1px solid color-mix(in srgb, var(--error) 25%, var(--border));
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: background var(--transition), border-color var(--transition);
-  }
-
-  .revoke-btn:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--error) 15%, transparent);
-    border-color: color-mix(in srgb, var(--error) 40%, var(--border));
-  }
-
-  .revoke-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
   /* ── Events grid ─────────────────────────────────────────── */
   .public-events-heading {

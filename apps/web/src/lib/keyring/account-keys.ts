@@ -374,7 +374,7 @@ async function enrolSelfOnce(h: AccountKeysHost, seedAddr: string): Promise<void
 /**
  * Give the account's keys to a passkey ALREADY on it that a removal left without them:
  * its member (sent through a code) goes into the ring, the same generation, in one op.
- * A passkey not on the onchain list is refused - adding one is "Add another device".
+ * A passkey not on the onchain list is refused - adding one is "Add a device".
  */
 export async function giveKeysTo(h: AccountKeysHost, wire: unknown): Promise<void> {
   const parent = h.parent()?.toLowerCase();
@@ -391,7 +391,7 @@ export async function giveKeysTo(h: AccountKeysHost, wire: unknown): Promise<voi
   const list = await readCoOwners(parent);
   if (list === "error" || list === null) throw new Error(keysVerdictMessage("unknown"));
   if (!list.map((a) => a.toLowerCase()).includes(who)) {
-    throw new Error("That passkey isn't on your account. To add a device, use Add another device.");
+    throw new Error("That passkey isn't on your account. To add a device, use Add a device in Account & security.");
   }
   const ring = await ringForChange(h, [member]);
   if (!ring) throw new Error(keysVerdictMessage("unknown"));

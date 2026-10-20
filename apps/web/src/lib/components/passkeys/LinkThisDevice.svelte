@@ -69,7 +69,7 @@
 
   {#if auth.isConnected && stage !== "done"}
     <p class="muted">You're already signed in on this device.</p>
-    <button class="btn btn--ghost" onclick={() => navigate("/passkeys")}>Your passkeys</button>
+    <button class="btn btn--ghost" onclick={() => navigate("/account")}>Account & security</button>
   {:else if stage === "intro" || stage === "creating"}
     <p class="muted">
       You'll make a passkey on this device, then confirm on the device you already use. Nothing changes until it
@@ -83,8 +83,8 @@
     </button>
   {:else if stage === "waiting"}
     <p class="muted">
-      On the device you already use, open WoCo, go to Your passkeys and tap Add another device. Scan this code, or type
-      it there:
+      On your phone (or any device already signed in), open WoCo and go to Account & security, then tap Add a device.
+      Scan this code, or type it there:
     </p>
     {#if code}<PairingCode qr={code.qr} typed={code.typed} />{/if}
     <p class="muted">Waiting for your other device… The code works for 10 minutes.</p>

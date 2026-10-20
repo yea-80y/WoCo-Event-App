@@ -10,7 +10,8 @@
    * all equal - each opens it and can do everything, adding and removing passkeys
    * included. Each row says where its passkey works when this device knows the
    * password manager, so a person can see a barrier coming (a Samsung Pass passkey
-   * never reaches a laptop). Never asks for a passkey on page open.
+   * never reaches a laptop). Never asks for a passkey on page open. Rendered on
+   * Account & security, with the backup and add-a-device sections below the list.
    */
 
   let rows = $state<PasskeyRow[]>([]);
@@ -43,6 +44,8 @@
   const linkedOnly = $derived(!auth.isAccountOwner);
   const busy = $derived(linking || (adding !== "closed" && adding !== "explain" && adding !== "done") || removing !== null);
   const current = $derived(rows.find((r) => r.signedInWith) ?? null);
+  // Passkeys on the account's list: a device linked the old way is not a backup.
+  const fullPasskeys = $derived(rows.filter((r) => !r.linkedBefore).length);
 
   function day(ms: number): string {
     return new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
@@ -159,10 +162,11 @@
   }
 </script>
 
-<section class="passkeys" aria-labelledby="passkeys-title">
+<div class="passkeys">
+<section class="block" aria-labelledby="passkeys-title">
   <header>
     <h2 id="passkeys-title">Your passkeys</h2>
-    <p class="lede">Each one opens your account and can do everything. Add one for every device you use.</p>
+    <p class="lede">Each one opens your account and can do everything.</p>
   </header>
 
   {#if !auth.isConnected}
@@ -284,10 +288,10 @@
         </div>
       {:else if adding !== "closed"}
         <div class="panel">
-          <p class="panel-title">Add a password manager</p>
+          <p class="panel-title">Add a backup passkey</p>
           <p>
-            First confirm it's you. Then pick where to save the new passkey - Google Password Manager, 1Password,
-            Bitwarden or any other. Your current passkeys keep working.
+            First confirm it's you. Then pick another password manager to save the new passkey in - Google Password
+            Manager, 1Password, Bitwarden or any other. Your current passkeys keep working.
           </p>
           {#if addError}<p class="err" role="alert">{addError}</p>{/if}
           {#if adding === "explain"}
@@ -301,36 +305,70 @@
             </p>
           {/if}
         </div>
-      {:else if !linkedOnly}
-        {#if !canAdd}
-          <p class="muted">{unlocksWhen("Adding devices and password managers", true)}</p>
-        {:else}
-          <div class="actions">
-            <div class="action">
-              <button class="btn btn--primary" onclick={() => { linkMode = "link"; linking = true; }} disabled={busy}>Add another device</button>
-              <p class="hint">A laptop or another phone that can't use these passkeys.</p>
-            </div>
-            <div class="action">
-              <button class="btn btn--ghost" onclick={() => { adding = "explain"; addError = null; }} disabled={busy}>
-                Add a password manager here
-              </button>
-              <p class="hint">Switching password manager? Add the new one, then remove the old one.</p>
-            </div>
-          </div>
-          <p class="warn">Only add your own devices - never someone else's, staff included. Each one has full control of your account.</p>
-        {/if}
       {/if}
     {/if}
   {/if}
 </section>
 
+{#if auth.isConnected && isPasskey && loaded && !linkedOnly && !linking && adding === "closed"}
+  <section class="block" aria-labelledby="backup-title">
+    <h2 id="backup-title">Backup passkey</h2>
+    <div class="backup" class:callout={fullPasskeys <= 1}>
+      {#if fullPasskeys <= 1}
+        <p class="callout-title">Add a backup passkey</p>
+        <p class="body">
+          Save a second passkey in another password manager - like Google Password Manager or 1Password - so losing
+          one never locks you out.
+        </p>
+      {:else}
+        <p class="body">You have {fullPasskeys} passkeys. If you lose one, the others still open your account.</p>
+      {/if}
+      {#if !canAdd}
+        <p class="muted">{unlocksWhen("Adding devices and password managers", true)}</p>
+      {:else}
+        <button
+          class={fullPasskeys <= 1 ? "btn btn--primary" : "btn btn--ghost"}
+          onclick={() => { adding = "explain"; addError = null; }}
+          disabled={busy}
+        >{fullPasskeys <= 1 ? "Add a backup passkey" : "Add another passkey"}</button>
+        <p class="hint">Switching password manager? Add the new one, then remove the old one.</p>
+      {/if}
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="devices-title">
+    <h2 id="devices-title">Add a device</h2>
+    <p class="body">
+      Same password manager on both (for example Google Password Manager on your phone and in Chrome on your laptop)?
+      Just sign in there - nothing to add.
+    </p>
+    {#if !canAdd}
+      <p class="muted">Adding a device with a different password manager unlocks at the same time.</p>
+    {:else}
+      <p class="body">
+        Otherwise: on the laptop, open woco.eth.limo, tap Sign in, then 'Add this device'. Then tap Add a device here
+        and scan the code it shows.
+      </p>
+      <div class="action">
+        <button class="btn btn--ghost" onclick={() => { linkMode = "link"; linking = true; }} disabled={busy}>Add a device</button>
+      </div>
+      <p class="warn">Only add your own devices - never someone else's, staff included. Each one has full control of your account.</p>
+    {/if}
+  </section>
+{/if}
+</div>
+
 <style>
+  /* Sections of Account & security: the same rhythm as the page around them. */
   .passkeys {
     display: grid;
-    gap: 1.25rem;
-    max-width: 38rem;
-    margin: 0 auto;
-    padding: 1.5rem 1rem 2.5rem;
+    gap: 2rem;
+  }
+  .block {
+    display: grid;
+    gap: 1rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
   }
   header {
     display: grid;
@@ -339,16 +377,31 @@
   h2 {
     margin: 0;
     font-family: var(--font-display);
-    font-weight: 500;
-    font-size: 1.75rem;
-    letter-spacing: -0.01em;
+    font-size: 1.125rem;
+    font-weight: 600;
+    letter-spacing: -0.005em;
   }
   p {
     margin: 0;
   }
-  .lede {
+  .lede,
+  .body {
     color: var(--text-secondary);
-    max-width: 34rem;
+  }
+  .backup {
+    display: grid;
+    gap: 0.6rem;
+    justify-items: start;
+  }
+  .callout {
+    padding: 1rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--accent) 4%, var(--bg-surface));
+  }
+  .backup .callout-title {
+    color: var(--text);
+    font-weight: 600;
   }
   .muted,
   .hint {
@@ -454,10 +507,6 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
-  }
-  .actions {
-    display: grid;
-    gap: 1rem;
   }
   .action {
     display: grid;
