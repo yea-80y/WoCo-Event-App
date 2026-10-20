@@ -872,9 +872,9 @@
     color: var(--text-muted); background: transparent; border: none; border-radius: 5px;
     cursor: pointer; transition: background 120ms, color 120ms;
   }
-  .mode-btn:hover { color: var(--text); }
+  .mode-btn:not(.mode-btn--active):hover { color: var(--text); }
   .mode-btn--active {
-    color: #0d0d0d; background: var(--accent);
+    color: var(--accent-ink); background: var(--accent);
   }
 
   .reuse-hint { margin: 0; font-size: 0.75rem; color: var(--text-muted); opacity: 0.75; line-height: 1.45; }

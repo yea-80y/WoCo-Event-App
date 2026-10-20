@@ -67,3 +67,49 @@ test("the event page's buy buttons use the accent ink, never white", () => {
     assert.match(rule!, /(?<![-\w])color:\s*var\(--accent-ink\);/, `${file} ${selector}`);
   }
 });
+
+/** Rules (selector, body) in a component's <style>, comma lists split out. */
+function rules(file: string): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  for (const m of style(file).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    for (const sel of m[1].split(",")) out.push([sel.trim().replace(/\s+/g, " "), m[2]]);
+  }
+  return out;
+}
+
+test("a selected chip keeps its ink under a phone's sticky hover - the hover's text colour skips it", () => {
+  // A tap leaves :hover on the tapped element, and these hover rules outrank
+  // the selected class, so the chip went to the bone text colour on lime.
+  for (const [file, base, selected] of [
+    ["lib/creator/events/GenreTagPicker.svelte", ".pill", ".pill--active"],
+    ["lib/creator/builder/SubENSPicker.svelte", ".mode-btn", ".mode-btn--active"],
+    ["lib/creator/events/TicketSeriesEditor.svelte", ".fee-mode-btn", ".fee-mode-btn--active"],
+  ] as const) {
+    const all = rules(file);
+    const fill = all.find(([sel]) => sel === selected);
+    assert.ok(fill, `${file} ${selected}`);
+    assert.match(fill![1], /(?<![-\w])color:\s*var\(--accent-ink\);/, `${file} ${selected}`);
+    const hovers = all.filter(([sel, body]) =>
+      sel.startsWith(base) && sel.includes(":hover") && /(?<![-\w])color:/.test(body));
+    assert.ok(hovers.length > 0, `${file} has a ${base} hover colour`);
+    for (const [sel] of hovers) {
+      if (sel.startsWith(selected)) continue;
+      assert.ok(sel.includes(`:not(${selected})`), `${file}: "${sel}" must skip ${selected}`);
+    }
+  }
+});
+
+test("event creation's accent buttons use the accent ink, never white", () => {
+  for (const [file, selector] of [
+    ["lib/creator/events/PublishButton.svelte", ".publish-btn"],
+    ["lib/creator/events/StripeVerifyGate.svelte", ".setup-btn"],
+    ["lib/creator/events/TicketSeriesEditor.svelte", ".crypto-recipient-btn"],
+    ["lib/creator/events/ImportUrlPanel.svelte", ".import-btn"],
+    ["lib/creator/events/ImportUrlPanel.svelte", ".import-apply-btn"],
+    ["lib/creator/dashboard/StripeConnectModal.svelte", ".modal-cta--login"],
+  ] as const) {
+    const rule = rules(file).find(([sel]) => sel === selector);
+    assert.ok(rule, `${file} ${selector}`);
+    assert.match(rule![1], /(?<![-\w])color:\s*var\(--accent-ink\);/, `${file} ${selector}`);
+  }
+});

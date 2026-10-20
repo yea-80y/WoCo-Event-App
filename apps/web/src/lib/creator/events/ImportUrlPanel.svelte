@@ -181,7 +181,7 @@
   .import-btn {
     padding: 0.5rem 1rem;
     background: var(--accent);
-    color: var(--accent-ink, #fff);
+    color: var(--accent-ink);
     font-size: 0.875rem;
     font-weight: 600;
     border-radius: var(--radius-sm);
@@ -221,7 +221,7 @@
   .import-apply-btn {
     padding: 0.5rem 1rem;
     background: #22c55e;
-    color: #fff;
+    color: var(--accent-ink);
     font-size: 0.875rem;
     font-weight: 700;
     border-radius: var(--radius-sm);
