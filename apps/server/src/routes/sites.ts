@@ -883,11 +883,6 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     if (!resolvedUrls.ok) return c.json({ ok: false, error: resolvedUrls.error }, 400);
     const { apiUrl, gatewayUrl, wocoAppUrl } = resolvedUrls.urls;
 
-    // The pointer feed's index is resolved before the upload and held through it
-    // (below): one deploy of a site at a time (deploy-guard.ts).
-    endDeploy = beginDeploy(`site:${siteId}`);
-    if (!endDeploy) return c.json({ ok: false, error: DEPLOY_IN_PROGRESS_MESSAGE, code: DEPLOY_IN_PROGRESS_CODE }, 409);
-
     // Prefer the site config sent by the client — avoids a Swarm re-read immediately
     // after publishSite (deferred writes can have a brief propagation window).
     // Fall back to Swarm read for direct API calls. Always stamp ownerAddress server-side.
@@ -910,6 +905,12 @@ sitesRouter.post("/:id/deploy", requireAuth, async (c) => {
     if (published.status === "found" && published.site.ownerAddress.toLowerCase() !== parentAddress) {
       return c.json({ ok: false, error: "Not the site owner" }, 403);
     }
+
+    // The pointer feed's index is resolved before the upload and held through it
+    // (below): one deploy of a site at a time (deploy-guard.ts). Taken only once
+    // ownership is settled, so a caller who isn't the owner can never hold it.
+    endDeploy = beginDeploy(`site:${siteId}`);
+    if (!endDeploy) return c.json({ ok: false, error: DEPLOY_IN_PROGRESS_MESSAGE, code: DEPLOY_IN_PROGRESS_CODE }, 409);
 
     if (!existsSync(distMultisitePath)) {
       return c.json({

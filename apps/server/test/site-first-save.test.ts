@@ -532,3 +532,16 @@ test("every pointer branch of the site deploy resolves its index once, before th
   }
   assert.ok(!route.includes("prepareEthernaFeedUpdate("), "no resolution bundled with the post-upload chunk read");
 });
+
+test("the deploy lock is taken only after ownership is settled, so a non-owner can never hold it", () => {
+  for (const [file, route, ownerCheck] of [
+    ["../src/routes/sites.ts", 'sitesRouter.post("/:id/deploy"', 'error: "Not the site owner"'],
+    ["../src/routes/site.ts", "beginDeploy(`event-page:", "eventPageDeployGate(eventId, parentAddress)"],
+  ] as const) {
+    const s = src(file);
+    const body = file.endsWith("sites.ts") ? s.slice(s.indexOf(route)) : s;
+    const check = body.indexOf(ownerCheck);
+    const lock = body.indexOf("beginDeploy(");
+    assert.ok(check > 0 && lock > check, `${file}: beginDeploy after the ownership check`);
+  }
+});
