@@ -88,7 +88,7 @@ test("only on the landing page and the home screens, never during sign-in, signi
   for (const route of ["splitter", "home", "discover", "member-home", "creator-home"]) assert.ok(INSTALL_ROUTES.has(route), route);
   assert.equal(decideInstallOffer(inputs({ userAgent: IPHONE_SAFARI, route: "splitter" })), "ios", "the landing page at / is where most people arrive");
   for (const route of INSTALL_ROUTES) assert.equal(decideInstallOffer(inputs({ hasPrompt: true, route })), "prompt", route);
-  for (const route of ["event", "event-purchased", "signup", "profile", "protect", "passkeys", "link", "recover", "legal", "about", "invite"]) {
+  for (const route of ["event", "event-purchased", "signup", "profile", "protect", "account", "link", "recover", "legal", "about", "invite"]) {
     assert.equal(decideInstallOffer(inputs({ hasPrompt: true, route })), null, route);
   }
   assert.equal(decideInstallOffer(inputs({ hasPrompt: true, busy: true })), null);

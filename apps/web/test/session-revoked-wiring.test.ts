@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url";
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 const CLIENT = read("../src/lib/api/client.ts");
 const STORE = read("../src/lib/auth/auth-store.svelte.ts");
-const PROFILE = read("../src/lib/components/profile/ProfilePage.svelte");
+// The control moved from the Profile tab to Account & security.
+const ACCOUNT = read("../src/lib/components/account/AccountSecurity.svelte");
 
 test("both request paths sign out on SESSION_REVOKED, before the SESSION_INVALID re-mint", () => {
   const hits = CLIENT.match(/AuthErrorCode\.SESSION_REVOKED\) \{\s*(\/\/[^\n]*\n\s*)*if \(stillSessionAtSend\(sessionAtSend\)\) void auth\.onSessionRevoked\(\);\s*return/g);
@@ -38,8 +39,9 @@ test("onSessionRevoked signs out fully, once, and says why", () => {
 });
 
 test("'Sign out everywhere' signs this device out too, only after the server agreed", () => {
-  const start = PROFILE.indexOf("async function revokeAllSessions(");
-  const body = PROFILE.slice(start, PROFILE.indexOf("\n  }\n", start));
+  const start = ACCOUNT.indexOf("async function revokeAllSessions(");
+  assert.ok(start > 0, "the control lives on Account & security");
+  const body = ACCOUNT.slice(start, ACCOUNT.indexOf("\n  }\n", start));
   const ok = body.indexOf("if (!res.ok) throw");
   const out = body.indexOf("if (revoked) await auth.onSessionRevoked()");
   assert.ok(ok > 0 && out > body.indexOf("} finally {"), "after the try, so a local hiccup is not reported as a failed revoke");

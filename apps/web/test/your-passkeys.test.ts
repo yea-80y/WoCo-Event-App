@@ -200,7 +200,18 @@ test("more than one passkey needs an unlocked account: the screen follows the se
   assert.match(data, /canAdd: res\.data\.canAddDevices === true/);
   assert.match(src, /canAdd = res\.canAdd;/);
   const markup = src.slice(src.indexOf("</script>"));
-  const gate = markup.indexOf("{#if !canAdd}");
-  assert.ok(gate > 0 && gate < markup.indexOf("Add another device</button>"), "no add offer before the gate");
-  assert.ok(gate < markup.indexOf("Add a password manager here"));
+  // Both sections gate their own button: each offer sits in the {:else} of an {#if !canAdd}.
+  for (const [section, button] of [
+    ['id="backup-title"', '"Add a backup passkey" : "Add another passkey"'],
+    ['id="devices-title"', ">Add a device</button>"],
+  ]) {
+    const from = markup.indexOf(section);
+    const gate = markup.indexOf("{#if !canAdd}", from);
+    const unlocked = markup.indexOf("{:else}", gate);
+    const end = markup.indexOf("{/if}", unlocked);
+    const offer = markup.indexOf(button, from);
+    assert.ok(from > 0 && gate > from, `${section} is gated`);
+    assert.ok(!markup.slice(gate, unlocked).includes("{/if}"), `${section}: the {:else} belongs to the gate`);
+    assert.ok(offer > unlocked && offer < end, `${section}: the add offer only in the unlocked branch`);
+  }
 });
