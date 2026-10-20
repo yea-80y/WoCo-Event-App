@@ -34,8 +34,15 @@ import {
   versionedPageIdentifier,
   type SocChunkProbe,
 } from "@woco/shared";
-import { writeContentFeed, type SocTransport } from "./content-feed.js";
+import {
+  readContentFeedWriteBase,
+  writeContentFeed,
+  type ContentFeedResult,
+  type ContentFeedWriteBase,
+  type SocTransport,
+} from "./content-feed.js";
 import type { FeedRoute } from "./gateways.js";
+import { InconclusiveReadError } from "./late-retry.js";
 
 export type VerifiedWriteResult =
   /** Our bytes are what this version of the feed holds. */
@@ -274,4 +281,85 @@ export function writeContentFeedSettling(args: {
   void job.catch(() => undefined);
 
   return uploaded;
+}
+
+/** Lost races before a whole-document save gives up - the subject index's number. */
+const BASE_WRITE_ATTEMPTS = 3;
+
+const SUPERSEDED_MESSAGE =
+  "This was saved from another tab or device at the same moment, so your save didn't go through. Reload and try again.";
+
+/**
+ * Save a whole document at the version its base read proved next, never probing
+ * at write time (#943), and confirm it landed.
+ *
+ * The write targets `base.nextVersion` exactly - the subject index's rule (#689),
+ * for the same reason. A base read that was thorough and conclusive already
+ * knows that version, and asking again is what failed every first save: the
+ * chunk being asked about has never been written, and bee stops answering for it.
+ * If the address is taken now, another tab or device wrote it after the read; the
+ * chunk keeps its first bytes and the read-back says `superseded`. That is
+ * answered by reading again and building the document again from what is there -
+ * the only sound answer for a merge (a profile), and for a replacement (a
+ * notice, a photo) it is what the probing writer did too. `build` is called once
+ * per attempt, with that attempt's base.
+ *
+ * `base` is the caller's own clean read, used for the first attempt only and only
+ * when it names this feed; otherwise this reads one now. A read that cannot name
+ * a version throws {@link InconclusiveReadError} with `inconclusive` as its
+ * message - nothing is written - and a caller may retry it once later
+ * (`retryOnceIfInconclusive`). `build` may throw to refuse; that ends the save.
+ *
+ * `unconfirmed` returns as success: the upload was accepted, which is all the
+ * probing writer ever checked.
+ */
+export async function writeAtNextVersion<T, R = unknown>(args: {
+  signerPrivKey: string;
+  /** The address of `signerPrivKey` - see {@link writeContentFeedVerified}. */
+  ownerAddress: string;
+  topic: string;
+  route: FeedRoute;
+  /** For the base read - see `readContentFeedResult`. */
+  skipLegacy?: boolean;
+  base?: ContentFeedWriteBase<R> | null;
+  build: (read: ContentFeedResult<R>) => T;
+  inconclusive: string;
+  /** Test seam - production always posts to our server. */
+  transport?: SocTransport;
+}): Promise<{ data: T; written: Exclude<VerifiedWriteResult, { status: "superseded" }> }> {
+  const owner = (args.ownerAddress.startsWith("0x") ? args.ownerAddress.slice(2) : args.ownerAddress).toLowerCase();
+  const names = (b: ContentFeedWriteBase<R>) =>
+    b.owner === owner && b.topic === args.topic
+    && b.route.family === args.route.family && b.route.gatewayUrl === args.route.gatewayUrl;
+  let base: ContentFeedWriteBase<R> | null = args.base && names(args.base) ? args.base : null;
+
+  for (let attempt = 0; attempt < BASE_WRITE_ATTEMPTS; attempt++) {
+    if (!base || base.nextVersion === null) {
+      base = await readContentFeedWriteBase<R>(args.ownerAddress, args.topic, {
+        route: args.route,
+        skipLegacy: args.skipLegacy,
+      }).catch((e: unknown): ContentFeedWriteBase<R> => ({
+        read: { status: "unavailable", reason: e instanceof Error ? e.message : String(e) },
+        nextVersion: null,
+        owner,
+        topic: args.topic,
+        route: args.route,
+      }));
+    }
+    if (base.nextVersion === null) throw new InconclusiveReadError(args.inconclusive);
+
+    const data = args.build(base.read);
+    const written = await writeContentFeedVerified({
+      signerPrivKey: args.signerPrivKey,
+      ownerAddress: args.ownerAddress,
+      topic: args.topic,
+      data,
+      route: args.route,
+      knownVersion: base.nextVersion,
+      transport: args.transport,
+    });
+    if (written.status !== "superseded") return { data, written };
+    base = null;
+  }
+  throw new Error(SUPERSEDED_MESSAGE);
 }

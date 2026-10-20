@@ -10,7 +10,8 @@
  */
 
 import { PROFILE_TEXT_FIELDS, type ProfileTextField, type UpdateProfileRequest, type UserProfile } from "@woco/shared";
-import type { ContentFeedResult } from "../swarm/content-feed.js";
+import type { ContentFeedResult, SocTransport } from "../swarm/content-feed.js";
+import type { FeedRoute } from "../swarm/gateways.js";
 
 export const PROFILE_BASE_RETRY =
   "Couldn't load your current profile to update it - check your connection and try again. Nothing was changed.";
@@ -36,6 +37,73 @@ export function profileSaveBase(
   // would retry forever on advice that cannot work (#190). Reloading CAN work -
   // the usual cause is an app older than the payload it is being asked to read.
   return { ok: false, error: read.unusableAt !== undefined ? PROFILE_BASE_RELOAD : PROFILE_BASE_RETRY };
+}
+
+export const PROFILE_PHOTO_RETRY =
+  "Couldn't check your saved photo before changing it - check your connection and try again. Your photo wasn't changed.";
+
+/**
+ * Write the profile data feed: read the base, build the profile from it, write it
+ * at the version that read proved next (#943) and confirm it landed. If another
+ * device took that version in between, read again and build again from theirs,
+ * so their save is merged rather than reverted (`writeAtNextVersion`).
+ *
+ * The base read is thorough and includes the pre-versioning chunk, which is a
+ * profile too. No write-time probe: that asked the network about the same
+ * never-written version a second time, which is what made a first save fail.
+ * Throws `InconclusiveReadError` (message {@link PROFILE_BASE_RETRY}) without
+ * writing when the read could not say; refuses an unreadable stored profile.
+ */
+export async function writeProfileData(args: {
+  signer: { privKey: string; address: string };
+  topic: string;
+  route: FeedRoute;
+  build: (existing: UserProfile | null) => UserProfile;
+  /** Test seam - production always posts to our server. */
+  transport?: SocTransport;
+}): Promise<UserProfile> {
+  const { writeAtNextVersion } = await import("../swarm/verified-write.js");
+  const { data } = await writeAtNextVersion<UserProfile, UserProfile>({
+    signerPrivKey: args.signer.privKey,
+    ownerAddress: args.signer.address,
+    topic: args.topic,
+    route: args.route,
+    inconclusive: PROFILE_BASE_RETRY,
+    build: (read) => {
+      const base = profileSaveBase(read);
+      if (!base.ok) throw new Error(base.error);
+      return args.build(base.base);
+    },
+    transport: args.transport,
+  });
+  return data;
+}
+
+/**
+ * Point the avatar feed at an uploaded image, the same way (#943). A whole
+ * replacement, so nothing is built from the read but its version. `skipLegacy`:
+ * the probing writer it replaces never looked at the pre-versioning chunk, which
+ * cannot change the version chosen, and asking for it costs a missing-chunk search.
+ */
+export async function writeProfileAvatar(args: {
+  signer: { privKey: string; address: string };
+  topic: string;
+  route: FeedRoute;
+  avatarRef: string;
+  /** Test seam - production always posts to our server. */
+  transport?: SocTransport;
+}): Promise<void> {
+  const { writeAtNextVersion } = await import("../swarm/verified-write.js");
+  await writeAtNextVersion({
+    signerPrivKey: args.signer.privKey,
+    ownerAddress: args.signer.address,
+    topic: args.topic,
+    route: args.route,
+    skipLegacy: true,
+    inconclusive: PROFILE_PHOTO_RETRY,
+    build: () => ({ v: 1, avatarRef: args.avatarRef }),
+    transport: args.transport,
+  });
 }
 
 export type ProfileFormFields = Record<ProfileTextField, string>;
